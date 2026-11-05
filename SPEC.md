@@ -265,10 +265,10 @@ Decidable fragment, following Liquid Haskell: quantifier-free linear integer ari
 | `Int`, `Nat`, `U8`, … | `Int`, with `n >= 0` for `Nat` and the alias's predicates for refinements |
 | `Bool` | `Bool` |
 | `==`, `!=`, `<`, `<=`, `+`, `-`, `*`, `/`, `%` | native (`div`, `mod`: Euclidean, like Checkers) |
-| `Bytes` | `(Seq Int)`; `len`, `src[i]`, `++` native |
+| `Bytes` | `(Seq Int)`; `len`, `src[i]`, `++` native; each `src[i]` is known to be `< 256` |
 | `String` | `String`; `len` is uninterpreted (UTF-8 bytes, not characters) |
 | `Bag` (D47) | `(Array Int Int)` |
-| enums, records, `List`, `Option`, `Result`, tuples | `declare-datatypes`, with type parameters (value parameters are dropped from the sort) |
+| enums, records, `List`, `Option`, `Result`, tuples | `declare-datatypes`, with type parameters (value parameters are dropped from the sort); a value's constructor invariants are assumed, with the value parameters of its type filled in (`p~Parsed Json src i` gives `p.stop <= len src`) |
 | type variables, abstract types | uninterpreted sorts |
 | a parameter of function type | an uninterpreted function |
 | function `f` defined in this module, or imported `transparent` | **reflected** (D12) as `define-fun-rec`, instantiated per type; Z3 unfolds the definition where needed |

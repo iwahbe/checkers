@@ -18,7 +18,7 @@ export fn all p xs -> r : p~(a -> Bool), xs~List a, r~Bool
         [] -> True
         x :: rest -> p x and all p rest
 
-export fn reverse xs -> ys : xs~List a, ys~List a
+export transparent fn reverse xs -> ys : xs~List a, ys~List a
     reverse_onto xs []
 
 fn reverse_onto xs acc -> ys : xs~List a, acc~List a, ys~List a
@@ -32,17 +32,17 @@ export fn join sep parts -> s : sep~String, parts~List String, s~String
         [p] -> p
         p :: rest -> p ++ sep ++ join sep rest
 
-export fn keys pairs -> ks : pairs~List (k, v), ks~List k
+export transparent fn keys pairs -> ks : pairs~List (k, v), ks~List k
     match pairs
         [] -> []
         (key, _) :: rest -> key :: keys rest
 
-export fn contains xs x -> r : xs~List a, x~a, r~Bool
+export transparent fn contains xs x -> r : xs~List a, x~a, r~Bool
     match xs
         [] -> False
         y :: rest -> y == x or contains rest x
 
-export fn unique xs -> r : xs~List a, r~Bool
+export transparent fn unique xs -> r : xs~List a, r~Bool
     match xs
         [] -> True
         x :: rest -> not (contains rest x) and unique rest
@@ -99,3 +99,87 @@ export transparent fn sorted xs -> r : xs~List Int, r~Bool
 # `ys` is a rearrangement of `xs`: the same elements, as often (D47).
 export transparent fn perm xs ys -> r : xs~List Int, ys~List Int, r~Bool
     bag.of xs == bag.of ys
+
+# ── Lemmas about uniqueness and reversal ─────────────────────────────────────
+
+export lemma unique_cons x xs : x~a, xs~List a, not (contains xs x), unique xs
+    ensures unique (x :: xs)
+    proof
+        auto
+
+export lemma append_assoc xs ys zs : xs~List a, ys~List a, zs~List a
+    ensures (xs ++ ys) ++ zs == xs ++ (ys ++ zs)
+    proof
+        match xs
+            [] -> auto
+            _ :: rest -> have append_assoc rest ys zs
+
+lemma rev_onto_app xs acc : xs~List a, acc~List a
+    ensures reverse_onto xs acc == reverse_onto xs [] ++ acc
+    proof
+        match xs
+            [] -> auto
+            x :: rest ->
+                have rev_onto_app rest (x :: acc)
+                have rev_onto_app rest [x]
+                have append_assoc (reverse_onto rest []) [x] acc
+
+lemma keys_rev_onto ps acc : ps~List (k, v), acc~List (k, v)
+    ensures keys (reverse_onto ps acc) == reverse_onto (keys ps) (keys acc)
+    proof
+        match ps
+            [] -> auto
+            p :: rest -> have keys_rev_onto rest (p :: acc)
+
+export lemma keys_reverse ps : ps~List (k, v)
+    ensures keys (reverse ps) == reverse (keys ps)
+    proof
+        have keys_rev_onto ps []
+
+lemma contains_rev_onto xs acc y : xs~List a, acc~List a, y~a
+    ensures contains (reverse_onto xs acc) y == (contains xs y or contains acc y)
+    proof
+        match xs
+            [] -> auto
+            x :: rest -> have contains_rev_onto rest (x :: acc) y
+
+# No element of `xs` is in `ys`.
+fn disjoint xs ys -> r : xs~List a, ys~List a, r~Bool
+    match xs
+        [] -> True
+        x :: rest -> not (contains ys x) and disjoint rest ys
+
+lemma disjoint_nil xs : xs~List a
+    ensures disjoint xs []
+    proof
+        match xs
+            [] -> auto
+            _ :: rest -> have disjoint_nil rest
+
+lemma disjoint_cons xs ys x : xs~List a, ys~List a, x~a, disjoint xs ys, not (contains xs x)
+    ensures disjoint xs (x :: ys)
+    proof
+        match xs
+            [] -> auto
+            _ :: rest -> have disjoint_cons rest ys x
+
+lemma unique_rev_onto xs acc : xs~List a, acc~List a, unique xs, unique acc, disjoint xs acc
+    ensures unique (reverse_onto xs acc)
+    proof
+        match xs
+            [] -> auto
+            x :: rest ->
+                have disjoint_cons rest acc x
+                have unique_rev_onto rest (x :: acc)
+
+export lemma unique_reverse xs : xs~List a, unique xs
+    ensures unique (reverse xs)
+    proof
+        have disjoint_nil xs
+        have unique_rev_onto xs []
+
+export lemma reverse_cons_append acc x rest : acc~List a, x~a, rest~List a
+    ensures reverse (x :: acc) ++ rest == reverse acc ++ (x :: rest)
+    proof
+        have rev_onto_app acc [x]
+        have append_assoc (reverse_onto acc []) [x] rest

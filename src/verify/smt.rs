@@ -544,8 +544,12 @@ impl<'a> Builder<'a> {
                     self.asserts.push(format!("(>= {name} 0)"));
                 }
                 // A value of a datatype carries its constructor's invariants (D11).
+                // A refinement alias (`U8`) brings its predicates.
+                let raw = quote(&self.e.g, lvl, &l.ty);
+                self.alias_facts(&env, &raw, &name, &s);
                 if let Sort::Data(id, sargs) = &s {
-                    self.datatype_facts(&name, *id, sargs);
+                    let vals = self.value_args(&env, &tyt);
+                    self.datatype_facts(&name, *id, sargs, &vals);
                 }
                 if !l.name.starts_with('$') && !l.name.starts_with('_') {
                     self.shown.push((name.clone(), l.name.to_string()));
@@ -566,8 +570,74 @@ impl<'a> Builder<'a> {
 
     /// For each constructor of `id`: if `x` is that constructor, its `Nat`
     /// fields are non-negative and its invariants hold.
-    fn datatype_facts(&mut self, x: &str, id: TyId, sargs: &[Sort]) {
-        let senv = self.sort_env(id, sargs);
+    /// If `ty` is a refinement alias, assert its predicates about `x`.
+    fn alias_facts(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort) {
+        let mut args = Vec::new();
+        let mut h = ty;
+        while let Tm::App(f, a, _, _) = h {
+            args.push((**a).clone());
+            h = f;
+        }
+        args.reverse();
+        let Tm::Def(d) = h else { return };
+        let Some(preds) = self.e.alias_preds.get(d).cloned() else { return };
+        let mut inner = Vec::new();
+        for a in &args {
+            inner.push(match self.sort_of(env, a) {
+                Ok(s) if self.is_type(a) => Ent::Ty(s),
+                _ => match self.term(env, a) {
+                    Ok((t, s)) => Ent::Term(t, s),
+                    Err(_) => Ent::Opaque("alias argument".into()),
+                },
+            });
+        }
+        inner.push(Ent::Term(x.to_string(), xs.clone()));
+        for p in preds {
+            if let Ok((t, Sort::Bool)) = self.term(&inner, &p.tm) {
+                self.asserts.push(t);
+            }
+        }
+    }
+
+    /// The value arguments of a datatype type (`Parsed Json src i` → `src`,
+    /// `i`), translated where possible, by parameter position.
+    fn value_args(&mut self, env: &[Ent], ty: &Tm) -> Vec<Option<(String, Sort)>> {
+        let mut args = Vec::new();
+        let mut h = ty;
+        while let Tm::App(f, a, _, _) = h {
+            args.push((**a).clone());
+            h = f;
+        }
+        args.reverse();
+        let id = match h {
+            Tm::TyConApp(id, v) => {
+                let mut all = v.clone();
+                all.extend(args);
+                args = all;
+                *id
+            }
+            Tm::TyCon(id) => *id,
+            _ => return Vec::new(),
+        };
+        let params = self.e.g.tys[id.0 as usize].params.clone();
+        let mut out_ = Vec::new();
+        for (k, (_, pty)) in params.iter().enumerate() {
+            out_.push(match args.get(k) {
+                Some(a) if !self.is_type(pty) => self.term(env, a).ok(),
+                _ => None,
+            });
+        }
+        out_
+    }
+
+    fn datatype_facts(&mut self, x: &str, id: TyId, sargs: &[Sort], vals: &[Option<(String, Sort)>]) {
+        let mut senv = self.sort_env(id, sargs);
+        // Invariants may mention the type's value parameters (`stop <= len src`).
+        for (k, v) in vals.iter().enumerate() {
+            if let (Some((t, s)), Some(slot @ Ent::Opaque(_))) = (v, senv.get_mut(k)) {
+                *slot = Ent::Term(t.clone(), s.clone());
+            }
+        }
         let ctors = self.e.g.tys[id.0 as usize].ctors.clone();
         for c in ctors {
             let Ok(fs) = self.con_fields(c, &senv) else { continue };
@@ -1052,7 +1122,14 @@ impl<'a> Builder<'a> {
                 }
                 _ => out("`len` on this type"),
             },
-            Prim::Index => Ok((format!("(seq.nth {} {})", ts[0].0, ts[1].0), Sort::Int)),
+            Prim::Index => {
+                let t = format!("(seq.nth {} {})", ts[0].0, ts[1].0);
+                // Every element of `Bytes` is a `U8`.
+                if !self.in_def && self.nat_seen.insert(t.clone()) {
+                    self.asserts.push(format!("(and (>= {t} 0) (< {t} 256))"));
+                }
+                Ok((t, Sort::Int))
+            }
             Prim::Format => {
                 let s = ts[0].1.render(self.e);
                 let f = sym(&format!("format<{s}>"));

@@ -37,5 +37,5 @@ export type I64 = n~Int, -9223372036854775808 <= n, n < 9223372036854775808
 # A Unicode scalar value.
 export type Char = n~Nat, n < 0x110000, (n < 0xD800 or 0xE000 <= n)
 
-export fn not b -> r : b~Bool, r~Bool
+export transparent fn not b -> r : b~Bool, r~Bool
     if b then False else True
