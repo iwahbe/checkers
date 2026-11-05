@@ -1,0 +1,10 @@
+error[E0450]: cannot prove `n > first_nat a`, the postcondition of `wrong`
+  --> datatype_sorts.ck:26:57
+   |
+26 | fn wrong a b -> n : a~Option Nat, b~Option Tree, n~Nat, n > first_nat a
+   |                                                         ^^^^^^^^^^^^^^^ promised here
+   = note: for the value returned on line 27: `first_nat a + first_tree b`
+   = note: counterexample: a = None, b = None
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+datatype_sorts.ck: 1 error, 0 warnings

@@ -9,7 +9,7 @@
 
 use crate::core::{eval, force, quote, CaseTm, ConId, DefId, Lit, Mult, Prim, Tm, TyId, Val};
 use crate::elab::{Elab, ObLocal, Obligation};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 use std::rc::Rc;
 
@@ -75,6 +75,15 @@ fn con_sym(e: &Elab, c: ConId) -> String {
     sym(&format!("{}.{}", ti.module, ci.name))
 }
 
+/// The recognizer of constructor `c`. Z3 names it `is-C` and resolves it by
+/// its argument's sort; `(_ is C)` is ambiguous once a parametric datatype is
+/// used at two sorts.
+fn tester(e: &Elab, c: ConId) -> String {
+    let ci = &e.g.cons[c.0 as usize];
+    let ti = &e.g.tys[ci.ty.0 as usize];
+    sym(&format!("is-{}.{}", ti.module, ci.name))
+}
+
 fn sel_sym(e: &Elab, c: ConId, k: usize) -> String {
     let ci = &e.g.cons[c.0 as usize];
     let ti = &e.g.tys[ci.ty.0 as usize];
@@ -133,6 +142,8 @@ type InstSig = (Vec<Ent>, Vec<(String, Sort)>, Sort);
 struct PostUse {
     def: DefId,
     env: Vec<Ent>,
+    /// The result is a `Nat`: assumed where the precondition holds.
+    nat: bool,
 }
 
 pub struct Query {
@@ -388,26 +399,42 @@ impl<'a> Builder<'a> {
         for (name, n) in &self.sorts {
             out_.push(format!("(declare-sort {} {n})", sym(name)));
         }
-        let mut heads = Vec::new();
-        let mut bodies = Vec::new();
-        for n in {
-            let mut v: Vec<usize> = self.tuples.iter().copied().collect();
-            v.sort();
-            v
-        } {
-            heads.push(format!("({} {n})", tuple_sym(n)));
+        // Each declaration: (head, body, the heads its fields mention).
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+        enum Head {
+            Tuple(usize),
+            Data(TyId),
+        }
+        fn mentions(s: &Sort, out_: &mut BTreeSet<Head>) {
+            match s {
+                Sort::Data(t, args) => {
+                    out_.insert(Head::Data(*t));
+                    args.iter().for_each(|a| mentions(a, out_));
+                }
+                Sort::Tuple(xs) => {
+                    out_.insert(Head::Tuple(xs.len()));
+                    xs.iter().for_each(|a| mentions(a, out_));
+                }
+                Sort::Unin(_, xs) => xs.iter().for_each(|a| mentions(a, out_)),
+                _ => {}
+            }
+        }
+        let mut decls: BTreeMap<Head, (String, String, BTreeSet<Head>)> = BTreeMap::new();
+        for &n in &self.tuples {
             let ps: Vec<String> = (0..n).map(|k| format!("T{k}")).collect();
             let fields: Vec<String> = (0..n).map(|k| format!("({} T{k})", tuple_sel(n, k))).collect();
             let ctor = format!("({} {})", tuple_con(n), fields.join(" "));
-            bodies.push(if n == 0 { format!("(({}))", tuple_con(0)) } else { format!("(par ({}) ({ctor}))", ps.join(" ")) });
+            let body = if n == 0 { format!("(({}))", tuple_con(0)) } else { format!("(par ({}) ({ctor}))", ps.join(" ")) };
+            decls.insert(Head::Tuple(n), (format!("({} {n})", tuple_sym(n)), body, BTreeSet::new()));
         }
         let ids: Vec<(TyId, usize)> = self.datatypes.iter().map(|(a, b)| (*a, *b)).collect();
         for (id, n) in ids {
-            heads.push(format!("({} {n})", ty_sym(self.e, id)));
             let env = self.decl_env(id);
             let mut ctors = Vec::new();
+            let mut deps = BTreeSet::new();
             for c in self.e.g.tys[id.0 as usize].ctors.clone() {
                 let fs = self.con_fields(c, &env)?;
+                fs.iter().for_each(|(_, s)| mentions(s, &mut deps));
                 let fields: Vec<String> =
                     fs.iter().map(|(k, s)| format!("({} {})", sel_sym(self.e, c, *k), s.render(self.e))).collect();
                 ctors.push(if fields.is_empty() {
@@ -417,14 +444,56 @@ impl<'a> Builder<'a> {
                 });
             }
             let ps: Vec<String> = (0..n).map(|k| format!("T{k}")).collect();
-            bodies.push(if n == 0 {
+            let body = if n == 0 {
                 format!("({})", ctors.join(" "))
             } else {
                 format!("(par ({}) ({}))", ps.join(" "), ctors.join(" "))
-            });
+            };
+            decls.insert(Head::Data(id), (format!("({} {n})", ty_sym(self.e, id)), body, deps));
         }
-        if !heads.is_empty() {
-            out_.push(format!("(declare-datatypes ({}) ({}))", heads.join(" "), bodies.join(" ")));
+        // Z3 rejects a group whose members use a sibling at other parameters
+        // (`List (Tuple2 String Json)` beside `Json`), so declare each strongly
+        // connected group on its own, dependencies first.
+        let keys: Vec<Head> = decls.keys().copied().collect();
+        let reach = |from: Head| -> BTreeSet<Head> {
+            let mut seen = BTreeSet::new();
+            let mut stack = vec![from];
+            while let Some(h) = stack.pop() {
+                for d in decls.get(&h).map(|x| x.2.clone()).unwrap_or_default() {
+                    if decls.contains_key(&d) && seen.insert(d) {
+                        stack.push(d);
+                    }
+                }
+            }
+            seen
+        };
+        let reaches: BTreeMap<Head, BTreeSet<Head>> = keys.iter().map(|&k| (k, reach(k))).collect();
+        let mut done: BTreeSet<Head> = BTreeSet::new();
+        while done.len() < keys.len() {
+            // A group whose dependencies outside itself are all declared.
+            let mut progressed = false;
+            for &k in &keys {
+                if done.contains(&k) {
+                    continue;
+                }
+                let group: Vec<Head> = keys
+                    .iter()
+                    .copied()
+                    .filter(|&j| j == k || (reaches[&k].contains(&j) && reaches[&j].contains(&k)))
+                    .collect();
+                let ready = reaches[&k].iter().all(|d| done.contains(d) || group.contains(d));
+                if !ready {
+                    continue;
+                }
+                let heads: Vec<&str> = group.iter().map(|h| decls[h].0.as_str()).collect();
+                let bodies: Vec<&str> = group.iter().map(|h| decls[h].1.as_str()).collect();
+                out_.push(format!("(declare-datatypes ({}) ({}))", heads.join(" "), bodies.join(" ")));
+                done.extend(group);
+                progressed = true;
+            }
+            if !progressed {
+                return out("cyclic datatype declarations");
+            }
         }
         Ok(out_)
     }
@@ -530,7 +599,7 @@ impl<'a> Builder<'a> {
             }
             let all = if facts.len() == 1 { facts[0].clone() } else { format!("(and {})", facts.join(" ")) };
             let only = self.e.g.tys[id.0 as usize].ctors.len() == 1;
-            self.asserts.push(if only { all } else { format!("(=> ((_ is {}) {x}) {all})", con_sym(self.e, c)) });
+            self.asserts.push(if only { all } else { format!("(=> ({} {x}) {all})", tester(self.e, c)) });
         }
     }
 
@@ -593,6 +662,56 @@ impl<'a> Builder<'a> {
             format!("(forall ({}) (! (>= {app} 0) :pattern ({app})))", binds.join(" "))
         };
         self.axioms.insert(name.to_string(), ax);
+    }
+
+    /// Like `nat_axiom`, for a reflected definition: `Int` arguments are
+    /// guarded by `>= 0`, since a `Nat` parameter is an `Int` to Z3 (for a
+    /// true `Int` parameter this only weakens the axiom).
+    fn reflected_nat_axiom(&mut self, name: &str, args: &[String]) {
+        if args.is_empty() {
+            return self.nat_axiom(name, args);
+        }
+        let vars: Vec<String> = (0..args.len()).map(|k| format!("a{k}")).collect();
+        let binds: Vec<String> = vars.iter().zip(args).map(|(v, s)| format!("({v} {s})")).collect();
+        let guards: Vec<String> = vars.iter().zip(args).filter(|(_, s)| *s == "Int").map(|(v, _)| format!("(>= {v} 0)")).collect();
+        let app = format!("({name} {})", vars.join(" "));
+        let body = match guards.len() {
+            0 => format!("(>= {app} 0)"),
+            1 => format!("(=> {} (>= {app} 0))", guards[0]),
+            _ => format!("(=> (and {}) (>= {app} 0))", guards.join(" ")),
+        };
+        self.axioms.insert(name.to_string(), format!("(forall ({}) (! {body} :pattern ({app})))", binds.join(" ")));
+    }
+
+    /// Every solver value of sort `s` is a well-typed program value. At the
+    /// top (`top`), `Int` is allowed: the axiom guards it.
+    fn faithful(&mut self, s: &Sort, top: bool, seen: &mut Vec<TyId>) -> bool {
+        match s {
+            Sort::Bool | Sort::Str => true,
+            Sort::Int => top,
+            Sort::Bytes | Sort::Bag => false,
+            Sort::Unin(_, xs) | Sort::Tuple(xs) => xs.iter().all(|x| self.faithful(x, false, seen)),
+            Sort::Data(id, xs) => {
+                if !xs.iter().all(|x| self.faithful(x, false, seen)) {
+                    return false;
+                }
+                if seen.contains(id) {
+                    return true;
+                }
+                seen.push(*id);
+                let senv = self.sort_env(*id, xs);
+                for c in self.e.g.tys[id.0 as usize].ctors.clone() {
+                    if self.e.con_invs.get(&c).is_some_and(|v| !v.is_empty()) {
+                        return false;
+                    }
+                    let Ok(fs) = self.con_fields(c, &senv) else { return false };
+                    if !fs.iter().all(|(_, f)| self.faithful(f, false, seen)) {
+                        return false;
+                    }
+                }
+                true
+            }
+        }
     }
 
     fn nat_fact(&mut self, t: &str) {
@@ -844,13 +963,19 @@ impl<'a> Builder<'a> {
         }
         let app = if vals.is_empty() { name } else { format!("({name} {})", vals.join(" ")) };
         if !self.in_def {
-            if self.is_nat_tm(&t) {
+            let nat = self.is_nat_tm(&t);
+            let spec = self.e.specs.get(&d);
+            let has_pre = spec.is_some_and(|s| s.preds.iter().any(|p| !p.is_post));
+            let has_post = spec.is_some_and(|s| s.preds.iter().any(|p| p.is_post));
+            // A reflected definition can be negative outside its precondition
+            // (`n - 1` at 0), so a `Nat` result is assumed only under it.
+            if nat && !has_pre {
                 let a = app.clone();
                 self.nat_fact(&a);
             }
-            if self.e.specs.get(&d).is_some_and(|s| s.preds.iter().any(|p| p.is_post)) && self.post_seen.insert(app.clone()) {
+            if (has_post || (nat && has_pre)) && self.post_seen.insert(app.clone()) {
                 post_env.push(Ent::Term(app.clone(), rs.clone()));
-                self.posts.push(PostUse { def: d, env: post_env });
+                self.posts.push(PostUse { def: d, env: post_env, nat: nat && has_pre });
             }
         }
         Ok((app, rs))
@@ -865,9 +990,9 @@ impl<'a> Builder<'a> {
         self.ty_sort(&[], list, &[Tm::TyCon(wk.int.ok_or_else(|| Outside("no Int".into()))?)])?;
         let _ = nil;
         let def = format!(
-            "(define-fun-rec |bag.of| ((xs ({l} Int))) (Array Int Int) (ite ((_ is {c}) xs) (let ((b (|bag.of| ({t} xs))) (h ({hd} xs))) (store b h (+ (select b h) 1))) ((as const (Array Int Int)) 0)))",
+            "(define-fun-rec |bag.of| ((xs ({l} Int))) (Array Int Int) (ite ({c} xs) (let ((b (|bag.of| ({t} xs))) (h ({hd} xs))) (store b h (+ (select b h) 1))) ((as const (Array Int Int)) 0)))",
             l = ty_sym(self.e, list),
-            c = con_sym(self.e, cons),
+            c = tester(self.e, cons),
             t = sel_sym(self.e, cons, 1),
             hd = sel_sym(self.e, cons, 0),
         );
@@ -949,7 +1074,7 @@ impl<'a> Builder<'a> {
         if self.funs.contains_key(&name) {
             return Ok(name);
         }
-        let is_cons = format!("(_ is {})", con_sym(self.e, cons));
+        let is_cons = tester(self.e, cons);
         let hd = sel_sym(self.e, cons, 0);
         let tl = sel_sym(self.e, cons, 1);
         let def = match what {
@@ -994,7 +1119,7 @@ impl<'a> Builder<'a> {
                         }
                     }
                     let (bt, bs) = self.term(&env2, body)?;
-                    arms.push((Some(format!("((_ is {}) {x})", con_sym(self.e, *con))), bt, bs));
+                    arms.push((Some(format!("({} {x})", tester(self.e, *con))), bt, bs));
                 }
             }
             Sort::Tuple(_) => {
@@ -1043,11 +1168,30 @@ impl<'a> Builder<'a> {
             while let Tm::Pi(_, _, _, _, b) = ty {
                 ty = (*b).clone();
             }
-            if self.is_nat_tm(&ty) {
-                if let Ok((_, params, _)) = self.inst_sig(&inst) {
-                    let name = self.inst_name(&inst);
-                    let sorts: Vec<String> = params.iter().map(|(_, s)| s.render(self.e)).collect();
-                    self.nat_axiom(&name, &sorts);
+            // The axiom quantifies over every solver value, not just the
+            // well-typed ones, so it is stated only where the two agree: no
+            // precondition, and no `Nat`, byte or invariant hidden inside an
+            // argument's sort (an `Option Nat` is an `Option Int` to Z3).
+            // Sorts are judged at the generic signature: a value at a type
+            // parameter can only be passed on, compared or tested for
+            // equality, so (by parametricity) any solver value there behaves
+            // like some well-typed one.
+            let has_pre = self.e.specs.get(&inst.def).is_some_and(|s| s.preds.iter().any(|p| !p.is_post));
+            let generic = Inst {
+                def: inst.def,
+                tys: (0..inst.tys.len()).map(|k| Sort::Unin(format!("T{k}"), vec![])).collect(),
+            };
+            if self.is_nat_tm(&ty) && !has_pre {
+                let faithful = match self.inst_sig(&generic) {
+                    Ok((_, gparams, _)) => gparams.iter().all(|(_, s)| self.faithful(s, true, &mut Vec::new())),
+                    Err(_) => false,
+                };
+                if let (true, Ok((_, params, _))) = (faithful, self.inst_sig(&inst)) {
+                    {
+                        let name = self.inst_name(&inst);
+                        let sorts: Vec<String> = params.iter().map(|(_, s)| s.render(self.e)).collect();
+                        self.reflected_nat_axiom(&name, &sorts);
+                    }
                 }
             }
             self.insts.insert(inst, r.ok());
@@ -1163,14 +1307,23 @@ impl<'a> Builder<'a> {
                 if !ok {
                     continue;
                 }
+                let mut goals = Vec::new();
+                if p.nat {
+                    if let Some(Ent::Term(r, _)) = p.env.last() {
+                        goals.push(format!("(>= {r} 0)"));
+                    }
+                }
                 for pred in spec.preds.iter().filter(|x| x.is_post) {
                     if let Ok((t, _)) = self.term(&p.env, &pred.tm) {
-                        self.asserts.push(match pres.len() {
-                            0 => t,
-                            1 => format!("(=> {} {t})", pres[0]),
-                            _ => format!("(=> (and {}) {t})", pres.join(" ")),
-                        });
+                        goals.push(t);
                     }
+                }
+                for t in goals {
+                    self.asserts.push(match pres.len() {
+                        0 => t,
+                        1 => format!("(=> {} {t})", pres[0]),
+                        _ => format!("(=> (and {}) {t})", pres.join(" ")),
+                    });
                 }
             }
         }

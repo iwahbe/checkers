@@ -1,0 +1,24 @@
+error[E0450]: cannot prove `n > 0`, required to call `pred`
+  --> nat_results.ck:19:5
+   |
+19 |     pred 0                                  # 0 > 0 is false
+   |     ^^^^^^ `pred` requires `n > 0`
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+error[E0450]: cannot prove `lo <= hi`, required to call `width`
+  --> nat_results.ck:22:5
+   |
+22 |     width 5 3                               # 5 <= 3 is false
+   |     ^^^^^^^^^ `width` requires `lo <= hi`
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+error[E0450]: cannot prove `b`, the postcondition of `bad_first`
+  --> nat_results.ck:24:45
+   |
+24 | fn bad_first o -> b : o~Option Nat, b~Bool, b
+   |                                             ^ promised here
+   = note: for the value returned on line 25: `first o > 0`
+   = note: counterexample: o = None
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+nat_results.ck: 3 errors, 0 warnings

@@ -59,6 +59,12 @@ fn ask(query: &str) -> Answer {
         z3_sys::Z3_del_config(cfg);
         out
     };
+    // Z3 reports a rejected command as `(error …)` and carries on without it,
+    // so an answer that follows an error is not about the query we meant:
+    // never trust it (an `unsat` would be unsound).
+    if let Some(err) = out.lines().take_while(|l| !matches!(l.trim(), "sat" | "unsat" | "unknown" | "timeout")).find(|l| l.starts_with("(error")) {
+        return Answer::Unknown(format!("Z3 rejected the query (a checkers bug): {err}"));
+    }
     let mut lines = out.splitn(2, '\n');
     let first = lines.next().unwrap_or("").trim().to_string();
     let rest = lines.next().unwrap_or("").to_string();
@@ -77,7 +83,9 @@ fn ask_all(texts: &[Option<String>]) -> Vec<Option<Answer>> {
     let results: Vec<std::sync::Mutex<Option<Answer>>> = texts.iter().map(|_| std::sync::Mutex::new(None)).collect();
     std::thread::scope(|s| {
         for _ in 0..workers {
-            s.spawn(|| loop {
+            // Z3 recurses deeply on large terms: give it a big stack.
+            let worker = std::thread::Builder::new().stack_size(512 << 20);
+            let spawned = worker.spawn_scoped(s, || loop {
                 let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let Some(t) = texts.get(i) else { break };
                 if let Some(t) = t {
@@ -85,6 +93,9 @@ fn ask_all(texts: &[Option<String>]) -> Vec<Option<Answer>> {
                     *results[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(a);
                 }
             });
+            if spawned.is_err() {
+                break;
+            }
         }
     });
     results.into_iter().map(|m| m.into_inner().unwrap_or_else(|e| e.into_inner())).collect()
