@@ -167,6 +167,10 @@ pub struct Elab {
     /// Definitions whose bodies are being elaborated in this module (termination groups).
     pub module_fns: Vec<DefId>,
     pub obligations: Vec<Obligation>,
+    /// `check` declarations: module, span, elaborated `Bool` term (D40).
+    pub checks: Vec<(String, Span, Tm)>,
+    /// Variables that are linear because of their type (D39): (function, name) → (span, type).
+    pub resource_vars: HashMap<(DefId, String), (Span, String)>,
     /// The function result type when elaborating a tail position (for `try`).
     pub stdlib_mode: bool,
     /// Element locals of `map f xs` where xs is a subterm of parameter p.
@@ -195,6 +199,8 @@ impl Elab {
             calls: Vec::new(),
             module_fns: Vec::new(),
             obligations: Vec::new(),
+            checks: Vec::new(),
+            resource_vars: HashMap::new(),
             stdlib_mode: false,
             map_elem_sub: None,
             match_span: Span::default(),
@@ -203,7 +209,9 @@ impl Elab {
     }
 
     pub fn err(&mut self, d: Diagnostic) {
-        let key = (self.cur.clone(), d.span.start, d.span.end, d.message.clone());
+        // An unknown name is reported at its first use only; the fix is the same for all.
+        let (start, end) = if d.code == "E0204" { (0, 0) } else { (d.span.start, d.span.end) };
+        let key = (self.cur.clone(), start, end, d.message.clone());
         if self.seen.insert(key) {
             self.diags.push((self.cur.clone(), d));
         }
@@ -253,6 +261,78 @@ impl Elab {
                 false
             }
         }
+    }
+
+    /// A primitive resource (D39): implemented by the runtime as an open, stateful thing.
+    fn is_primitive_resource(&self, t: TyId) -> bool {
+        let ti = &self.g.tys[t.0 as usize];
+        &*ti.module == "files" && &*ti.name == "File"
+    }
+
+    /// Does this type declaration contain a resource (in a constructor field)?
+    fn ty_linear(&self, t: TyId, visiting: &mut Vec<TyId>) -> bool {
+        if self.is_primitive_resource(t) {
+            return true;
+        }
+        if visiting.contains(&t) {
+            return false;
+        }
+        visiting.push(t);
+        let ti = &self.g.tys[t.0 as usize];
+        let r = ti
+            .ctors
+            .iter()
+            .any(|c| self.g.cons[c.0 as usize].fields.iter().any(|f| f.1 != Mult::Zero && self.tm_linear(&f.3, visiting)));
+        visiting.pop();
+        r
+    }
+
+    fn tm_linear(&self, t: &Tm, visiting: &mut Vec<TyId>) -> bool {
+        match t {
+            Tm::TyCon(id) => self.ty_linear(*id, visiting),
+            Tm::TyConApp(id, args) => self.ty_linear(*id, visiting) || args.iter().any(|a| self.tm_linear(a, visiting)),
+            Tm::TupleTy(ts) => ts.iter().any(|a| self.tm_linear(a, visiting)),
+            Tm::Meta(m) => match self.g.meta(*m) {
+                Some(v) => self.val_linear(&v),
+                None => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// Is a value of this type linear (D39)?
+    pub fn val_linear(&self, v: &Val) -> bool {
+        match self.force(v) {
+            Val::TyCon(id, args) => self.ty_linear(id, &mut Vec::new()) || args.iter().any(|a| self.val_linear(a)),
+            Val::TupleTy(ts) => ts.iter().any(|a| self.val_linear(a)),
+            _ => false,
+        }
+    }
+
+    pub fn type_linear(&self, t: &Tm) -> bool {
+        self.tm_linear(t, &mut Vec::new())
+    }
+
+    /// The multiplicity for a variable the program names: linear types make it `own` (D39).
+    pub fn named_mult(&mut self, cx: &Cx, name: &str, ty: &Val, span: Span, declared: Mult) -> Mult {
+        if declared != Mult::Many || name == "_" || name.starts_with('$') || !self.val_linear(ty) {
+            return declared;
+        }
+        if let Some(f) = self.cur_fn {
+            let shown = self.show_val(cx, ty);
+            self.resource_vars.insert((f, name.to_string()), (span, shown));
+        }
+        Mult::One
+    }
+
+    /// E0404: a pattern or `_` that would drop a resource.
+    pub fn report_dropped(&mut self, cx: &Cx, ty: &Val, span: Span) {
+        let shown = self.show_val(cx, ty);
+        self.err(
+            Diagnostic::error("E0404", format!("this drops a resource of type `{shown}`"), span)
+                .with_label("a resource must be used exactly once")
+                .with_help("bind it to a name, then close it or pass it on"),
+        );
     }
 
     pub fn is_ty(&self, v: &Val, t: Option<TyId>) -> bool {

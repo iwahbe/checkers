@@ -1,0 +1,4 @@
+-- stdout
+4 20 119 copy.tmp
+-- stderr
+-- exit 0

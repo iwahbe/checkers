@@ -1,0 +1,5 @@
+-- stdout
+4 20 119 data/poem.txt
+1 1 4 data/one.txt
+-- stderr
+-- exit 0

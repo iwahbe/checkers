@@ -1,0 +1,6 @@
+-- stdout
+1: first
+2: second
+3: no newline at end
+-- stderr
+-- exit 0

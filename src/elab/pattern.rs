@@ -11,6 +11,8 @@ use crate::syntax::ast::{Expr, ExprKind, PatKind, Pattern};
 #[derive(Clone)]
 pub struct Row<'a> {
     pats: Vec<(usize, Pattern)>,
+    /// The arm's whole pattern, for errors about it.
+    span: Span,
     binds: Vec<(String, usize)>,
     guard: Option<&'a Expr>,
     body: ArmBody<'a>,
@@ -40,6 +42,8 @@ pub struct PatState {
     missing: Vec<String>,
     /// A pattern was ill-formed; don't also report missing cases.
     bad: bool,
+    /// Arms already reported for dropping a resource (each arm once).
+    dropped: Vec<Span>,
 }
 
 impl Elab {
@@ -164,11 +168,12 @@ impl Elab {
                 let rows = arms
                     .into_iter()
                     .map(|(p, guard, body)| {
+                        let p_span = p.span;
                         let pats = match p.kind {
                             PatKind::Tuple(ps) => locals.iter().copied().zip(ps).collect(),
                             _ => vec![],
                         };
-                        Row { pats, binds: vec![], guard, body }
+                        Row { pats, span: p_span, binds: vec![], guard, body }
                     })
                     .collect();
                 self.pm.roots = locals;
@@ -188,7 +193,7 @@ impl Elab {
         };
         let rows = arms
             .into_iter()
-            .map(|(p, guard, body)| Row { pats: vec![(occ, p)], binds: vec![], guard, body })
+            .map(|(p, guard, body)| Row { span: p.span, pats: vec![(occ, p)], binds: vec![], guard, body })
             .collect();
         self.pm.roots = vec![occ];
         let t = self.compile(cx, rows, &expected, tail);
@@ -252,6 +257,7 @@ impl Elab {
 
     fn leaf(&mut self, cx: &mut Cx, rows: Vec<Row>, expected: &Val, tail: bool) -> Tm {
         let row = rows[0].clone();
+        self.check_dropped(cx, &row);
         let start = cx.lvl();
         let mut lets = Vec::new();
         for (name, occ) in &row.binds {
@@ -259,10 +265,11 @@ impl Elab {
             let v = cx.env[*occ].clone();
             let tyt = quote(&self.g, cx.lvl(), &ty);
             let t = cx.var(*occ);
-            let l = cx.define(name, ty, v, Mult::Many);
+            let mult = self.named_mult(cx, name, &ty, row.span, Mult::Many);
+            let l = cx.define(name, ty, v, mult);
             cx.locals[l].sub = cx.locals[*occ].sub;
             cx.locals[l].param = cx.locals[*occ].param;
-            lets.push((name.clone(), tyt, t));
+            lets.push((name.clone(), mult, tyt, t));
         }
         let body = match row.guard {
             None => self.arm_body(cx, row.body, expected, tail),
@@ -287,10 +294,35 @@ impl Elab {
         };
         cx.truncate(start);
         let mut t = body;
-        for (n, tyt, v) in lets.into_iter().rev() {
-            t = Tm::Let(Rc::from(n.as_str()), Mult::Many, Rc::new(tyt), Rc::new(v), Rc::new(t));
+        for (n, mult, tyt, v) in lets.into_iter().rev() {
+            t = Tm::Let(Rc::from(n.as_str()), mult, Rc::new(tyt), Rc::new(v), Rc::new(t));
         }
         t
+    }
+
+    /// E0404: at a leaf, every resource reached by the match must be taken
+    /// apart further or bound to a name.
+    fn check_dropped(&mut self, cx: &Cx, row: &Row) {
+        let mut occs: Vec<usize> = self.pm.roots.iter().copied().filter(|r| cx.locals[*r].name.starts_with('$')).collect();
+        for (_, f) in &self.pm.frames {
+            match f {
+                Frame::Ctor(_, fs) | Frame::Tuple(fs) => occs.extend(fs.iter().copied()),
+            }
+        }
+        for o in occs {
+            let taken_apart = self.pm.frames.iter().any(|(x, _)| *x == o);
+            let bound = row.binds.iter().any(|(_, x)| *x == o);
+            if !taken_apart && !bound && o < cx.locals.len() {
+                let ty = cx.locals[o].ty.clone();
+                if self.val_linear(&ty) {
+                    if !self.pm.dropped.contains(&row.span) {
+                        self.pm.dropped.push(row.span);
+                        self.report_dropped(cx, &ty, row.span);
+                    }
+                    return;
+                }
+            }
+        }
     }
 
     fn compile_tuple(

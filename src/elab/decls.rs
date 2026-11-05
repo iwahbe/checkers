@@ -763,7 +763,26 @@ impl Elab {
             self.g.fuel.set(DEFAULT_FUEL);
             let sig = match &d.kind {
                 DeclKind::Fn { name, params, result, constraints, partial, decreasing, body } => {
-                    let sig = self.signature(params, result.as_ref(), constraints);
+                    let mut sig = self.signature(params, result.as_ref(), constraints);
+                    // Parameters of a resource type are `own` whether or not it is written (D39).
+                    for k in sig.n_implicit..sig.binders.len() {
+                        let b = &sig.binders[k];
+                        if b.1 != Mult::Many || !self.type_linear(&b.3) {
+                            continue;
+                        }
+                        let name = b.0.to_string();
+                        let span = params.iter().find(|p| p.name == name).map(|p| p.span).unwrap_or(d.span);
+                        let shown = match sig.cx.locals.iter().position(|l| *l.name == name) {
+                            Some(pos) => {
+                                sig.cx.locals[pos].mult = Mult::One;
+                                let ty = sig.cx.locals[pos].ty.clone();
+                                self.show_val(&sig.cx, &ty)
+                            }
+                            None => "resource".to_string(),
+                        };
+                        sig.binders[k].1 = Mult::One;
+                        self.resource_vars.insert((*did, name), (span, shown));
+                    }
                     let builtin = is_builtin(body);
                     if builtin && !self.stdlib_mode {
                         self.err(Diagnostic::error(
@@ -867,8 +886,9 @@ impl Elab {
                 DeclKind::Check { expr } => {
                     let mut cx = Cx::default();
                     let b = self.bool_ty();
-                    self.check(&mut cx, expr, &b, false);
+                    let t = self.check(&mut cx, expr, &b, false);
                     self.solve_deferred();
+                    self.checks.push((self.cur.clone(), expr.span, t));
                     self.obligations.push(Obligation { module: self.cur.clone(), span: expr.span, what: "check" });
                 }
                 _ => {}

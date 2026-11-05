@@ -1,0 +1,50 @@
+error[E0401]: `f` holds a resource (`File`), so it must be used exactly once, but `never_closed` never uses it
+ --> resources.ck:9:9
+  |
+9 |         Ok f  -> ()
+  |         ^^^^
+  = help: close it, or pass it on
+
+error[E0402]: `f` holds a resource (`File`), but `closed_on_one_path` uses it on some paths and not on others
+  --> resources.ck:14:9
+   |
+14 |         Ok f  -> if b then files.close f else ()
+   |         ^^^^
+   = help: a resource must be used exactly once on every path, e.g. closed in every branch
+
+error[E0404]: this drops a resource of type `File`
+  --> resources.ck:19:9
+   |
+19 |         (Ok _, Ok g) -> files.close g
+   |         ^^^^^^^^^^^^ a resource must be used exactly once
+   = help: bind it to a name, then close it or pass it on
+
+error[E0404]: this drops a resource of type `File`
+  --> resources.ck:20:9
+   |
+20 |         _            -> ()
+   |         ^ a resource must be used exactly once
+   = help: bind it to a name, then close it or pass it on
+
+error[E0404]: this drops a resource of type `Result File IoError`
+  --> resources.ck:23:9
+   |
+23 |     let _ = files.open path fs
+   |         ^ a resource must be used exactly once
+   = help: bind it to a name, then close it or pass it on
+
+error[E0401]: `f` holds a resource (`File`), so it must be used exactly once, but `closed_twice` may use it more than once
+  --> resources.ck:26:17
+   |
+26 | fn closed_twice f : f~File
+   |                 ^
+   = help: a resource can't be copied; thread it with `<-` so each use gets the new one
+
+error[E0401]: `f` holds a resource (`File`), so it must be used exactly once, but `never_closed_after_try` never uses it
+  --> resources.ck:31:9
+   |
+31 |     let f = try files.open path fs
+   |         ^
+   = help: close it, or pass it on
+
+resources.ck: 7 errors, 0 warnings

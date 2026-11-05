@@ -1,0 +1,9 @@
+-- stdout
+> alpha
+> beta
+ok
+b"bytes!"
+b"one\n"
+Permission denied (outside the directory this capability allows)
+-- stderr
+-- exit 0

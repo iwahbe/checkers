@@ -1,0 +1,5 @@
+-- stdout
+before
+-- stderr
+runtime error in `steps`: `-` on `Nat` would go below zero (2 - 3)
+-- exit 70

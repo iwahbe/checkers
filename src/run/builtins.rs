@@ -1,0 +1,312 @@
+//! Standard-library functions implemented in Rust (`__builtin` bodies).
+//! Arguments arrive with erased parameters already removed.
+
+use super::num::{Decimal, Num};
+use super::value::{Cap, FileState, Value};
+use super::{Interp, R};
+use std::cell::RefCell;
+use std::io::{BufRead, Read, Write};
+use std::path::{Component, Path, PathBuf};
+use std::rc::Rc;
+
+const NAMES: &[&str] = &[
+    "terminal.print_line",
+    "terminal.eprint_line",
+    "terminal.read_all",
+    "terminal.read_line",
+    "files.read",
+    "files.write",
+    "files.within",
+    "files.describe",
+    "files.open",
+    "files.create",
+    "files.close",
+    "files.read_line",
+    "files.write_line",
+    "bytes.matches_at",
+    "string.from_chars",
+    "string.from_char",
+    "string.concat_map",
+    "string.bytes",
+    "char.code",
+    "char.from_scalar",
+    "char.from_ascii",
+    "char.from_surrogates",
+    "utf8.decode_at",
+    "utf8.encode",
+    "decimal.scan_json",
+    "decimal.render",
+    "decimal.of_int",
+    "cown.new",
+    "future.ready",
+];
+
+pub fn exists(name: &str) -> bool {
+    NAMES.contains(&name)
+}
+
+/// The operating system's message, without Rust's " (os error N)" suffix.
+fn describe_io(e: &std::io::Error) -> Value {
+    let s = e.to_string();
+    let s = match s.find(" (os error") {
+        Some(k) => s[..k].to_string(),
+        None => s,
+    };
+    Value::IoErr(Rc::from(s))
+}
+
+impl Interp<'_> {
+    fn arg_str<'a>(&self, v: &'a Value) -> R<&'a str> {
+        match v {
+            Value::Str(s) => Ok(s),
+            other => Err(self.error(format!("expected a string, found a {}", other.kind()))),
+        }
+    }
+
+    fn arg_bytes<'a>(&self, v: &'a Value) -> R<&'a [u8]> {
+        match v {
+            Value::Bytes(b) => Ok(b),
+            other => Err(self.error(format!("expected bytes, found a {}", other.kind()))),
+        }
+    }
+
+    fn arg_nat(&self, v: &Value) -> R<usize> {
+        match v {
+            Value::Num(n) => n.to_usize().ok_or_else(|| self.error(format!("{n} is out of range here"))),
+            other => Err(self.error(format!("expected a number, found a {}", other.kind()))),
+        }
+    }
+
+    fn arg_char(&self, v: &Value) -> R<char> {
+        let n = self.arg_nat(v)?;
+        u32::try_from(n)
+            .ok()
+            .and_then(char::from_u32)
+            .ok_or_else(|| self.error(format!("{n} is not a Unicode scalar value")))
+    }
+
+    /// Resolve a path against an `Fs` capability (§13.4).
+    fn path(&self, fs: &Value, p: &str) -> Result<PathBuf, Value> {
+        let Value::Cap(Cap::Fs(root)) = fs else { return Err(Value::IoErr(Rc::from("not a file system capability"))) };
+        match root {
+            None => Ok(PathBuf::from(p)),
+            Some(dir) => {
+                let rel = Path::new(p);
+                let escapes = rel.is_absolute()
+                    || rel.components().any(|c| matches!(c, Component::ParentDir | Component::RootDir | Component::Prefix(_)));
+                if escapes {
+                    Err(Value::IoErr(Rc::from("Permission denied (outside the directory this capability allows)")))
+                } else {
+                    Ok(dir.join(rel))
+                }
+            }
+        }
+    }
+
+    fn file_result(&self, r: std::io::Result<std::fs::File>, write: bool) -> Value {
+        match r {
+            Ok(f) => {
+                let st = if write {
+                    FileState::Write(std::io::BufWriter::new(f))
+                } else {
+                    FileState::Read(std::io::BufReader::new(f))
+                };
+                self.ok(Value::File(Rc::new(RefCell::new(Some(st)))))
+            }
+            Err(e) => self.err(describe_io(&e)),
+        }
+    }
+}
+
+/// Read one line, without its `\n`; invalid UTF-8 becomes U+FFFD (§13.4).
+fn read_line(r: &mut dyn BufRead) -> std::io::Result<Option<String>> {
+    let mut buf = Vec::new();
+    if r.read_until(b'\n', &mut buf)? == 0 {
+        return Ok(None);
+    }
+    if buf.last() == Some(&b'\n') {
+        buf.pop();
+    }
+    Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
+}
+
+pub fn call(it: &mut Interp, name: &str, a: Vec<Value>) -> R<Value> {
+    Ok(match name {
+        "terminal.print_line" | "terminal.eprint_line" => {
+            let s = it.arg_str(&a[0])?.to_string();
+            let r = if name == "terminal.print_line" {
+                writeln!(it.io.stdout, "{s}")
+            } else {
+                let _ = it.io.stdout.flush();
+                writeln!(it.io.stderr, "{s}")
+            };
+            // A closed pipe is not an error the program can act on.
+            let _ = r;
+            Value::unit()
+        }
+        "terminal.read_all" => {
+            let mut buf = Vec::new();
+            match it.io.stdin.read_to_end(&mut buf) {
+                Ok(_) => it.ok(Value::Bytes(Rc::from(buf))),
+                Err(e) => it.err(describe_io(&e)),
+            }
+        }
+        "terminal.read_line" => {
+            let _ = it.io.stdout.flush();
+            match read_line(&mut *it.io.stdin) {
+                Ok(Some(s)) => it.some(Value::str(&s)),
+                _ => it.none(),
+            }
+        }
+        "files.read" => {
+            let p = it.arg_str(&a[0])?.to_string();
+            match it.path(&a[1], &p) {
+                Err(e) => it.err(e),
+                Ok(path) => match std::fs::read(path) {
+                    Ok(b) => it.ok(Value::Bytes(Rc::from(b))),
+                    Err(e) => it.err(describe_io(&e)),
+                },
+            }
+        }
+        "files.write" => {
+            let p = it.arg_str(&a[0])?.to_string();
+            let bytes = it.arg_bytes(&a[1])?.to_vec();
+            match it.path(&a[2], &p) {
+                Err(e) => it.err(e),
+                Ok(path) => match std::fs::write(path, bytes) {
+                    Ok(()) => it.ok(Value::unit()),
+                    Err(e) => it.err(describe_io(&e)),
+                },
+            }
+        }
+        "files.within" => {
+            let p = it.arg_str(&a[0])?.to_string();
+            match it.path(&a[1], &p) {
+                Ok(dir) => Value::Cap(Cap::Fs(Some(Rc::new(dir)))),
+                // A directory outside the capability: confine to nothing usable.
+                Err(_) => Value::Cap(Cap::Fs(Some(Rc::new(PathBuf::from("/nonexistent-checkers-confined"))))),
+            }
+        }
+        "files.describe" => match &a[0] {
+            Value::IoErr(m) => Value::Str(m.clone()),
+            other => return Err(it.error(format!("expected an IoError, found a {}", other.kind()))),
+        },
+        "files.open" | "files.create" => {
+            let p = it.arg_str(&a[0])?.to_string();
+            match it.path(&a[1], &p) {
+                Err(e) => it.err(e),
+                Ok(path) => {
+                    if name == "files.open" {
+                        it.file_result(std::fs::File::open(path), false)
+                    } else {
+                        it.file_result(std::fs::File::create(path), true)
+                    }
+                }
+            }
+        }
+        "files.close" => {
+            let Value::File(f) = &a[0] else { return Err(it.error("`close` needs a file")) };
+            if let Some(FileState::Write(mut w)) = f.borrow_mut().take() {
+                let _ = w.flush();
+            }
+            Value::unit()
+        }
+        "files.read_line" => {
+            let Value::File(f) = &a[0] else { return Err(it.error("`read_line` needs a file")) };
+            let line = match &mut *f.borrow_mut() {
+                Some(FileState::Read(r)) => read_line(r).ok().flatten(),
+                Some(FileState::Write(_)) => return Err(it.error("this file was opened for writing")),
+                None => return Err(it.error("this file is closed")),
+            };
+            let opt = match line {
+                Some(s) => it.some(Value::str(&s)),
+                None => it.none(),
+            };
+            Value::Tuple(Rc::from(vec![opt, a[0].clone()]))
+        }
+        "files.write_line" => {
+            let s = it.arg_str(&a[0])?.to_string();
+            let Value::File(f) = &a[1] else { return Err(it.error("`write_line` needs a file")) };
+            match &mut *f.borrow_mut() {
+                Some(FileState::Write(w)) => {
+                    let _ = writeln!(w, "{s}");
+                }
+                Some(FileState::Read(_)) => return Err(it.error("this file was opened for reading")),
+                None => return Err(it.error("this file is closed")),
+            }
+            Value::Tuple(Rc::from(vec![Value::unit(), a[1].clone()]))
+        }
+        "bytes.matches_at" => {
+            let src = it.arg_bytes(&a[0])?;
+            let i = it.arg_nat(&a[1])?;
+            let word = it.arg_bytes(&a[2])?;
+            let m = i.checked_add(word.len()).is_some_and(|end| end <= src.len() && &src[i..end] == word);
+            it.bool(m)
+        }
+        "string.from_chars" => {
+            let mut s = String::new();
+            for c in it.list_items(&a[0])? {
+                s.push(it.arg_char(&c)?);
+            }
+            Value::str(&s)
+        }
+        "string.from_char" => Value::str(&it.arg_char(&a[0])?.to_string()),
+        "string.concat_map" => {
+            let s = it.arg_str(&a[1])?.to_string();
+            let mut out = String::new();
+            for c in s.chars() {
+                let r = it.apply(a[0].clone(), Value::nat(c as usize))?;
+                out.push_str(it.arg_str(&r)?);
+            }
+            Value::str(&out)
+        }
+        "string.bytes" | "utf8.encode" => Value::Bytes(Rc::from(it.arg_str(&a[0])?.as_bytes())),
+        "char.code" | "char.from_scalar" | "char.from_ascii" => a[0].clone(),
+        "char.from_surrogates" => {
+            let hi = it.arg_nat(&a[0])?;
+            let lo = it.arg_nat(&a[1])?;
+            Value::nat(0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00))
+        }
+        "utf8.decode_at" => {
+            let src = it.arg_bytes(&a[0])?;
+            let k = it.arg_nat(&a[1])?;
+            let rest = &src[k.min(src.len())..];
+            let len = match rest.first() {
+                Some(b) if *b < 0x80 => 1,
+                Some(b) if *b >> 5 == 0b110 => 2,
+                Some(b) if *b >> 4 == 0b1110 => 3,
+                Some(b) if *b >> 3 == 0b11110 => 4,
+                _ => 0,
+            };
+            match rest.get(..len).and_then(|s| std::str::from_utf8(s).ok()).and_then(|s| s.chars().next()) {
+                Some(c) if len > 0 => {
+                    let v = it.parsed(Value::nat(c as usize), k + len);
+                    it.some(v)
+                }
+                _ => it.none(),
+            }
+        }
+        "decimal.scan_json" => {
+            let src = it.arg_bytes(&a[0])?;
+            let i = it.arg_nat(&a[1])?;
+            match Decimal::scan_json(src, i) {
+                Some((d, stop)) => {
+                    let v = it.parsed(Value::Decimal(Rc::new(d)), stop);
+                    it.some(v)
+                }
+                None => it.none(),
+            }
+        }
+        "decimal.render" => match &a[0] {
+            Value::Decimal(d) => Value::str(&d.render()),
+            other => return Err(it.error(format!("expected a Decimal, found a {}", other.kind()))),
+        },
+        "decimal.of_int" => match &a[0] {
+            Value::Num(n) => Value::Decimal(Rc::new(Decimal::new(Num::big(n), 0))),
+            other => return Err(it.error(format!("expected a number, found a {}", other.kind()))),
+        },
+        "cown.new" => Value::Cown(Rc::new(RefCell::new(a[0].clone()))),
+        "future.ready" => Value::Future(Rc::new(RefCell::new(Some(a[0].clone())))),
+        other => return Err(it.error(format!("`{other}` has no implementation in this interpreter yet"))),
+    })
+}

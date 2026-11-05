@@ -1,0 +1,14 @@
+-- stdout
+42
+-7
+a string
+["a", "b"]
+[1, 2, 3]
+Point 1 (-2)
+Some (Rect 2 3)
+Ok True
+(1, "x", ())
+b"hi\n"
+None
+-- stderr
+-- exit 0

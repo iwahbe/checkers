@@ -1,0 +1,4 @@
+-- stdout
+-- stderr
+usage: copy SRC DST
+-- exit 2

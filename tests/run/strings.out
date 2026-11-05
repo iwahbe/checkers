@@ -1,0 +1,10 @@
+-- stdout
+hé😀
+7
+hi!!!
+b"\xc3\xa9"
+abcd
+b"abcd"
+[1, 2, 3]
+-- stderr
+-- exit 0

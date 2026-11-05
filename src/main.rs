@@ -3,17 +3,27 @@
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-checkers — the Checkers compiler (M0: front end)
+checkers — the Checkers compiler and interpreter
 
 USAGE:
-    checkers check [--deny-warnings] <FILE.ck>...   parse and lint; report diagnostics
+    checkers run <FILE.ck> [ARG]...                 type-check, then run `main` with ARGs
+    checkers check [--deny-warnings] <FILE.ck>...   type-check and run `check`s; report diagnostics
     checkers parse <FILE.ck>                        print the syntax tree
     checkers --version
 ";
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    match args.first().map(String::as_str) {
+    // The interpreter recurses for non-tail calls, so everything runs on a big stack.
+    let code = checkers::run::with_big_stack(|| {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        cli(&args)
+    });
+    ExitCode::from(code)
+}
+
+fn cli(args: &[String]) -> u8 {
+    let code = match args.first().map(String::as_str) {
+        Some("run") => return run(&args[1..]),
         Some("check") => check(&args[1..]),
         Some("parse") => parse(&args[1..]),
         Some("--version") | Some("-V") => {
@@ -28,7 +38,28 @@ fn main() -> ExitCode {
             eprintln!("error: unknown command `{other}`\n\n{USAGE}");
             ExitCode::from(2)
         }
+    };
+    if code == ExitCode::SUCCESS {
+        0
+    } else if code == ExitCode::FAILURE {
+        1
+    } else {
+        2
     }
+}
+
+fn run(args: &[String]) -> u8 {
+    let Some(path) = args.first() else {
+        eprintln!("error: `run` needs a file\n\n{USAGE}");
+        return 2;
+    };
+    let text = match read(path) {
+        Ok(t) => t,
+        Err(_) => return 2,
+    };
+    let ran = checkers::run(path, &text, &args[1..], checkers::run::Io::process());
+    eprint!("{}", ran.report);
+    ran.code
 }
 
 fn read(path: &str) -> Result<String, ExitCode> {

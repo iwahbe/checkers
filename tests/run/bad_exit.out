@@ -1,0 +1,4 @@
+-- stdout
+-- stderr
+runtime error in `main`: `Failure 300`: an exit code must be between 1 and 255
+-- exit 70

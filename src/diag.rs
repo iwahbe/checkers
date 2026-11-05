@@ -18,19 +18,26 @@ pub struct Diagnostic {
     /// Short text printed under the caret line.
     pub label: Option<String>,
     pub help: Option<String>,
+    /// Extra facts, printed as `= note: …` before the help line.
+    pub notes: Vec<String>,
 }
 
 impl Diagnostic {
     pub fn error(code: &'static str, message: impl Into<String>, span: Span) -> Diagnostic {
-        Diagnostic { severity: Severity::Error, code, message: message.into(), span, label: None, help: None }
+        Diagnostic { severity: Severity::Error, code, message: message.into(), span, label: None, help: None, notes: Vec::new() }
     }
 
     pub fn warning(code: &'static str, message: impl Into<String>, span: Span) -> Diagnostic {
-        Diagnostic { severity: Severity::Warning, code, message: message.into(), span, label: None, help: None }
+        Diagnostic { severity: Severity::Warning, code, message: message.into(), span, label: None, help: None, notes: Vec::new() }
     }
 
     pub fn with_label(mut self, label: impl Into<String>) -> Diagnostic {
         self.label = Some(label.into());
+        self
+    }
+
+    pub fn with_note(mut self, note: impl Into<String>) -> Diagnostic {
+        self.notes.push(note.into());
         self
     }
 
@@ -82,6 +89,9 @@ impl Diagnostic {
             out += &format!(" {label}");
         }
         out += "\n";
+        for n in &self.notes {
+            out += &format!("{pad} = note: {n}\n");
+        }
         if let Some(help) = &self.help {
             out += &format!("{pad} = help: {help}\n");
         }

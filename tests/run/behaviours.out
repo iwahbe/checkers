@@ -1,0 +1,8 @@
+-- stdout
+main returns
+first sees 0
+second sees 1
+sum 42
+nested sees 2
+-- stderr
+-- exit 42

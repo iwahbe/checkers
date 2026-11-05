@@ -19,3 +19,5 @@ path = "tests/golden.rs"
 harness = false
 
 [dependencies]
+num-bigint = "0.4"
+num-traits = "0.2"

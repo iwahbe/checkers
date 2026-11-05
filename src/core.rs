@@ -391,6 +391,15 @@ pub fn force_meta(g: &Globals, v: Val) -> Val {
 
 /// Unfold one definition at the head, if allowed.
 pub fn unfold(g: &Globals, v: &Val) -> Option<Val> {
+    if let Val::Neutral(Head::Prim(p, args), sp) = v {
+        // Evaluate a stuck primitive's arguments to weak-head form and retry it.
+        let forced: Vec<Val> = args.iter().map(|a| force(g, a.clone())).collect();
+        let mut r = prim_value(g, p, &forced)?;
+        for e in sp.iter() {
+            r = elim(g, r, e.clone());
+        }
+        return Some(r);
+    }
     let Val::Neutral(Head::Def(d), sp) = v else { return None };
     let info = &g.defs[d.0 as usize];
     let body = info.body.as_ref()?;
@@ -542,17 +551,30 @@ fn val_eq(g: &Globals, a: &Val, b: &Val) -> Option<bool> {
     }
 }
 
+/// Apply a primitive. Like a definition, it does not unfold its arguments:
+/// if they are not already values it stays stuck, and `unfold` evaluates
+/// it further only when conversion checking needs to.
 fn prim(g: &Globals, p: &Prim, orig: Vec<Val>) -> Val {
-    let args: Vec<Val> = orig.iter().map(|a| force(g, a.clone())).collect();
-    // A stuck primitive keeps its unforced arguments.
-    let stuck = |_forced: Vec<Val>| {
-        let kept = orig.iter().map(|a| force_meta(g, a.clone())).collect();
-        Val::Neutral(Head::Prim(p.clone(), kept), Rc::new(Vec::new()))
-    };
+    let args: Vec<Val> = orig.iter().map(|a| force_meta(g, a.clone())).collect();
+    match prim_value(g, p, &args) {
+        Some(v) => v,
+        None => Val::Neutral(Head::Prim(p.clone(), args), Rc::new(Vec::new())),
+    }
+}
+
+fn prim_value(g: &Globals, p: &Prim, args: &[Val]) -> Option<Val> {
     let n2 = || Some((num(&args[0])?, num(&args[1])?));
     let r = match p {
         Prim::Add => n2().and_then(|(a, b)| a.checked_add(b)).map(|n| Val::Lit(Lit::Num(n))),
-        Prim::Sub => n2().and_then(|(a, b)| a.checked_sub(b)).map(|n| Val::Lit(Lit::Num(n))),
+        // `Sub` carries its operand type: on `Nat`, `a - b` with `a < b` has no value (stuck).
+        Prim::Sub => n2().and_then(|(a, b)| {
+            let on_nat = matches!(args.get(2), Some(Val::TyCon(t, _)) if Some(*t) == g.well_known.nat);
+            if on_nat && a < b {
+                None
+            } else {
+                a.checked_sub(b).map(|n| Val::Lit(Lit::Num(n)))
+            }
+        }),
         Prim::Mul => n2().and_then(|(a, b)| a.checked_mul(b)).map(|n| Val::Lit(Lit::Num(n))),
         Prim::Div => n2().and_then(|(a, b)| a.checked_div_euclid(b)).map(|n| Val::Lit(Lit::Num(n))),
         Prim::Rem => n2().and_then(|(a, b)| a.checked_rem_euclid(b)).map(|n| Val::Lit(Lit::Num(n))),
@@ -584,7 +606,7 @@ fn prim(g: &Globals, p: &Prim, orig: Vec<Val>) -> Val {
         Prim::Par => Some(args[0].clone()),
         _ => None,
     };
-    r.unwrap_or_else(|| stuck(args))
+    r
 }
 
 // ── quoting ──────────────────────────────────────────────────────────────────
@@ -1024,7 +1046,7 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
                 _ => None,
             };
             match (op, args.as_slice()) {
-                (Some(o), [a, b]) => {
+                (Some(o), [a, b]) | (Some(o), [a, b, _]) => {
                     paren(p > 0, format!("{} {o} {}", show_prec(g, ns, a, 2), show_prec(g, ns, b, 2)))
                 }
                 _ => {

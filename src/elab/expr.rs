@@ -686,7 +686,13 @@ impl Elab {
                 if matches!(op, Op::Sub | Op::Div | Op::Rem) {
                     self.obligations.push(Obligation { module: self.cur.clone(), span, what: "arithmetic side condition" });
                 }
-                (Tm::PrimApp(prim, vec![lt, rt]), result.unwrap_or(lty))
+                let args = if prim == Prim::Sub {
+                    // The runtime and the evaluator need to know whether this is `Nat` subtraction.
+                    vec![lt, rt, quote(&self.g, cx.lvl(), &lty)]
+                } else {
+                    vec![lt, rt]
+                };
+                (Tm::PrimApp(prim, args), result.unwrap_or(lty))
             }
         }
     }
@@ -781,9 +787,13 @@ impl Elab {
                             _ => "_".to_string(),
                         };
                         let (t, ty) = self.infer(cx, rhs);
+                        if name == "_" && self.val_linear(&ty) {
+                            self.report_dropped(cx, &ty, pat.span);
+                        }
+                        let mult = self.named_mult(cx, &name, &ty, pat.span, Mult::Many);
                         let v = self.eval(cx, &t);
                         let tyt = quote(&self.g, cx.lvl(), &ty);
-                        let l = cx.define(&name, ty, v, Mult::Many);
+                        let l = cx.define(&name, ty, v, mult);
                         // `let x = y` keeps y's structural information.
                         if let ExprKind::Var(src) = &rhs.kind {
                             if let Some(sl) = cx.locals[..l].iter().rposition(|x| x.name.as_ref() == src.as_str()) {
@@ -792,7 +802,7 @@ impl Elab {
                         }
                         let body = self.block_from(cx, rest, result, expected, tail);
                         cx.pop();
-                        Tm::Let(Rc::from(name.as_str()), Mult::Many, Rc::new(tyt), Rc::new(t), Rc::new(body))
+                        Tm::Let(Rc::from(name.as_str()), mult, Rc::new(tyt), Rc::new(t), Rc::new(body))
                     }
                     _ => {
                         let arms = vec![(pat.clone(), None, ArmBody::Rest(rest, result))];
@@ -911,13 +921,10 @@ impl Elab {
         let l = cx.bind(&okv, payload_ty, Mult::Many);
         let _ = l;
         let ok_body = match &pat.kind {
-            ast::PatKind::Var(n) => {
-                // Rename the field local to the pattern variable.
-                let last = cx.locals.len() - 1;
-                cx.locals[last].name = Rc::from(n.as_str());
-                self.block_from(cx, rest, result, expected, tail)
+            ast::PatKind::Var(_) | ast::PatKind::Wild => {
+                let pty = cx.locals[cx.lvl() - 1].ty.clone();
+                self.let_pattern(cx, pat, Tm::Var(0), pty, rest, result, expected, tail)
             }
-            ast::PatKind::Wild => self.block_from(cx, rest, result, expected, tail),
             _ => {
                 let scrut = mk(ExprKind::Var(okv.clone()), pat.span);
                 let arms = vec![(pat.clone(), None, ArmBody::Rest(rest, result))];
@@ -1032,9 +1039,13 @@ impl Elab {
             ast::PatKind::Wild => "_".to_string(),
             _ => format!("$p{}", cx.lvl()),
         };
+        if name == "_" && self.val_linear(&ty) {
+            self.report_dropped(cx, &ty, pat.span);
+        }
+        let mult = self.named_mult(cx, &name, &ty, pat.span, Mult::Many);
         let v = self.eval(cx, &t);
         let tyt = quote(&self.g, cx.lvl(), &ty);
-        cx.define(&name, ty, v, Mult::Many);
+        cx.define(&name, ty, v, mult);
         let body = match &pat.kind {
             ast::PatKind::Var(_) | ast::PatKind::Wild => self.block_from(cx, rest, result, expected, tail),
             _ => {
@@ -1044,7 +1055,7 @@ impl Elab {
             }
         };
         cx.pop();
-        Tm::Let(Rc::from(name.as_str()), Mult::Many, Rc::new(tyt), Rc::new(t), Rc::new(body))
+        Tm::Let(Rc::from(name.as_str()), mult, Rc::new(tyt), Rc::new(t), Rc::new(body))
     }
 
     // ── concurrency forms (§8.5–8.6) ────────────────────────────────────────

@@ -1,0 +1,4 @@
+-- stdout
+-- stderr
+copy: missing.txt: No such file or directory
+-- exit 1

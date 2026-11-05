@@ -56,14 +56,38 @@ impl U<'_> {
     fn report(&mut self, lvl: usize, c: Count, mixed: bool) {
         let b = &self.binders[lvl];
         let meta = self.e.fn_meta.get(&self.did).cloned().unwrap_or_default();
-        let span = meta
-            .params
-            .iter()
-            .find(|p| p.0 == b.name)
-            .map(|p| p.2)
-            .unwrap_or(meta.span);
+        let resource = self.e.resource_vars.get(&(self.did, b.name.clone())).cloned();
+        let span = match &resource {
+            Some((s, _)) => *s,
+            None => meta.params.iter().find(|p| p.0 == b.name).map(|p| p.2).unwrap_or(meta.span),
+        };
         let fname = meta.name.clone();
         let name = b.name.clone();
+        if let (Some((_, ty)), Mult::One) = (&resource, b.mult) {
+            let d = match (mixed, c) {
+                (true, _) => Diagnostic::error(
+                    "E0402",
+                    format!("`{name}` holds a resource (`{ty}`), but `{fname}` uses it on some paths and not on others"),
+                    span,
+                )
+                .with_help("a resource must be used exactly once on every path, e.g. closed in every branch"),
+                (false, Count::Zero) => Diagnostic::error(
+                    "E0401",
+                    format!("`{name}` holds a resource (`{ty}`), so it must be used exactly once, but `{fname}` never uses it"),
+                    span,
+                )
+                .with_help("close it, or pass it on"),
+                _ => Diagnostic::error(
+                    "E0401",
+                    format!("`{name}` holds a resource (`{ty}`), so it must be used exactly once, but `{fname}` may use it more than once"),
+                    span,
+                )
+                .with_help("a resource can't be copied; thread it with `<-` so each use gets the new one"),
+            };
+            self.e.err(d);
+            self.reported = true;
+            return;
+        }
         let d = match (b.mult, mixed, c) {
             (Mult::Zero, _, _) => Diagnostic::error(
                 "E0403",
@@ -125,7 +149,9 @@ impl U<'_> {
             }
             Tm::App(f, a, _, m) => {
                 let mut c = self.go(f);
-                let ca: Counts = self.go(a).into_iter().map(|x| x.scale(*m)).collect();
+                // A constructor stores its argument: one use, like a saturated `ConApp`.
+                let m = if *m != Mult::Zero && head_is_con(f) { Mult::One } else { *m };
+                let ca: Counts = self.go(a).into_iter().map(|x| x.scale(m)).collect();
                 add(&mut c, &ca);
                 c
             }
@@ -243,6 +269,13 @@ impl U<'_> {
         }
         out
     }
+}
+
+fn head_is_con(mut t: &Tm) -> bool {
+    while let Tm::App(f, ..) = t {
+        t = f;
+    }
+    matches!(t, Tm::Con(_))
 }
 
 /// Check the body (a λ over the function's parameters) of `did`.

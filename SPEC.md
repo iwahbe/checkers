@@ -14,13 +14,13 @@ This document is the single source of truth for Checkers. Implementation follows
 | D1 | **Trust the SMT solver (Z3).** SMT-discharged obligations are accepted without certificate re-checking. Every use is recorded in a per-module *trust ledger* (§7.4) so certificate checking can be added later without changing the language. | 11/05/2026 | decided |
 | D2 | Core calculus is **Quantitative Type Theory** with multiplicities {0, 1, ω} (Atkey 2018; as implemented in Idris 2). | 11/05/2026 | **(proposed)** |
 | D3 | `Prop` is a definitionally proof-irrelevant, impredicative universe (as in Lean 4). | 11/05/2026 | **(proposed)** |
-| D4 | **Pattern matching is checked as case trees** (as in Agda and Idris 2): the elaborator compiles `match` to case trees over constructors and literals, checks exhaustiveness, and checks structural recursion on them. *Revises the 11/05/2026 recursors-only proposal*, which would need dependent pattern-match compilation to eliminators before anything runs; recursors can return later as a proof certificate. | 11/05/2026 (rev.) | **(proposed)** |
+| D4 | **Pattern matching is checked as case trees** (as in Agda and Idris 2): the elaborator compiles `match` to case trees over constructors and literals, checks exhaustiveness, and checks structural recursion on them. *Revises the 11/05/2026 recursors-only proposal*, which would need dependent pattern-match compilation to eliminators before anything runs; recursors can return later as a proof certificate. | 11/05/2026 (rev.) | decided (11/05/2026) |
 | D5 | Implementation language: Rust (Cranelift and the `z3` bindings are Rust-native). | 11/05/2026 | **(proposed)** |
 | D6 | `Int` and `Nat` are arbitrary-precision (match SMT `Int` exactly). Fixed-width types are **refinements**, not separate number systems: `U8 = n~Nat, n < 256`, `I64 = n~Int, -2^63 <= n, n < 2^63`. Overflow is therefore a proof obligation, never a silent wrap; wrapping arithmetic is explicit (`wrapping_add`, …). `-` on `Nat` requires `a >= b`. The backend stores refined numbers in machine words. | 11/05/2026 (rev.) | **(proposed)** |
 | D7 | Compile-time staging uses Two-Level Type Theory (Kovács 2022), added in milestone M6, not in the v0.1 core. | 11/05/2026 | **(proposed)** |
 | D8 | **Haskell-style application.** Application is juxtaposition (`format x`, `List Int`, `Some b`) and every function is curried (`f x y == (f x) y`; partial application is ordinary). Operators are functions: `(+) 1 2 == 1 + 2`, with sections `(+ 1)` and `(1 +)`. `$` (lowest precedence, right-assoc.) and `.` (composition) behave as in Haskell. Declarations and applications now look the same. *Supersedes the 11/05/2026 parenthesized-call proposal.* | 11/05/2026 (rev.) | decided |
 | D9 | **Constraint lists are the only place types are written:** function headers, constructor arguments, record fields, and refinement aliases all use `name~Type, predicate, ...` (§9.3). | 11/05/2026 | **(proposed)** |
-| D10 | **Generics by auto-binding:** a lowercase name that appears free in a constraint and is not in scope becomes an implicit, erased (multiplicity 0) parameter. `fn map f xs -> ys : f~(a -> b), xs~List a` is generic in `a`, `b`. | 11/05/2026 | **(proposed)** |
+| D10 | **Generics by auto-binding:** a lowercase name that appears free in a constraint and is not in scope becomes an implicit, erased (multiplicity 0) parameter. `fn map f xs -> ys : f~(a -> b), xs~List a` is generic in `a`, `b`. | 11/05/2026 | decided (11/05/2026) |
 | D11 | **Constructor and field invariants:** predicates in a constructor's or field's constraint list are part of the type. Building the value requires discharging them; matching on it provides them as hypotheses. | 11/05/2026 | **(proposed)** |
 | D12 | **Refinement reflection inside a module:** total functions are reflected into the SMT logic (their definitions unfold on demand, Proof by Logical Evaluation). Outside the module only exported signatures, postconditions, and lemmas are visible (sealing, §6), unless exported `transparent`. | 11/05/2026 | **(proposed)** |
 | D13 | **Proofs are code:** `lemma … ensures … proof`. In a proof, `match` is case analysis, a recursive lemma call is the induction hypothesis, `have L(args)` adds L's conclusion as a fact, `auto` hands the goal to the pipeline, `admit` skips (recorded in the trust ledger). A proof block (or match arm in one) may end with `have …`; the goal is then closed by an implicit `auto`. No separate tactic language in v0.1. | 11/05/2026 | **(proposed)** |
@@ -38,15 +38,21 @@ This document is the single source of truth for Checkers. Implementation follows
 | D27 | **Effects go through capabilities** (§8.1–8.2). Every effectful operation takes a capability; the kernel treats capabilities as linear, so every function stays a mathematical function. `main` receives `sys~System`, a record of authority capabilities (`term`, `fs`, `env`, `proc`, `net`, `clock`, `sched`). No `IO` monad and no effect system in the kernel. | 11/05/2026 | decided |
 | D28 | **Authority is copied on use; resources are linear** (§8.1, §8.3–8.4). Authority capabilities (`System`, `Term`, `Fs`, `Env`, `Proc`, `Net`, `Clock`, `Sched`) may be used any number of times and dropped: the elaborator gives each use a fresh token, so the kernel still sees exact linearity. Cost: no proven ordering between uses of one authority, and closures capturing one are single-use. Resources (`File`, `Child`, `Pipe`, `Socket`) are `own`, used exactly once, and closed explicitly. *Supersedes the 11/05/2026 droppable-but-linear proposal and `files.split`.* | 11/05/2026 | decided |
 | D29 | **`x <- f a r`** means `let (x, r) = f a r`, where the last argument `r` is an `own` **resource** variable (§8.4). `<-` also binds the future returned by `fork`/`join` (§8.6). | 11/05/2026 | **(proposed)** |
-| D30 | **Concurrency is cowns + `when`** (behaviour-oriented concurrency, Verona; §8.5): race- and deadlock-free by construction, causal order, invariants as refinement types on contents. Actors and channels are libraries on top. *Supersedes the actors-with-session-types plan for M7.* | 11/05/2026 | decided (syntax **proposed**) |
+| D30 | **Concurrency is cowns + `when`** (behaviour-oriented concurrency, Verona; §8.5): race- and deadlock-free by construction, causal order, invariants as refinement types on contents. Actors and channels are libraries on top. *Supersedes the actors-with-session-types plan for M7.* | 11/05/2026 | decided (syntax decided 11/05/2026) |
 | D31 | `main`'s signature: `fn main args sys -> code : args~List String, sys~System, code~ExitCode` (it may be `partial`). `code` may also be a `Future ExitCode` (§8.6). The process exits once all scheduled work has finished. | 11/05/2026 | **(proposed)**; exit-after-all-work decided |
-| D33 | **Nothing ever blocks.** No `await`. Effectful fork/join is `f <- fork using sched` and `r <- join x = f, … using sched`: both schedule a behaviour and return a `Future`; a join runs after the forks it names, by causal order (§8.6). | 11/05/2026 | decided (syntax **proposed**) |
+| D33 | **Nothing ever blocks.** No `await`. Effectful fork/join is `f <- fork using sched` and `r <- join x = f, … using sched`: both schedule a behaviour and return a `Future`; a join runs after the forks it names, by causal order (§8.6). | 11/05/2026 | decided (syntax decided 11/05/2026) |
 | D34 | **`par (e1, …, en)`** evaluates the components of an n-tuple in parallel and returns the tuple. Pure only; to the prover `par t == t`. A keyword, not a function, because Checkers is strict: a function's arguments would already be evaluated, one after another, before it ran. | 11/05/2026 | decided |
 | D32 | **Record patterns** `Ctor { a, b = p }` bind named fields. Fields left out must be authority capabilities or ordinary values; an unmentioned resource field is an error. | 11/05/2026 | **(proposed)** |
 | D35 | **`Unit` statements.** A call returning `Unit` may stand alone as a statement line in a block (`terminal.print_line "hi" term`). Any other non-final bare expression is a type error; discard a value with `let _ = …`. | 11/05/2026 | **(proposed)** |
-| D36 | **Importing a type imports its constructors**: `import system (ExitCode)` makes `Success` and `Failure` available. Record fields are reached with `.field`. | 11/05/2026 | **(proposed)** |
-| D37 | **Inductive types have parameters, not indices.** A family such as `Vec a n` is parameterized by `a` and `n`; constructors relate them with equality constraints (`n == m + 1`), which are refinements (§7). The kernel never unifies indices. | 11/05/2026 | **(proposed)** |
-| D38 | **Built-in operators before interfaces (D15).** `+ - * / %` work on `Nat` and `Int`; `< <= > >=` on `Nat` and `Int`; `==`/`!=` on any type; `++` on `String`, `Bytes` and `List a`; `len` on `Bytes`, `String` and `List a`; `format` on any type. Both operands must have the same type; an unconstrained numeric literal defaults to `Nat`. `U8`, `Char` and the other fixed-width types are refinements of `Nat`/`Int` (D6), so they mix freely with them; their ranges are checked by the prover. | 11/05/2026 | **(proposed)** |
+| D36 | **Importing a type imports its constructors**: `import system (ExitCode)` makes `Success` and `Failure` available. Record fields are reached with `.field`. | 11/05/2026 | decided (11/05/2026) |
+| D37 | **Inductive types have parameters, not indices.** A family such as `Vec a n` is parameterized by `a` and `n`; constructors relate them with equality constraints (`n == m + 1`), which are refinements (§7). The kernel never unifies indices. | 11/05/2026 | decided (11/05/2026) |
+| D38 | **Built-in operators before interfaces (D15).** `+ - * / %` work on `Nat` and `Int`; `< <= > >=` on `Nat` and `Int`; `==`/`!=` on any type; `++` on `String`, `Bytes` and `List a`; `len` on `Bytes`, `String` and `List a`; `format` on any type. Both operands must have the same type; an unconstrained numeric literal defaults to `Nat`. `U8`, `Char` and the other fixed-width types are refinements of `Nat`/`Int` (D6), so they mix freely with them; their ranges are checked by the prover. | 11/05/2026 | decided (11/05/2026) |
+| D39 | **Resources are linear by type.** A *primitive resource* is a standard-library type the runtime implements as an open, stateful thing: `files.File` today, `Child`, `Pipe` and `Socket` when they exist. A type is *linear* if it is a primitive resource, or a tuple, record or enum with a linear component or type argument (`(Option String, File)`, `Result File IoError`). Every variable the program names (parameter, `let`, `<-`, pattern variable) whose type is linear must be used exactly once on every path, whether or not it is written `own`; `own` stays allowed as documentation. A pattern that would drop a resource (`_`, or a field left out of a record pattern) is an error (E0404). | 11/05/2026 | **(proposed)** |
+| D40 | **`check e` is run by `checkers check`** (compile-time execution, D0). The interpreter evaluates `e`; `False` is error E0260, a runtime error during evaluation is E0261. Checks receive no capabilities, so they cannot have effects. A check that evaluates to `True` is proven by evaluation; it is still recorded for the prover. | 11/05/2026 | **(proposed)** |
+| D41 | **Execution model (§13).** Strict, call-by-value, arguments left to right, block lines in order. Types, `ghost` values, implicit arguments and predicates are erased. Until the prover (M3) discharges obligations, the ones that guard an operation are checked at run time: `-` on `Nat` going below zero, `/` and `%` by zero, `src[i]` out of bounds, an `ExitCode` out of range. A failed check stops the program with a runtime error and exit code 70. Other refinements are not checked at run time. | 11/05/2026 | **(proposed)** |
+| D42 | **`format x`** renders a value as Checkers source: `Nat`/`Int` in decimal (`-5`), `Bool` and other constructors by name with arguments (`Counts 1 2 3`, `Some (Ok 1)`), lists `[1, 2]`, tuples `(1, "a")`, `Unit` as `()`, `Bytes` as `b"…"`. A top-level `String` is returned unchanged; strings inside other values are quoted. Functions and capabilities render as `<function>` and `<Fs>` etc. | 11/05/2026 | **(proposed)** |
+| D43 | **`checkers run FILE.ck [ARG…]`** type-checks the file (any error stops it, exit code 2), runs its `check`s, then calls its exported `main` with the arguments and the root `System`. The exit code is `0` for `Success` and `n` for `Failure n`. | 11/05/2026 | **(proposed)** |
+| D44 | **The M2 scheduler is single-threaded.** `when`, `fork` and `join` append a behaviour to one FIFO queue; after `main` returns, the queue runs until it is empty (behaviours scheduled meanwhile go to the back). FIFO order respects causal order (§8.5) and runs every fork before a join that names it, so it is a valid schedule. `par` evaluates left to right. The multi-threaded scheduler arrives in M7 without changing any program's result. | 11/05/2026 | **(proposed)** |
 | D24 | **Development loop:** Claude owns the implementation; Ian drives with examples. An issue is "found X, expected Y" with a `.ck` snippet. Each one becomes a regression test under `tests/` *before* the fix lands, and the spec is updated first whenever the expectation changes the language. | 11/05/2026 | decided |
 | D25 | **Milestones reordered for CLI tools first** (§10): a running interpreter with `IO` comes right after type checking, before the prover, so Checkers can be used to build its own tooling early. Capstone: an interactive shell with a small scripting language, with proofs of its correctness. | 11/05/2026 | decided |
 
@@ -262,7 +268,7 @@ Capabilities come in two kinds (D28):
 | Kind | Examples | Surface behaviour | Ordering proven? |
 |---|---|---|---|
 | **Authority** | `System`, `Term`, `Fs`, `Env`, `Proc`, `Net`, `Clock`, `Sched` | copied on use, dropped when unused; written without `own` | no |
-| **Resource** | `File`, `Child`, `Pipe`, `Socket` | linear: used exactly once, threaded with `<-`, closed explicitly; written `own` | yes |
+| **Resource** | `File`, `Child`, `Pipe`, `Socket` | linear by type (D39): used exactly once, threaded with `<-`, closed explicitly; `own` may be written | yes |
 
 ### 8.2 The root capability and `main` (D27, D31)
 
@@ -318,7 +324,7 @@ The kernel still checks exact linearity, and no two calls share a token. When a 
 
 ### 8.4 Resources: linear, threaded with `<-` (D29)
 
-A resource is an open, stateful thing that must be released: an open `File`, a `Child` process, a `Pipe`, a `Socket`. It has multiplicity 1 in the surface language (`f~own File`) and must be consumed exactly once. Forgetting to `close` a file or `wait` for a child is a compile error, which proves, for free, that the shell reaps every child it spawns.
+A resource is an open, stateful thing that must be released: an open `File`, a `Child` process, a `Pipe`, a `Socket`. It has multiplicity 1 (`f~own File`; the `own` is implied by the type, D39) and must be consumed exactly once, as must any value that contains one. Forgetting to `close` a file or `wait` for a child is a compile error, which proves, for free, that the shell reaps every child it spawns.
 
 Operations on a resource consume it and return a fresh one together with their result, `(result, resource)`, with the resource last. `<-` rebinds it:
 
@@ -602,12 +608,12 @@ Reordered (D25) so that Checkers can run CLI tools before the prover exists.
 |---|-------------|-----------|
 | M0 | Rust workspace; lexer with layout (§9.1); parser for §9.2; naming warnings (§9.7); source-span diagnostics; `checkers parse` / `checkers check` | `examples/json.ck` and every spec example parse; golden tests for errors and warnings |
 | M1 | Type checker: modules and imports, dependent types with implicit arguments (bidirectional elaboration, pattern unification), enums/records (strict positivity), `match` → case trees with exhaustiveness (D4), structural termination, `own`/`ghost` usage (QTT, §4), operators (D38), effect forms (§8) typed. **Not yet:** predicates are type-checked as `Bool` and recorded, but proven only in M3; `decreasing` measures are recorded and checked in M5; proof blocks and `check` evaluation come with M3 and M2; linearity of resources inferred from their *type* (not just `own` binders) comes with M2. | `Vec`, `List`, `Nat` programs type-check; all `examples/` type-check; golden contract tests in `tests/types/`, including rejected programs |
-| M2 | Erasure, interpreter, prelude, capabilities and `main` (§8.2–8.4: `Term`, `Fs`, `Env`, `Proc`, exit codes), copy-on-use splitting and implicit `drop`, resource linearity | `examples/wc.ck` runs |
+| M2 | Erasure and interpreter (§13), standard library builtins, capabilities and `main` (§8.2–8.4: `Term`, `Fs`, exit codes), `checkers run`, `check` evaluation (D40), resource linearity by type (D39), single-threaded behaviour scheduler (D44). **Not yet:** `Env`, `Proc`, `Net`, `Clock` operations. | `examples/wc.ck` and `examples/copy.ck` run; golden run tests in `tests/run/` |
 | M3 | `Prop`, equality, refinements, Z3 pipeline, trust ledger, `check` | verified insertion sort |
 | M4 | Modules, sealing, exported lemmas | sort module used from another module via its lemmas only |
 | M5 | Well-founded recursion, lexicographic `decreasing` | verified merge sort; `examples/json.ck` checks |
 | M6 | Two-level staging (`comptime`) | compile-time-generated specialized code |
-| M7 | Cowns, `when`, `fork`/`join`, futures, `par`, multi-threaded scheduler; actor library | `examples/log.ck` and `examples/parallel.ck` run; stress tests show no races or deadlocks |
+| M7 | Multi-threaded scheduler for cowns, `when`, `fork`/`join` and `par` (single-threaded since M2, D44); actor library | `examples/log.ck` and `examples/parallel.ck` run; stress tests show no races or deadlocks |
 | M8 | Cranelift backend | M2–M7 test suites pass native |
 | M9 | **Capstone:** interactive shell with a small scripting language, with proofs of its correctness (parser round-trip, evaluator semantics, job control protocol) | the shell runs its own test scripts |
 
@@ -644,3 +650,54 @@ Reordered (D25) so that Checkers can run CLI tools before the prover exists.
   - `tests/types/`: the full report, including type checking. These are the type checker's contract: one file per rule area (mismatches, exhaustiveness, termination, usage, positivity, effects, modules), with an accepted-programs file that must stay clean.
 - A report from Ian is "found X, expected Y" with a `.ck` snippet. It is added as a failing golden test first, then fixed. If Y changes the language, this spec is updated before the code.
 - `UPDATE_GOLDEN=1 cargo test` rewrites `.out` files; every rewritten file is reviewed in the diff before committing.
+
+---
+
+## 13. Execution (M2)
+
+`checkers run FILE.ck [ARG…]` (D43) runs a program with the interpreter. The same interpreter runs `check` declarations during `checkers check` (D40).
+
+### 13.1 Erasure
+
+Before running, the checked program is erased: types, type arguments, implicit arguments, `ghost` parameters and fields, refinement predicates, `ensures` clauses and proofs disappear. What remains is an untyped functional program over numbers, strings, bytes, constructors, tuples, closures and capabilities.
+
+### 13.2 Evaluation (D41)
+
+- Strict and call-by-value. A call evaluates its arguments left to right, then the body.
+- A block runs its lines in order. Effects (calls on `term`, `fs`, a `File`) therefore happen in program order.
+- `and`, `or`, `implies` and `if` evaluate only the operands they need.
+- `Nat` and `Int` are arbitrary-precision (D6). `/` and `%` are Euclidean (the remainder is never negative), matching the prover's integers.
+- A tail call does not grow the stack, so a loop written as tail recursion (`count_from` in `wc.ck`) runs in constant stack space.
+- `==` compares values structurally. Functions and capabilities cannot be compared; comparing them is a runtime error.
+- `len` of a `String` is its length in bytes (UTF-8, D20).
+
+### 13.3 Runtime checks
+
+Until the prover discharges obligations (M3), the interpreter checks the ones that guard an operation, and stops the program if one fails:
+
+| Operation | Checked condition |
+|---|---|
+| `a - b` on `Nat` | `a >= b` |
+| `a / b`, `a % b` | `b != 0` |
+| `src[i]` | `i < len src` |
+| `main` returns `Failure n` | `1 <= n <= 255` |
+
+A failure prints a runtime error that names the failing operation and the function it occurred in, and exits with code 70. Other refinements (a computed `U8` staying below 256, a postcondition) are not checked at run time; M3 proves all of them, and the runtime checks then go away.
+
+### 13.4 `main` and the root capability
+
+`main` receives the command-line arguments after the file name, as `List String`, and the root `System` (§8.2). `term` reads standard input and writes standard output and error; `fs` is the process's file system with relative paths resolved against the current directory, and `files.within dir fs` confines it to `dir` (absolute paths and `..` are then refused). Operations on `env`, `proc`, `net` and `clock` are not implemented yet.
+
+`IoError` values describe the operating-system error, as in `No such file or directory`. `read_line` (on `term` or a `File`) returns a line without its `\n`; bytes that are not valid UTF-8 become U+FFFD.
+
+### 13.5 Behaviours (D44)
+
+`when`, `fork` and `join` schedule behaviours on a single FIFO queue that runs after `main` returns. The process exits when the queue is empty. If `main` returns a `Future ExitCode`, its value is the exit code.
+
+### 13.6 Run tests
+
+A run test is `tests/run/NAME.args`: its first line is the program to run (relative to `tests/run/`, so `../../examples/wc.ck` runs an example), and each further line is one argument. `cargo test` runs it with the working directory `tests/run/` and standard input from `NAME.in` (empty if absent), and compares standard output, standard error and the exit code with `NAME.out`.
+
+### 13.7 Performance
+
+The M2 interpreter walks the erased term with linked environments: correct, but slow (about 2 µs per input byte for `wc.ck`). Native code (M8) is where speed comes from; until then, the interpreter is meant for CLI tools on modest inputs.
