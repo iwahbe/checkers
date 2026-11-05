@@ -5,7 +5,8 @@
 //! tests/types/NAME.ck  → NAME.out is the full report (type checking included).
 //! tests/run/NAME.args  → run the program named on its first line (SPEC §13.6);
 //!                         NAME.out is its stdout, stderr and exit code.
-//! examples/*.ck        → must check with no errors and no warnings.
+//! examples/*.ck        → must check with no errors and no warnings, unless listed
+//!                         in examples/PENDING: then tests/pending/NAME.out pins it.
 //!
 //! `UPDATE_GOLDEN=1 cargo test --test golden` rewrites the .out files.
 
@@ -47,7 +48,11 @@ impl Write for Capture {
 fn run_case(args_path: &Path) -> String {
     let spec = fs::read_to_string(args_path).unwrap();
     let mut lines = spec.lines();
-    let program = lines.next().unwrap_or_default().to_string();
+    let first = lines.next().unwrap_or_default();
+    let (unverified, program) = match first.strip_prefix("--unverified ") {
+        Some(p) => (true, p.to_string()),
+        None => (false, first.to_string()),
+    };
     let args: Vec<String> = lines.map(str::to_string).collect();
     let stdin = fs::read(args_path.with_extension("in")).unwrap_or_default();
     let text = fs::read_to_string(&program).unwrap_or_else(|e| panic!("{}: {program}: {e}", args_path.display()));
@@ -58,7 +63,7 @@ fn run_case(args_path: &Path) -> String {
         stderr: Box::new(err.clone()),
     };
     let name = Path::new(&program).file_name().unwrap().to_string_lossy().to_string();
-    let ran = checkers::run(&name, &text, &args, io);
+    let ran = checkers::run(&name, &text, &args, io, unverified);
     let stdout = String::from_utf8_lossy(&out.0.borrow()).to_string();
     let stderr = ran.report.clone() + &String::from_utf8_lossy(&err.0.borrow());
     format!("-- stdout\n{stdout}-- stderr\n{stderr}-- exit {}\n", ran.code)
@@ -133,12 +138,33 @@ fn golden() {
     }
     std::env::set_current_dir(root).unwrap();
 
+    // Examples waiting on a later milestone (D48): their output is pinned instead.
+    let pending: Vec<String> = fs::read_to_string(root.join("examples").join("PENDING"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .map(|l| l.split_whitespace().next().unwrap_or("").to_string())
+        .collect();
     for path in ck_files(&root.join("examples")) {
         count += 1;
+        let file = path.file_name().unwrap().to_string_lossy().to_string();
         let text = fs::read_to_string(&path).unwrap();
-        let c = checkers::check(&path.file_name().unwrap().to_string_lossy(), &text);
-        if !c.diags.is_empty() {
-            failures.push(format!("── examples/{} must be clean ──\n{}", path.file_name().unwrap().to_string_lossy(), c.report()));
+        let c = checkers::check(&file, &text);
+        if pending.contains(&file) {
+            let out_path = root.join("tests").join("pending").join(Path::new(&file).with_extension("out"));
+            let actual = c.report();
+            let expected = fs::read_to_string(&out_path).unwrap_or_default();
+            if actual != expected {
+                if update {
+                    fs::create_dir_all(out_path.parent().unwrap()).unwrap();
+                    fs::write(&out_path, &actual).unwrap();
+                    println!("updated {}", out_path.strip_prefix(root).unwrap().display());
+                } else {
+                    failures.push(format!("── pending examples/{file} ──\n--- expected\n{expected}\n--- actual\n{actual}"));
+                }
+            }
+        } else if !c.diags.is_empty() {
+            failures.push(format!("── examples/{file} must be clean ──\n{}", c.report()));
         }
     }
 

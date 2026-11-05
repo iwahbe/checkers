@@ -1,0 +1,9 @@
+error[E0453]: `mid` has a precondition, so it must be called with all its arguments
+  --> partial_pre.ck:11:14
+   |
+11 |     list.map (mid 0) xs
+   |              ^^^^^^^
+   = note: it requires `a <= b`
+   = help: use a lambda that passes every argument, e.g. `\x -> mid … x`
+
+partial_pre.ck: 1 error, 0 warnings

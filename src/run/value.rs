@@ -80,6 +80,8 @@ pub enum Value {
     File(Rc<RefCell<Option<FileState>>>),
     IoErr(Rc<str>),
     Decimal(Rc<Decimal>),
+    /// A multiset of integers (D47): sorted (value, count) pairs.
+    Bag(Rc<Vec<(Num, usize)>>),
     Cown(Rc<RefCell<Value>>),
     Future(Rc<RefCell<Option<Value>>>),
 }
@@ -110,6 +112,7 @@ impl Value {
             Value::File(_) => "file",
             Value::IoErr(_) => "I/O error",
             Value::Decimal(_) => "decimal",
+            Value::Bag(_) => "bag",
             Value::Cown(_) => "cown",
             Value::Future(_) => "future",
         }
@@ -123,6 +126,7 @@ pub fn equal(a: &Value, b: &Value) -> Result<bool, &'static str> {
         (Value::Str(x), Value::Str(y)) => x == y,
         (Value::Bytes(x), Value::Bytes(y)) => x == y,
         (Value::Decimal(x), Value::Decimal(y)) => x == y,
+        (Value::Bag(x), Value::Bag(y)) => x == y,
         (Value::IoErr(x), Value::IoErr(y)) => x == y,
         (Value::Erased, _) | (_, Value::Erased) => true,
         (Value::Con(c1, f1), Value::Con(c2, f2)) => {
@@ -188,22 +192,7 @@ pub fn show(g: &Globals, v: &Value, p: u8) -> String {
             paren(p > 0 && n.is_negative(), s)
         }
         Value::Str(s) => format!("{:?}", &**s),
-        Value::Bytes(b) => {
-            let mut s = String::from("b\"");
-            for &c in b.iter() {
-                match c {
-                    b'"' => s.push_str("\\\""),
-                    b'\\' => s.push_str("\\\\"),
-                    b'\n' => s.push_str("\\n"),
-                    b'\t' => s.push_str("\\t"),
-                    b'\r' => s.push_str("\\r"),
-                    0x20..=0x7e => s.push(c as char),
-                    _ => s.push_str(&format!("\\x{c:02x}")),
-                }
-            }
-            s.push('"');
-            s
-        }
+        Value::Bytes(b) => show_bytes(b),
         Value::Con(c, fields) => {
             if Some(*c) == wk.nil || Some(*c) == wk.cons {
                 let mut items = Vec::new();
@@ -248,7 +237,30 @@ pub fn show(g: &Globals, v: &Value, p: u8) -> String {
         Value::File(_) => "<File>".into(),
         Value::IoErr(m) => format!("<IoError: {m}>"),
         Value::Decimal(d) => d.render(),
+        Value::Bag(b) => {
+            let items: Vec<String> =
+                b.iter().flat_map(|(v, n)| std::iter::repeat_n(v.to_string(), *n)).collect();
+            format!("<Bag {{{}}}>", items.join(", "))
+        }
         Value::Cown(_) => "<Cown>".into(),
         Value::Future(_) => "<Future>".into(),
     }
+}
+
+/// A `Bytes` literal: `b"hi\n"`.
+pub fn show_bytes(b: &[u8]) -> String {
+    let mut s = String::from("b\"");
+    for &c in b.iter() {
+        match c {
+            b'"' => s.push_str("\\\""),
+            b'\\' => s.push_str("\\\\"),
+            b'\n' => s.push_str("\\n"),
+            b'\t' => s.push_str("\\t"),
+            b'\r' => s.push_str("\\r"),
+            0x20..=0x7e => s.push(c as char),
+            _ => s.push_str(&format!("\\x{c:02x}")),
+        }
+    }
+    s.push('"');
+    s
 }

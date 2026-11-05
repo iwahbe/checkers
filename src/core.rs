@@ -39,13 +39,13 @@ pub enum Icit {
     Impl,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DefId(pub u32);
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TyId(pub u32);
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ConId(pub u32);
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct MetaId(pub u32);
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1020,6 +1020,9 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
                 .map(|(a, _)| a)
                 .collect();
             if explicit.is_empty() {
+                if Some(*c) == g.well_known.nil {
+                    return "[]".into();
+                }
                 return ci.name.to_string();
             }
             let s = format!(
@@ -1050,6 +1053,9 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
                     paren(p > 0, format!("{} {o} {}", show_prec(g, ns, a, 2), show_prec(g, ns, b, 2)))
                 }
                 _ => {
+                    if let (Prim::Neg, [a]) = (pr, args.as_slice()) {
+                        return format!("-{}", show_prec(g, ns, a, 2));
+                    }
                     let name = match pr {
                         Prim::Builtin(n) => n.to_string(),
                         Prim::Len => "len".into(),
@@ -1066,7 +1072,21 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
                 }
             }
         }
-        Tm::Case(s, _) => paren(p > 0, format!("match {} …", show_prec(g, ns, s, 0))),
+        Tm::Case(s, c) => {
+            // `if` (and `and`/`or`) are matches on `Bool`.
+            let wk = &g.well_known;
+            let arm = |con: Option<ConId>| c.branches.iter().find(|b| Some(b.0) == con).map(|b| &b.2);
+            if let (Some(t), Some(f), 2) = (arm(wk.true_con), arm(wk.false_con), c.branches.len()) {
+                let (cs, ts, fs) = (show_prec(g, ns, s, 0), show_prec(g, ns, t, 0), show_prec(g, ns, f, 0));
+                let text = match (ts.as_str(), fs.as_str()) {
+                    (_, "False") => format!("{cs} and {ts}"),
+                    ("True", _) => format!("{cs} or {fs}"),
+                    _ => format!("if {cs} then {ts} else {fs}"),
+                };
+                return paren(p > 0, text);
+            }
+            paren(p > 0, format!("match {} …", show_prec(g, ns, s, 0)))
+        }
         Tm::Error => "_".into(),
     }
 }

@@ -47,13 +47,19 @@ This document is the single source of truth for Checkers. Implementation follows
 | D36 | **Importing a type imports its constructors**: `import system (ExitCode)` makes `Success` and `Failure` available. Record fields are reached with `.field`. | 11/05/2026 | decided (11/05/2026) |
 | D37 | **Inductive types have parameters, not indices.** A family such as `Vec a n` is parameterized by `a` and `n`; constructors relate them with equality constraints (`n == m + 1`), which are refinements (§7). The kernel never unifies indices. | 11/05/2026 | decided (11/05/2026) |
 | D38 | **Built-in operators before interfaces (D15).** `+ - * / %` work on `Nat` and `Int`; `< <= > >=` on `Nat` and `Int`; `==`/`!=` on any type; `++` on `String`, `Bytes` and `List a`; `len` on `Bytes`, `String` and `List a`; `format` on any type. Both operands must have the same type; an unconstrained numeric literal defaults to `Nat`. `U8`, `Char` and the other fixed-width types are refinements of `Nat`/`Int` (D6), so they mix freely with them; their ranges are checked by the prover. | 11/05/2026 | decided (11/05/2026) |
-| D39 | **Resources are linear by type.** A *primitive resource* is a standard-library type the runtime implements as an open, stateful thing: `files.File` today, `Child`, `Pipe` and `Socket` when they exist. A type is *linear* if it is a primitive resource, or a tuple, record or enum with a linear component or type argument (`(Option String, File)`, `Result File IoError`). `Cown a` and `Future a` are never linear: the cown or future owns its contents, and its handle may be shared (§8.5). A function type whose parameter type is linear takes that argument exactly once (`File -> Unit`). Every variable the program names (parameter, `let`, `<-`, pattern variable) whose type is linear must be used exactly once on every path, whether or not it is written `own`; `own` stays allowed as documentation. A pattern that would drop a resource (`_`, or a field left out of a record pattern) is an error (E0404). | 11/05/2026 | **(proposed)** |
-| D40 | **`check e` is run by `checkers check`** (compile-time execution, D0). The interpreter evaluates `e`; `False` is error E0260, a runtime error during evaluation is E0261. Checks receive no capabilities, so they cannot have effects. A check that evaluates to `True` is proven by evaluation; it is still recorded for the prover. | 11/05/2026 | **(proposed)** |
-| D41 | **Execution model (§13).** Strict, call-by-value, arguments left to right, block lines in order. Types, `ghost` values, implicit arguments and predicates are erased. Until the prover (M3) discharges obligations, the ones that guard an operation are checked at run time: `-` on `Nat` going below zero, `/` and `%` by zero, `src[i]` out of bounds, an `ExitCode` out of range. A failed check stops the program with a runtime error and exit code 70. Other refinements are not checked at run time. | 11/05/2026 | **(proposed)** |
-| D42 | **`format x`** renders a value as Checkers source: `Nat`/`Int` in decimal (`-5`), `Bool` and other constructors by name with arguments (`Counts 1 2 3`, `Some (Ok 1)`), lists `[1, 2]`, tuples `(1, "a")`, `Unit` as `()`, `Bytes` as `b"…"`. A top-level `String` is returned unchanged; strings inside other values are quoted. Functions and capabilities render as `<function>` and `<Fs>` etc. | 11/05/2026 | **(proposed)** |
-| D43 | **`checkers run FILE.ck [ARG…]`** type-checks the file (any error stops it, exit code 2), runs its `check`s, then calls its exported `main` with the arguments and the root `System`. The exit code is `0` for `Success` and `n` for `Failure n`. | 11/05/2026 | **(proposed)** |
-| D44 | **The M2 scheduler is single-threaded.** `when`, `fork` and `join` append a behaviour to one FIFO queue; after `main` returns, the queue runs until it is empty (behaviours scheduled meanwhile go to the back). FIFO order respects causal order (§8.5) and runs every fork before a join that names it, so it is a valid schedule. `par` evaluates left to right. The multi-threaded scheduler arrives in M7 without changing any program's result. | 11/05/2026 | **(proposed)** |
-| D45 | **`own` marks generic parameters that may receive a resource.** `x~own T` means `x` is used exactly once. For a linear `T` this is already implied (D39), so writing it is warning W010. For a `T` with a type variable (`v~own a`) it is what lets a generic function accept a resource: without it, the function might copy or drop `x`, so passing it a resource is an error. On any other type (`n~own Nat`) it is error E0357. Applies to parameters and constructor fields. | 11/05/2026 | decided |
+| D39 | **Resources are linear by type.** A *primitive resource* is a standard-library type the runtime implements as an open, stateful thing: `files.File` today, `Child`, `Pipe` and `Socket` when they exist. A type is *linear* if it is a primitive resource, or a tuple, record or enum with a linear component or type argument (`(Option String, File)`, `Result File IoError`). `Cown a` and `Future a` are never linear: the cown or future owns its contents, and its handle may be shared (§8.5). A function type whose parameter type is linear takes that argument exactly once (`File -> Unit`). Every variable the program names (parameter, `let`, `<-`, pattern variable) whose type is linear must be used exactly once on every path, whether or not it is written `own`; `own` stays allowed as documentation. A pattern that would drop a resource (`_`, or a field left out of a record pattern) is an error (E0404). | 11/05/2026 | decided (11/05/2026) |
+| D40 | **`check e` is run by `checkers check`** (compile-time execution, D0). The interpreter evaluates `e`; `False` is error E0260, a runtime error during evaluation is E0261. Checks receive no capabilities, so they cannot have effects. A check that evaluates to `True` is proven by evaluation; it is still recorded for the prover. | 11/05/2026 | decided (11/05/2026) |
+| D41 | **Execution model (§13).** Strict, call-by-value, arguments left to right, block lines in order. Types, `ghost` values, implicit arguments and predicates are erased. Until the prover (M3) discharges obligations, the ones that guard an operation are checked at run time: `-` on `Nat` going below zero, `/` and `%` by zero, `src[i]` out of bounds, an `ExitCode` out of range. A failed check stops the program with a runtime error and exit code 70. Other refinements are not checked at run time. | 11/05/2026 | decided (11/05/2026) |
+| D42 | **`format x`** renders a value as Checkers source: `Nat`/`Int` in decimal (`-5`), `Bool` and other constructors by name with arguments (`Counts 1 2 3`, `Some (Ok 1)`), lists `[1, 2]`, tuples `(1, "a")`, `Unit` as `()`, `Bytes` as `b"…"`. A top-level `String` is returned unchanged; strings inside other values are quoted. Functions and capabilities render as `<function>` and `<Fs>` etc. | 11/05/2026 | decided (11/05/2026) |
+| D43 | **`checkers run FILE.ck [ARG…]`** type-checks the file (any error stops it, exit code 2), runs its `check`s, then calls its exported `main` with the arguments and the root `System`. The exit code is `0` for `Success` and `n` for `Failure n`. | 11/05/2026 | decided (11/05/2026) |
+| D44 | **The M2 scheduler is single-threaded.** `when`, `fork` and `join` append a behaviour to one FIFO queue; after `main` returns, the queue runs until it is empty (behaviours scheduled meanwhile go to the back). FIFO order respects causal order (§8.5) and runs every fork before a join that names it, so it is a valid schedule. `par` evaluates left to right. The multi-threaded scheduler arrives in M7 without changing any program's result. | 11/05/2026 | decided (11/05/2026) |
+| D45 | **`own` marks generic parameters that may receive a resource.** `x~own T` means `x` is used exactly once. For a linear `T` this is already implied (D39), so writing it is warning W010. For a `T` with a type variable (`v~own a`) it is what lets a generic function accept a resource: without it, the function might copy or drop `x`, so passing it a resource is an error. On any other type (`n~own Nat`) it is error E0358. Applies to parameters and constructor fields. | 11/05/2026 | decided |
+| D46 | **Z3 is called through SMT-LIB 2**, as a subprocess (`z3` on `PATH`, or the path in `CHECKERS_Z3`), one query per obligation. No native bindings: nothing to build, and the query text is what the trust ledger hashes. Without Z3, every obligation that needs it is error E0452. | 11/05/2026 | **(proposed)** |
+| D47 | **Permutations are multiset equality.** The prelude-level module `bag` provides `Bag` (a finite multiset of `Int`) with `bag.of xs`, `bag.count x b`; `list.perm xs ys` is `bag.of xs == bag.of ys`. The prover maps `Bag` to Z3 arrays `Int → Int`, so permutation facts are decidable without quantifiers (as Liquid Haskell does with its `Bag` measure). | 11/05/2026 | **(proposed)** |
+| D48 | **An obligation the prover can't discharge is an error**: E0450 (Z3 found a counterexample or gave up), E0451 (outside the SMT fragment, §7.3). The message shows the goal, the facts in scope and the counterexample. Examples that need a later milestone are listed in `examples/PENDING` with their expected output under `tests/pending/`; `checkers run --unverified` runs a program whose only errors are unproven obligations, keeping the runtime checks of §13.3. | 11/05/2026 | **(proposed)** |
+| D49 | **Proof statements (D13).** `have e`: if `e` applies a lemma, its preconditions become obligations and its `ensures` a fact; otherwise `e` is a `Bool` that is proven, then becomes a fact. `auto` proves the current goal from the facts in scope; `admit` assumes it (trust ledger). `have` may also appear in function bodies. A lemma that uses itself is an induction and must recurse structurally, like a function. | 11/05/2026 | **(proposed)** |
+| D50 | **Calls assume the callee's postcondition**, including recursive calls, which is how induction over a function's own recursion works (as in Dafny and Liquid Haskell). This is sound because total functions terminate. Until M5 checks `decreasing` measures, a function that relies on one is trusted to terminate, and the trust ledger says so. | 11/05/2026 | **(proposed)** |
+| D51 | **A function with a precondition must be called with all its arguments** (E0453): a partial application would hide the call where the precondition is checked. | 11/05/2026 | **(proposed)** |
 | D24 | **Development loop:** Claude owns the implementation; Ian drives with examples. An issue is "found X, expected Y" with a `.ck` snippet. Each one becomes a regression test under `tests/` *before* the fix lands, and the spec is updated first whenever the expectation changes the language. | 11/05/2026 | decided |
 | D25 | **Milestones reordered for CLI tools first** (§10): a running interpreter with `IO` comes right after type checking, before the prover, so Checkers can be used to build its own tooling early. Capstone: an interactive shell with a small scripting language, with proofs of its correctness. | 11/05/2026 | decided |
 
@@ -218,39 +224,58 @@ Background: Rossberg, Russo & Dreyer, *F-ing Modules* (JFP 2014) for sealing; Gr
 ## 7. Theorem prover
 
 ### 7.1 Obligations
-Elaboration produces obligations `Γ ⊢ ? : φ` with `φ : Prop`. Sources: preconditions at call sites, postconditions, constructor/field invariants (D11), index bounds (`src[i]` needs `i < len src`), `nat` subtraction (D6), termination measures, `ensures` of lemmas, and `check` declarations.
+Elaboration produces obligations `Γ ⊢ φ` with `φ : Bool`. Sources, each reported at its own span:
 
-Γ includes **path conditions**: the guards of enclosing `if`s, the patterns and guards of the current `match` arm plus the negations of earlier arms (D17), the left operand of a short-circuiting `and`/`or`, and every `have` fact in scope.
+| Obligation | Where | Goal |
+|---|---|---|
+| precondition | every call of a function with predicates over its parameters (including refinement-alias parameter types such as `b~U8`) | the predicates, with the arguments substituted |
+| postcondition | the end of a function body | the predicates mentioning the result, with the body substituted |
+| constructor invariant (D11) | every constructor application | the constructor's predicates, including refinement-alias field types |
+| `Nat` subtraction (D6) | `a - b` on `Nat` | `a >= b` |
+| division | `a / b`, `a % b` | `b != 0` |
+| index | `src[i]` | `i < len src` |
+| lemma | a `lemma` without a proof, or `auto` in a proof | its `ensures`, or the current goal |
+| `have e` (D49) | a `have` of a `Bool` | `e` |
+| `check` | `check e` | evaluated (D40), no solver |
+
+Predicates inside types and specifications are not themselves checked for well-definedness (a precondition of a function called in a postcondition is not an obligation).
+
+Γ, the **facts in scope**, contains: the preconditions of the enclosing function; the definitions of `let`-bound variables; `n >= 0` for every `Nat`; **path conditions**, namely the guards of enclosing `if`s (true in `then`, false in `else`), the left operand of a short-circuiting `and`/`or`/`implies`, the constructor equation of the current `match` arm (`xs == y :: rest`) together with that constructor's invariants, the literal of a literal arm or the negations of the others in its `_` arm, and an arm's guard; the `ensures` of every lemma brought in with `have`, and every `have` fact (D49); and the postcondition of every function applied in the goal or the facts (D50).
 
 ### 7.2 Discharge pipeline
 Tried in order; first success wins:
-1. **Compute:** if φ is closed, evaluate it at compile time (this is where compile-time execution and proving meet; every `check` takes this path).
-2. **SMT:** translate Γ and φ to SMT-LIB and ask Z3 (§7.3). On `unsat` of ¬φ, insert `smt_trusted φ`.
-3. **User proof:** a `lemma`'s `proof` block (D13), or `have` facts added before the obligation arises. Tactics come later.
+1. **Compute:** a `check` is evaluated at compile time (D40).
+2. **SMT:** translate Γ and ¬φ to SMT-LIB and ask Z3 (§7.3, D46). On `unsat`, φ is proven, and the ledger records `smt φ` with the query's hash.
+3. **User proof:** a `lemma`'s `proof` block (D13, D49), or `have` facts added before the obligation arises.
 
-On failure, the error shows the obligation, the hypotheses in scope, and Z3's counterexample model when one exists.
+On failure (D48), the error shows the obligation, the facts in scope, and Z3's counterexample when one exists.
 
 ### 7.3 SMT fragment (v0.1)
-Decidable fragment, following Liquid Haskell: quantifier-free linear integer arithmetic, booleans, equality, and uninterpreted functions. Mapping:
+Decidable fragment, following Liquid Haskell: quantifier-free linear integer arithmetic, booleans, equality, datatypes, arrays and uninterpreted functions. Mapping:
 
 | Checkers | SMT-LIB |
 |----------|---------|
-| `Int`, `Nat`, `U8`, … | `Int` (+ range facts for refinements) |
+| `Int`, `Nat`, `U8`, … | `Int`, with `n >= 0` for `Nat` and the alias's predicates for refinements |
 | `Bool` | `Bool` |
-| `==`, `<`, `+`, `-`, `*` by constant | native |
-| `Bytes`, `String` | `Seq` (Z3 sequence theory) |
-| enums, records, `List`, `Option`, `Result`, tuples | `declare-datatypes` |
-| function `f` defined in this module | **reflected** (D12): `f`'s defining equation is instantiated where `f` is applied, Proof by Logical Evaluation (Vazou et al. 2018) |
-| imported function `f` | uninterpreted, plus its exported postconditions; transparent exports are reflected |
+| `==`, `!=`, `<`, `<=`, `+`, `-`, `*`, `/`, `%` | native (`div`, `mod`: Euclidean, like Checkers) |
+| `Bytes` | `(Seq Int)`; `len`, `src[i]`, `++` native |
+| `String` | `String`; `len` is uninterpreted (UTF-8 bytes, not characters) |
+| `Bag` (D47) | `(Array Int Int)` |
+| enums, records, `List`, `Option`, `Result`, tuples | `declare-datatypes`, with type parameters (value parameters are dropped from the sort) |
+| type variables, abstract types | uninterpreted sorts |
+| a parameter of function type | an uninterpreted function |
+| function `f` defined in this module, or imported `transparent` | **reflected** (D12) as `define-fun-rec`, instantiated per type; Z3 unfolds the definition where needed |
+| other imported functions, builtins | uninterpreted, plus their postconditions |
+| `match`, `if`, `let` | `ite` on testers, `let` |
+
+Lambdas, partial applications and effects (`when`, `fork`, `join`) are outside the fragment (E0451); prove facts about them with a lemma.
 
 Lemmas are not added automatically; `have` brings one in. **(proposed)** An `@auto` attribute on an exported lemma adds it to every query in importing modules (F\*'s SMT patterns), for very common facts only.
 
-Anything outside the fragment is not sent to Z3; it falls through to step 3.
-
 ### 7.4 Trust ledger (D1)
-Each compiled module records every `smt_trusted φ` it relies on (obligation, Z3 version, query hash). `checkers trust <module>` prints the transitive ledger. This is the only place Z3 enters the trust base, and the hook for future certificate checking.
+Each module records every fact it relies on without a kernel-checked proof: obligations proven by Z3 (kind, location, Z3 version, query hash), `admit`s, `check`s proven by evaluation, and functions whose termination rests on an unchecked `decreasing` measure (D50, until M5). `checkers trust FILE.ck` prints the ledger of a file. This is the only place Z3 enters the trust base, and the hook for future certificate checking.
 
-`admit` (D13) is also recorded, as an unproven assumption. Development builds allow it; `checkers build --release` rejects any module whose transitive ledger contains one.
+`admit` (D13) is recorded as an unproven assumption. Development builds allow it; `checkers build --release` (later) will reject any module whose transitive ledger contains one.
 
 ---
 
@@ -616,7 +641,7 @@ Reordered (D25) so that Checkers can run CLI tools before the prover exists.
 | M0 | Rust workspace; lexer with layout (§9.1); parser for §9.2; naming warnings (§9.7); source-span diagnostics; `checkers parse` / `checkers check` | `examples/json.ck` and every spec example parse; golden tests for errors and warnings |
 | M1 | Type checker: modules and imports, dependent types with implicit arguments (bidirectional elaboration, pattern unification), enums/records (strict positivity), `match` → case trees with exhaustiveness (D4), structural termination, `own`/`ghost` usage (QTT, §4), operators (D38), effect forms (§8) typed. **Not yet:** predicates are type-checked as `Bool` and recorded, but proven only in M3; `decreasing` measures are recorded and checked in M5; proof blocks and `check` evaluation come with M3 and M2; linearity of resources inferred from their *type* (not just `own` binders) comes with M2. | `Vec`, `List`, `Nat` programs type-check; all `examples/` type-check; golden contract tests in `tests/types/`, including rejected programs |
 | M2 | Erasure and interpreter (§13), standard library builtins, capabilities and `main` (§8.2–8.4: `Term`, `Fs`, exit codes), `checkers run`, `check` evaluation (D40), resource linearity by type (D39), single-threaded behaviour scheduler (D44). **Not yet:** `Env`, `Proc`, `Net`, `Clock` operations. | `examples/wc.ck` and `examples/copy.ck` run; golden run tests in `tests/run/` |
-| M3 | `Prop`, equality, refinements, Z3 pipeline, trust ledger, `check` | verified insertion sort |
+| M3 | Obligations with facts in scope (§7.1), Z3 pipeline (§7.2, D46), refinement aliases, pre/postconditions, constructor invariants, lemmas and proofs (D49), `Bag` and `perm` (D47), trust ledger, `checkers trust` | verified insertion sort (`examples/sort.ck`); `examples/wc.ck` verifies |
 | M4 | Modules, sealing, exported lemmas | sort module used from another module via its lemmas only |
 | M5 | Well-founded recursion, lexicographic `decreasing` | verified merge sort; `examples/json.ck` checks |
 | M6 | Two-level staging (`comptime`) | compile-time-generated specialized code |
@@ -654,7 +679,9 @@ Reordered (D25) so that Checkers can run CLI tools before the prover exists.
 - `tests/` holds golden tests: each `NAME.ck` has a `NAME.out` with the exact expected compiler output (diagnostics or program output). `cargo test` runs them all.
   - `tests/parse/`: syntax tree plus parse and lint diagnostics.
   - `tests/check/`: parse and lint diagnostics only.
-  - `tests/types/`: the full report, including type checking. These are the type checker's contract: one file per rule area (mismatches, exhaustiveness, termination, usage, positivity, effects, modules), with an accepted-programs file that must stay clean.
+  - `tests/types/`: the full report, including type checking and proofs. These are the checker's contract: one file per rule area (mismatches, exhaustiveness, termination, usage, positivity, effects, modules, resources, `own`, proofs), with an accepted-programs file that must stay clean.
+  - `tests/pending/`: the pinned output of examples listed in `examples/PENDING`, which need a later milestone (D48).
+  - The prover tests need Z3 (D46).
 - A report from Ian is "found X, expected Y" with a `.ck` snippet. It is added as a failing golden test first, then fixed. If Y changes the language, this spec is updated before the code.
 - `UPDATE_GOLDEN=1 cargo test` rewrites `.out` files; every rewritten file is reviewed in the diff before committing.
 
@@ -680,7 +707,7 @@ Before running, the checked program is erased: types, type arguments, implicit a
 
 ### 13.3 Runtime checks
 
-Until the prover discharges obligations (M3), the interpreter checks the ones that guard an operation, and stops the program if one fails:
+Since M3, the prover discharges every obligation before a program runs, so these checks never fail in a program that verifies. They remain for programs run with `checkers run --unverified` (D48), and for `check`s evaluated during checking. The interpreter checks the obligations that guard an operation, and stops the program if one fails:
 
 | Operation | Checked condition |
 |---|---|
@@ -689,7 +716,7 @@ Until the prover discharges obligations (M3), the interpreter checks the ones th
 | `src[i]` | `i < len src` |
 | `main` returns `Failure n` | `1 <= n <= 255` |
 
-A failure prints a runtime error that names the failing operation and the function it occurred in, and exits with code 70. Other refinements (a computed `U8` staying below 256, a postcondition) are not checked at run time; M3 proves all of them, and the runtime checks then go away.
+A failure prints a runtime error that names the failing operation and the function it occurred in, and exits with code 70. Other refinements (a computed `U8` staying below 256, a postcondition) are not checked at run time; the prover proves them.
 
 ### 13.4 `main` and the root capability
 

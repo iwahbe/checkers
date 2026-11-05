@@ -12,6 +12,7 @@ pub mod run;
 pub mod source;
 pub mod syntax;
 pub mod usage;
+pub mod verify;
 
 use diag::Diagnostic;
 use std::io::Write as _;
@@ -24,8 +25,11 @@ pub struct Checked {
     pub diags: Vec<Diagnostic>,
     /// Diagnostics in standard-library modules (compiler bugs), already rendered.
     pub internal: Vec<String>,
-    /// Predicates recorded for the prover (M3), in this file.
+    /// Proof obligations in this file, and how many the prover discharged.
     pub obligations: usize,
+    pub proved: usize,
+    /// The trust ledger (§7.4), rendered.
+    pub ledger: String,
 }
 
 impl Checked {
@@ -57,12 +61,8 @@ impl Checked {
             self.warnings(),
             if self.warnings() == 1 { "" } else { "s" },
         );
-        if self.obligations > 0 && self.errors() == 0 {
-            out += &format!(
-                "; {} proof obligation{} recorded for the prover",
-                self.obligations,
-                if self.obligations == 1 { "" } else { "s" }
-            );
+        if self.proved > 0 && self.errors() == 0 {
+            out += &format!("; {} obligation{} proved", self.proved, if self.proved == 1 { "" } else { "s" });
         }
         out.push('\n');
         out
@@ -74,7 +74,7 @@ pub fn parse_only(name: &str, text: &str) -> Checked {
     let file = SourceFile::new(name, text);
     let (module, mut diags) = syntax::parse_module(text);
     diags.extend(lint::naming(&module));
-    Checked { file, module, diags, internal: Vec::new(), obligations: 0 }
+    Checked { file, module, diags, internal: Vec::new(), obligations: 0, proved: 0, ledger: String::new() }
 }
 
 /// Run every implemented phase over one source file, including its `check`s.
@@ -82,8 +82,20 @@ pub fn check(name: &str, text: &str) -> Checked {
     let (mut c, e) = elaborate(name, text);
     if let Some((e, user)) = &e {
         run_checks(&mut c, e, user);
+        prove(&mut c, e, user);
     }
     c
+}
+
+/// Discharge the proof obligations (§7.2) once everything else is clean.
+fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
+    if c.errors() > 0 {
+        return;
+    }
+    let v = verify::verify(e, user);
+    c.proved = v.proved;
+    c.ledger = verify::ledger_text(&c.file, &v);
+    c.diags.extend(v.diags);
 }
 
 /// Parse, lint and type-check; also returns the elaborator and the module name.
@@ -107,6 +119,7 @@ fn elaborate(name: &str, text: &str) -> (Checked, Option<(elab::Elab, String)>) 
         }
     }
     c.obligations = e.obligations.iter().filter(|o| o.module == user).count();
+    e.sources.get(&user).map(|_| ()).unwrap_or(());
     (c, Some((e, user)))
 }
 
@@ -156,14 +169,26 @@ pub struct Ran {
     pub code: u8,
 }
 
+/// Proof failures (D48): the only errors `run --unverified` tolerates.
+fn is_proof_failure(d: &Diagnostic) -> bool {
+    matches!(d.code, "E0450" | "E0451" | "E0452")
+}
+
 /// Check `text`, then call its exported `main` with `args` (D43, §13.4).
-pub fn run(name: &str, text: &str, args: &[String], io: run::Io) -> Ran {
+/// With `unverified`, a program whose only errors are unproven obligations
+/// runs anyway, with the runtime checks of §13.3 (D48).
+pub fn run(name: &str, text: &str, args: &[String], io: run::Io, unverified: bool) -> Ran {
     let (mut c, e) = elaborate(name, text);
     let Some((e, user)) = e else { return Ran { report: c.report(), code: 2 } };
     run_checks(&mut c, &e, &user);
-    let report = if c.diags.is_empty() && c.internal.is_empty() { String::new() } else { c.report() };
-    if c.errors() > 0 {
+    prove(&mut c, &e, &user);
+    let mut report = if c.diags.is_empty() && c.internal.is_empty() { String::new() } else { c.report() };
+    let blocking = c.internal.len() + c.diags.iter().filter(|d| d.is_error() && !(unverified && is_proof_failure(d))).count();
+    if blocking > 0 {
         return Ran { report, code: 2 };
+    }
+    if c.errors() > 0 {
+        report += &format!("running with {} unproven obligation(s) (--unverified)\n", c.errors());
     }
     let exported = e.modules.get(&user).is_some_and(|m| m.exported_values.contains("main"));
     let main = e.g.defs.iter().position(|d| *d.module == user && &*d.name == "main");

@@ -45,6 +45,19 @@ impl Elab {
     }
 
     pub fn check(&mut self, cx: &mut Cx, e: &Expr, expected: &Val, tail: bool) -> Tm {
+        // A value the function returns: its postconditions must hold of it (§7.1).
+        let returned = tail
+            && self.post_target.is_some()
+            && !matches!(e.kind, ExprKind::If(..) | ExprKind::Match(..) | ExprKind::Block(..) | ExprKind::Try(_));
+        let t = self.check_inner(cx, e, expected, tail);
+        if returned && !matches!(t, Tm::Error) {
+            let v = self.eval(cx, &t);
+            self.oblige_posts_at(cx, v, e.span);
+        }
+        t
+    }
+
+    fn check_inner(&mut self, cx: &mut Cx, e: &Expr, expected: &Val, tail: bool) -> Tm {
         let exp = self.force(expected);
         // An implicit Π expected and a non-lambda given: insert an implicit lambda.
         if let Val::Pi(x, m, Icit::Impl, a, c) = &exp {
@@ -73,6 +86,8 @@ impl Elab {
                 } else {
                     (**body).clone()
                 };
+                // A lambda's results are not the function's.
+                let saved_post = self.post_target.take();
                 let t = if simple {
                     self.check(cx, &rest, &body_ty, true)
                 } else {
@@ -80,14 +95,21 @@ impl Elab {
                     let arm = vec![(p.clone(), None, ArmBody::Expr(&rest))];
                     self.elab_match(cx, &scrut, arm, Some(&body_ty), true, e.span).0
                 };
+                self.post_target = saved_post;
                 cx.pop();
                 Tm::Lam(Rc::from(name.as_str()), *m, Icit::Expl, Rc::new(t))
             }
             (ExprKind::If(c, t, f), _) => {
                 let b = self.bool_ty();
                 let ct = self.check(cx, c, &b, false);
+                let cv = self.eval(cx, &ct);
+                let saved = cx.facts.len();
+                cx.assume(self.is_bool(cv.clone(), true));
                 let tt = self.check(cx, t, &exp, tail);
+                cx.facts.truncate(saved);
+                cx.assume(self.is_bool(cv, false));
                 let ft = self.check(cx, f, &exp, tail);
+                cx.facts.truncate(saved);
                 self.if_tm(ct, tt, ft)
             }
             (ExprKind::Match(s, arms), _) => {
@@ -136,7 +158,9 @@ impl Elab {
             }
             (ExprKind::Unit, Val::Univ(_)) => Tm::TupleTy(vec![]),
             _ => {
+                let saved_fn = std::mem::replace(&mut self.expected_fn, matches!(e.kind, ExprKind::Var(_)).then(|| exp.clone()));
                 let (t, ty) = self.infer(cx, e);
+                self.expected_fn = saved_fn;
                 if self.unify_at(cx, &exp, &ty, e.span, "this expression") {
                     t
                 } else {
@@ -148,7 +172,24 @@ impl Elab {
 
     pub fn infer(&mut self, cx: &mut Cx, e: &Expr) -> (Tm, Val) {
         match &e.kind {
-            ExprKind::Var(n) => self.infer_var(cx, n, e.span),
+            ExprKind::Var(n) => {
+                let r = self.infer_var(cx, n, e.span);
+                if !self.in_app_head {
+                    if let Tm::Def(d) = &r.0 {
+                        if let Some(spec) = self.specs.get(d).cloned() {
+                            let expected = self.expected_fn.clone();
+                            let unmet = spec
+                                .preds
+                                .iter()
+                                .any(|p| !p.is_post && !self.alias_met_by(p, &spec, expected.as_ref()));
+                            if spec.n_binders > 0 && unmet {
+                                self.partial_with_pre(n, &spec, e.span);
+                            }
+                        }
+                    }
+                }
+                r
+            }
             ExprKind::Con(n) => match self.resolve(n, cx.type_pos) {
                 Some(s) => {
                     let (t, ty) = self.sym_term(cx, s, e.span);
@@ -241,7 +282,10 @@ impl Elab {
                 let nat = self.nat();
                 let at = self.check(cx, a, &bytes, false);
                 let it = self.check(cx, i, &nat, false);
-                self.obligations.push(Obligation { module: self.cur.clone(), span: e.span, what: "index in bounds" });
+                let (av, iv) = (self.eval(cx, &at), self.eval(cx, &it));
+                let goal = Self::prim_val(Prim::Lt, vec![iv, Self::prim_val(Prim::Len, vec![av])]);
+                let text = format!("{} < len {}", self.src_text(i.span), self.src_text(a.span));
+                self.oblige(cx, e.span, ObKind::Index, text, goal, None);
                 (Tm::PrimApp(Prim::Index, vec![at, it]), nat)
             }
             ExprKind::Lambda(pats, body) => {
@@ -288,14 +332,23 @@ impl Elab {
                 (Tm::PrimApp(Prim::Par, vec![t]), ty)
             }
             ExprKind::Fork(..) | ExprKind::Join(..) => self.elab_fork_join(cx, e),
-            ExprKind::Auto | ExprKind::Admit => {
-                self.err(Diagnostic::error(
-                    "E0212",
-                    "`auto` and `admit` are only allowed in proofs",
-                    e.span,
-                ));
-                (Tm::Error, Val::Error)
-            }
+            ExprKind::Auto | ExprKind::Admit => match self.proof_goal.clone() {
+                // In a proof: `auto` proves the goal from the facts in scope; `admit` assumes it (D49).
+                Some((goal, text)) => {
+                    if matches!(e.kind, ExprKind::Auto) {
+                        let name = self.cur_fn.map(|d| self.g.defs[d.0 as usize].name.to_string()).unwrap_or_default();
+                        let _ = name;
+                        self.oblige(cx, e.span, ObKind::Auto, text, goal, None);
+                    } else {
+                        self.admits.push(Trusted { module: self.cur.clone(), span: e.span, what: format!("admit: {text}") });
+                    }
+                    (Tm::Tuple(vec![]), self.unit())
+                }
+                None => {
+                    self.err(Diagnostic::error("E0212", "`auto` and `admit` are only allowed in proofs", e.span));
+                    (Tm::Error, Val::Error)
+                }
+            },
             ExprKind::Error => (Tm::Error, Val::Error),
         }
     }
@@ -482,7 +535,9 @@ impl Elab {
         // `map f xs` where xs is a structural subterm: f's argument is too (Lean's `attach`).
         let is_map = self.is_list_map(cx, head);
         let ncalls = self.calls.len();
+        let saved_head = std::mem::replace(&mut self.in_app_head, true);
         let (ft, fty) = self.infer(cx, head);
+        self.in_app_head = saved_head;
         let head_call = (self.calls.len() == ncalls + 1 && matches!(head.kind, ExprKind::Var(_))).then_some(ncalls);
         if let Some(i) = head_call {
             let classified: Vec<Option<usize>> = args.iter().map(|a| self.subterm_of(cx, a)).collect();
@@ -500,7 +555,130 @@ impl Elab {
             t = t2;
             ty = ty2;
         }
-        self.insert(cx, t, ty)
+        let (t, ty) = self.insert(cx, t, ty);
+        self.call_obligations(cx, &t, e.span);
+        (t, ty)
+    }
+
+    /// Preconditions of a call and invariants of a constructor application (§7.1).
+    fn call_obligations(&mut self, cx: &Cx, t: &Tm, span: Span) {
+        let mut args = Vec::new();
+        let mut h = t;
+        while let Tm::App(f, a, _, _) = h {
+            args.push(a.clone());
+            h = f;
+        }
+        args.reverse();
+        match h {
+            Tm::Def(d) => {
+                let Some(spec) = self.specs.get(d).cloned() else { return };
+                if !spec.preds.iter().any(|p| !p.is_post) {
+                    return;
+                }
+                let name = self.g.defs[d.0 as usize].name.to_string();
+                if args.len() < spec.n_binders {
+                    self.partial_with_pre(&name, &spec, span);
+                    return;
+                }
+                let mut env: Vec<Val> = args[..spec.n_binders].iter().map(|a| self.eval(cx, a)).collect();
+                env.push(self.eval(cx, t));
+                for p in spec.preds.iter().filter(|p| !p.is_post) {
+                    let goal = self.inst_pred(p, env.clone());
+                    self.oblige(cx, span, ObKind::Pre { callee: name.clone() }, p.text.clone(), goal, None);
+                }
+            }
+            Tm::Con(c) => {
+                let Some(invs) = self.con_invs.get(c).cloned() else { return };
+                if args.len() < self.g.arity_con(*c) {
+                    return;
+                }
+                let env: Vec<Val> = args.iter().map(|a| self.eval(cx, a)).collect();
+                let name = self.g.cons[c.0 as usize].name.to_string();
+                for p in &invs {
+                    let goal = self.inst_pred(p, env.clone());
+                    self.oblige(cx, span, ObKind::Invariant { con: name.clone() }, p.text.clone(), goal, None);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// A refinement-alias precondition on parameter k is met when the function
+    /// is passed where the expected function type has the same alias there
+    /// (`c~Char` passed as a `Char -> String`): its caller promises it.
+    fn alias_met_by(&self, p: &Pred, spec: &Spec, expected: Option<&Val>) -> bool {
+        let (Some((k, alias)), Some(mut ty)) = (p.alias, expected.cloned()) else { return false };
+        let mut pos = spec.n_implicit;
+        loop {
+            match self.force(&ty) {
+                Val::Pi(_, _, Icit::Expl, dom, c) => {
+                    if pos == k {
+                        return matches!(&*dom, Val::Neutral(Head::Def(d), _) if *d == alias);
+                    }
+                    pos += 1;
+                    ty = apply_closure(&self.g, &c, Val::var(usize::MAX / 2));
+                }
+                _ => return false,
+            }
+        }
+    }
+
+    fn partial_with_pre(&mut self, name: &str, spec: &Spec, span: Span) {
+        if self.in_spec > 0 {
+            return;
+        }
+        let pre: Vec<String> = spec.preds.iter().filter(|p| !p.is_post).map(|p| format!("`{}`", p.text)).collect();
+        self.err(
+            Diagnostic::error("E0453", format!("`{name}` has a precondition, so it must be called with all its arguments"), span)
+                .with_note(format!("it requires {}", pre.join(" and ")))
+                .with_help(format!("use a lambda that passes every argument, e.g. `\\x -> {name} … x`")),
+        );
+    }
+
+    /// `have e` (D49): a lemma's conclusion, or a proven `Bool`, becomes a fact.
+    pub fn have(&mut self, cx: &mut Cx, e: &Expr) {
+        let (t, ty) = self.infer(cx, e);
+        let mut h = &t;
+        while let Tm::App(f, ..) = h {
+            h = f;
+        }
+        if let Tm::Def(d) = h {
+            if let Some(spec) = self.specs.get(d).cloned() {
+                if let Some(ens) = &spec.ensures {
+                    let mut args = Vec::new();
+                    let mut x = &t;
+                    while let Tm::App(f, a, _, _) = x {
+                        args.push(a.clone());
+                        x = f;
+                    }
+                    args.reverse();
+                    if args.len() < spec.n_binders {
+                        let name = self.g.defs[d.0 as usize].name.to_string();
+                        self.err(
+                            Diagnostic::error("E0454", format!("`have {name}` needs all of the lemma's arguments"), e.span)
+                                .with_help("pass every parameter of the lemma"),
+                        );
+                        return;
+                    }
+                    let mut env: Vec<Val> = args[..spec.n_binders].iter().map(|a| self.eval(cx, a)).collect();
+                    for l in &spec.lets {
+                        let v = eval(&self.g, &Rc::new(env.clone()), l);
+                        env.push(v);
+                    }
+                    let fact = self.inst_pred(ens, env);
+                    cx.assume(fact);
+                    return;
+                }
+            }
+        }
+        let b = self.bool_ty();
+        if !self.unify_at(cx, &b, &ty, e.span, "`have`") {
+            return;
+        }
+        let v = self.eval(cx, &t);
+        let text = self.src_text(e.span);
+        self.oblige(cx, e.span, ObKind::Have, text, v.clone(), None);
+        cx.assume(v);
     }
 
     fn apply_rest(&mut self, cx: &mut Cx, r: (Tm, Val), args: &[&Expr], _span: Span) -> (Tm, Val) {
@@ -618,7 +796,12 @@ impl Elab {
             Op::And | Op::Or | Op::Implies => {
                 let b = self.bool_ty();
                 let lt = self.check(cx, l, &b, false);
+                // The right operand is only evaluated when the left one allows it.
+                let lv = self.eval(cx, &lt);
+                let saved = cx.facts.len();
+                cx.assume(self.is_bool(lv, op != Op::Or));
                 let rt = self.check(cx, r, &b, false);
+                cx.facts.truncate(saved);
                 let t = match op {
                     Op::And => self.if_tm(lt, rt, self.bool_lit(false)),
                     Op::Or => self.if_tm(lt, self.bool_lit(true), rt),
@@ -685,8 +868,20 @@ impl Elab {
                         names: cx.names(),
                     });
                 }
-                if matches!(op, Op::Sub | Op::Div | Op::Rem) {
-                    self.obligations.push(Obligation { module: self.cur.clone(), span, what: "arithmetic side condition" });
+                let (lv, rv) = (self.eval(cx, &lt), self.eval(cx, &rt));
+                match op {
+                    Op::Sub => {
+                        let goal = Self::prim_val(Prim::Ge, vec![lv, rv]);
+                        let text = self.src_text(span);
+                        self.oblige(cx, span, ObKind::NatSub, text, goal, Some(lty.clone()));
+                    }
+                    Op::Div | Op::Rem => {
+                        let zero = Val::Lit(Lit::Num(0));
+                        let goal = Self::prim_val(Prim::Ne, vec![rv, zero]);
+                        let text = self.src_text(span);
+                        self.oblige(cx, span, ObKind::Div, text, goal, None);
+                    }
+                    _ => {}
                 }
                 let args = if prim == Prim::Sub {
                     // The runtime and the evaluator need to know whether this is `Nat` subtraction.
@@ -812,9 +1007,12 @@ impl Elab {
                     }
                 }
             }
-            Stmt::Have(_) => {
-                // Proof hints are used by the prover (M3).
-                self.block_from(cx, rest, result, expected, tail)
+            Stmt::Have(h) => {
+                let saved = cx.facts.len();
+                self.have(cx, h);
+                let t = self.block_from(cx, rest, result, expected, tail);
+                cx.facts.truncate(saved);
+                t
             }
             Stmt::Expr(e) => {
                 let unit = self.unit();
@@ -920,8 +1118,12 @@ impl Elab {
         // Ok/Some branch: bind the payload, then the pattern.
         let payload_ty = payload[0].clone();
         let okv = format!("$ok{}", cx.lvl());
+        let it_val = self.eval(cx, &it);
         let l = cx.bind(&okv, payload_ty, Mult::Many);
-        let _ = l;
+        // On this path the value was `Ok x` / `Some x` (§7.1).
+        let mut ok_args: Vec<Val> = payload.clone();
+        ok_args.push(Val::var(l));
+        cx.assume(Self::prim_val(Prim::Eq, vec![it_val, Val::Con(ok_con, ok_args)]));
         let ok_body = match &pat.kind {
             ast::PatKind::Var(_) | ast::PatKind::Wild => {
                 let pty = cx.locals[cx.lvl() - 1].ty.clone();
@@ -943,6 +1145,25 @@ impl Elab {
         } else {
             (0, Tm::ConApp(err_con, vec![rp]))
         };
+        // The early return is a value the function returns, too.
+        if tail && self.post_target.is_some() {
+            let saved = cx.facts.len();
+            let it_val = self.eval(cx, &it);
+            if is_result {
+                let l = cx.bind("$err", payload[1].clone(), Mult::Many);
+                let mut args = payload.clone();
+                args.push(Val::var(l));
+                cx.assume(Self::prim_val(Prim::Eq, vec![it_val, Val::Con(err_con, args)]));
+                let v = self.eval(cx, &err_body);
+                self.oblige_posts_at(cx, v, span);
+                cx.pop();
+            } else {
+                cx.assume(Self::prim_val(Prim::Eq, vec![it_val, Val::Con(err_con, vec![payload[0].clone()])]));
+                let v = self.eval(cx, &err_body);
+                self.oblige_posts_at(cx, v, span);
+            }
+            cx.facts.truncate(saved);
+        }
         let (ok_n, ok_first) = (1, true);
         let _ = ok_first;
         let mut branches = vec![(ok_con, ok_n, ok_body), (err_con, err_n, err_body)];
@@ -1069,6 +1290,13 @@ impl Elab {
     }
 
     fn elab_when(&mut self, cx: &mut Cx, w: &ast::When) -> Tm {
+        let saved = self.post_target.take();
+        let t = self.elab_when_inner(cx, w);
+        self.post_target = saved;
+        t
+    }
+
+    fn elab_when_inner(&mut self, cx: &mut Cx, w: &ast::When) -> Tm {
         let st = self.check_sched(cx, &w.sched);
         let mut cowns = Vec::new();
         let mut tys = Vec::new();
@@ -1094,6 +1322,13 @@ impl Elab {
     }
 
     pub fn elab_fork_join(&mut self, cx: &mut Cx, e: &Expr) -> (Tm, Val) {
+        let saved = self.post_target.take();
+        let r = self.elab_fork_join_inner(cx, e);
+        self.post_target = saved;
+        r
+    }
+
+    fn elab_fork_join_inner(&mut self, cx: &mut Cx, e: &Expr) -> (Tm, Val) {
         match &e.kind {
             ExprKind::Fork(s, body) => {
                 let st = self.check_sched(cx, s);

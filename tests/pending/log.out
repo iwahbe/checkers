@@ -1,0 +1,15 @@
+error[E0450]: cannot prove `len entries <= 100`, required to call `append`
+  --> log.ck:24:9
+   |
+24 |         append "started" l
+   |         ^^^^^^^^^^^^^^^^^^ `append` requires `len entries <= 100`
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+error[E0450]: cannot prove `len entries <= 100`, required to call `append`
+  --> log.ck:28:10
+   |
+28 |         (append "checked" l, if full then d + 1 else d)
+   |          ^^^^^^^^^^^^^^^^^^ `append` requires `len entries <= 100`
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+log.ck: 2 errors, 0 warnings

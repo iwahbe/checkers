@@ -1,0 +1,66 @@
+error[E0450]: cannot prove that this `Nat` subtraction stays at or above zero
+  --> prove.ck:53:5
+   |
+53 |     r.lo - r.hi
+   |     ^^^^^^^^^^^ `-` on `Nat` needs the left side to be at least the right
+   = note: counterexample: r = Range 0 1
+   = help: check it first (`if a >= b then a - b else …`), or use `Int`
+
+error[E0450]: cannot prove `lo <= y`, the postcondition of `bad_clamp`
+  --> prove.ck:55:59
+   |
+55 | fn bad_clamp lo hi x -> y : lo~Int, hi~Int, x~Int, y~Int, lo <= y
+   |                                                           ^^^^^^^ promised here
+   = note: for the value returned on line 56: `x - 1`
+   = note: facts in scope: `not (x < lo)`
+   = note: counterexample: lo = 0, x = 0
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+error[E0450]: cannot prove `lo <= hi`, required to build `Range`
+  --> prove.ck:59:5
+   |
+59 |     Range lo hi
+   |     ^^^^^^^^^^^ `Range` requires `lo <= hi`
+   = note: counterexample: lo = 1, hi = 0
+   = help: check the value before building it, e.g. with an `if`
+
+error[E0450]: cannot prove that the divisor is not zero
+  --> prove.ck:62:5
+   |
+62 |     a / b
+   |     ^^^^^ `/` and `%` need a non-zero right side
+   = note: counterexample: b = 0
+   = help: check the divisor first, e.g. `if d != 0 then n / d else …`
+
+error[E0450]: cannot prove that the index is in bounds (`0 < len src`)
+  --> prove.ck:65:5
+   |
+65 |     src[0]
+   |     ^^^^^^ indexing needs `i < len src`
+   = note: counterexample: src = b""
+   = help: check the index first, e.g. `if i < len src then src[i] else …`
+
+error[E0450]: cannot prove `a <= b`, required to call `mid`
+  --> prove.ck:68:5
+   |
+68 |     mid 3 1
+   |     ^^^^^^^ `mid` requires `a <= b`
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+error[E0450]: cannot prove lemma `false_lemma`
+  --> prove.ck:74:13
+   |
+74 |     ensures x > 0
+   |             ^^^^^ `x > 0`
+   = note: counterexample: x = 0
+   = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+
+error[E0451]: cannot prove `n == length (list.map (\x -> x) xs)`, the postcondition of `outside`
+  --> prove.ck:81:42
+   |
+81 | fn outside xs -> n : xs~List Int, n~Nat, n == length (list.map (\x -> x) xs)
+   |                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ promised here
+   = note: this obligation is outside what the prover handles: it involves `map`, which takes a function as an argument
+   = help: state the fact you need as a lemma and bring it in with `have`
+
+prove.ck: 8 errors, 0 warnings

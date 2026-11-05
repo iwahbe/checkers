@@ -6,7 +6,8 @@ const USAGE: &str = "\
 checkers — the Checkers compiler and interpreter
 
 USAGE:
-    checkers run <FILE.ck> [ARG]...                 type-check, then run `main` with ARGs
+    checkers run [--unverified] <FILE.ck> [ARG]...  check and prove, then run `main` with ARGs
+    checkers trust <FILE.ck>                        print the trust ledger (what Z3, admits and checks vouch for)
     checkers check [--deny-warnings] <FILE.ck>...   type-check and run `check`s; report diagnostics
     checkers parse <FILE.ck>                        print the syntax tree
     checkers --version
@@ -24,6 +25,7 @@ fn main() -> ExitCode {
 fn cli(args: &[String]) -> u8 {
     let code = match args.first().map(String::as_str) {
         Some("run") => return run(&args[1..]),
+        Some("trust") => return trust(&args[1..]),
         Some("check") => check(&args[1..]),
         Some("parse") => parse(&args[1..]),
         Some("--version") | Some("-V") => {
@@ -48,7 +50,24 @@ fn cli(args: &[String]) -> u8 {
     }
 }
 
+fn trust(args: &[String]) -> u8 {
+    let [path] = args else {
+        eprintln!("error: `trust` takes exactly one file\n\n{USAGE}");
+        return 2;
+    };
+    let Ok(text) = read(path) else { return 2 };
+    let c = checkers::check(path, &text);
+    if c.errors() > 0 {
+        eprint!("{}", c.report());
+        return 1;
+    }
+    print!("{}", c.ledger);
+    0
+}
+
 fn run(args: &[String]) -> u8 {
+    let unverified = args.first().is_some_and(|a| a == "--unverified");
+    let args = if unverified { &args[1..] } else { args };
     let Some(path) = args.first() else {
         eprintln!("error: `run` needs a file\n\n{USAGE}");
         return 2;
@@ -57,7 +76,7 @@ fn run(args: &[String]) -> u8 {
         Ok(t) => t,
         Err(_) => return 2,
     };
-    let ran = checkers::run(path, &text, &args[1..], checkers::run::Io::process());
+    let ran = checkers::run(path, &text, &args[1..], checkers::run::Io::process(), unverified);
     eprint!("{}", ran.report);
     ran.code
 }

@@ -37,6 +37,8 @@ const NAMES: &[&str] = &[
     "decimal.scan_json",
     "decimal.render",
     "decimal.of_int",
+    "bag.of",
+    "bag.count",
     "cown.new",
     "future.ready",
 ];
@@ -305,6 +307,21 @@ pub fn call(it: &mut Interp, name: &str, a: Vec<Value>) -> R<Value> {
             Value::Num(n) => Value::Decimal(Rc::new(Decimal::new(Num::big(n), 0))),
             other => return Err(it.error(format!("expected a number, found a {}", other.kind()))),
         },
+        "bag.of" => {
+            let mut counts: std::collections::BTreeMap<Num, usize> = std::collections::BTreeMap::new();
+            for v in it.list_items(&a[0])? {
+                match v {
+                    Value::Num(n) => *counts.entry(n).or_default() += 1,
+                    other => return Err(it.error(format!("a bag holds numbers, not a {}", other.kind()))),
+                }
+            }
+            Value::Bag(Rc::new(counts.into_iter().collect()))
+        }
+        "bag.count" => {
+            let Value::Num(x) = &a[0] else { return Err(it.error("`bag.count` needs a number")) };
+            let Value::Bag(b) = &a[1] else { return Err(it.error("`bag.count` needs a bag")) };
+            Value::nat(b.iter().find(|(v, _)| v == x).map_or(0, |(_, n)| *n))
+        }
         "cown.new" => Value::Cown(Rc::new(RefCell::new(a[0].clone()))),
         "future.ready" => Value::Future(Rc::new(RefCell::new(Some(a[0].clone())))),
         other => return Err(it.error(format!("`{other}` has no implementation in this interpreter yet"))),

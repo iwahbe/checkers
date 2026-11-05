@@ -85,6 +85,9 @@ pub struct Cx {
     pub locals: Vec<Local>,
     /// Elaborating a type position (after `~`): `Uname`s prefer the type namespace (D26).
     pub type_pos: bool,
+    /// Facts in scope (§7.1): `Bool` values known to be true, tagged with the
+    /// context length when they were added.
+    pub facts: Vec<(usize, Val)>,
 }
 
 impl Cx {
@@ -112,10 +115,16 @@ impl Cx {
     pub fn pop(&mut self) {
         self.env.pop();
         self.locals.pop();
+        let n = self.locals.len();
+        self.facts.retain(|(l, _)| *l <= n);
     }
     pub fn truncate(&mut self, n: usize) {
         self.env.truncate(n);
         self.locals.truncate(n);
+        self.facts.retain(|(l, _)| *l <= n);
+    }
+    pub fn assume(&mut self, fact: Val) {
+        self.facts.push((self.locals.len(), fact));
     }
     pub fn lookup(&self, name: &str) -> Option<usize> {
         self.locals.iter().rposition(|l| l.name.as_ref() == name)
@@ -145,11 +154,83 @@ pub enum OpClass {
 }
 
 /// Predicates recorded for the prover (M3).
+/// What an obligation is for; decides how a failure is reported (§7.1).
+#[derive(Clone, Debug)]
+pub enum ObKind {
+    Pre { callee: String },
+    Post { func: String, at: Span },
+    Invariant { con: String },
+    NatSub,
+    Div,
+    Index,
+    Lemma { name: String },
+    Auto,
+    Have,
+}
+
+/// A local in an obligation's context.
+#[derive(Clone)]
+pub struct ObLocal {
+    pub name: Name,
+    pub ty: Val,
+    /// The value of a `let`-bound local.
+    pub def: Option<Val>,
+}
+
+/// `Γ ⊢ goal` (§7.1). Values are level-based over `ctx`.
 #[derive(Clone)]
 pub struct Obligation {
     pub module: String,
     pub span: Span,
-    pub what: &'static str,
+    pub kind: ObKind,
+    /// The predicate as written, for messages.
+    pub text: String,
+    pub ctx: Vec<ObLocal>,
+    pub facts: Vec<Val>,
+    pub goal: Val,
+    /// Only an obligation if this type turns out to be `Nat` (subtraction).
+    pub only_if_nat: Option<Val>,
+    pub owner: Option<DefId>,
+}
+
+/// A predicate from a header, constructor or alias, as a term over its binders.
+#[derive(Clone)]
+pub struct Pred {
+    pub tm: Tm,
+    pub text: String,
+    pub span: Span,
+    pub is_post: bool,
+    /// From a refinement-alias type on binder `k` (`c~Char`), not a written predicate.
+    pub alias: Option<(usize, DefId)>,
+}
+
+/// The specification of a function or lemma. Predicates are terms over the
+/// binders (implicit then explicit) followed by the result.
+#[derive(Clone, Default)]
+pub struct Spec {
+    pub preds: Vec<Pred>,
+    pub n_binders: usize,
+    pub n_implicit: usize,
+    /// A lemma's `let`s (each over the binders and earlier lets) and its `ensures`.
+    pub lets: Vec<Tm>,
+    pub ensures: Option<Pred>,
+}
+
+/// The postconditions to check at each value the current function returns.
+#[derive(Clone)]
+pub struct PostTarget {
+    pub posts: Vec<Pred>,
+    pub func: String,
+    /// The values of the function's binders (its parameters).
+    pub binders: Vec<Val>,
+}
+
+/// A trust-ledger entry (§7.4) for something accepted without a solver proof.
+#[derive(Clone, Debug)]
+pub struct Trusted {
+    pub module: String,
+    pub span: Span,
+    pub what: String,
 }
 
 pub struct Elab {
@@ -167,6 +248,24 @@ pub struct Elab {
     /// Definitions whose bodies are being elaborated in this module (termination groups).
     pub module_fns: Vec<DefId>,
     pub obligations: Vec<Obligation>,
+    pub specs: HashMap<DefId, Spec>,
+    /// Functions exported `transparent`: reflected into importers' queries (D12).
+    pub transparent: HashSet<DefId>,
+    /// Constructor invariants, over the type's parameters then the fields.
+    pub con_invs: HashMap<ConId, Vec<Pred>>,
+    /// Refinement aliases' predicates, over the alias's parameters then its binder.
+    pub alias_preds: HashMap<DefId, Vec<Pred>>,
+    /// Inside a type or specification: no obligations (§7.1).
+    pub in_spec: usize,
+    /// Elaborating the head of an application (see E0453).
+    pub in_app_head: bool,
+    /// The function type expected where a function is passed as a value (E0453).
+    pub expected_fn: Option<Val>,
+    /// Postconditions to check where the current function returns (§7.1).
+    pub post_target: Option<PostTarget>,
+    /// The goal of the proof being elaborated (D49).
+    pub proof_goal: Option<(Val, String)>,
+    pub admits: Vec<Trusted>,
     /// `check` declarations: module, span, elaborated `Bool` term (D40).
     pub checks: Vec<(String, Span, Tm)>,
     /// Variables that are linear because of their type (D39): (function, name) → (span, type).
@@ -200,6 +299,16 @@ impl Elab {
             module_fns: Vec::new(),
             obligations: Vec::new(),
             checks: Vec::new(),
+            specs: HashMap::new(),
+            transparent: HashSet::new(),
+            con_invs: HashMap::new(),
+            alias_preds: HashMap::new(),
+            in_spec: 0,
+            in_app_head: false,
+            expected_fn: None,
+            proof_goal: None,
+            post_target: None,
+            admits: Vec::new(),
             resource_vars: HashMap::new(),
             stdlib_mode: false,
             map_elem_sub: None,
@@ -338,7 +447,7 @@ impl Elab {
     }
 
     /// D45: `own` belongs on generic parameters. On a linear type it is implied
-    /// (W010); on a type without type variables it means nothing useful (E0357).
+    /// (W010); on a type without type variables it means nothing useful (E0358).
     pub fn check_own(&mut self, cx: &Cx, ty: &Tm, span: Span) {
         if self.type_linear(ty) {
             let tyv = self.eval(cx, ty);
@@ -352,7 +461,7 @@ impl Elab {
             let tyv = self.eval(cx, ty);
             let shown = self.show_val(cx, &tyv);
             self.err(
-                Diagnostic::error("E0357", format!("`own` on `{shown}`, which holds no resource"), span)
+                Diagnostic::error("E0358", format!("`own` on `{shown}`, which holds no resource"), span)
                     .with_label("`own` has no use here")
                     .with_help("`own` is for generic parameters that may receive a resource, as in `v~own a`; remove it"),
             );
@@ -381,6 +490,94 @@ impl Elab {
                 .with_label("a resource must be used exactly once")
                 .with_help("bind it to a name, then close it or pass it on"),
         );
+    }
+
+    // ── obligations (§7.1) ──────────────────────────────────────────────────
+
+    /// Record `facts in cx ⊢ goal`.
+    pub fn oblige(&mut self, cx: &Cx, span: Span, kind: ObKind, text: String, goal: Val, only_if_nat: Option<Val>) {
+        if self.in_spec > 0 {
+            return;
+        }
+        let ctx = (0..cx.lvl())
+            .map(|l| ObLocal {
+                name: cx.locals[l].name.clone(),
+                ty: cx.locals[l].ty.clone(),
+                def: if cx.locals[l].bound { None } else { Some(cx.env[l].clone()) },
+            })
+            .collect();
+        let facts = cx.facts.iter().map(|(_, v)| v.clone()).collect();
+        self.obligations.push(Obligation {
+            module: self.cur.clone(),
+            span,
+            kind,
+            text,
+            ctx,
+            facts,
+            goal,
+            only_if_nat,
+            owner: self.cur_fn,
+        });
+    }
+
+    /// The postconditions hold of `v`, a value the function returns at `at`.
+    pub fn oblige_posts_at(&mut self, cx: &Cx, v: Val, at: Span) {
+        let Some(pt) = self.post_target.clone() else { return };
+        let mut env = pt.binders.clone();
+        env.push(v);
+        for p in &pt.posts {
+            let goal = self.inst_pred(p, env.clone());
+            self.oblige(cx, p.span, ObKind::Post { func: pt.func.clone(), at }, p.text.clone(), goal, None);
+        }
+    }
+
+    pub fn prim_val(p: Prim, args: Vec<Val>) -> Val {
+        Val::Neutral(Head::Prim(p, args), Rc::new(Vec::new()))
+    }
+
+    pub fn bool_val(&self, b: bool) -> Val {
+        let c = if b { self.g.well_known.true_con } else { self.g.well_known.false_con };
+        match c {
+            Some(c) => Val::Con(c, Vec::new()),
+            None => Val::Error,
+        }
+    }
+
+    /// The fact `v == b` for a `Bool` value `v`.
+    pub fn is_bool(&self, v: Val, b: bool) -> Val {
+        Self::prim_val(Prim::Eq, vec![v, self.bool_val(b)])
+    }
+
+    /// The source text of a span in the current module.
+    pub fn src_text(&self, span: Span) -> String {
+        self.sources
+            .get(&self.cur)
+            .and_then(|f| f.text.get(span.start as usize..span.end as usize))
+            .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "))
+            .unwrap_or_default()
+    }
+
+    /// If `ty`, a type term over the first `at` locals of `cx`, is a refinement
+    /// alias (`U8`), its predicates about `subject` (D6, §7.1).
+    pub fn alias_facts(&self, cx: &Cx, at: usize, ty: &Tm, subject: Val) -> Vec<(Val, String, DefId)> {
+        let mut args = Vec::new();
+        let mut h = ty;
+        while let Tm::App(f, a, _, _) = h {
+            args.push(a.clone());
+            h = f;
+        }
+        let Tm::Def(d) = h else { return Vec::new() };
+        let Some(preds) = self.alias_preds.get(d) else { return Vec::new() };
+        args.reverse();
+        let prefix = Rc::new(cx.env[..at].to_vec());
+        let mut env: Vec<Val> = args.iter().map(|a| eval(&self.g, &prefix, a)).collect();
+        env.push(subject);
+        preds.iter().map(|p| (self.inst_pred(p, env.clone()), p.text.clone(), *d)).collect()
+    }
+
+    /// Instantiate a predicate over `binders ++ [result]` with values.
+    pub fn inst_pred(&self, p: &Pred, env: Vec<Val>) -> Val {
+        eval(&self.g, &Rc::new(env), &p.tm)
     }
 
     pub fn is_ty(&self, v: &Val, t: Option<TyId>) -> bool {

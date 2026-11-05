@@ -7,6 +7,7 @@ use crate::source::SourceFile;
 pub const MODULES: &[(&str, &str)] = &[
     ("prelude", include_str!("../../stdlib/prelude.ck")),
     ("list", include_str!("../../stdlib/list.ck")),
+    ("bag", include_str!("../../stdlib/bag.ck")),
     ("cown", include_str!("../../stdlib/cown.ck")),
     ("future", include_str!("../../stdlib/future.ck")),
     ("system", include_str!("../../stdlib/system.ck")),

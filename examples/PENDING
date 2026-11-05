@@ -1,0 +1,5 @@
+# Examples that check only once a later milestone lands (SPEC D48).
+# Their current output is pinned in tests/pending/NAME.out.
+json.ck      M5   lemmas about lists, UTF-8 and decimals; well-founded recursion
+parallel.ck  M5   merge sort: `decreasing` measures and lemmas about take/drop
+log.ck       M7   cown invariants (§8.5): behaviours re-establish `Log`

@@ -19,4 +19,11 @@ error[E0302]: `forever` is `partial` (it may not terminate), so `calls_partial` 
    |     ^^^^^^^
    = help: mark `calls_partial` as `partial fn` too
 
-termination.ck: 3 errors, 0 warnings
+error[E0301]: `circular` uses itself, but not on a smaller argument, so this is not an induction
+  --> termination.ck:41:14
+   |
+41 |         have circular x
+   |              ^^^^^^^^ the induction hypothesis
+   = help: use `circular` only on a part of a parameter you matched on, such as `rest` in `x :: rest`
+
+termination.ck: 4 errors, 0 warnings

@@ -1,7 +1,9 @@
 # list.ck — functions on immutable lists.
 module list
 
-export fn length xs -> n : xs~List a, n~Nat
+import bag
+
+export transparent fn length xs -> n : xs~List a, n~Nat
     match xs
         [] -> 0
         _ :: rest -> 1 + length rest
@@ -45,7 +47,7 @@ export fn unique xs -> r : xs~List a, r~Bool
         [] -> True
         x :: rest -> not (contains rest x) and unique rest
 
-export fn count x xs -> n : x~a, xs~List a, n~Nat
+export transparent fn count x xs -> n : x~a, xs~List a, n~Nat
     match xs
         [] -> 0
         y :: rest -> (if y == x then 1 else 0) + count x rest
@@ -67,11 +69,12 @@ export fn drop n xs -> ys : n~Nat, xs~List a, ys~List a
         [] -> []
         _ :: rest -> if n == 0 then xs else drop (n - 1) rest
 
-export fn sorted xs -> r : xs~List Int, r~Bool
+export transparent fn sorted xs -> r : xs~List Int, r~Bool
     decreasing length xs
     match xs
         x :: y :: rest -> x <= y and sorted (y :: rest)
         _ -> True
 
-export fn perm xs ys -> r : xs~List Int, ys~List Int, r~Bool
-    length xs == length ys and all (\x -> count x xs == count x ys) xs
+# `ys` is a rearrangement of `xs`: the same elements, as often (D47).
+export transparent fn perm xs ys -> r : xs~List Int, ys~List Int, r~Bool
+    bag.of xs == bag.of ys

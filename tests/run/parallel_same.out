@@ -1,4 +1,35 @@
 -- stdout
 same
 -- stderr
+error[E0450]: cannot prove `perm xs out`, the postcondition of `sort`
+  --> parallel.ck:18:67
+   |
+18 | export fn sort xs -> out : xs~List Int, out~List Int, sorted out, perm xs out
+   |                                                                   ^^^^^^^^^^^ promised here
+   = note: for the value returned on line 26: `merge l r`
+   = note: counterexample: xs = [4, 3]
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+error[E0450]: cannot prove `perm (l ++ r) out`, the postcondition of `merge`
+  --> parallel.ck:29:49
+   |
+29 |                       out~List Int, sorted out, perm (l ++ r) out
+   |                                                 ^^^^^^^^^^^^^^^^^ promised here
+   = note: for the value returned on line 33: `l`
+   = note: facts in scope: `sorted l`, `sorted r`, `r == []`
+   = note: Z3 gave up (unknown)
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+error[E0450]: cannot prove `perm (l ++ r) out`, the postcondition of `merge`
+  --> parallel.ck:29:49
+   |
+29 |                       out~List Int, sorted out, perm (l ++ r) out
+   |                                                 ^^^^^^^^^^^^^^^^^ promised here
+   = note: for the value returned on line 35: `y :: merge l ys`
+   = note: facts in scope: `sorted l`, `sorted r`
+   = note: Z3 gave up (unknown)
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+parallel.ck: 3 errors, 0 warnings
+running with 3 unproven obligation(s) (--unverified)
 -- exit 0

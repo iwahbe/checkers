@@ -1,3 +1,12 @@
 -- stdout
 -- stderr
+error[E0450]: cannot prove `n < 256`, required to build `Failure`
+  --> echo.ck:19:14
+   |
+19 |         _ -> Failure (len args + 10)
+   |              ^^^^^^^^^^^^^^^^^^^^^^^ `Failure` requires `n < 256`
+   = help: check the value before building it, e.g. with an `if`
+
+echo.ck: 1 error, 0 warnings
+running with 1 unproven obligation(s) (--unverified)
 -- exit 12

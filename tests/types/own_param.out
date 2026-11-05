@@ -20,7 +20,7 @@ warning[W010]: `own` is implied: `File` holds a resource
    |                      ^^^^ this `own` can go
    = help: remove `own`; a resource is used exactly once anyway
 
-error[E0357]: `own` on `Nat`, which holds no resource
+error[E0358]: `own` on `Nat`, which holds no resource
   --> own_param.ck:26:29
    |
 26 | fn pointless n -> m : n~own Nat, m~Nat

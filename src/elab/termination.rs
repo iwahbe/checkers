@@ -68,13 +68,23 @@ impl Elab {
                         names.join(", ")
                     )
                 };
-                self.err(
-                    Diagnostic::error("E0301", msg, c.span)
-                        .with_label("recursive call")
-                        .with_help(format!(
+                let is_lemma = !metas[k].is_fn;
+                let (msg, label, help) = if is_lemma {
+                    (
+                        format!("`{name}` uses itself, but not on a smaller argument, so this is not an induction"),
+                        "the induction hypothesis".to_string(),
+                        format!("use `{name}` only on a part of a parameter you matched on, such as `rest` in `x :: rest`"),
+                    )
+                } else {
+                    (
+                        msg,
+                        "recursive call".to_string(),
+                        format!(
                             "recurse on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of `{name}`, or mark it `partial`"
-                        )),
-                );
+                        ),
+                    )
+                };
+                self.err(Diagnostic::error("E0301", msg, c.span).with_label(label).with_help(help));
             }
         }
     }

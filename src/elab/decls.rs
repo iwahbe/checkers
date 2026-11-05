@@ -10,6 +10,9 @@ pub struct Sig {
     pub binders: Vec<(Name, Mult, Icit, Tm)>,
     pub result: Tm,
     pub n_implicit: usize,
+    /// Header predicates, over the binders then the result (§7.1).
+    pub preds: Vec<Pred>,
+    pub result_name: String,
 }
 
 impl Elab {
@@ -31,7 +34,8 @@ impl Elab {
         self.phase_ctors(m, &ids);
         self.phase_positivity(m, &ids);
         self.phase_consts(m, &ids);
-        let sigs = self.phase_signatures(m, &ids);
+        let mut sigs = self.phase_signatures(m, &ids);
+        self.phase_lemma_statements(m, &ids, &mut sigs);
         self.phase_bodies(m, &ids, sigs);
         self.check_termination();
         self.loading.pop();
@@ -303,7 +307,9 @@ impl Elab {
         }
         let saved = cx.type_pos;
         cx.type_pos = true;
+        self.in_spec += 1;
         let (t, ty) = self.infer(cx, e);
+        self.in_spec -= 1;
         cx.type_pos = saved;
         match self.force(&ty) {
             Val::Univ(_) | Val::Error => t,
@@ -322,14 +328,17 @@ impl Elab {
         }
     }
 
-    /// Check a predicate (refinement, invariant, `ensures`) as `Bool` and record it for the prover.
-    pub fn elab_pred(&mut self, cx: &mut Cx, e: &Expr, what: &'static str) {
+    /// Check a predicate (refinement, invariant, `ensures`) as `Bool`; it becomes
+    /// part of a specification (§7.1).
+    pub fn elab_pred(&mut self, cx: &mut Cx, e: &Expr, is_post: bool) -> Pred {
         let b = self.bool_ty();
         let saved = cx.type_pos;
         cx.type_pos = false;
-        self.check(cx, e, &b, false);
+        self.in_spec += 1;
+        let tm = self.check(cx, e, &b, false);
+        self.in_spec -= 1;
         cx.type_pos = saved;
-        self.obligations.push(Obligation { module: self.cur.clone(), span: e.span, what });
+        Pred { tm, text: self.src_text(e.span), span: e.span, is_post, alias: None }
     }
 
     fn phase_type_params(&mut self, m: &ast::Module, ids: &[Option<Sym>]) {
@@ -355,7 +364,7 @@ impl Elab {
             }
             for c in cs {
                 if let Constraint::Pred(e) = c {
-                    self.elab_pred(&mut cx, e, "type parameter constraint");
+                    self.elab_pred(&mut cx, e, false);
                 }
             }
             self.g.tys[tid.0 as usize].params = out;
@@ -392,7 +401,10 @@ impl Elab {
             cx.bind(&name.name, tv, Mult::Zero);
             for c in &constraints[1..] {
                 match c {
-                    Constraint::Pred(e) => self.elab_pred(&mut cx, e, "refinement"),
+                    Constraint::Pred(e) => {
+                        let p = self.elab_pred(&mut cx, e, false);
+                        self.alias_preds.entry(*did).or_default().push(p);
+                    }
                     Constraint::Typed { name, .. } => {
                         self.err(Diagnostic::error(
                             "E0351",
@@ -448,6 +460,7 @@ impl Elab {
         self.g.fuel.set(DEFAULT_FUEL);
         let mut cx = self.bind_type_params(tid);
         let mut fields: Vec<(Name, Mult, Icit, Tm)> = Vec::new();
+        let mut invs: Vec<(Tm, String, Span, usize)> = Vec::new();
         // Auto-bound implicit fields (D10), e.g. `m` in `xs~Vec a m`.
         let declared: HashSet<String> = names.iter().map(|n| n.name.clone()).collect();
         let mut autos = Vec::new();
@@ -481,12 +494,21 @@ impl Elab {
                 }
             };
             let v = self.eval(&cx, &ty);
-            cx.bind(&n.name, v, mult);
+            let at = cx.lvl();
+            let l = cx.bind(&n.name, v, mult);
+            // A refinement-alias field type is an invariant (§7.1).
+            for (fact, text, _) in self.alias_facts(&cx, at, &ty, Val::var(l)) {
+                let tm = quote(&self.g, cx.lvl(), &fact);
+                invs.push((tm, text, n.span, cx.lvl()));
+            }
             fields.push((Rc::from(n.name.as_str()), mult, Icit::Expl, ty));
         }
         for c in cs {
             match c {
-                Constraint::Pred(e) => self.elab_pred(&mut cx, e, "constructor invariant"),
+                Constraint::Pred(e) => {
+                    let p = self.elab_pred(&mut cx, e, false);
+                    invs.push((p.tm, p.text, p.span, cx.lvl()));
+                }
                 Constraint::Typed { name, .. } if !declared.contains(&name.name) => {
                     self.err(Diagnostic::error(
                         "E0353",
@@ -498,7 +520,20 @@ impl Elab {
             }
         }
         for e in extra_preds {
-            self.elab_pred(&mut cx, e, "field invariant");
+            let p = self.elab_pred(&mut cx, e, false);
+            invs.push((p.tm, p.text, p.span, cx.lvl()));
+        }
+        // Every invariant as a term over params ++ fields.
+        let total = cx.lvl();
+        let preds: Vec<Pred> = invs
+            .into_iter()
+            .map(|(tm, text, span, lvl)| {
+                let v = eval(&self.g, &Rc::new(cx.env[..lvl].to_vec()), &tm);
+                Pred { tm: quote(&self.g, total, &v), text, span, is_post: false, alias: None }
+            })
+            .collect();
+        if !preds.is_empty() {
+            self.con_invs.insert(cid, preds);
         }
         self.solve_deferred();
         // Default auto-bound field types that weren't determined to `Type`.
@@ -682,6 +717,8 @@ impl Elab {
     }
 
     /// Elaborate `fn name params -> result : constraints` into a context and Π-type.
+    // The loop over binders also visits the result slot (`k == nb`).
+    #[allow(clippy::needless_range_loop)]
     pub fn signature(&mut self, params: &[Ident], result: Option<&Ident>, cs: &[Constraint]) -> Sig {
         let mut cx = Cx::default();
         let mut binders = Vec::new();
@@ -738,20 +775,33 @@ impl Elab {
             }
         }
         // Predicates may mention the result, so check them with it in scope.
-        let has_preds = cs.iter().any(|c| matches!(c, Constraint::Pred(_)));
-        if has_preds {
-            let rv = self.eval(&cx, &result_ty);
-            let rname = result.map(|r| r.name.as_str()).unwrap_or("_result");
-            cx.bind(rname, rv, Mult::Zero);
-            for c in cs {
-                if let Constraint::Pred(e) = c {
-                    let what = if result.is_some_and(|r| mentions(e, &r.name)) { "postcondition" } else { "precondition" };
-                    self.elab_pred(&mut cx, e, what);
-                }
+        let rv = self.eval(&cx, &result_ty);
+        let rname = result.map(|r| r.name.clone()).unwrap_or_else(|| "_result".to_string());
+        let nb = binders.len();
+        let rl = cx.bind(&rname, rv, Mult::Zero);
+        let mut preds = Vec::new();
+        // Refinement-alias types on parameters (preconditions) and the result (postcondition).
+        for k in 0..=nb {
+            let (ty, span) = if k < nb {
+                let span = params.iter().find(|p| *p.name == *binders[k].0).map(|p| p.span).unwrap_or_default();
+                (binders[k].3.clone(), span)
+            } else {
+                (result_ty.clone(), result.map(|r| r.span).unwrap_or_default())
+            };
+            for (fact, text, alias) in self.alias_facts(&cx, k, &ty, Val::var(k)) {
+                let tm = quote(&self.g, cx.lvl(), &fact);
+                preds.push(Pred { tm, text, span, is_post: k == nb, alias: Some((k, alias)) });
             }
-            cx.pop();
         }
-        Sig { cx, binders, result: result_ty, n_implicit }
+        let _ = rl;
+        for c in cs {
+            if let Constraint::Pred(e) = c {
+                let is_post = result.is_some_and(|r| mentions(e, &r.name));
+                preds.push(self.elab_pred(&mut cx, e, is_post));
+            }
+        }
+        cx.pop();
+        Sig { cx, binders, result: result_ty, n_implicit, preds, result_name: rname }
     }
 
     pub fn pi_of(binders: &[(Name, Mult, Icit, Tm)], result: Tm) -> Tm {
@@ -778,6 +828,9 @@ impl Elab {
             let sig = match &d.kind {
                 DeclKind::Fn { name, params, result, constraints, partial, decreasing, body } => {
                     let mut sig = self.signature(params, result.as_ref(), constraints);
+                    if d.export == Export::Transparent {
+                        self.transparent.insert(*did);
+                    }
                     // Parameters of a resource type are `own` whether or not it is written (D39).
                     for k in sig.n_implicit..sig.binders.len() {
                         let b = &sig.binders[k];
@@ -822,10 +875,29 @@ impl Elab {
                             builtin,
                         },
                     );
+                    self.specs.insert(
+                        *did,
+                        Spec { preds: sig.preds.clone(), n_binders: sig.binders.len(), n_implicit: sig.n_implicit, ..Default::default() },
+                    );
                     sig
                 }
-                DeclKind::Lemma { params, constraints, .. } => {
+                DeclKind::Lemma { name, params, constraints, .. } => {
                     let sig = self.signature(params, None, constraints);
+                    self.fn_meta.insert(
+                        *did,
+                        FnMeta {
+                            name: name.name.clone(),
+                            span: name.span,
+                            is_fn: false,
+                            params: params
+                                .iter()
+                                .zip(sig.binders.iter().skip(sig.n_implicit))
+                                .map(|(p, b)| (p.name.clone(), b.1, p.span))
+                                .collect(),
+                            n_implicit: sig.n_implicit,
+                            ..Default::default()
+                        },
+                    );
                     // A lemma returns `Unit`; its content is the `ensures` clause.
                     let u = Tm::TupleTy(vec![]);
                     let rv = self.eval(&sig.cx, &sig.result);
@@ -862,11 +934,17 @@ impl Elab {
                     }
                     self.cur_fn = Some(*did);
                     self.module_fns.push(*did);
+                    let rty = self.eval(&sig.cx, &sig.result);
+                    self.assume_pres(&mut sig);
+                    let posts: Vec<Pred> = sig.preds.iter().filter(|p| p.is_post).cloned().collect();
+                    let fname = self.g.defs[did.0 as usize].name.to_string();
+                    self.post_target =
+                        (!posts.is_empty()).then(|| PostTarget { posts, func: fname, binders: sig.cx.env.clone() });
                     if let Some(e) = decreasing {
                         self.check_measure(&mut sig.cx, e);
                     }
-                    let rty = self.eval(&sig.cx, &sig.result);
                     let bt = self.check_block(&mut sig.cx, body, &rty, true);
+                    self.post_target = None;
                     self.solve_deferred();
                     self.report_unsolved_sig(*did, &sig, d.span);
                     let full = Self::lam_of(&sig.binders, bt);
@@ -874,28 +952,30 @@ impl Elab {
                     self.g.defs[did.0 as usize].body = Some(full);
                     self.cur_fn = None;
                 }
-                DeclKind::Lemma { lets, ensures, .. } => {
+                DeclKind::Lemma { name, lets, ensures, proof, .. } => {
+                    let Some(Sym::Def(did)) = id else { continue };
                     let Some(mut sig) = sigs.remove(&k) else { continue };
-                    let start = sig.cx.lvl();
-                    for (p, e) in lets {
-                        let (t, ty) = self.infer(&mut sig.cx, e);
-                        match &p.kind {
-                            ast::PatKind::Var(n) => {
-                                let v = self.eval(&sig.cx, &t);
-                                sig.cx.define(n, ty, v, Mult::Zero);
-                            }
-                            _ => {
-                                self.err(Diagnostic::error(
-                                    "E0357",
-                                    "`let` in a lemma header binds a single name",
-                                    p.span,
-                                ));
-                            }
+                    self.cur_fn = Some(*did);
+                    self.module_fns.push(*did);
+                    self.assume_pres(&mut sig);
+                    self.lemma_lets(&mut sig.cx, lets);
+                    let ens = self.elab_pred(&mut sig.cx, ensures, false);
+                    self.solve_deferred();
+                    let goal = self.eval(&sig.cx, &ens.tm);
+                    match proof {
+                        None => {
+                            let kind = ObKind::Lemma { name: name.name.clone() };
+                            self.oblige(&sig.cx, ensures.span, kind, ens.text.clone(), goal, None);
+                        }
+                        Some(block) => {
+                            let saved = self.proof_goal.replace((goal, ens.text.clone()));
+                            let unit = self.unit();
+                            let _ = self.check_block(&mut sig.cx, block, &unit, true);
+                            self.proof_goal = saved;
+                            self.solve_deferred();
                         }
                     }
-                    self.elab_pred(&mut sig.cx, ensures, "lemma");
-                    sig.cx.truncate(start);
-                    self.solve_deferred();
+                    self.cur_fn = None;
                 }
                 DeclKind::Check { expr } => {
                     let mut cx = Cx::default();
@@ -903,10 +983,64 @@ impl Elab {
                     let t = self.check(&mut cx, expr, &b, false);
                     self.solve_deferred();
                     self.checks.push((self.cur.clone(), expr.span, t));
-                    self.obligations.push(Obligation { module: self.cur.clone(), span: expr.span, what: "check" });
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// A lemma's statement (its `let`s and `ensures`), before any body, so a
+    /// `have` may use a lemma declared later.
+    fn phase_lemma_statements(&mut self, m: &ast::Module, ids: &[Option<Sym>], sigs: &mut HashMap<usize, Sig>) {
+        for (k, (d, id)) in m.decls.iter().zip(ids).enumerate() {
+            let DeclKind::Lemma { lets, ensures, .. } = &d.kind else { continue };
+            let Some(Sym::Def(did)) = id else { continue };
+            let Some(sig) = sigs.get(&k) else { continue };
+            self.g.fuel.set(DEFAULT_FUEL);
+            let mut cx = sig.cx.clone();
+            let lets_tm = self.lemma_lets(&mut cx, lets);
+            let ens = self.elab_pred(&mut cx, ensures, true);
+            self.solve_deferred();
+            let spec = Spec {
+                preds: sig.preds.clone(),
+                n_binders: sig.binders.len(),
+                n_implicit: sig.n_implicit,
+                lets: lets_tm,
+                ensures: Some(ens),
+            };
+            self.specs.insert(*did, spec);
+        }
+    }
+
+    /// Elaborate a lemma's header `let`s into `cx`, returning their terms.
+    fn lemma_lets(&mut self, cx: &mut Cx, lets: &[(ast::Pattern, Expr)]) -> Vec<Tm> {
+        let mut out = Vec::new();
+        for (p, e) in lets {
+            self.in_spec += 1;
+            let (t, ty) = self.infer(cx, e);
+            self.in_spec -= 1;
+            match &p.kind {
+                ast::PatKind::Var(n) => {
+                    let v = self.eval(cx, &t);
+                    cx.define(n, ty, v, Mult::Zero);
+                    out.push(t);
+                }
+                _ => {
+                    self.err(Diagnostic::error("E0357", "`let` in a lemma header binds a single name", p.span));
+                }
+            }
+        }
+        out
+    }
+
+    /// The preconditions are facts in the body (§7.1).
+    fn assume_pres(&mut self, sig: &mut Sig) {
+        let mut env = sig.cx.env.clone();
+        env.push(Val::var(sig.cx.lvl())); // the result slot; preconditions don't mention it
+        let env = Rc::new(env);
+        for p in sig.preds.iter().filter(|p| !p.is_post) {
+            let v = eval(&self.g, &env, &p.tm);
+            sig.cx.assume(v);
         }
     }
 
@@ -922,7 +1056,12 @@ impl Elab {
                 self.check(cx, e, &n, false);
             }
         }
-        self.obligations.push(Obligation { module: self.cur.clone(), span: e.span, what: "termination measure" });
+        // Checked in M5; until then the function's termination is trusted (D50).
+        self.admits.push(Trusted {
+            module: self.cur.clone(),
+            span: e.span,
+            what: format!("termination via `decreasing {}` (not checked until M5)", self.src_text(e.span)),
+        });
     }
 
     fn report_unsolved_sig(&mut self, did: DefId, sig: &Sig, span: Span) {

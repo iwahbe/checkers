@@ -4,10 +4,11 @@
 - **Ian does not read the implementation.** He reviews the spec, examples, and compiler output. Error messages are part of the product: precise span, plain message, a `help:` line when there is an obvious fix.
 - **Issue workflow (SPEC §12):** a report is "found X, expected Y" with a `.ck` snippet. First add it as a golden test showing the expected output (`tests/parse/`, `tests/check/`, `tests/types/` for type errors, `tests/run/` for program behaviour, §13.6), then fix, then `cargo test`.
 - `UPDATE_GOLDEN=1 cargo test --test golden` rewrites `.out` files. Read every changed `.out` before committing; never accept output you haven't checked.
-- `examples/*.ck` must check with zero diagnostics (enforced by the golden test).
+- `examples/*.ck` must check with zero diagnostics (enforced by the golden test), except those listed in `examples/PENDING`.
 - Keep `cargo clippy` clean. No new dependencies without a reason in the commit message.
-- `CHECKERS_DUMP=1 checkers run …` prints each function's elaborated core term as the interpreter compiles it.
-- Diagnostic codes: `E0001`–`E0099` lexer/layout, `E0100`–`E0199` parser, `E0200`–`E0299` names and types, `E0300`–`E0349` termination, `E0350`–`E0399` declarations (positivity, signatures), `E0400`–`E0449` usage (`own`/`ghost`), `W001`–`W003` naming (§9.7), `W010`–`W019` usage (`W010`: redundant `own`). Never reuse a code for a different meaning (E0107 is retired).
+- `CHECKERS_DUMP=1 checkers run …` prints each function's elaborated core term as the interpreter compiles it. `CHECKERS_SMT_DUMP=1 checkers check …` prints every SMT query.
+- The prover needs `z3` on `PATH` (or `CHECKERS_Z3`); install it with `pip install --break-system-packages z3-solver` in a fresh environment. Examples that need a later milestone are listed in `examples/PENDING`; their output is pinned in `tests/pending/`.
+- Diagnostic codes: `E0001`–`E0099` lexer/layout, `E0100`–`E0199` parser, `E0200`–`E0299` names and types, `E0300`–`E0349` termination, `E0350`–`E0399` declarations (positivity, signatures), `E0400`–`E0449` usage (`own`/`ghost`), `E0450`–`E0499` proofs, `W001`–`W003` naming (§9.7), `W010`–`W019` usage (`W010`: redundant `own`). Never reuse a code for a different meaning (E0107 is retired).
 - The standard library lives in `stdlib/*.ck` and is embedded in the binary. A function body consisting of `__builtin` (allowed only in `stdlib/`) is a primitive implemented in Rust.
 
 ## Layout
@@ -33,6 +34,8 @@ src/run/ir.rs        erasure: core terms → runtime code
 src/run/value.rs     runtime values, structural `==`, `format` (D42)
 src/run/num.rs       arbitrary-precision Nat/Int, exact decimals
 src/run/builtins.rs  Rust implementations of stdlib `__builtin` functions
+src/verify/mod.rs    prover driver: Z3 subprocesses, diagnostics, counterexamples, trust ledger (§7)
+src/verify/smt.rs    obligations → SMT-LIB: sorts, datatypes, reflected functions, postconditions
 stdlib/*.ck          standard library
 tests/golden.rs      golden test runner (tests/parse, tests/check, tests/types, tests/run, examples)
 ```

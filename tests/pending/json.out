@@ -1,0 +1,50 @@
+error[E0206]: module `list` has no export named `unique_cons`
+   --> json.ck:157:19
+    |
+157 |         have list.unique_cons key.value (keys acc)     # ¬contains ∧ unique ⇒ still unique
+    |                   ^^^^^^^^^^^
+
+error[E0206]: module `list` has no export named `keys_reverse`
+   --> json.ck:163:27
+    |
+163 |                 have list.keys_reverse acc2
+    |                           ^^^^^^^^^^^^
+
+error[E0206]: module `list` has no export named `unique_reverse`
+   --> json.ck:164:27
+    |
+164 |                 have list.unique_reverse (keys acc2)
+    |                           ^^^^^^^^^^^^^^
+
+error[E0206]: module `decimal` has no export named `scan_json_render`
+   --> json.ck:308:43
+    |
+308 |             Num n         -> have decimal.scan_json_render n pre post
+    |                                           ^^^^^^^^^^^^^^^^
+
+error[E0206]: module `utf8` has no export named `encode_append`
+   --> json.ck:313:27
+    |
+313 |                 have utf8.encode_append "[" (join "," (map render items) ++ "]")
+    |                           ^^^^^^^^^^^^^
+
+error[E0240]: this `match` does not cover `[]`
+   --> json.ck:326:9
+    |
+326 |         match items
+    |         ^^^^^^^^^^^ not exhaustive
+    = help: add an arm `[] -> …`, or a catch-all `_ -> …`
+
+error[E0206]: module `utf8` has no export named `encode_append`
+   --> json.ck:331:27
+    |
+331 |                 have utf8.encode_append (render x ++ ",") (join "," (map render rest) ++ "]")
+    |                           ^^^^^^^^^^^^^
+
+error[E0206]: module `list` has no export named `reverse_cons_append`
+   --> json.ck:334:27
+    |
+334 |                 have list.reverse_cons_append acc x rest
+    |                           ^^^^^^^^^^^^^^^^^^^
+
+json.ck: 8 errors, 0 warnings

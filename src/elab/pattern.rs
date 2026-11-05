@@ -276,7 +276,12 @@ impl Elab {
             Some(g) => {
                 let b = self.bool_ty();
                 let gt = self.check(cx, g, &b, false);
+                let gv = self.eval(cx, &gt);
+                let saved = cx.facts.len();
+                cx.assume(self.is_bool(gv.clone(), true));
                 let bt = self.arm_body(cx, row.body, expected, tail);
+                cx.facts.truncate(saved);
+                cx.assume(self.is_bool(gv, false));
                 let rest: Vec<Row> = rows[1..].to_vec();
                 let et = if rest.is_empty() {
                     let w = self.render_path();
@@ -289,6 +294,7 @@ impl Elab {
                 } else {
                     self.compile(cx, rest, expected, tail)
                 };
+                cx.facts.truncate(saved);
                 self.if_tm(gt, bt, et)
             }
         };
@@ -462,8 +468,17 @@ impl Elab {
                     None => rs.push(r),
                 }
             }
+            let saved = cx.facts.len();
+            let occ_val = cx.env[occ].clone();
+            cx.assume(Self::prim_val(Prim::Eq, vec![occ_val, Val::Lit(lit.clone())]));
             let body = if rs.is_empty() { Tm::Error } else { self.compile(cx, rs, expected, tail) };
+            cx.facts.truncate(saved);
             branches.push((lit.clone(), body));
+        }
+        let saved = cx.facts.len();
+        for lit in &lits {
+            let occ_val = cx.env[occ].clone();
+            cx.assume(Self::prim_val(Prim::Ne, vec![occ_val, Val::Lit(lit.clone())]));
         }
         let defaults: Vec<Row> = rows.iter().filter(|r| !r.pats.iter().any(|(o, _)| *o == occ)).cloned().collect();
         let default = if defaults.is_empty() {
@@ -478,6 +493,7 @@ impl Elab {
         } else {
             self.compile(cx, defaults, expected, tail)
         };
+        cx.facts.truncate(saved);
         Tm::Case(Rc::new(cx.var(occ)), Rc::new(CaseTm { branches: vec![], lits: branches, default: Some(default) }))
     }
 
@@ -639,6 +655,17 @@ impl Elab {
                 rs.push(r);
             }
             self.pm.frames.push((occ, Frame::Ctor(c, explicit.clone())));
+            // In this arm the value is this constructor, and its invariants hold (§7.1).
+            let saved = cx.facts.len();
+            let fvals: Vec<Val> = lvls.iter().map(|l| Val::var(*l)).collect();
+            let mut all: Vec<Val> = params.clone();
+            all.extend(fvals);
+            let occ_val = cx.env[occ].clone();
+            cx.assume(Self::prim_val(Prim::Eq, vec![occ_val, Val::Con(c, all.clone())]));
+            for inv in self.con_invs.get(&c).cloned().unwrap_or_default() {
+                let f = self.inst_pred(&inv, all.clone());
+                cx.assume(f);
+            }
             let body = if rs.is_empty() {
                 let w = self.render_path();
                 self.note_missing(format!("`{w}`"));
@@ -646,6 +673,7 @@ impl Elab {
             } else {
                 self.compile(cx, rs, expected, tail)
             };
+            cx.facts.truncate(saved);
             self.pm.frames.pop();
             cx.truncate(start);
             branches.push((c, fields.len(), body));
