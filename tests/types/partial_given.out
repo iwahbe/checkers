@@ -1,0 +1,8 @@
+error[E0450]: cannot prove `d != 0`, required to call `div_by`
+  --> partial_given.ck:13:14
+   |
+13 |     list.map (div_by 0) xs
+   |              ^^^^^^^^^^ `div_by` requires `d != 0`
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+partial_given.ck: 1 error, 0 warnings

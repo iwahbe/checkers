@@ -183,7 +183,13 @@ impl Elab {
                                 .iter()
                                 .any(|p| !p.is_post && !self.alias_met_by(p, &spec, expected.as_ref()));
                             if spec.n_binders > 0 && unmet {
-                                self.partial_with_pre(n, &spec, e.span);
+                                let unmet: Vec<Pred> = spec
+                                    .preds
+                                    .iter()
+                                    .filter(|p| !p.is_post && !self.alias_met_by(p, &spec, expected.as_ref()))
+                                    .cloned()
+                                    .collect();
+                                self.partial_with_pre(n, &unmet, e.span);
                             }
                         }
                     }
@@ -577,7 +583,28 @@ impl Elab {
                 }
                 let name = self.g.defs[d.0 as usize].name.to_string();
                 if args.len() < spec.n_binders {
-                    self.partial_with_pre(&name, &spec, span);
+                    // A partial application (D51, D52): preconditions about the
+                    // arguments given are checked here; others can't be.
+                    let given = args.len();
+                    let total = spec.n_binders + 1;
+                    let (now, later): (Vec<&Pred>, Vec<&Pred>) = spec
+                        .preds
+                        .iter()
+                        .filter(|p| !p.is_post)
+                        .partition(|p| !mentions_level_from(&p.tm, total, given, 0));
+                    if !later.is_empty() {
+                        let later: Vec<Pred> = later.into_iter().cloned().collect();
+                        self.partial_with_pre(&name, &later, span);
+                        return;
+                    }
+                    let mut env: Vec<Val> = args.iter().map(|a| self.eval(cx, a)).collect();
+                    for k in given..total {
+                        env.push(Val::var(usize::MAX / 2 + k));
+                    }
+                    for p in now {
+                        let goal = self.inst_pred(p, env.clone());
+                        self.oblige(cx, span, ObKind::Pre { callee: name.clone() }, p.text.clone(), goal, None);
+                    }
                     return;
                 }
                 let mut env: Vec<Val> = args[..spec.n_binders].iter().map(|a| self.eval(cx, a)).collect();
@@ -623,15 +650,21 @@ impl Elab {
         }
     }
 
-    fn partial_with_pre(&mut self, name: &str, spec: &Spec, span: Span) {
+    /// E0453: preconditions that mention arguments not given yet (D51).
+    fn partial_with_pre(&mut self, name: &str, unmet: &[Pred], span: Span) {
         if self.in_spec > 0 {
             return;
         }
-        let pre: Vec<String> = spec.preds.iter().filter(|p| !p.is_post).map(|p| format!("`{}`", p.text)).collect();
+        let pre: Vec<String> = unmet.iter().map(|p| format!("`{}`", p.text)).collect();
         self.err(
-            Diagnostic::error("E0453", format!("`{name}` has a precondition, so it must be called with all its arguments"), span)
-                .with_note(format!("it requires {}", pre.join(" and ")))
-                .with_help(format!("use a lambda that passes every argument, e.g. `\\x -> {name} … x`")),
+            Diagnostic::error(
+                "E0453",
+                format!("`{name}` is partially applied, but its precondition is about an argument it doesn't have yet"),
+                span,
+            )
+            .with_note(format!("it requires {}, which can't be checked until every argument is known", pre.join(" and ")))
+            .with_note("refined function types (M10) will let it go where the function type promises that precondition")
+            .with_help(format!("pass every argument at a call the prover can see, e.g. `\\x -> {name} … x` where `x` is known to satisfy it")),
         );
     }
 
@@ -1374,4 +1407,26 @@ impl Elab {
 
 fn pvar(n: &str, span: Span) -> ast::Pattern {
     ast::Pattern { kind: ast::PatKind::Var(n.to_string()), span }
+}
+
+/// Does `t`, a term over `total` binders (de Bruijn indices), mention a
+/// binder at level `from` or later? `depth` counts binders inside `t`.
+fn mentions_level_from(t: &Tm, total: usize, from: usize, depth: usize) -> bool {
+    let rec = |x: &Tm, d: usize| mentions_level_from(x, total, from, d);
+    match t {
+        Tm::Var(i) => *i >= depth && total + depth - 1 - i >= from,
+        Tm::App(f, a, ..) => rec(f, depth) || rec(a, depth),
+        Tm::Lam(_, _, _, b) => rec(b, depth + 1),
+        Tm::Pi(_, _, _, a, b) => rec(a, depth) || rec(b, depth + 1),
+        Tm::Let(_, _, a, v, b) => rec(a, depth) || rec(v, depth) || rec(b, depth + 1),
+        Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => v.iter().any(|x| rec(x, depth)),
+        Tm::Proj(x, _) | Tm::Field(x, _, _) => rec(x, depth),
+        Tm::Case(s, c) => {
+            rec(s, depth)
+                || c.branches.iter().any(|(_, n, b)| rec(b, depth + n))
+                || c.lits.iter().any(|(_, b)| rec(b, depth))
+                || c.default.as_ref().is_some_and(|b| rec(b, depth))
+        }
+        _ => false,
+    }
 }

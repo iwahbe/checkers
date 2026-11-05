@@ -7,8 +7,6 @@ use crate::core::{quote, show};
 use crate::diag::Diagnostic;
 use crate::elab::{Elab, ObKind, Obligation};
 use crate::source::Span;
-use std::io::Write;
-use std::process::{Command, Stdio};
 
 /// One entry of the trust ledger (§7.4).
 #[derive(Clone, Debug)]
@@ -32,34 +30,64 @@ enum Answer {
     Unknown(String),
 }
 
-fn z3_path() -> String {
-    std::env::var("CHECKERS_Z3").unwrap_or_else(|_| "z3".to_string())
-}
+/// Z3 reports API misuse through an error handler; the default one may exit
+/// the process. SMT-LIB errors come back in the output text instead.
+unsafe extern "C" fn ignore_error(_: z3_sys::Z3_context, _: z3_sys::Z3_error_code) {}
 
+/// The linked-in Z3's version (D46).
 pub fn z3_version() -> Option<String> {
-    let out = Command::new(z3_path()).arg("-version").output().ok()?;
-    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    // SAFETY: Z3_get_full_version returns a static, NUL-terminated string.
+    let v = unsafe { std::ffi::CStr::from_ptr(z3_sys::Z3_get_full_version()) };
+    Some(format!("Z3 {}", v.to_string_lossy()))
 }
 
-fn ask(query: &str) -> std::io::Result<Answer> {
-    let mut child = Command::new(z3_path())
-        .args(["-in", "-smt2", "-T:20"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
-    child.stdin.take().expect("stdin").write_all(query.as_bytes())?;
-    let out = child.wait_with_output()?;
-    let text = String::from_utf8_lossy(&out.stdout).to_string();
-    let mut lines = text.splitn(2, '\n');
+/// Evaluate one SMT-LIB script in a fresh Z3 context.
+fn ask(query: &str) -> Answer {
+    let Ok(text) = std::ffi::CString::new(query) else { return Answer::Unknown("a NUL byte in the query".into()) };
+    // SAFETY: the config and context are created, used and deleted on this
+    // thread only; the returned string is copied before the context is deleted.
+    let out = unsafe {
+        let Some(cfg) = z3_sys::Z3_mk_config() else { return Answer::Unknown("Z3 could not start".into()) };
+        let Some(ctx) = z3_sys::Z3_mk_context(cfg) else {
+            z3_sys::Z3_del_config(cfg);
+            return Answer::Unknown("Z3 could not start".into());
+        };
+        z3_sys::Z3_set_error_handler(ctx, Some(ignore_error));
+        let r = z3_sys::Z3_eval_smtlib2_string(ctx, text.as_ptr());
+        let out = if r.is_null() { String::new() } else { std::ffi::CStr::from_ptr(r).to_string_lossy().into_owned() };
+        z3_sys::Z3_del_context(ctx);
+        z3_sys::Z3_del_config(cfg);
+        out
+    };
+    let mut lines = out.splitn(2, '\n');
     let first = lines.next().unwrap_or("").trim().to_string();
     let rest = lines.next().unwrap_or("").to_string();
-    Ok(match first.as_str() {
+    match first.as_str() {
         "unsat" => Answer::Unsat,
         "sat" => Answer::Sat(rest),
         "unknown" | "timeout" => Answer::Unknown(first),
         other => Answer::Unknown(format!("{other} {rest}").trim().to_string()),
-    })
+    }
+}
+
+/// Solve the queries on a few worker threads (each Z3 context is heavy).
+fn ask_all(texts: &[Option<String>]) -> Vec<Option<Answer>> {
+    let workers = std::thread::available_parallelism().map_or(2, |n| n.get()).min(8);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let results: Vec<std::sync::Mutex<Option<Answer>>> = texts.iter().map(|_| std::sync::Mutex::new(None)).collect();
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            s.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(t) = texts.get(i) else { break };
+                if let Some(t) = t {
+                    let a = ask(t);
+                    *results[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(a);
+                }
+            });
+        }
+    });
+    results.into_iter().map(|m| m.into_inner().unwrap_or_else(|e| e.into_inner())).collect()
 }
 
 /// FNV-1a, for the ledger's query hashes.
@@ -111,20 +139,15 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
             eprintln!(";; ── {:?} at {:?}\n{}", o.kind, o.span, t.as_deref().unwrap_or(";; outside the fragment"));
         }
     }
-    let answers: Vec<Option<std::io::Result<Answer>>> = std::thread::scope(|s| {
-        let handles: Vec<_> = texts.iter().map(|t| t.as_ref().map(|t| s.spawn(move || ask(t)))).collect();
-        handles.into_iter().map(|h| h.map(|h| h.join().unwrap_or_else(|_| Ok(Answer::Unknown("crash".into()))))).collect()
-    });
-    let mut z3_missing = false;
+    let answers = ask_all(&texts);
     for ((o, q), a) in obs.iter().zip(&queries).zip(answers) {
         match (q, a) {
             (Err(why), _) => v.diags.push(outside(e, o, &why.0)),
-            (Ok(_), Some(Err(_))) => z3_missing = true,
-            (Ok(q), Some(Ok(Answer::Unsat))) => {
+            (Ok(q), Some(Answer::Unsat)) => {
                 v.proved += 1;
                 v.ledger.push(LedgerEntry { span: o.span, how: "smt", what: describe(e, o), hash: Some(fnv(&q.text)) });
             }
-            (Ok(q), Some(Ok(Answer::Sat(model)))) => {
+            (Ok(q), Some(Answer::Sat(model))) => {
                 let mut d = failed(e, o, Some(render_model(&model, &q.shown)));
                 if !q.dropped.is_empty() {
                     d = d.with_note(format!(
@@ -134,7 +157,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
                 }
                 v.diags.push(d);
             }
-            (Ok(_), Some(Ok(Answer::Unknown(why)))) => {
+            (Ok(_), Some(Answer::Unknown(why))) => {
                 let mut d = failed(e, o, None);
                 d = d.with_note(format!("Z3 gave up ({why})"));
                 v.diags.push(d);
@@ -142,16 +165,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
             (Ok(_), None) => {}
         }
     }
-    if z3_missing {
-        let span = obs[0].span;
-        v.diags.push(
-            Diagnostic::error("E0452", format!("cannot run Z3 (`{}`), so {} obligations are unproven", z3_path(), obs.len()), span)
-                .with_label("the first obligation")
-                .with_help("install Z3 (for example `pip install z3-solver` or `brew install z3`), or set CHECKERS_Z3 to its path"),
-        );
-    } else {
-        v.z3_version = z3_version();
-    }
+    v.z3_version = z3_version();
     v
 }
 

@@ -29,7 +29,7 @@ Types are written only as constraints (`i~Nat, i <= len src`); the compiler prov
 
 ## Usage
 
-The prover needs [Z3](https://github.com/Z3Prover/z3) on `PATH` (`pip install z3-solver`, `brew install z3`, or set `CHECKERS_Z3`).
+Z3 is built from source and linked into the binary (D46), so the first build takes several minutes and needs CMake and a C++ compiler. Nothing else needs installing.
 
 ```
 cargo build --release

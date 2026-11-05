@@ -16,3 +16,4 @@ fn shout c -> s : c~Char, s~String
 
 fn fine s -> t : s~String, t~String
     string.concat_map shout s
+
