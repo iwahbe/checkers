@@ -63,7 +63,8 @@ fn run_case(args_path: &Path) -> String {
         stderr: Box::new(err.clone()),
     };
     let name = Path::new(&program).file_name().unwrap().to_string_lossy().to_string();
-    let ran = checkers::run(&name, &text, &args, io, unverified);
+    let dir = Path::new(&program).parent().unwrap_or(Path::new("")).to_path_buf();
+    let ran = checkers::run_in(&name, &text, &dir, &args, io, unverified);
     let stdout = String::from_utf8_lossy(&out.0.borrow()).to_string();
     let stderr = ran.report.clone() + &String::from_utf8_lossy(&err.0.borrow());
     format!("-- stdout\n{stdout}-- stderr\n{stderr}-- exit {}\n", ran.code)
@@ -72,7 +73,10 @@ fn run_case(args_path: &Path) -> String {
 fn run(path: &Path, mode: &str) -> String {
     let text = fs::read_to_string(path).unwrap();
     let name = path.file_name().unwrap().to_string_lossy().to_string();
-    let c = if mode == "types" { checkers::check(&name, &text) } else { checkers::parse_only(&name, &text) };
+    // Imported modules are found beside the test, and shown by their relative path.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = path.parent().unwrap().strip_prefix(root).unwrap_or(Path::new("")).to_path_buf();
+    let c = if mode == "types" { checkers::check_in(&name, &text, &dir) } else { checkers::parse_only(&name, &text) };
     match mode {
         "parse" => {
             let mut out = checkers::syntax::print::module(&c.module);
@@ -149,7 +153,7 @@ fn golden() {
         count += 1;
         let file = path.file_name().unwrap().to_string_lossy().to_string();
         let text = fs::read_to_string(&path).unwrap();
-        let c = checkers::check(&file, &text);
+        let c = checkers::check_in(&file, &text, &root.join("examples"));
         if pending.contains(&file) {
             let out_path = root.join("tests").join("pending").join(Path::new(&file).with_extension("out"));
             let actual = c.report();

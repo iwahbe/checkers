@@ -241,6 +241,10 @@ pub struct Elab {
     seen: HashSet<(String, u32, u32, String)>,
     pub cur: String,
     loading: Vec<String>,
+    /// Where `import a.b` looks for `a/b.ck` (D53).
+    pub base_dir: Option<std::path::PathBuf>,
+    /// Imported program modules (not the standard library), dependencies first.
+    pub user_modules: Vec<String>,
     pub deferred: Vec<Deferred>,
     pub fn_meta: HashMap<DefId, FnMeta>,
     pub cur_fn: Option<DefId>,
@@ -292,6 +296,8 @@ impl Elab {
             seen: HashSet::new(),
             cur: String::new(),
             loading: Vec::new(),
+            base_dir: None,
+            user_modules: Vec::new(),
             deferred: Vec::new(),
             fn_meta: HashMap::new(),
             cur_fn: None,
@@ -363,10 +369,21 @@ impl Elab {
             Err(_) => {
                 let e = self.show_val(cx, expected);
                 let a = self.show_val(cx, actual);
-                self.err(
-                    Diagnostic::error("E0201", format!("type mismatch: expected `{e}`, found `{a}`"), span)
-                        .with_label(format!("{what} has type `{a}`")),
-                );
+                let mut d = Diagnostic::error("E0201", format!("type mismatch: expected `{e}`, found `{a}`"), span)
+                    .with_label(format!("{what} has type `{a}`"));
+                // A sealed function in a type never unfolds outside its module (D54).
+                let mut sealed = Vec::new();
+                for v in [expected, actual] {
+                    collect_sealed(&quote(&self.g, cx.lvl(), v), &self.g, &self.cur, &mut sealed);
+                }
+                if let Some(dd) = sealed.first() {
+                    let info = &self.g.defs[dd.0 as usize];
+                    d = d.with_help(format!(
+                        "`{}` is defined in `{}`, where function bodies are sealed: its value isn't visible here unless it is exported `transparent`",
+                        info.name, info.module
+                    ));
+                }
+                self.err(d);
                 false
             }
         }
@@ -703,8 +720,9 @@ impl Default for Elab {
 }
 
 /// Elaborate a user module (and the standard library modules it needs).
-pub fn check_module(name_hint: &str, file: &SourceFile, m: &ast::Module) -> Elab {
+pub fn check_module(name_hint: &str, file: &SourceFile, m: &ast::Module, dir: Option<&std::path::Path>) -> Elab {
     let mut e = Elab::new();
+    e.base_dir = dir.map(|d| d.to_path_buf());
     // Core stdlib modules are always loaded: they define well-known types.
     for core in ["prelude", "cown", "future", "system"] {
         e.load_stdlib(core);
@@ -713,4 +731,28 @@ pub fn check_module(name_hint: &str, file: &SourceFile, m: &ast::Module) -> Elab
     e.sources.insert(name.clone(), SourceFile::new(file.name.clone(), file.text.clone()));
     e.elab_module(&name, m, false);
     e
+}
+
+/// Definitions sealed by another module (D54) that occur in `t`.
+pub fn collect_sealed(t: &Tm, g: &Globals, cur: &str, out: &mut Vec<DefId>) {
+    match t {
+        Tm::Def(d) => {
+            let info = &g.defs[d.0 as usize];
+            if info.sealed && *info.module != *cur && !out.contains(d) {
+                out.push(*d);
+            }
+        }
+        Tm::App(f, a, ..) => {
+            collect_sealed(f, g, cur, out);
+            collect_sealed(a, g, cur, out);
+        }
+        Tm::Pi(_, _, _, a, b) => {
+            collect_sealed(a, g, cur, out);
+            collect_sealed(b, g, cur, out);
+        }
+        Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => {
+            v.iter().for_each(|x| collect_sealed(x, g, cur, out))
+        }
+        _ => {}
+    }
 }

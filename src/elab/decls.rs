@@ -38,6 +38,14 @@ impl Elab {
         self.phase_lemma_statements(m, &ids, &mut sigs);
         self.phase_bodies(m, &ids, sigs);
         self.check_termination();
+        // Seal the module's functions (D54): importers see signatures only.
+        for (d, id) in m.decls.iter().zip(&ids) {
+            if let (DeclKind::Fn { .. }, Some(Sym::Def(did))) = (&d.kind, id) {
+                if d.export != Export::Transparent {
+                    self.g.defs[did.0 as usize].sealed = true;
+                }
+            }
+        }
         self.loading.pop();
     }
 
@@ -58,12 +66,14 @@ impl Elab {
         for imp in &m.imports {
             let path = imp.path.dotted();
             self.cur = name.to_string();
-            let found = self.modules.contains_key(&path) || self.load_stdlib(&path);
+            let found = self.modules.contains_key(&path) || self.load_stdlib(&path) || self.load_user(&path, imp.path.span);
             self.cur = name.to_string();
             if !found {
+                let file = format!("{}.ck", path.replace('.', "/"));
                 self.err(
                     Diagnostic::error("E0220", format!("unknown module `{path}`"), imp.path.span)
-                        .with_help("the standard library modules are: prelude, list, system, terminal, files, cown, future, bytes, string, char, utf8, decimal, cursor"),
+                        .with_label(format!("no standard library module `{path}`, and no file `{file}` beside this program"))
+                        .with_help("the standard library modules are: prelude, list, bag, system, terminal, files, cown, future, bytes, string, char, utf8, decimal, cursor"),
                 );
                 continue;
             }
@@ -171,6 +181,7 @@ impl Elab {
             ty: Tm::Error,
             body: None,
             opaque: false,
+            sealed: false,
         });
         DefId(self.g.defs.len() as u32 - 1)
     }

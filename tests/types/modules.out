@@ -2,8 +2,8 @@ error[E0220]: unknown module `nothing_here`
  --> modules.ck:3:8
   |
 3 | import nothing_here
-  |        ^^^^^^^^^^^^
-  = help: the standard library modules are: prelude, list, system, terminal, files, cown, future, bytes, string, char, utf8, decimal, cursor
+  |        ^^^^^^^^^^^^ no standard library module `nothing_here`, and no file `nothing_here.ck` beside this program
+  = help: the standard library modules are: prelude, list, bag, system, terminal, files, cown, future, bytes, string, char, utf8, decimal, cursor
 
 error[E0221]: module `list` has no export named `no_such_thing`
  --> modules.ck:4:14

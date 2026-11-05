@@ -1,0 +1,8 @@
+error[E0201]: type mismatch: expected `Tag 2`, found `Tag two`
+  --> sealed_types.ck:15:5
+   |
+15 |     t
+   |     ^ this expression has type `Tag two`
+   = help: `two` is defined in `sealed_lib`, where function bodies are sealed: its value isn't visible here unless it is exported `transparent`
+
+sealed_types.ck: 1 error, 0 warnings

@@ -4,7 +4,8 @@
 #
 # The postcondition says the result is sorted and is a permutation of the
 # input. Nothing else is needed: each recursive call may assume its own
-# postcondition (induction, D50), and Z3 does the rest.
+# postcondition (induction, D50), and Z3 does the rest. `examples/resort.ck`
+# uses this module through its exported postconditions and lemma only.
 
 module sort
 
@@ -29,6 +30,15 @@ export fn sort xs -> ys : xs~List Int, ys~List Int, sorted ys, perm xs ys
     match xs
         [] -> []
         x :: rest -> insert x (sort rest)
+
+# Exported proofs (SPEC §6): importers can't see `sort`'s body, so the facts
+# they need come from here. Sorting a sorted list changes nothing.
+export lemma sort_of_sorted xs : xs~List Int, sorted xs
+    ensures sort xs == xs
+    proof
+        match xs
+            [] -> auto
+            x :: rest -> have sort_of_sorted rest
 
 check sort [3, 1, 2] == [1, 2, 3]
 check sort [5, 5, -1, 0] == [-1, 0, 5, 5]

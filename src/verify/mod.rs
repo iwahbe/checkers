@@ -282,8 +282,23 @@ fn failed(e: &Elab, o: &Obligation, model: Option<String>) -> Diagnostic {
     if let Some(n) = facts_note(e, o) {
         d = d.with_note(n);
     }
-    if let Some(m) = model.filter(|m| !m.is_empty()) {
-        d = d.with_note(format!("counterexample: {m}"));
+    // Sealed functions from other modules (D54) are only known by their contracts.
+    let mut sealed = Vec::new();
+    let lvl = o.ctx.len();
+    crate::elab::collect_sealed(&quote(&e.g, lvl, &o.goal), &e.g, &o.module, &mut sealed);
+    let sealed_note = sealed.first().map(|d| {
+        let info = &e.g.defs[d.0 as usize];
+        format!(
+            "`{}` is sealed in `{}`: here the prover knows only its postconditions and the lemmas you bring in with `have`",
+            info.name, info.module
+        )
+    });
+    match model.filter(|m| !m.is_empty()) {
+        Some(m) if sealed_note.is_none() => d = d.with_note(format!("counterexample: {m}")),
+        _ => {}
+    }
+    if let Some(n) = sealed_note {
+        d = d.with_note(n);
     }
     d.with_help(help)
 }

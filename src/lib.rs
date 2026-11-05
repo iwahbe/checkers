@@ -25,6 +25,8 @@ pub struct Checked {
     pub diags: Vec<Diagnostic>,
     /// Diagnostics in standard-library modules (compiler bugs), already rendered.
     pub internal: Vec<String>,
+    /// Diagnostics in imported program modules (D53), with their files.
+    pub others: Vec<(String, SourceFile, Vec<Diagnostic>)>,
     /// Proof obligations in this file, and how many the prover discharged.
     pub obligations: usize,
     pub proved: usize,
@@ -33,17 +35,28 @@ pub struct Checked {
 }
 
 impl Checked {
+    fn all_diags(&self) -> impl Iterator<Item = &Diagnostic> {
+        self.others.iter().flat_map(|o| o.2.iter()).chain(self.diags.iter())
+    }
+
     pub fn errors(&self) -> usize {
-        self.diags.iter().filter(|d| d.is_error()).count() + self.internal.len()
+        self.all_diags().filter(|d| d.is_error()).count() + self.internal.len()
     }
 
     pub fn warnings(&self) -> usize {
-        self.diags.iter().filter(|d| !d.is_error()).count()
+        self.all_diags().filter(|d| !d.is_error()).count()
     }
 
-    /// Diagnostics in source order, then a one-line summary.
+    /// Diagnostics in source order (imported modules first), then a one-line summary.
     pub fn report(&self) -> String {
-        let mut out = diag::render_all(&self.file, &self.diags);
+        let mut out = String::new();
+        for (_, f, ds) in &self.others {
+            if !ds.is_empty() {
+                out += &diag::render_all(f, ds);
+                out.push('\n');
+            }
+        }
+        out += &diag::render_all(&self.file, &self.diags);
         for i in &self.internal {
             if !out.is_empty() {
                 out.push('\n');
@@ -74,12 +87,23 @@ pub fn parse_only(name: &str, text: &str) -> Checked {
     let file = SourceFile::new(name, text);
     let (module, mut diags) = syntax::parse_module(text);
     diags.extend(lint::naming(&module));
-    Checked { file, module, diags, internal: Vec::new(), obligations: 0, proved: 0, ledger: String::new() }
+    Checked { file, module, diags, internal: Vec::new(), others: Vec::new(), obligations: 0, proved: 0, ledger: String::new() }
 }
 
-/// Run every implemented phase over one source file, including its `check`s.
+/// The directory `import a.b` looks in for `a/b.ck` (D53): the program's own.
+fn dir_of(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(name).parent().map(|p| p.to_path_buf()).unwrap_or_default()
+}
+
+/// Run every implemented phase over one source file, including its `check`s
+/// and proofs, and those of every module it imports.
 pub fn check(name: &str, text: &str) -> Checked {
-    let (mut c, e) = elaborate(name, text);
+    check_in(name, text, &dir_of(name))
+}
+
+/// `check`, with imported modules looked up in `dir`.
+pub fn check_in(name: &str, text: &str, dir: &std::path::Path) -> Checked {
+    let (mut c, e) = elaborate(name, text, dir);
     if let Some((e, user)) = &e {
         run_checks(&mut c, e, user);
         prove(&mut c, e, user);
@@ -87,39 +111,74 @@ pub fn check(name: &str, text: &str) -> Checked {
     c
 }
 
+/// The modules whose code is checked: imported program modules, then this one.
+fn program_modules(e: &elab::Elab, user: &str) -> Vec<String> {
+    let mut v = e.user_modules.clone();
+    v.push(user.to_string());
+    v
+}
+
+/// File a diagnostic of module `m` where it belongs.
+fn route(c: &mut Checked, e: &elab::Elab, user: &str, m: &str, d: Diagnostic) {
+    if m == user {
+        c.diags.push(d);
+    } else if e.user_modules.iter().any(|u| u == m) {
+        match c.others.iter_mut().find(|o| o.0 == m) {
+            Some(o) => o.2.push(d),
+            None => {
+                let f = e.sources.get(m).map(|f| SourceFile::new(f.name.clone(), f.text.clone())).unwrap_or_else(|| SourceFile::new(m, ""));
+                c.others.push((m.to_string(), f, vec![d]));
+            }
+        }
+    } else {
+        let rendered = match e.sources.get(m) {
+            Some(f) => d.render(f),
+            None => format!("{}: {}\n", m, d.message),
+        };
+        c.internal.push(format!("internal error (standard library module `{m}`):\n{rendered}"));
+    }
+}
+
 /// Discharge the proof obligations (§7.2) once everything else is clean.
 fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
     if c.errors() > 0 {
         return;
     }
-    let v = verify::verify(e, user);
-    c.proved = v.proved;
-    c.ledger = verify::ledger_text(&c.file, &v);
-    c.diags.extend(v.diags);
+    let mut ledger = String::new();
+    for m in program_modules(e, user) {
+        let v = verify::verify(e, &m);
+        c.proved += v.proved;
+        if let Some(f) = e.sources.get(&m) {
+            ledger += &verify::ledger_text(f, &v);
+        }
+        for d in v.diags {
+            route(c, e, user, &m, d);
+        }
+    }
+    // One solver line at the end.
+    let solver: Vec<&str> = ledger.lines().filter(|l| l.starts_with("solver: ")).collect();
+    let last = solver.last().map(|s| s.to_string());
+    let mut out: String = ledger.lines().filter(|l| !l.starts_with("solver: ")).map(|l| format!("{l}\n")).collect();
+    if let Some(s) = last {
+        out += &s;
+        out.push('\n');
+    }
+    c.ledger = out;
 }
 
 /// Parse, lint and type-check; also returns the elaborator and the module name.
-fn elaborate(name: &str, text: &str) -> (Checked, Option<(elab::Elab, String)>) {
+fn elaborate(name: &str, text: &str, dir: &std::path::Path) -> (Checked, Option<(elab::Elab, String)>) {
     let mut c = parse_only(name, text);
     if c.diags.iter().any(|d| d.is_error()) {
         return (c, None); // type checking a broken parse only produces noise
     }
     let stem = std::path::Path::new(name).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-    let e = elab::check_module(&stem, &c.file, &c.module);
+    let e = elab::check_module(&stem, &c.file, &c.module, Some(dir));
     let user = c.module.name.as_ref().map(|q| q.dotted()).unwrap_or(stem);
     for (m, d) in &e.diags {
-        if *m == user {
-            c.diags.push(d.clone());
-        } else {
-            let rendered = match e.sources.get(m) {
-                Some(f) => d.render(f),
-                None => format!("{}: {}\n", m, d.message),
-            };
-            c.internal.push(format!("internal error (standard library module `{m}`):\n{rendered}"));
-        }
+        route(&mut c, &e, &user, m, d.clone());
     }
     c.obligations = e.obligations.iter().filter(|o| o.module == user).count();
-    e.sources.get(&user).map(|_| ()).unwrap_or(());
     (c, Some((e, user)))
 }
 
@@ -133,8 +192,9 @@ fn run_checks(c: &mut Checked, e: &elab::Elab, user: &str) {
         return;
     }
     let mut it = run::Interp::new(&e.g, quiet_io());
+    let mods = program_modules(e, user);
     for (m, span, t) in &e.checks {
-        if m != user {
+        if !mods.contains(m) {
             continue;
         }
         match it.eval_closed(t) {
@@ -149,10 +209,14 @@ fn run_checks(c: &mut Checked, e: &elab::Elab, user: &str) {
                         }
                     }
                 }
-                c.diags.push(d);
+                route(c, e, user, m, d);
             }
             Ok(_) => {}
-            Err(err) => c.diags.push(
+            Err(err) => route(
+                c,
+                e,
+                user,
+                m,
                 diag::Diagnostic::error("E0261", "this `check` stopped with a runtime error", *span)
                     .with_label("evaluating this failed")
                     .with_note(err.to_string()),
@@ -178,12 +242,17 @@ fn is_proof_failure(d: &Diagnostic) -> bool {
 /// With `unverified`, a program whose only errors are unproven obligations
 /// runs anyway, with the runtime checks of §13.3 (D48).
 pub fn run(name: &str, text: &str, args: &[String], io: run::Io, unverified: bool) -> Ran {
-    let (mut c, e) = elaborate(name, text);
+    run_in(name, text, &dir_of(name), args, io, unverified)
+}
+
+/// `run`, with imported modules looked up in `dir`.
+pub fn run_in(name: &str, text: &str, dir: &std::path::Path, args: &[String], io: run::Io, unverified: bool) -> Ran {
+    let (mut c, e) = elaborate(name, text, dir);
     let Some((e, user)) = e else { return Ran { report: c.report(), code: 2 } };
     run_checks(&mut c, &e, &user);
     prove(&mut c, &e, &user);
-    let mut report = if c.diags.is_empty() && c.internal.is_empty() { String::new() } else { c.report() };
-    let blocking = c.internal.len() + c.diags.iter().filter(|d| d.is_error() && !(unverified && is_proof_failure(d))).count();
+    let mut report = if c.all_diags().next().is_none() && c.internal.is_empty() { String::new() } else { c.report() };
+    let blocking = c.internal.len() + c.all_diags().filter(|d| d.is_error() && !(unverified && is_proof_failure(d))).count();
     if blocking > 0 {
         return Ran { report, code: 2 };
     }

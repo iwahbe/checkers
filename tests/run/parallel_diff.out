@@ -7,7 +7,7 @@ error[E0450]: cannot prove `perm xs out`, the postcondition of `sort`
 18 | export fn sort xs -> out : xs~List Int, out~List Int, sorted out, perm xs out
    |                                                                   ^^^^^^^^^^^ promised here
    = note: for the value returned on line 26: `merge l r`
-   = note: counterexample: xs = [4, 3]
+   = note: `take` is sealed in `list`: here the prover knows only its postconditions and the lemmas you bring in with `have`
    = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
 
 error[E0450]: cannot prove `perm (l ++ r) out`, the postcondition of `merge`

@@ -12,7 +12,7 @@ fn skip_ws src i -> j : src~Bytes, i~Nat, i <= len src,
         i
 ```
 
-Types are written only as constraints (`i~Nat, i <= len src`); the compiler proves the rest. [`sort.ck`](examples/sort.ck) is an insertion sort whose result is proven sorted and a permutation of its input. Examples: [`json.ck`](examples/json.ck), a JSON parser whose bounds checks, termination, and round-trip property are proven; [`wc.ck`](examples/wc.ck), a CLI tool using linear capabilities; [`log.ck`](examples/log.ck), concurrency with cowns and `when`.
+Types are written only as constraints (`i~Nat, i <= len src`); the compiler proves the rest. [`sort.ck`](examples/sort.ck) is an insertion sort whose result is proven sorted and a permutation of its input; [`resort.ck`](examples/resort.ck) imports it and, seeing only its interface, proves that sorting twice is sorting once. Examples: [`json.ck`](examples/json.ck), a JSON parser whose bounds checks, termination, and round-trip property are proven; [`wc.ck`](examples/wc.ck), a CLI tool using linear capabilities; [`log.ck`](examples/log.ck), concurrency with cowns and `when`.
 
 **[SPEC.md](SPEC.md) is the definition of the language.** The implementation follows it.
 
@@ -24,7 +24,8 @@ Types are written only as constraints (`i~Nat, i <= len src`); the compiler prov
 | M1 Type checker: dependent types, exhaustive `match`, termination, `own`/`ghost` usage | done (refinements recorded, proven in M3) |
 | M2 Interpreter: `checkers run`, `check` evaluation, files and terminal, linear resources | done |
 | M3 Prover: pre/postconditions, refinements, invariants, lemmas, Z3, trust ledger | done: `examples/sort.ck` (insertion sort) and `wc.ck` verify |
-| M4 Modules, sealing, exported lemmas | next |
+| M4 Modules: files, sealing, exported lemmas, multi-module proofs | done: [`resort.ck`](examples/resort.ck) uses `sort` through its exported lemma only |
+| M5 Well-founded recursion, lexicographic `decreasing` | next |
 | M4–M9 | see SPEC §10 |
 
 ## Usage

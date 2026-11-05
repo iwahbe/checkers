@@ -27,7 +27,7 @@ src/elab/decls.rs    imports, declarations, positivity, signatures (auto-binding
 src/elab/expr.rs     bidirectional checking of expressions, blocks, `<-`, `try`, `when`/`fork`/`join`
 src/elab/pattern.rs  `match` → case trees, exhaustiveness witnesses
 src/elab/termination.rs  structural recursion over call-graph SCCs (§5.3)
-src/elab/stdlib.rs   embedded standard library loading
+src/elab/stdlib.rs   embedded standard library loading, program modules from `a/b.ck` (D53)
 src/usage.rs         `own`/`ghost` usage (QTT multiplicities)
 src/run/mod.rs       interpreter: evaluator (tail calls), behaviours, `main` (§13)
 src/run/ir.rs        erasure: core terms → runtime code

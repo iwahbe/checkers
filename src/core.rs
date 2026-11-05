@@ -174,6 +174,8 @@ pub struct DefInfo {
     pub body: Option<Tm>,
     /// Do not unfold during evaluation (`partial`).
     pub opaque: bool,
+    /// Sealed by its module (D54): does not unfold outside it.
+    pub sealed: bool,
 }
 
 pub struct TyInfo {
@@ -403,7 +405,7 @@ pub fn unfold(g: &Globals, v: &Val) -> Option<Val> {
     let Val::Neutral(Head::Def(d), sp) = v else { return None };
     let info = &g.defs[d.0 as usize];
     let body = info.body.as_ref()?;
-    if info.opaque || g.fuel.get() == 0 {
+    if info.opaque || info.sealed || g.fuel.get() == 0 {
         return None;
     }
     g.fuel.set(g.fuel.get() - 1);
