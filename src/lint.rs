@@ -261,7 +261,7 @@ impl Linter {
 
     fn expr(&mut self, e: &Expr) {
         match &e.kind {
-            ExprKind::Tuple(v) | ExprKind::List(v) => v.iter().for_each(|x| self.expr(x)),
+            ExprKind::Tuple(v) | ExprKind::List(v) | ExprKind::Par(v) => v.iter().for_each(|x| self.expr(x)),
             ExprKind::App(a, b) | ExprKind::Binary(_, a, b) | ExprKind::Arrow(a, b) | ExprKind::Index(a, b) => {
                 self.expr(a);
                 self.expr(b);
@@ -287,7 +287,14 @@ impl Linter {
                 ps.iter().for_each(|p| self.pat(p));
                 self.expr(b);
             }
-            ExprKind::Block(b) => self.block(b),
+            ExprKind::Block(b) | ExprKind::Fork(_, b) => self.block(b),
+            ExprKind::Join(binds, _, b) => {
+                for (n, f) in binds {
+                    self.snake(n, "variable");
+                    self.expr(f);
+                }
+                self.block(b);
+            }
             ExprKind::Var(_)
             | ExprKind::Con(_)
             | ExprKind::Lit(_)

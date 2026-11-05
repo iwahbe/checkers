@@ -38,8 +38,10 @@ This document is the single source of truth for Checkers. Implementation follows
 | D27 | **Effects are linear capabilities** (§8.1–8.2). Effectful operations take an `own` capability and return a fresh one, so every function stays a mathematical function. `main` receives `sys~own System`, a record of capabilities (`term`, `fs`, `env`, `proc`, `net`, `clock`, `sched`). No `IO` monad and no effect system in the kernel. | 11/05/2026 | decided |
 | D28 | **Droppable authority vs. linear resources** (§8.3). Authority tokens (`System`, `Term`, `Fs`, …, `Cown a`) are dropped implicitly when unused (the elaborator inserts `drop`); resources (`File`, `Child`, `Socket`) must be consumed explicitly. | 11/05/2026 | **(proposed)** |
 | D29 | **`x <- f a c`** means `let (x, c) = f a c`, where the last argument `c` is an `own` variable (§8.4). | 11/05/2026 | **(proposed)** |
-| D30 | **Concurrency is cowns + `when`** (behaviour-oriented concurrency, Verona; §8.5): race- and deadlock-free by construction, causal order, invariants as refinement types on contents. Actors and channels are libraries on top. `par` for pure parallelism. *Supersedes the actors-with-session-types plan for M7.* | 11/05/2026 | decided (syntax **proposed**) |
-| D31 | `main`'s signature: `fn main args sys -> code : args~List String, sys~own System, code~ExitCode`. | 11/05/2026 | **(proposed)** |
+| D30 | **Concurrency is cowns + `when`** (behaviour-oriented concurrency, Verona; §8.5): race- and deadlock-free by construction, causal order, invariants as refinement types on contents. Actors and channels are libraries on top. *Supersedes the actors-with-session-types plan for M7.* | 11/05/2026 | decided (syntax **proposed**) |
+| D31 | `main`'s signature: `fn main args sys -> code : args~List String, sys~own System, code~ExitCode`. `code` may also be a `Future ExitCode` (§8.6). The process exits once all scheduled work has finished. | 11/05/2026 | **(proposed)**; exit-after-all-work decided |
+| D33 | **Nothing ever blocks.** No `await`. Effectful fork/join is `f <- fork using sched` and `r <- join x = f, … using sched`: both schedule a behaviour and return a `Future`; a join runs after the forks it names, by causal order (§8.6). | 11/05/2026 | decided (syntax **proposed**) |
+| D34 | **`par (e1, …, en)`** evaluates the components of an n-tuple in parallel and returns the tuple. Pure only; to the prover `par t == t`. A keyword, not a function, because Checkers is strict: a function's arguments would already be evaluated, one after another, before it ran. | 11/05/2026 | decided |
 | D32 | **Record patterns** `Ctor { a, b = p }` bind named fields; unnamed fields of a linear record are dropped (they must be droppable). | 11/05/2026 | **(proposed)** |
 | D24 | **Development loop:** Claude owns the implementation; Ian drives with examples. An issue is "found X, expected Y" with a `.ck` snippet. Each one becomes a regression test under `tests/` *before* the fix lands, and the spec is updated first whenever the expectation changes the language. | 11/05/2026 | decided |
 | D25 | **Milestones reordered for CLI tools first** (§10): a running interpreter with `IO` comes right after type checking, before the prover, so Checkers can be used to build its own tooling early. Capstone: an interactive shell with a small scripting language, with proofs of its correctness. | 11/05/2026 | decided |
@@ -243,7 +245,7 @@ Each compiled module records every `smt_trusted φ` it relies on (obligation, Z3
 
 ## 8. Effects, capabilities, and concurrency
 
-Decisions D27–D32. Worked examples: `examples/wc.ck` (a CLI tool) and `examples/log.ck` (concurrency).
+Decisions D27–D34. Worked examples: `examples/wc.ck` (a CLI tool), `examples/log.ck` (cowns and `when`), `examples/parallel.ck` (`par`, `fork`, `join`).
 
 ### 8.1 Why capabilities, and why linear
 
@@ -294,7 +296,7 @@ means `let (input, term) = terminal.read_all term`. The **last argument** of the
 
 ### 8.5 Concurrency: cowns and `when` (D30)
 
-Data is immutable, so sharing it never races; parallel evaluation of pure code is always safe (`par a b` evaluates both in parallel and returns the pair). What needs coordination is a **resource or state shared by several concurrent tasks**: the shell's job table, the terminal. For that, Checkers adopts Verona's *behaviour-oriented concurrency* (Cheeseman et al., OOPSLA 2023):
+Data is immutable, so sharing it never races; parallel evaluation of pure code is always safe (`par`, §8.6). What needs coordination is a **resource or state shared by several concurrent tasks**: the shell's job table, the terminal. For that, Checkers adopts Verona's *behaviour-oriented concurrency* (Cheeseman et al., OOPSLA 2023):
 
 - A **cown** (concurrent owner) wraps a value. `c <- cown.new v sched` creates a `Cown a`. The cown handle has multiplicity ω and may be freely shared; its *contents* are owned by the cown, and a linear value moved into a cown (e.g. a `Term`) is no longer available to the creator.
 - A **behaviour** gets exclusive access to one or more cowns:
@@ -314,21 +316,55 @@ Guarantees, by construction:
 
 **Invariants.** A cown's content type can be a refinement (`type Log = entries~List String, len entries <= 100`). Every behaviour must return contents of that type, so it must re-establish the invariant: this is the lock-invariant rule of concurrent separation logic, enforced by ordinary type checking.
 
-**Results.** `when` returns nothing to the scheduler's caller. To get a value back, a behaviour writes it into a cown that a later behaviour reads. **(open)** A promise/`await` form will be designed when an example needs it.
+**Results.** `when` is asynchronous: it schedules the body and continues immediately, so the body's only outputs are the new contents of its cowns. A later behaviour on the same cowns sees them. To compute values in parallel and combine them, use §8.6.
 
 **Actors** are a library on top: an actor is a cown holding its state, and sending a message schedules a `when` on it. Session-typed channels (Neykova & Yoshida) can be layered the same way later.
 
-### 8.6 Other effects
+### 8.6 Parallelism and fork/join (D33, D34)
+
+Nothing ever blocks waiting for another task; this is what keeps deadlock impossible. Parallel work comes in two forms.
+
+**Pure: `par`.**
+
+```
+let (l, r) = par (sort left, sort right)
+let (a, b, c) = par (f x, g y, h z)
+```
+
+`par` takes a tuple literal with two or more components, evaluates them in parallel (work-stealing tasks), and returns the tuple. The components must be pure: no capabilities, no `partial` calls. Pure code holds no cowns and schedules nothing, so the implicit join is safe. To the prover `par t` is `t`, so a parallel `sort` keeps its proof, stays a pure function, and can be used in types.
+
+**Effectful: `fork` and `join`.**
+
+```
+let (fs1, fs2) = files.split fs
+a <- fork using sched
+    files.read "a.txt" fs1
+b <- fork using sched
+    files.read "b.txt" fs2
+done <- join x = a, y = b using sched
+    combine x y
+```
+
+- `f <- fork using sched` + block schedules the block as a behaviour and binds `f~Future t`, where `t` is the block's type. Like `when`, it rebinds `sched`.
+- `r <- join x = f1, y = f2, … using sched` + block schedules a behaviour that runs after every listed future has been filled. Inside, `x`, `y`, … are the plain values (moved out of the futures; each future can be joined once). It binds `r~Future t` for the block's result, so joins compose.
+- A future is a cown that only its own fork or join can fill, and that fork/join is the first behaviour scheduled on it. A later join on that future is ordered after it (causal order, §8.5), so its value is always present: no `Option`, no waiting, no deadlock.
+- Each concurrent branch needs its own capabilities. Droppable capabilities can be split (`files.split fs` consumes `fs` and returns two independent `Fs` tokens); resources such as an open `File` cannot be.
+- A behaviour body receives its own `sched` and may fork, join and `when` further.
+- A `fork`, `join` or `when` body may use `own` values from the enclosing scope (e.g. `term`); they **move** into the behaviour and are no longer available outside it.
+
+**Ending the program.** The process exits once no scheduled work remains. If `main` returns a `Future ExitCode`, that future's value is the exit code; this is how a program whose result comes from a join reports it.
+
+### 8.7 Other effects
 
 - **Non-termination:** `partial fn` (§5.3). A `partial` function cannot appear in types or proofs.
 - **Errors:** `Result` and `try` (D14). No exceptions.
 - **Algebraic effect handlers** (Koka, Effekt): not planned. Capabilities and `Result` cover the needs so far, and handlers complicate the prover.
 
-### 8.7 Proofs about effectful code (later)
+### 8.8 Proofs about effectful code (later)
 
 Capabilities and cown contents correspond to separation-logic resources (Iris, F\*'s Pulse). M3–M5 prove pure code; specifications over capability state (e.g. "after `files.write p b fs`, `files.read p fs'` returns `b`") come with the shell capstone.
 
-### 8.8 Staging (M6, D7)
+### 8.9 Staging (M6, D7)
 
 Two universes, compile-time and runtime; `quote`/`splice` across them. Compile-time code generation is guaranteed to produce well-typed runtime code.
 
@@ -364,7 +400,7 @@ A trailing `->`, `=` or `<-` outside brackets does **not** continue the line; it
 | `"…"` | `String` (UTF-8) | `"'"`, `"a\u{e9}"`, escapes `\" \\ \n \r \t \0 \u{…}` |
 | `b"…"` | `Bytes` | `b"null"`, escapes as strings plus `\xNN` |
 
-**Keywords:** `module import as export abstract transparent fn enum record type let lemma ensures proof have auto admit check match if then else try and or implies decreasing partial ghost own when using`. `not` is an ordinary prelude function.
+**Keywords:** `module import as export abstract transparent fn enum record type let lemma ensures proof have auto admit check match if then else try and or implies decreasing partial ghost own when using par`. `fork` and `join` are **contextual**: they are keywords only in `fork using …` and `join name = …` (right after `<-`), so `join` remains usable as an ordinary function name. `not` is an ordinary prelude function.
 
 **Glued vs spaced (D22):** `.` and `[` with no whitespace before them, directly after an identifier, `)` or `]`, are field/module access and indexing. With whitespace before them they are composition and a list literal.
 
@@ -404,12 +440,16 @@ stmt        ::= 'let' pattern '=' ( expr | NL INDENT block DEDENT )
               | pattern '<-' expr                            -- D29: rebinds the call's last argument
               | 'when' lname '=' expr { ',' lname '=' expr } 'using' lname NL
                 INDENT block DEDENT                          -- D30: schedule a behaviour
+              | pattern '<-' 'fork' 'using' lname NL INDENT block DEDENT                          -- D33
+              | pattern '<-' 'join' lname '=' expr { ',' lname '=' expr } 'using' lname NL
+                INDENT block DEDENT                          -- D33
 expr        ::= 'if' expr 'then' expr 'else' expr
               | 'if' expr NL INDENT block DEDENT
                 'else' ( 'if' … | NL INDENT block DEDENT )   -- `else if` chains; `else` is required
               | 'match' expr NL INDENT { arm } DEDENT
               | '\' apat { apat } '->' ( expr | NL INDENT block DEDENT )   -- lambda; block body only outside brackets
               | 'try' expr                                   -- D14
+              | 'par' '(' expr ',' expr { ',' expr } ')'     -- D34
               | 'auto' | 'admit'                             -- proof blocks only
               | opexpr                                       -- precedence climbing over §9.4
 arm         ::= pattern [ 'if' expr ] '->' ( expr NL | NL INDENT block DEDENT )
@@ -530,7 +570,7 @@ Reordered (D25) so that Checkers can run CLI tools before the prover exists.
 | M4 | Modules, sealing, exported lemmas | sort module used from another module via its lemmas only |
 | M5 | Well-founded recursion, lexicographic `decreasing` | verified merge sort; `examples/json.ck` checks |
 | M6 | Two-level staging (`comptime`) | compile-time-generated specialized code |
-| M7 | Cowns, `when`, `par`, multi-threaded scheduler; actor library | `examples/log.ck` runs; stress tests show no races or deadlocks |
+| M7 | Cowns, `when`, `fork`/`join`, futures, `par`, multi-threaded scheduler; actor library | `examples/log.ck` and `examples/parallel.ck` run; stress tests show no races or deadlocks |
 | M8 | Cranelift backend | M2–M7 test suites pass native |
 | M9 | **Capstone:** interactive shell with a small scripting language, with proofs of its correctness (parser round-trip, evaluator semantics, job control protocol) | the shell runs its own test scripts |
 

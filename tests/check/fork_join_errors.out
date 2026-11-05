@@ -1,0 +1,22 @@
+error[E0115]: `par` takes a tuple of two or more expressions
+ --> fork_join_errors.ck:4:9
+  |
+4 |     par (f x)
+  |         ^^^^^
+  = help: write `par (f x, g y)`; the components are evaluated in parallel
+
+error[E0116]: `fork` must be bound to a future
+ --> fork_join_errors.ck:7:5
+  |
+7 |     fork using sched
+  |     ^^^^
+  = help: write `f <- fork … using sched` on its own line; use `_ <-` to ignore the future
+
+error[E0112]: `join` needs a scheduler capability: `using sched`
+  --> fork_join_errors.ck:11:20
+   |
+11 |     r <- join x = p
+   |                    ^ expected `using`
+   = help: scheduling is an effect; pass the `Sched` capability, e.g. `f <- join … using sched`
+
+fork_join_errors.ck: 3 errors, 0 warnings

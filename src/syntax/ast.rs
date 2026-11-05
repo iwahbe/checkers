@@ -213,6 +213,12 @@ pub enum ExprKind {
     Block(Block),
     Auto,
     Admit,
+    /// `par (e1, …, en)` (D34)
+    Par(Vec<Expr>),
+    /// `fork using sched` + block; only as the right side of `<-` (D33)
+    Fork(Ident, Block),
+    /// `join x = f, … using sched` + block; only as the right side of `<-` (D33)
+    Join(Vec<(Ident, Expr)>, Ident, Block),
     /// Placeholder for a token the lexer rejected.
     Error,
 }

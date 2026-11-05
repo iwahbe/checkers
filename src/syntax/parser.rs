@@ -514,8 +514,13 @@ impl Parser {
             if !self.at_kw(Kw::Let) && self.line_has_larrow() {
                 let p = self.pattern()?;
                 let arrow = self.expect(Tok::LArrow, "`<-`")?.span;
-                let e = self.expr()?;
-                self.end_line()?;
+                let e = if self.at_fork_join() {
+                    self.fork_join()?
+                } else {
+                    let e = self.expr()?;
+                    self.end_line()?;
+                    e
+                };
                 stmts.push(Stmt::Bind(p, e));
                 if self.at(&Tok::Dedent) {
                     self.diags.push(
@@ -625,6 +630,54 @@ impl Parser {
         Ok(When { binds, sched, body, span })
     }
 
+    /// `fork` and `join` are contextual: `fork using …` and `join name = …`.
+    /// Elsewhere they are ordinary names (e.g. the list function `join`).
+    fn at_fork_join(&self) -> bool {
+        match self.peek() {
+            Tok::LName(n) if n == "fork" => *self.peek_at(1) == Tok::Kw(Kw::Using),
+            Tok::LName(n) if n == "join" => self.at_ident_at(1) && *self.peek_at(2) == Tok::Eq,
+            _ => false,
+        }
+    }
+
+    fn at_ident_at(&self, n: usize) -> bool {
+        matches!(self.peek_at(n), Tok::LName(_) | Tok::UName(_))
+    }
+
+    /// `fork using sched` / `join x = f, … using sched`, then an indented block (D33).
+    fn fork_join(&mut self) -> PResult<Expr> {
+        let is_fork = matches!(self.peek(), Tok::LName(n) if n == "fork");
+        let start = self.bump().span;
+        let what = if is_fork { "fork" } else { "join" };
+        let mut binds = Vec::new();
+        if !is_fork {
+            loop {
+                let name = self.ident("a name for the future's value")?;
+                self.expect(Tok::Eq, "`=` and a future")?;
+                binds.push((name, self.expr()?));
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+        }
+        if !self.at_kw(Kw::Using) {
+            let span = self.span();
+            self.diags.push(
+                Diagnostic::error("E0112", format!("`{what}` needs a scheduler capability: `using sched`"), span)
+                    .with_label("expected `using`")
+                    .with_help(format!("scheduling is an effect; pass the `Sched` capability, e.g. `f <- {what} … using sched`")),
+            );
+            return Err(Failed);
+        }
+        self.bump();
+        let sched = self.ident("the `Sched` capability")?;
+        self.open_block(&format!("{what} body"))?;
+        let body = self.block_rest()?;
+        let span = start.to(self.prev_span());
+        let kind = if is_fork { ExprKind::Fork(sched, body) } else { ExprKind::Join(binds, sched, body) };
+        Ok(Expr { kind, span })
+    }
+
     /// An indented block as an expression.
     fn block_expr(&mut self, what: &str) -> PResult<Expr> {
         self.open_block(what)?;
@@ -672,6 +725,14 @@ impl Parser {
             Tok::Kw(Kw::Auto) => {
                 self.bump();
                 Ok(Expr { kind: ExprKind::Auto, span: start })
+            }
+            _ if self.at_fork_join() => {
+                let what = if matches!(self.peek(), Tok::LName(n) if n == "fork") { "fork" } else { "join" };
+                self.diags.push(
+                    Diagnostic::error("E0116", format!("`{what}` must be bound to a future"), start)
+                        .with_help(format!("write `f <- {what} … using sched` on its own line; use `_ <-` to ignore the future")),
+                );
+                Err(Failed)
             }
             Tok::Kw(Kw::Admit) => {
                 self.bump();
@@ -836,6 +897,7 @@ impl Parser {
                 | Tok::LParen
                 | Tok::LBracket
                 | Tok::Error
+                | Tok::Kw(Kw::Par)
         )
     }
 
@@ -907,6 +969,21 @@ impl Parser {
             Tok::Error => {
                 self.bump();
                 ExprKind::Error
+            }
+            Tok::Kw(Kw::Par) => {
+                self.bump();
+                let arg = self.atom()?;
+                let span = start.to(arg.span);
+                return match arg.kind {
+                    ExprKind::Tuple(items) => Ok(Expr { kind: ExprKind::Par(items), span }),
+                    _ => {
+                        self.diags.push(
+                            Diagnostic::error("E0115", "`par` takes a tuple of two or more expressions", arg.span)
+                                .with_help("write `par (f x, g y)`; the components are evaluated in parallel"),
+                        );
+                        Err(Failed)
+                    }
+                };
             }
             Tok::LParen => return self.paren(),
             Tok::LBracket => {

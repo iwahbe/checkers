@@ -239,6 +239,15 @@ pub fn expr(e: &Expr, depth: usize) -> String {
         ExprKind::Auto => "auto".into(),
         ExprKind::Admit => "admit".into(),
         ExprKind::Error => "<error>".into(),
+        ExprKind::Par(v) => format!("(par {})", list(v, depth)),
+        ExprKind::Fork(s, b) => format!("(fork using {}\n{}{})", s.name, ind(depth + 1), block(b, depth + 1)),
+        ExprKind::Join(binds, s, b) => format!(
+            "(join ({}) using {}\n{}{})",
+            binds.iter().map(|(n, f)| format!("({} {})", n.name, expr(f, depth + 1))).collect::<Vec<_>>().join(" "),
+            s.name,
+            ind(depth + 1),
+            block(b, depth + 1)
+        ),
     }
 }
 

@@ -34,6 +34,7 @@ pub enum Kw {
     Own,
     When,
     Using,
+    Par,
 }
 
 impl Kw {
@@ -68,6 +69,7 @@ impl Kw {
             "own" => Kw::Own,
             "when" => Kw::When,
             "using" => Kw::Using,
+            "par" => Kw::Par,
             _ => return None,
         })
     }
@@ -103,6 +105,7 @@ impl Kw {
             Kw::Own => "own",
             Kw::When => "when",
             Kw::Using => "using",
+            Kw::Par => "par",
         }
     }
 }
