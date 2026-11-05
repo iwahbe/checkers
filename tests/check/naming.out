@@ -1,0 +1,79 @@
+warning[W002]: module name `Bad_Module` should be lower_snake_case
+ --> naming.ck:1:8
+  |
+1 | module Bad_Module
+  |        ^^^^^^^^^^ rename to `bad_module`
+
+warning[W001]: enum name `json_value` should be UpperCamelCase
+ --> naming.ck:3:6
+  |
+3 | enum json_value
+  |      ^^^^^^^^^^ rename to `JsonValue`
+
+warning[W001]: constructor `null_value` should be UpperCamelCase
+ --> naming.ck:4:5
+  |
+4 |     null_value
+  |     ^^^^^^^^^^ rename to `NullValue`
+
+warning[W001]: record name `httpServer` should be UpperCamelCase
+ --> naming.ck:7:8
+  |
+7 | record httpServer
+  |        ^^^^^^^^^^ rename to `HttpServer`
+
+warning[W002]: field `PortNumber` should be lower_snake_case
+ --> naming.ck:8:5
+  |
+8 |     PortNumber~Nat
+  |     ^^^^^^^^^^ rename to `port_number`
+
+warning[W001]: type name `small_nat` should be UpperCamelCase
+  --> naming.ck:10:6
+   |
+10 | type small_nat = N~Nat, N < 10
+   |      ^^^^^^^^^ rename to `SmallNat`
+
+warning[W002]: binder `N` should be lower_snake_case
+  --> naming.ck:10:18
+   |
+10 | type small_nat = N~Nat, N < 10
+   |                  ^ rename to `n`
+
+warning[W003]: constant `maxDepth` should be SCREAMING_SNAKE_CASE
+  --> naming.ck:12:5
+   |
+12 | let maxDepth = 512
+   |     ^^^^^^^^ rename to `MAX_DEPTH`
+
+warning[W003]: constant `Pi` should be SCREAMING_SNAKE_CASE
+  --> naming.ck:13:5
+   |
+13 | let Pi = 3
+   |     ^^ rename to `PI`
+
+warning[W002]: function name `parseHTTPRequest` should be lower_snake_case
+  --> naming.ck:15:4
+   |
+15 | fn parseHTTPRequest Input -> Result : Input~Bytes
+   |    ^^^^^^^^^^^^^^^^ rename to `parse_http_request`
+
+warning[W002]: parameter `Input` should be lower_snake_case
+  --> naming.ck:15:21
+   |
+15 | fn parseHTTPRequest Input -> Result : Input~Bytes
+   |                     ^^^^^ rename to `input`
+
+warning[W002]: result name `Result` should be lower_snake_case
+  --> naming.ck:15:30
+   |
+15 | fn parseHTTPRequest Input -> Result : Input~Bytes
+   |                              ^^^^^^ rename to `result`
+
+warning[W002]: variable `lineCount` should be lower_snake_case
+  --> naming.ck:16:9
+   |
+16 |     let lineCount = 0
+   |         ^^^^^^^^^ rename to `line_count`
+
+naming.ck: 0 errors, 13 warnings

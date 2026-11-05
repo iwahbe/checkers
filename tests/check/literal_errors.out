@@ -1,0 +1,37 @@
+error[E0001]: `'é'` is not a byte: byte literals hold one ASCII character; use `c'é'` for a Char
+ --> literal_errors.ck:3:9
+  |
+3 | let A = 'é'
+  |         ^^^
+
+error[E0001]: byte literal must contain exactly one character; use `"…"` for a String
+ --> literal_errors.ck:4:9
+  |
+4 | let B = 'ab'
+  |         ^^^^
+
+error[E0001]: unterminated string literal
+ --> literal_errors.ck:5:9
+  |
+5 | let C = "unterminated
+  |         ^^^^^^^^^^^^^
+
+error[E0001]: unknown escape `\q`
+ --> literal_errors.ck:6:10
+  |
+6 | let D = "\q"
+  |          ^^
+
+error[E0001]: `\x` escapes above 0x7f are only allowed in byte and bytes literals; use `\u{…}`
+ --> literal_errors.ck:7:11
+  |
+7 | let E = c'\xff'
+  |           ^^^^
+
+error[E0001]: invalid number literal `12abc`
+ --> literal_errors.ck:8:9
+  |
+8 | let F = 12abc
+  |         ^^^^^
+
+literal_errors.ck: 6 errors, 0 warnings

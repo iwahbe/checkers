@@ -1,0 +1,6 @@
+(module literals)
+(const BYTES ['a' '\"' '\'' '\\' '\n' '\x7f'])
+(const CHARS [c'a' c'\u{e9}' c'\u{1f600}' c'\''])
+(const STRINGS ["" "'" "say \"hi\"" "café" "tab\there"])
+(const RAW b"\x00\xff\\u")
+(const NUMBERS [0 42 1000000 0xff 0x7f])

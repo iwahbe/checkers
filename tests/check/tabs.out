@@ -1,0 +1,7 @@
+error[E0001]: tabs are not allowed in indentation; use spaces
+ --> tabs.ck:4:1
+  |
+4 | 	1
+  | ^
+
+tabs.ck: 1 error, 0 warnings

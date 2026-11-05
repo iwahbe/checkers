@@ -1,0 +1,25 @@
+(module layout)
+(fn long_header (a b c) -> r
+  (: (a~Nat) (b~Nat) (c~Nat) (r~Nat))
+  (+ (+ a b) c))
+(lemma split_header (x)
+  (: (x~Nat))
+  (ensures (== x x)))
+(fn listed () -> xs
+  (: (xs~(List Nat)))
+  [1 2 3])
+(fn classify (n)
+  (: (n~Int))
+  (do
+    (let sign (do
+      (let zero 0)
+      (if (< n zero)
+        (neg 1)
+        1)))
+    (match n
+      (0 -> "zero")
+      (_ -> (if (< sign 0)
+            "negative"
+            (if (< n 10)
+              "small"
+              "large"))))))

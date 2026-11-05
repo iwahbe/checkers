@@ -1,0 +1,21 @@
+[package]
+name = "checkers"
+version = "0.1.0"
+edition = "2021"
+description = "Checkers: a dependently typed, proof-carrying functional language"
+license = "UNLICENSED"
+publish = false
+
+[[bin]]
+name = "checkers"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[[test]]
+name = "golden"
+path = "tests/golden.rs"
+harness = false
+
+[dependencies]

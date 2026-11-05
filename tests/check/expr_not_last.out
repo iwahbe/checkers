@@ -1,0 +1,8 @@
+error[E0107]: only the last line of a block may be a bare expression
+ --> expr_not_last.ck:4:5
+  |
+4 |     x + 1
+  |     ^^^^^
+  = help: bind it with `let`, or move it to the end of the block
+
+expr_not_last.ck: 1 error, 0 warnings

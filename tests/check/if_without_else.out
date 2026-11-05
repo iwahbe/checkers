@@ -1,0 +1,8 @@
+error[E0108]: a multi-line `if` needs an `else` branch
+ --> if_without_else.ck:4:5
+  |
+4 |     if x
+  |     ^^^^ this `if` has no `else`
+  = help: every `if` is an expression and must produce a value on both branches
+
+if_without_else.ck: 1 error, 0 warnings

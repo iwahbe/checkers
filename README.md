@@ -1,0 +1,48 @@
+# Checkers
+
+A functional, immutable language with dependent types, a built-in theorem prover, sealed module interfaces, and actors. Source files end in `.ck`.
+
+```
+fn skip_ws src i -> j : src~Bytes, i~Nat, i <= len src,
+                        j~Nat, i <= j, j <= len src
+    decreasing len src - i
+    if i < len src and is_ws src[i]
+        skip_ws src (i + 1)
+    else
+        i
+```
+
+Types are written only as constraints (`i~Nat, i <= len src`); the compiler proves the rest. See [`examples/json.ck`](examples/json.ck) for a JSON parser whose bounds checks, termination, and round-trip property are proven.
+
+**[SPEC.md](SPEC.md) is the definition of the language.** The implementation follows it.
+
+## Status
+
+| Milestone | State |
+|---|---|
+| M0 Front end: lexer with layout, parser, naming warnings, diagnostics | done |
+| M1 Elaborator + kernel (QTT) | next |
+| M2 Interpreter, prelude, `IO`, CLI tools | |
+| M3 Prover (Z3), refinements, trust ledger | |
+| M4–M9 | see SPEC §10 |
+
+## Usage
+
+```
+cargo build --release
+target/release/checkers check examples/json.ck      # parse + lint, report diagnostics
+target/release/checkers parse examples/json.ck      # print the syntax tree
+```
+
+## Tests
+
+```
+cargo test                                    # unit + golden tests
+UPDATE_GOLDEN=1 cargo test --test golden      # accept new golden output (review the diff!)
+```
+
+Golden tests live in `tests/parse/` (syntax tree) and `tests/check/` (diagnostics): each `NAME.ck` has a `NAME.out`. Every file in `examples/` must check with no diagnostics.
+
+## Reporting a problem
+
+Open an issue in the form **"found X, expected Y"** with a `.ck` snippet. It becomes a golden test before it is fixed (SPEC §12).

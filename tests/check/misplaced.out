@@ -1,0 +1,38 @@
+error[E0103]: imports must come before all declarations
+ --> misplaced.ck:6:1
+  |
+6 | import late
+  | ^^^^^^
+
+error[E0104]: `export abstract` applies only to `enum` and `record`
+ --> misplaced.ck:8:1
+  |
+8 | export abstract fn g
+  | ^^^^^^
+
+error[E0105]: `export transparent` applies only to `fn`
+  --> misplaced.ck:11:1
+   |
+11 | export transparent enum E
+   | ^^^^^^
+
+error[E0106]: a type alias must start with a typed binder such as `n~Nat`
+  --> misplaced.ck:14:26
+   |
+14 | type NoBinder = Nat, 1 < 2
+   |                          ^
+   = help: write `type Small = n~Nat, n < 10`
+
+warning[W003]: constant `x` should be SCREAMING_SNAKE_CASE
+  --> misplaced.ck:16:5
+   |
+16 | let x = _
+   |     ^ rename to `X`
+
+error[E0110]: `_` is only allowed in patterns
+  --> misplaced.ck:16:9
+   |
+16 | let x = _
+   |         ^
+
+misplaced.ck: 5 errors, 1 warning
