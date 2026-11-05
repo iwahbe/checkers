@@ -1,6 +1,6 @@
 # Checkers
 
-A functional, immutable language with dependent types, a built-in theorem prover, sealed module interfaces, and actors. Source files end in `.ck`.
+A functional, immutable language with dependent types, a built-in theorem prover, sealed module interfaces, and race-free concurrency (cowns and `when`). Source files end in `.ck`.
 
 ```
 fn skip_ws src i -> j : src~Bytes, i~Nat, i <= len src,
@@ -21,8 +21,8 @@ Types are written only as constraints (`i~Nat, i <= len src`); the compiler prov
 | Milestone | State |
 |---|---|
 | M0 Front end: lexer with layout, parser, naming warnings, diagnostics | done |
-| M1 Elaborator + kernel (QTT) | next |
-| M2 Interpreter, prelude, `IO`, CLI tools | |
+| M1 Type checker: dependent types, exhaustive `match`, termination, `own`/`ghost` usage | done (refinements recorded, proven in M3) |
+| M2 Interpreter, `check` evaluation, CLI tools | next |
 | M3 Prover (Z3), refinements, trust ledger | |
 | M4–M9 | see SPEC §10 |
 
@@ -30,7 +30,7 @@ Types are written only as constraints (`i~Nat, i <= len src`); the compiler prov
 
 ```
 cargo build --release
-target/release/checkers check examples/json.ck      # parse + lint, report diagnostics
+target/release/checkers check examples/json.ck      # parse, lint and type-check
 target/release/checkers parse examples/json.ck      # print the syntax tree
 ```
 
@@ -41,7 +41,7 @@ cargo test                                    # unit + golden tests
 UPDATE_GOLDEN=1 cargo test --test golden      # accept new golden output (review the diff!)
 ```
 
-Golden tests live in `tests/parse/` (syntax tree) and `tests/check/` (diagnostics): each `NAME.ck` has a `NAME.out`. Every file in `examples/` must check with no diagnostics.
+Golden tests live in `tests/parse/` (syntax tree), `tests/check/` (parse diagnostics) and `tests/types/` (type-checker contract: accepted and rejected programs): each `NAME.ck` has a `NAME.out`. Every file in `examples/` must check with no diagnostics.
 
 ## Reporting a problem
 

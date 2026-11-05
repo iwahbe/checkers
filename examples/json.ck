@@ -16,6 +16,8 @@ import cursor (Parsed)            # record Parsed a src start: a value plus the 
 import decimal (Decimal)          # sealed: exact decimal numbers, JSON number scanning/rendering
 import utf8                       # sealed: decode_at, encode, and their lemmas
 import bytes                      # sealed: matches_at, ...
+import string
+import char
 import list (keys, unique, contains, reverse, join, map, max_of)   # `keys` is exported transparent
 
 # ── Data ─────────────────────────────────────────────────────────────────────

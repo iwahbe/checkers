@@ -1,0 +1,33 @@
+error[E0234]: `<-` needs a call that returns `(result, fs)`, but this returns `Result Bytes IoError`
+ --> effects.ck:9:17
+  |
+9 |     contents <- files.read path fs
+  |                 ^^^^^^^^^^^^^^^^^^
+  = help: operations on authority capabilities (`fs`, `term`, …) return just their result: use `let`
+
+error[E0230]: `try` can only be used where the block's value is the function's result
+  --> effects.ck:14:17
+   |
+14 |         let z = try x
+   |                 ^^^^^
+   = help: `try` returns the error from the enclosing function; use `match` here instead
+
+error[E0232]: `try` returns early with the error, so the result here must be `Option _`, but it is `Nat`
+  --> effects.ck:19:13
+   |
+19 |     let y = try x
+   |             ^^^^^ returns early from here
+
+error[E0201]: type mismatch: expected `Cown _`, found `Nat`
+  --> effects.ck:23:14
+   |
+23 |     when v = n using sched
+   |              ^ this expression has type `Nat`
+
+error[E0201]: type mismatch: expected `Sched`, found `Nat`
+  --> effects.ck:42:21
+   |
+42 |     f <- fork using x
+   |                     ^ this expression has type `Nat`
+
+effects.ck: 5 errors, 0 warnings

@@ -508,7 +508,17 @@ impl Parser {
                 return Err(self.error_here("an expression ending the block"));
             }
             if self.at_kw(Kw::When) {
-                stmts.push(Stmt::When(self.when_stmt()?));
+                let w = self.when_stmt()?;
+                let kw = Span::new(w.span.start as usize, w.span.start as usize + 4);
+                stmts.push(Stmt::When(w));
+                if self.at(&Tok::Dedent) || self.at(&Tok::Eof) {
+                    self.diags.push(
+                        Diagnostic::error("E0117", "a block cannot end with `when`", kw)
+                            .with_label("`when` schedules work and has no value")
+                            .with_help("add the block's result on the next line, e.g. `()`"),
+                    );
+                    return Err(Failed);
+                }
                 continue;
             }
             if !self.at_kw(Kw::Let) && self.line_has_larrow() {

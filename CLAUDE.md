@@ -6,7 +6,8 @@
 - `UPDATE_GOLDEN=1 cargo test --test golden` rewrites `.out` files. Read every changed `.out` before committing; never accept output you haven't checked.
 - `examples/*.ck` must check with zero diagnostics (enforced by the golden test).
 - Keep `cargo clippy` clean. No new dependencies without a reason in the commit message.
-- Diagnostic codes: `E0001`–`E0099` lexer/layout, `E0100`–`E0199` parser, `W001`–`W003` naming (§9.7). Never reuse a code for a different meaning.
+- Diagnostic codes: `E0001`–`E0099` lexer/layout, `E0100`–`E0199` parser, `E0200`–`E0299` names and types, `E0300`–`E0349` termination, `E0350`–`E0399` declarations (positivity, signatures), `E0400`–`E0449` usage (`own`/`ghost`), `W001`–`W003` naming (§9.7). Never reuse a code for a different meaning (E0107 is retired).
+- The standard library lives in `stdlib/*.ck` and is embedded in the binary. A function body consisting of `__builtin` (allowed only in `stdlib/`) is a primitive implemented in Rust.
 
 ## Layout
 
@@ -18,5 +19,14 @@ src/syntax/parser.rs recursive descent for §9.2
 src/syntax/ast.rs    surface AST
 src/syntax/print.rs  S-expression dump used by `checkers parse` and golden tests
 src/lint.rs          naming warnings (D21)
-tests/golden.rs      golden test runner
+src/core.rs          core terms and values, evaluation (NbE), lazy unfolding, unification, printing
+src/elab/mod.rs      elaborator state, metas, deferred operator constraints (D38)
+src/elab/decls.rs    imports, declarations, positivity, signatures (auto-binding, D10)
+src/elab/expr.rs     bidirectional checking of expressions, blocks, `<-`, `try`, `when`/`fork`/`join`
+src/elab/pattern.rs  `match` → case trees, exhaustiveness witnesses
+src/elab/termination.rs  structural recursion over call-graph SCCs (§5.3)
+src/elab/stdlib.rs   embedded standard library loading
+src/usage.rs         `own`/`ghost` usage (QTT multiplicities)
+stdlib/*.ck          standard library
+tests/golden.rs      golden test runner (tests/parse, tests/check, tests/types, examples)
 ```

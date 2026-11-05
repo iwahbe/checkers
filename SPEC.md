@@ -14,7 +14,7 @@ This document is the single source of truth for Checkers. Implementation follows
 | D1 | **Trust the SMT solver (Z3).** SMT-discharged obligations are accepted without certificate re-checking. Every use is recorded in a per-module *trust ledger* (§7.4) so certificate checking can be added later without changing the language. | 11/05/2026 | decided |
 | D2 | Core calculus is **Quantitative Type Theory** with multiplicities {0, 1, ω} (Atkey 2018; as implemented in Idris 2). | 11/05/2026 | **(proposed)** |
 | D3 | `Prop` is a definitionally proof-irrelevant, impredicative universe (as in Lean 4). | 11/05/2026 | **(proposed)** |
-| D4 | The kernel knows only recursors (eliminators); pattern matching is compiled to them by the elaborator (Lean's approach). Keeps the trusted kernel small. | 11/05/2026 | **(proposed)** |
+| D4 | **Pattern matching is checked as case trees** (as in Agda and Idris 2): the elaborator compiles `match` to case trees over constructors and literals, checks exhaustiveness, and checks structural recursion on them. *Revises the 11/05/2026 recursors-only proposal*, which would need dependent pattern-match compilation to eliminators before anything runs; recursors can return later as a proof certificate. | 11/05/2026 (rev.) | **(proposed)** |
 | D5 | Implementation language: Rust (Cranelift and the `z3` bindings are Rust-native). | 11/05/2026 | **(proposed)** |
 | D6 | `Int` and `Nat` are arbitrary-precision (match SMT `Int` exactly). Fixed-width types are **refinements**, not separate number systems: `U8 = n~Nat, n < 256`, `I64 = n~Int, -2^63 <= n, n < 2^63`. Overflow is therefore a proof obligation, never a silent wrap; wrapping arithmetic is explicit (`wrapping_add`, …). `-` on `Nat` requires `a >= b`. The backend stores refined numbers in machine words. | 11/05/2026 (rev.) | **(proposed)** |
 | D7 | Compile-time staging uses Two-Level Type Theory (Kovács 2022), added in milestone M6, not in the v0.1 core. | 11/05/2026 | **(proposed)** |
@@ -44,6 +44,9 @@ This document is the single source of truth for Checkers. Implementation follows
 | D34 | **`par (e1, …, en)`** evaluates the components of an n-tuple in parallel and returns the tuple. Pure only; to the prover `par t == t`. A keyword, not a function, because Checkers is strict: a function's arguments would already be evaluated, one after another, before it ran. | 11/05/2026 | decided |
 | D32 | **Record patterns** `Ctor { a, b = p }` bind named fields. Fields left out must be authority capabilities or ordinary values; an unmentioned resource field is an error. | 11/05/2026 | **(proposed)** |
 | D35 | **`Unit` statements.** A call returning `Unit` may stand alone as a statement line in a block (`terminal.print_line "hi" term`). Any other non-final bare expression is a type error; discard a value with `let _ = …`. | 11/05/2026 | **(proposed)** |
+| D36 | **Importing a type imports its constructors**: `import system (ExitCode)` makes `Success` and `Failure` available. Record fields are reached with `.field`. | 11/05/2026 | **(proposed)** |
+| D37 | **Inductive types have parameters, not indices.** A family such as `Vec a n` is parameterized by `a` and `n`; constructors relate them with equality constraints (`n == m + 1`), which are refinements (§7). The kernel never unifies indices. | 11/05/2026 | **(proposed)** |
+| D38 | **Built-in operators before interfaces (D15).** `+ - * / %` work on `Nat` and `Int`; `< <= > >=` on `Nat` and `Int`; `==`/`!=` on any type; `++` on `String`, `Bytes` and `List a`; `len` on `Bytes`, `String` and `List a`; `format` on any type. Both operands must have the same type; an unconstrained numeric literal defaults to `Nat`. `U8`, `Char` and the other fixed-width types are refinements of `Nat`/`Int` (D6), so they mix freely with them; their ranges are checked by the prover. | 11/05/2026 | **(proposed)** |
 | D24 | **Development loop:** Claude owns the implementation; Ian drives with examples. An issue is "found X, expected Y" with a `.ck` snippet. Each one becomes a regression test under `tests/` *before* the fix lands, and the spec is updated first whenever the expectation changes the language. | 11/05/2026 | decided |
 | D25 | **Milestones reordered for CLI tools first** (§10): a running interpreter with `IO` comes right after type checking, before the prover, so Checkers can be used to build its own tooling early. Capstone: an interactive shell with a small scripting language, with proofs of its correctness. | 11/05/2026 | decided |
 
@@ -513,7 +516,7 @@ apat        ::= '_' | lname | literal | Uname
 | predicate over inputs only | precondition | refinement on the inputs |
 | predicate mentioning the result name | postcondition | return type `{r : R \| P}` |
 | predicate in a constructor/field list | invariant (D11) | `Prop` field, erased |
-| free `lname` in a type position, not in scope (`a` in `xs~List a`) | implicit type parameter (D10) | `{a :0 Type}` |
+| free `lname` in a type position, not in scope (`a` in `xs~List a`) | implicit type parameter (D10); a name used as a qualifier (`future` in `future.Future`) is never auto-bound | `{a :0 Type}` |
 
 A constraint is only required where inference fails; `fn is_ws b : b~U8` infers its `Bool` result.
 
@@ -598,7 +601,7 @@ Reordered (D25) so that Checkers can run CLI tools before the prover exists.
 | # | Deliverable | Done when |
 |---|-------------|-----------|
 | M0 | Rust workspace; lexer with layout (§9.1); parser for §9.2; naming warnings (§9.7); source-span diagnostics; `checkers parse` / `checkers check` | `examples/json.ck` and every spec example parse; golden tests for errors and warnings |
-| M1 | Elaborator + kernel: name resolution, QTT core (§4), enums/records, `match` → recursors, inference and implicits, structural termination | `Vec`, `List`, `Nat` programs type-check; contract tests for every §4 rule, including rejected programs |
+| M1 | Type checker: modules and imports, dependent types with implicit arguments (bidirectional elaboration, pattern unification), enums/records (strict positivity), `match` → case trees with exhaustiveness (D4), structural termination, `own`/`ghost` usage (QTT, §4), operators (D38), effect forms (§8) typed. **Not yet:** predicates are type-checked as `Bool` and recorded, but proven only in M3; `decreasing` measures are recorded and checked in M5; proof blocks and `check` evaluation come with M3 and M2; linearity of resources inferred from their *type* (not just `own` binders) comes with M2. | `Vec`, `List`, `Nat` programs type-check; all `examples/` type-check; golden contract tests in `tests/types/`, including rejected programs |
 | M2 | Erasure, interpreter, prelude, capabilities and `main` (§8.2–8.4: `Term`, `Fs`, `Env`, `Proc`, exit codes), copy-on-use splitting and implicit `drop`, resource linearity | `examples/wc.ck` runs |
 | M3 | `Prop`, equality, refinements, Z3 pipeline, trust ledger, `check` | verified insertion sort |
 | M4 | Modules, sealing, exported lemmas | sort module used from another module via its lemmas only |
@@ -636,5 +639,8 @@ Reordered (D25) so that Checkers can run CLI tools before the prover exists.
 ## 12. Development workflow (D24)
 
 - `tests/` holds golden tests: each `NAME.ck` has a `NAME.out` with the exact expected compiler output (diagnostics or program output). `cargo test` runs them all.
+  - `tests/parse/`: syntax tree plus parse and lint diagnostics.
+  - `tests/check/`: parse and lint diagnostics only.
+  - `tests/types/`: the full report, including type checking. These are the type checker's contract: one file per rule area (mismatches, exhaustiveness, termination, usage, positivity, effects, modules), with an accepted-programs file that must stay clean.
 - A report from Ian is "found X, expected Y" with a `.ck` snippet. It is added as a failing golden test first, then fixed. If Y changes the language, this spec is updated before the code.
 - `UPDATE_GOLDEN=1 cargo test` rewrites `.out` files; every rewritten file is reviewed in the diff before committing.

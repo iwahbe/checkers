@@ -1,0 +1,23 @@
+module usage
+
+import files (File)
+
+fn twice f : f~own File
+    files.close f
+    files.close f
+
+fn never f -> n : f~own File, n~Nat
+    0
+
+fn one_branch f b : f~own File, b~Bool
+    if b then files.close f else ()
+
+fn threaded f : f~own File
+    _ <- files.write_line "hi" f
+    files.close f
+
+fn ghostly src -> n : src~ghost Bytes, n~Nat
+    len src
+
+fn ghost_ok src n -> m : src~ghost Bytes, n~Nat, n <= len src, m~Nat
+    n

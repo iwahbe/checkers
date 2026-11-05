@@ -1,7 +1,8 @@
 //! Golden tests (SPEC §12).
 //!
 //! tests/parse/NAME.ck  → NAME.out is the syntax tree, followed by any diagnostics.
-//! tests/check/NAME.ck  → NAME.out is the diagnostics report.
+//! tests/check/NAME.ck  → NAME.out is the parse + lint report.
+//! tests/types/NAME.ck  → NAME.out is the full report (type checking included).
 //! examples/*.ck        → must check with no errors and no warnings.
 //!
 //! `UPDATE_GOLDEN=1 cargo test --test golden` rewrites the .out files.
@@ -22,7 +23,7 @@ fn ck_files(dir: &Path) -> Vec<PathBuf> {
 fn run(path: &Path, mode: &str) -> String {
     let text = fs::read_to_string(path).unwrap();
     let name = path.file_name().unwrap().to_string_lossy().to_string();
-    let c = checkers::check(&name, &text);
+    let c = if mode == "types" { checkers::check(&name, &text) } else { checkers::parse_only(&name, &text) };
     match mode {
         "parse" => {
             let mut out = checkers::syntax::print::module(&c.module);
@@ -42,7 +43,7 @@ fn main() {
     let mut failures = Vec::new();
     let mut count = 0;
 
-    for mode in ["parse", "check"] {
+    for mode in ["parse", "check", "types"] {
         for path in ck_files(&root.join("tests").join(mode)) {
             count += 1;
             let actual = run(&path, mode);

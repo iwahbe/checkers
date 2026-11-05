@@ -9,7 +9,7 @@ import system (System, ExitCode)
 import terminal (Term)
 import files (Fs, IoError)
 import future (Future)
-import list (length, take, drop)
+import list (length, take, drop, sorted, perm)
 
 # ── Pure parallelism ─────────────────────────────────────────────────────────
 # `par` sorts both halves at once. To the prover `par t == t`, so `sort` is

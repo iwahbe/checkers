@@ -1,0 +1,29 @@
+error[E0401]: `f` is `own`, so it must be used exactly once, but `twice` may use it more than once
+ --> usage.ck:5:10
+  |
+5 | fn twice f : f~own File
+  |          ^
+  = help: an owned resource can't be copied; thread it with `<-` so each use gets the new one
+
+error[E0401]: `f` is `own`, so it must be used exactly once, but `never` never uses it
+ --> usage.ck:9:10
+  |
+9 | fn never f -> n : f~own File, n~Nat
+  |          ^
+  = help: close or pass on the resource
+
+error[E0402]: `f` is `own`, but `one_branch` uses it on some paths and not on others
+  --> usage.ck:12:15
+   |
+12 | fn one_branch f b : f~own File, b~Bool
+   |               ^
+   = help: an owned resource must be used exactly once on every path, e.g. closed in every branch
+
+error[E0403]: `src` is `ghost`: it may only appear in types and constraints, but `ghostly` uses it at runtime
+  --> usage.ck:19:12
+   |
+19 | fn ghostly src -> n : src~ghost Bytes, n~Nat
+   |            ^^^
+   = help: remove `ghost` if the value is needed at runtime
+
+usage.ck: 4 errors, 0 warnings

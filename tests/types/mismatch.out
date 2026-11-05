@@ -1,0 +1,71 @@
+error[E0201]: type mismatch: expected `Nat`, found `String`
+ --> mismatch.ck:8:9
+  |
+8 |     1 + "two"
+  |         ^^^^^ this expression has type `String`
+
+error[E0201]: type mismatch: expected `String`, found a number
+  --> mismatch.ck:11:5
+   |
+11 |     42
+   |     ^^ this is a number, not a `String`
+
+error[E0201]: type mismatch: expected `Nat`, found `String`
+  --> mismatch.ck:14:22
+   |
+14 |     if b then 1 else "no"
+   |                      ^^^^ this expression has type `String`
+
+error[E0205]: too many arguments: this has type `Nat`, which is not a function
+  --> mismatch.ck:18:9
+   |
+18 |     f 1 2
+   |         ^ extra argument
+
+error[E0204]: unknown name `undefined_thing`
+  --> mismatch.ck:21:5
+   |
+21 |     undefined_thing 1
+   |     ^^^^^^^^^^^^^^^ not found
+
+error[E0207]: record `Point` has no field `z`
+  --> mismatch.ck:24:7
+   |
+24 |     p.z
+   |       ^
+   = help: its fields are `x`, `y`
+
+error[E0207]: `Nat` has no field `value`
+  --> mismatch.ck:27:7
+   |
+27 |     n.value
+   |       ^^^^^ this is a `Nat`, not a record
+
+error[E0210]: `+` needs numbers (`Nat` or `Int`), but this is `String`
+  --> mismatch.ck:30:5
+   |
+30 |     "a" + "b"
+   |     ^^^^^^^^^ has type `String`
+   = help: to join strings, bytes or lists, use `++`
+
+error[E0210]: `len` needs a `String`, `Bytes` or `List`, but this is `Nat`
+  --> mismatch.ck:33:9
+   |
+33 |     len 5
+   |         ^ has type `Nat`
+
+error[E0215]: this line produces a `Nat`, which would be thrown away
+  --> mismatch.ck:36:5
+   |
+36 |     1 + 1
+   |     ^^^^^
+   = help: only calls returning `Unit` can stand alone; write `let _ = …` to discard a value, or make it the block's last line
+
+error[E0203]: cannot infer the type of `x` in `needs_type`
+  --> mismatch.ck:39:1
+   |
+39 | fn needs_type x
+   | ^^^^^^^^^^^^^^^
+   = help: add a constraint such as `x~Nat` to the header
+
+mismatch.ck: 11 errors, 0 warnings

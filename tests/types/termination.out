@@ -1,0 +1,22 @@
+error[E0301]: cannot show that `loops` terminates: no argument gets structurally smaller in this recursive call
+ --> termination.ck:4:5
+  |
+4 |     loops n
+  |     ^^^^^ recursive call
+  = help: recurse on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of `loops`, or mark it `partial`
+
+error[E0301]: cannot show that `not_smaller` terminates: no argument gets structurally smaller in this recursive call
+ --> termination.ck:9:22
+  |
+9 |         x :: rest -> not_smaller (x :: rest)
+  |                      ^^^^^^^^^^^ recursive call
+  = help: recurse on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of `not_smaller`, or mark it `partial`
+
+error[E0302]: `forever` is `partial` (it may not terminate), so `calls_partial` cannot call it
+  --> termination.ck:35:5
+   |
+35 |     forever n
+   |     ^^^^^^^
+   = help: mark `calls_partial` as `partial fn` too
+
+termination.ck: 3 errors, 0 warnings

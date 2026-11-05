@@ -1,0 +1,8 @@
+error[E0117]: a block cannot end with `when`
+ --> when_last.ck:4:5
+  |
+4 |     when v = c using sched
+  |     ^^^^ `when` schedules work and has no value
+  = help: add the block's result on the next line, e.g. `()`
+
+when_last.ck: 1 error, 0 warnings

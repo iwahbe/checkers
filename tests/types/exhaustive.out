@@ -1,0 +1,48 @@
+error[E0240]: this `match` does not cover `Blue`
+ --> exhaustive.ck:9:5
+  |
+9 |     match c
+  |     ^^^^^^^ not exhaustive
+  = help: add an arm `Blue -> …`, or a catch-all `_ -> …`
+
+error[E0240]: this `match` does not cover `Some Green` or `Some Blue`
+  --> exhaustive.ck:14:5
+   |
+14 |     match o
+   |     ^^^^^^^ not exhaustive
+   = help: add arms for these, or a catch-all `_ -> …`
+
+error[E0240]: this `match` does not cover every other `Nat`
+  --> exhaustive.ck:19:5
+   |
+19 |     match n
+   |     ^^^^^^^ not exhaustive
+   = help: add an arm for it, or a catch-all `_ -> …`
+
+error[E0240]: this `match` does not cover the case where the guard is false
+  --> exhaustive.ck:24:5
+   |
+24 |     match n
+   |     ^^^^^^^ not exhaustive
+   = help: add an arm for it, or a catch-all `_ -> …`
+
+error[E0241]: `Some` is a constructor of `Option`, but the value being matched has type `Color`
+  --> exhaustive.ck:29:9
+   |
+29 |         Some _ -> 1
+   |         ^^^^^^ expected a `Color` pattern
+
+error[E0242]: `Some` has 1 field, but this pattern gives 2
+  --> exhaustive.ck:34:9
+   |
+34 |         Some a b -> a
+   |         ^^^^^^^^
+
+error[E0244]: unknown constructor `Purple`
+  --> exhaustive.ck:39:9
+   |
+39 |         Purple -> 1
+   |         ^^^^^^
+   = help: the constructors of `Color` are `Red`, `Green`, `Blue`
+
+exhaustive.ck: 7 errors, 0 warnings
