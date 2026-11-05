@@ -161,6 +161,8 @@ pub enum ObKind {
     Post { func: String, at: Span },
     Invariant { con: String },
     NatSub,
+    /// A recursive call must make the caller's `decreasing` measure smaller.
+    Measure { func: String, measure: String },
     Div,
     Index,
     Lemma { name: String },
@@ -214,6 +216,8 @@ pub struct Spec {
     /// A lemma's `let`s (each over the binders and earlier lets) and its `ensures`.
     pub lets: Vec<Tm>,
     pub ensures: Option<Pred>,
+    /// `decreasing e` / `decreasing (a, b)`: components over the binders, and the text.
+    pub measure: Option<(Vec<Tm>, String)>,
 }
 
 /// The postconditions to check at each value the current function returns.
@@ -270,6 +274,12 @@ pub struct Elab {
     /// The goal of the proof being elaborated (D49).
     pub proof_goal: Option<(Val, String)>,
     pub admits: Vec<Trusted>,
+    /// Measure obligations of calls (caller, callee); kept only for calls
+    /// inside one recursive group once termination is analysed.
+    pub measure_obs: Vec<(DefId, DefId, Obligation)>,
+    /// Heads of saturated calls (recursion through a partial application
+    /// can't have its measure checked, E0303).
+    pub saturated_heads: HashSet<Span>,
     /// `check` declarations: module, span, elaborated `Bool` term (D40).
     pub checks: Vec<(String, Span, Tm)>,
     /// Variables that are linear because of their type (D39): (function, name) → (span, type).
@@ -315,6 +325,8 @@ impl Elab {
             proof_goal: None,
             post_target: None,
             admits: Vec::new(),
+            measure_obs: Vec::new(),
+            saturated_heads: HashSet::new(),
             resource_vars: HashMap::new(),
             stdlib_mode: false,
             map_elem_sub: None,

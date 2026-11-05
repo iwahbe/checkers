@@ -39,6 +39,7 @@ const NAMES: &[&str] = &[
     "decimal.of_int",
     "bag.of",
     "bag.count",
+    "bag.sum",
     "cown.new",
     "future.ready",
 ];
@@ -321,6 +322,14 @@ pub fn call(it: &mut Interp, name: &str, a: Vec<Value>) -> R<Value> {
             let Value::Num(x) = &a[0] else { return Err(it.error("`bag.count` needs a number")) };
             let Value::Bag(b) = &a[1] else { return Err(it.error("`bag.count` needs a bag")) };
             Value::nat(b.iter().find(|(v, _)| v == x).map_or(0, |(_, n)| *n))
+        }
+        "bag.sum" => {
+            let (Value::Bag(x), Value::Bag(y)) = (&a[0], &a[1]) else { return Err(it.error("`bag.sum` needs bags")) };
+            let mut counts: std::collections::BTreeMap<Num, usize> = x.iter().cloned().collect();
+            for (v, n) in y.iter() {
+                *counts.entry(v.clone()).or_default() += n;
+            }
+            Value::Bag(Rc::new(counts.into_iter().collect()))
         }
         "cown.new" => Value::Cown(Rc::new(RefCell::new(a[0].clone()))),
         "future.ready" => Value::Future(Rc::new(RefCell::new(Some(a[0].clone())))),

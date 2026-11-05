@@ -59,15 +59,36 @@ export fn max_of xs -> m : xs~List Nat, m~Nat
             let m = max_of rest
             if x > m then x else m
 
-export fn take n xs -> ys : n~Nat, xs~List a, ys~List a
+export fn take n xs -> ys : n~Nat, xs~List a, ys~List a,
+                            length ys <= length xs, n <= length xs implies length ys == n
     match xs
         [] -> []
         x :: rest -> if n == 0 then [] else x :: take (n - 1) rest
 
-export fn drop n xs -> ys : n~Nat, xs~List a, ys~List a
+export fn drop n xs -> ys : n~Nat, xs~List a, ys~List a,
+                            length ys <= length xs, n <= length xs implies length ys + n == length xs
     match xs
         [] -> []
         _ :: rest -> if n == 0 then xs else drop (n - 1) rest
+
+# Splitting a list and joining the halves gives it back.
+export lemma take_drop n xs : n~Nat, xs~List Int
+    ensures take n xs ++ drop n xs == xs
+    proof
+        match xs
+            [] -> auto
+            _ :: rest ->
+                match n
+                    0 -> auto
+                    _ -> have take_drop (n - 1) rest
+
+# The elements of `xs ++ ys` are those of `xs` and those of `ys`.
+export lemma bag_append xs ys : xs~List Int, ys~List Int
+    ensures bag.of (xs ++ ys) == bag.sum (bag.of xs) (bag.of ys)
+    proof
+        match xs
+            [] -> auto
+            _ :: rest -> have bag_append rest ys
 
 export transparent fn sorted xs -> r : xs~List Int, r~Bool
     decreasing length xs

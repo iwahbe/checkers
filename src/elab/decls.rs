@@ -36,6 +36,7 @@ impl Elab {
         self.phase_consts(m, &ids);
         let mut sigs = self.phase_signatures(m, &ids);
         self.phase_lemma_statements(m, &ids, &mut sigs);
+        self.phase_measures(m, &ids, &sigs);
         self.phase_bodies(m, &ids, sigs);
         self.check_termination();
         // Seal the module's functions (D54): importers see signatures only.
@@ -951,9 +952,7 @@ impl Elab {
                     let fname = self.g.defs[did.0 as usize].name.to_string();
                     self.post_target =
                         (!posts.is_empty()).then(|| PostTarget { posts, func: fname, binders: sig.cx.env.clone() });
-                    if let Some(e) = decreasing {
-                        self.check_measure(&mut sig.cx, e);
-                    }
+                    let _ = decreasing;
                     let bt = self.check_block(&mut sig.cx, body, &rty, true);
                     self.post_target = None;
                     self.solve_deferred();
@@ -1018,6 +1017,7 @@ impl Elab {
                 n_implicit: sig.n_implicit,
                 lets: lets_tm,
                 ensures: Some(ens),
+                measure: None,
             };
             self.specs.insert(*did, spec);
         }
@@ -1055,24 +1055,40 @@ impl Elab {
         }
     }
 
-    fn check_measure(&mut self, cx: &mut Cx, e: &Expr) {
+    /// Every function's `decreasing` measure, before any body, so calls to
+    /// functions defined later can be checked against it (§5.3).
+    fn phase_measures(&mut self, m: &ast::Module, ids: &[Option<Sym>], sigs: &HashMap<usize, Sig>) {
+        for (k, (d, id)) in m.decls.iter().zip(ids).enumerate() {
+            let DeclKind::Fn { decreasing: Some(e), .. } = &d.kind else { continue };
+            let (Some(Sym::Def(did)), Some(sig)) = (id, sigs.get(&k)) else { continue };
+            self.g.fuel.set(DEFAULT_FUEL);
+            let mut sig = Sig {
+                cx: sig.cx.clone(),
+                binders: sig.binders.clone(),
+                result: sig.result.clone(),
+                n_implicit: sig.n_implicit,
+                preds: sig.preds.clone(),
+                result_name: sig.result_name.clone(),
+            };
+            self.cur_fn = Some(*did);
+            self.assume_pres(&mut sig);
+            let comps = self.check_measure(&mut sig.cx, e);
+            self.solve_deferred();
+            let text = self.src_text(e.span);
+            if let Some(spec) = self.specs.get_mut(did) {
+                spec.measure = Some((comps, text));
+            }
+            self.cur_fn = None;
+        }
+    }
+
+    /// A measure: a `Nat`, or a tuple of `Nat`s compared lexicographically.
+    fn check_measure(&mut self, cx: &mut Cx, e: &Expr) -> Vec<Tm> {
         let n = self.nat();
         match &e.kind {
-            ExprKind::Tuple(items) => {
-                for it in items {
-                    self.check(cx, it, &n, false);
-                }
-            }
-            _ => {
-                self.check(cx, e, &n, false);
-            }
+            ExprKind::Tuple(items) => items.iter().map(|it| self.check(cx, it, &n, false)).collect(),
+            _ => vec![self.check(cx, e, &n, false)],
         }
-        // Checked in M5; until then the function's termination is trusted (D50).
-        self.admits.push(Trusted {
-            module: self.cur.clone(),
-            span: e.span,
-            what: format!("termination via `decreasing {}` (not checked until M5)", self.src_text(e.span)),
-        });
     }
 
     fn report_unsolved_sig(&mut self, did: DefId, sig: &Sig, span: Span) {

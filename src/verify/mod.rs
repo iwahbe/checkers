@@ -134,12 +134,28 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     // Translate on this thread (the elaborator isn't `Send`), solve in parallel.
     let queries: Vec<Result<smt::Query, smt::Outside>> = obs.iter().map(|o| smt::Builder::new(e, user).query(o)).collect();
     let texts: Vec<Option<String>> = queries.iter().map(|q| q.as_ref().ok().map(|q| q.text.clone())).collect();
+    let fallbacks: Vec<Option<String>> = queries.iter().map(|q| q.as_ref().ok().and_then(|q| q.without_axioms.clone())).collect();
     if std::env::var_os("CHECKERS_SMT_DUMP").is_some() {
         for (o, t) in obs.iter().zip(&texts) {
             eprintln!(";; ── {:?} at {:?}\n{}", o.kind, o.span, t.as_deref().unwrap_or(";; outside the fragment"));
         }
     }
-    let answers = ask_all(&texts);
+    let mut answers = ask_all(&texts);
+    // `unknown` with the quantified axioms: try without them (§7.2).
+    let retry: Vec<Option<String>> = answers
+        .iter()
+        .zip(&fallbacks)
+        .map(|(a, f)| if matches!(a, Some(Answer::Unknown(_))) { f.clone() } else { None })
+        .collect();
+    if retry.iter().any(|r| r.is_some()) {
+        for (a, r) in answers.iter_mut().zip(ask_all(&retry)) {
+            if let Some(r) = r {
+                if !matches!(r, Answer::Unknown(_)) {
+                    *a = Some(r);
+                }
+            }
+        }
+    }
     for ((o, q), a) in obs.iter().zip(&queries).zip(answers) {
         match (q, a) {
             (Err(why), _) => v.diags.push(outside(e, o, &why.0)),
@@ -186,6 +202,7 @@ fn describe(e: &Elab, o: &Obligation) -> String {
         }
         ObKind::Invariant { con } => format!("invariant of `{con}`: {}", o.text),
         ObKind::NatSub => format!("`Nat` subtraction `{}` stays at or above zero", o.text),
+        ObKind::Measure { func, measure } => format!("termination of `{func}`: `decreasing {measure}` gets smaller"),
         ObKind::Div => format!("divisor of `{}` is not zero", o.text),
         ObKind::Index => format!("index in bounds: {}", o.text),
         ObKind::Lemma { name } => format!("lemma `{name}`: {}", o.text),
@@ -235,6 +252,11 @@ fn headline(o: &Obligation) -> (String, String, String) {
             format!("cannot prove `{}`, required to build `{con}`", o.text),
             format!("`{con}` requires `{}`", o.text),
             "check the value before building it, e.g. with an `if`".into(),
+        ),
+        ObKind::Measure { func, measure } => (
+            format!("cannot prove that `{func}` terminates: `{measure}` may not get smaller in this call"),
+            format!("`decreasing {measure}` must be smaller here than on entry to `{func}`"),
+            "make sure the recursive call's arguments make the measure smaller, e.g. by checking a bound first".into(),
         ),
         ObKind::NatSub => (
             "cannot prove that this `Nat` subtraction stays at or above zero".into(),

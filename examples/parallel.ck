@@ -13,7 +13,10 @@ import list (length, take, drop, sorted, perm)
 
 # ── Pure parallelism ─────────────────────────────────────────────────────────
 # `par` sorts both halves at once. To the prover `par t == t`, so `sort` is
-# still an ordinary pure function and keeps its correctness proof.
+# still an ordinary pure function and keeps its correctness proof: a verified
+# merge sort (milestone M5). `decreasing` gives each recursion a measure that
+# must get smaller at every recursive call; the `have` lines bring in the list
+# lemmas the permutation proof needs.
 
 export fn sort xs -> out : xs~List Int, out~List Int, sorted out, perm xs out
     decreasing length xs
@@ -23,15 +26,20 @@ export fn sort xs -> out : xs~List Int, out~List Int, sorted out, perm xs out
         _   ->
             let half = length xs / 2
             let (l, r) = par (sort (take half xs), sort (drop half xs))
+            have list.take_drop half xs
+            have list.bag_append (take half xs) (drop half xs)
+            have list.bag_append l r
             merge l r
 
 fn merge l r -> out : l~List Int, r~List Int, sorted l, sorted r,
                       out~List Int, sorted out, perm (l ++ r) out
     decreasing length l + length r
+    have list.bag_append l r
     match (l, r)
         ([], _) -> r
         (_, []) -> l
         (x :: xs, y :: ys) ->
+            have list.bag_append l ys
             if x <= y then x :: merge xs r else y :: merge l ys
 
 # ── Effectful parallelism ────────────────────────────────────────────────────

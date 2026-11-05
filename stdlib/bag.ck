@@ -11,3 +11,7 @@ export fn of xs -> b : xs~List Int, b~Bag
 # How many times `x` occurs in `b`.
 export fn count x b -> n : x~Int, b~Bag, n~Nat
     __builtin
+
+# The union of two multisets: counts add up.
+export fn sum a b -> c : a~Bag, b~Bag, c~Bag
+    __builtin

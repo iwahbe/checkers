@@ -137,6 +137,9 @@ struct PostUse {
 
 pub struct Query {
     pub text: String,
+    /// The same query without the quantified `Nat` axioms: Z3 is complete on
+    /// it, so it can find a counterexample where the full query is `unknown`.
+    pub without_axioms: Option<String>,
     /// Why facts in scope could not be given to the solver.
     pub dropped: Vec<String>,
     /// (SMT name, display name) of the locals, for a counterexample.
@@ -156,6 +159,8 @@ pub struct Builder<'a> {
     inst_queue: Vec<Inst>,
     consts: Vec<String>,
     asserts: Vec<String>,
+    /// `Nat` results of functions, as pattern-guarded axioms (emitted after the definitions).
+    axioms: BTreeMap<String, String>,
     posts: Vec<PostUse>,
     post_seen: HashSet<String>,
     nat_seen: HashSet<String>,
@@ -179,6 +184,7 @@ impl<'a> Builder<'a> {
             inst_queue: Vec::new(),
             consts: Vec::new(),
             asserts: Vec::new(),
+            axioms: BTreeMap::new(),
             posts: Vec::new(),
             post_seen: HashSet::new(),
             nat_seen: HashSet::new(),
@@ -575,6 +581,20 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// Every result of `f` is a `Nat`: `∀ args. f args >= 0`, instantiated by
+    /// Z3 for each `f` term, including those it makes by unfolding definitions.
+    fn nat_axiom(&mut self, name: &str, args: &[String]) {
+        let ax = if args.is_empty() {
+            format!("(>= {name} 0)")
+        } else {
+            let vars: Vec<String> = (0..args.len()).map(|k| format!("a{k}")).collect();
+            let binds: Vec<String> = vars.iter().zip(args).map(|(v, s)| format!("({v} {s})")).collect();
+            let app = format!("({name} {})", vars.join(" "));
+            format!("(forall ({}) (! (>= {app} 0) :pattern ({app})))", binds.join(" "))
+        };
+        self.axioms.insert(name.to_string(), ax);
+    }
+
     fn nat_fact(&mut self, t: &str) {
         if !self.in_def && self.nat_seen.insert(t.to_string()) {
             self.asserts.push(format!("(>= {t} 0)"));
@@ -796,6 +816,7 @@ impl<'a> Builder<'a> {
                 return Ok((format!("(|bag.of| {})", vals.join(" ")), Sort::Bag));
             }
             "bag.count" => return Ok((format!("(select {} {})", vals[1], vals[0]), Sort::Int)),
+            "bag.sum" => return Ok((format!("((_ map (+ (Int Int) Int)) {} {})", vals[0], vals[1]), Sort::Bag)),
             _ => {}
         }
         let name = if tys.is_empty() {
@@ -816,6 +837,9 @@ impl<'a> Builder<'a> {
                     }
                 }
                 self.funs.insert(name.clone(), format!("(declare-fun {name} ({}) {})", arg_sorts.join(" "), rs.render(self.e)));
+                if self.is_nat_tm(&t) {
+                    self.nat_axiom(&name, &arg_sorts);
+                }
             }
         }
         let app = if vals.is_empty() { name } else { format!("({name} {})", vals.join(" ")) };
@@ -895,6 +919,8 @@ impl<'a> Builder<'a> {
                 s @ Sort::Data(..) => {
                     let s = s.clone();
                     let f = self.list_fun("len", &s, 1, Sort::Int)?;
+                    let ls = s.render(self.e);
+                    self.nat_axiom(&f, &[ls]);
                     let t = format!("({f} {})", ts[0].0);
                     self.nat_fact(&t);
                     Ok((t, Sort::Int))
@@ -1012,6 +1038,18 @@ impl<'a> Builder<'a> {
     fn define_instances(&mut self) -> Vec<String> {
         while let Some(inst) = self.inst_queue.pop() {
             let r = self.define(&inst);
+            // A `Nat` result is non-negative, for every argument.
+            let mut ty = self.e.g.defs[inst.def.0 as usize].ty.clone();
+            while let Tm::Pi(_, _, _, _, b) = ty {
+                ty = (*b).clone();
+            }
+            if self.is_nat_tm(&ty) {
+                if let Ok((_, params, _)) = self.inst_sig(&inst) {
+                    let name = self.inst_name(&inst);
+                    let sorts: Vec<String> = params.iter().map(|(_, s)| s.render(self.e)).collect();
+                    self.nat_axiom(&name, &sorts);
+                }
+            }
             self.insts.insert(inst, r.ok());
         }
         let mut heads = Vec::new();
@@ -1189,6 +1227,12 @@ impl<'a> Builder<'a> {
             text += &d;
             text += "\n";
         }
+        let mut axioms = String::new();
+        for a in self.axioms.values() {
+            axioms += &format!("(assert {a})\n");
+        }
+        let split = text.len();
+        text += &axioms;
         for c in &self.consts {
             text += c;
             text += "\n";
@@ -1200,7 +1244,8 @@ impl<'a> Builder<'a> {
         if !self.shown.is_empty() {
             text += &format!("(get-value ({}))\n", self.shown.iter().map(|s| s.0.clone()).collect::<Vec<_>>().join(" "));
         }
-        Ok(Query { text, dropped, shown: self.shown })
+        let without_axioms = (!axioms.is_empty()).then(|| format!("{}{}", &text[..split], &text[split + axioms.len()..]));
+        Ok(Query { text, without_axioms, dropped, shown: self.shown })
     }
 }
 

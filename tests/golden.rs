@@ -172,6 +172,13 @@ fn golden() {
         }
     }
 
+    // The standard library's own lemmas and postconditions are proven too.
+    count += 1;
+    let stdlib = checkers::check_stdlib();
+    if !stdlib.is_empty() {
+        failures.push(format!("── the standard library must verify ──\n{stdlib}"));
+    }
+
     if failures.is_empty() {
         println!("golden: {count} files ok");
     } else {

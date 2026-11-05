@@ -562,12 +562,12 @@ impl Elab {
             ty = ty2;
         }
         let (t, ty) = self.insert(cx, t, ty);
-        self.call_obligations(cx, &t, e.span);
+        self.call_obligations(cx, &t, e.span, head.span);
         (t, ty)
     }
 
     /// Preconditions of a call and invariants of a constructor application (§7.1).
-    fn call_obligations(&mut self, cx: &Cx, t: &Tm, span: Span) {
+    fn call_obligations(&mut self, cx: &Cx, t: &Tm, span: Span, head_span: Span) {
         let mut args = Vec::new();
         let mut h = t;
         while let Tm::App(f, a, _, _) = h {
@@ -578,6 +578,10 @@ impl Elab {
         match h {
             Tm::Def(d) => {
                 let Some(spec) = self.specs.get(d).cloned() else { return };
+                if args.len() >= spec.n_binders {
+                    let env: Vec<Val> = args[..spec.n_binders].iter().map(|a| self.eval(cx, a)).collect();
+                    self.measure_obligation(cx, *d, &env, span, head_span);
+                }
                 if !spec.preds.iter().any(|p| !p.is_post) {
                     return;
                 }
@@ -613,6 +617,7 @@ impl Elab {
                     let goal = self.inst_pred(p, env.clone());
                     self.oblige(cx, span, ObKind::Pre { callee: name.clone() }, p.text.clone(), goal, None);
                 }
+
             }
             Tm::Con(c) => {
                 let Some(invs) = self.con_invs.get(c).cloned() else { return };
@@ -647,6 +652,40 @@ impl Elab {
                 }
                 _ => return false,
             }
+        }
+    }
+
+    /// A call of `callee` from a function with a measure: the callee's measure at
+    /// the arguments must be lexicographically below the caller's (§5.3).
+    /// Kept only if both turn out to be in one recursive group.
+    fn measure_obligation(&mut self, cx: &Cx, callee: DefId, args: &[Val], span: Span, head_span: Span) {
+        self.saturated_heads.insert(head_span);
+        let Some(caller) = self.cur_fn else { return };
+        let (Some(cs), Some(ks)) = (self.specs.get(&caller).cloned(), self.specs.get(&callee).cloned()) else { return };
+        let (Some((mine, text)), Some((theirs, _))) = (cs.measure, ks.measure) else { return };
+        if mine.len() != theirs.len() || self.in_spec > 0 {
+            return;
+        }
+        let here_env = Rc::new((0..cs.n_binders).map(Val::var).collect::<Vec<_>>());
+        let there_env = Rc::new(args.to_vec());
+        let lvl = cx.lvl();
+        let a: Vec<Tm> = theirs.iter().map(|t| quote(&self.g, lvl, &eval(&self.g, &there_env, t))).collect();
+        let b: Vec<Tm> = mine.iter().map(|t| quote(&self.g, lvl, &eval(&self.g, &here_env, t))).collect();
+        // (a1, …) < (b1, …): a1 < b1, or a1 == b1 and the rest is smaller.
+        let mut goal = Tm::PrimApp(Prim::Lt, vec![a[a.len() - 1].clone(), b[b.len() - 1].clone()]);
+        for k in (0..a.len() - 1).rev() {
+            let lt = Tm::PrimApp(Prim::Lt, vec![a[k].clone(), b[k].clone()]);
+            let eq = Tm::PrimApp(Prim::Eq, vec![a[k].clone(), b[k].clone()]);
+            let rest = self.if_tm(eq, goal, self.bool_lit(false));
+            goal = self.if_tm(lt, self.bool_lit(true), rest);
+        }
+        let goal = self.eval(cx, &goal);
+        let func = self.g.defs[caller.0 as usize].name.to_string();
+        let n = self.obligations.len();
+        self.oblige(cx, span, ObKind::Measure { func, measure: text.clone() }, text, goal, None);
+        if self.obligations.len() > n {
+            let ob = self.obligations.pop().expect("just pushed");
+            self.measure_obs.push((caller, callee, ob));
         }
     }
 

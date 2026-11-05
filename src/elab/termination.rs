@@ -39,7 +39,31 @@ impl Elab {
             let members: Vec<DefId> = scc.iter().map(|&i| fns[i]).collect();
             let metas: Vec<FnMeta> = members.iter().map(|d| self.fn_meta.get(d).cloned().unwrap_or_default()).collect();
             if metas.iter().all(|m| m.partial || m.decreasing) {
-                continue; // `decreasing` measures are checked by the prover (M5).
+                // `decreasing` measures are proof obligations at each call in the group (§5.3).
+                let total: Vec<DefId> = members.iter().zip(&metas).filter(|(_, m)| !m.partial).map(|(d, _)| *d).collect();
+                for (caller, callee, ob) in std::mem::take(&mut self.measure_obs) {
+                    if total.contains(&caller) && total.contains(&callee) {
+                        self.obligations.push(ob);
+                    } else {
+                        self.measure_obs.push((caller, callee, ob));
+                    }
+                }
+                // A recursive use that isn't a full call can't have its measure checked.
+                for c in calls.iter().filter(|c| total.contains(&c.caller) && members.contains(&c.callee)) {
+                    if !self.saturated_heads.contains(&c.span) {
+                        let name = self.fn_meta.get(&c.callee).map(|m| m.name.clone()).unwrap_or_default();
+                        self.err(
+                            Diagnostic::error(
+                                "E0303",
+                                format!("`{name}` is used here as a value, so its `decreasing` measure can't be checked"),
+                                c.span,
+                            )
+                            .with_label("recursive use without all its arguments")
+                            .with_help("call it with all its arguments here, e.g. inside a lambda, or make the recursion structural"),
+                        );
+                    }
+                }
+                continue;
             }
             let inner: Vec<&CallRec> = calls
                 .iter()

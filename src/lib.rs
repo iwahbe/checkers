@@ -111,6 +111,31 @@ pub fn check_in(name: &str, text: &str, dir: &std::path::Path) -> Checked {
     c
 }
 
+/// Check and prove the standard library itself (its lemmas and postconditions).
+/// Returns the rendered errors; empty when it all verifies.
+pub fn check_stdlib() -> String {
+    let mut e = elab::Elab::new();
+    for (m, _) in elab::stdlib::MODULES {
+        e.load_stdlib(m);
+    }
+    let mut out = String::new();
+    for (m, d) in &e.diags {
+        if let Some(f) = e.sources.get(m) {
+            out += &d.render(f);
+        }
+    }
+    if !out.is_empty() {
+        return out;
+    }
+    for (m, _) in elab::stdlib::MODULES {
+        let v = verify::verify(&e, m);
+        if let Some(f) = e.sources.get(*m) {
+            out += &diag::render_all(f, &v.diags);
+        }
+    }
+    out
+}
+
 /// The modules whose code is checked: imported program modules, then this one.
 fn program_modules(e: &elab::Elab, user: &str) -> Vec<String> {
     let mut v = e.user_modules.clone();
