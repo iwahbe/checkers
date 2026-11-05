@@ -3,8 +3,8 @@
 #   wc               counts stdin
 #   wc FILE...       counts each file; exits with Failure 1 if any can't be read
 #
-# Effects are linear capabilities (SPEC §8): `main` receives `sys` and keeps
-# only `fs` and `term`; the other capabilities are dropped.
+# Effects go through capabilities (SPEC §8). `fs` and `term` are authority
+# capabilities: they can be used as often as needed and need no threading.
 
 module wc
 
@@ -36,35 +36,31 @@ fn count_from src i in_word acc -> c : src~Bytes, i~Nat, i <= len src, in_word~B
 fn render c name -> s : c~Counts, name~String, s~String
     format c.lines ++ " " ++ format c.words ++ " " ++ format c.bytes ++ " " ++ name
 
-export fn main args sys -> code : args~List String, sys~own System, code~ExitCode
+export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { fs, term } = sys
     match args
         [] ->
-            input <- terminal.read_all term
-            match input
+            match terminal.read_all term
                 Ok src ->
-                    _ <- terminal.print_line (render (count src) "") term
+                    terminal.print_line (render (count src) "") term
                     Success
                 Err e ->
-                    _ <- terminal.eprint_line ("wc: " ++ terminal.describe e) term
+                    terminal.eprint_line ("wc: " ++ terminal.describe e) term
                     Failure 1
         paths ->
             report paths Success fs term
 
-# Both capabilities are threaded through the recursion and used exactly once
-# on every path; when the list is empty they are dropped.
 fn report paths status fs term -> code : paths~List String, status~ExitCode,
-                                         fs~own Fs, term~own Term, code~ExitCode
+                                         fs~Fs, term~Term, code~ExitCode
     match paths
         [] -> status
         path :: rest ->
-            contents <- files.read path fs
-            match contents
+            match files.read path fs
                 Ok src ->
-                    _ <- terminal.print_line (render (count src) path) term
+                    terminal.print_line (render (count src) path) term
                     report rest status fs term
                 Err e ->
-                    _ <- terminal.eprint_line ("wc: " ++ path ++ ": " ++ files.describe e) term
+                    terminal.eprint_line ("wc: " ++ path ++ ": " ++ files.describe e) term
                     report rest (Failure 1) fs term
 
 check count b"hello world\nbye\n" == Counts 2 3 16

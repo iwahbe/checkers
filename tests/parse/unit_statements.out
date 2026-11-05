@@ -1,0 +1,7 @@
+(module unit_statements)
+(fn greet (term)
+  (do
+    (terminal.print_line "hello" term)
+    (terminal.print_line "world" term)
+    (let _ (compute 1))
+    0))

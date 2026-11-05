@@ -35,43 +35,40 @@ fn merge l r -> out : l~List Int, r~List Int, sorted l, sorted r,
             if x <= y then x :: merge xs r else y :: merge l ys
 
 # ── Effectful parallelism ────────────────────────────────────────────────────
-# Both reads are forked, and the join is scheduled straight away; it runs once
+# Both reads are forked and the join is scheduled straight away; it runs once
 # both reads are done. Nothing waits. `main` returns the join's future, and the
 # process exits with its value when all work has finished.
 
-export fn main args sys -> code : args~List String, sys~own System, code~Future ExitCode
+export fn main args sys -> code : args~List String, sys~System, code~Future ExitCode
     let System { fs, term, sched } = sys
     match args
         [p1, p2] ->
-            let (fs1, fs2) = files.split fs               # one capability per branch
             a <- fork using sched
-                contents <- files.read p1 fs1
-                contents
+                files.read p1 fs
             b <- fork using sched
-                contents <- files.read p2 fs2
-                contents
-            done <- join x = a, y = b using sched         # `term` moves into the join
+                files.read p2 fs
+            done <- join x = a, y = b using sched
                 compare_files p1 x p2 y term
             done
         _ ->
-            _ <- terminal.eprint_line "usage: parallel FILE1 FILE2" term
+            terminal.eprint_line "usage: parallel FILE1 FILE2" term
             future.ready (Failure 2)
 
 fn compare_files p1 r1 p2 r2 term -> code : p1~String, r1~Result Bytes IoError,
                                             p2~String, r2~Result Bytes IoError,
-                                            term~own Term, code~ExitCode
+                                            term~Term, code~ExitCode
     match (r1, r2)
         (Ok x, Ok y) if x == y ->
-            _ <- terminal.print_line "same" term
+            terminal.print_line "same" term
             Success
         (Ok _, Ok _) ->
-            _ <- terminal.print_line "different" term
+            terminal.print_line "different" term
             Failure 1
         (Err e, _) -> read_failed p1 e term
         (_, Err e) -> read_failed p2 e term
 
-fn read_failed path e term -> code : path~String, e~IoError, term~own Term, code~ExitCode
-    _ <- terminal.eprint_line ("parallel: " ++ path ++ ": " ++ files.describe e) term
+fn read_failed path e term -> code : path~String, e~IoError, term~Term, code~ExitCode
+    terminal.eprint_line ("parallel: " ++ path ++ ": " ++ files.describe e) term
     Failure 2
 
 check sort [3, 1, 2] == [1, 2, 3]

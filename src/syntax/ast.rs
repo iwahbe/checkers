@@ -152,6 +152,8 @@ pub struct Block {
 pub enum Stmt {
     Let(Pattern, Expr),
     Have(Expr),
+    /// A bare expression line that is not the block's last; must be `Unit` (D35)
+    Expr(Expr),
     /// `pat <- f a c` (D29)
     Bind(Pattern, Expr),
     /// `when x = c, … using sched` + block (D30)

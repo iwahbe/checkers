@@ -35,14 +35,15 @@ This document is the single source of truth for Checkers. Implementation follows
 | D22 | **Spacing distinguishes `.` and `[`.** Glued (`v.stop`, `list.keys`, `src[i]`): field access, qualified name, indexing. Spaced (`f . g`, `f [x]`): composition, list-literal argument. Same rule as Haskell's `OverloadedRecordDot`. Field access and indexing bind tighter than application, so `Str s.value` is `Str (s.value)`. | 11/05/2026 | **(proposed)** |
 | D23 | **Layout = Python-style logical lines** (§9.1): a newline ends a statement unless inside brackets, after a trailing `,` or binary operator, or before a line that starts with a binary operator or `:`. An indented block may follow any line that ends a header (`fn`, `enum`, `record`, `lemma`, `match`, an `if`/`else` line, a match arm ending in `->`, `proof`, `let x =`). | 11/05/2026 | **(proposed)** |
 | D26 | **Two namespaces for `Uname`s, chosen by position.** After `~` in a constraint (and in a `type` alias's first constraint) a `Uname` resolves to a type; elsewhere it resolves to a data constructor or constant. So `enum Json` may have a constructor `Bool b : b~Bool`, and `record Error` is built with `Error pos kind` while its type is `Error src`. `lname`s share one namespace everywhere, so values used inside types (`Parsed Json src i`) work. This is Haskell's split, made sound for dependent types by D9 (types only ever appear after `~`). | 11/05/2026 | **(proposed)** |
-| D27 | **Effects are linear capabilities** (§8.1–8.2). Effectful operations take an `own` capability and return a fresh one, so every function stays a mathematical function. `main` receives `sys~own System`, a record of capabilities (`term`, `fs`, `env`, `proc`, `net`, `clock`, `sched`). No `IO` monad and no effect system in the kernel. | 11/05/2026 | decided |
-| D28 | **Droppable authority vs. linear resources** (§8.3). Authority tokens (`System`, `Term`, `Fs`, …, `Cown a`) are dropped implicitly when unused (the elaborator inserts `drop`); resources (`File`, `Child`, `Socket`) must be consumed explicitly. | 11/05/2026 | **(proposed)** |
-| D29 | **`x <- f a c`** means `let (x, c) = f a c`, where the last argument `c` is an `own` variable (§8.4). | 11/05/2026 | **(proposed)** |
+| D27 | **Effects go through capabilities** (§8.1–8.2). Every effectful operation takes a capability; the kernel treats capabilities as linear, so every function stays a mathematical function. `main` receives `sys~System`, a record of authority capabilities (`term`, `fs`, `env`, `proc`, `net`, `clock`, `sched`). No `IO` monad and no effect system in the kernel. | 11/05/2026 | decided |
+| D28 | **Authority is copied on use; resources are linear** (§8.1, §8.3–8.4). Authority capabilities (`System`, `Term`, `Fs`, `Env`, `Proc`, `Net`, `Clock`, `Sched`) may be used any number of times and dropped: the elaborator gives each use a fresh token, so the kernel still sees exact linearity. Cost: no proven ordering between uses of one authority, and closures capturing one are single-use. Resources (`File`, `Child`, `Pipe`, `Socket`) are `own`, used exactly once, and closed explicitly. *Supersedes the 11/05/2026 droppable-but-linear proposal and `files.split`.* | 11/05/2026 | decided |
+| D29 | **`x <- f a r`** means `let (x, r) = f a r`, where the last argument `r` is an `own` **resource** variable (§8.4). `<-` also binds the future returned by `fork`/`join` (§8.6). | 11/05/2026 | **(proposed)** |
 | D30 | **Concurrency is cowns + `when`** (behaviour-oriented concurrency, Verona; §8.5): race- and deadlock-free by construction, causal order, invariants as refinement types on contents. Actors and channels are libraries on top. *Supersedes the actors-with-session-types plan for M7.* | 11/05/2026 | decided (syntax **proposed**) |
-| D31 | `main`'s signature: `fn main args sys -> code : args~List String, sys~own System, code~ExitCode`. `code` may also be a `Future ExitCode` (§8.6). The process exits once all scheduled work has finished. | 11/05/2026 | **(proposed)**; exit-after-all-work decided |
+| D31 | `main`'s signature: `fn main args sys -> code : args~List String, sys~System, code~ExitCode` (it may be `partial`). `code` may also be a `Future ExitCode` (§8.6). The process exits once all scheduled work has finished. | 11/05/2026 | **(proposed)**; exit-after-all-work decided |
 | D33 | **Nothing ever blocks.** No `await`. Effectful fork/join is `f <- fork using sched` and `r <- join x = f, … using sched`: both schedule a behaviour and return a `Future`; a join runs after the forks it names, by causal order (§8.6). | 11/05/2026 | decided (syntax **proposed**) |
 | D34 | **`par (e1, …, en)`** evaluates the components of an n-tuple in parallel and returns the tuple. Pure only; to the prover `par t == t`. A keyword, not a function, because Checkers is strict: a function's arguments would already be evaluated, one after another, before it ran. | 11/05/2026 | decided |
-| D32 | **Record patterns** `Ctor { a, b = p }` bind named fields; unnamed fields of a linear record are dropped (they must be droppable). | 11/05/2026 | **(proposed)** |
+| D32 | **Record patterns** `Ctor { a, b = p }` bind named fields. Fields left out must be authority capabilities or ordinary values; an unmentioned resource field is an error. | 11/05/2026 | **(proposed)** |
+| D35 | **`Unit` statements.** A call returning `Unit` may stand alone as a statement line in a block (`terminal.print_line "hi" term`). Any other non-final bare expression is a type error; discard a value with `let _ = …`. | 11/05/2026 | **(proposed)** |
 | D24 | **Development loop:** Claude owns the implementation; Ian drives with examples. An issue is "found X, expected Y" with a `.ck` snippet. Each one becomes a regression test under `tests/` *before* the fix lands, and the spec is updated first whenever the expectation changes the language. | 11/05/2026 | decided |
 | D25 | **Milestones reordered for CLI tools first** (§10): a running interpreter with `IO` comes right after type checking, before the prover, so Checkers can be used to build its own tooling early. Capstone: an interactive shell with a small scripting language, with proofs of its correctness. | 11/05/2026 | decided |
 
@@ -75,7 +76,7 @@ Every binder carries a multiplicity ρ ∈ {0, 1, ω}:
 | ρ | Meaning | Checkers use |
 |---|---------|--------------|
 | 0 | Erased. May appear only in types and proofs; never exists at runtime. | Proofs, type arguments, ghost values |
-| 1 | Linear. Used exactly once at runtime. | Resources owned by actors (handles, channels, capabilities) |
+| 1 | Linear. Used exactly once at runtime. | Resources (open files, child processes, sockets); capabilities in the kernel (§8.3) |
 | ω | Unrestricted. | Ordinary immutable values |
 
 Arithmetic (ordered semiring, as in Idris 2):
@@ -245,21 +246,28 @@ Each compiled module records every `smt_trusted φ` it relies on (obligation, Z3
 
 ## 8. Effects, capabilities, and concurrency
 
-Decisions D27–D34. Worked examples: `examples/wc.ck` (a CLI tool), `examples/log.ck` (cowns and `when`), `examples/parallel.ck` (`par`, `fork`, `join`).
+Decisions D27–D35. Worked examples: `examples/wc.ck` (a CLI tool using authority capabilities), `examples/copy.ck` (linear resources), `examples/log.ck` (cowns and `when`), `examples/parallel.ck` (`par`, `fork`, `join`).
 
-### 8.1 Why capabilities, and why linear
+### 8.1 Why capabilities
 
-Every Checkers function is a mathematical function: the prover relies on `f x == f x`. A side-effecting call such as reading a file would break that if it were an ordinary application. Checkers keeps it sound the way Idris 2 and Clean do: effectful operations take a **capability** with multiplicity 1 (`own`) and return a fresh one. The old capability is consumed, so the same call can never be made twice with the same arguments, and every effectful function remains a pure function of its inputs.
+Every Checkers function is a mathematical function: the prover relies on `f x == f x`. A side-effecting call such as reading a file would break that if it were an ordinary application of ordinary values. Checkers keeps it sound the way Idris 2 and Clean do: every effectful operation takes a **capability**, and the kernel treats capabilities as linear (multiplicity 1, §2), so no two effectful calls ever receive the same token and none of them can be proven equal to another.
 
 A capability is also an **authority**: code can only touch what it is handed. A JSON library that never receives an `Fs` cannot read files, and its type proves it.
+
+Capabilities come in two kinds (D28):
+
+| Kind | Examples | Surface behaviour | Ordering proven? |
+|---|---|---|---|
+| **Authority** | `System`, `Term`, `Fs`, `Env`, `Proc`, `Net`, `Clock`, `Sched` | copied on use, dropped when unused; written without `own` | no |
+| **Resource** | `File`, `Child`, `Pipe`, `Socket` | linear: used exactly once, threaded with `<-`, closed explicitly; written `own` | yes |
 
 ### 8.2 The root capability and `main` (D27, D31)
 
 ```
-export fn main args sys -> code : args~List String, sys~own System, code~ExitCode
+export fn main args sys -> code : args~List String, sys~System, code~ExitCode
 ```
 
-The runtime calls `main` with the command-line arguments and the root capability. `System` is a prelude record of capabilities, all `own`:
+The runtime calls `main` with the command-line arguments and the root capability. `System` is a prelude record of authority capabilities:
 
 | Field | Type | Authority |
 |---|---|---|
@@ -271,43 +279,70 @@ The runtime calls `main` with the command-line arguments and the root capability
 | `clock` | `Clock` | time, sleeping |
 | `sched` | `Sched` | creating cowns and scheduling behaviours (§8.5) |
 
-A program takes the capabilities it needs with a record pattern; the rest are dropped (D28): `let System { fs, term } = sys`. Capabilities can be **attenuated**: `files.within dir fs` returns an `Fs` confined to `dir`.
+A program takes what it needs with a record pattern, `let System { fs, term } = sys`, or a field, `sys.fs`. Capabilities can be **attenuated**: `files.within dir fs` returns an `Fs` confined to `dir`. Passing only an attenuated capability to a function bounds what it can do.
 
 `ExitCode` is an enum: `Success`, `Failure n` with `n~U8, n > 0`.
 
-### 8.3 Dropping: authority vs. resources (D28)
+### 8.3 Authority capabilities: copied on use (D28)
 
-The kernel's multiplicity 1 means *exactly once* (§2). Forcing every program to hand back every capability it was given would be noise, so types fall into two groups:
-
-- **Droppable** (authority tokens: `System`, `Term`, `Fs`, `Env`, `Proc`, `Net`, `Clock`, `Sched`, and `Cown a`): if one goes unused, the elaborator inserts `drop x` at the end of its scope. The kernel still sees exact linearity.
-- **Resources** (`File`, `Child`, `Socket`, …): must be consumed explicitly (`close`, `wait`, …). Forgetting one is a compile error. In the shell capstone this proves, for free, that every child process is reaped.
-
-Droppability is the `Drop` interface (D15). Until interfaces land, the prelude fixes which built-in types are droppable, and user types are not.
-
-### 8.4 Binding effectful results: `<-` (D29)
-
-Effectful operations return `(result, capability)`, by convention with the capability last in both the arguments and the result. Threading by hand is noisy, so:
+An authority capability can be used any number of times. Operations on it return only their result:
 
 ```
-input <- terminal.read_all term
+let contents = files.read path fs
+let listing  = files.list_dir dir fs
+terminal.print_line "done" term          # as a statement, see below
 ```
 
-means `let (input, term) = terminal.read_all term`. The **last argument** of the call must be an `own` variable; it is rebound to the returned capability. `_ <- terminal.print_line "hi" term` discards a `Unit` result. Otherwise it is an ordinary `let`, so proofs see plain tuple-returning functions.
+**How this stays sound.** The elaborator gives every use of an authority variable its own fresh token, inserting the splits itself:
+
+```
+let a = files.read "x" fs        # written
+let b = files.read "y" fs
+
+let (fs1, fs2) = split fs        # checked by the kernel
+let a = files.read "x" fs1
+let b = files.read "y" fs2
+```
+
+The kernel still checks exact linearity, and no two calls share a token. When a capability goes unused, the elaborator inserts `drop`.
+
+**What it costs.**
+1. *No proven ordering between uses of one authority.* At runtime, calls run in program order. The prover, however, treats two uses of `fs` as independent, so "a read after a write returns what was written" is not provable through `Fs`. Orderings that need proofs go through resources (§8.4).
+2. *Closures that capture an authority are single-use.* `let g = \u -> files.read p fs` captures one token, so `g` may be called once; the compiler rejects a second call and suggests passing `fs` as a parameter. Behaviour bodies (`fork`, `join`, `when`) run once, so they may capture authorities freely; the enclosing code keeps using them.
+3. *Concurrent branches can race on the operating system* (two forks writing one file), as in any language.
+
+**Effect statements.** A call whose result is `Unit` may stand alone as a statement line in a block, e.g. `terminal.print_line "done" term`. **(proposed)** Only calls returning `Unit` may: discarding any other value needs `let _ = …`.
+
+### 8.4 Resources: linear, threaded with `<-` (D29)
+
+A resource is an open, stateful thing that must be released: an open `File`, a `Child` process, a `Pipe`, a `Socket`. It has multiplicity 1 in the surface language (`f~own File`) and must be consumed exactly once. Forgetting to `close` a file or `wait` for a child is a compile error, which proves, for free, that the shell reaps every child it spawns.
+
+Operations on a resource consume it and return a fresh one together with their result, `(result, resource)`, with the resource last. `<-` rebinds it:
+
+```
+line <- file.read_line f         # means: let (line, f) = file.read_line f
+_ <- file.write b f
+files.close f
+```
+
+The **last argument** of the call must be an `own` variable. Because each operation consumes the previous token, the prover sees the operations in sequence; this is where ordering proofs about effects (§8.8) live.
+
+Resources are created from authorities, e.g. `files.open path fs` returns `Result (own File) IoError`.
 
 ### 8.5 Concurrency: cowns and `when` (D30)
 
 Data is immutable, so sharing it never races; parallel evaluation of pure code is always safe (`par`, §8.6). What needs coordination is a **resource or state shared by several concurrent tasks**: the shell's job table, the terminal. For that, Checkers adopts Verona's *behaviour-oriented concurrency* (Cheeseman et al., OOPSLA 2023):
 
-- A **cown** (concurrent owner) wraps a value. `c <- cown.new v sched` creates a `Cown a`. The cown handle has multiplicity ω and may be freely shared; its *contents* are owned by the cown, and a linear value moved into a cown (e.g. a `Term`) is no longer available to the creator.
+- A **cown** (concurrent owner) wraps a value. `let c = cown.new v sched` creates a `Cown a`. The cown handle may be freely shared; its *contents* are owned by the cown, and a resource moved into a cown (e.g. an open `File`) is no longer available to the creator.
 - A **behaviour** gets exclusive access to one or more cowns:
 
   ```
-  when l = log, t = screen using sched
-      _ <- terminal.print_line (format (len l)) t
-      (l, t)
+  when l = log, n = total using sched
+      terminal.print_line (format (len l)) term
+      (l, n + 1)
   ```
 
-  This *schedules* the body, which runs once it holds all the listed cowns at once. Inside, `l` and `t` are the current contents, with full ownership, and the body evaluates to the new contents (a tuple, in the order listed; a single value for one cown). `when` is a statement: it consumes `sched` and rebinds it, like `<-`. The body receives its own fresh `sched`, so it can create cowns and schedule further behaviours.
+  This *schedules* the body, which runs once it holds all the listed cowns at once. Inside, `l` and `t` are the current contents, with full ownership, and the body evaluates to the new contents (a tuple, in the order listed; a single value for one cown). `when` is a statement. The body may use authority capabilities from the enclosing scope (here `term`) and may schedule further behaviours with `sched`.
 
 Guarantees, by construction:
 1. **No data races.** Contents are only reachable inside a behaviour holding that cown.
@@ -336,21 +371,19 @@ let (a, b, c) = par (f x, g y, h z)
 **Effectful: `fork` and `join`.**
 
 ```
-let (fs1, fs2) = files.split fs
 a <- fork using sched
-    files.read "a.txt" fs1
+    files.read "a.txt" fs
 b <- fork using sched
-    files.read "b.txt" fs2
+    files.read "b.txt" fs
 done <- join x = a, y = b using sched
     combine x y
 ```
 
-- `f <- fork using sched` + block schedules the block as a behaviour and binds `f~Future t`, where `t` is the block's type. Like `when`, it rebinds `sched`.
+- `f <- fork using sched` + block schedules the block as a behaviour and binds `f~Future t`, where `t` is the block's type.
 - `r <- join x = f1, y = f2, … using sched` + block schedules a behaviour that runs after every listed future has been filled. Inside, `x`, `y`, … are the plain values (moved out of the futures; each future can be joined once). It binds `r~Future t` for the block's result, so joins compose.
 - A future is a cown that only its own fork or join can fill, and that fork/join is the first behaviour scheduled on it. A later join on that future is ordered after it (causal order, §8.5), so its value is always present: no `Option`, no waiting, no deadlock.
-- Each concurrent branch needs its own capabilities. Droppable capabilities can be split (`files.split fs` consumes `fs` and returns two independent `Fs` tokens); resources such as an open `File` cannot be.
-- A behaviour body receives its own `sched` and may fork, join and `when` further.
-- A `fork`, `join` or `when` body may use `own` values from the enclosing scope (e.g. `term`); they **move** into the behaviour and are no longer available outside it.
+- Behaviour bodies may use authority capabilities from the enclosing scope (each use gets its own token, §8.3) and may fork, join and `when` further.
+- A resource used inside a `fork`, `join` or `when` body **moves** into the behaviour and is no longer available outside it. Two concurrent branches therefore can never share an open `File`.
 
 **Ending the program.** The process exits once no scheduled work remains. If `main` returns a `Future ExitCode`, that future's value is the exit code; this is how a program whose result comes from a join reports it.
 
@@ -437,6 +470,7 @@ constraint  ::= lname '~' [ 'ghost' | 'own' ] expr           -- typing
 block       ::= { stmt NL } expr NL
 stmt        ::= 'let' pattern '=' ( expr | NL INDENT block DEDENT )
               | 'have' expr                                  -- lemma application; adds its conclusion
+              | expr                                         -- D35: must have type Unit
               | pattern '<-' expr                            -- D29: rebinds the call's last argument
               | 'when' lname '=' expr { ',' lname '=' expr } 'using' lname NL
                 INDENT block DEDENT                          -- D30: schedule a behaviour
@@ -475,7 +509,7 @@ apat        ::= '_' | lname | literal | Uname
 |---|---|---|
 | `x~T` | `x` has type `T` | `(x :ω T)` |
 | `x~ghost T` | exists only for types/proofs | `(x :0 T)` |
-| `x~own T` | linear: used exactly once (actor-owned resources) | `(x :1 T)` |
+| `x~own T` | linear: used exactly once (resources, §8.4) | `(x :1 T)` |
 | predicate over inputs only | precondition | refinement on the inputs |
 | predicate mentioning the result name | postcondition | return type `{r : R \| P}` |
 | predicate in a constructor/field list | invariant (D11) | `Prop` field, erased |
@@ -565,7 +599,7 @@ Reordered (D25) so that Checkers can run CLI tools before the prover exists.
 |---|-------------|-----------|
 | M0 | Rust workspace; lexer with layout (§9.1); parser for §9.2; naming warnings (§9.7); source-span diagnostics; `checkers parse` / `checkers check` | `examples/json.ck` and every spec example parse; golden tests for errors and warnings |
 | M1 | Elaborator + kernel: name resolution, QTT core (§4), enums/records, `match` → recursors, inference and implicits, structural termination | `Vec`, `List`, `Nat` programs type-check; contract tests for every §4 rule, including rejected programs |
-| M2 | Erasure, interpreter, prelude, capabilities and `main` (§8.2–8.4: `Term`, `Fs`, `Env`, `Proc`, exit codes), implicit `drop` | `examples/wc.ck` runs |
+| M2 | Erasure, interpreter, prelude, capabilities and `main` (§8.2–8.4: `Term`, `Fs`, `Env`, `Proc`, exit codes), copy-on-use splitting and implicit `drop`, resource linearity | `examples/wc.ck` runs |
 | M3 | `Prop`, equality, refinements, Z3 pipeline, trust ledger, `check` | verified insertion sort |
 | M4 | Modules, sealing, exported lemmas | sort module used from another module via its lemmas only |
 | M5 | Well-founded recursion, lexicographic `decreasing` | verified merge sort; `examples/json.ck` checks |

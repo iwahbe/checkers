@@ -143,6 +143,7 @@ fn block(b: &Block, depth: usize) -> String {
         parts.push(match s {
             Stmt::Let(p, e) => format!("(let {} {})", pat(p), expr(e, depth + 1)),
             Stmt::Have(e) => format!("(have {})", expr(e, depth + 1)),
+            Stmt::Expr(e) => expr(e, depth + 1),
             Stmt::Bind(p, e) => format!("(<- {} {})", pat(p), expr(e, depth + 1)),
             Stmt::When(w) => format!(
                 "(when ({}) using {}\n{}{})",

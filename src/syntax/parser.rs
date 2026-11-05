@@ -572,12 +572,9 @@ impl Parser {
             let e = self.expr()?;
             self.end_line()?;
             if !self.at(&Tok::Dedent) {
-                let span = e.span;
-                self.diags.push(
-                    Diagnostic::error("E0107", "only the last line of a block may be a bare expression", span)
-                        .with_help("bind it with `let`, or move it to the end of the block"),
-                );
-                return Err(Failed);
+                // A `Unit` statement (D35); the type checker rejects other types.
+                stmts.push(Stmt::Expr(e));
+                continue;
             }
             self.bump(); // dedent
             let span = start.to(self.prev_span());

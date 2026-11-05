@@ -1,7 +1,7 @@
 # log.ck — concurrency with cowns and `when` (SPEC §8.5).
 #
-# Two behaviours share the `log` cown. They run in the order they were
-# scheduled (causal order), never at the same time, and can't deadlock.
+# Behaviours that share a cown run in the order they were scheduled
+# (causal order), never at the same time, and can't deadlock.
 
 module log
 
@@ -16,13 +16,14 @@ type Log = entries~List String, len entries <= 100
 fn append msg entries -> out : msg~String, entries~Log, out~Log
     if len entries < 100 then msg :: entries else entries
 
-export fn main args sys -> code : args~List String, sys~own System, code~ExitCode
+export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { sched, term } = sys
-    log <- cown.new [] sched
-    screen <- cown.new term sched          # `term` moves into the cown
+    let log = cown.new [] sched
+    let dropped = cown.new 0 sched
     when l = log using sched
         append "started" l
-    when l = log, t = screen using sched
-        _ <- terminal.print_line ("log has " ++ format (len l) ++ " entries") t
-        (l, t)
+    when l = log, d = dropped using sched              # holds both cowns at once
+        let full = len l == 100
+        terminal.print_line ("log has " ++ format (len l) ++ " entries") term
+        (append "checked" l, if full then d + 1 else d)
     Success
