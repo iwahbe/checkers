@@ -143,6 +143,14 @@ fn block(b: &Block, depth: usize) -> String {
         parts.push(match s {
             Stmt::Let(p, e) => format!("(let {} {})", pat(p), expr(e, depth + 1)),
             Stmt::Have(e) => format!("(have {})", expr(e, depth + 1)),
+            Stmt::Bind(p, e) => format!("(<- {} {})", pat(p), expr(e, depth + 1)),
+            Stmt::When(w) => format!(
+                "(when ({}) using {}\n{}{})",
+                w.binds.iter().map(|(n, c)| format!("({} {})", n.name, expr(c, depth + 2))).collect::<Vec<_>>().join(" "),
+                w.sched.name,
+                ind(depth + 2),
+                block(&w.body, depth + 2)
+            ),
         });
     }
     parts.push(expr(&b.result, depth + 1));
@@ -253,5 +261,10 @@ pub fn pat(p: &Pattern) -> String {
         PatKind::List(v) => format!("[{}]", v.iter().map(pat).collect::<Vec<_>>().join(" ")),
         PatKind::Cons(h, t) => format!("(:: {} {})", pat(h), pat(t)),
         PatKind::Or(v) => format!("(| {})", v.iter().map(pat).collect::<Vec<_>>().join(" ")),
+        PatKind::Record(c, fs) => format!(
+            "({} {{{}}})",
+            c.name,
+            fs.iter().map(|(f, p)| format!("{}={}", f.name, pat(p))).collect::<Vec<_>>().join(" ")
+        ),
     }
 }

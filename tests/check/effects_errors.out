@@ -1,0 +1,22 @@
+error[E0112]: `when` needs a scheduler capability: `using sched`
+ --> effects_errors.ck:4:17
+  |
+4 |     when l = log
+  |                 ^ expected `using`
+  = help: scheduling is an effect; pass the `Sched` capability, e.g. `when l = log using sched`
+
+error[E0111]: `<-` does not take `let`
+ --> effects_errors.ck:9:14
+  |
+9 |     let line <- terminal.read_line term
+  |              ^^
+  = help: write `x <- f a cap` without `let`
+
+error[E0114]: a block cannot end with a `<-` binding
+  --> effects_errors.ck:13:6
+   |
+13 |     x<-1
+   |      ^^ this binds a result; the block still needs a final expression
+   = help: add the block's result on the next line; for a comparison with a negative number write `x < -1`
+
+effects_errors.ck: 3 errors, 0 warnings

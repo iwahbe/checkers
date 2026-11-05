@@ -35,6 +35,12 @@ This document is the single source of truth for Checkers. Implementation follows
 | D22 | **Spacing distinguishes `.` and `[`.** Glued (`v.stop`, `list.keys`, `src[i]`): field access, qualified name, indexing. Spaced (`f . g`, `f [x]`): composition, list-literal argument. Same rule as Haskell's `OverloadedRecordDot`. Field access and indexing bind tighter than application, so `Str s.value` is `Str (s.value)`. | 11/05/2026 | **(proposed)** |
 | D23 | **Layout = Python-style logical lines** (§9.1): a newline ends a statement unless inside brackets, after a trailing `,` or binary operator, or before a line that starts with a binary operator or `:`. An indented block may follow any line that ends a header (`fn`, `enum`, `record`, `lemma`, `match`, an `if`/`else` line, a match arm ending in `->`, `proof`, `let x =`). | 11/05/2026 | **(proposed)** |
 | D26 | **Two namespaces for `Uname`s, chosen by position.** After `~` in a constraint (and in a `type` alias's first constraint) a `Uname` resolves to a type; elsewhere it resolves to a data constructor or constant. So `enum Json` may have a constructor `Bool b : b~Bool`, and `record Error` is built with `Error pos kind` while its type is `Error src`. `lname`s share one namespace everywhere, so values used inside types (`Parsed Json src i`) work. This is Haskell's split, made sound for dependent types by D9 (types only ever appear after `~`). | 11/05/2026 | **(proposed)** |
+| D27 | **Effects are linear capabilities** (§8.1–8.2). Effectful operations take an `own` capability and return a fresh one, so every function stays a mathematical function. `main` receives `sys~own System`, a record of capabilities (`term`, `fs`, `env`, `proc`, `net`, `clock`, `sched`). No `IO` monad and no effect system in the kernel. | 11/05/2026 | decided |
+| D28 | **Droppable authority vs. linear resources** (§8.3). Authority tokens (`System`, `Term`, `Fs`, …, `Cown a`) are dropped implicitly when unused (the elaborator inserts `drop`); resources (`File`, `Child`, `Socket`) must be consumed explicitly. | 11/05/2026 | **(proposed)** |
+| D29 | **`x <- f a c`** means `let (x, c) = f a c`, where the last argument `c` is an `own` variable (§8.4). | 11/05/2026 | **(proposed)** |
+| D30 | **Concurrency is cowns + `when`** (behaviour-oriented concurrency, Verona; §8.5): race- and deadlock-free by construction, causal order, invariants as refinement types on contents. Actors and channels are libraries on top. `par` for pure parallelism. *Supersedes the actors-with-session-types plan for M7.* | 11/05/2026 | decided (syntax **proposed**) |
+| D31 | `main`'s signature: `fn main args sys -> code : args~List String, sys~own System, code~ExitCode`. | 11/05/2026 | **(proposed)** |
+| D32 | **Record patterns** `Ctor { a, b = p }` bind named fields; unnamed fields of a linear record are dropped (they must be droppable). | 11/05/2026 | **(proposed)** |
 | D24 | **Development loop:** Claude owns the implementation; Ian drives with examples. An issue is "found X, expected Y" with a `.ck` snippet. Each one becomes a regression test under `tests/` *before* the fix lands, and the spec is updated first whenever the expectation changes the language. | 11/05/2026 | decided |
 | D25 | **Milestones reordered for CLI tools first** (§10): a running interpreter with `IO` comes right after type checking, before the prover, so Checkers can be used to build its own tooling early. Capstone: an interactive shell with a small scripting language, with proofs of its correctness. | 11/05/2026 | decided |
 
@@ -235,12 +241,96 @@ Each compiled module records every `smt_trusted φ` it relies on (obligation, Z3
 
 ---
 
-## 8. Effects, actors, staging (later milestones; outline only)
+## 8. Effects, capabilities, and concurrency
 
-- **Effects (M7):** `Div` (non-termination), `IO`, and actor messaging as effects on runtime-stage code. Pure code stays pure.
-- **Actors (M7):** an actor owns its resources through multiplicity-1 bindings; sending a value moves ownership. Inspiration: Pony reference capabilities (data-race freedom). Protocols between actors are typed with multiparty session types (Neykova & Yoshida).
-- **Concurrency proofs (later):** concurrent separation logic in the style of Iris / F*'s Pulse.
-- **Staging (M6, D7):** two universes, compile-time and runtime; `quote`/`splice` across them. Guarantees compile-time code generation produces well-typed runtime code.
+Decisions D27–D32. Worked examples: `examples/wc.ck` (a CLI tool) and `examples/log.ck` (concurrency).
+
+### 8.1 Why capabilities, and why linear
+
+Every Checkers function is a mathematical function: the prover relies on `f x == f x`. A side-effecting call such as reading a file would break that if it were an ordinary application. Checkers keeps it sound the way Idris 2 and Clean do: effectful operations take a **capability** with multiplicity 1 (`own`) and return a fresh one. The old capability is consumed, so the same call can never be made twice with the same arguments, and every effectful function remains a pure function of its inputs.
+
+A capability is also an **authority**: code can only touch what it is handed. A JSON library that never receives an `Fs` cannot read files, and its type proves it.
+
+### 8.2 The root capability and `main` (D27, D31)
+
+```
+export fn main args sys -> code : args~List String, sys~own System, code~ExitCode
+```
+
+The runtime calls `main` with the command-line arguments and the root capability. `System` is a prelude record of capabilities, all `own`:
+
+| Field | Type | Authority |
+|---|---|---|
+| `term` | `Term` | stdin, stdout, stderr, terminal modes |
+| `fs` | `Fs` | the file system |
+| `env` | `Env` | environment variables, working directory |
+| `proc` | `Proc` | spawning and signalling processes |
+| `net` | `Net` | sockets |
+| `clock` | `Clock` | time, sleeping |
+| `sched` | `Sched` | creating cowns and scheduling behaviours (§8.5) |
+
+A program takes the capabilities it needs with a record pattern; the rest are dropped (D28): `let System { fs, term } = sys`. Capabilities can be **attenuated**: `files.within dir fs` returns an `Fs` confined to `dir`.
+
+`ExitCode` is an enum: `Success`, `Failure n` with `n~U8, n > 0`.
+
+### 8.3 Dropping: authority vs. resources (D28)
+
+The kernel's multiplicity 1 means *exactly once* (§2). Forcing every program to hand back every capability it was given would be noise, so types fall into two groups:
+
+- **Droppable** (authority tokens: `System`, `Term`, `Fs`, `Env`, `Proc`, `Net`, `Clock`, `Sched`, and `Cown a`): if one goes unused, the elaborator inserts `drop x` at the end of its scope. The kernel still sees exact linearity.
+- **Resources** (`File`, `Child`, `Socket`, …): must be consumed explicitly (`close`, `wait`, …). Forgetting one is a compile error. In the shell capstone this proves, for free, that every child process is reaped.
+
+Droppability is the `Drop` interface (D15). Until interfaces land, the prelude fixes which built-in types are droppable, and user types are not.
+
+### 8.4 Binding effectful results: `<-` (D29)
+
+Effectful operations return `(result, capability)`, by convention with the capability last in both the arguments and the result. Threading by hand is noisy, so:
+
+```
+input <- terminal.read_all term
+```
+
+means `let (input, term) = terminal.read_all term`. The **last argument** of the call must be an `own` variable; it is rebound to the returned capability. `_ <- terminal.print_line "hi" term` discards a `Unit` result. Otherwise it is an ordinary `let`, so proofs see plain tuple-returning functions.
+
+### 8.5 Concurrency: cowns and `when` (D30)
+
+Data is immutable, so sharing it never races; parallel evaluation of pure code is always safe (`par a b` evaluates both in parallel and returns the pair). What needs coordination is a **resource or state shared by several concurrent tasks**: the shell's job table, the terminal. For that, Checkers adopts Verona's *behaviour-oriented concurrency* (Cheeseman et al., OOPSLA 2023):
+
+- A **cown** (concurrent owner) wraps a value. `c <- cown.new v sched` creates a `Cown a`. The cown handle has multiplicity ω and may be freely shared; its *contents* are owned by the cown, and a linear value moved into a cown (e.g. a `Term`) is no longer available to the creator.
+- A **behaviour** gets exclusive access to one or more cowns:
+
+  ```
+  when l = log, t = screen using sched
+      _ <- terminal.print_line (format (len l)) t
+      (l, t)
+  ```
+
+  This *schedules* the body, which runs once it holds all the listed cowns at once. Inside, `l` and `t` are the current contents, with full ownership, and the body evaluates to the new contents (a tuple, in the order listed; a single value for one cown). `when` is a statement: it consumes `sched` and rebinds it, like `<-`. The body receives its own fresh `sched`, so it can create cowns and schedule further behaviours.
+
+Guarantees, by construction:
+1. **No data races.** Contents are only reachable inside a behaviour holding that cown.
+2. **No deadlock.** All of a behaviour's cowns are acquired atomically; there are no locks to order.
+3. **Causal order.** Two behaviours that share a cown run in the order they were scheduled.
+
+**Invariants.** A cown's content type can be a refinement (`type Log = entries~List String, len entries <= 100`). Every behaviour must return contents of that type, so it must re-establish the invariant: this is the lock-invariant rule of concurrent separation logic, enforced by ordinary type checking.
+
+**Results.** `when` returns nothing to the scheduler's caller. To get a value back, a behaviour writes it into a cown that a later behaviour reads. **(open)** A promise/`await` form will be designed when an example needs it.
+
+**Actors** are a library on top: an actor is a cown holding its state, and sending a message schedules a `when` on it. Session-typed channels (Neykova & Yoshida) can be layered the same way later.
+
+### 8.6 Other effects
+
+- **Non-termination:** `partial fn` (§5.3). A `partial` function cannot appear in types or proofs.
+- **Errors:** `Result` and `try` (D14). No exceptions.
+- **Algebraic effect handlers** (Koka, Effekt): not planned. Capabilities and `Result` cover the needs so far, and handlers complicate the prover.
+
+### 8.7 Proofs about effectful code (later)
+
+Capabilities and cown contents correspond to separation-logic resources (Iris, F\*'s Pulse). M3–M5 prove pure code; specifications over capability state (e.g. "after `files.write p b fs`, `files.read p fs'` returns `b`") come with the shell capstone.
+
+### 8.8 Staging (M6, D7)
+
+Two universes, compile-time and runtime; `quote`/`splice` across them. Compile-time code generation is guaranteed to produce well-typed runtime code.
 
 ---
 
@@ -255,9 +345,11 @@ The worked example for this section is `examples/json.ck`: an RFC 8259 parser an
 2. the line's last token is `,` or a binary operator (`+ - * / % ++ :: == != < <= > >= and or implies $ .` and the type operator `->` **inside brackets only**); or
 3. the next line's first token is a binary operator from that list, or `:`.
 
-A trailing `->` or `=` outside brackets does **not** continue the line; it opens a block (a match arm body, a multi-line `let`). Indentation uses spaces only; a tab in leading whitespace is an error. When a logical line is followed by a more-indented line, the lexer emits `INDENT`; on return to an enclosing level it emits matching `DEDENT`s (an inconsistent dedent is an error). Blank and comment-only lines are ignored for layout.
+A trailing `->`, `=` or `<-` outside brackets does **not** continue the line; it opens a block (a match arm body, a multi-line `let`). Indentation uses spaces only; a tab in leading whitespace is an error. When a logical line is followed by a more-indented line, the lexer emits `INDENT`; on return to an enclosing level it emits matching `DEDENT`s (an inconsistent dedent is an error). Blank and comment-only lines are ignored for layout.
 
 **Comments:** `#` to end of line.
+
+**Greedy tokens:** `<-` is always one token, so `x<-1` is a bind, not a comparison; write `x < -1`.
 
 **Identifiers:**
 - `lname` — `[a-z_][A-Za-z0-9_]*`: values, functions, parameters, fields, modules, type variables.
@@ -272,7 +364,7 @@ A trailing `->` or `=` outside brackets does **not** continue the line; it opens
 | `"…"` | `String` (UTF-8) | `"'"`, `"a\u{e9}"`, escapes `\" \\ \n \r \t \0 \u{…}` |
 | `b"…"` | `Bytes` | `b"null"`, escapes as strings plus `\xNN` |
 
-**Keywords:** `module import as export abstract transparent fn enum record type let lemma ensures proof have auto admit check match if then else try and or implies decreasing partial ghost own`. `not` is an ordinary prelude function.
+**Keywords:** `module import as export abstract transparent fn enum record type let lemma ensures proof have auto admit check match if then else try and or implies decreasing partial ghost own when using`. `not` is an ordinary prelude function.
 
 **Glued vs spaced (D22):** `.` and `[` with no whitespace before them, directly after an identifier, `)` or `]`, are field/module access and indexing. With whitespace before them they are composition and a list literal.
 
@@ -309,11 +401,14 @@ constraint  ::= lname '~' [ 'ghost' | 'own' ] expr           -- typing
 block       ::= { stmt NL } expr NL
 stmt        ::= 'let' pattern '=' ( expr | NL INDENT block DEDENT )
               | 'have' expr                                  -- lemma application; adds its conclusion
+              | pattern '<-' expr                            -- D29: rebinds the call's last argument
+              | 'when' lname '=' expr { ',' lname '=' expr } 'using' lname NL
+                INDENT block DEDENT                          -- D30: schedule a behaviour
 expr        ::= 'if' expr 'then' expr 'else' expr
               | 'if' expr NL INDENT block DEDENT
                 'else' ( 'if' … | NL INDENT block DEDENT )   -- `else if` chains; `else` is required
               | 'match' expr NL INDENT { arm } DEDENT
-              | '\' apat { apat } '->' expr                  -- lambda
+              | '\' apat { apat } '->' ( expr | NL INDENT block DEDENT )   -- lambda; block body only outside brackets
               | 'try' expr                                   -- D14
               | 'auto' | 'admit'                             -- proof blocks only
               | opexpr                                       -- precedence climbing over §9.4
@@ -325,7 +420,8 @@ atom        ::= lname | Uname | literal
               | '(' op ')' | '(' op expr ')' | '(' expr op ')'    -- operator sections
               | '[' [ expr { ',' expr } ] ']'
 pattern     ::= cpat { '|' cpat }                            -- or-patterns
-cpat        ::= apat '::' cpat | Uname { apat } | apat
+cpat        ::= apat '::' cpat | Uname { apat } | Uname '{' fieldpat { ',' fieldpat } '}' | apat
+fieldpat    ::= lname [ '=' pattern ]                        -- D32
 apat        ::= '_' | lname | literal | Uname
               | '(' pattern ')' | '(' pattern ',' pattern { ',' pattern } ')'
               | '[' [ pattern { ',' pattern } ] ']'
@@ -429,12 +525,12 @@ Reordered (D25) so that Checkers can run CLI tools before the prover exists.
 |---|-------------|-----------|
 | M0 | Rust workspace; lexer with layout (§9.1); parser for §9.2; naming warnings (§9.7); source-span diagnostics; `checkers parse` / `checkers check` | `examples/json.ck` and every spec example parse; golden tests for errors and warnings |
 | M1 | Elaborator + kernel: name resolution, QTT core (§4), enums/records, `match` → recursors, inference and implicits, structural termination | `Vec`, `List`, `Nat` programs type-check; contract tests for every §4 rule, including rejected programs |
-| M2 | Erasure, interpreter, prelude, `IO` and `main` (args, stdin/stdout, files, exit codes). The IO design is specced before work starts. | a CLI tool written in Checkers runs (first target: a line/word counter) |
+| M2 | Erasure, interpreter, prelude, capabilities and `main` (§8.2–8.4: `Term`, `Fs`, `Env`, `Proc`, exit codes), implicit `drop` | `examples/wc.ck` runs |
 | M3 | `Prop`, equality, refinements, Z3 pipeline, trust ledger, `check` | verified insertion sort |
 | M4 | Modules, sealing, exported lemmas | sort module used from another module via its lemmas only |
 | M5 | Well-founded recursion, lexicographic `decreasing` | verified merge sort; `examples/json.ck` checks |
 | M6 | Two-level staging (`comptime`) | compile-time-generated specialized code |
-| M7 | Effects, actors, linear ownership, session types | ping-pong actors type-checked against a protocol |
+| M7 | Cowns, `when`, `par`, multi-threaded scheduler; actor library | `examples/log.ck` runs; stress tests show no races or deadlocks |
 | M8 | Cranelift backend | M2–M7 test suites pass native |
 | M9 | **Capstone:** interactive shell with a small scripting language, with proofs of its correctness (parser round-trip, evaluator semantics, job control protocol) | the shell runs its own test scripts |
 
@@ -455,6 +551,9 @@ Reordered (D25) so that Checkers can run CLI tools before the prover exists.
 - Pony papers. https://www.ponylang.io/learn/papers/
 - Neykova & Yoshida, *Multiparty Session Actors*, LMCS 2017. https://lmcs.episciences.org/3227
 - Iris. https://iris-project.org/
+- Cheeseman et al., *When Concurrency Matters: Behaviour-Oriented Concurrency*, OOPSLA 2023. https://2023.splashcon.org/details/splash-2023-oopsla/86/When-Concurrency-Matters-Behaviour-Oriented-Concurrency
+- Borretti, *How Capabilities Work in Austral*. https://borretti.me/article/how-capabilities-work-austral
+- Pulse (F\*), concurrent separation logic. https://fstar-lang.org/tutorial/book/pulse/pulse.html
 - Vazou et al., *Refinement Reflection: Complete Verification with SMT*, POPL 2018. https://arxiv.org/abs/1711.03842
 - RFC 8259, *The JavaScript Object Notation (JSON) Data Interchange Format*. https://www.rfc-editor.org/rfc/rfc8259
 

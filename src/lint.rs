@@ -229,6 +229,17 @@ impl Linter {
                     self.expr(e);
                 }
                 Stmt::Have(e) => self.expr(e),
+                Stmt::Bind(p, e) => {
+                    self.pat(p);
+                    self.expr(e);
+                }
+                Stmt::When(w) => {
+                    for (n, c) in &w.binds {
+                        self.snake(n, "variable");
+                        self.expr(c);
+                    }
+                    self.block(&w.body);
+                }
             }
         }
         self.expr(&b.result);
@@ -243,6 +254,7 @@ impl Linter {
                 self.pat(h);
                 self.pat(t);
             }
+            PatKind::Record(_, fs) => fs.iter().for_each(|(_, p)| self.pat(p)),
             PatKind::Wild | PatKind::Lit(_) | PatKind::Neg(_) | PatKind::Unit => {}
         }
     }

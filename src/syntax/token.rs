@@ -32,6 +32,8 @@ pub enum Kw {
     Partial,
     Ghost,
     Own,
+    When,
+    Using,
 }
 
 impl Kw {
@@ -64,6 +66,8 @@ impl Kw {
             "partial" => Kw::Partial,
             "ghost" => Kw::Ghost,
             "own" => Kw::Own,
+            "when" => Kw::When,
+            "using" => Kw::Using,
             _ => return None,
         })
     }
@@ -97,6 +101,8 @@ impl Kw {
             Kw::Partial => "partial",
             Kw::Ghost => "ghost",
             Kw::Own => "own",
+            Kw::When => "when",
+            Kw::Using => "using",
         }
     }
 }
@@ -209,6 +215,8 @@ pub enum Tok {
     Pipe,
     Eq,
     Arrow,
+    /// `<-`
+    LArrow,
     /// A malformed token; the lexer already reported it.
     Error,
     Newline,
@@ -241,6 +249,7 @@ impl fmt::Display for Tok {
             Tok::Pipe => write!(f, "`|`"),
             Tok::Eq => write!(f, "`=`"),
             Tok::Arrow => write!(f, "`->`"),
+            Tok::LArrow => write!(f, "`<-`"),
             Tok::Error => write!(f, "invalid token"),
             Tok::Newline => write!(f, "end of line"),
             Tok::Indent => write!(f, "indented block"),

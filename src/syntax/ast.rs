@@ -152,6 +152,18 @@ pub struct Block {
 pub enum Stmt {
     Let(Pattern, Expr),
     Have(Expr),
+    /// `pat <- f a c` (D29)
+    Bind(Pattern, Expr),
+    /// `when x = c, … using sched` + block (D30)
+    When(When),
+}
+
+#[derive(Clone, Debug)]
+pub struct When {
+    pub binds: Vec<(Ident, Expr)>,
+    pub sched: Ident,
+    pub body: Block,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug)]
@@ -231,4 +243,6 @@ pub enum PatKind {
     List(Vec<Pattern>),
     Cons(Box<Pattern>, Box<Pattern>),
     Or(Vec<Pattern>),
+    /// `Ctor { a, b = p }` (D32)
+    Record(Ident, Vec<(Ident, Pattern)>),
 }

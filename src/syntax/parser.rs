@@ -114,6 +114,13 @@ impl Parser {
         if self.eat(&Tok::Newline) || self.last_dedent {
             self.last_dedent = false;
             Ok(())
+        } else if self.at(&Tok::LArrow) {
+            let span = self.span();
+            self.diags.push(
+                Diagnostic::error("E0113", "`<-` binds an effectful result and must start a statement", span)
+                    .with_help("write `x <- f a cap` on its own line; for a comparison with a negative number write `x < -1`"),
+            );
+            Err(Failed)
         } else {
             Err(self.error_here("end of line"))
         }
@@ -500,8 +507,36 @@ impl Parser {
             if self.at(&Tok::Dedent) || self.at(&Tok::Eof) {
                 return Err(self.error_here("an expression ending the block"));
             }
+            if self.at_kw(Kw::When) {
+                stmts.push(Stmt::When(self.when_stmt()?));
+                continue;
+            }
+            if !self.at_kw(Kw::Let) && self.line_has_larrow() {
+                let p = self.pattern()?;
+                let arrow = self.expect(Tok::LArrow, "`<-`")?.span;
+                let e = self.expr()?;
+                self.end_line()?;
+                stmts.push(Stmt::Bind(p, e));
+                if self.at(&Tok::Dedent) {
+                    self.diags.push(
+                        Diagnostic::error("E0114", "a block cannot end with a `<-` binding", arrow)
+                            .with_label("this binds a result; the block still needs a final expression")
+                            .with_help("add the block's result on the next line; for a comparison with a negative number write `x < -1`"),
+                    );
+                    return Err(Failed);
+                }
+                continue;
+            }
             if self.eat_kw(Kw::Let) {
                 let p = self.pattern()?;
+                if self.at(&Tok::LArrow) {
+                    let span = self.span();
+                    self.diags.push(
+                        Diagnostic::error("E0111", "`<-` does not take `let`", span)
+                            .with_help("write `x <- f a cap` without `let`"),
+                    );
+                    return Err(Failed);
+                }
                 self.expect(Tok::Eq, "`=`")?;
                 let e = if self.at(&Tok::Newline) && *self.peek_at(1) == Tok::Indent {
                     self.open_block("expression")?;
@@ -545,6 +580,51 @@ impl Parser {
         }
     }
 
+    /// Does the current logical line contain a top-level `<-`?
+    fn line_has_larrow(&self) -> bool {
+        let mut depth = 0usize;
+        for t in &self.toks[self.pos..] {
+            match t.tok {
+                Tok::LParen | Tok::LBracket | Tok::LBrace => depth += 1,
+                Tok::RParen | Tok::RBracket | Tok::RBrace => depth = depth.saturating_sub(1),
+                Tok::LArrow if depth == 0 => return true,
+                Tok::Newline | Tok::Indent | Tok::Dedent | Tok::Eof => return false,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// `when x = c, … using sched` NL INDENT block DEDENT (D30)
+    fn when_stmt(&mut self) -> PResult<When> {
+        let start = self.bump().span; // when
+        let mut binds = Vec::new();
+        loop {
+            let name = self.ident("a name for the cown's contents")?;
+            self.expect(Tok::Eq, "`=` and a cown")?;
+            let cown = self.expr()?;
+            binds.push((name, cown));
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+        }
+        if !self.at_kw(Kw::Using) {
+            let span = self.span();
+            self.diags.push(
+                Diagnostic::error("E0112", "`when` needs a scheduler capability: `using sched`", span)
+                    .with_label("expected `using`")
+                    .with_help("scheduling is an effect; pass the `Sched` capability, e.g. `when l = log using sched`"),
+            );
+            return Err(Failed);
+        }
+        self.bump();
+        let sched = self.ident("the `Sched` capability")?;
+        self.open_block("behaviour body")?;
+        let body = self.block_rest()?;
+        let span = start.to(self.prev_span());
+        Ok(When { binds, sched, body, span })
+    }
+
     /// An indented block as an expression.
     fn block_expr(&mut self, what: &str) -> PResult<Expr> {
         self.open_block(what)?;
@@ -567,7 +647,11 @@ impl Parser {
                     pats.push(self.apat()?);
                 }
                 self.bump(); // ->
-                let body = self.expr()?;
+                let body = if self.at(&Tok::Newline) && *self.peek_at(1) == Tok::Indent {
+                    self.block_expr("lambda body")?
+                } else {
+                    self.expr()?
+                };
                 let span = start.to(body.span);
                 Ok(Expr { kind: ExprKind::Lambda(pats, Box::new(body)), span })
             }
@@ -923,6 +1007,24 @@ impl Parser {
     fn cpat(&mut self) -> PResult<Pattern> {
         let head = if let Tok::UName(n) = self.peek().clone() {
             let span = self.bump().span;
+            if self.at(&Tok::LBrace) {
+                self.bump();
+                let mut fields = Vec::new();
+                loop {
+                    let f = self.ident("a field name")?;
+                    let p = if self.eat(&Tok::Eq) {
+                        self.pattern()?
+                    } else {
+                        Pattern { kind: PatKind::Var(f.name.clone()), span: f.span }
+                    };
+                    fields.push((f, p));
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
+                }
+                let end = self.expect(Tok::RBrace, "`,` or `}`")?.span;
+                return Ok(Pattern { kind: PatKind::Record(Ident { name: n, span }, fields), span: span.to(end) });
+            }
             let mut args = Vec::new();
             while self.starts_apat() {
                 args.push(self.apat()?);

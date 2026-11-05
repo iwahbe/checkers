@@ -12,7 +12,7 @@ fn skip_ws src i -> j : src~Bytes, i~Nat, i <= len src,
         i
 ```
 
-Types are written only as constraints (`i~Nat, i <= len src`); the compiler proves the rest. See [`examples/json.ck`](examples/json.ck) for a JSON parser whose bounds checks, termination, and round-trip property are proven.
+Types are written only as constraints (`i~Nat, i <= len src`); the compiler proves the rest. Examples: [`json.ck`](examples/json.ck), a JSON parser whose bounds checks, termination, and round-trip property are proven; [`wc.ck`](examples/wc.ck), a CLI tool using linear capabilities; [`log.ck`](examples/log.ck), concurrency with cowns and `when`.
 
 **[SPEC.md](SPEC.md) is the definition of the language.** The implementation follows it.
 

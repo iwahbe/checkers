@@ -1,0 +1,23 @@
+(module effects)
+(fn binds (sys)
+  (do
+    (let (System {fs=fs term=t}) sys)
+    (<- line (terminal.read_line t))
+    (<- (tuple a b) (pair_op 1 fs))
+    (<- _ (terminal.print_line "done" t))
+    line))
+(fn behaviours (jobs screen sched)
+  (do
+    (when ((j jobs)) using sched
+      j)
+    (when ((j jobs) (s screen)) using sched
+      (do
+        (let j2 (add 1 j))
+        (tuple j2 s)))
+    0))
+(fn block_lambda (xs)
+  (do
+    (let step (\ (x) (do
+      (let y (+ x 1))
+      (* y 2))))
+    (map step xs)))

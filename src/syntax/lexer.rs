@@ -153,6 +153,8 @@ impl<'a> RawLexer<'a> {
             (Tok::Op(Op::EqEq), 2)
         } else if two(b'!', b'=') {
             (Tok::Op(Op::Ne), 2)
+        } else if two(b'<', b'-') {
+            (Tok::LArrow, 2)
         } else if two(b'<', b'=') {
             (Tok::Op(Op::Le), 2)
         } else if two(b'>', b'=') {
