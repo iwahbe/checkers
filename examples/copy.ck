@@ -29,7 +29,7 @@ export partial fn main args sys -> code : args~List String, sys~System, code~Exi
             Failure 2
 
 # Both files are consumed on every path: each is read/written and finally closed.
-partial fn copy_lines input output : input~own File, output~own File
+partial fn copy_lines input output : input~File, output~File
     line <- files.read_line input
     match line
         None ->

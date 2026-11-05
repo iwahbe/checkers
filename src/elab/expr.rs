@@ -197,10 +197,12 @@ impl Elab {
             ExprKind::Arrow(a, b) => {
                 let at = self.elab_type(cx, a);
                 let av = self.eval(cx, &at);
-                cx.bind("_", av, Mult::Many);
+                // A function taking a resource takes it exactly once (D39).
+                let m = if self.type_linear(&at) { Mult::One } else { Mult::Many };
+                cx.bind("_", av, m);
                 let bt = self.elab_type(cx, b);
                 cx.pop();
-                (Tm::Pi(Rc::from("_"), Mult::Many, Icit::Expl, Rc::new(at), Rc::new(bt)), Val::Univ(0))
+                (Tm::Pi(Rc::from("_"), m, Icit::Expl, Rc::new(at), Rc::new(bt)), Val::Univ(0))
             }
             ExprKind::Neg(x) => {
                 let int = self.int();

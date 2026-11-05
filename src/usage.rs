@@ -38,6 +38,8 @@ struct U<'a> {
     did: DefId,
     binders: Vec<Binder>,
     reported: bool,
+    /// Binder level → a function it was passed to whose parameter isn't `own` (D45).
+    copied_by: std::collections::HashMap<usize, String>,
 }
 
 type Counts = Vec<Count>;
@@ -77,12 +79,19 @@ impl U<'_> {
                     span,
                 )
                 .with_help("close it, or pass it on"),
-                _ => Diagnostic::error(
-                    "E0401",
-                    format!("`{name}` holds a resource (`{ty}`), so it must be used exactly once, but `{fname}` may use it more than once"),
-                    span,
-                )
-                .with_help("a resource can't be copied; thread it with `<-` so each use gets the new one"),
+                _ => {
+                    let d = Diagnostic::error(
+                        "E0401",
+                        format!("`{name}` holds a resource (`{ty}`), so it must be used exactly once, but `{fname}` may use it more than once"),
+                        span,
+                    );
+                    match self.copied_by.get(&lvl) {
+                        Some(callee) => d
+                            .with_note(format!("`{name}` is passed to `{callee}`, whose parameter is not `own`, so `{callee}` may copy or drop it"))
+                            .with_help(format!("mark that parameter of `{callee}` with `own` (as in `x~own a`) so it can take a resource")),
+                        None => d.with_help("a resource can't be copied; thread it with `<-` so each use gets the new one"),
+                    }
+                }
             };
             self.e.err(d);
             self.reported = true;
@@ -100,19 +109,19 @@ impl U<'_> {
                 format!("`{name}` is `own`, but `{fname}` uses it on some paths and not on others"),
                 span,
             )
-            .with_help("an owned resource must be used exactly once on every path, e.g. closed in every branch"),
+            .with_help("an `own` value must be used exactly once on every path"),
             (_, false, Count::Zero) => Diagnostic::error(
                 "E0401",
                 format!("`{name}` is `own`, so it must be used exactly once, but `{fname}` never uses it"),
                 span,
             )
-            .with_help("close or pass on the resource"),
+            .with_help("`own` promises a single use, so the argument may be a resource that must not be dropped; use it, or remove `own`"),
             _ => Diagnostic::error(
                 "E0401",
                 format!("`{name}` is `own`, so it must be used exactly once, but `{fname}` may use it more than once"),
                 span,
             )
-            .with_help("an owned resource can't be copied; thread it with `<-` so each use gets the new one"),
+            .with_help("`own` promises a single use, so the argument may be a resource; remove `own` if the value must be used twice"),
         };
         self.e.err(d);
         self.reported = true;
@@ -151,7 +160,17 @@ impl U<'_> {
                 let mut c = self.go(f);
                 // A constructor stores its argument: one use, like a saturated `ConApp`.
                 let m = if *m != Mult::Zero && head_is_con(f) { Mult::One } else { *m };
-                let ca: Counts = self.go(a).into_iter().map(|x| x.scale(m)).collect();
+                let used = self.go(a);
+                if m == Mult::Many {
+                    if let Some(callee) = head_def(f).map(|d| self.e.g.defs[d.0 as usize].name.to_string()) {
+                        for (lvl, c) in used.iter().enumerate() {
+                            if *c != Count::Zero && self.binders[lvl].mult == Mult::One {
+                                self.copied_by.entry(lvl).or_insert_with(|| callee.clone());
+                            }
+                        }
+                    }
+                }
+                let ca: Counts = used.into_iter().map(|x| x.scale(m)).collect();
                 add(&mut c, &ca);
                 c
             }
@@ -271,6 +290,16 @@ impl U<'_> {
     }
 }
 
+fn head_def(mut t: &Tm) -> Option<DefId> {
+    while let Tm::App(f, ..) = t {
+        t = f;
+    }
+    match t {
+        Tm::Def(d) => Some(*d),
+        _ => None,
+    }
+}
+
 fn head_is_con(mut t: &Tm) -> bool {
     while let Tm::App(f, ..) = t {
         t = f;
@@ -280,7 +309,7 @@ fn head_is_con(mut t: &Tm) -> bool {
 
 /// Check the body (a λ over the function's parameters) of `did`.
 pub fn check_fn(e: &mut Elab, did: DefId, body: &Tm) {
-    let mut u = U { e, did, binders: Vec::new(), reported: false };
+    let mut u = U { e, did, binders: Vec::new(), reported: false, copied_by: Default::default() };
     let mut t = body;
     let mut n = 0;
     while let Tm::Lam(x, m, _, b) = t {

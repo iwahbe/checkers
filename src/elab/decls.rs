@@ -464,7 +464,14 @@ impl Elab {
         }
         for n in names {
             let (ty, mult) = match Self::typed_constraint(cs, &n.name) {
-                Some((e, m)) => (self.elab_type(&mut cx, e), Self::mult_of(m)),
+                Some((e, m)) => {
+                    let ty = self.elab_type(&mut cx, e);
+                    let mult = Self::mult_of(m);
+                    if mult == Mult::One {
+                        self.check_own(&cx, &ty, e.span);
+                    }
+                    (ty, mult)
+                }
                 None => {
                     self.err(
                         Diagnostic::error("E0352", format!("constructor field `{}` needs a type", n.name), n.span)
@@ -697,7 +704,14 @@ impl Elab {
         let n_implicit = autos.len();
         for (k, p) in params.iter().enumerate() {
             let (ty, mult) = match Self::typed_constraint(cs, &p.name) {
-                Some((e, m)) => (self.elab_type(&mut cx, e), Self::mult_of(m)),
+                Some((e, m)) => {
+                    let ty = self.elab_type(&mut cx, e);
+                    let mult = Self::mult_of(m);
+                    if mult == Mult::One {
+                        self.check_own(&cx, &ty, e.span);
+                    }
+                    (ty, mult)
+                }
                 None => (self.fresh_meta(&cx), Mult::Many),
             };
             let v = self.eval(&cx, &ty);

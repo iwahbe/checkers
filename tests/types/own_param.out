@@ -1,0 +1,30 @@
+error[E0401]: `x` is `own`, so it must be used exactly once, but `twice_owned` may use it more than once
+  --> own_param.ck:14:16
+   |
+14 | fn twice_owned x -> p : x~own a, p~(a, a)
+   |                ^
+   = help: `own` promises a single use, so the argument may be a resource; remove `own` if the value must be used twice
+
+error[E0401]: `f` holds a resource (`File`), so it must be used exactly once, but `generic_without_own` may use it more than once
+  --> own_param.ck:17:24
+   |
+17 | fn generic_without_own f : f~File
+   |                        ^
+   = note: `f` is passed to `keep`, whose parameter is not `own`, so `keep` may copy or drop it
+   = help: mark that parameter of `keep` with `own` (as in `x~own a`) so it can take a resource
+
+warning[W010]: `own` is implied: `File` holds a resource
+  --> own_param.ck:23:22
+   |
+23 | fn implied f : f~own File
+   |                      ^^^^ this `own` can go
+   = help: remove `own`; a resource is used exactly once anyway
+
+error[E0357]: `own` on `Nat`, which holds no resource
+  --> own_param.ck:26:29
+   |
+26 | fn pointless n -> m : n~own Nat, m~Nat
+   |                             ^^^ `own` has no use here
+   = help: `own` is for generic parameters that may receive a resource, as in `v~own a`; remove it
+
+own_param.ck: 3 errors, 1 warning

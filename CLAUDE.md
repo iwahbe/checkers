@@ -7,7 +7,7 @@
 - `examples/*.ck` must check with zero diagnostics (enforced by the golden test).
 - Keep `cargo clippy` clean. No new dependencies without a reason in the commit message.
 - `CHECKERS_DUMP=1 checkers run …` prints each function's elaborated core term as the interpreter compiles it.
-- Diagnostic codes: `E0001`–`E0099` lexer/layout, `E0100`–`E0199` parser, `E0200`–`E0299` names and types, `E0300`–`E0349` termination, `E0350`–`E0399` declarations (positivity, signatures), `E0400`–`E0449` usage (`own`/`ghost`), `W001`–`W003` naming (§9.7). Never reuse a code for a different meaning (E0107 is retired).
+- Diagnostic codes: `E0001`–`E0099` lexer/layout, `E0100`–`E0199` parser, `E0200`–`E0299` names and types, `E0300`–`E0349` termination, `E0350`–`E0399` declarations (positivity, signatures), `E0400`–`E0449` usage (`own`/`ghost`), `W001`–`W003` naming (§9.7), `W010`–`W019` usage (`W010`: redundant `own`). Never reuse a code for a different meaning (E0107 is retired).
 - The standard library lives in `stdlib/*.ck` and is embedded in the binary. A function body consisting of `__builtin` (allowed only in `stdlib/`) is a primitive implemented in Rust.
 
 ## Layout

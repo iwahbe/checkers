@@ -24,11 +24,11 @@ export fn open path fs -> r : path~String, fs~Fs, r~Result File IoError
 export fn create path fs -> r : path~String, fs~Fs, r~Result File IoError
     __builtin
 
-export fn close f -> r : f~own File, r~Unit
+export fn close f -> r : f~File, r~Unit
     __builtin
 
-export fn read_line f -> r : f~own File, r~(Option String, File)
+export fn read_line f -> r : f~File, r~(Option String, File)
     __builtin
 
-export fn write_line s f -> r : s~String, f~own File, r~(Unit, File)
+export fn write_line s f -> r : s~String, f~File, r~(Unit, File)
     __builtin

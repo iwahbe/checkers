@@ -270,9 +270,17 @@ impl Elab {
     }
 
     /// Does this type declaration contain a resource (in a constructor field)?
+    /// A cown or future owns its contents; its handle may be shared (D39).
+    fn is_owner(&self, t: TyId) -> bool {
+        Some(t) == self.g.well_known.cown || Some(t) == self.g.well_known.future
+    }
+
     fn ty_linear(&self, t: TyId, visiting: &mut Vec<TyId>) -> bool {
         if self.is_primitive_resource(t) {
             return true;
+        }
+        if self.is_owner(t) {
+            return false;
         }
         if visiting.contains(&t) {
             return false;
@@ -290,7 +298,9 @@ impl Elab {
     fn tm_linear(&self, t: &Tm, visiting: &mut Vec<TyId>) -> bool {
         match t {
             Tm::TyCon(id) => self.ty_linear(*id, visiting),
-            Tm::TyConApp(id, args) => self.ty_linear(*id, visiting) || args.iter().any(|a| self.tm_linear(a, visiting)),
+            Tm::TyConApp(id, args) => {
+                !self.is_owner(*id) && (self.ty_linear(*id, visiting) || args.iter().any(|a| self.tm_linear(a, visiting)))
+            }
             Tm::TupleTy(ts) => ts.iter().any(|a| self.tm_linear(a, visiting)),
             Tm::Meta(m) => match self.g.meta(*m) {
                 Some(v) => self.val_linear(&v),
@@ -303,7 +313,9 @@ impl Elab {
     /// Is a value of this type linear (D39)?
     pub fn val_linear(&self, v: &Val) -> bool {
         match self.force(v) {
-            Val::TyCon(id, args) => self.ty_linear(id, &mut Vec::new()) || args.iter().any(|a| self.val_linear(a)),
+            Val::TyCon(id, args) => {
+                !self.is_owner(id) && (self.ty_linear(id, &mut Vec::new()) || args.iter().any(|a| self.val_linear(a)))
+            }
             Val::TupleTy(ts) => ts.iter().any(|a| self.val_linear(a)),
             _ => false,
         }
@@ -323,6 +335,42 @@ impl Elab {
             self.resource_vars.insert((f, name.to_string()), (span, shown));
         }
         Mult::One
+    }
+
+    /// D45: `own` belongs on generic parameters. On a linear type it is implied
+    /// (W010); on a type without type variables it means nothing useful (E0357).
+    pub fn check_own(&mut self, cx: &Cx, ty: &Tm, span: Span) {
+        if self.type_linear(ty) {
+            let tyv = self.eval(cx, ty);
+            let shown = self.show_val(cx, &tyv);
+            self.err(
+                Diagnostic::warning("W010", format!("`own` is implied: `{shown}` holds a resource"), span)
+                    .with_label("this `own` can go")
+                    .with_help("remove `own`; a resource is used exactly once anyway"),
+            );
+        } else if !self.mentions_type_var(cx, ty, 0) {
+            let tyv = self.eval(cx, ty);
+            let shown = self.show_val(cx, &tyv);
+            self.err(
+                Diagnostic::error("E0357", format!("`own` on `{shown}`, which holds no resource"), span)
+                    .with_label("`own` has no use here")
+                    .with_help("`own` is for generic parameters that may receive a resource, as in `v~own a`; remove it"),
+            );
+        }
+    }
+
+    fn mentions_type_var(&self, cx: &Cx, t: &Tm, under: usize) -> bool {
+        match t {
+            Tm::Var(i) if *i >= under => {
+                let lvl = cx.lvl() + under - 1 - i;
+                lvl < cx.locals.len() && matches!(self.force(&cx.locals[lvl].ty), Val::Univ(_))
+            }
+            Tm::App(f, a, ..) => self.mentions_type_var(cx, f, under) || self.mentions_type_var(cx, a, under),
+            Tm::TyConApp(_, v) | Tm::TupleTy(v) => v.iter().any(|a| self.mentions_type_var(cx, a, under)),
+            Tm::Pi(_, _, _, a, b) => self.mentions_type_var(cx, a, under) || self.mentions_type_var(cx, b, under + 1),
+            Tm::Meta(m) => self.g.meta(*m).is_none(),
+            _ => false,
+        }
     }
 
     /// E0404: a pattern or `_` that would drop a resource.
