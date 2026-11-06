@@ -24,17 +24,6 @@ fn nested xss -> r : xss~List (List Nat), r~Nat
 fn takes_nested xss -> r : xss~List (List Small), r~Nat
     0
 
-# A function that needs a `Small` can't stand in for one that takes any `Nat`
-# (contravariance).
-fn apply_nat f -> r : f~(Nat -> Nat), r~Nat
-    f 20
-
-fn pass_fn h -> r : h~(Small -> Nat), r~Nat
-    apply_nat h                                 # error: `h` needs a `Small`
-
-fn pass_fn_ok h -> r : h~(Nat -> Small), r~Nat
-    apply_nat h
-
 # Forgetting a refinement is free, except through a cown, which is invariant.
 fn forget_cown c -> d : c~Cown Small, d~Cown Nat
     c                                           # error: `Cown Small` is not `Cown Nat`

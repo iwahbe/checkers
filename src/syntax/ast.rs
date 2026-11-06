@@ -69,6 +69,35 @@ pub enum Constraint {
     Pred(Expr),
 }
 
+/// `(param~dom, preds…)`, or with `arrow`, `(param~dom -> result~cod, preds…)`.
+#[derive(Clone, Debug)]
+pub struct RefineTy {
+    pub param: Option<Ident>,
+    pub dom: Expr,
+    pub arrow: Option<(Option<Ident>, Expr)>,
+    pub preds: Vec<Expr>,
+}
+
+impl RefineTy {
+    /// The names it binds.
+    pub fn binders(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.param.iter().map(|p| p.name.clone()).collect();
+        if let Some((Some(r), _)) = &self.arrow {
+            v.push(r.name.clone());
+        }
+        v
+    }
+
+    /// Its type expressions (the parameter's, then the result's).
+    pub fn types(&self) -> Vec<&Expr> {
+        let mut v = vec![&self.dom];
+        if let Some((_, t)) = &self.arrow {
+            v.push(t);
+        }
+        v
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Polarity {
     Pos,
@@ -199,6 +228,9 @@ pub enum ExprKind {
     Binary(Op, Box<Expr>, Box<Expr>),
     /// Function type `a -> b`
     Arrow(Box<Expr>, Box<Expr>),
+    /// A refinement type `(n~Int, n >= 5)` or a refined function type
+    /// `(x~Int -> y~Int, x >= 5, y > x)` written inside a type (D82).
+    Refine(Box<RefineTy>),
     Neg(Box<Expr>),
     /// `(+)`
     OpRef(Op),

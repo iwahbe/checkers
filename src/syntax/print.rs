@@ -206,6 +206,17 @@ pub fn expr(e: &Expr, depth: usize) -> String {
         }
         ExprKind::Binary(op, l, r) => format!("({} {} {})", op.as_str(), expr(l, depth), expr(r, depth)),
         ExprKind::Arrow(a, b) => format!("(-> {} {})", expr(a, depth), expr(b, depth)),
+        ExprKind::Refine(r) => {
+            let name = |n: &Option<Ident>| n.as_ref().map_or("_".to_string(), |i| i.name.clone());
+            let mut s = format!("(refine {}~{}", name(&r.param), expr(&r.dom, depth));
+            if let Some((n, t)) = &r.arrow {
+                s += &format!(" -> {}~{}", name(n), expr(t, depth));
+            }
+            for p in &r.preds {
+                s += &format!(" {}", expr(p, depth));
+            }
+            s + ")"
+        }
         ExprKind::Neg(x) => format!("(neg {})", expr(x, depth)),
         ExprKind::OpRef(op) => format!("({})", op.as_str()),
         ExprKind::SectionL(op, x) => format!("(section {} {} _)", op.as_str(), expr(x, depth)),

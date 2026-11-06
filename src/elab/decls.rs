@@ -227,7 +227,7 @@ impl Elab {
         }
     }
 
-    fn new_def(&mut self, name: &str) -> DefId {
+    pub(crate) fn new_def(&mut self, name: &str) -> DefId {
         self.g.defs.push(DefInfo {
             name: Rc::from(name),
             module: Rc::from(self.cur.as_str()),
@@ -467,6 +467,7 @@ impl Elab {
             let t = self.elab_type(&mut cx, ty);
             let tv = self.eval(&cx, &t);
             cx.bind(&name.name, tv, Mult::Zero);
+            self.alias_subject.insert(*did, Rc::from(name.name.as_str()));
             for c in &constraints[1..] {
                 match c {
                     Constraint::Pred(e) => {
@@ -645,6 +646,14 @@ impl Elab {
             }
             ExprKind::Tuple(v) | ExprKind::List(v) => v.iter().for_each(|x| self.collect_free(cx, x, declared, out)),
             ExprKind::Neg(x) => self.collect_free(cx, x, declared, out),
+            // A refinement binds its own names; its predicates name no types.
+            ExprKind::Refine(r) => {
+                let mut inner = declared.clone();
+                inner.extend(r.binders());
+                for t in r.types() {
+                    self.collect_free(cx, t, &inner, out);
+                }
+            }
             ExprKind::Field(x, _) => {
                 // `q.name` qualifies or projects; it never introduces a type variable `q`.
                 if let ExprKind::Var(q) = &x.kind {
@@ -1060,6 +1069,7 @@ impl Elab {
                                 .collect(),
                             n_implicit: sig.n_implicit,
                             builtin,
+                            result: result.as_ref().map(|r| r.name.clone()),
                         },
                     );
                     self.specs.insert(
@@ -1340,6 +1350,10 @@ fn walk(e: &Expr, f: &mut dyn FnMut(&Expr)) {
             walk(a, f);
             walk(b, f);
             walk(c, f);
+        }
+        ExprKind::Refine(r) => {
+            r.types().into_iter().for_each(|t| walk(t, f));
+            r.preds.iter().for_each(|p| walk(p, f));
         }
         _ => {}
     }

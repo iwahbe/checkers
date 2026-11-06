@@ -314,6 +314,16 @@ impl Refs {
                 go(self, b);
             }
             ExprKind::Neg(a) | ExprKind::SectionL(_, a) | ExprKind::SectionR(_, a) | ExprKind::Try(a) => go(self, a),
+            ExprKind::Refine(r) => {
+                let mut b = bound.to_vec();
+                b.extend(r.binders());
+                for t in r.types() {
+                    self.expr(t, &b, in_type);
+                }
+                for p in &r.preds {
+                    self.expr(p, &b, false);
+                }
+            }
             // `m.f` names another module's `f`; `x.field` a field.
             ExprKind::Field(a, _) => {
                 if !matches!(&a.kind, ExprKind::Var(n) if !bound.iter().any(|b| b == n)) {

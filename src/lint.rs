@@ -268,6 +268,10 @@ impl Linter {
             }
             ExprKind::Neg(x) | ExprKind::SectionL(_, x) | ExprKind::SectionR(_, x) | ExprKind::Try(x) => self.expr(x),
             ExprKind::Field(x, _) => self.expr(x),
+            ExprKind::Refine(r) => {
+                r.types().into_iter().for_each(|t| self.expr(t));
+                r.preds.iter().for_each(|p| self.expr(p));
+            }
             ExprKind::If(c, t, f) => {
                 self.expr(c);
                 self.expr(t);

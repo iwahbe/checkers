@@ -1,0 +1,34 @@
+error[E0450]: cannot prove that `at_least 7` can be called here
+  --> refined_fn_types.ck:52:14
+   |
+52 |     list.map (at_least 7) xs                    # error E0450: needs `x >= 7`, counterexample x = 5
+   |              ^^^^^^^^^^^^ `list.map` may call this with any `Big`
+   = note: it needs `x >= 7`
+   = note: counterexample: x = 5
+   = help: pass a function that accepts every `Big`
+
+error[E0450]: cannot prove `x >= 5`, required to call `f`
+  --> refined_fn_types.ck:56:7
+   |
+56 |     f 3                                         # error E0450: `x >= 5`, required to call `f`
+   |       ^ `f` requires `x >= 5`
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+error[E0450]: cannot prove that `x - 9` is a `(y~Int, y >= 0)` (`y >= 0`)
+  --> refined_fn_types.ck:60:18
+   |
+60 |     apply (\x -> x - 9) 9                       # error E0450: `y >= 0` of `x - 9`, counterexample x = 5
+   |                  ^^^^^ this must be a `(y~Int, y >= 0)`
+   = note: counterexample: x = 5
+   = help: make it true first, e.g. with an `if`, or start from a value that is already a `(y~Int, y >= 0)`
+
+error[E0450]: cannot prove that every `Big` is a `(n~Int, n >= 6)`
+  --> refined_fn_types.ck:64:5
+   |
+64 |     xs                                          # error E0450: every `Big` is `n >= 6`, counterexample n = 5
+   |     ^^ `xs` holds `Big` values where `(n~Int, n >= 6)` values are expected
+   = note: it needs `n >= 6`
+   = note: counterexample: n = 5
+   = help: give the values the type `(n~Int, n >= 6)` where they are built, so that each is checked there
+
+refined_fn_types.ck: 4 errors, 0 warnings

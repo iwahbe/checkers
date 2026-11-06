@@ -980,7 +980,9 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
                 Mult::One => "own ",
                 Mult::Many => "",
             };
+            let anon_dom = matches!(head_def(a), Some(d) if is_anon_alias(g, d));
             let s = match i {
+                Icit::Expl if anon_dom && *m != Mult::Zero => format!("{mul}{dom} -> {cod}"),
                 Icit::Impl => format!("{{{x2}~{mul}{dom}}} -> {cod}"),
                 Icit::Expl if x.as_ref() == "_" && *m == Mult::Many => format!("{dom} -> {cod}"),
                 Icit::Expl => format!("({x2}~{mul}{dom}) -> {cod}"),
@@ -1004,6 +1006,12 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
                 h = f;
             }
             args.reverse();
+            // An inline refinement (D82) prints as written.
+            if let Tm::Def(d) = h {
+                if is_anon_alias(g, *d) {
+                    return g.defs[d.0 as usize].name.to_string();
+                }
+            }
             if let Tm::Meta(m) = h {
                 if g.meta(*m).is_none() {
                     return "_".into();
@@ -1132,5 +1140,95 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
             paren(p > 0, format!("match {} …", show_prec(g, ns, s, 0)))
         }
         Tm::Error => "_".into(),
+    }
+}
+
+/// The free variables of `t` under `depth` binders, as indices from outside
+/// those binders.
+pub fn free_vars(t: &Tm, depth: usize, out: &mut std::collections::BTreeSet<usize>) {
+    let mut go = |x: &Tm, d: usize| free_vars(x, d, out);
+    match t {
+        Tm::Var(i) if *i >= depth => {
+            out.insert(i - depth);
+        }
+        Tm::Pi(_, _, _, a, b) => {
+            go(a, depth);
+            go(b, depth + 1);
+        }
+        Tm::Lam(_, _, _, b) => go(b, depth + 1),
+        Tm::App(f, a, _, _) => {
+            go(f, depth);
+            go(a, depth);
+        }
+        Tm::Let(_, _, ty, v, b) => {
+            go(ty, depth);
+            go(v, depth);
+            go(b, depth + 1);
+        }
+        Tm::TyConApp(_, v) | Tm::TupleTy(v) | Tm::ConApp(_, v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => {
+            for x in v {
+                go(x, depth);
+            }
+        }
+        Tm::Proj(x, _) | Tm::Field(x, _, _) => go(x, depth),
+        Tm::Case(s, c) => {
+            go(s, depth);
+            for (_, n, b) in &c.branches {
+                go(b, depth + n);
+            }
+            for (_, b) in &c.lits {
+                go(b, depth);
+            }
+            if let Some(b) = &c.default {
+                go(b, depth);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `t` with each free variable `i` (an index from outside `depth` binders)
+/// replaced by `f(i)`.
+pub fn rename_free(t: &Tm, depth: usize, f: &dyn Fn(usize) -> usize) -> Tm {
+    let go = |x: &Tm, d: usize| rename_free(x, d, f);
+    let rc = |x: &Rc<Tm>, d: usize| Rc::new(rename_free(x, d, f));
+    let all = |v: &Vec<Tm>| v.iter().map(|x| go(x, depth)).collect::<Vec<_>>();
+    match t {
+        Tm::Var(i) if *i >= depth => Tm::Var(f(i - depth) + depth),
+        Tm::Pi(x, m, i, a, b) => Tm::Pi(x.clone(), *m, *i, rc(a, depth), rc(b, depth + 1)),
+        Tm::Lam(x, m, i, b) => Tm::Lam(x.clone(), *m, *i, rc(b, depth + 1)),
+        Tm::App(a, b, i, m) => Tm::App(rc(a, depth), rc(b, depth), *i, *m),
+        Tm::Let(x, m, ty, v, b) => Tm::Let(x.clone(), *m, rc(ty, depth), rc(v, depth), rc(b, depth + 1)),
+        Tm::TyConApp(c, v) => Tm::TyConApp(*c, all(v)),
+        Tm::TupleTy(v) => Tm::TupleTy(all(v)),
+        Tm::ConApp(c, v) => Tm::ConApp(*c, all(v)),
+        Tm::Tuple(v) => Tm::Tuple(all(v)),
+        Tm::PrimApp(p, v) => Tm::PrimApp(p.clone(), all(v)),
+        Tm::Proj(x, i) => Tm::Proj(rc(x, depth), *i),
+        Tm::Field(x, c, i) => Tm::Field(rc(x, depth), *c, *i),
+        Tm::Case(s, c) => Tm::Case(
+            rc(s, depth),
+            Rc::new(CaseTm {
+                branches: c.branches.iter().map(|(k, n, b)| (*k, *n, go(b, depth + n))).collect(),
+                lits: c.lits.iter().map(|(l, b)| (l.clone(), go(b, depth))).collect(),
+                default: c.default.as_ref().map(|b| go(b, depth)),
+            }),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// An inline refinement `(n~Int, n >= 5)` (D82): an alias with no name of
+/// its own, named by its text.
+pub fn is_anon_alias(g: &Globals, d: DefId) -> bool {
+    g.defs[d.0 as usize].name.starts_with('(')
+}
+
+/// The definition at the head of an application, if any.
+pub fn head_def(t: &Tm) -> Option<DefId> {
+    match t {
+        Tm::Def(d) => Some(*d),
+        Tm::App(f, ..) => head_def(f),
+        _ => None,
     }
 }

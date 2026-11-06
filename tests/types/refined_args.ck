@@ -38,3 +38,14 @@ fn first xs -> r : xs~List Small, r~Nat, r < 10
 
 fn halve xs -> ys : xs~List Small, ys~List Small
     list.map (\x -> x / 2) xs
+
+# A function that needs a `Small` can't stand in for one that takes any `Nat`
+# (contravariance): an obligation for any `Nat` (D85).
+fn apply_nat f -> r : f~(Nat -> Nat), r~Nat
+    f 20
+
+fn pass_fn h -> r : h~(Small -> Nat), r~Nat
+    apply_nat h                                 # error: n < 10, counterexample n = 10
+
+fn pass_fn_ok h -> r : h~(Nat -> Small), r~Nat
+    apply_nat h

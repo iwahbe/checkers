@@ -1,0 +1,4 @@
+(module refine_types)
+(fn a (xs f g) -> r
+  (: (xs~(List (refine n~Int (>= n 5)))) (f~(refine x~Int -> y~Int (>= x 5) (> y x))) (g~(refine _~Int -> y~Int (>= y 0))) (r~Int))
+  0)

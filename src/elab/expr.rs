@@ -183,18 +183,16 @@ impl Elab {
             }
             (ExprKind::Unit, Val::Univ(_)) => Tm::TupleTy(vec![]),
             _ => {
-                let saved_fn = std::mem::replace(&mut self.expected_fn, matches!(e.kind, ExprKind::Var(_)).then(|| exp.clone()));
                 if matches!(e.kind, ExprKind::App(..)) && self.has_refined(cx, expected, 0) {
                     self.app_expected = Some(expected.clone());
                 }
                 let (t, ty) = self.infer(cx, e);
                 self.app_expected = None;
-                self.expected_fn = saved_fn;
                 if !self.unify_at(cx, &exp, &ty, e.span, "this expression") {
                     return Tm::Error;
                 }
                 // A refinement inside a type argument is never gained (D71).
-                if let Some(g) = self.refined_mismatch(cx, expected, &ty) {
+                if let Some(g) = self.refined_mismatch(cx, expected, &ty, e.span) {
                     self.report_gained(cx, expected, &ty, &g, e.span, "this expression");
                     return Tm::Error;
                 }
@@ -207,28 +205,13 @@ impl Elab {
     pub fn infer(&mut self, cx: &mut Cx, e: &Expr) -> (Tm, Val) {
         match &e.kind {
             ExprKind::Var(n) => {
-                let r = self.infer_var(cx, n, e.span);
-                if !self.in_app_head {
-                    if let Tm::Def(d) = &r.0 {
-                        if let Some(spec) = self.specs.get(d).cloned() {
-                            let expected = self.expected_fn.clone();
-                            let unmet = spec
-                                .preds
-                                .iter()
-                                .any(|p| !p.is_post && !self.alias_met_by(p, &spec, expected.as_ref()));
-                            if spec.n_binders > 0 && unmet {
-                                let unmet: Vec<Pred> = spec
-                                    .preds
-                                    .iter()
-                                    .filter(|p| !p.is_post && !self.alias_met_by(p, &spec, expected.as_ref()))
-                                    .cloned()
-                                    .collect();
-                                self.partial_with_pre(n, &unmet, e.span);
-                            }
-                        }
-                    }
+                let (t, ty) = self.infer_var(cx, n, e.span);
+                if self.in_app_head {
+                    return (t, ty);
                 }
-                r
+                // A function with a specification, as a value (D85).
+                let ty = self.refined_fn_type(cx, &t, ty);
+                (t, ty)
             }
             ExprKind::Con(n) => match self.resolve(n, cx.type_pos) {
                 Some(s) => {
@@ -275,6 +258,7 @@ impl Elab {
             }
             ExprKind::App(..) => self.elab_app(cx, e),
             ExprKind::Binary(op, l, r) => self.elab_binary(cx, *op, l, r, e.span),
+            ExprKind::Refine(r) => (self.elab_refine(cx, r), Val::Univ(0)),
             ExprKind::Arrow(a, b) => {
                 let at = self.elab_type(cx, a);
                 let av = self.eval(cx, &at);
@@ -624,6 +608,8 @@ impl Elab {
         let (ft, fty) = self.look_ahead(cx, ft, fty, &args);
         let mut t = ft;
         let mut ty = fty;
+        let head_text = self.src_text(head.span);
+        let saved_arg_of = self.arg_of.replace(head_text);
         for (k, a) in args.iter().enumerate() {
             if k == 0 {
                 self.map_elem_sub = map_sub;
@@ -633,8 +619,11 @@ impl Elab {
             t = t2;
             ty = ty2;
         }
+        self.arg_of = saved_arg_of;
         let (t, ty) = self.insert(cx, t, ty);
         self.call_obligations(cx, &t, e.span, head.span);
+        // A partial application (D86).
+        let ty = self.refined_fn_type(cx, &t, ty);
         // A compile-time argument that isn't known: its type may not compute
         // either, so don't also report a mismatch.
         if !self.check_comptime_call(cx, &t, &args, e.span) {
@@ -710,20 +699,12 @@ impl Elab {
                 }
                 let name = self.g.defs[d.0 as usize].name.to_string();
                 if args.len() < spec.n_binders {
-                    // A partial application (D51, D52): preconditions about the
-                    // arguments given are checked here; others can't be.
+                    // A partial application (D86): preconditions about the
+                    // arguments given are checked here; the others are in
+                    // its type (`refined_fn_type`).
                     let given = args.len();
                     let total = spec.n_binders + 1;
-                    let (now, later): (Vec<&Pred>, Vec<&Pred>) = spec
-                        .preds
-                        .iter()
-                        .filter(|p| !p.is_post)
-                        .partition(|p| !mentions_level_from(&p.tm, total, given, 0));
-                    if !later.is_empty() {
-                        let later: Vec<Pred> = later.into_iter().cloned().collect();
-                        self.partial_with_pre(&name, &later, span);
-                        return;
-                    }
+                    let now = spec.preds.iter().filter(|p| !p.is_post && !mentions_level_from(&p.tm, total, given, 0));
                     let mut env: Vec<Val> = args.iter().map(|a| self.eval(cx, a)).collect();
                     for k in given..total {
                         env.push(Val::var(usize::MAX / 2 + k));
@@ -755,26 +736,6 @@ impl Elab {
                 }
             }
             _ => {}
-        }
-    }
-
-    /// A refinement-alias precondition on parameter k is met when the function
-    /// is passed where the expected function type has the same alias there
-    /// (`c~Char` passed as a `Char -> String`): its caller promises it.
-    fn alias_met_by(&self, p: &Pred, spec: &Spec, expected: Option<&Val>) -> bool {
-        let (Some((k, alias)), Some(mut ty)) = (p.alias, expected.cloned()) else { return false };
-        let mut pos = spec.n_implicit;
-        loop {
-            match self.force(&ty) {
-                Val::Pi(_, _, Icit::Expl, dom, c) => {
-                    if pos == k {
-                        return matches!(&*dom, Val::Neutral(Head::Def(d), _) if *d == alias);
-                    }
-                    pos += 1;
-                    ty = apply_closure(&self.g, &c, Val::var(usize::MAX / 2));
-                }
-                _ => return false,
-            }
         }
     }
 
@@ -810,24 +771,6 @@ impl Elab {
             let ob = self.obligations.pop().expect("just pushed");
             self.measure_obs.push((caller, callee, ob));
         }
-    }
-
-    /// E0453: preconditions that mention arguments not given yet (D51).
-    fn partial_with_pre(&mut self, name: &str, unmet: &[Pred], span: Span) {
-        if self.in_spec > 0 {
-            return;
-        }
-        let pre: Vec<String> = unmet.iter().map(|p| format!("`{}`", p.text)).collect();
-        self.err(
-            Diagnostic::error(
-                "E0453",
-                format!("`{name}` is partially applied, but its precondition is about an argument it doesn't have yet"),
-                span,
-            )
-            .with_note(format!("it requires {}, which can't be checked until every argument is known", pre.join(" and ")))
-            .with_note("refined function types (M10) will let it go where the function type promises that precondition")
-            .with_help(format!("pass every argument at a call the prover can see, e.g. `\\x -> {name} … x` where `x` is known to satisfy it")),
-        );
     }
 
     /// `have e` (D49): a lemma's conclusion, or a proven `Bool`, becomes a fact.
@@ -916,17 +859,20 @@ impl Elab {
         (t, ty)
     }
 
-    /// A lambda argument followed by a local variable (`map (\x -> …) xs`):
-    /// take the variable's type first, so the lambda's parameter gets the
-    /// most precise type (`Small`, not `Nat`; D71). Looking up a local has no
-    /// effects, so nothing is elaborated twice.
+    /// A function argument followed by a local variable (`map (\x -> …) xs`,
+    /// `map sub5 xs`): take the variable's type first, so the function is
+    /// checked against the most precise type (`Small`, not `Nat`; D71, D87).
+    /// Looking up a local has no effects, so nothing is elaborated twice.
     fn look_ahead(&mut self, cx: &Cx, t: Tm, ty: Val, args: &[&Expr]) -> (Tm, Val) {
-        let Some(first_lam) = args.iter().position(|a| matches!(a.kind, ExprKind::Lambda(..))) else { return (t, ty) };
         let (t, ty) = self.insert(cx, t, ty);
         let mut r = ty.clone();
+        let mut first_fn = None;
         for (k, a) in args.iter().enumerate() {
             let Val::Pi(_, _, Icit::Expl, dom, c) = self.force(&r) else { break };
-            if k > first_lam {
+            if first_fn.is_none() && (matches!(a.kind, ExprKind::Lambda(..)) || matches!(self.force(&dom), Val::Pi(..))) {
+                first_fn = Some(k);
+            }
+            if first_fn.is_some_and(|f| k > f) {
                 if let ExprKind::Var(n) = &a.kind {
                     if let Some(l) = cx.lookup(n) {
                         let q = quote(&self.g, cx.lvl() + k, &dom);
@@ -953,9 +899,24 @@ impl Elab {
         let (t, ty) = self.insert(cx, t, ty);
         match self.force(&ty) {
             Val::Pi(_, m, Icit::Expl, dom, c) => {
-                self.alias_covered = self.head_checks_aliases && self.is_direct_alias(&dom);
+                // A refined function type's precondition (D84): required to
+                // call the function.
+                let pre = match self.refined_alias(&dom) {
+                    Some((d, args)) if !self.head_checks_aliases && self.is_direct_alias(&dom) && is_anon_alias(&self.g, d) => Some((d, args)),
+                    _ => None,
+                };
+                self.alias_covered = (self.head_checks_aliases && self.is_direct_alias(&dom)) || pre.is_some();
                 let at = self.check(cx, a, &dom, false);
                 let av = self.eval(cx, &at);
+                if let Some((d, args)) = pre {
+                    let callee = self.arg_of.clone().unwrap_or_else(|| "the function".into());
+                    for p in self.alias_preds.get(&d).cloned().unwrap_or_default() {
+                        let mut env = args.clone();
+                        env.push(av.clone());
+                        let goal = self.inst_pred(&p, env);
+                        self.oblige(cx, a.span, ObKind::Pre { callee: callee.clone() }, p.text.clone(), goal, None);
+                    }
+                }
                 (Tm::App(Rc::new(t), Rc::new(at), Icit::Expl, m), apply_closure(&self.g, &c, av))
             }
             Val::Neutral(Head::Meta(_), _) if self.default_if_numeric(&ty) => self.apply_one(cx, t, ty, a),

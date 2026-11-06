@@ -179,6 +179,8 @@ pub struct Builder<'a> {
     sorts: BTreeMap<String, usize>,
     /// Uninterpreted functions: name → declaration.
     funs: BTreeMap<String, String>,
+    /// A local function's type, over the locals before it (D84).
+    fun_tys: BTreeMap<String, (usize, Tm)>,
     /// Reflected instances waiting for / with a definition.
     insts: BTreeMap<Inst, Option<Defn>>,
     /// Known function values by key.
@@ -208,6 +210,7 @@ impl<'a> Builder<'a> {
             tuples: HashSet::new(),
             sorts: BTreeMap::new(),
             funs: BTreeMap::new(),
+            fun_tys: BTreeMap::new(),
             insts: BTreeMap::new(),
             known: BTreeMap::new(),
             inst_queue: Vec::new(),
@@ -553,6 +556,7 @@ impl<'a> Builder<'a> {
                     r.render(self.e)
                 );
                 self.funs.insert(name.clone(), decl);
+                self.fun_tys.insert(name.clone(), (lvl, quote(&self.e.g, lvl, &ty)));
                 Ent::Fun(name, args, r)
             }
             _ => {
@@ -597,6 +601,43 @@ impl<'a> Builder<'a> {
     /// fields are non-negative and its invariants hold.
     /// If `ty` is a refinement alias, assert its predicates about `x`.
     fn alias_facts(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort) {
+        let ts = self.alias_terms(env, ty, x, xs);
+        self.asserts.extend(ts);
+    }
+
+    /// A call `f a…` of a local function whose type is refined (D84): where
+    /// its preconditions hold at the arguments, its postconditions hold at
+    /// the result.
+    fn fun_post_facts(&mut self, env: &[Ent], name: &str, args: &[(Tm, Mult)], app: &str, rs: &Sort) {
+        let Some((lvl, ty)) = self.fun_tys.get(name).cloned() else { return };
+        let mut inner: Vec<Ent> = (0..lvl).map(|k| Ent::Opaque(format!("@{k}"))).collect();
+        let mut pres = Vec::new();
+        let mut t = ty;
+        for (a, m) in args {
+            let Tm::Pi(_, _, _, dom, cod) = t else { return };
+            if *m == Mult::Zero {
+                inner.push(Ent::Opaque("type argument".into()));
+            } else {
+                let Ok((at, s)) = self.term(env, a) else { return };
+                pres.extend(self.alias_terms(&inner, &dom, &at, &s));
+                inner.push(Ent::Term(at, s));
+            }
+            t = (*cod).clone();
+        }
+        let posts = self.alias_terms(&inner, &t, app, rs);
+        if posts.is_empty() {
+            return;
+        }
+        let post = if posts.len() == 1 { posts[0].clone() } else { format!("(and {})", posts.join(" ")) };
+        self.asserts.push(match pres.len() {
+            0 => post,
+            1 => format!("(=> {} {post})", pres[0]),
+            _ => format!("(=> (and {}) {post})", pres.join(" ")),
+        });
+    }
+
+    /// The predicates of the refinement alias `ty` at `x`, as terms.
+    fn alias_terms(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort) -> Vec<String> {
         let mut args = Vec::new();
         let mut h = ty;
         while let Tm::App(f, a, _, _) = h {
@@ -604,8 +645,8 @@ impl<'a> Builder<'a> {
             h = f;
         }
         args.reverse();
-        let Tm::Def(d) = h else { return };
-        let Some(preds) = self.e.alias_preds.get(d).cloned() else { return };
+        let Tm::Def(d) = h else { return Vec::new() };
+        let Some(preds) = self.e.alias_preds.get(d).cloned() else { return Vec::new() };
         let mut inner = Vec::new();
         for a in &args {
             inner.push(match self.sort_of(env, a) {
@@ -617,11 +658,13 @@ impl<'a> Builder<'a> {
             });
         }
         inner.push(Ent::Term(x.to_string(), xs.clone()));
+        let mut out = Vec::new();
         for p in preds {
             if let Ok((t, Sort::Bool)) = self.term(&inner, &p.tm) {
-                self.asserts.push(t);
+                out.push(t);
             }
         }
+        out
     }
 
     fn field_alias_facts(&mut self, env: &[Ent], ty: &Tm, x: &str, id: TyId, sargs: &[Sort]) {
@@ -1017,7 +1060,11 @@ impl<'a> Builder<'a> {
                     if ts.len() != sorts.len() {
                         return out("a partially applied function");
                     }
-                    Ok((format!("({name} {})", ts.join(" ")), r))
+                    let app = format!("({name} {})", ts.join(" "));
+                    if !self.in_def && self.post_seen.insert(app.clone()) {
+                        self.fun_post_facts(env, &name, &args, &app, &r);
+                    }
+                    Ok((app, r))
                 }
                 Ent::Known(k) => {
                     let f = self.known.get(&k).cloned().ok_or_else(|| Outside("an unknown function".into()))?;

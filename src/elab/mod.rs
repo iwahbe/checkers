@@ -57,6 +57,8 @@ pub struct FnMeta {
     pub params: Vec<(String, Mult, Span)>,
     pub n_implicit: usize,
     pub builtin: bool,
+    /// The result's name, if it has one (`-> y`).
+    pub result: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -168,6 +170,9 @@ pub enum ObKind {
     CownInvariant { alias: String },
     /// A value checked against a refinement alias from a type argument (D71).
     Refined { alias: String, value: String },
+    /// A refinement replaced by another in a type (D83, D85): for any value
+    /// of `sub`, the predicates of `sup` hold.
+    Weaken { role: WeakenRole, value: String, sub: String, sup: String, callee: Option<String> },
     NatSub,
     /// A recursive call must make the caller's `decreasing` measure smaller.
     Measure { func: String, measure: String },
@@ -176,6 +181,17 @@ pub enum ObKind {
     Lemma { name: String },
     Auto,
     Have,
+}
+
+/// Where a refinement is weakened (D83, D85).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WeakenRole {
+    /// The values a type holds (`List (n~Int, n >= 6)` as `List Big`).
+    Element,
+    /// A function's parameter: the function is given more than it accepts.
+    Param,
+    /// A function's result: it may return less than is promised.
+    Result,
 }
 
 /// A local in an obligation's context.
@@ -285,12 +301,15 @@ pub struct Elab {
     pub con_invs: HashMap<ConId, Vec<Pred>>,
     /// Refinement aliases' predicates, over the alias's parameters then its binder.
     pub alias_preds: HashMap<DefId, Vec<Pred>>,
+    /// The name a refinement alias binds (`n` in `type Big = n~Int, …`).
+    pub alias_subject: HashMap<DefId, Name>,
+    /// The function whose argument is being checked, for messages (D85).
+    pub arg_of: Option<String>,
     /// Inside a type or specification: no obligations (§7.1).
     pub in_spec: usize,
-    /// Elaborating the head of an application (see E0453).
+    /// Elaborating the head of an application: a bare function name gets its
+    /// refined type only as a value (D85).
     pub in_app_head: bool,
-    /// The function type expected where a function is passed as a value (E0453).
-    pub expected_fn: Option<Val>,
     /// Postconditions to check where the current function returns (§7.1).
     pub post_target: Option<PostTarget>,
     /// The goal of the proof being elaborated (D49).
@@ -357,9 +376,10 @@ impl Elab {
             transparent: HashSet::new(),
             con_invs: HashMap::new(),
             alias_preds: HashMap::new(),
+            alias_subject: HashMap::new(),
+            arg_of: None,
             in_spec: 0,
             in_app_head: false,
-            expected_fn: None,
             proof_goal: None,
             post_target: None,
             admits: Vec::new(),

@@ -1016,6 +1016,18 @@ impl Parser {
 
     fn paren(&mut self) -> PResult<Expr> {
         let start = self.bump().span; // (
+        // `(x~T, …)` or `(x~A -> …)`: a refinement written in a type (D82).
+        if self.at_ident() && *self.peek_at(1) == Tok::Tilde {
+            let param = self.ident("a name")?;
+            self.bump(); // ~
+            let _ = self.mult();
+            let saved = std::mem::replace(&mut self.no_arrow, true);
+            let dom = self.expr();
+            self.no_arrow = saved;
+            let dom = dom?;
+            let arrow = if self.eat(&Tok::Arrow) { Some(self.refine_result()?) } else { None };
+            return self.refine_rest(start, Some(param), dom, arrow);
+        }
         if self.at(&Tok::RParen) {
             let end = self.bump().span;
             return Ok(Expr { kind: ExprKind::Unit, span: start.to(end) });
@@ -1034,6 +1046,18 @@ impl Parser {
             }
         }
         let first = self.expr()?;
+        // `(A -> y~B, …)`: a refined function type with an unnamed parameter.
+        if self.at(&Tok::Tilde) {
+            if let ExprKind::Arrow(dom, res) = &first.kind {
+                if let ExprKind::Var(y) = &res.kind {
+                    let name = Ident { name: y.clone(), span: res.span };
+                    self.bump(); // ~
+                    let _ = self.mult();
+                    let cod = self.expr()?;
+                    return self.refine_rest(start, None, (**dom).clone(), Some((Some(name), cod)));
+                }
+            }
+        }
         if let Tok::Op(op) = *self.peek() {
             if *self.peek_at(1) == Tok::RParen {
                 self.bump();
@@ -1054,6 +1078,28 @@ impl Parser {
         }
         let end = self.expect(Tok::RParen, "`)`")?.span;
         Ok(Expr { kind: first.kind, span: start.to(end) })
+    }
+
+    /// After `->` in a refined function type: `y~B` or `B`.
+    fn refine_result(&mut self) -> PResult<(Option<Ident>, Expr)> {
+        if self.at_ident() && *self.peek_at(1) == Tok::Tilde {
+            let name = self.ident("a name")?;
+            self.bump(); // ~
+            let _ = self.mult();
+            Ok((Some(name), self.expr()?))
+        } else {
+            Ok((None, self.expr()?))
+        }
+    }
+
+    /// The predicates and `)` of a refinement type.
+    fn refine_rest(&mut self, start: Span, param: Option<Ident>, dom: Expr, arrow: Option<(Option<Ident>, Expr)>) -> PResult<Expr> {
+        let mut preds = Vec::new();
+        while self.eat(&Tok::Comma) {
+            preds.push(self.expr()?);
+        }
+        let end = self.expect(Tok::RParen, "`,` or `)`")?.span;
+        Ok(Expr { kind: ExprKind::Refine(Box::new(RefineTy { param, dom, arrow, preds })), span: start.to(end) })
     }
 
     // ── patterns ────────────────────────────────────────────────────────────

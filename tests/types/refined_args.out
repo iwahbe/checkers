@@ -37,4 +37,13 @@ error[E0450]: cannot prove that `x + 1` is a `Small` (`n < 10`)
    = note: counterexample: x = 9
    = help: make it true first, e.g. with an `if`, or start from a value that is already a `Small`
 
-refined_args.ck: 5 errors, 0 warnings
+error[E0450]: cannot prove that `h` can be called here
+  --> refined_args.ck:48:15
+   |
+48 |     apply_nat h                                 # error: n < 10, counterexample n = 10
+   |               ^ `apply_nat` may call this with any `Nat`
+   = note: it needs `n < 10`
+   = note: counterexample: n = 10
+   = help: pass a function that accepts every `Nat`
+
+refined_args.ck: 6 errors, 0 warnings

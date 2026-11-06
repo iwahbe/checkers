@@ -1,0 +1,9 @@
+error[E0262]: type mismatch: expected `List Big`, found `List Int`
+ --> refined_fn_gain.ck:8:5
+  |
+8 |     xs                                          # error E0262: `List Int` is not `List Big`
+  |     ^^ this expression has type `List Int`, so its `Int` values aren't known to be `Big`
+  = note: a refinement inside a type is never gained from an existing value: that would need a proof about every element (D71)
+  = help: give the value the type `List Big` where it is built, so that each part is checked there
+
+refined_fn_gain.ck: 1 error, 0 warnings

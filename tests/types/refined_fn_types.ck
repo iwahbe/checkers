@@ -1,8 +1,9 @@
 module refined_fn_types
 
-# M10 (D82–D87, proposed): refined types inside types, refined function
-# types, refinements compared by implication, partial applications
-# everywhere. Each case says what it should give; the done-when for M10.
+# M10 (D82–D87): refined types inside types, refined function types,
+# refinements compared by implication, partial applications everywhere.
+# The E0262 case is in refined_fn_gain.ck (no proving once a file has a
+# type error).
 
 import list
 
@@ -52,16 +53,12 @@ fn too_strict xs -> ys : xs~List Big, ys~List Int
 
 # D84: the call's argument doesn't meet the precondition.
 fn bad_call f -> r : f~(x~Int -> y~Int, x >= 5, y >= 0), r~Int
-    f 3                                         # error E0450: cannot prove `3 >= 5`
+    f 3                                         # error E0450: `x >= 5`, required to call `f`
 
 # D85: a lambda whose result doesn't meet the postcondition.
 fn bad_lambda -> r : r~Int, r >= 0
-    apply (\x -> x - 9) 9                       # error E0450: `x - 9 >= 0`, counterexample x = 5
+    apply (\x -> x - 9) 9                       # error E0450: `y >= 0` of `x - 9`, counterexample x = 5
 
 # D83: a weaker refinement can't pass as a stronger one.
 fn strengthen xs -> ys : xs~List Big, ys~List (n~Int, n >= 6)
-    xs                                          # error E0450: `n >= 5 ⇒ n >= 6`, counterexample n = 5
-
-# D71c, unchanged: no refinement at all can't gain one.
-fn gain xs -> ys : xs~List Int, ys~List Big
-    xs                                          # error E0262: `List Int` is not `List Big`
+    xs                                          # error E0450: every `Big` is `n >= 6`, counterexample n = 5

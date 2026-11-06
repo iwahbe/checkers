@@ -5,7 +5,7 @@ pub mod smt;
 
 use crate::core::{quote, show};
 use crate::diag::Diagnostic;
-use crate::elab::{Elab, ObKind, Obligation};
+use crate::elab::{Elab, ObKind, Obligation, WeakenRole};
 use crate::source::Span;
 
 /// One entry of the trust ledger (§7.4).
@@ -231,6 +231,7 @@ fn describe(e: &Elab, o: &Obligation) -> String {
         ObKind::Invariant { con } => format!("invariant of `{con}`: {}", o.text),
         ObKind::CownInvariant { alias } => format!("cown contents stay `{alias}`: {}", o.text),
         ObKind::Refined { alias, value } => format!("`{value}` is a `{alias}`: {}", o.text),
+        ObKind::Weaken { sub, sup, .. } => format!("every `{sub}` is a `{sup}`: {}", o.text),
         ObKind::NatSub => format!("`Nat` subtraction `{}` stays at or above zero", o.text),
         ObKind::Measure { func, measure } => format!("termination of `{func}`: `decreasing {measure}` gets smaller"),
         ObKind::Div => format!("divisor of `{}` is not zero", o.text),
@@ -293,6 +294,24 @@ fn headline(o: &Obligation) -> (String, String, String) {
             format!("this must be a `{alias}`"),
             format!("make it true first, e.g. with an `if`, or start from a value that is already a `{alias}`"),
         ),
+        ObKind::Weaken { role: WeakenRole::Param, value, sub, callee, .. } => (
+            format!("cannot prove that `{value}` can be called here"),
+            match callee {
+                Some(c) => format!("`{c}` may call this with any `{sub}`"),
+                None => format!("this may be called with any `{sub}`"),
+            },
+            format!("pass a function that accepts every `{sub}`"),
+        ),
+        ObKind::Weaken { role: WeakenRole::Result, value, sub, sup, .. } => (
+            format!("cannot prove that `{value}` returns a `{sup}`"),
+            format!("its result is a `{sub}`, which must be a `{sup}`"),
+            format!("pass a function whose result is always a `{sup}`"),
+        ),
+        ObKind::Weaken { role: WeakenRole::Element, value, sub, sup, .. } => (
+            format!("cannot prove that every `{sub}` is a `{sup}`"),
+            format!("`{value}` holds `{sub}` values where `{sup}` values are expected"),
+            format!("give the values the type `{sup}` where they are built, so that each is checked there"),
+        ),
         ObKind::Measure { func, measure } => (
             format!("cannot prove that `{func}` terminates: `{measure}` may not get smaller in this call"),
             format!("`decreasing {measure}` must be smaller here than on entry to `{func}`"),
@@ -334,6 +353,9 @@ fn headline(o: &Obligation) -> (String, String, String) {
 fn failed(e: &Elab, o: &Obligation, model: Option<String>) -> Diagnostic {
     let (msg, label, help) = headline(o);
     let mut d = Diagnostic::error("E0450", msg, o.span).with_label(label);
+    if let ObKind::Weaken { .. } = &o.kind {
+        d = d.with_note(format!("it needs `{}`", o.text));
+    }
     if let ObKind::Post { at, .. } = &o.kind {
         if let Some(f) = e.sources.get(&o.module) {
             let (line, _) = f.line_col(at.start);
