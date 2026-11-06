@@ -783,9 +783,19 @@ A failure prints a runtime error that names the failing operation and the functi
 
 `IoError` values describe the operating-system error, as in `No such file or directory`. `read_line` (on `term` or a `File`) returns a line without its `\n`; bytes that are not valid UTF-8 become U+FFFD.
 
-### 13.5 Behaviours (D44)
+### 13.5 Behaviours (D44; M7: D66–D70)
 
 `when`, `fork` and `join` schedule behaviours on a single FIFO queue that runs after `main` returns. The process exits when the queue is empty. If `main` returns a `Future ExitCode`, its value is the exit code.
+
+**M7 (proposed).** Behaviours run on a pool of worker threads:
+
+- **Scheduling (D66).** Verona's algorithm (Cheeseman et al. 2023, §4): scheduling a behaviour appends it, in one atomic step, to the queue of every cown it names (a `fork` names a fresh future; a `join` names the futures it waits for). It runs when it is first in all of its queues, and on finishing it leaves them, which may make the next behaviours runnable. This gives causal order and freedom from deadlock by construction: nothing waits while holding a cown. Behaviours start as soon as they are runnable, while `main` is still running. The process exits when `main` has returned and no behaviour is queued or running.
+- **Threads (D67).** `checkers run --threads N` (default: the number of cores). `--threads 1` is the M2 scheduler exactly: one FIFO queue after `main` returns, so output is deterministic. Golden run tests use `--threads 1`; stress tests (`tests/stress/`) use many threads and check results that every valid schedule must give.
+- **Output (D68).** Each `terminal` call is atomic: lines from behaviours that share no cown may come in any order, but never interleave within a call.
+- **`par` (D69).** The components of `par (e1, …, en)` run on the pool; the result is the same tuple.
+- **Actors (D70).** `stdlib/actor.ck`: an `Actor s` is a cown holding state `s`; `actor.send a f sched` schedules `when x = a using sched: f x`, so messages to one actor are handled one at a time, in the order sent. State invariants are refinement types on `s`, as for any cown (§8.5).
+
+Cown invariants (§8.5) need no runtime support: inside `when l = log`, `l` has the cown's content type, so a refinement such as `len l <= 100` is a fact the prover uses (`examples/log.ck`).
 
 ### 13.6 Run tests
 
