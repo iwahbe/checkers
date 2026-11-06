@@ -89,8 +89,9 @@ This document is the single source of truth for Checkers. Implementation follows
 | D78 | **The interpreter stays after M8**, in two roles: the compile-time evaluator (`check`, D40; staging, §8.9), whose values turn back into core terms directly; and the reference that native code is tested against (D76). It stops being a way to run programs except with `--interp`. Every builtin is implemented once in the shared runtime where the representation allows (D76), so the cost of two implementations stays small. | 11/06/2026 | rejected (11/06/2026): see D80 |
 | D79 | **Replace M8's third criterion** ("the fork/join tree of §13.7 no slower on 2 threads than on 1"), which compares against the one-thread FIFO queue, where a behaviour costs about 0.3 µs with no synchronisation, while handing a behaviour between cores costs about 1.5 µs. Proposed instead: *the fork/join tree whose leaves each do about 5 µs of work is faster on 2 threads than on 1* (met: 1.35×; 1.6× at 17 µs). Cutting the cost of tiny behaviours further (work stealing with per-worker queues, fewer allocations per behaviour) is left for later. | 11/06/2026 | decided (11/06/2026) |
 | D80 | **The interpreter is removed; everything runs as native code** (§14). `checkers run` compiles and runs the program; `checkers check` evaluates `check` declarations (D40) and staging (§8.9) computes compile-time values by compiling them in memory and running them. A compile-time value is turned back into a term from its words (numbers, strings, bytes, constructors, tuples). One implementation: compile-time and run-time evaluation can't differ, each builtin is written once, and slow compile-time work (real proofs, heavy staging) runs at native speed. The cost is a few milliseconds of compiling per file, even when its checks are trivial. A runtime error during compile-time evaluation stops that evaluation only (E0261, E0273), not `checkers`. `--interp` is gone. | 11/06/2026 | decided (11/06/2026) |
+| D81 | **No shell in this repository; M9 is removed** (§10). The shell capstone moves out of the project; M10 follows M8. Proofs about effectful protocols use pure state machines in cowns (§8.8): the state's invariant is the cown's content type, transitions are pure verified functions, and behaviours apply them. Separation-logic specifications over capability state are not scheduled. The `env` and `proc` libraries (`Env`, `Proc`, `Child`, `Pipe`, §8.1–8.4) stay specified but are built only when a program needs them. | 11/06/2026 | decided (11/06/2026) |
 | D24 | **Development loop:** Claude owns the implementation; Ian drives with examples. An issue is "found X, expected Y" with a `.ck` snippet. Each one becomes a regression test under `tests/` *before* the fix lands, and the spec is updated first whenever the expectation changes the language. | 11/05/2026 | decided |
-| D25 | **Milestones reordered for CLI tools first** (§10): a running interpreter with `IO` comes right after type checking, before the prover, so Checkers can be used to build its own tooling early. Capstone: an interactive shell with a small scripting language, with proofs of its correctness. | 11/05/2026 | decided |
+| D25 | **Milestones reordered for CLI tools first** (§10): a running interpreter with `IO` comes right after type checking, before the prover, so Checkers can be used to build its own tooling early. ~~Capstone: an interactive shell with a small scripting language, with proofs of its correctness.~~ (removed by D81) | 11/05/2026 | decided |
 
 ---
 
@@ -408,7 +409,7 @@ Resources are created from authorities, e.g. `files.open path fs` returns `Resul
 
 ### 8.5 Concurrency: cowns and `when` (D30)
 
-Data is immutable, so sharing it never races; parallel evaluation of pure code is always safe (`par`, §8.6). What needs coordination is a **resource or state shared by several concurrent tasks**: the shell's job table, the terminal. For that, Checkers adopts Verona's *behaviour-oriented concurrency* (Cheeseman et al., OOPSLA 2023):
+Data is immutable, so sharing it never races; parallel evaluation of pure code is always safe (`par`, §8.6). What needs coordination is a **resource or state shared by several concurrent tasks**: a table of running jobs, the terminal. For that, Checkers adopts Verona's *behaviour-oriented concurrency* (Cheeseman et al., OOPSLA 2023):
 
 - A **cown** (concurrent owner) wraps a value. `let c = cown.new v sched` creates a `Cown a`. The cown handle may be freely shared; its *contents* are owned by the cown, and a resource moved into a cown (e.g. an open `File`) is no longer available to the creator.
 - A **behaviour** gets exclusive access to one or more cowns:
@@ -472,7 +473,7 @@ done <- join x = a, y = b using sched
 
 ### 8.8 Proofs about effectful code (later)
 
-Capabilities and cown contents correspond to separation-logic resources (Iris, F\*'s Pulse). M3–M5 prove pure code; specifications over capability state (e.g. "after `files.write p b fs`, `files.read p fs'` returns `b`") come with the shell capstone.
+Capabilities and cown contents correspond to separation-logic resources (Iris, F\*'s Pulse). M3–M5 prove pure code. **A protocol is proved as a pure state machine (D81):** keep its state in a cown whose content type is a refinement (the protocol's invariant, §8.5), and make every behaviour apply a pure, verified transition function; the cown invariant obligations then prove the protocol at every step. Specifications over capability state itself (e.g. "after `files.write p b fs`, `files.read p fs'` returns `b`") are not scheduled.
 
 ### 8.9 Staging (M6, D7, D59–D64)
 
@@ -721,7 +722,7 @@ Reordered (D25) so that Checkers can run CLI tools before the prover exists.
 | M6 | Two-level staging (`comptime`, §8.9, D59–D63) | `examples/format.ck` checks, runs and stages; `checkers stage`; golden tests in `tests/stage/` (done 11/06/2026) |
 | M7 | Multi-threaded scheduler for cowns, `when`, `fork`/`join` and `par` (single-threaded since M2, D44); actor library | `examples/log.ck` and `examples/parallel.ck` run; stress tests show no races or deadlocks (done 11/06/2026) |
 | M8 | Cranelift backend (§14, D72–D77): closure conversion, word representation, reference counting, tail calls, `checkers build`, lock-free scheduler | every `tests/run/` and `tests/stress/` case gives the same output natively (done); `wc.ck` at least 20× faster than the interpreter (done: 45×); ~~the fork/join tree of §13.7 no slower on 2 threads than on 1~~ replaced by D79: the tree with about 5 µs of work per leaf is faster on 2 threads (done: 1.35×) (done 11/06/2026) |
-| M9 | **Capstone:** interactive shell with a small scripting language, with proofs of its correctness (parser round-trip, evaluator semantics, job control protocol) | the shell runs its own test scripts |
+| ~~M9~~ | ~~Capstone: interactive shell~~ removed (D81): the shell is not part of this repository | — |
 | M10 | Refined function types (D52): predicates in function types, subtyping of refined function and element types, preconditions checked at calls of function-typed values; lifts D51 | `list.map (at_least 5) xs` checks when `xs~List (n~Int, n >= 5)` |
 
 ---

@@ -29,7 +29,7 @@ Types are written only as constraints (`i~Nat, i <= len src`); the compiler prov
 | M6 Staging: `comptime` parameters, compile-time expansion, `checkers stage` | done: [`format.ck`](examples/format.ck), a typed `fmt` whose format string is parsed at compile time |
 | M7 Multi-threaded behaviours (Verona scheduling), `par` on threads, cown invariants, actors | done: [`log.ck`](examples/log.ck) proves its cown invariant and runs; `checkers run --threads N`; stress tests in `tests/stress/` |
 | M8 Native code: Cranelift, closure conversion, reference counting with reuse, tail calls, `checkers build`, lock-free scheduler | done: [`wc.ck`](examples/wc.ck) 45× faster than the interpreter, which is now removed (SPEC D80): `check` and staging run native code too |
-| M9–M10 | see SPEC §10 |
+| M10 | see SPEC §10 (M9, a shell, was removed: D81) |
 
 ## Usage
 
