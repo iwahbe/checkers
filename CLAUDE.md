@@ -3,6 +3,7 @@
 - **SPEC.md is the source of truth.** Change the spec before the code whenever behavior changes. Record every language decision in the §0 decision log (Dn, date as MM/DD/YYYY, decided/proposed). Ian decides; Claude's recommendations stay marked **(proposed)** until he accepts them.
 - **Ian does not read the implementation.** He reviews the spec, examples, and compiler output. Error messages are part of the product: precise span, plain message, a `help:` line when there is an obvious fix.
 - **Issue workflow (SPEC §12):** a report is "found X, expected Y" with a `.ck` snippet. First add it as a golden test showing the expected output (`tests/parse/`, `tests/check/`, `tests/types/` for type errors, `tests/stage/` for staged code, `tests/run/` for program behaviour, §13.6; `tests/stress/` for results every multi-threaded schedule must give, §13.5), then fix, then `cargo test`.
+- A test for a **(proposed)** decision goes in `tests/proposed/` (not run) until Ian decides; then it moves to its test directory.
 - `UPDATE_GOLDEN=1 cargo test --test golden` rewrites `.out` files. Read every changed `.out` before committing; never accept output you haven't checked.
 - `examples/*.ck` must check with zero diagnostics (enforced by the golden test), except those listed in `examples/PENDING`.
 - Keep `cargo clippy` clean. No new dependencies without a reason in the commit message.
@@ -26,6 +27,7 @@ src/elab/mod.rs      elaborator state, metas, deferred operator constraints (D38
 src/elab/decls.rs    imports, declarations, positivity, signatures (auto-binding, D10)
 src/elab/expr.rs     bidirectional checking of expressions, blocks, `<-`, `try`, `when`/`fork`/`join`
 src/elab/pattern.rs  `match` → case trees, exhaustiveness witnesses
+src/elab/refine.rs   refinements inside type arguments: obligations, variance, E0262 (D71)
 src/elab/termination.rs  structural recursion over call-graph SCCs (§5.3)
 src/elab/order.rs   declaration order by dependencies, cycles (D65)
 src/elab/stdlib.rs   embedded standard library loading, program modules from `a/b.ck` (D53)

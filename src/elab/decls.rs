@@ -1036,7 +1036,6 @@ impl Elab {
                     let bt = self.check_block(&mut sig.cx, body, &rty, true);
                     self.post_target = None;
                     self.solve_deferred();
-                    self.flush_pending_cowns();
                     self.report_unsolved_sig(*did, &sig, d.span);
                     let full = Self::lam_of(&sig.binders, bt);
                     crate::usage::check_fn(self, *did, &full);

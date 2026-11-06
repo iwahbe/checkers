@@ -9,6 +9,7 @@ mod decls;
 mod expr;
 mod order;
 mod pattern;
+mod refine;
 pub mod stdlib;
 mod termination;
 
@@ -164,7 +165,9 @@ pub enum ObKind {
     Post { func: String, at: Span },
     Invariant { con: String },
     /// A behaviour must hand back contents of the cown's refinement (§8.5).
-    CownInvariant { alias: String, initial: bool },
+    CownInvariant { alias: String },
+    /// A value checked against a refinement alias from a type argument (D71).
+    Refined { alias: String, value: String },
     NatSub,
     /// A recursive call must make the caller's `decreasing` measure smaller.
     Measure { func: String, measure: String },
@@ -293,12 +296,17 @@ pub struct Elab {
     /// The goal of the proof being elaborated (D49).
     pub proof_goal: Option<(Val, String)>,
     pub admits: Vec<Trusted>,
-    /// `cown.new v` calls whose content type is known only once the body is
-    /// checked: the initial value must satisfy its refinement (§8.5).
-    pub pending_cowns: Vec<(Cx, Val, Val, Span)>,
-    /// The content type a checked `cown.new` call is expected to produce
-    /// (inference from the argument alone would lose a refinement alias).
-    pub expected_cown: Option<Val>,
+    /// An application checked against a type with a refinement inside: its
+    /// result type is unified with this before its arguments are checked (D71).
+    pub app_expected: Option<Val>,
+    /// The argument being checked is for a parameter or field declared with a
+    /// refinement alias, so the call's own obligations cover it (D71).
+    pub alias_covered: bool,
+    /// The head of the application being elaborated checks its arguments'
+    /// refinement aliases (a function with a spec or a constructor with invariants).
+    pub head_checks_aliases: bool,
+    /// The type an expression checked by inference was found to have.
+    pub last_inferred: Option<Val>,
     /// Uses of standard-library lemmas about `__builtin` functions, which are
     /// trusted like the primitives themselves (D56).
     pub builtin_axioms: Vec<Trusted>,
@@ -355,8 +363,10 @@ impl Elab {
             proof_goal: None,
             post_target: None,
             admits: Vec::new(),
-            pending_cowns: Vec::new(),
-            expected_cown: None,
+            app_expected: None,
+            alias_covered: false,
+            head_checks_aliases: false,
+            last_inferred: None,
             builtin_axioms: Vec::new(),
             axiom_defs: HashSet::new(),
             measure_obs: Vec::new(),
@@ -605,23 +615,7 @@ impl Elab {
             env.push(subject);
             for p in &inv.preds {
                 let goal = self.inst_pred(p, env.clone());
-                self.oblige(cx, at, ObKind::CownInvariant { alias: inv.alias.clone(), initial: false }, p.text.clone(), goal, None);
-            }
-        }
-    }
-
-    /// Oblige the initial contents of new cowns (`cown.new v`) to satisfy the
-    /// cown's refinement, now that the content types are solved.
-    pub fn flush_pending_cowns(&mut self) {
-        for (cx, v, content, span) in std::mem::take(&mut self.pending_cowns) {
-            // Not forced: that would unfold the alias we are looking for.
-            if let Some(inv) = self.cown_inv(&cx, &content, None) {
-                let mut env = inv.args.clone();
-                env.push(v.clone());
-                for p in &inv.preds {
-                    let goal = self.inst_pred(p, env.clone());
-                    self.oblige(&cx, span, ObKind::CownInvariant { alias: inv.alias.clone(), initial: true }, p.text.clone(), goal, None);
-                }
+                self.oblige(cx, at, ObKind::CownInvariant { alias: inv.alias.clone() }, p.text.clone(), goal, None);
             }
         }
     }

@@ -1,0 +1,41 @@
+error[E0262]: type mismatch: expected `List Small`, found `List Nat`
+  --> refined_args_types.ck:16:17
+   |
+16 |     takes_small xs                              # error: `List Nat` is not `List Small`
+   |                 ^^ this expression has type `List Nat`, so its `Nat` values aren't known to be `Small`
+   = note: a refinement inside a type is never gained from an existing value: that would need a proof about every element (D71)
+   = help: give the value the type `List Small` where it is built, so that each part is checked there
+
+error[E0262]: type mismatch: expected `List Small`, found `List Nat`
+  --> refined_args_types.ck:19:5
+   |
+19 |     xs                                          # error: `List Nat` is not `List Small`
+   |     ^^ this expression has type `List Nat`, so its `Nat` values aren't known to be `Small`
+   = note: a refinement inside a type is never gained from an existing value: that would need a proof about every element (D71)
+   = help: give the value the type `List Small` where it is built, so that each part is checked there
+
+error[E0262]: type mismatch: expected `List (List Small)`, found `List (List Nat)`
+  --> refined_args_types.ck:22:18
+   |
+22 |     takes_nested xss                            # error: the inner `Nat`s aren't `Small`
+   |                  ^^^ this expression has type `List (List Nat)`, so its `Nat` values aren't known to be `Small`
+   = note: a refinement inside a type is never gained from an existing value: that would need a proof about every element (D71)
+   = help: give the value the type `List (List Small)` where it is built, so that each part is checked there
+
+error[E0262]: type mismatch: expected `Nat -> Nat`, found `Small -> Nat`
+  --> refined_args_types.ck:33:15
+   |
+33 |     apply_nat h                                 # error: `h` needs a `Small`
+   |               ^ this expression has type `Small -> Nat`
+   = note: this function needs a `Small`, but is given where any `Nat` may be passed to it
+   = help: check the argument inside the function instead, e.g. with an `if`
+
+error[E0262]: type mismatch: expected `Cown Nat`, found `Cown Small`
+  --> refined_args_types.ck:40:5
+   |
+40 |     c                                           # error: `Cown Small` is not `Cown Nat`
+   |     ^ this expression has type `Cown Small`
+   = note: a cown's contents type must match exactly: `Small` and `Nat` differ, and a behaviour on either side could write a value the other doesn't allow
+   = help: create the cown with the type `Cown Nat`
+
+refined_args_types.ck: 5 errors, 0 warnings

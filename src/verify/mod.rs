@@ -229,7 +229,8 @@ fn describe(e: &Elab, o: &Obligation) -> String {
             format!("postcondition of `{func}`: {} (for `{text}`, line {line})", o.text)
         }
         ObKind::Invariant { con } => format!("invariant of `{con}`: {}", o.text),
-        ObKind::CownInvariant { alias, .. } => format!("cown contents stay `{alias}`: {}", o.text),
+        ObKind::CownInvariant { alias } => format!("cown contents stay `{alias}`: {}", o.text),
+        ObKind::Refined { alias, value } => format!("`{value}` is a `{alias}`: {}", o.text),
         ObKind::NatSub => format!("`Nat` subtraction `{}` stays at or above zero", o.text),
         ObKind::Measure { func, measure } => format!("termination of `{func}`: `decreasing {measure}` gets smaller"),
         ObKind::Div => format!("divisor of `{}` is not zero", o.text),
@@ -282,14 +283,15 @@ fn headline(o: &Obligation) -> (String, String, String) {
             format!("`{con}` requires `{}`", o.text),
             "check the value before building it, e.g. with an `if`".into(),
         ),
-        ObKind::CownInvariant { alias, initial } => (
+        ObKind::CownInvariant { alias } => (
             format!("cannot prove `{}`, the invariant of a cown holding `{alias}`", o.text),
-            if *initial { format!("a new cown holding `{alias}` must start with one") } else { format!("the cown's new contents must be a `{alias}`") },
-            if *initial {
-                format!("start the cown with a value that is a `{alias}`")
-            } else {
-                format!("every behaviour on this cown must hand back a `{alias}`: check the new contents first, e.g. with an `if`")
-            },
+            format!("the cown's new contents must be a `{alias}`"),
+            format!("every behaviour on this cown must hand back a `{alias}`: check the new contents first, e.g. with an `if`"),
+        ),
+        ObKind::Refined { alias, value } => (
+            format!("cannot prove that `{value}` is a `{alias}` (`{}`)", o.text),
+            format!("this must be a `{alias}`"),
+            format!("make it true first, e.g. with an `if`, or start from a value that is already a `{alias}`"),
         ),
         ObKind::Measure { func, measure } => (
             format!("cannot prove that `{func}` terminates: `{measure}` may not get smaller in this call"),

@@ -1,0 +1,40 @@
+error[E0450]: cannot prove that `12` is a `Small` (`n < 10`)
+  --> refined_args.ck:12:9
+   |
+12 |     [1, 12]                                     # error: 12 < 10
+   |         ^^ this must be a `Small`
+   = help: make it true first, e.g. with an `if`, or start from a value that is already a `Small`
+
+error[E0450]: cannot prove that `n` is a `Small` (`n < 10`)
+  --> refined_args.ck:15:5
+   |
+15 |     n :: xs                                     # error: n < 10, counterexample n = 10
+   |     ^ this must be a `Small`
+   = note: counterexample: n = 10
+   = help: make it true first, e.g. with an `if`, or start from a value that is already a `Small`
+
+error[E0450]: cannot prove that `n` is a `Small` (`n < 10`)
+  --> refined_args.ck:18:10
+   |
+18 |     Some n                                      # error: n < 10
+   |          ^ this must be a `Small`
+   = note: counterexample: n = 10
+   = help: make it true first, e.g. with an `if`, or start from a value that is already a `Small`
+
+error[E0450]: cannot prove that `n` is a `Small` (`n < 10`)
+  --> refined_args.ck:21:6
+   |
+21 |     (n, n)                                      # error: n < 10 (first component only)
+   |      ^ this must be a `Small`
+   = note: counterexample: n = 10
+   = help: make it true first, e.g. with an `if`, or start from a value that is already a `Small`
+
+error[E0450]: cannot prove that `x + 1` is a `Small` (`n < 10`)
+  --> refined_args.ck:24:21
+   |
+24 |     list.map (\x -> x + 1) xs                   # error: x + 1 < 10, counterexample x = 9
+   |                     ^^^^^ this must be a `Small`
+   = note: counterexample: x = 9
+   = help: make it true first, e.g. with an `if`, or start from a value that is already a `Small`
+
+refined_args.ck: 5 errors, 0 warnings

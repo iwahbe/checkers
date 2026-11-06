@@ -1,7 +1,9 @@
 module refined_args
 
-# D71 (proposed): refinements inside type arguments are checked.
+# D71: refinements inside type arguments are checked.
 # Expected: an error on each line marked `error`, none elsewhere.
+
+import list
 
 type Small = n~Nat, n < 10
 
@@ -21,25 +23,9 @@ fn tup n -> t : n~Nat, t~(Small, Nat)
 fn mapped xs -> ys : xs~List Small, ys~List Small
     list.map (\x -> x + 1) xs                   # error: x + 1 < 10, counterexample x = 9
 
-# Gaining a refinement through an existing value's type: a type error (E0262).
-fn takes_small xs -> r : xs~List Small, r~Nat
-    0
-
-fn pass xs -> r : xs~List Nat, r~Nat
-    takes_small xs                              # error: `List Nat` is not `List Small`
-
-fn ret xs -> ys : xs~List Nat, ys~List Small
-    xs                                          # error: `List Nat` is not `List Small`
-
 # Forgetting a refinement is free (covariance)...
 fn forget xs -> ys : xs~List Small, ys~List Nat
     xs
-
-# ...except through a cown, which is invariant.
-import cown (Cown)
-
-fn forget_cown c -> d : c~Cown Small, d~Cown Nat
-    c                                           # error: `Cown Small` is not `Cown Nat`
 
 # Fine: the refinement is established, or assumed from a type.
 fn cons_ok n xs -> ys : n~Nat, xs~List Small, ys~List Small

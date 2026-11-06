@@ -45,21 +45,25 @@ impl Elab {
     }
 
     pub fn check(&mut self, cx: &mut Cx, e: &Expr, expected: &Val, tail: bool) -> Tm {
+        let covered = std::mem::take(&mut self.alias_covered);
         // A value the function returns: its postconditions must hold of it (§7.1).
         let returned = tail
             && self.post_target.is_some()
             && !matches!(e.kind, ExprKind::If(..) | ExprKind::Match(..) | ExprKind::Block(..) | ExprKind::Try(_));
-        // `cown.new v` checked against `Cown T`: T is the content type (§8.5).
-        let saved_cown = self.expected_cown.take();
-        if matches!(e.kind, ExprKind::App(..)) {
-            if let Val::TyCon(t, args) = self.force(expected) {
-                if Some(t) == self.g.well_known.cown && args.len() == 1 {
-                    self.expected_cown = Some(args[0].clone());
+        let t = self.check_inner(cx, e, expected, tail);
+        let inferred = self.last_inferred.take();
+        // A value checked against a refinement alias must satisfy it (D71),
+        // unless the call it is passed to, or the function returning it,
+        // already checks that alias.
+        if !covered && !returned && !matches!(t, Tm::Error) {
+            if let Some((d, args)) = self.refined_alias(expected) {
+                let already = inferred.as_ref().and_then(|ty| self.refined_alias(ty)).is_some_and(|(d2, _)| d2 == d);
+                if !already {
+                    let v = self.eval(cx, &t);
+                    self.refined_obligation(cx, d, args, v, e.span);
                 }
             }
         }
-        let t = self.check_inner(cx, e, expected, tail);
-        self.expected_cown = saved_cown;
         if returned && !matches!(t, Tm::Error) {
             let v = self.eval(cx, &t);
             self.oblige_posts_at(cx, v, e.span);
@@ -150,9 +154,20 @@ impl Elab {
                 if matches!(op, Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Rem | Op::Concat) =>
             {
                 // The result has the operands' type, so check both against it.
-                let lt = self.check(cx, l, &exp, false);
-                let rt = self.check(cx, r, &exp, false);
+                let lt = self.check_operand(cx, l, &exp);
+                let rt = self.check_operand(cx, r, &exp);
                 self.finish_arith(cx, *op, lt, rt, exp.clone(), l.span.to(r.span), e.span).0
+            }
+            (ExprKind::Binary(Op::Cons, l, r), Val::TyCon(id, args)) if Some(*id) == self.g.well_known.list => {
+                // Checked, so that the element type is the expected one (D71).
+                let elem = args[0].clone();
+                let lt = self.check(cx, l, &elem, false);
+                let rt = self.check(cx, r, &exp, false);
+                let et = quote(&self.g, cx.lvl(), &elem);
+                match self.g.well_known.cons {
+                    Some(c) => Tm::ConApp(c, vec![et, lt, rt]),
+                    None => Tm::Error,
+                }
             }
             (ExprKind::List(items), Val::TyCon(id, args)) if Some(*id) == self.g.well_known.list => {
                 let elem = args[0].clone();
@@ -169,13 +184,22 @@ impl Elab {
             (ExprKind::Unit, Val::Univ(_)) => Tm::TupleTy(vec![]),
             _ => {
                 let saved_fn = std::mem::replace(&mut self.expected_fn, matches!(e.kind, ExprKind::Var(_)).then(|| exp.clone()));
-                let (t, ty) = self.infer(cx, e);
-                self.expected_fn = saved_fn;
-                if self.unify_at(cx, &exp, &ty, e.span, "this expression") {
-                    t
-                } else {
-                    Tm::Error
+                if matches!(e.kind, ExprKind::App(..)) && self.has_refined(cx, expected, 0) {
+                    self.app_expected = Some(expected.clone());
                 }
+                let (t, ty) = self.infer(cx, e);
+                self.app_expected = None;
+                self.expected_fn = saved_fn;
+                if !self.unify_at(cx, &exp, &ty, e.span, "this expression") {
+                    return Tm::Error;
+                }
+                // A refinement inside a type argument is never gained (D71).
+                if let Some(g) = self.refined_mismatch(cx, expected, &ty) {
+                    self.report_gained(cx, expected, &ty, &g, e.span, "this expression");
+                    return Tm::Error;
+                }
+                self.last_inferred = Some(ty);
+                t
             }
         }
     }
@@ -533,6 +557,14 @@ impl Elab {
     // ── application ─────────────────────────────────────────────────────────
 
     fn elab_app(&mut self, cx: &mut Cx, e: &Expr) -> (Tm, Val) {
+        let want = self.app_expected.take();
+        let saved_checks = std::mem::replace(&mut self.head_checks_aliases, false);
+        let r = self.elab_app_inner(cx, e, want);
+        self.head_checks_aliases = saved_checks;
+        r
+    }
+
+    fn elab_app_inner(&mut self, cx: &mut Cx, e: &Expr, want: Option<Val>) -> (Tm, Val) {
         let mut args: Vec<&Expr> = Vec::new();
         let mut head = e;
         while let ExprKind::App(f, a) = &head.kind {
@@ -580,6 +612,16 @@ impl Elab {
             self.calls[i].args = classified;
         }
         let map_sub = if is_map && args.len() >= 2 { self.subterm_of_or_param(cx, args[1]) } else { None };
+        self.head_checks_aliases = match &ft {
+            Tm::Def(d) => self.specs.get(d).is_some_and(|s| s.preds.iter().any(|p| p.alias.is_some() && !p.is_post)),
+            Tm::Con(c) => self.con_invs.contains_key(c),
+            _ => false,
+        };
+        let (ft, fty) = match want {
+            Some(w) => self.presolve_result(cx, ft, fty, args.len(), &w),
+            None => (ft, fty),
+        };
+        let (ft, fty) = self.look_ahead(cx, ft, fty, &args);
         let mut t = ft;
         let mut ty = fty;
         for (k, a) in args.iter().enumerate() {
@@ -593,33 +635,12 @@ impl Elab {
         }
         let (t, ty) = self.insert(cx, t, ty);
         self.call_obligations(cx, &t, e.span, head.span);
-        // `cown.new v sched`: `v` must satisfy the content type's refinement.
-        self.note_cown_new(cx, &t, &args);
         // A compile-time argument that isn't known: its type may not compute
         // either, so don't also report a mismatch.
         if !self.check_comptime_call(cx, &t, &args, e.span) {
             return (Tm::Error, Val::Error);
         }
         (t, ty)
-    }
-
-    fn note_cown_new(&mut self, cx: &Cx, t: &Tm, args: &[&Expr]) {
-        let mut spine = Vec::new();
-        let mut h = t;
-        while let Tm::App(f, a, _, _) = h {
-            spine.push(a.clone());
-            h = f;
-        }
-        spine.reverse();
-        let Tm::Def(d) = h else { return };
-        let info = &self.g.defs[d.0 as usize];
-        if &*info.module != "cown" || &*info.name != "new" || spine.len() < 2 {
-            return;
-        }
-        let content = self.expected_cown.take().unwrap_or_else(|| self.eval(cx, &spine[0]));
-        let v = self.eval(cx, &spine[1]);
-        let span = args.first().map(|a| a.span).unwrap_or_default();
-        self.pending_cowns.push((cx.clone(), v, content, span));
     }
 
     /// A call of a function with `comptime` parameters (D59): it must be
@@ -872,10 +893,67 @@ impl Elab {
     }
 
     /// Apply `t : ty` to one explicit argument.
+    /// Unify the result type of applying `t` to `n` explicit arguments with
+    /// the expected type before the arguments are checked, when it doesn't
+    /// depend on them: `n :: xs` against `List Small` makes the element type
+    /// `Small`, so `n` is checked against it (D71).
+    fn presolve_result(&mut self, cx: &Cx, t: Tm, ty: Val, n: usize, want: &Val) -> (Tm, Val) {
+        let (t, ty) = self.insert(cx, t, ty);
+        let mut r = ty.clone();
+        for k in 0..n {
+            match self.force(&r) {
+                Val::Pi(_, _, Icit::Expl, _, c) => r = apply_closure(&self.g, &c, Val::var(cx.lvl() + k)),
+                _ => return (t, ty),
+            }
+        }
+        if matches!(self.force(&r), Val::Pi(_, _, Icit::Impl, _, _)) {
+            return (t, ty);
+        }
+        let q = quote(&self.g, cx.lvl() + n, &r);
+        if !mentions_level_from(&q, cx.lvl() + n, cx.lvl(), 0) {
+            let _ = unify(&self.g, cx.lvl(), want, &r);
+        }
+        (t, ty)
+    }
+
+    /// A lambda argument followed by a local variable (`map (\x -> …) xs`):
+    /// take the variable's type first, so the lambda's parameter gets the
+    /// most precise type (`Small`, not `Nat`; D71). Looking up a local has no
+    /// effects, so nothing is elaborated twice.
+    fn look_ahead(&mut self, cx: &Cx, t: Tm, ty: Val, args: &[&Expr]) -> (Tm, Val) {
+        let Some(first_lam) = args.iter().position(|a| matches!(a.kind, ExprKind::Lambda(..))) else { return (t, ty) };
+        let (t, ty) = self.insert(cx, t, ty);
+        let mut r = ty.clone();
+        for (k, a) in args.iter().enumerate() {
+            let Val::Pi(_, _, Icit::Expl, dom, c) = self.force(&r) else { break };
+            if k > first_lam {
+                if let ExprKind::Var(n) = &a.kind {
+                    if let Some(l) = cx.lookup(n) {
+                        let q = quote(&self.g, cx.lvl() + k, &dom);
+                        if !mentions_level_from(&q, cx.lvl() + k, cx.lvl(), 0) {
+                            let _ = unify(&self.g, cx.lvl(), &dom, &cx.locals[l].ty.clone());
+                        }
+                    }
+                }
+            }
+            r = apply_closure(&self.g, &c, Val::var(cx.lvl() + k));
+        }
+        (t, ty)
+    }
+
+    /// An operand of an arithmetic or comparison operator: it takes the
+    /// other operand's type, but not its refinement (`x < 10` with `x~Small`
+    /// doesn't need `10` to be a `Small`; D71).
+    fn check_operand(&mut self, cx: &mut Cx, e: &Expr, ty: &Val) -> Tm {
+        self.alias_covered = true;
+        self.check(cx, e, ty, false)
+    }
+
     pub fn apply_one(&mut self, cx: &mut Cx, t: Tm, ty: Val, a: &Expr) -> (Tm, Val) {
         let (t, ty) = self.insert(cx, t, ty);
         match self.force(&ty) {
             Val::Pi(_, m, Icit::Expl, dom, c) => {
+                self.alias_covered = self.head_checks_aliases && self.is_direct_alias(&dom);
                 let at = self.check(cx, a, &dom, false);
                 let av = self.eval(cx, &at);
                 (Tm::App(Rc::new(t), Rc::new(at), Icit::Expl, m), apply_closure(&self.g, &c, av))
@@ -1006,11 +1084,11 @@ impl Elab {
                     && !matches!(r.kind, ExprKind::Lit(ast::Lit::Int(_)))
                 {
                     let (rt, rty) = self.infer(cx, r);
-                    let lt = self.check(cx, l, &rty, false);
+                    let lt = self.check_operand(cx, l, &rty);
                     (lt, rt, rty)
                 } else {
                     let (lt, lty) = self.infer(cx, l);
-                    let rt = self.check(cx, r, &lty, false);
+                    let rt = self.check_operand(cx, r, &lty);
                     (lt, rt, lty)
                 };
                 self.finish_arith(cx, op, lt, rt, lty, l.span.to(r.span), span)
