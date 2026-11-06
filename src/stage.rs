@@ -579,8 +579,8 @@ fn arity(ty: &Tm) -> usize {
 fn reify(g: &Globals, v: &Value) -> Option<Tm> {
     Some(match v {
         Value::Num(n) => Tm::Lit(Lit::Num(n.to_string().parse().ok()?)),
-        Value::Str(s) => Tm::Lit(Lit::Str(s.clone())),
-        Value::Bytes(b) => Tm::Lit(Lit::Bytes(b.clone())),
+        Value::Str(s) => Tm::Lit(Lit::Str(Rc::from(&**s))),
+        Value::Bytes(b) => Tm::Lit(Lit::Bytes(Rc::from(&**b))),
         Value::Con(c, fields) => con_tm(g, *c, fields)?,
         Value::Tuple(xs) => Tm::Tuple(xs.iter().map(|x| reify(g, x)).collect::<Option<Vec<_>>>()?),
         Value::Erased => Tm::Tuple(vec![]),

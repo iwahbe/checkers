@@ -6,15 +6,16 @@
 
 mod builtins;
 pub mod ir;
+mod sched;
 pub mod num;
 pub mod value;
 
-use crate::core::{ConId, DefId, Globals, Mult, Prim, Tm};
-use ir::{Compiler, Ir, IrCase};
+use crate::core::{ConId, DefId, Globals, Mult, Tm};
+use ir::{Compiler, Ir, IrCase, Op};
 use num::Num;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::io::{BufRead, Write};
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use value::{env_get, env_push, BuiltinFn, Cap, Env, Value};
 
 /// A runtime error: an unproven obligation that failed (§13.3), or a bug.
@@ -37,9 +38,9 @@ pub type R<T> = Result<T, RtError>;
 
 /// Standard streams, replaceable for tests.
 pub struct Io {
-    pub stdin: Box<dyn BufRead>,
-    pub stdout: Box<dyn Write>,
-    pub stderr: Box<dyn Write>,
+    pub stdin: Box<dyn BufRead + Send>,
+    pub stdout: Box<dyn Write + Send>,
+    pub stderr: Box<dyn Write + Send>,
 }
 
 impl Io {
@@ -52,15 +53,15 @@ impl Io {
     }
 }
 
-enum Behaviour {
-    When(Vec<Rc<std::cell::RefCell<Value>>>, Value),
-    Fork(Rc<std::cell::RefCell<Option<Value>>>, Value),
-    Join(Vec<Rc<std::cell::RefCell<Option<Value>>>>, Value, Rc<std::cell::RefCell<Option<Value>>>),
+pub(crate) enum Behaviour {
+    When(Vec<Arc<std::sync::Mutex<Value>>>, Value),
+    Fork(Arc<std::sync::Mutex<Option<Value>>>, Value),
+    Join(Vec<Arc<std::sync::Mutex<Option<Value>>>>, Value, Arc<std::sync::Mutex<Option<Value>>>),
 }
 
 /// Constructors the runtime builds values with.
-#[derive(Default)]
-struct Known {
+#[derive(Default, Clone, Copy)]
+pub struct Known {
     true_con: Option<ConId>,
     false_con: Option<ConId>,
     some: Option<ConId>,
@@ -75,36 +76,55 @@ struct Known {
     failure: Option<ConId>,
 }
 
-pub struct Interp<'g> {
-    pub g: &'g Globals,
-    code: HashMap<DefId, Rc<Ir>>,
+/// What the runtime needs of the checked program, shareable between
+/// threads (M7): compiled code, builtins, and constructor tables.
+pub struct Rt {
+    pub names: Vec<String>,
+    builtins: Vec<Option<Arc<BuiltinFn>>>,
+    code: std::sync::RwLock<Vec<Option<Arc<Ir>>>>,
+    pub cons: Vec<value::ConRt>,
+    pub known: Known,
+    system_fields: Vec<String>,
+}
+
+/// The evaluator: one per thread, sharing `Rt`, the standard streams and
+/// the scheduler.
+pub struct Machine {
+    pub rt: Arc<Rt>,
     cache: Vec<Option<Value>>,
     true_v: Value,
     false_v: Value,
-    pub io: Io,
+    pub io: Arc<Mutex<Io>>,
     queue: VecDeque<Behaviour>,
     current: Option<DefId>,
     known: Known,
+    /// The multi-threaded scheduler, when running with more than one thread.
+    pub(crate) sched: Option<Arc<sched::Shared>>,
+}
+
+/// A `Machine` plus the checked program, which it compiles code from.
+pub struct Interp<'g> {
+    pub g: &'g Globals,
+    m: Machine,
     /// The staged program (§8.9), if staging ran: replacement bodies, and
     /// generated functions numbered after `g.defs`.
-    staged: Option<Rc<crate::stage::Staged>>,
+    staged: Option<std::rc::Rc<crate::stage::Staged>>,
+}
+
+impl<'g> std::ops::Deref for Interp<'g> {
+    type Target = Machine;
+    fn deref(&self) -> &Machine {
+        &self.m
+    }
+}
+
+impl<'g> std::ops::DerefMut for Interp<'g> {
+    fn deref_mut(&mut self) -> &mut Machine {
+        &mut self.m
+    }
 }
 
 impl<'g> Interp<'g> {
-    /// Run the staged program rather than the elaborated one.
-    pub fn with_staged(mut self, s: Rc<crate::stage::Staged>) -> Self {
-        self.cache.resize(self.g.defs.len() + s.extra.len(), None);
-        self.staged = Some(s);
-        self
-    }
-
-    pub fn def_name(&self, d: DefId) -> String {
-        match self.g.defs.get(d.0 as usize) {
-            Some(i) => i.name.to_string(),
-            None => self.staged.as_ref().and_then(|s| s.extra.get(d.0 as usize - self.g.defs.len())).map(|e| e.0.clone()).unwrap_or_default(),
-        }
-    }
-
     pub fn new(g: &'g Globals, io: Io) -> Interp<'g> {
         let wk = &g.well_known;
         let find = |module: &str, name: &str| {
@@ -126,34 +146,175 @@ impl<'g> Interp<'g> {
             success: find("system", "Success"),
             failure: find("system", "Failure"),
         };
+        let mut builtins = Vec::new();
+        for info in &g.defs {
+            builtins.push(if info.body.is_none() {
+                let mut keep = Vec::new();
+                let mut t = &info.ty;
+                while let Tm::Pi(_, m, _, _, b) = t {
+                    keep.push(*m != Mult::Zero);
+                    t = b;
+                }
+                Some(Arc::new(BuiltinFn { name: format!("{}.{}", info.module, info.name), keep }))
+            } else {
+                None
+            });
+        }
+        let cons = g
+            .cons
+            .iter()
+            .enumerate()
+            .map(|(k, ci)| value::ConRt {
+                name: ci.name.to_string(),
+                arity: g.arity_con(ConId(k as u32)),
+                np: g.arity_ty(ci.ty),
+                erased: ci.fields.iter().map(|f| f.1 == Mult::Zero).collect(),
+                shown: ci.fields.iter().map(|f| f.2 == crate::core::Icit::Expl && f.1 != Mult::Zero).collect(),
+            })
+            .collect();
+        let system_fields = known.system.map(|c| g.cons[c.0 as usize].fields.iter().map(|f| f.0.to_string()).collect()).unwrap_or_default();
+        let rt = Rt {
+            names: g.defs.iter().map(|d| d.name.to_string()).collect(),
+            builtins,
+            code: std::sync::RwLock::new(vec![None; g.defs.len()]),
+            cons,
+            known,
+            system_fields,
+        };
+        Interp { g, m: Machine::new(Arc::new(rt), Arc::new(Mutex::new(io))), staged: None }
+    }
+
+    /// Run the staged program rather than the elaborated one.
+    pub fn with_staged(mut self, s: std::rc::Rc<crate::stage::Staged>) -> Self {
+        let rt = Arc::get_mut(&mut self.m.rt).expect("staging is set before running");
+        rt.names.extend(s.extra.iter().map(|e| e.0.clone()));
+        rt.builtins.resize(self.g.defs.len() + s.extra.len(), None);
+        rt.code.get_mut().unwrap().resize(self.g.defs.len() + s.extra.len(), None);
+        self.m.cache.resize(self.g.defs.len() + s.extra.len(), None);
+        self.staged = Some(s);
+        self
+    }
+
+    /// The body to run for `d`: staged, generated, or elaborated.
+    fn body_of(&self, d: DefId) -> Option<Tm> {
+        let n = self.g.defs.len();
+        if let Some(s) = &self.staged {
+            if (d.0 as usize) >= n {
+                return s.extra.get(d.0 as usize - n).map(|e| e.1.clone());
+            }
+            if let Some(b) = s.bodies.get(&d) {
+                return Some(b.clone());
+            }
+        }
+        self.g.defs.get(d.0 as usize).and_then(|i| i.body.clone())
+    }
+
+    /// Compile `d` and everything its code refers to, so that running it
+    /// never needs the checked program (worker threads don't have it).
+    fn prepare(&mut self, roots: Vec<DefId>) {
+        let mut todo = roots;
+        while let Some(d) = todo.pop() {
+            if self.m.rt.code.read().unwrap().get(d.0 as usize).is_none_or(|c| c.is_some()) {
+                continue;
+            }
+            let Some(body) = self.body_of(d) else { continue };
+            if std::env::var_os("CHECKERS_DUMP").is_some() {
+                eprintln!("{} = {}", self.m.def_name(d), crate::core::show(self.g, &[], &body));
+            }
+            let c = Compiler { g: self.g, owner: Some(d) }.compile(&body);
+            globals_in(&c, &mut todo);
+            self.m.rt.code.write().unwrap()[d.0 as usize] = Some(c);
+        }
+    }
+
+    /// Evaluate a closed core term (a `check`, say).
+    pub fn eval_closed(&mut self, t: &Tm) -> R<Value> {
+        let ir = Compiler { g: self.g, owner: None }.compile(t);
+        let mut roots = Vec::new();
+        globals_in(&ir, &mut roots);
+        self.prepare(roots);
+        self.m.current = None;
+        self.m.eval(&ir, &None)
+    }
+
+    /// Call `main` and return the process exit code (§13.4). With more than
+    /// one thread, behaviours run on a pool as soon as they are runnable (D66).
+    pub fn run_main(&mut self, main: DefId, args: &[String], threads: usize) -> R<u8> {
+        self.prepare(vec![main]);
+        if threads > 1 {
+            self.m.sched = Some(sched::Shared::start(self.m.rt.clone(), self.m.io.clone(), threads));
+        }
+        let r = self.m.run_main(main, args);
+        if let Some(s) = self.m.sched.clone() {
+            let waited = s.finish(&mut self.m);
+            self.m.sched = None;
+            let r = r?;
+            waited?;
+            return self.m.exit_code(r);
+        }
+        let r = r?;
+        self.m.exit_code(r)
+    }
+}
+
+/// The definitions compiled code refers to.
+fn globals_in(ir: &Ir, out: &mut Vec<DefId>) {
+    match ir {
+        Ir::Global(d) => out.push(*d),
+        Ir::Lam(_, b) => globals_in(b, out),
+        Ir::Call(h, xs) => {
+            globals_in(h, out);
+            xs.iter().for_each(|x| globals_in(x, out));
+        }
+        Ir::Let(a, b) => {
+            globals_in(a, out);
+            globals_in(b, out);
+        }
+        Ir::Tuple(xs) | Ir::Con(_, xs) | Ir::Prim(_, xs, _) | Ir::Par(xs) => xs.iter().for_each(|x| globals_in(x, out)),
+        Ir::Proj(x, _) | Ir::Field(x, _) => globals_in(x, out),
+        Ir::Case(s, c) => {
+            globals_in(s, out);
+            c.branches.iter().for_each(|(_, _, b)| globals_in(b, out));
+            c.lits.iter().for_each(|(_, b)| globals_in(b, out));
+            if let Some(d) = &c.default {
+                globals_in(d, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+impl Machine {
+    pub fn new(rt: Arc<Rt>, io: Arc<Mutex<Io>>) -> Machine {
+        let known = rt.known;
         let mk = |c: Option<ConId>| match c {
-            Some(c) => Value::Con(c, Rc::from(Vec::new())),
+            Some(c) => Value::Con(c, Arc::from(Vec::new())),
             None => Value::Erased,
         };
-        Interp {
-            g,
-            code: HashMap::new(),
-            cache: vec![None; g.defs.len()],
+        let n = rt.names.len();
+        Machine {
+            cache: vec![None; n],
             true_v: mk(known.true_con),
             false_v: mk(known.false_con),
+            rt,
             io,
             queue: VecDeque::new(),
             current: None,
             known,
-            staged: None,
+            sched: None,
         }
     }
 
-    // ── errors ──────────────────────────────────────────────────────────────
+    pub fn def_name(&self, d: DefId) -> String {
+        self.rt.names.get(d.0 as usize).cloned().unwrap_or_default()
+    }
 
     pub fn error(&self, msg: impl Into<String>) -> RtError {
         RtError { msg: msg.into(), in_fn: self.current.map(|d| self.def_name(d)) }
     }
 
-    // ── value helpers ───────────────────────────────────────────────────────
-
     fn con(&self, c: Option<ConId>, fields: Vec<Value>) -> Value {
-        Value::Con(c.expect("standard library constructor"), Rc::from(fields))
+        Value::Con(c.expect("standard library constructor"), Arc::from(fields))
     }
 
     pub fn bool(&self, b: bool) -> Value {
@@ -217,50 +378,28 @@ impl<'g> Interp<'g> {
         if let Some(Some(v)) = self.cache.get(d.0 as usize) {
             return Ok(v.clone());
         }
-        // A generated or staged body (§8.9) replaces the elaborated one.
-        let staged = self.staged.clone();
-        let sbody = staged.as_ref().and_then(|s| match self.g.defs.get(d.0 as usize) {
-            Some(_) => s.bodies.get(&d).cloned(),
-            None => s.extra.get(d.0 as usize - self.g.defs.len()).map(|e| e.1.clone()),
-        });
-        if let Some(body) = sbody {
-            let ir = self.code_of(d, &body);
-            let saved = self.current;
-            self.current = Some(d);
-            let v = self.eval(&ir, &None)?;
-            self.current = saved;
-            if let Some(slot) = self.cache.get_mut(d.0 as usize) {
-                *slot = Some(v.clone());
-            }
-            return Ok(v);
-        }
-        let info = &self.g.defs[d.0 as usize];
-        let v = match &info.body {
-            None => {
-                let mut keep = Vec::new();
-                let mut t = &info.ty;
-                while let Tm::Pi(_, m, _, _, b) = t {
-                    keep.push(*m != Mult::Zero);
-                    t = b;
-                }
-                let name = format!("{}.{}", info.module, info.name);
-                if !builtins::exists(&name) {
-                    return Err(self.error(format!("`{name}` has no implementation in this interpreter yet")));
-                }
-                let b = Rc::new(BuiltinFn { name, keep });
-                if b.keep.is_empty() {
-                    builtins::call(self, &b.name, vec![])?
-                } else {
-                    Value::Builtin(b, Rc::new(Vec::new()))
-                }
-            }
-            Some(body) => {
-                let ir = self.code_of(d, body);
+        // This machine's own copy of the code (`ir::private`).
+        let code = self.rt.code.read().unwrap().get(d.0 as usize).cloned().flatten().map(|c| ir::private(&c));
+        let v = match code {
+            Some(ir) => {
                 let saved = self.current;
                 self.current = Some(d);
                 let v = self.eval(&ir, &None)?;
                 self.current = saved;
                 v
+            }
+            None => {
+                let Some(b) = self.rt.builtins.get(d.0 as usize).cloned().flatten() else {
+                    return Err(self.error(format!("`{}` was not compiled (a bug)", self.def_name(d))));
+                };
+                if !builtins::exists(&b.name) {
+                    return Err(self.error(format!("`{}` has no implementation in this interpreter yet", b.name)));
+                }
+                if b.keep.is_empty() {
+                    builtins::call(self, &b.name, vec![])?
+                } else {
+                    Value::Builtin(b, Arc::new(Vec::new()))
+                }
             }
         };
         if let Some(slot) = self.cache.get_mut(d.0 as usize) {
@@ -269,28 +408,9 @@ impl<'g> Interp<'g> {
         Ok(v)
     }
 
-    fn code_of(&mut self, d: DefId, body: &Tm) -> Rc<Ir> {
-        if let Some(c) = self.code.get(&d) {
-            return c.clone();
-        }
-        if std::env::var_os("CHECKERS_DUMP").is_some() {
-            eprintln!("{} = {}", self.def_name(d), crate::core::show(self.g, &[], body));
-        }
-        let c = Compiler { g: self.g, owner: Some(d) }.compile(body);
-        self.code.insert(d, c.clone());
-        c
-    }
-
-    /// Evaluate a closed core term (a `check`, say).
-    pub fn eval_closed(&mut self, t: &Tm) -> R<Value> {
-        let ir = Compiler { g: self.g, owner: None }.compile(t);
-        self.current = None;
-        self.eval(&ir, &None)
-    }
-
     // ── evaluation ──────────────────────────────────────────────────────────
 
-    pub fn eval(&mut self, ir: &Rc<Ir>, env: &Env) -> R<Value> {
+    pub fn eval(&mut self, ir: &Arc<Ir>, env: &Env) -> R<Value> {
         let saved = self.current;
         let r = self.run(ir.clone(), env.clone());
         if r.is_ok() {
@@ -299,7 +419,7 @@ impl<'g> Interp<'g> {
         r
     }
 
-    fn run(&mut self, mut ir: Rc<Ir>, mut env: Env) -> R<Value> {
+    fn run(&mut self, mut ir: Arc<Ir>, mut env: Env) -> R<Value> {
         loop {
             let (next, next_env) = match &*ir {
                 Ir::Var(i) => return Ok(env_get(&env, *i).clone()),
@@ -308,7 +428,7 @@ impl<'g> Interp<'g> {
                 Ir::Lit(v) => return Ok(v.clone()),
                 Ir::Fail(m) => return Err(self.error(format!("reached {m}"))),
                 Ir::Lam(owner, b) => {
-                    return Ok(Value::Clo(Rc::new(value::Closure { body: b.clone(), env: env.clone(), owner: *owner })))
+                    return Ok(Value::Clo(Arc::new(value::Closure { body: b.clone(), env: env.clone(), owner: *owner })))
                 }
                 Ir::Call(h, spine) => {
                     // Evaluate the head, then every argument left to right (§13.2),
@@ -366,7 +486,7 @@ impl<'g> Interp<'g> {
                     for x in xs {
                         vs.push(self.eval(x, &env)?);
                     }
-                    return Ok(Value::Tuple(Rc::from(vs)));
+                    return Ok(Value::Tuple(Arc::from(vs)));
                 }
                 Ir::Proj(x, i) => {
                     return match self.eval(x, &env)? {
@@ -385,15 +505,16 @@ impl<'g> Interp<'g> {
                     for x in xs {
                         vs.push(self.eval(x, &env)?);
                     }
-                    return Ok(Value::Con(*c, Rc::from(vs)));
+                    return Ok(Value::Con(*c, Arc::from(vs)));
                 }
                 Ir::ConFn(c) => {
-                    return Ok(if self.g.arity_con(*c) == 0 {
-                        Value::Con(*c, Rc::from(Vec::new()))
+                    return Ok(if self.rt.cons[c.0 as usize].arity == 0 {
+                        Value::Con(*c, Arc::from(Vec::new()))
                     } else {
-                        Value::ConFn(*c, Rc::new(Vec::new()))
+                        Value::ConFn(*c, Arc::new(Vec::new()))
                     })
                 }
+                Ir::Par(xs) => return self.par(xs, &env),
                 Ir::Prim(p, args, nat) => {
                     let mut vs = Vec::with_capacity(args.len());
                     for a in args {
@@ -408,7 +529,7 @@ impl<'g> Interp<'g> {
     }
 
     /// The arm for `v`, and how many fields it binds.
-    fn select(&self, v: &Value, c: &IrCase) -> R<(Rc<Ir>, usize)> {
+    fn select(&self, v: &Value, c: &IrCase) -> R<(Arc<Ir>, usize)> {
         match v {
             Value::Con(con, _) => {
                 for (bc, n, body) in &c.branches {
@@ -450,7 +571,7 @@ impl<'g> Interp<'g> {
                 let mut v = (*args).clone();
                 v.push(a);
                 if v.len() < b.keep.len() {
-                    return Ok(Value::Builtin(b, Rc::new(v)));
+                    return Ok(Value::Builtin(b, Arc::new(v)));
                 }
                 let kept: Vec<Value> = v.into_iter().zip(&b.keep).filter(|(_, k)| **k).map(|(x, _)| x).collect();
                 builtins::call(self, &b.name, kept)
@@ -458,18 +579,17 @@ impl<'g> Interp<'g> {
             Value::ConFn(c, args) => {
                 let mut v = (*args).clone();
                 v.push(a);
-                if v.len() < self.g.arity_con(c) {
-                    return Ok(Value::ConFn(c, Rc::new(v)));
+                let ci = &self.rt.cons[c.0 as usize];
+                if v.len() < ci.arity {
+                    return Ok(Value::ConFn(c, Arc::new(v)));
                 }
-                let ci = &self.g.cons[c.0 as usize];
-                let np = self.g.arity_ty(ci.ty);
                 let fields: Vec<Value> = v
                     .into_iter()
-                    .skip(np)
-                    .zip(&ci.fields)
-                    .map(|(x, f)| if f.1 == Mult::Zero { Value::Erased } else { x })
+                    .skip(ci.np)
+                    .zip(&ci.erased)
+                    .map(|(x, erased)| if *erased { Value::Erased } else { x })
                     .collect();
-                Ok(Value::Con(c, Rc::from(fields)))
+                Ok(Value::Con(c, Arc::from(fields)))
             }
             Value::Erased => Ok(Value::Erased),
             other => Err(self.error(format!("applied a {} as a function", other.kind()))),
@@ -491,38 +611,38 @@ impl<'g> Interp<'g> {
         }
     }
 
-    fn prim(&mut self, p: &Prim, args: Vec<Value>, nat: bool) -> R<Value> {
+    fn prim(&mut self, p: &Op, args: Vec<Value>, nat: bool) -> R<Value> {
         let a = || &args[0];
         let b = || &args[1];
         Ok(match p {
-            Prim::Add => Value::Num(self.num(a())?.add(self.num(b())?)),
-            Prim::Sub => {
+            Op::Add => Value::Num(self.num(a())?.add(self.num(b())?)),
+            Op::Sub => {
                 let (x, y) = (self.num(a())?, self.num(b())?);
                 if nat && x < y {
                     return Err(self.error(format!("`-` on `Nat` would go below zero ({x} - {y})")));
                 }
                 Value::Num(x.sub(y))
             }
-            Prim::Mul => Value::Num(self.num(a())?.mul(self.num(b())?)),
-            Prim::Div | Prim::Rem => {
+            Op::Mul => Value::Num(self.num(a())?.mul(self.num(b())?)),
+            Op::Div | Op::Rem => {
                 let (x, y) = (self.num(a())?, self.num(b())?);
                 if y.is_zero() {
-                    let op = if *p == Prim::Div { "/" } else { "%" };
+                    let op = if *p == Op::Div { "/" } else { "%" };
                     return Err(self.error(format!("`{op}` by zero ({x} {op} 0)")));
                 }
-                Value::Num(if *p == Prim::Div { x.div(y) } else { x.rem(y) })
+                Value::Num(if *p == Op::Div { x.div(y) } else { x.rem(y) })
             }
-            Prim::Neg => Value::Num(self.num(a())?.neg()),
-            Prim::Eq | Prim::Ne => {
+            Op::Neg => Value::Num(self.num(a())?.neg()),
+            Op::Eq | Op::Ne => {
                 let e = value::equal(a(), b()).map_err(|what| self.error(format!("`==` can't compare {what}")))?;
-                self.bool(if *p == Prim::Eq { e } else { !e })
+                self.bool(if *p == Op::Eq { e } else { !e })
             }
-            Prim::Lt => self.bool(self.num(a())? < self.num(b())?),
-            Prim::Le => self.bool(self.num(a())? <= self.num(b())?),
-            Prim::Gt => self.bool(self.num(a())? > self.num(b())?),
-            Prim::Ge => self.bool(self.num(a())? >= self.num(b())?),
-            Prim::Concat => match (a(), b()) {
-                (Value::Str(x), Value::Str(y)) => Value::Str(Rc::from(format!("{x}{y}"))),
+            Op::Lt => self.bool(self.num(a())? < self.num(b())?),
+            Op::Le => self.bool(self.num(a())? <= self.num(b())?),
+            Op::Gt => self.bool(self.num(a())? > self.num(b())?),
+            Op::Ge => self.bool(self.num(a())? >= self.num(b())?),
+            Op::Concat => match (a(), b()) {
+                (Value::Str(x), Value::Str(y)) => Value::Str(Arc::from(format!("{x}{y}"))),
                 (Value::Bytes(x), Value::Bytes(y)) => Value::Bytes(x.iter().chain(y.iter()).copied().collect()),
                 (x, y) => {
                     let mut items = self.list_items(x)?;
@@ -530,12 +650,12 @@ impl<'g> Interp<'g> {
                     self.list(items)
                 }
             },
-            Prim::Len => match a() {
+            Op::Len => match a() {
                 Value::Str(s) => Value::nat(s.len()),
                 Value::Bytes(b) => Value::nat(b.len()),
                 other => Value::nat(self.list_items(other)?.len()),
             },
-            Prim::Index => {
+            Op::Index => {
                 let Value::Bytes(src) = a() else { return Err(self.error("indexing needs `Bytes`")) };
                 let i = self.num(b())?;
                 match i.to_usize().filter(|i| *i < src.len()) {
@@ -543,9 +663,9 @@ impl<'g> Interp<'g> {
                     None => return Err(self.error(format!("index {i} out of bounds for {} bytes", src.len()))),
                 }
             }
-            Prim::Format => Value::Str(Rc::from(value::format(self.g, a()))),
-            Prim::Par => a().clone(),
-            Prim::When => {
+            Op::Format => Value::Str(Arc::from(value::format(&self.rt, a()))),
+            Op::Par => a().clone(),
+            Op::When => {
                 let Value::Tuple(cs) = b() else { return Err(self.error("`when` needs cowns")) };
                 let mut cowns = Vec::new();
                 for c in cs.iter() {
@@ -554,15 +674,15 @@ impl<'g> Interp<'g> {
                         other => return Err(self.error(format!("`when` needs cowns, found a {}", other.kind()))),
                     }
                 }
-                self.queue.push_back(Behaviour::When(cowns, args[2].clone()));
+                self.schedule(Behaviour::When(cowns, args[2].clone()));
                 Value::unit()
             }
-            Prim::Fork => {
-                let fut = Rc::new(std::cell::RefCell::new(None));
-                self.queue.push_back(Behaviour::Fork(fut.clone(), b().clone()));
+            Op::Fork => {
+                let fut = Arc::new(std::sync::Mutex::new(None));
+                self.schedule(Behaviour::Fork(fut.clone(), b().clone()));
                 Value::Future(fut)
             }
-            Prim::Join => {
+            Op::Join => {
                 let Value::Tuple(fs) = b() else { return Err(self.error("`join` needs futures")) };
                 let mut futs = Vec::new();
                 for f in fs.iter() {
@@ -571,67 +691,148 @@ impl<'g> Interp<'g> {
                         other => return Err(self.error(format!("`join` needs futures, found a {}", other.kind()))),
                     }
                 }
-                let out = Rc::new(std::cell::RefCell::new(None));
-                self.queue.push_back(Behaviour::Join(futs, args[2].clone(), out.clone()));
+                let out = Arc::new(std::sync::Mutex::new(None));
+                self.schedule(Behaviour::Join(futs, args[2].clone(), out.clone()));
                 Value::Future(out)
             }
-            Prim::Builtin(n) => return Err(self.error(format!("unexpected primitive `{n}`"))),
         })
     }
 
-    // ── behaviours (D44) ────────────────────────────────────────────────────
+    // ── behaviours (D44, D66) ───────────────────────────────────────────────
 
-    /// Run scheduled behaviours until none remain.
+    /// Schedule a behaviour: on the pool if there is one, else on the FIFO queue.
+    fn schedule(&mut self, b: Behaviour) {
+        match &self.sched {
+            Some(s) => s.submit(b),
+            None => self.queue.push_back(b),
+        }
+    }
+
+    /// Run one behaviour. `ready`: the scheduler guarantees its futures are
+    /// filled; on the FIFO queue a `join` may have to wait its turn.
+    pub(crate) fn run_behaviour(&mut self, b: Behaviour, ready: bool) -> R<Option<Behaviour>> {
+        match b {
+            Behaviour::When(cowns, f) => {
+                let contents: Vec<Value> = cowns.iter().map(|c| c.lock().unwrap().clone()).collect();
+                let r = self.apply_n(f, contents)?;
+                if cowns.len() == 1 {
+                    *cowns[0].lock().unwrap() = r;
+                } else {
+                    let Value::Tuple(vs) = r else { return Err(self.error("`when` body must return a tuple")) };
+                    for (c, v) in cowns.iter().zip(vs.iter()) {
+                        *c.lock().unwrap() = v.clone();
+                    }
+                }
+            }
+            Behaviour::Fork(fut, f) => {
+                let v = self.apply(f, Value::unit())?;
+                *fut.lock().unwrap() = Some(v);
+            }
+            Behaviour::Join(futs, f, out) => {
+                if !ready && futs.iter().any(|x| x.lock().unwrap().is_none()) {
+                    return Ok(Some(Behaviour::Join(futs, f, out)));
+                }
+                let vals: Vec<Value> = futs.iter().map(|x| x.lock().unwrap().take().unwrap_or(Value::Erased)).collect();
+                let v = self.apply_n(f, vals)?;
+                *out.lock().unwrap() = Some(v);
+            }
+        }
+        Ok(None)
+    }
+
+    /// Run the FIFO queue until it is empty (D44, `--threads 1`).
     pub fn run_queue(&mut self) -> R<()> {
         let mut stalled = 0;
         while let Some(b) = self.queue.pop_front() {
-            match b {
-                Behaviour::When(cowns, f) => {
-                    let contents: Vec<Value> = cowns.iter().map(|c| c.borrow().clone()).collect();
-                    let r = self.apply_n(f, contents)?;
-                    if cowns.len() == 1 {
-                        *cowns[0].borrow_mut() = r;
-                    } else {
-                        let Value::Tuple(vs) = r else { return Err(self.error("`when` body must return a tuple")) };
-                        for (c, v) in cowns.iter().zip(vs.iter()) {
-                            *c.borrow_mut() = v.clone();
-                        }
+            match self.run_behaviour(b, false)? {
+                // Causal order makes this unreachable with FIFO scheduling (D44).
+                Some(waiting) => {
+                    stalled += 1;
+                    if stalled > self.queue.len() + 1 {
+                        return Err(self.error("a `join` waits on a future that is never filled"));
                     }
-                    stalled = 0;
+                    self.queue.push_back(waiting);
                 }
-                Behaviour::Fork(fut, f) => {
-                    let v = self.apply(f, Value::unit())?;
-                    *fut.borrow_mut() = Some(v);
-                    stalled = 0;
-                }
-                Behaviour::Join(futs, f, out) => {
-                    if futs.iter().any(|x| x.borrow().is_none()) {
-                        // Causal order makes this unreachable with FIFO scheduling (D44).
-                        stalled += 1;
-                        if stalled > self.queue.len() + 1 {
-                            return Err(self.error("a `join` waits on a future that is never filled"));
-                        }
-                        self.queue.push_back(Behaviour::Join(futs, f, out));
-                        continue;
-                    }
-                    let vals: Vec<Value> = futs.iter().map(|x| x.borrow_mut().take().unwrap_or(Value::Erased)).collect();
-                    let v = self.apply_n(f, vals)?;
-                    *out.borrow_mut() = Some(v);
-                    stalled = 0;
-                }
+                None => stalled = 0,
             }
         }
         Ok(())
+    }
+
+    /// `par (e1, …, en)` (D69): components on threads while the pool has
+    /// room, the rest here; the result is the same tuple either way.
+    fn par(&mut self, xs: &[Arc<Ir>], env: &Env) -> R<Value> {
+        let sched = self.sched.clone();
+        let take = |n: usize| match &sched {
+            Some(s) => {
+                let mut got = 0;
+                while got < n {
+                    let cur = s.par_budget.load(std::sync::atomic::Ordering::Relaxed);
+                    if cur == 0 {
+                        break;
+                    }
+                    if s.par_budget
+                        .compare_exchange(cur, cur - 1, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Relaxed)
+                        .is_ok()
+                    {
+                        got += 1;
+                    }
+                }
+                got
+            }
+            None => 0,
+        };
+        let spawned = take(xs.len().saturating_sub(1));
+        if spawned == 0 {
+            let mut vs = Vec::with_capacity(xs.len());
+            for x in xs {
+                vs.push(self.eval(x, env)?);
+            }
+            return Ok(Value::Tuple(Arc::from(vs)));
+        }
+        let (rt, io, current) = (self.rt.clone(), self.io.clone(), self.current);
+        let results: Vec<R<Value>> = std::thread::scope(|sc| {
+            let mut handles = Vec::new();
+            for x in &xs[..spawned] {
+                let (rt, io, sched, env) = (rt.clone(), io.clone(), sched.clone(), env.clone());
+                let h = std::thread::Builder::new()
+                    .stack_size(256 << 20)
+                    .spawn_scoped(sc, move || {
+                        let mut m = Machine::new(rt, io);
+                        m.sched = sched;
+                        m.current = current;
+                        m.eval(x, &env)
+                    })
+                    .expect("spawn a `par` thread");
+                handles.push(h);
+            }
+            let mut rest = Vec::new();
+            for x in &xs[spawned..] {
+                rest.push(self.eval(x, env));
+            }
+            let mut out: Vec<R<Value>> = handles.into_iter().map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect();
+            out.extend(rest);
+            out
+        });
+        if let Some(s) = &sched {
+            s.par_budget.fetch_add(spawned, std::sync::atomic::Ordering::AcqRel);
+        }
+        let mut vs = Vec::with_capacity(xs.len());
+        for r in results {
+            vs.push(r?);
+        }
+        Ok(Value::Tuple(Arc::from(vs)))
     }
 
     // ── main ────────────────────────────────────────────────────────────────
 
     pub fn system(&self) -> Value {
         let Some(c) = self.known.system else { return Value::Erased };
-        let fields = self.g.cons[c.0 as usize]
-            .fields
+        let fields = self
+            .rt
+            .system_fields
             .iter()
-            .map(|f| match &*f.0 {
+            .map(|f| match f.as_str() {
                 "term" => Value::Cap(Cap::Term),
                 "fs" => Value::Cap(Cap::Fs(None)),
                 "env" => Value::Cap(Cap::Env),
@@ -642,22 +843,29 @@ impl<'g> Interp<'g> {
                 _ => Value::Erased,
             })
             .collect::<Vec<_>>();
-        Value::Con(c, Rc::from(fields))
+        Value::Con(c, Arc::from(fields))
     }
 
-    /// Call `main` and return the process exit code (§13.4).
-    pub fn run_main(&mut self, main: DefId, args: &[String]) -> R<u8> {
+    /// Call `main`; with the FIFO scheduler, also run its behaviours.
+    pub fn run_main(&mut self, main: DefId, args: &[String]) -> R<Value> {
         let argv = self.list(args.iter().map(|a| Value::str(a)).collect());
         let sys = self.system();
         let f = self.global(main)?;
         self.current = Some(main);
-        let mut r = self.apply_n(f, vec![argv, sys])?;
-        self.run_queue()?;
-        if let Value::Future(fut) = &r {
-            let v = fut.borrow_mut().take();
-            r = v.ok_or_else(|| self.error("`main`'s future was never filled"))?;
+        let r = self.apply_n(f, vec![argv, sys])?;
+        if self.sched.is_none() {
+            self.run_queue()?;
         }
         self.current = Some(main);
+        Ok(r)
+    }
+
+    /// The process exit code `main`'s result stands for (§13.4).
+    pub fn exit_code(&mut self, mut r: Value) -> R<u8> {
+        if let Value::Future(fut) = &r {
+            let v = fut.lock().unwrap().take();
+            r = v.ok_or_else(|| self.error("`main`'s future was never filled"))?;
+        }
         match &r {
             Value::Con(c, _) if Some(*c) == self.known.success => Ok(0),
             Value::Con(c, f) if Some(*c) == self.known.failure => {
@@ -672,8 +880,9 @@ impl<'g> Interp<'g> {
     }
 
     pub fn flush(&mut self) {
-        let _ = self.io.stdout.flush();
-        let _ = self.io.stderr.flush();
+        let mut io = self.io.lock().unwrap();
+        let _ = io.stdout.flush();
+        let _ = io.stderr.flush();
     }
 }
 

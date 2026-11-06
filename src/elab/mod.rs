@@ -163,6 +163,8 @@ pub enum ObKind {
     Pre { callee: String },
     Post { func: String, at: Span },
     Invariant { con: String },
+    /// A behaviour must hand back contents of the cown's refinement (§8.5).
+    CownInvariant { alias: String, initial: bool },
     NatSub,
     /// A recursive call must make the caller's `decreasing` measure smaller.
     Measure { func: String, measure: String },
@@ -230,6 +232,20 @@ pub struct PostTarget {
     pub func: String,
     /// The values of the function's binders (its parameters).
     pub binders: Vec<Val>,
+    /// In a `when` body: the refinements the new contents must satisfy (§8.5).
+    pub invariants: Vec<CownInv>,
+}
+
+/// A cown's content refinement (`type Log = …, len entries <= 100`), to be
+/// re-established by a behaviour.
+#[derive(Clone)]
+pub struct CownInv {
+    pub alias: String,
+    /// The alias's predicates over `args ++ [subject]`.
+    pub preds: Vec<Pred>,
+    pub args: Vec<Val>,
+    /// The component of the body's tuple, with several cowns.
+    pub proj: Option<usize>,
 }
 
 /// A trust-ledger entry (§7.4) for something accepted without a solver proof.
@@ -277,6 +293,12 @@ pub struct Elab {
     /// The goal of the proof being elaborated (D49).
     pub proof_goal: Option<(Val, String)>,
     pub admits: Vec<Trusted>,
+    /// `cown.new v` calls whose content type is known only once the body is
+    /// checked: the initial value must satisfy its refinement (§8.5).
+    pub pending_cowns: Vec<(Cx, Val, Val, Span)>,
+    /// The content type a checked `cown.new` call is expected to produce
+    /// (inference from the argument alone would lose a refinement alias).
+    pub expected_cown: Option<Val>,
     /// Uses of standard-library lemmas about `__builtin` functions, which are
     /// trusted like the primitives themselves (D56).
     pub builtin_axioms: Vec<Trusted>,
@@ -333,6 +355,8 @@ impl Elab {
             proof_goal: None,
             post_target: None,
             admits: Vec::new(),
+            pending_cowns: Vec::new(),
+            expected_cown: None,
             builtin_axioms: Vec::new(),
             axiom_defs: HashSet::new(),
             measure_obs: Vec::new(),
@@ -570,6 +594,54 @@ impl Elab {
             let goal = self.inst_pred(p, env.clone());
             self.oblige(cx, p.span, ObKind::Post { func: pt.func.clone(), at }, p.text.clone(), goal, None);
         }
+        let v = env.pop().unwrap_or(Val::Error);
+        for inv in &pt.invariants {
+            let subject = match (inv.proj, &v) {
+                (None, _) => v.clone(),
+                (Some(k), Val::Tuple(xs)) => xs.get(k).cloned().unwrap_or(Val::Error),
+                (Some(k), _) => eval(&self.g, &Rc::new(vec![v.clone()]), &Tm::Proj(Rc::new(Tm::Var(0)), k)),
+            };
+            let mut env = inv.args.clone();
+            env.push(subject);
+            for p in &inv.preds {
+                let goal = self.inst_pred(p, env.clone());
+                self.oblige(cx, at, ObKind::CownInvariant { alias: inv.alias.clone(), initial: false }, p.text.clone(), goal, None);
+            }
+        }
+    }
+
+    /// Oblige the initial contents of new cowns (`cown.new v`) to satisfy the
+    /// cown's refinement, now that the content types are solved.
+    pub fn flush_pending_cowns(&mut self) {
+        for (cx, v, content, span) in std::mem::take(&mut self.pending_cowns) {
+            // Not forced: that would unfold the alias we are looking for.
+            if let Some(inv) = self.cown_inv(&cx, &content, None) {
+                let mut env = inv.args.clone();
+                env.push(v.clone());
+                for p in &inv.preds {
+                    let goal = self.inst_pred(p, env.clone());
+                    self.oblige(&cx, span, ObKind::CownInvariant { alias: inv.alias.clone(), initial: true }, p.text.clone(), goal, None);
+                }
+            }
+        }
+    }
+
+    /// A cown's content type as a refinement alias: its name, predicates and
+    /// argument values (none if the type isn't an alias).
+    pub fn cown_inv(&self, cx: &Cx, content: &Val, proj: Option<usize>) -> Option<CownInv> {
+        let ty = quote(&self.g, cx.lvl(), content);
+        let mut args = Vec::new();
+        let mut h = &ty;
+        while let Tm::App(f, a, _, _) = h {
+            args.push(a.clone());
+            h = f;
+        }
+        let Tm::Def(d) = h else { return None };
+        let preds = self.alias_preds.get(d)?.clone();
+        args.reverse();
+        let env = cx.env();
+        let args = args.iter().map(|a| eval(&self.g, &env, a)).collect();
+        Some(CownInv { alias: self.g.defs[d.0 as usize].name.to_string(), preds, args, proj })
     }
 
     pub fn prim_val(p: Prim, args: Vec<Val>) -> Val {

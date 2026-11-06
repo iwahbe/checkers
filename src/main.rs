@@ -6,7 +6,9 @@ const USAGE: &str = "\
 checkers — the Checkers compiler and interpreter
 
 USAGE:
-    checkers run [--unverified] <FILE.ck> [ARG]...  check and prove, then run `main` with ARGs
+    checkers run [--unverified] [--threads N] <FILE.ck> [ARG]...
+                                                    check and prove, then run `main` with ARGs
+                                                    (N worker threads, default: cores; 1 is deterministic)
     checkers trust <FILE.ck>                        print the trust ledger (what Z3, admits and checks vouch for)
     checkers check [--deny-warnings] <FILE.ck>...   type-check and run `check`s; report diagnostics
     checkers stage <FILE.ck>                        print the code staging generates (§8.9)
@@ -83,8 +85,28 @@ fn stage(args: &[String]) -> u8 {
 }
 
 fn run(args: &[String]) -> u8 {
-    let unverified = args.first().is_some_and(|a| a == "--unverified");
-    let args = if unverified { &args[1..] } else { args };
+    let mut unverified = false;
+    let mut threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    let mut args = args;
+    loop {
+        match args.first().map(String::as_str) {
+            Some("--unverified") => {
+                unverified = true;
+                args = &args[1..];
+            }
+            Some("--threads") => {
+                match args.get(1).and_then(|n| n.parse::<usize>().ok()).filter(|n| *n >= 1) {
+                    Some(n) => threads = n,
+                    None => {
+                        eprintln!("error: `--threads` needs a number of threads, at least 1\n\n{USAGE}");
+                        return 2;
+                    }
+                }
+                args = &args[2..];
+            }
+            _ => break,
+        }
+    }
     let Some(path) = args.first() else {
         eprintln!("error: `run` needs a file\n\n{USAGE}");
         return 2;
@@ -93,7 +115,7 @@ fn run(args: &[String]) -> u8 {
         Ok(t) => t,
         Err(_) => return 2,
     };
-    let ran = checkers::run(path, &text, &args[1..], checkers::run::Io::process(), unverified);
+    let ran = checkers::run(path, &text, &args[1..], checkers::run::Io::process(), unverified, threads);
     eprint!("{}", ran.report);
     ran.code
 }

@@ -2,15 +2,15 @@
 
 use super::ir::Ir;
 use super::num::{Decimal, Num};
-use crate::core::{ConId, DefId, Globals, Icit, Mult};
-use std::cell::RefCell;
+use crate::core::{ConId, DefId};
+use std::sync::Mutex;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// A persistent environment: index 0 is the innermost binder.
-pub type Env = Option<Rc<EnvNode>>;
+pub type Env = Option<Arc<EnvNode>>;
 
 pub struct EnvNode {
     pub v: Value,
@@ -18,7 +18,7 @@ pub struct EnvNode {
 }
 
 pub fn env_push(env: &Env, v: Value) -> Env {
-    Some(Rc::new(EnvNode { v, next: env.clone() }))
+    Some(Arc::new(EnvNode { v, next: env.clone() }))
 }
 
 pub fn env_get(env: &Env, mut i: usize) -> &Value {
@@ -31,7 +31,7 @@ pub fn env_get(env: &Env, mut i: usize) -> &Value {
 }
 
 pub struct Closure {
-    pub body: Rc<Ir>,
+    pub body: Arc<Ir>,
     pub env: Env,
     /// The definition this code belongs to, for error messages.
     pub owner: Option<DefId>,
@@ -48,7 +48,7 @@ pub struct BuiltinFn {
 pub enum Cap {
     Term,
     /// The file system, optionally confined to a directory (`files.within`).
-    Fs(Option<Rc<PathBuf>>),
+    Fs(Option<Arc<PathBuf>>),
     Env,
     Proc,
     Net,
@@ -64,35 +64,35 @@ pub enum FileState {
 #[derive(Clone)]
 pub enum Value {
     Num(Num),
-    Str(Rc<str>),
-    Bytes(Rc<[u8]>),
+    Str(Arc<str>),
+    Bytes(Arc<[u8]>),
     /// A constructor with its fields (type parameters dropped; erased fields are `Erased`).
-    Con(ConId, Rc<[Value]>),
-    Tuple(Rc<[Value]>),
-    Clo(Rc<Closure>),
+    Con(ConId, Arc<[Value]>),
+    Tuple(Arc<[Value]>),
+    Clo(Arc<Closure>),
     /// A constructor applied to fewer arguments (parameters + fields) than it takes.
-    ConFn(ConId, Rc<Vec<Value>>),
-    Builtin(Rc<BuiltinFn>, Rc<Vec<Value>>),
+    ConFn(ConId, Arc<Vec<Value>>),
+    Builtin(Arc<BuiltinFn>, Arc<Vec<Value>>),
     /// A type, proof or ghost value.
     Erased,
     Cap(Cap),
     /// An open file; `None` once closed.
-    File(Rc<RefCell<Option<FileState>>>),
-    IoErr(Rc<str>),
-    Decimal(Rc<Decimal>),
+    File(Arc<Mutex<Option<FileState>>>),
+    IoErr(Arc<str>),
+    Decimal(Arc<Decimal>),
     /// A multiset of integers (D47): sorted (value, count) pairs.
-    Bag(Rc<Vec<(Num, usize)>>),
-    Cown(Rc<RefCell<Value>>),
-    Future(Rc<RefCell<Option<Value>>>),
+    Bag(Arc<Vec<(Num, usize)>>),
+    Cown(Arc<Mutex<Value>>),
+    Future(Arc<Mutex<Option<Value>>>),
 }
 
 impl Value {
     pub fn unit() -> Value {
-        Value::Tuple(Rc::from(Vec::new()))
+        Value::Tuple(Arc::from(Vec::new()))
     }
 
     pub fn str(s: &str) -> Value {
-        Value::Str(Rc::from(s))
+        Value::Str(Arc::from(s))
     }
 
     pub fn nat(n: usize) -> Value {
@@ -156,19 +156,27 @@ pub fn equal(a: &Value, b: &Value) -> Result<bool, &'static str> {
     })
 }
 
+/// What the runtime knows of a constructor (M7: no `Globals` on workers).
+pub struct ConRt {
+    pub name: String,
+    /// Parameters + fields: the arguments it takes.
+    pub arity: usize,
+    /// Type parameters.
+    pub np: usize,
+    /// Per field: erased (`ghost`)?
+    pub erased: Vec<bool>,
+    /// Per field: printed by `format` (explicit and not erased)?
+    pub shown: Vec<bool>,
+}
+
 /// The explicit, runtime fields of a constructor value, for printing.
-fn shown_fields<'a>(g: &Globals, c: ConId, fields: &'a [Value]) -> Vec<&'a Value> {
+fn shown_fields<'a>(g: &super::Rt, c: ConId, fields: &'a [Value]) -> Vec<&'a Value> {
     let ci = &g.cons[c.0 as usize];
-    ci.fields
-        .iter()
-        .zip(fields)
-        .filter(|(f, _)| f.2 == Icit::Expl && f.1 != Mult::Zero)
-        .map(|(_, v)| v)
-        .collect()
+    ci.shown.iter().zip(fields).filter(|(s, _)| **s).map(|(_, v)| v).collect()
 }
 
 /// `format` (D42).
-pub fn format(g: &Globals, v: &Value) -> String {
+pub fn format(g: &super::Rt, v: &Value) -> String {
     match v {
         Value::Str(s) => s.to_string(),
         other => show(g, other, 0),
@@ -184,8 +192,8 @@ fn paren(b: bool, s: String) -> String {
 }
 
 /// Render as Checkers source; `p > 0` means "in argument position".
-pub fn show(g: &Globals, v: &Value, p: u8) -> String {
-    let wk = &g.well_known;
+pub fn show(g: &super::Rt, v: &Value, p: u8) -> String {
+    let wk = &g.known;
     match v {
         Value::Num(n) => {
             let s = n.to_string();
@@ -263,4 +271,12 @@ pub fn show_bytes(b: &[u8]) -> String {
     }
     s.push('"');
     s
+}
+
+// Values are shared between worker threads (M7, D66).
+#[allow(dead_code)]
+fn assert_thread_safe() {
+    fn check<T: Send + Sync>() {}
+    check::<Value>();
+    check::<Ir>();
 }

@@ -415,7 +415,7 @@ Guarantees, by construction:
 2. **No deadlock.** All of a behaviour's cowns are acquired atomically; there are no locks to order.
 3. **Causal order.** Two behaviours that share a cown run in the order they were scheduled.
 
-**Invariants.** A cown's content type can be a refinement (`type Log = entries~List String, len entries <= 100`). Every behaviour must return contents of that type, so it must re-establish the invariant: this is the lock-invariant rule of concurrent separation logic, enforced by ordinary type checking.
+**Invariants.** A cown's content type can be a refinement (`type Log = entries~List String, len entries <= 100`). Every behaviour must return contents of that type, so it must re-establish the invariant: this is the lock-invariant rule of concurrent separation logic, enforced by ordinary type checking. Concretely, the prover checks two obligations (E0450, "the invariant of a cown holding `Log`"): the value given to `cown.new` satisfies the refinement, and so does every value a `when` body hands back. Inside the body, the invariant of each cown held is a fact. The content type comes from the cown's declared type (`c~Cown Log`), so write it in the signature or a `let` with a type when it matters.
 
 **Results.** `when` is asynchronous: it schedules the body and continues immediately, so the body's only outputs are the new contents of its cowns. A later behaviour on the same cowns sees them. To compute values in parallel and combine them, use §8.6.
 
@@ -708,7 +708,7 @@ Reordered (D25) so that Checkers can run CLI tools before the prover exists.
 | M4 | Module files (D53), sealing in conversion and in the prover (D54), exported lemmas, multi-module checking, transitive trust ledger | `examples/resort.ck` uses `sort` from `examples/sort.ck` through its exported lemma only |
 | M5 | Well-founded recursion, lexicographic `decreasing` | verified merge sort; `examples/json.ck` checks (done 11/06/2026: its two `admit`s, `string_render` and `members_render`, and the axioms `decimal.render_starts` and `decimal.scan_json_render` are the trust ledger) |
 | M6 | Two-level staging (`comptime`, §8.9, D59–D63) | `examples/format.ck` checks, runs and stages; `checkers stage`; golden tests in `tests/stage/` (done 11/06/2026) |
-| M7 | Multi-threaded scheduler for cowns, `when`, `fork`/`join` and `par` (single-threaded since M2, D44); actor library | `examples/log.ck` and `examples/parallel.ck` run; stress tests show no races or deadlocks |
+| M7 | Multi-threaded scheduler for cowns, `when`, `fork`/`join` and `par` (single-threaded since M2, D44); actor library | `examples/log.ck` and `examples/parallel.ck` run; stress tests show no races or deadlocks (done 11/06/2026) |
 | M8 | Cranelift backend | M2–M7 test suites pass native |
 | M9 | **Capstone:** interactive shell with a small scripting language, with proofs of its correctness (parser round-trip, evaluator semantics, job control protocol) | the shell runs its own test scripts |
 | M10 | Refined function types (D52): predicates in function types, subtyping of refined function and element types, preconditions checked at calls of function-typed values; lifts D51 | `list.map (at_least 5) xs` checks when `xs~List (n~Int, n >= 5)` |
@@ -795,10 +795,10 @@ A failure prints a runtime error that names the failing operation and the functi
 **M7.** Behaviours run on a pool of worker threads:
 
 - **Scheduling (D66).** Verona's algorithm (Cheeseman et al. 2023, §4): scheduling a behaviour appends it, in one atomic step, to the queue of every cown it names (a `fork` names a fresh future; a `join` names the futures it waits for). It runs when it is first in all of its queues, and on finishing it leaves them, which may make the next behaviours runnable. This gives causal order and freedom from deadlock by construction: nothing waits while holding a cown. Behaviours start as soon as they are runnable, while `main` is still running. The process exits when `main` has returned and no behaviour is queued or running.
-- **Threads (D67).** `checkers run --threads N` (default: the number of cores). `--threads 1` is the M2 scheduler exactly: one FIFO queue after `main` returns, so output is deterministic. Golden run tests use `--threads 1`; stress tests (`tests/stress/`) use many threads and check results that every valid schedule must give.
+- **Threads (D67).** `checkers run --threads N` (default: the number of cores) runs behaviours on N threads: N − 1 workers from the start, and the main thread too once `main` returns. `--threads 1` is the M2 scheduler exactly: one FIFO queue after `main` returns, so output is deterministic. Golden run tests use `--threads 1`; stress tests (`tests/stress/`) run each program 10 times on 8 threads, compare its output lines sorted (D68 allows any order between behaviours that share no cown), and fail if any two runs differ.
 - **Output (D68).** Each `terminal` call is atomic: lines from behaviours that share no cown may come in any order, but never interleave within a call.
-- **`par` (D69).** The components of `par (e1, …, en)` run on the pool; the result is the same tuple.
-- **Actors (D70).** `stdlib/actor.ck`: an `Actor s` is a cown holding state `s`; `actor.send a f sched` schedules `when x = a using sched: f x`, so messages to one actor are handled one at a time, in the order sent. State invariants are refinement types on `s`, as for any cown (§8.5).
+- **`par` (D69).** The components of `par (e1, …, en)` run on threads of their own, at most N − 1 at a time across the program; when none is free, the remaining components run on the current thread. The result is the same tuple either way.
+- **Actors (D70).** `stdlib/actor.ck`: an `Actor s` is a cown holding state `s`, made by `actor.new init sched`; `actor.send a f sched` (with `f~(s -> s)`) schedules `when x = a using sched: f x`, so messages to one actor are handled one at a time, in the order sent. State invariants are refinement types on `s`, as for any cown (§8.5).
 
 Cown invariants (§8.5) need no runtime support: inside `when l = log`, `l` has the cown's content type, so a refinement such as `len l <= 100` is a fact the prover uses (`examples/log.ck`).
 
@@ -809,3 +809,5 @@ A run test is `tests/run/NAME.args`: its first line is the program to run (relat
 ### 13.7 Performance
 
 The M2 interpreter walks the erased term with linked environments: correct, but slow (about 2 µs per input byte for `wc.ck`). Native code (M8) is where speed comes from; until then, the interpreter is meant for CLI tools on modest inputs.
+
+On several threads (M7), each thread runs its own copy of a function's code, so threads do not contend on shared reference counts: `fib 27` written with `par` runs about 1.5× faster on 2 cores (release build). The scheduler is one lock-protected queue set, so very small behaviours lose time handing the lock between threads: a fork/join tree of 65 536 behaviours that each add two numbers is about 2.3× *slower* on 2 threads than on 1. A lock-free scheduler (Verona's per-cown queues) belongs with the native runtime (M8).

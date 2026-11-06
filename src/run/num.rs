@@ -5,19 +5,19 @@ use num_bigint::BigInt;
 use num_traits::{Euclid, Signed, ToPrimitive, Zero};
 use std::cmp::Ordering;
 use std::fmt;
-use std::rc::Rc;
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub enum Num {
     S(i128),
-    B(Rc<BigInt>),
+    B(Arc<BigInt>),
 }
 
 impl Num {
     pub fn from_big(b: BigInt) -> Num {
         match b.to_i128() {
             Some(s) => Num::S(s),
-            None => Num::B(Rc::new(b)),
+            None => Num::B(Arc::new(b)),
         }
     }
 

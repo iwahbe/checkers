@@ -27,7 +27,8 @@ Types are written only as constraints (`i~Nat, i <= len src`); the compiler prov
 | M4 Modules: files, sealing, exported lemmas, multi-module proofs | done: [`resort.ck`](examples/resort.ck) uses `sort` through its exported lemma only |
 | M5 Well-founded recursion, lexicographic `decreasing` | done: merge sort in [`parallel.ck`](examples/parallel.ck); [`json.ck`](examples/json.ck) verifies, trusting its two `admit`s and two axioms about decimal numbers |
 | M6 Staging: `comptime` parameters, compile-time expansion, `checkers stage` | done: [`format.ck`](examples/format.ck), a typed `fmt` whose format string is parsed at compile time |
-| M7–M10 | see SPEC §10 |
+| M7 Multi-threaded behaviours (Verona scheduling), `par` on threads, cown invariants, actors | done: [`log.ck`](examples/log.ck) proves its cown invariant and runs; `checkers run --threads N`; stress tests in `tests/stress/` |
+| M8–M10 | see SPEC §10 |
 
 ## Usage
 

@@ -1031,11 +1031,12 @@ impl Elab {
                     let posts: Vec<Pred> = sig.preds.iter().filter(|p| p.is_post).cloned().collect();
                     let fname = self.g.defs[did.0 as usize].name.to_string();
                     self.post_target =
-                        (!posts.is_empty()).then(|| PostTarget { posts, func: fname, binders: sig.cx.env.clone() });
+                        (!posts.is_empty()).then(|| PostTarget { posts, func: fname, binders: sig.cx.env.clone(), invariants: Vec::new() });
                     let _ = decreasing;
                     let bt = self.check_block(&mut sig.cx, body, &rty, true);
                     self.post_target = None;
                     self.solve_deferred();
+                    self.flush_pending_cowns();
                     self.report_unsolved_sig(*did, &sig, d.span);
                     let full = Self::lam_of(&sig.binders, bt);
                     crate::usage::check_fn(self, *did, &full);

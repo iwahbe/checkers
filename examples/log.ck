@@ -7,7 +7,7 @@ module log
 
 import system (System, ExitCode)
 import terminal (Term)
-import cown (Cown)
+import cown (Cown, Sched)
 
 # The invariant lives in the type: every behaviour that touches the log must
 # hand back a list of at most 100 entries.
@@ -16,9 +16,13 @@ type Log = entries~List String, len entries <= 100
 fn append msg entries -> out : msg~String, entries~Log, out~Log
     if len entries < 100 then msg :: entries else entries
 
+# A cown's type says what it holds; here, a `Log`.
+fn new_log sched -> c : sched~Sched, c~Cown Log
+    cown.new [] sched
+
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { sched, term } = sys
-    let log = cown.new [] sched
+    let log = new_log sched
     let dropped = cown.new 0 sched
     when l = log using sched
         append "started" l

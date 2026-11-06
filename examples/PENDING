@@ -1,3 +1,2 @@
 # Examples that check only once a later milestone lands (SPEC D48).
 # Their current output is pinned in tests/pending/NAME.out.
-log.ck       M7   cown invariants (§8.5): behaviours re-establish `Log`

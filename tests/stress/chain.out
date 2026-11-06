@@ -1,0 +1,6 @@
+-- stdout (sorted)
+c1 45150
+c2 45150
+trail 500 [1, 2, 3]
+-- stderr
+-- exit 0

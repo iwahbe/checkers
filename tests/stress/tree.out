@@ -1,0 +1,4 @@
+-- stdout (sorted)
+sum 524800
+-- stderr
+-- exit 0

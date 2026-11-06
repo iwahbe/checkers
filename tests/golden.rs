@@ -7,16 +7,18 @@
 //!                         report if checking fails (SPEC §8.9).
 //! tests/run/NAME.args  → run the program named on its first line (SPEC §13.6);
 //!                         NAME.out is its stdout, stderr and exit code.
+//! tests/stress/NAME.args → as a run test, but with 8 threads, several times
+//!                         (CHECKERS_STRESS_RUNS, default 10); stdout lines are
+//!                         compared sorted, since behaviours that share no cown
+//!                         may print in any order (SPEC §13.5, D67, D68).
 //! examples/*.ck        → must check with no errors and no warnings, unless listed
 //!                         in examples/PENDING: then tests/pending/NAME.out pins it.
 //!
 //! `UPDATE_GOLDEN=1 cargo test --test golden` rewrites the .out files.
 
-use std::cell::RefCell;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 
 fn files_with(dir: &Path, ext: &str) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = fs::read_dir(dir)
@@ -34,11 +36,11 @@ fn ck_files(dir: &Path) -> Vec<PathBuf> {
 
 /// A writer whose bytes the test can read afterwards.
 #[derive(Clone, Default)]
-struct Capture(Rc<RefCell<Vec<u8>>>);
+struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
 
 impl Write for Capture {
     fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-        self.0.borrow_mut().extend_from_slice(b);
+        self.0.lock().unwrap().extend_from_slice(b);
         Ok(b.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -48,6 +50,12 @@ impl Write for Capture {
 
 /// Run one `tests/run/NAME.args` case; the working directory is `tests/run`.
 fn run_case(args_path: &Path) -> String {
+    run_case_with(args_path, 1)
+}
+
+/// A run case with `threads` worker threads (1: the deterministic FIFO
+/// scheduler, D67).
+fn run_case_with(args_path: &Path, threads: usize) -> String {
     let spec = fs::read_to_string(args_path).unwrap();
     let mut lines = spec.lines();
     let first = lines.next().unwrap_or_default();
@@ -66,10 +74,23 @@ fn run_case(args_path: &Path) -> String {
     };
     let name = Path::new(&program).file_name().unwrap().to_string_lossy().to_string();
     let dir = Path::new(&program).parent().unwrap_or(Path::new("")).to_path_buf();
-    let ran = checkers::run_in(&name, &text, &dir, &args, io, unverified);
-    let stdout = String::from_utf8_lossy(&out.0.borrow()).to_string();
-    let stderr = ran.report.clone() + &String::from_utf8_lossy(&err.0.borrow());
+    let ran = checkers::run_in(&name, &text, &dir, &args, io, unverified, threads);
+    let stdout = String::from_utf8_lossy(&out.0.lock().unwrap()).to_string();
+    let stderr = ran.report.clone() + &String::from_utf8_lossy(&err.0.lock().unwrap());
     format!("-- stdout\n{stdout}-- stderr\n{stderr}-- exit {}\n", ran.code)
+}
+
+/// A run result with its stdout lines sorted.
+fn sorted_stdout(out: &str) -> String {
+    let (head, rest) = out.split_once("-- stderr\n").unwrap_or((out, ""));
+    let mut lines: Vec<&str> = head.strip_prefix("-- stdout\n").unwrap_or(head).lines().collect();
+    lines.sort_unstable();
+    let mut s = String::from("-- stdout (sorted)\n");
+    for l in lines {
+        s += l;
+        s += "\n";
+    }
+    s + "-- stderr\n" + rest
 }
 
 fn run(path: &Path, mode: &str) -> String {
@@ -145,6 +166,34 @@ fn golden() {
                     "── {} ──\n--- expected\n{expected}\n--- actual\n{actual}",
                     path.strip_prefix(root).unwrap().display()
                 ));
+            }
+        }
+    }
+
+    // Stress tests: every run on many threads must give the same result.
+    let stress_dir = root.join("tests").join("stress");
+    let runs: usize = std::env::var("CHECKERS_STRESS_RUNS").ok().and_then(|n| n.parse().ok()).unwrap_or(10);
+    std::env::set_current_dir(&stress_dir).unwrap();
+    for path in files_with(&stress_dir, "args") {
+        count += 1;
+        let out_path = path.with_extension("out");
+        let expected = fs::read_to_string(&out_path).unwrap_or_default();
+        let mut seen: Vec<String> = Vec::new();
+        for _ in 0..runs.max(1) {
+            let actual = sorted_stdout(&run_case_with(&path, 8));
+            if !seen.contains(&actual) {
+                seen.push(actual);
+            }
+        }
+        let name = path.strip_prefix(root).unwrap().display().to_string();
+        if seen.len() > 1 {
+            failures.push(format!("── {name}: {} different results in {runs} runs ──\n{}", seen.len(), seen.join("--- or\n")));
+        } else if seen[0] != expected {
+            if update {
+                fs::write(&out_path, &seen[0]).unwrap();
+                println!("updated {}", out_path.strip_prefix(root).unwrap().display());
+            } else {
+                failures.push(format!("── {name} ──\n--- expected\n{expected}\n--- actual\n{}", seen[0]));
             }
         }
     }

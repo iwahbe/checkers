@@ -19,6 +19,7 @@ pub const MODULES: &[(&str, &str)] = &[
     ("utf8", include_str!("../../stdlib/utf8.ck")),
     ("decimal", include_str!("../../stdlib/decimal.ck")),
     ("cursor", include_str!("../../stdlib/cursor.ck")),
+    ("actor", include_str!("../../stdlib/actor.ck")),
 ];
 
 pub fn source(name: &str) -> Option<&'static str> {

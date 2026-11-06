@@ -1,0 +1,4 @@
+-- stdout (sorted)
+fib 20 = 6765
+-- stderr
+-- exit 0

@@ -49,7 +49,17 @@ impl Elab {
         let returned = tail
             && self.post_target.is_some()
             && !matches!(e.kind, ExprKind::If(..) | ExprKind::Match(..) | ExprKind::Block(..) | ExprKind::Try(_));
+        // `cown.new v` checked against `Cown T`: T is the content type (§8.5).
+        let saved_cown = self.expected_cown.take();
+        if matches!(e.kind, ExprKind::App(..)) {
+            if let Val::TyCon(t, args) = self.force(expected) {
+                if Some(t) == self.g.well_known.cown && args.len() == 1 {
+                    self.expected_cown = Some(args[0].clone());
+                }
+            }
+        }
         let t = self.check_inner(cx, e, expected, tail);
+        self.expected_cown = saved_cown;
         if returned && !matches!(t, Tm::Error) {
             let v = self.eval(cx, &t);
             self.oblige_posts_at(cx, v, e.span);
@@ -583,12 +593,33 @@ impl Elab {
         }
         let (t, ty) = self.insert(cx, t, ty);
         self.call_obligations(cx, &t, e.span, head.span);
+        // `cown.new v sched`: `v` must satisfy the content type's refinement.
+        self.note_cown_new(cx, &t, &args);
         // A compile-time argument that isn't known: its type may not compute
         // either, so don't also report a mismatch.
         if !self.check_comptime_call(cx, &t, &args, e.span) {
             return (Tm::Error, Val::Error);
         }
         (t, ty)
+    }
+
+    fn note_cown_new(&mut self, cx: &Cx, t: &Tm, args: &[&Expr]) {
+        let mut spine = Vec::new();
+        let mut h = t;
+        while let Tm::App(f, a, _, _) = h {
+            spine.push(a.clone());
+            h = f;
+        }
+        spine.reverse();
+        let Tm::Def(d) = h else { return };
+        let info = &self.g.defs[d.0 as usize];
+        if &*info.module != "cown" || &*info.name != "new" || spine.len() < 2 {
+            return;
+        }
+        let content = self.expected_cown.take().unwrap_or_else(|| self.eval(cx, &spine[0]));
+        let v = self.eval(cx, &spine[1]);
+        let span = args.first().map(|a| a.span).unwrap_or_default();
+        self.pending_cowns.push((cx.clone(), v, content, span));
     }
 
     /// A call of a function with `comptime` parameters (D59): it must be
@@ -1456,12 +1487,28 @@ impl Elab {
             tys.push(inner);
         }
         let start = cx.lvl();
+        // The contents' refinements (a cown invariant, §8.5): facts on entry,
+        // obligations on every value the body hands back.
+        let many = tys.len() > 1;
+        let invs: Vec<CownInv> = tys.iter().enumerate().filter_map(|(k, ty)| self.cown_inv(cx, ty, many.then_some(k))).collect();
         for ((n, _), ty) in w.binds.iter().zip(&tys) {
-            cx.bind(&n.name, ty.clone(), Mult::Many);
+            let l = cx.bind(&n.name, ty.clone(), Mult::Many);
+            if let Some(inv) = self.cown_inv(cx, ty, None) {
+                let mut env = inv.args.clone();
+                env.push(Val::var(l));
+                for p in &inv.preds {
+                    let f = self.inst_pred(p, env.clone());
+                    cx.assume(f);
+                }
+            }
+        }
+        if !invs.is_empty() {
+            self.post_target = Some(PostTarget { posts: Vec::new(), func: String::new(), binders: Vec::new(), invariants: invs });
         }
         // The body's type is in the outer context; shift by evaluating in the extended one.
         let expected = if tys.len() == 1 { tys[0].clone() } else { Val::TupleTy(tys.clone()) };
         let body = self.check_block(cx, &w.body, &expected, true);
+        self.post_target = None;
         cx.truncate(start);
         let mut lam = body;
         for (n, _) in w.binds.iter().rev() {

@@ -262,8 +262,8 @@ fn run_checks(c: &mut Checked, e: &elab::Elab, user: &str) {
                     if let [l, r] = sides.as_slice() {
                         if let (Ok(lv), Ok(rv)) = (it.eval_closed(l), it.eval_closed(r)) {
                             d = d
-                                .with_note(format!("left side:  `{}`", run::value::show(&e.g, &lv, 0)))
-                                .with_note(format!("right side: `{}`", run::value::show(&e.g, &rv, 0)));
+                                .with_note(format!("left side:  `{}`", run::value::show(&it.rt, &lv, 0)))
+                                .with_note(format!("right side: `{}`", run::value::show(&it.rt, &rv, 0)));
                         }
                     }
                 }
@@ -299,12 +299,14 @@ fn is_proof_failure(d: &Diagnostic) -> bool {
 /// Check `text`, then call its exported `main` with `args` (D43, §13.4).
 /// With `unverified`, a program whose only errors are unproven obligations
 /// runs anyway, with the runtime checks of §13.3 (D48).
-pub fn run(name: &str, text: &str, args: &[String], io: run::Io, unverified: bool) -> Ran {
-    run_in(name, text, &dir_of(name), args, io, unverified)
+pub fn run(name: &str, text: &str, args: &[String], io: run::Io, unverified: bool, threads: usize) -> Ran {
+    run_in(name, text, &dir_of(name), args, io, unverified, threads)
 }
 
 /// `run`, with imported modules looked up in `dir`.
-pub fn run_in(name: &str, text: &str, dir: &std::path::Path, args: &[String], io: run::Io, unverified: bool) -> Ran {
+/// `threads`: worker threads for behaviours and `par`; 1 is the deterministic
+/// FIFO scheduler (D67).
+pub fn run_in(name: &str, text: &str, dir: &std::path::Path, args: &[String], io: run::Io, unverified: bool, threads: usize) -> Ran {
     let (mut c, e) = elaborate(name, text, dir);
     let Some((e, user)) = e else { return Ran { report: c.report(), code: 2 } };
     run_checks(&mut c, &e, &user);
@@ -324,11 +326,12 @@ pub fn run_in(name: &str, text: &str, dir: &std::path::Path, args: &[String], io
     };
     let (staged, _) = stage::stage_program(&e.g);
     let mut it = run::Interp::new(&e.g, io).with_staged(std::rc::Rc::new(staged));
-    let code = match it.run_main(core::DefId(main as u32), args) {
+    let code = match it.run_main(core::DefId(main as u32), args, threads) {
         Ok(code) => code,
         Err(err) => {
-            let _ = std::io::Write::flush(&mut it.io.stdout);
-            let _ = writeln!(it.io.stderr, "{err}");
+            let mut io = it.io.lock().unwrap();
+            let _ = std::io::Write::flush(&mut io.stdout);
+            let _ = writeln!(io.stderr, "{err}");
             70
         }
     };
