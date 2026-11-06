@@ -1,0 +1,17 @@
+error[E0262]: type mismatch: expected `Sink Nat`, found `Sink Small`
+  --> polarity_variance.ck:28:5
+   |
+28 |     s                                           # error E0262: needs a `Small`
+   |     ^ this expression has type `Sink Small`
+   = note: `Sink` is marked `-`: a `Sink Small` accepts only `Small` values, but is used where any `Nat` may be given to it
+   = help: use a `Sink Nat` here
+
+error[E0262]: type mismatch: expected `Cell Nat`, found `Cell Small`
+  --> polarity_variance.ck:31:5
+   |
+31 |     c                                           # error E0262: unmarked, so invariant
+   |     ^ this expression has type `Cell Small`
+   = note: `Cell`'s parameter has no polarity mark, so `Small` and `Nat` must match exactly (D16)
+   = help: if `Cell` only holds values of its parameter, its module can mark it `+`
+
+polarity_variance.ck: 2 errors, 0 warnings

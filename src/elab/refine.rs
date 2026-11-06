@@ -38,6 +38,16 @@ pub struct Gained {
     pub expected: Val,
     pub found: Val,
     pub variance: Variance,
+    /// What made the position contravariant or invariant: a function's
+    /// argument, or a parameter of a type constructor.
+    pub via: Via,
+}
+
+#[derive(Clone, Copy)]
+pub enum Via {
+    Nothing,
+    Fn,
+    Ty(TyId),
 }
 
 impl Elab {
@@ -105,40 +115,32 @@ impl Elab {
         self.force(v)
     }
 
-    /// The variance of each parameter of a type constructor.
+    /// The variance of each parameter of a type constructor: from its
+    /// marks for an abstract type (D16), otherwise covariant where the
+    /// parameter is strictly positive and invariant elsewhere.
     pub fn variance(&self, t: TyId) -> Vec<Variance> {
         let ti = &self.g.tys[t.0 as usize];
-        if Some(t) == self.g.well_known.future {
-            return vec![Variance::Co; ti.params.len()];
-        }
-        if Some(t) == self.g.well_known.cown || ti.ctors.is_empty() {
-            return vec![Variance::Inv; ti.params.len()];
-        }
         (0..ti.params.len())
-            .map(|j| if ti.positive.get(j).copied().unwrap_or(false) && !self.param_in_invariant(t, j) { Variance::Co } else { Variance::Inv })
-            .collect()
-    }
-
-    /// Does parameter `j` of `t` occur in a field as an argument of a cown
-    /// (or another invariant position)?
-    fn param_in_invariant(&self, t: TyId, j: usize) -> bool {
-        let ti = &self.g.tys[t.0 as usize];
-        let np = ti.params.len();
-        ti.ctors.iter().any(|c| {
-            self.g.cons[c.0 as usize].fields.iter().enumerate().any(|(k, f)| {
-                // Parameter j is de Bruijn index np + k - 1 - j at depth 0.
-                in_invariant_arg(&self.g, &f.3, np + k - 1 - j, 0, t)
+            .map(|j| {
+                if ti.positive.get(j).copied().unwrap_or(false) {
+                    Variance::Co
+                } else if ti.negative.get(j).copied().unwrap_or(false) {
+                    Variance::Contra
+                } else {
+                    Variance::Inv
+                }
             })
-        })
+            .collect()
     }
 
     /// Compare an expected and a found type that unify: the first place
     /// where the found type would gain a refinement it doesn't have.
     pub fn refined_mismatch(&self, cx: &Cx, expected: &Val, found: &Val) -> Option<Gained> {
-        self.gain(cx, expected, found, Variance::Co, 0, 0)
+        self.gain(cx, expected, found, Variance::Co, Via::Nothing, 0, 0)
     }
 
-    fn gain(&self, cx: &Cx, exp: &Val, found: &Val, pol: Variance, depth: usize, binders: usize) -> Option<Gained> {
+    #[allow(clippy::too_many_arguments)]
+    fn gain(&self, cx: &Cx, exp: &Val, found: &Val, pol: Variance, via: Via, depth: usize, binders: usize) -> Option<Gained> {
         if depth > 16 {
             return None;
         }
@@ -161,7 +163,7 @@ impl Elab {
                 Variance::Inv => true,
             };
             if bad {
-                return Some(Gained { expected: e, found: f, variance: pol });
+                return Some(Gained { expected: e, found: f, variance: pol, via });
             }
         }
         let (e, f) = (self.base(&e), self.base(&f));
@@ -170,19 +172,20 @@ impl Elab {
                 let vs = self.variance(*t1);
                 a1.iter().zip(a2).enumerate().find_map(|(k, (x, y))| {
                     let v = vs.get(k).copied().unwrap_or(Variance::Inv);
-                    self.gain(cx, x, y, pol.then(v), depth + 1, binders)
+                    let via = if v == Variance::Co { via } else { Via::Ty(*t1) };
+                    self.gain(cx, x, y, pol.then(v), via, depth + 1, binders)
                 })
             }
             (Val::TupleTy(x), Val::TupleTy(y)) if x.len() == y.len() => {
-                x.iter().zip(y).find_map(|(a, b)| self.gain(cx, a, b, pol, depth + 1, binders))
+                x.iter().zip(y).find_map(|(a, b)| self.gain(cx, a, b, pol, via, depth + 1, binders))
             }
             (Val::Pi(_, _, _, a1, c1), Val::Pi(_, _, _, a2, c2)) => {
-                if let Some(g) = self.gain(cx, a1, a2, pol.then(Variance::Contra), depth + 1, binders) {
+                if let Some(g) = self.gain(cx, a1, a2, pol.then(Variance::Contra), Via::Fn, depth + 1, binders) {
                     return Some(g);
                 }
                 let x = Val::var(cx.lvl() + binders);
                 let (b1, b2) = (apply_closure(&self.g, c1, x.clone()), apply_closure(&self.g, c2, x));
-                self.gain(cx, &b1, &b2, pol, depth + 1, binders + 1)
+                self.gain(cx, &b1, &b2, pol, via, depth + 1, binders + 1)
             }
             _ => None,
         }
@@ -207,56 +210,33 @@ impl Elab {
         let (e, f) = (self.show_val(cx, expected), self.show_val(cx, found));
         let (ge, gf) = (self.show_val(cx, &g.expected), self.show_val(cx, &g.found));
         let mut d = Diagnostic::error("E0262", format!("type mismatch: expected `{e}`, found `{f}`"), span);
-        d = match g.variance {
-            Variance::Inv => d
+        let ty = |t: TyId| self.g.tys[t.0 as usize].name.to_string();
+        d = match (g.variance, g.via) {
+            (Variance::Inv, Via::Ty(t)) if Some(t) == self.g.well_known.cown => d
                 .with_label(format!("{what} has type `{f}`"))
                 .with_note(format!("a cown's contents type must match exactly: `{gf}` and `{ge}` differ, and a behaviour on either side could write a value the other doesn't allow"))
                 .with_help(format!("create the cown with the type `{e}`")),
-            Variance::Contra => d
+            (Variance::Inv, Via::Ty(t)) if self.g.tys[t.0 as usize].is_abstract => d
+                .with_label(format!("{what} has type `{f}`"))
+                .with_note(format!("`{}`'s parameter has no polarity mark, so `{gf}` and `{ge}` must match exactly (D16)", ty(t)))
+                .with_help(format!("if `{}` only holds values of its parameter, its module can mark it `+`", ty(t))),
+            (Variance::Inv, _) => d
+                .with_label(format!("{what} has type `{f}`"))
+                .with_note(format!("`{gf}` and `{ge}` must match exactly here: the type is used both as input and as output"))
+                .with_help(format!("give the value the type `{e}` where it is built")),
+            (Variance::Contra, Via::Ty(t)) => d
+                .with_label(format!("{what} has type `{f}`"))
+                .with_note(format!("`{}` is marked `-`: a `{f}` accepts only `{gf}` values, but is used where any `{ge}` may be given to it", ty(t)))
+                .with_help(format!("use a `{e}` here")),
+            (Variance::Contra, _) => d
                 .with_label(format!("{what} has type `{f}`"))
                 .with_note(format!("this function needs a `{gf}`, but is given where any `{ge}` may be passed to it"))
                 .with_help("check the argument inside the function instead, e.g. with an `if`"),
-            Variance::Co => d
+            (Variance::Co, _) => d
                 .with_label(format!("{what} has type `{f}`, so its `{gf}` values aren't known to be `{ge}`"))
                 .with_note("a refinement inside a type is never gained from an existing value: that would need a proof about every element (D71)")
                 .with_help(format!("give the value the type `{e}` where it is built, so that each part is checked there")),
         };
         self.err(d);
-    }
-}
-
-/// Does `t` use variable index `var` (at binder depth `depth`) as an argument
-/// in an invariant position of a type constructor other than `own`?
-fn in_invariant_arg(g: &Globals, t: &Tm, var: usize, depth: usize, own: TyId) -> bool {
-    let mut args = Vec::new();
-    let mut h = t;
-    while let Tm::App(f, a, _, _) = h {
-        args.push(a.as_ref());
-        h = f;
-    }
-    args.reverse();
-    if let Tm::TyCon(t2) = h {
-        let invariant = *t2 != own && (Some(*t2) == g.well_known.cown || (g.tys[t2.0 as usize].ctors.is_empty() && Some(*t2) != g.well_known.future));
-        if invariant && args.iter().any(|a| mentions_var(a, var, depth)) {
-            return true;
-        }
-    }
-    let rec = |x: &Tm, d: usize| in_invariant_arg(g, x, var, d, own);
-    match t {
-        Tm::App(f, a, _, _) => rec(f, depth) || rec(a, depth),
-        Tm::Pi(_, _, _, a, b) => rec(a, depth) || rec(b, depth + 1),
-        Tm::TupleTy(ts) => ts.iter().any(|x| rec(x, depth)),
-        _ => false,
-    }
-}
-
-fn mentions_var(t: &Tm, var: usize, depth: usize) -> bool {
-    match t {
-        Tm::Var(i) => *i == var + depth,
-        Tm::App(f, a, _, _) => mentions_var(f, var, depth) || mentions_var(a, var, depth),
-        Tm::Pi(_, _, _, a, b) => mentions_var(a, var, depth) || mentions_var(b, var, depth + 1),
-        Tm::Lam(_, _, _, b) => mentions_var(b, var, depth + 1),
-        Tm::TupleTy(ts) | Tm::Tuple(ts) => ts.iter().any(|x| mentions_var(x, var, depth)),
-        _ => false,
     }
 }

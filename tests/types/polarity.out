@@ -1,0 +1,36 @@
+error[E0354]: `Tree` occurs in field `c` as an argument of `Cell`, which may use it in a negative position
+  --> polarity.ck:22:1
+   |
+22 | enum Tree
+   | ^^^^^^^^^
+   = help: a recursive type may appear only directly or in a parameter marked `+`; `Cell`'s module can mark it `+` if `Cell` only holds values of it (D16)
+
+error[E0359]: `Bad` marks `+v`, but field `f` has `v` to the left of an `->`
+  --> polarity.ck:26:29
+   |
+26 | export abstract record Bad +v : v~Type
+   |                             ^ declared `+` here
+   = help: importers rely on the mark (D16): change the field, or remove the mark
+
+error[E0359]: `AlsoBad` marks `-v`, but field `x` has `v` in a positive position
+  --> polarity.ck:29:33
+   |
+29 | export abstract record AlsoBad -v : v~Type
+   |                                 ^ declared `-` here
+   = help: importers rely on the mark (D16): change the field, or remove the mark
+
+error[E0359]: `Twice` marks `+v`, but field `g` has `v` to the left of an `->`
+  --> polarity.ck:33:31
+   |
+33 | export abstract record Twice +v : v~Type
+   |                               ^ declared `+` here
+   = help: importers rely on the mark (D16): change the field, or remove the mark
+
+error[E0360]: `+v` marks the polarity of a parameter, but only abstract types are marked
+  --> polarity.ck:36:15
+   |
+36 | record Plain +v : v~Type                        # error E0360: not abstract
+   |               ^ not an abstract type
+   = help: remove the `+`: the polarity of `Plain`'s parameters is worked out from its constructors
+
+polarity.ck: 5 errors, 0 warnings

@@ -257,6 +257,7 @@ impl Elab {
                         is_record: false,
                         is_abstract: abstract_,
                         positive: params.iter().map(|p| p.polarity == Some(ast::Polarity::Pos)).collect(),
+                        negative: params.iter().map(|p| p.polarity == Some(ast::Polarity::Neg)).collect(),
                     });
                     self.declare(name, true, Sym::Ty(tid), exported);
                     for (tag, c) in ctors.iter().enumerate() {
@@ -279,6 +280,7 @@ impl Elab {
                         is_record: true,
                         is_abstract: abstract_,
                         positive: params.iter().map(|p| p.polarity == Some(ast::Polarity::Pos)).collect(),
+                        negative: params.iter().map(|p| p.polarity == Some(ast::Polarity::Neg)).collect(),
                     });
                     self.declare(name, true, Sym::Ty(tid), exported);
                     let cid = ConId(self.g.cons.len() as u32);
@@ -677,7 +679,65 @@ impl Elab {
                 }
             }
         }
+        self.check_polarity_marks(m, ids);
         self.check_strict_positivity(m, ids);
+    }
+
+    /// D16: marks only on abstract types, each one true of the constructors;
+    /// importers then see only the marks.
+    fn check_polarity_marks(&mut self, m: &ast::Module, ids: &[Option<Sym>]) {
+        for (d, id) in m.decls.iter().zip(ids) {
+            let Some(Sym::Ty(tid)) = id else { continue };
+            let params = match &d.kind {
+                DeclKind::Enum { params, .. } | DeclKind::Record { params, .. } => params,
+                _ => continue,
+            };
+            let ti = &self.g.tys[tid.0 as usize];
+            let (name, abstract_, has_ctors) = (ti.name.clone(), ti.is_abstract, !ti.ctors.is_empty());
+            if !abstract_ {
+                for p in params {
+                    if let Some(pol) = p.polarity {
+                        let mark = if pol == ast::Polarity::Pos { "+" } else { "-" };
+                        self.err(
+                            Diagnostic::error("E0360", format!("`{mark}{}` marks the polarity of a parameter, but only abstract types are marked", p.name.name), p.name.span)
+                                .with_label("not an abstract type")
+                                .with_help(format!("remove the `{mark}`: the polarity of `{name}`'s parameters is worked out from its constructors")),
+                        );
+                    }
+                }
+                continue;
+            }
+            if has_ctors {
+                let np = params.len();
+                for (j, p) in params.iter().enumerate() {
+                    let Some(pol) = p.polarity else { continue };
+                    let ctors = self.g.tys[tid.0 as usize].ctors.clone();
+                    'ctors: for c in ctors {
+                        let fields = self.g.cons[c.0 as usize].fields.clone();
+                        for (i, (fname, _, _, t)) in fields.iter().enumerate() {
+                            let idx = np + i - 1 - j;
+                            let ok = match pol {
+                                ast::Polarity::Pos => self.var_positive(t, idx, true),
+                                ast::Polarity::Neg => self.var_negative(t, idx, true),
+                            };
+                            if !ok {
+                                let (mark, wrong) = if pol == ast::Polarity::Pos { ("+", "to the left of an `->`") } else { ("-", "in a positive position") };
+                                self.err(
+                                    Diagnostic::error("E0359", format!("`{name}` marks `{mark}{}`, but field `{fname}` has `{}` {wrong}", p.name.name, p.name.name), p.name.span)
+                                        .with_label(format!("declared `{mark}` here"))
+                                        .with_help("importers rely on the mark (D16): change the field, or remove the mark"),
+                                );
+                                break 'ctors;
+                            }
+                        }
+                    }
+                }
+            }
+            // Importers, and the rest of this module, see only the marks.
+            let ti = &mut self.g.tys[tid.0 as usize];
+            ti.positive = params.iter().map(|p| p.polarity == Some(ast::Polarity::Pos)).collect();
+            ti.negative = params.iter().map(|p| p.polarity == Some(ast::Polarity::Neg)).collect();
+        }
     }
 
     fn compute_polarity(&mut self, tid: TyId) {
@@ -715,24 +775,34 @@ impl Elab {
                 for (fname, _, _, t) in &fields {
                     if !self.ty_positive(t, *tid, true) {
                         let name = self.g.tys[tid.0 as usize].name.clone();
-                        self.err(
-                            Diagnostic::error(
-                                "E0354",
-                                format!("`{name}` occurs in a negative position in field `{fname}`"),
-                                d.span,
-                            )
-                            .with_help("a type may not appear to the left of `->` in its own constructors; this would make the logic inconsistent"),
-                        );
+                        let diag = match self.unmarked_holder(t, *tid) {
+                            // Inside a type constructor that doesn't promise positivity.
+                            Some(h) => {
+                                let hi = &self.g.tys[h.0 as usize];
+                                let help = if hi.is_abstract {
+                                    format!("a recursive type may appear only directly or in a parameter marked `+`; `{}`'s module can mark it `+` if `{}` only holds values of it (D16)", hi.name, hi.name)
+                                } else {
+                                    format!("a recursive type may appear only where it is strictly positive; `{}` uses that parameter to the left of an `->`", hi.name)
+                                };
+                                Diagnostic::error("E0354", format!("`{name}` occurs in field `{fname}` as an argument of `{}`, which may use it in a negative position", hi.name), d.span)
+                                    .with_help(help)
+                            }
+                            None => Diagnostic::error("E0354", format!("`{name}` occurs in a negative position in field `{fname}`"), d.span)
+                                .with_help("a type may not appear to the left of `->` in its own constructors; this would make the logic inconsistent"),
+                        };
+                        self.err(diag);
                     }
                 }
             }
         }
     }
 
+    /// Does variable `idx` occur in `t` only strictly positively (never to
+    /// the left of an `->`)? `pos` is false under such an arrow.
     fn var_positive(&self, t: &Tm, idx: usize, pos: bool) -> bool {
         match t {
             Tm::Var(i) => pos || *i != idx,
-            Tm::Pi(_, _, _, a, b) => self.var_positive(a, idx, !pos) && self.var_positive(b, idx + 1, pos),
+            Tm::Pi(_, _, _, a, b) => !occurs_var(a, idx) && self.var_positive(b, idx + 1, pos),
             Tm::TyConApp(t2, args) => {
                 let positive = self.g.tys[t2.0 as usize].positive.clone();
                 args.iter().enumerate().all(|(k, a)| {
@@ -745,6 +815,52 @@ impl Elab {
             }
             Tm::TupleTy(ts) => ts.iter().all(|a| self.var_positive(a, idx, pos)),
             other => pos || !occurs_var(other, idx),
+        }
+    }
+
+    /// Does variable `idx` occur in `t` only negatively (D16 `-`)? `pos` is
+    /// the polarity of the current position.
+    fn var_negative(&self, t: &Tm, idx: usize, pos: bool) -> bool {
+        match t {
+            Tm::Var(i) => !pos || *i != idx,
+            Tm::Pi(_, _, _, a, b) => self.var_negative(a, idx, !pos) && self.var_negative(b, idx + 1, pos),
+            Tm::TyConApp(t2, args) => {
+                let ti = &self.g.tys[t2.0 as usize];
+                let (positive, negative) = (ti.positive.clone(), ti.negative.clone());
+                args.iter().enumerate().all(|(k, a)| {
+                    if positive.get(k).copied().unwrap_or(false) {
+                        self.var_negative(a, idx, pos)
+                    } else if negative.get(k).copied().unwrap_or(false) {
+                        self.var_negative(a, idx, !pos)
+                    } else {
+                        !occurs_var(a, idx)
+                    }
+                })
+            }
+            Tm::TupleTy(ts) => ts.iter().all(|a| self.var_negative(a, idx, pos)),
+            other => !occurs_var(other, idx),
+        }
+    }
+
+    /// The type constructor that holds `me` in a parameter not known to be
+    /// strictly positive, if that (rather than an `->`) is why `t` fails.
+    fn unmarked_holder(&self, t: &Tm, me: TyId) -> Option<TyId> {
+        match t {
+            Tm::TyConApp(t2, args) if *t2 != me => {
+                let positive = self.g.tys[t2.0 as usize].positive.clone();
+                args.iter().enumerate().find_map(|(k, a)| {
+                    if positive.get(k).copied().unwrap_or(false) {
+                        self.unmarked_holder(a, me)
+                    } else if occurs_ty(a, me) {
+                        Some(*t2)
+                    } else {
+                        None
+                    }
+                })
+            }
+            Tm::Pi(_, _, _, a, b) if !occurs_ty(a, me) => self.unmarked_holder(b, me),
+            Tm::TupleTy(ts) => ts.iter().find_map(|a| self.unmarked_holder(a, me)),
+            _ => None,
         }
     }
 

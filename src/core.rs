@@ -190,8 +190,12 @@ pub struct TyInfo {
     pub is_record: bool,
     /// Abstract to importers (or a built-in type such as `Nat`).
     pub is_abstract: bool,
-    /// Per parameter: occurs only positively in constructor fields.
+    /// Per parameter: occurs only strictly positively in constructor fields
+    /// (for an abstract type: marked `+`, D16).
     pub positive: Vec<bool>,
+    /// Per parameter of an abstract type: marked `-`, so it occurs only
+    /// negatively (D16).
+    pub negative: Vec<bool>,
 }
 
 pub struct ConInfo {
