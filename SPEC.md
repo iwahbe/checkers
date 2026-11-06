@@ -67,6 +67,10 @@ This document is the single source of truth for Checkers. Implementation follows
 | D56 | **Axioms about primitives.** In the standard library only, a lemma whose `proof` is `__builtin` states a fact about `__builtin` functions (`decimal.scan_json_render`: scanning a rendered number gives it back). It is trusted like the Rust code it describes. Each use (`have`) is listed in the trust ledger as `axiom`, separately from `admit`s; release builds accept axioms and reject admits. | 11/06/2026 | decided (11/06/2026) |
 | D57 | **Known function arguments are seen through (§7.3).** When a function that takes a function is applied to a named function or a lambda with no free variables (`map render items`, `map (\(k, x) -> …) fields`), the prover reflects a copy specialized to that argument. Other function arguments (a lambda using a local) remain outside the fragment (E0451). Lambdas are compared up to the names of their parameters. | 11/06/2026 | decided (11/06/2026) |
 | D58 | **Strings are their UTF-8 bytes to the prover (§7.3).** A `String` is translated as its bytes, so `++`, `len` and `utf8.encode` are exact, and `utf8.encode (a ++ b) == utf8.encode a ++ utf8.encode b` is immediate. | 11/06/2026 | decided (11/06/2026) |
+| D59 | **`comptime` binders (§8.9).** `x~comptime T` marks a compile-time parameter; every call supplies a compile-time value, and code depending only on such values runs during staging (branches chosen, recursion unrolled). | 11/06/2026 | **(proposed)** |
+| D60 | **Stage inference (§8.9).** `quote`/`splice` are inserted by the elaborator (Kovács's coercive subtyping); `Code a`, `quote`, `splice` are written only when building code explicitly. A runtime value never flows to compile time. | 11/06/2026 | **(proposed)** |
+| D61 | **Staged functions are proven once (§8.9).** Obligations are proven with `comptime` parameters symbolic; specializations are not re-proven. Compile-time recursion follows §5.3, so staging terminates. | 11/06/2026 | **(proposed)** |
+| D62 | **Compile time is pure (§8.9).** Data, types and functions only; no capabilities or effects at compile time. | 11/06/2026 | **(proposed)** |
 | D24 | **Development loop:** Claude owns the implementation; Ian drives with examples. An issue is "found X, expected Y" with a `.ck` snippet. Each one becomes a regression test under `tests/` *before* the fix lands, and the spec is updated first whenever the expectation changes the language. | 11/05/2026 | decided |
 | D25 | **Milestones reordered for CLI tools first** (§10): a running interpreter with `IO` comes right after type checking, before the prover, so Checkers can be used to build its own tooling early. Capstone: an interactive shell with a small scripting language, with proofs of its correctness. | 11/05/2026 | decided |
 
@@ -448,9 +452,26 @@ done <- join x = a, y = b using sched
 
 Capabilities and cown contents correspond to separation-logic resources (Iris, F\*'s Pulse). M3–M5 prove pure code; specifications over capability state (e.g. "after `files.write p b fs`, `files.read p fs'` returns `b`") come with the shell capstone.
 
-### 8.9 Staging (M6, D7)
+### 8.9 Staging (M6, D7, D59–D62)
 
-Two universes, compile-time and runtime; `quote`/`splice` across them. Compile-time code generation is guaranteed to produce well-typed runtime code.
+**(proposed — draft for M6.)** Underneath is Two-Level Type Theory (Kovács 2022): a compile-time stage and a runtime stage, with `Code a` (Kovács's ⇑a) for compile-time values that *are* runtime code, `quote e : Code a` for `e : a`, and `splice c : a` for `c : Code a`. Staging evaluates the compile-time stage away; the result is always a well-typed runtime program with no `quote`/`splice` left (Kovács §2.1.3, §5). The surface keeps all of that implicit in the common case:
+
+```
+# `n` is known at compile time; `x` is not.
+fn power n x -> y : n~comptime Nat, x~Int, y~Int
+    if n == 0 then 1 else x * power (n - 1) x
+
+fn cube x -> y : x~Int, y~Int
+    power 3 x               # staged to: x * (x * (x * 1))
+```
+
+- **`comptime` binders (D59).** `x~comptime T` marks a compile-time parameter, like `ghost` and `own`. Every call must supply a value known at compile time: a literal, a `let` constant, another `comptime` parameter, or the result of compile-time code. Inside the body, code that depends only on compile-time values runs at compile time: `if`/`match` on them pick a branch, and recursion on them unrolls. Everything else becomes runtime code.
+- **Stage inference (D60).** The elaborator inserts `quote` and `splice` itself, by Kovács's coercive subtyping (`a ≤ Code a` and back, §2.3.2): `Code`, `quote` and `splice` are written only by code that builds code explicitly (a generator returning `Code (Int -> Int)`). A runtime value never becomes a compile-time one; asking for one is an error with the value's span.
+- **Proofs (D61).** Obligations of a function with `comptime` parameters are proven once, with those parameters symbolic, so they hold for every specialization; staged output is not re-proven. Compile-time recursion obeys the termination rules of §5.3 (no `partial`), so staging always ends.
+- **What exists at compile time (D62).** Pure code over `Nat`, `Int`, `Bool`, `Char`, `String`, `Bytes`, enums, records, lists and tuples of these, types, and functions. No capabilities or effects: compile time can't read files or the clock.
+- **Output.** Staging runs after checking and before erasure (§13.1). `checkers stage FILE.ck` prints each specialized definition; `CHECKERS_DUMP=1` shows them too. Golden tests in `tests/stage/` pin staged code.
+
+Worked example: `examples/format.ck`, a typed `format` whose format string is `comptime`. `format "{}: {}"` has type `Int -> String -> String`, computed at compile time, and stages to concatenations with no parsing left at run time; a format string with a bad placeholder is a compile-time error.
 
 ---
 
@@ -660,7 +681,7 @@ Reordered (D25) so that Checkers can run CLI tools before the prover exists.
 | M3 | Obligations with facts in scope (§7.1), Z3 pipeline (§7.2, D46), refinement aliases, pre/postconditions, constructor invariants, lemmas and proofs (D49), `Bag` and `perm` (D47), trust ledger, `checkers trust` | verified insertion sort (`examples/sort.ck`); `examples/wc.ck` verifies |
 | M4 | Module files (D53), sealing in conversion and in the prover (D54), exported lemmas, multi-module checking, transitive trust ledger | `examples/resort.ck` uses `sort` from `examples/sort.ck` through its exported lemma only |
 | M5 | Well-founded recursion, lexicographic `decreasing` | verified merge sort; `examples/json.ck` checks (done 11/06/2026: its two `admit`s, `string_render` and `members_render`, and the axioms `decimal.render_starts` and `decimal.scan_json_render` are the trust ledger) |
-| M6 | Two-level staging (`comptime`) | compile-time-generated specialized code |
+| M6 | Two-level staging (`comptime`, §8.9, D59–D62) | `examples/format.ck` checks, runs and stages; `checkers stage`; golden tests in `tests/stage/` |
 | M7 | Multi-threaded scheduler for cowns, `when`, `fork`/`join` and `par` (single-threaded since M2, D44); actor library | `examples/log.ck` and `examples/parallel.ck` run; stress tests show no races or deadlocks |
 | M8 | Cranelift backend | M2–M7 test suites pass native |
 | M9 | **Capstone:** interactive shell with a small scripting language, with proofs of its correctness (parser round-trip, evaluator semantics, job control protocol) | the shell runs its own test scripts |
