@@ -90,6 +90,12 @@ This document is the single source of truth for Checkers. Implementation follows
 | D79 | **Replace M8's third criterion** ("the fork/join tree of §13.7 no slower on 2 threads than on 1"), which compares against the one-thread FIFO queue, where a behaviour costs about 0.3 µs with no synchronisation, while handing a behaviour between cores costs about 1.5 µs. Proposed instead: *the fork/join tree whose leaves each do about 5 µs of work is faster on 2 threads than on 1* (met: 1.35×; 1.6× at 17 µs). Cutting the cost of tiny behaviours further (work stealing with per-worker queues, fewer allocations per behaviour) is left for later. | 11/06/2026 | decided (11/06/2026) |
 | D80 | **The interpreter is removed; everything runs as native code** (§14). `checkers run` compiles and runs the program; `checkers check` evaluates `check` declarations (D40) and staging (§8.9) computes compile-time values by compiling them in memory and running them. A compile-time value is turned back into a term from its words (numbers, strings, bytes, constructors, tuples). One implementation: compile-time and run-time evaluation can't differ, each builtin is written once, and slow compile-time work (real proofs, heavy staging) runs at native speed. The cost is a few milliseconds of compiling per file, even when its checks are trivial. A runtime error during compile-time evaluation stops that evaluation only (E0261, E0273), not `checkers`. `--interp` is gone. | 11/06/2026 | decided (11/06/2026) |
 | D81 | **No shell in this repository; M9 is removed** (§10). The shell capstone moves out of the project; M10 follows M8. Proofs about effectful protocols use pure state machines in cowns (§8.8): the state's invariant is the cown's content type, transitions are pure verified functions, and behaviours apply them. Separation-logic specifications over capability state are not scheduled. The `env` and `proc` libraries (`Env`, `Proc`, `Child`, `Pipe`, §8.1–8.4) stay specified but are built only when a program needs them. | 11/06/2026 | decided (11/06/2026) |
+| D82 | **Refined types can be written inside types (M10, §7.5).** In a type, a parenthesized constraint list is a refinement type: `xs~List (n~Int, n >= 5)`. A function type may name its parameter and result and constrain them: `f~(x~Int -> y~Int, x >= 5, y > x)`, where predicates that mention only parameters are preconditions and the others postconditions. An unnamed side stays plain: `(x~Int -> Int, x >= 5)`. Each is an anonymous refinement alias, so everything D71 says about aliases holds for it. | 11/06/2026 | **(proposed)** |
+| D83 | **Weakening a refinement is a proof obligation, not a type error (§7.5).** Where D71 compares a found and an expected refinement in a covariant position (a type argument, a function's result), the found one may be stronger: `List (n~Int, n >= 6)` passes as `List (n~Int, n >= 5)` when the prover shows `n >= 6 ⇒ n >= 5` for any `n`. That is first-order (no induction: it is about one element), so it is an obligation (E0450) with a counterexample. A contravariant position (a function's parameter) flips it. Gaining a refinement where the found type has none (`List Int` as `List Big`) stays E0262 (D71c). Two refinements are compared by implication, not by name: `Big` and `(n~Int, n >= 5)` are the same type. | 11/06/2026 | **(proposed)** |
+| D84 | **Calls of function-typed values (§7.5).** Calling `f a` where `f~(x~A -> y~B, P x, Q x y)` obliges `P a` (as D71 already does for an alias parameter) and gives the fact `Q a (f a)`, so the result is known to satisfy the function type's postcondition. The prover keeps `f` uninterpreted (§7.3) and adds the fact at each call. | 11/06/2026 | **(proposed)** |
+| D85 | **Passing a function where a refined function type is expected (§7.5).** A named function, a partial application or a lambda passed where `(x~A -> y~B, P x, Q x y)` is expected is checked against it: the expected precondition must imply the function's own (`P x ⇒ pre x`, contravariant), and its own postcondition must imply the expected one (`P x ∧ post x y ⇒ Q x y`). Both are obligations (E0450) at the place it is passed, reported as "`list.map` may call `at_least 7` with any `x` where `x >= 5`, but it needs `x >= 7`", with a counterexample. A lambda's body is checked with `P x` as a fact and `Q x y` as an obligation on its result, as D71 already does for aliases. A function type with no predicates is the weakest expectation: passing a function with a precondition there fails with a counterexample. | 11/06/2026 | **(proposed)** |
+| D86 | **Partial applications are allowed everywhere; E0453 is retired (lifts D51).** `at_least 5` has the refined function type `(x~Int -> y~Int, x >= 5)`: the remaining parameters, with the supplied arguments put into the preconditions and postconditions. Where it is passed, D85 checks it; where it is called, D84. So `list.map (at_least 5) xs` checks when every element of `xs` is known to be at least 5. The failure E0453 reported becomes a D85 obligation with a counterexample. E0453 is not reused. | 11/06/2026 | **(proposed)** |
+| D87 | **Function arguments are typed before the function is (§7.5).** For a call like `list.map sub5 xs`, the elaborator takes the type of `xs` before checking `sub5` against `(a -> b)` (as it already does for a lambda, D71), so `a` is `Big` and D85 can see the promise `xs` makes. Without this, the order of arguments would decide whether a program checks. | 11/06/2026 | **(proposed)** |
 | D24 | **Development loop:** Claude owns the implementation; Ian drives with examples. An issue is "found X, expected Y" with a `.ck` snippet. Each one becomes a regression test under `tests/` *before* the fix lands, and the spec is updated first whenever the expectation changes the language. | 11/05/2026 | decided |
 | D25 | **Milestones reordered for CLI tools first** (§10): a running interpreter with `IO` comes right after type checking, before the prover, so Checkers can be used to build its own tooling early. ~~Capstone: an interactive shell with a small scripting language, with proofs of its correctness.~~ (removed by D81) | 11/05/2026 | decided |
 
@@ -267,6 +273,9 @@ Elaboration produces obligations `Γ ⊢ φ` with `φ : Bool`. Sources, each rep
 | precondition | every call of a function with predicates over its parameters (including refinement-alias parameter types such as `b~U8`) | the predicates, with the arguments substituted |
 | postcondition | the end of a function body | the predicates mentioning the result, with the body substituted |
 | constructor invariant (D11) | every constructor application | the constructor's predicates, including refinement-alias field types |
+| weakened refinement (D83, proposed) | a value whose refinement is replaced by a weaker one in a covariant position (`List (n~Int, n >= 6)` as `List (n~Int, n >= 5)`) | for any `n`: the found predicates imply the expected ones |
+| call of a function-typed value (D84, proposed) | `f a` where `f`'s type has preconditions | the preconditions at `a`; afterwards its postconditions at `a` and `f a` are facts |
+| function passed as a value (D85, proposed) | a named function, partial application or lambda passed where a function type is expected | for any argument: the expected precondition implies the function's own; with it, the function's postcondition implies the expected one |
 | refined type argument (D71) | a value checked against a refinement alias that the call or constructor it is passed to doesn't already check: one that comes from a type argument (`n` in `n :: xs : List Small`, `Some n : Option U8`, a list literal's elements, a tuple's components, a lambda's result). Not for a value whose type is already that alias, and not for an operand of an arithmetic or comparison operator (`10` in `x < 10` with `x~Small`) | the alias's predicates, with the value substituted |
 | `Nat` subtraction (D6) | `a - b` on `Nat` | `a >= b` |
 | division | `a / b`, `a % b` | `b != 0` |
@@ -319,6 +328,47 @@ Lemmas are not added automatically; `have` brings one in. **(proposed)** An `@au
 Each module records every fact it relies on without a kernel-checked proof: obligations proven by Z3 (kind, location, Z3 version, query hash), `admit`s, and `check`s proven by evaluation. `checkers trust FILE.ck` prints the ledger of a file. This is the only place Z3 enters the trust base, and the hook for future certificate checking.
 
 `admit` (D13) is recorded as an unproven assumption. Development builds allow it; `checkers build --release` (later) will reject any module whose transitive ledger contains one.
+
+### 7.5 Refined types inside types (M10, D82–D87) **(proposed)**
+
+D71 made a refinement inside a type mean what it says, for refinements written as aliases. M10 lets them be written in place, puts predicates on function types, and compares refinements by implication.
+
+```
+type Big = n~Int, n >= 5
+
+fn at_least k x -> y : k~Int, x~Int, x >= k, y~Int, y >= 0
+    x - k
+
+# D82: an inline refinement; the same type as `List Big` (D83).
+fn shift xs -> ys : xs~List (n~Int, n >= 5), ys~List (m~Int, m >= 0)
+    list.map (at_least 5) xs          # D86: allowed; D85: `n >= 5 ⇒ n >= 5`
+
+# D84: the call obliges `x >= 5`; its result is known to be `>= 0`.
+fn apply f x -> r : f~(x~Int -> y~Int, x >= 5, y >= 0), x~Big, r~Int, r >= 0
+    f x
+```
+
+Failures:
+
+```
+fn too_strict xs -> ys : xs~List Big, ys~List Int
+    list.map (at_least 7) xs
+```
+
+```
+error[E0450]: cannot prove that `at_least 7` can be called here
+ --> example.ck:2:14
+  |
+2 |     list.map (at_least 7) xs
+  |              ^^^^^^^^^^^^ `list.map` may call this with any `Big`
+  = note: it needs `x >= 7`
+  = note: counterexample: x = 5
+  = help: pass a function that accepts every `Big`, or narrow what `xs` holds
+```
+
+**How it is checked.** An inline refinement is an anonymous alias, so D71's machinery applies unchanged: obligations where a value is built, variance through type arguments. What changes is the comparison of two refinements in one position: by implication for any value (D83), proven by Z3, where D71 asked for the same alias. For function types the comparison runs both ways (D85): preconditions contravariantly, postconditions covariantly. All of these are about one value or one argument at a time, so they need no induction.
+
+**What stays out.** Gaining a refinement through a type argument of an existing value (`List Int` as `List Big`) still needs a proof about every element: still E0262, until the prover supports induction for it (D71). Function types in types (a list of refined functions) follow the same rules through variance.
 
 ---
 
@@ -574,7 +624,8 @@ const       ::= 'let' Uname '=' expr NL                      -- compile-time con
 check       ::= 'check' expr NL                              -- compile error unless true
 
 constraints ::= constraint { ',' constraint }
-constraint  ::= lname '~' [ 'ghost' | 'own' | 'comptime' ] expr  -- typing
+constraint  ::= lname '~' [ 'ghost' | 'own' | 'comptime' ] expr  -- typing; in a type, '(' constraints ')' is a refinement and
+                                                                --   '(' [lname '~'] expr '->' [lname '~'] expr { ',' expr } ')' a refined function type (D82, proposed)
               | expr                                         -- predicate (Bool or Prop)
 
 block       ::= { stmt NL } expr NL
@@ -723,7 +774,7 @@ Reordered (D25) so that Checkers can run CLI tools before the prover exists.
 | M7 | Multi-threaded scheduler for cowns, `when`, `fork`/`join` and `par` (single-threaded since M2, D44); actor library | `examples/log.ck` and `examples/parallel.ck` run; stress tests show no races or deadlocks (done 11/06/2026) |
 | M8 | Cranelift backend (§14, D72–D77): closure conversion, word representation, reference counting, tail calls, `checkers build`, lock-free scheduler | every `tests/run/` and `tests/stress/` case gives the same output natively (done); `wc.ck` at least 20× faster than the interpreter (done: 45×); ~~the fork/join tree of §13.7 no slower on 2 threads than on 1~~ replaced by D79: the tree with about 5 µs of work per leaf is faster on 2 threads (done: 1.35×) (done 11/06/2026) |
 | ~~M9~~ | ~~Capstone: interactive shell~~ removed (D81): the shell is not part of this repository | — |
-| M10 | Refined function types (D52): predicates in function types, subtyping of refined function and element types, preconditions checked at calls of function-typed values; lifts D51 | `list.map (at_least 5) xs` checks when `xs~List (n~Int, n >= 5)` |
+| M10 | Refined function types (D52, §7.5, D82–D87, proposed): refinements written inside types, predicates in function types, refinements compared by implication, preconditions checked and postconditions known at calls of function-typed values, partial applications everywhere (lifts D51, retires E0453) | `list.map (at_least 5) xs` checks when `xs~List (n~Int, n >= 5)`; every case in `tests/proposed/refined_fn_types.ck` gives the output marked there |
 
 ---
 
