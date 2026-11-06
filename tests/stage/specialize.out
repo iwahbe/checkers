@@ -1,0 +1,26 @@
+fn newlines src =
+    count[10] src 0
+
+fn lines_and_spaces src =
+    (count[10] src 0) + (count[32] src 0)
+
+fn count[10] src i =
+    if i == (len src)
+        0
+    else
+        if (index src i) == 10
+            1 + (let i = i + 1; count[10] src i)
+        else
+            let i1 = i + 1
+            count[10] src i1
+
+fn count[32] src i =
+    if i == (len src)
+        0
+    else
+        if (index src i) == 32
+            1 + (let i = i + 1; count[32] src i)
+        else
+            let i1 = i + 1
+            count[32] src i1
+

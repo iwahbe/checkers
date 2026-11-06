@@ -85,9 +85,26 @@ pub struct Interp<'g> {
     queue: VecDeque<Behaviour>,
     current: Option<DefId>,
     known: Known,
+    /// The staged program (§8.9), if staging ran: replacement bodies, and
+    /// generated functions numbered after `g.defs`.
+    staged: Option<Rc<crate::stage::Staged>>,
 }
 
 impl<'g> Interp<'g> {
+    /// Run the staged program rather than the elaborated one.
+    pub fn with_staged(mut self, s: Rc<crate::stage::Staged>) -> Self {
+        self.cache.resize(self.g.defs.len() + s.extra.len(), None);
+        self.staged = Some(s);
+        self
+    }
+
+    pub fn def_name(&self, d: DefId) -> String {
+        match self.g.defs.get(d.0 as usize) {
+            Some(i) => i.name.to_string(),
+            None => self.staged.as_ref().and_then(|s| s.extra.get(d.0 as usize - self.g.defs.len())).map(|e| e.0.clone()).unwrap_or_default(),
+        }
+    }
+
     pub fn new(g: &'g Globals, io: Io) -> Interp<'g> {
         let wk = &g.well_known;
         let find = |module: &str, name: &str| {
@@ -123,13 +140,14 @@ impl<'g> Interp<'g> {
             queue: VecDeque::new(),
             current: None,
             known,
+            staged: None,
         }
     }
 
     // ── errors ──────────────────────────────────────────────────────────────
 
     pub fn error(&self, msg: impl Into<String>) -> RtError {
-        RtError { msg: msg.into(), in_fn: self.current.map(|d| self.g.defs[d.0 as usize].name.to_string()) }
+        RtError { msg: msg.into(), in_fn: self.current.map(|d| self.def_name(d)) }
     }
 
     // ── value helpers ───────────────────────────────────────────────────────
@@ -199,6 +217,23 @@ impl<'g> Interp<'g> {
         if let Some(Some(v)) = self.cache.get(d.0 as usize) {
             return Ok(v.clone());
         }
+        // A generated or staged body (§8.9) replaces the elaborated one.
+        let staged = self.staged.clone();
+        let sbody = staged.as_ref().and_then(|s| match self.g.defs.get(d.0 as usize) {
+            Some(_) => s.bodies.get(&d).cloned(),
+            None => s.extra.get(d.0 as usize - self.g.defs.len()).map(|e| e.1.clone()),
+        });
+        if let Some(body) = sbody {
+            let ir = self.code_of(d, &body);
+            let saved = self.current;
+            self.current = Some(d);
+            let v = self.eval(&ir, &None)?;
+            self.current = saved;
+            if let Some(slot) = self.cache.get_mut(d.0 as usize) {
+                *slot = Some(v.clone());
+            }
+            return Ok(v);
+        }
         let info = &self.g.defs[d.0 as usize];
         let v = match &info.body {
             None => {
@@ -238,13 +273,8 @@ impl<'g> Interp<'g> {
         if let Some(c) = self.code.get(&d) {
             return c.clone();
         }
-        // Staging (§8.9): compile-time calls are expanded before erasure. If
-        // it fails, `checkers check` has reported why; running the unstaged
-        // body computes the same values.
-        let staged = if crate::stage::needs_staging(self.g, body) { crate::stage::stage(self.g, body).ok() } else { None };
-        let body = staged.as_ref().unwrap_or(body);
         if std::env::var_os("CHECKERS_DUMP").is_some() {
-            eprintln!("{} = {}", self.g.defs[d.0 as usize].name, crate::core::show(self.g, &[], body));
+            eprintln!("{} = {}", self.def_name(d), crate::core::show(self.g, &[], body));
         }
         let c = Compiler { g: self.g, owner: Some(d) }.compile(body);
         self.code.insert(d, c.clone());
@@ -253,8 +283,6 @@ impl<'g> Interp<'g> {
 
     /// Evaluate a closed core term (a `check`, say).
     pub fn eval_closed(&mut self, t: &Tm) -> R<Value> {
-        let staged = if crate::stage::needs_staging(self.g, t) { crate::stage::stage(self.g, t).ok() } else { None };
-        let t = staged.as_ref().unwrap_or(t);
         let ir = Compiler { g: self.g, owner: None }.compile(t);
         self.current = None;
         self.eval(&ir, &None)

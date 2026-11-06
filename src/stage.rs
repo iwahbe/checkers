@@ -11,6 +11,7 @@
 use crate::core::{CaseTm, ConId, DefId, Globals, Lit, Mult, Prim, Tm};
 use crate::run::value::Value;
 use crate::run::{Interp, Io};
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 /// One variable of the term being staged.
@@ -52,11 +53,47 @@ pub fn needs_staging(g: &Globals, t: &Tm) -> bool {
     ds.iter().any(|d| !g.defs[d.0 as usize].comptime.is_empty())
 }
 
-/// Stage a closed term (a function body, with its parameter lambdas).
-pub fn stage(g: &Globals, t: &Tm) -> Res<Tm> {
+/// A staged program: new bodies for the functions that call compile-time
+/// functions, and the functions staging generated (D64), numbered after the
+/// program's own definitions.
+#[derive(Default)]
+pub struct Staged {
+    pub bodies: HashMap<DefId, Tm>,
+    pub extra: Vec<(String, Tm)>,
+}
+
+/// Stage every function that calls a compile-time function. Failures are
+/// returned per function; those functions keep their unstaged bodies (the
+/// interpreter computes the same values from them).
+pub fn stage_program(g: &Globals) -> (Staged, Vec<(DefId, String)>) {
     let io = Io { stdin: Box::new(std::io::empty()), stdout: Box::new(std::io::sink()), stderr: Box::new(std::io::sink()) };
-    let mut s = Stager { g, it: Interp::new(g, io), depth: 0 };
-    Ok(s.pe(t, &[], 0)?.tm())
+    let mut s = Stager {
+        g,
+        it: Interp::new(g, io),
+        depth: 0,
+        active: Vec::new(),
+        wanted: HashSet::new(),
+        spec_ids: HashMap::new(),
+        specs: Vec::new(),
+    };
+    let mut out = Staged::default();
+    let mut errs = Vec::new();
+    for (k, info) in g.defs.iter().enumerate() {
+        let Some(body) = &info.body else { continue };
+        if !info.comptime.is_empty() || !needs_staging(g, body) {
+            continue;
+        }
+        let d = DefId(k as u32);
+        s.depth = 0;
+        match s.pe(body, &[], 0) {
+            Ok(r) => {
+                out.bodies.insert(d, r.tm());
+            }
+            Err(why) => errs.push((d, why)),
+        }
+    }
+    out.extra = s.specs.into_iter().map(|(n, b)| (n, b.unwrap_or(Tm::Error))).collect();
+    (out, errs)
 }
 
 struct Stager<'g> {
@@ -65,6 +102,14 @@ struct Stager<'g> {
     it: Interp<'g>,
     /// Nesting of compile-time expansions, against runaway recursion.
     depth: usize,
+    /// Expansions in progress, by function and compile-time arguments.
+    active: Vec<String>,
+    /// Expansions that reached themselves again: they become functions.
+    wanted: HashSet<String>,
+    /// Generated functions by expansion key (index into `specs`).
+    spec_ids: HashMap<String, usize>,
+    /// Generated functions: name and body (filled when its expansion ends).
+    specs: Vec<(String, Option<Tm>)>,
 }
 
 const MAX_DEPTH: usize = 10_000;
@@ -305,45 +350,90 @@ impl<'g> Stager<'g> {
         if spine.len() < ar {
             return Err(format!("`{name}` is not called with all its arguments"));
         }
+        let mut binders = Vec::new();
+        let mut ty = &info.ty;
+        while let Tm::Pi(x, m, _, _, b) = ty {
+            binders.push((x.clone(), *m));
+            ty = b;
+        }
         for _ in 0..ar {
             let Tm::Lam(_, _, _, b) = body else { return Err(format!("`{name}` has an unexpected body")) };
             body = (*b).clone();
         }
         self.depth += 1;
         if self.depth > MAX_DEPTH {
-            return Err(format!("expanding `{name}` nests too deeply"));
+            return Err(format!("expanding `{name}` nests too deeply: its compile-time arguments keep changing"));
         }
-        let mut names = Vec::new();
-        let mut ty = &info.ty;
-        while let Tm::Pi(x, _, _, _, b) = ty {
-            names.push(x.clone());
-            ty = b;
-        }
-        let r = self.apply_body(&body, ar, spine, env, lvl, &comptime, &name, &names);
-        self.depth -= 1;
-        r
-    }
-
-    /// Stage `body` (under `n` parameters) applied to `spine`: the first `n`
-    /// arguments are its parameters, any others are applied to its result.
-    #[allow(clippy::too_many_arguments)]
-    fn apply_body(
-        &mut self,
-        body: &Tm,
-        n: usize,
-        spine: &[(Rc<Tm>, crate::core::Icit, Mult)],
-        env: &[Ent],
-        lvl: usize,
-        comptime: &[usize],
-        what: &str,
-        names: &[crate::core::Name],
-    ) -> Res<R> {
-        let (ents, lets, l) = self.bind_args(spine, env, lvl, comptime, what, names)?;
-        let mut r = self.pe(body, &ents[..n], l)?;
-        if spine.len() > n {
+        let names: Vec<crate::core::Name> = binders.iter().map(|b| b.0.clone()).collect();
+        let (ents, lets, l) = self.bind_args(spine, env, lvl, &comptime, &name, &names)?;
+        // The expansion's identity: the function and its compile-time arguments.
+        let shown: Vec<String> = comptime
+            .iter()
+            .map(|&k| match &ents[k] {
+                Ent::Stat(s) => crate::core::show(self.g, &[], s),
+                _ => "?".into(),
+            })
+            .collect();
+        let key = format!("{}|{}", d.0, comptime.iter().map(|&k| format!("{:?}", stat_of(&ents[k]))).collect::<Vec<_>>().join("|"));
+        let spec_name = format!("{name}[{}]", shown.join(", "));
+        // Runtime arguments, in order: what a generated function takes.
+        let runtime: Vec<usize> = (0..ar).filter(|k| !comptime.contains(k) && binders[*k].1 != Mult::Zero).collect();
+        let call = |me: &mut Self, idx: usize| {
+            let mut t = Tm::Def(DefId((me.g.defs.len() + idx) as u32));
+            for &k in &runtime {
+                let a = match &ents[k] {
+                    Ent::Stat(s) => s.clone(),
+                    Ent::Dyn(j) => Tm::Var(l - 1 - j),
+                    Ent::Ty(s, at) => shift(s, l - at, 0),
+                };
+                t = Tm::App(Rc::new(t), Rc::new(a), crate::core::Icit::Expl, binders[k].1);
+            }
+            t
+        };
+        let done = self.spec_ids.get(&key).is_some_and(|i| self.specs[*i].1.is_some());
+        let mut r = if done || self.active.contains(&key) {
+            // The same expansion again, inside itself (recursion on runtime
+            // values): call the function it becomes (D64).
+            self.wanted.insert(key.clone());
+            let idx = self.spec_id(&key, &spec_name);
+            R::D(call(self, idx))
+        } else {
+            self.active.push(key.clone());
+            let inlined = self.pe(&body, &ents[..ar], l);
+            let r = if self.wanted.contains(&key) {
+                // It recursed: generate one runtime function for these
+                // compile-time arguments, with the runtime ones as parameters.
+                let idx = self.spec_id(&key, &spec_name);
+                if self.specs[idx].1.is_none() {
+                    let mut benv = Vec::new();
+                    let mut j = 0;
+                    for (k, (_, m)) in binders.iter().enumerate() {
+                        if comptime.contains(&k) {
+                            benv.push(ents[k].clone());
+                        } else if *m == Mult::Zero {
+                            benv.push(Ent::Ty(Tm::Error, 0));
+                        } else {
+                            benv.push(Ent::Dyn(j));
+                            j += 1;
+                        }
+                    }
+                    let mut fb = self.pe(&body, &benv, j)?.tm();
+                    for &k in runtime.iter().rev() {
+                        fb = Tm::Lam(binders[k].0.clone(), binders[k].1, crate::core::Icit::Expl, Rc::new(fb));
+                    }
+                    self.specs[idx].1 = Some(fb);
+                }
+                R::D(call(self, idx))
+            } else {
+                inlined?
+            };
+            self.active.pop();
+            r
+        };
+        if spine.len() > ar {
             // Apply the rest to the result, then stage that (a lambda reduces).
             let mut out = r.tm();
-            for (e, (_, i, m)) in ents[n..].iter().zip(&spine[n..]) {
+            for (e, (_, i, m)) in ents[ar..].iter().zip(&spine[ar..]) {
                 let a = match e {
                     Ent::Stat(s) => s.clone(),
                     Ent::Dyn(k) => Tm::Var(l - 1 - k),
@@ -354,7 +444,17 @@ impl<'g> Stager<'g> {
             let ident: Vec<Ent> = (0..l).map(Ent::Dyn).collect();
             r = self.pe(&out, &ident, l)?;
         }
+        self.depth -= 1;
         Ok(wrap_lets(r, lets))
+    }
+
+    fn spec_id(&mut self, key: &str, name: &str) -> usize {
+        if let Some(i) = self.spec_ids.get(key) {
+            return *i;
+        }
+        self.specs.push((name.to_string(), None));
+        self.spec_ids.insert(key.to_string(), self.specs.len() - 1);
+        self.specs.len() - 1
     }
 
     fn beta(&mut self, lam: &Tm, spine: &[(Rc<Tm>, crate::core::Icit, Mult)], env: &[Ent], lvl: usize) -> Res<R> {
@@ -435,6 +535,13 @@ impl<'g> Stager<'g> {
             None => None,
         };
         Ok(R::D(Tm::Case(Rc::new(st), Rc::new(CaseTm { branches, lits, default }))))
+    }
+}
+
+fn stat_of(e: &Ent) -> Option<&Tm> {
+    match e {
+        Ent::Stat(s) => Some(s),
+        _ => None,
     }
 }
 
@@ -624,9 +731,12 @@ fn defs_in(t: &Tm, out: &mut Vec<DefId>) {
 
 // ── printing staged code (`checkers stage`) ─────────────────────────────────
 
-/// A staged definition, in Checkers-like layout.
-pub fn show_def(g: &Globals, name: &str, body: &Tm) -> String {
-    let mut ns: Vec<crate::core::Name> = Vec::new();
+/// A staged definition, in Checkers-like layout. `extra` names the
+/// generated functions (numbered after `g.defs`).
+pub fn show_def(g: &Globals, name: &str, body: &Tm, extra: &[String]) -> String {
+    // Generated functions print by name: make them outer variables.
+    let body = &defs_to_vars(body, g.defs.len(), extra.len(), 0);
+    let mut ns: Vec<crate::core::Name> = extra.iter().map(|e| Rc::from(e.as_str())).collect();
     let mut params = Vec::new();
     let mut t = body;
     while let Tm::Lam(x, m, _, b) = t {
@@ -724,5 +834,35 @@ fn block(g: &Globals, ns: &mut Vec<crate::core::Name>, t: &Tm, ind: usize, out: 
             }
         }
         _ => out.push_str(&format!("{pad}{}\n", crate::core::show(g, ns, t))),
+    }
+}
+
+/// Replace references to generated functions by variables bound outside
+/// everything (`n` of them, the first outermost).
+fn defs_to_vars(t: &Tm, base: usize, n: usize, depth: usize) -> Tm {
+    let go = |x: &Tm, d: usize| defs_to_vars(x, base, n, d);
+    match t {
+        Tm::Def(d) if (d.0 as usize) >= base => Tm::Var(depth + n - 1 - (d.0 as usize - base)),
+        Tm::Var(i) if *i >= depth => Tm::Var(i + n),
+        Tm::Pi(x, m, i, a, b) => Tm::Pi(x.clone(), *m, *i, Rc::new(go(a, depth)), Rc::new(go(b, depth + 1))),
+        Tm::Lam(x, m, i, b) => Tm::Lam(x.clone(), *m, *i, Rc::new(go(b, depth + 1))),
+        Tm::App(f, a, i, m) => Tm::App(Rc::new(go(f, depth)), Rc::new(go(a, depth)), *i, *m),
+        Tm::Let(x, m, ty, v, b) => Tm::Let(x.clone(), *m, Rc::new(go(ty, depth)), Rc::new(go(v, depth)), Rc::new(go(b, depth + 1))),
+        Tm::TupleTy(v) => Tm::TupleTy(v.iter().map(|x| go(x, depth)).collect()),
+        Tm::Tuple(v) => Tm::Tuple(v.iter().map(|x| go(x, depth)).collect()),
+        Tm::TyConApp(c, v) => Tm::TyConApp(*c, v.iter().map(|x| go(x, depth)).collect()),
+        Tm::ConApp(c, v) => Tm::ConApp(*c, v.iter().map(|x| go(x, depth)).collect()),
+        Tm::PrimApp(p, v) => Tm::PrimApp(p.clone(), v.iter().map(|x| go(x, depth)).collect()),
+        Tm::Proj(x, i) => Tm::Proj(Rc::new(go(x, depth)), *i),
+        Tm::Field(x, c, i) => Tm::Field(Rc::new(go(x, depth)), *c, *i),
+        Tm::Case(s, c) => Tm::Case(
+            Rc::new(go(s, depth)),
+            Rc::new(CaseTm {
+                branches: c.branches.iter().map(|(con, k, b)| (*con, *k, go(b, depth + k))).collect(),
+                lits: c.lits.iter().map(|(l, b)| (l.clone(), go(b, depth))).collect(),
+                default: c.default.as_ref().map(|b| go(b, depth)),
+            }),
+        ),
+        _ => t.clone(),
     }
 }

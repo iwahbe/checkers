@@ -1,0 +1,8 @@
+error[E0273]: compile-time evaluation failed in `use`
+  --> specialize_unbounded.ck:10:4
+   |
+10 | fn use src -> n : src~Bytes, n~Nat
+   |    ^^^
+   = note: expanding `walk` nests too deeply: its compile-time arguments keep changing
+
+specialize_unbounded.ck: 1 error, 0 warnings

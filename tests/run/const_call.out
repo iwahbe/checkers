@@ -1,0 +1,4 @@
+-- stdout
+42 hi!
+-- stderr
+-- exit 0

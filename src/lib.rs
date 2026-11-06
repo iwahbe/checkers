@@ -115,32 +115,32 @@ pub fn check_in(name: &str, text: &str, dir: &std::path::Path) -> Checked {
     c
 }
 
-/// Stage the module's functions that call compile-time functions (§8.9),
-/// reporting where compile-time evaluation fails.
+/// Stage the program (§8.9): report where compile-time evaluation fails, and
+/// keep the module's staged code for `checkers stage`.
 fn stage_module(c: &mut Checked, e: &elab::Elab, user: &str) {
     if c.errors() > 0 {
         return;
     }
+    let (staged, errs) = stage::stage_program(&e.g);
+    for (d, why) in errs {
+        let info = &e.g.defs[d.0 as usize];
+        if *info.module != *user {
+            continue;
+        }
+        let span = e.fn_meta.get(&d).map(|m| m.span).unwrap_or_default();
+        let dg = diag::Diagnostic::error("E0273", format!("compile-time evaluation failed in `{}`", info.name), span).with_note(why);
+        route(c, e, user, user, dg);
+    }
+    let names: Vec<String> = staged.extra.iter().map(|x| x.0.clone()).collect();
     for (k, info) in e.g.defs.iter().enumerate() {
-        if *info.module != *user || !info.comptime.is_empty() {
-            continue;
+        if let (true, Some(t)) = (*info.module == *user, staged.bodies.get(&core::DefId(k as u32))) {
+            c.staged += &stage::show_def(&e.g, &info.name, t, &names);
+            c.staged += "\n";
         }
-        let Some(body) = &info.body else { continue };
-        if !stage::needs_staging(&e.g, body) {
-            continue;
-        }
-        match stage::stage(&e.g, body) {
-            Ok(t) => {
-                c.staged += &stage::show_def(&e.g, &info.name, &t);
-                c.staged += "\n";
-            }
-            Err(why) => {
-                let span = e.fn_meta.get(&core::DefId(k as u32)).map(|m| m.span).unwrap_or_default();
-                let d = diag::Diagnostic::error("E0273", format!("compile-time evaluation failed in `{}`", info.name), span)
-                    .with_note(why);
-                route(c, e, user, user, d);
-            }
-        }
+    }
+    for (name, t) in &staged.extra {
+        c.staged += &stage::show_def(&e.g, name, t, &names);
+        c.staged += "\n";
     }
 }
 
@@ -322,7 +322,8 @@ pub fn run_in(name: &str, text: &str, dir: &std::path::Path, args: &[String], io
     let (Some(main), true) = (main, exported) else {
         return Ran { report: format!("{report}error: `{}` has no exported `main` function\n", c.file.name), code: 2 };
     };
-    let mut it = run::Interp::new(&e.g, io);
+    let (staged, _) = stage::stage_program(&e.g);
+    let mut it = run::Interp::new(&e.g, io).with_staged(std::rc::Rc::new(staged));
     let code = match it.run_main(core::DefId(main as u32), args) {
         Ok(code) => code,
         Err(err) => {
