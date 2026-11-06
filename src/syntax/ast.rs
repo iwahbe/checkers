@@ -57,6 +57,8 @@ pub enum Mult {
     Many,
     Ghost,
     Own,
+    /// `x~comptime T`: known at compile time (§8.9, D59).
+    Comptime,
 }
 
 #[derive(Clone, Debug)]

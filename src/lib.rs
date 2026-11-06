@@ -10,6 +10,7 @@ pub mod elab;
 pub mod lint;
 pub mod run;
 pub mod source;
+pub mod stage;
 pub mod syntax;
 pub mod usage;
 pub mod verify;
@@ -32,6 +33,8 @@ pub struct Checked {
     pub proved: usize,
     /// The trust ledger (§7.4), rendered.
     pub ledger: String,
+    /// Staged definitions (§8.9), for `checkers stage`.
+    pub staged: String,
 }
 
 impl Checked {
@@ -87,7 +90,7 @@ pub fn parse_only(name: &str, text: &str) -> Checked {
     let file = SourceFile::new(name, text);
     let (module, mut diags) = syntax::parse_module(text);
     diags.extend(lint::naming(&module));
-    Checked { file, module, diags, internal: Vec::new(), others: Vec::new(), obligations: 0, proved: 0, ledger: String::new() }
+    Checked { file, module, diags, internal: Vec::new(), others: Vec::new(), obligations: 0, proved: 0, ledger: String::new(), staged: String::new() }
 }
 
 /// The directory `import a.b` looks in for `a/b.ck` (D53): the program's own.
@@ -107,8 +110,38 @@ pub fn check_in(name: &str, text: &str, dir: &std::path::Path) -> Checked {
     if let Some((e, user)) = &e {
         run_checks(&mut c, e, user);
         prove(&mut c, e, user);
+        stage_module(&mut c, e, user);
     }
     c
+}
+
+/// Stage the module's functions that call compile-time functions (§8.9),
+/// reporting where compile-time evaluation fails.
+fn stage_module(c: &mut Checked, e: &elab::Elab, user: &str) {
+    if c.errors() > 0 {
+        return;
+    }
+    for (k, info) in e.g.defs.iter().enumerate() {
+        if *info.module != *user || !info.comptime.is_empty() {
+            continue;
+        }
+        let Some(body) = &info.body else { continue };
+        if !stage::needs_staging(&e.g, body) {
+            continue;
+        }
+        match stage::stage(&e.g, body) {
+            Ok(t) => {
+                c.staged += &stage::show_def(&e.g, &info.name, &t);
+                c.staged += "\n";
+            }
+            Err(why) => {
+                let span = e.fn_meta.get(&core::DefId(k as u32)).map(|m| m.span).unwrap_or_default();
+                let d = diag::Diagnostic::error("E0273", format!("compile-time evaluation failed in `{}`", info.name), span)
+                    .with_note(why);
+                route(c, e, user, user, d);
+            }
+        }
+    }
 }
 
 /// Check and prove the standard library itself (its lemmas and postconditions).

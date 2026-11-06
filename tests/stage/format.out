@@ -1,0 +1,7 @@
+fn greet name age =
+    let acc = "" ++ name
+    let acc1 = acc ++ " is "
+    let acc2 = acc1 ++ (format age)
+    let acc3 = acc2 ++ " years old"
+    acc3
+

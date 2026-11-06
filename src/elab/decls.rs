@@ -13,6 +13,8 @@ pub struct Sig {
     /// Header predicates, over the binders then the result (§7.1).
     pub preds: Vec<Pred>,
     pub result_name: String,
+    /// Binder positions marked `comptime` (D59).
+    pub comptime: Vec<usize>,
 }
 
 impl Elab {
@@ -57,7 +59,8 @@ impl Elab {
         // Seal the module's functions (D54): importers see signatures only.
         for (d, id) in m.decls.iter().zip(&ids) {
             if let (DeclKind::Fn { .. }, Some(Sym::Def(did))) = (&d.kind, id) {
-                if d.export != Export::Transparent {
+                // A transparent function's private helpers stay unsealed too.
+                if d.export != Export::Transparent && !self.transparent.contains(did) {
                     self.g.defs[did.0 as usize].sealed = true;
                 }
             }
@@ -198,6 +201,7 @@ impl Elab {
             body: None,
             opaque: false,
             sealed: false,
+            comptime: Vec::new(),
         });
         DefId(self.g.defs.len() as u32 - 1)
     }
@@ -323,6 +327,7 @@ impl Elab {
             ast::Mult::Many => Mult::Many,
             ast::Mult::Ghost => Mult::Zero,
             ast::Mult::Own => Mult::One,
+            ast::Mult::Comptime => Mult::Many,
         }
     }
 
@@ -766,21 +771,26 @@ impl Elab {
             binders.push((Rc::from(a.as_str()), Mult::Zero, Icit::Impl, mv));
         }
         let n_implicit = autos.len();
+        let mut comptime = Vec::new();
         for (k, p) in params.iter().enumerate() {
-            let (ty, mult) = match Self::typed_constraint(cs, &p.name) {
+            let (ty, mult, ct) = match Self::typed_constraint(cs, &p.name) {
                 Some((e, m)) => {
                     let ty = self.elab_type(&mut cx, e);
                     let mult = Self::mult_of(m);
                     if mult == Mult::One {
                         self.check_own(&cx, &ty, e.span);
                     }
-                    (ty, mult)
+                    (ty, mult, m == ast::Mult::Comptime)
                 }
-                None => (self.fresh_meta(&cx), Mult::Many),
+                None => (self.fresh_meta(&cx), Mult::Many, false),
             };
             let v = self.eval(&cx, &ty);
             let l = cx.bind(&p.name, v, mult);
             cx.locals[l].param = Some(k);
+            if ct {
+                cx.locals[l].comptime = true;
+                comptime.push(binders.len());
+            }
             binders.push((Rc::from(p.name.as_str()), mult, Icit::Expl, ty));
         }
         let result_ty = match result.and_then(|r| Self::typed_constraint(cs, &r.name)) {
@@ -828,7 +838,7 @@ impl Elab {
             }
         }
         cx.pop();
-        Sig { cx, binders, result: result_ty, n_implicit, preds, result_name: rname }
+        Sig { cx, binders, result: result_ty, n_implicit, preds, result_name: rname, comptime }
     }
 
     pub fn pi_of(binders: &[(Name, Mult, Icit, Tm)], result: Tm) -> Tm {
@@ -937,6 +947,27 @@ impl Elab {
             };
             let ty = Self::pi_of(&sig.binders, sig.result.clone());
             self.g.defs[did.0 as usize].ty = ty;
+            if !sig.comptime.is_empty() {
+                let (what, bad) = match &d.kind {
+                    DeclKind::Fn { partial: true, .. } => ("a `partial` function", true),
+                    DeclKind::Lemma { .. } => ("a lemma", true),
+                    _ => ("", false),
+                };
+                if bad {
+                    let span = match &d.kind {
+                        DeclKind::Fn { name, .. } | DeclKind::Lemma { name, .. } => name.span,
+                        _ => d.span,
+                    };
+                    let help = if what == "a lemma" {
+                        "a lemma is never run, so its parameters need no stage; remove `comptime`"
+                    } else {
+                        "compile-time code must end (D61): only total functions take `comptime` parameters"
+                    };
+                    self.err(Diagnostic::error("E0272", format!("{what} can't have `comptime` parameters"), span).with_help(help));
+                } else {
+                    self.g.defs[did.0 as usize].comptime = sig.comptime.clone();
+                }
+            }
             if let DeclKind::Fn { partial: true, .. } = &d.kind {
                 self.g.defs[did.0 as usize].opaque = true;
             }
@@ -1084,6 +1115,7 @@ impl Elab {
                 n_implicit: sig.n_implicit,
                 preds: sig.preds.clone(),
                 result_name: sig.result_name.clone(),
+                comptime: sig.comptime.clone(),
             };
             self.cur_fn = Some(*did);
             self.assume_pres(&mut sig);

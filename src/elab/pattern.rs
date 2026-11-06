@@ -572,6 +572,7 @@ impl Elab {
             }
         };
         let scrut = cx.var(occ);
+        let occ_static = self.local_static(cx, occ);
         let ctors = self.g.tys[tid.0 as usize].ctors.clone();
         let mut branches = Vec::new();
         for c in ctors {
@@ -585,6 +586,7 @@ impl Elab {
                 let mult = if *m == Mult::Zero { Mult::Zero } else { Mult::Many };
                 let l = cx.bind(&format!("${n}"), ty, mult);
                 cx.locals[l].sub = sub;
+                cx.locals[l].comptime = occ_static;
                 env.push(Val::var(l));
                 lvls.push(l);
             }
@@ -666,12 +668,29 @@ impl Elab {
                 let f = self.inst_pred(&inv, all.clone());
                 cx.assume(f);
             }
+            // Dependent matching: where the matched value is a variable, the
+            // expected type sees it as this constructor (`f~format_type ps`
+            // becomes `f~format_type []` in the `[]` arm).
+            // Only a type that mentions the variable, and has no unknowns
+            // left (an unknown abstracts over the variable itself).
+            let refined = if cx.locals[occ].bound {
+                let tm = quote(&self.g, cx.lvl(), expected);
+                if !has_meta_tm(&tm) && mentions_var(&tm, cx.lvl() - 1 - occ) {
+                    let mut env = cx.env.clone();
+                    env[occ] = Val::Con(c, all.clone());
+                    eval(&self.g, &Rc::new(env), &tm)
+                } else {
+                    expected.clone()
+                }
+            } else {
+                expected.clone()
+            };
             let body = if rs.is_empty() {
                 let w = self.render_path();
                 self.note_missing(format!("`{w}`"));
                 Tm::Error
             } else {
-                self.compile(cx, rs, expected, tail)
+                self.compile(cx, rs, &refined, tail)
             };
             cx.facts.truncate(saved);
             self.pm.frames.pop();
@@ -679,5 +698,44 @@ impl Elab {
             branches.push((c, fields.len(), body));
         }
         Tm::Case(Rc::new(scrut), Rc::new(CaseTm { branches, lits: vec![], default: None }))
+    }
+}
+
+fn has_meta_tm(t: &Tm) -> bool {
+    match t {
+        Tm::Meta(_) => true,
+        Tm::Pi(_, _, _, a, b) | Tm::App(a, b, ..) => has_meta_tm(a) || has_meta_tm(b),
+        Tm::Lam(_, _, _, b) | Tm::Proj(b, _) | Tm::Field(b, _, _) => has_meta_tm(b),
+        Tm::Let(_, _, a, b, c) => has_meta_tm(a) || has_meta_tm(b) || has_meta_tm(c),
+        Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => v.iter().any(has_meta_tm),
+        Tm::Case(s, c) => {
+            has_meta_tm(s)
+                || c.branches.iter().any(|(_, _, b)| has_meta_tm(b))
+                || c.lits.iter().any(|(_, b)| has_meta_tm(b))
+                || c.default.as_ref().is_some_and(has_meta_tm)
+        }
+        _ => false,
+    }
+}
+
+/// Does `t` mention variable `i` (de Bruijn, at its top)?
+fn mentions_var(t: &Tm, i: usize) -> bool {
+    match t {
+        Tm::Var(j) => *j == i,
+        Tm::Pi(_, _, _, a, b) => mentions_var(a, i) || mentions_var(b, i + 1),
+        Tm::Lam(_, _, _, b) => mentions_var(b, i + 1),
+        Tm::App(a, b, ..) => mentions_var(a, i) || mentions_var(b, i),
+        Tm::Proj(b, _) | Tm::Field(b, _, _) => mentions_var(b, i),
+        Tm::Let(_, _, a, b, c) => mentions_var(a, i) || mentions_var(b, i) || mentions_var(c, i + 1),
+        Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => {
+            v.iter().any(|x| mentions_var(x, i))
+        }
+        Tm::Case(s, c) => {
+            mentions_var(s, i)
+                || c.branches.iter().any(|(_, n, b)| mentions_var(b, i + n))
+                || c.lits.iter().any(|(_, b)| mentions_var(b, i))
+                || c.default.as_ref().is_some_and(|b| mentions_var(b, i))
+        }
+        _ => false,
     }
 }

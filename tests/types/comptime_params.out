@@ -1,0 +1,36 @@
+error[E0270]: `n` of `power` must be known at compile time
+  --> comptime_params.ck:13:11
+   |
+13 |     power n x
+   |           ^ this depends on a value only known when the program runs
+   = help: pass a literal, a constant, or a `comptime` parameter of the calling function
+
+error[E0271]: `power` is a compile-time function, so it must be called with all its arguments
+  --> comptime_params.ck:17:9
+   |
+17 |     map (power 2) xs
+   |         ^^^^^^^^^
+   = help: it is expanded where it is called (D59); wrap the call in a lambda to pass it as a value, e.g. `\x -> f 2 x`
+
+error[E0271]: `power` is a compile-time function, so it must be called with all its arguments
+  --> comptime_params.ck:20:5
+   |
+20 |     power
+   |     ^^^^^
+   = help: it is expanded where it is called (D59); wrap the call in a lambda to pass it as a value, e.g. `\x -> f 2 x`
+
+error[E0272]: a `partial` function can't have `comptime` parameters
+  --> comptime_params.ck:27:12
+   |
+27 | partial fn spin n : n~comptime Nat
+   |            ^^^^
+   = help: compile-time code must end (D61): only total functions take `comptime` parameters
+
+error[E0272]: a lemma can't have `comptime` parameters
+  --> comptime_params.ck:30:7
+   |
+30 | lemma about n : n~comptime Nat
+   |       ^^^^^
+   = help: a lemma is never run, so its parameters need no stage; remove `comptime`
+
+comptime_params.ck: 5 errors, 0 warnings

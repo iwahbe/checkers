@@ -1,0 +1,20 @@
+error[E0205]: too many arguments: this has type `BadPlaceholder`, which is not a function
+ --> comptime_format.ck:8:36
+  |
+8 |     fmt "{x} is not a placeholder" name
+  |                                    ^^^^ extra argument
+
+error[E0270]: `s` of `fmt` must be known at compile time
+  --> comptime_format.ck:11:9
+   |
+11 |     fmt s
+   |         ^ this depends on a value only known when the program runs
+   = help: pass a literal, a constant, or a `comptime` parameter of the calling function
+
+error[E0201]: type mismatch: expected `String`, found `BadPlaceholder`
+  --> comptime_format.ck:14:5
+   |
+14 |     fmt "a stray } brace"
+   |     ^^^^^^^^^^^^^^^^^^^^^ this expression has type `BadPlaceholder`
+
+comptime_format.ck: 3 errors, 0 warnings

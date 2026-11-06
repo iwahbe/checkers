@@ -357,6 +357,8 @@ impl Parser {
             Mult::Ghost
         } else if self.eat_kw(Kw::Own) {
             Mult::Own
+        } else if self.eat_kw(Kw::Comptime) {
+            Mult::Comptime
         } else {
             Mult::Many
         }

@@ -9,6 +9,7 @@ USAGE:
     checkers run [--unverified] <FILE.ck> [ARG]...  check and prove, then run `main` with ARGs
     checkers trust <FILE.ck>                        print the trust ledger (what Z3, admits and checks vouch for)
     checkers check [--deny-warnings] <FILE.ck>...   type-check and run `check`s; report diagnostics
+    checkers stage <FILE.ck>                        print the code staging generates (§8.9)
     checkers parse <FILE.ck>                        print the syntax tree
     checkers --version
 ";
@@ -26,6 +27,7 @@ fn cli(args: &[String]) -> u8 {
     let code = match args.first().map(String::as_str) {
         Some("run") => return run(&args[1..]),
         Some("trust") => return trust(&args[1..]),
+        Some("stage") => return stage(&args[1..]),
         Some("check") => check(&args[1..]),
         Some("parse") => parse(&args[1..]),
         Some("--version") | Some("-V") => {
@@ -62,6 +64,21 @@ fn trust(args: &[String]) -> u8 {
         return 1;
     }
     print!("{}", c.ledger);
+    0
+}
+
+fn stage(args: &[String]) -> u8 {
+    let [path] = args else {
+        eprintln!("error: `stage` takes exactly one file\n\n{USAGE}");
+        return 2;
+    };
+    let Ok(text) = read(path) else { return 2 };
+    let c = checkers::check(path, &text);
+    if c.errors() > 0 {
+        eprint!("{}", c.report());
+        return 1;
+    }
+    print!("{}", c.staged);
     0
 }
 

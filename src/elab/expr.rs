@@ -387,6 +387,12 @@ impl Elab {
             Some(s) => {
                 if let Sym::Def(d) = s {
                     self.note_reference(d, span);
+                    if !self.in_app_head && !self.g.defs[d.0 as usize].comptime.is_empty() {
+                        self.err(
+                            Diagnostic::error("E0271", format!("`{n}` is a compile-time function, so it must be called with all its arguments"), span)
+                                .with_help("it is expanded where it is called (D59); wrap the call in a lambda to pass it as a value, e.g. `\\x -> f 2 x`"),
+                        );
+                    }
                 }
                 let (t, ty) = self.sym_term(cx, s, span);
                 self.insert(cx, t, ty)
@@ -573,7 +579,58 @@ impl Elab {
         }
         let (t, ty) = self.insert(cx, t, ty);
         self.call_obligations(cx, &t, e.span, head.span);
+        // A compile-time argument that isn't known: its type may not compute
+        // either, so don't also report a mismatch.
+        if !self.check_comptime_call(cx, &t, &args, e.span) {
+            return (Tm::Error, Val::Error);
+        }
         (t, ty)
+    }
+
+    /// A call of a function with `comptime` parameters (D59): it must be
+    /// complete, and each such argument known at compile time.
+    fn check_comptime_call(&mut self, cx: &Cx, t: &Tm, args: &[&Expr], span: Span) -> bool {
+        let mut spine = Vec::new();
+        let mut h = t;
+        while let Tm::App(f, a, _, _) = h {
+            spine.push(a.clone());
+            h = f;
+        }
+        spine.reverse();
+        let Tm::Def(d) = h else { return true };
+        let ct = self.g.defs[d.0 as usize].comptime.clone();
+        if ct.is_empty() {
+            return true;
+        }
+        let mut ok = true;
+        let name = self.g.defs[d.0 as usize].name.to_string();
+        let n_implicit = self.fn_meta.get(d).map(|m| m.n_implicit).unwrap_or(0);
+        let mut arity = 0;
+        let mut ty = self.g.defs[d.0 as usize].ty.clone();
+        while let Tm::Pi(_, _, _, _, b) = ty {
+            arity += 1;
+            ty = (*b).clone();
+        }
+        for b in ct {
+            let Some(arg) = spine.get(b).filter(|_| spine.len() >= arity) else {
+                self.err(
+                    Diagnostic::error("E0271", format!("`{name}` is a compile-time function, so it must be called with all its arguments"), span)
+                        .with_help("it is expanded where it is called (D59); wrap the call in a lambda to pass it as a value, e.g. `\\x -> f 2 x`"),
+                );
+                return false;
+            };
+            if !self.tm_static(cx, arg, 0, cx.lvl()) {
+                let pname = self.fn_meta.get(d).and_then(|m| m.params.get(b.saturating_sub(n_implicit))).map(|p| p.0.clone()).unwrap_or_default();
+                let at = args.get(b.saturating_sub(n_implicit)).map(|a| a.span).unwrap_or(span);
+                self.err(
+                    Diagnostic::error("E0270", format!("`{pname}` of `{name}` must be known at compile time"), at)
+                        .with_label("this depends on a value only known when the program runs")
+                        .with_help("pass a literal, a constant, or a `comptime` parameter of the calling function"),
+                );
+                ok = false;
+            }
+        }
+        ok
     }
 
     /// Preconditions of a call and invariants of a constructor application (§7.1).

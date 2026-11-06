@@ -238,6 +238,11 @@ impl<'g> Interp<'g> {
         if let Some(c) = self.code.get(&d) {
             return c.clone();
         }
+        // Staging (§8.9): compile-time calls are expanded before erasure. If
+        // it fails, `checkers check` has reported why; running the unstaged
+        // body computes the same values.
+        let staged = if crate::stage::needs_staging(self.g, body) { crate::stage::stage(self.g, body).ok() } else { None };
+        let body = staged.as_ref().unwrap_or(body);
         if std::env::var_os("CHECKERS_DUMP").is_some() {
             eprintln!("{} = {}", self.g.defs[d.0 as usize].name, crate::core::show(self.g, &[], body));
         }
@@ -248,6 +253,8 @@ impl<'g> Interp<'g> {
 
     /// Evaluate a closed core term (a `check`, say).
     pub fn eval_closed(&mut self, t: &Tm) -> R<Value> {
+        let staged = if crate::stage::needs_staging(self.g, t) { crate::stage::stage(self.g, t).ok() } else { None };
+        let t = staged.as_ref().unwrap_or(t);
         let ir = Compiler { g: self.g, owner: None }.compile(t);
         self.current = None;
         self.eval(&ir, &None)

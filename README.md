@@ -12,7 +12,7 @@ fn skip_ws src i -> j : src~Bytes, i~Nat, i <= len src,
         i
 ```
 
-Types are written only as constraints (`i~Nat, i <= len src`); the compiler proves the rest. [`sort.ck`](examples/sort.ck) is an insertion sort whose result is proven sorted and a permutation of its input; [`resort.ck`](examples/resort.ck) imports it and, seeing only its interface, proves that sorting twice is sorting once. Examples: [`json.ck`](examples/json.ck), a JSON parser whose bounds checks, termination, and round-trip property are proven; [`wc.ck`](examples/wc.ck), a CLI tool using linear capabilities; [`log.ck`](examples/log.ck), concurrency with cowns and `when`.
+Types are written only as constraints (`i~Nat, i <= len src`); the compiler proves the rest. [`sort.ck`](examples/sort.ck) is an insertion sort whose result is proven sorted and a permutation of its input; [`resort.ck`](examples/resort.ck) imports it and, seeing only its interface, proves that sorting twice is sorting once. Examples: [`json.ck`](examples/json.ck), a JSON parser whose bounds checks, termination, and round-trip property are proven; [`wc.ck`](examples/wc.ck), a CLI tool using linear capabilities; [`log.ck`](examples/log.ck), concurrency with cowns and `when`; [`format.ck`](examples/format.ck), a typed `fmt` whose format string is parsed at compile time.
 
 **[SPEC.md](SPEC.md) is the definition of the language.** The implementation follows it.
 
@@ -26,7 +26,8 @@ Types are written only as constraints (`i~Nat, i <= len src`); the compiler prov
 | M3 Prover: pre/postconditions, refinements, invariants, lemmas, Z3, trust ledger | done: `examples/sort.ck` (insertion sort) and `wc.ck` verify |
 | M4 Modules: files, sealing, exported lemmas, multi-module proofs | done: [`resort.ck`](examples/resort.ck) uses `sort` through its exported lemma only |
 | M5 Well-founded recursion, lexicographic `decreasing` | done: merge sort in [`parallel.ck`](examples/parallel.ck); [`json.ck`](examples/json.ck) verifies, trusting its two `admit`s and two axioms about decimal numbers |
-| M6–M10 | see SPEC §10 |
+| M6 Staging: `comptime` parameters, compile-time expansion, `checkers stage` | done: [`format.ck`](examples/format.ck), a typed `fmt` whose format string is parsed at compile time |
+| M7–M10 | see SPEC §10 |
 
 ## Usage
 

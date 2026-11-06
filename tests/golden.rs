@@ -3,6 +3,8 @@
 //! tests/parse/NAME.ck  → NAME.out is the syntax tree, followed by any diagnostics.
 //! tests/check/NAME.ck  → NAME.out is the parse + lint report.
 //! tests/types/NAME.ck  → NAME.out is the full report (type checking included).
+//! tests/stage/NAME.ck  → NAME.out is the staged code (`checkers stage`), or the
+//!                         report if checking fails (SPEC §8.9).
 //! tests/run/NAME.args  → run the program named on its first line (SPEC §13.6);
 //!                         NAME.out is its stdout, stderr and exit code.
 //! examples/*.ck        → must check with no errors and no warnings, unless listed
@@ -76,7 +78,11 @@ fn run(path: &Path, mode: &str) -> String {
     // Imported modules are found beside the test, and shown by their relative path.
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let dir = path.parent().unwrap().strip_prefix(root).unwrap_or(Path::new("")).to_path_buf();
-    let c = if mode == "types" { checkers::check_in(&name, &text, &dir) } else { checkers::parse_only(&name, &text) };
+    let c = if mode == "types" || mode == "stage" {
+        checkers::check_in(&name, &text, &dir)
+    } else {
+        checkers::parse_only(&name, &text)
+    };
     match mode {
         "parse" => {
             let mut out = checkers::syntax::print::module(&c.module);
@@ -86,6 +92,8 @@ fn run(path: &Path, mode: &str) -> String {
             }
             out
         }
+        // Staged code, or the errors that prevented it.
+        "stage" if c.errors() == 0 => c.staged.clone(),
         _ => c.report(),
     }
 }
@@ -101,7 +109,7 @@ fn golden() {
     let mut failures = Vec::new();
     let mut count = 0;
 
-    for mode in ["parse", "check", "types"] {
+    for mode in ["parse", "check", "types", "stage"] {
         for path in ck_files(&root.join("tests").join(mode)) {
             count += 1;
             let actual = run(&path, mode);

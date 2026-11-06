@@ -77,6 +77,8 @@ pub struct Local {
     pub param: Option<usize>,
     /// This local is a strict structural subterm of parameter p.
     pub sub: Option<usize>,
+    /// Known at compile time (§8.9): a `comptime` parameter, or a field of one.
+    pub comptime: bool,
 }
 
 #[derive(Clone, Default)]
@@ -103,13 +105,13 @@ impl Cx {
     pub fn bind(&mut self, name: &str, ty: Val, mult: Mult) -> usize {
         let l = self.lvl();
         self.env.push(Val::var(l));
-        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: true, param: None, sub: None });
+        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: true, param: None, sub: None, comptime: false });
         l
     }
     pub fn define(&mut self, name: &str, ty: Val, val: Val, mult: Mult) -> usize {
         let l = self.lvl();
         self.env.push(val);
-        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: false, param: None, sub: None });
+        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: false, param: None, sub: None, comptime: false });
         l
     }
     pub fn pop(&mut self) {
@@ -386,6 +388,8 @@ impl Elab {
         match unify(&self.g, cx.lvl(), expected, actual) {
             Ok(()) => true,
             Err(_) => {
+                // Show computed types (`BadPlaceholder`, not the call that gives it).
+                let (expected, actual) = (&self.force(expected), &self.force(actual));
                 let e = self.show_val(cx, expected);
                 let a = self.show_val(cx, actual);
                 let mut d = Diagnostic::error("E0201", format!("type mismatch: expected `{e}`, found `{a}`"), span)
@@ -614,6 +618,54 @@ impl Elab {
     /// Instantiate a predicate over `binders ++ [result]` with values.
     pub fn inst_pred(&self, p: &Pred, env: Vec<Val>) -> Val {
         eval(&self.g, &Rc::new(env), &p.tm)
+    }
+
+    /// Is local `l` known at compile time (§8.9)? A `comptime` parameter or
+    /// a field of one, or a `let` whose value is.
+    pub fn local_static(&self, cx: &Cx, l: usize) -> bool {
+        let loc = &cx.locals[l];
+        if loc.comptime {
+            return true;
+        }
+        if loc.bound {
+            return false;
+        }
+        let t = quote(&self.g, l, &cx.env[l]);
+        self.tm_static(cx, &t, 0, l)
+    }
+
+    /// Does `t` (over the first `at` locals of `cx`, under `depth` more
+    /// binders) use only compile-time values, with no effects or `partial`
+    /// calls, so that staging can compute it?
+    pub fn tm_static(&self, cx: &Cx, t: &Tm, depth: usize, at: usize) -> bool {
+        let go = |x: &Tm, d: usize| self.tm_static(cx, x, d, at);
+        match t {
+            Tm::Var(i) if *i < depth => true,
+            Tm::Var(i) => match (at + depth).checked_sub(i + 1) {
+                Some(l) if l < at => self.local_static(cx, l),
+                _ => false,
+            },
+            Tm::Def(d) => {
+                let info = &self.g.defs[d.0 as usize];
+                !(info.opaque && info.body.is_some())
+            }
+            Tm::PrimApp(Prim::When | Prim::Fork | Prim::Join, _) => false,
+            Tm::Pi(_, _, _, a, b) => go(a, depth) && go(b, depth + 1),
+            Tm::Lam(_, _, _, b) => go(b, depth + 1),
+            Tm::App(f, a, _, m) => go(f, depth) && (*m == Mult::Zero || go(a, depth)),
+            Tm::Let(_, _, _, v, b) => go(v, depth) && go(b, depth + 1),
+            Tm::TyConApp(_, v) | Tm::TupleTy(v) => v.iter().all(|x| go(x, depth)),
+            Tm::ConApp(_, v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => v.iter().all(|x| go(x, depth)),
+            Tm::Proj(x, _) | Tm::Field(x, _, _) => go(x, depth),
+            Tm::Case(s, c) => {
+                go(s, depth)
+                    && c.branches.iter().all(|(_, n, b)| go(b, depth + n))
+                    && c.lits.iter().all(|(_, b)| go(b, depth))
+                    && c.default.as_ref().is_none_or(|b| go(b, depth))
+            }
+            Tm::Error => false,
+            _ => true,
+        }
     }
 
     pub fn is_ty(&self, v: &Val, t: Option<TyId>) -> bool {

@@ -1,0 +1,14 @@
+fn cube x =
+    x * (x * (x * 1))
+
+fn square_of_sum a b =
+    let x = a + b
+    x * (x * 1)
+
+fn from_let x =
+    x * (x * (x * 1))
+
+fn read_and_square term =
+    let x = line_value (read_line term)
+    x * (x * 1)
+

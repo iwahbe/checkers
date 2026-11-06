@@ -62,7 +62,7 @@ This document is the single source of truth for Checkers. Implementation follows
 | D51 | **A function with a precondition must be called with all its arguments** (E0453): a partial application would hide the call where the precondition is checked. | 11/05/2026 | **(proposed)** |
 | D52 | **Refined function types are the direction (M10).** A function type may carry predicates over its parameters and result, e.g. `f~(x~Int -> y~Int, x >= 5, y > x)`, with subtyping between refined function types and refined element types (`xs~List (n~Int, n >= 5)`). A partially applied function with a precondition can then be passed wherever the expected function type promises that precondition, and the callee proves it at each call of `f`. Until M10, D51 applies, relaxed: a partial application is allowed when its preconditions mention only the arguments already supplied, and they are checked there. | 11/05/2026 | decided (relaxation of D51 decided 11/06/2026) |
 | D53 | **Module files.** `import a.b` loads the standard-library module `a.b` if there is one, else the file `a/b.ck` next to the file being checked (directories mirror dotted names). That file must start with `module a.b` (E0223). Every module a program imports is type-checked, has its `check`s run and its obligations proven, as part of checking the program; errors are reported in the file they belong to. | 11/05/2026 | decided (11/06/2026) |
-| D54 | **Sealing is per module (§6).** Outside its module, a function's body is invisible: it never unfolds during type checking, and the prover sees only its signature and postconditions (an uninterpreted function), unless it is exported `transparent`. A transparent function's private helpers (the module-local functions its body calls, transitively) are visible to the prover too, or its body would say nothing; they still can't be named outside. Type aliases and `let` constants stay transparent (they are part of the types). The interpreter always uses the body. | 11/05/2026 | decided (11/06/2026) |
+| D54 | **Sealing is per module (§6).** Outside its module, a function's body is invisible: it never unfolds during type checking, and the prover sees only its signature and postconditions (an uninterpreted function), unless it is exported `transparent`. A transparent function's private helpers (the module-local functions its body calls, transitively) are visible too, to the prover and to type checking, or its body would say nothing; they still can't be named outside. Type aliases and `let` constants stay transparent (they are part of the types). The interpreter always uses the body. | 11/05/2026 | decided (11/06/2026) |
 | D55 | **Termination measures are proof obligations (§5.3).** At every call between functions of one recursive group that use `decreasing`, the callee's measure at the arguments must be lexicographically below the caller's measure at its parameters, under the facts at the call. A recursive use that is not a full call (passing the function as a value) can't be checked and is error E0303. Results of `Nat`-valued functions are known to be `>= 0` at every call that meets the callee's precondition (§7.3). | 11/05/2026 | decided (11/06/2026) |
 | D56 | **Axioms about primitives.** In the standard library only, a lemma whose `proof` is `__builtin` states a fact about `__builtin` functions (`decimal.scan_json_render`: scanning a rendered number gives it back). It is trusted like the Rust code it describes. Each use (`have`) is listed in the trust ledger as `axiom`, separately from `admit`s; release builds accept axioms and reject admits. | 11/06/2026 | decided (11/06/2026) |
 | D57 | **Known function arguments are seen through (§7.3).** When a function that takes a function is applied to a named function or a lambda with no free variables (`map render items`, `map (\(k, x) -> …) fields`), the prover reflects a copy specialized to that argument. Other function arguments (a lambda using a local) remain outside the fragment (E0451). Lambdas are compared up to the names of their parameters. | 11/06/2026 | decided (11/06/2026) |
@@ -71,6 +71,7 @@ This document is the single source of truth for Checkers. Implementation follows
 | D60 | **Stage inference (§8.9).** `quote`/`splice` are inserted by the elaborator (Kovács's coercive subtyping); `Code a`, `quote`, `splice` are written only when building code explicitly. A runtime value never flows to compile time. | 11/06/2026 | decided (11/06/2026) |
 | D61 | **Staged functions are proven once (§8.9).** Obligations are proven with `comptime` parameters symbolic; specializations are not re-proven. Compile-time recursion follows §5.3, so staging terminates. | 11/06/2026 | decided (11/06/2026) |
 | D62 | **Compile time is pure (§8.9).** Data, types and functions only; no capabilities or effects at compile time. | 11/06/2026 | decided (11/06/2026) |
+| D63 | **Dependent `match` (§5.2).** Matching a variable refines the expected type in each arm: the variable is replaced by the arm's constructor. Needed for functions whose result type is computed from a parameter (`go` in `examples/format.ck`). | 11/06/2026 | **(proposed)** |
 | D24 | **Development loop:** Claude owns the implementation; Ian drives with examples. An issue is "found X, expected Y" with a `.ck` snippet. Each one becomes a regression test under `tests/` *before* the fix lands, and the spec is updated first whenever the expectation changes the language. | 11/05/2026 | decided |
 | D25 | **Milestones reordered for CLI tools first** (§10): a running interpreter with `IO` comes right after type checking, before the prover, so Checkers can be used to build its own tooling early. Capstone: an interactive shell with a small scripting language, with proofs of its correctness. | 11/05/2026 | decided |
 
@@ -200,6 +201,8 @@ inductive Vec (A : Type ℓ) : Nat → Type ℓ
   | nil  : Vec A 0
   | cons : (n :0 Nat) → A → Vec A n → Vec A (n + 1)
 ```
+
+**Dependent `match` (D63).** When the value matched is a variable that the expected type mentions, each arm is checked against the type with the variable replaced by that arm's constructor. So `fn go ps acc -> f : …, f~format_type ps` can return a `String` in the `[]` arm and a lambda in the `Str :: rest` arm. Types that still contain an unknown (`_`) are not refined.
 
 ### 5.3 Recursion and totality
 All code that may appear in types or proofs must be **total**:
@@ -452,13 +455,14 @@ done <- join x = a, y = b using sched
 
 Capabilities and cown contents correspond to separation-logic resources (Iris, F\*'s Pulse). M3–M5 prove pure code; specifications over capability state (e.g. "after `files.write p b fs`, `files.read p fs'` returns `b`") come with the shell capstone.
 
-### 8.9 Staging (M6, D7, D59–D62)
+### 8.9 Staging (M6, D7, D59–D63)
 
 Underneath is Two-Level Type Theory (Kovács 2022): a compile-time stage and a runtime stage, with `Code a` (Kovács's ⇑a) for compile-time values that *are* runtime code, `quote e : Code a` for `e : a`, and `splice c : a` for `c : Code a`. Staging evaluates the compile-time stage away; the result is always a well-typed runtime program with no `quote`/`splice` left (Kovács §2.1.3, §5). The surface keeps all of that implicit in the common case:
 
 ```
 # `n` is known at compile time; `x` is not.
 fn power n x -> y : n~comptime Nat, x~Int, y~Int
+    decreasing n
     if n == 0 then 1 else x * power (n - 1) x
 
 fn cube x -> y : x~Int, y~Int
@@ -466,12 +470,26 @@ fn cube x -> y : x~Int, y~Int
 ```
 
 - **`comptime` binders (D59).** `x~comptime T` marks a compile-time parameter, like `ghost` and `own`. Every call must supply a value known at compile time: a literal, a `let` constant, another `comptime` parameter, or the result of compile-time code. Inside the body, code that depends only on compile-time values runs at compile time: `if`/`match` on them pick a branch, and recursion on them unrolls. Everything else becomes runtime code.
-- **Stage inference (D60).** The elaborator inserts `quote` and `splice` itself, by Kovács's coercive subtyping (`a ≤ Code a` and back, §2.3.2): `Code`, `quote` and `splice` are written only by code that builds code explicitly (a generator returning `Code (Int -> Int)`). A runtime value never becomes a compile-time one; asking for one is an error with the value's span.
+- **Stage inference (D60).** The elaborator inserts `quote` and `splice` itself, by Kovács's coercive subtyping (`a ≤ Code a` and back, §2.3.2): `Code`, `quote` and `splice` are written only by code that builds code explicitly (a generator returning `Code (Int -> Int)`). A runtime value never becomes a compile-time one; asking for one is an error with the value's span. **Not yet implemented:** M6 delivers the implicit form only; writing `Code`, `quote` and `splice` comes later. Until then a compile-time function's runtime parameters play the role of `Code` values: they are passed as code, and expansion inserts them.
 - **Proofs (D61).** Obligations of a function with `comptime` parameters are proven once, with those parameters symbolic, so they hold for every specialization; staged output is not re-proven. Compile-time recursion obeys the termination rules of §5.3 (no `partial`), so staging always ends.
 - **What exists at compile time (D62).** Pure code over `Nat`, `Int`, `Bool`, `Char`, `String`, `Bytes`, enums, records, lists and tuples of these, types, and functions. No capabilities or effects: compile time can't read files or the clock.
-- **Output.** Staging runs after checking and before erasure (§13.1). `checkers stage FILE.ck` prints each specialized definition; `CHECKERS_DUMP=1` shows them too. Golden tests in `tests/stage/` pin staged code.
+- **Errors.** E0270: an argument for a `comptime` parameter depends on a runtime value. E0271: a compile-time function used other than in a complete call (passed as a value, or partly applied); wrap it in a lambda. E0272: `comptime` on a `partial` function or a lemma. E0273: compile-time evaluation failed (a computation staging needs stopped with a runtime error).
+- **Types compute.** A `comptime` argument's type may be computed from it (`format_type (pieces (string.bytes s) 0 [])`). The type checker evaluates such types by unfolding definitions; the standard-library primitives `string.bytes` and `utf8.encode` compute on literals there. Functions that compute types must be visible where they are used: exported `transparent` (D54) if they are used from another module.
+- **Expansion.** A function with `comptime` parameters is a compile-time function: every call is expanded in place (that is what makes `if n == 0` decidable there). Its runtime arguments are `let`-bound first unless they are variables, so each is evaluated exactly once, in order (D41). Known computations in the expanded code run at compile time; anything that fails there (a runtime error) is left for run time, unless staging needs its value (a `comptime` argument, a `match` it must decide), which is E0273.
+- **Output.** Staging runs after checking and before erasure (§13.1). `checkers stage FILE.ck` prints each staged definition; `CHECKERS_DUMP=1` shows them too. Golden tests in `tests/stage/` pin staged code.
 
-Worked example: `examples/format.ck`, a typed `format` whose format string is `comptime`. `format "{}: {}"` has type `Int -> String -> String`, computed at compile time, and stages to concatenations with no parsing left at run time; a format string with a bad placeholder is a compile-time error.
+Worked example: `examples/format.ck`, a typed `fmt` whose format string is `comptime`. `fmt "{} is {n} years old"` has type `String -> Int -> String`, computed at compile time (`{}` takes a `String`, `{n}` an `Int`), and stages to
+
+```
+fn greet name age =
+    let acc = "" ++ name
+    let acc1 = acc ++ " is "
+    let acc2 = acc1 ++ (format age)
+    let acc3 = acc2 ++ " years old"
+    acc3
+```
+
+with no format string left to parse at run time. A bad placeholder is a compile-time error: its type is `BadPlaceholder`, so `fmt "{x}" name` reports too many arguments for a `BadPlaceholder`, and `fmt`'s precondition `valid (string.bytes s) 0` catches the rest.
 
 ---
 
@@ -505,7 +523,7 @@ A trailing `->`, `=` or `<-` outside brackets does **not** continue the line; it
 | `"…"` | `String` (UTF-8) | `"'"`, `"a\u{e9}"`, escapes `\" \\ \n \r \t \0 \u{…}` |
 | `b"…"` | `Bytes` | `b"null"`, escapes as strings plus `\xNN` |
 
-**Keywords:** `module import as export abstract transparent fn enum record type let lemma ensures proof have auto admit check match if then else try and or implies decreasing partial ghost own when using par`. `fork` and `join` are **contextual**: they are keywords only in `fork using …` and `join name = …` (right after `<-`), so `join` remains usable as an ordinary function name. `not` is an ordinary prelude function.
+**Keywords:** `module import as export abstract transparent fn enum record type let lemma ensures proof have auto admit check match if then else try and or implies decreasing partial ghost own comptime when using par`. `fork` and `join` are **contextual**: they are keywords only in `fork using …` and `join name = …` (right after `<-`), so `join` remains usable as an ordinary function name. `not` is an ordinary prelude function.
 
 **Glued vs spaced (D22):** `.` and `[` with no whitespace before them, directly after an identifier, `)` or `]`, are field/module access and indexing. With whitespace before them they are composition and a list literal.
 
@@ -536,7 +554,7 @@ const       ::= 'let' Uname '=' expr NL                      -- compile-time con
 check       ::= 'check' expr NL                              -- compile error unless true
 
 constraints ::= constraint { ',' constraint }
-constraint  ::= lname '~' [ 'ghost' | 'own' ] expr           -- typing
+constraint  ::= lname '~' [ 'ghost' | 'own' | 'comptime' ] expr  -- typing
               | expr                                         -- predicate (Bool or Prop)
 
 block       ::= { stmt NL } expr NL
@@ -681,7 +699,7 @@ Reordered (D25) so that Checkers can run CLI tools before the prover exists.
 | M3 | Obligations with facts in scope (§7.1), Z3 pipeline (§7.2, D46), refinement aliases, pre/postconditions, constructor invariants, lemmas and proofs (D49), `Bag` and `perm` (D47), trust ledger, `checkers trust` | verified insertion sort (`examples/sort.ck`); `examples/wc.ck` verifies |
 | M4 | Module files (D53), sealing in conversion and in the prover (D54), exported lemmas, multi-module checking, transitive trust ledger | `examples/resort.ck` uses `sort` from `examples/sort.ck` through its exported lemma only |
 | M5 | Well-founded recursion, lexicographic `decreasing` | verified merge sort; `examples/json.ck` checks (done 11/06/2026: its two `admit`s, `string_render` and `members_render`, and the axioms `decimal.render_starts` and `decimal.scan_json_render` are the trust ledger) |
-| M6 | Two-level staging (`comptime`, §8.9, D59–D62) | `examples/format.ck` checks, runs and stages; `checkers stage`; golden tests in `tests/stage/` |
+| M6 | Two-level staging (`comptime`, §8.9, D59–D63) | `examples/format.ck` checks, runs and stages; `checkers stage`; golden tests in `tests/stage/` (done 11/06/2026) |
 | M7 | Multi-threaded scheduler for cowns, `when`, `fork`/`join` and `par` (single-threaded since M2, D44); actor library | `examples/log.ck` and `examples/parallel.ck` run; stress tests show no races or deadlocks |
 | M8 | Cranelift backend | M2–M7 test suites pass native |
 | M9 | **Capstone:** interactive shell with a small scripting language, with proofs of its correctness (parser round-trip, evaluator semantics, job control protocol) | the shell runs its own test scripts |
@@ -731,7 +749,7 @@ Reordered (D25) so that Checkers can run CLI tools before the prover exists.
 
 ### 13.1 Erasure
 
-Before running, the checked program is erased: types, type arguments, implicit arguments, `ghost` parameters and fields, refinement predicates, `ensures` clauses and proofs disappear. What remains is an untyped functional program over numbers, strings, bytes, constructors, tuples, closures and capabilities.
+Before running, the checked program is staged (§8.9): calls of compile-time functions are expanded, and what they compute at compile time is replaced by its value. Then it is erased: types, type arguments, implicit arguments, `ghost` parameters and fields, refinement predicates, `ensures` clauses and proofs disappear. What remains is an untyped functional program over numbers, strings, bytes, constructors, tuples, closures and capabilities.
 
 ### 13.2 Evaluation (D41)
 

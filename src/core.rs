@@ -176,6 +176,9 @@ pub struct DefInfo {
     pub opaque: bool,
     /// Sealed by its module (D54): does not unfold outside it.
     pub sealed: bool,
+    /// Binder positions (over the whole Π-type) that are `comptime` (D59).
+    /// A function with any is a compile-time function: staging inlines it.
+    pub comptime: Vec<usize>,
 }
 
 pub struct TyInfo {
@@ -404,6 +407,9 @@ pub fn unfold(g: &Globals, v: &Val) -> Option<Val> {
     }
     let Val::Neutral(Head::Def(d), sp) = v else { return None };
     let info = &g.defs[d.0 as usize];
+    if info.body.is_none() {
+        return builtin_value(g, info, sp);
+    }
     let body = info.body.as_ref()?;
     if info.opaque || info.sealed || g.fuel.get() == 0 {
         return None;
@@ -414,6 +420,20 @@ pub fn unfold(g: &Globals, v: &Val) -> Option<Val> {
         r = elim(g, r, e.clone());
     }
     Some(r)
+}
+
+/// Pure builtins that types may need computed, on literal arguments: a
+/// compile-time type such as `format_type (pieces (string.bytes s) 0 [])`
+/// (§8.9).
+fn builtin_value(g: &Globals, info: &DefInfo, sp: &[Elim]) -> Option<Val> {
+    let q = format!("{}.{}", info.module, info.name);
+    match (q.as_str(), sp) {
+        ("string.bytes" | "utf8.encode", [Elim::App(a, _)]) => match force(g, a.clone()) {
+            Val::Lit(Lit::Str(s)) => Some(Val::Lit(Lit::Bytes(Rc::from(s.as_bytes())))),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Weak-head normal form: resolve metas and unfold definitions at the head.

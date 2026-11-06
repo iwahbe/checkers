@@ -119,6 +119,7 @@ fn mult(m: Mult) -> &'static str {
         Mult::Many => "",
         Mult::Ghost => " ghost",
         Mult::Own => " own",
+        Mult::Comptime => " comptime",
     }
 }
 

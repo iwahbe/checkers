@@ -2,7 +2,7 @@
 
 - **SPEC.md is the source of truth.** Change the spec before the code whenever behavior changes. Record every language decision in the §0 decision log (Dn, date as MM/DD/YYYY, decided/proposed). Ian decides; Claude's recommendations stay marked **(proposed)** until he accepts them.
 - **Ian does not read the implementation.** He reviews the spec, examples, and compiler output. Error messages are part of the product: precise span, plain message, a `help:` line when there is an obvious fix.
-- **Issue workflow (SPEC §12):** a report is "found X, expected Y" with a `.ck` snippet. First add it as a golden test showing the expected output (`tests/parse/`, `tests/check/`, `tests/types/` for type errors, `tests/run/` for program behaviour, §13.6), then fix, then `cargo test`.
+- **Issue workflow (SPEC §12):** a report is "found X, expected Y" with a `.ck` snippet. First add it as a golden test showing the expected output (`tests/parse/`, `tests/check/`, `tests/types/` for type errors, `tests/stage/` for staged code, `tests/run/` for program behaviour, §13.6), then fix, then `cargo test`.
 - `UPDATE_GOLDEN=1 cargo test --test golden` rewrites `.out` files. Read every changed `.out` before committing; never accept output you haven't checked.
 - `examples/*.ck` must check with zero diagnostics (enforced by the golden test), except those listed in `examples/PENDING`.
 - Keep `cargo clippy` clean. No new dependencies without a reason in the commit message.
@@ -29,6 +29,7 @@ src/elab/pattern.rs  `match` → case trees, exhaustiveness witnesses
 src/elab/termination.rs  structural recursion over call-graph SCCs (§5.3)
 src/elab/stdlib.rs   embedded standard library loading, program modules from `a/b.ck` (D53)
 src/usage.rs         `own`/`ghost` usage (QTT multiplicities)
+src/stage.rs         staging (§8.9): expands compile-time functions before erasure; `checkers stage`
 src/run/mod.rs       interpreter: evaluator (tail calls), behaviours, `main` (§13)
 src/run/ir.rs        erasure: core terms → runtime code
 src/run/value.rs     runtime values, structural `==`, `format` (D42)
@@ -37,5 +38,5 @@ src/run/builtins.rs  Rust implementations of stdlib `__builtin` functions
 src/verify/mod.rs    prover driver: in-process Z3, diagnostics, counterexamples, trust ledger (§7)
 src/verify/smt.rs    obligations → SMT-LIB: sorts, datatypes, reflected functions, postconditions
 stdlib/*.ck          standard library
-tests/golden.rs      golden test runner (tests/parse, tests/check, tests/types, tests/run, examples)
+tests/golden.rs      golden test runner (tests/parse, tests/check, tests/types, tests/stage, tests/run, examples)
 ```
