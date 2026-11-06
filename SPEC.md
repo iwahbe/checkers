@@ -80,6 +80,12 @@ This document is the single source of truth for Checkers. Implementation follows
 | D69 | **`par` runs its components on the pool.** | 11/06/2026 | decided (11/06/2026) |
 | D70 | **Actors are a library** (`stdlib/actor.ck`): a cown of state; `actor.send a f sched` schedules `f` on it. | 11/06/2026 | decided (11/06/2026) |
 | D71 | **Refinements inside type arguments are checked (§7.1).** `List Small`, `Option U8` and `Cown Log` mean what they say: every value in that position satisfies the refinement, and the prover already assumes so. (a) **Gaining one is an obligation where a value is built:** a value checked against a refinement alias anywhere gets its predicates as an obligation (a constructor field whose type parameter is instantiated to the alias, as in `n :: xs` against `List Small`; an element of a list literal; the result of a lambda passed to `map`; `Some n` against `Option U8`), as parameters and results already do. (b) **Forgetting one is free:** a `List Small` is also a `List Nat`. This follows the variance of each type argument: covariant for a datatype parameter used only in fields (`List`, `Option`, tuples, records, `Result`, `Parsed`), contravariant for a function's argument, covariant for its result, and for abstract types as their parameters are marked (D16): `Future +a` is covariant, unmarked `Cown a` invariant, so a `Cown Small` is never a `Cown Nat`. (c) **A refinement is never gained through a type argument of an existing value:** passing a `List Nat` where a `List Small` is expected is a type error (E0262); proving it would need a proof about every element, which needs induction. The help line says to give the value the refined type where it is built. **Later:** once the prover supports induction for this, (c) becomes a proof obligation instead of a type error. The obligation is a generated predicate for each type, "every element satisfies the refinement", proven automatically or with lemmas about that predicate (D13, D50). | 11/06/2026 | decided (11/06/2026) |
+| D72 | **Native pipeline (§14).** The erased code the interpreter runs is closure-converted into first-order functions and lowered to Cranelift IR. One lowering, two outputs: `checkers run --native` compiles in memory (JIT) and runs, and `checkers build FILE -o PROG` writes an executable (object file linked with the runtime library by the system C compiler). Compile-time evaluation (`check`, D40) and staging (§8.9) stay in the interpreter. | 11/06/2026 | **(proposed)** |
+| D73 | **One 64-bit word per value.** Odd words are integers of up to 63 bits; even words point to a heap object (a header with reference count and constructor, then fields). Constructors without fields are words, not objects. Erased values have no representation. `Nat`/`Int` arithmetic is checked: on overflow it continues with a big integer (D6 unchanged). Where a type's refinement bounds a number within 63 bits (`U8`…`U32`, `I8`, `I32`, `Char`), the overflow check is left out. `U64` and `I64` need all 64 bits: they are words while they fit and big integers otherwise, until values are laid out by type (after M8). | 11/06/2026 | **(proposed)** |
+| D74 | **Memory: reference counting, Perceus style** (Reinking et al., PLDI 2021). The compiler inserts increments and decrements where values are copied and last used; a value with one reference that is dropped and rebuilt with the same shape is reused in place, which `own` (multiplicity 1) values always allow. Counts are atomic, since values cross threads. No cycle collector: immutable values can't form cycles; a cown that (indirectly) holds itself is never freed. | 11/06/2026 | **(proposed)** |
+| D75 | **Tail calls are guaranteed natively too (§13.2).** Every call in tail position uses Cranelift's `tail` calling convention and `return_call`. Deep non-tail recursion runs on threads with 256 MiB stacks, as in the interpreter. | 11/06/2026 | **(proposed)** |
+| D76 | **Same behaviour, same tests.** Native code gives the same output as the interpreter, byte for byte, including runtime errors (`runtime error in \`f\`: …`, exit 70) and `format`. Every `tests/run/` and `tests/stress/` case runs both ways against one `.out` file. The runtime (builtins, big integers, the scheduler, I/O) is one Rust library both use where the representation allows. | 11/06/2026 | **(proposed)** |
+| D77 | **The scheduler becomes lock-free in M8** (Verona's per-cown queues with atomic links, Cheeseman et al. 2023, §5), so many small behaviours no longer slow down with more threads (§13.7). After M8, `checkers run` runs native code by default; `--interp` selects the interpreter. | 11/06/2026 | **(proposed)** |
 | D24 | **Development loop:** Claude owns the implementation; Ian drives with examples. An issue is "found X, expected Y" with a `.ck` snippet. Each one becomes a regression test under `tests/` *before* the fix lands, and the spec is updated first whenever the expectation changes the language. | 11/05/2026 | decided |
 | D25 | **Milestones reordered for CLI tools first** (§10): a running interpreter with `IO` comes right after type checking, before the prover, so Checkers can be used to build its own tooling early. Capstone: an interactive shell with a small scripting language, with proofs of its correctness. | 11/05/2026 | decided |
 
@@ -711,7 +717,7 @@ Reordered (D25) so that Checkers can run CLI tools before the prover exists.
 | M5 | Well-founded recursion, lexicographic `decreasing` | verified merge sort; `examples/json.ck` checks (done 11/06/2026: its two `admit`s, `string_render` and `members_render`, and the axioms `decimal.render_starts` and `decimal.scan_json_render` are the trust ledger) |
 | M6 | Two-level staging (`comptime`, §8.9, D59–D63) | `examples/format.ck` checks, runs and stages; `checkers stage`; golden tests in `tests/stage/` (done 11/06/2026) |
 | M7 | Multi-threaded scheduler for cowns, `when`, `fork`/`join` and `par` (single-threaded since M2, D44); actor library | `examples/log.ck` and `examples/parallel.ck` run; stress tests show no races or deadlocks (done 11/06/2026) |
-| M8 | Cranelift backend | M2–M7 test suites pass native |
+| M8 | Cranelift backend (§14, D72–D77): closure conversion, word representation, reference counting, tail calls, `checkers build`, lock-free scheduler | every `tests/run/` and `tests/stress/` case gives the same output natively; `wc.ck` at least 20× faster than the interpreter; the fork/join tree of §13.7 no slower on 2 threads than on 1 |
 | M9 | **Capstone:** interactive shell with a small scripting language, with proofs of its correctness (parser round-trip, evaluator semantics, job control protocol) | the shell runs its own test scripts |
 | M10 | Refined function types (D52): predicates in function types, subtyping of refined function and element types, preconditions checked at calls of function-typed values; lifts D51 | `list.map (at_least 5) xs` checks when `xs~List (n~Int, n >= 5)` |
 
@@ -813,3 +819,38 @@ A run test is `tests/run/NAME.args`: its first line is the program to run (relat
 The M2 interpreter walks the erased term with linked environments: correct, but slow (about 2 µs per input byte for `wc.ck`). Native code (M8) is where speed comes from; until then, the interpreter is meant for CLI tools on modest inputs.
 
 On several threads (M7), each thread runs its own copy of a function's code, so threads do not contend on shared reference counts: `fib 27` written with `par` runs about 1.5× faster on 2 cores (release build). The scheduler is one lock-protected queue set, so very small behaviours lose time handing the lock between threads: a fork/join tree of 65 536 behaviours that each add two numbers is about 2.3× *slower* on 2 threads than on 1. A lock-free scheduler (Verona's per-cown queues) belongs with the native runtime (M8).
+
+## 14. Native code (M8) **(proposed: D72–D77)**
+
+**Pipeline (D72).**
+
+```
+staged, erased code (src/run/ir.rs)
+  │ closure conversion: every lambda becomes a top-level function taking its free variables
+  │ reference counting: dup/drop and reuse inserted (D74)
+  ▼
+first-order code ──▶ Cranelift IR ──┬──▶ JIT: `checkers run --native`, run tests
+                                    └──▶ object file + runtime library ──cc──▶ `checkers build -o PROG`
+```
+
+**Values (D73).** A value is one 64-bit word. `n` is stored as `2n + 1` while it fits in 63 bits; otherwise as a pointer to a big integer. A heap object is a header (reference count, constructor number, field count) followed by its fields, each a word. `True`, `None`, `[]` and other constructors without fields are small words. Closures are objects holding a code pointer and the free variables. `Bytes` and `String` are objects holding their bytes.
+
+**Memory (D74).** Every function receives its arguments owned and must consume them: pass each on, or drop it. Where a value is used twice, the compiler inserts a `dup` (increment); after its last use, a `drop` (decrement, freeing at zero). A `match` that takes a uniquely owned value apart and builds a value of the same size reuses its memory (Perceus reuse). Counts are atomic.
+
+**Calls (D75).** Known calls are direct; calls of a closure are indirect through its code pointer. Calls in tail position are `return_call`, so tail recursion runs in constant stack, exactly as in the interpreter.
+
+**Runtime (D76).** A Rust library: allocation and reference counts, big integers (`src/run/num.rs`), the `__builtin` functions of `stdlib/`, `format`, I/O, the scheduler (D66, lock-free per D77), and runtime errors with the same messages as the interpreter. Native code calls it through a fixed table of functions.
+
+**Order of work.**
+1. Closure conversion and the word representation, with direct and tail calls.
+2. Arithmetic, `match`, records and constructors.
+3. Strings and bytes; builtins and I/O.
+4. Behaviours on the existing scheduler.
+5. Reference counting with reuse.
+6. `checkers build`.
+7. The lock-free scheduler.
+8. Make native the default.
+
+Each step adds the run tests it makes pass natively.
+
+**Dependencies.** `cranelift-codegen`, `cranelift-frontend`, `cranelift-module`, `cranelift-jit`, `cranelift-object`, `cranelift-native` (all from the Bytecode Alliance, pure Rust; D5) and `target-lexicon`.
