@@ -1,2 +1,4 @@
 /target
 /target-dyn
+# Debug traces Z3 writes when built from source
+.z3-trace
