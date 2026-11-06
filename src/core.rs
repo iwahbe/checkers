@@ -415,15 +415,33 @@ pub fn unfold(g: &Globals, v: &Val) -> Option<Val> {
         return builtin_value(g, info, sp);
     }
     let body = info.body.as_ref()?;
-    if info.opaque || info.sealed || g.fuel.get() == 0 {
+    if info.opaque || info.sealed {
         return None;
     }
-    g.fuel.set(g.fuel.get() - 1);
+    // Fuel bounds unfolding of functions. A type alias can't recurse
+    // (cycles are errors, D65), so unfolding it always terminates and costs
+    // none: running out of fuel must not stop `U8` from being `Nat`.
+    if !is_type_former(&info.ty) {
+        if g.fuel.get() == 0 {
+            return None;
+        }
+        g.fuel.set(g.fuel.get() - 1);
+    }
     let mut r = eval(g, &Rc::new(Vec::new()), body);
     for e in sp.iter() {
         r = elim(g, r, e.clone());
     }
     Some(r)
+}
+
+/// Is this the type of a type (or of a function returning one), as for a
+/// type alias?
+fn is_type_former(ty: &Tm) -> bool {
+    let mut t = ty;
+    while let Tm::Pi(_, _, _, _, b) = t {
+        t = b;
+    }
+    matches!(t, Tm::Univ(_))
 }
 
 /// Pure builtins that types may need computed, on literal arguments: a
