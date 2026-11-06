@@ -1,0 +1,16 @@
+[package]
+name = "checkers_rt"
+version = "0.1.0"
+edition = "2021"
+description = "The Checkers runtime: values, builtins and the scheduler, for native code (M8, SPEC §14)"
+license = "UNLICENSED"
+publish = false
+
+[lib]
+# rlib: linked into `checkers` (the interpreter and the JIT). staticlib:
+# linked into executables written by `checkers build` (D72).
+crate-type = ["rlib", "staticlib"]
+
+[dependencies]
+num-bigint = "0.4"
+num-traits = "0.2"

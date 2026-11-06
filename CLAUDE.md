@@ -7,7 +7,8 @@
 - `UPDATE_GOLDEN=1 cargo test --test golden` rewrites `.out` files. Read every changed `.out` before committing; never accept output you haven't checked.
 - `examples/*.ck` must check with zero diagnostics (enforced by the golden test), except those listed in `examples/PENDING`.
 - Keep `cargo clippy` clean. No new dependencies without a reason in the commit message.
-- `CHECKERS_DUMP=1 checkers run …` prints each function's elaborated core term as the interpreter compiles it. `CHECKERS_SMT_DUMP=1 checkers check …` prints every SMT query.
+- `checkers run` runs native code (M8, SPEC §14); `--interp` runs the interpreter. Both must give the same output (D76): the golden runner checks every run and stress test both ways. A builtin exists twice, in `src/run/builtins.rs` and `rt/src/builtins.rs`; change both.
+- `CHECKERS_DUMP=1 checkers run --interp …` prints each function's elaborated core term as the interpreter compiles it. `CHECKERS_NATIVE_DUMP=1 checkers run …` prints native code's first-order form with its reference counting; `CHECKERS_RC_CHECK=1` reports objects still live at exit (only constants' values should be). `CHECKERS_SMT_DUMP=1 checkers check …` prints every SMT query.
 - Z3 is linked in (crate `z3-sys`, feature `vendored`, D46): a clean build compiles Z3 from source (needs CMake and a C++ compiler; slow, once). For quicker development builds against an installed libz3: `Z3_LIBRARY_PATH_OVERRIDE=<dir> LD_LIBRARY_PATH=<dir> CARGO_TARGET_DIR=target-dyn cargo test --no-default-features` (the `z3-solver` pip package ships a matching `libz3.so`). Examples that need a later milestone are listed in `examples/PENDING`; their output is pinned in `tests/pending/`.
 - Diagnostic codes: `E0001`–`E0099` lexer/layout, `E0100`–`E0199` parser, `E0200`–`E0299` names and types, `E0300`–`E0349` termination, `E0350`–`E0399` declarations (positivity, signatures), `E0400`–`E0449` usage (`own`/`ghost`), `E0450`–`E0499` proofs, `W001`–`W003` naming (§9.7), `W010`–`W019` usage (`W010`: redundant `own`). Never reuse a code for a different meaning (E0107 and E0224 are retired).
 - The standard library lives in `stdlib/*.ck` and is embedded in the binary. A function body consisting of `__builtin` (allowed only in `stdlib/`) is a primitive implemented in Rust.
@@ -34,11 +35,15 @@ src/elab/stdlib.rs   embedded standard library loading, program modules from `a/
 src/usage.rs         `own`/`ghost` usage (QTT multiplicities)
 src/stage.rs         staging (§8.9): expands compile-time functions before erasure; `checkers stage`
 src/run/mod.rs       interpreter: evaluator (tail calls), behaviours, `par`, `main` (§13)
-src/run/sched.rs     multi-threaded scheduler: Verona queues per cown and future (D66)
+src/run/sched.rs     the interpreter on the shared scheduler (rt/src/sched.rs: lock-free Verona queues, D66, D77)
 src/run/ir.rs        erasure: core terms → runtime code
-src/run/value.rs     runtime values, structural `==`, `format` (D42)
-src/run/num.rs       arbitrary-precision Nat/Int, exact decimals
-src/run/builtins.rs  Rust implementations of stdlib `__builtin` functions
+src/run/value.rs     interpreter values, structural `==`, `format` (D42); numbers in rt/src/num.rs
+src/run/builtins.rs  Rust implementations of stdlib `__builtin` functions (interpreter)
+src/native/lower.rs  closure conversion: runtime code → first-order functions (§14)
+src/native/rc.rs     reference counting, Perceus style: dup/drop, borrowing, reuse (D74)
+src/native/codegen.rs first-order code → Cranelift (JIT and object files)
+src/native/mod.rs    `checkers run` natively, `checkers build` (link with libcheckers_rt.a)
+rt/src/              runtime crate checkers_rt: words and objects, builtins, format, scheduler (shared), entry
 src/verify/mod.rs    prover driver: in-process Z3, diagnostics, counterexamples, trust ledger (§7)
 src/verify/smt.rs    obligations → SMT-LIB: sorts, datatypes, reflected functions, postconditions
 stdlib/*.ck          standard library

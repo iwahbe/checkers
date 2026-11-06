@@ -7,7 +7,7 @@
 mod builtins;
 pub mod ir;
 mod sched;
-pub mod num;
+pub use checkers_rt::num;
 pub mod value;
 
 use crate::core::{ConId, DefId, Globals, Mult, Tm};
@@ -54,9 +54,9 @@ impl Io {
 }
 
 pub(crate) enum Behaviour {
-    When(Vec<Arc<std::sync::Mutex<Value>>>, Value),
-    Fork(Arc<std::sync::Mutex<Option<Value>>>, Value),
-    Join(Vec<Arc<std::sync::Mutex<Option<Value>>>>, Value, Arc<std::sync::Mutex<Option<Value>>>),
+    When(Vec<Arc<value::Held<Value>>>, Value),
+    Fork(Arc<value::Held<Option<Value>>>, Value),
+    Join(Vec<Arc<value::Held<Option<Value>>>>, Value, Arc<value::Held<Option<Value>>>),
 }
 
 /// Constructors the runtime builds values with.
@@ -100,6 +100,8 @@ pub struct Machine {
     known: Known,
     /// The multi-threaded scheduler, when running with more than one thread.
     pub(crate) sched: Option<Arc<sched::Shared>>,
+    /// On a worker: where its pool will be, once started.
+    pool_cell: Option<Arc<std::sync::OnceLock<Arc<sched::Shared>>>>,
 }
 
 /// A `Machine` plus the checked program, which it compiles code from.
@@ -197,16 +199,7 @@ impl<'g> Interp<'g> {
 
     /// The body to run for `d`: staged, generated, or elaborated.
     fn body_of(&self, d: DefId) -> Option<Tm> {
-        let n = self.g.defs.len();
-        if let Some(s) = &self.staged {
-            if (d.0 as usize) >= n {
-                return s.extra.get(d.0 as usize - n).map(|e| e.1.clone());
-            }
-            if let Some(b) = s.bodies.get(&d) {
-                return Some(b.clone());
-            }
-        }
-        self.g.defs.get(d.0 as usize).and_then(|i| i.body.clone())
+        body_of(self.g, self.staged.as_deref(), d)
     }
 
     /// Compile `d` and everything its code refers to, so that running it
@@ -242,7 +235,7 @@ impl<'g> Interp<'g> {
     pub fn run_main(&mut self, main: DefId, args: &[String], threads: usize) -> R<u8> {
         self.prepare(vec![main]);
         if threads > 1 {
-            self.m.sched = Some(sched::Shared::start(self.m.rt.clone(), self.m.io.clone(), threads));
+            self.m.sched = Some(sched::start(self.m.rt.clone(), self.m.io.clone(), threads));
         }
         let r = self.m.run_main(main, args);
         if let Some(s) = self.m.sched.clone() {
@@ -257,8 +250,23 @@ impl<'g> Interp<'g> {
     }
 }
 
+/// The body to run for `d`: staged, generated (numbered after `g.defs`), or
+/// elaborated. Shared with native code (§14).
+pub fn body_of(g: &Globals, staged: Option<&crate::stage::Staged>, d: DefId) -> Option<Tm> {
+    let n = g.defs.len();
+    if let Some(s) = staged {
+        if (d.0 as usize) >= n {
+            return s.extra.get(d.0 as usize - n).map(|e| e.1.clone());
+        }
+        if let Some(b) = s.bodies.get(&d) {
+            return Some(b.clone());
+        }
+    }
+    g.defs.get(d.0 as usize).and_then(|i| i.body.clone())
+}
+
 /// The definitions compiled code refers to.
-fn globals_in(ir: &Ir, out: &mut Vec<DefId>) {
+pub fn globals_in(ir: &Ir, out: &mut Vec<DefId>) {
     match ir {
         Ir::Global(d) => out.push(*d),
         Ir::Lam(_, b) => globals_in(b, out),
@@ -302,6 +310,7 @@ impl Machine {
             current: None,
             known,
             sched: None,
+            pool_cell: None,
         }
     }
 
@@ -678,7 +687,7 @@ impl Machine {
                 Value::unit()
             }
             Op::Fork => {
-                let fut = Arc::new(std::sync::Mutex::new(None));
+                let fut = value::Held::new(None);
                 self.schedule(Behaviour::Fork(fut.clone(), b().clone()));
                 Value::Future(fut)
             }
@@ -691,7 +700,7 @@ impl Machine {
                         other => return Err(self.error(format!("`join` needs futures, found a {}", other.kind()))),
                     }
                 }
-                let out = Arc::new(std::sync::Mutex::new(None));
+                let out = value::Held::new(None);
                 self.schedule(Behaviour::Join(futs, args[2].clone(), out.clone()));
                 Value::Future(out)
             }
@@ -702,8 +711,21 @@ impl Machine {
 
     /// Schedule a behaviour: on the pool if there is one, else on the FIFO queue.
     fn schedule(&mut self, b: Behaviour) {
+        if self.sched.is_none() {
+            self.sched = self.pool_cell.as_ref().and_then(|c| c.get().cloned());
+        }
         match &self.sched {
-            Some(s) => s.submit(b),
+            Some(s) => {
+                let res: Vec<&checkers_rt::sched::Resource> = match &b {
+                    Behaviour::When(cs, _) => cs.iter().map(|c| &c.res).collect(),
+                    Behaviour::Fork(f, _) => vec![&f.res],
+                    Behaviour::Join(fs, _, out) => fs.iter().map(|c| &c.res).chain(std::iter::once(&out.res)).collect(),
+                };
+                // The behaviour holds its cells, so they outlive their queues.
+                let res: Vec<&'static checkers_rt::sched::Resource> =
+                    res.into_iter().map(|r| unsafe { &*(r as *const checkers_rt::sched::Resource) }).collect();
+                s.submit(&res, b)
+            }
             None => self.queue.push_back(b),
         }
     }
@@ -763,25 +785,7 @@ impl Machine {
     /// room, the rest here; the result is the same tuple either way.
     fn par(&mut self, xs: &[Arc<Ir>], env: &Env) -> R<Value> {
         let sched = self.sched.clone();
-        let take = |n: usize| match &sched {
-            Some(s) => {
-                let mut got = 0;
-                while got < n {
-                    let cur = s.par_budget.load(std::sync::atomic::Ordering::Relaxed);
-                    if cur == 0 {
-                        break;
-                    }
-                    if s.par_budget
-                        .compare_exchange(cur, cur - 1, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Relaxed)
-                        .is_ok()
-                    {
-                        got += 1;
-                    }
-                }
-                got
-            }
-            None => 0,
-        };
+        let take = |n: usize| sched.as_ref().map_or(0, |s| s.take_par(n));
         let spawned = take(xs.len().saturating_sub(1));
         if spawned == 0 {
             let mut vs = Vec::with_capacity(xs.len());
@@ -815,7 +819,7 @@ impl Machine {
             out
         });
         if let Some(s) = &sched {
-            s.par_budget.fetch_add(spawned, std::sync::atomic::Ordering::AcqRel);
+            s.give_par(spawned);
         }
         let mut vs = Vec::with_capacity(xs.len());
         for r in results {

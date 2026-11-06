@@ -8,6 +8,7 @@ pub mod core;
 pub mod diag;
 pub mod elab;
 pub mod lint;
+pub mod native;
 pub mod run;
 pub mod source;
 pub mod stage;
@@ -94,7 +95,7 @@ pub fn parse_only(name: &str, text: &str) -> Checked {
 }
 
 /// The directory `import a.b` looks in for `a/b.ck` (D53): the program's own.
-fn dir_of(name: &str) -> std::path::PathBuf {
+pub fn dir_of(name: &str) -> std::path::PathBuf {
     std::path::Path::new(name).parent().map(|p| p.to_path_buf()).unwrap_or_default()
 }
 
@@ -307,26 +308,12 @@ pub fn run(name: &str, text: &str, args: &[String], io: run::Io, unverified: boo
 /// `threads`: worker threads for behaviours and `par`; 1 is the deterministic
 /// FIFO scheduler (D67).
 pub fn run_in(name: &str, text: &str, dir: &std::path::Path, args: &[String], io: run::Io, unverified: bool, threads: usize) -> Ran {
-    let (mut c, e) = elaborate(name, text, dir);
-    let Some((e, user)) = e else { return Ran { report: c.report(), code: 2 } };
-    run_checks(&mut c, &e, &user);
-    prove(&mut c, &e, &user);
-    let mut report = if c.all_diags().next().is_none() && c.internal.is_empty() { String::new() } else { c.report() };
-    let blocking = c.internal.len() + c.all_diags().filter(|d| d.is_error() && !(unverified && is_proof_failure(d))).count();
-    if blocking > 0 {
-        return Ran { report, code: 2 };
-    }
-    if c.errors() > 0 {
-        report += &format!("running with {} unproven obligation(s) (--unverified)\n", c.errors());
-    }
-    let exported = e.modules.get(&user).is_some_and(|m| m.exported_values.contains("main"));
-    let main = e.g.defs.iter().position(|d| *d.module == user && &*d.name == "main");
-    let (Some(main), true) = (main, exported) else {
-        return Ran { report: format!("{report}error: `{}` has no exported `main` function\n", c.file.name), code: 2 };
+    let (e, main, staged, report) = match ready_to_run(name, text, dir, unverified) {
+        Ok(r) => r,
+        Err(ran) => return ran,
     };
-    let (staged, _) = stage::stage_program(&e.g);
     let mut it = run::Interp::new(&e.g, io).with_staged(std::rc::Rc::new(staged));
-    let code = match it.run_main(core::DefId(main as u32), args, threads) {
+    let code = match it.run_main(main, args, threads) {
         Ok(code) => code,
         Err(err) => {
             let mut io = it.io.lock().unwrap();
@@ -337,4 +324,61 @@ pub fn run_in(name: &str, text: &str, dir: &std::path::Path, args: &[String], io
     };
     it.flush();
     Ran { report, code }
+}
+
+/// `run`, as native code (M8, §14). The program writes to this process's
+/// standard streams, so the report is printed to standard error before it
+/// runs; the returned report is empty.
+pub fn run_native(name: &str, text: &str, dir: &std::path::Path, args: &[String], unverified: bool, threads: usize) -> Ran {
+    let (e, main, staged, report) = match ready_to_run(name, text, dir, unverified) {
+        Ok(r) => r,
+        Err(ran) => return ran,
+    };
+    eprint!("{report}");
+    let code = native::run(&e.g, Some(&staged), main, args, threads);
+    Ran { report: String::new(), code: code as u8 }
+}
+
+/// `checkers build`: check and prove, then write an executable.
+pub fn build(name: &str, text: &str, dir: &std::path::Path, out: &std::path::Path, unverified: bool) -> Ran {
+    let (e, main, staged, mut report) = match ready_to_run(name, text, dir, unverified) {
+        Ok(r) => r,
+        Err(ran) => return ran,
+    };
+    match native::build(&e.g, Some(&staged), main, out) {
+        Ok(()) => Ran { report, code: 0 },
+        Err(msg) => {
+            report += &format!("error: {msg}\n");
+            Ran { report, code: 2 }
+        }
+    }
+}
+
+/// Check, prove and stage a program for running: the elaborated program,
+/// `main`, the staged code, and the report so far.
+fn ready_to_run(
+    name: &str,
+    text: &str,
+    dir: &std::path::Path,
+    unverified: bool,
+) -> Result<(elab::Elab, core::DefId, stage::Staged, String), Ran> {
+    let (mut c, e) = elaborate(name, text, dir);
+    let Some((e, user)) = e else { return Err(Ran { report: c.report(), code: 2 }) };
+    run_checks(&mut c, &e, &user);
+    prove(&mut c, &e, &user);
+    let mut report = if c.all_diags().next().is_none() && c.internal.is_empty() { String::new() } else { c.report() };
+    let blocking = c.internal.len() + c.all_diags().filter(|d| d.is_error() && !(unverified && is_proof_failure(d))).count();
+    if blocking > 0 {
+        return Err(Ran { report, code: 2 });
+    }
+    if c.errors() > 0 {
+        report += &format!("running with {} unproven obligation(s) (--unverified)\n", c.errors());
+    }
+    let exported = e.modules.get(&user).is_some_and(|m| m.exported_values.contains("main"));
+    let main = e.g.defs.iter().position(|d| *d.module == user && &*d.name == "main");
+    let (Some(main), true) = (main, exported) else {
+        return Err(Ran { report: format!("{report}error: `{}` has no exported `main` function\n", c.file.name), code: 2 });
+    };
+    let (staged, _) = stage::stage_program(&e.g);
+    Ok((e, core::DefId(main as u32), staged, report))
 }

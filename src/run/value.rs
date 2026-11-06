@@ -82,8 +82,27 @@ pub enum Value {
     Decimal(Arc<Decimal>),
     /// A multiset of integers (D47): sorted (value, count) pairs.
     Bag(Arc<Vec<(Num, usize)>>),
-    Cown(Arc<Mutex<Value>>),
-    Future(Arc<Mutex<Option<Value>>>),
+    Cown(Arc<Held<Value>>),
+    Future(Arc<Held<Option<Value>>>),
+}
+
+/// A cown's or future's contents, and its queue in the scheduler (D66).
+pub struct Held<T> {
+    pub res: checkers_rt::sched::Resource,
+    pub v: Mutex<T>,
+}
+
+impl<T> Held<T> {
+    pub fn new(v: T) -> Arc<Held<T>> {
+        Arc::new(Held { res: checkers_rt::sched::Resource::default(), v: Mutex::new(v) })
+    }
+}
+
+impl<T> std::ops::Deref for Held<T> {
+    type Target = Mutex<T>;
+    fn deref(&self) -> &Mutex<T> {
+        &self.v
+    }
 }
 
 impl Value {

@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "rt"]
+
 [package]
 name = "checkers"
 version = "0.1.0"
@@ -28,3 +31,11 @@ static-z3 = ["z3-sys/vendored"]
 z3-sys = "0.14.1"
 num-bigint = "0.4"
 num-traits = "0.2"
+checkers_rt = { path = "rt" }
+cranelift-codegen = "0.137.1"
+cranelift-frontend = "0.137.1"
+cranelift-module = "0.137.1"
+cranelift-jit = "0.137.1"
+cranelift-object = "0.137.1"
+cranelift-native = "0.137.1"
+target-lexicon = "0.13.5"

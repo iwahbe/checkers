@@ -338,8 +338,8 @@ pub fn call(it: &mut Machine, name: &str, a: Vec<Value>) -> R<Value> {
             }
             Value::Bag(Arc::new(counts.into_iter().collect()))
         }
-        "cown.new" => Value::Cown(Arc::new(Mutex::new(a[0].clone()))),
-        "future.ready" => Value::Future(Arc::new(Mutex::new(Some(a[0].clone())))),
+        "cown.new" => Value::Cown(super::value::Held::new(a[0].clone())),
+        "future.ready" => Value::Future(super::value::Held::new(Some(a[0].clone()))),
         other => return Err(it.error(format!("`{other}` has no implementation in this interpreter yet"))),
     })
 }

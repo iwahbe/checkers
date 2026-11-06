@@ -6,9 +6,13 @@ const USAGE: &str = "\
 checkers — the Checkers compiler and interpreter
 
 USAGE:
-    checkers run [--unverified] [--threads N] <FILE.ck> [ARG]...
-                                                    check and prove, then run `main` with ARGs
-                                                    (N worker threads, default: cores; 1 is deterministic)
+    checkers run [--unverified] [--threads N] [--interp] <FILE.ck> [ARG]...
+                                                    check and prove, then run `main` with ARGs as native code
+                                                    (N worker threads, default: cores; 1 is deterministic;
+                                                    --interp: run in the interpreter instead)
+    checkers build [--unverified] <FILE.ck> -o <PROGRAM>
+                                                    check and prove, then write an executable
+                                                    (its threads: CHECKERS_THREADS, default: cores)
     checkers trust <FILE.ck>                        print the trust ledger (what Z3, admits and checks vouch for)
     checkers check [--deny-warnings] <FILE.ck>...   type-check and run `check`s; report diagnostics
     checkers stage <FILE.ck>                        print the code staging generates (§8.9)
@@ -28,6 +32,7 @@ fn main() -> ExitCode {
 fn cli(args: &[String]) -> u8 {
     let code = match args.first().map(String::as_str) {
         Some("run") => return run(&args[1..]),
+        Some("build") => return build(&args[1..]),
         Some("trust") => return trust(&args[1..]),
         Some("stage") => return stage(&args[1..]),
         Some("check") => check(&args[1..]),
@@ -86,12 +91,17 @@ fn stage(args: &[String]) -> u8 {
 
 fn run(args: &[String]) -> u8 {
     let mut unverified = false;
+    let mut interp = false;
     let mut threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
     let mut args = args;
     loop {
         match args.first().map(String::as_str) {
             Some("--unverified") => {
                 unverified = true;
+                args = &args[1..];
+            }
+            Some("--interp") => {
+                interp = true;
                 args = &args[1..];
             }
             Some("--threads") => {
@@ -115,7 +125,40 @@ fn run(args: &[String]) -> u8 {
         Ok(t) => t,
         Err(_) => return 2,
     };
-    let ran = checkers::run(path, &text, &args[1..], checkers::run::Io::process(), unverified, threads);
+    let ran = if interp {
+        checkers::run(path, &text, &args[1..], checkers::run::Io::process(), unverified, threads)
+    } else {
+        checkers::run_native(path, &text, &checkers::dir_of(path), &args[1..], unverified, threads)
+    };
+    eprint!("{}", ran.report);
+    ran.code
+}
+
+fn build(args: &[String]) -> u8 {
+    let mut unverified = false;
+    let mut out: Option<String> = None;
+    let mut file: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--unverified" => unverified = true,
+            "-o" => {
+                i += 1;
+                out = args.get(i).cloned();
+            }
+            f => file = Some(f.to_string()),
+        }
+        i += 1;
+    }
+    let (Some(path), Some(out)) = (file, out) else {
+        eprintln!("error: `build` needs a file and `-o PROGRAM`\n\n{USAGE}");
+        return 2;
+    };
+    let text = match read(&path) {
+        Ok(t) => t,
+        Err(_) => return 2,
+    };
+    let ran = checkers::build(&path, &text, &checkers::dir_of(&path), std::path::Path::new(&out), unverified);
     eprint!("{}", ran.report);
     ran.code
 }

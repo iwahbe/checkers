@@ -6,7 +6,9 @@
 //! tests/stage/NAME.ck  → NAME.out is the staged code (`checkers stage`), or the
 //!                         report if checking fails (SPEC §8.9).
 //! tests/run/NAME.args  → run the program named on its first line (SPEC §13.6);
-//!                         NAME.out is its stdout, stderr and exit code.
+//!                         NAME.out is its stdout, stderr and exit code. Each
+//!                         case runs twice, in the interpreter and as native
+//!                         code (`checkers run`), against the same NAME.out (D76).
 //! tests/stress/NAME.args → as a run test, but with 8 threads, several times
 //!                         (CHECKERS_STRESS_RUNS, default 10); stdout lines are
 //!                         compared sorted, since behaviours that share no cown
@@ -51,6 +53,39 @@ impl Write for Capture {
 /// Run one `tests/run/NAME.args` case; the working directory is `tests/run`.
 fn run_case(args_path: &Path) -> String {
     run_case_with(args_path, 1)
+}
+
+/// A run case as native code: the `checkers` binary in a subprocess (its
+/// runtime writes to the process's streams), in the case's directory.
+fn run_native(args_path: &Path, threads: usize) -> String {
+    let spec = fs::read_to_string(args_path).unwrap();
+    let mut lines = spec.lines();
+    let first = lines.next().unwrap_or_default();
+    let (flags, program): (Vec<&str>, &str) = match first.strip_prefix("--unverified ") {
+        Some(p) => (vec!["--unverified"], p),
+        None => (vec![], first),
+    };
+    let stdin = fs::read(args_path.with_extension("in")).unwrap_or_default();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_checkers"))
+        .arg("run")
+        .args(["--threads", &threads.to_string()])
+        .args(flags)
+        .arg(program)
+        .args(lines)
+        .current_dir(args_path.parent().unwrap())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("run checkers");
+    child.stdin.take().unwrap().write_all(&stdin).unwrap();
+    let out = child.wait_with_output().unwrap();
+    format!(
+        "-- stdout\n{}-- stderr\n{}-- exit {}\n",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+        out.status.code().unwrap_or(-1)
+    )
 }
 
 /// A run case with `threads` worker threads (1: the deterministic FIFO
@@ -157,6 +192,14 @@ fn golden() {
         let actual = run_case(&path);
         let out_path = path.with_extension("out");
         let expected = fs::read_to_string(&out_path).unwrap_or_default();
+        // Native code must give exactly the interpreter's output (D76).
+        let native = run_native(&path, 1);
+        if native != actual {
+            failures.push(format!(
+                "── {} (native) ──\n--- interpreter\n{actual}\n--- native\n{native}",
+                path.strip_prefix(root).unwrap().display()
+            ));
+        }
         if actual != expected {
             if update {
                 fs::write(&out_path, &actual).unwrap();
@@ -180,9 +223,10 @@ fn golden() {
         let expected = fs::read_to_string(&out_path).unwrap_or_default();
         let mut seen: Vec<String> = Vec::new();
         for _ in 0..runs.max(1) {
-            let actual = sorted_stdout(&run_case_with(&path, 8));
-            if !seen.contains(&actual) {
-                seen.push(actual);
+            for actual in [sorted_stdout(&run_case_with(&path, 8)), sorted_stdout(&run_native(&path, 8))] {
+                if !seen.contains(&actual) {
+                    seen.push(actual);
+                }
             }
         }
         let name = path.strip_prefix(root).unwrap().display().to_string();
@@ -198,6 +242,47 @@ fn golden() {
         }
     }
     std::env::set_current_dir(root).unwrap();
+
+    // Executables (`checkers build`): built, then run like a run case.
+    for (args_name, program) in [("wc_stdin", "examples/wc.ck"), ("behaviours", "tests/run/behaviours.ck")] {
+        count += 1;
+        let exe = std::env::temp_dir().join(format!("checkers-golden-{}-{args_name}", std::process::id()));
+        let built = std::process::Command::new(env!("CARGO_BIN_EXE_checkers"))
+            .args(["build", program, "-o"])
+            .arg(&exe)
+            .current_dir(root)
+            .output()
+            .expect("run checkers build");
+        if !built.status.success() {
+            failures.push(format!("── build {program} ──\n{}", String::from_utf8_lossy(&built.stderr)));
+            continue;
+        }
+        let args_path = run_dir.join(format!("{args_name}.args"));
+        let spec = fs::read_to_string(&args_path).unwrap();
+        let stdin = fs::read(args_path.with_extension("in")).unwrap_or_default();
+        let mut child = std::process::Command::new(&exe)
+            .args(spec.lines().skip(1))
+            .env("CHECKERS_THREADS", "1")
+            .current_dir(&run_dir)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("run the executable");
+        child.stdin.take().unwrap().write_all(&stdin).unwrap();
+        let out = child.wait_with_output().unwrap();
+        let _ = fs::remove_file(&exe);
+        let actual = format!(
+            "-- stdout\n{}-- stderr\n{}-- exit {}\n",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+            out.status.code().unwrap_or(-1)
+        );
+        let expected = fs::read_to_string(args_path.with_extension("out")).unwrap_or_default();
+        if actual != expected {
+            failures.push(format!("── built {program} ──\n--- expected\n{expected}\n--- actual\n{actual}"));
+        }
+    }
 
     // Examples waiting on a later milestone (D48): their output is pinned instead.
     let pending: Vec<String> = fs::read_to_string(root.join("examples").join("PENDING"))

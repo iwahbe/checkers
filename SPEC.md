@@ -87,6 +87,7 @@ This document is the single source of truth for Checkers. Implementation follows
 | D76 | **Same behaviour, same tests.** Native code gives the same output as the interpreter, byte for byte, including runtime errors (`runtime error in \`f\`: …`, exit 70) and `format`. Every `tests/run/` and `tests/stress/` case runs both ways against one `.out` file. The runtime (builtins, big integers, the scheduler, I/O) is one Rust library both use where the representation allows. | 11/06/2026 | decided (11/06/2026) |
 | D77 | **The scheduler becomes lock-free in M8** (Verona's per-cown queues with atomic links, Cheeseman et al. 2023, §5), so many small behaviours no longer slow down with more threads (§13.7). After M8, `checkers run` runs native code by default; `--interp` selects the interpreter. | 11/06/2026 | decided (11/06/2026) |
 | D78 | **The interpreter stays after M8**, in two roles: the compile-time evaluator (`check`, D40; staging, §8.9), whose values turn back into core terms directly; and the reference that native code is tested against (D76). It stops being a way to run programs except with `--interp`. Every builtin is implemented once in the shared runtime where the representation allows (D76), so the cost of two implementations stays small. | 11/06/2026 | **(proposed)** |
+| D79 | **Replace M8's third criterion** ("the fork/join tree of §13.7 no slower on 2 threads than on 1"), which compares against the one-thread FIFO queue, where a behaviour costs about 0.3 µs with no synchronisation, while handing a behaviour between cores costs about 1.5 µs. Proposed instead: *the fork/join tree whose leaves each do about 5 µs of work is faster on 2 threads than on 1* (met: 1.35×; 1.6× at 17 µs). Cutting the cost of tiny behaviours further (work stealing with per-worker queues, fewer allocations per behaviour) is left for later. | 11/06/2026 | **(proposed)** |
 | D24 | **Development loop:** Claude owns the implementation; Ian drives with examples. An issue is "found X, expected Y" with a `.ck` snippet. Each one becomes a regression test under `tests/` *before* the fix lands, and the spec is updated first whenever the expectation changes the language. | 11/05/2026 | decided |
 | D25 | **Milestones reordered for CLI tools first** (§10): a running interpreter with `IO` comes right after type checking, before the prover, so Checkers can be used to build its own tooling early. Capstone: an interactive shell with a small scripting language, with proofs of its correctness. | 11/05/2026 | decided |
 
@@ -718,7 +719,7 @@ Reordered (D25) so that Checkers can run CLI tools before the prover exists.
 | M5 | Well-founded recursion, lexicographic `decreasing` | verified merge sort; `examples/json.ck` checks (done 11/06/2026: its two `admit`s, `string_render` and `members_render`, and the axioms `decimal.render_starts` and `decimal.scan_json_render` are the trust ledger) |
 | M6 | Two-level staging (`comptime`, §8.9, D59–D63) | `examples/format.ck` checks, runs and stages; `checkers stage`; golden tests in `tests/stage/` (done 11/06/2026) |
 | M7 | Multi-threaded scheduler for cowns, `when`, `fork`/`join` and `par` (single-threaded since M2, D44); actor library | `examples/log.ck` and `examples/parallel.ck` run; stress tests show no races or deadlocks (done 11/06/2026) |
-| M8 | Cranelift backend (§14, D72–D77): closure conversion, word representation, reference counting, tail calls, `checkers build`, lock-free scheduler | every `tests/run/` and `tests/stress/` case gives the same output natively; `wc.ck` at least 20× faster than the interpreter; the fork/join tree of §13.7 no slower on 2 threads than on 1 |
+| M8 | Cranelift backend (§14, D72–D77): closure conversion, word representation, reference counting, tail calls, `checkers build`, lock-free scheduler | every `tests/run/` and `tests/stress/` case gives the same output natively (done); `wc.ck` at least 20× faster than the interpreter (done: 45×); the fork/join tree of §13.7 no slower on 2 threads than on 1 (**not met**: 0.14 s against 0.05 s; see §13.7 and D79) |
 | M9 | **Capstone:** interactive shell with a small scripting language, with proofs of its correctness (parser round-trip, evaluator semantics, job control protocol) | the shell runs its own test scripts |
 | M10 | Refined function types (D52): predicates in function types, subtyping of refined function and element types, preconditions checked at calls of function-typed values; lifts D51 | `list.map (at_least 5) xs` checks when `xs~List (n~Int, n >= 5)` |
 
@@ -762,7 +763,7 @@ Reordered (D25) so that Checkers can run CLI tools before the prover exists.
 
 ## 13. Execution (M2)
 
-`checkers run FILE.ck [ARG…]` (D43) runs a program with the interpreter. The same interpreter runs `check` declarations during `checkers check` (D40).
+`checkers run FILE.ck [ARG…]` (D43) runs a program as native code (§14) since M8; `checkers run --interp` runs it with the interpreter this section describes, which also runs `check` declarations during `checkers check` (D40) and compile-time evaluation in staging (§8.9). Both give the same output (D76).
 
 ### 13.1 Erasure
 
@@ -804,7 +805,7 @@ A failure prints a runtime error that names the failing operation and the functi
 **M7.** Behaviours run on a pool of worker threads:
 
 - **Scheduling (D66).** Verona's algorithm (Cheeseman et al. 2023, §4): scheduling a behaviour appends it, in one atomic step, to the queue of every cown it names (a `fork` names a fresh future; a `join` names the futures it waits for). It runs when it is first in all of its queues, and on finishing it leaves them, which may make the next behaviours runnable. This gives causal order and freedom from deadlock by construction: nothing waits while holding a cown. Behaviours start as soon as they are runnable, while `main` is still running. The process exits when `main` has returned and no behaviour is queued or running.
-- **Threads (D67).** `checkers run --threads N` (default: the number of cores) runs behaviours on N threads: N − 1 workers from the start, and the main thread too once `main` returns. `--threads 1` is the M2 scheduler exactly: one FIFO queue after `main` returns, so output is deterministic. Golden run tests use `--threads 1`; stress tests (`tests/stress/`) run each program 10 times on 8 threads, compare its output lines sorted (D68 allows any order between behaviours that share no cown), and fail if any two runs differ.
+- **Threads (D67).** `checkers run --threads N` (default: the number of cores) runs behaviours on N threads: N − 1 workers from the start, and the main thread too once `main` returns. `--threads 1` is the M2 scheduler exactly: one FIFO queue after `main` returns, so output is deterministic. An executable written by `checkers build` takes its thread count from the environment variable `CHECKERS_THREADS` (default: the number of cores). Golden run tests use `--threads 1`; stress tests (`tests/stress/`) run each program 10 times on 8 threads, compare its output lines sorted (D68 allows any order between behaviours that share no cown), and fail if any two runs differ.
 - **Output (D68).** Each `terminal` call is atomic: lines from behaviours that share no cown may come in any order, but never interleave within a call.
 - **`par` (D69).** The components of `par (e1, …, en)` run on threads of their own, at most N − 1 at a time across the program; when none is free, the remaining components run on the current thread. The result is the same tuple either way.
 - **Actors (D70).** `stdlib/actor.ck`: an `Actor s` is a cown holding state `s`, made by `actor.new init sched`; `actor.send a f sched` (with `f~(s -> s)`) schedules `when x = a using sched: f x`, so messages to one actor are handled one at a time, in the order sent. State invariants are refinement types on `s`, as for any cown (§8.5).
@@ -817,41 +818,35 @@ A run test is `tests/run/NAME.args`: its first line is the program to run (relat
 
 ### 13.7 Performance
 
-The M2 interpreter walks the erased term with linked environments: correct, but slow (about 2 µs per input byte for `wc.ck`). Native code (M8) is where speed comes from; until then, the interpreter is meant for CLI tools on modest inputs.
+The interpreter walks the erased term with linked environments: correct, but slow (about 2.5 µs per input byte for `wc.ck`). Native code (§14) is about 45× faster: `wc.ck` counts a 12.7 MB file in 0.73 s, against 32.7 s in the interpreter (release builds, one thread, checking and compiling included).
 
-On several threads (M7), each thread runs its own copy of a function's code, so threads do not contend on shared reference counts: `fib 27` written with `par` runs about 1.5× faster on 2 cores (release build). The scheduler is one lock-protected queue set, so very small behaviours lose time handing the lock between threads: a fork/join tree of 65 536 behaviours that each add two numbers is about 2.3× *slower* on 2 threads than on 1. A lock-free scheduler (Verona's per-cown queues) belongs with the native runtime (M8).
+On several threads, `fib 30` written with `par` runs about 1.5× faster on 2 cores than on 1. Behaviours pay for coordination between cores, about 1.5 µs each when one thread creates them and another runs them: a fork/join tree of 65 536 behaviours that each add two numbers runs in 0.14 s on 2 threads against 0.05 s on 1 (where the FIFO queue needs no synchronisation). With about 5 µs of work per leaf the same tree is 1.35× faster on 2 threads, and with about 17 µs 1.6× faster.
 
 ## 14. Native code (M8, D72–D77)
+
+`checkers run` compiles the program to native code in memory and runs it; `checkers build FILE.ck -o PROGRAM` writes an executable. Code is in `src/native/`, the runtime in the `checkers_rt` crate (`rt/`).
 
 **Pipeline (D72).**
 
 ```
 staged, erased code (src/run/ir.rs)
-  │ closure conversion: every lambda becomes a top-level function taking its free variables
-  │ reference counting: dup/drop and reuse inserted (D74)
+  │ closure conversion (lower.rs): every lambda becomes a function taking its closure and arguments
+  │ reference counting (rc.rs): dup, drop and reuse inserted (D74)
   ▼
-first-order code ──▶ Cranelift IR ──┬──▶ JIT: `checkers run --native`, run tests
-                                    └──▶ object file + runtime library ──cc──▶ `checkers build -o PROG`
+first-order code ──codegen.rs──▶ Cranelift IR ──┬──▶ in memory (JIT): `checkers run`
+                                                └──▶ object file + libcheckers_rt.a ──cc──▶ `checkers build`
 ```
 
-**Values (D73).** A value is one 64-bit word. `n` is stored as `2n + 1` while it fits in 63 bits; otherwise as a pointer to a big integer. A heap object is a header (reference count, constructor number, field count) followed by its fields, each a word. `True`, `None`, `[]` and other constructors without fields are small words. Closures are objects holding a code pointer and the free variables. `Bytes` and `String` are objects holding their bytes.
+**Values (D73).** A value is one 64-bit word: `2n + 1` for an integer `n` that fits in 63 bits; `0` for an erased value; `8k + 2` for constructor `k` without fields; `8k + 4` for unit and the capabilities; otherwise a pointer to a heap object. An object is a header (reference count; kind, field count and constructor or arity) followed by its words. Closures hold a code pointer and their free variables; a partial application holds the function and the arguments so far. Strings and bytes hold their bytes. Numbers that don't fit, decimals, bags, files, cowns and futures are Rust values behind an object. Literals and the closures of definitions are static data that is never freed. Addition, subtraction, multiplication and comparisons of small integers, equality of small integers, byte indexing, and calls of closures of the right arity are inline; the rest calls the runtime. **Not yet:** leaving out the overflow check where a refinement bounds a number (`U8`); it changes no result.
 
-**Memory (D74).** Every function receives its arguments owned and must consume them: pass each on, or drop it. Where a value is used twice, the compiler inserts a `dup` (increment); after its last use, a `drop` (decrement, freeing at zero). A `match` that takes a uniquely owned value apart and builds a value of the same size reuses its memory (Perceus reuse). Counts are atomic.
+**Memory (D74).** Functions receive their arguments owned and consume them. Each variable a function binds goes to the last part of an expression that uses it; earlier parts borrow it, and a borrowed variable is duplicated only where it is kept (returned, stored, passed on). Primitives and builtins borrow their arguments. A `match` duplicates the fields its arm uses; if the arm doesn't use the value matched on, it is dropped, and if the arm builds a constructor with as many fields, the drop becomes a *reuse*: when it was the only reference, the new value is built in its memory. Counts are atomic. Constants (definitions without parameters) are computed on first use and kept for good. `CHECKERS_RC_CHECK=1` counts the objects left at exit (only constants' values should remain); `CHECKERS_NATIVE_DUMP=1` prints the first-order code with its reference counting.
 
-**Calls (D75).** Known calls are direct; calls of a closure are indirect through its code pointer. Calls in tail position are `return_call`, so tail recursion runs in constant stack, exactly as in the interpreter.
+**Calls (D75).** Every function uses Cranelift's `tail` convention; calls in tail position are `return_call` or `return_call_indirect`, so tail recursion runs in constant stack. Code runs on threads with large stacks (1 GiB for `main`, 256 MiB for workers). The runtime calls compiled code through a generated trampoline, `ck_invoke`.
 
-**Runtime (D76).** A Rust library: allocation and reference counts, big integers (`src/run/num.rs`), the `__builtin` functions of `stdlib/`, `format`, I/O, the scheduler (D66, lock-free per D77), and runtime errors with the same messages as the interpreter. Native code calls it through a fixed table of functions.
+**Runtime (D76).** `checkers_rt`: allocation and freeing, big integers (shared with the interpreter: `rt/src/num.rs`), the `__builtin`s of `stdlib/` (`rt/src/builtins.rs`, a second implementation of `src/run/builtins.rs`), `format` and `==`, I/O with atomic terminal calls (D68), behaviours and `par`, the scheduler (shared with the interpreter), and runtime errors with the interpreter's messages and exit code 70. Native code describes its constructors and definitions to the runtime in a short text descriptor. `checkers build` links with `libcheckers_rt.a`: the one named by `CHECKERS_RT_LIB`, else the newest next to the `checkers` executable or in `deps/` beside it.
 
-**Order of work.**
-1. Closure conversion and the word representation, with direct and tail calls.
-2. Arithmetic, `match`, records and constructors.
-3. Strings and bytes; builtins and I/O.
-4. Behaviours on the existing scheduler.
-5. Reference counting with reuse.
-6. `checkers build`.
-7. The lock-free scheduler.
-8. Make native the default.
+**Scheduler (D77).** Both backends share `rt/src/sched.rs`: Verona's per-resource queues with atomic links (§13.5), runnable behaviours on a lock-free queue (Vyukov's bounded multi-producer, multi-consumer queue, with a locked overflow), a worker running next the behaviour its own completion made runnable, and idle workers polling briefly before they sleep. A behaviour keeps the cells it names until it has released them.
 
-Each step adds the run tests it makes pass natively.
+**Tests (D76).** The golden runner runs each `tests/run/` case in the interpreter and, through the `checkers` binary, as native code, against one `.out` file; each stress case 10 times on 8 threads in both; and it builds two programs with `checkers build` and runs the executables.
 
-**Dependencies.** `cranelift-codegen`, `cranelift-frontend`, `cranelift-module`, `cranelift-jit`, `cranelift-object`, `cranelift-native` (all from the Bytecode Alliance, pure Rust; D5) and `target-lexicon`.
+**Dependencies.** `cranelift-codegen`, `cranelift-frontend`, `cranelift-module`, `cranelift-jit`, `cranelift-object`, `cranelift-native` 0.137 (all from the Bytecode Alliance, pure Rust; D5) and `target-lexicon`.
