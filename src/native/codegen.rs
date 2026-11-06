@@ -9,7 +9,7 @@
 
 use super::lower::*;
 use crate::core::Globals;
-use crate::run::ir::Op;
+use crate::native::ir::Op;
 use checkers_rt::word as w;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::types::{I32, I64, I8};
@@ -56,10 +56,18 @@ fn flags() -> MemFlagsData {
     MemFlagsData::trusted()
 }
 
+/// The most arguments the runtime can call compiled code with
+/// (`ck_invoke`).
+pub const MAX_INVOKE: usize = 64;
+
 pub struct Gen<'p, M: Module> {
     pub m: M,
-    p: &'p Program,
+    /// The program, which may grow between `define_new`s.
+    pub p: Program,
     g: &'p Globals,
+    /// Functions of `p` declared and defined so far.
+    defined: usize,
+    invoke_defined: bool,
     funcs: Vec<FuncId>,
     rt: HashMap<&'static str, FuncId>,
     /// Global closure of a function (definitions, wrappers).
@@ -106,7 +114,7 @@ fn arity_of(f: &Func) -> usize {
 }
 
 impl<'p, M: Module> Gen<'p, M> {
-    pub fn new(mut m: M, p: &'p Program, g: &'p Globals) -> Self {
+    pub fn new(mut m: M, p: Program, g: &'p Globals) -> Self {
         let call_conv = m.isa().default_call_conv();
         let mut rt = HashMap::new();
         for (name, n, ret) in RUNTIME {
@@ -128,13 +136,8 @@ impl<'p, M: Module> Gen<'p, M> {
                 rt.insert(*sym, m.declare_function(sym, Linkage::Import, &s).expect("declare a builtin"));
             }
         }
-        let mut funcs = Vec::new();
-        let mut max_arity = 0;
-        for (i, f) in p.funcs.iter().enumerate() {
-            let n = arity_of(f);
-            max_arity = max_arity.max(n);
-            funcs.push(m.declare_function(&format!("ckf_{i}"), Linkage::Local, &tail_sig(n)).expect("declare a function"));
-        }
+        let funcs = Vec::new();
+        let max_arity = MAX_INVOKE;
         let mut is = Signature::new(call_conv);
         for _ in 0..4 {
             is.params.push(AbiParam::new(I64));
@@ -147,6 +150,8 @@ impl<'p, M: Module> Gen<'p, M> {
             m,
             p,
             g,
+            defined: 0,
+            invoke_defined: false,
             funcs,
             rt,
             closures: HashMap::new(),
@@ -234,10 +239,20 @@ impl<'p, M: Module> Gen<'p, M> {
 
     // ── functions ───────────────────────────────────────────────────────────
 
-    pub fn define_all(&mut self) {
+    /// Declare and define the functions added to the program since the last
+    /// call (and, the first time, `ck_invoke`).
+    pub fn define_new(&mut self) {
         let mut fctx = FunctionBuilderContext::new();
         let mut ctx = self.m.make_context();
-        for i in 0..self.p.funcs.len() {
+        for i in self.funcs.len()..self.p.funcs.len() {
+            let n = arity_of(&self.p.funcs[i]);
+            if n > MAX_INVOKE {
+                panic!("`{}` takes {n} arguments; native code supports at most {MAX_INVOKE}", self.p.funcs[i].name);
+            }
+            let id = self.m.declare_function(&format!("ckf_{i}"), Linkage::Local, &tail_sig(n)).expect("declare a function");
+            self.funcs.push(id);
+        }
+        for i in self.defined..self.p.funcs.len() {
             ctx.func.signature = tail_sig(arity_of(&self.p.funcs[i]));
             ctx.func.name = ir::UserFuncName::user(0, i as u32);
             {
@@ -251,11 +266,21 @@ impl<'p, M: Module> Gen<'p, M> {
             }
             self.m.clear_context(&mut ctx);
         }
-        self.define_invoke(&mut fctx, &mut ctx);
+        self.defined = self.p.funcs.len();
+        if !self.invoke_defined {
+            self.define_invoke(&mut fctx, &mut ctx);
+            self.invoke_defined = true;
+        }
+    }
+
+    /// The finished function of index `f` (after `define_new`).
+    pub fn func_id(&self, f: u32) -> FuncId {
+        self.funcs[f as usize]
     }
 
     fn function(&mut self, b: &mut FunctionBuilder, i: usize) {
-        let f = &self.p.funcs[i];
+        let f = self.p.funcs[i].clone();
+        let f = &f;
         let entry = b.create_block();
         b.append_block_params_for_function_params(entry);
         b.switch_to_block(entry);

@@ -1,17 +1,23 @@
 //! Erasure (§13.1): core terms → runtime code. Types, implicit and `ghost`
 //! arguments become `Erased`; everything else keeps its shape (de Bruijn
-//! indices included), so the evaluator can follow the core term exactly.
+//! indices included). Closure conversion (`lower`) starts from here.
 
-use super::num::Num;
-use super::value::Value;
-use crate::core::{eval, force, CaseTm, ConId, DefId, Globals, Lit, Mult, Prim, Tm, Val};
+use crate::core::{eval, force, CaseTm, ConId, DefId, Globals, Mult, Prim, Tm, Val};
 use std::sync::Arc;
+
+/// A literal at run time.
+#[derive(Clone)]
+pub enum Lit {
+    Num(i128),
+    Str(Arc<str>),
+    Bytes(Arc<[u8]>),
+}
 
 pub enum Ir {
     Var(usize),
     Global(DefId),
     Erased,
-    Lit(Value),
+    Lit(Lit),
     Lam(Option<DefId>, Arc<Ir>),
     /// A call: head and arguments, flattened from nested applications.
     Call(Arc<Ir>, Vec<Arc<Ir>>),
@@ -88,15 +94,15 @@ impl Op {
 
 pub struct IrCase {
     pub branches: Vec<(ConId, usize, Arc<Ir>)>,
-    pub lits: Vec<(Value, Arc<Ir>)>,
+    pub lits: Vec<(Lit, Arc<Ir>)>,
     pub default: Option<Arc<Ir>>,
 }
 
-pub fn lit_value(l: &Lit) -> Value {
+pub fn lit_value(l: &crate::core::Lit) -> Lit {
     match l {
-        Lit::Num(n) => Value::Num(Num::S(*n)),
-        Lit::Str(s) => Value::Str(Arc::from(&**s)),
-        Lit::Bytes(b) => Value::Bytes(Arc::from(&**b)),
+        crate::core::Lit::Num(n) => Lit::Num(*n),
+        crate::core::Lit::Str(s) => Lit::Str(Arc::from(&**s)),
+        crate::core::Lit::Bytes(b) => Lit::Bytes(Arc::from(&**b)),
     }
 }
 
@@ -207,42 +213,44 @@ fn max_var(t: &Tm) -> Option<usize> {
     }
 }
 
-/// A copy of `ir` that shares no node with it. Each thread runs its own copy
-/// of a function's code, so evaluating it doesn't make threads contend on
-/// the reference counts of shared nodes (M7).
-pub fn private(ir: &Ir) -> Arc<Ir> {
-    let all = |xs: &[Arc<Ir>]| xs.iter().map(|x| private(x)).collect::<Vec<_>>();
-    Arc::new(match ir {
-        Ir::Var(i) => Ir::Var(*i),
-        Ir::Global(d) => Ir::Global(*d),
-        Ir::Erased => Ir::Erased,
-        Ir::Lit(v) => Ir::Lit(private_lit(v)),
-        Ir::Lam(o, b) => Ir::Lam(*o, private(b)),
-        Ir::Call(h, xs) => Ir::Call(private(h), all(xs)),
-        Ir::Let(v, b) => Ir::Let(private(v), private(b)),
-        Ir::Tuple(xs) => Ir::Tuple(all(xs)),
-        Ir::Proj(x, i) => Ir::Proj(private(x), *i),
-        Ir::Field(x, i) => Ir::Field(private(x), *i),
-        Ir::Con(c, xs) => Ir::Con(*c, all(xs)),
-        Ir::ConFn(c) => Ir::ConFn(*c),
-        Ir::Prim(op, xs, nat) => Ir::Prim(*op, all(xs), *nat),
-        Ir::Par(xs) => Ir::Par(all(xs)),
-        Ir::Case(s, c) => Ir::Case(
-            private(s),
-            Arc::new(IrCase {
-                branches: c.branches.iter().map(|(k, n, b)| (*k, *n, private(b))).collect(),
-                lits: c.lits.iter().map(|(v, b)| (private_lit(v), private(b))).collect(),
-                default: c.default.as_ref().map(|b| private(b)),
-            }),
-        ),
-        Ir::Fail(m) => Ir::Fail(m),
-    })
+/// The body to run for `d`: staged, generated (numbered after `g.defs`), or
+/// elaborated.
+pub fn body_of(g: &Globals, staged: Option<&crate::stage::Staged>, d: DefId) -> Option<Tm> {
+    let n = g.defs.len();
+    if let Some(s) = staged {
+        if (d.0 as usize) >= n {
+            return s.extra.get(d.0 as usize - n).map(|e| e.1.clone());
+        }
+        if let Some(b) = s.bodies.get(&d) {
+            return Some(b.clone());
+        }
+    }
+    g.defs.get(d.0 as usize).and_then(|i| i.body.clone())
 }
 
-fn private_lit(v: &Value) -> Value {
-    match v {
-        Value::Str(s) => Value::Str(Arc::from(&**s)),
-        Value::Bytes(b) => Value::Bytes(Arc::from(&**b)),
-        other => other.clone(),
+/// The definitions code refers to.
+pub fn globals_in(ir: &Ir, out: &mut Vec<DefId>) {
+    match ir {
+        Ir::Global(d) => out.push(*d),
+        Ir::Lam(_, b) => globals_in(b, out),
+        Ir::Call(h, xs) => {
+            globals_in(h, out);
+            xs.iter().for_each(|x| globals_in(x, out));
+        }
+        Ir::Let(a, b) => {
+            globals_in(a, out);
+            globals_in(b, out);
+        }
+        Ir::Tuple(xs) | Ir::Con(_, xs) | Ir::Prim(_, xs, _) | Ir::Par(xs) => xs.iter().for_each(|x| globals_in(x, out)),
+        Ir::Proj(x, _) | Ir::Field(x, _) => globals_in(x, out),
+        Ir::Case(s, c) => {
+            globals_in(s, out);
+            c.branches.iter().for_each(|(_, _, b)| globals_in(b, out));
+            c.lits.iter().for_each(|(_, b)| globals_in(b, out));
+            if let Some(d) = &c.default {
+                globals_in(d, out);
+            }
+        }
+        _ => {}
     }
 }

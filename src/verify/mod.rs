@@ -489,7 +489,7 @@ fn pretty(x: &Sx) -> String {
     if let Some(b) = seq_bytes(x) {
         return match std::str::from_utf8(&b) {
             Ok(t) => format!("{t:?}"),
-            Err(_) => crate::run::value::show_bytes(&b),
+            Err(_) => checkers_rt::ops::show_bytes(&b),
         };
     }
     if let Sx::List(l) = x {
@@ -641,9 +641,9 @@ fn render_model(text: &str, shown: &[(String, String)], strings: &[String]) -> S
                         // A `String` is its UTF-8 bytes to the solver (§7.3).
                         Some(b) if strings.contains(k) => match String::from_utf8(b.clone()) {
                             Ok(t) => format!("{t:?}"),
-                            Err(_) => crate::run::value::show_bytes(&b),
+                            Err(_) => checkers_rt::ops::show_bytes(&b),
                         },
-                        Some(b) => crate::run::value::show_bytes(&b),
+                        Some(b) => checkers_rt::ops::show_bytes(&b),
                         None => pretty(&v),
                     };
                     // Values of abstract types (capabilities, type variables) say nothing useful.

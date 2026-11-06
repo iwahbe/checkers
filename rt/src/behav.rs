@@ -231,10 +231,12 @@ pub unsafe extern "C" fn ck_par(thunks: *const W, n: u64) -> W {
             .iter()
             .map(|t| {
                 let t = Send2(*t);
+                let trap = crate::prog::current_trap();
                 std::thread::Builder::new()
                     .stack_size(crate::sched::WORKER_STACK)
                     .spawn_scoped(sc, move || {
                         let t = t;
+                        crate::prog::set_trap(trap);
                         Send2(apply(t.0, vec![UNIT]))
                     })
                     .expect("spawn a `par` thread")

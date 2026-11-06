@@ -1,0 +1,16 @@
+error[E0261]: this `check` stopped with a runtime error
+  --> check_runtime_error.ck:10:7
+   |
+10 | check steps 2 == 0
+   |       ^^^^^^^^^^^^ evaluating this failed
+   = note: runtime error in `steps`: `-` on `Nat` would go below zero (2 - 3)
+
+error[E0260]: this `check` is false
+  --> check_runtime_error.ck:12:7
+   |
+12 | check steps 7 == 5
+   |       ^^^^^^^^^^^^ evaluates to `False`
+   = note: left side:  `4`
+   = note: right side: `5`
+
+check_runtime_error.ck: 2 errors, 0 warnings

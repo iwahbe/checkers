@@ -6,9 +6,8 @@
 //! tests/stage/NAME.ck  → NAME.out is the staged code (`checkers stage`), or the
 //!                         report if checking fails (SPEC §8.9).
 //! tests/run/NAME.args  → run the program named on its first line (SPEC §13.6);
-//!                         NAME.out is its stdout, stderr and exit code. Each
-//!                         case runs twice, in the interpreter and as native
-//!                         code (`checkers run`), against the same NAME.out (D76).
+//!                         NAME.out is its stdout, stderr and exit code, from
+//!                         the `checkers` binary (`checkers run --threads 1`).
 //! tests/stress/NAME.args → as a run test, but with 8 threads, several times
 //!                         (CHECKERS_STRESS_RUNS, default 10); stdout lines are
 //!                         compared sorted, since behaviours that share no cown
@@ -34,25 +33,6 @@ fn files_with(dir: &Path, ext: &str) -> Vec<PathBuf> {
 
 fn ck_files(dir: &Path) -> Vec<PathBuf> {
     files_with(dir, "ck")
-}
-
-/// A writer whose bytes the test can read afterwards.
-#[derive(Clone, Default)]
-struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-
-impl Write for Capture {
-    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(b);
-        Ok(b.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-/// Run one `tests/run/NAME.args` case; the working directory is `tests/run`.
-fn run_case(args_path: &Path) -> String {
-    run_case_with(args_path, 1)
 }
 
 /// A run case as native code: the `checkers` binary in a subprocess (its
@@ -86,33 +66,6 @@ fn run_native(args_path: &Path, threads: usize) -> String {
         String::from_utf8_lossy(&out.stderr),
         out.status.code().unwrap_or(-1)
     )
-}
-
-/// A run case with `threads` worker threads (1: the deterministic FIFO
-/// scheduler, D67).
-fn run_case_with(args_path: &Path, threads: usize) -> String {
-    let spec = fs::read_to_string(args_path).unwrap();
-    let mut lines = spec.lines();
-    let first = lines.next().unwrap_or_default();
-    let (unverified, program) = match first.strip_prefix("--unverified ") {
-        Some(p) => (true, p.to_string()),
-        None => (false, first.to_string()),
-    };
-    let args: Vec<String> = lines.map(str::to_string).collect();
-    let stdin = fs::read(args_path.with_extension("in")).unwrap_or_default();
-    let text = fs::read_to_string(&program).unwrap_or_else(|e| panic!("{}: {program}: {e}", args_path.display()));
-    let (out, err) = (Capture::default(), Capture::default());
-    let io = checkers::run::Io {
-        stdin: Box::new(std::io::Cursor::new(stdin)),
-        stdout: Box::new(out.clone()),
-        stderr: Box::new(err.clone()),
-    };
-    let name = Path::new(&program).file_name().unwrap().to_string_lossy().to_string();
-    let dir = Path::new(&program).parent().unwrap_or(Path::new("")).to_path_buf();
-    let ran = checkers::run_in(&name, &text, &dir, &args, io, unverified, threads);
-    let stdout = String::from_utf8_lossy(&out.0.lock().unwrap()).to_string();
-    let stderr = ran.report.clone() + &String::from_utf8_lossy(&err.0.lock().unwrap());
-    format!("-- stdout\n{stdout}-- stderr\n{stderr}-- exit {}\n", ran.code)
 }
 
 /// A run result with its stdout lines sorted.
@@ -155,8 +108,8 @@ fn run(path: &Path, mode: &str) -> String {
 }
 
 fn main() {
-    // `check` runs code (D40); the interpreter needs a big stack.
-    checkers::run::with_big_stack(golden);
+    // Checking recurses deeply: a big stack.
+    checkers::with_big_stack(golden);
 }
 
 fn golden() {
@@ -189,17 +142,9 @@ fn golden() {
     std::env::set_current_dir(&run_dir).unwrap();
     for path in files_with(&run_dir, "args") {
         count += 1;
-        let actual = run_case(&path);
+        let actual = run_native(&path, 1);
         let out_path = path.with_extension("out");
         let expected = fs::read_to_string(&out_path).unwrap_or_default();
-        // Native code must give exactly the interpreter's output (D76).
-        let native = run_native(&path, 1);
-        if native != actual {
-            failures.push(format!(
-                "── {} (native) ──\n--- interpreter\n{actual}\n--- native\n{native}",
-                path.strip_prefix(root).unwrap().display()
-            ));
-        }
         if actual != expected {
             if update {
                 fs::write(&out_path, &actual).unwrap();
@@ -223,10 +168,9 @@ fn golden() {
         let expected = fs::read_to_string(&out_path).unwrap_or_default();
         let mut seen: Vec<String> = Vec::new();
         for _ in 0..runs.max(1) {
-            for actual in [sorted_stdout(&run_case_with(&path, 8)), sorted_stdout(&run_native(&path, 8))] {
-                if !seen.contains(&actual) {
-                    seen.push(actual);
-                }
+            let actual = sorted_stdout(&run_native(&path, 8));
+            if !seen.contains(&actual) {
+                seen.push(actual);
             }
         }
         let name = path.strip_prefix(root).unwrap().display().to_string();

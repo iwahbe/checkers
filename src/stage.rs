@@ -9,8 +9,7 @@
 //! in order (D41).
 
 use crate::core::{CaseTm, ConId, DefId, Globals, Lit, Mult, Prim, Tm};
-use crate::run::value::Value;
-use crate::run::{Interp, Io};
+use crate::native::eval::Evaluator;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -63,13 +62,12 @@ pub struct Staged {
 }
 
 /// Stage every function that calls a compile-time function. Failures are
-/// returned per function; those functions keep their unstaged bodies (the
-/// interpreter computes the same values from them).
+/// returned per function; those functions keep their unstaged bodies (run
+/// time computes the same values from them).
 pub fn stage_program(g: &Globals) -> (Staged, Vec<(DefId, String)>) {
-    let io = Io { stdin: Box::new(std::io::empty()), stdout: Box::new(std::io::sink()), stderr: Box::new(std::io::sink()) };
     let mut s = Stager {
         g,
-        it: Interp::new(g, io),
+        ev: None,
         depth: 0,
         active: Vec::new(),
         wanted: HashSet::new(),
@@ -98,8 +96,8 @@ pub fn stage_program(g: &Globals) -> (Staged, Vec<(DefId, String)>) {
 
 struct Stager<'g> {
     g: &'g Globals,
-    /// Runs compile-time computations.
-    it: Interp<'g>,
+    /// Runs compile-time computations as native code (D80); made on first use.
+    ev: Option<Evaluator<'g>>,
     /// Nesting of compile-time expansions, against runaway recursion.
     depth: usize,
     /// Expansions in progress, by function and compile-time arguments.
@@ -227,8 +225,12 @@ impl<'g> Stager<'g> {
     /// Compute a closed term at compile time; `None` if it fails there (it
     /// will fail at run time instead) or its value can't be written as a term.
     fn compute(&mut self, t: &Tm) -> Option<Tm> {
-        let v = self.it.eval_closed(t).ok()?;
-        reify(self.g, &v)
+        let g = self.g;
+        let ev = self.ev.get_or_insert_with(|| Evaluator::new(g));
+        let v = ev.eval(t).ok()?;
+        let r = ev.reify(v);
+        ev.release(v);
+        r
     }
 
     /// A known value in constructor or literal form, if it has one.
@@ -573,28 +575,6 @@ fn arity(ty: &Tm) -> usize {
         t = b;
     }
     n
-}
-
-/// A runtime value as a term, where it has one.
-fn reify(g: &Globals, v: &Value) -> Option<Tm> {
-    Some(match v {
-        Value::Num(n) => Tm::Lit(Lit::Num(n.to_string().parse().ok()?)),
-        Value::Str(s) => Tm::Lit(Lit::Str(Rc::from(&**s))),
-        Value::Bytes(b) => Tm::Lit(Lit::Bytes(Rc::from(&**b))),
-        Value::Con(c, fields) => con_tm(g, *c, fields)?,
-        Value::Tuple(xs) => Tm::Tuple(xs.iter().map(|x| reify(g, x)).collect::<Option<Vec<_>>>()?),
-        Value::Erased => Tm::Tuple(vec![]),
-        _ => return None,
-    })
-}
-
-fn con_tm(g: &Globals, c: ConId, fields: &[Value]) -> Option<Tm> {
-    let np = g.arity_ty(g.cons[c.0 as usize].ty);
-    let mut args: Vec<Tm> = (0..np).map(|_| Tm::Univ(0)).collect();
-    for f in fields {
-        args.push(reify(g, f)?);
-    }
-    Some(Tm::ConApp(c, args))
 }
 
 /// Replace erased arguments (types) by a placeholder, so a term whose value

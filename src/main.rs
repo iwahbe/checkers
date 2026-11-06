@@ -3,13 +3,12 @@
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-checkers — the Checkers compiler and interpreter
+checkers — the Checkers compiler
 
 USAGE:
-    checkers run [--unverified] [--threads N] [--interp] <FILE.ck> [ARG]...
-                                                    check and prove, then run `main` with ARGs as native code
-                                                    (N worker threads, default: cores; 1 is deterministic;
-                                                    --interp: run in the interpreter instead)
+    checkers run [--unverified] [--threads N] <FILE.ck> [ARG]...
+                                                    check and prove, then run `main` with ARGs
+                                                    (N worker threads, default: cores; 1 is deterministic)
     checkers build [--unverified] <FILE.ck> -o <PROGRAM>
                                                     check and prove, then write an executable
                                                     (its threads: CHECKERS_THREADS, default: cores)
@@ -22,7 +21,7 @@ USAGE:
 
 fn main() -> ExitCode {
     // The interpreter recurses for non-tail calls, so everything runs on a big stack.
-    let code = checkers::run::with_big_stack(|| {
+    let code = checkers::with_big_stack(|| {
         let args: Vec<String> = std::env::args().skip(1).collect();
         cli(&args)
     });
@@ -91,17 +90,12 @@ fn stage(args: &[String]) -> u8 {
 
 fn run(args: &[String]) -> u8 {
     let mut unverified = false;
-    let mut interp = false;
     let mut threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
     let mut args = args;
     loop {
         match args.first().map(String::as_str) {
             Some("--unverified") => {
                 unverified = true;
-                args = &args[1..];
-            }
-            Some("--interp") => {
-                interp = true;
                 args = &args[1..];
             }
             Some("--threads") => {
@@ -125,11 +119,7 @@ fn run(args: &[String]) -> u8 {
         Ok(t) => t,
         Err(_) => return 2,
     };
-    let ran = if interp {
-        checkers::run(path, &text, &args[1..], checkers::run::Io::process(), unverified, threads)
-    } else {
-        checkers::run_native(path, &text, &checkers::dir_of(path), &args[1..], unverified, threads)
-    };
+    let ran = checkers::run(path, &text, &checkers::dir_of(path), &args[1..], unverified, threads);
     eprint!("{}", ran.report);
     ran.code
 }

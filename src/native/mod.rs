@@ -1,8 +1,11 @@
-//! Native code (M8, SPEC §14): closure conversion (`lower`), reference
-//! counting (`rc`), Cranelift (`codegen`), run in memory or written as an
-//! executable. The runtime is the `checkers_rt` crate.
+//! Native code (M8, D80, SPEC §14): erasure (`ir`), closure conversion
+//! (`lower`), reference counting (`rc`), Cranelift (`codegen`), run in
+//! memory (`run`; compile-time evaluation, `eval`) or written as an
+//! executable (`build`). The runtime is the `checkers_rt` crate.
 
 pub mod codegen;
+pub mod eval;
+pub mod ir;
 pub mod lower;
 pub mod rc;
 
@@ -11,7 +14,7 @@ use cranelift_codegen::settings::{self, Configurable};
 
 
 /// The descriptor the runtime reads (`checkers_rt::prog::install`).
-fn descriptor(g: &Globals, p: &lower::Program) -> String {
+pub(crate) fn descriptor(g: &Globals, p: &lower::Program) -> String {
     let mut d = String::new();
     for (i, c) in g.cons.iter().enumerate() {
         let shown: String = c
@@ -59,16 +62,37 @@ fn descriptor(g: &Globals, p: &lower::Program) -> String {
 /// Closure-convert and reference-count the program.
 fn prepare(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId) -> lower::Program {
     let mut p = lower::lower(g, staged, main);
+    rc_new(g, &mut p);
+    p
+}
+
+/// Reference counting for the functions added since the last call.
+pub(crate) fn rc_new(g: &Globals, p: &mut lower::Program) {
     let fields_of = |c: u32| g.cons[c as usize].fields.len();
-    for f in &mut p.funcs {
+    let from = p.rc_done;
+    for f in &mut p.funcs[from..] {
         rc::function(f, &fields_of);
     }
     if std::env::var_os("CHECKERS_NATIVE_DUMP").is_some() {
-        for (i, f) in p.funcs.iter().enumerate() {
+        for (i, f) in p.funcs.iter().enumerate().skip(from) {
             eprintln!("ckf_{i} {} ({} params):\n{}", f.name, f.params.len(), dump(&f.body, 1));
         }
     }
-    p
+    p.rc_done = p.funcs.len();
+}
+
+/// An in-memory module for this machine, with the runtime's symbols.
+pub(crate) fn jit_module() -> cranelift_jit::JITModule {
+    // Cranelift's tail calls rely on frame pointers.
+    let mut jb = cranelift_jit::JITBuilder::with_flags(
+        &[("opt_level", "speed"), ("preserve_frame_pointers", "true")],
+        cranelift_module::default_libcall_names(),
+    )
+    .expect("a JIT for this machine");
+    for (name, ptr) in checkers_rt::symbols() {
+        jb.symbol(name, ptr);
+    }
+    cranelift_jit::JITModule::new(jb)
 }
 
 fn dump(e: &lower::E, d: usize) -> String {
@@ -135,14 +159,9 @@ fn dump(e: &lower::E, d: usize) -> String {
 pub fn run(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId, args: &[String], threads: usize) -> i32 {
     let p = prepare(g, staged, main);
     let desc = descriptor(g, &p);
-    let mut jb = cranelift_jit::JITBuilder::with_flags(&[("opt_level", "speed"), ("preserve_frame_pointers", "true")], cranelift_module::default_libcall_names())
-        .expect("a JIT for this machine");
-    for (name, ptr) in checkers_rt::symbols() {
-        jb.symbol(name, ptr);
-    }
-    let module = cranelift_jit::JITModule::new(jb);
-    let mut gen = codegen::Gen::new(module, &p, g);
-    gen.define_all();
+    let module = jit_module();
+    let mut gen = codegen::Gen::new(module, p, g);
+    gen.define_new();
     let main_clo = gen.main_closure();
     let invoke = gen.invoke;
     let mut module = gen.m;
@@ -181,8 +200,8 @@ pub fn build(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId, ou
     let ob = cranelift_object::ObjectBuilder::new(isa, "checkers_program", cranelift_module::default_libcall_names())
         .map_err(|e| e.to_string())?;
     let module = cranelift_object::ObjectModule::new(ob);
-    let mut gen = codegen::Gen::new(module, &p, g);
-    gen.define_all();
+    let mut gen = codegen::Gen::new(module, p, g);
+    gen.define_new();
     gen.define_c_main(&desc);
     let product = gen.m.finish();
     let bytes = product.emit().map_err(|e| e.to_string())?;

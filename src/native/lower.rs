@@ -1,4 +1,4 @@
-//! Closure conversion (D72, §14): the interpreter's code (`run::ir::Ir`,
+//! Closure conversion (D72, §14): erased code (`native::ir::Ir`,
 //! curried and de Bruijn-indexed) becomes first-order functions over
 //! numbered variables. Every lambda becomes a function taking its closure
 //! (the environment) and its arguments; saturated calls of known functions
@@ -6,8 +6,7 @@
 //! reference-counting pass can treat them as borrowed.
 
 use crate::core::{ConId, DefId, Globals, Mult, Tm};
-use crate::run::ir::{Compiler, Ir, Op};
-use crate::run::value::Value;
+use crate::native::ir::{Compiler, Ir, Lit as RtLit, Op};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
@@ -70,6 +69,7 @@ pub struct Arm {
     pub body: E,
 }
 
+#[derive(Clone)]
 pub enum FnKind {
     /// A definition's function: it ignores its environment.
     Global,
@@ -83,6 +83,7 @@ pub enum FnKind {
     Caf,
 }
 
+#[derive(Clone)]
 pub struct Func {
     pub name: String,
     /// The definition this code belongs to (for runtime errors).
@@ -108,22 +109,28 @@ pub enum DefShape {
 }
 
 pub struct Program {
+    /// Functions; those from `rc_done` on still need reference counting.
     pub funcs: Vec<Func>,
+    pub rc_done: usize,
+    /// Compiled code of each definition lowered so far.
+    pub code: HashMap<u32, Arc<Ir>>,
     pub defs: HashMap<u32, DefShape>,
     /// Constructor wrapper functions, by constructor.
     pub con_wraps: HashMap<u32, u32>,
     /// All definition names (including staged ones), for error messages.
     pub names: Vec<String>,
+    /// `main`, when the program has one.
     pub main: u32,
 }
 
-struct Lowerer<'g> {
+/// Code with no definition (a `check`, a value staging computes).
+pub const NO_OWNER: u32 = u32::MAX;
+
+/// Adds to a `Program`.
+pub struct Lowerer<'a, 'g> {
     g: &'g Globals,
-    funcs: Vec<Func>,
-    defs: HashMap<u32, DefShape>,
-    con_wraps: HashMap<u32, u32>,
-    /// Compiled code of each reachable definition.
-    code: HashMap<u32, Arc<Ir>>,
+    staged: Option<&'a crate::stage::Staged>,
+    p: &'a mut Program,
     // Per function being lowered:
     next: u32,
     owner: u32,
@@ -140,90 +147,136 @@ fn lams(ir: &Ir) -> (usize, &Ir) {
     (n, b)
 }
 
-pub fn lower(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId) -> Program {
-    let ndefs = g.defs.len() + staged.map_or(0, |s| s.extra.len());
-    let mut names: Vec<String> = g.defs.iter().map(|d| d.name.to_string()).collect();
-    if let Some(s) = staged {
-        names.extend(s.extra.iter().map(|e| e.0.clone()));
-    }
-    let body_of = |d: u32| -> Option<Tm> { crate::run::body_of(g, staged, DefId(d)) };
-    // Compile every reachable definition.
-    let mut code = HashMap::new();
-    let mut todo = vec![main.0];
-    while let Some(d) = todo.pop() {
-        if code.contains_key(&d) || d as usize >= ndefs {
-            continue;
+impl Program {
+    pub fn new(g: &Globals, staged: Option<&crate::stage::Staged>) -> Program {
+        let mut names: Vec<String> = g.defs.iter().map(|d| d.name.to_string()).collect();
+        if let Some(s) = staged {
+            names.extend(s.extra.iter().map(|e| e.0.clone()));
         }
-        let Some(body) = body_of(d) else { continue };
-        let c = Compiler { g, owner: Some(DefId(d)) }.compile(&body);
-        let mut gs = Vec::new();
-        globals_in(&c, &mut gs);
-        todo.extend(gs.iter().map(|x| x.0));
-        code.insert(d, c);
-    }
-    let mut lw = Lowerer { g, funcs: Vec::new(), defs: HashMap::new(), con_wraps: HashMap::new(), code, next: 0, owner: 0 };
-    // Shapes first, so calls can be direct.
-    let mut ids: Vec<u32> = lw.code.keys().copied().collect();
-    ids.sort_unstable();
-    for d in &ids {
-        let (n, _) = lams(&lw.code[d]);
-        let func = lw.funcs.len() as u32;
-        lw.funcs.push(Func {
-            name: names[*d as usize].clone(),
-            owner: *d,
-            kind: if n > 0 { FnKind::Global } else { FnKind::Caf },
-            params: Vec::new(),
-            body: E::Erased,
-            nvars: 0,
-        });
-        lw.defs.insert(*d, if n > 0 { DefShape::Fn { func, arity: n } } else { DefShape::Caf { func } });
-    }
-    // Builtins referenced.
-    let mut referenced = BTreeSet::new();
-    for c in lw.code.values() {
-        let mut gs = Vec::new();
-        globals_in(c, &mut gs);
-        referenced.extend(gs.into_iter().map(|x| x.0));
-    }
-    for d in referenced {
-        if lw.defs.contains_key(&d) {
-            continue;
+        Program {
+            funcs: Vec::new(),
+            rc_done: 0,
+            code: HashMap::new(),
+            defs: HashMap::new(),
+            con_wraps: HashMap::new(),
+            names,
+            main: NO_OWNER,
         }
-        let info = &g.defs[d as usize];
-        let full = format!("{}.{}", info.module, info.name);
-        let shape = match checkers_rt::builtins::NAMES.iter().find(|(n, _)| *n == full) {
-            Some((_, sym)) => {
-                let mut keep = Vec::new();
-                let mut t = &info.ty;
-                while let Tm::Pi(_, m, _, _, b) = t {
-                    keep.push(*m != Mult::Zero);
-                    t = b;
-                }
-                let wrap = lw.wrapper(&full, d, FnKind::BuiltinWrap { sym, keep: keep.clone() }, keep.len());
-                DefShape::Builtin { sym, keep, wrap }
-            }
-            None => DefShape::Missing(full),
-        };
-        lw.defs.insert(d, shape);
     }
-    for d in &ids {
-        let ir = lw.code[d].clone();
-        let (DefShape::Fn { func, .. } | DefShape::Caf { func }) = lw.defs[d].clone() else { continue };
-        lw.owner = *d;
-        lw.next = 0;
-        let (n, body) = lams(&ir);
-        let params: Vec<V> = (0..n).map(|_| lw.fresh()).collect();
-        let mut ctx: Vec<V> = params.clone();
-        let body = lw.expr(body, &mut ctx, true);
-        let f = &mut lw.funcs[func as usize];
-        f.params = params;
-        f.body = body;
-        f.nvars = lw.next;
-    }
-    Program { funcs: lw.funcs, defs: lw.defs, con_wraps: lw.con_wraps, names, main: main.0 }
 }
 
-impl Lowerer<'_> {
+/// The whole program reachable from `main`.
+pub fn lower(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId) -> Program {
+    let mut p = Program::new(g, staged);
+    Lowerer::new(g, staged, &mut p).add_defs(&[main.0]);
+    p.main = main.0;
+    p
+}
+
+impl<'a, 'g> Lowerer<'a, 'g> {
+    pub fn new(g: &'g Globals, staged: Option<&'a crate::stage::Staged>, p: &'a mut Program) -> Self {
+        Lowerer { g, staged, p, next: 0, owner: 0 }
+    }
+
+    /// Lower `roots` and every definition they reach that isn't lowered yet.
+    pub fn add_defs(&mut self, roots: &[u32]) {
+        let g = self.g;
+        let staged = self.staged;
+        let ndefs = g.defs.len() + staged.map_or(0, |s| s.extra.len());
+        // Compile every new reachable definition.
+        let mut new: Vec<u32> = Vec::new();
+        let mut referenced = BTreeSet::new();
+        let mut todo: Vec<u32> = roots.to_vec();
+        while let Some(d) = todo.pop() {
+            if self.p.code.contains_key(&d) || self.p.defs.contains_key(&d) || d as usize >= ndefs {
+                continue;
+            }
+            let Some(body) = crate::native::ir::body_of(g, staged, DefId(d)) else {
+                referenced.insert(d);
+                continue;
+            };
+            let c = Compiler { g, owner: Some(DefId(d)) }.compile(&body);
+            let mut gs = Vec::new();
+            globals_in(&c, &mut gs);
+            todo.extend(gs.iter().map(|x| x.0));
+            self.p.code.insert(d, c);
+            new.push(d);
+        }
+        new.sort_unstable();
+        // Shapes first, so calls can be direct.
+        for d in &new {
+            let (n, _) = lams(&self.p.code[d]);
+            let func = self.p.funcs.len() as u32;
+            self.p.funcs.push(Func {
+                name: self.p.names[*d as usize].clone(),
+                owner: *d,
+                kind: if n > 0 { FnKind::Global } else { FnKind::Caf },
+                params: Vec::new(),
+                body: E::Erased,
+                nvars: 0,
+            });
+            self.p.defs.insert(*d, if n > 0 { DefShape::Fn { func, arity: n } } else { DefShape::Caf { func } });
+        }
+        // Builtins (and anything else without a body).
+        for d in referenced {
+            if self.p.defs.contains_key(&d) {
+                continue;
+            }
+            let info = &g.defs[d as usize];
+            let full = format!("{}.{}", info.module, info.name);
+            let shape = match checkers_rt::builtins::NAMES.iter().find(|(n, _)| *n == full) {
+                Some((_, sym)) => {
+                    let mut keep = Vec::new();
+                    let mut t = &info.ty;
+                    while let Tm::Pi(_, m, _, _, b) = t {
+                        keep.push(*m != Mult::Zero);
+                        t = b;
+                    }
+                    let wrap = self.wrapper(&full, d, FnKind::BuiltinWrap { sym, keep: keep.clone() }, keep.len());
+                    DefShape::Builtin { sym, keep, wrap }
+                }
+                None => DefShape::Missing(full),
+            };
+            self.p.defs.insert(d, shape);
+        }
+        for d in &new {
+            let ir = self.p.code[d].clone();
+            let (DefShape::Fn { func, .. } | DefShape::Caf { func }) = self.p.defs[d].clone() else { continue };
+            self.owner = *d;
+            self.next = 0;
+            let (n, body) = lams(&ir);
+            let params: Vec<V> = (0..n).map(|_| self.fresh()).collect();
+            let mut ctx: Vec<V> = params.clone();
+            let body = self.expr(body, &mut ctx, true);
+            let f = &mut self.p.funcs[func as usize];
+            f.params = params;
+            f.body = body;
+            f.nvars = self.next;
+        }
+    }
+
+    /// A closed term as a function of no arguments (a `Caf` computed
+    /// afresh each time it runs): its index.
+    pub fn add_closed(&mut self, t: &Tm) -> u32 {
+        let ir = Compiler { g: self.g, owner: None }.compile(t);
+        let mut gs = Vec::new();
+        globals_in(&ir, &mut gs);
+        let roots: Vec<u32> = gs.iter().map(|x| x.0).collect();
+        self.add_defs(&roots);
+        let func = self.p.funcs.len() as u32;
+        self.p.funcs.push(Func { name: "check".into(), owner: NO_OWNER, kind: FnKind::Caf, params: Vec::new(), body: E::Erased, nvars: 0 });
+        self.owner = NO_OWNER;
+        self.next = 0;
+        let mut ctx = Vec::new();
+        let body = self.expr(&ir, &mut ctx, true);
+        let f = &mut self.p.funcs[func as usize];
+        f.body = body;
+        f.nvars = self.next;
+        func
+    }
+}
+
+impl Lowerer<'_, '_> {
     fn fresh(&mut self) -> V {
         self.next += 1;
         self.next - 1
@@ -232,12 +285,12 @@ impl Lowerer<'_> {
     /// A wrapper function (builtin or constructor) of `arity` parameters.
     fn wrapper(&mut self, name: &str, owner: u32, kind: FnKind, arity: usize) -> u32 {
         let params: Vec<V> = (0..arity as u32).collect();
-        self.funcs.push(Func { name: name.to_string(), owner, kind, params, body: E::Erased, nvars: arity as u32 });
-        (self.funcs.len() - 1) as u32
+        self.p.funcs.push(Func { name: name.to_string(), owner, kind, params, body: E::Erased, nvars: arity as u32 });
+        (self.p.funcs.len() - 1) as u32
     }
 
     fn con_wrap(&mut self, c: u32) -> u32 {
-        if let Some(f) = self.con_wraps.get(&c) {
+        if let Some(f) = self.p.con_wraps.get(&c) {
             return *f;
         }
         let ci = &self.g.cons[c as usize];
@@ -246,7 +299,7 @@ impl Lowerer<'_> {
         let name = ci.name.to_string();
         let arity = self.g.arity_con(ConId(c));
         let f = self.wrapper(&name, self.owner, FnKind::ConWrap { con: c, np, erased }, arity);
-        self.con_wraps.insert(c, f);
+        self.p.con_wraps.insert(c, f);
         f
     }
 
@@ -273,15 +326,12 @@ impl Lowerer<'_> {
         Self::wrap(binds, E::Borrow { op, args, drops: Vec::new() })
     }
 
-    fn lit(v: &Value) -> E {
+    fn lit(v: &RtLit) -> E {
         match v {
-            Value::Num(n) => match n {
-                checkers_rt::num::Num::S(s) if checkers_rt::word::fits(*s) => E::Int(*s as i64),
-                other => E::BigLit(other.to_string()),
-            },
-            Value::Str(s) => E::Str(s.clone()),
-            Value::Bytes(b) => E::Bytes(b.clone()),
-            _ => E::Erased,
+            RtLit::Num(n) if checkers_rt::word::fits(*n) => E::Int(*n as i64),
+            RtLit::Num(n) => E::BigLit(n.to_string()),
+            RtLit::Str(s) => E::Str(s.clone()),
+            RtLit::Bytes(b) => E::Bytes(b.clone()),
         }
     }
 
@@ -392,10 +442,10 @@ impl Lowerer<'_> {
         }
         // The same outer variable may appear twice in the context (never in
         // practice): keep the first.
-        let f = self.funcs.len() as u32;
+        let f = self.p.funcs.len() as u32;
         let owner = self.owner;
         let name = format!("lambda{f}");
-        self.funcs.push(Func {
+        self.p.funcs.push(Func {
             name,
             owner,
             kind: FnKind::Lambda { captured: captured_inner },
@@ -414,7 +464,7 @@ impl Lowerer<'_> {
 
     fn call(&mut self, h: &Ir, args: &[Arc<Ir>], ctx: &mut Vec<V>, tail: bool) -> E {
         if let Ir::Global(d) = h {
-            match self.defs.get(&d.0).cloned() {
+            match self.p.defs.get(&d.0).cloned() {
                 Some(DefShape::Fn { func, arity }) if args.len() >= arity => {
                     let es: Vec<E> = args[..arity].iter().map(|a| self.expr(a, ctx, false)).collect();
                     let rest: Vec<E> = args[arity..].iter().map(|a| self.expr(a, ctx, false)).collect();
@@ -473,7 +523,7 @@ fn shift(ir: &Ir, k: usize) -> Ir {
             Ir::Par(xs) => Ir::Par(all(xs, depth)),
             Ir::Case(s, c) => Ir::Case(
                 a(s, depth),
-                Arc::new(crate::run::ir::IrCase {
+                Arc::new(crate::native::ir::IrCase {
                     branches: c.branches.iter().map(|(con, n, b)| (*con, *n, a(b, depth + n))).collect(),
                     lits: c.lits.iter().map(|(l, b)| (l.clone(), a(b, depth))).collect(),
                     default: c.default.as_ref().map(|d| a(d, depth)),
@@ -487,7 +537,7 @@ fn shift(ir: &Ir, k: usize) -> Ir {
 
 /// The definitions code refers to.
 pub fn globals_in(ir: &Ir, out: &mut Vec<DefId>) {
-    crate::run::globals_in(ir, out)
+    crate::native::ir::globals_in(ir, out)
 }
 
 /// Free variables of an expression.

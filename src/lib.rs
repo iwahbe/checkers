@@ -9,7 +9,6 @@ pub mod diag;
 pub mod elab;
 pub mod lint;
 pub mod native;
-pub mod run;
 pub mod source;
 pub mod stage;
 pub mod syntax;
@@ -17,7 +16,6 @@ pub mod usage;
 pub mod verify;
 
 use diag::Diagnostic;
-use std::io::Write as _;
 use source::SourceFile;
 
 /// Result of checking one file.
@@ -241,36 +239,38 @@ fn elaborate(name: &str, text: &str, dir: &std::path::Path) -> (Checked, Option<
     (c, Some((e, user)))
 }
 
-fn quiet_io() -> run::Io {
-    run::Io { stdin: Box::new(std::io::empty()), stdout: Box::new(std::io::sink()), stderr: Box::new(std::io::sink()) }
-}
-
 /// Evaluate the module's `check` declarations (D40).
 fn run_checks(c: &mut Checked, e: &elab::Elab, user: &str) {
     if c.errors() > 0 {
         return;
     }
-    let mut it = run::Interp::new(&e.g, quiet_io());
     let mods = program_modules(e, user);
+    if !e.checks.iter().any(|(m, _, _)| mods.contains(m)) {
+        return;
+    }
+    // Native code (D80): one in-memory module for all of this program's checks.
+    let mut ev = native::eval::Evaluator::new(&e.g);
     for (m, span, t) in &e.checks {
         if !mods.contains(m) {
             continue;
         }
-        match it.eval_closed(t) {
-            Ok(v) if it.is_false(&v) => {
+        match ev.eval(t) {
+            Ok(v) if ev.is_false(v) => {
                 let mut d = diag::Diagnostic::error("E0260", "this `check` is false", *span).with_label("evaluates to `False`");
                 if let core::Tm::PrimApp(core::Prim::Eq, sides) = t {
                     if let [l, r] = sides.as_slice() {
-                        if let (Ok(lv), Ok(rv)) = (it.eval_closed(l), it.eval_closed(r)) {
+                        if let (Ok(lv), Ok(rv)) = (ev.eval(l), ev.eval(r)) {
                             d = d
-                                .with_note(format!("left side:  `{}`", run::value::show(&it.rt, &lv, 0)))
-                                .with_note(format!("right side: `{}`", run::value::show(&it.rt, &rv, 0)));
+                                .with_note(format!("left side:  `{}`", ev.show(lv)))
+                                .with_note(format!("right side: `{}`", ev.show(rv)));
+                            ev.release(lv);
+                            ev.release(rv);
                         }
                     }
                 }
                 route(c, e, user, m, d);
             }
-            Ok(_) => {}
+            Ok(v) => ev.release(v),
             Err(err) => route(
                 c,
                 e,
@@ -278,7 +278,7 @@ fn run_checks(c: &mut Checked, e: &elab::Elab, user: &str) {
                 m,
                 diag::Diagnostic::error("E0261", "this `check` stopped with a runtime error", *span)
                     .with_label("evaluating this failed")
-                    .with_note(err.to_string()),
+                    .with_note(err),
             ),
         }
     }
@@ -297,39 +297,13 @@ fn is_proof_failure(d: &Diagnostic) -> bool {
     matches!(d.code, "E0450" | "E0451" | "E0452")
 }
 
-/// Check `text`, then call its exported `main` with `args` (D43, §13.4).
-/// With `unverified`, a program whose only errors are unproven obligations
-/// runs anyway, with the runtime checks of §13.3 (D48).
-pub fn run(name: &str, text: &str, args: &[String], io: run::Io, unverified: bool, threads: usize) -> Ran {
-    run_in(name, text, &dir_of(name), args, io, unverified, threads)
-}
-
-/// `run`, with imported modules looked up in `dir`.
-/// `threads`: worker threads for behaviours and `par`; 1 is the deterministic
-/// FIFO scheduler (D67).
-pub fn run_in(name: &str, text: &str, dir: &std::path::Path, args: &[String], io: run::Io, unverified: bool, threads: usize) -> Ran {
-    let (e, main, staged, report) = match ready_to_run(name, text, dir, unverified) {
-        Ok(r) => r,
-        Err(ran) => return ran,
-    };
-    let mut it = run::Interp::new(&e.g, io).with_staged(std::rc::Rc::new(staged));
-    let code = match it.run_main(main, args, threads) {
-        Ok(code) => code,
-        Err(err) => {
-            let mut io = it.io.lock().unwrap();
-            let _ = std::io::Write::flush(&mut io.stdout);
-            let _ = writeln!(io.stderr, "{err}");
-            70
-        }
-    };
-    it.flush();
-    Ran { report, code }
-}
-
-/// `run`, as native code (M8, §14). The program writes to this process's
+/// Check and prove `text`, then call its exported `main` with `args` (D43,
+/// §13.4), as native code (§14). The program writes to this process's
 /// standard streams, so the report is printed to standard error before it
-/// runs; the returned report is empty.
-pub fn run_native(name: &str, text: &str, dir: &std::path::Path, args: &[String], unverified: bool, threads: usize) -> Ran {
+/// runs; the returned report is empty. Imported modules are looked up in
+/// `dir`; `threads`: threads for behaviours and `par` (1: the deterministic
+/// FIFO scheduler, D67).
+pub fn run(name: &str, text: &str, dir: &std::path::Path, args: &[String], unverified: bool, threads: usize) -> Ran {
     let (e, main, staged, report) = match ready_to_run(name, text, dir, unverified) {
         Ok(r) => r,
         Err(ran) => return ran,
@@ -381,4 +355,15 @@ fn ready_to_run(
     };
     let (staged, _) = stage::stage_program(&e.g);
     Ok((e, core::DefId(main as u32), staged, report))
+}
+
+/// Run `f` on a thread with a large stack: checking recurses deeply (long
+/// lists in types, deep terms).
+pub fn with_big_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    std::thread::Builder::new()
+        .stack_size(1 << 30)
+        .spawn(f)
+        .expect("spawn the checking thread")
+        .join()
+        .unwrap_or_else(|e| std::panic::resume_unwind(e))
 }

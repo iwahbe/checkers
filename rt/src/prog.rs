@@ -4,7 +4,7 @@
 
 use crate::word::*;
 use std::io::Write;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 pub struct ConInfo {
     pub name: String,
@@ -44,10 +44,22 @@ pub struct Prog {
     pub invoke: Invoke,
 }
 
-static PROG: OnceLock<Prog> = OnceLock::new();
+/// The current program. `checkers check` installs one per file it
+/// evaluates `check`s in; the old ones are kept (never freed), since values
+/// computed under them may still be read.
+static PROG: AtomicPtr<Prog> = AtomicPtr::new(std::ptr::null_mut());
 
 pub fn prog() -> &'static Prog {
-    PROG.get().unwrap_or_else(|| fatal("the program was not set up"))
+    let p = PROG.load(Ordering::Acquire);
+    if p.is_null() {
+        fatal("the program was not set up");
+    }
+    unsafe { &*p }
+}
+
+fn prog_opt() -> Option<&'static Prog> {
+    let p = PROG.load(Ordering::Acquire);
+    (!p.is_null()).then(|| unsafe { &*p })
 }
 
 /// The descriptor (one item per line):
@@ -91,7 +103,7 @@ pub fn install(desc: &str, invoke: Invoke) {
             _ => {}
         }
     }
-    let _ = PROG.set(p);
+    PROG.store(Box::into_raw(Box::new(p)), Ordering::Release);
 }
 
 // ── values the runtime builds ───────────────────────────────────────────────
@@ -164,8 +176,19 @@ pub const NO_OWNER: u32 = u32::MAX;
 /// Stop with a runtime error, as the interpreter reports it (D76): flush
 /// standard output, print the message, exit with code 70.
 pub fn error(owner: u32, msg: &str) -> ! {
+    let name = prog_opt().and_then(|p| p.names.get(owner as usize));
+    // Compile-time evaluation: report to the compiler, stop this thread.
+    if let Some(tx) = TRAP.with(|t| t.borrow().clone()) {
+        let text = match name {
+            Some(n) => format!("runtime error in `{n}`: {msg}"),
+            None => format!("runtime error: {msg}"),
+        };
+        let _ = tx.send(Err(text));
+        loop {
+            std::thread::park();
+        }
+    }
     crate::io::flush();
-    let name = PROG.get().and_then(|p| p.names.get(owner as usize));
     let mut e = std::io::stderr().lock();
     let _ = match name {
         Some(n) => writeln!(e, "runtime error in `{n}`: {msg}"),
@@ -181,6 +204,40 @@ pub fn error(owner: u32, msg: &str) -> ! {
 pub unsafe extern "C" fn ck_fail(owner: u64, msg: *const u8, len: u64) -> W {
     let m = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg, len as usize)) };
     error(owner as u32, &format!("reached {m}"))
+}
+
+thread_local! {
+    /// Where a runtime error goes during compile-time evaluation (D80).
+    pub static TRAP: std::cell::RefCell<Option<std::sync::mpsc::Sender<Result<W, String>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run compiled code for the compiler (a `check`, a value staging needs):
+/// on a thread of its own with a large stack. A runtime error doesn't exit
+/// the process: it comes back as `Err` with the message `checkers run`
+/// would print, and that thread stays parked.
+pub fn eval_trapped(f: impl FnOnce() -> W + Send + 'static) -> Result<W, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let tx2 = tx.clone();
+    let spawned = std::thread::Builder::new().stack_size(1 << 30).spawn(move || {
+        TRAP.with(|t| *t.borrow_mut() = Some(tx2.clone()));
+        let w = f();
+        let _ = tx2.send(Ok(w));
+    });
+    if let Err(e) = spawned {
+        return Err(format!("could not start evaluation: {e}"));
+    }
+    drop(tx);
+    rx.recv().unwrap_or_else(|_| Err("evaluation stopped".into()))
+}
+
+/// This thread's trap, for threads it starts (`par`).
+pub fn current_trap() -> Option<std::sync::mpsc::Sender<Result<W, String>>> {
+    TRAP.with(|t| t.borrow().clone())
+}
+
+pub fn set_trap(tx: Option<std::sync::mpsc::Sender<Result<W, String>>>) {
+    TRAP.with(|t| *t.borrow_mut() = tx);
 }
 
 /// A runtime error with a message of its own (from native code).
