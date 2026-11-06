@@ -1,0 +1,24 @@
+# basics.ck — formatter input (D91, D92). The expected output is basics.out.
+module basics
+import list (map)
+
+enum Shape
+    Circle r : r~Nat
+    Rect w h : w~Nat, h~Nat     # width, height
+    Empty                       # nothing
+
+fn area s -> a : s~Shape, a~Nat
+    match s
+        Circle r -> 3 * r * r  # close enough
+        Rect w h -> w * h
+        Empty    -> 0
+fn total shapes -> n : shapes~List Shape,
+                       n~Nat
+    sum (map area shapes)
+
+fn sum xs -> n : xs~List Nat, n~Nat
+    match xs
+        []        -> 0
+        x :: rest -> x + sum rest
+check area (Rect 2 3) == 6
+check total [Circle 1, Empty] == 3
