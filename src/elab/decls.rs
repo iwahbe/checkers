@@ -32,17 +32,48 @@ impl Elab {
         self.stdlib_mode = is_stdlib;
         let ids = self.register(m);
         self.phase_type_params(m, &ids);
-        self.phase_aliases(m, &ids);
-        self.phase_ctors(m, &ids);
+        // Declarations in the order of what they use, not of the file (D65).
+        let plan = super::order::plan(m);
+        for chain in &plan.cycles {
+            let name = |k: usize| decl_name(&m.decls[k]).map(|n| n.name.clone()).unwrap_or_default();
+            let span = decl_name(&m.decls[chain[0]]).map(|n| n.span).unwrap_or(m.decls[chain[0]].span);
+            let shown: Vec<String> = chain.iter().map(|k| format!("`{}`", name(*k))).collect();
+            let msg = if chain.len() <= 2 {
+                format!("`{}` depends on itself", name(chain[0]))
+            } else {
+                format!("`{}` depends on itself: {}", name(chain[0]), shown.join(" → "))
+            };
+            self.err(Diagnostic::error("E0225", msg, span).with_help(
+                "a type, signature or constant can't need its own value; break the chain (recursion between function bodies is fine)",
+            ));
+        }
+        let mut sigs: HashMap<usize, Sig> = HashMap::new();
+        for group in &plan.groups {
+            let keep: HashSet<usize> = group.iter().map(|n| match n {
+                super::order::Node::Head(k) | super::order::Node::Body(k) => *k,
+            }).collect();
+            let mask: Vec<Option<Sym>> = ids.iter().enumerate().map(|(k, s)| if keep.contains(&k) { *s } else { None }).collect();
+            match group[0] {
+                super::order::Node::Head(k) => match &m.decls[k].kind {
+                    DeclKind::Enum { .. } | DeclKind::Record { .. } | DeclKind::Alias { .. } => {
+                        self.phase_aliases(m, &mask);
+                        self.phase_ctors(m, &mask);
+                    }
+                    DeclKind::Const { .. } => self.phase_consts(m, &mask),
+                    _ => {
+                        sigs.extend(self.phase_signatures(m, &mask));
+                        self.phase_lemma_statements(m, &mask, &mut sigs);
+                        self.phase_measures(m, &mask, &sigs);
+                    }
+                },
+                super::order::Node::Body(k) => {
+                    let one: HashMap<usize, Sig> = sigs.remove(&k).map(|s| (k, s)).into_iter().collect();
+                    self.phase_bodies(m, &mask, one, false);
+                }
+            }
+        }
         self.phase_positivity(m, &ids);
-        // Constants first, since signatures may use them; one that calls a
-        // function waits until the signatures are known.
-        let late = self.phase_consts(m, &ids, None);
-        let mut sigs = self.phase_signatures(m, &ids);
-        self.phase_consts(m, &ids, Some(&late));
-        self.phase_lemma_statements(m, &ids, &mut sigs);
-        self.phase_measures(m, &ids, &sigs);
-        self.phase_bodies(m, &ids, sigs);
+        self.phase_bodies(m, &ids, HashMap::new(), true);
         self.check_termination();
         // A transparent function's private helpers are visible to the prover
         // too, or its body would say nothing (D54): close the set over calls.
@@ -736,37 +767,19 @@ impl Elab {
         }
     }
 
-    /// Elaborate constants. The first pass (`only` is `None`) sets aside, and
-    /// returns, those that use a definition whose type isn't known yet; the
-    /// second elaborates just those.
-    fn phase_consts(&mut self, m: &ast::Module, ids: &[Option<Sym>], only: Option<&HashSet<DefId>>) -> HashSet<DefId> {
-        let mut late = HashSet::new();
+    fn phase_consts(&mut self, m: &ast::Module, ids: &[Option<Sym>]) {
         for (d, id) in m.decls.iter().zip(ids) {
             let DeclKind::Const { value, .. } = &d.kind else { continue };
             let Some(Sym::Def(did)) = id else { continue };
-            if only.is_some_and(|o| !o.contains(did)) {
-                continue;
-            }
             self.g.fuel.set(DEFAULT_FUEL);
             let mut cx = Cx::default();
-            let mark = self.diags.len();
-            self.unready_hit = false;
-            self.probing = only.is_none();
             let (t, ty) = self.infer(&mut cx, value);
-            self.probing = false;
-            if only.is_none() && self.unready_hit {
-                self.diags.truncate(mark);
-                self.deferred.clear();
-                late.insert(*did);
-                continue;
-            }
             self.solve_deferred();
             let tyt = quote(&self.g, 0, &ty);
             let info = &mut self.g.defs[did.0 as usize];
             info.ty = tyt;
             info.body = Some(t);
         }
-        late
     }
 
     /// Elaborate `fn name params -> result : constraints` into a context and Π-type.
@@ -997,7 +1010,7 @@ impl Elab {
         sigs
     }
 
-    fn phase_bodies(&mut self, m: &ast::Module, ids: &[Option<Sym>], mut sigs: HashMap<usize, Sig>) {
+    fn phase_bodies(&mut self, m: &ast::Module, ids: &[Option<Sym>], mut sigs: HashMap<usize, Sig>, checks: bool) {
         for (k, (d, id)) in m.decls.iter().zip(ids).enumerate() {
             self.g.fuel.set(DEFAULT_FUEL);
             match &d.kind {
@@ -1054,7 +1067,7 @@ impl Elab {
                     }
                     self.cur_fn = None;
                 }
-                DeclKind::Check { expr } => {
+                DeclKind::Check { expr } if checks => {
                     let mut cx = Cx::default();
                     let b = self.bool_ty();
                     let t = self.check(&mut cx, expr, &b, false);
@@ -1284,5 +1297,17 @@ fn defs_in(t: &Tm, out: &mut Vec<DefId>) {
             }
         }
         _ => {}
+    }
+}
+
+fn decl_name(d: &ast::Decl) -> Option<&Ident> {
+    match &d.kind {
+        DeclKind::Fn { name, .. }
+        | DeclKind::Lemma { name, .. }
+        | DeclKind::Const { name, .. }
+        | DeclKind::Enum { name, .. }
+        | DeclKind::Record { name, .. }
+        | DeclKind::Alias { name, .. } => Some(name),
+        DeclKind::Check { .. } => None,
     }
 }

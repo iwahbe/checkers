@@ -8,7 +8,7 @@
 - Keep `cargo clippy` clean. No new dependencies without a reason in the commit message.
 - `CHECKERS_DUMP=1 checkers run …` prints each function's elaborated core term as the interpreter compiles it. `CHECKERS_SMT_DUMP=1 checkers check …` prints every SMT query.
 - Z3 is linked in (crate `z3-sys`, feature `vendored`, D46): a clean build compiles Z3 from source (needs CMake and a C++ compiler; slow, once). For quicker development builds against an installed libz3: `Z3_LIBRARY_PATH_OVERRIDE=<dir> LD_LIBRARY_PATH=<dir> CARGO_TARGET_DIR=target-dyn cargo test --no-default-features` (the `z3-solver` pip package ships a matching `libz3.so`). Examples that need a later milestone are listed in `examples/PENDING`; their output is pinned in `tests/pending/`.
-- Diagnostic codes: `E0001`–`E0099` lexer/layout, `E0100`–`E0199` parser, `E0200`–`E0299` names and types, `E0300`–`E0349` termination, `E0350`–`E0399` declarations (positivity, signatures), `E0400`–`E0449` usage (`own`/`ghost`), `E0450`–`E0499` proofs, `W001`–`W003` naming (§9.7), `W010`–`W019` usage (`W010`: redundant `own`). Never reuse a code for a different meaning (E0107 is retired).
+- Diagnostic codes: `E0001`–`E0099` lexer/layout, `E0100`–`E0199` parser, `E0200`–`E0299` names and types, `E0300`–`E0349` termination, `E0350`–`E0399` declarations (positivity, signatures), `E0400`–`E0449` usage (`own`/`ghost`), `E0450`–`E0499` proofs, `W001`–`W003` naming (§9.7), `W010`–`W019` usage (`W010`: redundant `own`). Never reuse a code for a different meaning (E0107 and E0224 are retired).
 - The standard library lives in `stdlib/*.ck` and is embedded in the binary. A function body consisting of `__builtin` (allowed only in `stdlib/`) is a primitive implemented in Rust.
 
 ## Layout
@@ -27,6 +27,7 @@ src/elab/decls.rs    imports, declarations, positivity, signatures (auto-binding
 src/elab/expr.rs     bidirectional checking of expressions, blocks, `<-`, `try`, `when`/`fork`/`join`
 src/elab/pattern.rs  `match` → case trees, exhaustiveness witnesses
 src/elab/termination.rs  structural recursion over call-graph SCCs (§5.3)
+src/elab/order.rs   declaration order by dependencies, cycles (D65)
 src/elab/stdlib.rs   embedded standard library loading, program modules from `a/b.ck` (D53)
 src/usage.rs         `own`/`ghost` usage (QTT multiplicities)
 src/stage.rs         staging (§8.9): expands compile-time functions before erasure; `checkers stage`

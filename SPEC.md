@@ -73,7 +73,7 @@ This document is the single source of truth for Checkers. Implementation follows
 | D62 | **Compile time is pure (§8.9).** Data, types and functions only; no capabilities or effects at compile time. | 11/06/2026 | decided (11/06/2026) |
 | D63 | **Dependent `match` (§5.2).** Matching a variable refines the expected type in each arm: the variable is replaced by the arm's constructor. Applied whenever possible; needed for functions whose result type is computed from a parameter (`go` in `examples/format.ck`). | 11/06/2026 | decided (11/06/2026) |
 | D64 | **One runtime function per compile-time arguments (§8.9).** An expansion that reaches itself again (same function, same compile-time arguments) becomes a generated runtime function taking the runtime arguments; `checkers stage` prints it as `name[args]`. This is what Zig and C++ templates do, without new syntax; explicit `Code`/`quote`/`splice` (D60) stay for later. | 11/06/2026 | decided (11/06/2026) |
-| D65 | **Constants are checked before signatures unless they call functions.** A top-level `let` whose value uses a function is checked after all signatures, so it can call a function declared anywhere in the module. Such a constant can't be used in a signature: E0224 (“used before its type is known”). | 11/06/2026 | **(proposed)** |
+| D65 | **Declarations are checked in dependency order, not file order.** Each declaration may use any other that doesn't depend on it. A declaration's *head* (a type's constructors, a constant's value, a function's or lemma's signature) needs the heads of what it mentions, and the body of a function it mentions in a type or a constant's value (the type or value may have to be computed). Bodies need only heads, so recursion between function bodies is unrestricted. A head that needs itself, through any chain, is E0225 (`A` depends on itself: `A` → `B` → `A`); types may still be mutually recursive. | 11/06/2026 | decided (11/06/2026) |
 | D24 | **Development loop:** Claude owns the implementation; Ian drives with examples. An issue is "found X, expected Y" with a `.ck` snippet. Each one becomes a regression test under `tests/` *before* the fix lands, and the spec is updated first whenever the expectation changes the language. | 11/05/2026 | decided |
 | D25 | **Milestones reordered for CLI tools first** (§10): a running interpreter with `IO` comes right after type checking, before the prover, so Checkers can be used to build its own tooling early. Capstone: an interactive shell with a small scripting language, with proofs of its correctness. | 11/05/2026 | decided |
 
@@ -191,6 +191,7 @@ Judgment: `Γ ⊢ t :σ A` with σ ∈ {0, 1}. σ = 1 checks `t` as a runtime te
 ## 5. Declarations
 
 ### 5.1 Definitions
+Order in the file doesn't matter: declarations are checked in dependency order, and a declaration may use any other that doesn't depend on it (D65).
 ```
 def f :ρ A = t              transparent: unfolds during conversion
 opaque def f :ρ A = t       opaque: never unfolds outside its own module (§6)

@@ -1,8 +1,0 @@
-error[E0224]: `LIMIT` is used before its type is known
-  --> const_in_signature.ck:11:38
-   |
-11 | fn clamp n -> m : n~Nat, m~Nat, m <= LIMIT
-   |                                      ^^^^^ used here
-   = help: `LIMIT` is a constant that calls a function, so it is checked after all signatures; a signature can't use it (write its value directly)
-
-const_in_signature.ck: 1 error, 0 warnings

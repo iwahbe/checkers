@@ -7,6 +7,7 @@
 
 mod decls;
 mod expr;
+mod order;
 mod pattern;
 pub mod stdlib;
 mod termination;
@@ -244,11 +245,6 @@ pub struct Elab {
     pub modules: HashMap<String, ModuleInfo>,
     pub sources: HashMap<String, SourceFile>,
     pub diags: Vec<(String, Diagnostic)>,
-    /// Set when a definition is used before its type is elaborated (a
-    /// constant that calls a function, tried before signatures).
-    pub unready_hit: bool,
-    /// While trying constants early: don't report unready uses.
-    pub probing: bool,
     seen: HashSet<(String, u32, u32, String)>,
     pub cur: String,
     loading: Vec<String>,
@@ -315,8 +311,6 @@ impl Elab {
             modules: HashMap::new(),
             sources: HashMap::new(),
             diags: Vec::new(),
-            unready_hit: false,
-            probing: false,
             seen: HashSet::new(),
             cur: String::new(),
             loading: Vec::new(),

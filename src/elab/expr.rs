@@ -435,17 +435,7 @@ impl Elab {
             Sym::Def(d) => {
                 let ty = self.g.defs[d.0 as usize].ty.clone();
                 if matches!(ty, Tm::Error) && self.g.defs[d.0 as usize].body.is_none() {
-                    self.unready_hit = true;
-                    if !self.probing {
-                        let name = self.g.defs[d.0 as usize].name.to_string();
-                        self.err(
-                            Diagnostic::error("E0224", format!("`{name}` is used before its type is known"), span)
-                                .with_label("used here")
-                                .with_help(format!(
-                                    "`{name}` is a constant that calls a function, so it is checked after all signatures; a signature can't use it (write its value directly)"
-                                )),
-                        );
-                    }
+                    // Only in a cycle, which E0225 reports (D65).
                     return (Tm::Error, Val::Error);
                 }
                 (Tm::Def(d), eval(&self.g, &empty, &ty))

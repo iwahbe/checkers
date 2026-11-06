@@ -1,0 +1,22 @@
+error[E0225]: `A` depends on itself: `A` → `B` → `A`
+ --> decl_cycle.ck:5:5
+  |
+5 | let A = B + 1
+  |     ^
+  = help: a type, signature or constant can't need its own value; break the chain (recursion between function bodies is fine)
+
+error[E0225]: `f` depends on itself: `f` → `LIMIT` → `f`
+ --> decl_cycle.ck:9:4
+  |
+9 | fn f n -> m : n~Nat, m~Nat, m <= LIMIT
+  |    ^
+  = help: a type, signature or constant can't need its own value; break the chain (recursion between function bodies is fine)
+
+error[E0225]: `Box` depends on itself: `Box` → `small` → `Box`
+  --> decl_cycle.ck:15:8
+   |
+15 | record Box
+   |        ^^^
+   = help: a type, signature or constant can't need its own value; break the chain (recursion between function bodies is fine)
+
+decl_cycle.ck: 3 errors, 0 warnings
