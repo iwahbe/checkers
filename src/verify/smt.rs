@@ -46,7 +46,9 @@ impl Sort {
         match self {
             Sort::Int => "Int".into(),
             Sort::Bool => "Bool".into(),
-            Sort::Str => "String".into(),
+            // A string is its UTF-8 bytes (§7.3): `++`, `len` and `utf8.encode`
+            // are then native, and literals are byte sequences.
+            Sort::Str => "(Seq Int)".into(),
             Sort::Bytes => "(Seq Int)".into(),
             Sort::Bag => "(Array Int Int)".into(),
             Sort::Data(t, args) => apply_sort(ty_sym(e, *t), args, e),
@@ -113,6 +115,9 @@ enum Ent {
     Fun(String, Vec<Sort>, Sort),
     /// Something the solver can't see (a value only used in types).
     Opaque(String),
+    /// A known function value: a closed term (a top-level function or a
+    /// lambda without free variables), keyed for instance names.
+    Known(String),
 }
 
 impl fmt::Debug for Ent {
@@ -121,6 +126,7 @@ impl fmt::Debug for Ent {
             Ent::Term(t, _) => write!(f, "{t}"),
             Ent::Ty(_) => write!(f, "<type>"),
             Ent::Fun(n, ..) => write!(f, "{n}"),
+            Ent::Known(k) => write!(f, "{k}"),
             Ent::Opaque(w) => write!(f, "<{w}>"),
         }
     }
@@ -131,6 +137,8 @@ impl fmt::Debug for Ent {
 struct Inst {
     def: DefId,
     tys: Vec<Sort>,
+    /// Keys of known function arguments (higher-order specialization).
+    funs: Vec<String>,
 }
 
 /// An application whose postcondition should be assumed.
@@ -151,10 +159,16 @@ pub struct Query {
     /// The same query without the quantified `Nat` axioms: Z3 is complete on
     /// it, so it can find a counterexample where the full query is `unknown`.
     pub without_axioms: Option<String>,
+    /// The same query with every reflected definition uninterpreted: weaker,
+    /// so `unsat` still proves the goal, and often far faster when the facts
+    /// in scope (`have`) already suffice. Tried first.
+    pub facts_only: Option<String>,
     /// Why facts in scope could not be given to the solver.
     pub dropped: Vec<String>,
     /// (SMT name, display name) of the locals, for a counterexample.
     pub shown: Vec<(String, String)>,
+    /// The SMT names of `String` locals (shown as text, not bytes).
+    pub string_vars: Vec<String>,
 }
 
 pub struct Builder<'a> {
@@ -167,6 +181,8 @@ pub struct Builder<'a> {
     funs: BTreeMap<String, String>,
     /// Reflected instances waiting for / with a definition.
     insts: BTreeMap<Inst, Option<Defn>>,
+    /// Known function values by key.
+    known: BTreeMap<String, Tm>,
     inst_queue: Vec<Inst>,
     consts: Vec<String>,
     asserts: Vec<String>,
@@ -180,6 +196,7 @@ pub struct Builder<'a> {
     ctx: Vec<Option<Ent>>,
     ctx_src: Vec<ObLocal>,
     pub shown: Vec<(String, String)>,
+    string_vars: Vec<String>,
 }
 
 impl<'a> Builder<'a> {
@@ -192,6 +209,7 @@ impl<'a> Builder<'a> {
             sorts: BTreeMap::new(),
             funs: BTreeMap::new(),
             insts: BTreeMap::new(),
+            known: BTreeMap::new(),
             inst_queue: Vec::new(),
             consts: Vec::new(),
             asserts: Vec::new(),
@@ -203,6 +221,7 @@ impl<'a> Builder<'a> {
             ctx: Vec::new(),
             ctx_src: Vec::new(),
             shown: Vec::new(),
+            string_vars: Vec::new(),
         }
     }
 
@@ -550,9 +569,15 @@ impl<'a> Builder<'a> {
                 if let Sort::Data(id, sargs) = &s {
                     let vals = self.value_args(&env, &tyt);
                     self.datatype_facts(&name, *id, sargs, &vals);
+                    // A field at a type parameter instantiated with a
+                    // refinement alias (`Parsed Members …`) has its predicates.
+                    self.field_alias_facts(&env, &raw, &name, *id, sargs);
                 }
                 if !l.name.starts_with('$') && !l.name.starts_with('_') {
                     self.shown.push((name.clone(), l.name.to_string()));
+                    if s == Sort::Str {
+                        self.string_vars.push(name.clone());
+                    }
                 }
                 Ent::Term(name.clone(), s)
             }
@@ -596,6 +621,44 @@ impl<'a> Builder<'a> {
             if let Ok((t, Sort::Bool)) = self.term(&inner, &p.tm) {
                 self.asserts.push(t);
             }
+        }
+    }
+
+    fn field_alias_facts(&mut self, env: &[Ent], ty: &Tm, x: &str, id: TyId, sargs: &[Sort]) {
+        let mut args = Vec::new();
+        let mut h = ty;
+        while let Tm::App(f, a, _, _) = h {
+            args.push((**a).clone());
+            h = f;
+        }
+        args.reverse();
+        if let Tm::TyConApp(_, v) = h {
+            let mut all = v.clone();
+            all.extend(args);
+            args = all;
+        }
+        if !args.iter().any(|a| matches!(a, Tm::Def(_) | Tm::App(..))) {
+            return;
+        }
+        let ctors = self.e.g.tys[id.0 as usize].ctors.clone();
+        if ctors.len() != 1 {
+            return;
+        }
+        let c = ctors[0];
+        let n = self.e.g.tys[id.0 as usize].params.len();
+        let senv = self.sort_env(id, sargs);
+        let Ok(fs) = self.con_fields(c, &senv) else { return };
+        let fields = self.e.g.cons[c.0 as usize].fields.clone();
+        for (k, f) in fields.iter().enumerate() {
+            let Tm::Var(i) = f.3 else { continue };
+            let Some(level) = (n + k).checked_sub(1 + i) else { continue };
+            let (Some(arg), Some((_, fsort))) = (args.get(level), fs.iter().find(|(j, _)| *j == k)) else { continue };
+            if level >= n {
+                continue;
+            }
+            let sel = format!("({} {x})", sel_sym(self.e, c, k));
+            let (arg, fsort) = (arg.clone(), fsort.clone());
+            self.alias_facts(env, &arg, &sel, &fsort);
         }
     }
 
@@ -734,53 +797,63 @@ impl<'a> Builder<'a> {
         self.axioms.insert(name.to_string(), ax);
     }
 
-    /// Like `nat_axiom`, for a reflected definition: `Int` arguments are
-    /// guarded by `>= 0`, since a `Nat` parameter is an `Int` to Z3 (for a
-    /// true `Int` parameter this only weakens the axiom).
-    fn reflected_nat_axiom(&mut self, name: &str, args: &[String]) {
-        if args.is_empty() {
-            return self.nat_axiom(name, args);
+    /// Is `d`'s result `>= 0` for every solver value of its arguments? For
+    /// a declared (uninterpreted) `Nat` function, assuming so is consistent.
+    /// For a reflected one, its body must be built from non-negative parts
+    /// (`0`, `1 + length rest`), with no precondition, and any recursion
+    /// structural: the unfolding is then finite on every solver value, so
+    /// the claim follows by induction. (`decreasing` recursion may run
+    /// forever on values the program can't build, so it gets no axiom.)
+    fn nonneg_fn(&self, d: DefId, stack: &mut Vec<DefId>) -> bool {
+        let mut ty = self.e.g.defs[d.0 as usize].ty.clone();
+        while let Tm::Pi(_, _, _, _, b) = ty {
+            ty = (*b).clone();
         }
-        let vars: Vec<String> = (0..args.len()).map(|k| format!("a{k}")).collect();
-        let binds: Vec<String> = vars.iter().zip(args).map(|(v, s)| format!("({v} {s})")).collect();
-        let guards: Vec<String> = vars.iter().zip(args).filter(|(_, s)| *s == "Int").map(|(v, _)| format!("(>= {v} 0)")).collect();
-        let app = format!("({name} {})", vars.join(" "));
-        let body = match guards.len() {
-            0 => format!("(>= {app} 0)"),
-            1 => format!("(=> {} (>= {app} 0))", guards[0]),
-            _ => format!("(=> (and {}) (>= {app} 0))", guards.join(" ")),
-        };
-        self.axioms.insert(name.to_string(), format!("(forall ({}) (! {body} :pattern ({app})))", binds.join(" ")));
+        if !self.is_nat_tm(&ty) {
+            return false;
+        }
+        if !self.reflected(d) {
+            return true;
+        }
+        let spec = self.e.specs.get(&d);
+        if spec.is_some_and(|s| s.measure.is_some() || s.preds.iter().any(|p| !p.is_post)) {
+            return false;
+        }
+        if stack.contains(&d) {
+            return true;
+        }
+        let Some(mut body) = self.e.g.defs[d.0 as usize].body.clone() else { return false };
+        while let Tm::Lam(_, _, _, b) = body {
+            body = (*b).clone();
+        }
+        stack.push(d);
+        let r = self.nonneg(&body, stack);
+        stack.pop();
+        r
     }
 
-    /// Every solver value of sort `s` is a well-typed program value. At the
-    /// top (`top`), `Int` is allowed: the axiom guards it.
-    fn faithful(&mut self, s: &Sort, top: bool, seen: &mut Vec<TyId>) -> bool {
-        match s {
-            Sort::Bool | Sort::Str => true,
-            Sort::Int => top,
-            Sort::Bytes | Sort::Bag => false,
-            Sort::Unin(_, xs) | Sort::Tuple(xs) => xs.iter().all(|x| self.faithful(x, false, seen)),
-            Sort::Data(id, xs) => {
-                if !xs.iter().all(|x| self.faithful(x, false, seen)) {
-                    return false;
-                }
-                if seen.contains(id) {
-                    return true;
-                }
-                seen.push(*id);
-                let senv = self.sort_env(*id, xs);
-                for c in self.e.g.tys[id.0 as usize].ctors.clone() {
-                    if self.e.con_invs.get(&c).is_some_and(|v| !v.is_empty()) {
-                        return false;
-                    }
-                    let Ok(fs) = self.con_fields(c, &senv) else { return false };
-                    if !fs.iter().all(|(_, f)| self.faithful(f, false, seen)) {
-                        return false;
-                    }
-                }
-                true
+    /// `t` is `>= 0` for every solver value of its free variables.
+    fn nonneg(&self, t: &Tm, stack: &mut Vec<DefId>) -> bool {
+        match t {
+            Tm::Lit(Lit::Num(n)) => *n >= 0,
+            Tm::PrimApp(Prim::Add | Prim::Mul, xs) => xs.iter().all(|x| self.nonneg(x, stack)),
+            Tm::PrimApp(Prim::Len, _) => true,
+            Tm::PrimApp(Prim::Par, xs) => xs.iter().all(|x| self.nonneg(x, stack)),
+            Tm::Let(_, _, _, _, b) => self.nonneg(b, stack),
+            Tm::Case(_, c) => {
+                c.branches.iter().all(|(_, _, b)| matches!(b, Tm::Error) || self.nonneg(b, stack))
+                    && c.lits.iter().all(|(_, b)| matches!(b, Tm::Error) || self.nonneg(b, stack))
+                    && c.default.as_ref().is_none_or(|b| matches!(b, Tm::Error) || self.nonneg(b, stack))
             }
+            Tm::App(..) | Tm::Def(_) => {
+                let mut h = t;
+                while let Tm::App(f, ..) = h {
+                    h = f;
+                }
+                let Tm::Def(d) = h else { return false };
+                self.nonneg_fn(*d, stack)
+            }
+            _ => false,
         }
     }
 
@@ -797,6 +870,7 @@ impl<'a> Builder<'a> {
                 Ent::Fun(n, a, r) if a.is_empty() => Ok((n, r)),
                 Ent::Fun(..) => out("a function used as a value"),
                 Ent::Ty(_) => out("a type used as a value"),
+                Ent::Known(_) => out("a function used as a value"),
                 Ent::Opaque(w) => out(format!("a value the prover can't see ({w})")),
             },
             Tm::Meta(m) => match self.e.g.meta(*m) {
@@ -807,7 +881,9 @@ impl<'a> Builder<'a> {
                 None => out("an unsolved unknown"),
             },
             Tm::Lit(Lit::Num(n)) => Ok((if *n < 0 { format!("(- {})", -n) } else { n.to_string() }, Sort::Int)),
-            Tm::Lit(Lit::Str(s)) => Ok((smt_string(s), Sort::Str)),
+            Tm::Lit(Lit::Str(s)) => {
+                Ok((smt_bytes(s.as_bytes()), Sort::Str))
+            }
             Tm::Lit(Lit::Bytes(b)) => Ok((smt_bytes(b), Sort::Bytes)),
             Tm::Tuple(xs) => {
                 let mut ts = Vec::new();
@@ -943,8 +1019,13 @@ impl<'a> Builder<'a> {
                     }
                     Ok((format!("({name} {})", ts.join(" ")), r))
                 }
+                Ent::Known(k) => {
+                    let f = self.known.get(&k).cloned().ok_or_else(|| Outside("an unknown function".into()))?;
+                    self.apply_known(env, &f, &args)
+                }
                 _ => out("an application of a non-function"),
             },
+            Tm::Lam(..) => self.apply_known(env, h, &args),
             Tm::Meta(m) if self.e.g.meta(*m).is_some() => {
                 let z = self.zonk(env.len(), t);
                 if has_meta(&z) {
@@ -969,6 +1050,7 @@ impl<'a> Builder<'a> {
         let ty = info.ty.clone();
         // Walk the binders: type arguments pick the instance, values are arguments.
         let mut tys = Vec::new();
+        let mut funs: Vec<String> = Vec::new();
         let mut vals = Vec::new();
         let mut post_env = Vec::new();
         let mut inner: Vec<Ent> = Vec::new();
@@ -983,7 +1065,21 @@ impl<'a> Builder<'a> {
                 post_env.push(Ent::Ty(s));
             } else {
                 if matches!(self.zonk(inner.len(), &a), Tm::Pi(..)) {
-                    return out(format!("`{}`, which takes a function as an argument", info.name));
+                    // A known function argument picks a specialized instance.
+                    let Some(key) = self.known_fun(env, arg) else {
+                        let what = if matches!(self.zonk(env.len(), arg), Tm::Lam(..)) {
+                            "a lambda that uses local variables"
+                        } else {
+                            "a function value"
+                        };
+                        return out(format!("`{}` applied to {what} (only named functions and lambdas without free variables are seen through)", info.name));
+                    };
+                    funs.push(key.clone());
+                    inner.push(Ent::Known(key.clone()));
+                    post_env.push(Ent::Known(key));
+                    t = (*b).clone();
+                    k += 1;
+                    continue;
                 }
                 let ps = self.sort_of(&inner, &a)?;
                 let (at, _) = self.term(env, arg)?;
@@ -1006,14 +1102,20 @@ impl<'a> Builder<'a> {
             }
             "bag.count" => return Ok((format!("(select {} {})", vals[1], vals[0]), Sort::Int)),
             "bag.sum" => return Ok((format!("((_ map (+ (Int Int) Int)) {} {})", vals[0], vals[1]), Sort::Bag)),
+            // A string is already its UTF-8 bytes.
+            "utf8.encode" | "string.bytes" => return Ok((vals[0].clone(), Sort::Bytes)),
+            // `word` occurs in `src` at `i` (the Rust primitive, exactly).
+            "bytes.matches_at" => {
+                let (src, i, w) = (&vals[0], &vals[1], &vals[2]);
+                return Ok((
+                    format!("(and (<= (+ {i} (seq.len {w})) (seq.len {src})) (= (seq.extract {src} {i} (seq.len {w})) {w}))"),
+                    Sort::Bool,
+                ));
+            }
             _ => {}
         }
-        let name = if tys.is_empty() {
-            sym(&qualified)
-        } else {
-            sym(&format!("{qualified}<{}>", tys.iter().map(|s| s.render(self.e)).collect::<Vec<_>>().join(",")))
-        };
-        let inst = Inst { def: d, tys: tys.clone() };
+        let inst = Inst { def: d, tys: tys.clone(), funs: funs.clone() };
+        let name = self.inst_name(&inst);
         if !self.insts.contains_key(&inst) && !self.funs.contains_key(&name) {
             if self.reflected(d) {
                 self.insts.insert(inst.clone(), None);
@@ -1033,12 +1135,13 @@ impl<'a> Builder<'a> {
         }
         let app = if vals.is_empty() { name } else { format!("({name} {})", vals.join(" ")) };
         if !self.in_def {
+            // At a call on program values the result is a `Nat` where the
+            // callee's precondition holds (outside it, a reflected body such
+            // as `n - 1` can be negative).
             let nat = self.is_nat_tm(&t);
             let spec = self.e.specs.get(&d);
             let has_pre = spec.is_some_and(|s| s.preds.iter().any(|p| !p.is_post));
             let has_post = spec.is_some_and(|s| s.preds.iter().any(|p| p.is_post));
-            // A reflected definition can be negative outside its precondition
-            // (`n - 1` at 0), so a `Nat` result is assumed only under it.
             if nat && !has_pre {
                 let a = app.clone();
                 self.nat_fact(&a);
@@ -1091,7 +1194,7 @@ impl<'a> Builder<'a> {
             Prim::Eq => bin("=", &ts, Sort::Bool),
             Prim::Ne => Ok((format!("(not (= {} {}))", ts[0].0, ts[1].0), Sort::Bool)),
             Prim::Concat => match &ts[0].1 {
-                Sort::Str => bin("str.++", &ts, Sort::Str),
+                Sort::Str => bin("seq.++", &ts, Sort::Str),
                 Sort::Bytes => bin("seq.++", &ts, Sort::Bytes),
                 s @ Sort::Data(..) => {
                     let s = s.clone();
@@ -1102,15 +1205,7 @@ impl<'a> Builder<'a> {
             },
             Prim::Len => match &ts[0].1 {
                 Sort::Bytes => Ok((format!("(seq.len {})", ts[0].0), Sort::Int)),
-                Sort::Str => {
-                    if let Tm::Lit(Lit::Str(s)) = &args[0] {
-                        return Ok((s.len().to_string(), Sort::Int));
-                    }
-                    self.funs.insert("|len.String|".into(), "(declare-fun |len.String| (String) Int)".into());
-                    let t = format!("(|len.String| {})", ts[0].0);
-                    self.nat_fact(&t);
-                    Ok((t, Sort::Int))
-                }
+                Sort::Str => Ok((format!("(seq.len {})", ts[0].0), Sort::Int)),
                 s @ Sort::Data(..) => {
                     let s = s.clone();
                     let f = self.list_fun("len", &s, 1, Sort::Int)?;
@@ -1133,7 +1228,7 @@ impl<'a> Builder<'a> {
             Prim::Format => {
                 let s = ts[0].1.render(self.e);
                 let f = sym(&format!("format<{s}>"));
-                self.funs.insert(f.clone(), format!("(declare-fun {f} ({s}) String)"));
+                self.funs.insert(f.clone(), format!("(declare-fun {f} ({s}) (Seq Int))"));
                 Ok((format!("({f} {})", ts[0].0), Sort::Str))
             }
             Prim::Par => Ok(ts[0].clone()),
@@ -1214,7 +1309,7 @@ impl<'a> Builder<'a> {
             }
             let lt = match l {
                 Lit::Num(n) => if *n < 0 { format!("(- {})", -n) } else { n.to_string() },
-                Lit::Str(s) => smt_string(s),
+                Lit::Str(s) => smt_bytes(s.as_bytes()),
                 Lit::Bytes(b) => smt_bytes(b),
             };
             let (bt, bs) = self.term(env, body)?;
@@ -1237,7 +1332,7 @@ impl<'a> Builder<'a> {
 
     // ── reflected definitions and postconditions ────────────────────────────
 
-    fn define_instances(&mut self) -> Vec<String> {
+    fn define_instances(&mut self) -> (Vec<String>, Vec<String>) {
         while let Some(inst) = self.inst_queue.pop() {
             let r = self.define(&inst);
             // A `Nat` result is non-negative, for every argument.
@@ -1245,30 +1340,16 @@ impl<'a> Builder<'a> {
             while let Tm::Pi(_, _, _, _, b) = ty {
                 ty = (*b).clone();
             }
-            // The axiom quantifies over every solver value, not just the
-            // well-typed ones, so it is stated only where the two agree: no
-            // precondition, and no `Nat`, byte or invariant hidden inside an
-            // argument's sort (an `Option Nat` is an `Option Int` to Z3).
-            // Sorts are judged at the generic signature: a value at a type
-            // parameter can only be passed on, compared or tested for
-            // equality, so (by parametricity) any solver value there behaves
-            // like some well-typed one.
-            let has_pre = self.e.specs.get(&inst.def).is_some_and(|s| s.preds.iter().any(|p| !p.is_post));
-            let generic = Inst {
-                def: inst.def,
-                tys: (0..inst.tys.len()).map(|k| Sort::Unin(format!("T{k}"), vec![])).collect(),
-            };
-            if self.is_nat_tm(&ty) && !has_pre {
-                let faithful = match self.inst_sig(&generic) {
-                    Ok((_, gparams, _)) => gparams.iter().all(|(_, s)| self.faithful(s, true, &mut Vec::new())),
-                    Err(_) => false,
-                };
-                if let (true, Ok((_, params, _))) = (faithful, self.inst_sig(&inst)) {
-                    {
-                        let name = self.inst_name(&inst);
-                        let sorts: Vec<String> = params.iter().map(|(_, s)| s.render(self.e)).collect();
-                        self.reflected_nat_axiom(&name, &sorts);
-                    }
+            // Z3 applies the definition to values no program can build
+            // (`Option Nat` is `Option Int` to it; invariants and
+            // preconditions aren't in sorts), where a `Nat` body can be
+            // negative. So "the result is >= 0 for every argument" is stated
+            // only when it holds for every solver value (`nonneg_fn`).
+            if self.is_nat_tm(&ty) && self.nonneg_fn(inst.def, &mut Vec::new()) {
+                if let Ok((_, params, _)) = self.inst_sig(&inst) {
+                    let name = self.inst_name(&inst);
+                    let sorts: Vec<String> = params.iter().map(|(_, s)| s.render(self.e)).collect();
+                    self.nat_axiom(&name, &sorts);
                 }
             }
             self.insts.insert(inst, r.ok());
@@ -1276,6 +1357,7 @@ impl<'a> Builder<'a> {
         let mut heads = Vec::new();
         let mut bodies = Vec::new();
         let mut decls = Vec::new();
+        let mut opaque = Vec::new();
         let all: Vec<(Inst, Option<Defn>)> = self.insts.iter().map(|(a, b)| (a.clone(), b.clone())).collect();
         for (inst, def) in &all {
             match def {
@@ -1283,6 +1365,9 @@ impl<'a> Builder<'a> {
                     let _ = name;
                     heads.push(head.clone());
                     bodies.push(body.clone());
+                    if let Some(d) = self.uninterp_decl(inst) {
+                        opaque.push(d);
+                    }
                 }
                 None => {
                     // Not translatable: uninterpreted.
@@ -1292,19 +1377,125 @@ impl<'a> Builder<'a> {
                 }
             }
         }
-        if !heads.is_empty() {
+        let reflected = !heads.is_empty();
+        if reflected {
             decls.push(format!("(define-funs-rec ({}) ({}))", heads.join(" "), bodies.join(" ")));
         }
-        decls
+        // The uninterpreted variant shares the rest (`decls` minus the group).
+        let mut only = decls.clone();
+        if reflected {
+            only.pop();
+            only.extend(opaque);
+        }
+        (decls, only)
     }
 
     fn inst_name(&self, inst: &Inst) -> String {
         let info = &self.e.g.defs[inst.def.0 as usize];
-        let q = format!("{}.{}", info.module, info.name);
-        if inst.tys.is_empty() {
-            sym(&q)
-        } else {
-            sym(&format!("{q}<{}>", inst.tys.iter().map(|s| s.render(self.e)).collect::<Vec<_>>().join(",")))
+        let mut q = format!("{}.{}", info.module, info.name);
+        if !inst.tys.is_empty() {
+            q += &format!("<{}>", inst.tys.iter().map(|s| s.render(self.e)).collect::<Vec<_>>().join(","));
+        }
+        if !inst.funs.is_empty() {
+            q += &format!("[{}]", inst.funs.join(","));
+        }
+        sym(&q)
+    }
+
+    /// If `arg` (under `env`) is a known function value, its key.
+    fn known_fun(&mut self, env: &[Ent], arg: &Tm) -> Option<String> {
+        let arg = self.zonk(env.len(), arg);
+        if let Tm::Var(i) = &arg {
+            return match self.resolve(env, *i).ok()? {
+                Ent::Known(k) => Some(k),
+                _ => None,
+            };
+        }
+        if !closed(&arg, 0) {
+            return None;
+        }
+        let mut h = &arg;
+        while let Tm::App(f, ..) = h {
+            h = f;
+        }
+        let key = match h {
+            Tm::Def(d) if matches!(arg, Tm::Def(_)) => {
+                let info = &self.e.g.defs[d.0 as usize];
+                format!("{}.{}", info.module, info.name)
+            }
+            _ => {
+                use std::hash::{Hash, Hasher};
+                let mut hs = std::collections::hash_map::DefaultHasher::new();
+                // Binder names don't matter: `\x -> …` written twice is one function.
+                let mut text = format!("{arg:?}");
+                for binder in ["Lam(\"", "Pi(\"", "Let(\""] {
+                    let mut out_ = String::new();
+                    let mut rest = text.as_str();
+                    while let Some(k) = rest.find(binder) {
+                        out_ += &rest[..k + binder.len()];
+                        rest = &rest[k + binder.len()..];
+                        if let Some(e) = rest.find('"') {
+                            rest = &rest[e..];
+                        }
+                    }
+                    out_ += rest;
+                    text = out_;
+                }
+                text.hash(&mut hs);
+                if std::env::var_os("CHECKERS_KNOWN_DUMP").is_some() {
+                    eprintln!("KNOWN {:08x} {arg:?}", hs.clone().finish() as u32);
+                }
+                format!("fn#{:08x}", hs.finish() as u32)
+            }
+        };
+        self.known.insert(key.clone(), arg);
+        Some(key)
+    }
+
+    /// Apply a closed function term to arguments under `env`.
+    fn apply_known(&mut self, env: &[Ent], f: &Tm, args: &[(Tm, Mult)]) -> Tx<(String, Sort)> {
+        match f {
+            Tm::Lam(..) => {
+                // The body sees only its parameters (the lambda is closed).
+                let mut inner = Vec::new();
+                let mut body = f;
+                for (a, _) in args {
+                    let Tm::Lam(_, _, _, b) = body else { return out("a lambda returning a function") };
+                    let (at, s) = self.term(env, a)?;
+                    inner.push(Ent::Term(at, s));
+                    body = b;
+                }
+                if matches!(body, Tm::Lam(..)) {
+                    return out("a partially applied lambda");
+                }
+                let body = body.clone();
+                self.term(&inner, &body)
+            }
+            _ => {
+                // Re-express the arguments as variables of a fresh environment.
+                let mut inner = Vec::new();
+                let mut tms = Vec::new();
+                let n = args.len();
+                for (k, (a, m)) in args.iter().enumerate() {
+                    let ent = match self.known_fun(env, a) {
+                        Some(key) => Ent::Known(key),
+                        None => match self.term(env, a) {
+                            Ok((t, s)) => Ent::Term(t, s),
+                            Err(e) => match self.sort_of(env, a) {
+                                Ok(s) => Ent::Ty(s),
+                                Err(_) => return Err(e),
+                            },
+                        },
+                    };
+                    inner.push(ent);
+                    tms.push((Tm::Var(n - 1 - k), *m));
+                }
+                let mut app = f.clone();
+                for (t, m) in tms {
+                    app = Tm::App(Rc::new(app), Rc::new(t), crate::core::Icit::Expl, m);
+                }
+                self.term(&inner, &app)
+            }
         }
     }
 
@@ -1314,11 +1505,16 @@ impl<'a> Builder<'a> {
         let mut params = Vec::new();
         let mut t = ty;
         let mut tk = 0;
+        let mut fk = 0;
         let mut k = 0;
         while let Tm::Pi(_, _, _, a, b) = t.clone() {
             if self.is_type(&a) {
                 env.push(Ent::Ty(inst.tys.get(tk).cloned().unwrap_or(Sort::Int)));
                 tk += 1;
+            } else if matches!(self.zonk(env.len(), &a), Tm::Pi(..)) {
+                let key = inst.funs.get(fk).cloned().ok_or_else(|| Outside("a function parameter".into()))?;
+                env.push(Ent::Known(key));
+                fk += 1;
             } else {
                 let s = self.sort_of(&env, &a)?;
                 let n = format!("p{k}");
@@ -1432,7 +1628,8 @@ impl<'a> Builder<'a> {
             }
         }
         self.assume_posts();
-        let defs = self.define_instances();
+        let (defs, opaque_defs) = self.define_instances();
+        let reflected = defs.len() != opaque_defs.len() || defs.iter().zip(&opaque_defs).any(|(a, b)| a != b);
         // Definitions may mention new datatypes; postconditions inside them are not assumed.
         let sorts = self.sort_decls()?;
         let mut text = String::new();
@@ -1453,10 +1650,12 @@ impl<'a> Builder<'a> {
                 text += "\n";
             }
         }
-        for d in defs {
-            text += &d;
+        let defs_at = text.len();
+        for d in &defs {
+            text += d;
             text += "\n";
         }
+        let defs_end = text.len();
         let mut axioms = String::new();
         for a in self.axioms.values() {
             axioms += &format!("(assert {a})\n");
@@ -1475,7 +1674,34 @@ impl<'a> Builder<'a> {
             text += &format!("(get-value ({}))\n", self.shown.iter().map(|s| s.0.clone()).collect::<Vec<_>>().join(" "));
         }
         let without_axioms = (!axioms.is_empty()).then(|| format!("{}{}", &text[..split], &text[split + axioms.len()..]));
-        Ok(Query { text, without_axioms, dropped, shown: self.shown })
+        let facts_only = reflected.then(|| {
+            let decls: String = opaque_defs.iter().map(|d| format!("{d}\n")).collect();
+            format!("{}{decls}{}", &text[..defs_at], &text[defs_end..])
+        });
+        Ok(Query { text, without_axioms, facts_only, dropped, shown: self.shown, string_vars: self.string_vars })
+    }
+}
+
+/// No variable of `t` reaches outside `depth` enclosing binders.
+fn closed(t: &Tm, depth: usize) -> bool {
+    match t {
+        Tm::Var(i) => *i < depth,
+        Tm::Pi(_, _, _, a, b) => closed(a, depth) && closed(b, depth + 1),
+        Tm::Lam(_, _, _, b) => closed(b, depth + 1),
+        Tm::App(a, b, _, _) => closed(a, depth) && closed(b, depth),
+        Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => {
+            v.iter().all(|a| closed(a, depth))
+        }
+        Tm::Proj(a, _) | Tm::Field(a, _, _) => closed(a, depth),
+        Tm::Let(_, _, a, b, c) => closed(a, depth) && closed(b, depth) && closed(c, depth + 1),
+        Tm::Case(sc, c) => {
+            closed(sc, depth)
+                && c.branches.iter().all(|(_, n, b)| closed(b, depth + n))
+                && c.lits.iter().all(|(_, b)| closed(b, depth))
+                && c.default.as_ref().is_none_or(|b| closed(b, depth))
+        }
+        Tm::Meta(_) | Tm::Error => false,
+        _ => true,
     }
 }
 
@@ -1501,18 +1727,6 @@ fn has_meta(t: &Tm) -> bool {
     }
 }
 
-fn smt_string(s: &str) -> String {
-    let mut out_ = String::from("\"");
-    for c in s.chars() {
-        match c {
-            '"' => out_.push_str("\"\""),
-            ' '..='~' if c != '\\' => out_.push(c),
-            _ => out_.push_str(&format!("\\u{{{:x}}}", c as u32)),
-        }
-    }
-    out_.push('"');
-    out_
-}
 
 fn smt_bytes(b: &[u8]) -> String {
     if b.is_empty() {

@@ -26,3 +26,12 @@ fn bad_first o -> b : o~Option Nat, b~Bool, b
 
 fn good_first o -> b : o~Option Nat, b~Bool, b
     first o >= 0
+
+# `decreasing` recursion may not end on values the program can't build
+# (`i > n` here), so no "for every argument" fact is assumed for it.
+fn count_up i n -> r : i~Nat, n~Nat, i <= n, r~Nat
+    decreasing n - i
+    if i == n then 0 else 1 + count_up (i + 1) n
+
+fn bad_count -> b : b~Bool, b
+    count_up 0 3 == 4                       # it is 3

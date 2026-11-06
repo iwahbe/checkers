@@ -280,8 +280,10 @@ fn escape_char c -> s : c~Char, s~String
         _                        -> string.from_char c
 
 fn hex4_string n -> s : n~Nat, n < 0x10000, s~String
-    let digit = \d -> char.from_ascii b"0123456789abcdef"[d]     # d < 16 ⇒ index in bounds
-    string.from_chars [digit (n / 4096), digit (n / 256 % 16), digit (n / 16 % 16), digit (n % 16)]
+    string.from_chars [hex_char (n / 4096), hex_char (n / 256 % 16), hex_char (n / 16 % 16), hex_char (n % 16)]
+
+fn hex_char d -> c : d~Nat, d < 16, c~Char
+    char.from_ascii b"0123456789abcdef"[d]      # d < 16 ⇒ index in bounds
 
 # ── Proofs ───────────────────────────────────────────────────────────────────
 
@@ -289,11 +291,35 @@ fn hex4_string n -> s : n~Nat, n < 0x10000, s~String
 fn delimits post : post~Bytes
     len post == 0 or is_ws post[0] or post[0] == ',' or post[0] == ']' or post[0] == '}'
 
+# What follows the first item's rendering in an array: `]`, or `,` and the rest.
+fn after_first rest -> s : rest~List Json, s~String
+    match rest
+        [] -> "]"
+        _ -> "," ++ join "," (map render rest) ++ "]"
+
+fn head_or_null xs -> v : xs~List Json, v~Json
+    match xs
+        [] -> Null
+        x :: _ -> x
+
+# The first byte of a rendered value, as `value` dispatches on it.
+fn starts_value c -> r : c~U8, r~Bool
+    c == 'n' or c == 't' or c == 'f' or c == '"' or c == '[' or c == '{' or c == '-' or (c >= '0' and c <= '9')
+
+lemma render_first v : v~Json
+    let b = utf8.encode (render v)
+    ensures len b > 0 and starts_value b[0]
+    proof
+        match v
+            Num n -> have decimal.render_starts n
+            _     -> auto
+
 # The headline theorem. The depth precondition is not decoration: without it the
 # statement is false, because parse rejects nesting deeper than MAX_DEPTH.
 export lemma roundtrip v : v~Json, depth v <= MAX_DEPTH
     ensures parse (utf8.encode (render v)) == Ok v
     proof
+        have render_first v
         have value_render v b"" b"" 0
 
 # Generalized so it can be used inside larger documents: any prefix, any
@@ -305,13 +331,27 @@ lemma value_render v pre post d : v~Json, pre~Bytes, post~Bytes, delimits post,
     proof
         match v
             Null | Bool _ -> auto                                    # unfold value/literal/render; solver closes
-            Num n         -> have decimal.scan_json_render n pre post
+            Num n         ->
+                have decimal.render_starts n
+                have decimal.scan_json_render n pre post
             Str s         -> have string_render s pre post d
-            Arr []        -> auto
             Arr items     ->
-                let pre2 = pre ++ b"["
-                have utf8.encode_append "[" (join "," (map render items) ++ "]")
-                have elements_render items [] pre2 post (len pre2) (d + 1)
+                match items
+                    [] -> have utf8.encode_append "[" "]"
+                    x :: rest ->
+                        let pre2 = pre ++ b"["
+                        have render_first x
+                        have elements_render items [] pre2 post (len pre2) (d + 1)
+                        let i = len pre + 1
+                        have src[len pre] == '['
+                        have max_of (map depth items) >= 0
+                        have d < MAX_DEPTH
+                        have skip_ws src i == i
+                        have peek src i != Some ']'
+                        have array src i (d + 1) == elements src i i (d + 1) []
+                        have reverse [] ++ items == items
+                        have render v == "[" ++ join "," (map render items) ++ "]"
+                        have array src i (d + 1) == Ok (Parsed items (len src - len post))
             Obj fields    -> have members_render fields pre post d
 
 # Induction over the remaining items; the recursive `have` is the induction hypothesis.
@@ -324,14 +364,33 @@ lemma elements_render items acc pre post start d
          == Ok (Parsed (reverse acc ++ items) (len src - len post))
     proof
         match items
+            [] -> auto                                               # excluded by items != []
             [x] ->
+                have list.max_of_cons (depth x) []
                 have value_render x pre (b"]" ++ post) d
-            x :: rest ->                                             # first-match: rest != [] here
+                let e = len pre + len (utf8.encode (render x))
+                have map render items == [render x]
+                have join "," (map render items) == render x
+                have src[e] == ']'
+                have skip_ws src e == e
+                have peek src e == Some ']'
+                have list.reverse_cons_append acc x []
+                have list.append_nil (reverse (x :: acc))
+            x :: rest ->
                 let pre2 = pre ++ utf8.encode (render x) ++ b","
-                have utf8.encode_append (render x ++ ",") (join "," (map render rest) ++ "]")
+                have render_first (head_or_null rest)
+                have list.max_of_cons (depth x) (map depth rest)
                 have value_render x pre (b"," ++ utf8.encode (join "," (map render rest) ++ "]") ++ post) d
                 have elements_render rest (x :: acc) pre2 post start d
                 have list.reverse_cons_append acc x rest
+                let e = len pre + len (utf8.encode (render x))
+                have map render items == render x :: map render rest
+                have join "," (map render items) == render x ++ "," ++ join "," (map render rest)
+                have src[e] == ','
+                have skip_ws src e == e
+                have peek src e == Some ','
+                have skip_ws src (e + 1) == e + 1
+                have elements src start (len pre) d acc == elements src start (e + 1) d (x :: acc)
 
 # Not yet proven. `admit` is legal but recorded in the trust ledger (SPEC §7.4),
 # so `checkers trust json` lists both until they are discharged.

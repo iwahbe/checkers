@@ -275,6 +275,30 @@ mod tests {
         assert_eq!(scan("1.x"), Some(("1".into(), 1)));
     }
 
+    /// The axioms `decimal.scan_json_render` and `decimal.render_starts`
+    /// (stdlib/decimal.ck, D56), on many values, prefixes and suffixes.
+    #[test]
+    fn render_scan_axioms() {
+        let mut values = Vec::new();
+        for m in [0i64, 1, -1, 7, -12, 10, 100, 123456789, -987654321, 5, 25] {
+            for e in [-30i64, -8, -7, -6, -3, -1, 0, 1, 2, 5, 21, 22, 23, 40] {
+                values.push(Decimal::new(BigInt::from(m), e));
+            }
+        }
+        for d in values {
+            let r = d.render();
+            let b = r.as_bytes();
+            assert!(!b.is_empty() && (b[0] == b'-' || b[0].is_ascii_digit()), "render_starts: {r}");
+            for pre in ["", "[", "x: "] {
+                for post in ["", ",", "]", "}", " ", "\n", "x", "-"] {
+                    let src = format!("{pre}{r}{post}");
+                    let got = Decimal::scan_json(src.as_bytes(), pre.len());
+                    assert_eq!(got, Some((d.clone(), pre.len() + b.len())), "scan_json_render: {src:?}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn bignum_overflow_path() {
         let a = Num::S(i128::MAX);

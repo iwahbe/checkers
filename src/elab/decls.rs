@@ -39,6 +39,21 @@ impl Elab {
         self.phase_measures(m, &ids, &sigs);
         self.phase_bodies(m, &ids, sigs);
         self.check_termination();
+        // A transparent function's private helpers are visible to the prover
+        // too, or its body would say nothing (D54): close the set over calls.
+        let mut stack: Vec<DefId> = self.transparent.iter().copied().filter(|d| *self.g.defs[d.0 as usize].module == *name).collect();
+        while let Some(d) = stack.pop() {
+            let mut used = Vec::new();
+            if let Some(b) = &self.g.defs[d.0 as usize].body {
+                defs_in(b, &mut used);
+            }
+            for u in used {
+                let info = &self.g.defs[u.0 as usize];
+                if *info.module == *name && info.body.is_some() && !info.opaque && self.transparent.insert(u) {
+                    stack.push(u);
+                }
+            }
+        }
         // Seal the module's functions (D54): importers see signatures only.
         for (d, id) in m.decls.iter().zip(&ids) {
             if let (DeclKind::Fn { .. }, Some(Sym::Def(did))) = (&d.kind, id) {
@@ -1188,4 +1203,33 @@ pub fn has_unsolved(g: &Globals, l: usize, v: &Val) -> bool {
         }
     }
     tm(&quote(g, l, v))
+}
+
+/// The definitions a term mentions.
+fn defs_in(t: &Tm, out: &mut Vec<DefId>) {
+    match t {
+        Tm::Def(d) => out.push(*d),
+        Tm::Pi(_, _, _, a, b) | Tm::App(a, b, ..) => {
+            defs_in(a, out);
+            defs_in(b, out);
+        }
+        Tm::Lam(_, _, _, b) | Tm::Proj(b, _) | Tm::Field(b, _, _) => defs_in(b, out),
+        Tm::Let(_, _, a, b, c) => {
+            defs_in(a, out);
+            defs_in(b, out);
+            defs_in(c, out);
+        }
+        Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => {
+            v.iter().for_each(|x| defs_in(x, out))
+        }
+        Tm::Case(s, c) => {
+            defs_in(s, out);
+            c.branches.iter().for_each(|(_, _, b)| defs_in(b, out));
+            c.lits.iter().for_each(|(_, b)| defs_in(b, out));
+            if let Some(b) = &c.default {
+                defs_in(b, out);
+            }
+        }
+        _ => {}
+    }
 }

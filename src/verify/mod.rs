@@ -123,6 +123,9 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     for t in e.admits.iter().filter(|t| t.module == user) {
         v.ledger.push(LedgerEntry { span: t.span, how: "trusted", what: t.what.clone(), hash: None });
     }
+    for t in e.builtin_axioms.iter().filter(|t| t.module == user) {
+        v.ledger.push(LedgerEntry { span: t.span, how: "axiom", what: t.what.clone(), hash: None });
+    }
     for (m, span, _) in e.checks.iter().filter(|c| c.0 == user) {
         let _ = m;
         let text = e.sources.get(user).and_then(|f| f.text.get(span.start as usize..span.end as usize)).unwrap_or("");
@@ -151,7 +154,17 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
             eprintln!(";; ── {:?} at {:?}\n{}", o.kind, o.span, t.as_deref().unwrap_or(";; outside the fragment"));
         }
     }
-    let mut answers = ask_all(&texts);
+    // First with definitions uninterpreted: `unsat` there is a proof (§7.2).
+    let quick: Vec<Option<String>> = queries.iter().map(|q| q.as_ref().ok().and_then(|q| q.facts_only.clone())).collect();
+    let quick_answers = ask_all(&quick);
+    let proved_quick: Vec<bool> = quick_answers.iter().map(|a| matches!(a, Some(Answer::Unsat))).collect();
+    let rest: Vec<Option<String>> = texts.iter().zip(&proved_quick).map(|(t, p)| if *p { None } else { t.clone() }).collect();
+    let mut answers = ask_all(&rest);
+    for (a, p) in answers.iter_mut().zip(&proved_quick) {
+        if *p {
+            *a = Some(Answer::Unsat);
+        }
+    }
     // `unknown` with the quantified axioms: try without them (§7.2).
     let retry: Vec<Option<String>> = answers
         .iter()
@@ -167,15 +180,19 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
             }
         }
     }
-    for ((o, q), a) in obs.iter().zip(&queries).zip(answers) {
+    for (k, ((o, q), a)) in obs.iter().zip(&queries).zip(answers).enumerate() {
         match (q, a) {
             (Err(why), _) => v.diags.push(outside(e, o, &why.0)),
             (Ok(q), Some(Answer::Unsat)) => {
                 v.proved += 1;
-                v.ledger.push(LedgerEntry { span: o.span, how: "smt", what: describe(e, o), hash: Some(fnv(&q.text)) });
+                let text = match (&q.facts_only, proved_quick[k]) {
+                    (Some(t), true) => t,
+                    _ => &q.text,
+                };
+                v.ledger.push(LedgerEntry { span: o.span, how: "smt", what: describe(e, o), hash: Some(fnv(text)) });
             }
             (Ok(q), Some(Answer::Sat(model))) => {
-                let mut d = failed(e, o, Some(render_model(&model, &q.shown)));
+                let mut d = failed(e, o, Some(render_model(&model, &q.shown, &q.string_vars)));
                 if !q.dropped.is_empty() {
                     d = d.with_note(format!(
                         "some facts could not be given to the prover, so the counterexample may be impossible: they involve {}",
@@ -456,6 +473,18 @@ fn short(a: &str) -> String {
 }
 
 fn pretty(x: &Sx) -> String {
+    // A byte sequence: a `String` (its UTF-8 bytes, §7.3) or `Bytes`.
+    if let Some(b) = seq_bytes(x) {
+        return match std::str::from_utf8(&b) {
+            Ok(t) => format!("{t:?}"),
+            Err(_) => crate::run::value::show_bytes(&b),
+        };
+    }
+    if let Sx::List(l) = x {
+        if matches!(l.first(), Some(Sx::Atom(h)) if h == "seq.unit" || h == "seq.++") {
+            return "…".into();
+        }
+    }
     match x {
         Sx::Atom(a) => match a.as_str() {
             "true" => "True".into(),
@@ -514,6 +543,12 @@ fn pretty_con(c: &str, args: &[Sx]) -> String {
                     break;
                 }
             }
+        }
+        // A long list: its start and its length are what matter.
+        if items.len() > 8 {
+            let n = items.len();
+            items.truncate(3);
+            return format!("[{}, … ({n} items)]", items.join(", "));
         }
         return format!("[{}]", items.join(", "));
     }
@@ -581,7 +616,7 @@ fn seq_bytes(x: &Sx) -> Option<Vec<u8>> {
     }
 }
 
-fn render_model(text: &str, shown: &[(String, String)]) -> String {
+fn render_model(text: &str, shown: &[(String, String)], strings: &[String]) -> String {
     let sx = parse_sx(text);
     let Some(Sx::List(pairs)) = sx.first() else { return String::new() };
     let mut found: Vec<(usize, String)> = Vec::new();
@@ -591,6 +626,11 @@ fn render_model(text: &str, shown: &[(String, String)]) -> String {
                 if let Some(pos) = shown.iter().position(|(n, _)| n == k) {
                     let v = unlet(v, &[]);
                     let s = match seq_bytes(&v) {
+                        // A `String` is its UTF-8 bytes to the solver (§7.3).
+                        Some(b) if strings.contains(k) => match String::from_utf8(b.clone()) {
+                            Ok(t) => format!("{t:?}"),
+                            Err(_) => crate::run::value::show_bytes(&b),
+                        },
                         Some(b) => crate::run::value::show_bytes(&b),
                         None => pretty(&v),
                     };

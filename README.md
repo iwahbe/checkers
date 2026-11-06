@@ -25,8 +25,8 @@ Types are written only as constraints (`i~Nat, i <= len src`); the compiler prov
 | M2 Interpreter: `checkers run`, `check` evaluation, files and terminal, linear resources | done |
 | M3 Prover: pre/postconditions, refinements, invariants, lemmas, Z3, trust ledger | done: `examples/sort.ck` (insertion sort) and `wc.ck` verify |
 | M4 Modules: files, sealing, exported lemmas, multi-module proofs | done: [`resort.ck`](examples/resort.ck) uses `sort` through its exported lemma only |
-| M5 Well-founded recursion, lexicographic `decreasing` | next |
-| M4–M9 | see SPEC §10 |
+| M5 Well-founded recursion, lexicographic `decreasing` | done: merge sort in [`parallel.ck`](examples/parallel.ck); [`json.ck`](examples/json.ck) verifies, trusting its two `admit`s and two axioms about decimal numbers |
+| M6–M10 | see SPEC §10 |
 
 ## Usage
 

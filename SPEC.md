@@ -62,8 +62,11 @@ This document is the single source of truth for Checkers. Implementation follows
 | D51 | **A function with a precondition must be called with all its arguments** (E0453): a partial application would hide the call where the precondition is checked. | 11/05/2026 | **(proposed)** |
 | D52 | **Refined function types are the direction (M10).** A function type may carry predicates over its parameters and result, e.g. `f~(x~Int -> y~Int, x >= 5, y > x)`, with subtyping between refined function types and refined element types (`xs~List (n~Int, n >= 5)`). A partially applied function with a precondition can then be passed wherever the expected function type promises that precondition, and the callee proves it at each call of `f`. Until M10, D51 applies, relaxed: a partial application is allowed when its preconditions mention only the arguments already supplied, and they are checked there. | 11/05/2026 | decided (relaxation of D51 **proposed**) |
 | D53 | **Module files.** `import a.b` loads the standard-library module `a.b` if there is one, else the file `a/b.ck` next to the file being checked (directories mirror dotted names). That file must start with `module a.b` (E0223). Every module a program imports is type-checked, has its `check`s run and its obligations proven, as part of checking the program; errors are reported in the file they belong to. | 11/05/2026 | **(proposed)** |
-| D54 | **Sealing is per module (§6).** Outside its module, a function's body is invisible: it never unfolds during type checking, and the prover sees only its signature and postconditions (an uninterpreted function), unless it is exported `transparent`. Type aliases and `let` constants stay transparent (they are part of the types). The interpreter always uses the body. | 11/05/2026 | **(proposed)** |
+| D54 | **Sealing is per module (§6).** Outside its module, a function's body is invisible: it never unfolds during type checking, and the prover sees only its signature and postconditions (an uninterpreted function), unless it is exported `transparent`. A transparent function's private helpers (the module-local functions its body calls, transitively) are visible to the prover too, or its body would say nothing; they still can't be named outside. Type aliases and `let` constants stay transparent (they are part of the types). The interpreter always uses the body. | 11/05/2026 | **(proposed)** |
 | D55 | **Termination measures are proof obligations (§5.3).** At every call between functions of one recursive group that use `decreasing`, the callee's measure at the arguments must be lexicographically below the caller's measure at its parameters, under the facts at the call. A recursive use that is not a full call (passing the function as a value) can't be checked and is error E0303. Results of `Nat`-valued functions are known to be `>= 0` at every call that meets the callee's precondition (§7.3). | 11/05/2026 | **(proposed)** |
+| D56 | **Axioms about primitives.** In the standard library only, a lemma whose `proof` is `__builtin` states a fact about `__builtin` functions (`decimal.scan_json_render`: scanning a rendered number gives it back). It is trusted like the Rust code it describes. Each use (`have`) is listed in the trust ledger as `axiom`, separately from `admit`s; release builds accept axioms and reject admits. | 11/06/2026 | **(proposed)** |
+| D57 | **Known function arguments are seen through (§7.3).** When a function that takes a function is applied to a named function or a lambda with no free variables (`map render items`, `map (\(k, x) -> …) fields`), the prover reflects a copy specialized to that argument. Other function arguments (a lambda using a local) remain outside the fragment (E0451). Lambdas are compared up to the names of their parameters. | 11/06/2026 | **(proposed)** |
+| D58 | **Strings are their UTF-8 bytes to the prover (§7.3).** A `String` is translated as its bytes, so `++`, `len` and `utf8.encode` are exact, and `utf8.encode (a ++ b) == utf8.encode a ++ utf8.encode b` is immediate. | 11/06/2026 | **(proposed)** |
 | D24 | **Development loop:** Claude owns the implementation; Ian drives with examples. An issue is "found X, expected Y" with a `.ck` snippet. Each one becomes a regression test under `tests/` *before* the fix lands, and the spec is updated first whenever the expectation changes the language. | 11/05/2026 | decided |
 | D25 | **Milestones reordered for CLI tools first** (§10): a running interpreter with `IO` comes right after type checking, before the prover, so Checkers can be used to build its own tooling early. Capstone: an interactive shell with a small scripting language, with proofs of its correctness. | 11/05/2026 | decided |
 
@@ -252,7 +255,7 @@ Predicates inside types and specifications are not themselves checked for well-d
 ### 7.2 Discharge pipeline
 Tried in order; first success wins:
 1. **Compute:** a `check` is evaluated at compile time (D40).
-2. **SMT:** translate Γ and ¬φ to SMT-LIB and ask the linked-in Z3 (§7.3, D46). On `unsat`, φ is proven, and the ledger records `smt φ` with the query's hash.
+2. **SMT:** translate Γ and ¬φ to SMT-LIB and ask the linked-in Z3 (§7.3, D46). On `unsat`, φ is proven, and the ledger records `smt φ` with the query's hash. Each query is first tried with every reflected definition uninterpreted: that is weaker, so `unsat` is still a proof, and it is fast when the facts in scope (`have`) already suffice. Only then is it tried with the definitions, which Z3 unfolds.
 3. **User proof:** a `lemma`'s `proof` block (D13, D49), or `have` facts added before the obligation arises.
 
 On failure (D48), the error shows the obligation, the facts in scope, and Z3's counterexample when one exists.
@@ -266,18 +269,22 @@ Decidable fragment, following Liquid Haskell: quantifier-free linear integer ari
 | `Bool` | `Bool` |
 | `==`, `!=`, `<`, `<=`, `+`, `-`, `*`, `/`, `%` | native (`div`, `mod`: Euclidean, like Checkers) |
 | `Bytes` | `(Seq Int)`; `len`, `src[i]`, `++` native; each `src[i]` is known to be `< 256` |
-| `String` | `String`; `len` is uninterpreted (UTF-8 bytes, not characters) |
+| `String` | its UTF-8 bytes, `(Seq Int)` (D58): `len` (bytes, not characters), `++` and `utf8.encode` native |
 | `Bag` (D47) | `(Array Int Int)` |
 | enums, records, `List`, `Option`, `Result`, tuples | `declare-datatypes`, with type parameters (value parameters are dropped from the sort); a value's constructor invariants are assumed, with the value parameters of its type filled in (`p~Parsed Json src i` gives `p.stop <= len src`) |
 | type variables, abstract types | uninterpreted sorts |
-| a parameter of function type | an uninterpreted function |
+| a parameter of function type | an uninterpreted function; a known function argument (a named function, a lambda without free variables) is specialized (D57) |
 | function `f` defined in this module, or imported `transparent` | **reflected** (D12) as `define-fun-rec`, instantiated per type; Z3 unfolds the definition where needed |
 | other imported functions, builtins | uninterpreted, plus their postconditions |
 | `match`, `if`, `let` | `ite` on testers, `let` |
 
 Lambdas, partial applications and effects (`when`, `fork`, `join`) are outside the fragment (E0451); prove facts about them with a lemma.
 
-Z3 sees more values than the program can build: `Option Nat` is `Option Int` to it, and a record's invariant is not part of its sort. So a fact about all values of a type is assumed only where the two agree. A `Nat` result of `f` is assumed `>= 0` (a) at each call in the query, under `f`'s precondition, like a postcondition; and (b) for every argument, including in terms Z3 creates by unfolding definitions, only if `f` has no precondition and no argument's type hides a `Nat`, `Bytes` or a constructor invariant (a type parameter hides nothing: `f` can only pass such a value on or compare it). If Z3 rejects a query, which is a checkers bug, the obligation is reported unproven, never proven.
+Z3 sees more values than the program can build: `Option Nat` is `Option Int` to it, and neither a record's invariant nor a function's precondition is part of a sort. So a fact about all values of a type is assumed only where it holds for all of Z3's values too. A `Nat` result of `f` is assumed `>= 0`:
+- at each call in the query, under `f`'s precondition, like a postcondition;
+- for every argument, including in terms Z3 creates by unfolding definitions, only if that holds for every solver value: `f` is not reflected (then it is free), or `f` has no precondition, recurses only structurally, and its body is built from non-negative parts (`0`, `1 + length rest`, other such functions). `max_of`'s `if x > m then x else m` is not such a body, so `max_of xs >= 0` is known only where `max_of xs` appears in the query; `have max_of xs >= 0` puts it there.
+
+If Z3 rejects a query, which is a checkers bug, the obligation is reported unproven, never proven. **Known gap:** a reflected definition is given to Z3 as an equation for all values, including ones on which a `decreasing` recursion would not end; Dafny and F\* avoid this with typing predicates and fuel, which is the planned fix.
 
 Lemmas are not added automatically; `have` brings one in. **(proposed)** An `@auto` attribute on an exported lemma adds it to every query in importing modules (F\*'s SMT patterns), for very common facts only.
 
@@ -652,7 +659,7 @@ Reordered (D25) so that Checkers can run CLI tools before the prover exists.
 | M2 | Erasure and interpreter (§13), standard library builtins, capabilities and `main` (§8.2–8.4: `Term`, `Fs`, exit codes), `checkers run`, `check` evaluation (D40), resource linearity by type (D39), single-threaded behaviour scheduler (D44). **Not yet:** `Env`, `Proc`, `Net`, `Clock` operations. | `examples/wc.ck` and `examples/copy.ck` run; golden run tests in `tests/run/` |
 | M3 | Obligations with facts in scope (§7.1), Z3 pipeline (§7.2, D46), refinement aliases, pre/postconditions, constructor invariants, lemmas and proofs (D49), `Bag` and `perm` (D47), trust ledger, `checkers trust` | verified insertion sort (`examples/sort.ck`); `examples/wc.ck` verifies |
 | M4 | Module files (D53), sealing in conversion and in the prover (D54), exported lemmas, multi-module checking, transitive trust ledger | `examples/resort.ck` uses `sort` from `examples/sort.ck` through its exported lemma only |
-| M5 | Well-founded recursion, lexicographic `decreasing` | verified merge sort; `examples/json.ck` checks |
+| M5 | Well-founded recursion, lexicographic `decreasing` | verified merge sort; `examples/json.ck` checks (done 11/06/2026: its two `admit`s, `string_render` and `members_render`, and the axioms `decimal.render_starts` and `decimal.scan_json_render` are the trust ledger) |
 | M6 | Two-level staging (`comptime`) | compile-time-generated specialized code |
 | M7 | Multi-threaded scheduler for cowns, `when`, `fork`/`join` and `par` (single-threaded since M2, D44); actor library | `examples/log.ck` and `examples/parallel.ck` run; stress tests show no races or deadlocks |
 | M8 | Cranelift backend | M2–M7 test suites pass native |

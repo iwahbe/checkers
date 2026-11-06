@@ -1,0 +1,10 @@
+error[E0450]: cannot prove `r`, the postcondition of `wrong`
+  --> higher_order.ck:29:41
+   |
+29 | fn wrong xs -> r : xs~List Int, r~Bool, r
+   |                                         ^ promised here
+   = note: for the value returned on line 30: `first_or_zero (map double xs) == first_or_zero xs`
+   = note: counterexample: xs = [1]
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+higher_order.ck: 1 error, 0 warnings

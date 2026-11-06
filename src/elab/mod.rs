@@ -274,6 +274,11 @@ pub struct Elab {
     /// The goal of the proof being elaborated (D49).
     pub proof_goal: Option<(Val, String)>,
     pub admits: Vec<Trusted>,
+    /// Uses of standard-library lemmas about `__builtin` functions, which are
+    /// trusted like the primitives themselves (D56).
+    pub builtin_axioms: Vec<Trusted>,
+    /// Lemmas whose proof is `__builtin` (D56).
+    pub axiom_defs: HashSet<DefId>,
     /// Measure obligations of calls (caller, callee); kept only for calls
     /// inside one recursive group once termination is analysed.
     pub measure_obs: Vec<(DefId, DefId, Obligation)>,
@@ -325,6 +330,8 @@ impl Elab {
             proof_goal: None,
             post_target: None,
             admits: Vec::new(),
+            builtin_axioms: Vec::new(),
+            axiom_defs: HashSet::new(),
             measure_obs: Vec::new(),
             saturated_heads: HashSet::new(),
             resource_vars: HashMap::new(),

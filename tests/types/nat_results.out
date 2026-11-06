@@ -21,4 +21,12 @@ error[E0450]: cannot prove `b`, the postcondition of `bad_first`
    = note: counterexample: o = None
    = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
 
-nat_results.ck: 3 errors, 0 warnings
+error[E0450]: cannot prove `b`, the postcondition of `bad_count`
+  --> nat_results.ck:36:29
+   |
+36 | fn bad_count -> b : b~Bool, b
+   |                             ^ promised here
+   = note: for the value returned on line 37: `count_up 0 3 == 4`
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+nat_results.ck: 4 errors, 0 warnings

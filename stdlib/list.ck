@@ -8,7 +8,7 @@ export transparent fn length xs -> n : xs~List a, n~Nat
         [] -> 0
         _ :: rest -> 1 + length rest
 
-export fn map f xs -> ys : f~(a -> b), xs~List a, ys~List b
+export transparent fn map f xs -> ys : f~(a -> b), xs~List a, ys~List b
     match xs
         [] -> []
         x :: rest -> f x :: map f rest
@@ -26,7 +26,7 @@ fn reverse_onto xs acc -> ys : xs~List a, acc~List a, ys~List a
         [] -> acc
         x :: rest -> reverse_onto rest (x :: acc)
 
-export fn join sep parts -> s : sep~String, parts~List String, s~String
+export transparent fn join sep parts -> s : sep~String, parts~List String, s~String
     match parts
         [] -> ""
         [p] -> p
@@ -52,7 +52,7 @@ export transparent fn count x xs -> n : x~a, xs~List a, n~Nat
         [] -> 0
         y :: rest -> (if y == x then 1 else 0) + count x rest
 
-export fn max_of xs -> m : xs~List Nat, m~Nat
+export transparent fn max_of xs -> m : xs~List Nat, m~Nat
     match xs
         [] -> 0
         x :: rest ->
@@ -106,6 +106,18 @@ export lemma unique_cons x xs : x~a, xs~List a, not (contains xs x), unique xs
     ensures unique (x :: xs)
     proof
         auto
+
+export lemma max_of_cons x xs : x~Nat, xs~List Nat
+    ensures x <= max_of (x :: xs) and max_of xs <= max_of (x :: xs)
+    proof
+        auto
+
+export lemma append_nil xs : xs~List a
+    ensures xs ++ [] == xs
+    proof
+        match xs
+            [] -> auto
+            _ :: rest -> have append_nil rest
 
 export lemma append_assoc xs ys zs : xs~List a, ys~List a, zs~List a
     ensures (xs ++ ys) ++ zs == xs ++ (ys ++ zs)

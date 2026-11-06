@@ -370,6 +370,16 @@ impl Elab {
             return (cx.var(l), ty);
         }
         if n == "__builtin" {
+            // In a standard-library proof: an axiom about a primitive (D56).
+            if self.stdlib_mode {
+                if let Some((_, text)) = self.proof_goal.clone() {
+                    if let Some(d) = self.cur_fn {
+                        self.axiom_defs.insert(d);
+                    }
+                    let _ = text;
+                    return (Tm::Tuple(vec![]), self.unit());
+                }
+            }
             self.err(Diagnostic::error("E0356", "`__builtin` bodies are only allowed in the standard library", span));
             return (Tm::Error, Val::Error);
         }
@@ -739,6 +749,12 @@ impl Elab {
                     }
                     let fact = self.inst_pred(ens, env);
                     cx.assume(fact);
+                    // Using a fact about a primitive: listed in the ledger (D56).
+                    if self.axiom_defs.contains(d) {
+                        let info = &self.g.defs[d.0 as usize];
+                        let what = format!("builtin axiom {}.{}", info.module, info.name);
+                        self.builtin_axioms.push(Trusted { module: self.cur.clone(), span: e.span, what });
+                    }
                     return;
                 }
             }
