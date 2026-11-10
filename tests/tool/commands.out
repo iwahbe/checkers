@@ -21,6 +21,8 @@ USAGE:
     checkers fmt -                                   format standard input
     checkers --version
 
+In a directory with checkers.json, the compiler commands first fetch the package's
+dependencies and update checkers.lock; the file defaults to main.ck.
 `ckc` is found through CKC, else next to `checkers`, else on PATH.
 -- exit 2
 $ checkers fmt --check tests/fmt/basics.ck tests/fmt/blanks.ck

@@ -17,6 +17,10 @@ USAGE:
 
     check, run, build, trust and stage reuse Z3's answers from `.checkers/` beside the
     file (D100); --no-cache (before the file) or CHECKERS_NO_CACHE=1 turns that off.
+
+    Before the file, packages (D111; `checkers` passes these from checkers.json):
+      --package NAME=DIR    a dependency, importable as `NAME.module`
+      --uses PKG=A,B        the packages PKG may import (`.` is this program's own)
     ckc stage <FILE.ck>                        print the code staging generates (§8.9)
     ckc parse <FILE.ck>                        print the syntax tree
     ckc --version
@@ -41,20 +45,60 @@ fn use_cache(path: &str) {
 }
 
 fn cli(args: &[String]) -> u8 {
-    // `--no-cache`, before the file (after it, arguments are the program's).
+    // Options before the file (after it, arguments are the program's):
+    // `--no-cache`, and the packages of this build (D111).
     let first_file = args.iter().position(|a| a.ends_with(".ck")).unwrap_or(args.len());
-    let args: Vec<String> = args
-        .iter()
-        .enumerate()
-        .filter(|(i, a)| {
-            let flag = *i < first_file && a.as_str() == "--no-cache";
-            if flag {
-                NO_CACHE.store(true, std::sync::atomic::Ordering::Relaxed);
+    let mut kept: Vec<String> = Vec::new();
+    let mut pkgs = checkers::elab::stdlib::Packages::default();
+    let mut uses: Vec<(String, Vec<String>)> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if i < first_file && (a == "--package" || a == "--uses") {
+            let Some(v) = args.get(i + 1).filter(|_| i + 1 < first_file) else {
+                eprintln!("error: `{a}` needs a value: `{a} NAME=…`\n\n{USAGE}");
+                return 2;
+            };
+            let Some((k, rest)) = v.split_once('=') else {
+                eprintln!("error: `{a} {v}`: expected `NAME=…`");
+                return 2;
+            };
+            if a == "--package" {
+                let dir = std::path::Path::new(rest);
+                if !dir.is_dir() {
+                    eprintln!("error: `--package {v}`: no directory `{rest}`");
+                    return 2;
+                }
+                if k == "std" || k == "." || k.is_empty() {
+                    eprintln!("error: `--package {v}`: `{k}` can't name a package");
+                    return 2;
+                }
+                pkgs.dirs.insert(k.to_string(), dir.to_path_buf());
+            } else {
+                let list = rest.split(',').filter(|x| !x.is_empty()).map(str::to_string).collect();
+                uses.push((k.to_string(), list));
             }
-            !flag
-        })
-        .map(|(_, a)| a.clone())
-        .collect();
+            i += 2;
+            continue;
+        }
+        if i < first_file && a == "--no-cache" {
+            NO_CACHE.store(true, std::sync::atomic::Ordering::Relaxed);
+        } else {
+            kept.push(args[i].clone());
+        }
+        i += 1;
+    }
+    for (k, list) in uses {
+        for n in list.iter().chain(std::iter::once(&k).filter(|k| *k != ".")) {
+            if !pkgs.dirs.contains_key(n) {
+                eprintln!("error: `--uses {k}=…` names `{n}`, which no `--package` gives");
+                return 2;
+            }
+        }
+        pkgs.uses.insert(k, list);
+    }
+    checkers::elab::stdlib::set_packages(pkgs);
+    let args = kept;
     let args = &args[..];
     let needs_std = !matches!(args.first().map(String::as_str), None | Some("--version" | "--help" | "-h"));
     if needs_std {

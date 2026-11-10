@@ -33,7 +33,8 @@ Types are written only as constraints (`i~Nat, i <= len src`); the compiler prov
 | M11 `checkers`, the build tool in Checkers, and `checkers fmt` | done: [`tools/`](tools) |
 | M12 Faster checking: Z3 answer cache, work limits | done |
 | M13 The standard library as the package `std`, read from [`stdlib/`](stdlib) at each check: `import std.list` | done |
-| M14, M15 | see SPEC §10 (M9, a shell, was removed: D81) |
+| M14 Packages: `checkers.json`, `checkers.lock`, git and path dependencies, minimal version selection | done |
+| M15 | see SPEC §10 (M9, a shell, was removed: D81) |
 
 ## Usage
 
@@ -47,6 +48,7 @@ target/release/ckc trust examples/sort.ck           # what the proof relies on: 
 target/release/ckc parse examples/json.ck           # print the syntax tree
 target/release/ckc build tools/checkers.ck -o target/release/checkers
 target/release/checkers fmt examples                # format; `checkers check …` etc. run `ckc`
+cd my_package && checkers run                        # with checkers.json: fetch dependencies, then run main.ck
 ```
 
 `ckc` is the compiler; `checkers` is the build tool, written in Checkers (SPEC §15, D95).

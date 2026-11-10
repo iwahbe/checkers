@@ -1137,6 +1137,9 @@ impl Elab {
                         }
                     };
                 }
+                if self.resolve(q, false).is_none() && self.module().failed_imports.contains(q.as_str()) {
+                    return (Tm::Error, Val::Error);
+                }
                 if self.resolve(q, false).is_none() && crate::elab::stdlib::source(&format!("std.{q}")).is_some() {
                     self.err(
                         Diagnostic::error("E0204", format!("unknown name `{q}`"), x.span)

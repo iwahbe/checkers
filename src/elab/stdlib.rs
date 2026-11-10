@@ -13,6 +13,27 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
+/// The packages of this build (D109, D111): set once from `ckc`'s
+/// `--package` and `--uses` flags.
+#[derive(Default, Clone, Debug)]
+pub struct Packages {
+    /// Each dependency's directory.
+    pub dirs: HashMap<String, PathBuf>,
+    /// The packages each package may import; `.` is the program's own.
+    pub uses: HashMap<String, Vec<String>>,
+}
+
+static PACKAGES: OnceLock<Packages> = OnceLock::new();
+
+/// Set this build's packages (once, before checking).
+pub fn set_packages(p: Packages) {
+    let _ = PACKAGES.set(p);
+}
+
+pub fn packages() -> &'static Packages {
+    PACKAGES.get_or_init(Packages::default)
+}
+
 /// The places looked in, in order.
 fn candidates() -> Vec<PathBuf> {
     let mut out = Vec::new();
@@ -98,7 +119,7 @@ impl Elab {
             self.diags.push((name.to_string(), d));
         }
         self.sources.insert(name.to_string(), file);
-        self.require_declared(name, &m);
+        self.require_declared(name, name, &m);
         let saved = std::mem::take(&mut self.cur);
         let saved_fn = self.cur_fn.take();
         let saved_calls = std::mem::take(&mut self.calls);
@@ -113,16 +134,22 @@ impl Elab {
         true
     }
 
-    /// E0223 unless the file imported as `name` declares `module name`.
-    fn require_declared(&mut self, name: &str, m: &crate::syntax::ast::Module) {
+    /// E0223 unless the file of module `key` declares `module name`.
+    fn require_declared(&mut self, key: &str, name: &str, m: &crate::syntax::ast::Module) {
         match &m.name {
             Some(q) if q.dotted() == name => {}
             other => {
                 let span = other.as_ref().map(|q| q.span).unwrap_or_default();
                 let found = other.as_ref().map(|q| q.dotted()).unwrap_or_default();
+                let why = if key == name {
+                    format!("because it is imported as `{name}`")
+                } else {
+                    let pkg = key.strip_suffix(name).unwrap_or(key).trim_end_matches('.');
+                    format!("its path in package `{pkg}`")
+                };
                 self.diags.push((
-                    name.to_string(),
-                    Diagnostic::error("E0223", format!("this file must declare `module {name}`, because it is imported as `{name}`"), span)
+                    key.to_string(),
+                    Diagnostic::error("E0223", format!("this file must declare `module {name}`, {why}"), span)
                         .with_label(if found.is_empty() { "no module declaration".to_string() } else { format!("declares `{found}`") })
                         .with_help(format!("start the file with `module {name}`")),
                 ));
@@ -134,32 +161,52 @@ impl Elab {
     /// Returns false if there is no such file.
     pub fn load_user(&mut self, name: &str, _span: crate::source::Span) -> bool {
         let Some(base) = self.base_dir.clone() else { return false };
-        let rel: std::path::PathBuf = name.split('.').collect::<std::path::PathBuf>().with_extension("ck");
+        self.load_file(name, name, &base, None)
+    }
+
+    /// Load module `rel` of dependency `pkg` (D111): the file `rel`'s path
+    /// in the package's directory, known as `pkg.rel`.
+    pub fn load_package(&mut self, pkg: &str, rel: &str) -> bool {
+        let Some(base) = packages().dirs.get(pkg).cloned() else { return false };
+        self.load_file(&format!("{pkg}.{rel}"), rel, &base, Some(pkg))
+    }
+
+    /// Load the module known as `key`, declared `module declared`, from
+    /// `declared`'s path under `base`.
+    fn load_file(&mut self, key: &str, declared: &str, base: &std::path::Path, pkg: Option<&str>) -> bool {
+        let rel: PathBuf = declared.split('.').collect::<PathBuf>().with_extension("ck");
         let path = base.join(&rel);
         let Ok(text) = std::fs::read_to_string(&path) else { return false };
-        let file = SourceFile::new(path.to_string_lossy().to_string(), text.clone());
+        let shown = match pkg {
+            Some(p) => format!("<{p}>/{}", rel.to_string_lossy()),
+            None => path.to_string_lossy().to_string(),
+        };
+        let file = SourceFile::new(shown, text.clone());
         let (m, diags) = crate::syntax::parse_module(&text);
         let broken = diags.iter().any(|d| d.is_error());
         for d in diags {
-            self.diags.push((name.to_string(), d));
+            self.diags.push((key.to_string(), d));
         }
         for d in crate::lint::naming(&m) {
-            self.diags.push((name.to_string(), d));
+            self.diags.push((key.to_string(), d));
         }
-        self.sources.insert(name.to_string(), file);
-        self.user_modules.push(name.to_string());
+        self.sources.insert(key.to_string(), file);
+        self.user_modules.push(key.to_string());
+        if let Some(p) = pkg {
+            self.module_pkg.insert(key.to_string(), p.to_string());
+        }
         if broken {
             // Its errors are reported; importers see an empty module.
-            self.modules.insert(name.to_string(), super::ModuleInfo { name: name.to_string(), ..Default::default() });
+            self.modules.insert(key.to_string(), super::ModuleInfo { name: key.to_string(), ..Default::default() });
             return true;
         }
-        self.require_declared(name, &m);
+        self.require_declared(key, declared, &m);
         let saved = std::mem::take(&mut self.cur);
         let saved_fn = self.cur_fn.take();
         let saved_calls = std::mem::take(&mut self.calls);
         let saved_mod_fns = std::mem::take(&mut self.module_fns);
         let saved_deferred = std::mem::take(&mut self.deferred);
-        self.elab_module(name, &m, false);
+        self.elab_module(key, &m, false);
         self.cur = saved;
         self.cur_fn = saved_fn;
         self.calls = saved_calls;

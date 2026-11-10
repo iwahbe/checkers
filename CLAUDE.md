@@ -32,7 +32,7 @@ src/elab/pattern.rs  `match` → case trees, exhaustiveness witnesses
 src/elab/refine.rs   refinements inside types: inline and function-type refinements, implication, variance, E0262 (D71, D82–D87)
 src/elab/termination.rs  structural recursion over call-graph SCCs (§5.3)
 src/elab/order.rs   declaration order by dependencies, cycles (D65)
-src/elab/stdlib.rs   finding and loading the standard library from disk (D104), program modules from `a/b.ck` (D53)
+src/elab/stdlib.rs   finding and loading the standard library from disk (D104), program modules from `a/b.ck` (D53), packages' modules (D111)
 src/usage.rs         `own`/`ghost` usage (QTT multiplicities)
 src/stage.rs         staging (§8.9): expands compile-time functions before erasure; `checkers stage`
 src/native/ir.rs     erasure: core terms → runtime code (§13.1)
@@ -48,8 +48,11 @@ src/verify/smt.rs    obligations → SMT-LIB: sorts, datatypes, reflected functi
 stdlib/*.ck          standard library, the package `std` (`stdlib/json.ck` is `std.json`)
 tools/checkers.ck    `checkers`, the build tool, in Checkers (D95): passes compiler commands to `ckc`; `fmt`
 tools/fmt.ck         `checkers fmt`: files, --check, standard input (§15.4)
+tools/ck/manifest.ck reading checkers.json and checkers.lock (§16.4)
+tools/ck/packages.ck dependencies: path and git, minimal version selection, lock, `--package`/`--uses` (D111)
 tools/ck/syntax.ck   the formatter's lexer and layout pass: lines, logical lines, blocks (D93, D99)
 tools/ck/format.ck   the formatter: spacing, indentation, alignment, blank lines, comments (D91, D92)
+tests/packages.rs    packages end to end with local git repositories (M14)
 tests/std.rs         standard library on disk: `CHECKERS_STD`, edits without rebuilding, E0223/E0361, §16.3 lists every builtin
 tests/golden.rs      golden test runner (tests/parse, check, types, stage, run, stress, fmt, tool; examples; tools; repository formatting)
 ```

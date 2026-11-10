@@ -43,6 +43,8 @@ pub struct ModuleInfo {
     pub import_values: HashMap<String, Sym>,
     /// Qualifier (module name or alias) → module name.
     pub qualifiers: HashMap<String, String>,
+    /// Qualifiers of imports that failed: their uses are already reported.
+    pub failed_imports: HashSet<String>,
 }
 
 /// Per-function facts used by the termination and usage checks.
@@ -287,6 +289,9 @@ pub struct Elab {
     pub base_dir: Option<std::path::PathBuf>,
     /// Imported program modules (not the standard library), dependencies first.
     pub user_modules: Vec<String>,
+    /// The package of each module of a dependency (D111); others are the
+    /// program's own package, or `std`.
+    pub module_pkg: HashMap<String, String>,
     pub deferred: Vec<Deferred>,
     pub fn_meta: HashMap<DefId, FnMeta>,
     pub cur_fn: Option<DefId>,
@@ -367,6 +372,7 @@ impl Elab {
             loading: Vec::new(),
             base_dir: None,
             user_modules: Vec::new(),
+            module_pkg: HashMap::new(),
             deferred: Vec::new(),
             fn_meta: HashMap::new(),
             cur_fn: None,

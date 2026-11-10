@@ -51,20 +51,18 @@ impl Checked {
 
     /// Diagnostics in source order (imported modules first), then a one-line summary.
     pub fn report(&self) -> String {
-        let mut out = String::new();
+        // Each module's diagnostics, a blank line between them and before the summary.
+        let mut parts: Vec<String> = Vec::new();
         for (_, f, ds) in &self.others {
             if !ds.is_empty() {
-                out += &diag::render_all(f, ds);
-                out.push('\n');
+                parts.push(diag::render_all(f, ds));
             }
         }
-        out += &diag::render_all(&self.file, &self.diags);
-        for i in &self.internal {
-            if !out.is_empty() {
-                out.push('\n');
-            }
-            out += i;
+        if !self.diags.is_empty() {
+            parts.push(diag::render_all(&self.file, &self.diags));
         }
+        parts.extend(self.internal.iter().cloned());
+        let mut out = parts.join("\n");
         if !out.is_empty() {
             out.push('\n');
         }
@@ -147,7 +145,7 @@ fn stage_module(c: &mut Checked, e: &elab::Elab, user: &str) {
 /// Add the builtins the program relies on to the trust ledger: those reachable
 /// from `main`, or from every function of the program if it has none (§16.3).
 fn trusted_builtins(c: &mut Checked, e: &elab::Elab, user: &str, staged: &stage::Staged) {
-    let mut progs = e.user_modules.clone();
+    let mut progs: Vec<String> = e.user_modules.iter().filter(|m| e.package_of(m) == ".").cloned().collect();
     progs.push(user.to_string());
     let main = e.g.defs.iter().position(|d| *d.module == *user && &*d.name == "main");
     let roots: Vec<u32> = match main {
@@ -208,10 +206,14 @@ pub fn check_stdlib() -> String {
 }
 
 /// The modules whose code is checked: the standard-library modules the
-/// program loads (D109), imported program modules, then this one.
+/// program loads and its dependencies' (D109), sorted; then its own imported
+/// modules, and this one.
 fn program_modules(e: &elab::Elab, user: &str) -> Vec<String> {
     let mut v = std_modules(e);
-    v.extend(e.user_modules.iter().cloned());
+    let mut deps: Vec<String> = e.user_modules.iter().filter(|m| e.package_of(m) != ".").cloned().collect();
+    deps.sort();
+    v.extend(deps);
+    v.extend(e.user_modules.iter().filter(|m| e.package_of(m) == ".").cloned());
     v.push(user.to_string());
     v
 }
@@ -250,14 +252,15 @@ fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
     let (mut asked, mut reused) = (0, 0);
     for m in program_modules(e, user) {
         let v = verify::verify(e, &m);
-        let from_std = m.starts_with("std.");
-        if !from_std {
+        // The standard library and dependencies are summarized (D110, D111).
+        let own = e.package_of(&m) == ".";
+        if own {
             c.proved += v.proved;
         }
         asked += v.asked;
         reused += v.reused;
         if let Some(f) = e.sources.get(&m) {
-            ledger += &if from_std { verify::ledger_summary(f, &v) } else { verify::ledger_text(f, &v) };
+            ledger += &if own { verify::ledger_text(f, &v) } else { verify::ledger_summary(f, &v) };
         }
         for d in v.diags {
             route(c, e, user, &m, d);

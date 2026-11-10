@@ -119,11 +119,50 @@ impl Elab {
         for imp in &m.imports {
             let path = imp.path.dotted();
             self.cur = name.to_string();
-            // The first component says where a module comes from (D105).
+            // The first component says where a module comes from (D105): `std`,
+            // a dependency (D111), or else this package's own files.
             let from_std = path.starts_with("std.");
-            let found = self.modules.contains_key(&path)
-                || if from_std { self.load_stdlib(&path) } else { self.load_user(&path, imp.path.span) };
+            let here = self.package_of(name);
+            let first = path.split('.').next().unwrap_or("").to_string();
+            let pkgs = super::stdlib::packages();
+            let dep = (!from_std && path.contains('.') && pkgs.dirs.contains_key(&first)).then(|| first.clone());
+            if let Some(d) = &dep {
+                let allowed = here != "std" && pkgs.uses.get(&here).is_some_and(|u| u.contains(d));
+                if !allowed {
+                    let who = if here == "." { "this program".to_string() } else { format!("package `{here}`") };
+                    let mut diag = Diagnostic::error("E0227", format!("`{d}` is not a dependency of {who}"), imp.path.span)
+                        .with_label(format!("{who} doesn't list `{d}` in its `dependencies`"));
+                    diag = if *d == here {
+                        let rel = &path[d.len() + 1..];
+                        diag.with_help(format!("a package imports its own modules by their path in it: `import {rel}`"))
+                    } else {
+                        diag.with_help(format!("add `{d}` to `dependencies` in checkers.json"))
+                    };
+                    self.err(diag);
+                    self.import_failed(name, imp);
+                    continue;
+                }
+            }
+            // The module's name in this build.
+            let key = match (&dep, here.as_str()) {
+                (Some(_), _) => path.clone(),
+                (None, _) if from_std => path.clone(),
+                (None, ".") | (None, "std") => path.clone(),
+                (None, p) => format!("{p}.{path}"),
+            };
+            let found = self.modules.contains_key(&key)
+                || match (&dep, here.as_str()) {
+                    _ if from_std => self.load_stdlib(&path),
+                    (Some(d), _) => self.load_package(d, &path[d.len() + 1..]),
+                    (None, ".") => self.load_user(&path, imp.path.span),
+                    (None, "std") => false,
+                    (None, p) => {
+                        let p = p.to_string();
+                        self.load_package(&p, &path)
+                    }
+                };
             self.cur = name.to_string();
+            let path = key;
             if !found {
                 let d = if from_std {
                     let all: Vec<String> = super::stdlib::modules();
@@ -131,16 +170,26 @@ impl Elab {
                         .with_label("no such standard library module")
                         .with_help(format!("the standard library modules are: {}", all.join(", ")))
                 } else {
-                    let file = format!("{}.ck", path.replace('.', "/"));
-                    let d = Diagnostic::error("E0220", format!("unknown module `{path}`"), imp.path.span)
-                        .with_label(format!("no file `{file}` beside this program"));
-                    if super::stdlib::source(&format!("std.{path}")).is_some() {
-                        d.with_help(format!("the standard library's modules are under `std`: `import std.{path}`"))
+                    let written = imp.path.dotted();
+                    let (pkg, rel) = match &dep {
+                        Some(d) => (d.clone(), written[d.len() + 1..].to_string()),
+                        None => (here.clone(), written.clone()),
+                    };
+                    let file = format!("{}.ck", rel.replace('.', "/"));
+                    let label = if pkg == "." {
+                        format!("no file `{file}` beside this program")
+                    } else {
+                        format!("no file `{file}` in package `{pkg}`")
+                    };
+                    let d = Diagnostic::error("E0220", format!("unknown module `{written}`"), imp.path.span).with_label(label);
+                    if super::stdlib::source(&format!("std.{written}")).is_some() {
+                        d.with_help(format!("the standard library's modules are under `std`: `import std.{written}`"))
                     } else {
                         d
                     }
                 };
                 self.err(d);
+                self.import_failed(name, imp);
                 continue;
             }
             if self.loading.contains(&path) && path != name {
@@ -196,6 +245,22 @@ impl Elab {
                 }
             }
         }
+    }
+
+    /// Remember that `imp` failed, so its qualifier's uses aren't reported again.
+    fn import_failed(&mut self, module: &str, imp: &ast::Import) {
+        let written = imp.path.dotted();
+        let qual = imp.alias.as_ref().map(|a| a.name.clone()).unwrap_or_else(|| written.rsplit('.').next().unwrap_or("").to_string());
+        self.modules.get_mut(module).unwrap().failed_imports.insert(qual);
+    }
+
+    /// The package module `m` belongs to: a dependency's name, `std`, or
+    /// `.` for the program's own (D111).
+    pub fn package_of(&self, m: &str) -> String {
+        if m.starts_with("std.") {
+            return "std".to_string();
+        }
+        self.module_pkg.get(m).cloned().unwrap_or_else(|| ".".to_string())
     }
 
     // ── name resolution ─────────────────────────────────────────────────────
