@@ -13,7 +13,7 @@ export abstract record Sink -v : v~Type
 # A `Box Json` may hold a `Json`, because `Box` is marked `+`.
 enum Json
     Null
-    Boxed b     : b~Box Json
+    Boxed b : b~Box Json
 
 # An unmarked parameter promises nothing, so a recursive type can't go there.
 export abstract record Cell v : v~Type
@@ -21,7 +21,7 @@ export abstract record Cell v : v~Type
 
 enum Tree
     Leaf
-    Node c      : c~Cell Tree                   # error E0354
+    Node c : c~Cell Tree                   # error E0354
 
 export abstract record Bad +v : v~Type
     f~(v -> Nat)                                # error E0359: `v` left of `->`

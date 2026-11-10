@@ -18,7 +18,7 @@ export enum Option a : a~Type
     Some x : x~a
 
 export enum Result a e : a~Type, e~Type
-    Ok x : x~a
+    Ok x  : x~a
     Err x : x~e
 
 export enum List a : a~Type

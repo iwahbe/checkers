@@ -33,7 +33,7 @@ fn cons_ok n xs -> ys : n~Nat, xs~List Small, ys~List Small
 
 fn first xs -> r : xs~List Small, r~Nat, r < 10
     match xs
-        [] -> 0
+        []     -> 0
         x :: _ -> x
 
 fn halve xs -> ys : xs~List Small, ys~List Small

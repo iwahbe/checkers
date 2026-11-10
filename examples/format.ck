@@ -29,11 +29,11 @@ export enum BadPlaceholder
 # The type `fmt` gives a format string: one parameter per placeholder.
 export transparent fn format_type ps -> t : ps~List Piece, t~Type
     match ps
-        [] -> String
+        []             -> String
         Text _ :: rest -> format_type rest
-        Str :: rest -> String -> format_type rest
-        Num :: rest -> Int -> format_type rest
-        Bad :: _ -> BadPlaceholder
+        Str :: rest    -> String -> format_type rest
+        Num :: rest    -> Int -> format_type rest
+        Bad :: _       -> BadPlaceholder
 
 # Every `{` starts `{}` or `{n}`, and every `}` ends one.
 export transparent fn valid src i -> b : src~Bytes, i~Nat, i <= len src, b~Bool
@@ -68,16 +68,16 @@ export transparent fn pieces src i text -> ps : src~Bytes, i~Nat, i <= len src, 
 fn flush text rest -> ps : text~List Char, rest~List Piece, ps~List Piece
     match text
         [] -> rest
-        _ -> Text (string.from_chars (reverse text)) :: rest
+        _  -> Text (string.from_chars (reverse text)) :: rest
 
 # Expanded at compile time, piece by piece: each placeholder becomes a lambda.
 fn go ps acc -> f : ps~comptime List Piece, acc~String, f~format_type ps
     match ps
-        [] -> acc
+        []             -> acc
         Text t :: rest -> go rest (acc ++ t)
-        Str :: rest -> \x -> go rest (acc ++ x)
-        Num :: rest -> \n -> go rest (acc ++ format n)
-        Bad :: _ -> Rejected
+        Str :: rest    -> \x -> go rest (acc ++ x)
+        Num :: rest    -> \n -> go rest (acc ++ format n)
+        Bad :: _       -> Rejected
 
 export fn fmt s -> f : s~comptime String, valid (string.bytes s) 0,
                        f~format_type (pieces (string.bytes s) 0 [])

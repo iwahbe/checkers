@@ -17,14 +17,14 @@ export partial fn main args sys -> code : args~List String, sys~System, code~Exi
                 (Ok input, Ok output) ->
                     copy_lines input output
                     Success
-                (Ok input, Err e) ->
+                (Ok input, Err e)     ->
                     files.close input                       # must close what was opened
                     fail dst e term
-                (Err e, Ok output) ->
+                (Err e, Ok output)    ->
                     files.close output
                     fail src e term
-                (Err e, Err _) -> fail src e term
-        _ ->
+                (Err e, Err _)        -> fail src e term
+        _          ->
             terminal.eprint_line "usage: copy SRC DST" term
             Failure 2
 
@@ -32,7 +32,7 @@ export partial fn main args sys -> code : args~List String, sys~System, code~Exi
 partial fn copy_lines input output : input~File, output~File
     line <- files.read_line input
     match line
-        None ->
+        None      ->
             files.close input
             files.close output
         Some text ->

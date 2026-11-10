@@ -24,22 +24,22 @@ import list (keys, unique, contains, reverse, join, map, max_of)   # `keys` is e
 
 export enum Json
     Null
-    Bool b      : b~Bool
-    Num n       : n~Decimal
-    Str s       : s~String
-    Arr items   : items~List Json
-    Obj fields  : fields~List (String, Json), unique (keys fields)
+    Bool b     : b~Bool
+    Num n      : n~Decimal
+    Str s      : s~String
+    Arr items  : items~List Json
+    Obj fields : fields~List (String, Json), unique (keys fields)
 
 # Object members. Insertion order is kept; duplicates are unrepresentable.
 type Members = fs~List (String, Json), unique (keys fs)
 
 export enum ErrorKind
     UnexpectedEnd
-    UnexpectedByte b    : b~U8
+    UnexpectedByte b : b~U8
     BadEscape
     BadUtf8
     ControlInString
-    DuplicateKey k      : k~String
+    DuplicateKey k   : k~String
     TooDeep
     TrailingInput
 
@@ -86,22 +86,22 @@ fn value src i depth -> r : src~Bytes, i~Nat, i <= len src, depth~Nat,
                             r~Result (Parsed Json src i) (Error src)
     decreasing (len src - i, 0)
     match peek src i
-        None     -> Err (Error i UnexpectedEnd)
-        Some 'n' -> literal src i b"null" Null
-        Some 't' -> literal src i b"true" (Bool True)
-        Some 'f' -> literal src i b"false" (Bool False)
-        Some '"' ->
+        None                           -> Err (Error i UnexpectedEnd)
+        Some 'n'                       -> literal src i b"null" Null
+        Some 't'                       -> literal src i b"true" (Bool True)
+        Some 'f'                       -> literal src i b"false" (Bool False)
+        Some '"'                       ->
             let s = try string_body src (i + 1)
             Ok (Parsed (Str s.value) s.stop)
         Some '[' if depth >= MAX_DEPTH -> Err (Error i TooDeep)
-        Some '[' ->
+        Some '['                       ->
             let a = try array src (i + 1) (depth + 1)
             Ok (Parsed (Arr a.value) a.stop)
         Some '{' if depth >= MAX_DEPTH -> Err (Error i TooDeep)
-        Some '{' ->
+        Some '{'                       ->
             let o = try object src (i + 1) (depth + 1)
             Ok (Parsed (Obj o.value) o.stop)       # o.value~Members carries unique (keys …)
-        Some b ->
+        Some b                         ->
             match decimal.scan_json src i
                 Some n -> Ok (Parsed (Num n.value) n.stop)
                 None   -> Err (Error i (UnexpectedByte b))
@@ -231,9 +231,9 @@ fn hex_value b -> n : b~U8, hex_digit b, n~Nat, n < 16
 fn hex4 src i -> r : src~Bytes, i~Nat, i <= len src,
                      r~Result (Parsed Hex16 src i) (Error src)
     if i + 4 <= len src and hex_digit src[i] and hex_digit src[i + 1]
-                        and hex_digit src[i + 2] and hex_digit src[i + 3]
+        and hex_digit src[i + 2] and hex_digit src[i + 3]
         let n = hex_value src[i] * 4096 + hex_value src[i + 1] * 256
-              + hex_value src[i + 2] * 16 + hex_value src[i + 3]
+            + hex_value src[i + 2] * 16 + hex_value src[i + 3]
         Ok (Parsed n (i + 4))                # n < 0x10000 follows from each digit < 16
     else
         Err (Error i BadEscape)
@@ -259,25 +259,25 @@ fn unicode_escape src i -> r : src~Bytes, i~Nat, i <= len src,
 
 export fn render v -> s : v~Json, s~String
     match v
-        Null        -> "null"
-        Bool b      -> if b then "true" else "false"
-        Num n       -> decimal.render n
-        Str s       -> quote s
-        Arr items   -> "[" ++ join "," (map render items) ++ "]"
-        Obj fields  -> "{" ++ join "," (map (\(k, x) -> quote k ++ ":" ++ render x) fields) ++ "}"
+        Null       -> "null"
+        Bool b     -> if b then "true" else "false"
+        Num n      -> decimal.render n
+        Str s      -> quote s
+        Arr items  -> "[" ++ join "," (map render items) ++ "]"
+        Obj fields -> "{" ++ join "," (map (\(k, x) -> quote k ++ ":" ++ render x) fields) ++ "}"
 
 fn quote s -> q : s~String, q~String
     "\"" ++ string.concat_map escape_char s ++ "\""
 
 fn escape_char c -> s : c~Char, s~String
     match c
-        c'"'                     -> "\\\""
-        c'\\'                    -> "\\\\"
-        c'\n'                    -> "\\n"
-        c'\r'                    -> "\\r"
-        c'\t'                    -> "\\t"
-        _ if char.code c < 0x20  -> "\\u" ++ hex4_string (char.code c)
-        _                        -> string.from_char c
+        c'"'                    -> "\\\""
+        c'\\'                   -> "\\\\"
+        c'\n'                   -> "\\n"
+        c'\r'                   -> "\\r"
+        c'\t'                   -> "\\t"
+        _ if char.code c < 0x20 -> "\\u" ++ hex4_string (char.code c)
+        _                       -> string.from_char c
 
 fn hex4_string n -> s : n~Nat, n < 0x10000, s~String
     string.from_chars [hex_char (n / 4096), hex_char (n / 256 % 16), hex_char (n / 16 % 16), hex_char (n % 16)]
@@ -295,11 +295,11 @@ fn delimits post : post~Bytes
 fn after_first rest -> s : rest~List Json, s~String
     match rest
         [] -> "]"
-        _ -> "," ++ join "," (map render rest) ++ "]"
+        _  -> "," ++ join "," (map render rest) ++ "]"
 
 fn head_or_null xs -> v : xs~List Json, v~Json
     match xs
-        [] -> Null
+        []     -> Null
         x :: _ -> x
 
 # The first byte of a rendered value, as `value` dispatches on it.
@@ -337,7 +337,7 @@ lemma value_render v pre post d : v~Json, pre~Bytes, post~Bytes, delimits post,
             Str s         -> have string_render s pre post d
             Arr items     ->
                 match items
-                    [] -> have utf8.encode_append "[" "]"
+                    []        -> have utf8.encode_append "[" "]"
                     x :: rest ->
                         let pre2 = pre ++ b"["
                         have render_first x
@@ -361,11 +361,11 @@ lemma elements_render items acc pre post start d
       d~Nat, d + max_of (map depth items) <= MAX_DEPTH
     let src = pre ++ utf8.encode (join "," (map render items) ++ "]") ++ post
     ensures elements src start (len pre) d acc
-         == Ok (Parsed (reverse acc ++ items) (len src - len post))
+        == Ok (Parsed (reverse acc ++ items) (len src - len post))
     proof
         match items
-            [] -> auto                                               # excluded by items != []
-            [x] ->
+            []        -> auto                                               # excluded by items != []
+            [x]       ->
                 have list.max_of_cons (depth x) []
                 have value_render x pre (b"]" ++ post) d
                 let e = len pre + len (utf8.encode (render x))
@@ -411,7 +411,7 @@ lemma members_render fields pre post d : fields~Members, pre~Bytes, post~Bytes, 
 # Evaluated by the compiler; a failing `check` is a compile error.
 
 check parse b"[1, true, \"a\\u00e9\"]"
-      == Ok (Arr [Num (decimal.of_int 1), Bool True, Str "aé"])
+    == Ok (Arr [Num (decimal.of_int 1), Bool True, Str "aé"])
 check parse b"{\"a\":1,\"a\":2}" == Err (Error 7 (DuplicateKey "a"))
 check parse b"[1,]" == Err (Error 3 (UnexpectedByte ']'))
 check parse b"\"\\ud800\"" == Err (Error 7 BadEscape)

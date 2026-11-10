@@ -27,7 +27,7 @@ partial fn read_and_square term -> y : term~Term, y~Int
 
 fn line_value l -> n : l~Option String, n~Int
     match l
-        None -> 0
+        None   -> 0
         Some _ -> 7
 
 check cube 2 == 8

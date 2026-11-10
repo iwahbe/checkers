@@ -5,17 +5,17 @@ import bag
 
 export transparent fn length xs -> n : xs~List a, n~Nat
     match xs
-        [] -> 0
+        []        -> 0
         _ :: rest -> 1 + length rest
 
 export transparent fn map f xs -> ys : f~(a -> b), xs~List a, ys~List b
     match xs
-        [] -> []
+        []        -> []
         x :: rest -> f x :: map f rest
 
 export fn all p xs -> r : p~(a -> Bool), xs~List a, r~Bool
     match xs
-        [] -> True
+        []        -> True
         x :: rest -> p x and all p rest
 
 export transparent fn reverse xs -> ys : xs~List a, ys~List a
@@ -23,38 +23,38 @@ export transparent fn reverse xs -> ys : xs~List a, ys~List a
 
 fn reverse_onto xs acc -> ys : xs~List a, acc~List a, ys~List a
     match xs
-        [] -> acc
+        []        -> acc
         x :: rest -> reverse_onto rest (x :: acc)
 
 export transparent fn join sep parts -> s : sep~String, parts~List String, s~String
     match parts
-        [] -> ""
-        [p] -> p
+        []        -> ""
+        [p]       -> p
         p :: rest -> p ++ sep ++ join sep rest
 
 export transparent fn keys pairs -> ks : pairs~List (k, v), ks~List k
     match pairs
-        [] -> []
+        []               -> []
         (key, _) :: rest -> key :: keys rest
 
 export transparent fn contains xs x -> r : xs~List a, x~a, r~Bool
     match xs
-        [] -> False
+        []        -> False
         y :: rest -> y == x or contains rest x
 
 export transparent fn unique xs -> r : xs~List a, r~Bool
     match xs
-        [] -> True
+        []        -> True
         x :: rest -> not (contains rest x) and unique rest
 
 export transparent fn count x xs -> n : x~a, xs~List a, n~Nat
     match xs
-        [] -> 0
+        []        -> 0
         y :: rest -> (if y == x then 1 else 0) + count x rest
 
 export transparent fn max_of xs -> m : xs~List Nat, m~Nat
     match xs
-        [] -> 0
+        []        -> 0
         x :: rest ->
             let m = max_of rest
             if x > m then x else m
@@ -62,13 +62,13 @@ export transparent fn max_of xs -> m : xs~List Nat, m~Nat
 export fn take n xs -> ys : n~Nat, xs~List a, ys~List a,
                             length ys <= length xs, n <= length xs implies length ys == n
     match xs
-        [] -> []
+        []        -> []
         x :: rest -> if n == 0 then [] else x :: take (n - 1) rest
 
 export fn drop n xs -> ys : n~Nat, xs~List a, ys~List a,
                             length ys <= length xs, n <= length xs implies length ys + n == length xs
     match xs
-        [] -> []
+        []        -> []
         _ :: rest -> if n == 0 then xs else drop (n - 1) rest
 
 # Splitting a list and joining the halves gives it back.
@@ -76,7 +76,7 @@ export lemma take_drop n xs : n~Nat, xs~List Int
     ensures take n xs ++ drop n xs == xs
     proof
         match xs
-            [] -> auto
+            []        -> auto
             _ :: rest ->
                 match n
                     0 -> auto
@@ -87,14 +87,14 @@ export lemma bag_append xs ys : xs~List Int, ys~List Int
     ensures bag.of (xs ++ ys) == bag.sum (bag.of xs) (bag.of ys)
     proof
         match xs
-            [] -> auto
+            []        -> auto
             _ :: rest -> have bag_append rest ys
 
 export transparent fn sorted xs -> r : xs~List Int, r~Bool
     decreasing length xs
     match xs
         x :: y :: rest -> x <= y and sorted (y :: rest)
-        _ -> True
+        _              -> True
 
 # `ys` is a rearrangement of `xs`: the same elements, as often (D47).
 export transparent fn perm xs ys -> r : xs~List Int, ys~List Int, r~Bool
@@ -116,21 +116,21 @@ export lemma append_nil xs : xs~List a
     ensures xs ++ [] == xs
     proof
         match xs
-            [] -> auto
+            []        -> auto
             _ :: rest -> have append_nil rest
 
 export lemma append_assoc xs ys zs : xs~List a, ys~List a, zs~List a
     ensures (xs ++ ys) ++ zs == xs ++ (ys ++ zs)
     proof
         match xs
-            [] -> auto
+            []        -> auto
             _ :: rest -> have append_assoc rest ys zs
 
 lemma rev_onto_app xs acc : xs~List a, acc~List a
     ensures reverse_onto xs acc == reverse_onto xs [] ++ acc
     proof
         match xs
-            [] -> auto
+            []        -> auto
             x :: rest ->
                 have rev_onto_app rest (x :: acc)
                 have rev_onto_app rest [x]
@@ -140,7 +140,7 @@ lemma keys_rev_onto ps acc : ps~List (k, v), acc~List (k, v)
     ensures keys (reverse_onto ps acc) == reverse_onto (keys ps) (keys acc)
     proof
         match ps
-            [] -> auto
+            []        -> auto
             p :: rest -> have keys_rev_onto rest (p :: acc)
 
 export lemma keys_reverse ps : ps~List (k, v)
@@ -152,34 +152,34 @@ lemma contains_rev_onto xs acc y : xs~List a, acc~List a, y~a
     ensures contains (reverse_onto xs acc) y == (contains xs y or contains acc y)
     proof
         match xs
-            [] -> auto
+            []        -> auto
             x :: rest -> have contains_rev_onto rest (x :: acc) y
 
 # No element of `xs` is in `ys`.
 fn disjoint xs ys -> r : xs~List a, ys~List a, r~Bool
     match xs
-        [] -> True
+        []        -> True
         x :: rest -> not (contains ys x) and disjoint rest ys
 
 lemma disjoint_nil xs : xs~List a
     ensures disjoint xs []
     proof
         match xs
-            [] -> auto
+            []        -> auto
             _ :: rest -> have disjoint_nil rest
 
 lemma disjoint_cons xs ys x : xs~List a, ys~List a, x~a, disjoint xs ys, not (contains xs x)
     ensures disjoint xs (x :: ys)
     proof
         match xs
-            [] -> auto
+            []        -> auto
             _ :: rest -> have disjoint_cons rest ys x
 
 lemma unique_rev_onto xs acc : xs~List a, acc~List a, unique xs, unique acc, disjoint xs acc
     ensures unique (reverse_onto xs acc)
     proof
         match xs
-            [] -> auto
+            []        -> auto
             x :: rest ->
                 have disjoint_cons rest acc x
                 have unique_rev_onto rest (x :: acc)

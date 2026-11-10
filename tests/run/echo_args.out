@@ -1,10 +1,10 @@
 -- stdout
 -- stderr
 error[E0450]: cannot prove `n < 256`, required to build `Failure`
-  --> echo.ck:19:14
+  --> echo.ck:19:15
    |
-19 |         _ -> Failure (len args + 10)
-   |              ^^^^^^^^^^^^^^^^^^^^^^^ `Failure` requires `n < 256`
+19 |         _  -> Failure (len args + 10)
+   |               ^^^^^^^^^^^^^^^^^^^^^^^ `Failure` requires `n < 256`
    = note: counterexample: args = ["", b"\xf6", b"\xf7", … (246 items)]
    = help: check the value before building it, e.g. with an `if`
 

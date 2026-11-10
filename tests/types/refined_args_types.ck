@@ -27,4 +27,3 @@ fn takes_nested xss -> r : xss~List (List Small), r~Nat
 # Forgetting a refinement is free, except through a cown, which is invariant.
 fn forget_cown c -> d : c~Cown Small, d~Cown Nat
     c                                           # error: `Cown Small` is not `Cown Nat`
-

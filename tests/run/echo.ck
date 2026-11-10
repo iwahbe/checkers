@@ -7,7 +7,7 @@ import terminal (Term)
 
 partial fn number n term : n~Nat, term~Term
     match terminal.read_line term
-        None -> ()
+        None   -> ()
         Some l ->
             terminal.print_line (format n ++ ": " ++ l) term
             number (n + 1) term
@@ -16,4 +16,4 @@ export partial fn main args sys -> code : args~List String, sys~System, code~Exi
     number 1 sys.term
     match args
         [] -> Success
-        _ -> Failure (len args + 10)
+        _  -> Failure (len args + 10)

@@ -39,12 +39,12 @@ fn render c name -> s : c~Counts, name~String, s~String
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { fs, term } = sys
     match args
-        [] ->
+        []    ->
             match terminal.read_all term
                 Ok src ->
                     terminal.print_line (render (count src) "") term
                     Success
-                Err e ->
+                Err e  ->
                     terminal.eprint_line ("wc: " ++ terminal.describe e) term
                     Failure 1
         paths ->
@@ -53,13 +53,13 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
 fn report paths status fs term -> code : paths~List String, status~ExitCode,
                                          fs~Fs, term~Term, code~ExitCode
     match paths
-        [] -> status
+        []           -> status
         path :: rest ->
             match files.read path fs
                 Ok src ->
                     terminal.print_line (render (count src) path) term
                     report rest status fs term
-                Err e ->
+                Err e  ->
                     terminal.eprint_line ("wc: " ++ path ++ ": " ++ files.describe e) term
                     report rest (Failure 1) fs term
 

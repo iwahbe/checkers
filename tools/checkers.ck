@@ -38,15 +38,15 @@ fn last_slash b i -> r : b~Bytes, i~Nat, i <= len b, r~Option (k~Nat, k < len b)
 # `ckc` in the directory of the running program.
 fn beside exe -> r : exe~Option String, r~Option String
     match exe
-        None -> None
+        None      -> None
         Some path ->
             let b = string.bytes path
             match last_slash b (len b)
-                None -> None
+                None   -> None
                 Some k ->
                     match string.from_utf8 (bytes.slice b 0 (k + 1))
                         Some dir -> Some (dir ++ "ckc")
-                        None -> None
+                        None     -> None
 
 fn report program e term -> code : program~String, e~files.IoError, term~Term, code~ExitCode
     terminal.eprint_line ("checkers: could not run `" ++ program ++ "`: " ++ files.describe e) term
@@ -56,18 +56,18 @@ partial fn compiler args e p term -> code : args~List String, e~Env, p~Proc, ter
     match env.get "CKC" e
         Some c ->
             match proc.exec c args p
-                Ok n -> exit_code n
+                Ok n  -> exit_code n
                 Err x -> report c x term
-        None ->
+        None   ->
             let on_path = \u ->
                 match proc.exec "ckc" args p
-                    Ok n -> exit_code n
+                    Ok n  -> exit_code n
                     Err x -> report "ckc" x term
             match beside (env.executable e)
-                None -> on_path ()
+                None   -> on_path ()
                 Some c ->
                     match proc.exec c args p
-                        Ok n -> exit_code n
+                        Ok n  -> exit_code n
                         Err _ -> on_path ()
 
 export partial fn main args sys -> code : args~List String, sys~System, code~ExitCode
@@ -77,13 +77,13 @@ export partial fn main args sys -> code : args~List String, sys~System, code~Exi
         ["--version"] ->
             terminal.print_line ("checkers " ++ VERSION) term
             Success
-        ["--help"] ->
+        ["--help"]    ->
             terminal.print_line USAGE term
             Success
-        [] ->
+        []            ->
             terminal.print_line USAGE term
             Success
-        c :: _ ->
+        c :: _        ->
             if compiler_command c
                 compiler args e p term
             else

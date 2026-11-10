@@ -34,12 +34,12 @@ fn never_closed_after_try path fs -> r : path~String, fs~Fs, r~Result Unit IoErr
 # Accepted: every file is consumed exactly once on every path.
 fn fine a b fs : a~String, b~String, fs~Fs
     match (files.open a fs, files.open b fs)
-        (Ok x, Ok y) ->
+        (Ok x, Ok y)   ->
             _ <- files.write_line "hi" y
             files.close x
             files.close y
-        (Ok x, Err _) -> files.close x
-        (Err _, Ok y) -> files.close y
+        (Ok x, Err _)  -> files.close x
+        (Err _, Ok y)  -> files.close y
         (Err _, Err _) -> ()
 
 fn wrapped f : f~File

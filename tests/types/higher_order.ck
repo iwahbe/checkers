@@ -10,7 +10,7 @@ fn double x -> y : x~Int, y~Int
 
 fn first_or_zero xs -> r : xs~List Int, r~Int
     match xs
-        [] -> 0
+        []     -> 0
         x :: _ -> x
 
 fn doubled xs -> r : xs~List Int, r~Bool, r
@@ -23,7 +23,7 @@ lemma kept xs : xs~List Int
     ensures length (map double xs) == length xs
     proof
         match xs
-            [] -> auto
+            []        -> auto
             _ :: rest -> have kept rest
 
 fn wrong xs -> r : xs~List Int, r~Bool, r

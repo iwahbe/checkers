@@ -37,7 +37,7 @@ fn report term name x -> y : term~Term, name~String, x~a, y~a
 fn first_three xs -> ys : xs~List Nat, ys~List Nat
     match xs
         a :: b :: c :: _ -> [a, b, c]
-        _ -> xs
+        _                -> xs
 
 fn trail term xs -> ys : term~Term, xs~List Nat, ys~List Nat
     terminal.print_line ("trail " ++ format (list.length xs) ++ " " ++ format (first_three xs)) term

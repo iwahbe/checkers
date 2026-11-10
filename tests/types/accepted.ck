@@ -44,10 +44,10 @@ fn swap p -> q : p~(a, b), q~(b, a)
 
 fn classify n -> s : n~Nat, s~String
     match n
-        0 -> "zero"
-        1 -> "one"
+        0           -> "zero"
+        1           -> "one"
         _ if n < 10 -> "small"
-        _ -> "large"
+        _           -> "large"
 
 fn ops xs -> r : xs~List Nat, r~List Nat
     let inc = (+ 1)

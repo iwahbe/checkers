@@ -41,7 +41,7 @@ partial fn ck_files path fs -> r : path~String, fs~Fs, r~List String
 
 partial fn entries dir es fs -> r : dir~String, es~List Entry, fs~Fs, r~List String
     match es
-        [] -> []
+        []        -> []
         e :: rest ->
             let here = if e.dir and not (hidden e.name)
                 ck_files (join_path dir e.name) fs
@@ -61,17 +61,17 @@ record Tally
 
 partial fn each paths verify fs term t -> r : paths~List String, verify~Bool, fs~Fs, term~Term, t~Tally, r~Tally
     match paths
-        [] -> t
+        []        -> t
         p :: rest -> each rest verify fs term (one p verify fs term t)
 
 partial fn one path verify fs term t -> r : path~String, verify~Bool, fs~Fs, term~Term, t~Tally, r~Tally
     match files.read path fs
-        Err e ->
+        Err e  ->
             terminal.eprint_line (path ++ ": " ++ files.describe e) term
             Tally True t.changed
         Ok src ->
             match formatter.format src
-                Err e ->
+                Err e  ->
                     terminal.eprint_line (describe path e) term
                     Tally True t.changed
                 Ok out ->
@@ -82,14 +82,14 @@ partial fn one path verify fs term t -> r : path~String, verify~Bool, fs~Fs, ter
                         Tally t.failed True
                     else
                         match files.write path out fs
-                            Ok _ -> Tally t.failed True
+                            Ok _  -> Tally t.failed True
                             Err e ->
                                 terminal.eprint_line (path ++ ": " ++ files.describe e) term
                                 Tally True t.changed
 
 fn stdin term -> code : term~Term, code~ExitCode
     match terminal.read_all term
-        Err e ->
+        Err e  ->
             terminal.eprint_line ("<stdin>: " ++ files.describe e) term
             Failure 1
         Ok src ->
@@ -97,29 +97,29 @@ fn stdin term -> code : term~Term, code~ExitCode
                 Ok out ->
                     terminal.write_bytes out term
                     Success
-                Err e ->
+                Err e  ->
                     terminal.eprint_line (describe "<stdin>" e) term
                     Failure 1
 
 partial fn collect paths fs -> r : paths~List String, fs~Fs, r~List String
     match paths
-        [] -> []
+        []        -> []
         p :: rest -> ck_files p fs ++ collect rest fs
 
 # `checkers fmt ARGS`.
 export partial fn run args term fs -> code : args~List String, term~Term, fs~Fs, code~ExitCode
     match args
-        ["-"] -> stdin term
-        ["--help"] ->
+        ["-"]              -> stdin term
+        ["--help"]         ->
             terminal.print_line USAGE term
             Success
         "--check" :: paths -> files_mode paths True term fs
-        paths -> files_mode paths False term fs
+        paths              -> files_mode paths False term fs
 
 # A flag among the paths: in the wrong place.
 fn flagged paths : paths~List String
     match paths
-        [] -> False
+        []        -> False
         p :: rest -> p == "-" or p == "--check" or flagged rest
 
 partial fn files_mode paths verify term fs -> code : paths~List String, verify~Bool, term~Term, fs~Fs, code~ExitCode

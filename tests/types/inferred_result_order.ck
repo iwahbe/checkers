@@ -11,7 +11,7 @@ fn uses_later prev pending -> r : prev~Option Nat, pending~Bool, r~Bool
 fn at_most prev l : prev~Option Nat, l~Nat
     match prev
         Some q -> l <= q
-        None -> False
+        None   -> False
 
 # Between functions that call each other, one is checked first: a call to
 # the other there needs its result type written.

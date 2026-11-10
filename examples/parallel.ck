@@ -36,8 +36,8 @@ fn merge l r -> out : l~List Int, r~List Int, sorted l, sorted r,
     decreasing length l + length r
     have list.bag_append l r
     match (l, r)
-        ([], _) -> r
-        (_, []) -> l
+        ([], _)            -> r
+        (_, [])            -> l
         (x :: xs, y :: ys) ->
             have list.bag_append l ys
             if x <= y then x :: merge xs r else y :: merge l ys
@@ -58,7 +58,7 @@ export fn main args sys -> code : args~List String, sys~System, code~Future Exit
             done <- join x = a, y = b using sched
                 compare_files p1 x p2 y term
             done
-        _ ->
+        _        ->
             terminal.eprint_line "usage: parallel FILE1 FILE2" term
             future.ready (Failure 2)
 
@@ -69,11 +69,11 @@ fn compare_files p1 r1 p2 r2 term -> code : p1~String, r1~Result Bytes IoError,
         (Ok x, Ok y) if x == y ->
             terminal.print_line "same" term
             Success
-        (Ok _, Ok _) ->
+        (Ok _, Ok _)           ->
             terminal.print_line "different" term
             Failure 1
-        (Err e, _) -> read_failed p1 e term
-        (_, Err e) -> read_failed p2 e term
+        (Err e, _)             -> read_failed p1 e term
+        (_, Err e)             -> read_failed p2 e term
 
 fn read_failed path e term -> code : path~String, e~IoError, term~Term, code~ExitCode
     terminal.eprint_line ("parallel: " ++ path ++ ": " ++ files.describe e) term

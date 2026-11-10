@@ -6,8 +6,8 @@ module datatype_sorts
 # never trusted.
 
 enum Tree
-    Leaf n      : n~Nat
-    Node kids   : kids~List (String, Tree)
+    Leaf n    : n~Nat
+    Node kids : kids~List (String, Tree)
 
 fn first_nat o -> n : o~Option Nat, n~Nat
     match o

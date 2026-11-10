@@ -36,7 +36,7 @@ lemma length_append xs ys : xs~List Int, ys~List Int
     ensures length (xs ++ ys) == length xs + length ys
     proof
         match xs
-            [] -> auto
+            []        -> auto
             _ :: rest -> have length_append rest ys
 
 fn uses_lemma xs ys -> n : xs~List Int, ys~List Int, n~Nat, n >= length xs

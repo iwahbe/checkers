@@ -76,20 +76,20 @@ fn quote_end src i e q -> r : src~Bytes, i~Nat, e~Nat, i <= e, e <= len src, q~U
                               r~Option (j~Nat, i < j, j <= e)
     decreasing e - i
     match peek src i e
-        None -> None
+        None   -> None
         Some c ->
             if c == q
                 Some (i + 1)
             else if c == '\\'
                 if i + 2 <= e
                     match quote_end src (i + 2) e q
-                        None -> None
+                        None   -> None
                         Some j -> Some j
                 else
                     None
             else
                 match quote_end src (i + 1) e q
-                    None -> None
+                    None   -> None
                     Some j -> Some j
 
 fn error n col msg -> r : n~Nat, col~Nat, msg~String, r~SyntaxError
@@ -101,7 +101,7 @@ fn literal src i body e q n col -> r : src~Bytes, i~Nat, body~Nat, i < body, bod
                                        r~Result (Scan i e) SyntaxError
     match quote_end src body e q
         Some j -> Ok (Scan Literal j)
-        None -> Err (error n col "unterminated literal")
+        None   -> Err (error n col "unterminated literal")
 
 fn two src i e a b : src~Bytes, i~Nat, e~Nat, e <= len src, a~U8, b~U8
     i + 1 < e and src[i] == a and src[i + 1] == b
@@ -155,7 +155,7 @@ fn lex_line src ls i e n col acc -> r : src~Bytes, ls~Nat, i~Nat, e~Nat, ls <= i
                                         r~Result Line SyntaxError
     decreasing e - i
     match peek src i e
-        None -> Ok (Line n (reverse acc) None)
+        None   -> Ok (Line n (reverse acc) None)
         Some c ->
             if c == '\t' and acc == []
                 Err (error n col "tabs are not allowed in indentation; use spaces")
@@ -201,12 +201,12 @@ export fn is_text t s : t~Tok, s~Bytes
 export fn is_punct t s : t~Tok, s~Bytes
     match t.kind
         Punct -> t.text == s
-        _ -> False
+        _     -> False
 
 export fn is_keyword t : t~Tok
     match t.kind
         Name -> list.contains KEYWORDS t.text
-        _ -> False
+        _    -> False
 
 let KEYWORDS = [b"module", b"import", b"as", b"export", b"abstract", b"transparent", b"fn", b"enum",
                 b"record", b"type", b"let", b"lemma", b"ensures", b"proof", b"have", b"auto", b"admit",
@@ -217,8 +217,8 @@ let KEYWORDS = [b"module", b"import", b"as", b"export", b"abstract", b"transpare
 export fn is_binop t : t~Tok
     match t.kind
         Punct -> list.contains BINOPS t.text
-        Name -> t.text == b"and" or t.text == b"or" or t.text == b"implies"
-        _ -> False
+        Name  -> t.text == b"and" or t.text == b"or" or t.text == b"implies"
+        _     -> False
 
 let BINOPS = [b".", b"*", b"/", b"%", b"+", b"-", b"++", b"::", b"==", b"!=", b"<", b"<=", b">",
               b">=", b"$", b"|"]
@@ -232,7 +232,7 @@ export fn is_close t : t~Tok
 # The bracket depth after `toks`, starting from `d`.
 export fn depth_after toks d -> r : toks~List Tok, d~Nat, r~Nat
     match toks
-        [] -> d
+        []        -> d
         t :: rest ->
             if is_open t
                 depth_after rest (d + 1)
@@ -250,7 +250,7 @@ export enum Role
     Blank
     Start lvl : lvl~Nat
     Cont
-    Note lvl : lvl~Nat
+    Note lvl  : lvl~Nat
 
 export record Placed
     role~Role
@@ -265,15 +265,15 @@ record State
 
 fn last_of toks -> r : toks~List Tok, r~Option Tok
     match toks
-        [] -> None
-        [t] -> Some t
+        []        -> None
+        [t]       -> Some t
         _ :: rest -> last_of rest
 
 # The last line ends with a binary operator or a comma.
 fn open_ended st : st~State
     match st.last
         Some t -> is_binop t or is_punct t b","
-        None -> False
+        None   -> False
 
 fn continues st first : st~State, first~Tok
     st.depth > 0 or is_binop first or is_punct first b":" or open_ended st
@@ -281,30 +281,30 @@ fn continues st first : st~State, first~Tok
 # The level of the innermost open block whose column is at most `col`.
 fn level_at stack col -> l : stack~List Nat, col~Nat, l~Nat
     match stack
-        [] -> 0
+        []        -> 0
         c :: rest -> if c <= col then list.length rest else level_at rest col
 
 # Close blocks down to `col`: the remaining stack, if `col` is one of its
 # columns.
 fn dedent stack col -> r : stack~List Nat, col~Nat, r~Option (List Nat)
     match stack
-        [] -> None
+        []        -> None
         c :: rest -> if c == col then Some stack else if c < col then None else dedent rest col
 
 # The level of the innermost block.
 fn level_of stack -> l : stack~List Nat, l~Nat
     match stack
-        [] -> 0
+        []        -> 0
         _ :: rest -> list.length rest
 
 fn place lines st acc -> r : lines~List Line, st~State, acc~List Placed, r~Result (List Placed) SyntaxError
     match lines
-        [] -> Ok (reverse acc)
+        []        -> Ok (reverse acc)
         l :: rest ->
             match l.toks
-                [] ->
+                []         ->
                     match l.comment
-                        None -> place rest st (Placed Blank l :: acc)
+                        None   -> place rest st (Placed Blank l :: acc)
                         Some c ->
                             let role = if st.depth > 0 or open_ended st then Cont else Note (level_at st.stack c.col)
                             place rest st (Placed role l :: acc)
@@ -314,7 +314,7 @@ fn place lines st acc -> r : lines~List Line, st~State, acc~List Placed, r~Resul
                         place rest next (Placed Cont l :: acc)
                     else
                         let top = match st.stack
-                            [] -> 0
+                            []     -> 0
                             c :: _ -> c
                         if first.col > top
                             if st.last == None
@@ -325,7 +325,7 @@ fn place lines st acc -> r : lines~List Line, st~State, acc~List Placed, r~Resul
                                 place rest (State stack next.depth next.last) (p :: acc)
                         else
                             match dedent st.stack first.col
-                                None -> Err (error l.num first.col "unindent does not match any outer indentation level")
+                                None       -> Err (error l.num first.col "unindent does not match any outer indentation level")
                                 Some stack ->
                                     let p = Placed (Start (level_of stack)) l
                                     place rest (State stack next.depth next.last) (p :: acc)
@@ -334,23 +334,23 @@ fn place lines st acc -> r : lines~List Line, st~State, acc~List Placed, r~Resul
 # least as far, else with the block its column is in.
 fn resolve placed next acc -> r : placed~List Placed, next~Option (Nat, Nat), acc~List Placed, r~List Placed
     match placed
-        [] -> acc
+        []        -> acc
         p :: rest ->
             match p.role
                 Start lvl ->
                     let col = match p.line.toks
-                        [] -> 0
+                        []     -> 0
                         t :: _ -> t.col
                     resolve rest (Some (col, lvl)) (p :: acc)
                 Note back ->
                     let col = match p.line.comment
                         Some c -> c.col
-                        None -> 0
+                        None   -> 0
                     let lvl = match next
                         Some (c, l) -> if col >= c then l else back
-                        None -> back
+                        None        -> back
                     resolve rest next (Placed (Note lvl) p.line :: acc)
-                _ -> resolve rest next (p :: acc)
+                _         -> resolve rest next (p :: acc)
 
 # The lines of a file, each with its role.
 export fn layout lines -> r : lines~List Line, r~Result (List Placed) SyntaxError
