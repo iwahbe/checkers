@@ -34,7 +34,9 @@ Types are written only as constraints (`i~Nat, i <= len src`); the compiler prov
 | M12 Faster checking: Z3 answer cache, work limits | done |
 | M13 The standard library as the package `std`, read from [`stdlib/`](stdlib) at each check: `import std.list` | done |
 | M14 Packages: `checkers.json`, `checkers.lock`, git and path dependencies, minimal version selection | done |
-| M15 | see SPEC §10 (M9, a shell, was removed: D81) |
+| M15 Streams and processes: `File` for every file, `proc.run`/`spawn`/`wait` | next |
+| M16 Blocking operations free the thread | planned |
+| M17 `checkers lsp` | planned |
 
 ## Usage
 
