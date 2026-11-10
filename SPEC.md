@@ -105,7 +105,7 @@ This document is the single source of truth for Checkers. Implementation follows
 | D94 | **LSP, first version (§15.5).** Full-document sync. Diagnostics come from the compiler (`ckc check --json`, D97), run in a behaviour so that requests are still answered while it works: without the prover when a document changes (the unsaved text on standard input), with it when the document is saved; results for an older version of the document are dropped. Formatting calls the formatter's module directly, and document symbols come from its syntax tree. Positions are UTF-16 code units (the protocol's default, and the only encoding VS Code's client supports), or UTF-8 when the client offers it. Hover, go to definition and completion need queries into the elaborator and come later. | 11/06/2026 | **(proposed)** |
 | D95 | **A compiler and a build tool, like `rustc` and `cargo` (§15.1).** The compiler is written in Rust and built by Cargo with no special cases. The build tool, the command people use, is a Checkers program compiled by the compiler; the formatter and the language server are part of it, as Checkers modules. Supersedes D88, which compiled Checkers tools into the Rust binary. | 11/10/2026 | decided (11/10/2026) |
 | D96 | **Names (§15.1).** The compiler is `ckc`; the build tool is `checkers`. `checkers check`, `run`, `build`, `parse`, `stage` and `trust` pass their arguments to `ckc`; `checkers fmt` and `checkers lsp` are the build tool's own. The build tool finds the compiler through `CKC`, else next to its own executable, else on `PATH`. | 11/10/2026 | **(proposed)** |
-| D97 | **The build tool runs the compiler as a process (§15.2).** `ckc check --json` writes one JSON object per diagnostic, one per line, to standard output; `--no-prove` stops after type checking; `--stdin PATH` reads the text of `PATH` from standard input instead of the disk (an editor's unsaved buffer). The build tool needs `proc.run` (run to completion, capturing output) and `proc.exec` (run with the build tool's standard streams, return the exit code), both operations of the `Proc` authority; long-lived children (`Child`, `Pipe`, D39) are still not needed. Supersedes D89, which gave tools the compiler in process. | 11/10/2026 | **(proposed)** |
+| D97 | **The build tool runs the compiler as a process (§15.2).** `ckc check --json` writes one JSON object per diagnostic, one per line, to standard output; `--no-prove` skips the prover: no Z3 obligations (preconditions, postconditions, refinements, `decreasing` measures, lemmas), everything else as usual; `--stdin` reads the file's text from standard input instead of the disk (an editor's unsaved buffer; exactly one file, whose path still resolves imports and names the diagnostics). The build tool needs `proc.run` (run to completion, capturing output) and `proc.exec` (run with the build tool's standard streams, return the exit code), both operations of the `Proc` authority; long-lived children (`Child`, `Pipe`, D39) are still not needed. Supersedes D89, which gave tools the compiler in process. | 11/10/2026 | **(proposed)** |
 | D24 | **Development loop:** Claude owns the implementation; Ian drives with examples. An issue is "found X, expected Y" with a `.ck` snippet. Each one becomes a regression test under `tests/` *before* the fix lands, and the spec is updated first whenever the expectation changes the language. | 11/05/2026 | decided |
 | D25 | **Milestones reordered for CLI tools first** (§10): a running interpreter with `IO` comes right after type checking, before the prover, so Checkers can be used to build its own tooling early. ~~Capstone: an interactive shell with a small scripting language, with proofs of its correctness.~~ (removed by D81) | 11/05/2026 | decided |
 
@@ -949,7 +949,7 @@ The build tool is an ordinary program, compiled ahead of time, so starting it co
 The build tool starts `ckc` as a process. `checkers check FILE` is `ckc check FILE` with the build tool's standard streams (`proc.exec`). The language server captures the output instead (`proc.run`):
 
 ```
-ckc check --json [--no-prove] [--stdin PATH] FILE
+ckc check --json [--no-prove] [--stdin] FILE...
 ```
 
 prints each diagnostic as one line of JSON:
@@ -959,7 +959,11 @@ prints each diagnostic as one line of JSON:
  "message":"cannot prove that `at_least 7` can be called here","label":"…","notes":["…"],"help":"…"}
 ```
 
-Positions are `[line, column]` from 0, the column in bytes. `--no-prove` stops after type checking; `--stdin PATH` reads `PATH`'s text from standard input instead of the disk.
+Positions are `[line, column]` from 0, the column in bytes. Each `FILE` is checked with the modules it imports, as `ckc check` does today.
+
+`--no-prove` runs everything except the prover: parsing, types, `own`/`ghost` usage, structural termination and `check` declarations, but no Z3 obligations (preconditions, postconditions, refinements, `decreasing` measures, lemmas). No diagnostics then means "well typed", not "verified". It is for checking as someone types: about 0.1 s for `examples/json.ck` instead of 14 s.
+
+`--stdin` takes exactly one `FILE` and reads its text from standard input instead of the disk. The path is still needed: imports are found relative to it (D53) and diagnostics name it. Other modules are read from disk, so an unsaved change in a module the file imports is not seen until it is saved; checking several unsaved buffers together needs a long-running `ckc` that holds them, which comes with the second version of the server.
 
 The second version of the language server needs more than diagnostics: the type at a position, where a name is defined, the names in scope. Those become further `ckc` commands with JSON output, or a long-running `ckc` the server talks to; that is decided then.
 
@@ -1000,7 +1004,7 @@ The formatter keeps the line breaks the author chose and normalizes everything e
 | Request or notification | Behaviour |
 |---|---|
 | `initialize` | advertises full sync, formatting, document symbols; picks UTF-8 positions if the client offers them, else UTF-16 |
-| `didOpen`, `didChange` | stores the text; in a behaviour, runs `ckc check --json --no-prove --stdin PATH PATH` with the text and publishes the diagnostics, unless the document has changed since |
+| `didOpen`, `didChange` | stores the text; in a behaviour, runs `ckc check --json --no-prove --stdin PATH` with the text and publishes the diagnostics, unless the document has changed since |
 | `didSave` | the same with the prover (no `--no-prove`, no `--stdin`) |
 | `textDocument/formatting` | `format` from `tools/ck/format.ck`; a syntax error gives no edits |
 | `textDocument/documentSymbol` | declarations from the concrete syntax tree |
