@@ -1,0 +1,12 @@
+# Proposed: a continuation line outside brackets keeps the indentation its
+# author gave it, relative to the line it continues (at least 4).
+module continuation_ops
+
+fn hex4 src i : src~Bytes, i~Nat
+    if i + 4 <= len src and hex_digit src[i] and hex_digit src[i + 1]
+                        and hex_digit src[i + 2] and hex_digit src[i + 3]
+        let n = hex_value src[i] * 4096 + hex_value src[i + 1] * 256
+              + hex_value src[i + 2] * 16 + hex_value src[i + 3]
+        n
+    else
+        0
