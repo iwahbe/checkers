@@ -202,9 +202,12 @@ fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
         return;
     }
     let mut ledger = String::new();
+    let (mut asked, mut reused) = (0, 0);
     for m in program_modules(e, user) {
         let v = verify::verify(e, &m);
         c.proved += v.proved;
+        asked += v.asked;
+        reused += v.reused;
         if let Some(f) = e.sources.get(&m) {
             ledger += &verify::ledger_text(f, &v);
         }
@@ -219,6 +222,9 @@ fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
     if let Some(s) = last {
         out += &s;
         out.push('\n');
+    }
+    if reused > 0 {
+        out += &format!("cache: {reused} of {asked} Z3 answers reused (D100)\n");
     }
     c.ledger = out;
 }

@@ -154,6 +154,38 @@ struct PostUse {
     nat: bool,
 }
 
+/// What it takes to reflect only some definitions: the declarations that
+/// aren't reflected anyway, and each reflected one (name, head, body, its
+/// uninterpreted declaration).
+pub struct Focus {
+    others: Vec<String>,
+    group: Vec<(String, String, String, Option<String>)>,
+}
+
+impl Focus {
+    /// Reflect the definitions `goal` mentions; leave the rest
+    /// uninterpreted. `None` if that is all or none of them.
+    fn for_goal(&self, goal: &str) -> Option<String> {
+        let (on, off): (Vec<_>, Vec<_>) = self.group.iter().partition(|(n, ..)| goal.contains(n.as_str()));
+        if on.is_empty() || off.is_empty() {
+            return None;
+        }
+        let mut out = String::new();
+        for d in &self.others {
+            out += d;
+            out += "\n";
+        }
+        for (_, _, _, d) in &off {
+            out += d.as_deref()?;
+            out += "\n";
+        }
+        let heads: Vec<&str> = on.iter().map(|g| g.1.as_str()).collect();
+        let bodies: Vec<&str> = on.iter().map(|g| g.2.as_str()).collect();
+        out += &format!("(define-funs-rec ({}) ({}))\n", heads.join(" "), bodies.join(" "));
+        Some(out)
+    }
+}
+
 pub struct Query {
     pub text: String,
     /// The same query without the quantified `Nat` axioms: Z3 is complete on
@@ -163,6 +195,10 @@ pub struct Query {
     /// so `unsat` still proves the goal, and often far faster when the facts
     /// in scope (`have`) already suffice. Tried first.
     pub facts_only: Option<String>,
+    /// Only the definitions the goal mentions reflected, without the
+    /// quantified axioms: weaker again, and Z3 doesn't unfold functions
+    /// whose results the facts in scope already give (M12).
+    pub focused: Option<String>,
     /// Why facts in scope could not be given to the solver.
     pub dropped: Vec<String>,
     /// (SMT name, display name) of the locals, for a counterexample.
@@ -171,8 +207,29 @@ pub struct Query {
     pub string_vars: Vec<String>,
 }
 
+/// What defining an instance added to a builder, so another builder for the
+/// same module can reuse the translation (M12: the definitions are the same
+/// for every obligation; translating them was most of a cached check).
+#[derive(Clone, Default)]
+struct Delta {
+    datatypes: Vec<(TyId, usize)>,
+    tuples: Vec<usize>,
+    sorts: Vec<(String, usize)>,
+    funs: Vec<(String, String)>,
+    insts: Vec<Inst>,
+    known: Vec<(String, Tm)>,
+    axioms: Vec<(String, String)>,
+    asserts: Vec<String>,
+    consts: Vec<String>,
+}
+
+/// Translated definitions, shared by the builders of one module.
+#[derive(Default)]
+pub struct Defs(std::cell::RefCell<BTreeMap<Inst, (Tx<Defn>, Delta)>>);
+
 pub struct Builder<'a> {
     e: &'a Elab,
+    defs: Option<&'a Defs>,
     user: String,
     datatypes: BTreeMap<TyId, usize>,
     tuples: HashSet<usize>,
@@ -205,6 +262,7 @@ impl<'a> Builder<'a> {
     pub fn new(e: &'a Elab, user: &str) -> Builder<'a> {
         Builder {
             e,
+            defs: None,
             user: user.to_string(),
             datatypes: BTreeMap::new(),
             tuples: HashSet::new(),
@@ -226,6 +284,82 @@ impl<'a> Builder<'a> {
             shown: Vec::new(),
             string_vars: Vec::new(),
         }
+    }
+
+    /// Share translated definitions with the other builders of the module.
+    pub fn sharing(mut self, defs: &'a Defs) -> Builder<'a> {
+        self.defs = Some(defs);
+        self
+    }
+
+    /// `define`, reusing another builder's translation. A translation is
+    /// recorded with everything it refers to (sorts, declarations,
+    /// instances), translating it in an empty builder, so replaying it is
+    /// enough wherever it is used.
+    fn define_shared(&mut self, inst: &Inst) -> Tx<Defn> {
+        let Some(defs) = self.defs else { return self.define(inst) };
+        let found = defs.0.borrow().get(inst).cloned();
+        let (r, d) = match found {
+            Some(x) => x,
+            None => {
+                let saved = (
+                    std::mem::take(&mut self.datatypes),
+                    std::mem::take(&mut self.tuples),
+                    std::mem::take(&mut self.sorts),
+                    std::mem::take(&mut self.funs),
+                    std::mem::take(&mut self.insts),
+                    std::mem::take(&mut self.inst_queue),
+                    std::mem::take(&mut self.axioms),
+                    std::mem::take(&mut self.asserts),
+                    std::mem::take(&mut self.consts),
+                );
+                let known_before: HashSet<String> = self.known.keys().cloned().collect();
+                let r = self.define(inst);
+                let d = Delta {
+                    datatypes: std::mem::replace(&mut self.datatypes, saved.0).into_iter().collect(),
+                    tuples: std::mem::replace(&mut self.tuples, saved.1).into_iter().collect(),
+                    sorts: std::mem::replace(&mut self.sorts, saved.2).into_iter().collect(),
+                    funs: std::mem::replace(&mut self.funs, saved.3).into_iter().collect(),
+                    insts: std::mem::replace(&mut self.insts, saved.4).into_keys().collect(),
+                    known: self.known.iter().filter(|(k, _)| !known_before.contains(*k)).map(|(k, v)| (k.clone(), v.clone())).collect(),
+                    axioms: std::mem::replace(&mut self.axioms, saved.6).into_iter().collect(),
+                    asserts: std::mem::replace(&mut self.asserts, saved.7),
+                    consts: std::mem::replace(&mut self.consts, saved.8),
+                };
+                self.inst_queue = saved.5;
+                defs.0.borrow_mut().insert(inst.clone(), (r.clone(), d.clone()));
+                (r, d)
+            }
+        };
+        self.datatypes.extend(d.datatypes);
+        self.tuples.extend(d.tuples);
+        self.sorts.extend(d.sorts);
+        for (k, v) in d.funs {
+            self.funs.entry(k).or_insert(v);
+        }
+        for i in d.insts {
+            if &i != inst && !self.insts.contains_key(&i) {
+                self.insts.insert(i.clone(), None);
+                self.inst_queue.push(i);
+            }
+        }
+        for (k, v) in d.known {
+            self.known.entry(k).or_insert(v);
+        }
+        for (k, v) in d.axioms {
+            self.axioms.entry(k).or_insert(v);
+        }
+        for a in d.asserts {
+            if !self.asserts.contains(&a) {
+                self.asserts.push(a);
+            }
+        }
+        for c in d.consts {
+            if !self.consts.contains(&c) {
+                self.consts.push(c);
+            }
+        }
+        r
     }
 
     fn wk(&self) -> &crate::core::WellKnown {
@@ -1379,9 +1513,11 @@ impl<'a> Builder<'a> {
 
     // ── reflected definitions and postconditions ────────────────────────────
 
-    fn define_instances(&mut self) -> (Vec<String>, Vec<String>) {
+    /// The definitions: all reflected; all uninterpreted; and the parts to
+    /// reflect some only (`focus`).
+    fn define_instances(&mut self) -> (Vec<String>, Vec<String>, Focus) {
         while let Some(inst) = self.inst_queue.pop() {
-            let r = self.define(&inst);
+            let r = self.define_shared(&inst);
             // A `Nat` result is non-negative, for every argument.
             let mut ty = self.e.g.defs[inst.def.0 as usize].ty.clone();
             while let Tm::Pi(_, _, _, _, b) = ty {
@@ -1405,16 +1541,18 @@ impl<'a> Builder<'a> {
         let mut bodies = Vec::new();
         let mut decls = Vec::new();
         let mut opaque = Vec::new();
+        let mut group = Vec::new();
         let all: Vec<(Inst, Option<Defn>)> = self.insts.iter().map(|(a, b)| (a.clone(), b.clone())).collect();
         for (inst, def) in &all {
             match def {
                 Some((name, head, body)) => {
-                    let _ = name;
                     heads.push(head.clone());
                     bodies.push(body.clone());
-                    if let Some(d) = self.uninterp_decl(inst) {
-                        opaque.push(d);
+                    let d = self.uninterp_decl(inst);
+                    if let Some(d) = &d {
+                        opaque.push(d.clone());
                     }
+                    group.push((name.clone(), head.clone(), body.clone(), d));
                 }
                 None => {
                     // Not translatable: uninterpreted.
@@ -1432,9 +1570,12 @@ impl<'a> Builder<'a> {
         let mut only = decls.clone();
         if reflected {
             only.pop();
+        }
+        let focus = Focus { others: only.clone(), group };
+        if reflected {
             only.extend(opaque);
         }
-        (decls, only)
+        (decls, only, focus)
     }
 
     fn inst_name(&self, inst: &Inst) -> String {
@@ -1675,12 +1816,16 @@ impl<'a> Builder<'a> {
             }
         }
         self.assume_posts();
-        let (defs, opaque_defs) = self.define_instances();
+        let (defs, opaque_defs, focus) = self.define_instances();
         let reflected = defs.len() != opaque_defs.len() || defs.iter().zip(&opaque_defs).any(|(a, b)| a != b);
         // Definitions may mention new datatypes; postconditions inside them are not assumed.
         let sorts = self.sort_decls()?;
         let mut text = String::new();
-        text += "(set-option :produce-models true)\n(set-option :timeout 10000)\n(set-logic ALL)\n";
+        text += &format!(
+            "(set-option :produce-models true)\n(set-option :rlimit {})\n(set-option :timeout {})\n(set-logic ALL)\n",
+            super::RLIMIT,
+            super::SAFETY_MS
+        );
         for s in sorts {
             text += &s;
             text += "\n";
@@ -1725,7 +1870,10 @@ impl<'a> Builder<'a> {
             let decls: String = opaque_defs.iter().map(|d| format!("{d}\n")).collect();
             format!("{}{decls}{}", &text[..defs_at], &text[defs_end..])
         });
-        Ok(Query { text, without_axioms, facts_only, dropped, shown: self.shown, string_vars: self.string_vars })
+        let focused = focus
+            .for_goal(&goal)
+            .map(|d| format!("{}{d}{}{}", &text[..defs_at], &text[defs_end..split], &text[split + axioms.len()..]));
+        Ok(Query { text, without_axioms, facts_only, focused, dropped, shown: self.shown, string_vars: self.string_vars })
     }
 }
 

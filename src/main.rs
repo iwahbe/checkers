@@ -14,6 +14,9 @@ USAGE:
                                                (its threads: CHECKERS_THREADS, default: cores)
     ckc trust <FILE.ck>                        print the trust ledger (what Z3, admits and checks vouch for)
     ckc check [--deny-warnings] <FILE.ck>...   type-check and run `check`s; report diagnostics
+
+    check, run, build, trust and stage reuse Z3's answers from `.checkers/` beside the
+    file (D100); --no-cache (before the file) or CHECKERS_NO_CACHE=1 turns that off.
     ckc stage <FILE.ck>                        print the code staging generates (§8.9)
     ckc parse <FILE.ck>                        print the syntax tree
     ckc --version
@@ -28,7 +31,31 @@ fn main() -> ExitCode {
     ExitCode::from(code)
 }
 
+static NO_CACHE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Cache Z3's answers beside `path`'s module root (D100), unless
+/// `--no-cache` or `CHECKERS_NO_CACHE` says not to.
+fn use_cache(path: &str) {
+    let off = NO_CACHE.load(std::sync::atomic::Ordering::Relaxed) || std::env::var_os("CHECKERS_NO_CACHE").is_some();
+    checkers::verify::set_cache((!off).then(|| checkers::dir_of(path).join(".checkers")));
+}
+
 fn cli(args: &[String]) -> u8 {
+    // `--no-cache`, before the file (after it, arguments are the program's).
+    let first_file = args.iter().position(|a| a.ends_with(".ck")).unwrap_or(args.len());
+    let args: Vec<String> = args
+        .iter()
+        .enumerate()
+        .filter(|(i, a)| {
+            let flag = *i < first_file && a.as_str() == "--no-cache";
+            if flag {
+                NO_CACHE.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            !flag
+        })
+        .map(|(_, a)| a.clone())
+        .collect();
+    let args = &args[..];
     let code = match args.first().map(String::as_str) {
         Some("run") => return run(&args[1..]),
         Some("build") => return build(&args[1..]),
@@ -64,6 +91,7 @@ fn trust(args: &[String]) -> u8 {
         return 2;
     };
     let Ok(text) = read(path) else { return 2 };
+    use_cache(path);
     let c = checkers::check(path, &text);
     if c.errors() > 0 {
         eprint!("{}", c.report());
@@ -79,6 +107,7 @@ fn stage(args: &[String]) -> u8 {
         return 2;
     };
     let Ok(text) = read(path) else { return 2 };
+    use_cache(path);
     let c = checkers::check(path, &text);
     if c.errors() > 0 {
         eprint!("{}", c.report());
@@ -119,6 +148,7 @@ fn run(args: &[String]) -> u8 {
         Ok(t) => t,
         Err(_) => return 2,
     };
+    use_cache(path);
     let ran = checkers::run(path, &text, &checkers::dir_of(path), &args[1..], unverified, threads);
     eprint!("{}", ran.report);
     ran.code
@@ -148,6 +178,7 @@ fn build(args: &[String]) -> u8 {
         Ok(t) => t,
         Err(_) => return 2,
     };
+    use_cache(&path);
     let ran = checkers::build(&path, &text, &checkers::dir_of(&path), std::path::Path::new(&out), unverified);
     eprint!("{}", ran.report);
     ran.code
@@ -173,6 +204,7 @@ fn check(args: &[String]) -> ExitCode {
             Ok(t) => t,
             Err(c) => return c,
         };
+        use_cache(path);
         let c = checkers::check(path, &text);
         eprint!("{}", c.report());
         if c.errors() > 0 || (deny && c.warnings() > 0) {

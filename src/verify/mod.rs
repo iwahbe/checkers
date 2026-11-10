@@ -22,6 +22,9 @@ pub struct Verified {
     pub ledger: Vec<LedgerEntry>,
     pub z3_version: Option<String>,
     pub proved: usize,
+    /// Z3 answers asked for, and how many came from the cache (D100).
+    pub asked: usize,
+    pub reused: usize,
 }
 
 enum Answer {
@@ -41,16 +44,103 @@ pub fn z3_version() -> Option<String> {
     Some(format!("Z3 {}", v.to_string_lossy()))
 }
 
-/// Evaluate one SMT-LIB script in a fresh Z3 context.
+/// Z3's work limit per query (D101): unlike a timeout, it gives the same
+/// answer on every machine and at any load. Twice the work the hardest
+/// answer in the repository needs (a counterexample in `tests/run/echo.ck`,
+/// 3 050 000, 11/10/2026); the hardest proof needs 154 000.
+pub const RLIMIT: u64 = 6_000_000;
+
+/// The work limit for the weaker queries tried first (§7.2): a shortcut,
+/// so giving up on one only costs this much before the next. 1.5 times the
+/// hardest proof they give in the repository (660 000; the next is 255 000).
+pub const QUICK_RLIMIT: u64 = 1_000_000;
+
+/// A weaker query, tried first: with the smaller work limit.
+fn quick(q: Option<String>) -> Option<String> {
+    q.map(|t| t.replacen(&format!("(set-option :rlimit {RLIMIT})"), &format!("(set-option :rlimit {QUICK_RLIMIT})"), 1))
+}
+
+/// A wall-clock cap, in case Z3 is slow to use up its work limit. An answer
+/// it cuts off depends on the machine, so it isn't cached.
+pub const SAFETY_MS: u64 = 60_000;
+
+/// Where Z3's answers are cached (D100), if anywhere.
+static CACHE: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+static ASKED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static REUSED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Cache Z3's answers in `dir` (`None`: don't).
+pub fn set_cache(dir: Option<std::path::PathBuf>) {
+    *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = dir;
+}
+
+fn cache_dir() -> Option<std::path::PathBuf> {
+    CACHE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// A cache entry: a header with Z3's version and the query's length, the
+/// query in full (compared on a hit, so a hash collision can't reuse a wrong
+/// answer), then Z3's output.
+fn cache_path(dir: &std::path::Path, version: &str, query: &str) -> std::path::PathBuf {
+    dir.join("z3").join(format!("{:016x}", fnv(&format!("{version}\n{query}"))))
+}
+
+fn cached(query: &str) -> Option<String> {
+    let dir = cache_dir()?;
+    let version = z3_version()?;
+    let data = std::fs::read_to_string(cache_path(&dir, &version, query)).ok()?;
+    let (header, rest) = data.split_once('\n')?;
+    let (v, n) = header.strip_prefix("checkers z3 cache 1 ")?.rsplit_once(' ')?;
+    let n: usize = n.parse().ok()?;
+    (v == version && rest.get(..n)? == query).then(|| rest[n..].to_string())
+}
+
+fn store(query: &str, out: &str) {
+    let (Some(dir), Some(version)) = (cache_dir(), z3_version()) else { return };
+    let path = cache_path(&dir, &version, query);
+    let Some(parent) = path.parent() else { return };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    // Whole or not at all: write elsewhere, then rename.
+    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+    let data = format!("checkers z3 cache 1 {version} {}\n{query}{out}", query.len());
+    if std::fs::write(&tmp, data).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
+}
+
+/// Z3's answer to one SMT-LIB script, from the cache or a fresh Z3 context.
 fn ask(query: &str) -> Answer {
-    let Ok(text) = std::ffi::CString::new(query) else { return Answer::Unknown("a NUL byte in the query".into()) };
+    ASKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let out = match cached(query) {
+        Some(out) => {
+            REUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            out
+        }
+        None => {
+            let start = std::time::Instant::now();
+            let out = run_z3(query);
+            let cut_off = out.starts_with("unknown") && start.elapsed().as_millis() as u64 >= SAFETY_MS * 9 / 10;
+            if !cut_off {
+                store(query, &out);
+            }
+            out
+        }
+    };
+    answer(out)
+}
+
+/// Evaluate one SMT-LIB script in a fresh Z3 context: Z3's output.
+fn run_z3(query: &str) -> String {
+    let Ok(text) = std::ffi::CString::new(query) else { return "unknown\n(a NUL byte in the query)".into() };
     // SAFETY: the config and context are created, used and deleted on this
     // thread only; the returned string is copied before the context is deleted.
     let out = unsafe {
-        let Some(cfg) = z3_sys::Z3_mk_config() else { return Answer::Unknown("Z3 could not start".into()) };
+        let Some(cfg) = z3_sys::Z3_mk_config() else { return "unknown\n(Z3 could not start)".into() };
         let Some(ctx) = z3_sys::Z3_mk_context(cfg) else {
             z3_sys::Z3_del_config(cfg);
-            return Answer::Unknown("Z3 could not start".into());
+            return "unknown\n(Z3 could not start)".into();
         };
         z3_sys::Z3_set_error_handler(ctx, Some(ignore_error));
         let r = z3_sys::Z3_eval_smtlib2_string(ctx, text.as_ptr());
@@ -59,6 +149,14 @@ fn ask(query: &str) -> Answer {
         z3_sys::Z3_del_config(cfg);
         out
     };
+    out
+}
+
+/// What Z3's output says.
+fn answer(out: String) -> Answer {
+    if out.starts_with("unknown\n(a NUL") || out.starts_with("unknown\n(Z3 could not") {
+        return Answer::Unknown(out.lines().nth(1).unwrap_or("").trim_matches(|c| c == '(' || c == ')').to_string());
+    }
     // Z3 reports a rejected command as `(error …)` and carries on without it,
     // so an answer that follows an error is not about the query we meant:
     // never trust it (an `unsat` would be unsound).
@@ -119,7 +217,8 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
         .filter(|o| o.module == user)
         .filter(|o| o.only_if_nat.as_ref().is_none_or(|t| smt::is_nat(e, t)))
         .collect();
-    let mut v = Verified { diags: Vec::new(), ledger: Vec::new(), z3_version: None, proved: 0 };
+    let mut v = Verified { diags: Vec::new(), ledger: Vec::new(), z3_version: None, proved: 0, asked: 0, reused: 0 };
+    let (asked0, reused0) = (ASKED.load(std::sync::atomic::Ordering::Relaxed), REUSED.load(std::sync::atomic::Ordering::Relaxed));
     for t in e.admits.iter().filter(|t| t.module == user) {
         v.ledger.push(LedgerEntry { span: t.span, how: "trusted", what: t.what.clone(), hash: None });
     }
@@ -146,7 +245,8 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
         return v;
     }
     // Translate on this thread (the elaborator isn't `Send`), solve in parallel.
-    let queries: Vec<Result<smt::Query, smt::Outside>> = obs.iter().map(|o| smt::Builder::new(e, user).query(o)).collect();
+    let defs = smt::Defs::default();
+    let queries: Vec<Result<smt::Query, smt::Outside>> = obs.iter().map(|o| smt::Builder::new(e, user).sharing(&defs).query(o)).collect();
     let texts: Vec<Option<String>> = queries.iter().map(|q| q.as_ref().ok().map(|q| q.text.clone())).collect();
     let fallbacks: Vec<Option<String>> = queries.iter().map(|q| q.as_ref().ok().and_then(|q| q.without_axioms.clone())).collect();
     if std::env::var_os("CHECKERS_SMT_DUMP").is_some() {
@@ -154,18 +254,39 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
             eprintln!(";; ── {:?} at {:?}\n{}", o.kind, o.span, t.as_deref().unwrap_or(";; outside the fragment"));
         }
     }
-    // First with definitions uninterpreted: `unsat` there is a proof (§7.2).
-    let quick: Vec<Option<String>> = queries.iter().map(|q| q.as_ref().ok().and_then(|q| q.facts_only.clone())).collect();
-    let quick_answers = ask_all(&quick);
+    // Weakest first: `unsat` from a weaker query is still a proof (§7.2).
+    // 1. Definitions uninterpreted: fast when the facts in scope suffice.
+    let quick_q: Vec<Option<String>> = queries.iter().map(|q| quick(q.as_ref().ok().and_then(|q| q.facts_only.clone()))).collect();
+    let quick_answers = ask_all(&quick_q);
     let proved_quick: Vec<bool> = quick_answers.iter().map(|a| matches!(a, Some(Answer::Unsat))).collect();
-    let rest: Vec<Option<String>> = texts.iter().zip(&proved_quick).map(|(t, p)| if *p { None } else { t.clone() }).collect();
+    // 2. Only the definitions the goal mentions: Z3 doesn't unfold the
+    //    functions whose results the facts in scope give.
+    let focus: Vec<Option<String>> = queries
+        .iter()
+        .zip(&proved_quick)
+        .map(|(q, p)| if *p { None } else { quick(q.as_ref().ok().and_then(|q| q.focused.clone())) })
+        .collect();
+    let proved_focus: Vec<bool> = ask_all(&focus).iter().map(|a| matches!(a, Some(Answer::Unsat))).collect();
+    let proved_quick: Vec<bool> = proved_quick.iter().zip(&proved_focus).map(|(a, b)| *a || *b).collect();
+    // 3. Every definition, without the quantified postconditions of other
+    //    functions, which can send Z3 searching (D101).
+    let lean: Vec<Option<String>> =
+        fallbacks.iter().zip(&proved_quick).map(|(f, p)| if *p { None } else { quick(f.clone()) }).collect();
+    let proved_lean: Vec<bool> = ask_all(&lean).iter().map(|a| matches!(a, Some(Answer::Unsat))).collect();
+    // 4. Everything: the query whose counterexample is real.
+    let rest: Vec<Option<String>> = texts
+        .iter()
+        .zip(proved_quick.iter().zip(&proved_lean))
+        .map(|(t, (q, l))| if *q || *l { None } else { t.clone() })
+        .collect();
     let mut answers = ask_all(&rest);
-    for (a, p) in answers.iter_mut().zip(&proved_quick) {
-        if *p {
+    for (k, a) in answers.iter_mut().enumerate() {
+        if proved_quick[k] || proved_lean[k] {
             *a = Some(Answer::Unsat);
         }
     }
-    // `unknown` with the quantified axioms: try without them (§7.2).
+    // 5. Z3 gave up on everything: a counterexample without the axioms, with
+    //    the full work limit, is better than nothing (§7.2).
     let retry: Vec<Option<String>> = answers
         .iter()
         .zip(&fallbacks)
@@ -173,10 +294,8 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
         .collect();
     if retry.iter().any(|r| r.is_some()) {
         for (a, r) in answers.iter_mut().zip(ask_all(&retry)) {
-            if let Some(r) = r {
-                if !matches!(r, Answer::Unknown(_)) {
-                    *a = Some(r);
-                }
+            if let Some(r @ Answer::Sat(_)) = r {
+                *a = Some(r);
             }
         }
     }
@@ -185,11 +304,15 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
             (Err(why), _) => v.diags.push(outside(e, o, &why.0)),
             (Ok(q), Some(Answer::Unsat)) => {
                 v.proved += 1;
-                let text = match (&q.facts_only, proved_quick[k]) {
-                    (Some(t), true) => t,
-                    _ => &q.text,
+                // The query that was proved, as Z3 was given it.
+                let text = match (&q.facts_only, &q.without_axioms) {
+                    _ if proved_focus[k] => quick(q.focused.clone()),
+                    (Some(t), _) if proved_quick[k] => quick(Some(t.clone())),
+                    (_, Some(t)) if proved_lean[k] => quick(Some(t.clone())),
+                    _ => Some(q.text.clone()),
                 };
-                v.ledger.push(LedgerEntry { span: o.span, how: "smt", what: describe(e, o), hash: Some(fnv(text)) });
+                let hash = text.map(|t| fnv(&t));
+                v.ledger.push(LedgerEntry { span: o.span, how: "smt", what: describe(e, o), hash });
             }
             (Ok(q), Some(Answer::Sat(model))) => {
                 let mut d = failed(e, o, Some(render_model(&model, &q.shown, &q.string_vars)));
@@ -210,6 +333,8 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
         }
     }
     v.z3_version = z3_version();
+    v.asked = ASKED.load(std::sync::atomic::Ordering::Relaxed) - asked0;
+    v.reused = REUSED.load(std::sync::atomic::Ordering::Relaxed) - reused0;
     v
 }
 

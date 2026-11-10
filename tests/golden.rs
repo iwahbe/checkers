@@ -54,6 +54,7 @@ fn run_native(args_path: &Path, threads: usize) -> String {
     };
     let stdin = fs::read(args_path.with_extension("in")).unwrap_or_default();
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_ckc"))
+        .env("CHECKERS_NO_CACHE", "1")
         .arg("run")
         .args(["--threads", &threads.to_string()])
         .args(flags)
@@ -90,6 +91,7 @@ fn run_with(exe: &Path, args: &[&str], stdin: &[u8], dir: &Path) -> std::process
     let mut child = std::process::Command::new(exe)
         .args(args)
         .env("CKC", env!("CARGO_BIN_EXE_ckc"))
+        .env("CHECKERS_NO_CACHE", "1")
         .env("CHECKERS_THREADS", "1")
         .current_dir(dir)
         .stdin(std::process::Stdio::piped())
@@ -149,6 +151,7 @@ fn build_tool(root: &Path, update: bool, failures: &mut Vec<String>) -> usize {
     }
     let exe = std::env::temp_dir().join(format!("checkers-golden-{}-tool", std::process::id()));
     let built = std::process::Command::new(env!("CARGO_BIN_EXE_ckc"))
+        .env("CHECKERS_NO_CACHE", "1")
         .args(["build", "tools/checkers.ck", "-o"])
         .arg(&exe)
         .current_dir(root)
@@ -334,6 +337,7 @@ fn golden() {
         count += 1;
         let exe = std::env::temp_dir().join(format!("checkers-golden-{}-{args_name}", std::process::id()));
         let built = std::process::Command::new(env!("CARGO_BIN_EXE_ckc"))
+            .env("CHECKERS_NO_CACHE", "1")
             .args(["build", program, "-o"])
             .arg(&exe)
             .current_dir(root)
