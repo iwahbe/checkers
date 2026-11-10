@@ -1131,7 +1131,7 @@ impl Elab {
                             Some(pos) => {
                                 sig.cx.locals[pos].mult = Mult::One;
                                 let ty = sig.cx.locals[pos].ty.clone();
-                                self.show_val(&sig.cx, &ty)
+                                self.show_resource(&sig.cx, &ty)
                             }
                             None => "resource".to_string(),
                         };

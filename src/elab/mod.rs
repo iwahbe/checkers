@@ -490,6 +490,55 @@ impl Elab {
         }
     }
 
+}
+
+/// A type constructor applied to arguments, in either shape the elaborator builds.
+fn tycon_app(t: &Tm) -> Option<(TyId, Vec<&Tm>)> {
+    match t {
+        Tm::TyCon(id) => Some((*id, Vec::new())),
+        Tm::TyConApp(id, args) => Some((*id, args.iter().collect())),
+        Tm::App(..) => {
+            let mut args = Vec::new();
+            let mut h = t;
+            while let Tm::App(f, a, ..) = h {
+                args.push(&**a);
+                h = f;
+            }
+            match h {
+                Tm::TyCon(id) => {
+                    args.reverse();
+                    Some((*id, args))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Whether a type declaration holds a resource.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Lin {
+    No,
+    Yes,
+    Depends,
+}
+
+impl Lin {
+    fn or(self, o: Lin) -> Lin {
+        match (self, o) {
+            (Lin::Yes, _) | (_, Lin::Yes) => Lin::Yes,
+            (Lin::Depends, _) | (_, Lin::Depends) => Lin::Depends,
+            _ => Lin::No,
+        }
+    }
+
+    fn of(b: bool) -> Lin {
+        if b { Lin::Yes } else { Lin::No }
+    }
+}
+
+impl Elab {
     /// A primitive resource (D39): implemented by the runtime as an open, stateful thing.
     fn is_primitive_resource(&self, t: TyId) -> bool {
         let ti = &self.g.tys[t.0 as usize];
@@ -502,48 +551,140 @@ impl Elab {
         Some(t) == self.g.well_known.cown || Some(t) == self.g.well_known.future
     }
 
-    fn ty_linear(&self, t: TyId, visiting: &mut Vec<TyId>) -> bool {
+    /// Is a type declared with a resource in a constructor field (D39)? `Depends`
+    /// when a field's type is computed from the parameters (`pipe_end ss.stdout`,
+    /// D112): then it is a resource for some arguments and not others.
+    fn ty_lin(&self, t: TyId, visiting: &mut Vec<TyId>) -> Lin {
         if self.is_primitive_resource(t) {
-            return true;
+            return Lin::Yes;
         }
-        if self.is_owner(t) {
-            return false;
-        }
-        if visiting.contains(&t) {
-            return false;
+        if self.is_owner(t) || visiting.contains(&t) {
+            return Lin::No;
         }
         visiting.push(t);
         let ti = &self.g.tys[t.0 as usize];
-        let r = ti
-            .ctors
-            .iter()
-            .any(|c| self.g.cons[c.0 as usize].fields.iter().any(|f| f.1 != Mult::Zero && self.tm_linear(&f.3, visiting)));
+        let mut r = Lin::No;
+        for c in &ti.ctors {
+            for f in &self.g.cons[c.0 as usize].fields {
+                if f.1 != Mult::Zero {
+                    r = r.or(self.field_lin(&f.3, visiting));
+                }
+            }
+        }
         visiting.pop();
         r
     }
 
-    fn tm_linear(&self, t: &Tm, visiting: &mut Vec<TyId>) -> bool {
+    /// A field's type, in the context of the parameters and earlier fields.
+    fn field_lin(&self, t: &Tm, visiting: &mut Vec<TyId>) -> Lin {
+        if let Some((id, args)) = tycon_app(t) {
+            if self.is_owner(id) {
+                return Lin::No;
+            }
+            return args.iter().fold(self.ty_lin(id, visiting), |r, a| r.or(self.field_lin(a, visiting)));
+        }
         match t {
-            Tm::TyCon(id) => self.ty_linear(*id, visiting),
+            Tm::TyCon(id) => self.ty_lin(*id, visiting),
             Tm::TyConApp(id, args) => {
-                !self.is_owner(*id) && (self.ty_linear(*id, visiting) || args.iter().any(|a| self.tm_linear(a, visiting)))
+                if self.is_owner(*id) {
+                    return Lin::No;
+                }
+                args.iter().fold(self.ty_lin(*id, visiting), |r, a| r.or(self.field_lin(a, visiting)))
+            }
+            Tm::TupleTy(ts) => ts.iter().fold(Lin::No, |r, a| r.or(self.field_lin(a, visiting))),
+            Tm::Meta(m) => match self.g.meta(*m) {
+                Some(v) => Lin::of(self.val_linear(&v)),
+                None => Lin::No,
+            },
+            // A type variable: a generic container (D45), decided by its argument.
+            Tm::Var(_) | Tm::Pi(..) | Tm::Univ(_) | Tm::Lit(_) | Tm::Error => Lin::No,
+            // A proposition (a refinement field) or a value: never a resource.
+            _ if !self.computes_type(t) => Lin::No,
+            // Computed: an alias, an application, a match.
+            _ => {
+                let mut fv = std::collections::BTreeSet::new();
+                crate::core::free_vars(t, 0, &mut fv);
+                if fv.is_empty() {
+                    Lin::of(self.val_linear(&eval(&self.g, &Rc::new(Vec::new()), t)))
+                } else {
+                    Lin::Depends
+                }
+            }
+        }
+    }
+
+    fn tm_linear(&self, t: &Tm, visiting: &mut Vec<TyId>) -> bool {
+        if let Some((id, args)) = tycon_app(t) {
+            if self.is_owner(id) {
+                return false;
+            }
+            return match self.ty_lin(id, visiting) {
+                Lin::Yes => true,
+                Lin::No => args.iter().any(|a| self.tm_linear(a, visiting)),
+                // Decided by the arguments: evaluate them if they are known.
+                Lin::Depends => self.closed_linear(t),
+            };
+        }
+        match t {
+            Tm::TyCon(id) => self.ty_lin(*id, visiting) != Lin::No,
+            Tm::TyConApp(id, args) => {
+                if self.is_owner(*id) {
+                    return false;
+                }
+                match self.ty_lin(*id, visiting) {
+                    Lin::Yes => true,
+                    Lin::No => args.iter().any(|a| self.tm_linear(a, visiting)),
+                    // Decided by the arguments: evaluate them if they are known.
+                    Lin::Depends => self.closed_linear(t),
+                }
             }
             Tm::TupleTy(ts) => ts.iter().any(|a| self.tm_linear(a, visiting)),
             Tm::Meta(m) => match self.g.meta(*m) {
                 Some(v) => self.val_linear(&v),
                 None => false,
             },
-            _ => false,
+            Tm::Var(_) | Tm::Pi(..) | Tm::Univ(_) | Tm::Lit(_) | Tm::Error => false,
+            _ if !self.computes_type(t) => false,
+            _ => self.closed_linear(t),
+        }
+    }
+
+    /// A computed type: decided by evaluating it if it mentions no variables,
+    /// else a resource, since it may be one (D112).
+    fn closed_linear(&self, t: &Tm) -> bool {
+        let mut fv = std::collections::BTreeSet::new();
+        crate::core::free_vars(t, 0, &mut fv);
+        if fv.is_empty() {
+            self.val_linear(&eval(&self.g, &Rc::new(Vec::new()), t))
+        } else {
+            true
         }
     }
 
     /// Is a value of this type linear (D39)?
     pub fn val_linear(&self, v: &Val) -> bool {
+        self.val_linear_at(v, 0)
+    }
+
+    fn val_linear_at(&self, v: &Val, depth: usize) -> bool {
+        if depth > 32 {
+            return true;
+        }
         match self.force(v) {
             Val::TyCon(id, args) => {
-                !self.is_owner(id) && (self.ty_linear(id, &mut Vec::new()) || args.iter().any(|a| self.val_linear(a)))
+                if self.is_owner(id) {
+                    return false;
+                }
+                match self.ty_lin(id, &mut Vec::new()) {
+                    Lin::Yes => true,
+                    Lin::No => args.iter().any(|a| self.val_linear_at(a, depth + 1)),
+                    Lin::Depends => self.fields_linear(id, &args, depth),
+                }
             }
-            Val::TupleTy(ts) => ts.iter().any(|a| self.val_linear(a)),
+            Val::TupleTy(ts) => ts.iter().any(|a| self.val_linear_at(a, depth + 1)),
+            // A type variable is generic (D45); a stuck computation of a type may be a resource.
+            Val::Neutral(Head::Def(d), _) => self.def_gives_type(d),
+            Val::Neutral(..) => false,
             _ => false,
         }
     }
@@ -552,16 +693,72 @@ impl Elab {
         self.tm_linear(t, &mut Vec::new())
     }
 
+    /// Could this term (in a type position) compute a type, rather than a
+    /// proposition or a value? Only an application of a definition whose
+    /// result is a type, or something we can't see into (a field, a match).
+    fn computes_type(&self, t: &Tm) -> bool {
+        let mut h = t;
+        while let Tm::App(f, ..) = h {
+            h = f;
+        }
+        match h {
+            Tm::Def(d) => self.def_gives_type(*d),
+            Tm::Field(..) | Tm::Proj(..) | Tm::Case(..) | Tm::Let(..) => true,
+            _ => false,
+        }
+    }
+
+    /// Is `d`'s result (after all its parameters) a universe?
+    fn def_gives_type(&self, d: DefId) -> bool {
+        let mut t = &self.g.defs[d.0 as usize].ty;
+        while let Tm::Pi(_, _, _, _, b) = t {
+            t = b;
+        }
+        matches!(t, Tm::Univ(_))
+    }
+
+    /// The fields of `id` at these arguments: is any a resource?
+    fn fields_linear(&self, id: TyId, args: &[Val], depth: usize) -> bool {
+        let ti = &self.g.tys[id.0 as usize];
+        for c in &ti.ctors {
+            let mut env: Vec<Val> = args.to_vec();
+            for (k, f) in self.g.cons[c.0 as usize].fields.iter().enumerate() {
+                let ty = eval(&self.g, &Rc::new(env.clone()), &f.3);
+                if f.1 != Mult::Zero && self.field_lin(&f.3, &mut Vec::new()) != Lin::No && self.val_linear_at(&ty, depth + 1) {
+                    return true;
+                }
+                // Earlier fields are unknown here: fresh variables far above any context.
+                env.push(Val::var(usize::MAX / 2 + k));
+            }
+        }
+        false
+    }
+
     /// The multiplicity for a variable the program names: linear types make it `own` (D39).
     pub fn named_mult(&mut self, cx: &Cx, name: &str, ty: &Val, span: Span, declared: Mult) -> Mult {
         if declared != Mult::Many || name == "_" || name.starts_with('$') || !self.val_linear(ty) {
             return declared;
         }
         if let Some(f) = self.cur_fn {
-            let shown = self.show_val(cx, ty);
+            let shown = self.show_resource(cx, ty);
             self.resource_vars.insert((f, name.to_string()), (span, shown));
         }
         Mult::One
+    }
+
+    /// A resource's type for a message: a computed type (`pipe_end Pipe`) is
+    /// shown as what it computes to (`File`); an alias keeps its name.
+    pub fn show_resource(&self, cx: &Cx, ty: &Val) -> String {
+        match force_meta(&self.g, ty.clone()) {
+            Val::Neutral(Head::Def(_), _) | Val::Neutral(Head::Prim(..), _) => {
+                let f = self.force(ty);
+                if matches!(f, Val::TyCon(..) | Val::TupleTy(_)) {
+                    return self.show_val(cx, &f);
+                }
+                self.show_val(cx, ty)
+            }
+            _ => self.show_val(cx, ty),
+        }
     }
 
     /// D45: `own` belongs on generic parameters. On a linear type it is implied

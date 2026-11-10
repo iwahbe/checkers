@@ -1,15 +1,15 @@
 error[E0401]: `f` holds a resource (`File`), so it must be used exactly once, but `never_closed` never uses it
- --> resources.ck:9:9
+ --> resources.ck:9:12
   |
 9 |         Ok f  -> ()
-  |         ^^^^
+  |            ^
   = help: close it, or pass it on
 
 error[E0402]: `f` holds a resource (`File`), but `closed_on_one_path` uses it on some paths and not on others
-  --> resources.ck:14:9
+  --> resources.ck:14:12
    |
 14 |         Ok f  -> if b then files.close f else ()
-   |         ^^^^
+   |            ^
    = help: a resource must be used exactly once on every path, e.g. closed in every branch
 
 error[E0404]: this drops a resource of type `File`

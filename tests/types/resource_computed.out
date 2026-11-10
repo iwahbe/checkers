@@ -1,0 +1,35 @@
+error[E0401]: `e` holds a resource (`Ends Pipe Inherit`), so it must be used exactly once, but `dropped` never uses it
+  --> resource_computed.ck:27:12
+   |
+27 | fn dropped e -> r : e~Ends Pipe Inherit, r~Unit
+   |            ^
+   = help: close it, or pass it on
+
+error[E0401]: `first` holds a resource (`File`), so it must be used exactly once, but `forgotten` never uses it
+  --> resource_computed.ck:37:16
+   |
+37 |     let Ends { first, second } = e
+   |                ^^^^^
+   = help: close it, or pass it on
+
+error[E0401]: `second` holds a resource (`File`), so it must be used exactly once, but `wrong` never uses it
+  --> resource_computed.ck:42:23
+   |
+42 |     let Ends { first, second } = e
+   |                       ^^^^^^
+   = help: close it, or pass it on
+
+error[E0201]: type mismatch: expected `File`, found `Unit`
+  --> resource_computed.ck:43:17
+   |
+43 |     files.close first
+   |                 ^^^^^ this expression has type `Unit`
+
+error[E0401]: `e` holds a resource (`Ends a b`), so it must be used exactly once, but `generic` never uses it
+  --> resource_computed.ck:46:16
+   |
+46 | fn generic a b e -> r : a~Stream, b~Stream, e~Ends a b, r~Unit
+   |                ^
+   = help: close it, or pass it on
+
+resource_computed.ck: 5 errors, 0 warnings

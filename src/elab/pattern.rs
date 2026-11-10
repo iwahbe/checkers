@@ -13,7 +13,8 @@ pub struct Row<'a> {
     pats: Vec<(usize, Pattern)>,
     /// The arm's whole pattern, for errors about it.
     span: Span,
-    binds: Vec<(String, usize)>,
+    /// Names bound, the occurrence each names, and where it is written.
+    binds: Vec<(String, usize, Span)>,
     guard: Option<&'a Expr>,
     body: ArmBody<'a>,
 }
@@ -226,7 +227,7 @@ impl Elab {
         for (occ, p) in r.pats.drain(..) {
             match p.kind {
                 PatKind::Wild | PatKind::Unit => {}
-                PatKind::Var(n) => r.binds.push((n, occ)),
+                PatKind::Var(n) => r.binds.push((n, occ, p.span)),
                 _ => pats.push((occ, p)),
             }
         }
@@ -260,12 +261,12 @@ impl Elab {
         self.check_dropped(cx, &row);
         let start = cx.lvl();
         let mut lets = Vec::new();
-        for (name, occ) in &row.binds {
+        for (name, occ, at) in &row.binds {
             let ty = cx.locals[*occ].ty.clone();
             let v = cx.env[*occ].clone();
             let tyt = quote(&self.g, cx.lvl(), &ty);
             let t = cx.var(*occ);
-            let mult = self.named_mult(cx, name, &ty, row.span, Mult::Many);
+            let mult = self.named_mult(cx, name, &ty, *at, Mult::Many);
             let l = cx.define(name, ty, v, mult);
             cx.locals[l].sub = cx.locals[*occ].sub;
             cx.locals[l].param = cx.locals[*occ].param;
@@ -317,7 +318,7 @@ impl Elab {
         }
         for o in occs {
             let taken_apart = self.pm.frames.iter().any(|(x, _)| *x == o);
-            let bound = row.binds.iter().any(|(_, x)| *x == o);
+            let bound = row.binds.iter().any(|(_, x, _)| *x == o);
             if !taken_apart && !bound && o < cx.locals.len() {
                 let ty = cx.locals[o].ty.clone();
                 if self.val_linear(&ty) {
