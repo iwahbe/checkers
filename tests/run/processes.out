@@ -1,0 +1,12 @@
+-- stdout
+code 0, out b"SHOUT\n", err b""
+code 3, out b"out\n", err b"err\n"
+can't run no-such-program-checkers: No such file or directory
+big: 262144 out, 5 err
+Ok b"got hello\n", Ok 0
+discarded, Ok 5
+inherited
+then Ok 0
+-- stderr
+to stderr
+-- exit 0

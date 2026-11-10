@@ -2,6 +2,7 @@
 
 #[allow(unused_imports)]
 use super::*;
+use std::io::Read;
 
 /// Each builtin: its standard-library name, symbol and function.
 pub const TABLE: &[Builtin] = &[
@@ -15,6 +16,10 @@ pub const TABLE: &[Builtin] = &[
     ("std.files.read_line", "ckb_files_read_line", ckb_files_read_line),
     ("std.files.write_line", "ckb_files_write_line", ckb_files_write_line),
     ("std.files.list", "ckb_files_list", ckb_files_list),
+    ("std.files.read_some", "ckb_files_read_some", ckb_files_read_some),
+    ("std.files.read_exactly", "ckb_files_read_exactly", ckb_files_read_exactly),
+    ("std.files.read_rest", "ckb_files_read_rest", ckb_files_read_rest),
+    ("std.files.write_bytes", "ckb_files_write_bytes", ckb_files_write_bytes),
 ];
 
 builtin!(ckb_files_read, |a| match path(a[1], s(a[0])) {
@@ -58,17 +63,25 @@ builtin!(ckb_files_create, |a| match path(a[1], s(a[0])) {
 });
 
 builtin!(ckb_files_close, |a| {
-    if let Some(FileState::Write(mut w)) = file(a[0]).lock().unwrap().take() {
-        let _ = w.flush();
+    let st = file(a[0]).lock().unwrap_or_else(|e| e.into_inner()).take();
+    match st {
+        Some(FileState::Write(mut w)) => {
+            let _ = w.flush();
+        }
+        // The stream stays open; what this handle wrote goes out now.
+        Some(FileState::Stdout) => crate::io::flush(),
+        _ => {}
     }
     UNIT
 });
 
 builtin!(ckb_files_read_line, |a| {
-    let line = match &mut *file(a[0]).lock().unwrap() {
-        Some(FileState::Read(r)) => crate::io::read_line_from(r).ok().flatten(),
-        Some(FileState::Write(_)) => bug("this file was opened for writing"),
-        None => bug("this file is closed"),
+    let line = match reading(a[0], crate::io::read_line_from) {
+        Ok(l) => l,
+        Err(e) => {
+            fail_on("files.read_line", &e);
+            None
+        }
     };
     let opt = match line {
         Some(l) => some(new_str(&l)),
@@ -78,14 +91,73 @@ builtin!(ckb_files_read_line, |a| {
 });
 
 builtin!(ckb_files_write_line, |a| {
-    match &mut *file(a[1]).lock().unwrap() {
-        Some(FileState::Write(w)) => {
-            let _ = writeln!(w, "{}", s(a[0]));
-        }
-        Some(FileState::Read(_)) => bug("this file was opened for reading"),
-        None => bug("this file is closed"),
+    if let Err(e) = writing(a[1], |w| writeln!(w, "{}", s(a[0]))) {
+        fail_on("files.write_line", &e);
     }
     new_tuple(&[UNIT, dup(a[1])])
+});
+
+/// A result and the file, as `(Result Bytes IoError, File)`.
+fn bytes_and(r: std::io::Result<Vec<u8>>, f: W) -> W {
+    let r = match r {
+        Ok(v) => ok(new_bytes(&v)),
+        Err(e) => err(describe_io(&e)),
+    };
+    new_tuple(&[r, dup(f)])
+}
+
+builtin!(ckb_files_read_some, |a| {
+    let want = n(a[0]);
+    bytes_and(
+        reading(a[1], |r| {
+            if want == 0 {
+                return Ok(Vec::new());
+            }
+            let buf = loop {
+                match r.fill_buf() {
+                    Ok(b) => break b,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(e) => return Err(e),
+                }
+            };
+            let k = buf.len().min(want);
+            let v = buf[..k].to_vec();
+            r.consume(k);
+            Ok(v)
+        }),
+        a[1],
+    )
+});
+
+builtin!(ckb_files_read_exactly, |a| {
+    let want = n(a[0]);
+    bytes_and(
+        reading(a[1], |r| {
+            let mut v = Vec::with_capacity(want.min(1 << 20));
+            r.take(want as u64).read_to_end(&mut v)?;
+            Ok(v)
+        }),
+        a[1],
+    )
+});
+
+builtin!(ckb_files_read_rest, |a| {
+    bytes_and(
+        reading(a[0], |r| {
+            let mut v = Vec::new();
+            r.read_to_end(&mut v)?;
+            Ok(v)
+        }),
+        a[0],
+    )
+});
+
+builtin!(ckb_files_write_bytes, |a| {
+    let r = match writing(a[1], |w| w.write_all(b(a[0]))) {
+        Ok(()) => ok(UNIT),
+        Err(e) => err(describe_io(&e)),
+    };
+    new_tuple(&[r, dup(a[1])])
 });
 
 builtin!(ckb_files_list, |a| match path(a[1], s(a[0])) {

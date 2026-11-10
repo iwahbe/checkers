@@ -11,6 +11,9 @@ pub const TABLE: &[Builtin] = &[
     ("std.terminal.read_line", "ckb_read_line", ckb_read_line),
     ("std.terminal.write", "ckb_write", ckb_write),
     ("std.terminal.write_bytes", "ckb_write_bytes", ckb_write_bytes),
+    ("std.terminal.stdin", "ckb_terminal_stdin", ckb_terminal_stdin),
+    ("std.terminal.stdout", "ckb_terminal_stdout", ckb_terminal_stdout),
+    ("std.terminal.stderr", "ckb_terminal_stderr", ckb_terminal_stderr),
 ];
 
 builtin!(ckb_print_line, |a| {
@@ -42,3 +45,9 @@ builtin!(ckb_write_bytes, |a| {
     crate::io::write(b(a[0]));
     UNIT
 });
+
+builtin!(ckb_terminal_stdin, |_a| new_file(FileState::Stdin));
+
+builtin!(ckb_terminal_stdout, |_a| new_file(FileState::Stdout));
+
+builtin!(ckb_terminal_stderr, |_a| new_file(FileState::Stderr));

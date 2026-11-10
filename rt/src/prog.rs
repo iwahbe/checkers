@@ -31,6 +31,11 @@ pub struct Known {
     pub success: Option<u32>,
     pub failure: Option<u32>,
     pub entry: Option<u32>,
+    pub output: Option<u32>,
+    pub spawned: Option<u32>,
+    pub inherit: Option<u32>,
+    pub pipe: Option<u32>,
+    pub discard: Option<u32>,
 }
 
 /// Compiled code's entry for calls from Rust: `invoke(code, env, args, n)`
@@ -97,6 +102,11 @@ pub fn install(desc: &str, invoke: Invoke) {
                     "success" => &mut k.success,
                     "failure" => &mut k.failure,
                     "entry" => &mut k.entry,
+                    "output" => &mut k.output,
+                    "spawned" => &mut k.spawned,
+                    "inherit" => &mut k.inherit,
+                    "pipe" => &mut k.pipe,
+                    "discard" => &mut k.discard,
                     _ => continue,
                 };
                 *slot = id;
@@ -169,6 +179,34 @@ pub fn list_items(mut w: W) -> Vec<W> {
 /// A `files.Entry`.
 pub fn entry(name: &str, dir: bool) -> W {
     new_con(known_con(prog().known.entry), &[new_str(name), bool_w(dir)])
+}
+
+/// A `proc.Output`.
+pub fn output(code: usize, stdout: &[u8], stderr: &[u8]) -> W {
+    new_con(known_con(prog().known.output), &[crate::obj::nat(code), new_bytes(stdout), new_bytes(stderr)])
+}
+
+/// A `proc.Spawned`: the child, then each stream's end (a `File` or unit).
+pub fn spawned(child: W, ends: [W; 3]) -> W {
+    new_con(known_con(prog().known.spawned), &[child, ends[0], ends[1], ends[2]])
+}
+
+/// How a `proc.Stream` connects a child's stream.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Conn {
+    Inherit,
+    Pipe,
+    Discard,
+}
+
+pub fn conn(w: W) -> Conn {
+    let k = &prog().known;
+    match con_of(w) {
+        Some(c) if Some(c) == k.pipe => Conn::Pipe,
+        Some(c) if Some(c) == k.discard => Conn::Discard,
+        Some(c) if Some(c) == k.inherit => Conn::Inherit,
+        _ => bug("expected a proc.Stream"),
+    }
 }
 
 pub fn parsed(v: W, stop: usize) -> W {

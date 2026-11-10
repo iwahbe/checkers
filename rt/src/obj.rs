@@ -4,15 +4,20 @@ use crate::num::{Decimal, Num};
 use crate::word::*;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
-use std::fs::File;
-use std::io::{BufReader, BufWriter};
+use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicPtr;
 use std::sync::{Arc, Mutex};
 
+/// What a `File` is open on (D112): a reader or a writer (a file on disk, a
+/// child's pipe), or one of the standard streams, whose buffers it shares
+/// with `std.terminal`.
 pub enum FileState {
-    Read(BufReader<File>),
-    Write(BufWriter<File>),
+    Read(Box<dyn BufRead + Send>),
+    Write(Box<dyn Write + Send>),
+    Stdin,
+    Stdout,
+    Stderr,
 }
 
 /// A resource for the scheduler (D66): a cown or a future.
@@ -26,6 +31,8 @@ pub enum Obj {
     /// Sorted (value, count) pairs (D47).
     Bag(Vec<(Num, usize)>),
     File(Mutex<Option<FileState>>),
+    /// A child process, until it is waited for.
+    Child(Mutex<Option<std::process::Child>>),
     IoErr(String),
     /// A file system capability confined to a directory (`files.within`).
     Fs(PathBuf),

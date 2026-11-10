@@ -1,0 +1,5 @@
+-- stdout
+Err <IoError: this file is open for reading, not writing>
+-- stderr
+runtime error: `files.write_line`: this file is open for reading, not writing
+-- exit 70

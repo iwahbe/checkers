@@ -1,0 +1,8 @@
+error[E0207]: `Proc` has no field `exec`
+ --> shadowed_module.ck:9:16
+  |
+9 |     match proc.exec "true" [] proc
+  |                ^^^^ this is a `Proc`, not a record
+  = help: the variable `proc` hides the module `std.proc` here; give the variable another name
+
+shadowed_module.ck: 1 error, 0 warnings

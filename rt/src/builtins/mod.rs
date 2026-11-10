@@ -142,13 +142,65 @@ pub(crate) fn file_result(r: std::io::Result<std::fs::File>, write: bool) -> W {
     match r {
         Ok(f) => {
             let st = if write {
-                FileState::Write(std::io::BufWriter::new(f))
+                FileState::Write(Box::new(std::io::BufWriter::new(f)))
             } else {
-                FileState::Read(std::io::BufReader::new(f))
+                FileState::Read(Box::new(std::io::BufReader::new(f)))
             };
-            ok(new_obj(Obj::File(Mutex::new(Some(st)))))
+            ok(new_file(st))
         }
         Err(e) => err(describe_io(&e)),
+    }
+}
+
+/// Using a `File` the way it wasn't opened for.
+fn misuse(m: &str) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidInput, m)
+}
+
+/// For operations whose type has no error: misuse is a runtime error, any
+/// other error the end of input (reading) or nothing (writing), as before.
+pub(crate) fn fail_on(op: &str, e: &std::io::Error) {
+    if e.kind() == std::io::ErrorKind::InvalidInput {
+        error(NO_OWNER, &format!("`{op}`: {e}"))
+    }
+}
+
+pub(crate) fn new_file(st: FileState) -> W {
+    new_obj(Obj::File(Mutex::new(Some(st))))
+}
+
+/// Read from a `File` (or report why it can't be read).
+pub(crate) fn reading<T>(w: W, f: impl FnOnce(&mut dyn std::io::BufRead) -> std::io::Result<T>) -> std::io::Result<T> {
+    let mut g = file(w).lock().unwrap_or_else(|e| e.into_inner());
+    match &mut *g {
+        Some(FileState::Read(r)) => f(&mut **r),
+        Some(FileState::Stdin) => {
+            let mut io = crate::io::std_io();
+            // What was written so far comes before waiting for input.
+            let _ = io.out.flush();
+            f(&mut io.inp)
+        }
+        Some(_) => Err(misuse("this file is open for writing, not reading")),
+        None => Err(misuse("this file is closed")),
+    }
+}
+
+/// Write to a `File` (or report why it can't be written).
+pub(crate) fn writing<T>(w: W, f: impl FnOnce(&mut dyn Write) -> std::io::Result<T>) -> std::io::Result<T> {
+    let mut g = file(w).lock().unwrap_or_else(|e| e.into_inner());
+    match &mut *g {
+        Some(FileState::Write(wr)) => f(&mut **wr),
+        Some(FileState::Stdout) => {
+            let mut io = crate::io::std_io();
+            f(&mut io.out)
+        }
+        Some(FileState::Stderr) => {
+            let mut io = crate::io::std_io();
+            let _ = io.out.flush();
+            f(&mut std::io::stderr())
+        }
+        Some(_) => Err(misuse("this file is open for reading, not writing")),
+        None => Err(misuse("this file is closed")),
     }
 }
 

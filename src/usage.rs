@@ -161,16 +161,21 @@ impl U<'_> {
                 // A constructor stores its argument: one use, like a saturated `ConApp`.
                 let m = if *m != Mult::Zero && head_is_con(f) { Mult::One } else { *m };
                 let used = self.go(a);
+                // Arguments are evaluated once, before the call: only what can be
+                // part of the argument's value is used as often as the parameter
+                // allows; a use inside it (`f` in `g (close f)`) happens once.
+                let carried = self.carried(a);
                 if m == Mult::Many {
                     if let Some(callee) = head_def(f).map(|d| self.e.g.defs[d.0 as usize].name.to_string()) {
                         for (lvl, c) in used.iter().enumerate() {
-                            if *c != Count::Zero && self.binders[lvl].mult == Mult::One {
+                            if *c != Count::Zero && self.binders[lvl].mult == Mult::One && carried.contains(&lvl) {
                                 self.copied_by.entry(lvl).or_insert_with(|| callee.clone());
                             }
                         }
                     }
                 }
-                let ca: Counts = used.into_iter().map(|x| x.scale(m)).collect();
+                let ca: Counts =
+                    used.into_iter().enumerate().map(|(lvl, x)| if carried.contains(&lvl) { x.scale(m) } else { x }).collect();
                 add(&mut c, &ca);
                 c
             }
@@ -226,6 +231,80 @@ impl U<'_> {
             }
             // Types and globals are erased or contain no locals.
             _ => self.zero(),
+        }
+    }
+
+    /// The binders (levels) whose value may be part of the value of `t`: the
+    /// variables it is built from, everything a closure or partial application
+    /// captures, and the arguments of a call whose result may be a resource.
+    /// When unsure, every variable `t` mentions.
+    fn carried(&self, t: &Tm) -> std::collections::BTreeSet<usize> {
+        let mut out = std::collections::BTreeSet::new();
+        self.carried_into(t, 0, &mut out);
+        out
+    }
+
+    /// `depth`: binders `t` is under that aren't in `self.binders`.
+    fn carried_into(&self, t: &Tm, depth: usize, out: &mut std::collections::BTreeSet<usize>) {
+        let all = |t: &Tm, depth: usize, out: &mut std::collections::BTreeSet<usize>| {
+            let mut fv = std::collections::BTreeSet::new();
+            crate::core::free_vars(t, depth, &mut fv);
+            for i in fv {
+                if let Some(l) = self.binders.len().checked_sub(1 + i) {
+                    out.insert(l);
+                }
+            }
+        };
+        match t {
+            Tm::Var(i) if *i >= depth => {
+                if let Some(l) = self.binders.len().checked_sub(1 + (i - depth)) {
+                    out.insert(l);
+                }
+            }
+            Tm::Var(_) | Tm::Lit(_) | Tm::Def(_) | Tm::Con(_) | Tm::Univ(_) | Tm::TyCon(_) | Tm::Error => {}
+            Tm::Tuple(v) | Tm::ConApp(_, v) => v.iter().for_each(|x| self.carried_into(x, depth, out)),
+            Tm::Proj(x, _) | Tm::Field(x, _, _) => self.carried_into(x, depth, out),
+            Tm::Let(_, _, _, v, b) => {
+                self.carried_into(v, depth, out);
+                self.carried_into(b, depth + 1, out);
+            }
+            Tm::App(..) => {
+                let (head, n) = spine(t);
+                match head {
+                    // A constructor stores its arguments.
+                    Tm::Con(_) => app_args(t).into_iter().for_each(|x| self.carried_into(x, depth, out)),
+                    // A saturated call carries its arguments only if its result may hold a resource.
+                    Tm::Def(d) => {
+                        let ty = &self.e.g.defs[d.0 as usize].ty;
+                        let (arity, result) = pi_arity(ty);
+                        if n < arity || self.e.type_linear(result) {
+                            all(t, depth, out);
+                        }
+                    }
+                    _ => all(t, depth, out),
+                }
+            }
+            // Numbers, truth values, strings: nothing is carried.
+            Tm::PrimApp(
+                Prim::Add
+                | Prim::Sub
+                | Prim::Mul
+                | Prim::Div
+                | Prim::Rem
+                | Prim::Neg
+                | Prim::Eq
+                | Prim::Ne
+                | Prim::Lt
+                | Prim::Le
+                | Prim::Gt
+                | Prim::Ge
+                | Prim::Concat
+                | Prim::Len
+                | Prim::Format,
+                _,
+            ) => {}
+            // A closure, a match, an element, a builtin: everything they mention.
+            _ => all(t, depth, out),
         }
     }
 
@@ -298,6 +377,36 @@ fn head_def(mut t: &Tm) -> Option<DefId> {
         Tm::Def(d) => Some(*d),
         _ => None,
     }
+}
+
+/// The head of an application and how many arguments it has.
+fn spine(mut t: &Tm) -> (&Tm, usize) {
+    let mut n = 0;
+    while let Tm::App(f, ..) = t {
+        t = f;
+        n += 1;
+    }
+    (t, n)
+}
+
+fn app_args(mut t: &Tm) -> Vec<&Tm> {
+    let mut v = Vec::new();
+    while let Tm::App(f, a, ..) = t {
+        v.push(&**a);
+        t = f;
+    }
+    v.reverse();
+    v
+}
+
+/// The number of parameters of a function type, and its result.
+fn pi_arity(mut t: &Tm) -> (usize, &Tm) {
+    let mut n = 0;
+    while let Tm::Pi(_, _, _, _, b) = t {
+        t = b;
+        n += 1;
+    }
+    (n, t)
 }
 
 fn head_is_con(mut t: &Tm) -> bool {

@@ -110,11 +110,35 @@ partial fn home c -> r : c~Caps, r~Result String String
 fn tag v -> s : v~Version, s~String
     "v" ++ manifest.show v
 
-# Clone `url` at `rev` into `tmp`.
-partial fn clone url rev tmp c -> ok : url~String, rev~String, tmp~String, c~Caps, ok~Bool
-    run "rm" ["-rf", tmp] c
-        and run "git" ["clone", "--quiet", url, tmp] c
-        and run "git" ["-C", tmp, "-c", "advice.detachedHead=false", "checkout", "--quiet", rev] c
+# The last line of `b` that isn't empty.
+partial fn last_line b -> s : b~Bytes, s~String
+    let stop = trimmed b (len b)
+    piece b (line_start b stop) stop
+
+partial fn trimmed b j -> r : b~Bytes, j~Nat, r~Nat
+    if j > 0 and j <= len b and (b[j - 1] == '\n' or b[j - 1] == '\r') then trimmed b (j - 1) else j
+
+partial fn line_start b j -> r : b~Bytes, j~Nat, r~Nat
+    if j > 0 and j <= len b and b[j - 1] != '\n' then line_start b (j - 1) else j
+
+# Run git: the first line of its output, or what it said went wrong.
+partial fn git args c -> r : args~List String, c~Caps, r~Result String String
+    match proc.run "git" args b"" c.proc
+        Err e -> Err ("can't run git: " ++ files.describe e)
+        Ok o  ->
+            if o.code == 0
+                Ok (piece o.stdout 0 (first_line o.stdout 0))
+            else
+                Err (last_line o.stderr)
+
+# Clone `url` into `tmp` (replacing whatever is there) and check out `rev`.
+partial fn clone url rev tmp c -> r : url~String, rev~String, tmp~String, c~Caps, r~Result String String
+    if not (run "rm" ["-rf", tmp] c)
+        Err ("can't remove " ++ tmp)
+    else
+        match git ["clone", "--quiet", url, tmp] c
+            Err e -> Err e
+            Ok _  -> git ["-C", tmp, "-c", "advice.detachedHead=false", "checkout", "--quiet", rev] c
 
 # `name` at version `v`: its directory and commit. `known` is the commit if
 # the lock file or the cache already says which it is.
@@ -144,32 +168,47 @@ partial fn fetch_into name url v k base c -> r : name~String, url~String, v~Vers
                                                  base~String, c~Caps, r~Result (String, String) String
     let tmp = base ++ "/.fetching"
     announce name url v c
-    if run "mkdir" ["-p", base] c and clone url k tmp c and run "mv" [tmp, base ++ "/" ++ k] c
-        Ok (base ++ "/" ++ k, k)
+    if not (run "mkdir" ["-p", base] c)
+        Err ("can't create " ++ base)
     else
-        Err ("could not fetch `" ++ name ++ "` at commit " ++ k ++ " from " ++ url)
+        match clone url k tmp c
+            Err e -> Err ("could not fetch `" ++ name ++ "` at commit " ++ k ++ " from " ++ url ++ ": " ++ e)
+            Ok _  ->
+                if run "mv" [tmp, base ++ "/" ++ k] c
+                    Ok (base ++ "/" ++ k, k)
+                else
+                    Err ("could not move `" ++ name ++ "` into " ++ base ++ "/" ++ k)
 
 partial fn fetch_tag name url v base remembered c -> r : name~String, url~String, v~Version,
                                                          base~String, remembered~String, c~Caps,
                                                          r~Result (String, String) String
     let tmp = base ++ "/.fetching"
     announce name url v c
-    if not (run "mkdir" ["-p", base] c and run "rm" ["-rf", tmp] c and run "git" ["clone", "--quiet", url, tmp] c)
-        Err ("could not fetch `" ++ name ++ "` from " ++ url)
-    else if not (run "git" ["-C", tmp, "show-ref", "--quiet", "--verify", "refs/tags/" ++ tag v] c and run "git" ["-C", tmp, "-c", "advice.detachedHead=false", "checkout", "--quiet", tag v] c)
-        let _ = run "rm" ["-rf", tmp] c
-        Err ("`" ++ name ++ "`: " ++ url ++ " has no tag " ++ tag v)
+    if not (run "mkdir" ["-p", base] c)
+        Err ("can't create " ++ base)
     else
-        match read_line (tmp ++ "/.git/HEAD") c
-            None   -> Err ("`" ++ name ++ "`: can't read the commit of " ++ tag v)
-            Some k ->
-                let dir = base ++ "/" ++ k
-                let placed = if exists dir c then run "rm" ["-rf", tmp] c else run "mv" [tmp, dir] c
-                if placed
-                    let _ = files.write remembered (string.bytes (k ++ "\n")) c.fs
-                    Ok (dir, k)
-                else
-                    Err ("could not move `" ++ name ++ "` into " ++ dir)
+        match clone url "HEAD" tmp c
+            Err e -> Err ("could not fetch `" ++ name ++ "` from " ++ url ++ ": " ++ e)
+            Ok _  ->
+                match git ["-C", tmp, "rev-parse", "--verify", "--quiet", "refs/tags/" ++ tag v ++ "^{commit}"] c
+                    Err _ ->
+                        let _ = run "rm" ["-rf", tmp] c
+                        Err ("`" ++ name ++ "`: " ++ url ++ " has no tag " ++ tag v)
+                    Ok k  ->
+                        match git ["-C", tmp, "-c", "advice.detachedHead=false", "checkout", "--quiet", k] c
+                            Err e -> Err ("`" ++ name ++ "`: can't check out " ++ tag v ++ ": " ++ e)
+                            Ok _  -> settle name tmp base k remembered c
+
+# Move a checkout into the cache under its commit, and remember the tag's commit.
+partial fn settle name tmp base k remembered c -> r : name~String, tmp~String, base~String, k~String,
+                                                      remembered~String, c~Caps, r~Result (String, String) String
+    let dir = base ++ "/" ++ k
+    let placed = if exists dir c then run "rm" ["-rf", tmp] c else run "mv" [tmp, dir] c
+    if placed
+        let _ = files.write remembered (string.bytes (k ++ "\n")) c.fs
+        Ok (dir, k)
+    else
+        Err ("could not move `" ++ name ++ "` into " ++ dir)
 
 # ── Resolution ───────────────────────────────────────────────────────────────
 

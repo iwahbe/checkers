@@ -268,6 +268,7 @@ pub fn show(w: W, p: u8) -> String {
                 format!("<Bag {{{}}}>", items.join(", "))
             }
             Some(Obj::File(_)) => "<File>".into(),
+            Some(Obj::Child(_)) => "<Child>".into(),
             Some(Obj::IoErr(m)) => format!("<IoError: {m}>"),
             Some(Obj::Fs(_)) => "<Fs>".into(),
             Some(Obj::Cown(_)) => "<Cown>".into(),

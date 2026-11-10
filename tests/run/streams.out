@@ -1,0 +1,9 @@
+-- stdout
+Some "Content-Length: 5\r"
+Ok b"hello" Ok b"abc" Ok b"defg\nlast" Ok b""
+one, two
+three
+Ok () Ok ()
+-- stderr
+to stderr
+-- exit 0

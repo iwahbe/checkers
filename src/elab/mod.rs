@@ -542,7 +542,7 @@ impl Elab {
     /// A primitive resource (D39): implemented by the runtime as an open, stateful thing.
     fn is_primitive_resource(&self, t: TyId) -> bool {
         let ti = &self.g.tys[t.0 as usize];
-        &*ti.module == "std.files" && &*ti.name == "File"
+        matches!((&*ti.module, &*ti.name), ("std.files", "File") | ("std.proc", "Child"))
     }
 
     /// Does this type declaration contain a resource (in a constructor field)?

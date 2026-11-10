@@ -43,26 +43,36 @@ there are any. `-` formats standard input to standard output.
 -- exit 2
 $ checkers trust examples/wc.ck
 -- stdout
-examples/wc.ck:21:42  smt      postcondition of `count`: c.bytes == len src (for `count_from src 0 False (Counts 0 0 0)`, line 22)  [bb37dc14384d272f]
-examples/wc.ck:22:5  smt      precondition of `count_from`: i <= len src  [48e82dc3928e329d]
-examples/wc.ck:25:50  smt      postcondition of `count_from`: c.bytes == acc.bytes + (len src - i) (for `acc`, line 28)  [ccb5eb8f230f308f]
-examples/wc.ck:25:50  smt      postcondition of `count_from`: c.bytes == acc.bytes + (len src - i) (for `count_from src (i + 1) (not space) (Coun…`, line 34)  [191101a4ee862a1e]
-examples/wc.ck:26:16  smt      `Nat` subtraction `len src - i` stays at or above zero  [6b0b661b17597b70]
-examples/wc.ck:30:17  smt      index in bounds: i < len src  [cc0fb0a34c00c530]
-examples/wc.ck:34:9  smt      precondition of `count_from`: i <= len src  [08f3a30cc3e86448]
-examples/wc.ck:34:9  smt      termination of `count_from`: `decreasing len src - i` gets smaller  [4db31f3d517b5118]
-examples/wc.ck:49:21  computed invariant of `Failure`: n < 256
-examples/wc.ck:49:21  computed invariant of `Failure`: n > 0
-examples/wc.ck:64:33  computed invariant of `Failure`: n < 256
-examples/wc.ck:64:33  computed invariant of `Failure`: n > 0
-examples/wc.ck:66:7  computed check count b"hello world\nbye\n" == Counts 2 3 16
-examples/wc.ck:67:7  computed check count b"" == Counts 0 0 0
-examples/wc.ck:68:7  computed check render (Counts 1 2 3) "f.txt" == "1 2 3 f.txt"
-<std>/files.ck:18:11  builtin  std.files.describe
-<std>/files.ck:9:11  builtin  std.files.read
+examples/wc.ck:22:42  smt      postcondition of `count`: c.bytes == len src (for `count_from src 0 False (Counts 0 0 0)`, line 23)  [5788745a97b0d885]
+examples/wc.ck:23:5  smt      precondition of `count_from`: i <= len src  [48e82dc3928e329d]
+examples/wc.ck:26:50  smt      postcondition of `count_from`: c.bytes == acc.bytes + (len src - i) (for `acc`, line 29)  [ccb5eb8f230f308f]
+examples/wc.ck:26:50  smt      postcondition of `count_from`: c.bytes == acc.bytes + (len src - i) (for `count_from src (i + 1) (not space) (Coun…`, line 35)  [9b48c9a3e7289c30]
+examples/wc.ck:27:16  smt      `Nat` subtraction `len src - i` stays at or above zero  [6b0b661b17597b70]
+examples/wc.ck:31:17  smt      index in bounds: i < len src  [cc0fb0a34c00c530]
+examples/wc.ck:32:21  smt      precondition of `is_space`: n < 256  [aaf381b26ee4fd8b]
+examples/wc.ck:35:9  smt      precondition of `count_from`: i <= len src  [08f3a30cc3e86448]
+examples/wc.ck:35:9  smt      termination of `count_from`: `decreasing len src - i` gets smaller  [4db31f3d517b5118]
+examples/wc.ck:42:43  smt      precondition of `is_space`: n < 256  [fae8e7d63f72fcd0]
+examples/wc.ck:42:53  smt      index in bounds: len src - 1 < len src  [96631bf502d4696f]
+examples/wc.ck:42:57  smt      `Nat` subtraction `len src - 1` stays at or above zero  [86134213095e4ef2]
+examples/wc.ck:55:55  smt      precondition of `count_from`: i <= len src  [fefb06f90b67c2b1]
+examples/wc.ck:73:21  computed invariant of `Failure`: n < 256
+examples/wc.ck:73:21  computed invariant of `Failure`: n > 0
+examples/wc.ck:88:33  computed invariant of `Failure`: n < 256
+examples/wc.ck:88:33  computed invariant of `Failure`: n > 0
+examples/wc.ck:95:7  computed check count b"hello world\nbye\n" == Counts 2 3 16
+examples/wc.ck:96:7  computed check count b"" == Counts 0 0 0
+examples/wc.ck:97:7  computed check render (Counts 1 2 3) "f.txt" == "1 2 3 f.txt"
+examples/wc.ck:98:7  computed check ends_in_word b"ab" False
+examples/wc.ck:99:7  computed check not (ends_in_word b"ab " True)
+examples/wc.ck:100:7  computed check ends_in_word b"" True
+<std>/files.ck:29:11  builtin  std.files.close
+<std>/files.ck:20:11  builtin  std.files.describe
+<std>/files.ck:23:11  builtin  std.files.open
+<std>/files.ck:42:11  builtin  std.files.read_some
 <std>/terminal.ck:11:11  builtin  std.terminal.eprint_line
 <std>/terminal.ck:8:11  builtin  std.terminal.print_line
-<std>/terminal.ck:14:11  builtin  std.terminal.read_all
+<std>/terminal.ck:33:11  builtin  std.terminal.stdin
 solver: Z3 5.3.3.0
 -- stderr
 -- exit 0

@@ -1179,10 +1179,17 @@ impl Elab {
             Val::Error => (Tm::Error, Val::Error),
             other => {
                 let shown = self.show_val(cx, &other);
-                self.err(
-                    Diagnostic::error("E0207", format!("`{shown}` has no field `{}`", name.name), name.span)
-                        .with_label(format!("this is a `{shown}`, not a record")),
-                );
+                let mut d = Diagnostic::error("E0207", format!("`{shown}` has no field `{}`", name.name), name.span)
+                    .with_label(format!("this is a `{shown}`, not a record"));
+                // A local variable hiding an imported module of the same name.
+                if let ExprKind::Var(q) = &x.kind {
+                    if let Some(m) = self.qualifier(q).filter(|_| cx.lookup(q).is_some()) {
+                        d = d.with_help(format!(
+                            "the variable `{q}` hides the module `{m}` here; give the variable another name"
+                        ));
+                    }
+                }
+                self.err(d);
                 (Tm::Error, Val::Error)
             }
         }

@@ -1,0 +1,25 @@
+error[E0401]: `f` holds a resource (`File`), so it must be used exactly once, but `closure` may use it more than once
+  --> resources_nested.ck:40:12
+   |
+40 | fn closure f -> r : f~File, r~Nat
+   |            ^
+   = note: `f` is passed to `twice`, whose parameter is not `own`, so `twice` may copy or drop it
+   = help: mark that parameter of `twice` with `own` (as in `x~own a`) so it can take a resource
+
+error[E0401]: `f` holds a resource (`File`), so it must be used exactly once, but `returned` may use it more than once
+  --> resources_nested.ck:44:13
+   |
+44 | fn returned f -> r : f~File, r~File
+   |             ^
+   = note: `f` is passed to `same`, whose parameter is not `own`, so `same` may copy or drop it
+   = help: mark that parameter of `same` with `own` (as in `x~own a`) so it can take a resource
+
+error[E0401]: `f` holds a resource (`File`), so it must be used exactly once, but `partial_app` may use it more than once
+  --> resources_nested.ck:48:16
+   |
+48 | fn partial_app f -> r : f~File, r~Nat
+   |                ^
+   = note: `f` is passed to `twice_on`, whose parameter is not `own`, so `twice_on` may copy or drop it
+   = help: mark that parameter of `twice_on` with `own` (as in `x~own a`) so it can take a resource
+
+resources_nested.ck: 3 errors, 0 warnings

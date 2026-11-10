@@ -253,3 +253,21 @@ fn ckc_package_flags_and_messages() {
     let bad = ckc(&w, "prog", &["check", "--package", "lib=../lib", "--uses", ".=lib,other", "p.ck"]);
     assert_eq!((bad.status.code(), text(&bad.stderr)), (Some(2), "error: `--uses .=…` names `other`, which no `--package` gives\n".to_string()));
 }
+
+#[test]
+fn fetch_failures_are_reported_plainly() {
+    let w = World::new("fetchfail");
+    app(&w);
+    // A version with no tag: only our message, nothing from git.
+    w.write("shared/checkers.json", &manifest("shared", &[git_dep(&w, "util", "9.0.0")]));
+    let out = w.checkers("app", &["check"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(errors(&out), format!("checkers: `util`: {} has no tag v9.0.0\n", w.url("util")));
+    // A repository that isn't there: git's reason is part of the message.
+    w.write("shared/checkers.json", &manifest("shared", &[format!("\"util\": {{ \"git\": \"{}/nowhere\", \"version\": \"1.0.0\" }}", w.root.display())]));
+    let out = w.checkers("app", &["check"]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = errors(&out);
+    assert!(err.starts_with(&format!("checkers: could not fetch `util` from {}/nowhere: fatal: ", w.root.display())), "{err}");
+    assert_eq!(err.lines().count(), 1, "{err}");
+}
