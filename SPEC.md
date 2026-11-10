@@ -113,11 +113,11 @@ This document is the single source of truth for Checkers. Implementation follows
 | D102 | **Elaborated modules are not cached yet (M12).** Type checking every module of `examples/json.ck`, the standard library included, takes about 30 ms, under 1% of checking it; proving takes the rest. Caching elaborated modules (serializing core terms and the global tables) waits until elaboration of a program takes over 1 s. | 11/10/2026 | decided (11/10/2026) |
 | D103 | **Three layers (§16.1).** (1) The **prelude**: the types and operators the compiler knows by name (`Nat`, `Int`, `Bytes`, `String`, `Bool`, `Option`, `Result`, `List`, tuples, the fixed-width aliases, `Char`, `len`, `++`, `==`, indexing, arithmetic, `format`), imported everywhere; a closed set, changed only by a language decision. (2) **Builtin modules**: functions the runtime implements (`__builtin`), each with its full contract in the module's `.ck` file and its code in `rt/src/builtins/<module>.rs`; their postconditions and `__builtin` lemmas are trusted and listed by `ckc trust` wherever a program uses them. (3) **Checkers modules**: everything else, written in Checkers with proofs. A function is builtin only if it needs the runtime (the OS, the scheduler), works on the representation of a primitive type (`Bytes`, `String`), or is a fact about another builtin; anything expressible in Checkers is written in Checkers. | 11/10/2026 | **(proposed)** |
 | D104 | **The standard library ships with the toolchain (§16.1).** It is embedded in `ckc` and versioned with it, as Go's and Rust's are: builtin modules need the runtime they were built with, and its proofs are checked against this compiler. It is not a package with versions of its own (as Gleam's `gleam_stdlib` is). | 11/10/2026 | **(proposed)** |
-| D105 | **Module names (§16.2).** The standard library's modules are `std.…` (`import std.list`), and the prelude is `std.prelude`. An import's first component says where it comes from: `std`, a dependency named in the package manifest, or else this package's own files (D53). By default a module is referred to by the last component of its name (`import std.list` → `list.map`), as in Go; `as` renames it, and two imports with the same last component need `as`. So adding a module to the standard library never collides with a package's modules, and short qualifiers stay short. Supersedes D53's lookup order (the standard library before local files). | 11/10/2026 | **(proposed)** |
-| D106 | **What the standard library contains (§16.3).** Exactly the modules in the §16.3 table, each with its contents listed. A module belongs there if it (a) is needed to use a primitive type or a capability at all, (b) defines a vocabulary type that packages' interfaces exchange (`Map`, `Set`, `Array`, `Json`), or (c) is a widely used algorithm the standard library should ship with its proofs (`sort`). Anything else is a package. Adding or changing an exported function is a decision recorded here, with the table updated: no function is added only because a program needs it. | 11/10/2026 | **(proposed)** |
-| D107 | **Packages (§16.4).** A package is a directory with a manifest, `package.ck`: a Checkers module exporting `PACKAGE`, a `std.package.Package` record (name, version, the oldest toolchain it needs, dependencies). The build tool reads it with `ckc eval package.ck PACKAGE` (its value as JSON), so the manifest is type-checked: a malformed name or version is a compile error with a span. Evaluating it is pure (no capabilities), as evaluating any compile-time value is. | 11/10/2026 | **(proposed)** |
-| D108 | **Dependencies (§16.4).** A dependency is a git repository and a version (a tag `vMAJOR.MINOR.PATCH`) or a local path. Versions are chosen by minimal version selection (Go): each package states the oldest version it works with, and the build uses, for each dependency, the highest of those minimums; deterministic, no solver, and a new release upstream changes nothing until someone asks for it. `package.lock` records each dependency's commit, so a build is reproducible. Different major versions of one package are an error for now. There is no registry yet. The build tool fetches with `git` (`proc.exec`) into `~/.cache/checkers/packages/`. | 11/10/2026 | **(proposed)** |
-| D109 | **Checking with packages (§16.4).** The build tool passes `ckc` each package as `--package NAME=DIR`, with the dependencies each may import; a module may import only its own package, `std`, and the dependencies its manifest declares. A dependency's proofs are checked like the program's own (the answer cache, D100, makes that cheap after the first time), and `ckc trust` lists every package's admits and the builtins it relies on. Dependency code runs no code at build time (there are no build scripts; compile-time evaluation is pure) and performs no effects except through capabilities its callers pass it, so adding a dependency can't touch the machine. | 11/10/2026 | **(proposed)** |
+| D105 | **Module names (§16.2).** The standard library's modules are `std.…` (`import std.list`), and the prelude is `std.prelude`. An import's first component says where it comes from: `std`, a dependency named in the package manifest, or else this package's own files (D53). By default a module is referred to by the last component of its name (`import std.list` → `list.map`), as in Go; `as` renames it, and two imports with the same last component need `as`. So adding a module to the standard library never collides with a package's modules, and short qualifiers stay short. Supersedes D53's lookup order (the standard library before local files). | 11/10/2026 | decided (11/10/2026) |
+| D106 | **What the standard library contains (§16.3).** Exactly the modules in the §16.3 table, each with its contents listed. A module belongs there if it (a) is needed to use a primitive type or a capability at all, (b) defines a vocabulary type that packages' interfaces exchange (`Map`, `Set`, `Array`, `Json`), or (c) is a widely used algorithm the standard library should ship with its proofs (`sort`). Anything else is a package. Adding or changing an exported function is a decision recorded here, with the table updated: no function is added only because a program needs it. | 11/10/2026 | **(proposed)**; the scope is to be settled later; until then the standard library stays small: today's modules, plus what M13–M14 need (11/10/2026) |
+| D107 | **Packages (§16.4).** A package is a directory with a manifest, `checkers.json`: the package's name, version, the oldest toolchain it needs, and its dependencies. The build tool reads it with `std.json`, and reports a malformed manifest with its line and column. The lock file is `checkers.lock` (JSON as well; written by the build tool). | 11/10/2026 | decided (11/10/2026): `checkers.json` and `checkers.lock`; the lock file's format proposed |
+| D108 | **Dependencies (§16.4).** A dependency is a git repository and a version (a tag `vMAJOR.MINOR.PATCH`) or a local path. Versions are chosen by minimal version selection (Go): each package states the oldest version it works with, and the build uses, for each dependency, the highest of those minimums; deterministic, no solver, and a new release upstream changes nothing until someone asks for it. `checkers.lock` records each dependency's commit, so a build is reproducible. Different major versions of one package are an error for now. There is no registry yet. The build tool fetches with `git` (`proc.exec`) into `~/.cache/checkers/packages/`. | 11/10/2026 | **(proposed)** |
+| D109 | **Checking with packages (§16.4).** The build tool passes `ckc` each package as `--package NAME=DIR`, with the dependencies each may import; a module may import only its own package, `std`, and the dependencies its manifest declares. A dependency's proofs are always checked, like the program's own; there is no way to trust a dependency unchecked (the answer cache, D100, makes that cheap after the first time), and `ckc trust` lists every package's admits and the builtins it relies on. Dependency code runs no code at build time (there are no build scripts; compile-time evaluation is pure) and performs no effects except through capabilities its callers pass it, so adding a dependency can't touch the machine. | 11/10/2026 | decided (11/10/2026) |
 | D24 | **Development loop:** Claude owns the implementation; Ian drives with examples. An issue is "found X, expected Y" with a `.ck` snippet. Each one becomes a regression test under `tests/` *before* the fix lands, and the spec is updated first whenever the expectation changes the language. | 11/05/2026 | decided |
 | D25 | **Milestones reordered for CLI tools first** (§10): a running interpreter with `IO` comes right after type checking, before the prover, so Checkers can be used to build its own tooling early. ~~Capstone: an interactive shell with a small scripting language, with proofs of its correctness.~~ (removed by D81) | 11/05/2026 | decided |
 
@@ -799,8 +799,8 @@ Reordered (D25) so that Checkers can run CLI tools before the prover exists.
 | M10 | Refined function types (D52, §7.5, D82–D87): refinements written inside types, predicates in function types, refinements compared by implication, preconditions checked and postconditions known at calls of function-typed values, partial applications everywhere (lifts D51, retires E0453) | `list.map (at_least 5) xs` checks when `xs~List (n~Int, n >= 5)`; every case in `tests/types/refined_fn_types.ck` gives the output marked there (done 11/06/2026) |
 | M11 | The build tool and the formatter (D90–D93, D95–D98, §15.1–15.4): `ckc` (the renamed compiler); the M11 standard library additions; `checkers` written in Checkers, passing compiler commands to `ckc`; `checkers fmt [--check] [PATH]...` and `checkers fmt -`; the golden tests build `checkers` with `ckc` once and use it | `checkers fmt --check` passes on every `.ck` file in the repository (after one reformatting commit, if needed, whose diff Ian reviews); for each of them, formatting is a fixed point and `ckc parse` gives the same output before and after; every case in `tests/fmt/` gives its `.out`; `checkers check`, `run` and `build` behave as `ckc`'s (done 11/10/2026; `tests/parse/` and `tests/check/` keep their unformatted inputs, §15.4) |
 | M12 | Faster checking (D100–D102): measurements (11/10/2026, release build, 2 cores): `ckc check examples/json.ck` takes 15 s, of which elaboration 27 ms, `check`s 61 ms, proving 15.2 s; two of its 364 queries (the `have` steps at lines 354 and 393 of the round-trip proof) take 4–10 s each, against a 10 s timeout, so the result depends on load (the vendored Z3 sometimes gives up); the other 362 take 1.3 s together. `tools/checkers.ck`: 0.28 s to check, 0.56 s to build. Work: the proof cache (D100); `rlimit` (D101); the two slow queries made fast, by giving Z3 less to search (only the facts the goal needs) or by splitting the proof steps | `ckc check examples/json.ck` under 2 s from scratch and under 0.3 s again with nothing changed or after a one-line change to a function the proofs don't use; every obligation in the repository proved with the same answer on every run and machine (vendored and pip Z3 alike) (done 11/10/2026: 1.2 s from scratch, 0.21 s again, 0.22 s after a one-line change to `parse`; the work limit is 6 000 000 for the full query and 1 000 000 for the weaker ones, from measurements over the repository; the same answers with the vendored and pip Z3) |
-| M13 | **(proposed)** The standard library restructured (D103–D106, §16.1–16.3): `std.` names and last-component qualifiers; builtins one Rust file per module; the §16.3 modules marked *planned for M13* written, with proofs; `ckc trust` lists the builtins a program relies on | every module and function in the §16.3 table exists with its contract; `examples/`, `tools/` and the tests use `std.` imports; every builtin is in the table |
-| M14 | **(proposed)** Packages (D107–D109, §16.4): `package.ck`, `ckc eval`, `--package`, `checkers build` / `check` / `run` for a package, `git` and path dependencies, minimal version selection, `package.lock` | a package depending on a git package and a path package builds, its `trust` ledger lists both, and changing a dependency's version in the manifest rebuilds with the new one |
+| M13 | **(proposed)** The standard library restructured (D103–D106, §16.1–16.3), kept small: `std.` names and last-component qualifiers (D105); builtins one Rust file per module; `ckc trust` lists the builtins a program relies on; `std.json` from `examples/json.ck` (the manifest needs it) | every standard-library module is imported as `std.…` in `examples/`, `tools/`, `stdlib/` and the tests; every builtin is in the §16.3 table; `std.json` checks with its proofs |
+| M14 | **(proposed)** Packages (D107–D109, §16.4): `checkers.json`, `checkers.lock`, `--package`, `checkers build` / `check` / `run` for a package, `git` and path dependencies, minimal version selection | a package depending on a git package and a path package builds, its `trust` ledger lists both, and changing a dependency's version in `checkers.json` rebuilds with the new one |
 | M15 | **(proposed)** `checkers lsp` (D94, §15.5) | the scripted sessions in `tests/lsp/` (requests in, expected responses out) pass; diagnostics, go to definition, formatting and document symbols work in VS Code and Neovim |
 
 ---
@@ -1019,7 +1019,7 @@ What it needs from the compiler (a later decision):
 
 The output goes through a cown, so a reply and diagnostics published by a behaviour never interleave. Tests in `tests/lsp/` are scripted sessions: a file of requests, and the responses expected.
 
-## 16. Standard library and packages (M13–M14, D103–D109, proposed)
+## 16. Standard library and packages (M13–M14, D103–D109)
 
 ### 16.1 Layers (D103, D104)
 
@@ -1043,11 +1043,11 @@ import parser.lexer                 # this package's parser/lexer.ck: lexer.next
 import std.string as str            # str.concat
 ```
 
-The first component of an import decides where it comes from: `std`; a dependency declared in `package.ck`; else this package's files. Go reserves the same way, by giving standard-library paths no dot in their first element ([Go modules reference](https://go.dev/ref/mod)).
+The first component of an import decides where it comes from: `std`; a dependency declared in `checkers.json`; else this package's files. Go reserves the same way, by giving standard-library paths no dot in their first element ([Go modules reference](https://go.dev/ref/mod)).
 
 ### 16.3 Contents (D106)
 
-The standard library is these modules; *planned* entries are the work of M13. Contracts are in each module's file.
+The standard library is these modules. Its scope is still to be settled (D106); until then it stays small: *planned* entries other than `std.json` wait for that decision. Contracts are in each module's file.
 
 | Module | Layer | Exports | Status |
 |---|---|---|---|
@@ -1063,38 +1063,48 @@ The standard library is these modules; *planned* entries are the work of M13. Co
 | `std.char`, `std.utf8` | builtin | `code`, `from_scalar`, `from_ascii`, `from_surrogates`; `decode_at`, `encode`, `encode_append` | exist |
 | `std.decimal` | builtin + Checkers | `Decimal`, `scan_json`, `render`, `of_int`, `continues_number` | exists; planned: `nat.parse` as `std.number` (`parse_nat`, `parse_int`, `render_nat`) |
 | `std.cursor` | Checkers | `Parsed` (a parse result that consumed input) | exists |
-| `std.json` | Checkers | `Json`, `parse`, `render`, the round-trip lemma | planned (from `examples/json.ck`) |
+| `std.json` | Checkers | `Json`, `parse`, `render`, the round-trip lemma | planned for M13 (from `examples/json.ck`; `checkers.json` needs it) |
 | `std.path` | Checkers | `join`, `parent`, `name`, `extension` (paths as `String`, `/`-separated) | planned (the tools compute these by hand today) |
 | `std.system` | — | `System`, `ExitCode`, the authority types | exists |
 | `std.terminal` | builtin | `Term`, `print_line`, `eprint_line`, `write`, `write_bytes`, `read_line`, `read_all` | exists |
 | `std.files` | builtin | `Fs`, `File`, `IoError`, `Entry`, `read`, `write`, `list`, `open`, `create`, `close`, `read_line`, `write_line`, `within` | exists |
 | `std.env`, `std.proc` | builtin | `get`, `executable`; `exec` | exist |
 | `std.cown`, `std.future`, `std.actor` | builtin + Checkers | `Cown`, `new`; `Future`, `ready`; `Actor`, `new`, `send` | exist |
-| `std.package` | Checkers | `Package`, `Dependency`, `Version` (§16.4) | planned (M14) |
 
 Not in the standard library: formats other than JSON, networking (`Net` waits for a program that needs it), command-line parsing, and anything else a package can provide.
 
 ### 16.4 Packages (D107–D109)
 
+A package is a directory with `checkers.json`, its modules (`a/b.ck` is module `a.b`), and `checkers.lock`, which the build tool writes:
+
+```json
+{
+  "name": "parser_tools",
+  "version": "0.3.1",
+  "toolchain": "0.1.0",
+  "dependencies": {
+    "json_schema": { "git": "https://github.com/example/json_schema", "version": "1.2.0" },
+    "shared": { "path": "../shared" }
+  }
+}
 ```
-module package
 
-import std.package (Package, Dependency, Git, Path, Version)
+| Field | Required | Meaning |
+|---|---|---|
+| `name` | yes | lower-case letters, digits and `_`, starting with a letter; not `std` |
+| `version` | yes | `MAJOR.MINOR.PATCH` |
+| `toolchain` | yes | the oldest `ckc` this package works with |
+| `dependencies` | no | name → `{ "git": URL, "version": "MAJOR.MINOR.PATCH" }` (the oldest version that works, a tag `vMAJOR.MINOR.PATCH`) or `{ "path": DIR }`; the name is what this package imports it as |
 
-export let PACKAGE = Package "parser_tools" (Version 0 3 1) (Version 0 1 0) [
-    Dependency "json_schema" (Git "https://github.com/example/json_schema" (Version 1 2 0)),
-    Dependency "shared" (Path "../shared")]
-```
+An unknown field, a missing required one, or a malformed value is an error with its line and column in `checkers.json`. The lock file (proposed format):
 
-(The fields are name, version, oldest toolchain, dependencies. The language has no record syntax with field names (`Package { name = … }`) yet; a manifest is where it would help most. This checks today with `ckc`, given the records in `std.package`.)
-
-A package's directory holds `package.ck`, its modules (`a/b.ck` is module `a.b`), and `package.lock`, which the build tool writes:
-
-```
-json_schema v1.4.0 git https://github.com/example/json_schema 3f2a9c…
-shared       path ../shared
+```json
+{
+  "json_schema": { "git": "https://github.com/example/json_schema", "version": "1.4.0", "commit": "3f2a9c…" },
+  "shared": { "path": "../shared" }
+}
 ```
 
 Minimal version selection: if this package needs `json_schema ≥ 1.2.0` and another dependency needs `≥ 1.4.0`, the build uses 1.4.0, even if 1.9.0 exists ("the highest required versions … are the minimum versions that satisfy all requirements", [Go modules reference](https://go.dev/ref/mod)). Lean's Lake records git dependencies the same way, with a revision per dependency in `lake-manifest.json` ([Lake reference](https://lean-lang.org/doc/reference/4.34.0/Build-Tools-and-Distribution/Lake/)).
 
-`checkers build` in a package: read `package.ck` (`ckc eval`), resolve and fetch the dependencies, write `package.lock`, then run `ckc build --package json_schema=~/.cache/checkers/packages/json_schema/3f2a9c… --package shared=../shared … main.ck`.
+`checkers build` in a package: read `checkers.json`, resolve and fetch the dependencies, write `checkers.lock`, then run `ckc build --package json_schema=~/.cache/checkers/packages/json_schema/3f2a9c… --package shared=../shared … main.ck`.
