@@ -63,7 +63,15 @@ unsafe impl<P> Send for Ptr<P> {}
 /// its resources: it is what keeps them alive.
 pub trait Worker<P>: Send + 'static {
     type Error: Send + 'static;
-    fn run(&mut self, p: &mut P) -> Result<(), Self::Error>;
+    fn run(&mut self, p: &mut P) -> Result<Ran, Self::Error>;
+}
+
+/// How a behaviour's turn on a thread ended (D113).
+pub enum Ran {
+    Done,
+    /// It is waiting, and keeps its resources: `register` is called with
+    /// what puts it back on the ready queue, which then runs it again.
+    Parked(Box<dyn FnOnce(crate::fiber::Waker) + Send>),
 }
 
 pub struct Pool<P, E> {
@@ -82,6 +90,8 @@ pub struct Pool<P, E> {
     workers: Mutex<Vec<std::thread::JoinHandle<()>>>,
     /// Threads `par` may still start (D69).
     pub par_budget: AtomicUsize,
+    /// The pool itself, for wakers of parked behaviours.
+    me: std::sync::OnceLock<std::sync::Weak<Self>>,
 }
 
 unsafe impl<P: Send, E: Send> Sync for Pool<P, E> {}
@@ -114,7 +124,9 @@ impl<P: Send + 'static, E: Send + 'static> Pool<P, E> {
             error: Mutex::new(None),
             workers: Mutex::new(Vec::new()),
             par_budget: AtomicUsize::new(threads.saturating_sub(1)),
+            me: std::sync::OnceLock::new(),
         });
+        let _ = pool.me.set(Arc::downgrade(&pool));
         let make = Arc::new(make);
         for _ in 1..threads.max(2) {
             let (p, make) = (pool.clone(), make.clone());
@@ -273,9 +285,26 @@ impl<P: Send + 'static, E: Send + 'static> Pool<P, E> {
                 self.idle.fetch_sub(1, Ordering::AcqRel);
                 return Some(b);
             }
+            // Going to sleep: what was written goes out first (D113), so a
+            // program waiting for input has shown what it has to show.
+            drop(q);
+            crate::io::flush();
+            q = self.ready.lock().unwrap();
+            if self.done_or_ready(main_thread) {
+                self.idle.fetch_sub(1, Ordering::AcqRel);
+                continue;
+            }
             q = self.cv.wait(q).unwrap();
             self.idle.fetch_sub(1, Ordering::AcqRel);
         }
+    }
+
+    /// Something to do (or nothing more ever): don't sleep.
+    fn done_or_ready(&self, main_thread: bool) -> bool {
+        self.stop.load(Ordering::Acquire)
+            || main_thread && self.outstanding.load(Ordering::Acquire) == 0
+            || self.queued.load(Ordering::Acquire) > 0
+            || !self.fast.is_empty()
     }
 
     fn work<S: Worker<P, Error = E>>(&self, s: &mut S, main_thread: bool) {
@@ -290,8 +319,21 @@ impl<P: Send + 'static, E: Send + 'static> Pool<P, E> {
             };
             let r = match unsafe { (*b).payload.as_mut() } {
                 Some(p) => s.run(p),
-                None => Ok(()),
+                None => Ok(Ran::Done),
             };
+            // Parked: it keeps its resources and stays outstanding; its waker
+            // puts it back on the ready queue.
+            if let Ok(Ran::Parked(register)) = r {
+                let me = self.me.get().and_then(|w| w.upgrade());
+                let ptr = Ptr(b);
+                register(Box::new(move || {
+                    let ptr = ptr;
+                    if let Some(me) = me {
+                        me.push(ptr.0);
+                    }
+                }));
+                continue;
+            }
             if let Err(e) = r {
                 let mut slot = self.error.lock().unwrap();
                 if slot.is_none() {
@@ -370,6 +412,11 @@ impl<T> Mpmc<T> {
             head: AtomicUsize::new(0),
             tail: AtomicUsize::new(0),
         }
+    }
+
+    /// Nothing in it, as far as this thread can tell.
+    fn is_empty(&self) -> bool {
+        self.head.load(Ordering::Acquire) == self.tail.load(Ordering::Acquire)
     }
 
     /// False if the queue is full.

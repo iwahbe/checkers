@@ -9,7 +9,7 @@
 
 use crate::core::{eval, force, quote, CaseTm, ConId, DefId, Lit, Mult, Prim, Tm, TyId, Val};
 use crate::elab::{Elab, ObLocal, Obligation};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
 
@@ -234,6 +234,8 @@ pub struct Builder<'a> {
     datatypes: BTreeMap<TyId, usize>,
     tuples: HashSet<usize>,
     sorts: BTreeMap<String, usize>,
+    /// Types with a field whose type can't be a sort (opaque to Z3).
+    computed: HashMap<TyId, bool>,
     /// Uninterpreted functions: name → declaration.
     funs: BTreeMap<String, String>,
     /// A local function's type, over the locals before it (D84).
@@ -267,6 +269,7 @@ impl<'a> Builder<'a> {
             datatypes: BTreeMap::new(),
             tuples: HashSet::new(),
             sorts: BTreeMap::new(),
+            computed: HashMap::new(),
             funs: BTreeMap::new(),
             fun_tys: BTreeMap::new(),
             insts: BTreeMap::new(),
@@ -492,7 +495,10 @@ impl<'a> Builder<'a> {
             }
         }
         let ti = &self.e.g.tys[id.0 as usize];
-        if ti.ctors.is_empty() {
+        // A type without constructors, or one with a field whose type is
+        // computed from its parameters (`Spawned ss`, D112), is opaque to Z3:
+        // it knows nothing about its values, which can only prove less.
+        if ti.ctors.is_empty() || self.computed_fields(id) {
             let name = format!("{}.{}", ti.module, ti.name);
             self.sorts.insert(name.clone(), sargs.len());
             return Ok(Sort::Unin(name, sargs));
@@ -504,6 +510,39 @@ impl<'a> Builder<'a> {
             self.datatype_decl(id)?;
         }
         Ok(Sort::Data(id, sargs))
+    }
+
+    /// Does a constructor of `id` have a field whose type can't be a sort?
+    fn computed_fields(&mut self, id: TyId) -> bool {
+        if let Some(r) = self.computed.get(&id) {
+            return *r;
+        }
+        // Assume not while looking, for recursive types.
+        self.computed.insert(id, false);
+        let env = self.decl_env(id);
+        let saved = (self.sorts.clone(), self.datatypes.clone(), self.tuples.clone());
+        let mut r = false;
+        for c in self.e.g.tys[id.0 as usize].ctors.clone() {
+            let fields = self.e.g.cons[c.0 as usize].fields.clone();
+            let mut env = env.clone();
+            for f in &fields {
+                if self.is_type(&f.3) {
+                    env.push(Ent::Ty(Sort::Unin("field".into(), vec![])));
+                    continue;
+                }
+                match self.sort_of(&env, &f.3) {
+                    Ok(s) => env.push(Ent::Term(String::new(), s)),
+                    Err(_) => {
+                        r = true;
+                        break;
+                    }
+                }
+            }
+        }
+        // Looking may have registered sorts; keep only what the query needs.
+        (self.sorts, self.datatypes, self.tuples) = saved;
+        self.computed.insert(id, r);
+        r
     }
 
     /// The parameter environment of a datatype declaration: type parameters

@@ -1,0 +1,7 @@
+-- stdout
+b"line 1\n" 0
+b"line 2\n" 0
+b"line 3\n" 0
+b"line 4\n" 0
+-- stderr
+-- exit 0

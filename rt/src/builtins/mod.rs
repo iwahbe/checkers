@@ -141,10 +141,11 @@ pub(crate) fn path(fs: W, p: &str) -> Result<PathBuf, W> {
 pub(crate) fn file_result(r: std::io::Result<std::fs::File>, write: bool) -> W {
     match r {
         Ok(f) => {
+            // Their system calls don't hold a behaviour's thread (D113).
             let st = if write {
-                FileState::Write(Box::new(std::io::BufWriter::new(f)))
+                FileState::Write(Box::new(std::io::BufWriter::with_capacity(1 << 16, crate::fiber::BlockingWrite(f))))
             } else {
-                FileState::Read(Box::new(std::io::BufReader::new(f)))
+                FileState::Read(Box::new(std::io::BufReader::with_capacity(1 << 16, crate::fiber::BlockingRead(f))))
             };
             ok(new_file(st))
         }
@@ -174,12 +175,7 @@ pub(crate) fn reading<T>(w: W, f: impl FnOnce(&mut dyn std::io::BufRead) -> std:
     let mut g = file(w).lock().unwrap_or_else(|e| e.into_inner());
     match &mut *g {
         Some(FileState::Read(r)) => f(&mut **r),
-        Some(FileState::Stdin) => {
-            let mut io = crate::io::std_io();
-            // What was written so far comes before waiting for input.
-            let _ = io.out.flush();
-            f(&mut io.inp)
-        }
+        Some(FileState::Stdin) => crate::io::with_stdin(f),
         Some(_) => Err(misuse("this file is open for writing, not reading")),
         None => Err(misuse("this file is closed")),
     }
@@ -190,13 +186,13 @@ pub(crate) fn writing<T>(w: W, f: impl FnOnce(&mut dyn Write) -> std::io::Result
     let mut g = file(w).lock().unwrap_or_else(|e| e.into_inner());
     match &mut *g {
         Some(FileState::Write(wr)) => f(&mut **wr),
-        Some(FileState::Stdout) => {
-            let mut io = crate::io::std_io();
-            f(&mut io.out)
-        }
+        Some(FileState::Stdout) => f(&mut *crate::io::stdout()),
         Some(FileState::Stderr) => {
-            let mut io = crate::io::std_io();
-            let _ = io.out.flush();
+            let _out = {
+                let mut o = crate::io::stdout();
+                let _ = o.flush();
+                o
+            };
             f(&mut std::io::stderr())
         }
         Some(_) => Err(misuse("this file is open for reading, not writing")),

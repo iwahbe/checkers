@@ -12,5 +12,7 @@ publish = false
 crate-type = ["rlib", "staticlib"]
 
 [dependencies]
+# mmap and mprotect for behaviours' stacks, epoll and fcntl for the poller (M16, D113).
+libc = "0.2"
 num-bigint = "0.4"
 num-traits = "0.2"

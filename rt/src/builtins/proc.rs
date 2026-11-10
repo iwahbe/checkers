@@ -2,6 +2,8 @@
 
 #[allow(unused_imports)]
 use super::*;
+use crate::fiber::blocking;
+use crate::poll::PollFd;
 
 /// Each builtin: its standard-library name, symbol and function.
 pub const TABLE: &[Builtin] = &[
@@ -31,26 +33,32 @@ fn command(program: W, args: W) -> std::process::Command {
     c
 }
 
+// Waiting for a child doesn't hold a behaviour's thread (D113).
+
 builtin!(ckb_proc_exec, |a| {
-    let args: Vec<&str> = list_items(a[1]).into_iter().map(s).collect();
+    let mut c = command(a[0], a[1]);
     // Output written so far comes first.
     crate::io::flush();
-    match std::process::Command::new(s(a[0])).args(args).status() {
+    blocking(move || match c.status() {
         Ok(st) => ok(nat(code_of(st))),
         Err(e) => err(describe_io(&e)),
-    }
+    })
 });
 
 builtin!(ckb_proc_run, |a| {
+    let c = command(a[0], a[1]);
+    let input = b(a[2]).to_vec();
+    blocking(move || run_child(c, input))
+});
+
+fn run_child(mut c: std::process::Command, input: Vec<u8>) -> W {
     use std::process::Stdio;
-    let mut c = command(a[0], a[1]);
     c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = match c.spawn() {
         Ok(ch) => ch,
         Err(e) => return err(describe_io(&e)),
     };
     // The input is written on a thread of its own while the outputs are read.
-    let input = b(a[2]).to_vec();
     let mut pipe = child.stdin.take();
     let writer = std::thread::spawn(move || {
         if let Some(p) = pipe.as_mut() {
@@ -64,7 +72,7 @@ builtin!(ckb_proc_run, |a| {
         Ok(o) => ok(output(code_of(o.status), &o.stdout, &o.stderr)),
         Err(e) => err(describe_io(&e)),
     }
-});
+}
 
 builtin!(ckb_proc_spawn, |a| {
     use std::process::Stdio;
@@ -83,9 +91,10 @@ builtin!(ckb_proc_spawn, |a| {
         Ok(ch) => ch,
         Err(e) => return err(describe_io(&e)),
     };
-    let end_in = child.stdin.take().map(|p| new_file(FileState::Write(Box::new(std::io::BufWriter::new(p)))));
-    let end_out = child.stdout.take().map(|p| new_file(FileState::Read(Box::new(std::io::BufReader::new(p)))));
-    let end_err = child.stderr.take().map(|p| new_file(FileState::Read(Box::new(std::io::BufReader::new(p)))));
+    // Our ends of the pipes wait in the poller, not on a thread (D113).
+    let end_in = child.stdin.take().map(|p| new_file(FileState::Write(Box::new(std::io::BufWriter::new(PollFd::new(p.into()))))));
+    let end_out = child.stdout.take().map(|p| new_file(FileState::Read(Box::new(std::io::BufReader::new(PollFd::new(p.into()))))));
+    let end_err = child.stderr.take().map(|p| new_file(FileState::Read(Box::new(std::io::BufReader::new(PollFd::new(p.into()))))));
     let ch = new_obj(Obj::Child(Mutex::new(Some(child))));
     ok(spawned(ch, [end_in.unwrap_or(UNIT), end_out.unwrap_or(UNIT), end_err.unwrap_or(UNIT)]))
 });
@@ -96,10 +105,10 @@ builtin!(ckb_proc_wait, |a| {
         _ => bug("expected a child process"),
     };
     match child {
-        Some(mut ch) => match ch.wait() {
+        Some(mut ch) => blocking(move || match ch.wait() {
             Ok(st) => ok(nat(code_of(st))),
             Err(e) => err(describe_io(&e)),
-        },
+        }),
         None => err(io_err("this child was already waited for")),
     }
 });

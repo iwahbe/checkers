@@ -2,6 +2,7 @@
 
 #[allow(unused_imports)]
 use super::*;
+use crate::fiber::blocking;
 use std::io::Read;
 
 /// Each builtin: its standard-library name, symbol and function.
@@ -22,20 +23,25 @@ pub const TABLE: &[Builtin] = &[
     ("std.files.write_bytes", "ckb_files_write_bytes", ckb_files_write_bytes),
 ];
 
+// Calls on paths run without holding a behaviour's thread (D113).
+
 builtin!(ckb_files_read, |a| match path(a[1], s(a[0])) {
     Err(e) => err(e),
-    Ok(p) => match std::fs::read(p) {
+    Ok(p) => blocking(move || match std::fs::read(p) {
         Ok(bytes) => ok(new_bytes(&bytes)),
         Err(e) => err(describe_io(&e)),
-    },
+    }),
 });
 
 builtin!(ckb_files_write, |a| match path(a[2], s(a[0])) {
     Err(e) => err(e),
-    Ok(p) => match std::fs::write(p, b(a[1])) {
-        Ok(()) => ok(UNIT),
-        Err(e) => err(describe_io(&e)),
-    },
+    Ok(p) => {
+        let contents = b(a[1]).to_vec();
+        blocking(move || match std::fs::write(p, contents) {
+            Ok(()) => ok(UNIT),
+            Err(e) => err(describe_io(&e)),
+        })
+    }
 });
 
 builtin!(ckb_files_within, |a| match path(a[1], s(a[0])) {
@@ -54,12 +60,12 @@ builtin!(ckb_files_describe, |a| match obj(a[0]) {
 
 builtin!(ckb_files_open, |a| match path(a[1], s(a[0])) {
     Err(e) => err(e),
-    Ok(p) => file_result(std::fs::File::open(p), false),
+    Ok(p) => blocking(move || file_result(std::fs::File::open(p), false)),
 });
 
 builtin!(ckb_files_create, |a| match path(a[1], s(a[0])) {
     Err(e) => err(e),
-    Ok(p) => file_result(std::fs::File::create(p), true),
+    Ok(p) => blocking(move || file_result(std::fs::File::create(p), true)),
 });
 
 builtin!(ckb_files_close, |a| {
@@ -162,7 +168,7 @@ builtin!(ckb_files_write_bytes, |a| {
 
 builtin!(ckb_files_list, |a| match path(a[1], s(a[0])) {
     Err(e) => err(e),
-    Ok(p) => match std::fs::read_dir(p) {
+    Ok(p) => blocking(move || match std::fs::read_dir(p) {
         Err(e) => err(describe_io(&e)),
         Ok(rd) => {
             let mut es = Vec::new();
@@ -178,5 +184,5 @@ builtin!(ckb_files_list, |a| match path(a[1], s(a[0])) {
             es.sort();
             ok(list(es.into_iter().map(|(n, d)| entry(&n, d)).collect()))
         }
-    },
+    }),
 });

@@ -43,6 +43,9 @@ src/native/eval.rs   compile-time evaluation: `check` and staging, one in-memory
 src/native/mod.rs    `ckc run` (in memory), `ckc build` (link with libcheckers_rt.a)
 rt/src/              runtime crate checkers_rt: words and objects, format, I/O, lock-free scheduler (D77), entry
 rt/src/builtins/     the standard library's builtins, one file per module (§16.1)
+rt/src/fiber.rs      a stack per behaviour, the switch, parking, `blocking` (M16, D113, D117; Linux x86-64)
+rt/src/poll.rs       epoll: our ends of child pipes wait without a thread
+rt/src/blocking.rs   threads for calls that can't be polled
 src/verify/mod.rs    prover driver: in-process Z3, diagnostics, counterexamples, trust ledger (§7)
 src/verify/smt.rs    obligations → SMT-LIB: sorts, datatypes, reflected functions, postconditions
 stdlib/*.ck          standard library, the package `std` (`stdlib/json.ck` is `std.json`)
@@ -53,6 +56,7 @@ tools/ck/packages.ck dependencies: path and git, minimal version selection, lock
 tools/ck/syntax.ck   the formatter's lexer and layout pass: lines, logical lines, blocks (D93, D99)
 tools/ck/format.ck   the formatter: spacing, indentation, alignment, blank lines, comments (D91, D92)
 tests/packages.rs    packages end to end with local git repositories (M14)
+tests/parking.rs     waiting behaviours hold no thread, at several thread counts (M16)
 tests/std.rs         standard library on disk: `CHECKERS_STD`, edits without rebuilding, E0223/E0361, §16.3 lists every builtin
 tests/golden.rs      golden test runner (tests/parse, check, types, stage, run, stress, fmt, tool; examples; tools; repository formatting)
 ```

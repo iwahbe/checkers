@@ -8,12 +8,15 @@
 
 pub mod apply;
 pub mod behav;
+pub mod blocking;
 pub mod builtins;
 pub mod entry;
+pub mod fiber;
 pub mod io;
 pub mod num;
 pub mod obj;
 pub mod ops;
+pub mod poll;
 pub mod prog;
 pub mod sched;
 pub mod word;

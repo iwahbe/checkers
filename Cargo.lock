@@ -78,6 +78,7 @@ dependencies = [
 name = "checkers_rt"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "num-bigint",
  "num-traits",
 ]

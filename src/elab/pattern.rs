@@ -316,10 +316,25 @@ impl Elab {
                 Frame::Ctor(_, fs) | Frame::Tuple(fs) => occs.extend(fs.iter().copied()),
             }
         }
+        // A part of a value bound whole (`other` in a later arm) isn't dropped.
+        let parent = |o: usize| {
+            self.pm.frames.iter().find_map(|(p, f)| match f {
+                Frame::Ctor(_, fs) | Frame::Tuple(fs) => fs.contains(&o).then_some(*p),
+            })
+        };
+        let bound = |o: usize| row.binds.iter().any(|(_, x, _)| *x == o);
+        let within_bound = |mut o: usize| loop {
+            if bound(o) {
+                return true;
+            }
+            match parent(o) {
+                Some(p) => o = p,
+                None => return false,
+            }
+        };
         for o in occs {
             let taken_apart = self.pm.frames.iter().any(|(x, _)| *x == o);
-            let bound = row.binds.iter().any(|(_, x, _)| *x == o);
-            if !taken_apart && !bound && o < cx.locals.len() {
+            if !taken_apart && !within_bound(o) && o < cx.locals.len() {
                 let ty = cx.locals[o].ty.clone();
                 if self.val_linear(&ty) {
                     if !self.pm.dropped.contains(&row.span) {
