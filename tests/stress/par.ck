@@ -3,9 +3,9 @@ module par_stress
 # `par` inside a deep recursion: more parallel components than threads.
 # The result is the sequential one.
 
-import system (System, ExitCode)
-import future (Future)
-import terminal (Term)
+import std.system (System, ExitCode)
+import std.future (Future)
+import std.terminal (Term)
 
 fn fib n -> r : n~Nat, r~Nat
     decreasing n

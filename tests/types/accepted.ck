@@ -2,7 +2,7 @@ module accepted
 
 # Everything in this file must type-check with no diagnostics.
 
-import list (map, length, reverse)
+import std.list (map, length, reverse)
 
 enum Shape
     Circle r : r~Nat

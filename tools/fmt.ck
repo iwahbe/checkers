@@ -3,11 +3,11 @@
 
 module fmt
 
-import system (ExitCode)
-import terminal (Term)
-import files (Fs, Entry)
-import string
-import bytes
+import std.system (ExitCode)
+import std.terminal (Term)
+import std.files (Fs, Entry)
+import std.string
+import std.bytes
 import ck.format as formatter
 import ck.syntax (SyntaxError)
 

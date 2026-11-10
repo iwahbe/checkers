@@ -9,7 +9,7 @@
 
 module sort
 
-import list (sorted, perm)
+import std.list (sorted, perm)
 
 # The first element, or `d` for an empty list.
 fn first_or d xs -> r : d~Int, xs~List Int, r~Int

@@ -127,7 +127,7 @@ impl<'p, M: Module> Gen<'p, M> {
             }
             rt.insert(*name, m.declare_function(name, Linkage::Import, &s).expect("declare a runtime function"));
         }
-        for (_, sym) in checkers_rt::builtins::NAMES {
+        for (_, sym, _) in checkers_rt::builtins::all() {
             if !rt.contains_key(sym) {
                 let mut s = Signature::new(call_conv);
                 s.params.push(AbiParam::new(I64));

@@ -1,6 +1,6 @@
 module usage
 
-import files (File)
+import std.files (File)
 
 fn twice f : f~File
     files.close f

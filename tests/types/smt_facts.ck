@@ -4,7 +4,7 @@ module smt_facts
 # the range of a byte, and record invariants that mention the record's
 # value parameters.
 
-import cursor (Parsed)
+import std.cursor (Parsed)
 
 fn small b -> r : b~U8, r~Bool, r
     b < 256                                 # U8's predicate

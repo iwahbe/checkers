@@ -1,6 +1,6 @@
 # files.ck — the file system. `Fs` is an authority (copied on use); an open
 # `File` is a resource (used exactly once, closed explicitly). SPEC §8.3–8.4.
-module files
+module std.files
 
 export abstract enum Fs
 export abstract enum File

@@ -2,23 +2,22 @@ error[E0220]: unknown module `nothing_here`
  --> modules.ck:3:8
   |
 3 | import nothing_here
-  |        ^^^^^^^^^^^^ no standard library module `nothing_here`, and no file `nothing_here.ck` beside this program
-  = help: the standard library modules are: prelude, list, bag, system, terminal, files, cown, future, bytes, string, char, utf8, decimal, cursor
+  |        ^^^^^^^^^^^^ no file `nothing_here.ck` beside this program
 
-error[E0221]: module `list` has no export named `no_such_thing`
- --> modules.ck:4:14
+error[E0221]: module `std.list` has no export named `no_such_thing`
+ --> modules.ck:4:18
   |
-4 | import list (no_such_thing)
-  |              ^^^^^^^^^^^^^
+4 | import std.list (no_such_thing)
+  |                  ^^^^^^^^^^^^^
 
 error[E0204]: unknown name `string`
  --> modules.ck:7:5
   |
 7 |     string.from_chars []
   |     ^^^^^^
-  = help: `string` is a standard library module; add `import string`
+  = help: `string` is a standard library module; add `import std.string`
 
-error[E0206]: module `list` has no export named `nope`
+error[E0206]: module `std.list` has no export named `nope`
   --> modules.ck:10:10
    |
 10 |     list.nope

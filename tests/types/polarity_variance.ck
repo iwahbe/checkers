@@ -2,7 +2,7 @@ module polarity_variance
 
 # D16 marks give D71 variance: `+` covariant, `-` contravariant, unmarked invariant.
 
-import future (Future)
+import std.future (Future)
 
 type Small = n~Nat, n < 10
 

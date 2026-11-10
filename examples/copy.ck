@@ -4,9 +4,9 @@
 
 module copy
 
-import system (System, ExitCode)
-import terminal (Term)
-import files (Fs, File, IoError)
+import std.system (System, ExitCode)
+import std.terminal (Term)
+import std.files (Fs, File, IoError)
 
 # `partial` because it calls `copy_lines`, which reads until end of file.
 export partial fn main args sys -> code : args~List String, sys~System, code~ExitCode

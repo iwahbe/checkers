@@ -4,10 +4,10 @@ module tree
 # node a `join` of its two halves. The result does not depend on which
 # worker runs what.
 
-import system (System, ExitCode)
-import cown (Sched)
-import future (Future)
-import terminal (Term)
+import std.system (System, ExitCode)
+import std.cown (Sched)
+import std.future (Future)
+import std.terminal (Term)
 
 fn sum lo n sched -> f : lo~Nat, n~Nat, sched~Sched, f~Future Nat
     decreasing n

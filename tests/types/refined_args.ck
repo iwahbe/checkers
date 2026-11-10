@@ -3,7 +3,7 @@ module refined_args
 # D71: refinements inside type arguments are checked.
 # Expected: an error on each line marked `error`, none elsewhere.
 
-import list
+import std.list
 
 type Small = n~Nat, n < 10
 

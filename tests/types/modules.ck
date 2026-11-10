@@ -1,7 +1,7 @@
 module modules
 
 import nothing_here
-import list (no_such_thing)
+import std.list (no_such_thing)
 
 fn uses_unimported -> s : s~String
     string.from_chars []

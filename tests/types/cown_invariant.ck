@@ -4,8 +4,8 @@ module cown_invariant
 # included (§8.5): the invariant is a fact there, and must hold again on
 # the way out.
 
-import system (System, ExitCode)
-import cown (Cown, Sched)
+import std.system (System, ExitCode)
+import std.cown (Cown, Sched)
 
 type Small = n~Nat, n < 10
 

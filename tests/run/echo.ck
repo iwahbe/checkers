@@ -2,8 +2,8 @@ module echo
 
 # Number the lines of standard input; `partial` because input may not end.
 
-import system (System, ExitCode)
-import terminal (Term)
+import std.system (System, ExitCode)
+import std.terminal (Term)
 
 partial fn number n term : n~Nat, term~Term
     match terminal.read_line term

@@ -4,7 +4,7 @@ module fuel_alias
 # `Failure 1` was rejected: "a number literal needs numbers, but this is
 # `U8`". Expected: no error. Unfolding a type alias costs no fuel.
 
-import system (System, ExitCode)
+import std.system (System, ExitCode)
 
 fn sum_to n acc -> r : n~Nat, acc~Nat, r~Nat
     decreasing n

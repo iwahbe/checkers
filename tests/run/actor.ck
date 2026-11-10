@@ -2,10 +2,10 @@ module actor_demo
 
 # An account actor whose balance never goes negative; messages run in order.
 
-import system (System, ExitCode)
-import actor (Actor)
-import future (Future)
-import terminal (Term)
+import std.system (System, ExitCode)
+import std.actor (Actor)
+import std.future (Future)
+import std.terminal (Term)
 
 type Balance = n~Nat
 

@@ -5,7 +5,7 @@ module refined_fn_types
 # The E0262 case is in refined_fn_gain.ck (no proving once a file has a
 # type error).
 
-import list
+import std.list
 
 type Big = n~Int, n >= 5
 

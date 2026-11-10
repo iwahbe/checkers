@@ -8,9 +8,9 @@
 
 module wc
 
-import system (System, ExitCode)
-import terminal (Term)
-import files (Fs)
+import std.system (System, ExitCode)
+import std.terminal (Term)
+import std.files (Fs)
 
 record Counts
     lines~Nat

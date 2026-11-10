@@ -4,9 +4,9 @@
 
 module ck.syntax
 
-import bytes
-import list (reverse)
-import list
+import std.bytes
+import std.list (reverse)
+import std.list
 
 # ── Tokens ───────────────────────────────────────────────────────────────────
 

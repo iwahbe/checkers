@@ -1,6 +1,6 @@
 # bag.ck — finite multisets of integers (D47). The prover sees a `Bag` as an
 # array from values to counts, so facts about permutations need no quantifiers.
-module bag
+module std.bag
 
 export abstract enum Bag
 

@@ -1,10 +1,10 @@
 module strings
 
-import system (System, ExitCode)
-import terminal
-import string
-import utf8
-import char
+import std.system (System, ExitCode)
+import std.terminal
+import std.string
+import std.utf8
+import std.char
 
 fn shout c -> s : c~Char, s~String
     if c == '!' then "!!!" else string.from_char c

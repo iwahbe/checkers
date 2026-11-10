@@ -3,7 +3,7 @@ module higher_order
 # The prover specializes a function that takes a function argument when the
 # argument is known: a top-level function or a lambda without free variables.
 
-import list (map, length)
+import std.list (map, length)
 
 fn double x -> y : x~Int, y~Int
     2 * x

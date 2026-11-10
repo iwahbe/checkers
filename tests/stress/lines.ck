@@ -4,10 +4,10 @@ module lines
 # come in any order, but a `terminal` call is atomic (D68): no line is ever
 # split by another.
 
-import system (System, ExitCode)
-import cown (Cown, Sched)
-import future (Future)
-import terminal (Term)
+import std.system (System, ExitCode)
+import std.cown (Cown, Sched)
+import std.future (Future)
+import std.terminal (Term)
 
 fn rep k s -> r : k~Nat, s~String, r~String
     decreasing k

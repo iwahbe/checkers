@@ -56,6 +56,13 @@ fn cli(args: &[String]) -> u8 {
         .map(|(_, a)| a.clone())
         .collect();
     let args = &args[..];
+    let needs_std = !matches!(args.first().map(String::as_str), None | Some("--version" | "--help" | "-h"));
+    if needs_std {
+        if let Err(e) = checkers::elab::stdlib::dir() {
+            eprintln!("{e}");
+            return 2;
+        }
+    }
     let code = match args.first().map(String::as_str) {
         Some("run") => return run(&args[1..]),
         Some("build") => return build(&args[1..]),

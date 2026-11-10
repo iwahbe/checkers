@@ -141,13 +141,52 @@ fn stage_module(c: &mut Checked, e: &elab::Elab, user: &str) {
         c.staged += &stage::show_def(&e.g, name, t, &names);
         c.staged += "\n";
     }
+    trusted_builtins(c, e, user, &staged);
+}
+
+/// Add the builtins the program relies on to the trust ledger: those reachable
+/// from `main`, or from every function of the program if it has none (§16.3).
+fn trusted_builtins(c: &mut Checked, e: &elab::Elab, user: &str, staged: &stage::Staged) {
+    let mut progs = e.user_modules.clone();
+    progs.push(user.to_string());
+    let main = e.g.defs.iter().position(|d| *d.module == *user && &*d.name == "main");
+    let roots: Vec<u32> = match main {
+        Some(m) => vec![m as u32],
+        None => (0..e.g.defs.len() as u32)
+            .filter(|d| progs.iter().any(|m| **m == *e.g.defs[*d as usize].module) && e.fn_meta.contains_key(&core::DefId(*d)))
+            .collect(),
+    };
+    let mut p = native::lower::Program::new(&e.g, Some(staged));
+    native::lower::Lowerer::new(&e.g, Some(staged), &mut p).add_defs(&roots);
+    let mut lines: Vec<(String, String)> = Vec::new();
+    for (d, shape) in &p.defs {
+        if !matches!(shape, native::lower::DefShape::Builtin { .. }) {
+            continue;
+        }
+        let info = &e.g.defs[*d as usize];
+        let at = match (e.sources.get(&*info.module), e.fn_meta.get(&core::DefId(*d))) {
+            (Some(f), Some(m)) => {
+                let (line, col) = f.line_col(m.span.start);
+                format!("{}:{line}:{col}", f.name)
+            }
+            _ => info.module.to_string(),
+        };
+        let full = format!("{}.{}", info.module, info.name);
+        lines.push((full.clone(), format!("{at}  {:<8} {full}\n", "builtin")));
+    }
+    lines.sort();
+    let text: String = lines.into_iter().map(|l| l.1).collect();
+    // Before the solver line.
+    let k = c.ledger.find("solver: ").unwrap_or(c.ledger.len());
+    c.ledger.insert_str(k, &text);
 }
 
 /// Check and prove the standard library itself (its lemmas and postconditions).
 /// Returns the rendered errors; empty when it all verifies.
 pub fn check_stdlib() -> String {
     let mut e = elab::Elab::new();
-    for (m, _) in elab::stdlib::MODULES {
+    let modules = elab::stdlib::modules();
+    for m in &modules {
         e.load_stdlib(m);
     }
     let mut out = String::new();
@@ -159,19 +198,28 @@ pub fn check_stdlib() -> String {
     if !out.is_empty() {
         return out;
     }
-    for (m, _) in elab::stdlib::MODULES {
+    for m in &modules {
         let v = verify::verify(&e, m);
-        if let Some(f) = e.sources.get(*m) {
+        if let Some(f) = e.sources.get(m) {
             out += &diag::render_all(f, &v.diags);
         }
     }
     out
 }
 
-/// The modules whose code is checked: imported program modules, then this one.
+/// The modules whose code is checked: the standard-library modules the
+/// program loads (D109), imported program modules, then this one.
 fn program_modules(e: &elab::Elab, user: &str) -> Vec<String> {
-    let mut v = e.user_modules.clone();
+    let mut v = std_modules(e);
+    v.extend(e.user_modules.iter().cloned());
     v.push(user.to_string());
+    v
+}
+
+/// The standard-library modules loaded, sorted.
+fn std_modules(e: &elab::Elab) -> Vec<String> {
+    let mut v: Vec<String> = e.modules.keys().filter(|m| m.starts_with("std.")).cloned().collect();
+    v.sort();
     v
 }
 
@@ -179,7 +227,8 @@ fn program_modules(e: &elab::Elab, user: &str) -> Vec<String> {
 fn route(c: &mut Checked, e: &elab::Elab, user: &str, m: &str, d: Diagnostic) {
     if m == user {
         c.diags.push(d);
-    } else if e.user_modules.iter().any(|u| u == m) {
+    } else if e.sources.contains_key(m) {
+        // Imported program modules and standard-library modules alike (D104).
         match c.others.iter_mut().find(|o| o.0 == m) {
             Some(o) => o.2.push(d),
             None => {
@@ -188,11 +237,7 @@ fn route(c: &mut Checked, e: &elab::Elab, user: &str, m: &str, d: Diagnostic) {
             }
         }
     } else {
-        let rendered = match e.sources.get(m) {
-            Some(f) => d.render(f),
-            None => format!("{}: {}\n", m, d.message),
-        };
-        c.internal.push(format!("internal error (standard library module `{m}`):\n{rendered}"));
+        c.internal.push(format!("internal error (module `{m}`, which has no source): {}\n", d.message));
     }
 }
 
@@ -205,11 +250,14 @@ fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
     let (mut asked, mut reused) = (0, 0);
     for m in program_modules(e, user) {
         let v = verify::verify(e, &m);
-        c.proved += v.proved;
+        let from_std = m.starts_with("std.");
+        if !from_std {
+            c.proved += v.proved;
+        }
         asked += v.asked;
         reused += v.reused;
         if let Some(f) = e.sources.get(&m) {
-            ledger += &verify::ledger_text(f, &v);
+            ledger += &if from_std { verify::ledger_summary(f, &v) } else { verify::ledger_text(f, &v) };
         }
         for d in v.diags {
             route(c, e, user, &m, d);

@@ -2,8 +2,8 @@ module arith
 
 # Arbitrary-precision numbers (D6) and Euclidean division (§13.2).
 
-import system (System, ExitCode)
-import terminal (Term)
+import std.system (System, ExitCode)
+import std.terminal (Term)
 
 fn pow b e -> r : b~Int, e~Nat, r~Int
     decreasing e

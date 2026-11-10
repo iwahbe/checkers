@@ -1,0 +1,4 @@
+-- stdout
+-- stderr
+<stdin>:2:2: the key "a" twice
+-- exit 1

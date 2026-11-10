@@ -105,9 +105,9 @@ impl Elab {
     // ── imports ─────────────────────────────────────────────────────────────
 
     fn imports(&mut self, m: &ast::Module, name: &str) {
-        if name != "prelude" {
-            self.load_stdlib("prelude");
-            let p = &self.modules["prelude"];
+        if name != "std.prelude" {
+            self.load_stdlib("std.prelude");
+            let p = &self.modules["std.prelude"];
             let ts: Vec<(String, Sym)> =
                 p.exported_types.iter().map(|n| (n.clone(), p.types[n])).collect();
             let vs: Vec<(String, Sym)> =
@@ -119,22 +119,46 @@ impl Elab {
         for imp in &m.imports {
             let path = imp.path.dotted();
             self.cur = name.to_string();
-            let found = self.modules.contains_key(&path) || self.load_stdlib(&path) || self.load_user(&path, imp.path.span);
+            // The first component says where a module comes from (D105).
+            let from_std = path.starts_with("std.");
+            let found = self.modules.contains_key(&path)
+                || if from_std { self.load_stdlib(&path) } else { self.load_user(&path, imp.path.span) };
             self.cur = name.to_string();
             if !found {
-                let file = format!("{}.ck", path.replace('.', "/"));
-                self.err(
+                let d = if from_std {
+                    let all: Vec<String> = super::stdlib::modules();
                     Diagnostic::error("E0220", format!("unknown module `{path}`"), imp.path.span)
-                        .with_label(format!("no standard library module `{path}`, and no file `{file}` beside this program"))
-                        .with_help("the standard library modules are: prelude, list, bag, system, terminal, files, cown, future, bytes, string, char, utf8, decimal, cursor"),
-                );
+                        .with_label("no such standard library module")
+                        .with_help(format!("the standard library modules are: {}", all.join(", ")))
+                } else {
+                    let file = format!("{}.ck", path.replace('.', "/"));
+                    let d = Diagnostic::error("E0220", format!("unknown module `{path}`"), imp.path.span)
+                        .with_label(format!("no file `{file}` beside this program"));
+                    if super::stdlib::source(&format!("std.{path}")).is_some() {
+                        d.with_help(format!("the standard library's modules are under `std`: `import std.{path}`"))
+                    } else {
+                        d
+                    }
+                };
+                self.err(d);
                 continue;
             }
             if self.loading.contains(&path) && path != name {
                 self.err(Diagnostic::error("E0222", format!("module `{path}` imports itself (import cycle)"), imp.path.span));
                 continue;
             }
-            let qual = imp.alias.as_ref().map(|a| a.name.clone()).unwrap_or_else(|| path.clone());
+            // Referred to by its last component, unless renamed (D105).
+            let last = path.rsplit('.').next().unwrap_or(&path).to_string();
+            let qual = imp.alias.as_ref().map(|a| a.name.clone()).unwrap_or(last);
+            let taken = self.modules[name].qualifiers.get(&qual).filter(|p| **p != path).cloned();
+            if let Some(other) = taken {
+                self.err(
+                    Diagnostic::error("E0226", format!("two imports are both called `{qual}`"), imp.path.span)
+                        .with_label(format!("`{qual}` already names `{other}`"))
+                        .with_help(format!("rename one: `import {path} as {qual}_2`, with a name of your choice")),
+                );
+                continue;
+            }
             self.modules.get_mut(name).unwrap().qualifiers.insert(qual, path.clone());
             if let Some(items) = &imp.items {
                 for it in items {
@@ -304,8 +328,8 @@ impl Elab {
             };
             ids.push(id);
         }
-        if self.cur == "prelude" {
-            let me = self.modules.get_mut("prelude").unwrap();
+        if self.cur == "std.prelude" {
+            let me = self.modules.get_mut("std.prelude").unwrap();
             for (n, s) in [("len", Sym::Len), ("format", Sym::Format)] {
                 me.values.insert(n.into(), s);
                 me.exported_values.insert(n.into());
@@ -318,33 +342,33 @@ impl Elab {
         let wk = &mut self.g.well_known;
         let ctors = self.g.tys[tid.0 as usize].ctors.clone();
         match (self.cur.as_str(), name) {
-            ("prelude", "Bool") => {
+            ("std.prelude", "Bool") => {
                 wk.bool_ty = Some(tid);
                 wk.false_con = ctors.first().copied();
                 wk.true_con = ctors.get(1).copied();
             }
-            ("prelude", "Nat") => wk.nat = Some(tid),
-            ("prelude", "Int") => wk.int = Some(tid),
-            ("prelude", "String") => wk.string = Some(tid),
-            ("prelude", "Bytes") => wk.bytes = Some(tid),
-            ("prelude", "List") => {
+            ("std.prelude", "Nat") => wk.nat = Some(tid),
+            ("std.prelude", "Int") => wk.int = Some(tid),
+            ("std.prelude", "String") => wk.string = Some(tid),
+            ("std.prelude", "Bytes") => wk.bytes = Some(tid),
+            ("std.prelude", "List") => {
                 wk.list = Some(tid);
                 wk.nil = ctors.first().copied();
                 wk.cons = ctors.get(1).copied();
             }
-            ("prelude", "Option") => {
+            ("std.prelude", "Option") => {
                 wk.option = Some(tid);
                 wk.none = ctors.first().copied();
                 wk.some = ctors.get(1).copied();
             }
-            ("prelude", "Result") => {
+            ("std.prelude", "Result") => {
                 wk.result = Some(tid);
                 wk.ok = ctors.first().copied();
                 wk.err = ctors.get(1).copied();
             }
-            ("future", "Future") => wk.future = Some(tid),
-            ("cown", "Cown") => wk.cown = Some(tid),
-            ("cown", "Sched") => wk.sched = Some(tid),
+            ("std.future", "Future") => wk.future = Some(tid),
+            ("std.cown", "Cown") => wk.cown = Some(tid),
+            ("std.cown", "Sched") => wk.sched = Some(tid),
             _ => {}
         }
     }
@@ -1056,6 +1080,20 @@ impl Elab {
                             "`__builtin` bodies are only allowed in the standard library",
                             body.result.span,
                         ));
+                    } else if builtin && checkers_rt::builtins::symbol(&format!("{}.{}", self.cur, name.name)).is_none() {
+                        self.err(
+                            Diagnostic::error(
+                                "E0361",
+                                format!("the runtime has no builtin `{}.{}`", self.cur, name.name),
+                                body.result.span,
+                            )
+                            .with_label("no implementation in this `ckc`")
+                            .with_help(format!(
+                                "add it to `rt/src/builtins/{}.rs`, or give `{}` a body in Checkers",
+                                self.cur.trim_start_matches("std.").replace('.', "/"),
+                                name.name
+                            )),
+                        );
                     }
                     self.fn_meta.insert(
                         *did,

@@ -4,12 +4,12 @@ module chain
 # next one, 500 deep, and the last prints the trail, while 4 more actors count in parallel. Messages to
 # one actor run in the order sent, so the trail is the same every time.
 
-import system (System, ExitCode)
-import actor (Actor)
-import future (Future)
-import terminal (Term)
-import cown (Sched)
-import list
+import std.system (System, ExitCode)
+import std.actor (Actor)
+import std.future (Future)
+import std.terminal (Term)
+import std.cown (Sched)
+import std.list
 
 fn step term k a sched x -> y : term~Term, k~Nat, a~Actor (List Nat), sched~Sched, x~List Nat, y~List Nat
     decreasing k

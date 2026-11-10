@@ -392,7 +392,7 @@ impl<'a> Builder<'a> {
 
     fn is_bag(&self, t: TyId) -> bool {
         let ti = &self.e.g.tys[t.0 as usize];
-        &*ti.module == "bag" && &*ti.name == "Bag"
+        &*ti.module == "std.bag" && &*ti.name == "Bag"
     }
 
     /// The sort a type term denotes, in `env`.
@@ -1277,16 +1277,16 @@ impl<'a> Builder<'a> {
         let rs = self.sort_of(&inner, &t)?;
         // Builtins with a meaning in the solver.
         match qualified.as_str() {
-            "bag.of" => {
+            "std.bag.of" => {
                 self.ensure_bag_of()?;
                 return Ok((format!("(|bag.of| {})", vals.join(" ")), Sort::Bag));
             }
-            "bag.count" => return Ok((format!("(select {} {})", vals[1], vals[0]), Sort::Int)),
-            "bag.sum" => return Ok((format!("((_ map (+ (Int Int) Int)) {} {})", vals[0], vals[1]), Sort::Bag)),
+            "std.bag.count" => return Ok((format!("(select {} {})", vals[1], vals[0]), Sort::Int)),
+            "std.bag.sum" => return Ok((format!("((_ map (+ (Int Int) Int)) {} {})", vals[0], vals[1]), Sort::Bag)),
             // A string is already its UTF-8 bytes.
-            "utf8.encode" | "string.bytes" => return Ok((vals[0].clone(), Sort::Bytes)),
+            "std.utf8.encode" | "std.string.bytes" => return Ok((vals[0].clone(), Sort::Bytes)),
             // `word` occurs in `src` at `i` (the Rust primitive, exactly).
-            "bytes.matches_at" => {
+            "std.bytes.matches_at" => {
                 let (src, i, w) = (&vals[0], &vals[1], &vals[2]);
                 return Ok((
                     format!("(and (<= (+ {i} (seq.len {w})) (seq.len {src})) (= (seq.extract {src} {i} (seq.len {w})) {w}))"),

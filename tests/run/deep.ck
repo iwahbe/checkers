@@ -2,9 +2,9 @@ module deep
 
 # Non-tail recursion nests (big stack); tail recursion runs in constant space.
 
-import system (System, ExitCode)
-import terminal
-import list (map, length)
+import std.system (System, ExitCode)
+import std.terminal
+import std.list (map, length)
 
 fn upto n -> xs : n~Nat, xs~List Nat
     decreasing n

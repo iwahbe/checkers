@@ -1,5 +1,5 @@
 # string.ck — UTF-8 strings (D20).
-module string
+module std.string
 
 export fn from_chars cs -> s : cs~List Char, s~String
     __builtin

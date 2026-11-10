@@ -41,18 +41,18 @@ pub(crate) fn descriptor(g: &Globals, p: &lower::Program) -> String {
         ("err", wk.err.map(|c| c.0)),
         ("nil", wk.nil.map(|c| c.0)),
         ("cons", wk.cons.map(|c| c.0)),
-        ("parsed", find("cursor", "Parsed")),
-        ("system", find("system", "System")),
-        ("success", find("system", "Success")),
-        ("failure", find("system", "Failure")),
-        ("entry", find("files", "Entry")),
+        ("parsed", find("std.cursor", "Parsed")),
+        ("system", find("std.system", "System")),
+        ("success", find("std.system", "Success")),
+        ("failure", find("std.system", "Failure")),
+        ("entry", find("std.files", "Entry")),
     ];
     for (k, v) in known {
         if let Some(v) = v {
             d += &format!("known {k} {v}\n");
         }
     }
-    if let Some(s) = find("system", "System") {
+    if let Some(s) = find("std.system", "System") {
         for f in &g.cons[s as usize].fields {
             d += &format!("system {}\n", f.0);
         }

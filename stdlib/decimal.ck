@@ -1,8 +1,8 @@
 # decimal.ck — exact decimal numbers.
-module decimal
+module std.decimal
 
-import cursor (Parsed)
-import utf8
+import std.cursor (Parsed)
+import std.utf8
 
 export abstract enum Decimal
 

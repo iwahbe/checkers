@@ -1,5 +1,5 @@
 # prelude.ck — imported into every module.
-module prelude
+module std.prelude
 
 # Built-in types; their values come from literals and primitives.
 export abstract enum Nat

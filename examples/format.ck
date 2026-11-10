@@ -9,11 +9,11 @@
 
 module format
 
-import system (System, ExitCode)
-import terminal (Term)
-import list (reverse)
-import char
-import string
+import std.system (System, ExitCode)
+import std.terminal (Term)
+import std.list (reverse)
+import std.char
+import std.string
 
 # A format string, taken apart: `{}` takes a String, `{n}` an Int.
 export enum Piece

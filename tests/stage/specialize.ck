@@ -3,9 +3,9 @@ module specialize
 # A compile-time function that recurses on runtime values becomes one
 # runtime function per set of compile-time arguments (SPEC §8.9, D64).
 
-import system (System, ExitCode)
-import terminal (Term)
-import string
+import std.system (System, ExitCode)
+import std.terminal (Term)
+import std.string
 
 fn count c src i -> n : c~comptime Nat, src~Bytes, i~Nat, i <= len src, n~Nat
     decreasing len src - i

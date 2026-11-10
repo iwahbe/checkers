@@ -1,7 +1,7 @@
 module partial_pre
 
-import string
-import list
+import std.string
+import std.list
 
 # A function with a precondition can be partially applied (D86): `mid 0`
 # has the type `(b~Nat -> m~Nat, 0 <= b)`, checked where it is passed (D85).

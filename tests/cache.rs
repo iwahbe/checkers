@@ -24,6 +24,18 @@ fn cache_line(ledger: &str) -> Option<String> {
     ledger.lines().find(|l| l.starts_with("cache: ")).map(str::to_string)
 }
 
+/// Answers reused, out of answers asked for.
+fn counts(ledger: &str) -> (usize, usize) {
+    match cache_line(ledger) {
+        None => (0, 0),
+        Some(line) => {
+            let nums: Vec<usize> = line.split_whitespace().filter_map(|w| w.parse().ok()).collect();
+            assert_eq!(nums.len(), 2, "{line}");
+            (nums[0], nums[1])
+        }
+    }
+}
+
 /// The ledger without its cache line: the same, cached or not.
 fn proofs(ledger: &str) -> String {
     ledger.lines().filter(|l| !l.starts_with("cache: ")).map(|l| format!("{l}\n")).collect()
@@ -33,12 +45,13 @@ fn proofs(ledger: &str) -> String {
 fn second_check_reuses_answers() {
     let dir = scratch("reuse");
     let first = ckc(&dir, &["trust", "sort.ck"]);
-    assert_eq!(cache_line(&first), None, "nothing cached yet:\n{first}");
+    // Only a query asked twice in one run (the same text, so the same answer) is reused.
+    let (reused, asked) = counts(&first);
+    assert!(reused * 2 < asked, "nothing cached yet:\n{first}");
     let second = ckc(&dir, &["trust", "sort.ck"]);
-    let line = cache_line(&second).expect("a cache line");
-    let nums: Vec<&str> = line.split_whitespace().filter(|w| w.parse::<usize>().is_ok()).collect();
-    assert_eq!(nums.len(), 2, "{line}");
-    assert_eq!(nums[0], nums[1], "every answer reused: {line}");
+    let (reused, asked) = counts(&second);
+    assert!(asked > 0, "a cache line:\n{second}");
+    assert_eq!(reused, asked, "every answer reused:\n{second}");
     assert_eq!(proofs(&first), proofs(&second));
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -56,7 +69,8 @@ fn mismatched_entry_is_ignored() {
         std::fs::write(&p, format!("{header}\n{changed}")).unwrap();
     }
     let again = ckc(&dir, &["trust", "sort.ck"]);
-    assert_eq!(cache_line(&again), None, "no entry matches:\n{again}");
+    // No stored entry matches: only what the first run itself reused is reused.
+    assert_eq!(counts(&again).0, counts(&first).0, "no entry matches:\n{again}");
     assert_eq!(proofs(&first), proofs(&again));
     let _ = std::fs::remove_dir_all(&dir);
 }

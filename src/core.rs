@@ -450,7 +450,7 @@ fn is_type_former(ty: &Tm) -> bool {
 fn builtin_value(g: &Globals, info: &DefInfo, sp: &[Elim]) -> Option<Val> {
     let q = format!("{}.{}", info.module, info.name);
     match (q.as_str(), sp) {
-        ("string.bytes" | "utf8.encode", [Elim::App(a, _)]) => match force(g, a.clone()) {
+        ("std.string.bytes" | "std.utf8.encode", [Elim::App(a, _)]) => match force(g, a.clone()) {
             Val::Lit(Lit::Str(s)) => Some(Val::Lit(Lit::Bytes(Rc::from(s.as_bytes())))),
             _ => None,
         },

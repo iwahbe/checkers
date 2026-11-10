@@ -1,5 +1,5 @@
 # future.ck — values produced by `fork` and `join` (SPEC §8.6).
-module future
+module std.future
 
 export abstract enum Future +a : a~Type
 

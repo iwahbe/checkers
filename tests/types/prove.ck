@@ -2,7 +2,7 @@ module prove
 
 # The prover's contract (SPEC §7): each kind of obligation, proved and not.
 
-import list (length)
+import std.list (length)
 
 record Range
     lo~Nat

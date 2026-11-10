@@ -3,14 +3,14 @@
 
 module checkers
 
-import system (System, ExitCode)
-import terminal (Term)
-import system (Env, Proc)
-import env
-import files
-import proc
-import string
-import bytes
+import std.system (System, ExitCode)
+import std.terminal (Term)
+import std.system (Env, Proc)
+import std.env
+import std.files
+import std.proc
+import std.string
+import std.bytes
 import fmt
 
 let VERSION = "0.1.0"

@@ -4,7 +4,7 @@ module refined_args_types
 # The type errors (E0262); the obligations are in refined_args.ck.
 # Expected: an error on each line marked `error`, none elsewhere.
 
-import cown (Cown)
+import std.cown (Cown)
 
 type Small = n~Nat, n < 10
 

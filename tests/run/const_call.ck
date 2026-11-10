@@ -3,8 +3,8 @@ module const_call
 # A top-level constant may call a function declared in the same module,
 # before or after it (found 11/06/2026: its type was silently unknown).
 
-import system (System, ExitCode)
-import terminal (Term)
+import std.system (System, ExitCode)
+import std.terminal (Term)
 
 let ANSWER = double 21
 let GREETING = shout "hi"

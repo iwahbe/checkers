@@ -1,6 +1,6 @@
 # Spaces between tokens (D92).
 module spacing
-import list(map,  reverse)
+import std.list(map,  reverse)
 
 export abstract record Box +v : v~ Type
     item ~v

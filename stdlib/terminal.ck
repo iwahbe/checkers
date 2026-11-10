@@ -1,7 +1,7 @@
 # terminal.ck — standard input, output and error.
-module terminal
+module std.terminal
 
-import files (IoError)
+import std.files (IoError)
 
 export abstract enum Term
 

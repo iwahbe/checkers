@@ -1,9 +1,9 @@
 # system.ck — the root capability and exit codes (SPEC §8.2).
-module system
+module std.system
 
-import terminal (Term)
-import files (Fs)
-import cown (Sched)
+import std.terminal (Term)
+import std.files (Fs)
+import std.cown (Sched)
 
 export abstract enum Env
 export abstract enum Proc

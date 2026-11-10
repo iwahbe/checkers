@@ -1,6 +1,6 @@
 module partial_given
 
-import list
+import std.list
 
 # A precondition about the arguments already given is checked right there.
 fn div_by d x -> q : d~Int, d != 0, x~Int, q~Int

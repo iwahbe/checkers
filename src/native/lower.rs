@@ -224,8 +224,8 @@ impl<'a, 'g> Lowerer<'a, 'g> {
             }
             let info = &g.defs[d as usize];
             let full = format!("{}.{}", info.module, info.name);
-            let shape = match checkers_rt::builtins::NAMES.iter().find(|(n, _)| *n == full) {
-                Some((_, sym)) => {
+            let shape = match checkers_rt::builtins::symbol(&full) {
+                Some(sym) => {
                     let mut keep = Vec::new();
                     let mut t = &info.ty;
                     while let Tm::Pi(_, m, _, _, b) = t {

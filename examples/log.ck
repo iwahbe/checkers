@@ -5,9 +5,9 @@
 
 module log
 
-import system (System, ExitCode)
-import terminal (Term)
-import cown (Cown, Sched)
+import std.system (System, ExitCode)
+import std.terminal (Term)
+import std.cown (Cown, Sched)
 
 # The invariant lives in the type: every behaviour that touches the log must
 # hand back a list of at most 100 entries.

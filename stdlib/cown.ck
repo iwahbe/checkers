@@ -1,5 +1,5 @@
 # cown.ck — concurrent owners and the scheduler capability (SPEC §8.5).
-module cown
+module std.cown
 
 export abstract enum Sched
 export abstract enum Cown a : a~Type

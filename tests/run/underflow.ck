@@ -2,8 +2,8 @@ module underflow
 
 # Until the prover exists, `-` on `Nat` is checked at run time (§13.3).
 
-import system (System, ExitCode)
-import terminal
+import std.system (System, ExitCode)
+import std.terminal
 
 fn steps n -> m : n~Nat, m~Nat
     n - 3

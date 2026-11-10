@@ -1,9 +1,9 @@
 # Comments: kept, re-indented, trailing ones aligned (D92).
 module comments
 
-import list   # lists
-import string                 # strings
-import bytes # bytes
+import std.list   # lists
+import std.string                 # strings
+import std.bytes # bytes
 
 fn f x : x~Nat
       # about the first line

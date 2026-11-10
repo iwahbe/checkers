@@ -1,7 +1,7 @@
 # list.ck — functions on immutable lists.
-module list
+module std.list
 
-import bag
+import std.bag
 
 export transparent fn length xs -> n : xs~List a, n~Nat
     match xs

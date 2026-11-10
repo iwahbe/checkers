@@ -539,6 +539,27 @@ pub fn ledger_text(file: &crate::source::SourceFile, v: &Verified) -> String {
     out
 }
 
+/// A dependency's part of the trust ledger (D109): what it trusts, line by
+/// line, then one line for what was proved or computed.
+pub fn ledger_summary(file: &crate::source::SourceFile, v: &Verified) -> String {
+    let mut out = String::new();
+    let mut entries: Vec<&LedgerEntry> = v.ledger.iter().filter(|x| x.how == "trusted" || x.how == "axiom").collect();
+    entries.sort_by_key(|x| (x.span.start, x.how));
+    for x in &entries {
+        let (line, col) = file.line_col(x.span.start);
+        out += &format!("{}:{line}:{col}  {:<8} {}\n", file.name, x.how, x.what);
+    }
+    let smt = v.ledger.iter().filter(|x| x.how == "smt").count();
+    let computed = v.ledger.iter().filter(|x| x.how == "computed").count();
+    if smt + computed > 0 {
+        out += &format!("{}  proved   {smt} by smt, {computed} computed\n", file.name);
+    }
+    if let Some(z) = &v.z3_version {
+        out += &format!("solver: {z}\n");
+    }
+    out
+}
+
 // ── counterexamples ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]

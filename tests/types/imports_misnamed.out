@@ -9,7 +9,6 @@ error[E0220]: unknown module `no_such_module`
  --> imports_misnamed.ck:4:8
   |
 4 | import no_such_module
-  |        ^^^^^^^^^^^^^^ no standard library module `no_such_module`, and no file `no_such_module.ck` beside this program
-  = help: the standard library modules are: prelude, list, bag, system, terminal, files, cown, future, bytes, string, char, utf8, decimal, cursor
+  |        ^^^^^^^^^^^^^^ no file `no_such_module.ck` beside this program
 
 imports_misnamed.ck: 2 errors, 0 warnings

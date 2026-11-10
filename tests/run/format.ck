@@ -2,8 +2,8 @@ module format
 
 # `format` renders values as Checkers source (D42).
 
-import system (System, ExitCode)
-import terminal (Term)
+import std.system (System, ExitCode)
+import std.terminal (Term)
 
 record Point
     x~Int

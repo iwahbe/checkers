@@ -39,3 +39,28 @@ Formats each .ck file under each PATH (default: the current directory) in place.
 --check changes nothing: it lists the files that would change, and fails if
 there are any. `-` formats standard input to standard output.
 -- exit 2
+$ checkers trust examples/wc.ck
+-- stdout
+examples/wc.ck:21:42  smt      postcondition of `count`: c.bytes == len src (for `count_from src 0 False (Counts 0 0 0)`, line 22)  [bb37dc14384d272f]
+examples/wc.ck:22:5  smt      precondition of `count_from`: i <= len src  [48e82dc3928e329d]
+examples/wc.ck:25:50  smt      postcondition of `count_from`: c.bytes == acc.bytes + (len src - i) (for `acc`, line 28)  [ccb5eb8f230f308f]
+examples/wc.ck:25:50  smt      postcondition of `count_from`: c.bytes == acc.bytes + (len src - i) (for `count_from src (i + 1) (not space) (Coun…`, line 34)  [191101a4ee862a1e]
+examples/wc.ck:26:16  smt      `Nat` subtraction `len src - i` stays at or above zero  [6b0b661b17597b70]
+examples/wc.ck:30:17  smt      index in bounds: i < len src  [cc0fb0a34c00c530]
+examples/wc.ck:34:9  smt      precondition of `count_from`: i <= len src  [08f3a30cc3e86448]
+examples/wc.ck:34:9  smt      termination of `count_from`: `decreasing len src - i` gets smaller  [4db31f3d517b5118]
+examples/wc.ck:49:21  computed invariant of `Failure`: n < 256
+examples/wc.ck:49:21  computed invariant of `Failure`: n > 0
+examples/wc.ck:64:33  computed invariant of `Failure`: n < 256
+examples/wc.ck:64:33  computed invariant of `Failure`: n > 0
+examples/wc.ck:66:7  computed check count b"hello world\nbye\n" == Counts 2 3 16
+examples/wc.ck:67:7  computed check count b"" == Counts 0 0 0
+examples/wc.ck:68:7  computed check render (Counts 1 2 3) "f.txt" == "1 2 3 f.txt"
+<std>/files.ck:18:11  builtin  std.files.describe
+<std>/files.ck:9:11  builtin  std.files.read
+<std>/terminal.ck:11:11  builtin  std.terminal.eprint_line
+<std>/terminal.ck:8:11  builtin  std.terminal.print_line
+<std>/terminal.ck:14:11  builtin  std.terminal.read_all
+solver: Z3 5.3.3.0
+-- stderr
+-- exit 0

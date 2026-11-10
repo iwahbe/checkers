@@ -5,11 +5,11 @@
 
 module parallel
 
-import system (System, ExitCode)
-import terminal (Term)
-import files (Fs, IoError)
-import future (Future)
-import list (length, take, drop, sorted, perm)
+import std.system (System, ExitCode)
+import std.terminal (Term)
+import std.files (Fs, IoError)
+import std.future (Future)
+import std.list (length, take, drop, sorted, perm)
 
 # ── Pure parallelism ─────────────────────────────────────────────────────────
 # `par` sorts both halves at once. To the prover `par t == t`, so `sort` is

@@ -1,5 +1,5 @@
 # char.ck — Unicode scalar values.
-module char
+module std.char
 
 export fn code c -> n : c~Char, n~Nat
     __builtin

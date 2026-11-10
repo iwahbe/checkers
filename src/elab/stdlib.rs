@@ -1,31 +1,87 @@
-//! The embedded standard library (`stdlib/*.ck`).
+//! The standard library: the package `std`, read from disk (D104).
+//!
+//! `ckc` finds it through `CHECKERS_STD`, else `../lib/checkers/std` from
+//! its own directory (an installation), else the `stdlib/` of the source
+//! tree it was built from (builds from the source tree; a release build
+//! sets `CHECKERS_RELEASE` at compile time to leave this out). Module
+//! `std.a.b` is the file `a/b.ck` there.
 
 use super::Elab;
 use crate::diag::Diagnostic;
 use crate::source::SourceFile;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 
-pub const MODULES: &[(&str, &str)] = &[
-    ("prelude", include_str!("../../stdlib/prelude.ck")),
-    ("list", include_str!("../../stdlib/list.ck")),
-    ("bag", include_str!("../../stdlib/bag.ck")),
-    ("cown", include_str!("../../stdlib/cown.ck")),
-    ("future", include_str!("../../stdlib/future.ck")),
-    ("system", include_str!("../../stdlib/system.ck")),
-    ("terminal", include_str!("../../stdlib/terminal.ck")),
-    ("files", include_str!("../../stdlib/files.ck")),
-    ("bytes", include_str!("../../stdlib/bytes.ck")),
-    ("string", include_str!("../../stdlib/string.ck")),
-    ("char", include_str!("../../stdlib/char.ck")),
-    ("utf8", include_str!("../../stdlib/utf8.ck")),
-    ("decimal", include_str!("../../stdlib/decimal.ck")),
-    ("cursor", include_str!("../../stdlib/cursor.ck")),
-    ("actor", include_str!("../../stdlib/actor.ck")),
-    ("env", include_str!("../../stdlib/env.ck")),
-    ("proc", include_str!("../../stdlib/proc.ck")),
-];
+/// The places looked in, in order.
+fn candidates() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(d) = std::env::var_os("CHECKERS_STD") {
+        out.push(PathBuf::from(d));
+        return out;
+    }
+    if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf())) {
+        out.push(dir.join("..").join("lib").join("checkers").join("std"));
+    }
+    if option_env!("CHECKERS_RELEASE").is_none() {
+        out.push(PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/stdlib")));
+    }
+    out
+}
 
-pub fn source(name: &str) -> Option<&'static str> {
-    MODULES.iter().find(|(n, _)| *n == name).map(|(_, s)| *s)
+/// The standard library's directory, or why there is none.
+pub fn dir() -> Result<PathBuf, String> {
+    static DIR: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let cs = candidates();
+        cs.iter().find(|d| d.join("prelude.ck").is_file()).cloned().ok_or_else(|| {
+            let looked: Vec<String> = cs.iter().map(|d| format!("  {}", d.display())).collect();
+            format!(
+                "error: the standard library was not found; looked in:\n{}\nhelp: set CHECKERS_STD to the directory holding prelude.ck",
+                looked.join("\n")
+            )
+        })
+    })
+    .clone()
+}
+
+/// The text of standard-library module `name` (`std.list`), read once.
+pub fn source(name: &str) -> Option<String> {
+    static TEXTS: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
+    let rest = name.strip_prefix("std.")?;
+    let texts = TEXTS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut t = texts.lock().unwrap_or_else(|e| e.into_inner());
+    t.entry(name.to_string())
+        .or_insert_with(|| {
+            let d = dir().ok()?;
+            let rel: PathBuf = rest.split('.').collect::<PathBuf>().with_extension("ck");
+            std::fs::read_to_string(d.join(rel)).ok()
+        })
+        .clone()
+}
+
+/// Every standard-library module, sorted by name.
+pub fn modules() -> Vec<String> {
+    fn walk(base: &std::path::Path, d: &std::path::Path, out: &mut Vec<String>) {
+        let Ok(rd) = std::fs::read_dir(d) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(base, &p, out);
+            } else if p.extension().is_some_and(|x| x == "ck") {
+                if let Ok(rel) = p.strip_prefix(base) {
+                    let name: Vec<String> = rel.with_extension("").iter().map(|c| c.to_string_lossy().to_string()).collect();
+                    out.push(format!("std.{}", name.join(".")));
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if let Ok(d) = dir() {
+        walk(&d, &d, &mut out);
+    }
+    out.sort();
+    out
 }
 
 impl Elab {
@@ -35,12 +91,14 @@ impl Elab {
             return true;
         }
         let Some(text) = source(name) else { return false };
-        let file = SourceFile::new(format!("<stdlib>/{name}.ck"), text);
-        let (m, diags) = crate::syntax::parse_module(text);
+        let rel = name.trim_start_matches("std.").replace('.', "/");
+        let file = SourceFile::new(format!("<std>/{rel}.ck"), text.clone());
+        let (m, diags) = crate::syntax::parse_module(&text);
         for d in diags {
             self.diags.push((name.to_string(), d));
         }
         self.sources.insert(name.to_string(), file);
+        self.require_declared(name, &m);
         let saved = std::mem::take(&mut self.cur);
         let saved_fn = self.cur_fn.take();
         let saved_calls = std::mem::take(&mut self.calls);
@@ -53,6 +111,23 @@ impl Elab {
         self.module_fns = saved_mod_fns;
         self.deferred = saved_deferred;
         true
+    }
+
+    /// E0223 unless the file imported as `name` declares `module name`.
+    fn require_declared(&mut self, name: &str, m: &crate::syntax::ast::Module) {
+        match &m.name {
+            Some(q) if q.dotted() == name => {}
+            other => {
+                let span = other.as_ref().map(|q| q.span).unwrap_or_default();
+                let found = other.as_ref().map(|q| q.dotted()).unwrap_or_default();
+                self.diags.push((
+                    name.to_string(),
+                    Diagnostic::error("E0223", format!("this file must declare `module {name}`, because it is imported as `{name}`"), span)
+                        .with_label(if found.is_empty() { "no module declaration".to_string() } else { format!("declares `{found}`") })
+                        .with_help(format!("start the file with `module {name}`")),
+                ));
+            }
+        }
     }
 
     /// Load the program module `a.b` from `a/b.ck` beside the program (D53).
@@ -78,19 +153,7 @@ impl Elab {
             self.modules.insert(name.to_string(), super::ModuleInfo { name: name.to_string(), ..Default::default() });
             return true;
         }
-        match &m.name {
-            Some(q) if q.dotted() == name => {}
-            other => {
-                let span = other.as_ref().map(|q| q.span).unwrap_or_default();
-                let found = other.as_ref().map(|q| q.dotted()).unwrap_or_default();
-                self.diags.push((
-                    name.to_string(),
-                    Diagnostic::error("E0223", format!("this file must declare `module {name}`, because it is imported as `{name}`"), span)
-                        .with_label(if found.is_empty() { "no module declaration".to_string() } else { format!("declares `{found}`") })
-                        .with_help(format!("start the file with `module {name}`")),
-                ));
-            }
-        }
+        self.require_declared(name, &m);
         let saved = std::mem::take(&mut self.cur);
         let saved_fn = self.cur_fn.take();
         let saved_calls = std::mem::take(&mut self.calls);

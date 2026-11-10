@@ -487,7 +487,7 @@ impl Elab {
     /// A primitive resource (D39): implemented by the runtime as an open, stateful thing.
     fn is_primitive_resource(&self, t: TyId) -> bool {
         let ti = &self.g.tys[t.0 as usize];
-        &*ti.module == "files" && &*ti.name == "File"
+        &*ti.module == "std.files" && &*ti.name == "File"
     }
 
     /// Does this type declaration contain a resource (in a constructor field)?
@@ -899,7 +899,7 @@ pub fn check_module(name_hint: &str, file: &SourceFile, m: &ast::Module, dir: Op
     let mut e = Elab::new();
     e.base_dir = dir.map(|d| d.to_path_buf());
     // Core stdlib modules are always loaded: they define well-known types.
-    for core in ["prelude", "cown", "future", "system"] {
+    for core in ["std.prelude", "std.cown", "std.future", "std.system"] {
         e.load_stdlib(core);
     }
     let name = m.name.as_ref().map(|q| q.dotted()).unwrap_or_else(|| name_hint.to_string());

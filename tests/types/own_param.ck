@@ -2,8 +2,8 @@ module own_param
 
 # `own` marks generic parameters that may receive a resource (D45).
 
-import files (Fs, File)
-import cown (Cown, Sched)
+import std.files (Fs, File)
+import std.cown (Cown, Sched)
 
 fn keep x -> y : x~a, y~a
     x

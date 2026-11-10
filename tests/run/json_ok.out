@@ -1,0 +1,4 @@
+-- stdout
+{"a":[1,2.5,true,null,"xé"],"b":{}}
+-- stderr
+-- exit 0

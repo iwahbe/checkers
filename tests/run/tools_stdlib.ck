@@ -2,13 +2,13 @@ module tools_stdlib
 
 # The standard library additions for the build tool and formatter (D90).
 
-import system (System, ExitCode)
-import terminal (Term)
-import files (Entry)
-import string
-import bytes
-import env
-import proc
+import std.system (System, ExitCode)
+import std.terminal (Term)
+import std.files (Entry)
+import std.string
+import std.bytes
+import std.env
+import std.proc
 
 fn show_entries es term : es~List Entry, term~Term
     match es

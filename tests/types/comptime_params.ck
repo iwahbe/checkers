@@ -2,7 +2,7 @@ module comptime_params
 
 # Compile-time parameters (SPEC §8.9, D59–D61): what is rejected.
 
-import list (map)
+import std.list (map)
 
 fn power n x -> y : n~comptime Nat, x~Int, y~Int
     decreasing n

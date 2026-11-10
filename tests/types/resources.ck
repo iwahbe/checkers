@@ -2,7 +2,7 @@ module resources
 
 # Resources are linear by type (D39): no `own` needed on these binders.
 
-import files (Fs, File, IoError)
+import std.files (Fs, File, IoError)
 
 fn never_closed path fs : path~String, fs~Fs
     match files.open path fs

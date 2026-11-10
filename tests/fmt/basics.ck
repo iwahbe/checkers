@@ -1,6 +1,6 @@
 # basics.ck — formatter input (D91, D92). The expected output is basics.out.
 module basics
-import list   (map)
+import std.list   (map)
 
 
 

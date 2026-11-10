@@ -4,10 +4,10 @@ module counters
 # `when` holds all four, so it runs after every bump scheduled before it
 # (causal order, D66). Every schedule prints the same total.
 
-import system (System, ExitCode)
-import cown (Cown, Sched)
-import future (Future)
-import terminal (Term)
+import std.system (System, ExitCode)
+import std.cown (Cown, Sched)
+import std.future (Future)
+import std.terminal (Term)
 
 fn bump c k sched -> u : c~Cown Nat, k~Nat, sched~Sched, u~()
     decreasing k

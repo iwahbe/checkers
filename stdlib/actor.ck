@@ -4,9 +4,9 @@
 # old state to the new one; messages to one actor are handled one at a
 # time, in the order they were sent. An invariant on the state is a
 # refinement on `s`, checked like any cown's (§8.5).
-module actor
+module std.actor
 
-import cown (Cown, Sched)
+import std.cown (Cown, Sched)
 
 export record Actor s : s~Type
     state~Cown s

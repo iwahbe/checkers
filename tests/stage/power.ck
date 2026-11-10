@@ -3,7 +3,7 @@ module power
 # Staging (SPEC §8.9): a compile-time function is expanded at each call;
 # `if` on a compile-time value picks its branch, and recursion unrolls.
 
-import terminal (Term)
+import std.terminal (Term)
 
 fn power n x -> y : n~comptime Nat, x~Int, y~Int
     decreasing n

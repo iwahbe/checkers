@@ -1,8 +1,8 @@
 # proc.ck — running other programs (SPEC §8.1, D90, D97).
-module proc
+module std.proc
 
-import system (Proc)
-import files (IoError)
+import std.system (Proc)
+import std.files (IoError)
 
 # Run `program` with `args`, sharing this program's standard input, output
 # and error, and wait for it: its exit code (128 + the signal, if a signal

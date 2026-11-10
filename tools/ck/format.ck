@@ -4,9 +4,9 @@
 
 module ck.format
 
-import bytes
-import list (reverse)
-import list
+import std.bytes
+import std.list (reverse)
+import std.list
 import ck.syntax as syntax
 import ck.syntax (Tok, Line, Placed, Role, Kind, SyntaxError, Name, Upper, Number, Literal, Punct, Comment,
                   Blank, Start, Cont, Note)

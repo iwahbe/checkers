@@ -421,10 +421,10 @@ impl Elab {
                         Diagnostic::error("E0213", format!("`{n}` is a module, not a value"), span)
                             .with_help(format!("use one of its exports, e.g. `{n}.name`")),
                     );
-                } else if crate::elab::stdlib::source(n).is_some() {
+                } else if crate::elab::stdlib::source(&format!("std.{n}")).is_some() {
                     self.err(
                         Diagnostic::error("E0204", format!("unknown name `{n}`"), span)
-                            .with_help(format!("`{n}` is a standard library module; add `import {n}`")),
+                            .with_help(format!("`{n}` is a standard library module; add `import std.{n}`")),
                     );
                 } else {
                     self.err(Diagnostic::error("E0204", format!("unknown name `{n}`"), span).with_label("not found"));
@@ -976,7 +976,7 @@ impl Elab {
         match sym {
             Some(Sym::Def(d)) => {
                 let info = &self.g.defs[d.0 as usize];
-                info.module.as_ref() == "list" && info.name.as_ref() == "map"
+                info.module.as_ref() == "std.list" && info.name.as_ref() == "map"
             }
             _ => false,
         }
@@ -1130,17 +1130,17 @@ impl Elab {
                         None => {
                             self.err(Diagnostic::error(
                                 "E0206",
-                                format!("module `{q}` has no export named `{}`", name.name),
+                                format!("module `{m}` has no export named `{}`", name.name),
                                 name.span,
                             ));
                             (Tm::Error, Val::Error)
                         }
                     };
                 }
-                if self.resolve(q, false).is_none() && crate::elab::stdlib::source(q).is_some() {
+                if self.resolve(q, false).is_none() && crate::elab::stdlib::source(&format!("std.{q}")).is_some() {
                     self.err(
                         Diagnostic::error("E0204", format!("unknown name `{q}`"), x.span)
-                            .with_help(format!("`{q}` is a standard library module; add `import {q}`")),
+                            .with_help(format!("`{q}` is a standard library module; add `import std.{q}`")),
                     );
                     return (Tm::Error, Val::Error);
                 }

@@ -2,10 +2,10 @@ module behaviours
 
 # Behaviours run after `main` returns, in the order they were scheduled (D44).
 
-import system (System, ExitCode)
-import cown (Cown, Sched)
-import future (Future)
-import terminal (Term)
+import std.system (System, ExitCode)
+import std.cown (Cown, Sched)
+import std.future (Future)
+import std.terminal (Term)
 
 export fn main args sys -> code : args~List String, sys~System, code~Future ExitCode
     let System { term, sched } = sys

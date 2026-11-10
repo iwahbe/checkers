@@ -2,9 +2,9 @@ module files_test
 
 # File operations (§8.3, §8.4, §13.4).
 
-import system (System, ExitCode)
-import terminal (Term)
-import files (Fs, File, IoError)
+import std.system (System, ExitCode)
+import std.terminal (Term)
+import std.files (Fs, File, IoError)
 
 partial fn print_lines f term : f~File, term~Term
     line <- files.read_line f

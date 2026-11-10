@@ -1,9 +1,9 @@
 module effects
 
-import system (System, ExitCode)
-import files (File)
-import cown (Cown, Sched)
-import future (Future)
+import std.system (System, ExitCode)
+import std.files (File)
+import std.cown (Cown, Sched)
+import std.future (Future)
 
 fn bind_on_authority path fs -> r : path~String, fs~files.Fs, r~Nat
     contents <- files.read path fs
