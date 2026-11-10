@@ -1024,6 +1024,9 @@ impl Elab {
             let sig = match &d.kind {
                 DeclKind::Fn { name, params, result, constraints, partial, decreasing, body } => {
                     let mut sig = self.signature(params, result.as_ref(), constraints);
+                    if let Some(m) = head_meta(&sig.result) {
+                        self.result_metas.insert(m, *did);
+                    }
                     if d.export == Export::Transparent {
                         self.transparent.insert(*did);
                     }
@@ -1439,5 +1442,14 @@ fn decl_name(d: &ast::Decl) -> Option<&Ident> {
         | DeclKind::Record { name, .. }
         | DeclKind::Alias { name, .. } => Some(name),
         DeclKind::Check { .. } => None,
+    }
+}
+
+/// The meta at the head of a term, if any.
+fn head_meta(t: &Tm) -> Option<MetaId> {
+    match t {
+        Tm::Meta(m) => Some(*m),
+        Tm::App(f, ..) => head_meta(f),
+        _ => None,
     }
 }

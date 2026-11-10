@@ -1,0 +1,5 @@
+--version
+check examples/sort.ck
+frobnicate
+fmt --check tests/fmt/basics.ck tests/fmt/blanks.ck
+fmt --check --check

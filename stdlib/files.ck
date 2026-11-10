@@ -32,3 +32,12 @@ export fn read_line f -> r : f~File, r~(Option String, File)
 
 export fn write_line s f -> r : s~String, f~File, r~(Unit, File)
     __builtin
+
+# An entry of a directory.
+export record Entry
+    name~String
+    dir~Bool
+
+# The entries of a directory, sorted by name, without `.` and `..`.
+export fn list dir fs -> r : dir~String, fs~Fs, r~Result (List Entry) IoError
+    __builtin

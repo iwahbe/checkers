@@ -29,7 +29,9 @@ Types are written only as constraints (`i~Nat, i <= len src`); the compiler prov
 | M6 Staging: `comptime` parameters, compile-time expansion, `checkers stage` | done: [`format.ck`](examples/format.ck), a typed `fmt` whose format string is parsed at compile time |
 | M7 Multi-threaded behaviours (Verona scheduling), `par` on threads, cown invariants, actors | done: [`log.ck`](examples/log.ck) proves its cown invariant and runs; `checkers run --threads N`; stress tests in `tests/stress/` |
 | M8 Native code: Cranelift, closure conversion, reference counting with reuse, tail calls, `checkers build`, lock-free scheduler | done: [`wc.ck`](examples/wc.ck) 45× faster than the interpreter, which is now removed (SPEC D80): `check` and staging run native code too |
-| M10 | see SPEC §10 (M9, a shell, was removed: D81) |
+| M10 Refined function types | done |
+| M11 `checkers`, the build tool in Checkers, and `checkers fmt` | done: [`tools/`](tools) |
+| M12, M13 | see SPEC §10 (M9, a shell, was removed: D81) |
 
 ## Usage
 
@@ -37,11 +39,15 @@ Z3 is built from source and linked into the binary (D46), so the first build tak
 
 ```
 cargo build --release
-target/release/checkers run examples/wc.ck FILE    # type-check, then run `main`
-target/release/checkers check examples/sort.ck      # type-check, run the `check`s, prove
-target/release/checkers trust examples/sort.ck      # what the proof relies on: Z3, admits, checks
-target/release/checkers parse examples/json.ck      # print the syntax tree
+target/release/ckc run examples/wc.ck FILE         # type-check, then run `main`
+target/release/ckc check examples/sort.ck           # type-check, run the `check`s, prove
+target/release/ckc trust examples/sort.ck           # what the proof relies on: Z3, admits, checks
+target/release/ckc parse examples/json.ck           # print the syntax tree
+target/release/ckc build tools/checkers.ck -o target/release/checkers
+target/release/checkers fmt examples                # format; `checkers check …` etc. run `ckc`
 ```
+
+`ckc` is the compiler; `checkers` is the build tool, written in Checkers (SPEC §15, D95).
 
 ## Tests
 

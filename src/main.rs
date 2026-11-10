@@ -1,26 +1,26 @@
-//! `checkers` command-line driver.
+//! `ckc`, the compiler's command-line driver (D96).
 
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-checkers — the Checkers compiler
+ckc — the Checkers compiler (usually run through `checkers`, the build tool)
 
 USAGE:
-    checkers run [--unverified] [--threads N] <FILE.ck> [ARG]...
-                                                    check and prove, then run `main` with ARGs
-                                                    (N worker threads, default: cores; 1 is deterministic)
-    checkers build [--unverified] <FILE.ck> -o <PROGRAM>
-                                                    check and prove, then write an executable
-                                                    (its threads: CHECKERS_THREADS, default: cores)
-    checkers trust <FILE.ck>                        print the trust ledger (what Z3, admits and checks vouch for)
-    checkers check [--deny-warnings] <FILE.ck>...   type-check and run `check`s; report diagnostics
-    checkers stage <FILE.ck>                        print the code staging generates (§8.9)
-    checkers parse <FILE.ck>                        print the syntax tree
-    checkers --version
+    ckc run [--unverified] [--threads N] <FILE.ck> [ARG]...
+                                               check and prove, then run `main` with ARGs
+                                               (N worker threads, default: cores; 1 is deterministic)
+    ckc build [--unverified] <FILE.ck> -o <PROGRAM>
+                                               check and prove, then write an executable
+                                               (its threads: CHECKERS_THREADS, default: cores)
+    ckc trust <FILE.ck>                        print the trust ledger (what Z3, admits and checks vouch for)
+    ckc check [--deny-warnings] <FILE.ck>...   type-check and run `check`s; report diagnostics
+    ckc stage <FILE.ck>                        print the code staging generates (§8.9)
+    ckc parse <FILE.ck>                        print the syntax tree
+    ckc --version
 ";
 
 fn main() -> ExitCode {
-    // The interpreter recurses for non-tail calls, so everything runs on a big stack.
+    // The elaborator recurses deeply, so everything runs on a big stack.
     let code = checkers::with_big_stack(|| {
         let args: Vec<String> = std::env::args().skip(1).collect();
         cli(&args)
@@ -37,7 +37,7 @@ fn cli(args: &[String]) -> u8 {
         Some("check") => check(&args[1..]),
         Some("parse") => parse(&args[1..]),
         Some("--version") | Some("-V") => {
-            println!("checkers {}", env!("CARGO_PKG_VERSION"));
+            println!("ckc {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
         Some("--help") | Some("-h") | None => {

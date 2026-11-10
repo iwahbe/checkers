@@ -1,0 +1,41 @@
+$ checkers --version
+-- stdout
+checkers 0.1.0
+-- stderr
+-- exit 0
+$ checkers check examples/sort.ck
+-- stdout
+-- stderr
+examples/sort.ck: 0 errors, 0 warnings; 18 obligations proved
+-- exit 0
+$ checkers frobnicate
+-- stdout
+-- stderr
+checkers: unknown command `frobnicate`
+
+checkers — the Checkers build tool
+
+USAGE:
+    checkers check|run|build|trust|stage|parse ...   run the compiler, `ckc` (see `ckc --help`)
+    checkers fmt [--check] [PATH]...                 format .ck files (see `checkers fmt --help`)
+    checkers fmt -                                   format standard input
+    checkers --version
+
+`ckc` is found through CKC, else next to `checkers`, else on PATH.
+-- exit 2
+$ checkers fmt --check tests/fmt/basics.ck tests/fmt/blanks.ck
+-- stdout
+tests/fmt/basics.ck
+tests/fmt/blanks.ck
+-- stderr
+-- exit 1
+$ checkers fmt --check --check
+-- stdout
+-- stderr
+usage: checkers fmt [--check] [PATH]...
+       checkers fmt -
+
+Formats each .ck file under each PATH (default: the current directory) in place.
+--check changes nothing: it lists the files that would change, and fails if
+there are any. `-` formats standard input to standard output.
+-- exit 2

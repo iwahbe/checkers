@@ -1,0 +1,4 @@
+-- stdout
+-- stderr
+<stdin>:3:9: unterminated literal
+-- exit 1

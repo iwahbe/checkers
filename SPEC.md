@@ -107,6 +107,7 @@ This document is the single source of truth for Checkers. Implementation follows
 | D96 | **Names (§15.1).** The compiler is `ckc`; the build tool is `checkers`. `checkers check`, `run`, `build`, `parse`, `stage` and `trust` pass their arguments to `ckc`; `checkers fmt` and `checkers lsp` are the build tool's own. The build tool finds the compiler through `CKC`, else next to its own executable, else on `PATH`. | 11/10/2026 | decided (11/10/2026) |
 | D97 | **The build tool runs the compiler as a process (§15.2).** `checkers check FILE` runs `ckc check FILE` with the build tool's standard streams and returns its exit code (`proc.exec`, the first operation of the `Proc` authority); the same for the other compiler commands. A machine-readable interface (JSON diagnostics, overlays for unsaved files, an index for go to definition) waits for the language server (§15.5). Supersedes D89, which gave tools the compiler in process. | 11/10/2026 | decided (11/10/2026) |
 | D98 | **Scope and order of the tools work (§10, §15).** M11 is the build tool and the formatter only. M12 makes checking and building faster, including incremental compilation. The language server is M13. | 11/10/2026 | decided (11/10/2026) |
+| D99 | **Formatter details found while building it (§15.4).** (a) A trailing comment's column is the furthest, over its run, of each line's code end plus the spaces its author put before the comment (at least two), rather than the column it was at: aligned comments stay aligned when the code moves (re-indented, respaced). (b) Inside `{ }` one space at each end (`System { fs, term }`, as `examples/` writes it), not none as in `( )` and `[ ]`. (c) A type's polarity marks stay glued (`record Box +v`). (d) The formatter's parser is a lexer plus the layout pass (§9.1): lines grouped into logical lines and blocks; it has no expression grammar, so it refuses lexical and layout errors (a tab in indentation, an unterminated literal, an inconsistent dedent) but formats a file with other syntax errors, keeping every token; `checkers check` reports those. | 11/10/2026 | **(proposed)** |
 | D24 | **Development loop:** Claude owns the implementation; Ian drives with examples. An issue is "found X, expected Y" with a `.ck` snippet. Each one becomes a regression test under `tests/` *before* the fix lands, and the spec is updated first whenever the expectation changes the language. | 11/05/2026 | decided |
 | D25 | **Milestones reordered for CLI tools first** (§10): a running interpreter with `IO` comes right after type checking, before the prover, so Checkers can be used to build its own tooling early. ~~Capstone: an interactive shell with a small scripting language, with proofs of its correctness.~~ (removed by D81) | 11/05/2026 | decided |
 
@@ -937,8 +938,8 @@ As with `rustc` and `cargo`, there are two programs:
 ```
 tools/
   checkers.ck      `main`: the commands
-  ck/syntax.ck     lexer and parser keeping comments: the concrete syntax tree
-  ck/format.ck     the formatter, a pure function: fn format src -> r : src~Bytes, r~Result String Error
+  ck/syntax.ck     lexer and layout, keeping comments and blank lines: lines, logical lines and blocks
+  ck/format.ck     the formatter, a pure function: fn format src -> r : src~Bytes, r~Result Bytes SyntaxError
   fmt.ck           `checkers fmt`: files, --check, standard input
   lsp/protocol.ck  JSON-RPC framing and LSP messages over `json` (M13)
   lsp.ck           `checkers lsp` (M13)
@@ -959,7 +960,7 @@ The language already has what the tools need: total code with proven bounds and 
 | output without a newline | `checkers fmt -` writes the formatted file as it is | `terminal.write` (M11) |
 | reading exactly *n* bytes | LSP messages are `Content-Length: n\r\n\r\n` + *n* bytes, on a pipe that stays open | `terminal.read_bytes` (M13) |
 | directory listing | `checkers fmt` with a directory | `files.list` (M11) |
-| linear-time joining | `list.join` is `p ++ sep ++ join sep rest`, quadratic in the output | `string.concat`, and `list.join` uses it (M11) |
+| linear-time joining | `list.join` is `p ++ sep ++ join sep rest`, quadratic in the output | `string.concat` (M11); `list.join` keeps its definition, which proofs about rendering use (`examples/json.ck`) |
 | byte slices, UTF-8 checking | lexing | `bytes.slice`, `string.from_utf8` (M11) |
 | number parsing | `Content-Length` | `nat.parse` (M13) |
 | JSON | LSP messages | `examples/json.ck` becomes the `json` module (with its proofs) (M13) |
@@ -975,12 +976,12 @@ The language already has what the tools need: total code with proven bounds and 
 The formatter keeps the line breaks the author chose and normalizes everything else, as gofmt does. The rules (D92):
 
 - **Indentation:** 4 spaces per block level. A continuation line lines up with the first item after the open bracket it is inside, or after the `:` of a signature; otherwise it is indented 4 more than the line it continues.
-- **Spaces:** one on each side of a binary operator, `->`, `<-` and `=`, and after `,` and a signature's `:`. None around `~`, inside brackets, or around a glued `.` or `[` (D22). Application is separated by single spaces.
-- **Alignment:** the `->` of the arms of one `match` line up, as do the `:` of the constructors of one `enum` (a constructor without constraints is skipped), unless a blank line separates them. Trailing `#` comments on consecutive lines start in one column; a blank line or a line without a trailing comment ends the run. The comments' column is the furthest of: the columns their author put them at, and two spaces after each line's code. So a run that is already aligned keeps its column (as in `examples/json.ck`), and formatting twice changes nothing.
+- **Spaces:** one on each side of a binary operator, `->`, `<-` and `=`, and after `,` and a signature's `:`. None around `~`, inside `( )` and `[ ]`, after a unary `-` or `\\`, or around a glued `.` or `[` (D22); one inside `{ }` (D99). Application is separated by single spaces.
+- **Alignment:** the `->` of the arms of one `match` line up, as do the `:` of the constructors of one `enum` (a constructor without constraints is skipped), unless a blank line separates them. Trailing `#` comments on consecutive lines start in one column; a blank line or a line without a trailing comment ends the run. The column is the furthest of each line's code end plus the spaces its author put before the comment, at least two (D99): a run that is already aligned stays aligned, wherever its code moves, and formatting twice changes nothing.
 - **Blank lines:** at most one in a row; none at the start or end of a block; the file ends with exactly one newline. Trailing whitespace is removed.
 - **Kept as written:** comment text, literals, the order of declarations and imports.
 
-`tests/proposed/fmt/` has examples: each `.ck` is formatter input and its `.out` the expected output.
+`tests/fmt/` has examples: each `.ck` is formatter input and its `.out` the output of `checkers fmt -` on it. The golden tests also require every `.ck` file in `tools/`, `examples/`, `stdlib/` and `tests/{types,run,stage,stress}` to be formatted, and every `.ck` file in the repository to format to a fixed point with the same syntax tree (`tests/parse/` and `tests/check/` keep their unformatted inputs, which test the lexer and parser).
 
 ### 15.5 The language server (M13, D94; deferred by D98)
 

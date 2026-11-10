@@ -7,11 +7,18 @@
 //!                         report if checking fails (SPEC §8.9).
 //! tests/run/NAME.args  → run the program named on its first line (SPEC §13.6);
 //!                         NAME.out is its stdout, stderr and exit code, from
-//!                         the `checkers` binary (`checkers run --threads 1`).
+//!                         the `ckc` binary (`ckc run --threads 1`).
 //! tests/stress/NAME.args → as a run test, but with 8 threads, several times
 //!                         (CHECKERS_STRESS_RUNS, default 10); stdout lines are
 //!                         compared sorted, since behaviours that share no cown
 //!                         may print in any order (SPEC §13.5, D67, D68).
+//! tests/fmt/NAME.ck    → NAME.out is `checkers fmt -` on it: stdout, stderr, exit code
+//!                         (`checkers` is built from tools/checkers.ck with `ckc build`).
+//! tests/tool/NAME.args → each line runs `checkers` with those arguments (`ckc` is
+//!                         this build's); NAME.out is their output.
+//! tools/, examples/, stdlib/, tests/{types,run,stage,stress}: every .ck file must be
+//!                         formatted; every .ck file in the repository must format to a
+//!                         fixed point with the same syntax tree (D93).
 //! examples/*.ck        → must check with no errors and no warnings, unless listed
 //!                         in examples/PENDING: then tests/pending/NAME.out pins it.
 //!
@@ -35,7 +42,7 @@ fn ck_files(dir: &Path) -> Vec<PathBuf> {
     files_with(dir, "ck")
 }
 
-/// A run case as native code: the `checkers` binary in a subprocess (its
+/// A run case as native code: the `ckc` binary in a subprocess (its
 /// runtime writes to the process's streams), in the case's directory.
 fn run_native(args_path: &Path, threads: usize) -> String {
     let spec = fs::read_to_string(args_path).unwrap();
@@ -46,7 +53,7 @@ fn run_native(args_path: &Path, threads: usize) -> String {
         None => (vec![], first),
     };
     let stdin = fs::read(args_path.with_extension("in")).unwrap_or_default();
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_checkers"))
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_ckc"))
         .arg("run")
         .args(["--threads", &threads.to_string()])
         .args(flags)
@@ -57,7 +64,7 @@ fn run_native(args_path: &Path, threads: usize) -> String {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .expect("run checkers");
+        .expect("run ckc");
     child.stdin.take().unwrap().write_all(&stdin).unwrap();
     let out = child.wait_with_output().unwrap();
     format!(
@@ -66,6 +73,141 @@ fn run_native(args_path: &Path, threads: usize) -> String {
         String::from_utf8_lossy(&out.stderr),
         out.status.code().unwrap_or(-1)
     )
+}
+
+/// A process's output, as run tests show it.
+fn shown(out: &std::process::Output) -> String {
+    format!(
+        "-- stdout\n{}-- stderr\n{}-- exit {}\n",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+        out.status.code().unwrap_or(-1)
+    )
+}
+
+/// Run `exe` with `args` and `stdin`.
+fn run_with(exe: &Path, args: &[&str], stdin: &[u8], dir: &Path) -> std::process::Output {
+    let mut child = std::process::Command::new(exe)
+        .args(args)
+        .env("CKC", env!("CARGO_BIN_EXE_ckc"))
+        .env("CHECKERS_THREADS", "1")
+        .current_dir(dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("run checkers");
+    child.stdin.take().unwrap().write_all(stdin).unwrap();
+    child.wait_with_output().unwrap()
+}
+
+fn compare(root: &Path, out_path: &Path, actual: &str, update: bool, failures: &mut Vec<String>) {
+    let expected = fs::read_to_string(out_path).unwrap_or_default();
+    if actual != expected {
+        if update {
+            fs::write(out_path, actual).unwrap();
+            println!("updated {}", out_path.strip_prefix(root).unwrap().display());
+        } else {
+            failures.push(format!(
+                "── {} ──\n--- expected\n{expected}\n--- actual\n{actual}",
+                out_path.strip_prefix(root).unwrap().display()
+            ));
+        }
+    }
+}
+
+/// Every `.ck` file under `dir`, recursively.
+fn ck_tree(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(rd) = fs::read_dir(dir) else { return };
+    let mut paths: Vec<PathBuf> = rd.map(|e| e.unwrap().path()).collect();
+    paths.sort();
+    for p in paths {
+        if p.is_dir() {
+            ck_tree(&p, out);
+        } else if p.extension().is_some_and(|x| x == "ck") {
+            out.push(p);
+        }
+    }
+}
+
+/// The syntax tree, if the file parses.
+fn tree(name: &str, text: &str) -> Option<String> {
+    let c = checkers::parse_only(name, text);
+    c.diags.is_empty().then(|| checkers::syntax::print::module(&c.module))
+}
+
+/// The build tool (M11, D95): it checks clean; it builds; `checkers fmt`
+/// and `checkers` commands give their golden output; the repository is
+/// formatted.
+fn build_tool(root: &Path, update: bool, failures: &mut Vec<String>) -> usize {
+    let mut count = 1;
+    let tools = root.join("tools");
+    let main = tools.join("checkers.ck");
+    let c = checkers::check_in("checkers.ck", &fs::read_to_string(&main).unwrap(), &tools);
+    if !c.diags.is_empty() {
+        failures.push(format!("── tools/checkers.ck must be clean ──\n{}", c.report()));
+    }
+    let exe = std::env::temp_dir().join(format!("checkers-golden-{}-tool", std::process::id()));
+    let built = std::process::Command::new(env!("CARGO_BIN_EXE_ckc"))
+        .args(["build", "tools/checkers.ck", "-o"])
+        .arg(&exe)
+        .current_dir(root)
+        .output()
+        .expect("run ckc build");
+    if !built.status.success() {
+        failures.push(format!("── build tools/checkers.ck ──\n{}", String::from_utf8_lossy(&built.stderr)));
+        return count;
+    }
+    let fmt = |text: &[u8]| run_with(&exe, &["fmt", "-"], text, root);
+
+    for path in ck_files(&root.join("tests").join("fmt")) {
+        count += 1;
+        let actual = shown(&fmt(&fs::read(&path).unwrap()));
+        compare(root, &path.with_extension("out"), &actual, update, failures);
+    }
+    let tool_dir = root.join("tests").join("tool");
+    for path in files_with(&tool_dir, "args") {
+        count += 1;
+        let mut actual = String::new();
+        for line in fs::read_to_string(&path).unwrap().lines() {
+            let args: Vec<&str> = line.split_whitespace().collect();
+            actual += &format!("$ checkers {line}\n{}", shown(&run_with(&exe, &args, b"", root)));
+        }
+        compare(root, &path.with_extension("out"), &actual, update, failures);
+    }
+
+    // The repository: formatted where it should be; everywhere, formatting
+    // is a fixed point that keeps the syntax tree.
+    let formatted = ["tools", "examples", "stdlib", "tests/types", "tests/run", "tests/stage", "tests/stress"];
+    let mut all = Vec::new();
+    for d in ["tools", "examples", "stdlib", "tests"] {
+        ck_tree(&root.join(d), &mut all);
+    }
+    for path in all {
+        let rel = path.strip_prefix(root).unwrap();
+        let name = rel.display().to_string();
+        let text = fs::read(&path).unwrap();
+        let once = fmt(&text);
+        if !once.status.success() {
+            continue; // not lexically valid: tests/check has such files on purpose
+        }
+        count += 1;
+        let twice = fmt(&once.stdout);
+        if twice.stdout != once.stdout {
+            failures.push(format!("── formatting {name} twice changes it ──"));
+        }
+        let (a, b) = (String::from_utf8_lossy(&text), String::from_utf8_lossy(&once.stdout));
+        if let Some(t) = tree(&name, &a) {
+            if tree(&name, &b).as_ref() != Some(&t) {
+                failures.push(format!("── formatting {name} changes its syntax tree ──\n{b}"));
+            }
+        }
+        if formatted.iter().any(|d| rel.starts_with(d)) && once.stdout != text {
+            failures.push(format!("── {name} is not formatted (`checkers fmt {name}`) ──"));
+        }
+    }
+    let _ = fs::remove_file(&exe);
+    count
 }
 
 /// A run result with its stdout lines sorted.
@@ -191,12 +333,12 @@ fn golden() {
     for (args_name, program) in [("wc_stdin", "examples/wc.ck"), ("behaviours", "tests/run/behaviours.ck")] {
         count += 1;
         let exe = std::env::temp_dir().join(format!("checkers-golden-{}-{args_name}", std::process::id()));
-        let built = std::process::Command::new(env!("CARGO_BIN_EXE_checkers"))
+        let built = std::process::Command::new(env!("CARGO_BIN_EXE_ckc"))
             .args(["build", program, "-o"])
             .arg(&exe)
             .current_dir(root)
             .output()
-            .expect("run checkers build");
+            .expect("run ckc build");
         if !built.status.success() {
             failures.push(format!("── build {program} ──\n{}", String::from_utf8_lossy(&built.stderr)));
             continue;
@@ -227,6 +369,8 @@ fn golden() {
             failures.push(format!("── built {program} ──\n--- expected\n{expected}\n--- actual\n{actual}"));
         }
     }
+
+    count += build_tool(root, update, &mut failures);
 
     // Examples waiting on a later milestone (D48): their output is pinned instead.
     let pending: Vec<String> = fs::read_to_string(root.join("examples").join("PENDING"))

@@ -1,0 +1,8 @@
+error[E0201]: the result type of `odd` isn't known yet here
+  --> inferred_result_order.ck:20:30
+   |
+20 |     if n == 0 then True else odd (n - 1)
+   |                              ^^^^^^^^^^^ `odd` is checked after this, since they call each other
+   = help: write `odd`'s result type in its signature (`-> r : …, r~Bool`)
+
+inferred_result_order.ck: 1 error, 0 warnings

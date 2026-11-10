@@ -1,0 +1,4 @@
+-- stdout
+-- stderr
+<stdin>:5:3: unindent does not match any outer indentation level
+-- exit 1

@@ -20,6 +20,8 @@ pub const MODULES: &[(&str, &str)] = &[
     ("decimal", include_str!("../../stdlib/decimal.ck")),
     ("cursor", include_str!("../../stdlib/cursor.ck")),
     ("actor", include_str!("../../stdlib/actor.ck")),
+    ("env", include_str!("../../stdlib/env.ck")),
+    ("proc", include_str!("../../stdlib/proc.ck")),
 ];
 
 pub fn source(name: &str) -> Option<&'static str> {

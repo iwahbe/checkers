@@ -30,6 +30,7 @@ pub struct Known {
     pub system: Option<u32>,
     pub success: Option<u32>,
     pub failure: Option<u32>,
+    pub entry: Option<u32>,
 }
 
 /// Compiled code's entry for calls from Rust: `invoke(code, env, args, n)`
@@ -95,6 +96,7 @@ pub fn install(desc: &str, invoke: Invoke) {
                     "system" => &mut k.system,
                     "success" => &mut k.success,
                     "failure" => &mut k.failure,
+                    "entry" => &mut k.entry,
                     _ => continue,
                 };
                 *slot = id;
@@ -162,6 +164,11 @@ pub fn list_items(mut w: W) -> Vec<W> {
             _ => bug("expected a list"),
         }
     }
+}
+
+/// A `files.Entry`.
+pub fn entry(name: &str, dir: bool) -> W {
+    new_con(known_con(prog().known.entry), &[new_str(name), bool_w(dir)])
 }
 
 pub fn parsed(v: W, stop: usize) -> W {

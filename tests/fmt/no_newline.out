@@ -1,0 +1,5 @@
+-- stdout
+module nonl
+let X = 1
+-- stderr
+-- exit 0

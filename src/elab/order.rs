@@ -51,10 +51,22 @@ pub fn plan(m: &ast::Module) -> Plan {
             DeclKind::Check { .. } => {}
         }
     }
+    // A function whose result type isn't written: its type is known only
+    // once its body is checked.
+    let inferred = |k: usize| match &m.decls[k].kind {
+        DeclKind::Fn { result, constraints, .. } => match result {
+            None => true,
+            Some(r) => !constraints.iter().any(|c| matches!(c, Constraint::Typed { name, .. } if name.name == r.name)),
+        },
+        _ => false,
+    };
     let is_type = |k: usize| matches!(m.decls[k].kind, DeclKind::Enum { .. } | DeclKind::Record { .. } | DeclKind::Alias { .. });
     let has_body = |k: usize| matches!(m.decls[k].kind, DeclKind::Fn { .. } | DeclKind::Lemma { .. });
 
     let mut edges: HashMap<Node, HashSet<Node>> = HashMap::new();
+    // Soft edges only order checking: a body that uses a function with an
+    // inferred result comes after that function's body, where possible.
+    let mut soft: HashMap<Node, HashSet<Node>> = HashMap::new();
     let mut need = |from: Node, refs: &Refs, computed: bool| {
         let e = edges.entry(from).or_default();
         for (n, in_type) in &refs.0 {
@@ -62,6 +74,8 @@ pub fn plan(m: &ast::Module) -> Plan {
             e.insert(Node::Head(k));
             if (computed || *in_type) && has_body(k) {
                 e.insert(Node::Body(k));
+            } else if matches!(from, Node::Body(u) if u != k) && inferred(k) {
+                soft.entry(from).or_default().insert(Node::Body(k));
             }
         }
     };
@@ -147,7 +161,26 @@ pub fn plan(m: &ast::Module) -> Plan {
             nodes.push(Node::Body(k));
         }
     }
-    let sccs = tarjan(&nodes, &edges);
+    let mut both = edges.clone();
+    for (n, ts) in soft {
+        both.entry(n).or_default().extend(ts);
+    }
+    // Order by both kinds of edge; within a group the soft edges make, by
+    // the hard ones only (so only those can be cycles).
+    let mut sccs = Vec::new();
+    for group in tarjan(&nodes, &both) {
+        if group.len() == 1 {
+            sccs.push(group);
+            continue;
+        }
+        let members: HashSet<Node> = group.iter().copied().collect();
+        let inner: HashMap<Node, HashSet<Node>> = group
+            .iter()
+            .map(|n| (*n, edges.get(n).map(|e| e.iter().copied().filter(|x| members.contains(x)).collect()).unwrap_or_default()))
+            .collect();
+        let ordered: Vec<Node> = nodes.iter().copied().filter(|n| members.contains(n)).collect();
+        sccs.extend(tarjan(&ordered, &inner));
+    }
     let mut plan = Plan { groups: Vec::new(), cycles: Vec::new() };
     for scc in sccs {
         let cyclic = scc.len() > 1 || edges.get(&scc[0]).is_some_and(|e| e.contains(&scc[0]));

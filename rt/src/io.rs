@@ -29,6 +29,11 @@ pub fn print_line(s: &str) {
     let _ = writeln!(io.out, "{s}");
 }
 
+pub fn write(b: &[u8]) {
+    let mut io = std_io();
+    let _ = io.out.write_all(b);
+}
+
 pub fn eprint_line(s: &str) {
     let mut io = std_io();
     let _ = io.out.flush();

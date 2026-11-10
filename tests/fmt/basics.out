@@ -1,3 +1,4 @@
+-- stdout
 # basics.ck — formatter input (D91, D92). The expected output is basics.out.
 module basics
 import list (map)
@@ -22,3 +23,5 @@ fn sum xs -> n : xs~List Nat, n~Nat
         x :: rest -> x + sum rest
 check area (Rect 2 3) == 6
 check total [Circle 1, Empty] == 3
+-- stderr
+-- exit 0

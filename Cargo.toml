@@ -10,7 +10,7 @@ license = "UNLICENSED"
 publish = false
 
 [[bin]]
-name = "checkers"
+name = "ckc"
 path = "src/main.rs"
 
 [lib]

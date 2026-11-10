@@ -1,0 +1,17 @@
+
+
+# Blank lines: at most one, none at the start of a block or the file.
+module blanks
+
+
+
+fn f x : x~Nat
+
+    let y = x
+
+
+    y
+fn g x : x~Nat
+    x
+
+

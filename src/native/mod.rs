@@ -32,7 +32,7 @@ pub(crate) fn descriptor(g: &Globals, p: &lower::Program) -> String {
     let find = |module: &str, name: &str| {
         g.cons.iter().position(|c| &*c.name == name && &*g.tys[c.ty.0 as usize].module == module).map(|i| i as u32)
     };
-    let known: [(&str, Option<u32>); 12] = [
+    let known: [(&str, Option<u32>); 13] = [
         ("true", wk.true_con.map(|c| c.0)),
         ("false", wk.false_con.map(|c| c.0)),
         ("some", wk.some.map(|c| c.0)),
@@ -45,6 +45,7 @@ pub(crate) fn descriptor(g: &Globals, p: &lower::Program) -> String {
         ("system", find("system", "System")),
         ("success", find("system", "Success")),
         ("failure", find("system", "Failure")),
+        ("entry", find("files", "Entry")),
     ];
     for (k, v) in known {
         if let Some(v) = v {
@@ -210,7 +211,7 @@ pub fn build(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId, ou
     let obj = dir.join("program.o");
     std::fs::write(&obj, bytes).map_err(|e| e.to_string())?;
     let lib = runtime_library().ok_or_else(|| {
-        "the runtime library (libcheckers_rt.a) was not found next to `checkers`; set CHECKERS_RT_LIB to its path".to_string()
+        "the runtime library (libcheckers_rt.a) was not found next to `ckc`; set CHECKERS_RT_LIB to its path".to_string()
     })?;
     let status = std::process::Command::new(std::env::var("CC").unwrap_or_else(|_| "cc".into()))
         .arg("-o")

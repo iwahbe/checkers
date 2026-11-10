@@ -1,0 +1,18 @@
+-- stdout
+no newline, then bytes
+concatenated
+b"world"
+b"abcd"
+Some "café"
+None
+one.txt
+poem.txt
+No such file or directory
+PATH: set
+None
+executable: known
+from a child
+Ok 3
+No such file or directory
+-- stderr
+-- exit 0

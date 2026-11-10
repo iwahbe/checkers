@@ -19,3 +19,10 @@ export fn read_line term -> r : term~Term, r~Option String
 
 export fn describe e -> s : e~IoError, s~String
     files.describe e
+
+# Write to standard output without adding a newline.
+export fn write s term -> r : s~String, term~Term, r~Unit
+    __builtin
+
+export fn write_bytes b term -> r : b~Bytes, term~Term, r~Unit
+    __builtin

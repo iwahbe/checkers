@@ -1,6 +1,6 @@
 //! The standard library's `__builtin` functions for native code. Each takes
 //! its kept (non-erased) arguments as a borrowed array and returns an owned
-//! word. Behaviour matches the interpreter's (`src/run/builtins.rs`, D76).
+//! word. Runtime errors are reported as D76 describes.
 
 use crate::num::{Decimal, Num};
 use crate::obj::*;
@@ -44,6 +44,16 @@ pub const NAMES: &[(&str, &str)] = &[
     ("bag.sum", "ckb_bag_sum"),
     ("cown.new", "ckb_cown_new"),
     ("future.ready", "ckb_future_ready"),
+    ("terminal.write", "ckb_write"),
+    ("terminal.write_bytes", "ckb_write_bytes"),
+    ("string.concat", "ckb_string_concat"),
+    ("string.from_utf8", "ckb_from_utf8"),
+    ("bytes.slice", "ckb_bytes_slice"),
+    ("bytes.concat", "ckb_bytes_concat"),
+    ("files.list", "ckb_files_list"),
+    ("env.get", "ckb_env_get"),
+    ("env.executable", "ckb_env_executable"),
+    ("proc.exec", "ckb_proc_exec"),
 ];
 
 /// The address of each builtin, for the JIT.
@@ -80,6 +90,16 @@ pub fn addresses() -> Vec<(&'static str, *const u8)> {
         ("ckb_bag_sum", f(ckb_bag_sum)),
         ("ckb_cown_new", f(ckb_cown_new)),
         ("ckb_future_ready", f(ckb_future_ready)),
+        ("ckb_write", f(ckb_write)),
+        ("ckb_write_bytes", f(ckb_write_bytes)),
+        ("ckb_string_concat", f(ckb_string_concat)),
+        ("ckb_from_utf8", f(ckb_from_utf8)),
+        ("ckb_bytes_slice", f(ckb_bytes_slice)),
+        ("ckb_bytes_concat", f(ckb_bytes_concat)),
+        ("ckb_files_list", f(ckb_files_list)),
+        ("ckb_env_get", f(ckb_env_get)),
+        ("ckb_env_executable", f(ckb_env_executable)),
+        ("ckb_proc_exec", f(ckb_proc_exec)),
     ]
 }
 
@@ -357,3 +377,99 @@ builtin!(ckb_bag_sum, |a| match (obj(a[0]), obj(a[1])) {
 builtin!(ckb_cown_new, |a| new_obj(Obj::Cown(new_cell(dup(a[0])))));
 
 builtin!(ckb_future_ready, |a| new_obj(Obj::Future(new_cell(dup(a[0])))));
+
+builtin!(ckb_write, |a| {
+    crate::io::write(s(a[0]).as_bytes());
+    UNIT
+});
+
+builtin!(ckb_write_bytes, |a| {
+    crate::io::write(b(a[0]));
+    UNIT
+});
+
+builtin!(ckb_string_concat, |a| {
+    let parts = list_items(a[0]);
+    let mut out = String::with_capacity(parts.iter().map(|p| s(*p).len()).sum());
+    for p in parts {
+        out.push_str(s(p));
+    }
+    new_str(&out)
+});
+
+builtin!(ckb_from_utf8, |a| match std::str::from_utf8(b(a[0])) {
+    Ok(t) => some(new_str(t)),
+    Err(_) => none(),
+});
+
+builtin!(ckb_bytes_slice, |a| {
+    let (src, i, j) = (b(a[0]), n(a[1]), n(a[2]));
+    match src.get(i..j) {
+        Some(x) => new_bytes(x),
+        None => bug("`bytes.slice` out of range"),
+    }
+});
+
+builtin!(ckb_bytes_concat, |a| {
+    let parts = list_items(a[0]);
+    let mut out = Vec::with_capacity(parts.iter().map(|p| b(*p).len()).sum());
+    for p in parts {
+        out.extend_from_slice(b(p));
+    }
+    new_bytes(&out)
+});
+
+builtin!(ckb_files_list, |a| match path(a[1], s(a[0])) {
+    Err(e) => err(e),
+    Ok(p) => match std::fs::read_dir(p) {
+        Err(e) => err(describe_io(&e)),
+        Ok(rd) => {
+            let mut es = Vec::new();
+            for e in rd {
+                match e {
+                    Ok(e) => {
+                        let dir = e.file_type().is_ok_and(|t| t.is_dir());
+                        es.push((e.file_name().to_string_lossy().into_owned(), dir));
+                    }
+                    Err(e) => return err(describe_io(&e)),
+                }
+            }
+            es.sort();
+            ok(list(es.into_iter().map(|(n, d)| entry(&n, d)).collect()))
+        }
+    },
+});
+
+builtin!(ckb_env_get, |a| match std::env::var(s(a[0])) {
+    Ok(v) => some(new_str(&v)),
+    Err(_) => none(),
+});
+
+builtin!(ckb_env_executable, |_a| match std::env::current_exe() {
+    Ok(p) => match p.to_str() {
+        Some(t) => some(new_str(t)),
+        None => none(),
+    },
+    Err(_) => none(),
+});
+
+builtin!(ckb_proc_exec, |a| {
+    let args: Vec<&str> = list_items(a[1]).into_iter().map(s).collect();
+    // Output written so far comes first.
+    crate::io::flush();
+    match std::process::Command::new(s(a[0])).args(args).status() {
+        Ok(st) => {
+            #[cfg(unix)]
+            let signal = std::os::unix::process::ExitStatusExt::signal(&st);
+            #[cfg(not(unix))]
+            let signal: Option<i32> = None;
+            let code = match (st.code(), signal) {
+                (Some(c), _) => c as usize,
+                (None, Some(sig)) => 128 + sig as usize,
+                (None, None) => 1,
+            };
+            ok(nat(code))
+        }
+        Err(e) => err(describe_io(&e)),
+    }
+});

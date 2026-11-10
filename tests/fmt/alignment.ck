@@ -1,0 +1,24 @@
+# Alignment of arms and constructors (D92).
+module alignment
+
+enum Shape
+    Circle r : r~Nat
+    Unit
+    Rectangle w h : w~Nat, h~Nat
+
+fn f s : s~Shape
+    match s
+        Circle r if r > 100 -> 1
+        Circle r -> 2
+        Unit ->
+            match 3
+                0 -> 0
+                long_name -> long_name
+        Rectangle w h -> w * h
+
+fn g n : n~Nat
+    match n
+        0 -> 0
+        1 -> 1
+
+        many -> many

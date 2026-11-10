@@ -303,6 +303,8 @@ pub struct Elab {
     pub alias_preds: HashMap<DefId, Vec<Pred>>,
     /// The name a refinement alias binds (`n` in `type Big = n~Int, …`).
     pub alias_subject: HashMap<DefId, Name>,
+    /// The result type of a function whose result type isn't written.
+    pub result_metas: HashMap<MetaId, DefId>,
     /// The function whose argument is being checked, for messages (D85).
     pub arg_of: Option<String>,
     /// Inside a type or specification: no obligations (§7.1).
@@ -377,6 +379,7 @@ impl Elab {
             con_invs: HashMap::new(),
             alias_preds: HashMap::new(),
             alias_subject: HashMap::new(),
+            result_metas: HashMap::new(),
             arg_of: None,
             in_spec: 0,
             in_app_head: false,
@@ -447,6 +450,20 @@ impl Elab {
                 let (expected, actual) = (&self.force(expected), &self.force(actual));
                 let e = self.show_val(cx, expected);
                 let a = self.show_val(cx, actual);
+                // A function checked later whose result type isn't written.
+                let pending = [expected, actual].into_iter().find_map(|v| match v {
+                    Val::Neutral(Head::Meta(m), _) => self.result_metas.get(m).copied(),
+                    _ => None,
+                });
+                if let Some(f) = pending {
+                    let name = self.g.defs[f.0 as usize].name.to_string();
+                    self.err(
+                        Diagnostic::error("E0201", format!("the result type of `{name}` isn't known yet here"), span)
+                            .with_label(format!("`{name}` is checked after this, since they call each other"))
+                            .with_help(format!("write `{name}`'s result type in its signature (`-> r : …, r~{e}`)")),
+                    );
+                    return false;
+                }
                 let mut d = Diagnostic::error("E0201", format!("type mismatch: expected `{e}`, found `{a}`"), span)
                     .with_label(format!("{what} has type `{a}`"));
                 // A sealed function in a type never unfolds outside its module (D54).

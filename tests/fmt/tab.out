@@ -1,0 +1,4 @@
+-- stdout
+-- stderr
+<stdin>:4:1: tabs are not allowed in indentation; use spaces
+-- exit 1
