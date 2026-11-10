@@ -209,6 +209,48 @@ fn fnv(s: &str) -> u64 {
     h
 }
 
+/// Functions recursing by `decreasing` whose recursion ends without their
+/// preconditions: every termination obligation in their bodies holds with
+/// the preconditions left out (D118). Recorded on the elaborator, so a
+/// standard-library function decided once stays decided for its users.
+fn ends_everywhere(e: &Elab, obs: &[&Obligation]) {
+    use crate::elab::ObKind;
+    // Each candidate's termination obligations, without its preconditions.
+    let mut cands: Vec<(crate::core::DefId, Vec<Obligation>)> = Vec::new();
+    for o in obs {
+        let (ObKind::Measure { .. }, Some(owner)) = (&o.kind, o.owner) else { continue };
+        let Some(spec) = e.specs.get(&owner) else { continue };
+        let n_pre = spec.preds.iter().filter(|p| !p.is_post).count();
+        if n_pre == 0 || o.facts.len() < n_pre {
+            continue;
+        }
+        let mut reduced = (*o).clone();
+        reduced.facts.drain(..n_pre);
+        match cands.iter_mut().find(|(d, _)| *d == owner) {
+            Some((_, v)) => v.push(reduced),
+            None => cands.push((owner, vec![reduced])),
+        }
+    }
+    if cands.is_empty() {
+        return;
+    }
+    let all: Vec<&Obligation> = cands.iter().flat_map(|(_, v)| v.iter()).collect();
+    let user = &all[0].module;
+    let defs = smt::Defs::default();
+    let texts: Vec<Option<String>> =
+        all.iter().map(|o| smt::Builder::new(e, user).sharing(&defs).query(o).ok().map(|q| q.text)).collect();
+    let answers = ask_all(&texts);
+    let mut k = 0;
+    let mut set = e.ends_everywhere.lock().unwrap_or_else(|e| e.into_inner());
+    for (d, v) in &cands {
+        let ok = answers[k..k + v.len()].iter().all(|a| matches!(a, Some(Answer::Unsat)));
+        k += v.len();
+        if ok {
+            set.insert(*d);
+        }
+    }
+}
+
 /// Prove the obligations of module `user` (§7.2).
 pub fn verify(e: &Elab, user: &str) -> Verified {
     let obs: Vec<&Obligation> = e
@@ -244,6 +286,9 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     if obs.is_empty() {
         return v;
     }
+    // Which functions recursing by `decreasing` end whatever their
+    // preconditions say: their definitions need no precondition guard (M17).
+    ends_everywhere(e, &obs);
     // Translate on this thread (the elaborator isn't `Send`), solve in parallel.
     let defs = smt::Defs::default();
     let queries: Vec<Result<smt::Query, smt::Outside>> = obs.iter().map(|o| smt::Builder::new(e, user).sharing(&defs).query(o)).collect();

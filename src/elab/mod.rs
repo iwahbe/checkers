@@ -163,7 +163,7 @@ pub enum OpClass {
 
 /// Predicates recorded for the prover (M3).
 /// What an obligation is for; decides how a failure is reported (§7.1).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ObKind {
     Pre { callee: String },
     Post { func: String, at: Span },
@@ -341,6 +341,9 @@ pub struct Elab {
     /// Measure obligations of calls (caller, callee); kept only for calls
     /// inside one recursive group once termination is analysed.
     pub measure_obs: Vec<(DefId, DefId, Obligation)>,
+    /// Functions recursing by `decreasing` that end without their
+    /// preconditions (D118), found while proving.
+    pub ends_everywhere: std::sync::Mutex<HashSet<DefId>>,
     /// Heads of saturated calls (recursion through a partial application
     /// can't have its measure checked, E0303).
     pub saturated_heads: HashSet<Span>,
@@ -399,6 +402,7 @@ impl Elab {
             builtin_axioms: Vec::new(),
             axiom_defs: HashSet::new(),
             measure_obs: Vec::new(),
+            ends_everywhere: Default::default(),
             saturated_heads: HashSet::new(),
             resource_vars: HashMap::new(),
             stdlib_mode: false,
@@ -811,8 +815,16 @@ impl Elab {
 
     /// Record `facts in cx ⊢ goal`.
     pub fn oblige(&mut self, cx: &Cx, span: Span, kind: ObKind, text: String, goal: Val, only_if_nat: Option<Val>) {
+        // In a specification only a callee's precondition is checked: a spec
+        // mustn't speak of a call that can't be made (M17, D118). A
+        // specification elaborated twice (a lemma's `ensures`) obliges once.
         if self.in_spec > 0 {
-            return;
+            if !matches!(kind, ObKind::Pre { .. }) {
+                return;
+            }
+            if self.obligations.iter().any(|o| o.span == span && o.module == self.cur && o.kind == kind) {
+                return;
+            }
         }
         let ctx = (0..cx.lvl())
             .map(|l| ObLocal {

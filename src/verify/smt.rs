@@ -1778,14 +1778,69 @@ impl<'a> Builder<'a> {
         let saved = self.in_def;
         self.in_def = true;
         let r_body = self.term(&env, &body);
+        let guard = self.domain(inst, &env);
         self.in_def = saved;
-        let (bt, _) = r_body?;
+        let (mut bt, _) = r_body?;
+        // A definition recursing by `decreasing` ends only where its
+        // precondition holds and its `Nat`s are `Nat`s: Z3 gets the equation
+        // there, and an unknown value elsewhere (M17, D118).
+        if let Some(guard) = guard? {
+            let out_name = sym(&format!("{}#outside", name.trim_matches('|')));
+            self.funs.insert(
+                out_name.clone(),
+                format!(
+                    "(declare-fun {out_name} ({}) {})",
+                    params.iter().map(|(_, s)| s.render(self.e)).collect::<Vec<_>>().join(" "),
+                    r.render(self.e)
+                ),
+            );
+            let args: Vec<&str> = params.iter().map(|(n, _)| n.as_str()).collect();
+            let outside = if args.is_empty() { out_name } else { format!("({out_name} {})", args.join(" ")) };
+            bt = format!("(ite {guard} {bt} {outside})");
+        }
         let head = format!(
             "({name} ({}) {})",
             params.iter().map(|(n, s)| format!("({n} {})", s.render(self.e))).collect::<Vec<_>>().join(" "),
             r.render(self.e)
         );
         Ok((name, head, bt))
+    }
+
+    /// Where a definition recursing by `decreasing` is known to end: its
+    /// preconditions, and its `Nat` parameters non-negative. None for other
+    /// definitions (structural recursion ends on every value Z3 can build).
+    fn domain(&mut self, inst: &Inst, env: &[Ent]) -> Tx<Option<String>> {
+        let Some(spec) = self.e.specs.get(&inst.def).cloned() else { return Ok(None) };
+        if spec.measure.is_none() {
+            return Ok(None);
+        }
+        // Its recursion ends without the preconditions: only `Nat`s matter.
+        let everywhere = self.e.ends_everywhere.lock().unwrap_or_else(|e| e.into_inner()).contains(&inst.def);
+        let mut conds = Vec::new();
+        // Nat parameters.
+        let mut ty = self.e.g.defs[inst.def.0 as usize].ty.clone();
+        let mut k = 0;
+        while let Tm::Pi(_, _, _, a, b) = ty {
+            if self.is_nat_tm(&a) {
+                if let Some(Ent::Term(n, _)) = env.get(k) {
+                    conds.push(format!("(>= {n} 0)"));
+                }
+            }
+            ty = (*b).clone();
+            k += 1;
+        }
+        // Preconditions, elaborated with the result in scope after the parameters.
+        let mut penv = env.to_vec();
+        penv.push(Ent::Opaque("the result".into()));
+        for pred in spec.preds.iter().filter(|p| !p.is_post && !everywhere) {
+            let (t, _) = self.term(&penv, &pred.tm)?;
+            conds.push(t);
+        }
+        Ok(match conds.len() {
+            0 => None,
+            1 => conds.pop(),
+            _ => Some(format!("(and {})", conds.join(" "))),
+        })
     }
 
     fn assume_posts(&mut self) {

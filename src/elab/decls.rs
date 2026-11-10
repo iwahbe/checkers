@@ -1079,12 +1079,24 @@ impl Elab {
             }
         }
         let _ = rl;
+        // While the signature is elaborated, each condition is known to the
+        // ones after it, so a call in one may rely on those before (M17);
+        // the body gets its facts its own way, so these are dropped after.
+        let facts_before = cx.facts.len();
+        for p in &preds {
+            let v = self.eval(&cx, &p.tm);
+            cx.assume(v);
+        }
         for c in cs {
             if let Constraint::Pred(e) = c {
                 let is_post = result.is_some_and(|r| mentions(e, &r.name));
-                preds.push(self.elab_pred(&mut cx, e, is_post));
+                let p = self.elab_pred(&mut cx, e, is_post);
+                let v = self.eval(&cx, &p.tm);
+                cx.assume(v);
+                preds.push(p);
             }
         }
+        cx.facts.truncate(facts_before);
         cx.pop();
         Sig { cx, binders, result: result_ty, n_implicit, preds, result_name: rname, comptime }
     }
@@ -1320,6 +1332,14 @@ impl Elab {
             let Some(sig) = sigs.get(&k) else { continue };
             self.g.fuel.set(DEFAULT_FUEL);
             let mut cx = sig.cx.clone();
+            // The hypotheses are known while the conclusion is elaborated (M17).
+            // They were elaborated with a (lemma-less) result in scope.
+            let mut with_result = cx.clone();
+            with_result.bind("_result", Val::Univ(0), Mult::Zero);
+            let hyps: Vec<Val> = sig.preds.iter().map(|p| self.eval(&with_result, &p.tm)).collect();
+            for v in hyps {
+                cx.assume(v);
+            }
             let lets_tm = self.lemma_lets(&mut cx, lets);
             let ens = self.elab_pred(&mut cx, ensures, true);
             self.solve_deferred();

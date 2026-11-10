@@ -1,0 +1,36 @@
+error[E0450]: cannot prove `r == half x`, the postcondition of `unguarded`
+  --> spec_preconditions.ck:15:37
+   |
+15 | fn unguarded x -> r : x~Nat, r~Nat, r == half x
+   |                                     ^^^^^^^^^^^ promised here
+   = note: for the value returned on line 16: `0`
+   = note: counterexample: x = 0
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+error[E0450]: cannot prove `x >= 1`, required to call `half`
+  --> spec_preconditions.ck:15:42
+   |
+15 | fn unguarded x -> r : x~Nat, r~Nat, r == half x
+   |                                          ^^^^^^ `half` requires `x >= 1`
+   = note: counterexample: x = 0
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+error[E0450]: cannot prove `x >= 1`, required to call `half`
+  --> spec_preconditions.ck:26:13
+   |
+26 |     ensures half y == half y
+   |             ^^^^^^ `half` requires `x >= 1`
+   = note: facts in scope: `y == 0`
+   = note: counterexample: y = 0
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+error[E0450]: cannot prove `x >= 1`, required to call `half`
+  --> spec_preconditions.ck:26:23
+   |
+26 |     ensures half y == half y
+   |                       ^^^^^^ `half` requires `x >= 1`
+   = note: facts in scope: `y == 0`
+   = note: counterexample: y = 0
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+spec_preconditions.ck: 4 errors, 0 warnings

@@ -1,0 +1,16 @@
+error[E0450]: cannot prove `r > 0`, the postcondition of `bad`
+  --> reflect_domain.ck:19:31
+   |
+19 | fn bad n -> r : n~Nat, r~Nat, r > 0
+   |                               ^^^^^ promised here
+   = note: for the value returned on line 21: `x + 1`
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+error[E0450]: cannot prove `x >= 1`, required to call `half`
+  --> reflect_domain.ck:20:13
+   |
+20 |     let x = half 0
+   |             ^^^^^^ `half` requires `x >= 1`
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+reflect_domain.ck: 2 errors, 0 warnings
