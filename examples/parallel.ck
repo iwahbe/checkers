@@ -69,11 +69,11 @@ fn compare_files p1 r1 p2 r2 term -> code : p1~String, r1~Result Bytes IoError,
         (Ok x, Ok y) if x == y ->
             terminal.print_line "same" term
             Success
-        (Ok _, Ok _)           ->
+        (Ok _, Ok _) ->
             terminal.print_line "different" term
             Failure 1
-        (Err e, _)             -> read_failed p1 e term
-        (_, Err e)             -> read_failed p2 e term
+        (Err e, _)   -> read_failed p1 e term
+        (_, Err e)   -> read_failed p2 e term
 
 fn read_failed path e term -> code : path~String, e~IoError, term~Term, code~ExitCode
     terminal.eprint_line ("parallel: " ++ path ++ ": " ++ files.describe e) term

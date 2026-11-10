@@ -1,4 +1,5 @@
-# Proposed: an arm with a guard doesn't take part in alignment.
+-- stdout
+# An arm with a guard doesn't take part in alignment.
 module wide_arms
 
 fn value src i depth : src~Bytes, i~Nat, depth~Nat
@@ -9,3 +10,5 @@ fn value src i depth : src~Bytes, i~Nat, depth~Nat
         Some '[' ->
             3
         Some b   -> 4
+-- stderr
+-- exit 0

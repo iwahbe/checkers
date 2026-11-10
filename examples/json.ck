@@ -86,22 +86,22 @@ fn value src i depth -> r : src~Bytes, i~Nat, i <= len src, depth~Nat,
                             r~Result (Parsed Json src i) (Error src)
     decreasing (len src - i, 0)
     match peek src i
-        None                           -> Err (Error i UnexpectedEnd)
-        Some 'n'                       -> literal src i b"null" Null
-        Some 't'                       -> literal src i b"true" (Bool True)
-        Some 'f'                       -> literal src i b"false" (Bool False)
-        Some '"'                       ->
+        None     -> Err (Error i UnexpectedEnd)
+        Some 'n' -> literal src i b"null" Null
+        Some 't' -> literal src i b"true" (Bool True)
+        Some 'f' -> literal src i b"false" (Bool False)
+        Some '"' ->
             let s = try string_body src (i + 1)
             Ok (Parsed (Str s.value) s.stop)
         Some '[' if depth >= MAX_DEPTH -> Err (Error i TooDeep)
-        Some '['                       ->
+        Some '[' ->
             let a = try array src (i + 1) (depth + 1)
             Ok (Parsed (Arr a.value) a.stop)
         Some '{' if depth >= MAX_DEPTH -> Err (Error i TooDeep)
-        Some '{'                       ->
+        Some '{' ->
             let o = try object src (i + 1) (depth + 1)
             Ok (Parsed (Obj o.value) o.stop)       # o.value~Members carries unique (keys …)
-        Some b                         ->
+        Some b   ->
             match decimal.scan_json src i
                 Some n -> Ok (Parsed (Num n.value) n.stop)
                 None   -> Err (Error i (UnexpectedByte b))
@@ -170,8 +170,8 @@ fn expect src i b -> r : src~Bytes, i~Nat, i <= len src, b~U8,
                          r~Result (Parsed Unit src i) (Error src)
     match peek src i
         Some c if c == b -> Ok (Parsed () (i + 1))
-        Some c           -> Err (Error i (UnexpectedByte c))
-        None             -> Err (Error i UnexpectedEnd)
+        Some c -> Err (Error i (UnexpectedByte c))
+        None   -> Err (Error i UnexpectedEnd)
 
 fn quoted src k -> r : src~Bytes, k~Nat, k <= len src,
                        r~Result (Parsed String src k) (Error src)
@@ -191,13 +191,13 @@ fn chars src start k acc -> r : src~Bytes, start~Nat, k~Nat, start <= k, k <= le
                                 r~Result (Parsed String src start) (Error src)
     decreasing len src - k
     match peek src k
-        None               -> Err (Error k UnexpectedEnd)
-        Some '"'           -> Ok (Parsed (string.from_chars (reverse acc)) (k + 1))
-        Some '\\'          ->
+        None      -> Err (Error k UnexpectedEnd)
+        Some '"'  -> Ok (Parsed (string.from_chars (reverse acc)) (k + 1))
+        Some '\\' ->
             let e = try escape src (k + 1)
             chars src start e.stop (e.value :: acc)
         Some b if b < 0x20 -> Err (Error k ControlInString)
-        Some _             ->
+        Some _    ->
             match utf8.decode_at src k            # Parsed Char src k: always advances
                 Some c -> chars src start c.stop (c.value :: acc)
                 None   -> Err (Error k BadUtf8)
@@ -231,9 +231,9 @@ fn hex_value b -> n : b~U8, hex_digit b, n~Nat, n < 16
 fn hex4 src i -> r : src~Bytes, i~Nat, i <= len src,
                      r~Result (Parsed Hex16 src i) (Error src)
     if i + 4 <= len src and hex_digit src[i] and hex_digit src[i + 1]
-        and hex_digit src[i + 2] and hex_digit src[i + 3]
+                        and hex_digit src[i + 2] and hex_digit src[i + 3]
         let n = hex_value src[i] * 4096 + hex_value src[i + 1] * 256
-            + hex_value src[i + 2] * 16 + hex_value src[i + 3]
+              + hex_value src[i + 2] * 16 + hex_value src[i + 3]
         Ok (Parsed n (i + 4))                # n < 0x10000 follows from each digit < 16
     else
         Err (Error i BadEscape)
@@ -271,13 +271,13 @@ fn quote s -> q : s~String, q~String
 
 fn escape_char c -> s : c~Char, s~String
     match c
-        c'"'                    -> "\\\""
-        c'\\'                   -> "\\\\"
-        c'\n'                   -> "\\n"
-        c'\r'                   -> "\\r"
-        c'\t'                   -> "\\t"
+        c'"'  -> "\\\""
+        c'\\' -> "\\\\"
+        c'\n' -> "\\n"
+        c'\r' -> "\\r"
+        c'\t' -> "\\t"
         _ if char.code c < 0x20 -> "\\u" ++ hex4_string (char.code c)
-        _                       -> string.from_char c
+        _     -> string.from_char c
 
 fn hex4_string n -> s : n~Nat, n < 0x10000, s~String
     string.from_chars [hex_char (n / 4096), hex_char (n / 256 % 16), hex_char (n / 16 % 16), hex_char (n % 16)]
@@ -361,7 +361,7 @@ lemma elements_render items acc pre post start d
       d~Nat, d + max_of (map depth items) <= MAX_DEPTH
     let src = pre ++ utf8.encode (join "," (map render items) ++ "]") ++ post
     ensures elements src start (len pre) d acc
-        == Ok (Parsed (reverse acc ++ items) (len src - len post))
+         == Ok (Parsed (reverse acc ++ items) (len src - len post))
     proof
         match items
             []        -> auto                                               # excluded by items != []
@@ -411,7 +411,7 @@ lemma members_render fields pre post d : fields~Members, pre~Bytes, post~Bytes, 
 # Evaluated by the compiler; a failing `check` is a compile error.
 
 check parse b"[1, true, \"a\\u00e9\"]"
-    == Ok (Arr [Num (decimal.of_int 1), Bool True, Str "aé"])
+      == Ok (Arr [Num (decimal.of_int 1), Bool True, Str "aé"])
 check parse b"{\"a\":1,\"a\":2}" == Err (Error 7 (DuplicateKey "a"))
 check parse b"[1,]" == Err (Error 3 (UnexpectedByte ']'))
 check parse b"\"\\ud800\"" == Err (Error 7 BadEscape)

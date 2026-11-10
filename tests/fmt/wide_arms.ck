@@ -1,4 +1,4 @@
-# Proposed: an arm with a guard doesn't take part in alignment.
+# An arm with a guard doesn't take part in alignment.
 module wide_arms
 
 fn value src i depth : src~Bytes, i~Nat, depth~Nat

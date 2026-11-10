@@ -1,4 +1,4 @@
-# Proposed: a continuation line outside brackets keeps the indentation its
+# A continuation line outside brackets keeps the indentation its
 # author gave it, relative to the line it continues (at least 4).
 module continuation_ops
 

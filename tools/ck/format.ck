@@ -171,7 +171,8 @@ fn emit toks cur target what base lead acc -> r : toks~List Tok, cur~Cursor, tar
             emit rest c2 target2 what base False (t.text :: spaces n :: acc)
 
 # Where a continuation line starts (D92).
-fn cont_col cur first indent -> c : cur~Cursor, first~Option Tok, indent~Nat, c~Nat
+# `origin`: the column the logical line started at in the input.
+fn cont_col cur first indent origin -> c : cur~Cursor, first~Option Tok, indent~Nat, origin~Nat, c~Nat
     match cur.brackets
         b :: _ ->
             let closing = match first
@@ -186,7 +187,19 @@ fn cont_col cur first indent -> c : cur~Cursor, first~Option Tok, indent~Nat, c~
         []     ->
             match cur.sig
                 Some c -> c
-                None   -> indent + INDENT
+                None   -> indent + kept_offset first origin
+
+# Outside brackets, a continuation line keeps the indentation its author
+# gave it, relative to the line it continues, and at least one level (D99).
+fn kept_offset first origin -> n : first~Option Tok, origin~Nat, n~Nat
+    match first
+        Some t -> if t.col >= origin + INDENT then t.col - origin else INDENT
+        None   -> INDENT
+
+fn first_col toks -> c : toks~List Tok, c~Nat
+    match toks
+        t :: _ -> t.col
+        []     -> 0
 
 # ── Alignment (D92) ──────────────────────────────────────────────────────────
 
@@ -239,6 +252,12 @@ fn before toks what d acc -> r : toks~List Tok, what~Bytes, d~Nat, acc~List Tok,
             else
                 before rest what (syntax.depth_after [t] d) (t :: acc)
 
+# An arm with a guard (`Some x if x > 0`) isn't aligned (D99).
+fn guarded toks d : toks~List Tok, d~Nat
+    match toks
+        []        -> False
+        t :: rest -> (d == 0 and syntax.is_text t b"if" and syntax.is_keyword t) or guarded rest (syntax.depth_after [t] d)
+
 fn fresh col pattern header -> c : col~Nat, pattern~Bool, header~Bool, c~Cursor
     Cursor col Begin [] None False pattern header
 
@@ -287,7 +306,11 @@ fn entries placed frames next blanks acc -> r : placed~List Placed, frames~List 
                     let e = match aligns block
                         Some what ->
                             match before toks what 0 []
-                                Some pre -> Entry parent blanks (Some (rendered_width pre (block == Arms))) what
+                                Some pre ->
+                                    if block == Arms and guarded pre 0
+                                        Entry parent blanks None what
+                                    else
+                                        Entry parent blanks (Some (rendered_width pre (block == Arms))) what
                                 None     -> Entry parent blanks None what
                         None      -> Entry parent blanks None b""
                     entries rest (Frame lvl next (block_of toks) :: fs) (next + 1) blanks (e :: acc)
@@ -362,17 +385,18 @@ enum Out
     Code text width comment gap : text~Bytes, width~Nat, comment~Option Tok, gap~Nat
 
 # Render the lines, each logical line with its alignment target.
-fn render placed ts lvl cur acc -> r : placed~List Placed, ts~List (Option Nat, Bytes), lvl~Nat, cur~Cursor,
-                                       acc~List Out, r~List Out
+fn render placed ts lvl origin cur acc -> r : placed~List Placed, ts~List (Option Nat, Bytes), lvl~Nat, origin~Nat,
+                                              cur~Cursor,
+                                              acc~List Out, r~List Out
     match placed
         []        -> reverse acc
         p :: rest ->
             let l = p.line
             match p.role
-                Blank   -> render rest ts lvl cur (Gap :: acc)
+                Blank   -> render rest ts lvl origin cur (Gap :: acc)
                 Note n  ->
                     let text = spaces (n * INDENT) ++ comment_text l.comment
-                    render rest ts lvl cur (Alone text :: acc)
+                    render rest ts lvl origin cur (Alone text :: acc)
                 Start n ->
                     let (target, what, ts2) = match ts
                         (t, w) :: more -> (t, w, more)
@@ -384,19 +408,19 @@ fn render placed ts lvl cur acc -> r : placed~List Placed, ts~List (Option Nat, 
                     let arm = what == b"->"
                     let (pieces, c2) = emit l.toks (fresh indent arm (type_header l.toks)) abs what indent True []
                     let text = spaces indent ++ bytes.concat pieces
-                    render rest ts2 n c2 (Code text c2.col l.comment (author_gap l) :: acc)
+                    render rest ts2 n (first_col l.toks) c2 (Code text c2.col l.comment (author_gap l) :: acc)
                 Cont    ->
                     let first = match l.toks
                         t :: _ -> Some t
                         []     -> None
-                    let col = cont_col cur first (lvl * INDENT)
+                    let col = cont_col cur first (lvl * INDENT) origin
                     match l.toks
-                        [] -> render rest ts lvl cur (Alone (spaces col ++ comment_text l.comment) :: acc)
+                        [] -> render rest ts lvl origin cur (Alone (spaces col ++ comment_text l.comment) :: acc)
                         _  ->
                             let start = Cursor col cur.prev cur.brackets cur.sig cur.sig_wait False cur.header
                             let (pieces, c2) = emit l.toks start None b"" col True []
                             let text = spaces col ++ bytes.concat pieces
-                            render rest ts lvl c2 (Code text c2.col l.comment (author_gap l) :: acc)
+                            render rest ts lvl origin c2 (Code text c2.col l.comment (author_gap l) :: acc)
 
 # The spaces between a line's code and its comment, as written.
 fn author_gap l -> g : l~Line, g~Nat
@@ -456,5 +480,5 @@ export fn format src -> r : src~Bytes, r~Result Bytes SyntaxError
     let placed = try syntax.layout lines
     let kept = blanks placed None False []
     let es = entries kept [] 0 0 []
-    let outs = render kept (targets es es) 0 (fresh 0 False False) []
+    let outs = render kept (targets es es) 0 0 (fresh 0 False False) []
     Ok (lines_text (finish outs None []))
