@@ -98,14 +98,15 @@ This document is the single source of truth for Checkers. Implementation follows
 | D87 | **Function arguments are typed before the function is (§7.5).** For a call like `list.map sub5 xs`, the elaborator takes the type of `xs` before checking `sub5` against `(a -> b)` (as it already does for a lambda, D71), so `a` is `Big` and D85 can see the promise `xs` makes. Without this, the order of arguments would decide whether a program checks. | 11/06/2026 | decided (11/06/2026) |
 | D88 | **Tools written in Checkers ship inside `checkers` (§15.1).** Their source lives in `tools/` and is embedded in the binary like the standard library. `checkers fmt …` and `checkers lsp …` run the tool's `main` with the remaining arguments. A tool is proven by `cargo test` (it must check with zero diagnostics, like `examples/`), not each time it starts. The build compiles each tool to native code linked into `checkers`, so starting one costs no elaboration or code generation. While a tool is being written, `checkers run tools/fmt.ck …` runs the same program. | 11/06/2026 | superseded by D95 (11/10/2026) |
 | D89 | **The `Toolchain` capability (§15.2).** A program run by `checkers` (a bundled tool, or `checkers run`) may take a third parameter `tc~Toolchain` in `main`. It gives in-process access to the compiler: check a file with unsaved buffers taking the place of files on disk, with or without the prover, and get its diagnostics as values. `checkers build` rejects such a `main` with a new error code, because an executable doesn't contain the compiler. | 11/06/2026 | superseded by D97 (11/10/2026) |
-| D90 | **Standard library additions the tools need (§15.3).** Writing to standard output without a newline, and reading exactly *n* bytes from standard input (for LSP message framing); listing a directory; joining many strings in linear time; slicing bytes; checking that bytes are UTF-8; parsing a `Nat`; running a program and waiting for it (`proc.run`, `proc.exec`) and reading environment variables (`env.get`), so the build tool can drive the compiler (D97); `json` moves from `examples/` into the standard library. | 11/06/2026 | **(proposed)** |
+| D90 | **Standard library additions the tools need (§15.3).** For M11: writing to standard output without a newline; listing a directory; joining many strings in linear time; slicing bytes; checking that bytes are UTF-8; running a program with the caller's standard streams (`proc.exec`); reading environment variables and the executable's path (`env.get`, `env.executable`). For the language server (M13): reading exactly *n* bytes from standard input, `proc.run`, parsing a `Nat`, `json` in the standard library. | 11/06/2026 | **(proposed)** |
 | D91 | **One formatting style, with no options (§15.4).** `checkers fmt` has no configuration. Its output parses to the same tree as its input, and formatting it again changes nothing. A file with a syntax error is left alone and the error is reported. Comments, literals as written (`0x20`, `1_000`) and line breaks within a logical line are kept. There is no line-width limit, so the formatter never adds or removes line breaks inside a logical line. | 11/06/2026 | **(proposed)** |
 | D92 | **Formatting rules (§15.4):** 4 spaces per block level; continuation lines line up with the first item after the opening bracket or the signature's `:`, as in `examples/`; single spaces around binary operators, `->`, `<-`, `=` and after `,`, none around `~` or inside brackets; gofmt-style alignment of the arms' `->` in a `match`, the constructors' `:` in an `enum`, and trailing comments on consecutive lines (at the furthest column their author used, so aligned code keeps its layout); at most one blank line in a row, none at the start or end of a block. | 11/06/2026 | **(proposed)** |
 | D93 | **The formatter parses Checkers itself (§15.4).** It is written in Checkers, with its own lexer and parser that keep comments and blank lines (a concrete syntax tree). It does not get the Rust parser's tree, which drops comments. A test runs it over every `.ck` file in the repository and requires `ckc parse` to give the same output before and after, so the two parsers can't drift apart. | 11/06/2026 | **(proposed)** |
-| D94 | **LSP, first version (§15.5).** Full-document sync. Diagnostics come from the compiler (`ckc check --json`, D97), run in a behaviour so that requests are still answered while it works: without the prover when a document changes (the unsaved text on standard input), with it when the document is saved; results for an older version of the document are dropped. Formatting calls the formatter's module directly, and document symbols come from its syntax tree. Positions are UTF-16 code units (the protocol's default, and the only encoding VS Code's client supports), or UTF-8 when the client offers it. Hover, go to definition and completion need queries into the elaborator and come later. | 11/06/2026 | **(proposed)** |
+| D94 | **LSP, first version (§15.5), deferred to M13 by D98.** Full-document sync. Diagnostics come from the compiler (`ckc check --json`, D97), run in a behaviour so that requests are still answered while it works: without the prover when a document changes (the unsaved text on standard input), with it when the document is saved; results for an older version of the document are dropped. Formatting calls the formatter's module directly, and document symbols come from its syntax tree. Positions are UTF-16 code units (the protocol's default, and the only encoding VS Code's client supports), or UTF-8 when the client offers it. Hover, go to definition and completion need queries into the elaborator and come later. | 11/06/2026 | **(proposed)**, deferred (11/10/2026) |
 | D95 | **A compiler and a build tool, like `rustc` and `cargo` (§15.1).** The compiler is written in Rust and built by Cargo with no special cases. The build tool, the command people use, is a Checkers program compiled by the compiler; the formatter and the language server are part of it, as Checkers modules. Supersedes D88, which compiled Checkers tools into the Rust binary. | 11/10/2026 | decided (11/10/2026) |
 | D96 | **Names (§15.1).** The compiler is `ckc`; the build tool is `checkers`. `checkers check`, `run`, `build`, `parse`, `stage` and `trust` pass their arguments to `ckc`; `checkers fmt` and `checkers lsp` are the build tool's own. The build tool finds the compiler through `CKC`, else next to its own executable, else on `PATH`. | 11/10/2026 | **(proposed)** |
-| D97 | **The build tool runs the compiler as a process (§15.2).** `ckc check --json` writes one JSON object per diagnostic, one per line, to standard output; `--no-prove` skips the prover: no Z3 obligations (preconditions, postconditions, refinements, `decreasing` measures, lemmas), everything else as usual; `--stdin` reads the file's text from standard input instead of the disk (an editor's unsaved buffer; exactly one file, whose path still resolves imports and names the diagnostics). The build tool needs `proc.run` (run to completion, capturing output) and `proc.exec` (run with the build tool's standard streams, return the exit code), both operations of the `Proc` authority; long-lived children (`Child`, `Pipe`, D39) are still not needed. Supersedes D89, which gave tools the compiler in process. | 11/10/2026 | **(proposed)** |
+| D97 | **The build tool runs the compiler as a process (§15.2).** `checkers check FILE` runs `ckc check FILE` with the build tool's standard streams and returns its exit code (`proc.exec`, the first operation of the `Proc` authority); the same for the other compiler commands. A machine-readable interface (JSON diagnostics, overlays for unsaved files, an index for go to definition) waits for the language server (§15.5). Supersedes D89, which gave tools the compiler in process. | 11/10/2026 | **(proposed)** |
+| D98 | **Scope and order of the tools work (§10, §15).** M11 is the build tool and the formatter only. M12 makes checking and building faster, including incremental compilation. The language server is M13. | 11/10/2026 | decided (11/10/2026) |
 | D24 | **Development loop:** Claude owns the implementation; Ian drives with examples. An issue is "found X, expected Y" with a `.ck` snippet. Each one becomes a regression test under `tests/` *before* the fix lands, and the spec is updated first whenever the expectation changes the language. | 11/05/2026 | decided |
 | D25 | **Milestones reordered for CLI tools first** (§10): a running interpreter with `IO` comes right after type checking, before the prover, so Checkers can be used to build its own tooling early. ~~Capstone: an interactive shell with a small scripting language, with proofs of its correctness.~~ (removed by D81) | 11/05/2026 | decided |
 
@@ -785,8 +786,9 @@ Reordered (D25) so that Checkers can run CLI tools before the prover exists.
 | M8 | Cranelift backend (§14, D72–D77): closure conversion, word representation, reference counting, tail calls, `checkers build`, lock-free scheduler | every `tests/run/` and `tests/stress/` case gives the same output natively (done); `wc.ck` at least 20× faster than the interpreter (done: 45×); ~~the fork/join tree of §13.7 no slower on 2 threads than on 1~~ replaced by D79: the tree with about 5 µs of work per leaf is faster on 2 threads (done: 1.35×) (done 11/06/2026) |
 | ~~M9~~ | ~~Capstone: interactive shell~~ removed (D81): the shell is not part of this repository | — |
 | M10 | Refined function types (D52, §7.5, D82–D87): refinements written inside types, predicates in function types, refinements compared by implication, preconditions checked and postconditions known at calls of function-typed values, partial applications everywhere (lifts D51, retires E0453) | `list.map (at_least 5) xs` checks when `xs~List (n~Int, n >= 5)`; every case in `tests/types/refined_fn_types.ck` gives the output marked there (done 11/06/2026) |
-| M11 | **(proposed)** The build tool and the formatter (D90–D93, D95–D97, §15.1–15.4): `ckc` (the renamed compiler) with `check --json`, `--no-prove`, `--stdin`; the standard library additions; `checkers` in Checkers, passing compiler commands through; `checkers fmt [--check] [PATH]...`; the golden tests build `checkers` with `ckc` once and use it | `checkers fmt --check` passes on every `.ck` file in the repository (after one reformatting commit, if needed, whose diff Ian reviews); for each of them, formatting is a fixed point and `ckc parse` gives the same output before and after; every case in `tests/proposed/fmt/` gives its `.out` |
-| M12 | **(proposed)** `checkers lsp` (D94, §15.5) | the scripted sessions in `tests/lsp/` (requests in, expected responses out) pass; diagnostics, formatting and document symbols work in VS Code and Neovim |
+| M11 | **(proposed)** The build tool and the formatter (D90–D93, D95–D98, §15.1–15.4): `ckc` (the renamed compiler); the M11 standard library additions; `checkers` written in Checkers, passing compiler commands to `ckc`; `checkers fmt [--check] [PATH]...` and `checkers fmt -`; the golden tests build `checkers` with `ckc` once and use it | `checkers fmt --check` passes on every `.ck` file in the repository (after one reformatting commit, if needed, whose diff Ian reviews); for each of them, formatting is a fixed point and `ckc parse` gives the same output before and after; every case in `tests/proposed/fmt/` gives its `.out`; `checkers check`, `run` and `build` behave as `ckc`'s |
+| M12 | **(proposed)** Faster checking and building (D98): measure where time goes (elaboration, proving, code generation, linking); incremental compilation: an unchanged module is not elaborated again, an unchanged obligation is not proven again (results cached by the query Z3 is given); the vendored Z3 giving up where the pip build doesn't (`examples/json.ck`) | targets set from the measurements when M12 starts, for at least: `ckc check` of `examples/json.ck` from scratch, and again after a one-line change to one function |
+| M13 | **(proposed)** `checkers lsp` (D94, §15.5) | the scripted sessions in `tests/lsp/` (requests in, expected responses out) pass; diagnostics, go to definition, formatting and document symbols work in VS Code and Neovim |
 
 ---
 
@@ -918,7 +920,7 @@ first-order code ──codegen.rs──▶ Cranelift IR ──┬──▶ in me
 
 **Dependencies.** `cranelift-codegen`, `cranelift-frontend`, `cranelift-module`, `cranelift-jit`, `cranelift-object`, `cranelift-native` 0.137 (all from the Bytecode Alliance, pure Rust; D5) and `target-lexicon`.
 
-## 15. Developer tools (M11–M12, D90–D97)
+## 15. Developer tools (M11, M13; D90–D98)
 
 Tools that help write Checkers are themselves written in Checkers: they are useful, and they show what the language can do at a larger scale than `examples/`.
 
@@ -930,7 +932,7 @@ As with `rustc` and `cargo`, there are two programs:
 |---|---|---|
 | written in | Rust | Checkers |
 | built by | Cargo | `ckc build tools/checkers.ck` |
-| does | `check`, `run`, `build`, `parse`, `stage`, `trust` on files | the command people use: passes those commands to `ckc`; `fmt`; `lsp`; later, projects and dependencies |
+| does | `check`, `run`, `build`, `parse`, `stage`, `trust` on files | the command people use: passes those commands to `ckc`; `fmt`; later `lsp` (M13), projects and dependencies |
 
 ```
 tools/
@@ -938,34 +940,15 @@ tools/
   ck/syntax.ck     lexer and parser keeping comments: the concrete syntax tree
   ck/format.ck     the formatter, a pure function: fn format src -> r : src~Bytes, r~Result String Error
   fmt.ck           `checkers fmt`: files, --check, standard input
-  lsp/protocol.ck  JSON-RPC framing and LSP messages over `json`
-  lsp.ck           `checkers lsp`
+  lsp/protocol.ck  JSON-RPC framing and LSP messages over `json` (M13)
+  lsp.ck           `checkers lsp` (M13)
 ```
 
 The build tool is an ordinary program, compiled ahead of time, so starting it costs no elaboration or code generation (compiling a program the size of `examples/json.ck` takes about 0.13 s without proving, 14 s with it). It is proven like `examples/`: `ckc check tools/checkers.ck` must report zero diagnostics, which the golden tests check. During development, `ckc run tools/checkers.ck fmt …` runs it without building.
 
 ### 15.2 How the build tool drives the compiler (D97)
 
-The build tool starts `ckc` as a process. `checkers check FILE` is `ckc check FILE` with the build tool's standard streams (`proc.exec`). The language server captures the output instead (`proc.run`):
-
-```
-ckc check --json [--no-prove] [--stdin] FILE...
-```
-
-prints each diagnostic as one line of JSON:
-
-```
-{"path":"a.ck","start":[2,13],"stop":[2,25],"severity":"error","code":"E0450",
- "message":"cannot prove that `at_least 7` can be called here","label":"…","notes":["…"],"help":"…"}
-```
-
-Positions are `[line, column]` from 0, the column in bytes. Each `FILE` is checked with the modules it imports, as `ckc check` does today.
-
-`--no-prove` runs everything except the prover: parsing, types, `own`/`ghost` usage, structural termination and `check` declarations, but no Z3 obligations (preconditions, postconditions, refinements, `decreasing` measures, lemmas). No diagnostics then means "well typed", not "verified". It is for checking as someone types: about 0.1 s for `examples/json.ck` instead of 14 s.
-
-`--stdin` takes exactly one `FILE` and reads its text from standard input instead of the disk. The path is still needed: imports are found relative to it (D53) and diagnostics name it. Other modules are read from disk, so an unsaved change in a module the file imports is not seen until it is saved; checking several unsaved buffers together needs a long-running `ckc` that holds them, which comes with the second version of the server.
-
-The second version of the language server needs more than diagnostics: the type at a position, where a name is defined, the names in scope. Those become further `ckc` commands with JSON output, or a long-running `ckc` the server talks to; that is decided then.
+The build tool starts `ckc` as a process with its own standard streams (`proc.exec`): `checkers check FILE` is `ckc check FILE`, and its exit code is `ckc`'s. The formatter does not involve the compiler at all: it reads bytes and writes bytes, one file at a time.
 
 ### 15.3 Standard library additions (D90)
 
@@ -973,13 +956,15 @@ The language already has what the tools need: total code with proven bounds and 
 
 | Missing | Why | Addition |
 |---|---|---|
-| output without a newline; reading exactly *n* bytes | LSP messages are `Content-Length: n\r\n\r\n` + *n* bytes, on a pipe that stays open | `terminal.write`, `terminal.read_bytes` |
-| directory listing | `checkers fmt` with a directory | `files.list` |
-| linear-time joining | `list.join` is `p ++ sep ++ join sep rest`, quadratic in the output | `string.concat`, and `list.join` uses it |
-| byte slices, UTF-8 checking, number parsing | lexing, `Content-Length` | `bytes.slice`, `string.from_utf8`, `nat.parse` |
-| JSON | LSP messages | `examples/json.ck` becomes the `json` module (with its proofs) |
-| running a program | the build tool drives `ckc` (D97); `Proc` has no operations yet (D81) | `proc.run` (capture output), `proc.exec` (share standard streams) |
-| environment variables, the executable's path | finding `ckc` (D96) | `env.get`, `env.executable` |
+| output without a newline | `checkers fmt -` writes the formatted file as it is | `terminal.write` (M11) |
+| reading exactly *n* bytes | LSP messages are `Content-Length: n\r\n\r\n` + *n* bytes, on a pipe that stays open | `terminal.read_bytes` (M13) |
+| directory listing | `checkers fmt` with a directory | `files.list` (M11) |
+| linear-time joining | `list.join` is `p ++ sep ++ join sep rest`, quadratic in the output | `string.concat`, and `list.join` uses it (M11) |
+| byte slices, UTF-8 checking | lexing | `bytes.slice`, `string.from_utf8` (M11) |
+| number parsing | `Content-Length` | `nat.parse` (M13) |
+| JSON | LSP messages | `examples/json.ck` becomes the `json` module (with its proofs) (M13) |
+| running a program | the build tool drives `ckc` (D97); `Proc` has no operations yet (D81) | `proc.exec` (share standard streams, M11), `proc.run` (capture output, M13) |
+| environment variables, the executable's path | finding `ckc` (D96) | `env.get`, `env.executable` (M11) |
 
 `Map`, `Set` and `Array` (§9.5) are not needed for the first versions: the open documents are a short association list.
 
@@ -997,17 +982,26 @@ The formatter keeps the line breaks the author chose and normalizes everything e
 
 `tests/proposed/fmt/` has examples: each `.ck` is formatter input and its `.out` the expected output.
 
-### 15.5 The language server (D94)
+### 15.5 The language server (M13, D94; deferred by D98)
 
-`checkers lsp` speaks LSP 3.17 over standard input and output. First version:
+A sketch, to be decided when M13 starts. `checkers lsp` speaks LSP 3.17 over standard input and output.
 
 | Request or notification | Behaviour |
 |---|---|
-| `initialize` | advertises full sync, formatting, document symbols; picks UTF-8 positions if the client offers them, else UTF-16 |
-| `didOpen`, `didChange` | stores the text; in a behaviour, runs `ckc check --json --no-prove --stdin PATH` with the text and publishes the diagnostics, unless the document has changed since |
-| `didSave` | the same with the prover (no `--no-prove`, no `--stdin`) |
+| `initialize` | advertises full sync, go to definition, formatting, document symbols; picks UTF-8 positions if the client offers them, else UTF-16 |
+| `didOpen`, `didChange` | stores the text; in a behaviour, checks without the prover and publishes the diagnostics, unless the document has changed since |
+| `didSave` | the same with the prover |
+| `textDocument/definition` | from the compiler's index of the last check |
 | `textDocument/formatting` | `format` from `tools/ck/format.ck`; a syntax error gives no edits |
 | `textDocument/documentSymbol` | declarations from the concrete syntax tree |
 | `shutdown`, `exit` | ends the server |
+
+What it needs from the compiler (a later decision):
+
+- **Unsaved files.** Any number of open buffers, checked together, with proofs. As `go build -overlay` does: `ckc check --overlay FILE`, where `FILE` maps paths to replacement text, applied where the compiler reads files, so module resolution doesn't change. (`rustc` reads only from disk, which is why rust-analyzer's `cargo check` diagnostics wait for a save.)
+- **JSON diagnostics.** `ckc check --json`: one object per line, with path, start and stop (`[line, column]` from 0, column in bytes), severity, code, message, label, notes and help.
+- **Without the prover.** `--no-prove`: everything except Z3 obligations; for checking as someone types.
+- **Go to definition.** `--index`: each name occurrence with the span of its definition (and its type, for hover), so the server needn't have a second type checker.
+- **Module resolution** stays in the compiler for the modules of one program (D53), as `rustc` and `ghc --make` do; packages and dependencies, when they exist, are resolved by the build tool and passed to `ckc`, as Cargo passes `--extern`.
 
 The output goes through a cown, so a reply and diagnostics published by a behaviour never interleave. Tests in `tests/lsp/` are scripted sessions: a file of requests, and the responses expected.
