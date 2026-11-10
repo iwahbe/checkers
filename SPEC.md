@@ -120,6 +120,8 @@ This document is the single source of truth for Checkers. Implementation follows
 | D109 | **Checking with packages (§16.4).** The build tool passes `ckc` each package as `--package NAME=DIR`, with the dependencies each may import; a module may import only its own package, `std`, and the dependencies its manifest declares. A dependency's proofs are always checked, like the program's own; there is no way to trust a dependency unchecked (the answer cache, D100, makes that cheap after the first time), and `ckc trust` lists every package's admits and the builtins it relies on. Dependency code runs no code at build time (there are no build scripts; compile-time evaluation is pure) and performs no effects except through capabilities its callers pass it, so adding a dependency can't touch the machine. | 11/10/2026 | decided (11/10/2026) |
 | D110 | **What M13 shows (§7.4, §16.1).** Choices made while building M13 that appear in compiler output. (a) A standard-library module's errors are reported like any module's, at `<std>/list.ck:LINE:COL`, not as internal errors, since the standard library is editable source (D104). (b) A standard-library module whose declaration doesn't match its path is E0223, as for program modules; a `__builtin` function the runtime doesn't implement is E0361, with the Rust file to add it to. (c) `ckc` exits with status 2 and lists the places it looked when it finds no standard library. (d) The standard-library modules a program loads are proven and their `check`s run with it (D109); the summary line counts only the program's own obligations, and the trust ledger gives each such module one line (`<std>/list.ck  proved   51 by smt, 1 computed`) after its `admit`s and axioms, which stay listed one by one. (e) The ledger lists, as `builtin`, each builtin reachable from `main` at run time (from every function of the program if it has none), at its declaration. (f) An unknown module beside the program gets `help: … import std.list` when the standard library has a module of that name. | 11/10/2026 | decided (11/11/2026) |
 | D111 | **Packages as built (M14, §16.4).** (a) `ckc` takes `--package NAME=DIR` for each dependency and `--uses PKG=A,B` for the packages `PKG` may import (`.` is the program's own package); with no `--package`, `ckc` works as before. A package given no `--uses` imports no packages. (b) Inside a package, its own modules are declared and imported by their path in the package (`module validate`, `import validate`); other packages import them as `json_schema.validate`. Messages call the module `json_schema.validate` and its file `<json_schema>/validate.ck`, as for `<std>` (D110). (c) A dependency's key in `dependencies` must be the `name` in that package's own manifest, so a name means one package in the whole build. Importing a package that isn't a declared dependency is E0227. (d) Dependencies' modules are checked and proven with the program, and shown like the standard library's (D110 d): one ledger line per module after its `admit`s and axioms; the summary line counts the program's own package only. (e) In a directory with `checkers.json`, `checkers check|run|build|trust|stage` first resolve the dependencies, and the file defaults to `main.ck`; elsewhere they behave as before. (f) Path dependencies are relative to the manifest that names them. A git dependency is cloned with `git` into `$XDG_CACHE_HOME/checkers/packages/NAME/COMMIT` (else `~/.cache/…`) and checked out at tag `vMAJOR.MINOR.PATCH`. Minimal version selection reads the manifest of every version reached, as Go does. If `checkers.lock` already has the selected version, its commit is used, so a moved tag doesn't change a build; otherwise the tag is resolved and the lock rewritten. The lock lists every package of the build, transitive ones included, and is written only when it changes. (g) Errors: a manifest's at `checkers.json:LINE:COL`; a `toolchain` newer than this `checkers`; two major versions of one package (naming who needs each); one name for two different path or git sources. | 11/11/2026 | decided (11/11/2026; may be revisited) |
+| D112 | **Streams and processes (§8.4, §16.3).** One resource type for every byte stream: an open file, a pipe to or from a child process, and the standard streams are all a `File`, read and written with the same operations (as Haskell's `Handle` and Eio's sources and sinks). (a) `std.files` adds, for any `File`: `read_some n f` (at most `n` bytes, waiting for at least one; empty only at the end), `read_exactly n f` (`n` bytes, fewer only at the end), `read_rest f`, and `write_bytes b f`, each returning `(Result … IoError, File)`. (b) `std.terminal` adds `stdin term`, `stdout term` and `stderr term`, each a new `File` on that stream: handles to one stream share the runtime's buffer, and closing one closes the handle, not the stream. `print_line` and the other `Term` functions stay, as shorthands. (c) `std.proc` adds `run program args input p`: the child's standard input is `input`, and the result is `Output { code, stdout, stderr }` (the runtime writes the input and reads both outputs at once, so a child that fills a pipe can't deadlock it); and `spawn program args streams p`, where `Streams` gives each of the three `Inherit`, `Pipe` or `Discard`, returning a `Spawned` record of the `Child` and an `Option File` for each piped stream; `wait c` consumes the `Child` and returns its exit code. `exec` stays: `spawn` with every stream inherited, then `wait`. A `Child` and its pipes are resources (§8.4), so forgetting to wait for a child or close a pipe is a compile error. (d) Supersedes D90's `terminal.read_bytes` (now `read_exactly` on `stdin term`); `proc.run` is the one D90 planned. A working directory and environment for the child wait for a program that needs them. | 11/11/2026 | **(proposed)** |
+| D113 | **Blocking operations free the thread (M16, §13.8).** A behaviour (or `main`) that waits (reading a pipe or the terminal, writing to a full pipe, waiting for a child, sleeping) is parked, and its thread runs other behaviours until it can go on, as goroutines do in Go and fibers in OCaml's Eio. Nothing in the language changes: the same functions, the same types, no `async` (no function colouring). The runtime runs each behaviour on a stack of its own, taken from a pool; waits on pipes, terminals and sockets go to a poller (`epoll`, `kqueue`); calls that can't be polled (regular files, `waitpid`) run on a separate pool of threads while the behaviour is parked (Go's hand-off of blocking system calls). A parked behaviour keeps its cowns, so causal order and freedom from deadlock (§8.5) are unchanged. | 11/11/2026 | **(proposed)** |
 | D24 | **Development loop:** Claude owns the implementation; Ian drives with examples. An issue is "found X, expected Y" with a `.ck` snippet. Each one becomes a regression test under `tests/` *before* the fix lands, and the spec is updated first whenever the expectation changes the language. | 11/05/2026 | decided |
 | D25 | **Milestones reordered for CLI tools first** (§10): a running interpreter with `IO` comes right after type checking, before the prover, so Checkers can be used to build its own tooling early. ~~Capstone: an interactive shell with a small scripting language, with proofs of its correctness.~~ (removed by D81) | 11/05/2026 | decided |
 
@@ -423,7 +425,7 @@ The runtime calls `main` with the command-line arguments and the root capability
 
 | Field | Type | Authority |
 |---|---|---|
-| `term` | `Term` | stdin, stdout, stderr, terminal modes |
+| `term` | `Term` | stdin, stdout, stderr (each also as a `File`, D112), terminal modes |
 | `fs` | `Fs` | the file system |
 | `env` | `Env` | environment variables, working directory |
 | `proc` | `Proc` | spawning and signalling processes |
@@ -480,6 +482,28 @@ files.close f
 The **last argument** of the call must be a resource variable. Because each operation consumes the previous token, the prover sees the operations in sequence; this is where ordering proofs about effects (§8.8) live.
 
 Resources are created from authorities, e.g. `files.open path fs` returns `Result File IoError`.
+
+**Streams (D112, proposed).** Every byte stream is a `File`: an open file, the standard streams (`terminal.stdin term`), and the pipes of a child process. The same operations read and write all of them:
+
+```
+let input = terminal.stdin term
+header <- files.read_line input          # Content-Length: 52
+body <- files.read_exactly 52 input      # (Result Bytes IoError, File)
+files.close input
+
+match proc.spawn "ckc" ["check", "--json", path] (Streams Discard Pipe Inherit) p
+    Ok (Spawned child None (Some out) None) ->
+        text <- files.read_rest out           # (Result Bytes IoError, File)
+        files.close out
+        let code = proc.wait child            # consumes the Child: Result Nat IoError
+        …
+    Ok other                                 -> …   # can't happen: only stdout is piped
+    Err e                                    -> …
+```
+
+A piped stream comes back as `Some` file and the others as `None`, so a `match` must name the shape it asked for. A later version could compute the field types from `Streams` instead (a `File` where the stream is `Pipe`, `Unit` elsewhere), which dependent types allow; D112 starts with `Option`.
+
+`proc.run "ckc" args input p` does the same in one call and returns `Output { code, stdout, stderr }`.
 
 ### 8.5 Concurrency: cowns and `when` (D30)
 
@@ -803,7 +827,8 @@ Reordered (D25) so that Checkers can run CLI tools before the prover exists.
 | M12 | Faster checking (D100–D102): measurements (11/10/2026, release build, 2 cores): `ckc check examples/json.ck` takes 15 s, of which elaboration 27 ms, `check`s 61 ms, proving 15.2 s; two of its 364 queries (the `have` steps at lines 354 and 393 of the round-trip proof) take 4–10 s each, against a 10 s timeout, so the result depends on load (the vendored Z3 sometimes gives up); the other 362 take 1.3 s together. `tools/checkers.ck`: 0.28 s to check, 0.56 s to build. Work: the proof cache (D100); `rlimit` (D101); the two slow queries made fast, by giving Z3 less to search (only the facts the goal needs) or by splitting the proof steps | `ckc check examples/json.ck` under 2 s from scratch and under 0.3 s again with nothing changed or after a one-line change to a function the proofs don't use; every obligation in the repository proved with the same answer on every run and machine (vendored and pip Z3 alike) (done 11/10/2026: 1.2 s from scratch, 0.21 s again, 0.22 s after a one-line change to `parse`; the work limit is 6 000 000 for the full query and 1 000 000 for the weaker ones, from measurements over the repository; the same answers with the vendored and pip Z3) |
 | M13 | The standard library restructured (D103–D106, §16.1–16.3), kept small: `std.` names and last-component qualifiers (D105); the standard library read from disk as the package `std` (D104), its proofs checked with programs; builtins one Rust file per module; `ckc trust` lists the builtins a program relies on; `std.json` from `examples/json.ck` (the manifest needs it) | every standard-library module is imported as `std.…` in `examples/`, `tools/`, `stdlib/` and the tests; every builtin is in the §16.3 table; `std.json` checks with its proofs (done 11/10/2026: `CHECKERS_STD`, `../lib/checkers/std` or the source tree's `stdlib/`; builtins in `rt/src/builtins/<module>.rs`; E0223 and E0361 for a broken standard library; `examples/json.ck` now reads JSON on standard input with `std.json`; checking `examples/json.ck` proves the 325 obligations of `std.json` and those of `std.list` too: 1.8 s from scratch, 0.21 s again (release build, 2 cores); output choices in D110) |
 | M14 | Packages (D107–D109, D111, §16.4): `checkers.json`, `checkers.lock`, `--package`, `checkers build` / `check` / `run` for a package, `git` and path dependencies, minimal version selection | a package depending on a git package and a path package builds, its `trust` ledger lists both, and changing a dependency's version in `checkers.json` rebuilds with the new one (done 11/11/2026: `tests/packages.rs` builds a package with a path dependency that has a git dependency, from local repositories; checks its ledger, an upgrade through `checkers.json`, a moved tag, two major versions, an undeclared import and manifest errors; choices in D111) |
-| M15 | **(proposed)** `checkers lsp` (D94, §15.5) | the scripted sessions in `tests/lsp/` (requests in, expected responses out) pass; diagnostics, go to definition, formatting and document symbols work in VS Code and Neovim |
+| M15 | **(proposed)** `checkers lsp` (D94, §15.5), starting with the streams and processes it needs (D112) | the scripted sessions in `tests/lsp/` (requests in, expected responses out) pass; diagnostics, go to definition, formatting and document symbols work in VS Code and Neovim |
+| M16 | **(proposed)** Blocking operations free the thread (D113, §13.8): a stack per behaviour, a poller, a thread pool for calls that can't be polled | the done-when list of §13.8 |
 
 ---
 
@@ -904,6 +929,15 @@ Native code (§14) is about 45× faster than the M2–M8 interpreter it replaced
 
 On several threads, `fib 30` written with `par` runs about 1.5× faster on 2 cores than on 1. Behaviours pay for coordination between cores, about 1.5 µs each when one thread creates them and another runs them: a fork/join tree of 65 536 behaviours that each add two numbers runs in 0.14 s on 2 threads against 0.05 s on 1 (where the FIFO queue needs no synchronisation). With about 5 µs of work per leaf the same tree is 1.35× faster on 2 threads, and with about 17 µs 1.6× faster.
 
+### 13.8 Blocking operations (M16, D113, proposed)
+
+Today a behaviour that waits for input, for a child or for a pipe to drain holds its thread: with `--threads N`, N waiting behaviours stop the program. From M16 a wait parks the behaviour instead, and the thread runs others, as goroutines in Go and fibers in Eio do. Programs don't change.
+
+- **Stacks.** Each behaviour runs on a stack of its own, so it can be suspended in the middle of a call. Stacks come from a pool and are reserved, not committed: address space for the deep recursion D75 allows (256 MiB), memory only for the pages a behaviour touches, a guard page below. Switching stacks saves and restores the callee-saved registers, a few nanoseconds; M16 measures it against the 1.5 µs a behaviour already costs (§13.7).
+- **Waiting.** Pipes, terminals and (later) sockets are non-blocking; a read or write that would block registers the descriptor with a poller (`epoll` on Linux, `kqueue` on macOS) and parks the behaviour, and a poller wakes it when the descriptor is ready. Reading a regular file and `waitpid` can't be polled; they run on a separate pool of threads while the behaviour is parked (Go's hand-off; `io_uring` may replace this on Linux later). `clock.sleep` is a timer in the poller.
+- **What stays the same.** A parked behaviour keeps its cowns: behaviours waiting for those cowns still wait, in the order they were scheduled, so causal order and freedom from deadlock hold (§8.5). Terminal calls stay atomic (D68). With `--threads 1` the order in which parked behaviours resume follows the order their input arrives, so golden run tests stay deterministic when only one behaviour reads at a time.
+- **Done when** (M16): with `--threads 2`, a program whose behaviours wait on more pipes than it has threads finishes; the language server's reader keeps no thread while it waits; `tests/stress/` passes; the cost of a behaviour that doesn't block stays within 10% of today's.
+
 ## 14. Native code (M8, D72–D77)
 
 `checkers run` compiles the program to native code in memory and runs it; `checkers build FILE.ck -o PROGRAM` writes an executable. Code is in `src/native/`, the runtime in the `checkers_rt` crate (`rt/`).
@@ -974,13 +1008,13 @@ The language already has what the tools need: total code with proven bounds and 
 | Missing | Why | Addition |
 |---|---|---|
 | output without a newline | `checkers fmt -` writes the formatted file as it is | `terminal.write` (M11) |
-| reading exactly *n* bytes | LSP messages are `Content-Length: n\r\n\r\n` + *n* bytes, on a pipe that stays open | `terminal.read_bytes` (M13) |
+| reading exactly *n* bytes | LSP messages are `Content-Length: n\r\n\r\n` + *n* bytes, on a pipe that stays open | `files.read_exactly` on `terminal.stdin` (D112, M15) |
 | directory listing | `checkers fmt` with a directory | `files.list` (M11) |
 | linear-time joining | `list.join` is `p ++ sep ++ join sep rest`, quadratic in the output | `string.concat` (M11); `list.join` keeps its definition, which proofs about rendering use (`std.json`) |
 | byte slices, UTF-8 checking | lexing | `bytes.slice`, `string.from_utf8` (M11) |
 | number parsing | `Content-Length` | `nat.parse` (M13) |
 | JSON | LSP messages | `std.json`, from `examples/json.ck`, with its proofs (M13, done) |
-| running a program | the build tool drives `ckc` (D97); `Proc` has no operations yet (D81) | `proc.exec` (share standard streams, M11), `proc.run` (capture output, M13) |
+| running a program | the build tool drives `ckc` (D97); the language server reads its diagnostics | `proc.exec` (share standard streams, M11); `proc.run` (capture output) and `proc.spawn` / `proc.wait` (D112, M15) |
 | environment variables, the executable's path | finding `ckc` (D96) | `env.get`, `env.executable` (M11) |
 
 `Map`, `Set` and `Array` (§9.5) are not needed for the first versions: the open documents are a short association list.
@@ -1070,9 +1104,9 @@ The standard library is these modules. Its scope is still to be settled (D106); 
 | `std.json` | Checkers | `Json`, `Error`, `ErrorKind`, `parse`, `render`, `depth`, `MAX_DEPTH`, the round-trip lemma | exists (M13; two `admit`s) |
 | `std.path` | Checkers | `join`, `parent`, `name`, `extension` (paths as `String`, `/`-separated) | planned (the tools compute these by hand today) |
 | `std.system` | — | `System`, `ExitCode`, the authority types | exists |
-| `std.terminal` | builtin | `Term`, `print_line`, `eprint_line`, `write`, `write_bytes`, `read_line`, `read_all` | exists |
-| `std.files` | builtin | `Fs`, `File`, `IoError`, `Entry`, `read`, `write`, `list`, `open`, `create`, `close`, `read_line`, `write_line`, `within`, `describe` | exists |
-| `std.env`, `std.proc` | builtin | `get`, `executable`; `exec` | exist |
+| `std.terminal` | builtin | `Term`, `print_line`, `eprint_line`, `write`, `write_bytes`, `read_line`, `read_all` | exists; proposed (D112): `stdin`, `stdout`, `stderr` |
+| `std.files` | builtin | `Fs`, `File`, `IoError`, `Entry`, `read`, `write`, `list`, `open`, `create`, `close`, `read_line`, `write_line`, `within`, `describe` | exists; proposed (D112): `read_some`, `read_exactly`, `read_rest`, `write_bytes` |
+| `std.env`, `std.proc` | builtin | `get`, `executable`; `exec` | exist; proposed (D112): `Child`, `Output`, `Stream`, `Streams`, `Spawned`, `run`, `spawn`, `wait` |
 | `std.cown`, `std.future`, `std.actor` | builtin + Checkers | `Cown`, `new`; `Future`, `ready`; `Actor`, `new`, `send` | exist |
 
 Not in the standard library: formats other than JSON, networking (`Net` waits for a program that needs it), command-line parsing, and anything else a package can provide.
