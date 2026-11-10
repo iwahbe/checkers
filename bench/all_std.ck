@@ -1,0 +1,20 @@
+module all_std
+
+import std.actor
+import std.bag
+import std.bytes
+import std.char
+import std.cown
+import std.cursor
+import std.decimal
+import std.env
+import std.files
+import std.future
+import std.json
+import std.list
+import std.prelude
+import std.proc
+import std.string
+import std.system
+import std.terminal
+import std.utf8
