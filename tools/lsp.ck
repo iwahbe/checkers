@@ -12,7 +12,6 @@ import std.terminal (Term)
 import std.files (Fs, File)
 import std.proc (Streams, Spawned, Pipe, Discard, Child, Killer)
 import std.cown (Cown, Sched)
-import std.future (Future)
 import std.json (Json, Null, Bool, Num, Str, Arr, Obj)
 import std.string
 import std.bytes
@@ -718,17 +717,13 @@ partial fn begin input c -> r : input~File, c~Caps, r~(ExitCode, File)
                 _                            -> begin input c
 
 # `checkers lsp`: serve on standard input and output, running `ckc` (with
-# `flags`, a package's) for checks. The loop is a behaviour, not `main`, so
-# that on one thread the checks' behaviours run while it waits for input
-# (`main` holds its thread until it returns, D67, D117).
+# `flags`, a package's) for checks. `main` is a behaviour on its own fiber
+# (D123), so the checks' behaviours run while this loop waits for input.
 export partial fn run ckc flags term fs p sched -> code : ckc~String, flags~List String, term~Term, fs~Fs, p~Proc,
-                                                          sched~Sched, code~Future ExitCode
+                                                          sched~Sched, code~ExitCode
     let out = cown.new (terminal.stdout term) sched
     let shared = cown.new (Shared 0 [] []) sched
     let c = Caps fs p sched out shared ckc flags False
-    let input = terminal.stdin term
-    done <- fork using sched
-        let (code, rest) = begin input c
-        files.close rest
-        code
-    done
+    let (code, rest) = begin (terminal.stdin term) c
+    files.close rest
+    code

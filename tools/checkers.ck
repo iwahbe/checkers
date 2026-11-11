@@ -5,8 +5,6 @@ module checkers
 
 import std.system (System, ExitCode)
 import std.cown (Sched)
-import std.future (Future)
-import std.future
 import std.terminal (Term)
 import std.files (Fs)
 import std.system (Env, Proc)
@@ -122,7 +120,7 @@ fn ckc_path e -> r : e~Env, r~String
                 None   -> "ckc"
 
 # `checkers lsp`: in a package's directory, checks get its dependencies.
-partial fn language_server c sched -> code : c~Caps, sched~Sched, code~Future ExitCode
+partial fn language_server c sched -> code : c~Caps, sched~Sched, code~ExitCode
     let flags = match files.read "checkers.json" c.fs
         Err _ -> []
         Ok _  ->
@@ -131,12 +129,11 @@ partial fn language_server c sched -> code : c~Caps, sched~Sched, code~Future Ex
                 Err _ -> []
     lsp.run (ckc_path c.env) flags c.term c.fs c.proc sched
 
-# The language server's exit code comes from a behaviour; the others' at once.
-export partial fn main args sys -> code : args~List String, sys~System, code~Future ExitCode
+export partial fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { term, fs, env = e, proc = p, sched } = sys
     match args
         ["lsp"] -> language_server (Caps fs e p term) sched
-        _       -> future.ready (command args term fs e p)
+        _       -> command args term fs e p
 
 partial fn command args term fs e p -> code : args~List String, term~Term, fs~Fs, e~Env, p~Proc, code~ExitCode
     match args
