@@ -1,0 +1,33 @@
+error[E0260]: this `check` is false
+ --> check_false_char.ck:4:7
+  |
+4 | check Some (c'😀', 4) == Some (c'a', 4)
+  |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluates to `False`
+  = note: left side:  `Some (c'😀', 4)`
+  = note: right side: `Some (c'a', 4)`
+
+error[E0260]: this `check` is false
+ --> check_false_char.ck:5:7
+  |
+5 | check [c'é', c'\n'] == []
+  |       ^^^^^^^^^^^^^^^^^^^ evaluates to `False`
+  = note: left side:  `[c'é', c'\n']`
+  = note: right side: `[]`
+
+error[E0260]: this `check` is false
+ --> check_false_char.ck:6:7
+  |
+6 | check (c'\'', c'\\', c'\t', c'\u{1}', 7) == (c'a', c'b', c'c', c'd', 7)
+  |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluates to `False`
+  = note: left side:  `(c'\'', c'\\', c'\t', c'\u{1}', 7)`
+  = note: right side: `(c'a', c'b', c'c', c'd', 7)`
+
+error[E0260]: this `check` is false
+  --> check_false_char.ck:13:7
+   |
+13 | check first [c'é'] == first []
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^ evaluates to `False`
+   = note: left side:  `Ok c'é'`
+   = note: right side: `Err "empty"`
+
+check_false_char.ck: 4 errors, 0 warnings

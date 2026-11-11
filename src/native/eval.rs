@@ -50,6 +50,75 @@ impl<'g> Evaluator<'g> {
         checkers_rt::ops::show(v, 0)
     }
 
+    /// `v` shown as a value of type `ty` where the type tells more than the
+    /// value does: a `Char` as `c'a'`, not its code. Elsewhere as `show`.
+    pub fn show_as(&self, v: W, ty: Option<&Tm>) -> String {
+        match ty {
+            Some(ty) => self.show_typed(v, ty, 0),
+            None => self.show(v),
+        }
+    }
+
+    fn show_typed(&self, v: W, ty: &Tm, p: u8) -> String {
+        let g = self.g;
+        let rt = || checkers_rt::ops::show(v, p);
+        match ty {
+            Tm::Def(d) => {
+                let info = &g.defs[d.0 as usize];
+                if info.module.as_ref() == "std.prelude" && info.name.as_ref() == "Char" && checkers_rt::obj::is_num(v) {
+                    let n = checkers_rt::obj::num_of(v);
+                    let c = n.to_string().parse::<u32>().ok().and_then(char::from_u32);
+                    return c.map(char_literal).unwrap_or_else(rt);
+                }
+                rt()
+            }
+            Tm::TupleTy(ts) if w::is_ptr(v) && w::kind(v) == w::K_TUPLE && w::nfields(v) == ts.len() => {
+                let items: Vec<String> = ts.iter().enumerate().map(|(i, t)| self.show_typed(w::slot(v, i), t, 0)).collect();
+                format!("({})", items.join(", "))
+            }
+            Tm::TyConApp(id, args) => {
+                let Some(c) = w::con_of(v) else { return rt() };
+                let wk = &g.well_known;
+                if Some(*id) == wk.list && (Some(ConId(c)) == wk.nil || Some(ConId(c)) == wk.cons) {
+                    let Some(elem) = args.first() else { return rt() };
+                    let mut items = Vec::new();
+                    let mut l = v;
+                    while w::con_of(l) == wk.cons.map(|c| c.0) && !w::is_nullary(l) {
+                        items.push(self.show_typed(w::field(l, 0), elem, 0));
+                        l = w::field(l, 1);
+                    }
+                    return format!("[{}]", items.join(", "));
+                }
+                let ci = &g.cons[c as usize];
+                if ci.ty != *id || (!w::is_nullary(v) && w::nfields(v) != ci.fields.len()) {
+                    return rt();
+                }
+                // A field's type is in the context of the type's parameters
+                // and the earlier fields; only closed ones are used.
+                let mut shown = Vec::new();
+                for (i, (_, m, icit, fty)) in ci.fields.iter().enumerate() {
+                    if *icit != crate::core::Icit::Expl || *m == crate::core::Mult::Zero {
+                        continue;
+                    }
+                    let fv = w::field(v, i);
+                    let fty = subst_params(g, fty, args, i);
+                    shown.push(match fty {
+                        Some(t) => self.show_typed(fv, &t, 1),
+                        None => checkers_rt::ops::show(fv, 1),
+                    });
+                }
+                if shown.is_empty() {
+                    ci.name.to_string()
+                } else if p > 0 {
+                    format!("({} {})", ci.name, shown.join(" "))
+                } else {
+                    format!("{} {}", ci.name, shown.join(" "))
+                }
+            }
+            _ => rt(),
+        }
+    }
+
     pub fn release(&self, v: W) {
         w::drop_w(v)
     }
@@ -84,4 +153,34 @@ impl<'g> Evaluator<'g> {
             _ => None,
         }
     }
+}
+
+/// A character literal as the lexer reads it.
+fn char_literal(c: char) -> String {
+    let body = match c {
+        '\'' => "\\'".to_string(),
+        '\\' => "\\\\".to_string(),
+        '\n' => "\\n".to_string(),
+        '\t' => "\\t".to_string(),
+        '\r' => "\\r".to_string(),
+        c if c.is_control() => format!("\\u{{{:x}}}", c as u32),
+        c => c.to_string(),
+    };
+    format!("c'{body}'")
+}
+
+/// A field's type `t` (under the type's parameters, then `earlier` fields)
+/// at the parameters `args`, if it mentions no earlier field.
+fn subst_params(g: &Globals, t: &Tm, args: &[Tm], earlier: usize) -> Option<Tm> {
+    let mut free = std::collections::BTreeSet::new();
+    crate::core::free_vars(t, 0, &mut free);
+    if free.iter().any(|&k| k < earlier) {
+        return None;
+    }
+    let empty = Rc::new(Vec::new());
+    let mut env: Vec<crate::core::Val> = args.iter().map(|a| crate::core::eval(g, &empty, a)).collect();
+    let np = env.len();
+    env.extend((0..earlier).map(|k| crate::core::Val::var(np + k)));
+    let v = crate::core::eval(g, &Rc::new(env), t);
+    Some(crate::core::quote(g, np + earlier, &v))
 }

@@ -512,7 +512,7 @@ impl Elab {
                 (Tm::Lit(Lit::Num(n)), mv)
             }
             ast::Lit::Byte(b) => (Tm::Lit(Lit::Num(*b as i128)), self.nat()),
-            ast::Lit::Char(c) => (Tm::Lit(Lit::Num(*c as i128)), self.nat()),
+            ast::Lit::Char(c) => (Tm::Lit(Lit::Num(*c as i128)), self.char_ty()),
             ast::Lit::Str(s) => (Tm::Lit(Lit::Str(Rc::from(s.as_str()))), self.string()),
             ast::Lit::Bytes(b) => (Tm::Lit(Lit::Bytes(Rc::from(b.as_slice()))), self.bytes()),
         }
@@ -873,18 +873,56 @@ impl Elab {
                 first_fn = Some(k);
             }
             if first_fn.is_some_and(|f| k > f) {
-                if let ExprKind::Var(n) = &a.kind {
-                    if let Some(l) = cx.lookup(n) {
-                        let q = quote(&self.g, cx.lvl() + k, &dom);
-                        if !mentions_level_from(&q, cx.lvl() + k, cx.lvl(), 0) {
-                            let _ = unify(&self.g, cx.lvl(), &dom, &cx.locals[l].ty.clone());
-                        }
+                if let Some(aty) = self.shallow_type(cx, a) {
+                    let q = quote(&self.g, cx.lvl() + k, &dom);
+                    if !mentions_level_from(&q, cx.lvl() + k, cx.lvl(), 0) {
+                        let _ = unify(&self.g, cx.lvl(), &dom, &aty);
                     }
                 }
             }
             r = apply_closure(&self.g, &c, Val::var(cx.lvl() + k));
         }
         (t, ty)
+    }
+
+    /// The type of `a`, if it can be read without elaborating `a`: a local,
+    /// or a call of a global function whose result type doesn't depend on
+    /// its arguments (`string.chars s` is a `List Char`). `look_ahead` uses
+    /// it so a lambda before `a` sees `a`'s type, refinement included.
+    fn shallow_type(&self, cx: &Cx, a: &Expr) -> Option<Val> {
+        let mut head = a;
+        let mut n = 0;
+        while let ExprKind::App(f, _) = &head.kind {
+            head = f;
+            n += 1;
+        }
+        if let ExprKind::Var(x) = &head.kind {
+            if let Some(l) = cx.lookup(x) {
+                return (n == 0).then(|| cx.locals[l].ty.clone());
+            }
+        }
+        let sym = match &head.kind {
+            ExprKind::Var(x) => self.resolve(x, false),
+            ExprKind::Field(q, x) => match &q.kind {
+                ExprKind::Var(q) if cx.lookup(q).is_none() => self.qualifier(q).and_then(|m| self.resolve_qualified(&m, &x.name, false)),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some(Sym::Def(d)) = sym else { return None };
+        let mut ty = &self.g.defs[d.0 as usize].ty;
+        for _ in 0..n {
+            match ty {
+                Tm::Pi(_, _, Icit::Expl, _, b) => ty = b,
+                _ => return None,
+            }
+        }
+        let mut free = std::collections::BTreeSet::new();
+        crate::core::free_vars(ty, 0, &mut free);
+        if !free.is_empty() || matches!(ty, Tm::Error) {
+            return None;
+        }
+        Some(eval(&self.g, &Rc::new(Vec::new()), ty))
     }
 
     /// An operand of an arithmetic or comparison operator: it takes the
@@ -1086,6 +1124,9 @@ impl Elab {
                         lvl: cx.lvl(),
                         names: cx.names(),
                     });
+                }
+                if op == Op::EqEq {
+                    self.last_eq_ty = Some(lty.clone());
                 }
                 let (lv, rv) = (self.eval(cx, &lt), self.eval(cx, &rt));
                 match op {

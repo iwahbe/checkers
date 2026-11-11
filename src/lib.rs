@@ -317,9 +317,10 @@ fn run_checks(c: &mut Checked, e: &elab::Elab, user: &str) {
                 if let core::Tm::PrimApp(core::Prim::Eq, sides) = t {
                     if let [l, r] = sides.as_slice() {
                         if let (Ok(lv), Ok(rv)) = (ev.eval(l), ev.eval(r)) {
+                            let ty = e.check_eq_tys.get(span);
                             d = d
-                                .with_note(format!("left side:  `{}`", ev.show(lv)))
-                                .with_note(format!("right side: `{}`", ev.show(rv)));
+                                .with_note(format!("left side:  `{}`", ev.show_as(lv, ty)))
+                                .with_note(format!("right side: `{}`", ev.show_as(rv, ty)));
                             ev.release(lv);
                             ev.release(rv);
                         }

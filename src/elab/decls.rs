@@ -1314,8 +1314,13 @@ impl Elab {
                 DeclKind::Check { expr } if checks => {
                     let mut cx = Cx::default();
                     let b = self.bool_ty();
+                    self.last_eq_ty = None;
                     let t = self.check(&mut cx, expr, &b, false);
                     self.solve_deferred();
+                    if let (Tm::PrimApp(Prim::Eq, _), Some(ty)) = (&t, self.last_eq_ty.take()) {
+                        let ty = quote(&self.g, 0, &ty);
+                        self.check_eq_tys.insert(expr.span, ty);
+                    }
                     self.checks.push((self.cur.clone(), expr.span, t));
                 }
                 _ => {}

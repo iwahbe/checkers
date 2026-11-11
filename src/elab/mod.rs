@@ -349,6 +349,11 @@ pub struct Elab {
     pub saturated_heads: HashSet<Span>,
     /// `check` declarations: module, span, elaborated `Bool` term (D40).
     pub checks: Vec<(String, Span, Tm)>,
+    /// For a `check` that is an `==`: the type of its sides, so a false one
+    /// can show them as values of that type (a `Char` as `c'a'`).
+    pub check_eq_tys: HashMap<Span, Tm>,
+    /// The operand type of the `==` elaborated last (for `check_eq_tys`).
+    pub last_eq_ty: Option<Val>,
     /// Variables that are linear because of their type (D39): (function, name) → (span, type).
     pub resource_vars: HashMap<(DefId, String), (Span, String)>,
     /// The function result type when elaborating a tail position (for `try`).
@@ -383,6 +388,8 @@ impl Elab {
             module_fns: Vec::new(),
             obligations: Vec::new(),
             checks: Vec::new(),
+            check_eq_tys: HashMap::new(),
+            last_eq_ty: None,
             specs: HashMap::new(),
             transparent: HashSet::new(),
             con_invs: HashMap::new(),
@@ -1000,6 +1007,14 @@ impl Elab {
 
     pub fn nat(&self) -> Val {
         self.ty_val(self.g.well_known.nat, vec![])
+    }
+    /// The prelude's `Char` (a refinement of `Nat`), the type of `c'…'` (D19).
+    pub fn char_ty(&self) -> Val {
+        let d = self.g.defs.iter().position(|i| i.module.as_ref() == "std.prelude" && i.name.as_ref() == "Char");
+        match d {
+            Some(d) => eval(&self.g, &Rc::new(Vec::new()), &Tm::Def(DefId(d as u32))),
+            None => self.nat(),
+        }
     }
     pub fn int(&self) -> Val {
         self.ty_val(self.g.well_known.int, vec![])
