@@ -1,0 +1,9 @@
+error[E0262]: type mismatch: expected `List Nat`, found `List Int`
+  --> nat_int.ck:32:5
+   |
+32 |     is
+   |     ^^ this expression has type `List Int`, so its `Int` values aren't known to be `Nat`
+   = note: a refinement inside a type is never gained from an existing value: that would need a proof about every element (D71)
+   = help: give the value the type `List Nat` where it is built, so that each part is checked there
+
+nat_int.ck: 1 error, 0 warnings

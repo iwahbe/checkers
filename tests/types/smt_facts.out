@@ -4,7 +4,7 @@ error[E0450]: cannot prove `j < len src`, the postcondition of `wrong`
 18 | fn wrong src i p -> j : src~Bytes, i~Nat, p~Parsed Nat src i, j~Nat, j < len src
    |                                                                      ^^^^^^^^^^^ promised here
    = note: for the value returned on line 19: `p.stop`
-   = note: counterexample: src = b"\x05", i = 0, p = Parsed 0 1
+   = note: counterexample: src = b"\x06", i = 0, p = Parsed 32285 1
    = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
 
 smt_facts.ck: 1 error, 0 warnings

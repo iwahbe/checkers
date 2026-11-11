@@ -50,12 +50,21 @@ impl Elab {
         let returned = tail
             && self.post_target.is_some()
             && !matches!(e.kind, ExprKind::If(..) | ExprKind::Match(..) | ExprKind::Block(..) | ExprKind::Try(_));
-        let t = self.check_inner(cx, e, expected, tail);
+        // An `if`, `match` or block passes the expected type to each branch,
+        // which meets any refinement in it; where refinements are not imposed
+        // (an operator's operand, D71), the branches get the type without them.
+        let compound = matches!(e.kind, ExprKind::If(..) | ExprKind::Match(..) | ExprKind::Block(..));
+        let t = if covered && compound {
+            let bare = self.force(expected);
+            self.check_inner(cx, e, &bare, tail)
+        } else {
+            self.check_inner(cx, e, expected, tail)
+        };
         let inferred = self.last_inferred.take();
         // A value checked against a refinement alias must satisfy it (D71),
         // unless the call it is passed to, or the function returning it,
-        // already checks that alias.
-        if !covered && !returned && !matches!(t, Tm::Error) {
+        // already checks that alias, or its branches did.
+        if !covered && !returned && !compound && !matches!(t, Tm::Error) {
             if let Some((d, args)) = self.refined_alias(expected) {
                 let already = inferred.as_ref().and_then(|ty| self.refined_alias(ty)).is_some_and(|(d2, _)| d2 == d);
                 if !already {
@@ -66,7 +75,7 @@ impl Elab {
         }
         if returned && !matches!(t, Tm::Error) {
             let v = self.eval(cx, &t);
-            self.oblige_posts_at(cx, v, e.span);
+            self.oblige_posts_typed(cx, v, e.span, inferred.as_ref());
         }
         t
     }
@@ -122,18 +131,18 @@ impl Elab {
                 let cv = self.eval(cx, &ct);
                 let saved = cx.facts.len();
                 cx.assume(self.is_bool(cv.clone(), true));
-                let tt = self.check(cx, t, &exp, tail);
+                let tt = self.check(cx, t, expected, tail);
                 cx.facts.truncate(saved);
                 cx.assume(self.is_bool(cv, false));
-                let ft = self.check(cx, f, &exp, tail);
+                let ft = self.check(cx, f, expected, tail);
                 cx.facts.truncate(saved);
                 self.if_tm(ct, tt, ft)
             }
             (ExprKind::Match(s, arms), _) => {
                 let arms_in = arms.iter().map(|a| (a.pat.clone(), a.guard.as_ref(), ArmBody::Expr(&a.body))).collect();
-                self.elab_match(cx, s, arms_in, Some(&exp), tail, e.span).0
+                self.elab_match(cx, s, arms_in, Some(expected), tail, e.span).0
             }
-            (ExprKind::Block(b), _) => self.check_block(cx, b, &exp, tail),
+            (ExprKind::Block(b), _) => self.check_block(cx, b, expected, tail),
             (ExprKind::Try(x), _) => {
                 if !tail {
                     self.try_not_tail(e.span);
@@ -141,7 +150,7 @@ impl Elab {
                 self.check(cx, x, &exp, tail)
             }
             (ExprKind::Lit(ast::Lit::Int(s)), Val::TyCon(id, _))
-                if Some(*id) == self.g.well_known.nat || Some(*id) == self.g.well_known.int =>
+                if Some(*id) == self.g.well_known.int =>
             {
                 Tm::Lit(Lit::Num(self.number(s, e.span)))
             }
@@ -728,6 +737,11 @@ impl Elab {
                 let mut env: Vec<Val> = args[..spec.n_binders].iter().map(|a| self.eval(cx, a)).collect();
                 env.push(self.eval(cx, t));
                 for p in spec.preds.iter().filter(|p| !p.is_post) {
+                    if let Some((k, _)) = p.alias {
+                        if env.get(k).is_some_and(|a| self.nat_pred_holds(cx, p, a)) {
+                            continue;
+                        }
+                    }
                     let goal = self.inst_pred(p, env.clone());
                     self.oblige(cx, span, ObKind::Pre { callee: name.clone() }, p.text.clone(), goal, None);
                 }
@@ -741,6 +755,11 @@ impl Elab {
                 let env: Vec<Val> = args.iter().map(|a| self.eval(cx, a)).collect();
                 let name = self.g.cons[c.0 as usize].name.to_string();
                 for p in &invs {
+                    if let Some((k, _)) = p.alias {
+                        if env.get(k).is_some_and(|a| self.nat_pred_holds(cx, p, a)) {
+                            continue;
+                        }
+                    }
                     let goal = self.inst_pred(p, env.clone());
                     self.oblige(cx, span, ObKind::Invariant { con: name.clone() }, p.text.clone(), goal, None);
                 }
@@ -995,8 +1014,8 @@ impl Elab {
                 let _ = self.infer(cx, a);
                 (Tm::Error, Val::Error)
             }
-            other => {
-                let shown = self.show_val(cx, &other);
+            _ => {
+                let shown = self.show_written(cx, &ty);
                 self.err(
                     Diagnostic::error(
                         "E0205",
@@ -1231,8 +1250,8 @@ impl Elab {
                 (Tm::Field(Rc::new(xt), cid, idx), fty)
             }
             Val::Error => (Tm::Error, Val::Error),
-            other => {
-                let shown = self.show_val(cx, &other);
+            _ => {
+                let shown = self.show_written(cx, &xty);
                 let mut d = Diagnostic::error("E0207", format!("`{shown}` has no field `{}`", name.name), name.span)
                     .with_label(format!("this is a `{shown}`, not a record"));
                 // A local variable hiding an imported module of the same name.

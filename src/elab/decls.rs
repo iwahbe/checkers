@@ -3,6 +3,11 @@
 use super::*;
 use crate::syntax::ast::{Constraint, DeclKind, Export, Expr, ExprKind, Ident};
 
+/// A constructor invariant while its fields are elaborated: the predicate,
+/// its text and span, the level it was made at, and the field's alias if it
+/// comes from a refinement-alias field type.
+type FieldInv = (Tm, String, Span, usize, Option<(usize, DefId)>);
+
 /// Signature of a function or lemma, elaborated into a context.
 pub struct Sig {
     pub cx: Cx,
@@ -434,6 +439,9 @@ impl Elab {
                 DeclKind::Alias { name, .. } => {
                     let id = self.new_def(&name.name);
                     self.declare(name, true, Sym::Def(id), exported);
+                    if self.cur == "std.prelude" && name.name == "Nat" {
+                        self.g.well_known.nat = Some(id);
+                    }
                     self.def_class.insert(id, "type");
                     self.index_header(index::Target::Def(id), name.span, d);
                     Some(Sym::Def(id))
@@ -473,7 +481,6 @@ impl Elab {
                 wk.false_con = ctors.first().copied();
                 wk.true_con = ctors.get(1).copied();
             }
-            ("std.prelude", "Nat") => wk.nat = Some(tid),
             ("std.prelude", "Int") => wk.int = Some(tid),
             ("std.prelude", "String") => wk.string = Some(tid),
             ("std.prelude", "Bytes") => wk.bytes = Some(tid),
@@ -680,7 +687,7 @@ impl Elab {
         self.g.fuel.set(DEFAULT_FUEL);
         let mut cx = self.bind_type_params(tid);
         let mut fields: Vec<(Name, Mult, Icit, Tm)> = Vec::new();
-        let mut invs: Vec<(Tm, String, Span, usize)> = Vec::new();
+        let mut invs: Vec<FieldInv> = Vec::new();
         // Auto-bound implicit fields (D10), e.g. `m` in `xs~Vec a m`.
         let declared: HashSet<String> = names.iter().map(|n| n.name.clone()).collect();
         let mut autos = Vec::new();
@@ -718,9 +725,9 @@ impl Elab {
             let l = cx.bind(&n.name, v, mult);
             cx.locals[l].span = Some(n.span);
             // A refinement-alias field type is an invariant (§7.1).
-            for (fact, text, _) in self.alias_facts(&cx, at, &ty, Val::var(l)) {
+            for (fact, text, alias) in self.alias_facts(&cx, at, &ty, Val::var(l)) {
                 let tm = quote(&self.g, cx.lvl(), &fact);
-                invs.push((tm, text, n.span, cx.lvl()));
+                invs.push((tm, text, n.span, cx.lvl(), Some((at, alias))));
             }
             fields.push((Rc::from(n.name.as_str()), mult, Icit::Expl, ty));
         }
@@ -728,7 +735,7 @@ impl Elab {
             match c {
                 Constraint::Pred(e) => {
                     let p = self.elab_pred(&mut cx, e, false);
-                    invs.push((p.tm, p.text, p.span, cx.lvl()));
+                    invs.push((p.tm, p.text, p.span, cx.lvl(), None));
                 }
                 Constraint::Typed { name, .. } if !declared.contains(&name.name) => {
                     self.err(Diagnostic::error(
@@ -742,15 +749,16 @@ impl Elab {
         }
         for e in extra_preds {
             let p = self.elab_pred(&mut cx, e, false);
-            invs.push((p.tm, p.text, p.span, cx.lvl()));
+            invs.push((p.tm, p.text, p.span, cx.lvl(), None));
         }
         // Every invariant as a term over params ++ fields.
         let total = cx.lvl();
         let preds: Vec<Pred> = invs
             .into_iter()
-            .map(|(tm, text, span, lvl)| {
+            .map(|(tm, text, span, lvl, alias)| {
                 let v = eval(&self.g, &Rc::new(cx.env[..lvl].to_vec()), &tm);
-                Pred { tm: quote(&self.g, total, &v), text, span, is_post: false, alias: None }
+                // A field's refinement alias, by its position among params ++ fields.
+                Pred { tm: quote(&self.g, total, &v), text, span, is_post: false, alias }
             })
             .collect();
         if !preds.is_empty() {

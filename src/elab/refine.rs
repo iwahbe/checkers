@@ -152,6 +152,23 @@ impl Elab {
     /// none, it is gained: the first such place is returned (E0262), except
     /// for a function's parameter, where an unrefined expectation is the
     /// weakest and gives an obligation too.
+    /// Is `sup` a refinement of `sub`'s alias, through the aliases it is
+    /// defined with (`Small = n~Nat, …` refines `Nat`)?
+    pub fn refines(&self, sup: &Val, sub: &Val) -> bool {
+        let Some((d, _)) = self.refined_alias(sub) else { return false };
+        let mut v = force_meta(&self.g, sup.clone());
+        for _ in 0..64 {
+            match crate::core::unfold(&self.g, &v) {
+                Some(u) => v = force_meta(&self.g, u),
+                None => return false,
+            }
+            if self.refined_alias(&v).is_some_and(|(e, _)| e == d) {
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn refined_mismatch(&mut self, cx: &Cx, expected: &Val, found: &Val, span: Span) -> Option<Gained> {
         let mut cx2 = cx.clone();
         let text = self.src_text(span);
@@ -192,7 +209,10 @@ impl Elab {
                     Variance::Inv => vec![(&f, &e), (&e, &f)],
                 };
                 for (sub, sup) in pairs {
-                    let (sub_ref, sup_ref) = (self.refined_alias(sub).is_some(), self.refined_alias(sup).is_some());
+                    // A `sub` whose alias `sup` refines further (`Nat` under
+                    // `Small`) is its base, as an unrefined type is (D121).
+                    let sub_ref = self.refined_alias(sub).is_some() && !self.refines(sup, sub);
+                    let sup_ref = self.refined_alias(sup).is_some();
                     if !sup_ref {
                         continue;
                     }
@@ -268,6 +288,9 @@ impl Elab {
     /// The obligations for a value `v` checked against refinement alias
     /// `alias` applied to `args` (D71).
     pub fn refined_obligation(&mut self, cx: &Cx, alias: DefId, args: Vec<Val>, v: Val, span: Span) {
+        if Some(alias) == self.g.well_known.nat && self.nat_by_closure(cx, &v) {
+            return; // D121 (c)
+        }
         let Some(preds) = self.alias_preds.get(&alias).cloned() else { return };
         let name = self.g.defs[alias.0 as usize].name.to_string();
         let value = self.src_text(span);

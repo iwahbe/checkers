@@ -2,7 +2,7 @@
 //! arguments become `Erased`; everything else keeps its shape (de Bruijn
 //! indices included). Closure conversion (`lower`) starts from here.
 
-use crate::core::{eval, force, CaseTm, ConId, DefId, Globals, Mult, Prim, Tm, Val};
+use crate::core::{eval, CaseTm, ConId, DefId, Globals, Mult, Prim, Tm, Val};
 use std::sync::Arc;
 
 /// A literal at run time.
@@ -193,7 +193,7 @@ impl Compiler<'_> {
     fn is_nat(&self, ty: &Tm) -> bool {
         let depth = max_var(ty).map_or(0, |m| m + 1);
         let env = std::rc::Rc::new((0..depth).map(Val::var).collect::<Vec<_>>());
-        matches!(force(self.g, eval(self.g, &env, ty)), Val::TyCon(t, _) if Some(t) == self.g.well_known.nat)
+        crate::core::is_nat(self.g, &eval(self.g, &env, ty))
     }
 }
 

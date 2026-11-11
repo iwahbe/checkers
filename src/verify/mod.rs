@@ -416,7 +416,10 @@ fn describe(e: &Elab, o: &Obligation) -> String {
 fn facts_note(e: &Elab, o: &Obligation) -> Option<String> {
     let names: Vec<crate::core::Name> = o.ctx.iter().map(|l| l.name.clone()).collect();
     let lvl = o.ctx.len();
-    let mut shown: Vec<String> = Vec::new();
+    // `x >= 0` for a `Nat` local restates its type (D121): not shown.
+    let implied: Vec<String> =
+        o.ctx.iter().filter(|l| crate::core::is_nat(&e.g, &l.ty)).map(|l| format!("{} >= 0", l.name)).collect();
+    let mut shown: Vec<String> = implied.clone();
     for f in &o.facts {
         let s = show(&e.g, &names, &quote(&e.g, lvl, f));
         let s = match (s.strip_suffix(" == True"), s.strip_suffix(" == False")) {
@@ -429,6 +432,7 @@ fn facts_note(e: &Elab, o: &Obligation) -> Option<String> {
             shown.push(s);
         }
     }
+    let shown: Vec<String> = shown.into_iter().skip(implied.len()).collect();
     if shown.is_empty() {
         return None;
     }

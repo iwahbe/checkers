@@ -228,7 +228,8 @@ pub struct WellKnown {
     pub bool_ty: Option<TyId>,
     pub true_con: Option<ConId>,
     pub false_con: Option<ConId>,
-    pub nat: Option<TyId>,
+    /// The prelude's `Nat`, a refinement alias of `Int` (D121).
+    pub nat: Option<DefId>,
     pub int: Option<TyId>,
     pub string: Option<TyId>,
     pub bytes: Option<TyId>,
@@ -459,6 +460,26 @@ fn builtin_value(g: &Globals, info: &DefInfo, sp: &[Elim]) -> Option<Val> {
 }
 
 /// Weak-head normal form: resolve metas and unfold definitions at the head.
+/// Is `v` the type `Nat`, or a refinement of it (`U8`, `Char`)? Aliases are
+/// unfolded one at a time until `Nat` is met (D121): forcing would go past it
+/// to `Int`.
+pub fn is_nat(g: &Globals, v: &Val) -> bool {
+    let Some(nat) = g.well_known.nat else { return false };
+    let mut v = force_meta(g, v.clone());
+    for _ in 0..64 {
+        if let Val::Neutral(Head::Def(d), _) = &v {
+            if *d == nat {
+                return true;
+            }
+        }
+        match unfold(g, &v) {
+            Some(u) => v = force_meta(g, u),
+            None => return false,
+        }
+    }
+    false
+}
+
 pub fn force(g: &Globals, v: Val) -> Val {
     let mut v = force_meta(g, v);
     while let Some(u) = unfold(g, &v) {
@@ -612,7 +633,7 @@ fn prim_value(g: &Globals, p: &Prim, args: &[Val]) -> Option<Val> {
         Prim::Add => n2().and_then(|(a, b)| a.checked_add(b)).map(|n| Val::Lit(Lit::Num(n))),
         // `Sub` carries its operand type: on `Nat`, `a - b` with `a < b` has no value (stuck).
         Prim::Sub => n2().and_then(|(a, b)| {
-            let on_nat = matches!(args.get(2), Some(Val::TyCon(t, _)) if Some(*t) == g.well_known.nat);
+            let on_nat = args.get(2).is_some_and(|t| is_nat(g, t));
             if on_nat && a < b {
                 None
             } else {
@@ -848,7 +869,7 @@ fn unify_sp(g: &Globals, l: usize, a: &[Elim], b: &[Elim]) -> Result<(), UnifyEr
 }
 
 /// Syntactic equality of quoted terms (used for stuck case trees).
-fn tm_eq(a: &Tm, b: &Tm) -> bool {
+pub fn tm_eq(a: &Tm, b: &Tm) -> bool {
     format!("{a:?}") == format!("{b:?}")
 }
 

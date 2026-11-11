@@ -470,7 +470,7 @@ impl<'a> Builder<'a> {
 
     fn ty_sort(&mut self, env: &[Ent], id: TyId, args: &[Tm]) -> Tx<Sort> {
         let wk = self.wk().clone();
-        if Some(id) == wk.nat || Some(id) == wk.int {
+        if Some(id) == wk.int {
             return Ok(Sort::Int);
         }
         if Some(id) == wk.bool_ty {
@@ -974,7 +974,7 @@ impl<'a> Builder<'a> {
     }
 
     fn is_nat_val(&self, ty: &Val) -> bool {
-        matches!(force(&self.e.g, ty.clone()), Val::TyCon(t, _) if Some(t) == self.e.g.well_known.nat)
+        crate::core::is_nat(&self.e.g, ty)
     }
 
     fn is_nat_tm(&self, ty: &Tm) -> bool {
@@ -983,7 +983,7 @@ impl<'a> Builder<'a> {
             h = f;
         }
         match h {
-            Tm::TyCon(t) | Tm::TyConApp(t, _) => Some(*t) == self.e.g.well_known.nat,
+            Tm::Def(d) if Some(*d) == self.e.g.well_known.nat => true,
             Tm::Def(d) => match &self.e.g.defs[d.0 as usize].body {
                 Some(b) => {
                     let mut b = b;
@@ -2035,5 +2035,5 @@ fn smt_bytes(b: &[u8]) -> String {
 
 /// Is a value `Nat`-typed? (for `only_if_nat` obligations)
 pub fn is_nat(e: &Elab, ty: &Val) -> bool {
-    matches!(force(&e.g, ty.clone()), Val::TyCon(t, _) if Some(t) == e.g.well_known.nat)
+    crate::core::is_nat(&e.g, ty)
 }

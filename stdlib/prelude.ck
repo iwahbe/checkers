@@ -2,7 +2,6 @@
 module std.prelude
 
 # Built-in types; their values come from literals and primitives.
-export abstract enum Nat
 export abstract enum Int
 export abstract enum String
 export abstract enum Bytes
@@ -24,6 +23,9 @@ export enum Result a e : a~Type, e~Type
 export enum List a : a~Type
     Nil
     Cons x xs : x~a, xs~List a
+
+# The natural numbers are a refinement of the integers (D121).
+export type Nat = n~Int, n >= 0
 
 # Fixed-width numbers are refinements of Nat and Int (D6).
 export type U8 = n~Nat, n < 256

@@ -479,6 +479,16 @@ impl Elab {
         self.eval(cx, &t)
     }
 
+    /// A type for a message: computed (`BadPlaceholder`, not the call that
+    /// gives it), but a refinement alias by its name (`Nat`, not `Int`).
+    pub fn show_written(&self, cx: &Cx, v: &Val) -> String {
+        let t = quote(&self.g, cx.lvl(), v);
+        match crate::core::head_def(&t) {
+            Some(d) if self.alias_preds.contains_key(&d) => self.show_val(cx, v),
+            _ => self.show_val(cx, &self.force(v)),
+        }
+    }
+
     /// Unify, reporting a type mismatch on failure. Returns false on failure.
     pub fn unify_at(&mut self, cx: &Cx, expected: &Val, actual: &Val, span: Span, what: &str) -> bool {
         match unify(&self.g, cx.lvl(), expected, actual) {
@@ -486,14 +496,7 @@ impl Elab {
             Err(_) => {
                 // Show computed types (`BadPlaceholder`, not the call that gives
                 // it), but a refinement alias by its name (`U8`, not `Nat`).
-                let shown = |el: &Self, v: &Val| {
-                    let t = quote(&el.g, cx.lvl(), v);
-                    match crate::core::head_def(&t) {
-                        Some(d) if el.alias_preds.contains_key(&d) => el.show_val(cx, v),
-                        _ => el.show_val(cx, &el.force(v)),
-                    }
-                };
-                let (e, a) = (shown(self, expected), shown(self, actual));
+                let (e, a) = (self.show_written(cx, expected), self.show_written(cx, actual));
                 let (expected, actual) = (&self.force(expected), &self.force(actual));
                 // A function checked later whose result type isn't written.
                 let pending = [expected, actual].into_iter().find_map(|v| match v {
@@ -883,11 +886,109 @@ impl Elab {
     }
 
     /// The postconditions hold of `v`, a value the function returns at `at`.
+    /// D121 (c): `v` is a `Nat` by construction, with no obligation: a
+    /// non-negative literal, a `Nat` local, `len`, `+`, `*`, `/` or `%` of
+    /// such values, or a `Nat` subtraction (which has its own obligation).
+    pub fn nat_by_closure(&self, cx: &Cx, v: &Val) -> bool {
+        match crate::core::force_meta(&self.g, v.clone()) {
+            Val::Lit(Lit::Num(n)) => n >= 0,
+            Val::Neutral(Head::Var(l), sp) if sp.is_empty() => {
+                cx.locals.get(l).is_some_and(|x| crate::core::is_nat(&self.g, &x.ty))
+            }
+            Val::Neutral(Head::Prim(p, args), sp) if sp.is_empty() => match p {
+                Prim::Add | Prim::Mul | Prim::Div | Prim::Rem => args.iter().take(2).all(|a| self.nat_by_closure(cx, a)),
+                Prim::Sub => args.get(2).is_some_and(|t| crate::core::is_nat(&self.g, t)),
+                Prim::Len => true,
+                _ => false,
+            },
+            v @ Val::Neutral(..) => {
+                // An `if` or `match` whose every branch is a `Nat` (a branch's
+                // own fields are unknown here, so one that uses them is not).
+                if let Val::Neutral(_, sp) = &v {
+                    if let Some(Elim::Case(ct, env)) = sp.last() {
+                        let at = |n: usize, body: &crate::core::Tm| {
+                            let mut e = (**env).clone();
+                            e.extend(std::iter::repeat_n(Val::Error, n));
+                            self.nat_by_closure(cx, &eval(&self.g, &Rc::new(e), body))
+                        };
+                        if ct.branches.iter().all(|(_, n, b)| at(*n, b))
+                            && ct.lits.iter().all(|(_, b)| at(0, b))
+                            && ct.default.as_ref().is_none_or(|d| at(0, d))
+                        {
+                            return true;
+                        }
+                    }
+                }
+                // A record field whose type is `Nat`.
+                if let Val::Neutral(_, sp) = &v {
+                    if let Some(Elim::Field(c, i)) = sp.last() {
+                        let fty = &self.g.cons[c.0 as usize].fields[*i].3;
+                        let np = self.g.arity_ty(self.g.cons[c.0 as usize].ty);
+                        // Only a type that mentions no parameter or earlier field.
+                        let mut free = std::collections::BTreeSet::new();
+                        crate::core::free_vars(fty, 0, &mut free);
+                        if free.is_empty() && crate::core::is_nat(&self.g, &eval(&self.g, &Rc::new(vec![Val::Error; np + i]), fty)) {
+                            return true;
+                        }
+                    }
+                }
+                // A call of a function (global or local) whose result type is `Nat`.
+                let call = match &v {
+                    Val::Neutral(Head::Def(d), sp) => {
+                        let ty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[d.0 as usize].ty);
+                        self.returns_nat(&ty, sp)
+                    }
+                    Val::Neutral(Head::Var(l), sp) => cx.locals.get(*l).is_some_and(|x| self.returns_nat(&x.ty, sp)),
+                    _ => false,
+                };
+                // Or what a `Nat` local stands for (`j` in `Some (n, j)`, a
+                // `let` of a `match`).
+                call || {
+                    let t = quote(&self.g, cx.lvl(), &v);
+                    cx.locals.iter().zip(cx.env.iter()).any(|(x, e)| {
+                        crate::core::is_nat(&self.g, &x.ty) && crate::core::tm_eq(&quote(&self.g, cx.lvl(), e), &t)
+                    })
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// Does a function of type `ty`, applied as `sp` says, return a `Nat`?
+    fn returns_nat(&self, ty: &Val, sp: &[Elim]) -> bool {
+        let mut t = ty.clone();
+        for e in sp {
+            let Elim::App(a, _) = e else { return false };
+            match crate::core::force(&self.g, t) {
+                Val::Pi(_, _, _, _, c) => t = apply_closure(&self.g, &c, a.clone()),
+                _ => return false,
+            }
+        }
+        crate::core::is_nat(&self.g, &t)
+    }
+
+    /// A predicate that only says "is a `Nat`" of a value that is one by
+    /// construction (D121 c) needs no obligation.
+    pub fn nat_pred_holds(&self, cx: &Cx, p: &Pred, v: &Val) -> bool {
+        matches!(p.alias, Some((_, d)) if Some(d) == self.g.well_known.nat) && self.nat_by_closure(cx, v)
+    }
+
     pub fn oblige_posts_at(&mut self, cx: &Cx, v: Val, at: Span) {
+        self.oblige_posts_typed(cx, v, at, None)
+    }
+
+    /// The same, knowing the returned value's type: one already a `Nat`
+    /// meets a `Nat` result (D121).
+    pub fn oblige_posts_typed(&mut self, cx: &Cx, v: Val, at: Span, ty: Option<&Val>) {
         let Some(pt) = self.post_target.clone() else { return };
         let mut env = pt.binders.clone();
-        env.push(v);
+        env.push(v.clone());
+        let typed_nat = ty.is_some_and(|t| crate::core::is_nat(&self.g, t));
         for p in &pt.posts {
+            let nat_pred = matches!(p.alias, Some((_, d)) if Some(d) == self.g.well_known.nat);
+            if self.nat_pred_holds(cx, p, &v) || (nat_pred && typed_nat) {
+                continue;
+            }
             let goal = self.inst_pred(p, env.clone());
             self.oblige(cx, p.span, ObKind::Post { func: pt.func.clone(), at }, p.text.clone(), goal, None);
         }
@@ -1033,8 +1134,12 @@ impl Elab {
         }
     }
 
+    /// `Nat`, the prelude's refinement of `Int` (D121).
     pub fn nat(&self) -> Val {
-        self.ty_val(self.g.well_known.nat, vec![])
+        match self.g.well_known.nat {
+            Some(d) => eval(&self.g, &Rc::new(Vec::new()), &Tm::Def(d)),
+            None => self.int(),
+        }
     }
     /// The prelude's `Char` (a refinement of `Nat`), the type of `c'…'` (D19).
     pub fn char_ty(&self) -> Val {
@@ -1048,7 +1153,7 @@ impl Elab {
         let d = self.g.defs.iter().position(|i| i.module.as_ref() == "std.prelude" && i.name.as_ref() == name);
         match d {
             Some(d) => eval(&self.g, &Rc::new(Vec::new()), &Tm::Def(DefId(d as u32))),
-            None => self.nat(),
+            None => self.int(),
         }
     }
     pub fn int(&self) -> Val {
@@ -1112,7 +1217,7 @@ impl Elab {
                 (Val::Error, _) => true,
                 (Val::Neutral(Head::Meta(_), _), _) => true,
                 (Val::TyCon(id, _), OpClass::Numeric | OpClass::Ordered) => {
-                    Some(*id) == wk.nat || Some(*id) == wk.int
+                    Some(*id) == wk.int
                 }
                 (Val::TyCon(id, _), OpClass::Concat | OpClass::HasLen) => {
                     Some(*id) == wk.string || Some(*id) == wk.bytes || Some(*id) == wk.list

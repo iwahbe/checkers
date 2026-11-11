@@ -3,12 +3,12 @@
 {"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[5,7],"end":[5,17],"class":"module","def":{"path":"$ROOT/tests/json/lib/helper.ck","start":[0,0],"end":[0,0]},"hover":"module lib.helper"}
 {"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[7,5],"end":[7,10],"class":"type","def":{"path":"$ROOT/tests/json/phases.ck","start":[7,5],"end":[7,10]},"hover":"type small = n~Nat, n < 10"}
 {"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[9,3],"end":[9,9],"class":"function","def":{"path":"$ROOT/tests/json/phases.ck","start":[9,3],"end":[9,9]},"hover":"fn bigger x -> r : x~Nat, r~Nat, r > 5"}
-{"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[7,15],"end":[7,18],"class":"type","def":{"path":"$ROOT/stdlib/prelude.ck","start":[4,21],"end":[4,24]},"hover":"export abstract enum Nat"}
+{"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[7,15],"end":[7,18],"class":"type","def":{"path":"$ROOT/stdlib/prelude.ck","start":[27,12],"end":[27,15]},"hover":"export type Nat = n~Int, n >= 0"}
 {"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[7,13],"end":[7,14],"class":"variable","def":{"path":"$ROOT/tests/json/phases.ck","start":[7,13],"end":[7,14]},"hover":"n : Nat"}
 {"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[7,20],"end":[7,21],"class":"variable","def":{"path":"$ROOT/tests/json/phases.ck","start":[7,13],"end":[7,14]},"hover":"n : Nat"}
-{"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[9,21],"end":[9,24],"class":"type","def":{"path":"$ROOT/stdlib/prelude.ck","start":[4,21],"end":[4,24]},"hover":"export abstract enum Nat"}
+{"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[9,21],"end":[9,24],"class":"type","def":{"path":"$ROOT/stdlib/prelude.ck","start":[27,12],"end":[27,15]},"hover":"export type Nat = n~Int, n >= 0"}
 {"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[9,10],"end":[9,11],"class":"parameter","def":{"path":"$ROOT/tests/json/phases.ck","start":[9,10],"end":[9,11]},"hover":"x : Nat"}
-{"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[9,28],"end":[9,31],"class":"type","def":{"path":"$ROOT/stdlib/prelude.ck","start":[4,21],"end":[4,24]},"hover":"export abstract enum Nat"}
+{"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[9,28],"end":[9,31],"class":"type","def":{"path":"$ROOT/stdlib/prelude.ck","start":[27,12],"end":[27,15]},"hover":"export type Nat = n~Int, n >= 0"}
 {"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[9,15],"end":[9,16],"class":"variable","def":{"path":"$ROOT/tests/json/phases.ck","start":[9,15],"end":[9,16]},"hover":"r : Nat"}
 {"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[9,19],"end":[9,20],"class":"parameter","def":{"path":"$ROOT/tests/json/phases.ck","start":[9,10],"end":[9,11]},"hover":"x : Nat"}
 {"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[9,26],"end":[9,27],"class":"variable","def":{"path":"$ROOT/tests/json/phases.ck","start":[9,15],"end":[9,16]},"hover":"r : Nat"}

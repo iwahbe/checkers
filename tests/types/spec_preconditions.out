@@ -12,7 +12,7 @@ error[E0450]: cannot prove `x >= 1`, required to call `half`
    |
 15 | fn unguarded x -> r : x~Nat, r~Nat, r == half x
    |                                          ^^^^^^ `half` requires `x >= 1`
-   = note: counterexample: x = 0
+   = note: counterexample: x = 0, r = 0
    = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
 
 error[E0450]: cannot prove `x >= 1`, required to call `half`
