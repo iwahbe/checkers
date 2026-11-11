@@ -1099,7 +1099,13 @@ impl Elab {
                 _ => false,
             };
             if !ok {
-                let shown = show(&self.g, &d.names, &quote(&self.g, d.lvl, &t));
+                // A refinement alias by its name (`Small`, not `Nat`), as in E0201.
+                let declared = quote(&self.g, d.lvl, &d.ty);
+                let shown_tm = match crate::core::head_def(&declared) {
+                    Some(a) if self.alias_preds.contains_key(&a) => declared,
+                    _ => quote(&self.g, d.lvl, &t),
+                };
+                let shown = show(&self.g, &d.names, &shown_tm);
                 let need = match d.kind {
                     OpClass::Numeric => "numbers (`Nat` or `Int`)",
                     OpClass::Ordered => "numbers (`Nat` or `Int`) to compare",

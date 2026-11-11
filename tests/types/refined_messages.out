@@ -1,0 +1,25 @@
+error[E0201]: type mismatch: expected `Small`, found `Option Small`
+  --> refined_messages.ck:10:5
+   |
+10 |     o
+   |     ^ this expression has type `Option Small`
+
+error[E0210]: `++` needs a `String`, `Bytes` or `List`, but this is `Small`
+  --> refined_messages.ck:13:5
+   |
+13 |     y ++ "a"
+   |     ^^^^^^^^ has type `Small`
+
+error[E0201]: type mismatch: expected `Small`, found `String`
+  --> refined_messages.ck:13:10
+   |
+13 |     y ++ "a"
+   |          ^^^ this expression has type `String`
+
+error[E0201]: type mismatch: expected `Small`, found `String`
+  --> refined_messages.ck:16:10
+   |
+16 |     y == "a"
+   |          ^^^ this expression has type `String`
+
+refined_messages.ck: 4 errors, 0 warnings

@@ -153,10 +153,11 @@ impl Elab {
             (ExprKind::Binary(op, l, r), Val::TyCon(..))
                 if matches!(op, Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Rem | Op::Concat) =>
             {
-                // The result has the operands' type, so check both against it.
-                let lt = self.check_operand(cx, l, &exp);
-                let rt = self.check_operand(cx, r, &exp);
-                self.finish_arith(cx, *op, lt, rt, exp.clone(), l.span.to(r.span), e.span).0
+                // The result has the operands' type, so check both against it
+                // (as written: a mismatch names `Small`, not `Nat`).
+                let lt = self.check_operand(cx, l, expected);
+                let rt = self.check_operand(cx, r, expected);
+                self.finish_arith(cx, *op, lt, rt, expected.clone(), l.span.to(r.span), e.span).0
             }
             (ExprKind::Binary(Op::Cons, l, r), Val::TyCon(id, args)) if Some(*id) == self.g.well_known.list => {
                 // Checked, so that the element type is the expected one (D71).
@@ -188,7 +189,7 @@ impl Elab {
                 }
                 let (t, ty) = self.infer(cx, e);
                 self.app_expected = None;
-                if !self.unify_at(cx, &exp, &ty, e.span, "this expression") {
+                if !self.unify_at(cx, expected, &ty, e.span, "this expression") {
                     return Tm::Error;
                 }
                 // A refinement inside a type argument is never gained (D71).
