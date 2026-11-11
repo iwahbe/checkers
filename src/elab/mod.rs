@@ -463,10 +463,17 @@ impl Elab {
         match unify(&self.g, cx.lvl(), expected, actual) {
             Ok(()) => true,
             Err(_) => {
-                // Show computed types (`BadPlaceholder`, not the call that gives it).
+                // Show computed types (`BadPlaceholder`, not the call that gives
+                // it), but a refinement alias by its name (`U8`, not `Nat`).
+                let shown = |el: &Self, v: &Val| {
+                    let t = quote(&el.g, cx.lvl(), v);
+                    match crate::core::head_def(&t) {
+                        Some(d) if el.alias_preds.contains_key(&d) => el.show_val(cx, v),
+                        _ => el.show_val(cx, &el.force(v)),
+                    }
+                };
+                let (e, a) = (shown(self, expected), shown(self, actual));
                 let (expected, actual) = (&self.force(expected), &self.force(actual));
-                let e = self.show_val(cx, expected);
-                let a = self.show_val(cx, actual);
                 // A function checked later whose result type isn't written.
                 let pending = [expected, actual].into_iter().find_map(|v| match v {
                     Val::Neutral(Head::Meta(m), _) => self.result_metas.get(m).copied(),
@@ -1010,7 +1017,14 @@ impl Elab {
     }
     /// The prelude's `Char` (a refinement of `Nat`), the type of `c'…'` (D19).
     pub fn char_ty(&self) -> Val {
-        let d = self.g.defs.iter().position(|i| i.module.as_ref() == "std.prelude" && i.name.as_ref() == "Char");
+        self.prelude_alias("Char")
+    }
+    /// The prelude's `U8`, the type of `'x'` (D19).
+    pub fn u8_ty(&self) -> Val {
+        self.prelude_alias("U8")
+    }
+    fn prelude_alias(&self, name: &str) -> Val {
+        let d = self.g.defs.iter().position(|i| i.module.as_ref() == "std.prelude" && i.name.as_ref() == name);
         match d {
             Some(d) => eval(&self.g, &Rc::new(Vec::new()), &Tm::Def(DefId(d as u32))),
             None => self.nat(),

@@ -511,7 +511,7 @@ impl Elab {
                 });
                 (Tm::Lit(Lit::Num(n)), mv)
             }
-            ast::Lit::Byte(b) => (Tm::Lit(Lit::Num(*b as i128)), self.nat()),
+            ast::Lit::Byte(b) => (Tm::Lit(Lit::Num(*b as i128)), self.u8_ty()),
             ast::Lit::Char(c) => (Tm::Lit(Lit::Num(*c as i128)), self.char_ty()),
             ast::Lit::Str(s) => (Tm::Lit(Lit::Str(Rc::from(s.as_str()))), self.string()),
             ast::Lit::Bytes(b) => (Tm::Lit(Lit::Bytes(Rc::from(b.as_slice()))), self.bytes()),

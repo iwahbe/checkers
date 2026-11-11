@@ -1,0 +1,13 @@
+error[E0201]: type mismatch: expected `String`, found `U8`
+  --> byte_literal.ck:18:11
+   |
+18 |     shout 'a'
+   |           ^^^ this expression has type `U8`
+
+error[E0201]: type mismatch: expected `String`, found `Char`
+  --> byte_literal.ck:21:11
+   |
+21 |     shout c'a'
+   |           ^^^^ this expression has type `Char`
+
+byte_literal.ck: 2 errors, 0 warnings
