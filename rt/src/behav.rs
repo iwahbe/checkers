@@ -13,7 +13,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 pub enum Beh {
     When(Vec<Arc<Cell>>, W),
-    Fork(Arc<Cell>, W),
+    /// A future to fill, the function, and its arguments (`()` for `fork`;
+    /// the arguments and the root capability for `main`, D123).
+    Fork(Arc<Cell>, W, Vec<W>),
     Join(Vec<Arc<Cell>>, W, Arc<Cell>),
 }
 
@@ -269,7 +271,7 @@ fn schedule(b: Beh) {
         Some(p) => {
             let res: Vec<&crate::sched::Resource> = match &b {
                 Beh::When(cs, _) => cs.iter().map(|c| &c.res).collect(),
-                Beh::Fork(f, _) => vec![&f.res],
+                Beh::Fork(f, _, _) => vec![&f.res],
                 Beh::Join(fs, _, out) => fs.iter().map(|c| &c.res).chain(std::iter::once(&out.res)).collect(),
             };
             // The cells outlive the behaviour: it holds them.
@@ -288,8 +290,8 @@ fn run_in_place(b: &mut Beh) {
             let r = apply(std::mem::replace(f, ERASED), contents);
             store_when(cells, r);
         }
-        Beh::Fork(fut, f) => {
-            let v = apply(std::mem::replace(f, ERASED), vec![UNIT]);
+        Beh::Fork(fut, f, args) => {
+            let v = apply(std::mem::replace(f, ERASED), std::mem::take(args));
             *fut.v.lock().unwrap() = v;
         }
         Beh::Join(futs, f, out) => {
@@ -348,10 +350,18 @@ pub extern "C" fn ck_when(cowns: W, f: W) -> W {
     UNIT
 }
 
+/// `main` as the program's first behaviour (D123): its waits park it like
+/// any behaviour's. The future it fills holds its result.
+pub fn start_main(main: W, args: Vec<W>) -> W {
+    let fut = new_cell(UNSET);
+    schedule(Beh::Fork(fut.clone(), main, args));
+    new_obj(Obj::Future(fut))
+}
+
 #[no_mangle]
 pub extern "C" fn ck_fork(f: W) -> W {
     let fut = new_cell(UNSET);
-    schedule(Beh::Fork(fut.clone(), dup(f)));
+    schedule(Beh::Fork(fut.clone(), dup(f), vec![UNIT]));
     new_obj(Obj::Future(fut))
 }
 

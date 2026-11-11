@@ -1,0 +1,4 @@
+-- stdout
+main read: ping
+-- stderr
+-- exit 0

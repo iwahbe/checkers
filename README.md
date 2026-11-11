@@ -39,6 +39,7 @@ Types are written only as constraints (`i~Nat, i <= len src`); the compiler prov
 | M17 Reflected definitions sound for `decreasing` recursion (SPEC §7.3) | done |
 | M18 No `admit`s in `std`; `--release` rejects them | done |
 | M19 `checkers lsp` | built: diagnostics on every change, hover, go to definition, highlighting, outline, formatting; awaiting a check in Emacs |
+| M20 Checking past errors; `Nat` a refinement of `Int`; `main` on a fiber | next |
 
 ## Usage
 

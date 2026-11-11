@@ -1,6 +1,5 @@
 //! Running a native program's `main` (§13.4).
 
-use crate::apply::apply;
 use crate::obj::*;
 use crate::prog::*;
 use crate::word::*;
@@ -30,7 +29,9 @@ fn system() -> W {
 fn exit_code(r: W, owner: u32) -> i32 {
     let k = prog().known;
     let mut r = r;
-    if let Some(Obj::Future(cell)) = obj(r) {
+    // `main` runs as a behaviour (D123), whose future holds its result, which
+    // may itself be a `Future ExitCode` (D31).
+    while let Some(Obj::Future(cell)) = obj(r) {
         let v = std::mem::replace(&mut *cell.v.lock().unwrap(), UNSET);
         if v == UNSET {
             error(owner, "`main`'s future was never filled");
@@ -61,7 +62,9 @@ pub fn run_main(desc: &str, invoke: Invoke, main: W, owner: u32, args: &[String]
     TRACK.store(track, std::sync::atomic::Ordering::Relaxed);
     crate::behav::start_pool(threads);
     let argv = list(args.iter().map(|a| new_str(a)).collect());
-    let r = apply(dup(main), vec![argv, system()]);
+    // `main` is a behaviour like any other (D123): on one thread too, its
+    // waits let the others run.
+    let r = crate::behav::start_main(dup(main), vec![argv, system()]);
     if threads > 1 {
         crate::behav::finish_pool();
     } else {
