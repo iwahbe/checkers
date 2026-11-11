@@ -57,6 +57,18 @@ export fn spawn program args ss p -> r : program~String, args~List String, ss~St
                                          r~Result (Spawned ss) IoError
     __builtin
 
+# A way to end the child from anywhere: a `Killer` is an ordinary value, so
+# it can be kept or handed to other behaviours while the `Child` is used.
+export abstract enum Killer
+
+export fn killer c -> r : c~Child, r~(Child, Killer)
+    __builtin
+
+# End the child now (SIGKILL), if it hasn't ended and been waited for; it
+# still must be waited for. Nothing happens if it has.
+export fn kill k -> r : k~Killer, r~Unit
+    __builtin
+
 # Wait for the child to finish: its exit code (128 + the signal, if a signal
 # ended it). Close the pipe to its standard input first, or a child reading
 # it may never finish.

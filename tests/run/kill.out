@@ -1,0 +1,4 @@
+-- stdout
+exit 137
+-- stderr
+-- exit 0

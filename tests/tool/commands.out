@@ -19,6 +19,7 @@ USAGE:
     checkers check|run|build|trust|stage|parse ...   run the compiler, `ckc` (see `ckc --help`)
     checkers fmt [--check] [PATH]...                 format .ck files (see `checkers fmt --help`)
     checkers fmt -                                   format standard input
+    checkers lsp                                     the language server, on standard input and output
     checkers --version
 
 In a directory with checkers.json, the compiler commands first fetch the package's

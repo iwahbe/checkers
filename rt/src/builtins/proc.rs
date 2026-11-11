@@ -11,6 +11,8 @@ pub const TABLE: &[Builtin] = &[
     ("std.proc.run", "ckb_proc_run", ckb_proc_run),
     ("std.proc.spawn", "ckb_proc_spawn", ckb_proc_spawn),
     ("std.proc.wait", "ckb_proc_wait", ckb_proc_wait),
+    ("std.proc.killer", "ckb_proc_killer", ckb_proc_killer),
+    ("std.proc.kill", "ckb_proc_kill", ckb_proc_kill),
 ];
 
 /// An exit code: 128 + the signal, if a signal ended the child.
@@ -95,20 +97,56 @@ builtin!(ckb_proc_spawn, |a| {
     let end_in = child.stdin.take().map(|p| new_file(FileState::Write(Box::new(std::io::BufWriter::new(PollFd::new(p.into()))))));
     let end_out = child.stdout.take().map(|p| new_file(FileState::Read(Box::new(std::io::BufReader::new(PollFd::new(p.into()))))));
     let end_err = child.stderr.take().map(|p| new_file(FileState::Read(Box::new(std::io::BufReader::new(PollFd::new(p.into()))))));
-    let ch = new_obj(Obj::Child(Mutex::new(Some(child))));
+    let cell = crate::obj::ChildCell { pid: child.id() as i32, child: Mutex::new(Some(child)), reaped: Mutex::new(false) };
+    let ch = new_obj(Obj::Child(std::sync::Arc::new(cell)));
     ok(spawned(ch, [end_in.unwrap_or(UNIT), end_out.unwrap_or(UNIT), end_err.unwrap_or(UNIT)]))
 });
 
 builtin!(ckb_proc_wait, |a| {
-    let child = match obj(a[0]) {
-        Some(Obj::Child(m)) => m.lock().unwrap_or_else(|e| e.into_inner()).take(),
+    let cell = match obj(a[0]) {
+        Some(Obj::Child(c)) => c.clone(),
         _ => bug("expected a child process"),
     };
+    let child = cell.child.lock().unwrap_or_else(|e| e.into_inner()).take();
     match child {
-        Some(mut ch) => blocking(move || match ch.wait() {
-            Ok(st) => ok(nat(code_of(st))),
-            Err(e) => err(describe_io(&e)),
+        Some(mut ch) => blocking(move || {
+            // Wait for it to end without reaping it, then reap it under the
+            // lock `kill` takes (see `ChildCell`).
+            loop {
+                let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+                let r = unsafe { libc::waitid(libc::P_PID, cell.pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT) };
+                if r == 0 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                    break;
+                }
+            }
+            let mut reaped = cell.reaped.lock().unwrap_or_else(|e| e.into_inner());
+            let r = ch.wait();
+            *reaped = true;
+            drop(reaped);
+            match r {
+                Ok(st) => ok(nat(code_of(st))),
+                Err(e) => err(describe_io(&e)),
+            }
         }),
         None => err(io_err("this child was already waited for")),
     }
+});
+
+builtin!(ckb_proc_killer, |a| {
+    let cell = match obj(a[0]) {
+        Some(Obj::Child(c)) => c.clone(),
+        _ => bug("expected a child process"),
+    };
+    new_tuple(&[dup(a[0]), new_obj(Obj::Killer(cell))])
+});
+
+// End the child (SIGKILL), unless it has already ended and been waited for.
+builtin!(ckb_proc_kill, |a| {
+    if let Some(Obj::Killer(cell)) = obj(a[0]) {
+        let reaped = cell.reaped.lock().unwrap_or_else(|e| e.into_inner());
+        if !*reaped {
+            unsafe { libc::kill(cell.pid, libc::SIGKILL) };
+        }
+    }
+    UNIT
 });

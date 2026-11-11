@@ -54,6 +54,11 @@ export fn write_bytes b f -> r : b~Bytes, f~File, r~(Result Unit IoError, File)
     __builtin
 
 # An entry of a directory.
+# Write out what is buffered now, rather than when the program next waits
+# or ends (§13.8): for a reply another program is waiting for.
+export fn flush f -> r : f~File, r~(Result Unit IoError, File)
+    __builtin
+
 export record Entry
     name~String
     dir~Bool

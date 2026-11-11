@@ -124,11 +124,13 @@ pub fn check_json(name: &str, text: &str, dir: &std::path::Path, out: &mut dyn F
     let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let user = e.as_ref().map(|(_, u)| u.clone()).unwrap_or_default();
     emit_new(&c, e.as_ref().map(|x| &x.0), &main, "types", &mut seen, out);
+    out(r#"{"kind":"done","phase":"types"}"#.to_string());
+    // The index after the types phase's diagnostics, so they aren't kept
+    // waiting by it.
     match &e {
         Some((e, user)) => emit_index(e, user, &main, out),
         None => emit_tokens(&main, &c.file, out),
     }
-    out(r#"{"kind":"done","phase":"types"}"#.to_string());
     if let Some((e, user)) = &e {
         run_checks(&mut c, e, user);
     }
@@ -144,8 +146,8 @@ pub fn check_json(name: &str, text: &str, dir: &std::path::Path, out: &mut dyn F
     c.errors() > 0
 }
 
-/// The index (§15.5): each name in the program's own modules, then each
-/// keyword, comment, string and number.
+/// The index (§15.5): each name in the file being checked, then each
+/// keyword, comment, string and number in it.
 fn emit_index(e: &elab::Elab, user: &str, main: &std::path::Path, out: &mut dyn FnMut(String)) {
     let path_of = |m: &str| -> std::path::PathBuf {
         if m == user {
@@ -180,13 +182,8 @@ fn emit_index(e: &elab::Elab, user: &str, main: &std::path::Path, out: &mut dyn 
             json::string(&e.hover_of(&u.what)),
         ));
     }
-    let mut mods: Vec<&String> = e.user_modules.iter().collect();
-    let u = user.to_string();
-    mods.push(&u);
-    for m in mods {
-        if let Some(f) = e.sources.get(m) {
-            emit_tokens(&path_of(m), f, out);
-        }
+    if let Some(f) = e.sources.get(user) {
+        emit_tokens(main, f, out);
     }
 }
 

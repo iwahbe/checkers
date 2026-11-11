@@ -219,6 +219,7 @@ impl Elab {
             }
             ExprKind::Con(n) => match self.resolve(n, cx.type_pos) {
                 Some(s) => {
+                    self.index_sym(e.span, s);
                     let (t, ty) = self.sym_term(cx, s, e.span);
                     self.insert(cx, t, ty)
                 }

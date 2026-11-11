@@ -20,6 +20,11 @@
 //!                         (`checkers` is built from tools/checkers.ck with `ckc build`).
 //! tests/tool/NAME.args → each line runs `checkers` with those arguments (`ckc` is
 //!                         this build's); NAME.out is their output.
+//! tests/lsp/NAME.session → a session with `checkers lsp` (§15.5), run in tests/lsp:
+//!                         `> JSON` sends a message (`$ROOT` is the repository,
+//!                         `$TEXT(file)` a file's text as a JSON string), `< N`
+//!                         waits for N more messages; NAME.out is every message
+//!                         received, in order, and the exit code.
 //! tools/, examples/, stdlib/, tests/{types,run,stage,stress}: every .ck file must be
 //!                         formatted; every .ck file in the repository must format to a
 //!                         fixed point with the same syntax tree (D93).
@@ -180,6 +185,13 @@ fn build_tool(root: &Path, update: bool, failures: &mut Vec<String>) -> usize {
             let args: Vec<&str> = line.split_whitespace().collect();
             actual += &format!("$ checkers {line}\n{}", shown(&run_with(&exe, &args, b"", root)));
         }
+        compare(root, &path.with_extension("out"), &actual, update, failures);
+    }
+
+    let lsp_dir = root.join("tests").join("lsp");
+    for path in files_with(&lsp_dir, "session") {
+        count += 1;
+        let actual = lsp_session(&exe, root, &path);
         compare(root, &path.with_extension("out"), &actual, update, failures);
     }
 
@@ -453,4 +465,91 @@ fn golden() {
         println!("golden: {} of {count} failed (UPDATE_GOLDEN=1 to accept)", failures.len());
         std::process::exit(1);
     }
+}
+
+/// Run a `tests/lsp/NAME.session` against `checkers lsp` (§15.5).
+fn lsp_session(exe: &Path, root: &Path, path: &Path) -> String {
+    use std::io::{BufRead, BufReader, Read};
+    use std::sync::mpsc;
+    let dir = path.parent().unwrap();
+    let root_text = root.canonicalize().unwrap().to_string_lossy().to_string();
+    let mut child = std::process::Command::new(exe)
+        .arg("lsp")
+        .env("CKC", env!("CARGO_BIN_EXE_ckc"))
+        .env("CHECKERS_NO_CACHE", "1")
+        .env("CHECKERS_THREADS", "1")
+        .current_dir(dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("run checkers lsp");
+    let mut stdin = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let mut r = BufReader::new(stdout);
+        loop {
+            let mut n = None;
+            loop {
+                let mut line = String::new();
+                if r.read_line(&mut line).unwrap_or(0) == 0 {
+                    return;
+                }
+                let line = line.trim_end();
+                if line.is_empty() {
+                    break;
+                }
+                if let Some(v) = line.strip_prefix("Content-Length:") {
+                    n = v.trim().parse::<usize>().ok();
+                }
+            }
+            let mut body = vec![0; n.unwrap_or(0)];
+            if r.read_exact(&mut body).is_err() {
+                return;
+            }
+            let _ = tx.send(String::from_utf8_lossy(&body).to_string());
+        }
+    });
+    let mut out = String::new();
+    let text_of = |name: &str| -> String {
+        let t = fs::read_to_string(dir.join(name)).unwrap_or_default();
+        checkers::json::string(&t)
+    };
+    for line in fs::read_to_string(path).unwrap().lines() {
+        if let Some(msg) = line.strip_prefix("> ") {
+            let mut m = msg.replace("$ROOT", &root_text);
+            while let Some(k) = m.find("$TEXT(") {
+                let end = k + m[k..].find(')').unwrap();
+                let name = m[k + 6..end].to_string();
+                m.replace_range(k..=end, &text_of(&name));
+            }
+            let framed = format!("Content-Length: {}\r\n\r\n{m}", m.len());
+            if stdin.write_all(framed.as_bytes()).is_err() {
+                out += "-- the server closed its input\n";
+                break;
+            }
+            let _ = stdin.flush();
+        } else if let Some(n) = line.strip_prefix("< ") {
+            for _ in 0..n.trim().parse::<usize>().unwrap_or(0) {
+                match rx.recv_timeout(std::time::Duration::from_secs(60)) {
+                    Ok(m) => out += &format!("{}\n", m.replace(&root_text, "$ROOT")),
+                    Err(_) => {
+                        out += "-- timed out waiting for a message\n";
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    drop(stdin);
+    let status = child.wait().expect("wait for checkers lsp");
+    while let Ok(m) = rx.recv_timeout(std::time::Duration::from_millis(200)) {
+        out += &format!("{}\n", m.replace(&root_text, "$ROOT"));
+    }
+    let mut err = String::new();
+    if let Some(mut e) = child.stderr.take() {
+        let _ = e.read_to_string(&mut err);
+    }
+    out + &format!("-- exit {}\n{err}", status.code().unwrap_or(-1))
 }

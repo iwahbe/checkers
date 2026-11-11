@@ -1,21 +1,15 @@
 {"kind":"diagnostic","phase":"types","path":"$ROOT/tests/json/lib/helper.ck","start":[3,4],"end":[3,8],"severity":"error","code":"E0201","message":"type mismatch: expected `Nat`, found `String`","label":"this expression has type `String`","notes":[],"help":null}
-{"kind":"name","path":"$ROOT/tests/json/lib/helper.ck","start":[2,10],"end":[2,13],"class":"function","def":{"path":"$ROOT/tests/json/lib/helper.ck","start":[2,10],"end":[2,13]},"hover":"export fn two -> r : r~Nat"}
-{"kind":"name","path":"$ROOT/tests/json/lib/helper.ck","start":[2,17],"end":[2,18],"class":"variable","def":{"path":"$ROOT/tests/json/lib/helper.ck","start":[2,17],"end":[2,18]},"hover":"r : Nat"}
-{"kind":"name","path":"$ROOT/tests/json/lib/helper.ck","start":[2,21],"end":[2,22],"class":"variable","def":{"path":"$ROOT/tests/json/lib/helper.ck","start":[2,17],"end":[2,18]},"hover":"r : Nat"}
+{"kind":"done","phase":"types"}
 {"kind":"name","path":"$ROOT/tests/json/overlay.ck","start":[2,7],"end":[2,17],"class":"module","def":{"path":"$ROOT/tests/json/lib/helper.ck","start":[0,0],"end":[0,0]},"hover":"module lib.helper"}
 {"kind":"name","path":"$ROOT/tests/json/overlay.ck","start":[4,3],"end":[4,4],"class":"function","def":{"path":"$ROOT/tests/json/overlay.ck","start":[4,3],"end":[4,4]},"hover":"fn f -> r : r~Nat"}
+{"kind":"name","path":"$ROOT/tests/json/overlay.ck","start":[4,14],"end":[4,17],"class":"type","def":{"path":"$ROOT/stdlib/prelude.ck","start":[4,21],"end":[4,24]},"hover":"export abstract enum Nat"}
 {"kind":"name","path":"$ROOT/tests/json/overlay.ck","start":[4,8],"end":[4,9],"class":"variable","def":{"path":"$ROOT/tests/json/overlay.ck","start":[4,8],"end":[4,9]},"hover":"r : Nat"}
 {"kind":"name","path":"$ROOT/tests/json/overlay.ck","start":[4,12],"end":[4,13],"class":"variable","def":{"path":"$ROOT/tests/json/overlay.ck","start":[4,8],"end":[4,9]},"hover":"r : Nat"}
 {"kind":"name","path":"$ROOT/tests/json/overlay.ck","start":[5,4],"end":[5,10],"class":"module","def":{"path":"$ROOT/tests/json/lib/helper.ck","start":[0,0],"end":[0,0]},"hover":"module lib.helper"}
 {"kind":"name","path":"$ROOT/tests/json/overlay.ck","start":[5,11],"end":[5,14],"class":"function","def":{"path":"$ROOT/tests/json/lib/helper.ck","start":[2,10],"end":[2,13]},"hover":"export fn two -> r : r~Nat"}
-{"kind":"token","path":"$ROOT/tests/json/lib/helper.ck","start":[0,0],"end":[0,6],"class":"keyword"}
-{"kind":"token","path":"$ROOT/tests/json/lib/helper.ck","start":[2,0],"end":[2,6],"class":"keyword"}
-{"kind":"token","path":"$ROOT/tests/json/lib/helper.ck","start":[2,7],"end":[2,9],"class":"keyword"}
-{"kind":"token","path":"$ROOT/tests/json/lib/helper.ck","start":[3,4],"end":[3,8],"class":"string"}
 {"kind":"token","path":"$ROOT/tests/json/overlay.ck","start":[0,0],"end":[0,6],"class":"keyword"}
 {"kind":"token","path":"$ROOT/tests/json/overlay.ck","start":[2,0],"end":[2,6],"class":"keyword"}
 {"kind":"token","path":"$ROOT/tests/json/overlay.ck","start":[4,0],"end":[4,2],"class":"keyword"}
-{"kind":"done","phase":"types"}
 {"kind":"done","phase":"checks"}
 {"kind":"done","phase":"proofs"}
 -- exit 1

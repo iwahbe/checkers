@@ -17,6 +17,7 @@ USAGE:
     ckc check [--deny-warnings] <FILE.ck>...   type-check and run `check`s; report diagnostics
     ckc check --json [--overlay MAP] <FILE.ck> the same as JSON lines, phase by phase, for tools (§15.5);
                                                MAP is a JSON object from paths to unsaved text
+                                               (`-`: read it from standard input)
 
     check, run, build, trust and stage reuse Z3's answers from `.checkers/` beside the
     file (D100); --no-cache (before the file) or CHECKERS_NO_CACHE=1 turns that off.
@@ -263,7 +264,14 @@ fn check(args: &[String]) -> ExitCode {
                 eprintln!("error: `--overlay` needs a file\n\n{USAGE}");
                 return ExitCode::from(2);
             };
-            let parsed = std::fs::read_to_string(f).map_err(|e| e.to_string()).and_then(|t| checkers::json::string_object(&t));
+            // `-`: standard input (a language server pipes it, §15.5).
+            let text = if f == "-" {
+                let mut t = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut t).map(|_| t)
+            } else {
+                std::fs::read_to_string(f)
+            };
+            let parsed = text.map_err(|e| e.to_string()).and_then(|t| checkers::json::string_object(&t));
             match parsed {
                 Ok(m) => checkers::overlay::set(m),
                 Err(e) => {

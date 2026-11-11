@@ -1,0 +1,14 @@
+# A client that takes only UTF-16 positions: columns count UTF-16 code units
+# (`é` is one, `😀` two), in diagnostics and in requests.
+> {"jsonrpc":"2.0","id":1,"method":"textDocument/hover","params":{}}
+< 1
+> {"jsonrpc":"2.0","id":2,"method":"initialize","params":{"processId":null,"capabilities":{}}}
+< 1
+> {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/wide.ck","languageId":"checkers","version":1,"text":$TEXT(wide.ck)}}}
+< 3
+# The `1` after the string: UTF-16 column 13 (byte column 16).
+> {"jsonrpc":"2.0","id":3,"method":"textDocument/semanticTokens/full","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/wide.ck"}}}
+< 1
+> {"jsonrpc":"2.0","id":4,"method":"shutdown"}
+< 1
+> {"jsonrpc":"2.0","method":"exit"}

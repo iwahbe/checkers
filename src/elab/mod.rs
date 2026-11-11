@@ -286,13 +286,15 @@ pub struct Elab {
     pub sources: HashMap<String, SourceFile>,
     /// Each loaded module's file, absolute (for tools, §15.5).
     pub paths: HashMap<String, std::path::PathBuf>,
-    /// The index of names in the program's modules (§15.5).
+    /// The index of names in the module being checked (§15.5).
     pub index: Vec<index::NameUse>,
+    /// That module.
+    pub index_of: Option<String>,
     /// Where each global is declared: module and the span of its name.
     pub decl_at: HashMap<index::Target, (String, Span)>,
     /// A declaration's header as written, for hover.
     pub decl_sig: HashMap<index::Target, String>,
-    /// `function`, `lemma`, `variable` (a constant) or `type` (an alias).
+    /// `function`, `lemma`, `constant` or `type` (an alias).
     pub def_class: HashMap<DefId, &'static str>,
     pub diags: Vec<(String, Diagnostic)>,
     seen: HashSet<(String, u32, u32, String)>,
@@ -402,6 +404,7 @@ impl Elab {
             obligations: Vec::new(),
             paths: HashMap::new(),
             index: Vec::new(),
+            index_of: None,
             decl_at: HashMap::new(),
             decl_sig: HashMap::new(),
             def_class: HashMap::new(),
@@ -1172,6 +1175,7 @@ pub fn check_module(name_hint: &str, file: &SourceFile, m: &ast::Module, dir: Op
     }
     let name = m.name.as_ref().map(|q| q.dotted()).unwrap_or_else(|| name_hint.to_string());
     e.sources.insert(name.clone(), SourceFile::new(file.name.clone(), file.text.clone()));
+    e.index_of = Some(name.clone());
     e.elab_module(&name, m, false);
     e
 }

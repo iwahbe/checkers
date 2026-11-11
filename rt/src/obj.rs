@@ -26,13 +26,24 @@ pub struct Cell {
     pub v: Mutex<W>,
 }
 
+/// A child process and whether it has been reaped. A `kill` holds `reaped`'s
+/// lock while it signals, and the child is reaped only under that lock, so a
+/// signal never reaches a process that has reused the child's id.
+pub struct ChildCell {
+    pub pid: i32,
+    pub child: Mutex<Option<std::process::Child>>,
+    pub reaped: Mutex<bool>,
+}
+
 pub enum Obj {
     Decimal(Decimal),
     /// Sorted (value, count) pairs (D47).
     Bag(Vec<(Num, usize)>),
     File(Mutex<Option<FileState>>),
     /// A child process, until it is waited for.
-    Child(Mutex<Option<std::process::Child>>),
+    Child(Arc<ChildCell>),
+    /// A way to end a child, shared freely (`proc.killer`).
+    Killer(Arc<ChildCell>),
     IoErr(String),
     /// A file system capability confined to a directory (`files.within`).
     Fs(PathBuf),

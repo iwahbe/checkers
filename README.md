@@ -38,7 +38,7 @@ Types are written only as constraints (`i~Nat, i <= len src`); the compiler prov
 | M16 Blocking operations free the thread | done (Linux x86-64) |
 | M17 Reflected definitions sound for `decreasing` recursion (SPEC §7.3) | done |
 | M18 No `admit`s in `std`; `--release` rejects them | done |
-| M19 `checkers lsp` | planned |
+| M19 `checkers lsp` | built: diagnostics on every change, hover, go to definition, highlighting, outline, formatting; awaiting a check in Emacs |
 
 ## Usage
 

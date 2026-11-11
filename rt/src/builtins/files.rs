@@ -21,6 +21,7 @@ pub const TABLE: &[Builtin] = &[
     ("std.files.read_exactly", "ckb_files_read_exactly", ckb_files_read_exactly),
     ("std.files.read_rest", "ckb_files_read_rest", ckb_files_read_rest),
     ("std.files.write_bytes", "ckb_files_write_bytes", ckb_files_write_bytes),
+    ("std.files.flush", "ckb_files_flush", ckb_files_flush),
 ];
 
 // Calls on paths run without holding a behaviour's thread (D113).
@@ -164,6 +165,14 @@ builtin!(ckb_files_write_bytes, |a| {
         Err(e) => err(describe_io(&e)),
     };
     new_tuple(&[r, dup(a[1])])
+});
+
+builtin!(ckb_files_flush, |a| {
+    let r = match writing(a[0], |w| w.flush()) {
+        Ok(()) => ok(UNIT),
+        Err(e) => err(describe_io(&e)),
+    };
+    new_tuple(&[r, dup(a[0])])
 });
 
 builtin!(ckb_files_list, |a| match path(a[1], s(a[0])) {

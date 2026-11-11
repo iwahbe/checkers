@@ -4,7 +4,11 @@
 module checkers
 
 import std.system (System, ExitCode)
+import std.cown (Sched)
+import std.future (Future)
+import std.future
 import std.terminal (Term)
+import std.files (Fs)
 import std.system (Env, Proc)
 import std.env
 import std.files
@@ -12,6 +16,7 @@ import std.proc
 import std.string
 import std.bytes
 import fmt
+import lsp
 import ck.packages (Caps)
 
 let VERSION = "0.1.0"
@@ -22,6 +27,7 @@ let USAGE = string.concat [
     "    checkers check|run|build|trust|stage|parse ...   run the compiler, `ckc` (see `ckc --help`)\n",
     "    checkers fmt [--check] [PATH]...                 format .ck files (see `checkers fmt --help`)\n",
     "    checkers fmt -                                   format standard input\n",
+    "    checkers lsp                                     the language server, on standard input and output\n",
     "    checkers --version\n\n",
     "In a directory with checkers.json, the compiler commands first fetch the package's\n",
     "dependencies and update checkers.lock; the file defaults to main.ck.\n",
@@ -105,8 +111,34 @@ partial fn in_package command rest c -> code : command~String, rest~List String,
             let given = if names_file rest then rest else with_main rest
             compiler (command :: packages.flags b ++ given) c.env c.proc c.term
 
-export partial fn main args sys -> code : args~List String, sys~System, code~ExitCode
-    let System { term, fs, env = e, proc = p } = sys
+# The compiler for the language server: CKC, else next to `checkers`, else
+# `ckc` on PATH.
+fn ckc_path e -> r : e~Env, r~String
+    match env.get "CKC" e
+        Some c -> c
+        None   ->
+            match beside (env.executable e)
+                Some c -> c
+                None   -> "ckc"
+
+# `checkers lsp`: in a package's directory, checks get its dependencies.
+partial fn language_server c sched -> code : c~Caps, sched~Sched, code~Future ExitCode
+    let flags = match files.read "checkers.json" c.fs
+        Err _ -> []
+        Ok _  ->
+            match packages.resolve c
+                Ok b  -> packages.flags b
+                Err _ -> []
+    lsp.run (ckc_path c.env) flags c.term c.fs c.proc sched
+
+# The language server's exit code comes from a behaviour; the others' at once.
+export partial fn main args sys -> code : args~List String, sys~System, code~Future ExitCode
+    let System { term, fs, env = e, proc = p, sched } = sys
+    match args
+        ["lsp"] -> language_server (Caps fs e p term) sched
+        _       -> future.ready (command args term fs e p)
+
+partial fn command args term fs e p -> code : args~List String, term~Term, fs~Fs, e~Env, p~Proc, code~ExitCode
     match args
         "fmt" :: rest -> fmt.run rest term fs
         ["--version"] ->

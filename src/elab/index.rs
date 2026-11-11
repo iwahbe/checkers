@@ -34,9 +34,11 @@ pub enum Use {
 }
 
 impl Elab {
-    /// Names are indexed in the program's modules only.
+    /// Names are indexed in the module being checked only (the editor's
+    /// document); other modules' declarations still record where they are
+    /// and their headers, for hover and go to definition.
     pub fn indexing(&self) -> bool {
-        !self.cur.starts_with("std.") && !self.cur.is_empty()
+        self.index_of.as_deref() == Some(self.cur.as_str())
     }
 
     pub fn index_global(&mut self, span: Span, t: Target) {

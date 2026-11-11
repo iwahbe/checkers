@@ -443,7 +443,7 @@ impl Elab {
                     self.declare(name, false, Sym::Def(id), exported);
                     let class = match &d.kind {
                         DeclKind::Lemma { .. } => "lemma",
-                        DeclKind::Const { .. } => "variable",
+                        DeclKind::Const { .. } => "constant",
                         _ => "function",
                     };
                     self.def_class.insert(id, class);
