@@ -297,6 +297,8 @@ pub struct Elab {
     /// `function`, `lemma`, `constant` or `type` (an alias).
     pub def_class: HashMap<DefId, &'static str>,
     pub diags: Vec<(String, Diagnostic)>,
+    /// Each module's declarations: span and what they declare (D122).
+    pub decl_spans: HashMap<String, Vec<(Span, Option<Sym>)>>,
     seen: HashSet<(String, u32, u32, String)>,
     pub cur: String,
     loading: Vec<String>,
@@ -390,6 +392,7 @@ impl Elab {
             modules: HashMap::new(),
             sources: HashMap::new(),
             diags: Vec::new(),
+            decl_spans: HashMap::new(),
             seen: HashSet::new(),
             cur: String::new(),
             loading: Vec::new(),
@@ -1283,6 +1286,102 @@ pub fn check_module(name_hint: &str, file: &SourceFile, m: &ast::Module, dir: Op
     e.index_of = Some(name.clone());
     e.elab_module(&name, m, false);
     e
+}
+
+impl Elab {
+    /// Check as far as possible past errors (D122): set aside the obligations
+    /// and `check`s of declarations with errors, and those that mention a
+    /// definition or type with errors (or one that uses such, transitively).
+    /// `extra` adds errors not in `diags`: the checked file's syntax errors.
+    pub fn set_aside_broken(&mut self, extra: &[(String, Span)]) {
+        let mut errs: Vec<(String, Span)> =
+            self.diags.iter().filter(|(_, d)| d.is_error()).map(|(m, d)| (m.clone(), d.span)).collect();
+        errs.extend_from_slice(extra);
+        if errs.is_empty() {
+            return;
+        }
+        let mut spans: HashMap<String, Vec<Span>> = HashMap::new();
+        let mut defs: HashSet<DefId> = HashSet::new();
+        let mut tys: HashSet<TyId> = HashSet::new();
+        for (m, sp) in &errs {
+            for (d, id) in self.decl_spans.get(m).map(|v| v.as_slice()).unwrap_or(&[]) {
+                if d.start <= sp.start && sp.start < d.end.max(d.start + 1) {
+                    spans.entry(m.clone()).or_default().push(*d);
+                    match id {
+                        Some(Sym::Def(x)) => {
+                            defs.insert(*x);
+                        }
+                        Some(Sym::Ty(t)) => {
+                            tys.insert(*t);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        // Close over uses: a definition whose type or body mentions a broken
+        // one is broken too (for `check`s, which run it, and proofs, which
+        // may unfold it).
+        loop {
+            let before = defs.len() + tys.len();
+            for (k, info) in self.g.defs.iter().enumerate() {
+                let d = DefId(k as u32);
+                if !defs.contains(&d) && (touches(&info.ty, &self.g, &defs, &tys) || info.body.as_ref().is_some_and(|b| touches(b, &self.g, &defs, &tys))) {
+                    defs.insert(d);
+                }
+            }
+            for c in &self.g.cons {
+                if !tys.contains(&c.ty) && c.fields.iter().any(|f| touches(&f.3, &self.g, &defs, &tys)) {
+                    tys.insert(c.ty);
+                }
+            }
+            if defs.len() + tys.len() == before {
+                break;
+            }
+        }
+        let inside = |m: &str, at: Span| spans.get(m).is_some_and(|v| v.iter().any(|d| d.start <= at.start && at.start < d.end));
+        let g = &self.g;
+        self.checks.retain(|(m, at, t)| !inside(m, *at) && !touches(t, g, &defs, &tys));
+        self.obligations.retain(|o| {
+            if inside(&o.module, o.span) {
+                return false;
+            }
+            let lvl = o.ctx.len();
+            let bad = |v: &Val| touches(&quote(g, lvl, v), g, &defs, &tys);
+            !(bad(&o.goal)
+                || o.facts.iter().any(bad)
+                || o.only_if_nat.as_ref().is_some_and(bad)
+                || o.ctx.iter().enumerate().any(|(i, l)| {
+                    touches(&quote(g, i, &l.ty), g, &defs, &tys) || l.def.as_ref().is_some_and(|v| touches(&quote(g, i, v), g, &defs, &tys))
+                }))
+        });
+    }
+}
+
+/// Whether `t` mentions an error, one of `defs`, or one of `tys` or their constructors.
+fn touches(t: &Tm, g: &Globals, defs: &HashSet<DefId>, tys: &HashSet<TyId>) -> bool {
+    let go = |x: &Tm| touches(x, g, defs, tys);
+    let con = |c: &ConId| tys.contains(&g.cons[c.0 as usize].ty);
+    match t {
+        Tm::Error => true,
+        Tm::Def(d) => defs.contains(d),
+        Tm::TyCon(ty) => tys.contains(ty),
+        Tm::Con(c) => con(c),
+        Tm::Var(_) | Tm::Meta(_) | Tm::Univ(_) | Tm::Lit(_) => false,
+        Tm::Pi(_, _, _, a, b) | Tm::App(a, b, ..) => go(a) || go(b),
+        Tm::Lam(_, _, _, b) | Tm::Proj(b, _) => go(b),
+        Tm::Field(b, c, _) => con(c) || go(b),
+        Tm::Let(_, _, a, b, c) => go(a) || go(b) || go(c),
+        Tm::TyConApp(ty, v) => tys.contains(ty) || v.iter().any(go),
+        Tm::ConApp(c, v) => con(c) || v.iter().any(go),
+        Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => v.iter().any(go),
+        Tm::Case(s, c) => {
+            go(s)
+                || c.branches.iter().any(|(k, _, b)| con(k) || go(b))
+                || c.lits.iter().any(|(_, b)| go(b))
+                || c.default.as_ref().is_some_and(go)
+        }
+    }
 }
 
 /// Definitions sealed by another module (D54) that occur in `t`.

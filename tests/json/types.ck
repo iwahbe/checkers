@@ -1,6 +1,6 @@
 module types
 
-# A type error: the later phases do nothing, but each still ends with `done`.
+# A type error and nothing else to check: each later phase still ends with `done`.
 # The error's notes and help line, and a diagnostic in an imported module.
 import lib.broken
 

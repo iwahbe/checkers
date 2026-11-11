@@ -1,3 +1,11 @@
+error[E0450]: cannot prove that this `Nat` subtraction stays at or above zero
+ --> check_runtime_error.ck:8:5
+  |
+8 |     n - 3
+  |     ^^^^^ `-` on `Nat` needs the left side to be at least the right
+  = note: counterexample: n = 0
+  = help: check it first (`if a >= b then a - b else …`), or use `Int`
+
 error[E0261]: this `check` stopped with a runtime error
   --> check_runtime_error.ck:10:7
    |
@@ -13,4 +21,4 @@ error[E0260]: this `check` is false
    = note: left side:  `4`
    = note: right side: `5`
 
-check_runtime_error.ck: 2 errors, 0 warnings
+check_runtime_error.ck: 3 errors, 0 warnings

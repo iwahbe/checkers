@@ -1,0 +1,10 @@
+# Past a syntax error (D122): the syntax error after the types phase, then
+# the proof failure of another declaration with it after the proofs phase.
+> {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"capabilities":{"general":{"positionEncodings":["utf-8"]}}}}
+< 1
+> {"jsonrpc":"2.0","method":"initialized","params":{}}
+> {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/past_errors.ck","languageId":"checkers","version":1,"text":$TEXT(past_errors.ck)}}}
+< 3
+> {"jsonrpc":"2.0","id":2,"method":"shutdown"}
+< 1
+> {"jsonrpc":"2.0","method":"exit"}

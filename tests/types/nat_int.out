@@ -1,3 +1,20 @@
+error[E0450]: cannot prove `n >= 0`, the postcondition of `narrow_wrong`
+  --> nat_int.ck:20:22
+   |
+20 | fn narrow_wrong i -> r : i~Int, r~Nat
+   |                      ^ promised here
+   = note: for the value returned on line 21: `i`
+   = note: counterexample: i = -1
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+error[E0450]: cannot prove that this `Nat` subtraction stays at or above zero
+  --> nat_int.ck:28:5
+   |
+28 |     a - b
+   |     ^^^^^ `-` on `Nat` needs the left side to be at least the right
+   = note: counterexample: a = 0, b = 1
+   = help: check it first (`if a >= b then a - b else …`), or use `Int`
+
 error[E0262]: type mismatch: expected `List Nat`, found `List Int`
   --> nat_int.ck:32:5
    |
@@ -6,4 +23,4 @@ error[E0262]: type mismatch: expected `List Nat`, found `List Int`
    = note: a refinement inside a type is never gained from an existing value: that would need a proof about every element (D71)
    = help: give the value the type `List Nat` where it is built, so that each part is checked there
 
-nat_int.ck: 1 error, 0 warnings
+nat_int.ck: 3 errors, 0 warnings

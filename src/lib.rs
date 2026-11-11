@@ -390,11 +390,8 @@ fn route(c: &mut Checked, e: &elab::Elab, user: &str, m: &str, d: Diagnostic) {
     }
 }
 
-/// Discharge the proof obligations (§7.2) once everything else is clean.
+/// Discharge the proof obligations (§7.2) not set aside by errors (D122).
 fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
-    if c.errors() > 0 {
-        return;
-    }
     let mut ledger = String::new();
     let (mut asked, mut reused) = (0, 0);
     for m in program_modules(e, user) {
@@ -430,24 +427,21 @@ fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
 /// Parse, lint and type-check; also returns the elaborator and the module name.
 fn elaborate(name: &str, text: &str, dir: &std::path::Path) -> (Checked, Option<(elab::Elab, String)>) {
     let mut c = parse_only(name, text);
-    if c.diags.iter().any(|d| d.is_error()) {
-        return (c, None); // type checking a broken parse only produces noise
-    }
+    // Every declaration the parser recovered is checked (D122).
     let stem = std::path::Path::new(name).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-    let e = elab::check_module(&stem, &c.file, &c.module, Some(dir));
+    let mut e = elab::check_module(&stem, &c.file, &c.module, Some(dir));
     let user = c.module.name.as_ref().map(|q| q.dotted()).unwrap_or(stem);
     for (m, d) in &e.diags {
         route(&mut c, &e, &user, m, d.clone());
     }
+    let syntax: Vec<(String, source::Span)> = c.diags.iter().filter(|d| d.is_error()).map(|d| (user.clone(), d.span)).collect();
+    e.set_aside_broken(&syntax);
     c.obligations = e.obligations.iter().filter(|o| o.module == user).count();
     (c, Some((e, user)))
 }
 
 /// Evaluate the module's `check` declarations (D40).
 fn run_checks(c: &mut Checked, e: &elab::Elab, user: &str) {
-    if c.errors() > 0 {
-        return;
-    }
     let mods = program_modules(e, user);
     if !e.checks.iter().any(|(m, _, _)| mods.contains(m)) {
         return;

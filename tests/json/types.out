@@ -8,7 +8,7 @@
 {"kind":"name","path":"$ROOT/tests/json/types.ck","start":[6,8],"end":[6,9],"class":"variable","def":{"path":"$ROOT/tests/json/types.ck","start":[6,8],"end":[6,9]},"hover":"r : String"}
 {"kind":"name","path":"$ROOT/tests/json/types.ck","start":[6,12],"end":[6,13],"class":"variable","def":{"path":"$ROOT/tests/json/types.ck","start":[6,8],"end":[6,9]},"hover":"r : String"}
 {"kind":"token","path":"$ROOT/tests/json/types.ck","start":[0,0],"end":[0,6],"class":"keyword"}
-{"kind":"token","path":"$ROOT/tests/json/types.ck","start":[2,0],"end":[2,77],"class":"comment"}
+{"kind":"token","path":"$ROOT/tests/json/types.ck","start":[2,0],"end":[2,82],"class":"comment"}
 {"kind":"token","path":"$ROOT/tests/json/types.ck","start":[3,0],"end":[3,74],"class":"comment"}
 {"kind":"token","path":"$ROOT/tests/json/types.ck","start":[4,0],"end":[4,6],"class":"keyword"}
 {"kind":"token","path":"$ROOT/tests/json/types.ck","start":[6,0],"end":[6,2],"class":"keyword"}

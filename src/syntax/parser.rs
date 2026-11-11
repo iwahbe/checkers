@@ -384,14 +384,28 @@ impl Parser {
         let result = if self.eat(&Tok::Arrow) { Some(self.ident("a result name after `->`")?) } else { None };
         let constraints = self.opt_constraints()?;
         self.open_block("function body")?;
-        let decreasing = if self.eat_kw(Kw::Decreasing) {
-            let e = self.expr()?;
-            self.end_line()?;
-            Some(e)
-        } else {
-            None
+        // A body that fails to parse keeps the header (D122): uses of the
+        // function still see its signature.
+        let start = self.span();
+        let parsed = (|| {
+            let decreasing = if self.eat_kw(Kw::Decreasing) {
+                let e = self.expr()?;
+                self.end_line()?;
+                Some(e)
+            } else {
+                None
+            };
+            Ok((decreasing, self.block_rest()?))
+        })();
+        let (decreasing, body) = match parsed {
+            Ok(x) => x,
+            Err(Failed) => {
+                self.recover_top();
+                let span = start.to(self.prev_span());
+                let result = Box::new(Expr { kind: ExprKind::Error, span });
+                (None, Block { stmts: Vec::new(), result, span })
+            }
         };
-        let body = self.block_rest()?;
         Ok(DeclKind::Fn { partial, name, params, result, constraints, decreasing, body })
     }
 

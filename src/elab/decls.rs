@@ -36,6 +36,7 @@ impl Elab {
         self.cur = name.to_string();
         self.stdlib_mode = is_stdlib;
         let ids = self.register(m);
+        self.decl_spans.insert(name.to_string(), m.decls.iter().zip(&ids).map(|(d, id)| (d.span, *id)).collect());
         self.phase_type_params(m, &ids);
         // Declarations in the order of what they use, not of the file (D65).
         let plan = super::order::plan(m);

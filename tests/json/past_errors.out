@@ -1,0 +1,34 @@
+{"kind":"diagnostic","phase":"types","path":"$ROOT/tests/json/past_errors.ck","start":[6,8],"end":[6,9],"severity":"error","code":"E0100","message":"expected an expression, found `+`","label":"expected an expression","notes":[],"help":null}
+{"kind":"done","phase":"types"}
+{"kind":"name","path":"$ROOT/tests/json/past_errors.ck","start":[5,3],"end":[5,9],"class":"function","def":{"path":"$ROOT/tests/json/past_errors.ck","start":[5,3],"end":[5,9]},"hover":"fn broken x -> r : x~Nat, r~Nat"}
+{"kind":"name","path":"$ROOT/tests/json/past_errors.ck","start":[8,3],"end":[8,11],"class":"function","def":{"path":"$ROOT/tests/json/past_errors.ck","start":[8,3],"end":[8,11]},"hover":"fn unproven x -> r : x~Nat, r~Nat, r > 5"}
+{"kind":"name","path":"$ROOT/tests/json/past_errors.ck","start":[5,21],"end":[5,24],"class":"type","def":{"path":"$ROOT/stdlib/prelude.ck","start":[27,12],"end":[27,15]},"hover":"export type Nat = n~Int, n >= 0"}
+{"kind":"name","path":"$ROOT/tests/json/past_errors.ck","start":[5,10],"end":[5,11],"class":"parameter","def":{"path":"$ROOT/tests/json/past_errors.ck","start":[5,10],"end":[5,11]},"hover":"x : Nat"}
+{"kind":"name","path":"$ROOT/tests/json/past_errors.ck","start":[5,28],"end":[5,31],"class":"type","def":{"path":"$ROOT/stdlib/prelude.ck","start":[27,12],"end":[27,15]},"hover":"export type Nat = n~Int, n >= 0"}
+{"kind":"name","path":"$ROOT/tests/json/past_errors.ck","start":[5,15],"end":[5,16],"class":"variable","def":{"path":"$ROOT/tests/json/past_errors.ck","start":[5,15],"end":[5,16]},"hover":"r : Nat"}
+{"kind":"name","path":"$ROOT/tests/json/past_errors.ck","start":[5,19],"end":[5,20],"class":"parameter","def":{"path":"$ROOT/tests/json/past_errors.ck","start":[5,10],"end":[5,11]},"hover":"x : Nat"}
+{"kind":"name","path":"$ROOT/tests/json/past_errors.ck","start":[5,26],"end":[5,27],"class":"variable","def":{"path":"$ROOT/tests/json/past_errors.ck","start":[5,15],"end":[5,16]},"hover":"r : Nat"}
+{"kind":"name","path":"$ROOT/tests/json/past_errors.ck","start":[8,23],"end":[8,26],"class":"type","def":{"path":"$ROOT/stdlib/prelude.ck","start":[27,12],"end":[27,15]},"hover":"export type Nat = n~Int, n >= 0"}
+{"kind":"name","path":"$ROOT/tests/json/past_errors.ck","start":[8,12],"end":[8,13],"class":"parameter","def":{"path":"$ROOT/tests/json/past_errors.ck","start":[8,12],"end":[8,13]},"hover":"x : Nat"}
+{"kind":"name","path":"$ROOT/tests/json/past_errors.ck","start":[8,30],"end":[8,33],"class":"type","def":{"path":"$ROOT/stdlib/prelude.ck","start":[27,12],"end":[27,15]},"hover":"export type Nat = n~Int, n >= 0"}
+{"kind":"name","path":"$ROOT/tests/json/past_errors.ck","start":[8,17],"end":[8,18],"class":"variable","def":{"path":"$ROOT/tests/json/past_errors.ck","start":[8,17],"end":[8,18]},"hover":"r : Nat"}
+{"kind":"name","path":"$ROOT/tests/json/past_errors.ck","start":[8,21],"end":[8,22],"class":"parameter","def":{"path":"$ROOT/tests/json/past_errors.ck","start":[8,12],"end":[8,13]},"hover":"x : Nat"}
+{"kind":"name","path":"$ROOT/tests/json/past_errors.ck","start":[8,28],"end":[8,29],"class":"variable","def":{"path":"$ROOT/tests/json/past_errors.ck","start":[8,17],"end":[8,18]},"hover":"r : Nat"}
+{"kind":"name","path":"$ROOT/tests/json/past_errors.ck","start":[8,35],"end":[8,36],"class":"variable","def":{"path":"$ROOT/tests/json/past_errors.ck","start":[8,17],"end":[8,18]},"hover":"r : Nat"}
+{"kind":"name","path":"$ROOT/tests/json/past_errors.ck","start":[9,4],"end":[9,5],"class":"parameter","def":{"path":"$ROOT/tests/json/past_errors.ck","start":[8,12],"end":[8,13]},"hover":"x : Nat"}
+{"kind":"name","path":"$ROOT/tests/json/past_errors.ck","start":[11,6],"end":[11,14],"class":"function","def":{"path":"$ROOT/tests/json/past_errors.ck","start":[8,3],"end":[8,11]},"hover":"fn unproven x -> r : x~Nat, r~Nat, r > 5"}
+{"kind":"token","path":"$ROOT/tests/json/past_errors.ck","start":[0,0],"end":[0,6],"class":"keyword"}
+{"kind":"token","path":"$ROOT/tests/json/past_errors.ck","start":[2,0],"end":[2,76],"class":"comment"}
+{"kind":"token","path":"$ROOT/tests/json/past_errors.ck","start":[3,0],"end":[3,41],"class":"comment"}
+{"kind":"token","path":"$ROOT/tests/json/past_errors.ck","start":[5,0],"end":[5,2],"class":"keyword"}
+{"kind":"token","path":"$ROOT/tests/json/past_errors.ck","start":[6,10],"end":[6,11],"class":"number"}
+{"kind":"token","path":"$ROOT/tests/json/past_errors.ck","start":[8,0],"end":[8,2],"class":"keyword"}
+{"kind":"token","path":"$ROOT/tests/json/past_errors.ck","start":[8,39],"end":[8,40],"class":"number"}
+{"kind":"token","path":"$ROOT/tests/json/past_errors.ck","start":[11,0],"end":[11,5],"class":"keyword"}
+{"kind":"token","path":"$ROOT/tests/json/past_errors.ck","start":[11,15],"end":[11,16],"class":"number"}
+{"kind":"token","path":"$ROOT/tests/json/past_errors.ck","start":[11,20],"end":[11,21],"class":"number"}
+{"kind":"diagnostic","phase":"checks","path":"$ROOT/tests/json/past_errors.ck","start":[11,6],"end":[11,21],"severity":"error","code":"E0260","message":"this `check` is false","label":"evaluates to `False`","notes":["left side:  `1`","right side: `2`"],"help":null}
+{"kind":"done","phase":"checks"}
+{"kind":"diagnostic","phase":"proofs","path":"$ROOT/tests/json/past_errors.ck","start":[8,35],"end":[8,40],"severity":"error","code":"E0450","message":"cannot prove `r > 5`, the postcondition of `unproven`","label":"promised here","notes":["for the value returned on line 10: `x`","counterexample: x = 0"],"help":"make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`"}
+{"kind":"done","phase":"proofs"}
+-- exit 1

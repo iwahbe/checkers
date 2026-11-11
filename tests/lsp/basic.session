@@ -3,13 +3,14 @@
 > {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"capabilities":{"general":{"positionEncodings":["utf-32","utf-8","utf-16"]}}}}
 < 1
 > {"jsonrpc":"2.0","method":"initialized","params":{}}
-# A type error: published after the types phase, and again after each of
-# the other two (which have nothing to add, since types failed).
+# A type error: published after the types phase and the `check`s phase;
+# the proofs phase adds `sum`'s proof failure, found past the type error (D122).
 > {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/demo.ck","languageId":"checkers","version":1,"text":$TEXT(demo.ck)}}}
 < 3
-# Fixed: no diagnostics after the types phase; then the proof failure.
+# Fixed: the type error goes after the types phase; the last proof failure
+# stays (at its old position) until this check's proofs replace it.
 > {"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/demo.ck","version":2},"contentChanges":[{"text":"module demo\n\nrecord Point\n    x~Nat\n    y~Nat\n\nlet ORIGIN = Point 0 0\n\nfn sum p -> r : p~Point, r~Nat, r > 100\n    p.x + p.y\n"}]}}
-< 2
+< 3
 # Hover over the parameter `p` in the body, and the field `x`.
 > {"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/demo.ck"},"position":{"line":9,"character":4}}}
 < 1

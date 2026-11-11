@@ -1,0 +1,30 @@
+error[E0100]: expected an expression, found `+`
+  --> past_errors.ck:11:9
+   |
+11 |     x + + 1
+   |         ^ expected an expression
+
+error[E0201]: type mismatch: expected `Nat`, found `String`
+  --> past_errors.ck:15:5
+   |
+15 |     "s"
+   |     ^^^ this expression has type `String`
+
+error[E0450]: cannot prove `r > 5`, the postcondition of `unproven`
+  --> past_errors.ck:21:36
+   |
+21 | fn unproven x -> r : x~Nat, r~Nat, r > 5
+   |                                    ^^^^^ promised here
+   = note: for the value returned on line 22: `x`
+   = note: counterexample: x = 0
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+error[E0260]: this `check` is false
+  --> past_errors.ck:32:7
+   |
+32 | check good 1 == 3
+   |       ^^^^^^^^^^^ evaluates to `False`
+   = note: left side:  `2`
+   = note: right side: `3`
+
+past_errors.ck: 4 errors, 0 warnings
