@@ -76,7 +76,7 @@ pub fn source(name: &str) -> Option<String> {
         .or_insert_with(|| {
             let d = dir().ok()?;
             let rel: PathBuf = rest.split('.').collect::<PathBuf>().with_extension("ck");
-            std::fs::read_to_string(d.join(rel)).ok()
+            crate::overlay::read(&d.join(rel)).ok()
         })
         .clone()
 }
@@ -114,6 +114,9 @@ impl Elab {
         let Some(text) = source(name) else { return false };
         let rel = name.trim_start_matches("std.").replace('.', "/");
         let file = SourceFile::new(format!("<std>/{rel}.ck"), text.clone());
+        if let Ok(d) = dir() {
+            self.paths.insert(name.to_string(), crate::overlay::absolute(&d.join(format!("{rel}.ck"))));
+        }
         let (m, diags) = crate::syntax::parse_module(&text);
         for d in diags {
             self.diags.push((name.to_string(), d));
@@ -176,7 +179,8 @@ impl Elab {
     fn load_file(&mut self, key: &str, declared: &str, base: &std::path::Path, pkg: Option<&str>) -> bool {
         let rel: PathBuf = declared.split('.').collect::<PathBuf>().with_extension("ck");
         let path = base.join(&rel);
-        let Ok(text) = std::fs::read_to_string(&path) else { return false };
+        let Ok(text) = crate::overlay::read(&path) else { return false };
+        self.paths.insert(key.to_string(), crate::overlay::absolute(&path));
         let shown = match pkg {
             Some(p) => format!("<{p}>/{}", rel.to_string_lossy()),
             None => path.to_string_lossy().to_string(),

@@ -7,6 +7,7 @@
 
 mod decls;
 mod expr;
+pub mod index;
 mod order;
 mod pattern;
 mod refine;
@@ -85,6 +86,8 @@ pub struct Local {
     pub sub: Option<usize>,
     /// Known at compile time (§8.9): a `comptime` parameter, or a field of one.
     pub comptime: bool,
+    /// Where its name is bound, if known (for the index, §15.5).
+    pub span: Option<Span>,
 }
 
 #[derive(Clone, Default)]
@@ -111,13 +114,13 @@ impl Cx {
     pub fn bind(&mut self, name: &str, ty: Val, mult: Mult) -> usize {
         let l = self.lvl();
         self.env.push(Val::var(l));
-        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: true, param: None, sub: None, comptime: false });
+        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: true, param: None, sub: None, comptime: false, span: None });
         l
     }
     pub fn define(&mut self, name: &str, ty: Val, val: Val, mult: Mult) -> usize {
         let l = self.lvl();
         self.env.push(val);
-        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: false, param: None, sub: None, comptime: false });
+        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: false, param: None, sub: None, comptime: false, span: None });
         l
     }
     pub fn pop(&mut self) {
@@ -281,6 +284,16 @@ pub struct Elab {
     pub g: Globals,
     pub modules: HashMap<String, ModuleInfo>,
     pub sources: HashMap<String, SourceFile>,
+    /// Each loaded module's file, absolute (for tools, §15.5).
+    pub paths: HashMap<String, std::path::PathBuf>,
+    /// The index of names in the program's modules (§15.5).
+    pub index: Vec<index::NameUse>,
+    /// Where each global is declared: module and the span of its name.
+    pub decl_at: HashMap<index::Target, (String, Span)>,
+    /// A declaration's header as written, for hover.
+    pub decl_sig: HashMap<index::Target, String>,
+    /// `function`, `lemma`, `variable` (a constant) or `type` (an alias).
+    pub def_class: HashMap<DefId, &'static str>,
     pub diags: Vec<(String, Diagnostic)>,
     seen: HashSet<(String, u32, u32, String)>,
     pub cur: String,
@@ -387,6 +400,11 @@ impl Elab {
             calls: Vec::new(),
             module_fns: Vec::new(),
             obligations: Vec::new(),
+            paths: HashMap::new(),
+            index: Vec::new(),
+            decl_at: HashMap::new(),
+            decl_sig: HashMap::new(),
+            def_class: HashMap::new(),
             checks: Vec::new(),
             check_eq_tys: HashMap::new(),
             last_eq_ty: None,

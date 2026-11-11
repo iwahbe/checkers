@@ -94,6 +94,9 @@ impl Elab {
                 let v = Val::var(cx.lvl());
                 let l = cx.bind(&name, (**a).clone(), *m);
                 cx.locals[l].sub = map_sub;
+                if simple && name != "_" {
+                    self.bound_at(cx, l, p.span);
+                }
                 let body_ty = apply_closure(&self.g, c, v);
                 let rest: Expr = if pats.len() > 1 {
                     mk(ExprKind::Lambda(pats[1..].to_vec(), body.clone()), e.span)
@@ -331,7 +334,10 @@ impl Elab {
                     };
                     let a = self.fresh_meta_val(cx);
                     let at = quote(&self.g, cx.lvl(), &a);
-                    cx.bind(&name, a, Mult::Many);
+                    let l = cx.bind(&name, a, Mult::Many);
+                    if name != "_" {
+                        self.bound_at(cx, l, p.span);
+                    }
                     binders.push((Rc::<str>::from(name.as_str()), at));
                 }
                 let (bt, bty) = self.infer(cx, body);
@@ -382,6 +388,7 @@ impl Elab {
 
     fn infer_var(&mut self, cx: &mut Cx, n: &str, span: Span) -> (Tm, Val) {
         if let Some(l) = cx.lookup(n) {
+            self.index_local(cx, l, span);
             let ty = cx.locals[l].ty.clone();
             if self.map_elem_sub.is_some() {
                 self.map_elem_sub = None;
@@ -404,6 +411,7 @@ impl Elab {
         }
         match self.resolve(n, cx.type_pos) {
             Some(s) => {
+                self.index_sym(span, s);
                 if let Sym::Def(d) = s {
                     self.note_reference(d, span);
                     if !self.in_app_head && !self.g.defs[d.0 as usize].comptime.is_empty() {
@@ -1163,6 +1171,8 @@ impl Elab {
                 if let Some(m) = self.qualifier(q) {
                     return match self.resolve_qualified(&m, &name.name, cx.type_pos) {
                         Some(s) => {
+                            self.index_module(x.span, &m);
+                            self.index_sym(name.span, s);
                             if let Sym::Def(d) = s {
                                 self.note_reference(d, span);
                             }
@@ -1206,6 +1216,7 @@ impl Elab {
                     );
                     return (Tm::Error, Val::Error);
                 };
+                self.index_global(name.span, index::Target::Field(cid, idx));
                 let xv = self.eval(cx, &xt);
                 let mut env: Vec<Val> = params;
                 for j in 0..idx {
@@ -1262,6 +1273,9 @@ impl Elab {
                         let v = self.eval(cx, &t);
                         let tyt = quote(&self.g, cx.lvl(), &ty);
                         let l = cx.define(&name, ty, v, mult);
+                        if name != "_" {
+                            self.bound_at(cx, l, pat.span);
+                        }
                         // `let x = y` keeps y's structural information.
                         if let ExprKind::Var(src) = &rhs.kind {
                             if let Some(sl) = cx.locals[..l].iter().rposition(|x| x.name.as_ref() == src.as_str()) {
@@ -1584,6 +1598,7 @@ impl Elab {
         let invs: Vec<CownInv> = tys.iter().enumerate().filter_map(|(k, ty)| self.cown_inv(cx, ty, many.then_some(k))).collect();
         for ((n, _), ty) in w.binds.iter().zip(&tys) {
             let l = cx.bind(&n.name, ty.clone(), Mult::Many);
+            self.bound_at(cx, l, n.span);
             if let Some(inv) = self.cown_inv(cx, ty, None) {
                 let mut env = inv.args.clone();
                 env.push(Val::var(l));
@@ -1643,7 +1658,8 @@ impl Elab {
                 let rty = self.fresh_meta_val(cx);
                 let start = cx.lvl();
                 for ((n, _), ty) in binds.iter().zip(&tys) {
-                    cx.bind(&n.name, ty.clone(), Mult::Many);
+                    let l = cx.bind(&n.name, ty.clone(), Mult::Many);
+                    self.bound_at(cx, l, n.span);
                 }
                 let bt = self.check_block(cx, body, &rty, true);
                 cx.truncate(start);

@@ -163,6 +163,9 @@ impl Elab {
                 };
             self.cur = name.to_string();
             let path = key;
+            if found {
+                self.index_module(imp.path.span, &path);
+            }
             if !found {
                 let d = if from_std {
                     let all: Vec<String> = super::stdlib::modules();
@@ -316,6 +319,34 @@ impl Elab {
         }
     }
 
+    /// Index a declaration: its name, and its header as written (for hover):
+    /// up to the line its body starts on.
+    fn index_header(&mut self, t: index::Target, name: Span, d: &ast::Decl) {
+        let text = self.sources.get(&self.cur).map(|f| f.text.clone()).unwrap_or_default();
+        let start = d.span.start as usize;
+        let body = match &d.kind {
+            DeclKind::Fn { body, decreasing, .. } => Some(decreasing.as_ref().map(|e| e.span.start).unwrap_or(body.span.start)),
+            DeclKind::Lemma { lets, ensures, .. } => Some(lets.first().map(|l| l.0.span.start).unwrap_or(ensures.span.start)),
+            DeclKind::Enum { ctors, .. } => ctors.first().map(|c| c.span.start),
+            DeclKind::Record { fields, .. } => fields.first().map(|f| f.span.start),
+            _ => None,
+        };
+        let end = match body {
+            // Up to the start of the body's line, if it is on a later line.
+            Some(b) => {
+                let b = (b as usize).min(text.len());
+                match text.get(start..b).and_then(|h| h.rfind('\n')) {
+                    Some(k) => start + k,
+                    None => b,
+                }
+            }
+            None => (d.span.end as usize).min(text.len()),
+        };
+        let header = text.get(start..end).unwrap_or("").trim_end().to_string();
+        self.decl_sig.insert(t, header);
+        self.index_decl(name, t);
+    }
+
     pub(crate) fn new_def(&mut self, name: &str) -> DefId {
         self.g.defs.push(DefInfo {
             name: Rc::from(name),
@@ -349,11 +380,18 @@ impl Elab {
                         negative: params.iter().map(|p| p.polarity == Some(ast::Polarity::Neg)).collect(),
                     });
                     self.declare(name, true, Sym::Ty(tid), exported);
+                    self.index_header(index::Target::Ty(tid), name.span, d);
                     for (tag, c) in ctors.iter().enumerate() {
                         let cid = ConId(self.g.cons.len() as u32);
                         self.g.cons.push(ConInfo { name: Rc::from(c.name.name.as_str()), ty: tid, tag, fields: Vec::new() });
                         self.g.tys[tid.0 as usize].ctors.push(cid);
                         self.declare(&c.name, false, Sym::Con(cid), exported && !abstract_);
+                        let text = format!("{}  (of `{}`)", self.src_text(c.span).trim(), name.name);
+                        self.decl_sig.insert(index::Target::Con(cid), text);
+                        self.index_decl(c.name.span, index::Target::Con(cid));
+                        for (k, p) in c.params.iter().enumerate() {
+                            self.index_decl(p.span, index::Target::Field(cid, k));
+                        }
                     }
                     self.well_known(&name.name, tid);
                     Some(Sym::Ty(tid))
@@ -376,17 +414,40 @@ impl Elab {
                     self.g.cons.push(ConInfo { name: Rc::from(name.name.as_str()), ty: tid, tag: 0, fields: Vec::new() });
                     self.g.tys[tid.0 as usize].ctors.push(cid);
                     self.declare(name, false, Sym::Con(cid), exported && !abstract_);
+                    self.index_header(index::Target::Ty(tid), name.span, d);
+                    {
+                        let rec = name.name.clone();
+                        self.decl_sig.insert(index::Target::Con(cid), self.decl_sig.get(&index::Target::Ty(tid)).cloned().unwrap_or_default());
+                        self.decl_at.insert(index::Target::Con(cid), (self.cur.clone(), name.span));
+                        if let DeclKind::Record { fields, .. } = &d.kind {
+                            for f in fields {
+                                let k = fields.iter().position(|g| g.name.name == f.name.name).unwrap_or(0);
+                                let text = format!("{}  (field of `{rec}`)", self.src_text(f.span).trim());
+                                self.decl_sig.insert(index::Target::Field(cid, k), text);
+                                self.index_decl(f.name.span, index::Target::Field(cid, k));
+                            }
+                        }
+                    }
                     self.well_known(&name.name, tid);
                     Some(Sym::Ty(tid))
                 }
                 DeclKind::Alias { name, .. } => {
                     let id = self.new_def(&name.name);
                     self.declare(name, true, Sym::Def(id), exported);
+                    self.def_class.insert(id, "type");
+                    self.index_header(index::Target::Def(id), name.span, d);
                     Some(Sym::Def(id))
                 }
                 DeclKind::Fn { name, .. } | DeclKind::Lemma { name, .. } | DeclKind::Const { name, .. } => {
                     let id = self.new_def(&name.name);
                     self.declare(name, false, Sym::Def(id), exported);
+                    let class = match &d.kind {
+                        DeclKind::Lemma { .. } => "lemma",
+                        DeclKind::Const { .. } => "variable",
+                        _ => "function",
+                    };
+                    self.def_class.insert(id, class);
+                    self.index_header(index::Target::Def(id), name.span, d);
                     Some(Sym::Def(id))
                 }
                 DeclKind::Check { .. } => None,
@@ -555,7 +616,8 @@ impl Elab {
             };
             let t = self.elab_type(&mut cx, ty);
             let tv = self.eval(&cx, &t);
-            cx.bind(&name.name, tv, Mult::Zero);
+            let l = cx.bind(&name.name, tv, Mult::Zero);
+            self.bound_at(&mut cx, l, name.span);
             self.alias_subject.insert(*did, Rc::from(name.name.as_str()));
             for c in &constraints[1..] {
                 match c {
@@ -654,6 +716,7 @@ impl Elab {
             let v = self.eval(&cx, &ty);
             let at = cx.lvl();
             let l = cx.bind(&n.name, v, mult);
+            cx.locals[l].span = Some(n.span);
             // A refinement-alias field type is an invariant (§7.1).
             for (fact, text, _) in self.alias_facts(&cx, at, &ty, Val::var(l)) {
                 let tm = quote(&self.g, cx.lvl(), &fact);
@@ -1035,6 +1098,7 @@ impl Elab {
             let v = self.eval(&cx, &ty);
             let l = cx.bind(&p.name, v, mult);
             cx.locals[l].param = Some(k);
+            self.bound_at(&mut cx, l, p.span);
             if ct {
                 cx.locals[l].comptime = true;
                 comptime.push(binders.len());
@@ -1064,6 +1128,17 @@ impl Elab {
         let rname = result.map(|r| r.name.clone()).unwrap_or_else(|| "_result".to_string());
         let nb = binders.len();
         let rl = cx.bind(&rname, rv, Mult::Zero);
+        if let Some(r) = result {
+            self.bound_at(&mut cx, rl, r.span);
+        }
+        // Each name a constraint gives a type to (`x~Nat`) is a use of it.
+        for c in cs {
+            if let Constraint::Typed { name, .. } = c {
+                if let Some(l) = cx.lookup(&name.name) {
+                    self.index_local(&cx, l, name.span);
+                }
+            }
+        }
         let mut preds = Vec::new();
         // Refinement-alias types on parameters (preconditions) and the result (postcondition).
         for k in 0..=nb {

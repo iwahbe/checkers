@@ -61,6 +61,16 @@ impl SourceFile {
         (line + 1, col + 1)
     }
 
+    /// 0-based line and 0-based column in bytes of a byte offset (§15.5).
+    pub fn line_byte(&self, offset: u32) -> (usize, usize) {
+        let offset = (offset as usize).min(self.text.len());
+        let line = match self.line_starts.binary_search(&offset) {
+            Ok(i) => i,
+            Err(i) => i - 1,
+        };
+        (line, offset - self.line_starts[line])
+    }
+
     /// The text of a 1-based line, without its newline.
     pub fn line_text(&self, line: usize) -> &str {
         let start = self.line_starts[line - 1];

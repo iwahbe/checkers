@@ -270,6 +270,7 @@ impl Elab {
             let l = cx.define(name, ty, v, mult);
             cx.locals[l].sub = cx.locals[*occ].sub;
             cx.locals[l].param = cx.locals[*occ].param;
+            self.bound_at(cx, l, *at);
             lets.push((name.clone(), mult, tyt, t));
         }
         let body = match row.guard {
@@ -527,14 +528,20 @@ impl Elab {
         };
         match &p.kind {
             PatKind::Con(name, args) => match self.resolve(&name.name, false) {
-                Some(Sym::Con(c)) => Some((c, Some(args.clone()))),
+                Some(Sym::Con(c)) => {
+                    self.index_global(name.span, index::Target::Con(c));
+                    Some((c, Some(args.clone())))
+                }
                 _ => {
                     unknown(self, name);
                     None
                 }
             },
             PatKind::Record(name, _) => match self.resolve(&name.name, false) {
-                Some(Sym::Con(c)) => Some((c, None)),
+                Some(Sym::Con(c)) => {
+                    self.index_global(name.span, index::Target::Con(c));
+                    Some((c, None))
+                }
                 _ => {
                     unknown(self, name);
                     None

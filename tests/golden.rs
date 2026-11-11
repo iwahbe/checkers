@@ -12,6 +12,10 @@
 //!                         (CHECKERS_STRESS_RUNS, default 10); stdout lines are
 //!                         compared sorted, since behaviours that share no cown
 //!                         may print in any order (SPEC §13.5, D67, D68).
+//! tests/json/NAME.ck   → NAME.out is `ckc check --json` on it (§15.5), with
+//!                         NAME.overlay (a JSON object, paths relative to the
+//!                         repository) as `--overlay` if there is one; the
+//!                         repository's path is shown as `$ROOT`.
 //! tests/fmt/NAME.ck    → NAME.out is `checkers fmt -` on it: stdout, stderr, exit code
 //!                         (`checkers` is built from tools/checkers.ck with `ckc build`).
 //! tests/tool/NAME.args → each line runs `checkers` with those arguments (`ckc` is
@@ -279,6 +283,33 @@ fn golden() {
                         path.strip_prefix(root).unwrap().display()
                     ));
                 }
+            }
+        }
+    }
+
+    // `ckc check --json` (§15.5).
+    for path in ck_files(&root.join("tests").join("json")) {
+        count += 1;
+        let rel = path.strip_prefix(root).unwrap().to_string_lossy().to_string();
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_ckc"));
+        cmd.env("CHECKERS_NO_CACHE", "1").current_dir(root).arg("check").arg("--json");
+        let overlay = path.with_extension("overlay");
+        if overlay.exists() {
+            cmd.arg("--overlay").arg(&overlay);
+        }
+        let out = cmd.arg(&rel).output().expect("run ckc check --json");
+        let root_text = root.canonicalize().unwrap().to_string_lossy().to_string();
+        let actual = format!("{}-- exit {}\n", String::from_utf8_lossy(&out.stdout), out.status.code().unwrap_or(-1))
+            .replace(&root_text, "$ROOT")
+            + &String::from_utf8_lossy(&out.stderr);
+        let out_path = path.with_extension("out");
+        let expected = fs::read_to_string(&out_path).unwrap_or_default();
+        if actual != expected {
+            if update {
+                fs::write(&out_path, &actual).unwrap();
+                println!("updated {}", out_path.strip_prefix(root).unwrap().display());
+            } else {
+                failures.push(format!("── {rel} ──\n--- expected\n{expected}\n--- actual\n{actual}"));
             }
         }
     }

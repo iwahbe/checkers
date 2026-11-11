@@ -7,8 +7,10 @@
 pub mod core;
 pub mod diag;
 pub mod elab;
+pub mod json;
 pub mod lint;
 pub mod native;
+pub mod overlay;
 pub mod source;
 pub mod stage;
 pub mod syntax;
@@ -110,6 +112,154 @@ pub fn check_in(name: &str, text: &str, dir: &std::path::Path) -> Checked {
         stage_module(&mut c, e, user);
     }
     c
+}
+
+/// `ckc check --json` (§15.5, D120): check `name` like `check_in`, writing
+/// JSON lines to `out` as each phase ends: syntax, names and types; `check`s;
+/// proofs. Every phase ends with a `done` line, also when an earlier phase's
+/// errors mean it does nothing. Returns whether there were errors.
+pub fn check_json(name: &str, text: &str, dir: &std::path::Path, out: &mut dyn FnMut(String)) -> bool {
+    let main = overlay::absolute(std::path::Path::new(name));
+    let (mut c, e) = elaborate(name, text, dir);
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let user = e.as_ref().map(|(_, u)| u.clone()).unwrap_or_default();
+    emit_new(&c, e.as_ref().map(|x| &x.0), &main, "types", &mut seen, out);
+    match &e {
+        Some((e, user)) => emit_index(e, user, &main, out),
+        None => emit_tokens(&main, &c.file, out),
+    }
+    out(r#"{"kind":"done","phase":"types"}"#.to_string());
+    if let Some((e, user)) = &e {
+        run_checks(&mut c, e, user);
+    }
+    emit_new(&c, e.as_ref().map(|x| &x.0), &main, "checks", &mut seen, out);
+    out(r#"{"kind":"done","phase":"checks"}"#.to_string());
+    if let Some((e, user)) = &e {
+        prove(&mut c, e, user);
+        stage_module(&mut c, e, user);
+    }
+    emit_new(&c, e.as_ref().map(|x| &x.0), &main, "proofs", &mut seen, out);
+    out(r#"{"kind":"done","phase":"proofs"}"#.to_string());
+    let _ = user;
+    c.errors() > 0
+}
+
+/// The index (§15.5): each name in the program's own modules, then each
+/// keyword, comment, string and number.
+fn emit_index(e: &elab::Elab, user: &str, main: &std::path::Path, out: &mut dyn FnMut(String)) {
+    let path_of = |m: &str| -> std::path::PathBuf {
+        if m == user {
+            main.to_path_buf()
+        } else {
+            e.paths.get(m).cloned().unwrap_or_else(|| std::path::PathBuf::from(m))
+        }
+    };
+    let pos = |m: &str, span: source::Span| -> Option<String> {
+        let f = e.sources.get(m)?;
+        let (sl, sc) = f.line_byte(span.start);
+        let (el, ec) = f.line_byte(span.end);
+        Some(format!(r#""start":[{sl},{sc}],"end":[{el},{ec}]"#))
+    };
+    let mut done = std::collections::HashSet::new();
+    for u in &e.index {
+        if !done.insert((u.module.clone(), u.span.start, u.span.end)) {
+            continue;
+        }
+        let Some(at) = pos(&u.module, u.span) else { continue };
+        let def = match e.def_of(&u.what) {
+            Some((m, span)) => match pos(&m, span) {
+                Some(p) => format!(r#"{{"path":{},{p}}}"#, json::string(&path_of(&m).to_string_lossy())),
+                None => "null".into(),
+            },
+            None => "null".into(),
+        };
+        out(format!(
+            r#"{{"kind":"name","path":{},{at},"class":"{}","def":{def},"hover":{}}}"#,
+            json::string(&path_of(&u.module).to_string_lossy()),
+            e.class_of(&u.what),
+            json::string(&e.hover_of(&u.what)),
+        ));
+    }
+    let mut mods: Vec<&String> = e.user_modules.iter().collect();
+    let u = user.to_string();
+    mods.push(&u);
+    for m in mods {
+        if let Some(f) = e.sources.get(m) {
+            emit_tokens(&path_of(m), f, out);
+        }
+    }
+}
+
+/// The keywords, comments, strings and numbers of a file (§15.5).
+fn emit_tokens(path: &std::path::Path, f: &SourceFile, out: &mut dyn FnMut(String)) {
+    use syntax::token::Tok;
+    let (toks, comments) = syntax::lexer::tokens_and_comments(&f.text);
+    let mut all: Vec<(source::Span, &str)> = toks
+        .iter()
+        .filter_map(|(t, span)| {
+            let class = match t {
+                Tok::Kw(_) => "keyword",
+                Tok::Int(_) => "number",
+                Tok::Byte(_) | Tok::Char(_) | Tok::Str(_) | Tok::Bytes(_) => "string",
+                _ => return None,
+            };
+            Some((*span, class))
+        })
+        .collect();
+    all.extend(comments.iter().map(|s| (*s, "comment")));
+    all.sort_by_key(|(s, _)| s.start);
+    let p = json::string(&path.to_string_lossy());
+    for (span, class) in all {
+        let (sl, sc) = f.line_byte(span.start);
+        let (el, ec) = f.line_byte(span.end);
+        out(format!(r#"{{"kind":"token","path":{p},"start":[{sl},{sc}],"end":[{el},{ec}],"class":"{class}"}}"#));
+    }
+}
+
+/// The diagnostics of `c` not yet written, as JSON lines of `phase`.
+fn emit_new(
+    c: &Checked,
+    e: Option<&elab::Elab>,
+    main: &std::path::Path,
+    phase: &str,
+    seen: &mut std::collections::HashMap<String, usize>,
+    out: &mut dyn FnMut(String),
+) {
+    let mut files: Vec<(String, std::path::PathBuf, &SourceFile, &[Diagnostic])> = Vec::new();
+    for (m, f, ds) in &c.others {
+        let path = e.and_then(|e| e.paths.get(m)).cloned().unwrap_or_else(|| std::path::PathBuf::from(&f.name));
+        files.push((m.clone(), path, f, ds));
+    }
+    files.push((String::new(), main.to_path_buf(), &c.file, &c.diags));
+    for (key, path, f, ds) in files {
+        let from = seen.get(&key).copied().unwrap_or(0);
+        for d in ds.iter().skip(from) {
+            out(diagnostic_json(phase, &path, f, d));
+        }
+        seen.insert(key, ds.len());
+    }
+    let from = seen.get("\0internal").copied().unwrap_or(0);
+    for m in c.internal.iter().skip(from) {
+        let d = Diagnostic::error("internal", m.trim_end().to_string(), source::Span::new(0, 0));
+        out(diagnostic_json(phase, main, &c.file, &d));
+    }
+    seen.insert("\0internal".into(), c.internal.len());
+}
+
+fn diagnostic_json(phase: &str, path: &std::path::Path, f: &SourceFile, d: &Diagnostic) -> String {
+    let (sl, sc) = f.line_byte(d.span.start);
+    let (el, ec) = f.line_byte(d.span.end);
+    let notes: Vec<String> = d.notes.iter().map(|n| json::string(n)).collect();
+    format!(
+        r#"{{"kind":"diagnostic","phase":"{phase}","path":{},"start":[{sl},{sc}],"end":[{el},{ec}],"severity":"{}","code":"{}","message":{},"label":{},"notes":[{}],"help":{}}}"#,
+        json::string(&path.to_string_lossy()),
+        if d.is_error() { "error" } else { "warning" },
+        d.code,
+        json::string(&d.message),
+        json::opt(d.label.as_deref()),
+        notes.join(","),
+        json::opt(d.help.as_deref()),
+    )
 }
 
 /// Stage the program (§8.9): report where compile-time evaluation fails, and

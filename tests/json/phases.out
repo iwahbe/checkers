@@ -1,0 +1,39 @@
+{"kind":"diagnostic","phase":"types","path":"$ROOT/tests/json/phases.ck","start":[7,5],"end":[7,10],"severity":"warning","code":"W001","message":"type name `small` should be UpperCamelCase","label":"rename to `Small`","notes":[],"help":null}
+{"kind":"name","path":"$ROOT/tests/json/lib/helper.ck","start":[2,10],"end":[2,13],"class":"function","def":{"path":"$ROOT/tests/json/lib/helper.ck","start":[2,10],"end":[2,13]},"hover":"export fn one -> r : r~Nat"}
+{"kind":"name","path":"$ROOT/tests/json/lib/helper.ck","start":[2,17],"end":[2,18],"class":"variable","def":{"path":"$ROOT/tests/json/lib/helper.ck","start":[2,17],"end":[2,18]},"hover":"r : Nat"}
+{"kind":"name","path":"$ROOT/tests/json/lib/helper.ck","start":[2,21],"end":[2,22],"class":"variable","def":{"path":"$ROOT/tests/json/lib/helper.ck","start":[2,17],"end":[2,18]},"hover":"r : Nat"}
+{"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[5,7],"end":[5,17],"class":"module","def":{"path":"$ROOT/tests/json/lib/helper.ck","start":[0,0],"end":[0,0]},"hover":"module lib.helper"}
+{"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[7,5],"end":[7,10],"class":"type","def":{"path":"$ROOT/tests/json/phases.ck","start":[7,5],"end":[7,10]},"hover":"type small = n~Nat, n < 10"}
+{"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[9,3],"end":[9,9],"class":"function","def":{"path":"$ROOT/tests/json/phases.ck","start":[9,3],"end":[9,9]},"hover":"fn bigger x -> r : x~Nat, r~Nat, r > 5"}
+{"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[7,13],"end":[7,14],"class":"variable","def":{"path":"$ROOT/tests/json/phases.ck","start":[7,13],"end":[7,14]},"hover":"n : Nat"}
+{"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[7,20],"end":[7,21],"class":"variable","def":{"path":"$ROOT/tests/json/phases.ck","start":[7,13],"end":[7,14]},"hover":"n : Nat"}
+{"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[9,10],"end":[9,11],"class":"parameter","def":{"path":"$ROOT/tests/json/phases.ck","start":[9,10],"end":[9,11]},"hover":"x : Nat"}
+{"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[9,15],"end":[9,16],"class":"variable","def":{"path":"$ROOT/tests/json/phases.ck","start":[9,15],"end":[9,16]},"hover":"r : Nat"}
+{"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[9,19],"end":[9,20],"class":"parameter","def":{"path":"$ROOT/tests/json/phases.ck","start":[9,10],"end":[9,11]},"hover":"x : Nat"}
+{"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[9,26],"end":[9,27],"class":"variable","def":{"path":"$ROOT/tests/json/phases.ck","start":[9,15],"end":[9,16]},"hover":"r : Nat"}
+{"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[9,33],"end":[9,34],"class":"variable","def":{"path":"$ROOT/tests/json/phases.ck","start":[9,15],"end":[9,16]},"hover":"r : Nat"}
+{"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[10,4],"end":[10,5],"class":"parameter","def":{"path":"$ROOT/tests/json/phases.ck","start":[9,10],"end":[9,11]},"hover":"x : Nat"}
+{"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[10,8],"end":[10,14],"class":"module","def":{"path":"$ROOT/tests/json/lib/helper.ck","start":[0,0],"end":[0,0]},"hover":"module lib.helper"}
+{"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[10,15],"end":[10,18],"class":"function","def":{"path":"$ROOT/tests/json/lib/helper.ck","start":[2,10],"end":[2,13]},"hover":"export fn one -> r : r~Nat"}
+{"kind":"name","path":"$ROOT/tests/json/phases.ck","start":[12,6],"end":[12,12],"class":"function","def":{"path":"$ROOT/tests/json/phases.ck","start":[9,3],"end":[9,9]},"hover":"fn bigger x -> r : x~Nat, r~Nat, r > 5"}
+{"kind":"token","path":"$ROOT/tests/json/lib/helper.ck","start":[0,0],"end":[0,6],"class":"keyword"}
+{"kind":"token","path":"$ROOT/tests/json/lib/helper.ck","start":[2,0],"end":[2,6],"class":"keyword"}
+{"kind":"token","path":"$ROOT/tests/json/lib/helper.ck","start":[2,7],"end":[2,9],"class":"keyword"}
+{"kind":"token","path":"$ROOT/tests/json/lib/helper.ck","start":[3,4],"end":[3,5],"class":"number"}
+{"kind":"token","path":"$ROOT/tests/json/phases.ck","start":[0,0],"end":[0,6],"class":"keyword"}
+{"kind":"token","path":"$ROOT/tests/json/phases.ck","start":[2,0],"end":[2,74],"class":"comment"}
+{"kind":"token","path":"$ROOT/tests/json/phases.ck","start":[3,0],"end":[3,74],"class":"comment"}
+{"kind":"token","path":"$ROOT/tests/json/phases.ck","start":[4,0],"end":[4,16],"class":"comment"}
+{"kind":"token","path":"$ROOT/tests/json/phases.ck","start":[5,0],"end":[5,6],"class":"keyword"}
+{"kind":"token","path":"$ROOT/tests/json/phases.ck","start":[7,0],"end":[7,4],"class":"keyword"}
+{"kind":"token","path":"$ROOT/tests/json/phases.ck","start":[7,24],"end":[7,26],"class":"number"}
+{"kind":"token","path":"$ROOT/tests/json/phases.ck","start":[9,0],"end":[9,2],"class":"keyword"}
+{"kind":"token","path":"$ROOT/tests/json/phases.ck","start":[9,37],"end":[9,38],"class":"number"}
+{"kind":"token","path":"$ROOT/tests/json/phases.ck","start":[12,0],"end":[12,5],"class":"keyword"}
+{"kind":"token","path":"$ROOT/tests/json/phases.ck","start":[12,13],"end":[12,14],"class":"number"}
+{"kind":"token","path":"$ROOT/tests/json/phases.ck","start":[12,18],"end":[12,19],"class":"number"}
+{"kind":"done","phase":"types"}
+{"kind":"done","phase":"checks"}
+{"kind":"diagnostic","phase":"proofs","path":"$ROOT/tests/json/phases.ck","start":[9,33],"end":[9,38],"severity":"error","code":"E0450","message":"cannot prove `r > 5`, the postcondition of `bigger`","label":"promised here","notes":["for the value returned on line 11: `x + helper.one`","`one` is sealed in `lib.helper`: here the prover knows only its postconditions and the lemmas you bring in with `have`"],"help":"make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`"}
+{"kind":"done","phase":"proofs"}
+-- exit 1

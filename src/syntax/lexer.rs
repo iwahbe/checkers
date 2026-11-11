@@ -14,11 +14,19 @@ struct Raw {
 }
 
 pub fn lex(text: &str) -> (Vec<Token>, Vec<Diagnostic>) {
-    let mut lx = RawLexer { src: text.as_bytes(), text, pos: 0, line_start: 0, diags: Vec::new() };
+    let mut lx = RawLexer { src: text.as_bytes(), text, pos: 0, line_start: 0, diags: Vec::new(), comments: Vec::new() };
     let raws = lx.run();
     let mut diags = lx.diags;
     let toks = layout(raws, text.len(), &mut diags);
     (toks, diags)
+}
+
+/// The tokens as written (no layout tokens) and the comments, for
+/// highlighting (§15.5).
+pub fn tokens_and_comments(text: &str) -> (Vec<(Tok, Span)>, Vec<Span>) {
+    let mut lx = RawLexer { src: text.as_bytes(), text, pos: 0, line_start: 0, diags: Vec::new(), comments: Vec::new() };
+    let raws = lx.run();
+    (raws.into_iter().map(|r| (r.tok, r.span)).collect(), lx.comments)
 }
 
 struct RawLexer<'a> {
@@ -27,6 +35,7 @@ struct RawLexer<'a> {
     pos: usize,
     line_start: usize,
     diags: Vec<Diagnostic>,
+    comments: Vec<Span>,
 }
 
 impl<'a> RawLexer<'a> {
@@ -72,12 +81,14 @@ impl<'a> RawLexer<'a> {
                     continue;
                 }
                 b'#' => {
+                    let start = self.pos;
                     while let Some(c) = self.peek() {
                         if c == b'\n' {
                             break;
                         }
                         self.pos += 1;
                     }
+                    self.comments.push(Span::new(start, self.pos));
                     continue;
                 }
                 _ => {}

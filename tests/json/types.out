@@ -1,0 +1,25 @@
+{"kind":"diagnostic","phase":"types","path":"$ROOT/tests/json/lib/broken.ck","start":[3,4],"end":[3,8],"severity":"error","code":"E0201","message":"type mismatch: expected `Bool`, found `String`","label":"this expression has type `String`","notes":[],"help":null}
+{"kind":"diagnostic","phase":"types","path":"$ROOT/tests/json/types.ck","start":[7,4],"end":[7,5],"severity":"error","code":"E0201","message":"type mismatch: expected `String`, found a number","label":"this is a number, not a `String`","notes":[],"help":null}
+{"kind":"diagnostic","phase":"types","path":"$ROOT/tests/json/types.ck","start":[7,4],"end":[7,11],"severity":"error","code":"E0210","message":"`+` needs numbers (`Nat` or `Int`), but this is `String`","label":"has type `String`","notes":[],"help":"to join strings, bytes or lists, use `++`"}
+{"kind":"name","path":"$ROOT/tests/json/lib/broken.ck","start":[2,10],"end":[2,11],"class":"function","def":{"path":"$ROOT/tests/json/lib/broken.ck","start":[2,10],"end":[2,11]},"hover":"export fn h -> r : r~Bool"}
+{"kind":"name","path":"$ROOT/tests/json/lib/broken.ck","start":[2,15],"end":[2,16],"class":"variable","def":{"path":"$ROOT/tests/json/lib/broken.ck","start":[2,15],"end":[2,16]},"hover":"r : Bool"}
+{"kind":"name","path":"$ROOT/tests/json/lib/broken.ck","start":[2,19],"end":[2,20],"class":"variable","def":{"path":"$ROOT/tests/json/lib/broken.ck","start":[2,15],"end":[2,16]},"hover":"r : Bool"}
+{"kind":"name","path":"$ROOT/tests/json/types.ck","start":[4,7],"end":[4,17],"class":"module","def":{"path":"$ROOT/tests/json/lib/broken.ck","start":[0,0],"end":[0,0]},"hover":"module lib.broken"}
+{"kind":"name","path":"$ROOT/tests/json/types.ck","start":[6,3],"end":[6,4],"class":"function","def":{"path":"$ROOT/tests/json/types.ck","start":[6,3],"end":[6,4]},"hover":"fn g -> r : r~String"}
+{"kind":"name","path":"$ROOT/tests/json/types.ck","start":[6,8],"end":[6,9],"class":"variable","def":{"path":"$ROOT/tests/json/types.ck","start":[6,8],"end":[6,9]},"hover":"r : String"}
+{"kind":"name","path":"$ROOT/tests/json/types.ck","start":[6,12],"end":[6,13],"class":"variable","def":{"path":"$ROOT/tests/json/types.ck","start":[6,8],"end":[6,9]},"hover":"r : String"}
+{"kind":"token","path":"$ROOT/tests/json/lib/broken.ck","start":[0,0],"end":[0,6],"class":"keyword"}
+{"kind":"token","path":"$ROOT/tests/json/lib/broken.ck","start":[2,0],"end":[2,6],"class":"keyword"}
+{"kind":"token","path":"$ROOT/tests/json/lib/broken.ck","start":[2,7],"end":[2,9],"class":"keyword"}
+{"kind":"token","path":"$ROOT/tests/json/lib/broken.ck","start":[3,4],"end":[3,8],"class":"string"}
+{"kind":"token","path":"$ROOT/tests/json/types.ck","start":[0,0],"end":[0,6],"class":"keyword"}
+{"kind":"token","path":"$ROOT/tests/json/types.ck","start":[2,0],"end":[2,77],"class":"comment"}
+{"kind":"token","path":"$ROOT/tests/json/types.ck","start":[3,0],"end":[3,74],"class":"comment"}
+{"kind":"token","path":"$ROOT/tests/json/types.ck","start":[4,0],"end":[4,6],"class":"keyword"}
+{"kind":"token","path":"$ROOT/tests/json/types.ck","start":[6,0],"end":[6,2],"class":"keyword"}
+{"kind":"token","path":"$ROOT/tests/json/types.ck","start":[7,4],"end":[7,5],"class":"number"}
+{"kind":"token","path":"$ROOT/tests/json/types.ck","start":[7,8],"end":[7,11],"class":"string"}
+{"kind":"done","phase":"types"}
+{"kind":"done","phase":"checks"}
+{"kind":"done","phase":"proofs"}
+-- exit 1

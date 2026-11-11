@@ -1,0 +1,4 @@
+{
+ "tests/json/overlay.ck": "module overlay\n\nimport lib.helper\n\nfn f -> r : r~Nat\n    helper.two\n",
+ "tests/json/lib/helper.ck": "module lib.helper\n\nexport fn two -> r : r~Nat\n    \"é\"\n"
+}

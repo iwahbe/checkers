@@ -15,6 +15,8 @@ USAGE:
                                                --release refuses any `admit` the program relies on
     ckc trust <FILE.ck>                        print the trust ledger (what Z3, admits and checks vouch for)
     ckc check [--deny-warnings] <FILE.ck>...   type-check and run `check`s; report diagnostics
+    ckc check --json [--overlay MAP] <FILE.ck> the same as JSON lines, phase by phase, for tools (§15.5);
+                                               MAP is a JSON object from paths to unsaved text
 
     check, run, build, trust and stage reuse Z3's answers from `.checkers/` beside the
     file (D100); --no-cache (before the file) or CHECKERS_NO_CACHE=1 turns that off.
@@ -243,7 +245,7 @@ fn build(args: &[String]) -> u8 {
 }
 
 fn read(path: &str) -> Result<String, ExitCode> {
-    std::fs::read_to_string(path).map_err(|e| {
+    checkers::overlay::read(std::path::Path::new(path)).map_err(|e| {
         eprintln!("error: cannot read `{path}`: {e}");
         ExitCode::from(2)
     })
@@ -251,7 +253,48 @@ fn read(path: &str) -> Result<String, ExitCode> {
 
 fn check(args: &[String]) -> ExitCode {
     let deny = args.iter().any(|a| a == "--deny-warnings");
-    let files: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
+    let json = args.iter().any(|a| a == "--json");
+    // `--overlay FILE`: unsaved text for some paths (§15.5).
+    let mut rest: Vec<&String> = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--overlay" {
+            let Some(f) = it.next() else {
+                eprintln!("error: `--overlay` needs a file\n\n{USAGE}");
+                return ExitCode::from(2);
+            };
+            let parsed = std::fs::read_to_string(f).map_err(|e| e.to_string()).and_then(|t| checkers::json::string_object(&t));
+            match parsed {
+                Ok(m) => checkers::overlay::set(m),
+                Err(e) => {
+                    eprintln!("error: `--overlay {f}`: {e}");
+                    return ExitCode::from(2);
+                }
+            }
+        } else {
+            rest.push(a);
+        }
+    }
+    let files: Vec<&String> = rest.into_iter().filter(|a| !a.starts_with("--")).collect();
+    if json {
+        let [path] = files.as_slice() else {
+            eprintln!("error: `check --json` takes exactly one file\n\n{USAGE}");
+            return ExitCode::from(2);
+        };
+        let text = match read(path) {
+            Ok(t) => t,
+            Err(c) => return c,
+        };
+        use_cache(path);
+        use std::io::Write;
+        let stdout = std::io::stdout();
+        let mut lock = stdout.lock();
+        let failed = checkers::check_json(path, &text, &checkers::dir_of(path), &mut |line| {
+            let _ = writeln!(lock, "{line}");
+            let _ = lock.flush();
+        });
+        return if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS };
+    }
     if files.is_empty() {
         eprintln!("error: no input files\n\n{USAGE}");
         return ExitCode::from(2);
