@@ -76,3 +76,20 @@ examples/wc.ck:100:7  computed check ends_in_word b"" True
 solver: Z3 5.3.3.0
 -- stderr
 -- exit 0
+$ checkers build --release tests/tool/admitted.ck -o tests/tool/admitted.out-never-written
+-- stdout
+-- stderr
+error[E0455]: a release build can't rely on an `admit`
+  --> tests/tool/admitted.ck:12:9
+   |
+12 |         admit
+   |         ^^^^^ assumed, not proven: double n >= n
+   = help: prove it, or build without `--release`
+
+error: `--release` refuses this program: it relies on 1 `admit`
+-- exit 1
+$ checkers build --release --unverified examples/wc.ck -o tests/tool/never
+-- stdout
+-- stderr
+error: `--release` builds only proven programs, so it can't be used with `--unverified`
+-- exit 2

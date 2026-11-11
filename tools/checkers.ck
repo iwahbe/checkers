@@ -88,7 +88,7 @@ partial fn with_main args -> r : args~List String, r~List String
     match args
         "--threads" :: n :: rest -> "--threads" :: n :: with_main rest
         a :: rest                ->
-            if a == "--unverified" or a == "--deny-warnings" or a == "--no-cache"
+            if a == "--unverified" or a == "--release" or a == "--deny-warnings" or a == "--no-cache"
                 a :: with_main rest
             else
                 "main.ck" :: args

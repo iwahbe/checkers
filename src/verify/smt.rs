@@ -1641,6 +1641,10 @@ impl<'a> Builder<'a> {
         if !closed(&arg, 0) {
             return None;
         }
+        // One normal form, so the same function written in two places (say, a
+        // lambda in a body and in a lemma, one with its pattern `let`s still
+        // there) is one key.
+        let arg = if matches!(arg, Tm::Def(_)) { arg } else { quote(&self.e.g, 0, &eval(&self.e.g, &Rc::new(Vec::new()), &arg)) };
         let mut h = &arg;
         while let Tm::App(f, ..) = h {
             h = f;

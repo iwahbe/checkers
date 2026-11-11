@@ -5,6 +5,7 @@ use super::*;
 
 /// Each builtin: its standard-library name, symbol and function.
 pub const TABLE: &[Builtin] = &[
+    ("std.string.chars", "ckb_string_chars", ckb_string_chars),
     ("std.string.from_chars", "ckb_from_chars", ckb_from_chars),
     ("std.string.from_char", "ckb_from_char", ckb_from_char),
     ("std.string.concat_map", "ckb_concat_map", ckb_concat_map),
@@ -45,3 +46,5 @@ builtin!(ckb_from_utf8, |a| match std::str::from_utf8(b(a[0])) {
     Ok(t) => some(new_str(t)),
     Err(_) => none(),
 });
+
+builtin!(ckb_string_chars, |a| list(s(a[0]).chars().map(|c| crate::obj::nat(c as usize)).collect()));

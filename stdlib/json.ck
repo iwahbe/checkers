@@ -350,7 +350,30 @@ lemma value_render v pre post d : v~Json, pre~Bytes, post~Bytes, delimits post,
                         have reverse [] ++ items == items
                         have render v == "[" ++ join "," (map render items) ++ "]"
                         have array src i (d + 1) == Ok (Parsed items (len src - len post))
-            Obj fields    -> have members_render fields pre post d
+            Obj fields    ->
+                have map_member_text fields
+                have map_member_depth fields
+                have render (Obj fields) == "{" ++ join "," (map member_text fields) ++ "}"
+                have depth v == 1 + max_of (map member_depth fields)
+                have d < MAX_DEPTH
+                let i = len pre + 1
+                have src[len pre] == '{'
+                match fields
+                    []             ->
+                        have utf8.encode (render (Obj fields)) == b"{}"
+                        have src[i] == '}'
+                        have skip_ws src i == i
+                    (k, x) :: rest ->
+                        let pre2 = pre ++ b"{"
+                        have members_go fields [] pre2 post (len pre2) (d + 1)
+                        have quote_first k
+                        have member_text (k, x) == quote k ++ ":" ++ render x
+                        have src[i] == '"'
+                        have skip_ws src i == i
+                        have peek src i != Some '}'
+                        have object src i (d + 1) == members src i i (d + 1) []
+                        have reverse [] ++ fields == fields
+                        have object src i (d + 1) == Ok (Parsed fields (len src - len post))
 
 # Induction over the remaining items; the recursive `have` is the induction hypothesis.
 lemma elements_render items acc pre post start d
@@ -390,21 +413,242 @@ lemma elements_render items acc pre post start d
                 have skip_ws src (e + 1) == e + 1
                 have elements src start (len pre) d acc == elements src start (e + 1) d (x :: acc)
 
-# Not yet proven. `admit` is legal but recorded in the trust ledger (SPEC §7.4),
-# so `ckc trust` lists both, for every program that uses this module, until
-# they are discharged.
+# ── Strings read back ────────────────────────────────────────────────────────
+
+# The escaped text of characters, one after another: what `quote` writes
+# between its quotes (string.concat_map_chars).
+fn escaped cs -> s : cs~List Char, s~String
+    list.join "" (map escape_char cs)
+
+# A hex digit's character reads back as that digit.
+lemma hex_char_round d : d~Nat, d < 16
+    let b = char.code (hex_char d)
+    ensures b < 128 and hex_digit b and hex_value b == d
+    proof
+        auto
+
+# The bytes `hex4_string` writes: one ASCII hex digit per four bits, high first.
+lemma hex4_bytes n : n~Nat, n < 0x10000
+    let b = utf8.encode (hex4_string n)
+    ensures len b == 4
+        and b[0] == char.code (hex_char (n / 4096)) and b[1] == char.code (hex_char (n / 256 % 16))
+        and b[2] == char.code (hex_char (n / 16 % 16)) and b[3] == char.code (hex_char (n % 16))
+    proof
+        let d0 = hex_char (n / 4096)
+        let d1 = hex_char (n / 256 % 16)
+        let d2 = hex_char (n / 16 % 16)
+        let d3 = hex_char (n % 16)
+        have hex_char_round (n / 4096)
+        have hex_char_round (n / 256 % 16)
+        have hex_char_round (n / 16 % 16)
+        have hex_char_round (n % 16)
+        have string.from_char_bytes d0
+        have string.from_char_bytes d1
+        have string.from_char_bytes d2
+        have string.from_char_bytes d3
+        have string.from_chars_cons d0 [d1, d2, d3]
+        have string.from_chars_cons d1 [d2, d3]
+        have string.from_chars_cons d2 [d3]
+        have string.from_chars_cons d3 []
+        have string.from_chars_nil
+
+# `hex4` reads back what `hex4_string` writes.
+lemma hex4_round n pre post : n~Nat, n < 0x10000, pre~Bytes, post~Bytes
+    let src = pre ++ utf8.encode (hex4_string n) ++ post
+    ensures len (utf8.encode (hex4_string n)) == 4 and hex4 src (len pre) == Ok (Parsed n (len pre + 4))
+    proof
+        have hex4_bytes n
+        have hex_char_round (n / 4096)
+        have hex_char_round (n / 256 % 16)
+        have hex_char_round (n / 16 % 16)
+        have hex_char_round (n % 16)
+
+# One character, escaped, is read back as itself, whatever follows.
+lemma char_step c pre post start acc : c~Char, pre~Bytes, post~Bytes, start~Nat, start <= len pre,
+                                       acc~List Char
+    let src = pre ++ utf8.encode (escape_char c) ++ post
+    ensures chars src start (len pre) acc == chars src start (len pre + len (utf8.encode (escape_char c))) (c :: acc)
+    proof
+        match c
+            c'"'  -> auto
+            c'\\' -> auto
+            c'\n' -> auto
+            c'\r' -> auto
+            c'\t' -> auto
+            _ if char.code c < 0x20 ->
+                have hex4_round (char.code c) (pre ++ b"\\u") post
+                auto
+            _     ->
+                have string.from_char_bytes c
+                have utf8.decode_from_char c pre post
+                auto
+
+# Induction over the characters; the recursive `have` is the induction hypothesis.
+lemma chars_render cs acc pre post start : cs~List Char, acc~List Char, pre~Bytes, post~Bytes,
+                                           start~Nat, start <= len pre
+    let src = pre ++ utf8.encode (escaped cs ++ "\"") ++ post
+    ensures chars src start (len pre) acc
+         == Ok (Parsed (string.from_chars (reverse acc ++ cs)) (len src - len post))
+    proof
+        match cs
+            []        -> have list.append_nil (reverse acc)
+            c :: rest ->
+                let e = utf8.encode (escape_char c)
+                have escaped cs == escape_char c ++ escaped rest
+                have char_step c pre (utf8.encode (escaped rest ++ "\"") ++ post) start acc
+                have chars_render rest (c :: acc) (pre ++ e) post start
+                have list.reverse_cons_append acc c rest
+
+# `quoted` reads back a quoted string, whatever follows it.
+lemma quoted_render s pre post : s~String, pre~Bytes, post~Bytes
+    let src = pre ++ utf8.encode (quote s) ++ post
+    ensures quoted src (len pre) == Ok (Parsed s (len src - len post))
+    proof
+        have string.concat_map_chars escape_char s
+        have string.from_chars_chars s
+        have chars_render (string.chars s) [] (pre ++ b"\"") post (len pre + 1)
+
 lemma string_render s pre post d : s~String, pre~Bytes, post~Bytes, delimits post, d~Nat
     let src = pre ++ utf8.encode (quote s) ++ post
     ensures value src (len pre) d == Ok (Parsed (Str s) (len src - len post))
     proof
-        admit
+        have quoted_render s pre post
 
-lemma members_render fields pre post d : fields~Members, pre~Bytes, post~Bytes, delimits post,
-                                         d~Nat, d + depth (Obj fields) <= MAX_DEPTH
-    let src = pre ++ utf8.encode (render (Obj fields)) ++ post
-    ensures value src (len pre) d == Ok (Parsed (Obj fields) (len src - len post))
+# ── Objects read back ────────────────────────────────────────────────────────
+
+# One member as `render` writes it, and its depth as `depth` counts it.
+fn member_text kx -> s : kx~(String, Json), s~String
+    let (k, x) = kx
+    quote k ++ ":" ++ render x
+
+fn member_depth kx -> n : kx~(String, Json), n~Nat
+    let (_, x) = kx
+    depth x
+
+lemma map_member_text fields : fields~List (String, Json)
+    ensures map (\(k, x) -> quote k ++ ":" ++ render x) fields == map member_text fields
     proof
-        admit
+        match fields
+            []        -> auto
+            _ :: rest -> have map_member_text rest
+
+lemma map_member_depth fields : fields~List (String, Json)
+    ensures map (\(_, x) -> depth x) fields == map member_depth fields
+    proof
+        match fields
+            []        -> auto
+            _ :: rest -> have map_member_depth rest
+
+# A quoted string starts with its quote.
+lemma quote_first s : s~String
+    let b = utf8.encode (quote s)
+    ensures len b > 0 and b[0] == '"'
+    proof
+        auto
+
+# One step of `members`: a key, a colon, a value, then `}` or `,`.
+lemma members_last src start k d acc key x q e
+    : src~Bytes, start~Nat, k~Nat, start <= k, d~Nat, acc~Members, key~String, x~Json,
+      q~Nat, k < q, q + 1 < e, e < len src,
+      quoted src k == Ok (Parsed key q), not (contains (keys acc) key),
+      src[q] == ':', not (is_ws src[q + 1]), value src (q + 1) d == Ok (Parsed x e), src[e] == '}',
+      unique (keys (reverse ((key, x) :: acc)))
+    ensures members src start k d acc == Ok (Parsed (reverse ((key, x) :: acc)) (e + 1))
+    proof
+        have skip_ws src q == q
+        have expect src q ':' == Ok (Parsed () (q + 1))
+        have skip_ws src (q + 1) == q + 1
+        have skip_ws src e == e
+        have peek src e == Some src[e]
+
+lemma members_next src start k d acc key x q e
+    : src~Bytes, start~Nat, k~Nat, start <= k, d~Nat, acc~Members, key~String, x~Json,
+      q~Nat, k < q, q + 1 < e, e + 1 < len src,
+      quoted src k == Ok (Parsed key q), not (contains (keys acc) key),
+      src[q] == ':', not (is_ws src[q + 1]), value src (q + 1) d == Ok (Parsed x e), src[e] == ',',
+      not (is_ws src[e + 1])
+    ensures members src start k d acc == members src start (e + 1) d ((key, x) :: acc)
+    proof
+        have skip_ws src q == q
+        have expect src q ':' == Ok (Parsed () (q + 1))
+        have skip_ws src (q + 1) == q + 1
+        have skip_ws src e == e
+        have peek src e == Some src[e]
+        have skip_ws src (e + 1) == e + 1
+
+# Where things are in one rendered member followed by `,` or `}`.
+lemma member_layout k x pre rest post d
+    : k~String, x~Json, pre~Bytes, rest~Bytes, len rest > 0, rest[0] == ',' or rest[0] == '}',
+      post~Bytes, d~Nat, d + depth x <= MAX_DEPTH
+    let qk = utf8.encode (quote k)
+    let rx = utf8.encode (render x)
+    let src = pre ++ qk ++ b":" ++ rx ++ rest ++ post
+    let q = len pre + len qk
+    let e = q + 1 + len rx
+    ensures len pre < q and q + 1 < e and e < len src
+        and quoted src (len pre) == Ok (Parsed k q) and src[q] == ':' and not (is_ws src[q + 1])
+        and src[e] == rest[0]
+        and (if len rest > 1 then e + 1 < len src and src[e + 1] == rest[1] else True)
+    proof
+        have quote_first k
+        have render_first x
+        have quoted_render k pre (b":" ++ rx ++ rest ++ post)
+
+# Induction over the remaining members, like `elements_render`. Every key is
+# new: `unique` holds of all the keys, those read so far and those to come.
+lemma members_go fields acc pre post start d
+    : fields~List (String, Json), fields != [], acc~Members, unique (keys (reverse acc ++ fields)),
+      pre~Bytes, post~Bytes, delimits post, start~Nat, start <= len pre,
+      d~Nat, d + max_of (map member_depth fields) <= MAX_DEPTH
+    let src = pre ++ utf8.encode (join "," (map member_text fields) ++ "}") ++ post
+    ensures members src start (len pre) d acc
+         == Ok (Parsed (reverse acc ++ fields) (len src - len post))
+    proof
+        match fields
+            []             -> auto
+            (k, x) :: rest ->
+                have list.keys_append (reverse acc) fields
+                have list.unique_split (keys (reverse acc)) k (keys rest)
+                have list.keys_reverse acc
+                have list.contains_reverse (keys acc) k
+                have not (list.contains (keys acc) k)
+                have list.max_of_cons (depth x) (map member_depth rest)
+                have render_first x
+                have list.reverse_cons_append acc (k, x) rest
+                have member_text (k, x) == quote k ++ ":" ++ render x
+                let tail = (if rest == [] then "" else "," ++ join "," (map member_text rest)) ++ "}"
+                have join "," (map member_text fields) ++ "}" == quote k ++ ":" ++ render x ++ tail
+                let qk = utf8.encode (quote k)
+                let rx = utf8.encode (render x)
+                let q = len pre + len qk
+                let e = q + 1 + len rx
+                have member_depth (k, x) == depth x
+                have d + depth x <= MAX_DEPTH
+                have list.unique_cons k (keys acc)
+                have list.keys_reverse ((k, x) :: acc)
+                have list.unique_reverse (keys ((k, x) :: acc))
+                match rest
+                    []               ->
+                        have src == pre ++ qk ++ b":" ++ rx ++ b"}" ++ post
+                        have member_layout k x pre b"}" post d
+                        have value_render x (pre ++ qk ++ b":") (b"}" ++ post) d
+                        have members_last src start (len pre) d acc k x q e
+                        have list.append_nil (reverse ((k, x) :: acc))
+                    (k2, x2) :: more ->
+                        have member_text (k2, x2) == quote k2 ++ ":" ++ render x2
+                        let after = if more == [] then "" else "," ++ join "," (map member_text more)
+                        have join "," (map member_text rest) == quote k2 ++ ":" ++ render x2 ++ after
+                        have quote_first k2
+                        let more_bytes = utf8.encode (join "," (map member_text rest) ++ "}")
+                        have more_bytes == utf8.encode (quote k2) ++ utf8.encode (":" ++ render x2 ++ after ++ "}")
+                        have more_bytes[0] == '"'
+                        have src == pre ++ qk ++ b":" ++ rx ++ (b"," ++ more_bytes) ++ post
+                        have (b"," ++ more_bytes)[1] == '"'
+                        have member_layout k x pre (b"," ++ more_bytes) post d
+                        have value_render x (pre ++ qk ++ b":") (b"," ++ more_bytes ++ post) d
+                        have src[e + 1] == '"'
+                        have members_next src start (len pre) d acc k x q e
+                        have members_go rest ((k, x) :: acc) (pre ++ qk ++ b":" ++ rx ++ b",") post start d
 
 # ── Compile-time checks ──────────────────────────────────────────────────────
 # Evaluated by the compiler; a failing `check` is a compile error.

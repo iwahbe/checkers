@@ -371,11 +371,29 @@ pub fn run(name: &str, text: &str, dir: &std::path::Path, args: &[String], unver
 }
 
 /// `checkers build`: check and prove, then write an executable.
-pub fn build(name: &str, text: &str, dir: &std::path::Path, out: &std::path::Path, unverified: bool) -> Ran {
+pub fn build(name: &str, text: &str, dir: &std::path::Path, out: &std::path::Path, unverified: bool, release: bool) -> Ran {
     let (e, main, staged, mut report) = match ready_to_run(name, text, dir, unverified) {
         Ok(r) => r,
         Err(ran) => return ran,
     };
+    // A release build relies on no `admit` anywhere in the program, its
+    // dependencies or the standard library (§7.4, D116); axioms stay allowed.
+    if release && !e.admits.is_empty() {
+        let mut admits: Vec<&elab::Trusted> = e.admits.iter().collect();
+        admits.sort_by(|a, b| (a.module.as_str(), a.span.start).cmp(&(b.module.as_str(), b.span.start)));
+        for a in &admits {
+            let d = Diagnostic::error("E0455", "a release build can't rely on an `admit`", a.span)
+                .with_label(format!("assumed, not proven: {}", a.what.trim_start_matches("admit: ")))
+                .with_help("prove it, or build without `--release`");
+            report += &match e.sources.get(&a.module) {
+                Some(f) => d.render(f),
+                None => format!("error[E0455]: a release build can't rely on an `admit` ({}: {})\n", a.module, a.what),
+            };
+            report.push('\n');
+        }
+        report += &format!("error: `--release` refuses this program: it relies on {} `admit`{}\n", admits.len(), if admits.len() == 1 { "" } else { "s" });
+        return Ran { report, code: 1 };
+    }
     match native::build(&e.g, Some(&staged), main, out) {
         Ok(()) => Ran { report, code: 0 },
         Err(msg) => {

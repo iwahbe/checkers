@@ -195,3 +195,32 @@ export lemma reverse_cons_append acc x rest : acc~List a, x~a, rest~List a
     proof
         have rev_onto_app acc [x]
         have append_assoc (reverse_onto acc []) [x] rest
+
+export lemma keys_append xs ys : xs~List (k, v), ys~List (k, v)
+    ensures keys (xs ++ ys) == keys xs ++ keys ys
+    proof
+        match xs
+            []        -> auto
+            _ :: rest -> have keys_append rest ys
+
+export lemma contains_append xs ys y : xs~List a, ys~List a, y~a
+    ensures contains (xs ++ ys) y == (contains xs y or contains ys y)
+    proof
+        match xs
+            []        -> auto
+            _ :: rest -> have contains_append rest ys y
+
+export lemma contains_reverse xs y : xs~List a, y~a
+    ensures contains (reverse xs) y == contains xs y
+    proof
+        have contains_rev_onto xs [] y
+
+# In a list without repeats, an element is not also earlier in it.
+export lemma unique_split xs y ys : xs~List a, y~a, ys~List a, unique (xs ++ (y :: ys))
+    ensures not (contains xs y)
+    proof
+        match xs
+            []        -> auto
+            x :: rest ->
+                have contains_append rest (y :: ys) x
+                have unique_split rest y ys

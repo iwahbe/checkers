@@ -9,9 +9,10 @@ USAGE:
     ckc run [--unverified] [--threads N] <FILE.ck> [ARG]...
                                                check and prove, then run `main` with ARGs
                                                (N worker threads, default: cores; 1 is deterministic)
-    ckc build [--unverified] <FILE.ck> -o <PROGRAM>
+    ckc build [--unverified | --release] <FILE.ck> -o <PROGRAM>
                                                check and prove, then write an executable
-                                               (its threads: CHECKERS_THREADS, default: cores)
+                                               (its threads: CHECKERS_THREADS, default: cores);
+                                               --release refuses any `admit` the program relies on
     ckc trust <FILE.ck>                        print the trust ledger (what Z3, admits and checks vouch for)
     ckc check [--deny-warnings] <FILE.ck>...   type-check and run `check`s; report diagnostics
 
@@ -207,12 +208,14 @@ fn run(args: &[String]) -> u8 {
 
 fn build(args: &[String]) -> u8 {
     let mut unverified = false;
+    let mut release = false;
     let mut out: Option<String> = None;
     let mut file: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--unverified" => unverified = true,
+            "--release" => release = true,
             "-o" => {
                 i += 1;
                 out = args.get(i).cloned();
@@ -225,12 +228,16 @@ fn build(args: &[String]) -> u8 {
         eprintln!("error: `build` needs a file and `-o PROGRAM`\n\n{USAGE}");
         return 2;
     };
+    if release && unverified {
+        eprintln!("error: `--release` builds only proven programs, so it can't be used with `--unverified`");
+        return 2;
+    }
     let text = match read(&path) {
         Ok(t) => t,
         Err(_) => return 2,
     };
     use_cache(&path);
-    let ran = checkers::build(&path, &text, &checkers::dir_of(&path), std::path::Path::new(&out), unverified);
+    let ran = checkers::build(&path, &text, &checkers::dir_of(&path), std::path::Path::new(&out), unverified, release);
     eprint!("{}", ran.report);
     ran.code
 }

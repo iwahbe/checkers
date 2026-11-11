@@ -25,7 +25,7 @@ Types are written only as constraints (`i~Nat, i <= len src`); the compiler prov
 | M2 Interpreter: `checkers run`, `check` evaluation, files and terminal, linear resources | done |
 | M3 Prover: pre/postconditions, refinements, invariants, lemmas, Z3, trust ledger | done: `examples/sort.ck` (insertion sort) and `wc.ck` verify |
 | M4 Modules: files, sealing, exported lemmas, multi-module proofs | done: [`resort.ck`](examples/resort.ck) uses `sort` through its exported lemma only |
-| M5 Well-founded recursion, lexicographic `decreasing` | done: merge sort in [`parallel.ck`](examples/parallel.ck); [`json.ck`](stdlib/json.ck) (now `std.json`) verifies, trusting its two `admit`s and two axioms about decimal numbers |
+| M5 Well-founded recursion, lexicographic `decreasing` | done: merge sort in [`parallel.ck`](examples/parallel.ck); [`json.ck`](stdlib/json.ck) (now `std.json`) verifies, trusting axioms about decimal numbers, characters and strings (its two `admit`s were proven in M18) |
 | M6 Staging: `comptime` parameters, compile-time expansion, `checkers stage` | done: [`format.ck`](examples/format.ck), a typed `fmt` whose format string is parsed at compile time |
 | M7 Multi-threaded behaviours (Verona scheduling), `par` on threads, cown invariants, actors | done: [`log.ck`](examples/log.ck) proves its cown invariant and runs; `checkers run --threads N`; stress tests in `tests/stress/` |
 | M8 Native code: Cranelift, closure conversion, reference counting with reuse, tail calls, `checkers build`, lock-free scheduler | done: [`wc.ck`](examples/wc.ck) 45× faster than the interpreter, which is now removed (SPEC D80): `check` and staging run native code too |
@@ -37,7 +37,7 @@ Types are written only as constraints (`i~Nat, i <= len src`); the compiler prov
 | M15 Streams and processes: `File` for every file, `proc.run`/`spawn`/`wait` | done |
 | M16 Blocking operations free the thread | done (Linux x86-64) |
 | M17 Reflected definitions sound for `decreasing` recursion (SPEC §7.3) | done |
-| M18 No `admit`s in `std`; `--release` rejects them | next |
+| M18 No `admit`s in `std`; `--release` rejects them | done |
 | M19 `checkers lsp` | planned |
 
 ## Usage
