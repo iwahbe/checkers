@@ -2,6 +2,9 @@
 # description; its first sentence is shown in the package's index.
 module pkg.shapes
 
+import pkg.sub.broken (Kind)
+import pkg.sub.broken as b
+
 # A point. The fields are shown, each with its description.
 export record Point
     # Across.
@@ -41,6 +44,21 @@ export lemma nonneg s : s~Shape
     ensures double_area s >= 0
     proof
         auto
+
+# Links: `Kind` through the import's names, `b.Square` through its name;
+# `Round` isn't one (the import doesn't bring it in).
+export fn kind s -> k : s~Shape, k~Kind, k == Round or k == b.Square
+    match s
+        Circle _ -> Round
+        Rect _ _ -> Square
+
+export fn same k -> r : k~b.Kind, r~b.Kind
+    k
+
+# `Circle` is a constructor here; `Option` and `Some` are the prelude's, not
+# this package's.
+export fn maybe s -> m : s~Shape, m~Option Shape, m == Some s or s == Circle 0
+    Some s
 
 export let UNIT = 1
 

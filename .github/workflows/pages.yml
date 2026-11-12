@@ -5,6 +5,7 @@
 #                       its own tools, so it never changes)
 #   /docs/latest/std/   a copy of the highest release that isn't a
 #                       pre-release; of `dev` before the first
+#   /docs/versions.json the list the pages' version menu reads
 # Nothing generated is kept in the repository.
 #
 # It builds nothing. The site and `dev` come from the latest commit that
@@ -78,6 +79,7 @@ jobs:
           checkers doc stdlib -o _site/docs/dev --name std --root ../../.. --label dev
           latest=""
           versions=""
+          released=()
           for tag in $(gh release list --repo "$REPO" --exclude-drafts --limit 1000 \
                          --json tagName --jq '.[].tagName' | sort -rV); do
             archive="checkers-$tag-docs.tar.gz"
@@ -85,12 +87,17 @@ jobs:
               mkdir -p "_site/docs/$tag"
               tar -xzf "$RUNNER_TEMP/releases/$archive" -C "_site/docs/$tag"
               versions="$versions- [$tag](docs/$tag/std/index.md)"$'\n'
+              released+=("$tag")
               case "$tag" in *-*) ;; *) latest="${latest:-$tag}" ;; esac
             else
               echo "::warning::release $tag has no $archive"
             fi
           done
           cp -R "_site/docs/${latest:-dev}" _site/docs/latest
+          # The version menu's list (SPEC §15.6).
+          jq -n --arg latest "$latest" --args \
+            '{latest: (if $latest == "" then null else $latest end), versions: (["dev"] + $ARGS.positional)}' \
+            "${released[@]}" > _site/docs/versions.json
           {
             echo
             echo "- [Latest](docs/latest/std/index.md): ${latest:-no release yet, so the same as \`dev\`}"

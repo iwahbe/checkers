@@ -200,32 +200,82 @@ partial fn span t -> r : t~Tok, r~Bytes
     let c = class_of t
     if len c == 0 then escape t.text else bytes.concat [b"<span class=\"", c, b"\">", escape t.text, b"</span>"]
 
+# Where a highlighter is in a signature (§15.6): in a type (after `~`, until
+# a `,` or `:` outside brackets), how deep in brackets, the name just before
+# (for a qualifier), and the qualifier of the next name (`files` in
+# `files.File`).
+record Place
+    ty~Bool
+    depth~Nat
+    last~Bytes
+    qual~Bytes
+
+let START = Place False 0 b"" b""
+
+partial fn step t h -> r : t~Tok, h~Place, r~Place
+    match t.kind
+        Comment -> h
+        Name    -> Place (h.ty and not (syntax.is_keyword t)) h.depth t.text b""
+        Punct   ->
+            if t.text == b"~"
+                Place True 0 b"" b""
+            else if t.text == b"(" or t.text == b"["
+                Place h.ty (h.depth + 1) b"" b""
+            else if t.text == b")" or t.text == b"]"
+                Place h.ty (if h.depth > 0 then h.depth - 1 else 0) b"" b""
+            else if (t.text == b"," or t.text == b":") and h.depth == 0
+                START
+            else if t.text == b"."
+                Place h.ty h.depth b"" h.last
+            else
+                Place h.ty h.depth b"" b""
+        _       -> Place h.ty h.depth b"" b""
+
+# A token, a link if it is a name `links` knows: `links qualifier name ty`
+# gives the address of a name's declaration, `ty` saying it is in a type.
+partial fn linked t h links -> r : t~Tok, h~Place, links~(Bytes -> Bytes -> Bool -> Option Bytes), r~Bytes
+    let s = span t
+    match t.kind
+        Upper ->
+            match links h.qual t.text h.ty
+                Some url -> bytes.concat [b"<a href=\"", escape url, b"\">", s, b"</a>"]
+                None     -> s
+        _     -> s
+
 # One line's tokens, spaced as written (columns are in characters).
-partial fn line_html toks col acc -> r : toks~List Tok, col~Nat, acc~List Bytes, r~List Bytes
+partial fn line_html toks col h links acc -> r : toks~List Tok, col~Nat, h~Place,
+                                                 links~(Bytes -> Bytes -> Bool -> Option Bytes), acc~List Bytes,
+                                                 r~(List Bytes, Place)
     match toks
-        []        -> acc
+        []        -> (acc, h)
         t :: rest ->
             let gap = if t.col >= col then t.col - col else 0
-            line_html rest (t.col + t.wide) (span t :: spaces gap :: acc)
+            line_html rest (t.col + t.wide) (step t h) links (linked t h links :: spaces gap :: acc)
 
-partial fn lines_html ls next acc -> r : ls~List Line, next~Nat, acc~List Bytes, r~List Bytes
+# A new line outside brackets starts outside a type (the next field, say).
+partial fn lines_html ls next h links acc -> r : ls~List Line, next~Nat, h~Place,
+                                                 links~(Bytes -> Bytes -> Bool -> Option Bytes), acc~List Bytes,
+                                                 r~List Bytes
     match ls
         []        -> acc
         l :: rest ->
             if l.num > next
-                lines_html ls (next + 1) (b"\n" :: acc)
+                lines_html ls (next + 1) h links (b"\n" :: acc)
             else
                 let toks = match l.comment
                     Some c -> l.toks ++ [c]
                     None   -> l.toks
-                lines_html rest (l.num + 1) (b"\n" :: line_html toks 0 acc)
+                let fresh = if h.depth == 0 then START else h
+                let (out, after) = line_html toks 0 fresh links acc
+                lines_html rest (l.num + 1) after links (b"\n" :: out)
 
 # A code block: highlighted if it is Checkers that lexes, else as written.
-partial fn code lang body -> r : lang~Bytes, body~List Bytes, r~Bytes
+partial fn code lang body links -> r : lang~Bytes, body~List Bytes,
+                                       links~(Bytes -> Bytes -> Bool -> Option Bytes), r~Bytes
     let text = bytes.concat (list.map (\l -> bytes.concat [l, b"\n"]) body)
     let inner = if lang == b"checkers"
         match syntax.lex text
-            Ok ls -> bytes.concat (list.reverse (lines_html ls 1 []))
+            Ok ls -> bytes.concat (list.reverse (lines_html ls 1 START links []))
             Err _ -> escape text
     else
         escape text
@@ -302,9 +352,16 @@ partial fn opens b : b~Bytes
 
 # Markdown as HTML.
 export partial fn to_html text -> r : text~Bytes, r~Bytes
-    bytes.concat (list.reverse (blocks (lines_of text) []))
+    to_html_linked text (\q n ty -> None)
 
-partial fn blocks ls acc -> r : ls~List Bytes, acc~List Bytes, r~List Bytes
+# Markdown as HTML, with the names in `checkers` code that `links` knows as
+# links to their declarations (`links qualifier name ty`, see `linked`).
+export partial fn to_html_linked text links -> r : text~Bytes, links~(Bytes -> Bytes -> Bool -> Option Bytes),
+                                                   r~Bytes
+    bytes.concat (list.reverse (blocks (lines_of text) links []))
+
+partial fn blocks ls links acc -> r : ls~List Bytes, links~(Bytes -> Bytes -> Bool -> Option Bytes),
+                                      acc~List Bytes, r~List Bytes
     match ls
         []        -> acc
         l :: rest ->
@@ -313,30 +370,30 @@ partial fn blocks ls acc -> r : ls~List Bytes, acc~List Bytes, r~List Bytes
                 next :: _ -> table_row l and separator next
                 []        -> False
             if blank l
-                blocks rest acc
+                blocks rest links acc
             else if fence l
                 let (body, after) = fenced rest []
-                blocks after (code (trim (from l 3)) body :: acc)
+                blocks after links (code (trim (from l 3)) body links :: acc)
             else if h > 0
                 let text = trim (from l (h + 1))
                 let n = string.bytes (format h)
                 let html = bytes.concat [b"<h", n, b" id=\"", slug text, b"\">", inline text, b"</h", n, b">\n"]
-                blocks rest (html :: acc)
+                blocks rest links (html :: acc)
             else if starts_table
                 let (rows, after) = take_rows (list.drop 1 rest) []
-                blocks after (table l rows :: acc)
+                blocks after links (table l rows :: acc)
             else if bullet l != None
                 let (items, after) = items_of bullet rest (item_text bullet l) []
-                blocks after (list_html b"ul" items :: acc)
+                blocks after links (list_html b"ul" items :: acc)
             else if numbered l != None
                 let (items, after) = items_of numbered rest (item_text numbered l) []
-                blocks after (list_html b"ol" items :: acc)
+                blocks after links (list_html b"ol" items :: acc)
             else if quote l
                 let (inner, after) = quoted ls []
-                blocks after (bytes.concat [b"<blockquote>\n", to_html (joined inner), b"</blockquote>\n"] :: acc)
+                blocks after links (bytes.concat [b"<blockquote>\n", to_html_linked (joined inner) links, b"</blockquote>\n"] :: acc)
             else
                 let (para, after) = paragraph rest [l]
-                blocks after (bytes.concat [b"<p>", inline (joined para), b"</p>\n"] :: acc)
+                blocks after links (bytes.concat [b"<p>", inline (joined para), b"</p>\n"] :: acc)
 
 partial fn joined ls -> r : ls~List Bytes, r~Bytes
     match ls

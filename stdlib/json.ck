@@ -1,5 +1,5 @@
-# json.ck — `std.json`: RFC 8259 JSON parser and renderer, with a round-trip
-# proof. The worked example for SPEC.md §9.
+# json.ck — RFC 8259 JSON: a parser and a renderer, with a proof that
+# parsing what was rendered gives it back. The worked example for SPEC.md §9.
 #
 # What the compiler proves about this module (nothing here is a runtime check):
 #   • every byte access src[i] is in bounds            (refinements on i)

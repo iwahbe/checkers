@@ -4,6 +4,8 @@
 //!
 //! - `{"kind":"module","name":…,"doc":…}`: its name and description (the
 //!   comment that opens the file);
+//! - `{"kind":"import","module":…,"as":…,"names":[…]}` for each import: the
+//!   name the module is used by, and the names it brings in unqualified;
 //! - `{"kind":"decl","what":…,"name":…,"line":…,"signature":…,"doc":…,"items":[…]}`
 //!   for each exported declaration, in order: what it is (`fn`, `lemma`,
 //!   `type`, `enum`, `record`, `let`), its signature as written, its
@@ -138,6 +140,20 @@ pub fn lines(text: &str, module: &Module, fallback_name: &str) -> Vec<String> {
     let line_of = |at: usize| text[..at.min(text.len())].matches('\n').count() + 1;
     let mut out =
         vec![format!(r#"{{"kind":"module","name":{},"doc":{}}}"#, json::string(&name), string_or_null(module_doc(text)))];
+    for i in &module.imports {
+        let path = i.path.dotted();
+        let used_as = match &i.alias {
+            Some(a) => a.name.to_string(),
+            None => i.path.parts.last().map(|p| p.name.to_string()).unwrap_or_default(),
+        };
+        let names: Vec<String> = i.items.iter().flatten().map(|n| json::string(&n.name)).collect();
+        out.push(format!(
+            r#"{{"kind":"import","module":{},"as":{},"names":[{}]}}"#,
+            json::string(&path),
+            json::string(&used_as),
+            names.join(",")
+        ));
+    }
     out.extend(module.decls.iter().filter_map(|d| decl(text, d, &line_of)));
     out
 }
