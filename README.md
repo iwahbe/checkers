@@ -35,7 +35,7 @@ Types are written only as constraints (`i~Nat, i <= len src`); the compiler prov
 | M13 The standard library as the package `std`, read from [`stdlib/`](stdlib) at each check: `import std.list` | done |
 | M14 Packages: `checkers.json`, `checkers.lock`, git and path dependencies, minimal version selection | done |
 | M15 Streams and processes: `File` for every file, `proc.run`/`spawn`/`wait` | done |
-| M16 Blocking operations free the thread | done (Linux x86-64) |
+| M16 Blocking operations free the thread | done (Linux x86-64; macOS ARM64, D126) |
 | M17 Reflected definitions sound for `decreasing` recursion (SPEC §7.3) | done |
 | M18 No `admit`s in `std`; `--release` rejects them | done |
 | M19 `checkers lsp` | built: diagnostics on every change, hover, go to definition, highlighting, outline, formatting; awaiting a check in Emacs |
@@ -43,7 +43,7 @@ Types are written only as constraints (`i~Nat, i <= len src`); the compiler prov
 
 ## Usage
 
-Z3 is built from source and linked into the binary (D46), so the first build takes several minutes and needs CMake and a C++ compiler. Nothing else needs installing.
+Runs on Linux (x86-64) and macOS (Apple silicon) (D126). Z3 is built from source and linked into the binary (D46), so the first build takes several minutes and needs CMake and a C++ compiler. Nothing else needs installing.
 
 ```
 cargo build --release

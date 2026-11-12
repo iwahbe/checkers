@@ -1,12 +1,13 @@
 //! Fibers (M16, D113, §13.8): each behaviour runs on a stack of its own, so
 //! a behaviour that would wait can be suspended in the middle of a call and
-//! its thread can run others. Linux on x86-64 (D116).
+//! its thread can run others. x86-64 and ARM64; Linux and macOS (D116, D126).
 //!
 //! A stack is reserved address space (256 MiB, the depth D75 allows a
 //! worker), committed by the kernel only as pages are touched, with a guard
 //! page below. Stacks are reused through a pool. Switching saves the
-//! callee-saved registers, the SSE control word and the x87 control word
-//! of the System V ABI, then swaps stack pointers.
+//! callee-saved registers and the floating-point control state (on x86-64
+//! the System V ABI's, with the SSE and x87 control words; on ARM64 the
+//! AAPCS64's, x19–x30 and d8–d15, with FPCR), then swaps stack pointers.
 //!
 //! Thread-local state must not be read on both sides of a switch within one
 //! function: a fiber may resume on another thread. The functions here that
@@ -32,15 +33,12 @@ impl Stack {
         if let Some(base) = FREE.lock().unwrap_or_else(|e| e.into_inner()).pop() {
             return Stack { base };
         }
+        #[cfg(target_os = "linux")]
+        let flags = libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE | libc::MAP_STACK;
+        #[cfg(not(target_os = "linux"))]
+        let flags = libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_NORESERVE;
         unsafe {
-            let p = libc::mmap(
-                std::ptr::null_mut(),
-                STACK,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE | libc::MAP_STACK,
-                -1,
-                0,
-            );
+            let p = libc::mmap(std::ptr::null_mut(), STACK, libc::PROT_READ | libc::PROT_WRITE, flags, -1, 0);
             if p == libc::MAP_FAILED {
                 crate::prog::fatal("could not reserve a stack for a behaviour");
             }
@@ -134,6 +132,7 @@ pub fn on_fiber() -> bool {
     !current().is_null()
 }
 
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 std::arch::global_asm!(
     ".text",
     ".global ck_fiber_switch",
@@ -174,6 +173,65 @@ std::arch::global_asm!(
     ".size ck_fiber_start, .-ck_fiber_start",
 );
 
+// ARM64 (AAPCS64; Apple's variant leaves x18 alone, as this does). A frame
+// is 176 bytes: x19–x28, x29 (frame pointer), x30 (return address), d8–d15,
+// FPCR, padding. Mach-O symbols carry a leading underscore.
+#[cfg(target_arch = "aarch64")]
+macro_rules! fiber_asm {
+    ($switch:literal, $start:literal, $main:literal) => {
+        std::arch::global_asm!(
+            ".text",
+            ".p2align 2",
+            concat!(".global ", $switch),
+            // switch(save: *mut usize, to: usize): save this context's stack
+            // pointer at `save`, continue the one whose stack pointer is `to`.
+            concat!($switch, ":"),
+            "sub sp, sp, #176",
+            "stp x19, x20, [sp, #0]",
+            "stp x21, x22, [sp, #16]",
+            "stp x23, x24, [sp, #32]",
+            "stp x25, x26, [sp, #48]",
+            "stp x27, x28, [sp, #64]",
+            "stp x29, x30, [sp, #80]",
+            "stp d8, d9, [sp, #96]",
+            "stp d10, d11, [sp, #112]",
+            "stp d12, d13, [sp, #128]",
+            "stp d14, d15, [sp, #144]",
+            "mrs x9, fpcr",
+            "str x9, [sp, #160]",
+            "mov x9, sp",
+            "str x9, [x0]",
+            "mov sp, x1",
+            "ldr x9, [sp, #160]",
+            "msr fpcr, x9",
+            "ldp d14, d15, [sp, #144]",
+            "ldp d12, d13, [sp, #128]",
+            "ldp d10, d11, [sp, #112]",
+            "ldp d8, d9, [sp, #96]",
+            "ldp x29, x30, [sp, #80]",
+            "ldp x27, x28, [sp, #64]",
+            "ldp x25, x26, [sp, #48]",
+            "ldp x23, x24, [sp, #32]",
+            "ldp x21, x22, [sp, #16]",
+            "ldp x19, x20, [sp, #0]",
+            "add sp, sp, #176",
+            "ret",
+            concat!(".global ", $start),
+            // A new fiber's first switch returns here, with its `Fiber` in x19.
+            concat!($start, ":"),
+            "mov x0, x19",
+            concat!("bl ", $main),
+            "brk #1",
+        );
+    };
+}
+#[cfg(all(target_arch = "aarch64", target_vendor = "apple"))]
+fiber_asm!("_ck_fiber_switch", "_ck_fiber_start", "_ck_fiber_main");
+#[cfg(all(target_arch = "aarch64", not(target_vendor = "apple")))]
+fiber_asm!("ck_fiber_switch", "ck_fiber_start", "ck_fiber_main");
+#[cfg(not(any(all(target_arch = "x86_64", target_os = "linux"), target_arch = "aarch64")))]
+compile_error!("fibers are implemented for Linux on x86-64 and for ARM64 (D126)");
+
 extern "C" {
     fn ck_fiber_switch(save: *mut usize, to: usize);
     fn ck_fiber_start();
@@ -212,15 +270,32 @@ impl Fiber {
     fn new() -> Box<Fiber> {
         let stack = Stack::get();
         let mut f = Box::new(Fiber { stack, sp: 0, back: 0, body: None, left: None });
-        // The first switch to it pops this frame: 16 bytes of control words,
-        // r15, r14, r13, r12 (the fiber), rbx, rbp, then returns to the start.
+        let me = &mut *f as *mut Fiber as usize;
+        let start = ck_fiber_start as *const () as usize;
         let top = f.stack.top() - 64;
+        // The first switch to it pops this frame, then returns to the start
+        // with the fiber in a callee-saved register.
+        #[cfg(target_arch = "x86_64")]
         let frame: [usize; 10] = {
+            // 16 bytes of control words, r15, r14, r13, r12 (the fiber), rbx, rbp, return address.
             let mut cw = 0u64;
             unsafe {
                 std::arch::asm!("stmxcsr [{0}]", "fnstcw [{0} + 4]", in(reg) &mut cw as *mut u64, options(nostack));
             }
-            [cw as usize, 0, 0, 0, 0, &mut *f as *mut Fiber as usize, 0, 0, ck_fiber_start as *const () as usize, 0]
+            [cw as usize, 0, 0, 0, 0, me, 0, 0, start, 0]
+        };
+        #[cfg(target_arch = "aarch64")]
+        let frame: [usize; 22] = {
+            // x19 (the fiber) … x28, x29, x30 (the start), d8 … d15, FPCR, padding.
+            let fpcr: usize;
+            unsafe {
+                std::arch::asm!("mrs {0}, fpcr", out(reg) fpcr, options(nomem, nostack));
+            }
+            let mut fr = [0usize; 22];
+            fr[0] = me;
+            fr[11] = start;
+            fr[20] = fpcr;
+            fr
         };
         let sp = top - frame.len() * 8;
         unsafe {

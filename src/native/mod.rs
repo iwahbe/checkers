@@ -223,7 +223,7 @@ pub fn build(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId, ou
         .arg(out)
         .arg(&obj)
         .arg(&lib)
-        .args(["-lpthread", "-ldl", "-lm", "-lrt", "-lutil", "-lgcc_s", "-lc"])
+        .args(SYSTEM_LIBS)
         .status()
         .map_err(|e| format!("running the C compiler to link: {e}"))?;
     let _ = std::fs::remove_dir_all(&dir);
@@ -232,6 +232,13 @@ pub fn build(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId, ou
     }
     Ok(())
 }
+
+/// The system libraries the runtime (a Rust static library) needs.
+#[cfg(target_os = "linux")]
+const SYSTEM_LIBS: &[&str] = &["-lpthread", "-ldl", "-lm", "-lrt", "-lutil", "-lgcc_s", "-lc"];
+/// On macOS everything is in libSystem, which the C compiler links anyway.
+#[cfg(target_vendor = "apple")]
+const SYSTEM_LIBS: &[&str] = &[];
 
 /// The runtime library to link executables with: `CHECKERS_RT_LIB`, or the
 /// newest `libcheckers_rt*.a` next to the running `checkers` (an installed

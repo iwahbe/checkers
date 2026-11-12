@@ -45,9 +45,11 @@ fn proofs(ledger: &str) -> String {
 fn second_check_reuses_answers() {
     let dir = scratch("reuse");
     let first = ckc(&dir, &["trust", "sort.ck"]);
-    // Only a query asked twice in one run (the same text, so the same answer) is reused.
+    // Only a query asked twice in one run (the same text, so the same answer)
+    // can be reused, and only if the first answer is stored before the second
+    // is asked: when both run at once, nothing is (and there's no cache line).
     let (reused, asked) = counts(&first);
-    assert!(reused * 2 < asked, "nothing cached yet:\n{first}");
+    assert!(cache_line(&first).is_none() || reused * 2 < asked, "nothing cached yet:\n{first}");
     let second = ckc(&dir, &["trust", "sort.ck"]);
     let (reused, asked) = counts(&second);
     assert!(asked > 0, "a cache line:\n{second}");
@@ -69,8 +71,10 @@ fn mismatched_entry_is_ignored() {
         std::fs::write(&p, format!("{header}\n{changed}")).unwrap();
     }
     let again = ckc(&dir, &["trust", "sort.ck"]);
-    // No stored entry matches: only what the first run itself reused is reused.
-    assert_eq!(counts(&again).0, counts(&first).0, "no entry matches:\n{again}");
+    // No stored entry matches: as in a first run, at most a query asked twice
+    // in this run is reused.
+    let (reused, asked) = counts(&again);
+    assert!(cache_line(&again).is_none() || reused * 2 < asked, "no entry matches:\n{again}");
     assert_eq!(proofs(&first), proofs(&again));
     let _ = std::fs::remove_dir_all(&dir);
 }

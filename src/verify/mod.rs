@@ -37,11 +37,13 @@ enum Answer {
 /// the process. SMT-LIB errors come back in the output text instead.
 unsafe extern "C" fn ignore_error(_: z3_sys::Z3_context, _: z3_sys::Z3_error_code) {}
 
-/// The linked-in Z3's version (D46).
+/// The linked-in Z3's version (D46): the release, the same for every build
+/// of it (some builds' full version names a commit too).
 pub fn z3_version() -> Option<String> {
-    // SAFETY: Z3_get_full_version returns a static, NUL-terminated string.
-    let v = unsafe { std::ffi::CStr::from_ptr(z3_sys::Z3_get_full_version()) };
-    Some(format!("Z3 {}", v.to_string_lossy()))
+    let (mut major, mut minor, mut build, mut rev) = (0, 0, 0, 0);
+    // SAFETY: writes four integers.
+    unsafe { z3_sys::Z3_get_version(&mut major, &mut minor, &mut build, &mut rev) };
+    Some(format!("Z3 {major}.{minor}.{build}.{rev}"))
 }
 
 /// Z3's work limit per query (D101): unlike a timeout, it gives the same
@@ -131,8 +133,30 @@ fn ask(query: &str) -> Answer {
     answer(out)
 }
 
+/// The Z3 release Checkers pins (crate `z3-src`, D46). Another release, as a
+/// development build may link (`--no-default-features`), can prove less or
+/// take far longer within the same work limit.
+const Z3_PINNED: (u32, u32) = (5, 3);
+
+/// Warn once if the linked Z3 is not the pinned release.
+fn check_z3_version() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let (mut major, mut minor, mut build, mut rev) = (0, 0, 0, 0);
+        // SAFETY: writes four integers.
+        unsafe { z3_sys::Z3_get_version(&mut major, &mut minor, &mut build, &mut rev) };
+        if (major, minor) != Z3_PINNED {
+            eprintln!(
+                "warning: ckc is linked with Z3 {major}.{minor}.{build}, but Checkers pins Z3 {}.{}: proofs may fail or take far longer",
+                Z3_PINNED.0, Z3_PINNED.1
+            );
+        }
+    });
+}
+
 /// Evaluate one SMT-LIB script in a fresh Z3 context: Z3's output.
 fn run_z3(query: &str) -> String {
+    check_z3_version();
     let Ok(text) = std::ffi::CString::new(query) else { return "unknown\n(a NUL byte in the query)".into() };
     // SAFETY: the config and context are created, used and deleted on this
     // thread only; the returned string is copied before the context is deleted.
