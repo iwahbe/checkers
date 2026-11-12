@@ -1,6 +1,10 @@
 # prelude.ck — imported into every module.
 module std.prelude
 
+# The type of types: `a~Type` says that `a` is a type, so `List a` is a
+# list of any type `a`. Built into the compiler (D132).
+export abstract enum Type
+
 # Built-in types; their values come from literals and primitives.
 export abstract enum Int
 # Text: UTF-8, immutable. The prover sees a string as its UTF-8 bytes.

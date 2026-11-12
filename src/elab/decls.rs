@@ -378,6 +378,14 @@ impl Elab {
         for d in &m.decls {
             let exported = d.export != Export::No;
             let id = match &d.kind {
+                // The prelude's `Type` is the universe itself (D132): its
+                // declaration gives it a place and a description.
+                DeclKind::Enum { name, ctors, .. }
+                    if self.cur == "std.prelude" && name.name == "Type" && ctors.is_empty() && d.export == Export::Abstract =>
+                {
+                    self.declare(name, true, Sym::Univ, exported);
+                    Some(Sym::Univ)
+                }
                 DeclKind::Enum { name, params, ctors, .. } => {
                     let tid = TyId(self.g.tys.len() as u32);
                     let abstract_ = d.export == Export::Abstract;
