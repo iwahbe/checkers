@@ -122,6 +122,7 @@ pub fn equal(a: W, b: W) -> Result<bool, &'static str> {
             (Some(Obj::File(_)), _) => return Err("files"),
             (Some(Obj::Fs(_)), _) => return Err("capabilities"),
             (Some(Obj::Cown(_) | Obj::Future(_)), _) => return Err("cowns and futures"),
+            (Some(Obj::Child(_) | Obj::Killer(_)), _) => return Err("process handles"),
             _ => false,
         },
         _ => false,

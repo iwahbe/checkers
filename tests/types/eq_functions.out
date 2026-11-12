@@ -1,67 +1,91 @@
-error[E0263]: `==` can't compare functions: `Nat -> Nat` is a function type
-  --> eq_functions.ck:16:5
+error[E0263]: `==` can't compare `Nat -> Nat`: it is a function type
+  --> eq_functions.ck:22:5
    |
-16 |     f == g
+22 |     f == g
    |     ^^^^^^ has type `Nat -> Nat`
    = help: compare what the functions return instead, such as `f x == g x`
 
-error[E0263]: `!=` can't compare functions: `Option (Nat -> Nat)` contains a function, `Nat -> Nat`
-  --> eq_functions.ck:19:5
+error[E0263]: `!=` can't compare `Option (Nat -> Nat)`: it contains a function, `Nat -> Nat`
+  --> eq_functions.ck:25:5
    |
-19 |     Some f != None
+25 |     Some f != None
    |     ^^^^^^^^^^^^^^ has type `Option (Nat -> Nat)`
    = help: compare what the functions return instead, such as `f x == g x`
 
-error[E0263]: `==` can't compare functions: `(Nat, Nat -> Nat)` contains a function, `Nat -> Nat`
-  --> eq_functions.ck:22:5
+error[E0263]: `==` can't compare `(Nat, Nat -> Nat)`: it contains a function, `Nat -> Nat`
+  --> eq_functions.ck:28:5
    |
-22 |     (1, f) == (1, inc)
+28 |     (1, f) == (1, inc)
    |     ^^^^^^^^^^^^^^^^^^ has type `(Nat, Nat -> Nat)`
    = help: compare what the functions return instead, such as `f x == g x`
 
-error[E0263]: `==` can't compare functions: `Handler` contains a function, `Nat -> Nat`
-  --> eq_functions.ck:25:5
+error[E0263]: `==` can't compare `Handler`: it contains a function, `Nat -> Nat`
+  --> eq_functions.ck:31:5
    |
-25 |     h == Handler "inc" inc
+31 |     h == Handler "inc" inc
    |     ^^^^^^^^^^^^^^^^^^^^^^ has type `Handler`
    = help: compare what the functions return instead, such as `f x == g x`
 
-error[E0263]: `==` can't compare functions: `(x~Nat) -> Nat` is a function type
-  --> eq_functions.ck:27:7
+error[E0263]: `==` can't compare `(x~Nat) -> Nat`: it is a function type
+  --> eq_functions.ck:33:7
    |
-27 | check inc == inc
+33 | check inc == inc
    |       ^^^^^^^^^^ has type `(x~Nat) -> Nat`
    = help: compare what the functions return instead, such as `f x == g x`
 
 error[E0264]: `same` compares values of type `a` with `==`, so `a` can't be `Nat -> Nat`: it is a function type
-  --> eq_functions.ck:51:5
+  --> eq_functions.ck:57:5
    |
-51 |     same f inc
+57 |     same f inc
    |     ^^^^ `a` is `Nat -> Nat` here
 
 error[E0264]: `same_twice` compares values of type `a` with `==` (through `same`), so `a` can't be `Nat -> Nat`: it is a function type
-  --> eq_functions.ck:54:5
+  --> eq_functions.ck:60:5
    |
-54 |     same_twice f inc
+60 |     same_twice f inc
    |     ^^^^^^^^^^ `a` is `Nat -> Nat` here
 
 error[E0264]: `same_options` compares values of type `a` with `==`, so `a` can't be `Nat -> Nat`: it is a function type
-  --> eq_functions.ck:57:5
+  --> eq_functions.ck:63:5
    |
-57 |     same_options (Some f) None
+63 |     same_options (Some f) None
    |     ^^^^^^^^^^^^ `a` is `Nat -> Nat` here
 
 error[E0264]: `contains` compares values of type `a` with `==`, so `a` can't be `(x~Nat) -> Nat`: it is a function type
-  --> eq_functions.ck:60:5
+  --> eq_functions.ck:66:5
    |
-60 |     list.contains [inc] f
+66 |     list.contains [inc] f
    |     ^^^^^^^^^^^^^ `a` is `(x~Nat) -> Nat` here
 
-error[E0263]: `==` can't compare functions: `(x~Nat) -> Nat` is a function type
-  --> eq_functions.ck:64:18
+error[E0263]: `==` can't compare `(x~Nat) -> Nat`: it is a function type
+  --> eq_functions.ck:70:18
    |
-64 |     let is_inc = (== inc)
+70 |     let is_inc = (== inc)
    |                  ^^^^^^^^ has type `(x~Nat) -> Nat`
    = help: compare what the functions return instead, such as `f x == g x`
 
-eq_functions.ck: 10 errors, 0 warnings
+error[E0263]: `==` can't compare `Term`: it is a capability
+  --> eq_functions.ck:75:5
+   |
+75 |     t == u
+   |     ^^^^^^ has type `Term`
+
+error[E0263]: `!=` can't compare `Cown Nat`: it is a cown
+  --> eq_functions.ck:78:5
+   |
+78 |     c != d
+   |     ^^^^^^ has type `Cown Nat`
+
+error[E0263]: `==` can't compare `System`: it contains a capability, `Term`
+  --> eq_functions.ck:81:5
+   |
+81 |     s == s
+   |     ^^^^^^ has type `System`
+
+error[E0264]: `same` compares values of type `a` with `==`, so `a` can't be `Term`: it is a capability
+  --> eq_functions.ck:84:5
+   |
+84 |     same t t
+   |     ^^^^ `a` is `Term` here
+
+eq_functions.ck: 14 errors, 0 warnings

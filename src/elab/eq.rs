@@ -1,4 +1,5 @@
-//! `==` never compares functions (D125).
+//! `==` never compares functions, nor capabilities, cowns, futures, files
+//! or process handles (D125).
 //!
 //! (a) `==`/`!=` in compiled code (function bodies, `check`s) on a type that
 //! is or contains a function type is E0263. A type parameter of the
@@ -15,8 +16,9 @@ use std::collections::BTreeSet;
 
 /// Why a type can't be compared.
 enum Bad {
-    /// It is a function type, or contains this one.
-    Fn(Val),
+    /// It is, or contains, this function type or built-in type without
+    /// equality.
+    NoEq(Val),
     /// It is a type variable that is not a parameter of the function.
     Var(usize),
 }
@@ -37,6 +39,39 @@ impl Elab {
         out
     }
 
+    /// What a built-in type without equality is (D125 c): `None` for the
+    /// built-in types that compare and for every declared type.
+    fn no_equality(&self, id: TyId) -> Option<&'static str> {
+        let ti = &self.g.tys[id.0 as usize];
+        if !ti.is_abstract || !ti.ctors.is_empty() || !ti.module.starts_with("std.") {
+            return None;
+        }
+        match &*ti.name {
+            "Int" | "String" | "Bytes" | "Bag" | "Decimal" | "IoError" => None,
+            "Cown" => Some("a cown"),
+            "Future" => Some("a future"),
+            "File" => Some("a file"),
+            "Child" | "Killer" => Some("a process handle"),
+            _ => Some("a capability"),
+        }
+    }
+
+    /// What a type that can't be compared is, or contains: "it is a
+    /// function type", "it contains a capability, `Term`".
+    fn why_not(&self, names: &[Name], lvl: usize, ty: &Val, bad: &Val) -> String {
+        let what = |v: &Val| match self.force(v) {
+            Val::TyCon(id, _) => self.no_equality(id).unwrap_or("a function"),
+            _ => "a function",
+        };
+        if matches!(self.force(ty), Val::Pi(..)) {
+            "it is a function type".to_string()
+        } else if tm_eq(&quote(&self.g, lvl, ty), &quote(&self.g, lvl, bad)) {
+            format!("it is {}", what(bad))
+        } else {
+            format!("it contains {}, `{}`", what(bad), show(&self.g, names, &quote(&self.g, lvl, bad)))
+        }
+    }
+
     /// The type variables `ty` mentions where a value is compared, or why
     /// it can't be compared.
     fn comparable(&self, ty: &Val, depth: usize, seen: &mut Vec<(TyId, Vec<Tm>)>, lvl: usize, vars: &mut BTreeSet<usize>) -> Result<(), Val> {
@@ -45,6 +80,7 @@ impl Elab {
         }
         match self.force(ty) {
             f @ Val::Pi(..) => Err(f),
+            t @ Val::TyCon(id, _) if self.no_equality(id).is_some() => Err(t),
             Val::TupleTy(ts) => ts.iter().try_for_each(|t| self.comparable(t, depth + 1, seen, lvl, vars)),
             Val::TyCon(id, args) => {
                 let key: Vec<Tm> = args.iter().map(|a| quote(&self.g, lvl, a)).collect();
@@ -75,7 +111,7 @@ impl Elab {
     /// parameters of `owner` it needs comparable, or why it can't be.
     fn check_comparable(&self, ty: &Val, lvl: usize, owner: Option<DefId>) -> Result<Vec<(usize, Name)>, Bad> {
         let mut vars = BTreeSet::new();
-        self.comparable(ty, 0, &mut Vec::new(), lvl, &mut vars).map_err(Bad::Fn)?;
+        self.comparable(ty, 0, &mut Vec::new(), lvl, &mut vars).map_err(Bad::NoEq)?;
         let params = owner.map(|d| self.type_params(d)).unwrap_or_default();
         let mut out = Vec::new();
         for l in vars {
@@ -85,18 +121,6 @@ impl Elab {
             }
         }
         Ok(out)
-    }
-
-    /// Why `ty` can't be compared, for a message: "`T` is a function type"
-    /// or "`T` contains a function, `A -> B`".
-    fn why_not(&self, names: &[Name], lvl: usize, ty: &Val, f: &Val) -> String {
-        let shown = show(&self.g, names, &quote(&self.g, lvl, ty));
-        if matches!(self.force(ty), Val::Pi(..)) {
-            format!("`{shown}` is a function type")
-        } else {
-            let inner = show(&self.g, names, &quote(&self.g, lvl, f));
-            format!("`{shown}` contains a function, `{inner}`")
-        }
     }
 
     /// (a): a `==` or `!=` in compiled code.
@@ -110,14 +134,15 @@ impl Elab {
                     }
                 }
             }
-            Err(Bad::Fn(f)) => {
+            Err(Bad::NoEq(f)) => {
                 let shown = show(&self.g, &d.names, &quote(&self.g, d.lvl, &d.ty));
                 let why = self.why_not(&d.names, d.lvl, &d.ty, &f);
-                self.err(
-                    Diagnostic::error("E0263", format!("{} can't compare functions: {why}", d.what), d.span)
-                        .with_label(format!("has type `{shown}`"))
-                        .with_help("compare what the functions return instead, such as `f x == g x`"),
-                );
+                let mut diag = Diagnostic::error("E0263", format!("{} can't compare `{shown}`: {why}", d.what), d.span)
+                    .with_label(format!("has type `{shown}`"));
+                if matches!(self.force(&f), Val::Pi(..)) {
+                    diag = diag.with_help("compare what the functions return instead, such as `f x == g x`");
+                }
+                self.err(diag);
             }
             Err(Bad::Var(l)) => {
                 let shown = d.names.get(l).map(|n| n.to_string()).unwrap_or_else(|| "_".into());
@@ -167,8 +192,7 @@ impl Elab {
                 let Some(arg) = i.args.get(k) else { continue };
                 let bad = match self.check_comparable(arg, i.lvl, i.caller) {
                     Ok(_) => continue,
-                    Err(Bad::Fn(_)) if matches!(self.force(arg), Val::Pi(..)) => "it is a function type".to_string(),
-                    Err(Bad::Fn(f)) => format!("it contains a function, `{}`", show(&self.g, &i.names, &quote(&self.g, i.lvl, &f))),
+                    Err(Bad::NoEq(f)) => self.why_not(&i.names, i.lvl, arg, &f),
                     Err(Bad::Var(_)) => "it could be a function type".to_string(),
                 };
                 let callee = self.g.defs[i.callee.0 as usize].name.to_string();

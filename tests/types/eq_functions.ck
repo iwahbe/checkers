@@ -1,8 +1,14 @@
 module eq_functions
 
 import std.list
+import std.terminal (Term)
+import std.cown (Cown)
+import std.system (System)
+import std.decimal (Decimal)
+import std.bag (Bag)
 
-# `==` never compares functions (D125).
+# `==` never compares functions, nor capabilities, cowns, futures, files or
+# process handles (D125).
 
 fn inc x -> r : x~Nat, r~Nat
     x + 1
@@ -63,3 +69,20 @@ fn from_std f : f~(Nat -> Nat)
 fn section f : f~(Nat -> Nat)
     let is_inc = (== inc)
     is_inc f
+
+# (c) Capabilities, cowns, futures, files and process handles, like functions.
+fn terms t u : t~Term, u~Term
+    t == u
+
+fn cowns c d : c~Cown Nat, d~Cown Nat
+    c != d
+
+fn systems s : s~System
+    s == s
+
+fn generic_term t : t~Term
+    same t t
+
+# Built-in types that do compare.
+fn plain a b c : a~Bytes, b~Decimal, c~Bag
+    a == a and b == b and c == c
