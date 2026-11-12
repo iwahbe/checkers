@@ -1,16 +1,23 @@
-# The site (D131, SPEC §15.6), on GitHub Pages: the pages in `site/` and
-# `main`'s standard-library documentation at the root, and each release's
-# documentation at /vX.Y.Z/docs/, unpacked from the archive that release
-# attached (built by its own tools, so it never changes). Nothing generated
-# is kept in the repository.
+# The site (D131, SPEC §15.6), on GitHub Pages: the pages in `site/`, and
+# the standard library's documentation by version:
+#   /docs/dev/std/      `main`
+#   /docs/vX.Y.Z/std/   each release, from the archive it attached (built by
+#                       its own tools, so it never changes)
+#   /docs/latest/std/   a copy of the highest release that isn't a
+#                       pre-release; of `dev` before the first
+# Nothing generated is kept in the repository.
 #
-# Runs after each push to `main`, and when a release is published: the
-# release workflow starts it (`gh workflow run`), since a release published
-# with GITHUB_TOKEN starts no `release` event.
+# It builds nothing: `ckc` and `checkers` come from CI's run for the commit
+# deployed, the latest on `main` that passed. It runs when CI passes on
+# `main`, when a release is published (the release workflow starts it, since
+# a release published with GITHUB_TOKEN starts no `release` event), and by
+# hand.
 name: Pages
 
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
   release:
     types: [published]
@@ -18,59 +25,75 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 # One deployment at a time; a newer one waits rather than cancelling.
 concurrency:
   group: pages
   cancel-in-progress: false
 
-env:
-  CARGO_TERM_COLOR: always
-  RUST_VERSION: "1.98.0"
-
 jobs:
   build:
+    if: github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          # CI's cache: the same `--release` build, Z3 included.
-          shared-key: release
-          save-if: false
-      - name: Build
-        run: |
-          cargo build --release --locked
-          target/release/ckc build tools/checkers.ck -o target/release/checkers
-      - name: Each release's documentation
+      - name: The CI run to deploy
+        id: ci
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
-          mkdir -p _site _pages
+          gh run list --repo "$REPO" --workflow ci.yml --branch main --event push --status success \
+            --limit 1 --json databaseId,headSha --jq '.[0] | "run=\(.databaseId)\nsha=\(.headSha)"' >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.ci.outputs.sha }}
+          persist-credentials: false
+      - name: Its tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN: ${{ steps.ci.outputs.run }}
+        run: |
+          gh run download "$RUN" --repo "$REPO" --name tools-linux --dir "$RUNNER_TEMP/tools"
+          chmod +x "$RUNNER_TEMP/tools/ckc" "$RUNNER_TEMP/tools/checkers"
+          echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
+          echo "CHECKERS_STD=$PWD/stdlib" >> "$GITHUB_ENV"
+      - name: Documentation by version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          mkdir -p _site/docs _pages
           cp site/*.md _pages/
+          checkers doc stdlib -o _site/docs/dev --name std --root ../../.. --label dev
+          latest=""
           versions=""
           for tag in $(gh release list --repo "$REPO" --exclude-drafts --limit 1000 \
                          --json tagName --jq '.[].tagName' | sort -rV); do
             archive="checkers-$tag-docs.tar.gz"
-            if gh release download "$tag" --repo "$REPO" --pattern "$archive" --dir _releases; then
-              mkdir -p "_site/$tag"
-              tar -xzf "_releases/$archive" -C "_site/$tag"
-              versions="$versions- [$tag]($tag/docs/std/index.md)"$'\n'
+            if gh release download "$tag" --repo "$REPO" --pattern "$archive" --dir "$RUNNER_TEMP/releases"; then
+              mkdir -p "_site/docs/$tag"
+              tar -xzf "$RUNNER_TEMP/releases/$archive" -C "_site/docs/$tag"
+              versions="$versions- [$tag](docs/$tag/std/index.md)"$'\n'
+              case "$tag" in *-*) ;; *) latest="${latest:-$tag}" ;; esac
             else
               echo "::warning::release $tag has no $archive"
             fi
           done
-          { echo; echo "${versions:-None yet.}"; } >> _pages/docs.md
-      - name: Main's documentation and the site
-        run: |
-          target/release/checkers doc stdlib -o _site/docs --name std --label main
-          target/release/checkers site _pages -o _site
+          cp -R "_site/docs/${latest:-dev}" _site/docs/latest
+          {
+            echo
+            echo "- [Latest](docs/latest/std/index.md): ${latest:-no release yet, so the same as \`dev\`}"
+            echo "- [dev](docs/dev/std/index.md): \`main\`"
+            echo
+            echo "## Releases"
+            echo
+            echo "${versions:-None yet.}"
+          } >> _pages/docs.md
+      - name: The site
+        run: checkers site _pages -o _site
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
 

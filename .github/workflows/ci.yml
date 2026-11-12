@@ -4,7 +4,8 @@
 # - the merge queue, and `main` after a merge: everything, integration tests
 #   included (golden files, packages, parking, the standard library, the cache).
 # Only `main` saves the build cache (Z3 compiled from source is most of it);
-# pull requests and the merge queue restore it.
+# pull requests and the merge queue restore it. On `main`, the Linux job also
+# uploads `ckc` and `checkers` for the site (pages.yml).
 name: CI
 
 on:
@@ -53,3 +54,17 @@ jobs:
       - name: Integration tests
         if: github.event_name != 'pull_request'
         run: cargo test --release --locked --workspace --tests
+      # On `main`, the tools for the site (pages.yml), which builds nothing.
+      - name: Tools for the site
+        if: github.event_name == 'push' && runner.os == 'Linux'
+        run: |
+          mkdir -p tools-out
+          cp target/release/ckc tools-out/
+          target/release/ckc build tools/checkers.ck -o tools-out/checkers
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: github.event_name == 'push' && runner.os == 'Linux'
+        with:
+          name: tools-linux
+          path: tools-out/
+          retention-days: 90
+          if-no-files-found: error

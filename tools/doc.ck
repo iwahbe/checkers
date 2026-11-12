@@ -400,8 +400,9 @@ partial fn link_line out rel fs -> r : out~String, rel~String, fs~Fs, r~String
         Err _   -> rel
     "- [" ++ title ++ "](" ++ rel ++ ")\n"
 
+# The documentation `llms.txt` lists: the latest only (§15.6).
 partial fn in_docs rel : rel~String
-    bytes.matches_at (string.bytes rel) 0 b"docs/" or bytes.matches_at (string.bytes rel) 0 b"v"
+    bytes.matches_at (string.bytes rel) 0 b"docs/latest/"
 
 partial fn only_docs rels -> r : rels~List String, r~List String
     match rels

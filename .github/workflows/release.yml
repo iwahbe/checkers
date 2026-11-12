@@ -67,12 +67,13 @@ jobs:
           shasum -a 256 "$d.tar.gz" > "$d.tar.gz.sha256"
       - name: Documentation
         # Once, from Linux: the standard library's documentation, built by
-        # this tag's tools. The site serves it at /vX.Y.Z/docs/ (pages.yml).
+        # this tag's tools: `std/`, which the site serves at
+        # /docs/vX.Y.Z/std/ (pages.yml).
         if: matrix.target == 'x86_64-linux'
         run: |
           target/release/checkers doc stdlib -o docs --name std --root ../../.. --label "$GITHUB_REF_NAME"
           d="checkers-$GITHUB_REF_NAME-docs"
-          tar -czf "$d.tar.gz" docs
+          tar -czf "$d.tar.gz" -C docs std
           shasum -a 256 "$d.tar.gz" > "$d.tar.gz.sha256"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
