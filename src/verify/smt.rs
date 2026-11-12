@@ -28,7 +28,8 @@ pub enum Sort {
     Int,
     Bool,
     Str,
-    Bytes,
+    /// An array (D133): a sequence of its elements' sort.
+    Seq(Box<Sort>),
     Bag,
     /// A datatype with its type arguments.
     Data(TyId, Vec<Sort>),
@@ -49,7 +50,7 @@ impl Sort {
             // A string is its UTF-8 bytes (§7.3): `++`, `len` and `utf8.encode`
             // are then native, and literals are byte sequences.
             Sort::Str => "(Seq Int)".into(),
-            Sort::Bytes => "(Seq Int)".into(),
+            Sort::Seq(x) => format!("(Seq {})", x.render(e)),
             Sort::Bag => "(Array Int Int)".into(),
             Sort::Data(t, args) => apply_sort(ty_sym(e, *t), args, e),
             Sort::Tuple(args) => apply_sort(tuple_sym(args.len()), args, e),
@@ -205,6 +206,8 @@ pub struct Query {
     pub shown: Vec<(String, String)>,
     /// The SMT names of `String` locals (shown as text, not bytes).
     pub string_vars: Vec<String>,
+    /// Shown variables that are arrays of anything but `U8` (D133).
+    pub array_vars: Vec<String>,
 }
 
 /// What defining an instance added to a builder, so another builder for the
@@ -258,6 +261,7 @@ pub struct Builder<'a> {
     ctx_src: Vec<ObLocal>,
     pub shown: Vec<(String, String)>,
     string_vars: Vec<String>,
+    array_vars: Vec<String>,
 }
 
 impl<'a> Builder<'a> {
@@ -286,6 +290,7 @@ impl<'a> Builder<'a> {
             ctx_src: Vec::new(),
             shown: Vec::new(),
             string_vars: Vec::new(),
+            array_vars: Vec::new(),
         }
     }
 
@@ -479,8 +484,9 @@ impl<'a> Builder<'a> {
         if Some(id) == wk.string {
             return Ok(Sort::Str);
         }
-        if Some(id) == wk.bytes {
-            return Ok(Sort::Bytes);
+        if Some(id) == wk.array {
+            let a = args.first().ok_or_else(|| Outside("an array without its element type".into()))?;
+            return Ok(Sort::Seq(Box::new(self.sort_of(env, a)?)));
         }
         if self.is_bag(id) {
             return Ok(Sort::Bag);
@@ -754,6 +760,14 @@ impl<'a> Builder<'a> {
                     self.shown.push((name.clone(), l.name.to_string()));
                     if s == Sort::Str {
                         self.string_vars.push(name.clone());
+                    }
+                    if let Val::TyCon(id, args) = crate::core::force(&self.e.g, l.ty.clone()) {
+                        let byte = checkers_rt::array::Layout::U8 as u8;
+                        if Some(id) == self.e.g.well_known.array
+                            && args.first().is_none_or(|a| crate::core::layout_of(&self.e.g, a) != Ok(byte))
+                        {
+                            self.array_vars.push(name.clone());
+                        }
                     }
                 }
                 Ent::Term(name.clone(), s)
@@ -1100,7 +1114,7 @@ impl<'a> Builder<'a> {
             Tm::Lit(Lit::Str(s)) => {
                 Ok((smt_bytes(s.as_bytes()), Sort::Str))
             }
-            Tm::Lit(Lit::Bytes(b)) => Ok((smt_bytes(b), Sort::Bytes)),
+            Tm::Lit(Lit::Bytes(b)) => Ok((smt_bytes(b), Sort::Seq(Box::new(Sort::Int)))),
             Tm::Tuple(xs) => {
                 let mut ts = Vec::new();
                 let mut ss = Vec::new();
@@ -1323,7 +1337,7 @@ impl<'a> Builder<'a> {
             "std.bag.count" => return Ok((format!("(select {} {})", vals[1], vals[0]), Sort::Int)),
             "std.bag.sum" => return Ok((format!("((_ map (+ (Int Int) Int)) {} {})", vals[0], vals[1]), Sort::Bag)),
             // A string is already its UTF-8 bytes.
-            "std.utf8.encode" | "std.string.bytes" => return Ok((vals[0].clone(), Sort::Bytes)),
+            "std.utf8.encode" | "std.string.bytes" => return Ok((vals[0].clone(), Sort::Seq(Box::new(Sort::Int)))),
             // `word` occurs in `src` at `i` (the Rust primitive, exactly).
             "std.bytes.matches_at" => {
                 let (src, i, w) = (&vals[0], &vals[1], &vals[2]);
@@ -1395,7 +1409,7 @@ impl<'a> Builder<'a> {
 
     fn prim(&mut self, env: &[Ent], p: &Prim, args: &[Tm]) -> Tx<(String, Sort)> {
         let mut ts = Vec::new();
-        let n = if *p == Prim::Sub { 2 } else { args.len() };
+        let n = if matches!(p, Prim::Sub | Prim::Index) { 2 } else { args.len() };
         for a in &args[..n.min(args.len())] {
             ts.push(self.term(env, a)?);
         }
@@ -1415,7 +1429,10 @@ impl<'a> Builder<'a> {
             Prim::Ne => Ok((format!("(not (= {} {}))", ts[0].0, ts[1].0), Sort::Bool)),
             Prim::Concat => match &ts[0].1 {
                 Sort::Str => bin("seq.++", &ts, Sort::Str),
-                Sort::Bytes => bin("seq.++", &ts, Sort::Bytes),
+                s @ Sort::Seq(_) => {
+                    let s = s.clone();
+                    bin("seq.++", &ts, s)
+                }
                 s @ Sort::Data(..) => {
                     let s = s.clone();
                     let f = self.list_fun("append", &s, 2, s.clone())?;
@@ -1424,7 +1441,7 @@ impl<'a> Builder<'a> {
                 _ => out("`++` on this type"),
             },
             Prim::Len => match &ts[0].1 {
-                Sort::Bytes => Ok((format!("(seq.len {})", ts[0].0), Sort::Int)),
+                Sort::Seq(_) => Ok((format!("(seq.len {})", ts[0].0), Sort::Int)),
                 Sort::Str => Ok((format!("(seq.len {})", ts[0].0), Sort::Int)),
                 s @ Sort::Data(..) => {
                     let s = s.clone();
@@ -1438,12 +1455,23 @@ impl<'a> Builder<'a> {
                 _ => out("`len` on this type"),
             },
             Prim::Index => {
+                let elem = match &ts[0].1 {
+                    Sort::Seq(e) => (**e).clone(),
+                    _ => Sort::Int,
+                };
                 let t = format!("(seq.nth {} {})", ts[0].0, ts[1].0);
-                // Every element of `Bytes` is a `U8`.
+                // An element has its type's refinement (D133): a `U8` of
+                // `Bytes` is `>= 0` and `< 256`.
                 if !self.in_def && self.nat_seen.insert(t.clone()) {
-                    self.asserts.push(format!("(and (>= {t} 0) (< {t} 256))"));
+                    if let Some(ety) = args.get(2) {
+                        let mut facts = self.alias_terms(env, ety, &t, &elem);
+                        if self.is_nat_tm(ety) {
+                            facts.push(format!("(>= {t} 0)"));
+                        }
+                        self.asserts.extend(facts);
+                    }
                 }
-                Ok((t, Sort::Int))
+                Ok((t, elem))
             }
             Prim::Format => {
                 let s = ts[0].1.render(self.e);
@@ -1971,7 +1999,7 @@ impl<'a> Builder<'a> {
         let focused = focus
             .for_goal(&goal)
             .map(|d| format!("{}{d}{}{}", &text[..defs_at], &text[defs_end..split], &text[split + axioms.len()..]));
-        Ok(Query { text, without_axioms, facts_only, focused, dropped, shown: self.shown, string_vars: self.string_vars })
+        Ok(Query { text, without_axioms, facts_only, focused, dropped, shown: self.shown, string_vars: self.string_vars, array_vars: self.array_vars })
     }
 }
 

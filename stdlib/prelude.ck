@@ -9,8 +9,9 @@ export abstract enum Type
 export abstract enum Int
 # Text: UTF-8, immutable. The prover sees a string as its UTF-8 bytes.
 export abstract enum String
-# A sequence of bytes, immutable. `src[i]` is the byte at `i`, a `U8`.
-export abstract enum Bytes
+# An immutable array: `len xs` and `xs[i]` take constant time. Arrays of
+# fixed-width numbers are packed (D133); `std.array` has its functions.
+export abstract enum Array +a : a~Type
 
 # `False` or `True`.
 export enum Bool
@@ -40,6 +41,11 @@ export type Nat = n~Int, n >= 0
 
 # Fixed-width numbers are refinements of Nat and Int (D6).
 export type U8 = n~Nat, n < 256
+
+# A sequence of bytes, immutable: an array of `U8`, packed (D133).
+# `src[i]` is the byte at `i`.
+export type Bytes = b~Array U8
+
 # An unsigned 16-bit number.
 export type U16 = n~Nat, n < 65536
 # An unsigned 32-bit number.

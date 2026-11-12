@@ -331,15 +331,19 @@ impl Elab {
             }
             ExprKind::Field(x, name) => self.elab_field(cx, x, name, e.span),
             ExprKind::Index(a, i) => {
-                let bytes = self.bytes();
+                // An element of an array (D133): of its element type, which
+                // the prover is also given (its refinement holds of it).
+                let elem = self.fresh_meta_val(cx);
+                let arr = self.array_of(elem.clone());
                 let nat = self.nat();
-                let at = self.check(cx, a, &bytes, false);
+                let at = self.check(cx, a, &arr, false);
                 let it = self.check(cx, i, &nat, false);
                 let (av, iv) = (self.eval(cx, &at), self.eval(cx, &it));
                 let goal = Self::prim_val(Prim::Lt, vec![iv, Self::prim_val(Prim::Len, vec![av])]);
                 let text = format!("{} < len {}", self.src_text(i.span), self.src_text(a.span));
                 self.oblige(cx, e.span, ObKind::Index, text, goal, None);
-                (Tm::PrimApp(Prim::Index, vec![at, it]), nat)
+                let et = quote(&self.g, cx.lvl(), &elem);
+                (Tm::PrimApp(Prim::Index, vec![at, it, et]), elem)
             }
             ExprKind::Lambda(pats, body) => {
                 // Infer a lambda: parameter types are unknowns.

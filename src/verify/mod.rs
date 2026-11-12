@@ -384,7 +384,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
                 v.ledger.push(LedgerEntry { span: o.span, how: "smt", what: describe(e, o), hash });
             }
             (Ok(q), Some(Answer::Sat(model))) => {
-                let mut d = failed(e, o, Some(render_model(&model, &q.shown, &q.string_vars)));
+                let mut d = failed(e, o, Some(render_model(&model, &q.shown, &q.string_vars, &q.array_vars)));
                 if !q.dropped.is_empty() {
                     d = d.with_note(format!(
                         "some facts could not be given to the prover, so the counterexample may be impossible: they involve {}",
@@ -869,7 +869,27 @@ fn seq_bytes(x: &Sx) -> Option<Vec<u8>> {
     }
 }
 
-fn render_model(text: &str, shown: &[(String, String)], strings: &[String]) -> String {
+/// The elements of a sequence in a model.
+fn seq_items(x: &Sx) -> Option<Vec<Sx>> {
+    match x {
+        Sx::List(l) => match l.first() {
+            Some(Sx::Atom(h)) if h == "seq.unit" => l.get(1).map(|e| vec![e.clone()]),
+            Some(Sx::Atom(h)) if h == "seq.++" => {
+                let mut v = Vec::new();
+                for p in &l[1..] {
+                    v.extend(seq_items(p)?);
+                }
+                Some(v)
+            }
+            Some(Sx::Atom(h)) if h == "as" => matches!(l.get(1), Some(Sx::Atom(a)) if a == "seq.empty").then(Vec::new),
+            _ => None,
+        },
+        Sx::Atom(a) if a == "seq.empty" => Some(Vec::new()),
+        _ => None,
+    }
+}
+
+fn render_model(text: &str, shown: &[(String, String)], strings: &[String], arrays: &[String]) -> String {
     let sx = parse_sx(text);
     let Some(Sx::List(pairs)) = sx.first() else { return String::new() };
     let mut found: Vec<(usize, String)> = Vec::new();
@@ -878,7 +898,13 @@ fn render_model(text: &str, shown: &[(String, String)], strings: &[String]) -> S
             if let (Some(Sx::Atom(k)), Some(v)) = (kv.first(), kv.get(1)) {
                 if let Some(pos) = shown.iter().position(|(n, _)| n == k) {
                     let v = unlet(v, &[]);
+                    let items = if arrays.contains(k) { seq_items(&v) } else { None };
                     let s = match seq_bytes(&v) {
+                        // An array of anything but `U8` (D133).
+                        _ if items.is_some() => {
+                            let shown: Vec<String> = items.unwrap_or_default().iter().map(pretty).collect();
+                            format!("array.from_list [{}]", shown.join(", "))
+                        }
                         // A `String` is its UTF-8 bytes to the solver (§7.3).
                         Some(b) if strings.contains(k) => match String::from_utf8(b.clone()) {
                             Ok(t) => format!("{t:?}"),

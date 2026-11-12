@@ -1206,8 +1206,15 @@ impl Elab {
     pub fn string(&self) -> Val {
         self.ty_val(self.g.well_known.string, vec![])
     }
+    /// `Bytes`, the alias of `Array U8` (D133).
     pub fn bytes(&self) -> Val {
-        self.ty_val(self.g.well_known.bytes, vec![])
+        match self.g.well_known.bytes {
+            Some(d) => eval(&self.g, &Rc::new(Vec::new()), &Tm::Def(d)),
+            None => Val::Error,
+        }
+    }
+    pub fn array_of(&self, elem: Val) -> Val {
+        self.ty_val(self.g.well_known.array, vec![elem])
     }
     pub fn unit(&self) -> Val {
         Val::TupleTy(vec![])
@@ -1265,7 +1272,7 @@ impl Elab {
                     Some(*id) == wk.int
                 }
                 (Val::TyCon(id, _), OpClass::Concat | OpClass::HasLen) => {
-                    Some(*id) == wk.string || Some(*id) == wk.bytes || Some(*id) == wk.list
+                    Some(*id) == wk.string || Some(*id) == wk.array || Some(*id) == wk.list
                 }
                 _ => false,
             };
@@ -1280,14 +1287,14 @@ impl Elab {
                 let need = match d.kind {
                     OpClass::Numeric => "numbers (`Nat` or `Int`)",
                     OpClass::Ordered => "numbers (`Nat` or `Int`) to compare",
-                    OpClass::Concat => "a `String`, `Bytes` or `List`",
-                    OpClass::HasLen => "a `String`, `Bytes` or `List`",
+                    OpClass::Concat => "a `String`, `List` or `Array`",
+                    OpClass::HasLen => "a `String`, `List` or `Array`",
                     OpClass::Comparable => unreachable!(),
                 };
                 let mut diag = Diagnostic::error("E0210", format!("{} needs {need}, but this is `{shown}`", d.what), d.span)
                     .with_label(format!("has type `{shown}`"));
-                if d.what == "`+`" && matches!(&t, Val::TyCon(id, _) if Some(*id) == wk.string || Some(*id) == wk.bytes || Some(*id) == wk.list) {
-                    diag = diag.with_help("to join strings, bytes or lists, use `++`");
+                if d.what == "`+`" && matches!(&t, Val::TyCon(id, _) if Some(*id) == wk.string || Some(*id) == wk.array || Some(*id) == wk.list) {
+                    diag = diag.with_help("to join strings, lists or arrays, use `++`");
                 }
                 self.err(diag);
             }

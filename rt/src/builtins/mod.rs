@@ -30,6 +30,7 @@ pub mod decimal;
 pub mod bag;
 pub mod cown;
 pub mod future;
+pub mod array;
 pub mod env;
 pub mod proc;
 
@@ -50,9 +51,19 @@ pub const MODULES: &[&[Builtin]] = &[
     bag::TABLE,
     cown::TABLE,
     future::TABLE,
+    array::TABLE,
     env::TABLE,
     proc::TABLE,
 ];
+
+/// Builtins that get their type parameters, as element layouts (D133).
+pub fn keeps_types(name: &str) -> bool {
+    name.starts_with("std.array.")
+}
+
+/// Builtins called through their wrapper function, which owns its
+/// arguments, so they can update an unshared argument in place (D133).
+pub const OWNING: &[&str] = &["ckb_array_set"];
 
 /// Every builtin.
 pub fn all() -> impl Iterator<Item = &'static Builtin> {

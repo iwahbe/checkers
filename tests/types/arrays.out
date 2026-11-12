@@ -1,0 +1,26 @@
+error[E0450]: cannot prove `n < 256`, the postcondition of `first_byte`
+ --> arrays.ck:6:21
+  |
+6 | fn first_byte xs -> b : xs~Array Int, len xs > 0, b~U8
+  |                     ^ promised here
+  = note: for the value returned on line 7: `xs[0]`
+  = note: facts in scope: `(len xs) > 0`
+  = note: counterexample: xs = array.from_list [256]
+  = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+error[E0263]: `==` can't compare `Array (Int -> Int)`: it contains a function, `Int -> Int`
+  --> arrays.ck:15:5
+   |
+15 |     fs == gs
+   |     ^^^^^^^^ has type `Array (Int -> Int)`
+   = help: compare what the functions return instead, such as `f x == g x`
+
+error[E0450]: cannot prove that the index is in bounds (`len xs < len xs`)
+  --> arrays.ck:29:5
+   |
+29 |     xs[len xs]
+   |     ^^^^^^^^^^ indexing needs `i < len src`
+   = note: counterexample: xs = array.from_list []
+   = help: check the index first, e.g. `if i < len src then src[i] else …`
+
+arrays.ck: 3 errors, 0 warnings

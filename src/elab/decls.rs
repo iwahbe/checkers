@@ -455,8 +455,29 @@ impl Elab {
                 DeclKind::Alias { name, .. } => {
                     let id = self.new_def(&name.name);
                     self.declare(name, true, Sym::Def(id), exported);
-                    if self.cur == "std.prelude" && name.name == "Nat" {
-                        self.g.well_known.nat = Some(id);
+                    if self.cur == "std.prelude" {
+                        use checkers_rt::array::Layout;
+                        let layout = match name.name.as_str() {
+                            "Nat" => {
+                                self.g.well_known.nat = Some(id);
+                                None
+                            }
+                            "Bytes" => {
+                                self.g.well_known.bytes = Some(id);
+                                None
+                            }
+                            "U8" => Some(Layout::U8),
+                            "I8" => Some(Layout::I8),
+                            "U16" => Some(Layout::U16),
+                            "U32" | "Char" => Some(Layout::U32),
+                            "I32" => Some(Layout::I32),
+                            "U64" => Some(Layout::U64),
+                            "I64" => Some(Layout::I64),
+                            _ => None,
+                        };
+                        if let Some(l) = layout {
+                            self.g.well_known.layouts.push((id, l as u8));
+                        }
                     }
                     self.def_class.insert(id, "type");
                     self.index_header(index::Target::Def(id), name.span, d);
@@ -499,7 +520,7 @@ impl Elab {
             }
             ("std.prelude", "Int") => wk.int = Some(tid),
             ("std.prelude", "String") => wk.string = Some(tid),
-            ("std.prelude", "Bytes") => wk.bytes = Some(tid),
+            ("std.prelude", "Array") => wk.array = Some(tid),
             ("std.prelude", "List") => {
                 wk.list = Some(tid);
                 wk.nil = ctors.first().copied();

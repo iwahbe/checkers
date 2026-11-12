@@ -80,6 +80,11 @@ impl Elab {
         }
         match self.force(ty) {
             f @ Val::Pi(..) => Err(f),
+            // An array compares element by element (D133).
+            Val::TyCon(id, args) if Some(id) == self.g.well_known.array => match args.first() {
+                Some(a) => self.comparable(a, depth + 1, seen, lvl, vars),
+                None => Ok(()),
+            },
             t @ Val::TyCon(id, _) if self.no_equality(id).is_some() => Err(t),
             Val::TupleTy(ts) => ts.iter().try_for_each(|t| self.comparable(t, depth + 1, seen, lvl, vars)),
             Val::TyCon(id, args) => {

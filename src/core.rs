@@ -232,7 +232,12 @@ pub struct WellKnown {
     pub nat: Option<DefId>,
     pub int: Option<TyId>,
     pub string: Option<TyId>,
-    pub bytes: Option<TyId>,
+    /// `Bytes`, the prelude's alias of `Array U8` (D133).
+    pub bytes: Option<DefId>,
+    pub array: Option<TyId>,
+    /// The prelude's fixed-width aliases and `Char`, with the layout of an
+    /// array of them (`checkers_rt::array::Layout`, D133).
+    pub layouts: Vec<(DefId, u8)>,
     pub list: Option<TyId>,
     pub nil: Option<ConId>,
     pub cons: Option<ConId>,
@@ -478,6 +483,30 @@ pub fn is_nat(g: &Globals, v: &Val) -> bool {
         }
     }
     false
+}
+
+/// The layout of an array of `v`, a type (D133): a fixed-width alias's or
+/// `Bool`'s (`Ok(code)`, `checkers_rt::array::Layout`), a type variable at
+/// level `Err(level)` (its layout is the variable's word at run time), or
+/// one word per element (`Ok(0)`).
+pub fn layout_of(g: &Globals, v: &Val) -> Result<u8, usize> {
+    let mut v = force_meta(g, v.clone());
+    for _ in 0..64 {
+        if let Val::Neutral(Head::Def(d), _) = &v {
+            if let Some((_, l)) = g.well_known.layouts.iter().find(|(a, _)| a == d) {
+                return Ok(*l);
+            }
+        }
+        match unfold(g, &v) {
+            Some(u) => v = force_meta(g, u),
+            None => break,
+        }
+    }
+    match v {
+        Val::TyCon(id, _) if Some(id) == g.well_known.bool_ty => Ok(checkers_rt::array::Layout::Bool as u8),
+        Val::Neutral(Head::Var(x), sp) if sp.is_empty() => Err(x),
+        _ => Ok(0),
+    }
 }
 
 pub fn force(g: &Globals, v: Val) -> Val {
@@ -1128,6 +1157,9 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
                 _ => {
                     if let (Prim::Neg, [a]) = (pr, args.as_slice()) {
                         return format!("-{}", show_prec(g, ns, a, 2));
+                    }
+                    if let (Prim::Index, [a, i, ..]) = (pr, args.as_slice()) {
+                        return format!("{}[{}]", show_prec(g, ns, a, 3), show_prec(g, ns, i, 0));
                     }
                     let name = match pr {
                         Prim::Builtin(n) => n.to_string(),

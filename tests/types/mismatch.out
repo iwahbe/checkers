@@ -46,9 +46,9 @@ error[E0210]: `+` needs numbers (`Nat` or `Int`), but this is `String`
    |
 30 |     "a" + "b"
    |     ^^^^^^^^^ has type `String`
-   = help: to join strings, bytes or lists, use `++`
+   = help: to join strings, lists or arrays, use `++`
 
-error[E0210]: `len` needs a `String`, `Bytes` or `List`, but this is `Nat`
+error[E0210]: `len` needs a `String`, `List` or `Array`, but this is `Nat`
   --> mismatch.ck:33:9
    |
 33 |     len 5

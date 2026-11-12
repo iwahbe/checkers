@@ -226,11 +226,17 @@ impl<'a, 'g> Lowerer<'a, 'g> {
             let full = format!("{}.{}", info.module, info.name);
             let shape = match checkers_rt::builtins::symbol(&full) {
                 Some(sym) => {
+                    // Kept: what isn't erased, and for `std.array`'s builtins,
+                    // the type parameters, as layouts (D133).
+                    let types = checkers_rt::builtins::keeps_types(&full);
                     let mut keep = Vec::new();
-                    let mut t = &info.ty;
-                    while let Tm::Pi(_, m, _, _, b) = t {
-                        keep.push(*m != Mult::Zero);
-                        t = b;
+                    let mut v = crate::core::eval(g, &std::rc::Rc::new(Vec::new()), &info.ty);
+                    let mut k = 0;
+                    while let crate::core::Val::Pi(_, m, _, dom, c) = crate::core::force(g, v.clone()) {
+                        let is_type = matches!(crate::core::force(g, (*dom).clone()), crate::core::Val::Univ(_));
+                        keep.push(m != Mult::Zero || types && is_type);
+                        v = crate::core::apply_closure(g, &c, crate::core::Val::var(k));
+                        k += 1;
                     }
                     let wrap = self.wrapper(&full, d, FnKind::BuiltinWrap { sym, keep: keep.clone() }, keep.len());
                     DefShape::Builtin { sym, keep, wrap }
@@ -473,6 +479,17 @@ impl Lowerer<'_, '_> {
                     }
                     let inner = E::Call { f: func, args: es, tail: false };
                     return E::Apply { f: Box::new(inner), args: rest, tail };
+                }
+                // A builtin that may update an argument in place is called
+                // through its wrapper, which owns its arguments (D133).
+                Some(DefShape::Builtin { sym, keep, wrap }) if args.len() >= keep.len() && checkers_rt::builtins::OWNING.contains(&sym) => {
+                    let es: Vec<E> = args.iter().map(|a| self.expr(a, ctx, false)).collect();
+                    let (now, rest) = es.split_at(keep.len());
+                    let call = E::Call { f: wrap, args: now.to_vec(), tail: tail && rest.is_empty() };
+                    if rest.is_empty() {
+                        return call;
+                    }
+                    return E::Apply { f: Box::new(call), args: rest.to_vec(), tail };
                 }
                 Some(DefShape::Builtin { sym, keep, .. }) if args.len() >= keep.len() => {
                     let kept: Vec<E> = args[..keep.len()]

@@ -906,16 +906,60 @@ impl<'p, M: Module> Gen<'p, M> {
                 self.bool_of(b, r)
             }
             Op::Concat => self.call1(b, st, "ck_concat", &[a[0], a[1]]),
-            Op::Len => self.call1(b, st, "ck_len", &[a[0]]),
+            Op::Len => {
+                // Inline for strings, bytes and arrays, which keep their
+                // length in their first word (D133); lists go to the runtime.
+                let kinds = b.create_block();
+                let fast = b.create_block();
+                let slow = b.create_block();
+                let done = b.create_block();
+                let r = b.append_block_param(done, I64);
+                let low = b.ins().band_imm_s(a[0], 7);
+                let aligned = b.ins().icmp_imm_s(IntCC::Equal, low, 0);
+                let nonzero = b.ins().icmp_imm_s(IntCC::NotEqual, a[0], 0);
+                let is_ptr = b.ins().band(aligned, nonzero);
+                b.ins().brif(is_ptr, kinds, &[], slow, &[]);
+                b.switch_to_block(kinds);
+                let info = b.ins().load(I64, flags(), a[0], 8);
+                let kind = b.ins().band_imm_s(info, 0xff);
+                let s = b.ins().icmp_imm_s(IntCC::Equal, kind, w::K_STR as i64);
+                let y = b.ins().icmp_imm_s(IntCC::Equal, kind, w::K_BYTES as i64);
+                let z = b.ins().icmp_imm_s(IntCC::Equal, kind, checkers_rt::array::K_ARRAY as i64);
+                let sy = b.ins().bor(s, y);
+                let any = b.ins().bor(sy, z);
+                b.ins().brif(any, fast, &[], slow, &[]);
+                b.switch_to_block(fast);
+                let n = b.ins().load(I64, flags(), a[0], w::HDR as i32);
+                let sh = b.ins().ishl_imm_s(n, 1);
+                let v = b.ins().bor_imm_s(sh, 1);
+                b.ins().jump(done, &[BlockArg::Value(v)]);
+                b.switch_to_block(slow);
+                let c = self.call1(b, st, "ck_len", &[a[0]]);
+                b.ins().jump(done, &[BlockArg::Value(c)]);
+                b.switch_to_block(done);
+                r
+            }
             Op::Index => {
-                // Inline: a small index into bytes, in bounds.
+                // Inline: a small index into bytes, in bounds. Other arrays
+                // (D133) and everything else go to the runtime. An `Array
+                // U8` (`nat` here) is always bytes: no need to check.
                 let fast = b.create_block();
                 let slow = b.create_block();
                 let done = b.create_block();
                 let r = b.append_block_param(done, I64);
                 let is_int = b.ins().band_imm_s(a[1], 1);
+                let kind_check = b.create_block();
                 let check = b.create_block();
-                b.ins().brif(is_int, check, &[], slow, &[]);
+                b.ins().brif(is_int, kind_check, &[], slow, &[]);
+                b.switch_to_block(kind_check);
+                if nat {
+                    b.ins().jump(check, &[]);
+                } else {
+                    let info = b.ins().load(I64, flags(), a[0], 8);
+                    let kind = b.ins().band_imm_s(info, 0xff);
+                    let is_bytes = b.ins().icmp_imm_s(IntCC::Equal, kind, w::K_BYTES as i64);
+                    b.ins().brif(is_bytes, check, &[], slow, &[]);
+                }
                 b.switch_to_block(check);
                 let i = b.ins().sshr_imm_s(a[1], 1);
                 let len = b.ins().load(I64, flags(), a[0], w::HDR as i32);

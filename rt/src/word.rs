@@ -158,6 +158,7 @@ fn size_of(w: W) -> usize {
         K_CON | K_TUPLE => HDR + 8 * n,
         K_CLO | K_PAP => HDR + 8 + 8 * n,
         K_STR | K_BYTES => HDR + 8 + (slot(w, 0) as usize).div_ceil(8) * 8,
+        crate::array::K_ARRAY => crate::array::size(w),
         _ => HDR + 8,
     }
 }
@@ -288,6 +289,7 @@ pub extern "C" fn ck_free(w: W) {
             K_PAP => (0..=n).for_each(|i| release(slot(w, i))),
             K_BIG => unsafe { drop(Box::from_raw(slot(w, 0) as *mut num_bigint::BigInt)) },
             K_RUST => unsafe { drop(Box::from_raw(slot(w, 0) as *mut crate::obj::Obj)) },
+            crate::array::K_ARRAY => crate::array::held(w).for_each(&mut release),
             _ => {}
         }
         if TRACK.load(Ordering::Relaxed) {

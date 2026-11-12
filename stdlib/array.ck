@@ -1,0 +1,87 @@
+# array.ck — functions on arrays (D133). `Array a` is in the prelude, with
+# `len`, indexing (`xs[i]`), `++` and `==`; arrays of fixed-width numbers
+# are packed.
+module std.array
+
+import std.list
+
+# The list's elements, in order.
+export fn from_list xs -> r : xs~List a, r~Array a, len r == list.length xs
+    __builtin
+
+# The array's elements, in order.
+export fn to_list xs -> r : xs~Array a, r~List a, list.length r == len xs
+    __builtin
+
+# `n` copies of `x`.
+export fn repeat n x -> r : n~Nat, x~a, r~Array a, len r == n
+    __builtin
+
+# `xs` with element `i` replaced by `x`. When nothing else refers to `xs`,
+# it is updated in place; otherwise this copies it.
+export fn set xs i x -> r : xs~Array a, i~Nat, i < len xs, x~a, r~Array a, len r == len xs, r[i] == x
+    __builtin
+
+# The elements from `i` up to (not including) `j`.
+export fn slice xs i j -> r : xs~Array a, i~Nat, j~Nat, i <= j, j <= len xs, r~Array a, len r == j - i
+    __builtin
+
+# The arrays one after another, in time linear in the result.
+export fn concat parts -> r : parts~List (Array a), r~Array a
+    __builtin
+
+# The elements in reverse order.
+export fn reverse xs -> r : xs~Array a, r~Array a, len r == len xs
+    __builtin
+
+# `f` applied to each element, in order.
+export fn map f xs -> r : f~(a -> b), xs~Array a, r~Array b
+    from_list (list.map f (to_list xs))
+
+# Whether `p` holds for every element (`True` for an empty array).
+export fn all p xs -> r : p~(a -> Bool), xs~Array a, r~Bool
+    all_from p xs 0
+
+fn all_from p xs i -> r : p~(a -> Bool), xs~Array a, i~Nat, i <= len xs, r~Bool
+    decreasing len xs - i
+    if i < len xs then p xs[i] and all_from p xs (i + 1) else True
+
+# Whether `x` is an element of `xs`.
+export fn contains xs x -> r : xs~Array a, x~a, r~Bool
+    contains_from xs x 0
+
+fn contains_from xs x i -> r : xs~Array a, x~a, i~Nat, i <= len xs, r~Bool
+    decreasing len xs - i
+    if i < len xs then xs[i] == x or contains_from xs x (i + 1) else False
+
+# How many times `x` occurs in `xs`.
+export fn count x xs -> n : x~a, xs~Array a, n~Nat
+    count_from x xs 0
+
+fn count_from x xs i -> n : x~a, xs~Array a, i~Nat, i <= len xs, n~Nat
+    decreasing len xs - i
+    if i < len xs then (if xs[i] == x then 1 else 0) + count_from x xs (i + 1) else 0
+
+# The first `n` elements, or all of `xs` if it is shorter.
+export fn take n xs -> r : n~Nat, xs~Array a, r~Array a, len r <= len xs, n <= len xs implies len r == n
+    slice xs 0 (if n <= len xs then n else len xs)
+
+# All but the first `n` elements; empty if `xs` is shorter.
+export fn drop n xs -> r : n~Nat, xs~Array a, r~Array a, len r <= len xs,
+                           n <= len xs implies len r + n == len xs
+    let k = if n <= len xs then n else len xs
+    slice xs k (len xs)
+
+check to_list (from_list [3, 1, 2]) == [3, 1, 2]
+check len (repeat 4 7) == 4
+check to_list (set (from_list [1, 2, 3]) 1 9) == [1, 9, 3]
+check to_list (slice (from_list [1, 2, 3, 4]) 1 3) == [2, 3]
+check to_list (concat [from_list [1, 2], from_list [], from_list [3]]) == [1, 2, 3]
+check to_list (reverse (from_list [1, 2, 3])) == [3, 2, 1]
+check to_list (map (\x -> x * 2) (from_list [1, 2, 3])) == [2, 4, 6]
+check all (\x -> x > 0) (from_list [1, 2, 3]) and not (all (\x -> x > 1) (from_list [1, 2, 3]))
+check contains (from_list [1, 2, 3]) 2 and not (contains (from_list [1, 2, 3]) 5)
+check count 1 (from_list [1, 2, 1]) == 2
+check to_list (take 2 (from_list [1, 2, 3])) == [1, 2] and to_list (take 5 (from_list [1])) == [1]
+check to_list (drop 2 (from_list [1, 2, 3])) == [3] and to_list (drop 5 (from_list [1])) == []
+check from_list [104, 105] == b"hi"

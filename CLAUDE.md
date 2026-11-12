@@ -48,6 +48,7 @@ src/native/eval.rs   compile-time evaluation: `check` and staging, one in-memory
 src/native/mod.rs    `ckc run` (in memory), `ckc build` (link with libcheckers_rt.a)
 rt/src/              runtime crate checkers_rt: words and objects, format, I/O, lock-free scheduler (D77), entry
 rt/src/builtins/     the standard library's builtins, one file per module (§16.1)
+rt/src/array.rs      arrays (D133): `K_ARRAY` objects laid out by element (words, or packed 1/2/4/8 bytes); an `Array U8` is a bytes object
 rt/src/fiber.rs      a stack per behaviour, the switch, parking, `blocking` (M16, D113, D117; x86-64 Linux, ARM64, D126)
 rt/src/poll.rs       epoll (Linux) or kqueue (macOS): our ends of child pipes wait without a thread
 rt/src/blocking.rs   threads for calls that can't be polled

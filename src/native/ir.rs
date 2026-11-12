@@ -29,7 +29,8 @@ pub enum Ir {
     Con(ConId, Vec<Arc<Ir>>),
     /// A constructor used as a function.
     ConFn(ConId),
-    /// A primitive; the flag marks `Nat` subtraction (checked, D41).
+    /// A primitive; the flag marks `Nat` subtraction (checked, D41), or
+    /// indexing an `Array U8` (a bytes object, D133).
     Prim(Op, Vec<Arc<Ir>>, bool),
     /// `par (e1, …, en)`: the components, evaluated in parallel (D69).
     Par(Vec<Arc<Ir>>),
@@ -127,7 +128,7 @@ impl Compiler<'_> {
                 let mut args = Vec::new();
                 let mut h = t;
                 while let Tm::App(f, a, _, m) = h {
-                    args.push(if *m == Mult::Zero { Arc::new(Ir::Erased) } else { self.compile(a) });
+                    args.push(if *m == Mult::Zero { Arc::new(self.erased(a)) } else { self.compile(a) });
                     h = f;
                 }
                 args.reverse();
@@ -169,8 +170,14 @@ impl Compiler<'_> {
                 if let (Prim::Par, [Tm::Tuple(xs)]) = (p, &args[..]) {
                     return Ir::Par(xs.iter().map(|x| self.compile(x)).collect());
                 }
-                let nat = *p == Prim::Sub && args.get(2).is_some_and(|ty| self.is_nat(ty));
-                let n = if *p == Prim::Sub { 2 } else { args.len() };
+                // The flag: `Nat` subtraction (checked), or indexing an
+                // `Array U8`, always a bytes object (D133).
+                let nat = match p {
+                    Prim::Sub => args.get(2).is_some_and(|ty| self.is_nat(ty)),
+                    Prim::Index => args.get(2).is_some_and(|ty| self.is_bytes_elem(ty)),
+                    _ => false,
+                };
+                let n = if matches!(p, Prim::Sub | Prim::Index) { 2 } else { args.len() };
                 match Op::of(p) {
                     Some(op) => Ir::Prim(op, args.iter().take(n).map(|a| self.compile(a)).collect(), nat),
                     None => Ir::Fail("an unexpected primitive"),
@@ -187,6 +194,38 @@ impl Compiler<'_> {
             lits: c.lits.iter().map(|(l, b)| (lit_value(l), self.compile(b))).collect(),
             default: c.default.as_ref().map(|d| self.compile(d)),
         }
+    }
+
+    /// An erased argument. A type is passed as its layout word (D133): an
+    /// array of it is laid out by that word; anything else as nothing.
+    fn erased(&self, a: &Tm) -> Ir {
+        let mut h = a;
+        while let Tm::App(f, ..) = h {
+            h = f;
+        }
+        let typelike = match h {
+            Tm::Var(_) | Tm::Meta(_) | Tm::TyCon(_) | Tm::TyConApp(..) => true,
+            Tm::Def(d) => self.g.defs.get(d.0 as usize).is_some_and(|i| matches!(i.ty, Tm::Univ(_))),
+            _ => false,
+        };
+        if !typelike {
+            return Ir::Erased;
+        }
+        let depth = max_var(a).map_or(0, |m| m + 1);
+        let env = std::rc::Rc::new((0..depth).map(Val::var).collect::<Vec<_>>());
+        match crate::core::layout_of(self.g, &eval(self.g, &env, a)) {
+            Ok(0) => Ir::Erased,
+            Ok(l) => Ir::Lit(Lit::Num(l as i128)),
+            Err(level) if level < depth => Ir::Var(depth - 1 - level),
+            Err(_) => Ir::Erased,
+        }
+    }
+
+    /// Is this element type `U8`, so the array is a bytes object (D133)?
+    fn is_bytes_elem(&self, ty: &Tm) -> bool {
+        let depth = max_var(ty).map_or(0, |m| m + 1);
+        let env = std::rc::Rc::new((0..depth).map(Val::var).collect::<Vec<_>>());
+        crate::core::layout_of(self.g, &eval(self.g, &env, ty)) == Ok(checkers_rt::array::Layout::U8 as u8)
     }
 
     /// Is this type term `Nat`? It may mention local variables and solved metas.

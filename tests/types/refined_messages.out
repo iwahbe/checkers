@@ -4,7 +4,7 @@ error[E0201]: type mismatch: expected `Small`, found `Option Small`
 10 |     o
    |     ^ this expression has type `Option Small`
 
-error[E0210]: `++` needs a `String`, `Bytes` or `List`, but this is `Small`
+error[E0210]: `++` needs a `String`, `List` or `Array`, but this is `Small`
   --> refined_messages.ck:13:5
    |
 13 |     y ++ "a"

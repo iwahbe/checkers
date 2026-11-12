@@ -99,6 +99,11 @@ pub fn equal(a: W, b: W) -> Result<bool, &'static str> {
     if matches!(ka, K_CLO | K_PAP) {
         return Err("functions");
     }
+    // Arrays of one type may be stored differently (an `Array U8` used as
+    // an `Array U32`, D133): compared element by element.
+    if crate::array::is_array(a) && crate::array::is_array(b) && (ka == crate::array::K_ARRAY || kb == crate::array::K_ARRAY) {
+        return crate::array::equal(a, b, &equal);
+    }
     if ka != kb {
         return Ok(false);
     }
@@ -160,10 +165,13 @@ pub extern "C" fn ck_concat(a: W, b: W) -> W {
         s.push_str(str_of(b));
         return new_str(&s);
     }
-    if is_kind(a, K_BYTES) {
+    if is_kind(a, K_BYTES) && is_kind(b, K_BYTES) {
         let mut v = blob(a).to_vec();
         v.extend_from_slice(blob(b));
         return new_bytes(&v);
+    }
+    if crate::array::is_array(a) {
+        return crate::array::concat(a, b);
     }
     let mut items: Vec<W> = list_items(a).into_iter().map(dup).collect();
     items.extend(list_items(b).into_iter().map(dup));
@@ -175,15 +183,19 @@ pub extern "C" fn ck_len(a: W) -> W {
     if is_kind(a, K_STR) || is_kind(a, K_BYTES) {
         return nat(blob(a).len());
     }
+    if is_kind(a, crate::array::K_ARRAY) {
+        return nat(crate::array::len(a));
+    }
     nat(list_items(a).len())
 }
 
 #[no_mangle]
 pub extern "C" fn ck_index(a: W, b: W, owner: u64) -> W {
-    let src = blob(a);
-    match to_usize(b).filter(|i| *i < src.len()) {
-        Some(i) => mk_int(src[i] as i64),
-        None => error(owner as u32, &format!("index {} out of bounds for {} bytes", num_of(b), src.len())),
+    let n = crate::array::len(a);
+    match to_usize(b).filter(|i| *i < n) {
+        Some(i) => crate::array::get(a, i),
+        None if is_kind(a, K_BYTES) => error(owner as u32, &format!("index {} out of bounds for {n} bytes", num_of(b))),
+        None => error(owner as u32, &format!("index {} out of bounds for an array of {n} elements", num_of(b))),
     }
 }
 
@@ -260,6 +272,17 @@ pub fn show(w: W, p: u8) -> String {
     match kind(w) {
         K_STR => format!("{:?}", str_of(w)),
         K_BYTES => show_bytes(blob(w)),
+        crate::array::K_ARRAY => {
+            let items: Vec<String> = crate::array::items(w)
+                .into_iter()
+                .map(|x| {
+                    let s = show(x, 0);
+                    drop_w(x);
+                    s
+                })
+                .collect();
+            format!("[{}]", items.join(", "))
+        }
         K_TUPLE => format!("({})", (0..nfields(w)).map(|i| show(slot(w, i), 0)).collect::<Vec<_>>().join(", ")),
         K_CLO | K_PAP => "<function>".into(),
         K_RUST => match obj(w) {

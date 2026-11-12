@@ -7,6 +7,7 @@
 //! scheduler are also used by the interpreter.
 
 pub mod apply;
+pub mod array;
 pub mod behav;
 pub mod blocking;
 pub mod builtins;

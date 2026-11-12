@@ -212,7 +212,9 @@ impl U<'_> {
             }
             Tm::PrimApp(p, v) => {
                 let mut c = self.zero();
-                for x in v {
+                // The type `Nat` subtraction and indexing carry is erased.
+                let n = if matches!(p, Prim::Sub | Prim::Index) { 2 } else { v.len() };
+                for x in v.iter().take(n) {
                     // Behaviour bodies run once: a resource may move into them.
                     let cx = match (p, x) {
                         (Prim::Fork | Prim::Join | Prim::When, Tm::Lam(..)) => self.lam_once(x),

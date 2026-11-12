@@ -1,6 +1,6 @@
 {"kind":"diagnostic","phase":"types","path":"$ROOT/tests/json/lib/broken.ck","start":[3,4],"end":[3,8],"severity":"error","code":"E0201","message":"type mismatch: expected `Bool`, found `String`","label":"this expression has type `String`","notes":[],"help":null}
 {"kind":"diagnostic","phase":"types","path":"$ROOT/tests/json/types.ck","start":[7,4],"end":[7,5],"severity":"error","code":"E0201","message":"type mismatch: expected `String`, found a number","label":"this is a number, not a `String`","notes":[],"help":null}
-{"kind":"diagnostic","phase":"types","path":"$ROOT/tests/json/types.ck","start":[7,4],"end":[7,11],"severity":"error","code":"E0210","message":"`+` needs numbers (`Nat` or `Int`), but this is `String`","label":"has type `String`","notes":[],"help":"to join strings, bytes or lists, use `++`"}
+{"kind":"diagnostic","phase":"types","path":"$ROOT/tests/json/types.ck","start":[7,4],"end":[7,11],"severity":"error","code":"E0210","message":"`+` needs numbers (`Nat` or `Int`), but this is `String`","label":"has type `String`","notes":[],"help":"to join strings, lists or arrays, use `++`"}
 {"kind":"done","phase":"types"}
 {"kind":"name","path":"$ROOT/tests/json/types.ck","start":[4,7],"end":[4,17],"class":"module","def":{"path":"$ROOT/tests/json/lib/broken.ck","start":[0,0],"end":[0,0]},"hover":"module lib.broken","doc":null}
 {"kind":"name","path":"$ROOT/tests/json/types.ck","start":[6,3],"end":[6,4],"class":"function","def":{"path":"$ROOT/tests/json/types.ck","start":[6,3],"end":[6,4]},"hover":"fn g -> r : r~String","doc":null}

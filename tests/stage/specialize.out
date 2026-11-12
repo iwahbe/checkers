@@ -8,7 +8,7 @@ fn count[10] src i =
     if i == (len src)
         0
     else
-        if (index src i) == 10
+        if src[i] == 10
             1 + (let i = i + 1; count[10] src i)
         else
             let i1 = i + 1
@@ -18,7 +18,7 @@ fn count[32] src i =
     if i == (len src)
         0
     else
-        if (index src i) == 32
+        if src[i] == 32
             1 + (let i = i + 1; count[32] src i)
         else
             let i1 = i + 1
