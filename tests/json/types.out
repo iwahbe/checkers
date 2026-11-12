@@ -14,6 +14,7 @@
 {"kind":"token","path":"$ROOT/tests/json/types.ck","start":[6,0],"end":[6,2],"class":"keyword"}
 {"kind":"token","path":"$ROOT/tests/json/types.ck","start":[7,4],"end":[7,5],"class":"number"}
 {"kind":"token","path":"$ROOT/tests/json/types.ck","start":[7,8],"end":[7,11],"class":"string"}
+{"kind":"done","phase":"index"}
 {"kind":"done","phase":"checks"}
 {"kind":"done","phase":"proofs"}
 -- exit 1

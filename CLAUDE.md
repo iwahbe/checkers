@@ -55,7 +55,7 @@ src/verify/smt.rs    obligations → SMT-LIB: sorts, datatypes, reflected functi
 stdlib/*.ck          standard library, the package `std` (`stdlib/json.ck` is `std.json`)
 tools/checkers.ck    `checkers`, the build tool, in Checkers (D95): passes compiler commands to `ckc`; `fmt`
 tools/fmt.ck         `checkers fmt`: files, --check, standard input (§15.4)
-tools/lsp.ck         `checkers lsp`, the language server (§15.5, D120): checks as child processes, phases, hover, definition, tokens
+tools/lsp.ck         `checkers lsp`, the language server (§15.5, D120): checks as child processes, phases, hover, definition, references, tokens; answers wait for the index of the text asked about (D127)
 tools/ck/jsonrpc.ck  LSP messages: framing, JSON helpers
 tools/ck/text.ck     lines, byte and UTF-16 columns, `file:` URIs
 tools/ck/manifest.ck reading checkers.json and checkers.lock (§16.4)

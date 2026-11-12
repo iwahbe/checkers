@@ -131,6 +131,7 @@ pub fn check_json(name: &str, text: &str, dir: &std::path::Path, out: &mut dyn F
         Some((e, user)) => emit_index(e, user, &main, out),
         None => emit_tokens(&main, &c.file, out),
     }
+    out(r#"{"kind":"done","phase":"index"}"#.to_string());
     if let Some((e, user)) = &e {
         run_checks(&mut c, e, user);
     }

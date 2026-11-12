@@ -10,6 +10,7 @@
 {"kind":"token","path":"$ROOT/tests/json/overlay.ck","start":[0,0],"end":[0,6],"class":"keyword"}
 {"kind":"token","path":"$ROOT/tests/json/overlay.ck","start":[2,0],"end":[2,6],"class":"keyword"}
 {"kind":"token","path":"$ROOT/tests/json/overlay.ck","start":[4,0],"end":[4,2],"class":"keyword"}
+{"kind":"done","phase":"index"}
 {"kind":"done","phase":"checks"}
 {"kind":"done","phase":"proofs"}
 -- exit 1

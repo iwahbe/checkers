@@ -27,6 +27,7 @@
 {"kind":"token","path":"$ROOT/tests/json/past_errors.ck","start":[11,0],"end":[11,5],"class":"keyword"}
 {"kind":"token","path":"$ROOT/tests/json/past_errors.ck","start":[11,15],"end":[11,16],"class":"number"}
 {"kind":"token","path":"$ROOT/tests/json/past_errors.ck","start":[11,20],"end":[11,21],"class":"number"}
+{"kind":"done","phase":"index"}
 {"kind":"diagnostic","phase":"checks","path":"$ROOT/tests/json/past_errors.ck","start":[11,6],"end":[11,21],"severity":"error","code":"E0260","message":"this `check` is false","label":"evaluates to `False`","notes":["left side:  `1`","right side: `2`"],"help":null}
 {"kind":"done","phase":"checks"}
 {"kind":"diagnostic","phase":"proofs","path":"$ROOT/tests/json/past_errors.ck","start":[8,35],"end":[8,40],"severity":"error","code":"E0450","message":"cannot prove `r > 5`, the postcondition of `unproven`","label":"promised here","notes":["for the value returned on line 10: `x`","counterexample: x = 0"],"help":"make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`"}

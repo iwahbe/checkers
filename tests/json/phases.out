@@ -29,6 +29,7 @@
 {"kind":"token","path":"$ROOT/tests/json/phases.ck","start":[12,0],"end":[12,5],"class":"keyword"}
 {"kind":"token","path":"$ROOT/tests/json/phases.ck","start":[12,13],"end":[12,14],"class":"number"}
 {"kind":"token","path":"$ROOT/tests/json/phases.ck","start":[12,18],"end":[12,19],"class":"number"}
+{"kind":"done","phase":"index"}
 {"kind":"done","phase":"checks"}
 {"kind":"diagnostic","phase":"proofs","path":"$ROOT/tests/json/phases.ck","start":[9,33],"end":[9,38],"severity":"error","code":"E0450","message":"cannot prove `r > 5`, the postcondition of `bigger`","label":"promised here","notes":["for the value returned on line 11: `x + helper.one`","`one` is sealed in `lib.helper`: here the prover knows only its postconditions and the lemmas you bring in with `have`"],"help":"make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`"}
 {"kind":"done","phase":"proofs"}

@@ -1,0 +1,26 @@
+# Requests as Eglot makes them (D127): highlighting asked for at once when a
+# file opens, and again at once after each edit, waits for that text's
+# check; then references.
+> {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"capabilities":{"general":{"positionEncodings":["utf-32","utf-8","utf-16"]}}}}
+< 1
+> {"jsonrpc":"2.0","method":"initialized","params":{}}
+> {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/tracking.ck","languageId":"checkers","version":1,"text":$TEXT(tracking.ck)}}}
+> {"jsonrpc":"2.0","id":2,"method":"textDocument/semanticTokens/full","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/tracking.ck"}}}
+< 1
+# A comment typed above `FOUR`: the tokens are the new text's, the comment
+# whole (10 bytes) and the names below it a line further down.
+> {"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/tracking.ck","version":2},"contentChanges":[{"text":"module tracking\n\nfn twice n -> r : n~Nat, r~Nat\n    n + n\n\n# Doubled.\nlet FOUR = twice 2\nlet EIGHT = twice FOUR\n"}]}}
+> {"jsonrpc":"2.0","id":3,"method":"textDocument/semanticTokens/full","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/tracking.ck"}}}
+< 1
+# References to `twice` (from its use on the last line), with and without
+# its definition.
+> {"jsonrpc":"2.0","id":4,"method":"textDocument/references","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/tracking.ck"},"position":{"line":7,"character":13},"context":{"includeDeclaration":true}}}
+< 1
+> {"jsonrpc":"2.0","id":5,"method":"textDocument/references","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/tracking.ck"},"position":{"line":7,"character":13},"context":{"includeDeclaration":false}}}
+< 1
+# References to the constant `FOUR`, from its definition.
+> {"jsonrpc":"2.0","id":6,"method":"textDocument/references","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/tracking.ck"},"position":{"line":6,"character":5},"context":{"includeDeclaration":true}}}
+< 1
+> {"jsonrpc":"2.0","id":7,"method":"shutdown"}
+< 1
+> {"jsonrpc":"2.0","method":"exit"}

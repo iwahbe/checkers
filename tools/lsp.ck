@@ -1,9 +1,10 @@
 # lsp.ck — `checkers lsp`, the language server (SPEC §15.5, D120). It
 # speaks LSP over standard input and output and runs `ckc check --json` on
-# every change, with the open documents as an overlay; a newer change kills
-# the check in progress. Diagnostics are published after each of the check's
-# phases (types, `check`s, proofs); hover, go to definition, highlighting
-# and the outline come from the index of the last check.
+# every change, with the open documents as an overlay; a newer change of the
+# same document kills its check in progress. Diagnostics are published after
+# each of the check's phases (types, `check`s, proofs); hover, go to
+# definition, references, highlighting and the outline come from the index
+# of the document's latest check, waiting for it if needed (D127).
 
 module lsp
 
@@ -53,27 +54,37 @@ record Diag
     phase~String
     json~Json
 
-# What the checks share: the latest check (only its results are shown), each
-# root's diagnostics (a check's proof diagnostics stay until its root's next
-# check gets that far, so they don't flicker), and the index of each file.
+# What the checks share: each root's latest check and diagnostics (a check's
+# proof diagnostics stay until its root's next check gets that far, so they
+# don't flicker), the index of each file, and the requests waiting for one.
 record Shared
-    gen~Nat
     roots~List Root
     index~List Entry
+    pending~List Pending
 
-# The diagnostics of the last check of one file (its root): those showing,
-# and its last proof diagnostics. A file's diagnostics are those every root
-# has for it (a module two open files import is checked with each).
+# One checked file (a root): its latest check (only its results are shown),
+# whether the index has the file as that check saw it, the diagnostics
+# showing, and its last proof diagnostics. A file's diagnostics are those
+# every root has for it (a module two open files import is checked with each).
 record Root
     path~String
+    gen~Nat
+    indexed~Bool
     showing~List Diag
     proofs~List Diag
 
-# The main loop's state.
+# A request about a file waiting for its index: its answer is `f` of it.
+record Pending
+    id~Json
+    path~String
+    f~(List Entry -> Json)
+
+# The main loop's state: the open documents, the last check's number, and
+# a way to end each document's check in progress.
 record Server
     docs~List Doc
     gen~Nat
-    killer~Option Killer
+    killers~List (String, Killer)
     shutdown~Bool
 
 # A check in progress: the compiler's output and the child.
@@ -230,29 +241,67 @@ partial fn of_path path ds -> r : path~String, ds~List Diag, r~List Diag
         []        -> []
         d :: rest -> if d.at.path == path then d :: of_path path rest else of_path path rest
 
-# Publish the diagnostics after a phase of check `g`, if it is still the latest.
+# After a phase of check `g` of `root`, if it is still the root's latest:
+# publish the diagnostics, or take the index and answer the requests
+# waiting for it.
 partial fn publish phase acc g root docs c : phase~String, acc~Acc, g~Nat, root~String, docs~List Doc, c~Caps
     let sched = c.sched
     when sh = c.shared, o = c.out using sched
-        if sh.gen != g
+        let before = root_in root sh.roots
+        if before.gen != g
             (sh, o)
+        else if phase == "index"
+            # It covers the root's file only.
+            let index = acc.index ++ not_in root sh.index
+            let roots = Root root g True before.showing before.proofs :: other_roots root sh.roots
+            _ <- answer_all (of_root root sh.pending) index o
+            (Shared roots index (not_of_root root sh.pending), o)
         else
-            let before = root_in root sh.roots
             # Until this check's proofs are known, its root's last ones stay.
             let proofs = if phase == "proofs" then of_phase "proofs" acc.diags else before.proofs
             let showing = not_proof acc.diags ++ proofs
-            let roots = Root root showing proofs :: other_roots root sh.roots
+            let roots = Root root g before.indexed showing proofs :: other_roots root sh.roots
             let touched = paths_of showing (paths_of before.showing [])
             _ <- send_all touched (all_showing roots) docs c o
-            # The index follows the types phase's `done` (§15.5); it covers
-            # the root's file only.
-            let index = if phase == "checks" then acc.index ++ not_in root sh.index else sh.index
-            (Shared sh.gen roots index, o)
+            (Shared roots sh.index sh.pending, o)
     ()
 
+# A check `g` of `root` ended without its index (the compiler failed): if it
+# is the root's latest, answer the requests waiting for it with what there is.
+partial fn settle g root c : g~Nat, root~String, c~Caps
+    let sched = c.sched
+    when sh = c.shared, o = c.out using sched
+        let before = root_in root sh.roots
+        if before.gen != g or before.indexed
+            (sh, o)
+        else
+            let roots = Root root g True before.showing before.proofs :: other_roots root sh.roots
+            _ <- answer_all (of_root root sh.pending) sh.index o
+            (Shared roots sh.index (not_of_root root sh.pending), o)
+    ()
+
+partial fn answer_all ps index o -> r : ps~List Pending, index~List Entry, o~File, r~((), File)
+    match ps
+        []        -> ((), o)
+        p :: rest ->
+            _ <- rpc.write (rpc.response p.id (p.f index)) o
+            answer_all rest index o
+
+# The requests about `path`, oldest first.
+partial fn of_root path ps -> r : path~String, ps~List Pending, r~List Pending
+    match ps
+        []        -> []
+        p :: rest -> if p.path == path then of_root path rest ++ [p] else of_root path rest
+
+partial fn not_of_root path ps -> r : path~String, ps~List Pending, r~List Pending
+    match ps
+        []        -> []
+        p :: rest -> if p.path == path then not_of_root path rest else p :: not_of_root path rest
+
+# A file never checked counts as indexed: there is nothing to wait for.
 partial fn root_in path roots -> r : path~String, roots~List Root, r~Root
     match roots
-        []        -> Root path [] []
+        []        -> Root path 0 True [] []
         x :: rest -> if x.path == path then x else root_in path rest
 
 partial fn other_roots path roots -> r : path~String, roots~List Root, r~List Root
@@ -318,27 +367,49 @@ partial fn feed input o -> r : input~Bytes, o~File, r~()
     _ <- files.write_bytes input o
     files.close o
 
-# Start a check of `doc`, killing the one in progress.
+# Start a check of `doc`, killing its check in progress (D127 e).
 partial fn start doc st c -> r : doc~Doc, st~Server, c~Caps, r~Server
-    match st.killer
+    match killer_of doc.path st.killers
         Some k -> proc.kill k
         None   -> ()
+    let others = other_killers doc.path st.killers
     let g = st.gen + 1
     let sched = c.sched
+    let path = doc.path
     when sh = c.shared using sched
-        Shared g sh.roots sh.index
+        let before = root_in path sh.roots
+        let roots = Root path g False before.showing before.proofs :: other_roots path sh.roots
+        Shared roots sh.index sh.pending
     let args = c.flags ++ ["check", "--json", "--overlay", "-", doc.path]
     let docs = st.docs
     match proc.spawn c.ckc args (Streams Pipe Pipe Discard) c.proc
         Err e                           ->
             show_error ("could not run `" ++ c.ckc ++ "`: " ++ files.describe e ++ "; set CKC to the compiler") c
-            Server st.docs g None st.shutdown
+            settle g doc.path c
+            Server st.docs g others st.shutdown
         Ok (Spawned child input out ()) ->
             feed (string.bytes (json.render (overlay st.docs))) input
             let (child, k) = proc.killer child
             let job = cown.new (Running out child (Acc [] [] 0)) c.sched
             step job g doc.path docs c
-            Server st.docs g (Some k) st.shutdown
+            Server st.docs g ((doc.path, k) :: others) st.shutdown
+
+partial fn killer_of path ks -> r : path~String, ks~List (String, Killer), r~Option Killer
+    match ks
+        []             -> None
+        (p, k) :: rest -> if p == path then Some k else killer_of path rest
+
+partial fn other_killers path ks -> r : path~String, ks~List (String, Killer), r~List (String, Killer)
+    match ks
+        []             -> []
+        (p, k) :: rest -> if p == path then other_killers path rest else (p, k) :: other_killers path rest
+
+partial fn kill_all ks : ks~List (String, Killer)
+    match ks
+        []             -> ()
+        (_, k) :: rest ->
+            proc.kill k
+            kill_all rest
 
 # One phase of a check: read it, publish it, and go on in a new behaviour, so
 # the publication (on other cowns) needn't wait for the rest of the output.
@@ -360,12 +431,13 @@ partial fn step job g root docs c : job~Cown Job, g~Nat, root~String, docs~List 
                         Ok n if acc2.phases == 0 and n != 137 ->
                             show_error ("`" ++ c.ckc ++ "` stopped without checking (exit " ++ format n ++ ")") c
                         _ -> ()
+                    if acc2.phases < 2 then settle g root c else ()
                     Finished
             Finished         -> Finished
     ()
 
 fn phase_name n -> s : n~Nat, s~String
-    if n == 1 then "types" else if n == 2 then "checks" else "proofs"
+    if n == 1 then "types" else if n == 2 then "index" else if n == 3 then "checks" else "proofs"
 
 # ── Requests ─────────────────────────────────────────────────────────────────
 
@@ -412,19 +484,46 @@ partial fn definition w es docs c -> j : w~Where, es~List Entry, docs~List Doc, 
                 None   -> Null
         None   -> Null
 
-# Reply to request `id` with `f` of the index, from a behaviour on the shared
-# cown (which holds the index) and the output.
-partial fn answer id f c : id~Json, f~(List Entry -> Json), c~Caps
+# Reply to request `id`, about the file at `path`, with `f` of the index,
+# from a behaviour on the shared cown (which holds the index) and the
+# output: at once if the index has the file's latest check, else when it
+# does (D127 c).
+partial fn answer id path f c : id~Json, path~String, f~(List Entry -> Json), c~Caps
     let sched = c.sched
     when sh = c.shared, o = c.out using sched
-        _ <- rpc.write (rpc.response id (f sh.index)) o
-        (sh, o)
+        if (root_in path sh.roots).indexed
+            _ <- rpc.write (rpc.response id (f sh.index)) o
+            (sh, o)
+        else
+            (Shared sh.roots sh.index (Pending id path f :: sh.pending), o)
     ()
 
 # Tell the user something went wrong (`window/showMessage`).
 partial fn show_error message c : message~String, c~Caps
     let params = rpc.obj [("type", rpc.num 1), ("message", Str ("checkers: " ++ message))]
     reply (rpc.notification "window/showMessage" params) c
+
+# The uses of the name under the cursor in the open files' indexes, and its
+# definition if `declaration` (D127 f).
+partial fn references w es declaration docs c -> j : w~Where, es~List Entry, declaration~Bool, docs~List Doc,
+                                                     c~Caps, j~Json
+    match name_at w.doc.path w.line w.col es
+        Some e ->
+            match e.def
+                Some d ->
+                    let uses = uses_of d (sort es) []
+                    let all = if declaration then d :: uses else uses
+                    Arr (list.map (\s -> location s docs c.fs c.utf8) all)
+                None   -> Arr []
+        None   -> Null
+
+# The places of the names defined at `d` (but `d`), each once.
+partial fn uses_of d es acc -> r : d~Span, es~List Entry, acc~List Span, r~List Span
+    match es
+        []        -> list.reverse acc
+        e :: rest ->
+            let new = e.def == Some d and e.at != d and not (list.contains acc e.at)
+            uses_of d rest (if new then e.at :: acc else acc)
 
 # Reply with a value that needs no index, in order with the other replies.
 partial fn reply msg c : msg~Json, c~Caps
@@ -582,6 +681,7 @@ partial fn capabilities utf8 -> j : utf8~Bool, j~Json
         ("textDocumentSync", rpc.obj [("openClose", Bool True), ("change", rpc.num 1)]),
         ("hoverProvider", Bool True),
         ("definitionProvider", Bool True),
+        ("referencesProvider", Bool True),
         ("documentFormattingProvider", Bool True),
         ("documentSymbolProvider", Bool True),
         ("semanticTokensProvider", rpc.obj [("legend", legend), ("full", Bool True)])]
@@ -632,23 +732,21 @@ partial fn handle m st c -> r : m~Json, st~Server, c~Caps, r~(Server, Option Exi
     if method == "exit"
         (st, Some (if st.shutdown then Success else Failure 1))
     else if method == "shutdown"
-        match st.killer
-            Some k -> proc.kill k
-            None   -> ()
+        kill_all st.killers
         match id
             Some i -> reply (rpc.response i Null) c
             None   -> ()
-        (Server st.docs st.gen None True, None)
+        (Server st.docs st.gen [] True, None)
     else if method == "textDocument/didOpen" or method == "textDocument/didChange"
         let d = if method == "textDocument/didOpen" then opened params else changed params
         match d
             Some doc ->
-                let st2 = Server (doc :: without doc.uri st.docs) st.gen st.killer st.shutdown
+                let st2 = Server (doc :: without doc.uri st.docs) st.gen st.killers st.shutdown
                 (start doc st2 c, None)
             None     -> keep
     else if method == "textDocument/didClose"
         match rpc.str_at ["textDocument", "uri"] params
-            Some uri -> (Server (without uri st.docs) st.gen st.killer st.shutdown, None)
+            Some uri -> (Server (without uri st.docs) st.gen st.killers st.shutdown, None)
             None     -> keep
     else
         match id
@@ -656,12 +754,17 @@ partial fn handle m st c -> r : m~Json, st~Server, c~Caps, r~(Server, Option Exi
             Some i ->
                 let utf8 = c.utf8
                 if method == "textDocument/hover" or method == "textDocument/definition"
+                    or method == "textDocument/references"
                     match where_of params docs utf8
                         Some w ->
+                            let path = w.doc.path
                             if method == "textDocument/hover"
-                                answer i (\es -> hover w es c) c
+                                answer i path (\es -> hover w es c) c
+                            else if method == "textDocument/definition"
+                                answer i path (\es -> definition w es docs c) c
                             else
-                                answer i (\es -> definition w es docs c) c
+                                let decl = rpc.at ["context", "includeDeclaration"] params == Some (Bool True)
+                                answer i path (\es -> references w es decl docs c) c
                         None   -> reply (rpc.response i Null) c
                     keep
                 else if method == "textDocument/semanticTokens/full" or method == "textDocument/documentSymbol"
@@ -671,9 +774,9 @@ partial fn handle m st c -> r : m~Json, st~Server, c~Caps, r~(Server, Option Exi
                             match doc_of uri docs
                                 Some doc ->
                                     if method == "textDocument/semanticTokens/full"
-                                        answer i (\es -> semantic_tokens doc es c) c
+                                        answer i doc.path (\es -> semantic_tokens doc es c) c
                                     else if method == "textDocument/documentSymbol"
-                                        answer i (\es -> symbols doc es c) c
+                                        answer i doc.path (\es -> symbols doc es c) c
                                     else
                                         reply (rpc.response i (formatting doc c)) c
                                 None     -> reply (rpc.response i Null) c
@@ -709,7 +812,7 @@ partial fn begin input c -> r : input~File, c~Caps, r~(ExitCode, File)
                     let utf8 = offers_utf8 params
                     let c2 = Caps c.fs c.proc c.sched c.out c.shared c.ckc c.flags utf8
                     reply (rpc.response id (capabilities utf8)) c2
-                    serve input (Server [] 0 None False) c2
+                    serve input (Server [] 0 [] False) c2
                 (Some "exit", _)             -> (Failure 1, input)
                 (_, Some id)                 ->
                     reply (rpc.error_response id (0 - 32002) "the server is not initialized") c
@@ -722,7 +825,7 @@ partial fn begin input c -> r : input~File, c~Caps, r~(ExitCode, File)
 export partial fn run ckc flags term fs p sched -> code : ckc~String, flags~List String, term~Term, fs~Fs, p~Proc,
                                                           sched~Sched, code~ExitCode
     let out = cown.new (terminal.stdout term) sched
-    let shared = cown.new (Shared 0 [] []) sched
+    let shared = cown.new (Shared [] [] []) sched
     let c = Caps fs p sched out shared ckc flags False
     let (code, rest) = begin (terminal.stdin term) c
     files.close rest
