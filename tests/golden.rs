@@ -20,6 +20,10 @@
 //!                         (`checkers` is built from tools/checkers.ck with `ckc build`).
 //! tests/tool/NAME.args → each line runs `checkers` with those arguments (`ckc` is
 //!                         this build's); NAME.out is their output.
+//! tests/doc/NAME/     → a package (`.ck` files): NAME.out is `ckc doc` on each
+//!                         file, then every page `checkers doc` writes for it;
+//!                         with an index.md, a site: every file `checkers site`
+//!                         writes (§15.6).
 //! tests/lsp/NAME.session → a session with `checkers lsp` (§15.5), run in tests/lsp:
 //!                         `> JSON` sends a message (`$ROOT` is the repository,
 //!                         `$TEXT(file)` a file's text as a JSON string), `< N`
@@ -29,6 +33,8 @@
 //!                         formatted; every .ck file in the repository must format to a
 //!                         fixed point with the same syntax tree (D93).
 //! examples/*.ck        → must check with no errors and no warnings.
+//! site/*.md            → each `checkers` block must check clean, or be followed by
+//!                         a plain block holding exactly its report.
 //!
 //! `UPDATE_GOLDEN=1 cargo test --test golden` rewrites the .out files.
 
@@ -185,6 +191,53 @@ fn build_tool(root: &Path, update: bool, failures: &mut Vec<String>) -> usize {
             actual += &format!("$ checkers {line}\n{}", shown(&run_with(&exe, &args, b"", root)));
         }
         compare(root, &path.with_extension("out"), &actual, update, failures);
+    }
+
+    // Documentation (§15.6): a package's `ckc doc` lines and the pages
+    // `checkers doc` writes; a site's pages and llms.txt.
+    let doc_dir = root.join("tests").join("doc");
+    let mut cases: Vec<PathBuf> = fs::read_dir(&doc_dir).map(|rd| rd.map(|e| e.unwrap().path()).filter(|p| p.is_dir()).collect()).unwrap_or_default();
+    cases.sort();
+    for case in cases {
+        count += 1;
+        let name = case.file_name().unwrap().to_string_lossy().to_string();
+        let rel = case.strip_prefix(root).unwrap().display().to_string();
+        let out = std::env::temp_dir().join(format!("checkers-golden-{}-doc-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&out);
+        let out_s = out.display().to_string();
+        let mut actual = String::new();
+        let result = if case.join("index.md").exists() {
+            run_with(&exe, &["site", &rel, "-o", &out_s], b"", root)
+        } else {
+            let mut sources = Vec::new();
+            ck_tree(&case, &mut sources);
+            for src in sources {
+                let src_rel = src.strip_prefix(root).unwrap().display().to_string();
+                let o = std::process::Command::new(env!("CARGO_BIN_EXE_ckc")).args(["doc", &src_rel]).current_dir(root).output().unwrap();
+                actual += &format!("$ ckc doc {src_rel}\n{}", shown(&o));
+            }
+            run_with(&exe, &["doc", &rel, "-o", &out_s, "--name", &name], b"", root)
+        };
+        actual += &format!("$ checkers {} {rel} -o OUT\n{}", if case.join("index.md").exists() { "site" } else { "doc" }, shown(&result));
+        let mut written = Vec::new();
+        let mut stack = vec![out.clone()];
+        while let Some(d) = stack.pop() {
+            for e in fs::read_dir(&d).into_iter().flatten() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else {
+                    written.push(p);
+                }
+            }
+        }
+        written.sort();
+        for p in written {
+            let text = fs::read_to_string(&p).unwrap();
+            actual += &format!("== OUT/{}\n{text}", p.strip_prefix(&out).unwrap().display());
+        }
+        let _ = fs::remove_dir_all(&out);
+        compare(root, &doc_dir.join(format!("{name}.out")), &actual.replace(&out_s, "OUT"), update, failures);
     }
 
     let lsp_dir = root.join("tests").join("lsp");
@@ -428,6 +481,8 @@ fn golden() {
         }
     }
 
+    count += site_samples(root, &mut failures);
+
     // The standard library's own lemmas and postconditions are proven too.
     count += 1;
     let stdlib = checkers::check_stdlib();
@@ -447,6 +502,63 @@ fn golden() {
 }
 
 /// Run a `tests/lsp/NAME.session` against `checkers lsp` (§15.5).
+/// The site's code (site/*.md): each `checkers` block is a module, saved
+/// with the page's others (so one may import another) and checked. It must
+/// be clean, or be followed by a plain block holding exactly its report.
+fn site_samples(root: &Path, failures: &mut Vec<String>) -> usize {
+    let mut count = 0;
+    for page in files_with(&root.join("site"), "md") {
+        let page_name = page.file_name().unwrap().to_string_lossy().to_string();
+        let text = fs::read_to_string(&page).unwrap();
+        // Each fenced block: its language and its text.
+        let mut blocks: Vec<(String, String)> = Vec::new();
+        let mut open: Option<(String, String)> = None;
+        for line in text.lines() {
+            match (&mut open, line.strip_prefix("```")) {
+                (None, Some(lang)) => open = Some((lang.trim().to_string(), String::new())),
+                (Some(_), Some("")) => blocks.push(open.take().unwrap()),
+                (Some((_, body)), _) => {
+                    body.push_str(line);
+                    body.push('\n');
+                }
+                (None, None) => {}
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("checkers-golden-{}-site-{page_name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut samples = Vec::new();
+        for (i, (lang, body)) in blocks.iter().enumerate() {
+            if lang != "checkers" {
+                continue;
+            }
+            let Some(module) = body.lines().next().and_then(|l| l.strip_prefix("module ")) else {
+                failures.push(format!("── site/{page_name}: a `checkers` block must start with `module NAME` ──\n{body}"));
+                continue;
+            };
+            let file = format!("{}.ck", module.trim());
+            fs::write(dir.join(&file), body).unwrap();
+            let report = blocks.get(i + 1).filter(|(l, _)| l.is_empty()).map(|(_, b)| b.clone());
+            samples.push((file, body.clone(), report));
+        }
+        for (file, body, report) in samples {
+            count += 1;
+            let c = checkers::check_in(&file, &body, &dir);
+            if c.diags.is_empty() {
+                continue;
+            }
+            let actual = c.report();
+            if report.as_deref() != Some(actual.as_str()) {
+                failures.push(format!(
+                    "── site/{page_name}: `{file}` must check clean, or be followed by a block with its report ──\n{actual}"
+                ));
+            }
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+    count
+}
+
 fn lsp_session(exe: &Path, root: &Path, path: &Path) -> String {
     use std::io::{BufRead, BufReader, Read};
     use std::sync::mpsc;

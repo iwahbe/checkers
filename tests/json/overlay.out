@@ -2,7 +2,7 @@
 {"kind":"done","phase":"types"}
 {"kind":"name","path":"$ROOT/tests/json/overlay.ck","start":[2,7],"end":[2,17],"class":"module","def":{"path":"$ROOT/tests/json/lib/helper.ck","start":[0,0],"end":[0,0]},"hover":"module lib.helper","doc":null}
 {"kind":"name","path":"$ROOT/tests/json/overlay.ck","start":[4,3],"end":[4,4],"class":"function","def":{"path":"$ROOT/tests/json/overlay.ck","start":[4,3],"end":[4,4]},"hover":"fn f -> r : r~Nat","doc":null}
-{"kind":"name","path":"$ROOT/tests/json/overlay.ck","start":[4,14],"end":[4,17],"class":"type","def":{"path":"$ROOT/stdlib/prelude.ck","start":[27,12],"end":[27,15]},"hover":"export type Nat = n~Int, n >= 0","doc":"The natural numbers are a refinement of the integers (D121)."}
+{"kind":"name","path":"$ROOT/tests/json/overlay.ck","start":[4,14],"end":[4,17],"class":"type","def":{"path":"$ROOT/stdlib/prelude.ck","start":[34,12],"end":[34,15]},"hover":"export type Nat = n~Int, n >= 0","doc":"The natural numbers are a refinement of the integers (D121)."}
 {"kind":"name","path":"$ROOT/tests/json/overlay.ck","start":[4,8],"end":[4,9],"class":"variable","def":{"path":"$ROOT/tests/json/overlay.ck","start":[4,8],"end":[4,9]},"hover":"r : Nat","doc":null}
 {"kind":"name","path":"$ROOT/tests/json/overlay.ck","start":[4,12],"end":[4,13],"class":"variable","def":{"path":"$ROOT/tests/json/overlay.ck","start":[4,8],"end":[4,9]},"hover":"r : Nat","doc":null}
 {"kind":"name","path":"$ROOT/tests/json/overlay.ck","start":[5,4],"end":[5,10],"class":"module","def":{"path":"$ROOT/tests/json/lib/helper.ck","start":[0,0],"end":[0,0]},"hover":"module lib.helper","doc":null}

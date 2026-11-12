@@ -17,6 +17,7 @@ pub const TABLE: &[Builtin] = &[
     ("std.files.read_line", "ckb_files_read_line", ckb_files_read_line),
     ("std.files.write_line", "ckb_files_write_line", ckb_files_write_line),
     ("std.files.list", "ckb_files_list", ckb_files_list),
+    ("std.files.create_dirs", "ckb_files_create_dirs", ckb_files_create_dirs),
     ("std.files.read_some", "ckb_files_read_some", ckb_files_read_some),
     ("std.files.read_exactly", "ckb_files_read_exactly", ckb_files_read_exactly),
     ("std.files.read_rest", "ckb_files_read_rest", ckb_files_read_rest),
@@ -173,6 +174,14 @@ builtin!(ckb_files_flush, |a| {
         Err(e) => err(describe_io(&e)),
     };
     new_tuple(&[r, dup(a[0])])
+});
+
+builtin!(ckb_files_create_dirs, |a| match path(a[1], s(a[0])) {
+    Err(e) => err(e),
+    Ok(p) => blocking(move || match std::fs::create_dir_all(p) {
+        Ok(()) => ok(UNIT),
+        Err(e) => err(describe_io(&e)),
+    }),
 });
 
 builtin!(ckb_files_list, |a| match path(a[1], s(a[0])) {

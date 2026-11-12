@@ -32,6 +32,7 @@ export enum Stream
     Pipe
     Discard
 
+# What each of a child's standard streams is connected to.
 export record Streams
     stdin~Stream
     stdout~Stream
@@ -61,6 +62,7 @@ export fn spawn program args ss p -> r : program~String, args~List String, ss~St
 # it can be kept or handed to other behaviours while the `Child` is used.
 export abstract enum Killer
 
+# A `Killer` for the child, and the child back.
 export fn killer c -> r : c~Child, r~(Child, Killer)
     __builtin
 

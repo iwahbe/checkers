@@ -2,6 +2,8 @@
 
 A functional, immutable language with dependent types, a built-in theorem prover, sealed module interfaces, and race-free concurrency (cowns and `when`). Source files end in `.ck`.
 
+The site, with a tour and the standard library's documentation: <https://iwahbe.github.io/checkers/> (built from `site/` by `checkers site`, SPEC §15.6).
+
 ```
 fn skip_ws src i -> j : src~Bytes, i~Nat, i <= len src,
                         j~Nat, i <= j, j <= len src

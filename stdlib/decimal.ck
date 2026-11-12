@@ -4,15 +4,19 @@ module std.decimal
 import std.cursor (Parsed)
 import std.utf8
 
+# An exact decimal number: an integer times a power of ten.
 export abstract enum Decimal
 
 # Scan an RFC 8259 number starting at `i`.
 export fn scan_json src i -> r : src~Bytes, i~Nat, i <= len src, r~Option (Parsed Decimal src i)
     __builtin
 
+# The number as JSON writes it: `-12.5`, `0.001`, `1e30` (an exponent
+# only when the number is very large or very small).
 export fn render d -> s : d~Decimal, s~String
     __builtin
 
+# The integer as a decimal.
 export fn of_int n -> d : n~Int, d~Decimal
     __builtin
 

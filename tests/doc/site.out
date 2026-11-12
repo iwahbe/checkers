@@ -1,0 +1,126 @@
+$ checkers site tests/doc/site -o OUT
+-- stdout
+-- stderr
+-- exit 0
+== OUT/index.html
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Test site · Checkers</title>
+<link rel="alternate" type="text/markdown" href="index.md">
+<style>:root{--fg:#1d1f21;--muted:#5c6166;--bg:#fdfdfc;--panel:#f3f2ee;--line:#dedcd5;--accent:#8a3324;--kw:#8a3324;--ty:#1f5f8b;--st:#3d6b2e;--nu:#7a4f9a;--co:#7c7f84}@media (prefers-color-scheme:dark){:root{--fg:#e6e4df;--muted:#a3a19b;--bg:#17181a;--panel:#212226;--line:#34363b;--accent:#e08a6f;--kw:#e08a6f;--ty:#7fb4dd;--st:#a3c98b;--nu:#c9a3e0;--co:#8b8e94}}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}header{border-bottom:1px solid var(--line);padding:12px 16px}header nav{max-width:820px;margin:0 auto;display:flex;gap:18px;align-items:baseline;flex-wrap:wrap}header a{color:var(--fg);text-decoration:none}header .home{font-weight:700}header .label{color:var(--muted);font-size:14px;margin-left:auto}main{max-width:820px;margin:0 auto;padding:16px 16px 64px}h1,h2,h3{line-height:1.25;margin:1.6em 0 .5em}h1{font-size:2em;margin-top:.6em}h2{font-size:1.4em;border-bottom:1px solid var(--line);padding-bottom:.2em}h3{font-size:1.15em}a{color:var(--accent)}code{font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}:not(pre)>code{background:var(--panel);padding:.1em .3em;border-radius:4px}pre{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 14px;overflow-x:auto}pre code{white-space:pre}.kw{color:var(--kw);font-weight:600}.ty{color:var(--ty)}.st{color:var(--st)}.nu{color:var(--nu)}.co{color:var(--co);font-style:italic}table{border-collapse:collapse;display:block;overflow-x:auto}th,td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}th{background:var(--panel)}blockquote{margin:1em 0;padding:0 1em;border-left:3px solid var(--line);color:var(--muted)}footer{max-width:820px;margin:0 auto;padding:16px;color:var(--muted);font-size:14px;border-top:1px solid var(--line)}</style>
+</head>
+<body>
+<header><nav><a class="home" href="index.html">Checkers</a><a href="tour.html">Tour</a><a href="docs.html">Documentation</a><a href="https://github.com/iwahbe/checkers">Source</a></nav></header>
+<main>
+<h1 id="test-site">Test site</h1>
+<p>The <em>first</em> paragraph is the site's summary, with <code>code</code> and <strong>strong</strong> text.</p>
+<h2 id="links">Links</h2>
+<ul>
+<li><a href="other.html">Another page</a>, <a href="other.html#a-table">a section</a> and <a href="https://example.com/x.md">outside</a>.</li>
+<li>A long item whose text
+continues on the next line.</li>
+</ul>
+<ol>
+<li>First</li>
+<li>Second</li>
+</ol>
+<blockquote>
+<p>A quote, with &lt;tags&gt; &amp; ampersands.</p>
+</blockquote>
+</main>
+<footer>This page as Markdown: <a href="index.md">index.md</a>. Every page: <a href="llms.txt">llms.txt</a>.</footer>
+</body>
+</html>
+== OUT/index.md
+# Test site
+
+The *first* paragraph is the site's summary, with `code` and **strong** text.
+
+## Links
+
+- [Another page](other.md), [a section](other.md#a-table) and [outside](https://example.com/x.md).
+- A long item whose text
+  continues on the next line.
+
+1. First
+2. Second
+
+> A quote, with <tags> & ampersands.
+== OUT/llms.txt
+# Test site
+
+> The *first* paragraph is the site's summary, with `code` and **strong** text.
+
+Every page of this site is also Markdown: replace `.html` with `.md`.
+
+## Pages
+
+- [Test site](index.md)
+- [Other page](other.md)
+== OUT/other.html
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Other page · Checkers</title>
+<link rel="alternate" type="text/markdown" href="other.md">
+<style>:root{--fg:#1d1f21;--muted:#5c6166;--bg:#fdfdfc;--panel:#f3f2ee;--line:#dedcd5;--accent:#8a3324;--kw:#8a3324;--ty:#1f5f8b;--st:#3d6b2e;--nu:#7a4f9a;--co:#7c7f84}@media (prefers-color-scheme:dark){:root{--fg:#e6e4df;--muted:#a3a19b;--bg:#17181a;--panel:#212226;--line:#34363b;--accent:#e08a6f;--kw:#e08a6f;--ty:#7fb4dd;--st:#a3c98b;--nu:#c9a3e0;--co:#8b8e94}}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}header{border-bottom:1px solid var(--line);padding:12px 16px}header nav{max-width:820px;margin:0 auto;display:flex;gap:18px;align-items:baseline;flex-wrap:wrap}header a{color:var(--fg);text-decoration:none}header .home{font-weight:700}header .label{color:var(--muted);font-size:14px;margin-left:auto}main{max-width:820px;margin:0 auto;padding:16px 16px 64px}h1,h2,h3{line-height:1.25;margin:1.6em 0 .5em}h1{font-size:2em;margin-top:.6em}h2{font-size:1.4em;border-bottom:1px solid var(--line);padding-bottom:.2em}h3{font-size:1.15em}a{color:var(--accent)}code{font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}:not(pre)>code{background:var(--panel);padding:.1em .3em;border-radius:4px}pre{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 14px;overflow-x:auto}pre code{white-space:pre}.kw{color:var(--kw);font-weight:600}.ty{color:var(--ty)}.st{color:var(--st)}.nu{color:var(--nu)}.co{color:var(--co);font-style:italic}table{border-collapse:collapse;display:block;overflow-x:auto}th,td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}th{background:var(--panel)}blockquote{margin:1em 0;padding:0 1em;border-left:3px solid var(--line);color:var(--muted)}footer{max-width:820px;margin:0 auto;padding:16px;color:var(--muted);font-size:14px;border-top:1px solid var(--line)}</style>
+</head>
+<body>
+<header><nav><a class="home" href="index.html">Checkers</a><a href="tour.html">Tour</a><a href="docs.html">Documentation</a><a href="https://github.com/iwahbe/checkers">Source</a></nav></header>
+<main>
+<h1 id="other-page">Other page</h1>
+<h2 id="a-table">A table</h2>
+<table>
+<thead>
+<tr><th>Syntax</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>a | b</code></td><td>a pipe in code</td></tr>
+<tr><td>*not em*</td><td>escaped stars</td></tr>
+</tbody>
+</table>
+<h2 id="code">Code</h2>
+<pre><code class="language-checkers"><span class="kw">module</span> m
+
+<span class="co"># A comment.</span>
+<span class="kw">fn</span> f x -&gt; y : x~<span class="ty">Int</span>, y~<span class="ty">Int</span>
+    <span class="kw">if</span> x &gt; <span class="nu">0</span> <span class="kw">then</span> x <span class="kw">else</span> <span class="nu">0</span> - x
+
+<span class="kw">check</span> f (<span class="nu">0</span> - <span class="nu">2</span>) == <span class="nu">2</span> <span class="kw">and</span> <span class="st">&quot;s&quot;</span> ++ <span class="st">&quot;t&quot;</span> == <span class="st">&quot;st&quot;</span>
+</code></pre>
+<pre><code>plain &lt;code&gt; &amp; text
+</code></pre>
+</main>
+<footer>This page as Markdown: <a href="other.md">other.md</a>. Every page: <a href="llms.txt">llms.txt</a>.</footer>
+</body>
+</html>
+== OUT/other.md
+# Other page
+
+## A table
+
+| Syntax | Meaning |
+|---|---|
+| `a \| b` | a pipe in code |
+| \*not em\* | escaped stars |
+
+## Code
+
+```checkers
+module m
+
+# A comment.
+fn f x -> y : x~Int, y~Int
+    if x > 0 then x else 0 - x
+
+check f (0 - 2) == 2 and "s" ++ "t" == "st"
+```
+
+```
+plain <code> & text
+```

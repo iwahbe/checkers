@@ -4,7 +4,7 @@
 {"kind":"done","phase":"types"}
 {"kind":"name","path":"$ROOT/tests/json/types.ck","start":[4,7],"end":[4,17],"class":"module","def":{"path":"$ROOT/tests/json/lib/broken.ck","start":[0,0],"end":[0,0]},"hover":"module lib.broken","doc":null}
 {"kind":"name","path":"$ROOT/tests/json/types.ck","start":[6,3],"end":[6,4],"class":"function","def":{"path":"$ROOT/tests/json/types.ck","start":[6,3],"end":[6,4]},"hover":"fn g -> r : r~String","doc":null}
-{"kind":"name","path":"$ROOT/tests/json/types.ck","start":[6,14],"end":[6,20],"class":"type","def":{"path":"$ROOT/stdlib/prelude.ck","start":[5,21],"end":[5,27]},"hover":"export abstract enum String","doc":null}
+{"kind":"name","path":"$ROOT/tests/json/types.ck","start":[6,14],"end":[6,20],"class":"type","def":{"path":"$ROOT/stdlib/prelude.ck","start":[6,21],"end":[6,27]},"hover":"export abstract enum String","doc":"Text: UTF-8, immutable. The prover sees a string as its UTF-8 bytes."}
 {"kind":"name","path":"$ROOT/tests/json/types.ck","start":[6,8],"end":[6,9],"class":"variable","def":{"path":"$ROOT/tests/json/types.ck","start":[6,8],"end":[6,9]},"hover":"r : String","doc":null}
 {"kind":"name","path":"$ROOT/tests/json/types.ck","start":[6,12],"end":[6,13],"class":"variable","def":{"path":"$ROOT/tests/json/types.ck","start":[6,8],"end":[6,9]},"hover":"r : String","doc":null}
 {"kind":"token","path":"$ROOT/tests/json/types.ck","start":[0,0],"end":[0,6],"class":"keyword"}

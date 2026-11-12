@@ -4,15 +4,19 @@ module std.string
 import std.char
 import std.list
 
+# The characters, one after another.
 export fn from_chars cs -> s : cs~List Char, s~String
     __builtin
 
+# The one-character string.
 export fn from_char c -> s : c~Char, s~String
     __builtin
 
+# `f` applied to each character, the results one after another.
 export fn concat_map f s -> r : f~(Char -> String), s~String, r~String
     __builtin
 
+# The string's UTF-8 bytes.
 export fn bytes s -> b : s~String, b~Bytes
     __builtin
 
@@ -33,21 +37,25 @@ export fn chars s -> cs : s~String, cs~List Char
 # sees a string as its UTF-8 bytes (§7.3), so these say how characters and
 # bytes relate.
 
+# No characters make the empty string.
 export lemma from_chars_nil
     ensures from_chars [] == ""
     proof
         __builtin
 
+# A string of characters is its first character, then the rest.
 export lemma from_chars_cons c cs : c~Char, cs~List Char
     ensures from_chars (c :: cs) == from_char c ++ from_chars cs
     proof
         __builtin
 
+# A string is made of its characters.
 export lemma from_chars_chars s : s~String
     ensures from_chars (chars s) == s
     proof
         __builtin
 
+# `concat_map` joins what `f` gives for each character.
 export lemma concat_map_chars f s : f~(Char -> String), s~String
     ensures concat_map f s == list.join "" (list.map f (chars s))
     proof

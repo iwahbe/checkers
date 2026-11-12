@@ -2,7 +2,7 @@
 
 - **SPEC.md is the source of truth.** Change the spec before the code whenever behavior changes. Record every language decision in the §0 decision log (Dn, date as MM/DD/YYYY, decided/proposed). Ian decides; Claude's recommendations stay marked **(proposed)** until he accepts them.
 - **Ian does not read the implementation.** He reviews the spec, examples, and compiler output. Error messages are part of the product: precise span, plain message, a `help:` line when there is an obvious fix.
-- **Issue workflow (SPEC §12):** a report is "found X, expected Y" with a `.ck` snippet. First add it as a golden test showing the expected output (`tests/parse/`, `tests/check/`, `tests/types/` for type errors, `tests/stage/` for staged code, `tests/run/` for program behaviour, §13.6; `tests/stress/` for results every multi-threaded schedule must give, §13.5), then fix, then `cargo test`. `ckc check --json` cases in `tests/json/`, language server sessions in `tests/lsp/` (§15.5). Tools written in Checkers (`tools/`, D95): formatter cases in `tests/fmt/`, `checkers` commands in `tests/tool/`.
+- **Issue workflow (SPEC §12):** a report is "found X, expected Y" with a `.ck` snippet. First add it as a golden test showing the expected output (`tests/parse/`, `tests/check/`, `tests/types/` for type errors, `tests/stage/` for staged code, `tests/run/` for program behaviour, §13.6; `tests/stress/` for results every multi-threaded schedule must give, §13.5), then fix, then `cargo test`. `ckc check --json` cases in `tests/json/`, language server sessions in `tests/lsp/` (§15.5). Tools written in Checkers (`tools/`, D95): formatter cases in `tests/fmt/`, `checkers` commands in `tests/tool/`, `ckc doc`/`checkers doc`/`checkers site` in `tests/doc/` (a package directory, or a site with `index.md`).
 - A test for a **(proposed)** decision goes in `tests/proposed/` (not run) until Ian decides; then it moves to its test directory.
 - `UPDATE_GOLDEN=1 cargo test --test golden` rewrites `.out` files. Read every changed `.out` before committing; never accept output you haven't checked.
 - `examples/*.ck` must check with zero diagnostics (enforced by the golden test). `tools/checkers.ck` too.
@@ -34,6 +34,7 @@ src/elab/pattern.rs  `match` → case trees, exhaustiveness witnesses
 src/elab/index.rs    names for tools: each use, its definition, kind and hover text (`--json`, D120)
 src/elab/refine.rs   refinements inside types: inline and function-type refinements, implication, variance, E0262 (D71, D82–D87)
 src/elab/eq.rs       `==` never compares functions: in compiled code, and through type parameters (D125)
+src/doc.rs           `ckc doc FILE`: a module's exported declarations and descriptions as JSON lines (§15.6, D131)
 src/elab/termination.rs  structural recursion over call-graph SCCs (§5.3)
 src/elab/order.rs   declaration order by dependencies, cycles (D65)
 src/elab/stdlib.rs   finding and loading the standard library from disk (D104), program modules from `a/b.ck` (D53), packages' modules (D111)
@@ -56,14 +57,17 @@ stdlib/*.ck          standard library, the package `std` (`stdlib/json.ck` is `s
 tools/checkers.ck    `checkers`, the build tool, in Checkers (D95): passes compiler commands to `ckc`; `fmt`
 tools/fmt.ck         `checkers fmt`: files, --check, standard input (§15.4)
 tools/lsp.ck         `checkers lsp`, the language server (§15.5, D120): checks as child processes, phases, hover, definition, references, tokens; answers wait for the index of the text asked about (D127)
+tools/doc.ck         `checkers doc` (a package's documentation) and `checkers site` (the site in `site/`, llms.txt), as Markdown and HTML (§15.6, D131)
+tools/ck/markdown.ck Markdown → HTML for those pages, `checkers` code highlighted
 tools/ck/jsonrpc.ck  LSP messages: framing, JSON helpers
 tools/ck/text.ck     lines, byte and UTF-16 columns, `file:` URIs
 tools/ck/manifest.ck reading checkers.json and checkers.lock (§16.4)
 tools/ck/packages.ck dependencies: path and git, minimal version selection, lock, `--package`/`--uses` (D111)
 tools/ck/syntax.ck   the formatter's lexer and layout pass: lines, logical lines, blocks (D93, D99)
 tools/ck/format.ck   the formatter: spacing, indentation, alignment, blank lines, comments (D91, D92)
+site/*.md            the language's site: home, tour, install, documentation (every sample checks; deployed by .github/workflows/pages.yml)
 tests/packages.rs    packages end to end with local git repositories (M14)
 tests/parking.rs     waiting behaviours hold no thread, at several thread counts (M16)
 tests/std.rs         standard library on disk: `CHECKERS_STD`, edits without rebuilding, E0223/E0361, §16.3 lists every builtin
-tests/golden.rs      golden test runner (tests/parse, check, types, stage, run, stress, fmt, tool; examples; tools; repository formatting)
+tests/golden.rs      golden test runner (tests/parse, check, types, stage, run, stress, fmt, tool, doc; examples; tools; repository formatting)
 ```

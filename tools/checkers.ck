@@ -15,6 +15,7 @@ import std.string
 import std.bytes
 import fmt
 import lsp
+import doc
 import ck.packages (Caps)
 
 let VERSION = "0.1.0"
@@ -26,6 +27,8 @@ let USAGE = string.concat [
     "    checkers fmt [--check] [PATH]...                 format .ck files (see `checkers fmt --help`)\n",
     "    checkers fmt -                                   format standard input\n",
     "    checkers lsp                                     the language server, on standard input and output\n",
+    "    checkers doc DIR -o OUT                          a package's documentation, as Markdown and HTML\n",
+    "    checkers site SRC -o OUT                         the site: Markdown pages, as Markdown and HTML\n",
     "    checkers --version\n\n",
     "In a directory with checkers.json, the compiler commands first fetch the package's\n",
     "dependencies and update checkers.lock; the file defaults to main.ck.\n",
@@ -137,17 +140,19 @@ export partial fn main args sys -> code : args~List String, sys~System, code~Exi
 
 partial fn command args term fs e p -> code : args~List String, term~Term, fs~Fs, e~Env, p~Proc, code~ExitCode
     match args
-        "fmt" :: rest -> fmt.run rest term fs
-        ["--version"] ->
+        "fmt" :: rest  -> fmt.run rest term fs
+        "doc" :: rest  -> doc.run rest (ckc_path e) term fs p
+        "site" :: rest -> doc.site rest term fs
+        ["--version"]  ->
             terminal.print_line ("checkers " ++ VERSION) term
             Success
-        ["--help"]    ->
+        ["--help"]     ->
             terminal.print_line USAGE term
             Success
-        []            ->
+        []             ->
             terminal.print_line USAGE term
             Success
-        c :: rest     ->
+        c :: rest      ->
             if compiler_command c
                 match files.read "checkers.json" fs
                     Err _ -> compiler args e p term

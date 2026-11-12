@@ -1,0 +1,88 @@
+# The site (D131, SPEC §15.6), on GitHub Pages: the pages in `site/` and
+# `main`'s standard-library documentation at the root, and each release's
+# documentation at /vX.Y.Z/docs/, unpacked from the archive that release
+# attached (built by its own tools, so it never changes). Nothing generated
+# is kept in the repository.
+#
+# Runs after each push to `main`, and when a release is published: the
+# release workflow starts it (`gh workflow run`), since a release published
+# with GITHUB_TOKEN starts no `release` event.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deployment at a time; a newer one waits rather than cancelling.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.98.0"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # CI's cache: the same `--release` build, Z3 included.
+          shared-key: release
+          save-if: false
+      - name: Build
+        run: |
+          cargo build --release --locked
+          target/release/ckc build tools/checkers.ck -o target/release/checkers
+      - name: Each release's documentation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          mkdir -p _site _pages
+          cp site/*.md _pages/
+          versions=""
+          for tag in $(gh release list --repo "$REPO" --exclude-drafts --limit 1000 \
+                         --json tagName --jq '.[].tagName' | sort -rV); do
+            archive="checkers-$tag-docs.tar.gz"
+            if gh release download "$tag" --repo "$REPO" --pattern "$archive" --dir _releases; then
+              mkdir -p "_site/$tag"
+              tar -xzf "_releases/$archive" -C "_site/$tag"
+              versions="$versions- [$tag]($tag/docs/std/index.md)"$'\n'
+            else
+              echo "::warning::release $tag has no $archive"
+            fi
+          done
+          { echo; echo "${versions:-None yet.}"; } >> _pages/docs.md
+      - name: Main's documentation and the site
+        run: |
+          target/release/checkers doc stdlib -o _site/docs --name std --label main
+          target/release/checkers site _pages -o _site
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

@@ -8,6 +8,7 @@ module std.actor
 
 import std.cown (Cown, Sched)
 
+# An actor whose state has type `s`: a cown holding it.
 export record Actor s : s~Type
     state~Cown s
 

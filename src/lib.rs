@@ -6,6 +6,7 @@
 
 pub mod core;
 pub mod diag;
+pub mod doc;
 pub mod elab;
 pub mod json;
 pub mod lint;
@@ -152,7 +153,7 @@ pub fn check_json(name: &str, text: &str, dir: &std::path::Path, out: &mut dyn F
 /// The description of the declaration whose name starts at byte `at`: the
 /// run of `#` comment lines directly above its line, without the `#` and one
 /// space (D128).
-fn doc_comment(text: &str, at: usize) -> Option<String> {
+pub(crate) fn doc_comment(text: &str, at: usize) -> Option<String> {
     let start = text[..at.min(text.len())].rfind('\n').map_or(0, |i| i + 1);
     let mut lines = Vec::new();
     let mut end = start;

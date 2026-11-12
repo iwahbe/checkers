@@ -20,6 +20,8 @@ USAGE:
     checkers fmt [--check] [PATH]...                 format .ck files (see `checkers fmt --help`)
     checkers fmt -                                   format standard input
     checkers lsp                                     the language server, on standard input and output
+    checkers doc DIR -o OUT                          a package's documentation, as Markdown and HTML
+    checkers site SRC -o OUT                         the site: Markdown pages, as Markdown and HTML
     checkers --version
 
 In a directory with checkers.json, the compiler commands first fetch the package's
@@ -67,13 +69,13 @@ examples/wc.ck:97:7  computed check render (Counts 1 2 3) "f.txt" == "1 2 3 f.tx
 examples/wc.ck:98:7  computed check ends_in_word b"ab" False
 examples/wc.ck:99:7  computed check not (ends_in_word b"ab " True)
 examples/wc.ck:100:7  computed check ends_in_word b"" True
-<std>/files.ck:29:11  builtin  std.files.close
-<std>/files.ck:20:11  builtin  std.files.describe
-<std>/files.ck:23:11  builtin  std.files.open
-<std>/files.ck:42:11  builtin  std.files.read_some
-<std>/terminal.ck:11:11  builtin  std.terminal.eprint_line
-<std>/terminal.ck:8:11  builtin  std.terminal.print_line
-<std>/terminal.ck:33:11  builtin  std.terminal.stdin
+<std>/files.ck:43:11  builtin  std.files.close
+<std>/files.ck:31:11  builtin  std.files.describe
+<std>/files.ck:35:11  builtin  std.files.open
+<std>/files.ck:58:11  builtin  std.files.read_some
+<std>/terminal.ck:14:11  builtin  std.terminal.eprint_line
+<std>/terminal.ck:10:11  builtin  std.terminal.print_line
+<std>/terminal.ck:40:11  builtin  std.terminal.stdin
 solver: Z3 5.3.3.0
 -- stderr
 -- exit 0

@@ -4,9 +4,12 @@ module std.utf8
 import std.cursor (Parsed)
 import std.string
 
+# The character whose UTF-8 encoding starts at `k`, and where it ends;
+# `None` if the bytes there aren't one (or `k` is the end).
 export fn decode_at src k -> r : src~Bytes, k~Nat, k <= len src, r~Option (Parsed Char src k)
     __builtin
 
+# The string's UTF-8 bytes (the same as `string.bytes`).
 export fn encode s -> b : s~String, b~Bytes
     __builtin
 

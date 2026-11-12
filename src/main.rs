@@ -118,6 +118,7 @@ fn cli(args: &[String]) -> u8 {
         Some("stage") => return stage(&args[1..]),
         Some("check") => check(&args[1..]),
         Some("parse") => parse(&args[1..]),
+        Some("doc") => doc(&args[1..]),
         Some("--version") | Some("-V") => {
             println!("ckc {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -321,6 +322,34 @@ fn check(args: &[String]) -> ExitCode {
         }
     }
     if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// `ckc doc FILE`: the module's documentation as JSON lines (§15.6).
+fn doc(args: &[String]) -> ExitCode {
+    let [path] = args else {
+        eprintln!("error: `doc` takes exactly one file\n\n{USAGE}");
+        return ExitCode::from(2);
+    };
+    let text = match read(path) {
+        Ok(t) => t,
+        Err(c) => return c,
+    };
+    let c = checkers::parse_only(path, &text);
+    let stem = std::path::Path::new(path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    // A reader that stops early (`| head`) is not an error.
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    for l in checkers::doc::lines(&text, &c.module, &stem) {
+        if writeln!(out, "{l}").is_err() {
+            break;
+        }
+    }
+    if c.errors() > 0 {
+        eprint!("{}", c.report());
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS

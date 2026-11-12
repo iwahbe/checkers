@@ -1,0 +1,317 @@
+$ ckc doc tests/doc/pkg/shapes.ck
+-- stdout
+{"kind":"module","name":"pkg.shapes","doc":"Shapes and their areas. This line and the next are the module's\ndescription; its first sentence is shown in the package's index."}
+{"kind":"decl","what":"record","name":"Point","line":6,"signature":"export record Point","doc":"A point. The fields are shown, each with its description.","items":[{"name":"x","signature":"x~Int","doc":"Across."},{"name":"y","signature":"y~Int","doc":null}]}
+{"kind":"decl","what":"enum","name":"Shape","line":15,"signature":"export enum Shape","doc":"A shape:\n\n- a circle, by its radius;\n- a rectangle, by its sides.","items":[{"name":"Circle","signature":"Circle r : r~Nat","doc":"A circle."},{"name":"Rect","signature":"Rect w h : w~Nat, h~Nat","doc":null}]}
+{"kind":"decl","what":"enum","name":"Handle","line":21,"signature":"export abstract enum Handle","doc":"Its constructors are hidden, so they aren't shown.","items":[]}
+{"kind":"decl","what":"type","name":"Even","line":24,"signature":"export type Even = n~Nat, n % 2 == 0","doc":"An even number.","items":[]}
+{"kind":"decl","what":"fn","name":"double_area","line":28,"signature":"export fn double_area s -> a : s~Shape,\n                               a~Nat","doc":"Twice the area, in whole units (`Circle` uses 3 for pi). A long\nsignature keeps its lines:","items":[]}
+{"kind":"decl","what":"fn","name":"down","line":35,"signature":"export fn down n -> r : n~Nat, r~Nat","doc":"Counts down; `decreasing` isn't part of the signature.","items":[]}
+{"kind":"decl","what":"lemma","name":"nonneg","line":40,"signature":"export lemma nonneg s : s~Shape\n    ensures double_area s >= 0","doc":"Areas aren't negative.","items":[]}
+{"kind":"decl","what":"let","name":"UNIT","line":45,"signature":"export let UNIT = 1","doc":null,"items":[]}
+{"kind":"decl","what":"let","name":"TABLE","line":48,"signature":"export let TABLE = …","doc":"A table too long to show.","items":[]}
+{"kind":"decl","what":"fn","name":"undocumented","line":50,"signature":"export fn undocumented x -> y : x~Int, y~Int","doc":null,"items":[]}
+-- stderr
+-- exit 0
+$ ckc doc tests/doc/pkg/sub/broken.ck
+-- stdout
+{"kind":"module","name":"pkg.sub.broken","doc":"A module with a type error still has documentation: <b>escaped</b> & all."}
+{"kind":"decl","what":"fn","name":"wrong","line":5,"signature":"export fn wrong x -> y : x~Int, y~Int","doc":"Returns a `String` where an `Int` is expected.","items":[]}
+-- stderr
+-- exit 0
+$ checkers doc tests/doc/pkg -o OUT
+-- stdout
+-- stderr
+-- exit 0
+== OUT/pkg/index.html
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Package pkg · Checkers</title>
+<link rel="alternate" type="text/markdown" href="index.md">
+<style>:root{--fg:#1d1f21;--muted:#5c6166;--bg:#fdfdfc;--panel:#f3f2ee;--line:#dedcd5;--accent:#8a3324;--kw:#8a3324;--ty:#1f5f8b;--st:#3d6b2e;--nu:#7a4f9a;--co:#7c7f84}@media (prefers-color-scheme:dark){:root{--fg:#e6e4df;--muted:#a3a19b;--bg:#17181a;--panel:#212226;--line:#34363b;--accent:#e08a6f;--kw:#e08a6f;--ty:#7fb4dd;--st:#a3c98b;--nu:#c9a3e0;--co:#8b8e94}}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}header{border-bottom:1px solid var(--line);padding:12px 16px}header nav{max-width:820px;margin:0 auto;display:flex;gap:18px;align-items:baseline;flex-wrap:wrap}header a{color:var(--fg);text-decoration:none}header .home{font-weight:700}header .label{color:var(--muted);font-size:14px;margin-left:auto}main{max-width:820px;margin:0 auto;padding:16px 16px 64px}h1,h2,h3{line-height:1.25;margin:1.6em 0 .5em}h1{font-size:2em;margin-top:.6em}h2{font-size:1.4em;border-bottom:1px solid var(--line);padding-bottom:.2em}h3{font-size:1.15em}a{color:var(--accent)}code{font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}:not(pre)>code{background:var(--panel);padding:.1em .3em;border-radius:4px}pre{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 14px;overflow-x:auto}pre code{white-space:pre}.kw{color:var(--kw);font-weight:600}.ty{color:var(--ty)}.st{color:var(--st)}.nu{color:var(--nu)}.co{color:var(--co);font-style:italic}table{border-collapse:collapse;display:block;overflow-x:auto}th,td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}th{background:var(--panel)}blockquote{margin:1em 0;padding:0 1em;border-left:3px solid var(--line);color:var(--muted)}footer{max-width:820px;margin:0 auto;padding:16px;color:var(--muted);font-size:14px;border-top:1px solid var(--line)}</style>
+</head>
+<body>
+<header><nav><a class="home" href="../../index.html">Checkers</a><a href="../../tour.html">Tour</a><a href="../../docs.html">Documentation</a><a href="https://github.com/iwahbe/checkers">Source</a></nav></header>
+<main>
+<h1 id="package-pkg">Package <code>pkg</code></h1>
+<p>Each module's page lists what it exports: signatures as written, with their conditions, and descriptions.</p>
+<table>
+<thead>
+<tr><th>Module</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><a href="shapes.html">pkg.shapes</a></td><td>Shapes and their areas.</td></tr>
+<tr><td><a href="sub.broken.html">pkg.sub.broken</a></td><td>A module with a type error still has documentation: &lt;b&gt;escaped&lt;/b&gt; &amp; all.</td></tr>
+</tbody>
+</table>
+</main>
+<footer>This page as Markdown: <a href="index.md">index.md</a>. Every page: <a href="../../llms.txt">llms.txt</a>.</footer>
+</body>
+</html>
+== OUT/pkg/index.md
+# Package `pkg`
+
+Each module's page lists what it exports: signatures as written, with their conditions, and descriptions.
+
+| Module | Description |
+|---|---|
+| [pkg.shapes](shapes.md) | Shapes and their areas. |
+| [pkg.sub.broken](sub.broken.md) | A module with a type error still has documentation: <b>escaped</b> & all. |
+== OUT/pkg/shapes.html
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Module pkg.shapes · Checkers</title>
+<link rel="alternate" type="text/markdown" href="shapes.md">
+<style>:root{--fg:#1d1f21;--muted:#5c6166;--bg:#fdfdfc;--panel:#f3f2ee;--line:#dedcd5;--accent:#8a3324;--kw:#8a3324;--ty:#1f5f8b;--st:#3d6b2e;--nu:#7a4f9a;--co:#7c7f84}@media (prefers-color-scheme:dark){:root{--fg:#e6e4df;--muted:#a3a19b;--bg:#17181a;--panel:#212226;--line:#34363b;--accent:#e08a6f;--kw:#e08a6f;--ty:#7fb4dd;--st:#a3c98b;--nu:#c9a3e0;--co:#8b8e94}}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}header{border-bottom:1px solid var(--line);padding:12px 16px}header nav{max-width:820px;margin:0 auto;display:flex;gap:18px;align-items:baseline;flex-wrap:wrap}header a{color:var(--fg);text-decoration:none}header .home{font-weight:700}header .label{color:var(--muted);font-size:14px;margin-left:auto}main{max-width:820px;margin:0 auto;padding:16px 16px 64px}h1,h2,h3{line-height:1.25;margin:1.6em 0 .5em}h1{font-size:2em;margin-top:.6em}h2{font-size:1.4em;border-bottom:1px solid var(--line);padding-bottom:.2em}h3{font-size:1.15em}a{color:var(--accent)}code{font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}:not(pre)>code{background:var(--panel);padding:.1em .3em;border-radius:4px}pre{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 14px;overflow-x:auto}pre code{white-space:pre}.kw{color:var(--kw);font-weight:600}.ty{color:var(--ty)}.st{color:var(--st)}.nu{color:var(--nu)}.co{color:var(--co);font-style:italic}table{border-collapse:collapse;display:block;overflow-x:auto}th,td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}th{background:var(--panel)}blockquote{margin:1em 0;padding:0 1em;border-left:3px solid var(--line);color:var(--muted)}footer{max-width:820px;margin:0 auto;padding:16px;color:var(--muted);font-size:14px;border-top:1px solid var(--line)}</style>
+</head>
+<body>
+<header><nav><a class="home" href="../../index.html">Checkers</a><a href="../../tour.html">Tour</a><a href="../../docs.html">Documentation</a><a href="https://github.com/iwahbe/checkers">Source</a></nav></header>
+<main>
+<h1 id="module-pkg-shapes">Module <code>pkg.shapes</code></h1>
+<p>In package <a href="index.html">pkg</a>.</p>
+<p>Shapes and their areas. This line and the next are the module's
+description; its first sentence is shown in the package's index.</p>
+<h2 id="index">Index</h2>
+<ul>
+<li><a href="#record-point">record <code>Point</code></a></li>
+<li><a href="#enum-shape">enum <code>Shape</code></a></li>
+<li><a href="#enum-handle">enum <code>Handle</code></a></li>
+<li><a href="#type-even">type <code>Even</code></a></li>
+<li><a href="#fn-double_area">fn <code>double_area</code></a></li>
+<li><a href="#fn-down">fn <code>down</code></a></li>
+<li><a href="#lemma-nonneg">lemma <code>nonneg</code></a></li>
+<li><a href="#let-unit">let <code>UNIT</code></a></li>
+<li><a href="#let-table">let <code>TABLE</code></a></li>
+<li><a href="#fn-undocumented">fn <code>undocumented</code></a></li>
+</ul>
+<h2 id="declarations">Declarations</h2>
+<h3 id="record-point">record <code>Point</code></h3>
+<pre><code class="language-checkers"><span class="kw">record</span> <span class="ty">Point</span>
+</code></pre>
+<p>A point. The fields are shown, each with its description.</p>
+<p>Fields:</p>
+<ul>
+<li><code>x~Int</code>: Across.</li>
+<li><code>y~Int</code></li>
+</ul>
+<h3 id="enum-shape">enum <code>Shape</code></h3>
+<pre><code class="language-checkers"><span class="kw">enum</span> <span class="ty">Shape</span>
+</code></pre>
+<p>A shape:</p>
+<ul>
+<li>a circle, by its radius;</li>
+<li>a rectangle, by its sides.</li>
+</ul>
+<p>Constructors:</p>
+<ul>
+<li><code>Circle r : r~Nat</code>: A circle.</li>
+<li><code>Rect w h : w~Nat, h~Nat</code></li>
+</ul>
+<h3 id="enum-handle">enum <code>Handle</code></h3>
+<pre><code class="language-checkers"><span class="kw">abstract</span> <span class="kw">enum</span> <span class="ty">Handle</span>
+</code></pre>
+<p>Its constructors are hidden, so they aren't shown.</p>
+<h3 id="type-even">type <code>Even</code></h3>
+<pre><code class="language-checkers"><span class="kw">type</span> <span class="ty">Even</span> = n~<span class="ty">Nat</span>, n % <span class="nu">2</span> == <span class="nu">0</span>
+</code></pre>
+<p>An even number.</p>
+<h3 id="fn-double_area">fn <code>double_area</code></h3>
+<pre><code class="language-checkers"><span class="kw">fn</span> double_area s -&gt; a : s~<span class="ty">Shape</span>,
+                        a~<span class="ty">Nat</span>
+</code></pre>
+<p>Twice the area, in whole units (<code>Circle</code> uses 3 for pi). A long
+signature keeps its lines:</p>
+<h3 id="fn-down">fn <code>down</code></h3>
+<pre><code class="language-checkers"><span class="kw">fn</span> down n -&gt; r : n~<span class="ty">Nat</span>, r~<span class="ty">Nat</span>
+</code></pre>
+<p>Counts down; <code>decreasing</code> isn't part of the signature.</p>
+<h3 id="lemma-nonneg">lemma <code>nonneg</code></h3>
+<pre><code class="language-checkers"><span class="kw">lemma</span> nonneg s : s~<span class="ty">Shape</span>
+    <span class="kw">ensures</span> double_area s &gt;= <span class="nu">0</span>
+</code></pre>
+<p>Areas aren't negative.</p>
+<h3 id="let-unit">let <code>UNIT</code></h3>
+<pre><code class="language-checkers"><span class="kw">let</span> <span class="ty">UNIT</span> = <span class="nu">1</span>
+</code></pre>
+<h3 id="let-table">let <code>TABLE</code></h3>
+<pre><code class="language-checkers">let TABLE = …
+</code></pre>
+<p>A table too long to show.</p>
+<h3 id="fn-undocumented">fn <code>undocumented</code></h3>
+<pre><code class="language-checkers"><span class="kw">fn</span> undocumented x -&gt; y : x~<span class="ty">Int</span>, y~<span class="ty">Int</span>
+</code></pre>
+</main>
+<footer>This page as Markdown: <a href="shapes.md">shapes.md</a>. Every page: <a href="../../llms.txt">llms.txt</a>.</footer>
+</body>
+</html>
+== OUT/pkg/shapes.md
+# Module `pkg.shapes`
+
+In package [pkg](index.md).
+
+Shapes and their areas. This line and the next are the module's
+description; its first sentence is shown in the package's index.
+
+## Index
+
+- [record `Point`](#record-point)
+- [enum `Shape`](#enum-shape)
+- [enum `Handle`](#enum-handle)
+- [type `Even`](#type-even)
+- [fn `double_area`](#fn-double_area)
+- [fn `down`](#fn-down)
+- [lemma `nonneg`](#lemma-nonneg)
+- [let `UNIT`](#let-unit)
+- [let `TABLE`](#let-table)
+- [fn `undocumented`](#fn-undocumented)
+
+## Declarations
+
+### record `Point`
+
+```checkers
+record Point
+```
+
+A point. The fields are shown, each with its description.
+
+Fields:
+
+- `x~Int`: Across.
+- `y~Int`
+
+### enum `Shape`
+
+```checkers
+enum Shape
+```
+
+A shape:
+
+- a circle, by its radius;
+- a rectangle, by its sides.
+
+Constructors:
+
+- `Circle r : r~Nat`: A circle.
+- `Rect w h : w~Nat, h~Nat`
+
+### enum `Handle`
+
+```checkers
+abstract enum Handle
+```
+
+Its constructors are hidden, so they aren't shown.
+
+### type `Even`
+
+```checkers
+type Even = n~Nat, n % 2 == 0
+```
+
+An even number.
+
+### fn `double_area`
+
+```checkers
+fn double_area s -> a : s~Shape,
+                        a~Nat
+```
+
+Twice the area, in whole units (`Circle` uses 3 for pi). A long
+signature keeps its lines:
+
+### fn `down`
+
+```checkers
+fn down n -> r : n~Nat, r~Nat
+```
+
+Counts down; `decreasing` isn't part of the signature.
+
+### lemma `nonneg`
+
+```checkers
+lemma nonneg s : s~Shape
+    ensures double_area s >= 0
+```
+
+Areas aren't negative.
+
+### let `UNIT`
+
+```checkers
+let UNIT = 1
+```
+
+### let `TABLE`
+
+```checkers
+let TABLE = …
+```
+
+A table too long to show.
+
+### fn `undocumented`
+
+```checkers
+fn undocumented x -> y : x~Int, y~Int
+```
+
+== OUT/pkg/sub.broken.html
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Module pkg.sub.broken · Checkers</title>
+<link rel="alternate" type="text/markdown" href="sub.broken.md">
+<style>:root{--fg:#1d1f21;--muted:#5c6166;--bg:#fdfdfc;--panel:#f3f2ee;--line:#dedcd5;--accent:#8a3324;--kw:#8a3324;--ty:#1f5f8b;--st:#3d6b2e;--nu:#7a4f9a;--co:#7c7f84}@media (prefers-color-scheme:dark){:root{--fg:#e6e4df;--muted:#a3a19b;--bg:#17181a;--panel:#212226;--line:#34363b;--accent:#e08a6f;--kw:#e08a6f;--ty:#7fb4dd;--st:#a3c98b;--nu:#c9a3e0;--co:#8b8e94}}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}header{border-bottom:1px solid var(--line);padding:12px 16px}header nav{max-width:820px;margin:0 auto;display:flex;gap:18px;align-items:baseline;flex-wrap:wrap}header a{color:var(--fg);text-decoration:none}header .home{font-weight:700}header .label{color:var(--muted);font-size:14px;margin-left:auto}main{max-width:820px;margin:0 auto;padding:16px 16px 64px}h1,h2,h3{line-height:1.25;margin:1.6em 0 .5em}h1{font-size:2em;margin-top:.6em}h2{font-size:1.4em;border-bottom:1px solid var(--line);padding-bottom:.2em}h3{font-size:1.15em}a{color:var(--accent)}code{font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}:not(pre)>code{background:var(--panel);padding:.1em .3em;border-radius:4px}pre{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 14px;overflow-x:auto}pre code{white-space:pre}.kw{color:var(--kw);font-weight:600}.ty{color:var(--ty)}.st{color:var(--st)}.nu{color:var(--nu)}.co{color:var(--co);font-style:italic}table{border-collapse:collapse;display:block;overflow-x:auto}th,td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}th{background:var(--panel)}blockquote{margin:1em 0;padding:0 1em;border-left:3px solid var(--line);color:var(--muted)}footer{max-width:820px;margin:0 auto;padding:16px;color:var(--muted);font-size:14px;border-top:1px solid var(--line)}</style>
+</head>
+<body>
+<header><nav><a class="home" href="../../index.html">Checkers</a><a href="../../tour.html">Tour</a><a href="../../docs.html">Documentation</a><a href="https://github.com/iwahbe/checkers">Source</a></nav></header>
+<main>
+<h1 id="module-pkg-sub-broken">Module <code>pkg.sub.broken</code></h1>
+<p>In package <a href="index.html">pkg</a>.</p>
+<p>A module with a type error still has documentation: &lt;b&gt;escaped&lt;/b&gt; &amp; all.</p>
+<h2 id="index">Index</h2>
+<ul>
+<li><a href="#fn-wrong">fn <code>wrong</code></a></li>
+</ul>
+<h2 id="declarations">Declarations</h2>
+<h3 id="fn-wrong">fn <code>wrong</code></h3>
+<pre><code class="language-checkers"><span class="kw">fn</span> wrong x -&gt; y : x~<span class="ty">Int</span>, y~<span class="ty">Int</span>
+</code></pre>
+<p>Returns a <code>String</code> where an <code>Int</code> is expected.</p>
+</main>
+<footer>This page as Markdown: <a href="sub.broken.md">sub.broken.md</a>. Every page: <a href="../../llms.txt">llms.txt</a>.</footer>
+</body>
+</html>
+== OUT/pkg/sub.broken.md
+# Module `pkg.sub.broken`
+
+In package [pkg](index.md).
+
+A module with a type error still has documentation: <b>escaped</b> & all.
+
+## Index
+
+- [fn `wrong`](#fn-wrong)
+
+## Declarations
+
+### fn `wrong`
+
+```checkers
+fn wrong x -> y : x~Int, y~Int
+```
+
+Returns a `String` where an `Int` is expected.
+

@@ -2,6 +2,7 @@
 # array from values to counts, so facts about permutations need no quantifiers.
 module std.bag
 
+# A finite multiset of integers.
 export abstract enum Bag
 
 # The multiset of a list's elements.

@@ -20,6 +20,8 @@ import std.list (keys, unique, contains, reverse, join, map, max_of)   # `keys` 
 
 # ── Data ─────────────────────────────────────────────────────────────────────
 
+# A JSON value. An object's keys are distinct (the constructor requires
+# it) and keep their order. Numbers are exact decimals.
 export enum Json
     Null
     Bool b     : b~Bool
@@ -31,6 +33,7 @@ export enum Json
 # Object members. Insertion order is kept; duplicates are unrepresentable.
 type Members = fs~List (String, Json), unique (keys fs)
 
+# What went wrong in a parse.
 export enum ErrorKind
     UnexpectedEnd
     UnexpectedByte b : b~U8
@@ -47,8 +50,10 @@ export record Error src : src~ghost Bytes
     pos~Nat, pos <= len src
     kind~ErrorKind
 
+# How deeply arrays and objects may nest in what `parse` accepts.
 export let MAX_DEPTH = 512
 
+# How deeply `v`'s arrays and objects nest: 0 for a scalar.
 export fn depth v -> d : v~Json, d~Nat
     match v
         Arr items  -> 1 + max_of (map depth items)
@@ -57,6 +62,9 @@ export fn depth v -> d : v~Json, d~Nat
 
 # ── Parsing ──────────────────────────────────────────────────────────────────
 
+# Parse one JSON value (RFC 8259), with optional whitespace around it.
+# An error says where in `src` it happened. Nesting deeper than
+# `MAX_DEPTH` is `TooDeep`; a repeated object key is `DuplicateKey`.
 export fn parse src -> r : src~Bytes, r~Result Json (Error src)
     let v = try value src (skip_ws src 0) 0
     let end = skip_ws src v.stop
@@ -255,6 +263,8 @@ fn unicode_escape src i -> r : src~Bytes, i~Nat, i <= len src,
 
 # ── Rendering ────────────────────────────────────────────────────────────────
 
+# `v` as compact JSON, without whitespace. `parse` gives `v` back (lemma
+# `roundtrip`).
 export fn render v -> s : v~Json, s~String
     match v
         Null       -> "null"

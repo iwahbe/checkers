@@ -3,21 +3,25 @@ module std.list
 
 import std.bag
 
+# The number of elements.
 export transparent fn length xs -> n : xs~List a, n~Nat
     match xs
         []        -> 0
         _ :: rest -> 1 + length rest
 
+# `f` applied to each element, in order.
 export transparent fn map f xs -> ys : f~(a -> b), xs~List a, ys~List b
     match xs
         []        -> []
         x :: rest -> f x :: map f rest
 
+# Whether `p` holds for every element (`True` for an empty list).
 export fn all p xs -> r : p~(a -> Bool), xs~List a, r~Bool
     match xs
         []        -> True
         x :: rest -> p x and all p rest
 
+# The elements in reverse order.
 export transparent fn reverse xs -> ys : xs~List a, ys~List a
     reverse_onto xs []
 
@@ -26,32 +30,38 @@ fn reverse_onto xs acc -> ys : xs~List a, acc~List a, ys~List a
         []        -> acc
         x :: rest -> reverse_onto rest (x :: acc)
 
+# The strings with `sep` between each two.
 export transparent fn join sep parts -> s : sep~String, parts~List String, s~String
     match parts
         []        -> ""
         [p]       -> p
         p :: rest -> p ++ sep ++ join sep rest
 
+# The first component of each pair.
 export transparent fn keys pairs -> ks : pairs~List (k, v), ks~List k
     match pairs
         []               -> []
         (key, _) :: rest -> key :: keys rest
 
+# Whether `x` is an element of `xs`.
 export transparent fn contains xs x -> r : xs~List a, x~a, r~Bool
     match xs
         []        -> False
         y :: rest -> y == x or contains rest x
 
+# Whether no element occurs twice.
 export transparent fn unique xs -> r : xs~List a, r~Bool
     match xs
         []        -> True
         x :: rest -> not (contains rest x) and unique rest
 
+# How many times `x` occurs in `xs`.
 export transparent fn count x xs -> n : x~a, xs~List a, n~Nat
     match xs
         []        -> 0
         y :: rest -> (if y == x then 1 else 0) + count x rest
 
+# The largest element, or 0 for an empty list.
 export transparent fn max_of xs -> m : xs~List Nat, m~Nat
     match xs
         []        -> 0
@@ -59,12 +69,14 @@ export transparent fn max_of xs -> m : xs~List Nat, m~Nat
             let m = max_of rest
             if x > m then x else m
 
+# The first `n` elements, or all of `xs` if it is shorter.
 export fn take n xs -> ys : n~Nat, xs~List a, ys~List a,
                             length ys <= length xs, n <= length xs implies length ys == n
     match xs
         []        -> []
         x :: rest -> if n == 0 then [] else x :: take (n - 1) rest
 
+# All but the first `n` elements; empty if `xs` is shorter.
 export fn drop n xs -> ys : n~Nat, xs~List a, ys~List a,
                             length ys <= length xs, n <= length xs implies length ys + n == length xs
     match xs
@@ -90,6 +102,7 @@ export lemma bag_append xs ys : xs~List Int, ys~List Int
             []        -> auto
             _ :: rest -> have bag_append rest ys
 
+# Whether each element is at most the next.
 export transparent fn sorted xs -> r : xs~List Int, r~Bool
     decreasing length xs
     match xs
@@ -102,16 +115,19 @@ export transparent fn perm xs ys -> r : xs~List Int, ys~List Int, r~Bool
 
 # ── Lemmas about uniqueness and reversal ─────────────────────────────────────
 
+# Adding a new element to a list without repeats keeps it without repeats.
 export lemma unique_cons x xs : x~a, xs~List a, not (contains xs x), unique xs
     ensures unique (x :: xs)
     proof
         auto
 
+# The maximum of a longer list is at least its head and the old maximum.
 export lemma max_of_cons x xs : x~Nat, xs~List Nat
     ensures x <= max_of (x :: xs) and max_of xs <= max_of (x :: xs)
     proof
         auto
 
+# Appending the empty list changes nothing.
 export lemma append_nil xs : xs~List a
     ensures xs ++ [] == xs
     proof
@@ -119,6 +135,7 @@ export lemma append_nil xs : xs~List a
             []        -> auto
             _ :: rest -> have append_nil rest
 
+# `++` is associative.
 export lemma append_assoc xs ys zs : xs~List a, ys~List a, zs~List a
     ensures (xs ++ ys) ++ zs == xs ++ (ys ++ zs)
     proof
@@ -143,6 +160,7 @@ lemma keys_rev_onto ps acc : ps~List (k, v), acc~List (k, v)
             []        -> auto
             p :: rest -> have keys_rev_onto rest (p :: acc)
 
+# The keys of a reversed list are the reversed keys.
 export lemma keys_reverse ps : ps~List (k, v)
     ensures keys (reverse ps) == reverse (keys ps)
     proof
@@ -184,18 +202,21 @@ lemma unique_rev_onto xs acc : xs~List a, acc~List a, unique xs, unique acc, dis
                 have disjoint_cons rest acc x
                 have unique_rev_onto rest (x :: acc)
 
+# Reversing keeps a list without repeats.
 export lemma unique_reverse xs : xs~List a, unique xs
     ensures unique (reverse xs)
     proof
         have disjoint_nil xs
         have unique_rev_onto xs []
 
+# Moving `x` from the reversed prefix onto the rest keeps the whole.
 export lemma reverse_cons_append acc x rest : acc~List a, x~a, rest~List a
     ensures reverse (x :: acc) ++ rest == reverse acc ++ (x :: rest)
     proof
         have rev_onto_app acc [x]
         have append_assoc (reverse_onto acc []) [x] rest
 
+# The keys of an append are the appended keys.
 export lemma keys_append xs ys : xs~List (k, v), ys~List (k, v)
     ensures keys (xs ++ ys) == keys xs ++ keys ys
     proof
@@ -203,6 +224,7 @@ export lemma keys_append xs ys : xs~List (k, v), ys~List (k, v)
             []        -> auto
             _ :: rest -> have keys_append rest ys
 
+# An element of `xs ++ ys` is an element of `xs` or of `ys`.
 export lemma contains_append xs ys y : xs~List a, ys~List a, y~a
     ensures contains (xs ++ ys) y == (contains xs y or contains ys y)
     proof
@@ -210,6 +232,7 @@ export lemma contains_append xs ys y : xs~List a, ys~List a, y~a
             []        -> auto
             _ :: rest -> have contains_append rest ys y
 
+# Reversing doesn't change which elements a list has.
 export lemma contains_reverse xs y : xs~List a, y~a
     ensures contains (reverse xs) y == contains xs y
     proof
