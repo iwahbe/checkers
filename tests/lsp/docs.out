@@ -1,0 +1,10 @@
+{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"positionEncoding":"utf-8","textDocumentSync":{"openClose":true,"change":1},"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"documentFormattingProvider":true,"documentSymbolProvider":true,"semanticTokensProvider":{"legend":{"tokenTypes":["namespace","type","enumMember","property","function","parameter","variable","keyword","comment","string","number"],"tokenModifiers":["declaration","readonly"]},"full":true}},"serverInfo":{"name":"checkers","version":"0.1.0"}}}
+{"jsonrpc":"2.0","id":2,"result":{"contents":{"kind":"markdown","value":"```checkers\nfn right p n -> q : p~Point, n~Nat, q~Point, q.x == p.x + n\n```\n\nThe point `n` steps to the right of `p`."},"range":{"start":{"line":17,"character":4},"end":{"line":17,"character":9}}}}
+{"jsonrpc":"2.0","id":3,"result":{"contents":{"kind":"markdown","value":"```checkers\nrecord Point\n```\n\nA point on the grid.\n\nBoth coordinates count from the top left."},"range":{"start":{"line":13,"character":22},"end":{"line":13,"character":27}}}}
+{"jsonrpc":"2.0","id":4,"result":{"contents":{"kind":"markdown","value":"```checkers\nx~Nat  (field of `Point`)\n```\n\nAcross."},"range":{"start":{"line":14,"character":13},"end":{"line":14,"character":14}}}}
+{"jsonrpc":"2.0","id":5,"result":{"contents":{"kind":"markdown","value":"```checkers\nfn undocumented p -> q : p~Point, q~Point\n```"},"range":{"start":{"line":16,"character":3},"end":{"line":16,"character":15}}}}
+{"jsonrpc":"2.0","id":6,"result":{"contents":{"kind":"markdown","value":"```checkers\ny~Nat  (field of `Point`)\n```"},"range":{"start":{"line":14,"character":22},"end":{"line":14,"character":23}}}}
+{"jsonrpc":"2.0","id":7,"result":{"contents":{"kind":"markdown","value":"```checkers\nexport transparent fn reverse xs -> ys : xs~List a, ys~List a\n```"},"range":{"start":{"line":19,"character":16},"end":{"line":19,"character":23}}}}
+{"jsonrpc":"2.0","id":8,"result":{"contents":{"kind":"markdown","value":"```checkers\np : Point\n```"},"range":{"start":{"line":13,"character":9},"end":{"line":13,"character":10}}}}
+{"jsonrpc":"2.0","id":9,"result":null}
+-- exit 0

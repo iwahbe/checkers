@@ -41,12 +41,14 @@ record Span
     end_col~Nat
 
 # A name or token of the index (§15.5): its place, its class, where it is
-# defined and what hovering shows ("" for keywords, comments and so on).
+# defined, what hovering shows ("" for keywords, comments and so on), and the
+# description of what it refers to ("" when there is none, D128).
 record Entry
     at~Span
     class~String
     def~Option Span
     hover~String
+    doc~String
 
 # A diagnostic as the compiler gave it, with its phase.
 record Diag
@@ -220,7 +222,7 @@ partial fn pump out acc g docs c -> r : out~File, acc~Acc, g~Nat, docs~List Doc,
                                 let def = match rpc.get "def" j
                                     Some d -> span_of d
                                     None   -> None
-                                let e = Entry s (str_or "class" j) def (str_or "hover" j)
+                                let e = Entry s (str_or "class" j) def (str_or "hover" j) (str_or "doc" j)
                                 pump out (Acc acc.diags (e :: acc.index) acc.phases) g docs c
                             None   -> pump out acc g docs c
                     else
@@ -473,7 +475,8 @@ partial fn hover w es c -> j : w~Where, es~List Entry, c~Caps, j~Json
     match name_at w.doc.path w.line w.col es
         None   -> Null
         Some e ->
-            let md = rpc.obj [("kind", Str "markdown"), ("value", Str ("```checkers\n" ++ e.hover ++ "\n```"))]
+            let doc = if e.doc == "" then "" else "\n\n" ++ e.doc
+            let md = rpc.obj [("kind", Str "markdown"), ("value", Str ("```checkers\n" ++ e.hover ++ "\n```" ++ doc))]
             rpc.obj [("contents", md), ("range", range_of w.doc.text e.at c.utf8)]
 
 partial fn definition w es docs c -> j : w~Where, es~List Entry, docs~List Doc, c~Caps, j~Json

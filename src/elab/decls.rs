@@ -348,7 +348,13 @@ impl Elab {
             }
             None => (d.span.end as usize).min(text.len()),
         };
-        let header = text.get(start..end).unwrap_or("").trim_end().to_string();
+        // Without the comment lines between the header and the body (a
+        // field's description, D128).
+        let mut lines: Vec<&str> = text.get(start..end).unwrap_or("").lines().collect();
+        while lines.len() > 1 && lines.last().is_some_and(|l| l.trim().is_empty() || l.trim_start().starts_with('#')) {
+            lines.pop();
+        }
+        let header = lines.join("\n").trim_end().to_string();
         self.decl_sig.insert(t, header);
         self.index_decl(name, t);
     }

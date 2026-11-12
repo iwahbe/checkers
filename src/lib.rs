@@ -149,6 +149,25 @@ pub fn check_json(name: &str, text: &str, dir: &std::path::Path, out: &mut dyn F
 
 /// The index (§15.5): each name in the file being checked, then each
 /// keyword, comment, string and number in it.
+/// The description of the declaration whose name starts at byte `at`: the
+/// run of `#` comment lines directly above its line, without the `#` and one
+/// space (D128).
+fn doc_comment(text: &str, at: usize) -> Option<String> {
+    let start = text[..at.min(text.len())].rfind('\n').map_or(0, |i| i + 1);
+    let mut lines = Vec::new();
+    let mut end = start;
+    while end > 0 {
+        let prev = text[..end - 1].rfind('\n').map_or(0, |i| i + 1);
+        let line = text[prev..end - 1].trim();
+        let Some(rest) = line.strip_prefix('#') else { break };
+        lines.push(rest.strip_prefix(' ').unwrap_or(rest).trim_end().to_string());
+        end = prev;
+    }
+    lines.reverse();
+    let doc = lines.join("\n");
+    (!doc.trim().is_empty()).then_some(doc)
+}
+
 fn emit_index(e: &elab::Elab, user: &str, main: &std::path::Path, out: &mut dyn FnMut(String)) {
     let path_of = |m: &str| -> std::path::PathBuf {
         if m == user {
@@ -176,11 +195,18 @@ fn emit_index(e: &elab::Elab, user: &str, main: &std::path::Path, out: &mut dyn 
             },
             None => "null".into(),
         };
+        let doc = match e.def_of(&u.what) {
+            Some((m, span)) if !matches!(u.what, elab::index::Use::Local { .. } | elab::index::Use::Module(_)) => {
+                e.sources.get(&m).and_then(|f| doc_comment(&f.text, span.start as usize))
+            }
+            _ => None,
+        };
         out(format!(
-            r#"{{"kind":"name","path":{},{at},"class":"{}","def":{def},"hover":{}}}"#,
+            r#"{{"kind":"name","path":{},{at},"class":"{}","def":{def},"hover":{},"doc":{}}}"#,
             json::string(&path_of(&u.module).to_string_lossy()),
             e.class_of(&u.what),
             json::string(&e.hover_of(&u.what)),
+            doc.map(|d| json::string(&d)).unwrap_or_else(|| "null".into()),
         ));
     }
     if let Some(f) = e.sources.get(user) {

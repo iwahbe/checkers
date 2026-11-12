@@ -1,0 +1,27 @@
+# Hover shows a name's signature and its description: the comment lines
+# directly above its declaration (D128).
+> {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"capabilities":{"general":{"positionEncodings":["utf-32","utf-8","utf-16"]}}}}
+< 1
+> {"jsonrpc":"2.0","method":"initialized","params":{}}
+> {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/docs.ck","languageId":"checkers","version":1,"text":$TEXT(docs.ck)}}}
+# The use of `right` in `undocumented`: its signature and description.
+> {"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/docs.ck"},"position":{"line":17,"character":5}}}
+< 1
+# `Point` in a signature: two paragraphs; its field `x` (on `p.x`): one line.
+> {"jsonrpc":"2.0","id":3,"method":"textDocument/hover","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/docs.ck"},"position":{"line":13,"character":26}}}
+< 1
+> {"jsonrpc":"2.0","id":4,"method":"textDocument/hover","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/docs.ck"},"position":{"line":14,"character":13}}}
+< 1
+# No description: `undocumented`, the field `y`, and `reverse` in `std`.
+> {"jsonrpc":"2.0","id":5,"method":"textDocument/hover","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/docs.ck"},"position":{"line":16,"character":5}}}
+< 1
+> {"jsonrpc":"2.0","id":6,"method":"textDocument/hover","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/docs.ck"},"position":{"line":14,"character":22}}}
+< 1
+> {"jsonrpc":"2.0","id":7,"method":"textDocument/hover","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/docs.ck"},"position":{"line":19,"character":19}}}
+< 1
+# A local has no description.
+> {"jsonrpc":"2.0","id":8,"method":"textDocument/hover","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/docs.ck"},"position":{"line":13,"character":9}}}
+< 1
+> {"jsonrpc":"2.0","id":9,"method":"shutdown"}
+< 1
+> {"jsonrpc":"2.0","method":"exit"}
