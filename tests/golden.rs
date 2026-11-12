@@ -28,8 +28,7 @@
 //! tools/, examples/, stdlib/, tests/{types,run,stage,stress}: every .ck file must be
 //!                         formatted; every .ck file in the repository must format to a
 //!                         fixed point with the same syntax tree (D93).
-//! examples/*.ck        → must check with no errors and no warnings, unless listed
-//!                         in examples/PENDING: then tests/pending/NAME.out pins it.
+//! examples/*.ck        → must check with no errors and no warnings.
 //!
 //! `UPDATE_GOLDEN=1 cargo test --test golden` rewrites the .out files.
 
@@ -419,32 +418,12 @@ fn golden() {
 
     count += build_tool(root, update, &mut failures);
 
-    // Examples waiting on a later milestone (D48): their output is pinned instead.
-    let pending: Vec<String> = fs::read_to_string(root.join("examples").join("PENDING"))
-        .unwrap_or_default()
-        .lines()
-        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
-        .map(|l| l.split_whitespace().next().unwrap_or("").to_string())
-        .collect();
     for path in ck_files(&root.join("examples")) {
         count += 1;
         let file = path.file_name().unwrap().to_string_lossy().to_string();
         let text = fs::read_to_string(&path).unwrap();
         let c = checkers::check_in(&file, &text, &root.join("examples"));
-        if pending.contains(&file) {
-            let out_path = root.join("tests").join("pending").join(Path::new(&file).with_extension("out"));
-            let actual = c.report();
-            let expected = fs::read_to_string(&out_path).unwrap_or_default();
-            if actual != expected {
-                if update {
-                    fs::create_dir_all(out_path.parent().unwrap()).unwrap();
-                    fs::write(&out_path, &actual).unwrap();
-                    println!("updated {}", out_path.strip_prefix(root).unwrap().display());
-                } else {
-                    failures.push(format!("── pending examples/{file} ──\n--- expected\n{expected}\n--- actual\n{actual}"));
-                }
-            }
-        } else if !c.diags.is_empty() {
+        if !c.diags.is_empty() {
             failures.push(format!("── examples/{file} must be clean ──\n{}", c.report()));
         }
     }

@@ -1,0 +1,96 @@
+# Releases (D129). Pushing a tag `vX.Y.Z` builds, tests and packages Checkers
+# on each platform, attests the archives' provenance, and publishes them as a
+# release: created as a draft, the archives attached, then published. With
+# the repository's immutable releases setting on, publishing locks the tag
+# and the archives for good.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.98.0"
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-linux
+          - os: macos-15
+            target: aarch64-macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: release
+          save-if: false
+      - name: The tag names this version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME, but Cargo.toml says $version"
+            exit 1
+          fi
+      - name: Test
+        run: cargo test --release --locked --workspace
+      - name: Build
+        run: |
+          cargo build --release --locked
+          target/release/ckc build tools/checkers.ck -o target/release/checkers
+      - name: Package
+        run: |
+          d="checkers-$GITHUB_REF_NAME-${{ matrix.target }}"
+          mkdir -p "$d/bin" "$d/lib/checkers"
+          cp target/release/ckc target/release/checkers "$d/bin/"
+          cp -R stdlib "$d/lib/checkers/std"
+          cp README.md SPEC.md "$d/"
+          # The packaged tools on their own: `checkers` finds `ckc` beside it,
+          # `ckc` the standard library in ../lib/checkers/std.
+          "$d/bin/checkers" check examples/wc.ck
+          tar -czf "$d.tar.gz" "$d"
+          shasum -a 256 "$d.tar.gz" > "$d.tar.gz.sha256"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-${{ matrix.target }}
+          path: checkers-*.tar.gz*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*.tar.gz
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$REPO" --draft --verify-tag \
+            --title "Checkers $GITHUB_REF_NAME" --generate-notes
+          gh release edit "$GITHUB_REF_NAME" --repo "$REPO" --draft=false

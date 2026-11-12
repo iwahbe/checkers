@@ -1,0 +1,55 @@
+# CI (D129). One job per platform, so the checks a branch rule requires have
+# the same names for pull requests and the merge queue:
+# - every pull request: clippy and the unit tests;
+# - the merge queue, and `main` after a merge: everything, integration tests
+#   included (golden files, packages, parking, the standard library, the cache).
+# Only `main` saves the build cache (Z3 compiled from source is most of it);
+# pull requests and the merge queue restore it.
+name: CI
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.98.0"
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # The same cache for every job on one platform: they all build
+          # `--release`, so they share the Z3 build.
+          shared-key: release
+          save-if: ${{ github.event_name == 'push' }}
+      - name: Clippy
+        run: cargo clippy --release --locked --workspace --all-targets -- -D warnings
+      - name: Unit tests
+        run: cargo test --release --locked --workspace --lib --bins
+      - name: Integration tests
+        if: github.event_name != 'pull_request'
+        run: cargo test --release --locked --workspace --tests

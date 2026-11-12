@@ -67,6 +67,10 @@ UPDATE_GOLDEN=1 cargo test --test golden      # accept new golden output (review
 
 Golden tests live in `tests/parse/` (syntax tree), `tests/check/` (parse diagnostics) and `tests/types/` (type-checker contract: accepted and rejected programs): each `NAME.ck` has a `NAME.out`. `tests/run/NAME.args` runs a program (first line) with arguments (other lines) and stdin `NAME.in`; `NAME.out` holds its stdout, stderr and exit code (SPEC §13.6). Every file in `examples/` must check with no diagnostics.
 
+## CI and releases
+
+Pull requests merge through a merge queue that runs the whole suite on Linux (x86-64) and macOS (ARM64); each pull request runs clippy and the unit tests (`.github/workflows/ci.yml`). Pushing a tag `vX.Y.Z` that matches `Cargo.toml` publishes an immutable release with an archive per platform (`.github/workflows/release.yml`, D129).
+
 ## Reporting a problem
 
 Open an issue in the form **"found X, expected Y"** with a `.ck` snippet. It becomes a golden test before it is fixed (SPEC §12).
