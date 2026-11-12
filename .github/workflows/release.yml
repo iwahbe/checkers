@@ -18,7 +18,27 @@ env:
   RUST_VERSION: "1.98.0"
 
 jobs:
+  # Only a commit that passed CI on `main` is released: the site deploys a
+  # release with that run's tools (pages.yml).
+  passed:
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+    steps:
+      - name: The tag's commit passed CI on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          n=$(gh run list --repo "$REPO" --workflow ci.yml --branch main --event push --status success \
+                --commit "$GITHUB_SHA" --json databaseId --jq length)
+          if [ "$n" = 0 ]; then
+            echo "::error::$GITHUB_REF_NAME ($GITHUB_SHA) has no passing CI run on main; release a commit of main after its CI passes"
+            exit 1
+          fi
+
   build:
+    needs: passed
     name: build (${{ matrix.target }})
     strategy:
       fail-fast: true
@@ -108,4 +128,4 @@ jobs:
           gh release edit "$GITHUB_REF_NAME" --repo "$REPO" --draft=false
           # Publishing with GITHUB_TOKEN starts no other workflow; start the
           # site's, which adds this release's documentation.
-          gh workflow run pages.yml --repo "$REPO" --ref main
+          gh workflow run pages.yml --repo "$REPO" --ref main -f release="$GITHUB_REF_NAME"

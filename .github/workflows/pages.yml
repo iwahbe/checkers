@@ -7,11 +7,13 @@
 #                       pre-release; of `dev` before the first
 # Nothing generated is kept in the repository.
 #
-# It builds nothing: `ckc` and `checkers` come from CI's run for the commit
-# deployed, the latest on `main` that passed. It runs when CI passes on
-# `main`, when a release is published (the release workflow starts it, since
-# a release published with GITHUB_TOKEN starts no `release` event), and by
-# hand.
+# It builds nothing: it deploys a commit that passed CI on `main`, with the
+# `ckc` and `checkers` that CI run uploaded. Which commit:
+#   CI passed on `main`      that run's
+#   a release is published   the release's (the release workflow starts this
+#                            with `release`, since a release published with
+#                            GITHUB_TOKEN starts no `release` event)
+#   by hand                  `release`'s if given, else the latest that passed
 name: Pages
 
 on:
@@ -22,6 +24,11 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      release:
+        description: "Deploy this release's commit (vX.Y.Z); empty for the latest that passed CI on main"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -42,10 +49,29 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          RELEASE: ${{ github.event.release.tag_name || inputs.release }}
         run: |
-          gh run list --repo "$REPO" --workflow ci.yml --branch main --event push --status success \
-            --limit 1 --json databaseId,headSha --jq '.[0] | "run=\(.databaseId)\nsha=\(.headSha)"' >> "$GITHUB_OUTPUT"
-          cat "$GITHUB_OUTPUT"
+          if [ "$EVENT" = workflow_run ]; then
+            run=$RUN_ID
+            sha=$RUN_SHA
+          else
+            commit=()
+            if [ -n "$RELEASE" ]; then
+              commit=(--commit "$(gh api "repos/$REPO/commits/$RELEASE" --jq .sha)")
+            fi
+            read -r run sha < <(gh run list --repo "$REPO" --workflow ci.yml --branch main --event push \
+              --status success "${commit[@]}" --limit 1 --json databaseId,headSha \
+              --jq '.[0] | "\(.databaseId) \(.headSha)"')
+          fi
+          if [ -z "$run" ] || [ "$run" = null ]; then
+            echo "::error::no CI run on main passed for ${RELEASE:-any commit}"
+            exit 1
+          fi
+          echo "deploying $sha, with the tools of CI run $run"
+          { echo "run=$run"; echo "sha=$sha"; } >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.ci.outputs.sha }}
