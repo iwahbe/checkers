@@ -335,6 +335,9 @@ pub struct Elab {
     /// program's own package, or `std`.
     pub module_pkg: HashMap<String, String>,
     pub deferred: Vec<Deferred>,
+    /// Results of arithmetic whose operands' type wasn't known yet (D134):
+    /// the result's type (a meta), the operands' type, the level.
+    pub arith_results: Vec<(Val, Val, usize)>,
     pub fn_meta: HashMap<DefId, FnMeta>,
     pub cur_fn: Option<DefId>,
     pub calls: Vec<CallRec>,
@@ -434,6 +437,7 @@ impl Elab {
             user_modules: Vec::new(),
             module_pkg: HashMap::new(),
             deferred: Vec::new(),
+            arith_results: Vec::new(),
             fn_meta: HashMap::new(),
             cur_fn: None,
             calls: Vec::new(),
@@ -1230,6 +1234,15 @@ impl Elab {
     /// be a function or `Unit`, so this only sharpens error messages.
     pub fn default_if_numeric(&mut self, ty: &Val) -> bool {
         let Val::Neutral(Head::Meta(m), _) = self.force(ty) else { return false };
+        // The result of arithmetic (D134): settle its operands' type first.
+        let pos = self.arith_results.iter().position(|(r, _, _)| matches!(self.force(r), Val::Neutral(Head::Meta(m2), _) if m2 == m));
+        if let Some(pos) = pos {
+            let (r, operands, lvl) = self.arith_results.remove(pos);
+            self.default_if_numeric(&operands);
+            let base = self.arith_base(&operands);
+            let _ = unify(&self.g, lvl, &r, &base);
+            return true;
+        }
         let hit = self.deferred.iter().find_map(|d| {
             if !matches!(d.kind, OpClass::Numeric | OpClass::Ordered) {
                 return None;
@@ -1248,6 +1261,29 @@ impl Elab {
         }
     }
 
+    /// The type of `+ - * / %` on operands of type `ty` (D134): `Nat` for
+    /// `Nat` and its refinements, `Int` for any other number type.
+    pub fn arith_base(&self, ty: &Val) -> Val {
+        if crate::core::is_nat(&self.g, ty) {
+            return self.nat();
+        }
+        match self.force(ty) {
+            Val::TyCon(id, _) if Some(id) == self.g.well_known.int => self.int(),
+            _ => ty.clone(),
+        }
+    }
+
+    /// The type of `+ - * / %` on operands of type `ty`, now or, if `ty`
+    /// isn't known yet, once it is (D134).
+    pub fn arith_result(&mut self, cx: &Cx, ty: &Val) -> Val {
+        if let Val::Neutral(Head::Meta(_), _) = self.force(ty) {
+            let r = self.fresh_meta_val(cx);
+            self.arith_results.push((r.clone(), ty.clone(), cx.lvl()));
+            return r;
+        }
+        self.arith_base(ty)
+    }
+
     pub fn solve_deferred(&mut self) {
         let ds = std::mem::take(&mut self.deferred);
         for d in &ds {
@@ -1257,6 +1293,10 @@ impl Elab {
                     let _ = unify(&self.g, d.lvl, &d.ty, &n);
                 }
             }
+        }
+        for (r, ty, lvl) in std::mem::take(&mut self.arith_results) {
+            let base = self.arith_base(&ty);
+            let _ = unify(&self.g, lvl, &r, &base);
         }
         for d in ds {
             if d.kind == OpClass::Comparable {

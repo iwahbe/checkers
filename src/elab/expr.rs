@@ -1213,7 +1213,13 @@ impl Elab {
                 } else {
                     vec![lt, rt]
                 };
-                (Tm::PrimApp(prim, args), result.unwrap_or(lty))
+                let result = match (result, class) {
+                    (Some(r), _) => r,
+                    // Arithmetic gives the base number type (D134).
+                    (None, Some(OpClass::Numeric)) => self.arith_result(cx, &lty),
+                    (None, _) => lty,
+                };
+                (Tm::PrimApp(prim, args), result)
             }
         }
     }

@@ -1,0 +1,18 @@
+error[E0450]: cannot prove `r == 0`, the postcondition of `h`
+ --> arith_refined.ck:9:35
+  |
+9 | fn h xs -> r : xs~List I8, r~Nat, r == 0
+  |                                   ^^^^^^ promised here
+  = note: for the value returned on line 12: `1`
+  = note: counterexample: xs = [127]
+  = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+error[E0450]: cannot prove that `x + 1` is a `I8` (`n < 128`)
+  --> arith_refined.ck:17:21
+   |
+17 |     list.map (\x -> x + 1) xs
+   |                     ^^^^^ this must be a `I8`
+   = note: counterexample: x = 127
+   = help: make it true first, e.g. with an `if`, or start from a value that is already a `I8`
+
+arith_refined.ck: 2 errors, 0 warnings
