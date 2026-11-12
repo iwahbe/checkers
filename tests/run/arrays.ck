@@ -81,6 +81,8 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     show (array.map (\x -> x + 1) i8) t
     show (twos i8) t
     show (bytes_upto 4) t
+    # A range's layout (D135 d): `x % 16` is in `0 … 15`, so bytes.
+    show (array.map (\x -> x % 16) u32) t
     show (negated u16) t
     let shared = array.from_list [1, 2, 3]
     let changed = array.set shared 0 9

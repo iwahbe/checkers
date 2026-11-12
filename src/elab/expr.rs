@@ -76,6 +76,7 @@ impl Elab {
             self.check_inner(cx, e, expected, tail)
         };
         let inferred = self.last_inferred.take();
+        self.last_checked = inferred.clone();
         // A value checked against a refinement alias must satisfy it (D71),
         // unless the call it is passed to, or the function returning it,
         // already checks that alias, or its branches did.
@@ -182,8 +183,9 @@ impl Elab {
             {
                 // The result has the operands' type, so check both against it
                 // (as written: a mismatch names `Small`, not `Nat`).
-                let lt = self.check_operand(cx, l, expected);
-                let rt = self.check_operand(cx, r, expected);
+                let (lt, lown) = self.check_operand(cx, l, expected);
+                let (rt, rown) = self.check_operand(cx, r, expected);
+                self.operand_types = Some((lown.unwrap_or_else(|| expected.clone()), rown.unwrap_or_else(|| expected.clone())));
                 self.finish_arith(cx, *op, lt, rt, expected.clone(), l.span.to(r.span), e.span).0
             }
             (ExprKind::Binary(Op::Cons, l, r), Val::TyCon(id, args)) if Some(*id) == self.g.well_known.list => {
@@ -216,7 +218,18 @@ impl Elab {
                 }
                 let (t, ty) = self.infer(cx, e);
                 self.app_expected = None;
-                if !self.unify_at(cx, expected, &ty, e.span, "this expression") {
+                // A branch of an `if` or `match` whose type is inferred
+                // (D135): its range joins the others'; the branches share
+                // only their base type.
+                let shared = match self.join_of(expected) {
+                    Some(m) => {
+                        let r = self.type_range(&ty);
+                        self.join_branch(m, r);
+                        if r.is_some() { self.arith_base(&ty) } else { ty.clone() }
+                    }
+                    None => ty.clone(),
+                };
+                if !self.unify_at(cx, expected, &shared, e.span, "this expression") {
                     return Tm::Error;
                 }
                 // A refinement inside a type argument is never gained (D71).
@@ -304,8 +317,19 @@ impl Elab {
                     let n = self.number(s, x.span);
                     return (Tm::Lit(Lit::Num(-n)), int);
                 }
-                let t = self.check(cx, x, &int, false);
-                (Tm::PrimApp(Prim::Neg, vec![t]), int)
+                let (t, xty) = self.infer(cx, x);
+                if !self.unify_at(cx, &int, &xty, x.span, "this expression") {
+                    return (Tm::Error, int);
+                }
+                // The operand's bounds, negated (D135).
+                let ty = match self.type_range(&xty) {
+                    Some(r) if r.lo.is_some() || r.hi.is_some() => {
+                        let neg = |b: Option<i128>| b.and_then(|b| b.checked_neg());
+                        self.range_type(super::interval::Range { lo: neg(r.hi), hi: neg(r.lo) })
+                    }
+                    _ => int,
+                };
+                (Tm::PrimApp(Prim::Neg, vec![t]), ty)
             }
             ExprKind::OpRef(op) => {
                 let a = format!("$a{}", cx.lvl());
@@ -383,8 +407,22 @@ impl Elab {
             }
             ExprKind::If(..) | ExprKind::Match(..) | ExprKind::Block(..) | ExprKind::Try(..) => {
                 let mv = self.fresh_meta_val(cx);
+                // Numbers from the branches: the hull of their ranges (D135).
+                let m = match &mv {
+                    Val::Neutral(Head::Meta(m), _) => Some(*m),
+                    _ => None,
+                };
+                if let Some(m) = m {
+                    self.joins.insert(m, super::interval::Join::Empty);
+                }
                 let t = self.check(cx, e, &mv, false);
-                (t, mv)
+                match m.and_then(|m| self.joins.remove(&m)) {
+                    Some(super::interval::Join::Range(r)) => {
+                        let ty = self.range_type(r);
+                        (t, ty)
+                    }
+                    _ => (t, mv),
+                }
             }
             ExprKind::Par(items) => {
                 let tuple = mk(ExprKind::Tuple(items.clone()), e.span);
@@ -979,9 +1017,13 @@ impl Elab {
     /// An operand of an arithmetic or comparison operator: it takes the
     /// other operand's type, but not its refinement (`x < 10` with `x~Small`
     /// doesn't need `10` to be a `Small`; D71).
-    fn check_operand(&mut self, cx: &mut Cx, e: &Expr, ty: &Val) -> Tm {
+    /// An operand checked against `ty`, and its own type if it was
+    /// inferred (an operand needn't have `ty`'s refinements, D71).
+    fn check_operand(&mut self, cx: &mut Cx, e: &Expr, ty: &Val) -> (Tm, Option<Val>) {
         self.alias_covered = true;
-        self.check(cx, e, ty, false)
+        self.last_checked = None;
+        let t = self.check(cx, e, ty, false);
+        (t, self.last_checked.take())
     }
 
     pub fn apply_one(&mut self, cx: &mut Cx, t: Tm, ty: Val, a: &Expr) -> (Tm, Val) {
@@ -1130,17 +1172,24 @@ impl Elab {
             _ => {
                 // Take the operand type from the side that is not a bare number
                 // literal, so `1 + "a"` blames `"a"`.
-                let (lt, rt, lty) = if matches!(l.kind, ExprKind::Lit(ast::Lit::Int(_)))
+                // A range (D135) isn't imposed on the other operand: they
+                // share its base type. Each operand's range is its own.
+                let (lt, rt, lty, own) = if matches!(l.kind, ExprKind::Lit(ast::Lit::Int(_)))
                     && !matches!(r.kind, ExprKind::Lit(ast::Lit::Int(_)))
                 {
                     let (rt, rty) = self.infer(cx, r);
-                    let lt = self.check_operand(cx, l, &rty);
-                    (lt, rt, rty)
+                    let shared = self.shared_operand_type(&rty);
+                    let (lt, lown) = self.check_operand(cx, l, &shared);
+                    let lown = lown.unwrap_or_else(|| shared.clone());
+                    (lt, rt, shared, (lown, rty))
                 } else {
                     let (lt, lty) = self.infer(cx, l);
-                    let rt = self.check_operand(cx, r, &lty);
-                    (lt, rt, lty)
+                    let shared = self.shared_operand_type(&lty);
+                    let (rt, rown) = self.check_operand(cx, r, &shared);
+                    let rown = rown.unwrap_or_else(|| shared.clone());
+                    (lt, rt, shared, (lty, rown))
                 };
+                self.operand_types = Some(own);
                 self.finish_arith(cx, op, lt, rt, lty, l.span.to(r.span), span)
             }
         }
@@ -1215,8 +1264,12 @@ impl Elab {
                 };
                 let result = match (result, class) {
                     (Some(r), _) => r,
-                    // Arithmetic gives the base number type (D134).
-                    (None, Some(OpClass::Numeric)) => self.arith_result(cx, &lty),
+                    // Arithmetic gives the operands' range, or their base
+                    // number type (D134, D135).
+                    (None, Some(OpClass::Numeric)) => {
+                        let (a, b) = self.operand_types.take().unwrap_or_else(|| (lty.clone(), lty.clone()));
+                        self.arith_result(cx, prim.clone(), &args[0], &args[1], &lty, &a, &b)
+                    }
                     (None, _) => lty,
                 };
                 (Tm::PrimApp(prim, args), result)

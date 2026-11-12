@@ -8,6 +8,7 @@
 mod decls;
 mod expr;
 mod eq;
+mod interval;
 pub mod index;
 mod order;
 mod pattern;
@@ -250,6 +251,20 @@ pub struct Obligation {
 }
 
 /// A predicate from a header, constructor or alias, as a term over its binders.
+/// Arithmetic whose operands' type wasn't known yet (D134, D135): its
+/// result's type (a meta) is settled when it is.
+pub struct ArithResult {
+    pub result: Val,
+    pub operands: Val,
+    pub lvl: usize,
+    pub op: Prim,
+    pub left: Tm,
+    pub right: Tm,
+    /// Each operand's own type (D135).
+    pub left_ty: Val,
+    pub right_ty: Val,
+}
+
 #[derive(Clone)]
 pub struct Pred {
     pub tm: Tm,
@@ -337,7 +352,15 @@ pub struct Elab {
     pub deferred: Vec<Deferred>,
     /// Results of arithmetic whose operands' type wasn't known yet (D134):
     /// the result's type (a meta), the operands' type, the level.
-    pub arith_results: Vec<(Val, Val, usize)>,
+    pub arith_results: Vec<ArithResult>,
+    /// The anonymous refinement made for each range (D135).
+    pub ranges: HashMap<(Option<i128>, Option<i128>), DefId>,
+    /// Inferred `if`s and `match`es whose branches' ranges join (D135).
+    pub joins: HashMap<MetaId, interval::Join>,
+    /// The type `check` inferred for what it checked, if it did.
+    pub last_checked: Option<Val>,
+    /// An arithmetic operation's operands' own types (D135).
+    pub operand_types: Option<(Val, Val)>,
     pub fn_meta: HashMap<DefId, FnMeta>,
     pub cur_fn: Option<DefId>,
     pub calls: Vec<CallRec>,
@@ -438,6 +461,10 @@ impl Elab {
             module_pkg: HashMap::new(),
             deferred: Vec::new(),
             arith_results: Vec::new(),
+            ranges: HashMap::new(),
+            joins: HashMap::new(),
+            last_checked: None,
+            operand_types: None,
             fn_meta: HashMap::new(),
             cur_fn: None,
             calls: Vec::new(),
@@ -1235,12 +1262,11 @@ impl Elab {
     pub fn default_if_numeric(&mut self, ty: &Val) -> bool {
         let Val::Neutral(Head::Meta(m), _) = self.force(ty) else { return false };
         // The result of arithmetic (D134): settle its operands' type first.
-        let pos = self.arith_results.iter().position(|(r, _, _)| matches!(self.force(r), Val::Neutral(Head::Meta(m2), _) if m2 == m));
+        let pos = self.arith_results.iter().position(|a| matches!(self.force(&a.result), Val::Neutral(Head::Meta(m2), _) if m2 == m));
         if let Some(pos) = pos {
-            let (r, operands, lvl) = self.arith_results.remove(pos);
-            self.default_if_numeric(&operands);
-            let base = self.arith_base(&operands);
-            let _ = unify(&self.g, lvl, &r, &base);
+            let a = self.arith_results.remove(pos);
+            self.default_if_numeric(&a.operands);
+            self.settle_arith(a);
             return true;
         }
         let hit = self.deferred.iter().find_map(|d| {
@@ -1273,15 +1299,30 @@ impl Elab {
         }
     }
 
-    /// The type of `+ - * / %` on operands of type `ty`, now or, if `ty`
-    /// isn't known yet, once it is (D134).
-    pub fn arith_result(&mut self, cx: &Cx, ty: &Val) -> Val {
+    /// The type of `lt op rt` on operands of type `ty`, now or, if `ty`
+    /// isn't known yet, once it is (D134, D135).
+    #[allow(clippy::too_many_arguments)]
+    pub fn arith_result(&mut self, cx: &Cx, op: Prim, lt: &Tm, rt: &Tm, ty: &Val, lty: &Val, rty: &Val) -> Val {
         if let Val::Neutral(Head::Meta(_), _) = self.force(ty) {
             let r = self.fresh_meta_val(cx);
-            self.arith_results.push((r.clone(), ty.clone(), cx.lvl()));
+            self.arith_results.push(ArithResult {
+                result: r.clone(),
+                operands: ty.clone(),
+                lvl: cx.lvl(),
+                op,
+                left: lt.clone(),
+                right: rt.clone(),
+                left_ty: lty.clone(),
+                right_ty: rty.clone(),
+            });
             return r;
         }
-        self.arith_base(ty)
+        self.arith_type(op, lt, rt, ty, lty, rty)
+    }
+
+    fn settle_arith(&mut self, a: ArithResult) {
+        let t = self.arith_type(a.op, &a.left, &a.right, &a.operands, &a.left_ty, &a.right_ty);
+        let _ = unify(&self.g, a.lvl, &a.result, &t);
     }
 
     pub fn solve_deferred(&mut self) {
@@ -1294,9 +1335,8 @@ impl Elab {
                 }
             }
         }
-        for (r, ty, lvl) in std::mem::take(&mut self.arith_results) {
-            let base = self.arith_base(&ty);
-            let _ = unify(&self.g, lvl, &r, &base);
+        for a in std::mem::take(&mut self.arith_results) {
+            self.settle_arith(a);
         }
         for d in ds {
             if d.kind == OpClass::Comparable {

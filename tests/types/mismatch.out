@@ -16,7 +16,7 @@ error[E0201]: type mismatch: expected `Nat`, found `String`
 14 |     if b then 1 else "no"
    |                      ^^^^ this expression has type `String`
 
-error[E0205]: too many arguments: this has type `Nat`, which is not a function
+error[E0205]: too many arguments: this has type `(n~Nat, 1 <= n)`, which is not a function
   --> mismatch.ck:18:9
    |
 18 |     f 1 2
@@ -54,7 +54,7 @@ error[E0210]: `len` needs a `String`, `List` or `Array`, but this is `Nat`
 33 |     len 5
    |         ^ has type `Nat`
 
-error[E0215]: this line produces a `Nat`, which would be thrown away
+error[E0215]: this line produces a `(n~Nat, n == 2)`, which would be thrown away
   --> mismatch.ck:36:5
    |
 36 |     1 + 1

@@ -1,0 +1,27 @@
+error[E0450]: cannot prove `n < 256`, the postcondition of `wrong`
+  --> ranges.ck:33:15
+   |
+33 | fn wrong x -> r : x~U8, r~U8
+   |               ^ promised here
+   = note: for the value returned on line 35: `y`
+   = note: facts in scope: `x < 256`
+   = note: counterexample: x = 255
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+error[E0201]: type mismatch: expected `String`, found `(n~Nat, n <= 510)`
+  --> ranges.ck:40:5
+   |
+40 |     y
+   |     ^ this expression has type `(n~Nat, n <= 510)`
+
+error[E0450]: cannot prove `r <= 510`, the postcondition of `mixed`
+  --> ranges.ck:44:41
+   |
+44 | fn mixed x y -> r : x~U8, y~U32, r~Nat, r <= 510
+   |                                         ^^^^^^^^ promised here
+   = note: for the value returned on line 46: `s`
+   = note: facts in scope: `x < 256`, `y < 4294967296`
+   = note: counterexample: x = 255, y = 256
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+ranges.ck: 3 errors, 0 warnings

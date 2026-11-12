@@ -123,6 +123,11 @@ fn ask(query: &str) -> Answer {
         None => {
             let start = std::time::Instant::now();
             let out = run_z3(query);
+            // `CHECKERS_SMT_TIME=1`: each query Z3 answered, its time and size.
+            if std::env::var_os("CHECKERS_SMT_TIME").is_some() {
+                let what = query.lines().find(|l| l.starts_with("(assert (not")).unwrap_or("").chars().take(120).collect::<String>();
+                eprintln!("smt {:>6} ms {:>7} bytes {what}", start.elapsed().as_millis(), query.len());
+            }
             let cut_off = out.starts_with("unknown") && start.elapsed().as_millis() as u64 >= SAFETY_MS * 9 / 10;
             if !cut_off {
                 store(query, &out);
