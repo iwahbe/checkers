@@ -18,8 +18,7 @@ env:
   RUST_VERSION: "1.98.0"
 
 jobs:
-  # Only a commit that passed CI on `main` is released: the site deploys a
-  # release with that run's tools (pages.yml).
+  # Only a commit that passed CI on `main` is released.
   passed:
     runs-on: ubuntu-24.04
     permissions:
@@ -127,5 +126,6 @@ jobs:
             --title "Checkers $GITHUB_REF_NAME" --generate-notes
           gh release edit "$GITHUB_REF_NAME" --repo "$REPO" --draft=false
           # Publishing with GITHUB_TOKEN starts no other workflow; start the
-          # site's, which adds this release's documentation.
-          gh workflow run pages.yml --repo "$REPO" --ref main -f release="$GITHUB_REF_NAME"
+          # site's, which adds this release's documentation (and keeps `dev`
+          # from main's latest passing commit).
+          gh workflow run pages.yml --repo "$REPO" --ref main
