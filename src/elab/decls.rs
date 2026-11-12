@@ -384,6 +384,7 @@ impl Elab {
                     if self.cur == "std.prelude" && name.name == "Type" && ctors.is_empty() && d.export == Export::Abstract =>
                 {
                     self.declare(name, true, Sym::Univ, exported);
+                    self.index_header(index::Target::Univ, name.span, d);
                     Some(Sym::Univ)
                 }
                 DeclKind::Enum { name, params, ctors, .. } => {

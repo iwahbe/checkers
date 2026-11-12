@@ -13,6 +13,8 @@ pub enum Target {
     Con(ConId),
     /// Field `k` of a constructor (a record's fields, an enum constructor's).
     Field(ConId, usize),
+    /// `Type`, declared in the prelude (D132).
+    Univ,
 }
 
 /// One occurrence of a name.
@@ -52,6 +54,7 @@ impl Elab {
             Sym::Def(d) => self.index_global(span, Target::Def(d)),
             Sym::Ty(t) => self.index_global(span, Target::Ty(t)),
             Sym::Con(c) => self.index_global(span, Target::Con(c)),
+            Sym::Univ => self.index_global(span, Target::Univ),
             _ => {}
         }
     }
@@ -97,7 +100,7 @@ impl Elab {
     pub fn class_of(&self, u: &Use) -> &'static str {
         match u {
             Use::Global(Target::Def(d)) => self.def_class.get(d).copied().unwrap_or("function"),
-            Use::Global(Target::Ty(_)) => "type",
+            Use::Global(Target::Ty(_) | Target::Univ) => "type",
             Use::Global(Target::Con(_)) => "constructor",
             Use::Global(Target::Field(..)) => "field",
             Use::Local { param: true, .. } => "parameter",
@@ -119,6 +122,7 @@ impl Elab {
                         format!("{} : {}", info.name, crate::core::show(&self.g, &[], &info.ty))
                     }
                     Target::Ty(t) => format!("type {}", self.g.tys[t.0 as usize].name),
+                    Target::Univ => "Type".to_string(),
                     Target::Con(c) => {
                         let ty = self.con_type(*c);
                         format!("{} : {}", self.g.cons[c.0 as usize].name, crate::core::show(&self.g, &[], &ty))
