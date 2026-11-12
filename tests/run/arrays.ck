@@ -43,6 +43,14 @@ fn of_i64 xs -> r : xs~List I64, r~Array I64
 fn of_int xs -> r : xs~List Int, r~Array Int
     array.from_list xs
 
+# `init` lays its result out for `U8`, written as each element comes.
+fn bytes_upto n -> r : n~Nat, r~Bytes
+    array.init n (\i -> i % 256)
+
+# `map` into one word per element.
+fn negated xs -> r : xs~Array U16, r~Array Int
+    array.map (\x -> -x) xs
+
 # A generic function's result laid out for `U8`, from its caller.
 fn twos xs -> r : xs~Array I8, r~Array U8
     array.map (\x -> 2) xs
@@ -72,6 +80,8 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     show (twice u8) t
     show (array.map (\x -> x + 1) i8) t
     show (twos i8) t
+    show (bytes_upto 4) t
+    show (negated u16) t
     let shared = array.from_list [1, 2, 3]
     let changed = array.set shared 0 9
     show shared t

@@ -14,6 +14,8 @@ pub const TABLE: &[Builtin] = &[
     ("std.array.slice", "ckb_array_slice", ckb_array_slice),
     ("std.array.concat", "ckb_array_concat", ckb_array_concat),
     ("std.array.reverse", "ckb_array_reverse", ckb_array_reverse),
+    ("std.array.init", "ckb_array_init", ckb_array_init),
+    ("std.array.map", "ckb_array_map", ckb_array_map),
 ];
 
 builtin!(ckb_array_from_list, |a| {
@@ -41,3 +43,12 @@ builtin!(ckb_array_concat, |a| {
 });
 
 builtin!(ckb_array_reverse, |a| array::reverse(a[1]));
+
+// `init n f`: element `i` is `f i`, laid out for its type (`a[0]`).
+builtin!(ckb_array_init, |a| array::build(Layout::of_word(a[0]), n(a[1]), |i| crate::apply::apply(dup(a[2]), vec![nat(i)])));
+
+// `map f xs`: the result laid out for `b` (`a[1]`; `a[0]` is `xs`'s).
+builtin!(ckb_array_map, |a| {
+    let (f, xs) = (a[2], a[3]);
+    array::build(Layout::of_word(a[1]), array::len(xs), |i| crate::apply::apply(dup(f), vec![array::get(xs, i)]))
+});

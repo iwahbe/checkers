@@ -34,9 +34,14 @@ export fn concat parts -> r : parts~List (Array a), r~Array a
 export fn reverse xs -> r : xs~Array a, r~Array a, len r == len xs
     __builtin
 
-# `f` applied to each element, in order.
-export fn map f xs -> r : f~(a -> b), xs~Array a, r~Array b
-    from_list (list.map f (to_list xs))
+# `f` applied to each element, in order, written straight into the new
+# array.
+export fn map f xs -> r : f~(a -> b), xs~Array a, r~Array b, len r == len xs
+    __builtin
+
+# An array of `n` elements, element `i` being `f i`.
+export fn init n f -> r : n~Nat, f~(Nat -> a), r~Array a, len r == n
+    __builtin
 
 # Whether `p` holds for every element (`True` for an empty array).
 export fn all p xs -> r : p~(a -> Bool), xs~Array a, r~Bool
@@ -79,6 +84,8 @@ check to_list (slice (from_list [1, 2, 3, 4]) 1 3) == [2, 3]
 check to_list (concat [from_list [1, 2], from_list [], from_list [3]]) == [1, 2, 3]
 check to_list (reverse (from_list [1, 2, 3])) == [3, 2, 1]
 check to_list (map (\x -> x * 2) (from_list [1, 2, 3])) == [2, 4, 6]
+check to_list (init 4 (\i -> i * i)) == [0, 1, 4, 9]
+check len (init 0 (\i -> i)) == 0
 check all (\x -> x > 0) (from_list [1, 2, 3]) and not (all (\x -> x > 1) (from_list [1, 2, 3]))
 check contains (from_list [1, 2, 3]) 2 and not (contains (from_list [1, 2, 3]) 5)
 check count 1 (from_list [1, 2, 1]) == 2

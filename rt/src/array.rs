@@ -216,6 +216,28 @@ pub fn from_items(l: Layout, items: Vec<W>) -> W {
     a
 }
 
+/// A new array of `n` elements laid out as `l`, element `i` being
+/// `next(i)` (owned), written in place as it comes: one allocation. If an
+/// element doesn't fit `l` (a program that type checks never does that),
+/// the array is rebuilt with one word per element.
+pub fn build(l: Layout, n: usize, mut next: impl FnMut(usize) -> W) -> W {
+    let a = alloc_array(l, n);
+    for i in 0..n {
+        let w = next(i);
+        if !l.holds(w) {
+            let mut v: Vec<W> = (0..i).map(|k| get(a, k)).collect();
+            v.push(w);
+            v.extend((i + 1..n).map(&mut next));
+            // `a` is packed (every word fits `Words`), so it holds no
+            // references: freeing it releases nothing.
+            drop_w(a);
+            return from_items(Words, v);
+        }
+        put(a, l, i, w);
+    }
+    a
+}
+
 /// The elements of `a` (borrowed), as new references.
 pub fn items(a: W) -> Vec<W> {
     (0..len(a)).map(|i| get(a, i)).collect()
