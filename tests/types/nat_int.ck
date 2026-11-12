@@ -30,3 +30,17 @@ fn minus a b -> r : a~Nat, b~Nat, r~Nat
 # A refinement is never gained inside a type (D71 c).
 fn narrow_all is -> ns : is~List Int, ns~List Nat
     is
+
+# (d) A function over `Nat`s is a `Nat -> Nat`, also where its type is
+# inferred first and `f` must then have it (`a` from `inc`, then `f~a`).
+fn inc x -> r : x~Nat, r~Nat
+    x + 1
+
+fn same_type x y : x~a, y~a
+    True
+
+fn inc_first f : f~(Nat -> Nat)
+    same_type inc f
+
+fn inc_listed f : f~(Nat -> Nat)
+    same_type [inc] [f]

@@ -1388,7 +1388,9 @@ impl Elab {
                         Some(block) => {
                             let saved = self.proof_goal.replace((goal, ens.text.clone()));
                             let unit = self.unit();
+                            self.in_proof += 1;
                             let _ = self.check_block(&mut sig.cx, block, &unit, true);
+                            self.in_proof -= 1;
                             self.proof_goal = saved;
                             self.solve_deferred();
                         }
@@ -1410,6 +1412,7 @@ impl Elab {
                 _ => {}
             }
         }
+        self.resolve_insts();
     }
 
     /// A lemma's statement (its `let`s and `ensures`), before any body, so a

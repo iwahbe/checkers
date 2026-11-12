@@ -7,6 +7,7 @@
 
 mod decls;
 mod expr;
+mod eq;
 pub mod index;
 mod order;
 mod pattern;
@@ -18,7 +19,7 @@ use crate::core::*;
 use crate::diag::Diagnostic;
 use crate::source::{SourceFile, Span};
 use crate::syntax::ast;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,6 +155,8 @@ pub struct Deferred {
     pub what: String,
     pub lvl: usize,
     pub names: Vec<Name>,
+    /// The function whose body this is in.
+    pub owner: Option<DefId>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -162,6 +165,28 @@ pub enum OpClass {
     Ordered,
     Concat,
     HasLen,
+    /// `==`/`!=` in compiled code: no functions (D125).
+    Comparable,
+}
+
+/// A use of a generic function in compiled code: its type parameters'
+/// arguments, for D125 (b).
+pub struct Inst {
+    pub caller: Option<DefId>,
+    pub callee: DefId,
+    /// The arguments of the callee's leading implicit binders, by position.
+    pub args: Vec<Val>,
+    pub lvl: usize,
+    pub names: Vec<Name>,
+    pub span: Span,
+}
+
+/// Why a function's type parameter must not be a function type (D125 b):
+/// the function that compares it with `==`, and that parameter's name.
+#[derive(Clone)]
+pub struct EqReq {
+    pub root: DefId,
+    pub param: Name,
 }
 
 /// Predicates recorded for the prover (M3).
@@ -331,6 +356,15 @@ pub struct Elab {
     pub arg_of: Option<String>,
     /// Inside a type or specification: no obligations (§7.1).
     pub in_spec: usize,
+    /// Inside a lemma's proof, which is never compiled (D125).
+    pub in_proof: usize,
+    /// Type parameters compared with `==` in compiled code, by function and
+    /// binder position (D125 b).
+    pub eq_reqs: HashMap<DefId, BTreeMap<usize, EqReq>>,
+    /// This module's uses of generic functions, resolved after its bodies.
+    pub insts: Vec<Inst>,
+    /// The last definition `sym_term` gave, for `insert` to record its use.
+    pub pending_inst: Option<(DefId, Span)>,
     /// Elaborating the head of an application: a bare function name gets its
     /// refined type only as a value (D85).
     pub in_app_head: bool,
@@ -422,6 +456,10 @@ impl Elab {
             result_metas: HashMap::new(),
             arg_of: None,
             in_spec: 0,
+            in_proof: 0,
+            eq_reqs: HashMap::new(),
+            insts: Vec::new(),
+            pending_inst: None,
             in_app_head: false,
             proof_goal: None,
             post_target: None,
@@ -1214,6 +1252,10 @@ impl Elab {
             }
         }
         for d in ds {
+            if d.kind == OpClass::Comparable {
+                self.solve_comparable(&d);
+                continue;
+            }
             let t = self.force(&d.ty);
             let wk = &self.g.well_known;
             let ok = match (&t, d.kind) {
@@ -1240,6 +1282,7 @@ impl Elab {
                     OpClass::Ordered => "numbers (`Nat` or `Int`) to compare",
                     OpClass::Concat => "a `String`, `Bytes` or `List`",
                     OpClass::HasLen => "a `String`, `Bytes` or `List`",
+                    OpClass::Comparable => unreachable!(),
                 };
                 let mut diag = Diagnostic::error("E0210", format!("{} needs {need}, but this is `{shown}`", d.what), d.span)
                     .with_label(format!("has type `{shown}`"));

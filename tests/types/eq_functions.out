@@ -1,0 +1,67 @@
+error[E0263]: `==` can't compare functions: `Nat -> Nat` is a function type
+  --> eq_functions.ck:16:5
+   |
+16 |     f == g
+   |     ^^^^^^ has type `Nat -> Nat`
+   = help: compare what the functions return instead, such as `f x == g x`
+
+error[E0263]: `!=` can't compare functions: `Option (Nat -> Nat)` contains a function, `Nat -> Nat`
+  --> eq_functions.ck:19:5
+   |
+19 |     Some f != None
+   |     ^^^^^^^^^^^^^^ has type `Option (Nat -> Nat)`
+   = help: compare what the functions return instead, such as `f x == g x`
+
+error[E0263]: `==` can't compare functions: `(Nat, Nat -> Nat)` contains a function, `Nat -> Nat`
+  --> eq_functions.ck:22:5
+   |
+22 |     (1, f) == (1, inc)
+   |     ^^^^^^^^^^^^^^^^^^ has type `(Nat, Nat -> Nat)`
+   = help: compare what the functions return instead, such as `f x == g x`
+
+error[E0263]: `==` can't compare functions: `Handler` contains a function, `Nat -> Nat`
+  --> eq_functions.ck:25:5
+   |
+25 |     h == Handler "inc" inc
+   |     ^^^^^^^^^^^^^^^^^^^^^^ has type `Handler`
+   = help: compare what the functions return instead, such as `f x == g x`
+
+error[E0263]: `==` can't compare functions: `(x~Nat) -> Nat` is a function type
+  --> eq_functions.ck:27:7
+   |
+27 | check inc == inc
+   |       ^^^^^^^^^^ has type `(x~Nat) -> Nat`
+   = help: compare what the functions return instead, such as `f x == g x`
+
+error[E0264]: `same` compares values of type `a` with `==`, so `a` can't be `Nat -> Nat`: it is a function type
+  --> eq_functions.ck:51:5
+   |
+51 |     same f inc
+   |     ^^^^ `a` is `Nat -> Nat` here
+
+error[E0264]: `same_twice` compares values of type `a` with `==` (through `same`), so `a` can't be `Nat -> Nat`: it is a function type
+  --> eq_functions.ck:54:5
+   |
+54 |     same_twice f inc
+   |     ^^^^^^^^^^ `a` is `Nat -> Nat` here
+
+error[E0264]: `same_options` compares values of type `a` with `==`, so `a` can't be `Nat -> Nat`: it is a function type
+  --> eq_functions.ck:57:5
+   |
+57 |     same_options (Some f) None
+   |     ^^^^^^^^^^^^ `a` is `Nat -> Nat` here
+
+error[E0264]: `contains` compares values of type `a` with `==`, so `a` can't be `(x~Nat) -> Nat`: it is a function type
+  --> eq_functions.ck:60:5
+   |
+60 |     list.contains [inc] f
+   |     ^^^^^^^^^^^^^ `a` is `(x~Nat) -> Nat` here
+
+error[E0263]: `==` can't compare functions: `(x~Nat) -> Nat` is a function type
+  --> eq_functions.ck:64:18
+   |
+64 |     let is_inc = (== inc)
+   |                  ^^^^^^^^ has type `(x~Nat) -> Nat`
+   = help: compare what the functions return instead, such as `f x == g x`
+
+eq_functions.ck: 10 errors, 0 warnings

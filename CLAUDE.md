@@ -33,6 +33,7 @@ src/elab/expr.rs     bidirectional checking of expressions, blocks, `<-`, `try`,
 src/elab/pattern.rs  `match` → case trees, exhaustiveness witnesses
 src/elab/index.rs    names for tools: each use, its definition, kind and hover text (`--json`, D120)
 src/elab/refine.rs   refinements inside types: inline and function-type refinements, implication, variance, E0262 (D71, D82–D87)
+src/elab/eq.rs       `==` never compares functions: in compiled code, and through type parameters (D125)
 src/elab/termination.rs  structural recursion over call-graph SCCs (§5.3)
 src/elab/order.rs   declaration order by dependencies, cycles (D65)
 src/elab/stdlib.rs   finding and loading the standard library from disk (D104), program modules from `a/b.ck` (D53), packages' modules (D111)

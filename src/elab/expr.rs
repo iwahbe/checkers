@@ -31,15 +31,30 @@ impl Elab {
 
     /// Insert implicit applications until the type is not an implicit Π.
     pub fn insert(&mut self, cx: &Cx, mut t: Tm, mut ty: Val) -> (Tm, Val) {
+        // A use of a definition in compiled code: its implicit arguments
+        // are checked against D125 (b) once the module's bodies are done.
+        let inst = match (self.pending_inst.take(), &t) {
+            (Some((d, span)), Tm::Def(d2)) if d == *d2 && self.in_spec == 0 && self.in_proof == 0 => Some((d, span)),
+            _ => None,
+        };
+        let mut args = Vec::new();
         loop {
             match self.force(&ty) {
                 Val::Pi(_, m, Icit::Impl, _, c) => {
                     let mt = self.fresh_meta(cx);
                     let mv = self.eval(cx, &mt);
+                    args.push(mv.clone());
                     t = Tm::App(Rc::new(t), Rc::new(mt), Icit::Impl, m);
                     ty = apply_closure(&self.g, &c, mv);
                 }
-                _ => return (t, ty),
+                _ => {
+                    if let Some((callee, span)) = inst {
+                        if !args.is_empty() {
+                            self.insts.push(Inst { caller: self.cur_fn, callee, args, lvl: cx.lvl(), names: cx.names(), span });
+                        }
+                    }
+                    return (t, ty);
+                }
             }
         }
     }
@@ -475,6 +490,7 @@ impl Elab {
                     // Only in a cycle, which E0225 reports (D65).
                     return (Tm::Error, Val::Error);
                 }
+                self.pending_inst = Some((d, span));
                 (Tm::Def(d), eval(&self.g, &empty, &ty))
             }
             Sym::Ty(t) => {
@@ -527,6 +543,7 @@ impl Elab {
                     what: "a number literal".into(),
                     lvl: cx.lvl(),
                     names: cx.names(),
+                    owner: self.cur_fn,
                 });
                 (Tm::Lit(Lit::Num(n)), mv)
             }
@@ -589,6 +606,7 @@ impl Elab {
                             what: "`len`".into(),
                             lvl: cx.lvl(),
                             names: cx.names(),
+                            owner: self.cur_fn,
                         });
                         let r = (Tm::PrimApp(Prim::Len, vec![at]), self.nat());
                         return self.apply_rest(cx, r, &args[1..], e.span);
@@ -1152,10 +1170,23 @@ impl Elab {
                         what: format!("`{}`", op.as_str()),
                         lvl: cx.lvl(),
                         names: cx.names(),
+                        owner: self.cur_fn,
                     });
                 }
                 if op == Op::EqEq {
                     self.last_eq_ty = Some(lty.clone());
+                }
+                // Compiled code never compares functions (D125).
+                if matches!(op, Op::EqEq | Op::Ne) && self.in_spec == 0 && self.in_proof == 0 {
+                    self.deferred.push(Deferred {
+                        ty: lty.clone(),
+                        kind: OpClass::Comparable,
+                        span: operands,
+                        what: format!("`{}`", op.as_str()),
+                        lvl: cx.lvl(),
+                        names: cx.names(),
+                        owner: self.cur_fn,
+                    });
                 }
                 let (lv, rv) = (self.eval(cx, &lt), self.eval(cx, &rt));
                 match op {

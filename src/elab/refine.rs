@@ -443,7 +443,10 @@ impl Elab {
         let Some(spec) = self.specs.get(d).cloned() else { return ty };
         let n = spec.n_binders;
         let given = args.len();
-        if given >= n || spec.preds.is_empty() {
+        // A predicate of a binder's refinement alias (`x~Nat`) is carried by
+        // the alias in the binder's type already.
+        let spec_preds: Vec<Pred> = spec.preds.iter().filter(|p| p.alias.is_none()).cloned().collect();
+        if given >= n || spec_preds.is_empty() {
             return ty;
         }
         // The last binder a predicate mentions (`n` for the result).
@@ -462,7 +465,7 @@ impl Elab {
             let l = cx2.lvl();
             let dom_tm = quote(&self.g, l, &dom);
             let mut preds = Vec::new();
-            for p in spec.preds.iter().filter(|p| !p.is_post && last(p) == Some(k)) {
+            for p in spec_preds.iter().filter(|p| !p.is_post && last(p) == Some(k)) {
                 let mut e = env.clone();
                 e.push(Val::var(l));
                 while e.len() <= n {
@@ -481,7 +484,7 @@ impl Elab {
         let cod = quote(&self.g, l, &cur);
         let res: Name = Rc::from(self.fn_meta.get(d).and_then(|m| m.result.clone()).unwrap_or_else(|| "result".to_string()).as_str());
         let mut posts = Vec::new();
-        for p in spec.preds.iter().filter(|p| p.is_post && last(p) == Some(n)) {
+        for p in spec_preds.iter().filter(|p| p.is_post && last(p) == Some(n)) {
             let mut e = env.clone();
             e.push(Val::var(l));
             posts.push(self.subst_pred(p, e, l + 1, &cx2, &res));
