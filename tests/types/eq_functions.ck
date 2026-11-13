@@ -84,5 +84,5 @@ fn generic_term t : t~Term
     same t t
 
 # Built-in types that do compare.
-fn plain a b c : a~Bytes, b~Decimal, c~Bag
+fn plain a b c : a~Bytes, b~Decimal, c~Bag Int
     a == a and b == b and c == c

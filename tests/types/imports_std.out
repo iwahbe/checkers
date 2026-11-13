@@ -10,7 +10,7 @@ error[E0220]: unknown module `std.nothing`
   |
 6 | import std.nothing
   |        ^^^^^^^^^^^ no such standard library module
-  = help: the standard library modules are: std.actor, std.array, std.bag, std.bytes, std.char, std.cown, std.cursor, std.decimal, std.env, std.files, std.future, std.json, std.list, std.prelude, std.proc, std.string, std.system, std.terminal, std.utf8
+  = help: the standard library modules are: std.actor, std.array, std.bag, std.bytes, std.char, std.cown, std.cursor, std.decimal, std.env, std.files, std.future, std.json, std.list, std.prelude, std.proc, std.sort, std.string, std.system, std.terminal, std.utf8
 
 error[E0226]: two imports are both called `string`
  --> imports_std.ck:8:8

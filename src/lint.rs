@@ -139,7 +139,7 @@ impl Linter {
         for c in cs {
             match c {
                 Constraint::Typed { ty, .. } => self.expr(ty),
-                Constraint::Pred(e) => self.expr(e),
+                Constraint::Pred(e) | Constraint::Named(_, e) => self.expr(e),
             }
         }
     }
@@ -218,6 +218,41 @@ impl Linter {
                 self.expr(value);
             }
             DeclKind::Check { expr } => self.expr(expr),
+            DeclKind::Class { name, param, members } => {
+                self.camel(name, "class name");
+                self.snake(param, "type parameter");
+                for m in members {
+                    match m {
+                        ClassMember::Fn { name, params, constraints, .. } => {
+                            self.snake(name, "function name");
+                            params.iter().for_each(|p| self.snake(p, "parameter"));
+                            self.constraints(constraints);
+                        }
+                        ClassMember::Lemma { name, params, constraints, ensures, .. } => {
+                            self.snake(name, "lemma name");
+                            params.iter().for_each(|p| self.snake(p, "parameter"));
+                            self.constraints(constraints);
+                            self.expr(ensures);
+                        }
+                    }
+                }
+            }
+            DeclKind::Instance { members, .. } => {
+                for m in members {
+                    match m {
+                        InstMember::Fn { params, body, .. } => {
+                            params.iter().for_each(|p| self.snake(p, "parameter"));
+                            self.block(body);
+                        }
+                        InstMember::Lemma { params, proof, .. } => {
+                            params.iter().for_each(|p| self.snake(p, "parameter"));
+                            if let Some(b) = proof {
+                                self.block(b);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -268,6 +303,10 @@ impl Linter {
             }
             ExprKind::Neg(x) | ExprKind::SectionL(_, x) | ExprKind::SectionR(_, x) | ExprKind::Try(x) => self.expr(x),
             ExprKind::Field(x, _) => self.expr(x),
+            ExprKind::Forall(vs, cs) => {
+                vs.iter().for_each(|v| self.snake(v, "variable"));
+                self.constraints(cs);
+            }
             ExprKind::Refine(r) => {
                 r.types().into_iter().for_each(|t| self.expr(t));
                 r.preds.iter().for_each(|p| self.expr(p));

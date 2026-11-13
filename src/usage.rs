@@ -156,6 +156,8 @@ impl U<'_> {
                 c[lvl] = Count::One;
                 c
             }
+            // An unsolved meta (an error was reported) uses nothing.
+            Tm::App(..) if head_is_meta(t) => self.zero(),
             Tm::App(f, a, _, m) => {
                 let mut c = self.go(f);
                 // A constructor stores its argument: one use, like a saturated `ConApp`.
@@ -441,4 +443,12 @@ pub fn check_fn(e: &mut Elab, did: DefId, body: &Tm) {
             u.report(lvl, k, false);
         }
     }
+}
+
+fn head_is_meta(t: &Tm) -> bool {
+    let mut h = t;
+    while let Tm::App(f, ..) = h {
+        h = f;
+    }
+    matches!(h, Tm::Meta(_))
 }

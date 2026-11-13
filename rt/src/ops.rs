@@ -288,7 +288,7 @@ pub fn show(w: W, p: u8) -> String {
         K_RUST => match obj(w) {
             Some(Obj::Decimal(d)) => d.render(),
             Some(Obj::Bag(b)) => {
-                let items: Vec<String> = b.iter().flat_map(|(v, n)| std::iter::repeat_n(v.to_string(), *n)).collect();
+                let items: Vec<String> = b.iter().flat_map(|(v, n)| std::iter::repeat_n(v.clone(), *n)).collect();
                 format!("<Bag {{{}}}>", items.join(", "))
             }
             Some(Obj::File(_)) => "<File>".into(),

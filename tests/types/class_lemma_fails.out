@@ -1,0 +1,27 @@
+error[E0450]: cannot prove lemma `Ord Odd.trans`
+  --> class_lemma_fails.ck:10:1
+   |
+10 | instance Ord Odd
+   | ^^^^^^ `le x z`
+   = note: facts in scope: `le x y`, `le y z`
+   = note: counterexample: x = Odd 3, y = Odd 2, z = Odd 3
+   = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+
+error[E0450]: cannot prove lemma `Ord Odd.antisym`
+  --> class_lemma_fails.ck:10:1
+   |
+10 | instance Ord Odd
+   | ^^^^^^^^^^^ `x == y`
+   = note: facts in scope: `le x y`, `le y x`
+   = note: counterexample: x = Odd 2, y = Odd 3
+   = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+
+error[E0450]: `auto` cannot prove `le x y or le y x`
+  --> class_lemma_fails.ck:15:13
+   |
+15 |             auto
+   |             ^^^^ the goal here
+   = note: counterexample: p = Odd 2, q = Odd 2
+   = help: split into cases with `match`, or add facts with `have`
+
+class_lemma_fails.ck: 3 errors, 0 warnings

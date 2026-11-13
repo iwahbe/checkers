@@ -284,13 +284,22 @@ impl Parser {
             Tok::Kw(Kw::Type) => self.alias_decl()?,
             Tok::Kw(Kw::Lemma) => self.lemma_decl()?,
             Tok::Kw(Kw::Let) => self.const_decl()?,
+            Tok::Kw(Kw::Class) => self.class_decl()?,
+            Tok::Kw(Kw::Instance) if export == Export::No => self.instance_decl()?,
             Tok::Kw(Kw::Check) if export == Export::No => {
                 self.bump();
                 let expr = self.expr()?;
                 self.end_line()?;
                 DeclKind::Check { expr }
             }
-            _ => return Err(self.error_here("a declaration (`fn`, `enum`, `record`, `type`, `lemma`, `let`, `check`)")),
+            Tok::Kw(Kw::Instance) => {
+                self.diags.push(
+                    Diagnostic::error("E0120", "an instance is not exported: it is visible wherever its class and type are", start)
+                        .with_help("remove `export`"),
+                );
+                self.instance_decl()?
+            }
+            _ => return Err(self.error_here("a declaration (`fn`, `enum`, `record`, `type`, `lemma`, `let`, `class`, `instance`, `check`)")),
         };
         if matches!(export, Export::Abstract) && !matches!(kind, DeclKind::Enum { .. } | DeclKind::Record { .. }) {
             self.diags.push(Diagnostic::error(
@@ -365,6 +374,11 @@ impl Parser {
     }
 
     fn constraint(&mut self) -> PResult<Constraint> {
+        if matches!(self.peek(), Tok::LName(_)) && *self.peek_at(1) == Tok::Colon {
+            let name = self.ident("a name")?;
+            self.bump(); // :
+            return Ok(Constraint::Named(name, self.expr()?));
+        }
         if self.at_ident() && *self.peek_at(1) == Tok::Tilde {
             let name = self.ident("a name")?;
             self.bump(); // ~
@@ -502,6 +516,138 @@ impl Parser {
             return Err(self.error_here("end of lemma"));
         }
         Ok(DeclKind::Lemma { name, params, constraints, lets, ensures, proof })
+    }
+
+    fn class_decl(&mut self) -> PResult<DeclKind> {
+        self.bump(); // class
+        let name = self.ident("a class name")?;
+        let param = self.ident("the class's type parameter")?;
+        self.open_block("list of the class's functions and lemmas")?;
+        let mut members = Vec::new();
+        while !self.at(&Tok::Dedent) && !self.at(&Tok::Eof) {
+            let start = self.span();
+            if self.eat_kw(Kw::Fn) {
+                let mname = self.ident("a function name")?;
+                let params = self.names_until_header_end();
+                let result = if self.eat(&Tok::Arrow) { Some(self.ident("a result name after `->`")?) } else { None };
+                let constraints = self.opt_constraints()?;
+                let span = start.to(self.prev_span());
+                if self.at(&Tok::Newline) && *self.peek_at(1) == Tok::Indent {
+                    self.diags.push(
+                        Diagnostic::error("E0121", format!("a class's function `{}` has no body", mname.name), mname.span)
+                            .with_help("each instance gives the body; a class only gives the signature"),
+                    );
+                    return Err(Failed);
+                }
+                self.end_line()?;
+                members.push(ClassMember::Fn { name: mname, params, result, constraints, span });
+            } else if self.eat_kw(Kw::Lemma) {
+                let mname = self.ident("a lemma name")?;
+                let params = self.names_until_header_end();
+                let constraints = self.opt_constraints()?;
+                self.open_block("lemma statement (`ensures …`)")?;
+                let mut lets = Vec::new();
+                while self.eat_kw(Kw::Let) {
+                    let p = self.pattern()?;
+                    self.expect(Tok::Eq, "`=`")?;
+                    let e = self.expr()?;
+                    self.end_line()?;
+                    lets.push((p, e));
+                }
+                self.expect_kw(Kw::Ensures)?;
+                let ensures = self.expr()?;
+                self.end_line()?;
+                if self.at_kw(Kw::Proof) {
+                    self.diags.push(
+                        Diagnostic::error("E0121", format!("a class's lemma `{}` has no proof", mname.name), self.span())
+                            .with_help("each instance proves it; to prove something once from the class's lemmas, write a lemma outside the class"),
+                    );
+                    return Err(Failed);
+                }
+                if !self.eat(&Tok::Dedent) {
+                    return Err(self.error_here("end of lemma"));
+                }
+                let span = start.to(self.prev_span());
+                members.push(ClassMember::Lemma { name: mname, params, constraints, lets, ensures, span });
+            } else {
+                return Err(self.error_here("`fn` or `lemma`"));
+            }
+        }
+        self.bump(); // dedent
+        Ok(DeclKind::Class { name, param, members })
+    }
+
+    fn instance_decl(&mut self) -> PResult<DeclKind> {
+        self.bump(); // instance
+        let class = self.ident("a class name")?;
+        let ty = self.postfix()?;
+        let mut context = Vec::new();
+        if self.eat(&Tok::Colon) {
+            context.push(self.expr()?);
+            while self.eat(&Tok::Comma) {
+                context.push(self.expr()?);
+            }
+        }
+        let mut members = Vec::new();
+        if !(self.at(&Tok::Newline) && *self.peek_at(1) == Tok::Indent) {
+            self.end_line()?;
+            return Ok(DeclKind::Instance { class, ty, context, members });
+        }
+        self.open_block("list of the instance's functions and lemmas")?;
+        while !self.at(&Tok::Dedent) && !self.at(&Tok::Eof) {
+            let start = self.span();
+            if self.eat_kw(Kw::Fn) {
+                let mname = self.ident("a function name")?;
+                let params = self.names_until_header_end();
+                if self.at(&Tok::Colon) || self.at(&Tok::Arrow) {
+                    self.diags.push(
+                        Diagnostic::error("E0121", format!("an instance's function `{}` takes its signature from the class", mname.name), self.span())
+                            .with_help("write only its name and parameters, then its body"),
+                    );
+                    return Err(Failed);
+                }
+                self.open_block("function body")?;
+                let decreasing = if self.eat_kw(Kw::Decreasing) {
+                    let e = self.expr()?;
+                    self.end_line()?;
+                    Some(e)
+                } else {
+                    None
+                };
+                let body = self.block_rest()?;
+                let span = start.to(self.prev_span());
+                members.push(InstMember::Fn { name: mname, params, decreasing, body, span });
+            } else if self.eat_kw(Kw::Lemma) {
+                let mname = self.ident("a lemma name")?;
+                let params = self.names_until_header_end();
+                if self.at(&Tok::Colon) {
+                    self.diags.push(
+                        Diagnostic::error("E0121", format!("an instance's lemma `{}` takes its statement from the class", mname.name), self.span())
+                            .with_help("write only its name and parameters, then its proof"),
+                    );
+                    return Err(Failed);
+                }
+                let proof = if self.at(&Tok::Newline) && *self.peek_at(1) == Tok::Indent {
+                    self.open_block("proof")?;
+                    self.expect_kw(Kw::Proof)?;
+                    self.open_block("proof")?;
+                    let b = self.block_rest()?;
+                    if !self.eat(&Tok::Dedent) {
+                        return Err(self.error_here("end of lemma"));
+                    }
+                    Some(b)
+                } else {
+                    self.end_line()?;
+                    None
+                };
+                let span = start.to(self.prev_span());
+                members.push(InstMember::Lemma { name: mname, params, proof, span });
+            } else {
+                return Err(self.error_here("`fn` or `lemma`"));
+            }
+        }
+        self.bump(); // dedent
+        Ok(DeclKind::Instance { class, ty, context, members })
     }
 
     fn const_decl(&mut self) -> PResult<DeclKind> {
@@ -761,8 +907,49 @@ impl Parser {
                 self.bump();
                 Ok(Expr { kind: ExprKind::Admit, span: start })
             }
+            Tok::Kw(Kw::Forall) => self.forall(),
             _ => self.dollar(),
         }
+    }
+
+    /// `forall x y : c, …` (D137): its clauses are those that follow and
+    /// mention one of its variables (parenthesize to end it sooner).
+    fn forall(&mut self) -> PResult<Expr> {
+        let start = self.bump().span; // forall
+        let mut vars = Vec::new();
+        while matches!(self.peek(), Tok::LName(_)) {
+            vars.push(self.ident("a variable")?);
+        }
+        if vars.is_empty() {
+            return Err(self.error_here("the variables of `forall`"));
+        }
+        self.expect(Tok::Colon, "`:` and the clauses of `forall`")?;
+        let names: Vec<String> = vars.iter().map(|v| v.name.clone()).collect();
+        let mut clauses = vec![self.constraint()?];
+        loop {
+            if !self.at(&Tok::Comma) {
+                break;
+            }
+            let (pos, ndiags, indent, last) = (self.pos, self.diags.len(), self.indent, self.last_dedent);
+            self.bump(); // ,
+            let c = match self.constraint() {
+                Ok(c) => c,
+                Err(Failed) => {
+                    (self.pos, self.indent, self.last_dedent) = (pos, indent, last);
+                    self.diags.truncate(ndiags);
+                    break;
+                }
+            };
+            if constraint_mentions(&c, &names) {
+                clauses.push(c);
+            } else {
+                (self.pos, self.indent, self.last_dedent) = (pos, indent, last);
+                self.diags.truncate(ndiags);
+                break;
+            }
+        }
+        let end = self.prev_span();
+        Ok(Expr { kind: ExprKind::Forall(vars, clauses), span: start.to(end) })
     }
 
     /// `a $ b`, lowest precedence, right-associative.
@@ -849,7 +1036,7 @@ impl Parser {
     fn starts_tail_expr(&self) -> bool {
         matches!(
             self.peek(),
-            Tok::Kw(Kw::If) | Tok::Kw(Kw::Match) | Tok::Backslash | Tok::Kw(Kw::Try)
+            Tok::Kw(Kw::If) | Tok::Kw(Kw::Match) | Tok::Backslash | Tok::Kw(Kw::Try) | Tok::Kw(Kw::Forall)
         )
     }
 
@@ -1275,5 +1462,31 @@ impl Parser {
             _ => return Err(self.error_here("a pattern")),
         };
         Ok(Pattern { kind, span: start })
+    }
+}
+
+/// Does the constraint mention one of `names` (as a variable, or as the name
+/// a typed binder gives a type to)?
+fn constraint_mentions(c: &Constraint, names: &[String]) -> bool {
+    match c {
+        Constraint::Typed { name, ty, .. } => names.contains(&name.name) || expr_mentions(ty, names),
+        Constraint::Pred(e) | Constraint::Named(_, e) => expr_mentions(e, names),
+    }
+}
+
+fn expr_mentions(e: &Expr, names: &[String]) -> bool {
+    let go = |x: &Expr| expr_mentions(x, names);
+    match &e.kind {
+        ExprKind::Var(n) => names.contains(n),
+        ExprKind::Tuple(xs) | ExprKind::List(xs) | ExprKind::Par(xs) => xs.iter().any(go),
+        ExprKind::App(a, b) | ExprKind::Binary(_, a, b) | ExprKind::Arrow(a, b) | ExprKind::Index(a, b) => go(a) || go(b),
+        ExprKind::Neg(a) | ExprKind::SectionL(_, a) | ExprKind::SectionR(_, a) | ExprKind::Field(a, _) | ExprKind::Try(a) => go(a),
+        ExprKind::If(a, b, c) => go(a) || go(b) || go(c),
+        ExprKind::Match(a, arms) => go(a) || arms.iter().any(|arm| go(&arm.body) || arm.guard.as_ref().is_some_and(go)),
+        ExprKind::Lambda(_, b) => go(b),
+        ExprKind::Refine(r) => r.types().into_iter().any(go) || r.preds.iter().any(go),
+        ExprKind::Forall(_, cs) => cs.iter().any(|c| constraint_mentions(c, names)),
+        ExprKind::Block(b) => go(&b.result),
+        _ => false,
     }
 }

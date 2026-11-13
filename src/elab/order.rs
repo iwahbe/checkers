@@ -28,7 +28,9 @@ pub struct Plan {
     pub cycles: Vec<Vec<usize>>,
 }
 
-pub fn plan(m: &ast::Module) -> Plan {
+/// `dicts`: the declarations building instances' dictionaries (D136), which
+/// every function and lemma may need, since instances aren't named.
+pub fn plan(m: &ast::Module, dicts: &[usize]) -> Plan {
     // Module-level names → declaration index (constructors → their type).
     let mut names: HashMap<&str, usize> = HashMap::new();
     for (k, d) in m.decls.iter().enumerate() {
@@ -48,7 +50,7 @@ pub fn plan(m: &ast::Module) -> Plan {
             DeclKind::Record { name, .. } => {
                 names.insert(&name.name, k);
             }
-            DeclKind::Check { .. } => {}
+            DeclKind::Check { .. } | DeclKind::Class { .. } | DeclKind::Instance { .. } => {}
         }
     }
     // A function whose result type isn't written: its type is known only
@@ -140,7 +142,16 @@ pub fn plan(m: &ast::Module) -> Plan {
                 head.constraints(constraints, &bound);
                 need(Node::Head(k), &head, false);
             }
-            DeclKind::Check { .. } => {}
+            DeclKind::Check { .. } | DeclKind::Class { .. } | DeclKind::Instance { .. } => {}
+        }
+    }
+    // Any function or lemma may use an instance (D136).
+    for k in 0..m.decls.len() {
+        if has_body(k) && !dicts.contains(&k) {
+            for &d in dicts {
+                edges.entry(Node::Head(k)).or_default().insert(Node::Head(d));
+                edges.entry(Node::Body(k)).or_default().insert(Node::Head(d));
+            }
         }
     }
     // A body comes after its own head.
@@ -302,12 +313,12 @@ impl Refs {
     fn constraints(&mut self, cs: &[Constraint], bound: &[String]) {
         let bound: Vec<String> = bound.iter().cloned().chain(cs.iter().filter_map(|c| match c {
             Constraint::Typed { name, .. } => Some(name.name.clone()),
-            Constraint::Pred(_) => None,
+            Constraint::Pred(_) | Constraint::Named(..) => None,
         })).collect();
         for c in cs {
             match c {
                 Constraint::Typed { ty, .. } => self.expr(ty, &bound, true),
-                Constraint::Pred(e) => self.expr(e, &bound, false),
+                Constraint::Pred(e) | Constraint::Named(_, e) => self.expr(e, &bound, false),
             }
         }
     }
@@ -387,6 +398,11 @@ impl Refs {
                     self.pat_refs(p, in_type);
                 }
                 self.expr(body, &b, in_type);
+            }
+            ExprKind::Forall(vs, cs) => {
+                let mut b = bound.to_vec();
+                b.extend(vs.iter().map(|v| v.name.clone()));
+                self.constraints(cs, &b);
             }
             ExprKind::Block(b) => self.block(b, bound),
             ExprKind::Fork(_, b) => self.block(b, bound),

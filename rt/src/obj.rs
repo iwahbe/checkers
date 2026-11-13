@@ -37,8 +37,9 @@ pub struct ChildCell {
 
 pub enum Obj {
     Decimal(Decimal),
-    /// Sorted (value, count) pairs (D47).
-    Bag(Vec<(Num, usize)>),
+    /// Sorted (value, count) pairs (D47, D138), each value by how it is
+    /// shown (a bag is only made by `check`s on specifications).
+    Bag(Vec<(String, usize)>),
     File(Mutex<Option<FileState>>),
     /// A child process, until it is waited for.
     Child(Arc<ChildCell>),

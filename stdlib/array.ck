@@ -4,6 +4,7 @@
 module std.array
 
 import std.list
+import std.sort
 
 # The list's elements, in order.
 export fn from_list xs -> r : xs~List a, r~Array a, len r == list.length xs
@@ -77,7 +78,41 @@ export fn drop n xs -> r : n~Nat, xs~Array a, r~Array a, len r <= len xs,
     let k = if n <= len xs then n else len xs
     slice xs k (len xs)
 
+# A list made into an array and back is the same list.
+export lemma to_list_from_list xs : xs~List a
+    ensures to_list (from_list xs) == xs
+    proof
+        __builtin
+
+# ── Sorting (D138) ───────────────────────────────────────────────────────────
+# Stable, by the merge sorts of `std.sort`.
+
+# `xs` in order (`Ord`).
+export fn sort xs -> r : Ord a, xs~Array a, r~Array a, len r == len xs,
+                         list.sorted (to_list r), list.perm (to_list xs) (to_list r)
+    let s = sort.sort (to_list xs)
+    have to_list_from_list s
+    from_list s
+
+# `xs` in the order of `key` of each element (`Ord`).
+export fn sort_as key xs -> r : Ord k, key~(a -> k), xs~Array a, r~Array a, len r == len xs,
+                                list.sorted_as key (to_list r), list.perm (to_list xs) (to_list r)
+    let s = sort.sort_as key (to_list xs)
+    have to_list_from_list s
+    from_list s
+
+# `xs` in the order `le` gives, which must put any two elements in order
+# one way or the other (`total`).
+export fn sort_by le xs -> r : le~(a -> a -> Bool), xs~Array a,
+                               total: forall x y : x~a, y~a, le x y or le y x,
+                               r~Array a, len r == len xs, list.sorted_by le (to_list r), list.perm (to_list xs) (to_list r)
+    let s = sort.sort_by le (to_list xs)
+    have to_list_from_list s
+    from_list s
+
 check to_list (from_list [3, 1, 2]) == [3, 1, 2]
+check to_list (sort (from_list [3, 1, 2])) == [1, 2, 3]
+check to_list (sort_by (\x y -> x >= y) (from_list [1, 3, 2])) == [3, 2, 1]
 check len (repeat 4 7) == 4
 check to_list (set (from_list [1, 2, 3]) 1 9) == [1, 9, 3]
 check to_list (slice (from_list [1, 2, 3, 4]) 1 3) == [2, 3]

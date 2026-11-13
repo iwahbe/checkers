@@ -81,6 +81,10 @@ pub enum Prim {
     When,
     /// A stdlib function implemented in Rust (`__builtin`), by qualified name.
     Builtin(Rc<str>),
+    /// `forall x y : …, p` (D137): its one argument is a Π over the
+    /// variables whose body is the `Bool` (premises implying the
+    /// conclusion). Only in specifications; never evaluated or compiled.
+    Forall,
 }
 
 #[derive(Clone, Debug)]
@@ -1284,4 +1288,93 @@ pub fn head_def(t: &Tm) -> Option<DefId> {
         Tm::App(f, ..) => head_def(f),
         _ => None,
     }
+}
+
+/// Replace each solved meta in `t` (a term over `l` variables), with its
+/// arguments, by its solution, leaving the rest of `t` as it is.
+pub fn zonk_metas(g: &Globals, l: usize, t: &Tm) -> Tm {
+    fn has(g: &Globals, t: &Tm) -> bool {
+        match t {
+            Tm::Meta(m) => g.meta(*m).is_some(),
+            Tm::App(f, a, ..) => has(g, f) || has(g, a),
+            Tm::Pi(_, _, _, a, b) => has(g, a) || has(g, b),
+            Tm::Lam(_, _, _, b) => has(g, b),
+            Tm::Let(_, _, a, b, c) => has(g, a) || has(g, b) || has(g, c),
+            Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => v.iter().any(|x| has(g, x)),
+            Tm::Proj(x, _) | Tm::Field(x, _, _) => has(g, x),
+            Tm::Case(s, c) => {
+                has(g, s)
+                    || c.branches.iter().any(|(_, _, b)| has(g, b))
+                    || c.lits.iter().any(|(_, b)| has(g, b))
+                    || c.default.as_ref().is_some_and(|b| has(g, b))
+            }
+            _ => false,
+        }
+    }
+    fn go(g: &Globals, l: usize, t: &Tm) -> Tm {
+        if !has(g, t) {
+            return t.clone();
+        }
+        let mut h = t;
+        while let Tm::App(f, ..) = h {
+            h = f;
+        }
+        if let Tm::Meta(m) = h {
+            if g.meta(*m).is_some() {
+                let env = Rc::new((0..l).map(Val::var).collect::<Vec<_>>());
+                return fix_mults(g, &quote(g, l, &eval(g, &env, t)));
+            }
+        }
+        let rc = |x: &Tm, k: usize| Rc::new(go(g, l + k, x));
+        match t {
+            Tm::App(f, a, i, m) => Tm::App(rc(f, 0), rc(a, 0), *i, *m),
+            Tm::Pi(x, m, i, a, b) => Tm::Pi(x.clone(), *m, *i, rc(a, 0), rc(b, 1)),
+            Tm::Lam(x, m, i, b) => Tm::Lam(x.clone(), *m, *i, rc(b, 1)),
+            Tm::Let(x, m, a, b, c) => Tm::Let(x.clone(), *m, rc(a, 0), rc(b, 0), rc(c, 1)),
+            Tm::TyConApp(c, v) => Tm::TyConApp(*c, v.iter().map(|x| go(g, l, x)).collect()),
+            Tm::ConApp(c, v) => Tm::ConApp(*c, v.iter().map(|x| go(g, l, x)).collect()),
+            Tm::TupleTy(v) => Tm::TupleTy(v.iter().map(|x| go(g, l, x)).collect()),
+            Tm::Tuple(v) => Tm::Tuple(v.iter().map(|x| go(g, l, x)).collect()),
+            Tm::PrimApp(p, v) => Tm::PrimApp(p.clone(), v.iter().map(|x| go(g, l, x)).collect()),
+            Tm::Proj(x, i) => Tm::Proj(rc(x, 0), *i),
+            Tm::Field(x, c, i) => Tm::Field(rc(x, 0), *c, *i),
+            Tm::Case(s, c) => Tm::Case(
+                rc(s, 0),
+                Rc::new(CaseTm {
+                    branches: c.branches.iter().map(|(k, n, b)| (*k, *n, go(g, l + n, b))).collect(),
+                    lits: c.lits.iter().map(|(x, b)| (x.clone(), go(g, l, b))).collect(),
+                    default: c.default.as_ref().map(|b| go(g, l, b)),
+                }),
+            ),
+            _ => t.clone(),
+        }
+    }
+    go(g, l, t)
+}
+
+/// A quoted application of a definition, with each argument's multiplicity
+/// taken from the definition's type again (quoting doesn't keep them).
+fn fix_mults(g: &Globals, t: &Tm) -> Tm {
+    let mut args = Vec::new();
+    let mut h = t;
+    while let Tm::App(f, a, i, _) = h {
+        args.push((fix_mults(g, a), *i));
+        h = f;
+    }
+    args.reverse();
+    let Tm::Def(d) = h else { return t.clone() };
+    let mut ty = g.defs[d.0 as usize].ty.clone();
+    let mut out = h.clone();
+    for (a, i) in args {
+        let m = match &ty {
+            Tm::Pi(_, m, _, _, b) => {
+                let m = *m;
+                ty = (**b).clone();
+                m
+            }
+            _ => Mult::Many,
+        };
+        out = Tm::App(Rc::new(out), Rc::new(a), i, m);
+    }
+    out
 }

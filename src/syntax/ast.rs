@@ -67,6 +67,9 @@ pub enum Constraint {
     Typed { name: Ident, mult: Mult, ty: Expr },
     /// A Bool/Prop predicate.
     Pred(Expr),
+    /// `name: p`, a precondition with a name, which may contain `forall`
+    /// (D137); used in the body by `have name a b …`.
+    Named(Ident, Expr),
 }
 
 /// `(param~dom, preds…)`, or with `arrow`, `(param~dom -> result~cod, preds…)`.
@@ -170,6 +173,33 @@ pub enum DeclKind {
     Check {
         expr: Expr,
     },
+    /// `class Ord a` and what each instance must supply (D136).
+    Class {
+        name: Ident,
+        param: Ident,
+        members: Vec<ClassMember>,
+    },
+    /// `instance Ord (List a) : Ord a` (D136).
+    Instance {
+        class: Ident,
+        ty: Expr,
+        context: Vec<Expr>,
+        members: Vec<InstMember>,
+    },
+}
+
+/// A requirement of a class: a function's signature, or a lemma's statement.
+#[derive(Clone, Debug)]
+pub enum ClassMember {
+    Fn { name: Ident, params: Vec<Ident>, result: Option<Ident>, constraints: Vec<Constraint>, span: Span },
+    Lemma { name: Ident, params: Vec<Ident>, constraints: Vec<Constraint>, lets: Vec<(Pattern, Expr)>, ensures: Expr, span: Span },
+}
+
+/// What an instance supplies: a function's body, or a lemma's proof.
+#[derive(Clone, Debug)]
+pub enum InstMember {
+    Fn { name: Ident, params: Vec<Ident>, decreasing: Option<Expr>, body: Block, span: Span },
+    Lemma { name: Ident, params: Vec<Ident>, proof: Option<Block>, span: Span },
 }
 
 #[derive(Clone, Debug)]
@@ -255,6 +285,9 @@ pub enum ExprKind {
     Fork(Ident, Block),
     /// `join x = f, … using sched` + block; only as the right side of `<-` (D33)
     Join(Vec<(Ident, Expr)>, Ident, Block),
+    /// `forall x y : x~a, y~a, p x y` (D137): variables, then clauses that
+    /// mention them, the last the conclusion.
+    Forall(Vec<Ident>, Vec<Constraint>),
     /// Placeholder for a token the lexer rejected.
     Error,
 }

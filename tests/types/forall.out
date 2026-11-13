@@ -1,0 +1,44 @@
+error[E0450]: cannot prove `forall a b : a~Int, b~Int, le a b or le b a`, required to call `ordered`
+  --> forall.ck:21:5
+   |
+21 |     ordered (\a b -> a < b) 1 1
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ordered` requires `forall a b : a~Int, b~Int, le a b or le b a`
+   = note: counterexample: a = 0, b = 0
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+error[E0289]: `forall` is only allowed in a named precondition
+  --> forall.ck:31:28
+   |
+31 | fn unnamed x -> r : x~Int, forall a : a~Int, a == a, r~Bool
+   |                            ^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: write it as a precondition with a name, `name: forall …`, and use it in the body with `have name …`
+
+error[E0289]: this `forall` would have to be assumed where the function is called
+  --> forall.ck:34:30
+   |
+34 | fn before x -> r : x~Int, h: (forall a : a~Int, a > x) implies x > 0, r~Bool
+   |                              ^^^^^^^^^^^^^^^^^^^^^^^^^ a `forall` before `implies` or under `not`
+   = help: make it a precondition of its own: `name: forall …`
+
+error[E0290]: `h` has fewer variables than the values given here
+  --> forall.ck:38:10
+   |
+38 |     have h x x
+   |          ^^^^^
+   = help: give one value for each variable of `h`'s `forall`s, left to right
+
+error[E0290]: `have h` needs a value for each variable of its `forall`s
+  --> forall.ck:42:10
+   |
+42 |     have h x
+   |          ^^^
+   = help: a `forall` is used by filling in its variables: the fact is then what it says of those values
+
+error[E0289]: `forall` is only allowed in a named precondition
+  --> forall.ck:46:5
+   |
+46 |     forall a : a~Int, a == a
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: write it as a precondition with a name, `name: forall …`, and use it in the body with `have name …`
+
+forall.ck: 6 errors, 0 warnings

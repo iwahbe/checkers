@@ -88,7 +88,7 @@ impl Op {
             Prim::Fork => Op::Fork,
             Prim::Join => Op::Join,
             Prim::When => Op::When,
-            Prim::Builtin(_) => return None,
+            Prim::Builtin(_) | Prim::Forall => return None,
         })
     }
 }

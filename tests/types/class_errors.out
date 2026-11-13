@@ -1,0 +1,98 @@
+error[E0362]: class function `width` must give the type of each parameter and of its result
+ --> class_errors.ck:7:8
+  |
+7 |     fn width x -> n : x~a, n
+  |        ^^^^^ no type for `n`
+  = help: write `-> r` and a type for each name, e.g. `fn le x y -> r : x~a, y~a, r~Bool`
+
+error[E0280]: `Name` is not a class
+  --> class_errors.ck:15:10
+   |
+15 | instance Name Bool
+   |          ^^^^
+   = help: an instance is of a class declared with `class`
+
+error[E0281]: `instance Show (List Int)` must be for a type applied to distinct type variables
+  --> class_errors.ck:20:15
+   |
+20 | instance Show (List Int)
+   |               ^^^^^^^^^^ not a type constructor applied to variables
+   = help: write it for every element type, e.g. `instance Ord (List a) : Ord a`
+
+error[E0282]: `instance Ord Int` must be in the package of `Ord` or of the type
+  --> class_errors.ck:25:1
+   |
+25 | instance Ord Int
+   | ^^^^^^^^^^^^^^^^ neither is declared in this package
+   = help: an instance goes with its class or its type, so there is only ever one (Rust's orphan rule); wrap the type in a record of your own to give it this instance
+
+error[E0283]: `instance Show Name` overlaps another instance
+  --> class_errors.ck:37:1
+   |
+37 | instance Show Name
+   | ^^^^^^^^^^^^^^^^^^ `Show Name` is already declared on line 29
+   = help: a type has one instance of each class; give the other order through a wrapper type, or `sort_as`/`sort_by`
+
+error[E0365]: `show` takes 1 parameter in class `Show`, but 2 here
+  --> class_errors.ck:44:5
+   |
+44 |     fn show b k
+   |     ^^^^^^^^^^^
+
+error[E0363]: class `Show` has no function `colour`
+  --> class_errors.ck:46:8
+   |
+46 |     fn colour b
+   |        ^^^^^^
+   = help: its members are `show`, `short`
+
+error[E0364]: `instance Show (Option a)` doesn't give `show`
+  --> class_errors.ck:50:1
+   |
+50 | instance Show (Option a)
+   | ^^^^^^^^^^^^^^^^^^^^^^^^ `show` missing
+   = help: add `fn show x` and its body
+
+error[E0301]: `Show Nest.show` uses `instance Show Nest` itself, so it can't be shown to terminate
+  --> class_errors.ck:62:21
+   |
+62 |             In m -> Show.show m
+   |                     ^^^^^^^^^ the class's function at this instance's own type
+   = help: inside the instance, call its own `show` (on a smaller part of a parameter), which is checked like any recursion
+
+error[E0287]: a dictionary of class `Ord` is built only by an instance
+  --> class_errors.ck:68:5
+   |
+68 |     Ord (\x y -> True)
+   |     ^^^
+   = help: declare `instance Ord …`; its functions' bodies and lemmas' proofs are checked there
+
+error[E0284]: no instance of `Ord` for `a`
+  --> class_errors.ck:72:5
+   |
+72 |     le x x
+   |     ^^ `a` is a type parameter
+   = help: add `Ord a` to the function's signature
+
+error[E0284]: no instance of `Ord` for `Int -> Int`
+  --> class_errors.ck:75:5
+   |
+75 |     le f f
+   |     ^^ needs `Ord (Int -> Int)`
+   = help: declare `instance Ord …` for this type, beside the class or the type
+
+error[E0285]: can't tell which instance of `Ord` to use: the type isn't known here
+  --> class_errors.ck:79:5
+   |
+79 |     le [] []
+   |     ^^
+   = help: give the type, e.g. with a constraint `x~List Int` or an annotated `let`
+
+error[E0206]: class `Show` has no function or lemma `print`
+  --> class_errors.ck:82:10
+   |
+82 |     Show.print x
+   |          ^^^^^
+   = help: its members are `show`, `width`, `short`
+
+class_errors.ck: 14 errors, 0 warnings

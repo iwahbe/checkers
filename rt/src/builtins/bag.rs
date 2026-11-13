@@ -1,4 +1,4 @@
-//! Builtins of multisets of numbers (`std.bag`).
+//! Builtins of multisets (`std.bag`).
 
 #[allow(unused_imports)]
 use super::*;
@@ -11,15 +11,15 @@ pub const TABLE: &[Builtin] = &[
 ];
 
 builtin!(ckb_bag_of, |a| {
-    let mut counts: std::collections::BTreeMap<Num, usize> = std::collections::BTreeMap::new();
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for v in list_items(a[0]) {
-        *counts.entry(num_of(v)).or_default() += 1;
+        *counts.entry(crate::ops::show(v, 0)).or_default() += 1;
     }
     new_obj(Obj::Bag(counts.into_iter().collect()))
 });
 
 builtin!(ckb_bag_count, |a| {
-    let x = num_of(a[0]);
+    let x = crate::ops::show(a[0], 0);
     match obj(a[1]) {
         Some(Obj::Bag(bag)) => nat(bag.iter().find(|(v, _)| *v == x).map_or(0, |(_, c)| *c)),
         _ => bug("`bag.count` needs a bag"),
@@ -28,7 +28,7 @@ builtin!(ckb_bag_count, |a| {
 
 builtin!(ckb_bag_sum, |a| match (obj(a[0]), obj(a[1])) {
     (Some(Obj::Bag(x)), Some(Obj::Bag(y))) => {
-        let mut counts: std::collections::BTreeMap<Num, usize> = x.iter().cloned().collect();
+        let mut counts: std::collections::BTreeMap<String, usize> = x.iter().cloned().collect();
         for (v, c) in y.iter() {
             *counts.entry(v.clone()).or_default() += c;
         }

@@ -36,6 +36,9 @@ pub enum Kw {
     When,
     Using,
     Par,
+    Class,
+    Instance,
+    Forall,
 }
 
 impl Kw {
@@ -65,6 +68,9 @@ impl Kw {
             "else" => Kw::Else,
             "try" => Kw::Try,
             "decreasing" => Kw::Decreasing,
+            "class" => Kw::Class,
+            "instance" => Kw::Instance,
+            "forall" => Kw::Forall,
             "partial" => Kw::Partial,
             "ghost" => Kw::Ghost,
             "own" => Kw::Own,
@@ -109,6 +115,9 @@ impl Kw {
             Kw::When => "when",
             Kw::Using => "using",
             Kw::Par => "par",
+            Kw::Class => "class",
+            Kw::Instance => "instance",
+            Kw::Forall => "forall",
         }
     }
 }

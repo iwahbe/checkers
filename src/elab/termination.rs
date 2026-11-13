@@ -72,6 +72,19 @@ impl Elab {
             if structural(&members, &metas, &inner) {
                 continue;
             }
+            // Recursion through an instance's dictionary (D136): a use of
+            // the class's function at the instance's own type.
+            if let Some(c) = inner.iter().find(|c| self.dict_defs.contains(&c.callee) && !self.dict_defs.contains(&c.caller)) {
+                let inst = self.g.defs[c.callee.0 as usize].name.to_string();
+                let caller = self.fn_meta.get(&c.caller).map(|m| m.name.clone()).unwrap_or_default();
+                let own = caller.rsplit('.').next().unwrap_or("").to_string();
+                self.err(
+                    Diagnostic::error("E0301", format!("`{caller}` uses `instance {inst}` itself, so it can't be shown to terminate"), c.span)
+                        .with_label("the class's function at this instance's own type")
+                        .with_help(format!("inside the instance, call its own `{own}` (on a smaller part of a parameter), which is checked like any recursion")),
+                );
+                continue;
+            }
             // Report at the first recursive call made by a function without `decreasing`.
             let bad = inner
                 .iter()

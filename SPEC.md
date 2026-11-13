@@ -1189,13 +1189,13 @@ The standard library is these modules. Its scope is still to be settled (D106); 
 
 | Module | Layer | Exports | Status |
 |---|---|---|---|
-| `std.prelude` | prelude | `Type`, `Nat`, `Int`, `String`, `Array`, `Bytes`, `Bool`, `Unit`, `Option`, `Result`, `List`, `U8`…`U64`, `I8`…`I64`, `Char`, `not` | exists |
-| `std.list` | Checkers | `length`, `map`, `all`, `reverse`, `join`, `keys`, `contains`, `unique`, `count`, `max_of`, `take`, `drop`, `sorted`, `perm`, lemmas (among them `keys_append`, `contains_append`, `contains_reverse`, `unique_split`, D119) | exists; planned: `filter`, `fold`, `find`, `any`, `zip`, `concat`, `index_of` with lemmas |
+| `std.prelude` | prelude + builtin | `Type`, `Nat`, `Int`, `String`, `Array`, `Bytes`, `Bool`, `Unit`, `Option`, `Result`, `List`, `U8`…`U64`, `I8`…`I64`, `Char`, `not`; the class `Ord` (`le`, `trans`, `total`, `antisym`), `refl`, instances for `Int`, `Bool`, `String` (by `string_le`, D138) | exists |
+| `std.list` | Checkers | `length`, `map`, `all`, `reverse`, `join`, `keys`, `contains`, `unique`, `count`, `max_of`, `take`, `drop`, `head`, `sorted`, `sorted_as`, `sorted_by`, `perm` (any element type, D138), lemmas (among them `perm_middle`) (among them `keys_append`, `contains_append`, `contains_reverse`, `unique_split`, D119) | exists; planned: `filter`, `fold`, `find`, `any`, `zip`, `concat`, `index_of` with lemmas |
 | `std.option`, `std.result` | Checkers | `map`, `and_then`, `or_else`, `with_default`, `is_some` / `is_ok` | planned |
-| `std.bag` | builtin | `Bag`, `of`, `count`, `sum` (multisets, for permutation proofs, D47) | exists |
-| `std.sort` | Checkers | `sort` with `sort_sorted`, `sort_perm` | planned (from `examples/sort.ck`) |
+| `std.bag` | builtin | `Bag a`, `of`, `count`, `sum` (multisets of any element type, for permutation proofs, D47, D138) | exists |
+| `std.sort` | Checkers | `sort`, `sort_as`, `sort_by`: stable merge sorts of lists, proved sorted, permutations, of the same length (D138) | exists (M23) |
 | `std.map`, `std.set` | Checkers | `Map k +v`, `Set k`: `empty`, `insert`, `remove`, `lookup`, `member`, `size`, `to_list` and their lemmas (`lookup_insert`, …), ordered keys (D15) | planned (§9.5) |
-| `std.array` | builtin + Checkers | `from_list`, `to_list`, `repeat`, `init`, `map`, `set`, `slice`, `concat`, `reverse`, `all`, `contains`, `count`, `take`, `drop` (D133) | exists (M21) |
+| `std.array` | builtin + Checkers | `from_list`, `to_list`, `repeat`, `init`, `map`, `set`, `slice`, `concat`, `reverse`, `all`, `contains`, `count`, `take`, `drop` (D133); `sort`, `sort_as`, `sort_by` (D138), the axiom `to_list_from_list` | exists (M21) |
 | `std.bytes` | builtin | `matches_at`, `slice`, `concat` | exists |
 | `std.string` | builtin + Checkers | `bytes`, `from_utf8`, `from_char`, `from_chars`, `chars`, `concat`, `concat_map` (Checkers, D139), axioms relating them (D119; `concat_join` in place of the axiom `concat_map_chars`, now proved, M22) | exists; planned: `join`, `split`, `starts_with`, `ends_with`, `trim` |
 | `std.char` | Checkers | `code`, `from_scalar`, `from_ascii`, `from_surrogates` (D119) | exists |

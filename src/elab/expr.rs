@@ -1,7 +1,7 @@
 //! Expressions: bidirectional checking and inference.
 
 use super::*;
-use crate::syntax::ast::{Expr, ExprKind, Ident, Stmt};
+use crate::syntax::ast::{Constraint, Expr, ExprKind, Ident, Stmt};
 use crate::syntax::token::Op;
 
 /// The body of a match arm: an expression, or the rest of a block (for `let` patterns).
@@ -40,9 +40,12 @@ impl Elab {
         let mut args = Vec::new();
         loop {
             match self.force(&ty) {
-                Val::Pi(_, m, Icit::Impl, _, c) => {
+                Val::Pi(_, m, Icit::Impl, dom, c) => {
                     let mt = self.fresh_meta(cx);
                     let mv = self.eval(cx, &mt);
+                    // A dictionary (D136): found once its type is known.
+                    let span = self.name_span;
+                    self.note_dict(cx, &mv, &dom, span);
                     args.push(mv.clone());
                     t = Tm::App(Rc::new(t), Rc::new(mt), Icit::Impl, m);
                     ty = apply_closure(&self.g, &c, mv);
@@ -245,6 +248,7 @@ impl Elab {
 
     pub fn infer(&mut self, cx: &mut Cx, e: &Expr) -> (Tm, Val) {
         match &e.kind {
+            ExprKind::Forall(..) => self.elab_forall(cx, e),
             ExprKind::Var(n) => {
                 let (t, ty) = self.infer_var(cx, n, e.span);
                 if self.in_app_head {
@@ -255,7 +259,19 @@ impl Elab {
                 (t, ty)
             }
             ExprKind::Con(n) => match self.resolve(n, cx.type_pos) {
+                Some(Sym::Ty(t)) if !cx.type_pos && self.class_defs.contains_key(&t) => {
+                    let name = self.class_defs[&t].name.clone();
+                    self.err(
+                        Diagnostic::error("E0287", format!("a dictionary of class `{name}` is built only by an instance"), e.span)
+                            .with_help(format!("declare `instance {name} …`; its functions' bodies and lemmas' proofs are checked there")),
+                    );
+                    (Tm::Error, Val::Error)
+                }
                 Some(s) => {
+                    if let Sym::Con(c) = s {
+                        self.check_dict_con(c, e.span);
+                    }
+                    self.name_span = e.span;
                     self.index_sym(e.span, s);
                     let (t, ty) = self.sym_term(cx, s, e.span);
                     self.insert(cx, t, ty)
@@ -462,6 +478,12 @@ impl Elab {
             }
             return (cx.var(l), ty);
         }
+        if n == "__class_lemma" {
+            // A class's lemma: assumed, each instance proving it (D136).
+            if self.proof_goal.is_some() && self.cur_fn.is_some_and(|d| self.class_lemmas.contains(&d)) {
+                return (Tm::Tuple(vec![]), self.unit());
+            }
+        }
         if n == "__builtin" {
             // In a standard-library proof: an axiom about a primitive (D56).
             if self.stdlib_mode {
@@ -478,6 +500,20 @@ impl Elab {
         }
         match self.resolve(n, cx.type_pos) {
             Some(s) => {
+                self.name_span = span;
+                if let Sym::Con(c) = s {
+                    self.check_dict_con(c, span);
+                }
+                if let Sym::Ty(t) = s {
+                    if !cx.type_pos && self.class_defs.contains_key(&t) {
+                        let name = self.class_defs[&t].name.clone();
+                        self.err(
+                            Diagnostic::error("E0287", format!("a dictionary of class `{name}` is built only by an instance"), span)
+                                .with_help(format!("declare `instance {name} …`; its functions' bodies and lemmas' proofs are checked there")),
+                        );
+                        return (Tm::Error, Val::Error);
+                    }
+                }
                 self.index_sym(span, s);
                 if let Sym::Def(d) = s {
                     self.note_reference(d, span);
@@ -862,8 +898,164 @@ impl Elab {
         }
     }
 
+    /// `forall x y : …` (D137), allowed only in a named precondition: a Π
+    /// over its variables whose body is its premises implying its conclusion.
+    pub fn elab_forall(&mut self, cx: &mut Cx, e: &Expr) -> (Tm, Val) {
+        let ExprKind::Forall(vs, cs) = &e.kind else { return (Tm::Error, Val::Error) };
+        if self.forall_ok == 0 {
+            self.err(
+                Diagnostic::error("E0289", "`forall` is only allowed in a named precondition", e.span)
+                    .with_help("write it as a precondition with a name, `name: forall …`, and use it in the body with `have name …`"),
+            );
+            return (Tm::Error, Val::Error);
+        }
+        let n0 = cx.lvl();
+        let mut tys = Vec::new();
+        for v in vs {
+            let written = cs.iter().find_map(|c| match c {
+                Constraint::Typed { name, ty, .. } if name.name == v.name => Some(ty),
+                _ => None,
+            });
+            let saved = cx.type_pos;
+            cx.type_pos = true;
+            let ty = match written {
+                Some(t) => self.elab_type(cx, t),
+                None => self.fresh_meta(cx),
+            };
+            cx.type_pos = saved;
+            let tv = self.eval(cx, &ty);
+            let l = cx.bind(&v.name, tv, Mult::Many);
+            self.bound_at(cx, l, v.span);
+            tys.push((Rc::from(v.name.as_str()), ty));
+        }
+        let b = self.bool_ty();
+        let saved_facts = cx.facts.len();
+        let mut preds = Vec::new();
+        for c in cs {
+            match c {
+                Constraint::Typed { name, .. } => {
+                    if !vs.iter().any(|v| v.name == name.name) {
+                        self.err(Diagnostic::error("E0355", format!("`{}` is not a variable of this `forall`", name.name), name.span));
+                    }
+                }
+                Constraint::Pred(p) | Constraint::Named(_, p) => {
+                    let t = self.check(cx, p, &b, false);
+                    let v = self.eval(cx, &t);
+                    cx.assume(v);
+                    preds.push(t);
+                }
+            }
+        }
+        cx.facts.truncate(saved_facts);
+        cx.truncate(n0);
+        let Some(concl) = preds.pop() else {
+            self.err(
+                Diagnostic::error("E0289", "this `forall` has no conclusion", e.span)
+                    .with_help("its last clause is what holds for all of its variables, e.g. `forall x : x~a, le x x`"),
+            );
+            return (Tm::Error, Val::Error);
+        };
+        let mut body = concl;
+        for p in preds.into_iter().rev() {
+            body = self.if_tm(p, body, self.bool_lit(true));
+        }
+        for (n, ty) in tys.into_iter().rev() {
+            body = Tm::Pi(n, Mult::Many, Icit::Expl, Rc::new(ty), Rc::new(body));
+        }
+        (Tm::PrimApp(Prim::Forall, vec![body]), b)
+    }
+
+    /// `have h a b …` for a named precondition `h` (D137): its `forall`s'
+    /// variables filled in, left to right, the rest a fact.
+    fn have_hyp(&mut self, cx: &mut Cx, e: &Expr, name: &str, fact: Val, args: &[&Expr]) {
+        let mut args = args.to_vec();
+        args.reverse();
+        let t = quote(&self.g, cx.lvl(), &fact);
+        let mut unfilled = false;
+        let r = self.fill_forall(cx, &t, &mut args, &mut unfilled);
+        if !args.is_empty() {
+            self.err(
+                Diagnostic::error("E0290", format!("`{name}` has fewer variables than the values given here"), e.span)
+                    .with_help(format!("give one value for each variable of `{name}`'s `forall`s, left to right")),
+            );
+            return;
+        }
+        if unfilled {
+            self.err(
+                Diagnostic::error("E0290", format!("`have {name}` needs a value for each variable of its `forall`s"), e.span)
+                    .with_help("a `forall` is used by filling in its variables: the fact is then what it says of those values"),
+            );
+            return;
+        }
+        let v = self.eval(cx, &r);
+        cx.assume(v);
+    }
+
+    fn fill_forall(&mut self, cx: &mut Cx, t: &Tm, args: &mut Vec<&Expr>, unfilled: &mut bool) -> Tm {
+        match t {
+            Tm::PrimApp(Prim::Forall, xs) if xs.len() == 1 => {
+                let mut v = self.eval(cx, &xs[0]);
+                loop {
+                    match self.force(&v) {
+                        Val::Pi(_, _, _, dom, clo) => {
+                            let Some(a) = args.pop() else {
+                                *unfilled = true;
+                                return t.clone();
+                            };
+                            let at = self.check(cx, a, &dom, false);
+                            let av = self.eval(cx, &at);
+                            v = apply_closure(&self.g, &clo, av);
+                        }
+                        other => {
+                            let body = quote(&self.g, cx.lvl(), &other);
+                            return self.fill_forall(cx, &body, args, unfilled);
+                        }
+                    }
+                }
+            }
+            Tm::Case(s, c) if c.branches.len() == 2 && c.lits.is_empty() && c.default.is_none() => {
+                let lit = |x: &Tm| match x {
+                    Tm::ConApp(k, v) if v.is_empty() => Some(Some(*k) == self.g.well_known.true_con),
+                    _ => None,
+                };
+                let (tc, fc) = (self.g.well_known.true_con, self.g.well_known.false_con);
+                let br = |con: Option<ConId>| c.branches.iter().find(|(k, _, _)| Some(*k) == con).map(|b| b.2.clone());
+                let (Some(tb), Some(fb)) = (br(tc), br(fc)) else { return t.clone() };
+                let (s2, tb2, fb2) = match (lit(&tb), lit(&fb)) {
+                    // `a and b`
+                    (_, Some(false)) => (self.fill_forall(cx, s, args, unfilled), self.fill_forall(cx, &tb, args, unfilled), fb),
+                    // `a implies b`
+                    (_, Some(true)) => ((**s).clone(), self.fill_forall(cx, &tb, args, unfilled), fb),
+                    // `a or b`
+                    (Some(true), _) => (self.fill_forall(cx, s, args, unfilled), tb, self.fill_forall(cx, &fb, args, unfilled)),
+                    _ => return t.clone(),
+                };
+                self.if_tm(s2, tb2, fb2)
+            }
+            _ => t.clone(),
+        }
+    }
+
     /// `have e` (D49): a lemma's conclusion, or a proven `Bool`, becomes a fact.
     pub fn have(&mut self, cx: &mut Cx, e: &Expr) {
+        // A named precondition (D137).
+        {
+            let mut args = Vec::new();
+            let mut h = e;
+            while let ExprKind::App(f, a) = &h.kind {
+                args.push(&**a);
+                h = f;
+            }
+            args.reverse();
+            if let ExprKind::Var(n) = &h.kind {
+                if cx.lookup(n).is_none() {
+                    if let Some((_, fact)) = self.cur_hyps.iter().find(|(x, _)| x == n).cloned() {
+                        self.have_hyp(cx, e, n, fact, &args);
+                        return;
+                    }
+                }
+            }
+        }
         let (t, ty) = self.infer(cx, e);
         let mut h = &t;
         while let Tm::App(f, ..) = h {
@@ -1280,6 +1472,41 @@ impl Elab {
     // ── fields and qualified names ──────────────────────────────────────────
 
     fn elab_field(&mut self, cx: &mut Cx, x: &Expr, name: &Ident, span: Span) -> (Tm, Val) {
+        // `Ord.le`: a class's function or lemma (D136).
+        if let ExprKind::Con(c) = &x.kind {
+            if let Some(Sym::Ty(tid)) = self.resolve(c, true) {
+                if let Some(cd) = self.class_defs.get(&tid).cloned() {
+                    let member = self.modules.get(&cd.module).and_then(|m| m.values.get(&name.name)).copied();
+                    let is_member = cd.members.iter().any(|m| match m {
+                        ast::ClassMember::Fn { name: n, .. } | ast::ClassMember::Lemma { name: n, .. } => n.name == name.name,
+                    });
+                    return match member {
+                        Some(s @ Sym::Def(d)) if is_member => {
+                            self.index_sym(x.span, Sym::Ty(tid));
+                            self.index_sym(name.span, s);
+                            self.note_reference(d, span);
+                            self.name_span = span;
+                            let (t, ty) = self.sym_term(cx, s, span);
+                            self.insert(cx, t, ty)
+                        }
+                        _ => {
+                            let names: Vec<String> = cd
+                                .members
+                                .iter()
+                                .map(|m| match m {
+                                    ast::ClassMember::Fn { name, .. } | ast::ClassMember::Lemma { name, .. } => name.name.clone(),
+                                })
+                                .collect();
+                            self.err(
+                                Diagnostic::error("E0206", format!("class `{}` has no function or lemma `{}`", cd.name, name.name), name.span)
+                                    .with_help(format!("its members are `{}`", names.join("`, `"))),
+                            );
+                            (Tm::Error, Val::Error)
+                        }
+                    };
+                }
+            }
+        }
         if let ExprKind::Var(q) = &x.kind {
             if cx.lookup(q).is_none() {
                 if let Some(m) = self.qualifier(q) {
@@ -1290,6 +1517,7 @@ impl Elab {
                             if let Sym::Def(d) = s {
                                 self.note_reference(d, span);
                             }
+                            self.name_span = span;
                             let (t, ty) = self.sym_term(cx, s, span);
                             self.insert(cx, t, ty)
                         }
@@ -1813,4 +2041,54 @@ fn mentions_level_from(t: &Tm, total: usize, from: usize, depth: usize) -> bool 
         }
         _ => false,
     }
+}
+
+/// The first `forall` in `e` that isn't positive (under `and`, `or`, after
+/// `implies`, or in another `forall`'s conclusion), if any (D137).
+pub fn negative_forall(e: &Expr, positive: bool) -> Option<Span> {
+    match &e.kind {
+        ExprKind::Forall(_, cs) => {
+            if !positive {
+                return Some(e.span);
+            }
+            cs.iter().find_map(|c| match c {
+                Constraint::Pred(p) | Constraint::Named(_, p) => negative_forall(p, true),
+                Constraint::Typed { ty, .. } => negative_forall(ty, false),
+            })
+        }
+        ExprKind::Binary(Op::And | Op::Or, a, b) => negative_forall(a, positive).or_else(|| negative_forall(b, positive)),
+        ExprKind::Binary(Op::Implies, a, b) => negative_forall(a, false).or_else(|| negative_forall(b, positive)),
+        ExprKind::Var(_) | ExprKind::Con(_) | ExprKind::Lit(_) | ExprKind::Unit => None,
+        _ => any_forall(e),
+    }
+}
+
+fn any_forall(e: &Expr) -> Option<Span> {
+    let mut found = None;
+    fn go(e: &Expr, found: &mut Option<Span>) {
+        if found.is_some() {
+            return;
+        }
+        match &e.kind {
+            ExprKind::Forall(..) => *found = Some(e.span),
+            ExprKind::Tuple(xs) | ExprKind::List(xs) | ExprKind::Par(xs) => xs.iter().for_each(|x| go(x, found)),
+            ExprKind::App(a, b) | ExprKind::Binary(_, a, b) | ExprKind::Arrow(a, b) | ExprKind::Index(a, b) => {
+                go(a, found);
+                go(b, found);
+            }
+            ExprKind::Neg(a) | ExprKind::Field(a, _) | ExprKind::Try(a) | ExprKind::Lambda(_, a) => go(a, found),
+            ExprKind::If(a, b, c) => {
+                go(a, found);
+                go(b, found);
+                go(c, found);
+            }
+            ExprKind::Match(s, arms) => {
+                go(s, found);
+                arms.iter().for_each(|a| go(&a.body, found));
+            }
+            _ => {}
+        }
+    }
+    go(e, &mut found);
+    found
 }

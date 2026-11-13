@@ -211,7 +211,7 @@ export fn is_keyword t : t~Tok
 let KEYWORDS = [b"module", b"import", b"as", b"export", b"abstract", b"transparent", b"fn", b"enum",
                 b"record", b"type", b"let", b"lemma", b"ensures", b"proof", b"have", b"auto", b"admit",
                 b"check", b"match", b"if", b"then", b"else", b"try", b"decreasing", b"partial",
-                b"ghost", b"own", b"comptime", b"when", b"using", b"par"]
+                b"ghost", b"own", b"comptime", b"when", b"using", b"par", b"class", b"instance", b"forall"]
 
 # A binary operator (§9.4), including `|` between patterns.
 export fn is_binop t : t~Tok

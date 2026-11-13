@@ -1,0 +1,14 @@
+-- stdout
+[1, 3, 3, 5, 9]
+["Banana", "apple", "fig", "pear"]
+[False, True, True]
+["Bo", "Cy", "Ada", "Al"]
+["Ada", "Al", "Bo", "Cy"]
+["Bo", "Cy", "Ada", "Al"]
+[9, 5, 3, 3, 1]
+[1, 2, 3]
+[7, 64, 200]
+Bo
+a
+-- stderr
+-- exit 0

@@ -97,6 +97,55 @@ fn decl(d: &Decl) -> String {
         }
         DeclKind::Const { name, value } => format!("({ex}const {} {})", name.name, expr(value, 1)),
         DeclKind::Check { expr: e } => format!("(check {})", expr(e, 1)),
+        DeclKind::Class { name, param, members } => {
+            let mut s = format!("({ex}class {} {}", name.name, param.name);
+            for m in members {
+                match m {
+                    ClassMember::Fn { name, params, result, constraints, .. } => {
+                        s += &format!("\n{}(fn {} ({})", ind(1), name.name, names(params));
+                        if let Some(r) = result {
+                            s += &format!(" -> {}", r.name);
+                        }
+                        s += &cons(constraints, 2);
+                        s += ")";
+                    }
+                    ClassMember::Lemma { name, params, constraints, lets, ensures, .. } => {
+                        s += &format!("\n{}(lemma {} ({})", ind(1), name.name, names(params));
+                        s += &cons(constraints, 2);
+                        for (p, e) in lets {
+                            s += &format!("\n{}(let {} {})", ind(2), pat(p), expr(e, 2));
+                        }
+                        s += &format!("\n{}(ensures {}))", ind(2), expr(ensures, 2));
+                    }
+                }
+            }
+            s + ")"
+        }
+        DeclKind::Instance { class, ty, context, members } => {
+            let mut s = format!("(instance {} {}", class.name, expr(ty, 1));
+            if !context.is_empty() {
+                s += &format!(" (: {})", list(context, 1));
+            }
+            for m in members {
+                match m {
+                    InstMember::Fn { name, params, decreasing, body, .. } => {
+                        s += &format!("\n{}(fn {} ({})", ind(1), name.name, names(params));
+                        if let Some(e) = decreasing {
+                            s += &format!("\n{}(decreasing {})", ind(2), expr(e, 2));
+                        }
+                        s += &format!("\n{}{})", ind(2), block(body, 2));
+                    }
+                    InstMember::Lemma { name, params, proof, .. } => {
+                        s += &format!("\n{}(lemma {} ({})", ind(1), name.name, names(params));
+                        if let Some(b) = proof {
+                            s += &format!("\n{}(proof {})", ind(2), block(b, 3));
+                        }
+                        s += ")";
+                    }
+                }
+            }
+            s + ")"
+        }
     }
 }
 
@@ -133,6 +182,7 @@ fn cons(cs: &[Constraint], depth: usize) -> String {
             Constraint::Typed { name, mult: m, ty } => format!("({}~{} {})", name.name, mult(*m).trim(), expr(ty, depth))
                 .replace("~ ", "~"),
             Constraint::Pred(e) => expr(e, depth),
+            Constraint::Named(n, e) => format!("({}: {})", n.name, expr(e, depth)),
         })
         .collect();
     format!("\n{}(: {})", ind(depth), items.join(" "))
@@ -188,6 +238,10 @@ fn escape_byte(b: u8) -> String {
 pub fn expr(e: &Expr, depth: usize) -> String {
     match &e.kind {
         ExprKind::Var(n) | ExprKind::Con(n) => n.clone(),
+        ExprKind::Forall(vs, cs) => {
+            let vars: Vec<&str> = vs.iter().map(|v| v.name.as_str()).collect();
+            format!("(forall ({}){})", vars.join(" "), cons(cs, depth + 1))
+        }
         ExprKind::Lit(l) => lit(l),
         ExprKind::Unit => "()".into(),
         ExprKind::Tuple(v) => format!("(tuple {})", list(v, depth)),

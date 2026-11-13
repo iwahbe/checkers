@@ -5,6 +5,7 @@
 //! checking (D4). Predicates in constraints are type-checked as `Bool` and
 //! recorded for the prover (M3).
 
+mod classes;
 mod decls;
 mod expr;
 mod eq;
@@ -441,6 +442,37 @@ pub struct Elab {
     pub match_span: Span,
     /// Exhaustiveness state of the `match` being compiled.
     pub pm: pattern::PatState,
+    /// Classes (D136), by their dictionary's type.
+    pub class_defs: HashMap<TyId, classes::ClassDef>,
+    /// This module's classes, until their types are registered.
+    pub pending_classes: Vec<(String, String, Vec<ast::ClassMember>, Span)>,
+    /// This module's instances, until their dictionary functions are registered.
+    pub pending_insts: Vec<classes::PendingInst>,
+    /// Where each declaration of the module being checked came from.
+    pub decl_origin: Vec<classes::Origin>,
+    /// Classes' functions: their postconditions are the instances' to prove.
+    pub class_methods: HashSet<DefId>,
+    /// Classes' lemmas: assumed, each instance proving them.
+    pub class_lemmas: HashSet<DefId>,
+    /// Functions building an instance's dictionary.
+    pub dict_defs: HashSet<DefId>,
+    /// Each instance member's dictionary function.
+    pub inst_member_of: HashMap<DefId, DefId>,
+    /// Instances, by class and the head of their type.
+    pub instances: HashMap<(TyId, classes::HeadKey), classes::InstInfo>,
+    /// Dictionaries to find once types are known.
+    pub inst_reqs: Vec<classes::InstReq>,
+    /// Inside a named precondition: `forall` is allowed (D137).
+    pub forall_ok: usize,
+    /// The named preconditions of the function being checked (D137).
+    pub cur_hyps: Vec<(String, Val)>,
+    /// The span of the name being elaborated (for a dictionary's errors).
+    pub name_span: Span,
+    /// Text for spans standing for code written in another module (a class's
+    /// signatures in an instance, D136): module, start, end → text.
+    pub text_override: HashMap<(String, u32, u32), String>,
+    /// How many synthetic spans each anchor has given out.
+    pub synthetic: HashMap<(u32, u32), u32>,
 }
 
 pub struct Failed;
@@ -509,6 +541,21 @@ impl Elab {
             map_elem_sub: None,
             match_span: Span::default(),
             pm: Default::default(),
+            class_defs: HashMap::new(),
+            pending_classes: Vec::new(),
+            pending_insts: Vec::new(),
+            decl_origin: Vec::new(),
+            class_methods: HashSet::new(),
+            class_lemmas: HashSet::new(),
+            dict_defs: HashSet::new(),
+            inst_member_of: HashMap::new(),
+            instances: HashMap::new(),
+            inst_reqs: Vec::new(),
+            forall_ok: 0,
+            cur_hyps: Vec::new(),
+            name_span: Span::default(),
+            text_override: HashMap::new(),
+            synthetic: HashMap::new(),
         }
     }
 
@@ -1117,6 +1164,9 @@ impl Elab {
 
     /// The source text of a span in the current module.
     pub fn src_text(&self, span: Span) -> String {
+        if let Some(t) = self.text_override.get(&(self.cur.clone(), span.start, span.end)) {
+            return t.clone();
+        }
         self.sources
             .get(&self.cur)
             .and_then(|f| f.text.get(span.start as usize..span.end as usize))
@@ -1326,6 +1376,7 @@ impl Elab {
     }
 
     pub fn solve_deferred(&mut self) {
+        self.solve_instances(false);
         let ds = std::mem::take(&mut self.deferred);
         for d in &ds {
             if let Val::Neutral(Head::Meta(_), _) = self.force(&d.ty) {
@@ -1338,6 +1389,7 @@ impl Elab {
         for a in std::mem::take(&mut self.arith_results) {
             self.settle_arith(a);
         }
+        self.solve_instances(true);
         for d in ds {
             if d.kind == OpClass::Comparable {
                 self.solve_comparable(&d);

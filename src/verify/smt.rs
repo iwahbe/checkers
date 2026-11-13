@@ -30,7 +30,8 @@ pub enum Sort {
     Str,
     /// An array (D133): a sequence of its elements' sort.
     Seq(Box<Sort>),
-    Bag,
+    /// A multiset of elements of a sort: counts (D47, D138).
+    Bag(Box<Sort>),
     /// A datatype with its type arguments.
     Data(TyId, Vec<Sort>),
     Tuple(Vec<Sort>),
@@ -56,7 +57,7 @@ impl Sort {
             // are then native, and literals are byte sequences.
             Sort::Str => "(Seq Int)".into(),
             Sort::Seq(x) => format!("(Seq {})", x.render(e)),
-            Sort::Bag => "(Array Int Int)".into(),
+            Sort::Bag(x) => format!("(Array {} Int)", x.render(e)),
             Sort::Data(t, args) => apply_sort(ty_sym(e, *t), args, e),
             Sort::Tuple(args) => apply_sort(tuple_sym(args.len()), args, e),
             Sort::Unin(n, args) => apply_sort(sym(n), args, e),
@@ -118,8 +119,6 @@ enum Ent {
     Term(String, Sort),
     /// A type: the sort it denotes.
     Ty(Sort),
-    /// A local function: name, argument sorts, result sort.
-    Fun(String, Vec<Sort>, Sort),
     /// Something the solver can't see (a value only used in types).
     Opaque(String),
     /// A known function value: a closed term (a top-level function or a
@@ -132,7 +131,6 @@ impl fmt::Debug for Ent {
         match self {
             Ent::Term(t, _) => write!(f, "{t}"),
             Ent::Ty(_) => write!(f, "<type>"),
-            Ent::Fun(n, ..) => write!(f, "{n}"),
             Ent::Known(k) => write!(f, "{k}"),
             Ent::Opaque(w) => write!(f, "<{w}>"),
         }
@@ -518,7 +516,8 @@ impl<'a> Builder<'a> {
             return Ok(Sort::Seq(Box::new(self.sort_of(env, a)?)));
         }
         if self.is_bag(id) {
-            return Ok(Sort::Bag);
+            let a = args.first().ok_or_else(|| Outside("a bag without its element type".into()))?;
+            return Ok(Sort::Bag(Box::new(self.sort_of(env, a)?)));
         }
         // Only type parameters (of kind `Type`) become sort parameters.
         let params = self.e.g.tys[id.0 as usize].params.clone();
@@ -650,7 +649,7 @@ impl<'a> Builder<'a> {
                     mentions(p, out_);
                     mentions(r, out_);
                 }
-                Sort::Seq(x) => mentions(x, out_),
+                Sort::Seq(x) | Sort::Bag(x) => mentions(x, out_),
                 _ => {}
             }
         }
@@ -750,31 +749,14 @@ impl<'a> Builder<'a> {
                 Ent::Ty(Sort::Unin(s, vec![]))
             }
             Val::Pi(..) => {
-                // A local function: uninterpreted, if its type is simple.
-                let mut args = Vec::new();
-                let mut t = quote(&self.e.g, lvl, &ty);
-                let mut inner = env.clone();
-                while let Tm::Pi(_, m, _, a, b) = t.clone() {
-                    if self.is_type(&a) {
-                        return out("a function of a type (a polymorphic function value)");
-                    }
-                    let s = self.sort_of(&inner, &a)?;
-                    if m != Mult::Zero {
-                        args.push(s.clone());
-                    }
-                    inner.push(Ent::Opaque("arg".into()));
-                    t = (*b).clone();
-                }
-                let r = self.sort_of(&inner, &t)?;
-                let decl = format!(
-                    "(declare-fun {name} ({}) {})",
-                    args.iter().map(|s| s.render(self.e)).collect::<Vec<_>>().join(" "),
-                    r.render(self.e)
-                );
-                self.funs.insert(name.clone(), decl);
-                self.fun_tys.insert(name.clone(), (lvl, quote(&self.e.g, lvl, &ty)));
+                // A local function: a function value (D139), so it can be
+                // passed on as it is.
+                let tyt = quote(&self.e.g, lvl, &ty);
+                let s = self.sort_of(&env, &tyt)?;
+                self.consts.push(format!("(declare-const {name} {})", s.render(self.e)));
+                self.fun_tys.insert(name.clone(), (lvl, tyt));
                 self.fun_axiom(&name, lvl);
-                Ent::Fun(name, args, r)
+                Ent::Term(name.clone(), s)
             }
             _ => {
                 let tyt = quote(&self.e.g, lvl, &ty);
@@ -884,7 +866,10 @@ impl<'a> Builder<'a> {
             t = (*cod).clone();
         }
         let Ok(rs) = self.sort_of(&inner, &t) else { return };
-        let app = format!("({name} {})", vars.iter().map(|(v, _)| v.as_str()).collect::<Vec<_>>().join(" "));
+        let mut app = name.to_string();
+        for (v, _) in &vars {
+            app = format!("(select {app} {v})");
+        }
         let posts = self.alias_terms(&inner, &t, &app, &rs);
         if posts.is_empty() || vars.is_empty() {
             return;
@@ -892,7 +877,8 @@ impl<'a> Builder<'a> {
         let conj = |xs: &[String]| if xs.len() == 1 { xs[0].clone() } else { format!("(and {})", xs.join(" ")) };
         let body = if pres.is_empty() { conj(&posts) } else { format!("(=> {} {})", conj(&pres), conj(&posts)) };
         let binds: Vec<String> = vars.iter().map(|(v, s)| format!("({v} {})", s.render(self.e))).collect();
-        self.axioms.insert(format!("{name}/refined"), format!("(forall ({}) (! {body} :pattern ({app})))", binds.join(" ")));
+        // After the function's own declaration, so among the facts.
+        self.asserts.push(format!("(forall ({}) (! {body} :pattern ({app})))", binds.join(" ")));
     }
 
     /// The predicates of the refinement alias `ty` at `x`, as terms.
@@ -1169,8 +1155,6 @@ impl<'a> Builder<'a> {
         match t {
             Tm::Var(i) => match self.resolve(env, *i)? {
                 Ent::Term(n, s) => Ok((n, s)),
-                Ent::Fun(n, a, r) if a.is_empty() => Ok((n, r)),
-                Ent::Fun(..) => out("a function used as a value"),
                 Ent::Ty(_) => out("a type used as a value"),
                 Ent::Known(_) => out("a function used as a value"),
                 Ent::Opaque(w) => out(format!("a value the prover can't see ({w})")),
@@ -1240,6 +1224,7 @@ impl<'a> Builder<'a> {
                 let args: Vec<Tm> = args.clone();
                 self.con_app(env, *c, &args)
             }
+            Tm::PrimApp(Prim::Forall, args) if args.len() == 1 => self.forall(env, &args[0]),
             Tm::PrimApp(p, args) => self.prim(env, p, args),
             Tm::Case(s, c) => self.case(env, s, c),
             Tm::Lam(..) => out("a lambda"),
@@ -1312,22 +1297,6 @@ impl<'a> Builder<'a> {
             }
             Tm::Def(d) => self.def_app(env, *d, &args),
             Tm::Var(i) => match self.resolve(env, *i)? {
-                Ent::Fun(name, sorts, r) => {
-                    let mut ts = Vec::new();
-                    for (a, m) in &args {
-                        if *m != Mult::Zero {
-                            ts.push(self.term(env, a)?.0);
-                        }
-                    }
-                    if ts.len() != sorts.len() {
-                        return out("a partially applied function");
-                    }
-                    let app = format!("({name} {})", ts.join(" "));
-                    if !self.in_def && self.post_seen.insert(app.clone()) {
-                        self.fun_post_facts(env, &name, &args, &app, &r);
-                    }
-                    Ok((app, r))
-                }
                 Ent::Known(k) => {
                     let f = self.known.get(&k).cloned().ok_or_else(|| Outside("an unknown function".into()))?;
                     self.apply_known(env, &f, &args)
@@ -1351,6 +1320,70 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// The sorts of a `forall`'s variables, over the obligation's locals.
+    fn forall_sorts(&mut self, lvl: usize, pi: &Tm) -> Tx<Vec<Sort>> {
+        let mut inner: Vec<Ent> = (0..lvl).map(|k| Ent::Opaque(format!("@{k}"))).collect();
+        let mut out_ = Vec::new();
+        let mut t = pi.clone();
+        while let Tm::Pi(_, _, _, a, b) = t {
+            let s = self.sort_of(&inner, &a)?;
+            inner.push(Ent::Term(String::new(), s.clone()));
+            out_.push(s);
+            t = (*b).clone();
+        }
+        Ok(out_)
+    }
+
+    /// A `forall`'s body at the given values, if its variables have those sorts.
+    fn forall_body_at(&mut self, lvl: usize, pi: &Tm, names: &[String], sorts: &[Sort]) -> Tx<Option<String>> {
+        let mut inner: Vec<Ent> = (0..lvl).map(|k| Ent::Opaque(format!("@{k}"))).collect();
+        let mut t = pi.clone();
+        let mut k = 0;
+        while let Tm::Pi(_, _, _, a, b) = t {
+            let s = self.sort_of(&inner, &a)?;
+            if sorts.get(k) != Some(&s) {
+                return Ok(None);
+            }
+            inner.push(Ent::Term(names[k].clone(), s));
+            t = (*b).clone();
+            k += 1;
+        }
+        if k != sorts.len() {
+            return Ok(None);
+        }
+        let (bt, bs) = self.term(&inner, &t)?;
+        Ok((bs == Sort::Bool).then_some(bt))
+    }
+
+    /// `forall x y : …` (D137), only ever proved (so Z3 refutes its negation
+    /// with fresh values, without quantifier instantiation).
+    fn forall(&mut self, env: &[Ent], pi: &Tm) -> Tx<(String, Sort)> {
+        let d = self.lam_depth;
+        let mut inner = env.to_vec();
+        let mut binds = Vec::new();
+        let mut t = pi.clone();
+        let mut k = 0;
+        while let Tm::Pi(_, _, _, a, b) = t {
+            let s = self.sort_of(&inner, &a)?;
+            let n = format!("|all{d}.{k}|");
+            binds.push(format!("({n} {})", s.render(self.e)));
+            inner.push(Ent::Term(n, s));
+            t = (*b).clone();
+            k += 1;
+        }
+        let saved = self.in_def;
+        self.in_def = true;
+        self.lam_depth += 1;
+        let r = self.term(&inner, &t);
+        self.lam_depth -= 1;
+        self.in_def = saved;
+        let (bt, bs) = r?;
+        if bs != Sort::Bool || binds.is_empty() {
+            return out("a `forall` that is not a `Bool`");
+        }
+        Ok((format!("(forall ({}) {bt})", binds.join(" ")), Sort::Bool))
+    }
+
     /// Apply the function value `ft` (of sort `s`) to `args` (D139).
     fn select(&mut self, env: &[Ent], ft: &str, s: &Sort, args: &[(Tm, Mult)]) -> Tx<(String, Sort)> {
         let mut app = ft.to_string();
@@ -1363,6 +1396,11 @@ impl<'a> Builder<'a> {
             let at = self.term(env, a)?.0;
             app = format!("(select {app} {at})");
             sort = *r;
+        }
+        // A local function of a refined type: its postconditions (D84).
+        if !self.in_def && !matches!(sort, Sort::Fun(..)) && self.fun_tys.contains_key(ft) && self.post_seen.insert(app.clone()) {
+            let ft = ft.to_string();
+            self.fun_post_facts(env, &ft, args, &app, &sort);
         }
         Ok((app, sort))
     }
@@ -1434,6 +1472,108 @@ impl<'a> Builder<'a> {
         Ok(v)
     }
 
+    /// Is this binder's type a class's dictionary (D136)?
+    fn is_dict_ty(&self, t: &Tm) -> bool {
+        let mut h = t;
+        while let Tm::App(f, ..) = h {
+            h = f;
+        }
+        match h {
+            Tm::TyCon(id) | Tm::TyConApp(id, _) => self.e.class_defs.contains_key(id),
+            Tm::Meta(m) => matches!(self.e.g.meta(*m).map(|v| force(&self.e.g, v)), Some(Val::TyCon(id, _)) if self.e.class_defs.contains_key(&id)),
+            _ => false,
+        }
+    }
+
+    /// `f x …` for class function `f` (`d`) given a known instance's
+    /// dictionary: the instance's own function, applied to the same
+    /// arguments, taken from the dictionary's definition.
+    fn member_app(&mut self, env: &[Ent], d: DefId, args: &[(Tm, Mult)], inner: &[Ent]) -> Tx<Option<(String, Sort)>> {
+        // The dictionary's binder: the class's (Many, implicit) one.
+        let ty = self.e.g.defs[d.0 as usize].ty.clone();
+        let mut t = ty;
+        let mut pos = None;
+        let mut k = 0;
+        while let Tm::Pi(_, m, i, a, b) = t {
+            if m == Mult::Many && i == crate::core::Icit::Impl && self.is_dict_ty(&a) {
+                pos = Some(k);
+                break;
+            }
+            t = (*b).clone();
+            k += 1;
+        }
+        let Some(pos) = pos else { return Ok(None) };
+        let Some(Ent::Known(key)) = inner.get(pos) else { return Ok(None) };
+        let Some(dict) = self.known.get(key).cloned() else { return Ok(None) };
+        // The dictionary: an instance's function applied to its arguments.
+        let mut dargs = Vec::new();
+        let mut h = &dict;
+        while let Tm::App(f, a, ..) = h {
+            dargs.push((**a).clone());
+            h = f;
+        }
+        dargs.reverse();
+        let Tm::Def(dd) = h else { return Ok(None) };
+        if !self.e.dict_defs.contains(dd) {
+            return Ok(None);
+        }
+        let Some(mut body) = self.e.g.defs[dd.0 as usize].body.clone() else { return Ok(None) };
+        for _ in 0..dargs.len() {
+            match body {
+                Tm::Lam(_, _, _, b) => body = (*b).clone(),
+                _ => return Ok(None),
+            }
+        }
+        // Its field for this function.
+        let name = self.e.g.defs[d.0 as usize].name.clone();
+        let mut fields = Vec::new();
+        let mut hb = &body;
+        while let Tm::App(f, a, ..) = hb {
+            fields.push((**a).clone());
+            hb = f;
+        }
+        fields.reverse();
+        let (con, mut all) = match hb {
+            Tm::Con(c) => (*c, fields),
+            Tm::ConApp(c, v) => (*c, v.clone()),
+            _ => return Ok(None),
+        };
+        let cty = self.e.g.cons[con.0 as usize].ty;
+        let np = self.e.g.arity_ty(cty);
+        if all.len() < np {
+            return Ok(None);
+        }
+        all.drain(..np);
+        let Some(cd) = self.e.class_defs.get(&cty) else { return Ok(None) };
+        let Some(fi) = cd.methods().iter().position(|m| **m == *name) else { return Ok(None) };
+        let Some(field) = all.get(fi).cloned() else { return Ok(None) };
+        // The environment: the dictionary's arguments, then the call's explicit ones.
+        let mut ienv: Vec<Ent> = Vec::new();
+        let mut dty = self.e.g.defs[dd.0 as usize].ty.clone();
+        for a in &dargs {
+            let Tm::Pi(_, _, _, dom, cod) = dty else { return Ok(None) };
+            let e = if self.is_type(&dom) {
+                Ent::Ty(self.sort_of(env, a)?)
+            } else if let Some(k2) = self.is_dict_ty(&dom).then(|| self.known_fun(env, a)).flatten() {
+                Ent::Known(k2)
+            } else {
+                let (at, s) = self.term(env, a)?;
+                Ent::Term(at, s)
+            };
+            ienv.push(e);
+            dty = (*cod).clone();
+        }
+        let rest: Vec<Ent> = inner[pos + 1..].to_vec();
+        let n = rest.len();
+        ienv.extend(rest);
+        let mut app = crate::stage::shift(&field, n, 0);
+        for j in 0..n {
+            app = Tm::App(Rc::new(app), Rc::new(Tm::Var(n - 1 - j)), crate::core::Icit::Expl, Mult::Many);
+        }
+        let _ = args;
+        self.term(&ienv, &app).map(Some)
+    }
+
     /// Should `d`'s definition be visible to the solver (D12)?
     fn reflected(&self, d: DefId) -> bool {
         let info = &self.e.g.defs[d.0 as usize];
@@ -1461,12 +1601,14 @@ impl<'a> Builder<'a> {
                 inner.push(Ent::Ty(s.clone()));
                 post_env.push(Ent::Ty(s));
             } else {
-                if matches!(self.zonk(inner.len(), &a), Tm::Pi(..)) {
+                let dict = self.is_dict_ty(&a);
+                if dict || matches!(self.zonk(inner.len(), &a), Tm::Pi(..)) {
                     // A known function argument picks a specialized instance;
-                    // any other is passed as a value (D139).
+                    // any other is passed as a value (D139). So does a known
+                    // dictionary (D136).
                     let Some(key) = self.known_fun(env, arg) else {
                         let want = self.sort_of(&inner, &a)?;
-                        let fv = self.fun_value(env, arg, &want)?;
+                        let fv = if dict { self.term(env, arg)?.0 } else { self.fun_value(env, arg, &want)? };
                         funs.push("*".into());
                         vals.push(fv.clone());
                         inner.push(Ent::Term(fv.clone(), want.clone()));
@@ -1498,11 +1640,15 @@ impl<'a> Builder<'a> {
         // Builtins with a meaning in the solver.
         match qualified.as_str() {
             "std.bag.of" => {
-                self.ensure_bag_of()?;
-                return Ok((format!("(|bag.of| {})", vals.join(" ")), Sort::Bag));
+                let elem = tys.first().cloned().unwrap_or(Sort::Int);
+                let f = self.ensure_bag_of(&elem)?;
+                return Ok((format!("({f} {})", vals.join(" ")), Sort::Bag(Box::new(elem))));
             }
             "std.bag.count" => return Ok((format!("(select {} {})", vals[1], vals[0]), Sort::Int)),
-            "std.bag.sum" => return Ok((format!("((_ map (+ (Int Int) Int)) {} {})", vals[0], vals[1]), Sort::Bag)),
+            "std.bag.sum" => {
+                let elem = tys.first().cloned().unwrap_or(Sort::Int);
+                return Ok((format!("((_ map (+ (Int Int) Int)) {} {})", vals[0], vals[1]), Sort::Bag(Box::new(elem))));
+            }
             // A string is already its UTF-8 bytes.
             "std.utf8.encode" | "std.string.bytes" => return Ok((vals[0].clone(), Sort::Seq(Box::new(Sort::Int)))),
             // `word` occurs in `src` at `i` (the Rust primitive, exactly).
@@ -1514,6 +1660,42 @@ impl<'a> Builder<'a> {
                 ));
             }
             _ => {}
+        }
+        // A class's function of a known instance's dictionary is that
+        // instance's function (D136).
+        if self.e.class_methods.contains(&d) {
+            if let Some(r) = self.member_app(env, d, args, &inner)? {
+                let (app, _) = r;
+                if !self.in_def {
+                    let has_post = self.e.specs.get(&d).is_some_and(|s| s.preds.iter().any(|p| p.is_post));
+                    if has_post && self.post_seen.insert(app.clone()) {
+                        post_env.push(Ent::Term(app.clone(), rs.clone()));
+                        self.posts.push(PostUse { def: d, env: post_env, nat: false });
+                    }
+                }
+                return Ok((app, rs));
+            }
+        }
+        // Otherwise a class's function, and an instance's dictionary, are
+        // inlined: reading a field of the dictionary.
+        if self.e.class_methods.contains(&d) || self.e.dict_defs.contains(&d) {
+            if let Some(mut body) = self.e.g.defs[d.0 as usize].body.clone() {
+                for _ in 0..inner.len() {
+                    match body {
+                        Tm::Lam(_, _, _, b) => body = (*b).clone(),
+                        _ => return out("a class's function that is not a function"),
+                    }
+                }
+                let (app, _) = self.term(&inner, &body)?;
+                if !self.in_def {
+                    let has_post = self.e.specs.get(&d).is_some_and(|s| s.preds.iter().any(|p| p.is_post));
+                    if has_post && self.post_seen.insert(app.clone()) {
+                        post_env.push(Ent::Term(app.clone(), rs.clone()));
+                        self.posts.push(PostUse { def: d, env: post_env, nat: false });
+                    }
+                }
+                return Ok((app, rs));
+            }
         }
         let inst = Inst { def: d, tys: tys.clone(), funs: funs.clone() };
         let name = self.inst_name(&inst);
@@ -1555,23 +1737,28 @@ impl<'a> Builder<'a> {
         Ok((app, rs))
     }
 
-    fn ensure_bag_of(&mut self) -> Tx<()> {
-        if self.funs.contains_key("|bag.of|") {
-            return Ok(());
+    /// `bag.of` on lists of `elem` (D47, D138).
+    fn ensure_bag_of(&mut self, elem: &Sort) -> Tx<String> {
+        let es = elem.render(self.e);
+        let name = if *elem == Sort::Int { "|bag.of|".to_string() } else { sym(&format!("bag.of<{es}>")) };
+        if self.funs.contains_key(&name) {
+            return Ok(name);
         }
         let wk = self.wk().clone();
-        let (Some(list), Some(nil), Some(cons)) = (wk.list, wk.nil, wk.cons) else { return out("no lists") };
-        self.ty_sort(&[], list, &[Tm::TyCon(wk.int.ok_or_else(|| Outside("no Int".into()))?)])?;
-        let _ = nil;
+        let (Some(list), Some(cons)) = (wk.list, wk.cons) else { return out("no lists") };
+        if let std::collections::btree_map::Entry::Vacant(v) = self.datatypes.entry(list) {
+            v.insert(1);
+            self.datatype_decl(list)?;
+        }
         let def = format!(
-            "(define-fun-rec |bag.of| ((xs ({l} Int))) (Array Int Int) (ite ({c} xs) (let ((b (|bag.of| ({t} xs))) (h ({hd} xs))) (store b h (+ (select b h) 1))) ((as const (Array Int Int)) 0)))",
+            "(define-fun-rec {name} ((xs ({l} {es}))) (Array {es} Int) (ite ({c} xs) (let ((b ({name} ({t} xs))) (h ({hd} xs))) (store b h (+ (select b h) 1))) ((as const (Array {es} Int)) 0)))",
             l = ty_sym(self.e, list),
             c = tester(self.e, cons),
             t = sel_sym(self.e, cons, 1),
             hd = sel_sym(self.e, cons, 0),
         );
-        self.funs.insert("|bag.of|".into(), def);
-        Ok(())
+        self.funs.insert(name.clone(), def);
+        Ok(name)
     }
 
     fn prim(&mut self, env: &[Ent], p: &Prim, args: &[Tm]) -> Tx<(String, Sort)> {
@@ -1649,6 +1836,7 @@ impl<'a> Builder<'a> {
             Prim::Par => Ok(ts[0].clone()),
             Prim::When | Prim::Fork | Prim::Join => out("a concurrency form (`when`, `fork`, `join`)"),
             Prim::Builtin(n) => out(format!("the builtin `{n}`")),
+            Prim::Forall => out("a `forall`"),
         }
     }
 
@@ -1937,7 +2125,7 @@ impl<'a> Builder<'a> {
             if self.is_type(&a) {
                 env.push(Ent::Ty(inst.tys.get(tk).cloned().unwrap_or(Sort::Int)));
                 tk += 1;
-            } else if matches!(self.zonk(env.len(), &a), Tm::Pi(..)) {
+            } else if self.is_dict_ty(&a) || matches!(self.zonk(env.len(), &a), Tm::Pi(..)) {
                 let key = inst.funs.get(fk).cloned().ok_or_else(|| Outside("a function parameter".into()))?;
                 fk += 1;
                 if key == "*" {
@@ -2038,7 +2226,8 @@ impl<'a> Builder<'a> {
         // Preconditions, elaborated with the result in scope after the parameters.
         let mut penv = env.to_vec();
         penv.push(Ent::Opaque("the result".into()));
-        for pred in spec.preds.iter().filter(|p| !p.is_post && !everywhere) {
+        // A `forall` (D137) is proved at each call; termination doesn't rest on it.
+        for pred in spec.preds.iter().filter(|p| !p.is_post && !everywhere && !has_forall(&p.tm)) {
             let (t, _) = self.term(&penv, &pred.tm)?;
             conds.push(t);
         }
@@ -2059,7 +2248,9 @@ impl<'a> Builder<'a> {
                 // The postcondition holds where the precondition does.
                 let mut pres = Vec::new();
                 let mut ok = true;
-                for pred in spec.preds.iter().filter(|x| !x.is_post) {
+                // A `forall` precondition is proved at the call (D137), and
+                // Z3 can't use it in a guard without instantiating it.
+                for pred in spec.preds.iter().filter(|x| !x.is_post && !has_forall(&x.tm)) {
                     match self.term(&p.env, &pred.tm) {
                         Ok((t, _)) => pres.push(t),
                         Err(_) => ok = false,
@@ -2096,14 +2287,53 @@ impl<'a> Builder<'a> {
         self.ctx_src = ob.ctx.clone();
         let lvl = ob.ctx.len();
         let goal_tm = quote(&self.e.g, lvl, &ob.goal);
-        let (goal, gs) = self.term_ctx(lvl, &goal_tm)?;
+        let mut facts = Vec::new();
+        // Proving a `forall` (D137): its body, at fresh values; a `forall`
+        // in scope over the same types is given at those values (how a
+        // function passes its own hypothesis on).
+        let (goal, gs) = match &goal_tm {
+            Tm::PrimApp(Prim::Forall, a) if a.len() == 1 => {
+                let sorts = self.forall_sorts(lvl, &a[0])?;
+                let names: Vec<String> = (0..sorts.len()).map(|k| format!("|forall.{k}|")).collect();
+                let mut shown_names = Vec::new();
+                let mut pt = &a[0];
+                while let Tm::Pi(x, _, _, _, b) = pt {
+                    shown_names.push(x.to_string());
+                    pt = b;
+                }
+                for (k, (n, s)) in names.iter().zip(&sorts).enumerate() {
+                    self.consts.push(format!("(declare-const {n} {})", s.render(self.e)));
+                    if let Some(x) = shown_names.get(k) {
+                        self.shown.push((n.clone(), x.clone()));
+                        if *s == Sort::Str {
+                            self.string_vars.push(n.clone());
+                        }
+                    }
+                }
+                let g = self.forall_body_at(lvl, &a[0], &names, &sorts)?.ok_or_else(|| Outside("a `forall`".into()))?;
+                for f in &ob.facts {
+                    if let Tm::PrimApp(Prim::Forall, fa) = quote(&self.e.g, lvl, f) {
+                        if fa.len() == 1 {
+                            if let Ok(Some(b)) = self.forall_body_at(lvl, &fa[0], &names, &sorts) {
+                                facts.push(b);
+                            }
+                        }
+                    }
+                }
+                (g, Sort::Bool)
+            }
+            _ => self.term_ctx(lvl, &goal_tm)?,
+        };
         if gs != Sort::Bool {
             return out("a goal that is not a `Bool`");
         }
-        let mut facts = Vec::new();
         let mut dropped = Vec::new();
         for f in &ob.facts {
             let tm = quote(&self.e.g, lvl, f);
+            // A `forall` is used only by name, with `have` (D137).
+            if has_forall(&tm) {
+                continue;
+            }
             // A fact the solver can't see is simply not assumed.
             match self.term_ctx(lvl, &tm) {
                 Ok((t, Sort::Bool)) => facts.push(t),
@@ -2238,4 +2468,23 @@ fn smt_bytes(b: &[u8]) -> String {
 /// Is a value `Nat`-typed? (for `only_if_nat` obligations)
 pub fn is_nat(e: &Elab, ty: &Val) -> bool {
     crate::core::is_nat(&e.g, ty)
+}
+
+fn has_forall(t: &Tm) -> bool {
+    match t {
+        Tm::PrimApp(Prim::Forall, _) => true,
+        Tm::PrimApp(_, v) | Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) => v.iter().any(has_forall),
+        Tm::App(f, a, ..) => has_forall(f) || has_forall(a),
+        Tm::Lam(_, _, _, b) => has_forall(b),
+        Tm::Pi(_, _, _, a, b) => has_forall(a) || has_forall(b),
+        Tm::Let(_, _, a, b, c) => has_forall(a) || has_forall(b) || has_forall(c),
+        Tm::Proj(x, _) | Tm::Field(x, _, _) => has_forall(x),
+        Tm::Case(s, c) => {
+            has_forall(s)
+                || c.branches.iter().any(|(_, _, b)| has_forall(b))
+                || c.lits.iter().any(|(_, b)| has_forall(b))
+                || c.default.as_ref().is_some_and(has_forall)
+        }
+        _ => false,
+    }
 }

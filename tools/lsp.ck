@@ -40,12 +40,12 @@ record Span
     end_line~Nat
     end_col~Nat
 
-# A name or token of the index (§15.5): its place, its class, where it is
+# A name or token of the index (§15.5): its place, its role, where it is
 # defined, what hovering shows ("" for keywords, comments and so on), and the
 # description of what it refers to ("" when there is none, D128).
 record Entry
     at~Span
-    class~String
+    role~String
     def~Option Span
     hover~String
     doc~String
@@ -541,19 +541,19 @@ let TOKEN_TYPES = ["namespace", "type", "enumMember", "property", "function", "p
                    "keyword", "comment", "string", "number"]
 let TOKEN_MODIFIERS = ["declaration", "readonly"]
 
-fn type_index class -> n : class~String, n~Nat
-    position_in class ["module", "type", "constructor", "field", "function", "parameter", "variable", "keyword",
-                       "comment", "string", "number", "lemma", "constant"] 0
+fn type_index role -> n : role~String, n~Nat
+    position_in role ["module", "type", "constructor", "field", "function", "parameter", "variable", "keyword",
+                      "comment", "string", "number", "lemma", "constant"] 0
 
 # Lemmas are shown as functions, constants as (read-only) variables.
-fn position_in class names k -> n : class~String, names~List String, k~Nat, n~Nat
+fn position_in role names k -> n : role~String, names~List String, k~Nat, n~Nat
     match names
         []        -> 10
         x :: rest ->
-            if x == class
+            if x == role
                 if k == 11 then 4 else if k == 12 then 6 else k
             else
-                position_in class rest (k + 1)
+                position_in role rest (k + 1)
 
 fn is_declaration e : e~Entry
     match e.def
@@ -561,7 +561,7 @@ fn is_declaration e : e~Entry
         None   -> False
 
 fn modifiers e -> n : e~Entry, n~Nat
-    (if is_declaration e then 1 else 0) + (if e.class == "constant" then 2 else 0)
+    (if is_declaration e then 1 else 0) + (if e.role == "constant" then 2 else 0)
 
 fn before a b : a~Entry, b~Entry
     a.at.line < b.at.line or (a.at.line == b.at.line and a.at.col < b.at.col)
@@ -611,7 +611,7 @@ partial fn encode es text utf8 pl pc -> r : es~List Entry, text~Bytes, utf8~Bool
             let dl = if e.at.line >= pl then e.at.line - pl else 0
             let dc = if dl == 0 and col >= pc then col - pc else col
             let n = if stop >= col then stop - col else 0
-            rpc.num dl :: rpc.num dc :: rpc.num n :: rpc.num (type_index e.class) :: rpc.num (modifiers e)
+            rpc.num dl :: rpc.num dc :: rpc.num n :: rpc.num (type_index e.role) :: rpc.num (modifiers e)
                 :: encode rest text utf8 e.at.line col
 
 partial fn semantic_tokens doc es c -> j : doc~Doc, es~List Entry, c~Caps, j~Json
@@ -619,21 +619,21 @@ partial fn semantic_tokens doc es c -> j : doc~Doc, es~List Entry, c~Caps, j~Jso
     rpc.obj [("data", Arr (encode mine doc.text c.utf8 0 0))]
 
 # The outline: the file's declarations.
-fn symbol_kind class -> n : class~String, n~Nat
-    if class == "type"
+fn symbol_kind role -> n : role~String, n~Nat
+    if role == "type"
         23
-    else if class == "constructor"
+    else if role == "constructor"
         22
-    else if class == "constant"
+    else if role == "constant"
         14
-    else if class == "field"
+    else if role == "field"
         8
     else
         12
 
 fn outlined e : e~Entry
-    is_declaration e and (e.class == "function" or e.class == "lemma" or e.class == "type"
-                          or e.class == "constructor" or e.class == "constant" or e.class == "field")
+    is_declaration e and (e.role == "function" or e.role == "lemma" or e.role == "type"
+                          or e.role == "constructor" or e.role == "constant" or e.role == "field")
 
 partial fn name_text text s -> r : text~Bytes, s~Span, r~String
     let line = tx.line_at text s.line
@@ -652,7 +652,7 @@ partial fn symbol_list es doc c -> r : es~List Entry, doc~Doc, c~Caps, r~List Js
         e :: rest ->
             if outlined e
                 let loc = rpc.obj [("uri", Str doc.uri), ("range", range_of doc.text e.at c.utf8)]
-                let s = rpc.obj [("name", Str (name_text doc.text e.at)), ("kind", rpc.num (symbol_kind e.class)),
+                let s = rpc.obj [("name", Str (name_text doc.text e.at)), ("kind", rpc.num (symbol_kind e.role)),
                                  ("location", loc)]
                 s :: symbol_list rest doc c
             else

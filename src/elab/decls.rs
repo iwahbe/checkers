@@ -20,6 +20,8 @@ pub struct Sig {
     pub result_name: String,
     /// Binder positions marked `comptime` (D59).
     pub comptime: Vec<usize>,
+    /// Named preconditions (D137): name and index in `preds`.
+    pub hyps: Vec<(String, usize)>,
 }
 
 impl Elab {
@@ -35,11 +37,19 @@ impl Elab {
         self.imports(m, name);
         self.cur = name.to_string();
         self.stdlib_mode = is_stdlib;
+        // Classes and instances become records, functions and lemmas (D136).
+        self.pending_insts.clear();
+        let (desugared, origins) = self.desugar_classes(m);
+        self.decl_origin = origins;
+        let m = &desugared;
         let ids = self.register(m);
+        self.register_classes(m, &ids);
         self.decl_spans.insert(name.to_string(), m.decls.iter().zip(&ids).map(|(d, id)| (d.span, *id)).collect());
         self.phase_type_params(m, &ids);
         // Declarations in the order of what they use, not of the file (D65).
-        let plan = super::order::plan(m);
+        let dicts: Vec<usize> =
+            self.decl_origin.iter().enumerate().filter(|(_, o)| matches!(o, super::classes::Origin::InstDict(_))).map(|(k, _)| k).collect();
+        let plan = super::order::plan(m, &dicts);
         for chain in &plan.cycles {
             let name = |k: usize| decl_name(&m.decls[k]).map(|n| n.name.clone()).unwrap_or_default();
             let span = decl_name(&m.decls[chain[0]]).map(|n| n.span).unwrap_or(m.decls[chain[0]].span);
@@ -275,6 +285,11 @@ impl Elab {
     // ── name resolution ─────────────────────────────────────────────────────
 
     pub fn resolve(&self, name: &str, type_pos: bool) -> Option<Sym> {
+        if name.starts_with('$') {
+            if let Some(s) = self.generated_sym(name) {
+                return Some(s);
+            }
+        }
         let m = self.module();
         let firsts = if type_pos { [&m.types, &m.import_types] } else { [&m.values, &m.import_values] };
         let seconds = if type_pos { [&m.values, &m.import_values] } else { [&m.types, &m.import_types] };
@@ -375,7 +390,7 @@ impl Elab {
     /// Allocate ids for every declaration; returns one entry per decl.
     fn register(&mut self, m: &ast::Module) -> Vec<Option<Sym>> {
         let mut ids = Vec::new();
-        for d in &m.decls {
+        for (k_decl, d) in m.decls.iter().enumerate() {
             let exported = d.export != Export::No;
             let id = match &d.kind {
                 // The prelude's `Type` is the universe itself (D132): its
@@ -434,7 +449,11 @@ impl Elab {
                     let cid = ConId(self.g.cons.len() as u32);
                     self.g.cons.push(ConInfo { name: Rc::from(name.name.as_str()), ty: tid, tag: 0, fields: Vec::new() });
                     self.g.tys[tid.0 as usize].ctors.push(cid);
-                    self.declare(name, false, Sym::Con(cid), exported && !abstract_);
+                    // A class's dictionary is built only by instances (D136).
+                    let is_class = matches!(self.decl_origin.get(k_decl), Some(super::classes::Origin::ClassRecord));
+                    if !is_class {
+                        self.declare(name, false, Sym::Con(cid), exported && !abstract_);
+                    }
                     self.index_header(index::Target::Ty(tid), name.span, d);
                     {
                         let rec = name.name.clone();
@@ -495,7 +514,7 @@ impl Elab {
                     self.index_header(index::Target::Def(id), name.span, d);
                     Some(Sym::Def(id))
                 }
-                DeclKind::Check { .. } => None,
+                DeclKind::Check { .. } | DeclKind::Class { .. } | DeclKind::Instance { .. } => None,
             };
             ids.push(id);
         }
@@ -665,7 +684,7 @@ impl Elab {
             self.alias_subject.insert(*did, Rc::from(name.name.as_str()));
             for c in &constraints[1..] {
                 match c {
-                    Constraint::Pred(e) => {
+                    Constraint::Pred(e) | Constraint::Named(_, e) => {
                         let p = self.elab_pred(&mut cx, e, false);
                         self.alias_preds.entry(*did).or_default().push(p);
                     }
@@ -770,7 +789,7 @@ impl Elab {
         }
         for c in cs {
             match c {
-                Constraint::Pred(e) => {
+                Constraint::Pred(e) | Constraint::Named(_, e) => {
                     let p = self.elab_pred(&mut cx, e, false);
                     invs.push((p.tm, p.text, p.span, cx.lvl(), None));
                 }
@@ -1098,6 +1117,7 @@ impl Elab {
             let (t, ty) = self.infer(&mut cx, value);
             self.solve_deferred();
             let tyt = quote(&self.g, 0, &ty);
+            let t = crate::core::zonk_metas(&self.g, 0, &t);
             let info = &mut self.g.defs[did.0 as usize];
             info.ty = tyt;
             info.body = Some(t);
@@ -1115,10 +1135,21 @@ impl Elab {
             declared.insert(r.name.clone());
         }
         let mut autos = Vec::new();
+        // Class clauses (`Ord a`, D136): implicit parameters, the dictionaries.
+        let class_clauses: Vec<&Expr> = cs
+            .iter()
+            .filter_map(|c| match c {
+                Constraint::Pred(e) if self.class_clause(e).is_some() => Some(e),
+                _ => None,
+            })
+            .collect();
         for c in cs {
             if let Constraint::Typed { ty, .. } = c {
                 self.collect_free(&cx, ty, &declared, &mut autos);
             }
+        }
+        for e in &class_clauses {
+            self.collect_free(&cx, e, &declared, &mut autos);
         }
         for a in &autos {
             let mv = self.fresh_meta(&cx);
@@ -1126,7 +1157,14 @@ impl Elab {
             cx.bind(a, v, Mult::Zero);
             binders.push((Rc::from(a.as_str()), Mult::Zero, Icit::Impl, mv));
         }
-        let n_implicit = autos.len();
+        for (k, e) in class_clauses.iter().enumerate() {
+            let ty = self.elab_type(&mut cx, e);
+            let v = self.eval(&cx, &ty);
+            let name = format!("$d{k}");
+            cx.bind(&name, v, Mult::Many);
+            binders.push((Rc::from(name.as_str()), Mult::Many, Icit::Impl, ty));
+        }
+        let n_implicit = binders.len();
         let mut comptime = Vec::new();
         for (k, p) in params.iter().enumerate() {
             let (ty, mult, ct) = match Self::typed_constraint(cs, &p.name) {
@@ -1207,10 +1245,37 @@ impl Elab {
             let v = self.eval(&cx, &p.tm);
             cx.assume(v);
         }
+        let mut hyps = Vec::new();
         for c in cs {
-            if let Constraint::Pred(e) = c {
+            if let Constraint::Pred(e) | Constraint::Named(_, e) = c {
+                if class_clauses.iter().any(|x| std::ptr::eq(*x, e)) {
+                    continue;
+                }
                 let is_post = result.is_some_and(|r| mentions(e, &r.name));
+                let named = matches!(c, Constraint::Named(..));
+                if let Constraint::Named(n, _) = c {
+                    if is_post {
+                        self.err(
+                            Diagnostic::error("E0289", format!("`{}` names a postcondition; only preconditions are named", n.name), n.span)
+                                .with_help("name a precondition, to use it in the body with `have`"),
+                        );
+                    }
+                    if let Some(bad) = super::expr::negative_forall(e, true) {
+                        self.err(
+                            Diagnostic::error("E0289", "this `forall` would have to be assumed where the function is called", bad)
+                                .with_label("a `forall` before `implies` or under `not`")
+                                .with_help("make it a precondition of its own: `name: forall …`"),
+                        );
+                    }
+                    hyps.push((n.name.clone(), preds.len()));
+                }
+                if named {
+                    self.forall_ok += 1;
+                }
                 let p = self.elab_pred(&mut cx, e, is_post);
+                if named {
+                    self.forall_ok -= 1;
+                }
                 let v = self.eval(&cx, &p.tm);
                 cx.assume(v);
                 preds.push(p);
@@ -1218,7 +1283,7 @@ impl Elab {
         }
         cx.facts.truncate(facts_before);
         cx.pop();
-        Sig { cx, binders, result: result_ty, n_implicit, preds, result_name: rname, comptime }
+        Sig { cx, binders, result: result_ty, n_implicit, preds, result_name: rname, comptime, hyps }
     }
 
     pub fn pi_of(binders: &[(Name, Mult, Icit, Tm)], result: Tm) -> Tm {
@@ -1394,14 +1459,17 @@ impl Elab {
                     self.assume_pres(&mut sig);
                     let posts: Vec<Pred> = sig.preds.iter().filter(|p| p.is_post).cloned().collect();
                     let fname = self.g.defs[did.0 as usize].name.to_string();
+                    // A class's function: each instance proves its postconditions (D136).
+                    let checked = !posts.is_empty() && !self.class_methods.contains(did);
                     self.post_target =
-                        (!posts.is_empty()).then(|| PostTarget { posts, func: fname, binders: sig.cx.env.clone(), invariants: Vec::new() });
+                        checked.then(|| PostTarget { posts, func: fname, binders: sig.cx.env.clone(), invariants: Vec::new() });
                     let _ = decreasing;
                     let bt = self.check_block(&mut sig.cx, body, &rty, true);
                     self.post_target = None;
                     self.solve_deferred();
                     self.report_unsolved_sig(*did, &sig, d.span);
-                    let full = Self::lam_of(&sig.binders, bt);
+                    // Dictionaries found after the body was checked (D136).
+                    let full = crate::core::zonk_metas(&self.g, 0, &Self::lam_of(&sig.binders, bt));
                     crate::usage::check_fn(self, *did, &full);
                     self.g.defs[did.0 as usize].body = Some(full);
                     self.cur_fn = None;
@@ -1443,6 +1511,7 @@ impl Elab {
                         let ty = quote(&self.g, 0, &ty);
                         self.check_eq_tys.insert(expr.span, ty);
                     }
+                    let t = crate::core::zonk_metas(&self.g, 0, &t);
                     self.checks.push((self.cur.clone(), expr.span, t));
                 }
                 _ => {}
@@ -1509,8 +1578,12 @@ impl Elab {
         let mut env = sig.cx.env.clone();
         env.push(Val::var(sig.cx.lvl())); // the result slot; preconditions don't mention it
         let env = Rc::new(env);
-        for p in sig.preds.iter().filter(|p| !p.is_post) {
+        self.cur_hyps.clear();
+        for (k, p) in sig.preds.iter().enumerate().filter(|(_, p)| !p.is_post) {
             let v = eval(&self.g, &env, &p.tm);
+            if let Some((n, _)) = sig.hyps.iter().find(|(_, i)| *i == k) {
+                self.cur_hyps.push((n.clone(), v.clone()));
+            }
             sig.cx.assume(v);
         }
     }
@@ -1530,6 +1603,7 @@ impl Elab {
                 preds: sig.preds.clone(),
                 result_name: sig.result_name.clone(),
                 comptime: sig.comptime.clone(),
+                hyps: sig.hyps.clone(),
             };
             self.cur_fn = Some(*did);
             self.assume_pres(&mut sig);
@@ -1691,8 +1765,9 @@ fn decl_name(d: &ast::Decl) -> Option<&Ident> {
         | DeclKind::Const { name, .. }
         | DeclKind::Enum { name, .. }
         | DeclKind::Record { name, .. }
-        | DeclKind::Alias { name, .. } => Some(name),
-        DeclKind::Check { .. } => None,
+        | DeclKind::Alias { name, .. }
+        | DeclKind::Class { name, .. } => Some(name),
+        DeclKind::Check { .. } | DeclKind::Instance { .. } => None,
     }
 }
 

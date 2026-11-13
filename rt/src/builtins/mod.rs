@@ -1,7 +1,7 @@
 //! The standard library's `__builtin` functions for native code, one file
 //! per module. Runtime errors are reported as D76 describes.
 
-use crate::num::{Decimal, Num};
+use crate::num::Decimal;
 use crate::obj::*;
 use crate::prog::*;
 use crate::word::*;
@@ -33,6 +33,7 @@ pub mod future;
 pub mod array;
 pub mod env;
 pub mod proc;
+pub mod prelude;
 
 /// A builtin: its standard-library name (`std.terminal.print_line`), its
 /// symbol, and its function. Each takes its kept (non-erased) arguments as
@@ -54,6 +55,7 @@ pub const MODULES: &[&[Builtin]] = &[
     array::TABLE,
     env::TABLE,
     proc::TABLE,
+    prelude::TABLE,
 ];
 
 /// Builtins that get their type parameters, as element layouts (D133).

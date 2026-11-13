@@ -26,6 +26,11 @@ fn operand_end t : t~Tok
         Punct   -> syntax.is_close t
         Comment -> False
 
+fn is_name t : t~Tok
+    match t.kind
+        Name -> not (syntax.is_keyword t)
+        _    -> False
+
 fn is_number t : t~Tok
     match t.kind
         Number -> True
@@ -64,7 +69,8 @@ fn next_is_number next : next~Option Tok
         None   -> False
 
 # Spaces between `prev` and `t` on one line.
-fn gap prev t -> n : prev~After, t~Tok, n~Nat
+# `in_sig`: after a signature's `:`, among its constraints.
+fn gap prev t in_sig -> n : prev~After, t~Tok, in_sig~Bool, n~Nat
     match prev
         Begin   -> 0
         Unary   -> 0
@@ -79,6 +85,9 @@ fn gap prev t -> n : prev~After, t~Tok, n~Nat
             else if syntax.is_punct t b"~" or syntax.is_punct p b"~" or syntax.is_punct p b"\\"
                 0
             else if glued_postfix p t
+                0
+            else if in_sig and syntax.is_punct t b":" and not t.spaced and is_name p
+                # A named precondition, `total: forall …` (D137).
                 0
             else
                 1
@@ -146,7 +155,7 @@ fn emit toks cur target what base lead acc -> r : toks~List Tok, cur~Cursor, tar
                 n :: _ -> Some n
             let top = no_brackets cur.brackets
             let aligned = top and syntax.is_punct t what
-            let normal = if lead then 0 else gap cur.prev t
+            let normal = if lead then 0 else gap cur.prev t (cur.sig != None)
             let n = match target
                 Some c -> if aligned then (if c > cur.col + 1 then c - cur.col else 1) else normal
                 None   -> normal

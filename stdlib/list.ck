@@ -84,7 +84,7 @@ export fn drop n xs -> ys : n~Nat, xs~List a, ys~List a,
         _ :: rest -> if n == 0 then xs else drop (n - 1) rest
 
 # Splitting a list and joining the halves gives it back.
-export lemma take_drop n xs : n~Nat, xs~List Int
+export lemma take_drop n xs : n~Nat, xs~List a
     ensures take n xs ++ drop n xs == xs
     proof
         match xs
@@ -95,23 +95,51 @@ export lemma take_drop n xs : n~Nat, xs~List Int
                     _ -> have take_drop (n - 1) rest
 
 # The elements of `xs ++ ys` are those of `xs` and those of `ys`.
-export lemma bag_append xs ys : xs~List Int, ys~List Int
+export lemma bag_append xs ys : xs~List a, ys~List a
     ensures bag.of (xs ++ ys) == bag.sum (bag.of xs) (bag.of ys)
     proof
         match xs
             []        -> auto
             _ :: rest -> have bag_append rest ys
 
-# Whether each element is at most the next.
-export transparent fn sorted xs -> r : xs~List Int, r~Bool
+# Whether each element comes before the next or with it (`Ord`, D138).
+export transparent fn sorted xs -> r : Ord a, xs~List a, r~Bool
     decreasing length xs
     match xs
-        x :: y :: rest -> x <= y and sorted (y :: rest)
+        x :: y :: rest -> le x y and sorted (y :: rest)
+        _              -> True
+
+# Whether each element comes before the next or with it, by `le`.
+export transparent fn sorted_by le xs -> r : le~(a -> a -> Bool), xs~List a, r~Bool
+    decreasing length xs
+    match xs
+        x :: y :: rest -> le x y and sorted_by le (y :: rest)
+        _              -> True
+
+# Whether each element's key comes before the next one's or with it.
+export transparent fn sorted_as key xs -> r : Ord k, key~(a -> k), xs~List a, r~Bool
+    decreasing length xs
+    match xs
+        x :: y :: rest -> le (key x) (key y) and sorted_as key (y :: rest)
         _              -> True
 
 # `ys` is a rearrangement of `xs`: the same elements, as often (D47).
-export transparent fn perm xs ys -> r : xs~List Int, ys~List Int, r~Bool
+export transparent fn perm xs ys -> r : xs~List a, ys~List a, r~Bool
     bag.of xs == bag.of ys
+
+# The first element, if there is one.
+export transparent fn head xs -> r : xs~List a, r~Option a
+    match xs
+        []     -> None
+        x :: _ -> Some x
+
+# Moving an element to the front keeps the same elements.
+export lemma perm_middle xs y ys : xs~List a, y~a, ys~List a
+    ensures perm (xs ++ (y :: ys)) (y :: (xs ++ ys))
+    proof
+        match xs
+            []        -> auto
+            _ :: rest -> have perm_middle rest y ys
 
 # ── Lemmas about uniqueness and reversal ─────────────────────────────────────
 
