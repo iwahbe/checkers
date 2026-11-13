@@ -221,6 +221,8 @@ pub struct Globals {
     pub tys: Vec<TyInfo>,
     pub cons: Vec<ConInfo>,
     pub metas: RefCell<Vec<MetaEntry>>,
+    /// The implicit parameters unknowns stand for, for messages (D141).
+    pub meta_origins: RefCell<HashMap<MetaId, MetaOrigin>>,
     /// Remaining δ-unfoldings before evaluation stops unfolding (guards against
     /// non-terminating definitions whose termination isn't checked yet).
     pub fuel: Cell<u64>,
@@ -265,6 +267,7 @@ impl Globals {
             tys: Vec::new(),
             cons: Vec::new(),
             metas: RefCell::new(Vec::new()),
+            meta_origins: RefCell::new(HashMap::new()),
             fuel: Cell::new(DEFAULT_FUEL),
             well_known: WellKnown::default(),
         }
@@ -763,8 +766,26 @@ fn quote_case(g: &Globals, l: usize, c: &Rc<CaseTm>, env: &Env) -> Rc<CaseTm> {
 
 // ── unification ──────────────────────────────────────────────────────────────
 
-#[derive(Debug)]
-pub struct UnifyError;
+/// Why unification failed, where a message can say more than "mismatch".
+#[derive(Debug, Clone, Copy)]
+pub enum UnifyError {
+    Mismatch,
+    /// `?f x` against a type that isn't a type constructor applied to a
+    /// type (`Int`), D141.
+    NotApplied(MetaId),
+}
+
+/// What an unknown stands for (D141): the implicit parameter `name` of
+/// `owner`, a meta applied to `spine` locals first.
+#[derive(Debug, Clone)]
+pub struct MetaOrigin {
+    pub name: Name,
+    pub owner: Option<Name>,
+    pub spine: usize,
+    /// Its parameter is a type (`a~Type`) or a type constructor (arity > 0).
+    pub is_type: bool,
+    pub arity: usize,
+}
 
 struct PartialRenaming {
     dom: usize,
@@ -782,9 +803,9 @@ fn invert(g: &Globals, gamma: usize, sp: &[Elim]) -> Result<(PartialRenaming, Ve
                     ren.insert(x, dom);
                     icits.push(*i);
                 }
-                _ => return Err(UnifyError),
+                _ => return Err(UnifyError::Mismatch),
             },
-            _ => return Err(UnifyError),
+            _ => return Err(UnifyError::Mismatch),
         }
     }
     Ok((PartialRenaming { dom: sp.len(), cod: gamma, ren }, icits))
@@ -812,13 +833,13 @@ fn rename(g: &Globals, m: MetaId, p: &PartialRenaming, v: &Val) -> Result<Tm, Un
     match force_meta(g, v.clone()) {
         Val::Neutral(Head::Meta(m2), sp) => {
             if m2 == m {
-                return Err(UnifyError); // occurs check
+                return Err(UnifyError::Mismatch); // occurs check
             }
             go_sp(Tm::Meta(m2), &sp)
         }
         Val::Neutral(Head::Var(x), sp) => match p.ren.get(&x) {
             Some(x2) => go_sp(Tm::Var(p.dom - x2 - 1), &sp),
-            None => Err(UnifyError), // scope error
+            None => Err(UnifyError::Mismatch), // scope error
         },
         Val::Neutral(Head::Def(d), sp) => go_sp(Tm::Def(d), &sp),
         Val::Neutral(Head::Prim(pr, args), sp) => {
@@ -881,7 +902,7 @@ fn solve(g: &Globals, gamma: usize, m: MetaId, sp: &[Elim], rhs: &Val) -> Result
 
 fn unify_sp(g: &Globals, l: usize, a: &[Elim], b: &[Elim]) -> Result<(), UnifyError> {
     if a.len() != b.len() {
-        return Err(UnifyError);
+        return Err(UnifyError::Mismatch);
     }
     for (x, y) in a.iter().zip(b) {
         match (x, y) {
@@ -892,10 +913,10 @@ fn unify_sp(g: &Globals, l: usize, a: &[Elim], b: &[Elim]) -> Result<(), UnifyEr
                 let q1 = quote_case(g, l, c1, e1);
                 let q2 = quote_case(g, l, c2, e2);
                 if !tm_eq(&Tm::Case(Rc::new(Tm::Error), q1), &Tm::Case(Rc::new(Tm::Error), q2)) {
-                    return Err(UnifyError);
+                    return Err(UnifyError::Mismatch);
                 }
             }
-            _ => return Err(UnifyError),
+            _ => return Err(UnifyError::Mismatch),
         }
     }
     Ok(())
@@ -908,7 +929,7 @@ pub fn tm_eq(a: &Tm, b: &Tm) -> bool {
 
 fn unify_many(g: &Globals, l: usize, a: &[Val], b: &[Val]) -> Result<(), UnifyError> {
     if a.len() != b.len() {
-        return Err(UnifyError);
+        return Err(UnifyError::Mismatch);
     }
     for (x, y) in a.iter().zip(b) {
         unify(g, l, x, y)?;
@@ -947,7 +968,7 @@ fn unify_whnf(g: &Globals, l: usize, a: &Val, b: &Val) -> Result<(), UnifyError>
         }
         (Val::Pi(_, m1, i1, a1, c1), Val::Pi(_, m2, i2, a2, c2)) => {
             if i1 != i2 || m1 != m2 {
-                return Err(UnifyError);
+                return Err(UnifyError::Mismatch);
             }
             unify(g, l, a1, a2)?;
             unify(g, l + 1, &apply_closure(g, c1, Val::var(l)), &apply_closure(g, c2, Val::var(l)))
@@ -968,7 +989,7 @@ fn unify_whnf(g: &Globals, l: usize, a: &Val, b: &Val) -> Result<(), UnifyError>
             }
         }
         (Val::Neutral(Head::Meta(m), sp), other) | (other, Val::Neutral(Head::Meta(m), sp)) => {
-            solve(g, l, *m, sp, other).or_else(|e| first_order(g, l, *m, sp, other).ok_or(e))
+            solve(g, l, *m, sp, other).or_else(|e| first_order(g, l, *m, sp, other).unwrap_or(Err(e)))
         }
         (Val::Neutral(Head::Var(x), s1), Val::Neutral(Head::Var(y), s2)) if x == y => unify_sp(g, l, s1, s2),
         (Val::Neutral(Head::Def(x), s1), Val::Neutral(Head::Def(y), s2)) if x == y => unify_sp(g, l, s1, s2),
@@ -976,7 +997,7 @@ fn unify_whnf(g: &Globals, l: usize, a: &Val, b: &Val) -> Result<(), UnifyError>
             unify_many(g, l, a1, a2)?;
             unify_sp(g, l, s1, s2)
         }
-        _ => Err(UnifyError),
+        _ => Err(UnifyError::Mismatch),
     }
 }
 
@@ -1018,8 +1039,12 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
         Tm::Con(c) => g.cons[c.0 as usize].name.to_string(),
         Tm::Meta(m) => match g.meta(*m) {
             Some(v) => show_prec(g, ns, &quote(g, ns.len(), &v), p),
-            // An unknown the checker has not worked out yet.
-            None => "_".into(),
+            // An unknown the checker has not worked out yet: by the
+            // parameter it stands for (D141), else `_`.
+            None => match g.meta_origins.borrow().get(m) {
+                Some(o) => format!("?{}", o.name),
+                None => "_".into(),
+            },
         },
         Tm::Univ(0) => "Type".into(),
         Tm::Univ(u) => format!("Type {u}"),
@@ -1068,7 +1093,19 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
             }
             if let Tm::Meta(m) = h {
                 if g.meta(*m).is_none() {
-                    return "_".into();
+                    // Applied to the locals in scope where it was made, then
+                    // to its own arguments (`?f Int`).
+                    let Some(o) = g.meta_origins.borrow().get(m).cloned() else { return "_".into() };
+                    let own: Vec<_> = args.iter().skip(o.spine).collect();
+                    if own.is_empty() {
+                        return format!("?{}", o.name);
+                    }
+                    let mut s = format!("?{}", o.name);
+                    for a in own {
+                        s += " ";
+                        s += &show_prec(g, ns, a, 2);
+                    }
+                    return paren(p > 1, s);
                 }
             }
             if args.is_empty() {
@@ -1383,7 +1420,7 @@ fn fix_mults(g: &Globals, t: &Tm) -> Tm {
 /// that isn't a bound variable, M25): solve the heads and the arguments
 /// apart, as Haskell does for type constructors. `t a` is a variable or a
 /// type constructor applied to arguments.
-fn first_order(g: &Globals, l: usize, m: MetaId, sp: &[Elim], other: &Val) -> Option<()> {
+fn first_order(g: &Globals, l: usize, m: MetaId, sp: &[Elim], other: &Val) -> Option<Result<(), UnifyError>> {
     let (Elim::App(x, _), init) = sp.split_last()? else { return None };
     // Only where pattern unification can't apply: the last argument is not
     // a bound variable (`?f Int`). Otherwise the failure is real (a
@@ -1394,9 +1431,8 @@ fn first_order(g: &Globals, l: usize, m: MetaId, sp: &[Elim], other: &Val) -> Op
     let head = Val::Neutral(Head::Meta(m), Rc::new(init.to_vec()));
     match other {
         Val::Neutral(h @ Head::Var(_), sp2) => {
-            let (Elim::App(y, _), init2) = sp2.split_last()? else { return None };
-            unify(g, l, &head, &Val::Neutral(h.clone(), Rc::new(init2.to_vec()))).ok()?;
-            unify(g, l, x, y).ok()
+            let Some((Elim::App(y, _), init2)) = sp2.split_last() else { return Some(Err(UnifyError::NotApplied(m))) };
+            Some(unify(g, l, &head, &Val::Neutral(h.clone(), Rc::new(init2.to_vec()))).and_then(|_| unify(g, l, x, y)))
         }
         Val::TyCon(id, args) if !args.is_empty() => {
             let (last, prefix) = args.split_last()?;
@@ -1406,9 +1442,10 @@ fn first_order(g: &Globals, l: usize, m: MetaId, sp: &[Elim], other: &Val) -> Op
             let lam = Tm::Lam(Rc::from("y"), Mult::Many, Icit::Expl, Rc::new(Tm::TyConApp(*id, ts)));
             let env = Rc::new((0..l).map(Val::var).collect::<Vec<_>>());
             let f = eval(g, &env, &lam);
-            unify(g, l, &head, &f).ok()?;
-            unify(g, l, x, last).ok()
+            Some(unify(g, l, &head, &f).and_then(|_| unify(g, l, x, last)))
         }
+        Val::TyCon(..) | Val::TupleTy(_) | Val::Pi(..) | Val::Univ(_) => Some(Err(UnifyError::NotApplied(m))),
+        Val::Neutral(Head::Def(_), s) if s.is_empty() => Some(Err(UnifyError::NotApplied(m))),
         _ => None,
     }
 }

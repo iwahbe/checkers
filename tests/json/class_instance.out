@@ -1,0 +1,27 @@
+{"kind":"done","phase":"types"}
+{"kind":"name","path":"$ROOT/tests/json/class_instance.ck","start":[5,7],"end":[5,10],"class":"type","def":{"path":"$ROOT/tests/json/class_instance.ck","start":[5,7],"end":[5,10]},"hover":"record Odd","doc":"An instance of a class from another module (D136): its lemma's\ndiagnostic is at the instance, and the class's code shown there\nisn't indexed as if it were in this file."}
+{"kind":"name","path":"$ROOT/tests/json/class_instance.ck","start":[6,4],"end":[6,5],"class":"field","def":{"path":"$ROOT/tests/json/class_instance.ck","start":[6,4],"end":[6,5]},"hover":"n~Nat  (field of `Odd`)","doc":null}
+{"kind":"name","path":"$ROOT/tests/json/class_instance.ck","start":[9,7],"end":[9,9],"class":"function","def":{"path":"$ROOT/tests/json/class_instance.ck","start":[9,7],"end":[9,9]},"hover":"fn le x y","doc":null}
+{"kind":"name","path":"$ROOT/tests/json/class_instance.ck","start":[6,6],"end":[6,9],"class":"type","def":{"path":"$ROOT/stdlib/prelude.ck","start":[39,12],"end":[39,15]},"hover":"export type Nat = n~Int, n >= 0","doc":"The natural numbers are a refinement of the integers (D121)."}
+{"kind":"name","path":"$ROOT/tests/json/class_instance.ck","start":[8,9],"end":[8,12],"class":"type","def":{"path":"$ROOT/stdlib/prelude.ck","start":[72,13],"end":[72,16]},"hover":"export class Ord a","doc":"A total order: `le x y` says `x` comes before `y`, or with it. Sorting\n(`std.sort`, `array.sort`) uses one. Each instance proves the lemmas."}
+{"kind":"name","path":"$ROOT/tests/json/class_instance.ck","start":[8,13],"end":[8,16],"class":"type","def":{"path":"$ROOT/tests/json/class_instance.ck","start":[5,7],"end":[5,10]},"hover":"record Odd","doc":"An instance of a class from another module (D136): its lemma's\ndiagnostic is at the instance, and the class's code shown there\nisn't indexed as if it were in this file."}
+{"kind":"name","path":"$ROOT/tests/json/class_instance.ck","start":[9,10],"end":[9,11],"class":"parameter","def":{"path":"$ROOT/tests/json/class_instance.ck","start":[9,10],"end":[9,11]},"hover":"x : Odd","doc":null}
+{"kind":"name","path":"$ROOT/tests/json/class_instance.ck","start":[9,12],"end":[9,13],"class":"parameter","def":{"path":"$ROOT/tests/json/class_instance.ck","start":[9,12],"end":[9,13]},"hover":"y : Odd","doc":null}
+{"kind":"name","path":"$ROOT/tests/json/class_instance.ck","start":[10,8],"end":[10,9],"class":"parameter","def":{"path":"$ROOT/tests/json/class_instance.ck","start":[9,10],"end":[9,11]},"hover":"x : Odd","doc":null}
+{"kind":"name","path":"$ROOT/tests/json/class_instance.ck","start":[10,10],"end":[10,11],"class":"field","def":{"path":"$ROOT/tests/json/class_instance.ck","start":[6,4],"end":[6,5]},"hover":"n~Nat  (field of `Odd`)","doc":null}
+{"kind":"name","path":"$ROOT/tests/json/class_instance.ck","start":[10,15],"end":[10,16],"class":"parameter","def":{"path":"$ROOT/tests/json/class_instance.ck","start":[9,12],"end":[9,13]},"hover":"y : Odd","doc":null}
+{"kind":"name","path":"$ROOT/tests/json/class_instance.ck","start":[10,17],"end":[10,18],"class":"field","def":{"path":"$ROOT/tests/json/class_instance.ck","start":[6,4],"end":[6,5]},"hover":"n~Nat  (field of `Odd`)","doc":null}
+{"kind":"token","path":"$ROOT/tests/json/class_instance.ck","start":[0,0],"end":[0,6],"class":"keyword"}
+{"kind":"token","path":"$ROOT/tests/json/class_instance.ck","start":[2,0],"end":[2,64],"class":"comment"}
+{"kind":"token","path":"$ROOT/tests/json/class_instance.ck","start":[3,0],"end":[3,65],"class":"comment"}
+{"kind":"token","path":"$ROOT/tests/json/class_instance.ck","start":[4,0],"end":[4,43],"class":"comment"}
+{"kind":"token","path":"$ROOT/tests/json/class_instance.ck","start":[5,0],"end":[5,6],"class":"keyword"}
+{"kind":"token","path":"$ROOT/tests/json/class_instance.ck","start":[8,0],"end":[8,8],"class":"keyword"}
+{"kind":"token","path":"$ROOT/tests/json/class_instance.ck","start":[9,4],"end":[9,6],"class":"keyword"}
+{"kind":"token","path":"$ROOT/tests/json/class_instance.ck","start":[10,21],"end":[10,22],"class":"number"}
+{"kind":"done","phase":"index"}
+{"kind":"done","phase":"checks"}
+{"kind":"diagnostic","phase":"proofs","path":"$ROOT/tests/json/class_instance.ck","start":[8,0],"end":[8,16],"severity":"error","code":"E0450","message":"cannot prove lemma `Ord Odd.trans`","label":"`le x z`","notes":["facts in scope: `le x y`, `le y z`","counterexample: x = Odd 2, y = Odd 1, z = Odd 0"],"help":"add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs"}
+{"kind":"diagnostic","phase":"proofs","path":"$ROOT/tests/json/class_instance.ck","start":[8,0],"end":[8,16],"severity":"error","code":"E0450","message":"cannot prove lemma `Ord Odd.antisym`","label":"`x == y`","notes":["facts in scope: `le x y`, `le y x`","counterexample: x = Odd 1, y = Odd 0"],"help":"add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs"}
+{"kind":"done","phase":"proofs"}
+-- exit 1

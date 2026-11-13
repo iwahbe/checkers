@@ -40,8 +40,9 @@ impl Elab {
         let mut args = Vec::new();
         loop {
             match self.force(&ty) {
-                Val::Pi(_, m, Icit::Impl, dom, c) => {
+                Val::Pi(x, m, Icit::Impl, dom, c) => {
                     let mt = self.fresh_meta(cx);
+                    self.name_meta(cx, &mt, &x, &dom, &t);
                     let mv = self.eval(cx, &mt);
                     // A dictionary (D136): found once its type is known.
                     let span = self.name_span;

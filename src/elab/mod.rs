@@ -473,9 +473,15 @@ pub struct Elab {
     /// Text for spans standing for code written in another module (a class's
     /// signatures in an instance, D136): module, start, end → text.
     pub text_override: HashMap<(String, u32, u32), String>,
-    /// How many synthetic spans each anchor has given out.
-    pub synthetic: HashMap<(u32, u32), u32>,
+    /// Synthetic spans (beyond any file's text, from `SYNTHETIC`), each
+    /// standing for the real span it is shown at: module, start → anchor.
+    pub synthetic: HashMap<(String, u32), Span>,
+    /// Unknowns in a reported type mismatch (D141 c).
+    pub blamed: HashSet<MetaId>,
 }
+
+/// Where synthetic spans start: past the end of any source file.
+pub const SYNTHETIC: u32 = 0xC000_0000;
 
 pub struct Failed;
 
@@ -559,6 +565,7 @@ impl Elab {
             name_span: Span::default(),
             text_override: HashMap::new(),
             synthetic: HashMap::new(),
+            blamed: HashSet::new(),
         }
     }
 
@@ -596,6 +603,44 @@ impl Elab {
         t
     }
 
+    /// Record that the unknown `mt` (from `fresh_meta`) stands for the
+    /// implicit parameter `x` of the function `head` is (D141).
+    pub fn name_meta(&mut self, cx: &Cx, mt: &Tm, x: &Name, dom: &Val, head: &Tm) {
+        if x.starts_with('$') || x.is_empty() || &**x == "_" {
+            return;
+        }
+        let mut h = mt;
+        let mut spine = 0;
+        while let Tm::App(f, ..) = h {
+            spine += 1;
+            h = f;
+        }
+        let Tm::Meta(m) = h else { return };
+        let mut f = head;
+        while let Tm::App(g, ..) = f {
+            f = g;
+        }
+        let owner = match f {
+            Tm::Def(d) => Some(self.g.defs[d.0 as usize].name.clone()),
+            Tm::Con(c) => Some(self.g.cons[c.0 as usize].name.clone()),
+            _ => None,
+        };
+        // A type (`Type`) or a type constructor (`Type -> Type`, M25).
+        let mut arity = 0;
+        let mut d = self.force(dom);
+        let is_type = loop {
+            match d {
+                Val::Univ(_) => break true,
+                Val::Pi(_, _, _, a, c) if matches!(self.force(&a), Val::Univ(_)) => {
+                    arity += 1;
+                    d = self.force(&apply_closure(&self.g, &c, Val::var(cx.lvl())));
+                }
+                _ => break false,
+            }
+        };
+        self.g.meta_origins.borrow_mut().insert(*m, crate::core::MetaOrigin { name: x.clone(), owner, spine, is_type, arity });
+    }
+
     pub fn fresh_meta_val(&mut self, cx: &Cx) -> Val {
         let t = self.fresh_meta(cx);
         self.eval(cx, &t)
@@ -615,7 +660,7 @@ impl Elab {
     pub fn unify_at(&mut self, cx: &Cx, expected: &Val, actual: &Val, span: Span, what: &str) -> bool {
         match unify(&self.g, cx.lvl(), expected, actual) {
             Ok(()) => true,
-            Err(_) => {
+            Err(why) => {
                 // Show computed types (`BadPlaceholder`, not the call that gives
                 // it), but a refinement alias by its name (`U8`, not `Nat`).
                 let (e, a) = (self.show_written(cx, expected), self.show_written(cx, actual));
@@ -634,32 +679,25 @@ impl Elab {
                     );
                     return false;
                 }
-                // An unknown type constructor applied to types (`f Int`, M25).
-                let ctor_app = |v: &Val| match v {
-                    Val::Neutral(Head::Meta(_), sp) => {
-                        let tys: Vec<&Val> = sp
-                            .iter()
-                            .filter_map(|el| match el {
-                                Elim::App(x, _) if !matches!(x, Val::Neutral(Head::Var(_), s) if s.is_empty()) => Some(x),
-                                _ => None,
-                            })
-                            .collect();
-                        (!tys.is_empty()).then(|| tys.iter().map(|t| self.show_val(cx, t)).collect::<Vec<_>>().join(" "))
+                // A mismatch about an unknown already in a reported one
+                // follows from it (D141 c).
+                let unknowns = {
+                    let mut v = self.unknowns(cx.lvl(), expected);
+                    for m in self.unknowns(cx.lvl(), actual) {
+                        if !v.contains(&m) {
+                            v.push(m);
+                        }
                     }
-                    _ => None,
+                    v
                 };
-                let e = match ctor_app(expected) {
-                    Some(args) => format!("f {args}"),
-                    None => e,
-                };
-                let a = match ctor_app(actual) {
-                    Some(args) => format!("f {args}"),
-                    None => a,
-                };
+                if unknowns.iter().any(|m| self.blamed.contains(m)) {
+                    return false;
+                }
+                self.blamed.extend(unknowns.iter().copied());
                 let mut d = Diagnostic::error("E0201", format!("type mismatch: expected `{e}`, found `{a}`"), span)
                     .with_label(format!("{what} has type `{a}`"));
-                if ctor_app(expected).or(ctor_app(actual)).is_some() {
-                    d = d.with_note("`f` stands for a type constructor, like `List` or `Option`");
+                if let Some(n) = self.unknowns_note(&unknowns, why, &e, &a) {
+                    d = d.with_note(n);
                 }
                 // A sealed function in a type never unfolds outside its module (D54).
                 let mut sealed = Vec::new();
@@ -679,6 +717,99 @@ impl Elab {
         }
     }
 
+}
+
+impl Elab {
+    /// The unknowns in `v` the checker hasn't worked out, in order.
+    pub fn unknowns(&self, lvl: usize, v: &Val) -> Vec<MetaId> {
+        fn go(g: &Globals, t: &Tm, lvl: usize, out: &mut Vec<MetaId>) {
+            match t {
+                Tm::Meta(m) => match g.meta(*m) {
+                    Some(v) => go(g, &quote(g, lvl, &v), lvl, out),
+                    None => {
+                        if !out.contains(m) {
+                            out.push(*m)
+                        }
+                    }
+                },
+                Tm::App(f, a, ..) => {
+                    go(g, f, lvl, out);
+                    go(g, a, lvl, out);
+                }
+                Tm::Pi(_, _, _, a, b) => {
+                    go(g, a, lvl, out);
+                    go(g, b, lvl + 1, out);
+                }
+                Tm::Lam(_, _, _, b) => go(g, b, lvl + 1, out),
+                Tm::TyConApp(_, v) | Tm::TupleTy(v) | Tm::ConApp(_, v) | Tm::Tuple(v) => v.iter().for_each(|x| go(g, x, lvl, out)),
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        go(&self.g, &quote(&self.g, lvl, v), lvl, &mut out);
+        out
+    }
+
+    /// What the named unknowns in a message stand for (D141): "`?f` is
+    /// `doubled`'s type parameter `f`, a type constructor like `List`", and
+    /// why `?f x` can't be the other type.
+    fn unknowns_note(&self, unknowns: &[MetaId], why: crate::core::UnifyError, e: &str, a: &str) -> Option<String> {
+        let origins = self.g.meta_origins.borrow();
+        let named: Vec<&crate::core::MetaOrigin> = unknowns.iter().filter_map(|m| origins.get(m)).collect();
+        if named.is_empty() {
+            return None;
+        }
+        // By function, in order of first appearance.
+        let mut groups: Vec<(Option<Name>, Vec<&crate::core::MetaOrigin>)> = Vec::new();
+        for o in &named {
+            match groups.iter_mut().find(|g| g.0 == o.owner) {
+                Some(g) => g.1.push(o),
+                None => groups.push((o.owner.clone(), vec![o])),
+            }
+        }
+        let not_applied = match why {
+            crate::core::UnifyError::NotApplied(m) => origins.get(&m).map(|o| {
+                let shown = format!("?{}", o.name);
+                // The side without the unknown.
+                if e.contains(&shown) { a.to_string() } else { e.to_string() }
+            }),
+            crate::core::UnifyError::Mismatch => None,
+        };
+        let mut parts = Vec::new();
+        for (owner, os) in &groups {
+            let unk = os.iter().map(|o| format!("`?{}`", o.name)).collect::<Vec<_>>();
+            let params = os.iter().map(|o| format!("`{}`", o.name)).collect::<Vec<_>>();
+            let kind = if os.iter().all(|o| o.is_type) { "type parameter" } else { "implicit parameter" };
+            let whose = match owner {
+                Some(f) => format!("`{f}`'s "),
+                None => String::new(),
+            };
+            let mut p = if os.len() == 1 {
+                format!("{} is {whose}{kind} {}", unk[0], params[0])
+            } else {
+                format!("{} are {whose}{kind}s {}", and_list(&unk), and_list(&params))
+            };
+            if os.len() == 1 && os[0].arity > 0 {
+                p += ", a type constructor like `List`";
+            }
+            parts.push(p);
+        }
+        let mut note = parts.join("; ");
+        if let Some(other) = not_applied {
+            let one = named.len() == 1 && named[0].arity > 0;
+            note += &if one { format!("; `{other}` isn't one applied to a type") } else { format!("; `{other}` isn't a type constructor applied to a type") };
+        }
+        Some(note)
+    }
+}
+
+/// `a`, `a and b`, `a, b and c`.
+fn and_list(xs: &[String]) -> String {
+    match xs {
+        [] => String::new(),
+        [x] => x.clone(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+    }
 }
 
 /// A type constructor applied to arguments, in either shape the elaborator builds.

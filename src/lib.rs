@@ -365,6 +365,8 @@ pub fn check_stdlib() -> String {
     let mut out = String::new();
     for (m, d) in &e.diags {
         if let Some(f) = e.sources.get(m) {
+            let mut d = d.clone();
+            d.span = e.real_span(m, d.span);
             out += &d.render(f);
         }
     }
@@ -372,7 +374,10 @@ pub fn check_stdlib() -> String {
         return out;
     }
     for m in &modules {
-        let v = verify::verify(&e, m);
+        let mut v = verify::verify(&e, m);
+        for d in &mut v.diags {
+            d.span = e.real_span(m, d.span);
+        }
         if let Some(f) = e.sources.get(m) {
             out += &diag::render_all(f, &v.diags);
         }
@@ -401,7 +406,8 @@ fn std_modules(e: &elab::Elab) -> Vec<String> {
 }
 
 /// File a diagnostic of module `m` where it belongs.
-fn route(c: &mut Checked, e: &elab::Elab, user: &str, m: &str, d: Diagnostic) {
+fn route(c: &mut Checked, e: &elab::Elab, user: &str, m: &str, mut d: Diagnostic) {
+    d.span = e.real_span(m, d.span);
     if m == user {
         c.diags.push(d);
     } else if e.sources.contains_key(m) {
@@ -431,6 +437,10 @@ fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
         }
         asked += v.asked;
         reused += v.reused;
+        let mut v = v;
+        for l in &mut v.ledger {
+            l.span = e.real_span(&m, l.span);
+        }
         if let Some(f) = e.sources.get(&m) {
             ledger += &if own { verify::ledger_text(f, &v) } else { verify::ledger_summary(f, &v) };
         }

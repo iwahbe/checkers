@@ -551,12 +551,20 @@ impl Elab {
             .collect()
     }
 
-    /// A span within `at` not given out before, for a text override.
-    fn synthetic_span(&mut self, at: Span, len: u32) -> Span {
-        let n = self.synthetic.entry((at.start, at.end)).or_insert(0);
-        let k = *n % len;
-        *n += 1;
-        Span { start: at.start, end: at.start + 1 + k }
+    /// A span of its own, for a text override, shown at `at` (D136): past
+    /// the end of the file, so it never collides with real code.
+    fn synthetic_span(&mut self, at: Span) -> Span {
+        let start = SYNTHETIC + self.synthetic.len() as u32;
+        self.synthetic.insert((self.cur.clone(), start), at);
+        Span { start, end: start + 1 }
+    }
+
+    /// The real span of `span` in module `m`: a synthetic one's anchor.
+    pub fn real_span(&self, m: &str, span: Span) -> Span {
+        if span.start < SYNTHETIC {
+            return span;
+        }
+        self.synthetic.get(&(m.to_string(), span.start)).copied().unwrap_or(Span { start: 0, end: 0 })
     }
 
     /// Source text of `span` in module `m`.
@@ -572,14 +580,13 @@ impl Elab {
     /// each shown at the member (`at`), with its own text.
     fn shown_here(&mut self, foreign: Option<&str>, original: &[Constraint], cs: Vec<Constraint>, at: Span) -> Vec<Constraint> {
         let Some(m) = foreign else { return cs };
-        let len = (at.end - at.start).max(1);
         cs.iter()
             .zip(original)
             .enumerate()
             .map(|(k, (c, o))| {
                 // A distinct span for each, within the member's.
                 let _ = k;
-                let s = self.synthetic_span(at, len);
+                let s = self.synthetic_span(at);
                 let oe = match o {
                     Constraint::Typed { ty, .. } => ty.span,
                     Constraint::Pred(e) | Constraint::Named(_, e) => e.span,
@@ -1023,13 +1030,15 @@ impl Elab {
                     bound.extend(result.iter().map(|r| r.name.clone()));
                     let gname = gen(&name.name);
                     member_list.push((name.name.clone(), decls.len()));
+                    // The class's name for the result isn't written here.
+                    let result = result.as_ref().map(|r| ident(&r.name, self.synthetic_span(span)));
                     decls.push(Decl {
                         export: Export::No,
                         kind: DeclKind::Fn {
                             partial: false,
                             name: ident(&gname, own_name),
                             params: iparams.clone(),
-                            result: result.clone(),
+                            result,
                             constraints: cs,
                             decreasing: decreasing.as_ref().map(|e| rw.expr(e, &bound)),
                             body: rw.block(body, &bound),
@@ -1043,8 +1052,16 @@ impl Elab {
                         InstMember::Lemma { name: n, params, proof, span } if n.name == name.name => Some((params.clone(), proof.clone(), *span, n.span)),
                         _ => None,
                     });
-                    let (iparams, proof, span, name_span) =
-                        given.unwrap_or_else(|| (params.clone(), None, d.span, Span { start: d.span.start, end: d.span.start }));
+                    // Not given: proved by Z3, reported at the instance's header,
+                    // with the class's names for the parameters.
+                    let (iparams, proof, span, name_span) = match given {
+                        Some(g) => g,
+                        None => {
+                            let header = Span { start: d.span.start, end: ty.span.end };
+                            let ps: Vec<Ident> = params.iter().map(|p| ident(&p.name, self.synthetic_span(header))).collect();
+                            (ps, None, header, Span { start: d.span.start, end: d.span.start })
+                        }
+                    };
                     if iparams.len() != params.len() {
                         self.err(Diagnostic::error(
                             "E0365",
@@ -1073,7 +1090,7 @@ impl Elab {
                     }
                     let mut ens = srw.expr(&prw.expr(ensures, &[]), &[]);
                     if let Some(m) = foreign.as_deref() {
-                        let at = self.synthetic_span(span, (span.end - span.start).max(1));
+                        let at = self.synthetic_span(span);
                         let text = self.text_in(m, ensures.span);
                         self.text_override.insert((self.cur.clone(), at.start, at.end), text);
                         ens = respan(&ens, at);
@@ -1334,13 +1351,8 @@ impl Elab {
                 }
                 Err(why) if why == "unknown" && !last => self.inst_reqs.push(r),
                 Err(why) => {
-                    // An unknown type after a type error there is that error's.
-                    let cur = self.cur.clone();
-                    if why == "unknown"
-                        && self.diags.iter().any(|(m, d)| {
-                            **m == *cur && d.code == "E0201" && d.span.start < r.span.end.max(r.span.start + 1) && r.span.start < d.span.end
-                        })
-                    {
+                    // An unknown type in a reported mismatch: that error's (D141 c).
+                    if why == "unknown" && self.unknowns(r.lvl, &r.ty).iter().any(|m| self.blamed.contains(m)) {
                         continue;
                     }
                     let cname = self.class_defs.get(&r.class).map(|c| c.name.clone()).unwrap_or_default();

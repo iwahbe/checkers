@@ -1,0 +1,28 @@
+error[E0201]: type mismatch: expected `?f Int`, found `Int`
+  --> unknowns.ck:19:13
+   |
+19 |     doubled x
+   |             ^ this expression has type `Int`
+   = note: `?f` is `doubled`'s type parameter `f`, a type constructor like `List`; `Int` isn't one applied to a type
+
+error[E0201]: type mismatch: expected `?f ?a`, found `Nat`
+  --> unknowns.ck:22:10
+   |
+22 |     size n == 0
+   |          ^ this expression has type `Nat`
+   = note: `?f` and `?a` are `size`'s type parameters `f` and `a`; `Nat` isn't a type constructor applied to a type
+
+error[E0201]: type mismatch: expected `Option a`, found a number
+  --> unknowns.ck:26:17
+   |
+26 |     first xs == 5
+   |                 ^ this is a number, not a `Option a`
+
+error[E0201]: type mismatch: expected `List ?a`, found `Int`
+  --> unknowns.ck:30:11
+   |
+30 |     first x == None
+   |           ^ this expression has type `Int`
+   = note: `?a` is `first`'s type parameter `a`
+
+unknowns.ck: 4 errors, 0 warnings

@@ -44,7 +44,8 @@ impl Elab {
     }
 
     pub fn index_global(&mut self, span: Span, t: Target) {
-        if self.indexing() {
+        // Code shown from another module (D136) isn't in this file.
+        if self.indexing() && span.start < super::SYNTHETIC {
             self.index.push(NameUse { module: self.cur.clone(), span, what: Use::Global(t) });
         }
     }
@@ -77,6 +78,9 @@ impl Elab {
         }
         let ty = self.show_val(cx, &local.ty);
         let def = local.span.map(|s| (self.cur.clone(), s));
+        if span.start >= super::SYNTHETIC {
+            return;
+        }
         self.index.push(NameUse {
             module: self.cur.clone(),
             span,

@@ -2,7 +2,7 @@ error[E0450]: cannot prove lemma `Functor Bad.fmap_id`
   --> functor.ck:33:1
    |
 33 | instance Functor Bad
-   | ^^ `fmap (\x -> x) xs == xs`
+   | ^^^^^^^^^^^^^^^^^^^^ `fmap (\x -> x) xs == xs`
    = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
 
 error[E0450]: cannot prove lemma `no_lemma`
@@ -33,19 +33,12 @@ error[E0286]: `Ord` is for a type, like `Int`, but `List` is a type constructor 
    |              ^^^^
    = help: give it its parameters, as in `instance Ord (List a)`
 
-error[E0201]: type mismatch: expected `Int`, found `f _`
-  --> functor.ck:75:5
-   |
-75 |     fmap (\y -> y) x
-   |     ^^^^^^^^^^^^^^^^ this expression has type `f _`
-   = note: `f` stands for a type constructor, like `List` or `Option`
-
-error[E0201]: type mismatch: expected `f _`, found `Int`
+error[E0201]: type mismatch: expected `?f ?a`, found `Int`
   --> functor.ck:75:20
    |
 75 |     fmap (\y -> y) x
    |                    ^ this expression has type `Int`
-   = note: `f` stands for a type constructor, like `List` or `Option`
+   = note: `?f` and `?a` are `fmap`'s type parameters `f` and `a`; `Int` isn't a type constructor applied to a type
 
 error[E0354]: `Rose` occurs in field `kids` as an argument of `f`, a parameter, which may use it in a negative position
   --> functor.ck:80:1
@@ -54,4 +47,4 @@ error[E0354]: `Rose` occurs in field `kids` as an argument of `f`, a parameter, 
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
    = help: a recursive type may appear only directly or as an argument of a type that holds only values of it, like `List`; `f` could be any type constructor, so nothing is known of how it uses its argument
 
-functor.ck: 8 errors, 0 warnings
+functor.ck: 7 errors, 0 warnings
