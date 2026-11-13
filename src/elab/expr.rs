@@ -181,6 +181,19 @@ impl Elab {
                 );
                 Tm::Error
             }
+            // `+ - *` of a type with an instance of the operator's class (M24).
+            (ExprKind::Binary(op @ (Op::Add | Op::Sub | Op::Mul), l, r), Val::TyCon(..))
+                if Self::class_op(*op).is_some_and(|(c, m, _, _)| self.operator_method(cx, c, m, &exp).is_some()) =>
+            {
+                let lt = self.check(cx, l, expected, false);
+                match self.class_operator(cx, *op, lt, expected, r, e.span) {
+                    Some((t, ty)) => {
+                        self.last_inferred = Some(ty);
+                        t
+                    }
+                    None => Tm::Error,
+                }
+            }
             (ExprKind::Binary(op, l, r), Val::TyCon(..))
                 if matches!(op, Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Rem | Op::Concat) =>
             {
@@ -334,6 +347,13 @@ impl Elab {
                     return (Tm::Lit(Lit::Num(-n)), int);
                 }
                 let (t, xty) = self.infer(cx, x);
+                // `-x` on a type with an instance of `Neg` (M24).
+                if let Some(m) = self.operator_method(cx, "Neg", "neg", &xty) {
+                    let (f, fty) = self.sym_term(cx, Sym::Def(m), e.span);
+                    self.name_span = e.span;
+                    let (f, fty) = self.insert(cx, f, fty);
+                    return self.apply_tm(cx, f, fty, t, &xty, x.span);
+                }
                 if !self.unify_at(cx, &int, &xty, x.span, "this expression") {
                     return (Tm::Error, int);
                 }
@@ -1366,9 +1386,37 @@ impl Elab {
                 // literal, so `1 + "a"` blames `"a"`.
                 // A range (D135) isn't imposed on the other operand: they
                 // share its base type. Each operand's range is its own.
-                let (lt, rt, lty, own) = if matches!(l.kind, ExprKind::Lit(ast::Lit::Int(_)))
-                    && !matches!(r.kind, ExprKind::Lit(ast::Lit::Int(_)))
-                {
+                let left_literal = matches!(l.kind, ExprKind::Lit(ast::Lit::Int(_)));
+                // An operator on a type with an instance of its class (D136,
+                // M24): `+` is `Add.add`, `<=` is `Ord.le`. Numbers keep
+                // their built-in operators.
+                let early = if !left_literal && Self::class_op(op).is_some() {
+                    let (lt, lty) = self.infer(cx, l);
+                    if let Some(r) = self.class_operator(cx, op, lt.clone(), &lty, r, span) {
+                        return r;
+                    }
+                    // The left side's type isn't known yet (`zero + x`): the right's.
+                    if matches!(self.force(&lty), Val::Neutral(Head::Meta(_), _)) && !matches!(r.kind, ExprKind::Lit(_)) {
+                        let (rt, rty) = self.infer(cx, r);
+                        if let Some(res) = self.class_operator_tms(cx, op, lt.clone(), rt.clone(), &rty, span) {
+                            self.unify_at(cx, &rty, &lty, l.span, "this operand");
+                            return res;
+                        }
+                        let shared = self.shared_operand_type(&rty);
+                        self.unify_at(cx, &shared, &lty, l.span, "this operand");
+                        self.operand_types = Some((lty.clone(), rty.clone()));
+                        return self.finish_arith(cx, op, lt, rt, shared, l.span.to(r.span), span);
+                    }
+                    Some((lt, lty))
+                } else {
+                    None
+                };
+                let (lt, rt, lty, own) = if let Some((lt, lty)) = early {
+                    let shared = self.shared_operand_type(&lty);
+                    let (rt, rown) = self.check_operand(cx, r, &shared);
+                    let rown = rown.unwrap_or_else(|| shared.clone());
+                    (lt, rt, shared, (lty, rown))
+                } else if left_literal && !matches!(r.kind, ExprKind::Lit(ast::Lit::Int(_))) {
                     let (rt, rty) = self.infer(cx, r);
                     let shared = self.shared_operand_type(&rty);
                     let (lt, lown) = self.check_operand(cx, l, &shared);
@@ -1384,6 +1432,88 @@ impl Elab {
                 self.operand_types = Some(own);
                 self.finish_arith(cx, op, lt, rt, lty, l.span.to(r.span), span)
             }
+        }
+    }
+
+    /// The class and function an operator stands for on other types than
+    /// numbers (M24): whether its operands are swapped, and whether the
+    /// result is negated.
+    fn class_op(op: Op) -> Option<(&'static str, &'static str, bool, bool)> {
+        Some(match op {
+            Op::Add => ("Add", "add", false, false),
+            Op::Sub => ("Sub", "sub", false, false),
+            Op::Mul => ("Mul", "mul", false, false),
+            Op::Le => ("Ord", "le", false, false),
+            Op::Ge => ("Ord", "le", true, false),
+            Op::Lt => ("Ord", "le", true, true),
+            Op::Gt => ("Ord", "le", false, true),
+            _ => return None,
+        })
+    }
+
+    /// The prelude class `class`'s function `method`, if `ty` has an
+    /// instance of it (or a dictionary of it is in scope) and isn't a
+    /// built-in number.
+    fn operator_method(&self, cx: &Cx, class: &str, method: &str, ty: &Val) -> Option<DefId> {
+        let prelude = self.modules.get("std.prelude")?;
+        let Some(Sym::Ty(ctid)) = prelude.types.get(class).copied() else { return None };
+        if !self.class_defs.contains_key(&ctid) {
+            return None;
+        }
+        let Some(Sym::Def(m)) = prelude.values.get(method).copied() else { return None };
+        let t = self.force(ty);
+        let found = match &t {
+            Val::TyCon(id, _) if Some(*id) == self.g.well_known.int => false,
+            Val::TyCon(id, _) => self.instances.contains_key(&(ctid, super::classes::HeadKey::Ty(*id))),
+            Val::TupleTy(xs) => self.instances.contains_key(&(ctid, super::classes::HeadKey::Tuple(xs.len()))),
+            Val::Neutral(Head::Meta(_), _) | Val::Error => false,
+            _ => {
+                // A type parameter: a dictionary in scope.
+                let tq = format!("{:?}", quote(&self.g, cx.lvl(), &t));
+                cx.locals.iter().any(|loc| match self.force(&loc.ty) {
+                    Val::TyCon(c, a) if c == ctid => a.last().is_some_and(|x| format!("{:?}", quote(&self.g, cx.lvl(), &self.force(x))) == tq),
+                    _ => false,
+                })
+            }
+        };
+        found.then_some(m)
+    }
+
+    /// `l op r` through a class's function (M24), if `l`'s type has one.
+    fn class_operator(&mut self, cx: &mut Cx, op: Op, lt: Tm, lty: &Val, r: &Expr, span: Span) -> Option<(Tm, Val)> {
+        let (class, method, _, _) = Self::class_op(op)?;
+        self.operator_method(cx, class, method, lty)?;
+        let rt = self.check(cx, r, lty, false);
+        self.class_operator_tms(cx, op, lt, rt, lty, span)
+    }
+
+    /// `lt op rt`, both of type `lty`, through a class's function (M24).
+    fn class_operator_tms(&mut self, cx: &mut Cx, op: Op, lt: Tm, rt: Tm, lty: &Val, span: Span) -> Option<(Tm, Val)> {
+        let (class, method, swap, negate) = Self::class_op(op)?;
+        let m = self.operator_method(cx, class, method, lty)?;
+        let (f, fty) = self.sym_term(cx, Sym::Def(m), span);
+        self.name_span = span;
+        let (f, fty) = self.insert(cx, f, fty);
+        let (a, b) = if swap { (rt, lt) } else { (lt, rt) };
+        let (f1, ty1) = self.apply_tm(cx, f, fty, a, lty, span);
+        let (t, ty) = self.apply_tm(cx, f1, ty1, b, lty, span);
+        if negate {
+            let b = self.bool_ty();
+            return Some((self.if_tm(t, self.bool_lit(false), self.bool_lit(true)), b));
+        }
+        Some((t, ty))
+    }
+
+    /// Apply `f : fty` to an elaborated argument `a : aty`.
+    fn apply_tm(&mut self, cx: &Cx, f: Tm, fty: Val, a: Tm, aty: &Val, span: Span) -> (Tm, Val) {
+        match self.force(&fty) {
+            Val::Pi(_, m, i, dom, c) => {
+                self.unify_at(cx, &dom, aty, span, "this operand");
+                let av = self.eval(cx, &a);
+                let ty = apply_closure(&self.g, &c, av);
+                (Tm::App(Rc::new(f), Rc::new(a), i, m), ty)
+            }
+            _ => (Tm::Error, Val::Error),
         }
     }
 

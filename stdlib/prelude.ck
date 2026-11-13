@@ -201,6 +201,60 @@ instance Ord (Option a) : Ord a
                         None   -> auto
                         Some y -> have Ord.antisym x y
 
+# ── Operators (D136, M24) ────────────────────────────────────────────────────
+# On numbers, `+ - *`, negation and comparisons are built in. On another
+# type they are its instance's: `x + y` is `add x y`, `-x` is `neg x`, and
+# `x <= y` is `le x y` (`x < y` is `not (le y x)`).
+
+# Values with `+`.
+export class Add a
+    fn add x y -> r : x~a, y~a, r~a
+
+# Values with `-`.
+export class Sub a
+    fn sub x y -> r : x~a, y~a, r~a
+
+# Values with `*`.
+export class Mul a
+    fn mul x y -> r : x~a, y~a, r~a
+
+# Values with negation, `-x`.
+export class Neg a
+    fn neg x -> r : x~a, r~a
+
+# Values with an associative `+` and a `zero` it leaves alone.
+export class Monoid a
+    fn zero -> r : r~a
+    # Adding three values doesn't depend on which two come first.
+    lemma assoc x y z : Add a, x~a, y~a, z~a
+        ensures (x + y) + z == x + (y + z)
+    # `zero` on the left changes nothing.
+    lemma zero_add x : Add a, x~a
+        ensures zero + x == x
+    # `zero` on the right changes nothing.
+    lemma add_zero x : Add a, x~a
+        ensures x + zero == x
+
+instance Add Int
+    fn add x y
+        x + y
+
+instance Sub Int
+    fn sub x y
+        x - y
+
+instance Mul Int
+    fn mul x y
+        x * y
+
+instance Neg Int
+    fn neg x
+        0 - x
+
+instance Monoid Int
+    fn zero
+        0
+
 # Whether `x` comes before `y` by their bytes (`Ord String`).
 fn string_le x y -> r : x~String, y~String, r~Bool
     __builtin

@@ -1071,7 +1071,10 @@ impl Elab {
         }
         let ty = self.force(ty);
         let tq = quote(&self.g, req.lvl, &ty);
-        for (l, c, t) in &req.given {
+        // A known type's dictionary is its instance's (coherence); one in
+        // scope is used for a type parameter.
+        let concrete = matches!(ty, Val::TyCon(..) | Val::TupleTy(_));
+        for (l, c, t) in req.given.iter().filter(|_| !concrete) {
             if *c == class && format!("{:?}", quote(&self.g, req.lvl, &self.force(t))) == format!("{tq:?}") {
                 return Ok(Tm::Var(req.lvl - l - 1));
             }
