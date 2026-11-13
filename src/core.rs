@@ -968,7 +968,7 @@ fn unify_whnf(g: &Globals, l: usize, a: &Val, b: &Val) -> Result<(), UnifyError>
             }
         }
         (Val::Neutral(Head::Meta(m), sp), other) | (other, Val::Neutral(Head::Meta(m), sp)) => {
-            solve(g, l, *m, sp, other)
+            solve(g, l, *m, sp, other).or_else(|e| first_order(g, l, *m, sp, other).ok_or(e))
         }
         (Val::Neutral(Head::Var(x), s1), Val::Neutral(Head::Var(y), s2)) if x == y => unify_sp(g, l, s1, s2),
         (Val::Neutral(Head::Def(x), s1), Val::Neutral(Head::Def(y), s2)) if x == y => unify_sp(g, l, s1, s2),
@@ -1377,4 +1377,38 @@ fn fix_mults(g: &Globals, t: &Tm) -> Tm {
         out = Tm::App(Rc::new(out), Rc::new(a), i, m);
     }
     out
+}
+
+/// `?f x =?= t a` where pattern unification fails (`?f` applied to a type
+/// that isn't a bound variable, M25): solve the heads and the arguments
+/// apart, as Haskell does for type constructors. `t a` is a variable or a
+/// type constructor applied to arguments.
+fn first_order(g: &Globals, l: usize, m: MetaId, sp: &[Elim], other: &Val) -> Option<()> {
+    let (Elim::App(x, _), init) = sp.split_last()? else { return None };
+    // Only where pattern unification can't apply: the last argument is not
+    // a bound variable (`?f Int`). Otherwise the failure is real (a
+    // variable escaping its scope, say).
+    if matches!(x, Val::Neutral(Head::Var(_), s) if s.is_empty()) {
+        return None;
+    }
+    let head = Val::Neutral(Head::Meta(m), Rc::new(init.to_vec()));
+    match other {
+        Val::Neutral(h @ Head::Var(_), sp2) => {
+            let (Elim::App(y, _), init2) = sp2.split_last()? else { return None };
+            unify(g, l, &head, &Val::Neutral(h.clone(), Rc::new(init2.to_vec()))).ok()?;
+            unify(g, l, x, y).ok()
+        }
+        Val::TyCon(id, args) if !args.is_empty() => {
+            let (last, prefix) = args.split_last()?;
+            // `\y -> T prefix y`, at level `l`.
+            let mut ts: Vec<Tm> = prefix.iter().map(|a| quote(g, l + 1, a)).collect();
+            ts.push(Tm::Var(0));
+            let lam = Tm::Lam(Rc::from("y"), Mult::Many, Icit::Expl, Rc::new(Tm::TyConApp(*id, ts)));
+            let env = Rc::new((0..l).map(Val::var).collect::<Vec<_>>());
+            let f = eval(g, &env, &lam);
+            unify(g, l, &head, &f).ok()?;
+            unify(g, l, x, last).ok()
+        }
+        _ => None,
+    }
 }

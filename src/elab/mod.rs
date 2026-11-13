@@ -448,6 +448,8 @@ pub struct Elab {
     pub pending_classes: Vec<(String, String, Vec<ast::ClassMember>, Span)>,
     /// This module's instances, until their dictionary functions are registered.
     pub pending_insts: Vec<classes::PendingInst>,
+    /// This module's types and their numbers of parameters, for instances' kinds (M25).
+    pub local_ty_params: HashMap<String, usize>,
     /// Where each declaration of the module being checked came from.
     pub decl_origin: Vec<classes::Origin>,
     /// Classes' functions: their postconditions are the instances' to prove.
@@ -544,6 +546,7 @@ impl Elab {
             class_defs: HashMap::new(),
             pending_classes: Vec::new(),
             pending_insts: Vec::new(),
+            local_ty_params: HashMap::new(),
             decl_origin: Vec::new(),
             class_methods: HashSet::new(),
             class_lemmas: HashSet::new(),
@@ -631,8 +634,33 @@ impl Elab {
                     );
                     return false;
                 }
+                // An unknown type constructor applied to types (`f Int`, M25).
+                let ctor_app = |v: &Val| match v {
+                    Val::Neutral(Head::Meta(_), sp) => {
+                        let tys: Vec<&Val> = sp
+                            .iter()
+                            .filter_map(|el| match el {
+                                Elim::App(x, _) if !matches!(x, Val::Neutral(Head::Var(_), s) if s.is_empty()) => Some(x),
+                                _ => None,
+                            })
+                            .collect();
+                        (!tys.is_empty()).then(|| tys.iter().map(|t| self.show_val(cx, t)).collect::<Vec<_>>().join(" "))
+                    }
+                    _ => None,
+                };
+                let e = match ctor_app(expected) {
+                    Some(args) => format!("f {args}"),
+                    None => e,
+                };
+                let a = match ctor_app(actual) {
+                    Some(args) => format!("f {args}"),
+                    None => a,
+                };
                 let mut d = Diagnostic::error("E0201", format!("type mismatch: expected `{e}`, found `{a}`"), span)
                     .with_label(format!("{what} has type `{a}`"));
+                if ctor_app(expected).or(ctor_app(actual)).is_some() {
+                    d = d.with_note("`f` stands for a type constructor, like `List` or `Option`");
+                }
                 // A sealed function in a type never unfolds outside its module (D54).
                 let mut sealed = Vec::new();
                 for v in [expected, actual] {

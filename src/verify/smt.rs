@@ -124,6 +124,12 @@ enum Ent {
     /// A known function value: a closed term (a top-level function or a
     /// lambda without free variables), keyed for instance names.
     Known(String),
+    /// A type constructor not applied to its last argument (`List` for a
+    /// `Functor`, M25): `\y -> T … y`, closed.
+    TyFun(TyId, Vec<Sort>),
+    /// A type constructor variable (`f` of kind `Type -> Type`): an
+    /// uninterpreted sort of that name, applied to its arguments' sorts.
+    TyVar(String),
 }
 
 impl fmt::Debug for Ent {
@@ -133,6 +139,7 @@ impl fmt::Debug for Ent {
             Ent::Ty(_) => write!(f, "<type>"),
             Ent::Known(k) => write!(f, "{k}"),
             Ent::Opaque(w) => write!(f, "<{w}>"),
+            Ent::TyFun(..) | Ent::TyVar(_) => write!(f, "<type constructor>"),
         }
     }
 }
@@ -225,6 +232,7 @@ struct Delta {
     funs: Vec<(String, String)>,
     insts: Vec<Inst>,
     known: Vec<(String, Tm)>,
+    dict_args: Vec<(String, Vec<Ent>)>,
     axioms: Vec<(String, String)>,
     asserts: Vec<String>,
     consts: Vec<String>,
@@ -251,6 +259,11 @@ pub struct Builder<'a> {
     insts: BTreeMap<Inst, Option<Defn>>,
     /// Known function values by key.
     known: BTreeMap<String, Tm>,
+    /// Type constructors given to instances, by key (M25).
+    ty_funs: BTreeMap<String, Ent>,
+    /// A known dictionary over types of the obligation (`Functor (Pair k)`,
+    /// M25): its instance's arguments, by its key.
+    dict_args: BTreeMap<String, Vec<Ent>>,
     inst_queue: Vec<Inst>,
     consts: Vec<String>,
     asserts: Vec<String>,
@@ -284,6 +297,8 @@ impl<'a> Builder<'a> {
             fun_tys: BTreeMap::new(),
             insts: BTreeMap::new(),
             known: BTreeMap::new(),
+            ty_funs: BTreeMap::new(),
+            dict_args: BTreeMap::new(),
             inst_queue: Vec::new(),
             consts: Vec::new(),
             asserts: Vec::new(),
@@ -329,6 +344,7 @@ impl<'a> Builder<'a> {
                     std::mem::take(&mut self.consts),
                 );
                 let known_before: HashSet<String> = self.known.keys().cloned().collect();
+                let dict_before: HashSet<String> = self.dict_args.keys().cloned().collect();
                 let r = self.define(inst);
                 let d = Delta {
                     datatypes: std::mem::replace(&mut self.datatypes, saved.0).into_iter().collect(),
@@ -337,6 +353,7 @@ impl<'a> Builder<'a> {
                     funs: std::mem::replace(&mut self.funs, saved.3).into_iter().collect(),
                     insts: std::mem::replace(&mut self.insts, saved.4).into_keys().collect(),
                     known: self.known.iter().filter(|(k, _)| !known_before.contains(*k)).map(|(k, v)| (k.clone(), v.clone())).collect(),
+                    dict_args: self.dict_args.iter().filter(|(k, _)| !dict_before.contains(*k)).map(|(k, v)| (k.clone(), v.clone())).collect(),
                     axioms: std::mem::replace(&mut self.axioms, saved.6).into_iter().collect(),
                     asserts: std::mem::replace(&mut self.asserts, saved.7),
                     consts: std::mem::replace(&mut self.consts, saved.8),
@@ -360,6 +377,9 @@ impl<'a> Builder<'a> {
         }
         for (k, v) in d.known {
             self.known.entry(k).or_insert(v);
+        }
+        for (k, v) in d.dict_args {
+            self.dict_args.entry(k).or_insert(v);
         }
         for (k, v) in d.axioms {
             self.axioms.entry(k).or_insert(v);
@@ -403,6 +423,91 @@ impl<'a> Builder<'a> {
             }
             _ => false,
         }
+    }
+
+    /// Is this binder's type a kind like `Type -> Type` (a type
+    /// constructor's, M25)?
+    fn is_kind(&self, t: &Tm) -> bool {
+        let n = max_var(t).map_or(0, |m| m + 1);
+        let mut t = if has_meta(t) { self.zonk(n, t) } else { t.clone() };
+        let mut any = false;
+        while let Tm::Pi(_, _, _, a, b) = t {
+            if !matches!(*a, Tm::Univ(_)) {
+                return false;
+            }
+            any = true;
+            t = (*b).clone();
+        }
+        any && matches!(t, Tm::Univ(_))
+    }
+
+    /// A type constructor value, `\y -> T p… y`, as `T` and the sorts of
+    /// `p…` (M25).
+    fn ty_fun(&mut self, env: &[Ent], t: &Tm) -> Option<Ent> {
+        let z = self.zonk(env.len(), t);
+        if let Tm::Var(i) = &z {
+            return match self.resolve(env, *i).ok()? {
+                e @ (Ent::TyFun(..) | Ent::TyVar(_)) => Some(e),
+                _ => None,
+            };
+        }
+        // `T p…` unapplied, or eta-expanded.
+        let mut h = &z;
+        let mut ps: Vec<Tm> = Vec::new();
+        while let Tm::App(f, a, ..) = h {
+            ps.push((**a).clone());
+            h = f;
+        }
+        ps.reverse();
+        match h {
+            Tm::TyCon(id) => {
+                let mut pre = Vec::new();
+                for p in &ps {
+                    pre.push(self.sort_of(env, p).ok()?);
+                }
+                Some(Ent::TyFun(*id, pre))
+            }
+            Tm::Lam(_, _, _, body) if ps.is_empty() => match &**body {
+                Tm::TyConApp(id, ps) if matches!(ps.last(), Some(Tm::Var(0))) => {
+                    let mut inner = env.to_vec();
+                    inner.push(Ent::Opaque("a type constructor's own argument".into()));
+                    let mut pre = Vec::new();
+                    for p in &ps[..ps.len() - 1] {
+                        pre.push(self.sort_of(&inner, p).ok()?);
+                    }
+                    Some(Ent::TyFun(*id, pre))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The sort of a type constructor applied to the sorts of all its
+    /// parameters, each of kind `Type` (M25).
+    fn ty_sort_sorts(&mut self, id: TyId, sorts: Vec<Sort>) -> Tx<Sort> {
+        let wk = self.wk().clone();
+        if Some(id) == wk.array {
+            return Ok(Sort::Seq(Box::new(sorts.into_iter().next().ok_or_else(|| Outside("an array without its element type".into()))?)));
+        }
+        if self.is_bag(id) {
+            return Ok(Sort::Bag(Box::new(sorts.into_iter().next().ok_or_else(|| Outside("a bag without its element type".into()))?)));
+        }
+        let params = self.e.g.tys[id.0 as usize].params.clone();
+        if params.len() != sorts.len() || !params.iter().all(|(_, t)| self.is_type(t)) {
+            return out("a type constructor with parameters that aren't types");
+        }
+        let ti = &self.e.g.tys[id.0 as usize];
+        if ti.ctors.is_empty() || self.computed_fields(id) {
+            let name = format!("{}.{}", ti.module, ti.name);
+            self.sorts.insert(name.clone(), sorts.len());
+            return Ok(Sort::Unin(name, sorts));
+        }
+        if let std::collections::btree_map::Entry::Vacant(e) = self.datatypes.entry(id) {
+            e.insert(sorts.len());
+            self.datatype_decl(id)?;
+        }
+        Ok(Sort::Data(id, sorts))
     }
 
     fn is_bag(&self, t: TyId) -> bool {
@@ -450,6 +555,25 @@ impl<'a> Builder<'a> {
                         self.ty_sort(env, *id, &all)
                     }
                     Tm::TyCon(id) => self.ty_sort(env, *id, &args),
+                    Tm::Var(i) => match self.resolve(env, *i)? {
+                        Ent::TyFun(id, pre) => {
+                            // `T p…` applied to `a…`: `T p… a…`.
+                            let mut all = pre;
+                            for a in &args {
+                                all.push(self.sort_of(env, a)?);
+                            }
+                            self.ty_sort_sorts(id, all)
+                        }
+                        Ent::TyVar(n) => {
+                            let mut ss = Vec::new();
+                            for a in &args {
+                                ss.push(self.sort_of(env, a)?);
+                            }
+                            self.sorts.insert(n.clone(), ss.len());
+                            Ok(Sort::Unin(n, ss))
+                        }
+                        _ => out("a type that depends on a value"),
+                    },
                     Tm::Def(d) => {
                         // A type alias: unfold it.
                         let Some(body) = self.e.g.defs[d.0 as usize].body.clone() else {
@@ -747,6 +871,10 @@ impl<'a> Builder<'a> {
                 let s = format!("{}#{lvl}", l.name);
                 self.sorts.insert(s.clone(), 0);
                 Ent::Ty(Sort::Unin(s, vec![]))
+            }
+            Val::Pi(..) if self.is_kind(&quote(&self.e.g, lvl, &ty)) => {
+                // A type constructor variable (M25).
+                Ent::TyVar(format!("{}#{lvl}", l.name))
             }
             Val::Pi(..) => {
                 // A local function: a function value (D139), so it can be
@@ -1155,7 +1283,7 @@ impl<'a> Builder<'a> {
         match t {
             Tm::Var(i) => match self.resolve(env, *i)? {
                 Ent::Term(n, s) => Ok((n, s)),
-                Ent::Ty(_) => out("a type used as a value"),
+                Ent::Ty(_) | Ent::TyFun(..) | Ent::TyVar(_) => out("a type used as a value"),
                 Ent::Known(_) => out("a function used as a value"),
                 Ent::Opaque(w) => out(format!("a value the prover can't see ({w})")),
             },
@@ -1488,6 +1616,20 @@ impl<'a> Builder<'a> {
     /// `f x …` for class function `f` (`d`) given a known instance's
     /// dictionary: the instance's own function, applied to the same
     /// arguments, taken from the dictionary's definition.
+    /// The position of a class function's dictionary binder.
+    fn dict_pos(&self, d: DefId) -> Option<usize> {
+        let mut t = self.e.g.defs[d.0 as usize].ty.clone();
+        let mut k = 0;
+        while let Tm::Pi(_, m, i, a, b) = t {
+            if m == Mult::Many && i == crate::core::Icit::Impl && self.is_dict_ty(&a) {
+                return Some(k);
+            }
+            t = (*b).clone();
+            k += 1;
+        }
+        None
+    }
+
     fn member_app(&mut self, env: &[Ent], d: DefId, args: &[(Tm, Mult)], inner: &[Ent]) -> Tx<Option<(String, Sort)>> {
         // The dictionary's binder: the class's (Many, implicit) one.
         let ty = self.e.g.defs[d.0 as usize].ty.clone();
@@ -1550,9 +1692,14 @@ impl<'a> Builder<'a> {
         // The environment: the dictionary's arguments, then the call's explicit ones.
         let mut ienv: Vec<Ent> = Vec::new();
         let mut dty = self.e.g.defs[dd.0 as usize].ty.clone();
-        for a in &dargs {
+        let stored = self.dict_args.get(key).cloned();
+        for (j, a) in dargs.iter().enumerate() {
             let Tm::Pi(_, _, _, dom, cod) = dty else { return Ok(None) };
-            let e = if self.is_type(&dom) {
+            let e = if let Some(e) = stored.as_ref().and_then(|s| s.get(j)) {
+                e.clone()
+            } else if self.is_kind(&dom) {
+                self.ty_fun(env, a).ok_or_else(|| Outside("a type constructor the prover can't see".into()))?
+            } else if self.is_type(&dom) {
                 Ent::Ty(self.sort_of(env, a)?)
             } else if let Some(k2) = self.is_dict_ty(&dom).then(|| self.known_fun(env, a)).flatten() {
                 Ent::Known(k2)
@@ -1562,6 +1709,42 @@ impl<'a> Builder<'a> {
             };
             ienv.push(e);
             dty = (*cod).clone();
+        }
+        // The function's own type arguments (M25: a polymorphic field takes
+        // them first), then its explicit ones.
+        let mut tyargs = Vec::new();
+        {
+            let mut t = self.e.g.defs[d.0 as usize].ty.clone();
+            let mut k = 0;
+            while let Tm::Pi(x, _, _, a, b) = t {
+                if k >= pos {
+                    break;
+                }
+                if self.is_type(&a) && *x != *cd.param {
+                    tyargs.push(inner[k].clone());
+                }
+                t = (*b).clone();
+                k += 1;
+            }
+        }
+        let field_tys = {
+            let mut n = 0;
+            let mut f = &field;
+            while let Tm::Lam(_, Mult::Zero, crate::core::Icit::Impl, b) = f {
+                n += 1;
+                f = b;
+            }
+            n
+        };
+        // A polymorphic field's type parameters are bound to the call's
+        // type arguments directly (its body refers to the dictionary's own).
+        let mut field = field;
+        if field_tys == tyargs.len() {
+            for _ in 0..field_tys {
+                let Tm::Lam(_, _, _, b) = field else { unreachable!() };
+                field = (*b).clone();
+            }
+            ienv.extend(tyargs);
         }
         let rest: Vec<Ent> = inner[pos + 1..].to_vec();
         let n = rest.len();
@@ -1591,10 +1774,27 @@ impl<'a> Builder<'a> {
         let mut vals = Vec::new();
         let mut post_env = Vec::new();
         let mut inner: Vec<Ent> = Vec::new();
+        let dpos = if self.e.class_methods.contains(&d) { self.dict_pos(d) } else { None };
         let mut t = ty;
         let mut k = 0;
         while let Tm::Pi(_, _, _, a, b) = t.clone() {
             let Some((arg, _)) = args.get(k) else { return out(format!("a partial application of `{}`", info.name)) };
+            if self.is_kind(&a) {
+                // A type constructor (M25): it picks the instance.
+                let e = self.ty_fun(env, arg).ok_or_else(|| Outside("a type constructor the prover can't see".into()))?;
+                let key = match &e {
+                    Ent::TyFun(t, ps) => format!("tyfun#{t:?}{ps:?}"),
+                    Ent::TyVar(n) => format!("tyvar#{n}"),
+                    _ => unreachable!(),
+                };
+                self.ty_funs.insert(key.clone(), e.clone());
+                tys.push(Sort::Unin(key, Vec::new()));
+                inner.push(e.clone());
+                post_env.push(e);
+                t = (*b).clone();
+                k += 1;
+                continue;
+            }
             if self.is_type(&a) {
                 let s = self.sort_of(env, arg)?;
                 tys.push(s.clone());
@@ -1606,7 +1806,20 @@ impl<'a> Builder<'a> {
                     // A known function argument picks a specialized instance;
                     // any other is passed as a value (D139). So does a known
                     // dictionary (D136).
-                    let Some(key) = self.known_fun(env, arg) else {
+                    // At an opaque dictionary (below), a function is passed
+                    // as a value, so that equal functions are equal.
+                    let opaque = !dict && dpos.and_then(|p| inner.get(p)).is_some_and(|e| matches!(e, Ent::Term(_, Sort::Unin(..))));
+                    let known = if opaque {
+                        None
+                    } else if dict {
+                        match self.known_fun(env, arg) {
+                            Some(k) => Some(k),
+                            None => self.known_dict(env, arg)?,
+                        }
+                    } else {
+                        self.known_fun(env, arg)
+                    };
+                    let Some(key) = known else {
                         let want = self.sort_of(&inner, &a)?;
                         let fv = if dict { self.term(env, arg)?.0 } else { self.fun_value(env, arg, &want)? };
                         funs.push("*".into());
@@ -1676,9 +1889,14 @@ impl<'a> Builder<'a> {
                 return Ok((app, rs));
             }
         }
+        // At a dictionary Z3 can't see into (a class over a type
+        // constructor, M25), a class's function is uninterpreted: one
+        // function per dictionary and type arguments (D136 i).
+        let opaque_dict = self.e.class_methods.contains(&d)
+            && self.dict_pos(d).and_then(|p| inner.get(p)).is_some_and(|e| matches!(e, Ent::Term(_, Sort::Unin(..))));
         // Otherwise a class's function, and an instance's dictionary, are
         // inlined: reading a field of the dictionary.
-        if self.e.class_methods.contains(&d) || self.e.dict_defs.contains(&d) {
+        if !opaque_dict && (self.e.class_methods.contains(&d) || self.e.dict_defs.contains(&d)) {
             if let Some(mut body) = self.e.g.defs[d.0 as usize].body.clone() {
                 for _ in 0..inner.len() {
                     match body {
@@ -1700,7 +1918,7 @@ impl<'a> Builder<'a> {
         let inst = Inst { def: d, tys: tys.clone(), funs: funs.clone() };
         let name = self.inst_name(&inst);
         if !self.insts.contains_key(&inst) && !self.funs.contains_key(&name) {
-            if self.reflected(d) {
+            if self.reflected(d) && !opaque_dict {
                 self.insts.insert(inst.clone(), None);
                 self.inst_queue.push(inst);
             } else {
@@ -2013,6 +2231,61 @@ impl<'a> Builder<'a> {
     }
 
     /// If `arg` (under `env`) is a known function value, its key.
+    /// A dictionary built by an instance from types of the obligation and
+    /// known dictionaries (`Functor (Pair k)` with `k` a type parameter,
+    /// M25): known, its arguments kept by its key.
+    fn known_dict(&mut self, env: &[Ent], arg: &Tm) -> Tx<Option<String>> {
+        let arg = self.zonk(env.len(), arg);
+        let mut dargs = Vec::new();
+        let mut h = &arg;
+        while let Tm::App(f, a, ..) = h {
+            dargs.push((**a).clone());
+            h = f;
+        }
+        dargs.reverse();
+        let Tm::Def(dd) = h else { return Ok(None) };
+        if !self.e.dict_defs.contains(dd) {
+            return Ok(None);
+        }
+        let mut dty = self.e.g.defs[dd.0 as usize].ty.clone();
+        let mut ents = Vec::new();
+        let mut parts = Vec::new();
+        for a in &dargs {
+            let Tm::Pi(_, _, _, dom, cod) = dty else { return Ok(None) };
+            if self.is_kind(&dom) {
+                let Some(e) = self.ty_fun(env, a) else { return Ok(None) };
+                parts.push(match &e {
+                    Ent::TyFun(t, ps) => format!("{t:?}{}", ps.iter().map(|p| p.render(self.e)).collect::<Vec<_>>().join(",")),
+                    Ent::TyVar(n) => n.clone(),
+                    _ => return Ok(None),
+                });
+                ents.push(e);
+            } else if self.is_type(&dom) {
+                let s = self.sort_of(env, a)?;
+                parts.push(s.render(self.e));
+                ents.push(Ent::Ty(s));
+            } else if self.is_dict_ty(&dom) {
+                let k = match self.known_fun(env, a) {
+                    Some(k) => k,
+                    None => match self.known_dict(env, a)? {
+                        Some(k) => k,
+                        None => return Ok(None),
+                    },
+                };
+                parts.push(k.clone());
+                ents.push(Ent::Known(k));
+            } else {
+                return Ok(None);
+            }
+            dty = (*cod).clone();
+        }
+        let info = &self.e.g.defs[dd.0 as usize];
+        let key = format!("dict#{}.{}[{}]", info.module, info.name, parts.join(";"));
+        self.known.insert(key.clone(), arg);
+        self.dict_args.insert(key.clone(), ents);
+        Ok(Some(key))
+    }
+
     fn known_fun(&mut self, env: &[Ent], arg: &Tm) -> Option<String> {
         let arg = self.zonk(env.len(), arg);
         if let Tm::Var(i) = &arg {
@@ -2073,16 +2346,41 @@ impl<'a> Builder<'a> {
                 // The body sees only its parameters (the lambda is closed).
                 let mut inner = Vec::new();
                 let mut body = f;
-                for (a, _) in args {
-                    let Tm::Lam(_, _, _, b) = body else { return out("a lambda returning a function") };
-                    let (at, s) = self.term(env, a)?;
-                    inner.push(Ent::Term(at, s));
-                    body = b;
+                let mut taken = 0;
+                for (a, m) in args {
+                    if *m == Mult::Zero {
+                        // A type argument (M25).
+                        let e = match self.ty_fun(env, a) {
+                            Some(e) => e,
+                            None => Ent::Ty(self.sort_of(env, a)?),
+                        };
+                        inner.push(e);
+                    } else if let Tm::Var(i) = a {
+                        // A known function stays known.
+                        let e = self.resolve(env, *i)?;
+                        inner.push(e);
+                    } else {
+                        let (at, s) = self.term(env, a)?;
+                        inner.push(Ent::Term(at, s));
+                    }
+                    if let Tm::Lam(_, _, _, b) = body {
+                        if taken == inner.len() - 1 {
+                            body = b;
+                            taken += 1;
+                        }
+                    }
                 }
                 if matches!(body, Tm::Lam(..)) {
                     return out("a partially applied lambda");
                 }
-                let body = body.clone();
+                // A lambda returning a function (a dictionary's polymorphic
+                // field, M25): apply what it returns to the other arguments.
+                let n = inner.len();
+                let mut body = crate::stage::shift(body, n - taken, 0);
+                for (j, (_, m)) in args.iter().enumerate().skip(taken) {
+                    let i = if *m == Mult::Zero { crate::core::Icit::Impl } else { crate::core::Icit::Expl };
+                    body = Tm::App(Rc::new(body), Rc::new(Tm::Var(n - 1 - j)), i, *m);
+                }
                 self.term(&inner, &body)
             }
             _ => {
@@ -2122,7 +2420,14 @@ impl<'a> Builder<'a> {
         let mut fk = 0;
         let mut k = 0;
         while let Tm::Pi(_, _, _, a, b) = t.clone() {
-            if self.is_type(&a) {
+            if self.is_kind(&a) {
+                let e = match inst.tys.get(tk) {
+                    Some(Sort::Unin(key, _)) => self.ty_funs.get(key).cloned(),
+                    _ => None,
+                };
+                env.push(e.ok_or_else(|| Outside("a type constructor".into()))?);
+                tk += 1;
+            } else if self.is_type(&a) {
                 env.push(Ent::Ty(inst.tys.get(tk).cloned().unwrap_or(Sort::Int)));
                 tk += 1;
             } else if self.is_dict_ty(&a) || matches!(self.zonk(env.len(), &a), Tm::Pi(..)) {

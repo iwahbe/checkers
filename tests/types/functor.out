@@ -1,0 +1,57 @@
+error[E0450]: cannot prove lemma `Functor Bad.fmap_id`
+  --> functor.ck:33:1
+   |
+33 | instance Functor Bad
+   | ^^ `fmap (\x -> x) xs == xs`
+   = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+
+error[E0450]: cannot prove lemma `no_lemma`
+  --> functor.ck:51:13
+   |
+51 |     ensures fmap (\x -> x) xs == xs
+   |             ^^^^^^^^^^^^^^^^^^^^^^^ `fmap (\x -> x) xs == xs`
+   = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+
+error[E0450]: cannot prove lemma `not_every`
+  --> functor.ck:55:13
+   |
+55 |     ensures fmap (\x -> x + 1) xs == xs
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `fmap (\x -> x + 1) xs == xs`
+   = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+
+error[E0286]: `Functor` is for a type constructor of one parameter, like `List`, but `Int` is a type
+  --> functor.ck:65:18
+   |
+65 | instance Functor Int
+   |                  ^^^
+   = help: `Functor` is for a type that takes its element type as its last parameter, like `List` or `Option`
+
+error[E0286]: `Ord` is for a type, like `Int`, but `List` is a type constructor of one parameter
+  --> functor.ck:70:14
+   |
+70 | instance Ord List
+   |              ^^^^
+   = help: give it its parameters, as in `instance Ord (List a)`
+
+error[E0201]: type mismatch: expected `Int`, found `f _`
+  --> functor.ck:75:5
+   |
+75 |     fmap (\y -> y) x
+   |     ^^^^^^^^^^^^^^^^ this expression has type `f _`
+   = note: `f` stands for a type constructor, like `List` or `Option`
+
+error[E0201]: type mismatch: expected `f _`, found `Int`
+  --> functor.ck:75:20
+   |
+75 |     fmap (\y -> y) x
+   |                    ^ this expression has type `Int`
+   = note: `f` stands for a type constructor, like `List` or `Option`
+
+error[E0354]: `Rose` occurs in field `kids` as an argument of `f`, a parameter, which may use it in a negative position
+  --> functor.ck:80:1
+   |
+80 | enum Rose f a : f~(Type -> Type), a~Type
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: a recursive type may appear only directly or as an argument of a type that holds only values of it, like `List`; `f` could be any type constructor, so nothing is known of how it uses its argument
+
+functor.ck: 8 errors, 0 warnings

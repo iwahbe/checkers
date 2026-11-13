@@ -1001,10 +1001,13 @@ impl Elab {
             let ctors = self.g.tys[tid.0 as usize].ctors.clone();
             for c in ctors {
                 let fields = self.g.cons[c.0 as usize].fields.clone();
-                for (fname, _, _, t) in &fields {
+                for (fi, (fname, _, _, t)) in fields.iter().enumerate() {
                     if !self.ty_positive(t, *tid, true) {
                         let name = self.g.tys[tid.0 as usize].name.clone();
-                        let diag = match self.unmarked_holder(t, *tid) {
+                        let diag = if let Some(f) = self.param_holder(t, *tid, &self.g.tys[tid.0 as usize].params.clone(), fi) {
+                            Diagnostic::error("E0354", format!("`{name}` occurs in field `{fname}` as an argument of `{f}`, a parameter, which may use it in a negative position"), d.span)
+                                .with_help(format!("a recursive type may appear only directly or as an argument of a type that holds only values of it, like `List`; `{f}` could be any type constructor, so nothing is known of how it uses its argument"))
+                        } else { match self.unmarked_holder(t, *tid) {
                             // Inside a type constructor that doesn't promise positivity.
                             Some(h) => {
                                 let hi = &self.g.tys[h.0 as usize];
@@ -1018,7 +1021,7 @@ impl Elab {
                             }
                             None => Diagnostic::error("E0354", format!("`{name}` occurs in a negative position in field `{fname}`"), d.span)
                                 .with_help("a type may not appear to the left of `->` in its own constructors; this would make the logic inconsistent"),
-                        };
+                        }};
                         self.err(diag);
                     }
                 }
@@ -1043,6 +1046,12 @@ impl Elab {
                 })
             }
             Tm::TupleTy(ts) => ts.iter().all(|a| self.var_positive(a, idx, pos)),
+            // A type constructor parameter applied (M25) promises nothing
+            // about its argument.
+            Tm::App(..) => {
+                let (h, args) = spine(t);
+                self.var_positive(h, idx, pos) && args.iter().all(|a| !occurs_var(a, idx))
+            }
             other => pos || !occurs_var(other, idx),
         }
     }
@@ -1067,8 +1076,38 @@ impl Elab {
                 })
             }
             Tm::TupleTy(ts) => ts.iter().all(|a| self.var_negative(a, idx, pos)),
+            Tm::App(..) => {
+                let (h, args) = spine(t);
+                self.var_negative(h, idx, pos) && args.iter().all(|a| !occurs_var(a, idx))
+            }
             other => !occurs_var(other, idx),
         }
+    }
+
+    /// The type constructor parameter (M25) applied to an argument holding
+    /// `me`, by name: `f` in `kids~f (Rose f a)`. `t` is a field type under
+    /// the type's parameters and the constructor's earlier fields.
+    fn param_holder(&self, t: &Tm, me: TyId, params: &[(Name, Tm)], field: usize) -> Option<String> {
+        fn go(t: &Tm, me: TyId, depth: usize, params: &[(Name, Tm)], extra: usize) -> Option<String> {
+            match t {
+                Tm::App(..) => {
+                    let (h, args) = spine(t);
+                    if let Tm::Var(i) = h {
+                        if args.iter().any(|a| occurs_ty(a, me)) {
+                            // Its level among the type's parameters, if it is one.
+                            let lvl = (depth + extra).checked_sub(1 + i)?;
+                            return params.get(lvl).map(|p| p.0.to_string()).or_else(|| Some("a type constructor".into()));
+                        }
+                    }
+                    args.iter().find_map(|a| go(a, me, depth, params, extra))
+                }
+                Tm::Pi(_, _, _, a, b) => go(a, me, depth, params, extra).or_else(|| go(b, me, depth + 1, params, extra)),
+                Tm::TyConApp(_, args) => args.iter().find_map(|a| go(a, me, depth, params, extra)),
+                Tm::TupleTy(ts) => ts.iter().find_map(|a| go(a, me, depth, params, extra)),
+                _ => None,
+            }
+        }
+        go(t, me, 0, params, params.len() + field)
     }
 
     /// The type constructor that holds `me` in a parameter not known to be
@@ -1108,6 +1147,10 @@ impl Elab {
                 })
             }
             Tm::TupleTy(ts) => ts.iter().all(|a| self.ty_positive(a, me, pos)),
+            Tm::App(..) => {
+                let (h, args) = spine(t);
+                self.ty_positive(h, me, pos) && args.iter().all(|a| !occurs_ty(a, me))
+            }
             other => pos || !occurs_ty(other, me),
         }
     }
@@ -1156,7 +1199,26 @@ impl Elab {
             self.collect_free(&cx, e, &declared, &mut autos);
         }
         for a in &autos {
-            let mv = self.fresh_meta(&cx);
+            // Applied to arguments (`f a`), it is a type constructor (M25).
+            let arity = cs
+                .iter()
+                .filter_map(|c| match c {
+                    Constraint::Typed { ty, .. } => Some(super::classes::applied_arity(ty, a)),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0);
+            let mv = if arity == 0 {
+                self.fresh_meta(&cx)
+            } else {
+                let sp = Span { start: 0, end: 0 };
+                let ty = |sp| Expr { kind: ExprKind::Con("Type".into()), span: sp };
+                let mut kind = ty(sp);
+                for _ in 0..arity {
+                    kind = Expr { kind: ExprKind::Arrow(Box::new(ty(sp)), Box::new(kind)), span: sp };
+                }
+                self.elab_type(&mut cx, &kind)
+            };
             let v = self.eval(&cx, &mv);
             cx.bind(a, v, Mult::Zero);
             binders.push((Rc::from(a.as_str()), Mult::Zero, Icit::Impl, mv));
@@ -1782,4 +1844,15 @@ fn head_meta(t: &Tm) -> Option<MetaId> {
         Tm::App(f, ..) => head_meta(f),
         _ => None,
     }
+}
+
+/// A term's head and its arguments.
+fn spine(mut t: &Tm) -> (&Tm, Vec<&Tm>) {
+    let mut args = Vec::new();
+    while let Tm::App(f, a, ..) = t {
+        args.push(&**a);
+        t = f;
+    }
+    args.reverse();
+    (t, args)
 }

@@ -84,6 +84,36 @@ export lemma to_list_from_list xs : xs~List a
     proof
         __builtin
 
+# An array made into a list and back is the same array.
+export lemma from_list_to_list xs : xs~Array a
+    ensures from_list (to_list xs) == xs
+    proof
+        __builtin
+
+# `map` is `list.map` on the elements.
+export lemma to_list_map f xs : f~(a -> b), xs~Array a
+    ensures to_list (map f xs) == list.map f (to_list xs)
+    proof
+        __builtin
+
+instance Functor Array
+    fn fmap g xs
+        map g xs
+    lemma fmap_id xs
+        proof
+            have from_list_to_list (map (\x -> x) xs)
+            have to_list_map (\x -> x) xs
+            have list.map_id (to_list xs)
+            have from_list_to_list xs
+    lemma fmap_comp g h xs
+        proof
+            have from_list_to_list (map (\x -> g (h x)) xs)
+            have from_list_to_list (map g (map h xs))
+            have to_list_map (\x -> g (h x)) xs
+            have to_list_map g (map h xs)
+            have to_list_map h xs
+            have list.map_comp g h (to_list xs)
+
 # ── Sorting (D138) ───────────────────────────────────────────────────────────
 # Stable, by the merge sorts of `std.sort`.
 

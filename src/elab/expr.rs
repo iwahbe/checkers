@@ -229,7 +229,16 @@ impl Elab {
             }
             (ExprKind::Unit, Val::Univ(_)) => Tm::TupleTy(vec![]),
             _ => {
-                if matches!(e.kind, ExprKind::App(..)) && self.has_refined(cx, expected, 0) {
+                // A dictionary (D136): its class's type constructor (M25) comes
+                // from the instance's head before its functions are checked.
+                let dict = {
+                    let mut h = e;
+                    while let ExprKind::App(f, _) = &h.kind {
+                        h = f;
+                    }
+                    matches!(&h.kind, ExprKind::Con(n) if n.starts_with("$mk#")) && !std::ptr::eq(h, e)
+                };
+                if matches!(e.kind, ExprKind::App(..)) && (dict || self.has_refined(cx, expected, 0)) {
                     self.app_expected = Some(expected.clone());
                 }
                 let (t, ty) = self.infer(cx, e);

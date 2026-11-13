@@ -346,6 +346,16 @@ impl Elab {
         let a_text = self.src_text(r.dom.span);
         let av = self.eval(cx, &a);
         let x = name(&r.param);
+        // A class function's own type variable (M25): an implicit, erased
+        // parameter.
+        if let (Some(p), Some((None, b_expr))) = (&r.param, &r.arrow) {
+            if p.name.starts_with('\'') {
+                cx.bind(&p.name, av, Mult::Zero);
+                let b = self.elab_type(cx, b_expr);
+                cx.pop();
+                return Tm::Pi(Rc::from(&p.name[1..]), Mult::Zero, Icit::Impl, Rc::new(a), Rc::new(b));
+            }
+        }
         let Some((res, b_expr)) = &r.arrow else {
             cx.bind(&x, av, Mult::Zero);
             let preds: Vec<Pred> = r.preds.iter().map(|e| self.elab_pred(cx, e, false)).collect();

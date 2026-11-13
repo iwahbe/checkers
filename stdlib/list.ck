@@ -155,6 +155,22 @@ export lemma max_of_cons x xs : x~Nat, xs~List Nat
     proof
         auto
 
+# Mapping the identity changes nothing.
+export lemma map_id xs : xs~List a
+    ensures map (\x -> x) xs == xs
+    proof
+        match xs
+            []        -> auto
+            _ :: rest -> have map_id rest
+
+# Mapping `h` then `g` is mapping both at once.
+export lemma map_comp g h xs : g~(b -> c), h~(a -> b), xs~List a
+    ensures map (\x -> g (h x)) xs == map g (map h xs)
+    proof
+        match xs
+            []        -> auto
+            _ :: rest -> have map_comp g h rest
+
 # Appending the empty list changes nothing.
 export lemma append_nil xs : xs~List a
     ensures xs ++ [] == xs

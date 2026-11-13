@@ -170,6 +170,85 @@ fn count(n: usize, what: &str) -> String {
     }
 }
 
+/// The most arguments `param` is applied to in `e` (its kind's arity, M25).
+pub(crate) fn applied_arity(e: &Expr, param: &str) -> usize {
+    let mut best = 0;
+    fn go(e: &Expr, param: &str, best: &mut usize) {
+        if let ExprKind::App(..) = &e.kind {
+            let mut n = 0;
+            let mut h = e;
+            while let ExprKind::App(f, a) = &h.kind {
+                go(a, param, best);
+                n += 1;
+                h = f;
+            }
+            if matches!(&h.kind, ExprKind::Var(v) if v == param) {
+                *best = (*best).max(n);
+            }
+            return;
+        }
+        match &e.kind {
+            ExprKind::Arrow(a, b) | ExprKind::Binary(_, a, b) => {
+                go(a, param, best);
+                go(b, param, best);
+            }
+            ExprKind::Tuple(xs) | ExprKind::List(xs) => xs.iter().for_each(|x| go(x, param, best)),
+            ExprKind::Refine(r) => r.types().into_iter().for_each(|t| go(t, param, best)),
+            _ => {}
+        }
+    }
+    go(e, param, &mut best);
+    best
+}
+
+/// The type variables of a class function's types other than the class's
+/// own (`a` and `b` of `fn map g xs : g~(a -> b), xs~f a`), in order.
+fn method_vars(tys: &[&Expr], param: &str, out: &mut Vec<String>) {
+    fn go(e: &Expr, param: &str, out: &mut Vec<String>) {
+        match &e.kind {
+            ExprKind::Var(v) if v != param && !out.contains(v) => out.push(v.clone()),
+            ExprKind::App(a, b) | ExprKind::Arrow(a, b) | ExprKind::Binary(_, a, b) => {
+                go(a, param, out);
+                go(b, param, out);
+            }
+            ExprKind::Tuple(xs) | ExprKind::List(xs) => xs.iter().for_each(|x| go(x, param, out)),
+            ExprKind::Refine(r) => r.types().into_iter().for_each(|t| go(t, param, out)),
+            _ => {}
+        }
+    }
+    for t in tys {
+        go(t, param, out);
+    }
+}
+
+/// The class function's own type variables that would be captured by the
+/// instance's names (its parameters, or its type's variables), each given a
+/// fresh name: `b` in `g~(a -> b)` when the instance names a parameter `b`.
+fn hygiene(cs: &[Constraint], param: &str, taken: &[String]) -> HashMap<String, String> {
+    let tys: Vec<&Expr> = cs
+        .iter()
+        .filter_map(|c| match c {
+            Constraint::Typed { ty, .. } => Some(ty),
+            _ => None,
+        })
+        .collect();
+    let mut own = Vec::new();
+    method_vars(&tys, param, &mut own);
+    let mut map = HashMap::new();
+    for v in own.iter().filter(|v| taken.contains(v)) {
+        let mut k = 1;
+        let fresh = loop {
+            let n = format!("{v}{k}");
+            if !taken.contains(&n) && !own.contains(&n) {
+                break n;
+            }
+            k += 1;
+        };
+        map.insert(v.clone(), fresh);
+    }
+    map
+}
+
 fn ident(name: &str, span: Span) -> Ident {
     Ident { name: name.to_string(), span }
 }
@@ -344,6 +423,18 @@ impl Rewrite<'_> {
 }
 
 /// Rename the names a signature binds (its parameters) in its constraints.
+/// Free variables renamed (binders kept).
+fn rename_vars(cs: &[Constraint], map: &HashMap<String, String>) -> Vec<Constraint> {
+    if map.is_empty() {
+        return cs.to_vec();
+    }
+    let f = |n: &str, s: Span| map.get(n).map(|m| var(m, s));
+    let none = |_: &str, _: Span| None;
+    let nq = |_: &str, _: &str, _: Span| None;
+    let rw = Rewrite { var: &f, con: &none, qualified: &nq };
+    rw.constraints(cs, &[])
+}
+
 fn rename_binders(cs: &[Constraint], map: &HashMap<String, String>) -> Vec<Constraint> {
     let f = |n: &str, s: Span| map.get(n).map(|m| var(m, s));
     let none = |_: &str, _: Span| None;
@@ -517,6 +608,14 @@ impl Elab {
                 _ => None,
             })
             .collect();
+        self.local_ty_params = m
+            .decls
+            .iter()
+            .filter_map(|d| match &d.kind {
+                DeclKind::Enum { name, params, .. } | DeclKind::Record { name, params, .. } => Some((name.name.clone(), params.len())),
+                _ => None,
+            })
+            .collect();
         for d in &m.decls {
             match &d.kind {
                 DeclKind::Class { name, param, members } => self.desugar_class(d, name, param, members, &mut decls, &mut origins),
@@ -577,10 +676,33 @@ impl Elab {
                         );
                         continue;
                     }
-                    let mut fty = rty.unwrap();
+                    let rty = rty.unwrap();
+                    // Its own type variables make the field polymorphic: an
+                    // implicit, erased parameter of type `Type` each (M25).
+                    let mut own = Vec::new();
+                    let refs: Vec<&Expr> = tys.iter().chain(std::iter::once(&rty)).collect();
+                    method_vars(&refs, &param.name, &mut own);
+                    let ren: HashMap<String, String> = own.iter().map(|v| (v.clone(), format!("'{v}"))).collect();
+                    let to_q = |n: &str, s: Span| ren.get(n).map(|m| var(m, s));
+                    let none = |_: &str, _: Span| None;
+                    let nq = |_: &str, _: &str, _: Span| None;
+                    let qrw = Rewrite { var: &to_q, con: &none, qualified: &nq };
+                    let mut fty = qrw.expr(&rty, &[]);
                     for t in tys.into_iter().rev() {
                         let span = t.span;
-                        fty = Expr { kind: ExprKind::Arrow(Box::new(t), Box::new(fty)), span };
+                        fty = Expr { kind: ExprKind::Arrow(Box::new(qrw.expr(&t, &[])), Box::new(fty)), span };
+                    }
+                    for v in own.iter().rev() {
+                        let span = fty.span;
+                        fty = Expr {
+                            kind: ExprKind::Refine(Box::new(ast::RefineTy {
+                                param: Some(ident(&format!("'{v}"), span)),
+                                dom: con("Type", span),
+                                arrow: Some((None, fty)),
+                                preds: Vec::new(),
+                            })),
+                            span,
+                        };
                     }
                     fields.push(ast::Field { name: f.clone(), mult: ast::Mult::Many, ty: fty, preds: Vec::new(), span: mspan });
                     // The function reading it (its body placed after its
@@ -626,12 +748,30 @@ impl Elab {
                 }
             }
         }
+        // The parameter's kind: `Type`, or `Type -> Type` if the members
+        // apply it to one argument, and so on (M25).
+        let mut arity = 0;
+        for mem in members {
+            let cs = match mem {
+                ClassMember::Fn { constraints, .. } | ClassMember::Lemma { constraints, .. } => constraints,
+            };
+            for c in cs {
+                if let Constraint::Typed { ty, .. } = c {
+                    arity = arity.max(applied_arity(ty, &param.name));
+                }
+            }
+        }
+        let mut kind = con("Type", sp);
+        for _ in 0..arity {
+            kind = Expr { kind: ExprKind::Arrow(Box::new(con("Type", sp)), Box::new(kind)), span: sp };
+        }
+        let rcs = if arity == 0 { Vec::new() } else { vec![Constraint::Typed { name: param.clone(), mult: ast::Mult::Many, ty: kind }] };
         decls.push(Decl {
             export: if d.export == Export::No { Export::No } else { Export::Abstract },
             kind: DeclKind::Record {
                 name: name.clone(),
                 params: vec![ast::Param { polarity: None, name: param.clone() }],
-                constraints: Vec::new(),
+                constraints: rcs,
                 fields,
             },
             span: d.span,
@@ -692,6 +832,55 @@ impl Elab {
             );
             return;
         }
+        // Its kind: a class over types of `n` parameters (M25) takes a type
+        // constructor short of `n` arguments.
+        let want = cmembers
+            .iter()
+            .flat_map(|m| match m {
+                ClassMember::Fn { constraints, .. } | ClassMember::Lemma { constraints, .. } => constraints.iter(),
+            })
+            .filter_map(|c| match c {
+                Constraint::Typed { ty, .. } => Some(applied_arity(ty, &param)),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+        let have = match &h.kind {
+            ExprKind::Con(n) => match self.local_ty_params.get(n) {
+                Some(k) => Some(*k),
+                None => match self.resolve(n, true) {
+                    Some(Sym::Ty(t)) => Some(self.g.tys[t.0 as usize].params.len()),
+                    _ => None,
+                },
+            },
+            _ => Some(args.len()),
+        };
+        if let Some(k) = have.filter(|k| k.checked_sub(args.len()) != Some(want)) {
+            let shown = |n: usize| match n {
+                0 => "a type, like `Int`".to_string(),
+                1 => "a type constructor of one parameter, like `List`".to_string(),
+                n => format!("a type constructor of {n} parameters"),
+            };
+            let plain = |n: usize| match n {
+                0 => "a type".to_string(),
+                1 => "a type constructor of one parameter".to_string(),
+                n => format!("a type constructor of {n} parameters"),
+            };
+            let given = k.saturating_sub(args.len());
+            let fix = if want == 0 {
+                let vs: Vec<String> = (0..given).map(|i| ((b'a' + (i % 26) as u8) as char).to_string()).collect();
+                format!("give it its parameters, as in `instance {} ({} {})`", class.name, self.src_text(ty.span).trim(), vs.join(" "))
+            } else if want < given {
+                "leave the last parameters off; the class's functions supply them".to_string()
+            } else {
+                format!("`{}` is for a type that takes its element type as its last parameter, like `List` or `Option`", class.name)
+            };
+            self.err(
+                Diagnostic::error("E0286", format!("`{}` is for {}, but `{}` is {}", class.name, shown(want), self.src_text(ty.span).trim(), plain(given)), ty.span)
+                    .with_help(fix),
+            );
+            return;
+        }
         // Its context: classes of its variables.
         let mut ctx = Vec::new();
         for c in context {
@@ -745,6 +934,8 @@ impl Elab {
             return;
         }
         let inst_ix = self.pending_insts.len();
+        let mut head_vars = Vec::new();
+        method_vars(&[ty], "", &mut head_vars);
         let gen = |n: &str| format!("{text}.{n}");
         // Each member's name in this instance.
         let mut rename: HashMap<String, String> = HashMap::new();
@@ -822,6 +1013,9 @@ impl Elab {
                         continue;
                     }
                     let map: HashMap<String, String> = params.iter().zip(iparams.iter()).map(|(a, b)| (a.name.clone(), b.name.clone())).collect();
+                    let mut taken: Vec<String> = iparams.iter().map(|p| p.name.clone()).chain(result.iter().map(|r| r.name.clone())).collect();
+                    taken.extend(head_vars.iter().cloned());
+                    let constraints = &rename_vars(constraints, &hygiene(constraints, &param, &taken));
                     let mut cs = ctx_preds.clone();
                     let theirs = srw.constraints(&rename_binders(constraints, &map), &[]);
                     cs.extend(self.shown_here(foreign.as_deref(), constraints, theirs, span));
@@ -860,7 +1054,12 @@ impl Elab {
                         bad = true;
                         continue;
                     }
-                    let map: HashMap<String, String> = params.iter().zip(iparams.iter()).map(|(a, b)| (a.name.clone(), b.name.clone())).collect();
+                    let mut taken: Vec<String> = iparams.iter().map(|p| p.name.clone()).collect();
+                    taken.extend(head_vars.iter().cloned());
+                    let hyg = hygiene(constraints, &param, &taken);
+                    let constraints = &rename_vars(constraints, &hyg);
+                    let mut map: HashMap<String, String> = params.iter().zip(iparams.iter()).map(|(a, b)| (a.name.clone(), b.name.clone())).collect();
+                    map.extend(hyg);
                     let to_new = |n: &str, s: Span| map.get(n).map(|m| var(m, s));
                     let prw = Rewrite { var: &to_new, con: &none, qualified: &nq };
                     let mut cs = ctx_preds.clone();
@@ -1081,6 +1280,18 @@ impl Elab {
         }
         let (key, args) = match &ty {
             Val::TyCon(t, args) => (HeadKey::Ty(*t), args.clone()),
+            // A type constructor not applied to its last argument (`List`
+            // for `Functor`, M25): `\y -> T … y`.
+            Val::Lam(_, _, _, c) => {
+                let y = Val::var(req.lvl + 1000);
+                match self.force(&apply_closure(&self.g, c, y)) {
+                    Val::TyCon(t, mut args) if args.last().is_some_and(|a| matches!(a, Val::Neutral(Head::Var(v), sp) if *v == req.lvl + 1000 && sp.is_empty())) => {
+                        args.pop();
+                        (HeadKey::Ty(t), args)
+                    }
+                    _ => return Err("none".into()),
+                }
+            }
             Val::TupleTy(xs) => (HeadKey::Tuple(xs.len()), xs.clone()),
             Val::Neutral(Head::Meta(_), _) => return Err("unknown".into()),
             _ => return Err("none".into()),
@@ -1123,8 +1334,24 @@ impl Elab {
                 }
                 Err(why) if why == "unknown" && !last => self.inst_reqs.push(r),
                 Err(why) => {
+                    // An unknown type after a type error there is that error's.
+                    let cur = self.cur.clone();
+                    if why == "unknown"
+                        && self.diags.iter().any(|(m, d)| {
+                            **m == *cur && d.code == "E0201" && d.span.start < r.span.end.max(r.span.start + 1) && r.span.start < d.span.end
+                        })
+                    {
+                        continue;
+                    }
                     let cname = self.class_defs.get(&r.class).map(|c| c.name.clone()).unwrap_or_default();
-                    let shown = show(&self.g, &r.names, &quote(&self.g, r.lvl, &r.ty));
+                    let shown = match self.force(&r.ty) {
+                        // `\y -> List y` is `List`.
+                        Val::Lam(_, _, _, c) => match self.force(&apply_closure(&self.g, &c, Val::var(r.lvl))) {
+                            Val::TyCon(t, args) if args.len() == 1 => self.g.tys[t.0 as usize].name.to_string(),
+                            _ => show(&self.g, &r.names, &quote(&self.g, r.lvl, &r.ty)),
+                        },
+                        _ => show(&self.g, &r.names, &quote(&self.g, r.lvl, &r.ty)),
+                    };
                     let shown_arg = if shown.contains(' ') { format!("({shown})") } else { shown.clone() };
                     let d = if why == "unknown" {
                         Diagnostic::error("E0285", format!("can't tell which instance of `{cname}` to use: the type isn't known here"), r.span)

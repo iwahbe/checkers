@@ -255,6 +255,42 @@ instance Monoid Int
     fn zero
         0
 
+# ── Functors (D136, M25) ─────────────────────────────────────────────────────
+
+# A container whose elements a function can be applied to, keeping its
+# shape: `List`, `Option`, and `Array` (in `std.array`).
+export class Functor f
+    # `g` applied to each element.
+    fn fmap g xs -> ys : g~(a -> b), xs~f a, ys~f b
+    # Applying the identity changes nothing.
+    lemma fmap_id xs : xs~f a
+        ensures fmap (\x -> x) xs == xs
+    # Applying `h` then `g` is applying both at once.
+    lemma fmap_comp g h xs : g~(b -> c), h~(a -> b), xs~f a
+        ensures fmap (\x -> g (h x)) xs == fmap g (fmap h xs)
+
+instance Functor List
+    fn fmap g xs
+        match xs
+            []        -> []
+            x :: rest -> g x :: fmap g rest
+    lemma fmap_id xs
+        proof
+            match xs
+                []        -> auto
+                _ :: rest -> have fmap_id rest
+    lemma fmap_comp g h xs
+        proof
+            match xs
+                []        -> auto
+                _ :: rest -> have fmap_comp g h rest
+
+instance Functor Option
+    fn fmap g o
+        match o
+            None   -> None
+            Some x -> Some (g x)
+
 # Whether `x` comes before `y` by their bytes (`Ord String`).
 fn string_le x y -> r : x~String, y~String, r~Bool
     __builtin
