@@ -55,12 +55,12 @@ error[E0450]: cannot prove lemma `false_lemma`
    = note: counterexample: x = 0
    = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
 
-error[E0451]: cannot prove `n == length (list.map (\x -> x + k) xs)`, the postcondition of `outside`
-  --> prove.ck:83:51
+error[E0451]: cannot prove `n == length (list.map (f Int) xs)`, the postcondition of `outside`
+  --> prove.ck:83:66
    |
-83 | fn outside xs k -> n : xs~List Int, k~Int, n~Nat, n == length (list.map (\x -> x + k) xs)
-   |                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ promised here
-   = note: this obligation is outside what the prover handles: it involves `map` applied to a lambda that uses local variables (only named functions and lambdas without free variables are seen through)
+83 | fn outside f xs -> n : f~(t~Type -> t -> t), xs~List Int, n~Nat, n == length (list.map (f Int) xs)
+   |                                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ promised here
+   = note: this obligation is outside what the prover handles: it involves a function of a type (a polymorphic function value)
    = help: state the fact you need as a lemma and bring it in with `have`
 
 prove.ck: 8 errors, 0 warnings

@@ -627,7 +627,7 @@ fn resid(t: &Tm, env: &[Ent], lvl: usize, depth: usize) -> Tm {
 }
 
 /// Add `by` to the free variables of `t` (those `>= cut`).
-fn shift(t: &Tm, by: usize, cut: usize) -> Tm {
+pub(crate) fn shift(t: &Tm, by: usize, cut: usize) -> Tm {
     if by == 0 {
         return t.clone();
     }

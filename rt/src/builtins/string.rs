@@ -8,7 +8,6 @@ pub const TABLE: &[Builtin] = &[
     ("std.string.chars", "ckb_string_chars", ckb_string_chars),
     ("std.string.from_chars", "ckb_from_chars", ckb_from_chars),
     ("std.string.from_char", "ckb_from_char", ckb_from_char),
-    ("std.string.concat_map", "ckb_concat_map", ckb_concat_map),
     ("std.string.bytes", "ckb_string_bytes", ckb_string_bytes),
     ("std.string.concat", "ckb_string_concat", ckb_string_concat),
     ("std.string.from_utf8", "ckb_from_utf8", ckb_from_utf8),
@@ -20,16 +19,6 @@ builtin!(ckb_from_chars, |a| {
 });
 
 builtin!(ckb_from_char, |a| new_str(&ch(a[0]).to_string()));
-
-builtin!(ckb_concat_map, |a| {
-    let mut out = String::new();
-    for c in s(a[1]).chars() {
-        let r = crate::apply::apply(dup(a[0]), vec![nat(c as usize)]);
-        out.push_str(s(r));
-        drop_w(r);
-    }
-    new_str(&out)
-});
 
 builtin!(ckb_string_bytes, |a| new_bytes(s(a[0]).as_bytes()));
 

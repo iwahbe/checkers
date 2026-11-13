@@ -36,6 +36,11 @@ pub enum Sort {
     Tuple(Vec<Sort>),
     /// An uninterpreted sort: an abstract type or a type variable.
     Unin(String, Vec<Sort>),
+    /// A function value (D139): Z3's array from its parameter's sort to its
+    /// result's, curried (`Int -> Int -> Int` is an array of arrays), so a
+    /// partial application is a value too; applying it is `select`, a
+    /// lambda is a `lambda`.
+    Fun(Box<Sort>, Box<Sort>),
 }
 
 fn sym(s: &str) -> String {
@@ -55,6 +60,7 @@ impl Sort {
             Sort::Data(t, args) => apply_sort(ty_sym(e, *t), args, e),
             Sort::Tuple(args) => apply_sort(tuple_sym(args.len()), args, e),
             Sort::Unin(n, args) => apply_sort(sym(n), args, e),
+            Sort::Fun(p, r) => format!("(Array {} {})", p.render(e), r.render(e)),
         }
     }
 }
@@ -257,6 +263,8 @@ pub struct Builder<'a> {
     nat_seen: HashSet<String>,
     /// Translating a reflected body: don't collect postconditions or facts.
     in_def: bool,
+    /// How many lambdas are being translated (names their parameters).
+    lam_depth: usize,
     ctx: Vec<Option<Ent>>,
     ctx_src: Vec<ObLocal>,
     pub shown: Vec<(String, String)>,
@@ -286,6 +294,7 @@ impl<'a> Builder<'a> {
             post_seen: HashSet::new(),
             nat_seen: HashSet::new(),
             in_def: false,
+            lam_depth: 0,
             ctx: Vec::new(),
             ctx_src: Vec::new(),
             shown: Vec::new(),
@@ -467,7 +476,27 @@ impl<'a> Builder<'a> {
                 }
             }
             _ if wk.nat.is_none() => out("no prelude"),
-            Tm::Pi(..) => out("a function type"),
+            Tm::Pi(..) => {
+                // A function value (D139): its parameters that aren't erased.
+                let mut ps = Vec::new();
+                let mut inner = env.to_vec();
+                let mut t = t.clone();
+                while let Tm::Pi(_, m, _, a, b) = t {
+                    if self.is_type(&a) {
+                        return out("a function of a type (a polymorphic function value)");
+                    }
+                    if m != Mult::Zero {
+                        ps.push(self.sort_of(&inner, &a)?);
+                    }
+                    inner.push(Ent::Opaque("parameter".into()));
+                    t = (*b).clone();
+                }
+                if ps.is_empty() {
+                    return out("a function without arguments");
+                }
+                let r = self.sort_of(&inner, &t)?;
+                Ok(ps.into_iter().rev().fold(r, |r, p| Sort::Fun(Box::new(p), Box::new(r))))
+            }
             Tm::Univ(_) => out("a universe"),
             _ => out("an unsupported type"),
         }
@@ -617,6 +646,11 @@ impl<'a> Builder<'a> {
                     xs.iter().for_each(|a| mentions(a, out_));
                 }
                 Sort::Unin(_, xs) => xs.iter().for_each(|a| mentions(a, out_)),
+                Sort::Fun(p, r) => {
+                    mentions(p, out_);
+                    mentions(r, out_);
+                }
+                Sort::Seq(x) => mentions(x, out_),
                 _ => {}
             }
         }
@@ -721,6 +755,9 @@ impl<'a> Builder<'a> {
                 let mut t = quote(&self.e.g, lvl, &ty);
                 let mut inner = env.clone();
                 while let Tm::Pi(_, m, _, a, b) = t.clone() {
+                    if self.is_type(&a) {
+                        return out("a function of a type (a polymorphic function value)");
+                    }
                     let s = self.sort_of(&inner, &a)?;
                     if m != Mult::Zero {
                         args.push(s.clone());
@@ -736,6 +773,7 @@ impl<'a> Builder<'a> {
                 );
                 self.funs.insert(name.clone(), decl);
                 self.fun_tys.insert(name.clone(), (lvl, quote(&self.e.g, lvl, &ty)));
+                self.fun_axiom(&name, lvl);
                 Ent::Fun(name, args, r)
             }
             _ => {
@@ -821,6 +859,40 @@ impl<'a> Builder<'a> {
             1 => format!("(=> {} {post})", pres[0]),
             _ => format!("(=> (and {}) {post})", pres.join(" ")),
         });
+    }
+
+    /// A local function of a refined type (D84) is so at every argument, not
+    /// only at the calls written: where its preconditions hold, its
+    /// postconditions hold, for each application Z3 makes (unfolding `map f`,
+    /// D139). A pattern-guarded axiom, like `nat_axiom`'s.
+    fn fun_axiom(&mut self, name: &str, lvl: usize) {
+        let Some((_, ty)) = self.fun_tys.get(name).cloned() else { return };
+        let mut inner: Vec<Ent> = (0..lvl).map(|k| Ent::Opaque(format!("@{k}"))).collect();
+        let mut pres = Vec::new();
+        let mut vars = Vec::new();
+        let mut t = ty;
+        while let Tm::Pi(_, m, _, dom, cod) = t {
+            if m == Mult::Zero {
+                inner.push(Ent::Opaque("type argument".into()));
+            } else {
+                let Ok(s) = self.sort_of(&inner, &dom) else { return };
+                let v = format!("x{}", vars.len());
+                pres.extend(self.alias_terms(&inner, &dom, &v, &s));
+                vars.push((v.clone(), s.clone()));
+                inner.push(Ent::Term(v, s));
+            }
+            t = (*cod).clone();
+        }
+        let Ok(rs) = self.sort_of(&inner, &t) else { return };
+        let app = format!("({name} {})", vars.iter().map(|(v, _)| v.as_str()).collect::<Vec<_>>().join(" "));
+        let posts = self.alias_terms(&inner, &t, &app, &rs);
+        if posts.is_empty() || vars.is_empty() {
+            return;
+        }
+        let conj = |xs: &[String]| if xs.len() == 1 { xs[0].clone() } else { format!("(and {})", xs.join(" ")) };
+        let body = if pres.is_empty() { conj(&posts) } else { format!("(=> {} {})", conj(&pres), conj(&posts)) };
+        let binds: Vec<String> = vars.iter().map(|(v, s)| format!("({v} {})", s.render(self.e))).collect();
+        self.axioms.insert(format!("{name}/refined"), format!("(forall ({}) (! {body} :pattern ({app})))", binds.join(" ")));
     }
 
     /// The predicates of the refinement alias `ty` at `x`, as terms.
@@ -1213,8 +1285,11 @@ impl<'a> Builder<'a> {
         let Sort::Data(_, sargs) = &sort else { return out("a constructor of an abstract type") };
         let fs = self.con_fields(c, &self.sort_env(id, sargs))?;
         let mut ts = Vec::new();
-        for (k, _) in &fs {
-            let (t, _) = self.term(env, &args[np + k])?;
+        for (k, s) in &fs {
+            let t = match s {
+                Sort::Fun(..) => self.fun_value(env, &args[np + k], s)?,
+                _ => self.term(env, &args[np + k])?.0,
+            };
             ts.push(t);
         }
         let head = format!("(as {} {})", con_sym(self.e, c), sort.render(self.e));
@@ -1257,9 +1332,14 @@ impl<'a> Builder<'a> {
                     let f = self.known.get(&k).cloned().ok_or_else(|| Outside("an unknown function".into()))?;
                     self.apply_known(env, &f, &args)
                 }
+                Ent::Term(ft, s @ Sort::Fun(..)) => self.select(env, &ft, &s, &args),
                 _ => out("an application of a non-function"),
             },
             Tm::Lam(..) => self.apply_known(env, h, &args),
+            Tm::Field(..) | Tm::Proj(..) | Tm::Case(..) | Tm::Let(..) => {
+                let (ft, s) = self.term(env, h)?;
+                self.select(env, &ft, &s, &args)
+            }
             Tm::Meta(m) if self.e.g.meta(*m).is_some() => {
                 let z = self.zonk(env.len(), t);
                 if has_meta(&z) {
@@ -1269,6 +1349,89 @@ impl<'a> Builder<'a> {
             }
             _ => out("an unsupported application"),
         }
+    }
+
+    /// Apply the function value `ft` (of sort `s`) to `args` (D139).
+    fn select(&mut self, env: &[Ent], ft: &str, s: &Sort, args: &[(Tm, Mult)]) -> Tx<(String, Sort)> {
+        let mut app = ft.to_string();
+        let mut sort = s.clone();
+        for (a, m) in args {
+            if *m == Mult::Zero {
+                continue;
+            }
+            let Sort::Fun(_, r) = sort else { return out("an application of a non-function") };
+            let at = self.term(env, a)?.0;
+            app = format!("(select {app} {at})");
+            sort = *r;
+        }
+        Ok((app, sort))
+    }
+
+    /// `arg` as a function value of sort `want` (D139): a parameter or field
+    /// already is one; a lambda becomes Z3's `lambda`, and anything else (a
+    /// named function, a partial application, a local function) one that
+    /// applies it.
+    fn fun_value(&mut self, env: &[Ent], arg: &Tm, want: &Sort) -> Tx<String> {
+        if !matches!(want, Sort::Fun(..)) {
+            return out("a function value of a non-function type");
+        }
+        let mut ps = Vec::new();
+        let mut w = want;
+        while let Sort::Fun(p, r) = w {
+            ps.push((**p).clone());
+            w = r;
+        }
+        let arg = self.zonk(env.len(), arg);
+        if let Tm::Var(i) = &arg {
+            match self.resolve(env, *i)? {
+                Ent::Term(t, Sort::Fun(..)) => return Ok(t),
+                Ent::Known(k) => {
+                    let f = self.known.get(&k).cloned().ok_or_else(|| Outside("an unknown function".into()))?;
+                    return self.fun_value(&[], &f, want);
+                }
+                _ => {}
+            }
+        }
+        let d = self.lam_depth;
+        let names: Vec<String> = (0..ps.len()).map(|k| format!("|lam{d}.{k}|")).collect();
+        let mut inner = env.to_vec();
+        let mut body = arg;
+        let mut used = 0;
+        while used < ps.len() {
+            let Tm::Lam(_, m, _, b) = &body else { break };
+            if *m == Mult::Zero {
+                inner.push(Ent::Opaque("erased parameter".into()));
+            } else {
+                inner.push(Ent::Term(names[used].clone(), ps[used].clone()));
+                used += 1;
+            }
+            let b = (**b).clone();
+            body = b;
+        }
+        let rest = ps.len() - used;
+        if rest > 0 {
+            // Apply what is left to the remaining parameters.
+            let mut app = crate::stage::shift(&body, rest, 0);
+            for k in 0..rest {
+                inner.push(Ent::Term(names[used + k].clone(), ps[used + k].clone()));
+                app = Tm::App(Rc::new(app), Rc::new(Tm::Var(rest - 1 - k)), crate::core::Icit::Expl, Mult::Many);
+            }
+            body = app;
+        } else if matches!(body, Tm::Lam(..)) {
+            return out("a lambda with more parameters than its type");
+        }
+        let saved = self.in_def;
+        self.in_def = true;
+        self.lam_depth += 1;
+        let r = self.term(&inner, &body);
+        self.lam_depth -= 1;
+        self.in_def = saved;
+        let (bt, _) = r?;
+        let mut v = bt;
+        for (n, s) in names.iter().zip(&ps).rev() {
+            v = format!("(lambda (({n} {})) {v})", s.render(self.e));
+        }
+        Ok(v)
     }
 
     /// Should `d`'s definition be visible to the solver (D12)?
@@ -1299,14 +1462,18 @@ impl<'a> Builder<'a> {
                 post_env.push(Ent::Ty(s));
             } else {
                 if matches!(self.zonk(inner.len(), &a), Tm::Pi(..)) {
-                    // A known function argument picks a specialized instance.
+                    // A known function argument picks a specialized instance;
+                    // any other is passed as a value (D139).
                     let Some(key) = self.known_fun(env, arg) else {
-                        let what = if matches!(self.zonk(env.len(), arg), Tm::Lam(..)) {
-                            "a lambda that uses local variables"
-                        } else {
-                            "a function value"
-                        };
-                        return out(format!("`{}` applied to {what} (only named functions and lambdas without free variables are seen through)", info.name));
+                        let want = self.sort_of(&inner, &a)?;
+                        let fv = self.fun_value(env, arg, &want)?;
+                        funs.push("*".into());
+                        vals.push(fv.clone());
+                        inner.push(Ent::Term(fv.clone(), want.clone()));
+                        post_env.push(Ent::Term(fv, want));
+                        t = (*b).clone();
+                        k += 1;
+                        continue;
                     };
                     funs.push(key.clone());
                     inner.push(Ent::Known(key.clone()));
@@ -1772,8 +1939,15 @@ impl<'a> Builder<'a> {
                 tk += 1;
             } else if matches!(self.zonk(env.len(), &a), Tm::Pi(..)) {
                 let key = inst.funs.get(fk).cloned().ok_or_else(|| Outside("a function parameter".into()))?;
-                env.push(Ent::Known(key));
                 fk += 1;
+                if key == "*" {
+                    let s = self.sort_of(&env, &a)?;
+                    let n = format!("p{k}");
+                    params.push((n.clone(), s.clone()));
+                    env.push(Ent::Term(n, s));
+                } else {
+                    env.push(Ent::Known(key));
+                }
             } else {
                 let s = self.sort_of(&env, &a)?;
                 let n = format!("p{k}");

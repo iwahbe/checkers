@@ -14,7 +14,7 @@ export fn from_char c -> s : c~Char, s~String
 
 # `f` applied to each character, the results one after another.
 export fn concat_map f s -> r : f~(Char -> String), s~String, r~String
-    __builtin
+    concat (list.map f (chars s))
 
 # The string's UTF-8 bytes.
 export fn bytes s -> b : s~String, b~Bytes
@@ -55,11 +55,17 @@ export lemma from_chars_chars s : s~String
     proof
         __builtin
 
+# `concat` joins the strings with nothing between them.
+export lemma concat_join parts : parts~List String
+    ensures concat parts == list.join "" parts
+    proof
+        __builtin
+
 # `concat_map` joins what `f` gives for each character.
 export lemma concat_map_chars f s : f~(Char -> String), s~String
     ensures concat_map f s == list.join "" (list.map f (chars s))
     proof
-        __builtin
+        have concat_join (list.map f (chars s))
 
 # One character's UTF-8 bytes: its code if it is ASCII, otherwise two to four
 # bytes starting at 0xC2 or above.
@@ -78,5 +84,6 @@ fn dotted c -> s : c~Char, s~String
     from_char c ++ "."
 
 check concat_map dotted "aé" == list.join "" (list.map dotted (chars "aé"))
+check concat ["ab", "", "c"] == list.join "" ["ab", "", "c"] and concat [] == list.join "" []
 check bytes (from_char c'A') == b"A" and bytes (from_char c'\u{80}') == b"\xC2\x80"
 check bytes (from_char c'😀') == b"\xF0\x9F\x98\x80"

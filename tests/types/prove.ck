@@ -78,7 +78,7 @@ lemma trusted_lemma x : x~Int
     proof
         admit
 
-# A lambda that captures a local is outside the fragment (a closed one is
-# specialized, see higher_order.ck).
-fn outside xs k -> n : xs~List Int, k~Int, n~Nat, n == length (list.map (\x -> x + k) xs)
+# A function of a type, passed as a value, is outside the fragment (a
+# function of values is a function value, D139, see fn_values.ck).
+fn outside f xs -> n : f~(t~Type -> t -> t), xs~List Int, n~Nat, n == length (list.map (f Int) xs)
     length xs
