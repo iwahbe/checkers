@@ -377,8 +377,14 @@ partial fn decl_targets owner d -> r : owner~String, d~Item, r~List Target
         [Target owner d.name a True]
     else if d.what == "let"
         [Target owner d.name a False]
+    else if d.what == "class"
+        Target owner d.name a True :: list.map (member_target owner a) d.items
     else
         []
+
+# A class's function or lemma: a link to its class.
+partial fn member_target owner a i -> r : owner~String, a~String, i~Item, r~Target
+    Target owner i.name a False
 
 partial fn ctor_targets owner a cs -> r : owner~String, a~String, cs~List Item, r~List Target
     match cs

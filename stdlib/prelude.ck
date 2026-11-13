@@ -69,7 +69,7 @@ export transparent fn not b -> r : b~Bool, r~Bool
 # ── Order (D136, D138) ───────────────────────────────────────────────────────
 
 # A total order: `le x y` says `x` comes before `y`, or with it. Sorting
-# (`list.sort`, `array.sort`) needs one. Each instance proves the lemmas.
+# (`std.sort`, `array.sort`) uses one. Each instance proves the lemmas.
 export class Ord a
     # Whether `x` comes before `y` or with it.
     fn le x y -> r : x~a, y~a, r~Bool

@@ -115,6 +115,42 @@ export lemma sort_twice xs : xs~List Int
         have sort.sort_of_sorted (sort xs)
 ```
 
+## Classes and sorting
+
+```checkers
+module versions
+
+import std.sort (sort, sort_by)
+
+record Version
+    major~Nat
+    minor~Nat
+
+# An order on versions: by major number, then minor. `Ord`, in the prelude,
+# asks for `le` and three lemmas about it (`trans`, `total`, `antisym`);
+# Z3 proves them here without help.
+instance Ord Version
+    fn le v w
+        v.major < w.major or (v.major == w.major and v.minor <= w.minor)
+
+# Generic over any type with an order: `Ord a` gives `le` at `a`, and its
+# lemmas, used with `have`.
+fn larger x y -> r : Ord a, x~a, y~a, r~a, le x r and le y r
+    have total x y
+    have refl x
+    have refl y
+    if le x y then y else x
+
+check sort [Version 1 2, Version 0 9, Version 1 0] == [Version 0 9, Version 1 0, Version 1 2]
+check larger "fig" "apple" == "fig"
+
+# `sort_by` takes any comparison that orders every two values one way or
+# the other: a `forall` it requires, proved where it is called.
+check sort_by (\x y -> x >= y) [2, 3, 1] == [3, 2, 1]
+```
+
+A class lists functions and lemmas; an instance gives the functions for one type and proves the lemmas (or Z3 does). A function generic over the class (`Ord a`) gets them where it is called, for the caller's type. The prelude's `Ord` has instances for numbers, `Bool`, `String`, `List` and `Option`; `std.sort` sorts by it (`sort`), by a key (`sort_as`), or by a comparison (`sort_by`), each proved to give a sorted permutation.
+
 ## What a proof rests on
 
 `checkers trust FILE.ck` lists every fact a module relies on and how it was established: proven by Z3 (with the query's hash), computed at compile time, an axiom of the standard library, or an `admit` (an unproven assumption, allowed while developing; `checkers build --release` refuses a program that has one).

@@ -583,10 +583,12 @@ impl Elab {
                         fty = Expr { kind: ExprKind::Arrow(Box::new(t), Box::new(fty)), span };
                     }
                     fields.push(ast::Field { name: f.clone(), mult: ast::Mult::Many, ty: fty, preds: Vec::new(), span: mspan });
-                    // The function reading it.
-                    let mut call = Expr { kind: ExprKind::Field(Box::new(var("$d0", f.span)), f.clone()), span: f.span };
+                    // The function reading it (its body placed after its
+                    // header, which is then its whole text, for hover).
+                    let at_end = Span { start: mspan.end, end: mspan.end };
+                    let mut call = Expr { kind: ExprKind::Field(Box::new(var("$d0", at_end)), Ident { name: f.name.clone(), span: at_end }), span: at_end };
                     for p in params {
-                        call = app(call, var(&p.name, p.span));
+                        call = app(call, var(&p.name, at_end));
                     }
                     let mut cs = vec![Constraint::Pred(clause.clone())];
                     cs.extend(constraints.iter().cloned());
@@ -798,10 +800,10 @@ impl Elab {
             match cm {
                 ClassMember::Fn { name, params, result, constraints, .. } => {
                     let given = members.iter().find_map(|m| match m {
-                        InstMember::Fn { name: n, params, decreasing, body, span } if n.name == name.name => Some((params, decreasing, body, *span)),
+                        InstMember::Fn { name: n, params, decreasing, body, span } if n.name == name.name => Some((params, decreasing, body, *span, n.span)),
                         _ => None,
                     });
-                    let Some((iparams, decreasing, body, span)) = given else {
+                    let Some((iparams, decreasing, body, span, own_name)) = given else {
                         self.err(
                             Diagnostic::error("E0364", format!("`instance {text}` doesn't give `{}`", name.name), d.span)
                                 .with_label(format!("`{}` missing", name.name))
@@ -831,7 +833,7 @@ impl Elab {
                         export: Export::No,
                         kind: DeclKind::Fn {
                             partial: false,
-                            name: ident(&gname, name.span),
+                            name: ident(&gname, own_name),
                             params: iparams.clone(),
                             result: result.clone(),
                             constraints: cs,
@@ -844,10 +846,11 @@ impl Elab {
                 }
                 ClassMember::Lemma { name, params, constraints, lets, ensures, .. } => {
                     let given = members.iter().find_map(|m| match m {
-                        InstMember::Lemma { name: n, params, proof, span } if n.name == name.name => Some((params.clone(), proof.clone(), *span)),
+                        InstMember::Lemma { name: n, params, proof, span } if n.name == name.name => Some((params.clone(), proof.clone(), *span, n.span)),
                         _ => None,
                     });
-                    let (iparams, proof, span) = given.unwrap_or_else(|| (params.clone(), None, d.span));
+                    let (iparams, proof, span, name_span) =
+                        given.unwrap_or_else(|| (params.clone(), None, d.span, Span { start: d.span.start, end: d.span.start }));
                     if iparams.len() != params.len() {
                         self.err(Diagnostic::error(
                             "E0365",
@@ -881,7 +884,7 @@ impl Elab {
                     decls.push(Decl {
                         export: Export::No,
                         kind: DeclKind::Lemma {
-                            name: ident(&gname, name.span),
+                            name: ident(&gname, name_span),
                             params: iparams.clone(),
                             constraints: cs,
                             lets: ls,
@@ -919,7 +922,7 @@ impl Elab {
             export: Export::No,
             kind: DeclKind::Fn {
                 partial: false,
-                name: ident(&text, sp),
+                name: ident(&text, Span { start: sp.start, end: sp.start }),
                 params: Vec::new(),
                 result: Some(ident("$dict", sp)),
                 constraints: cs,

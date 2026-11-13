@@ -343,6 +343,10 @@ impl Elab {
     /// Index a declaration: its name, and its header as written (for hover):
     /// up to the line its body starts on.
     fn index_header(&mut self, t: index::Target, name: Span, d: &ast::Decl) {
+        // A declaration made by desugaring, with no name of its own (D136).
+        if name.start == name.end {
+            return;
+        }
         let text = self.sources.get(&self.cur).map(|f| f.text.clone()).unwrap_or_default();
         let start = d.span.start as usize;
         let body = match &d.kind {
