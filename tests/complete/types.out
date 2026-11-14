@@ -1,0 +1,107 @@
+== line 10, column 33
+replaces 10:33-10:33
+  a                  type parameter  a : Type
+  comptime           keyword         
+  ghost              keyword         
+  own                keyword         
+  Point              type            record Point
+  Array              type            export abstract enum Array +a : a~Type  (documented)
+  Bool               type            export enum Bool  (documented)
+  Bytes              type            export type Bytes = b~Array U8  (documented)
+  Char               type            export type Char = n~Nat, n < 0x110000, (n < 0xD800 or 0xE000 <= n)  (documented)
+  I32                type            export type I32 = n~Int, -2147483648 <= n, n < 2147483648  (documented)
+  I64                type            export type I64 = n~Int, -9223372036854775808 <= n, n < 9223372036854775808  (documented)
+  I8                 type            export type I8 = n~Int, -128 <= n, n < 128  (documented)
+  Int                type            export abstract enum Int  (documented)
+  List               type            export enum List a : a~Type  (documented)
+  Nat                type            export type Nat = n~Int, n >= 0  (documented)
+  Option             type            export enum Option a : a~Type  (documented)
+  Result             type            export enum Result a e : a~Type, e~Type  (documented)
+  String             type            export abstract enum String  (documented)
+  Type               type            export abstract enum Type  (documented)
+  U16                type            export type U16 = n~Nat, n < 65536  (documented)
+  U32                type            export type U32 = n~Nat, n < 4294967296  (documented)
+  U64                type            export type U64 = n~Nat, n < 18446744073709551616  (documented)
+  U8                 type            export type U8 = n~Nat, n < 256  (documented)
+  Unit               type            export type Unit = u~()  (documented)
+== line 13, column 29
+replaces 13:29-13:29
+  Point              type            record Point
+  Array              type            export abstract enum Array +a : a~Type  (documented)
+  Bool               type            export enum Bool  (documented)
+  Bytes              type            export type Bytes = b~Array U8  (documented)
+  Char               type            export type Char = n~Nat, n < 0x110000, (n < 0xD800 or 0xE000 <= n)  (documented)
+  I32                type            export type I32 = n~Int, -2147483648 <= n, n < 2147483648  (documented)
+  I64                type            export type I64 = n~Int, -9223372036854775808 <= n, n < 9223372036854775808  (documented)
+  I8                 type            export type I8 = n~Int, -128 <= n, n < 128  (documented)
+  Int                type            export abstract enum Int  (documented)
+  List               type            export enum List a : a~Type  (documented)
+  Nat                type            export type Nat = n~Int, n >= 0  (documented)
+  Option             type            export enum Option a : a~Type  (documented)
+  Result             type            export enum Result a e : a~Type, e~Type  (documented)
+  String             type            export abstract enum String  (documented)
+  Type               type            export abstract enum Type  (documented)
+  U16                type            export type U16 = n~Nat, n < 65536  (documented)
+  U32                type            export type U32 = n~Nat, n < 4294967296  (documented)
+  U64                type            export type U64 = n~Nat, n < 18446744073709551616  (documented)
+  U8                 type            export type U8 = n~Nat, n < 256  (documented)
+  Unit               type            export type Unit = u~()  (documented)
+== line 16, column 33
+replaces 16:33-16:33
+  r                  variable        r : Int
+  x                  parameter       x : Int
+  forall             keyword         
+  if                 keyword         
+  match              keyword         
+  Point              constructor     record Point
+  second             function        fn second xs -> r : xs~List  (documented)
+  third              function        fn third x -> r : x~Int, r~Int,  (documented)
+  False              constructor     False  (of `Bool`)
+  True               constructor     True  (of `Bool`)
+  le                 function        fn le x y -> r : x~a, y~a, r~Bool  (documented)
+  not                function        export transparent fn not b -> r : b~Bool, r~Bool  (documented)
+  Add                class           export class Add a  (documented)
+  Cons               constructor     Cons x xs : x~a, xs~List a  (of `List`)
+  Err                constructor     Err x : x~e  (of `Result`)
+  Functor            class           export class Functor f  (documented)
+  Monoid             class           export class Monoid a  (documented)
+  Mul                class           export class Mul a  (documented)
+  Neg                class           export class Neg a  (documented)
+  Nil                constructor     Nil  (of `List`)
+  None               constructor     None  (of `Option`)
+  Ok                 constructor     Ok x : x~a  (of `Result`)
+  Ord                class           export class Ord a  (documented)
+  Some               constructor     Some x : x~a  (of `Option`)
+  Sub                class           export class Sub a  (documented)
+  add                function        fn add x y -> r : x~a, y~a, r~a
+  fmap               function        fn fmap g xs -> ys : g~(a -> b), xs~f a, ys~f b  (documented)
+  format             function        
+  len                function        
+  mul                function        fn mul x y -> r : x~a, y~a, r~a
+  neg                function        fn neg x -> r : x~a, r~a
+  sub                function        fn sub x y -> r : x~a, y~a, r~a
+  zero               function        fn zero -> r : r~a
+== line 20, column 10
+replaces 20:10-20:10
+  ghost              keyword         
+  Box                type            record Box  (documented)
+  Point              type            record Point
+  Array              type            export abstract enum Array +a : a~Type  (documented)
+  Bool               type            export enum Bool  (documented)
+  Bytes              type            export type Bytes = b~Array U8  (documented)
+  Char               type            export type Char = n~Nat, n < 0x110000, (n < 0xD800 or 0xE000 <= n)  (documented)
+  I32                type            export type I32 = n~Int, -2147483648 <= n, n < 2147483648  (documented)
+  I64                type            export type I64 = n~Int, -9223372036854775808 <= n, n < 9223372036854775808  (documented)
+  I8                 type            export type I8 = n~Int, -128 <= n, n < 128  (documented)
+  Int                type            export abstract enum Int  (documented)
+  List               type            export enum List a : a~Type  (documented)
+  Nat                type            export type Nat = n~Int, n >= 0  (documented)
+  Option             type            export enum Option a : a~Type  (documented)
+  Result             type            export enum Result a e : a~Type, e~Type  (documented)
+  String             type            export abstract enum String  (documented)
+  Type               type            export abstract enum Type  (documented)
+  U16                type            export type U16 = n~Nat, n < 65536  (documented)
+  U32                type            export type U32 = n~Nat, n < 4294967296  (documented)
+  U64                type            export type U64 = n~Nat, n < 18446744073709551616  (documented)
+  U8                 type            export type U8 = n~Nat, n < 256  (documented)
+  Unit               type            export type Unit = u~()  (documented)

@@ -25,6 +25,9 @@ USAGE:
     Before the file, packages (D111; `checkers` passes these from checkers.json):
       --package NAME=DIR    a dependency, importable as `NAME.module`
       --uses PKG=A,B        the packages PKG may import (`.` is this program's own)
+    ckc complete [--overlay MAP] <FILE.ck> LINE COL
+                                               what can be written at LINE, COL (from 0, the
+                                               column in bytes), as JSON lines (§15.5, D142)
     ckc stage <FILE.ck>                        print the code staging generates (§8.9)
     ckc parse <FILE.ck>                        print the syntax tree
     ckc --version
@@ -117,6 +120,7 @@ fn cli(args: &[String]) -> u8 {
         Some("trust") => return trust(&args[1..]),
         Some("stage") => return stage(&args[1..]),
         Some("check") => check(&args[1..]),
+        Some("complete") => complete(&args[1..]),
         Some("parse") => parse(&args[1..]),
         Some("doc") => doc(&args[1..]),
         Some("--version") | Some("-V") => {
@@ -253,17 +257,16 @@ fn read(path: &str) -> Result<String, ExitCode> {
     })
 }
 
-fn check(args: &[String]) -> ExitCode {
-    let deny = args.iter().any(|a| a == "--deny-warnings");
-    let json = args.iter().any(|a| a == "--json");
-    // `--overlay FILE`: unsaved text for some paths (§15.5).
+/// `--overlay FILE`: unsaved text for some paths (§15.5). The other
+/// arguments.
+fn take_overlay(args: &[String]) -> Result<Vec<&String>, ExitCode> {
     let mut rest: Vec<&String> = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
         if a == "--overlay" {
             let Some(f) = it.next() else {
                 eprintln!("error: `--overlay` needs a file\n\n{USAGE}");
-                return ExitCode::from(2);
+                return Err(ExitCode::from(2));
             };
             // `-`: standard input (a language server pipes it, §15.5).
             let text = if f == "-" {
@@ -277,13 +280,51 @@ fn check(args: &[String]) -> ExitCode {
                 Ok(m) => checkers::overlay::set(m),
                 Err(e) => {
                     eprintln!("error: `--overlay {f}`: {e}");
-                    return ExitCode::from(2);
+                    return Err(ExitCode::from(2));
                 }
             }
         } else {
             rest.push(a);
         }
     }
+    Ok(rest)
+}
+
+/// `ckc complete [--overlay MAP] FILE LINE COL` (D142).
+fn complete(args: &[String]) -> ExitCode {
+    let rest = match take_overlay(args) {
+        Ok(r) => r,
+        Err(c) => return c,
+    };
+    let nums = |s: &String| s.parse::<usize>().ok();
+    let [path, line, col] = rest.as_slice() else {
+        eprintln!("error: `complete` takes a file, a line and a column\n\n{USAGE}");
+        return ExitCode::from(2);
+    };
+    let (Some(line), Some(col)) = (nums(line), nums(col)) else {
+        eprintln!("error: `complete`: the line and column are numbers from 0\n\n{USAGE}");
+        return ExitCode::from(2);
+    };
+    let text = match read(path) {
+        Ok(t) => t,
+        Err(c) => return c,
+    };
+    use std::io::Write;
+    let stdout = std::io::stdout();
+    let mut lock = stdout.lock();
+    checkers::complete_json(path, &text, &checkers::dir_of(path), line, col, &mut |l| {
+        let _ = writeln!(lock, "{l}");
+    });
+    ExitCode::SUCCESS
+}
+
+fn check(args: &[String]) -> ExitCode {
+    let deny = args.iter().any(|a| a == "--deny-warnings");
+    let json = args.iter().any(|a| a == "--json");
+    let rest = match take_overlay(args) {
+        Ok(r) => r,
+        Err(c) => return c,
+    };
     let files: Vec<&String> = rest.into_iter().filter(|a| !a.starts_with("--")).collect();
     if json {
         let [path] = files.as_slice() else {

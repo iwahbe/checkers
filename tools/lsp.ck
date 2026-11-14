@@ -536,6 +536,99 @@ partial fn reply msg c : msg~Json, c~Caps
         o
     ()
 
+# ── Completion (D142) ────────────────────────────────────────────────────────
+
+# Completion at `w`: `ckc complete` on the document, with the open documents
+# as an overlay, its output read in a behaviour of its own; it neither waits
+# for the document's check nor stops it.
+partial fn complete id w docs c : id~Json, w~Where, docs~List Doc, c~Caps
+    let args = c.flags ++ ["complete", "--overlay", "-", w.doc.path, format w.line, format w.col]
+    match proc.spawn c.ckc args (Streams Pipe Pipe Discard) c.proc
+        Err e                           ->
+            show_error ("could not run `" ++ c.ckc ++ "`: " ++ files.describe e ++ "; set CKC to the compiler") c
+            reply (rpc.response id Null) c
+        Ok (Spawned child input out ()) ->
+            feed (string.bytes (json.render (overlay docs))) input
+            let sched = c.sched
+            let job = cown.new (Running out child (Acc [] [] 0)) sched
+            let text = w.doc.text
+            when j = job using sched
+                match j
+                    Running o ch _ ->
+                        let (items, o2) = read_items o text c None [] 0
+                        files.close o2
+                        let _ = proc.wait ch
+                        let list = rpc.obj [("isIncomplete", Bool False), ("items", Arr items)]
+                        reply (rpc.response id list) c
+                        Finished
+                    Finished       -> Finished
+            ()
+
+# The candidates `ckc complete` writes, as completion items, in its order.
+partial fn read_items out text c range acc n -> r : out~File, text~Bytes, c~Caps, range~Option Json, acc~List Json,
+                                                    n~Nat, r~(List Json, File)
+    line <- files.read_line out
+    match line
+        None   -> (list.reverse acc, out)
+        Some l ->
+            match json.parse (string.bytes l)
+                Err _ -> read_items out text c range acc n
+                Ok j  ->
+                    let kind = str_or "kind" j
+                    if kind == "complete"
+                        match (pair_at "start" j, pair_at "end" j)
+                            (Some (l1, c1), Some (l2, c2)) ->
+                                let r = rpc.obj [("start", position text l1 c1 c.utf8), ("end", position text l2 c2 c.utf8)]
+                                read_items out text c (Some r) acc n
+                            _                              -> read_items out text c range acc n
+                    else if kind == "candidate"
+                        read_items out text c range (item j range n :: acc) (n + 1)
+                    else
+                        read_items out text c range acc n
+
+# A candidate as a completion item: it replaces the word being typed, and
+# is ordered as the compiler gave it.
+partial fn item j range n -> r : j~Json, range~Option Json, n~Nat, r~Json
+    let label = str_or "label" j
+    let detail = str_or "detail" j
+    let doc = str_or "doc" j
+    let base = [("label", Str label), ("kind", rpc.num (item_kind (str_or "class" j))), ("sortText", Str (sort_key n)),
+                ("filterText", Str label)]
+    let d = if detail == "" then [] else [("detail", Str detail)]
+    let m = if doc == "" then [] else [("documentation", rpc.obj [("kind", Str "markdown"), ("value", Str doc)])]
+    let e = match range
+        Some r -> [("textEdit", rpc.obj [("range", r), ("newText", Str label)])]
+        None   -> []
+    rpc.obj (base ++ d ++ m ++ e)
+
+# LSP's `CompletionItemKind` for a candidate's role (its `class`).
+fn item_kind role -> k : role~String, k~Nat
+    if role == "keyword"
+        14
+    else if role == "function" or role == "lemma"
+        3
+    else if role == "constant"
+        21
+    else if role == "type"
+        7
+    else if role == "class"
+        8
+    else if role == "constructor"
+        4
+    else if role == "field"
+        5
+    else if role == "type parameter"
+        25
+    else if role == "module"
+        9
+    else
+        6
+
+# `0042`: the order of item `n`, as text that sorts like it.
+fn sort_key n -> s : n~Nat, s~String
+    let t = format n
+    if n < 10 then "000" ++ t else if n < 100 then "00" ++ t else if n < 1000 then "0" ++ t else t
+
 # The semantic token types and modifiers (`initialize`'s legend).
 let TOKEN_TYPES = ["namespace", "type", "enumMember", "property", "function", "parameter", "variable",
                    "keyword", "comment", "string", "number"]
@@ -687,6 +780,7 @@ partial fn capabilities utf8 -> j : utf8~Bool, j~Json
         ("referencesProvider", Bool True),
         ("documentFormattingProvider", Bool True),
         ("documentSymbolProvider", Bool True),
+        ("completionProvider", rpc.obj [("triggerCharacters", Arr [Str "."])]),
         ("semanticTokensProvider", rpc.obj [("legend", legend), ("full", Bool True)])]
     rpc.obj [("capabilities", caps), ("serverInfo", rpc.obj [("name", Str "checkers"), ("version", Str VERSION)])]
 
@@ -768,6 +862,11 @@ partial fn handle m st c -> r : m~Json, st~Server, c~Caps, r~(Server, Option Exi
                             else
                                 let decl = rpc.at ["context", "includeDeclaration"] params == Some (Bool True)
                                 answer i path (\es -> references w es decl docs c) c
+                        None   -> reply (rpc.response i Null) c
+                    keep
+                else if method == "textDocument/completion"
+                    match where_of params docs utf8
+                        Some w -> complete i w docs c
                         None   -> reply (rpc.response i Null) c
                     keep
                 else if method == "textDocument/semanticTokens/full" or method == "textDocument/documentSymbol"

@@ -6,9 +6,67 @@ use crate::diag::Diagnostic;
 use crate::source::Span;
 
 pub fn parse(tokens: Vec<Token>) -> (Module, Vec<Diagnostic>) {
-    let mut p = Parser { toks: tokens, pos: 0, diags: Vec::new(), last_dedent: false, indent: 0, no_arrow: false };
+    let (m, diags, _) = parse_with_place(tokens);
+    (m, diags)
+}
+
+/// `parse`, and the kind of place the cursor token (D142) is in, if any.
+pub fn parse_with_place(tokens: Vec<Token>) -> (Module, Vec<Diagnostic>, Option<Place>) {
+    let mut p = Parser {
+        toks: tokens,
+        pos: 0,
+        diags: Vec::new(),
+        last_dedent: false,
+        indent: 0,
+        no_arrow: false,
+        place: None,
+        in_proof: 0,
+        body_start: false,
+        in_type: 0,
+    };
     let m = p.module();
-    (m, p.diags)
+    (m, p.diags, p.place)
+}
+
+/// The kind of place the cursor is in (D142 c): what can be written there.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PlaceKind {
+    /// The start of a declaration; `first`: none before it (so `import` too).
+    Top { first: bool },
+    /// After `export`.
+    Export,
+    /// The start of a statement; `first`: a function body's first (`decreasing`).
+    Stmt { first: bool },
+    /// After `have`: a lemma.
+    Have,
+    /// Anywhere else an expression starts.
+    Expr,
+    /// A signature's clause, or `ensures`.
+    Cond,
+    /// A type: `start`, directly after `~` (where `ghost`, `own` and
+    /// `comptime` go; a record's field: `ghost` only).
+    Type { start: bool, field: bool },
+    /// After `x.`.
+    Member,
+    /// A pattern.
+    Pattern,
+    /// A module path after `import`, with the parts before the cursor.
+    Import(Vec<String>),
+    /// A lemma's body before `ensures`.
+    LemmaBody,
+    /// After a lemma's `ensures` line.
+    Proof,
+    /// After a multi-line `if`'s branch.
+    Else,
+    /// A class's or an instance's body.
+    Members,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Place {
+    pub kind: PlaceKind,
+    /// In a `proof` block: `auto`, `admit` and lemmas too.
+    pub proof: bool,
 }
 
 /// Marker: a diagnostic was already recorded.
@@ -26,6 +84,14 @@ struct Parser {
     indent: usize,
     /// Parsing a match guard: `->` ends the guard instead of forming a function type.
     no_arrow: bool,
+    /// Where the cursor token is (D142), once the parser has met it.
+    place: Option<Place>,
+    /// Inside `proof` blocks.
+    in_proof: usize,
+    /// At a function body's first statement.
+    body_start: bool,
+    /// Inside a type after `~`.
+    in_type: usize,
 }
 
 impl Parser {
@@ -68,6 +134,14 @@ impl Parser {
 
     fn at(&self, t: &Tok) -> bool {
         self.peek() == t
+    }
+
+    /// At the cursor token (D142): note the kind of place, the first time.
+    /// Parsing then goes on as for a name.
+    fn mark(&mut self, kind: PlaceKind) {
+        if self.place.is_none() && matches!(self.peek(), Tok::LName(n) if n == super::lexer::CURSOR) {
+            self.place = Some(Place { kind, proof: self.in_proof > 0 });
+        }
     }
 
     fn at_kw(&self, k: Kw) -> bool {
@@ -124,6 +198,22 @@ impl Parser {
         } else {
             Err(self.error_here("end of line"))
         }
+    }
+
+    /// Expect NEWLINE INDENT, opening a block; if it isn't there (a header
+    /// being written), report it and skip to the next declaration: false.
+    fn open_body(&mut self, what: &str) -> bool {
+        if !self.eat(&Tok::Newline) {
+            self.error_here(&format!("end of line before {what}"));
+            self.recover_top();
+            return false;
+        }
+        if !self.eat(&Tok::Indent) {
+            // The next line is the next declaration.
+            self.error_here(&format!("an indented {what}"));
+            return false;
+        }
+        true
     }
 
     /// Expect NEWLINE INDENT, opening a block.
@@ -220,6 +310,7 @@ impl Parser {
                 let _ = self.import();
                 continue;
             }
+            self.mark(PlaceKind::Top { first: decls.is_empty() });
             match self.decl() {
                 Ok(d) => decls.push(d),
                 Err(_) => self.recover_top(),
@@ -243,7 +334,19 @@ impl Parser {
 
     fn import(&mut self) -> PResult<Import> {
         let start = self.bump().span; // import
-        let path = self.qname()?;
+        // The path, noting the parts before the cursor (D142).
+        self.mark(PlaceKind::Import(Vec::new()));
+        let first = self.ident("a module name")?;
+        let mut span = first.span;
+        let mut parts = vec![first];
+        while self.at(&Tok::Op(Op::Dot)) && !self.tok().space_before {
+            self.bump();
+            self.mark(PlaceKind::Import(parts.iter().map(|p| p.name.clone()).collect()));
+            let p = self.ident("a name after `.`")?;
+            span = span.to(p.span);
+            parts.push(p);
+        }
+        let path = QName { parts, span };
         let mut items = None;
         if self.eat(&Tok::LParen) {
             let mut v = Vec::new();
@@ -267,6 +370,7 @@ impl Parser {
     fn decl(&mut self) -> PResult<Decl> {
         let start = self.span();
         let export = if self.eat_kw(Kw::Export) {
+            self.mark(PlaceKind::Export);
             if self.eat_kw(Kw::Abstract) {
                 Export::Abstract
             } else if self.eat_kw(Kw::Transparent) {
@@ -374,6 +478,15 @@ impl Parser {
     }
 
     fn constraint(&mut self) -> PResult<Constraint> {
+        self.mark(PlaceKind::Cond);
+        // A predicate, even in a refinement inside a type, is not a type.
+        let saved = std::mem::replace(&mut self.in_type, 0);
+        let c = self.constraint_inner();
+        self.in_type = saved;
+        c
+    }
+
+    fn constraint_inner(&mut self) -> PResult<Constraint> {
         if matches!(self.peek(), Tok::LName(_)) && *self.peek_at(1) == Tok::Colon {
             let name = self.ident("a name")?;
             self.bump(); // :
@@ -382,9 +495,12 @@ impl Parser {
         if self.at_ident() && *self.peek_at(1) == Tok::Tilde {
             let name = self.ident("a name")?;
             self.bump(); // ~
+            self.mark(PlaceKind::Type { start: true, field: false });
             let mult = self.mult();
-            let ty = self.expr()?;
-            Ok(Constraint::Typed { name, mult, ty })
+            self.in_type += 1;
+            let ty = self.expr();
+            self.in_type -= 1;
+            Ok(Constraint::Typed { name, mult, ty: ty? })
         } else {
             Ok(Constraint::Pred(self.expr()?))
         }
@@ -395,12 +511,20 @@ impl Parser {
         self.expect_kw(Kw::Fn)?;
         let name = self.ident("a function name")?;
         let params = self.names_until_header_end();
-        let result = if self.eat(&Tok::Arrow) { Some(self.ident("a result name after `->`")?) } else { None };
+        let result_name = if self.eat(&Tok::Arrow) { Some(self.ident("a result name after `->`")?) } else { None };
         let constraints = self.opt_constraints()?;
-        self.open_block("function body")?;
+        let result = result_name.clone();
+        // A header without a body yet (being written) is still checked.
+        if !self.open_body("function body") {
+            let span = self.prev_span();
+            let result = Box::new(Expr { kind: ExprKind::Error, span });
+            let body = Block { stmts: Vec::new(), result, span };
+            return Ok(DeclKind::Fn { partial, name, params, result: result_name, constraints, decreasing: None, body });
+        }
         // A body that fails to parse keeps the header (D122): uses of the
         // function still see its signature.
         let start = self.span();
+        self.body_start = true;
         let parsed = (|| {
             let decreasing = if self.eat_kw(Kw::Decreasing) {
                 let e = self.expr()?;
@@ -458,8 +582,12 @@ impl Parser {
             let start = self.span();
             let fname = self.ident("a field name")?;
             self.expect(Tok::Tilde, "`~` and the field's type")?;
+            self.mark(PlaceKind::Type { start: true, field: true });
             let mult = self.mult();
-            let ty = self.expr()?;
+            self.in_type += 1;
+            let ty = self.expr();
+            self.in_type -= 1;
+            let ty = ty?;
             let mut preds = Vec::new();
             while self.eat(&Tok::Comma) {
                 preds.push(self.expr()?);
@@ -494,21 +622,32 @@ impl Parser {
         let name = self.ident("a lemma name")?;
         let params = self.names_until_header_end();
         let constraints = self.opt_constraints()?;
-        self.open_block("lemma body (`ensures …`)")?;
+        if !self.open_body("lemma body (`ensures …`)") {
+            // A header being written: checked, with nothing to prove yet.
+            let ensures = Expr { kind: ExprKind::Error, span: self.prev_span() };
+            return Ok(DeclKind::Lemma { name, params, constraints, lets: Vec::new(), ensures, proof: None });
+        }
         let mut lets = Vec::new();
+        self.mark(PlaceKind::LemmaBody);
         while self.eat_kw(Kw::Let) {
             let p = self.pattern()?;
             self.expect(Tok::Eq, "`=`")?;
             let e = self.expr()?;
             self.end_line()?;
             lets.push((p, e));
+            self.mark(PlaceKind::LemmaBody);
         }
         self.expect_kw(Kw::Ensures)?;
+        self.mark(PlaceKind::Cond);
         let ensures = self.expr()?;
         self.end_line()?;
+        self.mark(PlaceKind::Proof);
         let proof = if self.eat_kw(Kw::Proof) {
             self.open_block("proof")?;
-            Some(self.block_rest()?)
+            self.in_proof += 1;
+            let b = self.block_rest();
+            self.in_proof -= 1;
+            Some(b?)
         } else {
             None
         };
@@ -526,6 +665,7 @@ impl Parser {
         let mut members = Vec::new();
         while !self.at(&Tok::Dedent) && !self.at(&Tok::Eof) {
             let start = self.span();
+            self.mark(PlaceKind::Members);
             if self.eat_kw(Kw::Fn) {
                 let mname = self.ident("a function name")?;
                 let params = self.names_until_header_end();
@@ -596,6 +736,7 @@ impl Parser {
         self.open_block("list of the instance's functions and lemmas")?;
         while !self.at(&Tok::Dedent) && !self.at(&Tok::Eof) {
             let start = self.span();
+            self.mark(PlaceKind::Members);
             if self.eat_kw(Kw::Fn) {
                 let mname = self.ident("a function name")?;
                 let params = self.names_until_header_end();
@@ -607,6 +748,7 @@ impl Parser {
                     return Err(Failed);
                 }
                 self.open_block("function body")?;
+                self.body_start = true;
                 let decreasing = if self.eat_kw(Kw::Decreasing) {
                     let e = self.expr()?;
                     self.end_line()?;
@@ -629,9 +771,13 @@ impl Parser {
                 }
                 let proof = if self.at(&Tok::Newline) && *self.peek_at(1) == Tok::Indent {
                     self.open_block("proof")?;
+                    self.mark(PlaceKind::Proof);
                     self.expect_kw(Kw::Proof)?;
                     self.open_block("proof")?;
-                    let b = self.block_rest()?;
+                    self.in_proof += 1;
+                    let b = self.block_rest();
+                    self.in_proof -= 1;
+                    let b = b?;
                     if !self.eat(&Tok::Dedent) {
                         return Err(self.error_here("end of lemma"));
                     }
@@ -661,7 +807,6 @@ impl Parser {
 
     // ── blocks and statements ───────────────────────────────────────────────
 
-    /// After an INDENT: statements, then a final expression, then DEDENT.
     /// The rest of a block, after its INDENT. A statement that fails to
     /// parse becomes a hole (`ExprKind::Error`, bound if it was a `let`) and
     /// parsing goes on at the block's next statement (D142 e): the rest of
@@ -671,11 +816,24 @@ impl Parser {
         let level = self.indent;
         let mut stmts = Vec::new();
         loop {
+            let (had_place, before) = (self.place.is_some(), stmts.len());
             match self.block_step(&mut stmts, start) {
                 Ok(Some(b)) => return Ok(b),
                 Ok(None) => {}
                 Err(Failed) => {
                     let at = self.span();
+                    let hole = Span { start: at.start, end: at.start };
+                    // The cursor (D142) was in the statement that failed: the
+                    // hole is the cursor's name, so the checker still sees
+                    // what is in scope there.
+                    let mut cursor = (!had_place && self.place.is_some())
+                        .then(|| Expr { kind: ExprKind::Var(super::lexer::CURSOR.to_string()), span: hole });
+                    if stmts.len() > before {
+                        if let (Some(c), Some(Stmt::Let(_, rhs))) = (&cursor, stmts.last_mut()) {
+                            *rhs = c.clone();
+                            cursor = None;
+                        }
+                    }
                     self.recover_stmt(level);
                     if self.at(&Tok::Eof) || (self.at(&Tok::Dedent) && self.indent == level) || self.indent < level {
                         if self.at(&Tok::Dedent) && self.indent == level {
@@ -683,8 +841,11 @@ impl Parser {
                         }
                         self.last_dedent = true;
                         let span = start.to(self.prev_span());
-                        let result = Box::new(Expr { kind: ExprKind::Error, span: Span { start: at.start, end: at.start } });
+                        let result = Box::new(cursor.unwrap_or(Expr { kind: ExprKind::Error, span: hole }));
                         return Ok(Block { stmts, result, span });
+                    }
+                    if let Some(c) = cursor {
+                        stmts.push(Stmt::Expr(c));
                     }
                 }
             }
@@ -715,6 +876,8 @@ impl Parser {
     /// One statement of a block, or its last expression (the block, done).
     fn block_step(&mut self, stmts: &mut Vec<Stmt>, start: Span) -> PResult<Option<Block>> {
         {
+            let first = std::mem::replace(&mut self.body_start, false);
+            self.mark(PlaceKind::Stmt { first });
             if self.at(&Tok::Dedent) || self.at(&Tok::Eof) {
                 return Err(self.error_here("an expression ending the block"));
             }
@@ -790,6 +953,7 @@ impl Parser {
             }
             if self.at_kw(Kw::Have) {
                 let hspan = self.bump().span;
+                self.mark(PlaceKind::Have);
                 let e = self.expr()?;
                 self.end_line()?;
                 stmts.push(Stmt::Have(e));
@@ -946,6 +1110,7 @@ impl Parser {
             Tok::Kw(Kw::Have) => {
                 // `have L args` as an expression (e.g. a match-arm body in a proof): `have` then implicit `auto`.
                 self.bump();
+                self.mark(PlaceKind::Have);
                 let e = self.expr()?;
                 let span = start.to(e.span);
                 let block = Block { stmts: vec![Stmt::Have(e)], result: Box::new(Expr { kind: ExprKind::Auto, span: start }), span };
@@ -1047,6 +1212,7 @@ impl Parser {
             return Ok(Expr { kind: ExprKind::If(Box::new(cond), Box::new(t), Box::new(e)), span });
         }
         let t = self.block_expr("`if` branch (or write `then` on the same line)")?;
+        self.mark(PlaceKind::Else);
         if !self.at_kw(Kw::Else) {
             self.diags.push(
                 Diagnostic::error("E0108", "a multi-line `if` needs an `else` branch", start.to(cond.span))
@@ -1068,6 +1234,7 @@ impl Parser {
         let mut arms = Vec::new();
         while !self.at(&Tok::Dedent) && !self.at(&Tok::Eof) {
             let astart = self.span();
+            self.mark(PlaceKind::Pattern);
             let pat = self.pattern()?;
             let guard = if self.eat_kw(Kw::If) {
                 let saved = std::mem::replace(&mut self.no_arrow, true);
@@ -1187,6 +1354,7 @@ impl Parser {
             let glued = !self.tok().space_before;
             if glued && self.at(&Tok::Op(Op::Dot)) {
                 self.bump();
+                self.mark(PlaceKind::Member);
                 let name = self.ident("a field or member name after `.`")?;
                 let span = e.span.to(name.span);
                 e = Expr { kind: ExprKind::Field(Box::new(e), name), span };
@@ -1204,6 +1372,7 @@ impl Parser {
 
     fn atom(&mut self) -> PResult<Expr> {
         let start = self.span();
+        self.mark(if self.in_type > 0 { PlaceKind::Type { start: false, field: false } } else { PlaceKind::Expr });
         let kind = match self.peek().clone() {
             Tok::LName(n) => {
                 self.bump();
@@ -1437,6 +1606,7 @@ impl Parser {
 
     fn apat(&mut self) -> PResult<Pattern> {
         let start = self.span();
+        self.mark(PlaceKind::Pattern);
         let kind = match self.peek().clone() {
             Tok::LName(n) => {
                 self.bump();

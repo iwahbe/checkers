@@ -6,6 +6,7 @@
 //! recorded for the prover (M3).
 
 mod classes;
+pub mod complete;
 mod decls;
 mod expr;
 mod eq;
@@ -478,6 +479,10 @@ pub struct Elab {
     pub synthetic: HashMap<(String, u32), Span>,
     /// Unknowns in a reported type mismatch (D141 c).
     pub blamed: HashSet<MetaId>,
+    /// What is known at the cursor, when completing (D142).
+    pub completion: Option<complete::CompInfo>,
+    /// Completing at this byte of this module: other bodies aren't checked.
+    pub completing: Option<(String, u32)>,
 }
 
 /// Where synthetic spans start: past the end of any source file.
@@ -566,6 +571,8 @@ impl Elab {
             text_override: HashMap::new(),
             synthetic: HashMap::new(),
             blamed: HashSet::new(),
+            completion: None,
+            completing: None,
         }
     }
 
@@ -1616,7 +1623,17 @@ impl Default for Elab {
 
 /// Elaborate a user module (and the standard library modules it needs).
 pub fn check_module(name_hint: &str, file: &SourceFile, m: &ast::Module, dir: Option<&std::path::Path>) -> Elab {
+    check_module_at(name_hint, file, m, dir, None)
+}
+
+/// `check_module`; completing at byte `at` (D142), only the body there is
+/// checked, and other modules' signatures.
+pub fn check_module_at(name_hint: &str, file: &SourceFile, m: &ast::Module, dir: Option<&std::path::Path>, at: Option<u32>) -> Elab {
     let mut e = Elab::new();
+    if let Some(at) = at {
+        let name = m.name.as_ref().map(|q| q.dotted()).unwrap_or_else(|| name_hint.to_string());
+        e.completing = Some((name, at));
+    }
     e.base_dir = dir.map(|d| d.to_path_buf());
     // Core stdlib modules are always loaded: they define well-known types.
     for core in ["std.prelude", "std.cown", "std.future", "std.system"] {

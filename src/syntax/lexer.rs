@@ -21,6 +21,54 @@ pub fn lex(text: &str) -> (Vec<Token>, Vec<Diagnostic>) {
     (toks, diags)
 }
 
+/// The name the cursor stands as when completing (D142): no identifier
+/// written in a file can have a `$`.
+pub const CURSOR: &str = "$cursor";
+
+/// `lex`, with a cursor token at byte `at` (D142 c): the word the cursor is
+/// in or at the end of is replaced by it, or it is inserted. Also the span
+/// of the word it replaced (empty when inserted). None if `at` is in a comment, a literal or
+/// past the end.
+pub fn lex_with_cursor(text: &str, at: usize) -> Option<(Vec<Token>, Vec<Diagnostic>, Span)> {
+    if at > text.len() || !text.is_char_boundary(at) {
+        return None;
+    }
+    let mut lx = RawLexer { src: text.as_bytes(), text, pos: 0, line_start: 0, diags: Vec::new(), comments: Vec::new() };
+    let mut raws = lx.run();
+    if lx.comments.iter().any(|c| (c.start as usize) < at && at <= c.end as usize) {
+        return None;
+    }
+    let cursor = Tok::LName(CURSOR.to_string());
+    let replaced;
+    match raws.iter().position(|r| (r.span.start as usize) < at && at <= r.span.end as usize) {
+        Some(i) if matches!(raws[i].tok, Tok::LName(_) | Tok::UName(_) | Tok::Kw(_)) => {
+            // The whole word, also what follows the cursor.
+            replaced = raws[i].span;
+            raws[i].tok = cursor;
+        }
+        Some(i) if at < raws[i].span.end as usize => return None, // inside a literal or an operator
+        _ => {
+            let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+            let first_on_line = text[line_start..at].bytes().all(|b| b == b' ');
+            let space_before = at == 0 || matches!(text.as_bytes()[at - 1], b' ' | b'\n' | b'\r' | b'\t');
+            let i = raws.iter().position(|r| r.span.start as usize >= at).unwrap_or(raws.len());
+            // A token later on the cursor's line is no longer first on it.
+            if first_on_line {
+                if let Some(r) = raws.get_mut(i) {
+                    if !text[at..r.span.start as usize].contains('\n') {
+                        r.first_on_line = false;
+                    }
+                }
+            }
+            raws.insert(i, Raw { tok: cursor, span: Span::new(at, at), space_before, first_on_line, col: at - line_start });
+            replaced = Span::new(at, at);
+        }
+    }
+    let mut diags = lx.diags;
+    let toks = layout(raws, text.len(), &mut diags);
+    Some((toks, diags, replaced))
+}
+
 /// The tokens as written (no layout tokens) and the comments, for
 /// highlighting (§15.5).
 pub fn tokens_and_comments(text: &str) -> (Vec<(Tok, Span)>, Vec<Span>) {

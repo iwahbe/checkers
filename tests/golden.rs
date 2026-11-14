@@ -12,6 +12,8 @@
 //!                         (CHECKERS_STRESS_RUNS, default 10); stdout lines are
 //!                         compared sorted, since behaviours that share no cown
 //!                         may print in any order (SPEC §13.5, D67, D68).
+//! tests/complete/NAME.ck → each `‸` in it is a cursor: NAME.out is what
+//!                         `ckc complete` offers there (§15.5, D142), readably.
 //! tests/json/NAME.ck   → NAME.out is `ckc check --json` on it (§15.5), with
 //!                         NAME.overlay (a JSON object, paths relative to the
 //!                         repository) as `--overlay` if there is one; the
@@ -115,6 +117,69 @@ fn run_with(exe: &Path, args: &[&str], stdin: &[u8], dir: &Path) -> std::process
         .expect("run checkers");
     child.stdin.take().unwrap().write_all(stdin).unwrap();
     child.wait_with_output().unwrap()
+}
+
+fn json_str(s: &str) -> String {
+    let mut o = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => o += "\\\"",
+            '\\' => o += "\\\\",
+            '\n' => o += "\\n",
+            c if (c as u32) < 0x20 => o += &format!("\\u{:04x}", c as u32),
+            c => o.push(c),
+        }
+    }
+    o + "\""
+}
+
+/// A `ckc complete` line, readably: the range replaced, then each candidate
+/// as its label, class and the first line of its detail.
+fn complete_line(l: &str) -> String {
+    let field = |k: &str| -> Option<String> {
+        let key = format!("\"{k}\":");
+        let i = l.find(&key)? + key.len();
+        let rest = &l[i..];
+        if rest.starts_with("null") {
+            return None;
+        }
+        if let Some(r) = rest.strip_prefix('"') {
+            let mut out = String::new();
+            let mut chars = r.chars();
+            while let Some(c) = chars.next() {
+                match c {
+                    '"' => break,
+                    '\\' => match chars.next() {
+                        Some('n') => out.push('\n'),
+                        Some(c) => out.push(c),
+                        None => break,
+                    },
+                    c => out.push(c),
+                }
+            }
+            return Some(out);
+        }
+        Some(rest.split([',', '}']).next().unwrap_or("").to_string())
+    };
+    match field("kind").as_deref() {
+        Some("complete") => {
+            let span = |k: &str| {
+                let key = format!("\"{k}\":[");
+                let i = l.find(&key).unwrap() + key.len();
+                let v: Vec<usize> = l[i..].split(']').next().unwrap().split(',').map(|n| n.parse::<usize>().unwrap() + 1).collect();
+                format!("{}:{}", v[0], v[1])
+            };
+            format!("replaces {}-{}\n", span("start"), span("end"))
+        }
+        Some("candidate") => {
+            let detail = field("detail").unwrap_or_default();
+            let detail = detail.lines().next().unwrap_or("");
+            let doc = if field("doc").is_some() { "  (documented)" } else { "" };
+            format!("  {:<18} {:<15} {detail}{doc}\n", field("label").unwrap_or_default(), field("class").unwrap_or_default())
+        }
+        Some("done") => String::new(),
+        _ => format!("{l}\n"),
+    }
 }
 
 fn compare(root: &Path, out_path: &Path, actual: &str, update: bool, failures: &mut Vec<String>) {
@@ -349,6 +414,41 @@ fn golden() {
                 }
             }
         }
+    }
+
+    // `ckc complete` (§15.5, D142): each `‸` in the file is a cursor.
+    for path in ck_files(&root.join("tests").join("complete")) {
+        count += 1;
+        let rel = path.strip_prefix(root).unwrap().to_string_lossy().to_string();
+        let marked = fs::read_to_string(&path).unwrap();
+        let text = marked.replace('‸', "");
+        let mut actual = String::new();
+        let mut removed = 0;
+        for (at, _) in marked.match_indices('‸') {
+            let at = at - removed;
+            removed += '‸'.len_utf8();
+            let line = text[..at].matches('\n').count();
+            let col = at - text[..at].rfind('\n').map_or(0, |i| i + 1);
+            let overlay = format!("{{{}:{}}}", json_str(&rel), json_str(&text));
+            let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_ckc"))
+                .env("CHECKERS_NO_CACHE", "1")
+                .current_dir(root)
+                .args(["complete", "--overlay", "-", &rel, &line.to_string(), &col.to_string()])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("run ckc complete");
+            use std::io::Write as _;
+            child.stdin.take().unwrap().write_all(overlay.as_bytes()).unwrap();
+            let out = child.wait_with_output().unwrap();
+            actual += &format!("== line {}, column {}\n", line + 1, col + 1);
+            for l in String::from_utf8_lossy(&out.stdout).lines() {
+                actual += &complete_line(l);
+            }
+            actual += &String::from_utf8_lossy(&out.stderr);
+        }
+        compare(root, &path.with_extension("out"), &actual, update, &mut failures);
     }
 
     // `ckc check --json` (§15.5).

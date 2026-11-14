@@ -1,0 +1,162 @@
+== line 19, column 5
+replaces 19:5-19:5
+  q                  variable        q : Point
+  p                  parameter       p : Point
+  have               keyword         
+  if                 keyword         
+  let                keyword         
+  match              keyword         
+  par                keyword         
+  try                keyword         
+  when               keyword         
+  after              function        fn after p -> n : p~Point, n~Int  (documented)
+  arg                function        fn arg p -> n : p~Point, n~Int  (documented)
+  branch             function        fn branch p -> n : p~Point, n~Int  (documented)
+  fields             function        fn fields p -> n : p~Point, n~Int  (documented)
+  first              function        fn first p -> n : p~Point, n~Int  (documented)
+  norm               function        fn norm p -> n : p~Point, n~Int  (documented)
+  unfinished         function        fn unfinished p -> n : p~Point, n~Int  (documented)
+  Point              constructor     record Point  (documented)
+  exports            function        fn exports c -> n : c~Char, n~Nat
+  Cons               constructor     Cons x xs : x~a, xs~List a  (of `List`)
+  Err                constructor     Err x : x~e  (of `Result`)
+  False              constructor     False  (of `Bool`)
+  Nil                constructor     Nil  (of `List`)
+  None               constructor     None  (of `Option`)
+  Ok                 constructor     Ok x : x~a  (of `Result`)
+  Some               constructor     Some x : x~a  (of `Option`)
+  True               constructor     True  (of `Bool`)
+  add                function        fn add x y -> r : x~a, y~a, r~a
+  char               module          module std.char
+  fmap               function        fn fmap g xs -> ys : g~(a -> b), xs~f a, ys~f b  (documented)
+  format             function        
+  le                 function        fn le x y -> r : x~a, y~a, r~Bool  (documented)
+  len                function        
+  mul                function        fn mul x y -> r : x~a, y~a, r~a
+  neg                function        fn neg x -> r : x~a, r~a
+  not                function        export transparent fn not b -> r : b~Bool, r~Bool  (documented)
+  sub                function        fn sub x y -> r : x~a, y~a, r~a
+  zero               function        fn zero -> r : r~a
+== line 24, column 7
+replaces 24:5-24:7
+  p                  parameter       p : Point
+  decreasing         keyword         
+  have               keyword         
+  if                 keyword         
+  let                keyword         
+  match              keyword         
+  par                keyword         
+  try                keyword         
+  when               keyword         
+  after              function        fn after p -> n : p~Point, n~Int  (documented)
+  arg                function        fn arg p -> n : p~Point, n~Int  (documented)
+  branch             function        fn branch p -> n : p~Point, n~Int  (documented)
+  fields             function        fn fields p -> n : p~Point, n~Int  (documented)
+  first              function        fn first p -> n : p~Point, n~Int  (documented)
+  norm               function        fn norm p -> n : p~Point, n~Int  (documented)
+  unfinished         function        fn unfinished p -> n : p~Point, n~Int  (documented)
+  Point              constructor     record Point  (documented)
+  exports            function        fn exports c -> n : c~Char, n~Nat
+  Cons               constructor     Cons x xs : x~a, xs~List a  (of `List`)
+  Err                constructor     Err x : x~e  (of `Result`)
+  False              constructor     False  (of `Bool`)
+  Nil                constructor     Nil  (of `List`)
+  None               constructor     None  (of `Option`)
+  Ok                 constructor     Ok x : x~a  (of `Result`)
+  Some               constructor     Some x : x~a  (of `Option`)
+  True               constructor     True  (of `Bool`)
+  add                function        fn add x y -> r : x~a, y~a, r~a
+  char               module          module std.char
+  fmap               function        fn fmap g xs -> ys : g~(a -> b), xs~f a, ys~f b  (documented)
+  format             function        
+  le                 function        fn le x y -> r : x~a, y~a, r~Bool  (documented)
+  len                function        
+  mul                function        fn mul x y -> r : x~a, y~a, r~a
+  neg                function        fn neg x -> r : x~a, r~a
+  not                function        export transparent fn not b -> r : b~Bool, r~Bool  (documented)
+  sub                function        fn sub x y -> r : x~a, y~a, r~a
+  zero               function        fn zero -> r : r~a
+== line 28, column 10
+replaces 28:10-28:10
+  p                  parameter       p : Point
+  if                 keyword         
+  match              keyword         
+  par                keyword         
+  try                keyword         
+  Point              constructor     record Point  (documented)
+  after              function        fn after p -> n : p~Point, n~Int  (documented)
+  arg                function        fn arg p -> n : p~Point, n~Int  (documented)
+  branch             function        fn branch p -> n : p~Point, n~Int  (documented)
+  exports            function        fn exports c -> n : c~Char, n~Nat
+  fields             function        fn fields p -> n : p~Point, n~Int  (documented)
+  first              function        fn first p -> n : p~Point, n~Int  (documented)
+  norm               function        fn norm p -> n : p~Point, n~Int  (documented)
+  unfinished         function        fn unfinished p -> n : p~Point, n~Int  (documented)
+  Cons               constructor     Cons x xs : x~a, xs~List a  (of `List`)
+  Err                constructor     Err x : x~e  (of `Result`)
+  False              constructor     False  (of `Bool`)
+  Nil                constructor     Nil  (of `List`)
+  None               constructor     None  (of `Option`)
+  Ok                 constructor     Ok x : x~a  (of `Result`)
+  Some               constructor     Some x : x~a  (of `Option`)
+  True               constructor     True  (of `Bool`)
+  add                function        fn add x y -> r : x~a, y~a, r~a
+  char               module          module std.char
+  fmap               function        fn fmap g xs -> ys : g~(a -> b), xs~f a, ys~f b  (documented)
+  format             function        
+  le                 function        fn le x y -> r : x~a, y~a, r~Bool  (documented)
+  len                function        
+  mul                function        fn mul x y -> r : x~a, y~a, r~a
+  neg                function        fn neg x -> r : x~a, r~a
+  not                function        export transparent fn not b -> r : b~Bool, r~Bool  (documented)
+  sub                function        fn sub x y -> r : x~a, y~a, r~a
+  zero               function        fn zero -> r : r~a
+== line 32, column 7
+replaces 32:7-32:7
+  x                  field           x~Int  (field of `Point`)
+  y                  field           y~Int  (field of `Point`)
+== line 35, column 10
+replaces 35:10-35:10
+  code               function        export transparent fn code c -> n : c~Char, n~Nat  (documented)
+  from_ascii         function        export transparent fn from_ascii b -> c : b~U8, b < 128, c~Char  (documented)
+  from_scalar        function        export transparent fn from_scalar n -> c : n~Nat, n < 0x110000, (n < 0xD800 or 0xE000 <= n), c~Char  (documented)
+  from_surrogates    function        export transparent fn from_surrogates hi lo -> c : hi~Nat, lo~Nat, 0xD800 <= hi, hi < 0xDC00,  (documented)
+== line 41, column 5
+replaces 41:5-41:5
+  else               keyword         
+== line 46, column 11
+replaces 46:11-46:11
+  q                  variable        q : Point
+  p                  parameter       p : Point
+  if                 keyword         
+  match              keyword         
+  par                keyword         
+  try                keyword         
+  after              function        fn after p -> n : p~Point, n~Int  (documented)
+  arg                function        fn arg p -> n : p~Point, n~Int  (documented)
+  branch             function        fn branch p -> n : p~Point, n~Int  (documented)
+  fields             function        fn fields p -> n : p~Point, n~Int  (documented)
+  first              function        fn first p -> n : p~Point, n~Int  (documented)
+  norm               function        fn norm p -> n : p~Point, n~Int  (documented)
+  unfinished         function        fn unfinished p -> n : p~Point, n~Int  (documented)
+  Point              constructor     record Point  (documented)
+  exports            function        fn exports c -> n : c~Char, n~Nat
+  Cons               constructor     Cons x xs : x~a, xs~List a  (of `List`)
+  Err                constructor     Err x : x~e  (of `Result`)
+  False              constructor     False  (of `Bool`)
+  Nil                constructor     Nil  (of `List`)
+  None               constructor     None  (of `Option`)
+  Ok                 constructor     Ok x : x~a  (of `Result`)
+  Some               constructor     Some x : x~a  (of `Option`)
+  True               constructor     True  (of `Bool`)
+  add                function        fn add x y -> r : x~a, y~a, r~a
+  char               module          module std.char
+  fmap               function        fn fmap g xs -> ys : g~(a -> b), xs~f a, ys~f b  (documented)
+  format             function        
+  le                 function        fn le x y -> r : x~a, y~a, r~Bool  (documented)
+  len                function        
+  mul                function        fn mul x y -> r : x~a, y~a, r~a
+  neg                function        fn neg x -> r : x~a, r~a
+  not                function        export transparent fn not b -> r : b~Bool, r~Bool  (documented)
+  sub                function        fn sub x y -> r : x~a, y~a, r~a
+  zero               function        fn zero -> r : r~a

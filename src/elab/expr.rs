@@ -101,6 +101,10 @@ impl Elab {
     }
 
     fn check_inner(&mut self, cx: &mut Cx, e: &Expr, expected: &Val, tail: bool) -> Tm {
+        if matches!(&e.kind, ExprKind::Var(n) if Self::is_cursor(n)) {
+            self.note_cursor(cx, Some(expected));
+            return Tm::Error;
+        }
         let exp = self.force(expected);
         // An implicit Π expected and a non-lambda given: insert an implicit lambda.
         if let Val::Pi(x, m, Icit::Impl, a, c) = &exp {
@@ -500,6 +504,10 @@ impl Elab {
     // ── names ───────────────────────────────────────────────────────────────
 
     fn infer_var(&mut self, cx: &mut Cx, n: &str, span: Span) -> (Tm, Val) {
+        if Self::is_cursor(n) {
+            self.note_cursor(cx, None);
+            return (Tm::Error, Val::Error);
+        }
         if let Some(l) = cx.lookup(n) {
             self.index_local(cx, l, span);
             let ty = cx.locals[l].ty.clone();
@@ -1612,6 +1620,9 @@ impl Elab {
     // ── fields and qualified names ──────────────────────────────────────────
 
     fn elab_field(&mut self, cx: &mut Cx, x: &Expr, name: &Ident, span: Span) -> (Tm, Val) {
+        if Self::is_cursor(&name.name) {
+            return self.note_member(cx, x);
+        }
         // `Ord.le`: a class's function or lemma (D136).
         if let ExprKind::Con(c) = &x.kind {
             if let Some(Sym::Ty(tid)) = self.resolve(c, true) {

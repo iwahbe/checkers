@@ -856,6 +856,7 @@ impl Elab {
                     && self.qualifier(n).is_none()
                     && !out.contains(n)
                     && n != "_"
+                    && !Self::is_cursor(n)
                 {
                     out.push(n.clone());
                 }
@@ -1508,6 +1509,13 @@ impl Elab {
     fn phase_bodies(&mut self, m: &ast::Module, ids: &[Option<Sym>], mut sigs: HashMap<usize, Sig>, checks: bool) {
         for (k, (d, id)) in m.decls.iter().zip(ids).enumerate() {
             self.g.fuel.set(DEFAULT_FUEL);
+            // Completing (D142): only the body the cursor is in.
+            if let Some((module, at)) = &self.completing {
+                let here = *module == self.cur && d.span.start <= *at && *at <= d.span.end;
+                if !here && matches!(d.kind, DeclKind::Fn { .. } | DeclKind::Lemma { .. }) {
+                    continue;
+                }
+            }
             match &d.kind {
                 DeclKind::Fn { body, decreasing, .. } => {
                     let Some(Sym::Def(did)) = id else { continue };

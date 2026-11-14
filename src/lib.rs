@@ -148,6 +148,39 @@ pub fn check_json(name: &str, text: &str, dir: &std::path::Path, out: &mut dyn F
     c.errors() > 0
 }
 
+/// `ckc complete` (§15.5, D142): what can be written at byte column `col`
+/// of line `line` (from 0) of `name`, as JSON lines: the span the
+/// completion replaces, then each candidate in order, then `done`. The
+/// names and types phase runs, with a cursor token there; nothing else.
+pub fn complete_json(name: &str, text: &str, dir: &std::path::Path, line: usize, col: usize, out: &mut dyn FnMut(String)) {
+    let file = SourceFile::new(name, text);
+    let main = overlay::absolute(std::path::Path::new(name));
+    let at = file.offset(line, col);
+    let parsed = at.and_then(|at| syntax::parse_at_cursor(text, at));
+    if let Some((module, Some(place), replaced)) = parsed {
+        let stem = std::path::Path::new(name).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let e = elab::check_module_at(&stem, &file, &module, Some(dir), Some(replaced.start));
+        let user = module.name.as_ref().map(|q| q.dotted()).unwrap_or(stem);
+        let (sl, sc) = file.line_byte(replaced.start);
+        let (el, ec) = file.line_byte(replaced.end);
+        out(format!(
+            r#"{{"kind":"complete","path":{},"start":[{sl},{sc}],"end":[{el},{ec}]}}"#,
+            json::string(&main.to_string_lossy())
+        ));
+        for c in e.candidates(&place, &user) {
+            let opt = |s: &Option<String>| s.as_ref().map(|d| json::string(d)).unwrap_or_else(|| "null".into());
+            out(format!(
+                r#"{{"kind":"candidate","label":{},"class":"{}","detail":{},"doc":{}}}"#,
+                json::string(&c.label),
+                c.class,
+                opt(&c.detail),
+                opt(&c.doc)
+            ));
+        }
+    }
+    out(r#"{"kind":"done","phase":"complete"}"#.to_string());
+}
+
 /// The index (§15.5): each name in the file being checked, then each
 /// keyword, comment, string and number in it.
 /// The description of the declaration whose name starts at byte `at`: the

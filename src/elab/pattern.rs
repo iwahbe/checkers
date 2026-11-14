@@ -192,6 +192,11 @@ impl Elab {
                 (l, Some((st, tyt)))
             }
         };
+        // Completing a pattern (D142): the type matched.
+        if arms.iter().any(|(p, _, _)| matches!(&p.kind, PatKind::Var(n) if Self::is_cursor(n))) {
+            let ty = cx.locals[occ].ty.clone();
+            self.note_scrutinee(cx, &ty);
+        }
         let rows = arms
             .into_iter()
             .map(|(p, guard, body)| Row { span: p.span, pats: vec![(occ, p)], binds: vec![], guard, body })

@@ -62,6 +62,14 @@ impl SourceFile {
     }
 
     /// 0-based line and 0-based column in bytes of a byte offset (§15.5).
+    /// The byte offset of `[line, column]` (from 0, the column in bytes),
+    /// if it is in the file.
+    pub fn offset(&self, line: usize, col: usize) -> Option<usize> {
+        let start = *self.line_starts.get(line)?;
+        let end = self.line_starts.get(line + 1).map_or(self.text.len(), |e| e - 1);
+        (start + col <= end.max(start)).then_some(start + col)
+    }
+
     pub fn line_byte(&self, offset: u32) -> (usize, usize) {
         let offset = (offset as usize).min(self.text.len());
         let line = match self.line_starts.binary_search(&offset) {

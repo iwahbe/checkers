@@ -1,0 +1,34 @@
+== line 4, column 12
+replaces 4:12-4:12
+  actor              module          
+  array              module          
+  bag                module          
+  bytes              module          
+  char               module          
+  cown               module          
+  cursor             module          
+  decimal            module          
+  env                module          
+  files              module          
+  future             module          
+  json               module          
+  list               module          
+  prelude            module          
+  proc               module          
+  sort               module          
+  string             module          
+  system             module          
+  terminal           module          
+  utf8               module          
+== line 14, column 9
+replaces 14:9-14:9
+  Circle             constructor     Circle r : r~Nat  (of `Shape`)
+  Square             constructor     Square s : s~Nat  (of `Shape`)
+  Cons               constructor     Cons x xs : x~a, xs~List a  (of `List`)
+  Err                constructor     Err x : x~e  (of `Result`)
+  False              constructor     False  (of `Bool`)
+  Nil                constructor     Nil  (of `List`)
+  None               constructor     None  (of `Option`)
+  Ok                 constructor     Ok x : x~a  (of `Result`)
+  Some               constructor     Some x : x~a  (of `Option`)
+  True               constructor     True  (of `Bool`)

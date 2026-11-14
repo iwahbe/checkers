@@ -1,0 +1,61 @@
+== line 11, column 26
+replaces 11:26-11:26
+  rest               variable        rest : List Int
+  xs                 parameter       xs : List Int
+  admit              keyword         
+  auto               keyword         
+  have               keyword         
+  if                 keyword         
+  match              keyword         
+  length_nonneg      lemma           lemma length_nonneg xs : xs~List Int
+  twice              lemma           lemma twice xs : xs~List Int  (documented)
+  Cons               constructor     Cons x xs : x~a, xs~List a  (of `List`)
+  Err                constructor     Err x : x~e  (of `Result`)
+  False              constructor     False  (of `Bool`)
+  Nil                constructor     Nil  (of `List`)
+  None               constructor     None  (of `Option`)
+  Ok                 constructor     Ok x : x~a  (of `Result`)
+  Some               constructor     Some x : x~a  (of `Option`)
+  True               constructor     True  (of `Bool`)
+  add                function        fn add x y -> r : x~a, y~a, r~a
+  add_zero           lemma           lemma add_zero x : Add a, x~a  (documented)
+  antisym            lemma           lemma antisym x y : x~a, y~a, le x y, le y x  (documented)
+  assoc              lemma           lemma assoc x y z : Add a, x~a, y~a, z~a  (documented)
+  fmap               function        fn fmap g xs -> ys : g~(a -> b), xs~f a, ys~f b  (documented)
+  fmap_comp          lemma           lemma fmap_comp g h xs : g~(b -> c), h~(a -> b), xs~f a  (documented)
+  fmap_id            lemma           lemma fmap_id xs : xs~f a  (documented)
+  format             function        
+  le                 function        fn le x y -> r : x~a, y~a, r~Bool  (documented)
+  len                function        
+  list               module          module std.list
+  mul                function        fn mul x y -> r : x~a, y~a, r~a
+  neg                function        fn neg x -> r : x~a, r~a
+  not                function        export transparent fn not b -> r : b~Bool, r~Bool  (documented)
+  refl               lemma           export lemma refl x : Ord a, x~a  (documented)
+  sub                function        fn sub x y -> r : x~a, y~a, r~a
+  total              lemma           lemma total x y : x~a, y~a  (documented)
+  trans              lemma           lemma trans x y z : x~a, y~a, z~a, le x y, le y z  (documented)
+  zero               function        fn zero -> r : r~a
+  zero_add           lemma           lemma zero_add x : Add a, x~a  (documented)
+== line 17, column 14
+replaces 17:14-17:14
+  xs                 parameter       xs : List Int
+  length_nonneg      lemma           lemma length_nonneg xs : xs~List Int
+  twice              lemma           lemma twice xs : xs~List Int  (documented)
+  Add                class           export class Add a  (documented)
+  Functor            class           export class Functor f  (documented)
+  Monoid             class           export class Monoid a  (documented)
+  Mul                class           export class Mul a  (documented)
+  Neg                class           export class Neg a  (documented)
+  Ord                class           export class Ord a  (documented)
+  Sub                class           export class Sub a  (documented)
+  add_zero           lemma           lemma add_zero x : Add a, x~a  (documented)
+  antisym            lemma           lemma antisym x y : x~a, y~a, le x y, le y x  (documented)
+  assoc              lemma           lemma assoc x y z : Add a, x~a, y~a, z~a  (documented)
+  fmap_comp          lemma           lemma fmap_comp g h xs : g~(b -> c), h~(a -> b), xs~f a  (documented)
+  fmap_id            lemma           lemma fmap_id xs : xs~f a  (documented)
+  list               module          module std.list
+  refl               lemma           export lemma refl x : Ord a, x~a  (documented)
+  total              lemma           lemma total x y : x~a, y~a  (documented)
+  trans              lemma           lemma trans x y z : x~a, y~a, z~a, le x y, le y z  (documented)
+  zero_add           lemma           lemma zero_add x : Add a, x~a  (documented)

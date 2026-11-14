@@ -1,0 +1,16 @@
+# Completion (D142): the server runs `ckc complete` on the open text; each
+# item replaces the word being typed and keeps the compiler's order.
+> {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"capabilities":{"general":{"positionEncodings":["utf-8"]}}}}
+< 1
+> {"jsonrpc":"2.0","method":"initialized","params":{}}
+> {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/complete.ck","languageId":"checkers","version":1,"text":$TEXT(complete.ck)}}}
+# At the end of `norm` in `norm p`: replaces `norm`; locals, keywords, then
+# names, those of type `Int` first.
+> {"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/complete.ck"},"position":{"line":11,"character":8}}}
+< 1
+# After `p.` (the trigger character): the fields.
+> {"jsonrpc":"2.0","id":3,"method":"textDocument/completion","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/complete.ck"},"position":{"line":8,"character":6},"context":{"triggerKind":2,"triggerCharacter":"."}}}
+< 1
+> {"jsonrpc":"2.0","id":4,"method":"shutdown"}
+< 1
+> {"jsonrpc":"2.0","method":"exit"}
