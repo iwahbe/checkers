@@ -1,0 +1,7 @@
+error[E0201]: type mismatch: expected `ExitCode`, found `Unit`
+  --> main_signature.ck:10:5
+   |
+10 |     terminal.print_line "hello" term
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this expression has type `Unit`
+
+main_signature.ck: 1 error, 0 warnings

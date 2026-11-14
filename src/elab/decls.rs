@@ -574,6 +574,47 @@ impl Elab {
         }
     }
 
+    /// `main` is `fn main args sys -> code : args~List String, sys~System,
+    /// code~ExitCode` (D31; `code` may be a `Future ExitCode`): what isn't
+    /// written is that, what is must agree (E0366).
+    fn check_main(&mut self, sig: &Sig, at: Span) {
+        let ty = |e: &Self, m: &str, n: &str| e.g.tys.iter().position(|t| &*t.module == m && &*t.name == n).map(|i| Val::TyCon(TyId(i as u32), vec![]));
+        let wk = self.g.well_known.clone();
+        let (Some(system), Some(exit), Some(string), Some(list)) =
+            (ty(self, "std.system", "System"), ty(self, "std.system", "ExitCode"), wk.string, wk.list)
+        else {
+            return;
+        };
+        let args = Val::TyCon(list, vec![Val::TyCon(string, vec![])]);
+        let explicit: Vec<usize> = (sig.n_implicit..sig.binders.len()).collect();
+        let lvl = sig.cx.lvl();
+        let mut wrong: Vec<String> = Vec::new();
+        if explicit.len() != 2 {
+            wrong.push(format!("it takes {} parameters, not 2", explicit.len()));
+        } else {
+            for (k, (want, shown)) in explicit.iter().zip([(args, "List String"), (system, "System")]) {
+                let have = self.eval(&sig.cx, &sig.binders[*k].3);
+                if unify(&self.g, lvl, &want, &have).is_err() {
+                    let is = self.show_val(&sig.cx, &have);
+                    let why = if is == "Bool" { " (a name alone among the constraints is a condition, so a `Bool`)" } else { "" };
+                    wrong.push(format!("`{}` is `{is}`, not `{shown}`{why}", sig.binders[*k].0));
+                }
+            }
+        }
+        let res = self.eval(&sig.cx, &sig.result);
+        let future = wk.future.map(|f| Val::TyCon(f, vec![exit.clone()]));
+        if unify(&self.g, lvl, &exit, &res).is_err() && !future.is_some_and(|f| unify(&self.g, lvl, &f, &res).is_ok()) {
+            wrong.push(format!("`{}` is `{}`, not `ExitCode`", sig.result_name, self.show_val(&sig.cx, &res)));
+        }
+        if let Some(first) = wrong.first() {
+            let mut d = Diagnostic::error("E0366", "this isn't `main`'s signature", at).with_label(first.clone());
+            for w in &wrong[1..] {
+                d = d.with_note(w.clone());
+            }
+            self.err(d.with_note("`main` is `fn main args sys -> code : args~List String, sys~System, code~ExitCode` (or a `Future ExitCode`); a type left out is that one"));
+        }
+    }
+
     // ── phases ──────────────────────────────────────────────────────────────
 
     fn typed_constraint<'a>(cs: &'a [Constraint], name: &str) -> Option<(&'a Expr, ast::Mult)> {
@@ -1265,7 +1306,9 @@ impl Elab {
         }
         let result_ty = match result.and_then(|r| Self::typed_constraint(cs, &r.name)) {
             Some((e, _)) => self.elab_type(&mut cx, e),
-            None => self.fresh_meta(&cx),
+            // Not written: the same type at every call, so it may mention the
+            // type parameters but not the values (`fib (x - 1) + fib (x - 2)`).
+            None => self.fresh_meta_over_types(&cx),
         };
         for c in cs {
             if let Constraint::Typed { name, .. } = c {
@@ -1385,6 +1428,9 @@ impl Elab {
             let sig = match &d.kind {
                 DeclKind::Fn { name, params, result, constraints, partial, decreasing, body } => {
                     let mut sig = self.signature(params, result.as_ref(), constraints);
+                    if name.name == "main" && d.export != Export::No && self.root.as_deref() == Some(self.cur.as_str()) {
+                        self.check_main(&sig, name.span);
+                    }
                     if let Some(m) = head_meta(&sig.result) {
                         self.result_metas.insert(m, *did);
                     }

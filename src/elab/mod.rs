@@ -399,6 +399,8 @@ pub struct Elab {
     pub obligations: Vec<Obligation>,
     /// Branches to ask about (D144 d).
     pub probes: Vec<Probe>,
+    /// The module checked, whose exported `main` is the program's (D31).
+    pub root: Option<String>,
     /// References between declarations, for unused code (D144).
     pub refs: Vec<unused::Ref>,
     /// Values whose every field is observed: formatted, or compared with
@@ -555,6 +557,7 @@ impl Elab {
             module_fns: Vec::new(),
             obligations: Vec::new(),
             probes: Vec::new(),
+            root: None,
             refs: Vec::new(),
             observed: Vec::new(),
             decl_table: HashMap::new(),
@@ -653,6 +656,33 @@ impl Elab {
             }
         }
         t
+    }
+
+    /// An unknown that may depend on the type-level locals in scope (those
+    /// whose type ends in `Type`), not on values.
+    pub fn fresh_meta_over_types(&mut self, cx: &Cx) -> Tm {
+        let m = self.g.fresh_meta();
+        let mut t = Tm::Meta(m);
+        for (lvl, l) in cx.locals.iter().enumerate() {
+            if l.bound && self.is_type_level(&l.ty) {
+                t = Tm::App(Rc::new(t), Rc::new(cx.var(lvl)), Icit::Expl, Mult::Many);
+            }
+        }
+        t
+    }
+
+    /// Whether values of type `ty` are types or type constructors.
+    fn is_type_level(&self, ty: &Val) -> bool {
+        match self.force(ty) {
+            Val::Univ(_) => true,
+            Val::Pi(_, _, _, _, clo) => {
+                let body = crate::core::apply_closure(&self.g, &clo, Val::Error);
+                self.is_type_level(&body)
+            }
+            // Not yet known: may be a type.
+            Val::Neutral(Head::Meta(_), _) => true,
+            _ => false,
+        }
     }
 
     /// Record that the unknown `mt` (from `fresh_meta`) stands for the
@@ -1738,6 +1768,7 @@ pub fn check_module_at(name_hint: &str, file: &SourceFile, m: &ast::Module, dir:
     // (D145); it may be one of the core modules loaded next, so it is
     // indexed from the start.
     let is_std = stdlib::is_std_file(&name, std::path::Path::new(&file.name));
+    e.root = Some(name.clone());
     if is_std {
         e.index_of = Some(name.clone());
     }

@@ -13,8 +13,9 @@ fn at_most prev l : prev~Option Nat, l~Nat
         Some q -> l <= q
         None   -> False
 
-# Between functions that call each other, one is checked first: a call to
-# the other there needs its result type written.
+# Between functions that call each other, one is checked first: its call
+# to the other, not yet checked, gives that one's result type (one type for
+# every call, whatever the arguments).
 fn even n : n~Nat
     decreasing n
     if n == 0 then True else odd (n - 1)
