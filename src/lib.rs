@@ -429,7 +429,10 @@ fn program_modules(e: &elab::Elab, user: &str) -> Vec<String> {
     deps.sort();
     v.extend(deps);
     v.extend(e.user_modules.iter().filter(|m| e.package_of(m) == ".").cloned());
-    v.push(user.to_string());
+    // A standard-library file checked by itself is among them already (D145).
+    if !v.iter().any(|m| m == user) {
+        v.push(user.to_string());
+    }
     v
 }
 
