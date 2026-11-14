@@ -374,6 +374,9 @@ fn check(args: &[String]) -> ExitCode {
 
 /// `ckc doc FILE`: the module's documentation as JSON lines (§15.6).
 fn doc(args: &[String]) -> ExitCode {
+    if args == ["--std"] {
+        return doc_std();
+    }
     let [path] = args else {
         eprintln!("error: `doc` takes exactly one file\n\n{USAGE}");
         return ExitCode::from(2);
@@ -398,6 +401,39 @@ fn doc(args: &[String]) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// `ckc doc --std`: every standard-library module's documentation, one
+/// after another (for links to it from pages outside it, D148 c).
+fn doc_std() -> ExitCode {
+    let dir = match checkers::elab::stdlib::dir() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "ck"))
+        .collect();
+    files.sort();
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    for f in files {
+        let Ok(text) = std::fs::read_to_string(&f) else { continue };
+        let path = f.display().to_string();
+        let c = checkers::parse_only(&path, &text);
+        let stem = f.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        for l in checkers::doc::lines(&text, &c.module, &format!("std.{stem}")) {
+            if writeln!(out, "{l}").is_err() {
+                return ExitCode::SUCCESS;
+            }
+        }
+    }
+    ExitCode::SUCCESS
 }
 
 fn parse(args: &[String]) -> ExitCode {

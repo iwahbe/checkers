@@ -1,0 +1,20 @@
+{"kind":"done","phase":"types"}
+{"kind":"name","path":"$ROOT/tests/json/doc_blocks.ck","start":[8,11],"end":[8,14],"class":"constant","def":{"path":"$ROOT/tests/json/doc_blocks.ck","start":[8,11],"end":[8,14]},"hover":"export let ONE = 1","doc":null}
+{"kind":"token","path":"$ROOT/tests/json/doc_blocks.ck","start":[0,0],"end":[0,42],"class":"comment"}
+{"kind":"token","path":"$ROOT/tests/json/doc_blocks.ck","start":[1,0],"end":[1,1],"class":"comment"}
+{"kind":"token","path":"$ROOT/tests/json/doc_blocks.ck","start":[5,0],"end":[5,5],"class":"comment"}
+{"kind":"token","path":"$ROOT/tests/json/doc_blocks.ck","start":[6,0],"end":[6,6],"class":"keyword"}
+{"kind":"token","path":"$ROOT/tests/json/doc_blocks.ck","start":[8,0],"end":[8,6],"class":"keyword"}
+{"kind":"token","path":"$ROOT/tests/json/doc_blocks.ck","start":[8,7],"end":[8,10],"class":"keyword"}
+{"kind":"token","path":"$ROOT/tests/json/doc_blocks.ck","start":[8,17],"end":[8,18],"class":"number"}
+{"kind":"name","path":"$ROOT/tests/json/doc_blocks.ck","start":[3,12],"end":[3,20],"class":"module","def":{"path":"$ROOT/stdlib/list.ck","start":[0,0],"end":[0,0]},"hover":"module std.list","doc":null}
+{"kind":"name","path":"$ROOT/tests/json/doc_blocks.ck","start":[4,8],"end":[4,12],"class":"module","def":{"path":"$ROOT/stdlib/list.ck","start":[0,0],"end":[0,0]},"hover":"module std.list","doc":null}
+{"kind":"name","path":"$ROOT/tests/json/doc_blocks.ck","start":[4,13],"end":[4,19],"class":"function","def":{"path":"$ROOT/stdlib/list.ck","start":[6,22],"end":[6,28]},"hover":"export transparent fn length xs -> n : xs~List a, n~Nat","doc":"The number of elements."}
+{"kind":"token","path":"$ROOT/tests/json/doc_blocks.ck","start":[3,5],"end":[3,11],"class":"keyword"}
+{"kind":"token","path":"$ROOT/tests/json/doc_blocks.ck","start":[4,2],"end":[4,7],"class":"keyword"}
+{"kind":"token","path":"$ROOT/tests/json/doc_blocks.ck","start":[4,21],"end":[4,22],"class":"number"}
+{"kind":"token","path":"$ROOT/tests/json/doc_blocks.ck","start":[4,27],"end":[4,28],"class":"number"}
+{"kind":"done","phase":"index"}
+{"kind":"done","phase":"checks"}
+{"kind":"done","phase":"proofs"}
+-- exit 0

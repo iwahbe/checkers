@@ -10,6 +10,7 @@ pub mod doc;
 pub mod elab;
 pub mod json;
 pub mod lint;
+pub mod literate;
 pub mod native;
 pub mod overlay;
 pub mod source;
@@ -110,6 +111,7 @@ pub fn check(name: &str, text: &str) -> Checked {
 pub fn check_in(name: &str, text: &str, dir: &std::path::Path) -> Checked {
     let (mut c, e) = elaborate(name, text, dir);
     if let Some((e, user)) = &e {
+        doc_comments(&mut c, e, user, dir);
         run_checks(&mut c, e, user);
         prove(&mut c, e, user);
         stage_module(&mut c, e, user);
@@ -131,11 +133,28 @@ pub fn check_json(name: &str, text: &str, dir: &std::path::Path, out: &mut dyn F
     // The index after the types phase's diagnostics, so they aren't kept
     // waiting by it.
     match &e {
-        Some((e, user)) => emit_index(e, user, &main, out),
+        Some((e, user)) => {
+            // The doc comments' code is indexed as code (D148 f): their
+            // lines' comment tokens give way to its tokens.
+            let samples = literate::links_and_samples(&c.file.text, &c.module, e, user).1;
+            let covered: std::collections::HashSet<usize> =
+                samples.iter().flat_map(|s| s.starts.iter().map(|a| c.file.line_byte(*a as u32).0)).collect();
+            let mut kept = |l: String| {
+                let comment_here = l.contains(r#""class":"comment""#) && start_line(&l).is_some_and(|n| covered.contains(&n));
+                if !comment_here {
+                    out(l)
+                }
+            };
+            emit_index(e, user, &main, &mut kept);
+            for s in &samples {
+                emit_sample_index(&c.file, s, dir, &main, out);
+            }
+        }
         None => emit_tokens(&main, &c.file, out),
     }
     out(r#"{"kind":"done","phase":"index"}"#.to_string());
     if let Some((e, user)) = &e {
+        doc_comments(&mut c, e, user, dir);
         run_checks(&mut c, e, user);
     }
     emit_new(&c, e.as_ref().map(|x| &x.0), &main, "checks", &mut seen, out);
@@ -158,6 +177,11 @@ pub fn complete_json(name: &str, text: &str, dir: &std::path::Path, line: usize,
     let file = SourceFile::new(name, text);
     let main = overlay::absolute(std::path::Path::new(name));
     let at = file.offset(line, col);
+    if let Some(at) = at {
+        if complete_in_doc(name, &file, dir, &main, at, out) {
+            return;
+        }
+    }
     let parsed = at.and_then(|at| syntax::parse_at_cursor(text, at));
     if let Some((module, Some(place), replaced)) = parsed {
         let stem = std::path::Path::new(name).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
@@ -623,6 +647,111 @@ fn elaborate(name: &str, text: &str, dir: &std::path::Path) -> (Checked, Option<
     }
     c.obligations = e.obligations.iter().filter(|o| o.module == user).count();
     (c, Some((e, user)))
+}
+
+/// The line a JSON line's `"start":[line,col]` gives.
+fn start_line(l: &str) -> Option<usize> {
+    let k = l.find(r#""start":["#)? + 9;
+    l[k..].split(',').next()?.parse().ok()
+}
+
+/// A JSON line about a doc comment's code block (whose path is `from`), at
+/// the block's place in `file` (path `to`); `None` for a line about the
+/// `module` line the block was given.
+fn remap_json(l: &str, from: &str, to: &str, file: &SourceFile, s: &literate::Sample) -> Option<String> {
+    if s.inserted && l.contains(&format!("{from},\"start\":[0,")) {
+        return None;
+    }
+    let mut rest = l;
+    let mut done = String::new();
+    while let Some(k) = rest.find(from) {
+        done.push_str(&rest[..k]);
+        done.push_str(to);
+        rest = &rest[k + from.len()..];
+        // `,"start":[l,c],"end":[l,c]` after the path: moved to the file.
+        for key in [r#","start":["#, r#","end":["#] {
+            let Some(t) = rest.strip_prefix(key) else { break };
+            let Some(close) = t.find(']') else { break };
+            let nums: Vec<usize> = t[..close].split(',').filter_map(|x| x.parse().ok()).collect();
+            let [line, col] = nums[..] else { break };
+            let (fl, fc) = file.line_byte(s.place_at(line, col) as u32);
+            done.push_str(&format!("{key}{fl},{fc}]"));
+            rest = &t[close + 1..];
+        }
+    }
+    done.push_str(rest);
+    Some(done)
+}
+
+/// The index of a doc comment's code block, at its place in `file` (D148 f).
+fn emit_sample_index(file: &SourceFile, s: &literate::Sample, dir: &std::path::Path, main: &std::path::Path, out: &mut dyn FnMut(String)) {
+    let name = format!("{}.ck", s.name);
+    let marker = std::path::PathBuf::from(format!("/\u{1}doc/{name}"));
+    let (_, e) = elaborate(&name, &s.text, dir);
+    let Some((e, user)) = e else { return };
+    let from = json::string(&marker.to_string_lossy());
+    let to = json::string(&main.to_string_lossy());
+    let mut remap = |l: String| {
+        if let Some(x) = remap_json(&l, &from, &to, file, s) {
+            out(x)
+        }
+    };
+    emit_index(&e, &user, &marker, &mut remap);
+}
+
+/// Completion in a doc comment (D148 f): in a code block, as in code; after
+/// `[` in its text, the names a link can name. `false` if `at` is in none.
+fn complete_in_doc(name: &str, file: &SourceFile, dir: &std::path::Path, main: &std::path::Path, at: usize, out: &mut dyn FnMut(String)) -> bool {
+    let (module, _) = syntax::parse_module(&file.text);
+    let to = json::string(&main.to_string_lossy());
+    for region in literate::regions(&file.text, &module) {
+        let Some(line) = region.iter().find(|l| l.at <= at && at <= l.at + l.text.len()) else { continue };
+        let (blocks, _) = literate::scan(&region);
+        for (k, b) in blocks.iter().enumerate() {
+            if !literate::is_checkers(&b.info) || !b.lines.iter().any(|l| l.at == line.at) {
+                continue;
+            }
+            let s = literate::sample(b, k + 1);
+            let Some(j) = s.starts.iter().rposition(|start| *start <= at) else { return false };
+            let sname = format!("{}.ck", s.name);
+            let from = json::string(&overlay::absolute(std::path::Path::new(&sname)).to_string_lossy());
+            let mut remap = |l: String| {
+                if let Some(x) = remap_json(&l, &from, &to, file, &s) {
+                    out(x)
+                }
+            };
+            complete_json(&sname, &s.text.clone(), dir, j, at - s.starts[j], &mut remap);
+            return true;
+        }
+        // After `[` on this line: a link's name so far.
+        let before = &line.text[..at - line.at];
+        let Some(open) = before.rfind('[') else { return false };
+        let typed = before[open + 1..].trim_start_matches('`');
+        if !typed.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.') {
+            return false;
+        }
+        let stem = std::path::Path::new(name).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let e = elab::check_module(&stem, file, &module, Some(dir));
+        let user = module.name.as_ref().map(|q| q.dotted()).unwrap_or(stem);
+        let (l, c) = file.line_byte((at - typed.len()) as u32);
+        let (el, ec) = file.line_byte(at as u32);
+        out(format!(r#"{{"kind":"complete","path":{to},"start":[{l},{c}],"end":[{el},{ec}]}}"#));
+        for (label, class) in literate::link_names(&e, &user) {
+            out(format!(r#"{{"kind":"candidate","label":{},"class":"{class}","detail":null,"doc":null}}"#, json::string(&label)));
+        }
+        out(r#"{"kind":"done","phase":"complete"}"#.to_string());
+        return true;
+    }
+    false
+}
+
+/// The doc comments' links and code (D148 e): W030–W033.
+fn doc_comments(c: &mut Checked, e: &elab::Elab, user: &str, dir: &std::path::Path) {
+    let (diags, samples) = literate::links_and_samples(&c.file.text, &c.module, e, user);
+    c.diags.extend(diags);
+    for s in &samples {
+        c.diags.extend(literate::sample_diagnostics(s, dir));
+    }
 }
 
 /// Evaluate the module's `check` declarations (D40).

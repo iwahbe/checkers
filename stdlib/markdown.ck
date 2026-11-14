@@ -7,33 +7,35 @@
 # lines become blocks first, then each paragraph's and heading's text becomes
 # inlines. Its notice:
 #
-#     Copyright (c) 2014, John MacFarlane
+# ```text
+# Copyright (c) 2014, John MacFarlane
 #
-#     All rights reserved.
+# All rights reserved.
 #
-#     Redistribution and use in source and binary forms, with or without
-#     modification, are permitted provided that the following conditions are
-#     met:
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are
+# met:
 #
-#         * Redistributions of source code must retain the above copyright
-#           notice, this list of conditions and the following disclaimer.
+#     * Redistributions of source code must retain the above copyright
+#       notice, this list of conditions and the following disclaimer.
 #
-#         * Redistributions in binary form must reproduce the above
-#           copyright notice, this list of conditions and the following
-#           disclaimer in the documentation and/or other materials provided
-#           with the distribution.
+#     * Redistributions in binary form must reproduce the above
+#       copyright notice, this list of conditions and the following
+#       disclaimer in the documentation and/or other materials provided
+#       with the distribution.
 #
-#     THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-#     "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-#     LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-#     A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-#     OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-#     SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-#     LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-#     DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-#     THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-#     (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-#     OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+# A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+# OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+# SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+# LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+# DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+# THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+# ```
 #
 # Links' destinations are percent-encoded as commonmark.js's dependency
 # mdurl does (`encode`, MIT License, Copyright (c) 2015 Vitaly Puzrin, Alex
@@ -1430,8 +1432,9 @@ fn position_from map p best -> r : map~List (Nat, Nat, Nat), p~Nat, best~Nat, r~
         (k, a, pad) :: rest -> if k <= p then position_from rest p (a + sub (p - k) pad) else best
         []                  -> best
 
-# A label normalized as CommonMark matches them: without white space at
-# either end, each run of it a single space, and case folded.
+# A label normalized as CommonMark matches them (a [Definition]'s with a
+# [Reference]'s): without white space at either end, each run of it a
+# single space, and case folded.
 export fn label_key label -> r : label~String, r~String
     let b = string.bytes label
     let i = skip is_ascii_space b 0
@@ -1963,7 +1966,13 @@ fn items_of defs resolve raws acc -> r : defs~List (Def, Span), resolve~(String 
 
 # ── Parsing ──────────────────────────────────────────────────────────────────
 
-# The document `text` is, as CommonMark parses it.
+# The document `text` is, as CommonMark parses it: [parse_with] with nothing
+# to resolve references. [to_html] writes it as HTML:
+#
+# ```
+# #! import std.markdown
+# check markdown.to_html (markdown.parse "*hi*") == "<p><em>hi</em></p>\n"
+# ```
 export fn parse text -> d : text~String, d~Document
     parse_with (\_ -> None) text
 

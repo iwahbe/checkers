@@ -2,7 +2,7 @@
 # parsing what was rendered gives it back. The worked example for SPEC.md §9.
 #
 # What the compiler proves about this module (nothing here is a runtime check):
-#   • every byte access src[i] is in bounds            (refinements on i)
+#   • every byte access `src[i]` is in bounds          (refinements on i)
 #   • the parser terminates on every input             (`decreasing` + Parsed's start < stop)
 #   • every Err position points inside the input       (Error's invariant)
 #   • a Json object can never hold duplicate keys      (Obj's constructor invariant)

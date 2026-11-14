@@ -6,7 +6,7 @@ Checkers runs on Linux (x86-64) and macOS (Apple silicon).
 
 Each release has an archive per platform on [GitHub](https://github.com/iwahbe/checkers/releases), with its SHA-256 and a provenance attestation:
 
-```
+```sh
 tar -xzf checkers-v0.0.1-x86_64-linux.tar.gz
 export PATH="$PWD/checkers-v0.0.1-x86_64-linux/bin:$PATH"
 checkers --version
@@ -18,7 +18,7 @@ The archive holds `bin/ckc` (the compiler), `bin/checkers` (the build tool) and 
 
 You need Rust (1.98 or later), CMake and a C++ compiler: the Z3 prover is built from source and linked in, so the first build takes several minutes.
 
-```
+```sh
 git clone https://github.com/iwahbe/checkers
 cd checkers
 cargo build --release
@@ -40,7 +40,7 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     Success
 ```
 
-```
+```sh
 checkers run hello.ck
 ```
 
@@ -48,7 +48,7 @@ checkers run hello.ck
 
 `checkers lsp` is a language server. With Emacs and Eglot:
 
-```
+```elisp
 (define-derived-mode checkers-mode prog-mode "Checkers")
 (add-to-list 'auto-mode-alist '("\\.ck\\'" . checkers-mode))
 (with-eval-after-load 'eglot

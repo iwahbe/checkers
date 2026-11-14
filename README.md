@@ -4,7 +4,12 @@ A functional, immutable language with dependent types, a built-in theorem prover
 
 The site, with a tour and the standard library's documentation: <https://iwahbe.github.io/checkers/> (built from `site/` by `checkers site`, SPEC §15.6).
 
-```
+```checkers
+#! module readme
+#!
+#! fn is_ws b : b~U8
+#!     b == ' ' or b == '\t' or b == '\n'
+#!
 fn skip_ws src i -> j : src~Bytes, i~Nat, i <= len src,
                         j~Nat, i <= j, j <= len src
     decreasing len src - i
@@ -47,7 +52,7 @@ Types are written only as constraints (`i~Nat, i <= len src`); the compiler prov
 
 Runs on Linux (x86-64) and macOS (Apple silicon) (D126). Z3 is built from source and linked into the binary (D46), so the first build takes several minutes and needs CMake and a C++ compiler. Nothing else needs installing.
 
-```
+```sh
 cargo build --release
 target/release/ckc run examples/wc.ck FILE         # type-check, then run `main`
 target/release/ckc check examples/sort.ck           # type-check, run the `check`s, prove
@@ -62,7 +67,7 @@ cd my_package && checkers run                        # with checkers.json: fetch
 
 ## Tests
 
-```
+```sh
 cargo test                                    # unit + golden tests
 UPDATE_GOLDEN=1 cargo test --test golden      # accept new golden output (review the diff!)
 ```

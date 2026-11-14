@@ -35,8 +35,9 @@
 //!                         formatted; every .ck file in the repository must format to a
 //!                         fixed point with the same syntax tree (D93).
 //! examples/*.ck        → must check with no errors and no warnings.
-//! site/*.md            → each `checkers` block must check clean, or be followed by
-//!                         a plain block holding exactly its report.
+//! site/*.md, README.md, the standard library's documentation → `checkers site`
+//!                         and `checkers doc` give no warnings: links resolve, code
+//!                         blocks compile and run (D148).
 //!
 //! `UPDATE_GOLDEN=1 cargo test --test golden` rewrites the .out files.
 
@@ -342,8 +343,34 @@ fn build_tool(root: &Path, update: bool, failures: &mut Vec<String>) -> usize {
             failures.push(format!("── {name} is not formatted (`checkers fmt {name}`) ──"));
         }
     }
+    count += literate_clean(&exe, root, failures);
     let _ = fs::remove_file(&exe);
     count
+}
+
+/// The site, the README and the standard library's documentation: their
+/// links resolve and their code compiles (and runs) with no warnings (D148 e).
+fn literate_clean(exe: &Path, root: &Path, failures: &mut Vec<String>) -> usize {
+    let tmp = std::env::temp_dir().join(format!("checkers-golden-{}-literate", std::process::id()));
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(tmp.join("readme")).unwrap();
+    fs::copy(root.join("README.md"), tmp.join("readme").join("index.md")).unwrap();
+    let out = |name: &str| tmp.join(name).display().to_string();
+    let readme = tmp.join("readme").display().to_string();
+    let runs: [(&str, Vec<String>); 3] = [
+        ("site/", vec!["site".into(), "site".into(), "-o".into(), out("site")]),
+        ("README.md", vec!["site".into(), readme, "-o".into(), out("readme-out")]),
+        ("the standard library's documentation", vec!["doc".into(), "stdlib".into(), "-o".into(), out("std"), "--name".into(), "std".into()]),
+    ];
+    for (what, args) in &runs {
+        let args: Vec<&str> = args.iter().map(|a| a.as_str()).collect();
+        let o = run_with(exe, &args, b"", root);
+        if !o.status.success() || !o.stderr.is_empty() {
+            failures.push(format!("── {what} must have no warnings (D148) ──\n{}", String::from_utf8_lossy(&o.stderr)));
+        }
+    }
+    let _ = fs::remove_dir_all(&tmp);
+    runs.len()
 }
 
 /// A run result with its stdout lines sorted.
@@ -581,7 +608,6 @@ fn golden() {
         }
     }
 
-    count += site_samples(root, &mut failures);
 
     // The standard library's own lemmas and postconditions are proven too.
     count += 1;
@@ -602,63 +628,6 @@ fn golden() {
 }
 
 /// Run a `tests/lsp/NAME.session` against `checkers lsp` (§15.5).
-/// The site's code (site/*.md): each `checkers` block is a module, saved
-/// with the page's others (so one may import another) and checked. It must
-/// be clean, or be followed by a plain block holding exactly its report.
-fn site_samples(root: &Path, failures: &mut Vec<String>) -> usize {
-    let mut count = 0;
-    for page in files_with(&root.join("site"), "md") {
-        let page_name = page.file_name().unwrap().to_string_lossy().to_string();
-        let text = fs::read_to_string(&page).unwrap();
-        // Each fenced block: its language and its text.
-        let mut blocks: Vec<(String, String)> = Vec::new();
-        let mut open: Option<(String, String)> = None;
-        for line in text.lines() {
-            match (&mut open, line.strip_prefix("```")) {
-                (None, Some(lang)) => open = Some((lang.trim().to_string(), String::new())),
-                (Some(_), Some("")) => blocks.push(open.take().unwrap()),
-                (Some((_, body)), _) => {
-                    body.push_str(line);
-                    body.push('\n');
-                }
-                (None, None) => {}
-            }
-        }
-        let dir = std::env::temp_dir().join(format!("checkers-golden-{}-site-{page_name}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let mut samples = Vec::new();
-        for (i, (lang, body)) in blocks.iter().enumerate() {
-            if lang != "checkers" {
-                continue;
-            }
-            let Some(module) = body.lines().next().and_then(|l| l.strip_prefix("module ")) else {
-                failures.push(format!("── site/{page_name}: a `checkers` block must start with `module NAME` ──\n{body}"));
-                continue;
-            };
-            let file = format!("{}.ck", module.trim());
-            fs::write(dir.join(&file), body).unwrap();
-            let report = blocks.get(i + 1).filter(|(l, _)| l.is_empty()).map(|(_, b)| b.clone());
-            samples.push((file, body.clone(), report));
-        }
-        for (file, body, report) in samples {
-            count += 1;
-            let c = checkers::check_in(&file, &body, &dir);
-            if c.diags.is_empty() {
-                continue;
-            }
-            let actual = c.report();
-            if report.as_deref() != Some(actual.as_str()) {
-                failures.push(format!(
-                    "── site/{page_name}: `{file}` must check clean, or be followed by a block with its report ──\n{actual}"
-                ));
-            }
-        }
-        let _ = fs::remove_dir_all(&dir);
-    }
-    count
-}
-
 fn lsp_session(exe: &Path, root: &Path, path: &Path) -> String {
     use std::io::{BufRead, BufReader, Read};
     use std::sync::mpsc;

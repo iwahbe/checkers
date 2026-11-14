@@ -29,23 +29,11 @@ fn skip_spaces src i -> j : src~Bytes, i~Nat, i <= len src, j~Nat, i <= j, j <= 
 
 `src[i]` is allowed only where `i < len src` can be proven: here the `if` says so. The recursion isn't on a smaller piece of `src`, so `decreasing` gives a measure that must shrink at each call; the compiler proves that too. When a proof fails, the error says what couldn't be proven and shows a counterexample:
 
-```checkers
+```checkers,compile_fail,E0450
 module wrong
 
 fn last xs -> x : xs~Bytes, x~U8
     xs[len xs - 1]
-```
-
-```
-error[E0450]: cannot prove that this `Nat` subtraction stays at or above zero
- --> wrong.ck:4:8
-  |
-4 |     xs[len xs - 1]
-  |        ^^^^^^^^^^ `-` on `Nat` needs the left side to be at least the right
-  = note: counterexample: xs = b""
-  = help: check it first (`if a >= b then a - b else …`), or use `Int`
-
-wrong.ck: 1 error, 0 warnings
 ```
 
 ## Refinement types
@@ -167,7 +155,7 @@ A class lists functions and lemmas; an instance gives the functions for one type
 
 `checkers trust FILE.ck` lists every fact a module relies on and how it was established: proven by Z3 (with the query's hash), computed at compile time, an axiom of the standard library, or an `admit` (an unproven assumption, allowed while developing; `checkers build --release` refuses a program that has one).
 
-```
+```text
 $ checkers trust bounds.ck
 bounds.ck:3:68  smt      postcondition of `skip_spaces`: i <= j (for `skip_spaces src (i + 1)`, line 5)  [051dfac6c486bedd]
 bounds.ck:3:68  smt      postcondition of `skip_spaces`: i <= j (for `i`, line 5)  [9a02b784e88ec4ab]

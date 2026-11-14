@@ -15,7 +15,8 @@ import std.string
 import std.bytes
 import std.list
 import ck.jsonrpc as rpc
-import ck.markdown as md
+import ck.literate (Symbol, Warning, Context, Compiler)
+import ck.literate as lit
 
 export let USAGE = string.concat [
     "usage: checkers doc DIR -o OUT [--name NAME] [--root PATH] [--label TEXT]\n",
@@ -113,6 +114,8 @@ let STYLE = string.concat [
     "pre{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 14px;",
     "overflow-x:auto}pre code{white-space:pre}pre a{color:inherit;text-decoration:none}",
     "pre a:hover{text-decoration:underline}",
+    "pre.output{background:var(--bg);border-style:dashed;margin-top:-.6em}",
+    "pre.fails{border-left:3px solid var(--accent)}",
     ".kw{color:var(--kw);font-weight:600}.ty{color:var(--ty)}.st{color:var(--st)}.nu{color:var(--nu)}",
     ".co{color:var(--co);font-style:italic}",
     "table{border-collapse:collapse;display:block;overflow-x:auto}th,td{border:1px solid var(--line);",
@@ -144,7 +147,7 @@ partial fn page title name root label side body -> r : title~String, name~String
     # A browser shows the title as text: no code marks.
     let plain = string.concat_map (\c -> if c == c'`' then "" else string.from_char c) title
     let page_title = if plain == "Checkers" then "Checkers" else plain ++ " · Checkers"
-    let label_html = as_string (md.escape (string.bytes label))
+    let label_html = as_string (lit.escape (string.bytes label))
     let menu = if label == ""
         ""
     else
@@ -155,7 +158,7 @@ partial fn page title name root label side body -> r : title~String, name~String
     let head = string.concat [
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n",
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n",
-        "<title>", as_string (md.escape (string.bytes page_title)), "</title>\n",
+        "<title>", as_string (lit.escape (string.bytes page_title)), "</title>\n",
         "<link rel=\"alternate\" type=\"text/markdown\" href=\"", name, ".md\">\n",
         "<link rel=\"describedby\" href=\"", root, "llms.txt\">\n",
         "<style>", STYLE, "</style>\n</head>\n<body", if wide then " class=\"wide\"" else "", ">\n<header><nav>",
@@ -174,7 +177,7 @@ partial fn page title name root label side body -> r : title~String, name~String
 partial fn write_page dir name text root label side body fs -> r : dir~String, name~String, text~Bytes, root~String,
                                                                    label~String, side~Bytes, body~Bytes, fs~Fs,
                                                                    r~Result Unit String
-    let title = match md.title text
+    let title = match lit.title text
         Some t -> as_string t
         None   -> name
     match files.write (join_path dir (name ++ ".md")) text fs
@@ -193,6 +196,7 @@ record Item
     signature~String
     doc~String
     items~List Item
+    line~Nat
 
 # An import: the module, the name it is used by, the names it brings in.
 record Import
@@ -205,6 +209,8 @@ record Module
     doc~String
     imports~List Import
     decls~List Item
+    file~String             # where it is
+    privates~List String    # the names it doesn't export
 
 partial fn str key j -> s : key~String, j~Json, s~String
     match rpc.str_at [key] j
@@ -215,7 +221,10 @@ partial fn item_of j -> i : j~Json, i~Item
     let items = match rpc.get "items" j
         Some (Arr xs) -> list.map item_of xs
         _             -> []
-    Item (str "what" j) (str "name" j) (str "signature" j) (str "doc" j) items
+    let line = match rpc.nat_at ["line"] j
+        Some n -> n
+        None   -> 1
+    Item (str "what" j) (str "name" j) (str "signature" j) (str "doc" j) items line
 
 partial fn strings js -> r : js~List Json, r~List String
     match js
@@ -229,29 +238,41 @@ partial fn import_of j -> i : j~Json, i~Import
         _             -> []
     Import (str "module" j) (str "as" j) names
 
-partial fn module_of lines m -> r : lines~List Bytes, m~Module, r~Module
+# The modules `ckc doc` describes in `lines` (one, or with `--std` all of
+# the standard library's), last first onto `done`.
+partial fn modules_of lines m done -> r : lines~List Bytes, m~Module, done~List Module, r~List Module
+    let finished = Module m.name m.doc (list.reverse m.imports) (list.reverse m.decls) m.file m.privates
     match lines
-        []        -> Module m.name m.doc (list.reverse m.imports) (list.reverse m.decls)
+        []        -> if m.name == "" then done else finished :: done
         l :: rest ->
             match json.parse l
                 Ok j  ->
                     let kind = str "kind" j
                     if kind == "module"
-                        module_of rest (Module (str "name" j) (str "doc" j) m.imports m.decls)
+                        let others = if m.name == "" then done else finished :: done
+                        modules_of rest (Module (str "name" j) (str "doc" j) [] [] m.file []) others
                     else if kind == "import"
-                        module_of rest (Module m.name m.doc (import_of j :: m.imports) m.decls)
+                        modules_of rest (Module m.name m.doc (import_of j :: m.imports) m.decls m.file m.privates) done
                     else if kind == "decl"
-                        module_of rest (Module m.name m.doc m.imports (item_of j :: m.decls))
+                        modules_of rest (Module m.name m.doc m.imports (item_of j :: m.decls) m.file m.privates) done
+                    else if kind == "private"
+                        let hidden = Module m.name m.doc m.imports m.decls m.file (str "name" j :: m.privates)
+                        modules_of rest hidden done
                     else
-                        module_of rest m
-                Err _ -> module_of rest m
+                        modules_of rest m done
+                Err _ -> modules_of rest m done
+
+partial fn module_of lines file -> r : lines~List Bytes, file~String, r~Module
+    match modules_of lines (Module "" "" [] [] file []) []
+        m :: _ -> m
+        []     -> Module "" "" [] [] file []
 
 # The module in `file`, as `ckc doc` reads it.
 partial fn read_module ckc file p -> r : ckc~String, file~String, p~Proc, r~Result Module String
     match proc.run ckc ["doc", file] b"" p
         Err e  -> Err ("could not run `" ++ ckc ++ "`: " ++ files.describe e)
         Ok out ->
-            let m = module_of (md.lines_of out.stdout) (Module "" "" [] [])
+            let m = module_of (lit.lines_of out.stdout) file
             if m.name == ""
                 Err (file ++ ": `" ++ ckc ++ " doc` gave nothing (" ++ as_string out.stderr ++ ")")
             else
@@ -279,7 +300,7 @@ partial fn sentence_end b i -> r : b~Bytes, i~Nat, i <= len b, r~Nat, r <= len b
         sentence_end b (i + 1)
 
 partial fn one_line b -> r : b~Bytes, r~Bytes
-    bytes.concat (list.map (\l -> l) (spaced (md.lines_of b)))
+    bytes.concat (list.map (\l -> l) (spaced (lit.lines_of b)))
 
 partial fn spaced ls -> r : ls~List Bytes, r~List Bytes
     match ls
@@ -292,7 +313,7 @@ partial fn spaced ls -> r : ls~List Bytes, r~List Bytes
 partial fn shown sig -> r : sig~String, r~String
     let b = string.bytes sig
     if bytes.matches_at b 0 b"export "
-        match md.lines_of (bytes.slice b 7 (len b))
+        match lit.lines_of (bytes.slice b 7 (len b))
             []          -> ""
             first :: ls -> as_string (bytes.concat (first :: list.map dedent ls))
     else
@@ -303,33 +324,42 @@ partial fn dedent l -> r : l~Bytes, r~Bytes
 
 # A declaration's anchor on its module's page: its heading's.
 partial fn anchor d -> r : d~Item, r~String
-    as_string (md.slug (string.bytes (d.what ++ " " ++ d.name)))
+    as_string (lit.slug (string.bytes (d.what ++ " " ++ d.name)))
 
 # A field or constructor in its declaration's code block: its description
 # as a comment above it.
 partial fn item_code i -> r : i~Item, r~String
-    let doc = if i.doc == "" then [] else list.map (\l -> comment_line l) (md.lines_of (string.bytes i.doc))
+    let doc = if i.doc == "" then [] else list.map (\l -> comment_line l) (lit.lines_of (string.bytes i.doc))
     string.concat (doc ++ ["\n    ", i.signature])
 
 partial fn comment_line l -> r : l~Bytes, r~String
-    if md.blank l then "\n    #" else "\n    # " ++ as_string l
+    if lit.blank l then "\n    #" else "\n    # " ++ as_string l
 
 partial fn decl_md d -> r : d~Item, r~String
     let doc = if d.doc == "" then "" else d.doc ++ "\n\n"
     let code = shown d.signature ++ string.concat (list.map item_code d.items)
-    string.concat ["## ", d.what, " `", d.name, "`\n\n```checkers\n", code, "\n```\n\n", doc]
+    string.concat ["## ", d.what, " `", d.name, "`\n\n```checkers,ignore\n", code, "\n```\n\n", doc]
 
-partial fn module_md m -> r : m~Module, r~String
+# A module's page, and where each part of it comes from: its start on the
+# page and the line of the module's file it describes.
+partial fn module_md m -> r : m~Module, r~(String, List (Nat, Nat))
     let doc = if m.doc == "" then "" else m.doc ++ "\n\n"
-    let body = if m.decls == [] then "It exports nothing.\n" else string.concat (list.map decl_md m.decls)
-    string.concat ["# Module `", m.name, "`\n\n", doc, body]
+    let head = string.concat ["# Module `", m.name, "`\n\n", doc]
+    let parts = list.map (\d -> (decl_md d, d.line)) m.decls
+    let body = if m.decls == [] then "It exports nothing.\n" else string.concat (list.map (\(t, _) -> t) parts)
+    (head ++ body, (0, 1) :: places parts (len (string.bytes head)))
+
+partial fn places parts at -> r : parts~List (String, Nat), at~Nat, r~List (Nat, Nat)
+    match parts
+        (text, line) :: rest -> (at, line) :: places rest (at + len (string.bytes text))
+        []                   -> []
 
 # A README's text without its first heading (the page has its own).
 partial fn without_title ls -> r : ls~List Bytes, r~List Bytes
     match ls
         []        -> []
         l :: rest ->
-            if md.blank l
+            if lit.blank l
                 without_title rest
             else if bytes.matches_at l 0 b"# "
                 drop_blank rest
@@ -338,13 +368,13 @@ partial fn without_title ls -> r : ls~List Bytes, r~List Bytes
 
 partial fn drop_blank ls -> r : ls~List Bytes, r~List Bytes
     match ls
-        l :: rest -> if md.blank l then drop_blank rest else ls
+        l :: rest -> if lit.blank l then drop_blank rest else ls
         []        -> []
 
 partial fn package_md package readme ms -> r : package~String, readme~Bytes, ms~List Module, r~String
     let rows = list.map (\m -> string.concat [
         "| [", m.name, "](", page_name package m.name, ".md) | ", first_sentence m.doc, " |\n"]) ms
-    let about = list.map (\l -> as_string l ++ "\n") (without_title (md.lines_of readme))
+    let about = list.map (\l -> as_string l ++ "\n") (without_title (lit.lines_of readme))
     let about_text = if about == [] then "" else string.concat about ++ "\n"
     string.concat ([
         "# Package `", package, "`\n\n", about_text, "## Modules\n\n| Module | Description |\n|---|---|\n"]
@@ -441,7 +471,7 @@ partial fn resolve package ts m qual name ty -> r : package~String, ts~List Targ
 # ── Navigation ───────────────────────────────────────────────────────────────
 
 partial fn esc s -> r : s~String, r~String
-    as_string (md.escape (string.bytes s))
+    as_string (lit.escape (string.bytes s))
 
 # `package.module`, `package` leading to the package's page.
 partial fn crumb package name -> r : package~String, name~String, r~String
@@ -474,17 +504,118 @@ partial fn read_all ckc dir rels p acc -> r : ckc~String, dir~String, rels~List 
                 Err e -> Err e
                 Ok m  -> read_all ckc dir rest p (m :: acc)
 
-partial fn write_modules out package ts ms root label fs -> r : out~String, package~String, ts~List Target,
-                                                                ms~List Module, root~String,
-                                                                label~String, fs~Fs, r~Result Unit String
+# ── Symbols and warnings (D148) ──────────────────────────────────────────────
+
+# What `[name]` links can name in modules `ms`: each module, declaration,
+# constructor and field, at its page (`list.html#fn-sort`) under `dir`.
+partial fn symbols_of package dir ms -> r : package~String, dir~String, ms~List Module, r~List Symbol
+    flatten (list.map (module_symbols package dir) ms)
+
+partial fn module_symbols package dir m -> r : package~String, dir~String, m~Module, r~List Symbol
+    let page = dir ++ page_name package m.name ++ ".html"
+    let decls = flatten (list.map (decl_symbols m.name page) m.decls)
+    let hidden = list.map (\n -> Symbol (m.name ++ "." ++ n) page False) m.privates
+    Symbol m.name page True :: decls ++ hidden
+
+partial fn decl_symbols owner page d -> r : owner~String, page~String, d~Item, r~List Symbol
+    let url = page ++ "#" ++ anchor d
+    let full = owner ++ "." ++ d.name
+    Symbol full url True :: flatten (list.map (item_symbols owner full url d.what) d.items)
+
+# A constructor is named by its type (`Json.Null`) or alone (`Null`), as in
+# code; a field or a class member by its type.
+partial fn item_symbols owner full url what i -> r : owner~String, full~String, url~String, what~String, i~Item,
+                                                     r~List Symbol
+    let mine = Symbol (full ++ "." ++ i.name) url True
+    if what == "enum" then [mine, Symbol (owner ++ "." ++ i.name) url True] else [mine]
+
+# The names in scope in module `m`'s documentation: its own, its imports',
+# the prelude's.
+partial fn module_scope m prelude -> r : m~Module, prelude~List (String, String), r~List (String, String)
+    let mine = list.map (named_in m.name) (list.map item_name m.decls ++ m.privates)
+    mine ++ flatten (list.map import_scope m.imports) ++ prelude
+
+fn item_name d -> r : d~Item, r~String
+    d.name
+
+fn named_in owner n -> r : owner~String, n~String, r~(String, String)
+    (n, owner ++ "." ++ n)
+
+partial fn import_scope i -> r : i~Import, r~List (String, String)
+    (i.used, i.source) :: list.map (named_in i.source) i.names
+
+# The prelude's names, if it is among `ms`.
+partial fn prelude_scope ms -> r : ms~List Module, r~List (String, String)
+    match ms
+        m :: rest -> if m.name == "std.prelude" then flatten (list.map (decl_scope m.name) m.decls) else prelude_scope rest
+        []        -> []
+
+partial fn decl_scope owner d -> r : owner~String, d~Item, r~List (String, String)
+    let ctors = if d.what == "enum" then list.map (named_in owner) (list.map item_name d.items) else []
+    named_in owner d.name :: ctors
+
+# The standard library's modules, as `ckc doc --std` gives them.
+partial fn std_modules ckc p -> r : ckc~String, p~Proc, r~List Module
+    match proc.run ckc ["doc", "--std"] b"" p
+        Ok out -> list.reverse (modules_of (lit.lines_of out.stdout) (Module "" "" [] [] "" []) [])
+        Err _  -> []
+
+# A warning, as the compiler shows one, at `file:line:col`.
+partial fn warning_text w file line col -> r : w~Warning, file~String, line~Nat, col~Nat, r~String
+    let help = if w.help == "" then "" else "\n  = help: " ++ w.help
+    string.concat ["warning[", w.code, "]: ", w.message, "\n  --> ", file, ":", format line, ":", format col, help, "\n"]
+
+# Warnings about a page of `text` read from `file`.
+partial fn page_warnings ws file text term -> r : ws~List Warning, file~String, text~Bytes, term~Term, r~Nat
+    match ws
+        w :: rest ->
+            let (line, col) = lit.line_col text w.at
+            terminal.eprint_line (warning_text w file line col) term
+            1 + page_warnings rest file text term
+        []        -> 0
+
+# Warnings about a module's page: at the line of the declaration whose
+# description they are in (`places`: where each part of the page starts,
+# and the line it describes).
+partial fn module_warnings ws file places term -> r : ws~List Warning, file~String, places~List (Nat, Nat), term~Term,
+                                                      r~Nat
+    match ws
+        w :: rest ->
+            terminal.eprint_line (warning_text w file (line_for places w.at 1) 1) term
+            1 + module_warnings rest file places term
+        []        -> 0
+
+partial fn line_for places at best -> r : places~List (Nat, Nat), at~Nat, best~Nat, r~Nat
+    match places
+        (start, line) :: rest -> if start <= at then line_for rest at line else best
+        []                    -> best
+
+# Where a page's code blocks are written (and compiled): a directory of their
+# own, outside the output.
+partial fn work_dir key fs -> r : key~String, fs~Fs, r~String
+    let dir = "/tmp/checkers-samples/" ++ as_string (lit.slug (string.bytes key))
+    let _ = files.create_dirs dir fs
+    dir
+
+partial fn write_modules out package ts ms root label cx fs p term -> r : out~String, package~String,
+                                                                          ts~List Target, ms~List Module,
+                                                                          root~String, label~String, cx~Context,
+                                                                          fs~Fs, p~Proc, term~Term,
+                                                                          r~Result Unit String
     match ms
         []        -> Ok ()
         m :: rest ->
-            let text = string.bytes (module_md m)
-            let body = md.to_html_linked text (\q n ty -> resolve package ts m q n ty)
+            let (page, places) = module_md m
+            let text = string.bytes page
+            let links = \q n ty -> resolve package ts m q n ty
+            let scope = module_scope m (prelude_scope ms ++ cx.scope)
+            let work = work_dir (package ++ "-" ++ m.name) fs
+            let here = Context cx.symbols scope cx.base (Compiler cx.compiler.ckc work cx.compiler.flags) links
+            let (body, ws) = lit.render text here fs p
+            let _ = module_warnings ws m.file places term
             match write_page out (page_name package m.name) text root label (module_side package m) body fs
                 Err e -> Err e
-                Ok _  -> write_modules out package ts rest root label fs
+                Ok _  -> write_modules out package ts rest root label cx fs p term
 
 record DocArgs
     dir~String
@@ -526,16 +657,25 @@ export partial fn run args ckc term fs p -> code : args~List String, ckc~String,
                     match files.create_dirs out fs
                         Err e -> fail (out ++ ": " ++ files.describe e) term
                         Ok _  ->
-                            let readme = match files.read (join_path a.dir "README.md") fs
+                            let readme_path = join_path a.dir "README.md"
+                            let readme = match files.read readme_path fs
                                 Ok text -> text
                                 Err _   -> b""
+                            let others = if package == "std" then [] else std_modules ckc p
+                            let symbols = symbols_of package "" ms ++ symbols_of "std" "../std/" others
+                            let flags = if package == "std" then [] else ["--package", package ++ "=" ++ a.dir, "--uses",
+                                                                          ".=" ++ package]
+                            let compiler = Compiler ckc (work_dir (package ++ "-index") fs) flags
+                            let cx = Context symbols (prelude_scope (ms ++ others)) "" compiler (\q n ty -> None)
                             let index = string.bytes (package_md package readme ms)
+                            let (index_html, ws) = lit.render index cx fs p
+                            let _ = module_warnings ws readme_path [(0, 1)] term
                             let side = package_side package ms
-                            match write_page out "index" index root a.label side (md.to_html index) fs
+                            match write_page out "index" index root a.label side index_html fs
                                 Err e -> fail e term
                                 Ok _  ->
                                     let ts = flatten (list.map targets_of ms)
-                                    match write_modules out package ts ms root a.label fs
+                                    match write_modules out package ts ms root a.label cx fs p term
                                         Err e -> fail e term
                                         Ok _  -> Success
 
@@ -552,27 +692,33 @@ partial fn root_of rel -> r : rel~String, r~String
 partial fn slashes b i acc -> r : b~Bytes, i~Nat, acc~List Nat, r~List Nat
     if i >= len b then acc else if b[i] == '/' then slashes b (i + 1) (i :: acc) else slashes b (i + 1) acc
 
-partial fn render_pages src out pages fs -> r : src~String, out~String, pages~List String, fs~Fs,
-                                                r~Result Unit String
+partial fn render_pages src out pages cx fs p term -> r : src~String, out~String, pages~List String, cx~Context,
+                                                          fs~Fs, p~Proc, term~Term, r~Result Unit String
     match pages
         []          -> Ok ()
         rel :: rest ->
-            match files.read (join_path src rel) fs
-                Err e   -> Err (join_path src rel ++ ": " ++ files.describe e)
+            let path = join_path src rel
+            match files.read path fs
+                Err e   -> Err (path ++ ": " ++ files.describe e)
                 Ok text ->
-                    match write_page out (strip_md rel) text (root_of rel) "" b"" (md.to_html text) fs
+                    let root = root_of rel
+                    let compiler = Compiler cx.compiler.ckc (work_dir ("site-" ++ rel) fs) cx.compiler.flags
+                    let here = Context cx.symbols cx.scope (root ++ cx.base) compiler cx.links
+                    let (body, ws) = lit.render text here fs p
+                    let _ = page_warnings ws path text term
+                    match write_page out (strip_md rel) text root "" b"" body fs
                         Err e -> Err e
-                        Ok _  -> render_pages src out rest fs
+                        Ok _  -> render_pages src out rest cx fs p term
 
 # The first paragraph after the first heading: the site's summary.
 partial fn summary text -> r : text~Bytes, r~String
-    as_string (one_line (first_paragraph (md.lines_of text) False []))
+    as_string (one_line (first_paragraph (lit.lines_of text) False []))
 
 partial fn first_paragraph ls seen acc -> r : ls~List Bytes, seen~Bool, acc~List Bytes, r~Bytes
     match ls
         []        -> bytes.concat (list.reverse acc)
         l :: rest ->
-            let empty = md.blank l
+            let empty = lit.blank l
             if not seen
                 first_paragraph rest (bytes.matches_at l 0 b"# ") acc
             else if empty and acc == []
@@ -585,7 +731,7 @@ partial fn first_paragraph ls seen acc -> r : ls~List Bytes, seen~Bool, acc~List
 partial fn link_line out rel fs -> r : out~String, rel~String, fs~Fs, r~String
     let title = match files.read (join_path out rel) fs
         Ok text ->
-            match md.title text
+            match lit.title text
                 Some t -> as_string t
                 None   -> rel
         Err _   -> rel
@@ -603,7 +749,7 @@ partial fn only_docs rels -> r : rels~List String, r~List String
 partial fn llms out pages index fs -> r : out~String, pages~List String, index~Bytes, fs~Fs, r~String
     let all = files_under out "." ".md" fs
     let docs = only_docs all
-    let title = match md.title index
+    let title = match lit.title index
         Some t -> as_string t
         None   -> "Checkers"
     let head = string.concat [
@@ -614,14 +760,18 @@ partial fn llms out pages index fs -> r : out~String, pages~List String, index~B
     string.concat (head :: listed ++ documented)
 
 # `checkers site SRC -o OUT`.
-export partial fn site args term fs -> code : args~List String, term~Term, fs~Fs, code~ExitCode
+export partial fn site args ckc term fs p -> code : args~List String, ckc~String, term~Term, fs~Fs, p~Proc,
+                                                    code~ExitCode
     match args
         [src, "-o", out] ->
             let pages = files_under src "." ".md" fs
+            let std = std_modules ckc p
+            let none = \q n ty -> None
+            let cx = Context (symbols_of "std" "" std) (prelude_scope std) "docs/latest/std/" (Compiler ckc "" []) none
             match files.create_dirs out fs
                 Err e -> fail (out ++ ": " ++ files.describe e) term
                 Ok _  ->
-                    match render_pages src out pages fs
+                    match render_pages src out pages cx fs p term
                         Err e -> fail e term
                         Ok _  ->
                             let index = match files.read (join_path src "index.md") fs

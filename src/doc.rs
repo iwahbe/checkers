@@ -10,7 +10,9 @@
 //!   for each exported declaration, in order: what it is (`fn`, `lemma`,
 //!   `type`, `enum`, `record`, `let`), its signature as written, its
 //!   description (D128), and for an enum or record that isn't abstract, its
-//!   constructors or fields (`{"name":…,"signature":…,"doc":…}`).
+//!   constructors or fields (`{"name":…,"signature":…,"doc":…}`);
+//! - `{"kind":"private","name":…}` for each declaration not exported, so a
+//!   link to it is told apart from one to nothing (W031, D148 c).
 
 use crate::json;
 use crate::syntax::ast;
@@ -170,5 +172,19 @@ pub fn lines(text: &str, module: &Module, fallback_name: &str) -> Vec<String> {
         ));
     }
     out.extend(module.decls.iter().filter_map(|d| decl(text, d, &line_of)));
+    // The names not exported: a link to one is W031, not W030 (D148 c).
+    for d in module.decls.iter().filter(|d| d.export == Export::No) {
+        let name = match &d.kind {
+            DeclKind::Fn { name, .. }
+            | DeclKind::Lemma { name, .. }
+            | DeclKind::Alias { name, .. }
+            | DeclKind::Enum { name, .. }
+            | DeclKind::Record { name, .. }
+            | DeclKind::Const { name, .. }
+            | DeclKind::Class { name, .. } => &name.name,
+            DeclKind::Check { .. } | DeclKind::Instance { .. } => continue,
+        };
+        out.push(format!(r#"{{"kind":"private","name":{}}}"#, json::string(name)));
+    }
     out
 }

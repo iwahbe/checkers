@@ -19,6 +19,6 @@ fn f x -> y : x~Int, y~Int
 check f (0 - 2) == 2 and "s" ++ "t" == "st"
 ```
 
-```
+```text
 plain <code> & text
 ```

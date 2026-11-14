@@ -780,7 +780,7 @@ partial fn capabilities utf8 -> j : utf8~Bool, j~Json
         ("referencesProvider", Bool True),
         ("documentFormattingProvider", Bool True),
         ("documentSymbolProvider", Bool True),
-        ("completionProvider", rpc.obj [("triggerCharacters", Arr [Str "."])]),
+        ("completionProvider", rpc.obj [("triggerCharacters", Arr [Str ".", Str "["])]),
         ("semanticTokensProvider", rpc.obj [("legend", legend), ("full", Bool True)])]
     rpc.obj [("capabilities", caps), ("serverInfo", rpc.obj [("name", Str "checkers"), ("version", Str VERSION)])]
 

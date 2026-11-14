@@ -1,0 +1,41 @@
+warning[W030]: no symbol `nothing` to link to
+ --> doc_links.ck:2:54
+  |
+2 | # [Pt.x], [`std.list`], [Option] and [Some] resolve; [nothing] and
+  |                                                      ^^^^^^^^^ not found
+  = help: a link names a declaration, a module, or a constructor or field (`Type.name`) in this module's scope; write `\[` for a bracket that isn't one
+
+warning[W030]: no symbol `list.nope` to link to
+ --> doc_links.ck:3:3
+  |
+3 | # [list.nope] don't (W030); [helper] isn't exported (W031); [x, y], [0] and
+  |   ^^^^^^^^^^^ not found
+  = help: a link names a declaration, a module, or a constructor or field (`Type.name`) in this module's scope; write `\[` for a bracket that isn't one
+
+warning[W031]: `helper` isn't exported, so it has no documentation to link to
+ --> doc_links.ck:3:29
+  |
+3 | # [list.nope] don't (W030); [helper] isn't exported (W031); [x, y], [0] and
+  |                             ^^^^^^^^ not exported
+
+warning[W033]: this example compiles, but is marked `compile_fail`
+  --> doc_links.ck:29:3
+   |
+29 | # ```checkers,compile_fail
+   |   ^
+   = help: remove `compile_fail`, or make the example fail
+
+warning[W033]: this example fails, but not with E0201
+  --> doc_links.ck:33:3
+   |
+33 | # ```checkers,compile_fail,E0201
+   |   ^
+   = note: it fails with E0261, E0450
+
+warning[W032]: this example has error[E0204]: unknown name `twice`
+  --> doc_links.ck:38:9
+   |
+38 | # check twice 1 == 2
+   |         ^^^^^ not found
+
+doc_links.ck: 0 errors, 6 warnings

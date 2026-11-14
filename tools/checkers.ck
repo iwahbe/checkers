@@ -142,7 +142,7 @@ partial fn command args term fs e p -> code : args~List String, term~Term, fs~Fs
     match args
         "fmt" :: rest  -> fmt.run rest term fs
         "doc" :: rest  -> doc.run rest (ckc_path e) term fs p
-        "site" :: rest -> doc.site rest term fs
+        "site" :: rest -> doc.site rest (ckc_path e) term fs p
         ["--version"]  ->
             terminal.print_line ("checkers " ++ VERSION) term
             Success

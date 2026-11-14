@@ -1,0 +1,94 @@
+== line 1, column 70
+replaces 1:68-1:70
+  Add                type            
+  Array              type            
+  Bool               type            
+  Bytes              function        
+  Char               function        
+  Cons               constructor     
+  Err                constructor     
+  False              constructor     
+  Functor            type            
+  I32                function        
+  I64                function        
+  I8                 function        
+  Int                type            
+  List               type            
+  Monoid             type            
+  Mul                type            
+  Nat                function        
+  Neg                type            
+  Nil                constructor     
+  None               constructor     
+  Ok                 constructor     
+  Option             type            
+  Ord                type            
+  Result             type            
+  Some               constructor     
+  String             type            
+  Sub                type            
+  True               constructor     
+  Type               function        
+  U16                function        
+  U32                function        
+  U64                function        
+  U8                 function        
+  Unit               function        
+  add                function        
+  add_zero           function        
+  antisym            function        
+  assoc              function        
+  fmap               function        
+  fmap_comp          function        
+  fmap_id            function        
+  format             function        
+  le                 function        
+  len                function        
+  mul                function        
+  neg                function        
+  not                function        
+  refl               function        
+  sub                function        
+  total              function        
+  trans              function        
+  twice              function        
+  zero               function        
+  zero_add           function        
+== line 5, column 14
+replaces 5:14-5:14
+  all                function        export fn all p xs -> r : p~(a -> Bool), xs~List a, r~Bool  (documented)
+  append_assoc       lemma           export lemma append_assoc xs ys zs : xs~List a, ys~List a, zs~List a  (documented)
+  append_nil         lemma           export lemma append_nil xs : xs~List a  (documented)
+  bag_append         lemma           export lemma bag_append xs ys : xs~List a, ys~List a  (documented)
+  contains           function        export transparent fn contains xs x -> r : xs~List a, x~a, r~Bool  (documented)
+  contains_append    lemma           export lemma contains_append xs ys y : xs~List a, ys~List a, y~a  (documented)
+  contains_reverse   lemma           export lemma contains_reverse xs y : xs~List a, y~a  (documented)
+  count              function        export transparent fn count x xs -> n : x~a, xs~List a, n~Nat  (documented)
+  drop               function        export fn drop n xs -> ys : n~Nat, xs~List a, ys~List a,  (documented)
+  head               function        export transparent fn head xs -> r : xs~List a, r~Option a  (documented)
+  join               function        export transparent fn join sep parts -> s : sep~String, parts~List String, s~String  (documented)
+  keys               function        export transparent fn keys pairs -> ks : pairs~List (k, v), ks~List k  (documented)
+  keys_append        lemma           export lemma keys_append xs ys : xs~List (k, v), ys~List (k, v)  (documented)
+  keys_reverse       lemma           export lemma keys_reverse ps : ps~List (k, v)  (documented)
+  length             function        export transparent fn length xs -> n : xs~List a, n~Nat  (documented)
+  map                function        export transparent fn map f xs -> ys : f~(a -> b), xs~List a, ys~List b  (documented)
+  map_comp           lemma           export lemma map_comp g h xs : g~(b -> c), h~(a -> b), xs~List a  (documented)
+  map_id             lemma           export lemma map_id xs : xs~List a  (documented)
+  max_of             function        export transparent fn max_of xs -> m : xs~List Nat, m~Nat  (documented)
+  max_of_cons        lemma           export lemma max_of_cons x xs : x~Nat, xs~List Nat  (documented)
+  perm               function        export transparent fn perm xs ys -> r : xs~List a, ys~List a, r~Bool  (documented)
+  perm_middle        lemma           export lemma perm_middle xs y ys : xs~List a, y~a, ys~List a  (documented)
+  reverse            function        export transparent fn reverse xs -> ys : xs~List a, ys~List a  (documented)
+  reverse_cons_append lemma           export lemma reverse_cons_append acc x rest : acc~List a, x~a, rest~List a  (documented)
+  sort               function        export fn sort xs -> r : Ord a, xs~List a, r~List a, sorted r, perm xs r, length r == length xs  (documented)
+  sort_as            function        export fn sort_as key xs -> r : Ord k, key~(a -> k), xs~List a, r~List a, sorted_as key r, perm xs r, length r == length xs  (documented)
+  sort_by            function        export fn sort_by le xs -> r : le~(a -> a -> Bool), xs~List a,  (documented)
+  sorted             function        export transparent fn sorted xs -> r : Ord a, xs~List a, r~Bool  (documented)
+  sorted_as          function        export transparent fn sorted_as key xs -> r : Ord k, key~(a -> k), xs~List a, r~Bool  (documented)
+  sorted_by          function        export transparent fn sorted_by le xs -> r : le~(a -> a -> Bool), xs~List a, r~Bool  (documented)
+  take               function        export fn take n xs -> ys : n~Nat, xs~List a, ys~List a,  (documented)
+  take_drop          lemma           export lemma take_drop n xs : n~Nat, xs~List a  (documented)
+  unique             function        export transparent fn unique xs -> r : xs~List a, r~Bool  (documented)
+  unique_cons        lemma           export lemma unique_cons x xs : x~a, xs~List a, not (contains xs x), unique xs  (documented)
+  unique_reverse     lemma           export lemma unique_reverse xs : xs~List a, unique xs  (documented)
+  unique_split       lemma           export lemma unique_split xs y ys : xs~List a, y~a, ys~List a, unique (xs ++ (y :: ys))  (documented)
