@@ -625,8 +625,12 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
         };
         // The obligation at each call, for each combination.
         let mut obs: Vec<Vec<Obligation>> = Vec::new();
+        // A combination whose measure is the same expression at a call as in
+        // the caller (`len src` passed `src`) can't be smaller there: not asked.
+        let mut doomed: Vec<Option<Span>> = Vec::new();
         for combo in &combos {
             let mut v = Vec::new();
+            let mut same_at = None;
             for c in &gr.calls {
                 let (mine, theirs) = (&combo[idx(c.caller)], &combo[idx(c.callee)]);
                 if mine.0.len() != theirs.0.len() {
@@ -638,6 +642,9 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
                 let there: crate::core::Env = std::rc::Rc::new(c.args.clone());
                 let a: Vec<Tm> = theirs.0.iter().map(|t| quote(&e.g, lvl, &eval(&e.g, &there, t))).collect();
                 let b: Vec<Tm> = mine.0.iter().map(|t| quote(&e.g, lvl, &eval(&e.g, &here, t))).collect();
+                if same_at.is_none() && c.caller == c.callee && a.iter().zip(&b).all(|(x, y)| format!("{x:?}") == format!("{y:?}")) {
+                    same_at = Some(c.ob.span);
+                }
                 // Each part a natural number here, and the callee's below.
                 let k = a.len();
                 let mut lt = Tm::PrimApp(Prim::Lt, vec![a[k - 1].clone(), b[k - 1].clone()]);
@@ -661,24 +668,55 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
                 v.push(o);
             }
             obs.push(v);
+            doomed.push(same_at);
         }
-        // Ask about every combination at once; take the first proved.
+        // Ask about the single measures, then the pairs, each first with a
+        // small work limit (a measure that holds is usually quick to show,
+        // and one that doesn't is slow to give up on), then the rest with
+        // the quick one; take the first proved.
         let defs = smt::Defs::default();
-        let all: Vec<&Obligation> = obs.iter().flatten().collect();
-        let texts: Vec<Option<String>> =
-            all.iter().map(|o| quick(smt::Builder::new(e, user).sharing(&defs).query(o).ok().map(|q| q.text))).collect();
-        let answers = ask_all(&texts);
-        let mut k = 0;
-        let mut chosen = None;
+        let base: Vec<usize> = obs.iter().scan(0, |k, os| {
+            let at = *k;
+            *k += os.len();
+            Some(at)
+        }).collect();
+        let texts: Vec<Option<String>> = obs
+            .iter()
+            .flatten()
+            .map(|o| quick(smt::Builder::new(e, user).sharing(&defs).query(o).ok().map(|q| q.text)))
+            .collect();
+        let mut answers: Vec<Option<Answer>> = texts.iter().map(|_| None).collect();
+        let singles = combos.iter().take_while(|c| c.iter().all(|m| m.0.len() == 1)).count();
+        let small = |t: &Option<String>| {
+            t.as_ref().map(|t| t.replacen(&format!("(set-option :rlimit {QUICK_RLIMIT})"), &format!("(set-option :rlimit {PROBE_RLIMIT})"), 1))
+        };
+        let proved = |answers: &[Option<Answer>], ci: usize| {
+            !obs[ci].is_empty() && answers[base[ci]..base[ci] + obs[ci].len()].iter().all(|a| matches!(a, Some(Answer::Unsat)))
+        };
+        let mut chosen: Option<(usize, usize)> = None;
+        'tiers: for limit in [true, false] {
+            for tier in [0..singles, singles..combos.len()] {
+                let ks: Vec<usize> = tier
+                    .clone()
+                    .filter(|ci| doomed[*ci].is_none())
+                    .flat_map(|ci| base[ci]..base[ci] + obs[ci].len())
+                    .filter(|k| !matches!(answers[*k], Some(Answer::Unsat)))
+                    .collect();
+                let asked: Vec<Option<String>> = ks.iter().map(|k| if limit { small(&texts[*k]) } else { texts[*k].clone() }).collect();
+                for (k, a) in ks.iter().zip(ask_all(&asked)) {
+                    answers[*k] = a;
+                }
+                if let Some(ci) = tier.clone().find(|ci| proved(&answers, *ci)) {
+                    chosen = Some((ci, base[ci]));
+                    break 'tiers;
+                }
+            }
+        }
         let mut tried: Vec<(String, Option<Span>)> = Vec::new();
         for (ci, os) in obs.iter().enumerate() {
-            let ans = &answers[k..k + os.len()];
-            let failed = os.iter().zip(ans).find(|(_, a)| !matches!(a, Some(Answer::Unsat))).map(|(o, _)| o.span);
-            if chosen.is_none() && failed.is_none() && !os.is_empty() {
-                chosen = Some((ci, k));
-            }
+            let ans = &answers[base[ci]..base[ci] + os.len()];
+            let failed = doomed[ci].or_else(|| os.iter().zip(ans).find(|(_, a)| !matches!(a, Some(Answer::Unsat))).map(|(o, _)| o.span));
             tried.push((combos[ci].iter().map(|m| format!("`{}`", m.1)).collect::<Vec<_>>().join(" and "), failed));
-            k += os.len();
         }
         let first_call = gr.calls.first().map(|c| c.ob.span);
         match chosen {

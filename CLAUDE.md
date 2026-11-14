@@ -57,6 +57,8 @@ rt/src/blocking.rs   threads for calls that can't be polled
 src/verify/mod.rs    prover driver: in-process Z3, diagnostics, counterexamples, trust ledger (§7)
 src/verify/smt.rs    obligations → SMT-LIB: sorts, datatypes, reflected functions, postconditions
 stdlib/*.ck          standard library, the package `std` (`stdlib/json.ck` is `std.json`)
+stdlib/markdown.ck   CommonMark 0.31.2 → syntax tree (with spans) and HTML, a port of commonmark.js (D151); `tests/commonmark/` runs the spec's 652 examples
+scripts/tables.py    writes the Unicode and HTML entity tables into stdlib/char.ck, string.ck, html.ck (D151)
 tools/checkers.ck    `checkers`, the build tool, in Checkers (D95): passes compiler commands to `ckc`; `fmt`
 tools/fmt.ck         `checkers fmt`: files, --check, standard input (§15.4)
 tools/lsp.ck         `checkers lsp`, the language server (§15.5, D120): checks as child processes, phases, hover, definition, references, tokens; answers wait for the index of the text asked about (D127)

@@ -63,6 +63,7 @@ impl Rc<'_> {
             | E::BigLit(_)
             | E::Str(_)
             | E::Bytes(_)
+            | E::Static(_)
             | E::Erased
             | E::Unit
             | E::Global(_)

@@ -1,0 +1,40 @@
+-- stdout
+h1 # Title *x*
+  text Title  Title 
+  emph *x*
+    text x x
+quote > quote
+> - a [b] `c` [nope]
+>   more
+  para quote
+    text quote quote
+  bullets True - a [b] `c` [nope]
+>   more
+    item - a [b] `c` [nope]
+>   more
+      para a [b] `c` [nope]
+>   more
+        text a  a 
+        link /url Some "b" [b]
+          text b b
+        text    
+        code `c`
+        text  [nope]  [nope]
+        soft 
+>   
+        text more more
+code checkers ```checkers
+fn f
+  x
+``` lines fn f  x
+code  indented lines indented
+para - tab item  
+  next
+  text - tab item - tab item
+  hard   
+  
+  text next next
+[("b", "[b]: /url")]
+[("nope", "[nope]")]
+-- stderr
+-- exit 0

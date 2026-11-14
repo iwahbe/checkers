@@ -11,8 +11,10 @@ replaces 4:12-4:12
   env                module          
   files              module          
   future             module          
+  html               module          
   json               module          
   list               module          
+  markdown           module          
   prelude            module          
   proc               module          
   string             module          

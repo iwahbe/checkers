@@ -398,6 +398,14 @@ pub fn eval(g: &Globals, env: &Env, t: &Tm) -> Val {
 pub fn force_meta(g: &Globals, v: Val) -> Val {
     match v {
         Val::Neutral(Head::Meta(m), sp) => match g.meta(m) {
+            // A meta solved by another, solved in turn: the end of the chain,
+            // remembered for `m` (a list literal's elements make a chain as
+            // long as the list).
+            Some(sol @ Val::Neutral(Head::Meta(_), _)) if sp.is_empty() => {
+                let r = force_meta(g, sol);
+                g.metas.borrow_mut()[m.0 as usize] = MetaEntry::Solved(r.clone());
+                r
+            }
             Some(sol) => {
                 let mut r = sol;
                 for e in sp.iter() {

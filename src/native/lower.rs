@@ -20,6 +20,9 @@ pub enum E {
     BigLit(String),
     Str(Arc<str>),
     Bytes(Arc<[u8]>),
+    /// A value made only of literals, constructors and tuples: static data,
+    /// built when the program is compiled rather than each time it runs.
+    Static(Arc<Static>),
     Erased,
     Unit,
     /// The value of a definition: its global closure, or a constant.
@@ -49,6 +52,46 @@ pub enum E {
     /// fields; if it was the only reference, its memory becomes `token`
     /// (else `token` is 0).
     DropReuse(V, V, usize, Box<E>),
+}
+
+/// A value known when the program is compiled (`E::Static`).
+pub enum Static {
+    /// An integer, a constructor without fields, `()` or an erased value.
+    Word(u64),
+    Str(Arc<str>),
+    Bytes(Arc<[u8]>),
+    Con(u32, Vec<Arc<Static>>),
+    Tuple(Vec<Arc<Static>>),
+}
+
+impl Static {
+    /// `e` as static data, if it is a literal or built from them.
+    fn of(e: &E) -> Option<Arc<Static>> {
+        use checkers_rt::word as w;
+        Some(Arc::new(match e {
+            E::Int(n) => Static::Word(w::mk_int(*n)),
+            E::Str(s) => Static::Str(s.clone()),
+            E::Bytes(b) => Static::Bytes(b.clone()),
+            E::Erased => Static::Word(w::ERASED),
+            E::Unit => Static::Word(w::UNIT),
+            E::Con { con, fields, reuse: None } if fields.is_empty() => Static::Word(w::nullary(*con)),
+            E::Static(x) => return Some(x.clone()),
+            _ => return None,
+        }))
+    }
+
+    /// A constructor or tuple whose fields are all static, as one value.
+    fn fold(e: E) -> E {
+        let fields = match &e {
+            E::Con { fields, reuse: None, .. } | E::Tuple(fields) if !fields.is_empty() => fields,
+            _ => return e,
+        };
+        let Some(xs) = fields.iter().map(Static::of).collect::<Option<Vec<_>>>() else { return e };
+        E::Static(Arc::new(match e {
+            E::Con { con, .. } => Static::Con(con, xs),
+            _ => Static::Tuple(xs),
+        }))
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -313,7 +356,7 @@ impl Lowerer<'_, '_> {
     /// bound to a variable first (`binds`, outermost first).
     fn atom(&mut self, e: E, binds: &mut Vec<(V, E)>) -> E {
         match e {
-            E::Var(_) | E::Int(_) | E::Str(_) | E::Bytes(_) | E::Erased | E::Unit => e,
+            E::Var(_) | E::Int(_) | E::Str(_) | E::Bytes(_) | E::Static(_) | E::Erased | E::Unit => e,
             other => {
                 let v = self.fresh();
                 binds.push((v, other));
@@ -370,7 +413,7 @@ impl Lowerer<'_, '_> {
                 if xs.is_empty() {
                     return E::Unit;
                 }
-                E::Tuple(xs.iter().map(|x| self.expr(x, ctx, false)).collect())
+                Static::fold(E::Tuple(xs.iter().map(|x| self.expr(x, ctx, false)).collect()))
             }
             Ir::Proj(x, i) => {
                 let xe = self.expr(x, ctx, false);
@@ -380,7 +423,7 @@ impl Lowerer<'_, '_> {
                 let xe = self.expr(x, ctx, false);
                 self.borrow(BOp::Field(*i), vec![xe])
             }
-            Ir::Con(c, xs) => E::Con { con: c.0, fields: xs.iter().map(|x| self.expr(x, ctx, false)).collect(), reuse: None },
+            Ir::Con(c, xs) => Static::fold(E::Con { con: c.0, fields: xs.iter().map(|x| self.expr(x, ctx, false)).collect(), reuse: None }),
             Ir::Prim(op, args, nat) => {
                 let es: Vec<E> = args.iter().map(|a| self.expr(a, ctx, false)).collect();
                 match op {

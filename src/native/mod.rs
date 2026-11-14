@@ -148,6 +148,7 @@ fn dump(e: &lower::E, d: usize) -> String {
         E::Global(g) => format!("{ind}global{g}"),
         E::Tuple(xs) => format!("{ind}({})", xs.iter().map(|a| dump(a, 0).trim().to_string()).collect::<Vec<_>>().join(", ")),
         E::Str(s) => format!("{ind}{s:?}"),
+        E::Static(_) => format!("{ind}static"),
         other => format!("{ind}{}", match other {
             E::Erased => "erased".to_string(),
             E::Unit => "()".to_string(),

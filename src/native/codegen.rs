@@ -76,6 +76,8 @@ pub struct Gen<'p, M: Module> {
     slots: HashMap<u32, DataId>,
     /// String and bytes literals, by kind and content.
     lits: HashMap<(u64, Vec<u8>), DataId>,
+    /// Static values laid out so far, for naming the next.
+    statics: usize,
     /// Raw bytes (messages, digits).
     raw: HashMap<Vec<u8>, DataId>,
     pub invoke: FuncId,
@@ -157,6 +159,7 @@ impl<'p, M: Module> Gen<'p, M> {
             closures: HashMap::new(),
             slots: HashMap::new(),
             lits: HashMap::new(),
+            statics: 0,
             raw: HashMap::new(),
             invoke,
             true_w: nul(wk.true_con),
@@ -221,6 +224,61 @@ impl<'p, M: Module> Gen<'p, M> {
         self.m.define_data(id, &dd).expect("define a literal");
         self.lits.insert(key, id);
         id
+    }
+
+    /// Static data for a value known when the program is compiled: every
+    /// object it is made of, in one block that points into itself.
+    fn statik(&mut self, v: &Static) -> DataId {
+        let id = self.m.declare_data(&format!("ckd_{}", self.statics), Linkage::Local, true, false).expect("declare static data");
+        self.statics += 1;
+        let mut dd = DataDescription::new();
+        let me = self.m.declare_data_in_data(id, &mut dd);
+        let mut bytes = Vec::new();
+        let mut relocs = Vec::new();
+        let _root_at_0 = Self::lay_out(v, &mut bytes, &mut relocs);
+        dd.define(bytes.into_boxed_slice());
+        dd.set_align(8);
+        for (at, to) in relocs {
+            dd.write_data_addr(at as u32, me, to as i64);
+        }
+        self.m.define_data(id, &dd).expect("define static data");
+        id
+    }
+
+    /// Append `v`'s objects to `out`, its own first; its word, as `Ok` (an
+    /// immediate) or `Err` (the offset of its object).
+    fn lay_out(v: &Static, out: &mut Vec<u8>, relocs: &mut Vec<(usize, usize)>) -> Result<u64, usize> {
+        let (kind, tag, fields) = match v {
+            Static::Word(x) => return Ok(*x),
+            Static::Str(s) => return Err(Self::lay_out_bytes(w::K_STR, s.as_bytes(), out)),
+            Static::Bytes(b) => return Err(Self::lay_out_bytes(w::K_BYTES, b, out)),
+            Static::Con(c, xs) => (w::K_CON, *c as u64, xs),
+            Static::Tuple(xs) => (w::K_TUPLE, 0, xs),
+        };
+        let at = out.len();
+        out.extend_from_slice(&w::STATIC_RC.to_le_bytes());
+        out.extend_from_slice(&w::info(kind, fields.len() as u64, tag).to_le_bytes());
+        out.resize(at + w::HDR + 8 * fields.len(), 0);
+        for (k, f) in fields.iter().enumerate() {
+            let slot = at + w::HDR + 8 * k;
+            match Self::lay_out(f, out, relocs) {
+                Ok(word) => out[slot..slot + 8].copy_from_slice(&word.to_le_bytes()),
+                Err(obj) => relocs.push((slot, obj)),
+            }
+        }
+        Err(at)
+    }
+
+    fn lay_out_bytes(kind: u64, b: &[u8], out: &mut Vec<u8>) -> usize {
+        let at = out.len();
+        out.extend_from_slice(&w::STATIC_RC.to_le_bytes());
+        out.extend_from_slice(&w::info(kind, 0, 0).to_le_bytes());
+        out.extend_from_slice(&(b.len() as u64).to_le_bytes());
+        out.extend_from_slice(b);
+        while !out.len().is_multiple_of(8) {
+            out.push(0);
+        }
+        at
     }
 
     fn raw(&mut self, b: &[u8]) -> DataId {
@@ -462,6 +520,10 @@ impl<'p, M: Module> Gen<'p, M> {
                 let d = self.lit(w::K_BYTES, x);
                 self.addr(b, st, d)
             }
+            E::Static(v) => {
+                let d = self.statik(v);
+                self.addr(b, st, d)
+            }
             _ => {
                 let k = b.create_block();
                 let r = b.append_block_param(k, I64);
@@ -474,7 +536,7 @@ impl<'p, M: Module> Gen<'p, M> {
 
     fn emit(&mut self, b: &mut FunctionBuilder, st: &mut St, e: &E, mode: Mode) {
         match e {
-            E::Var(_) | E::Int(_) | E::Erased | E::Unit | E::Str(_) | E::Bytes(_) => {
+            E::Var(_) | E::Int(_) | E::Erased | E::Unit | E::Str(_) | E::Bytes(_) | E::Static(_) => {
                 let x = self.val(b, st, e);
                 Self::finish(b, &mode, x)
             }
