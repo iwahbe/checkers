@@ -1330,28 +1330,10 @@ pub fn head_def(t: &Tm) -> Option<DefId> {
 /// Replace each solved meta in `t` (a term over `l` variables), with its
 /// arguments, by its solution, leaving the rest of `t` as it is.
 pub fn zonk_metas(g: &Globals, l: usize, t: &Tm) -> Tm {
-    fn has(g: &Globals, t: &Tm) -> bool {
-        match t {
-            Tm::Meta(m) => g.meta(*m).is_some(),
-            Tm::App(f, a, ..) => has(g, f) || has(g, a),
-            Tm::Pi(_, _, _, a, b) => has(g, a) || has(g, b),
-            Tm::Lam(_, _, _, b) => has(g, b),
-            Tm::Let(_, _, a, b, c) => has(g, a) || has(g, b) || has(g, c),
-            Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => v.iter().any(|x| has(g, x)),
-            Tm::Proj(x, _) | Tm::Field(x, _, _) => has(g, x),
-            Tm::Case(s, c) => {
-                has(g, s)
-                    || c.branches.iter().any(|(_, _, b)| has(g, b))
-                    || c.lits.iter().any(|(_, b)| has(g, b))
-                    || c.default.as_ref().is_some_and(|b| has(g, b))
-            }
-            _ => false,
-        }
-    }
-    fn go(g: &Globals, l: usize, t: &Tm) -> Tm {
-        if !has(g, t) {
-            return t.clone();
-        }
+    // One pass: `None` when nothing under a node changes, so unchanged
+    // subterms are shared, not copied (this was quadratic: a walk to find a
+    // solved meta at every node).
+    fn go(g: &Globals, l: usize, t: &Tm) -> Option<Tm> {
         let mut h = t;
         while let Tm::App(f, ..) = h {
             h = f;
@@ -1359,34 +1341,60 @@ pub fn zonk_metas(g: &Globals, l: usize, t: &Tm) -> Tm {
         if let Tm::Meta(m) = h {
             if g.meta(*m).is_some() {
                 let env = Rc::new((0..l).map(Val::var).collect::<Vec<_>>());
-                return fix_mults(g, &quote(g, l, &eval(g, &env, t)));
+                return Some(fix_mults(g, &quote(g, l, &eval(g, &env, t))));
             }
         }
-        let rc = |x: &Tm, k: usize| Rc::new(go(g, l + k, x));
+        let rc = |x: &Rc<Tm>, k: usize| go(g, l + k, x).map(Rc::new);
+        let keep = |new: Option<Rc<Tm>>, old: &Rc<Tm>| new.unwrap_or_else(|| old.clone());
+        let many = |v: &[Tm]| -> Option<Vec<Tm>> {
+            let new: Vec<Option<Tm>> = v.iter().map(|x| go(g, l, x)).collect();
+            if new.iter().all(|x| x.is_none()) {
+                return None;
+            }
+            Some(new.into_iter().zip(v).map(|(n, o)| n.unwrap_or_else(|| o.clone())).collect())
+        };
         match t {
-            Tm::App(f, a, i, m) => Tm::App(rc(f, 0), rc(a, 0), *i, *m),
-            Tm::Pi(x, m, i, a, b) => Tm::Pi(x.clone(), *m, *i, rc(a, 0), rc(b, 1)),
-            Tm::Lam(x, m, i, b) => Tm::Lam(x.clone(), *m, *i, rc(b, 1)),
-            Tm::Let(x, m, a, b, c) => Tm::Let(x.clone(), *m, rc(a, 0), rc(b, 0), rc(c, 1)),
-            Tm::TyConApp(c, v) => Tm::TyConApp(*c, v.iter().map(|x| go(g, l, x)).collect()),
-            Tm::ConApp(c, v) => Tm::ConApp(*c, v.iter().map(|x| go(g, l, x)).collect()),
-            Tm::TupleTy(v) => Tm::TupleTy(v.iter().map(|x| go(g, l, x)).collect()),
-            Tm::Tuple(v) => Tm::Tuple(v.iter().map(|x| go(g, l, x)).collect()),
-            Tm::PrimApp(p, v) => Tm::PrimApp(p.clone(), v.iter().map(|x| go(g, l, x)).collect()),
-            Tm::Proj(x, i) => Tm::Proj(rc(x, 0), *i),
-            Tm::Field(x, c, i) => Tm::Field(rc(x, 0), *c, *i),
-            Tm::Case(s, c) => Tm::Case(
-                rc(s, 0),
-                Rc::new(CaseTm {
-                    branches: c.branches.iter().map(|(k, n, b)| (*k, *n, go(g, l + n, b))).collect(),
-                    lits: c.lits.iter().map(|(x, b)| (x.clone(), go(g, l, b))).collect(),
-                    default: c.default.as_ref().map(|b| go(g, l, b)),
-                }),
-            ),
-            _ => t.clone(),
+            Tm::App(f, a, i, m) => {
+                let (nf, na) = (rc(f, 0), rc(a, 0));
+                (nf.is_some() || na.is_some()).then(|| Tm::App(keep(nf, f), keep(na, a), *i, *m))
+            }
+            Tm::Pi(x, m, i, a, b) => {
+                let (na, nb) = (rc(a, 0), rc(b, 1));
+                (na.is_some() || nb.is_some()).then(|| Tm::Pi(x.clone(), *m, *i, keep(na, a), keep(nb, b)))
+            }
+            Tm::Lam(x, m, i, b) => rc(b, 1).map(|nb| Tm::Lam(x.clone(), *m, *i, nb)),
+            Tm::Let(x, m, a, b, c) => {
+                let (na, nb, nc) = (rc(a, 0), rc(b, 0), rc(c, 1));
+                (na.is_some() || nb.is_some() || nc.is_some()).then(|| Tm::Let(x.clone(), *m, keep(na, a), keep(nb, b), keep(nc, c)))
+            }
+            Tm::TyConApp(c, v) => many(v).map(|v| Tm::TyConApp(*c, v)),
+            Tm::ConApp(c, v) => many(v).map(|v| Tm::ConApp(*c, v)),
+            Tm::TupleTy(v) => many(v).map(Tm::TupleTy),
+            Tm::Tuple(v) => many(v).map(Tm::Tuple),
+            Tm::PrimApp(p, v) => many(v).map(|v| Tm::PrimApp(p.clone(), v)),
+            Tm::Proj(x, i) => rc(x, 0).map(|nx| Tm::Proj(nx, *i)),
+            Tm::Field(x, c, i) => rc(x, 0).map(|nx| Tm::Field(nx, *c, *i)),
+            Tm::Case(sc, c) => {
+                let ns = rc(sc, 0);
+                let nb: Vec<Option<Tm>> = c.branches.iter().map(|(_, n, b)| go(g, l + n, b)).collect();
+                let nl: Vec<Option<Tm>> = c.lits.iter().map(|(_, b)| go(g, l, b)).collect();
+                let nd = c.default.as_ref().map(|b| go(g, l, b));
+                let changed = ns.is_some() || nb.iter().any(|x| x.is_some()) || nl.iter().any(|x| x.is_some()) || matches!(nd, Some(Some(_)));
+                changed.then(|| {
+                    Tm::Case(
+                        keep(ns, sc),
+                        Rc::new(CaseTm {
+                            branches: c.branches.iter().zip(nb).map(|((k, n, b), x)| (*k, *n, x.unwrap_or_else(|| b.clone()))).collect(),
+                            lits: c.lits.iter().zip(nl).map(|((v, b), x)| (v.clone(), x.unwrap_or_else(|| b.clone()))).collect(),
+                            default: c.default.as_ref().zip(nd).map(|(b, x)| x.unwrap_or_else(|| b.clone())),
+                        }),
+                    )
+                })
+            }
+            _ => None,
         }
     }
-    go(g, l, t)
+    go(g, l, t).unwrap_or_else(|| t.clone())
 }
 
 /// A quoted application of a definition, with each argument's multiplicity

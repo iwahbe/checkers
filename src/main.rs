@@ -2,6 +2,9 @@
 
 use std::process::ExitCode;
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 const USAGE: &str = "\
 ckc — the Checkers compiler (usually run through `checkers`, the build tool)
 

@@ -35,6 +35,9 @@ impl Elab {
         self.modules.insert(name.to_string(), ModuleInfo { name: name.to_string(), ..Default::default() });
 
         self.imports(m, name);
+        // `CHECKERS_ELAB_TIME=1`: each module's elaboration time, its imports'
+        // not included (to find what makes the types phase slow).
+        let started = std::time::Instant::now();
         self.cur = name.to_string();
         self.stdlib_mode = is_stdlib;
         // Classes and instances become records, functions and lemmas (D136).
@@ -116,6 +119,9 @@ impl Elab {
             }
         }
         self.loading.pop();
+        if std::env::var_os("CHECKERS_ELAB_TIME").is_some() {
+            eprintln!("{name}: {:.1} ms", started.elapsed().as_secs_f64() * 1000.0);
+        }
     }
 
     // ── imports ─────────────────────────────────────────────────────────────
@@ -1536,7 +1542,7 @@ impl Elab {
                     // A class's function: each instance proves its postconditions (D136).
                     let checked = !posts.is_empty() && !self.class_methods.contains(did);
                     self.post_target =
-                        checked.then(|| PostTarget { posts, func: fname, binders: sig.cx.env.clone(), invariants: Vec::new() });
+                        checked.then(|| PostTarget { posts, func: fname, binders: sig.cx.env.to_vec(), invariants: Vec::new() });
                     let _ = decreasing;
                     let bt = self.check_block(&mut sig.cx, body, &rty, true);
                     self.post_target = None;
@@ -1649,7 +1655,7 @@ impl Elab {
 
     /// The preconditions are facts in the body (§7.1).
     fn assume_pres(&mut self, sig: &mut Sig) {
-        let mut env = sig.cx.env.clone();
+        let mut env = sig.cx.env.to_vec();
         env.push(Val::var(sig.cx.lvl())); // the result slot; preconditions don't mention it
         let env = Rc::new(env);
         self.cur_hyps.clear();

@@ -704,7 +704,7 @@ impl Elab {
             let refined = if cx.locals[occ].bound {
                 let tm = quote(&self.g, cx.lvl(), expected);
                 if !has_meta_tm(&tm) && mentions_var(&tm, cx.lvl() - 1 - occ) {
-                    let mut env = cx.env.clone();
+                    let mut env = cx.env.to_vec();
                     env[occ] = Val::Con(c, all.clone());
                     eval(&self.g, &Rc::new(env), &tm)
                 } else {

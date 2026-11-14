@@ -170,6 +170,15 @@ impl Elab {
     }
 
     pub fn refined_mismatch(&mut self, cx: &Cx, expected: &Val, found: &Val, span: Span) -> Option<Gained> {
+        // The same type on both sides gains nothing; most types have no
+        // refinement inside them. Either way: nothing to walk, and no need
+        // to copy the context (most of the time this took).
+        if self.same_type(expected, found) {
+            return None;
+        }
+        if !self.refined_inside(expected, cx.lvl(), 0) && !self.refined_inside(found, cx.lvl(), 0) {
+            return None;
+        }
         let mut cx2 = cx.clone();
         let text = self.src_text(span);
         let value = match text.strip_prefix('(').and_then(|t| t.strip_suffix(')')) {
@@ -178,6 +187,59 @@ impl Elab {
         };
         let w = Walk { span, value, callee: self.arg_of.clone() };
         self.gain(&mut cx2, expected, found, Variance::Co, Via::Nothing, false, 0, &w)
+    }
+
+    /// The same type, structurally (without unfolding): false if unsure.
+    fn same_type(&self, a: &Val, b: &Val) -> bool {
+        if matches!(a, Val::Neutral(Head::Meta(_), _)) || matches!(b, Val::Neutral(Head::Meta(_), _)) {
+            let (a, b) = (force_meta(&self.g, a.clone()), force_meta(&self.g, b.clone()));
+            if matches!(a, Val::Neutral(Head::Meta(_), _)) || matches!(b, Val::Neutral(Head::Meta(_), _)) {
+                return matches!((&a, &b), (Val::Neutral(Head::Meta(x), s1), Val::Neutral(Head::Meta(y), s2)) if x == y && s1.is_empty() && s2.is_empty());
+            }
+            return self.same_type(&a, &b);
+        }
+        match (a, b) {
+            (Val::TyCon(t1, x1), Val::TyCon(t2, x2)) => t1 == t2 && x1.len() == x2.len() && x1.iter().zip(x2).all(|(x, y)| self.same_type(x, y)),
+            (Val::TupleTy(x1), Val::TupleTy(x2)) => x1.len() == x2.len() && x1.iter().zip(x2).all(|(x, y)| self.same_type(x, y)),
+            (Val::Univ(u1), Val::Univ(u2)) => u1 == u2,
+            (Val::Neutral(h1, s1), Val::Neutral(h2, s2)) => {
+                let heads = match (h1, h2) {
+                    (Head::Var(x), Head::Var(y)) => x == y,
+                    (Head::Meta(x), Head::Meta(y)) => x == y,
+                    (Head::Def(x), Head::Def(y)) => x == y,
+                    _ => false,
+                };
+                heads
+                    && s1.len() == s2.len()
+                    && s1.iter().zip(s2.iter()).all(|(e1, e2)| match (e1, e2) {
+                        (Elim::App(x, i), Elim::App(y, j)) => i == j && self.same_type(x, y),
+                        (Elim::Proj(i), Elim::Proj(j)) => i == j,
+                        (Elim::Field(c, i), Elim::Field(d, j)) => c == d && i == j,
+                        _ => false,
+                    })
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether `gain` could find something in `v`: a refinement alias
+    /// below the top (`depth > 0`), as `gain` walks it.
+    fn refined_inside(&self, v: &Val, lvl: usize, depth: usize) -> bool {
+        if depth > 16 {
+            return false;
+        }
+        let p = self.peel(v);
+        if depth > 0 && self.refined_alias(&p).is_some() {
+            return true;
+        }
+        match self.base(&p) {
+            Val::TyCon(_, args) => args.iter().any(|a| self.refined_inside(a, lvl, depth + 1)),
+            Val::TupleTy(xs) => xs.iter().any(|a| self.refined_inside(a, lvl, depth + 1)),
+            Val::Pi(_, _, _, a, c) => {
+                self.refined_inside(&a, lvl, depth + 1) || self.refined_inside(&apply_closure(&self.g, &c, Val::var(lvl)), lvl + 1, depth + 1)
+            }
+            _ => false,
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -96,7 +96,8 @@ pub struct Local {
 
 #[derive(Clone, Default)]
 pub struct Cx {
-    pub env: Vec<Val>,
+    /// Shared, so that evaluating under the context doesn't copy it.
+    pub env: Rc<Vec<Val>>,
     pub locals: Vec<Local>,
     /// Elaborating a type position (after `~`): `Uname`s prefer the type namespace (D26).
     pub type_pos: bool,
@@ -110,31 +111,31 @@ impl Cx {
         self.locals.len()
     }
     pub fn env(&self) -> Env {
-        Rc::new(self.env.clone())
+        self.env.clone()
     }
     pub fn names(&self) -> Vec<Name> {
         self.locals.iter().map(|l| l.name.clone()).collect()
     }
     pub fn bind(&mut self, name: &str, ty: Val, mult: Mult) -> usize {
         let l = self.lvl();
-        self.env.push(Val::var(l));
+        Rc::make_mut(&mut self.env).push(Val::var(l));
         self.locals.push(Local { name: Rc::from(name), ty, mult, bound: true, param: None, sub: None, comptime: false, span: None });
         l
     }
     pub fn define(&mut self, name: &str, ty: Val, val: Val, mult: Mult) -> usize {
         let l = self.lvl();
-        self.env.push(val);
+        Rc::make_mut(&mut self.env).push(val);
         self.locals.push(Local { name: Rc::from(name), ty, mult, bound: false, param: None, sub: None, comptime: false, span: None });
         l
     }
     pub fn pop(&mut self) {
-        self.env.pop();
+        Rc::make_mut(&mut self.env).pop();
         self.locals.pop();
         let n = self.locals.len();
         self.facts.retain(|(l, _)| *l <= n);
     }
     pub fn truncate(&mut self, n: usize) {
-        self.env.truncate(n);
+        Rc::make_mut(&mut self.env).truncate(n);
         self.locals.truncate(n);
         self.facts.retain(|(l, _)| *l <= n);
     }

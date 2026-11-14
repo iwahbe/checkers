@@ -842,14 +842,24 @@ impl Elab {
         args.reverse();
         match h {
             Tm::Def(d) => {
-                let Some(spec) = self.specs.get(d).cloned() else { return };
-                if args.len() >= spec.n_binders {
-                    let env: Vec<Val> = args[..spec.n_binders].iter().map(|a| self.eval(cx, a)).collect();
-                    self.measure_obligation(cx, *d, &env, span, head_span);
+                // Only what is needed: most calls have no measure to compare
+                // and no precondition, and evaluating their arguments for
+                // nothing was much of the time this took.
+                let Some(spec) = self.specs.get(d) else { return };
+                let (n, measured, pres) = (spec.n_binders, spec.measure.is_some(), spec.preds.iter().any(|p| !p.is_post));
+                if args.len() >= n {
+                    let caller_measured = self.cur_fn.and_then(|c| self.specs.get(&c)).is_some_and(|s| s.measure.is_some());
+                    if measured && caller_measured {
+                        let env: Vec<Val> = args[..n].iter().map(|a| self.eval(cx, a)).collect();
+                        self.measure_obligation(cx, *d, &env, span, head_span);
+                    } else {
+                        self.saturated_heads.insert(head_span);
+                    }
                 }
-                if !spec.preds.iter().any(|p| !p.is_post) {
+                if !pres {
                     return;
                 }
+                let spec = self.specs[d].clone();
                 let name = self.g.defs[d.0 as usize].name.to_string();
                 if args.len() < spec.n_binders {
                     // A partial application (D86): preconditions about the
