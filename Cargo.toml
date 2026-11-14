@@ -40,3 +40,10 @@ cranelift-jit = "0.137.1"
 cranelift-object = "0.137.1"
 cranelift-native = "0.137.1"
 target-lexicon = "0.13.5"
+
+# Z3, built from source (`static-z3`), is optimized in development builds
+# too: a debug Z3 is ~15 times slower, which can push a test's query past
+# the safety timeout (SAFETY_MS) on a busy machine.
+[profile.dev.package.z3-sys]
+opt-level = 3
+debug = false
