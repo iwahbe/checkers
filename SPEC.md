@@ -989,6 +989,8 @@ Reordered (D25) so that Checkers can run CLI tools before the prover exists.
 - Completion in an import's name list: `import std.system (Sy‸` offers the module's exports (Ian, 11/15/2026).
 - Large constants back in the prover (D151 g's stopgap gives it their type only), and fast enough with them: a table's value in every query that mentions it cost 15 s for three tables. (Compiling them is no longer slow: a constant made of literals is static data, D151 h.)
 - Regular expressions in `std`, working well at compile time too (staging, §8.9): a pattern known at compile time compiled then, as `fmt`'s format string is (Ian, 11/15/2026).
+- User-defined resources: a type declared as one (`resource record`, `resource enum`) follows D39's rules (used exactly once, never dropped by `_`, passed to generic code only as `own`) though it holds no runtime resource: a transaction to commit or roll back, a lock guard, a protocol's state that must reach its end (Ian, 11/15/2026).
+- Borrowing a resource: an operation that uses a resource without taking it (reading a `File`, a `TempDir`'s path), so the caller keeps it and the take-and-give-back pattern (`(result, resource)`, `<-`, D29) is unnecessary; only closing consumes it (Ian, 11/15/2026).
 
 ---
 
