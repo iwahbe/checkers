@@ -1,5 +1,5 @@
-//! Surface AST (§9.2). Names are not yet resolved; `decimal.scan_json` is a
-//! `Field` on `Var("decimal")` until name resolution decides it is qualified.
+//! Surface AST (§9.2). Names are not yet resolved; `json.parse` is a
+//! `Field` on `Var("json")` until name resolution decides it is qualified.
 
 use super::token::Op;
 use crate::source::Span;

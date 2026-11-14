@@ -81,6 +81,15 @@ pub fn source(name: &str) -> Option<String> {
         .clone()
 }
 
+/// Whether `path` is the file of standard-library module `name`.
+pub fn is_std_file(name: &str, path: &std::path::Path) -> bool {
+    let Some(rest) = name.strip_prefix("std.") else { return false };
+    let Ok(d) = dir() else { return false };
+    let own = d.join(rest.split('.').collect::<PathBuf>().with_extension("ck"));
+    let same = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| crate::overlay::absolute(p));
+    same(&own) == same(path)
+}
+
 /// Every standard-library module, sorted by name.
 pub fn modules() -> Vec<String> {
     fn walk(base: &std::path::Path, d: &std::path::Path, out: &mut Vec<String>) {

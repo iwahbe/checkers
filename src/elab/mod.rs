@@ -1733,14 +1733,24 @@ pub fn check_module_at(name_hint: &str, file: &SourceFile, m: &ast::Module, dir:
         e.completing = Some((name, at));
     }
     e.base_dir = dir.map(|d| d.to_path_buf());
+    let name = m.name.as_ref().map(|q| q.dotted()).unwrap_or_else(|| name_hint.to_string());
+    // A standard-library file, checked by itself, is the standard library
+    // (D145); it may be one of the core modules loaded next, so it is
+    // indexed from the start.
+    let is_std = stdlib::is_std_file(&name, std::path::Path::new(&file.name));
+    if is_std {
+        e.index_of = Some(name.clone());
+    }
     // Core stdlib modules are always loaded: they define well-known types.
     for core in ["std.prelude", "std.cown", "std.future", "std.system"] {
         e.load_stdlib(core);
     }
-    let name = m.name.as_ref().map(|q| q.dotted()).unwrap_or_else(|| name_hint.to_string());
-    e.sources.insert(name.clone(), SourceFile::new(file.name.clone(), file.text.clone()));
     e.index_of = Some(name.clone());
-    e.elab_module(&name, m, false);
+    if is_std && e.modules.contains_key(&name) {
+        return e;
+    }
+    e.sources.insert(name.clone(), SourceFile::new(file.name.clone(), file.text.clone()));
+    e.elab_module(&name, m, is_std);
     e
 }
 

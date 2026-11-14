@@ -108,9 +108,26 @@ fn value src i depth -> r : src~Bytes, i~Nat, i <= len src, depth~Nat,
             let o = try object src (i + 1) (depth + 1)
             Ok (Parsed (Obj o.value) o.stop)       # o.value~Members carries unique (keys …)
         Some b   ->
-            match decimal.scan_json src i
+            match scan_number src i
                 Some n -> Ok (Parsed (Num n.value) n.stop)
                 None   -> Err (Error i (UnexpectedByte b))
+
+# Scan an RFC 8259 number starting at `i`.
+fn scan_number src i -> r : src~Bytes, i~Nat, i <= len src, r~Option (Parsed Decimal src i)
+    __builtin
+
+# A byte that could continue a number (`1` then `.5` would scan as `1.5`).
+fn continues_number b -> r : b~U8, r~Bool
+    (b >= '0' and b <= '9') or b == '.' or b == 'e' or b == 'E'
+
+# Scanning a rendered number gives it back, wherever it sits; trusted like
+# the primitives (D56).
+lemma scan_number_render n pre post : n~Decimal, pre~Bytes, post~Bytes,
+                                      len post == 0 or not (continues_number post[0])
+    let src = pre ++ utf8.encode (decimal.render n) ++ post
+    ensures scan_number src (len pre) == Some (Parsed n (len pre + len (utf8.encode (decimal.render n))))
+    proof
+        __builtin
 
 fn literal src i word v -> r : src~Bytes, i~Nat, i < len src,
                                word~Bytes, len word > 0, v~Json,
@@ -341,7 +358,7 @@ lemma value_render v pre post d : v~Json, pre~Bytes, post~Bytes, delimits post,
             Null | Bool _ -> auto                                    # unfold value/literal/render; solver closes
             Num n         ->
                 have decimal.render_starts n
-                have decimal.scan_json_render n pre post
+                have scan_number_render n pre post
             Str s         -> have string_render s pre post d
             Arr items     ->
                 match items

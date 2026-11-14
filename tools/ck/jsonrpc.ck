@@ -33,13 +33,8 @@ export partial fn nat_of j -> r : j~Json, r~Option Nat
             if len b == 0 then None else digits b 0 0
         _     -> None
 
-# There is no conversion from `Nat` to `Int` yet, so the number is read
-# back from its decimal text.
 export fn num n -> j : n~Nat, j~Json
-    let b = string.bytes (format n)
-    match decimal.scan_json b 0
-        Some p -> Num p.value
-        None   -> Null
+    Num (decimal.of_int n)
 
 # ── Objects ──────────────────────────────────────────────────────────────────
 

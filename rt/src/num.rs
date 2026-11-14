@@ -275,7 +275,7 @@ mod tests {
         assert_eq!(scan("1.x"), Some(("1".into(), 1)));
     }
 
-    /// The axioms `decimal.scan_json_render` and `decimal.render_starts`
+    /// The axioms `json.scan_number_render` and `decimal.render_starts`
     /// (stdlib/decimal.ck, D56), on many values, prefixes and suffixes.
     #[test]
     fn render_scan_axioms() {
@@ -293,7 +293,7 @@ mod tests {
                 for post in ["", ",", "]", "}", " ", "\n", "x", "-"] {
                     let src = format!("{pre}{r}{post}");
                     let got = Decimal::scan_json(src.as_bytes(), pre.len());
-                    assert_eq!(got, Some((d.clone(), pre.len() + b.len())), "scan_json_render: {src:?}");
+                    assert_eq!(got, Some((d.clone(), pre.len() + b.len())), "scan_number_render: {src:?}");
                 }
             }
         }

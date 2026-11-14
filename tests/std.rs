@@ -29,7 +29,10 @@ fn scratch(name: &str) -> (PathBuf, PathBuf) {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib");
     for e in std::fs::read_dir(src).unwrap() {
         let e = e.unwrap();
-        std::fs::copy(e.path(), std_dir.join(e.file_name())).unwrap();
+        // Not `.checkers/`, the cache a check of a file here leaves (D100).
+        if e.path().is_file() {
+            std::fs::copy(e.path(), std_dir.join(e.file_name())).unwrap();
+        }
     }
     (std_dir, prog)
 }
@@ -108,4 +111,21 @@ fn every_builtin_is_in_the_spec() {
         }
     }
     assert!(missing.is_empty(), "builtins missing from SPEC §16.3: {missing:?}");
+}
+
+/// A standard-library file checked by itself (as an editor does) is checked
+/// as the standard library: `__builtin` is allowed (D145).
+#[test]
+fn checking_a_standard_library_file() {
+    let (std_dir, prog) = scratch("itself");
+    for m in ["decimal.ck", "prelude.ck", "json.ck"] {
+        let out = ckc(&std_dir, &prog, &["check", std_dir.join(m).to_str().unwrap()]);
+        let err = text(&out.stderr);
+        assert!(out.status.success(), "{m}:\n{err}");
+        assert!(err.ends_with(&format!("{m}: 0 errors, 0 warnings\n")), "{m}:\n{err}");
+    }
+    // A file elsewhere that says it is a standard-library module is not.
+    std::fs::write(prog.join("fake.ck"), "module std.fake\n\nexport fn f n -> m : n~Int, m~Int\n    __builtin\n").unwrap();
+    let out = ckc(&std_dir, &prog, &["check", "fake.ck"]);
+    assert!(text(&out.stderr).contains("E0356"), "{}", text(&out.stderr));
 }
