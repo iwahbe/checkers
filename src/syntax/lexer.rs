@@ -443,7 +443,37 @@ fn is_binop(t: &Tok) -> bool {
 
 /// The previous line ends in a way that continues onto the next line.
 fn continues_after(t: &Tok) -> bool {
-    is_binop(t) || matches!(t, Tok::Comma)
+    // Not `.`: a name must follow it on the same line (D22), and `p.` while
+    // typing shouldn't take in the next line (D142 e).
+    (is_binop(t) && !matches!(t, Tok::Op(Op::Dot))) || matches!(t, Tok::Comma)
+}
+
+/// A keyword that starts a line and never stands inside brackets: a line
+/// starting with one closes brackets left open (D142 e).
+fn never_bracketed(t: &Tok) -> bool {
+    matches!(
+        t,
+        Tok::Kw(
+            Kw::Module
+                | Kw::Import
+                | Kw::Export
+                | Kw::Fn
+                | Kw::Partial
+                | Kw::Enum
+                | Kw::Record
+                | Kw::Type
+                | Kw::Lemma
+                | Kw::Class
+                | Kw::Instance
+                | Kw::Check
+                | Kw::Let
+                | Kw::Have
+                | Kw::When
+                | Kw::Ensures
+                | Kw::Proof
+                | Kw::Decreasing
+        )
+    )
 }
 
 /// The next line starts in a way that continues the previous line.
@@ -454,17 +484,40 @@ fn continues_before(t: &Tok) -> bool {
 fn layout(raws: Vec<Raw>, eof: usize, diags: &mut Vec<Diagnostic>) -> Vec<Token> {
     let mut out: Vec<Token> = Vec::with_capacity(raws.len() + raws.len() / 4);
     let mut indents: Vec<usize> = vec![0];
-    let mut depth: usize = 0;
+    // Open brackets: the closer, where it opened, and its line's indentation.
+    let mut open: Vec<(Tok, Span, usize)> = Vec::new();
+    let mut line_col = 0;
     let mut have_line = false;
     for raw in raws {
-        if raw.first_on_line && depth == 0 {
+        // A line at or left of the first open bracket's line, starting
+        // with a keyword that never stands inside brackets, closes them.
+        if raw.first_on_line && !open.is_empty() && raw.col <= open[0].2 && never_bracketed(&raw.tok) {
+            let (_, at, _) = &open[0];
+            let (what, closer) = match open[0].0 {
+                Tok::RBracket => ("`[`", "`]`"),
+                Tok::RBrace => ("`{`", "`}`"),
+                _ => ("`(`", "`)`"),
+            };
+            diags.push(
+                Diagnostic::error("E0004", format!("{what} is never closed"), *at)
+                    .with_label("opened here")
+                    .with_help(format!("add the {closer} that closes it")),
+            );
+            let end = out.last().map(|t| t.span.end).unwrap_or(0);
+            while let Some((closer, _, _)) = open.pop() {
+                out.push(Token { tok: closer, span: Span::empty_at(end), space_before: false });
+            }
+        }
+        if raw.first_on_line && open.is_empty() {
             let prev = out.last().map(|t| &t.tok);
-            let cont = have_line && (prev.is_some_and(continues_after) || continues_before(&raw.tok));
+            // A keyword that only starts a line never continues one.
+            let cont = have_line && !never_bracketed(&raw.tok) && (prev.is_some_and(continues_after) || continues_before(&raw.tok));
             if !cont {
                 if have_line {
                     let at = out.last().unwrap().span.end;
                     out.push(Token { tok: Tok::Newline, span: Span::empty_at(at), space_before: false });
                 }
+                line_col = raw.col;
                 let here = Span::empty_at(raw.span.start);
                 let top = *indents.last().unwrap();
                 if raw.col > top {
@@ -493,8 +546,12 @@ fn layout(raws: Vec<Raw>, eof: usize, diags: &mut Vec<Diagnostic>) -> Vec<Token>
             }
         }
         match raw.tok {
-            Tok::LParen | Tok::LBracket | Tok::LBrace => depth += 1,
-            Tok::RParen | Tok::RBracket | Tok::RBrace => depth = depth.saturating_sub(1),
+            Tok::LParen => open.push((Tok::RParen, raw.span, line_col)),
+            Tok::LBracket => open.push((Tok::RBracket, raw.span, line_col)),
+            Tok::LBrace => open.push((Tok::RBrace, raw.span, line_col)),
+            Tok::RParen | Tok::RBracket | Tok::RBrace => {
+                open.pop();
+            }
             _ => {}
         }
         have_line = true;

@@ -1,0 +1,60 @@
+error[E0100]: expected an expression, found end of line
+  --> recovery.ck:15:12
+   |
+15 |     let r =
+   |            ^ expected an expression
+
+error[E0207]: record `Point` has no field `z`
+  --> recovery.ck:16:15
+   |
+16 |     let s = q.z
+   |               ^
+   = help: its fields are `x`, `y`
+
+error[E0100]: expected an expression, found end of line
+  --> recovery.ck:22:10
+   |
+22 |     q.x +
+   |          ^ expected an expression
+
+error[E0100]: expected a field or member name after `.`, found end of line
+  --> recovery.ck:27:7
+   |
+27 |     p.
+   |       ^ expected a field or member name after `.`
+
+error[E0450]: cannot prove lemma `kept`
+  --> recovery.ck:30:13
+   |
+30 |     ensures xs == xs ++ [1]
+   |             ^^^^^^^^^^^^^^^ `xs == xs ++ [1]`
+   = note: counterexample: xs = []
+   = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+
+error[E0004]: `(` is never closed
+  --> recovery.ck:35:11
+   |
+35 |     after (p
+   |           ^ opened here
+   = help: add the `)` that closes it
+
+error[E0201]: type mismatch: expected `Int`, found `String`
+  --> recovery.ck:38:5
+   |
+38 |     "zero"
+   |     ^^^^^^ this expression has type `String`
+
+error[E0004]: `(` is never closed
+  --> recovery.ck:42:19
+   |
+42 |     let a = after (p
+   |                   ^ opened here
+   = help: add the `)` that closes it
+
+error[E0204]: unknown name `nowhere`
+  --> recovery.ck:43:13
+   |
+43 |     let b = nowhere
+   |             ^^^^^^^ not found
+
+recovery.ck: 9 errors, 0 warnings

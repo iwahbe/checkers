@@ -257,11 +257,14 @@ export record Placed
     line~Line
 
 # Layout state: the columns of the open blocks (innermost first), the
-# bracket depth, and the last code token so far.
+# bracket depth, the last code token so far, the column of the logical
+# line, and of the logical line the outermost open bracket is on.
 record State
     stack~List Nat
     depth~Nat
     last~Option Tok
+    col~Nat
+    open~Nat
 
 fn last_of toks -> r : toks~List Tok, r~Option Tok
     match toks
@@ -269,14 +272,26 @@ fn last_of toks -> r : toks~List Tok, r~Option Tok
         [t]       -> Some t
         _ :: rest -> last_of rest
 
-# The last line ends with a binary operator or a comma.
+# The last line ends with a binary operator (not `.`) or a comma.
 fn open_ended st : st~State
     match st.last
-        Some t -> is_binop t or is_punct t b","
+        Some t -> (is_binop t and not (is_punct t b".")) or is_punct t b","
         None   -> False
 
+# A keyword that only starts a line, never inside brackets (D142 e).
+fn starts_only t : t~Tok
+    is_keyword t and list.contains LINE_KEYWORDS t.text
+
+let LINE_KEYWORDS = [b"module", b"import", b"export", b"fn", b"partial", b"enum", b"record", b"type",
+                     b"lemma", b"class", b"instance", b"check", b"let", b"have", b"when", b"ensures",
+                     b"proof", b"decreasing"]
+
+# Brackets left open are closed by such a line at or left of their own.
+fn closes st first : st~State, first~Tok
+    st.depth > 0 and first.col <= st.open and starts_only first
+
 fn continues st first : st~State, first~Tok
-    st.depth > 0 or is_binop first or is_punct first b":" or open_ended st
+    not (starts_only first) and (st.depth > 0 or is_binop first or is_punct first b":" or open_ended st)
 
 # The level of the innermost open block whose column is at most `col`.
 fn level_at stack col -> l : stack~List Nat, col~Nat, l~Nat
@@ -306,11 +321,18 @@ fn place lines st acc -> r : lines~List Line, st~State, acc~List Placed, r~Resul
                     match l.comment
                         None   -> place rest st (Placed Blank l :: acc)
                         Some c ->
-                            let role = if st.depth > 0 or open_ended st then Cont else Note (level_at st.stack c.col)
+                            # A continuation's comment is indented past the line it continues.
+                            let cont = (st.depth > 0 and c.col > st.open) or (open_ended st and c.col > st.col)
+                            let role = if cont then Cont else Note (level_at st.stack c.col)
                             place rest st (Placed role l :: acc)
                 first :: _ ->
-                    let next = State st.stack (depth_after l.toks st.depth) (last_of l.toks)
-                    if st.last != None and continues st first
+                    let st = if closes st first then State st.stack 0 st.last st.col st.open else st
+                    let cont = st.last != None and continues st first
+                    let col = if cont then st.col else first.col
+                    let depth = depth_after l.toks st.depth
+                    let open = if st.depth == 0 and depth > 0 then col else st.open
+                    let next = State st.stack depth (last_of l.toks) col open
+                    if cont
                         place rest next (Placed Cont l :: acc)
                     else
                         let top = match st.stack
@@ -322,13 +344,13 @@ fn place lines st acc -> r : lines~List Line, st~State, acc~List Placed, r~Resul
                             else
                                 let stack = first.col :: st.stack
                                 let p = Placed (Start (list.length st.stack)) l
-                                place rest (State stack next.depth next.last) (p :: acc)
+                                place rest (State stack next.depth next.last col open) (p :: acc)
                         else
                             match dedent st.stack first.col
                                 None       -> Err (error l.num first.col "unindent does not match any outer indentation level")
                                 Some stack ->
                                     let p = Placed (Start (level_of stack)) l
-                                    place rest (State stack next.depth next.last) (p :: acc)
+                                    place rest (State stack next.depth next.last col open) (p :: acc)
 
 # A comment on its own line belongs with the next line if it is indented at
 # least as far, else with the block its column is in.
@@ -354,5 +376,5 @@ fn resolve placed next acc -> r : placed~List Placed, next~Option (Nat, Nat), ac
 
 # The lines of a file, each with its role.
 export fn layout lines -> r : lines~List Line, r~Result (List Placed) SyntaxError
-    let placed = try place lines (State [0] 0 None) []
+    let placed = try place lines (State [0] 0 None 0 0) []
     Ok (resolve (reverse placed) None [])

@@ -662,10 +662,59 @@ impl Parser {
     // ── blocks and statements ───────────────────────────────────────────────
 
     /// After an INDENT: statements, then a final expression, then DEDENT.
+    /// The rest of a block, after its INDENT. A statement that fails to
+    /// parse becomes a hole (`ExprKind::Error`, bound if it was a `let`) and
+    /// parsing goes on at the block's next statement (D142 e): the rest of
+    /// the body is still checked.
     fn block_rest(&mut self) -> PResult<Block> {
         let start = self.span();
+        let level = self.indent;
         let mut stmts = Vec::new();
         loop {
+            match self.block_step(&mut stmts, start) {
+                Ok(Some(b)) => return Ok(b),
+                Ok(None) => {}
+                Err(Failed) => {
+                    let at = self.span();
+                    self.recover_stmt(level);
+                    if self.at(&Tok::Eof) || (self.at(&Tok::Dedent) && self.indent == level) || self.indent < level {
+                        if self.at(&Tok::Dedent) && self.indent == level {
+                            self.bump();
+                        }
+                        self.last_dedent = true;
+                        let span = start.to(self.prev_span());
+                        let result = Box::new(Expr { kind: ExprKind::Error, span: Span { start: at.start, end: at.start } });
+                        return Ok(Block { stmts, result, span });
+                    }
+                }
+            }
+        }
+    }
+
+    /// Skip to the start of the next statement of the block at `level`, or
+    /// to the DEDENT that ends it.
+    fn recover_stmt(&mut self, level: usize) {
+        loop {
+            if self.at(&Tok::Eof) || self.indent < level {
+                return;
+            }
+            if self.indent == level && self.at(&Tok::Dedent) {
+                return;
+            }
+            let t = self.bump();
+            // The failed statement's own indented block goes with it.
+            if t.tok == Tok::Newline && self.indent == level && !self.at(&Tok::Indent) {
+                return;
+            }
+            if t.tok == Tok::Dedent && self.indent == level {
+                return;
+            }
+        }
+    }
+
+    /// One statement of a block, or its last expression (the block, done).
+    fn block_step(&mut self, stmts: &mut Vec<Stmt>, start: Span) -> PResult<Option<Block>> {
+        {
             if self.at(&Tok::Dedent) || self.at(&Tok::Eof) {
                 return Err(self.error_here("an expression ending the block"));
             }
@@ -681,7 +730,7 @@ impl Parser {
                     );
                     return Err(Failed);
                 }
-                continue;
+                return Ok(None);
             }
             if !self.at_kw(Kw::Let) && self.line_has_larrow() {
                 let p = self.pattern()?;
@@ -702,7 +751,7 @@ impl Parser {
                     );
                     return Err(Failed);
                 }
-                continue;
+                return Ok(None);
             }
             if self.eat_kw(Kw::Let) {
                 let p = self.pattern()?;
@@ -715,18 +764,29 @@ impl Parser {
                     return Err(Failed);
                 }
                 self.expect(Tok::Eq, "`=`")?;
-                let e = if self.at(&Tok::Newline) && *self.peek_at(1) == Tok::Indent {
-                    self.open_block("expression")?;
-                    let b = self.block_rest()?;
-                    let span = b.span;
-                    Expr { kind: ExprKind::Block(b), span }
-                } else {
-                    let e = self.expr()?;
-                    self.end_line()?;
-                    e
+                let at = self.span();
+                let parsed = (|| {
+                    if self.at(&Tok::Newline) && *self.peek_at(1) == Tok::Indent {
+                        self.open_block("expression")?;
+                        let b = self.block_rest()?;
+                        let span = b.span;
+                        Ok(Expr { kind: ExprKind::Block(b), span })
+                    } else {
+                        let e = self.expr()?;
+                        self.end_line()?;
+                        Ok(e)
+                    }
+                })();
+                let e = match parsed {
+                    Ok(e) => e,
+                    Err(Failed) => {
+                        // Still bound, to a hole, for what follows.
+                        stmts.push(Stmt::Let(p, Expr { kind: ExprKind::Error, span: Span { start: at.start, end: at.start } }));
+                        return Err(Failed);
+                    }
                 };
                 stmts.push(Stmt::Let(p, e));
-                continue;
+                return Ok(None);
             }
             if self.at_kw(Kw::Have) {
                 let hspan = self.bump().span;
@@ -737,20 +797,20 @@ impl Parser {
                 if self.at(&Tok::Dedent) {
                     self.bump();
                     let span = start.to(self.prev_span());
-                    return Ok(Block { stmts, result: Box::new(Expr { kind: ExprKind::Auto, span: hspan }), span });
+                    return Ok(Some(Block { stmts: std::mem::take(stmts), result: Box::new(Expr { kind: ExprKind::Auto, span: hspan }), span }));
                 }
-                continue;
+                return Ok(None);
             }
             let e = self.expr()?;
             self.end_line()?;
             if !self.at(&Tok::Dedent) {
                 // A `Unit` statement (D35); the type checker rejects other types.
                 stmts.push(Stmt::Expr(e));
-                continue;
+                return Ok(None);
             }
             self.bump(); // dedent
             let span = start.to(self.prev_span());
-            return Ok(Block { stmts, result: Box::new(e), span });
+            Ok(Some(Block { stmts: std::mem::take(stmts), result: Box::new(e), span }))
         }
     }
 
