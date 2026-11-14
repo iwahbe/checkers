@@ -44,6 +44,22 @@ impl Elab {
     }
 
     pub fn index_global(&mut self, span: Span, t: Target) {
+        let kind = match t {
+            Target::Con(_) => super::unused::RefKind::Build,
+            Target::Field(..) => super::unused::RefKind::Read,
+            _ => super::unused::RefKind::Use,
+        };
+        self.reference(span, t, kind);
+        self.index_name(span, t);
+    }
+
+    /// A constructor matched in a pattern: used, but not built (D144).
+    pub fn index_pattern(&mut self, span: Span, t: Target) {
+        self.reference(span, t, super::unused::RefKind::Match);
+        self.index_name(span, t);
+    }
+
+    fn index_name(&mut self, span: Span, t: Target) {
         // Code shown from another module (D136) isn't in this file.
         if self.indexing() && span.start < super::SYNTHETIC {
             self.index.push(NameUse { module: self.cur.clone(), span, what: Use::Global(t) });
@@ -64,7 +80,7 @@ impl Elab {
     /// occurrence of its name.
     pub fn index_decl(&mut self, span: Span, t: Target) {
         self.decl_at.insert(t, (self.cur.clone(), span));
-        self.index_global(span, t);
+        self.index_name(span, t);
     }
 
     /// The local at level `l` used (or bound) at `span`.

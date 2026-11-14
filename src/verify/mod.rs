@@ -5,7 +5,7 @@ pub mod smt;
 
 use crate::core::{quote, show};
 use crate::diag::Diagnostic;
-use crate::elab::{Elab, ObKind, Obligation, WeakenRole};
+use crate::elab::{Elab, ObKind, Obligation, Probe, ProbeKind, WeakenRole};
 use crate::source::Span;
 
 /// One entry of the trust ledger (§7.4).
@@ -56,6 +56,9 @@ pub const RLIMIT: u64 = 6_000_000;
 /// so giving up on one only costs this much before the next. 1.5 times the
 /// hardest proof they give in the repository (660 000; the next is 255 000).
 pub const QUICK_RLIMIT: u64 = 1_000_000;
+/// For asking whether a branch can run (D144 d): a contradiction among the
+/// facts is found quickly or not at all, and there is one query per branch.
+pub const PROBE_RLIMIT: u64 = 200_000;
 
 /// A weaker query, tried first: with the smaller work limit.
 fn quick(q: Option<String>) -> Option<String> {
@@ -89,6 +92,8 @@ pub struct Remembered {
     pub ledger: Vec<LedgerEntry>,
     pub proved: usize,
     pub z3_version: Option<String>,
+    /// Its proofs phase's warnings (W022, D144).
+    pub warnings: Vec<Diagnostic>,
 }
 
 /// Where verified modules are remembered, if anywhere: beside Z3's answers,
@@ -100,7 +105,7 @@ pub fn modules_dir() -> Option<std::path::PathBuf> {
     cache_dir().map(|d| d.join("modules"))
 }
 
-const MODULE_HEADER: &str = "checkers module 1";
+const MODULE_HEADER: &str = "checkers module 2";
 
 /// The module verified under `key`, if it was.
 pub fn remembered(key: &str) -> Option<Remembered> {
@@ -113,7 +118,12 @@ pub fn remembered(key: &str) -> Option<Remembered> {
     let z3 = lines.next()?.strip_prefix("z3 ")?;
     let z3_version = (z3 != "-").then(|| z3.to_string());
     let mut ledger = Vec::new();
+    let mut warnings = Vec::new();
     for l in lines {
+        if let Some(w) = l.strip_prefix("warning ") {
+            warnings.push(unflatten(w)?);
+            continue;
+        }
         let mut parts = l.splitn(5, ' ');
         let start: u32 = parts.next()?.parse().ok()?;
         let end: u32 = parts.next()?.parse().ok()?;
@@ -131,7 +141,53 @@ pub fn remembered(key: &str) -> Option<Remembered> {
         let what = parts.next()?.replace("\\n", "\n");
         ledger.push(LedgerEntry { span: Span { start, end }, how, what, hash });
     }
-    Some(Remembered { ledger, proved, z3_version })
+    Some(Remembered { ledger, proved, z3_version, warnings })
+}
+
+/// A warning on one line: `CODE START END` and its texts, separated by
+/// U+001F, newlines escaped.
+fn flatten(d: &Diagnostic) -> String {
+    let esc = |t: &str| t.replace('\\', "\\\\").replace('\n', "\\n").replace('\u{1f}', " ");
+    let mut parts = vec![esc(&d.message), esc(d.label.as_deref().unwrap_or("")), esc(d.help.as_deref().unwrap_or(""))];
+    parts.extend(d.notes.iter().map(|n| esc(n)));
+    format!("{} {} {} {}", d.code, d.span.start, d.span.end, parts.join("\u{1f}"))
+}
+
+fn unflatten(line: &str) -> Option<Diagnostic> {
+    let mut it = line.splitn(4, ' ');
+    let code = match it.next()? {
+        "W022" => "W022",
+        _ => return None,
+    };
+    let start = it.next()?.parse().ok()?;
+    let end = it.next()?.parse().ok()?;
+    let unesc = |t: &str| {
+        let mut out = String::new();
+        let mut cs = t.chars();
+        while let Some(c) = cs.next() {
+            match (c, c == '\\') {
+                (_, true) => match cs.next() {
+                    Some('n') => out.push('\n'),
+                    Some(x) => out.push(x),
+                    None => {}
+                },
+                (c, false) => out.push(c),
+            }
+        }
+        out
+    };
+    let parts: Vec<String> = it.next()?.split('\u{1f}').map(unesc).collect();
+    let mut d = Diagnostic::warning(code, parts.first()?.clone(), Span { start, end });
+    if let Some(l) = parts.get(1).filter(|l| !l.is_empty()) {
+        d = d.with_label(l.clone());
+    }
+    if let Some(h) = parts.get(2).filter(|h| !h.is_empty()) {
+        d = d.with_help(h.clone());
+    }
+    for n in parts.iter().skip(3) {
+        d = d.with_note(n.clone());
+    }
+    Some(d)
 }
 
 /// Remember that the module under `key` verified with `v`.
@@ -144,6 +200,9 @@ pub fn remember(key: &str, v: &Verified) {
     for x in &v.ledger {
         let hash = x.hash.map(|h| format!("{h:x}")).unwrap_or_else(|| "-".into());
         out += &format!("{} {} {} {hash} {}\n", x.span.start, x.span.end, x.how, x.what.replace('\n', "\\n"));
+    }
+    for d in v.diags.iter().filter(|d| d.code == "W022") {
+        out += &format!("warning {}\n", flatten(d));
     }
     // Written whole, then renamed: a reader never sees half of it.
     let tmp = dir.join(format!("{key}.{}", std::process::id()));
@@ -376,6 +435,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     for t in e.builtin_axioms.iter().filter(|t| t.module == user) {
         v.ledger.push(LedgerEntry { span: t.span, how: "axiom", what: t.what.clone(), hash: None });
     }
+    v.diags.extend(unreachable(e, user));
     for (m, span, _) in e.checks.iter().filter(|c| c.0 == user) {
         let _ = m;
         let text = e.sources.get(user).and_then(|f| f.text.get(span.start as usize..span.end as usize)).unwrap_or("");
@@ -453,7 +513,18 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
             }
         }
     }
+    // Cases one `match` leaves out that may occur: one error (E0240).
+    let mut uncovered: Vec<(Span, Vec<String>, usize)> = Vec::new();
     for (k, ((o, q), a)) in obs.iter().zip(&queries).zip(answers).enumerate() {
+        if let (ObKind::Uncovered { case }, false) = (&o.kind, matches!((q, &a), (Ok(_), Some(Answer::Unsat)))) {
+            if let Some(u) = uncovered.iter_mut().find(|u| u.0 == o.span) {
+                if !u.1.contains(case) {
+                    u.1.push(case.clone());
+                }
+                continue;
+            }
+            uncovered.push((o.span, vec![case.clone()], v.diags.len()));
+        }
         match (q, a) {
             (Err(why), _) => v.diags.push(outside(e, o, &why.0)),
             (Ok(q), Some(Answer::Unsat)) => {
@@ -486,10 +557,87 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
             (Ok(_), None) => {}
         }
     }
+        for (_, cases, at) in &uncovered {
+        let d = v.diags[*at].clone();
+        v.diags[*at] = merge_uncovered(d, cases);
+    }
     v.z3_version = z3_version();
     v.asked = ASKED.load(std::sync::atomic::Ordering::Relaxed) - asked0;
     v.reused = REUSED.load(std::sync::atomic::Ordering::Relaxed) - reused0;
     v
+}
+
+/// W022 (D144 d): the branches of the program's own used code whose facts
+/// contradict each other, by the facts alone.
+fn unreachable(e: &Elab, user: &str) -> Vec<Diagnostic> {
+    if e.package_of(user) != "." {
+        return Vec::new();
+    }
+    let inside = |a: Span, b: Span| b.start <= a.start && a.end <= b.end;
+    let dead: Vec<Span> = e.dead.iter().filter(|(m, _)| m == user).map(|x| x.1).collect();
+    let probes: Vec<&Probe> =
+        e.probes.iter().filter(|p| p.ob.module == user && !dead.iter().any(|d| inside(p.ob.span, *d))).collect();
+    if probes.is_empty() {
+        return Vec::new();
+    }
+    let defs = smt::Defs::default();
+    let texts: Vec<Option<String>> =
+        probes
+        .iter()
+        .map(|p| {
+            // Marked, so a cached answer is never taken for an obligation's.
+            let q = smt::Builder::new(e, user).sharing(&defs).query(&p.ob).ok().map(|q| q.facts_only.unwrap_or(q.text));
+            q.map(|t| t.replacen(&format!("(set-option :rlimit {RLIMIT})"), &format!("(set-option :rlimit {PROBE_RLIMIT})"), 1) + ";; reachable?\n")
+        })
+        .collect();
+    let answers = ask_all(&texts);
+    // A branch reached along several paths (an arm under several cases)
+    // never runs only if no path reaches it.
+    let mut groups: Vec<(Span, ProbeKind, bool, &Probe)> = Vec::new();
+    for (p, a) in probes.iter().zip(&answers) {
+        let never = matches!(a, Some(Answer::Unsat));
+        match groups.iter_mut().find(|g| g.0 == p.ob.span && g.1 == p.kind) {
+            Some(g) => g.2 &= never,
+            None => groups.push((p.ob.span, p.kind, never, p)),
+        }
+    }
+    let never: Vec<&(Span, ProbeKind, bool, &Probe)> = groups.iter().filter(|g| g.2).collect();
+    let mut out = Vec::new();
+    for g in &never {
+        let (span, kind, _, p) = **g;
+        // Inside a branch already reported.
+        if never.iter().any(|h| !(h.0 == span && h.1 == kind) && inside(span, h.3.region) && h.3.region != p.region) {
+            continue;
+        }
+        let both = never.iter().any(|h| h.0 == span && h.1 != kind && matches!(h.1, ProbeKind::Then | ProbeKind::Else));
+        let src = e.sources.get(user).and_then(|f| f.text.get(span.start as usize..span.end as usize)).unwrap_or("").to_string();
+        let mut d = match kind {
+            ProbeKind::Arm => Diagnostic::warning("W022", "this arm never runs", span)
+                .with_label("no value that can reach this `match` matches it")
+                .with_help("remove it: a `match` needs no arm for a case that can't occur"),
+            ProbeKind::Then | ProbeKind::Else if both => {
+                if kind == ProbeKind::Else {
+                    continue;
+                }
+                Diagnostic::warning("W022", "this `if` never runs", span)
+                    .with_label("the facts here contradict each other")
+                    .with_help("remove it")
+            }
+            ProbeKind::Then => Diagnostic::warning("W022", "this condition is always false", span)
+                .with_label(format!("`{src}` can't be true here"))
+                .with_help("remove the `if`, keeping its `else` branch"),
+            ProbeKind::Else => Diagnostic::warning("W022", "this condition is always true", span)
+                .with_label(format!("`{src}` can't be false here"))
+                .with_help("remove the `if`, keeping its first branch"),
+        };
+        let mut before = p.ob.clone();
+        before.facts.truncate(p.before);
+        if let Some(n) = facts_note(e, &before) {
+            d = d.with_note(n);
+        }
+        out.push(d);
+    }
+    out
 }
 
 fn describe(e: &Elab, o: &Obligation) -> String {
@@ -518,6 +666,7 @@ fn describe(e: &Elab, o: &Obligation) -> String {
         ObKind::Lemma { name } => format!("lemma `{name}`: {}", o.text),
         ObKind::Auto => format!("auto: {}", o.text),
         ObKind::Have => format!("have {}", o.text),
+        ObKind::Uncovered { case } => format!("`match` needs no arm for {case}: it can't occur"),
     }
 }
 
@@ -630,12 +779,45 @@ fn headline(o: &Obligation) -> (String, String, String) {
             "asserted here".into(),
             "prove it with a lemma, or add the facts it needs first".into(),
         ),
+        ObKind::Uncovered { case } => (
+            format!("this `match` does not cover {case}"),
+            "not exhaustive".into(),
+            uncovered_help(std::slice::from_ref(case)),
+        ),
     }
+}
+
+/// What to do about cases a `match` leaves out that may occur.
+fn uncovered_help(cases: &[String]) -> String {
+    match cases {
+        [one] if one.starts_with('`') && !one.contains(" when ") && !one.contains(" for ") => {
+            format!("add an arm `{} -> …`, or a catch-all `_ -> …`", one.trim_matches('`'))
+        }
+        [_] => "add an arm for it, or a catch-all `_ -> …`".to_string(),
+        _ => "add arms for these, or a catch-all `_ -> …`".to_string(),
+    }
+}
+
+/// The cases left out of one `match` that may occur, as one error (E0240):
+/// the first's diagnostic, its message and help naming them all.
+fn merge_uncovered(mut d: Diagnostic, cases: &[String]) -> Diagnostic {
+    if cases.len() > 1 {
+        let n = cases.len();
+        let list = match n {
+            2 => format!("{} or {}", cases[0], cases[1]),
+            3 => format!("{}, {} or {}", cases[0], cases[1], cases[2]),
+            _ => format!("{}, {}, {} and {} more", cases[0], cases[1], cases[2], n - 3),
+        };
+        d.message = format!("this `match` does not cover {list}");
+        d.help = Some(uncovered_help(cases));
+    }
+    d
 }
 
 fn failed(e: &Elab, o: &Obligation, model: Option<String>) -> Diagnostic {
     let (msg, label, help) = headline(o);
-    let mut d = Diagnostic::error("E0450", msg, o.span).with_label(label);
+    let code = if matches!(o.kind, ObKind::Uncovered { .. }) { "E0240" } else { "E0450" };
+    let mut d = Diagnostic::error(code, msg, o.span).with_label(label);
     if let ObKind::Weaken { .. } = &o.kind {
         d = d.with_note(format!("it needs `{}`", o.text));
     }
@@ -646,7 +828,8 @@ fn failed(e: &Elab, o: &Obligation, model: Option<String>) -> Diagnostic {
             d = d.with_note(format!("for the value returned on line {line}: `{text}`"));
         }
     }
-    if let Some(n) = facts_note(e, o) {
+    // A case left out: the facts are the case itself.
+    if let Some(n) = facts_note(e, o).filter(|_| !matches!(o.kind, ObKind::Uncovered { .. })) {
         d = d.with_note(n);
     }
     // Sealed functions from other modules (D54) are only known by their contracts.
@@ -672,7 +855,8 @@ fn failed(e: &Elab, o: &Obligation, model: Option<String>) -> Diagnostic {
 
 fn outside(e: &Elab, o: &Obligation, why: &str) -> Diagnostic {
     let (msg, label, _) = headline(o);
-    let mut d = Diagnostic::error("E0451", msg, o.span)
+    let code = if matches!(o.kind, ObKind::Uncovered { .. }) { "E0240" } else { "E0451" };
+    let mut d = Diagnostic::error(code, msg, o.span)
         .with_label(label)
         .with_note(format!("this obligation is outside what the prover handles: it involves {why}"));
     if let Some(n) = facts_note(e, o) {

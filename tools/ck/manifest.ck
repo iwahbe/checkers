@@ -24,7 +24,6 @@ export record Dep
 
 export record Manifest
     name~String
-    version~Version
     toolchain~Version
     deps~List Dep
 
@@ -274,12 +273,12 @@ partial fn manifest src fields -> r : src~Bytes, fields~List (String, Json), r~R
                         match (version_field src fields [] "version", version_field src fields [] "toolchain")
                             (Err p, _)    -> Err p
                             (_, Err p)    -> Err p
-                            (Ok v, Ok tc) ->
+                            (Ok _, Ok tc) ->
                                 match field fields "dependencies"
-                                    None          -> Ok (Manifest n v tc [])
+                                    None          -> Ok (Manifest n tc [])
                                     Some (Obj ms) ->
                                         match deps src ms []
-                                            Ok ds -> Ok (Manifest n v tc ds)
+                                            Ok ds -> Ok (Manifest n tc ds)
                                             Err p -> Err p
                                     Some _        -> Err (at src ["dependencies"] "`dependencies` must be an object")
 

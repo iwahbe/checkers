@@ -17,6 +17,7 @@ mod pattern;
 mod refine;
 pub mod stdlib;
 mod termination;
+pub mod unused;
 
 use crate::core::*;
 use crate::diag::Diagnostic;
@@ -215,6 +216,30 @@ pub enum ObKind {
     Lemma { name: String },
     Auto,
     Have,
+    /// A case a `match` leaves out can't occur there (D144 e): its pattern.
+    Uncovered { case: String },
+}
+
+/// Where a branch was entered, asked whether it can be reached (D144 d).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProbeKind {
+    /// A `match` arm, at its pattern.
+    Arm,
+    /// An `if`'s first branch, at its condition.
+    Then,
+    /// An `if`'s `else` branch, at its condition.
+    Else,
+}
+
+/// A branch to report if its facts contradict each other (W022).
+#[derive(Clone)]
+pub struct Probe {
+    pub ob: Obligation,
+    pub kind: ProbeKind,
+    /// The code the branch runs: a branch inside one reported isn't reported.
+    pub region: Span,
+    /// How many of the facts were in scope before the `match` or `if`.
+    pub before: usize,
 }
 
 /// Where a refinement is weakened (D83, D85).
@@ -372,6 +397,17 @@ pub struct Elab {
     /// Definitions whose bodies are being elaborated in this module (termination groups).
     pub module_fns: Vec<DefId>,
     pub obligations: Vec<Obligation>,
+    /// Branches to ask about (D144 d).
+    pub probes: Vec<Probe>,
+    /// References between declarations, for unused code (D144).
+    pub refs: Vec<unused::Ref>,
+    /// Values whose every field is observed: formatted, or compared with
+    /// `==` (their type, solved later), for unused fields (D144).
+    pub observed: Vec<(String, Span, Val)>,
+    /// Each program module's declarations, for unused code (D144).
+    pub decl_table: HashMap<String, Vec<unused::Entry>>,
+    /// Declarations found unused: their branches aren't asked about.
+    pub dead: Vec<(String, Span)>,
     pub specs: HashMap<DefId, Spec>,
     /// Functions exported `transparent`: reflected into importers' queries (D12).
     pub transparent: HashSet<DefId>,
@@ -518,6 +554,11 @@ impl Elab {
             calls: Vec::new(),
             module_fns: Vec::new(),
             obligations: Vec::new(),
+            probes: Vec::new(),
+            refs: Vec::new(),
+            observed: Vec::new(),
+            decl_table: HashMap::new(),
+            dead: Vec::new(),
             paths: HashMap::new(),
             index: Vec::new(),
             index_of: None,
@@ -1153,6 +1194,12 @@ impl Elab {
                 return;
             }
         }
+        let o = self.obligation(cx, span, kind, text, goal, only_if_nat);
+        self.obligations.push(o);
+    }
+
+    /// `facts in cx ⊢ goal`, not yet recorded.
+    pub fn obligation(&self, cx: &Cx, span: Span, kind: ObKind, text: String, goal: Val, only_if_nat: Option<Val>) -> Obligation {
         let ctx = (0..cx.lvl())
             .map(|l| ObLocal {
                 name: cx.locals[l].name.clone(),
@@ -1161,17 +1208,64 @@ impl Elab {
             })
             .collect();
         let facts = cx.facts.iter().map(|(_, v)| v.clone()).collect();
-        self.obligations.push(Obligation {
-            module: self.cur.clone(),
-            span,
-            kind,
-            text,
-            ctx,
-            facts,
-            goal,
-            only_if_nat,
-            owner: self.cur_fn,
-        });
+        Obligation { module: self.cur.clone(), span, kind, text, ctx, facts, goal, only_if_nat, owner: self.cur_fn }
+    }
+
+    /// Whether branches here are asked about (D144 d): the program's own
+    /// code, outside specifications, written by its author.
+    pub fn probing(&self, span: Span) -> bool {
+        self.in_spec == 0 && !self.stdlib_mode && self.completing.is_none() && span.start < SYNTHETIC && span.end > span.start
+    }
+
+    /// Ask, in the proofs phase, whether the branch entered here can run.
+    pub fn probe(&mut self, cx: &Cx, span: Span, kind: ProbeKind, region: Span, before: usize) {
+        if !self.probing(span) || cx.facts.is_empty() || !self.may_contradict(cx, before) {
+            return;
+        }
+        let f = self.false_val();
+        let ob = self.obligation(cx, span, ObKind::Have, String::new(), f, None);
+        self.probes.push(Probe { ob, kind, region, before });
+    }
+
+    /// Whether the facts a branch adds (after the first `before`) can
+    /// contradict anything: they mention a local that earlier facts, a `let`
+    /// or a refined type constrain. Facts about locals nothing constrains
+    /// are satisfiable, so the branch isn't asked about (most aren't).
+    fn may_contradict(&self, cx: &Cx, before: usize) -> bool {
+        // A fact may mention a local no longer in scope: quote high enough.
+        let lvl = cx.lvl() + 1024;
+        let levels = |v: &Val| {
+            let mut out = Vec::new();
+            free_levels(&quote(&self.g, lvl, v), lvl, 0, &mut out);
+            out
+        };
+        let earlier: HashSet<usize> = cx.facts[..before.min(cx.facts.len())].iter().flat_map(|(_, v)| levels(v)).collect();
+        let own: Vec<usize> = cx.facts[before.min(cx.facts.len())..].iter().flat_map(|(_, v)| levels(v)).collect();
+        own.iter().any(|l| earlier.contains(l) || cx.locals.get(*l).is_some_and(|x| !x.bound || self.refined_ty(&x.ty)))
+    }
+
+    /// A type whose values the prover knows something about.
+    fn refined_ty(&self, ty: &Val) -> bool {
+        if crate::core::is_nat(&self.g, ty) {
+            return true;
+        }
+        match self.force(ty) {
+            Val::TyCon(id, args) => {
+                self.g.tys[id.0 as usize].ctors.iter().any(|c| self.con_invs.get(c).is_some_and(|v| !v.is_empty()))
+                    || args.iter().any(|a| self.refined_ty(a))
+            }
+            Val::TupleTy(ts) => ts.iter().any(|t| self.refined_ty(t)),
+            Val::Neutral(Head::Var(_), _) | Val::Pi(..) | Val::Univ(_) => false,
+            _ => true,
+        }
+    }
+
+    /// `False`, as a value.
+    pub fn false_val(&self) -> Val {
+        match self.g.well_known.false_con {
+            Some(c) => Val::Con(c, vec![]),
+            None => Val::Error,
+        }
     }
 
     /// The postconditions hold of `v`, a value the function returns at `at`.
@@ -1737,11 +1831,14 @@ fn touches(t: &Tm, g: &Globals, defs: &HashSet<DefId>, tys: &HashSet<TyId>) -> b
         Tm::TyConApp(ty, v) => tys.contains(ty) || v.iter().any(go),
         Tm::ConApp(c, v) => con(c) || v.iter().any(go),
         Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => v.iter().any(go),
+        // A branch that is only `Error` is a case the `match` leaves out
+        // (D144 e), not a type error: those are reported where they are.
         Tm::Case(s, c) => {
+            let arm = |b: &Tm| !matches!(b, Tm::Error) && go(b);
             go(s)
-                || c.branches.iter().any(|(k, _, b)| con(k) || go(b))
-                || c.lits.iter().any(|(_, b)| go(b))
-                || c.default.as_ref().is_some_and(go)
+                || c.branches.iter().any(|(k, _, b)| con(k) || arm(b))
+                || c.lits.iter().any(|(_, b)| arm(b))
+                || c.default.as_ref().is_some_and(arm)
         }
     }
 }
@@ -1765,6 +1862,52 @@ pub fn collect_sealed(t: &Tm, g: &Globals, cur: &str, out: &mut Vec<DefId>) {
         }
         Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => {
             v.iter().for_each(|x| collect_sealed(x, g, cur, out))
+        }
+        _ => {}
+    }
+}
+
+/// The levels of the locals `t` mentions; `t` is under `depth` binders of
+/// its own, at level `lvl`.
+fn free_levels(t: &Tm, lvl: usize, depth: usize, out: &mut Vec<usize>) {
+    let go = |x: &Tm, d: usize, out: &mut Vec<usize>| free_levels(x, lvl, d, out);
+    match t {
+        Tm::Var(i) => {
+            if *i >= depth && *i - depth < lvl {
+                out.push(lvl - 1 - (*i - depth));
+            }
+        }
+        Tm::Pi(_, _, _, a, b) => {
+            go(a, depth, out);
+            go(b, depth + 1, out);
+        }
+        Tm::Lam(_, _, _, b) => go(b, depth + 1, out),
+        Tm::App(a, b, ..) => {
+            go(a, depth, out);
+            go(b, depth, out);
+        }
+        Tm::Proj(b, _) | Tm::Field(b, _, _) => go(b, depth, out),
+        Tm::Let(_, _, a, b, c) => {
+            go(a, depth, out);
+            go(b, depth, out);
+            go(c, depth + 1, out);
+        }
+        Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => {
+            for x in v {
+                go(x, depth, out);
+            }
+        }
+        Tm::Case(s, c) => {
+            go(s, depth, out);
+            for (_, n, b) in &c.branches {
+                go(b, depth + n, out);
+            }
+            for (_, b) in &c.lits {
+                go(b, depth, out);
+            }
+            if let Some(d) = &c.default {
+                go(d, depth, out);
+            }
         }
         _ => {}
     }

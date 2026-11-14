@@ -155,9 +155,11 @@ impl Elab {
                 let cv = self.eval(cx, &ct);
                 let saved = cx.facts.len();
                 cx.assume(self.is_bool(cv.clone(), true));
+                self.probe(cx, c.span, ProbeKind::Then, t.span, saved);
                 let tt = self.check(cx, t, expected, tail);
                 cx.facts.truncate(saved);
                 cx.assume(self.is_bool(cv, false));
+                self.probe(cx, c.span, ProbeKind::Else, f.span, saved);
                 let ft = self.check(cx, f, expected, tail);
                 cx.facts.truncate(saved);
                 self.if_tm(ct, tt, ft)
@@ -728,7 +730,8 @@ impl Elab {
                         return self.apply_rest(cx, r, &args[1..], e.span);
                     }
                     Some(Sym::Format) => {
-                        let (at, _) = self.infer(cx, args[0]);
+                        let (at, aty) = self.infer(cx, args[0]);
+                        self.observe(args[0].span, aty);
                         let r = (Tm::PrimApp(Prim::Format, vec![at]), self.string());
                         return self.apply_rest(cx, r, &args[1..], e.span);
                     }
@@ -1578,6 +1581,9 @@ impl Elab {
                 }
                 if op == Op::EqEq {
                     self.last_eq_ty = Some(lty.clone());
+                }
+                if matches!(op, Op::EqEq | Op::Ne) {
+                    self.observe(operands, lty.clone());
                 }
                 // Compiled code never compares functions (D125).
                 if matches!(op, Op::EqEq | Op::Ne) && self.in_spec == 0 && self.in_proof == 0 {

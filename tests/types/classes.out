@@ -1,1 +1,9 @@
-classes.ck: 0 errors, 0 warnings; 9 obligations proved
+warning[W022]: this condition is always true
+  --> classes.ck:54:8
+   |
+54 |     if le x x then size x else 0
+   |        ^^^^^^ `le x x` can't be false here
+   = note: facts in scope: `le x x`
+   = help: remove the `if`, keeping its first branch
+
+classes.ck: 0 errors, 1 warning; 9 obligations proved

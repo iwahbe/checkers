@@ -10,7 +10,6 @@ record Point
     y~Int
 
 enum Shape
-    Circle r : r~Nat
     Rect w h : w~Nat, h~Nat
 
 fn show_all term : term~Term

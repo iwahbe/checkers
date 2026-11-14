@@ -94,10 +94,8 @@ partial fn unescape b i acc -> r : b~Bytes, i~Nat, acc~List Bytes, r~Bytes
     else if b[i] == '%' and i + 2 < len b and is_hex b[i + 1] and is_hex b[i + 2]
         let v = hex_value b[i + 1] * 16 + hex_value b[i + 2]
         unescape b (i + 3) (byte v :: acc)
-    else if i + 1 <= len b
-        unescape b (i + 1) (bytes.slice b i (i + 1) :: acc)
     else
-        bytes.concat (list.reverse acc)
+        unescape b (i + 1) (bytes.slice b i (i + 1) :: acc)
 
 # A one-byte `Bytes`.
 fn byte v -> r : v~Nat, r~Bytes

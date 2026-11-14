@@ -48,6 +48,7 @@ impl Elab {
         let ids = self.register(m);
         self.register_classes(m, &ids);
         self.decl_spans.insert(name.to_string(), m.decls.iter().zip(&ids).map(|(d, id)| (d.span, *id)).collect());
+        self.note_decls(name, m, &ids);
         self.phase_type_params(m, &ids);
         // Declarations in the order of what they use, not of the file (D65).
         let dicts: Vec<usize> =
@@ -1839,7 +1840,7 @@ fn defs_in(t: &Tm, out: &mut Vec<DefId>) {
     }
 }
 
-fn decl_name(d: &ast::Decl) -> Option<&Ident> {
+pub(super) fn decl_name(d: &ast::Decl) -> Option<&Ident> {
     match &d.kind {
         DeclKind::Fn { name, .. }
         | DeclKind::Lemma { name, .. }

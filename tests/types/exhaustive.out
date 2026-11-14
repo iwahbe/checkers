@@ -3,6 +3,7 @@ error[E0240]: this `match` does not cover `Blue`
   |
 9 |     match c
   |     ^^^^^^^ not exhaustive
+  = note: counterexample: c = Blue
   = help: add an arm `Blue -> …`, or a catch-all `_ -> …`
 
 error[E0240]: this `match` does not cover `Some Green` or `Some Blue`
@@ -10,6 +11,7 @@ error[E0240]: this `match` does not cover `Some Green` or `Some Blue`
    |
 14 |     match o
    |     ^^^^^^^ not exhaustive
+   = note: counterexample: o = Some Green
    = help: add arms for these, or a catch-all `_ -> …`
 
 error[E0240]: this `match` does not cover every other `Nat`
@@ -17,6 +19,7 @@ error[E0240]: this `match` does not cover every other `Nat`
    |
 19 |     match n
    |     ^^^^^^^ not exhaustive
+   = note: counterexample: n = 2
    = help: add an arm for it, or a catch-all `_ -> …`
 
 error[E0240]: this `match` does not cover the case where the guard is false
@@ -24,6 +27,7 @@ error[E0240]: this `match` does not cover the case where the guard is false
    |
 24 |     match n
    |     ^^^^^^^ not exhaustive
+   = note: counterexample: n = 0
    = help: add an arm for it, or a catch-all `_ -> …`
 
 error[E0241]: `Some` is a constructor of `Option`, but the value being matched has type `Color`

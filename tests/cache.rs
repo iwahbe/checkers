@@ -156,3 +156,20 @@ fn editing_an_import_forgets_its_importer() {
     assert_eq!((k2, n2), (n - 2, n), "{after}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn remembered_module_keeps_its_warnings() {
+    let dir = scratch("warnings");
+    std::fs::write(
+        dir.join("never.ck"),
+        "module never\n\nfn sign n -> r : n~Nat, r~Int\n    if n < 0 then -1 else 1\n\ncheck sign 2 == 1\n",
+    )
+    .unwrap();
+    let (_, first) = ckc_status(&dir, &["check", "never.ck"]);
+    assert!(first.contains("W022"), "a branch that never runs:\n{first}");
+    let (_, second) = ckc_status(&dir, &["check", "never.ck"]);
+    assert!(second.contains("W022"), "still reported when the module is remembered (D143):\n{second}");
+    let trust = ckc(&dir, &["trust", "never.ck"]);
+    assert!(modules(&trust).is_some_and(|(k, n)| k == n), "{trust}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

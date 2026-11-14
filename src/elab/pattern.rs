@@ -33,7 +33,7 @@ enum Frame {
 }
 
 /// Exhaustiveness bookkeeping for one `match`.
-#[derive(Default, Debug)]
+#[derive(Default)]
 pub struct PatState {
     /// The occurrences being matched (several for `match (a, b)` on locals).
     roots: Vec<usize>,
@@ -45,6 +45,12 @@ pub struct PatState {
     bad: bool,
     /// Arms already reported for dropping a resource (each arm once).
     dropped: Vec<Span>,
+    /// Cases left out, each an obligation that it can't occur (D144 e).
+    uncovered: Vec<Obligation>,
+    /// The arms some value reaches (the others are W021).
+    reached: Vec<Span>,
+    /// The facts in scope before the `match`.
+    facts_before: usize,
 }
 
 impl Elab {
@@ -90,8 +96,38 @@ impl Elab {
         }
     }
 
-    /// Report the uncovered values of the `match` that just finished, as one error.
-    fn report_missing(&mut self, span: Span) {
+    /// A case the arms leave out (D144 e): an obligation that it can't
+    /// occur here, or in a specification (no obligations) an error.
+    fn uncovered(&mut self, cx: &Cx, item: String) {
+        if self.in_spec > 0 || self.completing.is_some() {
+            self.note_missing(item);
+            return;
+        }
+        let f = self.false_val();
+        let span = self.match_span;
+        let o = self.obligation(cx, span, ObKind::Uncovered { case: item }, String::new(), f, None);
+        self.pm.uncovered.push(o);
+    }
+
+    /// Report the uncovered values of the `match` that just finished, as one
+    /// error; record the obligations for cases left out; W021 for arms no
+    /// value reaches.
+    fn report_missing(&mut self, span: Span, arms: &[Span]) {
+        let uncovered = std::mem::take(&mut self.pm.uncovered);
+        if !self.pm.bad {
+            self.obligations.extend(uncovered);
+            // The standard library and dependencies aren't reported (D144).
+            let own = !self.stdlib_mode && self.package_of(&self.cur) == ".";
+            for a in arms.iter().filter(|_| own) {
+                if !self.pm.reached.contains(a) && a.start < SYNTHETIC {
+                    self.err(
+                        Diagnostic::warning("W021", "this arm never matches", *a)
+                            .with_label("the arms above already match every value it would")
+                            .with_help("remove it"),
+                    );
+                }
+            }
+        }
         let missing = std::mem::take(&mut self.pm.missing);
         if missing.is_empty() || self.pm.bad {
             return;
@@ -130,8 +166,10 @@ impl Elab {
     ) -> (Tm, Val) {
         let saved_span = std::mem::replace(&mut self.match_span, span);
         let saved_pm = std::mem::take(&mut self.pm);
+        self.pm.facts_before = cx.facts.len();
+        let arm_spans: Vec<Span> = arms.iter().map(|(p, _, _)| p.span).collect();
         let r = self.elab_match_inner(cx, scrut, arms, expected, tail);
-        self.report_missing(span);
+        self.report_missing(span, &arm_spans);
         self.pm = saved_pm;
         self.match_span = saved_span;
         r
@@ -263,6 +301,15 @@ impl Elab {
 
     fn leaf(&mut self, cx: &mut Cx, rows: Vec<Row>, expected: &Val, tail: bool) -> Tm {
         let row = rows[0].clone();
+        if !self.pm.reached.contains(&row.span) {
+            self.pm.reached.push(row.span);
+        }
+        let region = match row.body {
+            ArmBody::Expr(e) => e.span,
+            ArmBody::Rest(_, r) => r.span,
+        };
+        let before = self.pm.facts_before;
+        self.probe(cx, row.span, ProbeKind::Arm, row.span.to(region), before);
         self.check_dropped(cx, &row);
         let start = cx.lvl();
         let mut lets = Vec::new();
@@ -292,7 +339,7 @@ impl Elab {
                 let rest: Vec<Row> = rows[1..].to_vec();
                 let et = if rest.is_empty() {
                     let w = self.render_path();
-                    self.note_missing(if w == "_" {
+                    self.uncovered(cx, if w == "_" {
                         "the case where the guard is false".to_string()
                     } else {
                         format!("`{w}` when the guard is false")
@@ -374,6 +421,7 @@ impl Elab {
                 let metas: Vec<Val> = (0..n).map(|_| self.fresh_meta_val(&outer)).collect();
                 let want = Val::TupleTy(metas.clone());
                 if !self.unify_at(cx, &other, &want, pat.span, "this pattern") {
+                    self.pm.bad = true;
                     return Tm::Error;
                 }
                 metas
@@ -506,7 +554,7 @@ impl Elab {
         let default = if defaults.is_empty() {
             let w = self.render_path();
             let tyname = self.show_val(cx, &occ_ty);
-            self.note_missing(if w == "_" {
+            self.uncovered(cx, if w == "_" {
                 format!("every other `{tyname}`")
             } else {
                 format!("`{w}` for other values of that `{tyname}`")
@@ -534,7 +582,7 @@ impl Elab {
         match &p.kind {
             PatKind::Con(name, args) => match self.resolve(&name.name, false) {
                 Some(Sym::Con(c)) => {
-                    self.index_global(name.span, index::Target::Con(c));
+                    self.index_pattern(name.span, index::Target::Con(c));
                     Some((c, Some(args.clone())))
                 }
                 _ => {
@@ -544,7 +592,7 @@ impl Elab {
             },
             PatKind::Record(name, _) => match self.resolve(&name.name, false) {
                 Some(Sym::Con(c)) => {
-                    self.index_global(name.span, index::Target::Con(c));
+                    self.index_pattern(name.span, index::Target::Con(c));
                     Some((c, None))
                 }
                 _ => {
@@ -575,7 +623,10 @@ impl Elab {
         let tid = self.g.cons[c0.0 as usize].ty;
         let params = match occ_ty {
             Val::TyCon(t, ps) if t == tid => ps,
-            Val::Error => return Tm::Error,
+            Val::Error => {
+                self.pm.bad = true;
+                return Tm::Error;
+            }
             other => {
                 let n = self.g.arity_ty(tid);
                 let mut outer = cx.clone();
@@ -659,13 +710,24 @@ impl Elab {
                             ));
                             continue;
                         }
+                        let expl_k = fields.iter().enumerate().filter(|(_, f)| f.2 == Icit::Expl).map(|(k, _)| k);
+                        for (k, a) in expl_k.zip(&args) {
+                            if !matches!(a.kind, PatKind::Wild) {
+                                self.reference(a.span, index::Target::Field(c, k), super::unused::RefKind::Read);
+                            }
+                        }
                         explicit.iter().copied().zip(args).collect()
                     }
                     (None, PatKind::Record(_, fps)) => {
                         let mut v = Vec::new();
                         for (fname, fp) in fps {
                             match fields.iter().position(|f| f.0.as_ref() == fname.name) {
-                                Some(k) => v.push((lvls[k], fp.clone())),
+                                Some(k) => {
+                                    if !matches!(fp.kind, PatKind::Wild) {
+                                        self.reference(fname.span, index::Target::Field(c, k), super::unused::RefKind::Read);
+                                    }
+                                    v.push((lvls[k], fp.clone()))
+                                }
                                 None => {
                                     let cname = self.g.cons[c.0 as usize].name.clone();
                                     self.pat_err(Diagnostic::error(
@@ -715,7 +777,7 @@ impl Elab {
             };
             let body = if rs.is_empty() {
                 let w = self.render_path();
-                self.note_missing(format!("`{w}`"));
+                self.uncovered(cx, format!("`{w}`"));
                 Tm::Error
             } else {
                 self.compile(cx, rs, &refined, tail)

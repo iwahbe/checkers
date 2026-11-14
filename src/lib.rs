@@ -535,7 +535,7 @@ fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
         // Verified before, with nothing it depends on changed: what it gave then.
         let v = match known.get(&m) {
             Some((_, r)) => verify::Verified {
-                diags: Vec::new(),
+                diags: r.warnings.clone(),
                 ledger: r.ledger.clone(),
                 z3_version: r.z3_version.clone(),
                 proved: r.proved,
@@ -544,7 +544,8 @@ fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
             },
             None => {
                 let v = verify::verify(e, &m);
-                fresh.push((m.clone(), verify::Verified { diags: Vec::new(), ledger: v.ledger.clone(), z3_version: v.z3_version.clone(), proved: v.proved, asked: 0, reused: 0 }));
+                let warnings = v.diags.iter().filter(|d| d.code == "W022").cloned().collect();
+                fresh.push((m.clone(), verify::Verified { diags: warnings, ledger: v.ledger.clone(), z3_version: v.z3_version.clone(), proved: v.proved, asked: 0, reused: 0 }));
                 v
             }
         };
@@ -603,6 +604,20 @@ fn elaborate(name: &str, text: &str, dir: &std::path::Path) -> (Checked, Option<
     }
     let syntax: Vec<(String, source::Span)> = c.diags.iter().filter(|d| d.is_error()).map(|d| (user.clone(), d.span)).collect();
     e.set_aside_broken(&syntax);
+    // Unused code (D144): only when everything resolved, or a name that
+    // failed to would look unused.
+    if c.errors() == 0 {
+        let mut own: Vec<String> = e.user_modules.iter().filter(|m| e.package_of(m) == ".").cloned().collect();
+        own.push(user.clone());
+        let u = e.unused(&user, &own);
+        for (m, d) in u.warnings {
+            route(&mut c, &e, &user, &m, d);
+        }
+        e.dead = u.dead;
+    } else {
+        // A branch near an error may look unreachable for want of what failed.
+        e.probes.clear();
+    }
     c.obligations = e.obligations.iter().filter(|o| o.module == user).count();
     (c, Some((e, user)))
 }
@@ -662,7 +677,7 @@ pub struct Ran {
 
 /// Proof failures (D48): the only errors `run --unverified` tolerates.
 fn is_proof_failure(d: &Diagnostic) -> bool {
-    matches!(d.code, "E0450" | "E0451" | "E0452")
+    matches!(d.code, "E0450" | "E0451" | "E0452" | "E0240")
 }
 
 /// Check and prove `text`, then call its exported `main` with `args` (D43,

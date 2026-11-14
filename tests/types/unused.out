@@ -1,0 +1,74 @@
+warning[W020]: function `unused_part` is never used
+ --> tests/types/unused_parts.ck:8:11
+  |
+8 | export fn unused_part n -> r : n~Int, r~Int
+  |           ^^^^^^^^^^^ nothing `main` reaches uses it
+  = help: remove it
+
+warning[W020]: function `ping` is never used
+ --> unused.ck:9:12
+  |
+9 | partial fn ping n -> r : n~Nat, r~Nat
+  |            ^^^^ nothing `main` reaches uses it
+  = note: only `pong` uses it, and it is unused too
+  = help: remove it
+
+warning[W020]: function `pong` is never used
+  --> unused.ck:14:12
+   |
+14 | partial fn pong n -> r : n~Nat, r~Nat
+   |            ^^^^ nothing `main` reaches uses it
+   = note: only `ping` uses it, and it is unused too
+   = help: remove it
+
+warning[W023]: constructor `Circle` is never built
+  --> unused.ck:35:5
+   |
+35 |     Circle r       : r~Nat
+   |     ^^^^^^ nothing used makes this value
+   = help: remove it, with any `match` arm for it
+
+warning[W023]: constructor `Triangle` is never built
+  --> unused.ck:36:5
+   |
+36 |     Triangle a b c : a~Nat, b~Nat, c~Nat
+   |     ^^^^^^^^ nothing used makes this value
+   = help: remove it, with any `match` arm for it
+
+warning[W024]: field `height` of `Size` is never read
+  --> unused.ck:40:5
+   |
+40 |     height~Nat
+   |     ^^^^^^ nothing used reads it
+   = help: remove it
+
+warning[W020]: record `Unused` is never used
+  --> unused.ck:50:8
+   |
+50 | record Unused
+   |        ^^^^^^ nothing `main` reaches uses it
+   = help: remove it
+
+warning[W021]: this arm never matches
+  --> unused.ck:58:9
+   |
+58 |         1 -> 2
+   |         ^ the arms above already match every value it would
+   = help: remove it
+
+warning[W022]: this arm never runs
+  --> unused.ck:63:9
+   |
+63 |         []     -> 0
+   |         ^^ no value that can reach this `match` matches it
+   = note: facts in scope: `xs != []`
+   = help: remove it: a `match` needs no arm for a case that can't occur
+
+warning[W022]: this condition is always false
+  --> unused.ck:67:8
+   |
+67 |     if n < 0 then True else False
+   |        ^^^^^ `n < 0` can't be true here
+   = help: remove the `if`, keeping its `else` branch
+
+unused.ck: 0 errors, 10 warnings; 6 obligations proved

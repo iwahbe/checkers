@@ -66,6 +66,18 @@ fn halve e -> n : e~Even, n~Nat, n + n == e
 
 A type can carry a condition. `Nat` itself is `n~Int, n >= 0`, and the fixed-width types (`U8`, `U32`, …) are refinements of it.
 
+## Cases that can't occur
+
+```checkers
+module head
+
+export fn head xs -> r : xs~List Int, xs != [], r~Int
+    match xs
+        x :: _ -> x
+```
+
+A `match` covers the values that can reach it: here the precondition rules out `[]`, and the prover checks that it does. An arm that can never run, like `[] -> 0` here, is a warning, as are functions, constructors and fields that nothing reachable from `main` (or from a library's exports) uses.
+
 ## Induction
 
 ```checkers

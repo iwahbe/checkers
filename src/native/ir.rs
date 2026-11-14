@@ -184,7 +184,7 @@ impl Compiler<'_> {
                 }
             }
             Tm::Case(s, c) => Ir::Case(self.compile(s), Arc::new(self.case(c))),
-            Tm::Error => Ir::Fail("code with a type error"),
+            Tm::Error => Ir::Fail("no arm of a `match` matches this value (`--unverified`)"),
         }
     }
 

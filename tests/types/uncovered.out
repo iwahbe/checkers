@@ -1,0 +1,9 @@
+error[E0240]: this `match` does not cover `Blue`
+  --> uncovered.ck:32:5
+   |
+32 |     match c
+   |     ^^^^^^^ not exhaustive
+   = note: counterexample: c = Blue
+   = help: add an arm `Blue -> …`, or a catch-all `_ -> …`
+
+uncovered.ck: 1 error, 0 warnings
