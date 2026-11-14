@@ -436,6 +436,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
         v.ledger.push(LedgerEntry { span: t.span, how: "axiom", what: t.what.clone(), hash: None });
     }
     v.diags.extend(unreachable(e, user));
+    guess_measures(e, user, &mut v);
     for (m, span, _) in e.checks.iter().filter(|c| c.0 == user) {
         let _ = m;
         let text = e.sources.get(user).and_then(|f| f.text.get(span.start as usize..span.end as usize)).unwrap_or("");
@@ -565,6 +566,151 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     v.asked = ASKED.load(std::sync::atomic::Ordering::Relaxed) - asked0;
     v.reused = REUSED.load(std::sync::atomic::Ordering::Relaxed) - reused0;
     v
+}
+
+/// Guess each recursive group's measure (D150): the first candidate, alone
+/// and then in pairs compared lexicographically, that the prover shows every
+/// recursive call makes smaller while staying a natural number. E0301 if
+/// none is.
+fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
+    use crate::core::{eval, quote, Lit, Prim, Tm, Val};
+    use crate::elab::termination::Measure;
+    for gr in e.guess_groups.iter().filter(|g| g.module == user) {
+        // Combinations to try: one measure per member.
+        let mut combos: Vec<Vec<Measure>> = Vec::new();
+        if gr.members.len() == 1 {
+            let cs = &gr.candidates[0];
+            combos.extend(cs.iter().map(|c| vec![c.clone()]));
+            let firsts = &cs[..cs.len().min(6)];
+            for a in firsts {
+                for b in firsts {
+                    if a.1 != b.1 {
+                        let mut comps = a.0.clone();
+                        comps.extend(b.0.iter().cloned());
+                        combos.push(vec![(comps, format!("({}, {})", a.1, b.1))]);
+                    }
+                }
+            }
+        } else {
+            // One candidate per member, as long as the product is small.
+            let mut acc: Vec<Vec<Measure>> = vec![Vec::new()];
+            for cs in &gr.candidates {
+                let mut next = Vec::new();
+                for a in &acc {
+                    for c in cs {
+                        let mut x = a.clone();
+                        x.push(c.clone());
+                        next.push(x);
+                    }
+                }
+                next.truncate(64);
+                acc = next;
+            }
+            combos = acc;
+        }
+        let idx = |d| gr.members.iter().position(|m| *m == d).unwrap_or(0);
+        let wk = &e.g.well_known;
+        let (Some(tc), Some(fc)) = (wk.true_con, wk.false_con) else { return };
+        let and = |a: Tm, b: Tm| {
+            Tm::Case(
+                std::rc::Rc::new(a),
+                std::rc::Rc::new(crate::core::CaseTm { branches: vec![(fc, 0, Tm::ConApp(fc, vec![])), (tc, 0, b)], lits: vec![], default: None }),
+            )
+        };
+        let or = |a: Tm, b: Tm| {
+            Tm::Case(
+                std::rc::Rc::new(a),
+                std::rc::Rc::new(crate::core::CaseTm { branches: vec![(fc, 0, b), (tc, 0, Tm::ConApp(tc, vec![]))], lits: vec![], default: None }),
+            )
+        };
+        // The obligation at each call, for each combination.
+        let mut obs: Vec<Vec<Obligation>> = Vec::new();
+        for combo in &combos {
+            let mut v = Vec::new();
+            for c in &gr.calls {
+                let (mine, theirs) = (&combo[idx(c.caller)], &combo[idx(c.callee)]);
+                if mine.0.len() != theirs.0.len() {
+                    continue;
+                }
+                let lvl = c.ob.ctx.len();
+                let n_caller = e.specs.get(&c.caller).map_or(0, |s| s.n_binders);
+                let here: crate::core::Env = std::rc::Rc::new((0..n_caller).map(Val::var).collect());
+                let there: crate::core::Env = std::rc::Rc::new(c.args.clone());
+                let a: Vec<Tm> = theirs.0.iter().map(|t| quote(&e.g, lvl, &eval(&e.g, &there, t))).collect();
+                let b: Vec<Tm> = mine.0.iter().map(|t| quote(&e.g, lvl, &eval(&e.g, &here, t))).collect();
+                // Each part a natural number here, and the callee's below.
+                let k = a.len();
+                let mut lt = Tm::PrimApp(Prim::Lt, vec![a[k - 1].clone(), b[k - 1].clone()]);
+                for j in (0..k - 1).rev() {
+                    let less = Tm::PrimApp(Prim::Lt, vec![a[j].clone(), b[j].clone()]);
+                    let same = Tm::PrimApp(Prim::Eq, vec![a[j].clone(), b[j].clone()]);
+                    lt = or(less, and(same, lt));
+                }
+                let mut goal = lt;
+                for bj in b.iter().rev() {
+                    goal = and(Tm::PrimApp(Prim::Le, vec![Tm::Lit(Lit::Num(0)), bj.clone()]), goal);
+                }
+                let env: crate::core::Env = std::rc::Rc::new(
+                    c.ob.ctx.iter().enumerate().map(|(l, x)| x.def.clone().unwrap_or_else(|| Val::var(l))).collect(),
+                );
+                let mut o = c.ob.clone();
+                o.goal = eval(&e.g, &env, &goal);
+                let func = e.g.defs[c.caller.0 as usize].name.to_string();
+                o.kind = ObKind::Measure { func, measure: mine.1.clone() };
+                o.text = mine.1.clone();
+                v.push(o);
+            }
+            obs.push(v);
+        }
+        // Ask about every combination at once; take the first proved.
+        let defs = smt::Defs::default();
+        let all: Vec<&Obligation> = obs.iter().flatten().collect();
+        let texts: Vec<Option<String>> =
+            all.iter().map(|o| quick(smt::Builder::new(e, user).sharing(&defs).query(o).ok().map(|q| q.text))).collect();
+        let answers = ask_all(&texts);
+        let mut k = 0;
+        let mut chosen = None;
+        let mut tried: Vec<(String, Option<Span>)> = Vec::new();
+        for (ci, os) in obs.iter().enumerate() {
+            let ans = &answers[k..k + os.len()];
+            let failed = os.iter().zip(ans).find(|(_, a)| !matches!(a, Some(Answer::Unsat))).map(|(o, _)| o.span);
+            if chosen.is_none() && failed.is_none() && !os.is_empty() {
+                chosen = Some((ci, k));
+            }
+            tried.push((combos[ci].iter().map(|m| format!("`{}`", m.1)).collect::<Vec<_>>().join(" and "), failed));
+            k += os.len();
+        }
+        let first_call = gr.calls.first().map(|c| c.ob.span);
+        match chosen {
+            Some((ci, at)) => {
+                for (o, t) in obs[ci].iter().zip(&texts[at..]) {
+                    v.proved += 1;
+                    let mut what = describe(e, o);
+                    what.push_str(" (guessed, D150)");
+                    v.ledger.push(LedgerEntry { span: o.span, how: "smt", what, hash: t.as_ref().map(|t| fnv(t)) });
+                }
+            }
+            None => {
+                let Some(at) = first_call else { continue };
+                let names: Vec<String> = gr.members.iter().map(|d| format!("`{}`", e.g.defs[d.0 as usize].name)).collect();
+                let src = e.sources.get(user);
+                let line = |sp: Span| src.map(|f| f.line_col(sp.start).0).unwrap_or(0);
+                let shown: Vec<String> = tried
+                    .iter()
+                    .take(8)
+                    .map(|(m, f)| match f {
+                        Some(sp) if *sp != at => format!("{m} (not shown smaller at line {})", line(*sp)),
+                        _ => m.clone(),
+                    })
+                    .collect();
+                let who = if names.len() == 1 { format!("{} terminates", names[0]) } else { format!("{} terminate", names.join(", ")) };
+                let mut d = Diagnostic::error("E0301", format!("cannot show that {who}: no measure found that every recursive call makes smaller"), at)
+                    .with_label("recursive call");
+                d = d.with_note(format!("measures tried, none shown smaller here: {}", shown.join(", ")));
+                v.diags.push(d.with_help("add `decreasing <measure>` as the first line of the function, or mark it `partial`"));
+            }
+        }
+    }
 }
 
 /// W022 (D144 d): the branches of the program's own used code whose facts

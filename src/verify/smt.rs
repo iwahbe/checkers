@@ -1232,7 +1232,7 @@ impl<'a> Builder<'a> {
             return true;
         }
         let spec = self.e.specs.get(&d);
-        if spec.is_some_and(|s| s.measure.is_some() || s.preds.iter().any(|p| !p.is_post)) {
+        if self.e.guessed.contains(&d) || spec.is_some_and(|s| s.measure.is_some() || s.preds.iter().any(|p| !p.is_post)) {
             return false;
         }
         if stack.contains(&d) {
@@ -2510,7 +2510,8 @@ impl<'a> Builder<'a> {
     /// definitions (structural recursion ends on every value Z3 can build).
     fn domain(&mut self, inst: &Inst, env: &[Ent]) -> Tx<Option<String>> {
         let Some(spec) = self.e.specs.get(&inst.def).cloned() else { return Ok(None) };
-        if spec.measure.is_none() {
+        // A measure written, or guessed (D150).
+        if spec.measure.is_none() && !self.e.guessed.contains(&inst.def) {
             return Ok(None);
         }
         // Its recursion ends without the preconditions: only `Nat`s matter.

@@ -687,7 +687,7 @@ impl Elab {
         Tm::Case(Rc::new(c), Rc::new(CaseTm { branches: vec![(fc, 0, f), (tc, 0, t)], lits: vec![], default: None }))
     }
 
-    fn bool_lit(&self, b: bool) -> Tm {
+    pub fn bool_lit(&self, b: bool) -> Tm {
         let c = if b { self.g.well_known.true_con } else { self.g.well_known.false_con };
         c.map(|c| Tm::ConApp(c, vec![])).unwrap_or(Tm::Error)
     }
@@ -857,6 +857,9 @@ impl Elab {
                         self.measure_obligation(cx, *d, &env, span, head_span);
                     } else {
                         self.saturated_heads.insert(head_span);
+                        if !measured && !caller_measured {
+                            self.note_rec_call(cx, *d, &args[..n], span);
+                        }
                     }
                 }
                 if !pres {

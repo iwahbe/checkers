@@ -16,7 +16,7 @@ mod order;
 mod pattern;
 mod refine;
 pub mod stdlib;
-mod termination;
+pub mod termination;
 pub mod unused;
 
 use crate::core::*;
@@ -461,6 +461,13 @@ pub struct Elab {
     /// Measure obligations of calls (caller, callee); kept only for calls
     /// inside one recursive group once termination is analysed.
     pub measure_obs: Vec<(DefId, DefId, Obligation)>,
+    /// Calls between functions of this module with no measure, which may
+    /// recurse: for guessing a measure (D150).
+    pub rec_calls: Vec<termination::RecCall>,
+    /// Recursive groups whose measure is guessed in the proofs phase (D150).
+    pub guess_groups: Vec<termination::GuessGroup>,
+    /// Their functions: terminating by a measure, as with `decreasing`.
+    pub guessed: HashSet<DefId>,
     /// Functions recursing by `decreasing` that end without their
     /// preconditions (D118), found while proving.
     pub ends_everywhere: std::sync::Mutex<HashSet<DefId>>,
@@ -595,6 +602,9 @@ impl Elab {
             axiom_defs: HashSet::new(),
             measure_obs: Vec::new(),
             ends_everywhere: Default::default(),
+            rec_calls: Vec::new(),
+            guess_groups: Vec::new(),
+            guessed: HashSet::new(),
             saturated_heads: HashSet::new(),
             resource_vars: HashMap::new(),
             stdlib_mode: false,
@@ -1906,6 +1916,11 @@ pub fn collect_sealed(t: &Tm, g: &Globals, cur: &str, out: &mut Vec<DefId>) {
         }
         _ => {}
     }
+}
+
+/// The levels of the locals `t` mentions (for termination, D150).
+pub(super) fn free_levels_pub(t: &Tm, lvl: usize, depth: usize, out: &mut Vec<usize>) {
+    free_levels(t, lvl, depth, out)
 }
 
 /// The levels of the locals `t` mentions; `t` is under `depth` binders of
