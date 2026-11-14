@@ -683,7 +683,7 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
         let texts: Vec<Option<String>> = obs
             .iter()
             .flatten()
-            .map(|o| quick(smt::Builder::new(e, user).sharing(&defs).query(o).ok().map(|q| q.text)))
+            .map(|o| quick(smt::Builder::new(e, user).sharing(&defs).query(o).ok().map(|q| q.no_tables.unwrap_or(q.text))))
             .collect();
         let mut answers: Vec<Option<Answer>> = texts.iter().map(|_| None).collect();
         let singles = combos.iter().take_while(|c| c.iter().all(|m| m.0.len() == 1)).count();

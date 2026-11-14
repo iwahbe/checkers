@@ -178,7 +178,7 @@ pub fn keywords(p: &Place) -> Vec<&'static str> {
         PlaceKind::Proof => k.push("proof"),
         PlaceKind::Else => k.push("else"),
         PlaceKind::Members => k.extend(["fn", "lemma"]),
-        PlaceKind::Type { .. } | PlaceKind::Have | PlaceKind::Member | PlaceKind::Pattern | PlaceKind::Import(_) => {}
+        PlaceKind::Type { .. } | PlaceKind::Have | PlaceKind::Member | PlaceKind::Pattern | PlaceKind::Import(_) | PlaceKind::ImportItem(_) => {}
     }
     k
 }
@@ -294,6 +294,25 @@ impl Elab {
                 }
             }
             PlaceKind::Import(prefix) => self.import_paths(prefix, &mut out),
+            PlaceKind::ImportItem(path) => {
+                // The module's exports (lemmas too: `import std.list (perm_middle)`).
+                if let Some(mi) = self.modules.get(&path.join(".")) {
+                    let mut names: Vec<(&String, Sym)> = Vec::new();
+                    for n in &mi.exported_values {
+                        names.push((n, mi.values[n]));
+                    }
+                    for n in &mi.exported_types {
+                        if !mi.exported_values.contains(n) {
+                            names.push((n, mi.types[n]));
+                        }
+                    }
+                    for (n, s) in names {
+                        if let Some(c) = self.global(n, s, 2, true, &info) {
+                            out.push(c);
+                        }
+                    }
+                }
+            }
             _ => {}
         }
         // Locals in scope order; the rest by fit, then name.

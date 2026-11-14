@@ -200,6 +200,8 @@ impl Focus {
 
 pub struct Query {
     pub text: String,
+    /// The full query without tables' elements (D153), when it has some.
+    pub no_tables: Option<String>,
     /// The same query without the quantified `Nat` axioms: Z3 is complete on
     /// it, so it can find a counterexample where the full query is `unknown`.
     pub without_axioms: Option<String>,
@@ -242,6 +244,15 @@ struct Delta {
 #[derive(Default)]
 pub struct Defs(std::cell::RefCell<BTreeMap<Inst, (Tx<Defn>, Delta)>>);
 
+/// A table's translation: what it adds to a builder, and its elements' facts.
+type Table = (Delta, Vec<String>);
+
+thread_local! {
+    /// Tables' translations (D153), for the elaborator they were made with:
+    /// the same in every query of every module it checks.
+    static TABLES: std::cell::RefCell<(u64, BTreeMap<String, Table>)> = const { std::cell::RefCell::new((0, BTreeMap::new())) };
+}
+
 pub struct Builder<'a> {
     e: &'a Elab,
     defs: Option<&'a Defs>,
@@ -267,6 +278,8 @@ pub struct Builder<'a> {
     inst_queue: Vec<Inst>,
     consts: Vec<String>,
     asserts: Vec<String>,
+    /// Constant tables' elements (D153): only in the full query.
+    table_facts: Vec<String>,
     /// `Nat` results of functions, as pattern-guarded axioms (emitted after the definitions).
     axioms: BTreeMap<String, String>,
     posts: Vec<PostUse>,
@@ -300,6 +313,7 @@ impl<'a> Builder<'a> {
             ty_funs: BTreeMap::new(),
             dict_args: BTreeMap::new(),
             inst_queue: Vec::new(),
+            table_facts: Vec::new(),
             consts: Vec::new(),
             asserts: Vec::new(),
             axioms: BTreeMap::new(),
@@ -1767,9 +1781,114 @@ impl<'a> Builder<'a> {
             && !self.large_constant(d)
     }
 
-    /// A constant whose value is large (a table): the solver gets it as an
-    /// unknown of its type, not its value, which every query mentioning it
-    /// would carry (D151 g). Lookups and bounds don't depend on the contents.
+    /// A constant whose value is `array.from_list` of a list literal, its
+    /// elements closed terms the solver can see: declared, with its length
+    /// and each element asserted (D153). Equations on `seq.nth` are cheap for
+    /// Z3 where the value as a term (`seq.++` of 2,000 units) is not.
+    fn array_table(&mut self, d: DefId, rs: &Sort) -> Tx<Option<(String, Sort)>> {
+        let name = {
+            let info = &self.e.g.defs[d.0 as usize];
+            sym(&format!("{}.{}", info.module, info.name))
+        };
+        if self.funs.contains_key(&name) {
+            return Ok(Some((name, rs.clone())));
+        }
+        let here = self.e.uid;
+        let found = TABLES.with(|t| {
+            let mut t = t.borrow_mut();
+            if t.0 != here {
+                *t = (here, BTreeMap::new());
+            }
+            t.1.get(&name).cloned()
+        });
+        let (delta, facts) = match found {
+            Some(x) => x,
+            None => {
+                // Translated once, in an empty builder, and replayed in each
+                // query's (as `define_shared` does for definitions).
+                let saved = (
+                    std::mem::take(&mut self.datatypes),
+                    std::mem::take(&mut self.tuples),
+                    std::mem::take(&mut self.sorts),
+                    std::mem::take(&mut self.funs),
+                    std::mem::take(&mut self.asserts),
+                    std::mem::take(&mut self.table_facts),
+                );
+                let r = self.table_fresh(d, rs);
+                let delta = Delta {
+                    datatypes: std::mem::replace(&mut self.datatypes, saved.0).into_iter().collect(),
+                    tuples: std::mem::replace(&mut self.tuples, saved.1).into_iter().collect(),
+                    sorts: std::mem::replace(&mut self.sorts, saved.2).into_iter().collect(),
+                    funs: std::mem::replace(&mut self.funs, saved.3).into_iter().collect(),
+                    asserts: std::mem::replace(&mut self.asserts, saved.4),
+                    ..Delta::default()
+                };
+                let facts = std::mem::replace(&mut self.table_facts, saved.5);
+                match r? {
+                    Some(_) => {}
+                    None => return Ok(None),
+                }
+                TABLES.with(|t| t.borrow_mut().1.insert(name.clone(), (delta.clone(), facts.clone())));
+                (delta, facts)
+            }
+        };
+        self.datatypes.extend(delta.datatypes);
+        self.tuples.extend(delta.tuples);
+        self.sorts.extend(delta.sorts);
+        for (k, v) in delta.funs {
+            self.funs.entry(k).or_insert(v);
+        }
+        self.asserts.extend(delta.asserts);
+        self.table_facts.extend(facts);
+        Ok(Some((name, rs.clone())))
+    }
+
+    fn table_fresh(&mut self, d: DefId, rs: &Sort) -> Tx<Option<(String, Sort)>> {
+        let info = &self.e.g.defs[d.0 as usize];
+        if matches!(info.ty, Tm::Pi(..)) || info.opaque || !(*info.module == *self.user || self.e.transparent.contains(&d)) {
+            return Ok(None);
+        }
+        let Some(body) = info.body.clone() else { return Ok(None) };
+        let name = sym(&format!("{}.{}", info.module, info.name));
+        let table = if matches!(rs, Sort::Seq(_)) { array_literal(self.e, &body) } else { None };
+        let Some(elems) = table else {
+            // Any other large constant: its value as one equation, also only
+            // in the full query.
+            if !self.large_constant(d) || !closed(&body, 0) {
+                return Ok(None);
+            }
+            if !self.funs.contains_key(&name) {
+                self.funs.insert(name.clone(), format!("(declare-fun {name} () {})", rs.render(self.e)));
+                let saved = self.in_def;
+                self.in_def = true;
+                let r = self.term(&[], &body);
+                self.in_def = saved;
+                if let Ok((t, _)) = r {
+                    self.table_facts.push(format!("(assert (= {name} {t}))\n"));
+                }
+            }
+            return Ok(Some((name, rs.clone())));
+        };
+        if !self.funs.contains_key(&name) {
+            self.funs.insert(name.clone(), format!("(declare-fun {name} () {})", rs.render(self.e)));
+            self.asserts.push(format!("(= (seq.len {name}) {})", elems.len()));
+            let saved = self.in_def;
+            self.in_def = true;
+            for (i, x) in elems.iter().enumerate() {
+                let r = self.term(&[], x);
+                match r {
+                    Ok((t, _)) => self.table_facts.push(format!("(assert (= (seq.nth {name} {i}) {t}))\n")),
+                    Err(_) => break,
+                }
+            }
+            self.in_def = saved;
+        }
+        Ok(Some((name, rs.clone())))
+    }
+
+    /// A constant whose value is large: not reflected as a definition (a
+    /// 2,000-unit term in a recursive definition is slow for Z3) but given
+    /// as an equation in the full query (D153).
     fn large_constant(&self, d: DefId) -> bool {
         let info = &self.e.g.defs[d.0 as usize];
         !matches!(info.ty, Tm::Pi(..)) && info.body.as_ref().is_some_and(|b| tm_size(b, LARGE_CONSTANT) >= LARGE_CONSTANT)
@@ -1884,6 +2003,13 @@ impl<'a> Builder<'a> {
                 ));
             }
             _ => {}
+        }
+        // A constant array of literals (a table): its length and each
+        // element, as facts (D153).
+        if args.is_empty() {
+            if let Some(r) = self.array_table(d, &rs)? {
+                return Ok(r);
+            }
         }
         // A class's function of a known instance's dictionary is that
         // instance's function (D136).
@@ -2720,7 +2846,18 @@ impl<'a> Builder<'a> {
         let focused = focus
             .for_goal(&goal)
             .map(|d| format!("{}{d}{}{}", &text[..defs_at], &text[defs_end..split], &text[split + axioms.len()..]));
-        Ok(Query { text, without_axioms, facts_only, focused, dropped, shown: self.shown, string_vars: self.string_vars, array_vars: self.array_vars })
+        // Tables' elements go only in the full query: the weaker ones first
+        // try without them, and most proofs about a table need only its
+        // length (D153).
+        let (text, no_tables, without_axioms) = match text.rfind("(assert (not ") {
+            Some(k) if !self.table_facts.is_empty() => {
+                let full = format!("{}{}{}", &text[..k], self.table_facts.concat(), &text[k..]);
+                let lean = without_axioms.or_else(|| Some(text.clone()));
+                (full, Some(text), lean)
+            }
+            _ => (text, None, without_axioms),
+        };
+        Ok(Query { text, no_tables, without_axioms, facts_only, focused, dropped, shown: self.shown, string_vars: self.string_vars, array_vars: self.array_vars })
     }
 }
 
@@ -2803,6 +2940,42 @@ fn has_forall(t: &Tm) -> bool {
                 || c.default.as_ref().is_some_and(has_forall)
         }
         _ => false,
+    }
+}
+
+/// The elements of `array.from_list [x, y, …]`, if `t` is that.
+fn array_literal(e: &Elab, t: &Tm) -> Option<Vec<Tm>> {
+    let mut head = t;
+    let mut args = Vec::new();
+    while let Tm::App(f, a, ..) = head {
+        args.push(&**a);
+        head = f;
+    }
+    let Tm::Def(d) = head else { return None };
+    let info = &e.g.defs[d.0 as usize];
+    if &*info.module != "std.array" || &*info.name != "from_list" {
+        return None;
+    }
+    let mut list = *args.first()?;
+    let mut out = Vec::new();
+    loop {
+        match list {
+            Tm::ConApp(c, xs) => {
+                let name = &e.g.cons[c.0 as usize].name;
+                match (&**name, xs.len()) {
+                    ("Nil", _) => return Some(out),
+                    ("Cons", n) if n >= 2 => {
+                        if !closed(&xs[n - 2], 0) {
+                            return None;
+                        }
+                        out.push(xs[n - 2].clone());
+                        list = &xs[n - 1];
+                    }
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        }
     }
 }
 

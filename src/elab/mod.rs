@@ -358,6 +358,8 @@ pub struct Elab {
     pub index: Vec<index::NameUse>,
     /// That module.
     pub index_of: Option<String>,
+    /// Different for every elaborator a process makes (keys caches, D153).
+    pub uid: u64,
     /// Where each global is declared: module and the span of its name.
     pub decl_at: HashMap<index::Target, (String, Span)>,
     /// A declaration's header as written, for hover.
@@ -572,6 +574,10 @@ impl Elab {
             paths: HashMap::new(),
             index: Vec::new(),
             index_of: None,
+            uid: {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            },
             decl_at: HashMap::new(),
             decl_sig: HashMap::new(),
             def_class: HashMap::new(),

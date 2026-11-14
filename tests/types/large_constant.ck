@@ -1,5 +1,6 @@
-# A large constant is an unknown to the prover (D151 g): proofs about
-# lookups need only its length, and stay small.
+# A large constant is known to the prover (D153): a table's length and its
+# elements are facts, the elements only in the full query, so proofs about
+# lookups, which need only its length, stay small.
 module large_constant
 
 import std.array
@@ -16,3 +17,10 @@ fn find k lo hi -> r : k~Nat, lo~Nat, hi~Nat, lo <= hi, hi <= len PAIRS, r~Optio
 
 check find 7 0 (len PAIRS) == Some 14
 check find 9999 0 (len PAIRS) == None
+
+# Its length and its elements are known.
+lemma size
+    ensures len PAIRS == 600
+
+lemma tenth
+    ensures PAIRS[10] == (10, 20)

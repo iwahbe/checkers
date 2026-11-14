@@ -532,16 +532,22 @@ fn module_keys(e: &elab::Elab) -> std::collections::HashMap<String, String> {
 }
 
 /// The program's modules verified before (D143), with their keys.
+/// Modules this process has verified, by key: a doc comment's code block
+/// imports the module it is in, and the standard library, all just verified
+/// (D148 k).
+static VERIFIED: std::sync::Mutex<Option<std::collections::HashMap<String, verify::Remembered>>> = std::sync::Mutex::new(None);
+
 fn remembered<'a>(c: &'a mut Checked, e: &elab::Elab, user: &str) -> &'a std::collections::HashMap<String, (String, verify::Remembered)> {
     if c.remembered.is_none() {
         let mut found = std::collections::HashMap::new();
-        if verify::modules_dir().is_some() {
-            let keys = module_keys(e);
-            for m in program_modules(e, user) {
-                if let Some(k) = keys.get(&m) {
-                    if let Some(r) = verify::remembered(k) {
-                        found.insert(m, (k.clone(), r));
-                    }
+        let keys = module_keys(e);
+        let memo = VERIFIED.lock().unwrap_or_else(|p| p.into_inner());
+        for m in program_modules(e, user) {
+            if let Some(k) = keys.get(&m) {
+                let r = memo.as_ref().and_then(|x| x.get(k).cloned());
+                let r = if r.is_some() || verify::modules_dir().is_none() { r } else { verify::remembered(k) };
+                if let Some(r) = r {
+                    found.insert(m, (k.clone(), r));
                 }
             }
         }
@@ -552,7 +558,7 @@ fn remembered<'a>(c: &'a mut Checked, e: &elab::Elab, user: &str) -> &'a std::co
 
 fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
     let known = remembered(c, e, user).clone();
-    let keys = if known.is_empty() && verify::modules_dir().is_none() { Default::default() } else { module_keys(e) };
+    let keys = module_keys(e);
     let mut ledger = String::new();
     let (mut asked, mut reused) = (0, 0);
     let mut fresh: Vec<(String, verify::Verified)> = Vec::new();
@@ -605,7 +611,7 @@ fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
     if reused > 0 {
         out += &format!("cache: {reused} of {asked} Z3 answers reused (D100)\n");
     }
-    if !known.is_empty() {
+    if !known.is_empty() && verify::modules_dir().is_some() {
         out += &format!("cache: {} of {} modules verified before (D143)\n", known.len(), all.len());
     }
     c.ledger = out;
@@ -613,7 +619,11 @@ fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
     if c.errors() == 0 {
         for (m, v) in &fresh {
             if let Some(k) = keys.get(m) {
-                verify::remember(k, v);
+                if verify::modules_dir().is_some() {
+                    verify::remember(k, v);
+                }
+                let r = verify::Remembered { ledger: v.ledger.clone(), proved: v.proved, z3_version: v.z3_version.clone(), warnings: v.diags.clone() };
+                VERIFIED.lock().unwrap_or_else(|p| p.into_inner()).get_or_insert_with(Default::default).insert(k.clone(), r);
             }
         }
     }

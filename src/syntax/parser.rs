@@ -52,6 +52,8 @@ pub enum PlaceKind {
     Pattern,
     /// A module path after `import`, with the parts before the cursor.
     Import(Vec<String>),
+    /// A name in an import's list: `import std.list (so‸`, the module's path.
+    ImportItem(Vec<String>),
     /// A lemma's body before `ensures`.
     LemmaBody,
     /// After a lemma's `ensures` line.
@@ -352,6 +354,7 @@ impl Parser {
             let mut v = Vec::new();
             if !self.at(&Tok::RParen) {
                 loop {
+                    self.mark(PlaceKind::ImportItem(path.parts.iter().map(|p| p.name.clone()).collect()));
                     v.push(self.ident("an imported name")?);
                     if !self.eat(&Tok::Comma) {
                         break;
