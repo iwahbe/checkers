@@ -134,8 +134,8 @@ fn checking_a_standard_library_file() {
 #[test]
 fn a_standard_library_file_reports_once() {
     let (std_dir, prog) = scratch("once");
-    append(&std_dir.join("sort.ck"), "\ncheck sort [2, 1] == [2, 1]\n\nfn bigger n -> m : n~Nat, m~Nat, m > n\n    n\n");
-    let out = ckc(&std_dir, &prog, &["check", std_dir.join("sort.ck").to_str().unwrap()]);
+    append(&std_dir.join("list.ck"), "\ncheck sort [2, 1] == [2, 1]\n\nfn bigger n -> m : n~Nat, m~Nat, m > n\n    n\n");
+    let out = ckc(&std_dir, &prog, &["check", std_dir.join("list.ck").to_str().unwrap()]);
     let err = text(&out.stderr);
     assert_eq!(err.matches("error[E0260]").count(), 1, "{err}");
     assert_eq!(err.matches("error[E0450]").count(), 1, "{err}");

@@ -1563,7 +1563,9 @@ impl Elab {
                     self.module_fns.push(*did);
                     self.assume_pres(&mut sig);
                     self.lemma_lets(&mut sig.cx, lets);
+                    self.forall_ok += 1;
                     let ens = self.elab_pred(&mut sig.cx, ensures, false);
+                    self.forall_ok -= 1;
                     self.solve_deferred();
                     let goal = self.eval(&sig.cx, &ens.tm);
                     match proof {
@@ -1572,6 +1574,9 @@ impl Elab {
                             self.oblige(&sig.cx, ensures.span, kind, ens.text.clone(), goal, None);
                         }
                         Some(block) => {
+                            // Concluding a `forall` (D146): its variables are
+                            // in scope in the proof, its premises facts.
+                            let goal = self.intro_forall(&mut sig.cx, &ens.tm, goal);
                             let saved = self.proof_goal.replace((goal, ens.text.clone()));
                             let unit = self.unit();
                             self.in_proof += 1;
@@ -1620,7 +1625,17 @@ impl Elab {
                 cx.assume(v);
             }
             let lets_tm = self.lemma_lets(&mut cx, lets);
+            // A lemma may conclude a `forall` (D146), positively.
+            if let Some(bad) = super::expr::negative_forall(ensures, true) {
+                self.err(
+                    Diagnostic::error("E0289", "this lemma would have to show a `forall` false, which takes a value it fails for", bad)
+                        .with_label("a `forall` before `implies` or under `not`")
+                        .with_help("conclude what holds of that value instead"),
+                );
+            }
+            self.forall_ok += 1;
             let ens = self.elab_pred(&mut cx, ensures, true);
+            self.forall_ok -= 1;
             self.solve_deferred();
             let spec = Spec {
                 preds: sig.preds.clone(),

@@ -8,8 +8,8 @@
 # `le`, and using one of the order's lemmas, `total`, where `x` doesn't come
 # before `y`. Each recursive call may assume its own postcondition
 # (induction, D50), and Z3 does the rest. `examples/resort.ck` uses this
-# module through its exported postconditions and lemma only. (`std.sort`
-# has merge sorts.)
+# module through its exported postconditions and lemma only. (`std.list`
+# has a merge sort.)
 
 module sort
 

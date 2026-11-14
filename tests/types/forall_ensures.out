@@ -1,0 +1,16 @@
+error[E0450]: cannot prove lemma `wrong`
+  --> forall_ensures.ck:29:13
+   |
+29 |     ensures forall m : m~Int, m > 0
+   |             ^^^^^^^^^^^^^^^^^^^^^^^ `forall m : m~Int, m > 0`
+   = note: counterexample: m = 0
+   = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+
+error[E0289]: this lemma would have to show a `forall` false, which takes a value it fails for
+  --> forall_ensures.ck:33:17
+   |
+33 |     ensures not (forall m : m~Int, m > 0)
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^ a `forall` before `implies` or under `not`
+   = help: conclude what holds of that value instead
+
+forall_ensures.ck: 2 errors, 0 warnings

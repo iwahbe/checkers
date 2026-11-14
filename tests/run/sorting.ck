@@ -6,7 +6,7 @@ module sorting
 import std.system (System, ExitCode)
 import std.terminal (Term)
 import std.terminal
-import std.sort (sort, sort_as, sort_by)
+import std.list (sort, sort_as, sort_by)
 import std.array
 
 record Person

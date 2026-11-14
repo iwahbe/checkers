@@ -127,6 +127,90 @@ export transparent fn sorted_as key xs -> r : Ord k, key~(a -> k), xs~List a, r~
 export transparent fn perm xs ys -> r : xs~List a, ys~List a, r~Bool
     bag.of xs == bag.of ys
 
+# ── Sorting (D138, D147) ─────────────────────────────────────────────────────
+# One stable merge sort, `sort_by`, in O(n log n) comparisons, proved to give
+# a sorted permutation of its input; `sort_as` and `sort` are through it.
+
+# `xs` in order (`Ord`).
+export fn sort xs -> r : Ord a, xs~List a, r~List a, sorted r, perm xs r, length r == length xs
+    let r = sort_as (\x -> x) xs
+    have sorted_as_id r
+    r
+
+# `xs` in the order of `key` of each element (`Ord`): `sort_as (\p -> p.age)`.
+export fn sort_as key xs -> r : Ord k, key~(a -> k), xs~List a, r~List a, sorted_as key r, perm xs r, length r == length xs
+    have total_key key
+    let r = sort_by (\x y -> le (key x) (key y)) xs
+    have sorted_by_key key r
+    r
+
+# The order of keys is total, as `Ord` says (D146).
+lemma total_key key : Ord k, key~(a -> k)
+    ensures forall x y : x~a, y~a, le (key x) (key y) or le (key y) (key x)
+    proof
+        have total (key x) (key y)
+
+# In the order of a key is in the order of comparing keys.
+lemma sorted_by_key key xs : Ord k, key~(a -> k), xs~List a
+    ensures sorted_by (\x y -> le (key x) (key y)) xs == sorted_as key xs
+    proof
+        match xs
+            []        -> auto
+            _ :: rest -> have sorted_by_key key rest
+
+# In order by the identity is in order.
+lemma sorted_as_id xs : Ord a, xs~List a
+    ensures sorted_as (\x -> x) xs == sorted xs
+    proof
+        match xs
+            []        -> auto
+            _ :: rest -> have sorted_as_id rest
+
+# `xs` in the order `le` gives, which must put any two elements in order
+# one way or the other (`total`).
+export fn sort_by le xs -> r : le~(a -> a -> Bool), xs~List a,
+                               total: forall x y : x~a, y~a, le x y or le y x,
+                               r~List a, sorted_by le r, perm xs r, length r == length xs
+    decreasing length xs
+    match xs
+        _ :: _ :: rest ->
+            have length xs == 2 + length rest
+            let k = length xs / 2
+            let front = take k xs
+            let back = drop k xs
+            have take_drop k xs
+            have bag_append front back
+            let a = sort_by le front
+            let b = sort_by le back
+            have bag_append a b
+            merge_by le a b
+        _              -> xs
+
+fn merge_by le xs ys -> r : le~(a -> a -> Bool), xs~List a, ys~List a, sorted_by le xs, sorted_by le ys,
+                            total: forall x y : x~a, y~a, le x y or le y x,
+                            r~List a, sorted_by le r, perm (xs ++ ys) r, head r == head xs or head r == head ys,
+                            length r == length xs + length ys
+    decreasing length xs + length ys
+    match xs
+        []      -> ys
+        x :: xr ->
+            match ys
+                []      ->
+                    have append_nil xs
+                    xs
+                y :: yr ->
+                    have total x y
+                    if le x y
+                        x :: merge_by le xr ys
+                    else
+                        have perm_middle xs y yr
+                        y :: merge_by le xs yr
+
+check sort [3, 1, 2, 2] == [1, 2, 2, 3]
+check sort ["pear", "apple", "fig"] == ["apple", "fig", "pear"]
+check sort_as (\x -> x * x) [-3, 2, 1] == [1, 2, -3]
+check sort_by (\x y -> x >= y) [1, 3, 2] == [3, 2, 1]
+
 # The first element, if there is one.
 export transparent fn head xs -> r : xs~List a, r~Option a
     match xs

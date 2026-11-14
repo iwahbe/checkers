@@ -132,7 +132,7 @@ export lemma sort_twice xs : xs~List Int
 ```checkers
 module versions
 
-import std.sort (sort, sort_by)
+import std.list (sort, sort_by)
 
 record Version
     major~Nat
@@ -161,7 +161,7 @@ check larger "fig" "apple" == "fig"
 check sort_by (\x y -> x >= y) [2, 3, 1] == [3, 2, 1]
 ```
 
-A class lists functions and lemmas; an instance gives the functions for one type and proves the lemmas (or Z3 does). A function generic over the class (`Ord a`) gets them where it is called, for the caller's type. The prelude's `Ord` has instances for numbers, `Bool`, `String`, `List` and `Option`; `std.sort` sorts by it (`sort`), by a key (`sort_as`), or by a comparison (`sort_by`), each proved to give a sorted permutation.
+A class lists functions and lemmas; an instance gives the functions for one type and proves the lemmas (or Z3 does). A function generic over the class (`Ord a`) gets them where it is called, for the caller's type. The prelude's `Ord` has instances for numbers, `Bool`, `String`, `List` and `Option`; `std.list` sorts by it (`sort`), by a key (`sort_as`), or by a comparison (`sort_by`), each proved to give a sorted permutation.
 
 ## What a proof rests on
 

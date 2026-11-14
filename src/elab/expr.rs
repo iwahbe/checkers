@@ -955,7 +955,7 @@ impl Elab {
         let ExprKind::Forall(vs, cs) = &e.kind else { return (Tm::Error, Val::Error) };
         if self.forall_ok == 0 {
             self.err(
-                Diagnostic::error("E0289", "`forall` is only allowed in a named precondition", e.span)
+                Diagnostic::error("E0289", "`forall` is only allowed in a named precondition or a lemma's `ensures`", e.span)
                     .with_help("write it as a precondition with a name, `name: forall …`, and use it in the body with `have name …`"),
             );
             return (Tm::Error, Val::Error);
@@ -1087,6 +1087,43 @@ impl Elab {
         }
     }
 
+    /// A lemma's conclusion `t` (its value `v`), if a `forall`, with its
+    /// variables bound in `cx` and its premises assumed: what remains to
+    /// prove (D146).
+    pub fn intro_forall(&mut self, cx: &mut Cx, t: &Tm, v: Val) -> Val {
+        let Tm::PrimApp(Prim::Forall, xs) = t else { return v };
+        let [pi] = xs.as_slice() else { return v };
+        let mut body = pi.clone();
+        while let Tm::Pi(name, _, _, dom, b) = &body {
+            let dv = self.eval(cx, dom);
+            cx.bind(name, dv, Mult::Many);
+            body = (**b).clone();
+        }
+        // `p implies q`: assume `p`, prove `q`.
+        let true_con = self.g.well_known.true_con;
+        loop {
+            let next = match &body {
+                Tm::Case(s, c) if c.branches.len() == 2 && c.lits.is_empty() && c.default.is_none() => {
+                    let br = |k: Option<ConId>| c.branches.iter().find(|b| Some(b.0) == k).map(|b| b.2.clone());
+                    match (br(true_con), br(self.g.well_known.false_con)) {
+                        (Some(tb), Some(Tm::ConApp(k, a))) if Some(k) == true_con && a.is_empty() => {
+                            let p = self.eval(cx, s);
+                            cx.assume(p);
+                            Some(tb)
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            match next {
+                Some(b) => body = b,
+                None => break,
+            }
+        }
+        self.eval(cx, &body)
+    }
+
     /// `have e` (D49): a lemma's conclusion, or a proven `Bool`, becomes a fact.
     pub fn have(&mut self, cx: &mut Cx, e: &Expr) {
         // A named precondition (D137).
@@ -1107,6 +1144,10 @@ impl Elab {
                 }
             }
         }
+        // `have l a b x y` (D146): the lemma's arguments, then values for
+        // its conclusion's `forall`.
+        let (inner, extra) = self.forall_lemma_args(cx, e);
+        let e = inner;
         let (t, ty) = self.infer(cx, e);
         let mut h = &t;
         while let Tm::App(f, ..) = h {
@@ -1136,6 +1177,11 @@ impl Elab {
                         env.push(v);
                     }
                     let fact = self.inst_pred(ens, env);
+                    if !extra.is_empty() {
+                        let name = self.g.defs[d.0 as usize].name.to_string();
+                        self.have_hyp(cx, e, &name, fact, &extra);
+                        return;
+                    }
                     cx.assume(fact);
                     // Using a fact about a primitive: listed in the ledger (D56).
                     if self.axiom_defs.contains(d) {
@@ -1155,6 +1201,49 @@ impl Elab {
         let text = self.src_text(e.span);
         self.oblige(cx, e.span, ObKind::Have, text, v.clone(), None);
         cx.assume(v);
+    }
+
+    /// `l a b x y` for a lemma `l` of two parameters that concludes a
+    /// `forall`: `l a b`, and `[x, y]` (D146). Otherwise `e` and none.
+    fn forall_lemma_args<'e>(&self, cx: &Cx, e: &'e Expr) -> (&'e Expr, Vec<&'e Expr>) {
+        let mut spine = Vec::new();
+        let mut h = e;
+        while let ExprKind::App(f, a) = &h.kind {
+            spine.push(h);
+            let _ = a;
+            h = f;
+        }
+        let sym = match &h.kind {
+            ExprKind::Var(x) if cx.lookup(x).is_none() => self.resolve(x, false),
+            ExprKind::Field(q, x) => match &q.kind {
+                ExprKind::Var(q) if cx.lookup(q).is_none() => self.qualifier(q).and_then(|m| self.resolve_qualified(&m, &x.name, false)),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some(Sym::Def(d)) = sym else { return (e, Vec::new()) };
+        let Some(spec) = self.specs.get(&d) else { return (e, Vec::new()) };
+        let concludes_forall = spec.ensures.as_ref().is_some_and(|p| matches!(p.tm, Tm::PrimApp(Prim::Forall, _)));
+        let n = spec.n_binders - spec.n_implicit;
+        if !concludes_forall || spine.len() <= n {
+            return (e, Vec::new());
+        }
+        // `spine` is outermost first: the last `spine.len() - n` applications
+        // give the extra values.
+        let extra_n = spine.len() - n;
+        let inner = match &spine[extra_n - 1].kind {
+            ExprKind::App(f, _) => &**f,
+            _ => e,
+        };
+        let mut extra: Vec<&Expr> = spine[..extra_n]
+            .iter()
+            .filter_map(|x| match &x.kind {
+                ExprKind::App(_, a) => Some(&**a),
+                _ => None,
+            })
+            .collect();
+        extra.reverse();
+        (inner, extra)
     }
 
     fn apply_rest(&mut self, cx: &mut Cx, r: (Tm, Val), args: &[&Expr], _span: Span) -> (Tm, Val) {

@@ -4,7 +4,6 @@
 module std.array
 
 import std.list
-import std.sort
 
 # The list's elements, in order.
 export fn from_list xs -> r : xs~List a, r~Array a, len r == list.length xs
@@ -115,19 +114,19 @@ instance Functor Array
             have list.map_comp g h (to_list xs)
 
 # ── Sorting (D138) ───────────────────────────────────────────────────────────
-# Stable, by the merge sorts of `std.sort`.
+# Stable, by the merge sort of `std.list`.
 
 # `xs` in order (`Ord`).
 export fn sort xs -> r : Ord a, xs~Array a, r~Array a, len r == len xs,
                          list.sorted (to_list r), list.perm (to_list xs) (to_list r)
-    let s = sort.sort (to_list xs)
+    let s = list.sort (to_list xs)
     have to_list_from_list s
     from_list s
 
 # `xs` in the order of `key` of each element (`Ord`).
 export fn sort_as key xs -> r : Ord k, key~(a -> k), xs~Array a, r~Array a, len r == len xs,
                                 list.sorted_as key (to_list r), list.perm (to_list xs) (to_list r)
-    let s = sort.sort_as key (to_list xs)
+    let s = list.sort_as key (to_list xs)
     have to_list_from_list s
     from_list s
 
@@ -136,7 +135,7 @@ export fn sort_as key xs -> r : Ord k, key~(a -> k), xs~Array a, r~Array a, len 
 export fn sort_by le xs -> r : le~(a -> a -> Bool), xs~Array a,
                                total: forall x y : x~a, y~a, le x y or le y x,
                                r~Array a, len r == len xs, list.sorted_by le (to_list r), list.perm (to_list xs) (to_list r)
-    let s = sort.sort_by le (to_list xs)
+    let s = list.sort_by le (to_list xs)
     have to_list_from_list s
     from_list s
 

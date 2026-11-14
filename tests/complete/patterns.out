@@ -15,7 +15,6 @@ replaces 4:12-4:12
   list               module          
   prelude            module          
   proc               module          
-  sort               module          
   string             module          
   system             module          
   terminal           module          
