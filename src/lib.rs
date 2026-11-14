@@ -109,14 +109,30 @@ pub fn check(name: &str, text: &str) -> Checked {
 
 /// `check`, with imported modules looked up in `dir`.
 pub fn check_in(name: &str, text: &str, dir: &std::path::Path) -> Checked {
+    let t = std::time::Instant::now();
     let (mut c, e) = elaborate(name, text, dir);
+    phase_time(name, "types", t);
     if let Some((e, user)) = &e {
+        let t = std::time::Instant::now();
         doc_comments(&mut c, e, user, dir);
+        phase_time(name, "doc comments", t);
+        let t = std::time::Instant::now();
         run_checks(&mut c, e, user);
+        phase_time(name, "checks", t);
+        let t = std::time::Instant::now();
         prove(&mut c, e, user);
+        phase_time(name, "proofs", t);
         stage_module(&mut c, e, user);
     }
     c
+}
+
+/// `CHECKERS_PHASE_TIME=1`: each phase's time, for each file checked (a doc
+/// comment's example too).
+fn phase_time(name: &str, phase: &str, t: std::time::Instant) {
+    if std::env::var_os("CHECKERS_PHASE_TIME").is_some() {
+        eprintln!("{name}: {phase} {:.1} ms", t.elapsed().as_secs_f64() * 1000.0);
+    }
 }
 
 /// `ckc check --json` (§15.5, D120): check `name` like `check_in`, writing

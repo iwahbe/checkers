@@ -47,3 +47,21 @@ target-lexicon = "0.13.5"
 [profile.dev.package.z3-sys]
 opt-level = 3
 debug = false
+
+# Cranelift and its register allocator are optimized in development builds
+# too: compiling `check`s with an unoptimized code generator was most of a
+# debug build's check time (11/15/2026).
+[profile.dev.package.cranelift-codegen]
+opt-level = 3
+[profile.dev.package.cranelift-frontend]
+opt-level = 3
+[profile.dev.package.cranelift-bforest]
+opt-level = 3
+[profile.dev.package.cranelift-entity]
+opt-level = 3
+[profile.dev.package.cranelift-jit]
+opt-level = 3
+[profile.dev.package.cranelift-module]
+opt-level = 3
+[profile.dev.package.regalloc2]
+opt-level = 3
