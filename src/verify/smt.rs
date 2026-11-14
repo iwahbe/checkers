@@ -1761,7 +1761,18 @@ impl<'a> Builder<'a> {
     fn reflected(&self, d: DefId) -> bool {
         let info = &self.e.g.defs[d.0 as usize];
         // `opaque` covers `partial` functions and builtins.
-        info.body.is_some() && !info.opaque && (*info.module == *self.user || self.e.transparent.contains(&d))
+        info.body.is_some()
+            && !info.opaque
+            && (*info.module == *self.user || self.e.transparent.contains(&d))
+            && !self.large_constant(d)
+    }
+
+    /// A constant whose value is large (a table): the solver gets it as an
+    /// unknown of its type, not its value, which every query mentioning it
+    /// would carry (D151 g). Lookups and bounds don't depend on the contents.
+    fn large_constant(&self, d: DefId) -> bool {
+        let info = &self.e.g.defs[d.0 as usize];
+        !matches!(info.ty, Tm::Pi(..)) && info.body.as_ref().is_some_and(|b| tm_size(b, LARGE_CONSTANT) >= LARGE_CONSTANT)
     }
 
     fn def_app(&mut self, env: &[Ent], d: DefId, args: &[(Tm, Mult)]) -> Tx<(String, Sort)> {
@@ -2793,4 +2804,40 @@ fn has_forall(t: &Tm) -> bool {
         }
         _ => false,
     }
+}
+
+/// How many term nodes make a constant large (D151 g).
+const LARGE_CONSTANT: usize = 1000;
+
+/// The number of nodes in `t`, counted up to `cap`.
+fn tm_size(t: &Tm, cap: usize) -> usize {
+    let mut n = 0;
+    let mut stack = vec![t];
+    while let Some(t) = stack.pop() {
+        n += 1;
+        if n >= cap {
+            return n;
+        }
+        match t {
+            Tm::App(a, b, ..) | Tm::Pi(_, _, _, a, b) => {
+                stack.push(a);
+                stack.push(b);
+            }
+            Tm::Lam(_, _, _, b) | Tm::Proj(b, _) | Tm::Field(b, _, _) => stack.push(b),
+            Tm::Let(_, _, a, b, c) => {
+                stack.push(a);
+                stack.push(b);
+                stack.push(c);
+            }
+            Tm::ConApp(_, v) | Tm::TyConApp(_, v) | Tm::Tuple(v) | Tm::TupleTy(v) | Tm::PrimApp(_, v) => stack.extend(v.iter()),
+            Tm::Case(s, c) => {
+                stack.push(s);
+                stack.extend(c.branches.iter().map(|b| &b.2));
+                stack.extend(c.lits.iter().map(|b| &b.1));
+                stack.extend(c.default.iter());
+            }
+            _ => {}
+        }
+    }
+    n
 }
