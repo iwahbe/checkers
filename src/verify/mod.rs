@@ -80,6 +80,86 @@ fn cache_dir() -> Option<std::path::PathBuf> {
     CACHE.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
+// ── Verified modules (D143) ─────────────────────────────────────────────────
+
+/// What a module verified before contributes: its part of the trust ledger
+/// and how many obligations it proved.
+#[derive(Clone)]
+pub struct Remembered {
+    pub ledger: Vec<LedgerEntry>,
+    pub proved: usize,
+    pub z3_version: Option<String>,
+}
+
+/// Where verified modules are remembered, if anywhere: beside Z3's answers,
+/// unless the prover is being watched.
+pub fn modules_dir() -> Option<std::path::PathBuf> {
+    if std::env::var_os("CHECKERS_SMT_DUMP").is_some() || std::env::var_os("CHECKERS_SMT_TIME").is_some() {
+        return None;
+    }
+    cache_dir().map(|d| d.join("modules"))
+}
+
+const MODULE_HEADER: &str = "checkers module 1";
+
+/// The module verified under `key`, if it was.
+pub fn remembered(key: &str) -> Option<Remembered> {
+    let text = std::fs::read_to_string(modules_dir()?.join(key)).ok()?;
+    let mut lines = text.lines();
+    if lines.next()? != MODULE_HEADER {
+        return None;
+    }
+    let proved = lines.next()?.strip_prefix("proved ")?.parse().ok()?;
+    let z3 = lines.next()?.strip_prefix("z3 ")?;
+    let z3_version = (z3 != "-").then(|| z3.to_string());
+    let mut ledger = Vec::new();
+    for l in lines {
+        let mut parts = l.splitn(5, ' ');
+        let start: u32 = parts.next()?.parse().ok()?;
+        let end: u32 = parts.next()?.parse().ok()?;
+        let how = match parts.next()? {
+            "trusted" => "trusted",
+            "axiom" => "axiom",
+            "computed" => "computed",
+            "smt" => "smt",
+            _ => return None,
+        };
+        let hash = match parts.next()? {
+            "-" => None,
+            h => Some(u64::from_str_radix(h, 16).ok()?),
+        };
+        let what = parts.next()?.replace("\\n", "\n");
+        ledger.push(LedgerEntry { span: Span { start, end }, how, what, hash });
+    }
+    Some(Remembered { ledger, proved, z3_version })
+}
+
+/// Remember that the module under `key` verified with `v`.
+pub fn remember(key: &str, v: &Verified) {
+    let Some(dir) = modules_dir() else { return };
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let mut out = format!("{MODULE_HEADER}\nproved {}\nz3 {}\n", v.proved, v.z3_version.as_deref().unwrap_or("-"));
+    for x in &v.ledger {
+        let hash = x.hash.map(|h| format!("{h:x}")).unwrap_or_else(|| "-".into());
+        out += &format!("{} {} {} {hash} {}\n", x.span.start, x.span.end, x.how, x.what.replace('\n', "\\n"));
+    }
+    // Written whole, then renamed: a reader never sees half of it.
+    let tmp = dir.join(format!("{key}.{}", std::process::id()));
+    if std::fs::write(&tmp, out).is_ok() {
+        let _ = std::fs::rename(&tmp, dir.join(key));
+    }
+}
+
+/// A 128-bit digest, as hex: two different 64-bit hashes of `s`.
+pub fn digest(s: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut h);
+    format!("{:016x}{:016x}", fnv(s), h.finish())
+}
+
 /// A cache entry: a header with Z3's version and the query's length, the
 /// query in full (compared on a hit, so a hash collision can't reuse a wrong
 /// answer), then Z3's output.

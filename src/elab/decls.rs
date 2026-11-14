@@ -187,6 +187,7 @@ impl Elab {
             let path = key;
             if found {
                 self.index_module(imp.path.span, &path);
+                self.module_deps.entry(name.to_string()).or_default().push(path.clone());
             }
             if !found {
                 let d = if from_std {

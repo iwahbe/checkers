@@ -37,6 +37,8 @@ pub struct Checked {
     pub ledger: String,
     /// Staged definitions (§8.9), for `checkers stage`.
     pub staged: String,
+    /// The modules verified before, by name (D143), once looked up.
+    remembered: Option<std::collections::HashMap<String, (String, verify::Remembered)>>,
 }
 
 impl Checked {
@@ -90,7 +92,7 @@ pub fn parse_only(name: &str, text: &str) -> Checked {
     let file = SourceFile::new(name, text);
     let (module, mut diags) = syntax::parse_module(text);
     diags.extend(lint::naming(&module));
-    Checked { file, module, diags, internal: Vec::new(), others: Vec::new(), obligations: 0, proved: 0, ledger: String::new(), staged: String::new() }
+    Checked { file, module, diags, internal: Vec::new(), others: Vec::new(), obligations: 0, proved: 0, ledger: String::new(), staged: String::new(), remembered: None }
 }
 
 /// The directory `import a.b` looks in for `a/b.ck` (D53): the program's own.
@@ -458,11 +460,94 @@ fn route(c: &mut Checked, e: &elab::Elab, user: &str, m: &str, mut d: Diagnostic
 }
 
 /// Discharge the proof obligations (§7.2) not set aside by errors (D122).
+/// Each module's key (D143): its text, its imports' keys, its name, the
+/// standard library's text (all of it: its modules give one another, and
+/// every module, the well-known types), the Z3 release and the `ckc`
+/// executable. None for a module without its text.
+fn module_keys(e: &elab::Elab) -> std::collections::HashMap<String, String> {
+    use std::collections::HashMap;
+    let exe = std::env::current_exe()
+        .and_then(std::fs::metadata)
+        .map(|m| format!("{} {:?}", m.len(), m.modified().ok()))
+        .unwrap_or_default();
+    let mut std_text = String::new();
+    for m in std_modules(e) {
+        if let Some(f) = e.sources.get(&m) {
+            std_text += &format!("module {m} {}\n{}\n", f.text.len(), f.text);
+        }
+    }
+    let tool = format!("ckc {} {exe} z3 {} std {}", env!("CARGO_PKG_VERSION"), verify::z3_version().unwrap_or_default(), verify::digest(&std_text));
+    fn key(e: &elab::Elab, m: &str, tool: &str, keys: &mut HashMap<String, Option<String>>) -> Option<String> {
+        if let Some(k) = keys.get(m) {
+            return k.clone();
+        }
+        keys.insert(m.to_string(), None); // a cycle has no key
+        let text = &e.sources.get(m)?.text;
+        let mut deps: Vec<String> = e.module_deps.get(m).cloned().unwrap_or_default();
+        deps.retain(|d| !d.starts_with("std."));
+        deps.sort();
+        deps.dedup();
+        let mut input = format!("{tool}\nmodule {m}\n");
+        for d in &deps {
+            input += &format!("import {d} {}\n", key(e, d, tool, keys)?);
+        }
+        input += text;
+        let k = verify::digest(&input);
+        keys.insert(m.to_string(), Some(k.clone()));
+        Some(k)
+    }
+    let mut keys = HashMap::new();
+    let names: Vec<String> = e.modules.keys().cloned().collect();
+    for m in &names {
+        key(e, m, &tool, &mut keys);
+    }
+    keys.into_iter().filter_map(|(m, k)| k.map(|k| (m, k))).collect()
+}
+
+/// The program's modules verified before (D143), with their keys.
+fn remembered<'a>(c: &'a mut Checked, e: &elab::Elab, user: &str) -> &'a std::collections::HashMap<String, (String, verify::Remembered)> {
+    if c.remembered.is_none() {
+        let mut found = std::collections::HashMap::new();
+        if verify::modules_dir().is_some() {
+            let keys = module_keys(e);
+            for m in program_modules(e, user) {
+                if let Some(k) = keys.get(&m) {
+                    if let Some(r) = verify::remembered(k) {
+                        found.insert(m, (k.clone(), r));
+                    }
+                }
+            }
+        }
+        c.remembered = Some(found);
+    }
+    c.remembered.as_ref().unwrap()
+}
+
 fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
+    let known = remembered(c, e, user).clone();
+    let keys = if known.is_empty() && verify::modules_dir().is_none() { Default::default() } else { module_keys(e) };
     let mut ledger = String::new();
     let (mut asked, mut reused) = (0, 0);
-    for m in program_modules(e, user) {
-        let v = verify::verify(e, &m);
+    let mut fresh: Vec<(String, verify::Verified)> = Vec::new();
+    let all = program_modules(e, user);
+    for m in &all {
+        let m = m.clone();
+        // Verified before, with nothing it depends on changed: what it gave then.
+        let v = match known.get(&m) {
+            Some((_, r)) => verify::Verified {
+                diags: Vec::new(),
+                ledger: r.ledger.clone(),
+                z3_version: r.z3_version.clone(),
+                proved: r.proved,
+                asked: 0,
+                reused: 0,
+            },
+            None => {
+                let v = verify::verify(e, &m);
+                fresh.push((m.clone(), verify::Verified { diags: Vec::new(), ledger: v.ledger.clone(), z3_version: v.z3_version.clone(), proved: v.proved, asked: 0, reused: 0 }));
+                v
+            }
+        };
         // The standard library and dependencies are summarized (D110, D111).
         let own = e.package_of(&m) == ".";
         if own {
@@ -492,7 +577,18 @@ fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
     if reused > 0 {
         out += &format!("cache: {reused} of {asked} Z3 answers reused (D100)\n");
     }
+    if !known.is_empty() {
+        out += &format!("cache: {} of {} modules verified before (D143)\n", known.len(), all.len());
+    }
     c.ledger = out;
+    // Remembered only from a check with no errors at all (D143 c).
+    if c.errors() == 0 {
+        for (m, v) in &fresh {
+            if let Some(k) = keys.get(m) {
+                verify::remember(k, v);
+            }
+        }
+    }
 }
 
 /// Parse, lint and type-check; also returns the elaborator and the module name.
@@ -513,7 +609,9 @@ fn elaborate(name: &str, text: &str, dir: &std::path::Path) -> (Checked, Option<
 
 /// Evaluate the module's `check` declarations (D40).
 fn run_checks(c: &mut Checked, e: &elab::Elab, user: &str) {
-    let mods = program_modules(e, user);
+    // A module verified before has passed its `check`s (D143).
+    let known: std::collections::HashSet<String> = remembered(c, e, user).keys().cloned().collect();
+    let mods: Vec<String> = program_modules(e, user).into_iter().filter(|m| !known.contains(m)).collect();
     if !e.checks.iter().any(|(m, _, _)| mods.contains(m)) {
         return;
     }

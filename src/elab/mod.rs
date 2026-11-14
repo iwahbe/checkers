@@ -349,6 +349,8 @@ pub struct Elab {
     pub base_dir: Option<std::path::PathBuf>,
     /// Imported program modules (not the standard library), dependencies first.
     pub user_modules: Vec<String>,
+    /// Each module's imports, by name (for D143's keys).
+    pub module_deps: HashMap<String, Vec<String>>,
     /// The package of each module of a dependency (D111); others are the
     /// program's own package, or `std`.
     pub module_pkg: HashMap<String, String>,
@@ -574,6 +576,7 @@ impl Elab {
             blamed: HashSet::new(),
             completion: None,
             completing: None,
+            module_deps: HashMap::new(),
         }
     }
 
