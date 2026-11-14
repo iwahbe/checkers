@@ -60,9 +60,20 @@ pub const QUICK_RLIMIT: u64 = 1_000_000;
 /// facts is found quickly or not at all, and there is one query per branch.
 pub const PROBE_RLIMIT: u64 = 200_000;
 
+/// The work limit each query is tried with first (D154): nearly every
+/// answer in the repository needs far less (all but 0.2%), and a query that
+/// can't prove its goal often searches until its limit, so giving up costs
+/// this before the next query.
+pub const FIRST_RLIMIT: u64 = 200_000;
+
 /// A weaker query, tried first: with the smaller work limit.
 fn quick(q: Option<String>) -> Option<String> {
-    q.map(|t| t.replacen(&format!("(set-option :rlimit {RLIMIT})"), &format!("(set-option :rlimit {QUICK_RLIMIT})"), 1))
+    q.map(|t| with_limit(&t, QUICK_RLIMIT))
+}
+
+/// A query with another work limit.
+fn with_limit(t: &str, limit: u64) -> String {
+    t.replacen(&format!("(set-option :rlimit {RLIMIT})"), &format!("(set-option :rlimit {limit})"), 1)
 }
 
 /// A wall-clock cap, in case Z3 is slow to use up its work limit. An answer
@@ -254,6 +265,16 @@ fn store(query: &str, out: &str) {
 /// Z3's answer to one SMT-LIB script, from the cache or a fresh Z3 context.
 fn ask(query: &str) -> Answer {
     ASKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // The same query asked twice in this process: Z3's answer depends only
+    // on the text, so it is reused (D154).
+    static MEMO: std::sync::Mutex<Option<std::collections::HashMap<String, String>>> = std::sync::Mutex::new(None);
+    let memo = |out: &str| {
+        MEMO.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).insert(query.to_string(), out.to_string());
+    };
+    if let Some(out) = MEMO.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(query)).cloned() {
+        REUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        return answer(out);
+    }
     let out = match cached(query) {
         Some(out) => {
             REUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -261,15 +282,32 @@ fn ask(query: &str) -> Answer {
         }
         None => {
             let start = std::time::Instant::now();
-            let out = run_z3(query);
-            // `CHECKERS_SMT_TIME=1`: each query Z3 answered, its time and size.
-            if std::env::var_os("CHECKERS_SMT_TIME").is_some() {
+            let timed = std::env::var_os("CHECKERS_SMT_TIME").is_some();
+            // Timed, Z3's statistics follow its output, for the work it used;
+            // they are cut off before the output is read or stored.
+            let mut out = if timed { run_z3(&format!("{query}(get-info :all-statistics)\n")) } else { run_z3(query) };
+            let mut used = String::from("?");
+            if timed {
+                if let Some(at) = out.rfind("(:") {
+                    used = out[at..].split(":rlimit-count").nth(1).and_then(|r| r.split_whitespace().next()).unwrap_or("?").trim_end_matches(')').to_string();
+                    out.truncate(at);
+                }
+            }
+            // `CHECKERS_SMT_TIME=1`: each query Z3 answered, its time, size,
+            // answer, work limit and the work it used.
+            if timed {
                 let what = query.lines().find(|l| l.starts_with("(assert (not")).unwrap_or("").chars().take(120).collect::<String>();
-                eprintln!("smt {:>6} ms {:>7} bytes {what}", start.elapsed().as_millis(), query.len());
+                let said = out.split_whitespace().next().unwrap_or("?");
+                let limit = query.split("(set-option :rlimit ").nth(1).and_then(|r| r.split(')').next()).unwrap_or("?");
+                eprintln!("smt {:>6} ms {:>7} bytes {said:>7} rlimit {limit:>8} used {used:>8} {what}", start.elapsed().as_millis(), query.len());
+                if let Some(err) = out.lines().find(|l| l.starts_with("(error")) {
+                    eprintln!("smt error {err}");
+                }
             }
             let cut_off = out.starts_with("unknown") && start.elapsed().as_millis() as u64 >= SAFETY_MS * 9 / 10;
             if !cut_off {
                 store(query, &out);
+                memo(&out);
             }
             out
         }
@@ -469,38 +507,74 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
             eprintln!(";; ── {:?} at {:?}\n{}", o.kind, o.span, t.as_deref().unwrap_or(";; outside the fragment"));
         }
     }
-    // Weakest first: `unsat` from a weaker query is still a proof (§7.2).
-    // 1. Definitions uninterpreted: fast when the facts in scope suffice.
-    let quick_q: Vec<Option<String>> = queries.iter().map(|q| quick(q.as_ref().ok().and_then(|q| q.facts_only.clone()))).collect();
-    let quick_answers = ask_all(&quick_q);
-    let proved_quick: Vec<bool> = quick_answers.iter().map(|a| matches!(a, Some(Answer::Unsat))).collect();
-    // 2. Only the definitions the goal mentions: Z3 doesn't unfold the
+    // 1. Everything, with a small work limit (D154): most goals need little
+    //    work, and this query's answer is final either way: `unsat` is a
+    //    proof, `sat` a real counterexample.
+    let first: Vec<Option<String>> = texts.iter().map(|t| t.as_ref().map(|t| with_limit(t, FIRST_RLIMIT))).collect();
+    let mut answers: Vec<Option<Answer>> =
+        ask_all(&first).into_iter().map(|a| a.filter(|a| matches!(a, Answer::Unsat | Answer::Sat(_)))).collect();
+    // The query that proved each obligation, as Z3 was given it.
+    let mut proof: Vec<Option<String>> =
+        answers.iter().zip(&first).map(|(a, t)| if matches!(a, Some(Answer::Unsat)) { t.clone() } else { None }).collect();
+    // Z3 gave up: weaker queries, weakest first. `unsat` from a weaker query
+    // is still a proof (§7.2).
+    // 2. Definitions uninterpreted: fast when the facts in scope suffice.
+    // 3. Only the definitions the goal mentions: Z3 doesn't unfold the
     //    functions whose results the facts in scope give.
-    let focus: Vec<Option<String>> = queries
-        .iter()
-        .zip(&proved_quick)
-        .map(|(q, p)| if *p { None } else { quick(q.as_ref().ok().and_then(|q| q.focused.clone())) })
-        .collect();
-    let proved_focus: Vec<bool> = ask_all(&focus).iter().map(|a| matches!(a, Some(Answer::Unsat))).collect();
-    let proved_quick: Vec<bool> = proved_quick.iter().zip(&proved_focus).map(|(a, b)| *a || *b).collect();
-    // 3. Every definition, without the quantified postconditions of other
+    // 4. Every definition, without the quantified postconditions of other
     //    functions, which can send Z3 searching (D101).
-    let lean: Vec<Option<String>> =
-        fallbacks.iter().zip(&proved_quick).map(|(f, p)| if *p { None } else { quick(f.clone()) }).collect();
-    let proved_lean: Vec<bool> = ask_all(&lean).iter().map(|a| matches!(a, Some(Answer::Unsat))).collect();
-    // 4. Everything: the query whose counterexample is real.
-    let rest: Vec<Option<String>> = texts
+    // Each with the small work limit, then again with a larger one where Z3
+    // gave up: a query that can't prove its goal often searches until its
+    // limit.
+    let weaker: Vec<[Option<&String>; 3]> = queries
         .iter()
-        .zip(proved_quick.iter().zip(&proved_lean))
-        .map(|(t, (q, l))| if *q || *l { None } else { t.clone() })
+        .zip(&answers)
+        .map(|(q, a)| match (q, a) {
+            (Ok(q), None) => [q.facts_only.as_ref(), q.focused.as_ref(), q.without_axioms.as_ref()],
+            _ => [None, None, None],
+        })
         .collect();
-    let mut answers = ask_all(&rest);
-    for (k, a) in answers.iter_mut().enumerate() {
-        if proved_quick[k] || proved_lean[k] {
-            *a = Some(Answer::Unsat);
+    // Whether each weaker query gave up with the small limit.
+    let mut gave_up: Vec<[bool; 3]> = vec![[true; 3]; obs.len()];
+    for limit in [FIRST_RLIMIT, QUICK_RLIMIT] {
+        for tier in 0..3 {
+            let ask_q: Vec<Option<String>> = weaker
+                .iter()
+                .enumerate()
+                .map(|(k, w)| {
+                    let t = w[tier]?;
+                    // Asked already: proved, the same text as a weaker tier,
+                    // or answered `sat` with the small limit.
+                    if proof[k].is_some() || w[..tier].contains(&Some(t)) || !gave_up[k][tier] {
+                        return None;
+                    }
+                    Some(with_limit(t, limit))
+                })
+                .collect();
+            for (k, a) in ask_all(&ask_q).into_iter().enumerate() {
+                match a {
+                    Some(Answer::Unsat) => proof[k] = ask_q[k].clone(),
+                    Some(Answer::Sat(_)) => gave_up[k][tier] = false,
+                    _ => {}
+                }
+            }
         }
     }
-    // 5. Z3 gave up on everything: a counterexample without the axioms, with
+    // 5. Everything, with the full work limit: the query whose
+    //    counterexample is real.
+    let rest: Vec<Option<String>> = texts
+        .iter()
+        .enumerate()
+        .map(|(k, t)| if proof[k].is_some() || answers[k].is_some() { None } else { t.clone() })
+        .collect();
+    for (k, a) in ask_all(&rest).into_iter().enumerate() {
+        if proof[k].is_some() {
+            answers[k] = Some(Answer::Unsat);
+        } else if a.is_some() {
+            answers[k] = a;
+        }
+    }
+    // 6. Z3 gave up on everything: a counterexample without the axioms, with
     //    the full work limit, is better than nothing (§7.2).
     let retry: Vec<Option<String>> = answers
         .iter()
@@ -531,13 +605,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
             (Ok(q), Some(Answer::Unsat)) => {
                 v.proved += 1;
                 // The query that was proved, as Z3 was given it.
-                let text = match (&q.facts_only, &q.without_axioms) {
-                    _ if proved_focus[k] => quick(q.focused.clone()),
-                    (Some(t), _) if proved_quick[k] => quick(Some(t.clone())),
-                    (_, Some(t)) if proved_lean[k] => quick(Some(t.clone())),
-                    _ => Some(q.text.clone()),
-                };
-                let hash = text.map(|t| fnv(&t));
+                let hash = Some(fnv(proof[k].as_ref().unwrap_or(&q.text)));
                 v.ledger.push(LedgerEntry { span: o.span, how: "smt", what: describe(e, o), hash });
             }
             (Ok(q), Some(Answer::Sat(model))) => {

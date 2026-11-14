@@ -1326,7 +1326,9 @@ impl<'a> Builder<'a> {
                 if xs.is_empty() {
                     Ok((tuple_con(0), sort))
                 } else {
-                    Ok((format!("({} {})", tuple_con(xs.len()), ts.join(" ")), sort))
+                    // Qualified, as other constructors are: Z3 can't always
+                    // tell a parametric constructor's sort from its arguments.
+                    Ok((format!("((as {} {}) {})", tuple_con(xs.len()), sort.render(self.e), ts.join(" ")), sort))
                 }
             }
             Tm::Proj(x, i) => {
