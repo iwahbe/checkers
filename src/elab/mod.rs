@@ -1611,6 +1611,27 @@ impl Elab {
         Val::TupleTy(vec![])
     }
 
+    /// The module of an abstract type declared in another module: its
+    /// constructors and fields are private there (§6, D155).
+    pub fn sealed_from(&self, t: TyId) -> Option<String> {
+        let ti = &self.g.tys[t.0 as usize];
+        (ti.is_abstract && *ti.module != *self.cur).then(|| ti.module.to_string())
+    }
+
+    /// E0247: a type's constructors or fields used outside its module, which
+    /// exports it as abstract (D155).
+    pub fn sealed_error(&self, t: TyId, what: &str, span: Span) -> Diagnostic {
+        let ti = &self.g.tys[t.0 as usize];
+        let m = ti.module.to_string();
+        let what = match what {
+            "constructors" if ti.is_record => "constructor is",
+            "constructors" => "constructors are",
+            _ => "fields are",
+        };
+        Diagnostic::error("E0247", format!("`{}` is abstract: its {what} private to module `{m}`", ti.name), span)
+            .with_help(format!("use the functions module `{m}` exports for `{}`", ti.name))
+    }
+
     pub fn module(&self) -> &ModuleInfo {
         &self.modules[&self.cur]
     }

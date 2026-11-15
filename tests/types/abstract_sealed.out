@@ -1,0 +1,29 @@
+error[E0247]: `Tx` is abstract: its constructor is private to module `sealed.tx`
+  --> abstract_sealed.ck:10:5
+   |
+10 |     Tx []
+   |     ^^
+   = help: use the functions module `sealed.tx` exports for `Tx`
+
+error[E0247]: `Tx` is abstract: its constructor is private to module `sealed.tx`
+  --> abstract_sealed.ck:14:9
+   |
+14 |         Tx log -> list.length log
+   |         ^^
+   = help: use the functions module `sealed.tx` exports for `Tx`
+
+error[E0247]: `Tx` is abstract: its fields are private to module `sealed.tx`
+  --> abstract_sealed.ck:17:23
+   |
+17 |     list.length begin.log
+   |                       ^^^
+   = help: use the functions module `sealed.tx` exports for `Tx`
+
+error[E0247]: `State` is abstract: its constructors are private to module `sealed.tx`
+  --> abstract_sealed.ck:21:9
+   |
+21 |         Fresh -> 0
+   |         ^^^^^
+   = help: use the functions module `sealed.tx` exports for `State`
+
+abstract_sealed.ck: 4 errors, 0 warnings

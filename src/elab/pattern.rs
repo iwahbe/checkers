@@ -571,6 +571,17 @@ impl Elab {
     fn pat_ctor(&mut self, p: &Pattern, hint: Option<TyId>) -> Option<(ConId, Option<Vec<Pattern>>)> {
         let wk = self.g.well_known.clone();
         let unknown = |this: &mut Self, name: &ast::Ident| {
+            // A constructor of an abstract type of another module (D155).
+            if let Some(t) = hint.filter(|t| this.sealed_from(*t).is_some()) {
+                let ti = &this.g.tys[t.0 as usize];
+                let d = if ti.ctors.iter().any(|c| *this.g.cons[c.0 as usize].name == *name.name) {
+                    this.sealed_error(t, "constructors", name.span)
+                } else {
+                    Diagnostic::error("E0244", format!("unknown constructor `{}`", name.name), name.span)
+                };
+                this.pat_err(d);
+                return;
+            }
             let mut d = Diagnostic::error("E0244", format!("unknown constructor `{}`", name.name), name.span);
             if let Some(t) = hint {
                 let ti = &this.g.tys[t.0 as usize];

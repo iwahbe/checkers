@@ -762,6 +762,18 @@ impl Elab {
             None => (ft, fty),
         };
         let (ft, fty) = self.look_ahead(cx, ft, fty, &args);
+        // `Tx a`, where `Tx` names an abstract type of another module whose
+        // constructor shares its name (D155).
+        if let Tm::TyCon(tid) = &ft {
+            let tid = *tid;
+            if self.sealed_from(tid).is_some() && !cx.type_pos {
+                self.err(self.sealed_error(tid, "constructors", head.span));
+                for a in &args {
+                    let _ = self.infer(cx, a);
+                }
+                return (Tm::Error, Val::Error);
+            }
+        }
         let mut t = ft;
         let mut ty = fty;
         let head_text = self.src_text(head.span);
@@ -1804,6 +1816,10 @@ impl Elab {
         }
         let (xt, xty) = self.infer(cx, x);
         match self.force(&xty) {
+            Val::TyCon(tid, _) if self.g.tys[tid.0 as usize].is_record && self.sealed_from(tid).is_some() => {
+                self.err(self.sealed_error(tid, "fields", name.span));
+                (Tm::Error, Val::Error)
+            }
             Val::TyCon(tid, params) if self.g.tys[tid.0 as usize].is_record => {
                 let cid = self.g.tys[tid.0 as usize].ctors[0];
                 let fields = self.g.cons[cid.0 as usize].fields.clone();
