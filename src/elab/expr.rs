@@ -413,6 +413,16 @@ impl Elab {
                 let arr = self.array_of(elem.clone());
                 let nat = self.nat();
                 let at = self.check(cx, a, &arr, false);
+                // Indexing uses the whole array: at runtime, it may not drop
+                // the other elements when they are resources (D156, E0407).
+                if self.in_spec == 0 && self.in_proof == 0 && self.val_linear(&elem) {
+                    let shown = self.show_val(cx, &elem);
+                    self.err(
+                        Diagnostic::error("E0407", format!("indexing would drop the array's other elements, and each is a resource (`{shown}`)"), e.span)
+                            .with_label("indexing uses the whole array")
+                            .with_help("keep the resources in a `List` and take it apart with `match`, using each one"),
+                    );
+                }
                 let it = self.check(cx, i, &nat, false);
                 let (av, iv) = (self.eval(cx, &at), self.eval(cx, &it));
                 let goal = Self::prim_val(Prim::Lt, vec![iv, Self::prim_val(Prim::Len, vec![av])]);
@@ -1835,15 +1845,50 @@ impl Elab {
                 };
                 self.index_global(name.span, index::Target::Field(cid, idx));
                 let xv = self.eval(cx, &xt);
+                // Each field's type, in the context of the parameters and the
+                // fields before it.
                 let mut env: Vec<Val> = params;
-                for j in 0..idx {
+                let mut ftys = Vec::new();
+                for (j, f) in fields.iter().enumerate() {
+                    ftys.push(eval(&self.g, &Rc::new(env.clone()), &f.3));
                     env.push(crate::core::eval(
                         &self.g,
                         &Rc::new(vec![xv.clone()]),
                         &Tm::Field(Rc::new(Tm::Var(0)), cid, j),
                     ));
                 }
-                let fty = eval(&self.g, &Rc::new(env), &fields[idx].3);
+                // Reading a field uses the whole record: at runtime, it may
+                // not drop another field holding a resource (D156, E0406).
+                if self.in_spec == 0 && self.in_proof == 0 && self.val_linear(&xty) {
+                    let others: Vec<String> = fields
+                        .iter()
+                        .zip(&ftys)
+                        .enumerate()
+                        .filter(|(j, (f, t))| *j != idx && f.1 != Mult::Zero && self.val_linear(t))
+                        .map(|(_, (f, _))| format!("`{}`", f.0))
+                        .collect();
+                    if !others.is_empty() {
+                        let tname = self.g.tys[tid.0 as usize].name.clone();
+                        let cname = self.g.cons[cid.0 as usize].name.clone();
+                        let all: Vec<String> =
+                            fields.iter().filter(|f| f.2 == Icit::Expl).map(|f| f.0.to_string()).collect();
+                        let verb = if others.len() == 1 { "holds" } else { "hold" };
+                        self.err(
+                            Diagnostic::error(
+                                "E0406",
+                                format!("reading `{}` would drop the rest of this `{tname}`, and {} {verb} a resource", name.name, others.join(", ")),
+                                name.span,
+                            )
+                            .with_label("reading a field uses the whole record")
+                            .with_help(format!(
+                                "take it apart with `match` (`{cname} {} -> …`) and use {} too",
+                                all.join(" "),
+                                others.join(", ")
+                            )),
+                        );
+                    }
+                }
+                let fty = ftys[idx].clone();
                 (Tm::Field(Rc::new(xt), cid, idx), fty)
             }
             Val::Error => (Tm::Error, Val::Error),

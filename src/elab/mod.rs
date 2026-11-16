@@ -485,6 +485,9 @@ pub struct Elab {
     pub last_eq_ty: Option<Val>,
     /// Variables that are linear because of their type (D39): (function, name) → (span, type).
     pub resource_vars: HashMap<(DefId, String), (Span, String)>,
+    /// A `match` arm's resource names, bound as ghosts for its guard: the
+    /// guard's span, for E0408.
+    pub guard_vars: HashMap<(DefId, String), Span>,
     /// The function result type when elaborating a tail position (for `try`).
     pub stdlib_mode: bool,
     /// Element locals of `map f xs` where xs is a subterm of parameter p.
@@ -613,6 +616,7 @@ impl Elab {
             guessed: HashSet::new(),
             saturated_heads: HashSet::new(),
             resource_vars: HashMap::new(),
+            guard_vars: HashMap::new(),
             stdlib_mode: false,
             map_elem_sub: None,
             match_span: Span::default(),

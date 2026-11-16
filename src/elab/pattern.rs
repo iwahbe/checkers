@@ -325,8 +325,19 @@ impl Elab {
             self.bound_at(cx, l, *at);
             lets.push((name.clone(), mult, tyt, t));
         }
-        let body = match row.guard {
-            None => self.arm_body(cx, row.body, expected, tail),
+        let wrap = |lets: &[(String, Mult, Tm, Tm)], body: Tm| {
+            let mut t = body;
+            for (n, mult, tyt, v) in lets.iter().rev() {
+                t = Tm::Let(Rc::from(n.as_str()), *mult, Rc::new(tyt.clone()), Rc::new(v.clone()), Rc::new(t));
+            }
+            t
+        };
+        match row.guard {
+            None => {
+                let body = self.arm_body(cx, row.body, expected, tail);
+                cx.truncate(start);
+                wrap(&lets, body)
+            }
             Some(g) => {
                 let b = self.bool_ty();
                 let gt = self.check(cx, g, &b, false);
@@ -335,6 +346,11 @@ impl Elab {
                 cx.assume(self.is_bool(gv.clone(), true));
                 let bt = self.arm_body(cx, row.body, expected, tail);
                 cx.facts.truncate(saved);
+                // The arm's names are bound twice: for the guard and for the
+                // body, so that when the guard is false the next arms see the
+                // value unused. A resource bound for the guard is ghost there:
+                // the guard can't use it up before the body runs.
+                cx.truncate(start);
                 cx.assume(self.is_bool(gv, false));
                 let rest: Vec<Row> = rows[1..].to_vec();
                 let et = if rest.is_empty() {
@@ -349,15 +365,20 @@ impl Elab {
                     self.compile(cx, rest, expected, tail)
                 };
                 cx.facts.truncate(saved);
-                self.if_tm(gt, bt, et)
+                if let Some(f) = self.cur_fn {
+                    for (n, m, _, _) in &lets {
+                        if *m == Mult::One {
+                            self.guard_vars.insert((f, n.clone()), g.span);
+                        }
+                    }
+                }
+                let guard_lets: Vec<(String, Mult, Tm, Tm)> = lets
+                    .iter()
+                    .map(|(n, m, tyt, v)| (n.clone(), if *m == Mult::One { Mult::Zero } else { *m }, tyt.clone(), v.clone()))
+                    .collect();
+                self.if_tm(wrap(&guard_lets, gt), wrap(&lets, bt), et)
             }
-        };
-        cx.truncate(start);
-        let mut t = body;
-        for (n, mult, tyt, v) in lets.into_iter().rev() {
-            t = Tm::Let(Rc::from(n.as_str()), mult, Rc::new(tyt), Rc::new(v), Rc::new(t));
         }
-        t
     }
 
     /// E0404: at a leaf, every resource reached by the match must be taken

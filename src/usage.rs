@@ -120,7 +120,15 @@ impl U<'_> {
             self.reported = true;
             return;
         }
+        let guard = self.e.guard_vars.get(&(self.did, name.clone())).copied();
         let d = match (b.mult, mixed, c) {
+            (Mult::Zero, _, _) if guard.is_some() => Diagnostic::error(
+                "E0408",
+                format!("this guard uses `{name}`, a resource, which the arm's body needs"),
+                guard.unwrap_or(span),
+            )
+            .with_label("the guard runs before the body, so it can't use the resource")
+            .with_help(format!("test `{name}` inside the arm's body instead, with `if` or another `match`")),
             (Mult::Zero, _, _) => Diagnostic::error(
                 "E0403",
                 format!("`{name}` is `ghost`: it may only appear in types and constraints, but `{fname}` uses it at runtime"),
@@ -228,7 +236,12 @@ impl U<'_> {
                 self.under(x, *m, b).into_iter().map(|c| c.scale(Mult::Many)).collect()
             }
             Tm::Let(x, m, _, v, b) => {
-                let mut c: Counts = self.go(v).into_iter().map(|c| c.scale(if *m == Mult::Zero { Mult::Zero } else { Mult::One })).collect();
+                // A tuple pattern binds each component (`$c0`, `$c1`, …) by
+                // projecting the tuple: together they use it once, counted
+                // at the first.
+                let rest_of_tuple = x.starts_with("$c") && matches!(&**v, Tm::Proj(t, i) if *i > 0 && matches!(**t, Tm::Var(_)));
+                let scale = if *m == Mult::Zero || rest_of_tuple { Mult::Zero } else { Mult::One };
+                let mut c: Counts = self.go(v).into_iter().map(|c| c.scale(scale)).collect();
                 let cb = self.under(x, *m, b);
                 add(&mut c, &cb);
                 c

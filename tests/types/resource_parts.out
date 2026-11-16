@@ -1,0 +1,36 @@
+error[E0406]: reading `lines` would drop the rest of this `One`, and `out` holds a resource
+  --> resource_parts.ck:17:7
+   |
+17 |     t.lines
+   |       ^^^^^ reading a field uses the whole record
+   = help: take it apart with `match` (`One out lines -> …`) and use `out` too
+
+error[E0406]: reading `a` would drop the rest of this `Two`, and `b` holds a resource
+  --> resource_parts.ck:20:19
+   |
+20 |     files.close t.a
+   |                   ^ reading a field uses the whole record
+   = help: take it apart with `match` (`Two a b -> …`) and use `b` too
+
+error[E0406]: reading `lines` would drop the rest of this `One`, and `out` holds a resource
+  --> resource_parts.ck:23:13
+   |
+23 |     One f t.lines
+   |             ^^^^^ reading a field uses the whole record
+   = help: take it apart with `match` (`One out lines -> …`) and use `out` too
+
+error[E0407]: indexing would drop the array's other elements, and each is a resource (`File`)
+  --> resource_parts.ck:26:17
+   |
+26 |     files.close a[0]
+   |                 ^^^^ indexing uses the whole array
+   = help: keep the resources in a `List` and take it apart with `match`, using each one
+
+error[E0408]: this guard uses `g`, a resource, which the arm's body needs
+  --> resource_parts.ck:68:14
+   |
+68 |         g if ready g -> files.close g
+   |              ^^^^^^^ the guard runs before the body, so it can't use the resource
+   = help: test `g` inside the arm's body instead, with `if` or another `match`
+
+resource_parts.ck: 5 errors, 0 warnings
