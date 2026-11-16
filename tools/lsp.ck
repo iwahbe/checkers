@@ -48,6 +48,8 @@ record Entry
     at~Span
     role~String
     def~Option Span
+    type_def~Option Span
+    renamable~Bool
     hover~String
     doc~String
 
@@ -80,7 +82,7 @@ record Root
 record Pending
     id~Json
     path~String
-    f~(List Entry -> Json)
+    f~(List Entry -> Result Json String)
 
 # The main loop's state: the open documents, the last check's number, and
 # a way to end each document's check in progress.
@@ -219,7 +221,11 @@ partial fn pump out acc g docs c -> r : out~File, acc~Acc, g~Nat, docs~List Doc,
                                 let def = match rpc.get "def" j
                                     Some d -> span_of d
                                     None   -> None
-                                let e = Entry s (str_or "class" j) def (str_or "hover" j) (str_or "doc" j)
+                                let type_def = match rpc.get "type_def" j
+                                    Some d -> span_of d
+                                    None   -> None
+                                let renamable = rpc.get "renamable" j == Some (Bool True)
+                                let e = Entry s (str_or "class" j) def type_def renamable (str_or "hover" j) (str_or "doc" j)
                                 pump out (Acc acc.diags (e :: acc.index) acc.phases) g docs c
                             None   -> pump out acc g docs c
                     else
@@ -289,7 +295,7 @@ partial fn answer_all ps index o -> r : ps~List Pending, index~List Entry, o~Fil
     match ps
         []        -> ((), o)
         p :: rest ->
-            _ <- rpc.write (rpc.response p.id (p.f index)) o
+            _ <- rpc.write (respond p.id (p.f index)) o
             answer_all rest index o
 
 # The requests about `path`, oldest first.
@@ -486,16 +492,114 @@ partial fn definition w es docs c -> j : w~Where, es~List Entry, docs~List Doc, 
                 None   -> Null
         None   -> Null
 
+# Where the type of the name at the position is declared (D160).
+partial fn type_definition w es docs c -> j : w~Where, es~List Entry, docs~List Doc, c~Caps, j~Json
+    match name_at w.doc.path w.line w.col es
+        Some e ->
+            match e.type_def
+                Some s -> location s docs c.fs c.utf8
+                None   -> Null
+        None   -> Null
+
+# The places of the name at the position in this file, its declaration
+# first, each once.
+partial fn occurrences w es -> r : w~Where, es~List Entry, r~List Span
+    match name_at w.doc.path w.line w.col es
+        Some e ->
+            let all = match e.def
+                Some d -> d :: uses_of d (sort es) []
+                None   -> [e.at]
+            spans_in w.doc.path all
+        None   -> []
+
+# The other places of the name at the position, in this file (D160).
+partial fn highlights w es c -> j : w~Where, es~List Entry, c~Caps, j~Json
+    match occurrences w es
+        []  -> Null
+        all -> Arr (list.map (\s -> rpc.obj [("range", range_of w.doc.text s c.utf8)]) all)
+
+# Whether renaming the name at the position can rename every use (D160):
+# its range, to edit in place, or why not.
+partial fn prepare_rename w es c -> r : w~Where, es~List Entry, c~Caps, r~Result Json String
+    match name_at w.doc.path w.line w.col es
+        None   -> Err "there is no name here to rename"
+        Some e ->
+            if e.renamable
+                Ok (range_of w.doc.text e.at c.utf8)
+            else
+                Err ("`" ++ name_text w.doc.text e.at ++ "` is used outside this file, or is a module or the standard library's: it can't be renamed here")
+
+partial fn spans_in path ss -> r : path~String, ss~List Span, r~List Span
+    match ss
+        []        -> []
+        s :: rest -> if s.path == path then s :: spans_in path rest else spans_in path rest
+
+# Is `name` already a name in the file at `path`?
+partial fn named path text name es : path~String, text~Bytes, name~String, es~List Entry
+    match es
+        []        -> False
+        e :: rest -> (e.at.path == path and e.hover != "" and name_text text e.at == name) or named path text name rest
+
+fn upper_first n : n~String
+    let b = string.bytes n
+    len b > 0 and 'A' <= b[0] and b[0] <= 'Z'
+
+# `new` is a name (§9.1) spelled as `old` is: both capitalised, or neither.
+partial fn same_case old new : old~String, new~String
+    let b = string.bytes new
+    len b > 0 and upper_first old == upper_first new and word_bytes b 0
+        and (upper_first new or b[0] == '_' or ('a' <= b[0] and b[0] <= 'z'))
+
+partial fn word_bytes b i : b~Bytes, i~Nat
+    if i >= len b
+        True
+    else
+        let c = b[i]
+        (('a' <= c and c <= 'z') or ('A' <= c and c <= 'Z') or ('0' <= c and c <= '9') or c == '_') and word_bytes b (i + 1)
+
+# Rename the name at the position everywhere it is used: one edit per place,
+# all in this file (D160). The new name must be spelled as the old one is
+# (a lower-case or a capitalised name, §9.1), not a keyword, and not a name
+# this file has already.
+partial fn rename w es new c -> r : w~Where, es~List Entry, new~String, c~Caps, r~Result Json String
+    let checked = try prepare_rename w es c
+    let old = match name_at w.doc.path w.line w.col es
+        Some e -> name_text w.doc.text e.at
+        None   -> ""
+    let taken = named w.doc.path w.doc.text new es
+    if not (same_case old new)
+        Err ("`" ++ new ++ "` isn't a name like `" ++ old ++ "`: " ++ (if upper_first old then "start it with a capital letter" else "start it with a lower-case letter or `_`") ++ ", then letters, digits and `_`")
+    else if list.contains syntax.KEYWORDS (string.bytes new)
+        Err ("`" ++ new ++ "` is a keyword")
+    else if new == old
+        Ok (rpc.obj [("changes", rpc.obj [])])
+    else if taken
+        Err ("`" ++ new ++ "` is already a name in this file: renaming to it could change what a name refers to")
+    else
+        let edits = list.map (\s -> rpc.obj [("range", range_of w.doc.text s c.utf8), ("newText", Str new)]) (occurrences w es)
+        Ok (rpc.obj [("changes", rpc.obj [(w.doc.uri, Arr edits)])])
+
 # Reply to request `id`, about the file at `path`, with `f` of the index,
 # from a behaviour on the shared cown (which holds the index) and the
 # output: at once if the index has the file's latest check, else when it
 # does (D127 c).
 partial fn answer id path f c : id~Json, path~String, f~(List Entry -> Json), c~Caps
+    answer_or id path (\es -> Ok (f es)) c
+
+# The reply to request `id`: its result, or an error with a message the
+# editor shows (`RequestFailed`).
+fn respond id r -> j : id~Json, r~Result Json String, j~Json
+    match r
+        Ok j    -> rpc.response id j
+        Err msg -> rpc.error_response id (0 - 32803) msg
+
+# As `answer`, where `f` may fail with a message.
+partial fn answer_or id path f c : id~Json, path~String, f~(List Entry -> Result Json String), c~Caps
     let sched = c.sched
     when sh = c.shared, turn = c.out using sched
         if (root_in path sh.roots).indexed
             let o = terminal.stdout c.term
-            _ <- rpc.write (rpc.response id (f sh.index)) o
+            _ <- rpc.write (respond id (f sh.index)) o
             files.close o
             (sh, turn)
         else
@@ -815,6 +919,9 @@ partial fn capabilities utf8 -> j : utf8~Bool, j~Json
         ("hoverProvider", Bool True),
         ("definitionProvider", Bool True),
         ("referencesProvider", Bool True),
+        ("typeDefinitionProvider", Bool True),
+        ("documentHighlightProvider", Bool True),
+        ("renameProvider", rpc.obj [("prepareProvider", Bool True)]),
         ("documentFormattingProvider", Bool True),
         ("documentOnTypeFormattingProvider", rpc.obj [("firstTriggerCharacter", Str "\n")]),
         ("documentSymbolProvider", Bool True),
@@ -889,7 +996,9 @@ partial fn handle m st c -> r : m~Json, st~Server, c~Caps, r~(Server, Option Exi
             Some i ->
                 let utf8 = c.utf8
                 if method == "textDocument/hover" or method == "textDocument/definition"
-                    or method == "textDocument/references"
+                    or method == "textDocument/references" or method == "textDocument/typeDefinition"
+                    or method == "textDocument/documentHighlight" or method == "textDocument/prepareRename"
+                    or method == "textDocument/rename"
                     match where_of params docs utf8
                         Some w ->
                             let path = w.doc.path
@@ -897,6 +1006,17 @@ partial fn handle m st c -> r : m~Json, st~Server, c~Caps, r~(Server, Option Exi
                                 answer i path (\es -> hover w es c) c
                             else if method == "textDocument/definition"
                                 answer i path (\es -> definition w es docs c) c
+                            else if method == "textDocument/typeDefinition"
+                                answer i path (\es -> type_definition w es docs c) c
+                            else if method == "textDocument/documentHighlight"
+                                answer i path (\es -> highlights w es c) c
+                            else if method == "textDocument/prepareRename"
+                                answer_or i path (\es -> prepare_rename w es c) c
+                            else if method == "textDocument/rename"
+                                let new = match rpc.str_at ["newName"] params
+                                    Some n -> n
+                                    None   -> ""
+                                answer_or i path (\es -> rename w es new c) c
                             else
                                 let decl = rpc.at ["context", "includeDeclaration"] params == Some (Bool True)
                                 answer i path (\es -> references w es decl docs c) c

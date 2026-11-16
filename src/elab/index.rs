@@ -30,7 +30,7 @@ pub enum Use {
     Global(Target),
     /// A local: its binding (if known), its type as shown, and whether it is
     /// a parameter.
-    Local { name: String, def: Option<(String, Span)>, ty: String, param: bool },
+    Local { name: String, def: Option<(String, Span)>, ty: String, param: bool, ty_head: Option<TyId> },
     /// A module name (`import a.b`, `b.f`).
     Module(String),
 }
@@ -93,6 +93,10 @@ impl Elab {
             return;
         }
         let ty = self.show_val(cx, &local.ty);
+        let ty_head = match self.force(&local.ty) {
+            Val::TyCon(t, _) => Some(t),
+            _ => None,
+        };
         let def = local.span.map(|s| (self.cur.clone(), s));
         if span.start >= super::SYNTHETIC {
             return;
@@ -100,7 +104,7 @@ impl Elab {
         self.index.push(NameUse {
             module: self.cur.clone(),
             span,
-            what: Use::Local { name: local.name.to_string(), def, ty, param: local.param.is_some() },
+            what: Use::Local { name: local.name.to_string(), def, ty, param: local.param.is_some(), ty_head },
         });
     }
 
@@ -156,6 +160,58 @@ impl Elab {
             }
             Use::Local { name, ty, .. } => format!("{name} : {ty}"),
             Use::Module(m) => format!("module {m}"),
+        }
+    }
+
+    /// Where go to type definition goes (D160): the declaration of the
+    /// type of a local, a constant, a field or a constructor's value, or of
+    /// a function's result.
+    pub fn type_def_of(&self, u: &Use) -> Option<(String, Span)> {
+        fn head(t: &Tm) -> Option<TyId> {
+            match t {
+                Tm::Pi(_, _, _, _, b) => head(b),
+                Tm::TyCon(t) | Tm::TyConApp(t, _) => Some(*t),
+                _ => None,
+            }
+        }
+        let t = match u {
+            Use::Local { ty_head, .. } => (*ty_head)?,
+            Use::Global(Target::Ty(t)) => *t,
+            Use::Global(Target::Def(d)) => head(&self.g.defs[d.0 as usize].ty)?,
+            Use::Global(Target::Con(c)) => self.g.cons[c.0 as usize].ty,
+            Use::Global(Target::Field(c, k)) => head(&self.g.cons[c.0 as usize].fields[*k].3)?,
+            Use::Global(Target::Univ) | Use::Module(_) => return None,
+        };
+        self.decl_at.get(&Target::Ty(t)).cloned()
+    }
+
+    /// Whether every use of the name is in `user`, the module checked
+    /// (D160): a local, or a declaration of it that it doesn't export, so
+    /// renaming it there renames it everywhere.
+    pub fn renamable(&self, u: &Use, user: &str) -> bool {
+        let (m, name, is_type) = match u {
+            Use::Local { .. } => return true,
+            Use::Module(_) | Use::Global(Target::Univ) => return false,
+            Use::Global(t) => {
+                let Some((m, _)) = self.decl_at.get(t) else { return false };
+                match t {
+                    Target::Def(d) => (m, self.g.defs[d.0 as usize].name.to_string(), false),
+                    Target::Ty(t) => (m, self.g.tys[t.0 as usize].name.to_string(), true),
+                    // Constructors and fields are seen wherever their type is.
+                    Target::Con(c) | Target::Field(c, _) => {
+                        let ty = self.g.cons[c.0 as usize].ty;
+                        (m, self.g.tys[ty.0 as usize].name.to_string(), true)
+                    }
+                    Target::Univ => return false,
+                }
+            }
+        };
+        if m != user || m.starts_with("std.") {
+            return false;
+        }
+        match self.modules.get(m) {
+            Some(info) => !(if is_type { info.exported_types.contains(&name) } else { info.exported_values.contains(&name) }),
+            None => false,
         }
     }
 

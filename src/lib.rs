@@ -277,10 +277,18 @@ fn emit_index(e: &elab::Elab, user: &str, main: &std::path::Path, out: &mut dyn 
             }
             _ => None,
         };
+        let type_def = match e.type_def_of(&u.what) {
+            Some((m, span)) => match pos(&m, span) {
+                Some(p) => format!(r#"{{"path":{},{p}}}"#, json::string(&path_of(&m).to_string_lossy())),
+                None => "null".into(),
+            },
+            None => "null".into(),
+        };
         out(format!(
-            r#"{{"kind":"name","path":{},{at},"class":"{}","def":{def},"hover":{},"doc":{}}}"#,
+            r#"{{"kind":"name","path":{},{at},"class":"{}","def":{def},"type_def":{type_def},"renamable":{},"hover":{},"doc":{}}}"#,
             json::string(&path_of(&u.module).to_string_lossy()),
             e.class_of(&u.what),
+            e.renamable(&u.what, user),
             json::string(&e.hover_of(&u.what)),
             doc.map(|d| json::string(&d)).unwrap_or_else(|| "null".into()),
         ));

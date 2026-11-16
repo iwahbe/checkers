@@ -1,0 +1,39 @@
+# Highlighting, go to type definition and rename (D160), on rename.ck.
+> {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"capabilities":{"general":{"positionEncodings":["utf-8"]}}}}
+< 1
+> {"jsonrpc":"2.0","method":"initialized","params":{}}
+> {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/rename.ck","languageId":"checkers","version":1,"text":$TEXT(rename.ck)}}}
+# The places of `q`, the local: where it's bound, then its uses.
+> {"jsonrpc":"2.0","id":2,"method":"textDocument/documentHighlight","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/rename.ck"},"position":{"line":11,"character":4}}}
+< 1
+# `q`'s type is `Point`: go to its declaration.
+> {"jsonrpc":"2.0","id":3,"method":"textDocument/typeDefinition","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/rename.ck"},"position":{"line":11,"character":4}}}
+< 1
+# A field: `x`'s type is `Nat`, which this file doesn't declare.
+> {"jsonrpc":"2.0","id":4,"method":"textDocument/typeDefinition","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/rename.ck"},"position":{"line":11,"character":6}}}
+< 1
+# `q` can be renamed: its range.
+> {"jsonrpc":"2.0","id":5,"method":"textDocument/prepareRename","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/rename.ck"},"position":{"line":11,"character":4}}}
+< 1
+# Renamed to `moved`: three edits.
+> {"jsonrpc":"2.0","id":6,"method":"textDocument/rename","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/rename.ck"},"position":{"line":11,"character":4},"newName":"moved"}}
+< 1
+# Not to a keyword, a name the file has, or a capitalised name.
+> {"jsonrpc":"2.0","id":7,"method":"textDocument/rename","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/rename.ck"},"position":{"line":11,"character":4},"newName":"match"}}
+< 1
+> {"jsonrpc":"2.0","id":8,"method":"textDocument/rename","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/rename.ck"},"position":{"line":11,"character":4},"newName":"p"}}
+< 1
+> {"jsonrpc":"2.0","id":9,"method":"textDocument/rename","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/rename.ck"},"position":{"line":11,"character":4},"newName":"Q"}}
+< 1
+# `sum` is exported: other files may use it.
+> {"jsonrpc":"2.0","id":10,"method":"textDocument/prepareRename","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/rename.ck"},"position":{"line":9,"character":10}}}
+< 1
+# `shift` isn't: its declaration and its use.
+> {"jsonrpc":"2.0","id":11,"method":"textDocument/rename","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/rename.ck"},"position":{"line":6,"character":4},"newName":"moved_on"}}
+< 1
+# `Point` isn't exported either: renamed as a type, where it's built too.
+> {"jsonrpc":"2.0","id":12,"method":"textDocument/rename","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/rename.ck"},"position":{"line":2,"character":8},"newName":"Place"}}
+< 1
+> {"jsonrpc":"2.0","id":13,"method":"shutdown"}
+< 1
+> {"jsonrpc":"2.0","method":"exit"}
