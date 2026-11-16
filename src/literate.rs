@@ -386,6 +386,9 @@ fn has_member(e: &Elab, t: crate::core::TyId, member: &str) -> bool {
     })
 }
 
+/// The names a link's path looks up, from where it starts.
+type Scope<'a> = Box<dyn Fn(&str) -> Option<Sym> + 'a>;
+
 /// The declarations a link names (D161): each part of its path that is a
 /// declaration, a constructor or a field, with its span in the file, so
 /// that renaming one renames it in the link too.
@@ -439,7 +442,7 @@ pub fn link_targets(e: &Elab, user: &str, r: &Ref) -> Vec<(Span, Target)> {
             break;
         }
     }
-    let (scope, k): (Box<dyn Fn(&str) -> Option<Sym>>, usize) = match from {
+    let (scope, k): (Scope, usize) = match from {
         Some((x, k)) => {
             let Some(xm) = e.modules.get(&x) else { return out };
             (Box::new(move |n: &str| xm.types.get(n).or_else(|| xm.values.get(n)).copied()), k)
