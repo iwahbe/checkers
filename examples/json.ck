@@ -5,6 +5,7 @@ module json
 
 import std.system (System, ExitCode)
 import std.terminal
+import std.files
 import std.string
 import std.char
 import std.json (Error, ErrorKind)
@@ -46,7 +47,7 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { term } = sys
     match terminal.read_all term
         Err e  ->
-            terminal.eprint_line ("json: " ++ terminal.describe e) term
+            terminal.eprint_line ("json: " ++ files.describe e) term
             Failure 1
         Ok src ->
             match json.parse src

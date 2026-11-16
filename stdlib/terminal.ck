@@ -22,10 +22,6 @@ export fn read_all term -> r : term~Term, r~Result Bytes IoError
 export fn read_line term -> r : term~Term, r~Option String
     __builtin
 
-# The error in words.
-export fn describe e -> s : e~IoError, s~String
-    files.describe e
-
 # Write to standard output without adding a newline.
 export fn write s term -> r : s~String, term~Term, r~Unit
     __builtin

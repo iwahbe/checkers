@@ -76,7 +76,7 @@ examples/wc.ck:100:7  computed check ends_in_word b"" True
 <std>/files.ck:58:11  builtin  std.files.read_some
 <std>/terminal.ck:14:11  builtin  std.terminal.eprint_line
 <std>/terminal.ck:10:11  builtin  std.terminal.print_line
-<std>/terminal.ck:40:11  builtin  std.terminal.stdin
+<std>/terminal.ck:36:11  builtin  std.terminal.stdin
 solver: Z3 5.3.3.0
 -- stderr
 -- exit 0

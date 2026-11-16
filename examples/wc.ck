@@ -69,7 +69,7 @@ export partial fn main args sys -> code : args~List String, sys~System, code~Exi
                     terminal.print_line (render c "") term
                     Success
                 Err e ->
-                    terminal.eprint_line ("wc: " ++ terminal.describe e) term
+                    terminal.eprint_line ("wc: " ++ files.describe e) term
                     Failure 1
         paths ->
             report paths Success fs term

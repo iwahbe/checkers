@@ -93,7 +93,11 @@ let STYLE = string.concat [
     "header nav{max-width:820px;margin:0 auto;display:flex;gap:18px;align-items:baseline;flex-wrap:wrap}",
     ".wide header nav{max-width:1160px}",
     "header a{color:var(--fg);text-decoration:none}header .home{font-weight:700}",
-    "header select{margin-left:auto;font:inherit;font-size:14px;color:var(--fg);background:var(--panel);",
+    "header .end{margin-left:auto;display:flex;gap:12px;align-items:center}",
+    "header .stars{display:inline-flex;align-items:center;gap:6px;font-size:14px;line-height:1.4;padding:2px 10px;",
+    "border:1px solid var(--line);border-radius:6px;background:var(--panel)}header .stars:hover{border-color:var(--accent)}",
+    "header .stars .n{font-variant-numeric:tabular-nums;color:var(--muted)}header .stars .n:empty{display:none}",
+    "header select{font:inherit;font-size:14px;color:var(--fg);background:var(--panel);",
     "border:1px solid var(--line);border-radius:4px;padding:1px 4px}",
     "main{max-width:820px;margin:0 auto;padding:16px 16px 64px}",
     ".layout{max-width:1160px;margin:0 auto;display:grid;grid-template-columns:240px minmax(0,1fr)}",
@@ -139,6 +143,19 @@ let VERSIONS = string.concat [
     "fetch(u,{method:'HEAD'}).then(function(x){location.href=x.ok?u:home}).catch(function(){location.href=home})})",
     "})();</script>\n"]
 
+# The repository's star count in the top bar, from GitHub's API, kept for
+# an hour in the browser (the API allows 60 requests an hour without a
+# token). Without it the button says "Star" alone.
+let STARS = string.concat [
+    "<script>(function(){var n=document.querySelector('header .stars .n');if(!n)return;",
+    "function show(c){n.textContent=c>=1000?(c/1000).toFixed(1).replace(/\\.0$/,'')+'k':String(c)}",
+    "var k='checkers-stars';try{var s=JSON.parse(localStorage.getItem(k)||'null');",
+    "if(s&&Date.now()-s.t<3600000){show(s.c);return}}catch(e){}",
+    "fetch('https://api.github.com/repos/iwahbe/checkers').then(function(r){return r.ok?r.json():null})",
+    ".then(function(j){if(!j||typeof j.stargazers_count!=='number')return;show(j.stargazers_count);",
+    "try{localStorage.setItem(k,JSON.stringify({c:j.stargazers_count,t:Date.now()}))}catch(e){}})",
+    ".catch(function(){})})();</script>\n"]
+
 # A page: `body` (HTML) under the site's top bar, with the navigation column
 # `side` (HTML) if it isn't empty. `title` is its Markdown title, `name` the
 # Markdown twin beside it; `root` is the way to the site's root ("" or
@@ -167,10 +184,13 @@ partial fn page title name root label side body -> r : title~String, name~String
         "<a href=\"", root, "tour.html\">Tour</a>",
         "<a href=\"", root, "reference/index.html\">Reference</a>",
         "<a href=\"", root, "docs/latest/std/index.html\">Packages</a>",
-        "<a href=\"https://github.com/iwahbe/checkers\">Source</a>", menu, "</nav></header>\n"]
+        "<span class=\"end\">", menu,
+        "<a class=\"stars\" href=\"https://github.com/iwahbe/checkers\" title=\"The repository on GitHub\">",
+        "<span aria-hidden=\"true\">\u{2605}</span><span>Star</span><span class=\"n\"></span></a>",
+        "</span></nav></header>\n"]
     let open = if wide then "<div class=\"layout\">\n<nav class=\"side\">\n" else ""
     let between = if wide then "</nav>\n<main>\n" else "<main>\n"
-    let close = string.concat [if wide then "</main>\n</div>\n" else "</main>\n", if label == "" then "" else VERSIONS]
+    let close = string.concat [if wide then "</main>\n</div>\n" else "</main>\n", if label == "" then "" else VERSIONS, STARS]
     bytes.concat [
         string.bytes head, string.bytes open, side, string.bytes between, body, string.bytes close,
         b"</body>\n</html>\n"]
