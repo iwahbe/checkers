@@ -9,7 +9,7 @@ const USAGE: &str = "\
 ckc — the Checkers compiler (usually run through `checkers`, the build tool)
 
 USAGE:
-    ckc run [--unverified] [--threads N] <FILE.ck> [ARG]...
+    ckc run [--unverified] [--threads N] [--overlay MAP] <FILE.ck> [ARG]...
                                                check and prove, then run `main` with ARGs
                                                (N worker threads, default: cores; 1 is deterministic)
     ckc build [--unverified | --release] <FILE.ck> -o <PROGRAM>
@@ -193,6 +193,13 @@ fn run(args: &[String]) -> u8 {
             Some("--unverified") => {
                 unverified = true;
                 args = &args[1..];
+            }
+            // Before the file only: what follows it is the program's.
+            Some("--overlay") => {
+                if take_overlay(&args[..args.len().min(2)]).is_err() {
+                    return 2;
+                }
+                args = &args[args.len().min(2)..];
             }
             Some("--threads") => {
                 match args.get(1).and_then(|n| n.parse::<usize>().ok()).filter(|n| *n >= 1) {

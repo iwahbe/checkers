@@ -162,8 +162,9 @@ pub fn check_json(name: &str, text: &str, dir: &std::path::Path, out: &mut dyn F
                 }
             };
             emit_index(e, user, &main, &mut kept);
+            let root = e.base_dir.clone().unwrap_or_else(|| dir.to_path_buf());
             for s in &samples {
-                emit_sample_index(&c.file, s, dir, &main, out);
+                emit_sample_index(&c.file, s, &root, &main, out);
             }
         }
         None => emit_tokens(&main, &c.file, out),
@@ -827,6 +828,8 @@ fn emit_sample_index(file: &SourceFile, s: &literate::Sample, dir: &std::path::P
 fn complete_in_doc(name: &str, file: &SourceFile, dir: &std::path::Path, main: &std::path::Path, at: usize, out: &mut dyn FnMut(String)) -> bool {
     let (module, _) = syntax::parse_module(&file.text);
     let to = json::string(&main.to_string_lossy());
+    let root = module.name.as_ref().map(|q| elab::program_root(dir, &q.dotted())).unwrap_or_else(|| dir.to_path_buf());
+    let dir = root.as_path();
     for region in literate::regions(&file.text, &module) {
         let Some(line) = region.iter().find(|l| l.at <= at && at <= l.at + l.text.len()) else { continue };
         let (blocks, _) = literate::scan(&region);
@@ -872,8 +875,10 @@ fn complete_in_doc(name: &str, file: &SourceFile, dir: &std::path::Path, main: &
 fn doc_comments(c: &mut Checked, e: &elab::Elab, user: &str, dir: &std::path::Path) {
     let (diags, samples) = literate::links_and_samples(&c.file.text, &c.module, e, user);
     c.diags.extend(diags);
+    // A sample is a module of the program its module is in (D148 d).
+    let root = e.base_dir.clone().unwrap_or_else(|| dir.to_path_buf());
     for s in &samples {
-        c.diags.extend(literate::sample_diagnostics(s, dir));
+        c.diags.extend(literate::sample_diagnostics(s, &root));
     }
 }
 

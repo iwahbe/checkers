@@ -13,7 +13,7 @@ import std.system (Proc)
 import std.files (Fs)
 import std.files
 import std.proc
-import std.json (Json, Arr)
+import std.json (Json, Arr, Str)
 import std.markdown (Document, Block, Inline, Item, Span, Target, Definition, Reference, Paragraph, Heading,
                      ThematicBreak, Quote, Bullets, Numbered, Code, Html, Text, CodeSpan, Emph, Strong, Link, Image,
                      RawHtml, SoftBreak, HardBreak)
@@ -537,6 +537,11 @@ record Outcome
 # What a page needs to compile its code: the compiler, a directory to write
 # blocks in (blocks on one page may import each other), and flags for it
 # (packages).
+# How a page's blocks are compiled: `ckc`, the directory the blocks are
+# compiled as if they were in (a module page's package, so that a block may
+# import its modules as the module does; else a directory of the page's
+# own), and `ckc`'s flags. The blocks are given to `ckc` as an overlay
+# (D120), not written there.
 export record Compiler
     ckc~String
     work~String
@@ -545,14 +550,20 @@ export record Compiler
 partial fn file_of c s -> r : c~Compiler, s~Sample, r~String
     c.work ++ "/" ++ s.name ++ ".ck"
 
-partial fn compile c s fs p -> r : c~Compiler, s~Sample, fs~Fs, p~Proc, r~Outcome
+# The overlay: every block of the page, at its file, so one may import
+# another.
+partial fn overlay_of c ss -> r : c~Compiler, ss~List Sample, r~Bytes
+    let entries = list.map (\s -> (file_of c s, Str (as_string (sample_text s)))) ss
+    string.bytes (json.render (rpc.obj entries))
+
+partial fn compile c s all fs p -> r : c~Compiler, s~Sample, all~Bytes, fs~Fs, p~Proc, r~Outcome
     let file = file_of c s
     let fail = has_attr s.info b"compile_fail"
     let start = match s.lines
         (_, at) :: _ -> at
         []           -> 0
     if fail
-        match proc.run c.ckc (c.flags ++ ["check", file]) b"" p
+        match proc.run c.ckc (c.flags ++ ["check", "--overlay", "-", file]) all p
             Err e  -> Outcome [Warning "W032" ("could not run `" ++ c.ckc ++ "`: " ++ files.describe e) start ""] b""
             Ok out ->
                 let report = without_dir (bytes.concat [out.stdout, out.stderr]) (string.bytes (c.work ++ "/"))
@@ -564,20 +575,20 @@ partial fn compile c s fs p -> r : c~Compiler, s~Sample, fs~Fs, p~Proc, r~Outcom
                 else
                     Outcome [] report
     else
-        match proc.run c.ckc (c.flags ++ ["check", "--json", file]) b"" p
+        match proc.run c.ckc (c.flags ++ ["check", "--json", "--overlay", "-", file]) all p
             Err e  -> Outcome [Warning "W032" ("could not run `" ++ c.ckc ++ "`: " ++ files.describe e) start ""] b""
             Ok out ->
                 let ws = diagnostics s (lines_of out.stdout)
                 if ws != [] or has_attr s.info b"no_run" or not (has_main s)
                     Outcome ws b""
                 else
-                    run c s file p
+                    run c s file all p
 
-partial fn run c s file p -> r : c~Compiler, s~Sample, file~String, p~Proc, r~Outcome
+partial fn run c s file all p -> r : c~Compiler, s~Sample, file~String, all~Bytes, p~Proc, r~Outcome
     let start = match s.lines
         (_, at) :: _ -> at
         []           -> 0
-    match proc.run c.ckc (c.flags ++ ["run", "--threads", "1", file]) b"" p
+    match proc.run c.ckc (c.flags ++ ["run", "--overlay", "-", "--threads", "1", file]) all p
         Err e  -> Outcome [Warning "W034" ("could not run `" ++ c.ckc ++ "`: " ++ files.describe e) start ""] b""
         Ok out ->
             let output = without_dir (bytes.concat [out.stdout, out.stderr]) (string.bytes (c.work ++ "/"))
@@ -674,20 +685,9 @@ fn line_of x -> r : x~(Bytes, Nat), r~Bytes
     match x
         (l, _) -> bytes.concat [l, b"\n"]
 
-# Write every block first, so one may import another.
-partial fn write_samples c ss fs -> r : c~Compiler, ss~List Sample, fs~Fs, r~List Warning
+partial fn compile_all c ss all fs p -> r : c~Compiler, ss~List Sample, all~Bytes, fs~Fs, p~Proc, r~List (Sample, Outcome)
     match ss
-        s :: rest -> write_sample c s fs ++ write_samples c rest fs
-        []        -> []
-
-partial fn write_sample c s fs -> r : c~Compiler, s~Sample, fs~Fs, r~List Warning
-    match files.write (file_of c s) (sample_text s) fs
-        Ok _  -> []
-        Err e -> [Warning "W032" (file_of c s ++ ": " ++ files.describe e) 0 ""]
-
-partial fn compile_all c ss fs p -> r : c~Compiler, ss~List Sample, fs~Fs, p~Proc, r~List (Sample, Outcome)
-    match ss
-        s :: rest -> (s, compile c s fs p) :: compile_all c rest fs p
+        s :: rest -> (s, compile c s all fs p) :: compile_all c rest all fs p
         []        -> []
 
 # A compiled block as HTML: its shown lines highlighted, then its output.
@@ -851,14 +851,13 @@ export partial fn render text cx fs p -> r : text~Bytes, cx~Context, fs~Fs, p~Pr
     let base = cx.base
     let resolve = \label -> found_target syms scope base label
     let d = markdown.parse_with resolve source
-    let written = write_samples cx.compiler samples fs
-    let results = compile_all cx.compiler samples fs p
+    let results = compile_all cx.compiler samples (overlay_of cx.compiler samples) fs p
     let outputs = list.map (\x -> output_of x cx.links) results
     let links = cx.links
     let code = \info body -> lookup_output outputs links info body
     let shown = Document (list.map (page_block text) (list.map links_block d.blocks)) d.definitions d.unresolved
     let html = string.bytes (markdown.to_html_with code shown)
-    let warnings = written ++ link_warnings syms scope d.unresolved ++ flatten (list.map result_warnings results)
+    let warnings = link_warnings syms scope d.unresolved ++ flatten (list.map result_warnings results)
     (html, warnings)
 
 partial fn found_target syms scope base label -> r : syms~List Symbol, scope~List (String, String), base~String,
@@ -875,3 +874,69 @@ partial fn output_of x links -> r : x~(Sample, Outcome), links~(Bytes -> Bytes -
 fn result_warnings x -> r : x~(Sample, Outcome), r~List Warning
     match x
         (_, res) -> res.warnings
+
+# ── The page as Markdown ─────────────────────────────────────────────────────
+
+# The page's Markdown as it is shown: its Checkers blocks' `#!` lines left
+# out, as the HTML leaves them out (D148 g), and a block of such lines
+# alone with its fences.
+export partial fn without_hidden text -> r : text~Bytes, r~Bytes
+    let doc = markdown.parse (as_string text)
+    let cuts = list.sort_as first_of (hidden_ranges text (code_nodes doc.blocks))
+    cut_out text cuts 0
+
+fn first_of x -> n : x~(Nat, Nat), n~Nat
+    match x
+        (a, _) -> a
+
+# The Checkers code blocks: each line's span, and the block's.
+partial fn code_nodes bs -> r : bs~List Block, r~List (List Span, Span)
+    match bs
+        b :: rest ->
+            let here = match b
+                Code info _ ls s  -> if is_checkers info then [(ls, s)] else []
+                Quote xs _        -> code_nodes xs
+                Bullets _ is _    -> item_nodes is
+                Numbered _ _ is _ -> item_nodes is
+                _                 -> []
+            here ++ code_nodes rest
+        []        -> []
+
+partial fn item_nodes is -> r : is~List Item, r~List (List Span, Span)
+    match is
+        i :: rest -> code_nodes i.blocks ++ item_nodes rest
+        []        -> []
+
+# The byte ranges to leave out: each hidden line's whole line, or a block's
+# whole lines when all of its lines are hidden.
+partial fn hidden_ranges text bs -> r : text~Bytes, bs~List (List Span, Span), r~List (Nat, Nat)
+    match bs
+        (ls, s) :: rest ->
+            let hidden = hidden_lines text ls
+            let mine = if ls != [] and list.length hidden == list.length ls
+                [(line_start text s.start, line_end text (if s.stop > 0 then s.stop - 1 else 0))]
+            else
+                list.map (\x -> (line_start text x.start, line_end text x.start)) hidden
+            mine ++ hidden_ranges text rest
+        []              -> []
+
+partial fn hidden_lines text ls -> r : text~Bytes, ls~List Span, r~List Span
+    match ls
+        l :: rest -> if bytes.matches_at text l.start b"#!" then l :: hidden_lines text rest else hidden_lines text rest
+        []        -> []
+
+# The first byte of the line `i` is on.
+partial fn line_start text i -> r : text~Bytes, i~Nat, r~Nat
+    if i == 0 or i > len text then (if i > len text then len text else 0) else if text[i - 1] == '\n' then i else line_start text (i - 1)
+
+# Just after the end of the line `i` is on (its newline included).
+partial fn line_end text i -> r : text~Bytes, i~Nat, r~Nat
+    if i >= len text then len text else if text[i] == '\n' then i + 1 else line_end text (i + 1)
+
+# `text` from `at` without the ranges `cuts` (sorted).
+partial fn cut_out text cuts at -> r : text~Bytes, cuts~List (Nat, Nat), at~Nat, r~Bytes
+    match cuts
+        (a, b) :: rest ->
+            let keep = if a > at and a <= len text then bytes.slice text at a else b""
+            bytes.concat [keep, cut_out text rest (if b > at then b else at)]
+        []             -> if at < len text then bytes.slice text at (len text) else b""

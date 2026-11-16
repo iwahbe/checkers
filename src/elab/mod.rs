@@ -1860,6 +1860,24 @@ impl Default for Elab {
     }
 }
 
+/// Where module `name`'s program is (D53): `dir`, the directory of its file,
+/// or the directory its name is relative to when `dir` ends with the name's
+/// leading parts (`tools/ck`, of `ck.syntax`, is in `tools`), so that its
+/// imports of the program's modules resolve when it is checked by itself.
+pub fn program_root(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let parts: Vec<&str> = name.split('.').collect();
+    let leading = &parts[..parts.len().saturating_sub(1)];
+    let mut root = dir.to_path_buf();
+    for p in leading.iter().rev() {
+        if root.file_name().is_some_and(|f| f.to_string_lossy() == *p) {
+            root.pop();
+        } else {
+            return dir.to_path_buf();
+        }
+    }
+    root
+}
+
 /// Elaborate a user module (and the standard library modules it needs).
 pub fn check_module(name_hint: &str, file: &SourceFile, m: &ast::Module, dir: Option<&std::path::Path>) -> Elab {
     check_module_at(name_hint, file, m, dir, None)
@@ -1873,8 +1891,8 @@ pub fn check_module_at(name_hint: &str, file: &SourceFile, m: &ast::Module, dir:
         let name = m.name.as_ref().map(|q| q.dotted()).unwrap_or_else(|| name_hint.to_string());
         e.completing = Some((name, at));
     }
-    e.base_dir = dir.map(|d| d.to_path_buf());
     let name = m.name.as_ref().map(|q| q.dotted()).unwrap_or_else(|| name_hint.to_string());
+    e.base_dir = dir.map(|d| program_root(d, &name));
     // A standard-library file, checked by itself, is the standard library
     // (D145); it may be one of the core modules loaded next, so it is
     // indexed from the start.

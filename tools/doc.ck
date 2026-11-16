@@ -180,7 +180,7 @@ partial fn write_page dir name text root label side body fs -> r : dir~String, n
     let title = match lit.title text
         Some t -> as_string t
         None   -> name
-    match files.write (join_path dir (name ++ ".md")) text fs
+    match files.write (join_path dir (name ++ ".md")) (lit.without_hidden text) fs
         Err e -> Err (join_path dir (name ++ ".md") ++ ": " ++ files.describe e)
         Ok _  ->
             match files.write (join_path dir (name ++ ".html")) (page title name root label side body) fs
@@ -597,6 +597,28 @@ partial fn work_dir key fs -> r : key~String, fs~Fs, r~String
     let _ = files.create_dirs dir fs
     dir
 
+# The directory module `m`'s name is relative to (D53): its file's, less a
+# directory for each of its name's leading parts.
+partial fn module_root m -> r : m~Module, r~String
+    climb (dir_name m.file) (list.length (dotted (string.bytes m.name) 0 0 []))
+
+partial fn climb dir n -> r : dir~String, n~Nat, r~String
+    if n <= 1 then dir else climb (dir_name dir) (n - 1)
+
+# The parts of a dotted name.
+partial fn dotted b i start acc -> r : b~Bytes, i~Nat, start~Nat, acc~List Nat, r~List Nat
+    if i >= len b then start :: acc else if b[i] == '.' then dotted b (i + 1) (i + 1) (i :: acc) else dotted b (i + 1) start acc
+
+# The directory of a path: what is before its last `/`.
+partial fn dir_name path -> r : path~String, r~String
+    let b = string.bytes path
+    match last_slash b 0 None
+        Some k if k <= len b -> as_string (bytes.slice b 0 k)
+        _ -> "."
+
+partial fn last_slash b i best -> r : b~Bytes, i~Nat, best~Option Nat, r~Option Nat
+    if i >= len b then best else last_slash b (i + 1) (if b[i] == '/' then Some i else best)
+
 partial fn write_modules out package ts ms root label cx fs p term -> r : out~String, package~String,
                                                                           ts~List Target, ms~List Module,
                                                                           root~String, label~String, cx~Context,
@@ -609,8 +631,10 @@ partial fn write_modules out package ts ms root label cx fs p term -> r : out~St
             let text = string.bytes page
             let links = \q n ty -> resolve package ts m q n ty
             let scope = module_scope m (prelude_scope ms ++ cx.scope)
-            let work = work_dir (package ++ "-" ++ m.name) fs
-            let here = Context cx.symbols scope cx.base (Compiler cx.compiler.ckc work cx.compiler.flags) links
+            # A module's blocks are compiled as if beside it, in its program
+            # (D148 d): they may import its modules as it does.
+            let compiler = Compiler cx.compiler.ckc (module_root m) cx.compiler.flags
+            let here = Context cx.symbols scope cx.base compiler links
             let (body, ws) = lit.render text here fs p
             let _ = module_warnings ws m.file places term
             match write_page out (page_name package m.name) text root label (module_side package m) body fs
@@ -663,9 +687,7 @@ export partial fn run args ckc term fs p -> code : args~List String, ckc~String,
                                 Err _   -> b""
                             let others = if package == "std" then [] else std_modules ckc p
                             let symbols = symbols_of package "" ms ++ symbols_of "std" "../std/" others
-                            let flags = if package == "std" then [] else ["--package", package ++ "=" ++ a.dir, "--uses",
-                                                                          ".=" ++ package]
-                            let compiler = Compiler ckc (work_dir (package ++ "-index") fs) flags
+                            let compiler = Compiler ckc a.dir []
                             let cx = Context symbols (prelude_scope (ms ++ others)) "" compiler (\q n ty -> None)
                             let index = string.bytes (package_md package readme ms)
                             let (index_html, ws) = lit.render index cx fs p

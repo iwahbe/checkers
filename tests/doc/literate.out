@@ -142,10 +142,6 @@ below, [Option] and [Some] from the prelude, and [`Parsed.stop`], a field.
 
 [sort]: https://example.com/sort
 
-```checkers
-#! import std.list
-#! import std.cursor (Parsed)
-```
 
 A block with `main` runs, and its output follows it:
 
@@ -164,7 +160,6 @@ A block without a `module` line gets a hidden one; `#!` lines are compiled but
 not shown:
 
 ```
-#! import std.list
 check list.length [1, 2, 3] == 3
 ```
 
