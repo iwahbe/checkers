@@ -164,12 +164,63 @@ pub fn scan(region: &[Line]) -> (Vec<Block>, Vec<Ref>) {
             i = j + 1;
             continue;
         }
+        // An indented code block (D162): four spaces in from where its
+        // text would start, after a blank line, not in a paragraph.
+        let base = list_content(&region[..i]);
+        if indent_of(&l.text) >= base + 4 && !l.text.trim().is_empty() && (i == 0 || region[i - 1].text.trim().is_empty() || region[i - 1].text.trim_start().starts_with('#')) {
+            let mut lines = Vec::new();
+            let mut j = i;
+            while j < region.len() && (region[j].text.trim().is_empty() || indent_of(&region[j].text) >= base + 4) {
+                let t = &region[j].text;
+                let cut = (base + 4).min(t.len());
+                lines.push(Line { text: t[cut..].to_string(), at: region[j].at + cut });
+                j += 1;
+            }
+            while lines.last().is_some_and(|x| x.text.trim().is_empty()) {
+                lines.pop();
+            }
+            blocks.push(Block { info: String::new(), lines, fence: l.at });
+            i = j;
+            continue;
+        }
         if definition_label(&l.text).is_none() {
             line_refs(l, &defined, &mut refs);
         }
         i += 1;
     }
     (blocks, refs)
+}
+
+fn indent_of(text: &str) -> usize {
+    text.len() - text.trim_start_matches(' ').len()
+}
+
+/// Where the text of the list item the next line may belong to starts:
+/// its marker's width and the space after it (`- `, `10. `), or 0 outside
+/// a list. A line indented that far continues the item, and four further
+/// make code (CommonMark's list items).
+fn list_content(before: &[Line]) -> usize {
+    for l in before.iter().rev() {
+        let t = &l.text;
+        if t.trim().is_empty() {
+            continue;
+        }
+        let ind = indent_of(t);
+        let rest = &t[ind..];
+        let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+        let marker = if rest.starts_with("- ") || rest.starts_with("* ") || rest.starts_with("+ ") {
+            1
+        } else if digits > 0 && (rest[digits..].starts_with(". ") || rest[digits..].starts_with(") ")) {
+            digits + 1
+        } else if ind == 0 {
+            return 0;
+        } else {
+            continue;
+        };
+        let spaces = rest[marker..].len() - rest[marker..].trim_start_matches(' ').len();
+        return ind + marker + spaces.clamp(1, 4);
+    }
+    0
 }
 
 /// The label of a link reference definition (`[label]: url`) on the line.

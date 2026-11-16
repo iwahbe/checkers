@@ -1,0 +1,7 @@
+warning[W032]: this example has error[E0201]: type mismatch: expected `Nat`, found `String`
+  --> doc_indented.ck:14:23
+   |
+14 | #     check add1 1 == "two"
+   |                       ^^^^^ this expression has type `String`
+
+doc_indented.ck: 0 errors, 1 warning
