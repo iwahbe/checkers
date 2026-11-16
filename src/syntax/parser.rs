@@ -23,6 +23,7 @@ pub fn parse_with_place(tokens: Vec<Token>) -> (Module, Vec<Diagnostic>, Option<
         in_proof: 0,
         body_start: false,
         in_type: 0,
+        keyword_params: Vec::new(),
     };
     let m = p.module();
     (m, p.diags, p.place)
@@ -94,6 +95,9 @@ struct Parser {
     body_start: bool,
     /// Inside a type after `~`.
     in_type: usize,
+    /// Keywords a header used as parameter names (reported, E0122): its
+    /// constraints may name them without a second report.
+    keyword_params: Vec<String>,
 }
 
 impl Parser {
@@ -235,8 +239,33 @@ impl Parser {
                 let span = self.bump().span;
                 Ok(Ident { name, span })
             }
+            Tok::Kw(k) => {
+                self.keyword_as_name(k, what);
+                Err(Failed)
+            }
             _ => Err(self.error_here(what)),
         }
+    }
+
+    /// E0122: a keyword where a name belongs.
+    fn keyword_as_name(&mut self, k: Kw, what: &str) {
+        let kw = k.as_str();
+        let span = self.span();
+        self.diags.push(
+            Diagnostic::error("E0122", format!("`{kw}` is a keyword, so it can't be {what}"), span)
+                .with_label(format!("expected {what}"))
+                .with_help(format!("use another name, such as `{kw}_`")),
+        );
+    }
+
+    /// A keyword used as a parameter's name: reported, and kept as the
+    /// name so the rest of the header still parses.
+    fn keyword_param(&mut self) -> Option<Ident> {
+        let Tok::Kw(k) = *self.peek() else { return None };
+        self.keyword_as_name(k, "a parameter's name");
+        let span = self.bump().span;
+        self.keyword_params.push(k.as_str().to_string());
+        Some(Ident { name: k.as_str().into(), span })
     }
 
     fn at_ident(&self) -> bool {
@@ -423,13 +452,19 @@ impl Parser {
 
     fn names_until_header_end(&mut self) -> Vec<Ident> {
         let mut v = Vec::new();
-        while self.at_ident() {
-            let t = self.bump();
-            if let Tok::LName(n) | Tok::UName(n) = t.tok {
-                v.push(Ident { name: n, span: t.span });
+        loop {
+            if self.at_ident() {
+                let t = self.bump();
+                if let Tok::LName(n) | Tok::UName(n) = t.tok {
+                    v.push(Ident { name: n, span: t.span });
+                }
+            } else if let Some(i) = self.keyword_param() {
+                // Nothing else in a header's parameters is a keyword.
+                v.push(i);
+            } else {
+                return v;
             }
         }
-        v
     }
 
     fn params(&mut self) -> PResult<Vec<Param>> {
@@ -495,8 +530,18 @@ impl Parser {
             self.bump(); // :
             return Ok(Constraint::Named(name, self.expr()?));
         }
-        if self.at_ident() && *self.peek_at(1) == Tok::Tilde {
-            let name = self.ident("a name")?;
+        let keyword_param = match self.peek() {
+            Tok::Kw(k) => *self.peek_at(1) == Tok::Tilde && self.keyword_params.iter().any(|p| p == k.as_str()),
+            _ => false,
+        };
+        if (self.at_ident() || keyword_param) && *self.peek_at(1) == Tok::Tilde {
+            let name = if keyword_param {
+                let t = self.bump();
+                let Tok::Kw(k) = t.tok else { unreachable!() };
+                Ident { name: k.as_str().into(), span: t.span }
+            } else {
+                self.ident("a name")?
+            };
             self.bump(); // ~
             self.mark(PlaceKind::Type { start: true, field: false });
             let mult = self.mult();
@@ -512,6 +557,7 @@ impl Parser {
     fn fn_decl(&mut self) -> PResult<DeclKind> {
         let partial = self.eat_kw(Kw::Partial);
         self.expect_kw(Kw::Fn)?;
+        self.keyword_params.clear();
         let name = self.ident("a function name")?;
         let params = self.names_until_header_end();
         let result_name = if self.eat(&Tok::Arrow) { Some(self.ident("a result name after `->`")?) } else { None };

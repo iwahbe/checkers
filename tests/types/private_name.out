@@ -1,0 +1,36 @@
+error[E0221]: module `private.shapes` has no export named `perimeter`
+ --> private_name.ck:5:30
+  |
+5 | import private.shapes (area, perimeter)
+  |                              ^^^^^^^^^
+  = help: `private.shapes` declares `perimeter` but doesn't export it; mark it `export` there to use it here
+
+error[E0204]: unknown name `perimeter`
+ --> private_name.ck:9:7
+  |
+9 | check perimeter 2 3 == 10
+  |       ^^^^^^^^^ not found
+  = help: `private.shapes` declares `perimeter` but doesn't export it; mark it `export` there to use it here
+
+error[E0206]: module `private.shapes` has no export named `perimeter`
+  --> private_name.ck:10:9
+   |
+10 | check s.perimeter 2 3 == 10
+   |         ^^^^^^^^^
+   = help: `private.shapes` declares `perimeter` but doesn't export it; mark it `export` there to use it here
+
+error[E0206]: module `private.shapes` has no export named `Corner`
+  --> private_name.ck:12:22
+   |
+12 | fn corner -> c : c~s.Corner
+   |                      ^^^^^^
+   = help: `private.shapes` declares `Corner` but doesn't export it; mark it `export` there to use it here
+
+error[E0206]: module `private.shapes` has no export named `Corner`
+  --> private_name.ck:13:7
+   |
+13 |     s.Corner 0 0
+   |       ^^^^^^
+   = help: `private.shapes` declares `Corner` but doesn't export it; mark it `export` there to use it here
+
+private_name.ck: 5 errors, 0 warnings

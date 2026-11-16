@@ -1,0 +1,15 @@
+error[E0122]: `own` is a keyword, so it can't be a parameter's name
+ --> keyword_name.ck:5:10
+  |
+5 | fn first own n -> r : own~Nat, n~Nat, r~Nat
+  |          ^^^ expected a parameter's name
+  = help: use another name, such as `own_`
+
+error[E0122]: `module` is a keyword, so it can't be a function name
+ --> keyword_name.ck:8:4
+  |
+8 | fn module -> r : r~Nat
+  |    ^^^^^^ expected a function name
+  = help: use another name, such as `module_`
+
+keyword_name.ck: 2 errors, 0 warnings

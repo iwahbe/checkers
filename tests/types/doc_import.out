@@ -3,5 +3,6 @@ warning[W032]: this example has error[E0204]: unknown name `halve`
    |
 14 | #     check halve 4 == 2
    |             ^^^^^ not found
+   = help: `doc_import` declares `halve` but doesn't export it; mark it `export` there to use it here
 
 doc_import.ck: 0 errors, 1 warning; 1 obligation proved

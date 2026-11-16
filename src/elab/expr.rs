@@ -306,7 +306,11 @@ impl Elab {
                     self.insert(cx, t, ty)
                 }
                 None => {
-                    self.err(Diagnostic::error("E0204", format!("unknown name `{n}`"), e.span).with_label("not found"));
+                    let mut d = Diagnostic::error("E0204", format!("unknown name `{n}`"), e.span).with_label("not found");
+                    if let Some(m) = self.private_in_imports(n) {
+                        d = d.with_help(Self::private_help(&m, n));
+                    }
+                    self.err(d);
                     (Tm::Error, Val::Error)
                 }
             },
@@ -590,7 +594,11 @@ impl Elab {
                             .with_help(format!("`{n}` is a standard library module; add `import std.{n}`")),
                     );
                 } else {
-                    self.err(Diagnostic::error("E0204", format!("unknown name `{n}`"), span).with_label("not found"));
+                    let mut d = Diagnostic::error("E0204", format!("unknown name `{n}`"), span).with_label("not found");
+                    if let Some(m) = self.private_in_imports(n) {
+                        d = d.with_help(Self::private_help(&m, n));
+                    }
+                    self.err(d);
                 }
                 (Tm::Error, Val::Error)
             }
@@ -1804,11 +1812,15 @@ impl Elab {
                             self.insert(cx, t, ty)
                         }
                         None => {
-                            self.err(Diagnostic::error(
+                            let mut d = Diagnostic::error(
                                 "E0206",
                                 format!("module `{m}` has no export named `{}`", name.name),
                                 name.span,
-                            ));
+                            );
+                            if self.declares_privately(&m, &name.name) {
+                                d = d.with_help(Self::private_help(&m, &name.name));
+                            }
+                            self.err(d);
                             (Tm::Error, Val::Error)
                         }
                     };

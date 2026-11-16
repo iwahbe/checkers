@@ -242,11 +242,15 @@ impl Elab {
                     let t = src.exported_types.contains(&it.name).then(|| src.types[&it.name]);
                     let v = src.exported_values.contains(&it.name).then(|| src.values[&it.name]);
                     if t.is_none() && v.is_none() {
-                        self.err(Diagnostic::error(
+                        let mut d = Diagnostic::error(
                             "E0221",
                             format!("module `{path}` has no export named `{}`", it.name),
                             it.span,
-                        ));
+                        );
+                        if self.declares_privately(&path, &it.name) {
+                            d = d.with_help(Self::private_help(&path, &it.name));
+                        }
+                        self.err(d);
                         continue;
                     }
                     // D36: importing a type imports its constructors.
@@ -317,6 +321,28 @@ impl Elab {
 
     pub fn qualifier(&self, q: &str) -> Option<String> {
         self.module().qualifiers.get(q).cloned()
+    }
+
+    /// A module this one imports that declares `name` without exporting
+    /// it, for a `help:` on an unknown or unexported name.
+    pub fn private_in_imports(&self, name: &str) -> Option<String> {
+        let mut imported: Vec<&String> = self.module().qualifiers.values().collect();
+        imported.sort();
+        imported.dedup();
+        imported.into_iter().find(|m| self.declares_privately(m, name)).cloned()
+    }
+
+    /// `module` declares `name` and doesn't export it.
+    pub fn declares_privately(&self, module: &str, name: &str) -> bool {
+        self.modules.get(module).is_some_and(|m| {
+            (m.values.contains_key(name) && !m.exported_values.contains(name))
+                || (m.types.contains_key(name) && !m.exported_types.contains(name))
+        })
+    }
+
+    /// The `help:` for a name `module` declares without exporting.
+    pub fn private_help(module: &str, name: &str) -> String {
+        format!("`{module}` declares `{name}` but doesn't export it; mark it `export` there to use it here")
     }
 
     pub fn resolve_qualified(&self, module: &str, name: &str, type_pos: bool) -> Option<Sym> {
