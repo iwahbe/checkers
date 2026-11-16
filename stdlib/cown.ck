@@ -10,5 +10,5 @@ export abstract enum Sched
 export abstract enum Cown a : a~Type
 
 # A new cown owning `v`.
-export fn new v sched -> c : v~own a, sched~Sched, c~Cown a
+export fn new v sched -> c : v~a, sched~Sched, c~Cown a
     __builtin

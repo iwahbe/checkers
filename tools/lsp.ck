@@ -89,11 +89,6 @@ record Server
     killers~List (String, Killer)
     shutdown~Bool
 
-# A check in progress: the compiler's output and the child.
-enum Job
-    Running out child acc : out~File, child~Child, acc~Acc
-    Finished
-
 # What doesn't change once the client is initialized: the system's
 # capabilities, the shared cowns, the compiler and its package flags, and
 # whether positions are in UTF-8 (else UTF-16).
@@ -101,7 +96,8 @@ record Caps
     fs~Fs
     proc~Proc
     sched~Sched
-    out~Cown File
+    term~Term
+    out~Cown ()
     shared~Cown Shared
     ckc~String
     flags~List String
@@ -248,38 +244,44 @@ partial fn of_path path ds -> r : path~String, ds~List Diag, r~List Diag
 # waiting for it.
 partial fn publish phase acc g root docs c : phase~String, acc~Acc, g~Nat, root~String, docs~List Doc, c~Caps
     let sched = c.sched
-    when sh = c.shared, o = c.out using sched
+    when sh = c.shared, turn = c.out using sched
         let before = root_in root sh.roots
         if before.gen != g
-            (sh, o)
+            (sh, turn)
         else if phase == "index"
             # It covers the root's file only.
             let index = acc.index ++ not_in root sh.index
             let roots = Root root g True before.showing before.proofs :: other_roots root sh.roots
+            let o = terminal.stdout c.term
             _ <- answer_all (of_root root sh.pending) index o
-            (Shared roots index (not_of_root root sh.pending), o)
+            files.close o
+            (Shared roots index (not_of_root root sh.pending), turn)
         else
             # Until this check's proofs are known, its root's last ones stay.
             let proofs = if phase == "proofs" then of_phase "proofs" acc.diags else before.proofs
             let showing = not_proof acc.diags ++ proofs
             let roots = Root root g before.indexed showing proofs :: other_roots root sh.roots
             let touched = paths_of showing (paths_of before.showing [])
+            let o = terminal.stdout c.term
             _ <- send_all touched (all_showing roots) docs c o
-            (Shared roots sh.index sh.pending, o)
+            files.close o
+            (Shared roots sh.index sh.pending, turn)
     ()
 
 # A check `g` of `root` ended without its index (the compiler failed): if it
 # is the root's latest, answer the requests waiting for it with what there is.
 partial fn settle g root c : g~Nat, root~String, c~Caps
     let sched = c.sched
-    when sh = c.shared, o = c.out using sched
+    when sh = c.shared, turn = c.out using sched
         let before = root_in root sh.roots
         if before.gen != g or before.indexed
-            (sh, o)
+            (sh, turn)
         else
             let roots = Root root g True before.showing before.proofs :: other_roots root sh.roots
+            let o = terminal.stdout c.term
             _ <- answer_all (of_root root sh.pending) sh.index o
-            (Shared roots sh.index (not_of_root root sh.pending), o)
+            files.close o
+            (Shared roots sh.index (not_of_root root sh.pending), turn)
     ()
 
 partial fn answer_all ps index o -> r : ps~List Pending, index~List Entry, o~File, r~((), File)
@@ -392,8 +394,7 @@ partial fn start doc st c -> r : doc~Doc, st~Server, c~Caps, r~Server
         Ok (Spawned child input out ()) ->
             feed (string.bytes (json.render (overlay st.docs))) input
             let (child, k) = proc.killer child
-            let job = cown.new (Running out child (Acc [] [] 0)) c.sched
-            step job g doc.path docs c
+            step out child (Acc [] [] 0) g doc.path docs c
             Server st.docs g ((doc.path, k) :: others) st.shutdown
 
 partial fn killer_of path ks -> r : path~String, ks~List (String, Killer), r~Option Killer
@@ -415,27 +416,24 @@ partial fn kill_all ks : ks~List (String, Killer)
 
 # One phase of a check: read it, publish it, and go on in a new behaviour, so
 # the publication (on other cowns) needn't wait for the rest of the output.
-partial fn step job g root docs c : job~Cown Job, g~Nat, root~String, docs~List Doc, c~Caps
+# Each behaviour owns the child and its output, and hands them to the next;
+# the last closes and waits for them (D156 k: a cown can't hold them).
+partial fn step o ch acc g root docs c : o~File, ch~Child, acc~Acc, g~Nat, root~String, docs~List Doc, c~Caps
     let sched = c.sched
-    when j = job using sched
-        match j
-            Running o ch acc ->
-                let (acc2, o2) = pump o acc g docs c
-                if acc2.phases > acc.phases
-                    publish (phase_name acc2.phases) acc2 g root docs c
-                    step job g root docs c
-                    Running o2 ch acc2
-                else
-                    files.close o2
-                    let code = proc.wait ch
-                    # 137: killed by a newer check.
-                    match code
-                        Ok n if acc2.phases == 0 and n != 137 ->
-                            show_error ("`" ++ c.ckc ++ "` stopped without checking (exit " ++ format n ++ ")") c
-                        _ -> ()
-                    if acc2.phases < 2 then settle g root c else ()
-                    Finished
-            Finished         -> Finished
+    _ <- fork using sched
+        let (acc2, o2) = pump o acc g docs c
+        if acc2.phases > acc.phases
+            publish (phase_name acc2.phases) acc2 g root docs c
+            step o2 ch acc2 g root docs c
+        else
+            files.close o2
+            let code = proc.wait ch
+            # 137: killed by a newer check.
+            match code
+                Ok n if acc2.phases == 0 and n != 137 ->
+                    show_error ("`" ++ c.ckc ++ "` stopped without checking (exit " ++ format n ++ ")") c
+                _ -> ()
+            if acc2.phases < 2 then settle g root c else ()
     ()
 
 fn phase_name n -> s : n~Nat, s~String
@@ -493,12 +491,14 @@ partial fn definition w es docs c -> j : w~Where, es~List Entry, docs~List Doc, 
 # does (D127 c).
 partial fn answer id path f c : id~Json, path~String, f~(List Entry -> Json), c~Caps
     let sched = c.sched
-    when sh = c.shared, o = c.out using sched
+    when sh = c.shared, turn = c.out using sched
         if (root_in path sh.roots).indexed
+            let o = terminal.stdout c.term
             _ <- rpc.write (rpc.response id (f sh.index)) o
-            (sh, o)
+            files.close o
+            (sh, turn)
         else
-            (Shared sh.roots sh.index (Pending id path f :: sh.pending), o)
+            (Shared sh.roots sh.index (Pending id path f :: sh.pending), turn)
     ()
 
 # Tell the user something went wrong (`window/showMessage`).
@@ -531,9 +531,11 @@ partial fn uses_of d es acc -> r : d~Span, es~List Entry, acc~List Span, r~List 
 # Reply with a value that needs no index, in order with the other replies.
 partial fn reply msg c : msg~Json, c~Caps
     let sched = c.sched
-    when o = c.out using sched
+    when turn = c.out using sched
+        let o = terminal.stdout c.term
         _ <- rpc.write msg o
-        o
+        files.close o
+        turn
     ()
 
 # ── Completion (D142) ────────────────────────────────────────────────────────
@@ -550,18 +552,13 @@ partial fn complete id w docs c : id~Json, w~Where, docs~List Doc, c~Caps
         Ok (Spawned child input out ()) ->
             feed (string.bytes (json.render (overlay docs))) input
             let sched = c.sched
-            let job = cown.new (Running out child (Acc [] [] 0)) sched
             let text = w.doc.text
-            when j = job using sched
-                match j
-                    Running o ch _ ->
-                        let (items, o2) = read_items o text c None [] 0
-                        files.close o2
-                        let _ = proc.wait ch
-                        let list = rpc.obj [("isIncomplete", Bool False), ("items", Arr items)]
-                        reply (rpc.response id list) c
-                        Finished
-                    Finished       -> Finished
+            _ <- fork using sched
+                let (items, o2) = read_items out text c None [] 0
+                files.close o2
+                let _ = proc.wait child
+                let list = rpc.obj [("isIncomplete", Bool False), ("items", Arr items)]
+                reply (rpc.response id list) c
             ()
 
 # The candidates `ckc complete` writes, as completion items, in its order.
@@ -912,7 +909,7 @@ partial fn begin input c -> r : input~File, c~Caps, r~(ExitCode, File)
                         Some p -> p
                         None   -> Null
                     let utf8 = offers_utf8 params
-                    let c2 = Caps c.fs c.proc c.sched c.out c.shared c.ckc c.flags utf8
+                    let c2 = Caps c.fs c.proc c.sched c.term c.out c.shared c.ckc c.flags utf8
                     reply (rpc.response id (capabilities utf8)) c2
                     serve input (Server [] 0 [] False) c2
                 (Some "exit", _)             -> (Failure 1, input)
@@ -926,9 +923,9 @@ partial fn begin input c -> r : input~File, c~Caps, r~(ExitCode, File)
 # (D123), so the checks' behaviours run while this loop waits for input.
 export partial fn run ckc flags term fs p sched -> code : ckc~String, flags~List String, term~Term, fs~Fs, p~Proc,
                                                           sched~Sched, code~ExitCode
-    let out = cown.new (terminal.stdout term) sched
+    let out = cown.new () sched
     let shared = cown.new (Shared [] [] []) sched
-    let c = Caps fs p sched out shared ckc flags False
+    let c = Caps fs p sched term out shared ckc flags False
     let (code, rest) = begin (terminal.stdin term) c
     files.close rest
     code

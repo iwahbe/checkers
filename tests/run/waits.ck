@@ -8,7 +8,6 @@ import std.system (System, ExitCode, Proc)
 import std.terminal (Term)
 import std.files (File)
 import std.proc (Streams, Spawned, Pipe, Inherit, Child)
-import std.cown (Cown, Sched)
 
 # A child `cat`: its input, its output, and the child.
 record Kid
@@ -33,26 +32,21 @@ partial fn cleanup ks : ks~List Kid
             let _ = proc.wait c
             cleanup rest
 
-# A reader's cown: the child and its output, then what it read.
+# What a reader read, and the child's exit code.
 enum Slot
-    Waiting out child : out~File, child~Child
-    Read text code    : text~Bytes, code~Nat
+    Read text code : text~Bytes, code~Nat
     Failed
 
-partial fn reader c sched : c~Cown Slot, sched~Sched
-    when s = c using sched
-        match s
-            Waiting out child ->
-                text <- files.read_rest out
-                files.close out
-                let code = match proc.wait child
-                    Ok n  -> n
-                    Err _ -> 99
-                match text
-                    Ok t  -> Read t code
-                    Err _ -> Failed
-            other             -> other
-    ()
+# Read the child's output to its end, then wait for it.
+partial fn read out child -> s : out~File, child~Child, s~Slot
+    text <- files.read_rest out
+    files.close out
+    let code = match proc.wait child
+        Ok n  -> n
+        Err _ -> 99
+    match text
+        Ok t  -> Read t code
+        Err _ -> Failed
 
 # Give each child its line, then close its input.
 partial fn feed ins n : ins~List File, n~Nat
@@ -63,39 +57,31 @@ partial fn feed ins n : ins~List File, n~Nat
             files.close w
             feed rest (n + 1)
 
-# What a slot holds, as text, and the slot back.
-partial fn shown s -> r : s~Slot, r~(String, Slot)
+# What a slot holds, as text.
+fn shown s -> r : s~Slot, r~String
     match s
-        Read t code       -> (format t ++ " " ++ format code, Read t code)
-        Waiting out child -> ("still waiting", Waiting out child)
-        Failed            -> ("failed", Failed)
+        Read t code -> format t ++ " " ++ format code
+        Failed      -> "failed"
 
 export partial fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { term, proc = p, sched } = sys
     match kids 4 p
         [Kid i1 o1 c1, Kid i2 o2 c2, Kid i3 o3 c3, Kid i4 o4 c4] ->
-            let a = cown.new (Waiting o1 c1) sched
-            let b = cown.new (Waiting o2 c2) sched
-            let c = cown.new (Waiting o3 c3) sched
-            let d = cown.new (Waiting o4 c4) sched
-            reader a sched
-            reader b sched
-            reader c sched
-            reader d sched
-            let inputs = cown.new [i1, i2, i3, i4] sched
-            when ins = inputs using sched
-                feed ins 1
-                []
-            when x = a, y = b, z = c, w = d using sched
-                let (sx, x) = shown x
-                let (sy, y) = shown y
-                let (sz, z) = shown z
-                let (sw, w) = shown w
-                terminal.print_line sx term
-                terminal.print_line sy term
-                terminal.print_line sz term
-                terminal.print_line sw term
-                (x, y, z, w)
+            a <- fork using sched
+                read o1 c1
+            b <- fork using sched
+                read o2 c2
+            c <- fork using sched
+                read o3 c3
+            d <- fork using sched
+                read o4 c4
+            _ <- fork using sched
+                feed [i1, i2, i3, i4] 1
+            _ <- join x = a, y = b, z = c, w = d using sched
+                terminal.print_line (shown x) term
+                terminal.print_line (shown y) term
+                terminal.print_line (shown z) term
+                terminal.print_line (shown w) term
             Success
         other                                                    ->
             cleanup other

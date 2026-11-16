@@ -13,7 +13,7 @@ export record Actor s : s~Type
     state~Cown s
 
 # A new actor with state `init`.
-export fn new init sched -> a : init~own s, sched~Sched, a~Actor s
+export fn new init sched -> a : init~s, sched~Sched, a~Actor s
     Actor (cown.new init sched)
 
 # Schedule message `f` on actor `a`.

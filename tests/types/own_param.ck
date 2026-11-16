@@ -3,7 +3,6 @@ module own_param
 # `own` marks generic parameters that may receive a resource (D45).
 
 import std.files (Fs, File)
-import std.cown (Cown, Sched)
 
 fn keep x -> y : x~a, y~a
     x
@@ -25,15 +24,6 @@ fn implied f : f~own File
 
 fn pointless n -> m : n~own Nat, m~Nat
     n
-
-# A cown owns its contents; the handle is shared freely (D39).
-fn into_cown f sched : f~File, sched~Sched
-    let c = cown.new f sched
-    when g = c using sched
-        g
-    when g = c using sched
-        g
-    ()
 
 # A function type whose parameter is a resource takes it exactly once.
 fn call_once k f : k~(File -> Unit), f~File

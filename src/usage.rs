@@ -39,7 +39,9 @@ struct U<'a> {
     binders: Vec<Binder>,
     reported: bool,
     /// Binder level → a function it was passed to whose parameter isn't `own` (D45).
-    copied_by: std::collections::HashMap<usize, String>,
+    /// The function each `own` binder is passed to as a parameter that isn't
+    /// `own`, with its module.
+    copied_by: std::collections::HashMap<usize, (String, String)>,
 }
 
 type Counts = Vec<Count>;
@@ -86,7 +88,21 @@ impl U<'_> {
                         span,
                     );
                     match self.copied_by.get(&lvl) {
-                        Some(callee) => d
+                        // A cown can't hold a resource (D156 k).
+                        Some((_, module)) if self.cown_target(lvl).is_some() => {
+                            let what = self.cown_target(lvl).unwrap_or_default();
+                            let short = module.trim_start_matches("std.");
+                            Diagnostic::error(
+                                "E0405",
+                                format!("`{name}` holds a resource (`{ty}`), which can't be put in {what}"),
+                                span,
+                            )
+                            .with_note(format!(
+                                "`{name}` is passed to `{short}.new`; a cown's handle can be shared, so nothing would make sure what it holds is closed (D156)"
+                            ))
+                            .with_help("keep the resource with one owner, passing it on through calls, `fork` and `join`; a cown may hold the rest of the state")
+                        }
+                        Some((callee, _)) => d
                             .with_note(format!("`{name}` is passed to `{callee}`, whose parameter is not `own`, so `{callee}` may copy or drop it"))
                             .with_help(format!("mark that parameter of `{callee}` with `own` (as in `x~own a`) so it can take a resource")),
                         None => d.with_help("a resource can't be copied; thread it with `<-` so each use gets the new one"),
@@ -116,6 +132,12 @@ impl U<'_> {
                 span,
             )
             .with_help("`own` promises a single use, so the argument may be a resource that must not be dropped; use it, or remove `own`"),
+            _ if self.cown_target(lvl).is_some() => Diagnostic::error(
+                "E0405",
+                format!("`{name}` is `own`, so it may be a resource, which can't be put in {}", self.cown_target(lvl).unwrap_or_default()),
+                span,
+            )
+            .with_help("remove `own`: a cown holds only values that aren't resources (D156)"),
             _ => Diagnostic::error(
                 "E0401",
                 format!("`{name}` is `own`, so it must be used exactly once, but `{fname}` may use it more than once"),
@@ -148,6 +170,16 @@ impl U<'_> {
         c
     }
 
+    /// What a binder passed to `cown.new` or `actor.new` would be put in: a
+    /// cown can't hold a resource (D156 k).
+    fn cown_target(&self, lvl: usize) -> Option<String> {
+        match self.copied_by.get(&lvl).map(|(c, m)| (c.as_str(), m.as_str())) {
+            Some(("new", "std.cown")) => Some("a cown".into()),
+            Some(("new", "std.actor")) => Some("an actor's state".into()),
+            _ => None,
+        }
+    }
+
     fn go(&mut self, t: &Tm) -> Counts {
         match t {
             Tm::Var(i) => {
@@ -168,7 +200,10 @@ impl U<'_> {
                 // allows; a use inside it (`f` in `g (close f)`) happens once.
                 let carried = self.carried(a);
                 if m == Mult::Many {
-                    if let Some(callee) = head_def(f).map(|d| self.e.g.defs[d.0 as usize].name.to_string()) {
+                    if let Some(callee) = head_def(f).map(|d| {
+                        let d = &self.e.g.defs[d.0 as usize];
+                        (d.name.to_string(), d.module.to_string())
+                    }) {
                         for (lvl, c) in used.iter().enumerate() {
                             if *c != Count::Zero && self.binders[lvl].mult == Mult::One && carried.contains(&lvl) {
                                 self.copied_by.entry(lvl).or_insert_with(|| callee.clone());

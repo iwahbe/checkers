@@ -9,16 +9,11 @@ import std.terminal
 import std.files
 import std.files (File)
 import std.proc (Streams, Spawned, Pipe, Discard)
-import std.cown
 
-# Write a line to each file and close it.
-partial fn send ws -> r : ws~List File, r~List File
-    match ws
-        []        -> []
-        w :: rest ->
-            _ <- files.write_line "ping" w
-            files.close w
-            send rest
+# Write a line to the file and close it.
+fn send w : w~File
+    _ <- files.write_line "ping" w
+    files.close w
 
 export partial fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { term, proc = p, sched } = sys
@@ -27,9 +22,8 @@ export partial fn main args sys -> code : args~List String, sys~System, code~Exi
             terminal.print_line ("spawn failed: " ++ files.describe e) term
             Failure 1
         Ok (Spawned child input output ()) ->
-            let writer = cown.new [input] sched
-            when ws = writer using sched
-                send ws
+            _ <- fork using sched
+                send input
             line <- files.read_line output
             files.close output
             let _ = proc.wait child
