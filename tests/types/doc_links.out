@@ -32,10 +32,10 @@ warning[W033]: this example fails, but not with E0201
    |   ^
    = note: it fails with E0261, E0450
 
-warning[W032]: this example has error[E0204]: unknown name `twice`
+warning[W032]: this example has error[E0204]: unknown name `thrice`
   --> doc_links.ck:38:9
    |
-38 | # check twice 1 == 2
-   |         ^^^^^ not found
+38 | # check thrice 1 == 3
+   |         ^^^^^^ not found
 
 doc_links.ck: 0 errors, 6 warnings

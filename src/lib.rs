@@ -153,12 +153,26 @@ pub fn check_json(name: &str, text: &str, dir: &std::path::Path, out: &mut dyn F
             // The doc comments' code is indexed as code (D148 f): their
             // lines' comment tokens give way to its tokens.
             let samples = literate::links_and_samples(&c.file.text, &c.module, e, user).1;
-            let covered: std::collections::HashSet<usize> =
-                samples.iter().flat_map(|s| s.starts.iter().map(|a| c.file.line_byte(*a as u32).0)).collect();
+            // Each code line's start: its comment marker (`#`, and `#!`
+            // on a hidden line) stays a comment, the rest is code. A
+            // `module` line given to a block is no line of the file.
+            let covered: std::collections::HashMap<usize, usize> = samples
+                .iter()
+                .flat_map(|s| s.starts.iter().enumerate().filter(|(i, _)| !s.given.contains(i)).map(|(_, a)| c.file.line_byte(*a as u32)))
+                .collect();
             let mut kept = |l: String| {
-                let comment_here = l.contains(r#""class":"comment""#) && start_line(&l).is_some_and(|n| covered.contains(&n));
-                if !comment_here {
-                    out(l)
+                let here = if l.contains(r#""class":"comment""#) { start_line(&l).and_then(|n| covered.get(&n).map(|col| (n, *col))) } else { None };
+                match here {
+                    None => out(l),
+                    Some((n, col)) => {
+                        // The comment's start column, from `"start":[n,c]`.
+                        let key = format!(r#""start":[{n},"#);
+                        let from = l.find(&key).and_then(|k| l[k + key.len()..].split(']').next()?.parse::<usize>().ok());
+                        let path = l.split(r#""path":"#).nth(1).and_then(|r| r.split(r#","start""#).next()).unwrap_or("\"\"");
+                        if let Some(c0) = from.filter(|c0| *c0 < col) {
+                            out(format!(r#"{{"kind":"token","path":{path},"start":[{n},{c0}],"end":[{n},{col}],"class":"comment"}}"#));
+                        }
+                    }
                 }
             };
             emit_index(e, user, &main, &mut kept);
@@ -783,7 +797,7 @@ fn start_line(l: &str) -> Option<usize> {
 /// the block's place in `file` (path `to`); `None` for a line about the
 /// `module` line the block was given.
 fn remap_json(l: &str, from: &str, to: &str, file: &SourceFile, s: &literate::Sample) -> Option<String> {
-    if s.inserted && l.contains(&format!("{from},\"start\":[0,")) {
+    if s.given.iter().any(|g| l.contains(&format!("{from},\"start\":[{g},"))) {
         return None;
     }
     let mut rest = l;
@@ -837,7 +851,7 @@ fn complete_in_doc(name: &str, file: &SourceFile, dir: &std::path::Path, main: &
             if !literate::is_checkers(&b.info) || !b.lines.iter().any(|l| l.at == line.at) {
                 continue;
             }
-            let s = literate::sample(b, k + 1);
+            let s = literate::sample(b, k + 1, literate::Own::of(&module).as_ref());
             let Some(j) = s.starts.iter().rposition(|start| *start <= at) else { return false };
             let sname = format!("{}.ck", s.name);
             let from = json::string(&overlay::absolute(std::path::Path::new(&sname)).to_string_lossy());

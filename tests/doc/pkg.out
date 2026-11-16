@@ -29,7 +29,7 @@ $ ckc doc tests/doc/pkg/sub/broken.ck
 $ ckc doc tests/doc/pkg/units.ck
 -- stdout
 {"kind":"module","name":"pkg.units","doc":"Units of measure."}
-{"kind":"decl","what":"let","name":"UNIT","line":13,"signature":"export let UNIT = 1","doc":"One. A block may import this package's modules, as this module does; its\n`#!` lines are left out of the page, the Markdown one too:\n\n    #! import pkg.units (UNIT)\n    check UNIT == 1\n\n```\n#! import pkg.units (UNIT)\n```","items":[]}
+{"kind":"decl","what":"let","name":"UNIT","line":17,"signature":"export let UNIT = 1","doc":"One. A block may import this package's modules, as this module does; its\n`#!` lines are left out of the page, the Markdown one too:\n\n    #! import pkg.units (UNIT)\n    check UNIT == 1\n\nIt needn't: a module's blocks import it (D164).\n\n    check UNIT + UNIT == 2\n\n```\n#! import pkg.units (UNIT)\n```","items":[]}
 -- stderr
 -- exit 0
 $ checkers doc tests/doc/pkg -o OUT
@@ -401,6 +401,9 @@ Shapes' kinds.
 <code>#!</code> lines are left out of the page, the Markdown one too:</p>
 <pre><code class="language-checkers"><span class="kw">check</span> <a href="#let-unit"><span class="ty">UNIT</span></a> == <span class="nu">1</span>
 </code></pre>
+<p>It needn't: a module's blocks import it (D164).</p>
+<pre><code class="language-checkers"><span class="kw">check</span> <a href="#let-unit"><span class="ty">UNIT</span></a> + <a href="#let-unit"><span class="ty">UNIT</span></a> == <span class="nu">2</span>
+</code></pre>
 
 </main>
 </div>
@@ -421,5 +424,9 @@ One. A block may import this package's modules, as this module does; its
 `#!` lines are left out of the page, the Markdown one too:
 
     check UNIT == 1
+
+It needn't: a module's blocks import it (D164).
+
+    check UNIT + UNIT == 2
 
 

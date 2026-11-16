@@ -46,8 +46,9 @@ pub struct Sample {
     pub text: String,
     pub starts: Vec<usize>,
     pub info: String,
-    /// Whether its first line is a `module` line it was given.
-    pub inserted: bool,
+    /// The lines it was given, which aren't the file's: a `module` line, and
+    /// the import of the documented module (D164).
+    pub given: Vec<usize>,
 }
 
 /// The doc comments of `module` (its opening comment, and the comment lines
@@ -317,9 +318,54 @@ fn attrs(info: &str) -> Vec<&str> {
     info.split_whitespace().next().unwrap_or("").split(',').skip(1).map(|a| a.trim()).collect()
 }
 
-/// A block as a module: `#!` lines compiled but not shown, and a hidden
-/// `module` line if it has none.
-pub fn sample(b: &Block, k: usize) -> Sample {
+/// The module a doc comment documents, as its blocks import it (D164): its
+/// name and its exported names, so that its blocks needn't import it.
+pub struct Own {
+    pub module: String,
+    pub names: Vec<String>,
+}
+
+impl Own {
+    /// From the module's syntax: the names it exports (a type's
+    /// constructors come with it, D36).
+    pub fn of(module: &Module) -> Option<Own> {
+        use crate::syntax::ast::Export;
+        let name = module.name.as_ref()?.dotted();
+        let mut names = Vec::new();
+        for d in &module.decls {
+            if d.export == Export::No {
+                continue;
+            }
+            let n = match &d.kind {
+                DeclKind::Fn { name, .. }
+                | DeclKind::Enum { name, .. }
+                | DeclKind::Record { name, .. }
+                | DeclKind::Alias { name, .. }
+                | DeclKind::Lemma { name, .. }
+                | DeclKind::Const { name, .. }
+                | DeclKind::Class { name, .. } => name.name.clone(),
+                _ => continue,
+            };
+            if !names.contains(&n) {
+                names.push(n);
+            }
+        }
+        Some(Own { module: name, names })
+    }
+
+    fn import(&self) -> String {
+        if self.names.is_empty() {
+            format!("import {}", self.module)
+        } else {
+            format!("import {} ({})", self.module, self.names.join(", "))
+        }
+    }
+}
+
+/// A block as a module: `#!` lines compiled but not shown, a hidden
+/// `module` line if it has none, and a hidden import of the module `own`
+/// documents unless the block imports it itself (D164).
+pub fn sample(b: &Block, k: usize, own: Option<&Own>) -> Sample {
     let mut lines: Vec<(String, usize)> = Vec::new();
     for l in &b.lines {
         if let Some(rest) = l.text.strip_prefix("#!") {
@@ -335,17 +381,30 @@ pub fn sample(b: &Block, k: usize) -> Sample {
         .find(|t| !t.is_empty() && !t.starts_with('#'))
         .and_then(|t| t.strip_prefix("module "))
         .map(|n| n.trim().to_string());
-    let inserted = named.is_none();
+    let mut given = Vec::new();
     let name = match named {
         Some(n) => n,
         None => {
             let n = format!("doc_sample_{k}");
             lines.insert(0, (format!("module {n}"), b.fence));
+            given.push(0);
             n
         }
     };
+    if let Some(o) = own.filter(|o| o.module != name) {
+        let imports_it = lines.iter().any(|(t, _)| {
+            let t = t.trim();
+            t.strip_prefix("import ").is_some_and(|r| r.split([' ', '(']).next() == Some(o.module.as_str()))
+        });
+        if !imports_it {
+            // Just after the `module` line.
+            let at = lines.iter().position(|(t, _)| t.trim().starts_with("module ")).map_or(0, |i| i + 1);
+            lines.insert(at, (o.import(), b.fence));
+            given.push(at);
+        }
+    }
     let text = lines.iter().map(|(t, _)| format!("{t}\n")).collect::<String>();
-    Sample { name, text, starts: lines.iter().map(|(_, a)| *a).collect(), info: b.info.clone(), inserted }
+    Sample { name, text, starts: lines.iter().map(|(_, a)| *a).collect(), info: b.info.clone(), given }
 }
 
 impl Sample {
@@ -565,7 +624,7 @@ pub fn links_and_samples(text: &str, module: &Module, e: &Elab, user: &str) -> (
         }
         for b in blocks {
             if is_checkers(&b.info) && !attrs(&b.info).contains(&"ignore") {
-                samples.push(sample(&b, samples.len() + 1));
+                samples.push(sample(&b, samples.len() + 1, Own::of(module).as_ref()));
             }
         }
     }

@@ -475,17 +475,57 @@ record Sample
     lines~List (Bytes, Nat)
     shown~Bytes
 
-# A block's lines and their spans: `#!` lines compiled but not shown.
-partial fn sample k info source spans start -> r : k~Nat, info~String, source~String, spans~List Span, start~Nat,
-                                                   r~Sample
+# A block's lines and their spans: `#!` lines compiled but not shown, a
+# hidden `module` line if it has none, and a hidden import of the module
+# the page documents unless the block imports it (D164).
+partial fn sample documented k info source spans start -> r : documented~Option (String, List String), k~Nat, info~String,
+                                                              source~String, spans~List Span, start~Nat, r~Sample
     let ls = zip (lines_of (string.bytes source)) spans
     let compiled = list.map compiled_line ls
     let shown = bytes.concat (list.map (\l -> bytes.concat [l, b"\n"]) (shown_lines ls))
     match module_named compiled
-        Some name -> Sample info source name compiled shown
+        Some name -> Sample info source name (with_own documented name start compiled) shown
         None      ->
             let name = "sample_" ++ format k
-            Sample info source name ((string.bytes ("module " ++ name), start) :: compiled) shown
+            let header = (string.bytes ("module " ++ name), start)
+            Sample info source name (header :: with_own documented name start compiled) shown
+
+# A block's lines with the documented module's import after its `module`
+# line (or first, when that line is to be added): unless the block is that
+# module or imports it itself.
+partial fn with_own documented name start ls -> r : documented~Option (String, List String), name~String,
+                                                    start~Nat, ls~List (Bytes, Nat), r~List (Bytes, Nat)
+    match documented
+        None            -> ls
+        Some (m, names) ->
+            if m == name or list.contains (list.map (\x -> imports_module x m) ls) True
+                ls
+            else
+                let line = (string.bytes (import_line m names), start)
+                if list.contains (list.map is_module_line ls) True then after_module line ls else line :: ls
+
+fn import_line m names -> r : m~String, names~List String, r~String
+    match names
+        []        -> "import " ++ m
+        n :: rest -> "import " ++ m ++ " (" ++ string.concat (n :: list.map (\x -> ", " ++ x) rest) ++ ")"
+
+partial fn imports_module x m : x~(Bytes, Nat), m~String
+    match x
+        (l, _) ->
+            let t = trim l
+            let name = string.bytes m
+            let after = 7 + len name
+            starts t b"import " and bytes.matches_at t 7 name
+                and (len t == after or bytes.matches_at t after b" " or bytes.matches_at t after b"(")
+
+partial fn is_module_line x : x~(Bytes, Nat)
+    match x
+        (l, _) -> starts (trim l) b"module "
+
+partial fn after_module line ls -> r : line~(Bytes, Nat), ls~List (Bytes, Nat), r~List (Bytes, Nat)
+    match ls
+        x :: rest -> if is_module_line x then x :: line :: rest else x :: after_module line rest
+        []        -> [line]
 
 partial fn zip ls spans -> r : ls~List Bytes, spans~List Span, r~List (Bytes, Nat)
     match (ls, spans)
@@ -644,6 +684,7 @@ export record Context
     base~String                     # the way from the page to the symbols' documentation
     compiler~Compiler
     links~(Bytes -> Bytes -> Bool -> Option Bytes)   # names in signatures (§15.6)
+    documented~Option (String, List String)          # the module documented, and its exports: its blocks import it (D164)
 
 # The code blocks of blocks, in order.
 partial fn code_blocks bs -> r : bs~List Block, r~List (String, String, List Span, Nat)
@@ -673,9 +714,10 @@ partial fn only_checkers xs -> r : xs~List (String, String, List Span, Nat), r~L
                 only_checkers rest
         []                           -> []
 
-partial fn numbered_samples xs k -> r : xs~List (String, String, List Span, Nat), k~Nat, r~List Sample
+partial fn numbered_samples documented xs k -> r : documented~Option (String, List String),
+                                                   xs~List (String, String, List Span, Nat), k~Nat, r~List Sample
     match xs
-        (info, text, ls, at) :: rest -> sample k info text ls at :: numbered_samples rest (k + 1)
+        (info, text, ls, at) :: rest -> sample documented k info text ls at :: numbered_samples documented rest (k + 1)
         []                           -> []
 
 partial fn sample_text s -> r : s~Sample, r~Bytes
@@ -845,7 +887,7 @@ partial fn html_target url -> r : url~Bytes, r~Bytes
 export partial fn render text cx fs p -> r : text~Bytes, cx~Context, fs~Fs, p~Proc, r~(Bytes, List Warning)
     let source = as_string text
     let plain = markdown.parse source
-    let samples = numbered_samples (only_checkers (code_blocks plain.blocks)) 1
+    let samples = numbered_samples cx.documented (only_checkers (code_blocks plain.blocks)) 1
     let scope = cx.scope ++ flatten (list.map (\s -> imports_of (sample_text s)) samples)
     let syms = cx.symbols
     let base = cx.base

@@ -634,7 +634,7 @@ partial fn write_modules out package ts ms root label cx fs p term -> r : out~St
             # A module's blocks are compiled as if beside it, in its program
             # (D148 d): they may import its modules as it does.
             let compiler = Compiler cx.compiler.ckc (module_root m) cx.compiler.flags
-            let here = Context cx.symbols scope cx.base compiler links
+            let here = Context cx.symbols scope cx.base compiler links (Some (m.name, list.map item_name m.decls))
             let (body, ws) = lit.render text here fs p
             let _ = module_warnings ws m.file places term
             match write_page out (page_name package m.name) text root label (module_side package m) body fs
@@ -688,7 +688,7 @@ export partial fn run args ckc term fs p -> code : args~List String, ckc~String,
                             let others = if package == "std" then [] else std_modules ckc p
                             let symbols = symbols_of package "" ms ++ symbols_of "std" "../std/" others
                             let compiler = Compiler ckc a.dir []
-                            let cx = Context symbols (prelude_scope (ms ++ others)) "" compiler (\q n ty -> None)
+                            let cx = Context symbols (prelude_scope (ms ++ others)) "" compiler (\q n ty -> None) None
                             let index = string.bytes (package_md package readme ms)
                             let (index_html, ws) = lit.render index cx fs p
                             let _ = module_warnings ws readme_path [(0, 1)] term
@@ -725,7 +725,7 @@ partial fn render_pages src out pages cx fs p term -> r : src~String, out~String
                 Ok text ->
                     let root = root_of rel
                     let compiler = Compiler cx.compiler.ckc (work_dir ("site-" ++ rel) fs) cx.compiler.flags
-                    let here = Context cx.symbols cx.scope (root ++ cx.base) compiler cx.links
+                    let here = Context cx.symbols cx.scope (root ++ cx.base) compiler cx.links None
                     let (body, ws) = lit.render text here fs p
                     let _ = page_warnings ws path text term
                     match write_page out (strip_md rel) text root "" b"" body fs
@@ -789,7 +789,7 @@ export partial fn site args ckc term fs p -> code : args~List String, ckc~String
             let pages = files_under src "." ".md" fs
             let std = std_modules ckc p
             let none = \q n ty -> None
-            let cx = Context (symbols_of "std" "" std) (prelude_scope std) "docs/latest/std/" (Compiler ckc "" []) none
+            let cx = Context (symbols_of "std" "" std) (prelude_scope std) "docs/latest/std/" (Compiler ckc "" []) none None
             match files.create_dirs out fs
                 Err e -> fail (out ++ ": " ++ files.describe e) term
                 Ok _  ->

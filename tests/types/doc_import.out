@@ -1,0 +1,7 @@
+warning[W032]: this example has error[E0204]: unknown name `halve`
+  --> doc_import.ck:14:13
+   |
+14 | #     check halve 4 == 2
+   |             ^^^^^ not found
+
+doc_import.ck: 0 errors, 1 warning; 1 obligation proved

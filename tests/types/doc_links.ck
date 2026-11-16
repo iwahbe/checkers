@@ -35,7 +35,7 @@ export record Pt
 # ```
 #
 # ```
-# check twice 1 == 2
+# check thrice 1 == 3
 # ```
 #
 # ```checkers,ignore
