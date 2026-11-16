@@ -235,6 +235,14 @@ pub fn index_json(name: &str, text: &str, out: &mut dyn FnMut(String)) {
     }
     let first = names.first().cloned().unwrap_or_default();
     emit_index_all(&e, &first, out);
+    // The code in their doc comments, as `check --json` indexes it (D148 f).
+    for n in &names {
+        let (Some(f), Some(p)) = (e.sources.get(n), e.paths.get(n)) else { continue };
+        let (module, _) = syntax::parse_module(&f.text);
+        for s in literate::links_and_samples(&f.text, &module, &e, n).1 {
+            emit_sample_index(f, &s, &root, p, out);
+        }
+    }
     out(r#"{"kind":"done","phase":"index"}"#.to_string());
 }
 
@@ -324,8 +332,26 @@ fn emit_names(e: &elab::Elab, user: &str, main: &std::path::Path, out: &mut dyn 
         let (el, ec) = f.line_byte(span.end);
         Some(format!(r#""start":[{sl},{sc}],"end":[{el},{ec}]"#))
     };
+    // The names doc comments' links name (D161): occurrences too.
+    let mut modules: Vec<String> = match &e.index_all {
+        Some(all) => all.iter().cloned().collect(),
+        None => vec![user.to_string()],
+    };
+    modules.sort();
+    let mut links = Vec::new();
+    for m in &modules {
+        let Some(f) = e.sources.get(m) else { continue };
+        let (module, _) = syntax::parse_module(&f.text);
+        for region in literate::regions(&f.text, &module) {
+            for r in literate::scan(&region).1 {
+                for (span, t) in literate::link_targets(e, m, &r) {
+                    links.push(elab::index::NameUse { module: m.clone(), span, what: elab::index::Use::Global(t) });
+                }
+            }
+        }
+    }
     let mut done = std::collections::HashSet::new();
-    for u in &e.index {
+    for u in e.index.iter().chain(links.iter()) {
         if !done.insert((u.module.clone(), u.span.start, u.span.end)) {
             continue;
         }

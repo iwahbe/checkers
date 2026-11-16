@@ -12,6 +12,7 @@
 //! another error). Running blocks (W034) is `checkers doc`'s.
 
 use crate::diag::Diagnostic;
+use crate::elab::index::Target;
 use crate::elab::{Elab, Sym};
 use crate::source::Span;
 use crate::syntax::ast::{DeclKind, Module};
@@ -383,6 +384,79 @@ fn has_member(e: &Elab, t: crate::core::TyId, member: &str) -> bool {
         let ci = &e.g.cons[c.0 as usize];
         ci.name.as_ref() == member || ci.fields.iter().any(|f| f.0.as_ref() == member)
     })
+}
+
+/// The declarations a link names (D161): each part of its path that is a
+/// declaration, a constructor or a field, with its span in the file, so
+/// that renaming one renames it in the link too.
+pub fn link_targets(e: &Elab, user: &str, r: &Ref) -> Vec<(Span, Target)> {
+    let mut out = Vec::new();
+    let Some(parts) = path_of(&r.label) else { return out };
+    let Some(m) = e.modules.get(user) else { return out };
+    // Where the label's text starts: after `[`, its spaces and a backtick.
+    let lead = r.label.len() - r.label.trim_start().len();
+    let tick = usize::from(r.label.trim().len() > 2 && r.label.trim().starts_with('`'));
+    let mut at = r.span.start as usize + 1 + lead + tick;
+    let mut spans = Vec::new();
+    for p in &parts {
+        spans.push(Span::new(at, at + p.len()));
+        at += p.len() + 1;
+    }
+    let sym_target = |s: &Sym| match s {
+        Sym::Def(d) => Some(Target::Def(*d)),
+        Sym::Ty(t) => Some(Target::Ty(*t)),
+        Sym::Con(c) => Some(Target::Con(*c)),
+        _ => None,
+    };
+    let in_scope = |n: &str| -> Option<Sym> {
+        m.types
+            .get(n)
+            .or_else(|| m.import_types.get(n))
+            .or_else(|| m.values.get(n))
+            .or_else(|| m.import_values.get(n))
+            .or_else(|| e.modules.get("std.prelude").and_then(|p| p.types.get(n).or_else(|| p.values.get(n))))
+            .copied()
+    };
+    let member = |t: crate::core::TyId, n: &str| -> Option<Target> {
+        for c in &e.g.tys[t.0 as usize].ctors {
+            let ci = &e.g.cons[c.0 as usize];
+            if ci.name.as_ref() == n {
+                return Some(Target::Con(*c));
+            }
+            if let Some(k) = ci.fields.iter().position(|f| f.0.as_ref() == n) {
+                return Some(Target::Field(*c, k));
+            }
+        }
+        None
+    };
+    // A qualifier or a module's name, then what is in it.
+    let mut from = None;
+    for k in (1..parts.len()).rev() {
+        let prefix = parts[..k].join(".");
+        let module = if k == 1 && m.qualifiers.contains_key(&prefix) { m.qualifiers.get(&prefix).cloned() } else { e.modules.contains_key(&prefix).then_some(prefix) };
+        if let Some(x) = module {
+            from = Some((x, k));
+            break;
+        }
+    }
+    let (scope, k): (Box<dyn Fn(&str) -> Option<Sym>>, usize) = match from {
+        Some((x, k)) => {
+            let Some(xm) = e.modules.get(&x) else { return out };
+            (Box::new(move |n: &str| xm.types.get(n).or_else(|| xm.values.get(n)).copied()), k)
+        }
+        None => (Box::new(in_scope), 0),
+    };
+    let Some(first) = parts.get(k) else { return out };
+    let Some(s) = scope(first) else { return out };
+    if let Some(t) = sym_target(&s) {
+        out.push((spans[k], t));
+    }
+    if let (Sym::Ty(t), Some(n)) = (s, parts.get(k + 1)) {
+        if let Some(x) = member(t, n) {
+            out.push((spans[k + 1], x));
+        }
+    }
+    out
 }
 
 /// The names a reference may complete to after `[` in a doc comment: the

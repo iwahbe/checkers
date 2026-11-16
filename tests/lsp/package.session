@@ -1,4 +1,5 @@
-# The package's index (D161): references and rename across its files, from app.ck.
+# The package's index (D161): references and rename across its files, from app.ck,
+# including doc comments' links and code in shapes.ck.
 > {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"capabilities":{"general":{"positionEncodings":["utf-8"]}}}}
 < 1
 > {"jsonrpc":"2.0","method":"initialized","params":{}}
@@ -6,7 +7,9 @@
 # `area`, exported by shapes.ck: its declaration there and its uses here.
 > {"jsonrpc":"2.0","id":2,"method":"textDocument/references","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/pkg/app.ck"},"position":{"line":5,"character":15},"context":{"includeDeclaration":true}}}
 < 1
-# `Point` can be renamed: every file that uses it is in the package.
+# `Point` can be renamed: every file that uses it is in the package. Its
+# declaration, its uses, and in shapes.ck's doc comment two links and the
+# code's import and use.
 > {"jsonrpc":"2.0","id":3,"method":"textDocument/prepareRename","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/pkg/app.ck"},"position":{"line":4,"character":27}}}
 < 1
 > {"jsonrpc":"2.0","id":4,"method":"textDocument/rename","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/pkg/app.ck"},"position":{"line":4,"character":27},"newName":"Spot"}}

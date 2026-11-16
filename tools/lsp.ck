@@ -529,10 +529,18 @@ partial fn prepare_rename w es c -> r : w~Where, es~List Entry, c~Caps, r~Result
     match name_at w.doc.path w.line w.col es
         None   -> Err "there is no name here to rename"
         Some e ->
-            if e.renamable
+            # A name in a doc comment's code is indexed apart from the
+            # package (D148 f): what it names decides.
+            if e.renamable or renamable_def e.def es
                 Ok (range_of w.doc.text e.at c.utf8)
             else
                 Err ("`" ++ name_text w.doc.text e.at ++ "` is a module, or the standard library's or a dependency's: it can't be renamed here")
+
+# Is some occurrence of what `d` declares renamable?
+partial fn renamable_def d es : d~Option Span, es~List Entry
+    match es
+        []        -> False
+        e :: rest -> (d != None and e.def == d and e.renamable) or renamable_def d rest
 
 partial fn spans_in path ss -> r : path~String, ss~List Span, r~List Span
     match ss
