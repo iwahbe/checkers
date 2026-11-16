@@ -1,0 +1,30 @@
+error[E0401]: `a` holds a resource (`Future (Result File IoError)`), so it must be used exactly once, but `never` never uses it
+  --> future_resource.ck:15:5
+   |
+15 |     a <- fork using sched
+   |     ^
+   = help: join it: a future of a resource is one too, joined exactly once (D156)
+
+error[E0404]: this drops a resource of type `Future (Result File IoError)`
+  --> future_resource.ck:20:5
+   |
+20 |     _ <- fork using sched
+   |     ^ a resource must be used exactly once
+   = help: bind it to a name, then join it: a future of a resource is one too (D156)
+
+error[E0401]: `a` holds a resource (`Future (Result File IoError)`), so it must be used exactly once, but `twice` may use it more than once
+  --> future_resource.ck:25:5
+   |
+25 |     a <- fork using sched
+   |     ^
+   = help: join it once: a future of a resource is one too, joined exactly once (D156)
+
+error[E0405]: `f` holds a resource (`Future File`), which can't be put in a cown
+  --> future_resource.ck:33:12
+   |
+33 | fn in_cown f s -> c : f~Future File, s~Sched, c~Cown (Future File)
+   |            ^
+   = note: `f` is passed to `cown.new`; a cown's handle can be shared, so nothing would make sure what it holds is closed (D156)
+   = help: keep the resource with one owner, passing it on through calls, `fork` and `join`; a cown may hold the rest of the state
+
+future_resource.ck: 4 errors, 0 warnings

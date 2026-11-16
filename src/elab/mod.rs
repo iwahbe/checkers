@@ -963,10 +963,11 @@ impl Elab {
         matches!((&*ti.module, &*ti.name), ("std.files", "File") | ("std.proc", "Child"))
     }
 
-    /// Does this type declaration contain a resource (in a constructor field)?
-    /// A cown or future owns its contents; its handle may be shared (D39).
+    /// A cown owns its contents; its handle may be shared (D39), and it can't
+    /// hold a resource (D156 k). A future of a resource is a resource, joined
+    /// exactly once (D156 l).
     fn is_owner(&self, t: TyId) -> bool {
-        Some(t) == self.g.well_known.cown || Some(t) == self.g.well_known.future
+        Some(t) == self.g.well_known.cown
     }
 
     /// Is a type declared with a resource in a constructor field (D39)? `Depends`
@@ -1221,7 +1222,11 @@ impl Elab {
         self.err(
             Diagnostic::error("E0404", format!("this drops a resource of type `{shown}`"), span)
                 .with_label("a resource must be used exactly once")
-                .with_help("bind it to a name, then close it or pass it on"),
+                .with_help(if shown.starts_with("Future ") {
+                    "bind it to a name, then join it: a future of a resource is one too (D156)"
+                } else {
+                    "bind it to a name, then close it or pass it on"
+                }),
         );
     }
 

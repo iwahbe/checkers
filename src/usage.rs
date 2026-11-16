@@ -80,7 +80,11 @@ impl U<'_> {
                     format!("`{name}` holds a resource (`{ty}`), so it must be used exactly once, but `{fname}` never uses it"),
                     span,
                 )
-                .with_help("close it, or pass it on"),
+                .with_help(if ty.starts_with("Future ") {
+                    "join it: a future of a resource is one too, joined exactly once (D156)"
+                } else {
+                    "close it, or pass it on"
+                }),
                 _ => {
                     let d = Diagnostic::error(
                         "E0401",
@@ -105,6 +109,9 @@ impl U<'_> {
                         Some((callee, _)) => d
                             .with_note(format!("`{name}` is passed to `{callee}`, whose parameter is not `own`, so `{callee}` may copy or drop it"))
                             .with_help(format!("mark that parameter of `{callee}` with `own` (as in `x~own a`) so it can take a resource")),
+                        None if ty.starts_with("Future ") => {
+                            d.with_help("join it once: a future of a resource is one too, joined exactly once (D156)")
+                        }
                         None => d.with_help("a resource can't be copied; thread it with `<-` so each use gets the new one"),
                     }
                 }
