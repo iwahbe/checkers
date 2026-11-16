@@ -1,0 +1,14 @@
+{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"positionEncoding":"utf-16","textDocumentSync":{"openClose":true,"change":1},"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"documentFormattingProvider":true,"documentOnTypeFormattingProvider":{"firstTriggerCharacter":"\n"},"documentSymbolProvider":true,"completionProvider":{"triggerCharacters":[".","["]},"semanticTokensProvider":{"legend":{"tokenTypes":["namespace","type","enumMember","property","function","parameter","variable","keyword","comment","string","number"],"tokenModifiers":["declaration","readonly"]},"full":true}},"serverInfo":{"name":"checkers","version":"0.1.0"}}}
+{"jsonrpc":"2.0","id":2,"result":[{"range":{"start":{"line":3,"character":0},"end":{"line":3,"character":0}},"newText":"    "}]}
+{"jsonrpc":"2.0","id":3,"result":[{"range":{"start":{"line":5,"character":0},"end":{"line":5,"character":0}},"newText":"        "}]}
+{"jsonrpc":"2.0","id":4,"result":[{"range":{"start":{"line":7,"character":0},"end":{"line":7,"character":0}},"newText":"            "}]}
+{"jsonrpc":"2.0","id":5,"result":[{"range":{"start":{"line":9,"character":0},"end":{"line":9,"character":0}},"newText":"            "}]}
+{"jsonrpc":"2.0","id":6,"result":[{"range":{"start":{"line":11,"character":0},"end":{"line":11,"character":0}},"newText":"                "}]}
+{"jsonrpc":"2.0","id":7,"result":[{"range":{"start":{"line":13,"character":0},"end":{"line":13,"character":0}},"newText":"                "}]}
+{"jsonrpc":"2.0","id":8,"result":[{"range":{"start":{"line":15,"character":0},"end":{"line":15,"character":0}},"newText":"            "}]}
+{"jsonrpc":"2.0","id":9,"result":[{"range":{"start":{"line":17,"character":0},"end":{"line":17,"character":0}},"newText":"                "}]}
+{"jsonrpc":"2.0","id":10,"result":[{"range":{"start":{"line":20,"character":0},"end":{"line":20,"character":0}},"newText":"                      "}]}
+{"jsonrpc":"2.0","id":11,"result":[{"range":{"start":{"line":23,"character":0},"end":{"line":23,"character":0}},"newText":"                "}]}
+{"jsonrpc":"2.0","id":12,"result":[{"range":{"start":{"line":24,"character":0},"end":{"line":24,"character":16}},"newText":"            "}]}
+{"jsonrpc":"2.0","id":13,"result":null}
+-- exit 0

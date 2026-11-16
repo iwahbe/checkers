@@ -1,0 +1,41 @@
+# On-type formatting (D158): after a line break, the new line's indentation.
+> {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"capabilities":{}}}
+< 1
+> {"jsonrpc":"2.0","method":"initialized","params":{}}
+> {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/indent.ck","languageId":"checkers","version":1,"text":"module indent\n\nfn f x -> r : x~Nat, r~Nat\n\n    match x\n\n        0 ->\n\n            let y = x + 1\n\n            if y > 2\n\n            else\n\n            let z = if y > 2 then 1 else 2\n\n            let w = y +\n\n                z\n            let xs = [1,\n\n                      2]\n            let ys = foo (\n\n                )\n"}}}
+# After a function's header: one level in.
+> {"jsonrpc":"2.0","id":2,"method":"textDocument/onTypeFormatting","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/indent.ck"},"position":{"line":3,"character":0},"ch":"\n","options":{"tabSize":4,"insertSpaces":true}}}
+< 1
+# After `match`.
+> {"jsonrpc":"2.0","id":3,"method":"textDocument/onTypeFormatting","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/indent.ck"},"position":{"line":5,"character":0},"ch":"\n","options":{"tabSize":4,"insertSpaces":true}}}
+< 1
+# After an arm's `->`.
+> {"jsonrpc":"2.0","id":4,"method":"textDocument/onTypeFormatting","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/indent.ck"},"position":{"line":7,"character":0},"ch":"\n","options":{"tabSize":4,"insertSpaces":true}}}
+< 1
+# After a statement: the same level.
+> {"jsonrpc":"2.0","id":5,"method":"textDocument/onTypeFormatting","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/indent.ck"},"position":{"line":9,"character":0},"ch":"\n","options":{"tabSize":4,"insertSpaces":true}}}
+< 1
+# After `if` without `then`.
+> {"jsonrpc":"2.0","id":6,"method":"textDocument/onTypeFormatting","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/indent.ck"},"position":{"line":11,"character":0},"ch":"\n","options":{"tabSize":4,"insertSpaces":true}}}
+< 1
+# After `else`.
+> {"jsonrpc":"2.0","id":7,"method":"textDocument/onTypeFormatting","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/indent.ck"},"position":{"line":13,"character":0},"ch":"\n","options":{"tabSize":4,"insertSpaces":true}}}
+< 1
+# After a one-line `if`: the same level.
+> {"jsonrpc":"2.0","id":8,"method":"textDocument/onTypeFormatting","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/indent.ck"},"position":{"line":15,"character":0},"ch":"\n","options":{"tabSize":4,"insertSpaces":true}}}
+< 1
+# After a trailing operator: one level in.
+> {"jsonrpc":"2.0","id":9,"method":"textDocument/onTypeFormatting","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/indent.ck"},"position":{"line":17,"character":0},"ch":"\n","options":{"tabSize":4,"insertSpaces":true}}}
+< 1
+# Inside a bracket with something after it: aligned with that.
+> {"jsonrpc":"2.0","id":10,"method":"textDocument/onTypeFormatting","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/indent.ck"},"position":{"line":20,"character":0},"ch":"\n","options":{"tabSize":4,"insertSpaces":true}}}
+< 1
+# Inside a bracket at the end of its line: one level in from its line.
+> {"jsonrpc":"2.0","id":11,"method":"textDocument/onTypeFormatting","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/indent.ck"},"position":{"line":23,"character":0},"ch":"\n","options":{"tabSize":4,"insertSpaces":true}}}
+< 1
+# A closing bracket: back at its line's level.
+> {"jsonrpc":"2.0","id":12,"method":"textDocument/onTypeFormatting","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/indent.ck"},"position":{"line":24,"character":0},"ch":"\n","options":{"tabSize":4,"insertSpaces":true}}}
+< 1
+> {"jsonrpc":"2.0","id":13,"method":"shutdown"}
+< 1
+> {"jsonrpc":"2.0","method":"exit"}

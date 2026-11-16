@@ -21,6 +21,7 @@ import ck.jsonrpc (Incoming, Message, Malformed, Closed)
 import ck.jsonrpc as rpc
 import ck.text as tx
 import ck.format as formatter
+import ck.syntax
 
 export let VERSION = "0.1.0"
 
@@ -762,6 +763,45 @@ partial fn formatting doc c -> j : doc~Doc, c~Caps, j~Json
                     ("end", rpc.obj [("line", rpc.num (lines + 1)), ("character", rpc.num 0)])]
                 Arr [rpc.obj [("range", whole), ("newText", Str (as_string out))]]
 
+# A new line's indentation (D158): typed after a line break, the edit that
+# gives line `line` the indentation the lines before it call for.
+partial fn on_type doc line -> j : doc~Doc, line~Nat, j~Json
+    let text = doc.text
+    let here = tx.line_at text line
+    let before = match tx.line_start text line
+        Some i if i <= len text -> bytes.slice text 0 i
+        _ -> text
+    let first = first_token here
+    match syntax.lex before
+        Err _    -> Arr []
+        Ok lines ->
+            let want = syntax.indent_after lines first
+            let now = spaces here 0
+            if want == now
+                Arr []
+            else
+                let range = rpc.obj [
+                    ("start", rpc.obj [("line", rpc.num line), ("character", rpc.num 0)]),
+                    ("end", rpc.obj [("line", rpc.num line), ("character", rpc.num now)])]
+                Arr [rpc.obj [("range", range), ("newText", Str (blanks want))]]
+
+# The first token of a line, if it has one.
+partial fn first_token line -> r : line~Bytes, r~Option syntax.Tok
+    match syntax.lex line
+        Ok (l :: _) ->
+            match l.toks
+                t :: _ -> Some t
+                []     -> None
+        _           -> None
+
+# `n` spaces.
+fn blanks n -> s : n~Nat, s~String
+    if n == 0 then "" else " " ++ blanks (n - 1)
+
+# The number of spaces `line` starts with, from `i`.
+partial fn spaces line i -> n : line~Bytes, i~Nat, n~Nat
+    if i < len line and line[i] == ' ' then spaces line (i + 1) else i
+
 # ── The main loop ────────────────────────────────────────────────────────────
 
 partial fn strings xs -> r : xs~List String, r~List Json
@@ -776,6 +816,7 @@ partial fn capabilities utf8 -> j : utf8~Bool, j~Json
         ("definitionProvider", Bool True),
         ("referencesProvider", Bool True),
         ("documentFormattingProvider", Bool True),
+        ("documentOnTypeFormattingProvider", rpc.obj [("firstTriggerCharacter", Str "\n")]),
         ("documentSymbolProvider", Bool True),
         ("completionProvider", rpc.obj [("triggerCharacters", Arr [Str ".", Str "["])]),
         ("semanticTokensProvider", rpc.obj [("legend", legend), ("full", Bool True)])]
@@ -865,6 +906,14 @@ partial fn handle m st c -> r : m~Json, st~Server, c~Caps, r~(Server, Option Exi
                     match where_of params docs utf8
                         Some w -> complete i w docs c
                         None   -> reply (rpc.response i Null) c
+                    keep
+                else if method == "textDocument/onTypeFormatting"
+                    match (rpc.str_at ["textDocument", "uri"] params, rpc.nat_at ["position", "line"] params)
+                        (Some uri, Some line) ->
+                            match doc_of uri docs
+                                Some doc -> reply (rpc.response i (on_type doc line)) c
+                                None     -> reply (rpc.response i Null) c
+                        _                     -> reply (rpc.response i Null) c
                     keep
                 else if method == "textDocument/semanticTokens/full" or method == "textDocument/documentSymbol"
                     or method == "textDocument/formatting"

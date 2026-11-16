@@ -378,3 +378,126 @@ fn resolve placed next acc -> r : placed~List Placed, next~Option (Nat, Nat), ac
 export fn layout lines -> r : lines~List Line, r~Result (List Placed) SyntaxError
     let placed = try place lines (State [0] 0 None 0 0) []
     Ok (resolve (reverse placed) None [])
+
+# ── Indentation for a new line (D158) ───────────────────────────────────────
+
+# One indentation level.
+let LEVEL = 4
+
+# An open bracket: the column its logical line starts at, the column of the
+# first token after it on its line, if any, and whether that token may still
+# come (the bracket was opened on the line being read).
+record Open
+    base~Nat
+    content~Option Nat
+    waiting~Bool
+
+# The brackets open after `toks` (innermost first), on a logical line
+# starting at column `base`.
+fn opens toks base stack -> r : toks~List Tok, base~Nat, stack~List Open, r~List Open
+    match toks
+        []        -> stack
+        t :: rest ->
+            let filled = match stack
+                o :: more if o.waiting and not (is_close t) -> Open o.base (Some t.col) False :: more
+                _ -> stack
+            if is_open t
+                opens rest base (Open base None True :: filled)
+            else if is_close t
+                match filled
+                    _ :: more -> opens rest base more
+                    []        -> opens rest base []
+            else
+                opens rest base filled
+
+# At the end of a physical line, a bracket with nothing after it waits no
+# more: its continuation lines go one level in from its line.
+fn settled stack -> r : stack~List Open, r~List Open
+    list.map (\o -> Open o.base o.content False) stack
+
+fn lines_opens lines base stack -> r : lines~List Line, base~Nat, stack~List Open, r~List Open
+    match lines
+        []        -> stack
+        l :: rest -> lines_opens rest base (settled (opens l.toks base stack))
+
+fn words_of toks -> r : toks~List Tok, r~List Bytes
+    list.map (\t -> t.text) toks
+
+# Does the logical line open a block on the next line? It ends with `->`,
+# `=` or `<-`, or it is a declaration, `match`, `if` without `then`, `else`,
+# `when`, `fork` or `join` header (§9.2).
+fn opens_block toks -> b : toks~List Tok, b~Bool
+    let ws = words_of toks
+    let last = match last_of toks
+        Some t -> t.text
+        None   -> b""
+    let first = match toks
+        t :: _ -> t.text
+        []     -> b""
+    let decl = any_head (list.take 4 ws)
+    if last == b"->" or last == b"=" or last == b"<-"
+        True
+    else if decl and not (list.contains ws b"=" and first == b"type")
+        True
+    else if first == b"if" or (first == b"else" and list.contains ws b"if")
+        not (list.contains ws b"then")
+    else if first == b"else"
+        True
+    else
+        first == b"match" or first == b"when" or (list.contains ws b"using" and list.contains ws b"<-")
+
+let HEADS = [b"fn", b"enum", b"record", b"lemma", b"class", b"instance", b"proof"]
+
+fn any_head ws : ws~List Bytes
+    match ws
+        []        -> False
+        w :: rest -> list.contains HEADS w or any_head rest
+
+# The code lines of the last logical line in `placed`, in order.
+fn last_logical placed acc -> r : placed~List Placed, acc~List Line, r~List Line
+    match placed
+        []        -> acc
+        p :: rest ->
+            match p.role
+                Start _ -> p.line :: acc
+                Cont    -> if p.line.toks == [] then last_logical rest acc else last_logical rest (p.line :: acc)
+                _       -> if acc == [] then last_logical rest acc else acc
+
+fn all_toks lines -> r : lines~List Line, r~List Tok
+    match lines
+        []        -> []
+        l :: rest -> l.toks ++ all_toks rest
+
+# The column a new line should start at, after `lines` (the lines before it),
+# when its first token is `first`: inside brackets, aligned with what follows
+# the innermost one, or one level in from its line; after a line that opens
+# a block or doesn't end, one level in; else at the level of the line before.
+export fn indent_after lines first -> c : lines~List Line, first~Option Tok, c~Nat
+    match layout lines
+        Err _     -> 0
+        Ok placed ->
+            match last_logical (reverse placed) []
+                []            -> 0
+                start :: more ->
+                    let base = match start.toks
+                        t :: _ -> t.col
+                        []     -> 0
+                    let logical = start :: more
+                    let stack = lines_opens logical base []
+                    let closing = match first
+                        Some t -> is_close t
+                        None   -> False
+                    match stack
+                        o :: _ ->
+                            if closing
+                                o.base
+                            else
+                                match o.content
+                                    Some c -> c
+                                    None   -> o.base + LEVEL
+                        []     ->
+                            let toks = all_toks logical
+                            let ends_open = match last_of toks
+                                Some t -> (is_binop t and not (is_punct t b".")) or is_punct t b","
+                                None   -> False
+                            if ends_open or opens_block toks then base + LEVEL else base
