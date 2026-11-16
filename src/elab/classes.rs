@@ -1375,7 +1375,7 @@ impl Elab {
                     let shown_arg = if shown.contains(' ') { format!("({shown})") } else { shown.clone() };
                     let d = if why == "unknown" {
                         Diagnostic::error("E0285", format!("can't tell which instance of `{cname}` to use: the type isn't known here"), r.span)
-                            .with_help("give the type, e.g. with a constraint `x~List Int` or an annotated `let`")
+                            .with_help("give the type, e.g. with a constraint `x~List Int` in the signature")
                     } else if matches!(self.force(&r.ty), Val::Neutral(Head::Var(_), _)) {
                         Diagnostic::error("E0284", format!("no instance of `{cname}` for `{shown}`"), r.span)
                             .with_label(format!("`{shown}` is a type parameter"))

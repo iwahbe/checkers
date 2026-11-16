@@ -1,0 +1,5 @@
+-- stdout
+shared once
+shared twice
+-- stderr
+-- exit 0

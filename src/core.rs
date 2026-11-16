@@ -804,17 +804,27 @@ struct PartialRenaming {
 fn invert(g: &Globals, gamma: usize, sp: &[Elim]) -> Result<(PartialRenaming, Vec<Icit>), UnifyError> {
     let mut ren = HashMap::new();
     let mut icits = Vec::new();
+    // A variable given twice (`?m x x`, a lambda's result type applied to a
+    // variable already in its context) can't be told apart in the
+    // solution: it is left out of the renaming, so a solution that doesn't
+    // mention it (`Int`) is found and one that does fails as out of scope.
+    let mut twice = std::collections::HashSet::new();
     for (dom, e) in sp.iter().enumerate() {
         match e {
             Elim::App(a, i) => match force(g, a.clone()) {
-                Val::Neutral(Head::Var(x), s) if s.is_empty() && !ren.contains_key(&x) => {
-                    ren.insert(x, dom);
+                Val::Neutral(Head::Var(x), s) if s.is_empty() => {
+                    if ren.insert(x, dom).is_some() {
+                        twice.insert(x);
+                    }
                     icits.push(*i);
                 }
                 _ => return Err(UnifyError::Mismatch),
             },
             _ => return Err(UnifyError::Mismatch),
         }
+    }
+    for x in twice {
+        ren.remove(&x);
     }
     Ok((PartialRenaming { dom: sp.len(), cod: gamma, ren }, icits))
 }
@@ -920,6 +930,23 @@ fn prune(g: &Globals, m2: MetaId, sp: &[Elim], p: &PartialRenaming) -> Option<(M
     let sol = eval(g, &Rc::new(Vec::new()), &t);
     g.metas.borrow_mut()[m2.0 as usize] = MetaEntry::Solved(sol);
     Some((m3, keep.into_iter().filter(|k| k.0).map(|k| Elim::App(k.2, k.1)).collect()))
+}
+
+/// An unknown whose spine mentions variables at or above `outer` (a
+/// lambda's parameters, for its inferred result type) solved by one that
+/// doesn't, when the spine is all variables: the result type then can't
+/// depend on the parameters, so the lambda can be applied to anything,
+/// not only to distinct variables.
+pub fn strengthen(g: &Globals, v: &Val, outer: usize) -> Val {
+    let v = force_meta(g, v.clone());
+    if let Val::Neutral(Head::Meta(m), sp) = &v {
+        let ren: HashMap<usize, usize> = (0..outer).map(|x| (x, x)).collect();
+        let p = PartialRenaming { dom: outer, cod: outer, ren };
+        if prune(g, *m, sp, &p).is_some() {
+            return force_meta(g, v.clone());
+        }
+    }
+    v
 }
 
 fn rename_case(g: &Globals, m: MetaId, p: &PartialRenaming, c: &Rc<CaseTm>, env: &Env) -> Result<Rc<CaseTm>, UnifyError> {

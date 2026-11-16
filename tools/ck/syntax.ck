@@ -290,8 +290,12 @@ let LINE_KEYWORDS = [b"module", b"import", b"export", b"fn", b"partial", b"enum"
 fn closes st first : st~State, first~Tok
     st.depth > 0 and first.col <= st.open and starts_only first
 
+# A line starting with an operator or `:` continues only when it is
+# indented further than the logical line's first line: at that line's own
+# indentation it starts a new one (a `match` arm `-1 -> …`).
 fn continues st first : st~State, first~Tok
-    not (starts_only first) and (st.depth > 0 or is_binop first or is_punct first b":" or open_ended st)
+    let leads = (is_binop first or is_punct first b":") and first.col > st.col
+    not (starts_only first) and (st.depth > 0 or leads or open_ended st)
 
 # The level of the innermost open block whose column is at most `col`.
 fn level_at stack col -> l : stack~List Nat, col~Nat, l~Nat

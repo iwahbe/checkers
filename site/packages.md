@@ -1,6 +1,6 @@
-# Documentation
+# Packages
 
-- [SPEC.md](https://github.com/iwahbe/checkers/blob/main/SPEC.md): the definition of the language.
+The documentation of each package's modules and exported declarations. The language itself is described in the [Reference](reference/index.md).
 
 Every page here is also Markdown: replace `.html` with `.md`. [llms.txt](llms.txt) lists the site's pages and the latest documentation.
 

@@ -106,7 +106,7 @@ jobs:
             echo "## Releases"
             echo
             echo "${versions:-None yet.}"
-          } >> _pages/docs.md
+          } >> _pages/packages.md
       - name: The site
         run: checkers site _pages -o _site
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0

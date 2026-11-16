@@ -1,0 +1,16 @@
+error[E0240]: this pattern does not cover `[]`
+  --> let_refutable.ck:18:29
+   |
+18 |     let firsts = list.map (\(x :: _) -> x) ls
+   |                             ^^^^^^^^ not exhaustive
+   = help: take it apart with a `match` that handles that case too, or make the facts here rule it out (a precondition, an `if`)
+
+error[E0240]: this pattern does not cover `[]`
+  --> let_refutable.ck:22:9
+   |
+22 |     let x :: _ = l
+   |         ^^^^^^ not exhaustive
+   = note: counterexample: l = []
+   = help: take it apart with a `match` that handles that case too, or make the facts here rule it out (a precondition, an `if`)
+
+let_refutable.ck: 2 errors, 0 warnings

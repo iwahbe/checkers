@@ -104,6 +104,7 @@ let STYLE = string.concat [
     "nav.side ul{list-style:none;margin:0;padding:0}nav.side li{margin:3px 0}",
     "nav.side li a{color:var(--fg);text-decoration:none;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}",
     "nav.side li a:hover{color:var(--accent)}nav.side .kind{color:var(--muted)}",
+    "nav.side ul.pages li a{font-family:inherit}nav.side ul.pages li.here a{font-weight:600}",
     "@media (max-width:760px){.layout{display:block}.layout main{padding-left:16px}",
     "nav.side{position:static;max-height:none;border-right:0;border-bottom:1px solid var(--line);padding:16px}",
     "nav.side ul{display:flex;flex-wrap:wrap;gap:2px 16px}nav.side li{margin:0}}",
@@ -164,7 +165,8 @@ partial fn page title name root label side body -> r : title~String, name~String
         "<style>", STYLE, "</style>\n</head>\n<body", if wide then " class=\"wide\"" else "", ">\n<header><nav>",
         "<a class=\"home\" href=\"", root, "index.html\">Checkers</a>",
         "<a href=\"", root, "tour.html\">Tour</a>",
-        "<a href=\"", root, "docs/latest/std/index.html\">Documentation</a>",
+        "<a href=\"", root, "reference/index.html\">Reference</a>",
+        "<a href=\"", root, "docs/latest/std/index.html\">Packages</a>",
         "<a href=\"https://github.com/iwahbe/checkers\">Source</a>", menu, "</nav></header>\n"]
     let open = if wide then "<div class=\"layout\">\n<nav class=\"side\">\n" else ""
     let between = if wide then "</nav>\n<main>\n" else "<main>\n"
@@ -728,9 +730,75 @@ partial fn render_pages src out pages cx fs p term -> r : src~String, out~String
                     let here = Context cx.symbols cx.scope (root ++ cx.base) compiler cx.links None
                     let (body, ws) = lit.render text here fs p
                     let _ = page_warnings ws path text term
-                    match write_page out (strip_md rel) text root "" b"" body fs
+                    # A page in a directory (`reference/types.md`) goes in
+                    # the same directory under `out`.
+                    let _ = files.create_dirs (join_path out (dir_name rel)) fs
+                    let side = section_side src rel fs
+                    match write_page out (strip_md rel) text root "" side body fs
                         Err e -> Err e
                         Ok _  -> render_pages src out rest cx fs p term
+
+# A page in a directory with an `index.md` (`reference/types.md`): the
+# pages that index links to, in its order, as the navigation column; the
+# index's title leads back to it.
+partial fn section_side src rel fs -> r : src~String, rel~String, fs~Fs, r~Bytes
+    let dir = dir_name rel
+    if dir == "."
+        b""
+    else
+        match files.read (join_path src (join_path dir "index.md")) fs
+            Err _    -> b""
+            Ok index ->
+                let here = page_of rel
+                let title = match lit.title index
+                    Some t -> esc (as_string (plain_title t))
+                    None   -> esc dir
+                let line = \name -> string.concat [
+                    "<li", if name == here then " class=\"here\"" else "", "><a href=\"", name, ".html\">",
+                    esc (page_title (join_path src (join_path dir (name ++ ".md"))) name fs), "</a></li>\n"]
+                string.bytes (string.concat (["<div class=\"crumb\"><a href=\"index.html\">", title, "</a></div>\n",
+                                              "<ul class=\"pages\">\n"]
+                                             ++ list.map line (linked_pages index 0 []) ++ ["</ul>\n"]))
+
+# A path's last part without `.md`: `reference/types.md` is `types`.
+partial fn page_of rel -> r : rel~String, r~String
+    let b = string.bytes (strip_md rel)
+    match last_slash b 0 None
+        Some k if k < len b -> as_string (bytes.slice b (k + 1) (len b))
+        _ -> as_string b
+
+# A page's title, without code marks, or its name.
+partial fn page_title path name fs -> r : path~String, name~String, fs~Fs, r~String
+    match files.read path fs
+        Ok text ->
+            match lit.title text
+                Some t -> as_string (plain_title t)
+                None   -> name
+        Err _   -> name
+
+partial fn plain_title t -> r : t~Bytes, r~Bytes
+    string.bytes (string.concat_map (\c -> if c == c'`' then "" else string.from_char c) (as_string t))
+
+# The pages of this directory a page links to, `](name.md)`, in order, once
+# each.
+partial fn linked_pages b i acc -> r : b~Bytes, i~Nat, acc~List String, r~List String
+    if i + 2 >= len b
+        list.reverse acc
+    else if bytes.matches_at b i b"]("
+        match md_target b (i + 2) (i + 2)
+            Some name -> linked_pages b (i + 2) (if list.contains acc name then acc else name :: acc)
+            None      -> linked_pages b (i + 2) acc
+    else
+        linked_pages b (i + 1) acc
+
+# `name.md)` at `start`: `name`, if it is a plain name (no `/`, `:` or `#`).
+partial fn md_target b start j -> r : b~Bytes, start~Nat, j~Nat, r~Option String
+    if j >= len b or b[j] == ')' or b[j] == '/' or b[j] == ':' or b[j] == '#' or b[j] == ' ' or b[j] == '\n'
+        None
+    else if bytes.matches_at b j b".md)" and j > start
+        Some (as_string (bytes.slice b start j))
+    else
+        md_target b start (j + 1)
 
 # The first paragraph after the first heading: the site's summary.
 partial fn summary text -> r : text~Bytes, r~String
@@ -778,7 +846,7 @@ partial fn llms out pages index fs -> r : out~String, pages~List String, index~B
         "# ", title, "\n\n> ", summary index, "\n\n",
         "Every page of this site is also Markdown: replace `.html` with `.md`.\n\n## Pages\n\n"]
     let listed = list.map (\r -> link_line out r fs) pages
-    let documented = if docs == [] then [] else "\n## Documentation\n\n" :: list.map (\r -> link_line out r fs) docs
+    let documented = if docs == [] then [] else "\n## Packages\n\n" :: list.map (\r -> link_line out r fs) docs
     string.concat (head :: listed ++ documented)
 
 # `checkers site SRC -o OUT`.

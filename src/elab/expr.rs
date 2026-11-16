@@ -143,7 +143,7 @@ impl Elab {
                 } else {
                     let scrut = mk(ExprKind::Var(name.clone()), p.span);
                     let arm = vec![(p.clone(), None, ArmBody::Expr(&rest))];
-                    self.elab_match(cx, &scrut, arm, Some(&body_ty), true, e.span).0
+                    self.elab_match(cx, &scrut, arm, Some(&body_ty), true, p.span).0
                 };
                 self.post_target = saved_post;
                 cx.pop();
@@ -440,16 +440,19 @@ impl Elab {
                 // Infer a lambda: parameter types are unknowns.
                 let mut binders = Vec::new();
                 let start = cx.lvl();
+                // A parameter that is a pattern (`\(a, b) -> …`) is a
+                // variable of its own, taken apart by a `match` around the
+                // body, as in checking mode.
+                let mut body: Expr = (**body).clone();
+                let mut taken_apart = Vec::new();
                 for p in pats {
                     let name = match &p.kind {
                         ast::PatKind::Var(n) => n.clone(),
                         ast::PatKind::Wild => "_".to_string(),
                         _ => {
-                            // Delegate complex parameter patterns to checking mode.
-                            cx.truncate(start);
-                            let mv = self.fresh_meta_val(cx);
-                            let t = self.check(cx, e, &mv, true);
-                            return (t, mv);
+                            let n = format!("$arg{}", cx.lvl());
+                            taken_apart.push((n.clone(), p.clone()));
+                            n
                         }
                     };
                     let a = self.fresh_meta_val(cx);
@@ -460,7 +463,19 @@ impl Elab {
                     }
                     binders.push((Rc::<str>::from(name.as_str()), at));
                 }
-                let (bt, bty) = self.infer(cx, body);
+                for (n, p) in taken_apart.into_iter().rev() {
+                    // At the pattern's place, so a case it leaves out is
+                    // reported about the pattern.
+                    let span = p.span;
+                    let scrut = mk(ExprKind::Var(n), p.span);
+                    let arm = ast::Arm { pat: p, guard: None, body, span };
+                    body = mk(ExprKind::Match(Box::new(scrut), vec![arm]), span);
+                }
+                // A lambda's results are not the function's.
+                let saved_post = self.post_target.take();
+                let (bt, bty) = self.infer(cx, &body);
+                let bty = crate::core::strengthen(&self.g, &bty, start);
+                self.post_target = saved_post;
                 let bty_t = quote(&self.g, cx.lvl(), &bty);
                 cx.truncate(start);
                 let mut t = bt;

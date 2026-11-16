@@ -192,12 +192,29 @@ pub fn plan(m: &ast::Module, dicts: &[usize]) -> Plan {
         let ordered: Vec<Node> = nodes.iter().copied().filter(|n| members.contains(n)).collect();
         sccs.extend(tarjan(&ordered, &inner));
     }
+    let is_alias = |n: &Node| matches!(n, Node::Head(k) if matches!(m.decls[*k].kind, DeclKind::Alias { .. }));
     let mut plan = Plan { groups: Vec::new(), cycles: Vec::new() };
     for scc in sccs {
         let cyclic = scc.len() > 1 || edges.get(&scc[0]).is_some_and(|e| e.contains(&scc[0]));
         let all_types = scc.iter().all(|n| matches!(n, Node::Head(k) if is_type(*k)));
         if cyclic && !all_types {
             plan.cycles.push(cycle_in(&scc, &edges));
+        }
+        // Types may be mutually recursive, but only through an `enum` or a
+        // `record`: an alias that needs itself through aliases alone
+        // (`type A = x~B`, `type B = x~A`; `type L = x~List L`) would
+        // unfold forever.
+        if cyclic && all_types {
+            let aliases: Vec<Node> = scc.iter().copied().filter(|n| is_alias(n)).collect();
+            let alias_edges: HashMap<Node, HashSet<Node>> = aliases
+                .iter()
+                .map(|n| (*n, edges.get(n).map(|e| e.iter().copied().filter(|x| is_alias(x)).collect()).unwrap_or_default()))
+                .collect();
+            for group in tarjan(&aliases, &alias_edges) {
+                if group.len() > 1 || alias_edges.get(&group[0]).is_some_and(|e| e.contains(&group[0])) {
+                    plan.cycles.push(cycle_in(&group, &alias_edges));
+                }
+            }
         }
         // A cycle's members aren't checked: uses of them then have no type,
         // quietly, rather than repeating the error.

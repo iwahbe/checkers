@@ -36,9 +36,9 @@ error[E0450]: cannot prove that the index is in bounds (`0 < len src`)
   --> prove.ck:65:5
    |
 65 |     src[0]
-   |     ^^^^^^ indexing needs `i < len src`
+   |     ^^^^^^ indexing needs `0 < len src`
    = note: counterexample: src = b""
-   = help: check the index first, e.g. `if i < len src then src[i] else …`
+   = help: check the index first, e.g. `if 0 < len src then src[0] else …`
 
 error[E0450]: cannot prove `a <= b`, required to call `mid`
   --> prove.ck:68:5

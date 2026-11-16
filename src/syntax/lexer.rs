@@ -458,8 +458,11 @@ impl<'a> RawLexer<'a> {
                 }
                 Some(b'\\') => {
                     self.pos += 1;
+                    // `\xNN` is one byte; every other escape is a character,
+                    // written as its UTF-8 bytes.
+                    let raw = self.peek() == Some(b'x');
                     match self.escape(kind) {
-                        Some(v) if bytes && v <= 0xff => out.push(v as u8),
+                        Some(v) if raw => out.push(v as u8),
                         Some(v) => {
                             let mut buf = [0u8; 4];
                             out.extend_from_slice(char::from_u32(v).unwrap().encode_utf8(&mut buf).as_bytes());
@@ -558,8 +561,12 @@ fn layout(raws: Vec<Raw>, eof: usize, diags: &mut Vec<Diagnostic>) -> Vec<Token>
         }
         if raw.first_on_line && open.is_empty() {
             let prev = out.last().map(|t| &t.tok);
-            // A keyword that only starts a line never continues one.
-            let cont = have_line && !never_bracketed(&raw.tok) && (prev.is_some_and(continues_after) || continues_before(&raw.tok));
+            // A keyword that only starts a line never continues one. A line
+            // starting with an operator continues only when it is indented
+            // further than the logical line's first: at that line's own
+            // indentation it starts a new one (a `match` arm `-1 -> …`).
+            let leads = continues_before(&raw.tok) && raw.col > line_col;
+            let cont = have_line && !never_bracketed(&raw.tok) && (prev.is_some_and(continues_after) || leads);
             if !cont {
                 if have_line {
                     let at = out.last().unwrap().span.end;
@@ -652,6 +659,8 @@ mod tests {
         assert_eq!(kinds("(a\nb)\n"), "( a b ) NL EOF");
         // trailing -> opens a block
         assert_eq!(kinds("p ->\n    e\n"), "p -> NL IN e NL DE EOF");
+        // a leading operator at the logical line's own indentation starts a line
+        assert_eq!(kinds("0 -> a\n-1 -> b\n"), "0 -> a NL - 1 -> b NL EOF");
     }
 
     #[test]

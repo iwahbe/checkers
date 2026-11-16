@@ -951,7 +951,7 @@ pub struct Ran {
 
 /// Proof failures (D48): the only errors `run --unverified` tolerates.
 fn is_proof_failure(d: &Diagnostic) -> bool {
-    matches!(d.code, "E0450" | "E0451" | "E0452" | "E0240")
+    matches!(d.code, "E0450" | "E0451" | "E0240")
 }
 
 /// Check and prove `text`, then call its exported `main` with `args` (D43,

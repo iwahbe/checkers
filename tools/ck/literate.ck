@@ -588,7 +588,8 @@ export record Compiler
     flags~List String
 
 partial fn file_of c s -> r : c~Compiler, s~Sample, r~String
-    c.work ++ "/" ++ s.name ++ ".ck"
+    # A module `a.b` is the file `a/b.ck` (D53).
+    c.work ++ "/" ++ string.concat_map (\ch -> if ch == c'.' then "/" else string.from_char ch) s.name ++ ".ck"
 
 # The overlay: every block of the page, at its file, so one may import
 # another.

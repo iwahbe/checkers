@@ -63,9 +63,13 @@ impl Elab {
             } else {
                 format!("`{}` depends on itself: {}", name(chain[0]), shown.join(" → "))
             };
-            self.err(Diagnostic::error("E0225", msg, span).with_help(
-                "a type, signature or constant can't need its own value; break the chain (recursion between function bodies is fine)",
-            ));
+            let aliases = chain.iter().all(|k| matches!(m.decls[*k].kind, ast::DeclKind::Alias { .. }));
+            let help = if aliases {
+                "an alias stands for its definition, so this would never end; a type can contain itself only through an `enum` or a `record`"
+            } else {
+                "a type, signature or constant can't need its own value; break the chain (recursion between function bodies is fine)"
+            };
+            self.err(Diagnostic::error("E0225", msg, span).with_help(help));
         }
         let mut sigs: HashMap<usize, Sig> = HashMap::new();
         for group in &plan.groups {

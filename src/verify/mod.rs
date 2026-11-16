@@ -591,7 +591,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     // Cases one `match` leaves out that may occur: one error (E0240).
     let mut uncovered: Vec<(Span, Vec<String>, usize)> = Vec::new();
     for (k, ((o, q), a)) in obs.iter().zip(&queries).zip(answers).enumerate() {
-        if let (ObKind::Uncovered { case }, false) = (&o.kind, matches!((q, &a), (Ok(_), Some(Answer::Unsat)))) {
+        if let (ObKind::Uncovered { case, .. }, false) = (&o.kind, matches!((q, &a), (Ok(_), Some(Answer::Unsat)))) {
             if let Some(u) = uncovered.iter_mut().find(|u| u.0 == o.span) {
                 if !u.1.contains(case) {
                     u.1.push(case.clone());
@@ -918,7 +918,8 @@ fn describe(e: &Elab, o: &Obligation) -> String {
         ObKind::Lemma { name } => format!("lemma `{name}`: {}", o.text),
         ObKind::Auto => format!("auto: {}", o.text),
         ObKind::Have => format!("have {}", o.text),
-        ObKind::Uncovered { case } => format!("`match` needs no arm for {case}: it can't occur"),
+        ObKind::Uncovered { case, binding: false } => format!("`match` needs no arm for {case}: it can't occur"),
+        ObKind::Uncovered { case, binding: true } => format!("the pattern needn't cover {case}: it can't occur"),
     }
 }
 
@@ -1011,11 +1012,16 @@ fn headline(o: &Obligation) -> (String, String, String) {
             "`/` and `%` need a non-zero right side".into(),
             "check the divisor first, e.g. `if d != 0 then n / d else …`".into(),
         ),
-        ObKind::Index => (
-            format!("cannot prove that the index is in bounds (`{}`)", o.text),
-            "indexing needs `i < len src`".into(),
-            "check the index first, e.g. `if i < len src then src[i] else …`".into(),
-        ),
+        ObKind::Index => {
+            // `o.text` is `INDEX < len ARRAY`, as written.
+            let (i, a) = o.text.split_once(" < len ").unwrap_or(("i", "src"));
+            let a_shown = if a.contains(' ') { format!("({a})") } else { a.to_string() };
+            (
+                format!("cannot prove that the index is in bounds (`{}`)", o.text),
+                format!("indexing needs `{}`", o.text),
+                format!("check the index first, e.g. `if {} then {a_shown}[{i}] else …`", o.text),
+            )
+        }
         ObKind::Lemma { name } => (
             format!("cannot prove lemma `{name}`"),
             format!("`{}`", o.text),
@@ -1031,10 +1037,10 @@ fn headline(o: &Obligation) -> (String, String, String) {
             "asserted here".into(),
             "prove it with a lemma, or add the facts it needs first".into(),
         ),
-        ObKind::Uncovered { case } => (
-            format!("this `match` does not cover {case}"),
+        ObKind::Uncovered { case, binding } => (
+            format!("this {} does not cover {case}", if *binding { "pattern" } else { "`match`" }),
             "not exhaustive".into(),
-            uncovered_help(std::slice::from_ref(case)),
+            if *binding { crate::elab::BINDING_HELP.to_string() } else { uncovered_help(std::slice::from_ref(case)) },
         ),
     }
 }
@@ -1060,8 +1066,12 @@ fn merge_uncovered(mut d: Diagnostic, cases: &[String]) -> Diagnostic {
             3 => format!("{}, {} or {}", cases[0], cases[1], cases[2]),
             _ => format!("{}, {}, {} and {} more", cases[0], cases[1], cases[2], n - 3),
         };
-        d.message = format!("this `match` does not cover {list}");
-        d.help = Some(uncovered_help(cases));
+        if d.message.starts_with("this pattern") {
+            d.message = format!("this pattern does not cover {list}");
+        } else {
+            d.message = format!("this `match` does not cover {list}");
+            d.help = Some(uncovered_help(cases));
+        }
     }
     d
 }

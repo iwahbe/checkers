@@ -53,6 +53,11 @@ pub struct PatState {
     facts_before: usize,
 }
 
+/// What to do about a case a binding's pattern (`let y :: _ = l`) leaves
+/// out: it has no arms to add.
+pub const BINDING_HELP: &str =
+    "take it apart with a `match` that handles that case too, or make the facts here rule it out (a precondition, an `if`)";
+
 impl Elab {
     fn pat_err(&mut self, d: Diagnostic) {
         self.pm.bad = true;
@@ -105,7 +110,7 @@ impl Elab {
         }
         let f = self.false_val();
         let span = self.match_span;
-        let o = self.obligation(cx, span, ObKind::Uncovered { case: item }, String::new(), f, None);
+        let o = self.obligation(cx, span, ObKind::Uncovered { case: item, binding: self.match_binding }, String::new(), f, None);
         self.pm.uncovered.push(o);
     }
 
@@ -142,14 +147,16 @@ impl Elab {
             list = format!("{}, {}, {} and {} more", shown[0], shown[1], shown[2], missing.len() - 3);
         }
         let help = match missing.as_slice() {
+            _ if self.match_binding => BINDING_HELP.to_string(),
             [one] if one.starts_with('`') && !one.contains(" when ") && !one.contains(" for ") => {
                 format!("add an arm `{} -> …`, or a catch-all `_ -> …`", one.trim_matches('`'))
             }
             [_] => "add an arm for it, or a catch-all `_ -> …`".to_string(),
             _ => "add arms for these, or a catch-all `_ -> …`".to_string(),
         };
+        let what = if self.match_binding { "pattern" } else { "`match`" };
         self.err(
-            Diagnostic::error("E0240", format!("this `match` does not cover {list}"), span)
+            Diagnostic::error("E0240", format!("this {what} does not cover {list}"), span)
                 .with_label("not exhaustive")
                 .with_help(help),
         );
@@ -168,10 +175,13 @@ impl Elab {
         let saved_pm = std::mem::take(&mut self.pm);
         self.pm.facts_before = cx.facts.len();
         let arm_spans: Vec<Span> = arms.iter().map(|(p, _, _)| p.span).collect();
+        let binding = arm_spans.len() == 1 && arm_spans[0] == span;
+        let saved_binding = std::mem::replace(&mut self.match_binding, binding);
         let r = self.elab_match_inner(cx, scrut, arms, expected, tail);
         self.report_missing(span, &arm_spans);
         self.pm = saved_pm;
         self.match_span = saved_span;
+        self.match_binding = saved_binding;
         r
     }
 

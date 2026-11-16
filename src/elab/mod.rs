@@ -14,6 +14,7 @@ mod interval;
 pub mod index;
 mod order;
 mod pattern;
+pub use pattern::BINDING_HELP;
 mod refine;
 pub mod stdlib;
 pub mod termination;
@@ -217,7 +218,9 @@ pub enum ObKind {
     Auto,
     Have,
     /// A case a `match` leaves out can't occur there (D144 e): its pattern.
-    Uncovered { case: String },
+    /// `binding`: the pattern of a `let`, a lambda's parameter or `<-`,
+    /// not a `match`.
+    Uncovered { case: String, binding: bool },
 }
 
 /// Where a branch was entered, asked whether it can be reached (D144 d).
@@ -496,6 +499,9 @@ pub struct Elab {
     pub map_elem_sub: Option<usize>,
     /// Span of the `match` being compiled (for exhaustiveness errors).
     pub match_span: Span,
+    /// The `match` being checked is a binding's one pattern (a `let`, a
+    /// lambda's parameter, `<-`).
+    pub match_binding: bool,
     /// Exhaustiveness state of the `match` being compiled.
     pub pm: pattern::PatState,
     /// Classes (D136), by their dictionary's type.
@@ -633,6 +639,7 @@ impl Elab {
             stdlib_mode: false,
             map_elem_sub: None,
             match_span: Span::default(),
+            match_binding: false,
             pm: Default::default(),
             class_defs: HashMap::new(),
             pending_classes: Vec::new(),
@@ -1080,11 +1087,27 @@ impl Elab {
                 let mut fv = std::collections::BTreeSet::new();
                 crate::core::free_vars(t, 0, &mut fv);
                 if fv.is_empty() {
-                    Lin::of(self.val_linear(&eval(&self.g, &Rc::new(Vec::new()), t)))
+                    self.val_lin(&eval(&self.g, &Rc::new(Vec::new()), t), visiting)
                 } else {
                     Lin::Depends
                 }
             }
+        }
+    }
+
+    /// A computed field type's value (an alias unfolded), with the types
+    /// being visited kept, so a type holding itself through an alias
+    /// (`kids~Forest`, `type Forest = x~List Tree`) is seen once.
+    fn val_lin(&self, v: &Val, visiting: &mut Vec<TyId>) -> Lin {
+        match self.force(v) {
+            Val::TyCon(id, args) => {
+                if self.is_owner(id) {
+                    return Lin::No;
+                }
+                args.iter().fold(self.ty_lin(id, visiting), |r, a| r.or(self.val_lin(a, visiting)))
+            }
+            Val::TupleTy(ts) => ts.iter().fold(Lin::No, |r, a| r.or(self.val_lin(a, visiting))),
+            other => Lin::of(self.val_linear(&other)),
         }
     }
 

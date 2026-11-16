@@ -19,8 +19,8 @@ error[E0450]: cannot prove that the index is in bounds (`len xs < len xs`)
   --> arrays.ck:29:5
    |
 29 |     xs[len xs]
-   |     ^^^^^^^^^^ indexing needs `i < len src`
+   |     ^^^^^^^^^^ indexing needs `len xs < len xs`
    = note: counterexample: xs = array.from_list []
-   = help: check the index first, e.g. `if i < len src then src[i] else …`
+   = help: check the index first, e.g. `if len xs < len xs then xs[len xs] else …`
 
 arrays.ck: 3 errors, 0 warnings

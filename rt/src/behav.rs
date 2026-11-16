@@ -302,12 +302,16 @@ fn run_in_place(b: &mut Beh) {
     }
 }
 
+/// A future's value for a `join`: a new reference, the future keeping its
+/// own, so a future joined twice gives both joins its value. (One holding a
+/// resource is joined exactly once, D156 l; the reference the future keeps
+/// is dropped with it.)
 fn take_future(x: &Cell) -> W {
-    let v = std::mem::replace(&mut *x.v.lock().unwrap(), UNSET);
+    let v = *x.v.lock().unwrap();
     if v == UNSET {
         ERASED
     } else {
-        v
+        dup(v)
     }
 }
 

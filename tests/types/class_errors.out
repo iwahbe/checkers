@@ -86,7 +86,7 @@ error[E0285]: can't tell which instance of `Ord` to use: the type isn't known he
    |
 79 |     le [] []
    |     ^^
-   = help: give the type, e.g. with a constraint `x~List Int` or an annotated `let`
+   = help: give the type, e.g. with a constraint `x~List Int` in the signature
 
 error[E0206]: class `Show` has no function or lemma `print`
   --> class_errors.ck:82:10

@@ -1,0 +1,15 @@
+error[E0225]: `A` depends on itself: `A` → `B` → `A`
+ --> alias_cycle.ck:7:6
+  |
+7 | type A = x~B
+  |      ^
+  = help: an alias stands for its definition, so this would never end; a type can contain itself only through an `enum` or a `record`
+
+error[E0225]: `Nested` depends on itself
+  --> alias_cycle.ck:10:6
+   |
+10 | type Nested = x~List Nested
+   |      ^^^^^^
+   = help: an alias stands for its definition, so this would never end; a type can contain itself only through an `enum` or a `record`
+
+alias_cycle.ck: 2 errors, 0 warnings
