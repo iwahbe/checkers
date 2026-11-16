@@ -1,4 +1,4 @@
-error[E0450]: cannot prove `n >= 0`, the postcondition of `narrow_wrong`
+error[E0450]: cannot prove `r >= 0`, the postcondition of `narrow_wrong`
   --> nat_int.ck:20:22
    |
 20 | fn narrow_wrong i -> r : i~Int, r~Nat

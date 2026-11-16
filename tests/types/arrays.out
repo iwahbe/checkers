@@ -1,4 +1,4 @@
-error[E0450]: cannot prove `n < 256`, the postcondition of `first_byte`
+error[E0450]: cannot prove `b < 256`, the postcondition of `first_byte`
  --> arrays.ck:6:21
   |
 6 | fn first_byte xs -> b : xs~Array Int, len xs > 0, b~U8

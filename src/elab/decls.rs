@@ -756,9 +756,14 @@ impl Elab {
             self.g.fuel.set(DEFAULT_FUEL);
             let mut cx = Cx::default();
             let mut ptys = Vec::new();
+            // A parameter's type is what the alias's definition makes it
+            // (`lo <= n` with `n~Int` makes `lo` an `Int`), and a type when
+            // nothing decides.
             for p in params {
-                cx.bind(&p.name, Val::Univ(0), Mult::Zero);
-                ptys.push(Tm::Univ(0));
+                let mt = self.fresh_meta(&cx);
+                let mv = self.eval(&cx, &mt);
+                cx.bind(&p.name, mv, Mult::Zero);
+                ptys.push(mt);
             }
             let Some(Constraint::Typed { name, ty, .. }) = constraints.first() else {
                 continue; // reported by the parser
@@ -783,11 +788,25 @@ impl Elab {
                     }
                 }
             }
+            self.solve_deferred();
+            let mut pty_terms = Vec::new();
+            for (i, pt) in ptys.iter().enumerate() {
+                let z = crate::core::zonk_metas(&self.g, i, pt);
+                let mut h = &z;
+                while let Tm::App(f, ..) = h {
+                    h = f;
+                }
+                if matches!(h, Tm::Meta(_)) {
+                    let pv = crate::core::eval(&self.g, &Rc::new(cx.env[..i].to_vec()), pt);
+                    let _ = crate::core::unify(&self.g, i, &pv, &Val::Univ(0));
+                }
+                pty_terms.push(crate::core::zonk_metas(&self.g, i, pt));
+            }
             let mut body = t;
             let mut ty = Tm::Univ(0);
-            for p in params.iter().rev() {
+            for (p, pt) in params.iter().zip(pty_terms).rev() {
                 body = Tm::Lam(Rc::from(p.name.as_str()), Mult::Zero, Icit::Expl, Rc::new(body));
-                ty = Tm::Pi(Rc::from(p.name.as_str()), Mult::Zero, Icit::Expl, Rc::new(Tm::Univ(0)), Rc::new(ty));
+                ty = Tm::Pi(Rc::from(p.name.as_str()), Mult::Zero, Icit::Expl, Rc::new(pt), Rc::new(ty));
             }
             let info = &mut self.g.defs[did.0 as usize];
             info.body = Some(body);

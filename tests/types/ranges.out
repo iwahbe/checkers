@@ -1,4 +1,4 @@
-error[E0450]: cannot prove `n < 256`, the postcondition of `wrong`
+error[E0450]: cannot prove `r < 256`, the postcondition of `wrong`
   --> ranges.ck:33:15
    |
 33 | fn wrong x -> r : x~U8, r~U8

@@ -1595,8 +1595,31 @@ impl Elab {
         args.reverse();
         let prefix = Rc::new(cx.env[..at].to_vec());
         let mut env: Vec<Val> = args.iter().map(|a| eval(&self.g, &prefix, a)).collect();
+        // The predicates as written, in this use's names: `n <= hi` of
+        // `type Bounded lo hi = n~Int, …` is `b <= 10` for `b~Bounded 0 10`.
+        let mut names: Vec<(String, String)> = Vec::new();
+        let mut body = self.g.defs[d.0 as usize].body.as_ref();
+        for v in &env {
+            let Some(Tm::Lam(x, _, _, b)) = body else { break };
+            names.push((x.to_string(), self.shown_operand(cx, v)));
+            body = Some(b);
+        }
+        if let Some(x) = self.alias_subject.get(d) {
+            names.push((x.to_string(), self.shown_operand(cx, &subject)));
+        }
         env.push(subject);
-        preds.iter().map(|p| (self.inst_pred(p, env.clone()), p.text.clone(), *d)).collect()
+        preds.iter().map(|p| (self.inst_pred(p, env.clone()), rename_words(&p.text, &names), *d)).collect()
+    }
+
+    /// A value as an operand in a predicate's text: parenthesized unless it
+    /// is one word.
+    fn shown_operand(&self, cx: &Cx, v: &Val) -> String {
+        let t = self.show_val(cx, v);
+        if t.contains(' ') && !(t.starts_with('(') && t.ends_with(')')) {
+            format!("({t})")
+        } else {
+            t
+        }
     }
 
     /// Instantiate a predicate over `binders ++ [result]` with values.
@@ -2109,4 +2132,41 @@ fn free_levels(t: &Tm, lvl: usize, depth: usize, out: &mut Vec<usize>) {
         }
         _ => {}
     }
+}
+
+/// `text` with each whole word that `names` maps replaced: identifiers,
+/// not parts of them, and nothing inside a string literal.
+pub fn rename_words(text: &str, names: &[(String, String)]) -> String {
+    let mut out = String::new();
+    let mut word = String::new();
+    let mut in_str = false;
+    let flush = |word: &mut String, out: &mut String| {
+        if !word.is_empty() {
+            match names.iter().rev().find(|(n, _)| n == word) {
+                Some((_, r)) => out.push_str(r),
+                None => out.push_str(word),
+            }
+            word.clear();
+        }
+    };
+    let mut prev = ' ';
+    for c in text.chars() {
+        if in_str {
+            out.push(c);
+            if c == '"' && prev != '\\' {
+                in_str = false;
+            }
+        } else if c.is_alphanumeric() || c == '_' || (c == '.' && !word.is_empty()) {
+            word.push(c);
+        } else {
+            flush(&mut word, &mut out);
+            if c == '"' {
+                in_str = true;
+            }
+            out.push(c);
+        }
+        prev = c;
+    }
+    flush(&mut word, &mut out);
+    out
 }

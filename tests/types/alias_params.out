@@ -1,0 +1,29 @@
+error[E0450]: cannot prove `b <= 10`, the postcondition of `too_big`
+  --> alias_params.ck:24:15
+   |
+24 | fn too_big -> b : b~Bounded 0 10
+   |               ^ promised here
+   = note: for the value returned on line 25: `11`
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+error[E0450]: cannot prove `2 <= y`, the postcondition of `narrow`
+  --> alias_params.ck:27:16
+   |
+27 | fn narrow x -> y : x~Bounded 0 10, y~Bounded 2 5
+   |                ^ promised here
+   = note: for the value returned on line 28: `x`
+   = note: facts in scope: `0 <= x`, `x <= 10`
+   = note: counterexample: x = 0
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+error[E0450]: cannot prove `y <= 5`, the postcondition of `narrow`
+  --> alias_params.ck:27:16
+   |
+27 | fn narrow x -> y : x~Bounded 0 10, y~Bounded 2 5
+   |                ^ promised here
+   = note: for the value returned on line 28: `x`
+   = note: facts in scope: `0 <= x`, `x <= 10`
+   = note: counterexample: x = 6
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+alias_params.ck: 3 errors, 0 warnings

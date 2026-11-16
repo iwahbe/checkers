@@ -174,7 +174,19 @@ fn half p -> q : p~Percent, q~Percent
     p / 2
 ```
 
-An alias stands for its definition: `Percent` and `(n~Nat, n <= 100)` are the same type ([Refinements](types.md#refinements)). An alias's parameters are types.
+An alias stands for its definition: `Percent` and `(n~Nat, n <= 100)` are the same type ([Refinements](types.md#refinements)).
+
+An alias's parameters may be types or values. Each parameter's type is what the definition makes it, and `Type` when nothing decides: in `Bounded` below, `lo <= n` with `n~Int` makes `lo` an `Int`. A use gives the arguments, which may be any values in scope.
+
+```checkers
+type Bounded lo hi = n~Int, lo <= n, n <= hi
+
+fn clamp lo hi x -> r : lo~Int, hi~Int, lo <= hi, x~Int, r~Bounded lo hi
+    if x < lo then lo else if x > hi then hi else x
+
+fn widen x -> y : x~Bounded 2 5, y~Bounded 0 10
+    x
+```
 
 ## Constants
 
