@@ -843,7 +843,10 @@ fn rename(g: &Globals, m: MetaId, p: &PartialRenaming, v: &Val) -> Result<Tm, Un
             if m2 == m {
                 return Err(UnifyError::Mismatch); // occurs check
             }
-            go_sp(Tm::Meta(m2), &sp)
+            match prune(g, m2, &sp, p) {
+                Some(m3) => go_sp(Tm::Meta(m3.0), &Rc::new(m3.1)),
+                None => go_sp(Tm::Meta(m2), &sp),
+            }
         }
         Val::Neutral(Head::Var(x), sp) => match p.ren.get(&x) {
             Some(x2) => go_sp(Tm::Var(p.dom - x2 - 1), &sp),
@@ -877,6 +880,46 @@ fn rename(g: &Globals, m: MetaId, p: &PartialRenaming, v: &Val) -> Result<Tm, Un
         Val::Tuple(vs) => Ok(Tm::Tuple(vs.iter().map(|a| rename(g, m, p, a)).collect::<Result<_, _>>()?)),
         Val::Error => Ok(Tm::Error),
     }
+}
+
+/// Pruning: `?m2 x y`, where `y` is out of the solution's scope, can only
+/// not depend on `y`. So `?m2 := λx y. ?m3 x`, and the solution mentions
+/// `?m3 x` (an unknown made inside a `match` arm, in a type the `match`
+/// has outside it). `None` when every argument is in scope, or one isn't a
+/// variable (then nothing is pruned).
+fn prune(g: &Globals, m2: MetaId, sp: &[Elim], p: &PartialRenaming) -> Option<(MetaId, Vec<Elim>)> {
+    let mut keep = Vec::new();
+    for e in sp {
+        match e {
+            Elim::App(a, i) => match force(g, a.clone()) {
+                Val::Neutral(Head::Var(x), s) if s.is_empty() => keep.push((p.ren.contains_key(&x), *i, a.clone())),
+                _ => return None,
+            },
+            _ => return None,
+        }
+    }
+    if keep.iter().all(|k| k.0) {
+        return None;
+    }
+    let m3 = g.fresh_meta();
+    let origin = g.meta_origins.borrow().get(&m2).cloned();
+    if let Some(o) = origin {
+        let spine = keep.iter().filter(|k| k.0).count();
+        g.meta_origins.borrow_mut().insert(m3, MetaOrigin { spine, ..o });
+    }
+    let n = keep.len();
+    let mut t = Tm::Meta(m3);
+    for (k, (kept, i, _)) in keep.iter().enumerate() {
+        if *kept {
+            t = Tm::App(Rc::new(t), Rc::new(Tm::Var(n - 1 - k)), *i, Mult::Many);
+        }
+    }
+    for (k, (_, i, _)) in keep.iter().enumerate().rev() {
+        t = Tm::Lam(Rc::from(format!("x{k}")), Mult::Many, *i, Rc::new(t));
+    }
+    let sol = eval(g, &Rc::new(Vec::new()), &t);
+    g.metas.borrow_mut()[m2.0 as usize] = MetaEntry::Solved(sol);
+    Some((m3, keep.into_iter().filter(|k| k.0).map(|k| Elim::App(k.2, k.1)).collect()))
 }
 
 fn rename_case(g: &Globals, m: MetaId, p: &PartialRenaming, c: &Rc<CaseTm>, env: &Env) -> Result<Rc<CaseTm>, UnifyError> {
