@@ -31,7 +31,7 @@ src/elab/mod.rs      elaborator state, metas, deferred operator constraints (D38
 src/elab/decls.rs    imports, declarations, positivity, signatures (auto-binding, D10)
 src/elab/expr.rs     bidirectional checking of expressions, blocks, `<-`, `try`, `when`/`fork`/`join`
 src/elab/pattern.rs  `match` → case trees, exhaustiveness witnesses
-src/elab/index.rs    names for tools: each use, its definition, kind and hover text (`--json`, D120)
+src/elab/index.rs    names for tools: each use, its definition, kind and hover text (`--json`, D120); `ckc index`, a package's (D161)
 src/elab/interval.rs arithmetic keeps constant bounds: ranges as anonymous refinements, joined branches, their array layouts (D135)
 src/elab/refine.rs   refinements inside types: inline and function-type refinements, implication, variance, E0262 (D71, D82–D87)
 src/elab/eq.rs       `==` never compares functions: in compiled code, and through type parameters (D125)

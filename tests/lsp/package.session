@@ -1,0 +1,24 @@
+# The package's index (D161): references and rename across its files, from app.ck.
+> {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"capabilities":{"general":{"positionEncodings":["utf-8"]}}}}
+< 1
+> {"jsonrpc":"2.0","method":"initialized","params":{}}
+> {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/pkg/app.ck","languageId":"checkers","version":1,"text":$TEXT(pkg/app.ck)}}}
+# `area`, exported by shapes.ck: its declaration there and its uses here.
+> {"jsonrpc":"2.0","id":2,"method":"textDocument/references","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/pkg/app.ck"},"position":{"line":5,"character":15},"context":{"includeDeclaration":true}}}
+< 1
+# `Point` can be renamed: every file that uses it is in the package.
+> {"jsonrpc":"2.0","id":3,"method":"textDocument/prepareRename","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/pkg/app.ck"},"position":{"line":4,"character":27}}}
+< 1
+> {"jsonrpc":"2.0","id":4,"method":"textDocument/rename","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/pkg/app.ck"},"position":{"line":4,"character":27},"newName":"Spot"}}
+< 1
+# Not to a name one of those files has.
+> {"jsonrpc":"2.0","id":5,"method":"textDocument/rename","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/pkg/app.ck"},"position":{"line":4,"character":27},"newName":"ORIGIN"}}
+< 1
+> {"jsonrpc":"2.0","id":6,"method":"textDocument/rename","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/pkg/app.ck"},"position":{"line":5,"character":15},"newName":"p"}}
+< 1
+# A standard library name can't be renamed.
+> {"jsonrpc":"2.0","id":7,"method":"textDocument/prepareRename","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/pkg/app.ck"},"position":{"line":4,"character":36}}}
+< 1
+> {"jsonrpc":"2.0","id":8,"method":"shutdown"}
+< 1
+> {"jsonrpc":"2.0","method":"exit"}

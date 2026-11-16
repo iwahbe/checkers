@@ -31,6 +31,9 @@ USAGE:
     ckc complete [--overlay MAP] <FILE.ck> LINE COL
                                                what can be written at LINE, COL (from 0, the
                                                column in bytes), as JSON lines (§15.5, D142)
+    ckc index [--overlay MAP] <FILE.ck>        the names of every module of FILE's package
+                                               (the files under the directory its module
+                                               name is relative to), as JSON lines (D161)
     ckc stage <FILE.ck>                        print the code staging generates (§8.9)
     ckc parse <FILE.ck>                        print the syntax tree
     ckc --version
@@ -124,6 +127,7 @@ fn cli(args: &[String]) -> u8 {
         Some("stage") => return stage(&args[1..]),
         Some("check") => check(&args[1..]),
         Some("complete") => complete(&args[1..]),
+        Some("index") => index(&args[1..]),
         Some("parse") => parse(&args[1..]),
         Some("doc") => doc(&args[1..]),
         Some("--version") | Some("-V") => {
@@ -316,6 +320,29 @@ fn complete(args: &[String]) -> ExitCode {
     let stdout = std::io::stdout();
     let mut lock = stdout.lock();
     checkers::complete_json(path, &text, &checkers::dir_of(path), line, col, &mut |l| {
+        let _ = writeln!(lock, "{l}");
+    });
+    ExitCode::SUCCESS
+}
+
+/// `ckc index [--overlay MAP] FILE` (D161).
+fn index(args: &[String]) -> ExitCode {
+    let rest = match take_overlay(args) {
+        Ok(r) => r,
+        Err(c) => return c,
+    };
+    let [path] = rest.as_slice() else {
+        eprintln!("error: `index` takes exactly one file\n\n{USAGE}");
+        return ExitCode::from(2);
+    };
+    let text = match read(path) {
+        Ok(t) => t,
+        Err(c) => return c,
+    };
+    use std::io::Write;
+    let stdout = std::io::stdout();
+    let mut lock = stdout.lock();
+    checkers::index_json(path, &text, &mut |l| {
         let _ = writeln!(lock, "{l}");
     });
     ExitCode::SUCCESS

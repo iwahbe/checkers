@@ -40,7 +40,7 @@ impl Elab {
     /// document); other modules' declarations still record where they are
     /// and their headers, for hover and go to definition.
     pub fn indexing(&self) -> bool {
-        self.index_of.as_deref() == Some(self.cur.as_str())
+        self.index_of.as_deref() == Some(self.cur.as_str()) || self.index_all.as_ref().is_some_and(|m| m.contains(&self.cur))
     }
 
     pub fn index_global(&mut self, span: Span, t: Target) {
@@ -57,6 +57,17 @@ impl Elab {
     pub fn index_pattern(&mut self, span: Span, t: Target) {
         self.reference(span, t, super::unused::RefKind::Match);
         self.index_name(span, t);
+    }
+
+    /// A name in an import's list: an occurrence of what it imports, for
+    /// references and rename (D161), not a use (D144).
+    pub fn index_import(&mut self, span: Span, s: Sym) {
+        match s {
+            Sym::Def(d) => self.index_name(span, Target::Def(d)),
+            Sym::Ty(t) => self.index_name(span, Target::Ty(t)),
+            Sym::Con(c) => self.index_name(span, Target::Con(c)),
+            _ => {}
+        }
     }
 
     fn index_name(&mut self, span: Span, t: Target) {
@@ -185,10 +196,11 @@ impl Elab {
         self.decl_at.get(&Target::Ty(t)).cloned()
     }
 
-    /// Whether every use of the name is in `user`, the module checked
-    /// (D160): a local, or a declaration of it that it doesn't export, so
-    /// renaming it there renames it everywhere.
-    pub fn renamable(&self, u: &Use, user: &str) -> bool {
+    /// Whether every use of the name is in the modules indexed (`user`):
+    /// a local, or a declaration of one of them; one it exports only when
+    /// every module of its package is indexed (D160, D161). Renaming it
+    /// there renames it everywhere.
+    pub fn renamable(&self, u: &Use, user: &dyn Fn(&str) -> bool) -> bool {
         let (m, name, is_type) = match u {
             Use::Local { .. } => return true,
             Use::Module(_) | Use::Global(Target::Univ) => return false,
@@ -206,8 +218,11 @@ impl Elab {
                 }
             }
         };
-        if m != user || m.starts_with("std.") {
+        if !user(m) || m.starts_with("std.") {
             return false;
+        }
+        if self.index_all.is_some() {
+            return true;
         }
         match self.modules.get(m) {
             Some(info) => !(if is_type { info.exported_types.contains(&name) } else { info.exported_values.contains(&name) }),

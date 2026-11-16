@@ -216,20 +216,25 @@ partial fn pump out acc g docs c -> r : out~File, acc~Acc, g~Nat, docs~List Doc,
                                 pump out (Acc (d :: acc.diags) acc.index acc.phases) g docs c
                             None   -> pump out acc g docs c
                     else if kind == "name" or kind == "token"
-                        match span_of j
-                            Some s ->
-                                let def = match rpc.get "def" j
-                                    Some d -> span_of d
-                                    None   -> None
-                                let type_def = match rpc.get "type_def" j
-                                    Some d -> span_of d
-                                    None   -> None
-                                let renamable = rpc.get "renamable" j == Some (Bool True)
-                                let e = Entry s (str_or "class" j) def type_def renamable (str_or "hover" j) (str_or "doc" j)
-                                pump out (Acc acc.diags (e :: acc.index) acc.phases) g docs c
+                        match entry_of j
+                            Some e -> pump out (Acc acc.diags (e :: acc.index) acc.phases) g docs c
                             None   -> pump out acc g docs c
                     else
                         pump out acc g docs c
+
+# A name or token of the compiler's index.
+partial fn entry_of j -> r : j~Json, r~Option Entry
+    match span_of j
+        Some s ->
+            let def = match rpc.get "def" j
+                Some d -> span_of d
+                None   -> None
+            let type_def = match rpc.get "type_def" j
+                Some d -> span_of d
+                None   -> None
+            let renamable = rpc.get "renamable" j == Some (Bool True)
+            Some (Entry s (str_or "class" j) def type_def renamable (str_or "hover" j) (str_or "doc" j))
+        None   -> None
 
 partial fn not_proof ds -> r : ds~List Diag, r~List Diag
     match ds
@@ -527,7 +532,7 @@ partial fn prepare_rename w es c -> r : w~Where, es~List Entry, c~Caps, r~Result
             if e.renamable
                 Ok (range_of w.doc.text e.at c.utf8)
             else
-                Err ("`" ++ name_text w.doc.text e.at ++ "` is used outside this file, or is a module or the standard library's: it can't be renamed here")
+                Err ("`" ++ name_text w.doc.text e.at ++ "` is a module, or the standard library's or a dependency's: it can't be renamed here")
 
 partial fn spans_in path ss -> r : path~String, ss~List Span, r~List Span
     match ss
@@ -556,28 +561,6 @@ partial fn word_bytes b i : b~Bytes, i~Nat
     else
         let c = b[i]
         (('a' <= c and c <= 'z') or ('A' <= c and c <= 'Z') or ('0' <= c and c <= '9') or c == '_') and word_bytes b (i + 1)
-
-# Rename the name at the position everywhere it is used: one edit per place,
-# all in this file (D160). The new name must be spelled as the old one is
-# (a lower-case or a capitalised name, §9.1), not a keyword, and not a name
-# this file has already.
-partial fn rename w es new c -> r : w~Where, es~List Entry, new~String, c~Caps, r~Result Json String
-    let checked = try prepare_rename w es c
-    let old = match name_at w.doc.path w.line w.col es
-        Some e -> name_text w.doc.text e.at
-        None   -> ""
-    let taken = named w.doc.path w.doc.text new es
-    if not (same_case old new)
-        Err ("`" ++ new ++ "` isn't a name like `" ++ old ++ "`: " ++ (if upper_first old then "start it with a capital letter" else "start it with a lower-case letter or `_`") ++ ", then letters, digits and `_`")
-    else if list.contains syntax.KEYWORDS (string.bytes new)
-        Err ("`" ++ new ++ "` is a keyword")
-    else if new == old
-        Ok (rpc.obj [("changes", rpc.obj [])])
-    else if taken
-        Err ("`" ++ new ++ "` is already a name in this file: renaming to it could change what a name refers to")
-    else
-        let edits = list.map (\s -> rpc.obj [("range", range_of w.doc.text s c.utf8), ("newText", Str new)]) (occurrences w es)
-        Ok (rpc.obj [("changes", rpc.obj [(w.doc.uri, Arr edits)])])
 
 # Reply to request `id`, about the file at `path`, with `f` of the index,
 # from a behaviour on the shared cown (which holds the index) and the
@@ -642,6 +625,96 @@ partial fn reply msg c : msg~Json, c~Caps
         files.close o
         turn
     ()
+
+# ── The package's index (D161) ──────────────────────────────────────────────
+
+# Reply to request `id` with `f` of the index of every module of `w`'s
+# package (`ckc index`, with the open documents as an overlay), read in a
+# behaviour of its own.
+partial fn with_package id w docs c f : id~Json, w~Where, docs~List Doc, c~Caps, f~(List Entry -> Result Json String)
+    let args = c.flags ++ ["index", "--overlay", "-", w.doc.path]
+    match proc.spawn c.ckc args (Streams Pipe Pipe Discard) c.proc
+        Err e                           ->
+            show_error ("could not run `" ++ c.ckc ++ "`: " ++ files.describe e ++ "; set CKC to the compiler") c
+            reply (rpc.response id Null) c
+        Ok (Spawned child input out ()) ->
+            feed (string.bytes (json.render (overlay docs))) input
+            let sched = c.sched
+            _ <- fork using sched
+                let (es, o2) = read_entries out []
+                files.close o2
+                let _ = proc.wait child
+                reply (respond id (f es)) c
+            ()
+
+# The names `ckc index` writes.
+partial fn read_entries out acc -> r : out~File, acc~List Entry, r~(List Entry, File)
+    line <- files.read_line out
+    match line
+        None   -> (acc, out)
+        Some l ->
+            match json.parse (string.bytes l)
+                Ok j if str_or "kind" j == "name" ->
+                    match entry_of j
+                        Some e -> read_entries out (e :: acc)
+                        None   -> read_entries out acc
+                _ -> read_entries out acc
+
+# The places of the name at `w` in every file of the package, its
+# declaration first, each once.
+partial fn everywhere w es -> r : w~Where, es~List Entry, r~List Span
+    match name_at w.doc.path w.line w.col es
+        Some e ->
+            match e.def
+                Some d -> d :: uses_of d (sort es) []
+                None   -> [e.at]
+        None   -> []
+
+# The paths of `ss`, each once.
+partial fn paths_in ss acc -> r : ss~List Span, acc~List String, r~List String
+    match ss
+        []        -> list.reverse acc
+        s :: rest -> paths_in rest (if list.contains acc s.path then acc else s.path :: acc)
+
+# Rename the name at `w` at each of its places in the package (D161): one
+# file's edits per path. The new name must be spelled as the old one is (a
+# lower-case or a capitalised name, §9.1), not be a keyword, and not be a
+# name any of those files has already.
+partial fn rename w es new docs c -> r : w~Where, es~List Entry, new~String, docs~List Doc, c~Caps, r~Result Json String
+    let checked = try prepare_rename w es c
+    let old = match name_at w.doc.path w.line w.col es
+        Some e -> name_text w.doc.text e.at
+        None   -> ""
+    let places = everywhere w es
+    let paths = paths_in places []
+    let taken = taken_in paths new es docs c
+    if not (same_case old new)
+        Err ("`" ++ new ++ "` isn't a name like `" ++ old ++ "`: " ++ (if upper_first old then "start it with a capital letter" else "start it with a lower-case letter or `_`") ++ ", then letters, digits and `_`")
+    else if list.contains syntax.KEYWORDS (string.bytes new)
+        Err ("`" ++ new ++ "` is a keyword")
+    else if new == old
+        Ok (rpc.obj [("changes", rpc.obj [])])
+    else
+        match taken
+            Some p -> Err ("`" ++ new ++ "` is already a name in " ++ p ++ ": renaming to it could change what a name refers to")
+            None   -> Ok (rpc.obj [("changes", rpc.obj (edits_by paths places new docs c))])
+
+# The first of `paths` that already has `name` as a name.
+partial fn taken_in paths name es docs c -> r : paths~List String, name~String, es~List Entry, docs~List Doc, c~Caps,
+                                                r~Option String
+    match paths
+        []        -> None
+        p :: rest -> if named p (text_of p docs c.fs) name es then Some p else taken_in rest name es docs c
+
+# For each path, its edits: `new` at each of the places in it.
+partial fn edits_by paths places new docs c -> r : paths~List String, places~List Span, new~String, docs~List Doc, c~Caps,
+                                                   r~List (String, Json)
+    match paths
+        []        -> []
+        p :: rest ->
+            let text = if c.utf8 then b"" else text_of p docs c.fs
+            let edits = list.map (\s -> rpc.obj [("range", range_of text s c.utf8), ("newText", Str new)]) (spans_in p places)
+            (tx.uri_of p, Arr edits) :: edits_by rest places new docs c
 
 # ── Completion (D142) ────────────────────────────────────────────────────────
 
@@ -1011,15 +1084,15 @@ partial fn handle m st c -> r : m~Json, st~Server, c~Caps, r~(Server, Option Exi
                             else if method == "textDocument/documentHighlight"
                                 answer i path (\es -> highlights w es c) c
                             else if method == "textDocument/prepareRename"
-                                answer_or i path (\es -> prepare_rename w es c) c
+                                with_package i w docs c (\es -> prepare_rename w es c)
                             else if method == "textDocument/rename"
                                 let new = match rpc.str_at ["newName"] params
                                     Some n -> n
                                     None   -> ""
-                                answer_or i path (\es -> rename w es new c) c
+                                with_package i w docs c (\es -> rename w es new docs c)
                             else
                                 let decl = rpc.at ["context", "includeDeclaration"] params == Some (Bool True)
-                                answer i path (\es -> references w es decl docs c) c
+                                with_package i w docs c (\es -> Ok (references w es decl docs c))
                         None   -> reply (rpc.response i Null) c
                     keep
                 else if method == "textDocument/completion"

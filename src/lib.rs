@@ -185,6 +185,59 @@ pub fn check_json(name: &str, text: &str, dir: &std::path::Path, out: &mut dyn F
     c.errors() > 0
 }
 
+/// `ckc index` (D161): the index of every module of the package `name`'s
+/// module is in, as `check --json` gives one file's: its names and tokens,
+/// then `done`. The package is the directory its module's name is relative
+/// to (`a/b.ck` is `a.b`, D53), and every `.ck` file under it. Names and
+/// types only: nothing is run or proved.
+pub fn index_json(name: &str, text: &str, out: &mut dyn FnMut(String)) {
+    let main = overlay::absolute(std::path::Path::new(name));
+    let (m, _) = syntax::parse_module(text);
+    let depth = m.name.as_ref().map(|q| q.dotted().split('.').count()).unwrap_or(1);
+    let mut root = main.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    for _ in 1..depth {
+        root = root.parent().map(|p| p.to_path_buf()).unwrap_or(root);
+    }
+    fn walk(base: &std::path::Path, dir: &std::path::Path, out: &mut Vec<String>) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        let mut entries: Vec<_> = rd.flatten().map(|e| e.path()).collect();
+        entries.sort();
+        for p in entries {
+            let file = p.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+            if file.starts_with('.') || file == "target" {
+                continue;
+            }
+            if p.is_dir() {
+                walk(base, &p, out);
+            } else if p.extension().is_some_and(|x| x == "ck") {
+                if let Ok(rel) = p.strip_prefix(base) {
+                    let parts: Vec<String> = rel.with_extension("").iter().map(|c| c.to_string_lossy().to_string()).collect();
+                    // Only names a module can have (§9.1).
+                    if parts.iter().all(|s| s.chars().next().is_some_and(|c| c.is_ascii_lowercase()) && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')) {
+                        out.push(parts.join("."));
+                    }
+                }
+            }
+        }
+    }
+    let mut names = Vec::new();
+    walk(&root, &root, &mut names);
+    let mut e = elab::Elab::new();
+    e.base_dir = Some(root.clone());
+    for core in ["std.prelude", "std.cown", "std.future", "std.system"] {
+        e.load_stdlib(core);
+    }
+    e.index_all = Some(names.iter().cloned().collect());
+    for n in &names {
+        if !e.modules.contains_key(n) {
+            e.load_user(n, source::Span::default());
+        }
+    }
+    let first = names.first().cloned().unwrap_or_default();
+    emit_index_all(&e, &first, out);
+    out(r#"{"kind":"done","phase":"index"}"#.to_string());
+}
+
 /// `ckc complete` (§15.5, D142): what can be written at byte column `col`
 /// of line `line` (from 0) of `name`, as JSON lines: the span the
 /// completion replaces, then each candidate in order, then `done`. The
@@ -244,7 +297,20 @@ pub(crate) fn doc_comment(text: &str, at: usize) -> Option<String> {
     (!doc.trim().is_empty()).then_some(doc)
 }
 
+/// The names of the index of `modules`, each at its own path.
+fn emit_index_all(e: &elab::Elab, user: &str, out: &mut dyn FnMut(String)) {
+    let main = e.paths.get(user).cloned().unwrap_or_default();
+    emit_names(e, user, &main, out);
+}
+
 fn emit_index(e: &elab::Elab, user: &str, main: &std::path::Path, out: &mut dyn FnMut(String)) {
+    emit_names(e, user, main, out);
+    if let Some(f) = e.sources.get(user) {
+        emit_tokens(main, f, out);
+    }
+}
+
+fn emit_names(e: &elab::Elab, user: &str, main: &std::path::Path, out: &mut dyn FnMut(String)) {
     let path_of = |m: &str| -> std::path::PathBuf {
         if m == user {
             main.to_path_buf()
@@ -288,13 +354,10 @@ fn emit_index(e: &elab::Elab, user: &str, main: &std::path::Path, out: &mut dyn 
             r#"{{"kind":"name","path":{},{at},"class":"{}","def":{def},"type_def":{type_def},"renamable":{},"hover":{},"doc":{}}}"#,
             json::string(&path_of(&u.module).to_string_lossy()),
             e.class_of(&u.what),
-            e.renamable(&u.what, user),
+            e.renamable(&u.what, &|m: &str| m == user || e.index_all.as_ref().is_some_and(|a| a.contains(m))),
             json::string(&e.hover_of(&u.what)),
             doc.map(|d| json::string(&d)).unwrap_or_else(|| "null".into()),
         ));
-    }
-    if let Some(f) = e.sources.get(user) {
-        emit_tokens(main, f, out);
     }
 }
 

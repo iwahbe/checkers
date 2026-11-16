@@ -259,6 +259,9 @@ impl Elab {
                             }
                         }
                     }
+                    if let Some(s) = t.or(v) {
+                        self.index_import(it.span, s);
+                    }
                     let me = self.modules.get_mut(name).unwrap();
                     if let Some(t) = t {
                         me.import_types.insert(it.name.clone(), t);
