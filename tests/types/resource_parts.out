@@ -33,4 +33,19 @@ error[E0408]: this guard uses `g`, a resource, which the arm's body needs
    |              ^^^^^^^ the guard runs before the body, so it can't use the resource
    = help: test `g` inside the arm's body instead, with `if` or another `match`
 
-resource_parts.ck: 5 errors, 0 warnings
+error[E0401]: `f` holds a resource (`File`), which a closure can't capture
+  --> resource_parts.ck:73:13
+   |
+73 | fn captured f : f~File
+   |             ^
+   = note: a closure may run any number of times, or never
+   = help: make `f` a parameter of the closure, or use it outside the closure
+
+error[E0406]: reading `lines` would drop the rest of this `One`, and `out` holds a resource
+  --> resource_parts.ck:79:15
+   |
+79 |     let n = t.lines
+   |               ^^^^^ reading a field uses the whole record
+   = help: take it apart with `match` (`One out lines -> …`) and use `out` too
+
+resource_parts.ck: 7 errors, 0 warnings

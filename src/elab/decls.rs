@@ -829,6 +829,15 @@ impl Elab {
                     (Tm::Error, Mult::Many)
                 }
             };
+            // A class function's `own` parameters (D156 i).
+            let key = {
+                let ti = &self.g.tys[tid.0 as usize];
+                format!("{}.{}.{}", ti.module, ti.name, n.name)
+            };
+            let ty = match self.class_own.get(&key) {
+                Some(owns) => own_params(&ty, owns),
+                None => ty,
+            };
             let v = self.eval(&cx, &ty);
             let at = cx.lvl();
             let l = cx.bind(&n.name, v, mult);
@@ -1440,7 +1449,7 @@ impl Elab {
                     // Parameters of a resource type are `own` whether or not it is written (D39).
                     for k in sig.n_implicit..sig.binders.len() {
                         let b = &sig.binders[k];
-                        if b.1 != Mult::Many || !self.type_linear(&b.3) {
+                        if b.1 == Mult::Zero || !self.type_linear(&b.3) {
                             continue;
                         }
                         let name = b.0.to_string();
@@ -1932,4 +1941,17 @@ fn spine(mut t: &Tm) -> (&Tm, Vec<&Tm>) {
     }
     args.reverse();
     (t, args)
+}
+
+/// A class function's field type with its `own` parameters marked: the
+/// explicit parameters after its implicit type parameters, in order.
+fn own_params(t: &Tm, owns: &[bool]) -> Tm {
+    match t {
+        Tm::Pi(x, m, Icit::Impl, a, b) => Tm::Pi(x.clone(), *m, Icit::Impl, a.clone(), Rc::new(own_params(b, owns))),
+        Tm::Pi(x, m, i, a, b) if !owns.is_empty() => {
+            let m = if owns[0] { Mult::One } else { *m };
+            Tm::Pi(x.clone(), m, *i, a.clone(), Rc::new(own_params(b, &owns[1..])))
+        }
+        _ => t.clone(),
+    }
 }

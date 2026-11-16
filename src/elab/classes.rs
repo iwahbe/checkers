@@ -684,6 +684,13 @@ impl Elab {
                         continue;
                     }
                     let rty = rty.unwrap();
+                    let owns: Vec<bool> = params
+                        .iter()
+                        .map(|p| constraints.iter().any(|c| matches!(c, Constraint::Typed { name, mult: ast::Mult::Own, .. } if name.name == p.name)))
+                        .collect();
+                    if owns.contains(&true) {
+                        self.class_own.insert(format!("{}.{}.{}", self.cur, name.name, f.name), owns);
+                    }
                     // Its own type variables make the field polymorphic: an
                     // implicit, erased parameter of type `Type` each (M25).
                     let mut own = Vec::new();
@@ -982,6 +989,7 @@ impl Elab {
         let none = |_: &str, _: Span| None;
         let nq = |_: &str, _: &str, _: Span| None;
         let rw = Rewrite { var: &renamer, con: &none, qualified: &nq };
+        self.inst_heads.insert((self.cur.clone(), ty.span.start));
         let subst_ty = ty.clone();
         let param_c = param.clone();
         let sub = move |n: &str, _s: Span| if n == param_c { Some(subst_ty.clone()) } else { None };

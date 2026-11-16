@@ -1,10 +1,10 @@
-error[E0401]: `f` holds a resource (`File`), so it must be used exactly once, but `closure` may use it more than once
+error[E0401]: `f` holds a resource (`File`), which a closure can't capture
   --> resources_nested.ck:40:12
    |
 40 | fn closure f -> r : f~File, r~Nat
    |            ^
-   = note: `f` is passed to `twice`, whose parameter is not `own`, so `twice` may copy or drop it
-   = help: mark that parameter of `twice` with `own` (as in `x~own a`) so it can take a resource
+   = note: a closure may run any number of times, or never
+   = help: make `f` a parameter of the closure, or use it outside the closure
 
 error[E0401]: `f` holds a resource (`File`), so it must be used exactly once, but `returned` may use it more than once
   --> resources_nested.ck:44:13

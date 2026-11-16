@@ -42,6 +42,8 @@ struct U<'a> {
     /// The function each `own` binder is passed to as a parameter that isn't
     /// `own`, with its module.
     copied_by: std::collections::HashMap<usize, (String, String)>,
+    /// The `own` binders a closure captures.
+    captured: std::collections::BTreeSet<usize>,
 }
 
 type Counts = Vec<Count>;
@@ -59,6 +61,10 @@ impl U<'_> {
 
     fn report(&mut self, lvl: usize, c: Count, mixed: bool) {
         let b = &self.binders[lvl];
+        // A field read or index that would drop part of it was reported (E0406, E0407).
+        if self.e.part_reported.contains(&(self.did, b.name.to_string())) {
+            return;
+        }
         let meta = self.e.fn_meta.get(&self.did).cloned().unwrap_or_default();
         let resource = self.e.resource_vars.get(&(self.did, b.name.clone())).cloned();
         let span = match &resource {
@@ -91,7 +97,8 @@ impl U<'_> {
                         format!("`{name}` holds a resource (`{ty}`), so it must be used exactly once, but `{fname}` may use it more than once"),
                         span,
                     );
-                    match self.copied_by.get(&lvl) {
+                    let closure = self.captured.contains(&lvl) && self.cown_target(lvl).is_none();
+                    match self.copied_by.get(&lvl).filter(|_| !closure) {
                         // A cown can't hold a resource (D156 k).
                         Some((_, module)) if self.cown_target(lvl).is_some() => {
                             let what = self.cown_target(lvl).unwrap_or_default();
@@ -109,6 +116,13 @@ impl U<'_> {
                         Some((callee, _)) => d
                             .with_note(format!("`{name}` is passed to `{callee}`, whose parameter is not `own`, so `{callee}` may copy or drop it"))
                             .with_help(format!("mark that parameter of `{callee}` with `own` (as in `x~own a`) so it can take a resource")),
+                        None if self.captured.contains(&lvl) => Diagnostic::error(
+                            "E0401",
+                            format!("`{name}` holds a resource (`{ty}`), which a closure can't capture"),
+                            span,
+                        )
+                        .with_note("a closure may run any number of times, or never")
+                        .with_help(format!("make `{name}` a parameter of the closure, or use it outside the closure")),
                         None if ty.starts_with("Future ") => {
                             d.with_help("join it once: a future of a resource is one too, joined exactly once (D156)")
                         }
@@ -233,7 +247,13 @@ impl U<'_> {
             }
             Tm::Lam(x, m, _, b) => {
                 // A closure may run any number of times.
-                self.under(x, *m, b).into_iter().map(|c| c.scale(Mult::Many)).collect()
+                let c = self.under(x, *m, b);
+                for (lvl, n) in c.iter().enumerate() {
+                    if *n != Count::Zero && self.binders[lvl].mult == Mult::One {
+                        self.captured.insert(lvl);
+                    }
+                }
+                c.into_iter().map(|c| c.scale(Mult::Many)).collect()
             }
             Tm::Let(x, m, _, v, b) => {
                 // A tuple pattern binds each component (`$c0`, `$c1`, …) by
@@ -477,7 +497,7 @@ fn head_is_con(mut t: &Tm) -> bool {
 
 /// Check the body (a λ over the function's parameters) of `did`.
 pub fn check_fn(e: &mut Elab, did: DefId, body: &Tm) {
-    let mut u = U { e, did, binders: Vec::new(), reported: false, copied_by: Default::default() };
+    let mut u = U { e, did, binders: Vec::new(), reported: false, copied_by: Default::default(), captured: Default::default() };
     let mut t = body;
     let mut n = 0;
     while let Tm::Lam(x, m, _, b) = t {

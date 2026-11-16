@@ -1,0 +1,22 @@
+error[E0201]: type mismatch: expected `File -> String`, found `(f~own File) -> String`
+  --> resource_instance.ck:27:10
+   |
+27 | instance Named File
+   |          ^^^^^ this takes a resource, but `File -> String` doesn't take its parameter as `own`
+   = help: write `own` on that parameter where the type is declared (for a class's function, `x~own a` in the class)
+
+error[E0401]: `f` holds a resource (`File`), so it must be used exactly once, but `Pair File.twice` may use it more than once
+  --> resource_instance.ck:37:14
+   |
+37 |     fn twice f
+   |              ^
+   = help: a resource can't be copied; thread it with `<-` so each use gets the new one
+
+error[E0401]: `f` holds a resource (`File`), so it must be used exactly once, but `Forget File.forget` never uses it
+  --> resource_instance.ck:44:15
+   |
+44 |     fn forget f
+   |               ^
+   = help: close it, or pass it on
+
+resource_instance.ck: 3 errors, 0 warnings

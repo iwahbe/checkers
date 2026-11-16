@@ -67,3 +67,14 @@ fn guarded f : f~File
     match f
         g if ready g -> files.close g
         g -> files.close g
+
+# A closure can't capture a resource: it may run any number of times, or
+# never.
+fn captured f : f~File
+    let close_it = \u -> files.close f
+    ()
+
+# One error for reading a field and then using the record.
+fn then_whole t -> r : t~One, r~One
+    let n = t.lines
+    t

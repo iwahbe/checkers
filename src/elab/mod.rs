@@ -500,6 +500,16 @@ pub struct Elab {
     pub class_defs: HashMap<TyId, classes::ClassDef>,
     /// This module's classes, until their types are registered.
     pub pending_classes: Vec<(String, String, Vec<ast::ClassMember>, Span)>,
+    /// A class function's parameters written `own`, by `module.Class.function`:
+    /// its dictionary field takes them exactly once, so generic code can pass
+    /// it a resource (D156 i).
+    pub class_own: HashMap<String, Vec<bool>>,
+    /// Where an instance's head type stands for its class's parameter, by
+    /// module and span start: an `own` there is the class's, not written.
+    pub inst_heads: HashSet<(String, u32)>,
+    /// Variables a field read or index of was reported for dropping part of
+    /// them (E0406, E0407): the usage check says nothing more about them.
+    pub part_reported: HashSet<(DefId, String)>,
     /// This module's instances, until their dictionary functions are registered.
     pub pending_insts: Vec<classes::PendingInst>,
     /// This module's types and their numbers of parameters, for instances' kinds (M25).
@@ -623,6 +633,9 @@ impl Elab {
             pm: Default::default(),
             class_defs: HashMap::new(),
             pending_classes: Vec::new(),
+            class_own: HashMap::new(),
+            inst_heads: HashSet::new(),
+            part_reported: HashSet::new(),
             pending_insts: Vec::new(),
             local_ty_params: HashMap::new(),
             decl_origin: Vec::new(),
@@ -758,9 +771,45 @@ impl Elab {
         }
     }
 
+    /// `actual`, a function type, with its parameters' `own` dropped where
+    /// `expected` has none, to tell a mismatch only in `own` from others.
+    fn own_as_many(&self, cx: &Cx, expected: &Val, actual: &Val) -> Option<Val> {
+        fn relax(e: &Tm, a: &Tm) -> Option<Tm> {
+            match (e, a) {
+                (Tm::Pi(_, me, ie, _, eb), Tm::Pi(x, ma, ia, da, ab)) if ie == ia => {
+                    let m = if *ma == Mult::One && *me == Mult::Many { Mult::Many } else { *ma };
+                    let b = relax(eb, ab).unwrap_or_else(|| (**ab).clone());
+                    Some(Tm::Pi(x.clone(), m, *ia, da.clone(), Rc::new(b)))
+                }
+                _ => None,
+            }
+        }
+        let (Val::Pi(..), Val::Pi(..)) = (self.force(expected), self.force(actual)) else { return None };
+        let l = cx.lvl();
+        let t = relax(&quote(&self.g, l, expected), &quote(&self.g, l, actual))?;
+        Some(eval(&self.g, &cx.env(), &t))
+    }
+
     /// Unify, reporting a type mismatch on failure. Returns false on failure.
     pub fn unify_at(&mut self, cx: &Cx, expected: &Val, actual: &Val, span: Span, what: &str) -> bool {
-        match unify(&self.g, cx.lvl(), expected, actual) {
+        let r = unify(&self.g, cx.lvl(), expected, actual);
+        // The types differ only in `own`: a function taking a resource where
+        // the type expected doesn't say its parameter is `own` (an instance
+        // of a class whose function doesn't, at a resource type, D156 i).
+        if r.is_err() {
+            if let Some(relaxed) = self.own_as_many(cx, expected, actual) {
+                if unify(&self.g, cx.lvl(), expected, &relaxed).is_ok() {
+                    let (e, a) = (self.show_written(cx, expected), self.show_written(cx, actual));
+                    self.err(
+                        Diagnostic::error("E0201", format!("type mismatch: expected `{e}`, found `{a}`"), span)
+                            .with_label(format!("this takes a resource, but `{e}` doesn't take its parameter as `own`"))
+                            .with_help("write `own` on that parameter where the type is declared (for a class's function, `x~own a` in the class)"),
+                    );
+                    return false;
+                }
+            }
+        }
+        match r {
             Ok(()) => true,
             Err(why) => {
                 // Show computed types (`BadPlaceholder`, not the call that gives
@@ -1187,6 +1236,10 @@ impl Elab {
     /// D45: `own` belongs on generic parameters. On a linear type it is implied
     /// (W010); on a type without type variables it means nothing useful (E0358).
     pub fn check_own(&mut self, cx: &Cx, ty: &Tm, span: Span) {
+        // A class function's `own`, at an instance's type: not written there.
+        if span.start >= SYNTHETIC || self.inst_heads.contains(&(self.cur.clone(), span.start)) {
+            return;
+        }
         if self.type_linear(ty) {
             let tyv = self.eval(cx, ty);
             let shown = self.show_val(cx, &tyv);
@@ -1217,6 +1270,15 @@ impl Elab {
             Tm::Pi(_, _, _, a, b) => self.mentions_type_var(cx, a, under) || self.mentions_type_var(cx, b, under + 1),
             Tm::Meta(m) => self.g.meta(*m).is_none(),
             _ => false,
+        }
+    }
+
+    /// Note that a field read or index of `t` was reported (E0406, E0407).
+    pub fn part_reported_at(&mut self, cx: &Cx, t: &Tm) {
+        if let (Tm::Var(ix), Some(f)) = (t, self.cur_fn) {
+            if let Some(l) = cx.lvl().checked_sub(ix + 1) {
+                self.part_reported.insert((f, cx.locals[l].name.to_string()));
+            }
         }
     }
 

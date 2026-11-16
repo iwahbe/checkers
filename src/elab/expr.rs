@@ -416,6 +416,7 @@ impl Elab {
                 // Indexing uses the whole array: at runtime, it may not drop
                 // the other elements when they are resources (D156, E0407).
                 if self.in_spec == 0 && self.in_proof == 0 && self.val_linear(&elem) {
+                    self.part_reported_at(cx, &at);
                     let shown = self.show_val(cx, &elem);
                     self.err(
                         Diagnostic::error("E0407", format!("indexing would drop the array's other elements, and each is a resource (`{shown}`)"), e.span)
@@ -1868,6 +1869,7 @@ impl Elab {
                         .map(|(_, (f, _))| format!("`{}`", f.0))
                         .collect();
                     if !others.is_empty() {
+                        self.part_reported_at(cx, &xt);
                         let tname = self.g.tys[tid.0 as usize].name.clone();
                         let cname = self.g.cons[cid.0 as usize].name.clone();
                         let all: Vec<String> =
