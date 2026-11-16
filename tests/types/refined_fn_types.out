@@ -14,7 +14,7 @@ error[E0450]: cannot prove `x >= 5`, required to call `f`
    |       ^ `f` requires `x >= 5`
    = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
 
-error[E0450]: cannot prove that `x - 9` is a `(y~Int, y >= 0)` (`y >= 0`)
+error[E0450]: cannot prove that `x - 9` is a `(y~Int, y >= 0)` (`(x - 9) >= 0`)
   --> refined_fn_types.ck:60:18
    |
 60 |     apply (\x -> x - 9) 9                       # error E0450: `y >= 0` of `x - 9`, counterexample x = 5

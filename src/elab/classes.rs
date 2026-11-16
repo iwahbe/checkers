@@ -404,6 +404,7 @@ impl Rewrite<'_> {
                     Stmt::Bind(self.pat(p), e)
                 }
                 Stmt::Have(e) => Stmt::Have(self.expr(e, &b)),
+                Stmt::HaveType(x, t) => Stmt::HaveType(x.clone(), self.expr(t, &b)),
                 Stmt::Expr(e) => Stmt::Expr(self.expr(e, &b)),
                 Stmt::When(w) => Stmt::When(w.clone()),
             });

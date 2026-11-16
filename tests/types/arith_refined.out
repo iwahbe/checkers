@@ -7,7 +7,7 @@ error[E0450]: cannot prove `r == 0`, the postcondition of `h`
   = note: counterexample: xs = [127]
   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
 
-error[E0450]: cannot prove that `x + 1` is a `I8` (`n < 128`)
+error[E0450]: cannot prove that `x + 1` is a `I8` (`(x + 1) < 128`)
   --> arith_refined.ck:17:21
    |
 17 |     list.map (\x -> x + 1) xs

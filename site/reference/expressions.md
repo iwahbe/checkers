@@ -10,6 +10,7 @@ A block is a sequence of lines at one indentation; its last line is its value.
 block ::= { stmt NL } expr NL
 stmt  ::= 'let' pattern '=' ( expr | NL INDENT block DEDENT )
         | 'have' expr
+        | 'have' lname '~' type
         | expr
         | pattern '<-' expr
         | when | fork | join
@@ -30,7 +31,7 @@ A name bound by `let` hides an earlier one of the same name for the rest of the 
 
 **A line that is just an expression** must be a call that returns `Unit`, such as printing a line; its value is thrown away. Any other value on a line of its own is an error (E0215); write `let _ = e` to discard it on purpose.
 
-**`have`** adds a fact for the prover ([Proofs](proofs.md#have)); it has no effect when the program runs. **`<-`** binds the results of an operation on a resource ([Capabilities](effects.md#resources)). **`when`**, **`fork`** and **`join`** schedule concurrent work ([Concurrency](concurrency.md)).
+**`have`** adds a fact for the prover, or states a variable's type ([Proofs](proofs.md#have)); it has no effect when the program runs. **`<-`** binds the results of an operation on a resource ([Capabilities](effects.md#resources)). **`when`**, **`fork`** and **`join`** schedule concurrent work ([Concurrency](concurrency.md)).
 
 ## Names and literals
 
@@ -42,7 +43,7 @@ A function is applied by writing its arguments after it, separated by spaces: `f
 
 Application binds tighter than every operator except a glued `.` and `[` ([Lexical structure](lexical.md#glued-and-spaced-and)): `f x + g y` is `(f x) + (g y)`, and `f p.x` is `f (p.x)`. An argument that is itself an application, an operator expression, an `if`, a `match`, a lambda or a `try` needs parentheses, or `$`.
 
-As in Haskell, `f -1` is a subtraction, `f - 1`; pass a negative number as `f (-1)`.
+`f -1` passes `-1` to `f`: a `-` glued to what follows, with a space before it, is a sign ([Lexical structure](lexical.md#signs)). `f - 1` and `f-1` subtract.
 
 ## Operators
 

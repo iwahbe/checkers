@@ -68,7 +68,7 @@ fn first own n -> r : own~Nat, n~Nat, r~Nat
 | string, `"…"` | `String` | `"hello"`, `"'"`, `"caf\u{e9}"` |
 | bytes, `b"…"` | `Bytes` | `b"null"`, `b"\xff\x00"` |
 
-**Integers** are written in decimal or, after `0x`, in hexadecimal. `_` may appear between digits and means nothing. A literal has no sign: `-1` is negation applied to `1`. There are no floating-point literals or types.
+**Integers** are written in decimal or, after `0x`, in hexadecimal. `_` may appear between digits and means nothing. A literal has no sign: `-1` is a sign applied to `1` ([Signs](#signs)), and in a pattern it matches minus one. There are no floating-point literals or types.
 
 **Bytes** (`'a'`) hold one ASCII character or an escape, and are numbers: `'a' + 1 == 98`. **Characters** (`c'é'`) hold one Unicode scalar value. **Strings** and **bytes literals** end on the line they start; a newline inside one is written `\n`.
 
@@ -99,7 +99,7 @@ check b"\xff"[0] == 255
 
 The lexer takes the longest token it can, so `<-` is always one token: `x<-1` is a binding, not a comparison with `-1`. Write `x < -1`.
 
-## Glued and spaced `.` and `[`
+## Glued and spaced `.`, `[` and `-`
 
 Whether `.` and `[` have a space before them changes what they mean:
 
@@ -126,13 +126,33 @@ check b"abc"[1] == 'b'
 check (Point 1 2).y == 2
 ```
 
+### Signs
+
+A `-` is a **sign** when it has white space, the start of the file, `(`, `[`, `{` or `,` before it, and is glued to what follows. Every other `-` subtracts.
+
+| Written | Meaning |
+|---|---|
+| `-1`, `f -1`, `[1, -2]`, `f -x.y` | a sign: `f` applied to `-1`; `f` applied to `-(x.y)` |
+| `a - b`, `a-b`, a line starting with `- b` | subtraction |
+
+A sign negates the argument it is glued to, so `f -1` passes `-1` to `f`; at the start of an expression it negates what follows, so `-f x` is `-(f x)`. A `-` where nothing it could subtract from comes before it (`2 * - 1`, `(- x)`) negates too.
+
+```checkers
+fn abs x -> y : x~Int, y~Int
+    if x < 0 then -x else x
+
+check abs -3 == 3
+check 3 - -1 == 4
+check [1, -2] == [1, 0 - 2]
+```
+
 ## Layout
 
 The source is divided into **logical lines**. A newline ends a logical line, except when:
 
 1. it is inside `( )`, `[ ]` or `{ }`;
 2. the line's last token is `,` or a binary operator (`+ - * / % ++ :: == != < <= > >= and or implies $`, or `->` inside brackets); or
-3. the next line's first token is a binary operator from that list, `.`, or `:`, and that line is indented further than the logical line's first line.
+3. the next line's first token is a binary operator from that list, `.`, or `:`.
 
 ```checkers
 fn total a b c -> s : a~Int, b~Int, c~Int,
@@ -144,7 +164,17 @@ fn total a b c -> s : a~Int, b~Int, c~Int,
 
 A line that ends in `->`, `=` or `<-` outside brackets does not continue: it opens a block.
 
-So a line starting with `-` at the indentation of the line before it starts a new logical line (a `match` arm `-1 -> …`), but one indented further continues it as a subtraction: the first line of an indented block can't start with a negation. Write `0 - 1`, or put the negation in parentheses, `(-1)`.
+A sign isn't a binary operator, so a line starting with `-1` starts a new logical line: it may be the first line of a block, or a `match` arm. A line starting with `- b` continues the one before.
+
+```checkers
+fn sign x -> s : x~Int, s~Int
+    if x > 0
+        1
+    else if x < 0
+        -1
+    else
+        0
+```
 
 **Blocks.** When a logical line is followed by a more indented line, a block starts; it ends at the first line indented less. A block is part of the construct whose header line opened it: a function's body, the arms of a `match`, a branch of a multi-line `if`, a record's fields. A line may only return to an indentation that an enclosing block used (E0003).
 

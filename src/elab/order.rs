@@ -349,6 +349,8 @@ impl Refs {
                     p.binds(&mut bound);
                 }
                 Stmt::Have(e) | Stmt::Expr(e) => self.expr(e, &bound, false),
+                // `x` is a local: only the type refers to declarations.
+                Stmt::HaveType(_, t) => self.expr(t, &bound, false),
                 Stmt::When(w) => {
                     for (x, e) in &w.binds {
                         self.expr(e, &bound, false);

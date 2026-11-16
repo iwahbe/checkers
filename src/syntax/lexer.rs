@@ -87,6 +87,17 @@ struct RawLexer<'a> {
 }
 
 impl<'a> RawLexer<'a> {
+    /// Is the `-` at `pos` a sign: white space, the line's start, `(`, `[`,
+    /// `{` or `,` before it, and something other than white space or a
+    /// closing bracket after it?
+    fn sign_here(&self) -> bool {
+        let before = if self.pos == 0 { None } else { Some(self.src[self.pos - 1]) };
+        let after = self.src.get(self.pos + 1).copied();
+        let open_before = matches!(before, None | Some(b' ' | b'\t' | b'\n' | b'\r' | b'(' | b'[' | b'{' | b','));
+        let glued_after = !matches!(after, None | Some(b' ' | b'\t' | b'\n' | b'\r' | b')' | b']' | b'}' | b','));
+        open_before && glued_after
+    }
+
     fn peek(&self) -> Option<u8> {
         self.src.get(self.pos).copied()
     }
@@ -223,6 +234,9 @@ impl<'a> RawLexer<'a> {
         } else {
             let t = match c {
                 b'+' => Tok::Op(Op::Add),
+                // A sign when nothing it could subtract from is glued
+                // before it and its operand is glued after it (D169).
+                b'-' if self.sign_here() => Tok::Neg,
                 b'-' => Tok::Op(Op::Sub),
                 b'*' => Tok::Op(Op::Mul),
                 b'/' => Tok::Op(Op::Div),
@@ -561,12 +575,10 @@ fn layout(raws: Vec<Raw>, eof: usize, diags: &mut Vec<Diagnostic>) -> Vec<Token>
         }
         if raw.first_on_line && open.is_empty() {
             let prev = out.last().map(|t| &t.tok);
-            // A keyword that only starts a line never continues one. A line
-            // starting with an operator continues only when it is indented
-            // further than the logical line's first: at that line's own
-            // indentation it starts a new one (a `match` arm `-1 -> …`).
-            let leads = continues_before(&raw.tok) && raw.col > line_col;
-            let cont = have_line && !never_bracketed(&raw.tok) && (prev.is_some_and(continues_after) || leads);
+            // A keyword that only starts a line never continues one. A sign
+            // (`-1`, D169) isn't an operator, so a line starting with one
+            // starts a new logical line.
+            let cont = have_line && !never_bracketed(&raw.tok) && (prev.is_some_and(continues_after) || continues_before(&raw.tok));
             if !cont {
                 if have_line {
                     let at = out.last().unwrap().span.end;

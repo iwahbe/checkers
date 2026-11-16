@@ -1597,18 +1597,25 @@ impl Elab {
         let mut env: Vec<Val> = args.iter().map(|a| eval(&self.g, &prefix, a)).collect();
         // The predicates as written, in this use's names: `n <= hi` of
         // `type Bounded lo hi = n~Int, …` is `b <= 10` for `b~Bounded 0 10`.
-        let mut names: Vec<(String, String)> = Vec::new();
-        let mut body = self.g.defs[d.0 as usize].body.as_ref();
-        for v in &env {
-            let Some(Tm::Lam(x, _, _, b)) = body else { break };
-            names.push((x.to_string(), self.shown_operand(cx, v)));
-            body = Some(b);
-        }
+        let mut names = self.alias_param_names(cx, *d, &env);
         if let Some(x) = self.alias_subject.get(d) {
             names.push((x.to_string(), self.shown_operand(cx, &subject)));
         }
         env.push(subject);
         preds.iter().map(|p| (self.inst_pred(p, env.clone()), rename_words(&p.text, &names), *d)).collect()
+    }
+
+    /// An alias's parameters and how to show the arguments given them, for
+    /// `rename_words`: `[("lo", "0"), ("hi", "10")]` for `Bounded 0 10`.
+    pub fn alias_param_names(&self, cx: &Cx, d: DefId, args: &[Val]) -> Vec<(String, String)> {
+        let mut names = Vec::new();
+        let mut body = self.g.defs[d.0 as usize].body.as_ref();
+        for v in args {
+            let Some(Tm::Lam(x, _, _, b)) = body else { break };
+            names.push((x.to_string(), self.shown_operand(cx, v)));
+            body = Some(b);
+        }
+        names
     }
 
     /// A value as an operand in a predicate's text: parenthesized unless it

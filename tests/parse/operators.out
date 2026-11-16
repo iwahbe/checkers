@@ -7,7 +7,7 @@
 (check (== (:: x (:: y zs)) (:: x (:: y zs))))
 (check (implies (or (and a b) c) d))
 (check (* (neg x) y))
-(check (- f 1))
+(check (f (neg 1)))
 (check (not (< a b)))
 (check (== v.stop (len src)))
 (check (decimal.scan_json src i))

@@ -1,4 +1,4 @@
-error[E0450]: cannot prove that `12` is a `Small` (`n < 10`)
+error[E0450]: cannot prove that `12` is a `Small` (`12 < 10`)
   --> refined_args.ck:12:9
    |
 12 |     [1, 12]                                     # error: 12 < 10
@@ -29,7 +29,7 @@ error[E0450]: cannot prove that `n` is a `Small` (`n < 10`)
    = note: counterexample: n = 10
    = help: make it true first, e.g. with an `if`, or start from a value that is already a `Small`
 
-error[E0450]: cannot prove that `x + 1` is a `Small` (`n < 10`)
+error[E0450]: cannot prove that `x + 1` is a `Small` (`(x + 1) < 10`)
   --> refined_args.ck:24:21
    |
 24 |     list.map (\x -> x + 1) xs                   # error: x + 1 < 10, counterexample x = 9

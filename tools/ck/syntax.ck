@@ -290,12 +290,21 @@ let LINE_KEYWORDS = [b"module", b"import", b"export", b"fn", b"partial", b"enum"
 fn closes st first : st~State, first~Tok
     st.depth > 0 and first.col <= st.open and starts_only first
 
-# A line starting with an operator or `:` continues only when it is
-# indented further than the logical line's first line: at that line's own
-# indentation it starts a new one (a `match` arm `-1 -> …`).
-fn continues st first : st~State, first~Tok
-    let leads = (is_binop first or is_punct first b":") and first.col > st.col
-    not (starts_only first) and (st.depth > 0 or leads or open_ended st)
+# A line starting with an operator or `:` continues the one before; one
+# starting with a sign (`-1`, glued to what follows, D169) doesn't.
+fn continues st toks : st~State, toks~List Tok
+    match toks
+        []            -> False
+        first :: rest ->
+            let leads = (is_binop first or is_punct first b":") and not (is_sign first rest)
+            not (starts_only first) and (st.depth > 0 or leads or open_ended st)
+
+# A `-` glued to the token after it, at the start of a line or after white
+# space or an opening bracket: a sign, not a subtraction (D169).
+export fn is_sign t rest : t~Tok, rest~List Tok
+    match rest
+        n :: _ -> is_punct t b"-" and n.col == t.col + t.wide and not (is_close n or is_punct n b",")
+        []     -> False
 
 # The level of the innermost open block whose column is at most `col`.
 fn level_at stack col -> l : stack~List Nat, col~Nat, l~Nat
@@ -331,7 +340,7 @@ fn place lines st acc -> r : lines~List Line, st~State, acc~List Placed, r~Resul
                             place rest st (Placed role l :: acc)
                 first :: _ ->
                     let st = if closes st first then State st.stack 0 st.last st.col st.open else st
-                    let cont = st.last != None and continues st first
+                    let cont = st.last != None and continues st l.toks
                     let col = if cont then st.col else first.col
                     let depth = depth_after l.toks st.depth
                     let open = if st.depth == 0 and depth > 0 then col else st.open

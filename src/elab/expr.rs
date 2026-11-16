@@ -1252,6 +1252,26 @@ impl Elab {
         cx.assume(v);
     }
 
+    /// `have x~T` (D170): `x`'s type is `T`. Checking `x` against `T` settles
+    /// what is still unknown of its type (a literal's, before it would
+    /// become a `Nat`), and a refinement `T` adds is an obligation, then
+    /// facts.
+    fn have_type(&mut self, cx: &mut Cx, x: &Ident, ty: &Expr) {
+        let t = self.elab_type(cx, ty);
+        let tv = self.eval(cx, &t);
+        let var = Expr { kind: ExprKind::Var(x.name.clone()), span: x.span };
+        let saved = self.post_target.take();
+        let xt = self.check(cx, &var, &tv, false);
+        self.post_target = saved;
+        if matches!(xt, Tm::Error) {
+            return;
+        }
+        let xv = self.eval(cx, &xt);
+        for (fact, _, _) in self.alias_facts(cx, cx.lvl(), &t, xv) {
+            cx.assume(fact);
+        }
+    }
+
     /// `l a b x y` for a lemma `l` of two parameters that concludes a
     /// `forall`: `l a b`, and `[x, y]` (D146). Otherwise `e` and none.
     fn forall_lemma_args<'e>(&self, cx: &Cx, e: &'e Expr) -> (&'e Expr, Vec<&'e Expr>) {
@@ -1461,14 +1481,20 @@ impl Elab {
             }
             _ => {
                 let shown = self.show_written(cx, &ty);
-                self.err(
-                    Diagnostic::error(
-                        "E0205",
-                        format!("too many arguments: this has type `{shown}`, which is not a function"),
-                        a.span,
-                    )
-                    .with_label("extra argument"),
-                );
+                let mut d = Diagnostic::error(
+                    "E0205",
+                    format!("too many arguments: this has type `{shown}`, which is not a function"),
+                    a.span,
+                )
+                .with_label("extra argument");
+                // `x -1`: a `-` glued to what follows is a sign (D169).
+                if let (ExprKind::Neg(n), true) = (&a.kind, self.src_text(a.span).starts_with('-')) {
+                    let operand = self.src_text(n.span);
+                    d = d.with_help(format!(
+                        "`-{operand}` is a negative argument, since its `-` is glued to it; to subtract, put a space after the `-`: `- {operand}`"
+                    ));
+                }
+                self.err(d);
                 (Tm::Error, Val::Error)
             }
         }
@@ -1982,6 +2008,13 @@ impl Elab {
                         self.elab_match(cx, rhs, arms, Some(expected), tail, pat.span).0
                     }
                 }
+            }
+            Stmt::HaveType(x, ty) => {
+                let saved = cx.facts.len();
+                self.have_type(cx, x, ty);
+                let t = self.block_from(cx, rest, result, expected, tail);
+                cx.facts.truncate(saved);
+                t
             }
             Stmt::Have(h) => {
                 let saved = cx.facts.len();

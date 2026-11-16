@@ -263,7 +263,7 @@ impl Linter {
                     self.pat(p);
                     self.expr(e);
                 }
-                Stmt::Have(e) | Stmt::Expr(e) => self.expr(e),
+                Stmt::Have(e) | Stmt::Expr(e) | Stmt::HaveType(_, e) => self.expr(e),
                 Stmt::Bind(p, e) => {
                     self.pat(p);
                     self.expr(e);

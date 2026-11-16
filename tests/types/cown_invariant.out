@@ -7,7 +7,7 @@ error[E0450]: cannot prove `n < 10`, the invariant of a cown holding `Small`
    = note: counterexample: n = 9
    = help: every behaviour on this cown must hand back a `Small`: check the new contents first, e.g. with an `if`
 
-error[E0450]: cannot prove that `12` is a `Small` (`n < 10`)
+error[E0450]: cannot prove that `12` is a `Small` (`12 < 10`)
   --> cown_invariant.ck:30:14
    |
 30 |     cown.new 12 sched

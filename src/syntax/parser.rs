@@ -473,7 +473,7 @@ impl Parser {
             let polarity = if self.at(&Tok::Op(Op::Add)) {
                 self.bump();
                 Some(Polarity::Pos)
-            } else if self.at(&Tok::Op(Op::Sub)) {
+            } else if self.at(&Tok::Op(Op::Sub)) || self.at(&Tok::Neg) {
                 self.bump();
                 Some(Polarity::Neg)
             } else {
@@ -1003,6 +1003,19 @@ impl Parser {
             if self.at_kw(Kw::Have) {
                 let hspan = self.bump().span;
                 self.mark(PlaceKind::Have);
+                if self.at_ident() && *self.peek_at(1) == Tok::Tilde {
+                    // `have x~T` (D170).
+                    let name = self.ident("a name")?;
+                    self.bump(); // ~
+                    self.mark(PlaceKind::Type { start: true, field: false });
+                    self.in_type += 1;
+                    let ty = self.expr();
+                    self.in_type -= 1;
+                    let ty = ty?;
+                    self.end_line()?;
+                    stmts.push(Stmt::HaveType(name, ty));
+                    return Ok(None);
+                }
                 let e = self.expr()?;
                 self.end_line()?;
                 stmts.push(Stmt::Have(e));
@@ -1361,7 +1374,7 @@ impl Parser {
     }
 
     fn unary(&mut self) -> PResult<Expr> {
-        if self.at(&Tok::Op(Op::Sub)) {
+        if self.at(&Tok::Op(Op::Sub)) || self.at(&Tok::Neg) {
             let start = self.bump().span;
             let e = self.app()?;
             let span = start.to(e.span);
@@ -1384,6 +1397,7 @@ impl Parser {
                 | Tok::LBracket
                 | Tok::Error
                 | Tok::Kw(Kw::Par)
+                | Tok::Neg
         )
     }
 
@@ -1398,6 +1412,13 @@ impl Parser {
     }
 
     fn postfix(&mut self) -> PResult<Expr> {
+        // A sign glued to an argument negates it: `f -x` is `f (-x)` (D169).
+        if self.at(&Tok::Neg) {
+            let start = self.bump().span;
+            let e = self.postfix()?;
+            let span = start.to(e.span);
+            return Ok(Expr { kind: ExprKind::Neg(Box::new(e)), span });
+        }
         let mut e = self.atom()?;
         loop {
             let glued = !self.tok().space_before;
@@ -1597,7 +1618,7 @@ impl Parser {
     }
 
     fn starts_apat(&self) -> bool {
-        if *self.peek() == Tok::Op(Op::Sub) {
+        if matches!(self.peek(), Tok::Op(Op::Sub) | Tok::Neg) {
             return matches!(self.peek_at(1), Tok::Int(_));
         }
         matches!(
@@ -1693,7 +1714,7 @@ impl Parser {
                 self.bump();
                 PatKind::Lit(Lit::Bytes(b))
             }
-            Tok::Op(Op::Sub) => {
+            Tok::Op(Op::Sub) | Tok::Neg => {
                 self.bump();
                 match self.peek().clone() {
                     Tok::Int(s) => {

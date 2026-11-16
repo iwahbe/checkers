@@ -66,12 +66,30 @@ Z3 is limited by an amount of work, not by time, so whether an obligation is pro
 
 ```text
 stmt ::= 'have' expr
+       | 'have' lname '~' type
 ```
 
-`have` adds a fact, in a function body or a proof. It has no effect when the program runs.
+`have` takes a constraint and makes it a fact, in a function body or a proof. It has no effect when the program runs.
 
-- **`have e`**, `e` a `Bool`: `e` is an obligation, proved from the facts so far, and then a fact.
+- **`have e`**, `e` a `Bool` (`have n < 19`, `have sorted xs`): `e` is an obligation, proved from the facts so far, and then a fact.
 - **`have l a b`**, `l` a lemma applied to all its arguments (E0454 otherwise): the lemma's preconditions at those arguments are obligations, and its conclusion at them is a fact.
+- **`have x~T`**, `x` a variable in scope: `x` is checked against `T`. What is still unknown of `x`'s type is settled by it, a different type is E0201, and a refinement it adds is an obligation and then facts.
+
+`have x~T` is how a `let`'s type is given. A number literal's type is decided only at the end of its declaration, so a later `have` is in time: here it makes `y - 7` an `Int` subtraction, where a `Nat` one couldn't be proved.
+
+```checkers
+type Percent = n~Nat, n <= 100
+
+fn below x -> r : x~Int, r~Int
+    let y = 5
+    have y~Int
+    y - 7 + x
+
+fn double p -> q : p~Nat, p <= 50, q~Percent
+    let d = p * 2
+    have d~Percent
+    d
+```
 
 `have` is how a proof points Z3 at what it needs: Z3 isn't given every lemma, only those a `have` names.
 

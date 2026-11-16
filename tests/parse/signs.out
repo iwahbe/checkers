@@ -1,0 +1,22 @@
+(module signs)
+(check (- 5 1))
+(check (- 5 1))
+(check (f (neg 1)))
+(check (- f 1))
+(check (* 2 (neg 1)))
+(check (- x (neg 1)))
+(check [1 (neg 2)])
+(check (neg x))
+(check (neg x))
+(check (-))
+(check (neg (f x)))
+(check (f (neg x.y)))
+(check a)
+
+error[E0102]: unexpected indented block
+  --> signs.ck:18:5
+   |
+18 |     -1
+   |     ^
+
+signs.ck: 1 error, 0 warnings

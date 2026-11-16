@@ -1,0 +1,8 @@
+error[E0205]: too many arguments: this has type `Int`, which is not a function
+  --> sign_spacing.ck:30:7
+   |
+30 |     x -1
+   |       ^^ extra argument
+   = help: `-1` is a negative argument, since its `-` is glued to it; to subtract, put a space after the `-`: `- 1`
+
+sign_spacing.ck: 1 error, 0 warnings

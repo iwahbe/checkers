@@ -44,7 +44,17 @@ enum After
     Field                      # a glued `.`
 
 fn is_unary prev t next pattern : prev~After, t~Tok, next~Option Tok, pattern~Bool
-    syntax.is_punct t b"-" and unary_after prev next pattern
+    syntax.is_punct t b"-" and (unary_after prev next pattern or sign_by_spacing prev t next)
+
+# A `-` written as a sign (`f -1`): after white space or an opening
+# bracket, glued to what follows (D169). It stays glued.
+fn sign_by_spacing prev t next : prev~After, t~Tok, next~Option Tok
+    let open_before = match prev
+        Token p -> t.spaced or syntax.is_open p or syntax.is_punct p b","
+        _       -> True
+    match next
+        Some n -> open_before and syntax.is_sign t [n]
+        None   -> False
 
 # A `-` here is a sign: nothing it could subtract from comes before it, or
 # it is in a pattern, before a number (`Num -1 ->`).

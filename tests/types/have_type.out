@@ -1,0 +1,15 @@
+error[E0450]: cannot prove that `p` is a `Percent` (`p <= 100`)
+  --> have_type.ck:26:10
+   |
+26 |     have p~Percent
+   |          ^ this must be a `Percent`
+   = note: counterexample: p = 101
+   = help: make it true first, e.g. with an `if`, or start from a value that is already a `Percent`
+
+error[E0201]: type mismatch: expected `String`, found `Int`
+  --> have_type.ck:30:10
+   |
+30 |     have x~String
+   |          ^ this expression has type `Int`
+
+have_type.ck: 2 errors, 0 warnings

@@ -342,7 +342,8 @@ impl Elab {
             env.push(Val::var(l));
             let goal = self.inst_pred(p, env);
             let kind = ObKind::Weaken { role, value: w.value.clone(), sub: sub_s.clone(), sup: sup_s.clone(), callee: w.callee.clone() };
-            self.oblige(cx, w.span, kind, p.text.clone(), goal, None);
+            let text = rename_words(&p.text, &self.alias_param_names(cx, alias, &args));
+            self.oblige(cx, w.span, kind, text, goal, None);
         }
         cx.pop();
     }
@@ -356,11 +357,18 @@ impl Elab {
         let Some(preds) = self.alias_preds.get(&alias).cloned() else { return };
         let name = self.g.defs[alias.0 as usize].name.to_string();
         let value = self.src_text(span);
+        // The predicates in this use's names: `p <= 100`, not `n <= 100`.
+        let mut names = self.alias_param_names(cx, alias, &args);
+        if let Some(x) = self.alias_subject.get(&alias) {
+            let shown = if value.contains(' ') { format!("({value})") } else { value.clone() };
+            names.push((x.to_string(), shown));
+        }
         for p in &preds {
             let mut env = args.clone();
             env.push(v.clone());
             let goal = self.inst_pred(p, env);
-            self.oblige(cx, span, ObKind::Refined { alias: name.clone(), value: value.clone() }, p.text.clone(), goal, None);
+            let text = rename_words(&p.text, &names);
+            self.oblige(cx, span, ObKind::Refined { alias: name.clone(), value: value.clone() }, text, goal, None);
         }
     }
 

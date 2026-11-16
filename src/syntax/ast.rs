@@ -213,6 +213,8 @@ pub struct Block {
 pub enum Stmt {
     Let(Pattern, Expr),
     Have(Expr),
+    /// `have x~T`: `x` has type `T` (D170)
+    HaveType(Ident, Expr),
     /// A bare expression line that is not the block's last; must be `Unit` (D35)
     Expr(Expr),
     /// `pat <- f a c` (D29)

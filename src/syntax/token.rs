@@ -217,6 +217,10 @@ pub enum Tok {
     Bytes(Vec<u8>),
     Kw(Kw),
     Op(Op),
+    /// A `-` that is a sign: after white space or an opening bracket, and
+    /// glued to what follows (`-1`, `f -x`, D169). Every other `-` is
+    /// `Op::Sub`.
+    Neg,
     LParen,
     RParen,
     LBracket,
@@ -260,6 +264,7 @@ impl fmt::Display for Tok {
             Tok::Comma => write!(f, "`,`"),
             Tok::Colon => write!(f, "`:`"),
             Tok::Tilde => write!(f, "`~`"),
+            Tok::Neg => write!(f, "`-`"),
             Tok::Backslash => write!(f, "`\\`"),
             Tok::Pipe => write!(f, "`|`"),
             Tok::Eq => write!(f, "`=`"),
