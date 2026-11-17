@@ -721,7 +721,7 @@ impl Elab {
         let mut v = crate::core::force_meta(&self.g, v.clone());
         for _ in 0..64 {
             let Val::Neutral(Head::Def(d), _) = &v else { break };
-            if self.alias_preds.contains_key(d) || Some(*d) == self.g.well_known.nat {
+            if self.alias_preds.contains_key(d) {
                 break;
             }
             match crate::core::unfold(&self.g, &v) {
