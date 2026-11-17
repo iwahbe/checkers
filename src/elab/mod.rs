@@ -2290,46 +2290,13 @@ pub(super) fn free_levels_pub(t: &Tm, lvl: usize, depth: usize, out: &mut Vec<us
 /// The levels of the locals `t` mentions; `t` is under `depth` binders of
 /// its own, at level `lvl`.
 fn free_levels(t: &Tm, lvl: usize, depth: usize, out: &mut Vec<usize>) {
-    let go = |x: &Tm, d: usize, out: &mut Vec<usize>| free_levels(x, lvl, d, out);
     match t {
         Tm::Var(i) => {
             if *i >= depth && *i - depth < lvl {
                 out.push(lvl - 1 - (*i - depth));
             }
         }
-        Tm::Pi(_, _, _, a, b) => {
-            go(a, depth, out);
-            go(b, depth + 1, out);
-        }
-        Tm::Lam(_, _, _, b) => go(b, depth + 1, out),
-        Tm::App(a, b, ..) => {
-            go(a, depth, out);
-            go(b, depth, out);
-        }
-        Tm::Proj(b, _, _) | Tm::Field(b, _, _) => go(b, depth, out),
-        Tm::Let(_, _, a, b, c) => {
-            go(a, depth, out);
-            go(b, depth, out);
-            go(c, depth + 1, out);
-        }
-        Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => {
-            for x in v {
-                go(x, depth, out);
-            }
-        }
-        Tm::Case(s, c) => {
-            go(s, depth, out);
-            for (_, n, b) in &c.branches {
-                go(b, depth + n, out);
-            }
-            for (_, b) in &c.lits {
-                go(b, depth, out);
-            }
-            if let Some(d) = &c.default {
-                go(d, depth, out);
-            }
-        }
-        _ => {}
+        _ => t.each_sub(|x, n| free_levels(x, lvl, depth + n, out)),
     }
 }
 
@@ -2372,18 +2339,5 @@ pub fn rename_words(text: &str, names: &[(String, String)]) -> String {
 
 /// Does a term mention a metavariable?
 pub(crate) fn has_meta(t: &Tm) -> bool {
-    match t {
-        Tm::Meta(_) => true,
-        Tm::Pi(_, _, _, a, b) | Tm::App(a, b, ..) => has_meta(a) || has_meta(b),
-        Tm::Lam(_, _, _, b) | Tm::Proj(b, _, _) | Tm::Field(b, _, _) => has_meta(b),
-        Tm::Let(_, _, a, b, c) => has_meta(a) || has_meta(b) || has_meta(c),
-        Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => v.iter().any(has_meta),
-        Tm::Case(s, c) => {
-            has_meta(s)
-                || c.branches.iter().any(|(_, _, b)| has_meta(b))
-                || c.lits.iter().any(|(_, b)| has_meta(b))
-                || c.default.as_ref().is_some_and(has_meta)
-        }
-        _ => false,
-    }
+    matches!(t, Tm::Meta(_)) || t.any_sub(|x, _| has_meta(x))
 }

@@ -921,20 +921,6 @@ impl Elab {
 fn mentions_var(t: &Tm, i: usize) -> bool {
     match t {
         Tm::Var(j) => *j == i,
-        Tm::Pi(_, _, _, a, b) => mentions_var(a, i) || mentions_var(b, i + 1),
-        Tm::Lam(_, _, _, b) => mentions_var(b, i + 1),
-        Tm::App(a, b, ..) => mentions_var(a, i) || mentions_var(b, i),
-        Tm::Proj(b, _, _) | Tm::Field(b, _, _) => mentions_var(b, i),
-        Tm::Let(_, _, a, b, c) => mentions_var(a, i) || mentions_var(b, i) || mentions_var(c, i + 1),
-        Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => {
-            v.iter().any(|x| mentions_var(x, i))
-        }
-        Tm::Case(s, c) => {
-            mentions_var(s, i)
-                || c.branches.iter().any(|(_, n, b)| mentions_var(b, i + n))
-                || c.lits.iter().any(|(_, b)| mentions_var(b, i))
-                || c.default.as_ref().is_some_and(|b| mentions_var(b, i))
-        }
-        _ => false,
+        _ => t.any_sub(|x, n| mentions_var(x, i + n)),
     }
 }

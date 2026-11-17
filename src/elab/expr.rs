@@ -2293,22 +2293,9 @@ fn pvar(n: &str, span: Span) -> ast::Pattern {
 /// Does `t`, a term over `total` binders (de Bruijn indices), mention a
 /// binder at level `from` or later? `depth` counts binders inside `t`.
 fn mentions_level_from(t: &Tm, total: usize, from: usize, depth: usize) -> bool {
-    let rec = |x: &Tm, d: usize| mentions_level_from(x, total, from, d);
     match t {
         Tm::Var(i) => *i >= depth && total + depth - 1 - i >= from,
-        Tm::App(f, a, ..) => rec(f, depth) || rec(a, depth),
-        Tm::Lam(_, _, _, b) => rec(b, depth + 1),
-        Tm::Pi(_, _, _, a, b) => rec(a, depth) || rec(b, depth + 1),
-        Tm::Let(_, _, a, v, b) => rec(a, depth) || rec(v, depth) || rec(b, depth + 1),
-        Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => v.iter().any(|x| rec(x, depth)),
-        Tm::Proj(x, _, _) | Tm::Field(x, _, _) => rec(x, depth),
-        Tm::Case(s, c) => {
-            rec(s, depth)
-                || c.branches.iter().any(|(_, n, b)| rec(b, depth + n))
-                || c.lits.iter().any(|(_, b)| rec(b, depth))
-                || c.default.as_ref().is_some_and(|b| rec(b, depth))
-        }
-        _ => false,
+        _ => t.any_sub(|x, n| mentions_level_from(x, total, from, depth + n)),
     }
 }
 

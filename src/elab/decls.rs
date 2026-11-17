@@ -1933,35 +1933,6 @@ pub fn has_unsolved(g: &Globals, l: usize, v: &Val) -> bool {
     tm(&quote(g, l, v))
 }
 
-/// The definitions a term mentions.
-fn defs_in(t: &Tm, out: &mut Vec<DefId>) {
-    match t {
-        Tm::Def(d) => out.push(*d),
-        Tm::Pi(_, _, _, a, b) | Tm::App(a, b, ..) => {
-            defs_in(a, out);
-            defs_in(b, out);
-        }
-        Tm::Lam(_, _, _, b) | Tm::Proj(b, _, _) | Tm::Field(b, _, _) => defs_in(b, out),
-        Tm::Let(_, _, a, b, c) => {
-            defs_in(a, out);
-            defs_in(b, out);
-            defs_in(c, out);
-        }
-        Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => {
-            v.iter().for_each(|x| defs_in(x, out))
-        }
-        Tm::Case(s, c) => {
-            defs_in(s, out);
-            c.branches.iter().for_each(|(_, _, b)| defs_in(b, out));
-            c.lits.iter().for_each(|(_, b)| defs_in(b, out));
-            if let Some(b) = &c.default {
-                defs_in(b, out);
-            }
-        }
-        _ => {}
-    }
-}
-
 pub(super) fn decl_name(d: &ast::Decl) -> Option<&Ident> {
     match &d.kind {
         DeclKind::Fn { name, .. }
