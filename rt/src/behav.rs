@@ -363,15 +363,15 @@ pub fn start_main(main: W, args: Vec<W>) -> W {
     new_obj(Obj::Future(fut))
 }
 
-#[no_mangle]
-pub extern "C" fn ck_fork(f: W) -> W {
+/// `future.fork sched f` (D171): a behaviour running `f ()`.
+pub(crate) fn ck_fork(f: W) -> W {
     let fut = new_cell(UNSET);
     schedule(Beh::Fork(fut.clone(), dup(f), vec![UNIT]));
     new_obj(Obj::Future(fut))
 }
 
-#[no_mangle]
-pub extern "C" fn ck_join(futs: W, f: W) -> W {
+/// `future.join x sched f` (D171): a behaviour running `f` once `x` is filled.
+pub(crate) fn ck_join(futs: W, f: W) -> W {
     let out = new_cell(UNSET);
     schedule(Beh::Join(cells_of(futs, "futures"), dup(f), out.clone()));
     new_obj(Obj::Future(out))
@@ -379,8 +379,7 @@ pub extern "C" fn ck_join(futs: W, f: W) -> W {
 
 /// `future.both x y`: a future of the pair, filled once both are (borrowed
 /// arguments).
-#[no_mangle]
-pub extern "C" fn ck_both(x: W, y: W) -> W {
+pub(crate) fn ck_both(x: W, y: W) -> W {
     let out = new_cell(UNSET);
     let cells = vec![cells_of(x, "futures").remove(0), cells_of(y, "futures").remove(0)];
     schedule(Beh::Join(cells, ERASED, out.clone()));

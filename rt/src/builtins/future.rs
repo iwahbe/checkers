@@ -13,8 +13,8 @@ pub const TABLE: &[Builtin] = &[
 
 builtin!(ckb_future_ready, |a| new_obj(Obj::Future(new_cell(dup(a[0])))));
 
-// `fork sched f`, `join x sched f`, `both x y` (D171): behaviours, as the
-// runtime's `ck_fork` and `ck_join` run them.
+// `fork sched f`, `join x sched f`, `both x y` (D171): scheduled as
+// behaviours (`behav.rs`).
 builtin!(ckb_future_fork, |a| crate::behav::ck_fork(a[1]));
 builtin!(ckb_future_join, |a| crate::behav::ck_join(a[0], a[2]));
 builtin!(ckb_future_both, |a| crate::behav::ck_both(a[0], a[1]));
