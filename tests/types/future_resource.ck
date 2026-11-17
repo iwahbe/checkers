@@ -24,11 +24,8 @@ partial fn dropped fs sched : fs~Fs, sched~Sched
 partial fn twice fs sched : fs~Fs, sched~Sched
     let a = future.fork sched $ \_ ->
         files.open "a.txt" fs
-    let _ = future.join a sched $ \r ->
-        done r
-    let _ = future.join a sched $ \r ->
-        done r
-    ()
+    done (future.join a)
+    done (future.join a)
 
 fn in_cown f s -> c : f~Future File, s~Sched, c~Cown (Future File)
     cown.new f s
@@ -37,8 +34,7 @@ fn in_cown f s -> c : f~Future File, s~Sched, c~Cown (Future File)
 partial fn once fs sched : fs~Fs, sched~Sched
     let a = future.fork sched $ \_ ->
         files.open "a.txt" fs
-    let _ = future.join a sched $ \r ->
-        done r
+    done (future.join a)
     let _ = future.fork sched $ \_ ->
         1 + 1
     ()

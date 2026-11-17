@@ -1,5 +1,4 @@
-# future.ck — values computed by behaviours: `fork`, `join` and `both`
-# (SPEC §8.6).
+# future.ck — values computed by behaviours: `fork` and `join` (SPEC §8.6).
 module std.future
 
 import std.cown (Sched)
@@ -7,6 +6,23 @@ import std.cown (Sched)
 # A value that a behaviour will produce. Waiting for it (`join`) holds no
 # thread. A future handle can be copied and shared.
 export abstract enum Future +a : a~Type
+
+# A list of types: the values a `join` waits for, one per future (D176).
+export enum Types
+    Last t      : t~Type
+    Then t rest : t~Type, rest~Types
+
+# The futures of the values `ts`: a `Future`, or a tuple of them.
+export transparent fn futures ts -> t : ts~Types, t~Type
+    match ts
+        Last a      -> Future a
+        Then a rest -> (Future a, futures rest)
+
+# The values themselves: one, or a tuple.
+export transparent fn values ts -> t : ts~Types, t~Type
+    match ts
+        Last a      -> a
+        Then a rest -> (a, values rest)
 
 # A future that is already filled.
 export fn ready v -> f : v~own a, f~Future a
@@ -17,14 +33,9 @@ export fn ready v -> f : v~own a, f~Future a
 export fn fork sched f -> r : sched~Sched, f~own (Unit -> a), r~Future a
     __builtin
 
-# Once `x` is filled, runs `f` on its value as a behaviour, and gives the
-# future of the result. The behaviour is scheduled after the one that fills
-# `x`, so it never waits. A future may be joined more than once; one holding
-# a resource, exactly once.
-export fn join x sched f -> r : x~own Future a, sched~Sched, f~own (v~own a -> b), r~Future b
-    __builtin
-
-# The future of both values, filled once `x` and `y` are: for joining
-# several futures, `join (both x y) sched (\(a, b) -> …)`.
-export fn both x y -> r : x~own Future a, y~own Future b, r~Future (a, b)
+# The value of a future, or the values of a tuple of futures, once they are
+# filled: `let (x, y) = join (a, b)`. Until then the behaviour waits,
+# keeping its cowns, and its thread runs others. A future may be joined
+# more than once; one holding a resource, exactly once.
+export fn join x -> v : x~own futures ts, v~values ts
     __builtin

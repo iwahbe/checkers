@@ -1,0 +1,7 @@
+error[E0201]: type mismatch: expected `(Future _, futures _)`, found `(Nat, Nat)`
+  --> join_infer.ck:21:30
+   |
+21 |     let (x, y) = future.join (n, n)
+   |                              ^^^^^^ this expression has type `(Nat, Nat)`
+
+join_infer.ck: 1 error, 0 warnings

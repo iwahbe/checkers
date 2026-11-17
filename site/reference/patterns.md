@@ -25,11 +25,11 @@ apat     ::= '_' | lname | literal | '-' number | Uname
 | `Some x`, `Node l v r` | a constructor, its fields matching the patterns in order | what they bind |
 | `x :: rest` | a non-empty list | its first element and the rest |
 | `[]`, `[a, b]` | a list of exactly that many elements | what they bind |
-| `(a, b)` | a tuple | its components |
+| `(a, b)` | a tuple | its components; the last, the rest of a longer tuple |
 | `Point { x, y = py }` | a record | the fields named; `y = p` matches field `y` against `p` |
 | `p \| q` | what `p` or `q` matches | the same names, from whichever matched |
 
-A constructor pattern names a constructor of the value's type (E0241 if it is another type's, E0244 if no constructor has that name) and gives a pattern for each of its fields (E0242). A tuple pattern has one pattern per component (E0246). Literal patterns match numbers, bytes, characters and strings; a `match` whose arms are literals ends with an arm that matches the rest.
+A constructor pattern names a constructor of the value's type (E0241 if it is another type's, E0244 if no constructor has that name) and gives a pattern for each of its fields (E0242). A tuple pattern has a pattern per component, or fewer, its last matching the rest (`(x, rest)` against `(1, 2, 3)` binds `rest` to `(2, 3)`, [Types](types.md#tuples)); more than the type has is E0246. Literal patterns match numbers, bytes, characters and strings; a `match` whose arms are literals ends with an arm that matches the rest.
 
 ```checkers
 enum Shape

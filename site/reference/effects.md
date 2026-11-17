@@ -120,7 +120,7 @@ A closure (a lambda, or a function applied to some of its arguments) that uses a
 - bound with `let` and called once: the variable is then used exactly once, like a resource;
 - passed to a parameter declared `own` on a function type, `k~own (Unit -> a)`, which promises a single call ([Types](types.md#own)).
 
-Anywhere else (passed to a parameter that isn't `own`, returned, called twice or never) is E0401. The closures given to `future.fork` and `future.join` are one-shot, so work scheduled with them can take a resource along ([Concurrency](concurrency.md#futures)).
+Anywhere else (passed to a parameter that isn't `own`, returned, called twice or never) is E0401. The function given to `future.fork` is one-shot, so work scheduled with it can take a resource along ([Concurrency](concurrency.md#futures)).
 
 ```checkers
 import std.files (File)

@@ -48,6 +48,8 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("ck_apply", 3, true),
     ("ck_when", 2, true),
     ("ck_par", 2, true),
+    ("ck_tuple_flat", 1, true),
+    ("ck_tuple_rest", 2, true),
 ];
 
 fn flags() -> MemFlagsData {
@@ -605,6 +607,7 @@ impl<'p, M: Module> Gen<'p, M> {
                 for (k, v) in vs.iter().enumerate() {
                     b.ins().store(flags(), *v, x, (w::HDR + 8 * k) as i32);
                 }
+                let x = self.flatten_tuple(b, st, x, vs[vs.len() - 1]);
                 Self::finish(b, &mode, x)
             }
             E::Borrow { op, args, drops } => {
@@ -843,12 +846,44 @@ impl<'p, M: Module> Gen<'p, M> {
         r
     }
 
+    /// A tuple just built whose last component is a tuple object is
+    /// flattened (D174): `(a, (b, c))` is `(a, b, c)`.
+    fn flatten_tuple(&mut self, b: &mut FunctionBuilder, st: &mut St, x: Value, last: Value) -> Value {
+        let check = b.create_block();
+        let slow = b.create_block();
+        let done = b.create_block();
+        let r = b.append_block_param(done, I64);
+        // A pointer: a non-zero multiple of 8.
+        let low = b.ins().band_imm_u(last, 7);
+        let aligned = b.ins().icmp_imm_s(IntCC::Equal, low, 0);
+        let nonzero = b.ins().icmp_imm_s(IntCC::NotEqual, last, 0);
+        let ptr = b.ins().band(aligned, nonzero);
+        b.ins().brif(ptr, check, &[], done, &[BlockArg::Value(x)]);
+        b.switch_to_block(check);
+        b.seal_block(check);
+        let info = b.ins().load(I64, flags(), last, 8);
+        let kind = b.ins().band_imm_u(info, 0xff);
+        let is_tuple = b.ins().icmp_imm_s(IntCC::Equal, kind, w::K_TUPLE as i64);
+        b.ins().brif(is_tuple, slow, &[], done, &[BlockArg::Value(x)]);
+        b.switch_to_block(slow);
+        b.seal_block(slow);
+        let f = self.call1(b, st, "ck_tuple_flat", &[x]);
+        b.ins().jump(done, &[BlockArg::Value(f)]);
+        b.switch_to_block(done);
+        b.seal_block(done);
+        r
+    }
+
     fn borrow(&mut self, b: &mut FunctionBuilder, st: &mut St, op: BOp, a: &[Value]) -> Value {
         match op {
             BOp::Field(i) | BOp::Proj(i) => {
                 let x = b.ins().load(I64, flags(), a[0], (w::HDR + 8 * i) as i32);
                 self.dup(b, st, x);
                 x
+            }
+            BOp::ProjRest(i) => {
+                let k = b.ins().iconst(I64, i as i64);
+                self.call1(b, st, "ck_tuple_rest", &[a[0], k])
             }
             BOp::Builtin(sym) => self.call_array(b, st, sym, a),
             BOp::Prim(p, nat) => self.prim(b, st, p, nat, a),

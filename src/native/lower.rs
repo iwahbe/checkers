@@ -89,7 +89,18 @@ impl Static {
         let Some(xs) = fields.iter().map(Static::of).collect::<Option<Vec<_>>>() else { return e };
         E::Static(Arc::new(match e {
             E::Con { con, .. } => Static::Con(con, xs),
-            _ => Static::Tuple(xs),
+            _ => {
+                // `(a, (b, c))` is `(a, b, c)` (D174).
+                let mut xs = xs;
+                if let Some(Static::Tuple(ys)) = xs.last().map(|l| &**l) {
+                    if ys.len() >= 2 {
+                        let ys = ys.clone();
+                        xs.pop();
+                        xs.extend(ys);
+                    }
+                }
+                Static::Tuple(xs)
+            }
         }))
     }
 }
@@ -101,6 +112,8 @@ pub enum BOp {
     Builtin(&'static str),
     Field(usize),
     Proj(usize),
+    /// A tuple's component `i` and the rest after it (D174).
+    ProjRest(usize),
 }
 
 #[derive(Clone)]
@@ -415,9 +428,9 @@ impl Lowerer<'_, '_> {
                 }
                 Static::fold(E::Tuple(xs.iter().map(|x| self.expr(x, ctx, false)).collect()))
             }
-            Ir::Proj(x, i) => {
+            Ir::Proj(x, i, rest) => {
                 let xe = self.expr(x, ctx, false);
-                self.borrow(BOp::Proj(*i), vec![xe])
+                self.borrow(if *rest { BOp::ProjRest(*i) } else { BOp::Proj(*i) }, vec![xe])
             }
             Ir::Field(x, i) => {
                 let xe = self.expr(x, ctx, false);
@@ -575,7 +588,7 @@ fn shift(ir: &Ir, k: usize) -> Ir {
             Ir::Call(h, xs) => Ir::Call(a(h, depth), all(xs, depth)),
             Ir::Let(v, b) => Ir::Let(a(v, depth), a(b, depth + 1)),
             Ir::Tuple(xs) => Ir::Tuple(all(xs, depth)),
-            Ir::Proj(x, i) => Ir::Proj(a(x, depth), *i),
+            Ir::Proj(x, i, r) => Ir::Proj(a(x, depth), *i, *r),
             Ir::Field(x, i) => Ir::Field(a(x, depth), *i),
             Ir::Con(c, xs) => Ir::Con(*c, all(xs, depth)),
             Ir::ConFn(c) => Ir::ConFn(*c),

@@ -23,7 +23,8 @@ pub enum Ir {
     Call(Arc<Ir>, Vec<Arc<Ir>>),
     Let(Arc<Ir>, Arc<Ir>),
     Tuple(Vec<Arc<Ir>>),
-    Proj(Arc<Ir>, usize),
+    /// Component `i`; with the flag, and the rest after it (D174).
+    Proj(Arc<Ir>, usize, bool),
     Field(Arc<Ir>, usize),
     /// Saturated constructor: fields only.
     Con(ConId, Vec<Arc<Ir>>),
@@ -150,7 +151,7 @@ impl Compiler<'_> {
             }
             Tm::Lit(l) => Ir::Lit(lit_value(l)),
             Tm::Tuple(xs) => Ir::Tuple(xs.iter().map(|x| self.compile(x)).collect()),
-            Tm::Proj(x, i) => Ir::Proj(self.compile(x), *i),
+            Tm::Proj(x, i, rest) => Ir::Proj(self.compile(x), *i, *rest),
             Tm::Field(x, _, i) => Ir::Field(self.compile(x), *i),
             Tm::ConApp(c, args) => {
                 let ci = &self.g.cons[c.0 as usize];
@@ -240,7 +241,7 @@ fn max_var(t: &Tm) -> Option<usize> {
         Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => {
             v.iter().map(max_var).fold(None, m)
         }
-        Tm::Proj(x, _) | Tm::Field(x, _, _) => max_var(x),
+        Tm::Proj(x, _, _) | Tm::Field(x, _, _) => max_var(x),
         // Binders shift indices; types under binders are not expected here.
         Tm::Pi(_, _, _, a, b) => m(max_var(a), max_var(b).and_then(|x| x.checked_sub(1))),
         Tm::Lam(_, _, _, b) => max_var(b).and_then(|x| x.checked_sub(1)),
@@ -277,7 +278,7 @@ pub fn globals_in(ir: &Ir, out: &mut Vec<DefId>) {
             globals_in(b, out);
         }
         Ir::Tuple(xs) | Ir::Con(_, xs) | Ir::Prim(_, xs, _) | Ir::Par(xs) => xs.iter().for_each(|x| globals_in(x, out)),
-        Ir::Proj(x, _) | Ir::Field(x, _) => globals_in(x, out),
+        Ir::Proj(x, _, _) | Ir::Field(x, _) => globals_in(x, out),
         Ir::Case(s, c) => {
             globals_in(s, out);
             c.branches.iter().for_each(|(_, _, b)| globals_in(b, out));

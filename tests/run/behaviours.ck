@@ -24,9 +24,11 @@ export fn main args sys -> code : args~List String, sys~System, code~Future Exit
         20
     let b = future.fork sched $ \_ ->
         22
-    let sum = future.join (future.both a b) sched $ \(x, y) ->
+    let sum = future.fork sched $ \_ ->
+        let (x, y) = future.join (a, b)
         x + y
-    let done = future.join sum sched $ \s ->
+    # `main` may give a future of its exit code (D31).
+    future.fork sched $ \_ ->
+        let s = future.join sum
         terminal.print_line ("sum " ++ format s) term
         if s == 42 then Failure 42 else Success
-    done

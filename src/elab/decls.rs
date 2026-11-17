@@ -1900,7 +1900,7 @@ pub fn occurs_var(t: &Tm, idx: usize) -> bool {
         Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => {
             v.iter().any(|a| occurs_var(a, idx))
         }
-        Tm::Proj(a, _) | Tm::Field(a, _, _) => occurs_var(a, idx),
+        Tm::Proj(a, _, _) | Tm::Field(a, _, _) => occurs_var(a, idx),
         Tm::Let(_, _, a, b, c) => occurs_var(a, idx) || occurs_var(b, idx) || occurs_var(c, idx + 1),
         _ => false,
     }
@@ -1926,7 +1926,7 @@ pub fn has_unsolved(g: &Globals, l: usize, v: &Val) -> bool {
             Tm::Lam(_, _, _, b) => tm(b),
             Tm::App(a, b, _, _) => tm(a) || tm(b),
             Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => v.iter().any(tm),
-            Tm::Proj(a, _) | Tm::Field(a, _, _) => tm(a),
+            Tm::Proj(a, _, _) | Tm::Field(a, _, _) => tm(a),
             _ => false,
         }
     }
@@ -1941,7 +1941,7 @@ fn defs_in(t: &Tm, out: &mut Vec<DefId>) {
             defs_in(a, out);
             defs_in(b, out);
         }
-        Tm::Lam(_, _, _, b) | Tm::Proj(b, _) | Tm::Field(b, _, _) => defs_in(b, out),
+        Tm::Lam(_, _, _, b) | Tm::Proj(b, _, _) | Tm::Field(b, _, _) => defs_in(b, out),
         Tm::Let(_, _, a, b, c) => {
             defs_in(a, out);
             defs_in(b, out);

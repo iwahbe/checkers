@@ -344,7 +344,7 @@ fn reindex(t: &Tm, from: usize, to: usize, depth: usize) -> Option<Tm> {
         Tm::PrimApp(p, xs) => Tm::PrimApp(p.clone(), xs.iter().map(|x| go(x, depth)).collect::<Option<_>>()?),
         Tm::ConApp(c, xs) => Tm::ConApp(*c, xs.iter().map(|x| go(x, depth)).collect::<Option<_>>()?),
         Tm::Field(b, c, k) => Tm::Field(Rc::new(go(b, depth)?), *c, *k),
-        Tm::Proj(b, k) => Tm::Proj(Rc::new(go(b, depth)?), *k),
+        Tm::Proj(b, k, r) => Tm::Proj(Rc::new(go(b, depth)?), *k, *r),
         Tm::Def(_) | Tm::Con(_) | Tm::TyCon(_) | Tm::Lit(_) => t.clone(),
         _ => return None,
     })

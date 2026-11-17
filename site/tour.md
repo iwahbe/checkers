@@ -197,7 +197,7 @@ import std.terminal
 
 # A cown owns a value. Behaviours (`when`) that name it run one at a time,
 # in the order they were scheduled, and hand back its new value.
-export fn main args sys -> code : args~List String, sys~System, code~Future ExitCode
+export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { term, sched } = sys
     let hits = cown.new 0 sched
     when n = hits using sched
@@ -209,12 +209,11 @@ export fn main args sys -> code : args~List String, sys~System, code~Future Exit
         20
     let b = future.fork sched $ \_ ->
         22
-    let done = future.join (future.both a b) sched $ \(x, y) ->
-        if x + y == 42 then Success else Failure 1
-    done
+    let (x, y) = future.join (a, b)
+    if x + y == 42 then Success else Failure 1
 ```
 
-A behaviour can name several cowns and gets them all at once, so there are no locks to order and no deadlocks. `future.fork` starts work and gives a future; `future.join` runs a function on a future's value once it is filled, without holding a thread. Waiting for input, a pipe or a child process doesn't hold a thread either. For pure parallelism, `par (f x, g y)` evaluates both at once and, to the prover, is just the pair.
+A behaviour can name several cowns and gets them all at once, so there are no locks to order and no deadlocks. `future.fork` starts work and gives a future; `future.join` gives a future's value, or a tuple of futures' values, once they are filled, without holding a thread. Waiting for input, a pipe or a child process doesn't hold a thread either. For pure parallelism, `par (f x, g y)` evaluates both at once and, to the prover, is just the pair.
 
 ## Modules and packages
 

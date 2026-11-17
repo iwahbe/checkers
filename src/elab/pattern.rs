@@ -462,10 +462,35 @@ impl Elab {
         tail: bool,
     ) -> Tm {
         let PatKind::Tuple(ps) = &pat.kind else { unreachable!() };
-        let n = ps.len();
-        let ty = self.force(&cx.locals[occ].ty);
+        // Rows may take the tuple apart into different numbers of parts:
+        // split at the fewest, the longer patterns' tails as one (`(x, y, z)`
+        // is `(x, (y, z))`, D174).
+        let n = rows
+            .iter()
+            .flat_map(|r| r.pats.iter())
+            .filter_map(|(o, p)| match &p.kind {
+                PatKind::Tuple(qs) if *o == occ && qs.len() >= 2 => Some(qs.len()),
+                _ => None,
+            })
+            .min()
+            .unwrap_or(ps.len());
+        let ty = match self.force(&cx.locals[occ].ty) {
+            Val::TupleTy(ts) => Val::TupleTy(crate::core::flat_parts(&self.g, &ts, true)),
+            t => t,
+        };
         let comps_ty = match ty {
             Val::TupleTy(ts) if ts.len() == n => ts,
+            // A tuple type with fewer parts than the pattern, ending in a
+            // type that isn't a tuple: the pattern has too many parts.
+            Val::TupleTy(ts) if ts.len() < n && !matches!(self.force(&ts[ts.len() - 1]), Val::Neutral(..)) => {
+                let shown = self.show_val(cx, &Val::TupleTy(ts.clone()));
+                self.pat_err(
+                    Diagnostic::error("E0246", format!("this pattern has {n} parts, but `{shown}` has {}", ts.len()), pat.span)
+                        .with_help(format!("take it apart into {} parts, or fewer: the last part is then the rest", ts.len())),
+                );
+                self.pm.bad = true;
+                return Tm::Error;
+            }
             other => {
                 // The occurrence's type can't depend on the occurrence itself.
                 let mut outer = cx.clone();
@@ -483,8 +508,9 @@ impl Elab {
         let start = cx.lvl();
         let mut lets = Vec::new();
         let mut comps = Vec::new();
+        let comps_ty: Vec<Val> = comps_ty.iter().map(|t| self.reduce_type(t)).collect();
         for (i, cty) in comps_ty.into_iter().enumerate() {
-            let tm = Tm::Proj(Rc::new(cx.var(occ)), i);
+            let tm = Tm::Proj(Rc::new(cx.var(occ)), i, i + 1 == n);
             let v = self.eval(cx, &tm);
             let tyt = quote(&self.g, cx.lvl(), &cty);
             let l = cx.define(&format!("$c{i}"), cty, v, Mult::Many);
@@ -496,6 +522,15 @@ impl Elab {
         for mut r in rows {
             if let Some(i) = r.pats.iter().position(|(o, _)| *o == occ) {
                 let (_, p) = r.pats.remove(i);
+                let p = match p.kind {
+                    PatKind::Tuple(mut qs) if qs.len() > n => {
+                        let tail: Vec<Pattern> = qs.split_off(n - 1);
+                        let span = tail[0].span.to(tail[tail.len() - 1].span);
+                        qs.push(Pattern { kind: PatKind::Tuple(tail), span });
+                        Pattern { kind: PatKind::Tuple(qs), span: p.span }
+                    }
+                    _ => p,
+                };
                 match p.kind {
                     PatKind::Tuple(qs) if qs.len() == n => {
                         let mut extra: Vec<(usize, Pattern)> = comps.iter().copied().zip(qs).collect();
@@ -889,7 +924,7 @@ fn mentions_var(t: &Tm, i: usize) -> bool {
         Tm::Pi(_, _, _, a, b) => mentions_var(a, i) || mentions_var(b, i + 1),
         Tm::Lam(_, _, _, b) => mentions_var(b, i + 1),
         Tm::App(a, b, ..) => mentions_var(a, i) || mentions_var(b, i),
-        Tm::Proj(b, _) | Tm::Field(b, _, _) => mentions_var(b, i),
+        Tm::Proj(b, _, _) | Tm::Field(b, _, _) => mentions_var(b, i),
         Tm::Let(_, _, a, b, c) => mentions_var(a, i) || mentions_var(b, i) || mentions_var(c, i + 1),
         Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => {
             v.iter().any(|x| mentions_var(x, i))

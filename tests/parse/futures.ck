@@ -5,8 +5,9 @@ fn f sched xs
     let pair = map2 combine (par (one, two))
     let p = future.fork sched $ \_ ->
         1
-    let q = future.join p sched (\x -> x + 1)
-    let r = future.join (future.both p q) sched $ \(x, y) ->
+    let q = future.join p + 1
+    let (x, y) = future.join (p, q)
+    let r = future.fork sched $ \_ ->
         let z = x + y
         z
     let s = join "," (fork_names xs)
