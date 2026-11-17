@@ -311,7 +311,7 @@ impl U<'_> {
                 // A tuple pattern binds each component (`$c0`, `$c1`, …) by
                 // projecting the tuple: together they use it once, counted
                 // at the first.
-                let rest_of_tuple = x.starts_with("$c") && matches!(&**v, Tm::Proj(t, i) if *i > 0 && matches!(**t, Tm::Var(_)));
+                let rest_of_tuple = x.starts_with("$c") && matches!(&**v, Tm::Proj(t, i, _) if *i > 0 && matches!(**t, Tm::Var(_)));
                 let scale = if *m == Mult::Zero || rest_of_tuple { Mult::Zero } else { Mult::One };
                 // A closure that uses a resource, bound by `let`: the
                 // variable is used once instead (D171).
@@ -366,7 +366,7 @@ impl U<'_> {
                 }
                 c
             }
-            Tm::Proj(x, _) | Tm::Field(x, _, _) => self.go(x),
+            Tm::Proj(x, _, _) | Tm::Field(x, _, _) => self.go(x),
             Tm::Case(s, c) => {
                 let mut cs = self.go(s);
                 let scrut = match &**s {
@@ -411,7 +411,7 @@ impl U<'_> {
             }
             Tm::Var(_) | Tm::Lit(_) | Tm::Def(_) | Tm::Con(_) | Tm::Univ(_) | Tm::TyCon(_) | Tm::Error => {}
             Tm::Tuple(v) | Tm::ConApp(_, v) => v.iter().for_each(|x| self.carried_into(x, depth, out)),
-            Tm::Proj(x, _) | Tm::Field(x, _, _) => self.carried_into(x, depth, out),
+            Tm::Proj(x, _, _) | Tm::Field(x, _, _) => self.carried_into(x, depth, out),
             Tm::Let(_, _, _, v, b) => {
                 self.carried_into(v, depth, out);
                 self.carried_into(b, depth + 1, out);

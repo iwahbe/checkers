@@ -176,12 +176,15 @@ impl<'g> Stager<'g> {
                 let t = Tm::ConApp(*c, out);
                 if all { R::S(t) } else { R::D(t) }
             }
-            Tm::Proj(x, i) => match self.pe(x, env, lvl)? {
+            Tm::Proj(x, i, rest) => match self.pe(x, env, lvl)? {
                 R::S(s) => match self.whnf(&s) {
-                    Some(Tm::Tuple(xs)) => R::S(xs[*i].clone()),
-                    _ => R::S(Tm::Proj(Rc::new(s), *i)),
+                    Some(Tm::Tuple(xs)) => {
+                        let xs = flat_tuple(xs);
+                        R::S(if *rest && xs.len() > i + 1 { Tm::Tuple(xs[*i..].to_vec()) } else { xs[*i].clone() })
+                    }
+                    _ => R::S(Tm::Proj(Rc::new(s), *i, *rest)),
                 },
-                R::D(d) => R::D(Tm::Proj(Rc::new(d), *i)),
+                R::D(d) => R::D(Tm::Proj(Rc::new(d), *i, *rest)),
             },
             Tm::Field(x, c, i) => match self.pe(x, env, lvl)? {
                 R::S(s) => match self.whnf(&s) {
@@ -612,7 +615,7 @@ fn resid(t: &Tm, env: &[Ent], lvl: usize, depth: usize) -> Tm {
         Tm::TyConApp(c, v) => Tm::TyConApp(*c, v.iter().map(|x| go(x, depth)).collect()),
         Tm::ConApp(c, v) => Tm::ConApp(*c, v.iter().map(|x| go(x, depth)).collect()),
         Tm::PrimApp(p, v) => Tm::PrimApp(p.clone(), v.iter().map(|x| go(x, depth)).collect()),
-        Tm::Proj(x, i) => Tm::Proj(Rc::new(go(x, depth)), *i),
+        Tm::Proj(x, i, r) => Tm::Proj(Rc::new(go(x, depth)), *i, *r),
         Tm::Field(x, c, i) => Tm::Field(Rc::new(go(x, depth)), *c, *i),
         Tm::Case(s, c) => Tm::Case(
             Rc::new(go(s, depth)),
@@ -645,7 +648,7 @@ pub(crate) fn shift(t: &Tm, by: usize, cut: usize) -> Tm {
         Tm::TyConApp(c, v) => Tm::TyConApp(*c, v.iter().map(|x| go(x, cut)).collect()),
         Tm::ConApp(c, v) => Tm::ConApp(*c, v.iter().map(|x| go(x, cut)).collect()),
         Tm::PrimApp(p, v) => Tm::PrimApp(p.clone(), v.iter().map(|x| go(x, cut)).collect()),
-        Tm::Proj(x, i) => Tm::Proj(Rc::new(go(x, cut)), *i),
+        Tm::Proj(x, i, r) => Tm::Proj(Rc::new(go(x, cut)), *i, *r),
         Tm::Field(x, c, i) => Tm::Field(Rc::new(go(x, cut)), *c, *i),
         Tm::Case(s, c) => Tm::Case(
             Rc::new(go(s, cut)),
@@ -670,7 +673,7 @@ fn closed(t: &Tm, depth: usize) -> bool {
         Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => {
             v.iter().all(|a| closed(a, depth))
         }
-        Tm::Proj(a, _) | Tm::Field(a, _, _) => closed(a, depth),
+        Tm::Proj(a, _, _) | Tm::Field(a, _, _) => closed(a, depth),
         Tm::Case(s, c) => {
             closed(s, depth)
                 && c.branches.iter().all(|(_, n, b)| closed(b, depth + n))
@@ -688,7 +691,7 @@ fn defs_in(t: &Tm, out: &mut Vec<DefId>) {
             defs_in(a, out);
             defs_in(b, out);
         }
-        Tm::Lam(_, _, _, b) | Tm::Proj(b, _) | Tm::Field(b, _, _) => defs_in(b, out),
+        Tm::Lam(_, _, _, b) | Tm::Proj(b, _, _) | Tm::Field(b, _, _) => defs_in(b, out),
         Tm::Let(_, _, a, b, c) => {
             defs_in(a, out);
             defs_in(b, out);
@@ -833,7 +836,7 @@ fn defs_to_vars(t: &Tm, base: usize, n: usize, depth: usize) -> Tm {
         Tm::TyConApp(c, v) => Tm::TyConApp(*c, v.iter().map(|x| go(x, depth)).collect()),
         Tm::ConApp(c, v) => Tm::ConApp(*c, v.iter().map(|x| go(x, depth)).collect()),
         Tm::PrimApp(p, v) => Tm::PrimApp(p.clone(), v.iter().map(|x| go(x, depth)).collect()),
-        Tm::Proj(x, i) => Tm::Proj(Rc::new(go(x, depth)), *i),
+        Tm::Proj(x, i, r) => Tm::Proj(Rc::new(go(x, depth)), *i, *r),
         Tm::Field(x, c, i) => Tm::Field(Rc::new(go(x, depth)), *c, *i),
         Tm::Case(s, c) => Tm::Case(
             Rc::new(go(s, depth)),
@@ -845,4 +848,20 @@ fn defs_to_vars(t: &Tm, base: usize, n: usize, depth: usize) -> Tm {
         ),
         _ => t.clone(),
     }
+}
+
+/// A static tuple's components, flattened: a last component that is a tuple
+/// of two or more is its components (D174).
+fn flat_tuple(mut xs: Vec<Tm>) -> Vec<Tm> {
+    while xs.len() >= 2 {
+        match xs.last() {
+            Some(Tm::Tuple(ys)) if ys.len() >= 2 => {
+                let ys = ys.clone();
+                xs.pop();
+                xs.extend(ys);
+            }
+            _ => break,
+        }
+    }
+    xs
 }

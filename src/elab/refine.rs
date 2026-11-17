@@ -213,7 +213,7 @@ impl Elab {
                     && s1.len() == s2.len()
                     && s1.iter().zip(s2.iter()).all(|(e1, e2)| match (e1, e2) {
                         (Elim::App(x, i), Elim::App(y, j)) => i == j && self.same_type(x, y),
-                        (Elim::Proj(i), Elim::Proj(j)) => i == j,
+                        (Elim::Proj(i, a), Elim::Proj(j, b)) => i == j && a == b,
                         (Elim::Field(c, i), Elim::Field(d, j)) => c == d && i == j,
                         _ => false,
                     })

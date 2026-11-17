@@ -321,3 +321,34 @@ pub fn show_bytes(b: &[u8]) -> String {
     s.push('"');
     s
 }
+
+// ── tuples (D174) ────────────────────────────────────────────────────────────
+
+/// A tuple just built whose last component is a tuple: one flat tuple, as
+/// `(a, (b, c))` is `(a, b, c)`. Consumes `t`.
+#[no_mangle]
+pub extern "C" fn ck_tuple_flat(t: W) -> W {
+    let n = nfields(t);
+    let last = slot(t, n - 1);
+    if n < 2 || !is_kind(last, K_TUPLE) {
+        return t;
+    }
+    // A tuple that exists is flat already, so one level is enough.
+    let mut items: Vec<W> = (0..n - 1).map(|i| dup(slot(t, i))).collect();
+    items.extend((0..nfields(last)).map(|i| dup(slot(last, i))));
+    drop_w(t);
+    new_tuple(&items)
+}
+
+/// Component `i` of a tuple and everything after it: the component, if it is
+/// the last, else a tuple of the rest (a pattern's last component, D174).
+/// Borrows `t`; the result is owned.
+#[no_mangle]
+pub extern "C" fn ck_tuple_rest(t: W, i: W) -> W {
+    let (n, i) = (nfields(t), i as usize);
+    if n == i + 1 {
+        return dup(slot(t, i));
+    }
+    let items: Vec<W> = (i..n).map(|k| dup(slot(t, k))).collect();
+    new_tuple(&items)
+}

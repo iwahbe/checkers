@@ -53,6 +53,8 @@ pub fn symbols() -> Vec<(&'static str, *const u8)> {
         ("ck_apply", apply::ck_apply as *const u8),
         ("ck_when", behav::ck_when as *const u8),
         ("ck_par", behav::ck_par as *const u8),
+        ("ck_tuple_flat", ops::ck_tuple_flat as *const u8),
+        ("ck_tuple_rest", ops::ck_tuple_rest as *const u8),
         ("ck_aot_main", entry::ck_aot_main as *const u8),
     ];
     v.extend(builtins::addresses());

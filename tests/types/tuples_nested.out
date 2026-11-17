@@ -1,0 +1,8 @@
+error[E0246]: this pattern has 3 parts, but `(Int, Int)` has 2
+  --> tuples_nested.ck:34:9
+   |
+34 |     let (a, b, c) = p
+   |         ^^^^^^^^^
+   = help: take it apart into 2 parts, or fewer: the last part is then the rest
+
+tuples_nested.ck: 1 error, 0 warnings

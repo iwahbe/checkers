@@ -43,11 +43,10 @@ fn merge l r -> out : l~List Int, r~List Int, sorted l, sorted r,
             if x <= y then x :: merge xs r else y :: merge l ys
 
 # ── Effectful parallelism ────────────────────────────────────────────────────
-# Both reads are forked and the join is scheduled straight away; it runs once
-# both reads are done. Nothing waits. `main` returns the join's future, and the
-# process exits with its value when all work has finished.
+# Both reads are forked and run in parallel; `join` gives their results once
+# both are done. Meanwhile `main` waits without holding a thread.
 
-export fn main args sys -> code : args~List String, sys~System, code~Future ExitCode
+export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { fs, term, sched } = sys
     match args
         [p1, p2] ->
@@ -55,12 +54,11 @@ export fn main args sys -> code : args~List String, sys~System, code~Future Exit
                 files.read p1 fs
             let b = future.fork sched $ \_ ->
                 files.read p2 fs
-            let done = future.join (future.both a b) sched $ \(x, y) ->
-                compare_files p1 x p2 y term
-            done
+            let (x, y) = future.join (a, b)
+            compare_files p1 x p2 y term
         _        ->
             terminal.eprint_line "usage: parallel FILE1 FILE2" term
-            future.ready (Failure 2)
+            Failure 2
 
 fn compare_files p1 r1 p2 r2 term -> code : p1~String, r1~Result Bytes IoError,
                                             p2~String, r2~Result Bytes IoError,

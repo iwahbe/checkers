@@ -101,7 +101,10 @@ pub enum Tm {
     Lit(Lit),
     TupleTy(Vec<Tm>),
     Tuple(Vec<Tm>),
-    Proj(Rc<Tm>, usize),
+    /// Component `i` of a tuple. With `rest` (the last component a pattern
+    /// names), the components from `i` on: `(a, b, c)` is `(a, (b, c))`, so
+    /// `(x, r)` binds `r` to `(b, c)` (D174).
+    Proj(Rc<Tm>, usize, bool),
     /// Record projection: field `index` (counting fields only, not type parameters).
     Field(Rc<Tm>, ConId, usize),
     TyConApp(TyId, Vec<Tm>),
@@ -141,7 +144,7 @@ pub enum Head {
 #[derive(Clone, Debug)]
 pub enum Elim {
     App(Val, Icit),
-    Proj(usize),
+    Proj(usize, bool),
     Field(ConId, usize),
     Case(Rc<CaseTm>, Env),
 }
@@ -382,7 +385,7 @@ pub fn eval(g: &Globals, env: &Env, t: &Tm) -> Val {
         Tm::Lit(l) => Val::Lit(l.clone()),
         Tm::TupleTy(ts) => Val::TupleTy(ts.iter().map(|t| eval(g, env, t)).collect()),
         Tm::Tuple(ts) => Val::Tuple(ts.iter().map(|t| eval(g, env, t)).collect()),
-        Tm::Proj(t, i) => proj(g, eval(g, env, t), *i),
+        Tm::Proj(t, i, rest) => proj(g, eval(g, env, t), *i, *rest),
         Tm::Field(t, c, i) => field(g, eval(g, env, t), *c, *i),
         Tm::TyConApp(t, args) => Val::TyCon(*t, args.iter().map(|a| eval(g, env, a)).collect()),
         Tm::ConApp(c, args) => Val::Con(*c, args.iter().map(|a| eval(g, env, a)).collect()),
@@ -539,7 +542,7 @@ fn with_elim(h: Head, sp: &Rc<Vec<Elim>>, e: Elim) -> Val {
 pub fn elim(g: &Globals, v: Val, e: Elim) -> Val {
     match e {
         Elim::App(a, i) => app(g, v, a, i),
-        Elim::Proj(i) => proj(g, v, i),
+        Elim::Proj(i, rest) => proj(g, v, i, rest),
         Elim::Field(c, i) => field(g, v, c, i),
         Elim::Case(c, env) => case(g, v, c, env),
     }
@@ -561,11 +564,33 @@ fn stuck_base(g: &Globals, orig: Val, forced: Val) -> Val {
     }
 }
 
-fn proj(g: &Globals, v: Val, i: usize) -> Val {
+/// A tuple's components, flattened: a last component that is itself a tuple
+/// (of two or more) is its components (D174). `ty`: of a tuple type.
+pub fn flat_parts(g: &Globals, vs: &[Val], ty: bool) -> Vec<Val> {
+    let mut vs = vs.to_vec();
+    while vs.len() >= 2 {
+        match (ty, force(g, vs[vs.len() - 1].clone())) {
+            (true, Val::TupleTy(ws)) | (false, Val::Tuple(ws)) if ws.len() >= 2 => {
+                vs.pop();
+                vs.extend(ws);
+            }
+            _ => break,
+        }
+    }
+    vs
+}
+
+fn proj(g: &Globals, v: Val, i: usize, rest: bool) -> Val {
     match force(g, v.clone()) {
-        Val::Tuple(vs) => vs.get(i).cloned().unwrap_or(Val::Error),
+        Val::Tuple(vs) => {
+            let vs = flat_parts(g, &vs, false);
+            match vs.len() {
+                n if rest && n > i + 1 => Val::Tuple(vs[i..].to_vec()),
+                _ => vs.get(i).cloned().unwrap_or(Val::Error),
+            }
+        }
         f @ Val::Neutral(..) => match stuck_base(g, v, f) {
-            Val::Neutral(h, sp) => with_elim(h, &sp, Elim::Proj(i)),
+            Val::Neutral(h, sp) => with_elim(h, &sp, Elim::Proj(i, rest)),
             _ => Val::Error,
         },
         _ => Val::Error,
@@ -646,6 +671,10 @@ fn val_eq(g: &Globals, a: &Val, b: &Val) -> Option<bool> {
             Some(true)
         }
         (Val::Tuple(x), Val::Tuple(y)) => {
+            let (x, y) = (flat_parts(g, &x, false), flat_parts(g, &y, false));
+            if x.len() != y.len() {
+                return None;
+            }
             for (a, b) in x.iter().zip(&y) {
                 match val_eq(g, a, b) {
                     Some(true) => {}
@@ -730,7 +759,7 @@ pub fn quote(g: &Globals, l: usize, v: &Val) -> Tm {
             for e in sp.iter() {
                 t = match e {
                     Elim::App(a, i) => Tm::App(Rc::new(t), Rc::new(quote(g, l, a)), *i, Mult::Many),
-                    Elim::Proj(i) => Tm::Proj(Rc::new(t), *i),
+                    Elim::Proj(i, r) => Tm::Proj(Rc::new(t), *i, *r),
                     Elim::Field(c, i) => Tm::Field(Rc::new(t), *c, *i),
                     Elim::Case(c, env) => Tm::Case(Rc::new(t), quote_case(g, l, c, env)),
                 };
@@ -839,7 +868,7 @@ fn rename(g: &Globals, m: MetaId, p: &PartialRenaming, v: &Val) -> Result<Tm, Un
         for e in sp.iter() {
             t = match e {
                 Elim::App(a, i) => Tm::App(Rc::new(t), Rc::new(rename(g, m, p, a)?), *i, Mult::Many),
-                Elim::Proj(i) => Tm::Proj(Rc::new(t), *i),
+                Elim::Proj(i, r) => Tm::Proj(Rc::new(t), *i, *r),
                 Elim::Field(c, i) => Tm::Field(Rc::new(t), *c, *i),
                 Elim::Case(c, env) => Tm::Case(Rc::new(t), rename_case(g, m, p, c, env)?),
             };
@@ -983,7 +1012,7 @@ fn unify_sp(g: &Globals, l: usize, a: &[Elim], b: &[Elim]) -> Result<(), UnifyEr
     for (x, y) in a.iter().zip(b) {
         match (x, y) {
             (Elim::App(u, _), Elim::App(v, _)) => unify(g, l, u, v)?,
-            (Elim::Proj(i), Elim::Proj(j)) if i == j => {}
+            (Elim::Proj(i, a), Elim::Proj(j, b)) if i == j && a == b => {}
             (Elim::Field(c1, i), Elim::Field(c2, j)) if c1 == c2 && i == j => {}
             (Elim::Case(c1, e1), Elim::Case(c2, e2)) => {
                 let q1 = quote_case(g, l, c1, e1);
@@ -1011,6 +1040,25 @@ fn unify_many(g: &Globals, l: usize, a: &[Val], b: &[Val]) -> Result<(), UnifyEr
         unify(g, l, x, y)?;
     }
     Ok(())
+}
+
+/// Two tuples (or tuple types), flattened (D174). Of different lengths, the
+/// shorter's last component is the rest of the longer: `(a, t)` and
+/// `(A, B, C)` give `a = A`, `t = (B, C)`.
+fn unify_tuple(g: &Globals, l: usize, x: &[Val], y: &[Val], ty: bool) -> Result<(), UnifyError> {
+    let (x, y) = (flat_parts(g, x, ty), flat_parts(g, y, ty));
+    let (short, long, flip) = if x.len() <= y.len() { (&x, &y, false) } else { (&y, &x, true) };
+    if short.len() == long.len() {
+        return unify_many(g, l, &x, &y);
+    }
+    if short.len() < 2 {
+        return Err(UnifyError::Mismatch);
+    }
+    let k = short.len() - 1;
+    let rest = if ty { Val::TupleTy(long[k..].to_vec()) } else { Val::Tuple(long[k..].to_vec()) };
+    let mut long2 = long[..k].to_vec();
+    long2.push(rest);
+    if flip { unify_many(g, l, &long2, short) } else { unify_many(g, l, short, &long2) }
 }
 
 pub fn unify(g: &Globals, l: usize, a: &Val, b: &Val) -> Result<(), UnifyError> {
@@ -1053,8 +1101,8 @@ fn unify_whnf(g: &Globals, l: usize, a: &Val, b: &Val) -> Result<(), UnifyError>
         (Val::TyCon(t1, a1), Val::TyCon(t2, a2)) if t1 == t2 => unify_many(g, l, a1, a2),
         (Val::Con(c1, a1), Val::Con(c2, a2)) if c1 == c2 => unify_many(g, l, a1, a2),
         (Val::Lit(x), Val::Lit(y)) if x == y => Ok(()),
-        (Val::TupleTy(x), Val::TupleTy(y)) => unify_many(g, l, x, y),
-        (Val::Tuple(x), Val::Tuple(y)) => unify_many(g, l, x, y),
+        (Val::TupleTy(x), Val::TupleTy(y)) => unify_tuple(g, l, x, y, true),
+        (Val::Tuple(x), Val::Tuple(y)) => unify_tuple(g, l, x, y, false),
         (Val::Neutral(Head::Meta(m1), s1), Val::Neutral(Head::Meta(m2), s2)) if m1 == m2 => unify_sp(g, l, s1, s2),
         (Val::Neutral(Head::Meta(m1), s1), Val::Neutral(Head::Meta(m2), s2)) => {
             // Solve the meta with the larger scope first; fall back to the other.
@@ -1065,7 +1113,9 @@ fn unify_whnf(g: &Globals, l: usize, a: &Val, b: &Val) -> Result<(), UnifyError>
             }
         }
         (Val::Neutral(Head::Meta(m), sp), other) | (other, Val::Neutral(Head::Meta(m), sp)) => {
-            solve(g, l, *m, sp, other).or_else(|e| first_order(g, l, *m, sp, other).unwrap_or(Err(e)))
+            solve(g, l, *m, sp, other)
+                .or_else(|e| first_order(g, l, *m, sp, other).unwrap_or(Err(e)))
+                .or_else(|e| invert_case(g, l, *m, sp, other).unwrap_or(Err(e)))
         }
         (Val::Neutral(Head::Var(x), s1), Val::Neutral(Head::Var(y), s2)) if x == y => unify_sp(g, l, s1, s2),
         (Val::Neutral(Head::Def(x), s1), Val::Neutral(Head::Def(y), s2)) if x == y => unify_sp(g, l, s1, s2),
@@ -1208,7 +1258,7 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
         Tm::TupleTy(ts) | Tm::Tuple(ts) => {
             format!("({})", ts.iter().map(|x| show_prec(g, ns, x, 0)).collect::<Vec<_>>().join(", "))
         }
-        Tm::Proj(x, i) => format!("{}.{i}", show_prec(g, ns, x, 2)),
+        Tm::Proj(x, i, _) => format!("{}.{i}", show_prec(g, ns, x, 2)),
         Tm::Field(x, c, i) => {
             let f = &g.cons[c.0 as usize].fields[*i].0;
             format!("{}.{f}", show_prec(g, ns, x, 2))
@@ -1340,7 +1390,7 @@ pub fn free_vars(t: &Tm, depth: usize, out: &mut std::collections::BTreeSet<usiz
                 go(x, depth);
             }
         }
-        Tm::Proj(x, _) | Tm::Field(x, _, _) => go(x, depth),
+        Tm::Proj(x, _, _) | Tm::Field(x, _, _) => go(x, depth),
         Tm::Case(s, c) => {
             go(s, depth);
             for (_, n, b) in &c.branches {
@@ -1374,7 +1424,7 @@ pub fn rename_free(t: &Tm, depth: usize, f: &dyn Fn(usize) -> usize) -> Tm {
         Tm::ConApp(c, v) => Tm::ConApp(*c, all(v)),
         Tm::Tuple(v) => Tm::Tuple(all(v)),
         Tm::PrimApp(p, v) => Tm::PrimApp(p.clone(), all(v)),
-        Tm::Proj(x, i) => Tm::Proj(rc(x, depth), *i),
+        Tm::Proj(x, i, r) => Tm::Proj(rc(x, depth), *i, *r),
         Tm::Field(x, c, i) => Tm::Field(rc(x, depth), *c, *i),
         Tm::Case(s, c) => Tm::Case(
             rc(s, depth),
@@ -1448,7 +1498,7 @@ pub fn zonk_metas(g: &Globals, l: usize, t: &Tm) -> Tm {
             Tm::TupleTy(v) => many(v).map(Tm::TupleTy),
             Tm::Tuple(v) => many(v).map(Tm::Tuple),
             Tm::PrimApp(p, v) => many(v).map(|v| Tm::PrimApp(p.clone(), v)),
-            Tm::Proj(x, i) => rc(x, 0).map(|nx| Tm::Proj(nx, *i)),
+            Tm::Proj(x, i, r) => rc(x, 0).map(|nx| Tm::Proj(nx, *i, *r)),
             Tm::Field(x, c, i) => rc(x, 0).map(|nx| Tm::Field(nx, *c, *i)),
             Tm::Case(sc, c) => {
                 let ns = rc(sc, 0);
@@ -1504,6 +1554,64 @@ fn fix_mults(g: &Globals, t: &Tm) -> Tm {
 /// that isn't a bound variable, M25): solve the heads and the arguments
 /// apart, as Haskell does for type constructors. `t a` is a variable or a
 /// type constructor applied to arguments.
+/// The head of a value, for inverting a function by it (D175).
+#[derive(PartialEq)]
+enum RigidHead {
+    TyCon(TyId),
+    Con(ConId),
+    Tuple,
+    Pi,
+    Univ(u32),
+}
+
+fn rigid_head(v: &Val) -> Option<RigidHead> {
+    Some(match v {
+        Val::TyCon(t, _) => RigidHead::TyCon(*t),
+        Val::Con(c, _) => RigidHead::Con(*c),
+        Val::TupleTy(ts) | Val::Tuple(ts) if ts.len() >= 2 => RigidHead::Tuple,
+        Val::Pi(..) => RigidHead::Pi,
+        Val::Univ(u) => RigidHead::Univ(*u),
+        _ => return None,
+    })
+}
+
+/// D175: a `match` stuck on an unknown (`futures ?ts`, unfolded) must equal a
+/// value with a rigid head (`(Future Nat, Future String)`). If every arm of
+/// the `match` gives a different rigid head ("constructor-headed", as in
+/// Agda), the arm with the value's head is the only one that can: the
+/// unknown is that arm's constructor, its fields fresh unknowns.
+fn invert_case(g: &Globals, l: usize, m: MetaId, sp: &[Elim], other: &Val) -> Option<Result<(), UnifyError>> {
+    let (Elim::Case(c, env), args) = sp.split_last()? else { return None };
+    if !args.iter().all(|e| matches!(e, Elim::App(..))) || !c.lits.is_empty() || c.default.is_some() {
+        return None;
+    }
+    let want = rigid_head(&force(g, other.clone()))?;
+    let mut heads = Vec::new();
+    let mut found = None;
+    for (con, n, body) in &c.branches {
+        let mut e = (**env).clone();
+        // The fields, unknown: far above any context.
+        e.extend((0..*n).map(|k| Val::var(usize::MAX / 2 + k)));
+        let h = rigid_head(&force(g, eval(g, &Rc::new(e), body)))?;
+        if heads.contains(&h) {
+            return None;
+        }
+        if h == want {
+            found = Some(*con);
+        }
+        heads.push(h);
+    }
+    let con = found?;
+    let info = &g.cons[con.0 as usize];
+    let n = g.tys[info.ty.0 as usize].params.len() + info.fields.len();
+    // Fresh unknowns in the same context as `m`: applied to the same arguments.
+    let fresh: Vec<Val> = (0..n).map(|_| Val::Neutral(Head::Meta(g.fresh_meta()), Rc::new(args.to_vec()))).collect();
+    if solve(g, l, m, args, &Val::Con(con, fresh)).is_err() {
+        return None;
+    }
+    Some(unify(g, l, &Val::Neutral(Head::Meta(m), Rc::new(sp.to_vec())), other))
+}
+
 fn first_order(g: &Globals, l: usize, m: MetaId, sp: &[Elim], other: &Val) -> Option<Result<(), UnifyError>> {
     let (Elim::App(x, _), init) = sp.split_last()? else { return None };
     // Only where pattern unification can't apply: the last argument is not

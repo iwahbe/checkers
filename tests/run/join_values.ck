@@ -1,5 +1,5 @@
-# D174–D176 (proposed): `join` gives the values of a future or a tuple of
-# futures, waiting (parked) until they are there.
+# D174–D176: `join` gives the values of a future or a tuple of futures,
+# waiting (parked) until they are there.
 module join_values
 
 import std.future (Future)
@@ -23,7 +23,3 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     terminal.print_line (format x ++ " is " ++ y) term
     let w = future.join a
     if x + z == 21 and w == 6 then Success else Failure 1
-
-# Expected output:
-# 6 is six
-# (exit code 0)

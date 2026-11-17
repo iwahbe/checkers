@@ -16,7 +16,9 @@ pub enum Beh {
     /// A future to fill, the function, and its arguments (`()` for `fork`;
     /// the arguments and the root capability for `main`, D123).
     Fork(Arc<Cell>, W, Vec<W>),
-    Join(Vec<Arc<Cell>>, W, Arc<Cell>),
+    /// Wakes a behaviour parked in `future.join` (D176): scheduled on the
+    /// futures it waits for, so it runs once they are filled.
+    Wake(Vec<Arc<Cell>>, Option<crate::fiber::Waker>),
 }
 
 // Words are shared between threads; ownership is tracked by counts.
@@ -91,9 +93,10 @@ fn run_owned(b: *mut ()) {
     run_in_place(&mut beh);
 }
 
-/// A `join` whose futures aren't all filled yet must wait (FIFO only).
+/// A wake-up for a `join` whose futures aren't all filled yet must wait
+/// (FIFO only).
 fn waiting(e: &Entry) -> bool {
-    matches!(e, Entry::New(Beh::Join(futs, _, _)) if futs.iter().any(|x| *x.v.lock().unwrap() == UNSET))
+    matches!(e, Entry::New(Beh::Wake(futs, _)) if futs.iter().any(|x| *x.v.lock().unwrap() == UNSET))
 }
 
 /// The cowns a behaviour holds while it runs, by address.
@@ -272,7 +275,7 @@ fn schedule(b: Beh) {
             let res: Vec<&crate::sched::Resource> = match &b {
                 Beh::When(cs, _) => cs.iter().map(|c| &c.res).collect(),
                 Beh::Fork(f, _, _) => vec![&f.res],
-                Beh::Join(fs, _, out) => fs.iter().map(|c| &c.res).chain(std::iter::once(&out.res)).collect(),
+                Beh::Wake(fs, _) => fs.iter().map(|c| &c.res).collect(),
             };
             // The cells outlive the behaviour: it holds them.
             let res: Vec<&'static crate::sched::Resource> = res.into_iter().map(|r| unsafe { &*(r as *const _) }).collect();
@@ -294,11 +297,10 @@ fn run_in_place(b: &mut Beh) {
             let v = apply(std::mem::replace(f, ERASED), std::mem::take(args));
             *fut.v.lock().unwrap() = v;
         }
-        Beh::Join(futs, f, out) => {
-            let vals: Vec<W> = futs.iter().map(|x| take_future(x)).collect();
-            // No function: `both`, whose value is the values' tuple.
-            let v = if *f == ERASED { new_tuple(&vals) } else { apply(std::mem::replace(f, ERASED), vals) };
-            *out.v.lock().unwrap() = v;
+        Beh::Wake(_, wake) => {
+            if let Some(w) = wake.take() {
+                w();
+            }
         }
     }
 }
@@ -323,8 +325,11 @@ fn store_when(cells: &[Arc<Cell>], r: W) {
         if !is_kind(r, K_TUPLE) {
             bug("`when` body must return a tuple");
         }
+        // The last cown's value is the rest of the tuple: `(a, (b, c))` is
+        // stored flat (D174).
+        let n = cells.len();
         for (i, c) in cells.iter().enumerate() {
-            *c.v.lock().unwrap() = dup(slot(r, i));
+            *c.v.lock().unwrap() = if i + 1 == n { ck_tuple_rest_owned(r, i) } else { dup(slot(r, i)) };
         }
         drop_w(r);
     }
@@ -370,20 +375,25 @@ pub(crate) fn ck_fork(f: W) -> W {
     new_obj(Obj::Future(fut))
 }
 
-/// `future.join x sched f` (D171): a behaviour running `f` once `x` is filled.
-pub(crate) fn ck_join(futs: W, f: W) -> W {
-    let out = new_cell(UNSET);
-    schedule(Beh::Join(cells_of(futs, "futures"), dup(f), out.clone()));
-    new_obj(Obj::Future(out))
-}
-
-/// `future.both x y`: a future of the pair, filled once both are (borrowed
-/// arguments).
-pub(crate) fn ck_both(x: W, y: W) -> W {
-    let out = new_cell(UNSET);
-    let cells = vec![cells_of(x, "futures").remove(0), cells_of(y, "futures").remove(0)];
-    schedule(Beh::Join(cells, ERASED, out.clone()));
-    new_obj(Obj::Future(out))
+/// `future.join x` (D176): the values of a future or a flat tuple of
+/// futures, parking the behaviour until they are all filled. A future joined
+/// twice gives both joins its value (`take_future`). Borrows `x`.
+pub(crate) fn join_values(x: W) -> W {
+    let cells = cells_of(x, "futures");
+    if cells.iter().any(|c| *c.v.lock().unwrap() == UNSET) {
+        if !crate::fiber::on_fiber() {
+            bug("`join` outside a behaviour, on a future not yet filled");
+        }
+        let cs = cells.clone();
+        crate::fiber::park(Box::new(move |wake| schedule(Beh::Wake(cs, Some(wake)))));
+    }
+    let vals: Vec<W> = cells.iter().map(|c| take_future(c)).collect();
+    if is_kind(x, K_TUPLE) {
+        // The values' tuple, flat: the last may be a tuple itself (D174).
+        crate::ops::ck_tuple_flat(new_tuple(&vals))
+    } else {
+        vals[0]
+    }
 }
 
 struct Send2(W);
@@ -431,4 +441,9 @@ pub unsafe extern "C" fn ck_par(thunks: *const W, n: u64) -> W {
         p.give_par(spawned);
     }
     new_tuple(&out)
+}
+
+/// Component `i` and the rest after it, owned (D174).
+fn ck_tuple_rest_owned(t: W, i: usize) -> W {
+    crate::ops::ck_tuple_rest(t, i as W)
 }

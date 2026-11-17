@@ -2,13 +2,13 @@
 
 Values are immutable, so sharing them between threads never races, and pure code may run in parallel freely (`par`). What needs coordinating is **state** that several tasks change: a table of jobs, a log, a counter. For that, Checkers has behaviour-oriented concurrency, as in the Verona project: state lives in **cowns** (concurrent owners), and **behaviours** get exclusive access to the cowns they name. Programs built this way have no data races and no deadlocks, by construction.
 
-Nothing ever waits for another task while holding something: there are no locks, and no `await`. A behaviour that waits for input, a pipe or a child process is set aside, and its thread runs other behaviours meanwhile.
+There are no locks. A behaviour that waits, for input, a pipe, a child process or a future's value, is set aside, and its thread runs other behaviours meanwhile; nothing it can wait for can be waiting for it.
 
 ## Cowns
 
 `cown.new v sched` (from `std.cown`, with the `Sched` capability) creates a `Cown a` holding `v`. The handle may be shared freely: copied, captured, passed to other functions. The value it holds is reachable only inside a behaviour that names the cown.
 
-A cown can't hold a resource (E0405): a resource has one owner at a time, and passes from owner to owner through calls and the closures given to `future.fork` and `future.join` ([Capabilities](effects.md#resources)).
+A cown can't hold a resource (E0405): a resource has one owner at a time, and passes from owner to owner through calls and the functions given to `future.fork` ([Capabilities](effects.md#resources)).
 
 ## `when`
 
@@ -69,16 +69,15 @@ fn add msg log sched -> u : msg~String, log~Cown Log, sched~Sched, u~Unit
 
 ## Futures
 
-`std.future` schedules work whose result is wanted later, as a `Future a`:
+`std.future` runs work in parallel and gives its result later, as a `Future a`:
 
 | Function | Gives |
 |---|---|
 | `future.fork sched f`, `f~own (Unit -> a)` | a `Future a`, filled by a behaviour that runs `f ()` |
-| `future.join x sched f`, `x~own Future a`, `f~own (v~own a -> b)` | a `Future b`, filled by a behaviour that runs `f` on `x`'s value once `x` is filled |
-| `future.both x y` | a `Future (a, b)`, filled once both are |
+| `future.join x` | the value of a future `x`, or the values of a tuple of futures: `(Future a, Future b)` gives `(a, b)` |
 | `future.ready v` | a `Future a` already filled with `v` |
 
-A `join` gives a future too, so joins compose; several futures are joined through `both`. The functions given to `fork` and `join` are [one-shot closures](effects.md#one-shot-closures): each runs once, so it may use a resource, which moves into the behaviour. A block becomes a lambda after `$`: `future.fork sched $ \_ ->` followed by the block.
+`join` gives the values once the futures are filled. Until then the behaviour that called it waits, as one reading a pipe does: its thread runs other behaviours, and it keeps any cowns it holds. Which values `join` gives is worked out from the futures' types: `future.join (a, b, c)` with `a~Future Nat`, `b~Future String` and `c~Future Nat` is a `(Nat, String, Nat)`.
 
 ```checkers
 module sums
@@ -91,18 +90,21 @@ fn sum xs -> n : xs~List Nat, n~Nat
         []        -> 0
         x :: rest -> x + sum rest
 
-export fn main args sys -> code : args~List String, sys~System, code~Future ExitCode
+export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let sched = sys.sched
     let a = future.fork sched $ \_ ->
         sum [1, 2, 3]
     let b = future.fork sched $ \_ ->
         sum [4, 5, 6]
-    let done = future.join (future.both a b) sched $ \(x, y) ->
-        if x + y == 21 then Success else Failure 1
-    done
+    let (x, y) = future.join (a, b)
+    if x + y == 21 then Success else Failure 1
 ```
 
-A future is filled only by its own `fork` or `join`, which is the first behaviour scheduled on it, so a `join` scheduled after it always finds the value there: no waiting, no `Option`. A future may be joined any number of times, each join getting its value; a future of a resource must be joined exactly once, like any resource.
+The function given to `fork` is a [one-shot closure](effects.md#one-shot-closures): it runs once, so it may use a resource, which moves into the behaviour. A block becomes a function after `$`: `future.fork sched $ \_ ->` followed by the block.
+
+**Still no deadlock.** A future is filled only by its own `fork`, whose function holds no cowns, and that function can only wait for futures that existed before it. So waits never form a cycle, and a `join` always ends, even in a `when` body. What waiting costs is time: while a `when` body waits, the behaviours queued on its cowns wait too.
+
+A future may be joined any number of times, each join getting its value; a future of a resource must be joined exactly once, like any resource.
 
 ## `par`
 
@@ -124,7 +126,7 @@ check both == (6765, 10946)
 
 ## Ending the program
 
-The process exits once `main` has returned and no behaviour remains scheduled or running. If `main` returns a `Future ExitCode`, the program's exit code is that future's value; this is how a program whose result comes from a `join` reports it.
+The process exits once `main` has returned and no behaviour remains scheduled or running. If `main` returns a `Future ExitCode`, the program's exit code is that future's value.
 
 ## Running behaviours
 

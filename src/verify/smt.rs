@@ -551,6 +551,13 @@ impl<'a> Builder<'a> {
                 for t in ts {
                     ss.push(self.sort_of(env, t)?);
                 }
+                // `(a, (b, c))` is `(a, b, c)` (D174).
+                if let Some(Sort::Tuple(ws)) = ss.last().filter(|_| ss.len() >= 2).cloned() {
+                    if ws.len() >= 2 {
+                        ss.pop();
+                        ss.extend(ws);
+                    }
+                }
                 self.tuples.insert(ss.len());
                 Ok(Sort::Tuple(ss))
             }
@@ -589,6 +596,22 @@ impl<'a> Builder<'a> {
                         _ => out("a type that depends on a value"),
                     },
                     Tm::Def(d) => {
+                        // A type function applied to closed arguments
+                        // (`values (Last Nat)`, D176): the type it gives.
+                        let mut fv = std::collections::BTreeSet::new();
+                        crate::core::free_vars(t, 0, &mut fv);
+                        if fv.is_empty() && !self.e.alias_preds.contains_key(d) {
+                            let v = crate::core::eval(&self.e.g, &Rc::new(Vec::new()), t);
+                            if let Some(u) = crate::core::unfold(&self.e.g, &v) {
+                                let u = crate::core::force_meta(&self.e.g, u);
+                                let stuck = matches!(&u, Val::Neutral(crate::core::Head::Def(d2), _) if d2 == d)
+                                    || matches!(&u, Val::Neutral(_, sp) if sp.iter().any(|e| matches!(e, crate::core::Elim::Case(..))));
+                                if !stuck {
+                                    let tm = quote(&self.e.g, env.len(), &u);
+                                    return self.sort_of(env, &tm);
+                                }
+                            }
+                        }
                         // A type alias: unfold it.
                         let Some(body) = self.e.g.defs[d.0 as usize].body.clone() else {
                             return out("an abstract type definition");
@@ -1321,19 +1344,38 @@ impl<'a> Builder<'a> {
                     ts.push(t);
                     ss.push(s);
                 }
-                self.tuples.insert(xs.len());
+                // A last component that is a tuple: its components (D174).
+                if let Some(Sort::Tuple(ws)) = ss.last().filter(|_| ss.len() >= 2).cloned() {
+                    if ws.len() >= 2 {
+                        ss.pop();
+                        let lt = ts.pop().unwrap_or_default();
+                        for k in 0..ws.len() {
+                            ts.push(format!("({} {lt})", tuple_sel(ws.len(), k)));
+                        }
+                        ss.extend(ws);
+                    }
+                }
+                self.tuples.insert(ss.len());
                 let sort = Sort::Tuple(ss);
-                if xs.is_empty() {
+                if ts.is_empty() {
                     Ok((tuple_con(0), sort))
                 } else {
                     // Qualified, as other constructors are: Z3 can't always
                     // tell a parametric constructor's sort from its arguments.
-                    Ok((format!("((as {} {}) {})", tuple_con(xs.len()), sort.render(self.e), ts.join(" ")), sort))
+                    Ok((format!("((as {} {}) {})", tuple_con(ts.len()), sort.render(self.e), ts.join(" ")), sort))
                 }
             }
-            Tm::Proj(x, i) => {
+            Tm::Proj(x, i, rest) => {
                 let (xt, xs) = self.term(env, x)?;
                 match xs {
+                    // The rest of a longer tuple: a tuple of its components (D174).
+                    Sort::Tuple(ss) if *rest && ss.len() > i + 1 => {
+                        let rs = ss[*i..].to_vec();
+                        self.tuples.insert(rs.len());
+                        let parts: Vec<String> = (*i..ss.len()).map(|k| format!("({} {xt})", tuple_sel(ss.len(), k))).collect();
+                        let sort = Sort::Tuple(rs);
+                        Ok((format!("((as {} {}) {})", tuple_con(ss.len() - i), sort.render(self.e), parts.join(" ")), sort))
+                    }
                     Sort::Tuple(ss) => {
                         let s = ss.get(*i).cloned().ok_or_else(|| Outside("a bad projection".into()))?;
                         let t = format!("({} {xt})", tuple_sel(ss.len(), *i));
@@ -1907,10 +1949,42 @@ impl<'a> Builder<'a> {
         let mut post_env = Vec::new();
         let mut inner: Vec<Ent> = Vec::new();
         let dpos = if self.e.class_methods.contains(&d) { self.dict_pos(d) } else { None };
+        // The values of arguments that hold types (`ts~Types`, D176), for the
+        // parameter types computed from them; unknowns for the others.
+        let mut type_vals: Vec<Val> = Vec::new();
+        let mut computed = false;
         let mut t = ty;
         let mut k = 0;
         while let Tm::Pi(_, _, _, a, b) = t.clone() {
             let Some((arg, _)) = args.get(k) else { return out(format!("a partial application of `{}`", info.name)) };
+            let a = if computed {
+                let v = crate::core::eval(&self.e.g, &Rc::new(type_vals.clone()), &a);
+                quote(&self.e.g, inner.len(), &self.e.reduce_type(&v))
+            } else {
+                (*a).clone()
+            };
+            type_vals.push(Val::var(inner.len()));
+            // An argument holding types: closed, it is a value the types after
+            // it are computed from; it is not passed to the solver.
+            if let Tm::TyCon(id) | Tm::TyConApp(id, _) = self.zonk(inner.len(), &a) {
+                if self.e.holds_types(id) {
+                    let z = self.zonk(env.len(), arg);
+                    let mut fv = std::collections::BTreeSet::new();
+                    crate::core::free_vars(&z, 0, &mut fv);
+                    if !fv.is_empty() {
+                        return out("a type computed from a value the prover can't see");
+                    }
+                    let shown = crate::core::show(&self.e.g, &[], &z);
+                    *type_vals.last_mut().unwrap() = crate::core::eval(&self.e.g, &Rc::new(Vec::new()), &z);
+                    computed = true;
+                    tys.push(Sort::Unin(format!("val#{shown}"), Vec::new()));
+                    inner.push(Ent::Opaque(shown.clone()));
+                    post_env.push(Ent::Opaque(shown));
+                    t = (*b).clone();
+                    k += 1;
+                    continue;
+                }
+            }
             if self.is_kind(&a) {
                 // A type constructor (M25): it picks the instance.
                 let e = self.ty_fun(env, arg).ok_or_else(|| Outside("a type constructor the prover can't see".into()))?;
@@ -1980,6 +2054,10 @@ impl<'a> Builder<'a> {
         }
         if k < args.len() {
             return out("a function returning a function");
+        }
+        if computed {
+            let v = crate::core::eval(&self.e.g, &Rc::new(type_vals.clone()), &t);
+            t = quote(&self.e.g, inner.len(), &self.e.reduce_type(&v));
         }
         let rs = self.sort_of(&inner, &t)?;
         // Builtins with a meaning in the solver.
@@ -2873,7 +2951,7 @@ fn closed(t: &Tm, depth: usize) -> bool {
         Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => {
             v.iter().all(|a| closed(a, depth))
         }
-        Tm::Proj(a, _) | Tm::Field(a, _, _) => closed(a, depth),
+        Tm::Proj(a, _, _) | Tm::Field(a, _, _) => closed(a, depth),
         Tm::Let(_, _, a, b, c) => closed(a, depth) && closed(b, depth) && closed(c, depth + 1),
         Tm::Case(sc, c) => {
             closed(sc, depth)
@@ -2902,7 +2980,7 @@ fn has_meta(t: &Tm) -> bool {
         Tm::Pi(_, _, _, a, b) => has_meta(a) || has_meta(b),
         Tm::Lam(_, _, _, b) => has_meta(b),
         Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => v.iter().any(has_meta),
-        Tm::Proj(x, _) | Tm::Field(x, _, _) => has_meta(x),
+        Tm::Proj(x, _, _) | Tm::Field(x, _, _) => has_meta(x),
         Tm::Let(_, _, a, b, c) => has_meta(a) || has_meta(b) || has_meta(c),
         _ => false,
     }
@@ -2934,7 +3012,7 @@ fn has_forall(t: &Tm) -> bool {
         Tm::Lam(_, _, _, b) => has_forall(b),
         Tm::Pi(_, _, _, a, b) => has_forall(a) || has_forall(b),
         Tm::Let(_, _, a, b, c) => has_forall(a) || has_forall(b) || has_forall(c),
-        Tm::Proj(x, _) | Tm::Field(x, _, _) => has_forall(x),
+        Tm::Proj(x, _, _) | Tm::Field(x, _, _) => has_forall(x),
         Tm::Case(s, c) => {
             has_forall(s)
                 || c.branches.iter().any(|(_, _, b)| has_forall(b))
@@ -2998,7 +3076,7 @@ fn tm_size(t: &Tm, cap: usize) -> usize {
                 stack.push(a);
                 stack.push(b);
             }
-            Tm::Lam(_, _, _, b) | Tm::Proj(b, _) | Tm::Field(b, _, _) => stack.push(b),
+            Tm::Lam(_, _, _, b) | Tm::Proj(b, _, _) | Tm::Field(b, _, _) => stack.push(b),
             Tm::Let(_, _, a, b, c) => {
                 stack.push(a);
                 stack.push(b);

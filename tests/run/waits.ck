@@ -78,11 +78,11 @@ export partial fn main args sys -> code : args~List String, sys~System, code~Exi
                 read o4 c4
             let _ = future.fork sched $ \_ ->
                 feed [i1, i2, i3, i4] 1
-            let _ = future.join (future.both a (future.both b (future.both c d))) sched $ \(x, (y, (z, w))) ->
-                terminal.print_line (shown x) term
-                terminal.print_line (shown y) term
-                terminal.print_line (shown z) term
-                terminal.print_line (shown w) term
+            let (x, y, z, w) = future.join (a, b, c, d)
+            terminal.print_line (shown x) term
+            terminal.print_line (shown y) term
+            terminal.print_line (shown z) term
+            terminal.print_line (shown w) term
             Success
         other                                                    ->
             cleanup other

@@ -29,14 +29,13 @@ fn when_ok c sched : c~Cown Nat, sched~Sched
         v + 1
     ()
 
-fn fork_join_ok sched -> r : sched~Sched, r~Future Nat
+fn fork_join_ok sched -> r : sched~Sched, r~Nat
     let a = future.fork sched $ \_ ->
         1
     let b = future.fork sched $ \_ ->
         2
-    let done = future.join (future.both a b) sched $ \(x, y) ->
-        x + y
-    done
+    let (x, y) = future.join (a, b)
+    x + y
 
 fn not_sched x -> r : x~Nat, r~Future Nat
     let f = future.fork x $ \_ ->

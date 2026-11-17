@@ -1990,6 +1990,7 @@ impl Elab {
                             _ => "_".to_string(),
                         };
                         let (t, ty) = self.infer(cx, rhs);
+                        let ty = self.reduce_type(&ty);
                         if name == "_" && self.val_linear(&ty) {
                             self.report_dropped(cx, &ty, pat.span);
                         }
@@ -2256,7 +2257,7 @@ impl Elab {
         // The contents' refinements (a cown invariant, §8.5): facts on entry,
         // obligations on every value the body hands back.
         let many = tys.len() > 1;
-        let invs: Vec<CownInv> = tys.iter().enumerate().filter_map(|(k, ty)| self.cown_inv(cx, ty, many.then_some(k))).collect();
+        let invs: Vec<CownInv> = tys.iter().enumerate().filter_map(|(k, ty)| self.cown_inv(cx, ty, many.then_some((k, k + 1 == tys.len())))).collect();
         for ((n, _), ty) in w.binds.iter().zip(&tys) {
             let l = cx.bind(&n.name, ty.clone(), Mult::Many);
             self.bound_at(cx, l, n.span);
@@ -2300,7 +2301,7 @@ fn mentions_level_from(t: &Tm, total: usize, from: usize, depth: usize) -> bool 
         Tm::Pi(_, _, _, a, b) => rec(a, depth) || rec(b, depth + 1),
         Tm::Let(_, _, a, v, b) => rec(a, depth) || rec(v, depth) || rec(b, depth + 1),
         Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => v.iter().any(|x| rec(x, depth)),
-        Tm::Proj(x, _) | Tm::Field(x, _, _) => rec(x, depth),
+        Tm::Proj(x, _, _) | Tm::Field(x, _, _) => rec(x, depth),
         Tm::Case(s, c) => {
             rec(s, depth)
                 || c.branches.iter().any(|(_, n, b)| rec(b, depth + n))

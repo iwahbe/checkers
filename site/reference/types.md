@@ -122,6 +122,17 @@ check b"hi"[0] == 'h'
 
 `(a, b)` is a pair, `(a, b, c)` a triple, and so on; `()` is `Unit`. A tuple is taken apart with a pattern: `let (x, y) = p`. There is no one-element tuple: `(e)` is just `e`.
 
+A tuple of more than two is a pair whose second part is the rest: `(a, b, c)` and `(a, (b, c))` are the same type, and `(1, (2, 3)) == (1, 2, 3)`. So a pattern may take a tuple apart into fewer parts, its last part the rest, and a function over `(a, t)` accepts a tuple of any length. Laid out in memory, a tuple is one block of its parts, however it was built.
+
+```checkers
+fn rest p -> r : p~(a, b, c), r~(b, c)
+    let (_, more) = p
+    more
+
+check rest (1, 2, 3) == (2, 3)
+check (1, (2, 3)) == (1, 2, 3)
+```
+
 ## Function types
 
 `a -> b` is the type of functions from `a` to `b`. `->` associates to the right: `a -> b -> c` takes an `a` and gives a function from `b` to `c`, which is how every function of several parameters is typed. Inside a constraint list, a function type is written in parentheses: `f~(Int -> Bool)`.

@@ -25,9 +25,9 @@ error[E0201]: type mismatch: expected `Cown _`, found `Nat`
    |              ^ this expression has type `Nat`
 
 error[E0201]: type mismatch: expected `Sched`, found `Nat`
-  --> effects.ck:42:25
+  --> effects.ck:41:25
    |
-42 |     let f = future.fork x $ \_ ->
+41 |     let f = future.fork x $ \_ ->
    |                         ^ this expression has type `Nat`
 
 effects.ck: 5 errors, 0 warnings

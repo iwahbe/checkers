@@ -339,8 +339,9 @@ pub struct CownInv {
     /// The alias's predicates over `args ++ [subject]`.
     pub preds: Vec<Pred>,
     pub args: Vec<Val>,
-    /// The component of the body's tuple, with several cowns.
-    pub proj: Option<usize>,
+    /// The component of the body's tuple, with several cowns, and whether
+    /// it is the last (then the rest of the tuple, D174).
+    pub proj: Option<(usize, bool)>,
 }
 
 /// A trust-ledger entry (§7.4) for something accepted without a solver proof.
@@ -506,6 +507,9 @@ pub struct Elab {
     /// function, the matched variable's level, the arm's constructor and
     /// the variable's level. The usage check lets it go unused there.
     pub moot_in_arm: HashSet<(DefId, usize, ConId, usize)>,
+    /// The stuck `match`es whose arms `case_linear` is looking at: met again,
+    /// a recursive type function adds no resource (D175).
+    pub lin_visiting: std::cell::RefCell<Vec<usize>>,
     /// A `match` arm's resource names, bound as ghosts for its guard: the
     /// guard's span, for E0408.
     pub guard_vars: HashMap<(DefId, String), Span>,
@@ -655,6 +659,7 @@ impl Elab {
             binder_spans: HashMap::new(),
             lam_domains: HashMap::new(),
             moot_in_arm: HashSet::new(),
+            lin_visiting: std::cell::RefCell::new(Vec::new()),
             guard_vars: HashMap::new(),
             stdlib_mode: false,
             map_elem_sub: None,
@@ -707,6 +712,31 @@ impl Elab {
 
     pub fn force(&self, v: &Val) -> Val {
         force(&self.g, v.clone())
+    }
+
+    /// A type with type functions at its head computed (`values (Last ?a)`
+    /// is `?a`), stopping at an alias, whose name carries facts (`Nat`):
+    /// for the types of variables a pattern or `let` binds (D176).
+    pub fn reduce_type(&self, v: &Val) -> Val {
+        let mut v = crate::core::force_meta(&self.g, v.clone());
+        for _ in 0..64 {
+            let Val::Neutral(Head::Def(d), _) = &v else { break };
+            if self.alias_preds.contains_key(d) || Some(*d) == self.g.well_known.nat {
+                break;
+            }
+            match crate::core::unfold(&self.g, &v) {
+                Some(u) => {
+                    let u = crate::core::force_meta(&self.g, u);
+                    // Stuck on an unknown: keep the application, as written.
+                    if matches!(&u, Val::Neutral(_, sp) if sp.iter().any(|e| matches!(e, Elim::Case(..)))) {
+                        break;
+                    }
+                    v = u;
+                }
+                None => break,
+            }
+        }
+        v
     }
 
     /// A fresh meta applied to the bound locals in scope.
@@ -1276,6 +1306,20 @@ impl Elab {
 
     /// Might an arm of this stuck `match` be a resource type?
     fn case_linear(&self, c: &CaseTm, env: &Env, depth: usize) -> bool {
+        // A recursive type function meets its own `match` again: what it
+        // gives there is the same type, a resource only if a base arm is
+        // (`futures ts` recurses through `futures rest`).
+        let key = c as *const CaseTm as usize;
+        if self.lin_visiting.borrow().contains(&key) {
+            return false;
+        }
+        self.lin_visiting.borrow_mut().push(key);
+        let r = self.case_arms_linear(c, env, depth);
+        self.lin_visiting.borrow_mut().pop();
+        r
+    }
+
+    fn case_arms_linear(&self, c: &CaseTm, env: &Env, depth: usize) -> bool {
         let arm = |n: usize, body: &Tm| {
             let mut e = (**env).clone();
             e.extend((0..n).map(|k| Val::var(usize::MAX / 2 + depth * 64 + k)));
@@ -1422,11 +1466,23 @@ impl Elab {
         }
     }
 
+    /// Does some constructor of this type have a field that is a type?
+    pub(crate) fn holds_types(&self, id: TyId) -> bool {
+        self.g.cons.iter().filter(|c| c.ty == id).any(|c| c.fields.iter().any(|f| matches!(f.3, Tm::Univ(_))))
+    }
+
     fn mentions_type_var(&self, cx: &Cx, t: &Tm, under: usize) -> bool {
         match t {
             Tm::Var(i) if *i >= under => {
                 let lvl = cx.lvl() + under - 1 - i;
-                lvl < cx.locals.len() && matches!(self.force(&cx.locals[lvl].ty), Val::Univ(_))
+                lvl < cx.locals.len()
+                    && match self.force(&cx.locals[lvl].ty) {
+                        Val::Univ(_) => true,
+                        // A value holding types (`ts~Types`): a type computed
+                        // from it is as generic as a type variable (D176).
+                        Val::TyCon(id, _) => self.holds_types(id),
+                        _ => false,
+                    }
             }
             Tm::App(f, a, ..) => self.mentions_type_var(cx, f, under) || self.mentions_type_var(cx, a, under),
             Tm::TyConApp(_, v) | Tm::TupleTy(v) => v.iter().any(|a| self.mentions_type_var(cx, a, under)),
@@ -1659,8 +1715,7 @@ impl Elab {
         for inv in &pt.invariants {
             let subject = match (inv.proj, &v) {
                 (None, _) => v.clone(),
-                (Some(k), Val::Tuple(xs)) => xs.get(k).cloned().unwrap_or(Val::Error),
-                (Some(k), _) => eval(&self.g, &Rc::new(vec![v.clone()]), &Tm::Proj(Rc::new(Tm::Var(0)), k)),
+                (Some((k, last)), _) => eval(&self.g, &Rc::new(vec![v.clone()]), &Tm::Proj(Rc::new(Tm::Var(0)), k, last)),
             };
             let mut env = inv.args.clone();
             env.push(subject);
@@ -1673,7 +1728,7 @@ impl Elab {
 
     /// A cown's content type as a refinement alias: its name, predicates and
     /// argument values (none if the type isn't an alias).
-    pub fn cown_inv(&self, cx: &Cx, content: &Val, proj: Option<usize>) -> Option<CownInv> {
+    pub fn cown_inv(&self, cx: &Cx, content: &Val, proj: Option<(usize, bool)>) -> Option<CownInv> {
         let ty = quote(&self.g, cx.lvl(), content);
         let mut args = Vec::new();
         let mut h = &ty;
@@ -1807,7 +1862,7 @@ impl Elab {
             Tm::Let(_, _, _, v, b) => go(v, depth) && go(b, depth + 1),
             Tm::TyConApp(_, v) | Tm::TupleTy(v) => v.iter().all(|x| go(x, depth)),
             Tm::ConApp(_, v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => v.iter().all(|x| go(x, depth)),
-            Tm::Proj(x, _) | Tm::Field(x, _, _) => go(x, depth),
+            Tm::Proj(x, _, _) | Tm::Field(x, _, _) => go(x, depth),
             Tm::Case(s, c) => {
                 go(s, depth)
                     && c.branches.iter().all(|(_, n, b)| go(b, depth + n))
@@ -2185,7 +2240,7 @@ fn touches(t: &Tm, g: &Globals, defs: &HashSet<DefId>, tys: &HashSet<TyId>) -> b
         Tm::Con(c) => con(c),
         Tm::Var(_) | Tm::Meta(_) | Tm::Univ(_) | Tm::Lit(_) => false,
         Tm::Pi(_, _, _, a, b) | Tm::App(a, b, ..) => go(a) || go(b),
-        Tm::Lam(_, _, _, b) | Tm::Proj(b, _) => go(b),
+        Tm::Lam(_, _, _, b) | Tm::Proj(b, _, _) => go(b),
         Tm::Field(b, c, _) => con(c) || go(b),
         Tm::Let(_, _, a, b, c) => go(a) || go(b) || go(c),
         Tm::TyConApp(ty, v) => tys.contains(ty) || v.iter().any(go),
@@ -2251,7 +2306,7 @@ fn free_levels(t: &Tm, lvl: usize, depth: usize, out: &mut Vec<usize>) {
             go(a, depth, out);
             go(b, depth, out);
         }
-        Tm::Proj(b, _) | Tm::Field(b, _, _) => go(b, depth, out),
+        Tm::Proj(b, _, _) | Tm::Field(b, _, _) => go(b, depth, out),
         Tm::Let(_, _, a, b, c) => {
             go(a, depth, out);
             go(b, depth, out);
@@ -2320,7 +2375,7 @@ pub(crate) fn has_meta(t: &Tm) -> bool {
     match t {
         Tm::Meta(_) => true,
         Tm::Pi(_, _, _, a, b) | Tm::App(a, b, ..) => has_meta(a) || has_meta(b),
-        Tm::Lam(_, _, _, b) | Tm::Proj(b, _) | Tm::Field(b, _, _) => has_meta(b),
+        Tm::Lam(_, _, _, b) | Tm::Proj(b, _, _) | Tm::Field(b, _, _) => has_meta(b),
         Tm::Let(_, _, a, b, c) => has_meta(a) || has_meta(b) || has_meta(c),
         Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => v.iter().any(has_meta),
         Tm::Case(s, c) => {
