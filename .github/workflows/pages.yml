@@ -75,7 +75,7 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           mkdir -p _site/docs _pages
-          cp site/*.md _pages/
+          cp -R site/. _pages/
           checkers doc stdlib -o _site/docs/dev --name std --root ../../.. --label dev
           latest=""
           versions=""
