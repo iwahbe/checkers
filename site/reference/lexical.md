@@ -49,7 +49,7 @@ decreasing  partial  ghost  own  comptime
 when  using  par
 ```
 
-Two more are keywords only in one place: `fork` right after `<-` and before `using`, and `join` right after `<-` and before a name and `=` ([Concurrency](concurrency.md)). Elsewhere they are ordinary names, so a function may be called `join`. `not`, `len` and `format` are ordinary functions of the prelude, not keywords.
+`not`, `len` and `format` are ordinary functions of the prelude, not keywords.
 
 A keyword where a name belongs is error E0122:
 
@@ -92,12 +92,12 @@ check b"\xff"[0] == 255
 
 ```text
 +  -  *  /  %  ++  ::  ==  !=  <  <=  >  >=  $  .
-->  <-  =  ~  :  ,  |  \  (  )  [  ]  {  }
+->  =  ~  :  ,  |  \  (  )  [  ]  {  }
 ```
 
 `and`, `or` and `implies` are operators written as keywords. Each operator's meaning and precedence is in [Expressions](expressions.md#operators).
 
-The lexer takes the longest token it can, so `<-` is always one token: `x<-1` is a binding, not a comparison with `-1`. Write `x < -1`.
+The lexer takes the longest token it can, so `->`, `<=` and `++` are single tokens; `x<-1` is `x < -1`.
 
 ## Glued and spaced `.`, `[` and `-`
 
@@ -162,7 +162,7 @@ fn total a b c -> s : a~Int, b~Int, c~Int,
         + c
 ```
 
-A line that ends in `->`, `=` or `<-` outside brackets does not continue: it opens a block.
+A line that ends in `->` or `=` outside brackets does not continue: it opens a block.
 
 A sign isn't a binary operator, so a line starting with `-1` starts a new logical line: it may be the first line of a block, or a `match` arm. A line starting with `- b` continues the one before.
 

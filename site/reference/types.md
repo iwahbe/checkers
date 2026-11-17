@@ -232,7 +232,7 @@ Proofs are always ghost: a lemma, a `have`, and every predicate are erased.
 
 ### `own`
 
-An `own` variable has multiplicity 1: it is used exactly once on every path. Values that hold resources (open files, child processes) are always used so, whether written `own` or not ([Capabilities and resources](effects.md#resources)). `own` is written on a parameter whose type is a type parameter, `v~own a`, so that a generic function may be given a resource: without it, the function might copy or drop its argument, so passing it a resource is an error. On a type that is a resource already it is redundant (W010); on one that can never be a resource it is an error (E0358).
+An `own` variable has multiplicity 1: it is used exactly once on every path. Values that hold resources (open files, child processes) are always used so, whether written `own` or not ([Capabilities and resources](effects.md#resources)). `own` is written on a parameter whose type is a type parameter, `v~own a`, so that a generic function may be given a resource: without it, the function might copy or drop its argument, so passing it a resource is an error. On a type that is a resource already it is redundant (W010); on one that can never be a resource it is an error (E0358). On a function type, `f~own (Unit -> a)`, it promises the function is called exactly once, so it may be given a closure that uses a resource ([One-shot closures](effects.md#one-shot-closures)).
 
 Every other variable has the default multiplicity: any number of times, including none.
 

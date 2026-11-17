@@ -60,8 +60,6 @@ pub enum Op {
     Index,
     Format,
     Par,
-    Fork,
-    Join,
     When,
 }
 
@@ -85,8 +83,6 @@ impl Op {
             Prim::Index => Op::Index,
             Prim::Format => Op::Format,
             Prim::Par => Op::Par,
-            Prim::Fork => Op::Fork,
-            Prim::Join => Op::Join,
             Prim::When => Op::When,
             Prim::Builtin(_) | Prim::Forall => return None,
         })

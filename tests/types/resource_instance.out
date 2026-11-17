@@ -10,7 +10,7 @@ error[E0401]: `f` holds a resource (`File`), so it must be used exactly once, bu
    |
 37 |     fn twice f
    |              ^
-   = help: a resource can't be copied; thread it with `<-` so each use gets the new one
+   = help: a resource can't be copied: each operation on it gives back the one to use next, `let (x, f) = op f`
 
 error[E0401]: `f` holds a resource (`File`), so it must be used exactly once, but `Forget File.forget` never uses it
   --> resource_instance.ck:44:15

@@ -8,8 +8,8 @@ import std.files
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { term } = sys
     let input = terminal.stdin term
-    r <- files.write_bytes b"x" input
+    let (r, input) = files.write_bytes b"x" input
     terminal.print_line (format r) term
-    _ <- files.write_line "x" input
+    let (_, input) = files.write_line "x" input
     files.close input
     Success

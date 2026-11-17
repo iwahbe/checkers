@@ -431,6 +431,27 @@ impl Elab {
         }
     }
 
+    /// `let (x, fs) = op fs` where `fs` holds no resource: an operation on
+    /// an authority (`Fs`, `Term`, …) returns only its result (D171).
+    fn authority_hint(&mut self, cx: &Cx, ps: &[Pattern], occ: usize) {
+        let Some(PatKind::Var(name)) = ps.last().map(|p| &p.kind) else { return };
+        let Some(l) = cx.lookup(name) else { return };
+        if l >= occ || self.val_linear(&cx.locals[l].ty.clone()) {
+            return;
+        }
+        let first = match ps.first().map(|p| &p.kind) {
+            Some(PatKind::Var(x)) if ps.len() == 2 => x.clone(),
+            _ => "x".into(),
+        };
+        if let Some((_, d)) = self.diags.last_mut() {
+            if d.code == "E0201" && d.help.is_none() {
+                d.help = Some(format!(
+                    "`{name}` is not a resource, so an operation on it returns only its result: `let {first} = …`"
+                ));
+            }
+        }
+    }
+
     fn compile_tuple(
         &mut self,
         cx: &mut Cx,
@@ -452,6 +473,7 @@ impl Elab {
                 let metas: Vec<Val> = (0..n).map(|_| self.fresh_meta_val(&outer)).collect();
                 let want = Val::TupleTy(metas.clone());
                 if !self.unify_at(cx, &other, &want, pat.span, "this pattern") {
+                    self.authority_hint(cx, ps, occ);
                     self.pm.bad = true;
                     return Tm::Error;
                 }

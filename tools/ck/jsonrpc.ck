@@ -120,7 +120,7 @@ export enum Incoming
 
 # Read the headers up to the blank line: the content length, if one was given.
 partial fn headers found f -> r : found~Option Nat, f~File, r~(Option (Option Nat), File)
-    line <- files.read_line f
+    let (line, f) = files.read_line f
     match line
         None   -> (None, f)
         Some l ->
@@ -134,12 +134,12 @@ partial fn headers found f -> r : found~Option Nat, f~File, r~(Option (Option Na
 
 # The next message on `f`.
 export partial fn read f -> r : f~File, r~(Incoming, File)
-    h <- headers None f
+    let (h, f) = headers None f
     match h
         None          -> (Closed, f)
         Some None     -> (Malformed "a message without a Content-Length header", f)
         Some (Some n) ->
-            body <- files.read_exactly n f
+            let (body, f) = files.read_exactly n f
             match body
                 Err _ -> (Closed, f)
                 Ok b  ->
@@ -151,7 +151,7 @@ export partial fn read f -> r : f~File, r~(Incoming, File)
 export fn write v f -> r : v~Json, f~File, r~(Result Unit IoError, File)
     let body = string.bytes (json.render v)
     let head = string.bytes ("Content-Length: " ++ format (len body) ++ "\r\n\r\n")
-    w <- files.write_bytes (bytes.concat [head, body]) f
+    let (w, f) = files.write_bytes (bytes.concat [head, body]) f
     match w
         Ok _  -> files.flush f
         Err e -> (Err e, f)

@@ -51,11 +51,11 @@ export fn main args sys -> code : args~List String, sys~System, code~Future Exit
     let System { fs, term, sched } = sys
     match args
         [p1, p2] ->
-            a <- fork using sched
+            let a = future.fork sched $ \_ ->
                 files.read p1 fs
-            b <- fork using sched
+            let b = future.fork sched $ \_ ->
                 files.read p2 fs
-            done <- join x = a, y = b using sched
+            let done = future.join (future.both a b) sched $ \(x, y) ->
                 compare_files p1 x p2 y term
             done
         _        ->

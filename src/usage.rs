@@ -31,6 +31,9 @@ impl Count {
 struct Binder {
     name: String,
     mult: Mult,
+    /// Bound to a closure that uses this resource (or `own` value): the
+    /// closure must be called exactly once (D171).
+    oneshot: Option<String>,
 }
 
 struct U<'a> {
@@ -69,10 +72,47 @@ impl U<'_> {
         let resource = self.e.resource_vars.get(&(self.did, b.name.clone())).cloned();
         let span = match &resource {
             Some((s, _)) => *s,
-            None => meta.params.iter().find(|p| p.0 == b.name).map(|p| p.2).unwrap_or(meta.span),
+            None => meta
+                .params
+                .iter()
+                .find(|p| p.0 == b.name)
+                .map(|p| p.2)
+                .or_else(|| self.e.local_spans.get(&(self.did, b.name.to_string())).copied())
+                .unwrap_or(meta.span),
         };
         let fname = meta.name.clone();
         let name = b.name.clone();
+        if let Some(used) = b.oneshot.clone() {
+            let d = match (mixed, c) {
+                (true, _) => Diagnostic::error(
+                    "E0402",
+                    format!("`{name}` uses `{used}`, a resource, so it must be called exactly once, but `{fname}` calls it on some paths and not on others"),
+                    span,
+                ),
+                (false, Count::Zero) => Diagnostic::error(
+                    "E0401",
+                    format!("`{name}` uses `{used}`, a resource, so it must be called exactly once, but `{fname}` never calls it"),
+                    span,
+                )
+                .with_help(format!("call `{name}`, or pass it on to a parameter declared `own`")),
+                _ => {
+                    let d = Diagnostic::error(
+                        "E0401",
+                        format!("`{name}` uses `{used}`, a resource, so it must be called exactly once, but `{fname}` may call it more than once"),
+                        span,
+                    );
+                    match self.copied_by.get(&lvl) {
+                        Some((callee, _)) => d
+                            .with_note(format!("`{name}` is passed to `{callee}`, whose parameter is not `own`, so `{callee}` may call it any number of times"))
+                            .with_help(format!("mark that parameter of `{callee}` with `own` (as in `f~own (Unit -> a)`)")),
+                        None => d.with_help("a closure that uses a resource is used up by its call"),
+                    }
+                }
+            };
+            self.e.err(d);
+            self.reported = true;
+            return;
+        }
         if let (Some((_, ty)), Mult::One) = (&resource, b.mult) {
             let d = match (mixed, c) {
                 (true, _) => Diagnostic::error(
@@ -116,17 +156,27 @@ impl U<'_> {
                         Some((callee, _)) => d
                             .with_note(format!("`{name}` is passed to `{callee}`, whose parameter is not `own`, so `{callee}` may copy or drop it"))
                             .with_help(format!("mark that parameter of `{callee}` with `own` (as in `x~own a`) so it can take a resource")),
+                        None if self.captured.contains(&lvl) && self.copied_by.contains_key(&lvl) => {
+                            let callee = self.copied_by.get(&lvl).map(|c| c.0.clone()).unwrap_or_default();
+                            Diagnostic::error(
+                                "E0401",
+                                format!("`{name}` holds a resource (`{ty}`), and a closure that uses it may be called more than once, or never"),
+                                span,
+                            )
+                            .with_note(format!("a closure using `{name}` is passed to `{callee}`, whose parameter is not `own`, so `{callee}` may call it any number of times"))
+                            .with_help(format!("mark that parameter of `{callee}` with `own` (as in `f~own (Unit -> a)`)"))
+                        }
                         None if self.captured.contains(&lvl) => Diagnostic::error(
                             "E0401",
-                            format!("`{name}` holds a resource (`{ty}`), which a closure can't capture"),
+                            format!("`{name}` holds a resource (`{ty}`), and a closure that uses it may be called more than once, or never"),
                             span,
                         )
-                        .with_note("a closure may run any number of times, or never")
-                        .with_help(format!("make `{name}` a parameter of the closure, or use it outside the closure")),
+                        .with_note("a closure that uses a resource must be called exactly once: called where it is made, bound with `let` and called once, or passed to a parameter declared `own`")
+                        .with_help(format!("pass the closure to an `own` parameter (`f~own (Unit -> a)`), or make `{name}` a parameter of the closure")),
                         None if ty.starts_with("Future ") => {
                             d.with_help("join it once: a future of a resource is one too, joined exactly once (D156)")
                         }
-                        None => d.with_help("a resource can't be copied; thread it with `<-` so each use gets the new one"),
+                        None => d.with_help("a resource can't be copied: each operation on it gives back the one to use next, `let (x, f) = op f`"),
                     }
                 }
             };
@@ -190,7 +240,7 @@ impl U<'_> {
     }
 
     fn under(&mut self, name: &str, mult: Mult, body: &Tm) -> Counts {
-        self.binders.push(Binder { name: name.to_string(), mult });
+        self.binders.push(Binder { name: name.to_string(), mult, oneshot: None });
         let c = self.go(body);
         self.close(&c);
         self.binders.pop();
@@ -219,32 +269,7 @@ impl U<'_> {
             }
             // An unsolved meta (an error was reported) uses nothing.
             Tm::App(..) if head_is_meta(t) => self.zero(),
-            Tm::App(f, a, _, m) => {
-                let mut c = self.go(f);
-                // A constructor stores its argument: one use, like a saturated `ConApp`.
-                let m = if *m != Mult::Zero && head_is_con(f) { Mult::One } else { *m };
-                let used = self.go(a);
-                // Arguments are evaluated once, before the call: only what can be
-                // part of the argument's value is used as often as the parameter
-                // allows; a use inside it (`f` in `g (close f)`) happens once.
-                let carried = self.carried(a);
-                if m == Mult::Many {
-                    if let Some(callee) = head_def(f).map(|d| {
-                        let d = &self.e.g.defs[d.0 as usize];
-                        (d.name.to_string(), d.module.to_string())
-                    }) {
-                        for (lvl, c) in used.iter().enumerate() {
-                            if *c != Count::Zero && self.binders[lvl].mult == Mult::One && carried.contains(&lvl) {
-                                self.copied_by.entry(lvl).or_insert_with(|| callee.clone());
-                            }
-                        }
-                    }
-                }
-                let ca: Counts =
-                    used.into_iter().enumerate().map(|(lvl, x)| if carried.contains(&lvl) { x.scale(m) } else { x }).collect();
-                add(&mut c, &ca);
-                c
-            }
+            Tm::App(..) => self.app(t, false),
             Tm::Lam(x, m, _, b) => {
                 // A closure may run any number of times.
                 let c = self.under(x, *m, b);
@@ -261,6 +286,19 @@ impl U<'_> {
                 // at the first.
                 let rest_of_tuple = x.starts_with("$c") && matches!(&**v, Tm::Proj(t, i) if *i > 0 && matches!(**t, Tm::Var(_)));
                 let scale = if *m == Mult::Zero || rest_of_tuple { Mult::Zero } else { Mult::One };
+                // A closure that uses a resource, bound by `let`: the
+                // variable is used once instead (D171).
+                if let (Some(used), false) = (self.oneshot_use(v), *m == Mult::Zero) {
+                    let mut c = self.go_once(v);
+                    self.binders.push(Binder { name: x.to_string(), mult: Mult::One, oneshot: Some(used) });
+                    let cb = self.go(b);
+                    self.close(&cb);
+                    self.binders.pop();
+                    let mut cb = cb;
+                    cb.pop();
+                    add(&mut c, &cb);
+                    return c;
+                }
                 let mut c: Counts = self.go(v).into_iter().map(|c| c.scale(scale)).collect();
                 let cb = self.under(x, *m, b);
                 add(&mut c, &cb);
@@ -294,7 +332,7 @@ impl U<'_> {
                 for x in v.iter().take(n) {
                     // Behaviour bodies run once: a resource may move into them.
                     let cx = match (p, x) {
-                        (Prim::Fork | Prim::Join | Prim::When, Tm::Lam(..)) => self.lam_once(x),
+                        (Prim::When, Tm::Lam(..)) => self.lam_once(x),
                         _ => self.go(x),
                     };
                     add(&mut c, &cx);
@@ -387,10 +425,102 @@ impl U<'_> {
         }
     }
 
+    /// An application. `once`: it is in a place that calls the closure it
+    /// makes, if it is a partial application, exactly once.
+    fn app(&mut self, t: &Tm, once: bool) -> Counts {
+        let Tm::App(f, a, _, m) = t else { return self.go(t) };
+        // A lambda called where it is made runs once (D171).
+        let mut c = match &**f {
+            Tm::Lam(..) => self.lam_once(f),
+            // The rest of this call: what it partly applies is decided at the top.
+            Tm::App(..) => self.app(f, true),
+            _ => self.go(f),
+        };
+        // A constructor stores its argument: one use, like a saturated `ConApp`.
+        let m = if *m != Mult::Zero && head_is_con(f) { Mult::One } else { *m };
+        // A lambda passed to an `own` parameter is called once (D171).
+        let used = if m == Mult::One { self.go_once(a) } else { self.go(a) };
+        // Arguments are evaluated once, before the call: only what can be
+        // part of the argument's value is used as often as the parameter
+        // allows; a use inside it (`f` in `g (close f)`) happens once.
+        let carried = self.carried(a);
+        if m == Mult::Many {
+            if let Some(callee) = head_def(f).map(|d| {
+                let d = &self.e.g.defs[d.0 as usize];
+                (d.name.to_string(), d.module.to_string())
+            }) {
+                for (lvl, c) in used.iter().enumerate() {
+                    if *c != Count::Zero && self.binders[lvl].mult == Mult::One && carried.contains(&lvl) {
+                        self.copied_by.entry(lvl).or_insert_with(|| callee.clone());
+                    }
+                }
+            }
+        }
+        let ca: Counts =
+            used.into_iter().enumerate().map(|(lvl, x)| if carried.contains(&lvl) { x.scale(m) } else { x }).collect();
+        add(&mut c, &ca);
+        // A partial application holding a resource is a closure that
+        // uses it: unless this is a place that calls it once, it may
+        // be called any number of times (D171).
+        if !once && self.partial_use(t).is_some() {
+            for (lvl, x) in c.iter_mut().enumerate() {
+                if *x != Count::Zero && self.binders[lvl].mult == Mult::One {
+                    *x = Count::Many;
+                    self.captured.insert(lvl);
+                }
+            }
+        }
+        c
+    
+    }
+
+    /// `t` where what it makes is called exactly once: a lambda, or a
+    /// partial application, holding a resource (D171).
+    fn go_once(&mut self, t: &Tm) -> Counts {
+        match t {
+            Tm::Lam(..) => self.lam_once(t),
+            Tm::App(..) => self.app(t, true),
+            _ => self.go(t),
+        }
+    }
+
+    /// If `t` partly applies a function to an argument that holds a
+    /// resource (`close_with file` for a function of two parameters), the
+    /// name of one such argument.
+    fn partial_use(&self, t: &Tm) -> Option<String> {
+        let d = head_def(t)?;
+        let meta = self.e.fn_meta.get(&d)?;
+        if spine(t).1 >= meta.n_implicit + meta.params.len() {
+            return None;
+        }
+        app_args(t)
+            .into_iter()
+            .flat_map(|a| self.carried(a))
+            .find(|l| self.binders[*l].mult == Mult::One)
+            .map(|l| self.binders[l].name.clone())
+    }
+
+    /// If `t` is a closure that uses a resource or an `own` value, the
+    /// name of one it uses: such a closure must be called exactly once (D171).
+    fn oneshot_use(&self, t: &Tm) -> Option<String> {
+        if matches!(t, Tm::App(..)) {
+            return self.partial_use(t);
+        }
+        if !matches!(t, Tm::Lam(..)) {
+            return None;
+        }
+        let mut fv = std::collections::BTreeSet::new();
+        crate::core::free_vars(t, 0, &mut fv);
+        fv.into_iter()
+            .filter_map(|i| self.binders.len().checked_sub(1 + i))
+            .find(|l| self.binders[*l].mult == Mult::One)
+            .map(|l| self.binders[l].name.clone())
+    }
+
     fn lam_once(&mut self, t: &Tm) -> Counts {
         match t {
             Tm::Lam(x, m, _, b) => {
-                self.binders.push(Binder { name: x.to_string(), mult: *m });
+                self.binders.push(Binder { name: x.to_string(), mult: *m, oneshot: None });
                 let c = self.lam_once(b);
                 self.close(&c);
                 self.binders.pop();
@@ -410,7 +540,7 @@ impl U<'_> {
             }
             let start = self.binders.len();
             for k in 0..*n {
-                self.binders.push(Binder { name: format!("$field{k}"), mult: Mult::Many });
+                self.binders.push(Binder { name: format!("$field{k}"), mult: Mult::Many, oneshot: None });
             }
             let mut r = self.go(body);
             self.binders.truncate(start);
@@ -498,10 +628,13 @@ fn head_is_con(mut t: &Tm) -> bool {
 /// Check the body (a λ over the function's parameters) of `did`.
 pub fn check_fn(e: &mut Elab, did: DefId, body: &Tm) {
     let mut u = U { e, did, binders: Vec::new(), reported: false, copied_by: Default::default(), captured: Default::default() };
+    // The function's own parameters; a lambda after them is a closure it
+    // returns, which may be called any number of times (D171).
+    let limit = u.e.fn_meta.get(&did).map_or(usize::MAX, |m| m.n_implicit + m.params.len());
     let mut t = body;
     let mut n = 0;
-    while let Tm::Lam(x, m, _, b) = t {
-        u.binders.push(Binder { name: x.to_string(), mult: *m });
+    while let (Tm::Lam(x, m, _, b), true) = (t, n < limit) {
+        u.binders.push(Binder { name: x.to_string(), mult: *m, oneshot: None });
         t = b;
         n += 1;
     }

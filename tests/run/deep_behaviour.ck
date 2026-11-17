@@ -15,9 +15,9 @@ fn upto n -> xs : n~Nat, xs~List Nat
 
 export fn main args sys -> code : args~List String, sys~System, code~Future ExitCode
     let System { term, sched } = sys
-    r <- fork using sched
+    let r = future.fork sched $ \_ ->
         length (map (+ 1) (upto 1000000))
-    done <- join n = r using sched
+    let done = future.join r sched $ \n ->
         terminal.print_line (format n) term
         Success
     done

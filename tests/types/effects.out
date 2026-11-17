@@ -1,9 +1,9 @@
-error[E0234]: `<-` needs a call that returns `(result, fs)`, but this returns `Result Bytes IoError`
- --> effects.ck:9:17
+error[E0201]: type mismatch: expected `Result Bytes IoError`, found `(_, _)`
+ --> effects.ck:9:9
   |
-9 |     contents <- files.read path fs
-  |                 ^^^^^^^^^^^^^^^^^^
-  = help: operations on authority capabilities (`fs`, `term`, …) return just their result: use `let`
+9 |     let (contents, fs) = files.read path fs
+  |         ^^^^^^^^^^^^^^ this pattern has type `(_, _)`
+  = help: `fs` is not a resource, so an operation on it returns only its result: `let contents = …`
 
 error[E0230]: `try` can only be used where the block's value is the function's result
   --> effects.ck:14:17
@@ -25,9 +25,9 @@ error[E0201]: type mismatch: expected `Cown _`, found `Nat`
    |              ^ this expression has type `Nat`
 
 error[E0201]: type mismatch: expected `Sched`, found `Nat`
-  --> effects.ck:42:21
+  --> effects.ck:42:25
    |
-42 |     f <- fork using x
-   |                     ^ this expression has type `Nat`
+42 |     let f = future.fork x $ \_ ->
+   |                         ^ this expression has type `Nat`
 
 effects.ck: 5 errors, 0 warnings

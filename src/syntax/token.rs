@@ -235,7 +235,6 @@ pub enum Tok {
     Eq,
     Arrow,
     /// `<-`
-    LArrow,
     /// A malformed token; the lexer already reported it.
     Error,
     Newline,
@@ -269,7 +268,6 @@ impl fmt::Display for Tok {
             Tok::Pipe => write!(f, "`|`"),
             Tok::Eq => write!(f, "`=`"),
             Tok::Arrow => write!(f, "`->`"),
-            Tok::LArrow => write!(f, "`<-`"),
             Tok::Error => write!(f, "invalid token"),
             Tok::Newline => write!(f, "end of line"),
             Tok::Indent => write!(f, "indented block"),

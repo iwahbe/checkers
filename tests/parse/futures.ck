@@ -1,15 +1,12 @@
-module fork_join
+module futures
 
 fn f sched xs
     let (a, b, c) = par (g xs, h xs, k xs)
     let pair = map2 combine (par (one, two))
-    p <- fork using sched
+    let p = future.fork sched $ \_ ->
         1
-    _ <- fork using sched
-        2
-    q <- join x = p using sched
-        x + 1
-    r <- join x = p, y = q using sched
+    let q = future.join p sched (\x -> x + 1)
+    let r = future.join (future.both p q) sched $ \(x, y) ->
         let z = x + y
         z
     let s = join "," (fork_names xs)

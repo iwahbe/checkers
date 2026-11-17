@@ -45,7 +45,7 @@ let BLOCK = 65536
 
 # Count the rest of `f`, a block at a time, from the counts so far.
 partial fn count_file f in_word acc -> r : f~File, in_word~Bool, acc~Counts, r~Result Counts IoError
-    block <- files.read_some BLOCK f
+    let (block, f) = files.read_some BLOCK f
     match block
         Ok b  ->
             if len b == 0

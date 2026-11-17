@@ -1,0 +1,61 @@
+error[E0401]: `f` is `own`, so it must be used exactly once, but `run_twice` may use it more than once
+  --> oneshot.ck:15:14
+   |
+15 | fn run_twice f -> r : f~own (Unit -> Unit), r~Unit
+   |              ^
+   = help: `own` promises a single use, so the argument may be a resource; remove `own` if the value must be used twice
+
+error[E0401]: `file` holds a resource (`File`), and a closure that uses it may be called more than once, or never
+  --> oneshot.ck:36:9
+   |
+36 | fn bad1 file -> r : file~File, r~Unit
+   |         ^^^^
+   = note: a closure using `file` is passed to `many`, whose parameter is not `own`, so `many` may call it any number of times
+   = help: mark that parameter of `many` with `own` (as in `f~own (Unit -> a)`)
+
+error[E0401]: `k` uses `file`, a resource, so it must be called exactly once, but `bad2` may call it more than once
+  --> oneshot.ck:40:9
+   |
+40 |     let k = \_ -> files.close file
+   |         ^
+   = help: a closure that uses a resource is used up by its call
+
+error[E0401]: `k` uses `file`, a resource, so it must be called exactly once, but `bad3` never calls it
+  --> oneshot.ck:45:9
+   |
+45 |     let k = \_ -> files.close file
+   |         ^
+   = help: call `k`, or pass it on to a parameter declared `own`
+
+error[E0401]: `file` holds a resource (`File`), and a closure that uses it may be called more than once, or never
+  --> oneshot.ck:48:9
+   |
+48 | fn bad4 file -> k : file~File, k~(Unit -> Unit)
+   |         ^^^^
+   = note: a closure that uses a resource must be called exactly once: called where it is made, bound with `let` and called once, or passed to a parameter declared `own`
+   = help: pass the closure to an `own` parameter (`f~own (Unit -> a)`), or make `file` a parameter of the closure
+
+error[E0401]: `k` uses `file`, a resource, so it must be called exactly once, but `bad5` may call it more than once
+  --> oneshot.ck:52:9
+   |
+52 |     let k = \_ -> files.close file
+   |         ^
+   = note: `k` is passed to `many`, whose parameter is not `own`, so `many` may call it any number of times
+   = help: mark that parameter of `many` with `own` (as in `f~own (Unit -> a)`)
+
+error[E0401]: `k` uses `file`, a resource, so it must be called exactly once, but `partial_twice` may call it more than once
+  --> oneshot.ck:59:9
+   |
+59 |     let k = close_with file
+   |         ^
+   = help: a closure that uses a resource is used up by its call
+
+error[E0401]: `file` holds a resource (`File`), and a closure that uses it may be called more than once, or never
+  --> oneshot.ck:63:7
+   |
+63 | fn mk file -> k : file~File, k~(Int -> Unit)
+   |       ^^^^
+   = note: a closure that uses a resource must be called exactly once: called where it is made, bound with `let` and called once, or passed to a parameter declared `own`
+   = help: pass the closure to an `own` parameter (`f~own (Unit -> a)`), or make `file` a parameter of the closure
+
+oneshot.ck: 8 errors, 0 warnings

@@ -8,7 +8,7 @@ Nothing ever waits for another task while holding something: there are no locks,
 
 `cown.new v sched` (from `std.cown`, with the `Sched` capability) creates a `Cown a` holding `v`. The handle may be shared freely: copied, captured, passed to other functions. The value it holds is reachable only inside a behaviour that names the cown.
 
-A cown can't hold a resource (E0405): a resource has one owner at a time, and passes from owner to owner through calls, `fork` and `join` ([Capabilities](effects.md#resources)).
+A cown can't hold a resource (E0405): a resource has one owner at a time, and passes from owner to owner through calls and the closures given to `future.fork` and `future.join` ([Capabilities](effects.md#resources)).
 
 ## `when`
 
@@ -67,14 +67,18 @@ fn add msg log sched -> u : msg~String, log~Cown Log, sched~Sched, u~Unit
     ()
 ```
 
-## `fork` and `join`
+## Futures
 
-```text
-stmt ::= pattern '<-' 'fork' 'using' lname NL INDENT block DEDENT
-       | pattern '<-' 'join' lname '=' expr { ',' lname '=' expr } 'using' lname NL INDENT block DEDENT
-```
+`std.future` schedules work whose result is wanted later, as a `Future a`:
 
-`f <- fork using sched` followed by a block schedules the block as a behaviour, and binds `f` to a `Future t`, `t` the block's type. `r <- join x = f1, y = f2 using sched` followed by a block schedules a behaviour that runs once every future listed is filled; inside, the names are bound to the futures' values. It binds a `Future` of the block's result, so joins compose. `fork` and `join` are written with `<-` on a line of their own (E0116).
+| Function | Gives |
+|---|---|
+| `future.fork sched f`, `f~own (Unit -> a)` | a `Future a`, filled by a behaviour that runs `f ()` |
+| `future.join x sched f`, `x~own Future a`, `f~own (a -> b)` | a `Future b`, filled by a behaviour that runs `f` on `x`'s value once `x` is filled |
+| `future.both x y` | a `Future (a, b)`, filled once both are |
+| `future.ready v` | a `Future a` already filled with `v` |
+
+A `join` gives a future too, so joins compose; several futures are joined through `both`. The functions given to `fork` and `join` are [one-shot closures](effects.md#one-shot-closures): each runs once, so it may use a resource, which moves into the behaviour. A block becomes a lambda after `$`: `future.fork sched $ \_ ->` followed by the block.
 
 ```checkers
 module sums
@@ -89,11 +93,11 @@ fn sum xs -> n : xs~List Nat, n~Nat
 
 export fn main args sys -> code : args~List String, sys~System, code~Future ExitCode
     let sched = sys.sched
-    a <- fork using sched
+    let a = future.fork sched $ \_ ->
         sum [1, 2, 3]
-    b <- fork using sched
+    let b = future.fork sched $ \_ ->
         sum [4, 5, 6]
-    done <- join x = a, y = b using sched
+    let done = future.join (future.both a b) sched $ \(x, y) ->
         if x + y == 21 then Success else Failure 1
     done
 ```

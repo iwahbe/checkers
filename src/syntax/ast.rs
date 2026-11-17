@@ -217,8 +217,6 @@ pub enum Stmt {
     HaveType(Ident, Expr),
     /// A bare expression line that is not the block's last; must be `Unit` (D35)
     Expr(Expr),
-    /// `pat <- f a c` (D29)
-    Bind(Pattern, Expr),
     /// `when x = c, … using sched` + block (D30)
     When(When),
 }
@@ -283,10 +281,6 @@ pub enum ExprKind {
     Admit,
     /// `par (e1, …, en)` (D34)
     Par(Vec<Expr>),
-    /// `fork using sched` + block; only as the right side of `<-` (D33)
-    Fork(Ident, Block),
-    /// `join x = f, … using sched` + block; only as the right side of `<-` (D33)
-    Join(Vec<(Ident, Expr)>, Ident, Block),
     /// `forall x y : x~a, y~a, p x y` (D137): variables, then clauses that
     /// mention them, the last the conclusion.
     Forall(Vec<Ident>, Vec<Constraint>),

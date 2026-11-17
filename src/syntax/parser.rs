@@ -194,13 +194,6 @@ impl Parser {
         if self.eat(&Tok::Newline) || self.last_dedent {
             self.last_dedent = false;
             Ok(())
-        } else if self.at(&Tok::LArrow) {
-            let span = self.span();
-            self.diags.push(
-                Diagnostic::error("E0113", "`<-` binds an effectful result and must start a statement", span)
-                    .with_help("write `x <- f a cap` on its own line; for a comparison with a negative number write `x < -1`"),
-            );
-            Err(Failed)
         } else {
             Err(self.error_here("end of line"))
         }
@@ -944,37 +937,8 @@ impl Parser {
                 }
                 return Ok(None);
             }
-            if !self.at_kw(Kw::Let) && self.line_has_larrow() {
-                let p = self.pattern()?;
-                let arrow = self.expect(Tok::LArrow, "`<-`")?.span;
-                let e = if self.at_fork_join() {
-                    self.fork_join()?
-                } else {
-                    let e = self.expr()?;
-                    self.end_line()?;
-                    e
-                };
-                stmts.push(Stmt::Bind(p, e));
-                if self.at(&Tok::Dedent) {
-                    self.diags.push(
-                        Diagnostic::error("E0114", "a block cannot end with a `<-` binding", arrow)
-                            .with_label("this binds a result; the block still needs a final expression")
-                            .with_help("add the block's result on the next line; for a comparison with a negative number write `x < -1`"),
-                    );
-                    return Err(Failed);
-                }
-                return Ok(None);
-            }
             if self.eat_kw(Kw::Let) {
                 let p = self.pattern()?;
-                if self.at(&Tok::LArrow) {
-                    let span = self.span();
-                    self.diags.push(
-                        Diagnostic::error("E0111", "`<-` does not take `let`", span)
-                            .with_help("write `x <- f a cap` without `let`"),
-                    );
-                    return Err(Failed);
-                }
                 self.expect(Tok::Eq, "`=`")?;
                 let at = self.span();
                 let parsed = (|| {
@@ -1040,21 +1004,6 @@ impl Parser {
         }
     }
 
-    /// Does the current logical line contain a top-level `<-`?
-    fn line_has_larrow(&self) -> bool {
-        let mut depth = 0usize;
-        for t in &self.toks[self.pos..] {
-            match t.tok {
-                Tok::LParen | Tok::LBracket | Tok::LBrace => depth += 1,
-                Tok::RParen | Tok::RBracket | Tok::RBrace => depth = depth.saturating_sub(1),
-                Tok::LArrow if depth == 0 => return true,
-                Tok::Newline | Tok::Indent | Tok::Dedent | Tok::Eof => return false,
-                _ => {}
-            }
-        }
-        false
-    }
-
     /// `when x = c, … using sched` NL INDENT block DEDENT (D30)
     fn when_stmt(&mut self) -> PResult<When> {
         let start = self.bump().span; // when
@@ -1083,54 +1032,6 @@ impl Parser {
         let body = self.block_rest()?;
         let span = start.to(self.prev_span());
         Ok(When { binds, sched, body, span })
-    }
-
-    /// `fork` and `join` are contextual: `fork using …` and `join name = …`.
-    /// Elsewhere they are ordinary names (e.g. the list function `join`).
-    fn at_fork_join(&self) -> bool {
-        match self.peek() {
-            Tok::LName(n) if n == "fork" => *self.peek_at(1) == Tok::Kw(Kw::Using),
-            Tok::LName(n) if n == "join" => self.at_ident_at(1) && *self.peek_at(2) == Tok::Eq,
-            _ => false,
-        }
-    }
-
-    fn at_ident_at(&self, n: usize) -> bool {
-        matches!(self.peek_at(n), Tok::LName(_) | Tok::UName(_))
-    }
-
-    /// `fork using sched` / `join x = f, … using sched`, then an indented block (D33).
-    fn fork_join(&mut self) -> PResult<Expr> {
-        let is_fork = matches!(self.peek(), Tok::LName(n) if n == "fork");
-        let start = self.bump().span;
-        let what = if is_fork { "fork" } else { "join" };
-        let mut binds = Vec::new();
-        if !is_fork {
-            loop {
-                let name = self.ident("a name for the future's value")?;
-                self.expect(Tok::Eq, "`=` and a future")?;
-                binds.push((name, self.expr()?));
-                if !self.eat(&Tok::Comma) {
-                    break;
-                }
-            }
-        }
-        if !self.at_kw(Kw::Using) {
-            let span = self.span();
-            self.diags.push(
-                Diagnostic::error("E0112", format!("`{what}` needs a scheduler capability: `using sched`"), span)
-                    .with_label("expected `using`")
-                    .with_help(format!("scheduling is an effect; pass the `Sched` capability, e.g. `f <- {what} … using sched`")),
-            );
-            return Err(Failed);
-        }
-        self.bump();
-        let sched = self.ident("the `Sched` capability")?;
-        self.open_block(&format!("{what} body"))?;
-        let body = self.block_rest()?;
-        let span = start.to(self.prev_span());
-        let kind = if is_fork { ExprKind::Fork(sched, body) } else { ExprKind::Join(binds, sched, body) };
-        Ok(Expr { kind, span })
     }
 
     /// An indented block as an expression.
@@ -1181,14 +1082,6 @@ impl Parser {
             Tok::Kw(Kw::Auto) => {
                 self.bump();
                 Ok(Expr { kind: ExprKind::Auto, span: start })
-            }
-            _ if self.at_fork_join() => {
-                let what = if matches!(self.peek(), Tok::LName(n) if n == "fork") { "fork" } else { "join" };
-                self.diags.push(
-                    Diagnostic::error("E0116", format!("`{what}` must be bound to a future"), start)
-                        .with_help(format!("write `f <- {what} … using sched` on its own line; use `_ <-` to ignore the future")),
-                );
-                Err(Failed)
             }
             Tok::Kw(Kw::Admit) => {
                 self.bump();

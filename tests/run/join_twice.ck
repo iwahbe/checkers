@@ -7,13 +7,13 @@ import std.terminal
 
 export fn main args sys -> code : args~List String, sys~System, code~Future ExitCode
     let System { term, sched } = sys
-    a <- fork using sched
+    let a = future.fork sched $ \_ ->
         "shared"
-    b <- join x = a using sched
+    let b = future.join a sched $ \x ->
         x ++ " once"
-    c <- join y = a using sched
+    let c = future.join a sched $ \y ->
         y ++ " twice"
-    d <- join p = b, q = c using sched
+    let d = future.join (future.both b c) sched $ \(p, q) ->
         terminal.print_line p term
         terminal.print_line q term
         Success

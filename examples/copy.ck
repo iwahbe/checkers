@@ -37,7 +37,7 @@ let BLOCK = 65536
 # An error comes with the path of the file it happened to.
 partial fn copy_blocks src input dst output -> r : src~String, input~File, dst~String, output~File,
                                                    r~Result Unit (String, IoError)
-    block <- files.read_some BLOCK input
+    let (block, input) = files.read_some BLOCK input
     match block
         Ok b  ->
             if len b == 0
@@ -45,7 +45,7 @@ partial fn copy_blocks src input dst output -> r : src~String, input~File, dst~S
                 files.close output
                 Ok ()
             else
-                written <- files.write_bytes b output
+                let (written, output) = files.write_bytes b output
                 match written
                     Ok _  -> copy_blocks src input dst output
                     Err e ->

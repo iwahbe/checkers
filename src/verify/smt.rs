@@ -2191,7 +2191,7 @@ impl<'a> Builder<'a> {
                 Ok((format!("({f} {})", ts[0].0), Sort::Str))
             }
             Prim::Par => Ok(ts[0].clone()),
-            Prim::When | Prim::Fork | Prim::Join => out("a concurrency form (`when`, `fork`, `join`)"),
+            Prim::When => out("a `when`"),
             Prim::Builtin(n) => out(format!("the builtin `{n}`")),
             Prim::Forall => out("a `forall`"),
         }

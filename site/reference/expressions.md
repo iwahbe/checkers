@@ -12,11 +12,10 @@ stmt  ::= 'let' pattern '=' ( expr | NL INDENT block DEDENT )
         | 'have' expr
         | 'have' lname '~' type
         | expr
-        | pattern '<-' expr
-        | when | fork | join
+        | when
 ```
 
-**`let`** evaluates an expression and binds the pattern on its left to it, for the rest of the block. A `let` whose expression starts on the next line takes an indented block. The pattern must match every value of the type ([Patterns](patterns.md)): `let (q, r) = p` takes a tuple apart.
+**`let`** evaluates an expression and binds the pattern on its left to it, for the rest of the block. A `let` whose expression starts on the next line takes an indented block. The pattern must match every value of the type ([Patterns](patterns.md)): `let (q, r) = p` takes a tuple apart. `let` is also how a resource is threaded through operations on it: `let (line, f) = files.read_line f` ([Capabilities](effects.md#threading-a-resource)).
 
 ```checkers
 fn area w h -> a : w~Nat, h~Nat, a~Nat
@@ -31,7 +30,7 @@ A name bound by `let` hides an earlier one of the same name for the rest of the 
 
 **A line that is just an expression** must be a call that returns `Unit`, such as printing a line; its value is thrown away. Any other value on a line of its own is an error (E0215); write `let _ = e` to discard it on purpose.
 
-**`have`** adds a fact for the prover, or states a variable's type ([Proofs](proofs.md#have)); it has no effect when the program runs. **`<-`** binds the results of an operation on a resource ([Capabilities](effects.md#resources)). **`when`**, **`fork`** and **`join`** schedule concurrent work ([Concurrency](concurrency.md)).
+**`have`** adds a fact for the prover, or states a variable's type ([Proofs](proofs.md#have)); it has no effect when the program runs. **`when`** schedules a behaviour on cowns ([Concurrency](concurrency.md#when)).
 
 ## Names and literals
 
@@ -139,7 +138,9 @@ check list.map (\x -> x * x) [1, 2, 3] == [1, 4, 9]
 check list.map (\(k, v) -> k + v) [(1, 2), (3, 4)] == [3, 7]
 ```
 
-A lambda may use the locals around it. Its body extends as far right as possible, so a lambda used as an argument is parenthesized (or follows `$`). A lambda whose body is an indented block is written outside brackets: `let f = \x ->` followed by the block.
+A lambda may use the locals around it. Its body extends as far right as possible, and an argument must be an atom (a name, a literal, something in brackets), so a lambda passed to a function is parenthesized, `f (\x -> e)`, or follows `$`, `f $ \x -> e`. A lambda whose body is an indented block is written outside brackets, after `$` or `=`: `let f = \x ->` or `future.fork sched $ \_ ->`, followed by the block.
+
+A lambda that uses a resource is a **one-shot closure**: it must be called exactly once ([Capabilities](effects.md#one-shot-closures)).
 
 ## `try`
 

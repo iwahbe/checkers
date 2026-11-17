@@ -1,6 +1,6 @@
 # Patterns and `match`
 
-A pattern describes the shape of a value and names its parts. Patterns are used by `match`, `let`, lambda parameters and `<-`.
+A pattern describes the shape of a value and names its parts. Patterns are used by `match`, `let` and lambda parameters.
 
 ## Patterns
 
@@ -113,7 +113,7 @@ fn head xs -> x : xs~List Int, x~Int
 
 In a specification (a predicate, an `ensures`, a type) there are no obligations, so a `match` there must cover every case of its type.
 
-The pattern of a `let`, a lambda's parameter or `<-` is a `match` with one arm, and follows the same rule: it must match every value that can occur there, and may leave out the cases the facts rule out.
+The pattern of a `let` or a lambda's parameter is a `match` with one arm, and follows the same rule: it must match every value that can occur there, and may leave out the cases the facts rule out.
 
 ```checkers
 fn first xs -> x : xs~List a, len xs > 0, x~a

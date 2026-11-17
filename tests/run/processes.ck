@@ -35,9 +35,9 @@ export partial fn main args sys -> code : args~List String, sys~System, code~Exi
     # Both directions piped; standard error shared with this program.
     match proc.spawn "sh" ["-c", "read x; echo got $x; echo to stderr >&2"] (Streams Pipe Pipe Inherit) p
         Ok (Spawned child to from ()) ->
-            _ <- files.write_line "hello" to
+            let (_, to) = files.write_line "hello" to
             files.close to
-            got <- files.read_rest from
+            let (got, from) = files.read_rest from
             files.close from
             terminal.print_line (format got ++ ", " ++ format (proc.wait child)) term
         Err e                         -> terminal.print_line (files.describe e) term

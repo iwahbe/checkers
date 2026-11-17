@@ -38,7 +38,7 @@ error[E0401]: `f` holds a resource (`File`), so it must be used exactly once, bu
    |
 26 | fn closed_twice f : f~File
    |                 ^
-   = help: a resource can't be copied; thread it with `<-` so each use gets the new one
+   = help: a resource can't be copied: each operation on it gives back the one to use next, `let (x, f) = op f`
 
 error[E0401]: `f` holds a resource (`File`), so it must be used exactly once, but `never_closed_after_try` never uses it
   --> resources.ck:31:9

@@ -13,7 +13,7 @@ fn one_branch f b : f~File, b~Bool
     if b then files.close f else ()
 
 fn threaded f : f~File
-    _ <- files.write_line "hi" f
+    let (_, f) = files.write_line "hi" f
     files.close f
 
 fn ghostly src -> n : src~ghost Bytes, n~Nat

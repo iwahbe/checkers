@@ -344,7 +344,7 @@ impl Refs {
         let mut bound = bound.to_vec();
         for s in &b.stmts {
             match s {
-                Stmt::Let(p, e) | Stmt::Bind(p, e) => {
+                Stmt::Let(p, e) => {
                     self.expr(e, &bound, false);
                     p.binds(&mut bound);
                 }
@@ -424,15 +424,6 @@ impl Refs {
                 self.constraints(cs, &b);
             }
             ExprKind::Block(b) => self.block(b, bound),
-            ExprKind::Fork(_, b) => self.block(b, bound),
-            ExprKind::Join(xs, _, b) => {
-                let mut bb = bound.to_vec();
-                for (x, e) in xs {
-                    self.expr(e, bound, in_type);
-                    bb.push(x.name.clone());
-                }
-                self.block(b, &bb);
-            }
             _ => {}
         }
     }

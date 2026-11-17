@@ -398,11 +398,6 @@ impl Rewrite<'_> {
                     pat_binds(p, &mut b);
                     Stmt::Let(self.pat(p), e)
                 }
-                Stmt::Bind(p, e) => {
-                    let e = self.expr(e, &b);
-                    pat_binds(p, &mut b);
-                    Stmt::Bind(self.pat(p), e)
-                }
                 Stmt::Have(e) => Stmt::Have(self.expr(e, &b)),
                 Stmt::HaveType(x, t) => Stmt::HaveType(x.clone(), self.expr(t, &b)),
                 Stmt::Expr(e) => Stmt::Expr(self.expr(e, &b)),

@@ -2,9 +2,9 @@ module effects
 
 fn binds sys
     let System { fs, term = t } = sys
-    line <- terminal.read_line t
-    (a, b) <- pair_op 1 fs
-    _ <- terminal.print_line "done" t
+    let (line, t) = terminal.read_line t
+    let ((a, b), fs) = pair_op 1 fs
+    let (_, t) = terminal.print_line "done" t
     line
 
 fn behaviours jobs screen sched

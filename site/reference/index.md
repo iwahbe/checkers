@@ -17,7 +17,7 @@ Every example on these pages is compiled when the site is built. An example mark
 9. [Proofs](proofs.md): obligations, the facts the prover knows, lemmas, `have`, `forall`, and what a proof rests on.
 10. [Classes](classes.md): classes, instances, operators through classes, and classes over type constructors.
 11. [Capabilities and resources](effects.md): `main`, authority capabilities, resources used exactly once, files and processes.
-12. [Concurrency](concurrency.md): cowns, behaviours, futures, `fork`, `join` and `par`.
+12. [Concurrency](concurrency.md): cowns, behaviours, futures and `par`.
 13. [Staging](staging.md): `comptime` parameters and code that runs while compiling.
 14. [Documentation comments](documentation.md): descriptions, links to symbols, and code that is compiled.
 15. [Running programs](execution.md): erasure, evaluation order, `format`, run-time checks and exit codes.

@@ -37,10 +37,10 @@ This document is the single source of truth for Checkers. Implementation follows
 | D26 | **Two namespaces for `Uname`s, chosen by position.** After `~` in a constraint (and in a `type` alias's first constraint) a `Uname` resolves to a type; elsewhere it resolves to a data constructor or constant. So `enum Json` may have a constructor `Bool b : b~Bool`, and `record Error` is built with `Error pos kind` while its type is `Error src`. `lname`s share one namespace everywhere, so values used inside types (`Parsed Json src i`) work. This is Haskell's split, made sound for dependent types by D9 (types only ever appear after `~`). | 11/05/2026 | decided (11/06/2026) |
 | D27 | **Effects go through capabilities** (§8.1–8.2). Every effectful operation takes a capability; the kernel treats capabilities as linear, so every function stays a mathematical function. `main` receives `sys~System`, a record of authority capabilities (`term`, `fs`, `env`, `proc`, `net`, `clock`, `sched`). No `IO` monad and no effect system in the kernel. | 11/05/2026 | decided |
 | D28 | **Authority is copied on use; resources are linear** (§8.1, §8.3–8.4). Authority capabilities (`System`, `Term`, `Fs`, `Env`, `Proc`, `Net`, `Clock`, `Sched`) may be used any number of times and dropped: the elaborator gives each use a fresh token, so the kernel still sees exact linearity. Cost: no proven ordering between uses of one authority, and closures capturing one are single-use. Resources (`File`, `Child`, `Pipe`, `Socket`) are `own`, used exactly once, and closed explicitly. *Supersedes the 11/05/2026 droppable-but-linear proposal and `files.split`.* | 11/05/2026 | decided |
-| D29 | **`x <- f a r`** means `let (x, r) = f a r`, where the last argument `r` is a **resource** variable (§8.4). `<-` also binds the future returned by `fork`/`join` (§8.6). | 11/05/2026 | decided (11/06/2026) |
+| D29 | **`x <- f a r`** means `let (x, r) = f a r`, where the last argument `r` is a **resource** variable (§8.4). `<-` also binds the future returned by `fork`/`join` (§8.6). | 11/05/2026 | decided (11/06/2026); superseded by D171 |
 | D30 | **Concurrency is cowns + `when`** (behaviour-oriented concurrency, Verona; §8.5): race- and deadlock-free by construction, causal order, invariants as refinement types on contents. Actors and channels are libraries on top. *Supersedes the actors-with-session-types plan for M7.* | 11/05/2026 | decided (syntax decided 11/05/2026) |
 | D31 | `main`'s signature: `fn main args sys -> code : args~List String, sys~System, code~ExitCode` (it may be `partial`; checked, E0366, and types left out are these, D149). `code` may also be a `Future ExitCode` (§8.6). The process exits once all scheduled work has finished. | 11/05/2026 | decided (11/06/2026) |
-| D33 | **Nothing ever blocks.** No `await`. Effectful fork/join is `f <- fork using sched` and `r <- join x = f, … using sched`: both schedule a behaviour and return a `Future`; a join runs after the forks it names, by causal order (§8.6). | 11/05/2026 | decided (syntax decided 11/05/2026) |
+| D33 | **Nothing ever blocks.** No `await`. Effectful fork/join is `f <- fork using sched` and `r <- join x = f, … using sched`: both schedule a behaviour and return a `Future`; a join runs after the forks it names, by causal order (§8.6). | 11/05/2026 | decided (syntax decided 11/05/2026); syntax superseded by D171 |
 | D34 | **`par (e1, …, en)`** evaluates the components of an n-tuple in parallel and returns the tuple. Pure only; to the prover `par t == t`. A keyword, not a function, because Checkers is strict: a function's arguments would already be evaluated, one after another, before it ran. | 11/05/2026 | decided |
 | D32 | **Record patterns** `Ctor { a, b = p }` bind named fields. Fields left out must be authority capabilities or ordinary values; an unmentioned resource field is an error. | 11/05/2026 | decided (11/06/2026) |
 | D35 | **`Unit` statements.** A call returning `Unit` may stand alone as a statement line in a block (`terminal.print_line "hi" term`). Any other non-final bare expression is a type error; discard a value with `let _ = …`. | 11/05/2026 | decided (11/06/2026) |
@@ -179,6 +179,7 @@ This document is the single source of truth for Checkers. Implementation follows
 | D168 | **Type alias parameters may be values.** Asked for (Ian, 11/17/2026): `type Bounded lo hi = n~Int, lo <= n, n <= hi` should work. It didn't because each alias parameter was bound as a `Type` (§9.2 left their types unsaid), so `lo <= n` compared a type with an `Int`. As built: each parameter's type is an unknown, settled by the alias's definition and predicates (`lo <= n` with `n~Int` makes it `Int`), and `Type` when nothing settles it, so `type Pairs a = xs~List (a, a)` is as before. Uses (`b~Bounded 0 10`, `r~Bounded lo hi`) were already handled: an alias's predicates are instantiated with its arguments (§7.1), and refinements compare by implication (D83), so `Bounded 2 5` is used as `Bounded 0 10` with an obligation. A failed alias predicate is now shown in the use's names (`b <= 10` for `b~Bounded 0 10`, `b < 256` for `b~U8`), not the alias's (`n <= hi`, `n < 256`), in E0450 and the trust ledger. Test: `tests/types/alias_params`. | 11/17/2026 | decided |
 | D169 | **A `-` is a sign or a subtraction by its spacing.** Asked for (Ian, 11/17/2026), replacing D167 (h), whose rule (a line starting with an operator continues only when indented further) left a block's first line unable to start with `-`. The one ambiguous operator is `-`, the only binary operator that can also start an expression. As in Scala 3, whose leading infix operators continue a line only when followed by white space ([reference](https://scala-lang.org/api/docs/changed-features/operators.html)), and GHC's `LexicalNegation` ([guide](https://ghc.gitlab.haskell.org/ghc/doc/users_guide/_sources/exts/lexical_negation.rst.txt)), whitespace decides, as it already does for `.` and `[` (D22): a `-` after white space, the start of the file, `(`, `[`, `{` or `,`, glued to what follows, is a sign (token `Neg`); every other `-` subtracts. So: a line starting with `-1` starts a new logical line (§9.1 rule 3 applies only to binary operators), at any indentation; a line starting with `- b` continues the one before; `f -1` applies `f` to `-1` (it was `f - 1`, as in Haskell); `a-b` and `a - b` subtract; `2*-1` and `(- x)`, with no operand before the `-`, negate as before. Breaking: `x -1` meaning `x - 1`; nothing in the repository wrote it outside the tests of this rule. E0205 on `x -1` has a `help:` saying the `-` is a sign and to put a space after it. The formatter keeps a sign glued (`g -1` stays), and its layout pass follows the same rule (`tools/ck/syntax.ck`). Tests: `tests/types/sign_spacing`, `tests/parse/signs`, `tests/fmt/spacing`. | 11/17/2026 | decided |
 | D170 | **`have x~T`.** Asked for (Ian, 11/17/2026). `have` takes any constraint: a predicate (`have n < 19`, `have sorted xs`, as before), a lemma with its arguments (as before), and now a typing, `have x~T`, for a variable `x` in scope. `x` is checked against `T`: what is still unknown of `x`'s type is settled (`let y = 5` then `have y~Int` makes `y - 7` an `Int` subtraction, not a `Nat` one: a literal's type is decided only at the end of the declaration, so a later `have` is in time), a different type is E0201, and a refinement `T` adds is an obligation (`have d~Percent`), then facts, as `have d <= 100` would be. A `let` takes no annotation of its own: a typing is a constraint, and constraints are written in signatures and after `have`. Refinement obligations now show their predicates in the use's names (`p <= 100`, `(x + 1) < 128`), as D168 did for postconditions. Test: `tests/types/have_type`. | 11/17/2026 | decided |
+| D171 | **`let` is the only binding form; `fork` and `join` are functions; one-shot closures.** Asked for (Ian, 11/17/2026), from the Later item "revisit `<-` and `let`". (a) **`<-` is removed** (D29): `x <- op a r` is written `let (x, r) = op a r`, which already did the same, and the token `<-` is gone, so `x<-1` is `x < -1`. Clean threads its unique values the same way, with a tuple and a rebinding `let` ([Clean 3.1 report, §9](https://clean.cs.ru.nl/download/doc/CleanLangRep.3.1.pdf)), as do Austral (`let (x, f) = …`) and Mercury's state variables, which give the rebinding a syntax only as sugar over pairs. (b) **`fork` and `join` are functions of `std.future`** (D33), taking a closure in place of a block: `future.fork sched f` with `f~own (Unit -> a)` gives a `Future a`; `future.join x sched f` with `x~own Future a`, `f~own (a -> b)` gives a `Future b` that runs `f` after `x` is filled; `future.both x y` gives a `Future (a, b)`, filled when both are, so joining several futures is `future.join (future.both a b) sched $ \(x, y) -> …`. A block becomes a lambda: `let a = future.fork sched $ \_ ->` followed by it. No special syntax: arguments are atoms (§9.2) and a lambda isn't one, so a lambda argument is parenthesized or follows `$`, as in Haskell. (c) **One-shot closures.** A closure that uses a resource (or a variable of an `own` parameter) is allowed when it is called exactly once: called where it is made, bound by `let` and called once (the variable is then linear, D39), or passed to a parameter declared `own`, which promises a single use; so `own` may now be written on a function type (`f~own (Unit -> a)`). Partly applying a function to a resource (`close_with file`) makes such a closure too. Anywhere else (passed to a parameter that isn't `own`, returned, called twice or never) is E0401, saying which. Idris 2 types this as a linear function `(1 _ : Unit) -> a` and Linear Haskell as `a %1 -> b`; Checkers keeps D45's reading of `own` instead of a second arrow. A resource used in the closure moves into it, as into a `when` (§8.5). (d) **`when` stays syntax** for now; it is to be revisited as a function the same way. (e) Retired: E0111 (`let` before `<-`), E0113 (`<-` inside an expression), E0114 (a block ending in `<-`), E0116 (`fork` not bound), E0233 (`<-` on something other than a call ending in a resource), E0234 (`<-` on a call not returning a pair). `let (x, fs) = op fs` on an authority (`Fs`, `Term`) is E0201 with a `help:` saying it returns only its result. The formatter's layout pass and the language server's indentation (D158) no longer treat `<-`, `fork` or `join`. Tests: `tests/types/oneshot`, `tests/types/future_resource`, `tests/parse/futures`, `tests/run/waits`. | 11/17/2026 | decided |
 | D24 | **Development loop:** Claude owns the implementation; Ian drives with examples. An issue is "found X, expected Y" with a `.ck` snippet. Each one becomes a regression test under `tests/` *before* the fix lands, and the spec is updated first whenever the expectation changes the language. | 11/05/2026 | decided |
 | D25 | **Milestones reordered for CLI tools first** (§10): a running interpreter with `IO` comes right after type checking, before the prover, so Checkers can be used to build its own tooling early. ~~Capstone: an interactive shell with a small scripting language, with proofs of its correctness.~~ (removed by D81) | 11/05/2026 | decided |
 
@@ -486,7 +487,7 @@ Capabilities come in two kinds (D28):
 | Kind | Examples | Surface behaviour | Ordering proven? |
 |---|---|---|---|
 | **Authority** | `System`, `Term`, `Fs`, `Env`, `Proc`, `Net`, `Clock`, `Sched` | copied on use, dropped when unused; written without `own` | no |
-| **Resource** | `File`, `Child`, `Pipe`, `Socket` | linear by type (D39): used exactly once, threaded with `<-`, closed explicitly; `own` may be written | yes |
+| **Resource** | `File`, `Child`, `Pipe`, `Socket` | linear by type (D39): used exactly once, threaded with `let (x, r) = op r`, closed explicitly; `own` may be written | yes |
 
 ### 8.2 The root capability and `main` (D27, D31)
 
@@ -540,19 +541,19 @@ The kernel still checks exact linearity, and no two calls share a token. When a 
 
 **Effect statements.** A call whose result is `Unit` may stand alone as a statement line in a block, e.g. `terminal.print_line "done" term`. Only calls returning `Unit` may: discarding any other value needs `let _ = …`.
 
-### 8.4 Resources: linear, threaded with `<-` (D29)
+### 8.4 Resources: linear, threaded with `let` (D29, D171)
 
 A resource is an open, stateful thing that must be released: an open `File`, a `Child` process, a `Pipe`, a `Socket`. It has multiplicity 1, implied by its type (D39), and must be consumed exactly once, as must any value that contains one. A generic function accepts a resource only through an `own` parameter (`v~own a`, D45). Forgetting to `close` a file or `wait` for a child is a compile error, which proves, for free, that the shell reaps every child it spawns.
 
-Operations on a resource consume it and return a fresh one together with their result, `(result, resource)`, with the resource last. `<-` rebinds it:
+Operations on a resource consume it and return a fresh one together with their result, `(result, resource)`, with the resource last. A `let` takes the pair apart and rebinds the resource's name:
 
 ```
-line <- file.read_line f         # means: let (line, f) = file.read_line f
-_ <- file.write b f
+let (line, f) = files.read_line f
+let (_, f) = files.write_bytes b f
 files.close f
 ```
 
-The **last argument** of the call must be a resource variable. Because each operation consumes the previous token, the prover sees the operations in sequence; this is where ordering proofs about effects (§8.8) live.
+Because each operation consumes the previous token, the prover sees the operations in sequence; this is where ordering proofs about effects (§8.8) live.
 
 Resources are created from authorities, e.g. `files.open path fs` returns `Result File IoError`.
 
@@ -560,13 +561,13 @@ Resources are created from authorities, e.g. `files.open path fs` returns `Resul
 
 ```
 let input = terminal.stdin term
-header <- files.read_line input          # Content-Length: 52
-body <- files.read_exactly 52 input      # (Result Bytes IoError, File)
+let (header, input) = files.read_line input       # Content-Length: 52
+let (body, input) = files.read_exactly 52 input   # (Result Bytes IoError, File)
 files.close input
 
 match proc.spawn "ckc" ["check", "--json", path] (Streams Discard Pipe Inherit) p
     Ok (Spawned child () out ()) ->           # out~File: only stdout is piped
-        text <- files.read_rest out           # (Result Bytes IoError, File)
+        let (text, out) = files.read_rest out # (Result Bytes IoError, File)
         files.close out
         let code = proc.wait child            # consumes the Child: Result Nat IoError
         …
@@ -596,7 +597,7 @@ So a program gets a `File` for each stream it piped and nothing to handle for th
 
 Data is immutable, so sharing it never races; parallel evaluation of pure code is always safe (`par`, §8.6). What needs coordination is a **resource or state shared by several concurrent tasks**: a table of running jobs, the terminal. For that, Checkers adopts Verona's *behaviour-oriented concurrency* (Cheeseman et al., OOPSLA 2023):
 
-- A **cown** (concurrent owner) wraps a value. `let c = cown.new v sched` creates a `Cown a`. The cown handle may be freely shared; its *contents* are owned by the cown, and it can't hold a resource (E0405, D156 k): its handle can be shared, so nothing would make sure what it held was closed. A resource stays with one owner, passed on through calls, `fork` and `join`; a cown holds the rest of the state.
+- A **cown** (concurrent owner) wraps a value. `let c = cown.new v sched` creates a `Cown a`. The cown handle may be freely shared; its *contents* are owned by the cown, and it can't hold a resource (E0405, D156 k): its handle can be shared, so nothing would make sure what it held was closed. A resource stays with one owner, passed on through calls and the closures given to `future.fork` and `future.join`; a cown holds the rest of the state.
 - A **behaviour** gets exclusive access to one or more cowns:
 
   ```
@@ -631,22 +632,23 @@ let (a, b, c) = par (f x, g y, h z)
 
 `par` takes a tuple literal with two or more components, evaluates them in parallel (work-stealing tasks), and returns the tuple. The components must be pure: no capabilities, no `partial` calls. Pure code holds no cowns and schedules nothing, so the implicit join is safe. To the prover `par t` is `t`, so a parallel `sort` keeps its proof, stays a pure function, and can be used in types.
 
-**Effectful: `fork` and `join`.**
+**Effectful: `fork` and `join` (D171).** Functions of `std.future`:
 
 ```
-a <- fork using sched
+let a = future.fork sched $ \_ ->
     files.read "a.txt" fs
-b <- fork using sched
+let b = future.fork sched $ \_ ->
     files.read "b.txt" fs
-done <- join x = a, y = b using sched
+let done = future.join (future.both a b) sched $ \(x, y) ->
     combine x y
 ```
 
-- `f <- fork using sched` + block schedules the block as a behaviour and binds `f~Future t`, where `t` is the block's type.
-- `r <- join x = f1, y = f2, … using sched` + block schedules a behaviour that runs after every listed future has been filled. Inside, `x`, `y`, … are the plain values (each join gets a future's value, so a future may be joined more than once, D167 m **(proposed)**; a future of a resource must be joined exactly once, D156 l). It binds `r~Future t` for the block's result, so joins compose.
+- `future.fork sched f`, `f~own (Unit -> t)`, schedules `f ()` as a behaviour and gives a `Future t`.
+- `future.join x sched f`, `x~own Future a`, `f~own (a -> b)`, schedules a behaviour that runs `f` on `x`'s value once `x` is filled, and gives a `Future b`, so joins compose. `future.both x y` is a `Future (a, b)` filled once both are; several futures are joined through it. Each join gets the future's value, so a future may be joined more than once (D167 m **(proposed)**); a future of a resource must be joined exactly once (D156 l).
+- The closures are one-shot (D171 c): they may use resources, which move into the behaviour.
 - A future is a cown that only its own fork or join can fill, and that fork/join is the first behaviour scheduled on it. A later join on that future is ordered after it (causal order, §8.5), so its value is always present: no `Option`, no waiting, no deadlock.
 - Behaviour bodies may use authority capabilities from the enclosing scope (each use gets its own token, §8.3) and may fork, join and `when` further.
-- A resource used inside a `fork`, `join` or `when` body **moves** into the behaviour and is no longer available outside it. Two concurrent branches therefore can never share an open `File`.
+- A resource used inside a `when` body, or a closure given to `fork` or `join`, **moves** into the behaviour and is no longer available outside it. Two concurrent branches therefore can never share an open `File`.
 
 **Ending the program.** The process exits once no scheduled work remains. If `main` returns a `Future ExitCode`, that future's value is the exit code; this is how a program whose result comes from a join reports it.
 
@@ -709,11 +711,9 @@ The worked example for this section is `std.json` (`stdlib/json.ck`; `examples/j
 2. the line's last token is `,` or a binary operator (`+ - * / % ++ :: == != < <= > >= and or implies $ .` and the type operator `->` **inside brackets only**); or
 3. the next line's first token is a binary operator from that list, or `:`. A sign is not a binary operator (D169): a line starting with `-1` starts a new logical line, at any indentation (a block's first line, a `match` arm `-1 -> …`), and one starting with `- b` continues.
 
-A trailing `->`, `=` or `<-` outside brackets does **not** continue the line; it opens a block (a match arm body, a multi-line `let`). Indentation uses spaces only; a tab in leading whitespace is an error. When a logical line is followed by a more-indented line, the lexer emits `INDENT`; on return to an enclosing level it emits matching `DEDENT`s (an inconsistent dedent is an error). Blank and comment-only lines are ignored for layout.
+A trailing `->` or `=` outside brackets does **not** continue the line; it opens a block (a match arm body, a multi-line `let`). Indentation uses spaces only; a tab in leading whitespace is an error. When a logical line is followed by a more-indented line, the lexer emits `INDENT`; on return to an enclosing level it emits matching `DEDENT`s (an inconsistent dedent is an error). Blank and comment-only lines are ignored for layout.
 
 **Comments:** `#` to end of line.
-
-**Greedy tokens:** `<-` is always one token, so `x<-1` is a bind, not a comparison; write `x < -1`.
 
 **Identifiers:**
 - `lname` — `[a-z_][A-Za-z0-9_]*`: values, functions, parameters, fields, modules, type variables.
@@ -728,7 +728,7 @@ A trailing `->`, `=` or `<-` outside brackets does **not** continue the line; it
 | `"…"` | `String` (UTF-8) | `"'"`, `"a\u{e9}"`, escapes `\" \\ \n \r \t \0 \u{…}` |
 | `b"…"` | `Bytes` | `b"null"`, escapes as strings plus `\xNN` |
 
-**Keywords:** `module import as export abstract transparent fn enum record type let lemma ensures proof have auto admit check match if then else try and or implies decreasing partial ghost own comptime when using par`. `fork` and `join` are **contextual**: they are keywords only in `fork using …` and `join name = …` (right after `<-`), so `join` remains usable as an ordinary function name. `not` is an ordinary prelude function.
+**Keywords:** `module import as export abstract transparent fn enum record type let lemma ensures proof have auto admit check match if then else try and or implies decreasing partial ghost own comptime when using par`. `not` is an ordinary prelude function.
 
 **Glued vs spaced (D22):** `.` and `[` with no whitespace before them, directly after an identifier, `)` or `]`, are field/module access and indexing. With whitespace before them they are composition and a list literal. **A sign (D169):** a `-` with white space, the start of the file, `(`, `[`, `{` or `,` before it, and glued to what follows (not white space, a closing bracket or `,`), is a sign: `-1`, `f -x`, `[1, -2]`. Every other `-` is subtraction: `a - b`, `a-b`, `- b`. A `-` where no operand comes before it (`2 * - 1`, `(- x)`) still negates.
 
@@ -768,12 +768,8 @@ stmt        ::= 'let' pattern '=' ( expr | NL INDENT block DEDENT )
               | 'have' expr                                  -- lemma application; adds its conclusion
               | 'have' lname '~' type                        -- a typing (D170)
               | expr                                         -- D35: must have type Unit
-              | pattern '<-' expr                            -- D29: rebinds the call's last argument
               | 'when' lname '=' expr { ',' lname '=' expr } 'using' lname NL
                 INDENT block DEDENT                          -- D30: schedule a behaviour
-              | pattern '<-' 'fork' 'using' lname NL INDENT block DEDENT                          -- D33
-              | pattern '<-' 'join' lname '=' expr { ',' lname '=' expr } 'using' lname NL
-                INDENT block DEDENT                          -- D33
 expr        ::= 'if' expr 'then' expr 'else' expr
               | 'if' expr NL INDENT block DEDENT
                 'else' ( 'if' … | NL INDENT block DEDENT )   -- `else if` chains; `else` is required
@@ -1007,11 +1003,12 @@ Reordered (D25) so that Checkers can run CLI tools before the prover exists.
 
 - Regular expressions in `std`, working well at compile time too (staging, §8.9): a pattern known at compile time compiled then, as `fmt`'s format string is (Ian, 11/15/2026).
 - User-defined resources (D156 a–c): a type declared as one (`resource record`, `resource enum`) follows D39's rules (used exactly once, never dropped by `_`, passed to generic code only as `own`) though it holds no runtime resource: a transaction to commit or roll back, a lock guard, a protocol's state that must reach its end (Ian, 11/15/2026).
-- Borrowing a resource (D156 d, e, deferred: wants regions or lifetimes, not only borrows for one call): an operation that uses a resource without taking it (reading a `File`, a `TempDir`'s path), so the caller keeps it and the take-and-give-back pattern (`(result, resource)`, `<-`, D29) is unnecessary; only closing consumes it (Ian, 11/15/2026).
+- Borrowing a resource (D156 d, e, deferred: wants regions or lifetimes, not only borrows for one call): an operation that uses a resource without taking it (reading a `File`, a `TempDir`'s path), so the caller keeps it and the take-and-give-back pattern (`let (result, resource) = …`, D29) is unnecessary; only closing consumes it (Ian, 11/15/2026).
 - Standard output and error as open files the program owns (Ian, 11/16/2026), not reached through `Term`: a program could close them (D156 k). Then writing to one from many behaviours, and to any file the program opened, by a copyable writer that only appends while the `File` stays with its owner. `std.terminal.stdin`/`stdout`/`stderr` give the stream's own `File`, not a handle of their own whose `close` leaves the stream open (§8.4, D112): closing it closes the stream, which is the point (Ian, 11/17/2026).
 - ~~Remove `std.terminal.describe`: it only calls `files.describe` (Ian, 11/17/2026).~~ Done (11/17/2026): `examples/json.ck` and `wc.ck` call `files.describe`.
 - ~~The site's header: a star counter for the repository at the top right, in place of the "Source" link (Ian, 11/17/2026).~~ Done (11/17/2026): a "★ Star" button at the right of the top bar links the repository; a script fills in the count from GitHub's API (`stargazers_count`, unauthenticated, kept an hour in `localStorage` since the API allows 60 requests an hour), and without it the button shows "Star" alone. On a docs page the version menu sits beside it.
-- Revisit `<-` and `let` (§8.4, D29): if one form can do what both do, keep `let` only (Ian, 11/17/2026).
+- ~~Revisit `<-` and `let` (§8.4, D29): if one form can do what both do, keep `let` only (Ian, 11/17/2026).~~ Done (11/17/2026, D171): `let` only; `fork` and `join` are functions taking one-shot closures.
+- Revisit `when` as a function of `std.cown` taking a one-shot closure, as `fork` and `join` became (D171 d) (Ian, 11/17/2026).
 - ~~`let` with a refutable pattern wherever a one-branch `match` would do: `let x :: _ = l` where the facts in scope rule out the other cases (`l~List a, len l > 0`), proved as a `match`'s exhaustiveness is (D144) (Ian, 11/17/2026).~~ Already so: a `let`'s (and a lambda parameter's) pattern is a one-arm `match` (D144 e); found writing the Reference, with E0240 now naming the pattern (D167 i). Test: `tests/types/let_refutable`.
 
 ---
@@ -1214,7 +1211,7 @@ The language already has what the tools need: total code with proven bounds and 
 The formatter keeps the line breaks the author chose and normalizes everything else, as gofmt does. The rules (D92):
 
 - **Indentation:** 4 spaces per block level. A continuation line lines up with the first item after the open bracket it is inside, or after the `:` of a signature; otherwise it keeps the indentation its author gave it relative to the line it continues, at least 4 (D99).
-- **Spaces:** one on each side of a binary operator, `->`, `<-` and `=`, and after `,` and a signature's `:`. None around `~`, inside `( )` and `[ ]`, after a unary `-` or `\\`, or around a glued `.` or `[` (D22); one inside `{ }` (D99). Application is separated by single spaces.
+- **Spaces:** one on each side of a binary operator, `->` and `=`, and after `,` and a signature's `:`. None around `~`, inside `( )` and `[ ]`, after a unary `-` or `\\`, or around a glued `.` or `[` (D22); one inside `{ }` (D99). Application is separated by single spaces.
 - **Alignment:** the `->` of the arms of one `match` line up (an arm with a guard is left out, D99), as do the `:` of the constructors of one `enum` (a constructor without constraints is skipped), unless a blank line separates them. Trailing `#` comments on consecutive lines start in one column; a blank line or a line without a trailing comment ends the run. The column is the furthest of each line's code end plus the spaces its author put before the comment, at least two (D99): a run that is already aligned stays aligned, wherever its code moves, and formatting twice changes nothing.
 - **Blank lines:** at most one in a row; none at the start or end of a block; the file ends with exactly one newline. Trailing whitespace is removed.
 - **Kept as written:** comment text, literals, the order of declarations and imports.
@@ -1362,7 +1359,7 @@ The standard library is these modules. Its scope is still to be settled (D106); 
 | `std.terminal` | builtin | `Term`, `print_line`, `eprint_line`, `write`, `write_bytes`, `read_line`, `read_all`, `stdin`, `stdout`, `stderr` | exists |
 | `std.files` | builtin | `Fs`, `File`, `IoError`, `Entry`, `read`, `write`, `list`, `create_dirs`, `open`, `create`, `close`, `read_line`, `write_line`, `read_some`, `read_exactly`, `read_rest`, `write_bytes`, `flush`, `within`, `describe` | exists |
 | `std.env`, `std.proc` | builtin + Checkers | `get`, `executable`; `exec`, `run`, `spawn`, `wait`, `killer`, `kill`, `Child`, `Killer`, `Output`, `Stream`, `Streams`, `Spawned`, `pipe_end` | exist |
-| `std.cown`, `std.future`, `std.actor` | builtin + Checkers | `Cown`, `new`; `Future`, `ready`; `Actor`, `new`, `send` | exist |
+| `std.cown`, `std.future`, `std.actor` | builtin + Checkers | `Cown`, `new`; `Future`, `ready`, `fork`, `join`, `both`; `Actor`, `new`, `send` | exist |
 
 Not in the standard library: formats other than JSON, Markdown and HTML's escaping, networking (`Net` waits for a program that needs it), command-line parsing, and anything else a package can provide.
 

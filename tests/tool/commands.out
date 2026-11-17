@@ -59,7 +59,7 @@ examples/wc.ck:35:9  smt      termination of `count_from`: `decreasing len src -
 examples/wc.ck:42:43  smt      precondition of `is_space`: b < 256  [be36b3993ee0cb29]
 examples/wc.ck:42:53  smt      index in bounds: len src - 1 < len src  [fa95efd32866468b]
 examples/wc.ck:42:57  smt      `Nat` subtraction `len src - 1` stays at or above zero  [1494cd0f7822e8fe]
-examples/wc.ck:55:55  smt      precondition of `count_from`: i <= len src  [1b6ba67475eb15e3]
+examples/wc.ck:55:55  smt      precondition of `count_from`: i <= len src  [ca79178e51266307]
 examples/wc.ck:73:21  computed invariant of `Failure`: n < 256
 examples/wc.ck:73:21  computed invariant of `Failure`: n > 0
 examples/wc.ck:88:33  computed invariant of `Failure`: n < 256

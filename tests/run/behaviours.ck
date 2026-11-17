@@ -20,13 +20,13 @@ export fn main args sys -> code : args~List String, sys~System, code~Future Exit
             m * 10
         n + 1
     terminal.print_line "main returns" term
-    a <- fork using sched
+    let a = future.fork sched $ \_ ->
         20
-    b <- fork using sched
+    let b = future.fork sched $ \_ ->
         22
-    sum <- join x = a, y = b using sched
+    let sum = future.join (future.both a b) sched $ \(x, y) ->
         x + y
-    done <- join s = sum using sched
+    let done = future.join sum sched $ \s ->
         terminal.print_line ("sum " ++ format s) term
         if s == 42 then Failure 42 else Success
     done

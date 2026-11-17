@@ -47,8 +47,6 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("ck_caf", 2, true),
     ("ck_apply", 3, true),
     ("ck_when", 2, true),
-    ("ck_fork", 1, true),
-    ("ck_join", 2, true),
     ("ck_par", 2, true),
 ];
 
@@ -1041,8 +1039,6 @@ impl<'p, M: Module> Gen<'p, M> {
             }
             Op::Format => self.call1(b, st, "ck_format", &[a[0]]),
             Op::When => self.call1(b, st, "ck_when", &[a[1], a[2]]),
-            Op::Fork => self.call1(b, st, "ck_fork", &[a[1]]),
-            Op::Join => self.call1(b, st, "ck_join", &[a[1], a[2]]),
             Op::Par => a[0],
         }
     }

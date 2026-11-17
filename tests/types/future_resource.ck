@@ -12,21 +12,21 @@ fn done r : r~Result File IoError
         Err _ -> ()
 
 partial fn never fs sched : fs~Fs, sched~Sched
-    a <- fork using sched
+    let a = future.fork sched $ \_ ->
         files.open "a.txt" fs
     ()
 
 partial fn dropped fs sched : fs~Fs, sched~Sched
-    _ <- fork using sched
+    let _ = future.fork sched $ \_ ->
         files.open "a.txt" fs
     ()
 
 partial fn twice fs sched : fs~Fs, sched~Sched
-    a <- fork using sched
+    let a = future.fork sched $ \_ ->
         files.open "a.txt" fs
-    _ <- join r = a using sched
+    let _ = future.join a sched $ \r ->
         done r
-    _ <- join r = a using sched
+    let _ = future.join a sched $ \r ->
         done r
     ()
 
@@ -35,10 +35,10 @@ fn in_cown f s -> c : f~Future File, s~Sched, c~Cown (Future File)
 
 # Joined once: fine. A future of plain values may be dropped.
 partial fn once fs sched : fs~Fs, sched~Sched
-    a <- fork using sched
+    let a = future.fork sched $ \_ ->
         files.open "a.txt" fs
-    _ <- join r = a using sched
+    let _ = future.join a sched $ \r ->
         done r
-    _ <- fork using sched
+    let _ = future.fork sched $ \_ ->
         1 + 1
     ()

@@ -197,7 +197,7 @@ impl<'g> Stager<'g> {
                 // `Sub` carries its operand type as a third argument.
                 let n = if *p == Prim::Sub { 2 } else { args.len() };
                 let mut out = Vec::new();
-                let mut all = !matches!(p, Prim::When | Prim::Fork | Prim::Join);
+                let mut all = !matches!(p, Prim::When);
                 for (k, a) in args.iter().enumerate() {
                     if k >= n {
                         out.push(resid(a, env, lvl, 0));

@@ -196,7 +196,6 @@ fn block(b: &Block, depth: usize) -> String {
             Stmt::Have(e) => format!("(have {})", expr(e, depth + 1)),
             Stmt::HaveType(x, t) => format!("(have-type {} {})", x.name, expr(t, depth + 1)),
             Stmt::Expr(e) => expr(e, depth + 1),
-            Stmt::Bind(p, e) => format!("(<- {} {})", pat(p), expr(e, depth + 1)),
             Stmt::When(w) => format!(
                 "(when ({}) using {}\n{}{})",
                 w.binds.iter().map(|(n, c)| format!("({} {})", n.name, expr(c, depth + 2))).collect::<Vec<_>>().join(" "),
@@ -308,14 +307,6 @@ pub fn expr(e: &Expr, depth: usize) -> String {
         ExprKind::Admit => "admit".into(),
         ExprKind::Error => "<error>".into(),
         ExprKind::Par(v) => format!("(par {})", list(v, depth)),
-        ExprKind::Fork(s, b) => format!("(fork using {}\n{}{})", s.name, ind(depth + 1), block(b, depth + 1)),
-        ExprKind::Join(binds, s, b) => format!(
-            "(join ({}) using {}\n{}{})",
-            binds.iter().map(|(n, f)| format!("({} {})", n.name, expr(f, depth + 1))).collect::<Vec<_>>().join(" "),
-            s.name,
-            ind(depth + 1),
-            block(b, depth + 1)
-        ),
     }
 }
 

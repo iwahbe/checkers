@@ -7,7 +7,7 @@ import std.terminal (Term)
 import std.files (Fs, File, IoError)
 
 partial fn print_lines f term : f~File, term~Term
-    line <- files.read_line f
+    let (line, f) = files.read_line f
     match line
         None   -> files.close f
         Some l ->
@@ -23,8 +23,8 @@ export partial fn main args sys -> code : args~List String, sys~System, code~Exi
     let System { fs, term } = sys
     match files.create "lines.tmp" fs
         Ok out ->
-            _ <- files.write_line "alpha" out
-            _ <- files.write_line "beta" out
+            let (_, out) = files.write_line "alpha" out
+            let (_, out) = files.write_line "beta" out
             files.close out
         Err e  -> terminal.print_line (files.describe e) term
     match files.open "lines.tmp" fs

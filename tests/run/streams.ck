@@ -10,21 +10,21 @@ import std.files
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { term } = sys
     let input = terminal.stdin term
-    header <- files.read_line input
-    body <- files.read_exactly 5 input
-    some <- files.read_some 3 input
-    rest <- files.read_rest input
-    tail <- files.read_rest input
+    let (header, input) = files.read_line input
+    let (body, input) = files.read_exactly 5 input
+    let (some, input) = files.read_some 3 input
+    let (rest, input) = files.read_rest input
+    let (tail, input) = files.read_rest input
     files.close input
     terminal.print_line (format header) term
     terminal.print_line (format body ++ " " ++ format some ++ " " ++ format rest ++ " " ++ format tail) term
     let out = terminal.stdout term
-    w <- files.write_bytes b"one, " out
+    let (w, out) = files.write_bytes b"one, " out
     terminal.print_line "two" term
-    _ <- files.write_line "three" out
+    let (_, out) = files.write_line "three" out
     files.close out
     let err = terminal.stderr term
-    e <- files.write_bytes b"to stderr\n" err
+    let (e, err) = files.write_bytes b"to stderr\n" err
     files.close err
     terminal.print_line (format w ++ " " ++ format e) term
     Success

@@ -8,6 +8,7 @@
 
 module lsp
 
+import std.future
 import std.system (ExitCode, Proc)
 import std.terminal (Term)
 import std.files (Fs, File)
@@ -198,7 +199,7 @@ record Acc
 # Read the compiler's lines until it ends, publishing after each phase.
 # Read the compiler's lines up to the end of a phase, or to its end.
 partial fn pump out acc g docs c -> r : out~File, acc~Acc, g~Nat, docs~List Doc, c~Caps, r~(Acc, File)
-    line <- files.read_line out
+    let (line, out) = files.read_line out
     match line
         None   -> (acc, out)
         Some l ->
@@ -265,7 +266,7 @@ partial fn publish phase acc g root docs c : phase~String, acc~Acc, g~Nat, root~
             let index = acc.index ++ not_in root sh.index
             let roots = Root root g True before.showing before.proofs :: other_roots root sh.roots
             let o = terminal.stdout c.term
-            _ <- answer_all (of_root root sh.pending) index o
+            let (_, o) = answer_all (of_root root sh.pending) index o
             files.close o
             (Shared roots index (not_of_root root sh.pending), turn)
         else
@@ -275,7 +276,7 @@ partial fn publish phase acc g root docs c : phase~String, acc~Acc, g~Nat, root~
             let roots = Root root g before.indexed showing proofs :: other_roots root sh.roots
             let touched = paths_of showing (paths_of before.showing [])
             let o = terminal.stdout c.term
-            _ <- send_all touched (all_showing roots) docs c o
+            let (_, o) = send_all touched (all_showing roots) docs c o
             files.close o
             (Shared roots sh.index sh.pending, turn)
     ()
@@ -291,7 +292,7 @@ partial fn settle g root c : g~Nat, root~String, c~Caps
         else
             let roots = Root root g True before.showing before.proofs :: other_roots root sh.roots
             let o = terminal.stdout c.term
-            _ <- answer_all (of_root root sh.pending) sh.index o
+            let (_, o) = answer_all (of_root root sh.pending) sh.index o
             files.close o
             (Shared roots sh.index (not_of_root root sh.pending), turn)
     ()
@@ -300,7 +301,7 @@ partial fn answer_all ps index o -> r : ps~List Pending, index~List Entry, o~Fil
     match ps
         []        -> ((), o)
         p :: rest ->
-            _ <- rpc.write (respond p.id (p.f index)) o
+            let (_, o) = rpc.write (respond p.id (p.f index)) o
             answer_all rest index o
 
 # The requests about `path`, oldest first.
@@ -360,7 +361,7 @@ partial fn send_all paths ds docs c o -> r : paths~List String, ds~List Diag, do
             let t = if c.utf8 then b"" else text_of p docs c.fs
             let items = list.map (\d -> with_range t d c.utf8) (of_path p ds)
             let params = rpc.obj [("uri", Str (tx.uri_of p)), ("diagnostics", Arr items)]
-            _ <- rpc.write (rpc.notification "textDocument/publishDiagnostics" params) o
+            let (_, o) = rpc.write (rpc.notification "textDocument/publishDiagnostics" params) o
             send_all rest ds docs c o
 
 partial fn with_range t d utf8 -> j : t~Bytes, d~Diag, utf8~Bool, j~Json
@@ -380,7 +381,7 @@ fn as_string b -> s : b~Bytes, s~String
         None   -> ""
 
 partial fn feed input o -> r : input~Bytes, o~File, r~()
-    _ <- files.write_bytes input o
+    let (_, o) = files.write_bytes input o
     files.close o
 
 # Start a check of `doc`, killing its check in progress (D127 e).
@@ -432,7 +433,7 @@ partial fn kill_all ks : ks~List (String, Killer)
 # the last closes and waits for them (D156 k: a cown can't hold them).
 partial fn step o ch acc g root docs c : o~File, ch~Child, acc~Acc, g~Nat, root~String, docs~List Doc, c~Caps
     let sched = c.sched
-    _ <- fork using sched
+    let _ = future.fork sched $ \_ ->
         let (acc2, o2) = pump o acc g docs c
         if acc2.phases > acc.phases
             publish (phase_name acc2.phases) acc2 g root docs c
@@ -590,7 +591,7 @@ partial fn answer_or id path f c : id~Json, path~String, f~(List Entry -> Result
     when sh = c.shared, turn = c.out using sched
         if (root_in path sh.roots).indexed
             let o = terminal.stdout c.term
-            _ <- rpc.write (respond id (f sh.index)) o
+            let (_, o) = rpc.write (respond id (f sh.index)) o
             files.close o
             (sh, turn)
         else
@@ -629,7 +630,7 @@ partial fn reply msg c : msg~Json, c~Caps
     let sched = c.sched
     when turn = c.out using sched
         let o = terminal.stdout c.term
-        _ <- rpc.write msg o
+        let (_, o) = rpc.write msg o
         files.close o
         turn
     ()
@@ -648,7 +649,7 @@ partial fn with_package id w docs c f : id~Json, w~Where, docs~List Doc, c~Caps,
         Ok (Spawned child input out ()) ->
             feed (string.bytes (json.render (overlay docs))) input
             let sched = c.sched
-            _ <- fork using sched
+            let _ = future.fork sched $ \_ ->
                 let (es, o2) = read_entries out []
                 files.close o2
                 let _ = proc.wait child
@@ -657,7 +658,7 @@ partial fn with_package id w docs c f : id~Json, w~Where, docs~List Doc, c~Caps,
 
 # The names `ckc index` writes.
 partial fn read_entries out acc -> r : out~File, acc~List Entry, r~(List Entry, File)
-    line <- files.read_line out
+    let (line, out) = files.read_line out
     match line
         None   -> (acc, out)
         Some l ->
@@ -739,7 +740,7 @@ partial fn complete id w docs c : id~Json, w~Where, docs~List Doc, c~Caps
             feed (string.bytes (json.render (overlay docs))) input
             let sched = c.sched
             let text = w.doc.text
-            _ <- fork using sched
+            let _ = future.fork sched $ \_ ->
                 let (items, o2) = read_items out text c None [] 0
                 files.close o2
                 let _ = proc.wait child
@@ -750,7 +751,7 @@ partial fn complete id w docs c : id~Json, w~Where, docs~List Doc, c~Caps
 # The candidates `ckc complete` writes, as completion items, in its order.
 partial fn read_items out text c range acc n -> r : out~File, text~Bytes, c~Caps, range~Option Json, acc~List Json,
                                                     n~Nat, r~(List Json, File)
-    line <- files.read_line out
+    let (line, out) = files.read_line out
     match line
         None   -> (list.reverse acc, out)
         Some l ->
@@ -1136,7 +1137,7 @@ partial fn handle m st c -> r : m~Json, st~Server, c~Caps, r~(Server, Option Exi
                     keep
 
 partial fn serve input st c -> r : input~File, st~Server, c~Caps, r~(ExitCode, File)
-    m <- rpc.read input
+    let (m, input) = rpc.read input
     match m
         Closed      -> (Failure 1, input)
         Malformed _ -> serve input st c
@@ -1148,7 +1149,7 @@ partial fn serve input st c -> r : input~File, st~Server, c~Caps, r~(ExitCode, F
 
 # Wait for `initialize`, answer it, then serve.
 partial fn begin input c -> r : input~File, c~Caps, r~(ExitCode, File)
-    m <- rpc.read input
+    let (m, input) = rpc.read input
     match m
         Closed      -> (Failure 1, input)
         Malformed _ -> begin input c

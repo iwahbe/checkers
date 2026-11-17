@@ -2,9 +2,9 @@
 (fn binds (sys)
   (do
     (let (System {fs=fs term=t}) sys)
-    (<- line (terminal.read_line t))
-    (<- (tuple a b) (pair_op 1 fs))
-    (<- _ (terminal.print_line "done" t))
+    (let (tuple line t) (terminal.read_line t))
+    (let (tuple (tuple a b) fs) (pair_op 1 fs))
+    (let (tuple _ t) (terminal.print_line "done" t))
     line))
 (fn behaviours (jobs screen sched)
   (do

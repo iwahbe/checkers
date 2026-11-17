@@ -4,6 +4,7 @@
 # thread while waiting, that behaviour would never run.
 module main_waits
 
+import std.future
 import std.system (System, ExitCode)
 import std.terminal
 import std.files
@@ -12,7 +13,7 @@ import std.proc (Streams, Spawned, Pipe, Discard)
 
 # Write a line to the file and close it.
 fn send w : w~File
-    _ <- files.write_line "ping" w
+    let (_, w) = files.write_line "ping" w
     files.close w
 
 export partial fn main args sys -> code : args~List String, sys~System, code~ExitCode
@@ -22,9 +23,9 @@ export partial fn main args sys -> code : args~List String, sys~System, code~Exi
             terminal.print_line ("spawn failed: " ++ files.describe e) term
             Failure 1
         Ok (Spawned child input output ()) ->
-            _ <- fork using sched
+            let _ = future.fork sched $ \_ ->
                 send input
-            line <- files.read_line output
+            let (line, output) = files.read_line output
             files.close output
             let _ = proc.wait child
             match line

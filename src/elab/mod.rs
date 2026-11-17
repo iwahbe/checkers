@@ -490,6 +490,9 @@ pub struct Elab {
     pub last_eq_ty: Option<Val>,
     /// Variables that are linear because of their type (D39): (function, name) → (span, type).
     pub resource_vars: HashMap<(DefId, String), (Span, String)>,
+    /// Where each named local of a function is bound, for usage messages
+    /// about one that holds no resource (a one-shot closure, D171).
+    pub local_spans: HashMap<(DefId, String), Span>,
     /// A `match` arm's resource names, bound as ghosts for its guard: the
     /// guard's span, for E0408.
     pub guard_vars: HashMap<(DefId, String), Span>,
@@ -635,6 +638,7 @@ impl Elab {
             guessed: HashSet::new(),
             saturated_heads: HashSet::new(),
             resource_vars: HashMap::new(),
+            local_spans: HashMap::new(),
             guard_vars: HashMap::new(),
             stdlib_mode: false,
             map_elem_sub: None,
@@ -1234,6 +1238,9 @@ impl Elab {
 
     /// The multiplicity for a variable the program names: linear types make it `own` (D39).
     pub fn named_mult(&mut self, cx: &Cx, name: &str, ty: &Val, span: Span, declared: Mult) -> Mult {
+        if let Some(f) = self.cur_fn {
+            self.local_spans.insert((f, name.to_string()), span);
+        }
         if declared != Mult::Many || name == "_" || name.starts_with('$') || !self.val_linear(ty) {
             return declared;
         }
@@ -1259,8 +1266,9 @@ impl Elab {
         }
     }
 
-    /// D45: `own` belongs on generic parameters. On a linear type it is implied
-    /// (W010); on a type without type variables it means nothing useful (E0358).
+    /// D45: `own` belongs on generic parameters and functions. On a linear
+    /// type it is implied (W010); on a type without type variables that isn't
+    /// a function it means nothing useful (E0358).
     pub fn check_own(&mut self, cx: &Cx, ty: &Tm, span: Span) {
         // A class function's `own`, at an instance's type: not written there.
         if span.start >= SYNTHETIC || self.inst_heads.contains(&(self.cur.clone(), span.start)) {
@@ -1274,7 +1282,9 @@ impl Elab {
                     .with_label("this `own` can go")
                     .with_help("remove `own`; a resource is used exactly once anyway"),
             );
-        } else if !self.mentions_type_var(cx, ty, 0) {
+        } else if !matches!(ty, Tm::Pi(..)) && !self.mentions_type_var(cx, ty, 0) {
+            // A function may be a closure that uses a resource, which is
+            // called exactly once (D171): `f~own (Unit -> a)` takes one.
             let tyv = self.eval(cx, ty);
             let shown = self.show_val(cx, &tyv);
             self.err(
@@ -1663,7 +1673,7 @@ impl Elab {
                 let info = &self.g.defs[d.0 as usize];
                 !(info.opaque && info.body.is_some())
             }
-            Tm::PrimApp(Prim::When | Prim::Fork | Prim::Join, _) => false,
+            Tm::PrimApp(Prim::When, _) => false,
             Tm::Pi(_, _, _, a, b) => go(a, depth) && go(b, depth + 1),
             Tm::Lam(_, _, _, b) => go(b, depth + 1),
             Tm::App(f, a, _, m) => go(f, depth) && (*m == Mult::Zero || go(a, depth)),

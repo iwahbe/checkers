@@ -31,12 +31,8 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0108` | a multi-line `if` without `else` |
 | `E0109` | chained comparisons, `a < b < c` |
 | `E0110` | `_` outside a pattern |
-| `E0111` | `let` before `<-` |
 | `E0112` | `when` without `using` and a scheduler |
-| `E0113` | `<-` other than at the start of a line |
-| `E0114` | a block ending with a `<-` line |
 | `E0115` | `par` without a tuple of two or more |
-| `E0116` | `fork` or `join` other than after `<-` on a line of its own |
 | `E0117` | a block ending with `when` |
 | `E0120` | `export` on an instance |
 | `E0121` | a class member with a body, or an instance member with a signature |
@@ -69,8 +65,6 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0230` | `try` where the block's value isn't the function's result |
 | `E0231` | `try` on something other than a `Result` or `Option` |
 | `E0232` | `try` in a function whose result can't carry the error |
-| `E0233` | `<-` on a call whose last argument isn't a resource variable |
-| `E0234` | `<-` on a call that doesn't return the resource last |
 | `E0240` | a `match`, or a pattern, doesn't cover a case that can occur |
 | `E0241` | a constructor of another type in a pattern |
 | `E0242` | a constructor pattern with the wrong number of fields |

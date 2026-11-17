@@ -108,7 +108,7 @@ fn two src i e a b : src~Bytes, i~Nat, e~Nat, e <= len src, a~U8, b~U8
 
 fn two_char src i e : src~Bytes, i~Nat, e~Nat, e <= len src
     two src i e '+' '+' or two src i e ':' ':' or two src i e '=' '=' or two src i e '!' '='
-        or two src i e '<' '-' or two src i e '<' '=' or two src i e '>' '=' or two src i e '-' '>'
+        or two src i e '<' '=' or two src i e '>' '=' or two src i e '-' '>'
 
 fn one_char c : c~U8
     c == '+' or c == '-' or c == '*' or c == '/' or c == '%' or c == '<' or c == '>'
@@ -436,9 +436,9 @@ fn lines_opens lines base stack -> r : lines~List Line, base~Nat, stack~List Ope
 fn words_of toks -> r : toks~List Tok, r~List Bytes
     list.map (\t -> t.text) toks
 
-# Does the logical line open a block on the next line? It ends with `->`,
-# `=` or `<-`, or it is a declaration, `match`, `if` without `then`, `else`,
-# `when`, `fork` or `join` header (§9.2).
+# Does the logical line open a block on the next line? It ends with `->`
+# or `=`, or it is a declaration, `match`, `if` without `then`, `else`, or
+# `when` header (§9.2).
 fn opens_block toks -> b : toks~List Tok, b~Bool
     let ws = words_of toks
     let last = match last_of toks
@@ -448,7 +448,7 @@ fn opens_block toks -> b : toks~List Tok, b~Bool
         t :: _ -> t.text
         []     -> b""
     let decl = any_head (list.take 4 ws)
-    if last == b"->" or last == b"=" or last == b"<-"
+    if last == b"->" or last == b"="
         True
     else if decl and not (list.contains ws b"=" and first == b"type")
         True
@@ -457,7 +457,7 @@ fn opens_block toks -> b : toks~List Tok, b~Bool
     else if first == b"else"
         True
     else
-        first == b"match" or first == b"when" or (list.contains ws b"using" and list.contains ws b"<-")
+        first == b"match" or first == b"when"
 
 let HEADS = [b"fn", b"enum", b"record", b"lemma", b"class", b"instance", b"proof"]
 

@@ -6,7 +6,7 @@ import std.cown (Cown, Sched)
 import std.future (Future)
 
 fn bind_on_authority path fs -> r : path~String, fs~files.Fs, r~Nat
-    contents <- files.read path fs
+    let (contents, fs) = files.read path fs
     0
 
 fn try_not_tail x -> n : x~Option Nat, n~Nat
@@ -30,15 +30,15 @@ fn when_ok c sched : c~Cown Nat, sched~Sched
     ()
 
 fn fork_join_ok sched -> r : sched~Sched, r~Future Nat
-    a <- fork using sched
+    let a = future.fork sched $ \_ ->
         1
-    b <- fork using sched
+    let b = future.fork sched $ \_ ->
         2
-    done <- join x = a, y = b using sched
+    let done = future.join (future.both a b) sched $ \(x, y) ->
         x + y
     done
 
 fn not_sched x -> r : x~Nat, r~Future Nat
-    f <- fork using x
+    let f = future.fork x $ \_ ->
         1
     f

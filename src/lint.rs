@@ -264,10 +264,6 @@ impl Linter {
                     self.expr(e);
                 }
                 Stmt::Have(e) | Stmt::Expr(e) | Stmt::HaveType(_, e) => self.expr(e),
-                Stmt::Bind(p, e) => {
-                    self.pat(p);
-                    self.expr(e);
-                }
                 Stmt::When(w) => {
                     for (n, c) in &w.binds {
                         self.snake(n, "variable");
@@ -330,14 +326,7 @@ impl Linter {
                 ps.iter().for_each(|p| self.pat(p));
                 self.expr(b);
             }
-            ExprKind::Block(b) | ExprKind::Fork(_, b) => self.block(b),
-            ExprKind::Join(binds, _, b) => {
-                for (n, f) in binds {
-                    self.snake(n, "variable");
-                    self.expr(f);
-                }
-                self.block(b);
-            }
+            ExprKind::Block(b) => self.block(b),
             ExprKind::Var(_)
             | ExprKind::Con(_)
             | ExprKind::Lit(_)

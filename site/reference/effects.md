@@ -87,7 +87,7 @@ The rules, each with its error:
 | used exactly once: not zero times, not twice | E0401 |
 | used on every path, or on none (an `if` that closes a file in one branch only) | E0402 |
 | never dropped by `_`, or by a field left out of a record pattern | E0404 |
-| not captured by a closure | E0401 |
+| used by a closure only if the closure is called exactly once ([One-shot closures](#one-shot-closures)) | E0401 |
 | not put in a cown | E0405 |
 | a field of a value holding a resource isn't read with `.f` if another field holds one: that would drop it (take it apart with `match`) | E0406 |
 | an array of resources isn't indexed: that would drop the other elements (use a `List`, taken apart with `match`) | E0407 |
@@ -95,13 +95,9 @@ The rules, each with its error:
 
 A `try` that returns early ([Expressions](expressions.md#try)) is a path like any other: a resource in scope must already be used there. Specifications and proofs may mention resources freely; they use nothing.
 
-### Threading a resource with `<-`
+### Threading a resource
 
-An operation on a resource consumes it and returns a fresh one with its result, `(result, resource)`, the resource last. `<-` binds the result and rebinds the resource under its old name:
-
-```text
-stmt ::= pattern '<-' expr
-```
+An operation on a resource consumes it and returns a fresh one with its result, `(result, resource)`, the resource last. A `let` takes the pair apart, binding the result and rebinding the resource under its old name:
 
 ```checkers
 import std.files (File)
@@ -109,12 +105,44 @@ import std.files
 
 # The first line of a file and the file closed.
 fn first_line f -> r : f~File, r~Option String
-    line <- files.read_line f      # let (line, f) = files.read_line f
+    let (line, f) = files.read_line f
     files.close f
     line
 ```
 
-`x <- e` requires `e` to be a call whose last argument is a resource variable (E0233), returning a pair whose second component has its type (E0234). It is a line of its own (E0113), not after `let` (E0111), and not a block's last line (E0114). Because each operation consumes the resource the last one returned, the operations are in sequence for the prover too.
+The new `f` hides the one used up by the call, so the old one can't be used again. Because each operation consumes the resource the last one returned, the operations are in sequence for the prover too. An operation on an authority returns only its result: `let (x, fs) = files.read path fs` is a type error (E0201).
+
+### One-shot closures
+
+A closure (a lambda, or a function applied to some of its arguments) that uses a resource holds it, so it must be called exactly once, or the resource would be used twice or never. Such a closure may be:
+
+- called where it is made: `(\_ -> files.close f) ()`;
+- bound with `let` and called once: the variable is then used exactly once, like a resource;
+- passed to a parameter declared `own` on a function type, `k~own (Unit -> a)`, which promises a single call ([Types](types.md#own)).
+
+Anywhere else (passed to a parameter that isn't `own`, returned, called twice or never) is E0401. The closures given to `future.fork` and `future.join` are one-shot, so work scheduled with them can take a resource along ([Concurrency](concurrency.md#futures)).
+
+```checkers
+import std.files (File)
+import std.files
+
+fn run k -> r : k~own (Unit -> Unit), r~Unit
+    k ()
+
+fn close_later f -> r : f~File, r~Unit
+    run (\_ -> files.close f)
+```
+
+```checkers,compile_fail,E0401
+import std.files (File)
+import std.files
+
+fn many k -> r : k~(Unit -> Unit), r~Unit
+    k ()
+
+fn close_twice f -> r : f~File, r~Unit
+    many (\_ -> files.close f)
+```
 
 ### Generic code and `own`
 
@@ -160,7 +188,7 @@ import std.files
 fn listing p -> r : p~Proc, r~Result Bytes IoError
     match proc.spawn "ls" [] (Streams Discard Pipe Inherit) p
         Ok (Spawned child () out ()) ->
-            text <- files.read_rest out
+            let (text, out) = files.read_rest out
             files.close out
             let _ = proc.wait child
             text

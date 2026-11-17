@@ -1,0 +1,12 @@
+(module futures)
+(fn f (sched xs)
+  (do
+    (let (tuple a b c) (par (g xs) (h xs) (k xs)))
+    (let pair (map2 combine (par one two)))
+    (let p ($ (future.fork sched) (\ (_) 1)))
+    (let q (future.join p sched (\ (x) (+ x 1))))
+    (let r ($ (future.join (future.both p q) sched) (\ ((tuple x y)) (do
+      (let z (+ x y))
+      z))))
+    (let s (join "," (fork_names xs)))
+    r))

@@ -76,8 +76,6 @@ pub enum Prim {
     Format,
     /// `par t` — identity to the type checker and prover (D34).
     Par,
-    Fork,
-    Join,
     When,
     /// A stdlib function implemented in Rust (`__builtin`), by qualified name.
     Builtin(Rc<str>),

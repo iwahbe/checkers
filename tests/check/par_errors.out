@@ -1,0 +1,8 @@
+error[E0115]: `par` takes a tuple of two or more expressions
+ --> par_errors.ck:4:9
+  |
+4 |     par (f x)
+  |         ^^^^^
+  = help: write `par (f x, g y)`; the components are evaluated in parallel
+
+par_errors.ck: 1 error, 0 warnings

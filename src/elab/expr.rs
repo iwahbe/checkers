@@ -511,7 +511,6 @@ impl Elab {
                 let (t, ty) = self.infer(cx, &tuple);
                 (Tm::PrimApp(Prim::Par, vec![t]), ty)
             }
-            ExprKind::Fork(..) | ExprKind::Join(..) => self.elab_fork_join(cx, e),
             ExprKind::Auto | ExprKind::Admit => match self.proof_goal.clone() {
                 // In a proof: `auto` proves the goal from the facts in scope; `admit` assumes it (D49).
                 Some((goal, text)) => {
@@ -2048,7 +2047,6 @@ impl Elab {
                 cx.pop();
                 Tm::Let(Rc::from("_"), Mult::Many, Rc::new(Tm::TupleTy(vec![])), Rc::new(t), Rc::new(body))
             }
-            Stmt::Bind(pat, rhs) => self.bind_stmt(cx, pat, rhs, rest, result, expected, tail),
             Stmt::When(w) => {
                 let t = self.elab_when(cx, w);
                 let unit = self.unit();
@@ -2179,80 +2177,6 @@ impl Elab {
         branches.sort_by_key(|b| self.g.cons[b.0 .0 as usize].tag);
         Tm::Case(Rc::new(it), Rc::new(CaseTm { branches, lits: vec![], default: None }))
     }
-
-    #[allow(clippy::too_many_arguments)]
-    fn bind_stmt(
-        &mut self,
-        cx: &mut Cx,
-        pat: &ast::Pattern,
-        rhs: &Expr,
-        rest: &[Stmt],
-        result: &Expr,
-        expected: &Val,
-        tail: bool,
-    ) -> Tm {
-        // `f <- fork …` / `r <- join …`: bind the future.
-        if matches!(rhs.kind, ExprKind::Fork(..) | ExprKind::Join(..)) {
-            let (t, ty) = self.elab_fork_join(cx, rhs);
-            return self.let_pattern(cx, pat, t, ty, rest, result, expected, tail);
-        }
-        // `x <- f a r`: r must be a local variable passed last.
-        let last = match &rhs.kind {
-            ExprKind::App(_, a) => match &a.kind {
-                ExprKind::Var(n) => cx.lookup(n).map(|l| (n.clone(), l)),
-                _ => None,
-            },
-            _ => None,
-        };
-        let Some((rname, rlvl)) = last else {
-            self.err(
-                Diagnostic::error("E0233", "`<-` needs a call whose last argument is a resource variable", rhs.span)
-                    .with_help("write `x <- files.read_line f`, where `f` is an `own` resource; for ordinary values use `let`"),
-            );
-            return Tm::Error;
-        };
-        let (t, ty) = self.infer(cx, rhs);
-        let rty = cx.locals[rlvl].ty.clone();
-        let comps = match self.force(&ty) {
-            Val::TupleTy(v) if v.len() == 2 => v,
-            Val::Error => return Tm::Error,
-            other => {
-                let shown = self.show_val(cx, &other);
-                self.err(
-                    Diagnostic::error(
-                        "E0234",
-                        format!("`<-` needs a call that returns `(result, {rname})`, but this returns `{shown}`"),
-                        rhs.span,
-                    )
-                    .with_help("operations on authority capabilities (`fs`, `term`, …) return just their result: use `let`"),
-                );
-                return Tm::Error;
-            }
-        };
-        self.unify_at(cx, &rty, &comps[1], rhs.span, "the returned resource");
-        let mult = cx.locals[rlvl].mult;
-        // let $t = rhs; let r = $t.1; let pat = $t.0; rest
-        let tname = format!("$t{}", cx.lvl());
-        let tv = self.eval(cx, &t);
-        let tyt = quote(&self.g, cx.lvl(), &ty);
-        cx.define(&tname, ty.clone(), tv, Mult::Many);
-        let r_tm = Tm::Proj(Rc::new(Tm::Var(0)), 1);
-        let r_val = self.eval(cx, &r_tm);
-        let r_ty_t = quote(&self.g, cx.lvl(), &comps[1]);
-        cx.define(&rname, comps[1].clone(), r_val, mult);
-        let x_tm = Tm::Proj(Rc::new(Tm::Var(1)), 0);
-        let body = self.let_pattern(cx, pat, x_tm, comps[0].clone(), rest, result, expected, tail);
-        cx.pop();
-        cx.pop();
-        Tm::Let(
-            Rc::from(tname.as_str()),
-            Mult::Many,
-            Rc::new(tyt),
-            Rc::new(t),
-            Rc::new(Tm::Let(Rc::from(rname.as_str()), mult, Rc::new(r_ty_t), Rc::new(r_tm), Rc::new(body))),
-        )
-    }
-
     /// `let pat = t` (t already elaborated) followed by the rest of the block.
     #[allow(clippy::too_many_arguments)]
     fn let_pattern(
@@ -2345,57 +2269,6 @@ impl Elab {
             lam = Tm::Lam(Rc::from(n.name.as_str()), Mult::Many, Icit::Expl, Rc::new(lam));
         }
         Tm::PrimApp(Prim::When, vec![st, Tm::Tuple(cowns), lam])
-    }
-
-    pub fn elab_fork_join(&mut self, cx: &mut Cx, e: &Expr) -> (Tm, Val) {
-        let saved = self.post_target.take();
-        let r = self.elab_fork_join_inner(cx, e);
-        self.post_target = saved;
-        r
-    }
-
-    fn elab_fork_join_inner(&mut self, cx: &mut Cx, e: &Expr) -> (Tm, Val) {
-        match &e.kind {
-            ExprKind::Fork(s, body) => {
-                let st = self.check_sched(cx, s);
-                // The result type lives outside the behaviour, so its unknown is
-                // created before the behaviour's binder.
-                let rty = self.fresh_meta_val(cx);
-                let start = cx.lvl();
-                let unit = self.unit();
-                cx.bind("_", unit, Mult::Many);
-                let bt = self.check_block(cx, body, &rty, true);
-                cx.truncate(start);
-                let fut = self.ty_val(self.g.well_known.future, vec![rty]);
-                (Tm::PrimApp(Prim::Fork, vec![st, Tm::Lam(Rc::from("_"), Mult::Many, Icit::Expl, Rc::new(bt))]), fut)
-            }
-            ExprKind::Join(binds, s, body) => {
-                let st = self.check_sched(cx, s);
-                let mut futs = Vec::new();
-                let mut tys = Vec::new();
-                for (_, f) in binds {
-                    let inner = self.fresh_meta_val(cx);
-                    let fut = self.ty_val(self.g.well_known.future, vec![inner.clone()]);
-                    futs.push(self.check(cx, f, &fut, false));
-                    tys.push(inner);
-                }
-                let rty = self.fresh_meta_val(cx);
-                let start = cx.lvl();
-                for ((n, _), ty) in binds.iter().zip(&tys) {
-                    let l = cx.bind(&n.name, ty.clone(), Mult::Many);
-                    self.bound_at(cx, l, n.span);
-                }
-                let bt = self.check_block(cx, body, &rty, true);
-                cx.truncate(start);
-                let mut lam = bt;
-                for (n, _) in binds.iter().rev() {
-                    lam = Tm::Lam(Rc::from(n.name.as_str()), Mult::Many, Icit::Expl, Rc::new(lam));
-                }
-                let fut = self.ty_val(self.g.well_known.future, vec![rty]);
-                (Tm::PrimApp(Prim::Join, vec![st, Tm::Tuple(futs), lam]), fut)
-            }
-            _ => self.infer(cx, e),
-        }
     }
 }
 

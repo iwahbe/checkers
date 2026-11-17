@@ -58,7 +58,7 @@ fn max_of xs -> m : xs~List Int, xs != [], m~Int
 
 **Values.** Numbers are Z3's integers; `String`s are their UTF-8 bytes, so `len`, `++` and encoding are exact; `Array`s and `Bytes` are sequences; enums, records, lists and tuples are datatypes; function values are functions Z3 can apply, and a lambda is known by its body.
 
-**Outside what Z3 handles**: behaviours (`when`, `fork`, `join`) and polymorphic function values. An obligation that needs one is E0451; state what is needed as a lemma instead.
+**Outside what Z3 handles**: behaviours (`when`) and polymorphic function values. An obligation that needs one is E0451; state what is needed as a lemma instead.
 
 Z3 is limited by an amount of work, not by time, so whether an obligation is proved doesn't depend on the machine; and its answers are cached, so checking unchanged code again is fast.
 

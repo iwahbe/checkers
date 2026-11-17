@@ -5,10 +5,7 @@ fn no_using log sched
         l
     0
 
-fn let_bind term
-    let line <- terminal.read_line term
-    line
-
+# `<-` is not a token: this is `x < -1`.
 fn comparison x
     x<-1
 

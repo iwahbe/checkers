@@ -205,16 +205,16 @@ export fn main args sys -> code : args~List String, sys~System, code~Future Exit
     when n = hits using sched
         terminal.print_line ("hits: " ++ format n) term
         n
-    a <- fork using sched
+    let a = future.fork sched $ \_ ->
         20
-    b <- fork using sched
+    let b = future.fork sched $ \_ ->
         22
-    done <- join x = a, y = b using sched
+    let done = future.join (future.both a b) sched $ \(x, y) ->
         if x + y == 42 then Success else Failure 1
     done
 ```
 
-A behaviour can name several cowns and gets them all at once, so there are no locks to order and no deadlocks. `fork` starts work and gives a future; `join` waits for futures without holding a thread. Waiting for input, a pipe or a child process doesn't hold a thread either. For pure parallelism, `par (f x, g y)` evaluates both at once and, to the prover, is just the pair.
+A behaviour can name several cowns and gets them all at once, so there are no locks to order and no deadlocks. `future.fork` starts work and gives a future; `future.join` runs a function on a future's value once it is filled, without holding a thread. Waiting for input, a pipe or a child process doesn't hold a thread either. For pure parallelism, `par (f x, g y)` evaluates both at once and, to the prover, is just the pair.
 
 ## Modules and packages
 

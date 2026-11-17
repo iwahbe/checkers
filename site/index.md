@@ -21,7 +21,7 @@ A function's signature is a list of constraints: its types (`src~Bytes`) and wha
 - **Proofs without proof scripts.** Pre- and postconditions, refinement types (`type Even = n~Nat, n % 2 == 0`), lemmas and induction, discharged by Z3. When Z3 needs help, a `have` line names the fact to use.
 - **Dependent types**, written as constraints: types can mention values (`Parsed Json src i`), and a function's result type can depend on its arguments.
 - **Effects through capabilities.** A function that reads files takes an `Fs`; one without it can't touch the file system. Open files and child processes are linear: forgetting to close one is a compile error.
-- **Concurrency without data races or deadlocks.** Values shared between threads live in cowns; behaviours (`when`) that name a cown run one at a time, in order. `fork`, `join` and `par` add parallelism.
+- **Concurrency without data races or deadlocks.** Values shared between threads live in cowns; behaviours (`when`) that name a cown run one at a time, in order. Futures (`future.fork`, `future.join`) and `par` add parallelism.
 - **Native code.** Programs compile to machine code with Cranelift, with reference counting and in-place reuse; `check` declarations and compile-time code run natively too.
 - **Tools.** `checkers fmt`, a language server (hover, go to definition, references, highlighting, diagnostics as you type), packages from git, and this site's documentation generator.
 
