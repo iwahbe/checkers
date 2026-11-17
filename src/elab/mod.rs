@@ -493,6 +493,19 @@ pub struct Elab {
     /// Where each named local of a function is bound, for usage messages
     /// about one that holds no resource (a one-shot closure, D171).
     pub local_spans: HashMap<(DefId, String), Span>,
+    /// Where a lambda's or `let`'s variable is bound, by its name's
+    /// allocation: two variables of one name are told apart (D171, D172 d). The
+    /// name is kept so the address isn't reused.
+    pub binder_spans: HashMap<usize, (Name, Span)>,
+    /// A lambda's parameter checked against a function type that takes it
+    /// `own`: its type and the level it was bound at, so the usage check
+    /// can tell, once metas are solved, whether it may be a resource (D172 b).
+    pub lam_domains: HashMap<usize, (Val, usize)>,
+    /// A variable whose type may be a resource but, in an arm of a `match`
+    /// on a variable, is refined to one that holds none (D173): the
+    /// function, the matched variable's level, the arm's constructor and
+    /// the variable's level. The usage check lets it go unused there.
+    pub moot_in_arm: HashSet<(DefId, usize, ConId, usize)>,
     /// A `match` arm's resource names, bound as ghosts for its guard: the
     /// guard's span, for E0408.
     pub guard_vars: HashMap<(DefId, String), Span>,
@@ -639,6 +652,9 @@ impl Elab {
             saturated_heads: HashSet::new(),
             resource_vars: HashMap::new(),
             local_spans: HashMap::new(),
+            binder_spans: HashMap::new(),
+            lam_domains: HashMap::new(),
+            moot_in_arm: HashSet::new(),
             guard_vars: HashMap::new(),
             stdlib_mode: false,
             map_elem_sub: None,
@@ -781,7 +797,11 @@ impl Elab {
         let t = quote(&self.g, cx.lvl(), v);
         match crate::core::head_def(&t) {
             Some(d) if self.alias_preds.contains_key(&d) => self.show_val(cx, v),
-            _ => self.show_val(cx, &self.force(v)),
+            // Stuck on an unknown: as written (`values s Int`), not `match s …`.
+            _ => match self.force(v) {
+                Val::Neutral(_, sp) if sp.iter().any(|e| matches!(e, Elim::Case(..))) => self.show_val(cx, v),
+                f => self.show_val(cx, &f),
+            },
         }
     }
 
@@ -804,9 +824,52 @@ impl Elab {
         Some(eval(&self.g, &cx.env(), &t))
     }
 
+    /// `own` on a function type's parameter is implied by the parameter's
+    /// type (D39), decided where the arrow is written: a type still being
+    /// computed there (`values s a`) may be a resource, so it is `own`. Once
+    /// the type is known not to hold one (`values One Int` is `Int`), `own`
+    /// means nothing: both sides drop it (D172 b).
+    fn moot_own(&self, cx: &Cx, expected: &Val, actual: &Val) -> Option<(Val, Val)> {
+        fn go(e: &Elab, t: &Tm, changed: &mut bool) -> Tm {
+            match t {
+                Tm::Pi(x, m, i, a, b) => {
+                    let a2 = go(e, a, changed);
+                    let b2 = go(e, b, changed);
+                    let m2 = if *m == Mult::One && e.never_linear(&a2) {
+                        *changed = true;
+                        Mult::Many
+                    } else {
+                        *m
+                    };
+                    Tm::Pi(x.clone(), m2, *i, Rc::new(a2), Rc::new(b2))
+                }
+                _ => t.clone(),
+            }
+        }
+        let (Val::Pi(..), Val::Pi(..)) = (self.force(expected), self.force(actual)) else { return None };
+        let l = cx.lvl();
+        let mut changed = false;
+        let e = go(self, &quote(&self.g, l, expected), &mut changed);
+        let a = go(self, &quote(&self.g, l, actual), &mut changed);
+        changed.then(|| (eval(&self.g, &cx.env(), &e), eval(&self.g, &cx.env(), &a)))
+    }
+
+    /// A type known never to hold a resource: no variables or unsolved
+    /// metas left to decide it, and not linear (D172 b).
+    pub fn never_linear(&self, t: &Tm) -> bool {
+        let mut fv = std::collections::BTreeSet::new();
+        crate::core::free_vars(t, 0, &mut fv);
+        fv.is_empty() && !has_meta(t) && !self.type_linear(t)
+    }
+
     /// Unify, reporting a type mismatch on failure. Returns false on failure.
     pub fn unify_at(&mut self, cx: &Cx, expected: &Val, actual: &Val, span: Span, what: &str) -> bool {
-        let r = unify(&self.g, cx.lvl(), expected, actual);
+        let mut r = unify(&self.g, cx.lvl(), expected, actual);
+        if r.is_err() {
+            if let Some((e, a)) = self.moot_own(cx, expected, actual) {
+                r = unify(&self.g, cx.lvl(), &e, &a);
+            }
+        }
         // The types differ only in `own`: a function taking a resource where
         // the type expected doesn't say its parameter is `own` (an instance
         // of a class whose function doesn't, at a resource type, D156 i).
@@ -1135,7 +1198,7 @@ impl Elab {
                 }
                 match self.ty_lin(*id, visiting) {
                     Lin::Yes => true,
-                    Lin::No => args.iter().any(|a| self.tm_linear(a, visiting)),
+                    Lin::No => args.iter().enumerate().any(|(k, a)| self.type_param(*id, k) && self.tm_linear(a, visiting)),
                     // Decided by the arguments: evaluate them if they are known.
                     Lin::Depends => self.closed_linear(t),
                 }
@@ -1151,16 +1214,17 @@ impl Elab {
         }
     }
 
-    /// A computed type: decided by evaluating it if it mentions no variables,
-    /// else a resource, since it may be one (D112).
+    /// A computed type: decided by evaluating it, its variables left
+    /// unknown. One that can't be computed may be a resource (D112); one
+    /// computed by a `match` on an unknown is one if an arm may be
+    /// (`pipe_end s` may be a `File`; `values s Int` is never one, D172 e).
     fn closed_linear(&self, t: &Tm) -> bool {
         let mut fv = std::collections::BTreeSet::new();
         crate::core::free_vars(t, 0, &mut fv);
-        if fv.is_empty() {
-            self.val_linear(&eval(&self.g, &Rc::new(Vec::new()), t))
-        } else {
-            true
-        }
+        let n = fv.iter().next_back().map_or(0, |m| m + 1);
+        // Unknowns far above any context, as for fields (`field_lin`).
+        let env: Vec<Val> = (0..n).map(|k| Val::var(usize::MAX / 4 + k)).collect();
+        self.val_linear(&eval(&self.g, &Rc::new(env), t))
     }
 
     /// Is a value of this type linear (D39)?
@@ -1179,16 +1243,47 @@ impl Elab {
                 }
                 match self.ty_lin(id, &mut Vec::new()) {
                     Lin::Yes => true,
-                    Lin::No => args.iter().any(|a| self.val_linear_at(a, depth + 1)),
+                    Lin::No => args.iter().enumerate().any(|(k, a)| self.type_param(id, k) && self.val_linear_at(a, depth + 1)),
                     Lin::Depends => self.fields_linear(id, &args, depth),
                 }
             }
             Val::TupleTy(ts) => ts.iter().any(|a| self.val_linear_at(a, depth + 1)),
             // A type variable is generic (D45); a stuck computation of a type may be a resource.
             Val::Neutral(Head::Def(d), _) => self.def_gives_type(d),
+            // A `match` stuck on an unknown: a resource if an arm may be one (D172 e).
+            Val::Neutral(_, sp) if sp.iter().any(|e| matches!(e, Elim::Case(..))) => match sp.last() {
+                Some(Elim::Case(c, env)) => self.case_linear(c, env, depth),
+                _ => true,
+            },
             Val::Neutral(..) => false,
             _ => false,
         }
+    }
+
+    /// Is parameter `k` of this type a type (`a~Type`, `f~Type -> Type`),
+    /// rather than a value (`src~Bytes`)? Only a type argument can make a
+    /// value a resource.
+    fn type_param(&self, id: TyId, k: usize) -> bool {
+        let mut t = match self.g.tys[id.0 as usize].params.get(k) {
+            Some((_, t)) => t,
+            None => return true,
+        };
+        while let Tm::Pi(_, _, _, _, b) = t {
+            t = b;
+        }
+        matches!(t, Tm::Univ(_))
+    }
+
+    /// Might an arm of this stuck `match` be a resource type?
+    fn case_linear(&self, c: &CaseTm, env: &Env, depth: usize) -> bool {
+        let arm = |n: usize, body: &Tm| {
+            let mut e = (**env).clone();
+            e.extend((0..n).map(|k| Val::var(usize::MAX / 2 + depth * 64 + k)));
+            self.val_linear_at(&eval(&self.g, &Rc::new(e), body), depth + 1)
+        };
+        c.branches.iter().any(|(_, n, b)| arm(*n, b))
+            || c.lits.iter().any(|(_, b)| arm(0, b))
+            || c.default.as_ref().is_some_and(|b| arm(0, b))
     }
 
     pub fn type_linear(&self, t: &Tm) -> bool {
@@ -1236,6 +1331,34 @@ impl Elab {
         false
     }
 
+    /// A binder's name, recorded with where it is bound (D172 d).
+    pub fn binder_name(&mut self, name: &str, span: Span) -> Name {
+        let n: Name = Rc::from(name);
+        self.binder_spans.insert(Rc::as_ptr(&n) as *const u8 as usize, (n.clone(), span));
+        n
+    }
+
+    /// `own` on this lambda parameter is moot: its type, now known, holds
+    /// no resource (D172 b).
+    pub fn lam_own_moot(&self, name: &Name) -> bool {
+        self.lam_domains
+            .get(&(Rc::as_ptr(name) as *const u8 as usize))
+            .is_some_and(|(ty, lvl)| self.never_linear(&quote(&self.g, *lvl, ty)))
+    }
+
+    /// The resource type of this lambda parameter, once known (`File`).
+    pub fn lam_resource(&self, name: &Name) -> Option<String> {
+        let (ty, lvl) = self.lam_domains.get(&(Rc::as_ptr(name) as *const u8 as usize))?;
+        let t = quote(&self.g, *lvl, ty);
+        let mut fv = std::collections::BTreeSet::new();
+        crate::core::free_vars(&t, 0, &mut fv);
+        (fv.is_empty() && !has_meta(&t) && self.type_linear(&t)).then(|| self.show_resource(&Cx::default(), ty))
+    }
+
+    pub fn binder_span(&self, name: &Name) -> Option<Span> {
+        self.binder_spans.get(&(Rc::as_ptr(name) as *const u8 as usize)).map(|(_, s)| *s)
+    }
+
     /// The multiplicity for a variable the program names: linear types make it `own` (D39).
     pub fn named_mult(&mut self, cx: &Cx, name: &str, ty: &Val, span: Span, declared: Mult) -> Mult {
         if let Some(f) = self.cur_fn {
@@ -1277,8 +1400,12 @@ impl Elab {
         if self.type_linear(ty) {
             let tyv = self.eval(cx, ty);
             let shown = self.show_val(cx, &tyv);
+            // A type still to be computed (`futures s a`) may be one.
+            let mut fv = std::collections::BTreeSet::new();
+            crate::core::free_vars(ty, 0, &mut fv);
+            let holds = if fv.is_empty() || !self.computes_type(ty) { "holds" } else { "may hold" };
             self.err(
-                Diagnostic::warning("W010", format!("`own` is implied: `{shown}` holds a resource"), span)
+                Diagnostic::warning("W010", format!("`own` is implied: `{shown}` {holds} a resource"), span)
                     .with_label("this `own` can go")
                     .with_help("remove `own`; a resource is used exactly once anyway"),
             );
@@ -2186,4 +2313,22 @@ pub fn rename_words(text: &str, names: &[(String, String)]) -> String {
     }
     flush(&mut word, &mut out);
     out
+}
+
+/// Does a term mention a metavariable?
+pub(crate) fn has_meta(t: &Tm) -> bool {
+    match t {
+        Tm::Meta(_) => true,
+        Tm::Pi(_, _, _, a, b) | Tm::App(a, b, ..) => has_meta(a) || has_meta(b),
+        Tm::Lam(_, _, _, b) | Tm::Proj(b, _) | Tm::Field(b, _, _) => has_meta(b),
+        Tm::Let(_, _, a, b, c) => has_meta(a) || has_meta(b) || has_meta(c),
+        Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => v.iter().any(has_meta),
+        Tm::Case(s, c) => {
+            has_meta(s)
+                || c.branches.iter().any(|(_, _, b)| has_meta(b))
+                || c.lits.iter().any(|(_, b)| has_meta(b))
+                || c.default.as_ref().is_some_and(has_meta)
+        }
+        _ => false,
+    }
 }

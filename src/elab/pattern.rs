@@ -333,12 +333,12 @@ impl Elab {
             cx.locals[l].sub = cx.locals[*occ].sub;
             cx.locals[l].param = cx.locals[*occ].param;
             self.bound_at(cx, l, *at);
-            lets.push((name.clone(), mult, tyt, t));
+            lets.push((self.binder_name(name, *at), mult, tyt, t));
         }
-        let wrap = |lets: &[(String, Mult, Tm, Tm)], body: Tm| {
+        let wrap = |lets: &[(crate::core::Name, Mult, Tm, Tm)], body: Tm| {
             let mut t = body;
             for (n, mult, tyt, v) in lets.iter().rev() {
-                t = Tm::Let(Rc::from(n.as_str()), *mult, Rc::new(tyt.clone()), Rc::new(v.clone()), Rc::new(t));
+                t = Tm::Let(n.clone(), *mult, Rc::new(tyt.clone()), Rc::new(v.clone()), Rc::new(t));
             }
             t
         };
@@ -378,11 +378,11 @@ impl Elab {
                 if let Some(f) = self.cur_fn {
                     for (n, m, _, _) in &lets {
                         if *m == Mult::One {
-                            self.guard_vars.insert((f, n.clone()), g.span);
+                            self.guard_vars.insert((f, n.to_string()), g.span);
                         }
                     }
                 }
-                let guard_lets: Vec<(String, Mult, Tm, Tm)> = lets
+                let guard_lets: Vec<(crate::core::Name, Mult, Tm, Tm)> = lets
                     .iter()
                     .map(|(n, m, tyt, v)| (n.clone(), if *m == Mult::One { Mult::Zero } else { *m }, tyt.clone(), v.clone()))
                     .collect();
@@ -829,7 +829,7 @@ impl Elab {
             // left (an unknown abstracts over the variable itself).
             let refined = if cx.locals[occ].bound {
                 let tm = quote(&self.g, cx.lvl(), expected);
-                if !has_meta_tm(&tm) && mentions_var(&tm, cx.lvl() - 1 - occ) {
+                if !super::has_meta(&tm) && mentions_var(&tm, cx.lvl() - 1 - occ) {
                     let mut env = cx.env.to_vec();
                     env[occ] = Val::Con(c, all.clone());
                     eval(&self.g, &Rc::new(env), &tm)
@@ -839,6 +839,30 @@ impl Elab {
             } else {
                 expected.clone()
             };
+            // So do the types of the variables in scope (D173): `x~futures s a`
+            // is a `Future a` in the `One` arm of `match s`, as in Agda and
+            // Idris. Only the type changes; the variable is the same.
+            let mut retyped: Vec<(usize, Val)> = Vec::new();
+            if cx.locals[occ].bound {
+                let i = cx.lvl() - 1 - occ;
+                for l in 0..start {
+                    if l == occ {
+                        continue;
+                    }
+                    let tm = quote(&self.g, cx.lvl(), &cx.locals[l].ty);
+                    if !super::has_meta(&tm) && mentions_var(&tm, i) {
+                        let mut env = cx.env.to_vec();
+                        env[occ] = Val::Con(c, all.clone());
+                        let ty = eval(&self.g, &Rc::new(env), &tm);
+                        if let Some(f) = self.cur_fn {
+                            if self.type_linear(&tm) && self.never_linear(&quote(&self.g, cx.lvl(), &ty)) {
+                                self.moot_in_arm.insert((f, occ, c, l));
+                            }
+                        }
+                        retyped.push((l, std::mem::replace(&mut cx.locals[l].ty, ty)));
+                    }
+                }
+            }
             let body = if rs.is_empty() {
                 let w = self.render_path();
                 self.uncovered(cx, format!("`{w}`"));
@@ -846,29 +870,15 @@ impl Elab {
             } else {
                 self.compile(cx, rs, &refined, tail)
             };
+            for (l, ty) in retyped {
+                cx.locals[l].ty = ty;
+            }
             cx.facts.truncate(saved);
             self.pm.frames.pop();
             cx.truncate(start);
             branches.push((c, fields.len(), body));
         }
         Tm::Case(Rc::new(scrut), Rc::new(CaseTm { branches, lits: vec![], default: None }))
-    }
-}
-
-fn has_meta_tm(t: &Tm) -> bool {
-    match t {
-        Tm::Meta(_) => true,
-        Tm::Pi(_, _, _, a, b) | Tm::App(a, b, ..) => has_meta_tm(a) || has_meta_tm(b),
-        Tm::Lam(_, _, _, b) | Tm::Proj(b, _) | Tm::Field(b, _, _) => has_meta_tm(b),
-        Tm::Let(_, _, a, b, c) => has_meta_tm(a) || has_meta_tm(b) || has_meta_tm(c),
-        Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => v.iter().any(has_meta_tm),
-        Tm::Case(s, c) => {
-            has_meta_tm(s)
-                || c.branches.iter().any(|(_, _, b)| has_meta_tm(b))
-                || c.lits.iter().any(|(_, b)| has_meta_tm(b))
-                || c.default.as_ref().is_some_and(has_meta_tm)
-        }
-        _ => false,
     }
 }
 

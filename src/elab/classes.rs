@@ -142,6 +142,7 @@ fn respan(e: &Expr, s: Span) -> Expr {
         ),
         ExprKind::Refine(r) => ExprKind::Refine(Box::new(ast::RefineTy {
             param: r.param.as_ref().map(id),
+            own: r.own,
             dom: respan(&r.dom, s),
             arrow: r.arrow.as_ref().map(|(n, t)| (n.as_ref().map(id), respan(t, s))),
             preds: r.preds.iter().map(|p| respan(p, s)).collect(),
@@ -354,6 +355,7 @@ impl Rewrite<'_> {
                 b.extend(r.binders());
                 ExprKind::Refine(Box::new(ast::RefineTy {
                     param: r.param.clone(),
+                    own: r.own,
                     dom: self.expr(&r.dom, bound),
                     arrow: r.arrow.as_ref().map(|(n, t)| (n.clone(), self.expr(t, &b))),
                     preds: r.preds.iter().map(|p| self.expr(p, &b)).collect(),
@@ -707,6 +709,7 @@ impl Elab {
                         fty = Expr {
                             kind: ExprKind::Refine(Box::new(ast::RefineTy {
                                 param: Some(ident(&format!("'{v}"), span)),
+                                own: false,
                                 dom: con("Type", span),
                                 arrow: Some((None, fty)),
                                 preds: Vec::new(),

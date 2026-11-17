@@ -1,0 +1,29 @@
+error[E0123]: `ghost` can't be written here, inside a type
+ --> refine_mult.ck:6:30
+  |
+6 | fn ghost_param f -> r : f~(v~ghost a -> b), r~Unit
+  |                              ^^^^^
+  = help: only `own` may be written on a function type's parameter; give `ghost` to the variable instead
+
+error[E0123]: `comptime` can't be written here, inside a type
+ --> refine_mult.ck:9:33
+  |
+9 | fn comptime_param f -> r : f~(v~comptime Int -> Int), r~Unit
+  |                                 ^^^^^^^^
+  = help: only `own` may be written on a function type's parameter; give `comptime` to the variable instead
+
+error[E0123]: `own` can't be written here, inside a type
+  --> refine_mult.ck:12:36
+   |
+12 | fn own_result f -> r : f~(v~a -> w~own b), r~Unit
+   |                                    ^^^
+   = help: write `own` on a parameter of a function (`x~own T`), or on a function type's parameter (`own` only)
+
+error[E0123]: `own` can't be written here, inside a type
+  --> refine_mult.ck:15:33
+   |
+15 | fn own_refinement n -> r : n~(m~own Int, m > 0), r~Unit
+   |                                 ^^^
+   = help: write `own` on a parameter of a function (`x~own T`), or on a function type's parameter (`own` only)
+
+refine_mult.ck: 4 errors, 0 warnings

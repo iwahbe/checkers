@@ -125,6 +125,12 @@ impl Elab {
                     _ => (format!("$arg{}", cx.lvl()), false),
                 };
                 let v = Val::var(cx.lvl());
+                let nm = self.binder_name(&name, p.span);
+                // Whether `own` here means anything is decided once the
+                // parameter's type is known, by the usage check (D172 b).
+                if *m == Mult::One {
+                    self.lam_domains.insert(Rc::as_ptr(&nm) as *const u8 as usize, ((**a).clone(), cx.lvl()));
+                }
                 let l = cx.bind(&name, (**a).clone(), *m);
                 cx.locals[l].sub = map_sub;
                 if simple && name != "_" {
@@ -147,7 +153,7 @@ impl Elab {
                 };
                 self.post_target = saved_post;
                 cx.pop();
-                Tm::Lam(Rc::from(name.as_str()), *m, Icit::Expl, Rc::new(t))
+                Tm::Lam(nm, *m, Icit::Expl, Rc::new(t))
             }
             (ExprKind::If(c, t, f), _) => {
                 let b = self.bool_ty();
@@ -245,7 +251,7 @@ impl Elab {
                     }
                     matches!(&h.kind, ExprKind::Con(n) if n.starts_with("$mk#")) && !std::ptr::eq(h, e)
                 };
-                if matches!(e.kind, ExprKind::App(..)) && (dict || self.has_refined(cx, expected, 0)) {
+                if matches!(e.kind, ExprKind::App(..)) && (dict || self.has_refined(cx, expected, 0) || matches!(self.force(expected), Val::Univ(_))) {
                     self.app_expected = Some(expected.clone());
                 }
                 let (t, ty) = self.infer(cx, e);
@@ -790,6 +796,7 @@ impl Elab {
             Tm::Con(c) => self.con_invs.contains_key(c),
             _ => false,
         };
+        let wants_type = matches!(want.as_ref().map(|w| self.force(w)), Some(Val::Univ(_)));
         let (ft, fty) = match want {
             Some(w) => self.presolve_result(cx, ft, fty, args.len(), &w),
             None => (ft, fty),
@@ -799,7 +806,8 @@ impl Elab {
         // constructor shares its name (D155).
         if let Tm::TyCon(tid) = &ft {
             let tid = *tid;
-            if self.sealed_from(tid).is_some() && !cx.type_pos {
+            // Where a `Type` is expected (a type function's result), it is the type.
+            if self.sealed_from(tid).is_some() && !cx.type_pos && !wants_type {
                 self.err(self.sealed_error(tid, "constructors", head.span));
                 for a in &args {
                     let _ = self.infer(cx, a);
@@ -2000,7 +2008,8 @@ impl Elab {
                         }
                         let body = self.block_from(cx, rest, result, expected, tail);
                         cx.pop();
-                        Tm::Let(Rc::from(name.as_str()), mult, Rc::new(tyt), Rc::new(t), Rc::new(body))
+                        let nm = if name != "_" { self.binder_name(&name, pat.span) } else { Rc::from("_") };
+                        Tm::Let(nm, mult, Rc::new(tyt), Rc::new(t), Rc::new(body))
                     }
                     _ => {
                         let arms = vec![(pat.clone(), None, ArmBody::Rest(rest, result))];
@@ -2211,7 +2220,11 @@ impl Elab {
             }
         };
         cx.pop();
-        Tm::Let(Rc::from(name.as_str()), mult, Rc::new(tyt), Rc::new(t), Rc::new(body))
+        let nm = match &pat.kind {
+            ast::PatKind::Var(_) => self.binder_name(&name, pat.span),
+            _ => Rc::from(name.as_str()),
+        };
+        Tm::Let(nm, mult, Rc::new(tyt), Rc::new(t), Rc::new(body))
     }
 
     // ── concurrency forms (§8.5–8.6) ────────────────────────────────────────

@@ -213,7 +213,9 @@ fn example -> h : h~handle Pipe
     b"output"
 ```
 
-When a `match` takes apart a variable that the expected type mentions, each arm is checked against that type with the variable replaced by the arm's pattern ([Patterns](patterns.md#dependent-match)).
+When a `match` takes apart a variable, each arm is checked with the variable replaced by the arm's pattern in the expected type and in the types of the variables in scope ([Patterns](patterns.md#dependent-match)).
+
+A type computed by a `match` on something unknown may be a resource if one of the `match`'s arms may be one. `proc.pipe_end s` is a `File` for `Pipe` and a `Unit` otherwise, so a value of it is used exactly once, except in an arm of `match s` that makes it a `Unit`.
 
 ## Multiplicities
 
@@ -232,7 +234,7 @@ Proofs are always ghost: a lemma, a `have`, and every predicate are erased.
 
 ### `own`
 
-An `own` variable has multiplicity 1: it is used exactly once on every path. Values that hold resources (open files, child processes) are always used so, whether written `own` or not ([Capabilities and resources](effects.md#resources)). `own` is written on a parameter whose type is a type parameter, `v~own a`, so that a generic function may be given a resource: without it, the function might copy or drop its argument, so passing it a resource is an error. On a type that is a resource already it is redundant (W010); on one that can never be a resource it is an error (E0358). On a function type, `f~own (Unit -> a)`, it promises the function is called exactly once, so it may be given a closure that uses a resource ([One-shot closures](effects.md#one-shot-closures)).
+An `own` variable has multiplicity 1: it is used exactly once on every path. Values that hold resources (open files, child processes) are always used so, whether written `own` or not ([Capabilities and resources](effects.md#resources)). `own` is written on a parameter whose type is a type parameter, `v~own a`, so that a generic function may be given a resource: without it, the function might copy or drop its argument, so passing it a resource is an error. On a type that is a resource already it is redundant (W010); on one that can never be a resource it is an error (E0358). On a function type, `f~own (Unit -> a)`, it promises the function is called exactly once, so it may be given a closure that uses a resource ([One-shot closures](effects.md#one-shot-closures)). On a function type's parameter, `(v~own a -> b)`, it says the function takes its argument once, so it may be given a function that takes a resource; a parameter whose type is a resource is taken once anyway. `ghost` and `comptime` can't be written inside a type, nor `own` anywhere there but on a function type's parameter (E0123).
 
 Every other variable has the default multiplicity: any number of times, including none.
 

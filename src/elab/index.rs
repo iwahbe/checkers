@@ -122,6 +122,10 @@ impl Elab {
     /// Bind-site bookkeeping: the local at `l` was bound by the name at `span`.
     pub fn bound_at(&mut self, cx: &mut Cx, l: usize, span: Span) {
         cx.locals[l].span = Some(span);
+        // For usage messages about a local that holds no resource (D171).
+        if let Some(f) = self.cur_fn {
+            self.local_spans.entry((f, cx.locals[l].name.to_string())).or_insert(span);
+        }
         self.index_local(cx, l, span);
     }
 

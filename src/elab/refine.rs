@@ -432,7 +432,10 @@ impl Elab {
             cx.pop();
             return self.anon_alias(cx, &x, &a_text, a, preds);
         };
-        let m = if self.type_linear(&a) { Mult::One } else { Mult::Many };
+        if r.own {
+            self.check_own(cx, &a, r.dom.span);
+        }
+        let m = if r.own || self.type_linear(&a) { Mult::One } else { Mult::Many };
         cx.bind(&x, av, Mult::Zero);
         let b = self.elab_type(cx, b_expr);
         let b_text = self.src_text(b_expr.span);

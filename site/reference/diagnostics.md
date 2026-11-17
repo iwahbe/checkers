@@ -37,6 +37,7 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0120` | `export` on an instance |
 | `E0121` | a class member with a body, or an instance member with a signature |
 | `E0122` | a keyword where a name belongs |
+| `E0123` | `ghost`, `comptime`, or `own` other than on a function type's parameter, written inside a type |
 
 ## Names and types
 

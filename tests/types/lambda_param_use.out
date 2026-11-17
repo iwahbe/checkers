@@ -1,0 +1,16 @@
+error[E0401]: this closure's parameter `x` must be used exactly once, but the closure never uses it
+  --> lambda_param_use.ck:19:16
+   |
+19 |     (\x -> x, \x -> ())
+   |                ^
+   = help: the closure's type takes `x` as `own`, since its type may be a resource: use it exactly once
+
+error[E0401]: this closure's parameter `x` must be used exactly once, but the closure may use it more than once
+  --> lambda_param_use.ck:25:6
+   |
+25 |     \x -> copy x
+   |      ^
+   = note: `x` is passed to `copy`, whose parameter is not `own`, so `copy` may copy or drop it
+   = help: the closure's type takes `x` as `own`, since its type may be a resource: use it exactly once
+
+lambda_param_use.ck: 2 errors, 0 warnings

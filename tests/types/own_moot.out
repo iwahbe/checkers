@@ -1,0 +1,22 @@
+error[E0401]: `h` holds a resource (`File`), so it must be used exactly once, but `close_twice` may use it more than once
+  --> own_moot.ck:44:16
+   |
+44 |     apply f $ \h ->
+   |                ^
+   = help: a resource can't be copied: each operation on it gives back the one to use next, `let (x, f) = op f`
+
+error[E0358]: `own` on `Int`, which holds no resource
+  --> own_moot.ck:48:29
+   |
+48 | fn on_int f -> r : f~(v~own Int -> Int), r~Int
+   |                             ^^^ `own` has no use here
+   = help: `own` is for generic parameters that may receive a resource, as in `v~own a`; remove it
+
+warning[W010]: `own` is implied: `File` holds a resource
+  --> own_moot.ck:51:30
+   |
+51 | fn on_file f -> r : f~(v~own File -> Unit), r~Unit
+   |                              ^^^^ this `own` can go
+   = help: remove `own`; a resource is used exactly once anyway
+
+own_moot.ck: 2 errors, 1 warning

@@ -3,6 +3,7 @@
 
 use crate::core::{CaseTm, DefId, Mult, Prim, Tm};
 use crate::diag::Diagnostic;
+use crate::source::Span;
 use crate::elab::Elab;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -31,6 +32,13 @@ impl Count {
 struct Binder {
     name: String,
     mult: Mult,
+    /// Where it is bound, if the elaborator recorded it (D172 d).
+    span: Option<Span>,
+    /// A lambda's parameter: `own` comes from the function type it is
+    /// checked against, not from anything written.
+    lambda: bool,
+    /// A lambda parameter's resource type, when known (`File`).
+    resource: Option<String>,
     /// Bound to a closure that uses this resource (or `own` value): the
     /// closure must be called exactly once (D171).
     oneshot: Option<String>,
@@ -69,10 +77,14 @@ impl U<'_> {
             return;
         }
         let meta = self.e.fn_meta.get(&self.did).cloned().unwrap_or_default();
-        let resource = self.e.resource_vars.get(&(self.did, b.name.clone())).cloned();
-        let span = match &resource {
-            Some((s, _)) => *s,
-            None => meta
+        let resource = match (&b.resource, b.span) {
+            (Some(t), Some(s)) => Some((s, t.clone())),
+            _ => self.e.resource_vars.get(&(self.did, b.name.clone())).cloned(),
+        };
+        let span = match (&resource, b.span) {
+            (_, Some(s)) => s,
+            (Some((s, _)), None) => *s,
+            (None, None) => meta
                 .params
                 .iter()
                 .find(|p| p.0 == b.name)
@@ -205,6 +217,18 @@ impl U<'_> {
                 span,
             )
             .with_help("an `own` value must be used exactly once on every path"),
+            (_, false, c) if b.lambda && b.span.is_some() && resource.is_none() && self.cown_target(lvl).is_none() => Diagnostic::error(
+                "E0401",
+                format!(
+                    "this closure's parameter `{name}` must be used exactly once, but the closure {}",
+                    if c == Count::Zero { "never uses it" } else { "may use it more than once" }
+                ),
+                span,
+            )
+            .with_notes(self.copied_by.get(&lvl).map(|(callee, _)| {
+                format!("`{name}` is passed to `{callee}`, whose parameter is not `own`, so `{callee}` may copy or drop it")
+            }))
+            .with_help(format!("the closure's type takes `{name}` as `own`, since its type may be a resource: use it exactly once")),
             (_, false, Count::Zero) => Diagnostic::error(
                 "E0401",
                 format!("`{name}` is `own`, so it must be used exactly once, but `{fname}` never uses it"),
@@ -239,8 +263,10 @@ impl U<'_> {
         }
     }
 
-    fn under(&mut self, name: &str, mult: Mult, body: &Tm) -> Counts {
-        self.binders.push(Binder { name: name.to_string(), mult, oneshot: None });
+    fn under(&mut self, name: &crate::core::Name, mult: Mult, body: &Tm, lambda: bool) -> Counts {
+        let span = self.e.binder_span(name);
+        let resource = if lambda { self.e.lam_resource(name) } else { None };
+        self.binders.push(Binder { name: name.to_string(), mult, span, lambda, resource, oneshot: None });
         let c = self.go(body);
         self.close(&c);
         self.binders.pop();
@@ -271,8 +297,9 @@ impl U<'_> {
             Tm::App(..) if head_is_meta(t) => self.zero(),
             Tm::App(..) => self.app(t, false),
             Tm::Lam(x, m, _, b) => {
+                let m = &if *m == Mult::One && self.e.lam_own_moot(x) { Mult::Many } else { *m };
                 // A closure may run any number of times.
-                let c = self.under(x, *m, b);
+                let c = self.under(x, *m, b, true);
                 for (lvl, n) in c.iter().enumerate() {
                     if *n != Count::Zero && self.binders[lvl].mult == Mult::One {
                         self.captured.insert(lvl);
@@ -290,7 +317,7 @@ impl U<'_> {
                 // variable is used once instead (D171).
                 if let (Some(used), false) = (self.oneshot_use(v), *m == Mult::Zero) {
                     let mut c = self.go_once(v);
-                    self.binders.push(Binder { name: x.to_string(), mult: Mult::One, oneshot: Some(used) });
+                    self.binders.push(Binder { name: x.to_string(), mult: Mult::One, span: self.e.binder_span(x), lambda: false, resource: None, oneshot: Some(used) });
                     let cb = self.go(b);
                     self.close(&cb);
                     self.binders.pop();
@@ -300,7 +327,7 @@ impl U<'_> {
                     return c;
                 }
                 let mut c: Counts = self.go(v).into_iter().map(|c| c.scale(scale)).collect();
-                let cb = self.under(x, *m, b);
+                let cb = self.under(x, *m, b, false);
                 add(&mut c, &cb);
                 c
             }
@@ -342,7 +369,11 @@ impl U<'_> {
             Tm::Proj(x, _) | Tm::Field(x, _, _) => self.go(x),
             Tm::Case(s, c) => {
                 let mut cs = self.go(s);
-                let cb = self.case(c);
+                let scrut = match &**s {
+                    Tm::Var(i) => Some(self.binders.len() - 1 - i),
+                    _ => None,
+                };
+                let cb = self.case(c, scrut);
                 add(&mut cs, &cb);
                 cs
             }
@@ -456,8 +487,13 @@ impl U<'_> {
                 }
             }
         }
-        let ca: Counts =
-            used.into_iter().enumerate().map(|(lvl, x)| if carried.contains(&lvl) { x.scale(m) } else { x }).collect();
+        // An erased argument (a type, a ghost value) uses nothing at all,
+        // even what it only computes from (`a` in `wrap s a`).
+        let ca: Counts = used
+            .into_iter()
+            .enumerate()
+            .map(|(lvl, x)| if m == Mult::Zero || carried.contains(&lvl) { x.scale(m) } else { x })
+            .collect();
         add(&mut c, &ca);
         // A partial application holding a resource is a closure that
         // uses it: unless this is a place that calls it once, it may
@@ -471,7 +507,6 @@ impl U<'_> {
             }
         }
         c
-    
     }
 
     /// `t` where what it makes is called exactly once: a lambda, or a
@@ -520,7 +555,8 @@ impl U<'_> {
     fn lam_once(&mut self, t: &Tm) -> Counts {
         match t {
             Tm::Lam(x, m, _, b) => {
-                self.binders.push(Binder { name: x.to_string(), mult: *m, oneshot: None });
+                let m = &if *m == Mult::One && self.e.lam_own_moot(x) { Mult::Many } else { *m };
+                self.binders.push(Binder { name: x.to_string(), mult: *m, span: self.e.binder_span(x), lambda: true, resource: self.e.lam_resource(x), oneshot: None });
                 let c = self.lam_once(b);
                 self.close(&c);
                 self.binders.pop();
@@ -532,36 +568,64 @@ impl U<'_> {
         }
     }
 
-    fn case(&mut self, c: &CaseTm) -> Counts {
+    fn case(&mut self, c: &CaseTm, scrut: Option<usize>) -> Counts {
         let mut results: Vec<Counts> = Vec::new();
-        for (_, n, body) in &c.branches {
+        // Per result, the variables that hold no resource in that arm.
+        let mut moots: Vec<Vec<usize>> = Vec::new();
+        for (con, n, body) in &c.branches {
             if matches!(body, Tm::Error) {
                 continue;
             }
             let start = self.binders.len();
+            // Variables whose type, refined in this arm, holds no resource
+            // (D173): used any number of times here, as if exactly once.
+            let moot: Vec<usize> = match scrut {
+                Some(s) => (0..start)
+                    .filter(|l| self.binders[*l].mult == Mult::One && self.e.moot_in_arm.contains(&(self.did, s, *con, *l)))
+                    .collect(),
+                None => Vec::new(),
+            };
+            for l in &moot {
+                self.binders[*l].mult = Mult::Many;
+            }
             for k in 0..*n {
-                self.binders.push(Binder { name: format!("$field{k}"), mult: Mult::Many, oneshot: None });
+                self.binders.push(Binder { name: format!("$field{k}"), mult: Mult::Many, span: None, lambda: false, resource: None, oneshot: None });
             }
             let mut r = self.go(body);
             self.binders.truncate(start);
             r.truncate(start);
+            for l in &moot {
+                self.binders[*l].mult = Mult::One;
+            }
             results.push(r);
+            moots.push(moot);
         }
         for (_, body) in &c.lits {
             if !matches!(body, Tm::Error) {
                 results.push(self.go(body));
+                moots.push(Vec::new());
             }
         }
         if let Some(d) = c.default.as_ref().filter(|d| !matches!(d, Tm::Error)) {
             results.push(self.go(d));
+            moots.push(Vec::new());
         }
         // Branches without code (errors already reported) don't constrain usage.
         let mut out = self.zero();
-        let Some(first) = results.first() else { return out };
+        if results.is_empty() {
+            return out;
+        }
         for lvl in 0..out.len() {
             let mult = self.binders[lvl].mult;
-            let all: Vec<Count> = results.iter().map(|r| r[lvl]).collect();
-            if mult == Mult::One && all.iter().any(|x| *x != first[lvl]) && !self.reported {
+            // An arm where it holds no resource doesn't constrain it (D173);
+            // if none does, it counts as used once.
+            let all: Vec<Count> =
+                results.iter().zip(&moots).filter(|(_, m)| !m.contains(&lvl)).map(|(r, _)| r[lvl]).collect();
+            let Some(first) = all.first().copied() else {
+                out[lvl] = Count::One;
+                continue;
+            };
+            if mult == Mult::One && all.iter().any(|x| *x != first) && !self.reported {
                 let has_one = all.contains(&Count::One);
                 let has_zero = all.contains(&Count::Zero);
                 if has_one && has_zero {
@@ -634,7 +698,7 @@ pub fn check_fn(e: &mut Elab, did: DefId, body: &Tm) {
     let mut t = body;
     let mut n = 0;
     while let (Tm::Lam(x, m, _, b), true) = (t, n < limit) {
-        u.binders.push(Binder { name: x.to_string(), mult: *m, oneshot: None });
+        u.binders.push(Binder { name: x.to_string(), mult: *m, span: u.e.binder_span(x), lambda: false, resource: None, oneshot: None });
         t = b;
         n += 1;
     }

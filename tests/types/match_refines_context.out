@@ -1,0 +1,20 @@
+error[E0201]: type mismatch: expected `Int`, found `values s Int`
+  --> match_refines_context.ck:48:17
+   |
+48 |         One  -> x
+   |                 ^ this expression has type `values s Int`
+
+error[E0201]: type mismatch: expected `Int`, found `values s Int`
+  --> match_refines_context.ck:56:5
+   |
+56 |     x + k
+   |     ^ this expression has type `values s Int`
+
+error[E0401]: `h` holds a resource (`handle s`), so it must be used exactly once, but `forget` never uses it
+  --> match_refines_context.ck:70:13
+   |
+70 | fn forget s h -> r : s~Shape, h~handle s, r~Unit
+   |             ^
+   = help: close it, or pass it on
+
+match_refines_context.ck: 3 errors, 0 warnings

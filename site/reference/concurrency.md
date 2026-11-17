@@ -74,7 +74,7 @@ fn add msg log sched -> u : msg~String, log~Cown Log, sched~Sched, u~Unit
 | Function | Gives |
 |---|---|
 | `future.fork sched f`, `f~own (Unit -> a)` | a `Future a`, filled by a behaviour that runs `f ()` |
-| `future.join x sched f`, `x~own Future a`, `f~own (a -> b)` | a `Future b`, filled by a behaviour that runs `f` on `x`'s value once `x` is filled |
+| `future.join x sched f`, `x~own Future a`, `f~own (v~own a -> b)` | a `Future b`, filled by a behaviour that runs `f` on `x`'s value once `x` is filled |
 | `future.both x y` | a `Future (a, b)`, filled once both are |
 | `future.ready v` | a `Future a` already filled with `v` |
 

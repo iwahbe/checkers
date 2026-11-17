@@ -41,6 +41,12 @@ impl Diagnostic {
         self
     }
 
+    /// Each note given, if any.
+    pub fn with_notes(mut self, notes: impl IntoIterator<Item = String>) -> Diagnostic {
+        self.notes.extend(notes);
+        self
+    }
+
     pub fn with_help(mut self, help: impl Into<String>) -> Diagnostic {
         self.help = Some(help.into());
         self

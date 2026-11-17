@@ -21,7 +21,7 @@ export fn fork sched f -> r : sched~Sched, f~own (Unit -> a), r~Future a
 # future of the result. The behaviour is scheduled after the one that fills
 # `x`, so it never waits. A future may be joined more than once; one holding
 # a resource, exactly once.
-export fn join x sched f -> r : x~own Future a, sched~Sched, f~own (a -> b), r~Future b
+export fn join x sched f -> r : x~own Future a, sched~Sched, f~own (v~own a -> b), r~Future b
     __builtin
 
 # The future of both values, filled once `x` and `y` are: for joining

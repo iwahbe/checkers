@@ -76,6 +76,8 @@ pub enum Constraint {
 #[derive(Clone, Debug)]
 pub struct RefineTy {
     pub param: Option<Ident>,
+    /// `own` written on the parameter of a refined function type (D172 b).
+    pub own: bool,
     pub dom: Expr,
     pub arrow: Option<(Option<Ident>, Expr)>,
     pub preds: Vec<Expr>,

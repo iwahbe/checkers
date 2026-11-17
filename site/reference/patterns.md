@@ -151,3 +151,29 @@ fn value_type k -> t : k~Kind, t~Type
 
 check default_of Text == ""
 ```
+
+**Variables in scope are refined too.** In each arm, every variable whose type mentions the matched variable has it replaced by the arm's pattern, so a function can take arguments whose types depend on another argument, and use them at the type each arm gives. A variable whose type may be a resource in general but holds none in an arm may be used freely there.
+
+```checkers
+enum Shape
+    One
+    Many
+
+fn values s a -> t : s~Shape, a~Type, t~Type
+    match s
+        One  -> a
+        Many -> List a
+
+fn first s x -> n : s~Shape, x~values s Int, n~Int
+    match s
+        One  -> x
+        Many ->
+            match x
+                []     -> 0
+                y :: _ -> y
+
+check first One 4 == 4
+check first Many [5, 6] == 5
+```
+
+Only a `match` on a variable refines, and only types without unknowns left in them.

@@ -1413,13 +1413,22 @@ impl Parser {
         if self.at_ident() && *self.peek_at(1) == Tok::Tilde {
             let param = self.ident("a name")?;
             self.bump(); // ~
-            let _ = self.mult();
+            let mult_span = self.span();
+            let mult = self.mult();
             let saved = std::mem::replace(&mut self.no_arrow, true);
             let dom = self.expr();
             self.no_arrow = saved;
             let dom = dom?;
             let arrow = if self.eat(&Tok::Arrow) { Some(self.refine_result()?) } else { None };
-            return self.refine_rest(start, Some(param), dom, arrow);
+            // Only a function's parameter may be `own` (D172 b).
+            if mult != Mult::Many && !(mult == Mult::Own && arrow.is_some()) {
+                self.refine_mult_error(mult, mult_span, arrow.is_some());
+            }
+            let mut e = self.refine_rest(start, Some(param), dom, arrow)?;
+            if let ExprKind::Refine(r) = &mut e.kind {
+                r.own = mult == Mult::Own;
+            }
+            return Ok(e);
         }
         if self.at(&Tok::RParen) {
             let end = self.bump().span;
@@ -1445,7 +1454,11 @@ impl Parser {
                 if let ExprKind::Var(y) = &res.kind {
                     let name = Ident { name: y.clone(), span: res.span };
                     self.bump(); // ~
-                    let _ = self.mult();
+                    let mult_span = self.span();
+                    let mult = self.mult();
+                    if mult != Mult::Many {
+                        self.refine_mult_error(mult, mult_span, false);
+                    }
                     let cod = self.expr()?;
                     return self.refine_rest(start, None, (**dom).clone(), Some((Some(name), cod)));
                 }
@@ -1478,11 +1491,34 @@ impl Parser {
         if self.at_ident() && *self.peek_at(1) == Tok::Tilde {
             let name = self.ident("a name")?;
             self.bump(); // ~
-            let _ = self.mult();
+            let mult_span = self.span();
+            let mult = self.mult();
+            if mult != Mult::Many {
+                self.refine_mult_error(mult, mult_span, false);
+            }
             Ok((Some(name), self.expr()?))
         } else {
             Ok((None, self.expr()?))
         }
+    }
+
+    /// E0123: `ghost`, `own` or `comptime` where a type can't carry it: on
+    /// a refinement, a function type's result, or (`ghost`, `comptime`) its
+    /// parameter. They were ignored before (D172 b).
+    fn refine_mult_error(&mut self, mult: Mult, span: Span, is_param: bool) {
+        let word = match mult {
+            Mult::Ghost => "ghost",
+            Mult::Own => "own",
+            Mult::Comptime => "comptime",
+            Mult::Many => return,
+        };
+        let d = Diagnostic::error("E0123", format!("`{word}` can't be written here, inside a type"), span);
+        let d = if is_param {
+            d.with_help(format!("only `own` may be written on a function type's parameter; give `{word}` to the variable instead"))
+        } else {
+            d.with_help(format!("write `{word}` on a parameter of a function (`x~{word} T`), or on a function type's parameter (`own` only)"))
+        };
+        self.diags.push(d);
     }
 
     /// The predicates and `)` of a refinement type.
@@ -1492,7 +1528,7 @@ impl Parser {
             preds.push(self.expr()?);
         }
         let end = self.expect(Tok::RParen, "`,` or `)`")?.span;
-        Ok(Expr { kind: ExprKind::Refine(Box::new(RefineTy { param, dom, arrow, preds })), span: start.to(end) })
+        Ok(Expr { kind: ExprKind::Refine(Box::new(RefineTy { param, own: false, dom, arrow, preds })), span: start.to(end) })
     }
 
     // ── patterns ────────────────────────────────────────────────────────────
