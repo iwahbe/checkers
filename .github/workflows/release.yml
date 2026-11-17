@@ -45,9 +45,15 @@ jobs:
         include:
           - os: ubuntu-24.04
             target: x86_64-linux
-          - os: macos-15
+          - os: macos-26
             target: aarch64-macos
     runs-on: ${{ matrix.os }}
+    env:
+      # The oldest macOS the archive runs on. Without it, Z3's CMake build
+      # targets the runner's SDK, the `cc` that links `checkers` the runner's
+      # macOS, and rustc macOS 11. rustc, CMake and clang all read it; Linux
+      # ignores it.
+      MACOSX_DEPLOYMENT_TARGET: "26.0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
