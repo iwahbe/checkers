@@ -19,11 +19,11 @@ export enum Source
     Path dir        : dir~String
 
 export record Dep
-    name~String
+    name~PackageName
     source~Source
 
 export record Manifest
-    name~String
+    name~PackageName
     toolchain~Version
     deps~List Dep
 
@@ -33,7 +33,7 @@ export enum Pinned
     PinnedPath dir               : dir~String
 
 export record Locked
-    name~String
+    name~PackageName
     pin~Pinned
 
 # A problem in a JSON file: the byte it is at, and what it is.
@@ -198,6 +198,13 @@ export fn valid_name s -> r : s~String, r~Bool
     let b = string.bytes s
     len b > 0 and name_from b 0
 
+# A package's name: lower-case letters, digits and `_`, starting with a letter.
+export type PackageName = s~String, valid_name s
+
+# The standard library's package, `std` (D104), is a `PackageName`.
+export lemma std_is_a_name
+    ensures valid_name "std"
+
 partial fn at src path msg -> r : src~Bytes, path~List String, msg~String, r~Problem
     Problem (locate src path) msg
 
@@ -219,10 +226,13 @@ partial fn version_field src fields path k -> r : src~Bytes, fields~List (String
                 Some v -> Ok v
                 None   -> Err (at src (path ++ [k]) ("`" ++ k ++ "` must be MAJOR.MINOR.PATCH, like 1.2.0"))
 
+partial fn not_a_name src path name -> r : src~Bytes, path~List String, name~String, r~Problem
+    at src path ("`" ++ name ++ "` isn't a package name: lower-case letters, digits and `_`, starting with a letter; not `std`")
+
 partial fn dep src name spec -> r : src~Bytes, name~String, spec~Json, r~Result Dep Problem
     let path = ["dependencies", name]
     if not (valid_name name) or name == "std"
-        Err (at src path ("`" ++ name ++ "` isn't a package name: lower-case letters, digits and `_`, starting with a letter; not `std`"))
+        Err (not_a_name src path name)
     else
         match spec
             Obj fs ->
@@ -231,7 +241,7 @@ partial fn dep src name spec -> r : src~Bytes, name~String, spec~Json, r~Result 
                     None   -> dep_source src name path fs
             _      -> Err (at src path ("`" ++ name ++ "` must be an object: { \"git\": URL, \"version\": \"1.2.0\" } or { \"path\": DIR }"))
 
-partial fn dep_source src name path fs -> r : src~Bytes, name~String, path~List String,
+partial fn dep_source src name path fs -> r : src~Bytes, name~PackageName, path~List String,
                                               fs~List (String, Json), r~Result Dep Problem
     match (field fs "git", field fs "path")
         (Some _, Some _) -> Err (at src path ("`" ++ name ++ "` has both `git` and `path`"))
@@ -268,7 +278,7 @@ partial fn manifest src fields -> r : src~Bytes, fields~List (String, Json), r~R
                 Err p -> Err p
                 Ok n  ->
                     if not (valid_name n) or n == "std"
-                        Err (at src ["name"] ("`" ++ n ++ "` isn't a package name: lower-case letters, digits and `_`, starting with a letter; not `std`"))
+                        Err (not_a_name src ["name"] n)
                     else
                         match (version_field src fields [] "version", version_field src fields [] "toolchain")
                             (Err p, _)    -> Err p
@@ -293,17 +303,20 @@ export partial fn read src -> r : src~Bytes, r~Result Manifest Problem
 
 partial fn pinned src name spec -> r : src~Bytes, name~String, spec~Json, r~Result Locked Problem
     let path = [name]
-    match spec
-        Obj fs ->
-            match field fs "path"
-                Some (Str d) -> Ok (Locked name (PinnedPath d))
-                _            ->
-                    match (string_field src fs path "git", version_field src fs path "version", string_field src fs path "commit")
-                        (Ok u, Ok v, Ok c) -> Ok (Locked name (PinnedGit u v c))
-                        (Err p, _, _)      -> Err p
-                        (_, Err p, _)      -> Err p
-                        (_, _, Err p)      -> Err p
-        _      -> Err (at src path ("`" ++ name ++ "` must be an object"))
+    if not (valid_name name) or name == "std"
+        Err (not_a_name src path name)
+    else
+        match spec
+            Obj fs ->
+                match field fs "path"
+                    Some (Str d) -> Ok (Locked name (PinnedPath d))
+                    _            ->
+                        match (string_field src fs path "git", version_field src fs path "version", string_field src fs path "commit")
+                            (Ok u, Ok v, Ok c) -> Ok (Locked name (PinnedGit u v c))
+                            (Err p, _, _)      -> Err p
+                            (_, Err p, _)      -> Err p
+                            (_, _, Err p)      -> Err p
+            _      -> Err (at src path ("`" ++ name ++ "` must be an object"))
 
 partial fn pins src members acc -> r : src~Bytes, members~List (String, Json), acc~List Locked,
                                        r~Result (List Locked) Problem

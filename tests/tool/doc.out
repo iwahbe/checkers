@@ -1,0 +1,12 @@
+$ checkers doc tests/doc/pkg/. -o tests/tool/never
+-- stdout
+-- stderr
+checkers: `.` isn't a package name: lower-case letters, digits and `_`, starting with a letter
+help: pass --name NAME, or give the package a checkers.json with its "name"
+-- exit 1
+$ checkers doc tests/doc/pkg -o tests/tool/never --name Shapes
+-- stdout
+-- stderr
+checkers: `Shapes` isn't a package name: lower-case letters, digits and `_`, starting with a letter
+help: pass --name NAME, or give the package a checkers.json with its "name"
+-- exit 1
