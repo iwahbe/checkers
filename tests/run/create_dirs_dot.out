@@ -1,0 +1,15 @@
+-- stdout
+dirs.tmp/a/.: ok
+dirs.tmp/b/./c: ok
+./dirs.tmp/d/e/./.: ok
+dirs.tmp/a/. again: ok
+.: ok
+within: f/.: ok
+within: ../g/.: Permission denied (outside the directory this capability allows)
+dirs.tmp/a: a directory
+dirs.tmp/b/c: a directory
+dirs.tmp/d/e: a directory
+dirs.tmp/f: a directory
+dirs.tmp/g: No such file or directory
+-- stderr
+-- exit 0
