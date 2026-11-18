@@ -7,7 +7,7 @@ import std.cown (Sched)
 # thread. A future handle can be copied and shared.
 export abstract enum Future +a : a~Type
 
-# A list of types: the values a `join` waits for, one per future (D176).
+# A list of types: the values a `join` waits for, one per future.
 export enum Types
     Last t      : t~Type
     Then t rest : t~Type, rest~Types

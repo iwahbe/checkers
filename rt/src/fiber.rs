@@ -230,7 +230,7 @@ fiber_asm!("_ck_fiber_switch", "_ck_fiber_start", "_ck_fiber_main");
 #[cfg(all(target_arch = "aarch64", not(target_vendor = "apple")))]
 fiber_asm!("ck_fiber_switch", "ck_fiber_start", "ck_fiber_main");
 #[cfg(not(any(all(target_arch = "x86_64", target_os = "linux"), target_arch = "aarch64")))]
-compile_error!("fibers are implemented for Linux on x86-64 and for ARM64 (D126)");
+compile_error!("fibers are implemented for Linux on x86-64 and for ARM64");
 
 extern "C" {
     fn ck_fiber_switch(save: *mut usize, to: usize);

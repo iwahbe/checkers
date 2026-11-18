@@ -15,7 +15,7 @@ export fn render d -> s : d~Decimal, s~String
 export fn of_int n -> d : n~Int, d~Decimal
     __builtin
 
-# ── Facts about the primitives above, trusted like the primitives (D56) ──────
+# ── Facts about the primitives above, trusted like the primitives ────────────
 
 # A rendered number starts with `-` or a digit.
 export lemma render_starts n : n~Decimal

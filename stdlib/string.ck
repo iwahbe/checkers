@@ -1,4 +1,4 @@
-# string.ck — UTF-8 strings (D20).
+# string.ck — UTF-8 strings.
 module std.string
 
 import std.array
@@ -29,11 +29,11 @@ export fn concat parts -> s : parts~List String, s~String
 export fn from_utf8 b -> r : b~Bytes, r~Option String
     __builtin
 
-# The characters of a string, in order (D119).
+# The characters of a string, in order.
 export fn chars s -> cs : s~String, cs~List Char
     __builtin
 
-# ── Axioms about these builtins (D56, D119) ─────────────────────────────────
+# ── Axioms about these builtins ─────────────────────────────────────────────
 # A string is the characters it is made of, one after another. The prover
 # sees a string as its UTF-8 bytes (§7.3), so these say how characters and
 # bytes relate.
@@ -89,7 +89,7 @@ check concat ["ab", "", "c"] == list.join "" ["ab", "", "c"] and concat [] == li
 check bytes (from_char c'A') == b"A" and bytes (from_char c'\u{80}') == b"\xC2\x80"
 check bytes (from_char c'😀') == b"\xF0\x9F\x98\x80"
 
-# ── Case folding (D151 d) ────────────────────────────────────────────────────
+# ── Case folding ─────────────────────────────────────────────────────────────
 
 # The string case folded, for comparing without regard to case: each
 # character as Unicode's full case folding maps it (`"Straße"` folds to

@@ -24,20 +24,20 @@ error[E0359]: `Plus` marks `+v`, but field `f` has `v` to the left of an `->`
    |
 32 | export abstract record Plus +v : v~Type
    |                              ^ declared `+` here
-   = help: importers rely on the mark (D16): change the field, or remove the mark
+   = help: importers rely on the mark: change the field, or remove the mark
 
 error[E0359]: `PlusHeld` marks `+v`, but field `f` has `v` to the left of an `->`
   --> positivity_computed.ck:36:34
    |
 36 | export abstract record PlusHeld +v : v~Type
    |                                  ^ declared `+` here
-   = help: importers rely on the mark (D16): change the field, or remove the mark
+   = help: importers rely on the mark: change the field, or remove the mark
 
 error[E0359]: `Minus` marks `-v`, but field `f` has `v` in a positive position
   --> positivity_computed.ck:40:31
    |
 40 | export abstract record Minus -v : v~Type
    |                               ^ declared `-` here
-   = help: importers rely on the mark (D16): change the field, or remove the mark
+   = help: importers rely on the mark: change the field, or remove the mark
 
 positivity_computed.ck: 6 errors, 0 warnings

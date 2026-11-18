@@ -1,4 +1,4 @@
-# actor.ck — actors on top of cowns (SPEC §13.5, D70).
+# actor.ck — actors on top of cowns (SPEC §13.5).
 #
 # An actor is a cown holding its state. A message is a function from the
 # old state to the new one; messages to one actor are handled one at a

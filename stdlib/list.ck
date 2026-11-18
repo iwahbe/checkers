@@ -102,7 +102,7 @@ export lemma bag_append xs ys : xs~List a, ys~List a
             []        -> auto
             _ :: rest -> have bag_append rest ys
 
-# Whether each element comes before the next or with it (`Ord`, D138).
+# Whether each element comes before the next or with it (`Ord`).
 export transparent fn sorted xs -> r : Ord a, xs~List a, r~Bool
     decreasing length xs
     match xs
@@ -123,11 +123,11 @@ export transparent fn sorted_as key xs -> r : Ord k, key~(a -> k), xs~List a, r~
         x :: y :: rest -> le (key x) (key y) and sorted_as key (y :: rest)
         _              -> True
 
-# `ys` is a rearrangement of `xs`: the same elements, as often (D47).
+# `ys` is a rearrangement of `xs`: the same elements, as often.
 export transparent fn perm xs ys -> r : xs~List a, ys~List a, r~Bool
     bag.of xs == bag.of ys
 
-# ── Sorting (D138, D147) ─────────────────────────────────────────────────────
+# ── Sorting ──────────────────────────────────────────────────────────────────
 # One stable merge sort, `sort_by`, in O(n log n) comparisons, proved to give
 # a sorted permutation of its input; `sort_as` and `sort` are through it.
 
@@ -144,7 +144,7 @@ export fn sort_as key xs -> r : Ord k, key~(a -> k), xs~List a, r~List a, sorted
     have sorted_by_key key r
     r
 
-# The order of keys is total, as `Ord` says (D146).
+# The order of keys is total, as `Ord` says.
 lemma total_key key : Ord k, key~(a -> k)
     ensures forall x y : x~a, y~a, le (key x) (key y) or le (key y) (key x)
     proof

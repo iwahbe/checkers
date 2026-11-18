@@ -1,5 +1,5 @@
 # char.ck — Unicode scalar values. A `Char` is its code (a refined `Nat`,
-# prelude), so these are ordinary functions the prover sees through (D119).
+# prelude), so these are ordinary functions the prover sees through.
 module std.char
 
 import std.array
@@ -22,7 +22,7 @@ export transparent fn from_surrogates hi lo -> c : hi~Nat, lo~Nat, 0xD800 <= hi,
                                                    0xDC00 <= lo, lo < 0xE000, c~Char
     0x10000 + (hi - 0xD800) * 0x400 + (lo - 0xDC00)
 
-# ── Classes of characters (D151 d) ──────────────────────────────────────────
+# ── Classes of characters ───────────────────────────────────────────────────
 
 # Whether `c` is punctuation or a symbol: general category P or S, what
 # CommonMark calls a Unicode punctuation character.

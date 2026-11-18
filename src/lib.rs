@@ -737,10 +737,10 @@ fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
         out.push('\n');
     }
     if reused > 0 {
-        out += &format!("cache: {reused} of {asked} Z3 answers reused (D100)\n");
+        out += &format!("cache: {reused} of {asked} Z3 answers reused\n");
     }
     if !known.is_empty() && verify::modules_dir().is_some() {
-        out += &format!("cache: {} of {} modules verified before (D143)\n", known.len(), all.len());
+        out += &format!("cache: {} of {} modules verified before\n", known.len(), all.len());
     }
     c.ledger = out;
     // Remembered only from a check with no errors at all (D143 c).

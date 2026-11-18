@@ -1,4 +1,4 @@
-# html.ck — HTML's escaping and its named character references (D151 d).
+# html.ck — HTML's escaping and its named character references.
 module std.html
 
 import std.array

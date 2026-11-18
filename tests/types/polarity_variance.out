@@ -11,7 +11,7 @@ error[E0262]: type mismatch: expected `Cell Nat`, found `Cell Small`
    |
 31 |     c                                           # error E0262: unmarked, so invariant
    |     ^ this expression has type `Cell Small`
-   = note: `Cell`'s parameter has no polarity mark, so `Small` and `Nat` must match exactly (D16)
+   = note: `Cell`'s parameter has no polarity mark, so `Small` and `Nat` must match exactly
    = help: if `Cell` only holds values of its parameter, its module can mark it `+`
 
 polarity_variance.ck: 2 errors, 0 warnings

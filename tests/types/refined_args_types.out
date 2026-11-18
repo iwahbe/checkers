@@ -3,7 +3,7 @@ error[E0262]: type mismatch: expected `List Small`, found `List Nat`
    |
 16 |     takes_small xs                              # error: `List Nat` is not `List Small`
    |                 ^^ this expression has type `List Nat`, so its `Nat` values aren't known to be `Small`
-   = note: a refinement inside a type is never gained from an existing value: that would need a proof about every element (D71)
+   = note: a refinement inside a type is never gained from an existing value: that would need a proof about every element
    = help: give the value the type `List Small` where it is built, so that each part is checked there
 
 error[E0262]: type mismatch: expected `List Small`, found `List Nat`
@@ -11,7 +11,7 @@ error[E0262]: type mismatch: expected `List Small`, found `List Nat`
    |
 19 |     xs                                          # error: `List Nat` is not `List Small`
    |     ^^ this expression has type `List Nat`, so its `Nat` values aren't known to be `Small`
-   = note: a refinement inside a type is never gained from an existing value: that would need a proof about every element (D71)
+   = note: a refinement inside a type is never gained from an existing value: that would need a proof about every element
    = help: give the value the type `List Small` where it is built, so that each part is checked there
 
 error[E0262]: type mismatch: expected `List (List Small)`, found `List (List Nat)`
@@ -19,7 +19,7 @@ error[E0262]: type mismatch: expected `List (List Small)`, found `List (List Nat
    |
 22 |     takes_nested xss                            # error: the inner `Nat`s aren't `Small`
    |                  ^^^ this expression has type `List (List Nat)`, so its `Nat` values aren't known to be `Small`
-   = note: a refinement inside a type is never gained from an existing value: that would need a proof about every element (D71)
+   = note: a refinement inside a type is never gained from an existing value: that would need a proof about every element
    = help: give the value the type `List (List Small)` where it is built, so that each part is checked there
 
 error[E0262]: type mismatch: expected `Cown Nat`, found `Cown Small`

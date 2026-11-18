@@ -2,7 +2,7 @@
 module std.prelude
 
 # The type of types: `a~Type` says that `a` is a type, so `List a` is a
-# list of any type `a`. Built into the compiler (D132).
+# list of any type `a`. Built into the compiler.
 export abstract enum Type
 
 # Built-in types; their values come from literals and primitives.
@@ -10,7 +10,7 @@ export abstract enum Int
 # Text: UTF-8, immutable. The prover sees a string as its UTF-8 bytes.
 export abstract enum String
 # An immutable array: `len xs` and `xs[i]` take constant time. Arrays of
-# fixed-width numbers are packed (D133); `std.array` has its functions.
+# fixed-width numbers are packed; `std.array` has its functions.
 export abstract enum Array +a : a~Type
 
 # `False` or `True`.
@@ -36,13 +36,13 @@ export enum List a : a~Type
     Nil
     Cons x xs : x~a, xs~List a
 
-# The natural numbers are a refinement of the integers (D121).
+# The natural numbers are a refinement of the integers.
 export type Nat = n~Int, n >= 0
 
-# Fixed-width numbers are refinements of Nat and Int (D6).
+# Fixed-width numbers are refinements of Nat and Int.
 export type U8 = n~Nat, n < 256
 
-# A sequence of bytes, immutable: an array of `U8`, packed (D133).
+# A sequence of bytes, immutable: an array of `U8`, packed.
 # `src[i]` is the byte at `i`.
 export type Bytes = b~Array U8
 
@@ -66,7 +66,7 @@ export type Char = n~Nat, n < 0x110000, (n < 0xD800 or 0xE000 <= n)
 export transparent fn not b -> r : b~Bool, r~Bool
     if b then False else True
 
-# ── Order (D136, D138) ───────────────────────────────────────────────────────
+# ── Order ────────────────────────────────────────────────────────────────────
 
 # A total order: `le x y` says `x` comes before `y`, or with it. Sorting
 # (`list.sort`, `array.sort`) uses one. Each instance proves the lemmas.
@@ -201,7 +201,7 @@ instance Ord (Option a) : Ord a
                         None   -> auto
                         Some y -> have Ord.antisym x y
 
-# ── Operators (D136, M24) ────────────────────────────────────────────────────
+# ── Operators (M24) ──────────────────────────────────────────────────────────
 # On numbers, `+ - *`, negation and comparisons are built in. On another
 # type they are its instance's: `x + y` is `add x y`, `-x` is `neg x`, and
 # `x <= y` is `le x y` (`x < y` is `not (le y x)`).
@@ -255,7 +255,7 @@ instance Monoid Int
     fn zero
         0
 
-# ── Functors (D136, M25) ─────────────────────────────────────────────────────
+# ── Functors (M25) ───────────────────────────────────────────────────────────
 
 # A container whose elements a function can be applied to, keeping its
 # shape: `List`, `Option`, and `Array` (in `std.array`).

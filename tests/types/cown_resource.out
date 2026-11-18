@@ -3,7 +3,7 @@ error[E0405]: `f` holds a resource (`File`), which can't be put in a cown
    |
 10 | fn direct f s -> c : f~File, s~Sched, c~Cown File
    |           ^
-   = note: `f` is passed to `cown.new`; a cown's handle can be shared, so nothing would make sure what it holds is closed (D156)
+   = note: `f` is passed to `cown.new`; a cown's handle can be shared, so nothing would make sure what it holds is closed
    = help: keep the resource with one owner, passing it on through calls, `fork` and `join`; a cown may hold the rest of the state
 
 error[E0405]: `f` holds a resource (`File`), which can't be put in a cown
@@ -11,7 +11,7 @@ error[E0405]: `f` holds a resource (`File`), which can't be put in a cown
    |
 17 | fn inside f s -> c : f~File, s~Sched, c~Cown Job
    |           ^
-   = note: `f` is passed to `cown.new`; a cown's handle can be shared, so nothing would make sure what it holds is closed (D156)
+   = note: `f` is passed to `cown.new`; a cown's handle can be shared, so nothing would make sure what it holds is closed
    = help: keep the resource with one owner, passing it on through calls, `fork` and `join`; a cown may hold the rest of the state
 
 error[E0405]: `v` is `own`, so it may be a resource, which can't be put in a cown
@@ -19,14 +19,14 @@ error[E0405]: `v` is `own`, so it may be a resource, which can't be put in a cow
    |
 20 | fn generic v s -> c : v~own a, s~Sched, c~Cown a
    |            ^
-   = help: remove `own`: a cown holds only values that aren't resources (D156)
+   = help: remove `own`: a cown holds only values that aren't resources
 
 error[E0405]: `f` holds a resource (`File`), which can't be put in an actor's state
   --> cown_resource.ck:23:10
    |
 23 | fn state f s -> a : f~File, s~Sched, a~Actor (Option File)
    |          ^
-   = note: `f` is passed to `actor.new`; a cown's handle can be shared, so nothing would make sure what it holds is closed (D156)
+   = note: `f` is passed to `actor.new`; a cown's handle can be shared, so nothing would make sure what it holds is closed
    = help: keep the resource with one owner, passing it on through calls, `fork` and `join`; a cown may hold the rest of the state
 
 cown_resource.ck: 4 errors, 0 warnings

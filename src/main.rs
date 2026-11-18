@@ -23,17 +23,17 @@ USAGE:
                                                (`-`: read it from standard input)
 
     check, run, build, trust and stage reuse Z3's answers from `.checkers/` beside the
-    file (D100); --no-cache (before the file) or CHECKERS_NO_CACHE=1 turns that off.
+    file; --no-cache (before the file) or CHECKERS_NO_CACHE=1 turns that off.
 
-    Before the file, packages (D111; `checkers` passes these from checkers.json):
+    Before the file, packages (`checkers` passes these from checkers.json):
       --package NAME=DIR    a dependency, importable as `NAME.module`
       --uses PKG=A,B        the packages PKG may import (`.` is this program's own)
     ckc complete [--overlay MAP] <FILE.ck> LINE COL
                                                what can be written at LINE, COL (from 0, the
-                                               column in bytes), as JSON lines (§15.5, D142)
+                                               column in bytes), as JSON lines (§15.5)
     ckc index [--overlay MAP] <FILE.ck>        the names of every module of FILE's package
                                                (the files under the directory its module
-                                               name is relative to), as JSON lines (D161)
+                                               name is relative to), as JSON lines
     ckc stage <FILE.ck>                        print the code staging generates (§8.9)
     ckc parse <FILE.ck>                        print the syntax tree
     ckc --version

@@ -31,6 +31,6 @@ A function's signature is a list of constraints: its types (`src~Bytes`) and wha
 - [Install](install.md): build from source, set up an editor.
 - [Reference](reference/index.md): the whole language, rule by rule.
 - [Packages](packages.md): the standard library's documentation, by version.
-- [SPEC.md](https://github.com/iwahbe/checkers/blob/main/SPEC.md): the log of the language's design decisions.
+- [SPEC.md](https://github.com/iwahbe/checkers/blob/main/SPEC.md): the language's specification.
 
 Checkers runs on Linux (x86-64) and macOS (Apple silicon). It is young: v0.0.1 is its first release.
