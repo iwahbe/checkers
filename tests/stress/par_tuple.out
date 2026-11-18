@@ -1,0 +1,8 @@
+-- stdout (sorted)
+(10, 21, 22)
+19
+21 22 53
+True
+ab1c1
+-- stderr
+-- exit 0

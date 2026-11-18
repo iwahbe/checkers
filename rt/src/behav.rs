@@ -400,7 +400,8 @@ struct Send2(W);
 unsafe impl Send for Send2 {}
 
 /// `par (e1, …, en)` (D69): `thunks` are closures taking `()`; they are
-/// consumed. Components run on threads while the pool has room.
+/// consumed. Components run on threads while the pool has room. The result
+/// is flat: the last component may be a tuple itself (D174).
 #[no_mangle]
 /// # Safety
 /// Called by native code with valid pointers (D72).
@@ -412,7 +413,7 @@ pub unsafe extern "C" fn ck_par(thunks: *const W, n: u64) -> W {
         for t in ts {
             out.push(apply(t, vec![UNIT]));
         }
-        return new_tuple(&out);
+        return crate::ops::ck_tuple_flat(new_tuple(&out));
     }
     let (first, rest) = ts.split_at(spawned);
     std::thread::scope(|sc| {
@@ -440,7 +441,7 @@ pub unsafe extern "C" fn ck_par(thunks: *const W, n: u64) -> W {
     if let Some(p) = pool() {
         p.give_par(spawned);
     }
-    new_tuple(&out)
+    crate::ops::ck_tuple_flat(new_tuple(&out))
 }
 
 /// Component `i` and the rest after it, owned (D174).
