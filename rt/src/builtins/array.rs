@@ -25,10 +25,7 @@ builtin!(ckb_array_from_list, |a| {
 
 builtin!(ckb_array_to_list, |a| list(array::items(a[1])));
 
-builtin!(ckb_array_repeat, |a| {
-    let items: Vec<W> = (0..n(a[1])).map(|_| dup(a[2])).collect();
-    array::from_items(Layout::of_word(a[0]), items)
-});
+builtin!(ckb_array_repeat, |a| array::repeat(Layout::of_word(a[0]), count(a[1]), a[2]));
 
 builtin!(ckb_array_set, |a| array::set(a[1], n(a[2]), a[3]));
 
@@ -45,7 +42,7 @@ builtin!(ckb_array_concat, |a| {
 builtin!(ckb_array_reverse, |a| array::reverse(a[1]));
 
 // `init n f`: element `i` is `f i`, laid out for its type (`a[0]`).
-builtin!(ckb_array_init, |a| array::build(Layout::of_word(a[0]), n(a[1]), |i| crate::apply::apply(dup(a[2]), vec![nat(i)])));
+builtin!(ckb_array_init, |a| array::build(Layout::of_word(a[0]), count(a[1]), |i| crate::apply::apply(dup(a[2]), vec![nat(i)])));
 
 // `map f xs`: the result laid out for `b` (`a[1]`; `a[0]` is `xs`'s).
 builtin!(ckb_array_map, |a| {

@@ -113,6 +113,12 @@ pub(crate) fn n(w: W) -> usize {
     to_usize(w).unwrap_or_else(|| bug("a number out of range"))
 }
 
+/// How many elements to make. A count no machine word holds becomes the
+/// largest one: allocating that many is out of memory (D184).
+pub(crate) fn count(w: W) -> usize {
+    to_usize(w).unwrap_or(usize::MAX)
+}
+
 pub(crate) fn ch(w: W) -> char {
     u32::try_from(n(w)).ok().and_then(char::from_u32).unwrap_or_else(|| bug("not a Unicode scalar value"))
 }

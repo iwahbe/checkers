@@ -163,9 +163,11 @@ fn size_of(w: W) -> usize {
     }
 }
 
-/// A new object with reference count 1; its words are uninitialised.
+/// A new object with reference count 1; its words are uninitialised. If
+/// it can't be allocated, the program ends: `out of memory` (§13.3, D184).
 pub fn alloc_obj(info_word: u64, size: usize) -> W {
-    let layout = Layout::from_size_align(size.max(HDR), 8).unwrap();
+    // A size above what an allocation can be has no layout (D184).
+    let Ok(layout) = Layout::from_size_align(size.max(HDR), 8) else { crate::fatal("out of memory") };
     let p = unsafe { alloc(layout) };
     if p.is_null() {
         crate::fatal("out of memory");

@@ -1,0 +1,4 @@
+-- stdout
+-- stderr
+checkers runtime: out of memory
+-- exit 70
