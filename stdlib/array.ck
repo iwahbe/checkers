@@ -39,8 +39,9 @@ export fn reverse xs -> r : xs~Array a, r~Array a, len r == len xs
 export fn map f xs -> r : f~(a -> b), xs~Array a, r~Array b, len r == len xs
     __builtin
 
-# An array of `n` elements, element `i` being `f i`.
-export fn init n f -> r : n~Nat, f~(Nat -> a), r~Array a, len r == n
+# An array of `n` elements, element `i` being `f i`. `f` is called only
+# with `i < n` (D186), so it may index arrays of length `n` unchecked.
+export fn init n f -> r : n~Nat, f~(i~Nat -> a, i < n), r~Array a, len r == n
     __builtin
 
 # Whether `p` holds for every element (`True` for an empty array).
