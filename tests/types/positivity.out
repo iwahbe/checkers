@@ -6,9 +6,9 @@ error[E0354]: `Bad` occurs in a negative position in field `f`
   = help: a type may not appear to the left of `->` in its own constructors; this would make the logic inconsistent
 
 error[E0354]: `Twice` occurs in a negative position in field `f`
-  --> positivity.ck:14:1
+  --> positivity.ck:15:1
    |
-14 | enum Twice
+15 | enum Twice
    | ^^^^^^^^^^
    = help: a type may not appear to the left of `->` in its own constructors; this would make the logic inconsistent
 

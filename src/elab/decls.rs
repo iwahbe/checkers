@@ -2,6 +2,10 @@
 
 use super::*;
 use crate::syntax::ast::{Constraint, DeclKind, Export, Expr, ExprKind, Ident};
+use std::collections::BTreeSet;
+
+/// A type at its arguments, each reduced to whether it has a value (D183).
+type TypeInstance = (TyId, Vec<bool>);
 
 /// A constructor invariant while its fields are elaborated: the predicate,
 /// its text and span, the level it was made at, and the field's alias if it
@@ -1089,7 +1093,126 @@ impl Elab {
             }
         }
         self.check_polarity_marks(m, ids);
-        self.check_strict_positivity(m, ids);
+        let rejected = self.check_strict_positivity(m, ids);
+        self.check_recursive_types_have_values(m, ids, &rejected);
+    }
+
+    /// E0367 (D183). A type already rejected by E0354 gets no second error.
+    fn check_recursive_types_have_values(&mut self, m: &ast::Module, ids: &[Option<Sym>], rejected: &BTreeSet<TyId>) {
+        let tys: Vec<TyId> = ids.iter().flatten().filter_map(|s| if let Sym::Ty(t) = s { Some(*t) } else { None }).collect();
+        for (d, id) in m.decls.iter().zip(ids) {
+            let Some(Sym::Ty(tid)) = id else { continue };
+            if rejected.contains(tid) || self.has_values(*tid) || !self.is_recursive(*tid, &tys) {
+                continue;
+            }
+            let ti = &self.g.tys[tid.0 as usize];
+            let name = ti.name.clone();
+            let help = if ti.is_record {
+                format!("hold the recursive field in a type that can be empty, such as `Option {name}` or `List {name}`")
+            } else {
+                format!("add a constructor that needs no value of `{name}`, such as one with no fields")
+            };
+            self.err(
+                Diagnostic::error("E0367", format!("`{name}` has no values: building one always needs a value of `{name}` first"), d.span)
+                    .with_label("no constructor can build the first value")
+                    .with_help(help),
+            );
+        }
+    }
+
+    /// Does `tid` reach itself through the field types of `tys`, the types
+    /// of its module? A cycle can't leave the module that declares it.
+    fn is_recursive(&self, tid: TyId, tys: &[TyId]) -> bool {
+        let mentions = |from: TyId, to: TyId| {
+            self.g.tys[from.0 as usize].ctors.iter().any(|c| self.g.cons[c.0 as usize].fields.iter().any(|f| occurs_ty(&f.3, to)))
+        };
+        let mut seen = BTreeSet::new();
+        let mut stack = vec![tid];
+        while let Some(from) = stack.pop() {
+            for &to in tys {
+                if mentions(from, to) {
+                    if to == tid {
+                        return true;
+                    }
+                    if seen.insert(to) {
+                        stack.push(to);
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Does `tid` have a value when each of its parameters has one? This is
+    /// the least fixed point of `instance_has_values`: each pass may use what
+    /// earlier passes found, and a pass that finds nothing new ends the search.
+    fn has_values(&self, tid: TyId) -> bool {
+        let root = (tid, vec![true; self.g.arity_ty(tid)]);
+        let mut known = BTreeSet::new();
+        loop {
+            let before = known.len();
+            let found = self.instance_has_values(&root, &mut known, &mut BTreeSet::new());
+            if found || known.len() == before {
+                return found;
+            }
+        }
+    }
+
+    /// One pass over a type at its arguments, each argument reduced to whether
+    /// it has a value. That keeps the instances finite under polymorphic
+    /// recursion (`Nested (a, a)` inside `Nested a`).
+    fn instance_has_values(&self, inst: &TypeInstance, known: &mut BTreeSet<TypeInstance>, seen: &mut BTreeSet<TypeInstance>) -> bool {
+        let ti = &self.g.tys[inst.0 .0 as usize];
+        if ti.ctors.is_empty() {
+            return ti.is_abstract;
+        }
+        if known.contains(inst) {
+            return true;
+        }
+        if !seen.insert(inst.clone()) {
+            return false;
+        }
+        let found = ti.ctors.iter().any(|c| {
+            let mut env = inst.1.clone();
+            self.g.cons[c.0 as usize].fields.iter().all(|(_, _, _, t)| {
+                let ok = self.type_has_values(t, &env, known, seen);
+                env.push(true);
+                ok
+            })
+        });
+        if found {
+            known.insert(inst.clone());
+        }
+        found
+    }
+
+    /// `env` says, for each variable in scope, whether it has a value. A form
+    /// that isn't a known type former counts as having one (D183 c).
+    fn type_has_values(&self, t: &Tm, env: &[bool], known: &mut BTreeSet<TypeInstance>, seen: &mut BTreeSet<TypeInstance>) -> bool {
+        match t.spine().0 {
+            Tm::Var(i) if matches!(t, Tm::Var(_)) => env.len().checked_sub(1 + i).and_then(|l| env.get(l)).copied().unwrap_or(true),
+            Tm::TupleTy(ts) => ts.iter().all(|a| self.type_has_values(a, env, known, seen)),
+            Tm::Pi(_, _, _, a, b) => {
+                let mut inner = env.to_vec();
+                inner.push(true);
+                self.is_empty_enum(a) || self.type_has_values(b, &inner, known, seen)
+            }
+            h @ (Tm::TyCon(id) | Tm::TyConApp(id, _)) => {
+                let held = if let Tm::TyConApp(_, args) = h { args.as_slice() } else { &[] };
+                let applied = t.spine().1;
+                let mut args: Vec<bool> = held.iter().chain(applied.iter().map(|a| a.as_ref())).map(|a| self.type_has_values(a, env, known, seen)).collect();
+                args.resize(self.g.arity_ty(*id), true);
+                self.instance_has_values(&(*id, args), known, seen)
+            }
+            _ => true,
+        }
+    }
+
+    fn is_empty_enum(&self, t: &Tm) -> bool {
+        matches!(t.spine().0, Tm::TyCon(id) | Tm::TyConApp(id, _) if {
+            let ti = &self.g.tys[id.0 as usize];
+            ti.ctors.is_empty() && !ti.is_abstract
+        })
     }
 
     /// D16: marks only on abstract types, each one true of the constructors;
@@ -1174,8 +1297,10 @@ impl Elab {
         }
     }
 
-    fn check_strict_positivity(&mut self, m: &ast::Module, ids: &[Option<Sym>]) {
-        // Strict positivity of each type in its own constructors.
+    /// Strict positivity of each type in its own constructors. Gives the
+    /// types that fail it.
+    fn check_strict_positivity(&mut self, m: &ast::Module, ids: &[Option<Sym>]) -> BTreeSet<TyId> {
+        let mut rejected = BTreeSet::new();
         for (d, id) in m.decls.iter().zip(ids) {
             let Some(Sym::Ty(tid)) = id else { continue };
             let ctors = self.g.tys[tid.0 as usize].ctors.clone();
@@ -1203,10 +1328,12 @@ impl Elab {
                                 .with_help("a type may not appear to the left of `->` in its own constructors; this would make the logic inconsistent"),
                         }};
                         self.err(diag);
+                        rejected.insert(*tid);
                     }
                 }
             }
         }
+        rejected
     }
 
     /// Does variable `idx` occur in `t` only strictly positively (never to
