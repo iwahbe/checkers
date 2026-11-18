@@ -180,6 +180,10 @@ struct PostUse {
     env: Vec<Ent>,
     /// The result is a `Nat`: assumed where the precondition holds.
     nat: bool,
+    /// The result's type, over `env` without the result, when it is a tuple
+    /// with refined parts (`(Nat, (j~Nat, i <= j))`): their predicates are
+    /// assumed too, where the precondition holds.
+    parts: Option<Tm>,
 }
 
 /// What it takes to reflect only some definitions: the declarations that
@@ -1066,7 +1070,8 @@ impl<'a> Builder<'a> {
             }
             t = (*cod).clone();
         }
-        let posts = self.alias_terms(&inner, &t, app, rs);
+        let mut posts = self.alias_terms(&inner, &t, app, rs);
+        posts.extend(self.tuple_terms(&inner, &t, app, rs));
         if posts.is_empty() {
             return;
         }
@@ -1105,7 +1110,8 @@ impl<'a> Builder<'a> {
         for (v, _) in &vars {
             app = format!("(select {app} {v})");
         }
-        let posts = self.alias_terms(&inner, &t, &app, &rs);
+        let mut posts = self.alias_terms(&inner, &t, &app, &rs);
+        posts.extend(self.tuple_terms(&inner, &t, &app, &rs));
         if posts.is_empty() || vars.is_empty() {
             return;
         }
@@ -1140,6 +1146,24 @@ impl<'a> Builder<'a> {
             self.alias_facts(env, t, &part, &ps);
             self.tuple_facts(env, t, &part, &ps);
         }
+    }
+
+    /// `tuple_facts`, as terms instead of facts.
+    fn tuple_terms(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort) -> Vec<String> {
+        let saved = std::mem::take(&mut self.asserts);
+        self.tuple_facts(env, ty, x, xs);
+        std::mem::replace(&mut self.asserts, saved)
+    }
+
+    /// `ty` is a tuple type with a part that `tuple_facts` has facts about:
+    /// a `Nat`, a refinement alias, or such a tuple.
+    fn refined_tuple(&self, ty: &Tm) -> bool {
+        let Tm::TupleTy(ts) = ty else { return false };
+        ts.iter().any(|t| {
+            self.is_nat_tm(t)
+                || matches!(t.head(), Tm::Def(d) if self.e.alias_preds.contains_key(d))
+                || self.refined_tuple(t)
+        })
     }
 
     /// The predicates of the refinement alias `ty` at `x`, as terms.
@@ -2166,7 +2190,7 @@ impl<'a> Builder<'a> {
                     let has_post = self.e.specs.get(&d).is_some_and(|s| s.preds.iter().any(|p| p.is_post));
                     if has_post && self.post_seen.insert(app.clone()) {
                         post_env.push(Ent::Term(app.clone(), rs.clone()));
-                        self.posts.push(PostUse { def: d, env: post_env, nat: false });
+                        self.posts.push(PostUse { def: d, env: post_env, nat: false, parts: None });
                     }
                 }
                 return Ok((app, rs));
@@ -2192,7 +2216,7 @@ impl<'a> Builder<'a> {
                     let has_post = self.e.specs.get(&d).is_some_and(|s| s.preds.iter().any(|p| p.is_post));
                     if has_post && self.post_seen.insert(app.clone()) {
                         post_env.push(Ent::Term(app.clone(), rs.clone()));
-                        self.posts.push(PostUse { def: d, env: post_env, nat: false });
+                        self.posts.push(PostUse { def: d, env: post_env, nat: false, parts: None });
                     }
                 }
                 return Ok((app, rs));
@@ -2230,9 +2254,10 @@ impl<'a> Builder<'a> {
                 let a = app.clone();
                 self.nat_fact(&a);
             }
-            if (has_post || (nat && has_pre)) && self.post_seen.insert(app.clone()) {
+            let parts = if self.refined_tuple(&t) { Some(t.clone()) } else { None };
+            if (has_post || (nat && has_pre) || parts.is_some()) && self.post_seen.insert(app.clone()) {
                 post_env.push(Ent::Term(app.clone(), rs.clone()));
-                self.posts.push(PostUse { def: d, env: post_env, nat: nat && has_pre });
+                self.posts.push(PostUse { def: d, env: post_env, nat: nat && has_pre, parts });
             }
         }
         Ok((app, rs))
@@ -2828,7 +2853,7 @@ impl<'a> Builder<'a> {
             rounds += 1;
             let posts = std::mem::take(&mut self.posts);
             for p in posts {
-                let Some(spec) = self.e.specs.get(&p.def).cloned() else { continue };
+                let spec = self.e.specs.get(&p.def).cloned().unwrap_or_default();
                 // The postcondition holds where the precondition does.
                 let mut pres = Vec::new();
                 let mut ok = true;
@@ -2853,6 +2878,9 @@ impl<'a> Builder<'a> {
                     if let Ok((t, _)) = self.term(&p.env, &pred.tm) {
                         goals.push(t);
                     }
+                }
+                if let (Some(ty), Some((Ent::Term(r, rs), params))) = (&p.parts, p.env.split_last()) {
+                    goals.extend(self.tuple_terms(params, ty, r, rs));
                 }
                 for t in goals {
                     self.asserts.push(match pres.len() {
