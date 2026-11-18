@@ -284,7 +284,8 @@ pub struct Builder<'a> {
     axioms: BTreeMap<String, String>,
     posts: Vec<PostUse>,
     post_seen: HashSet<String>,
-    nat_seen: HashSet<String>,
+    /// Terms whose type's facts were asserted (once each).
+    fact_seen: HashSet<String>,
     /// Translating a reflected body: don't collect postconditions or facts.
     in_def: bool,
     /// How many lambdas are being translated (names their parameters).
@@ -319,7 +320,7 @@ impl<'a> Builder<'a> {
             axioms: BTreeMap::new(),
             posts: Vec::new(),
             post_seen: HashSet::new(),
-            nat_seen: HashSet::new(),
+            fact_seen: HashSet::new(),
             in_def: false,
             lam_depth: 0,
             ctx: Vec::new(),
@@ -1311,7 +1312,7 @@ impl<'a> Builder<'a> {
     }
 
     fn nat_fact(&mut self, t: &str) {
-        if !self.in_def && self.nat_seen.insert(t.to_string()) {
+        if !self.in_def && self.fact_seen.insert(t.to_string()) {
             self.asserts.push(format!("(>= {t} 0)"));
         }
     }
@@ -1394,6 +1395,13 @@ impl<'a> Builder<'a> {
                 let t = format!("({} {xt})", sel_sym(self.e, *c, *i));
                 if self.is_nat_tm(&self.e.g.cons[c.0 as usize].fields[*i].3.clone()) {
                     self.nat_fact(&t);
+                }
+                // A field that is itself a datatype carries its constructor's
+                // invariants (D11), as a local of that type does.
+                if let Sort::Data(id, fargs) = &s {
+                    if !self.in_def && self.fact_seen.insert(t.clone()) {
+                        self.datatype_facts(&t, *id, fargs, &[]);
+                    }
                 }
                 Ok((t, s))
             }
@@ -2251,7 +2259,7 @@ impl<'a> Builder<'a> {
                 let t = format!("(seq.nth {} {})", ts[0].0, ts[1].0);
                 // An element has its type's refinement (D133): a `U8` of
                 // `Bytes` is `>= 0` and `< 256`.
-                if !self.in_def && self.nat_seen.insert(t.clone()) {
+                if !self.in_def && self.fact_seen.insert(t.clone()) {
                     if let Some(ety) = args.get(2) {
                         let mut facts = self.alias_terms(env, ety, &t, &elem);
                         if self.is_nat_tm(ety) {
