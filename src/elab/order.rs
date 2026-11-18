@@ -269,54 +269,81 @@ fn cycle_in(scc: &[Node], edges: &HashMap<Node, HashSet<Node>>) -> Vec<usize> {
     chain
 }
 
-/// Strongly connected components, dependencies first.
+/// Strongly connected components, dependencies first: those of `nodes` and
+/// of what they reach, each node's edges followed in order.
 fn tarjan(nodes: &[Node], edges: &HashMap<Node, HashSet<Node>>) -> Vec<Vec<Node>> {
-    struct St<'a> {
-        edges: &'a HashMap<Node, HashSet<Node>>,
-        index: HashMap<Node, usize>,
-        low: HashMap<Node, usize>,
-        stack: Vec<Node>,
-        on: HashSet<Node>,
-        next: usize,
-        out: Vec<Vec<Node>>,
+    // Number the nodes: `nodes` first, then the others as they are met.
+    let mut all: Vec<Node> = Vec::new();
+    let mut number: HashMap<Node, usize> = HashMap::new();
+    for &n in nodes {
+        number.entry(n).or_insert_with(|| {
+            all.push(n);
+            all.len() - 1
+        });
     }
-    fn visit(s: &mut St, v: Node) {
-        s.index.insert(v, s.next);
-        s.low.insert(v, s.next);
+    let mut numbered: Vec<Vec<usize>> = Vec::new();
+    while numbered.len() < all.len() {
+        let mut succ: Vec<Node> = edges.get(&all[numbered.len()]).map(|e| e.iter().copied().collect()).unwrap_or_default();
+        succ.sort();
+        let succ = succ.into_iter().map(|w| {
+            *number.entry(w).or_insert_with(|| {
+                all.push(w);
+                all.len() - 1
+            })
+        });
+        numbered.push(succ.collect());
+    }
+    let mut out: Vec<Vec<Node>> = sccs(&numbered).into_iter().map(|scc| scc.into_iter().map(|v| all[v]).collect()).collect();
+    out.iter_mut().for_each(|scc| scc.sort());
+    out
+}
+
+/// Strongly connected components (Tarjan's algorithm), dependencies first:
+/// `edges[v]` are the nodes `v` depends on.
+pub(super) fn sccs(edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    struct St<'a> {
+        edges: &'a [Vec<usize>],
+        index: Vec<Option<usize>>,
+        low: Vec<usize>,
+        on: Vec<bool>,
+        stack: Vec<usize>,
+        next: usize,
+        out: Vec<Vec<usize>>,
+    }
+    fn visit(s: &mut St, v: usize) {
+        s.index[v] = Some(s.next);
+        s.low[v] = s.next;
         s.next += 1;
         s.stack.push(v);
-        s.on.insert(v);
-        let mut succ: Vec<Node> = s.edges.get(&v).map(|e| e.iter().copied().collect()).unwrap_or_default();
-        succ.sort();
-        for w in succ {
-            if !s.index.contains_key(&w) {
-                visit(s, w);
-                let lw = s.low[&w];
-                let lv = s.low.get_mut(&v).unwrap();
-                *lv = (*lv).min(lw);
-            } else if s.on.contains(&w) {
-                let iw = s.index[&w];
-                let lv = s.low.get_mut(&v).unwrap();
-                *lv = (*lv).min(iw);
+        s.on[v] = true;
+        let edges = s.edges;
+        for &w in &edges[v] {
+            match s.index[w] {
+                None => {
+                    visit(s, w);
+                    s.low[v] = s.low[v].min(s.low[w]);
+                }
+                Some(iw) if s.on[w] => s.low[v] = s.low[v].min(iw),
+                _ => {}
             }
         }
-        if s.low[&v] == s.index[&v] {
-            let mut scc = Vec::new();
+        if Some(s.low[v]) == s.index[v] {
+            let mut comp = Vec::new();
             while let Some(w) = s.stack.pop() {
-                s.on.remove(&w);
-                scc.push(w);
+                s.on[w] = false;
+                comp.push(w);
                 if w == v {
                     break;
                 }
             }
-            scc.sort();
-            s.out.push(scc);
+            s.out.push(comp);
         }
     }
-    let mut s = St { edges, index: HashMap::new(), low: HashMap::new(), stack: Vec::new(), on: HashSet::new(), next: 0, out: Vec::new() };
-    for &n in nodes {
-        if !s.index.contains_key(&n) {
-            visit(&mut s, n);
+    let n = edges.len();
+    let mut s = St { edges, index: vec![None; n], low: vec![0; n], on: vec![false; n], stack: vec![], next: 0, out: vec![] };
+    for v in 0..n {
+        if s.index[v].is_none() {
+            visit(&mut s, v);
         }
     }
     s.out

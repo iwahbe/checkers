@@ -17,6 +17,7 @@ import fmt
 import lsp
 import doc
 import ck.packages (Caps)
+import ck.text (ends_with)
 
 let VERSION = "0.1.0"
 
@@ -79,11 +80,6 @@ partial fn compiler args e p term -> code : args~List String, e~Env, p~Proc, ter
                     match proc.exec c args p
                         Ok n  -> exit_code n
                         Err _ -> on_path ()
-
-fn ends_with s suffix : s~String, suffix~String
-    let b = string.bytes s
-    let x = string.bytes suffix
-    len x <= len b and bytes.matches_at b (len b - len x) x
 
 partial fn names_file args -> r : args~List String, r~Bool
     match args

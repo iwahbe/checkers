@@ -417,10 +417,11 @@ impl U<'_> {
                 self.carried_into(b, depth + 1, out);
             }
             Tm::App(..) => {
-                let (head, n) = spine(t);
+                let (head, args) = t.spine();
+                let n = args.len();
                 match head {
                     // A constructor stores its arguments.
-                    Tm::Con(_) => app_args(t).into_iter().for_each(|x| self.carried_into(x, depth, out)),
+                    Tm::Con(_) => args.into_iter().for_each(|x| self.carried_into(x, depth, out)),
                     // A saturated call carries its arguments only if its result may hold a resource.
                     Tm::Def(d) => {
                         let ty = &self.e.g.defs[d.0 as usize].ty;
@@ -525,11 +526,11 @@ impl U<'_> {
     fn partial_use(&self, t: &Tm) -> Option<String> {
         let d = head_def(t)?;
         let meta = self.e.fn_meta.get(&d)?;
-        if spine(t).1 >= meta.n_implicit + meta.params.len() {
+        let args = t.spine().1;
+        if args.len() >= meta.n_implicit + meta.params.len() {
             return None;
         }
-        app_args(t)
-            .into_iter()
+        args.into_iter()
             .flat_map(|a| self.carried(a))
             .find(|l| self.binders[*l].mult == Mult::One)
             .map(|l| self.binders[l].name.clone())
@@ -642,34 +643,11 @@ impl U<'_> {
     }
 }
 
-fn head_def(mut t: &Tm) -> Option<DefId> {
-    while let Tm::App(f, ..) = t {
-        t = f;
-    }
-    match t {
+fn head_def(t: &Tm) -> Option<DefId> {
+    match t.head() {
         Tm::Def(d) => Some(*d),
         _ => None,
     }
-}
-
-/// The head of an application and how many arguments it has.
-fn spine(mut t: &Tm) -> (&Tm, usize) {
-    let mut n = 0;
-    while let Tm::App(f, ..) = t {
-        t = f;
-        n += 1;
-    }
-    (t, n)
-}
-
-fn app_args(mut t: &Tm) -> Vec<&Tm> {
-    let mut v = Vec::new();
-    while let Tm::App(f, a, ..) = t {
-        v.push(&**a);
-        t = f;
-    }
-    v.reverse();
-    v
 }
 
 /// The number of parameters of a function type, and its result.
@@ -682,11 +660,8 @@ fn pi_arity(mut t: &Tm) -> (usize, &Tm) {
     (n, t)
 }
 
-fn head_is_con(mut t: &Tm) -> bool {
-    while let Tm::App(f, ..) = t {
-        t = f;
-    }
-    matches!(t, Tm::Con(_))
+fn head_is_con(t: &Tm) -> bool {
+    matches!(t.head(), Tm::Con(_))
 }
 
 /// Check the body (a λ over the function's parameters) of `did`.
@@ -718,9 +693,6 @@ pub fn check_fn(e: &mut Elab, did: DefId, body: &Tm) {
 }
 
 fn head_is_meta(t: &Tm) -> bool {
-    let mut h = t;
-    while let Tm::App(f, ..) = h {
-        h = f;
-    }
+    let h = t.head();
     matches!(h, Tm::Meta(_))
 }

@@ -19,6 +19,7 @@ import ck.literate (Symbol, Warning, Context, Compiler)
 import ck.literate as lit
 import ck.manifest (PackageName)
 import ck.manifest
+import ck.text (ends_with, hidden, join_path, as_string)
 
 export let USAGE = string.concat [
     "usage: checkers doc DIR -o OUT [--name NAME] [--root PATH] [--label TEXT]\n",
@@ -31,23 +32,6 @@ export let USAGE = string.concat [
     "OUT/llms.txt, a list of every Markdown page under OUT."]
 
 # ── Paths ────────────────────────────────────────────────────────────────────
-
-fn ends_with s suffix : s~String, suffix~String
-    let b = string.bytes s
-    let x = string.bytes suffix
-    len x <= len b and bytes.matches_at b (len b - len x) x
-
-fn hidden name : name~String
-    let b = string.bytes name
-    len b > 1 and b[0] == '.'
-
-fn join_path dir name -> p : dir~String, name~String, p~String
-    if dir == "." then name else dir ++ "/" ++ name
-
-fn as_string b -> s : b~Bytes, s~String
-    match string.from_utf8 b
-        Some s -> s
-        None   -> ""
 
 # The last part of a path.
 partial fn base_name path -> r : path~String, r~String

@@ -791,10 +791,7 @@ impl Elab {
             h = f;
         }
         let Tm::Meta(m) = h else { return };
-        let mut f = head;
-        while let Tm::App(g, ..) = f {
-            f = g;
-        }
+        let f = head.head();
         let owner = match f {
             Tm::Def(d) => Some(self.g.defs[d.0 as usize].name.clone()),
             Tm::Con(c) => Some(self.g.cons[c.0 as usize].name.clone()),
@@ -1076,17 +1073,9 @@ fn tycon_app(t: &Tm) -> Option<(TyId, Vec<&Tm>)> {
         Tm::TyCon(id) => Some((*id, Vec::new())),
         Tm::TyConApp(id, args) => Some((*id, args.iter().collect())),
         Tm::App(..) => {
-            let mut args = Vec::new();
-            let mut h = t;
-            while let Tm::App(f, a, ..) = h {
-                args.push(&**a);
-                h = f;
-            }
+            let (h, args) = t.spine();
             match h {
-                Tm::TyCon(id) => {
-                    args.reverse();
-                    Some((*id, args))
-                }
+                Tm::TyCon(id) => Some((*id, args.into_iter().map(|a| &**a).collect())),
                 _ => None,
             }
         }
@@ -1338,10 +1327,7 @@ impl Elab {
     /// proposition or a value? Only an application of a definition whose
     /// result is a type, or something we can't see into (a field, a match).
     fn computes_type(&self, t: &Tm) -> bool {
-        let mut h = t;
-        while let Tm::App(f, ..) = h {
-            h = f;
-        }
+        let h = t.head();
         match h {
             Tm::Def(d) => self.def_gives_type(*d),
             Tm::Field(..) | Tm::Proj(..) | Tm::Case(..) | Tm::Let(..) => true,
@@ -1730,15 +1716,9 @@ impl Elab {
     /// argument values (none if the type isn't an alias).
     pub fn cown_inv(&self, cx: &Cx, content: &Val, proj: Option<(usize, bool)>) -> Option<CownInv> {
         let ty = quote(&self.g, cx.lvl(), content);
-        let mut args = Vec::new();
-        let mut h = &ty;
-        while let Tm::App(f, a, _, _) = h {
-            args.push(a.clone());
-            h = f;
-        }
+        let (h, args) = ty.spine();
         let Tm::Def(d) = h else { return None };
         let preds = self.alias_preds.get(d)?.clone();
-        args.reverse();
         let env = cx.env();
         let args = args.iter().map(|a| eval(&self.g, &env, a)).collect();
         Some(CownInv { alias: self.g.defs[d.0 as usize].name.to_string(), preds, args, proj })
@@ -1776,15 +1756,9 @@ impl Elab {
     /// If `ty`, a type term over the first `at` locals of `cx`, is a refinement
     /// alias (`U8`), its predicates about `subject` (D6, §7.1).
     pub fn alias_facts(&self, cx: &Cx, at: usize, ty: &Tm, subject: Val) -> Vec<(Val, String, DefId)> {
-        let mut args = Vec::new();
-        let mut h = ty;
-        while let Tm::App(f, a, _, _) = h {
-            args.push(a.clone());
-            h = f;
-        }
+        let (h, args) = ty.spine();
         let Tm::Def(d) = h else { return Vec::new() };
         let Some(preds) = self.alias_preds.get(d) else { return Vec::new() };
-        args.reverse();
         let prefix = Rc::new(cx.env[..at].to_vec());
         let mut env: Vec<Val> = args.iter().map(|a| eval(&self.g, &prefix, a)).collect();
         // The predicates as written, in this use's names: `n <= hi` of

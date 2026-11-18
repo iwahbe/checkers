@@ -26,7 +26,7 @@ src/syntax/parser.rs recursive descent for §9.2
 src/syntax/ast.rs    surface AST
 src/syntax/print.rs  S-expression dump used by `checkers parse` and golden tests
 src/lint.rs          naming warnings (D21)
-src/core.rs          core terms and values, evaluation (NbE), lazy unfolding, unification, printing
+src/core.rs          core terms and values (their traversals: `any_sub`, `map_sub`, `head`, `spine`), evaluation (NbE), lazy unfolding, unification, printing
 src/elab/mod.rs      elaborator state, metas, deferred operator constraints (D38)
 src/elab/decls.rs    imports, declarations, positivity, signatures (auto-binding, D10)
 src/elab/expr.rs     bidirectional checking of expressions, blocks, `try`, `when`
@@ -39,7 +39,7 @@ src/doc.rs           `ckc doc FILE`: a module's exported declarations and descri
 src/elab/termination.rs  structural recursion over call-graph SCCs (§5.3)
 src/literate.rs      doc comments' links and code blocks: W030–W033, their index and completion (D148 e, f)
 src/elab/unused.rs   unused declarations, constructors and fields: references marked from the roots (D144)
-src/elab/order.rs   declaration order by dependencies, cycles (D65)
+src/elab/order.rs   declaration order by dependencies, cycles (D65); strongly connected components (`sccs`, termination's too)
 src/elab/stdlib.rs   finding and loading the standard library from disk (D104), program modules from `a/b.ck` (D53), packages' modules (D111)
 src/usage.rs         `own`/`ghost` usage (QTT multiplicities)
 src/stage.rs         staging (§8.9): expands compile-time functions before erasure; `checkers stage`
@@ -66,7 +66,7 @@ tools/lsp.ck         `checkers lsp`, the language server (§15.5, D120): checks 
 tools/doc.ck         `checkers doc` (a package's documentation) and `checkers site` (the site in `site/`, llms.txt), as Markdown and HTML (§15.6, D131)
 tools/ck/literate.ck those pages: std.markdown, `[name]` links, code blocks compiled and run by `ckc`, highlighting, tables (D148)
 tools/ck/jsonrpc.ck  LSP messages: framing, JSON helpers
-tools/ck/text.ck     lines, byte and UTF-16 columns, `file:` URIs
+tools/ck/text.ck     lines, byte and UTF-16 columns, `file:` URIs; the tools' string and path helpers
 tools/ck/manifest.ck reading checkers.json and checkers.lock (§16.4)
 tools/ck/packages.ck dependencies: path and git, minimal version selection, lock, `--package`/`--uses` (D111)
 tools/ck/syntax.ck   the formatter's lexer and layout pass: lines, logical lines, blocks (D93, D99)

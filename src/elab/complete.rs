@@ -233,22 +233,7 @@ impl Elab {
                     }
                 }
                 Some(Member::Module(m)) => {
-                    if let Some(mi) = self.modules.get(m) {
-                        let mut names: Vec<(&String, Sym)> = Vec::new();
-                        for n in &mi.exported_values {
-                            names.push((n, mi.values[n]));
-                        }
-                        for n in &mi.exported_types {
-                            if !mi.exported_values.contains(n) {
-                                names.push((n, mi.types[n]));
-                            }
-                        }
-                        for (n, s) in names {
-                            if let Some(c) = self.global(n, s, 2, true, &info) {
-                                out.push(c);
-                            }
-                        }
-                    }
+                    self.exports(m, &info, &mut out);
                 }
                 Some(Member::Class(t)) => {
                     if let Some(cd) = self.class_defs.get(t) {
@@ -296,22 +281,7 @@ impl Elab {
             PlaceKind::Import(prefix) => self.import_paths(prefix, &mut out),
             PlaceKind::ImportItem(path) => {
                 // The module's exports (lemmas too: `import std.list (perm_middle)`).
-                if let Some(mi) = self.modules.get(&path.join(".")) {
-                    let mut names: Vec<(&String, Sym)> = Vec::new();
-                    for n in &mi.exported_values {
-                        names.push((n, mi.values[n]));
-                    }
-                    for n in &mi.exported_types {
-                        if !mi.exported_values.contains(n) {
-                            names.push((n, mi.types[n]));
-                        }
-                    }
-                    for (n, s) in names {
-                        if let Some(c) = self.global(n, s, 2, true, &info) {
-                            out.push(c);
-                        }
-                    }
-                }
+                self.exports(&path.join("."), &info, &mut out);
             }
             _ => {}
         }
@@ -371,6 +341,19 @@ impl Elab {
                         out.push(Candidate { label: n.clone(), class: "class", detail: Some(self.hover_of(&u)), doc: self.doc_of(&u), group, fits: false });
                     }
                 }
+            }
+        }
+    }
+
+    /// What `module` exports: its values, then the types no value shares a
+    /// name with.
+    fn exports(&self, module: &str, info: &CompInfo, out: &mut Vec<Candidate>) {
+        let Some(mi) = self.modules.get(module) else { return };
+        let values = mi.exported_values.iter().map(|n| (n, mi.values[n]));
+        let types = mi.exported_types.iter().filter(|n| !mi.exported_values.contains(*n)).map(|n| (n, mi.types[n]));
+        for (n, s) in values.chain(types) {
+            if let Some(c) = self.global(n, s, 2, true, info) {
+                out.push(c);
             }
         }
     }

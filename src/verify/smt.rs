@@ -467,13 +467,7 @@ impl<'a> Builder<'a> {
             };
         }
         // `T p…` unapplied, or eta-expanded.
-        let mut h = &z;
-        let mut ps: Vec<Tm> = Vec::new();
-        while let Tm::App(f, a, ..) = h {
-            ps.push((**a).clone());
-            h = f;
-        }
-        ps.reverse();
+        let (h, ps) = z.spine_cloned();
         match h {
             Tm::TyCon(id) => {
                 let mut pre = Vec::new();
@@ -563,13 +557,7 @@ impl<'a> Builder<'a> {
                 Ok(Sort::Tuple(ss))
             }
             Tm::TyCon(_) | Tm::TyConApp(..) | Tm::App(..) | Tm::Def(_) => {
-                let mut args = Vec::new();
-                let mut h = t;
-                while let Tm::App(f, a, _, _) = h {
-                    args.push((**a).clone());
-                    h = f;
-                }
-                args.reverse();
+                let (h, args) = t.spine_cloned();
                 match h {
                     Tm::TyConApp(id, v) => {
                         let mut all = v.clone();
@@ -1049,13 +1037,7 @@ impl<'a> Builder<'a> {
 
     /// The predicates of the refinement alias `ty` at `x`, as terms.
     fn alias_terms(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort) -> Vec<String> {
-        let mut args = Vec::new();
-        let mut h = ty;
-        while let Tm::App(f, a, _, _) = h {
-            args.push((**a).clone());
-            h = f;
-        }
-        args.reverse();
+        let (h, args) = ty.spine_cloned();
         let Tm::Def(d) = h else { return Vec::new() };
         let Some(preds) = self.e.alias_preds.get(d).cloned() else { return Vec::new() };
         let mut inner = Vec::new();
@@ -1079,13 +1061,7 @@ impl<'a> Builder<'a> {
     }
 
     fn field_alias_facts(&mut self, env: &[Ent], ty: &Tm, x: &str, id: TyId, sargs: &[Sort]) {
-        let mut args = Vec::new();
-        let mut h = ty;
-        while let Tm::App(f, a, _, _) = h {
-            args.push((**a).clone());
-            h = f;
-        }
-        args.reverse();
+        let (h, mut args) = ty.spine_cloned();
         if let Tm::TyConApp(_, v) = h {
             let mut all = v.clone();
             all.extend(args);
@@ -1119,13 +1095,7 @@ impl<'a> Builder<'a> {
     /// The value arguments of a datatype type (`Parsed Json src i` → `src`,
     /// `i`), translated where possible, by parameter position.
     fn value_args(&mut self, env: &[Ent], ty: &Tm) -> Vec<Option<(String, Sort)>> {
-        let mut args = Vec::new();
-        let mut h = ty;
-        while let Tm::App(f, a, _, _) = h {
-            args.push((**a).clone());
-            h = f;
-        }
-        args.reverse();
+        let (h, mut args) = ty.spine_cloned();
         let id = match h {
             Tm::TyConApp(id, v) => {
                 let mut all = v.clone();
@@ -1216,10 +1186,7 @@ impl<'a> Builder<'a> {
     }
 
     fn is_nat_tm(&self, ty: &Tm) -> bool {
-        let mut h = ty;
-        while let Tm::App(f, ..) = h {
-            h = f;
-        }
+        let h = ty.head();
         match h {
             Tm::Def(d) if Some(*d) == self.e.g.well_known.nat => true,
             Tm::Def(d) => match &self.e.g.defs[d.0 as usize].body {
@@ -1300,10 +1267,7 @@ impl<'a> Builder<'a> {
                     && c.default.as_ref().is_none_or(|b| matches!(b, Tm::Error) || self.nonneg(b, stack))
             }
             Tm::App(..) | Tm::Def(_) => {
-                let mut h = t;
-                while let Tm::App(f, ..) = h {
-                    h = f;
-                }
+                let h = t.head();
                 let Tm::Def(d) = h else { return false };
                 self.nonneg_fn(*d, stack)
             }
@@ -1668,10 +1632,7 @@ impl<'a> Builder<'a> {
 
     /// Is this binder's type a class's dictionary (D136)?
     fn is_dict_ty(&self, t: &Tm) -> bool {
-        let mut h = t;
-        while let Tm::App(f, ..) = h {
-            h = f;
-        }
+        let h = t.head();
         match h {
             Tm::TyCon(id) | Tm::TyConApp(id, _) => self.e.class_defs.contains_key(id),
             Tm::Meta(m) => matches!(self.e.g.meta(*m).map(|v| force(&self.e.g, v)), Some(Val::TyCon(id, _)) if self.e.class_defs.contains_key(&id)),
@@ -1714,13 +1675,7 @@ impl<'a> Builder<'a> {
         let Some(Ent::Known(key)) = inner.get(pos) else { return Ok(None) };
         let Some(dict) = self.known.get(key).cloned() else { return Ok(None) };
         // The dictionary: an instance's function applied to its arguments.
-        let mut dargs = Vec::new();
-        let mut h = &dict;
-        while let Tm::App(f, a, ..) = h {
-            dargs.push((**a).clone());
-            h = f;
-        }
-        dargs.reverse();
+        let (h, dargs) = dict.spine_cloned();
         let Tm::Def(dd) = h else { return Ok(None) };
         if !self.e.dict_defs.contains(dd) {
             return Ok(None);
@@ -1734,13 +1689,7 @@ impl<'a> Builder<'a> {
         }
         // Its field for this function.
         let name = self.e.g.defs[d.0 as usize].name.clone();
-        let mut fields = Vec::new();
-        let mut hb = &body;
-        while let Tm::App(f, a, ..) = hb {
-            fields.push((**a).clone());
-            hb = f;
-        }
-        fields.reverse();
+        let (hb, fields) = body.spine_cloned();
         let (con, mut all) = match hb {
             Tm::Con(c) => (*c, fields),
             Tm::ConApp(c, v) => (*c, v.clone()),
@@ -2461,13 +2410,7 @@ impl<'a> Builder<'a> {
     /// M25): known, its arguments kept by its key.
     fn known_dict(&mut self, env: &[Ent], arg: &Tm) -> Tx<Option<String>> {
         let arg = self.zonk(env.len(), arg);
-        let mut dargs = Vec::new();
-        let mut h = &arg;
-        while let Tm::App(f, a, ..) = h {
-            dargs.push((**a).clone());
-            h = f;
-        }
-        dargs.reverse();
+        let (h, dargs) = arg.spine_cloned();
         let Tm::Def(dd) = h else { return Ok(None) };
         if !self.e.dict_defs.contains(dd) {
             return Ok(None);
@@ -2526,10 +2469,7 @@ impl<'a> Builder<'a> {
         // lambda in a body and in a lemma, one with its pattern `let`s still
         // there) is one key.
         let arg = if matches!(arg, Tm::Def(_)) { arg } else { quote(&self.e.g, 0, &eval(&self.e.g, &Rc::new(Vec::new()), &arg)) };
-        let mut h = &arg;
-        while let Tm::App(f, ..) = h {
-            h = f;
-        }
+        let h = arg.head();
         let key = match h {
             Tm::Def(d) if matches!(arg, Tm::Def(_)) => {
                 let info = &self.e.g.defs[d.0 as usize];
@@ -2981,18 +2921,13 @@ fn has_forall(t: &Tm) -> bool {
 
 /// The elements of `array.from_list [x, y, …]`, if `t` is that.
 fn array_literal(e: &Elab, t: &Tm) -> Option<Vec<Tm>> {
-    let mut head = t;
-    let mut args = Vec::new();
-    while let Tm::App(f, a, ..) = head {
-        args.push(&**a);
-        head = f;
-    }
+    let (head, args) = t.spine();
     let Tm::Def(d) = head else { return None };
     let info = &e.g.defs[d.0 as usize];
     if &*info.module != "std.array" || &*info.name != "from_list" {
         return None;
     }
-    let mut list = *args.first()?;
+    let mut list: &Tm = args.last()?;
     let mut out = Vec::new();
     loop {
         match list {

@@ -153,24 +153,17 @@ fn cli(args: &[String]) -> u8 {
 }
 
 fn trust(args: &[String]) -> u8 {
-    let [path] = args else {
-        eprintln!("error: `trust` takes exactly one file\n\n{USAGE}");
-        return 2;
-    };
-    let Ok(text) = read(path) else { return 2 };
-    use_cache(path);
-    let c = checkers::check(path, &text);
-    if c.errors() > 0 {
-        eprint!("{}", c.report());
-        return 1;
-    }
-    print!("{}", c.ledger);
-    0
+    checked("trust", args, |c| &c.ledger)
 }
 
 fn stage(args: &[String]) -> u8 {
+    checked("stage", args, |c| &c.staged)
+}
+
+/// `ckc COMMAND FILE`: what `shown` gives of the file, if it checks.
+fn checked(command: &str, args: &[String], shown: impl Fn(&checkers::Checked) -> &String) -> u8 {
     let [path] = args else {
-        eprintln!("error: `stage` takes exactly one file\n\n{USAGE}");
+        eprintln!("error: `{command}` takes exactly one file\n\n{USAGE}");
         return 2;
     };
     let Ok(text) = read(path) else { return 2 };
@@ -180,7 +173,7 @@ fn stage(args: &[String]) -> u8 {
         eprint!("{}", c.report());
         return 1;
     }
-    print!("{}", c.staged);
+    print!("{}", shown(&c));
     0
 }
 

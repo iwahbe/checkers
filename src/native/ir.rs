@@ -196,10 +196,7 @@ impl Compiler<'_> {
     /// An erased argument. A type is passed as its layout word (D133): an
     /// array of it is laid out by that word; anything else as nothing.
     fn erased(&self, a: &Tm) -> Ir {
-        let mut h = a;
-        while let Tm::App(f, ..) = h {
-            h = f;
-        }
+        let h = a.head();
         let typelike = match h {
             Tm::Var(_) | Tm::Meta(_) | Tm::TyCon(_) | Tm::TyConApp(..) => true,
             Tm::Def(d) => self.g.defs.get(d.0 as usize).is_some_and(|i| matches!(i.ty, Tm::Univ(_))),

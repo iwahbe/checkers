@@ -74,7 +74,7 @@ impl Elab {
             }
         }
 
-        for scc in tarjan(&edges) {
+        for scc in super::order::sccs(&edges) {
             let recursive = scc.len() > 1 || edges[scc[0]].contains(&scc[0]);
             if !recursive {
                 continue;
@@ -379,52 +379,4 @@ fn structural(members: &[DefId], metas: &[FnMeta], calls: &[&CallRec]) -> bool {
         }
     }
     false
-}
-
-fn tarjan(edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
-    struct St<'a> {
-        edges: &'a [Vec<usize>],
-        index: Vec<Option<usize>>,
-        low: Vec<usize>,
-        on: Vec<bool>,
-        stack: Vec<usize>,
-        next: usize,
-        out: Vec<Vec<usize>>,
-    }
-    fn visit(s: &mut St, v: usize) {
-        s.index[v] = Some(s.next);
-        s.low[v] = s.next;
-        s.next += 1;
-        s.stack.push(v);
-        s.on[v] = true;
-        for &w in &s.edges[v].clone() {
-            match s.index[w] {
-                None => {
-                    visit(s, w);
-                    s.low[v] = s.low[v].min(s.low[w]);
-                }
-                Some(iw) if s.on[w] => s.low[v] = s.low[v].min(iw),
-                _ => {}
-            }
-        }
-        if Some(s.low[v]) == s.index[v] {
-            let mut comp = Vec::new();
-            while let Some(w) = s.stack.pop() {
-                s.on[w] = false;
-                comp.push(w);
-                if w == v {
-                    break;
-                }
-            }
-            s.out.push(comp);
-        }
-    }
-    let n = edges.len();
-    let mut s = St { edges, index: vec![None; n], low: vec![0; n], on: vec![false; n], stack: vec![], next: 0, out: vec![] };
-    for v in 0..n {
-        if s.index[v].is_none() {
-            visit(&mut s, v);
-        }
-    }
-    s.out
 }
