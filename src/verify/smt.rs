@@ -8,7 +8,7 @@
 //! function with a postcondition contributes that postcondition (D50).
 
 use crate::core::{eval, force, max_var, quote, CaseTm, ConId, DefId, Lit, Mult, Prim, Tm, TyId, Val};
-use crate::elab::{Elab, ObLocal, Obligation};
+use crate::elab::{has_meta, Elab, ObLocal, Obligation};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
@@ -2957,20 +2957,6 @@ fn closed(t: &Tm, depth: usize) -> bool {
         _ => t.all_sub(|x, n| closed(x, depth + n)),
     }
 }
-
-fn has_meta(t: &Tm) -> bool {
-    match t {
-        Tm::Meta(_) => true,
-        Tm::App(f, a, ..) => has_meta(f) || has_meta(a),
-        Tm::Pi(_, _, _, a, b) => has_meta(a) || has_meta(b),
-        Tm::Lam(_, _, _, b) => has_meta(b),
-        Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => v.iter().any(has_meta),
-        Tm::Proj(x, _, _) | Tm::Field(x, _, _) => has_meta(x),
-        Tm::Let(_, _, a, b, c) => has_meta(a) || has_meta(b) || has_meta(c),
-        _ => false,
-    }
-}
-
 
 fn smt_bytes(b: &[u8]) -> String {
     if b.is_empty() {
