@@ -1182,7 +1182,7 @@ impl Elab {
             for c in ctors {
                 let fields = self.g.cons[c.0 as usize].fields.clone();
                 for (fi, (fname, _, _, t)) in fields.iter().enumerate() {
-                    if !self.ty_positive(t, *tid, true) {
+                    if !self.ty_positive(t, *tid) {
                         let name = self.g.tys[tid.0 as usize].name.clone();
                         let diag = if let Some(f) = self.param_holder(t, *tid, &self.g.tys[tid.0 as usize].params.clone(), fi) {
                             Diagnostic::error("E0354", format!("`{name}` occurs in field `{fname}` as an argument of `{f}`, a parameter, which may use it in a negative position"), d.span)
@@ -1316,28 +1316,31 @@ impl Elab {
         }
     }
 
-    fn ty_positive(&self, t: &Tm, me: TyId, pos: bool) -> bool {
+    /// Does the type `me` occur in `t`, a field of one of its constructors,
+    /// only strictly positively: never to the left of an `->`, however many
+    /// (SPEC §3, D182)? The rule `var_positive` holds a parameter to.
+    fn ty_positive(&self, t: &Tm, me: TyId) -> bool {
         match t {
-            Tm::TyConApp(t2, args) if *t2 == me => pos && args.iter().all(|a| !occurs_ty(a, me)),
-            Tm::Pi(_, _, _, a, b) => self.ty_positive(a, me, !pos) && self.ty_positive(b, me, pos),
+            Tm::TyConApp(t2, args) if *t2 == me => args.iter().all(|a| !occurs_ty(a, me)),
+            Tm::Pi(_, _, _, a, b) => !occurs_ty(a, me) && self.ty_positive(b, me),
             Tm::TyConApp(t2, args) => {
                 let positive = self.g.tys[t2.0 as usize].positive.clone();
                 args.iter().enumerate().all(|(k, a)| {
                     if positive.get(k).copied().unwrap_or(false) {
-                        self.ty_positive(a, me, pos)
+                        self.ty_positive(a, me)
                     } else {
                         !occurs_ty(a, me)
                     }
                 })
             }
-            Tm::TupleTy(ts) => ts.iter().all(|a| self.ty_positive(a, me, pos)),
+            Tm::TupleTy(ts) => ts.iter().all(|a| self.ty_positive(a, me)),
             Tm::App(..) => {
                 let (h, args) = t.spine();
-                self.ty_positive(h, me, pos) && args.iter().all(|a| !occurs_ty(a, me))
+                self.ty_positive(h, me) && args.iter().all(|a| !occurs_ty(a, me))
             }
             // A type computed by a `match` or an `if` may be any of its arms.
-            Tm::Case(s, c) => !occurs_ty(s, me) && case_arms(c).all(|(_, b)| self.ty_positive(b, me, pos)),
-            Tm::TyCon(t2) => pos || *t2 != me,
+            Tm::Case(s, c) => !occurs_ty(s, me) && case_arms(c).all(|(_, b)| self.ty_positive(b, me)),
+            Tm::TyCon(_) => true,
             // Any other form promises nothing about what it holds.
             other => !occurs_ty(other, me),
         }
