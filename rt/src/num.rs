@@ -154,13 +154,13 @@ impl fmt::Display for Num {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Decimal {
     pub m: BigInt,
-    pub e: i64,
+    pub e: BigInt,
 }
 
 impl Decimal {
-    pub fn new(mut m: BigInt, mut e: i64) -> Decimal {
+    pub fn new(mut m: BigInt, mut e: BigInt) -> Decimal {
         if m.is_zero() {
-            return Decimal { m, e: 0 };
+            return Decimal { m, e: BigInt::zero() };
         }
         let ten = BigInt::from(10);
         while (&m % &ten).is_zero() {
@@ -189,7 +189,7 @@ impl Decimal {
             _ => return None,
         }
         let mut digits: Vec<u8> = src[int_start..k].to_vec();
-        let mut e: i64 = 0;
+        let mut e = BigInt::zero();
         if at(k) == Some(b'.') {
             let frac_start = k + 1;
             let mut j = frac_start;
@@ -198,10 +198,10 @@ impl Decimal {
             }
             if j == frac_start {
                 // `1.` is not a number; the number ends before the dot.
-                return Some((Self::from_digits(neg, &digits, 0), k));
+                return Some((Self::from_digits(neg, &digits, e), k));
             }
             digits.extend_from_slice(&src[frac_start..j]);
-            e -= (j - frac_start) as i64;
+            e -= j - frac_start;
             k = j;
         }
         if matches!(at(k), Some(b'e' | b'E')) {
@@ -215,16 +215,15 @@ impl Decimal {
                 j += 1;
             }
             if j > exp_start {
-                let text = std::str::from_utf8(&src[exp_start..j]).ok()?;
-                let x: i64 = text.parse().ok()?;
-                e = e.checked_add(if eneg { -x } else { x })?;
+                let x = BigInt::parse_bytes(&src[exp_start..j], 10)?;
+                e += if eneg { -x } else { x };
                 k = j;
             }
         }
         Some((Self::from_digits(neg, &digits, e), k))
     }
 
-    fn from_digits(neg: bool, digits: &[u8], e: i64) -> Decimal {
+    fn from_digits(neg: bool, digits: &[u8], e: BigInt) -> Decimal {
         let text = std::str::from_utf8(digits).unwrap_or("0");
         let mut m: BigInt = text.parse().unwrap_or_default();
         if neg {
@@ -238,20 +237,18 @@ impl Decimal {
         let neg = self.m.is_negative();
         let digits = self.m.abs().to_string();
         let sign = if neg { "-" } else { "" };
-        let n = digits.len() as i64;
-        if self.e >= 0 {
-            if self.e <= 21 {
-                format!("{sign}{digits}{}", "0".repeat(self.e as usize))
-            } else {
-                format!("{sign}{digits}e{}", self.e)
+        let n = digits.len();
+        let size = self.e.magnitude().to_usize();
+        match size {
+            Some(z) if !self.e.is_negative() && z <= 21 => format!("{sign}{digits}{}", "0".repeat(z)),
+            Some(f) if self.e.is_negative() && f < n => {
+                let p = n - f;
+                format!("{sign}{}.{}", &digits[..p], &digits[p..])
             }
-        } else if -self.e < n {
-            let p = (n + self.e) as usize;
-            format!("{sign}{}.{}", &digits[..p], &digits[p..])
-        } else if -self.e - n <= 6 {
-            format!("{sign}0.{}{digits}", "0".repeat((-self.e - n) as usize))
-        } else {
-            format!("{sign}{digits}e{}", self.e)
+            Some(f) if self.e.is_negative() && f - n <= 6 => {
+                format!("{sign}0.{}{digits}", "0".repeat(f - n))
+            }
+            _ => format!("{sign}{digits}e{}", self.e),
         }
     }
 }
@@ -281,8 +278,9 @@ mod tests {
     fn render_scan_axioms() {
         let mut values = Vec::new();
         for m in [0i64, 1, -1, 7, -12, 10, 100, 123456789, -987654321, 5, 25] {
-            for e in [-30i64, -8, -7, -6, -3, -1, 0, 1, 2, 5, 21, 22, 23, 40] {
-                values.push(Decimal::new(BigInt::from(m), e));
+            let beyond_i64 = [i64::MIN as i128 - 1, i64::MIN as i128, i64::MAX as i128, i64::MAX as i128 + 1];
+            for e in [-30i128, -8, -7, -6, -3, -1, 0, 1, 2, 5, 21, 22, 23, 40].into_iter().chain(beyond_i64) {
+                values.push(Decimal::new(BigInt::from(m), BigInt::from(e)));
             }
         }
         for d in values {
