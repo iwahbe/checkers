@@ -1,0 +1,33 @@
+error[E0204]: unknown name `Nope`
+ --> instance_unknown_type.ck:6:14
+  |
+6 | instance Ord Nope
+  |              ^^^^ not found
+
+error[E0204]: unknown name `Gone`
+  --> instance_unknown_type.ck:10:14
+   |
+10 | instance Ord Gone
+   |              ^^^^ not found
+
+error[E0204]: unknown name `Missing`
+  --> instance_unknown_type.ck:12:14
+   |
+12 | instance Add Missing
+   |              ^^^^^^^ not found
+
+error[E0106]: a type alias must start with a typed binder such as `n~Nat`
+  --> instance_unknown_type.ck:17:12
+   |
+17 | type Age = Int
+   |            ^^^
+   = help: write `type Small = n~Nat, n < 10`
+
+error[E0281]: `instance Ord Age` is for a type alias
+  --> instance_unknown_type.ck:19:14
+   |
+19 | instance Ord Age
+   |              ^^^
+   = help: write the instance for the type the alias stands for; it applies to the alias too
+
+instance_unknown_type.ck: 5 errors, 0 warnings

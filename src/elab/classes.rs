@@ -621,6 +621,20 @@ impl Elab {
                 _ => None,
             })
             .collect();
+        self.local_names = m
+            .decls
+            .iter()
+            .flat_map(|d| match &d.kind {
+                DeclKind::Enum { name, ctors, .. } => std::iter::once(name).chain(ctors.iter().map(|c| &c.name)).map(|n| (n.name.clone(), false)).collect(),
+                DeclKind::Alias { name, .. } => vec![(name.name.clone(), true)],
+                DeclKind::Fn { name, .. }
+                | DeclKind::Record { name, .. }
+                | DeclKind::Lemma { name, .. }
+                | DeclKind::Const { name, .. }
+                | DeclKind::Class { name, .. } => vec![(name.name.clone(), false)],
+                DeclKind::Check { .. } | DeclKind::Instance { .. } => vec![],
+            })
+            .collect();
         for d in &m.decls {
             match &d.kind {
                 DeclKind::Class { name, param, members } => self.desugar_class(d, name, param, members, &mut decls, &mut origins),
@@ -858,11 +872,33 @@ impl Elab {
             })
             .max()
             .unwrap_or(0);
+        // This module's names aren't registered yet: its types are in
+        // `local_ty_params`, its other names in `local_names`.
+        let alias = |n: &str| match self.local_names.get(n) {
+            Some(is_alias) => *is_alias,
+            None => matches!(self.resolve(n, true), Some(Sym::Def(_))),
+        };
         let have = match &h.kind {
+            ExprKind::Con(n) if !self.local_ty_params.contains_key(n) && alias(n) => {
+                self.err(
+                    Diagnostic::error("E0281", format!("`instance {text}` is for a type alias"), ty.span)
+                        .with_help("write the instance for the type the alias stands for; it applies to the alias too"),
+                );
+                return;
+            }
             ExprKind::Con(n) => match self.local_ty_params.get(n) {
                 Some(k) => Some(*k),
                 None => match self.resolve(n, true) {
                     Some(Sym::Ty(t)) => Some(self.g.tys[t.0 as usize].params.len()),
+                    // An unknown type: nothing of the instance can be checked.
+                    None if !self.local_names.contains_key(n) => {
+                        let mut e = Diagnostic::error("E0204", format!("unknown name `{n}`"), h.span).with_label("not found");
+                        if let Some(m) = self.private_in_imports(n) {
+                            e = e.with_help(Self::private_help(&m, n));
+                        }
+                        self.err(e);
+                        return;
+                    }
                     _ => None,
                 },
             },
