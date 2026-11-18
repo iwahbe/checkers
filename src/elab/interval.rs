@@ -210,7 +210,8 @@ impl Elab {
             return eval(&self.g, &Rc::new(Vec::new()), &Tm::Def(*d));
         }
         let mut preds = Vec::new();
-        let lit = |n: i128| if n < 0 { Tm::PrimApp(Prim::Neg, vec![Tm::Lit(Lit::Num(-n))]) } else { Tm::Lit(Lit::Num(n)) };
+        // `n < 0` is `-(-n)`, and `-i128::MIN` is a `Big` literal.
+        let lit = |n: i128| if n < 0 { Tm::PrimApp(Prim::Neg, vec![Tm::Lit(Lit::int(-num_bigint::BigInt::from(n)))]) } else { Tm::Lit(Lit::Num(n)) };
         let mut pred = |tm: Tm, text: String| {
             preds.push(Pred { tm, text, span: Span::default(), is_post: false, alias: None });
         };
