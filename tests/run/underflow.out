@@ -7,7 +7,7 @@ error[E0450]: cannot prove that this `Nat` subtraction stays at or above zero
 9 |     n - 3
   |     ^^^^^ `-` on `Nat` needs the left side to be at least the right
   = note: counterexample: n = 0
-  = help: check it first (`if a >= b then a - b else …`), or use `Int`
+  = help: check it first (`if a >= b then a - b else …`), or write `a + (-b)` for a signed result
 
 underflow.ck: 1 error, 0 warnings
 running with 1 unproven obligation(s) (--unverified)

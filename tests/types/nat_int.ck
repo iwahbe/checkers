@@ -44,3 +44,12 @@ fn inc_first f : f~(Nat -> Nat)
 
 fn inc_listed f : f~(Nat -> Nat)
     same_type [inc] [f]
+
+# (e) `a + (-b)` is a signed difference of `Nat`s: `-b` is an `Int`, so the
+# sum is too, and it has no obligation.
+fn difference a b -> r : a~Nat, b~Nat, r~Int
+    let d = a + (-b)
+    d
+
+check difference 1 3 == -2
+check difference 3 1 == 2

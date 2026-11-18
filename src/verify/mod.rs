@@ -1005,7 +1005,7 @@ fn headline(o: &Obligation) -> (String, String, String) {
         ObKind::NatSub => (
             "cannot prove that this `Nat` subtraction stays at or above zero".into(),
             "`-` on `Nat` needs the left side to be at least the right".into(),
-            "check it first (`if a >= b then a - b else …`), or use `Int`".into(),
+            "check it first (`if a >= b then a - b else …`), or write `a + (-b)` for a signed result".into(),
         ),
         ObKind::Div => (
             "cannot prove that the divisor is not zero".into(),

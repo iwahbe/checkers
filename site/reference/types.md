@@ -81,6 +81,17 @@ fn under a b -> c : a~Nat, b~Nat, c~Nat
     a - b
 ```
 
+**Signed differences.** The operands of `a - b` select the subtraction, and a type stated later doesn't change it: after `let d = a - b`, `have d~Int` doesn't remove the obligation. To get a difference that may be negative from two `Nat`s, write `a + (-b)`. `-b` is an `Int`, so the sum is an `Int`, with no obligation.
+
+```checkers
+fn offset a b -> d : a~Nat, b~Nat, d~Int
+    let d = a + (-b)
+    d
+
+check offset 1 3 == -2
+check offset 3 1 == 2
+```
+
 **Ranges.** Where each operand's bounds are constants, from a literal or from a type such as `U8`, the result keeps them: for a `U8` `x`, `x + 1` has type `(n~Nat, 1 <= n, n <= 256)`. Multiplication takes the extreme products, `%` by a constant `c` gives `0` to `c - 1`, and a bound that isn't a constant is dropped. The branches of an `if` whose type is inferred get the smallest range holding both. Ranges are what let `x % 16` be stored in a byte ([Arrays](#arrays)).
 
 **Literals** take their type from where they are used, and are `Nat` when nothing decides. A number literal where something other than a number is expected is a type error.
