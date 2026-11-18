@@ -226,4 +226,4 @@ A file is a module (`module name`); `import std.list (sorted)` brings names in. 
 - `checkers lsp`: the language server: diagnostics as you type (types first, then proofs), hover with signatures and descriptions, go to definition, references, highlighting.
 - `checkers doc DIR -o OUT`: a package's documentation, as on this site.
 
-The [Reference](reference/index.md) describes the whole language, rule by rule.
+[Writing a parser](parsing.md) puts these pieces together in a parser for CSV files. The [Reference](reference/index.md) describes the whole language, rule by rule.

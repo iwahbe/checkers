@@ -28,6 +28,7 @@ A function's signature is a list of constraints: its types (`src~Bytes`) and wha
 ## Start
 
 - [Tour](tour.md): the language in ten examples.
+- [Writing a parser](parsing.md): a CSV parser from bytes, proved to stop on every input.
 - [Install](install.md): build from source, set up an editor.
 - [Reference](reference/index.md): the whole language, rule by rule.
 - [Packages](packages.md): the standard library's documentation, by version.
