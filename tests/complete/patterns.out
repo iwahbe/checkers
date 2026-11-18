@@ -6,7 +6,6 @@ replaces 4:12-4:12
   bytes              module          
   char               module          
   cown               module          
-  cursor             module          
   decimal            module          
   env                module          
   files              module          

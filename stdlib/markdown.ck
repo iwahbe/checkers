@@ -239,8 +239,8 @@ fn decimal n -> r : n~Nat, r~Bytes
 fn char_at b i -> r : b~Bytes, i~Nat, r~Option Char
     if i < len b
         match utf8.decode_at b i
-            Some p -> Some p.value
-            None   -> Some c'\u{FFFD}'
+            Some (c, _) -> Some c
+            None        -> Some c'\u{FFFD}'
     else
         None
 

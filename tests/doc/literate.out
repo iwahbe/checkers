@@ -36,7 +36,7 @@ warning[W034]: this block's `main` exits with code 3
 <main>
 <h1 id="literate-pages">Literate pages</h1>
 <p>Links name symbols: <a href="docs/latest/std/list.html#fn-sort">std.list.sort</a>, <a href="docs/latest/std/list.html#fn-sort"><code>list.sort</code></a> through the hidden import
-below, <a href="docs/latest/std/prelude.html#enum-option">Option</a> and <a href="docs/latest/std/prelude.html#enum-option">Some</a> from the prelude, and <a href="docs/latest/std/cursor.html#record-parsed"><code>Parsed.stop</code></a>, a field.
+below, <a href="docs/latest/std/prelude.html#enum-option">Option</a> and <a href="docs/latest/std/prelude.html#enum-option">Some</a> from the prelude, and <a href="docs/latest/std/json.html#record-error"><code>Error.pos</code></a>, a field.
 [std.list.merge_by] isn't exported, [nothing.here] isn't anything, and
 [x, y] and [0] are only text. A definition wins: <a href="https://example.com/sort">sort</a>.</p>
 
@@ -137,7 +137,7 @@ other.ck: 1 error, 0 warnings
 # Literate pages
 
 Links name symbols: [std.list.sort], [`list.sort`] through the hidden import
-below, [Option] and [Some] from the prelude, and [`Parsed.stop`], a field.
+below, [Option] and [Some] from the prelude, and [`Error.pos`], a field.
 [std.list.merge_by] isn't exported, [nothing.here] isn't anything, and
 [x, y] and [0] are only text. A definition wins: [sort].
 
@@ -232,7 +232,7 @@ checkers site docs -o out
 == OUT/llms.txt
 # Literate pages
 
-> Links name symbols: [std.list.sort], [`list.sort`] through the hidden import below, [Option] and [Some] from the prelude, and [`Parsed.stop`], a field. [std.list.merge_by] isn't exported, [nothing.here] isn't anything, and [x, y] and [0] are only text. A definition wins: [sort].
+> Links name symbols: [std.list.sort], [`list.sort`] through the hidden import below, [Option] and [Some] from the prelude, and [`Error.pos`], a field. [std.list.merge_by] isn't exported, [nothing.here] isn't anything, and [x, y] and [0] are only text. A definition wins: [sort].
 
 Every page of this site is also Markdown: replace `.html` with `.md`.
 

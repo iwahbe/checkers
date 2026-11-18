@@ -7,6 +7,6 @@ use super::*;
 pub const TABLE: &[Builtin] = &[("std.json.scan_number", "ckb_json_scan_number", ckb_json_scan_number)];
 
 builtin!(ckb_json_scan_number, |a| match Decimal::scan_json(b(a[0]), n(a[1])) {
-    Some((d, stop)) => some(parsed(new_obj(Obj::Decimal(d)), stop)),
+    Some((d, stop)) => some(new_tuple(&[new_obj(Obj::Decimal(d)), nat(stop)])),
     None => none(),
 });
