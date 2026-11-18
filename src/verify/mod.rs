@@ -1275,6 +1275,9 @@ fn pretty(x: &Sx) -> String {
             "false" => "False".into(),
             a if a.starts_with('"') => a.replace("\"\"", "\\\""),
             a if short(a) == "Nil" => "[]".into(),
+            // A datatype's stand-in base constructor (`smt::base_sym`): no
+            // value a program can build.
+            a if a.trim_matches('|').ends_with("#base") => "…".into(),
             a => short(a),
         },
         Sx::List(items) => {
@@ -1305,6 +1308,11 @@ fn pretty(x: &Sx) -> String {
 }
 
 fn pretty_con(c: &str, args: &[Sx]) -> String {
+    // A datatype's stand-in base constructor (`smt::base_sym`), or a
+    // function giving only it (from an empty type): no value to show.
+    if c.ends_with("#base") || c == "const" && args.len() == 1 && pretty(&args[0]) == "…" {
+        return "…".into();
+    }
     if c == "Nil" && args.is_empty() {
         return "[]".into();
     }

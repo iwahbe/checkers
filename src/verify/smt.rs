@@ -100,6 +100,22 @@ fn sel_sym(e: &Elab, c: ConId, k: usize) -> String {
     sym(&format!("{}.{}.{}", ti.module, ci.name, k))
 }
 
+/// A stand-in constructor without fields, added to a datatype Z3 would
+/// otherwise reject as not well-founded: one whose values all reach the type
+/// again through an array or a function (`Cells cells : cells~Array Grid`,
+/// `FromEmpty f : f~(Empty -> Absurd)`). Z3 doesn't count an empty array as a
+/// base. The program can't build it, so it only adds values the solver must
+/// consider; no value the program names is one (`real_values`).
+fn base_sym(e: &Elab, id: TyId) -> String {
+    let ti = &e.g.tys[id.0 as usize];
+    sym(&format!("{}.{}#base", ti.module, ti.name))
+}
+
+fn base_tester(e: &Elab, id: TyId) -> String {
+    let ti = &e.g.tys[id.0 as usize];
+    sym(&format!("is-{}.{}#base", ti.module, ti.name))
+}
+
 fn tuple_sym(n: usize) -> String {
     format!("|Tuple{n}|")
 }
@@ -295,6 +311,11 @@ pub struct Builder<'a> {
     pub shown: Vec<(String, String)>,
     string_vars: Vec<String>,
     array_vars: Vec<String>,
+    /// Values the program names, by their datatype: none is a type's
+    /// stand-in base constructor (`base_sym`).
+    real_values: Vec<(String, TyId)>,
+    /// Datatypes given a stand-in base constructor, so Z3 accepts them.
+    based: BTreeSet<TyId>,
 }
 
 impl<'a> Builder<'a> {
@@ -328,6 +349,8 @@ impl<'a> Builder<'a> {
             shown: Vec::new(),
             string_vars: Vec::new(),
             array_vars: Vec::new(),
+            real_values: Vec::new(),
+            based: BTreeSet::new(),
         }
     }
 
@@ -803,6 +826,9 @@ impl<'a> Builder<'a> {
                 _ => {}
             }
         }
+        // Each datatype's constructors' field sorts, to find those Z3 would
+        // reject as not well-founded (`base_sym`).
+        let mut fields_of: BTreeMap<TyId, Vec<Vec<Sort>>> = BTreeMap::new();
         let mut decls: BTreeMap<Head, (String, String, BTreeSet<Head>)> = BTreeMap::new();
         for &n in &self.tuples {
             let ps: Vec<String> = (0..n).map(|k| format!("T{k}")).collect();
@@ -816,9 +842,11 @@ impl<'a> Builder<'a> {
             let env = self.decl_env(id);
             let mut ctors = Vec::new();
             let mut deps = BTreeSet::new();
+            let mut sorts = Vec::new();
             for c in self.e.g.tys[id.0 as usize].ctors.clone() {
                 let fs = self.con_fields(c, &env)?;
                 fs.iter().for_each(|(_, s)| mentions(s, &mut deps));
+                sorts.push(fs.iter().map(|(_, s)| s.clone()).collect());
                 let fields: Vec<String> =
                     fs.iter().map(|(k, s)| format!("({} {})", sel_sym(self.e, c, *k), s.render(self.e))).collect();
                 ctors.push(if fields.is_empty() {
@@ -827,13 +855,32 @@ impl<'a> Builder<'a> {
                     format!("({} {})", con_sym(self.e, c), fields.join(" "))
                 });
             }
+            fields_of.insert(id, sorts);
+            // The body without its closing parentheses: a stand-in
+            // constructor may be added.
             let ps: Vec<String> = (0..n).map(|k| format!("T{k}")).collect();
             let body = if n == 0 {
-                format!("({})", ctors.join(" "))
+                format!("({}", ctors.join(" "))
             } else {
-                format!("(par ({}) ({}))", ps.join(" "), ctors.join(" "))
+                format!("(par ({}) ({}", ps.join(" "), ctors.join(" "))
             };
             decls.insert(Head::Data(id), (format!("({} {n})", ty_sym(self.e, id)), body, deps));
+        }
+        // Does a sort have a value Z3 can see without the group's datatypes
+        // whose bases aren't known yet? Z3 takes a datatype declared earlier
+        // as having values, and doesn't look through an array (`Seq`, `Bag`,
+        // a function) for one.
+        fn based(s: &Sort, group: &[Head], known: &BTreeSet<Head>) -> bool {
+            let mut m = BTreeSet::new();
+            match s {
+                Sort::Data(t, _) if group.contains(&Head::Data(*t)) => known.contains(&Head::Data(*t)),
+                Sort::Tuple(xs) => xs.iter().all(|x| based(x, group, known)),
+                Sort::Seq(_) | Sort::Bag(_) | Sort::Fun(..) => {
+                    mentions(s, &mut m);
+                    !m.iter().any(|h| group.contains(h))
+                }
+                _ => true,
+            }
         }
         // Z3 rejects a group whose members use a sibling at other parameters
         // (`List (Tuple2 String Json)` beside `Json`), so declare each strongly
@@ -869,8 +916,40 @@ impl<'a> Builder<'a> {
                 if !ready {
                     continue;
                 }
+                let mut known: BTreeSet<Head> = group.iter().copied().filter(|h| matches!(h, Head::Tuple(_))).collect();
+                loop {
+                    let more: Vec<Head> = group
+                        .iter()
+                        .copied()
+                        .filter(|h| !known.contains(h))
+                        .filter(|h| {
+                            let Head::Data(id) = h else { return false };
+                            fields_of[id].iter().any(|fs| fs.iter().all(|s| based(s, &group, &known)))
+                        })
+                        .collect();
+                    if more.is_empty() {
+                        break;
+                    }
+                    known.extend(more);
+                }
                 let heads: Vec<&str> = group.iter().map(|h| decls[h].0.as_str()).collect();
-                let bodies: Vec<&str> = group.iter().map(|h| decls[h].1.as_str()).collect();
+                let mut bodies = Vec::new();
+                for h in &group {
+                    let body = &decls[h].1;
+                    bodies.push(match h {
+                        Head::Tuple(_) => body.clone(),
+                        Head::Data(id) => {
+                            let n = self.datatypes[id];
+                            let close = if n == 0 { ")" } else { "))" };
+                            if known.contains(h) {
+                                format!("{body}{close}")
+                            } else {
+                                self.based.insert(*id);
+                                format!("{body} ({}){close}", base_sym(self.e, *id))
+                            }
+                        }
+                    });
+                }
                 out_.push(format!("(declare-datatypes ({}) ({}))", heads.join(" "), bodies.join(" ")));
                 done.extend(group);
                 progressed = true;
@@ -1146,6 +1225,7 @@ impl<'a> Builder<'a> {
     }
 
     fn datatype_facts(&mut self, x: &str, id: TyId, sargs: &[Sort], vals: &[Option<(String, Sort)>]) {
+        self.real_values.push((x.to_string(), id));
         let mut senv = self.sort_env(id, sargs);
         // Invariants may mention the type's value parameters (`stop <= len src`).
         for (k, v) in vals.iter().enumerate() {
@@ -2244,6 +2324,9 @@ impl<'a> Builder<'a> {
                         }
                         self.asserts.extend(facts);
                     }
+                    if let Sort::Data(id, _) = &elem {
+                        self.real_values.push((t.clone(), *id));
+                    }
                 }
                 Ok((t, elem))
             }
@@ -2849,6 +2932,11 @@ impl<'a> Builder<'a> {
         let reflected = defs.len() != opaque_defs.len() || defs.iter().zip(&opaque_defs).any(|(a, b)| a != b);
         // Definitions may mention new datatypes; postconditions inside them are not assumed.
         let sorts = self.sort_decls()?;
+        for (x, id) in std::mem::take(&mut self.real_values) {
+            if self.based.contains(&id) {
+                self.asserts.push(format!("(not ({} {x}))", base_tester(self.e, id)));
+            }
+        }
         let mut text = String::new();
         text += &format!(
             "(set-option :produce-models true)\n(set-option :rlimit {})\n(set-option :timeout {})\n(set-logic ALL)\n",
