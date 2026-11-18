@@ -1,0 +1,43 @@
+# A pull request may close a proposal only after Ian accepts it (SPEC §0).
+# After `accepted` is added, run this check again.
+name: Decisions
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+  merge_group:
+
+permissions:
+  issues: read
+  pull-requests: read
+
+jobs:
+  accepted:
+    name: accepted proposals
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Reject a closed proposal without `accepted`
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          unaccepted=$(gh api graphql -F owner="$OWNER" -F repo="$REPO" -F pr="$PR" -f query='
+            query($owner: String!, $repo: String!, $pr: Int!) {
+              repository(owner: $owner, name: $repo) {
+                pullRequest(number: $pr) {
+                  closingIssuesReferences(first: 100) {
+                    nodes { number labels(first: 100) { nodes { name } } }
+                  }
+                }
+              }
+            }' --jq '.data.repository.pullRequest.closingIssuesReferences.nodes[]
+              | [.labels.nodes[].name] as $labels
+              | select(($labels | index("proposal")) and ($labels | index("accepted") | not))
+              | "#\(.number)"')
+          if [ -n "$unaccepted" ]; then
+            echo "::error::This pull request closes proposals without the accepted label: ${unaccepted//$'\n'/ }"
+            exit 1
+          fi
