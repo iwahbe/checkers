@@ -558,6 +558,7 @@ fn wrap_lets(r: R, lets: Lets) -> R {
 fn lit_eq(a: &Lit, b: &Lit) -> bool {
     match (a, b) {
         (Lit::Num(x), Lit::Num(y)) => x == y,
+        (Lit::Big(x), Lit::Big(y)) => x == y,
         (Lit::Str(x), Lit::Str(y)) => x == y,
         (Lit::Bytes(x), Lit::Bytes(y)) => x == y,
         _ => false,

@@ -1364,7 +1364,7 @@ impl<'a> Builder<'a> {
     /// `t` is `>= 0` for every solver value of its free variables.
     fn nonneg(&self, t: &Tm, stack: &mut Vec<DefId>) -> bool {
         match t {
-            Tm::Lit(Lit::Num(n)) => *n >= 0,
+            Tm::Lit(l @ (Lit::Num(_) | Lit::Big(_))) => l.is_nonneg_int(),
             Tm::PrimApp(Prim::Add | Prim::Mul, xs) => xs.iter().all(|x| self.nonneg(x, stack)),
             Tm::PrimApp(Prim::Len, _) => true,
             Tm::PrimApp(Prim::Par, xs) => xs.iter().all(|x| self.nonneg(x, stack)),
@@ -1404,7 +1404,8 @@ impl<'a> Builder<'a> {
                 }
                 None => out("an unsolved unknown"),
             },
-            Tm::Lit(Lit::Num(n)) => Ok((if *n < 0 { format!("(- {})", -n) } else { n.to_string() }, Sort::Int)),
+            Tm::Lit(Lit::Num(n)) => Ok((smt_int(*n), Sort::Int)),
+            Tm::Lit(Lit::Big(n)) => Ok((smt_int((**n).clone()), Sort::Int)),
             Tm::Lit(Lit::Str(s)) => {
                 Ok((smt_bytes(s.as_bytes()), Sort::Str))
             }
@@ -2414,7 +2415,8 @@ impl<'a> Builder<'a> {
                 continue;
             }
             let lt = match l {
-                Lit::Num(n) => if *n < 0 { format!("(- {})", -n) } else { n.to_string() },
+                Lit::Num(n) => smt_int(*n),
+                Lit::Big(n) => smt_int((**n).clone()),
                 Lit::Str(s) => smt_bytes(s.as_bytes()),
                 Lit::Bytes(b) => smt_bytes(b),
             };
@@ -3100,4 +3102,13 @@ fn tm_size(t: &Tm, cap: usize) -> usize {
         }
     }
     n
+}
+
+/// An integer in SMT-LIB, where a negative number is `(- n)`.
+fn smt_int(n: impl Into<num_bigint::BigInt>) -> String {
+    let n: num_bigint::BigInt = n.into();
+    match n.sign() {
+        num_bigint::Sign::Minus => format!("(- {})", n.magnitude()),
+        _ => n.to_string(),
+    }
 }

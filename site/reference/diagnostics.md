@@ -51,7 +51,6 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0206` | a module or class has no export or member of that name |
 | `E0207` | a record has no field of that name, or the value isn't a record |
 | `E0210` | an operator applied to a type it doesn't work on |
-| `E0211` | a number literal too large for the type checker |
 | `E0212` | `auto` or `admit` outside a proof |
 | `E0213` | a module used as a value |
 | `E0214` | `len` or `format` not applied to an argument |

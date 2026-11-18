@@ -408,6 +408,7 @@ impl Lowerer<'_, '_> {
         match v {
             RtLit::Num(n) if checkers_rt::word::fits(*n) => E::Int(*n as i64),
             RtLit::Num(n) => E::BigLit(n.to_string()),
+            RtLit::Big(n) => E::BigLit(n.to_string()),
             RtLit::Str(s) => E::Str(s.clone()),
             RtLit::Bytes(b) => E::Bytes(b.clone()),
         }

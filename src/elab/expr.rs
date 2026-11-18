@@ -184,7 +184,7 @@ impl Elab {
             (ExprKind::Lit(ast::Lit::Int(s)), Val::TyCon(id, _))
                 if Some(*id) == self.g.well_known.int =>
             {
-                Tm::Lit(Lit::Num(self.number(s, e.span)))
+                Tm::Lit(Lit::int(self.number(s)))
             }
             (ExprKind::Lit(ast::Lit::Int(_)), Val::TyCon(..) | Val::TupleTy(_) | Val::Pi(..)) => {
                 let shown = self.show_val(cx, &exp);
@@ -369,8 +369,8 @@ impl Elab {
             ExprKind::Neg(x) => {
                 let int = self.int();
                 if let ExprKind::Lit(ast::Lit::Int(s)) = &x.kind {
-                    let n = self.number(s, x.span);
-                    return (Tm::Lit(Lit::Num(-n)), int);
+                    let n = self.number(s);
+                    return (Tm::Lit(Lit::int(-n)), int);
                 }
                 let (t, xty) = self.infer(cx, x);
                 // `-x` on a type with an instance of `Neg` (M24).
@@ -691,7 +691,7 @@ impl Elab {
     fn infer_lit(&mut self, cx: &mut Cx, l: &ast::Lit, span: Span) -> (Tm, Val) {
         match l {
             ast::Lit::Int(s) => {
-                let n = self.number(s, span);
+                let n = self.number(s);
                 let mv = self.fresh_meta_val(cx);
                 self.deferred.push(Deferred {
                     ty: mv.clone(),
@@ -702,7 +702,7 @@ impl Elab {
                     names: cx.names(),
                     owner: self.cur_fn,
                 });
-                (Tm::Lit(Lit::Num(n)), mv)
+                (Tm::Lit(Lit::int(n)), mv)
             }
             ast::Lit::Byte(b) => (Tm::Lit(Lit::Num(*b as i128)), self.u8_ty()),
             ast::Lit::Char(c) => (Tm::Lit(Lit::Num(*c as i128)), self.char_ty()),

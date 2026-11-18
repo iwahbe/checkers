@@ -128,7 +128,7 @@ impl<'g> Evaluator<'g> {
         let g = self.g;
         if checkers_rt::obj::is_num(v) {
             let n = checkers_rt::obj::num_of(v);
-            return Some(Tm::Lit(Lit::Num(n.to_string().parse().ok()?)));
+            return Some(Tm::Lit(Lit::int(n.to_string().parse().ok()?)));
         }
         if v == w::ERASED || v == w::UNIT {
             return Some(Tm::Tuple(vec![]));
