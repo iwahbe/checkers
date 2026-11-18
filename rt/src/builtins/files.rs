@@ -178,7 +178,11 @@ builtin!(ckb_files_flush, |a| {
 
 builtin!(ckb_files_create_dirs, |a| match path(a[1], s(a[0])) {
     Err(e) => err(e),
-    Ok(p) => blocking(move || match std::fs::create_dir_all(p) {
+    // `create_dir_all` takes a path's parent to be the path without its last
+    // component, which for `out/.` is nothing: it then asks for `out/.` in an
+    // `out` that isn't there. Without its `.` components the path names the
+    // same directory, and its parents are the ones to create.
+    Ok(p) => blocking(move || match std::fs::create_dir_all(p.components().collect::<std::path::PathBuf>()) {
         Ok(()) => ok(UNIT),
         Err(e) => err(describe_io(&e)),
     }),
