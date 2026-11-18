@@ -1,7 +1,7 @@
 # Literate pages
 
 Links name symbols: [std.list.sort], [`list.sort`] through the hidden import
-below, [Option] and [Some] from the prelude, and [`Parsed.stop`], a field.
+below, [Option] and [Some] from the prelude, and [`Error.pos`], a field.
 [std.list.merge_by] isn't exported, [nothing.here] isn't anything, and
 [x, y] and [0] are only text. A definition wins: [sort].
 
@@ -9,7 +9,7 @@ below, [Option] and [Some] from the prelude, and [`Parsed.stop`], a field.
 
 ```checkers
 #! import std.list
-#! import std.cursor (Parsed)
+#! import std.json (Error)
 ```
 
 A block with `main` runs, and its output follows it:

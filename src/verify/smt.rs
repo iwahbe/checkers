@@ -923,6 +923,8 @@ impl<'a> Builder<'a> {
                 // A refinement alias (`U8`) brings its predicates.
                 let raw = quote(&self.e.g, lvl, &l.ty);
                 self.alias_facts(&env, &raw, &name, &s);
+                // A tuple's parts carry theirs (`(Char, (stop~Nat, k < stop))`).
+                self.tuple_facts(&env, &tyt, &name, &s);
                 if let Sort::Data(id, sargs) = &s {
                     let vals = self.value_args(&env, &tyt);
                     self.datatype_facts(&name, *id, sargs, &vals);
@@ -1033,6 +1035,32 @@ impl<'a> Builder<'a> {
         let binds: Vec<String> = vars.iter().map(|(v, s)| format!("({v} {})", s.render(self.e))).collect();
         // After the function's own declaration, so among the facts.
         self.asserts.push(format!("(forall ({}) (! {body} :pattern ({app})))", binds.join(" ")));
+    }
+
+    /// A tuple's parts at refined types (D71, D82) have their predicates:
+    /// a `Nat` part is non-negative and a refinement alias's predicates hold,
+    /// in tuples written inside it too. `ty` is the tuple type, `xs` its sort, in which
+    /// a last part that is a tuple is flattened (D174): there the last part
+    /// is the tuple of the remaining components.
+    fn tuple_facts(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort) {
+        let (Tm::TupleTy(ts), Sort::Tuple(ss)) = (ty, xs) else { return };
+        let n = ss.len();
+        for (k, t) in ts.iter().enumerate() {
+            let (part, ps) = if k + 1 == ts.len() && ts.len() < n {
+                let rest = Sort::Tuple(ss[k..].to_vec());
+                self.tuples.insert(n - k);
+                let parts: Vec<String> = (k..n).map(|j| format!("({} {x})", tuple_sel(n, j))).collect();
+                (format!("((as {} {}) {})", tuple_con(n - k), rest.render(self.e), parts.join(" ")), rest)
+            } else {
+                let Some(p) = ss.get(k) else { return };
+                (format!("({} {x})", tuple_sel(n, k)), p.clone())
+            };
+            if self.is_nat_tm(t) {
+                self.asserts.push(format!("(>= {part} 0)"));
+            }
+            self.alias_facts(env, t, &part, &ps);
+            self.tuple_facts(env, t, &part, &ps);
+        }
     }
 
     /// The predicates of the refinement alias `ty` at `x`, as terms.

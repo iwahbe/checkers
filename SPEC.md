@@ -248,7 +248,7 @@ Decidable fragment, following Liquid Haskell: quantifier-free linear integer ari
 | `Array a` (and `Bytes`, `Array U8`) | `(Seq S)` for `a`'s sort `S`; `len`, `a[i]`, `++` native; each `a[i]` is known to satisfy the element type's refinement (`< 256` for `U8`) (D133) |
 | `String` | its UTF-8 bytes, `(Seq Int)` (D58): `len` (bytes, not characters), `++` and `utf8.encode` native |
 | `Bag` (D47) | `(Array Int Int)` |
-| enums, records, `List`, `Option`, `Result`, tuples | `declare-datatypes`, with type parameters (value parameters are dropped from the sort); a value's constructor invariants are assumed, with the value parameters of its type filled in (`p~Parsed Json src i` gives `p.stop <= len src`) |
+| enums, records, `List`, `Option`, `Result`, tuples | `declare-datatypes`, with type parameters (value parameters are dropped from the sort); a value's constructor invariants are assumed, with the value parameters of its type filled in (`e~Error src` gives `e.pos <= len src`); a tuple's parts at refined types, or `Nat`, have their predicates (`t~(Bool, (s~Nat, s > 3))` gives `s > 3` of its second part, however a pattern takes it apart) |
 | type variables, abstract types | uninterpreted sorts |
 | a parameter of function type | an uninterpreted function; if its type is refined, its postconditions hold at every application where its preconditions do (a pattern-guarded axiom, D139) |
 | a function value (D139) | Z3's `(Array A B)`, curried (`Int -> Int -> Int` is `(Array Int (Array Int Int))`); applying it is `select`; a lambda, even one using local variables, is Z3's `lambda`, and a named function, a partial application or a function parameter passed as a value is one applying it; a known function argument (a named function, a lambda without free variables) still picks a specialized instance (D57) |
@@ -1196,9 +1196,8 @@ The standard library is these modules. Its scope is still to be settled (D106); 
 | `std.bytes` | builtin | `matches_at`, `slice`, `concat` | exists |
 | `std.string` | builtin + Checkers | `bytes`, `from_utf8`, `from_char`, `from_chars`, `chars`, `concat`, `concat_map` (Checkers, D139), `fold_case` (Unicode's full case folding, a generated table, D151), axioms relating them (D119; `concat_join` in place of the axiom `concat_map_chars`, now proved, M22) | exists; planned: `join`, `split`, `starts_with`, `ends_with`, `trim` |
 | `std.char` | Checkers | `code`, `from_scalar`, `from_ascii`, `from_surrogates` (D119); `is_punctuation` (general category P or S), `is_space_separator` (Zs), from generated tables (D151) | exists |
-| `std.utf8` | builtin + Checkers | `decode_at`, `encode`, `encode_append`, `decode_from_char` | exists |
+| `std.utf8` | builtin + Checkers | `decode_at` (`Option (Char, (stop~Nat, k < stop, stop <= len src))`: a character and where its encoding ends, #44), `encode`, `encode_append`, `decode_from_char` | exists |
 | `std.decimal` | builtin + Checkers | `Decimal`, `render`, `of_int` | exists; planned: `nat.parse` as `std.number` (`parse_nat`, `parse_int`, `render_nat`) |
-| `std.cursor` | Checkers | `Parsed` (a parse result that consumed input) | exists |
 | `std.html` | Checkers | `escape`, `entity` (HTML5's named character references, a generated table, D151) | exists (M27) |
 | `std.markdown` | Checkers | `Document`, `Block`, `Inline`, `Item`, `Span`, `Target`, `Definition`, `Reference`, `parse`, `parse_with`, `to_html`, `to_html_with`, `label_key`, `language`, `plain` (CommonMark 0.31.2, a port of commonmark.js, D148, D151) | exists (M27) |
 | `std.json` | builtin + Checkers | `Json`, `Error`, `ErrorKind`, `parse`, `render`, `depth`, `MAX_DEPTH`, the round-trip lemma; not exported: `scan_number` (a number's text, D145) | exists (M13; proven without `admit`s, M18) |

@@ -1,0 +1,10 @@
+error[E0450]: cannot prove `r > 4`, the postcondition of `wrong`
+  --> tuple_refinements.ck:41:52
+   |
+41 | fn wrong t -> r : t~(Bool, (s~Nat, s > 3)), r~Nat, r > 4
+   |                                                    ^^^^^ promised here
+   = note: for the value returned on line 43: `s`
+   = note: counterexample: t = tuple2 False 4
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+tuple_refinements.ck: 1 error, 0 warnings

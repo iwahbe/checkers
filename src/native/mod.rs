@@ -32,7 +32,7 @@ pub(crate) fn descriptor(g: &Globals, p: &lower::Program) -> String {
     let find = |module: &str, name: &str| {
         g.cons.iter().position(|c| &*c.name == name && &*g.tys[c.ty.0 as usize].module == module).map(|i| i as u32)
     };
-    let known: [(&str, Option<u32>); 18] = [
+    let known: [(&str, Option<u32>); 17] = [
         ("true", wk.true_con.map(|c| c.0)),
         ("false", wk.false_con.map(|c| c.0)),
         ("some", wk.some.map(|c| c.0)),
@@ -41,7 +41,6 @@ pub(crate) fn descriptor(g: &Globals, p: &lower::Program) -> String {
         ("err", wk.err.map(|c| c.0)),
         ("nil", wk.nil.map(|c| c.0)),
         ("cons", wk.cons.map(|c| c.0)),
-        ("parsed", find("std.cursor", "Parsed")),
         ("system", find("std.system", "System")),
         ("success", find("std.system", "Success")),
         ("failure", find("std.system", "Failure")),

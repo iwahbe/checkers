@@ -5,7 +5,6 @@ import std.bag
 import std.bytes
 import std.char
 import std.cown
-import std.cursor
 import std.decimal
 import std.env
 import std.files

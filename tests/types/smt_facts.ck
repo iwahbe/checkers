@@ -4,7 +4,10 @@ module smt_facts
 # the range of a byte, and record invariants that mention the record's
 # value parameters.
 
-import std.cursor (Parsed)
+# A value parsed from `src` at `start`, and where it stopped.
+record Parsed a src start : a~Type, src~Bytes, start~Nat
+    value~a
+    stop~Nat, start < stop, stop <= len src
 
 fn small b -> r : b~U8, r~Bool, r
     b < 256                                 # U8's predicate

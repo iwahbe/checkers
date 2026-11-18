@@ -26,7 +26,6 @@ pub struct Known {
     pub err: Option<u32>,
     pub nil: Option<u32>,
     pub cons: Option<u32>,
-    pub parsed: Option<u32>,
     pub system: Option<u32>,
     pub success: Option<u32>,
     pub failure: Option<u32>,
@@ -97,7 +96,6 @@ pub fn install(desc: &str, invoke: Invoke) {
                     "err" => &mut k.err,
                     "nil" => &mut k.nil,
                     "cons" => &mut k.cons,
-                    "parsed" => &mut k.parsed,
                     "system" => &mut k.system,
                     "success" => &mut k.success,
                     "failure" => &mut k.failure,
@@ -207,10 +205,6 @@ pub fn conn(w: W) -> Conn {
         Some(c) if Some(c) == k.inherit => Conn::Inherit,
         _ => bug("expected a proc.Stream"),
     }
-}
-
-pub fn parsed(v: W, stop: usize) -> W {
-    new_con(known_con(prog().known.parsed), &[v, crate::obj::nat(stop)])
 }
 
 // ── errors ──────────────────────────────────────────────────────────────────

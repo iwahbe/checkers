@@ -10,7 +10,6 @@
 
 module std.json
 
-import std.cursor (Parsed)            # record Parsed a src start: a value plus the position after it
 import std.decimal (Decimal)          # sealed: exact decimal numbers, JSON number scanning/rendering
 import std.utf8                       # sealed: decode_at, encode, and their lemmas
 import std.bytes                      # sealed: matches_at, ...
@@ -19,6 +18,12 @@ import std.char
 import std.list (keys, unique, contains, reverse, join, map, max_of)   # `keys` is exported transparent
 
 # ── Data ─────────────────────────────────────────────────────────────────────
+
+# A value parsed from `src` starting at `start`, and where it stopped. A
+# parse consumes at least one byte, so a parser that loops on `stop` ends.
+record Parsed a src start : a~Type, src~Bytes, start~Nat
+    value~a
+    stop~Nat, start < stop, stop <= len src
 
 # A JSON value. An object's keys are distinct (the constructor requires
 # it) and keep their order. Numbers are exact decimals.
@@ -109,11 +114,12 @@ fn value src i depth -> r : src~Bytes, i~Nat, i <= len src, depth~Nat,
             Ok (Parsed (Obj o.value) o.stop)       # o.value~Members carries unique (keys …)
         Some b   ->
             match scan_number src i
-                Some n -> Ok (Parsed (Num n.value) n.stop)
-                None   -> Err (Error i (UnexpectedByte b))
+                Some (n, stop) -> Ok (Parsed (Num n) stop)
+                None           -> Err (Error i (UnexpectedByte b))
 
-# Scan an RFC 8259 number starting at `i`.
-fn scan_number src i -> r : src~Bytes, i~Nat, i <= len src, r~Option (Parsed Decimal src i)
+# Scan an RFC 8259 number starting at `i`: the number and where it ends.
+fn scan_number src i -> r : src~Bytes, i~Nat, i <= len src,
+                            r~Option (Decimal, (stop~Nat, i < stop, stop <= len src))
     __builtin
 
 # A byte that could continue a number (`1` then `.5` would scan as `1.5`).
@@ -125,7 +131,7 @@ fn continues_number b -> r : b~U8, r~Bool
 lemma scan_number_render n pre post : n~Decimal, pre~Bytes, post~Bytes,
                                       len post == 0 or not (continues_number post[0])
     let src = pre ++ utf8.encode (decimal.render n) ++ post
-    ensures scan_number src (len pre) == Some (Parsed n (len pre + len (utf8.encode (decimal.render n))))
+    ensures scan_number src (len pre) == Some (n, len pre + len (utf8.encode (decimal.render n)))
     proof
         __builtin
 
@@ -221,9 +227,9 @@ fn chars src start k acc -> r : src~Bytes, start~Nat, k~Nat, start <= k, k <= le
             chars src start e.stop (e.value :: acc)
         Some b if b < 0x20 -> Err (Error k ControlInString)
         Some _    ->
-            match utf8.decode_at src k            # Parsed Char src k: always advances
-                Some c -> chars src start c.stop (c.value :: acc)
-                None   -> Err (Error k BadUtf8)
+            match utf8.decode_at src k            # k < stop: always advances
+                Some (c, stop) -> chars src start stop (c :: acc)
+                None           -> Err (Error k BadUtf8)
 
 fn escape src i -> r : src~Bytes, i~Nat, i <= len src,
                        r~Result (Parsed Char src i) (Error src)
@@ -582,6 +588,7 @@ lemma members_last src start k d acc key x q e
       unique (keys (reverse ((key, x) :: acc)))
     ensures members src start k d acc == Ok (Parsed (reverse ((key, x) :: acc)) (e + 1))
     proof
+        have contains (keys acc) key == False
         have skip_ws src q == q
         have expect src q ':' == Ok (Parsed () (q + 1))
         have skip_ws src (q + 1) == q + 1
@@ -596,6 +603,7 @@ lemma members_next src start k d acc key x q e
       not (is_ws src[e + 1])
     ensures members src start k d acc == members src start (e + 1) d ((key, x) :: acc)
     proof
+        have contains (keys acc) key == False
         have skip_ws src q == q
         have expect src q ':' == Ok (Parsed () (q + 1))
         have skip_ws src (q + 1) == q + 1

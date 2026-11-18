@@ -20,7 +20,7 @@ builtin!(ckb_decode_at, |a| {
         _ => 0,
     };
     match rest.get(..len).and_then(|x| std::str::from_utf8(x).ok()).and_then(|x| x.chars().next()) {
-        Some(c) if len > 0 => some(parsed(nat(c as usize), k + len)),
+        Some(c) if len > 0 => some(new_tuple(&[nat(c as usize), nat(k + len)])),
         _ => none(),
     }
 });
