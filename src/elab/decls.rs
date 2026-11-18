@@ -606,41 +606,118 @@ impl Elab {
     /// code~ExitCode` (D31; `code` may be a `Future ExitCode`): what isn't
     /// written is that, what is must agree (E0366).
     fn check_main(&mut self, sig: &Sig, at: Span) {
+        let params: Vec<(Name, Val)> = (sig.n_implicit..sig.binders.len()).map(|k| (sig.binders[k].0.clone(), self.eval(&sig.cx, &sig.binders[k].3))).collect();
+        let res = self.eval(&sig.cx, &sig.result);
+        let mut wrong = self.main_mismatches(&sig.cx, &params, &sig.result_name, &res);
+        if wrong.is_empty() {
+            for p in sig.preds.iter().filter(|p| !p.is_post && p.alias.is_none()) {
+                wrong.push(format!("`{}` is a precondition, which the runtime can't prove", p.text));
+            }
+        }
+        self.report_main(wrong, at, None);
+    }
+
+    /// An exported `let main` (D181): its value's type must be D31's. The
+    /// result is the value as a function of the two parameters the runtime
+    /// passes, whatever computes it.
+    fn check_main_const(&mut self, value: Tm, ty: &Val, at: Span) -> Tm {
+        let mut cx = Cx::default();
+        let mut params: Vec<(Name, Val)> = Vec::new();
+        let mut mults = Vec::new();
+        let mut cur = ty.clone();
+        match self.force(ty) {
+            Val::Error => return value,
+            Val::Pi(..) => {}
+            _ => {
+                let shown = self.show_val(&cx, ty);
+                let help = "declare it with `fn main args sys -> code`";
+                self.report_main(vec![format!("`main` is `{shown}`, not a function")], at, Some(help));
+                return value;
+            }
+        }
+        while let Val::Pi(x, m, _, dom, c) = self.force(&cur) {
+            let l = cx.lvl();
+            cx.bind(&x, (*dom).clone(), m);
+            params.push((x, (*dom).clone()));
+            mults.push(m);
+            cur = apply_closure(&self.g, &c, Val::var(l));
+        }
+        let mut wrong = self.main_mismatches(&cx, &params, "code", &cur);
+        if wrong.is_empty() {
+            for ((x, _), m) in params.iter().zip(&mults) {
+                if *m == Mult::Zero {
+                    wrong.push(format!("`{x}` is `ghost`, but the runtime passes it"));
+                }
+            }
+        }
+        if !wrong.is_empty() {
+            self.report_main(wrong, at, None);
+            return value;
+        }
+        let arg = |t: Tm, k: usize| Tm::App(Rc::new(t), Rc::new(Tm::Var(1 - k)), Icit::Expl, mults[k]);
+        let body = arg(arg(value, 0), 1);
+        params.iter().zip(&mults).rev().fold(body, |b, ((x, _), m)| Tm::Lam(x.clone(), *m, Icit::Expl, Rc::new(b)))
+    }
+
+    /// Does a value of type `v` have to satisfy a predicate, of `v` or of an
+    /// alias it is defined with? `type Args = a~List String` only names its base.
+    fn has_precondition(&self, v: &Val) -> bool {
+        let mut v = crate::core::force_meta(&self.g, v.clone());
+        loop {
+            if self.refined_alias(&v).is_some_and(|(d, _)| !self.alias_preds[&d].is_empty()) {
+                return true;
+            }
+            match crate::core::unfold(&self.g, &v) {
+                Some(u) => v = crate::core::force_meta(&self.g, u),
+                None => return false,
+            }
+        }
+    }
+
+    /// Each part of `main`'s parameters and result that isn't D31's.
+    fn main_mismatches(&mut self, cx: &Cx, params: &[(Name, Val)], result_name: &str, res: &Val) -> Vec<String> {
         let ty = |e: &Self, m: &str, n: &str| e.g.tys.iter().position(|t| &*t.module == m && &*t.name == n).map(|i| Val::TyCon(TyId(i as u32), vec![]));
         let wk = self.g.well_known.clone();
         let (Some(system), Some(exit), Some(string), Some(list)) =
             (ty(self, "std.system", "System"), ty(self, "std.system", "ExitCode"), wk.string, wk.list)
         else {
-            return;
+            return Vec::new();
         };
         let args = Val::TyCon(list, vec![Val::TyCon(string, vec![])]);
-        let explicit: Vec<usize> = (sig.n_implicit..sig.binders.len()).collect();
-        let lvl = sig.cx.lvl();
+        let lvl = cx.lvl();
         let mut wrong: Vec<String> = Vec::new();
-        if explicit.len() != 2 {
-            wrong.push(format!("it takes {} parameters, not 2", explicit.len()));
+        if params.len() != 2 {
+            let plural = if params.len() == 1 { "" } else { "s" };
+            wrong.push(format!("it takes {} parameter{plural}, not 2", params.len()));
         } else {
-            for (k, (want, shown)) in explicit.iter().zip([(args, "List String"), (system, "System")]) {
-                let have = self.eval(&sig.cx, &sig.binders[*k].3);
-                if unify(&self.g, lvl, &want, &have).is_err() {
-                    let is = self.show_val(&sig.cx, &have);
+            for ((name, have), (want, shown)) in params.iter().zip([(args, "List String"), (system, "System")]) {
+                if unify(&self.g, lvl, &want, have).is_err() {
+                    let is = self.show_val(cx, have);
                     let why = if is == "Bool" { " (a name alone among the constraints is a condition, so a `Bool`)" } else { "" };
-                    wrong.push(format!("`{}` is `{is}`, not `{shown}`{why}", sig.binders[*k].0));
+                    wrong.push(format!("`{name}` is `{is}`, not `{shown}`{why}"));
+                } else if self.has_precondition(have) {
+                    wrong.push(format!("`{name}` has a precondition, which the runtime can't prove"));
                 }
             }
         }
-        let res = self.eval(&sig.cx, &sig.result);
         let future = wk.future.map(|f| Val::TyCon(f, vec![exit.clone()]));
-        if unify(&self.g, lvl, &exit, &res).is_err() && !future.is_some_and(|f| unify(&self.g, lvl, &f, &res).is_ok()) {
-            wrong.push(format!("`{}` is `{}`, not `ExitCode`", sig.result_name, self.show_val(&sig.cx, &res)));
+        if unify(&self.g, lvl, &exit, res).is_err() && !future.is_some_and(|f| unify(&self.g, lvl, &f, res).is_ok()) {
+            wrong.push(format!("`{result_name}` is `{}`, not `ExitCode`", self.show_val(cx, res)));
         }
-        if let Some(first) = wrong.first() {
-            let mut d = Diagnostic::error("E0366", "this isn't `main`'s signature", at).with_label(first.clone());
-            for w in &wrong[1..] {
-                d = d.with_note(w.clone());
-            }
-            self.err(d.with_note("`main` is `fn main args sys -> code : args~List String, sys~System, code~ExitCode` (or a `Future ExitCode`); a type left out is that one"));
+        wrong
+    }
+
+    fn report_main(&mut self, wrong: Vec<String>, at: Span, help: Option<&str>) {
+        let Some(first) = wrong.first() else { return };
+        let mut d = Diagnostic::error("E0366", "this isn't `main`'s signature", at).with_label(first.clone());
+        for w in &wrong[1..] {
+            d = d.with_note(w.clone());
         }
+        d = d.with_note("`main` is `fn main args sys -> code : args~List String, sys~System, code~ExitCode` (or a `Future ExitCode`); a type left out is that one");
+        self.err(match help {
+            Some(h) => d.with_help(h),
+            None => d,
+        });
     }
 
     // ── phases ──────────────────────────────────────────────────────────────
@@ -1268,12 +1345,15 @@ impl Elab {
 
     fn phase_consts(&mut self, m: &ast::Module, ids: &[Option<Sym>]) {
         for (d, id) in m.decls.iter().zip(ids) {
-            let DeclKind::Const { value, .. } = &d.kind else { continue };
+            let DeclKind::Const { name, value } = &d.kind else { continue };
             let Some(Sym::Def(did)) = id else { continue };
             self.g.fuel.set(DEFAULT_FUEL);
             let mut cx = Cx::default();
-            let (t, ty) = self.infer(&mut cx, value);
+            let (mut t, ty) = self.infer(&mut cx, value);
             self.solve_deferred();
+            if name.name == "main" && d.export != Export::No && self.root.as_deref() == Some(self.cur.as_str()) {
+                t = self.check_main_const(t, &ty, name.span);
+            }
             let tyt = quote(&self.g, 0, &ty);
             let t = crate::core::zonk_metas(&self.g, 0, &t);
             let info = &mut self.g.defs[did.0 as usize];

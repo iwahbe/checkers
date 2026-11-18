@@ -208,7 +208,7 @@ impl Elab {
         };
         for m in own {
             for e in self.decl_table.get(m).map(|v| v.as_slice()).unwrap_or(&[]) {
-                let is_main = m == root && e.name.as_ref().is_some_and(|n| n.0 == "main") && e.what == "function";
+                let is_main = m == root && e.name.as_ref().is_some_and(|n| n.0 == "main") && (e.what == "function" || e.what == "constant" && e.export);
                 if !(is_main || (!program && e.export) || (scratch && m == root)) {
                     continue;
                 }

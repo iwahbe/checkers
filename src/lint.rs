@@ -214,7 +214,10 @@ impl Linter {
                 }
             }
             DeclKind::Const { name, value } => {
-                self.screaming(name);
+                // An exported `main` is the program's entry (D181).
+                if name.name != "main" || d.export == Export::No {
+                    self.screaming(name);
+                }
                 self.expr(value);
             }
             DeclKind::Check { expr } => self.expr(expr),
