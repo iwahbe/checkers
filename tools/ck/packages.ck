@@ -12,7 +12,7 @@ import std.proc
 import std.string
 import std.bytes
 import std.list (contains, reverse)
-import ck.manifest (Version, Source, Git, Path, Dep, Manifest, Locked, Pinned, PinnedGit, PinnedPath)
+import ck.manifest (Version, Source, Git, Path, Dep, Manifest, Locked, Pinned, PinnedGit, PinnedPath, PackageName)
 
 # What resolving needs.
 export record Caps
@@ -23,9 +23,9 @@ export record Caps
 
 # A package of the build: its directory and the packages it may import.
 export record Package
-    name~String
+    name~PackageName
     dir~String
-    uses~List String
+    uses~List PackageName
     pin~Pinned
 
 # ── Paths ────────────────────────────────────────────────────────────────────
@@ -142,7 +142,7 @@ partial fn clone url rev tmp c -> r : url~String, rev~String, tmp~String, c~Caps
 
 # `name` at version `v`: its directory and commit. `known` is the commit if
 # the lock file or the cache already says which it is.
-export partial fn fetch name url v known c -> r : name~String, url~String, v~Version, known~Option String,
+export partial fn fetch name url v known c -> r : name~PackageName, url~String, v~Version, known~Option String,
                                                   c~Caps, r~Result (String, String) String
     match cache c
         Err e    -> Err e
@@ -161,10 +161,10 @@ export partial fn fetch name url v known c -> r : name~String, url~String, v~Ver
                         fetch_into name url v k base c
                 None   -> fetch_tag name url v base remembered c
 
-partial fn announce name url v c -> r : name~String, url~String, v~Version, c~Caps, r~Unit
+partial fn announce name url v c -> r : name~PackageName, url~String, v~Version, c~Caps, r~Unit
     terminal.eprint_line ("checkers: fetching " ++ name ++ " " ++ manifest.show v ++ " from " ++ url) c.term
 
-partial fn fetch_into name url v k base c -> r : name~String, url~String, v~Version, k~String,
+partial fn fetch_into name url v k base c -> r : name~PackageName, url~String, v~Version, k~String,
                                                  base~String, c~Caps, r~Result (String, String) String
     let tmp = base ++ "/.fetching"
     announce name url v c
@@ -179,7 +179,7 @@ partial fn fetch_into name url v k base c -> r : name~String, url~String, v~Vers
                 else
                     Err ("could not move `" ++ name ++ "` into " ++ base ++ "/" ++ k)
 
-partial fn fetch_tag name url v base remembered c -> r : name~String, url~String, v~Version,
+partial fn fetch_tag name url v base remembered c -> r : name~PackageName, url~String, v~Version,
                                                          base~String, remembered~String, c~Caps,
                                                          r~Result (String, String) String
     let tmp = base ++ "/.fetching"
@@ -200,7 +200,7 @@ partial fn fetch_tag name url v base remembered c -> r : name~String, url~String
                             Ok _  -> settle name tmp base k remembered c
 
 # Move a checkout into the cache under its commit, and remember the tag's commit.
-partial fn settle name tmp base k remembered c -> r : name~String, tmp~String, base~String, k~String,
+partial fn settle name tmp base k remembered c -> r : name~PackageName, tmp~String, base~String, k~String,
                                                       remembered~String, c~Caps, r~Result (String, String) String
     let dir = base ++ "/" ++ k
     let placed = if exists dir c then run "rm" ["-rf", tmp] c else run "mv" [tmp, dir] c
@@ -217,15 +217,15 @@ partial fn settle name tmp base k remembered c -> r : name~String, tmp~String, b
 record Need
     dep~Dep
     base~String
-    by~String
+    by~PackageName
 
 # A package version reached: where it is, and its manifest.
 record Node
-    name~String
+    name~PackageName
     dir~String
     pin~Pinned
     man~Manifest
-    by~String
+    by~PackageName
 
 # Where a dependency comes from, to tell two sources with one name apart.
 partial fn origin d base -> s : d~Dep, base~String, s~String
@@ -239,7 +239,7 @@ partial fn version_of p -> r : p~Pinned, r~Option Version
         PinnedPath _    -> None
 
 # Has this version of this package been visited?
-partial fn visited nodes name p -> r : nodes~List Node, name~String, p~Pinned, r~Bool
+partial fn visited nodes name p -> r : nodes~List Node, name~PackageName, p~Pinned, r~Bool
     match nodes
         []        -> False
         n :: rest -> (n.name == name and same n.pin p) or visited rest name p
@@ -251,7 +251,7 @@ partial fn same a b -> r : a~Pinned, b~Pinned, r~Bool
         _                                  -> False
 
 # The source another node with this name came from, if it differs.
-partial fn clash nodes name o -> r : nodes~List Node, name~String, o~String, r~Option Node
+partial fn clash nodes name o -> r : nodes~List Node, name~PackageName, o~String, r~Option Node
     match nodes
         []        -> None
         n :: rest -> if n.name == name and pin_origin n.pin != o then Some n else clash rest name o
@@ -261,7 +261,7 @@ partial fn pin_origin p -> s : p~Pinned, s~String
         PinnedGit u _ _ -> u
         PinnedPath d    -> d
 
-partial fn locked lock name url v -> r : lock~List Locked, name~String, url~String, v~Version, r~Option String
+partial fn locked lock name url v -> r : lock~List Locked, name~PackageName, url~String, v~Version, r~Option String
     match lock
         []        -> None
         l :: rest ->
@@ -331,7 +331,7 @@ partial fn shown_at n -> s : n~Node, s~String
 
 # The chosen node for `name`: the highest version reached (git), or the
 # only one (path). An error if two major versions are needed.
-partial fn choose nodes name best -> r : nodes~List Node, name~String, best~Option Node, r~Result Node String
+partial fn choose nodes name best -> r : nodes~List Node, name~PackageName, best~Option Node, r~Result Node String
     match nodes
         []        ->
             match best
@@ -355,17 +355,17 @@ partial fn choose nodes name best -> r : nodes~List Node, name~String, best~Opti
                                     choose rest name best
                             _                -> choose rest name best
 
-fn dep_name d -> s : d~Dep, s~String
+fn dep_name d -> s : d~Dep, s~PackageName
     d.name
 
-partial fn has ps name -> r : ps~List Package, name~String, r~Bool
+partial fn has ps name -> r : ps~List Package, name~PackageName, r~Bool
     match ps
         []        -> False
         p :: rest -> p.name == name or has rest name
 
 # The packages of the build: reached from the root through the chosen
 # versions only.
-partial fn build_list todo nodes acc -> r : todo~List String, nodes~List Node, acc~List Package,
+partial fn build_list todo nodes acc -> r : todo~List PackageName, nodes~List Node, acc~List Package,
                                             r~Result (List Package) String
     match todo
         []           -> Ok acc
@@ -456,7 +456,7 @@ partial fn package_flags ps -> r : ps~List Package, r~List String
         []        -> []
         p :: rest -> ["--package", p.name ++ "=" ++ p.dir] ++ uses_flag p.name p.uses ++ package_flags rest
 
-fn uses_flag name uses -> r : name~String, uses~List String, r~List String
+fn uses_flag name uses -> r : name~String, uses~List PackageName, r~List String
     match uses
         [] -> []
         _  -> ["--uses", name ++ "=" ++ list.join "," uses]

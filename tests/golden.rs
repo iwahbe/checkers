@@ -23,7 +23,8 @@
 //! tests/tool/NAME.args → each line runs `checkers` with those arguments (`ckc` is
 //!                         this build's); NAME.out is their output.
 //! tests/doc/NAME/     → a package (`.ck` files): NAME.out is `ckc doc` on each
-//!                         file, then every page `checkers doc` writes for it;
+//!                         file, then every page `checkers doc` writes for it
+//!                         (with a checkers.json, `checkers doc .` run in NAME/);
 //!                         with an index.md, a site: every file `checkers site`
 //!                         writes (§15.6).
 //! tests/lsp/NAME.session → a session with `checkers lsp` (§15.5), run in tests/lsp:
@@ -272,6 +273,9 @@ fn build_tool(root: &Path, update: bool, failures: &mut Vec<String>) -> usize {
         let _ = fs::remove_dir_all(&out);
         let out_s = out.display().to_string();
         let mut actual = String::new();
+        // A package with a manifest is documented from its own directory,
+        // as `.`, and named by its manifest.
+        let named = case.join("checkers.json").exists();
         let result = if case.join("index.md").exists() {
             run_with(&exe, &["site", &rel, "-o", &out_s], b"", root)
         } else {
@@ -282,9 +286,20 @@ fn build_tool(root: &Path, update: bool, failures: &mut Vec<String>) -> usize {
                 let o = std::process::Command::new(env!("CARGO_BIN_EXE_ckc")).args(["doc", &src_rel]).current_dir(root).output().unwrap();
                 actual += &format!("$ ckc doc {src_rel}\n{}", shown(&o));
             }
-            run_with(&exe, &["doc", &rel, "-o", &out_s, "--name", &name], b"", root)
+            if named {
+                run_with(&exe, &["doc", ".", "-o", &out_s], b"", &case)
+            } else {
+                run_with(&exe, &["doc", &rel, "-o", &out_s, "--name", &name], b"", root)
+            }
         };
-        actual += &format!("$ checkers {} {rel} -o OUT\n{}", if case.join("index.md").exists() { "site" } else { "doc" }, shown(&result));
+        let command = if case.join("index.md").exists() {
+            format!("site {rel} -o OUT")
+        } else if named {
+            format!("doc . -o OUT  (in {rel})")
+        } else {
+            format!("doc {rel} -o OUT")
+        };
+        actual += &format!("$ checkers {command}\n{}", shown(&result));
         let mut written = Vec::new();
         let mut stack = vec![out.clone()];
         while let Some(d) = stack.pop() {

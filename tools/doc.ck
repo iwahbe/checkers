@@ -17,14 +17,16 @@ import std.list
 import ck.jsonrpc as rpc
 import ck.literate (Symbol, Warning, Context, Compiler)
 import ck.literate as lit
+import ck.manifest (PackageName)
+import ck.manifest
 
 export let USAGE = string.concat [
     "usage: checkers doc DIR -o OUT [--name NAME] [--root PATH] [--label TEXT]\n",
     "       checkers site SRC -o OUT\n\n",
     "`doc` documents the package in DIR (every .ck file under it): OUT/NAME/index and\n",
     "OUT/NAME/MODULE, each as .md and .html; DIR/README.md, if any, describes the package.\n",
-    "NAME defaults to DIR's name; PATH is the way from those pages to the site's root\n",
-    "(default ../..); TEXT names the version.\n",
+    "NAME defaults to the name in DIR/checkers.json, else to DIR's name; PATH is the way\n",
+    "from those pages to the site's root (default ../..); TEXT names the version.\n",
     "`site` renders each SRC/PAGE.md to OUT/PAGE.md and OUT/PAGE.html, and writes\n",
     "OUT/llms.txt, a list of every Markdown page under OUT."]
 
@@ -301,7 +303,7 @@ partial fn read_module ckc file p -> r : ckc~String, file~String, p~Proc, r~Resu
                 Ok m
 
 # A module's page name: its name without the package's (`std.list` → `list`).
-partial fn page_name package name -> r : package~String, name~String, r~String
+partial fn page_name package name -> r : package~PackageName, name~String, r~String
     let b = string.bytes name
     let prefix = string.bytes (package ++ ".")
     if bytes.matches_at b 0 prefix then as_string (bytes.slice b (len prefix) (len b)) else name
@@ -393,7 +395,7 @@ partial fn drop_blank ls -> r : ls~List Bytes, r~List Bytes
         l :: rest -> if lit.blank l then drop_blank rest else ls
         []        -> []
 
-partial fn package_md package readme ms -> r : package~String, readme~Bytes, ms~List Module, r~String
+partial fn package_md package readme ms -> r : package~PackageName, readme~Bytes, ms~List Module, r~String
     let rows = list.map (\m -> string.concat [
         "| [", m.name, "](", page_name package m.name, ".md) | ", first_sentence m.doc, " |\n"]) ms
     let about = list.map (\l -> as_string l ++ "\n") (without_title (lit.lines_of readme))
@@ -473,7 +475,7 @@ partial fn first_target ts mod name ty -> r : ts~List Target, mod~String, name~S
 
 # Where `qual.name` in a signature of `m` leads (§15.6): within the package
 # only; in a type, a type; elsewhere a constructor or constant, else a type.
-partial fn resolve package ts m qual name ty -> r : package~String, ts~List Target, m~Module, qual~Bytes,
+partial fn resolve package ts m qual name ty -> r : package~PackageName, ts~List Target, m~Module, qual~Bytes,
                                                     name~Bytes, ty~Bool, r~Option Bytes
     let n = as_string name
     let q = as_string qual
@@ -496,20 +498,20 @@ partial fn esc s -> r : s~String, r~String
     as_string (lit.escape (string.bytes s))
 
 # `package.module`, `package` leading to the package's page.
-partial fn crumb package name -> r : package~String, name~String, r~String
+partial fn crumb package name -> r : package~PackageName, name~String, r~String
     let rest = page_name package name
     let tail = if name == "" then "" else if rest == name then " · " ++ esc name else "." ++ esc rest
     string.concat ["<div class=\"crumb\"><a href=\"index.html\">", esc package, "</a>", tail, "</div>\n"]
 
-partial fn module_side package m -> r : package~String, m~Module, r~Bytes
+partial fn module_side package m -> r : package~PackageName, m~Module, r~Bytes
     let line = \d -> string.concat [
         "<li><a href=\"#", anchor d, "\"><span class=\"kind\">", d.what, "</span> ", esc d.name, "</a></li>\n"]
     string.bytes (string.concat ([crumb package m.name, "<ul>\n"] ++ list.map line m.decls ++ ["</ul>\n"]))
 
-partial fn package_side package ms -> r : package~String, ms~List Module, r~Bytes
+partial fn package_side package ms -> r : package~PackageName, ms~List Module, r~Bytes
     string.bytes (string.concat ([crumb package "", "<ul>\n"] ++ module_lines package ms ++ ["</ul>\n"]))
 
-partial fn module_lines package ms -> r : package~String, ms~List Module, r~List String
+partial fn module_lines package ms -> r : package~PackageName, ms~List Module, r~List String
     match ms
         []        -> []
         m :: rest ->
@@ -530,10 +532,10 @@ partial fn read_all ckc dir rels p acc -> r : ckc~String, dir~String, rels~List 
 
 # What `[name]` links can name in modules `ms`: each module, declaration,
 # constructor and field, at its page (`list.html#fn-sort`) under `dir`.
-partial fn symbols_of package dir ms -> r : package~String, dir~String, ms~List Module, r~List Symbol
+partial fn symbols_of package dir ms -> r : package~PackageName, dir~String, ms~List Module, r~List Symbol
     flatten (list.map (module_symbols package dir) ms)
 
-partial fn module_symbols package dir m -> r : package~String, dir~String, m~Module, r~List Symbol
+partial fn module_symbols package dir m -> r : package~PackageName, dir~String, m~Module, r~List Symbol
     let page = dir ++ page_name package m.name ++ ".html"
     let decls = flatten (list.map (decl_symbols m.name page) m.decls)
     let hidden = list.map (\n -> Symbol (m.name ++ "." ++ n) page False) m.privates
@@ -641,7 +643,7 @@ partial fn dir_name path -> r : path~String, r~String
 partial fn last_slash b i best -> r : b~Bytes, i~Nat, best~Option Nat, r~Option Nat
     if i >= len b then best else last_slash b (i + 1) (if b[i] == '/' then Some i else best)
 
-partial fn write_modules out package ts ms root label cx fs p term -> r : out~String, package~String,
+partial fn write_modules out package ts ms root label cx fs p term -> r : out~String, package~PackageName,
                                                                           ts~List Target, ms~List Module,
                                                                           root~String, label~String, cx~Context,
                                                                           fs~Fs, p~Proc, term~Term,
@@ -686,6 +688,27 @@ fn fail message term -> code : message~String, term~Term, code~ExitCode
 partial fn with_slash root -> r : root~String, r~String
     if root == "" or ends_with root "/" then root else root ++ "/"
 
+# The package's name: `--name`, else the name in `DIR/checkers.json`, else
+# `DIR`'s last part (D177).
+partial fn package_name a fs -> r : a~DocArgs, fs~Fs, r~Result PackageName String
+    let path = join_path a.dir "checkers.json"
+    if a.name != ""
+        valid_package a.name
+    else
+        match files.read path fs
+            Err _   -> valid_package (base_name a.dir)
+            Ok text ->
+                match manifest.read text
+                    Ok m  -> Ok m.name
+                    Err p -> Err (manifest.describe path text p)
+
+fn valid_package name -> r : name~String, r~Result PackageName String
+    if manifest.valid_name name
+        Ok name
+    else
+        Err (string.concat ["`", name, "` isn't a package name: lower-case letters, digits and `_`, starting with a letter\n",
+                            "help: pass --name NAME, or give the package a checkers.json with its \"name\""])
+
 # `checkers doc DIR -o OUT [--name NAME] [--root PATH] [--label TEXT]`.
 export partial fn run args ckc term fs p -> code : args~List String, ckc~String, term~Term, fs~Fs, p~Proc,
                                                    code~ExitCode
@@ -694,34 +717,40 @@ export partial fn run args ckc term fs p -> code : args~List String, ckc~String,
             terminal.eprint_line USAGE term
             Failure 2
         Some a ->
-            let package = if a.name == "" then base_name a.dir else a.name
-            let out = join_path a.out package
-            let root = with_slash a.root
-            match read_all ckc a.dir (files_under a.dir "." ".ck" fs) p []
-                Err e -> fail e term
-                Ok ms ->
-                    match files.create_dirs out fs
-                        Err e -> fail (out ++ ": " ++ files.describe e) term
+            match package_name a fs
+                Err e      -> fail e term
+                Ok package -> document a package ckc term fs p
+
+partial fn document a package ckc term fs p -> code : a~DocArgs, package~PackageName, ckc~String, term~Term, fs~Fs,
+                                                      p~Proc, code~ExitCode
+    let out = join_path a.out package
+    let root = with_slash a.root
+    match read_all ckc a.dir (files_under a.dir "." ".ck" fs) p []
+        Err e -> fail e term
+        Ok ms ->
+            match files.create_dirs out fs
+                Err e -> fail (out ++ ": " ++ files.describe e) term
+                Ok _  ->
+                    let readme_path = join_path a.dir "README.md"
+                    let readme = match files.read readme_path fs
+                        Ok text -> text
+                        Err _   -> b""
+                    let others = if package == "std" then [] else std_modules ckc p
+                    have manifest.std_is_a_name
+                    let symbols = symbols_of package "" ms ++ symbols_of "std" "../std/" others
+                    let compiler = Compiler ckc a.dir []
+                    let cx = Context symbols (prelude_scope (ms ++ others)) "" compiler (\q n ty -> None) None
+                    let index = string.bytes (package_md package readme ms)
+                    let (index_html, ws) = lit.render index cx fs p
+                    let _ = module_warnings ws readme_path [(0, 1)] term
+                    let side = package_side package ms
+                    match write_page out "index" index root a.label side index_html fs
+                        Err e -> fail e term
                         Ok _  ->
-                            let readme_path = join_path a.dir "README.md"
-                            let readme = match files.read readme_path fs
-                                Ok text -> text
-                                Err _   -> b""
-                            let others = if package == "std" then [] else std_modules ckc p
-                            let symbols = symbols_of package "" ms ++ symbols_of "std" "../std/" others
-                            let compiler = Compiler ckc a.dir []
-                            let cx = Context symbols (prelude_scope (ms ++ others)) "" compiler (\q n ty -> None) None
-                            let index = string.bytes (package_md package readme ms)
-                            let (index_html, ws) = lit.render index cx fs p
-                            let _ = module_warnings ws readme_path [(0, 1)] term
-                            let side = package_side package ms
-                            match write_page out "index" index root a.label side index_html fs
+                            let ts = flatten (list.map targets_of ms)
+                            match write_modules out package ts ms root a.label cx fs p term
                                 Err e -> fail e term
-                                Ok _  ->
-                                    let ts = flatten (list.map targets_of ms)
-                                    match write_modules out package ts ms root a.label cx fs p term
-                                        Err e -> fail e term
-                                        Ok _  -> Success
+                                Ok _  -> Success
 
 # ── `checkers site` ──────────────────────────────────────────────────────────
 
@@ -877,6 +906,7 @@ export partial fn site args ckc term fs p -> code : args~List String, ckc~String
             let pages = files_under src "." ".md" fs
             let std = std_modules ckc p
             let none = \q n ty -> None
+            have manifest.std_is_a_name
             let cx = Context (symbols_of "std" "" std) (prelude_scope std) "docs/latest/std/" (Compiler ckc "" []) none None
             match files.create_dirs out fs
                 Err e -> fail (out ++ ": " ++ files.describe e) term

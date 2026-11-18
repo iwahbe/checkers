@@ -229,6 +229,18 @@ fn manifest_problems_have_a_position() {
     }
 }
 
+#[test]
+fn lock_file_names_are_package_names() {
+    let w = World::new("lockname");
+    app(&w);
+    w.write("app/checkers.lock", "{\n  \"Shared\": { \"path\": \"../shared\" }\n}\n");
+    let out = w.checkers("app", &["check"]);
+    assert_eq!(
+        (out.status.code(), errors(&out)),
+        (Some(1), "checkers: checkers.lock:2:3: `Shared` isn't a package name: lower-case letters, digits and `_`, starting with a letter; not `std`\n".to_string())
+    );
+}
+
 fn ckc(w: &World, dir: &str, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_ckc")).args(args).current_dir(w.root.join(dir)).env("CHECKERS_NO_CACHE", "1").output().expect("run ckc")
 }

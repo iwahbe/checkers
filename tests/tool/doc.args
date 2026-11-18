@@ -1,0 +1,2 @@
+doc tests/doc/pkg/. -o tests/tool/never
+doc tests/doc/pkg -o tests/tool/never --name Shapes
