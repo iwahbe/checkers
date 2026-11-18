@@ -1,0 +1,71 @@
+error[E0367]: `Fine` has no values: building one always needs a value of `Fine` first
+ --> no_values.ck:3:1
+  |
+3 | enum Fine
+  | ^^^^^^^^^ no constructor can build the first value
+  = help: add a constructor that needs no value of `Fine`, such as one with no fields
+
+error[E0367]: `Direct` has no values: building one always needs a value of `Direct` first
+ --> no_values.ck:6:1
+  |
+6 | enum Direct
+  | ^^^^^^^^^^^ no constructor can build the first value
+  = help: add a constructor that needs no value of `Direct`, such as one with no fields
+
+error[E0367]: `Chain` has no values: building one always needs a value of `Chain` first
+ --> no_values.ck:9:1
+  |
+9 | record Chain
+  | ^^^^^^^^^^^^ no constructor can build the first value
+  = help: hold the recursive field in a type that can be empty, such as `Option Chain` or `List Chain`
+
+error[E0367]: `Paired` has no values: building one always needs a value of `Paired` first
+  --> no_values.ck:12:1
+   |
+12 | enum Paired
+   | ^^^^^^^^^^^ no constructor can build the first value
+   = help: add a constructor that needs no value of `Paired`, such as one with no fields
+
+error[E0367]: `Ping` has no values: building one always needs a value of `Ping` first
+  --> no_values.ck:15:1
+   |
+15 | enum Ping
+   | ^^^^^^^^^ no constructor can build the first value
+   = help: add a constructor that needs no value of `Ping`, such as one with no fields
+
+error[E0367]: `Pong` has no values: building one always needs a value of `Pong` first
+  --> no_values.ck:18:1
+   |
+18 | enum Pong
+   | ^^^^^^^^^ no constructor can build the first value
+   = help: add a constructor that needs no value of `Pong`, such as one with no fields
+
+error[E0367]: `Boxed` has no values: building one always needs a value of `Boxed` first
+  --> no_values.ck:24:1
+   |
+24 | enum Boxed
+   | ^^^^^^^^^^ no constructor can build the first value
+   = help: add a constructor that needs no value of `Boxed`, such as one with no fields
+
+error[E0367]: `Generic` has no values: building one always needs a value of `Generic` first
+  --> no_values.ck:27:1
+   |
+27 | enum Generic a
+   | ^^^^^^^^^^^^^^ no constructor can build the first value
+   = help: add a constructor that needs no value of `Generic`, such as one with no fields
+
+error[E0367]: `Nested` has no values: building one always needs a value of `Nested` first
+  --> no_values.ck:30:1
+   |
+30 | enum Nested a
+   | ^^^^^^^^^^^^^ no constructor can build the first value
+   = help: add a constructor that needs no value of `Nested`, such as one with no fields
+
+error[E0367]: `NeedsEmpty` has no values: building one always needs a value of `NeedsEmpty` first
+  --> no_values.ck:35:1
+   |
+35 | enum NeedsEmpty
+   | ^^^^^^^^^^^^^^^ no constructor can build the first value
+   = help: add a constructor that needs no value of `NeedsEmpty`, such as one with no fields
+
+no_values.ck: 10 errors, 0 warnings

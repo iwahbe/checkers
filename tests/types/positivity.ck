@@ -8,6 +8,7 @@ enum Good
     Node kids : kids~List Good
 
 enum Fine
+    Stop
     Fn f : f~(Nat -> Fine)
 
 # To the left of two `->`s is still to the left of an `->` (D182).

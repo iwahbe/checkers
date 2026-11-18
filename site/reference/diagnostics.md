@@ -123,6 +123,7 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0364` | an instance missing one of the class's functions |
 | `E0365` | an instance member with other parameters than the class's |
 | `E0366` | `main`'s signature isn't `args~List String, sys~System, code~ExitCode` |
+| `E0367` | a recursive type has no values: every constructor needs a value of the type |
 
 ## Usage: resources and `ghost`
 
