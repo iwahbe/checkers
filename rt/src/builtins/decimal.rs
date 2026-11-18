@@ -14,4 +14,4 @@ builtin!(ckb_decimal_render, |a| match obj(a[0]) {
     _ => bug("expected a Decimal"),
 });
 
-builtin!(ckb_decimal_of_int, |a| new_obj(Obj::Decimal(Decimal::new(num_of(a[0]).big(), 0))));
+builtin!(ckb_decimal_of_int, |a| new_obj(Obj::Decimal(Decimal::new(num_of(a[0]).big(), 0.into()))));
