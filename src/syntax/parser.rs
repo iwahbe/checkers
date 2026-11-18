@@ -1277,6 +1277,11 @@ impl Parser {
     }
 
     fn starts_atom(&self) -> bool {
+        self.starts_simple() || matches!(self.peek(), Tok::Kw(Kw::Par) | Tok::Neg)
+    }
+
+    /// At a token that starts both an atom and an atomic pattern.
+    fn starts_simple(&self) -> bool {
         matches!(
             self.peek(),
             Tok::LName(_)
@@ -1289,9 +1294,17 @@ impl Parser {
                 | Tok::LParen
                 | Tok::LBracket
                 | Tok::Error
-                | Tok::Kw(Kw::Par)
-                | Tok::Neg
         )
+    }
+
+    /// `item`s separated by commas, at least one, added to `items`.
+    fn commas<T>(&mut self, items: &mut Vec<T>, mut item: impl FnMut(&mut Self) -> PResult<T>) -> PResult<()> {
+        loop {
+            items.push(item(self)?);
+            if !self.eat(&Tok::Comma) {
+                return Ok(());
+            }
+        }
     }
 
     fn app(&mut self) -> PResult<Expr> {
@@ -1392,12 +1405,7 @@ impl Parser {
                 self.bump();
                 let mut items = Vec::new();
                 if !self.at(&Tok::RBracket) {
-                    loop {
-                        items.push(self.expr()?);
-                        if !self.eat(&Tok::Comma) {
-                            break;
-                        }
-                    }
+                    self.commas(&mut items, Self::expr)?;
                 }
                 let end = self.expect(Tok::RBracket, "`,` or `]`")?.span;
                 return Ok(Expr { kind: ExprKind::List(items), span: start.to(end) });
@@ -1473,12 +1481,7 @@ impl Parser {
         }
         if self.eat(&Tok::Comma) {
             let mut items = vec![first];
-            loop {
-                items.push(self.expr()?);
-                if !self.eat(&Tok::Comma) {
-                    break;
-                }
-            }
+            self.commas(&mut items, Self::expr)?;
             let end = self.expect(Tok::RParen, "`,` or `)`")?.span;
             return Ok(Expr { kind: ExprKind::Tuple(items), span: start.to(end) });
         }
@@ -1550,19 +1553,7 @@ impl Parser {
         if matches!(self.peek(), Tok::Op(Op::Sub) | Tok::Neg) {
             return matches!(self.peek_at(1), Tok::Int(_));
         }
-        matches!(
-            self.peek(),
-            Tok::LName(_)
-                | Tok::UName(_)
-                | Tok::Int(_)
-                | Tok::Byte(_)
-                | Tok::Char(_)
-                | Tok::Str(_)
-                | Tok::Bytes(_)
-                | Tok::LParen
-                | Tok::LBracket
-                | Tok::Error
-        )
+        self.starts_simple()
     }
 
     fn cpat(&mut self) -> PResult<Pattern> {
@@ -1662,12 +1653,7 @@ impl Parser {
                 let first = self.pattern()?;
                 if self.eat(&Tok::Comma) {
                     let mut items = vec![first];
-                    loop {
-                        items.push(self.pattern()?);
-                        if !self.eat(&Tok::Comma) {
-                            break;
-                        }
-                    }
+                    self.commas(&mut items, Self::pattern)?;
                     let end = self.expect(Tok::RParen, "`,` or `)`")?.span;
                     return Ok(Pattern { kind: PatKind::Tuple(items), span: start.to(end) });
                 }
@@ -1678,12 +1664,7 @@ impl Parser {
                 self.bump();
                 let mut items = Vec::new();
                 if !self.at(&Tok::RBracket) {
-                    loop {
-                        items.push(self.pattern()?);
-                        if !self.eat(&Tok::Comma) {
-                            break;
-                        }
-                    }
+                    self.commas(&mut items, Self::pattern)?;
                 }
                 let end = self.expect(Tok::RBracket, "`,` or `]`")?.span;
                 return Ok(Pattern { kind: PatKind::List(items), span: start.to(end) });

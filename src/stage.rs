@@ -396,7 +396,7 @@ impl<'g> Stager<'g> {
             t
         };
         let done = self.spec_ids.get(&key).is_some_and(|i| self.specs[*i].1.is_some());
-        let mut r = if done || self.active.contains(&key) {
+        let r = if done || self.active.contains(&key) {
             // The same expansion again, inside itself (recursion on runtime
             // values): call the function it becomes (D64).
             self.wanted.insert(key.clone());
@@ -435,22 +435,28 @@ impl<'g> Stager<'g> {
             self.active.pop();
             r
         };
-        if spine.len() > ar {
-            // Apply the rest to the result, then stage that (a lambda reduces).
-            let mut out = r.tm();
-            for (e, (_, i, m)) in ents[ar..].iter().zip(&spine[ar..]) {
-                let a = match e {
-                    Ent::Stat(s) => s.clone(),
-                    Ent::Dyn(k) => Tm::Var(l - 1 - k),
-                    Ent::Ty(s, at) => shift(s, l - at, 0),
-                };
-                out = Tm::App(Rc::new(out), Rc::new(a), *i, *m);
-            }
-            let ident: Vec<Ent> = (0..l).map(Ent::Dyn).collect();
-            r = self.pe(&out, &ident, l)?;
-        }
+        let r = self.apply_rest(r, &ents, spine, ar, l)?;
         self.depth -= 1;
         Ok(wrap_lets(r, lets))
+    }
+
+    /// `r` applied to the arguments after the first `n`, then staged (a
+    /// lambda reduces).
+    fn apply_rest(&mut self, r: R, ents: &[Ent], spine: &[(Rc<Tm>, crate::core::Icit, Mult)], n: usize, l: usize) -> Res<R> {
+        if spine.len() <= n {
+            return Ok(r);
+        }
+        let mut out = r.tm();
+        for (e, (_, i, m)) in ents[n..].iter().zip(&spine[n..]) {
+            let a = match e {
+                Ent::Stat(s) => s.clone(),
+                Ent::Dyn(k) => Tm::Var(l - 1 - k),
+                Ent::Ty(s, at) => shift(s, l - at, 0),
+            };
+            out = Tm::App(Rc::new(out), Rc::new(a), *i, *m);
+        }
+        let ident: Vec<Ent> = (0..l).map(Ent::Dyn).collect();
+        self.pe(&out, &ident, l)
     }
 
     fn spec_id(&mut self, key: &str, name: &str) -> usize {
@@ -476,20 +482,8 @@ impl<'g> Stager<'g> {
         let (ents, lets, l) = self.bind_args(spine, env, lvl, &[], "a function", &names)?;
         let mut benv = outer;
         benv.extend(ents[..n].iter().cloned());
-        let mut r = self.pe(&body, &benv, l)?;
-        if spine.len() > n {
-            let mut out = r.tm();
-            for (e, (_, i, m)) in ents[n..].iter().zip(&spine[n..]) {
-                let a = match e {
-                    Ent::Stat(s) => s.clone(),
-                    Ent::Dyn(k) => Tm::Var(l - 1 - k),
-                    Ent::Ty(s, at) => shift(s, l - at, 0),
-                };
-                out = Tm::App(Rc::new(out), Rc::new(a), *i, *m);
-            }
-            let ident: Vec<Ent> = (0..l).map(Ent::Dyn).collect();
-            r = self.pe(&out, &ident, l)?;
-        }
+        let r = self.pe(&body, &benv, l)?;
+        let r = self.apply_rest(r, &ents, spine, n, l)?;
         Ok(wrap_lets(r, lets))
     }
 

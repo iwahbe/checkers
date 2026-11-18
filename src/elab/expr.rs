@@ -844,13 +844,7 @@ impl Elab {
     /// A call of a function with `comptime` parameters (D59): it must be
     /// complete, and each such argument known at compile time.
     fn check_comptime_call(&mut self, cx: &Cx, t: &Tm, args: &[&Expr], span: Span) -> bool {
-        let mut spine = Vec::new();
-        let mut h = t;
-        while let Tm::App(f, a, _, _) = h {
-            spine.push(a.clone());
-            h = f;
-        }
-        spine.reverse();
+        let (h, spine) = t.spine();
         let Tm::Def(d) = h else { return true };
         let ct = self.g.defs[d.0 as usize].comptime.clone();
         if ct.is_empty() {
@@ -889,13 +883,8 @@ impl Elab {
 
     /// Preconditions of a call and invariants of a constructor application (§7.1).
     fn call_obligations(&mut self, cx: &Cx, t: &Tm, span: Span, head_span: Span) {
-        let mut args = Vec::new();
-        let mut h = t;
-        while let Tm::App(f, a, _, _) = h {
-            args.push(a.clone());
-            h = f;
-        }
-        args.reverse();
+        let (h, args) = t.spine();
+        let args: Vec<Rc<Tm>> = args.into_iter().cloned().collect();
         match h {
             Tm::Def(d) => {
                 // Only what is needed: most calls have no measure to compare
@@ -1205,20 +1194,11 @@ impl Elab {
         let (inner, extra) = self.forall_lemma_args(cx, e);
         let e = inner;
         let (t, ty) = self.infer(cx, e);
-        let mut h = &t;
-        while let Tm::App(f, ..) = h {
-            h = f;
-        }
+        let h = t.head();
         if let Tm::Def(d) = h {
             if let Some(spec) = self.specs.get(d).cloned() {
                 if let Some(ens) = &spec.ensures {
-                    let mut args = Vec::new();
-                    let mut x = &t;
-                    while let Tm::App(f, a, _, _) = x {
-                        args.push(a.clone());
-                        x = f;
-                    }
-                    args.reverse();
+                    let args = t.spine().1;
                     if args.len() < spec.n_binders {
                         let name = self.g.defs[d.0 as usize].name.to_string();
                         self.err(

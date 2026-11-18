@@ -432,6 +432,21 @@ impl Elab {
         DefId(self.g.defs.len() as u32 - 1)
     }
 
+    /// A new type: an `enum`'s or a `record`'s, its constructors to come.
+    fn new_ty(&mut self, name: &Ident, params: &[ast::Param], is_record: bool, is_abstract: bool) -> TyId {
+        self.g.tys.push(TyInfo {
+            name: Rc::from(name.name.as_str()),
+            module: Rc::from(self.cur.as_str()),
+            params: Vec::new(),
+            ctors: Vec::new(),
+            is_record,
+            is_abstract,
+            positive: params.iter().map(|p| p.polarity == Some(ast::Polarity::Pos)).collect(),
+            negative: params.iter().map(|p| p.polarity == Some(ast::Polarity::Neg)).collect(),
+        });
+        TyId(self.g.tys.len() as u32 - 1)
+    }
+
     /// Allocate ids for every declaration; returns one entry per decl.
     fn register(&mut self, m: &ast::Module) -> Vec<Option<Sym>> {
         let mut ids = Vec::new();
@@ -448,18 +463,8 @@ impl Elab {
                     Some(Sym::Univ)
                 }
                 DeclKind::Enum { name, params, ctors, .. } => {
-                    let tid = TyId(self.g.tys.len() as u32);
                     let abstract_ = d.export == Export::Abstract;
-                    self.g.tys.push(TyInfo {
-                        name: Rc::from(name.name.as_str()),
-                        module: Rc::from(self.cur.as_str()),
-                        params: Vec::new(),
-                        ctors: Vec::new(),
-                        is_record: false,
-                        is_abstract: abstract_,
-                        positive: params.iter().map(|p| p.polarity == Some(ast::Polarity::Pos)).collect(),
-                        negative: params.iter().map(|p| p.polarity == Some(ast::Polarity::Neg)).collect(),
-                    });
+                    let tid = self.new_ty(name, params, false, abstract_);
                     self.declare(name, true, Sym::Ty(tid), exported);
                     self.index_header(index::Target::Ty(tid), name.span, d);
                     for (tag, c) in ctors.iter().enumerate() {
@@ -478,18 +483,8 @@ impl Elab {
                     Some(Sym::Ty(tid))
                 }
                 DeclKind::Record { name, params, .. } => {
-                    let tid = TyId(self.g.tys.len() as u32);
                     let abstract_ = d.export == Export::Abstract;
-                    self.g.tys.push(TyInfo {
-                        name: Rc::from(name.name.as_str()),
-                        module: Rc::from(self.cur.as_str()),
-                        params: Vec::new(),
-                        ctors: Vec::new(),
-                        is_record: true,
-                        is_abstract: abstract_,
-                        positive: params.iter().map(|p| p.polarity == Some(ast::Polarity::Pos)).collect(),
-                        negative: params.iter().map(|p| p.polarity == Some(ast::Polarity::Neg)).collect(),
-                    });
+                    let tid = self.new_ty(name, params, true, abstract_);
                     self.declare(name, true, Sym::Ty(tid), exported);
                     let cid = ConId(self.g.cons.len() as u32);
                     self.g.cons.push(ConInfo { name: Rc::from(name.name.as_str()), ty: tid, tag: 0, fields: Vec::new() });
@@ -792,10 +787,7 @@ impl Elab {
             let mut pty_terms = Vec::new();
             for (i, pt) in ptys.iter().enumerate() {
                 let z = crate::core::zonk_metas(&self.g, i, pt);
-                let mut h = &z;
-                while let Tm::App(f, ..) = h {
-                    h = f;
-                }
+                let h = z.head();
                 if matches!(h, Tm::Meta(_)) {
                     let pv = crate::core::eval(&self.g, &Rc::new(cx.env[..i].to_vec()), pt);
                     let _ = crate::core::unify(&self.g, i, &pv, &Val::Univ(0));
@@ -1160,7 +1152,7 @@ impl Elab {
             // A type constructor parameter applied (M25) promises nothing
             // about its argument.
             Tm::App(..) => {
-                let (h, args) = spine(t);
+                let (h, args) = t.spine();
                 self.var_positive(h, idx, pos) && args.iter().all(|a| !occurs_var(a, idx))
             }
             // A type computed by a `match` or an `if` may be any of its arms.
@@ -1191,7 +1183,7 @@ impl Elab {
             }
             Tm::TupleTy(ts) => ts.iter().all(|a| self.var_negative(a, idx, pos)),
             Tm::App(..) => {
-                let (h, args) = spine(t);
+                let (h, args) = t.spine();
                 self.var_negative(h, idx, pos) && args.iter().all(|a| !occurs_var(a, idx))
             }
             Tm::Case(s, c) => !occurs_var(s, idx) && case_arms(c).all(|(n, b)| self.var_negative(b, idx + n, pos)),
@@ -1206,7 +1198,7 @@ impl Elab {
         fn go(t: &Tm, me: TyId, depth: usize, params: &[(Name, Tm)], extra: usize) -> Option<String> {
             match t {
                 Tm::App(..) => {
-                    let (h, args) = spine(t);
+                    let (h, args) = t.spine();
                     if let Tm::Var(i) = h {
                         if args.iter().any(|a| occurs_ty(a, me)) {
                             // Its level among the type's parameters, if it is one.
@@ -1263,7 +1255,7 @@ impl Elab {
             }
             Tm::TupleTy(ts) => ts.iter().all(|a| self.ty_positive(a, me, pos)),
             Tm::App(..) => {
-                let (h, args) = spine(t);
+                let (h, args) = t.spine();
                 self.ty_positive(h, me, pos) && args.iter().all(|a| !occurs_ty(a, me))
             }
             // A type computed by a `match` or an `if` may be any of its arms.
@@ -1943,16 +1935,6 @@ fn head_meta(t: &Tm) -> Option<MetaId> {
 fn case_arms(c: &CaseTm) -> impl Iterator<Item = (usize, &Tm)> {
     let branches = c.branches.iter().map(|(_, n, b)| (*n, b));
     branches.chain(c.lits.iter().map(|(_, b)| (0, b))).chain(c.default.iter().map(|b| (0, b)))
-}
-
-fn spine(mut t: &Tm) -> (&Tm, Vec<&Tm>) {
-    let mut args = Vec::new();
-    while let Tm::App(f, a, ..) = t {
-        args.push(&**a);
-        t = f;
-    }
-    args.reverse();
-    (t, args)
 }
 
 /// A class function's field type with its `own` parameters marked: the

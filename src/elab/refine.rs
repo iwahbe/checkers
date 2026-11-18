@@ -515,13 +515,7 @@ impl Elab {
     /// postconditions, with the given arguments put in. Preconditions about
     /// given arguments alone are checked at the call (`call_obligations`).
     pub fn refined_fn_type(&mut self, cx: &Cx, t: &Tm, ty: Val) -> Val {
-        let mut args = Vec::new();
-        let mut h = t;
-        while let Tm::App(f, a, _, _) = h {
-            args.push((**a).clone());
-            h = f;
-        }
-        args.reverse();
+        let (h, args) = t.spine_cloned();
         let Tm::Def(d) = h else { return ty };
         let Some(spec) = self.specs.get(d).cloned() else { return ty };
         let n = spec.n_binders;

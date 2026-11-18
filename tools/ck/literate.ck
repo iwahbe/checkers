@@ -25,6 +25,7 @@ import std.list
 import ck.syntax (Tok, Line, Name, Upper, Number, Literal, Punct, Comment)
 import ck.syntax
 import ck.jsonrpc as rpc
+import ck.text (as_string)
 
 # ── Bytes ────────────────────────────────────────────────────────────────────
 
@@ -54,11 +55,6 @@ export partial fn trim b -> r : b~Bytes, r~Bytes
 
 export partial fn blank b : b~Bytes
     lead b 0 == len b
-
-fn as_string b -> s : b~Bytes, s~String
-    match string.from_utf8 b
-        Some s -> s
-        None   -> ""
 
 # The text's lines, without their line breaks.
 export partial fn lines_of b -> r : b~Bytes, r~List Bytes

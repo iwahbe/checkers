@@ -185,6 +185,11 @@ fn complete_line(l: &str) -> String {
 }
 
 fn compare(root: &Path, out_path: &Path, actual: &str, update: bool, failures: &mut Vec<String>) {
+    compare_as(root, out_path, out_path, actual, update, failures);
+}
+
+/// `compare`, the test named by another of its files (`named`) in a failure.
+fn compare_as(root: &Path, named: &Path, out_path: &Path, actual: &str, update: bool, failures: &mut Vec<String>) {
     let expected = fs::read_to_string(out_path).unwrap_or_default();
     if actual != expected {
         if update {
@@ -193,7 +198,7 @@ fn compare(root: &Path, out_path: &Path, actual: &str, update: bool, failures: &
         } else {
             failures.push(format!(
                 "── {} ──\n--- expected\n{expected}\n--- actual\n{actual}",
-                out_path.strip_prefix(root).unwrap().display()
+                named.strip_prefix(root).unwrap().display()
             ));
         }
     }
@@ -441,20 +446,7 @@ fn golden() {
     for mode in ["parse", "check", "types", "stage"] {
         for path in ck_files(&root.join("tests").join(mode)) {
             count += 1;
-            let actual = run(&path, mode);
-            let out_path = path.with_extension("out");
-            let expected = fs::read_to_string(&out_path).unwrap_or_default();
-            if actual != expected {
-                if update {
-                    fs::write(&out_path, &actual).unwrap();
-                    println!("updated {}", out_path.strip_prefix(root).unwrap().display());
-                } else {
-                    failures.push(format!(
-                        "── {} ──\n--- expected\n{expected}\n--- actual\n{actual}",
-                        path.strip_prefix(root).unwrap().display()
-                    ));
-                }
-            }
+            compare_as(root, &path, &path.with_extension("out"), &run(&path, mode), update, &mut failures);
         }
     }
 
@@ -508,36 +500,14 @@ fn golden() {
         let actual = format!("{}-- exit {}\n", String::from_utf8_lossy(&out.stdout), out.status.code().unwrap_or(-1))
             .replace(&root_text, "$ROOT")
             + &String::from_utf8_lossy(&out.stderr);
-        let out_path = path.with_extension("out");
-        let expected = fs::read_to_string(&out_path).unwrap_or_default();
-        if actual != expected {
-            if update {
-                fs::write(&out_path, &actual).unwrap();
-                println!("updated {}", out_path.strip_prefix(root).unwrap().display());
-            } else {
-                failures.push(format!("── {rel} ──\n--- expected\n{expected}\n--- actual\n{actual}"));
-            }
-        }
+        compare_as(root, &path, &path.with_extension("out"), &actual, update, &mut failures);
     }
 
     let run_dir = root.join("tests").join("run");
     std::env::set_current_dir(&run_dir).unwrap();
     for path in files_with(&run_dir, "args") {
         count += 1;
-        let actual = run_native(&path, 1);
-        let out_path = path.with_extension("out");
-        let expected = fs::read_to_string(&out_path).unwrap_or_default();
-        if actual != expected {
-            if update {
-                fs::write(&out_path, &actual).unwrap();
-                println!("updated {}", out_path.strip_prefix(root).unwrap().display());
-            } else {
-                failures.push(format!(
-                    "── {} ──\n--- expected\n{expected}\n--- actual\n{actual}",
-                    path.strip_prefix(root).unwrap().display()
-                ));
-            }
-        }
+        compare_as(root, &path, &path.with_extension("out"), &run_native(&path, 1), update, &mut failures);
     }
 
     // Stress tests: every run on many threads must give the same result.
@@ -546,8 +516,6 @@ fn golden() {
     std::env::set_current_dir(&stress_dir).unwrap();
     for path in files_with(&stress_dir, "args") {
         count += 1;
-        let out_path = path.with_extension("out");
-        let expected = fs::read_to_string(&out_path).unwrap_or_default();
         let mut seen: Vec<String> = Vec::new();
         for _ in 0..runs.max(1) {
             let actual = sorted_stdout(&run_native(&path, 8));
@@ -555,16 +523,11 @@ fn golden() {
                 seen.push(actual);
             }
         }
-        let name = path.strip_prefix(root).unwrap().display().to_string();
         if seen.len() > 1 {
+            let name = path.strip_prefix(root).unwrap().display();
             failures.push(format!("── {name}: {} different results in {runs} runs ──\n{}", seen.len(), seen.join("--- or\n")));
-        } else if seen[0] != expected {
-            if update {
-                fs::write(&out_path, &seen[0]).unwrap();
-                println!("updated {}", out_path.strip_prefix(root).unwrap().display());
-            } else {
-                failures.push(format!("── {name} ──\n--- expected\n{expected}\n--- actual\n{}", seen[0]));
-            }
+        } else {
+            compare_as(root, &path, &path.with_extension("out"), &seen[0], update, &mut failures);
         }
     }
     std::env::set_current_dir(root).unwrap();

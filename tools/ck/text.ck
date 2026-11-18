@@ -1,11 +1,31 @@
 # text.ck — positions in a document for the language server (SPEC §15.5):
-# lines, columns in bytes or UTF-16 code units, and `file:` URIs.
+# lines, columns in bytes or UTF-16 code units, and `file:` URIs. And what
+# the tools ask of strings and paths.
 
 module ck.text
 
 import std.string
 import std.bytes
 import std.list
+
+export fn ends_with s suffix : s~String, suffix~String
+    let b = string.bytes s
+    let x = string.bytes suffix
+    len x <= len b and bytes.matches_at b (len b - len x) x
+
+# A file or directory whose name starts with `.`.
+export fn hidden name : name~String
+    let b = string.bytes name
+    len b > 1 and b[0] == '.'
+
+export fn join_path dir name -> p : dir~String, name~String, p~String
+    if dir == "." then name else dir ++ "/" ++ name
+
+# The text of `b`; none if it is not UTF-8.
+export fn as_string b -> s : b~Bytes, s~String
+    match string.from_utf8 b
+        Some s -> s
+        None   -> ""
 
 # The byte offset where line `line` (from 0) starts, if the text has it.
 export partial fn line_start text line -> r : text~Bytes, line~Nat, r~Option Nat

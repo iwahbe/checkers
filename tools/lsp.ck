@@ -20,6 +20,7 @@ import std.bytes
 import std.list
 import ck.jsonrpc (Incoming, Message, Malformed, Closed)
 import ck.jsonrpc as rpc
+import ck.text (as_string)
 import ck.text as tx
 import ck.format as formatter
 import ck.syntax
@@ -374,11 +375,6 @@ partial fn with_range t d utf8 -> j : t~Bytes, d~Diag, utf8~Bool, j~Json
 # The overlay: each open document's text, by path.
 partial fn overlay docs -> j : docs~List Doc, j~Json
     rpc.obj (list.map (\d -> (d.path, Str (as_string d.text))) docs)
-
-fn as_string b -> s : b~Bytes, s~String
-    match string.from_utf8 b
-        Some s -> s
-        None   -> ""
 
 partial fn feed input o -> r : input~Bytes, o~File, r~()
     let (_, o) = files.write_bytes input o

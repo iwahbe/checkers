@@ -185,6 +185,35 @@ impl Tm {
             ),
         }
     }
+
+    /// What an application applies: `f` of `f a b`. A term that is not an
+    /// application is its own head.
+    pub fn head(&self) -> &Tm {
+        let mut h = self;
+        while let Tm::App(f, ..) = h {
+            h = f;
+        }
+        h
+    }
+
+    /// An application's head and its arguments, in order: `f` and `[a, b]`
+    /// of `f a b`.
+    pub fn spine(&self) -> (&Tm, Vec<&Rc<Tm>>) {
+        let mut h = self;
+        let mut args = Vec::new();
+        while let Tm::App(f, a, ..) = h {
+            args.push(a);
+            h = f;
+        }
+        args.reverse();
+        (h, args)
+    }
+
+    /// `spine`, with the arguments as terms of their own.
+    pub fn spine_cloned(&self) -> (&Tm, Vec<Tm>) {
+        let (h, args) = self.spine();
+        (h, args.into_iter().map(|a| (**a).clone()).collect())
+    }
 }
 
 pub type Env = Rc<Vec<Val>>;
@@ -1484,10 +1513,7 @@ pub fn zonk_metas(g: &Globals, l: usize, t: &Tm) -> Tm {
     // subterms are shared, not copied (this was quadratic: a walk to find a
     // solved meta at every node).
     fn go(g: &Globals, l: usize, t: &Tm) -> Option<Tm> {
-        let mut h = t;
-        while let Tm::App(f, ..) = h {
-            h = f;
-        }
+        let h = t.head();
         if let Tm::Meta(m) = h {
             if g.meta(*m).is_some() {
                 let env = Rc::new((0..l).map(Val::var).collect::<Vec<_>>());

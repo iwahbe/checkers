@@ -10,6 +10,7 @@ import std.string
 import std.bytes
 import ck.format as formatter
 import ck.syntax (SyntaxError)
+import ck.text (ends_with, hidden, join_path)
 
 export let USAGE = string.concat [
     "usage: checkers fmt [--check] [PATH]...\n",
@@ -17,18 +18,6 @@ export let USAGE = string.concat [
     "Formats each .ck file under each PATH (default: the current directory) in place.\n",
     "--check changes nothing: it lists the files that would change, and fails if\n",
     "there are any. `-` formats standard input to standard output."]
-
-fn ends_with s suffix : s~String, suffix~String
-    let b = string.bytes s
-    let x = string.bytes suffix
-    len x <= len b and bytes.matches_at b (len b - len x) x
-
-fn hidden name : name~String
-    let b = string.bytes name
-    len b > 1 and b[0] == '.'
-
-fn join_path dir name -> p : dir~String, name~String, p~String
-    if dir == "." then name else dir ++ "/" ++ name
 
 # The `.ck` files under `path`: itself, if it names one.
 partial fn ck_files path fs -> r : path~String, fs~Fs, r~List String
