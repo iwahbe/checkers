@@ -151,13 +151,13 @@ pub fn err(v: W) -> W {
 
 /// A list of owned words.
 pub fn list(items: Vec<W>) -> W {
-    let k = &prog().known;
-    let (nil, cons) = (known_con(k.nil), known_con(k.cons));
-    let mut l = nullary(nil);
-    for v in items.into_iter().rev() {
-        l = new_con(cons, &[v, l]);
-    }
-    l
+    list_onto(items, nullary(known_con(prog().known.nil)))
+}
+
+/// Owned words in front of the owned list `tail`, which is shared, not copied.
+pub fn list_onto(items: Vec<W>, tail: W) -> W {
+    let cons = known_con(prog().known.cons);
+    items.into_iter().rev().fold(tail, |l, v| new_con(cons, &[v, l]))
 }
 
 /// The items of a list (borrowed).

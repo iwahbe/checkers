@@ -173,9 +173,7 @@ pub extern "C" fn ck_concat(a: W, b: W) -> W {
     if crate::array::is_array(a) {
         return crate::array::concat(a, b);
     }
-    let mut items: Vec<W> = list_items(a).into_iter().map(dup).collect();
-    items.extend(list_items(b).into_iter().map(dup));
-    list(items)
+    list_onto(list_items(a).into_iter().map(dup).collect(), dup(b))
 }
 
 #[no_mangle]
