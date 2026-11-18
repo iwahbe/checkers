@@ -192,11 +192,17 @@ pub struct Lowerer<'a, 'g> {
     owner: u32,
 }
 
-/// The arity of code: how many lambdas it starts with.
+/// The most parameters a native function takes: the runtime calls compiled
+/// code through a table with one entry for each arity (`ck_invoke`).
+pub const MAX_ARITY: usize = 64;
+
+/// The arity of code: how many lambdas it starts with, up to `MAX_ARITY`.
+/// Further lambdas stay in the body, so a wider function is curried: it
+/// returns a closure that takes the next parameters.
 fn lams(ir: &Ir) -> (usize, &Ir) {
     let mut n = 0;
     let mut b = ir;
-    while let Ir::Lam(_, x) = b {
+    while let (true, Ir::Lam(_, x)) = (n < MAX_ARITY, b) {
         n += 1;
         b = x;
     }
@@ -365,6 +371,16 @@ impl Lowerer<'_, '_> {
         f
     }
 
+    /// A constructor with more than `MAX_ARITY` arguments as a lambda chain,
+    /// which `lams` curries.
+    fn wide_con_fn(&self, c: ConId) -> Ir {
+        let ci = &self.g.cons[c.0 as usize];
+        let np = self.g.arity_ty(ci.ty);
+        let n = np + ci.fields.len();
+        let fields = ci.fields.iter().enumerate().map(|(k, f)| Arc::new(if f.1 == Mult::Zero { Ir::Erased } else { Ir::Var(n - 1 - np - k) })).collect();
+        (0..n).fold(Ir::Con(c, fields), |body, _| Ir::Lam(Some(DefId(self.owner)), Arc::new(body)))
+    }
+
     /// An atom for a borrowed position: literals stay; anything else is
     /// bound to a variable first (`binds`, outermost first).
     fn atom(&mut self, e: E, binds: &mut Vec<(V, E)>) -> E {
@@ -406,8 +422,11 @@ impl Lowerer<'_, '_> {
             Ir::Fail(m) => E::Fail(m),
             Ir::Lam(..) => self.lambda(ir, ctx),
             Ir::ConFn(c) => {
-                if self.g.arity_con(*c) == 0 {
+                let arity = self.g.arity_con(*c);
+                if arity == 0 {
                     E::Con { con: c.0, fields: Vec::new(), reuse: None }
+                } else if arity > MAX_ARITY {
+                    self.lambda(&self.wide_con_fn(*c), ctx)
                 } else {
                     self.con_wrap(c.0);
                     E::ConFn(c.0)

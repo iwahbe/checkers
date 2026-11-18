@@ -56,10 +56,6 @@ fn flags() -> MemFlagsData {
     MemFlagsData::trusted()
 }
 
-/// The most arguments the runtime can call compiled code with
-/// (`ck_invoke`).
-pub const MAX_INVOKE: usize = 64;
-
 pub struct Gen<'p, M: Module> {
     pub m: M,
     /// The program, which may grow between `define_new`s.
@@ -139,7 +135,7 @@ impl<'p, M: Module> Gen<'p, M> {
             }
         }
         let funcs = Vec::new();
-        let max_arity = MAX_INVOKE;
+        let max_arity = MAX_ARITY;
         let mut is = Signature::new(call_conv);
         for _ in 0..4 {
             is.params.push(AbiParam::new(I64));
@@ -304,9 +300,7 @@ impl<'p, M: Module> Gen<'p, M> {
         let mut ctx = self.m.make_context();
         for i in self.funcs.len()..self.p.funcs.len() {
             let n = arity_of(&self.p.funcs[i]);
-            if n > MAX_INVOKE {
-                panic!("`{}` takes {n} arguments; native code supports at most {MAX_INVOKE}", self.p.funcs[i].name);
-            }
+            assert!(n <= MAX_ARITY, "`{}` takes {n} arguments: lowering curries past {MAX_ARITY}", self.p.funcs[i].name);
             let id = self.m.declare_function(&format!("ckf_{i}"), Linkage::Local, &tail_sig(n)).expect("declare a function");
             self.funcs.push(id);
         }
