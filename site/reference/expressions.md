@@ -64,7 +64,7 @@ From highest precedence to lowest:
 | `->` | right | function type, in a type |
 | `$` | right | application with the lowest precedence: `f $ g x` is `f (g x)` |
 
-**Arithmetic** is on numbers, with the types and obligations given in [Types](types.md#numbers): `a - b` on `Nat`s needs `a >= b`, `/` and `%` need a non-zero divisor. On other types the arithmetic operators and comparisons work through classes ([Classes](classes.md#operators)); without an instance they are E0210.
+**Arithmetic** is on numbers, with the types and obligations given in [Types](types.md#numbers): `a - b` on `Nat`s needs `a >= b` (that section also shows a difference that may be negative), `/` and `%` need a non-zero divisor. On other types the arithmetic operators and comparisons work through classes ([Classes](classes.md#operators)); without an instance they are E0210.
 
 **`++`** joins two `String`s, two `Array`s (and `Bytes`) or two `List`s of the same type.
 

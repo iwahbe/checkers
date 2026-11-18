@@ -4,7 +4,7 @@ error[E0450]: cannot prove that this `Nat` subtraction stays at or above zero
 53 |     r.lo - r.hi
    |     ^^^^^^^^^^^ `-` on `Nat` needs the left side to be at least the right
    = note: counterexample: r = Range 0 1
-   = help: check it first (`if a >= b then a - b else …`), or use `Int`
+   = help: check it first (`if a >= b then a - b else …`), or write `a + (-b)` for a signed result
 
 error[E0450]: cannot prove `lo <= y`, the postcondition of `bad_clamp`
   --> prove.ck:55:59

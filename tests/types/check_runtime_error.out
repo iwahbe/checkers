@@ -4,7 +4,7 @@ error[E0450]: cannot prove that this `Nat` subtraction stays at or above zero
 8 |     n - 3
   |     ^^^^^ `-` on `Nat` needs the left side to be at least the right
   = note: counterexample: n = 0
-  = help: check it first (`if a >= b then a - b else …`), or use `Int`
+  = help: check it first (`if a >= b then a - b else …`), or write `a + (-b)` for a signed result
 
 error[E0261]: this `check` stopped with a runtime error
   --> check_runtime_error.ck:10:7
