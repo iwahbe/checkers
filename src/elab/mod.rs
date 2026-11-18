@@ -542,6 +542,10 @@ pub struct Elab {
     pub pending_insts: Vec<classes::PendingInst>,
     /// This module's types and their numbers of parameters, for instances' kinds (M25).
     pub local_ty_params: HashMap<String, usize>,
+    /// This module's other names, and whether each is a type alias, for
+    /// instances' heads: they are read before the module's declarations are
+    /// registered.
+    pub local_names: HashMap<String, bool>,
     /// Where each declaration of the module being checked came from.
     pub decl_origin: Vec<classes::Origin>,
     /// Classes' functions: their postconditions are the instances' to prove.
@@ -673,6 +677,7 @@ impl Elab {
             part_reported: HashSet::new(),
             pending_insts: Vec::new(),
             local_ty_params: HashMap::new(),
+            local_names: HashMap::new(),
             decl_origin: Vec::new(),
             class_methods: HashSet::new(),
             class_lemmas: HashSet::new(),
@@ -2191,17 +2196,21 @@ impl Elab {
             if inside(&o.module, o.span) {
                 return false;
             }
-            let lvl = o.ctx.len();
-            let bad = |v: &Val| touches(&quote(g, lvl, v), g, &defs, &tys);
+            // `touches` ignores variables, so any level above them all will
+            // do. Not the context's length: a meta left unsolved in a header
+            // is applied to every binder then in scope, the result's too,
+            // which an obligation's context leaves out.
+            let bad = |v: &Val| touches(&quote(g, ANY_LEVEL, v), g, &defs, &tys);
             !(bad(&o.goal)
                 || o.facts.iter().any(bad)
                 || o.only_if_nat.as_ref().is_some_and(bad)
-                || o.ctx.iter().enumerate().any(|(i, l)| {
-                    touches(&quote(g, i, &l.ty), g, &defs, &tys) || l.def.as_ref().is_some_and(|v| touches(&quote(g, i, v), g, &defs, &tys))
-                }))
+                || o.ctx.iter().any(|l| bad(&l.ty) || l.def.as_ref().is_some_and(bad)))
         });
     }
 }
+
+/// A level above every variable of a value, to quote it for `touches`.
+const ANY_LEVEL: usize = usize::MAX / 2;
 
 /// Whether `t` mentions an error, one of `defs`, or one of `tys` or their constructors.
 fn touches(t: &Tm, g: &Globals, defs: &HashSet<DefId>, tys: &HashSet<TyId>) -> bool {
