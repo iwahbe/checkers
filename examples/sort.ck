@@ -4,10 +4,10 @@
 #   sort ["b", "a"] == ["a", "b"]
 #
 # The postcondition says the result is sorted and is a permutation of the
-# input. It sorts any type with an order (`Ord a`, D136): comparing with
+# input. It sorts any type with an order (`Ord a`): comparing with
 # `le`, and using one of the order's lemmas, `total`, where `x` doesn't come
 # before `y`. Each recursive call may assume its own postcondition
-# (induction, D50), and Z3 does the rest. `examples/resort.ck` uses this
+# (induction), and Z3 does the rest. `examples/resort.ck` uses this
 # module through its exported postconditions and lemma only. (`std.list`
 # has a merge sort.)
 

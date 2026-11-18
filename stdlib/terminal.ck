@@ -30,7 +30,7 @@ export fn write s term -> r : s~String, term~Term, r~Unit
 export fn write_bytes b term -> r : b~Bytes, term~Term, r~Unit
     __builtin
 
-# Standard input, output and error as files (D112). Each call gives a new
+# Standard input, output and error as files. Each call gives a new
 # handle; handles to one stream share its buffer with each other and with
 # the functions above, and closing one closes the handle, not the stream.
 export fn stdin term -> f : term~Term, f~File

@@ -1,4 +1,4 @@
-# bag.ck — finite multisets (D47, D138). The prover sees a `Bag a` as an
+# bag.ck — finite multisets. The prover sees a `Bag a` as an
 # array from values to counts, so facts about permutations need no quantifiers.
 module std.bag
 

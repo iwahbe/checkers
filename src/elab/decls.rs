@@ -1257,7 +1257,7 @@ impl Elab {
                                 self.err(
                                     Diagnostic::error("E0359", format!("`{name}` marks `{mark}{}`, but field `{fname}` has `{}` {wrong}", p.name.name, p.name.name), p.name.span)
                                         .with_label(format!("declared `{mark}` here"))
-                                        .with_help("importers rely on the mark (D16): change the field, or remove the mark"),
+                                        .with_help("importers rely on the mark: change the field, or remove the mark"),
                                 );
                                 break 'ctors;
                             }
@@ -1317,7 +1317,7 @@ impl Elab {
                             Some(h) => {
                                 let hi = &self.g.tys[h.0 as usize];
                                 let help = if hi.is_abstract {
-                                    format!("a recursive type may appear only directly or in a parameter marked `+`; `{}`'s module can mark it `+` if `{}` only holds values of it (D16)", hi.name, hi.name)
+                                    format!("a recursive type may appear only directly or in a parameter marked `+`; `{}`'s module can mark it `+` if `{}` only holds values of it", hi.name, hi.name)
                                 } else {
                                     format!("a recursive type may appear only where it is strictly positive; `{}` uses that parameter to the left of an `->`", hi.name)
                                 };
@@ -1816,7 +1816,7 @@ impl Elab {
                     let help = if what == "a lemma" {
                         "a lemma is never run, so its parameters need no stage; remove `comptime`"
                     } else {
-                        "compile-time code must end (D61): only total functions take `comptime` parameters"
+                        "compile-time code must end: only total functions take `comptime` parameters"
                     };
                     self.err(Diagnostic::error("E0272", format!("{what} can't have `comptime` parameters"), span).with_help(help));
                 } else {

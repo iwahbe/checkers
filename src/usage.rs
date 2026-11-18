@@ -139,7 +139,7 @@ impl U<'_> {
                     span,
                 )
                 .with_help(if ty.starts_with("Future ") {
-                    "join it: a future of a resource is one too, joined exactly once (D156)"
+                    "join it: a future of a resource is one too, joined exactly once"
                 } else {
                     "close it, or pass it on"
                 }),
@@ -161,7 +161,7 @@ impl U<'_> {
                                 span,
                             )
                             .with_note(format!(
-                                "`{name}` is passed to `{short}.new`; a cown's handle can be shared, so nothing would make sure what it holds is closed (D156)"
+                                "`{name}` is passed to `{short}.new`; a cown's handle can be shared, so nothing would make sure what it holds is closed"
                             ))
                             .with_help("keep the resource with one owner, passing it on through calls, `fork` and `join`; a cown may hold the rest of the state")
                         }
@@ -186,7 +186,7 @@ impl U<'_> {
                         .with_note("a closure that uses a resource must be called exactly once: called where it is made, bound with `let` and called once, or passed to a parameter declared `own`")
                         .with_help(format!("pass the closure to an `own` parameter (`f~own (Unit -> a)`), or make `{name}` a parameter of the closure")),
                         None if ty.starts_with("Future ") => {
-                            d.with_help("join it once: a future of a resource is one too, joined exactly once (D156)")
+                            d.with_help("join it once: a future of a resource is one too, joined exactly once")
                         }
                         None => d.with_help("a resource can't be copied: each operation on it gives back the one to use next, `let (x, f) = op f`"),
                     }
@@ -240,7 +240,7 @@ impl U<'_> {
                 format!("`{name}` is `own`, so it may be a resource, which can't be put in {}", self.cown_target(lvl).unwrap_or_default()),
                 span,
             )
-            .with_help("remove `own`: a cown holds only values that aren't resources (D156)"),
+            .with_help("remove `own`: a cown holds only values that aren't resources"),
             _ => Diagnostic::error(
                 "E0401",
                 format!("`{name}` is `own`, so it must be used exactly once, but `{fname}` may use it more than once"),

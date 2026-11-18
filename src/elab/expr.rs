@@ -595,7 +595,7 @@ impl Elab {
                     if !self.in_app_head && !self.g.defs[d.0 as usize].comptime.is_empty() {
                         self.err(
                             Diagnostic::error("E0271", format!("`{n}` is a compile-time function, so it must be called with all its arguments"), span)
-                                .with_help("it is expanded where it is called (D59); wrap the call in a lambda to pass it as a value, e.g. `\\x -> f 2 x`"),
+                                .with_help("it is expanded where it is called; wrap the call in a lambda to pass it as a value, e.g. `\\x -> f 2 x`"),
                         );
                     }
                 }
@@ -863,7 +863,7 @@ impl Elab {
             let Some(arg) = spine.get(b).filter(|_| spine.len() >= arity) else {
                 self.err(
                     Diagnostic::error("E0271", format!("`{name}` is a compile-time function, so it must be called with all its arguments"), span)
-                        .with_help("it is expanded where it is called (D59); wrap the call in a lambda to pass it as a value, e.g. `\\x -> f 2 x`"),
+                        .with_help("it is expanded where it is called; wrap the call in a lambda to pass it as a value, e.g. `\\x -> f 2 x`"),
                 );
                 return false;
             };

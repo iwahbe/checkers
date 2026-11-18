@@ -1,6 +1,5 @@
 # markdown.ck — Markdown to a syntax tree and to HTML: CommonMark 0.31.2
-# (https://spec.commonmark.org/0.31.2/), every example of its spec (D148,
-# D151).
+# (https://spec.commonmark.org/0.31.2/), every example of its spec.
 #
 # A port of commonmark.js (https://github.com/commonmark/commonmark.js), the
 # reference implementation by the spec's author, restated without mutation:

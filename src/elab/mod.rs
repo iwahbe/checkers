@@ -1494,7 +1494,7 @@ impl Elab {
             Diagnostic::error("E0404", format!("this drops a resource of type `{shown}`"), span)
                 .with_label("a resource must be used exactly once")
                 .with_help(if shown.starts_with("Future ") {
-                    "bind it to a name, then join it: a future of a resource is one too (D156)"
+                    "bind it to a name, then join it: a future of a resource is one too"
                 } else {
                     "bind it to a name, then close it or pass it on"
                 }),

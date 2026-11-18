@@ -792,7 +792,7 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
                 for (o, t) in obs[ci].iter().zip(&texts[at..]) {
                     v.proved += 1;
                     let mut what = describe(e, o);
-                    what.push_str(" (guessed, D150)");
+                    what.push_str(" (guessed)");
                     v.ledger.push(LedgerEntry { span: o.span, how: "smt", what, hash: t.as_ref().map(|t| fnv(t)) });
                 }
             }

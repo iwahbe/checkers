@@ -1,4 +1,4 @@
-# proc.ck — running other programs (SPEC §8.1, §8.4, D90, D97, D112).
+# proc.ck — running other programs (SPEC §8.1, §8.4).
 module std.proc
 
 import std.system (Proc)

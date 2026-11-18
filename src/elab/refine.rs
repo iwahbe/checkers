@@ -385,7 +385,7 @@ impl Elab {
                 .with_help(format!("create the cown with the type `{e}`")),
             (Variance::Inv, Via::Ty(t)) if self.g.tys[t.0 as usize].is_abstract => d
                 .with_label(format!("{what} has type `{f}`"))
-                .with_note(format!("`{}`'s parameter has no polarity mark, so `{gf}` and `{ge}` must match exactly (D16)", ty(t)))
+                .with_note(format!("`{}`'s parameter has no polarity mark, so `{gf}` and `{ge}` must match exactly", ty(t)))
                 .with_help(format!("if `{}` only holds values of its parameter, its module can mark it `+`", ty(t))),
             (Variance::Inv, _) => d
                 .with_label(format!("{what} has type `{f}`"))
@@ -401,7 +401,7 @@ impl Elab {
                 .with_help("check the argument inside the function instead, e.g. with an `if`"),
             (Variance::Co, _) => d
                 .with_label(format!("{what} has type `{f}`, so its `{gf}` values aren't known to be `{ge}`"))
-                .with_note("a refinement inside a type is never gained from an existing value: that would need a proof about every element (D71)")
+                .with_note("a refinement inside a type is never gained from an existing value: that would need a proof about every element")
                 .with_help(format!("give the value the type `{e}` where it is built, so that each part is checked there")),
         };
         self.err(d);

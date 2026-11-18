@@ -1,6 +1,6 @@
 # files.ck — the file system. `Fs` is an authority (copied on use); an open
 # `File` is a resource (used exactly once, closed explicitly). SPEC §8.3–8.4.
-# Everything that is a file is a `File` (D112): an open file, a child's pipe
+# Everything that is a file is a `File`: an open file, a child's pipe
 # (`std.proc`), and the standard streams (`std.terminal`).
 module std.files
 

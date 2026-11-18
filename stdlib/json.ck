@@ -121,7 +121,7 @@ fn continues_number b -> r : b~U8, r~Bool
     (b >= '0' and b <= '9') or b == '.' or b == 'e' or b == 'E'
 
 # Scanning a rendered number gives it back, wherever it sits; trusted like
-# the primitives (D56).
+# the primitives.
 lemma scan_number_render n pre post : n~Decimal, pre~Bytes, post~Bytes,
                                       len post == 0 or not (continues_number post[0])
     let src = pre ++ utf8.encode (decimal.render n) ++ post

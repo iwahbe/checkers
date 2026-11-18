@@ -5,7 +5,7 @@
 #
 # Effects go through capabilities (SPEC §8). `fs` and `term` are authority
 # capabilities: they can be used as often as needed and need no threading.
-# Input is read a block at a time, so any size can be counted (D112).
+# Input is read a block at a time, so any size can be counted.
 
 module wc
 

@@ -1,4 +1,4 @@
-# array.ck — functions on arrays (D133). `Array a` is in the prelude, with
+# array.ck — functions on arrays. `Array a` is in the prelude, with
 # `len`, indexing (`xs[i]`), `++` and `==`; arrays of fixed-width numbers
 # are packed.
 module std.array
@@ -40,7 +40,7 @@ export fn map f xs -> r : f~(a -> b), xs~Array a, r~Array b, len r == len xs
     __builtin
 
 # An array of `n` elements, element `i` being `f i`. `f` is called only
-# with `i < n` (D186), so it may index arrays of length `n` unchecked.
+# with `i < n`, so it may index arrays of length `n` unchecked.
 export fn init n f -> r : n~Nat, f~(i~Nat -> a, i < n), r~Array a, len r == n
     __builtin
 
@@ -114,7 +114,7 @@ instance Functor Array
             have to_list_map h xs
             have list.map_comp g h (to_list xs)
 
-# ── Sorting (D138) ───────────────────────────────────────────────────────────
+# ── Sorting ──────────────────────────────────────────────────────────────────
 # Stable, by the merge sort of `std.list`.
 
 # `xs` in order (`Ord`).

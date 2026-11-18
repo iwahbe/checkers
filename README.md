@@ -35,14 +35,14 @@ Types are written only as constraints (`i~Nat, i <= len src`); the compiler prov
 | M5 Well-founded recursion, lexicographic `decreasing` | done: merge sort in [`parallel.ck`](examples/parallel.ck); [`json.ck`](stdlib/json.ck) (now `std.json`) verifies, trusting axioms about decimal numbers, characters and strings (its two `admit`s were proven in M18) |
 | M6 Staging: `comptime` parameters, compile-time expansion, `checkers stage` | done: [`format.ck`](examples/format.ck), a typed `fmt` whose format string is parsed at compile time |
 | M7 Multi-threaded behaviours (Verona scheduling), `par` on threads, cown invariants, actors | done: [`log.ck`](examples/log.ck) proves its cown invariant and runs; `checkers run --threads N`; stress tests in `tests/stress/` |
-| M8 Native code: Cranelift, closure conversion, reference counting with reuse, tail calls, `checkers build`, lock-free scheduler | done: [`wc.ck`](examples/wc.ck) 45× faster than the interpreter, which is now removed (SPEC D80): `check` and staging run native code too |
+| M8 Native code: Cranelift, closure conversion, reference counting with reuse, tail calls, `checkers build`, lock-free scheduler | done: [`wc.ck`](examples/wc.ck) 45× faster than the interpreter, which is now removed: `check` and staging run native code too |
 | M10 Refined function types | done |
 | M11 `checkers`, the build tool in Checkers, and `checkers fmt` | done: [`tools/`](tools) |
 | M12 Faster checking: Z3 answer cache, work limits | done |
 | M13 The standard library as the package `std`, read from [`stdlib/`](stdlib) at each check: `import std.list` | done |
 | M14 Packages: `checkers.json`, `checkers.lock`, git and path dependencies, minimal version selection | done |
 | M15 Streams and processes: `File` for every file, `proc.run`/`spawn`/`wait` | done |
-| M16 Blocking operations free the thread | done (Linux x86-64; macOS ARM64, D126) |
+| M16 Blocking operations free the thread | done (Linux x86-64; macOS ARM64) |
 | M17 Reflected definitions sound for `decreasing` recursion (SPEC §7.3) | done |
 | M18 No `admit`s in `std`; `--release` rejects them | done |
 | M19 `checkers lsp` | built: diagnostics on every change, hover, go to definition, highlighting, outline, formatting; awaiting a check in Emacs |
@@ -50,7 +50,7 @@ Types are written only as constraints (`i~Nat, i <= len src`); the compiler prov
 
 ## Usage
 
-Runs on Linux (x86-64) and macOS (Apple silicon) (D126). Z3 is built from source and linked into the binary (D46), so the first build takes several minutes and needs CMake and a C++ compiler. Nothing else needs installing.
+Runs on Linux (x86-64) and macOS (Apple silicon). Z3 is built from source and linked into the binary, so the first build takes several minutes and needs CMake and a C++ compiler. Nothing else needs installing.
 
 ```sh
 cargo build --release
@@ -63,7 +63,7 @@ target/release/checkers fmt examples                # format; `checkers check �
 cd my_package && checkers run                        # with checkers.json: fetch dependencies, then run main.ck
 ```
 
-`ckc` is the compiler; `checkers` is the build tool, written in Checkers (SPEC §15, D95).
+`ckc` is the compiler; `checkers` is the build tool, written in Checkers (SPEC §15).
 
 ## Tests
 
@@ -76,7 +76,7 @@ Golden tests live in `tests/parse/` (syntax tree), `tests/check/` (parse diagnos
 
 ## CI and releases
 
-Pull requests merge through a merge queue that runs the whole suite on Linux (x86-64) and macOS (ARM64); each pull request runs clippy and the unit tests (`.github/workflows/ci.yml`). Pushing a tag `vX.Y.Z` that matches `Cargo.toml` publishes an immutable release with an archive per platform (`.github/workflows/release.yml`, D129).
+Pull requests merge through a merge queue that runs the whole suite on Linux (x86-64) and macOS (ARM64); each pull request runs clippy and the unit tests (`.github/workflows/ci.yml`). Pushing a tag `vX.Y.Z` that matches `Cargo.toml` publishes an immutable release with an archive per platform (`.github/workflows/release.yml`).
 
 ## Reporting a problem
 

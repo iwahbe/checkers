@@ -19,7 +19,7 @@ export lemma encode_append a b : a~String, b~String
     proof
         auto
 
-# Decoding a character's own bytes gives it back (D56, D119).
+# Decoding a character's own bytes gives it back.
 export lemma decode_from_char c pre post : c~Char, pre~Bytes, post~Bytes
     let src = pre ++ string.bytes (string.from_char c) ++ post
     ensures decode_at src (len pre) == Some (Parsed c (len pre + len (string.bytes (string.from_char c))))
