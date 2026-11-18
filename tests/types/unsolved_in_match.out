@@ -1,0 +1,15 @@
+error[E0203]: cannot infer the type of `x` in `plain`
+ --> unsolved_in_match.ck:9:1
+  |
+9 | fn plain x -> n : x~phantom [], n~Nat
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  = help: add a constraint such as `x~Nat` to the header
+
+error[E0203]: cannot infer the type of `x` in `hidden`
+  --> unsolved_in_match.ck:12:1
+   |
+12 | fn hidden b x -> n : b~Bool, x~(if b then phantom [] else Nat), n~Nat
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: add a constraint such as `x~Nat` to the header
+
+unsolved_in_match.ck: 2 errors, 0 warnings

@@ -7,8 +7,8 @@
 //! instantiated per type; others are uninterpreted. Every application of a
 //! function with a postcondition contributes that postcondition (D50).
 
-use crate::core::{eval, force, quote, CaseTm, ConId, DefId, Lit, Mult, Prim, Tm, TyId, Val};
-use crate::elab::{Elab, ObLocal, Obligation};
+use crate::core::{eval, force, max_var, quote, CaseTm, ConId, DefId, Lit, Mult, Prim, Tm, TyId, Val};
+use crate::elab::{has_meta, Elab, ObLocal, Obligation};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
@@ -2953,47 +2953,10 @@ impl<'a> Builder<'a> {
 fn closed(t: &Tm, depth: usize) -> bool {
     match t {
         Tm::Var(i) => *i < depth,
-        Tm::Pi(_, _, _, a, b) => closed(a, depth) && closed(b, depth + 1),
-        Tm::Lam(_, _, _, b) => closed(b, depth + 1),
-        Tm::App(a, b, _, _) => closed(a, depth) && closed(b, depth),
-        Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => {
-            v.iter().all(|a| closed(a, depth))
-        }
-        Tm::Proj(a, _, _) | Tm::Field(a, _, _) => closed(a, depth),
-        Tm::Let(_, _, a, b, c) => closed(a, depth) && closed(b, depth) && closed(c, depth + 1),
-        Tm::Case(sc, c) => {
-            closed(sc, depth)
-                && c.branches.iter().all(|(_, n, b)| closed(b, depth + n))
-                && c.lits.iter().all(|(_, b)| closed(b, depth))
-                && c.default.as_ref().is_none_or(|b| closed(b, depth))
-        }
         Tm::Meta(_) | Tm::Error => false,
-        _ => true,
+        _ => t.all_sub(|x, n| closed(x, depth + n)),
     }
 }
-
-fn max_var(t: &Tm) -> Option<usize> {
-    let m = |a: Option<usize>, b: Option<usize>| a.max(b);
-    match t {
-        Tm::Var(i) => Some(*i),
-        Tm::App(f, a, ..) => m(max_var(f), max_var(a)),
-        _ => None,
-    }
-}
-
-fn has_meta(t: &Tm) -> bool {
-    match t {
-        Tm::Meta(_) => true,
-        Tm::App(f, a, ..) => has_meta(f) || has_meta(a),
-        Tm::Pi(_, _, _, a, b) => has_meta(a) || has_meta(b),
-        Tm::Lam(_, _, _, b) => has_meta(b),
-        Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => v.iter().any(has_meta),
-        Tm::Proj(x, _, _) | Tm::Field(x, _, _) => has_meta(x),
-        Tm::Let(_, _, a, b, c) => has_meta(a) || has_meta(b) || has_meta(c),
-        _ => false,
-    }
-}
-
 
 fn smt_bytes(b: &[u8]) -> String {
     if b.is_empty() {
@@ -3013,22 +2976,7 @@ pub fn is_nat(e: &Elab, ty: &Val) -> bool {
 }
 
 fn has_forall(t: &Tm) -> bool {
-    match t {
-        Tm::PrimApp(Prim::Forall, _) => true,
-        Tm::PrimApp(_, v) | Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) => v.iter().any(has_forall),
-        Tm::App(f, a, ..) => has_forall(f) || has_forall(a),
-        Tm::Lam(_, _, _, b) => has_forall(b),
-        Tm::Pi(_, _, _, a, b) => has_forall(a) || has_forall(b),
-        Tm::Let(_, _, a, b, c) => has_forall(a) || has_forall(b) || has_forall(c),
-        Tm::Proj(x, _, _) | Tm::Field(x, _, _) => has_forall(x),
-        Tm::Case(s, c) => {
-            has_forall(s)
-                || c.branches.iter().any(|(_, _, b)| has_forall(b))
-                || c.lits.iter().any(|(_, b)| has_forall(b))
-                || c.default.as_ref().is_some_and(has_forall)
-        }
-        _ => false,
-    }
+    matches!(t, Tm::PrimApp(Prim::Forall, _)) || t.any_sub(|x, _| has_forall(x))
 }
 
 /// The elements of `array.from_list [x, y, …]`, if `t` is that.

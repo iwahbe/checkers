@@ -7,4 +7,12 @@ error[E0450]: cannot prove `y == 3 * x`, the postcondition of `sealed_body`
    = note: `triple` is sealed in `sealed_lib`: here the prover knows only its postconditions and the lemmas you bring in with `have`
    = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
 
-sealed_use.ck: 1 error, 0 warnings
+error[E0450]: cannot prove lemma `sealed_in_if`
+  --> sealed_use.ck:24:13
+   |
+24 |     ensures (if b then triple x else 3 * x) == 3 * x
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(if b then triple x else 3 * x) == 3 * x`
+   = note: `triple` is sealed in `sealed_lib`: here the prover knows only its postconditions and the lemmas you bring in with `have`
+   = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+
+sealed_use.ck: 2 errors, 0 warnings

@@ -2,7 +2,7 @@
 //! arguments become `Erased`; everything else keeps its shape (de Bruijn
 //! indices included). Closure conversion (`lower`) starts from here.
 
-use crate::core::{eval, CaseTm, ConId, DefId, Globals, Mult, Prim, Tm, Val};
+use crate::core::{eval, max_var, CaseTm, ConId, DefId, Globals, Mult, Prim, Tm, Val};
 use std::sync::Arc;
 
 /// A literal at run time.
@@ -230,22 +230,6 @@ impl Compiler<'_> {
         let depth = max_var(ty).map_or(0, |m| m + 1);
         let env = std::rc::Rc::new((0..depth).map(Val::var).collect::<Vec<_>>());
         crate::core::is_nat(self.g, &eval(self.g, &env, ty))
-    }
-}
-
-fn max_var(t: &Tm) -> Option<usize> {
-    let m = |a: Option<usize>, b: Option<usize>| a.max(b);
-    match t {
-        Tm::Var(i) => Some(*i),
-        Tm::App(f, a, ..) => m(max_var(f), max_var(a)),
-        Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => {
-            v.iter().map(max_var).fold(None, m)
-        }
-        Tm::Proj(x, _, _) | Tm::Field(x, _, _) => max_var(x),
-        // Binders shift indices; types under binders are not expected here.
-        Tm::Pi(_, _, _, a, b) => m(max_var(a), max_var(b).and_then(|x| x.checked_sub(1))),
-        Tm::Lam(_, _, _, b) => max_var(b).and_then(|x| x.checked_sub(1)),
-        _ => None,
     }
 }
 

@@ -17,3 +17,8 @@ fn by_transparency x -> y : x~Int, y~Int, y == 4 * x
 
 fn sealed_body x -> y : x~Int, y~Int, y == 3 * x
     triple x
+
+# The note is given wherever the sealed function is in what is to be proved:
+# inside an `if` too (D178), where a counterexample would say nothing true.
+lemma sealed_in_if x b : x~Int, b~Bool
+    ensures (if b then triple x else 3 * x) == 3 * x

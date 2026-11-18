@@ -8,7 +8,7 @@
 //! expanded call are `let`-bound first, so they are evaluated exactly once,
 //! in order (D41).
 
-use crate::core::{CaseTm, ConId, DefId, Globals, Lit, Mult, Prim, Tm};
+use crate::core::{defs_in, CaseTm, ConId, DefId, Globals, Lit, Mult, Prim, Tm};
 use crate::native::eval::Evaluator;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -595,7 +595,6 @@ fn erase_types(t: &Tm) -> Tm {
 /// Substitute the environment into `t` (no evaluation), giving a term at
 /// output level `lvl + depth` (`depth` binders inside `t` so far).
 fn resid(t: &Tm, env: &[Ent], lvl: usize, depth: usize) -> Tm {
-    let go = |x: &Tm, d: usize| resid(x, env, lvl, d);
     match t {
         Tm::Var(i) if *i < depth => t.clone(),
         Tm::Var(i) => match env.get(env.len().wrapping_sub(1 + i - depth)) {
@@ -604,28 +603,7 @@ fn resid(t: &Tm, env: &[Ent], lvl: usize, depth: usize) -> Tm {
             Some(Ent::Ty(s, at)) => shift(s, lvl + depth - at, 0),
             None => Tm::Error,
         },
-        Tm::Pi(x, m, i, a, b) => Tm::Pi(x.clone(), *m, *i, Rc::new(go(a, depth)), Rc::new(go(b, depth + 1))),
-        Tm::Lam(x, m, i, b) => Tm::Lam(x.clone(), *m, *i, Rc::new(go(b, depth + 1))),
-        Tm::App(f, a, i, m) => Tm::App(Rc::new(go(f, depth)), Rc::new(go(a, depth)), *i, *m),
-        Tm::Let(x, m, ty, v, b) => {
-            Tm::Let(x.clone(), *m, Rc::new(go(ty, depth)), Rc::new(go(v, depth)), Rc::new(go(b, depth + 1)))
-        }
-        Tm::TupleTy(v) => Tm::TupleTy(v.iter().map(|x| go(x, depth)).collect()),
-        Tm::Tuple(v) => Tm::Tuple(v.iter().map(|x| go(x, depth)).collect()),
-        Tm::TyConApp(c, v) => Tm::TyConApp(*c, v.iter().map(|x| go(x, depth)).collect()),
-        Tm::ConApp(c, v) => Tm::ConApp(*c, v.iter().map(|x| go(x, depth)).collect()),
-        Tm::PrimApp(p, v) => Tm::PrimApp(p.clone(), v.iter().map(|x| go(x, depth)).collect()),
-        Tm::Proj(x, i, r) => Tm::Proj(Rc::new(go(x, depth)), *i, *r),
-        Tm::Field(x, c, i) => Tm::Field(Rc::new(go(x, depth)), *c, *i),
-        Tm::Case(s, c) => Tm::Case(
-            Rc::new(go(s, depth)),
-            Rc::new(CaseTm {
-                branches: c.branches.iter().map(|(con, n, b)| (*con, *n, go(b, depth + n))).collect(),
-                lits: c.lits.iter().map(|(l, b)| (l.clone(), go(b, depth))).collect(),
-                default: c.default.as_ref().map(|b| go(b, depth)),
-            }),
-        ),
-        _ => t.clone(),
+        _ => t.map_sub(|x, n| resid(x, env, lvl, depth + n)),
     }
 }
 
@@ -634,31 +612,9 @@ pub(crate) fn shift(t: &Tm, by: usize, cut: usize) -> Tm {
     if by == 0 {
         return t.clone();
     }
-    let go = |x: &Tm, c: usize| shift(x, by, c);
     match t {
         Tm::Var(i) if *i >= cut => Tm::Var(i + by),
-        Tm::Pi(x, m, i, a, b) => Tm::Pi(x.clone(), *m, *i, Rc::new(go(a, cut)), Rc::new(go(b, cut + 1))),
-        Tm::Lam(x, m, i, b) => Tm::Lam(x.clone(), *m, *i, Rc::new(go(b, cut + 1))),
-        Tm::App(f, a, i, m) => Tm::App(Rc::new(go(f, cut)), Rc::new(go(a, cut)), *i, *m),
-        Tm::Let(x, m, ty, v, b) => {
-            Tm::Let(x.clone(), *m, Rc::new(go(ty, cut)), Rc::new(go(v, cut)), Rc::new(go(b, cut + 1)))
-        }
-        Tm::TupleTy(v) => Tm::TupleTy(v.iter().map(|x| go(x, cut)).collect()),
-        Tm::Tuple(v) => Tm::Tuple(v.iter().map(|x| go(x, cut)).collect()),
-        Tm::TyConApp(c, v) => Tm::TyConApp(*c, v.iter().map(|x| go(x, cut)).collect()),
-        Tm::ConApp(c, v) => Tm::ConApp(*c, v.iter().map(|x| go(x, cut)).collect()),
-        Tm::PrimApp(p, v) => Tm::PrimApp(p.clone(), v.iter().map(|x| go(x, cut)).collect()),
-        Tm::Proj(x, i, r) => Tm::Proj(Rc::new(go(x, cut)), *i, *r),
-        Tm::Field(x, c, i) => Tm::Field(Rc::new(go(x, cut)), *c, *i),
-        Tm::Case(s, c) => Tm::Case(
-            Rc::new(go(s, cut)),
-            Rc::new(CaseTm {
-                branches: c.branches.iter().map(|(con, n, b)| (*con, *n, go(b, cut + n))).collect(),
-                lits: c.lits.iter().map(|(l, b)| (l.clone(), go(b, cut))).collect(),
-                default: c.default.as_ref().map(|b| go(b, cut)),
-            }),
-        ),
-        _ => t.clone(),
+        _ => t.map_sub(|x, n| shift(x, by, cut + n)),
     }
 }
 
@@ -666,49 +622,7 @@ pub(crate) fn shift(t: &Tm, by: usize, cut: usize) -> Tm {
 fn closed(t: &Tm, depth: usize) -> bool {
     match t {
         Tm::Var(i) => *i < depth,
-        Tm::Pi(_, _, _, a, b) => closed(a, depth) && closed(b, depth + 1),
-        Tm::Lam(_, _, _, b) => closed(b, depth + 1),
-        Tm::App(a, b, _, _) => closed(a, depth) && closed(b, depth),
-        Tm::Let(_, _, a, b, c) => closed(a, depth) && closed(b, depth) && closed(c, depth + 1),
-        Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => {
-            v.iter().all(|a| closed(a, depth))
-        }
-        Tm::Proj(a, _, _) | Tm::Field(a, _, _) => closed(a, depth),
-        Tm::Case(s, c) => {
-            closed(s, depth)
-                && c.branches.iter().all(|(_, n, b)| closed(b, depth + n))
-                && c.lits.iter().all(|(_, b)| closed(b, depth))
-                && c.default.as_ref().is_none_or(|b| closed(b, depth))
-        }
-        _ => true,
-    }
-}
-
-fn defs_in(t: &Tm, out: &mut Vec<DefId>) {
-    match t {
-        Tm::Def(d) => out.push(*d),
-        Tm::Pi(_, _, _, a, b) | Tm::App(a, b, ..) => {
-            defs_in(a, out);
-            defs_in(b, out);
-        }
-        Tm::Lam(_, _, _, b) | Tm::Proj(b, _, _) | Tm::Field(b, _, _) => defs_in(b, out),
-        Tm::Let(_, _, a, b, c) => {
-            defs_in(a, out);
-            defs_in(b, out);
-            defs_in(c, out);
-        }
-        Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => {
-            v.iter().for_each(|x| defs_in(x, out))
-        }
-        Tm::Case(s, c) => {
-            defs_in(s, out);
-            c.branches.iter().for_each(|(_, _, b)| defs_in(b, out));
-            c.lits.iter().for_each(|(_, b)| defs_in(b, out));
-            if let Some(b) = &c.default {
-                defs_in(b, out);
-            }
-        }
-        _ => {}
+        _ => t.all_sub(|x, n| closed(x, depth + n)),
     }
 }
 
@@ -823,30 +737,10 @@ fn block(g: &Globals, ns: &mut Vec<crate::core::Name>, t: &Tm, ind: usize, out: 
 /// Replace references to generated functions by variables bound outside
 /// everything (`n` of them, the first outermost).
 fn defs_to_vars(t: &Tm, base: usize, n: usize, depth: usize) -> Tm {
-    let go = |x: &Tm, d: usize| defs_to_vars(x, base, n, d);
     match t {
         Tm::Def(d) if (d.0 as usize) >= base => Tm::Var(depth + n - 1 - (d.0 as usize - base)),
         Tm::Var(i) if *i >= depth => Tm::Var(i + n),
-        Tm::Pi(x, m, i, a, b) => Tm::Pi(x.clone(), *m, *i, Rc::new(go(a, depth)), Rc::new(go(b, depth + 1))),
-        Tm::Lam(x, m, i, b) => Tm::Lam(x.clone(), *m, *i, Rc::new(go(b, depth + 1))),
-        Tm::App(f, a, i, m) => Tm::App(Rc::new(go(f, depth)), Rc::new(go(a, depth)), *i, *m),
-        Tm::Let(x, m, ty, v, b) => Tm::Let(x.clone(), *m, Rc::new(go(ty, depth)), Rc::new(go(v, depth)), Rc::new(go(b, depth + 1))),
-        Tm::TupleTy(v) => Tm::TupleTy(v.iter().map(|x| go(x, depth)).collect()),
-        Tm::Tuple(v) => Tm::Tuple(v.iter().map(|x| go(x, depth)).collect()),
-        Tm::TyConApp(c, v) => Tm::TyConApp(*c, v.iter().map(|x| go(x, depth)).collect()),
-        Tm::ConApp(c, v) => Tm::ConApp(*c, v.iter().map(|x| go(x, depth)).collect()),
-        Tm::PrimApp(p, v) => Tm::PrimApp(p.clone(), v.iter().map(|x| go(x, depth)).collect()),
-        Tm::Proj(x, i, r) => Tm::Proj(Rc::new(go(x, depth)), *i, *r),
-        Tm::Field(x, c, i) => Tm::Field(Rc::new(go(x, depth)), *c, *i),
-        Tm::Case(s, c) => Tm::Case(
-            Rc::new(go(s, depth)),
-            Rc::new(CaseTm {
-                branches: c.branches.iter().map(|(con, k, b)| (*con, *k, go(b, depth + k))).collect(),
-                lits: c.lits.iter().map(|(l, b)| (l.clone(), go(b, depth))).collect(),
-                default: c.default.as_ref().map(|b| go(b, depth)),
-            }),
-        ),
-        _ => t.clone(),
+        _ => t.map_sub(|x, k| defs_to_vars(x, base, n, depth + k)),
     }
 }
 

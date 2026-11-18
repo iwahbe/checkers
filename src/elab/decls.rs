@@ -1163,7 +1163,10 @@ impl Elab {
                 let (h, args) = spine(t);
                 self.var_positive(h, idx, pos) && args.iter().all(|a| !occurs_var(a, idx))
             }
-            other => pos || !occurs_var(other, idx),
+            // A type computed by a `match` or an `if` may be any of its arms.
+            Tm::Case(s, c) => !occurs_var(s, idx) && case_arms(c).all(|(n, b)| self.var_positive(b, idx + n, pos)),
+            // Any other form promises nothing about what it holds.
+            other => !occurs_var(other, idx),
         }
     }
 
@@ -1191,6 +1194,7 @@ impl Elab {
                 let (h, args) = spine(t);
                 self.var_negative(h, idx, pos) && args.iter().all(|a| !occurs_var(a, idx))
             }
+            Tm::Case(s, c) => !occurs_var(s, idx) && case_arms(c).all(|(n, b)| self.var_negative(b, idx + n, pos)),
             other => !occurs_var(other, idx),
         }
     }
@@ -1262,7 +1266,11 @@ impl Elab {
                 let (h, args) = spine(t);
                 self.ty_positive(h, me, pos) && args.iter().all(|a| !occurs_ty(a, me))
             }
-            other => pos || !occurs_ty(other, me),
+            // A type computed by a `match` or an `if` may be any of its arms.
+            Tm::Case(s, c) => !occurs_ty(s, me) && case_arms(c).all(|(_, b)| self.ty_positive(b, me, pos)),
+            Tm::TyCon(t2) => pos || *t2 != me,
+            // Any other form promises nothing about what it holds.
+            other => !occurs_ty(other, me),
         }
     }
 
@@ -1891,75 +1899,21 @@ fn walk(e: &Expr, f: &mut dyn FnMut(&Expr)) {
     }
 }
 
+/// Does variable `idx` occur anywhere in `t`?
 pub fn occurs_var(t: &Tm, idx: usize) -> bool {
     match t {
         Tm::Var(i) => *i == idx,
-        Tm::Pi(_, _, _, a, b) => occurs_var(a, idx) || occurs_var(b, idx + 1),
-        Tm::Lam(_, _, _, b) => occurs_var(b, idx + 1),
-        Tm::App(a, b, _, _) => occurs_var(a, idx) || occurs_var(b, idx),
-        Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => {
-            v.iter().any(|a| occurs_var(a, idx))
-        }
-        Tm::Proj(a, _, _) | Tm::Field(a, _, _) => occurs_var(a, idx),
-        Tm::Let(_, _, a, b, c) => occurs_var(a, idx) || occurs_var(b, idx) || occurs_var(c, idx + 1),
-        _ => false,
+        _ => t.any_sub(|x, n| occurs_var(x, idx + n)),
     }
 }
 
+/// Does the type `me` occur anywhere in `t`?
 pub fn occurs_ty(t: &Tm, me: TyId) -> bool {
-    match t {
-        Tm::TyCon(x) => *x == me,
-        Tm::TyConApp(x, v) => *x == me || v.iter().any(|a| occurs_ty(a, me)),
-        Tm::Pi(_, _, _, a, b) => occurs_ty(a, me) || occurs_ty(b, me),
-        Tm::Lam(_, _, _, b) => occurs_ty(b, me),
-        Tm::App(a, b, _, _) => occurs_ty(a, me) || occurs_ty(b, me),
-        Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => v.iter().any(|a| occurs_ty(a, me)),
-        _ => false,
-    }
+    matches!(t, Tm::TyCon(x) | Tm::TyConApp(x, _) if *x == me) || t.any_sub(|x, _| occurs_ty(x, me))
 }
 
 pub fn has_unsolved(g: &Globals, l: usize, v: &Val) -> bool {
-    fn tm(t: &Tm) -> bool {
-        match t {
-            Tm::Meta(_) => true,
-            Tm::Pi(_, _, _, a, b) => tm(a) || tm(b),
-            Tm::Lam(_, _, _, b) => tm(b),
-            Tm::App(a, b, _, _) => tm(a) || tm(b),
-            Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => v.iter().any(tm),
-            Tm::Proj(a, _, _) | Tm::Field(a, _, _) => tm(a),
-            _ => false,
-        }
-    }
-    tm(&quote(g, l, v))
-}
-
-/// The definitions a term mentions.
-fn defs_in(t: &Tm, out: &mut Vec<DefId>) {
-    match t {
-        Tm::Def(d) => out.push(*d),
-        Tm::Pi(_, _, _, a, b) | Tm::App(a, b, ..) => {
-            defs_in(a, out);
-            defs_in(b, out);
-        }
-        Tm::Lam(_, _, _, b) | Tm::Proj(b, _, _) | Tm::Field(b, _, _) => defs_in(b, out),
-        Tm::Let(_, _, a, b, c) => {
-            defs_in(a, out);
-            defs_in(b, out);
-            defs_in(c, out);
-        }
-        Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => {
-            v.iter().for_each(|x| defs_in(x, out))
-        }
-        Tm::Case(s, c) => {
-            defs_in(s, out);
-            c.branches.iter().for_each(|(_, _, b)| defs_in(b, out));
-            c.lits.iter().for_each(|(_, b)| defs_in(b, out));
-            if let Some(b) = &c.default {
-                defs_in(b, out);
-            }
-        }
-        _ => {}
-    }
+    has_meta(&quote(g, l, v))
 }
 
 pub(super) fn decl_name(d: &ast::Decl) -> Option<&Ident> {
@@ -1985,6 +1939,12 @@ fn head_meta(t: &Tm) -> Option<MetaId> {
 }
 
 /// A term's head and its arguments.
+/// A `match`'s arms, each with the number of binders it is under.
+fn case_arms(c: &CaseTm) -> impl Iterator<Item = (usize, &Tm)> {
+    let branches = c.branches.iter().map(|(_, n, b)| (*n, b));
+    branches.chain(c.lits.iter().map(|(_, b)| (0, b))).chain(c.default.iter().map(|b| (0, b)))
+}
+
 fn spine(mut t: &Tm) -> (&Tm, Vec<&Tm>) {
     let mut args = Vec::new();
     while let Tm::App(f, a, ..) = t {

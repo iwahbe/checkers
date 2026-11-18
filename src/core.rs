@@ -124,6 +124,69 @@ pub struct CaseTm {
     pub default: Option<Tm>,
 }
 
+impl Tm {
+    /// Whether `f` holds of one of this term's immediate subterms. `f` is
+    /// given each subterm, in order, with the number of binders this term
+    /// puts it under, and is not asked again once it has held.
+    pub fn any_sub(&self, mut f: impl FnMut(&Tm, usize) -> bool) -> bool {
+        match self {
+            Tm::Var(_) | Tm::Def(_) | Tm::TyCon(_) | Tm::Con(_) | Tm::Meta(_) | Tm::Univ(_) | Tm::Lit(_) | Tm::Error => false,
+            Tm::Pi(_, _, _, a, b) => f(a, 0) || f(b, 1),
+            Tm::Lam(_, _, _, b) => f(b, 1),
+            Tm::App(a, b, _, _) => f(a, 0) || f(b, 0),
+            Tm::Let(_, _, a, b, c) => f(a, 0) || f(b, 0) || f(c, 1),
+            Tm::TupleTy(v) | Tm::Tuple(v) | Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::PrimApp(_, v) => v.iter().any(|x| f(x, 0)),
+            Tm::Proj(a, _, _) | Tm::Field(a, _, _) => f(a, 0),
+            Tm::Case(s, c) => {
+                f(s, 0)
+                    || c.branches.iter().any(|(_, n, b)| f(b, *n))
+                    || c.lits.iter().any(|(_, b)| f(b, 0))
+                    || c.default.as_ref().is_some_and(|b| f(b, 0))
+            }
+        }
+    }
+
+    /// Whether `f` holds of every immediate subterm (see `any_sub`).
+    pub fn all_sub(&self, mut f: impl FnMut(&Tm, usize) -> bool) -> bool {
+        !self.any_sub(|x, n| !f(x, n))
+    }
+
+    /// `f` on every immediate subterm, in order (see `any_sub`).
+    pub fn each_sub(&self, mut f: impl FnMut(&Tm, usize)) {
+        self.any_sub(|x, n| {
+            f(x, n);
+            false
+        });
+    }
+
+    /// This term with each immediate subterm replaced by `f` of it (see
+    /// `any_sub`); a term with no subterms is itself.
+    pub fn map_sub(&self, mut f: impl FnMut(&Tm, usize) -> Tm) -> Tm {
+        match self {
+            Tm::Var(_) | Tm::Def(_) | Tm::TyCon(_) | Tm::Con(_) | Tm::Meta(_) | Tm::Univ(_) | Tm::Lit(_) | Tm::Error => self.clone(),
+            Tm::Pi(x, m, i, a, b) => Tm::Pi(x.clone(), *m, *i, Rc::new(f(a, 0)), Rc::new(f(b, 1))),
+            Tm::Lam(x, m, i, b) => Tm::Lam(x.clone(), *m, *i, Rc::new(f(b, 1))),
+            Tm::App(a, b, i, m) => Tm::App(Rc::new(f(a, 0)), Rc::new(f(b, 0)), *i, *m),
+            Tm::Let(x, m, a, b, c) => Tm::Let(x.clone(), *m, Rc::new(f(a, 0)), Rc::new(f(b, 0)), Rc::new(f(c, 1))),
+            Tm::TupleTy(v) => Tm::TupleTy(v.iter().map(|x| f(x, 0)).collect()),
+            Tm::Tuple(v) => Tm::Tuple(v.iter().map(|x| f(x, 0)).collect()),
+            Tm::TyConApp(c, v) => Tm::TyConApp(*c, v.iter().map(|x| f(x, 0)).collect()),
+            Tm::ConApp(c, v) => Tm::ConApp(*c, v.iter().map(|x| f(x, 0)).collect()),
+            Tm::PrimApp(p, v) => Tm::PrimApp(p.clone(), v.iter().map(|x| f(x, 0)).collect()),
+            Tm::Proj(x, i, r) => Tm::Proj(Rc::new(f(x, 0)), *i, *r),
+            Tm::Field(x, c, i) => Tm::Field(Rc::new(f(x, 0)), *c, *i),
+            Tm::Case(s, c) => Tm::Case(
+                Rc::new(f(s, 0)),
+                Rc::new(CaseTm {
+                    branches: c.branches.iter().map(|(k, n, b)| (*k, *n, f(b, *n))).collect(),
+                    lits: c.lits.iter().map(|(l, b)| (l.clone(), f(b, 0))).collect(),
+                    default: c.default.as_ref().map(|b| f(b, 0)),
+                }),
+            ),
+        }
+    }
+}
+
 pub type Env = Rc<Vec<Val>>;
 
 #[derive(Clone, Debug)]
@@ -1366,75 +1429,36 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
 /// The free variables of `t` under `depth` binders, as indices from outside
 /// those binders.
 pub fn free_vars(t: &Tm, depth: usize, out: &mut std::collections::BTreeSet<usize>) {
-    let mut go = |x: &Tm, d: usize| free_vars(x, d, out);
     match t {
         Tm::Var(i) if *i >= depth => {
             out.insert(i - depth);
         }
-        Tm::Pi(_, _, _, a, b) => {
-            go(a, depth);
-            go(b, depth + 1);
-        }
-        Tm::Lam(_, _, _, b) => go(b, depth + 1),
-        Tm::App(f, a, _, _) => {
-            go(f, depth);
-            go(a, depth);
-        }
-        Tm::Let(_, _, ty, v, b) => {
-            go(ty, depth);
-            go(v, depth);
-            go(b, depth + 1);
-        }
-        Tm::TyConApp(_, v) | Tm::TupleTy(v) | Tm::ConApp(_, v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => {
-            for x in v {
-                go(x, depth);
-            }
-        }
-        Tm::Proj(x, _, _) | Tm::Field(x, _, _) => go(x, depth),
-        Tm::Case(s, c) => {
-            go(s, depth);
-            for (_, n, b) in &c.branches {
-                go(b, depth + n);
-            }
-            for (_, b) in &c.lits {
-                go(b, depth);
-            }
-            if let Some(b) = &c.default {
-                go(b, depth);
-            }
-        }
-        _ => {}
+        _ => t.each_sub(|x, n| free_vars(x, depth + n, out)),
     }
+}
+
+/// The largest free variable of `t`, if it has one: an environment of one
+/// more variable than that is enough to evaluate `t`.
+pub fn max_var(t: &Tm) -> Option<usize> {
+    let mut vars = std::collections::BTreeSet::new();
+    free_vars(t, 0, &mut vars);
+    vars.last().copied()
 }
 
 /// `t` with each free variable `i` (an index from outside `depth` binders)
 /// replaced by `f(i)`.
 pub fn rename_free(t: &Tm, depth: usize, f: &dyn Fn(usize) -> usize) -> Tm {
-    let go = |x: &Tm, d: usize| rename_free(x, d, f);
-    let rc = |x: &Rc<Tm>, d: usize| Rc::new(rename_free(x, d, f));
-    let all = |v: &Vec<Tm>| v.iter().map(|x| go(x, depth)).collect::<Vec<_>>();
     match t {
         Tm::Var(i) if *i >= depth => Tm::Var(f(i - depth) + depth),
-        Tm::Pi(x, m, i, a, b) => Tm::Pi(x.clone(), *m, *i, rc(a, depth), rc(b, depth + 1)),
-        Tm::Lam(x, m, i, b) => Tm::Lam(x.clone(), *m, *i, rc(b, depth + 1)),
-        Tm::App(a, b, i, m) => Tm::App(rc(a, depth), rc(b, depth), *i, *m),
-        Tm::Let(x, m, ty, v, b) => Tm::Let(x.clone(), *m, rc(ty, depth), rc(v, depth), rc(b, depth + 1)),
-        Tm::TyConApp(c, v) => Tm::TyConApp(*c, all(v)),
-        Tm::TupleTy(v) => Tm::TupleTy(all(v)),
-        Tm::ConApp(c, v) => Tm::ConApp(*c, all(v)),
-        Tm::Tuple(v) => Tm::Tuple(all(v)),
-        Tm::PrimApp(p, v) => Tm::PrimApp(p.clone(), all(v)),
-        Tm::Proj(x, i, r) => Tm::Proj(rc(x, depth), *i, *r),
-        Tm::Field(x, c, i) => Tm::Field(rc(x, depth), *c, *i),
-        Tm::Case(s, c) => Tm::Case(
-            rc(s, depth),
-            Rc::new(CaseTm {
-                branches: c.branches.iter().map(|(k, n, b)| (*k, *n, go(b, depth + n))).collect(),
-                lits: c.lits.iter().map(|(l, b)| (l.clone(), go(b, depth))).collect(),
-                default: c.default.as_ref().map(|b| go(b, depth)),
-            }),
-        ),
-        other => other.clone(),
+        _ => t.map_sub(|x, n| rename_free(x, depth + n, f)),
+    }
+}
+
+/// The definitions a term mentions.
+pub fn defs_in(t: &Tm, out: &mut Vec<DefId>) {
+    match t {
+        Tm::Def(d) => out.push(*d),
+        _ => t.each_sub(|x, _| defs_in(x, out)),
     }
 }
 
