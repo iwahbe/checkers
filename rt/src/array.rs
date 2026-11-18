@@ -149,14 +149,12 @@ pub fn held(a: W) -> impl Iterator<Item = W> {
     (0..n).map(move |i| slot(a, i + 1))
 }
 
-/// A new array of `n` elements laid out as `l`, its elements unset.
+/// A new array of `n` elements laid out as `l`, its elements unset. A size
+/// no machine word holds is one no machine has: out of memory (D184).
 fn alloc_array(l: Layout, n: usize) -> W {
-    if l == U8 {
-        let w = alloc_obj(info(K_BYTES, 0, 0), HDR + 8 + n.div_ceil(8) * 8);
-        set_slot(w, 0, n as u64);
-        return w;
-    }
-    let w = alloc_obj(info(K_ARRAY, 0, l as u64), HDR + 8 + (n * l.width()).div_ceil(8) * 8);
+    let bytes = n.checked_mul(l.width()).and_then(|b| b.checked_next_multiple_of(8)).and_then(|b| b.checked_add(HDR + 8));
+    let Some(size) = bytes else { crate::fatal("out of memory") };
+    let w = if l == U8 { alloc_obj(info(K_BYTES, 0, 0), size) } else { alloc_obj(info(K_ARRAY, 0, l as u64), size) };
     set_slot(w, 0, n as u64);
     w
 }
@@ -212,6 +210,17 @@ pub fn from_items(l: Layout, items: Vec<W>) -> W {
     let a = alloc_array(l, items.len());
     for (i, w) in items.into_iter().enumerate() {
         put(a, l, i, w);
+    }
+    a
+}
+
+/// A new array of `n` copies of `x` (borrowed), laid out as `l` (or with
+/// one word per element, if `l` can't hold `x`): one allocation.
+pub fn repeat(l: Layout, n: usize, x: W) -> W {
+    let l = if l.holds(x) { l } else { Words };
+    let a = alloc_array(l, n);
+    for i in 0..n {
+        put(a, l, i, dup(x));
     }
     a
 }
