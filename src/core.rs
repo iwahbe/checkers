@@ -6,6 +6,8 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use num_bigint::BigInt;
+use num_traits::{Euclid, Zero};
 use std::rc::Rc;
 
 pub type Name = Rc<str>;
@@ -51,8 +53,39 @@ pub struct MetaId(pub u32);
 #[derive(Clone, Debug, PartialEq)]
 pub enum Lit {
     Num(i128),
+    /// An integer outside `i128`'s range, never one inside it (`Lit::int`
+    /// keeps that), so equal numbers are equal literals.
+    Big(Rc<BigInt>),
     Str(Rc<str>),
     Bytes(Rc<[u8]>),
+}
+
+impl Lit {
+    /// The literal of integer `n`: `Num` when it fits in `i128`, else `Big`.
+    pub fn int(n: BigInt) -> Lit {
+        match i128::try_from(&n) {
+            Ok(m) => Lit::Num(m),
+            Err(_) => Lit::Big(Rc::new(n)),
+        }
+    }
+
+    /// The integer this literal is, if it is one.
+    pub fn as_int(&self) -> Option<BigInt> {
+        match self {
+            Lit::Num(n) => Some(BigInt::from(*n)),
+            Lit::Big(n) => Some((**n).clone()),
+            _ => None,
+        }
+    }
+
+    /// Whether this is an integer `>= 0`.
+    pub fn is_nonneg_int(&self) -> bool {
+        match self {
+            Lit::Num(n) => *n >= 0,
+            Lit::Big(n) => n.sign() != num_bigint::Sign::Minus,
+            _ => false,
+        }
+    }
 }
 
 /// Built-in operations. Evaluated when their arguments are literals; stuck otherwise.
@@ -790,27 +823,53 @@ fn prim(g: &Globals, p: &Prim, orig: Vec<Val>) -> Val {
     }
 }
 
+/// An integer value's literal as a `BigInt`: arithmetic's slow path, when
+/// an operand is `Big` or the `i128` result would overflow.
+fn big(v: &Val) -> Option<BigInt> {
+    match v {
+        Val::Lit(l) => l.as_int(),
+        _ => None,
+    }
+}
+
 fn prim_value(g: &Globals, p: &Prim, args: &[Val]) -> Option<Val> {
     let n2 = || Some((num(&args[0])?, num(&args[1])?));
+    let b2 = || Some((big(&args[0])?, big(&args[1])?));
+    let lit = |n: BigInt| Val::Lit(Lit::int(n));
+    // `i128` arithmetic, or `BigInt` arithmetic where that overflows.
+    let arith = |fast: fn(i128, i128) -> Option<i128>, slow: fn(BigInt, BigInt) -> Option<BigInt>| match n2() {
+        Some((a, b)) => match fast(a, b) {
+            Some(n) => Some(Val::Lit(Lit::Num(n))),
+            None => slow(a.into(), b.into()).map(lit),
+        },
+        None => b2().and_then(|(a, b)| slow(a, b)).map(lit),
+    };
+    let order = || match n2() {
+        Some((a, b)) => Some(a.cmp(&b)),
+        None => b2().map(|(a, b)| a.cmp(&b)),
+    };
+    let cmp = |f: fn(std::cmp::Ordering) -> bool| order().map(|o| g.bool_val(f(o)));
     let r = match p {
-        Prim::Add => n2().and_then(|(a, b)| a.checked_add(b)).map(|n| Val::Lit(Lit::Num(n))),
+        Prim::Add => arith(|a, b| a.checked_add(b), |a, b| Some(a + b)),
         // `Sub` carries its operand type: on `Nat`, `a - b` with `a < b` has no value (stuck).
-        Prim::Sub => n2().and_then(|(a, b)| {
+        Prim::Sub => {
             let on_nat = args.get(2).is_some_and(|t| is_nat(g, t));
-            if on_nat && a < b {
-                None
-            } else {
-                a.checked_sub(b).map(|n| Val::Lit(Lit::Num(n)))
+            match order() {
+                Some(std::cmp::Ordering::Less) if on_nat => None,
+                _ => arith(|a, b| a.checked_sub(b), |a, b| Some(a - b)),
             }
-        }),
-        Prim::Mul => n2().and_then(|(a, b)| a.checked_mul(b)).map(|n| Val::Lit(Lit::Num(n))),
-        Prim::Div => n2().and_then(|(a, b)| a.checked_div_euclid(b)).map(|n| Val::Lit(Lit::Num(n))),
-        Prim::Rem => n2().and_then(|(a, b)| a.checked_rem_euclid(b)).map(|n| Val::Lit(Lit::Num(n))),
-        Prim::Neg => num(&args[0]).map(|a| Val::Lit(Lit::Num(-a))),
-        Prim::Lt => n2().map(|(a, b)| g.bool_val(a < b)),
-        Prim::Le => n2().map(|(a, b)| g.bool_val(a <= b)),
-        Prim::Gt => n2().map(|(a, b)| g.bool_val(a > b)),
-        Prim::Ge => n2().map(|(a, b)| g.bool_val(a >= b)),
+        }
+        Prim::Mul => arith(|a, b| a.checked_mul(b), |a, b| Some(a * b)),
+        Prim::Div => arith(|a, b| a.checked_div_euclid(b), |a, b| (!b.is_zero()).then(|| a.div_euclid(&b))),
+        Prim::Rem => arith(|a, b| a.checked_rem_euclid(b), |a, b| (!b.is_zero()).then(|| a.rem_euclid(&b))),
+        Prim::Neg => match num(&args[0]) {
+            Some(a) => Some(a.checked_neg().map_or_else(|| lit(-BigInt::from(a)), |n| Val::Lit(Lit::Num(n)))),
+            None => big(&args[0]).map(|a| lit(-a)),
+        },
+        Prim::Lt => cmp(|o| o.is_lt()),
+        Prim::Le => cmp(|o| o.is_le()),
+        Prim::Gt => cmp(|o| o.is_gt()),
+        Prim::Ge => cmp(|o| o.is_ge()),
         Prim::Eq => val_eq(g, &args[0], &args[1]).map(|b| g.bool_val(b)),
         Prim::Ne => val_eq(g, &args[0], &args[1]).map(|b| g.bool_val(!b)),
         Prim::Concat => match (&args[0], &args[1]) {
@@ -1344,6 +1403,7 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
             paren(p > 0, s)
         }
         Tm::Lit(Lit::Num(n)) => n.to_string(),
+        Tm::Lit(Lit::Big(n)) => n.to_string(),
         Tm::Lit(Lit::Str(s)) => format!("{s:?}"),
         Tm::Lit(Lit::Bytes(b)) => format!("b{:?}", String::from_utf8_lossy(b)),
         Tm::TupleTy(ts) if ts.is_empty() => "Unit".into(),

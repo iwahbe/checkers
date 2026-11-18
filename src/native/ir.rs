@@ -9,6 +9,8 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub enum Lit {
     Num(i128),
+    /// An integer outside `i128`'s range, in decimal.
+    Big(Arc<str>),
     Str(Arc<str>),
     Bytes(Arc<[u8]>),
 }
@@ -99,6 +101,7 @@ pub struct IrCase {
 pub fn lit_value(l: &crate::core::Lit) -> Lit {
     match l {
         crate::core::Lit::Num(n) => Lit::Num(*n),
+        crate::core::Lit::Big(n) => Lit::Big(Arc::from(n.to_string())),
         crate::core::Lit::Str(s) => Lit::Str(Arc::from(&**s)),
         crate::core::Lit::Bytes(b) => Lit::Bytes(Arc::from(&**b)),
     }

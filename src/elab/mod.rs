@@ -1601,7 +1601,7 @@ impl Elab {
     /// such values, or a `Nat` subtraction (which has its own obligation).
     pub fn nat_by_closure(&self, cx: &Cx, v: &Val) -> bool {
         match crate::core::force_meta(&self.g, v.clone()) {
-            Val::Lit(Lit::Num(n)) => n >= 0,
+            Val::Lit(l @ (Lit::Num(_) | Lit::Big(_))) => l.is_nonneg_int(),
             Val::Neutral(Head::Var(l), sp) if sp.is_empty() => {
                 cx.locals.get(l).is_some_and(|x| crate::core::is_nat(&self.g, &x.ty))
             }
@@ -2062,19 +2062,14 @@ impl Elab {
         }
     }
 
-    pub fn number(&mut self, s: &str, span: Span) -> i128 {
-        let r = if let Some(h) = s.strip_prefix("0x") { i128::from_str_radix(h, 16) } else { s.parse::<i128>() };
-        match r {
-            Ok(n) => n,
-            Err(_) => {
-                self.err(Diagnostic::error(
-                    "E0211",
-                    "number literal is too large (the type checker currently supports 127-bit literals)",
-                    span,
-                ));
-                0
-            }
-        }
+    /// The value of a number literal's text, of any size: `Int` and `Nat`
+    /// have no fixed size. The lexer gives only decimal or `0x` hex digits.
+    pub fn number(&self, s: &str) -> num_bigint::BigInt {
+        let r = match s.strip_prefix("0x") {
+            Some(h) => num_bigint::BigInt::parse_bytes(h.as_bytes(), 16),
+            None => num_bigint::BigInt::parse_bytes(s.as_bytes(), 10),
+        };
+        r.expect("the lexer gives only digits")
     }
 }
 

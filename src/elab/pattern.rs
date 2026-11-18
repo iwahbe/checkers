@@ -563,12 +563,12 @@ impl Elab {
     fn lit_of(&mut self, p: &Pattern) -> Option<(Lit, Val)> {
         Some(match &p.kind {
             PatKind::Lit(ast::Lit::Int(s)) => {
-                let n = self.number(s, p.span);
-                (Lit::Num(n), Val::Error)
+                let n = self.number(s);
+                (Lit::int(n), Val::Error)
             }
             PatKind::Neg(s) => {
-                let n = self.number(s, p.span);
-                (Lit::Num(-n), self.int())
+                let n = self.number(s);
+                (Lit::int(-n), self.int())
             }
             PatKind::Lit(ast::Lit::Byte(b)) => (Lit::Num(*b as i128), self.nat()),
             PatKind::Lit(ast::Lit::Char(c)) => (Lit::Num(*c as i128), self.nat()),
