@@ -8,7 +8,9 @@ import std.string
 import std.bytes
 import std.list
 
-export fn ends_with s suffix : s~String, suffix~String
+# Whether `s` ends with `suffix`; then it is at least as long.
+export fn ends_with s suffix -> r : s~String, suffix~String, r~Bool,
+                                    r implies len (string.bytes suffix) <= len (string.bytes s)
     let b = string.bytes s
     let x = string.bytes suffix
     len x <= len b and bytes.matches_at b (len b - len x) x
