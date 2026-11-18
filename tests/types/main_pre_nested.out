@@ -1,0 +1,8 @@
+error[E0366]: this isn't `main`'s signature
+  --> main_pre_nested.ck:10:11
+   |
+10 | export fn main args sys -> code : args~Named, sys~System, code~ExitCode
+   |           ^^^^ `args` has a precondition, which the runtime can't prove
+   = note: `main` is `fn main args sys -> code : args~List String, sys~System, code~ExitCode` (or a `Future ExitCode`); a type left out is that one
+
+main_pre_nested.ck: 1 error, 0 warnings
