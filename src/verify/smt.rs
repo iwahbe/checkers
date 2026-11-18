@@ -7,7 +7,7 @@
 //! instantiated per type; others are uninterpreted. Every application of a
 //! function with a postcondition contributes that postcondition (D50).
 
-use crate::core::{eval, force, quote, CaseTm, ConId, DefId, Lit, Mult, Prim, Tm, TyId, Val};
+use crate::core::{eval, force, max_var, quote, CaseTm, ConId, DefId, Lit, Mult, Prim, Tm, TyId, Val};
 use crate::elab::{Elab, ObLocal, Obligation};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
@@ -2955,15 +2955,6 @@ fn closed(t: &Tm, depth: usize) -> bool {
         Tm::Var(i) => *i < depth,
         Tm::Meta(_) | Tm::Error => false,
         _ => t.all_sub(|x, n| closed(x, depth + n)),
-    }
-}
-
-fn max_var(t: &Tm) -> Option<usize> {
-    let m = |a: Option<usize>, b: Option<usize>| a.max(b);
-    match t {
-        Tm::Var(i) => Some(*i),
-        Tm::App(f, a, ..) => m(max_var(f), max_var(a)),
-        _ => None,
     }
 }
 

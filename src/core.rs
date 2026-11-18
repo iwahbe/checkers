@@ -1437,6 +1437,14 @@ pub fn free_vars(t: &Tm, depth: usize, out: &mut std::collections::BTreeSet<usiz
     }
 }
 
+/// The largest free variable of `t`, if it has one: an environment of one
+/// more variable than that is enough to evaluate `t`.
+pub fn max_var(t: &Tm) -> Option<usize> {
+    let mut vars = std::collections::BTreeSet::new();
+    free_vars(t, 0, &mut vars);
+    vars.last().copied()
+}
+
 /// `t` with each free variable `i` (an index from outside `depth` binders)
 /// replaced by `f(i)`.
 pub fn rename_free(t: &Tm, depth: usize, f: &dyn Fn(usize) -> usize) -> Tm {

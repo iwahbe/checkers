@@ -1,0 +1,43 @@
+error[E0354]: `Bad` occurs in a negative position in field `f`
+ --> positivity_computed.ck:7:1
+  |
+7 | enum Bad
+  | ^^^^^^^^
+  = help: a type may not appear to the left of `->` in its own constructors; this would make the logic inconsistent
+
+error[E0354]: `Held` occurs in field `f` as an argument of `Neg`, which may use it in a negative position
+  --> positivity_computed.ck:14:1
+   |
+14 | enum Held
+   | ^^^^^^^^^
+   = help: a recursive type may appear only where it is strictly positive; `Neg` uses that parameter to the left of an `->`
+
+error[E0354]: `Through` occurs in field `x` as an argument of `Hide`, which may use it in a negative position
+  --> positivity_computed.ck:23:1
+   |
+23 | enum Through
+   | ^^^^^^^^^^^^
+   = help: a recursive type may appear only where it is strictly positive; `Hide` uses that parameter to the left of an `->`
+
+error[E0359]: `Plus` marks `+v`, but field `f` has `v` to the left of an `->`
+  --> positivity_computed.ck:32:30
+   |
+32 | export abstract record Plus +v : v~Type
+   |                              ^ declared `+` here
+   = help: importers rely on the mark (D16): change the field, or remove the mark
+
+error[E0359]: `PlusHeld` marks `+v`, but field `f` has `v` to the left of an `->`
+  --> positivity_computed.ck:36:34
+   |
+36 | export abstract record PlusHeld +v : v~Type
+   |                                  ^ declared `+` here
+   = help: importers rely on the mark (D16): change the field, or remove the mark
+
+error[E0359]: `Minus` marks `-v`, but field `f` has `v` in a positive position
+  --> positivity_computed.ck:40:31
+   |
+40 | export abstract record Minus -v : v~Type
+   |                               ^ declared `-` here
+   = help: importers rely on the mark (D16): change the field, or remove the mark
+
+positivity_computed.ck: 6 errors, 0 warnings

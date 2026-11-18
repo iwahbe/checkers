@@ -2260,26 +2260,13 @@ fn touches(t: &Tm, g: &Globals, defs: &HashSet<DefId>, tys: &HashSet<TyId>) -> b
 
 /// Definitions sealed by another module (D54) that occur in `t`.
 pub fn collect_sealed(t: &Tm, g: &Globals, cur: &str, out: &mut Vec<DefId>) {
-    match t {
-        Tm::Def(d) => {
-            let info = &g.defs[d.0 as usize];
-            if info.sealed && *info.module != *cur && !out.contains(d) {
-                out.push(*d);
-            }
+    if let Tm::Def(d) = t {
+        let info = &g.defs[d.0 as usize];
+        if info.sealed && *info.module != *cur && !out.contains(d) {
+            out.push(*d);
         }
-        Tm::App(f, a, ..) => {
-            collect_sealed(f, g, cur, out);
-            collect_sealed(a, g, cur, out);
-        }
-        Tm::Pi(_, _, _, a, b) => {
-            collect_sealed(a, g, cur, out);
-            collect_sealed(b, g, cur, out);
-        }
-        Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => {
-            v.iter().for_each(|x| collect_sealed(x, g, cur, out))
-        }
-        _ => {}
     }
+    t.each_sub(|x, _| collect_sealed(x, g, cur, out));
 }
 
 /// The levels of the locals `t` mentions (for termination, D150).
