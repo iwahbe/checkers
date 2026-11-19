@@ -45,9 +45,76 @@ impl Elab {
         self.rec_calls.push(RecCall { caller, callee, args, ob });
     }
 
+    /// The promises the module's function bodies make (#102): explicit
+    /// parameter `k` of `f` is a function called only with strict parts of
+    /// parameter `j` if every use of `k` in `f`'s body is such a call, or
+    /// passes `k` to a function that promises it. The largest set of
+    /// promises that holds, as functions may pass their parameters to each
+    /// other (or themselves) recursively.
+    fn body_promises(&mut self) -> HashSet<ElemAlt> {
+        let fns: Vec<DefId> = std::mem::take(&mut self.body_fns);
+        let uses = std::mem::take(&mut self.param_uses);
+        let mut held: HashSet<ElemAlt> = HashSet::new();
+        for f in &fns {
+            let n = self.fn_meta.get(f).map_or(0, |m| m.params.len());
+            for k in 0..n {
+                for j in (0..n).filter(|j| *j != k) {
+                    held.insert((*f, k, j));
+                }
+            }
+        }
+        let empty = Vec::new();
+        loop {
+            let failed: Vec<ElemAlt> = held
+                .iter()
+                .copied()
+                .filter(|&(f, k, j)| {
+                    let us = uses.get(&(f, k)).unwrap_or(&empty);
+                    !us.iter().all(|u| u.iter().any(|&(p, c)| p == j && self.cond_holds(c, &held)))
+                })
+                .collect();
+            if failed.is_empty() {
+                break;
+            }
+            for x in failed {
+                held.remove(&x);
+            }
+        }
+        for f in &fns {
+            let mut ps: Vec<(usize, usize)> = held.iter().filter(|x| x.0 == *f).map(|x| (x.1, x.2)).collect();
+            ps.sort();
+            self.body_elems.insert(*f, ps);
+        }
+        held
+    }
+
+    /// Whether condition `c` holds: one of its promises does (#102), in
+    /// the callee's signature, or read from its body (this module's, in
+    /// `held`, or a `transparent` function's of another module).
+    fn cond_holds(&self, c: Option<u32>, held: &HashSet<ElemAlt>) -> bool {
+        let Some(c) = c else { return true };
+        self.elem_conds[c as usize].iter().any(|&(d, k, j)| {
+            self.specs.get(&d).is_some_and(|s| s.elems.contains(&(k, j)))
+                || held.contains(&(d, k, j))
+                || (*self.g.defs[d.0 as usize].module != *self.cur
+                    && self.transparent.contains(&d)
+                    && self.body_elems.get(&d).is_some_and(|ps| ps.contains(&(k, j))))
+        })
+    }
+
     pub fn check_termination(&mut self) {
+        let held = self.body_promises();
         let fns: Vec<DefId> = std::mem::take(&mut self.module_fns);
-        let calls: Vec<CallRec> = std::mem::take(&mut self.calls);
+        let mut calls: Vec<CallRec> = std::mem::take(&mut self.calls);
+        // Parts that hold only if a promise read from a body does (#102).
+        for c in &mut calls {
+            for &(i, cond) in &c.conds {
+                if !self.cond_holds(Some(cond), &held) {
+                    c.args[i] = None;
+                }
+            }
+        }
+        self.elem_conds.clear();
         let rec_calls: Vec<RecCall> = std::mem::take(&mut self.rec_calls);
         let idx: HashMap<DefId, usize> = fns.iter().enumerate().map(|(i, d)| (*d, i)).collect();
         let n = fns.len();

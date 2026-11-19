@@ -1951,6 +1951,7 @@ impl Elab {
                     }
                     self.cur_fn = Some(*did);
                     self.module_fns.push(*did);
+                    self.body_fns.push(*did);
                     let rty = self.eval(&sig.cx, &sig.result);
                     self.assume_pres(&mut sig);
                     let posts: Vec<Pred> = sig.preds.iter().filter(|p| p.is_post).cloned().collect();

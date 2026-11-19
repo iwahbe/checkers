@@ -77,7 +77,28 @@ pub struct CallRec {
     /// For each explicit argument: Some(p) if it is a strict structural subterm of the caller's parameter p.
     pub args: Vec<Option<usize>>,
     pub span: Span,
+    /// `(i, c)`: `args[i]` holds only if condition `c` does (an element
+    /// promise read from a body, decided once the module's bodies are
+    /// checked; #102). Otherwise `args[i]` is `None`.
+    pub conds: Vec<(usize, u32)>,
 }
+
+/// Where a function value passed to a call gets its argument (#102): a
+/// strict part of the caller's parameter `p`, if condition `cond` holds
+/// (`None`: it does, from the callee's signature).
+#[derive(Clone, Copy, Debug)]
+pub struct ElemSub {
+    pub p: usize,
+    pub cond: Option<u32>,
+}
+
+/// One use of a parameter in a function's body (#102): the parameters `j`
+/// it is a function called only with strict parts of here, each if a
+/// condition holds. Empty: any other use, which promises nothing.
+pub type ParamUse = Vec<(usize, Option<u32>)>;
+
+/// A promise `(callee, k, j)`: `k` is called only with strict parts of `j` (#102).
+pub type ElemAlt = (DefId, usize, usize);
 
 #[derive(Clone)]
 pub struct Local {
@@ -90,6 +111,9 @@ pub struct Local {
     pub param: Option<usize>,
     /// This local is a strict structural subterm of parameter p.
     pub sub: Option<usize>,
+    /// ... if this condition holds (an element of a list passed to a
+    /// function whose promise is read from its body, #102).
+    pub sub_cond: Option<u32>,
     /// Known at compile time (§8.9): a `comptime` parameter, or a field of one.
     pub comptime: bool,
     /// Where its name is bound, if known (for the index, §15.5).
@@ -130,13 +154,13 @@ impl Cx {
     pub fn bind(&mut self, name: &str, ty: Val, mult: Mult) -> usize {
         let l = self.lvl();
         Rc::make_mut(&mut self.env).push(Val::var(l));
-        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: true, param: None, sub: None, comptime: false, span: None, refined: None });
+        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: true, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None });
         l
     }
     pub fn define(&mut self, name: &str, ty: Val, val: Val, mult: Mult) -> usize {
         let l = self.lvl();
         Rc::make_mut(&mut self.env).push(val);
-        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: false, param: None, sub: None, comptime: false, span: None, refined: None });
+        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: false, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None });
         l
     }
     pub fn pop(&mut self) {
@@ -547,8 +571,21 @@ pub struct Elab {
     pub guard_vars: HashMap<(DefId, String), Span>,
     /// The function result type when elaborating a tail position (for `try`).
     pub stdlib_mode: bool,
-    /// Element locals of `map f xs` where xs is a subterm of parameter p.
-    pub map_elem_sub: Option<usize>,
+    /// A function value checked here is applied to a strict part of the
+    /// caller's parameter (#102).
+    pub map_elem_sub: Option<ElemSub>,
+    /// A parameter of the current function used next, as a function called
+    /// only with parts of these parameters (#102).
+    pub use_ctx: Option<ParamUse>,
+    /// Each parameter's uses in the module's function bodies (#102).
+    pub param_uses: HashMap<(DefId, usize), Vec<ParamUse>>,
+    /// The module's functions whose bodies were checked (#102).
+    pub body_fns: Vec<DefId>,
+    /// Conditions: any of these `(callee, k, j)` promises (#102).
+    pub elem_conds: Vec<Vec<ElemAlt>>,
+    /// The element promises read from each checked function's body:
+    /// `(k, j)` as in `Spec::elems` (#102).
+    pub body_elems: HashMap<DefId, Vec<(usize, usize)>>,
     /// Span of the `match` being compiled (for exhaustiveness errors).
     pub match_span: Span,
     /// The `match` being checked is a binding's one pattern (a `let`, a
@@ -702,6 +739,11 @@ impl Elab {
             guard_vars: HashMap::new(),
             stdlib_mode: false,
             map_elem_sub: None,
+            use_ctx: None,
+            param_uses: HashMap::new(),
+            body_fns: Vec::new(),
+            elem_conds: Vec::new(),
+            body_elems: HashMap::new(),
             match_span: Span::default(),
             match_binding: false,
             pm: Default::default(),

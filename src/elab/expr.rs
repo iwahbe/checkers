@@ -151,7 +151,8 @@ impl Elab {
                         cx.assume(f);
                     }
                 }
-                cx.locals[l].sub = map_sub;
+                cx.locals[l].sub = map_sub.map(|e| e.p);
+                cx.locals[l].sub_cond = map_sub.and_then(|e| e.cond);
                 if simple && name != "_" {
                     self.bound_at(cx, l, p.span);
                 }
@@ -585,6 +586,14 @@ impl Elab {
             if self.map_elem_sub.is_some() {
                 self.map_elem_sub = None;
             }
+            // A use of a parameter, for the promises its body makes (#102):
+            // code in a specification or proof never runs.
+            let ctx = self.use_ctx.take();
+            if let (Some(k), Some(f)) = (cx.locals[l].param, self.cur_fn) {
+                if self.in_spec == 0 && self.in_proof == 0 {
+                    self.param_uses.entry((f, k)).or_default().push(ctx.unwrap_or_default());
+                }
+            }
             return (cx.var(l), ty);
         }
         if n == "__class_lemma" {
@@ -665,11 +674,11 @@ impl Elab {
         if self.g.defs[d.0 as usize].module.as_ref() != self.cur {
             return;
         }
-        let args = match self.map_elem_sub.take() {
-            Some(p) => vec![Some(p)],
-            None => vec![],
+        let (args, conds) = match self.map_elem_sub.take() {
+            Some(e) => (vec![Some(e.p)], e.cond.map(|c| (0, c)).into_iter().collect()),
+            None => (vec![], vec![]),
         };
-        self.calls.push(CallRec { caller, callee: d, args, span });
+        self.calls.push(CallRec { caller, callee: d, args, span, conds });
     }
 
     pub fn sym_term(&mut self, _cx: &Cx, s: Sym, span: Span) -> (Tm, Val) {
@@ -819,25 +828,45 @@ impl Elab {
         let elem_sub = self.map_elem_sub.take();
         let ncalls = self.calls.len();
         let saved_head = std::mem::replace(&mut self.in_app_head, true);
+        // A parameter called here (#102): what its first argument is part of.
+        if let ExprKind::Var(n) = &head.kind {
+            if cx.lookup(n).is_some_and(|l| cx.locals[l].param.is_some()) {
+                self.use_ctx = Some(args.first().and_then(|a| self.part_of(cx, a)).map(|(j, c)| vec![(j, c)]).unwrap_or_default());
+            }
+        }
         let (ft, fty) = self.infer(cx, head);
+        self.use_ctx = None;
         self.in_app_head = saved_head;
         let head_call = (self.calls.len() == ncalls + 1 && matches!(head.kind, ExprKind::Var(_))).then_some(ncalls);
         if let Some(i) = head_call {
-            let mut classified: Vec<Option<usize>> = args.iter().map(|a| self.subterm_of(cx, a)).collect();
-            if let Some(p) = elem_sub {
+            let mut conds = Vec::new();
+            let mut classified = Vec::new();
+            for (k, a) in args.iter().enumerate() {
+                let part = self.part_of(cx, a);
+                if let Some((_, Some(c))) = part {
+                    conds.push((k, c));
+                }
+                classified.push(part.map(|(p, _)| p));
+            }
+            if let Some(e) = elem_sub {
                 let callee = self.calls[i].callee;
                 if self.fn_meta.get(&callee).is_some_and(|m| m.params.len() > args.len()) {
-                    classified.push(Some(p));
+                    if let Some(c) = e.cond {
+                        conds.push((classified.len(), c));
+                    }
+                    classified.push(Some(e.p));
                 }
             }
             self.calls[i].args = classified;
+            self.calls[i].conds = conds;
         }
         // What the callee's signature says about its function parameters
         // (#102): refinements over later parameters, and promises to call
         // them only with elements of a list.
         // A generic function's name comes with its implicit arguments.
         let callee_spec = crate::core::head_def(&ft).and_then(|d| self.specs.get(&d));
-        let (late, elems) = callee_spec.map(|s| (s.late.clone(), s.elems.clone())).unwrap_or_default();
+        let callee_def = crate::core::head_def(&ft);
+        let late = callee_spec.map(|s| s.late.clone()).unwrap_or_default();
         let n_implicit = callee_spec.map_or(0, |s| s.n_implicit);
         self.head_checks_aliases = match &ft {
             Tm::Def(d) => self.specs.get(d).is_some_and(|s| s.preds.iter().any(|p| p.alias.is_some() && !p.is_post)),
@@ -876,8 +905,26 @@ impl Elab {
                     (t, ty, expected) = (t1, ty1, e);
                 }
             }
-            let elem = elems.iter().find(|(f, _)| *f == k).and_then(|(_, j)| args.get(*j)).and_then(|aj| self.subterm_of_or_param(cx, aj));
+            let elem = callee_def.and_then(|d| self.elem_sub(cx, d, k, &args));
+            // A parameter passed here (#102): it is called only with parts
+            // of what the callee promises its function `k` gets.
+            if let (ExprKind::Var(n), Some(d)) = (&a.kind, callee_def) {
+                if cx.lookup(n).is_some_and(|l| cx.locals[l].param.is_some()) {
+                    let mut ctx = Vec::new();
+                    for (j, aj) in args.iter().enumerate() {
+                        if j == k {
+                            continue;
+                        }
+                        if let Some(p) = self.part_or_param(cx, aj) {
+                            let c = self.new_elem_cond(vec![(d, k, j)]);
+                            ctx.push((p, Some(c)));
+                        }
+                    }
+                    self.use_ctx = Some(ctx);
+                }
+            }
             let (t2, ty2) = self.apply_one_as(cx, t, ty, a, expected, elem, ready.remove(&k));
+            self.use_ctx = None;
             self.map_elem_sub = None;
             t = t2;
             ty = ty2;
@@ -1537,7 +1584,7 @@ impl Elab {
         ty: Val,
         a: &Expr,
         expected: Option<Val>,
-        elem: Option<usize>,
+        elem: Option<ElemSub>,
         ready: Option<(Tm, Val)>,
     ) -> (Tm, Val) {
         let (t, ty) = self.insert(cx, t, ty);
@@ -1618,19 +1665,68 @@ impl Elab {
         }
     }
 
-    /// If `a` is a local that is a strict structural subterm of parameter p, return p.
-    pub fn subterm_of(&self, cx: &Cx, a: &Expr) -> Option<usize> {
+    /// `a` as a strict part of parameter `p`, if condition `c` holds:
+    /// `(p, c)`.
+    fn part_of(&self, cx: &Cx, a: &Expr) -> Option<(usize, Option<u32>)> {
         match &a.kind {
-            ExprKind::Var(n) => cx.lookup(n).and_then(|l| cx.locals[l].sub),
+            ExprKind::Var(n) => cx.lookup(n).and_then(|l| cx.locals[l].sub.map(|p| (p, cx.locals[l].sub_cond))),
             _ => None,
         }
     }
 
-    fn subterm_of_or_param(&self, cx: &Cx, a: &Expr) -> Option<usize> {
+    /// `a` as parameter `p` or (unconditionally) a strict part of it.
+    fn part_or_param(&self, cx: &Cx, a: &Expr) -> Option<usize> {
         match &a.kind {
-            ExprKind::Var(n) => cx.lookup(n).and_then(|l| cx.locals[l].sub),
+            ExprKind::Var(n) => cx.lookup(n).and_then(|l| {
+                let x = &cx.locals[l];
+                if x.sub_cond.is_none() { x.sub.or(x.param) } else { x.param }
+            }),
             _ => None,
         }
+    }
+
+    fn new_elem_cond(&mut self, alts: Vec<ElemAlt>) -> u32 {
+        self.elem_conds.push(alts);
+        (self.elem_conds.len() - 1) as u32
+    }
+
+    /// Argument `k` of a call of `d`: a function value there is applied to
+    /// a strict part of the caller's parameter `p`, if `d` promises it to
+    /// call that function only with parts of another argument, itself the
+    /// parameter `p` or a part of it (#102). The promise is in `d`'s
+    /// signature, or read from its body where that is visible: in this
+    /// module, or exported `transparent`.
+    fn elem_sub(&mut self, cx: &Cx, d: DefId, k: usize, args: &[&Expr]) -> Option<ElemSub> {
+        let promised = self.specs.get(&d).map(|s| s.elems.clone()).unwrap_or_default();
+        for &(f, j) in &promised {
+            if f == k {
+                if let Some(p) = args.get(j).and_then(|aj| self.part_or_param(cx, aj)) {
+                    return Some(ElemSub { p, cond: None });
+                }
+            }
+        }
+        if !self.body_visible(d) {
+            return None;
+        }
+        let mut found: Option<(usize, Vec<ElemAlt>)> = None;
+        for (j, aj) in args.iter().enumerate() {
+            if j == k {
+                continue;
+            }
+            let Some(p) = self.part_or_param(cx, aj) else { continue };
+            match &mut found {
+                None => found = Some((p, vec![(d, k, j)])),
+                Some((q, alts)) if *q == p => alts.push((d, k, j)),
+                Some(_) => {}
+            }
+        }
+        let (p, alts) = found?;
+        Some(ElemSub { p, cond: Some(self.new_elem_cond(alts)) })
+    }
+
+    /// Whether `d`'s body can be read for its promises (#102).
+    pub fn body_visible(&self, d: DefId) -> bool {
+        *self.g.defs[d.0 as usize].module == *self.cur || self.transparent.contains(&d)
     }
 
     // ── operators ───────────────────────────────────────────────────────────
@@ -2115,6 +2211,7 @@ impl Elab {
                         if let ExprKind::Var(src) = &rhs.kind {
                             if let Some(sl) = cx.locals[..l].iter().rposition(|x| x.name.as_ref() == src.as_str()) {
                                 cx.locals[l].sub = cx.locals[sl].sub;
+                                cx.locals[l].sub_cond = cx.locals[sl].sub_cond;
                             }
                         }
                         let body = self.block_from(cx, rest, result, expected, tail);

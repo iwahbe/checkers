@@ -1,0 +1,8 @@
+error[E0301]: cannot show that `by_hidden` terminates: no argument gets structurally smaller in this recursive call
+  --> termination_across_modules.ck:24:39
+   |
+24 |         Many kids -> each.hidden kids by_hidden
+   |                                       ^^^^^^^^^ recursive call
+   = help: recurse on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of `by_hidden`, or mark it `partial`
+
+termination_across_modules.ck: 1 error, 0 warnings

@@ -331,6 +331,7 @@ impl Elab {
             let mult = self.named_mult(cx, name, &ty, *at, Mult::Many);
             let l = cx.define(name, ty, v, mult);
             cx.locals[l].sub = cx.locals[*occ].sub;
+            cx.locals[l].sub_cond = cx.locals[*occ].sub_cond;
             cx.locals[l].param = cx.locals[*occ].param;
             self.bound_at(cx, l, *at);
             lets.push((self.binder_name(name, *at), mult, tyt, t));
@@ -515,6 +516,7 @@ impl Elab {
             let tyt = quote(&self.g, cx.lvl(), &cty);
             let l = cx.define(&format!("$c{i}"), cty, v, Mult::Many);
             cx.locals[l].sub = cx.locals[occ].sub;
+            cx.locals[l].sub_cond = cx.locals[occ].sub_cond;
             comps.push(l);
             lets.push((format!("$c{i}"), tyt, tm));
         }
@@ -759,11 +761,13 @@ impl Elab {
             let mut env: Vec<Val> = params.clone();
             let mut lvls = Vec::new();
             let sub = cx.locals[occ].sub.or(cx.locals[occ].param);
+            let sub_cond = if cx.locals[occ].sub.is_some() { cx.locals[occ].sub_cond } else { None };
             for (n, m, _, fty) in &fields {
                 let ty = eval(&self.g, &Rc::new(env.clone()), fty);
                 let mult = if *m == Mult::Zero { Mult::Zero } else { Mult::Many };
                 let l = cx.bind(&format!("${n}"), ty, mult);
                 cx.locals[l].sub = sub;
+                cx.locals[l].sub_cond = sub_cond;
                 cx.locals[l].comptime = occ_static;
                 env.push(Val::var(l));
                 lvls.push(l);

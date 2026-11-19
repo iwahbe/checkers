@@ -175,18 +175,24 @@ All code that may appear in types or proofs must be **total**:
 - **Guessed measures (D150):** with no `decreasing`, a function whose recursion isn't structural gets a measure guessed from its parameters' sizes and the distances its guards bound (`i < len src` gives `len src - i`), alone or in pairs, and checked by the prover; E0301 names those tried if none works.
 - **Surface form:** `decreasing e` on the first line of a function body gives the measure. `e` is a `nat` or a tuple of `nat`s, compared lexicographically. Mutually recursive functions share one measure space; each call must strictly decrease it (worked example: `value`/`array`/`elements` in `stdlib/json.ck`).
 - **Lemmas (#76, #104).** A lemma that uses itself (`have l …` in its proof) is a proof by induction and must terminate the same way: structurally, by a measure written as `decreasing e` on the first line of its `proof` (the measure is part of the proof; it may use the lemma's `let`s), or by one guessed as for a function. At each recursive `have`, the measure at its arguments must be smaller, given the facts there. An induction on a position (`decreasing len src - i`) follows a parser's own recursion. An instance's lemma gives its measure the same way, in its proof; a class's lemma, a statement only, has none.
-- **Recursion through containers (#102)** is read from the callee's signature, never its body: changing a function's body must not break its callers. Where a function value is passed at a parameter of type `(x~A -> …, list.contains e x)`, and the argument for `e` is a parameter of the function being checked or a strict part of one, `x` counts as a strict part of that parameter, since an element of a list that is part of a value is a constructor argument inside it. The function value may be a bare name (`list.all walk kids`: the call `walk x`), a partial application (`list.map (by k) kids`: `by k x`, its first remaining parameter, D86), or a lambda (its parameter is the strict part). Only that predicate form is recognised. `std.list`'s `map` and `all` make the promise (§16.3), and so may a program's own functions:
+- **Recursion through containers (#102).** A function value passed to a callee counts as called only with strict parts of the caller's parameter when the callee calls its function argument only with strict parts of another argument, and that argument is a parameter of the function being checked or a strict part of one. Where the callee's body is visible, as for anything else (§6: the same module, or exported `transparent`), its body shows it; across a module boundary, from a sealed function, only its signature does, so changing a sealed body never breaks an importer.
+  - **From a body.** Explicit parameter `p` of `f` is called only with strict parts of parameter `e` when every use of `p` in `f`'s body that can run (not in a specification or proof) is either a call whose first argument is a strict part of `e` (a variable bound by matching on `e`), or `p` passed whole as an argument to a function that promises it in turn, with `e` or a strict part of it as the argument it promises about. Any other use (returned, stored, passed to a local function, called with anything else) promises nothing. Functions may pass their parameters to themselves or each other: the promises are the largest set that holds together. A parameter never used is never called, so it promises everything.
+  - **From a signature.** A parameter of type `(x~A -> …, list.contains e x)` promises it for the elements of `e`: an element of a list that is part of a value is a constructor argument inside it. Only that predicate form is recognised. `std.list`'s `all`, sealed, makes the promise (§16.3), and so does `map`; so may a program's own functions. The function making the promise proves it keeps it: each call of its function parameter obliges `list.contains e x` there (D84), and passing the parameter on obliges the implication between the two refinements (D85).
+  - **The function value** may be a bare name (`list.all walk kids`: the call `walk x`), a partial application (`list.map (by k) kids`: `by k x`, its first remaining parameter, D86), or a lambda (its parameter is the strict part).
 
   ```
-  fn each xs p -> r : xs~List a, p~(x~a -> Bool, list.contains xs x), r~Bool
+  fn every xs p -> r : xs~List a, p~(a -> Bool), r~Bool
+      match xs
+          []        -> True
+          x :: rest -> p x and every rest p
 
   fn walk t -> r : t~Tree, r~Bool
       match t
           Leaf      -> True
-          Many kids -> list.all walk kids and each kids walk
+          Many kids -> list.all walk kids and every kids walk
   ```
 
-  The function making the promise proves it keeps it: each call of its function parameter obliges `list.contains e x` there (D84), and passing the parameter on obliges the implication between the two refinements (D85).
+  `list.all` is sealed and promises it in its signature; `every`, in the same module, shows it in its body. An importer of `every` would need it exported `transparent`, or the promise in its signature.
 - Non-terminating code (server loops, actor bodies) is marked `partial` and lives in the `Div` effect (§8). `partial` code may never appear in a type or proof.
 
 ---

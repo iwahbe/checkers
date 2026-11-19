@@ -1,8 +1,15 @@
-error[E0301]: cannot show that `by_unpromised` terminates: no argument gets structurally smaller in this recursive call
-  --> termination_containers.ck:54:22
+error[E0301]: cannot show that `by_extra` terminates: no argument gets structurally smaller in this recursive call
+  --> termination_containers.ck:75:22
    |
-54 |         One kid   -> by_unpromised kid
-   |                      ^^^^^^^^^^^^^ recursive call
-   = help: recurse on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of `by_unpromised`, or mark it `partial`
+75 |         One kid   -> by_extra kid
+   |                      ^^^^^^^^ recursive call
+   = help: recurse on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of `by_extra`, or mark it `partial`
 
-termination_containers.ck: 1 error, 0 warnings
+error[E0301]: cannot show that `by_hold` terminates: no argument gets structurally smaller in this recursive call
+  --> termination_containers.ck:85:22
+   |
+85 |         One kid   -> by_hold kid
+   |                      ^^^^^^^ recursive call
+   = help: recurse on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of `by_hold`, or mark it `partial`
+
+termination_containers.ck: 2 errors, 0 warnings

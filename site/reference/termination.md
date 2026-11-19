@@ -19,7 +19,9 @@ fn total t -> n : t~Tree, n~Int
         Node l v r   -> total l + v + total r
 ```
 
-Recursion through a container counts as structural when the function it goes through promises, in its signature, to call its function argument only with elements of the list: a parameter typed `(x~a -> b, list.contains xs x)`, as `list.map` and `list.all` have. Each element of a list that is part of a parameter is itself a part of it, so a function on a tree whose children are in a `List` may pass itself to `list.map` with the children. The function passed may be the function's name, a partial application of it (`list.map (depth_from k) kids`: `kids`' elements are its next argument), or a lambda (`list.all (\k -> ok k) kids`: `k` is the part). Only the signature counts, never the body, so a change to a function's body never breaks a caller's termination.
+Recursion through a container counts as structural when the function it goes through calls its function argument only with elements of the list. Each element of a list that is part of a parameter is itself a part of it, so a function on a tree whose children are in a `List` may pass itself to `list.map` with the children. The function passed may be the function's name, a partial application of it (`list.map (depth_from k) kids`: `kids`' elements are its next argument), or a lambda (`list.all (\k -> ok k) kids`: `k` is the part).
+
+Where that function's body is visible, as it is for proofs (in the same module, or exported `transparent`), its body shows it: every use of its function parameter is a call on a part of the list, or passes the parameter on to a function that keeps the same promise.
 
 ```checkers
 import std.list
@@ -31,8 +33,8 @@ fn depth r -> n : r~Rose, n~Nat
     match r
         Rose _ kids -> 1 + list.max_of (list.map depth kids)
 
-# A function of your own may make the same promise.
-fn every xs p -> r : xs~List a, p~(x~a -> Bool, list.contains xs x), r~Bool
+# `every` calls `p` only with elements of `xs`, as its body shows.
+fn every xs p -> r : xs~List a, p~(a -> Bool), r~Bool
     match xs
         []        -> True
         x :: rest -> p x and every rest p
@@ -42,7 +44,18 @@ fn labelled r -> b : r~Rose, b~Bool
         Rose label kids -> label != "" and every kids labelled
 ```
 
-Without the promise (`p~(a -> Bool)`), `every kids labelled` isn't known to call `labelled` on a part of `r`, and is E0301.
+A sealed function of another module makes the promise in its signature instead, so that changing its body never breaks an importer: a parameter typed `(x~a -> b, list.contains xs x)`, as `list.all` has. Its body must keep it, which is proved like any precondition.
+
+```checkers
+import std.list
+
+export fn each xs p -> r : xs~List a, p~(x~a -> Bool, list.contains xs x), r~Bool
+    match xs
+        []        -> True
+        x :: rest -> p x and each rest p
+```
+
+Without either, a call through it is E0301.
 
 ## `decreasing`
 
