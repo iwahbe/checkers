@@ -110,7 +110,7 @@ pub struct Remembered {
 /// Where verified modules are remembered, if anywhere: beside Z3's answers,
 /// unless the prover is being watched.
 pub fn modules_dir() -> Option<std::path::PathBuf> {
-    if std::env::var_os("CHECKERS_SMT_DUMP").is_some() || std::env::var_os("CHECKERS_SMT_TIME").is_some() {
+    if std::env::var_os("CHECKERS_SMT_DUMP").is_some() || std::env::var_os("CHECKERS_SMT_TIME").is_some() || corpus_dir().is_some() {
         return None;
     }
     cache_dir().map(|d| d.join("modules"))
@@ -262,8 +262,48 @@ fn store(query: &str, out: &str) {
     }
 }
 
+/// Where the queries Z3 is asked are written, with its answers, if anywhere
+/// (`CHECKERS_SMT_CORPUS`, §7.2).
+pub fn corpus_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("CHECKERS_SMT_CORPUS").filter(|d| !d.is_empty()).map(std::path::PathBuf::from)
+}
+
+/// Write `data` to `path` whole or not at all; if the file is there already
+/// with other contents, say so (a hash collision, or Z3 answering one query
+/// two ways).
+fn write_once(path: &std::path::Path, data: &str, what: &str) {
+    if let Ok(old) = std::fs::read_to_string(path) {
+        if old != data {
+            eprintln!("corpus: {} already holds a different {what}", path.display());
+        }
+        return;
+    }
+    // A name of its own: other threads and processes may write the same file.
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let tmp = path.with_extension(format!("tmp{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    if std::fs::write(&tmp, data).is_err() || std::fs::rename(&tmp, path).is_err() {
+        eprintln!("corpus: could not write {}", path.display());
+    }
+}
+
+/// Add a query module `module` asked, and Z3's output with the work it used,
+/// to the corpus in `dir`: `dir/MODULE/HASH.smt2` and `dir/MODULE/HASH.z3`,
+/// named by the query's text alone (its ledger hash). `dir/z3-version` is
+/// the Z3 that answered.
+fn add_to_corpus(dir: &std::path::Path, module: &str, query: &str, out: &str, used: &str) {
+    let sub = dir.join(module);
+    if std::fs::create_dir_all(&sub).is_err() {
+        eprintln!("corpus: could not create {}", sub.display());
+        return;
+    }
+    write_once(&dir.join("z3-version"), &format!("{}\n", z3_version().unwrap_or_else(|| "unknown".into())), "Z3 version");
+    let name = format!("{:016x}", fnv(query));
+    write_once(&sub.join(format!("{name}.smt2")), query, "query");
+    write_once(&sub.join(format!("{name}.z3")), &format!(";; work {used}\n{out}"), "answer");
+}
+
 /// Z3's answer to one SMT-LIB script, from the cache or a fresh Z3 context.
-fn ask(query: &str) -> Answer {
+fn ask(module: &str, query: &str) -> Answer {
     ASKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     // The same query asked twice in this process: Z3's answer depends only
     // on the text, so it is reused (D154).
@@ -275,7 +315,9 @@ fn ask(query: &str) -> Answer {
         REUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return answer(out);
     }
-    let out = match cached(query) {
+    // Writing the corpus, every answer is Z3's own, not the cache's.
+    let corpus = corpus_dir();
+    let out = match cached(query).filter(|_| corpus.is_none()) {
         Some(out) => {
             REUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             out
@@ -283,11 +325,13 @@ fn ask(query: &str) -> Answer {
         None => {
             let start = std::time::Instant::now();
             let timed = std::env::var_os("CHECKERS_SMT_TIME").is_some();
-            // Timed, Z3's statistics follow its output, for the work it used;
-            // they are cut off before the output is read or stored.
-            let mut out = if timed { run_z3(&format!("{query}(get-info :all-statistics)\n")) } else { run_z3(query) };
+            // Timed or writing the corpus, Z3's statistics follow its output,
+            // for the work it used; they are cut off before the output is
+            // read or stored.
+            let stats = timed || corpus.is_some();
+            let mut out = if stats { run_z3(&format!("{query}(get-info :all-statistics)\n")) } else { run_z3(query) };
             let mut used = String::from("?");
-            if timed {
+            if stats {
                 if let Some(at) = out.rfind("(:") {
                     used = out[at..].split(":rlimit-count").nth(1).and_then(|r| r.split_whitespace().next()).unwrap_or("?").trim_end_matches(')').to_string();
                     out.truncate(at);
@@ -305,6 +349,11 @@ fn ask(query: &str) -> Answer {
                 }
             }
             let cut_off = out.starts_with("unknown") && start.elapsed().as_millis() as u64 >= SAFETY_MS * 9 / 10;
+            if let Some(dir) = &corpus {
+                // An answer the wall clock cut off depends on the machine.
+                let used = if cut_off { "cut off by the wall clock" } else { used.as_str() };
+                add_to_corpus(dir, module, query, &out, used);
+            }
             if !cut_off {
                 store(query, &out);
                 memo(&out);
@@ -381,7 +430,7 @@ fn answer(out: String) -> Answer {
 }
 
 /// Solve the queries on a few worker threads (each Z3 context is heavy).
-fn ask_all(texts: &[Option<String>]) -> Vec<Option<Answer>> {
+fn ask_all(module: &str, texts: &[Option<String>]) -> Vec<Option<Answer>> {
     let workers = std::thread::available_parallelism().map_or(2, |n| n.get()).min(8);
     let next = std::sync::atomic::AtomicUsize::new(0);
     let results: Vec<std::sync::Mutex<Option<Answer>>> = texts.iter().map(|_| std::sync::Mutex::new(None)).collect();
@@ -393,7 +442,7 @@ fn ask_all(texts: &[Option<String>]) -> Vec<Option<Answer>> {
                 let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let Some(t) = texts.get(i) else { break };
                 if let Some(t) = t {
-                    let a = ask(t);
+                    let a = ask(module, t);
                     *results[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(a);
                 }
             });
@@ -445,7 +494,7 @@ fn ends_everywhere(e: &Elab, obs: &[&Obligation]) {
     let defs = smt::Defs::default();
     let texts: Vec<Option<String>> =
         all.iter().map(|o| smt::Builder::new(e, user).sharing(&defs).query(o).ok().map(|q| q.text)).collect();
-    let answers = ask_all(&texts);
+    let answers = ask_all(user, &texts);
     let mut k = 0;
     let mut set = e.ends_everywhere.lock().unwrap_or_else(|e| e.into_inner());
     for (d, v) in &cands {
@@ -512,7 +561,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     //    proof, `sat` a real counterexample.
     let first: Vec<Option<String>> = texts.iter().map(|t| t.as_ref().map(|t| with_limit(t, FIRST_RLIMIT))).collect();
     let mut answers: Vec<Option<Answer>> =
-        ask_all(&first).into_iter().map(|a| a.filter(|a| matches!(a, Answer::Unsat | Answer::Sat(_)))).collect();
+        ask_all(user, &first).into_iter().map(|a| a.filter(|a| matches!(a, Answer::Unsat | Answer::Sat(_)))).collect();
     // The query that proved each obligation, as Z3 was given it.
     let mut proof: Vec<Option<String>> =
         answers.iter().zip(&first).map(|(a, t)| if matches!(a, Some(Answer::Unsat)) { t.clone() } else { None }).collect();
@@ -551,7 +600,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
                     Some(with_limit(t, limit))
                 })
                 .collect();
-            for (k, a) in ask_all(&ask_q).into_iter().enumerate() {
+            for (k, a) in ask_all(user, &ask_q).into_iter().enumerate() {
                 match a {
                     Some(Answer::Unsat) => proof[k] = ask_q[k].clone(),
                     Some(Answer::Sat(_)) => gave_up[k][tier] = false,
@@ -567,7 +616,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
         .enumerate()
         .map(|(k, t)| if proof[k].is_some() || answers[k].is_some() { None } else { t.clone() })
         .collect();
-    for (k, a) in ask_all(&rest).into_iter().enumerate() {
+    for (k, a) in ask_all(user, &rest).into_iter().enumerate() {
         if proof[k].is_some() {
             answers[k] = Some(Answer::Unsat);
         } else if a.is_some() {
@@ -582,7 +631,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
         .map(|(a, f)| if matches!(a, Some(Answer::Unknown(_))) { f.clone() } else { None })
         .collect();
     if retry.iter().any(|r| r.is_some()) {
-        for (a, r) in answers.iter_mut().zip(ask_all(&retry)) {
+        for (a, r) in answers.iter_mut().zip(ask_all(user, &retry)) {
             if let Some(r @ Answer::Sat(_)) = r {
                 *a = Some(r);
             }
@@ -771,7 +820,7 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
                     .filter(|k| !matches!(answers[*k], Some(Answer::Unsat)))
                     .collect();
                 let asked: Vec<Option<String>> = ks.iter().map(|k| if limit { small(&texts[*k]) } else { texts[*k].clone() }).collect();
-                for (k, a) in ks.iter().zip(ask_all(&asked)) {
+                for (k, a) in ks.iter().zip(ask_all(user, &asked)) {
                     answers[*k] = a;
                 }
                 if let Some(ci) = tier.clone().find(|ci| proved(&answers, *ci)) {
@@ -842,7 +891,7 @@ fn unreachable(e: &Elab, user: &str) -> Vec<Diagnostic> {
             q.map(|t| t.replacen(&format!("(set-option :rlimit {RLIMIT})"), &format!("(set-option :rlimit {PROBE_RLIMIT})"), 1) + ";; reachable?\n")
         })
         .collect();
-    let answers = ask_all(&texts);
+    let answers = ask_all(user, &texts);
     // A branch reached along several paths (an arm under several cases)
     // never runs only if no path reaches it.
     let mut groups: Vec<(Span, ProbeKind, bool, &Probe)> = Vec::new();
