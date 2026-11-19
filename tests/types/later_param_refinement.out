@@ -1,0 +1,27 @@
+error[E0450]: cannot prove `i < n`, required to call `f`
+  --> later_param_refinement.ck:39:7
+   |
+39 |     f n
+   |       ^ `f` requires `i < n`
+   = note: counterexample: n = 0
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+error[E0450]: cannot prove that `small` can be called here
+  --> later_param_refinement.ck:43:11
+   |
+43 |     under small 4
+   |           ^^^^^ `under` may call this with any `(i~Int, i < 4)`
+   = note: it needs `i < 3`
+   = note: counterexample: i = 3
+   = help: pass a function that accepts every `(i~Int, i < 4)`
+
+error[E0450]: cannot prove that `small` can be called here
+  --> later_param_refinement.ck:47:11
+   |
+47 |     under small
+   |           ^^^^^ `under` may call this with any `Int`
+   = note: it needs `i < 3`
+   = note: counterexample: i = 3
+   = help: pass a function that accepts every `Int`
+
+later_param_refinement.ck: 3 errors, 0 warnings

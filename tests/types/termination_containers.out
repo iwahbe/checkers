@@ -1,0 +1,15 @@
+error[E0301]: cannot show that `by_extra` terminates: no argument gets structurally smaller in this recursive call
+  --> termination_containers.ck:76:40
+   |
+76 |         Many kids -> with_extra t kids by_extra
+   |                                        ^^^^^^^^ recursive call
+   = help: `with_extra` isn't known to call `by_extra` only with parts of `kids`: it uses `p` other than by calling it with a part of `xs` or passing it on to a function that does
+
+error[E0301]: cannot show that `by_hold` terminates: no argument gets structurally smaller in this recursive call
+  --> termination_containers.ck:86:28
+   |
+86 |         Many kids -> (hold by_hold kids) t
+   |                            ^^^^^^^ recursive call
+   = help: `hold` isn't known to call `by_hold` only with parts of `kids`: it uses `f` other than by calling it with a part of `xs` or passing it on to a function that does
+
+termination_containers.ck: 2 errors, 0 warnings

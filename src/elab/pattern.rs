@@ -242,7 +242,7 @@ impl Elab {
         };
         // Completing a pattern (D142): the type matched.
         if arms.iter().any(|(p, _, _)| matches!(&p.kind, PatKind::Var(n) if Self::is_cursor(n))) {
-            let ty = cx.locals[occ].ty.clone();
+            let ty = cx.ty_of(occ);
             self.note_scrutinee(cx, &ty);
         }
         let rows = arms
@@ -324,13 +324,14 @@ impl Elab {
         let start = cx.lvl();
         let mut lets = Vec::new();
         for (name, occ, at) in &row.binds {
-            let ty = cx.locals[*occ].ty.clone();
+            let ty = cx.ty_of(*occ);
             let v = cx.env[*occ].clone();
             let tyt = quote(&self.g, cx.lvl(), &ty);
             let t = cx.var(*occ);
             let mult = self.named_mult(cx, name, &ty, *at, Mult::Many);
             let l = cx.define(name, ty, v, mult);
             cx.locals[l].sub = cx.locals[*occ].sub;
+            cx.locals[l].sub_cond = cx.locals[*occ].sub_cond;
             cx.locals[l].param = cx.locals[*occ].param;
             self.bound_at(cx, l, *at);
             lets.push((self.binder_name(name, *at), mult, tyt, t));
@@ -419,7 +420,7 @@ impl Elab {
         for o in occs {
             let taken_apart = self.pm.frames.iter().any(|(x, _)| *x == o);
             if !taken_apart && !within_bound(o) && o < cx.locals.len() {
-                let ty = cx.locals[o].ty.clone();
+                let ty = cx.ty_of(o);
                 if self.val_linear(&ty) {
                     if !self.pm.dropped.contains(&row.span) {
                         self.pm.dropped.push(row.span);
@@ -474,7 +475,7 @@ impl Elab {
             })
             .min()
             .unwrap_or(ps.len());
-        let ty = match self.force(&cx.locals[occ].ty) {
+        let ty = match self.force(&cx.ty_of(occ)) {
             Val::TupleTy(ts) => Val::TupleTy(crate::core::flat_parts(&self.g, &ts, true)),
             t => t,
         };
@@ -515,6 +516,7 @@ impl Elab {
             let tyt = quote(&self.g, cx.lvl(), &cty);
             let l = cx.define(&format!("$c{i}"), cty, v, Mult::Many);
             cx.locals[l].sub = cx.locals[occ].sub;
+            cx.locals[l].sub_cond = cx.locals[occ].sub_cond;
             comps.push(l);
             lets.push((format!("$c{i}"), tyt, tm));
         }
@@ -579,7 +581,7 @@ impl Elab {
     }
 
     fn compile_lit(&mut self, cx: &mut Cx, rows: Vec<Row>, occ: usize, expected: &Val, tail: bool) -> Tm {
-        let occ_ty = cx.locals[occ].ty.clone();
+        let occ_ty = cx.ty_of(occ);
         let mut lits: Vec<Lit> = Vec::new();
         for r in &rows {
             if let Some((_, p)) = r.pats.iter().find(|(o, _)| *o == occ) {
@@ -713,7 +715,7 @@ impl Elab {
     }
 
     fn compile_con(&mut self, cx: &mut Cx, rows: Vec<Row>, occ: usize, pat: &Pattern, expected: &Val, tail: bool) -> Tm {
-        let occ_ty = self.force(&cx.locals[occ].ty);
+        let occ_ty = self.force(&cx.ty_of(occ));
         let hint = match &occ_ty {
             Val::TyCon(t, _) => Some(*t),
             _ => None,
@@ -759,11 +761,13 @@ impl Elab {
             let mut env: Vec<Val> = params.clone();
             let mut lvls = Vec::new();
             let sub = cx.locals[occ].sub.or(cx.locals[occ].param);
+            let sub_cond = if cx.locals[occ].sub.is_some() { cx.locals[occ].sub_cond } else { None };
             for (n, m, _, fty) in &fields {
                 let ty = eval(&self.g, &Rc::new(env.clone()), fty);
                 let mult = if *m == Mult::Zero { Mult::Zero } else { Mult::Many };
                 let l = cx.bind(&format!("${n}"), ty, mult);
                 cx.locals[l].sub = sub;
+                cx.locals[l].sub_cond = sub_cond;
                 cx.locals[l].comptime = occ_static;
                 env.push(Val::var(l));
                 lvls.push(l);
@@ -877,24 +881,36 @@ impl Elab {
             // So do the types of the variables in scope (D173): `x~futures s a`
             // is a `Future a` in the `One` arm of `match s`, as in Agda and
             // Idris. Only the type changes; the variable is the same.
-            let mut retyped: Vec<(usize, Val)> = Vec::new();
+            // A type that still mentions the fields (`p~(x~a -> Bool,
+            // list.contains xs x)` in the `x :: rest` arm) mentions locals
+            // bound after the variable: it is the type its uses have
+            // (`refined`), and `ty` stays over the locals before it.
+            let mut retyped: Vec<(usize, Val, Option<Val>)> = Vec::new();
             if cx.locals[occ].bound {
                 let i = cx.lvl() - 1 - occ;
                 for l in 0..start {
                     if l == occ {
                         continue;
                     }
-                    let tm = quote(&self.g, cx.lvl(), &cx.locals[l].ty);
+                    let tm = quote(&self.g, cx.lvl(), &cx.ty_of(l));
                     if !super::has_meta(&tm) && mentions_var(&tm, i) {
                         let mut env = cx.env.to_vec();
                         env[occ] = Val::Con(c, all.clone());
                         let ty = eval(&self.g, &Rc::new(env), &tm);
+                        let new = quote(&self.g, cx.lvl(), &ty);
                         if let Some(f) = self.cur_fn {
-                            if self.type_linear(&tm) && self.never_linear(&quote(&self.g, cx.lvl(), &ty)) {
+                            if self.type_linear(&tm) && self.never_linear(&new) {
                                 self.moot_in_arm.insert((f, occ, c, l));
                             }
                         }
-                        retyped.push((l, std::mem::replace(&mut cx.locals[l].ty, ty)));
+                        let saved = (cx.locals[l].ty.clone(), cx.locals[l].refined.clone());
+                        if mentions_level_from(&new, cx.lvl(), l) {
+                            cx.locals[l].refined = Some(ty);
+                        } else {
+                            cx.locals[l].ty = ty;
+                            cx.locals[l].refined = None;
+                        }
+                        retyped.push((l, saved.0, saved.1));
                     }
                 }
             }
@@ -905,8 +921,9 @@ impl Elab {
             } else {
                 self.compile(cx, rs, &refined, tail)
             };
-            for (l, ty) in retyped {
+            for (l, ty, refined) in retyped {
                 cx.locals[l].ty = ty;
+                cx.locals[l].refined = refined;
             }
             cx.facts.truncate(saved);
             self.pm.frames.pop();
@@ -915,6 +932,14 @@ impl Elab {
         }
         Tm::Case(Rc::new(scrut), Rc::new(CaseTm { branches, lits: vec![], default: None }))
     }
+}
+
+/// Does `t`, a term over `total` locals, mention a local at level `from`
+/// or above?
+fn mentions_level_from(t: &Tm, total: usize, from: usize) -> bool {
+    let mut free = std::collections::BTreeSet::new();
+    crate::core::free_vars(t, 0, &mut free);
+    free.iter().any(|i| *i < total && total - 1 - i >= from)
 }
 
 /// Does `t` mention variable `i` (de Bruijn, at its top)?
