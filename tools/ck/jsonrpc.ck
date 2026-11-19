@@ -6,6 +6,7 @@ module ck.jsonrpc
 import std.files (File, IoError)
 import std.json (Json, Null, Bool, Num, Str, Arr, Obj)
 import std.decimal
+import std.number
 import std.string
 import std.bytes
 import std.list (keys, unique)
@@ -13,24 +14,10 @@ import std.list
 
 # ── Numbers ──────────────────────────────────────────────────────────────────
 
-fn digit_value b -> n : b~U8, b >= '0', b <= '9', n~Nat
-    b - '0'
-
-# The number written in `b` from `i` on, if it is only digits.
-partial fn digits b i acc -> r : b~Bytes, i~Nat, acc~Nat, r~Option Nat
-    if i >= len b
-        Some acc
-    else if b[i] >= '0' and b[i] <= '9'
-        digits b (i + 1) (acc * 10 + digit_value b[i])
-    else
-        None
-
 # A whole number, as a `Nat`.
-export partial fn nat_of j -> r : j~Json, r~Option Nat
+export fn nat_of j -> r : j~Json, r~Option Nat
     match j
-        Num d ->
-            let b = string.bytes (decimal.render d)
-            if len b == 0 then None else digits b 0 0
+        Num d -> number.parse_nat (string.bytes (decimal.render d))
         _     -> None
 
 export fn num n -> j : n~Nat, j~Json
@@ -100,7 +87,7 @@ partial fn content_length line -> r : line~String, r~Option Nat
     let b = trimmed_end (string.bytes line)
     let name = b"Content-Length:"
     if starts_with b name
-        digits (skip_spaces b (len name)) 0 0
+        number.parse_nat (skip_spaces b (len name))
     else
         None
 

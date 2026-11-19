@@ -14,6 +14,7 @@ replaces 4:12-4:12
   json               module          
   list               module          
   markdown           module          
+  number             module          
   prelude            module          
   proc               module          
   string             module          

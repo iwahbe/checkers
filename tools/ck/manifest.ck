@@ -8,6 +8,7 @@ import std.string
 import std.bytes
 import std.char
 import std.list (contains)
+import std.number
 
 export record Version
     major~Nat
@@ -43,23 +44,14 @@ export record Problem
 
 # ── Versions ─────────────────────────────────────────────────────────────────
 
-# The number written at `b[i]`, and the position after it.
-partial fn number b i n seen -> r : b~Bytes, i~Nat, n~Nat, seen~Bool, r~Option (Nat, Nat)
-    if i < len b and b[i] >= '0' and b[i] <= '9'
-        number b (i + 1) (n * 10 + (b[i] - '0')) True
-    else if seen
-        Some (n, i)
-    else
-        None
-
 # `n.` at `b[i]`: the number and the position after the dot.
-partial fn part b i -> r : b~Bytes, i~Nat, r~Option (Nat, Nat)
-    match number b i 0 False
-        Some (n, j) -> if j < len b and b[j] == '.' then Some (n, j + 1) else None
-        None        -> None
+fn part b i -> r : b~Bytes, i~Nat, r~Option (Nat, Nat)
+    match number.read_nat b i
+        Some d -> if d.stop < len b and b[d.stop] == '.' then Some (d.value, d.stop + 1) else None
+        None   -> None
 
 # `MAJOR.MINOR.PATCH`.
-export partial fn parse_version s -> r : s~String, r~Option Version
+export fn parse_version s -> r : s~String, r~Option Version
     let b = string.bytes s
     match part b 0
         None        -> None
@@ -67,9 +59,9 @@ export partial fn parse_version s -> r : s~String, r~Option Version
             match part b i
                 None        -> None
                 Some (y, j) ->
-                    match number b j 0 False
-                        Some (z, k) -> if k == len b then Some (Version x y z) else None
-                        None        -> None
+                    match number.read_nat b j
+                        Some d -> if d.stop == len b then Some (Version x y d.value) else None
+                        None   -> None
 
 export fn show v -> s : v~Version, s~String
     format v.major ++ "." ++ format v.minor ++ "." ++ format v.patch

@@ -1,0 +1,17 @@
+error[E0450]: cannot prove lemma `leading_zero_refused`
+  --> number.ck:54:13
+   |
+54 |     ensures number.parse_nat b"07" == None
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `number.parse_nat b"07" == None`
+   = note: `parse_nat` is sealed in `std.number`: here the prover knows only its postconditions and the lemmas you bring in with `have`
+   = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+
+error[E0450]: cannot prove lemma `plus_sign`
+  --> number.ck:58:13
+   |
+58 |     ensures number.parse_int b"+7" == Some 7
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `number.parse_int b"+7" == Some 7`
+   = note: `parse_int` is sealed in `std.number`: here the prover knows only its postconditions and the lemmas you bring in with `have`
+   = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+
+number.ck: 2 errors, 0 warnings
