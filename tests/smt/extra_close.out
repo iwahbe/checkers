@@ -1,0 +1,4 @@
+-- stdout
+(error "line 2 column 22: unexpected `)`")
+-- stderr
+-- exit 1

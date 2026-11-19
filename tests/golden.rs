@@ -39,6 +39,11 @@
 //!                         formatted; every .ck file in the repository must format to a
 //!                         fixed point with the same syntax tree (D93).
 //! examples/*.ck        → must check with no errors and no warnings.
+//! smt/                 → the solver package (#72): each module checks with no errors and
+//!                         no warnings, and so does its command, `smt/cli/main.ck` (its own
+//!                         package, depending on `smt`).
+//! tests/smt/NAME.smt2  → NAME.out is what `smt/cli/main.ck parse` writes for it: the
+//!                         query written back, or the error reading it (line and column).
 //! site/*.md, README.md, the standard library's documentation → `checkers site`
 //!                         and `checkers doc` give no warnings: links resolve, code
 //!                         blocks compile and run (D148).
@@ -338,9 +343,9 @@ fn build_tool(root: &Path, update: bool, failures: &mut Vec<String>) -> usize {
 
     // The repository: formatted where it should be; everywhere, formatting
     // is a fixed point that keeps the syntax tree.
-    let formatted = ["tools", "examples", "stdlib", "tests/types", "tests/run", "tests/stage", "tests/stress"];
+    let formatted = ["tools", "examples", "stdlib", "smt", "tests/types", "tests/run", "tests/stage", "tests/stress"];
     let mut all = Vec::new();
-    for d in ["tools", "examples", "stdlib", "tests"] {
+    for d in ["tools", "examples", "stdlib", "smt", "tests"] {
         ck_tree(&root.join(d), &mut all);
     }
     for path in all {
@@ -367,6 +372,55 @@ fn build_tool(root: &Path, update: bool, failures: &mut Vec<String>) -> usize {
         }
     }
     count += literate_clean(&exe, root, failures);
+    let _ = fs::remove_file(&exe);
+    count
+}
+
+/// The solver package (#72): its modules check clean; its command, a
+/// package of its own that depends on it, checks clean and builds; and
+/// `main parse` gives each `tests/smt/*.smt2` case's output.
+fn smt_package(root: &Path, update: bool, failures: &mut Vec<String>) -> usize {
+    let mut count = 0;
+    let pkg = root.join("smt");
+    for path in ck_files(&pkg) {
+        count += 1;
+        let file = path.file_name().unwrap().to_string_lossy().to_string();
+        let c = checkers::check_in(&file, &fs::read_to_string(&path).unwrap(), &pkg);
+        if !c.diags.is_empty() {
+            failures.push(format!("── smt/{file} must be clean ──\n{}", c.report()));
+        }
+    }
+    let cli = ["--package", "smt=smt", "--uses", ".=smt", "smt/cli/main.ck"];
+    count += 1;
+    let checked = std::process::Command::new(env!("CARGO_BIN_EXE_ckc"))
+        .env("CHECKERS_NO_CACHE", "1")
+        .args(["check", "--deny-warnings"])
+        .args(cli)
+        .current_dir(root)
+        .output()
+        .expect("run ckc check");
+    if !checked.status.success() {
+        failures.push(format!("── smt/cli/main.ck must be clean ──\n{}", shown(&checked)));
+    }
+    let exe = std::env::temp_dir().join(format!("checkers-golden-{}-smt", std::process::id()));
+    let built = std::process::Command::new(env!("CARGO_BIN_EXE_ckc"))
+        .env("CHECKERS_NO_CACHE", "1")
+        .arg("build")
+        .args(cli)
+        .arg("-o")
+        .arg(&exe)
+        .current_dir(root)
+        .output()
+        .expect("run ckc build");
+    if !built.status.success() {
+        failures.push(format!("── build smt/cli/main.ck ──\n{}", String::from_utf8_lossy(&built.stderr)));
+        return count;
+    }
+    for path in files_with(&root.join("tests").join("smt"), "smt2") {
+        count += 1;
+        let actual = shown(&run_with(&exe, &["parse"], &fs::read(&path).unwrap(), root));
+        compare(root, &path.with_extension("out"), &actual, update, failures);
+    }
     let _ = fs::remove_file(&exe);
     count
 }
@@ -606,6 +660,7 @@ fn golden() {
     }
 
     count += build_tool(root, update, &mut failures);
+    count += smt_package(root, update, &mut failures);
 
     for path in ck_files(&root.join("examples")) {
         count += 1;

@@ -1,0 +1,4 @@
+-- stdout
+(error "line 2 column 34: `ite` can't be applied to arguments of sorts `Bool`, `Bool`, `Int`")
+-- stderr
+-- exit 1

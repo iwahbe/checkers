@@ -1,0 +1,4 @@
+-- stdout
+(error "line 5 column 13: unknown name `y`")
+-- stderr
+-- exit 1
