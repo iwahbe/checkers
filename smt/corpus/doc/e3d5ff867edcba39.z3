@@ -1,0 +1,4 @@
+;; work 529
+sat
+((|lines#0| (std.prelude.Cons (seq.unit 2)
+                  (as std.prelude.Nil (std.prelude.List (Seq Int))))))

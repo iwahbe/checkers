@@ -4,8 +4,12 @@
 # (with the standard-library modules they load), and Z3's answer to each.
 #
 #   scripts/corpus.sh DIR [cargo build flags…]
+#   scripts/corpus.sh --check DIR [cargo build flags…]
 #
-# DIR is emptied first. `ckc` is built with `cargo build --release` and the
+# The repository's corpus is smt/corpus. DIR is emptied first. With
+# --check, DIR is left as it is: the corpus is written to a temporary
+# directory and compared with DIR, and the command fails if they differ
+# (DIR is stale: regenerate it with `scripts/corpus.sh DIR`). `ckc` is built with `cargo build --release` and the
 # flags given (`--no-default-features` to link an installed Z3, AGENTS.md),
 # unless CKC names a `ckc` to use. CORPUS_JOBS (default 2) programs are
 # checked at once.
@@ -16,8 +20,13 @@
 # out two ways.
 set -euo pipefail
 
+check=
+if [ "${1:-}" = --check ]; then
+    check=1
+    shift
+fi
 if [ $# -lt 1 ]; then
-    echo "usage: scripts/corpus.sh DIR [cargo build flags…]" >&2
+    echo "usage: scripts/corpus.sh [--check] DIR [cargo build flags…]" >&2
     exit 2
 fi
 out=$1
@@ -30,27 +39,36 @@ if [ -z "${CKC:-}" ]; then
     CKC=$root/target/release/ckc
 fi
 
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+if [ -n "$check" ]; then
+    if [ ! -d "$out" ]; then
+        echo "corpus: $out does not exist" >&2
+        exit 1
+    fi
+    committed=$(cd "$out" && pwd)
+    out=$work/corpus
+fi
 rm -rf "$out"
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
-work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
 
 files=(examples/*.ck tools/checkers.ck tests/types/*.ck tests/run/*.ck tests/stress/*.ck)
+mkdir -p "$work/programs"
 # Each program writes its own corpus, so that its queries can be counted;
 # they are merged below. The result is the same whatever the order.
 printf '%s\n' "${files[@]}" | CKC=$CKC WORK=$work xargs -P "${CORPUS_JOBS:-2}" -I{} sh -c '
     name=$(echo "{}" | tr / _)
-    CHECKERS_SMT_CORPUS=$WORK/$name "$CKC" check --no-cache "{}" >/dev/null 2>"$WORK/$name.err" || true
+    CHECKERS_SMT_CORPUS=$WORK/programs/$name "$CKC" check --no-cache "{}" >/dev/null 2>"$WORK/programs/$name.err" || true
 '
 
 status=0
-if grep -h '^corpus: ' "$work"/*.err >&2; then
+if grep -h '^corpus: ' "$work"/programs/*.err >&2; then
     status=1
 fi
 calls=0
 for f in "${files[@]}"; do
-    p=$work/$(echo "$f" | tr / _)
+    p=$work/programs/$(echo "$f" | tr / _)
     [ -d "$p" ] || continue
     calls=$((calls + $(find "$p" -name '*.smt2' | wc -l)))
     # A file another program wrote already must be the same.
@@ -71,4 +89,13 @@ echo "Z3 calls:         $calls"
 echo "answers:          $(answers unsat) unsat, $(answers sat) sat, $(answers unknown) unknown, $(answers '(error') rejected"
 echo "cut off:          $(grep -rl '^;; work cut off' "$out" --include='*.z3' | wc -l)"
 echo "size:             $(du -s --apparent-size --block-size=1 "$out" | cut -f1) bytes"
+if [ -n "$check" ] && [ "$status" = 0 ]; then
+    if diff -rq "$committed" "$out" >"$work/stale"; then
+        echo "up to date:       $committed"
+    else
+        echo "stale:            $committed differs from what ckc asks now ($(wc -l <"$work/stale") files); regenerate it with scripts/corpus.sh $committed" >&2
+        head -20 "$work/stale" | sed "s|$out|(now)|g" >&2
+        status=1
+    fi
+fi
 exit $status

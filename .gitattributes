@@ -1,0 +1,2 @@
+# The corpus of SMT queries (scripts/corpus.sh): generated, not reviewed line by line.
+smt/corpus/** linguist-generated -diff

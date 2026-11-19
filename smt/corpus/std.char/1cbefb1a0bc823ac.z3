@@ -1,0 +1,3 @@
+;; work 21484
+unsat
+(error "line 355 column 18: model is not available")

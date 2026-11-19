@@ -1,0 +1,12 @@
+(set-option :produce-models true)
+(set-option :rlimit 200000)
+(set-option :timeout 60000)
+(set-logic ALL)
+(declare-datatypes ((|std.json.ErrorKind| 0)) (((|std.json.UnexpectedEnd|) (|std.json.UnexpectedByte| (|std.json.UnexpectedByte.0| Int)) (|std.json.BadEscape|) (|std.json.BadUtf8|) (|std.json.ControlInString|) (|std.json.DuplicateKey| (|std.json.DuplicateKey.0| (Seq Int))) (|std.json.TooDeep|) (|std.json.TrailingInput|))))
+(declare-const |k#0| |std.json.ErrorKind|)
+(assert (=> (|is-std.json.UnexpectedByte| |k#0|) (and (>= (|std.json.UnexpectedByte.0| |k#0|) 0) (< (|std.json.UnexpectedByte.0| |k#0|) 256))))
+(assert (= |k#0| (as |std.json.BadUtf8| |std.json.ErrorKind|)))
+(assert (not false))
+(check-sat)
+(get-value (|k#0|))
+;; reachable?

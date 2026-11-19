@@ -1,0 +1,6 @@
+(set-option :produce-models true)
+(set-option :rlimit 200000)
+(set-option :timeout 60000)
+(set-logic ALL)
+(assert (not false))
+(check-sat)
