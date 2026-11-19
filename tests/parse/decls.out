@@ -34,6 +34,11 @@
   (proof (do
       (have (nat_nonneg n))
       auto)))
+(lemma by_measure (n)
+  (: (n~Nat))
+  (decreasing n)
+  (let m n)
+  (ensures (>= m 0)))
 (lemma trivial ()
   (ensures True)
   (proof admit))
