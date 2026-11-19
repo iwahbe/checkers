@@ -899,7 +899,19 @@ impl Elab {
                         self.err(e);
                         return;
                     }
-                    _ => None,
+                    // A class declared here: its kind is checked later.
+                    _ if local.contains_key(n) => None,
+                    // `Type`, a constructor, a value: not a type, so nothing
+                    // of the instance can be checked.
+                    s => {
+                        let label = if matches!(s, Some(Sym::Univ)) { "the type of types, not a type" } else { "not a type" };
+                        self.err(
+                            Diagnostic::error("E0281", format!("`instance {text}` must be for a type"), h.span)
+                                .with_label(label)
+                                .with_help("an instance is for a type constructor applied to distinct type variables, e.g. `instance Ord (List a) : Ord a`"),
+                        );
+                        return;
+                    }
                 },
             },
             _ => Some(args.len()),
