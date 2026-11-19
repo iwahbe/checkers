@@ -242,7 +242,7 @@ impl Elab {
         };
         // Completing a pattern (D142): the type matched.
         if arms.iter().any(|(p, _, _)| matches!(&p.kind, PatKind::Var(n) if Self::is_cursor(n))) {
-            let ty = cx.locals[occ].ty.clone();
+            let ty = cx.ty_of(occ);
             self.note_scrutinee(cx, &ty);
         }
         let rows = arms
@@ -324,7 +324,7 @@ impl Elab {
         let start = cx.lvl();
         let mut lets = Vec::new();
         for (name, occ, at) in &row.binds {
-            let ty = cx.locals[*occ].ty.clone();
+            let ty = cx.ty_of(*occ);
             let v = cx.env[*occ].clone();
             let tyt = quote(&self.g, cx.lvl(), &ty);
             let t = cx.var(*occ);
@@ -419,7 +419,7 @@ impl Elab {
         for o in occs {
             let taken_apart = self.pm.frames.iter().any(|(x, _)| *x == o);
             if !taken_apart && !within_bound(o) && o < cx.locals.len() {
-                let ty = cx.locals[o].ty.clone();
+                let ty = cx.ty_of(o);
                 if self.val_linear(&ty) {
                     if !self.pm.dropped.contains(&row.span) {
                         self.pm.dropped.push(row.span);
@@ -474,7 +474,7 @@ impl Elab {
             })
             .min()
             .unwrap_or(ps.len());
-        let ty = match self.force(&cx.locals[occ].ty) {
+        let ty = match self.force(&cx.ty_of(occ)) {
             Val::TupleTy(ts) => Val::TupleTy(crate::core::flat_parts(&self.g, &ts, true)),
             t => t,
         };
@@ -579,7 +579,7 @@ impl Elab {
     }
 
     fn compile_lit(&mut self, cx: &mut Cx, rows: Vec<Row>, occ: usize, expected: &Val, tail: bool) -> Tm {
-        let occ_ty = cx.locals[occ].ty.clone();
+        let occ_ty = cx.ty_of(occ);
         let mut lits: Vec<Lit> = Vec::new();
         for r in &rows {
             if let Some((_, p)) = r.pats.iter().find(|(o, _)| *o == occ) {
@@ -713,7 +713,7 @@ impl Elab {
     }
 
     fn compile_con(&mut self, cx: &mut Cx, rows: Vec<Row>, occ: usize, pat: &Pattern, expected: &Val, tail: bool) -> Tm {
-        let occ_ty = self.force(&cx.locals[occ].ty);
+        let occ_ty = self.force(&cx.ty_of(occ));
         let hint = match &occ_ty {
             Val::TyCon(t, _) => Some(*t),
             _ => None,
