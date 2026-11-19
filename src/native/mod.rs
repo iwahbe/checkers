@@ -8,6 +8,7 @@ pub mod eval;
 pub mod ir;
 pub mod lower;
 pub mod rc;
+pub mod tailrec;
 
 use crate::core::{DefId, Globals};
 use cranelift_codegen::settings::{self, Configurable};
@@ -75,6 +76,7 @@ fn prepare(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId) -> l
 pub(crate) fn rc_new(g: &Globals, p: &mut lower::Program) {
     let fields_of = |c: u32| g.cons[c as usize].fields.len();
     let from = p.rc_done;
+    tailrec::program(&mut p.funcs, from);
     for f in &mut p.funcs[from..] {
         rc::function(f, &fields_of);
     }

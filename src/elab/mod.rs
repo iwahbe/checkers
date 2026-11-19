@@ -556,6 +556,9 @@ pub struct Elab {
     pub class_lemmas: HashSet<DefId>,
     /// Functions building an instance's dictionary.
     pub dict_defs: HashSet<DefId>,
+    /// Instances' functions: the class's specification is theirs, so they
+    /// go into their dictionary without it (D136).
+    pub inst_fns: HashSet<DefId>,
     /// Each instance member's dictionary function.
     pub inst_member_of: HashMap<DefId, DefId>,
     /// Instances, by class and the head of their type.
@@ -682,6 +685,7 @@ impl Elab {
             local_names: HashMap::new(),
             decl_origin: Vec::new(),
             class_methods: HashSet::new(),
+            inst_fns: HashSet::new(),
             class_lemmas: HashSet::new(),
             dict_defs: HashSet::new(),
             inst_member_of: HashMap::new(),

@@ -46,3 +46,24 @@ export lemma concat_cons x xs : x~Bytes, xs~List Bytes
 check slice b"abcde" 1 4 == b"bcd" and (slice b"abcde" 1 4)[2] == b"abcde"[3]
 check slice (b"ab" ++ b"cde" ++ b"f") 2 5 == b"cde" and slice b"" 0 0 == b""
 check concat [] == b"" and concat [b"ab", b"", b"c"] == b"ab" ++ concat [b"", b"c"]
+
+# Two byte strings are equal when their lengths are and so are their bytes.
+export lemma ext xs ys : xs~Bytes, ys~Bytes, len xs == len ys,
+                         same: forall k : k~Nat, k < len xs, xs[k] == ys[k]
+    ensures xs == ys
+
+# Byte `m` of two slices side by side is byte `m` of the slice spanning both.
+lemma join_at src i j k : src~Bytes, i~Nat, j~Nat, k~Nat, i <= j, j <= k, k <= len src
+    ensures forall m : m~Nat, m < k - i, (slice src i j ++ slice src j k)[m] == (slice src i k)[m]
+    proof
+        have slice_at src i k m
+        if m < j - i
+            have slice_at src i j m
+        else
+            have slice_at src j k (m - (j - i))
+
+# Two slices side by side make the slice spanning both.
+export lemma slice_join src i j k : src~Bytes, i~Nat, j~Nat, k~Nat, i <= j, j <= k, k <= len src
+    ensures slice src i j ++ slice src j k == slice src i k
+    proof
+        have join_at src i j k
