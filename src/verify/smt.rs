@@ -1665,9 +1665,14 @@ impl<'a> Builder<'a> {
         Ok(out_)
     }
 
-    /// A `forall`'s body at the given values, if its variables have those sorts.
-    fn forall_body_at(&mut self, lvl: usize, pi: &Tm, names: &[String], sorts: &[Sort]) -> Tx<Option<String>> {
+    /// A `forall`'s body at the given values, if its variables have those
+    /// sorts, and what the values must satisfy to be in its variables'
+    /// types (`domain_terms`): to be assumed of them where the `forall` is
+    /// proved, and the condition under which it holds of them where it is
+    /// a premise (#115).
+    fn forall_body_at(&mut self, lvl: usize, pi: &Tm, names: &[String], sorts: &[Sort]) -> Tx<Option<(String, Vec<String>)>> {
         let mut inner: Vec<Ent> = (0..lvl).map(|k| Ent::Opaque(format!("@{k}"))).collect();
+        let mut guards = Vec::new();
         let mut t = pi.clone();
         let mut k = 0;
         while let Tm::Pi(_, _, _, a, b) = t {
@@ -1675,6 +1680,7 @@ impl<'a> Builder<'a> {
             if sorts.get(k) != Some(&s) {
                 return Ok(None);
             }
+            guards.extend(self.domain_terms(&inner, &a, &names[k], &s));
             inner.push(Ent::Term(names[k].clone(), s));
             t = (*b).clone();
             k += 1;
@@ -1683,7 +1689,14 @@ impl<'a> Builder<'a> {
             return Ok(None);
         }
         let (bt, bs) = self.term(&inner, &t)?;
-        Ok((bs == Sort::Bool).then_some(bt))
+        Ok((bs == Sort::Bool).then_some((bt, guards)))
+    }
+
+    /// A `forall` premise at the values `forall_body_at` gave it: its body
+    /// where they are in its variables' types.
+    fn premise_at(&mut self, lvl: usize, pi: &Tm, names: &[String], sorts: &[Sort]) -> Option<String> {
+        let (b, guards) = self.forall_body_at(lvl, pi, names, sorts).ok()??;
+        Some(implies(&guards, b))
     }
 
     /// Proving `xs == ys` for arrays or bytes (#75): they are equal if their
@@ -1723,7 +1736,7 @@ impl<'a> Builder<'a> {
             if !index || matches!(**body, Tm::Pi(..)) {
                 continue;
             }
-            if let Ok(Some(b)) = self.forall_body_at(lvl, pi, std::slice::from_ref(&w), &[Sort::Int]) {
+            if let Some(b) = self.premise_at(lvl, pi, std::slice::from_ref(&w), &[Sort::Int]) {
                 at.push(format!("(=> {inside} {b})"));
             }
         }
@@ -1760,12 +1773,7 @@ impl<'a> Builder<'a> {
         if bs != Sort::Bool || binds.is_empty() {
             return out("a `forall` that is not a `Bool`");
         }
-        let bt = match guards.len() {
-            0 => bt,
-            1 => format!("(=> {} {bt})", guards[0]),
-            _ => format!("(=> (and {}) {bt})", guards.join(" ")),
-        };
-        Ok((format!("(forall ({}) {bt})", binds.join(" ")), Sort::Bool))
+        Ok((format!("(forall ({}) {})", binds.join(" "), implies(&guards, bt)), Sort::Bool))
     }
 
     /// What a value `x` of type `ty` (sort `xs`) satisfies beyond its sort:
@@ -1776,8 +1784,12 @@ impl<'a> Builder<'a> {
         if self.is_nat_tm(ty) {
             out.push(format!("(>= {x} 0)"));
         }
-        out.extend(self.alias_terms(env, ty, x, xs));
-        out.extend(self.tuple_terms(env, ty, x, xs));
+        // `Nat` is also the alias `n~Int, n >= 0`: each term once.
+        for t in self.alias_terms(env, ty, x, xs).into_iter().chain(self.tuple_terms(env, ty, x, xs)) {
+            if !out.contains(&t) {
+                out.push(t);
+            }
+        }
         out
     }
 
@@ -2989,11 +3001,7 @@ impl<'a> Builder<'a> {
                     goals.extend(self.tuple_terms(params, ty, r, rs));
                 }
                 for t in goals {
-                    self.asserts.push(match pres.len() {
-                        0 => t,
-                        1 => format!("(=> {} {t})", pres[0]),
-                        _ => format!("(=> (and {}) {t})", pres.join(" ")),
-                    });
+                    self.asserts.push(implies(&pres, t));
                 }
             }
         }
@@ -3028,11 +3036,13 @@ impl<'a> Builder<'a> {
                         }
                     }
                 }
-                let g = self.forall_body_at(lvl, &a[0], &names, &sorts)?.ok_or_else(|| Outside("a `forall`".into()))?;
+                let (g, domain) = self.forall_body_at(lvl, &a[0], &names, &sorts)?.ok_or_else(|| Outside("a `forall`".into()))?;
+                // The fresh values are in the variables' types.
+                facts.extend(domain);
                 for f in &ob.facts {
                     if let Tm::PrimApp(Prim::Forall, fa) = quote(&self.e.g, lvl, f) {
                         if fa.len() == 1 {
-                            if let Ok(Some(b)) = self.forall_body_at(lvl, &fa[0], &names, &sorts) {
+                            if let Some(b) = self.premise_at(lvl, &fa[0], &names, &sorts) {
                                 facts.push(b);
                             }
                         }
@@ -3188,6 +3198,15 @@ fn smt_bytes(b: &[u8]) -> String {
 /// Is a value `Nat`-typed? (for `only_if_nat` obligations)
 pub fn is_nat(e: &Elab, ty: &Val) -> bool {
     crate::core::is_nat(&e.g, ty)
+}
+
+/// `t` under the conditions `guards`.
+fn implies(guards: &[String], t: String) -> String {
+    match guards {
+        [] => t,
+        [g] => format!("(=> {g} {t})"),
+        _ => format!("(=> (and {}) {t})", guards.join(" ")),
+    }
 }
 
 fn has_forall(t: &Tm) -> bool {
