@@ -336,12 +336,24 @@ impl Elab {
         }
     }
 
+    /// A type as shown in a message: an inline refinement with its
+    /// arguments put in (`(x~Nat, contains xs x)` for `(x~a, contains xs
+    /// x)` at `a` = `Nat`), any other type as it is.
+    fn show_refined(&self, cx: &Cx, v: &Val) -> String {
+        match self.refined_alias(v) {
+            Some((d, args)) if is_anon_alias(&self.g, d) && !args.is_empty() => {
+                rename_words(&self.g.defs[d.0 as usize].name, &self.alias_param_names(cx, d, &args))
+            }
+            _ => self.show_val(cx, v),
+        }
+    }
+
     /// For any value of `sub`, the predicates of `sup` (D83, D85).
     fn weaken_obligation(&mut self, cx: &mut Cx, sub: &Val, sup: &Val, role: WeakenRole, w: &Walk) {
         let Some((alias, args)) = self.refined_alias(sup) else { return };
         let Some(preds) = self.alias_preds.get(&alias).cloned() else { return };
         let name = self.alias_subject.get(&alias).cloned().unwrap_or_else(|| Rc::from("x"));
-        let (sub_s, sup_s) = (self.show_val(cx, sub), self.show_val(cx, sup));
+        let (sub_s, sup_s) = (self.show_refined(cx, sub), self.show_refined(cx, sup));
         let l = cx.lvl();
         cx.bind(&name, sub.clone(), Mult::Zero);
         for p in &preds {

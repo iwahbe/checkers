@@ -2,10 +2,10 @@ error[E0450]: cannot prove that `at_least 7` can be called here
   --> refined_fn_types.ck:52:14
    |
 52 |     list.map (at_least 7) xs                    # error E0450: needs `x >= 7`, counterexample x = 5
-   |              ^^^^^^^^^^^^ `list.map` may call this with any `Big`
+   |              ^^^^^^^^^^^^ `list.map` may call this with any `(x~Big, contains xs x)`
    = note: it needs `x >= 7`
-   = note: counterexample: x = 5
-   = help: pass a function that accepts every `Big`
+   = note: counterexample: xs = [5], x = 5
+   = help: pass a function that accepts every `(x~Big, contains xs x)`
 
 error[E0450]: cannot prove `x >= 5`, required to call `f`
   --> refined_fn_types.ck:56:7
@@ -19,6 +19,7 @@ error[E0450]: cannot prove that `x - 9` is a `(y~Int, y >= 0)` (`(x - 9) >= 0`)
    |
 60 |     apply (\x -> x - 9) 9                       # error E0450: `y >= 0` of `x - 9`, counterexample x = 5
    |                  ^^^^^ this must be a `(y~Int, y >= 0)`
+   = note: facts in scope: `x >= 5`
    = note: counterexample: x = 5
    = help: make it true first, e.g. with an `if`, or start from a value that is already a `(y~Int, y >= 0)`
 

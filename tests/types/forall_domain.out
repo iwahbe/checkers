@@ -1,0 +1,28 @@
+error[E0450]: cannot prove lemma `from_nat`
+ --> forall_domain.ck:9:13
+  |
+9 |     ensures forall k : k~Int, f k
+  |             ^^^^^^^^^^^^^^^^^^^^^ `forall k : k~Int, f k`
+  = note: facts in scope: `forall ((k~Nat) -> f k)`
+  = note: counterexample: k = -1
+  = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+
+error[E0450]: cannot prove lemma `from_range`
+  --> forall_domain.ck:13:13
+   |
+13 |     ensures forall k : k~Int, f k
+   |             ^^^^^^^^^^^^^^^^^^^^^ `forall k : k~Int, f k`
+   = note: facts in scope: `forall ((k~Int, k < 0) -> f k)`
+   = note: counterexample: k = 0
+   = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+
+error[E0450]: cannot prove `forall k : k~Nat, f k`, required to call `needs_nat`
+  --> forall_domain.ck:28:5
+   |
+28 |     needs_nat f
+   |     ^^^^^^^^^^^ `needs_nat` requires `forall k : k~Nat, f k`
+   = note: facts in scope: `forall ((k~Int, k >= 1) -> f k)`
+   = note: counterexample: k = 0
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+forall_domain.ck: 3 errors, 0 warnings

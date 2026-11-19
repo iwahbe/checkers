@@ -45,9 +45,248 @@ impl Elab {
         self.rec_calls.push(RecCall { caller, callee, args, ob });
     }
 
+    /// The promises the module's function bodies make (#102): explicit
+    /// parameter `k` of `f` is a function called only with strict parts of
+    /// parameter `j` if every use of `k` in `f`'s body is such a call, or
+    /// passes `k` to a function that promises it. The largest set of
+    /// promises that holds, as functions may pass their parameters to each
+    /// other (or themselves) recursively.
+    fn body_promises(&mut self) -> HashSet<ElemAlt> {
+        let fns: Vec<DefId> = std::mem::take(&mut self.body_fns);
+        let uses = std::mem::take(&mut self.param_uses);
+        let mut held: HashSet<ElemAlt> = HashSet::new();
+        for f in &fns {
+            let n = self.fn_meta.get(f).map_or(0, |m| m.params.len());
+            for k in 0..n {
+                for j in (0..n).filter(|j| *j != k) {
+                    held.insert((*f, k, j));
+                }
+            }
+        }
+        let empty = Vec::new();
+        loop {
+            let failed: Vec<ElemAlt> = held
+                .iter()
+                .copied()
+                .filter(|&(f, k, j)| {
+                    let us = uses.get(&(f, k)).unwrap_or(&empty);
+                    !us.iter().all(|u| u.iter().any(|&(p, c)| p == j && self.cond_holds(c, &held)))
+                })
+                .collect();
+            if failed.is_empty() {
+                break;
+            }
+            for x in failed {
+                held.remove(&x);
+            }
+        }
+        for f in &fns {
+            let mut ps: Vec<(usize, usize)> = held.iter().filter(|x| x.0 == *f).map(|x| (x.1, x.2)).collect();
+            ps.sort();
+            self.body_elems.insert(*f, ps);
+        }
+        held
+    }
+
+    /// Whether condition `c` holds: one of its promises does (#102), in
+    /// the callee's signature (a precondition that is a membership), or
+    /// read from its body (this module's, in `held`, or a `transparent`
+    /// function's of another module).
+    fn cond_holds(&self, c: Option<u32>, held: &HashSet<ElemAlt>) -> bool {
+        let Some(c) = c else { return true };
+        self.elem_conds[c as usize].iter().any(|&(d, k, j)| {
+            self.specs.get(&d).is_some_and(|s| {
+                s.elems.iter().any(|e| e.k == k && e.j == j && self.memberships.get(&(e.pred, e.c, e.s)) == Some(&true))
+            }) || held.contains(&(d, k, j))
+                || (*self.g.defs[d.0 as usize].module != *self.cur
+                    && self.transparent.contains(&d)
+                    && self.body_elems.get(&d).is_some_and(|ps| ps.contains(&(k, j))))
+        })
+    }
+
+    /// Why condition `cond`, made where `rec` is passed to a function, fails
+    /// (#102): E0301's help.
+    fn unkept_help(&self, cond: u32, rec: DefId) -> Option<String> {
+        let (head, arg, j) = self.elem_cond_at.get(&cond)?;
+        let &(d, k, _) = self.elem_conds[cond as usize].first()?;
+        let j = *j;
+        let rec = self.fn_meta.get(&rec).map(|m| m.name.clone()).unwrap_or_default();
+        let params = self.fn_meta.get(&d).map(|m| m.params.clone()).unwrap_or_default();
+        let (pk, pj) = (params.get(k).map(|p| p.0.clone())?, params.get(j).map(|p| p.0.clone())?);
+        let promise = self.specs.get(&d).and_then(|s| s.elems.iter().find(|e| e.k == k && e.j == j).copied());
+        let why = match promise {
+            Some(e) => {
+                let pred = self.g.defs[e.pred.0 as usize].name.to_string();
+                if self.body_visible(e.pred) && !self.g.defs[e.pred.0 as usize].opaque {
+                    format!(
+                        "`{pred}`, in its precondition on `{pk}`, isn't a membership: it must be true only of something equal to a part of `{pj}`"
+                    )
+                } else {
+                    format!("`{pred}`, in its precondition on `{pk}`, is sealed, so it can't be seen to be a membership")
+                }
+            }
+            None if self.body_visible(d) => format!(
+                "it uses `{pk}` other than by calling it with a part of `{pj}` or passing it on to a function that does"
+            ),
+            None => format!(
+                "its body is sealed; its signature can promise it with a precondition on `{pk}` such as `{pk}~(x~a -> b, list.contains {pj} x)`"
+            ),
+        };
+        Some(format!("`{head}` isn't known to call `{rec}` only with parts of `{arg}`: {why}"))
+    }
+
+    /// Decide, for each signature promise a condition names, whether its
+    /// predicate is a membership (#102).
+    fn decide_memberships(&mut self) {
+        // Whether a body is visible depends on the module checked.
+        self.memberships.clear();
+        let mut todo = Vec::new();
+        for alts in &self.elem_conds {
+            for &(d, k, j) in alts {
+                for e in self.specs.get(&d).map(|s| s.elems.as_slice()).unwrap_or(&[]) {
+                    if e.k == k && e.j == j {
+                        todo.push((e.pred, e.c, e.s));
+                    }
+                }
+            }
+        }
+        for key in todo {
+            if !self.memberships.contains_key(&key) {
+                let mut visiting = HashSet::new();
+                let m = self.is_membership(key, &mut visiting);
+                self.memberships.insert(key, m);
+            }
+        }
+    }
+
+    /// Whether predicate `pred` is true only where its explicit argument
+    /// `s` equals (`==`, which compares structure) a strict part of its
+    /// explicit argument `c`, as its body shows (#102): its body must be
+    /// visible, as for proofs. A recursive use of a predicate being decided
+    /// is assumed to be one: it is total, so this is an induction on its
+    /// recursion.
+    fn is_membership(&mut self, key: (DefId, usize, usize), visiting: &mut HashSet<(DefId, usize, usize)>) -> bool {
+        if let Some(m) = self.memberships.get(&key) {
+            return *m;
+        }
+        if !visiting.insert(key) {
+            return true;
+        }
+        let (pred, c, s) = key;
+        let info = &self.g.defs[pred.0 as usize];
+        let partial = self.fn_meta.get(&pred).is_some_and(|m| m.partial);
+        let Some(body) = info.body.clone().filter(|_| !info.opaque && !partial && self.body_visible(pred)) else {
+            return false;
+        };
+        let mut ctx = Vec::new();
+        let mut t = &body;
+        let mut explicit = 0;
+        while let Tm::Lam(_, _, i, b) = t {
+            ctx.push(match i {
+                Icit::Impl => Kind::Other,
+                Icit::Expl => {
+                    explicit += 1;
+                    if explicit - 1 == c {
+                        Kind::Container
+                    } else if explicit - 1 == s {
+                        Kind::Subject
+                    } else {
+                        Kind::Other
+                    }
+                }
+            });
+            t = b;
+        }
+        let t = t.clone();
+        self.only_if_member(&t, &mut ctx, visiting)
+    }
+
+    /// Whether `t`, a `Bool`, is `True` only where the subject equals a
+    /// strict part of the container (#102).
+    fn only_if_member(&mut self, t: &Tm, ctx: &mut Vec<Kind>, visiting: &mut HashSet<(DefId, usize, usize)>) -> bool {
+        let wk = &self.g.well_known;
+        let (tc, fc) = (wk.true_con, wk.false_con);
+        match t {
+            Tm::ConApp(con, args) => args.is_empty() && Some(*con) == fc,
+            Tm::Con(con) => Some(*con) == fc,
+            Tm::PrimApp(Prim::Eq, xs) if xs.len() == 2 => {
+                let (a, b) = (kind_of(&xs[0], ctx), kind_of(&xs[1], ctx));
+                matches!((a, b), (Kind::Part, Kind::Subject) | (Kind::Subject, Kind::Part))
+            }
+            Tm::Let(_, _, _, v, b) => {
+                let k = kind_of(v, ctx);
+                ctx.push(k);
+                let r = self.only_if_member(b, ctx, visiting);
+                ctx.pop();
+                r
+            }
+            Tm::Case(scrut, ct) => {
+                let field = match kind_of(scrut, ctx) {
+                    Kind::Container | Kind::Part => Kind::Part,
+                    _ => Kind::Other,
+                };
+                let ct = ct.clone();
+                for (con, n, b) in &ct.branches {
+                    let before = ctx.len();
+                    ctx.extend(std::iter::repeat_n(field, *n));
+                    let mut ok = self.only_if_member(b, ctx, visiting);
+                    ctx.truncate(before);
+                    // `if c then b else …`: `c` true too.
+                    if !ok && *n == 0 && Some(*con) == tc {
+                        ok = self.only_if_member(scrut, ctx, visiting);
+                    }
+                    if !ok {
+                        return false;
+                    }
+                }
+                ct.lits.iter().all(|(_, b)| self.only_if_member(b, ctx, visiting))
+                    && ct.default.as_ref().is_none_or(|b| self.only_if_member(b, ctx, visiting))
+            }
+            Tm::App(..) => {
+                let (head, args) = t.spine();
+                let Tm::Def(d) = head else { return false };
+                let d = *d;
+                let expl: Vec<Kind> = args
+                    .iter()
+                    .zip(app_icits(t))
+                    .filter(|(_, i)| *i == Icit::Expl)
+                    .map(|(a, _)| kind_of(a, ctx.as_slice()))
+                    .collect();
+                for (s2, ks) in expl.iter().enumerate() {
+                    if *ks != Kind::Subject {
+                        continue;
+                    }
+                    for (c2, kc) in expl.iter().enumerate() {
+                        if matches!(kc, Kind::Container | Kind::Part) && self.is_membership((d, c2, s2), visiting) {
+                            return true;
+                        }
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
     pub fn check_termination(&mut self) {
+        self.decide_memberships();
+        let held = self.body_promises();
         let fns: Vec<DefId> = std::mem::take(&mut self.module_fns);
-        let calls: Vec<CallRec> = std::mem::take(&mut self.calls);
+        let mut calls: Vec<CallRec> = std::mem::take(&mut self.calls);
+        // Parts that hold only if a promise does (#102).
+        let mut unkept: HashMap<Span, String> = HashMap::new();
+        for c in &mut calls {
+            for &(i, cond) in &c.conds {
+                if !self.cond_holds(Some(cond), &held) {
+                    c.args[i] = None;
+                    if let Some(help) = self.unkept_help(cond, c.callee) {
+                        unkept.entry(c.span).or_insert(help);
+                    }
+                }
+            }
+        }
+        self.elem_conds.clear();
+        self.elem_cond_at.clear();
         let rec_calls: Vec<RecCall> = std::mem::take(&mut self.rec_calls);
         let idx: HashMap<DefId, usize> = fns.iter().enumerate().map(|(i, d)| (*d, i)).collect();
         let n = fns.len();
@@ -132,14 +371,15 @@ impl Elab {
             if self.guess_measure(&members, &metas, &inner, &rec_calls) {
                 continue;
             }
-            // Report at the first recursive call made by a function without `decreasing`.
-            let bad = inner
-                .iter()
-                .find(|c| {
-                    let k = members.iter().position(|d| *d == c.caller).unwrap();
-                    !metas[k].partial && !metas[k].decreasing
-                })
-                .copied();
+            // Report at the first recursive call made by a function without
+            // `decreasing`; one passed to a function that isn't known to
+            // call it only with parts first (#102).
+            let unmarked = |c: &&&CallRec| {
+                let k = members.iter().position(|d| *d == c.caller).unwrap();
+                !metas[k].partial && !metas[k].decreasing
+            };
+            let bad =
+                inner.iter().filter(unmarked).find(|c| unkept.contains_key(&c.span)).or_else(|| inner.iter().find(unmarked)).copied();
             if let Some(c) = bad {
                 let k = members.iter().position(|d| *d == c.caller).unwrap();
                 let name = metas[k].name.clone();
@@ -170,6 +410,7 @@ impl Elab {
                         ),
                     )
                 };
+                let help = unkept.get(&c.span).cloned().unwrap_or(help);
                 self.err(Diagnostic::error("E0301", msg, c.span).with_label(label).with_help(help));
             }
         }
@@ -381,4 +622,37 @@ fn structural(members: &[DefId], metas: &[FnMeta], calls: &[&CallRec]) -> bool {
         }
     }
     false
+}
+
+/// What a local of a predicate being decided is (#102).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Kind {
+    Container,
+    Part,
+    Subject,
+    Other,
+}
+
+/// `t`'s kind: a local's, or a field of the container or of a part.
+fn kind_of(t: &Tm, ctx: &[Kind]) -> Kind {
+    match t {
+        Tm::Var(i) => ctx.len().checked_sub(i + 1).map_or(Kind::Other, |l| ctx[l]),
+        Tm::Field(a, _, _) | Tm::Proj(a, _, _) => match kind_of(a, ctx) {
+            Kind::Container | Kind::Part => Kind::Part,
+            _ => Kind::Other,
+        },
+        _ => Kind::Other,
+    }
+}
+
+/// The plicity of each argument of an application, outermost last.
+fn app_icits(t: &Tm) -> Vec<Icit> {
+    let mut out = Vec::new();
+    let mut h = t;
+    while let Tm::App(f, _, i, _) = h {
+        out.push(*i);
+        h = f;
+    }
+    out.reverse();
+    out
 }
