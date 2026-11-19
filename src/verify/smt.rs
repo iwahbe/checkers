@@ -1730,18 +1730,22 @@ impl<'a> Builder<'a> {
         Ok(Some((ext, at)))
     }
 
-    /// `forall x y : …` (D137), only ever proved (so Z3 refutes its negation
-    /// with fresh values, without quantifier instantiation).
+    /// `forall x y : …` (D137): proved (so Z3 refutes its negation with
+    /// fresh values, without quantifier instantiation), and assumed only to
+    /// check a counterexample (#77). Its variables range over their types:
+    /// a `Nat` is non-negative and a refinement's predicates hold (#112).
     fn forall(&mut self, env: &[Ent], pi: &Tm) -> Tx<(String, Sort)> {
         let d = self.lam_depth;
         let mut inner = env.to_vec();
         let mut binds = Vec::new();
+        let mut guards = Vec::new();
         let mut t = pi.clone();
         let mut k = 0;
         while let Tm::Pi(_, _, _, a, b) = t {
             let s = self.sort_of(&inner, &a)?;
             let n = format!("|all{d}.{k}|");
             binds.push(format!("({n} {})", s.render(self.e)));
+            guards.extend(self.domain_terms(&inner, &a, &n, &s));
             inner.push(Ent::Term(n, s));
             t = (*b).clone();
             k += 1;
@@ -1756,7 +1760,25 @@ impl<'a> Builder<'a> {
         if bs != Sort::Bool || binds.is_empty() {
             return out("a `forall` that is not a `Bool`");
         }
+        let bt = match guards.len() {
+            0 => bt,
+            1 => format!("(=> {} {bt})", guards[0]),
+            _ => format!("(=> (and {}) {bt})", guards.join(" ")),
+        };
         Ok((format!("(forall ({}) {bt})", binds.join(" ")), Sort::Bool))
+    }
+
+    /// What a value `x` of type `ty` (sort `xs`) satisfies beyond its sort:
+    /// a `Nat` is non-negative, a refinement's predicates hold, and so do
+    /// those of a tuple's refined parts.
+    fn domain_terms(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.is_nat_tm(ty) {
+            out.push(format!("(>= {x} 0)"));
+        }
+        out.extend(self.alias_terms(env, ty, x, xs));
+        out.extend(self.tuple_terms(env, ty, x, xs));
+        out
     }
 
     /// Apply the function value `ft` (of sort `s`) to `args` (D139).
