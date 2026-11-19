@@ -55,8 +55,8 @@ pub enum PlaceKind {
     Import(Vec<String>),
     /// A name in an import's list: `import std.list (so‸`, the module's path.
     ImportItem(Vec<String>),
-    /// A lemma's body before `ensures`.
-    LemmaBody,
+    /// A lemma's body before `ensures`; `first`: its first line (`decreasing`).
+    LemmaBody { first: bool },
     /// After a lemma's `ensures` line.
     Proof,
     /// After a multi-line `if`'s branch.
@@ -667,17 +667,25 @@ impl Parser {
         if !self.open_body("lemma body (`ensures …`)") {
             // A header being written: checked, with nothing to prove yet.
             let ensures = Expr { kind: ExprKind::Error, span: self.prev_span() };
-            return Ok(DeclKind::Lemma { name, params, constraints, lets: Vec::new(), ensures, proof: None });
+            return Ok(DeclKind::Lemma { name, params, constraints, decreasing: None, lets: Vec::new(), ensures, proof: None });
         }
         let mut lets = Vec::new();
-        self.mark(PlaceKind::LemmaBody);
+        self.mark(PlaceKind::LemmaBody { first: true });
+        let decreasing = if self.eat_kw(Kw::Decreasing) {
+            let e = self.expr()?;
+            self.end_line()?;
+            self.mark(PlaceKind::LemmaBody { first: false });
+            Some(e)
+        } else {
+            None
+        };
         while self.eat_kw(Kw::Let) {
             let p = self.pattern()?;
             self.expect(Tok::Eq, "`=`")?;
             let e = self.expr()?;
             self.end_line()?;
             lets.push((p, e));
-            self.mark(PlaceKind::LemmaBody);
+            self.mark(PlaceKind::LemmaBody { first: false });
         }
         self.expect_kw(Kw::Ensures)?;
         self.mark(PlaceKind::Cond);
@@ -696,7 +704,7 @@ impl Parser {
         if !self.eat(&Tok::Dedent) {
             return Err(self.error_here("end of lemma"));
         }
-        Ok(DeclKind::Lemma { name, params, constraints, lets, ensures, proof })
+        Ok(DeclKind::Lemma { name, params, constraints, decreasing, lets, ensures, proof })
     }
 
     fn class_decl(&mut self) -> PResult<DeclKind> {

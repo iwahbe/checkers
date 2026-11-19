@@ -174,6 +174,7 @@ All code that may appear in types or proofs must be **total**:
 - **Well-founded recursion** via a measure (required for merge sort, quicksort, etc.). The termination measure is a proof obligation like any other, so it goes to Z3 (D55). In the kernel this corresponds to recursion on the accessibility predicate `Acc` of `<` on `Nat` (lexicographic for tuples).
 - **Guessed measures (D150):** with no `decreasing`, a function whose recursion isn't structural gets a measure guessed from its parameters' sizes and the distances its guards bound (`i < len src` gives `len src - i`), alone or in pairs, and checked by the prover; E0301 names those tried if none works.
 - **Surface form:** `decreasing e` on the first line of a function body gives the measure. `e` is a `nat` or a tuple of `nat`s, compared lexicographically. Mutually recursive functions share one measure space; each call must strictly decrease it (worked example: `value`/`array`/`elements` in `stdlib/json.ck`).
+- **Lemmas (#76).** A lemma that uses itself (`have l …` in its proof) is a proof by induction and must terminate the same way: structurally, by a measure written as `decreasing e` on the first line of its body (before its `let`s and `ensures`), or by one guessed as for a function. At each recursive `have`, the measure at its arguments must be smaller, given the facts there. An induction on a position (`decreasing len src - i`) follows a parser's own recursion.
 - **Recursion through containers** (`map depth items` where `items` is a field of the value being recursed on) is accepted as structural. The elaborator inserts the membership proof, as Lean's `List.attach` does by hand.
 - Non-terminating code (server loops, actor bodies) is marked `partial` and lives in the `Div` effect (§8). `partial` code may never appear in a type or proof.
 
@@ -597,7 +598,7 @@ field       ::= lname '~' [ 'ghost' ] expr { ',' expr }      -- the field's own 
 param       ::= [ '+' | '-' ] lname                          -- polarity only on abstract types (D16, E0360)
 alias       ::= 'type' Uname { lname } '=' constraints NL    -- first constraint must be `x~T`; parameters typed by use (D168)
 lemma       ::= 'lemma' lname { lname } [ ':' constraints ] NL INDENT
-                { 'let' pattern '=' expr NL } 'ensures' expr NL
+                [ 'decreasing' expr NL ] { 'let' pattern '=' expr NL } 'ensures' expr NL
                 [ 'proof' NL INDENT block DEDENT ] DEDENT
 const       ::= 'let' Uname '=' expr NL                      -- compile-time constant
 check       ::= 'check' expr NL                              -- compile error unless true
@@ -1119,7 +1120,7 @@ The keywords at each kind of place, from the grammar (§9.2):
 | After `x.` | none | `x` a record: its fields; a module: its exports; a class: its functions and lemmas |
 | A `match` arm's pattern | none | the matched type's constructors (else every constructor in scope) |
 | After `import` (and `a.`) | none | modules: the standard library's, and the program's files and directories |
-| A lemma's body, before `ensures` | `let`, `ensures` | none |
+| A lemma's body, before `ensures` | `let`, `ensures`; its first line, `decreasing` | none |
 | After a lemma's `ensures` line | `proof` | none |
 | After a multi-line `if`'s branch | `else` | none |
 | A class's or instance's body | `fn`, `lemma` | none |

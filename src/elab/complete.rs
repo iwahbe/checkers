@@ -174,7 +174,12 @@ pub fn keywords(p: &Place) -> Vec<&'static str> {
         PlaceKind::Cond => k.extend(["forall", "if", "match"]),
         PlaceKind::Type { start: true, field: true } => k.push("ghost"),
         PlaceKind::Type { start: true, field: false } => k.extend(["ghost", "own", "comptime"]),
-        PlaceKind::LemmaBody => k.extend(["let", "ensures"]),
+        PlaceKind::LemmaBody { first } => {
+            k.extend(["let", "ensures"]);
+            if *first {
+                k.push("decreasing");
+            }
+        }
         PlaceKind::Proof => k.push("proof"),
         PlaceKind::Else => k.push("else"),
         PlaceKind::Members => k.extend(["fn", "lemma"]),

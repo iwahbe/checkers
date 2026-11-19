@@ -35,7 +35,7 @@ impl Elab {
         if self.in_spec > 0 {
             return;
         }
-        let total = |m: Option<&FnMeta>| m.is_some_and(|m| m.is_fn && !m.partial && !m.decreasing);
+        let total = |m: Option<&FnMeta>| m.is_some_and(|m| !m.partial && !m.decreasing);
         if !total(self.fn_meta.get(&caller)) || !total(self.fn_meta.get(&callee)) || *self.g.defs[callee.0 as usize].module != *self.cur {
             return;
         }
@@ -157,7 +157,9 @@ impl Elab {
                     (
                         format!("`{name}` uses itself, but not on a smaller argument, so this is not an induction"),
                         "the induction hypothesis".to_string(),
-                        format!("use `{name}` only on a part of a parameter you matched on, such as `rest` in `x :: rest`"),
+                        format!(
+                            "use `{name}` only on a part of a parameter you matched on, such as `rest` in `x :: rest`, or add `decreasing <measure>` as the first line of `{name}`"
+                        ),
                     )
                 } else {
                     (
@@ -179,7 +181,7 @@ impl Elab {
     /// (D150): every member a total function, every recursive call a full
     /// call, and candidates for each. False if it can't be.
     fn guess_measure(&mut self, members: &[DefId], metas: &[FnMeta], inner: &[&CallRec], rec_calls: &[RecCall]) -> bool {
-        if metas.iter().any(|m| !m.is_fn || m.partial || m.decreasing) {
+        if metas.iter().any(|m| m.partial || m.decreasing) {
             return false;
         }
         let calls: Vec<RecCall> =

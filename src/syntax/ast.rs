@@ -164,6 +164,8 @@ pub enum DeclKind {
         name: Ident,
         params: Vec<Ident>,
         constraints: Vec<Constraint>,
+        /// `decreasing e`, the induction's measure (#76).
+        decreasing: Option<Expr>,
         lets: Vec<(Pattern, Expr)>,
         ensures: Expr,
         proof: Option<Block>,

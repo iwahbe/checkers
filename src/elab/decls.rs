@@ -396,7 +396,9 @@ impl Elab {
         let start = d.span.start as usize;
         let body = match &d.kind {
             DeclKind::Fn { body, decreasing, .. } => Some(decreasing.as_ref().map(|e| e.span.start).unwrap_or(body.span.start)),
-            DeclKind::Lemma { lets, ensures, .. } => Some(lets.first().map(|l| l.0.span.start).unwrap_or(ensures.span.start)),
+            DeclKind::Lemma { decreasing, lets, ensures, .. } => Some(
+                decreasing.as_ref().map(|e| e.span.start).or(lets.first().map(|l| l.0.span.start)).unwrap_or(ensures.span.start),
+            ),
             DeclKind::Enum { ctors, .. } => ctors.first().map(|c| c.span.start),
             DeclKind::Record { fields, .. } => fields.first().map(|f| f.span.start),
             _ => None,
@@ -1773,7 +1775,7 @@ impl Elab {
                     );
                     sig
                 }
-                DeclKind::Lemma { name, params, constraints, .. } => {
+                DeclKind::Lemma { name, params, constraints, decreasing, .. } => {
                     let sig = self.signature(params, None, constraints);
                     self.fn_meta.insert(
                         *did,
@@ -1781,6 +1783,7 @@ impl Elab {
                             name: name.name.clone(),
                             span: name.span,
                             is_fn: false,
+                            decreasing: decreasing.is_some(),
                             params: params
                                 .iter()
                                 .zip(sig.binders.iter().skip(sig.n_implicit))
@@ -2002,11 +2005,11 @@ impl Elab {
         }
     }
 
-    /// Every function's `decreasing` measure, before any body, so calls to
-    /// functions defined later can be checked against it (§5.3).
+    /// Every function's and lemma's `decreasing` measure, before any body,
+    /// so calls to functions defined later can be checked against it (§5.3).
     fn phase_measures(&mut self, m: &ast::Module, ids: &[Option<Sym>], sigs: &HashMap<usize, Sig>) {
         for (k, (d, id)) in m.decls.iter().zip(ids).enumerate() {
-            let DeclKind::Fn { decreasing: Some(e), .. } = &d.kind else { continue };
+            let (DeclKind::Fn { decreasing: Some(e), .. } | DeclKind::Lemma { decreasing: Some(e), .. }) = &d.kind else { continue };
             let (Some(Sym::Def(did)), Some(sig)) = (id, sigs.get(&k)) else { continue };
             self.g.fuel.set(DEFAULT_FUEL);
             let mut sig = Sig {

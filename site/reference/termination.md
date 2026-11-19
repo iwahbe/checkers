@@ -86,4 +86,17 @@ partial fn collatz n -> r : n~Nat, r~Nat
 
 ## Lemmas
 
-A lemma that uses itself is a proof by induction, and must terminate the same way: structurally, or with `decreasing` ([Proofs](proofs.md#induction)).
+A lemma that uses itself is a proof by induction, and must terminate the same way: structurally, with `decreasing` on the first line of its body (before its `let`s and `ensures`), or with a measure guessed as for a function ([Proofs](proofs.md#induction)). A lemma about a function that recurses on a position is proved by induction on the same measure:
+
+```checkers
+fn walk n x -> r : n~Nat, x~Nat, x <= n, r~Nat
+    if x < n then walk n (x + 1) else x
+
+lemma walk_end n x : n~Nat, x~Nat, x <= n
+    decreasing n - x
+    ensures walk n x == n
+    proof
+        if x < n then have walk_end n (x + 1) else auto
+```
+
+Without the `decreasing` line, `n - x` would be guessed from the guard `x < n`.

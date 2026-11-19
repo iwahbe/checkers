@@ -34,6 +34,11 @@ export lemma len2_nonneg xs : xs~List a
     proof
         have nat_nonneg n
 
+lemma by_measure n : n~Nat
+    decreasing n
+    let m = n
+    ensures m >= 0
+
 lemma trivial
     ensures True
     proof

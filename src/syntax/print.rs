@@ -83,9 +83,12 @@ fn decl(d: &Decl) -> String {
         DeclKind::Alias { name, params, constraints } => {
             format!("({ex}type {} ({}){})", name.name, names(params), cons(constraints, 1))
         }
-        DeclKind::Lemma { name, params, constraints, lets, ensures, proof } => {
+        DeclKind::Lemma { name, params, constraints, decreasing, lets, ensures, proof } => {
             let mut s = format!("({ex}lemma {} ({})", name.name, names(params));
             s += &cons(constraints, 1);
+            if let Some(e) = decreasing {
+                s += &format!("\n{}(decreasing {})", ind(1), expr(e, 1));
+            }
             for (p, e) in lets {
                 s += &format!("\n{}(let {} {})", ind(1), pat(p), expr(e, 1));
             }

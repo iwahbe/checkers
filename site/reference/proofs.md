@@ -125,7 +125,7 @@ lemma double_even n : n~Nat
 
 ### Induction
 
-A lemma that uses itself is a proof by induction: the recursive `have` gives the conclusion for a smaller argument. Like a recursive function it must terminate, so the argument must be structurally smaller or the lemma must give `decreasing` ([Termination](termination.md)).
+A lemma that uses itself is a proof by induction: the recursive `have` gives the conclusion for a smaller argument. Like a recursive function it must terminate, so the argument must be structurally smaller, or a measure, given with `decreasing` or guessed, must get smaller ([Termination](termination.md#lemmas)).
 
 ```checkers
 fn sum xs -> n : xs~List Nat, n~Nat
