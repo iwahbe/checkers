@@ -1333,7 +1333,7 @@ impl Elab {
             self.inst_member_of.insert(*d, def);
             // Using the dictionary may rely on the lemmas (termination, D136).
             if self.def_class.get(d) == Some(&"lemma") {
-                self.calls.push(CallRec { caller: def, callee: *d, args: Vec::new(), span: p.span, conds: Vec::new() });
+                self.calls.push(CallRec { caller: def, callee: *d, args: Vec::new(), same: Vec::new(), span: p.span, conds: Vec::new() });
             }
         }
         self.instances.insert(
@@ -1392,7 +1392,7 @@ impl Elab {
         // Using an instance of this module: a call, for termination (D136).
         if inst.module == self.cur && !req.in_spec {
             if let Some(caller) = req.owner {
-                self.calls.push(CallRec { caller, callee: inst.def, args: Vec::new(), span: req.span, conds: Vec::new() });
+                self.calls.push(CallRec { caller, callee: inst.def, args: Vec::new(), same: Vec::new(), span: req.span, conds: Vec::new() });
             }
         }
         Ok(t)

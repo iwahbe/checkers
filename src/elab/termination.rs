@@ -351,9 +351,10 @@ impl Elab {
                 .iter()
                 .filter(|c| members.contains(&c.caller) && members.contains(&c.callee))
                 .collect();
-            if structural(&members, &metas, &inner) {
-                continue;
-            }
+            let cycle = match size_change(&members, &metas, &inner) {
+                Ok(()) => continue,
+                Err(cycle) => cycle,
+            };
             // Recursion through an instance's dictionary (D136): a use of
             // the class's function at the instance's own type.
             if let Some(c) = inner.iter().find(|c| self.dict_defs.contains(&c.callee) && !self.dict_defs.contains(&c.caller)) {
@@ -371,25 +372,56 @@ impl Elab {
             if self.guess_measure(&members, &metas, &inner, &rec_calls) {
                 continue;
             }
-            // Report at the first recursive call made by a function without
-            // `decreasing`; one passed to a function that isn't known to
-            // call it only with parts first (#102).
-            let unmarked = |c: &&&CallRec| {
+            // Report at a call of a cycle that isn't smaller (#109): one passed
+            // to a function that isn't known to call it only with parts first
+            // (#102), then one that passes no strict part, made by a function
+            // without `decreasing`.
+            let unmarked = |c: &&CallRec| {
                 let k = members.iter().position(|d| *d == c.caller).unwrap();
                 !metas[k].partial && !metas[k].decreasing
             };
-            let bad =
-                inner.iter().filter(unmarked).find(|c| unkept.contains_key(&c.span)).or_else(|| inner.iter().find(unmarked)).copied();
+            let in_cycle: Vec<&CallRec> = if cycle.is_empty() { inner.clone() } else { cycle.iter().map(|&i| inner[i]).collect() };
+            let bad = in_cycle
+                .iter()
+                .filter(|c| unmarked(c))
+                .find(|c| unkept.contains_key(&c.span))
+                .or_else(|| in_cycle.iter().filter(|c| unmarked(c)).find(|c| c.args.iter().all(Option::is_none)))
+                .or_else(|| in_cycle.iter().find(|c| unmarked(c)))
+                .or_else(|| inner.iter().find(|c| unmarked(c)))
+                .copied();
             if let Some(c) = bad {
                 let k = members.iter().position(|d| *d == c.caller).unwrap();
                 let name = metas[k].name.clone();
-                let msg = if members.len() == 1 {
+                let name_of = |d: DefId| metas[members.iter().position(|m| *m == d).unwrap()].name.clone();
+                // The cycle, from the call reported: `a` → `b` → `a`.
+                let at = in_cycle.iter().position(|x| std::ptr::eq(*x, c)).unwrap_or(0);
+                let mut turn: Vec<&CallRec> = in_cycle[at..].iter().chain(&in_cycle[..at]).copied().collect();
+                // One call, repeated: it is the cycle.
+                if turn.iter().all(|x| std::ptr::eq(*x, c)) {
+                    turn.truncate(1);
+                }
+                let mut route: Vec<String> = turn.iter().map(|x| format!("`{}`", name_of(x.caller))).collect();
+                route.push(format!("`{name}`"));
+                let file = self.sources.get(&self.cur);
+                let line = |sp: Span| file.map_or(0, |f| f.line_col(sp.start).0);
+                let note = (!cycle.is_empty() && turn.len() > 1).then(|| {
+                    let steps: Vec<String> =
+                        turn.iter().map(|x| format!("`{}` calls `{}` on line {}", name_of(x.caller), name_of(x.callee), line(x.span))).collect();
+                    format!("the cycle: {}", steps.join(", then "))
+                });
+                let msg = if members.len() == 1 && turn.len() <= 1 {
                     format!("cannot show that `{name}` terminates: no argument gets structurally smaller in this recursive call")
+                } else if members.len() == 1 {
+                    format!("cannot show that `{name}` terminates: no argument gets structurally smaller over these recursive calls in turn")
+                } else if cycle.is_empty() {
+                    let names: Vec<String> = metas.iter().map(|m| format!("`{}`", m.name)).collect();
+                    format!("cannot show that {} terminate: they call each other, and no argument gets structurally smaller", names.join(", "))
                 } else {
                     let names: Vec<String> = metas.iter().map(|m| format!("`{}`", m.name)).collect();
                     format!(
-                        "cannot show that {} terminate: they call each other, and no argument gets structurally smaller",
-                        names.join(", ")
+                        "cannot show that {} terminate: they call each other, and no argument gets structurally smaller around {}",
+                        names.join(", "),
+                        route.join(" → ")
                     )
                 };
                 let is_lemma = !metas[k].is_fn;
@@ -411,7 +443,11 @@ impl Elab {
                     )
                 };
                 let help = unkept.get(&c.span).cloned().unwrap_or(help);
-                self.err(Diagnostic::error("E0301", msg, c.span).with_label(label).with_help(help));
+                let mut d = Diagnostic::error("E0301", msg, c.span).with_label(label);
+                if let Some(note) = note {
+                    d = d.with_note(note);
+                }
+                self.err(d.with_help(help));
             }
         }
     }
@@ -593,35 +629,107 @@ fn reindex(t: &Tm, from: usize, to: usize, depth: usize) -> Option<Tm> {
     })
 }
 
-/// Is there a choice of one parameter per function such that every call
-/// inside the group passes a strict subterm of the caller's chosen parameter
-/// in the callee's chosen position?
-fn structural(members: &[DefId], metas: &[FnMeta], calls: &[&CallRec]) -> bool {
-    let arities: Vec<usize> = metas.iter().map(|m| m.params.len()).collect();
-    if arities.contains(&0) {
-        return false;
-    }
-    let total: usize = arities.iter().product();
-    if total > 4096 {
-        return false;
-    }
-    let mut choice = vec![0usize; members.len()];
-    for k in 0..total {
-        let mut r = k;
-        for (i, a) in arities.iter().enumerate() {
-            choice[i] = r % a;
-            r /= a;
+/// How an argument relates to a parameter of the caller (#109).
+const NONE: u8 = 0;
+const SAME: u8 = 1;
+const SMALLER: u8 = 2;
+
+/// A size-change graph (#109): from the caller's parameters to the
+/// callee's, `rel[i * to_arity + j]` how the callee's parameter `j` relates
+/// to the caller's parameter `i`, made by the calls `path` in turn.
+#[derive(Clone)]
+struct Graph {
+    from: usize,
+    to: usize,
+    rel: Vec<u8>,
+    path: Vec<usize>,
+}
+
+/// More than this many graphs and the group is refused, as not shown to
+/// terminate.
+const MAX_GRAPHS: usize = 20_000;
+
+/// Size-change termination (#109; Lee, Jones and Ben-Amram, POPL 2001).
+/// Each call relates each of the callee's parameters to the caller's: a
+/// strict part of one (`<`), one itself (`=`), or neither. The group
+/// terminates if every cycle of calls, composed, makes some parameter
+/// strictly smaller: every composed graph from a function to itself that is
+/// idempotent has a `<` from a parameter to itself. Otherwise, the calls
+/// (indices into `calls`) of a cycle that isn't smaller, or none if there
+/// were too many graphs to tell.
+fn size_change(members: &[DefId], metas: &[FnMeta], calls: &[&CallRec]) -> Result<(), Vec<usize>> {
+    let arity: Vec<usize> = metas.iter().map(|m| m.params.len()).collect();
+    let pos = |d: DefId| members.iter().position(|m| *m == d).unwrap();
+    let base: Vec<Graph> = calls
+        .iter()
+        .enumerate()
+        .map(|(k, c)| {
+            let (from, to) = (pos(c.caller), pos(c.callee));
+            let (af, at) = (arity[from], arity[to]);
+            let mut rel = vec![NONE; af * at];
+            for j in 0..at {
+                if let Some(i) = c.args.get(j).copied().flatten().filter(|i| *i < af) {
+                    rel[i * at + j] = SMALLER;
+                } else if let Some(i) = c.same.get(j).copied().flatten().filter(|i| *i < af) {
+                    rel[i * at + j] = SAME;
+                }
+            }
+            Graph { from, to, rel, path: vec![k] }
+        })
+        .collect();
+    let compose = |g: &Graph, h: &Graph| -> Vec<u8> {
+        let (a, b, c) = (arity[g.from], arity[g.to], arity[h.to]);
+        let mut rel = vec![NONE; a * c];
+        for i in 0..a {
+            for j in 0..b {
+                let x = g.rel[i * b + j];
+                if x == NONE {
+                    continue;
+                }
+                for k in 0..c {
+                    let y = h.rel[j * c + k];
+                    if y != NONE {
+                        let r = if x == SMALLER || y == SMALLER { SMALLER } else { SAME };
+                        rel[i * c + k] = rel[i * c + k].max(r);
+                    }
+                }
+            }
         }
-        let ok = calls.iter().all(|c| {
-            let fi = members.iter().position(|d| *d == c.caller).unwrap();
-            let gi = members.iter().position(|d| *d == c.callee).unwrap();
-            c.args.get(choice[gi]).copied().flatten() == Some(choice[fi])
-        });
-        if ok {
-            return true;
+        rel
+    };
+    // Every composition of calls, breadth first, so a cycle reported is a
+    // short one.
+    let mut seen: HashSet<(usize, usize, Vec<u8>)> = HashSet::new();
+    let mut all: Vec<Graph> = Vec::new();
+    for g in &base {
+        if seen.insert((g.from, g.to, g.rel.clone())) {
+            all.push(g.clone());
         }
     }
-    false
+    let mut next = 0;
+    while next < all.len() {
+        if all.len() > MAX_GRAPHS {
+            return Err(Vec::new());
+        }
+        let g = all[next].clone();
+        next += 1;
+        for h in base.iter().filter(|h| h.from == g.to) {
+            let rel = compose(&g, h);
+            if seen.insert((g.from, h.to, rel.clone())) {
+                let mut path = g.path.clone();
+                path.extend(&h.path);
+                all.push(Graph { from: g.from, to: h.to, rel, path });
+            }
+        }
+    }
+    for g in all.iter().filter(|g| g.from == g.to) {
+        let a = arity[g.from];
+        let idempotent = compose(g, g) == g.rel;
+        if idempotent && !(0..a).any(|i| g.rel[i * a + i] == SMALLER) {
+            return Err(g.path.clone());
+        }
+    }
+    Ok(())
 }
 
 /// What a local of a predicate being decided is (#102).
