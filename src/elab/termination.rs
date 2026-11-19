@@ -104,6 +104,37 @@ impl Elab {
         })
     }
 
+    /// Why condition `cond`, made where `rec` is passed to a function, fails
+    /// (#102): E0301's help.
+    fn unkept_help(&self, cond: u32, rec: DefId) -> Option<String> {
+        let (head, arg, j) = self.elem_cond_at.get(&cond)?;
+        let &(d, k, _) = self.elem_conds[cond as usize].first()?;
+        let j = *j;
+        let rec = self.fn_meta.get(&rec).map(|m| m.name.clone()).unwrap_or_default();
+        let params = self.fn_meta.get(&d).map(|m| m.params.clone()).unwrap_or_default();
+        let (pk, pj) = (params.get(k).map(|p| p.0.clone())?, params.get(j).map(|p| p.0.clone())?);
+        let promise = self.specs.get(&d).and_then(|s| s.elems.iter().find(|e| e.k == k && e.j == j).copied());
+        let why = match promise {
+            Some(e) => {
+                let pred = self.g.defs[e.pred.0 as usize].name.to_string();
+                if self.body_visible(e.pred) && !self.g.defs[e.pred.0 as usize].opaque {
+                    format!(
+                        "`{pred}`, in its precondition on `{pk}`, isn't a membership: it must be true only of something equal to a part of `{pj}`"
+                    )
+                } else {
+                    format!("`{pred}`, in its precondition on `{pk}`, is sealed, so it can't be seen to be a membership; export it `transparent`")
+                }
+            }
+            None if self.body_visible(d) => format!(
+                "it uses `{pk}` other than by calling it with a part of `{pj}` or passing it on to a function that does"
+            ),
+            None => format!(
+                "its body is sealed; its signature can promise it with a precondition on `{pk}` such as `{pk}~(x~a -> b, list.contains {pj} x)`"
+            ),
+        };
+        Some(format!("`{head}` isn't known to call `{rec}` only with parts of `{arg}`: {why}"))
+    }
+
     /// Decide, for each signature promise a condition names, whether its
     /// predicate is a membership (#102).
     fn decide_memberships(&mut self) {
@@ -242,15 +273,20 @@ impl Elab {
         let held = self.body_promises();
         let fns: Vec<DefId> = std::mem::take(&mut self.module_fns);
         let mut calls: Vec<CallRec> = std::mem::take(&mut self.calls);
-        // Parts that hold only if a promise read from a body does (#102).
+        // Parts that hold only if a promise does (#102).
+        let mut unkept: HashMap<Span, String> = HashMap::new();
         for c in &mut calls {
             for &(i, cond) in &c.conds {
                 if !self.cond_holds(Some(cond), &held) {
                     c.args[i] = None;
+                    if let Some(help) = self.unkept_help(cond, c.callee) {
+                        unkept.entry(c.span).or_insert(help);
+                    }
                 }
             }
         }
         self.elem_conds.clear();
+        self.elem_cond_at.clear();
         let rec_calls: Vec<RecCall> = std::mem::take(&mut self.rec_calls);
         let idx: HashMap<DefId, usize> = fns.iter().enumerate().map(|(i, d)| (*d, i)).collect();
         let n = fns.len();
@@ -335,14 +371,15 @@ impl Elab {
             if self.guess_measure(&members, &metas, &inner, &rec_calls) {
                 continue;
             }
-            // Report at the first recursive call made by a function without `decreasing`.
-            let bad = inner
-                .iter()
-                .find(|c| {
-                    let k = members.iter().position(|d| *d == c.caller).unwrap();
-                    !metas[k].partial && !metas[k].decreasing
-                })
-                .copied();
+            // Report at the first recursive call made by a function without
+            // `decreasing`; one passed to a function that isn't known to
+            // call it only with parts first (#102).
+            let unmarked = |c: &&&CallRec| {
+                let k = members.iter().position(|d| *d == c.caller).unwrap();
+                !metas[k].partial && !metas[k].decreasing
+            };
+            let bad =
+                inner.iter().filter(unmarked).find(|c| unkept.contains_key(&c.span)).or_else(|| inner.iter().find(unmarked)).copied();
             if let Some(c) = bad {
                 let k = members.iter().position(|d| *d == c.caller).unwrap();
                 let name = metas[k].name.clone();
@@ -373,6 +410,7 @@ impl Elab {
                         ),
                     )
                 };
+                let help = unkept.get(&c.span).cloned().unwrap_or(help);
                 self.err(Diagnostic::error("E0301", msg, c.span).with_label(label).with_help(help));
             }
         }

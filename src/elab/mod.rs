@@ -597,6 +597,9 @@ pub struct Elab {
     pub body_fns: Vec<DefId>,
     /// Conditions: any of these `(callee, k, j)` promises (#102).
     pub elem_conds: Vec<Vec<ElemAlt>>,
+    /// A condition made at a call: the callee's text, and the container
+    /// argument's text and position, for E0301's help (#102).
+    pub elem_cond_at: HashMap<u32, (String, String, usize)>,
     /// The element promises read from each checked function's body:
     /// `(k, j)` as in `Spec::elems` (#102).
     pub body_elems: HashMap<DefId, Vec<(usize, usize)>>,
@@ -761,6 +764,7 @@ impl Elab {
             param_uses: HashMap::new(),
             body_fns: Vec::new(),
             elem_conds: Vec::new(),
+            elem_cond_at: HashMap::new(),
             body_elems: HashMap::new(),
             memberships: HashMap::new(),
             match_span: Span::default(),

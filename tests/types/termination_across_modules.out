@@ -3,20 +3,20 @@ error[E0301]: cannot show that `by_hidden` terminates: no argument gets structur
    |
 24 |         Many kids -> each.hidden kids by_hidden
    |                                       ^^^^^^^^^ recursive call
-   = help: recurse on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of `by_hidden`, or mark it `partial`
+   = help: `each.hidden` isn't known to call `by_hidden` only with parts of `kids`: its body is sealed; its signature can promise it with a precondition on `p` such as `p~(x~a -> b, list.contains xs x)`
 
 error[E0301]: cannot show that `by_filled` terminates: no argument gets structurally smaller in this recursive call
   --> termination_across_modules.ck:37:44
    |
 37 |         Node kids -> each.each_filled kids by_filled
    |                                            ^^^^^^^^^ recursive call
-   = help: recurse on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of `by_filled`, or mark it `partial`
+   = help: `each.each_filled` isn't known to call `by_filled` only with parts of `kids`: `filled`, in its precondition on `p`, isn't a membership: it must be true only of something equal to a part of `t`
 
 error[E0301]: cannot show that `by_sealed` terminates: no argument gets structurally smaller in this recursive call
   --> termination_across_modules.ck:41:44
    |
 41 |         Node kids -> each.each_sealed kids by_sealed
    |                                            ^^^^^^^^^ recursive call
-   = help: recurse on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of `by_sealed`, or mark it `partial`
+   = help: `each.each_sealed` isn't known to call `by_sealed` only with parts of `kids`: `sealed_holds`, in its precondition on `p`, is sealed, so it can't be seen to be a membership; export it `transparent`
 
 termination_across_modules.ck: 3 errors, 0 warnings

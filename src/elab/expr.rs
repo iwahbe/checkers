@@ -1699,24 +1699,31 @@ impl Elab {
     /// `transparent`. Whether it holds is decided once the module's bodies
     /// are checked, as a body may come after this call.
     fn elem_sub(&mut self, cx: &Cx, d: DefId, k: usize, args: &[&Expr]) -> Option<ElemSub> {
-        let promised = self.specs.get(&d).is_some_and(|s| s.elems.iter().any(|e| e.k == k));
-        if !promised && !self.body_visible(d) {
-            return None;
-        }
         let mut found: Option<(usize, Vec<ElemAlt>)> = None;
+        // The argument E0301's help names: a part, rather than the parameter itself.
+        let mut shown = None;
         for (j, aj) in args.iter().enumerate() {
             if j == k {
                 continue;
             }
             let Some(p) = self.part_or_param(cx, aj) else { continue };
+            let part = self.part_of(cx, aj).is_some();
             match &mut found {
                 None => found = Some((p, vec![(d, k, j)])),
                 Some((q, alts)) if *q == p => alts.push((d, k, j)),
-                Some(_) => {}
+                Some(_) => continue,
+            }
+            if shown.is_none_or(|(_, was_part): (usize, bool)| part && !was_part) {
+                shown = Some((j, part));
             }
         }
         let (p, alts) = found?;
-        Some(ElemSub { p, cond: Some(self.new_elem_cond(alts)) })
+        let j = shown.map_or(alts[0].2, |(j, _)| j);
+        let arg = self.src_text(args[j].span);
+        let cond = self.new_elem_cond(alts);
+        let head = self.arg_of.clone().unwrap_or_else(|| self.g.defs[d.0 as usize].name.to_string());
+        self.elem_cond_at.insert(cond, (head, arg, j));
+        Some(ElemSub { p, cond: Some(cond) })
     }
 
     /// Whether `d`'s body can be read for its promises (#102).
