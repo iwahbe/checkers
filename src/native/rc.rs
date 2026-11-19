@@ -22,27 +22,98 @@ pub struct Rc<'p> {
 
 type Set = BTreeSet<V>;
 
+/// The free variables of an expression and of each part `Rc::node` visits,
+/// computed once, bottom-up: asking each node for its subtree's free
+/// variables would walk a deeply nested expression once per level.
+struct Fv {
+    vars: Set,
+    /// `Let`: the value and the body (the bound variable still free);
+    /// `Call`, `Tuple`, `Par`: the arguments; `Apply`: the function, then
+    /// the arguments; `Con`: the fields, then the reused cell; `Case`: the
+    /// arms' bodies (their fields still free), the literal arms' bodies,
+    /// the default. Other nodes have none.
+    parts: Vec<Fv>,
+}
+
+impl Fv {
+    fn leaf(vars: Set) -> Fv {
+        Fv { vars, parts: Vec::new() }
+    }
+
+    /// Parts whose free variables are all free in the whole.
+    fn of_parts(parts: Vec<Fv>) -> Fv {
+        let mut vars = Set::new();
+        for p in &parts {
+            vars.extend(p.vars.iter().copied());
+        }
+        Fv { vars, parts }
+    }
+
+    fn of(e: &E) -> Fv {
+        match e {
+            E::Var(v) => Fv::leaf(Set::from([*v])),
+            E::Let(x, a, b) => {
+                let (a, b) = (Fv::of(a), Fv::of(b));
+                let mut vars = a.vars.clone();
+                vars.extend(b.vars.iter().filter(|v| *v != x).copied());
+                Fv { vars, parts: vec![a, b] }
+            }
+            E::Call { args, .. } | E::Tuple(args) | E::Par(args) => Fv::of_parts(args.iter().map(Fv::of).collect()),
+            E::Apply { f, args, .. } => Fv::of_parts(std::iter::once(&**f).chain(args).map(Fv::of).collect()),
+            E::Con { fields, reuse, .. } => {
+                let mut parts: Vec<Fv> = fields.iter().map(Fv::of).collect();
+                if let Some(r) = reuse {
+                    parts.push(Fv::leaf(Set::from([*r])));
+                }
+                Fv::of_parts(parts)
+            }
+            E::Case { scrut, arms, lits, default } => {
+                let mut vars = Set::from([*scrut]);
+                let mut parts = Vec::new();
+                for a in arms {
+                    let p = Fv::of(&a.body);
+                    let bound: Set = a.fields.iter().flatten().copied().collect();
+                    vars.extend(p.vars.difference(&bound).copied());
+                    parts.push(p);
+                }
+                for (_, b) in lits {
+                    let p = Fv::of(b);
+                    vars.extend(p.vars.iter().copied());
+                    parts.push(p);
+                }
+                if let Some(d) = default {
+                    let p = Fv::of(d);
+                    vars.extend(p.vars.iter().copied());
+                    parts.push(p);
+                }
+                Fv { vars, parts }
+            }
+            // No parts are visited: atomic arguments, or code the pass made.
+            _ => Fv::leaf(free_vars(e)),
+        }
+    }
+}
+
 impl Rc<'_> {
-    /// Code for `e` that consumes exactly the variables in `own`.
-    pub fn rc(&mut self, e: E, own: Set) -> E {
-        let fvs = free_vars(&e);
-        let dead: Vec<V> = own.difference(&fvs).copied().collect();
-        let own: Set = own.intersection(&fvs).copied().collect();
-        let body = self.node(e, own);
+    /// Code for `e` that consumes exactly the variables in `own`; `fv` is
+    /// `Fv::of(&e)`.
+    fn rc(&mut self, e: E, fv: Fv, own: Set) -> E {
+        let dead: Vec<V> = own.difference(&fv.vars).copied().collect();
+        let own: Set = own.intersection(&fv.vars).copied().collect();
+        let body = self.node(e, fv.parts, own);
         dead.into_iter().rev().fold(body, |acc, x| E::Drop(x, Box::new(acc)))
     }
 
     /// Children evaluated in order: each owned variable goes to the last
     /// child that uses it; earlier ones borrow it.
-    fn children(&mut self, xs: Vec<E>, own: &Set) -> (Vec<V>, Vec<E>) {
-        let fvs: Vec<Set> = xs.iter().map(free_vars).collect();
+    fn children(&mut self, xs: Vec<E>, fvs: Vec<Fv>, own: &Set) -> (Vec<V>, Vec<E>) {
         let mut owns: Vec<Set> = vec![Set::new(); xs.len()];
         for v in own {
-            if let Some(k) = fvs.iter().rposition(|s| s.contains(v)) {
+            if let Some(k) = fvs.iter().rposition(|s| s.vars.contains(v)) {
                 owns[k].insert(*v);
             }
         }
-        let out = xs.into_iter().zip(owns).map(|(x, o)| self.rc(x, o)).collect();
+        let out = xs.into_iter().zip(fvs).zip(owns).map(|((x, f), o)| self.rc(x, f, o)).collect();
         (Vec::new(), out)
     }
 
@@ -50,7 +121,8 @@ impl Rc<'_> {
         dups.into_iter().rev().fold(e, |acc, v| E::Dup(v, Box::new(acc)))
     }
 
-    fn node(&mut self, e: E, own: Set) -> E {
+    fn node(&mut self, e: E, parts: Vec<Fv>, own: Set) -> E {
+        let mut parts = parts.into_iter();
         match e {
             // A borrowed variable that is kept: one more reference.
             E::Var(x) if !own.contains(&x) => E::Dup(x, Box::new(E::Var(x))),
@@ -70,25 +142,24 @@ impl Rc<'_> {
             | E::ConFn(_)
             | E::Fail(_) => e,
             E::Let(x, a, b) => {
-                let fa = free_vars(&a);
-                let mut fb = free_vars(&b);
-                fb.remove(&x);
+                let (fa, fb) = (parts.next().unwrap(), parts.next().unwrap());
                 // The body runs last: it owns what both use; the value borrows.
-                let oa: Set = own.iter().filter(|v| fa.contains(v) && !fb.contains(v)).copied().collect();
-                let a2 = self.rc(*a, oa);
-                let mut ob: Set = own.intersection(&fb).copied().collect();
+                let in_b = |v: &V| *v != x && fb.vars.contains(v);
+                let oa: Set = own.iter().filter(|v| fa.vars.contains(v) && !in_b(v)).copied().collect();
+                let mut ob: Set = own.iter().filter(|v| in_b(v)).copied().collect();
                 ob.insert(x);
-                let b2 = self.rc(*b, ob);
+                let a2 = self.rc(*a, fa, oa);
+                let b2 = self.rc(*b, fb, ob);
                 E::Let(x, Box::new(a2), Box::new(b2))
             }
             E::Call { f, args, tail } => {
-                let (dups, args) = self.children(args, &own);
+                let (dups, args) = self.children(args, parts.collect(), &own);
                 Self::with_dups(dups, E::Call { f, args, tail })
             }
             E::Apply { f, args, tail } => {
                 let mut xs = vec![*f];
                 xs.extend(args);
-                let (dups, mut xs) = self.children(xs, &own);
+                let (dups, mut xs) = self.children(xs, parts.collect(), &own);
                 let f = xs.remove(0);
                 Self::with_dups(dups, E::Apply { f: Box::new(f), args: xs, tail })
             }
@@ -97,18 +168,18 @@ impl Rc<'_> {
                 if let Some(r) = reuse {
                     xs.push(E::Var(r));
                 }
-                let (dups, mut xs) = self.children(xs, &own);
+                let (dups, mut xs) = self.children(xs, parts.collect(), &own);
                 if reuse.is_some() {
                     xs.pop();
                 }
                 Self::with_dups(dups, E::Con { con, fields: xs, reuse })
             }
             E::Tuple(xs) => {
-                let (dups, xs) = self.children(xs, &own);
+                let (dups, xs) = self.children(xs, parts.collect(), &own);
                 Self::with_dups(dups, E::Tuple(xs))
             }
             E::Par(xs) => {
-                let (dups, xs) = self.children(xs, &own);
+                let (dups, xs) = self.children(xs, parts.collect(), &own);
                 Self::with_dups(dups, E::Par(xs))
             }
             E::Borrow { op, args, .. } => E::Borrow { op, args, drops: own.into_iter().collect() },
@@ -117,13 +188,14 @@ impl Rc<'_> {
                 // A borrowed scrutinee is never dropped here.
                 let owned = own.contains(&scrut);
                 for mut a in arms {
-                    let used = free_vars(&a.body).contains(&scrut) || !owned;
+                    let fv = parts.next().unwrap();
+                    let used = fv.vars.contains(&scrut) || !owned;
                     let n = a.fields.len();
                     let mut own_arm: Set = own.clone();
                     own_arm.extend(a.fields.iter().flatten().copied());
                     let fields_used: Vec<V> = a.fields.iter().flatten().copied().collect();
                     let body = if used {
-                        self.rc(a.body, own_arm)
+                        self.rc(a.body, fv, own_arm)
                     } else {
                         own_arm.remove(&scrut);
                         // Reuse the matched value's memory for a constructor of
@@ -132,11 +204,13 @@ impl Rc<'_> {
                         match tok {
                             Some(t) => {
                                 own_arm.insert(t);
-                                let b = self.rc(a.body, own_arm);
+                                // The cell is a new free variable on the way to the constructor.
+                                let fv = Fv::of(&a.body);
+                                let b = self.rc(a.body, fv, own_arm);
                                 E::DropReuse(scrut, t, n, Box::new(b))
                             }
                             None => {
-                                let b = self.rc(a.body, own_arm);
+                                let b = self.rc(a.body, fv, own_arm);
                                 E::Drop(scrut, Box::new(b))
                             }
                         }
@@ -146,9 +220,10 @@ impl Rc<'_> {
                 }
                 let mut lits2 = Vec::new();
                 for (l, b) in lits {
-                    lits2.push((l, self.rc(b, own.clone())));
+                    let fv = parts.next().unwrap();
+                    lits2.push((l, self.rc(b, fv, own.clone())));
                 }
-                let default = default.map(|d| Box::new(self.rc(*d, own.clone())));
+                let default = default.map(|d| Box::new(self.rc(*d, parts.next().unwrap(), own.clone())));
                 E::Case { scrut, arms: arms2, lits: lits2, default }
             }
             E::Dup(..) | E::Drop(..) | E::DropReuse(..) => e,
@@ -209,6 +284,7 @@ pub fn function(f: &mut Func, fields_of: &dyn Fn(u32) -> usize) {
     }
     let mut r = Rc { next: f.nvars, fields_of };
     let body = std::mem::replace(&mut f.body, E::Erased);
-    f.body = r.rc(body, own);
+    let fv = Fv::of(&body);
+    f.body = r.rc(body, fv, own);
     f.nvars = r.next;
 }

@@ -126,7 +126,7 @@ pub fn layout_for(r: Range) -> u8 {
 }
 
 /// A constant term: a literal, or a negated one.
-fn constant(t: &Tm) -> Option<i128> {
+pub fn constant(t: &Tm) -> Option<i128> {
     match t {
         Tm::Lit(Lit::Num(n)) => Some(*n),
         Tm::PrimApp(Prim::Neg, a) => constant(a.first()?).and_then(|n| n.checked_neg()),
@@ -192,8 +192,8 @@ impl Elab {
     }
 
     /// An operand's bounds: a constant's own, else its type's.
-    pub fn operand_range(&self, t: &Tm, ty: &Val) -> Option<Range> {
-        match constant(t) {
+    pub fn operand_range(&self, c: Option<i128>, ty: &Val) -> Option<Range> {
+        match c {
             Some(c) => Some(Range::exact(c)),
             None => self.type_range(ty),
         }
@@ -278,9 +278,9 @@ impl Elab {
 
     /// The type of `lt op rt` (D134, D135): `ty` is the operands' shared
     /// type, `lty` and `rty` their own.
-    pub fn arith_type(&mut self, op: Prim, lt: &Tm, rt: &Tm, ty: &Val, lty: &Val, rty: &Val) -> Val {
+    pub fn arith_type(&mut self, op: Prim, lc: Option<i128>, rc: Option<i128>, ty: &Val, lty: &Val, rty: &Val) -> Val {
         let nat_sub = op == Prim::Sub && crate::core::is_nat(&self.g, ty);
-        match (self.operand_range(lt, lty), self.operand_range(rt, rty)) {
+        match (self.operand_range(lc, lty), self.operand_range(rc, rty)) {
             (Some(a), Some(b)) => {
                 let r = combine(op, a, b, nat_sub);
                 // Never wider than D134's base: `Nat` stays `Nat`.

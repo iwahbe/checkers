@@ -200,11 +200,11 @@ impl Elab {
             {
                 let lt = self.check(cx, l, expected, false);
                 match self.class_operator(cx, *op, lt, expected, r, e.span) {
-                    Some((t, ty)) => {
+                    Ok((t, ty)) => {
                         self.last_inferred = Some(ty);
                         t
                     }
-                    None => Tm::Error,
+                    Err(_) => Tm::Error,
                 }
             }
             (ExprKind::Binary(op, l, r), Val::TyCon(..))
@@ -1574,15 +1574,20 @@ impl Elab {
                 // their built-in operators.
                 let early = if !left_literal && Self::class_op(op).is_some() {
                     let (lt, lty) = self.infer(cx, l);
-                    if let Some(r) = self.class_operator(cx, op, lt.clone(), &lty, r, span) {
-                        return r;
-                    }
+                    // `lt` comes back if there is no class function: cloning
+                    // it would copy every operator chained below it.
+                    let lt = match self.class_operator(cx, op, lt, &lty, r, span) {
+                        Ok(r) => return r,
+                        Err(lt) => lt,
+                    };
                     // The left side's type isn't known yet (`zero + x`): the right's.
                     if matches!(self.force(&lty), Val::Neutral(Head::Meta(_), _)) && !matches!(r.kind, ExprKind::Lit(_)) {
                         let (rt, rty) = self.infer(cx, r);
-                        if let Some(res) = self.class_operator_tms(cx, op, lt.clone(), rt.clone(), &rty, span) {
-                            self.unify_at(cx, &rty, &lty, l.span, "this operand");
-                            return res;
+                        if self.has_class_operator(cx, op, &rty) {
+                            if let Some(res) = self.class_operator_tms(cx, op, lt.clone(), rt.clone(), &rty, span) {
+                                self.unify_at(cx, &rty, &lty, l.span, "this operand");
+                                return res;
+                            }
                         }
                         let shared = self.shared_operand_type(&rty);
                         self.unify_at(cx, &shared, &lty, l.span, "this operand");
@@ -1662,11 +1667,22 @@ impl Elab {
     }
 
     /// `l op r` through a class's function (M24), if `l`'s type has one.
-    fn class_operator(&mut self, cx: &mut Cx, op: Op, lt: Tm, lty: &Val, r: &Expr, span: Span) -> Option<(Tm, Val)> {
-        let (class, method, _, _) = Self::class_op(op)?;
-        self.operator_method(cx, class, method, lty)?;
+    /// `lt` back if there is none.
+    fn class_operator(&mut self, cx: &mut Cx, op: Op, lt: Tm, lty: &Val, r: &Expr, span: Span) -> Result<(Tm, Val), Tm> {
+        if !self.has_class_operator(cx, op, lty) {
+            return Err(lt);
+        }
         let rt = self.check(cx, r, lty, false);
-        self.class_operator_tms(cx, op, lt, rt, lty, span)
+        // Checking `r` can solve `lty`.
+        if !self.has_class_operator(cx, op, lty) {
+            return Err(lt);
+        }
+        self.class_operator_tms(cx, op, lt, rt, lty, span).ok_or(Tm::Error)
+    }
+
+    /// Whether `op` on `ty` is a class's function (M24).
+    fn has_class_operator(&mut self, cx: &Cx, op: Op, ty: &Val) -> bool {
+        Self::class_op(op).is_some_and(|(class, method, _, _)| self.operator_method(cx, class, method, ty).is_some())
     }
 
     /// `lt op rt`, both of type `lty`, through a class's function (M24).
@@ -1748,14 +1764,17 @@ impl Elab {
                         owner: self.cur_fn,
                     });
                 }
-                let (lv, rv) = (self.eval(cx, &lt), self.eval(cx, &rt));
+                // Only the obligations need the operands' values: evaluating
+                // the left operand walks every operator chained below it.
                 match op {
                     Op::Sub => {
+                        let (lv, rv) = (self.eval(cx, &lt), self.eval(cx, &rt));
                         let goal = Self::prim_val(Prim::Ge, vec![lv, rv]);
                         let text = self.src_text(span);
                         self.oblige(cx, span, ObKind::NatSub, text, goal, Some(lty.clone()));
                     }
                     Op::Div | Op::Rem => {
+                        let rv = self.eval(cx, &rt);
                         let zero = Val::Lit(Lit::Num(0));
                         let goal = Self::prim_val(Prim::Ne, vec![rv, zero]);
                         let text = self.src_text(span);
