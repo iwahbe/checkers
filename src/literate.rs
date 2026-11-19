@@ -172,8 +172,11 @@ pub fn scan(region: &[Line]) -> (Vec<Block>, Vec<Ref>) {
             let mut lines = Vec::new();
             let mut j = i;
             while j < region.len() && (region[j].text.trim().is_empty() || indent_of(&region[j].text) >= base + 4) {
+                // A blank line is blank in the block, whatever white space
+                // it holds; a non-blank one starts with `base + 4` ASCII
+                // spaces, so cutting them leaves a character boundary.
                 let t = &region[j].text;
-                let cut = (base + 4).min(t.len());
+                let cut = if t.trim().is_empty() { t.len() } else { base + 4 };
                 lines.push(Line { text: t[cut..].to_string(), at: region[j].at + cut });
                 j += 1;
             }
