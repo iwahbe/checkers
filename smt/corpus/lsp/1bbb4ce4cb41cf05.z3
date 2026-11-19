@@ -1,0 +1,7 @@
+;; work 1049
+sat
+((|ds#1| (std.prelude.Cons (lsp.Diag (lsp.Span (as seq.empty (Seq Int)) 0 0 0 0)
+                            (as seq.empty (Seq Int))
+                            std.json.Null)
+                  (as std.prelude.Nil (std.prelude.List lsp.Diag))))
+ (|phase#0| (seq.unit 5)))

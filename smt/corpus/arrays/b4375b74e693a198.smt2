@@ -1,0 +1,8 @@
+(set-option :produce-models true)
+(set-option :rlimit 200000)
+(set-option :timeout 60000)
+(set-logic ALL)
+(declare-const |xs#0| (Seq Int))
+(assert (not (< (seq.len |xs#0|) (seq.len |xs#0|))))
+(check-sat)
+(get-value (|xs#0|))
