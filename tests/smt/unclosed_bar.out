@@ -1,0 +1,4 @@
+-- stdout
+(error "line 2 column 16: this `|` is never closed")
+-- stderr
+-- exit 1

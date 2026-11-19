@@ -1,0 +1,5 @@
+(set-logic ALL)
+(declare-sort U 1)
+(declare-const x U)
+(assert (not true))
+(check-sat)

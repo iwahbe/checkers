@@ -1,0 +1,4 @@
+-- stdout
+(error "line 3 column 19: expected `(lambda ((NAME SORT)) TERM)`: a `lambda` of more than one variable is outside the subset `ckc` writes")
+-- stderr
+-- exit 1

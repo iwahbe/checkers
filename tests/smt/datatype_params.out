@@ -1,0 +1,4 @@
+-- stdout
+(error "line 2 column 29: `L` was declared with parameters: expected `(par (NAME …) (…))`")
+-- stderr
+-- exit 1

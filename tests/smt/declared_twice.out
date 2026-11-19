@@ -1,0 +1,4 @@
+-- stdout
+(error "line 3 column 14: `x` is already declared")
+-- stderr
+-- exit 1

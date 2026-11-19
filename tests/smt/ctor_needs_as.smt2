@@ -1,0 +1,5 @@
+(set-logic ALL)
+(declare-datatypes ((L 1)) ((par (T) ((Nil) (Cons (hd T) (tl (L T)))))))
+(declare-const x (L Int))
+(assert (not (= x Nil)))
+(check-sat)
