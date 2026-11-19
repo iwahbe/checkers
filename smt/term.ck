@@ -168,9 +168,7 @@ fn def_fun d -> f : d~Def, f~FunDecl
     FunDecl d.name (list.map (\(_, s) -> s) d.params) d.result Defined
 
 fn def_funs ds -> fs : ds~List Def, fs~List FunDecl
-    match ds
-        []        -> []
-        d :: rest -> def_fun d :: def_funs rest
+    list.map def_fun ds
 
 # The signature after `c`.
 export fn extend sig c -> r : sig~Sig, c~Command, r~Sig
@@ -213,7 +211,7 @@ export enum Problem
 # ── Well-formed sorts ────────────────────────────────────────────────────────
 
 # Whether `s` is a sort of `sig`, where `np` parameters may be used.
-export fn sort_ok sig np s -> r : sig~Sig, np~Nat, s~Sort, r~Bool
+export transparent fn sort_ok sig np s -> r : sig~Sig, np~Nat, s~Sort, r~Bool
     match s
         Bool        -> True
         Int         -> True
@@ -225,7 +223,7 @@ export fn sort_ok sig np s -> r : sig~Sig, np~Nat, s~Sort, r~Bool
         Unin u args -> u < len sig.sorts and list.length args == sig.sorts[u].arity and sorts_ok sig np args
         Param k     -> k < np
 
-export fn sorts_ok sig np ss -> r : sig~Sig, np~Nat, ss~List Sort, r~Bool
+export transparent fn sorts_ok sig np ss -> r : sig~Sig, np~Nat, ss~List Sort, r~Bool
     match ss
         []        -> True
         s :: rest -> sort_ok sig np s and sorts_ok sig np rest
@@ -254,6 +252,7 @@ export fn instantiate args s -> r : args~List Sort, s~Sort, r~Sort
                 Some a -> a
                 None   -> Param k
 
+# `list.map (instantiate args) ss`, which isn't accepted as structural (#102).
 fn instantiate_all args ss -> r : args~List Sort, ss~List Sort, r~List Sort
     match ss
         []        -> []
@@ -262,10 +261,10 @@ fn instantiate_all args ss -> r : args~List Sort, ss~List Sort, r~List Sort
 # ── Sorts of terms ───────────────────────────────────────────────────────────
 
 # The `k`-th constructor of the `d`-th datatype, if there is one.
-export fn ctor sig d k -> r : sig~Sig, d~Nat, k~Nat, r~Option Ctor
+export transparent fn ctor sig d k -> r : sig~Sig, d~Nat, k~Nat, r~Option Ctor
     if d < len sig.datatypes then list.head (list.drop k sig.datatypes[d].ctors) else None
 
-fn field_sorts fs -> r : fs~List Field, r~List Sort
+export transparent fn field_sorts fs -> r : fs~List Field, r~List Sort
     match fs
         []        -> []
         f :: rest -> f.sort :: field_sorts rest
@@ -307,21 +306,11 @@ export fn apply_sort sig h found -> r : sig~Sig, h~Head, found~List Sort, r~Resu
                 Some s -> Ok s
                 None   -> bad
 
-fn all_bool ss -> r : ss~List Sort, r~Bool
-    match ss
-        []        -> True
-        s :: rest -> s == Bool and all_bool rest
-
-fn all_seq e ss -> r : e~Sort, ss~List Sort, r~Bool
-    match ss
-        []        -> True
-        s :: rest -> s == Seq e and all_seq e rest
-
 # The sort a built-in operation gives for arguments of sorts `found`.
 fn prim_sort op found -> r : op~Op, found~List Sort, r~Option Sort
     match op
         Not        -> if found == [Bool] then Some Bool else None
-        And        -> if list.length found >= 2 and all_bool found then Some Bool else None
+        And        -> if list.length found >= 2 and list.all (\s -> s == Bool) found then Some Bool else None
         Implies    -> if found == [Bool, Bool] then Some Bool else None
         Ite        ->
             match found
@@ -367,7 +356,7 @@ fn prim_sort op found -> r : op~Op, found~List Sort, r~Option Sort
                 _   -> None
         SeqConcat  ->
             match found
-                Seq e :: rest if rest != [] and all_seq e rest -> Some (Seq e)
+                Seq e :: rest if rest != [] and list.all (\s -> s == Seq e) rest -> Some (Seq e)
                 _ -> None
         SeqExtract ->
             match found
@@ -422,7 +411,7 @@ export fn check_term sig env t want -> r : sig~Sig, env~List Sort, t~Term, want~
 
 # ── Well-formed commands ─────────────────────────────────────────────────────
 
-fn var_sorts vs -> r : vs~List (Name, Sort), r~List Sort
+export transparent fn var_sorts vs -> r : vs~List (Name, Sort), r~List Sort
     match vs
         []             -> []
         (_, s) :: rest -> s :: var_sorts rest
@@ -541,6 +530,8 @@ lemma extend_append sig xs ys : sig~Sig, xs~List Command, ys~List Command
             x :: rest -> have extend_append (extend sig x) rest ys
 
 # `c` with `cmd` after its commands, if `cmd` is well-formed there.
+# Appending copies the commands, so `context` of n commands takes time
+# quadratic in n; `prepare` (#86) will want better.
 export fn add c cmd -> r : c~Context, cmd~Command, r~Result Context Problem
     let _ = try check_command c.sig cmd
     have check_append empty_sig c.commands [cmd]
@@ -852,3 +843,390 @@ export lemma axioms_well_sorted c : c~Context
     proof
         have axioms_checked empty_sig c.commands
         have axioms_ok_sig c (axioms c)
+
+# ── What writing a context needs ─────────────────────────────────────────────
+# Every number in a well-formed context names a declaration, so its name can
+# be written. These say so without sorts: `heads_ok` checks the heads and
+# sorts of a term, not its variables.
+
+# Whether `h`'s numbers name declarations of `sig`, and its sorts are sorts.
+export transparent fn head_ok sig h -> r : sig~Sig, h~Head, r~Bool
+    match h
+        Fun f        -> f < len sig.funs
+        Con d k args -> ctor sig d k != None and sort_ok sig 0 (Data d args)
+        Is d k       -> ctor sig d k != None
+        Sel d k j    ->
+            match ctor sig d k
+                Some c -> list.head (list.drop j c.fields) != None
+                None   -> False
+        ConstArr s   -> sort_ok sig 0 s
+        EmptySeq s   -> sort_ok sig 0 s
+        _            -> True
+
+# Whether every head of `t` is `head_ok`, and every `lambda`'s sort a sort.
+export transparent fn heads_ok sig t -> r : sig~Sig, t~Term, r~Bool
+    match t
+        Var _          -> True
+        App h args     -> head_ok sig h and all_heads_ok sig args
+        Let binds body -> binds_heads_ok sig binds and heads_ok sig body
+        Lam _ s body   -> sort_ok sig 0 s and heads_ok sig body
+
+export transparent fn all_heads_ok sig ts -> r : sig~Sig, ts~List Term, r~Bool
+    match ts
+        []        -> True
+        t :: rest -> heads_ok sig t and all_heads_ok sig rest
+
+export transparent fn binds_heads_ok sig bs -> r : sig~Sig, bs~List (Name, Term), r~Bool
+    match bs
+        []             -> True
+        (_, t) :: rest -> heads_ok sig t and binds_heads_ok sig rest
+
+export transparent fn patterns_heads_ok sig ps -> r : sig~Sig, ps~List (List Term), r~Bool
+    match ps
+        []        -> True
+        p :: rest -> all_heads_ok sig p and patterns_heads_ok sig rest
+
+export transparent fn ctors_ok sig np cs -> r : sig~Sig, np~Nat, cs~List Ctor, r~Bool
+    match cs
+        []        -> True
+        c :: rest -> sorts_ok sig np (field_sorts c.fields) and ctors_ok sig np rest
+
+export transparent fn datatypes_ok sig ds -> r : sig~Sig, ds~List Datatype, r~Bool
+    match ds
+        []        -> True
+        d :: rest -> ctors_ok sig (list.length d.params) d.ctors and datatypes_ok sig rest
+
+export transparent fn defs_ok sig ds -> r : sig~Sig, ds~List Def, r~Bool
+    match ds
+        []        -> True
+        d :: rest ->
+            sorts_ok sig 0 (var_sorts d.params) and sort_ok sig 0 d.result and heads_ok sig d.body
+                and defs_ok sig rest
+
+# Whether everything `cmd` names is declared in `sig`.
+export transparent fn command_ok sig cmd -> r : sig~Sig, cmd~Command, r~Bool
+    match cmd
+        DeclareSort _       -> True
+        DeclareDatatypes ds -> datatypes_ok sig ds
+        DeclareFun f        -> sorts_ok sig 0 f.params and sort_ok sig 0 f.result
+        DefineFuns _ ds     -> defs_ok sig ds
+        Assume a            ->
+            sorts_ok sig 0 (var_sorts a.vars) and heads_ok sig a.body and patterns_heads_ok sig a.patterns
+        Assert t            -> heads_ok sig t
+
+export transparent fn commands_ok sig cmds -> r : sig~Sig, cmds~List Command, r~Bool
+    match cmds
+        []        -> True
+        c :: rest -> command_ok sig c and commands_ok sig rest
+
+lemma apply_heads sig h found s : sig~Sig, h~Head, found~List Sort, s~Sort, apply_sort sig h found == Ok s
+    ensures head_ok sig h
+    proof
+        auto
+
+lemma sort_of_heads sig env t s : sig~Sig, env~List Sort, t~Term, s~Sort, sort_of sig env t == Ok s
+    ensures heads_ok sig t
+    proof
+        match t
+            Var _          -> auto
+            App h args     ->
+                match sorts_of sig env args
+                    Ok found ->
+                        have sorts_of_heads sig env args found
+                        have apply_heads sig h found s
+                    Err _    -> auto
+            Let binds body ->
+                match bound_sorts sig env binds
+                    Ok ss ->
+                        have bound_heads sig env binds ss
+                        have sort_of_heads sig (list.reverse ss ++ env) body s
+                    Err _ -> auto
+            Lam _ v body   ->
+                match sort_of sig (v :: env) body
+                    Ok b  -> have sort_of_heads sig (v :: env) body b
+                    Err _ -> auto
+
+lemma sorts_of_heads sig env ts ss : sig~Sig, env~List Sort, ts~List Term, ss~List Sort, sorts_of sig env ts == Ok ss
+    ensures all_heads_ok sig ts
+    proof
+        match ts
+            []        -> auto
+            t :: rest ->
+                match (sort_of sig env t, sorts_of sig env rest)
+                    (Ok s, Ok more) ->
+                        have sort_of_heads sig env t s
+                        have sorts_of_heads sig env rest more
+                    _               -> auto
+
+lemma bound_heads sig env bs ss : sig~Sig, env~List Sort, bs~List (Name, Term), ss~List Sort,
+                                  bound_sorts sig env bs == Ok ss
+    ensures binds_heads_ok sig bs
+    proof
+        match bs
+            []             -> auto
+            (_, t) :: rest ->
+                match (sort_of sig env t, bound_sorts sig env rest)
+                    (Ok s, Ok more) ->
+                        have sort_of_heads sig env t s
+                        have bound_heads sig env rest more
+                    _               -> auto
+
+lemma head_grow sig a b c h : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, h~Head, head_ok sig h
+    ensures head_ok (grow sig a b c) h
+    proof
+        match h
+            Con d k args ->
+                have ctor_grow sig a b c d k
+                have sort_ok_grow sig a b c 0 (Data d args)
+            Is d k       -> have ctor_grow sig a b c d k
+            Sel d k _    -> have ctor_grow sig a b c d k
+            ConstArr t   -> have sort_ok_grow sig a b c 0 t
+            EmptySeq t   -> have sort_ok_grow sig a b c 0 t
+            _            -> auto
+
+lemma heads_grow sig a b c t : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, t~Term, heads_ok sig t
+    ensures heads_ok (grow sig a b c) t
+    proof
+        match t
+            Var _          -> auto
+            App h args     ->
+                have head_grow sig a b c h
+                have all_heads_grow sig a b c args
+            Let binds body ->
+                have binds_heads_grow sig a b c binds
+                have heads_grow sig a b c body
+            Lam _ v body   ->
+                have sort_ok_grow sig a b c 0 v
+                have heads_grow sig a b c body
+
+lemma all_heads_grow sig a b c ts : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, ts~List Term,
+                                    all_heads_ok sig ts
+    ensures all_heads_ok (grow sig a b c) ts
+    proof
+        match ts
+            []        -> auto
+            t :: rest ->
+                have heads_grow sig a b c t
+                have all_heads_grow sig a b c rest
+
+lemma binds_heads_grow sig a b c bs : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl,
+                                      bs~List (Name, Term), binds_heads_ok sig bs
+    ensures binds_heads_ok (grow sig a b c) bs
+    proof
+        match bs
+            []             -> auto
+            (_, t) :: rest ->
+                have heads_grow sig a b c t
+                have binds_heads_grow sig a b c rest
+
+lemma patterns_heads_grow sig a b c ps : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl,
+                                         ps~List (List Term), patterns_heads_ok sig ps
+    ensures patterns_heads_ok (grow sig a b c) ps
+    proof
+        match ps
+            []        -> auto
+            p :: rest ->
+                have all_heads_grow sig a b c p
+                have patterns_heads_grow sig a b c rest
+
+lemma ctors_grow sig a b c np cs : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, np~Nat,
+                                   cs~List Ctor, ctors_ok sig np cs
+    ensures ctors_ok (grow sig a b c) np cs
+    proof
+        match cs
+            []        -> auto
+            k :: rest ->
+                have sorts_ok_grow sig a b c np (field_sorts k.fields)
+                have ctors_grow sig a b c np rest
+
+lemma datatypes_grow sig a b c ds : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl,
+                                    ds~List Datatype, datatypes_ok sig ds
+    ensures datatypes_ok (grow sig a b c) ds
+    proof
+        match ds
+            []        -> auto
+            d :: rest ->
+                have ctors_grow sig a b c (list.length d.params) d.ctors
+                have datatypes_grow sig a b c rest
+
+lemma defs_grow sig a b c ds : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, ds~List Def,
+                               defs_ok sig ds
+    ensures defs_ok (grow sig a b c) ds
+    proof
+        match ds
+            []        -> auto
+            d :: rest ->
+                have sorts_ok_grow sig a b c 0 (var_sorts d.params)
+                have sort_ok_grow sig a b c 0 d.result
+                have heads_grow sig a b c d.body
+                have defs_grow sig a b c rest
+
+lemma command_grow sig a b c cmd : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, cmd~Command,
+                                   command_ok sig cmd
+    ensures command_ok (grow sig a b c) cmd
+    proof
+        match cmd
+            DeclareSort _       -> auto
+            DeclareDatatypes ds -> have datatypes_grow sig a b c ds
+            DeclareFun f        ->
+                have sorts_ok_grow sig a b c 0 f.params
+                have sort_ok_grow sig a b c 0 f.result
+            DefineFuns _ ds     -> have defs_grow sig a b c ds
+            Assume x            ->
+                have sorts_ok_grow sig a b c 0 (var_sorts x.vars)
+                have heads_grow sig a b c x.body
+                have patterns_heads_grow sig a b c x.patterns
+            Assert t            -> have heads_grow sig a b c t
+
+lemma command_extend sig cmd x : sig~Sig, cmd~Command, x~Command, command_ok sig x
+    ensures command_ok (extend sig cmd) x
+    proof
+        let no_sorts = array.from_list []
+        let no_dts = array.from_list []
+        let no_funs = array.from_list []
+        have sig.sorts ++ no_sorts == sig.sorts
+        have sig.datatypes ++ no_dts == sig.datatypes
+        have sig.funs ++ no_funs == sig.funs
+        match cmd
+            DeclareSort d       ->
+                have extend sig cmd == grow sig (array.from_list [d]) no_dts no_funs
+                have command_grow sig (array.from_list [d]) no_dts no_funs x
+            DeclareDatatypes ds ->
+                have extend sig cmd == grow sig no_sorts (array.from_list ds) no_funs
+                have command_grow sig no_sorts (array.from_list ds) no_funs x
+            DeclareFun f        ->
+                have extend sig cmd == grow sig no_sorts no_dts (array.from_list [f])
+                have command_grow sig no_sorts no_dts (array.from_list [f]) x
+            DefineFuns _ ds     ->
+                have extend sig cmd == grow sig no_sorts no_dts (array.from_list (def_funs ds))
+                have command_grow sig no_sorts no_dts (array.from_list (def_funs ds)) x
+            _                   -> auto
+
+lemma command_extend_all sig cmds x : sig~Sig, cmds~List Command, x~Command, command_ok sig x
+    ensures command_ok (extend_all sig cmds) x
+    proof
+        match cmds
+            []          -> auto
+            cmd :: rest ->
+                have command_extend sig cmd x
+                have command_extend_all (extend sig cmd) rest x
+
+lemma check_sorts_ok sig np ss : sig~Sig, np~Nat, ss~List Sort, check_sorts sig np ss == Ok ()
+    ensures sorts_ok sig np ss
+    proof
+        match ss
+            []        -> auto
+            _ :: rest -> have check_sorts_ok sig np rest
+
+lemma check_term_heads sig env t want : sig~Sig, env~List Sort, t~Term, want~Sort, check_term sig env t want == Ok ()
+    ensures heads_ok sig t
+    proof
+        match sort_of sig env t
+            Ok s  -> have sort_of_heads sig env t s
+            Err _ -> auto
+
+lemma check_ctors_ok sig np cs : sig~Sig, np~Nat, cs~List Ctor, check_ctors sig np cs == Ok ()
+    ensures ctors_ok sig np cs
+    proof
+        match cs
+            []        -> auto
+            k :: rest ->
+                have check_sorts_ok sig np (field_sorts k.fields)
+                have check_ctors_ok sig np rest
+
+lemma check_datatypes_ok sig ds : sig~Sig, ds~List Datatype, check_datatypes sig ds == Ok ()
+    ensures datatypes_ok sig ds
+    proof
+        match ds
+            []        -> auto
+            d :: rest ->
+                have check_ctors_ok sig (list.length d.params) d.ctors
+                have check_datatypes_ok sig rest
+
+# `defs_ok` for definitions whose signatures were checked in `sig` and
+# bodies in `big`, which `sig` grows into.
+lemma check_defs_ok sig big a b c ds : sig~Sig, big~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl,
+                                       big == grow sig a b c, ds~List Def,
+                                       check_sigs sig ds == Ok (), check_bodies big ds == Ok ()
+    ensures defs_ok big ds
+    proof
+        match ds
+            []        -> auto
+            d :: rest ->
+                have check_sorts_ok sig 0 (var_sorts d.params)
+                have sorts_ok_grow sig a b c 0 (var_sorts d.params)
+                have check_sort sig 0 d.result == Ok ()
+                have sort_ok_grow sig a b c 0 d.result
+                have check_term_heads big (binder_env d.params) d.body d.result
+                have check_defs_ok sig big a b c rest
+
+lemma check_patterns_ok sig env ps : sig~Sig, env~List Sort, ps~List (List Term), check_patterns sig env ps == Ok ()
+    ensures patterns_heads_ok sig ps
+    proof
+        match ps
+            []        -> auto
+            p :: rest ->
+                match sorts_of sig env p
+                    Ok ss ->
+                        have sorts_of_heads sig env p ss
+                        have check_patterns_ok sig env rest
+                    Err _ -> auto
+
+lemma checked_command_ok sig cmd : sig~Sig, cmd~Command, check_command sig cmd == Ok ()
+    ensures command_ok (extend sig cmd) cmd
+    proof
+        let no_sorts = array.from_list []
+        let no_dts = array.from_list []
+        let no_funs = array.from_list []
+        have sig.sorts ++ no_sorts == sig.sorts
+        have sig.datatypes ++ no_dts == sig.datatypes
+        match cmd
+            DeclareSort _       -> auto
+            DeclareDatatypes ds -> have check_datatypes_ok (extend sig cmd) ds
+            DeclareFun f        ->
+                have check_sorts_ok sig 0 f.params
+                have check_sort sig 0 f.result == Ok ()
+                have command_extend sig cmd cmd
+                have sorts_ok sig 0 f.params
+                have extend sig cmd == grow sig no_sorts no_dts (array.from_list [f])
+                have sorts_ok_grow sig no_sorts no_dts (array.from_list [f]) 0 f.params
+                have sort_ok_grow sig no_sorts no_dts (array.from_list [f]) 0 f.result
+            DefineFuns _ ds     ->
+                have extend sig cmd == grow sig no_sorts no_dts (array.from_list (def_funs ds))
+                have check_defs_ok sig (extend sig cmd) no_sorts no_dts (array.from_list (def_funs ds)) ds
+            Assume x            ->
+                have check_sorts_ok sig 0 (var_sorts x.vars)
+                have check_term_heads sig (binder_env x.vars) x.body Bool
+                have check_patterns_ok sig (binder_env x.vars) x.patterns
+            Assert t            -> have check_term_heads sig [] t Bool
+
+lemma checked_commands_ok sig cmds : sig~Sig, cmds~List Command, check_all sig cmds == Ok ()
+    ensures commands_ok (extend_all sig cmds) cmds
+    proof
+        match cmds
+            []          -> auto
+            cmd :: rest ->
+                have check_command sig cmd == Ok ()
+                have checked_command_ok sig cmd
+                have command_extend_all (extend sig cmd) rest cmd
+                have checked_commands_ok (extend sig cmd) rest
+
+# Everything a context's commands name is declared in it.
+export lemma commands_well_formed c : c~Context
+    ensures commands_ok (signature c) (commands c)
+    proof
+        have checked_commands_ok empty_sig c.commands
+
+# Every head of a fact is declared in the context.
+export lemma fact_heads c t : c~Context, t~Term, fact_ok c t
+    ensures heads_ok (signature c) t
+    proof
+        have check_term_heads c.sig [] t Bool
+
+# Every head of terms of the context is declared in it.
+export lemma terms_heads c ts : c~Context, ts~List Term, terms_ok c ts
+    ensures all_heads_ok (signature c) ts
+    proof
+        match sorts_of c.sig [] ts
+            Ok ss -> have sorts_of_heads c.sig [] ts ss
+            Err _ -> auto

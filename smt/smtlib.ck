@@ -275,23 +275,47 @@ fn tester_of dts name -> r : dts~Array Datatype, name~Name, r~Option (Nat, Nat)
     else
         None
 
-# The built-in operations by name, as SMT-LIB writes them (`-` is `Sub`
-# with two arguments, `Neg` with one).
-export let PRIMS = [(b"=", Eq), (b"not", Not), (b"and", And), (b"=>", Implies),
-                    (b"ite", Ite), (b"+", Add), (b"-", Sub), (b"-", Neg), (b"*", Mul),
-                    (b"div", Div), (b"mod", Mod), (b"<", Lt), (b"<=", Le), (b">", Gt),
-                    (b">=", Ge), (b"select", Select), (b"store", Store), (b"seq.len", SeqLen),
-                    (b"seq.nth", SeqNth), (b"seq.unit", SeqUnit), (b"seq.++", SeqConcat),
-                    (b"seq.extract", SeqExtract)]
+# How SMT-LIB writes each built-in operation (`-` is `Sub` with two
+# arguments, `Neg` with one).
+export fn op_text op -> r : op~Op, r~Bytes
+    match op
+        Not        -> b"not"
+        And        -> b"and"
+        Implies    -> b"=>"
+        Ite        -> b"ite"
+        Eq         -> b"="
+        Add        -> b"+"
+        Sub        -> b"-"
+        Neg        -> b"-"
+        Mul        -> b"*"
+        Div        -> b"div"
+        Mod        -> b"mod"
+        Lt         -> b"<"
+        Le         -> b"<="
+        Gt         -> b">"
+        Ge         -> b">="
+        Select     -> b"select"
+        Store      -> b"store"
+        MapAdd     -> b"(_ map (+ (Int Int) Int))"
+        SeqLen     -> b"seq.len"
+        SeqNth     -> b"seq.nth"
+        SeqUnit    -> b"seq.unit"
+        SeqConcat  -> b"seq.++"
+        SeqExtract -> b"seq.extract"
 
-fn find_prim ps name -> r : ps~List (Bytes, Op), name~Name, r~Option Op
-    match ps
-        []              -> None
-        (n, op) :: rest -> if n == name then Some op else find_prim rest name
+# The operations a name alone can denote (`Neg` is `-` with one argument;
+# `MapAdd` is written `(_ map …)`).
+let NAMED = [Eq, Not, And, Implies, Ite, Add, Sub, Mul, Div, Mod, Lt, Le, Gt, Ge, Select, Store, SeqLen, SeqNth,
+             SeqUnit, SeqConcat, SeqExtract]
+
+fn find_prim ops name -> r : ops~List Op, name~Name, r~Option Op
+    match ops
+        []        -> None
+        o :: rest -> if op_text o == name then Some o else find_prim rest name
 
 # The built-in operation named `name`, given `n` arguments.
 fn prim_op name n -> r : name~Name, n~Nat, r~Option Op
-    if name == b"-" and n == 1 then Some Neg else find_prim PRIMS name
+    if name == b"-" and n == 1 then Some Neg else find_prim NAMED name
 
 # Names SMT-LIB or Z3 define that the subset leaves out.
 fn outside name -> r : name~Name, r~Bool
@@ -407,6 +431,8 @@ fn term_from src sig vars e -> r : src~Bytes, sig~Sig, vars~List (Name, Sort), e
             else if n == b"_"
                 Err (Error hp b"an indexed name is in the subset `ckc` writes only as `(_ map (+ (Int Int) Int))`")
             else
+                # Written out here and in the next case: a helper taking
+                # `args` on to `terms_from` isn't accepted as structural (#109).
                 let h = try head_of src sig n hp (list.length args)
                 let (ts, ss) = try terms_from src sig vars args
                 applied src sig h ts ss hp
@@ -898,8 +924,10 @@ fn first_taken sig ns -> r : sig~Sig, ns~List Name, r~Option Name
 fn text pieces -> r : pieces~List Bytes, r~Bytes
     bytes.concat (list.reverse pieces)
 
+# A sort, or what it is if it isn't one of `sig`'s: only a command built
+# outside `parse`, with numbers that name nothing, has such a sort.
 fn sort_text sig s -> r : sig~Sig, s~Sort, r~Bytes
-    b"`" ++ text (w_sort sig [] s []) ++ b"`"
+    if term.sort_ok sig 0 s then b"`" ++ text (w_sort sig [] s []) ++ b"`" else b"a sort that isn't declared"
 
 fn sorts_text sig ss -> r : sig~Sig, ss~List Sort, r~Bytes
     match ss
@@ -914,7 +942,8 @@ fn problem_message sig pr -> r : sig~Sig, pr~Problem, r~Bytes
         NoCtors d         -> b"the datatype " ++ shown d.name ++ b" has no constructors"
         BadApply h found  ->
             let what = if found == [] then b"nothing" else b"arguments of sorts " ++ sorts_text sig found
-            b"`" ++ text (w_head sig h []) ++ b"` can't be applied to " ++ what
+            let head = if term.head_ok sig h then b"`" ++ text (w_head sig h []) ++ b"`" else b"a function that isn't declared"
+            head ++ b" can't be applied to " ++ what
         Unbound _         -> b"a variable that nothing binds"
         EmptyLet          -> b"a `let` that binds nothing"
         ConstantParams f  -> b"the constant " ++ shown f.name ++ b" has parameters"
@@ -943,76 +972,66 @@ fn simple n i -> r : n~Name, i~Nat, i <= len n, r~Bool
     decreasing len n - i
     if i >= len n then True else symbol_byte n[i] and simple n (i + 1)
 
+# The name of bound variable `i`. Every variable of a context's terms is
+# bound, so `?` is never written for one: `parse` builds only such terms.
+# Proving it (a precondition like `heads_ok`'s) needs the length of
+# `list.reverse xs ++ ys`, which `std.list` doesn't state (#107).
 fn name_at ns i -> r : ns~List Name, i~Nat, r~Name
     match list.head (list.drop i ns)
         Some n -> n
         None   -> b"?"
 
-fn fun_name sig f -> r : sig~Sig, f~Nat, r~Name
-    if f < len sig.funs then sig.funs[f].name else b"?"
-
-fn ctor_name sig d k -> r : sig~Sig, d~Nat, k~Nat, r~Name
-    match term.ctor sig d k
-        Some c -> c.name
-        None   -> b"?"
-
-fn sel_name sig d k j -> r : sig~Sig, d~Nat, k~Nat, j~Nat, r~Name
-    match term.ctor sig d k
-        Some c ->
-            match list.head (list.drop j c.fields)
-                Some f -> f.name
-                None   -> b"?"
-        None   -> b"?"
-
 # A sort; `params` name a datatype's parameters.
-fn w_sort sig params s acc -> r : sig~Sig, params~List Name, s~Sort, acc~List Bytes, r~List Bytes
+fn w_sort sig params s acc -> r : sig~Sig, params~List Name, s~Sort, term.sort_ok sig (list.length params) s,
+                                  acc~List Bytes, r~List Bytes
     match s
         Bool        -> b"Bool" :: acc
         Int         -> b"Int" :: acc
         Seq e       -> b")" :: w_sort sig params e (b"(Seq " :: acc)
         Arr i v     -> b")" :: w_sort sig params v (b" " :: w_sort sig params i (b"(Array " :: acc))
-        Data d []   -> w_name (if d < len sig.datatypes then sig.datatypes[d].name else b"?") acc
-        Data d args ->
-            let n = if d < len sig.datatypes then sig.datatypes[d].name else b"?"
-            b")" :: w_sorts sig params args (w_name n (b"(" :: acc))
-        Unin u []   -> w_name (if u < len sig.sorts then sig.sorts[u].name else b"?") acc
-        Unin u args ->
-            let n = if u < len sig.sorts then sig.sorts[u].name else b"?"
-            b")" :: w_sorts sig params args (w_name n (b"(" :: acc))
-        Param k     -> w_name (name_at params k) acc
+        Data d []   -> w_name sig.datatypes[d].name acc
+        Data d args -> b")" :: w_sorts sig params args (w_name sig.datatypes[d].name (b"(" :: acc))
+        Unin u []   -> w_name sig.sorts[u].name acc
+        Unin u args -> b")" :: w_sorts sig params args (w_name sig.sorts[u].name (b"(" :: acc))
+        Param k     ->
+            match list.head (list.drop k params)
+                Some n -> w_name n acc
 
 # Sorts, each after a space.
-fn w_sorts sig params ss acc -> r : sig~Sig, params~List Name, ss~List Sort, acc~List Bytes, r~List Bytes
+fn w_sorts sig params ss acc -> r : sig~Sig, params~List Name, ss~List Sort, term.sorts_ok sig (list.length params) ss,
+                                    acc~List Bytes, r~List Bytes
     match ss
         []        -> acc
         s :: rest -> w_sorts sig params rest (w_sort sig params s (b" " :: acc))
 
 # Sorts separated by spaces.
-fn w_sort_list sig ss acc -> r : sig~Sig, ss~List Sort, acc~List Bytes, r~List Bytes
+fn w_sort_list sig ss acc -> r : sig~Sig, ss~List Sort, term.sorts_ok sig 0 ss, acc~List Bytes, r~List Bytes
     match ss
         []        -> acc
         s :: rest -> w_sorts sig [] rest (w_sort sig [] s acc)
 
-fn op_name ps op -> r : ps~List (Bytes, Op), op~Op, r~Bytes
-    match ps
-        []             -> b"?"
-        (n, o) :: rest -> if o == op then n else op_name rest op
-
-fn w_head sig h acc -> r : sig~Sig, h~Head, acc~List Bytes, r~List Bytes
+fn w_head sig h acc -> r : sig~Sig, h~Head, term.head_ok sig h, acc~List Bytes, r~List Bytes
     match h
-        Fun f        -> w_name (fun_name sig f) acc
-        Con d k args -> b")" :: w_sort sig [] (Data d args) (b" " :: w_name (ctor_name sig d k) (b"(as " :: acc))
-        Is d k       -> w_name (tester_name (ctor_name sig d k)) acc
-        Sel d k j    -> w_name (sel_name sig d k j) acc
+        Fun f        -> w_name sig.funs[f].name acc
+        Con d k args ->
+            match term.ctor sig d k
+                Some c -> b")" :: w_sort sig [] (Data d args) (b" " :: w_name c.name (b"(as " :: acc))
+        Is d k       ->
+            match term.ctor sig d k
+                Some c -> w_name (tester_name c.name) acc
+        Sel d k j    ->
+            match term.ctor sig d k
+                Some c ->
+                    match list.head (list.drop j c.fields)
+                        Some f -> w_name f.name acc
         Num n        -> numeral n :: acc
         Boolean b    -> (if b then b"true" else b"false") :: acc
-        Prim MapAdd  -> b"(_ map (+ (Int Int) Int))" :: acc
-        Prim op      -> op_name PRIMS op :: acc
+        Prim op      -> op_text op :: acc
         ConstArr s   -> b")" :: w_sort sig [] s (b"(as const " :: acc)
         EmptySeq s   -> b")" :: w_sort sig [] s (b"(as seq.empty " :: acc)
 
 # A term; `vars` name the bound variables, innermost first.
-fn w_term sig vars t acc -> r : sig~Sig, vars~List Name, t~Term, acc~List Bytes, r~List Bytes
+fn w_term sig vars t acc -> r : sig~Sig, vars~List Name, t~Term, term.heads_ok sig t, acc~List Bytes, r~List Bytes
     match t
         Var i          -> w_name (name_at vars i) acc
         App h []       -> w_head sig h acc
@@ -1025,18 +1044,21 @@ fn w_term sig vars t acc -> r : sig~Sig, vars~List Name, t~Term, acc~List Bytes,
             b")" :: w_term sig (n :: vars) body (b")) " :: a)
 
 # Terms, each after a space.
-fn w_args sig vars ts acc -> r : sig~Sig, vars~List Name, ts~List Term, acc~List Bytes, r~List Bytes
+fn w_args sig vars ts acc -> r : sig~Sig, vars~List Name, ts~List Term, term.all_heads_ok sig ts, acc~List Bytes,
+                                 r~List Bytes
     match ts
         []        -> acc
         t :: rest -> w_args sig vars rest (w_term sig vars t (b" " :: acc))
 
 # Terms separated by spaces.
-fn w_term_list sig vars ts acc -> r : sig~Sig, vars~List Name, ts~List Term, acc~List Bytes, r~List Bytes
+fn w_term_list sig vars ts acc -> r : sig~Sig, vars~List Name, ts~List Term, term.all_heads_ok sig ts, acc~List Bytes,
+                                      r~List Bytes
     match ts
         []        -> acc
         t :: rest -> w_args sig vars rest (w_term sig vars t acc)
 
-fn w_binds sig vars bs acc -> r : sig~Sig, vars~List Name, bs~List (Name, Term), acc~List Bytes, r~List Bytes
+fn w_binds sig vars bs acc -> r : sig~Sig, vars~List Name, bs~List (Name, Term), term.binds_heads_ok sig bs,
+                                  acc~List Bytes, r~List Bytes
     match bs
         []             -> acc
         (n, t) :: rest ->
@@ -1046,10 +1068,12 @@ fn w_binds sig vars bs acc -> r : sig~Sig, vars~List Name, bs~List (Name, Term),
                 _  -> w_binds sig vars rest (b" " :: b)
 
 # `((x S) …)`.
-fn w_vars sig vs acc -> r : sig~Sig, vs~List (Name, Sort), acc~List Bytes, r~List Bytes
+fn w_vars sig vs acc -> r : sig~Sig, vs~List (Name, Sort), term.sorts_ok sig 0 (term.var_sorts vs), acc~List Bytes,
+                            r~List Bytes
     b")" :: w_var_list sig vs (b"(" :: acc)
 
-fn w_var_list sig vs acc -> r : sig~Sig, vs~List (Name, Sort), acc~List Bytes, r~List Bytes
+fn w_var_list sig vs acc -> r : sig~Sig, vs~List (Name, Sort), term.sorts_ok sig 0 (term.var_sorts vs),
+                                acc~List Bytes, r~List Bytes
     match vs
         []             -> acc
         (n, s) :: rest ->
@@ -1064,7 +1088,7 @@ fn w_atom a acc -> r : a~Atom, acc~List Bytes, r~List Bytes
         Keyword k  -> k :: b":" :: acc
         Numeral n  -> numeral n :: acc
 
-fn w_command sig c acc -> r : sig~Sig, c~Command, acc~List Bytes, r~List Bytes
+fn w_command sig c acc -> r : sig~Sig, c~Command, term.command_ok sig c, acc~List Bytes, r~List Bytes
     match c
         DeclareSort d       -> b")\n" :: numeral d.arity :: b" " :: w_name d.name (b"(declare-sort " :: acc)
         DeclareDatatypes ds ->
@@ -1097,7 +1121,7 @@ fn w_dt_heads ds acc -> r : ds~List Datatype, acc~List Bytes, r~List Bytes
                 [] -> a
                 _  -> w_dt_heads rest (b" " :: a)
 
-fn w_dt_bodies sig ds acc -> r : sig~Sig, ds~List Datatype, acc~List Bytes, r~List Bytes
+fn w_dt_bodies sig ds acc -> r : sig~Sig, ds~List Datatype, term.datatypes_ok sig ds, acc~List Bytes, r~List Bytes
     match ds
         []        -> acc
         d :: rest ->
@@ -1114,7 +1138,8 @@ fn w_name_list ns acc -> r : ns~List Name, acc~List Bytes, r~List Bytes
         [n]       -> w_name n acc
         n :: rest -> w_name_list rest (b" " :: w_name n acc)
 
-fn w_ctors sig params cs acc -> r : sig~Sig, params~List Name, cs~List Ctor, acc~List Bytes, r~List Bytes
+fn w_ctors sig params cs acc -> r : sig~Sig, params~List Name, cs~List Ctor, term.ctors_ok sig (list.length params) cs,
+                                    acc~List Bytes, r~List Bytes
     match cs
         []        -> acc
         c :: rest ->
@@ -1123,12 +1148,14 @@ fn w_ctors sig params cs acc -> r : sig~Sig, params~List Name, cs~List Ctor, acc
                 [] -> a
                 _  -> w_ctors sig params rest (b" " :: a)
 
-fn w_fields sig params fs acc -> r : sig~Sig, params~List Name, fs~List Field, acc~List Bytes, r~List Bytes
+fn w_fields sig params fs acc -> r : sig~Sig, params~List Name, fs~List Field,
+                                     term.sorts_ok sig (list.length params) (term.field_sorts fs), acc~List Bytes,
+                                     r~List Bytes
     match fs
         []        -> acc
         f :: rest -> w_fields sig params rest (b")" :: w_sort sig params f.sort (b" " :: w_name f.name (b" (" :: acc)))
 
-fn w_def_heads sig ds acc -> r : sig~Sig, ds~List Def, acc~List Bytes, r~List Bytes
+fn w_def_heads sig ds acc -> r : sig~Sig, ds~List Def, term.defs_ok sig ds, acc~List Bytes, r~List Bytes
     match ds
         []        -> acc
         d :: rest ->
@@ -1137,7 +1164,7 @@ fn w_def_heads sig ds acc -> r : sig~Sig, ds~List Def, acc~List Bytes, r~List By
                 [] -> a
                 _  -> w_def_heads sig rest (b" " :: a)
 
-fn w_def_bodies sig ds acc -> r : sig~Sig, ds~List Def, acc~List Bytes, r~List Bytes
+fn w_def_bodies sig ds acc -> r : sig~Sig, ds~List Def, term.defs_ok sig ds, acc~List Bytes, r~List Bytes
     match ds
         []        -> acc
         d :: rest ->
@@ -1146,12 +1173,13 @@ fn w_def_bodies sig ds acc -> r : sig~Sig, ds~List Def, acc~List Bytes, r~List B
                 [] -> a
                 _  -> w_def_bodies sig rest (b" " :: a)
 
-fn w_patterns sig env ps acc -> r : sig~Sig, env~List Name, ps~List (List Term), acc~List Bytes, r~List Bytes
+fn w_patterns sig env ps acc -> r : sig~Sig, env~List Name, ps~List (List Term), term.patterns_heads_ok sig ps,
+                                    acc~List Bytes, r~List Bytes
     match ps
         []        -> acc
         p :: rest -> w_patterns sig env rest (b")" :: w_term_list sig env p (b" :pattern (" :: acc))
 
-fn w_commands sig cs acc -> r : sig~Sig, cs~List Command, acc~List Bytes, r~List Bytes
+fn w_commands sig cs acc -> r : sig~Sig, cs~List Command, term.commands_ok sig cs, acc~List Bytes, r~List Bytes
     match cs
         []        -> acc
         c :: rest -> w_commands sig rest (w_command sig c acc)
@@ -1164,11 +1192,15 @@ fn w_options os acc -> r : os~List Opt, acc~List Bytes, r~List Bytes
 # The query as SMT-LIB text, one command per line.
 export fn render q -> r : q~Query, r~Bytes
     let sig = term.signature q.context
+    have term.commands_well_formed q.context
+    have term.fact_heads q.context q.goal
     let a = w_commands sig (term.commands q.context) (b")\n" :: w_name q.logic (b"(set-logic " :: w_options q.options []))
     let b = b"))\n(check-sat)\n" :: w_term sig [] q.goal (b"(assert (not " :: a)
     match q.values
         None    -> text b
-        Some ts -> text (b"))\n" :: w_term_list sig [] ts (b"(get-value (" :: b))
+        Some ts ->
+            have term.terms_heads q.context ts
+            text (b"))\n" :: w_term_list sig [] ts (b"(get-value (" :: b))
 
 # ── Comparing texts ──────────────────────────────────────────────────────────
 
@@ -1183,12 +1215,10 @@ export fn shape e -> r : e~SExpr src, r~Shape
         Leaf (Symbol t _) _ -> Word t
         Leaf (Keyword k) _  -> Word (b":" ++ k)
         Leaf (Numeral n) _  -> Word (numeral n)
-        Node items _        -> Group (shapes items)
+        Node items _        -> Group (list.map shape items)
 
 export fn shapes es -> r : es~List (SExpr src), r~List Shape
-    match es
-        []        -> []
-        e :: rest -> shape e :: shapes rest
+    list.map shape es
 
 # Whether `out` is how `render` writes `inp`, in a query whose declarations
 # are `sig`: the same, except that a constructor of a datatype without
