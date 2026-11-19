@@ -1,0 +1,8 @@
+(set-option :produce-models true)
+(set-option :rlimit 200000)
+(set-option :timeout 60000)
+(set-logic ALL)
+(declare-datatypes ((|std.prelude.List| 1)) ((par (T0) ((|std.prelude.Nil|) (|std.prelude.Cons| (|std.prelude.Cons.0| |T0|) (|std.prelude.Cons.1| (|std.prelude.List| |T0|)))))))
+(define-funs-rec ((|std.list.contains<Int>| ((p1 (|std.prelude.List| Int)) (p2 Int)) Bool)) ((ite (|is-std.prelude.Nil| p1) false (ite (not (= (|std.prelude.Cons.0| p1) p2)) (|std.list.contains<Int>| (|std.prelude.Cons.1| p1) p2) true))))
+(assert (not (|std.list.contains<Int>| ((as |std.prelude.Cons| (|std.prelude.List| Int)) 2 (as |std.prelude.Nil| (|std.prelude.List| Int))) 1)))
+(check-sat)

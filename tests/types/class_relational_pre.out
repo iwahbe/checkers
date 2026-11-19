@@ -1,0 +1,8 @@
+error[E0450]: cannot prove `x <= n`, required to call `pick`
+  --> class_relational_pre.ck:21:5
+   |
+21 |     pick b 1 2
+   |     ^^^^^^^^^^ `pick` requires `x <= n`
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+class_relational_pre.ck: 1 error, 0 warnings

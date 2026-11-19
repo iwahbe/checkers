@@ -1127,6 +1127,24 @@ pub fn strengthen(g: &Globals, v: &Val, outer: usize) -> Val {
     v
 }
 
+/// Each unsolved unknown in `t` (a term over `l` variables) applied to the
+/// variable at level `x` solved by one that isn't, when its spine is all
+/// variables: what `t` says can then no longer depend on `x` through an
+/// unknown that nothing determined (an implicit argument a function type's
+/// predicate left open must not make it look like a postcondition, D82).
+pub fn forget_var(g: &Globals, l: usize, t: &Tm, x: usize) {
+    if let Tm::Meta(m) = t.head() {
+        if g.meta(*m).is_none() {
+            let env = Rc::new((0..l).map(Val::var).collect::<Vec<_>>());
+            if let Val::Neutral(Head::Meta(m), sp) = force_meta(g, eval(g, &env, t)) {
+                let ren: HashMap<usize, usize> = (0..l).filter(|y| *y != x).map(|y| (y, y)).collect();
+                prune(g, m, &sp, &PartialRenaming { dom: l, cod: l, ren });
+            }
+        }
+    }
+    t.each_sub(|s, n| forget_var(g, l + n, s, x));
+}
+
 fn rename_case(g: &Globals, m: MetaId, p: &PartialRenaming, c: &Rc<CaseTm>, env: &Env) -> Result<Rc<CaseTm>, UnifyError> {
     let rb = |n: usize, body: &Tm| -> Result<Tm, UnifyError> {
         let mut e = (**env).clone();

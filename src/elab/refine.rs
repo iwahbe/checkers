@@ -313,11 +313,18 @@ impl Elab {
                 }
                 // The result is compared for arguments the caller may pass:
                 // those of the side that must be implied (D85).
-                let (x, dom) = match pol {
-                    Variance::Contra => (x2, a2),
-                    _ => (x1, a1),
+                let (x, other, dom) = match pol {
+                    Variance::Contra => (x2, x1, a2),
+                    _ => (x1, x2, a1),
                 };
-                let name = if x.as_ref() == "_" { "x" } else { x.as_ref() };
+                // An unnamed parameter (`Nat -> Nat`) takes the other side's
+                // name, which its predicates use (`x <= n`); never a default
+                // that another of its names may already have.
+                let name = [x.as_ref(), other.as_ref()].into_iter().find(|n| *n != "_").map(str::to_string).unwrap_or_else(|| {
+                    let taken = cx.names();
+                    (0..).map(|k| if k == 0 { "x".to_string() } else { format!("x{k}") }).find(|n| !taken.iter().any(|t| t.as_ref() == n)).unwrap()
+                });
+                let name = name.as_str();
                 let l = cx.lvl();
                 cx.bind(name, (**dom).clone(), Mult::Zero);
                 let (b1, b2) = (apply_closure(&self.g, c1, Val::var(l)), apply_closure(&self.g, c2, Val::var(l)));
@@ -442,7 +449,20 @@ impl Elab {
         let bv = self.eval(cx, &b);
         let y = name(res);
         cx.bind(&y, bv, Mult::Zero);
-        let preds: Vec<Pred> = r.preds.iter().map(|e| self.elab_pred(cx, e, false)).collect();
+        // An implicit argument in a predicate (`nonempty i` with `nonempty :
+        // xs~List a`) is an unknown applied to every local in scope, the
+        // result too. Its solution (`Int`) is substituted before asking which
+        // locals a predicate mentions; one left open (`nonempty []`) can't
+        // depend on the result: nothing about the result determined it.
+        let preds: Vec<Pred> = r
+            .preds
+            .iter()
+            .map(|e| {
+                let p = self.elab_pred(cx, e, false);
+                crate::core::forget_var(&self.g, cx.lvl(), &p.tm, cx.lvl() - 1);
+                Pred { tm: crate::core::zonk_metas(&self.g, cx.lvl(), &p.tm), ..p }
+            })
+            .collect();
         cx.pop();
         // A predicate that mentions the result is a postcondition (D82).
         let (posts, pres): (Vec<Pred>, Vec<Pred>) = preds.into_iter().partition(|p| {
@@ -517,6 +537,12 @@ impl Elab {
     pub fn refined_fn_type(&mut self, cx: &Cx, t: &Tm, ty: Val) -> Val {
         let (h, args) = t.spine_cloned();
         let Tm::Def(d) = h else { return ty };
+        // An instance's function is used only in its dictionary, and called
+        // only through the class's function, whose preconditions are its own
+        // (D136): its field's type needs none of them.
+        if self.inst_fns.contains(d) {
+            return ty;
+        }
         let Some(spec) = self.specs.get(d).cloned() else { return ty };
         let n = spec.n_binders;
         let given = args.len();
