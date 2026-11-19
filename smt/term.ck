@@ -246,18 +246,12 @@ export fn instantiate args s -> r : args~List Sort, s~Sort, r~Sort
         Int       -> Int
         Seq e     -> Seq (instantiate args e)
         Arr i v   -> Arr (instantiate args i) (instantiate args v)
-        Data d ss -> Data d (instantiate_all args ss)
-        Unin u ss -> Unin u (instantiate_all args ss)
+        Data d ss -> Data d (list.map (instantiate args) ss)
+        Unin u ss -> Unin u (list.map (instantiate args) ss)
         Param k   ->
             match list.head (list.drop k args)
                 Some a -> a
                 None   -> Param k
-
-# `list.map (instantiate args) ss`, which isn't accepted as structural (#102).
-fn instantiate_all args ss -> r : args~List Sort, ss~List Sort, r~List Sort
-    match ss
-        []        -> []
-        s :: rest -> instantiate args s :: instantiate_all args rest
 
 # ── Sorts of terms ───────────────────────────────────────────────────────────
 
@@ -279,7 +273,7 @@ export fn apply_sort sig h found -> r : sig~Sig, h~Head, found~List Sort, r~Resu
         Con d k args ->
             match ctor sig d k
                 Some c if sort_ok sig 0 (Data d args)
-                    and instantiate_all args (field_sorts c.fields) == found -> Ok (Data d args)
+                    and list.map (instantiate args) (field_sorts c.fields) == found -> Ok (Data d args)
                 _ -> bad
         Is d k       ->
             match (ctor sig d k, found)
