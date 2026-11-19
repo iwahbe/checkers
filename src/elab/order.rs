@@ -96,12 +96,15 @@ pub fn plan(m: &ast::Module, dicts: &[usize]) -> Plan {
                 need(Node::Head(k), &head, false);
                 need(Node::Body(k), &body, false);
             }
-            DeclKind::Lemma { params, constraints, lets, ensures, proof, .. } => {
+            DeclKind::Lemma { params, constraints, decreasing, lets, ensures, proof, .. } => {
                 let mut bound: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
                 head.constraints(constraints, &bound);
                 for (p, e) in lets {
                     head.expr(e, &bound, false);
                     p.binds(&mut bound);
+                }
+                if let Some(e) = decreasing {
+                    head.expr(e, &bound, false);
                 }
                 head.expr(ensures, &bound, false);
                 if let Some(b) = proof {

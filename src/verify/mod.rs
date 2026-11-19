@@ -817,10 +817,22 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
                         _ => m.clone(),
                     })
                     .collect();
+                let note = format!("measures tried, none shown smaller here: {}", shown.join(", "));
+                // A lemma using itself: an induction (#76).
+                let lemma = gr.members.len() == 1 && e.fn_meta.get(&gr.members[0]).is_some_and(|m| !m.is_fn);
+                if lemma {
+                    let name = &names[0];
+                    let d = Diagnostic::error("E0301", format!("{name} uses itself, but no measure found that each use makes smaller, so this is not an induction"), at)
+                        .with_label("the induction hypothesis")
+                        .with_note(note)
+                        .with_help(format!("use {name} only on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of its proof"));
+                    v.diags.push(d);
+                    continue;
+                }
                 let who = if names.len() == 1 { format!("{} terminates", names[0]) } else { format!("{} terminate", names.join(", ")) };
                 let mut d = Diagnostic::error("E0301", format!("cannot show that {who}: no measure found that every recursive call makes smaller"), at)
                     .with_label("recursive call");
-                d = d.with_note(format!("measures tried, none shown smaller here: {}", shown.join(", ")));
+                d = d.with_note(note);
                 v.diags.push(d.with_help("add `decreasing <measure>` as the first line of the function, or mark it `partial`"));
             }
         }

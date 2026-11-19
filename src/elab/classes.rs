@@ -765,6 +765,7 @@ impl Elab {
                             name: l.clone(),
                             params: params.clone(),
                             constraints: cs,
+                            decreasing: None,
                             lets: lets.clone(),
                             ensures: ensures.clone(),
                             proof: Some(block(var("__class_lemma", l.span))),
@@ -1104,17 +1105,19 @@ impl Elab {
                 }
                 ClassMember::Lemma { name, params, constraints, lets, ensures, .. } => {
                     let given = members.iter().find_map(|m| match m {
-                        InstMember::Lemma { name: n, params, proof, span } if n.name == name.name => Some((params.clone(), proof.clone(), *span, n.span)),
+                        InstMember::Lemma { name: n, params, decreasing, proof, span } if n.name == name.name => {
+                            Some((params.clone(), decreasing.clone(), proof.clone(), *span, n.span))
+                        }
                         _ => None,
                     });
                     // Not given: proved by Z3, reported at the instance's header,
                     // with the class's names for the parameters.
-                    let (iparams, proof, span, name_span) = match given {
+                    let (iparams, decreasing, proof, span, name_span) = match given {
                         Some(g) => g,
                         None => {
                             let header = Span { start: d.span.start, end: ty.span.end };
                             let ps: Vec<Ident> = params.iter().map(|p| ident(&p.name, self.synthetic_span(header))).collect();
-                            (ps, None, header, Span { start: d.span.start, end: d.span.start })
+                            (ps, None, None, header, Span { start: d.span.start, end: d.span.start })
                         }
                     };
                     if iparams.len() != params.len() {
@@ -1158,6 +1161,7 @@ impl Elab {
                             name: ident(&gname, name_span),
                             params: iparams.clone(),
                             constraints: cs,
+                            decreasing: decreasing.as_ref().map(|e| rw.expr(e, &bound)),
                             lets: ls,
                             ensures: ens,
                             proof: proof.as_ref().map(|b| rw.block(b, &bound)),

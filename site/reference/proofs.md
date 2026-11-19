@@ -108,7 +108,7 @@ fn moved xs y ys -> b : xs~List Int, y~Int, ys~List Int, b~Bool, b
 ```text
 lemma ::= 'lemma' lname { lname } [ ':' constraints ] NL INDENT
           { 'let' pattern '=' expr NL } 'ensures' expr NL
-          [ 'proof' NL INDENT block DEDENT ] DEDENT
+          [ 'proof' NL INDENT [ 'decreasing' expr NL ] block DEDENT ] DEDENT
 ```
 
 A lemma states a fact for all values of its parameters that satisfy its preconditions: its conclusion follows `ensures`. `let` lines before `ensures` name parts of the statement. Without a `proof`, Z3 proves the conclusion from the preconditions. A lemma is used with `have`, and is erased: it never runs.
@@ -125,7 +125,7 @@ lemma double_even n : n~Nat
 
 ### Induction
 
-A lemma that uses itself is a proof by induction: the recursive `have` gives the conclusion for a smaller argument. Like a recursive function it must terminate, so the argument must be structurally smaller or the lemma must give `decreasing` ([Termination](termination.md)).
+A lemma that uses itself is a proof by induction: the recursive `have` gives the conclusion for a smaller argument. Like a recursive function it must terminate, so the argument must be structurally smaller, or a measure, given with `decreasing` or guessed, must get smaller ([Termination](termination.md#lemmas)).
 
 ```checkers
 fn sum xs -> n : xs~List Nat, n~Nat
