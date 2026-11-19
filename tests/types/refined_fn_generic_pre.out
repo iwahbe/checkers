@@ -1,0 +1,8 @@
+error[E0450]: cannot prove `nonempty i`, required to call `f`
+  --> refined_fn_generic_pre.ck:14:7
+   |
+14 |     f []
+   |       ^^ `f` requires `nonempty i`
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+refined_fn_generic_pre.ck: 1 error, 0 warnings

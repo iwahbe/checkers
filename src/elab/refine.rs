@@ -461,7 +461,20 @@ impl Elab {
         let bv = self.eval(cx, &b);
         let y = name(res);
         cx.bind(&y, bv, Mult::Zero);
-        let preds: Vec<Pred> = r.preds.iter().map(|e| self.elab_pred(cx, e, false)).collect();
+        // An implicit argument in a predicate (`nonempty i` with `nonempty :
+        // xs~List a`) is an unknown applied to every local in scope, the
+        // result too. Its solution (`Int`) is substituted before asking which
+        // locals a predicate mentions; one left open (`nonempty []`) can't
+        // depend on the result: nothing about the result determined it.
+        let preds: Vec<Pred> = r
+            .preds
+            .iter()
+            .map(|e| {
+                let p = self.elab_pred(cx, e, false);
+                crate::core::forget_var(&self.g, cx.lvl(), &p.tm, cx.lvl() - 1);
+                Pred { tm: crate::core::zonk_metas(&self.g, cx.lvl(), &p.tm), ..p }
+            })
+            .collect();
         cx.pop();
         // A predicate that mentions the result is a postcondition (D82).
         let (posts, pres): (Vec<Pred>, Vec<Pred>) = preds.into_iter().partition(|p| {
