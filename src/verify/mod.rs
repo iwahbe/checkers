@@ -1226,12 +1226,12 @@ fn check_foralls(e: &Elab, user: &str, o: &Obligation, defs: &smt::Defs, model: 
         }
     }
     let pinned = format!("{}{pins}{}", &text[..at], &text[at..]);
-    let broken = match ask(&pinned) {
+    let broken = match ask(user, &pinned) {
         Answer::Sat(m) => return (Some(m), None),
         Answer::Unsat => true,
         Answer::Unknown(_) => false,
     };
-    match ask(&text) {
+    match ask(user, &text) {
         Answer::Sat(m) => (Some(m), None),
         _ => (None, why(broken)),
     }
