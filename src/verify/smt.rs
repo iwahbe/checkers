@@ -235,6 +235,9 @@ pub struct Query {
     pub focused: Option<String>,
     /// Why facts in scope could not be given to the solver.
     pub dropped: Vec<String>,
+    /// Some facts in scope are `forall`s, not given to the solver (D137):
+    /// a model may break them.
+    pub foralls: bool,
     /// (SMT name, display name) of the locals, for a counterexample.
     pub shown: Vec<(String, String)>,
     /// The SMT names of `String` locals (shown as text, not bytes).
@@ -320,6 +323,9 @@ pub struct Builder<'a> {
     real_values: Vec<(String, TyId)>,
     /// Datatypes given a stand-in base constructor, so Z3 accepts them.
     based: BTreeSet<TyId>,
+    /// Give `forall` facts to Z3, quantified: only to check a counterexample
+    /// against them, never to prove (D137).
+    foralls: bool,
 }
 
 impl<'a> Builder<'a> {
@@ -355,7 +361,16 @@ impl<'a> Builder<'a> {
             array_vars: Vec::new(),
             real_values: Vec::new(),
             based: BTreeSet::new(),
+            foralls: false,
         }
+    }
+
+    /// Give the `forall` facts in scope to Z3 as quantified formulas, so a
+    /// model of the query satisfies them: a counterexample to check one
+    /// against (D137 keeps them out of proofs).
+    pub fn with_foralls(mut self) -> Builder<'a> {
+        self.foralls = true;
+        self
     }
 
     /// Share translated definitions with the other builders of the module.
@@ -1646,6 +1661,50 @@ impl<'a> Builder<'a> {
         Ok((bs == Sort::Bool).then_some(bt))
     }
 
+    /// Proving `xs == ys` for arrays or bytes (#75): they are equal if their
+    /// lengths are and so are their elements at a fresh index `w`, which is
+    /// how an equality follows from a `forall` over the indexes. The
+    /// disjunction to add to the goal, and each `forall` in scope over one
+    /// `Nat` or `Int` given at `w` when `w` is an index. Z3 alone doesn't
+    /// conclude that two sequences are equal from their elements.
+    fn extensional(&mut self, lvl: usize, goal: &Tm, facts: &[Val]) -> Tx<Option<(String, Vec<String>)>> {
+        let Tm::PrimApp(Prim::Eq, sides) = goal else { return Ok(None) };
+        if sides.len() != 2 {
+            return Ok(None);
+        }
+        let (a, sa) = self.term_ctx(lvl, &sides[0])?;
+        if !matches!(sa, Sort::Seq(_)) {
+            return Ok(None);
+        }
+        let (b, _) = self.term_ctx(lvl, &sides[1])?;
+        let w = "|ext.index|".to_string();
+        self.consts.push(format!("(declare-const {w} Int)"));
+        let inside = format!("(and (<= 0 {w}) (< {w} (seq.len {a})))");
+        let ext = format!("(and (= (seq.len {a}) (seq.len {b})) (=> {inside} (= (seq.nth {a} {w}) (seq.nth {b} {w}))))");
+        let (nat, int) = (self.wk().nat, self.wk().int);
+        let mut at = Vec::new();
+        for f in facts {
+            let Tm::PrimApp(Prim::Forall, fa) = quote(&self.e.g, lvl, f) else { continue };
+            let [pi] = fa.as_slice() else { continue };
+            let Tm::Pi(_, _, _, dom, body) = pi else { continue };
+            // One variable, whose every value in range is an index: a
+            // refinement of `Int` would hold of fewer.
+            let index = match self.zonk(lvl, dom) {
+                Tm::Def(d) => Some(d) == nat,
+                Tm::TyCon(t) => Some(t) == int,
+                Tm::TyConApp(t, ref args) => args.is_empty() && Some(t) == int,
+                _ => false,
+            };
+            if !index || matches!(**body, Tm::Pi(..)) {
+                continue;
+            }
+            if let Ok(Some(b)) = self.forall_body_at(lvl, pi, std::slice::from_ref(&w), &[Sort::Int]) {
+                at.push(format!("(=> {inside} {b})"));
+            }
+        }
+        Ok(Some((ext, at)))
+    }
+
     /// `forall x y : …` (D137), only ever proved (so Z3 refutes its negation
     /// with fresh values, without quantifier instantiation).
     fn forall(&mut self, env: &[Ent], pi: &Tm) -> Tx<(String, Sort)> {
@@ -2934,16 +2993,28 @@ impl<'a> Builder<'a> {
                 }
                 (g, Sort::Bool)
             }
-            _ => self.term_ctx(lvl, &goal_tm)?,
+            _ => {
+                let (g, s) = self.term_ctx(lvl, &goal_tm)?;
+                match self.extensional(lvl, &goal_tm, &ob.facts)? {
+                    Some((ext, at)) => {
+                        facts.extend(at);
+                        (format!("(or {g} {ext})"), s)
+                    }
+                    None => (g, s),
+                }
+            }
         };
         if gs != Sort::Bool {
             return out("a goal that is not a `Bool`");
         }
         let mut dropped = Vec::new();
+        let mut foralls = false;
         for f in &ob.facts {
             let tm = quote(&self.e.g, lvl, f);
-            // A `forall` is used only by name, with `have` (D137).
-            if has_forall(&tm) {
+            // A `forall` is used only by name, with `have` (D137), except
+            // to check a counterexample.
+            if has_forall(&tm) && !self.foralls {
+                foralls = true;
                 continue;
             }
             // A fact the solver can't see is simply not assumed.
@@ -3031,7 +3102,18 @@ impl<'a> Builder<'a> {
             }
             _ => (text, None, without_axioms),
         };
-        Ok(Query { text, no_tables, without_axioms, facts_only, focused, dropped, shown: self.shown, string_vars: self.string_vars, array_vars: self.array_vars })
+        Ok(Query {
+            text,
+            no_tables,
+            without_axioms,
+            facts_only,
+            focused,
+            dropped,
+            foralls,
+            shown: self.shown,
+            string_vars: self.string_vars,
+            array_vars: self.array_vars,
+        })
     }
 }
 

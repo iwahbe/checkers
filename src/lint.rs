@@ -198,12 +198,15 @@ impl Linter {
                 }
                 self.constraints(constraints);
             }
-            DeclKind::Lemma { name, params, constraints, lets, ensures, proof } => {
+            DeclKind::Lemma { name, params, constraints, decreasing, lets, ensures, proof } => {
                 self.snake(name, "lemma name");
                 for p in params {
                     self.snake(p, "parameter");
                 }
                 self.constraints(constraints);
+                if let Some(e) = decreasing {
+                    self.expr(e);
+                }
                 for (p, e) in lets {
                     self.pat(p);
                     self.expr(e);
@@ -247,8 +250,11 @@ impl Linter {
                             params.iter().for_each(|p| self.snake(p, "parameter"));
                             self.block(body);
                         }
-                        InstMember::Lemma { params, proof, .. } => {
+                        InstMember::Lemma { params, decreasing, proof, .. } => {
                             params.iter().for_each(|p| self.snake(p, "parameter"));
+                            if let Some(e) = decreasing {
+                                self.expr(e);
+                            }
                             if let Some(b) = proof {
                                 self.block(b);
                             }

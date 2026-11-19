@@ -15,3 +15,9 @@ lemma twice xs : xs~List Int
     ensures list.length xs >= 0
     proof
         have ‸
+
+# A proof's first line: `decreasing` too.
+lemma first n : n~Nat
+    ensures n >= 0
+    proof
+        ‸

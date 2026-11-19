@@ -1773,7 +1773,7 @@ impl Elab {
                     );
                     sig
                 }
-                DeclKind::Lemma { name, params, constraints, .. } => {
+                DeclKind::Lemma { name, params, constraints, decreasing, .. } => {
                     let sig = self.signature(params, None, constraints);
                     self.fn_meta.insert(
                         *did,
@@ -1781,6 +1781,7 @@ impl Elab {
                             name: name.name.clone(),
                             span: name.span,
                             is_fn: false,
+                            decreasing: decreasing.is_some(),
                             params: params
                                 .iter()
                                 .zip(sig.binders.iter().skip(sig.n_implicit))
@@ -1928,7 +1929,7 @@ impl Elab {
     /// `have` may use a lemma declared later.
     fn phase_lemma_statements(&mut self, m: &ast::Module, ids: &[Option<Sym>], sigs: &mut HashMap<usize, Sig>) {
         for (k, (d, id)) in m.decls.iter().zip(ids).enumerate() {
-            let DeclKind::Lemma { lets, ensures, .. } = &d.kind else { continue };
+            let DeclKind::Lemma { lets, ensures, decreasing, .. } = &d.kind else { continue };
             let Some(Sym::Def(did)) = id else { continue };
             let Some(sig) = sigs.get(&k) else { continue };
             self.g.fuel.set(DEFAULT_FUEL);
@@ -1942,6 +1943,17 @@ impl Elab {
                 cx.assume(v);
             }
             let lets_tm = self.lemma_lets(&mut cx, lets);
+            // The induction's measure (#76), over the parameters and `let`s;
+            // kept over the parameters alone, the `let`s replaced by their values.
+            let measure = decreasing.as_ref().map(|e| {
+                let saved = self.cur_fn.replace(*did);
+                let comps = self.check_measure(&mut cx, e);
+                self.solve_deferred();
+                self.cur_fn = saved;
+                let n = sig.binders.len();
+                let comps = comps.iter().map(|t| quote(&self.g, n, &self.eval(&cx, t))).collect();
+                (comps, self.src_text(e.span))
+            });
             // A lemma may conclude a `forall` (D146), positively.
             if let Some(bad) = super::expr::negative_forall(ensures, true) {
                 self.err(
@@ -1960,7 +1972,7 @@ impl Elab {
                 n_implicit: sig.n_implicit,
                 lets: lets_tm,
                 ensures: Some(ens),
-                measure: None,
+                measure,
             };
             self.specs.insert(*did, spec);
         }
@@ -2003,7 +2015,8 @@ impl Elab {
     }
 
     /// Every function's `decreasing` measure, before any body, so calls to
-    /// functions defined later can be checked against it (§5.3).
+    /// functions defined later can be checked against it (§5.3). A lemma's
+    /// is checked with its statement, where its `let`s are in scope.
     fn phase_measures(&mut self, m: &ast::Module, ids: &[Option<Sym>], sigs: &HashMap<usize, Sig>) {
         for (k, (d, id)) in m.decls.iter().zip(ids).enumerate() {
             let DeclKind::Fn { decreasing: Some(e), .. } = &d.kind else { continue };
