@@ -89,20 +89,156 @@ impl Elab {
     }
 
     /// Whether condition `c` holds: one of its promises does (#102), in
-    /// the callee's signature, or read from its body (this module's, in
-    /// `held`, or a `transparent` function's of another module).
+    /// the callee's signature (a precondition that is a membership), or
+    /// read from its body (this module's, in `held`, or a `transparent`
+    /// function's of another module).
     fn cond_holds(&self, c: Option<u32>, held: &HashSet<ElemAlt>) -> bool {
         let Some(c) = c else { return true };
         self.elem_conds[c as usize].iter().any(|&(d, k, j)| {
-            self.specs.get(&d).is_some_and(|s| s.elems.contains(&(k, j)))
-                || held.contains(&(d, k, j))
+            self.specs.get(&d).is_some_and(|s| {
+                s.elems.iter().any(|e| e.k == k && e.j == j && self.memberships.get(&(e.pred, e.c, e.s)) == Some(&true))
+            }) || held.contains(&(d, k, j))
                 || (*self.g.defs[d.0 as usize].module != *self.cur
                     && self.transparent.contains(&d)
                     && self.body_elems.get(&d).is_some_and(|ps| ps.contains(&(k, j))))
         })
     }
 
+    /// Decide, for each signature promise a condition names, whether its
+    /// predicate is a membership (#102).
+    fn decide_memberships(&mut self) {
+        // Whether a body is visible depends on the module checked.
+        self.memberships.clear();
+        let mut todo = Vec::new();
+        for alts in &self.elem_conds {
+            for &(d, k, j) in alts {
+                for e in self.specs.get(&d).map(|s| s.elems.as_slice()).unwrap_or(&[]) {
+                    if e.k == k && e.j == j {
+                        todo.push((e.pred, e.c, e.s));
+                    }
+                }
+            }
+        }
+        for key in todo {
+            if !self.memberships.contains_key(&key) {
+                let mut visiting = HashSet::new();
+                let m = self.is_membership(key, &mut visiting);
+                self.memberships.insert(key, m);
+            }
+        }
+    }
+
+    /// Whether predicate `pred` is true only where its explicit argument
+    /// `s` equals (`==`, which compares structure) a strict part of its
+    /// explicit argument `c`, as its body shows (#102): its body must be
+    /// visible, as for proofs. A recursive use of a predicate being decided
+    /// is assumed to be one: it is total, so this is an induction on its
+    /// recursion.
+    fn is_membership(&mut self, key: (DefId, usize, usize), visiting: &mut HashSet<(DefId, usize, usize)>) -> bool {
+        if let Some(m) = self.memberships.get(&key) {
+            return *m;
+        }
+        if !visiting.insert(key) {
+            return true;
+        }
+        let (pred, c, s) = key;
+        let info = &self.g.defs[pred.0 as usize];
+        let partial = self.fn_meta.get(&pred).is_some_and(|m| m.partial);
+        let Some(body) = info.body.clone().filter(|_| !info.opaque && !partial && self.body_visible(pred)) else {
+            return false;
+        };
+        let mut ctx = Vec::new();
+        let mut t = &body;
+        let mut explicit = 0;
+        while let Tm::Lam(_, _, i, b) = t {
+            ctx.push(match i {
+                Icit::Impl => Kind::Other,
+                Icit::Expl => {
+                    explicit += 1;
+                    if explicit - 1 == c {
+                        Kind::Container
+                    } else if explicit - 1 == s {
+                        Kind::Subject
+                    } else {
+                        Kind::Other
+                    }
+                }
+            });
+            t = b;
+        }
+        let t = t.clone();
+        self.only_if_member(&t, &mut ctx, visiting)
+    }
+
+    /// Whether `t`, a `Bool`, is `True` only where the subject equals a
+    /// strict part of the container (#102).
+    fn only_if_member(&mut self, t: &Tm, ctx: &mut Vec<Kind>, visiting: &mut HashSet<(DefId, usize, usize)>) -> bool {
+        let wk = &self.g.well_known;
+        let (tc, fc) = (wk.true_con, wk.false_con);
+        match t {
+            Tm::ConApp(con, args) => args.is_empty() && Some(*con) == fc,
+            Tm::Con(con) => Some(*con) == fc,
+            Tm::PrimApp(Prim::Eq, xs) if xs.len() == 2 => {
+                let (a, b) = (kind_of(&xs[0], ctx), kind_of(&xs[1], ctx));
+                matches!((a, b), (Kind::Part, Kind::Subject) | (Kind::Subject, Kind::Part))
+            }
+            Tm::Let(_, _, _, v, b) => {
+                let k = kind_of(v, ctx);
+                ctx.push(k);
+                let r = self.only_if_member(b, ctx, visiting);
+                ctx.pop();
+                r
+            }
+            Tm::Case(scrut, ct) => {
+                let field = match kind_of(scrut, ctx) {
+                    Kind::Container | Kind::Part => Kind::Part,
+                    _ => Kind::Other,
+                };
+                let ct = ct.clone();
+                for (con, n, b) in &ct.branches {
+                    let before = ctx.len();
+                    ctx.extend(std::iter::repeat_n(field, *n));
+                    let mut ok = self.only_if_member(b, ctx, visiting);
+                    ctx.truncate(before);
+                    // `if c then b else …`: `c` true too.
+                    if !ok && *n == 0 && Some(*con) == tc {
+                        ok = self.only_if_member(scrut, ctx, visiting);
+                    }
+                    if !ok {
+                        return false;
+                    }
+                }
+                ct.lits.iter().all(|(_, b)| self.only_if_member(b, ctx, visiting))
+                    && ct.default.as_ref().is_none_or(|b| self.only_if_member(b, ctx, visiting))
+            }
+            Tm::App(..) => {
+                let (head, args) = t.spine();
+                let Tm::Def(d) = head else { return false };
+                let d = *d;
+                let expl: Vec<Kind> = args
+                    .iter()
+                    .zip(app_icits(t))
+                    .filter(|(_, i)| *i == Icit::Expl)
+                    .map(|(a, _)| kind_of(a, ctx.as_slice()))
+                    .collect();
+                for (s2, ks) in expl.iter().enumerate() {
+                    if *ks != Kind::Subject {
+                        continue;
+                    }
+                    for (c2, kc) in expl.iter().enumerate() {
+                        if matches!(kc, Kind::Container | Kind::Part) && self.is_membership((d, c2, s2), visiting) {
+                            return true;
+                        }
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
     pub fn check_termination(&mut self) {
+        self.decide_memberships();
         let held = self.body_promises();
         let fns: Vec<DefId> = std::mem::take(&mut self.module_fns);
         let mut calls: Vec<CallRec> = std::mem::take(&mut self.calls);
@@ -448,4 +584,37 @@ fn structural(members: &[DefId], metas: &[FnMeta], calls: &[&CallRec]) -> bool {
         }
     }
     false
+}
+
+/// What a local of a predicate being decided is (#102).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Kind {
+    Container,
+    Part,
+    Subject,
+    Other,
+}
+
+/// `t`'s kind: a local's, or a field of the container or of a part.
+fn kind_of(t: &Tm, ctx: &[Kind]) -> Kind {
+    match t {
+        Tm::Var(i) => ctx.len().checked_sub(i + 1).map_or(Kind::Other, |l| ctx[l]),
+        Tm::Field(a, _, _) | Tm::Proj(a, _, _) => match kind_of(a, ctx) {
+            Kind::Container | Kind::Part => Kind::Part,
+            _ => Kind::Other,
+        },
+        _ => Kind::Other,
+    }
+}
+
+/// The plicity of each argument of an application, outermost last.
+fn app_icits(t: &Tm) -> Vec<Icit> {
+    let mut out = Vec::new();
+    let mut h = t;
+    while let Tm::App(f, _, i, _) = h {
+        out.push(*i);
+        h = f;
+    }
+    out.reverse();
+    out
 }

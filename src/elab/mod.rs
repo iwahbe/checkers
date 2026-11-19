@@ -100,6 +100,18 @@ pub type ParamUse = Vec<(usize, Option<u32>)>;
 /// A promise `(callee, k, j)`: `k` is called only with strict parts of `j` (#102).
 pub type ElemAlt = (DefId, usize, usize);
 
+/// A function parameter's precondition `pred … j … x …` (#102): `k` and
+/// `j` are explicit parameters of the function; `c` and `s` are the
+/// explicit argument positions of `pred` that `j` and the subject fill.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ElemPromise {
+    pub k: usize,
+    pub j: usize,
+    pub pred: DefId,
+    pub c: usize,
+    pub s: usize,
+}
+
 #[derive(Clone)]
 pub struct Local {
     pub name: Name,
@@ -357,10 +369,12 @@ pub struct Spec {
     pub measure: Option<(Vec<Tm>, String)>,
     /// Parameters whose refinements mention later parameters (#102).
     pub late: Vec<Late>,
-    /// `(k, j)`: explicit parameter `k` is a function that the function
-    /// promises to call only with elements of explicit parameter `j`, a list
-    /// (`k~(x~A -> B, list.contains j x)`; termination reads it, #102).
-    pub elems: Vec<(usize, usize)>,
+    /// Explicit parameter `k` is a function whose precondition is a
+    /// predicate relating its argument to explicit parameter `j`
+    /// (`k~(x~A -> B, contains j x)`). Termination reads it as a promise to
+    /// call `k` only with strict parts of `j` where that predicate is a
+    /// membership, as its body shows (#102).
+    pub elems: Vec<ElemPromise>,
 }
 
 /// A parameter whose type's refinements mention later parameters (#102).
@@ -586,6 +600,10 @@ pub struct Elab {
     /// The element promises read from each checked function's body:
     /// `(k, j)` as in `Spec::elems` (#102).
     pub body_elems: HashMap<DefId, Vec<(usize, usize)>>,
+    /// `(pred, c, s)`: whether `pred` is a membership, true only where its
+    /// explicit argument `s` equals a strict part of argument `c` (#102);
+    /// for the module being checked.
+    pub memberships: HashMap<(DefId, usize, usize), bool>,
     /// Span of the `match` being compiled (for exhaustiveness errors).
     pub match_span: Span,
     /// The `match` being checked is a binding's one pattern (a `let`, a
@@ -744,6 +762,7 @@ impl Elab {
             body_fns: Vec::new(),
             elem_conds: Vec::new(),
             body_elems: HashMap::new(),
+            memberships: HashMap::new(),
             match_span: Span::default(),
             match_binding: false,
             pm: Default::default(),

@@ -1694,18 +1694,13 @@ impl Elab {
     /// a strict part of the caller's parameter `p`, if `d` promises it to
     /// call that function only with parts of another argument, itself the
     /// parameter `p` or a part of it (#102). The promise is in `d`'s
-    /// signature, or read from its body where that is visible: in this
-    /// module, or exported `transparent`.
+    /// signature, as a precondition that is a membership, or read from its
+    /// body where that is visible: in this module, or exported
+    /// `transparent`. Whether it holds is decided once the module's bodies
+    /// are checked, as a body may come after this call.
     fn elem_sub(&mut self, cx: &Cx, d: DefId, k: usize, args: &[&Expr]) -> Option<ElemSub> {
-        let promised = self.specs.get(&d).map(|s| s.elems.clone()).unwrap_or_default();
-        for &(f, j) in &promised {
-            if f == k {
-                if let Some(p) = args.get(j).and_then(|aj| self.part_or_param(cx, aj)) {
-                    return Some(ElemSub { p, cond: None });
-                }
-            }
-        }
-        if !self.body_visible(d) {
+        let promised = self.specs.get(&d).is_some_and(|s| s.elems.iter().any(|e| e.k == k));
+        if !promised && !self.body_visible(d) {
             return None;
         }
         let mut found: Option<(usize, Vec<ElemAlt>)> = None;

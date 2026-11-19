@@ -1711,10 +1711,11 @@ impl Elab {
         Sig { cx, binders, result: result_ty, n_implicit, preds, result_name: rname, comptime, hyps, late }
     }
 
-    /// The function parameters a signature promises to call only with
-    /// elements of a list parameter: `(k, j)` for `k~(x~A -> B,
-    /// list.contains j x)`, explicit parameters counted (#102).
-    pub fn elem_promises(&self, sig: &Sig) -> Vec<(usize, usize)> {
+    /// The preconditions of a signature's function parameters that relate
+    /// their argument to another parameter: `k~(x~A -> B, pred … j … x …)`,
+    /// explicit parameters counted. Termination reads one as a promise
+    /// where `pred` is a membership (#102).
+    pub fn elem_promises(&self, sig: &Sig) -> Vec<ElemPromise> {
         let nb = sig.binders.len();
         let mut out = Vec::new();
         for b in sig.n_implicit..nb {
@@ -1727,41 +1728,18 @@ impl Elab {
             let (Tm::Def(alias), captured) = dom.spine() else { continue };
             let Some(preds) = self.alias_preds.get(alias) else { continue };
             for p in preds {
-                let Some(q) = self.contains_subject(&p.tm) else { continue };
-                // `Var(1 + q)` is the alias's captured local `captured.len() - 1 - q`.
-                let Some(c) = captured.len().checked_sub(q + 1).and_then(|i| captured.get(i)) else { continue };
-                let Tm::Var(i) = &***c else { continue };
-                let Some(level) = lvl.checked_sub(i + 1) else { continue };
-                if level >= sig.n_implicit && level != b {
-                    out.push((b - sig.n_implicit, level - sig.n_implicit));
-                    break;
+                for (pred, q, c, s) in pred_subject(&p.tm) {
+                    // `Var(1 + q)` is the alias's captured local `captured.len() - 1 - q`.
+                    let Some(cap) = captured.len().checked_sub(q + 1).and_then(|i| captured.get(i)) else { continue };
+                    let Tm::Var(i) = &***cap else { continue };
+                    let Some(level) = lvl.checked_sub(i + 1) else { continue };
+                    if level >= sig.n_implicit && level != b {
+                        out.push(ElemPromise { k: b - sig.n_implicit, j: level - sig.n_implicit, pred, c, s });
+                    }
                 }
             }
         }
         out
-    }
-
-    /// `p` as `list.contains e x`, with `x` the refinement's subject
-    /// (`Var 0`) and `e` a captured local (`Var (1 + q)`): `q`.
-    fn contains_subject(&self, p: &Tm) -> Option<usize> {
-        let mut h = p;
-        let mut expl = Vec::new();
-        while let Tm::App(f, a, i, _) = h {
-            if *i == Icit::Expl {
-                expl.push(&**a);
-            }
-            h = f;
-        }
-        expl.reverse();
-        let Tm::Def(d) = h else { return None };
-        let info = &self.g.defs[d.0 as usize];
-        if info.module.as_ref() != "std.list" || info.name.as_ref() != "contains" {
-            return None;
-        }
-        match expl[..] {
-            [Tm::Var(e), Tm::Var(0)] if *e >= 1 => Some(e - 1),
-            _ => None,
-        }
     }
 
     pub fn pi_of(binders: &[(Name, Mult, Icit, Tm)], result: Tm) -> Tm {
@@ -2320,4 +2298,34 @@ fn own_params(t: &Tm, owns: &[bool]) -> Tm {
         }
         _ => t.clone(),
     }
+}
+
+/// `p` as a call `pred a0 a1 …` with the refinement's subject (`Var 0`) as
+/// explicit argument `s` and a captured local (`Var (1 + q)`) as explicit
+/// argument `c`: each such `(pred, q, c, s)` (#102).
+fn pred_subject(p: &Tm) -> Vec<(DefId, usize, usize, usize)> {
+    let mut h = p;
+    let mut expl = Vec::new();
+    while let Tm::App(f, a, i, _) = h {
+        if *i == Icit::Expl {
+            expl.push(&**a);
+        }
+        h = f;
+    }
+    expl.reverse();
+    let Tm::Def(d) = h else { return Vec::new() };
+    let mut out = Vec::new();
+    for (s, x) in expl.iter().enumerate() {
+        if !matches!(x, Tm::Var(0)) {
+            continue;
+        }
+        for (c, e) in expl.iter().enumerate() {
+            if let Tm::Var(e) = e {
+                if *e >= 1 {
+                    out.push((*d, e - 1, c, s));
+                }
+            }
+        }
+    }
+    out
 }
