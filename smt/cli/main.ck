@@ -1,8 +1,8 @@
 # main.ck — the solver package's command line.
 #
 # `main parse` reads a query on standard input and writes it back.
-# `main roundtrip DIR` reads each query in DIR, writes it back, and checks
-# that what it wrote is the same query. A query that can't be read gives
+# `main roundtrip DIR…` reads each query (`*.smt2`) in each DIR, writes it
+# back, and checks that what it wrote is the same query. A query that can't be read gives
 # `(error "line L column C: message")`, as Z3 reports one, and exit status 1.
 
 module main
@@ -12,17 +12,18 @@ import std.terminal (Term)
 import std.files
 import std.files (Fs, Entry)
 import std.string
+import std.bytes
 import std.list
 import smt.smtlib (Shape, Group)
 import smt.term
 
-let USAGE = "usage: main parse < QUERY\n       main roundtrip DIR"
+let USAGE = "usage: main parse < QUERY\n       main roundtrip DIR..."
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     match args
-        ["parse"]          -> parse_stdin sys.term
-        ["roundtrip", dir] -> roundtrip dir sys.term sys.fs
-        _                  ->
+        ["parse"]           -> parse_stdin sys.term
+        "roundtrip" :: dirs -> roundtrip dirs sys.term sys.fs
+        _                   ->
             let _ = terminal.eprint_line USAGE sys.term
             Failure 2
 
@@ -48,28 +49,43 @@ record Tally
     read~Nat
     same~Nat
 
-fn roundtrip dir io fs -> code : dir~String, io~Term, fs~Fs, code~ExitCode
-    match files.list dir fs
-        Err e ->
-            let _ = terminal.eprint_line ("error: " ++ dir ++ ": " ++ files.describe e) io
-            Failure 2
-        Ok es ->
-            let t = each dir es io fs (Tally 0 0)
+fn roundtrip dirs io fs -> code : dirs~List String, io~Term, fs~Fs, code~ExitCode
+    match in_dirs dirs io fs (Tally 0 0)
+        None   -> Failure 2
+        Some t ->
             let summary = string.concat [decimal t.read, " queries read, ", decimal t.same, " round-trip, ",
                                          decimal (t.read - t.same), " don't"]
             let _ = terminal.print_line summary io
             if t.same == t.read then Success else Failure 1
+
+# The queries of each of `dirs`, counted onto `t`; none if one can't be listed.
+fn in_dirs dirs io fs t -> r : dirs~List String, io~Term, fs~Fs, t~Tally, t.same <= t.read,
+                               r~Option (u~Tally, u.same <= u.read)
+    match dirs
+        []          -> Some t
+        dir :: rest ->
+            match files.list dir fs
+                Err e ->
+                    let _ = terminal.eprint_line ("error: " ++ dir ++ ": " ++ files.describe e) io
+                    None
+                Ok es -> in_dirs rest io fs (each dir es io fs t)
+
+# Whether `name` is a query's file.
+fn is_query name -> r : name~String, r~Bool
+    let b = string.bytes name
+    len b > 5 and bytes.matches_at b (len b - 5) b".smt2"
 
 fn decimal n -> s : n~Int, s~String
     match string.from_utf8 (smtlib.numeral (if n < 0 then 0 else n))
         Some s -> s
         None   -> "?"
 
-fn each dir es io fs t -> r : dir~String, es~List Entry, io~Term, fs~Fs, t~Tally, r~Tally, r.same <= r.read
+fn each dir es io fs t -> r : dir~String, es~List Entry, io~Term, fs~Fs, t~Tally, t.same <= t.read, r~Tally,
+                              r.same <= r.read
     match es
-        []        -> if t.same <= t.read then t else Tally t.read t.read
+        []        -> t
         e :: rest ->
-            if e.dir
+            if e.dir or not (is_query e.name)
                 each dir rest io fs t
             else
                 let path = dir ++ "/" ++ e.name
