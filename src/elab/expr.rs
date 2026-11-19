@@ -131,8 +131,28 @@ impl Elab {
                 if *m == Mult::One {
                     self.lam_domains.insert(Rc::as_ptr(&nm) as *const u8 as usize, ((**a).clone(), cx.lvl()));
                 }
-                let l = cx.bind(&name, (**a).clone(), *m);
-                cx.locals[l].sub = map_sub;
+                // A domain with an inline refinement (`(x~a, contains xs x)`,
+                // `(i~Nat, i < n)`): the parameter has its base type and the
+                // predicates as facts, so a type inferred from it (`map (\x
+                // -> x) xs`) doesn't gain the refinement.
+                let anon = match self.refined_alias(a) {
+                    Some((d, args)) if self.is_direct_alias(a) && is_anon_alias(&self.g, d) => {
+                        unfold(&self.g, a).map(|base| (base, self.alias_preds.get(&d).cloned().unwrap_or_default(), args))
+                    }
+                    _ => None,
+                };
+                let pty = anon.as_ref().map_or_else(|| (**a).clone(), |(base, _, _)| base.clone());
+                let l = cx.bind(&name, pty, *m);
+                if let Some((_, preds, args)) = anon {
+                    for p in &preds {
+                        let mut env = args.clone();
+                        env.push(Val::var(l));
+                        let f = self.inst_pred(p, env);
+                        cx.assume(f);
+                    }
+                }
+                cx.locals[l].sub = map_sub.map(|e| e.p);
+                cx.locals[l].sub_cond = map_sub.and_then(|e| e.cond);
                 if simple && name != "_" {
                     self.bound_at(cx, l, p.span);
                 }
@@ -251,8 +271,20 @@ impl Elab {
                     }
                     matches!(&h.kind, ExprKind::Con(n) if n.starts_with("$mk#")) && !std::ptr::eq(h, e)
                 };
+                // A function type whose parameter is refined in place (`(x~a ->
+                // b, contains xs x)`), with the parameter's base type: the
+                // value's own types (a `let`-bound lambda's parameter, a
+                // partial application's) are solved to it, so the value
+                // doesn't take on the precondition; the refinements are
+                // compared below.
+                let unrefined = match self.force(expected) {
+                    Val::Pi(x, m, i, dom, c) if self.is_direct_alias(&dom) && self.refined_alias(&dom).is_some_and(|(d, _)| is_anon_alias(&self.g, d)) => {
+                        unfold(&self.g, &dom).map(|base| Val::Pi(x, m, i, Rc::new(base), c))
+                    }
+                    _ => None,
+                };
                 if matches!(e.kind, ExprKind::App(..)) && (dict || self.has_refined(cx, expected, 0) || matches!(self.force(expected), Val::Univ(_))) {
-                    self.app_expected = Some(expected.clone());
+                    self.app_expected = Some(unrefined.clone().unwrap_or_else(|| expected.clone()));
                 }
                 let (t, ty) = self.infer(cx, e);
                 self.app_expected = None;
@@ -267,6 +299,9 @@ impl Elab {
                     }
                     None => ty.clone(),
                 };
+                if let Some(u) = &unrefined {
+                    let _ = unify(&self.g, cx.lvl(), u, &shared);
+                }
                 if !self.unify_at(cx, expected, &shared, e.span, "this expression") {
                     return Tm::Error;
                 }
@@ -547,9 +582,17 @@ impl Elab {
         }
         if let Some(l) = cx.lookup(n) {
             self.index_local(cx, l, span);
-            let ty = cx.locals[l].ty.clone();
+            let ty = cx.ty_of(l);
             if self.map_elem_sub.is_some() {
                 self.map_elem_sub = None;
+            }
+            // A use of a parameter, for the promises its body makes (#102):
+            // code in a specification or proof never runs.
+            let ctx = self.use_ctx.take();
+            if let (Some(k), Some(f)) = (cx.locals[l].param, self.cur_fn) {
+                if self.in_spec == 0 && self.in_proof == 0 {
+                    self.param_uses.entry((f, k)).or_default().push(ctx.unwrap_or_default());
+                }
             }
             return (cx.var(l), ty);
         }
@@ -631,11 +674,11 @@ impl Elab {
         if self.g.defs[d.0 as usize].module.as_ref() != self.cur {
             return;
         }
-        let args = match self.map_elem_sub.take() {
-            Some(p) => vec![Some(p)],
-            None => vec![],
+        let (args, conds) = match self.map_elem_sub.take() {
+            Some(e) => (vec![Some(e.p)], e.cond.map(|c| (0, c)).into_iter().collect()),
+            None => (vec![], vec![]),
         };
-        self.calls.push(CallRec { caller, callee: d, args, span });
+        self.calls.push(CallRec { caller, callee: d, args, span, conds });
     }
 
     pub fn sym_term(&mut self, _cx: &Cx, s: Sym, span: Span) -> (Tm, Val) {
@@ -779,18 +822,52 @@ impl Elab {
             }
         }
 
-        // `map f xs` where xs is a structural subterm: f's argument is too (Lean's `attach`).
-        let is_map = self.is_list_map(cx, head);
+        // A function value passed here is applied to an element of a list
+        // that is part of a parameter (#102): its call is recorded with that
+        // argument (`list.map (f k) xs`, the parameter after `k`).
+        let elem_sub = self.map_elem_sub.take();
         let ncalls = self.calls.len();
         let saved_head = std::mem::replace(&mut self.in_app_head, true);
+        // A parameter called here (#102): what its first argument is part of.
+        if let ExprKind::Var(n) = &head.kind {
+            if cx.lookup(n).is_some_and(|l| cx.locals[l].param.is_some()) {
+                self.use_ctx = Some(args.first().and_then(|a| self.part_of(cx, a)).map(|(j, c)| vec![(j, c)]).unwrap_or_default());
+            }
+        }
         let (ft, fty) = self.infer(cx, head);
+        self.use_ctx = None;
         self.in_app_head = saved_head;
         let head_call = (self.calls.len() == ncalls + 1 && matches!(head.kind, ExprKind::Var(_))).then_some(ncalls);
         if let Some(i) = head_call {
-            let classified: Vec<Option<usize>> = args.iter().map(|a| self.subterm_of(cx, a)).collect();
+            let mut conds = Vec::new();
+            let mut classified = Vec::new();
+            for (k, a) in args.iter().enumerate() {
+                let part = self.part_of(cx, a);
+                if let Some((_, Some(c))) = part {
+                    conds.push((k, c));
+                }
+                classified.push(part.map(|(p, _)| p));
+            }
+            if let Some(e) = elem_sub {
+                let callee = self.calls[i].callee;
+                if self.fn_meta.get(&callee).is_some_and(|m| m.params.len() > args.len()) {
+                    if let Some(c) = e.cond {
+                        conds.push((classified.len(), c));
+                    }
+                    classified.push(Some(e.p));
+                }
+            }
             self.calls[i].args = classified;
+            self.calls[i].conds = conds;
         }
-        let map_sub = if is_map && args.len() >= 2 { self.subterm_of_or_param(cx, args[1]) } else { None };
+        // What the callee's signature says about its function parameters
+        // (#102): refinements over later parameters, and promises to call
+        // them only with elements of a list.
+        // A generic function's name comes with its implicit arguments.
+        let callee_spec = crate::core::head_def(&ft).and_then(|d| self.specs.get(&d));
+        let callee_def = crate::core::head_def(&ft);
+        let late = callee_spec.map(|s| s.late.clone()).unwrap_or_default();
+        let n_implicit = callee_spec.map_or(0, |s| s.n_implicit);
         self.head_checks_aliases = match &ft {
             Tm::Def(d) => self.specs.get(d).is_some_and(|s| s.preds.iter().any(|p| p.alias.is_some() && !p.is_post)),
             Tm::Con(c) => self.con_invs.contains_key(c),
@@ -819,11 +896,35 @@ impl Elab {
         let mut ty = fty;
         let head_text = self.src_text(head.span);
         let saved_arg_of = self.arg_of.replace(head_text);
+        let mut ready: HashMap<usize, (Tm, Val)> = HashMap::new();
         for (k, a) in args.iter().enumerate() {
-            if k == 0 {
-                self.map_elem_sub = map_sub;
+            let mut expected = None;
+            if let Some(l) = late.iter().find(|l| l.binder == n_implicit + k) {
+                if !ready.contains_key(&k) && l.deps.iter().all(|j| j - n_implicit < args.len()) {
+                    let (t1, ty1, e) = self.late_expected(cx, t, ty, k, l, &args, &mut ready);
+                    (t, ty, expected) = (t1, ty1, e);
+                }
             }
-            let (t2, ty2) = self.apply_one(cx, t, ty, a);
+            let elem = callee_def.and_then(|d| self.elem_sub(cx, d, k, &args));
+            // A parameter passed here (#102): it is called only with parts
+            // of what the callee promises its function `k` gets.
+            if let (ExprKind::Var(n), Some(d)) = (&a.kind, callee_def) {
+                if cx.lookup(n).is_some_and(|l| cx.locals[l].param.is_some()) {
+                    let mut ctx = Vec::new();
+                    for (j, aj) in args.iter().enumerate() {
+                        if j == k {
+                            continue;
+                        }
+                        if let Some(p) = self.part_or_param(cx, aj) {
+                            let c = self.new_elem_cond(vec![(d, k, j)]);
+                            ctx.push((p, Some(c)));
+                        }
+                    }
+                    self.use_ctx = Some(ctx);
+                }
+            }
+            let (t2, ty2) = self.apply_one_as(cx, t, ty, a, expected, elem, ready.remove(&k));
+            self.use_ctx = None;
             self.map_elem_sub = None;
             t = t2;
             ty = ty2;
@@ -1415,9 +1516,84 @@ impl Elab {
     }
 
     pub fn apply_one(&mut self, cx: &mut Cx, t: Tm, ty: Val, a: &Expr) -> (Tm, Val) {
+        self.apply_one_as(cx, t, ty, a, None, None, None)
+    }
+
+    /// The type a parameter whose refinements mention later parameters
+    /// (#102) has at this call: the later arguments it needs are checked
+    /// first, into `ready`, in order. `None` where one of their types
+    /// depends on this argument; then it is checked against its type
+    /// without the refinements, which asks more of it.
+    #[allow(clippy::too_many_arguments)]
+    fn late_expected(
+        &mut self,
+        cx: &mut Cx,
+        t: Tm,
+        ty: Val,
+        k: usize,
+        late: &Late,
+        args: &[&Expr],
+        ready: &mut HashMap<usize, (Tm, Val)>,
+    ) -> (Tm, Val, Option<Val>) {
+        let (t, ty) = self.insert(cx, t, ty);
+        let Val::Pi(_, _, Icit::Expl, _, c) = self.force(&ty) else { return (t, ty, None) };
+        let (_, spine) = t.spine();
+        let mut env: Vec<Val> = spine.iter().map(|a| self.eval(cx, a)).collect();
+        if env.len() != late.binder {
+            return (t, ty, None);
+        }
+        env.push(Val::Error);
+        let l = cx.lvl();
+        let mut r = apply_closure(&self.g, &c, Val::var(l));
+        let last = late.deps.iter().max().copied().unwrap_or(late.binder);
+        for b in late.binder + 1..=last {
+            let j = k + b - late.binder;
+            let Val::Pi(_, _, Icit::Expl, dom, c) = self.force(&r) else { return (t, ty, None) };
+            let Some(arg) = args.get(j) else { return (t, ty, None) };
+            let av = match ready.get(&j) {
+                Some((_, av)) => av.clone(),
+                None => {
+                    let q = quote(&self.g, l + 1, &dom);
+                    if mentions_level_from(&q, l + 1, l, 0) {
+                        return (t, ty, None);
+                    }
+                    self.alias_covered = self.head_checks_aliases && self.is_direct_alias(&dom);
+                    let at = self.check(cx, arg, &dom, false);
+                    let av = self.eval(cx, &at);
+                    ready.insert(j, (at, av.clone()));
+                    av
+                }
+            };
+            env.push(av.clone());
+            r = apply_closure(&self.g, &c, av);
+        }
+        env.resize(late.n, Val::Error);
+        let expected = eval(&self.g, &Rc::new(env), &late.ty);
+        (t, ty, Some(expected))
+    }
+
+    /// `apply_one`, checking the argument against `expected` instead of the
+    /// parameter's type when given, or taking it as already checked
+    /// (`ready`), and recording `elem` as the parameter a function value
+    /// passed here is applied to elements of (#102).
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_one_as(
+        &mut self,
+        cx: &mut Cx,
+        t: Tm,
+        ty: Val,
+        a: &Expr,
+        expected: Option<Val>,
+        elem: Option<ElemSub>,
+        ready: Option<(Tm, Val)>,
+    ) -> (Tm, Val) {
         let (t, ty) = self.insert(cx, t, ty);
         match self.force(&ty) {
             Val::Pi(_, m, Icit::Expl, dom, c) => {
+                if let Some((at, av)) = ready {
+                    return (Tm::App(Rc::new(t), Rc::new(at), Icit::Expl, m), apply_closure(&self.g, &c, av));
+                }
+                let dom = expected.unwrap_or((*dom).clone());
                 // A refined function type's precondition (D84): required to
                 // call the function.
                 let pre = match self.refined_alias(&dom) {
@@ -1425,7 +1601,9 @@ impl Elab {
                     _ => None,
                 };
                 self.alias_covered = (self.head_checks_aliases && self.is_direct_alias(&dom)) || pre.is_some();
+                self.map_elem_sub = elem;
                 let at = self.check(cx, a, &dom, false);
+                self.map_elem_sub = None;
                 let av = self.eval(cx, &at);
                 if let Some((d, args)) = pre {
                     let callee = self.arg_of.clone().unwrap_or_else(|| "the function".into());
@@ -1487,39 +1665,70 @@ impl Elab {
         }
     }
 
-    fn is_list_map(&self, cx: &Cx, head: &Expr) -> bool {
-        let sym = match &head.kind {
-            ExprKind::Var(n) if cx.lookup(n).is_none() => self.resolve(n, false),
-            ExprKind::Field(q, n) => match &q.kind {
-                ExprKind::Var(q) if cx.lookup(q).is_none() => {
-                    self.qualifier(q).and_then(|m| self.resolve_qualified(&m, &n.name, false))
-                }
-                _ => None,
-            },
+    /// `a` as a strict part of parameter `p`, if condition `c` holds:
+    /// `(p, c)`.
+    fn part_of(&self, cx: &Cx, a: &Expr) -> Option<(usize, Option<u32>)> {
+        match &a.kind {
+            ExprKind::Var(n) => cx.lookup(n).and_then(|l| cx.locals[l].sub.map(|p| (p, cx.locals[l].sub_cond))),
             _ => None,
-        };
-        match sym {
-            Some(Sym::Def(d)) => {
-                let info = &self.g.defs[d.0 as usize];
-                info.module.as_ref() == "std.list" && info.name.as_ref() == "map"
+        }
+    }
+
+    /// `a` as parameter `p` or (unconditionally) a strict part of it.
+    fn part_or_param(&self, cx: &Cx, a: &Expr) -> Option<usize> {
+        match &a.kind {
+            ExprKind::Var(n) => cx.lookup(n).and_then(|l| {
+                let x = &cx.locals[l];
+                if x.sub_cond.is_none() { x.sub.or(x.param) } else { x.param }
+            }),
+            _ => None,
+        }
+    }
+
+    fn new_elem_cond(&mut self, alts: Vec<ElemAlt>) -> u32 {
+        self.elem_conds.push(alts);
+        (self.elem_conds.len() - 1) as u32
+    }
+
+    /// Argument `k` of a call of `d`: a function value there is applied to
+    /// a strict part of the caller's parameter `p`, if `d` promises it to
+    /// call that function only with parts of another argument, itself the
+    /// parameter `p` or a part of it (#102). The promise is in `d`'s
+    /// signature, as a precondition that is a membership, or read from its
+    /// body where that is visible: in this module, or exported
+    /// `transparent`. Whether it holds is decided once the module's bodies
+    /// are checked, as a body may come after this call.
+    fn elem_sub(&mut self, cx: &Cx, d: DefId, k: usize, args: &[&Expr]) -> Option<ElemSub> {
+        let mut found: Option<(usize, Vec<ElemAlt>)> = None;
+        // The argument E0301's help names: a part, rather than the parameter itself.
+        let mut shown = None;
+        for (j, aj) in args.iter().enumerate() {
+            if j == k {
+                continue;
             }
-            _ => false,
+            let Some(p) = self.part_or_param(cx, aj) else { continue };
+            let part = self.part_of(cx, aj).is_some();
+            match &mut found {
+                None => found = Some((p, vec![(d, k, j)])),
+                Some((q, alts)) if *q == p => alts.push((d, k, j)),
+                Some(_) => continue,
+            }
+            if shown.is_none_or(|(_, was_part): (usize, bool)| part && !was_part) {
+                shown = Some((j, part));
+            }
         }
+        let (p, alts) = found?;
+        let j = shown.map_or(alts[0].2, |(j, _)| j);
+        let arg = self.src_text(args[j].span);
+        let cond = self.new_elem_cond(alts);
+        let head = self.arg_of.clone().unwrap_or_else(|| self.g.defs[d.0 as usize].name.to_string());
+        self.elem_cond_at.insert(cond, (head, arg, j));
+        Some(ElemSub { p, cond: Some(cond) })
     }
 
-    /// If `a` is a local that is a strict structural subterm of parameter p, return p.
-    pub fn subterm_of(&self, cx: &Cx, a: &Expr) -> Option<usize> {
-        match &a.kind {
-            ExprKind::Var(n) => cx.lookup(n).and_then(|l| cx.locals[l].sub),
-            _ => None,
-        }
-    }
-
-    fn subterm_of_or_param(&self, cx: &Cx, a: &Expr) -> Option<usize> {
-        match &a.kind {
-            ExprKind::Var(n) => cx.lookup(n).and_then(|l| cx.locals[l].sub),
-            _ => None,
-        }
+    /// Whether `d`'s body can be read for its promises (#102).
+    pub fn body_visible(&self, d: DefId) -> bool {
+        *self.g.defs[d.0 as usize].module == *self.cur || self.transparent.contains(&d)
     }
 
     // ── operators ───────────────────────────────────────────────────────────
@@ -2004,6 +2213,7 @@ impl Elab {
                         if let ExprKind::Var(src) = &rhs.kind {
                             if let Some(sl) = cx.locals[..l].iter().rposition(|x| x.name.as_ref() == src.as_str()) {
                                 cx.locals[l].sub = cx.locals[sl].sub;
+                                cx.locals[l].sub_cond = cx.locals[sl].sub_cond;
                             }
                         }
                         let body = self.block_from(cx, rest, result, expected, tail);

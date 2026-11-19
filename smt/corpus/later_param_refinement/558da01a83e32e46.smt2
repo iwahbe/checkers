@@ -1,0 +1,8 @@
+(set-option :produce-models true)
+(set-option :rlimit 200000)
+(set-option :timeout 60000)
+(set-logic ALL)
+(declare-const |n#1| Int)
+(assert (not (< |n#1| |n#1|)))
+(check-sat)
+(get-value (|n#1|))

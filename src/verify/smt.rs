@@ -1006,8 +1006,14 @@ impl<'a> Builder<'a> {
                 let tyt = quote(&self.e.g, lvl, &ty);
                 let s = self.sort_of(&env, &tyt)?;
                 self.consts.push(format!("(declare-const {name} {})", s.render(self.e)));
-                self.fun_tys.insert(name.clone(), (lvl, tyt));
-                self.fun_axiom(&name, lvl);
+                // Its refinements may mention later locals (#102): its
+                // specification is over all of them.
+                let (at, spec) = match &l.refined {
+                    Some(r) => (self.ctx_src.len(), quote(&self.e.g, self.ctx_src.len(), r)),
+                    None => (lvl, tyt),
+                };
+                self.fun_tys.insert(name.clone(), (at, spec));
+                self.fun_axiom(&name, at);
                 Ent::Term(name.clone(), s)
             }
             _ => {
@@ -1188,16 +1194,35 @@ impl<'a> Builder<'a> {
         let Some(preds) = self.e.alias_preds.get(d).cloned() else { return Vec::new() };
         let mut inner = Vec::new();
         for a in &args {
+            // A type the alias captured (`a` of `(x~a, contains xs x)`, at
+            // `a` = `Nat` or a type variable) isn't a term: its sort, for the
+            // predicates' type arguments.
             inner.push(match self.sort_of(env, a) {
                 Ok(s) if self.is_type(a) => Ent::Ty(s),
-                _ => match self.term(env, a) {
+                sort => match self.term(env, a) {
                     Ok((t, s)) => Ent::Term(t, s),
-                    Err(_) => Ent::Opaque("alias argument".into()),
+                    Err(_) => match sort {
+                        Ok(s) => Ent::Ty(s),
+                        Err(_) => Ent::Opaque("alias argument".into()),
+                    },
                 },
             });
         }
-        inner.push(Ent::Term(x.to_string(), xs.clone()));
+        // The base may be refined too: `(x~a, contains xs x)` at `a` = `Char`.
         let mut out = Vec::new();
+        let mut base = self.e.g.defs[d.0 as usize].body.clone();
+        for _ in &args {
+            base = match base {
+                Some(Tm::Lam(_, _, _, b)) => Some((*b).clone()),
+                _ => None,
+            };
+        }
+        match base {
+            Some(Tm::Var(i)) if i < args.len() => out.extend(self.alias_terms(env, &args[args.len() - 1 - i], x, xs)),
+            Some(b) if matches!(b.head(), Tm::Def(_)) => out.extend(self.alias_terms(&inner, &b, x, xs)),
+            _ => {}
+        }
+        inner.push(Ent::Term(x.to_string(), xs.clone()));
         for p in preds {
             if let Ok((t, Sort::Bool)) = self.term(&inner, &p.tm) {
                 out.push(t);
@@ -1640,9 +1665,14 @@ impl<'a> Builder<'a> {
         Ok(out_)
     }
 
-    /// A `forall`'s body at the given values, if its variables have those sorts.
-    fn forall_body_at(&mut self, lvl: usize, pi: &Tm, names: &[String], sorts: &[Sort]) -> Tx<Option<String>> {
+    /// A `forall`'s body at the given values, if its variables have those
+    /// sorts, and what the values must satisfy to be in its variables'
+    /// types (`domain_terms`): to be assumed of them where the `forall` is
+    /// proved, and the condition under which it holds of them where it is
+    /// a premise (#115).
+    fn forall_body_at(&mut self, lvl: usize, pi: &Tm, names: &[String], sorts: &[Sort]) -> Tx<Option<(String, Vec<String>)>> {
         let mut inner: Vec<Ent> = (0..lvl).map(|k| Ent::Opaque(format!("@{k}"))).collect();
+        let mut guards = Vec::new();
         let mut t = pi.clone();
         let mut k = 0;
         while let Tm::Pi(_, _, _, a, b) = t {
@@ -1650,6 +1680,7 @@ impl<'a> Builder<'a> {
             if sorts.get(k) != Some(&s) {
                 return Ok(None);
             }
+            guards.extend(self.domain_terms(&inner, &a, &names[k], &s));
             inner.push(Ent::Term(names[k].clone(), s));
             t = (*b).clone();
             k += 1;
@@ -1658,7 +1689,14 @@ impl<'a> Builder<'a> {
             return Ok(None);
         }
         let (bt, bs) = self.term(&inner, &t)?;
-        Ok((bs == Sort::Bool).then_some(bt))
+        Ok((bs == Sort::Bool).then_some((bt, guards)))
+    }
+
+    /// A `forall` premise at the values `forall_body_at` gave it: its body
+    /// where they are in its variables' types.
+    fn premise_at(&mut self, lvl: usize, pi: &Tm, names: &[String], sorts: &[Sort]) -> Option<String> {
+        let (b, guards) = self.forall_body_at(lvl, pi, names, sorts).ok()??;
+        Some(implies(&guards, b))
     }
 
     /// Proving `xs == ys` for arrays or bytes (#75): they are equal if their
@@ -1698,25 +1736,29 @@ impl<'a> Builder<'a> {
             if !index || matches!(**body, Tm::Pi(..)) {
                 continue;
             }
-            if let Ok(Some(b)) = self.forall_body_at(lvl, pi, std::slice::from_ref(&w), &[Sort::Int]) {
+            if let Some(b) = self.premise_at(lvl, pi, std::slice::from_ref(&w), &[Sort::Int]) {
                 at.push(format!("(=> {inside} {b})"));
             }
         }
         Ok(Some((ext, at)))
     }
 
-    /// `forall x y : …` (D137), only ever proved (so Z3 refutes its negation
-    /// with fresh values, without quantifier instantiation).
+    /// `forall x y : …` (D137): proved (so Z3 refutes its negation with
+    /// fresh values, without quantifier instantiation), and assumed only to
+    /// check a counterexample (#77). Its variables range over their types:
+    /// a `Nat` is non-negative and a refinement's predicates hold (#112).
     fn forall(&mut self, env: &[Ent], pi: &Tm) -> Tx<(String, Sort)> {
         let d = self.lam_depth;
         let mut inner = env.to_vec();
         let mut binds = Vec::new();
+        let mut guards = Vec::new();
         let mut t = pi.clone();
         let mut k = 0;
         while let Tm::Pi(_, _, _, a, b) = t {
             let s = self.sort_of(&inner, &a)?;
             let n = format!("|all{d}.{k}|");
             binds.push(format!("({n} {})", s.render(self.e)));
+            guards.extend(self.domain_terms(&inner, &a, &n, &s));
             inner.push(Ent::Term(n, s));
             t = (*b).clone();
             k += 1;
@@ -1731,7 +1773,24 @@ impl<'a> Builder<'a> {
         if bs != Sort::Bool || binds.is_empty() {
             return out("a `forall` that is not a `Bool`");
         }
-        Ok((format!("(forall ({}) {bt})", binds.join(" ")), Sort::Bool))
+        Ok((format!("(forall ({}) {})", binds.join(" "), implies(&guards, bt)), Sort::Bool))
+    }
+
+    /// What a value `x` of type `ty` (sort `xs`) satisfies beyond its sort:
+    /// a `Nat` is non-negative, a refinement's predicates hold, and so do
+    /// those of a tuple's refined parts.
+    fn domain_terms(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.is_nat_tm(ty) {
+            out.push(format!("(>= {x} 0)"));
+        }
+        // `Nat` is also the alias `n~Int, n >= 0`: each term once.
+        for t in self.alias_terms(env, ty, x, xs).into_iter().chain(self.tuple_terms(env, ty, x, xs)) {
+            if !out.contains(&t) {
+                out.push(t);
+            }
+        }
+        out
     }
 
     /// Apply the function value `ft` (of sort `s`) to `args` (D139).
@@ -2942,11 +3001,7 @@ impl<'a> Builder<'a> {
                     goals.extend(self.tuple_terms(params, ty, r, rs));
                 }
                 for t in goals {
-                    self.asserts.push(match pres.len() {
-                        0 => t,
-                        1 => format!("(=> {} {t})", pres[0]),
-                        _ => format!("(=> (and {}) {t})", pres.join(" ")),
-                    });
+                    self.asserts.push(implies(&pres, t));
                 }
             }
         }
@@ -2981,11 +3036,13 @@ impl<'a> Builder<'a> {
                         }
                     }
                 }
-                let g = self.forall_body_at(lvl, &a[0], &names, &sorts)?.ok_or_else(|| Outside("a `forall`".into()))?;
+                let (g, domain) = self.forall_body_at(lvl, &a[0], &names, &sorts)?.ok_or_else(|| Outside("a `forall`".into()))?;
+                // The fresh values are in the variables' types.
+                facts.extend(domain);
                 for f in &ob.facts {
                     if let Tm::PrimApp(Prim::Forall, fa) = quote(&self.e.g, lvl, f) {
                         if fa.len() == 1 {
-                            if let Ok(Some(b)) = self.forall_body_at(lvl, &fa[0], &names, &sorts) {
+                            if let Some(b) = self.premise_at(lvl, &fa[0], &names, &sorts) {
                                 facts.push(b);
                             }
                         }
@@ -3141,6 +3198,15 @@ fn smt_bytes(b: &[u8]) -> String {
 /// Is a value `Nat`-typed? (for `only_if_nat` obligations)
 pub fn is_nat(e: &Elab, ty: &Val) -> bool {
     crate::core::is_nat(&e.g, ty)
+}
+
+/// `t` under the conditions `guards`.
+fn implies(guards: &[String], t: String) -> String {
+    match guards {
+        [] => t,
+        [g] => format!("(=> {g} {t})"),
+        _ => format!("(=> (and {}) {t})", guards.join(" ")),
+    }
 }
 
 fn has_forall(t: &Tm) -> bool {

@@ -56,7 +56,7 @@ replaces 1:68-1:70
   zero_add           function        
 == line 5, column 14
 replaces 5:14-5:14
-  all                function        export fn all p xs -> r : p~(a -> Bool), xs~List a, r~Bool  (documented)
+  all                function        export fn all p xs -> r : p~(x~a -> Bool, contains xs x), xs~List a, r~Bool  (documented)
   append_assoc       lemma           export lemma append_assoc xs ys zs : xs~List a, ys~List a, zs~List a  (documented)
   append_nil         lemma           export lemma append_nil xs : xs~List a  (documented)
   bag_append         lemma           export lemma bag_append xs ys : xs~List a, ys~List a  (documented)
@@ -71,7 +71,7 @@ replaces 5:14-5:14
   keys_append        lemma           export lemma keys_append xs ys : xs~List (k, v), ys~List (k, v)  (documented)
   keys_reverse       lemma           export lemma keys_reverse ps : ps~List (k, v)  (documented)
   length             function        export transparent fn length xs -> n : xs~List a, n~Nat  (documented)
-  map                function        export transparent fn map f xs -> ys : f~(a -> b), xs~List a, ys~List b  (documented)
+  map                function        export transparent fn map f xs -> ys : f~(x~a -> b, contains xs x), xs~List a, ys~List b  (documented)
   map_comp           lemma           export lemma map_comp g h xs : g~(b -> c), h~(a -> b), xs~List a  (documented)
   map_id             lemma           export lemma map_id xs : xs~List a  (documented)
   max_of             function        export transparent fn max_of xs -> m : xs~List Nat, m~Nat  (documented)
