@@ -1,0 +1,23 @@
+error[E0450]: cannot prove `nonempty i`, required to call `f`
+  --> refined_fn_generic_pre_named.ck:14:7
+   |
+14 |     f []
+   |       ^^ `f` requires `nonempty i`
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+error[E0450]: cannot prove `list.contains i 1`, required to call `f`
+  --> refined_fn_generic_pre_named.ck:20:7
+   |
+20 |     f [2]
+   |       ^^^ `f` requires `list.contains i 1`
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+error[E0451]: cannot prove `nonempty []`, required to call `f`
+  --> refined_fn_generic_pre_named.ck:27:7
+   |
+27 |     f 0
+   |       ^ `f` requires `nonempty []`
+   = note: this obligation is outside what the prover handles: it involves an unsupported type
+   = help: state the fact you need as a lemma and bring it in with `have`
+
+refined_fn_generic_pre_named.ck: 3 errors, 0 warnings
