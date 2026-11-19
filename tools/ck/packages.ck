@@ -286,8 +286,8 @@ export let TOOLCHAIN = Version 0 1 0
 
 # Visit every package version reached from `todo` (Go's minimal version
 # selection reads every manifest it reaches).
-partial fn visit todo nodes lock c -> r : todo~List Need, nodes~List Node, lock~List Locked, c~Caps,
-                                          r~Result (List Node) String
+partial fn visit root todo nodes lock c -> r : root~String, todo~List Need, nodes~List Node, lock~List Locked,
+                                               c~Caps, r~Result (List Node) String
     match todo
         []        -> Ok nodes
         n :: rest ->
@@ -300,9 +300,9 @@ partial fn visit todo nodes lock c -> r : todo~List Need, nodes~List Node, lock~
                         Err e       -> Err e
                         Ok (dir, p) ->
                             if visited nodes name p
-                                visit rest nodes lock c
+                                visit root rest nodes lock c
                             else
-                                match read_manifest dir c
+                                match read_manifest (join root dir) c
                                     Err e -> Err e
                                     Ok m  ->
                                         if m.name != name
@@ -310,7 +310,7 @@ partial fn visit todo nodes lock c -> r : todo~List Need, nodes~List Node, lock~
                                         else if manifest.older TOOLCHAIN m.toolchain
                                             Err ("`" ++ name ++ "` needs checkers " ++ manifest.show m.toolchain ++ " or newer; this is " ++ manifest.show TOOLCHAIN)
                                         else
-                                            visit (rest ++ needs m dir) (Node name dir p m n.by :: nodes) lock c
+                                            visit root (rest ++ needs m dir) (Node name dir p m n.by :: nodes) lock c
 
 # Where the needed package is, fetching it if it's from git.
 partial fn place n lock c -> r : n~Need, lock~List Locked, c~Caps, r~Result (String, Pinned) String
@@ -384,13 +384,14 @@ export record Build
     root~Manifest
     packages~List Package
 
-partial fn read_lock c -> r : c~Caps, r~Result (List Locked) String
-    match files.read "checkers.lock" c.fs
+partial fn read_lock root c -> r : root~String, c~Caps, r~Result (List Locked) String
+    let path = join root "checkers.lock"
+    match files.read path c.fs
         Err _   -> Ok []
         Ok text ->
             match manifest.read_lock text
                 Ok ls -> Ok ls
-                Err p -> Err (manifest.describe "checkers.lock" text p)
+                Err p -> Err (manifest.describe path text p)
 
 partial fn insert p sorted -> r : p~Locked, sorted~List Locked, r~List Locked
     match sorted
@@ -416,40 +417,51 @@ partial fn pins ps acc -> r : ps~List Package, acc~List Locked, r~List Locked
         p :: rest -> pins rest (insert (Locked p.name p.pin) acc)
 
 # Write `checkers.lock` if it changed.
-partial fn write_lock ps c -> r : ps~List Package, c~Caps, r~Result Unit String
+partial fn write_lock root ps c -> r : root~String, ps~List Package, c~Caps, r~Result Unit String
+    let path = join root "checkers.lock"
     let text = string.bytes (manifest.render_lock (pins ps []))
-    let old = match files.read "checkers.lock" c.fs
+    let old = match files.read path c.fs
         Ok b  -> b
         Err _ -> b""
     if old == text
         Ok ()
     else
-        match files.write "checkers.lock" text c.fs
+        match files.write path text c.fs
             Ok _  -> Ok ()
-            Err e -> Err ("checkers.lock: " ++ files.describe e)
+            Err e -> Err (path ++ ": " ++ files.describe e)
 
 # Read `checkers.json` in the current directory, resolve and fetch its
 # dependencies, and update `checkers.lock`.
 export partial fn resolve c -> r : c~Caps, r~Result Build String
-    match read_manifest "." c
+    resolve_in "." c
+
+# The same for the package in `root`. Paths in its manifest and lock are
+# relative to `root`; its packages' directories, to the current directory.
+export partial fn resolve_in root c -> r : root~String, c~Caps, r~Result Build String
+    match read_manifest root c
         Err e -> Err e
         Ok m  ->
             if manifest.older TOOLCHAIN m.toolchain
                 Err ("this package needs checkers " ++ manifest.show m.toolchain ++ " or newer; this is " ++ manifest.show TOOLCHAIN)
             else
-                match read_lock c
+                match read_lock root c
                     Err e   -> Err e
                     Ok lock ->
-                        match visit (needs m ".") [] lock c
+                        match visit root (needs m ".") [] lock c
                             Err e    -> Err e
                             Ok nodes ->
                                 match build_list (list.map dep_name m.deps) nodes []
                                     Err e -> Err e
                                     Ok ps ->
                                         let ps = reverse ps
-                                        match write_lock ps c
+                                        match write_lock root ps c
                                             Err e -> Err e
-                                            Ok _  -> Ok (Build m ps)
+                                            Ok _  -> Ok (Build m (list.map (from root) ps))
+
+# A package whose directory is relative to `root`, with its directory
+# relative to the current directory.
+partial fn from root p -> r : root~String, p~Package, r~Package
+    Package p.name (join root p.dir) p.uses p.pin
 
 partial fn package_flags ps -> r : ps~List Package, r~List String
     match ps

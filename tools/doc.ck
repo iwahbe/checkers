@@ -4,7 +4,7 @@
 
 module doc
 
-import std.system (ExitCode, Proc)
+import std.system (Env, ExitCode, Proc)
 import std.terminal (Term)
 import std.terminal
 import std.files (Fs, Entry)
@@ -19,6 +19,8 @@ import ck.literate (Symbol, Warning, Context, Compiler)
 import ck.literate as lit
 import ck.manifest (PackageName)
 import ck.manifest
+import ck.packages (Caps)
+import ck.packages
 import ck.text (ends_with, hidden, join_path, as_string)
 
 export let USAGE = string.concat [
@@ -26,7 +28,8 @@ export let USAGE = string.concat [
     "       checkers site SRC -o OUT\n\n",
     "`doc` documents the package in DIR (every .ck file under it): OUT/NAME/index and\n",
     "OUT/NAME/MODULE, each as .md and .html; DIR/README.md, if any, describes the package.\n",
-    "NAME defaults to the name in DIR/checkers.json, else to DIR's name; PATH is the way\n",
+    "NAME defaults to the name in DIR/checkers.json, else to DIR's name; the code blocks\n",
+    "may import the dependencies DIR/checkers.json declares. PATH is the way\n",
     "from those pages to the site's root (default ../..); TEXT names the version.\n",
     "`site` renders each SRC/PAGE.md to OUT/PAGE.md and OUT/PAGE.html, and writes\n",
     "OUT/llms.txt, a list of every Markdown page under OUT."]
@@ -693,20 +696,39 @@ fn valid_package name -> r : name~String, r~Result PackageName String
         Err (string.concat ["`", name, "` isn't a package name: lower-case letters, digits and `_`, starting with a letter\n",
                             "help: pass --name NAME, or give the package a checkers.json with its \"name\""])
 
+# The flags that give `ckc` the dependencies `DIR/checkers.json` declares
+# (§16.4), for the code blocks; none without a manifest or dependencies.
+partial fn dependency_flags dir c -> r : dir~String, c~Caps, r~Result (List String) String
+    match files.read (join_path dir "checkers.json") c.fs
+        Err _ -> Ok []
+        Ok _  ->
+            match packages.read_manifest dir c
+                Err e -> Err e
+                Ok m  ->
+                    if m.deps == []
+                        Ok []
+                    else
+                        match packages.resolve_in dir c
+                            Err e -> Err e
+                            Ok b  -> Ok (packages.flags b)
+
 # `checkers doc DIR -o OUT [--name NAME] [--root PATH] [--label TEXT]`.
-export partial fn run args ckc term fs p -> code : args~List String, ckc~String, term~Term, fs~Fs, p~Proc,
-                                                   code~ExitCode
+export partial fn run args ckc term fs e p -> code : args~List String, ckc~String, term~Term, fs~Fs, e~Env,
+                                                     p~Proc, code~ExitCode
     match doc_args args (DocArgs "" "" "" "../.." "")
         None   ->
             terminal.eprint_line USAGE term
             Failure 2
         Some a ->
             match package_name a fs
-                Err e      -> fail e term
-                Ok package -> document a package ckc term fs p
+                Err msg    -> fail msg term
+                Ok package ->
+                    match dependency_flags a.dir (Caps fs e p term)
+                        Err msg  -> fail msg term
+                        Ok flags -> document a package flags ckc term fs p
 
-partial fn document a package ckc term fs p -> code : a~DocArgs, package~PackageName, ckc~String, term~Term, fs~Fs,
-                                                      p~Proc, code~ExitCode
+partial fn document a package flags ckc term fs p -> code : a~DocArgs, package~PackageName, flags~List String,
+                                                            ckc~String, term~Term, fs~Fs, p~Proc, code~ExitCode
     let out = join_path a.out package
     let root = with_slash a.root
     match read_all ckc a.dir (files_under a.dir "." ".ck" fs) p []
@@ -722,7 +744,7 @@ partial fn document a package ckc term fs p -> code : a~DocArgs, package~Package
                     let others = if package == "std" then [] else std_modules ckc p
                     have manifest.std_is_a_name
                     let symbols = symbols_of package "" ms ++ symbols_of "std" "../std/" others
-                    let compiler = Compiler ckc a.dir []
+                    let compiler = Compiler ckc a.dir flags
                     let cx = Context symbols (prelude_scope (ms ++ others)) "" compiler (\q n ty -> None) None
                     let index = string.bytes (package_md package readme ms)
                     let (index_html, ws) = lit.render index cx fs p
