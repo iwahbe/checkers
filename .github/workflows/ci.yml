@@ -3,6 +3,8 @@
 # - every pull request: clippy and the unit tests;
 # - the merge queue, and `main` after a merge: everything, integration tests
 #   included (golden files, packages, parking, the standard library, the cache).
+# - a pull request into `smt`, the solver's integration branch, which has no
+#   merge queue: everything, on Linux only.
 # Only `main` saves the build cache (Z3 compiled from source is most of it);
 # pull requests and the merge queue restore it. On `main`, the Linux job also
 # uploads `ckc` and `checkers` for the site (pages.yml).
@@ -31,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-26]
+        os: ${{ fromJSON(github.base_ref == 'smt' && '["ubuntu-24.04"]' || '["ubuntu-24.04", "macos-26"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -57,7 +59,7 @@ jobs:
       - name: Unit tests
         run: cargo test --release --locked --workspace --lib --bins
       - name: Integration tests
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' || github.base_ref == 'smt'
         run: cargo test --release --locked --workspace --tests
       # On `main`, the tools for the site (pages.yml), which builds nothing.
       - name: Tools for the site

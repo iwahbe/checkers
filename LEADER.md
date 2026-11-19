@@ -103,8 +103,12 @@ only there.
   and by our solver.
 - The work unit and its limits are not a question: set them when the core
   exists.
-- Sequences (open question 3) is still open; Ian asked for an explanation.
-  Do not start order-of-work step 7 before he decides.
+- Sequences (open question 3): #87, changing the encoding in `ckc` first, is
+  closed as not planned (measured on Z3: slower, and proofs lost). The
+  encoding stays; the solver gets a sequence procedure (#89, order-of-work
+  step 7), after steps 1–6. Its design is a proposal for Ian before any code.
+- The package lives at `smt/` and is called `smt` (#80).
+- How the corpus is stored (#81) is the leader's to decide.
 
 ## Merging into `smt`
 

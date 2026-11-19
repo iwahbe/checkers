@@ -1,0 +1,10 @@
+(set-option :produce-models true)
+(set-option :rlimit 200000)
+(set-option :timeout 60000)
+(set-logic ALL)
+(declare-const |src#0| (Seq Int))
+(assert (= (= (seq.len |src#0|) 0) false))
+(assert (not false))
+(check-sat)
+(get-value (|src#0|))
+;; reachable?

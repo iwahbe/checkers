@@ -1,0 +1,12 @@
+(set-option :produce-models true)
+(set-option :rlimit 200000)
+(set-option :timeout 60000)
+(set-logic ALL)
+(declare-datatypes ((|uncovered.Color| 0)) (((|uncovered.Red|) (|uncovered.Green|) (|uncovered.Blue|))))
+(declare-const |c#0| |uncovered.Color|)
+(assert (not (= |c#0| (as |uncovered.Blue| |uncovered.Color|))))
+(assert (= |c#0| (as |uncovered.Green| |uncovered.Color|)))
+(assert (not false))
+(check-sat)
+(get-value (|c#0|))
+;; reachable?

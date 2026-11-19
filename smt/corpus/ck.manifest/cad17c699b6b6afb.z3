@@ -1,0 +1,8 @@
+;; work 4030
+sat
+((|name#1| (seq.unit 97))
+ (|spec#2| (std.json.Obj (std.prelude.Cons (tuple2 (as seq.empty (Seq Int)) std.json.Null)
+                                (as std.prelude.Nil
+                                    (std.prelude.List (Tuple2 (Seq Int)
+                                                              std.json.Json))))))
+ (|src#0| (seq.unit 112)))

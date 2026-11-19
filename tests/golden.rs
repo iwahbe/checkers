@@ -18,6 +18,9 @@
 //!                         NAME.overlay (a JSON object, paths relative to the
 //!                         repository) as `--overlay` if there is one; the
 //!                         repository's path is shown as `$ROOT`.
+//! tests/corpus/NAME.ck → NAME.out is `ckc check` on it with CHECKERS_SMT_CORPUS
+//!                         (§7.2): the report, the entries written, then each
+//!                         query of module NAME and Z3's answer, in name order.
 //! tests/fmt/NAME.ck    → NAME.out is `checkers fmt -` on it: stdout, stderr, exit code
 //!                         (`checkers` is built from tools/checkers.ck with `ckc build`).
 //! tests/tool/NAME.args → each line runs `checkers` with those arguments (`ckc` is
@@ -554,6 +557,34 @@ fn golden() {
         let actual = format!("{}-- exit {}\n", String::from_utf8_lossy(&out.stdout), out.status.code().unwrap_or(-1))
             .replace(&root_text, "$ROOT")
             + &String::from_utf8_lossy(&out.stderr);
+        compare_as(root, &path, &path.with_extension("out"), &actual, update, &mut failures);
+    }
+
+    // `CHECKERS_SMT_CORPUS` (§7.2): the report, then the queries written for
+    // the program's own module and Z3's answers, in name order.
+    for path in ck_files(&root.join("tests").join("corpus")) {
+        count += 1;
+        let rel = path.strip_prefix(root).unwrap().to_string_lossy().to_string();
+        let module = path.file_stem().unwrap().to_string_lossy().to_string();
+        let dir = std::env::temp_dir().join(format!("checkers-golden-{}-corpus-{module}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_ckc"))
+            .env("CHECKERS_SMT_CORPUS", &dir)
+            .current_dir(root)
+            .args(["check", "--no-cache", &rel])
+            .output()
+            .expect("run ckc check");
+        let mut actual = format!("{}{}-- exit {}\n", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr), out.status.code().unwrap_or(-1));
+        let mut names: Vec<String> = fs::read_dir(&dir).map(|rd| rd.map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect()).unwrap_or_default();
+        names.sort();
+        actual += &format!("-- written: {}\n", names.join(", "));
+        let own = dir.join(&module);
+        for f in if own.is_dir() { files_with(&own, "smt2") } else { Vec::new() } {
+            for g in [f.clone(), f.with_extension("z3")] {
+                actual += &format!("== {module}/{}\n{}", g.file_name().unwrap().to_string_lossy(), fs::read_to_string(&g).unwrap_or_else(|_| "(missing)\n".into()));
+            }
+        }
+        let _ = fs::remove_dir_all(&dir);
         compare_as(root, &path, &path.with_extension("out"), &actual, update, &mut failures);
     }
 
