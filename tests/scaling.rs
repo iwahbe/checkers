@@ -55,3 +55,51 @@ fn a_chain_of_additions_checks_in_linear_time() {
 fn a_chain_of_concatenations_checks_in_linear_time() {
     assert_linear("concat", "\"a\"", "++", |c| format!("len ({c})"));
 }
+
+/// The peak resident memory, in KB, of `ckc check` on `check <chain> == n`:
+/// the child's high-water mark (`VmHWM`), read until it exits.
+#[cfg(target_os = "linux")]
+fn check_peak_kb(dir: &Path, name: &str, n: usize) -> u64 {
+    let file = dir.join(format!("{name}.ck"));
+    let chain = vec!["1"; n].join(" + ");
+    std::fs::write(&file, format!("module {name}\n\ncheck {chain} == {n}\n")).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ckc"))
+        .args(["check", "--no-cache", &format!("{name}.ck")])
+        .current_dir(dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("run ckc");
+    let status = format!("/proc/{}/status", child.id());
+    let mut peak = 0;
+    loop {
+        // The mark only rises, so the last read before exit is the peak (up
+        // to the polling interval, after the code generation that matters).
+        if let Ok(s) = std::fs::read_to_string(&status) {
+            if let Some(kb) = s.lines().find_map(|l| l.strip_prefix("VmHWM:")) {
+                peak = peak.max(kb.trim().trim_end_matches("kB").trim().parse().unwrap());
+            }
+        }
+        if let Some(st) = child.try_wait().unwrap() {
+            assert!(st.success(), "{name}: ckc failed");
+            return peak;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
+/// Code generation keeps memory in proportion to the function: Cranelift's
+/// SSA builder, given a variable per `let`, kept a map per variable as long as
+/// the function's block count, n² for a chain of n additions (8,000 took
+/// 1.2 GB). Four times the operators may take at most three times the memory;
+/// quadratic memory took about five.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_chain_of_additions_compiles_in_linear_memory() {
+    let dir = std::env::temp_dir().join(format!("checkers-scaling-{}-memory", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let small = check_peak_kb(&dir, "mem2000", 2000);
+    let large = check_peak_kb(&dir, "mem8000", 8000);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(large < 3 * small, "2000 operators took {} MB at peak, 8000 took {} MB", small / 1024, large / 1024);
+}
