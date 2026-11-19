@@ -103,8 +103,11 @@ only there.
   and by our solver.
 - The work unit and its limits are not a question: set them when the core
   exists.
-- Sequences (open question 3) is still open; Ian asked for an explanation.
-  Do not start order-of-work step 7 before he decides.
+- Sequences (open question 3): the encoding in `ckc` changes first, measured
+  on Z3. That is its own proposal, #87. No work on #87 before it carries the
+  `accepted` label; then it is a `ckc` change by pull request to `main` (Ian
+  merges), not to `smt`. Order-of-work step 7 (#89) waits for #87's
+  measurements.
 
 ## Merging into `smt`
 
