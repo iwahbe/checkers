@@ -884,6 +884,14 @@ impl<'p, M: Module> Gen<'p, M> {
                 let k = b.ins().iconst(I64, i as i64);
                 self.call1(b, st, "ck_tuple_rest", &[a[0], k])
             }
+            BOp::SetField => {
+                self.dup(b, st, a[2]);
+                // Field `k` is at `HDR + 8k`; the word for `k` is `2k + 1`.
+                let off = b.ins().ishl_imm_s(a[1], 2);
+                let at = b.ins().iadd(a[0], off);
+                b.ins().store(flags(), a[2], at, w::HDR as i32 - 4);
+                b.ins().iconst(I64, w::UNIT as i64)
+            }
             BOp::Builtin(sym) => self.call_array(b, st, sym, a),
             BOp::Prim(p, nat) => self.prim(b, st, p, nat, a),
         }

@@ -46,6 +46,7 @@ src/usage.rs         `own`/`ghost` usage (QTT multiplicities)
 src/stage.rs         staging (§8.9): expands compile-time functions before erasure; `checkers stage`
 src/native/ir.rs     erasure: core terms → runtime code (§13.1)
 src/native/lower.rs  closure conversion: runtime code → first-order functions (§14)
+src/native/tailrec.rs recursion made tail recursion before reference counting: `f.dps` (a constructor around the call), `f.acc` (`+`, `*`, `++` after it); an optimization (§14)
 src/native/rc.rs     reference counting, Perceus style: dup/drop, borrowing, reuse (D74)
 src/native/codegen.rs first-order code → Cranelift (JIT and object files)
 src/native/eval.rs   compile-time evaluation: `check` and staging, one in-memory module per program (D80)

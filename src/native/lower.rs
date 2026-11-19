@@ -114,6 +114,10 @@ pub enum BOp {
     Proj(usize),
     /// A tuple's component `i` and the rest after it (D174).
     ProjRest(usize),
+    /// `[cell, i, x]`: store `x` (one more reference) in field `i` (an
+    /// integer word) of a new constructor cell whose field `i` is empty;
+    /// `()`. Only the code `tailrec` writes fills a cell this way.
+    SetField,
 }
 
 #[derive(Clone)]
