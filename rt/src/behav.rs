@@ -381,11 +381,31 @@ pub(crate) fn ck_fork(f: W) -> W {
 pub(crate) fn join_values(x: W) -> W {
     let cells = cells_of(x, "futures");
     if cells.iter().any(|c| *c.v.lock().unwrap() == UNSET) {
-        if !crate::fiber::on_fiber() {
-            bug("`join` outside a behaviour, on a future not yet filled");
-        }
         let cs = cells.clone();
-        crate::fiber::park(Box::new(move |wake| schedule(Beh::Wake(cs, Some(wake)))));
+        if crate::fiber::on_fiber() {
+            crate::fiber::park(Box::new(move |wake| schedule(Beh::Wake(cs, Some(wake)))));
+        } else {
+            // A component of `par` on a thread of its own (D69): no fiber to
+            // park, so the thread waits until a behaviour scheduled on the
+            // futures runs, which is once they are all filled. Behaviours run
+            // on the pool's workers, never on this thread, so this ends.
+            if pool().is_none() {
+                bug("`join` outside a behaviour, on a future not yet filled");
+            }
+            let done = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+            let d = done.clone();
+            schedule(Beh::Wake(
+                cs,
+                Some(Box::new(move || {
+                    *d.0.lock().unwrap() = true;
+                    d.1.notify_one();
+                })),
+            ));
+            let mut filled = done.0.lock().unwrap();
+            while !*filled {
+                filled = done.1.wait(filled).unwrap();
+            }
+        }
     }
     let vals: Vec<W> = cells.iter().map(|c| take_future(c)).collect();
     if is_kind(x, K_TUPLE) {

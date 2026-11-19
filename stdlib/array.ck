@@ -96,6 +96,34 @@ export lemma to_list_map f xs : f~(a -> b), xs~Array a
     proof
         __builtin
 
+# The signatures above give only lengths; these axioms say which elements
+# `slice` and `concat` give.
+
+# Element `k` of a slice is element `i + k` of the source.
+export lemma slice_at xs i j k : xs~Array a, i~Nat, j~Nat, i <= j, j <= len xs, k~Nat, k < j - i
+    ensures (slice xs i j)[k] == xs[i + k]
+    proof
+        __builtin
+
+# Slicing out the middle of three arrays gives the middle one.
+export lemma slice_append pre mid post : pre~Array a, mid~Array a, post~Array a
+    ensures slice (pre ++ mid ++ post) (len pre) (len pre + len mid) == mid
+    proof
+        __builtin
+
+# No parts make an empty array: appending it to `xs` changes nothing. (`xs`
+# gives the elements' type, which `concat []` alone doesn't.)
+export lemma concat_nil xs : xs~Array a
+    ensures xs ++ concat [] == xs
+    proof
+        __builtin
+
+# The parts joined are the first part, then the rest joined.
+export lemma concat_cons x xs : x~Array a, xs~List (Array a)
+    ensures concat (x :: xs) == x ++ concat xs
+    proof
+        __builtin
+
 instance Functor Array
     fn fmap g xs
         map g xs
@@ -157,3 +185,7 @@ check count 1 (from_list [1, 2, 1]) == 2
 check to_list (take 2 (from_list [1, 2, 3])) == [1, 2] and to_list (take 5 (from_list [1])) == [1]
 check to_list (drop 2 (from_list [1, 2, 3])) == [3] and to_list (drop 5 (from_list [1])) == []
 check from_list [104, 105] == b"hi"
+check to_list (slice (from_list [1, 2, 3] ++ from_list [4, 5] ++ from_list [6]) 3 5) == [4, 5]
+check (slice (from_list [1, 2, 3, 4]) 1 3)[1] == (from_list [1, 2, 3, 4])[2]
+check to_list (concat [from_list [1, 2], from_list [3]]) == to_list (from_list [1, 2] ++ concat [from_list [3]])
+check to_list (from_list [1, 2] ++ concat []) == [1, 2]

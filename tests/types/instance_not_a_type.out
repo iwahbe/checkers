@@ -1,0 +1,43 @@
+error[E0281]: `instance Ord Type` must be for a type
+ --> instance_not_a_type.ck:7:14
+  |
+7 | instance Ord Type
+  |              ^^^^ the type of types, not a type
+  = help: an instance is for a type constructor applied to distinct type variables, e.g. `instance Ord (List a) : Ord a`
+
+error[E0281]: `instance Ord Type` must be for a type
+  --> instance_not_a_type.ck:11:14
+   |
+11 | instance Ord Type
+   |              ^^^^ the type of types, not a type
+   = help: an instance is for a type constructor applied to distinct type variables, e.g. `instance Ord (List a) : Ord a`
+
+error[E0281]: `instance Add Type` must be for a type
+  --> instance_not_a_type.ck:13:14
+   |
+13 | instance Add Type
+   |              ^^^^ the type of types, not a type
+   = help: an instance is for a type constructor applied to distinct type variables, e.g. `instance Ord (List a) : Ord a`
+
+error[E0281]: `instance Monoid Type` must be for a type
+  --> instance_not_a_type.ck:17:17
+   |
+17 | instance Monoid Type
+   |                 ^^^^ the type of types, not a type
+   = help: an instance is for a type constructor applied to distinct type variables, e.g. `instance Ord (List a) : Ord a`
+
+error[E0281]: `instance Ord Dot` must be for a type
+  --> instance_not_a_type.ck:24:14
+   |
+24 | instance Ord Dot
+   |              ^^^ not a type
+   = help: an instance is for a type constructor applied to distinct type variables, e.g. `instance Ord (List a) : Ord a`
+
+error[E0281]: `instance Ord Some` must be for a type
+  --> instance_not_a_type.ck:28:14
+   |
+28 | instance Ord Some
+   |              ^^^^ not a type
+   = help: an instance is for a type constructor applied to distinct type variables, e.g. `instance Ord (List a) : Ord a`
+
+instance_not_a_type.ck: 6 errors, 0 warnings

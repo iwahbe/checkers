@@ -289,8 +289,10 @@ pub struct ArithResult {
     pub operands: Val,
     pub lvl: usize,
     pub op: Prim,
-    pub left: Tm,
-    pub right: Tm,
+    /// Each operand's value, if it is a constant: all the result's type
+    /// needs of the operand terms, which can be long (`1 + 1 + …`).
+    pub left: Option<i128>,
+    pub right: Option<i128>,
     /// Each operand's own type (D135).
     pub left_ty: Val,
     pub right_ty: Val,
@@ -1982,6 +1984,7 @@ impl Elab {
     /// isn't known yet, once it is (D134, D135).
     #[allow(clippy::too_many_arguments)]
     pub fn arith_result(&mut self, cx: &Cx, op: Prim, lt: &Tm, rt: &Tm, ty: &Val, lty: &Val, rty: &Val) -> Val {
+        let (lc, rc) = (interval::constant(lt), interval::constant(rt));
         if let Val::Neutral(Head::Meta(_), _) = self.force(ty) {
             let r = self.fresh_meta_val(cx);
             self.arith_results.push(ArithResult {
@@ -1989,18 +1992,18 @@ impl Elab {
                 operands: ty.clone(),
                 lvl: cx.lvl(),
                 op,
-                left: lt.clone(),
-                right: rt.clone(),
+                left: lc,
+                right: rc,
                 left_ty: lty.clone(),
                 right_ty: rty.clone(),
             });
             return r;
         }
-        self.arith_type(op, lt, rt, ty, lty, rty)
+        self.arith_type(op, lc, rc, ty, lty, rty)
     }
 
     fn settle_arith(&mut self, a: ArithResult) {
-        let t = self.arith_type(a.op, &a.left, &a.right, &a.operands, &a.left_ty, &a.right_ty);
+        let t = self.arith_type(a.op, a.left, a.right, &a.operands, &a.left_ty, &a.right_ty);
         let _ = unify(&self.g, a.lvl, &a.result, &t);
     }
 

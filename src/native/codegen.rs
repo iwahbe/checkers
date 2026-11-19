@@ -18,7 +18,7 @@ use cranelift_codegen::ir::{
     StackSlotKind, Value,
 };
 use cranelift_codegen::isa::CallConv;
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use std::collections::HashMap;
 
@@ -83,7 +83,12 @@ pub struct Gen<'p, M: Module> {
 }
 
 struct St {
-    vars: Vec<Variable>,
+    /// Each variable's value. Lowered code defines every variable once, before
+    /// its uses and at a point that dominates them (no loops: tail calls are
+    /// `return_call`), so no Cranelift `Variable`s are needed; the SSA builder
+    /// keeps a map per variable as long as the block count, quadratic in
+    /// generated code (#67).
+    vars: Vec<Option<Value>>,
     owner: u32,
     frefs: HashMap<FuncId, FuncRef>,
     gvs: HashMap<DataId, GlobalValue>,
@@ -337,24 +342,24 @@ impl<'p, M: Module> Gen<'p, M> {
         b.append_block_params_for_function_params(entry);
         b.switch_to_block(entry);
         let params: Vec<Value> = b.block_params(entry).to_vec();
-        let vars: Vec<Variable> = (0..f.nvars.max(f.params.len() as u32)).map(|_| b.declare_var(I64)).collect();
+        let vars = vec![None; f.nvars.max(f.params.len() as u32) as usize];
         let mut st = St { vars, owner: f.owner, frefs: HashMap::new(), gvs: HashMap::new() };
         let env = params[0];
         match &f.kind {
             FnKind::Global | FnKind::Caf => {
                 for (k, v) in f.params.iter().enumerate() {
-                    b.def_var(st.vars[*v as usize], params[k + 1]);
+                    st.vars[*v as usize] = Some(params[k + 1]);
                 }
                 self.emit(b, &mut st, &f.body, Mode::Tail);
             }
             FnKind::Lambda { captured } => {
                 for (k, v) in f.params.iter().enumerate() {
-                    b.def_var(st.vars[*v as usize], params[k + 1]);
+                    st.vars[*v as usize] = Some(params[k + 1]);
                 }
                 for (k, v) in captured.iter().enumerate() {
                     let x = b.ins().load(I64, flags(), env, (w::HDR + 8 + 8 * k) as i32);
                     self.dup(b, &mut st, x);
-                    b.def_var(st.vars[*v as usize], x);
+                    st.vars[*v as usize] = Some(x);
                 }
                 self.drop_v(b, &mut st, env);
                 self.emit(b, &mut st, &f.body, Mode::Tail);
@@ -481,8 +486,8 @@ impl<'p, M: Module> Gen<'p, M> {
         b.switch_to_block(done);
     }
 
-    fn var(&self, b: &mut FunctionBuilder, st: &St, v: V) -> Value {
-        b.use_var(st.vars[v as usize])
+    fn var(&self, _b: &mut FunctionBuilder, st: &St, v: V) -> Value {
+        st.vars[v as usize].unwrap_or_else(|| panic!("native code uses variable {v} before defining it"))
     }
 
     // ── expressions ─────────────────────────────────────────────────────────
@@ -551,7 +556,7 @@ impl<'p, M: Module> Gen<'p, M> {
             }
             E::Let(x, a, body) => {
                 let v = self.val(b, st, a);
-                b.def_var(st.vars[*x as usize], v);
+                st.vars[*x as usize] = Some(v);
                 self.emit(b, st, body, mode)
             }
             E::Call { f, args, .. } => {
@@ -637,7 +642,7 @@ impl<'p, M: Module> Gen<'p, M> {
             E::DropReuse(v, tok, n, body) => {
                 let x = self.var(b, st, *v);
                 let t = self.drop_reuse(b, st, x, *n);
-                b.def_var(st.vars[*tok as usize], t);
+                st.vars[*tok as usize] = Some(t);
                 self.emit(b, st, body, mode)
             }
             E::Case { scrut, arms, lits, default } => self.case(b, st, *scrut, arms, lits, default.as_deref(), mode),
@@ -1121,7 +1126,7 @@ impl<'p, M: Module> Gen<'p, M> {
                 for (k, f) in a.fields.iter().enumerate() {
                     if let Some(v) = f {
                         let fv = b.ins().load(I64, flags(), x, (w::HDR + 8 * k) as i32);
-                        b.def_var(st.vars[*v as usize], fv);
+                        st.vars[*v as usize] = Some(fv);
                     }
                 }
                 self.emit(b, st, &a.body, mode.again());
