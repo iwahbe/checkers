@@ -237,6 +237,8 @@ Tried in order; first success wins:
 
 On failure (D48), the error shows the obligation, the facts in scope, and Z3's counterexample when one exists.
 
+**The query corpus (proposed).** With the environment variable `CHECKERS_SMT_CORPUS` set to a directory, `ckc` writes every query it asks Z3 there: every step of the ladder above that was tried, the queries that guess a measure (§5.3), those that ask whether a definition's recursion ends without its preconditions (§7.3), and those that ask whether a branch can run (W022), each as Z3 was given it, with the work limit it was asked with. A query asked while proving module `M` is `M/H.smt2`, where `H` is its hash in the trust ledger (16 hexadecimal digits, from its text alone); Z3's output is `M/H.z3`, after a first line `;; work N` with the work Z3 used (`;; work cut off by the wall clock` if Z3 was stopped by the wall clock instead, an answer that depends on the machine). `z3-version` names the Z3 that answered. Nothing else is in a name, so checking the same files with the same Z3 writes the same files, whatever the order the queries are asked in. While it is set, Z3's answers are not taken from the cache, and modules verified before are verified again. A file that is already there with other contents is reported on standard error (`corpus: …`) and left as it was. `scripts/corpus.sh DIR` writes the corpus of `examples/`, `tools/checkers.ck` and `tests/{types,run,stress}`, and prints how many distinct queries and Z3 calls it holds.
+
 ### 7.3 SMT fragment (v0.1)
 Decidable fragment, following Liquid Haskell: quantifier-free linear integer arithmetic, booleans, equality, datatypes, arrays and uninterpreted functions. Mapping:
 
@@ -887,6 +889,7 @@ Reordered (D25) so that Checkers can run CLI tools before the prover exists.
   - `tests/check/`: parse and lint diagnostics only.
   - `tests/types/`: the full report, including type checking and proofs. These are the checker's contract: one file per rule area (mismatches, exhaustiveness, termination, usage, positivity, effects, modules, resources, `own`, proofs), with an accepted-programs file that must stay clean.
   - The prover tests need Z3 (D46).
+  - `tests/corpus/`: the queries `ckc` writes with `CHECKERS_SMT_CORPUS` (§7.2) for the program's own module, with Z3's answers. **(proposed)**
 - A report from Ian is "found X, expected Y" with a `.ck` snippet. It is added as a failing golden test first, then fixed. If Y changes the language, this spec is updated before the code.
 - **Past errors (D122).** Every declaration the parser recovers is type-checked; a function whose body fails to parse keeps its header, so its uses see its signature. A declaration has errors if one of its diagnostics is an error. Set aside, and not reported: the obligations inside a declaration with errors, the obligations and `check`s that mention one (or a definition or type using one, transitively), and the `check`s written with errors. Everything else is proven and run. A program with errors is still never run or built.
 - `UPDATE_GOLDEN=1 cargo test` rewrites `.out` files; every rewritten file is reviewed in the diff before committing.
