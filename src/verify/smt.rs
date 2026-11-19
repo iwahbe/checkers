@@ -1006,8 +1006,14 @@ impl<'a> Builder<'a> {
                 let tyt = quote(&self.e.g, lvl, &ty);
                 let s = self.sort_of(&env, &tyt)?;
                 self.consts.push(format!("(declare-const {name} {})", s.render(self.e)));
-                self.fun_tys.insert(name.clone(), (lvl, tyt));
-                self.fun_axiom(&name, lvl);
+                // Its refinements may mention later locals (#102): its
+                // specification is over all of them.
+                let (at, spec) = match &l.refined {
+                    Some(r) => (self.ctx_src.len(), quote(&self.e.g, self.ctx_src.len(), r)),
+                    None => (lvl, tyt),
+                };
+                self.fun_tys.insert(name.clone(), (at, spec));
+                self.fun_axiom(&name, at);
                 Ent::Term(name.clone(), s)
             }
             _ => {
@@ -1188,16 +1194,35 @@ impl<'a> Builder<'a> {
         let Some(preds) = self.e.alias_preds.get(d).cloned() else { return Vec::new() };
         let mut inner = Vec::new();
         for a in &args {
+            // A type the alias captured (`a` of `(x~a, contains xs x)`, at
+            // `a` = `Nat` or a type variable) isn't a term: its sort, for the
+            // predicates' type arguments.
             inner.push(match self.sort_of(env, a) {
                 Ok(s) if self.is_type(a) => Ent::Ty(s),
-                _ => match self.term(env, a) {
+                sort => match self.term(env, a) {
                     Ok((t, s)) => Ent::Term(t, s),
-                    Err(_) => Ent::Opaque("alias argument".into()),
+                    Err(_) => match sort {
+                        Ok(s) => Ent::Ty(s),
+                        Err(_) => Ent::Opaque("alias argument".into()),
+                    },
                 },
             });
         }
-        inner.push(Ent::Term(x.to_string(), xs.clone()));
+        // The base may be refined too: `(x~a, contains xs x)` at `a` = `Char`.
         let mut out = Vec::new();
+        let mut base = self.e.g.defs[d.0 as usize].body.clone();
+        for _ in &args {
+            base = match base {
+                Some(Tm::Lam(_, _, _, b)) => Some((*b).clone()),
+                _ => None,
+            };
+        }
+        match base {
+            Some(Tm::Var(i)) if i < args.len() => out.extend(self.alias_terms(env, &args[args.len() - 1 - i], x, xs)),
+            Some(b) if matches!(b.head(), Tm::Def(_)) => out.extend(self.alias_terms(&inner, &b, x, xs)),
+            _ => {}
+        }
+        inner.push(Ent::Term(x.to_string(), xs.clone()));
         for p in preds {
             if let Ok((t, Sort::Bool)) = self.term(&inner, &p.tm) {
                 out.push(t);

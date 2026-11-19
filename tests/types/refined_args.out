@@ -34,7 +34,8 @@ error[E0450]: cannot prove that `x + 1` is a `Small` (`(x + 1) < 10`)
    |
 24 |     list.map (\x -> x + 1) xs                   # error: x + 1 < 10, counterexample x = 9
    |                     ^^^^^ this must be a `Small`
-   = note: counterexample: x = 9
+   = note: facts in scope: `contains xs x`
+   = note: counterexample: xs = [9], x = 9
    = help: make it true first, e.g. with an `if`, or start from a value that is already a `Small`
 
 error[E0450]: cannot prove that `h` can be called here

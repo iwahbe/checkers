@@ -1,0 +1,8 @@
+error[E0301]: cannot show that `by_unpromised` terminates: no argument gets structurally smaller in this recursive call
+  --> termination_containers.ck:54:22
+   |
+54 |         One kid   -> by_unpromised kid
+   |                      ^^^^^^^^^^^^^ recursive call
+   = help: recurse on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of `by_unpromised`, or mark it `partial`
+
+termination_containers.ck: 1 error, 0 warnings

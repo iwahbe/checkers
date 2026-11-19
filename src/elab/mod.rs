@@ -94,6 +94,10 @@ pub struct Local {
     pub comptime: bool,
     /// Where its name is bound, if known (for the index, §15.5).
     pub span: Option<Span>,
+    /// A parameter whose refinements mention later parameters (#102): its
+    /// type with them, which a use of it has. `ty` is the type without
+    /// them, over the locals before it, as every local's type is.
+    pub refined: Option<Val>,
 }
 
 #[derive(Clone, Default)]
@@ -115,19 +119,24 @@ impl Cx {
     pub fn env(&self) -> Env {
         self.env.clone()
     }
+    /// The type a use of local `l` has: with the refinements that mention
+    /// later parameters, for such a parameter (#102).
+    pub fn ty_of(&self, l: usize) -> Val {
+        self.locals[l].refined.clone().unwrap_or_else(|| self.locals[l].ty.clone())
+    }
     pub fn names(&self) -> Vec<Name> {
         self.locals.iter().map(|l| l.name.clone()).collect()
     }
     pub fn bind(&mut self, name: &str, ty: Val, mult: Mult) -> usize {
         let l = self.lvl();
         Rc::make_mut(&mut self.env).push(Val::var(l));
-        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: true, param: None, sub: None, comptime: false, span: None });
+        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: true, param: None, sub: None, comptime: false, span: None, refined: None });
         l
     }
     pub fn define(&mut self, name: &str, ty: Val, val: Val, mult: Mult) -> usize {
         let l = self.lvl();
         Rc::make_mut(&mut self.env).push(val);
-        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: false, param: None, sub: None, comptime: false, span: None });
+        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: false, param: None, sub: None, comptime: false, span: None, refined: None });
         l
     }
     pub fn pop(&mut self) {
@@ -263,6 +272,8 @@ pub struct ObLocal {
     pub ty: Val,
     /// The value of a `let`-bound local.
     pub def: Option<Val>,
+    /// Its type with refinements that mention later locals (#102).
+    pub refined: Option<Val>,
 }
 
 /// `Γ ⊢ goal` (§7.1). Values are level-based over `ctx`.
@@ -320,6 +331,25 @@ pub struct Spec {
     pub ensures: Option<Pred>,
     /// `decreasing e` / `decreasing (a, b)`: components over the binders, and the text.
     pub measure: Option<(Vec<Tm>, String)>,
+    /// Parameters whose refinements mention later parameters (#102).
+    pub late: Vec<Late>,
+    /// `(k, j)`: explicit parameter `k` is a function that the function
+    /// promises to call only with elements of explicit parameter `j`, a list
+    /// (`k~(x~A -> B, list.contains j x)`; termination reads it, #102).
+    pub elems: Vec<(usize, usize)>,
+}
+
+/// A parameter whose type's refinements mention later parameters (#102).
+#[derive(Clone, Debug)]
+pub struct Late {
+    /// Its binder (implicit ones counted).
+    pub binder: usize,
+    /// Its refined type, over all the binders (not the result).
+    pub ty: Tm,
+    /// The later binders the refinements mention.
+    pub deps: Vec<usize>,
+    /// The number of binders `ty` is over.
+    pub n: usize,
 }
 
 /// The postconditions to check at each value the current function returns.
@@ -1537,6 +1567,7 @@ impl Elab {
             .map(|l| ObLocal {
                 name: cx.locals[l].name.clone(),
                 ty: cx.locals[l].ty.clone(),
+                refined: cx.locals[l].refined.clone(),
                 def: if cx.locals[l].bound { None } else { Some(cx.env[l].clone()) },
             })
             .collect();

@@ -171,6 +171,20 @@ check apply (\x -> x - 5) 6 == 1
 
 Calling such a function obliges its preconditions, and gives its postconditions as facts about the result. Passing a function where a refined function type is expected obliges two things, both proved by the compiler: the expected precondition implies the function's own, and the function's postcondition (given the expected precondition) implies the expected one.
 
+**Later parameters.** A predicate in a parameter's type may mention any of the function's parameters, also those given after it. Only the predicates may: the rest of the type may mention only earlier parameters. At a call, the arguments it mentions are checked first, and then this one with their values put in.
+
+```checkers
+fn under f n -> r : f~(i~Int -> Int, i < n), n~Int, r~Int
+    if 0 < n then f 0 else 0
+
+fn small i -> r : i~Int, i < 3, r~Int
+    i
+
+check under small 3 == 0
+```
+
+Here `under` may call `f` only below `n`, and so `small`, which needs an argument below 3, may be passed with `n` = 3. Applied to `f` alone, `under small` asks more: without `n`, `f` must accept every `Int`. `list.map` and `list.all` promise this way that they call their function only with elements of the list: `f~(x~a -> b, contains xs x)`.
+
 **Partial application.** Applying a function to some of its arguments gives a function of the rest, whose preconditions and postconditions are the original's with the given arguments filled in. So `at_least 5`, for `fn at_least k x : x >= k, …`, can be passed wherever a function on numbers of at least 5 is expected.
 
 ## Refinements
