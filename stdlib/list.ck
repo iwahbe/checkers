@@ -9,14 +9,16 @@ export transparent fn length xs -> n : xs~List a, n~Nat
         []        -> 0
         _ :: rest -> 1 + length rest
 
-# `f` applied to each element, in order.
-export transparent fn map f xs -> ys : f~(a -> b), xs~List a, ys~List b
+# `f` applied to each element, in order. `f` is called only with elements
+# of `xs`, so it may assume `contains xs x`.
+export transparent fn map f xs -> ys : f~(x~a -> b, contains xs x), xs~List a, ys~List b
     match xs
         []        -> []
         x :: rest -> f x :: map f rest
 
-# Whether `p` holds for every element (`True` for an empty list).
-export fn all p xs -> r : p~(a -> Bool), xs~List a, r~Bool
+# Whether `p` holds for every element (`True` for an empty list). `p` is
+# called only with elements of `xs`, so it may assume `contains xs x`.
+export fn all p xs -> r : p~(x~a -> Bool, contains xs x), xs~List a, r~Bool
     match xs
         []        -> True
         x :: rest -> p x and all p rest

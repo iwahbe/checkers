@@ -175,7 +175,25 @@ All code that may appear in types or proofs must be **total**:
 - **Guessed measures (D150):** with no `decreasing`, a function whose recursion isn't structural gets a measure guessed from its parameters' sizes and the distances its guards bound (`i < len src` gives `len src - i`), alone or in pairs, and checked by the prover; E0301 names those tried if none works.
 - **Surface form:** `decreasing e` on the first line of a function body gives the measure. `e` is a `nat` or a tuple of `nat`s, compared lexicographically. Mutually recursive functions share one measure space; each call must strictly decrease it (worked example: `value`/`array`/`elements` in `stdlib/json.ck`).
 - **Lemmas (#76, #104).** A lemma that uses itself (`have l …` in its proof) is a proof by induction and must terminate the same way: structurally, by a measure written as `decreasing e` on the first line of its `proof` (the measure is part of the proof; it may use the lemma's `let`s), or by one guessed as for a function. At each recursive `have`, the measure at its arguments must be smaller, given the facts there. An induction on a position (`decreasing len src - i`) follows a parser's own recursion. An instance's lemma gives its measure the same way, in its proof; a class's lemma, a statement only, has none.
-- **Recursion through containers** (`map depth items` where `items` is a field of the value being recursed on) is accepted as structural. The elaborator inserts the membership proof, as Lean's `List.attach` does by hand.
+- **Recursion through containers (#102).** A function value passed to a callee counts as called only with strict parts of the caller's parameter when the callee calls its function argument only with strict parts of another argument, and that argument is a parameter of the function being checked or a strict part of one. Where the callee's body is visible, as for anything else (§6: the same module, or exported `transparent`), its body shows it; across a module boundary, from a sealed function, only its signature does, so changing a sealed body never breaks an importer.
+  - **From a body.** Explicit parameter `p` of `f` is called only with strict parts of parameter `e` when every use of `p` in `f`'s body that can run (not in a specification or proof) is either a call whose first argument is a strict part of `e` (a variable bound by matching on `e`), or `p` passed whole as an argument to a function that promises it in turn, with `e` or a strict part of it as the argument it promises about. Any other use (returned, stored, passed to a local function, called with anything else) promises nothing. Functions may pass their parameters to themselves or each other: the promises are the largest set that holds together. A parameter never used is never called, so it promises everything.
+  - **From a signature.** A parameter of type `(x~A -> …, m … e … x …)` promises it for `e` when `m` is a **membership**: a predicate whose body shows it is `True` only where `x` equals (`==`, which compares structure) a strict part of `e`. A value equal to a part has the same structure, so it is just as small. A body shows it when every way to `True` passes through `y == x` with `y` a strict part of `e` (bound by matching on `e`, or a field of it), or through a membership (itself, recursively, or another) of `x` in `e` or a strict part of it; `False` never does, and anything else breaks it. `m`'s body must be visible, as for proofs (§6): a membership that is sealed doesn't count outside its module. `std.list.contains` is one, and a program's own containers have theirs (`holds t x` over a tree). `std.list`'s `all`, sealed, makes the promise with `contains` (§16.3), and so does `map`; so may a program's own functions. The function making the promise proves it keeps it: each call of its function parameter obliges the predicate there (D84), and passing the parameter on obliges the implication between the two refinements (D85).
+  - **The function value** may be a bare name (`list.all walk kids`: the call `walk x`), a partial application (`list.map (by k) kids`: `by k x`, its first remaining parameter, D86), or a lambda (its parameter is the strict part).
+  - **When it fails,** E0301 points at the function value passed and its help says why the function it is passed to isn't known to call it only with parts: its body uses the parameter another way; its body is sealed and its signature makes no promise (with an example precondition); its precondition's predicate isn't a membership; or that predicate is sealed.
+
+  ```
+  fn every xs p -> r : xs~List a, p~(a -> Bool), r~Bool
+      match xs
+          []        -> True
+          x :: rest -> p x and every rest p
+
+  fn walk t -> r : t~Tree, r~Bool
+      match t
+          Leaf      -> True
+          Many kids -> list.all walk kids and every kids walk
+  ```
+
+  `list.all` is sealed and promises it in its signature; `every`, in the same module, shows it in its body. An importer of `every` would need it exported `transparent`, or the promise in its signature.
 - Non-terminating code (server loops, actor bodies) is marked `partial` and lives in the `Div` effect (§8). `partial` code may never appear in a type or proof.
 
 ---
@@ -312,6 +330,8 @@ error[E0450]: cannot prove that `at_least 7` can be called here
 ```
 
 **How it is checked.** An inline refinement is an anonymous alias, so D71's machinery applies unchanged: obligations where a value is built, variance through type arguments. What changes is the comparison of two refinements in one position: by implication for any value (D83), proven by Z3, where D71 asked for the same alias. For function types the comparison runs both ways (D85): preconditions contravariantly, postconditions covariantly. All of these are about one value or one argument at a time, so they need no induction.
+
+A function type's precondition may mention a parameter of the enclosing function given after it, as `list.contains xs x` does in `fn all p xs -> r : p~(x~a -> Bool, list.contains xs x), xs~List a, r~Bool` (§9.3, #102). The function promises to call `p` only with elements of `xs`, and callers may pass a function that only accepts those.
 
 **What stays out.** Gaining a refinement through a type argument of an existing value (`List Int` as `List Big`) still needs a proof about every element: still E0262, until the prover supports induction for it (D71). Function types in types (a list of refined functions) follow the same rules through variance.
 
@@ -656,6 +676,13 @@ apat        ::= '_' | lname | literal | Uname
 | free `lname` in a type position, not in scope (`a` in `xs~List a`) | implicit type parameter (D10); a name used as a qualifier (`future` in `future.Future`) is never auto-bound | `{a :0 Type}` |
 
 A constraint is only required where inference fails; `fn is_ws b : b~U8` infers its `Bool` result.
+
+**Refinements may mention later parameters (#102).** A predicate in a parameter's type, at any depth (a function-typed parameter's precondition, an element type's refinement), may mention any parameter of the function, earlier or later: `fn all p xs -> r : p~(x~a -> Bool, list.contains xs x), xs~List a, r~Bool`. Only the predicates may: the rest of the type may mention only earlier parameters (a later one is E0204). The parameter's type without those predicates is its type in the function's core type (§3); with them, it is its type in the body and at a call:
+
+- In the body, the parameter has its full type, so calling `p y` obliges `list.contains xs y` (D84).
+- At a call with every argument the predicates mention, those arguments are checked first, then this one against its full type with them put in (`list.all walk kids` checks `kids`, then `walk` against `(x~Tree -> Bool, list.contains kids x)`). A function argument with no precondition is accepted (D85).
+- At a partial application without one of them (`list.all p`), or where a later parameter's type depends on this one, the argument is checked against its type without the predicates, which asks more of it: it must accept any value of its base type.
+- The function used as a value (D85) has its core type, the parameter's type without the predicates.
 
 | Surface | Core (§3, §5) |
 |---|---|
@@ -1193,7 +1220,7 @@ The standard library is these modules. Its scope is still to be settled (D106); 
 | Module | Layer | Exports | Status |
 |---|---|---|---|
 | `std.prelude` | prelude + builtin | `Type`, `Nat`, `Int`, `String`, `Array`, `Bytes`, `Bool`, `Unit`, `Option`, `Result`, `List`, `U8`…`U64`, `I8`…`I64`, `Char`, `not`; the class `Ord` (`le`, `trans`, `total`, `antisym`), `refl`, instances for `Int`, `Bool`, `String` (by `string_le`, D138), `List`, `Option`; the classes `Add`, `Sub`, `Mul`, `Neg`, `Monoid` (`zero`, `assoc`, `zero_add`, `add_zero`) with instances for `Int` (M24); the class `Functor` (`fmap`, `fmap_id`, `fmap_comp`) with instances for `List`, `Option` (M25) | exists |
-| `std.list` | Checkers | `length`, `map`, `all`, `reverse`, `join`, `keys`, `contains`, `unique`, `count`, `max_of`, `take`, `drop`, `head`, `sorted`, `sorted_as`, `sorted_by`, `perm` (any element type, D138), `sort`, `sort_as`, `sort_by` (stable merge sorts, proved sorted, permutations, of the same length; D138, D147), lemmas (among them `perm_middle`, `map_id`, `map_comp`) (among them `keys_append`, `contains_append`, `contains_reverse`, `unique_split`, D119) | exists; planned: `filter`, `fold`, `find`, `any`, `zip`, `concat`, `index_of` with lemmas |
+| `std.list` | Checkers | `length`, `map`, `all` (both call their function only with elements of the list, §5.3), `reverse`, `join`, `keys`, `contains`, `unique`, `count`, `max_of`, `take`, `drop`, `head`, `sorted`, `sorted_as`, `sorted_by`, `perm` (any element type, D138), `sort`, `sort_as`, `sort_by` (stable merge sorts, proved sorted, permutations, of the same length; D138, D147), lemmas (among them `perm_middle`, `map_id`, `map_comp`) (among them `keys_append`, `contains_append`, `contains_reverse`, `unique_split`, D119) | exists; planned: `filter`, `fold`, `find`, `any`, `zip`, `concat`, `index_of` with lemmas |
 | `std.option`, `std.result` | Checkers | `map`, `and_then`, `or_else`, `with_default`, `is_some` / `is_ok` | planned |
 | `std.bag` | builtin | `Bag a`, `of`, `count`, `sum` (multisets of any element type, for permutation proofs, D47, D138) | exists |
 | `std.map`, `std.set` | Checkers | `Map k +v`, `Set k`: `empty`, `insert`, `remove`, `lookup`, `member`, `size`, `to_list` and their lemmas (`lookup_insert`, …), ordered keys (D15) | planned (§9.5) |

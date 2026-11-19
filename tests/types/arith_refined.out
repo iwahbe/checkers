@@ -12,7 +12,8 @@ error[E0450]: cannot prove that `x + 1` is a `I8` (`(x + 1) < 128`)
    |
 17 |     list.map (\x -> x + 1) xs
    |                     ^^^^^ this must be a `I8`
-   = note: counterexample: x = 127
+   = note: facts in scope: `contains xs x`
+   = note: counterexample: xs = [127], x = 127
    = help: make it true first, e.g. with an `if`, or start from a value that is already a `I8`
 
 arith_refined.ck: 2 errors, 0 warnings

@@ -2,9 +2,9 @@ error[E0450]: cannot prove that `mid 3` can be called here
   --> partial_pre.ck:16:14
    |
 16 |     list.map (mid 3) xs
-   |              ^^^^^^^ `list.map` may call this with any `Nat`
+   |              ^^^^^^^ `list.map` may call this with any `(x~Nat, contains xs x)`
    = note: it needs `3 <= b`
-   = note: counterexample: b = 0
-   = help: pass a function that accepts every `Nat`
+   = note: counterexample: xs = [0], b = 0
+   = help: pass a function that accepts every `(x~Nat, contains xs x)`
 
 partial_pre.ck: 1 error, 0 warnings
