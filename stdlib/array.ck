@@ -139,6 +139,7 @@ lemma join_at xs i j k : xs~Array a, i~Nat, j~Nat, k~Nat, i <= j, j <= k, k <= l
             have slice_at xs i j m
         else
             have slice_at xs j k (m - (j - i))
+            have len (slice xs i j) == j - i
 
 # Two slices side by side make the slice spanning both.
 export lemma slice_join xs i j k : xs~Array a, i~Nat, j~Nat, k~Nat, i <= j, j <= k, k <= len xs
