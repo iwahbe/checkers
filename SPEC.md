@@ -823,7 +823,8 @@ The prelude declares `Ord` (`le`; `trans`, `total`, `antisym`) and the lemma `re
 
 `name: p` names a precondition. `forall x y : x~a, y~a, c1, …, cn` holds of all values of its variables: its clauses are the ones that follow and mention a variable (parenthesize to end it sooner), the last its conclusion. It may appear only in a named precondition or a lemma's `ensures` (E0289), in a positive place: the precondition itself, under `and` or `or`, after `implies`, inside another `forall`'s conclusion (E0289 otherwise).
 
-- **At a call** it is an obligation, proved with fresh values for its variables. A `forall` precondition of the calling function over the same types is given at those values, so a function passes its own hypothesis on.
+- Its variables range over their types wherever the prover proves or uses it: a `Nat` is non-negative and a refinement's predicates hold.
+- **At a call** it is an obligation, proved with fresh values for its variables, which are known to be in their types. A `forall` precondition of the calling function whose variables have the same representation (`Nat`, `Int` and refinements of `Int` share one) is given at those values where they are in its own variables' types, so a function passes its own hypothesis on: one over `Nat` meets one over a refinement of `Nat`, not the other way round.
 - **In the body** it is not given to Z3. `have name a b …` fills in the variables of its `forall`s, left to right, and gives the rest as a fact (E0290 if the count doesn't match).
 - A `forall` precondition guards nothing: a call's postconditions are assumed without it, since it is proved at that call.
 - **A lemma's `ensures`** may be a `forall` (D146). Its `proof` has the variables in scope by name and the premises as facts. `have l a b` with the lemma's arguments brings the `forall` into scope, given at fresh values as a precondition is; `have l a b x y` also fills in its variables.
