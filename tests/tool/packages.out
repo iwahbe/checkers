@@ -1,0 +1,43 @@
+$ checkers check tests/tool/exports_are_roots/main.ck
+-- stdout
+-- stderr
+tests/tool/exports_are_roots/main.ck: 0 errors, 0 warnings; 2 obligations proved
+-- exit 0
+$ checkers check tests/tool/private_unused/main.ck
+-- stdout
+-- stderr
+warning[W020]: function `dead` is never used
+  --> tests/tool/private_unused/lib.ck:12:4
+   |
+12 | fn dead n -> r : n~Nat, r~Nat
+   |    ^^^^ nothing `main` or an export reaches uses it
+   = help: remove it, or export it if other packages should use it
+
+warning[W020]: function `dead_in_main` is never used
+ --> tests/tool/private_unused/main.ck:7:4
+  |
+7 | fn dead_in_main n -> r : n~Nat, r~Nat
+  |    ^^^^^^^^^^^^ nothing `main` or an export reaches uses it
+  = help: remove it, or export it if other packages should use it
+
+tests/tool/private_unused/main.ck: 0 errors, 2 warnings
+-- exit 0
+$ checkers check tests/tool/no_manifest/main.ck
+-- stdout
+-- stderr
+warning[W020]: function `offered` is never used
+ --> tests/tool/no_manifest/lib.ck:8:11
+  |
+8 | export fn offered n -> r : n~Nat, r~Nat
+  |           ^^^^^^^ nothing `main` reaches uses it
+  = help: remove it
+
+warning[W020]: function `also_offered` is never used
+ --> tests/tool/no_manifest/main.ck:7:11
+  |
+7 | export fn also_offered n -> r : n~Nat, r~Nat
+  |           ^^^^^^^^^^^^ nothing `main` reaches uses it
+  = help: remove it
+
+tests/tool/no_manifest/main.ck: 0 errors, 2 warnings; 2 obligations proved
+-- exit 0

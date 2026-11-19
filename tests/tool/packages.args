@@ -1,0 +1,3 @@
+check tests/tool/exports_are_roots/main.ck
+check tests/tool/private_unused/main.ck
+check tests/tool/no_manifest/main.ck

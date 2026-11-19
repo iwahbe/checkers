@@ -774,7 +774,9 @@ fn elaborate(name: &str, text: &str, dir: &std::path::Path) -> (Checked, Option<
     if c.errors() == 0 {
         let mut own: Vec<String> = e.user_modules.iter().filter(|m| e.package_of(m) == ".").cloned().collect();
         own.push(user.clone());
-        let u = e.unused(&user, &own);
+        // In a package with a manifest, its exports are roots too (§16.4).
+        let package = e.base_dir.as_ref().is_some_and(|d| d.join("checkers.json").is_file());
+        let u = e.unused(&user, &own, package);
         for (m, d) in u.warnings {
             route(&mut c, &e, &user, &m, d);
         }

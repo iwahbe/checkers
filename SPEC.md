@@ -746,7 +746,7 @@ Other warnings:
 | W033 | a `compile_fail` block that compiles, or fails with another error than it names (D148 d) |
 | W034 | a code block whose `main` doesn't exit with `Success` (`checkers doc` and `checkers site`, D148 d) |
 
-Used means reached, through any reference, from the roots: `main` in a program, the exports in a library (no `main`), every declaration of a module with neither, and in all three every `check`, lemma and instance (D144). The standard library and dependencies are not reported, and none of these is reported while there is an error in the names and types phase (a name that failed to resolve would look unused).
+Used means reached, through any reference, from the roots: `main` in a program, the exports in a library (no `main`), every declaration of a module with neither, and in all three every `check`, lemma and instance (D144). In a package with a `checkers.json` (§16.4), the exports of every module are roots too, with `main` when checking a program: they are what the package offers other packages, whether or not its own program uses them (#95). Its declarations that aren't exported are still reported when nothing reaches them. A program without a manifest is unchanged. The standard library and dependencies are not reported, and none of these is reported while there is an error in the names and types phase (a name that failed to resolve would look unused).
 
 ### 9.8 Classes and instances (D136, M23–M25)
 
@@ -1250,5 +1250,7 @@ An unknown field, a missing required one, or a malformed value is an error with 
 Minimal version selection: if this package needs `json_schema ≥ 1.2.0` and another dependency needs `≥ 1.4.0`, the build uses 1.4.0, even if 1.9.0 exists ("the highest required versions … are the minimum versions that satisfy all requirements", [Go modules reference](https://go.dev/ref/mod)). Lean's Lake records git dependencies the same way, with a revision per dependency in `lake-manifest.json` ([Lake reference](https://lean-lang.org/doc/reference/4.34.0/Build-Tools-and-Distribution/Lake/)).
 
 `checkers build` in a package: read `checkers.json`, resolve and fetch the dependencies, write `checkers.lock`, then run `ckc build --package json_schema=~/.cache/checkers/packages/json_schema/3f2a9c… --package shared=../shared --uses .=json_schema,shared … main.ck` (D111).
+
+`ckc` knows the checked file is in a package with a manifest by `checkers.json` in the directory its module names are relative to (`main.ck`'s directory for `main.ck`, the parent of `a/` for `a/b.ck`), whether `checkers` runs it or it is run by hand; there, every module's exports are roots of the unused-code warnings (§9.7, #95).
 
 Inside `json_schema`, its own modules are `validate`, `schema`, …; to this package they are `json_schema.validate`, `json_schema.schema`, and it can import only what its own manifest names (D111).
