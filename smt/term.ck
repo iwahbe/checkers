@@ -78,6 +78,7 @@ export record FunDecl
 export enum Op
     Not
     And
+    Or
     Implies
     Ite
     Eq
@@ -311,6 +312,7 @@ fn prim_sort op found -> r : op~Op, found~List Sort, r~Option Sort
     match op
         Not        -> if found == [Bool] then Some Bool else None
         And        -> if list.length found >= 2 and list.all (\s -> s == Bool) found then Some Bool else None
+        Or         -> if list.length found >= 2 and list.all (\s -> s == Bool) found then Some Bool else None
         Implies    -> if found == [Bool, Bool] then Some Bool else None
         Ite        ->
             match found

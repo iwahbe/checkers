@@ -21,7 +21,7 @@
 (assert (= |xs#1| ((as |Cons| (|List| |a#0|)) (|Cons.0| |xs#1|) (as |Nil| (|List| |a#0|)))))
 (assert (and (< (seq.len |s#2|) 10) (<= 0 (seq.nth |s#2| 0)) (> (div (seq.len |s#2|) 2) (- 1))))
 (assert (= (seq.++ (seq.unit 104) (seq.unit 105) |s#2|) (seq.extract |s#2| 0 (mod 7 (* 2 3)))))
-(assert (=> (= |s#2| (as seq.empty (Seq Int))) (not (|even| 3))))
+(assert (=> (= |s#2| (as seq.empty (Seq Int))) (or (not (|even| 3)) (|odd| 3))))
 (assert (= ((_ map (+ (Int Int) Int)) (|count| |xs#1|) (|count| |xs#1|)) (|count| |xs#1|)))
 (assert (= (select (select |g#3| 1) 2) (select (lambda ((x Int)) (+ x (|f| x |s#2|))) 3)))
 (assert (= |t#4| ((as |Node| |Tree|) (as |Empty| |Forest|))))

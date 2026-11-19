@@ -1,4 +1,4 @@
 (set-logic ALL)
 (declare-const x Int)
-(assert (not (or (= x 1) (= x 2))))
+(assert (not (distinct x 1 2)))
 (check-sat)

@@ -16,7 +16,7 @@ import std.bytes
 import std.list
 import term (Name, Sort, Bool, Int, Seq, Arr, Data, Unin, Param, SortDecl, Field, Ctor, Datatype)
 import term (FunKind, Declared, Constant, Defined, FunDecl)
-import term (Op, Not, And, Implies, Ite, Eq, Add, Sub, Neg, Mul, Div, Mod, Lt, Le, Gt, Ge, Select, Store, MapAdd)
+import term (Op, Not, And, Or, Implies, Ite, Eq, Add, Sub, Neg, Mul, Div, Mod, Lt, Le, Gt, Ge, Select, Store, MapAdd)
 import term (SeqLen, SeqNth, SeqUnit, SeqConcat, SeqExtract)
 import term (Head, Fun, Con, Is, Sel, Num, Boolean, Prim, ConstArr, EmptySeq, Term, Var, App, Let, Lam)
 import term (Def, Axiom, Command, DeclareSort, DeclareDatatypes, DeclareFun, DefineFuns, Assume, Assert)
@@ -281,6 +281,7 @@ export fn op_text op -> r : op~Op, r~Bytes
     match op
         Not        -> b"not"
         And        -> b"and"
+        Or         -> b"or"
         Implies    -> b"=>"
         Ite        -> b"ite"
         Eq         -> b"="
@@ -305,7 +306,7 @@ export fn op_text op -> r : op~Op, r~Bytes
 
 # The operations a name alone can denote (`Neg` is `-` with one argument;
 # `MapAdd` is written `(_ map …)`).
-let NAMED = [Eq, Not, And, Implies, Ite, Add, Sub, Mul, Div, Mod, Lt, Le, Gt, Ge, Select, Store, SeqLen, SeqNth,
+let NAMED = [Eq, Not, And, Or, Implies, Ite, Add, Sub, Mul, Div, Mod, Lt, Le, Gt, Ge, Select, Store, SeqLen, SeqNth,
              SeqUnit, SeqConcat, SeqExtract]
 
 fn find_prim ops name -> r : ops~List Op, name~Name, r~Option Op
@@ -319,7 +320,7 @@ fn prim_op name n -> r : name~Name, n~Nat, r~Option Op
 
 # Names SMT-LIB or Z3 define that the subset leaves out.
 fn outside name -> r : name~Name, r~Bool
-    name == b"or" or name == b"xor" or name == b"distinct" or name == b"exists" or name == b"abs"
+    name == b"xor" or name == b"distinct" or name == b"exists" or name == b"abs"
         or name == b"/" or name == b"to_real" or name == b"to_int" or name == b"match"
         or name == b"define-fun" or name == b"declare-datatype" or name == b"push" or name == b"pop"
         or name == b"check-sat-assuming" or name == b"get-model" or name == b"exit"
