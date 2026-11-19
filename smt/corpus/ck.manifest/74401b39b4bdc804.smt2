@@ -1,0 +1,8 @@
+(set-option :produce-models true)
+(set-option :rlimit 200000)
+(set-option :timeout 60000)
+(set-logic ALL)
+(declare-fun |ck.manifest.name_from#outside| ((Seq Int) Int) Bool)
+(define-funs-rec ((|std.prelude.not| ((p0 Bool)) Bool) (|ck.manifest.name_byte| ((p0 Int) (p1 Bool)) Bool) (|ck.manifest.name_from| ((p0 (Seq Int)) (p1 Int)) Bool) (|ck.manifest.valid_name| ((p0 (Seq Int))) Bool)) ((ite (not p0) true false) (ite (not (ite (not (>= p0 97)) false (<= p0 122))) (ite (not (|std.prelude.not| p1)) false (ite (not (ite (not (>= p0 48)) false (<= p0 57))) (= p0 95) true)) true) (ite (>= p1 0) (ite (not (>= p1 (seq.len p0))) (ite (not (|ck.manifest.name_byte| (seq.nth p0 p1) (= p1 0))) false (|ck.manifest.name_from| p0 (+ p1 1))) true) (|ck.manifest.name_from#outside| p0 p1)) (ite (not (> (seq.len p0) 0)) false (|ck.manifest.name_from| p0 0))))
+(assert (not (|ck.manifest.valid_name| (seq.++ (seq.unit 115) (seq.unit 116) (seq.unit 100)))))
+(check-sat)

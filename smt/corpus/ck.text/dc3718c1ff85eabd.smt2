@@ -1,0 +1,13 @@
+(set-option :produce-models true)
+(set-option :rlimit 200000)
+(set-option :timeout 60000)
+(set-logic ALL)
+(declare-datatypes ((|std.prelude.Option| 1)) ((par (T0) ((|std.prelude.None|) (|std.prelude.Some| (|std.prelude.Some.0| |T0|))))))
+(declare-fun |std.string.from_utf8| ((Seq Int)) (|std.prelude.Option| (Seq Int)))
+(declare-const |b#0| (Seq Int))
+(declare-const |$x#2| (Seq Int))
+(assert (= (|std.string.from_utf8| |b#0|) ((as |std.prelude.Some| (|std.prelude.Option| (Seq Int))) |$x#2|)))
+(assert (not false))
+(check-sat)
+(get-value (|b#0|))
+;; reachable?

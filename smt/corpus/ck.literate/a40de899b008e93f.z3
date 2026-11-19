@@ -1,0 +1,7 @@
+;; work 580
+sat
+((|bs#1| (std.prelude.Cons (std.markdown.Bullets
+                    false
+                    (as std.prelude.Nil (std.prelude.List std.markdown.Item))
+                    (std.markdown.Span 0 7719))
+                  (as std.prelude.Nil (std.prelude.List std.markdown.Block)))))

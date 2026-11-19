@@ -1,0 +1,13 @@
+(set-option :produce-models true)
+(set-option :rlimit 200000)
+(set-option :timeout 60000)
+(set-logic ALL)
+(declare-datatypes ((|std.prelude.Option| 1)) ((par (T0) ((|std.prelude.None|) (|std.prelude.Some| (|std.prelude.Some.0| |T0|))))))
+(declare-fun |ck.literate.find| ((Seq Int) (Seq Int) Int) (|std.prelude.Option| Int))
+(declare-fun |ck.literate.starts| ((Seq Int) (Seq Int)) Bool)
+(declare-const |url#0| (Seq Int))
+(assert (= (ite (not (not (= (|ck.literate.find| |url#0| (seq.++ (seq.unit 58) (seq.unit 47) (seq.unit 47)) 0) (as |std.prelude.None| (|std.prelude.Option| Int))))) (ite (not (|ck.literate.starts| |url#0| (seq.++ (seq.unit 109) (seq.unit 97) (seq.unit 105) (seq.unit 108) (seq.unit 116) (seq.unit 111) (seq.unit 58)))) (|ck.literate.starts| |url#0| (seq.unit 35)) true) true) true))
+(assert (not false))
+(check-sat)
+(get-value (|url#0|))
+;; reachable?

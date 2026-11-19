@@ -1,0 +1,7 @@
+(set-option :produce-models true)
+(set-option :rlimit 200000)
+(set-option :timeout 60000)
+(set-logic ALL)
+(declare-fun |std.string.from_char| (Int) (Seq Int))
+(assert (not (<= 1 (seq.len (seq.++ (seq.++ (seq.unit 120) (|std.string.from_char| 8364)) (seq.unit 128))))))
+(check-sat)
