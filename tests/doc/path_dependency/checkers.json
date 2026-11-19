@@ -1,0 +1,1 @@
+{ "name": "uses_path", "version": "0.1.0", "toolchain": "0.1.0", "dependencies": { "geometry": { "path": "../named" } } }
