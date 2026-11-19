@@ -17,6 +17,6 @@ error[E0301]: cannot show that `by_sealed` terminates: no argument gets structur
    |
 41 |         Node kids -> each.each_sealed kids by_sealed
    |                                            ^^^^^^^^^ recursive call
-   = help: `each.each_sealed` isn't known to call `by_sealed` only with parts of `kids`: `sealed_holds`, in its precondition on `p`, is sealed, so it can't be seen to be a membership; export it `transparent`
+   = help: `each.each_sealed` isn't known to call `by_sealed` only with parts of `kids`: `sealed_holds`, in its precondition on `p`, is sealed, so it can't be seen to be a membership
 
 termination_across_modules.ck: 3 errors, 0 warnings

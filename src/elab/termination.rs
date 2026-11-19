@@ -36,13 +36,31 @@ impl Elab {
             return;
         }
         let total = |m: Option<&FnMeta>| m.is_some_and(|m| !m.partial && !m.decreasing);
-        if !total(self.fn_meta.get(&caller)) || !total(self.fn_meta.get(&callee)) || *self.g.defs[callee.0 as usize].module != *self.cur {
+        if !total(self.fn_meta.get(&caller))
+            || !total(self.fn_meta.get(&callee))
+            || *self.g.defs[callee.0 as usize].module != *self.cur
+        {
             return;
         }
         let args: Vec<Val> = args.iter().map(|a| self.eval(cx, a)).collect();
         let name = self.g.defs[caller.0 as usize].name.to_string();
-        let ob = self.obligation(cx, span, ObKind::Measure { func: name, measure: String::new() }, String::new(), Val::Error, None);
-        self.rec_calls.push(RecCall { caller, callee, args, ob });
+        let ob = self.obligation(
+            cx,
+            span,
+            ObKind::Measure {
+                func: name,
+                measure: String::new(),
+            },
+            String::new(),
+            Val::Error,
+            None,
+        );
+        self.rec_calls.push(RecCall {
+            caller,
+            callee,
+            args,
+            ob,
+        });
     }
 
     /// The promises the module's function bodies make (#102): explicit
@@ -70,7 +88,8 @@ impl Elab {
                 .copied()
                 .filter(|&(f, k, j)| {
                     let us = uses.get(&(f, k)).unwrap_or(&empty);
-                    !us.iter().all(|u| u.iter().any(|&(p, c)| p == j && self.cond_holds(c, &held)))
+                    !us.iter()
+                        .all(|u| u.iter().any(|&(p, c)| p == j && self.cond_holds(c, &held)))
                 })
                 .collect();
             if failed.is_empty() {
@@ -81,7 +100,11 @@ impl Elab {
             }
         }
         for f in &fns {
-            let mut ps: Vec<(usize, usize)> = held.iter().filter(|x| x.0 == *f).map(|x| (x.1, x.2)).collect();
+            let mut ps: Vec<(usize, usize)> = held
+                .iter()
+                .filter(|x| x.0 == *f)
+                .map(|x| (x.1, x.2))
+                .collect();
             ps.sort();
             self.body_elems.insert(*f, ps);
         }
@@ -96,11 +119,16 @@ impl Elab {
         let Some(c) = c else { return true };
         self.elem_conds[c as usize].iter().any(|&(d, k, j)| {
             self.specs.get(&d).is_some_and(|s| {
-                s.elems.iter().any(|e| e.k == k && e.j == j && self.memberships.get(&(e.pred, e.c, e.s)) == Some(&true))
+                s.elems.iter().any(|e| {
+                    e.k == k && e.j == j && self.memberships.get(&(e.pred, e.c, e.s)) == Some(&true)
+                })
             }) || held.contains(&(d, k, j))
                 || (*self.g.defs[d.0 as usize].module != *self.cur
                     && self.transparent.contains(&d)
-                    && self.body_elems.get(&d).is_some_and(|ps| ps.contains(&(k, j))))
+                    && self
+                        .body_elems
+                        .get(&d)
+                        .is_some_and(|ps| ps.contains(&(k, j))))
         })
     }
 
@@ -110,10 +138,24 @@ impl Elab {
         let (head, arg, j) = self.elem_cond_at.get(&cond)?;
         let &(d, k, _) = self.elem_conds[cond as usize].first()?;
         let j = *j;
-        let rec = self.fn_meta.get(&rec).map(|m| m.name.clone()).unwrap_or_default();
-        let params = self.fn_meta.get(&d).map(|m| m.params.clone()).unwrap_or_default();
-        let (pk, pj) = (params.get(k).map(|p| p.0.clone())?, params.get(j).map(|p| p.0.clone())?);
-        let promise = self.specs.get(&d).and_then(|s| s.elems.iter().find(|e| e.k == k && e.j == j).copied());
+        let rec = self
+            .fn_meta
+            .get(&rec)
+            .map(|m| m.name.clone())
+            .unwrap_or_default();
+        let params = self
+            .fn_meta
+            .get(&d)
+            .map(|m| m.params.clone())
+            .unwrap_or_default();
+        let (pk, pj) = (
+            params.get(k).map(|p| p.0.clone())?,
+            params.get(j).map(|p| p.0.clone())?,
+        );
+        let promise = self
+            .specs
+            .get(&d)
+            .and_then(|s| s.elems.iter().find(|e| e.k == k && e.j == j).copied());
         let why = match promise {
             Some(e) => {
                 let pred = self.g.defs[e.pred.0 as usize].name.to_string();
@@ -122,7 +164,7 @@ impl Elab {
                         "`{pred}`, in its precondition on `{pk}`, isn't a membership: it must be true only of something equal to a part of `{pj}`"
                     )
                 } else {
-                    format!("`{pred}`, in its precondition on `{pk}`, is sealed, so it can't be seen to be a membership; export it `transparent`")
+                    format!("`{pred}`, in its precondition on `{pk}`, is sealed, so it can't be seen to be a membership")
                 }
             }
             None if self.body_visible(d) => format!(
@@ -132,7 +174,9 @@ impl Elab {
                 "its body is sealed; its signature can promise it with a precondition on `{pk}` such as `{pk}~(x~a -> b, list.contains {pj} x)`"
             ),
         };
-        Some(format!("`{head}` isn't known to call `{rec}` only with parts of `{arg}`: {why}"))
+        Some(format!(
+            "`{head}` isn't known to call `{rec}` only with parts of `{arg}`: {why}"
+        ))
     }
 
     /// Decide, for each signature promise a condition names, whether its
@@ -143,7 +187,12 @@ impl Elab {
         let mut todo = Vec::new();
         for alts in &self.elem_conds {
             for &(d, k, j) in alts {
-                for e in self.specs.get(&d).map(|s| s.elems.as_slice()).unwrap_or(&[]) {
+                for e in self
+                    .specs
+                    .get(&d)
+                    .map(|s| s.elems.as_slice())
+                    .unwrap_or(&[])
+                {
                     if e.k == k && e.j == j {
                         todo.push((e.pred, e.c, e.s));
                     }
@@ -165,7 +214,11 @@ impl Elab {
     /// visible, as for proofs. A recursive use of a predicate being decided
     /// is assumed to be one: it is total, so this is an induction on its
     /// recursion.
-    fn is_membership(&mut self, key: (DefId, usize, usize), visiting: &mut HashSet<(DefId, usize, usize)>) -> bool {
+    fn is_membership(
+        &mut self,
+        key: (DefId, usize, usize),
+        visiting: &mut HashSet<(DefId, usize, usize)>,
+    ) -> bool {
         if let Some(m) = self.memberships.get(&key) {
             return *m;
         }
@@ -175,7 +228,11 @@ impl Elab {
         let (pred, c, s) = key;
         let info = &self.g.defs[pred.0 as usize];
         let partial = self.fn_meta.get(&pred).is_some_and(|m| m.partial);
-        let Some(body) = info.body.clone().filter(|_| !info.opaque && !partial && self.body_visible(pred)) else {
+        let Some(body) = info
+            .body
+            .clone()
+            .filter(|_| !info.opaque && !partial && self.body_visible(pred))
+        else {
             return false;
         };
         let mut ctx = Vec::new();
@@ -203,7 +260,12 @@ impl Elab {
 
     /// Whether `t`, a `Bool`, is `True` only where the subject equals a
     /// strict part of the container (#102).
-    fn only_if_member(&mut self, t: &Tm, ctx: &mut Vec<Kind>, visiting: &mut HashSet<(DefId, usize, usize)>) -> bool {
+    fn only_if_member(
+        &mut self,
+        t: &Tm,
+        ctx: &mut Vec<Kind>,
+        visiting: &mut HashSet<(DefId, usize, usize)>,
+    ) -> bool {
         let wk = &self.g.well_known;
         let (tc, fc) = (wk.true_con, wk.false_con);
         match t {
@@ -211,7 +273,10 @@ impl Elab {
             Tm::Con(con) => Some(*con) == fc,
             Tm::PrimApp(Prim::Eq, xs) if xs.len() == 2 => {
                 let (a, b) = (kind_of(&xs[0], ctx), kind_of(&xs[1], ctx));
-                matches!((a, b), (Kind::Part, Kind::Subject) | (Kind::Subject, Kind::Part))
+                matches!(
+                    (a, b),
+                    (Kind::Part, Kind::Subject) | (Kind::Subject, Kind::Part)
+                )
             }
             Tm::Let(_, _, _, v, b) => {
                 let k = kind_of(v, ctx);
@@ -239,8 +304,13 @@ impl Elab {
                         return false;
                     }
                 }
-                ct.lits.iter().all(|(_, b)| self.only_if_member(b, ctx, visiting))
-                    && ct.default.as_ref().is_none_or(|b| self.only_if_member(b, ctx, visiting))
+                ct.lits
+                    .iter()
+                    .all(|(_, b)| self.only_if_member(b, ctx, visiting))
+                    && ct
+                        .default
+                        .as_ref()
+                        .is_none_or(|b| self.only_if_member(b, ctx, visiting))
             }
             Tm::App(..) => {
                 let (head, args) = t.spine();
@@ -257,7 +327,9 @@ impl Elab {
                         continue;
                     }
                     for (c2, kc) in expl.iter().enumerate() {
-                        if matches!(kc, Kind::Container | Kind::Part) && self.is_membership((d, c2, s2), visiting) {
+                        if matches!(kc, Kind::Container | Kind::Part)
+                            && self.is_membership((d, c2, s2), visiting)
+                        {
                             return true;
                         }
                     }
@@ -305,7 +377,10 @@ impl Elab {
                 self.err(
                     Diagnostic::error(
                         "E0302",
-                        format!("`{}` is `partial` (it may not terminate), so `{}` cannot call it", callee.name, caller.name),
+                        format!(
+                            "`{}` is `partial` (it may not terminate), so `{}` cannot call it",
+                            callee.name, caller.name
+                        ),
                         c.span,
                     )
                     .with_help(format!("mark `{}` as `partial fn` too", caller.name)),
@@ -319,10 +394,18 @@ impl Elab {
                 continue;
             }
             let members: Vec<DefId> = scc.iter().map(|&i| fns[i]).collect();
-            let metas: Vec<FnMeta> = members.iter().map(|d| self.fn_meta.get(d).cloned().unwrap_or_default()).collect();
+            let metas: Vec<FnMeta> = members
+                .iter()
+                .map(|d| self.fn_meta.get(d).cloned().unwrap_or_default())
+                .collect();
             if metas.iter().all(|m| m.partial || m.decreasing) {
                 // `decreasing` measures are proof obligations at each call in the group (§5.3).
-                let total: Vec<DefId> = members.iter().zip(&metas).filter(|(_, m)| !m.partial).map(|(d, _)| *d).collect();
+                let total: Vec<DefId> = members
+                    .iter()
+                    .zip(&metas)
+                    .filter(|(_, m)| !m.partial)
+                    .map(|(d, _)| *d)
+                    .collect();
                 for (caller, callee, ob) in std::mem::take(&mut self.measure_obs) {
                     if total.contains(&caller) && total.contains(&callee) {
                         self.obligations.push(ob);
@@ -331,9 +414,16 @@ impl Elab {
                     }
                 }
                 // A recursive use that isn't a full call can't have its measure checked.
-                for c in calls.iter().filter(|c| total.contains(&c.caller) && members.contains(&c.callee)) {
+                for c in calls
+                    .iter()
+                    .filter(|c| total.contains(&c.caller) && members.contains(&c.callee))
+                {
                     if !self.saturated_heads.contains(&c.span) {
-                        let name = self.fn_meta.get(&c.callee).map(|m| m.name.clone()).unwrap_or_default();
+                        let name = self
+                            .fn_meta
+                            .get(&c.callee)
+                            .map(|m| m.name.clone())
+                            .unwrap_or_default();
                         self.err(
                             Diagnostic::error(
                                 "E0303",
@@ -356,9 +446,16 @@ impl Elab {
             }
             // Recursion through an instance's dictionary (D136): a use of
             // the class's function at the instance's own type.
-            if let Some(c) = inner.iter().find(|c| self.dict_defs.contains(&c.callee) && !self.dict_defs.contains(&c.caller)) {
+            if let Some(c) = inner
+                .iter()
+                .find(|c| self.dict_defs.contains(&c.callee) && !self.dict_defs.contains(&c.caller))
+            {
                 let inst = self.g.defs[c.callee.0 as usize].name.to_string();
-                let caller = self.fn_meta.get(&c.caller).map(|m| m.name.clone()).unwrap_or_default();
+                let caller = self
+                    .fn_meta
+                    .get(&c.caller)
+                    .map(|m| m.name.clone())
+                    .unwrap_or_default();
                 let own = caller.rsplit('.').next().unwrap_or("").to_string();
                 self.err(
                     Diagnostic::error("E0301", format!("`{caller}` uses `instance {inst}` itself, so it can't be shown to terminate"), c.span)
@@ -378,15 +475,20 @@ impl Elab {
                 let k = members.iter().position(|d| *d == c.caller).unwrap();
                 !metas[k].partial && !metas[k].decreasing
             };
-            let bad =
-                inner.iter().filter(unmarked).find(|c| unkept.contains_key(&c.span)).or_else(|| inner.iter().find(unmarked)).copied();
+            let bad = inner
+                .iter()
+                .filter(unmarked)
+                .find(|c| unkept.contains_key(&c.span))
+                .or_else(|| inner.iter().find(unmarked))
+                .copied();
             if let Some(c) = bad {
                 let k = members.iter().position(|d| *d == c.caller).unwrap();
                 let name = metas[k].name.clone();
                 let msg = if members.len() == 1 {
                     format!("cannot show that `{name}` terminates: no argument gets structurally smaller in this recursive call")
                 } else {
-                    let names: Vec<String> = metas.iter().map(|m| format!("`{}`", m.name)).collect();
+                    let names: Vec<String> =
+                        metas.iter().map(|m| format!("`{}`", m.name)).collect();
                     format!(
                         "cannot show that {} terminate: they call each other, and no argument gets structurally smaller",
                         names.join(", ")
@@ -411,7 +513,11 @@ impl Elab {
                     )
                 };
                 let help = unkept.get(&c.span).cloned().unwrap_or(help);
-                self.err(Diagnostic::error("E0301", msg, c.span).with_label(label).with_help(help));
+                self.err(
+                    Diagnostic::error("E0301", msg, c.span)
+                        .with_label(label)
+                        .with_help(help),
+                );
             }
         }
     }
@@ -421,14 +527,28 @@ impl Elab {
     /// Set up guessing a measure for a recursive group with none written
     /// (D150): every member a total function, every recursive call a full
     /// call, and candidates for each. False if it can't be.
-    fn guess_measure(&mut self, members: &[DefId], metas: &[FnMeta], inner: &[&CallRec], rec_calls: &[RecCall]) -> bool {
+    fn guess_measure(
+        &mut self,
+        members: &[DefId],
+        metas: &[FnMeta],
+        inner: &[&CallRec],
+        rec_calls: &[RecCall],
+    ) -> bool {
         if metas.iter().any(|m| m.partial || m.decreasing) {
             return false;
         }
-        let calls: Vec<RecCall> =
-            rec_calls.iter().filter(|c| members.contains(&c.caller) && members.contains(&c.callee)).cloned().collect();
+        let calls: Vec<RecCall> = rec_calls
+            .iter()
+            .filter(|c| members.contains(&c.caller) && members.contains(&c.callee))
+            .cloned()
+            .collect();
         // Each recursive call must be one we can compare measures at.
-        if inner.iter().any(|c| !calls.iter().any(|r| r.ob.span == c.span || r.ob.span.start <= c.span.start && c.span.end <= r.ob.span.end)) {
+        if inner.iter().any(|c| {
+            !calls.iter().any(|r| {
+                r.ob.span == c.span
+                    || r.ob.span.start <= c.span.start && c.span.end <= r.ob.span.end
+            })
+        }) {
             return false;
         }
         let mut candidates = Vec::new();
@@ -441,7 +561,12 @@ impl Elab {
             candidates.push(cs);
         }
         self.guessed.extend(members.iter().copied());
-        self.guess_groups.push(GuessGroup { module: self.cur.clone(), members: members.to_vec(), candidates, calls });
+        self.guess_groups.push(GuessGroup {
+            module: self.cur.clone(),
+            members: members.to_vec(),
+            candidates,
+            calls,
+        });
         true
     }
 
@@ -449,7 +574,9 @@ impl Elab {
     /// distances the comparisons guarding its recursive calls bound, and
     /// sums of two sizes; each over `d`'s binders.
     fn measure_candidates(&self, d: DefId, calls: &[&RecCall]) -> Vec<Measure> {
-        let Some(spec) = self.specs.get(&d) else { return Vec::new() };
+        let Some(spec) = self.specs.get(&d) else {
+            return Vec::new();
+        };
         let n = spec.n_binders;
         let wk = &self.g.well_known;
         // The binders' names, for the measures' text.
@@ -466,7 +593,9 @@ impl Elab {
             let var = Tm::Var(n - 1 - k);
             if icit == Icit::Expl {
                 match dv {
-                    Val::TyCon(id, _) if Some(id) == wk.int => sizes.push((vec![var], x.to_string())),
+                    Val::TyCon(id, _) if Some(id) == wk.int => {
+                        sizes.push((vec![var], x.to_string()))
+                    }
                     Val::TyCon(id, _) if [wk.list, wk.string, wk.array].contains(&Some(id)) => {
                         sizes.push((vec![Tm::PrimApp(Prim::Len, vec![var])], format!("len {x}")))
                     }
@@ -491,7 +620,10 @@ impl Elab {
                 let mut found = Vec::new();
                 comparisons(&self.g, &t, true, &mut found);
                 for (a, b, strict) in found {
-                    let (Some(a), Some(b)) = (reindex(&a, lvl, n, 0), reindex(&b, lvl, n, 0)) else { continue };
+                    let (Some(a), Some(b)) = (reindex(&a, lvl, n, 0), reindex(&b, lvl, n, 0))
+                    else {
+                        continue;
+                    };
                     // Against zero (`0 <= n`, `x < 0`), the distance is the
                     // other side itself, or its negation.
                     let zero = |t: &Tm| matches!(t, Tm::Lit(Lit::Num(0)));
@@ -517,8 +649,14 @@ impl Elab {
         // Sums of two sizes (a merge's `length xs + length ys`).
         for i in 0..sizes.len() {
             for j in i + 1..sizes.len() {
-                let t = Tm::PrimApp(Prim::Add, vec![sizes[i].0[0].clone(), sizes[j].0[0].clone()]);
-                push((vec![t], format!("{} + {}", sizes[i].1, sizes[j].1)), &mut out);
+                let t = Tm::PrimApp(
+                    Prim::Add,
+                    vec![sizes[i].0[0].clone(), sizes[j].0[0].clone()],
+                );
+                push(
+                    (vec![t], format!("{} + {}", sizes[i].1, sizes[j].1)),
+                    &mut out,
+                );
             }
         }
         out.truncate(10);
@@ -530,9 +668,12 @@ impl Elab {
 /// for `a < b` (strict) or `a <= b`; through `and`, `or` (false), `not`.
 fn comparisons(g: &Globals, t: &Tm, pol: bool, out: &mut Vec<(Tm, Tm, bool)>) {
     let wk = &g.well_known;
-    let is_con = |t: &Tm, c: Option<ConId>| matches!(t, Tm::ConApp(k, a) if Some(*k) == c && a.is_empty());
+    let is_con =
+        |t: &Tm, c: Option<ConId>| matches!(t, Tm::ConApp(k, a) if Some(*k) == c && a.is_empty());
     match t {
-        Tm::PrimApp(Prim::Eq, xs) if xs.len() == 2 && (is_con(&xs[1], wk.true_con) || is_con(&xs[1], wk.false_con)) => {
+        Tm::PrimApp(Prim::Eq, xs)
+            if xs.len() == 2 && (is_con(&xs[1], wk.true_con) || is_con(&xs[1], wk.false_con)) =>
+        {
             comparisons(g, &xs[0], pol == is_con(&xs[1], wk.true_con), out);
         }
         Tm::PrimApp(p @ (Prim::Lt | Prim::Le | Prim::Gt | Prim::Ge), xs) if xs.len() == 2 => {
@@ -551,8 +692,15 @@ fn comparisons(g: &Globals, t: &Tm, pol: bool, out: &mut Vec<(Tm, Tm, bool)>) {
             out.push((lo, hi, strict));
         }
         Tm::Case(c, ct) if ct.lits.is_empty() && ct.default.is_none() && ct.branches.len() == 2 => {
-            let br = |k: Option<ConId>| ct.branches.iter().find(|b| Some(b.0) == k && b.1 == 0).map(|b| &b.2);
-            let (Some(tb), Some(fb)) = (br(wk.true_con), br(wk.false_con)) else { return };
+            let br = |k: Option<ConId>| {
+                ct.branches
+                    .iter()
+                    .find(|b| Some(b.0) == k && b.1 == 0)
+                    .map(|b| &b.2)
+            };
+            let (Some(tb), Some(fb)) = (br(wk.true_con), br(wk.false_con)) else {
+                return;
+            };
             if pol && is_con(fb, wk.false_con) {
                 // `c and tb`
                 comparisons(g, c, true, out);
@@ -584,8 +732,13 @@ fn reindex(t: &Tm, from: usize, to: usize, depth: usize) -> Option<Tm> {
             Tm::Var(to - 1 - lvl + depth)
         }
         Tm::App(a, b, i, m) => Tm::App(Rc::new(go(a, depth)?), Rc::new(go(b, depth)?), *i, *m),
-        Tm::PrimApp(p, xs) => Tm::PrimApp(p.clone(), xs.iter().map(|x| go(x, depth)).collect::<Option<_>>()?),
-        Tm::ConApp(c, xs) => Tm::ConApp(*c, xs.iter().map(|x| go(x, depth)).collect::<Option<_>>()?),
+        Tm::PrimApp(p, xs) => Tm::PrimApp(
+            p.clone(),
+            xs.iter().map(|x| go(x, depth)).collect::<Option<_>>()?,
+        ),
+        Tm::ConApp(c, xs) => {
+            Tm::ConApp(*c, xs.iter().map(|x| go(x, depth)).collect::<Option<_>>()?)
+        }
         Tm::Field(b, c, k) => Tm::Field(Rc::new(go(b, depth)?), *c, *k),
         Tm::Proj(b, k, r) => Tm::Proj(Rc::new(go(b, depth)?), *k, *r),
         Tm::Def(_) | Tm::Con(_) | Tm::TyCon(_) | Tm::Lit(_) => t.clone(),
