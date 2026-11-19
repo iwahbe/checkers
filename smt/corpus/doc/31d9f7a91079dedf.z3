@@ -1,0 +1,4 @@
+;; work 3387
+sat
+((|i#1| 0)
+ (|b#0| (seq.++ (seq.unit 10) (seq.unit 10))))
