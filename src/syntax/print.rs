@@ -86,13 +86,13 @@ fn decl(d: &Decl) -> String {
         DeclKind::Lemma { name, params, constraints, decreasing, lets, ensures, proof } => {
             let mut s = format!("({ex}lemma {} ({})", name.name, names(params));
             s += &cons(constraints, 1);
-            if let Some(e) = decreasing {
-                s += &format!("\n{}(decreasing {})", ind(1), expr(e, 1));
-            }
             for (p, e) in lets {
                 s += &format!("\n{}(let {} {})", ind(1), pat(p), expr(e, 1));
             }
             s += &format!("\n{}(ensures {})", ind(1), expr(ensures, 1));
+            if let Some(e) = decreasing {
+                s += &format!("\n{}(decreasing {})", ind(1), expr(e, 1));
+            }
             if let Some(b) = proof {
                 s += &format!("\n{}(proof {})", ind(1), block(b, 2));
             }
@@ -138,8 +138,11 @@ fn decl(d: &Decl) -> String {
                         }
                         s += &format!("\n{}{})", ind(2), block(body, 2));
                     }
-                    InstMember::Lemma { name, params, proof, .. } => {
+                    InstMember::Lemma { name, params, decreasing, proof, .. } => {
                         s += &format!("\n{}(lemma {} ({})", ind(1), name.name, names(params));
+                        if let Some(e) = decreasing {
+                            s += &format!("\n{}(decreasing {})", ind(2), expr(e, 2));
+                        }
                         if let Some(b) = proof {
                             s += &format!("\n{}(proof {})", ind(2), block(b, 3));
                         }

@@ -39,7 +39,6 @@ replaces 11:8-11:8
   type               keyword         
 == line 15, column 5
 replaces 15:5-15:5
-  decreasing         keyword         
   ensures            keyword         
   let                keyword         
 == line 19, column 5

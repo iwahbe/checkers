@@ -174,7 +174,7 @@ All code that may appear in types or proofs must be **total**:
 - **Well-founded recursion** via a measure (required for merge sort, quicksort, etc.). The termination measure is a proof obligation like any other, so it goes to Z3 (D55). In the kernel this corresponds to recursion on the accessibility predicate `Acc` of `<` on `Nat` (lexicographic for tuples).
 - **Guessed measures (D150):** with no `decreasing`, a function whose recursion isn't structural gets a measure guessed from its parameters' sizes and the distances its guards bound (`i < len src` gives `len src - i`), alone or in pairs, and checked by the prover; E0301 names those tried if none works.
 - **Surface form:** `decreasing e` on the first line of a function body gives the measure. `e` is a `nat` or a tuple of `nat`s, compared lexicographically. Mutually recursive functions share one measure space; each call must strictly decrease it (worked example: `value`/`array`/`elements` in `stdlib/json.ck`).
-- **Lemmas (#76).** A lemma that uses itself (`have l …` in its proof) is a proof by induction and must terminate the same way: structurally, by a measure written as `decreasing e` on the first line of its body (before its `let`s and `ensures`), or by one guessed as for a function. At each recursive `have`, the measure at its arguments must be smaller, given the facts there. An induction on a position (`decreasing len src - i`) follows a parser's own recursion.
+- **Lemmas (#76, #104).** A lemma that uses itself (`have l …` in its proof) is a proof by induction and must terminate the same way: structurally, by a measure written as `decreasing e` on the first line of its `proof` (the measure is part of the proof; it may use the lemma's `let`s), or by one guessed as for a function. At each recursive `have`, the measure at its arguments must be smaller, given the facts there. An induction on a position (`decreasing len src - i`) follows a parser's own recursion. An instance's lemma gives its measure the same way, in its proof; a class's lemma, a statement only, has none.
 - **Recursion through containers** (`map depth items` where `items` is a field of the value being recursed on) is accepted as structural. The elaborator inserts the membership proof, as Lean's `List.attach` does by hand.
 - Non-terminating code (server loops, actor bodies) is marked `partial` and lives in the `Div` effect (§8). `partial` code may never appear in a type or proof.
 
@@ -598,8 +598,8 @@ field       ::= lname '~' [ 'ghost' ] expr { ',' expr }      -- the field's own 
 param       ::= [ '+' | '-' ] lname                          -- polarity only on abstract types (D16, E0360)
 alias       ::= 'type' Uname { lname } '=' constraints NL    -- first constraint must be `x~T`; parameters typed by use (D168)
 lemma       ::= 'lemma' lname { lname } [ ':' constraints ] NL INDENT
-                [ 'decreasing' expr NL ] { 'let' pattern '=' expr NL } 'ensures' expr NL
-                [ 'proof' NL INDENT block DEDENT ] DEDENT
+                { 'let' pattern '=' expr NL } 'ensures' expr NL
+                [ 'proof' NL INDENT [ 'decreasing' expr NL ] block DEDENT ] DEDENT
 const       ::= 'let' Uname '=' expr NL                      -- compile-time constant
 check       ::= 'check' expr NL                              -- compile error unless true
 
@@ -765,7 +765,7 @@ fn larger x y -> r : Ord a, x~a, y~a, r~a, le x r and le y r
 ```
 
 - **A class** lists functions (a signature, with a type for each parameter and the result, E0362) and lemmas (a statement); `C.f` names one. A lemma that follows from them is written outside the class, as an ordinary lemma with the clause `C a`.
-- **An instance** gives each function a body (E0364 if one is missing, E0365 if its parameters don't match, E0363 for one the class doesn't have) and may give each lemma a proof; without one, Z3 proves it. Its signatures are the class's, at its type. Inside an instance a member's name is the instance's own (recursion on the type is ordinary recursion, checked for termination); the class's function at another type is `C.f`. Using the class's function at the instance's own type from inside it is recursion through the dictionary, which can't be checked (E0301).
+- **An instance** gives each function a body (E0364 if one is missing, E0365 if its parameters don't match, E0363 for one the class doesn't have) and may give each lemma a proof, whose first line may be `decreasing e` (§5.3); without one, Z3 proves it. Its signatures are the class's, at its type. Inside an instance a member's name is the instance's own (recursion on the type is ordinary recursion, checked for termination); the class's function at another type is `C.f`. Using the class's function at the instance's own type from inside it is recursion through the dictionary, which can't be checked (E0301).
 - **Coherence.** An instance is for a type constructor applied to distinct variables (E0281), of the class's kind (E0286); its context is classes of those variables. It is declared in the package of the class or of the type (Rust's orphan rule, E0282). No two instances of a class have the same type constructor (E0283). An instance is visible wherever its module is loaded.
 - **Using a class.** A clause `C t` in a signature is an implicit parameter, the dictionary. Each use of a function with such a parameter finds it once the types are known: a dictionary in scope (a clause of the enclosing function) for that class and type, or the instance for the type's constructor, with its context found the same way (E0284 if there is none, E0285 if the type isn't known). Only instances build dictionaries (E0287).
 - **At run time** a dictionary is a record of the class's functions, passed as an argument; lemmas are erased.
@@ -1112,7 +1112,7 @@ The keywords at each kind of place, from the grammar (§9.2):
 |---|---|---|
 | A declaration | `export`, `fn`, `partial`, `enum`, `record`, `type`, `lemma`, `let`, `class`, `instance`, `check`; before the first, `import` | none |
 | After `export` | `abstract`, `transparent`, `partial`, `fn`, `enum`, `record`, `type`, `lemma`, `let`, `class` | none |
-| A statement | `let`, `have`, `if`, `match`, and `when`, `try`, `par` (outside a proof) or `auto`, `admit` (in one); the first of a function body, `decreasing` | locals but type parameters, values, modules; lemmas in a proof |
+| A statement | `let`, `have`, `if`, `match`, and `when`, `try`, `par` (outside a proof) or `auto`, `admit` (in one); the first of a function body or a proof, `decreasing` | locals but type parameters, values, modules; lemmas in a proof |
 | Any other expression | `if`, `match`, and `try`, `par` or `have`, `auto`, `admit` | as a statement |
 | After `have` | none | lemmas, classes, locals, modules |
 | A signature's clause, `ensures` | `forall`, `if`, `match` | locals (type parameters too), values, classes, modules |
@@ -1120,7 +1120,7 @@ The keywords at each kind of place, from the grammar (§9.2):
 | After `x.` | none | `x` a record: its fields; a module: its exports; a class: its functions and lemmas |
 | A `match` arm's pattern | none | the matched type's constructors (else every constructor in scope) |
 | After `import` (and `a.`) | none | modules: the standard library's, and the program's files and directories |
-| A lemma's body, before `ensures` | `let`, `ensures`; its first line, `decreasing` | none |
+| A lemma's body, before `ensures` | `let`, `ensures` | none |
 | After a lemma's `ensures` line | `proof` | none |
 | After a multi-line `if`'s branch | `else` | none |
 | A class's or instance's body | `fn`, `lemma` | none |

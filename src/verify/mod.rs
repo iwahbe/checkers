@@ -817,7 +817,7 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
                     let d = Diagnostic::error("E0301", format!("{name} uses itself, but no measure found that each use makes smaller, so this is not an induction"), at)
                         .with_label("the induction hypothesis")
                         .with_note(note)
-                        .with_help(format!("use {name} only on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of {name}"));
+                        .with_help(format!("use {name} only on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of its proof"));
                     v.diags.push(d);
                     continue;
                 }

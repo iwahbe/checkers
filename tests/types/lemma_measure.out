@@ -13,6 +13,15 @@ error[E0301]: `no_guess` uses itself, but no measure found that each use makes s
 32 |         have no_guess (x + 1)
    |              ^^^^^^^^^^^^^^^^ the induction hypothesis
    = note: measures tried, none shown smaller here: `x`
-   = help: use `no_guess` only on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of `no_guess`
+   = help: use `no_guess` only on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of its proof
 
-lemma_measure.ck: 2 errors, 0 warnings
+error[E0450]: cannot prove that `Walker Other.steps_end` terminates: `x` may not get smaller in this call
+  --> lemma_measure.ck:69:32
+   |
+69 |             if x < n then have steps_end w n (x + 1) else auto
+   |                                ^^^^^^^^^^^^^^^^^^^^^ `decreasing x` must be smaller here than on entry to `Walker Other.steps_end`
+   = note: facts in scope: `x <= n`, `(x < n)`
+   = note: counterexample: n = 1, x = 0
+   = help: make sure the recursive call's arguments make the measure smaller, e.g. by checking a bound first
+
+lemma_measure.ck: 3 errors, 0 warnings

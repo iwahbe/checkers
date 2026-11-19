@@ -250,8 +250,11 @@ impl Linter {
                             params.iter().for_each(|p| self.snake(p, "parameter"));
                             self.block(body);
                         }
-                        InstMember::Lemma { params, proof, .. } => {
+                        InstMember::Lemma { params, decreasing, proof, .. } => {
                             params.iter().for_each(|p| self.snake(p, "parameter"));
+                            if let Some(e) = decreasing {
+                                self.expr(e);
+                            }
                             if let Some(b) = proof {
                                 self.block(b);
                             }

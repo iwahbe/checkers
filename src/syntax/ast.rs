@@ -164,7 +164,8 @@ pub enum DeclKind {
         name: Ident,
         params: Vec<Ident>,
         constraints: Vec<Constraint>,
-        /// `decreasing e`, the induction's measure (#76).
+        /// `decreasing e`, the first line of the proof: the induction's
+        /// measure (#76).
         decreasing: Option<Expr>,
         lets: Vec<(Pattern, Expr)>,
         ensures: Expr,
@@ -203,7 +204,7 @@ pub enum ClassMember {
 #[derive(Clone, Debug)]
 pub enum InstMember {
     Fn { name: Ident, params: Vec<Ident>, decreasing: Option<Expr>, body: Block, span: Span },
-    Lemma { name: Ident, params: Vec<Ident>, proof: Option<Block>, span: Span },
+    Lemma { name: Ident, params: Vec<Ident>, decreasing: Option<Expr>, proof: Option<Block>, span: Span },
 }
 
 #[derive(Clone, Debug)]

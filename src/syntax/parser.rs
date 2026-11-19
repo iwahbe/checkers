@@ -55,8 +55,8 @@ pub enum PlaceKind {
     Import(Vec<String>),
     /// A name in an import's list: `import std.list (so‸`, the module's path.
     ImportItem(Vec<String>),
-    /// A lemma's body before `ensures`; `first`: its first line (`decreasing`).
-    LemmaBody { first: bool },
+    /// A lemma's body before `ensures`.
+    LemmaBody,
     /// After a lemma's `ensures` line.
     Proof,
     /// After a multi-line `if`'s branch.
@@ -670,41 +670,51 @@ impl Parser {
             return Ok(DeclKind::Lemma { name, params, constraints, decreasing: None, lets: Vec::new(), ensures, proof: None });
         }
         let mut lets = Vec::new();
-        self.mark(PlaceKind::LemmaBody { first: true });
-        let decreasing = if self.eat_kw(Kw::Decreasing) {
-            let e = self.expr()?;
-            self.end_line()?;
-            self.mark(PlaceKind::LemmaBody { first: false });
-            Some(e)
-        } else {
-            None
-        };
+        self.mark(PlaceKind::LemmaBody);
         while self.eat_kw(Kw::Let) {
             let p = self.pattern()?;
             self.expect(Tok::Eq, "`=`")?;
             let e = self.expr()?;
             self.end_line()?;
             lets.push((p, e));
-            self.mark(PlaceKind::LemmaBody { first: false });
+            self.mark(PlaceKind::LemmaBody);
         }
         self.expect_kw(Kw::Ensures)?;
         self.mark(PlaceKind::Cond);
         let ensures = self.expr()?;
         self.end_line()?;
         self.mark(PlaceKind::Proof);
-        let proof = if self.eat_kw(Kw::Proof) {
-            self.open_block("proof")?;
-            self.in_proof += 1;
-            let b = self.block_rest();
-            self.in_proof -= 1;
-            Some(b?)
+        let (decreasing, proof) = if self.eat_kw(Kw::Proof) {
+            let (d, b) = self.proof_block()?;
+            (d, Some(b))
         } else {
-            None
+            (None, None)
         };
         if !self.eat(&Tok::Dedent) {
             return Err(self.error_here("end of lemma"));
         }
         Ok(DeclKind::Lemma { name, params, constraints, decreasing, lets, ensures, proof })
+    }
+
+    /// A lemma's proof, after `proof`: its first line may be `decreasing e`,
+    /// the induction's measure (#76), as a function body's may.
+    fn proof_block(&mut self) -> PResult<(Option<Expr>, Block)> {
+        self.open_block("proof")?;
+        self.in_proof += 1;
+        self.body_start = true;
+        let b = (|| {
+            let decreasing = if self.eat_kw(Kw::Decreasing) {
+                let e = self.expr()?;
+                self.end_line()?;
+                Some(e)
+            } else {
+                None
+            };
+            Ok((decreasing, self.block_rest()?))
+        })();
+        self.body_start = false;
+        self.in_proof -= 1;
+        b
     }
 
     fn class_decl(&mut self) -> PResult<DeclKind> {
@@ -819,25 +829,21 @@ impl Parser {
                     );
                     return Err(Failed);
                 }
-                let proof = if self.at(&Tok::Newline) && *self.peek_at(1) == Tok::Indent {
+                let (decreasing, proof) = if self.at(&Tok::Newline) && *self.peek_at(1) == Tok::Indent {
                     self.open_block("proof")?;
                     self.mark(PlaceKind::Proof);
                     self.expect_kw(Kw::Proof)?;
-                    self.open_block("proof")?;
-                    self.in_proof += 1;
-                    let b = self.block_rest();
-                    self.in_proof -= 1;
-                    let b = b?;
+                    let (d, b) = self.proof_block()?;
                     if !self.eat(&Tok::Dedent) {
                         return Err(self.error_here("end of lemma"));
                     }
-                    Some(b)
+                    (d, Some(b))
                 } else {
                     self.end_line()?;
-                    None
+                    (None, None)
                 };
                 let span = start.to(self.prev_span());
-                members.push(InstMember::Lemma { name: mname, params, proof, span });
+                members.push(InstMember::Lemma { name: mname, params, decreasing, proof, span });
             } else {
                 return Err(self.error_here("`fn` or `lemma`"));
             }

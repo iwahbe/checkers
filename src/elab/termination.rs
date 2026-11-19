@@ -158,7 +158,7 @@ impl Elab {
                         format!("`{name}` uses itself, but not on a smaller argument, so this is not an induction"),
                         "the induction hypothesis".to_string(),
                         format!(
-                            "use `{name}` only on a part of a parameter you matched on, such as `rest` in `x :: rest`, or add `decreasing <measure>` as the first line of `{name}`"
+                            "use `{name}` only on a part of a parameter you matched on, such as `rest` in `x :: rest`, or add `decreasing <measure>` as the first line of its proof"
                         ),
                     )
                 } else {

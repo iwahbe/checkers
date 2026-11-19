@@ -27,6 +27,6 @@ error[E0301]: `circular` uses itself, but no measure found that each use makes s
 41 |         have circular x
    |              ^^^^^^^^^^ the induction hypothesis
    = note: measures tried, none shown smaller here: `x`
-   = help: use `circular` only on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of `circular`
+   = help: use `circular` only on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of its proof
 
 termination.ck: 4 errors, 0 warnings

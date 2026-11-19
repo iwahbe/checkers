@@ -108,7 +108,7 @@ fn moved xs y ys -> b : xs~List Int, y~Int, ys~List Int, b~Bool, b
 ```text
 lemma ::= 'lemma' lname { lname } [ ':' constraints ] NL INDENT
           { 'let' pattern '=' expr NL } 'ensures' expr NL
-          [ 'proof' NL INDENT block DEDENT ] DEDENT
+          [ 'proof' NL INDENT [ 'decreasing' expr NL ] block DEDENT ] DEDENT
 ```
 
 A lemma states a fact for all values of its parameters that satisfy its preconditions: its conclusion follows `ensures`. `let` lines before `ensures` name parts of the statement. Without a `proof`, Z3 proves the conclusion from the preconditions. A lemma is used with `have`, and is erased: it never runs.
