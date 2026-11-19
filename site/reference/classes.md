@@ -27,7 +27,7 @@ A member is named `C.f` (`Size.size`), or `f` alone where the class is in scope 
 instance ::= 'instance' Uname type [ ':' constraints ] NL INDENT { member } DEDENT
 ```
 
-An instance gives each of the class's functions a body for one type (E0364 if one is missing, E0363 for one the class doesn't have, E0365 if its parameters don't match the class's), and may give each lemma a `proof`; without one, Z3 proves it, as for any lemma. The signatures are the class's, at the instance's type. After `:`, the constraints are what the instance needs of its type's parameters.
+An instance gives each of the class's functions a body for one type (E0364 if one is missing, E0363 for one the class doesn't have, E0365 if its parameters don't match the class's), and may give each lemma a `proof`; without one, Z3 proves it, as for any lemma. A proof by induction may start with `decreasing e`, as any lemma's may ([Termination](termination.md#lemmas)). The signatures are the class's, at the instance's type. After `:`, the constraints are what the instance needs of its type's parameters.
 
 ```checkers
 record Version

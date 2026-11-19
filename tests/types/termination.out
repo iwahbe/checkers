@@ -21,11 +21,12 @@ error[E0302]: `forever` is `partial` (it may not terminate), so `calls_partial` 
    |     ^^^^^^^
    = help: mark `calls_partial` as `partial fn` too
 
-error[E0301]: `circular` uses itself, but not on a smaller argument, so this is not an induction
+error[E0301]: `circular` uses itself, but no measure found that each use makes smaller, so this is not an induction
   --> termination.ck:41:14
    |
 41 |         have circular x
-   |              ^^^^^^^^ the induction hypothesis
-   = help: use `circular` only on a part of a parameter you matched on, such as `rest` in `x :: rest`
+   |              ^^^^^^^^^^ the induction hypothesis
+   = note: measures tried, none shown smaller here: `x`
+   = help: use `circular` only on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of its proof
 
 termination.ck: 4 errors, 0 warnings

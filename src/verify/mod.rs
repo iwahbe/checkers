@@ -658,8 +658,16 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
                 v.ledger.push(LedgerEntry { span: o.span, how: "smt", what: describe(e, o), hash });
             }
             (Ok(q), Some(Answer::Sat(model))) => {
-                let mut d = failed(e, o, Some(render_model(&model, &q.shown, &q.string_vars, &q.array_vars)));
-                if !q.dropped.is_empty() {
+                // A model of a query without the `forall` facts may break
+                // them: shown only once checked against them.
+                let (shown, broken) = if q.foralls { check_foralls(e, user, o, &defs, &model) } else { (Some(model.clone()), None) };
+                let shown = shown.map(|m| render_model(&m, &q.shown, &q.string_vars, &q.array_vars));
+                let any = shown.is_some();
+                let mut d = failed(e, o, shown);
+                if let Some(n) = broken {
+                    d = d.with_note(n);
+                }
+                if any && !q.dropped.is_empty() {
                     d = d.with_note(format!(
                         "some facts could not be given to the prover, so the counterexample may be impossible: they involve {}",
                         q.dropped.join("; ")
@@ -858,10 +866,22 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
                         _ => m.clone(),
                     })
                     .collect();
+                let note = format!("measures tried, none shown smaller here: {}", shown.join(", "));
+                // A lemma using itself: an induction (#76).
+                let lemma = gr.members.len() == 1 && e.fn_meta.get(&gr.members[0]).is_some_and(|m| !m.is_fn);
+                if lemma {
+                    let name = &names[0];
+                    let d = Diagnostic::error("E0301", format!("{name} uses itself, but no measure found that each use makes smaller, so this is not an induction"), at)
+                        .with_label("the induction hypothesis")
+                        .with_note(note)
+                        .with_help(format!("use {name} only on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of its proof"));
+                    v.diags.push(d);
+                    continue;
+                }
                 let who = if names.len() == 1 { format!("{} terminates", names[0]) } else { format!("{} terminate", names.join(", ")) };
                 let mut d = Diagnostic::error("E0301", format!("cannot show that {who}: no measure found that every recursive call makes smaller"), at)
                     .with_label("recursive call");
-                d = d.with_note(format!("measures tried, none shown smaller here: {}", shown.join(", ")));
+                d = d.with_note(note);
                 v.diags.push(d.with_help("add `decreasing <measure>` as the first line of the function, or mark it `partial`"));
             }
         }
@@ -1174,6 +1194,54 @@ fn outside(e: &Elab, o: &Obligation, why: &str) -> Diagnostic {
         d = d.with_note(n);
     }
     d.with_help("state the fact you need as a lemma and bring it in with `have`")
+}
+
+/// Check Z3's counterexample against the `forall` facts in scope, which its
+/// query left out (D137): the same query with them given to Z3, quantified,
+/// first with the model's values fixed, then free. A model of that query is
+/// a counterexample; without one, the note saying why none is shown.
+fn check_foralls(e: &Elab, user: &str, o: &Obligation, defs: &smt::Defs, model: &str) -> (Option<String>, Option<String>) {
+    let why = |broken: bool| {
+        Some(format!(
+            "no counterexample: the one Z3 found {} a `forall` in scope, which the prover uses only by name, with `have`",
+            if broken { "breaks" } else { "could not be checked against" }
+        ))
+    };
+    let Ok(q) = smt::Builder::new(e, user).sharing(defs).with_foralls().query(o) else { return (None, why(false)) };
+    let text = with_limit(&q.text, QUICK_RLIMIT);
+    let Some(at) = text.rfind("(check-sat)") else { return (None, why(false)) };
+    let mut pins = String::new();
+    if let Some(Sx::List(pairs)) = parse_sx(model).first() {
+        for p in pairs {
+            if let Sx::List(kv) = p {
+                if let (Some(Sx::Atom(k)), Some(v)) = (kv.first(), kv.get(1)) {
+                    let v = print_sx(v);
+                    // Values of abstract sorts (`a#0!val!0`) and Z3's own
+                    // functions (`k!0`) can't be written in a query.
+                    if !v.contains('!') {
+                        pins += &format!("(assert (= {k} {v}))\n");
+                    }
+                }
+            }
+        }
+    }
+    let pinned = format!("{}{pins}{}", &text[..at], &text[at..]);
+    let broken = match ask(&pinned) {
+        Answer::Sat(m) => return (Some(m), None),
+        Answer::Unsat => true,
+        Answer::Unknown(_) => false,
+    };
+    match ask(&text) {
+        Answer::Sat(m) => (Some(m), None),
+        _ => (None, why(broken)),
+    }
+}
+
+fn print_sx(x: &Sx) -> String {
+    match x {
+        Sx::Atom(a) => a.clone(),
+        Sx::List(items) => format!("({})", items.iter().map(print_sx).collect::<Vec<_>>().join(" ")),
+    }
 }
 
 /// Accumulate entries for `checkers trust`.

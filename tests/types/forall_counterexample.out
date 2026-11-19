@@ -1,0 +1,28 @@
+error[E0450]: cannot prove lemma `by_index`
+ --> forall_counterexample.ck:8:13
+  |
+8 |     ensures a == b
+  |             ^^^^^^ `a == b`
+  = note: facts in scope: `(len a) == (len b)`, `forall ((k~Nat) -> if k < (len a) then a[k] == b[k] else True)`
+  = note: no counterexample: the one Z3 found breaks a `forall` in scope, which the prover uses only by name, with `have`
+  = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+
+error[E0450]: cannot prove lemma `by_function`
+  --> forall_counterexample.ck:12:13
+   |
+12 |     ensures f x == 0
+   |             ^^^^^^^^ `f x == 0`
+   = note: facts in scope: `forall ((k~Int) -> (f k) == 0)`
+   = note: no counterexample: the one Z3 found breaks a `forall` in scope, which the prover uses only by name, with `have`
+   = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+
+error[E0450]: cannot prove lemma `kept`
+  --> forall_counterexample.ck:16:13
+   |
+16 |     ensures x < 3
+   |             ^^^^^ `x < 3`
+   = note: facts in scope: `forall ((k~Nat) -> if k < x then k < 5 else True)`
+   = note: counterexample: x = 3
+   = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+
+forall_counterexample.ck: 3 errors, 0 warnings
