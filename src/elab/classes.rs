@@ -1236,7 +1236,11 @@ impl Elab {
                     self.class_lemmas.insert(*d);
                 }
                 (Origin::InstMember(_), Some(Sym::Def(d))) => {
-                    self.def_class.insert(*d, if matches!(m.decls[k].kind, DeclKind::Lemma { .. }) { "lemma" } else { "function" });
+                    let lemma = matches!(m.decls[k].kind, DeclKind::Lemma { .. });
+                    self.def_class.insert(*d, if lemma { "lemma" } else { "function" });
+                    if !lemma {
+                        self.inst_fns.insert(*d);
+                    }
                     // What an instance's functions do is visible wherever it is used.
                     self.transparent.insert(*d);
                 }
