@@ -235,6 +235,9 @@ pub struct Query {
     pub focused: Option<String>,
     /// Why facts in scope could not be given to the solver.
     pub dropped: Vec<String>,
+    /// Some facts in scope are `forall`s, not given to the solver (D137):
+    /// a model may break them.
+    pub foralls: bool,
     /// (SMT name, display name) of the locals, for a counterexample.
     pub shown: Vec<(String, String)>,
     /// The SMT names of `String` locals (shown as text, not bytes).
@@ -320,6 +323,9 @@ pub struct Builder<'a> {
     real_values: Vec<(String, TyId)>,
     /// Datatypes given a stand-in base constructor, so Z3 accepts them.
     based: BTreeSet<TyId>,
+    /// Give `forall` facts to Z3, quantified: only to check a counterexample
+    /// against them, never to prove (D137).
+    foralls: bool,
 }
 
 impl<'a> Builder<'a> {
@@ -355,7 +361,16 @@ impl<'a> Builder<'a> {
             array_vars: Vec::new(),
             real_values: Vec::new(),
             based: BTreeSet::new(),
+            foralls: false,
         }
+    }
+
+    /// Give the `forall` facts in scope to Z3 as quantified formulas, so a
+    /// model of the query satisfies them: a counterexample to check one
+    /// against (D137 keeps them out of proofs).
+    pub fn with_foralls(mut self) -> Builder<'a> {
+        self.foralls = true;
+        self
     }
 
     /// Share translated definitions with the other builders of the module.
@@ -2940,10 +2955,13 @@ impl<'a> Builder<'a> {
             return out("a goal that is not a `Bool`");
         }
         let mut dropped = Vec::new();
+        let mut foralls = false;
         for f in &ob.facts {
             let tm = quote(&self.e.g, lvl, f);
-            // A `forall` is used only by name, with `have` (D137).
-            if has_forall(&tm) {
+            // A `forall` is used only by name, with `have` (D137), except
+            // to check a counterexample.
+            if has_forall(&tm) && !self.foralls {
+                foralls = true;
                 continue;
             }
             // A fact the solver can't see is simply not assumed.
@@ -3031,7 +3049,18 @@ impl<'a> Builder<'a> {
             }
             _ => (text, None, without_axioms),
         };
-        Ok(Query { text, no_tables, without_axioms, facts_only, focused, dropped, shown: self.shown, string_vars: self.string_vars, array_vars: self.array_vars })
+        Ok(Query {
+            text,
+            no_tables,
+            without_axioms,
+            facts_only,
+            focused,
+            dropped,
+            foralls,
+            shown: self.shown,
+            string_vars: self.string_vars,
+            array_vars: self.array_vars,
+        })
     }
 }
 
