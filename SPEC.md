@@ -232,6 +232,7 @@ Elaboration produces obligations `Γ ⊢ φ` with `φ : Bool`. Sources, each rep
 | precondition | every call of a function with predicates over its parameters (including refinement-alias parameter types such as `b~U8`) | the predicates, with the arguments substituted |
 | postcondition | the end of a function body | the predicates mentioning the result, with the body substituted |
 | constructor invariant (D11) | every constructor application | the constructor's predicates, including refinement-alias field types |
+| type parameter condition (#136) | every application of a type whose parameters have predicates (`Ordered 5 1` for `record Ordered lo hi : lo~Nat, hi~Nat, lo <= hi`), wherever it is written: a parameter, the result, a field | the type's predicates, with the arguments substituted |
 | weakened refinement (D83) | a value whose refinement is replaced by a weaker one in a covariant position (`List (n~Int, n >= 6)` as `List (n~Int, n >= 5)`) | for any `n`: the found predicates imply the expected ones |
 | call of a function-typed value (D84) | `f a` where `f`'s type has preconditions | the preconditions at `a`; afterwards its postconditions at `a` and `f a` are facts |
 | function passed as a value (D85) | a named function, partial application or lambda passed where a function type is expected | for any argument: the expected precondition implies the function's own; with it, the function's postcondition implies the expected one |
@@ -244,7 +245,7 @@ Elaboration produces obligations `Γ ⊢ φ` with `φ : Bool`. Sources, each rep
 | case left out (D144) | each case a `match` (outside a specification) does not cover | the case can't occur: `False` from the facts there; E0240 if not proved |
 | `check` | `check e` | evaluated (D40), no solver |
 
-Predicates inside types and specifications are not themselves checked for well-definedness (a precondition of a function called in a postcondition is not an obligation).
+Inside types and specifications only two obligations are made: a called function's precondition (M17) and a type's parameter conditions (#136). Each predicate may rely on those written before it.
 
 Γ, the **facts in scope**, contains: the preconditions of the enclosing function; the definitions of `let`-bound variables; `n >= 0` for every `Nat`; **path conditions**, namely the guards of enclosing `if`s (true in `then`, false in `else`), the left operand of a short-circuiting `and`/`or`/`implies`, the constructor equation of the current `match` arm (`xs == y :: rest`) together with that constructor's invariants, the literal of a literal arm or the negations of the others in its `_` arm, and an arm's guard; the `ensures` of every lemma brought in with `have`, and every `have` fact (D49); and the postcondition of every function applied in the goal or the facts (D50).
 
@@ -673,6 +674,7 @@ apat        ::= '_' | lname | literal | Uname
 | predicate over inputs only | precondition | refinement on the inputs |
 | predicate mentioning the result name | postcondition | return type `{r : R \| P}` |
 | predicate in a constructor/field list | invariant (D11) | `Holds` field, erased |
+| predicate over a type's parameters (`record Ordered lo hi : lo~Nat, hi~Nat, lo <= hi`) | condition on the type (#136): an obligation wherever the type is applied (§7.1), a fact in its fields | erased |
 | free `lname` in a type position, not in scope (`a` in `xs~List a`) | implicit type parameter (D10); a name used as a qualifier (`future` in `future.Future`) is never auto-bound | `{a :0 Type}` |
 
 A constraint is only required where inference fails; `fn is_ws b : b~U8` infers its `Bool` result.

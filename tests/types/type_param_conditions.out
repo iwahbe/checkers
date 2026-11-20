@@ -1,0 +1,55 @@
+error[E0450]: cannot prove `a <= b`, required to call `pred`
+  --> type_param_conditions.ck:20:37
+   |
+20 | enum Before lo hi : lo~Nat, hi~Nat, pred lo hi, lo <= hi
+   |                                     ^^^^^^^^^^ `pred` requires `a <= b`
+   = note: counterexample: lo = 1, hi = 0
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+error[E0450]: cannot prove `lo <= hi`, required to write the type `Ordered 5 1`
+  --> type_param_conditions.ck:23:21
+   |
+23 | fn literal -> r : r~Ordered 5 1
+   |                     ^^^^^^^^^^^ `Ordered` requires `lo <= hi`
+   = help: give arguments for which it holds, or require it where the type is written: in the function's preconditions, or in a condition on the enclosing type's parameters
+
+error[E0450]: cannot prove `lo <= hi`, required to write the type `Ordered lo hi`
+  --> type_param_conditions.ck:33:51
+   |
+33 | fn no_precondition lo hi -> r : lo~Nat, hi~Nat, r~Ordered lo hi
+   |                                                   ^^^^^^^^^^^^^ `Ordered` requires `lo <= hi`
+   = note: counterexample: lo = 1, hi = 0
+   = help: give arguments for which it holds, or require it where the type is written: in the function's preconditions, or in a condition on the enclosing type's parameters
+
+error[E0450]: cannot prove `lo <= hi`, required to write the type `Ordered lo hi`
+  --> type_param_conditions.ck:37:52
+   |
+37 | fn by_postcondition lo hi -> r : lo~Nat, hi~Nat, r~Ordered lo hi, r.value == 0 and lo <= hi
+   |                                                    ^^^^^^^^^^^^^ `Ordered` requires `lo <= hi`
+   = note: counterexample: lo = 1, hi = 0
+   = help: give arguments for which it holds, or require it where the type is written: in the function's preconditions, or in a condition on the enclosing type's parameters
+
+error[E0450]: cannot prove `r.value == 0 and lo <= hi`, the postcondition of `by_postcondition`
+  --> type_param_conditions.ck:37:67
+   |
+37 | fn by_postcondition lo hi -> r : lo~Nat, hi~Nat, r~Ordered lo hi, r.value == 0 and lo <= hi
+   |                                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^ promised here
+   = note: for the value returned on line 38: `Ordered 0`
+   = note: counterexample: lo = 1, hi = 0
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+error[E0450]: cannot prove `lo <= hi`, required to write the type `Ordered 3 2`
+  --> type_param_conditions.ck:40:23
+   |
+40 | fn in_parameter x : x~Ordered 3 2
+   |                       ^^^^^^^^^^^ `Ordered` requires `lo <= hi`
+   = help: give arguments for which it holds, or require it where the type is written: in the function's preconditions, or in a condition on the enclosing type's parameters
+
+error[E0450]: cannot prove `lo <= hi`, required to write the type `Ordered 2 1`
+  --> type_param_conditions.ck:44:11
+   |
+44 |     inner~Ordered 2 1
+   |           ^^^^^^^^^^^ `Ordered` requires `lo <= hi`
+   = help: give arguments for which it holds, or require it where the type is written: in the function's preconditions, or in a condition on the enclosing type's parameters
+
+type_param_conditions.ck: 7 errors, 0 warnings
