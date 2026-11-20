@@ -26,6 +26,10 @@ pub struct GuessGroup {
     /// Each member's candidates, in the order they are tried.
     pub candidates: Vec<Vec<Measure>>,
     pub calls: Vec<RecCall>,
+    /// The recursive calls to report E0301 at, best first: those of a
+    /// cycle that isn't structurally smaller, losing its parameter first
+    /// (#124).
+    pub prefer: Vec<Span>,
 }
 
 impl Elab {
@@ -368,27 +372,41 @@ impl Elab {
                 );
                 continue;
             }
-            // No measure written: one is guessed, and proved, later (D150).
-            if self.guess_measure(&members, &metas, &inner, &rec_calls) {
-                continue;
-            }
-            // Report at a call of a cycle that isn't smaller (#109): one passed
-            // to a function that isn't known to call it only with parts first
-            // (#102), then one that passes no strict part, made by a function
-            // without `decreasing`.
-            let unmarked = |c: &&CallRec| {
+            // Report at a call of a cycle that isn't smaller (#109), made by a
+            // function without `decreasing`: one passed to a function that
+            // isn't known to call it only with parts first (#102), then one
+            // that passes on no parameter and no part of one (where the cycle
+            // loses what it was recursing on, #124), then one that passes no
+            // strict part. A call passing a parameter on unchanged keeps it.
+            let unmarked = |c: &CallRec| {
                 let k = members.iter().position(|d| *d == c.caller).unwrap();
                 !metas[k].partial && !metas[k].decreasing
             };
+            let rank = |c: &CallRec| {
+                if unkept.contains_key(&c.span) {
+                    0
+                } else if c.args.iter().chain(&c.same).all(Option::is_none) {
+                    1
+                } else if c.args.iter().all(Option::is_none) {
+                    2
+                } else {
+                    3
+                }
+            };
             let in_cycle: Vec<&CallRec> = if cycle.is_empty() { inner.clone() } else { cycle.iter().map(|&i| inner[i]).collect() };
-            let bad = in_cycle
-                .iter()
-                .filter(|c| unmarked(c))
-                .find(|c| unkept.contains_key(&c.span))
-                .or_else(|| in_cycle.iter().filter(|c| unmarked(c)).find(|c| c.args.iter().all(Option::is_none)))
-                .or_else(|| in_cycle.iter().find(|c| unmarked(c)))
-                .or_else(|| inner.iter().find(|c| unmarked(c)))
-                .copied();
+            let mut prefer: Vec<&CallRec> = in_cycle.iter().copied().filter(|c| unmarked(c)).collect();
+            prefer.sort_by_key(|c| rank(c));
+            for c in inner.iter().copied() {
+                if unmarked(c) && !prefer.iter().any(|x| std::ptr::eq(*x, c)) {
+                    prefer.push(c);
+                }
+            }
+            // No measure written: one is guessed, and proved, later (D150).
+            let spans: Vec<Span> = prefer.iter().map(|c| c.span).collect();
+            if self.guess_measure(&members, &metas, &inner, &rec_calls, spans) {
+                continue;
+            }
+            let bad = prefer.first().copied();
             if let Some(c) = bad {
                 let k = members.iter().position(|d| *d == c.caller).unwrap();
                 let name = metas[k].name.clone();
@@ -457,7 +475,7 @@ impl Elab {
     /// Set up guessing a measure for a recursive group with none written
     /// (D150): every member a total function, every recursive call a full
     /// call, and candidates for each. False if it can't be.
-    fn guess_measure(&mut self, members: &[DefId], metas: &[FnMeta], inner: &[&CallRec], rec_calls: &[RecCall]) -> bool {
+    fn guess_measure(&mut self, members: &[DefId], metas: &[FnMeta], inner: &[&CallRec], rec_calls: &[RecCall], prefer: Vec<Span>) -> bool {
         if metas.iter().any(|m| m.partial || m.decreasing) {
             return false;
         }
@@ -477,7 +495,7 @@ impl Elab {
             candidates.push(cs);
         }
         self.guessed.extend(members.iter().copied());
-        self.guess_groups.push(GuessGroup { module: self.cur.clone(), members: members.to_vec(), candidates, calls });
+        self.guess_groups.push(GuessGroup { module: self.cur.clone(), members: members.to_vec(), candidates, calls, prefer });
         true
     }
 
