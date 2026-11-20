@@ -307,7 +307,7 @@ export lemma length_reverse xs : xs~List a
         have length_rev_onto xs []
 
 # Mapping keeps a list's length.
-export lemma length_map f xs : f~(a -> b), xs~List a
+export lemma length_map f xs : f~(x~a -> b, contains xs x), xs~List a
     ensures length (map f xs) == length xs
     proof
         match xs
