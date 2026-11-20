@@ -1872,7 +1872,8 @@ impl Elab {
         let found = match &t {
             Val::TyCon(id, _) if Some(*id) == self.g.well_known.int => false,
             Val::TyCon(id, _) => self.instances.contains_key(&(ctid, super::classes::HeadKey::Ty(*id))),
-            Val::TupleTy(xs) => self.instances.contains_key(&(ctid, super::classes::HeadKey::Tuple(xs.len()))),
+            Val::TupleTy(xs) if xs.is_empty() => self.instances.contains_key(&(ctid, super::classes::HeadKey::Unit)),
+            Val::TupleTy(xs) if xs.len() >= 2 => self.instances.contains_key(&(ctid, super::classes::HeadKey::Pair)),
             Val::Neutral(Head::Meta(_), _) | Val::Error => false,
             _ => {
                 // A type parameter: a dictionary in scope.
