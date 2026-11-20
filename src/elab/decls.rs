@@ -978,10 +978,14 @@ impl Elab {
             }
             fields.push((Rc::from(n.name.as_str()), mult, Icit::Expl, ty));
         }
+        // Each condition may rely on those before it, as a signature's do
+        // (fields' types are facts already through their locals).
         for c in cs {
             match c {
                 Constraint::Pred(e) | Constraint::Named(_, e) => {
                     let p = self.elab_pred(&mut cx, e, false);
+                    let v = self.eval(&cx, &p.tm);
+                    cx.assume(v);
                     invs.push((p.tm, p.text, p.span, cx.lvl(), None));
                 }
                 Constraint::Typed { name, .. } if !declared.contains(&name.name) => {
@@ -996,6 +1000,8 @@ impl Elab {
         }
         for e in extra_preds {
             let p = self.elab_pred(&mut cx, e, false);
+            let v = self.eval(&cx, &p.tm);
+            cx.assume(v);
             invs.push((p.tm, p.text, p.span, cx.lvl(), None));
         }
         // Every invariant as a term over params ++ fields.
