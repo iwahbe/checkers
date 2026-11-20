@@ -38,6 +38,7 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0121` | a class member with a body, or an instance member with a signature |
 | `E0122` | a keyword where a name belongs |
 | `E0123` | `ghost`, `comptime`, or `own` other than on a function type's parameter, written inside a type |
+| `E0124` | a class's type with parameters (`type Elem b`) |
 
 ## Names and types
 
@@ -90,8 +91,10 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0285` | which instance to use can't be decided: the type isn't known there |
 | `E0286` | an instance for a type of the wrong kind |
 | `E0287` | a class's dictionary built other than by an instance |
+| `E0288` | a class's type whose default mentions the class's parameter |
 | `E0289` | `forall` outside a named precondition or a lemma's `ensures`, or in a negative place |
 | `E0290` | `have` with the wrong number of values for a `forall`'s variables |
+| `E0291` | a class's type (`C.Name`) without the type it is for |
 
 ## Termination
 
@@ -119,7 +122,7 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0361` | a standard-library builtin the runtime doesn't implement |
 | `E0362` | a class function without a type for each parameter and its result |
 | `E0363` | an instance member the class doesn't have |
-| `E0364` | an instance missing one of the class's functions |
+| `E0364` | an instance missing one of the class's functions, or a type the class gives no default for |
 | `E0365` | an instance member with other parameters than the class's |
 | `E0366` | `main`'s signature isn't `args~List String, sys~System, code~ExitCode` |
 | `E0367` | a recursive type has no values: every constructor needs a value of the type |

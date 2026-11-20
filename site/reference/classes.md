@@ -6,11 +6,12 @@ A class names functions and lemmas that a type may provide: an order (`Ord`), ad
 
 ```text
 class  ::= 'class' Uname lname NL INDENT { member } DEDENT
-member ::= 'fn' lname { lname } '->' lname ':' constraints NL
+member ::= 'type' Uname [ '=' type ] NL
+         | 'fn' lname { lname } '->' lname ':' constraints NL
          | 'lemma' lname { lname } [ ':' constraints ] NL INDENT 'ensures' expr NL DEDENT
 ```
 
-A class has one parameter, and lists its members: functions, each with a signature giving the type of every parameter and of the result (E0362), and lemmas, each with a statement. Members have no bodies. A lemma that follows from the members isn't part of the class: write it outside, as an ordinary lemma with the class as a constraint.
+A class has one parameter, and lists its members: types that each instance gives ([A class's types](#a-classs-types)), functions, each with a signature giving the type of every parameter and of the result (E0362), and lemmas, each with a statement. Members have no bodies. A lemma that follows from the members isn't part of the class: write it outside, as an ordinary lemma with the class as a constraint.
 
 ```checkers
 class Size a
@@ -25,6 +26,9 @@ A member is named `C.f` (`Size.size`), or `f` alone where the class is in scope 
 
 ```text
 instance ::= 'instance' Uname type [ ':' constraints ] NL INDENT { member } DEDENT
+member   ::= 'type' Uname '=' type NL
+           | 'fn' lname { lname } NL INDENT block DEDENT
+           | 'lemma' lname { lname } [ NL INDENT 'proof' NL INDENT block DEDENT DEDENT ]
 ```
 
 An instance gives each of the class's functions a body for one type (E0364 if one is missing, E0363 for one the class doesn't have, E0365 if its parameters don't match the class's), and may give each lemma a `proof`; without one, Z3 proves it, as for any lemma. A proof by induction may start with `decreasing e`, as any lemma's may ([Termination](termination.md#lemmas)). The signatures are the class's, at the instance's type. After `:`, the constraints are what the instance needs of its type's parameters.
@@ -134,6 +138,76 @@ check doubled (Some 5) == Some 10
 ```
 
 `f a` is matched against a type such as `List Int` with `f` as `List` and `a` as `Int`. A recursive type can't be passed as the argument of a type constructor parameter (E0354): nothing says how `f` uses its argument, so it could use it negatively.
+
+## A class's types
+
+A class may let each instance choose a type. `type Name` declares one; inside the class, its members use it by its bare name, anywhere a type may appear, a precondition included. `type Name = T` gives it a default, used by every instance that doesn't give its own; a default can't mention the class's parameter (E0288), so it is the same type wherever it applies. A class's type takes no parameters of its own (E0124).
+
+```checkers
+# How to show a value; each type says which options its display takes.
+class Display a
+    type Options = NoOptions
+    fn display x os -> s : x~a, os~List Options, s~String
+
+# No constructors: the only list of options is `[]`.
+enum NoOptions
+
+record Money
+    cents~Int
+
+enum MoneyOption
+    Cents
+    Whole
+
+instance Display Money
+    type Options = MoneyOption
+    fn display m os
+        match os
+            [Cents] -> format m.cents ++ "¢"
+            _       -> "$" ++ format (m.cents / 100)
+
+# `Options` is `NoOptions` here.
+instance Display Int
+    fn display x os
+        format x
+
+check display (Money 1250) [Cents] == "1250¢"
+check display 7 [] == "7"
+```
+
+An instance gives the type with `type Name = T`, or leaves it out to take the default (E0364 if there is none). In the instance's signatures, `Name` is that type.
+
+Outside the class, the type is `C.Name t`: `Display.Options Money`, or `Display.Options a` under the constraint `Display a` (E0284 without one; `C.Name` alone is E0291). At a type whose instance is known, it is that instance's type: `Display.Options Money` is `MoneyOption`, to the type checker and the prover alike. At a type parameter, it is a type of its own, equal only to itself, so generic code can pass `[]`, or options it was given, and nothing else:
+
+```checkers
+class Display a
+    type Options = NoOptions
+    fn display x os -> s : x~a, os~List Options, s~String
+
+enum NoOptions
+
+# Any `Display` type, without options.
+fn plain x -> s : Display a, x~a, s~String
+    display x []
+
+# Any `Display` type, with options the caller chose for it.
+fn twice x os -> s : Display a, x~a, os~List (Display.Options a), s~String
+    display x os ++ display x os
+
+# A pair shows both values with the options of their type.
+record Pair a
+    first~a
+    second~a
+
+instance Display (Pair a) : Display a
+    type Options = Display.Options a
+    fn display p os
+        Display.display p.first os ++ ", " ++ Display.display p.second os
+```
+
+A class's type doesn't tell which instance it is: `Int` and another type may both take `NoOptions`. So where the type isn't known yet, `display v [Cents]` doesn't decide what `v` is; the options are checked once `v`'s type is known from elsewhere, and if it never is, the call is E0285.
+
+At run time the type is erased, but an array of it, made in generic code, is laid out as the instance's type is: the instance's record of functions carries what the layout needs.
 
 ## The prelude's classes
 

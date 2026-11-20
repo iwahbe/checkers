@@ -819,6 +819,38 @@ fn doubled xs -> ys : Functor f, xs~f Int, ys~f Int
     fmap (\x -> x * 2) xs
 ```
 
+**A class's types (#133).** A class may declare a type, `type Name`, that each instance gives: it names a type that depends on the class's parameter. Inside the class, its functions and lemmas use it by its bare name, anywhere a type may appear (a precondition's predicate too). It takes no parameters of its own (E0124). `type Name = T` gives it a default, which may not mention the class's parameter (E0288), so it means the same at every instance.
+
+```checkers
+class Display a
+    type Options = NoOptions
+    fn display x os -> s : x~a, os~List Options, s~String
+
+enum NoOptions                        # no constructors: the only list of them is `[]`
+
+instance Display Money
+    type Options = MoneyOption
+    fn display m os
+        …
+
+instance Display Int                  # its `Options` is `NoOptions`
+    fn display x os
+        …
+
+instance Display (Pair a) : Display a
+    type Options = Display.Options a  # may use its context's types
+    …
+```
+
+- **An instance** gives it with `type Name = T`, or leaves it out to take the default; with no default, leaving it out is E0364, and giving a type the class doesn't have is E0363. In the instance's signatures, `Name` is that type, and the class's functions used in them (in a precondition, say) are the instance's own.
+- **Using it.** Outside the class it is `C.Name t` (`Display.Options Money`; `C.Name` alone is E0291). At a type whose instance is known it **is** the instance's type, both when types are compared and in the prover: `display price [Cents]` checks, and a `match` on `Cents` with it. At a type parameter `a` with the clause `C a`, it is a type of its own, equal only to itself: generic code can pass `[]`, or values it was given at that type, and nothing else. Without a clause for `a` it is E0284, as for a class's function.
+- **It doesn't determine the class's type.** `Int` and another type may both have `NoOptions`. So comparing `C.Name a`, while `a` isn't known yet, with another type neither fails nor guesses: it waits until `a` is known (from another argument, or a later use of the same value), and is then compared again; if `a` is never known, the use is E0285. `(\v -> display v [Cents]) (Money 1250)` checks.
+- **In core** the dictionary is a record whose fields may depend on earlier fields: its types first (`$Options~ghost Type`), then its functions, whose types use them. `C.Name t` is a definition reading that field of the dictionary found for `t` (Lean's classes, structures with fields of type `Type`, work so).
+- **At run time** the type is erased, but the dictionary keeps its layout word (D133), as a type argument's slot does, so generic code lays out an array of `C.Name a` as the instance's type is laid out.
+- **In the prover** a known instance's type is that type. At a dictionary in scope for `t`, it is a sort of its own applied to `t`'s sort (`Display.Options a`): one instance per type, so two uses at the same type are the same sort.
+- **Cycles and positivity.** An instance's type defined through itself, directly or through other instances (`type Options = Display.Options Money` in `Money`'s instance), is E0225, as for a type alias. A recursive type may not hold a class's type at itself (`kids~List (Display.Options Tree)` in `Tree`, E0354): what the instance gives isn't known while the type is checked, so it is taken as possibly negative.
+- **`==`** (D125 b) treats `C.Name a` as it treats a type parameter. **Coherence** is unchanged: one instance per type constructor, so `Display.Options Money` has one meaning wherever `Money`'s instance is loaded.
+
 The prelude declares `Ord` (`le`; `trans`, `total`, `antisym`) and the lemma `refl`, with instances for `Int` (so `Nat`, `Char` and the fixed-width numbers), `Bool` (`False` first), `String` (by bytes, which is by scalar values; a builtin with three axioms), `List a` (lexicographic) and `Option a` (`None` first); and `Functor`, with instances for `List` and `Option` (`std.array` has `Array`'s).
 
 ### 9.9 Named preconditions and `forall` (D137, M23)
@@ -1155,7 +1187,7 @@ The keywords at each kind of place, from the grammar (§9.2):
 | A lemma's body, before `ensures` | `let`, `ensures` | none |
 | After a lemma's `ensures` line | `proof` | none |
 | After a multi-line `if`'s branch | `else` | none |
-| A class's or instance's body | `fn`, `lemma` | none |
+| A class's or instance's body | `fn`, `lemma`, `type` | none |
 
 ### 15.6 Documentation and the site (D131)
 

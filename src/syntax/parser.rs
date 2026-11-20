@@ -642,6 +642,15 @@ impl Parser {
         Ok(DeclKind::Record { name, params, constraints, fields })
     }
 
+    /// A type, after `type Name =` in a class or an instance.
+    fn type_expr(&mut self) -> PResult<Expr> {
+        self.mark(PlaceKind::Type { start: false, field: false });
+        self.in_type += 1;
+        let ty = self.expr();
+        self.in_type -= 1;
+        ty
+    }
+
     fn alias_decl(&mut self) -> PResult<DeclKind> {
         self.bump(); // type
         let name = self.ident("a type name")?;
@@ -726,7 +735,21 @@ impl Parser {
         while !self.at(&Tok::Dedent) && !self.at(&Tok::Eof) {
             let start = self.span();
             self.mark(PlaceKind::Members);
-            if self.eat_kw(Kw::Fn) {
+            if self.eat_kw(Kw::Type) {
+                let mname = self.ident("a type name")?;
+                let params = self.names_until_header_end();
+                if let (Some(first), Some(last)) = (params.first(), params.last()) {
+                    self.diags.push(
+                        Diagnostic::error("E0124", format!("a class's type `{}` takes no parameters", mname.name), first.span.to(last.span))
+                            .with_help(format!("write `type {}`; each instance gives it for its own type", mname.name)),
+                    );
+                    return Err(Failed);
+                }
+                let default = if self.eat(&Tok::Eq) { Some(self.type_expr()?) } else { None };
+                let span = start.to(self.prev_span());
+                self.end_line()?;
+                members.push(ClassMember::Type { name: mname, default, span });
+            } else if self.eat_kw(Kw::Fn) {
                 let mname = self.ident("a function name")?;
                 let params = self.names_until_header_end();
                 let result = if self.eat(&Tok::Arrow) { Some(self.ident("a result name after `->`")?) } else { None };
@@ -770,7 +793,7 @@ impl Parser {
                 let span = start.to(self.prev_span());
                 members.push(ClassMember::Lemma { name: mname, params, constraints, lets, ensures, span });
             } else {
-                return Err(self.error_here("`fn` or `lemma`"));
+                return Err(self.error_here("`type`, `fn` or `lemma`"));
             }
         }
         self.bump(); // dedent
@@ -797,7 +820,22 @@ impl Parser {
         while !self.at(&Tok::Dedent) && !self.at(&Tok::Eof) {
             let start = self.span();
             self.mark(PlaceKind::Members);
-            if self.eat_kw(Kw::Fn) {
+            if self.eat_kw(Kw::Type) {
+                let mname = self.ident("a type name")?;
+                let params = self.names_until_header_end();
+                if let (Some(first), Some(last)) = (params.first(), params.last()) {
+                    self.diags.push(
+                        Diagnostic::error("E0124", format!("a class's type `{}` takes no parameters", mname.name), first.span.to(last.span))
+                            .with_help(format!("write `type {} = …` with the type for this instance", mname.name)),
+                    );
+                    return Err(Failed);
+                }
+                self.expect(Tok::Eq, "`=` and the type")?;
+                let ty = self.type_expr()?;
+                let span = start.to(self.prev_span());
+                self.end_line()?;
+                members.push(InstMember::Type { name: mname, ty, span });
+            } else if self.eat_kw(Kw::Fn) {
                 let mname = self.ident("a function name")?;
                 let params = self.names_until_header_end();
                 if self.at(&Tok::Colon) || self.at(&Tok::Arrow) {
@@ -845,7 +883,7 @@ impl Parser {
                 let span = start.to(self.prev_span());
                 members.push(InstMember::Lemma { name: mname, params, decreasing, proof, span });
             } else {
-                return Err(self.error_here("`fn` or `lemma`"));
+                return Err(self.error_here("`type`, `fn` or `lemma`"));
             }
         }
         self.bump(); // dedent

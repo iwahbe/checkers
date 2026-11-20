@@ -2,7 +2,7 @@
 //! arguments become `Erased`; everything else keeps its shape (de Bruijn
 //! indices included). Closure conversion (`lower`) starts from here.
 
-use crate::core::{eval, max_var, CaseTm, ConId, DefId, Globals, Mult, Prim, Tm, Val};
+use crate::core::{eval, max_var, CaseTm, ConId, DefId, Elim, Globals, Head, Mult, Prim, Tm, Val};
 use std::sync::Arc;
 
 /// A literal at run time.
@@ -137,11 +137,17 @@ impl Compiler<'_> {
                     if args.len() == self.g.arity_con(*c) {
                         let ci = &self.g.cons[c.0 as usize];
                         let np = self.g.arity_ty(ci.ty);
+                        let (_, targs) = t.spine();
                         let fields = args
                             .into_iter()
                             .skip(np)
                             .zip(&ci.fields)
-                            .map(|(a, f)| if f.1 == Mult::Zero { Arc::new(Ir::Erased) } else { a })
+                            .enumerate()
+                            .map(|(k, (a, f))| match f.1 {
+                                Mult::Zero if self.dict_type_field(*c, k) => Arc::new(self.erased(targs[np + k])),
+                                Mult::Zero => Arc::new(Ir::Erased),
+                                _ => a,
+                            })
                             .collect();
                         return Ir::Con(*c, fields);
                     }
@@ -162,7 +168,12 @@ impl Compiler<'_> {
                 let fields = args[np..]
                     .iter()
                     .zip(&ci.fields)
-                    .map(|(a, f)| if f.1 == Mult::Zero { Arc::new(Ir::Erased) } else { self.compile(a) })
+                    .enumerate()
+                    .map(|(k, (a, f))| match f.1 {
+                        Mult::Zero if self.dict_type_field(*c, k) => Arc::new(self.erased(a)),
+                        Mult::Zero => Arc::new(Ir::Erased),
+                        _ => self.compile(a),
+                    })
                     .collect();
                 Ir::Con(*c, fields)
             }
@@ -196,13 +207,19 @@ impl Compiler<'_> {
         }
     }
 
+    /// A class's type in its dictionary (#133): a field the dictionary
+    /// keeps the type's layout word in, for generic code's arrays of it.
+    fn dict_type_field(&self, c: crate::core::ConId, k: usize) -> bool {
+        self.g.is_type_field(c, k) && self.g.cons[c.0 as usize].fields[k].0.starts_with('$')
+    }
+
     /// An erased argument. A type is passed as its layout word (D133): an
     /// array of it is laid out by that word; anything else as nothing.
     fn erased(&self, a: &Tm) -> Ir {
         let h = a.head();
         let typelike = match h {
             Tm::Var(_) | Tm::Meta(_) | Tm::TyCon(_) | Tm::TyConApp(..) => true,
-            Tm::Def(d) => self.g.defs.get(d.0 as usize).is_some_and(|i| matches!(i.ty, Tm::Univ(_))),
+            Tm::Def(d) => self.g.defs.get(d.0 as usize).is_some_and(|i| matches!(i.ty, Tm::Univ(_))) || self.g.assoc_field(*d).is_some(),
             _ => false,
         };
         if !typelike {
@@ -210,7 +227,17 @@ impl Compiler<'_> {
         }
         let depth = max_var(a).map_or(0, |m| m + 1);
         let env = std::rc::Rc::new((0..depth).map(Val::var).collect::<Vec<_>>());
-        match crate::core::layout_of(self.g, &eval(self.g, &env, a)) {
+        let v = eval(self.g, &env, a);
+        // A class's type at a dictionary passed at run time (#133): its
+        // layout word, kept in the dictionary.
+        if let Val::Neutral(Head::Var(x), sp) = crate::core::force(self.g, v.clone()) {
+            if let [Elim::Field(c, i)] = sp.as_slice() {
+                if x < depth && self.dict_type_field(*c, *i) {
+                    return Ir::Field(Arc::new(Ir::Var(depth - 1 - x)), *i);
+                }
+            }
+        }
+        match crate::core::layout_of(self.g, &v) {
             Ok(0) => Ir::Erased,
             Ok(l) => Ir::Lit(Lit::Num(l as i128)),
             Err(level) if level < depth => Ir::Var(depth - 1 - level),

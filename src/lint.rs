@@ -229,6 +229,12 @@ impl Linter {
                 self.snake(param, "type parameter");
                 for m in members {
                     match m {
+                        ClassMember::Type { name, default, .. } => {
+                            self.camel(name, "type name");
+                            if let Some(t) = default {
+                                self.expr(t);
+                            }
+                        }
                         ClassMember::Fn { name, params, constraints, .. } => {
                             self.snake(name, "function name");
                             params.iter().for_each(|p| self.snake(p, "parameter"));
@@ -246,6 +252,7 @@ impl Linter {
             DeclKind::Instance { members, .. } => {
                 for m in members {
                     match m {
+                        InstMember::Type { ty, .. } => self.expr(ty),
                         InstMember::Fn { params, body, .. } => {
                             params.iter().for_each(|p| self.snake(p, "parameter"));
                             self.block(body);

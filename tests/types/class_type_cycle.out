@@ -1,0 +1,15 @@
+error[E0225]: `Display.Options Money` depends on itself
+  --> class_type_cycle.ck:13:20
+   |
+13 |     type Options = Display.Options Money
+   |                    ^^^^^^^^^^^^^^^^^^^^^
+   = help: an instance's type stands for the type it is given, so this would never end; give the type itself
+
+error[E0225]: `Display.Options Coin` depends on itself
+  --> class_type_cycle.ck:29:20
+   |
+29 |     type Options = Display.Options Coin
+   |                    ^^^^^^^^^^^^^^^^^^^^
+   = help: an instance's type stands for the type it is given, so this would never end; give the type itself
+
+class_type_cycle.ck: 2 errors, 0 warnings

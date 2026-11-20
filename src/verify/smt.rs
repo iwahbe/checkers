@@ -626,6 +626,41 @@ impl<'a> Builder<'a> {
                         }
                         _ => out("a type that depends on a value"),
                     },
+                    // A class's type (#133): at a known instance, its type;
+                    // at a dictionary in scope, for a type `t`, a sort of its
+                    // own applied to `t`'s (one instance per type).
+                    Tm::Def(d) if args.len() == 2 && self.e.g.assoc_field(*d).is_some() => {
+                        // Known values (an instance's dictionary) as they are.
+                        let n = env.len();
+                        let empty = Rc::new(Vec::new());
+                        let venv: Vec<Val> = env
+                            .iter()
+                            .enumerate()
+                            .map(|(k, e)| match e {
+                                Ent::Known(key) => match self.known.get(key) {
+                                    Some(tm) if crate::core::max_var(tm).is_none() => crate::core::eval(&self.e.g, &empty, tm),
+                                    _ => Val::var(k),
+                                },
+                                _ => Val::var(k),
+                            })
+                            .collect();
+                        let v = crate::core::force(&self.e.g, crate::core::eval(&self.e.g, &Rc::new(venv), t));
+                        match &v {
+                            Val::Neutral(crate::core::Head::Var(l), sp) if sp.len() == 1 && *l < n => {
+                                let crate::core::Elim::Field(c, i) = sp[0] else { return out("a class's type at a dictionary it can't name") };
+                                // The sort of the type the dictionary is for.
+                                match self.resolve(env, n - 1 - l)? {
+                                    Ent::Term(_, Sort::Data(_, sargs)) if !sargs.is_empty() => Ok(self.assoc_sort(c, i, sargs[0].clone())),
+                                    _ => out("a class's type at a dictionary it can't name"),
+                                }
+                            }
+                            Val::Neutral(..) => out("a class's type at a dictionary it can't name"),
+                            _ => {
+                                let tm = quote(&self.e.g, n, &v);
+                                self.sort_of(env, &tm)
+                            }
+                        }
+                    }
                     Tm::Def(d) => {
                         // A type function applied to closed arguments
                         // (`values (Last Nat)`, D176): the type it gives.
@@ -692,6 +727,30 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// The sort of a class's type (field `i` of its dictionary's
+    /// constructor `c`, #133) at a type of sort `arg`: a sort constructor
+    /// of its own, `Display.Options a`.
+    fn assoc_sort(&mut self, c: ConId, i: usize, arg: Sort) -> Sort {
+        let ci = &self.e.g.cons[c.0 as usize];
+        let ti = &self.e.g.tys[ci.ty.0 as usize];
+        let name = format!("{}.{}.{}", ti.module, ti.name, ci.fields[i].0.trim_start_matches('$'));
+        self.sorts.insert(name.clone(), 1);
+        Sort::Unin(name, vec![arg])
+    }
+
+    /// A type-valued field's sort, in a datatype's declaration: a class's
+    /// type at the class's parameter (#133), or a sort of its own.
+    fn type_field_sort(&mut self, c: ConId, i: usize, env: &[Ent]) -> Sort {
+        let f = &self.e.g.cons[c.0 as usize].fields[i];
+        if f.0.starts_with('$') {
+            if let Some(Ent::Ty(p)) = env.first() {
+                return self.assoc_sort(c, i, p.clone());
+            }
+        }
+        self.sorts.insert("field".into(), 0);
+        Sort::Unin("field".into(), vec![])
+    }
+
     fn ty_sort(&mut self, env: &[Ent], id: TyId, args: &[Tm]) -> Tx<Sort> {
         let wk = self.wk().clone();
         if Some(id) == wk.int {
@@ -751,9 +810,10 @@ impl<'a> Builder<'a> {
         for c in self.e.g.tys[id.0 as usize].ctors.clone() {
             let fields = self.e.g.cons[c.0 as usize].fields.clone();
             let mut env = env.clone();
-            for f in &fields {
+            for (k, f) in fields.iter().enumerate() {
                 if self.is_type(&f.3) {
-                    env.push(Ent::Ty(Sort::Unin("field".into(), vec![])));
+                    let s = self.type_field_sort(c, k, &env);
+                    env.push(Ent::Ty(s));
                     continue;
                 }
                 match self.sort_of(&env, &f.3) {
@@ -796,7 +856,10 @@ impl<'a> Builder<'a> {
         let mut out_ = Vec::new();
         for (k, f) in fields.iter().enumerate() {
             match &f.3 {
-                ty if self.is_type(ty) => env.push(Ent::Ty(Sort::Unin("field".into(), vec![]))),
+                ty if self.is_type(ty) => {
+                    let s = self.type_field_sort(c, k, &env);
+                    env.push(Ent::Ty(s));
+                }
                 ty => {
                     let s = self.sort_of(&env, ty)?;
                     out_.push((k, s.clone()));
@@ -1312,7 +1375,10 @@ impl<'a> Builder<'a> {
                         }
                         env.push(Ent::Term(sel, fsort.clone()));
                     }
-                    None => env.push(Ent::Ty(Sort::Unin("field".into(), vec![]))),
+                    None => {
+                        let s = self.type_field_sort(c, k, &senv);
+                        env.push(Ent::Ty(s));
+                    }
                 }
             }
             for inv in self.e.con_invs.get(&c).cloned().unwrap_or_default() {
@@ -1953,7 +2019,8 @@ impl<'a> Builder<'a> {
         }
         all.drain(..np);
         let Some(cd) = self.e.class_defs.get(&cty) else { return Ok(None) };
-        let Some(fi) = cd.methods().iter().position(|m| **m == *name) else { return Ok(None) };
+        // The dictionary's fields: the class's types (#133), then its functions.
+        let Some(fi) = cd.methods().iter().position(|m| **m == *name).map(|k| k + cd.types().len()) else { return Ok(None) };
         let Some(field) = all.get(fi).cloned() else { return Ok(None) };
         // The environment: the dictionary's arguments, then the call's explicit ones.
         let mut ienv: Vec<Ent> = Vec::new();
@@ -2537,7 +2604,10 @@ impl<'a> Builder<'a> {
                     for k in 0..*n {
                         match fs.iter().find(|(i, _)| *i == k) {
                             Some((_, fsort)) => env2.push(Ent::Term(format!("({} {x})", sel_sym(self.e, *con, k)), fsort.clone())),
-                            None => env2.push(Ent::Ty(Sort::Unin("field".into(), vec![]))),
+                            None => {
+                                let s = self.type_field_sort(*con, k, &senv);
+                                env2.push(Ent::Ty(s));
+                            }
                         }
                     }
                     let (bt, bs) = self.term(&env2, body)?;

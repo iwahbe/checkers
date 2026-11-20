@@ -1348,7 +1348,10 @@ impl Elab {
                 for (fi, (fname, _, _, t)) in fields.iter().enumerate() {
                     if !self.ty_positive(t, *tid) {
                         let name = self.g.tys[tid.0 as usize].name.clone();
-                        let diag = if let Some(f) = self.param_holder(t, *tid, &self.g.tys[tid.0 as usize].params.clone(), fi) {
+                        let diag = if let Some(a) = self.assoc_holder(t, *tid) {
+                            Diagnostic::error("E0354", format!("`{name}` occurs in field `{fname}` as the argument of `{a}`, a type each instance gives, which may use it in a negative position"), d.span)
+                                .with_help(format!("a recursive type can't hold a class's type at itself: the instance's type isn't known while `{name}` is checked; write that type in the field"))
+                        } else if let Some(f) = self.param_holder(t, *tid, &self.g.tys[tid.0 as usize].params.clone(), fi) {
                             Diagnostic::error("E0354", format!("`{name}` occurs in field `{fname}` as an argument of `{f}`, a parameter, which may use it in a negative position"), d.span)
                                 .with_help(format!("a recursive type may appear only directly or as an argument of a type that holds only values of it, like `List`; `{f}` could be any type constructor, so nothing is known of how it uses its argument"))
                         } else { match self.unmarked_holder(t, *tid) {
@@ -1458,6 +1461,22 @@ impl Elab {
             }
         }
         go(t, me, 0, params, params.len() + field)
+    }
+
+    /// A class's type (#133) at a type holding `me`: `Display.Options` in
+    /// `List (Display.Options Tree)`.
+    fn assoc_holder(&self, t: &Tm, me: TyId) -> Option<String> {
+        if let (Tm::Def(d), args) = t.spine() {
+            if self.g.assoc_field(*d).is_some() && args.first().is_some_and(|a| occurs_ty(a, me)) {
+                return Some(self.g.defs[d.0 as usize].name.to_string());
+            }
+        }
+        let mut found = None;
+        t.any_sub(|x, _| {
+            found = self.assoc_holder(x, me);
+            found.is_some()
+        });
+        found
     }
 
     /// The type constructor that holds `me` in a parameter not known to be
@@ -2231,7 +2250,7 @@ fn strip_refinements(e: &Expr) -> Expr {
 
 /// Whether the type `e` mentions `name` where a refinement's own names
 /// (`x` of `(x~Int -> Int, x >= 5)`) don't hide it.
-fn mentions_free(e: &Expr, name: &str) -> bool {
+pub(crate) fn mentions_free(e: &Expr, name: &str) -> bool {
     match &e.kind {
         ExprKind::Var(n) => n == name,
         ExprKind::Refine(r) => {

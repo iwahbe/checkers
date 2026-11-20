@@ -196,6 +196,8 @@ pub enum DeclKind {
 /// A requirement of a class: a function's signature, or a lemma's statement.
 #[derive(Clone, Debug)]
 pub enum ClassMember {
+    /// `type Name`, or `type Name = T` with a default (#133).
+    Type { name: Ident, default: Option<Expr>, span: Span },
     Fn { name: Ident, params: Vec<Ident>, result: Option<Ident>, constraints: Vec<Constraint>, span: Span },
     Lemma { name: Ident, params: Vec<Ident>, constraints: Vec<Constraint>, lets: Vec<(Pattern, Expr)>, ensures: Expr, span: Span },
 }
@@ -203,6 +205,8 @@ pub enum ClassMember {
 /// What an instance supplies: a function's body, or a lemma's proof.
 #[derive(Clone, Debug)]
 pub enum InstMember {
+    /// `type Name = T`: the class's type at this instance (#133).
+    Type { name: Ident, ty: Expr, span: Span },
     Fn { name: Ident, params: Vec<Ident>, decreasing: Option<Expr>, body: Block, span: Span },
     Lemma { name: Ident, params: Vec<Ident>, decreasing: Option<Expr>, proof: Option<Block>, span: Span },
 }
@@ -321,4 +325,26 @@ pub enum PatKind {
     Or(Vec<Pattern>),
     /// `Ctor { a, b = p }` (D32)
     Record(Ident, Vec<(Ident, Pattern)>),
+}
+
+impl ClassMember {
+    pub fn name(&self) -> &Ident {
+        match self {
+            ClassMember::Type { name, .. } | ClassMember::Fn { name, .. } | ClassMember::Lemma { name, .. } => name,
+        }
+    }
+
+    pub fn span(&self) -> Span {
+        match self {
+            ClassMember::Type { span, .. } | ClassMember::Fn { span, .. } | ClassMember::Lemma { span, .. } => *span,
+        }
+    }
+}
+
+impl InstMember {
+    pub fn name(&self) -> &Ident {
+        match self {
+            InstMember::Type { name, .. } | InstMember::Fn { name, .. } | InstMember::Lemma { name, .. } => name,
+        }
+    }
 }
