@@ -773,7 +773,7 @@ Other warnings:
 | W033 | a `compile_fail` block that compiles, or fails with another error than it names (D148 d) |
 | W034 | a code block whose `main` doesn't exit with `Success` (`checkers doc` and `checkers site`, D148 d) |
 
-Used means reached, through any reference, from the roots: `main` in a program, the exports in a library (no `main`), every declaration of a module with neither, and in all three every `check`, lemma and instance (D144). The standard library and dependencies are not reported, and none of these is reported while there is an error in the names and types phase (a name that failed to resolve would look unused).
+Used means reached, through any reference, from the roots: `main` and the exports of every module of the program, with an exported type's constructors and fields; every declaration of a root module with neither `main` nor an export; and always every `check`, lemma and instance (D144, #95). A program can also be a library: what its modules export counts as used, whether or not `main` uses it. The standard library and dependencies are not reported, and none of these is reported while there is an error in the names and types phase (a name that failed to resolve would look unused).
 
 ### 9.8 Classes and instances (D136, M23–M25)
 

@@ -1,1 +1,8 @@
-unused_parts.ck: 0 errors, 0 warnings
+warning[W020]: function `stray` is never used
+  --> unused_parts.ck:16:4
+   |
+16 | fn stray n -> r : n~Int, r~Int
+   |    ^^^^^ nothing exported reaches it
+   = help: remove it, or export it if other modules should use it
+
+unused_parts.ck: 0 errors, 1 warning
