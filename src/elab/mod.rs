@@ -633,9 +633,16 @@ pub struct Elab {
     /// An instance's dictionary reading a type from another's (#133), to
     /// find cycles.
     pub assoc_edges: Vec<(DefId, DefId)>,
+    /// Each instance member of the module being desugared, by its index:
+    /// its class's name, its instance's head and the head's variables (#146).
+    pub member_heads: HashMap<usize, (String, ast::Expr, Vec<String>)>,
+    /// The instance whose member's signature is being elaborated (#146).
+    pub sig_inst: Option<classes::SigInst>,
     /// Comparisons waiting for a dictionary (#133): level, expected,
     /// actual, where, the locals' names.
     pub waiting: Vec<(usize, Val, Val, Span, Vec<Name>)>,
+    /// Those waiting for an instance's dictionary to be elaborated (#146).
+    pub waiting_late: Vec<(usize, Val, Val, Span, Vec<Name>)>,
     /// This module's classes, until their types are registered.
     pub pending_classes: Vec<(String, String, Vec<ast::ClassMember>, Span)>,
     /// A class function's parameters' multiplicities, by `module.Class.function`,
@@ -796,7 +803,10 @@ impl Elab {
             class_defs: HashMap::new(),
             assoc_defs: HashMap::new(),
             assoc_edges: Vec::new(),
+            member_heads: HashMap::new(),
+            sig_inst: None,
             waiting: Vec::new(),
+            waiting_late: Vec::new(),
             pending_classes: Vec::new(),
             class_mults: HashMap::new(),
             inst_heads: HashSet::new(),

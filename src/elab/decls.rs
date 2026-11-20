@@ -107,6 +107,7 @@ impl Elab {
         }
         self.phase_positivity(m, &ids);
         self.phase_bodies(m, &ids, HashMap::new(), true);
+        self.retry_late();
         self.check_termination();
         // A transparent function's private helpers are visible to the prover
         // too, or its body would say nothing (D54): close the set over calls.
@@ -1832,6 +1833,7 @@ impl Elab {
         for (k, (d, id)) in m.decls.iter().zip(ids).enumerate() {
             let Some(Sym::Def(did)) = id else { continue };
             self.g.fuel.set(DEFAULT_FUEL);
+            self.sig_inst = self.sig_inst_of(k);
             let sig = match &d.kind {
                 DeclKind::Fn { name, params, result, constraints, partial, decreasing, body } => {
                     let mut sig = self.signature(params, result.as_ref(), constraints);
@@ -1972,6 +1974,7 @@ impl Elab {
             }
             sigs.insert(k, sig);
         }
+        self.sig_inst = None;
         sigs
     }
 
@@ -2077,6 +2080,7 @@ impl Elab {
             let Some(Sym::Def(did)) = id else { continue };
             let Some(sig) = sigs.get(&k) else { continue };
             self.g.fuel.set(DEFAULT_FUEL);
+            self.sig_inst = self.sig_inst_of(k);
             let mut cx = sig.cx.clone();
             // The hypotheses are known while the conclusion is elaborated (M17).
             // They were elaborated with a (lemma-less) result in scope.
@@ -2122,6 +2126,7 @@ impl Elab {
             };
             self.specs.insert(*did, spec);
         }
+        self.sig_inst = None;
     }
 
     /// Elaborate a lemma's header `let`s into `cx`, returning their terms.
