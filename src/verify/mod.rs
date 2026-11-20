@@ -956,6 +956,7 @@ fn describe(e: &Elab, o: &Obligation) -> String {
             format!("postcondition of `{func}`: {} (for `{text}`, line {line})", o.text)
         }
         ObKind::Invariant { con } => format!("invariant of `{con}`: {}", o.text),
+        ObKind::TypeParams { written, .. } => format!("`{written}` is a type: {}", o.text),
         ObKind::CownInvariant { alias } => format!("cown contents stay `{alias}`: {}", o.text),
         ObKind::Refined { alias, value } => format!("`{value}` is a `{alias}`: {}", o.text),
         ObKind::Weaken { sub, sup, .. } => format!("every `{sub}` is a `{sup}`: {}", o.text),
@@ -1016,6 +1017,11 @@ fn headline(o: &Obligation) -> (String, String, String) {
             format!("cannot prove `{}`, required to build `{con}`", o.text),
             format!("`{con}` requires `{}`", o.text),
             "check the value before building it, e.g. with an `if`".into(),
+        ),
+        ObKind::TypeParams { ty, written } => (
+            format!("cannot prove `{}`, required to write the type `{written}`", o.text),
+            format!("`{ty}` requires `{}`", o.text),
+            "give arguments for which it holds, or require it where the type is written: in the function's preconditions, or in a condition on the enclosing type's parameters".into(),
         ),
         ObKind::CownInvariant { alias } => (
             format!("cannot prove `{}`, the invariant of a cown holding `{alias}`", o.text),

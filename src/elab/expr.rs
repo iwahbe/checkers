@@ -985,6 +985,19 @@ impl Elab {
         ok
     }
 
+    /// The conditions on a type's parameters, for its application to `env`
+    /// at `span` (#136).
+    pub fn oblige_ty_conds(&mut self, cx: &Cx, span: Span, tid: TyId, env: Vec<Val>) {
+        let Some(conds) = self.ty_conds.get(&tid).cloned() else { return };
+        let ty = self.g.tys[tid.0 as usize].name.to_string();
+        let written = self.src_text(span);
+        for p in &conds {
+            let goal = self.inst_pred(p, env.clone());
+            let kind = ObKind::TypeParams { ty: ty.clone(), written: written.clone() };
+            self.oblige(cx, span, kind, p.text.clone(), goal, None);
+        }
+    }
+
     /// Preconditions of a call and invariants of a constructor application (§7.1).
     fn call_obligations(&mut self, cx: &Cx, t: &Tm, span: Span, head_span: Span) {
         let (h, args) = t.spine();
@@ -1042,6 +1055,19 @@ impl Elab {
                     self.oblige(cx, span, ObKind::Pre { callee: name.clone() }, p.text.clone(), goal, None);
                 }
 
+            }
+            Tm::TyCon(tid) => {
+                // Wherever a type is applied, its conditions on its
+                // parameters must hold (#136).
+                if !self.ty_conds.contains_key(tid) || args.len() < self.g.tys[tid.0 as usize].params.len() {
+                    return;
+                }
+                let env: Vec<Val> = args.iter().map(|a| self.eval(cx, a)).collect();
+                if let Some(d) = &mut self.ty_cond_defer {
+                    d.push((span, *tid, env));
+                    return;
+                }
+                self.oblige_ty_conds(cx, span, *tid, env);
             }
             Tm::Con(c) => {
                 let Some(invs) = self.con_invs.get(c).cloned() else { return };

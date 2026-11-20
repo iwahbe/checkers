@@ -89,6 +89,7 @@ impl Elab {
                 super::order::Node::Head(k) => match &m.decls[k].kind {
                     DeclKind::Enum { .. } | DeclKind::Record { .. } | DeclKind::Alias { .. } => {
                         self.phase_aliases(m, &mask);
+                        self.phase_type_conds(m, &mask);
                         self.phase_ctors(m, &mask);
                     }
                     DeclKind::Const { .. } => self.phase_consts(m, &mask),
@@ -809,13 +810,36 @@ impl Elab {
                 cx.bind(&p.name.name, v, Mult::Zero);
                 out.push((Rc::from(p.name.name.as_str()), ty));
             }
-            for c in cs {
-                if let Constraint::Pred(e) = c {
-                    self.elab_pred(&mut cx, e, false);
-                }
-            }
             self.g.tys[tid.0 as usize].params = out;
             self.solve_deferred();
+        }
+    }
+
+    /// A type's conditions on its parameters (`lo <= hi` in `record P lo hi :
+    /// lo~Nat, hi~Nat, lo <= hi`), in dependency order, so that the functions
+    /// they call have their signatures (#136). Each may rely on those before it.
+    fn phase_type_conds(&mut self, m: &ast::Module, ids: &[Option<Sym>]) {
+        for (d, id) in m.decls.iter().zip(ids) {
+            let cs = match &d.kind {
+                DeclKind::Enum { constraints, .. } | DeclKind::Record { constraints, .. } => constraints,
+                _ => continue,
+            };
+            let Some(Sym::Ty(tid)) = id else { continue };
+            self.g.fuel.set(DEFAULT_FUEL);
+            let mut cx = self.bind_type_params(*tid);
+            let mut preds = Vec::new();
+            for c in cs {
+                if let Constraint::Pred(e) | Constraint::Named(_, e) = c {
+                    let p = self.elab_pred(&mut cx, e, false);
+                    let v = self.eval(&cx, &p.tm);
+                    cx.assume(v);
+                    preds.push(p);
+                }
+            }
+            self.solve_deferred();
+            if !preds.is_empty() {
+                self.ty_conds.insert(*tid, preds);
+            }
         }
     }
 
@@ -924,6 +948,11 @@ impl Elab {
     fn elab_fields(&mut self, tid: TyId, cid: ConId, names: &[&Ident], cs: &[Constraint], extra_preds: &[&Expr]) {
         self.g.fuel.set(DEFAULT_FUEL);
         let mut cx = self.bind_type_params(tid);
+        // The type's conditions on its parameters hold in its fields (#136).
+        for p in self.ty_conds.get(&tid).cloned().unwrap_or_default() {
+            let v = self.eval(&cx, &p.tm);
+            cx.assume(v);
+        }
         let mut fields: Vec<(Name, Mult, Icit, Tm)> = Vec::new();
         let mut invs: Vec<FieldInv> = Vec::new();
         // Auto-bound implicit fields (D10), e.g. `m` in `xs~Vec a m`.
@@ -1506,6 +1535,9 @@ impl Elab {
     // The loop over binders also visits the result slot (`k == nb`).
     #[allow(clippy::needless_range_loop)]
     pub fn signature(&mut self, params: &[Ident], result: Option<&Ident>, cs: &[Constraint]) -> Sig {
+        // A type written here is checked against its conditions with every
+        // precondition known, wherever it is written (#136).
+        let saved_defer = self.ty_cond_defer.replace(Vec::new());
         let mut cx = Cx::default();
         let mut binders = Vec::new();
         let mut declared: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
@@ -1637,6 +1669,7 @@ impl Elab {
                 }
             }
         }
+        let deferred = std::mem::replace(&mut self.ty_cond_defer, saved_defer).unwrap_or_default();
         // Predicates may mention the result, so check them with it in scope.
         let rv = self.eval(&cx, &result_ty);
         let rname = result.map(|r| r.name.clone()).unwrap_or_else(|| "_result".to_string());
@@ -1712,6 +1745,17 @@ impl Elab {
                 preds.push(p);
             }
         }
+        // The types' conditions, from the preconditions only.
+        cx.facts.truncate(facts_before);
+        for p in preds.iter().filter(|p| !p.is_post) {
+            let v = self.eval(&cx, &p.tm);
+            cx.assume(v);
+        }
+        self.in_spec += 1;
+        for (span, tid, env) in deferred {
+            self.oblige_ty_conds(&cx, span, tid, env);
+        }
+        self.in_spec -= 1;
         cx.facts.truncate(facts_before);
         cx.pop();
         Sig { cx, binders, result: result_ty, n_implicit, preds, result_name: rname, comptime, hyps, late }

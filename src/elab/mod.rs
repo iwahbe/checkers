@@ -250,6 +250,9 @@ pub enum ObKind {
     Pre { callee: String },
     Post { func: String, at: Span },
     Invariant { con: String },
+    /// A condition on a type's parameters, where the type is applied (#136):
+    /// the type's name and the application as written.
+    TypeParams { ty: String, written: String },
     /// A behaviour must hand back contents of the cown's refinement (§8.5).
     CownInvariant { alias: String },
     /// A value checked against a refinement alias from a type argument (D71).
@@ -496,6 +499,12 @@ pub struct Elab {
     pub transparent: HashSet<DefId>,
     /// Constructor invariants, over the type's parameters then the fields.
     pub con_invs: HashMap<ConId, Vec<Pred>>,
+    /// A type's conditions on its parameters, over the parameters (#136):
+    /// obligations where the type is applied, facts in its fields.
+    pub ty_conds: HashMap<TyId, Vec<Pred>>,
+    /// While a signature's types are elaborated, the type applications whose
+    /// conditions are checked once all its preconditions are known (#136).
+    pub ty_cond_defer: Option<Vec<(Span, TyId, Vec<Val>)>>,
     /// Refinement aliases' predicates, over the alias's parameters then its binder.
     pub alias_preds: HashMap<DefId, Vec<Pred>>,
     /// The name a refinement alias binds (`n` in `type Big = n~Int, …`).
@@ -730,6 +739,8 @@ impl Elab {
             specs: HashMap::new(),
             transparent: HashSet::new(),
             con_invs: HashMap::new(),
+            ty_conds: HashMap::new(),
+            ty_cond_defer: None,
             alias_preds: HashMap::new(),
             alias_subject: HashMap::new(),
             result_metas: HashMap::new(),
@@ -1619,7 +1630,7 @@ impl Elab {
         // mustn't speak of a call that can't be made (M17, D118). A
         // specification elaborated twice (a lemma's `ensures`) obliges once.
         if self.in_spec > 0 {
-            if !matches!(kind, ObKind::Pre { .. }) {
+            if !matches!(kind, ObKind::Pre { .. } | ObKind::TypeParams { .. }) {
                 return;
             }
             if self.obligations.iter().any(|o| o.span == span && o.module == self.cur && o.kind == kind) {
