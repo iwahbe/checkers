@@ -2613,7 +2613,19 @@ impl<'a> Builder<'a> {
         let mut opaque = Vec::new();
         let mut group = Vec::new();
         let all: Vec<(Inst, Option<Defn>)> = self.insts.iter().map(|(a, b)| (a.clone(), b.clone())).collect();
+        // Instances at types of one sort (`String` and `Bytes` are both
+        // `(Seq Int)`, §7.3) have one SMT name: each name is defined, or
+        // else declared, once.
+        let defined: HashSet<String> = all.iter().filter_map(|(_, d)| d.as_ref().map(|(n, _, _)| n.clone())).collect();
+        let mut seen = HashSet::new();
         for (inst, def) in &all {
+            let name = match def {
+                Some((n, _, _)) => n.clone(),
+                None => self.inst_name(inst),
+            };
+            if (def.is_none() && defined.contains(&name)) || !seen.insert(name) {
+                continue;
+            }
             match def {
                 Some((name, head, body)) => {
                     heads.push(head.clone());
