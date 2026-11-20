@@ -5,13 +5,13 @@ A class names functions and lemmas that a type may provide: an order (`Ord`), ad
 ## Declaring a class
 
 ```text
-class  ::= 'class' Uname lname NL INDENT { member } DEDENT
+class  ::= 'class' Uname lname { lname } NL INDENT { member } DEDENT
 member ::= 'type' Uname [ '=' type ] NL
          | 'fn' lname { lname } '->' lname ':' constraints NL
          | 'lemma' lname { lname } [ ':' constraints ] NL INDENT 'ensures' expr NL DEDENT
 ```
 
-A class has one parameter, and lists its members: types that each instance gives ([A class's types](#a-classs-types)), functions, each with a signature giving the type of every parameter and of the result (E0362), and lemmas, each with a statement. Members have no bodies. A lemma that follows from the members isn't part of the class: write it outside, as an ordinary lemma with the class as a constraint.
+A class has a type parameter, or several ([Classes of several types](#classes-of-several-types)), and lists its members: types that each instance gives ([A class's types](#a-classs-types)), functions, each with a signature giving the type of every parameter and of the result (E0362), and lemmas, each with a statement. Members have no bodies. A lemma that follows from the members isn't part of the class: write it outside, as an ordinary lemma with the class as a constraint.
 
 ```checkers
 class Size a
@@ -25,7 +25,7 @@ A member is named `C.f` (`Size.size`), or `f` alone where the class is in scope 
 ## Instances
 
 ```text
-instance ::= 'instance' Uname type [ ':' constraints ] NL INDENT { member } DEDENT
+instance ::= 'instance' Uname type { type } [ ':' constraints ] NL INDENT { member } DEDENT
 member   ::= 'type' Uname '=' type NL
            | 'fn' lname { lname } NL INDENT block DEDENT
            | 'lemma' lname { lname } [ NL INDENT 'proof' NL INDENT block DEDENT DEDENT ]
@@ -75,6 +75,8 @@ There is at most one instance of a class for a type, wherever it is used:
 - an instance is for a type constructor applied to distinct type variables (`List a`, `Pair a`, `(a, b)`, `Int`, `Bool`, `()`), not for a type such as `List Int` (E0281), and of the kind the class expects (E0286); `Unit` names `()`, so `instance Show Unit` is that instance too, but an instance is never for another type alias; `(a, b, c)` is `(a, (b, c))`, so `instance C (a, b)` covers every tuple of two or more parts, `b` being the rest, and an instance for `(a, b, c)` is E0281;
 - it is declared in the package of the class or of the type, never in a third (E0282), as Rust's orphan rule asks;
 - no two instances of a class have the same type constructor (E0283).
+
+A class of several types has its own rules ([Classes of several types](#classes-of-several-types)).
 
 An instance isn't exported (E0120): it applies wherever its module is loaded. A second order on a type is given through a wrapper type with its own instance, or by sorting with a key or a comparison (`list.sort_as`, `list.sort_by`).
 
@@ -208,6 +210,65 @@ instance Display (Pair a) : Display a
 A class's type doesn't tell which instance it is: `Int` and another type may both take `NoOptions`. So where the type isn't known yet, `display v [Cents]` doesn't decide what `v` is; the options are checked once `v`'s type is known from elsewhere, and if it never is, the call is E0285.
 
 At run time the type is erased, but an array of it, made in generic code, is laid out as the instance's type is: the instance's record of functions carries what the layout needs.
+
+## Classes of several types
+
+A class may take several type parameters, when what is allowed depends on the types together. Here a formatter decides which types of values its holes accept: one takes anything with a display, one only strings, one strings and ints.
+
+```checkers
+class Hole s h
+    fn hole tag x -> r : tag~s, x~h, r~String
+
+class Show a
+    fn show x -> s : x~a, s~String
+
+instance Show Int
+    fn show x
+        format x
+
+record Format
+    prefix~String
+
+record Page
+    title~String
+
+record Plain
+    sep~String
+
+# Any type with a `Show`.
+instance Hole Format a : Show a
+    fn hole f x
+        f.prefix ++ show x
+
+# Only strings.
+instance Hole Page String
+    fn hole p x
+        p.title ++ x
+
+# Strings and ints, nothing else.
+instance Hole Plain String
+    fn hole p x
+        x
+
+instance Hole Plain Int
+    fn hole p x
+        format x ++ p.sep
+
+fn fill t x -> r : Hole s h, t~s, x~h, r~String
+    hole t x
+
+check hole (Format "#") 3 == "#3"
+check hole (Page "p: ") "x" == "p: x"
+check fill (Plain ";") 4 == "4;"
+```
+
+Each function and lemma of the class mentions every one of its parameters in its parameters' types (E0368): a use finds the instance from the types of its arguments.
+
+An instance gives a type for each parameter (E0292). Each is a type constructor applied to distinct type variables, as for one parameter, or a bare type variable, except the first (E0281). The first type decides where the instance may be declared: in the package of the class or of the first type's constructor (E0282). Two instances of a class whose types could match the same types overlap (E0283): `Hole Format a` and `Hole Format String` would, `Hole Format a` and `Hole Page String` don't.
+
+At a use, an instance is chosen once it is the only one whose types can still match what is known: a use at `Page` chooses `Hole Page String`, and the value's type is then `String`; a use at `Plain` waits until the value's type is known, and is E0285 if it never is. With no instance that can match, as for `Plain` and `Bool`, it is E0284.
+
+A class's type takes a type for each parameter outside the class: `Hole.Options s h` for a `type Options` declared in `Hole`.
 
 ## The prelude's classes
 

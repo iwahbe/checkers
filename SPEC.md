@@ -851,6 +851,25 @@ instance Display (Pair a) : Display a
 - **Cycles and positivity.** An instance's type defined through itself, directly or through other instances (`type Options = Display.Options Money` in `Money`'s instance), is E0225, as for a type alias. A recursive type may not hold a class's type at itself (`kids~List (Display.Options Tree)` in `Tree`, E0354): what the instance gives isn't known while the type is checked, so it is taken as possibly negative.
 - **`==`** (D125 b) treats `C.Name a` as it treats a type parameter. **Coherence** is unchanged: one instance per type constructor, so `Display.Options Money` has one meaning wherever `Money`'s instance is loaded.
 
+**Classes of several types (#145).** A class may take several type parameters, `class Hole s h`, when what is allowed is a property of the types together: which hole types a formatter accepts.
+
+```checkers
+class Hole s h
+    fn hole tag x -> r : tag~s, x~h, r~String
+
+instance Hole Format a : Display a    # any type with a display
+instance Hole Page String             # only strings
+instance Hole Plain String
+instance Hole Plain Int               # strings and ints, nothing else
+```
+
+- **Declaring.** Each function and lemma mentions every parameter of the class in its parameters' types (E0368 otherwise, at the member, naming the parameter): otherwise a use couldn't tell which instance it means. Each parameter's kind comes from how the members use it, as for one parameter (M25).
+- **An instance** gives a type for each parameter (E0292 otherwise). Each is a type constructor applied to distinct type variables (E0281), or a bare type variable, except the first, which can't be (E0281); the variables are distinct across all the types (E0281). Its context is classes of those variables. With one parameter, `instance Ord List a` is E0292 too (`instance Ord (List a)` is meant).
+- **Coherence.** An instance is declared in the package of the class or of its first type's type constructor (E0282): Rust's orphan rule ([RFC 2451](https://rust-lang.github.io/rfcs/2451-re-rebalancing-coherence.html)) with the local type first, so every instance for a given first type is in one of two packages, both visible wherever that type is. Two instances whose types can match the same types are E0283: at each position the same type constructor, or a variable in either (`Hole Format a` and `Hole Format String` overlap; `Hole Format a` and `Hole Page String` don't).
+- **Using a class.** A clause `Hole s h` is an implicit parameter, the dictionary, as for one parameter. An instance is chosen once it is the only one whose types can still match, given what is known of the types: with `instance Hole Format a : Display a`, a use at `Format` and a hole type not known yet chooses it at once, and its `Display a` waits for `a`; with `Hole Page String` alone, a use at `Page` chooses it and the hole's type is `String`; with `Hole Plain String` and `Hole Plain Int`, the use waits until the hole's type is known. E0284 if no instance can match; E0285 if more than one could and the types never become known (naming those that could). A dictionary in scope is used for exactly its types: a use whose unknown types it could match waits for them.
+- **A class's types** are given by each instance; outside the class, `Hole.Options s h`, a type for each parameter (E0291 with fewer). In the prover, at a dictionary in scope, it is a sort of its own applied to the sorts of all the types.
+- Everything else is as for one parameter: the dictionary is a record of the class's functions; a known instance's functions are visible to the prover and an unknown dictionary's fields are uninterpreted; a class's lemma is assumed for every dictionary; termination through dictionaries is found the same way. A class with one parameter is unchanged.
+
 The prelude declares `Ord` (`le`; `trans`, `total`, `antisym`) and the lemma `refl`, with instances for `Int` (so `Nat`, `Char` and the fixed-width numbers), `Bool` (`False` first), `String` (by bytes, which is by scalar values; a builtin with three axioms), `List a` (lexicographic) and `Option a` (`None` first); and `Functor`, with instances for `List` and `Option` (`std.array` has `Array`'s).
 
 ### 9.9 Named preconditions and `forall` (D137, M23)

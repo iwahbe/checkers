@@ -428,10 +428,22 @@ impl Globals {
     /// A class's type (#133): `C.Name`, a definition `\t {d} -> d.$Name`
     /// reading a `Type` field of the dictionary. The field, if `d` is one.
     pub fn assoc_field(&self, d: DefId) -> Option<(ConId, usize)> {
-        let Some(Tm::Lam(_, _, _, b)) = &self.defs.get(d.0 as usize)?.body else { return None };
-        let Tm::Lam(_, _, Icit::Impl, b) = &**b else { return None };
+        self.assoc_def(d).map(|(c, i, _)| (c, i))
+    }
+
+    /// A class's type (#133): its field, and how many type parameters the
+    /// class has (`\s h {d} -> d.$Name`, #145), so it takes one more
+    /// argument, the dictionary.
+    pub fn assoc_def(&self, d: DefId) -> Option<(ConId, usize, usize)> {
+        let mut b = self.defs.get(d.0 as usize)?.body.as_ref()?;
+        let mut n = 0;
+        while let Tm::Lam(_, _, Icit::Expl, x) = b {
+            b = x;
+            n += 1;
+        }
+        let Tm::Lam(_, _, Icit::Impl, b) = b else { return None };
         match &**b {
-            Tm::Field(x, c, i) if matches!(**x, Tm::Var(0)) && self.is_type_field(*c, *i) => Some((*c, *i)),
+            Tm::Field(x, c, i) if n > 0 && matches!(**x, Tm::Var(0)) && self.is_type_field(*c, *i) => Some((*c, *i, n)),
             _ => None,
         }
     }

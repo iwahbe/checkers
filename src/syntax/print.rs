@@ -100,8 +100,8 @@ fn decl(d: &Decl) -> String {
         }
         DeclKind::Const { name, value } => format!("({ex}const {} {})", name.name, expr(value, 1)),
         DeclKind::Check { expr: e } => format!("(check {})", expr(e, 1)),
-        DeclKind::Class { name, param, members } => {
-            let mut s = format!("({ex}class {} {}", name.name, param.name);
+        DeclKind::Class { name, params, members } => {
+            let mut s = format!("({ex}class {} {}", name.name, names(params));
             for m in members {
                 match m {
                     ClassMember::Type { name, default, .. } => {
@@ -131,8 +131,11 @@ fn decl(d: &Decl) -> String {
             }
             s + ")"
         }
-        DeclKind::Instance { class, ty, context, members } => {
-            let mut s = format!("(instance {} {}", class.name, expr(ty, 1));
+        DeclKind::Instance { class, tys, context, members } => {
+            let mut s = format!("(instance {}", class.name);
+            for ty in tys {
+                s += &format!(" {}", expr(ty, 1));
+            }
             if !context.is_empty() {
                 s += &format!(" (: {})", list(context, 1));
             }

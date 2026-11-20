@@ -266,6 +266,29 @@ fn ckc_package_flags_and_messages() {
     assert_eq!((bad.status.code(), text(&bad.stderr)), (Some(2), "error: `--uses .=…` names `other`, which no `--package` gives\n".to_string()));
 }
 
+/// An instance of a class of several types goes in the package of the class
+/// or of its first type (#145): another of its types being this package's
+/// isn't enough.
+#[test]
+fn instance_orphan_rule_by_first_type() {
+    let w = World::new("orphan");
+    w.write(
+        "lib/hole.ck",
+        "module hole\n\nexport class Hole s h\n    fn hole tag x -> r : tag~s, x~h, r~String\n\nexport record Format\n    prefix~String\n",
+    );
+    w.write(
+        "prog/p.ck",
+        "module p\n\nimport lib.hole (Hole, Format)\n\nrecord Mine\n    n~Int\n\ninstance Hole Mine Int\n    fn hole m x\n        format x\n\ninstance Hole Format Mine\n    fn hole f m\n        f.prefix\n",
+    );
+    let out = ckc(&w, "prog", &["check", "--package", "lib=../lib", "--uses", ".=lib", "p.ck"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        text(&out.stderr),
+        "error[E0282]: `instance Hole Format Mine` must be in the package of `Hole` or of its first type\n  --> p.ck:12:1\n   |\n12 | instance Hole Format Mine\n   | ^^^^^^^^^^^^^^^^^^^^^^^^^ neither is declared in this package\n   = help: an instance goes with its class or its first type, so there is only ever one (Rust's orphan rule); wrap the first type in a record of your own to give it this instance\n\n\
+         p.ck: 1 error, 0 warnings\n"
+    );
+}
+
 #[test]
 fn fetch_failures_are_reported_plainly() {
     let w = World::new("fetchfail");
