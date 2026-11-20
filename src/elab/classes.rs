@@ -808,6 +808,20 @@ impl Elab {
         self.pending_classes.push((name.name.clone(), param.name.clone(), members.to_vec(), name.span));
     }
 
+    /// Whether an instance's head is the unit type: `()`, or an alias of it
+    /// declared elsewhere (the prelude's `Unit`).
+    fn is_unit_head(&self, ty: &Expr) -> bool {
+        match &ty.kind {
+            ExprKind::Unit => true,
+            ExprKind::Tuple(xs) => xs.is_empty(),
+            ExprKind::Con(n) if !self.local_ty_params.contains_key(n) && !self.local_names.contains_key(n) => match self.resolve(n, true) {
+                Some(Sym::Def(d)) => matches!(&self.g.defs[d.0 as usize].body, Some(Tm::TupleTy(xs)) if xs.is_empty()),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn desugar_instance(
         &mut self,
@@ -838,9 +852,13 @@ impl Elab {
                 }
             },
         };
+        // `()`, written so or as the prelude's `Unit`: the tuple type of no
+        // elements, a type constructor with no parameters.
+        let unit_head = Expr { kind: ExprKind::Tuple(Vec::new()), span: ty.span };
+        let head_ty = if self.is_unit_head(ty) { &unit_head } else { ty };
         // The head: a type constructor applied to distinct type variables.
         let mut args = Vec::new();
-        let mut h = ty;
+        let mut h = head_ty;
         while let ExprKind::App(f, a) = &h.kind {
             args.push((**a).clone());
             h = f;
@@ -1210,7 +1228,7 @@ impl Elab {
         self.pending_insts.push(PendingInst {
             class: class_tid,
             class_name: class.name.clone(),
-            head: ty.clone(),
+            head: head_ty.clone(),
             vars,
             context: ctx,
             span: d.span,
