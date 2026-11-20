@@ -104,6 +104,13 @@ fn decl(d: &Decl) -> String {
             let mut s = format!("({ex}class {} {}", name.name, param.name);
             for m in members {
                 match m {
+                    ClassMember::Type { name, default, .. } => {
+                        s += &format!("\n{}(type {}", ind(1), name.name);
+                        if let Some(t) = default {
+                            s += &format!(" {}", expr(t, 2));
+                        }
+                        s += ")";
+                    }
                     ClassMember::Fn { name, params, result, constraints, .. } => {
                         s += &format!("\n{}(fn {} ({})", ind(1), name.name, names(params));
                         if let Some(r) = result {
@@ -131,6 +138,9 @@ fn decl(d: &Decl) -> String {
             }
             for m in members {
                 match m {
+                    InstMember::Type { name, ty, .. } => {
+                        s += &format!("\n{}(type {} {})", ind(1), name.name, expr(ty, 2));
+                    }
                     InstMember::Fn { name, params, decreasing, body, .. } => {
                         s += &format!("\n{}(fn {} ({})", ind(1), name.name, names(params));
                         if let Some(e) = decreasing {

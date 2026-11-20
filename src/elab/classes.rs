@@ -51,7 +51,7 @@ fn fn_member_ok(m: &ClassMember) -> bool {
             let typed = |n: &str| constraints.iter().any(|c| matches!(c, Constraint::Typed { name, .. } if name.name == n));
             params.iter().all(|p| typed(&p.name)) && result.as_ref().is_some_and(|r| typed(&r.name))
         }
-        ClassMember::Lemma { .. } => true,
+        ClassMember::Lemma { .. } | ClassMember::Type { .. } => true,
     }
 }
 
@@ -59,6 +59,26 @@ impl ClassDef {
     pub fn methods(&self) -> Vec<String> {
         self.members.iter().filter_map(|m| if let ClassMember::Fn { name, .. } = m { Some(name.name.clone()) } else { None }).collect()
     }
+
+    /// Its types' names (#133).
+    pub fn types(&self) -> Vec<String> {
+        type_names(&self.members)
+    }
+}
+
+/// The names of a class's types (#133).
+fn type_names(members: &[ClassMember]) -> Vec<String> {
+    members.iter().filter_map(|m| if let ClassMember::Type { name, .. } = m { Some(name.name.clone()) } else { None }).collect()
+}
+
+/// Inside a class, its type `Name` is `C.Name a` (#133).
+fn assoc_use(class: &str, param: &str, name: &str, s: Span) -> Expr {
+    app(Expr { kind: ExprKind::Field(Box::new(con(class, s)), ident(name, s)), span: s }, var(param, s))
+}
+
+/// The dictionary's field holding the class's type `Name` (#133).
+fn assoc_field_name(name: &str) -> String {
+    format!("${name}")
 }
 
 /// The head of an instance's type.
@@ -116,6 +136,8 @@ pub struct InstReq {
     pub in_spec: bool,
     /// Dictionaries in scope: level, class, type.
     pub given: Vec<(usize, TyId, Val)>,
+    /// For a class's type, `C.Name` (#133): the dictionary is read for it.
+    pub assoc: Option<String>,
 }
 
 /// `e` with every span `s`: code from another module, shown at `s`.
@@ -514,7 +536,12 @@ impl Elab {
             let sym = lookup(n, false)?;
             Some(var(&Self::sym_name(sym), s))
         };
+        // The class's own types stay by name: each instance gives them.
+        let tnames = c.types();
         let k = |n: &str, s: Span| -> Option<Expr> {
+            if tnames.iter().any(|t| t == n) {
+                return None;
+            }
             let sym = lookup(n, true)?;
             Some(con(&Self::sym_name(sym), s))
         };
@@ -527,6 +554,9 @@ impl Elab {
         c.members
             .iter()
             .map(|m| match m {
+                ClassMember::Type { name, default, span } => {
+                    ClassMember::Type { name: name.clone(), default: default.as_ref().map(|e| rw.expr(e, &[])), span: *span }
+                }
                 ClassMember::Fn { name, params, result, constraints, span } => {
                     let mut bound: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
                     bound.extend(result.iter().map(|r| r.name.clone()));
@@ -657,16 +687,40 @@ impl Elab {
         let sp = name.span;
         let clause = app(con(&name.name, sp), var(&param.name, sp));
         let mut fields = Vec::new();
+        let mut type_fields = Vec::new();
         let mut seen = HashSet::new();
+        // Its types (#133): in the dictionary, a field of its own; in its
+        // functions' and lemmas' signatures, `C.Name a`.
+        let tnames = type_names(members);
+        let to_field = |n: &str, s: Span| if tnames.iter().any(|t| t == n) { Some(var(&assoc_field_name(n), s)) } else { None };
+        let (cname, pname) = (name.name.clone(), param.name.clone());
+        let to_assoc = |n: &str, s: Span| if tnames.iter().any(|t| t == n) { Some(assoc_use(&cname, &pname, n, s)) } else { None };
+        let none = |_: &str, _: Span| None;
+        let nq = |_: &str, _: &str, _: Span| None;
+        let frw = Rewrite { var: &none, con: &to_field, qualified: &nq };
+        let arw = Rewrite { var: &none, con: &to_assoc, qualified: &nq };
         for mem in members {
-            let (mname, mspan) = match mem {
-                ClassMember::Fn { name, span, .. } | ClassMember::Lemma { name, span, .. } => (name, *span),
-            };
+            let (mname, mspan) = (mem.name(), mem.span());
             if !seen.insert(mname.name.clone()) {
                 self.err(Diagnostic::error("E0350", format!("`{}` is defined twice in class `{}`", mname.name, name.name), mname.span));
                 continue;
             }
             match mem {
+                ClassMember::Type { name: t, default, .. } => {
+                    if let Some(e) = default.as_ref().filter(|e| super::decls::mentions_free(e, &param.name)) {
+                        self.err(
+                            Diagnostic::error("E0288", format!("the default of `{}` can't mention the class's parameter `{}`", t.name, param.name), e.span)
+                                .with_help(format!("a default is the same type at every instance; an instance that needs `{}` gives `type {} = …` itself", param.name, t.name)),
+                        );
+                    }
+                    type_fields.push(ast::Field {
+                        name: ident(&assoc_field_name(&t.name), t.span),
+                        mult: ast::Mult::Ghost,
+                        ty: con("Type", t.span),
+                        preds: Vec::new(),
+                        span: mspan,
+                    });
+                }
                 ClassMember::Fn { name: f, params, result, constraints, .. } => {
                     // The dictionary's field: the function's type, without refinements' predicates.
                     let typed = |n: &str| {
@@ -723,10 +777,10 @@ impl Elab {
                     let none = |_: &str, _: Span| None;
                     let nq = |_: &str, _: &str, _: Span| None;
                     let qrw = Rewrite { var: &to_q, con: &none, qualified: &nq };
-                    let mut fty = qrw.expr(&rty, &[]);
+                    let mut fty = qrw.expr(&frw.expr(&rty, &[]), &[]);
                     for t in tys.into_iter().rev() {
                         let span = t.span;
-                        fty = Expr { kind: ExprKind::Arrow(Box::new(qrw.expr(&t, &[])), Box::new(fty)), span };
+                        fty = Expr { kind: ExprKind::Arrow(Box::new(qrw.expr(&frw.expr(&t, &[]), &[])), Box::new(fty)), span };
                     }
                     for v in own.iter().rev() {
                         let span = fty.span;
@@ -750,7 +804,7 @@ impl Elab {
                         call = app(call, var(&p.name, at_end));
                     }
                     let mut cs = vec![Constraint::Pred(clause.clone())];
-                    cs.extend(constraints.iter().cloned());
+                    cs.extend(arw.constraints(constraints, &[]));
                     decls.push(Decl {
                         export: if d.export == Export::No { Export::No } else { Export::Transparent },
                         kind: DeclKind::Fn {
@@ -768,7 +822,7 @@ impl Elab {
                 }
                 ClassMember::Lemma { name: l, params, constraints, lets, ensures, .. } => {
                     let mut cs = vec![Constraint::Pred(clause.clone())];
-                    cs.extend(constraints.iter().cloned());
+                    cs.extend(arw.constraints(constraints, &[]));
                     decls.push(Decl {
                         export: if d.export == Export::No { Export::No } else { Export::Yes },
                         kind: DeclKind::Lemma {
@@ -776,8 +830,8 @@ impl Elab {
                             params: params.clone(),
                             constraints: cs,
                             decreasing: None,
-                            lets: lets.clone(),
-                            ensures: ensures.clone(),
+                            lets: lets.iter().map(|(p, e)| (p.clone(), arw.expr(e, &[]))).collect(),
+                            ensures: arw.expr(ensures, &[]),
                             proof: Some(block(var("__class_lemma", l.span))),
                         },
                         span: mspan,
@@ -792,6 +846,7 @@ impl Elab {
         for mem in members {
             let cs = match mem {
                 ClassMember::Fn { constraints, .. } | ClassMember::Lemma { constraints, .. } => constraints,
+                ClassMember::Type { .. } => continue,
             };
             for c in cs {
                 if let Constraint::Typed { ty, .. } = c {
@@ -810,7 +865,7 @@ impl Elab {
                 name: name.clone(),
                 params: vec![ast::Param { polarity: None, name: param.clone() }],
                 constraints: rcs,
-                fields,
+                fields: type_fields.into_iter().chain(fields).collect(),
             },
             span: d.span,
         });
@@ -909,7 +964,8 @@ impl Elab {
         let want = cmembers
             .iter()
             .flat_map(|m| match m {
-                ClassMember::Fn { constraints, .. } | ClassMember::Lemma { constraints, .. } => constraints.iter(),
+                ClassMember::Fn { constraints, .. } | ClassMember::Lemma { constraints, .. } => constraints.as_slice(),
+                ClassMember::Type { .. } => &[],
             })
             .filter_map(|c| match c {
                 Constraint::Typed { ty, .. } => Some(applied_arity(ty, &param)),
@@ -1046,30 +1102,27 @@ impl Elab {
         // Each member's name in this instance.
         let mut rename: HashMap<String, String> = HashMap::new();
         for m in members {
-            let n = match m {
-                InstMember::Fn { name, .. } | InstMember::Lemma { name, .. } => &name.name,
-            };
-            rename.insert(n.clone(), gen(n));
+            if let InstMember::Fn { name, .. } | InstMember::Lemma { name, .. } = m {
+                rename.insert(name.name.clone(), gen(&name.name));
+            }
         }
-        let cnames: Vec<String> = cmembers
-            .iter()
-            .map(|m| match m {
-                ClassMember::Fn { name, .. } | ClassMember::Lemma { name, .. } => name.name.clone(),
-            })
-            .collect();
+        let cnames: Vec<String> = cmembers.iter().map(|m| m.name().name.clone()).collect();
+        let kind_of = |m: &ClassMember| match m {
+            ClassMember::Type { .. } => "type",
+            ClassMember::Fn { .. } => "function",
+            ClassMember::Lemma { .. } => "lemma",
+        };
         let mut bad = false;
         for m in members {
-            let (n, span, is_fn) = match m {
-                InstMember::Fn { name, .. } => (name, name.span, true),
-                InstMember::Lemma { name, .. } => (name, name.span, false),
+            let n = m.name();
+            let span = n.span;
+            let what = match m {
+                InstMember::Type { .. } => "type",
+                InstMember::Fn { .. } => "function",
+                InstMember::Lemma { .. } => "lemma",
             };
-            let class_kind = all_members.iter().find_map(|cm| match cm {
-                ClassMember::Fn { name, .. } if name.name == n.name => Some(true),
-                ClassMember::Lemma { name, .. } if name.name == n.name => Some(false),
-                _ => None,
-            });
-            if class_kind != Some(is_fn) {
-                let what = if is_fn { "function" } else { "lemma" };
+            let class_kind = all_members.iter().find(|cm| cm.name().name == n.name).map(kind_of);
+            if class_kind != Some(what) {
                 self.err(
                     Diagnostic::error("E0363", format!("class `{}` has no {what} `{}`", class.name, n.name), span)
                         .with_help(format!("its members are `{}`", cnames.join("`, `"))),
@@ -1077,10 +1130,58 @@ impl Elab {
                 bad = true;
             }
         }
+        // The class's types at this instance (#133): given, or the class's
+        // default (written in the class, so shown at the instance's header).
+        let header = Span { start: d.span.start, end: ty.span.end };
+        let mut types: Vec<(String, Expr)> = Vec::new();
+        for cm in &all_members {
+            let ClassMember::Type { name: tn, default, .. } = cm else { continue };
+            let given = members.iter().find_map(|m| match m {
+                InstMember::Type { name, ty, .. } if name.name == tn.name => Some(ty.clone()),
+                _ => None,
+            });
+            let t = match (given, default) {
+                (Some(t), _) => t,
+                (None, Some(dflt)) => match foreign.as_deref() {
+                    Some(m) => {
+                        let at = self.synthetic_span(header);
+                        let text = self.text_in(m, dflt.span);
+                        self.text_override.insert((self.cur.clone(), at.start, at.end), text);
+                        respan(dflt, at)
+                    }
+                    None => dflt.clone(),
+                },
+                (None, None) => {
+                    self.err(
+                        Diagnostic::error("E0364", format!("`instance {text}` doesn't give `{}`", tn.name), d.span)
+                            .with_label(format!("`{}` missing", tn.name))
+                            .with_help(format!("add `type {} = …` with the type for `{}`", tn.name, self.src_text(ty.span).trim())),
+                    );
+                    bad = true;
+                    continue;
+                }
+            };
+            types.push((tn.name.clone(), t));
+        }
+        let tsub = |n: &str, _s: Span| types.iter().find(|(t, _)| t == n).map(|(_, e)| e.clone());
         let renamer = |n: &str, s: Span| rename.get(n).map(|g| var(g, s));
         let none = |_: &str, _: Span| None;
         let nq = |_: &str, _: &str, _: Span| None;
         let rw = Rewrite { var: &renamer, con: &none, qualified: &nq };
+        // In a signature, the class's function at this instance is this
+        // instance's: the class's type doesn't tell which instance (#133).
+        let mut own_fns: HashMap<String, String> = HashMap::new();
+        for cm in cmembers.iter().filter(|_| !types.is_empty()) {
+            let ClassMember::Fn { name, .. } = cm else { continue };
+            let Some(g) = rename.get(&name.name) else { continue };
+            own_fns.insert(name.name.clone(), g.clone());
+            let class_mod = class_tid.map(|t| self.class_defs[&t].module.clone());
+            if let Some(Sym::Def(d)) = class_mod.as_ref().and_then(|m| self.modules.get(m)).and_then(|mi| mi.values.get(&name.name)) {
+                own_fns.insert(Self::sym_name(Sym::Def(*d)), g.clone());
+            }
+        }
+        let own_fn = |n: &str, s: Span| own_fns.get(n).map(|g| var(g, s));
+        let trw = Rewrite { var: &own_fn, con: &tsub, qualified: &nq };
         self.inst_heads.insert((self.cur.clone(), ty.span.start));
         let subst_ty = ty.clone();
         let param_c = param.clone();
@@ -1096,6 +1197,7 @@ impl Elab {
                 continue;
             }
             match cm {
+                ClassMember::Type { .. } => continue,
                 ClassMember::Fn { name, params, result, constraints, .. } => {
                     let given = members.iter().find_map(|m| match m {
                         InstMember::Fn { name: n, params, decreasing, body, span } if n.name == name.name => Some((params, decreasing, body, *span, n.span)),
@@ -1124,7 +1226,7 @@ impl Elab {
                     taken.extend(head_vars.iter().cloned());
                     let constraints = &rename_vars(constraints, &hygiene(constraints, &param, &taken));
                     let mut cs = ctx_preds.clone();
-                    let theirs = srw.constraints(&rename_binders(constraints, &map), &[]);
+                    let theirs = trw.constraints(&srw.constraints(&rename_binders(constraints, &map), &[]), &[]);
                     cs.extend(self.shown_here(foreign.as_deref(), constraints, theirs, span));
                     let mut bound: Vec<String> = iparams.iter().map(|p| p.name.clone()).collect();
                     bound.extend(result.iter().map(|r| r.name.clone()));
@@ -1182,15 +1284,15 @@ impl Elab {
                     let to_new = |n: &str, s: Span| map.get(n).map(|m| var(m, s));
                     let prw = Rewrite { var: &to_new, con: &none, qualified: &nq };
                     let mut cs = ctx_preds.clone();
-                    let theirs = srw.constraints(&rename_binders(constraints, &map), &[]);
+                    let theirs = trw.constraints(&srw.constraints(&rename_binders(constraints, &map), &[]), &[]);
                     cs.extend(self.shown_here(foreign.as_deref(), constraints, theirs, span));
                     let mut bound: Vec<String> = iparams.iter().map(|p| p.name.clone()).collect();
                     let mut ls = Vec::new();
                     for (p, e) in lets {
-                        ls.push((p.clone(), srw.expr(&prw.expr(e, &[]), &[])));
+                        ls.push((p.clone(), trw.expr(&srw.expr(&prw.expr(e, &[]), &[]), &[])));
                         pat_binds(p, &mut bound);
                     }
-                    let mut ens = srw.expr(&prw.expr(ensures, &[]), &[]);
+                    let mut ens = trw.expr(&srw.expr(&prw.expr(ensures, &[]), &[]), &[]);
                     if let Some(m) = foreign.as_deref() {
                         let at = self.synthetic_span(span);
                         let text = self.text_in(m, ensures.span);
@@ -1230,6 +1332,11 @@ impl Elab {
             None => format!("$mk#{}.{}", self.cur, class.name),
         };
         let mut body = con(&mk, sp);
+        // Its types, each elaborated as a type (`()` is the unit type).
+        for (_, t) in &types {
+            let as_type = ast::RefineTy { param: None, own: false, dom: t.clone(), arrow: None, preds: Vec::new() };
+            body = app(body, Expr { kind: ExprKind::Refine(Box::new(as_type)), span: t.span });
+        }
         for cm in &cmembers {
             if let ClassMember::Fn { name, .. } = cm {
                 body = app(body, var(&gen(&name.name), sp));
@@ -1273,6 +1380,7 @@ impl Elab {
                 continue;
             };
             let def = ClassDef { module: self.cur.clone(), name, param, members, tid, span };
+            self.register_assoc(&def);
             self.class_defs.insert(tid, def);
         }
         for (k, (o, id)) in self.decl_origin.clone().iter().zip(ids).enumerate() {
@@ -1298,6 +1406,51 @@ impl Elab {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// A class's types (#133): for each, `C.Name`, the definition
+    /// `\t {d~C t} -> d.$Name` of type `t~K -> {C t} -> Type`, `K` the
+    /// kind of the class's parameter.
+    fn register_assoc(&mut self, c: &ClassDef) {
+        let Some(&con) = self.g.tys[c.tid.0 as usize].ctors.first() else { return };
+        let arity = c
+            .members
+            .iter()
+            .flat_map(|m| match m {
+                ClassMember::Fn { constraints, .. } | ClassMember::Lemma { constraints, .. } => constraints.as_slice(),
+                ClassMember::Type { .. } => &[],
+            })
+            .filter_map(|k| match k {
+                Constraint::Typed { ty, .. } => Some(applied_arity(ty, &c.param)),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+        let mut kind = Tm::Univ(0);
+        for _ in 0..arity {
+            kind = Tm::Pi(Rc::from("_"), Mult::Many, Icit::Expl, Rc::new(Tm::Univ(0)), Rc::new(kind));
+        }
+        // Its types are the dictionary's first fields.
+        for (k, t) in c.types().iter().enumerate() {
+            let d = self.new_def(&format!("{}.{t}", c.name));
+            let dict = Tm::TyConApp(c.tid, vec![Tm::Var(0)]);
+            let info = &mut self.g.defs[d.0 as usize];
+            info.ty = Tm::Pi(
+                Rc::from(c.param.as_str()),
+                Mult::Zero,
+                Icit::Expl,
+                Rc::new(kind.clone()),
+                Rc::new(Tm::Pi(Rc::from("$d"), Mult::Many, Icit::Impl, Rc::new(dict), Rc::new(Tm::Univ(0)))),
+            );
+            info.body = Some(Tm::Lam(
+                Rc::from(c.param.as_str()),
+                Mult::Zero,
+                Icit::Expl,
+                Rc::new(Tm::Lam(Rc::from("$d"), Mult::Many, Icit::Impl, Rc::new(Tm::Field(Rc::new(Tm::Var(0)), con, k)))),
+            ));
+            self.transparent.insert(d);
+            self.assoc_defs.insert((c.tid, t.clone()), d);
         }
     }
 
@@ -1452,16 +1605,60 @@ impl Elab {
         Ok(t)
     }
 
+    /// An instance's type defined through its own (#133): a dictionary
+    /// that reads a type from the instance that is building it, through
+    /// any chain of instances. Reported (E0225), and the type left unknown.
+    fn assoc_cycle(&mut self, r: &InstReq, t: &Tm) -> bool {
+        let (Some(name), Some(owner)) = (&r.assoc, r.owner) else { return false };
+        let Tm::Def(target) = t.head() else { return false };
+        if !self.dict_defs.contains(&owner) || !self.dict_defs.contains(target) {
+            return false;
+        }
+        // Does `target` reach `owner`?
+        let mut seen = vec![*target];
+        let mut todo = vec![*target];
+        let mut cycle = *target == owner;
+        while let Some(d) = todo.pop() {
+            for (a, b) in &self.assoc_edges {
+                if *a == d && !seen.contains(b) {
+                    cycle |= *b == owner;
+                    seen.push(*b);
+                    todo.push(*b);
+                }
+            }
+        }
+        if !cycle {
+            self.assoc_edges.push((owner, *target));
+            return false;
+        }
+        let shown = show(&self.g, &r.names, &quote(&self.g, r.lvl, &r.ty));
+        let shown = if shown.contains(' ') { format!("({shown})") } else { shown };
+        self.err(
+            Diagnostic::error("E0225", format!("`{name} {shown}` depends on itself"), r.span)
+                .with_help("an instance's type stands for the type it is given, so this would never end; give the type itself"),
+        );
+        true
+    }
+
     /// Find the dictionaries asked for so far. With `last`, report those
     /// whose type still isn't known.
     pub fn solve_instances(&mut self, last: bool) {
         let reqs = std::mem::take(&mut self.inst_reqs);
         for r in reqs {
             if !matches!(self.force(&r.meta), Val::Neutral(Head::Meta(_), _)) {
+                // Found already, by comparing types: a class's type may still
+                // be defined through itself.
+                if r.assoc.is_some() {
+                    let t = quote(&self.g, r.lvl, &force_meta(&self.g, r.meta.clone()));
+                    self.assoc_cycle(&r, &t);
+                }
                 continue;
             }
             match self.find_dict(&r, r.class, &r.ty, 0) {
                 Ok(t) => {
+                    if self.assoc_cycle(&r, &t) {
+                        continue;
+                    }
                     let env = Rc::new((0..r.lvl).map(Val::var).collect::<Vec<_>>());
                     let v = eval(&self.g, &env, &t);
                     let _ = unify(&self.g, r.lvl, &r.meta, &v);
@@ -1495,6 +1692,68 @@ impl Elab {
                             .with_help(format!("declare `instance {cname} …` for this type, beside the class or the type"))
                     };
                     self.err(d);
+                }
+            }
+        }
+    }
+
+    /// A comparison just made waits for a dictionary (#133): remember it,
+    /// to make again once the dictionary is found.
+    pub fn note_postponed(&mut self, lvl: usize, expected: &Val, actual: &Val, span: Span, names: &[Name]) {
+        let any = !self.g.postponed.borrow().is_empty();
+        if any {
+            self.g.postponed.borrow_mut().clear();
+            self.waiting.push((lvl, expected.clone(), actual.clone(), span, names.to_vec()));
+        }
+    }
+
+    /// `t` with each class's type at a known instance replaced by the
+    /// instance's (#133): `NoOptions` for `Display.Options Int`, in messages.
+    pub fn reduce_assoc(&self, lvl: usize, t: &Tm) -> Tm {
+        if let (Tm::Def(d), args) = t.spine() {
+            if args.len() == 2 && self.g.assoc_field(*d).is_some() {
+                let env = Rc::new((0..lvl).map(Val::var).collect::<Vec<_>>());
+                let v = force(&self.g, eval(&self.g, &env, t));
+                let stuck = matches!(&v, Val::Neutral(_, sp) if matches!(sp.last(), Some(Elim::Field(..))));
+                if !stuck {
+                    return quote(&self.g, lvl, &v);
+                }
+                return t.clone();
+            }
+        }
+        t.map_sub(|x, n| self.reduce_assoc(lvl + n, x))
+    }
+
+    /// Make again the comparisons that waited for a dictionary. One that
+    /// still waits at the `last` try is dropped: its dictionary's type was
+    /// never known, which its use reports (E0285).
+    pub fn retry_waiting(&mut self, last: bool) {
+        // A comparison made other than through `unify_at`: reported, if it
+        // fails, at the last name checked.
+        let strays: Vec<(usize, Val, Val)> = self.g.postponed.borrow_mut().drain(..).collect();
+        for (l, a, b) in strays {
+            let names = (0..l).map(|k| Name::from(format!("#{k}"))).collect();
+            self.waiting.push((l, a, b, self.name_span, names));
+        }
+        for (l, a, b, span, names) in std::mem::take(&mut self.waiting) {
+            let r = unify(&self.g, l, &a, &b);
+            let again = {
+                let mut p = self.g.postponed.borrow_mut();
+                let again = !p.is_empty();
+                p.clear();
+                again
+            };
+            match r {
+                Ok(()) if again => {
+                    if !last {
+                        self.waiting.push((l, a, b, span, names));
+                    }
+                }
+                Ok(()) => {}
+                Err(_) => {
+                    let e = show(&self.g, &names, &self.reduce_assoc(l, &quote(&self.g, l, &a)));
+                    let f = show(&self.g, &names, &self.reduce_assoc(l, &quote(&self.g, l, &b)));
+                    self.err(Diagnostic::error("E0201", format!("type mismatch: expected `{e}`, found `{f}`"), span));
                 }
             }
         }
@@ -1540,6 +1799,7 @@ impl Elab {
             owner: self.cur_fn,
             in_spec: self.in_spec > 0,
             given,
+            assoc: None,
         });
     }
 }

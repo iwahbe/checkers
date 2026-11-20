@@ -619,6 +619,14 @@ pub struct Elab {
     pub pm: pattern::PatState,
     /// Classes (D136), by their dictionary's type.
     pub class_defs: HashMap<TyId, classes::ClassDef>,
+    /// A class's types (#133): `C.Name`'s definition, by class and name.
+    pub assoc_defs: HashMap<(TyId, String), DefId>,
+    /// An instance's dictionary reading a type from another's (#133), to
+    /// find cycles.
+    pub assoc_edges: Vec<(DefId, DefId)>,
+    /// Comparisons waiting for a dictionary (#133): level, expected,
+    /// actual, where, the locals' names.
+    pub waiting: Vec<(usize, Val, Val, Span, Vec<Name>)>,
     /// This module's classes, until their types are registered.
     pub pending_classes: Vec<(String, String, Vec<ast::ClassMember>, Span)>,
     /// A class function's parameters' multiplicities, by `module.Class.function`,
@@ -775,6 +783,9 @@ impl Elab {
             match_binding: false,
             pm: Default::default(),
             class_defs: HashMap::new(),
+            assoc_defs: HashMap::new(),
+            assoc_edges: Vec::new(),
+            waiting: Vec::new(),
             pending_classes: Vec::new(),
             class_mults: HashMap::new(),
             inst_heads: HashSet::new(),
@@ -937,6 +948,8 @@ impl Elab {
             // Stuck on an unknown: as written (`values s Int`), not `match s …`.
             _ => match self.force(v) {
                 Val::Neutral(_, sp) if sp.iter().any(|e| matches!(e, Elim::Case(..))) => self.show_val(cx, v),
+                // A class's type at a type parameter (#133): `Display.Options a`.
+                Val::Neutral(_, sp) if sp.iter().any(|e| matches!(e, Elim::Field(c, i) if self.g.is_type_field(*c, *i))) => self.show_val(cx, v),
                 f => self.show_val(cx, &f),
             },
         }
@@ -1022,6 +1035,11 @@ impl Elab {
                     return false;
                 }
             }
+        }
+        if r.is_ok() {
+            self.note_postponed(cx.lvl(), expected, actual, span, &cx.names());
+        } else {
+            self.g.postponed.borrow_mut().clear();
         }
         match r {
             Ok(()) => true,
@@ -1564,7 +1582,10 @@ impl Elab {
 
     /// Does some constructor of this type have a field that is a type?
     pub(crate) fn holds_types(&self, id: TyId) -> bool {
-        self.g.cons.iter().filter(|c| c.ty == id).any(|c| c.fields.iter().any(|f| matches!(f.3, Tm::Univ(_))))
+        // A class's dictionary holds its types (#133), but is passed and
+        // found as a dictionary.
+        !self.class_defs.contains_key(&id)
+            && self.g.cons.iter().filter(|c| c.ty == id).any(|c| c.fields.iter().any(|f| matches!(f.3, Tm::Univ(_))))
     }
 
     fn mentions_type_var(&self, cx: &Cx, t: &Tm, under: usize) -> bool {
@@ -2113,6 +2134,7 @@ impl Elab {
 
     pub fn solve_deferred(&mut self) {
         self.solve_instances(false);
+        self.retry_waiting(false);
         let ds = std::mem::take(&mut self.deferred);
         for d in &ds {
             if let Val::Neutral(Head::Meta(_), _) = self.force(&d.ty) {
@@ -2126,6 +2148,7 @@ impl Elab {
             self.settle_arith(a);
         }
         self.solve_instances(true);
+        self.retry_waiting(true);
         for d in ds {
             if d.kind == OpClass::Comparable {
                 self.solve_comparable(&d);

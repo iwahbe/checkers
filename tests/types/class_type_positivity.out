@@ -1,0 +1,8 @@
+error[E0354]: `Tree` occurs in field `kids` as the argument of `Display.Options`, a type each instance gives, which may use it in a negative position
+  --> class_type_positivity.ck:10:1
+   |
+10 | enum Tree
+   | ^^^^^^^^^
+   = help: a recursive type can't hold a class's type at itself: the instance's type isn't known while `Tree` is checked; write that type in the field
+
+class_type_positivity.ck: 1 error, 0 warnings

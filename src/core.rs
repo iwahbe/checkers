@@ -353,6 +353,10 @@ pub struct Globals {
     /// non-terminating definitions whose termination isn't checked yet).
     pub fuel: Cell<u64>,
     pub well_known: WellKnown,
+    /// Comparisons of a class's type at a dictionary not found yet with
+    /// another type (#133): neither failed nor guessed, they wait for the
+    /// dictionary (level, the two types).
+    pub postponed: RefCell<Vec<(usize, Val, Val)>>,
 }
 
 #[derive(Default, Clone)]
@@ -396,6 +400,7 @@ impl Globals {
             meta_origins: RefCell::new(HashMap::new()),
             fuel: Cell::new(DEFAULT_FUEL),
             well_known: WellKnown::default(),
+            postponed: RefCell::new(Vec::new()),
         }
     }
 
@@ -418,6 +423,22 @@ impl Globals {
             Some(c) => Val::Con(c, Vec::new()),
             None => Val::Error,
         }
+    }
+
+    /// A class's type (#133): `C.Name`, a definition `\t {d} -> d.$Name`
+    /// reading a `Type` field of the dictionary. The field, if `d` is one.
+    pub fn assoc_field(&self, d: DefId) -> Option<(ConId, usize)> {
+        let Some(Tm::Lam(_, _, _, b)) = &self.defs.get(d.0 as usize)?.body else { return None };
+        let Tm::Lam(_, _, Icit::Impl, b) = &**b else { return None };
+        match &**b {
+            Tm::Field(x, c, i) if matches!(**x, Tm::Var(0)) && self.is_type_field(*c, *i) => Some((*c, *i)),
+            _ => None,
+        }
+    }
+
+    /// Is field `i` of constructor `c` a type (of type `Type`)?
+    pub fn is_type_field(&self, c: ConId, i: usize) -> bool {
+        self.cons.get(c.0 as usize).and_then(|ci| ci.fields.get(i)).is_some_and(|f| matches!(f.3, Tm::Univ(_)))
     }
 
     pub fn arity_ty(&self, t: TyId) -> usize {
@@ -1280,6 +1301,14 @@ fn unify_whnf(g: &Globals, l: usize, a: &Val, b: &Val) -> Result<(), UnifyError>
             } else {
                 solve(g, l, *m2, s2, a).or_else(|_| solve(g, l, *m1, s1, b))
             }
+        }
+        // A class's type at a dictionary not found yet (#133): it doesn't
+        // tell which, so the comparison waits until it is found.
+        (Val::Neutral(Head::Meta(_), sp), _) | (_, Val::Neutral(Head::Meta(_), sp))
+            if sp.iter().any(|e| matches!(e, Elim::Field(c, i) if g.is_type_field(*c, *i))) =>
+        {
+            g.postponed.borrow_mut().push((l, a.clone(), b.clone()));
+            Ok(())
         }
         (Val::Neutral(Head::Meta(m), sp), other) | (other, Val::Neutral(Head::Meta(m), sp)) => {
             solve(g, l, *m, sp, other)

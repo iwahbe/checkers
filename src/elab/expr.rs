@@ -776,6 +776,34 @@ impl Elab {
 
     // ── application ─────────────────────────────────────────────────────────
 
+    /// `C.Name t` (#133): the class's type `Name` at `t`, read from the
+    /// dictionary found for `t` once `t` is known.
+    #[allow(clippy::too_many_arguments)]
+    fn elab_assoc(&mut self, cx: &mut Cx, tid: TyId, acc: DefId, class_span: Span, name: &ast::Ident, arg: &Expr, span: Span) -> (Tm, Val) {
+        self.index_sym(class_span, Sym::Ty(tid));
+        self.index_sym(name.span, Sym::Def(acc));
+        self.note_reference(acc, span);
+        let (f, fty) = self.sym_term(cx, Sym::Def(acc), span);
+        let Val::Pi(_, m, _, dom, c) = self.force(&fty) else { return (Tm::Error, Val::Error) };
+        let saved = cx.type_pos;
+        cx.type_pos = true;
+        self.in_spec += 1;
+        let at = self.check(cx, arg, &dom, false);
+        self.in_spec -= 1;
+        cx.type_pos = saved;
+        let av = self.eval(cx, &at);
+        let t = Tm::App(Rc::new(f), Rc::new(at), Icit::Expl, m);
+        let ty = apply_closure(&self.g, &c, av);
+        self.name_span = span;
+        let n = self.inst_reqs.len();
+        let r = self.insert(cx, t, ty);
+        let shown = self.g.defs[acc.0 as usize].name.to_string();
+        for q in &mut self.inst_reqs[n..] {
+            q.assoc = Some(shown.clone());
+        }
+        r
+    }
+
     fn elab_app(&mut self, cx: &mut Cx, e: &Expr) -> (Tm, Val) {
         let want = self.app_expected.take();
         let saved_checks = std::mem::replace(&mut self.head_checks_aliases, false);
@@ -792,6 +820,18 @@ impl Elab {
             head = f;
         }
         args.reverse();
+
+        // A class's type at a type, `Display.Options Money` (#133).
+        if let ExprKind::Field(x, name) = &head.kind {
+            if let ExprKind::Con(c) = &x.kind {
+                if let Some(Sym::Ty(tid)) = self.resolve(c, true) {
+                    if let Some(acc) = self.assoc_defs.get(&(tid, name.name.clone())).copied() {
+                        let r = self.elab_assoc(cx, tid, acc, x.span, name, args[0], head.span.to(args[0].span));
+                        return self.apply_rest(cx, r, &args[1..], e.span);
+                    }
+                }
+            }
+        }
 
         // Overloaded built-ins (D38).
         if let ExprKind::Var(n) = &head.kind {
@@ -2035,9 +2075,18 @@ impl Elab {
             if let Some(Sym::Ty(tid)) = self.resolve(c, true) {
                 if let Some(cd) = self.class_defs.get(&tid).cloned() {
                     let member = self.modules.get(&cd.module).and_then(|m| m.values.get(&name.name)).copied();
-                    let is_member = cd.members.iter().any(|m| match m {
-                        ast::ClassMember::Fn { name: n, .. } | ast::ClassMember::Lemma { name: n, .. } => n.name == name.name,
-                    });
+                    if let Some(acc) = self.assoc_defs.get(&(tid, name.name.clone())).copied() {
+                        self.index_sym(x.span, Sym::Ty(tid));
+                        self.index_sym(name.span, Sym::Def(acc));
+                        let (cn, n) = (cd.name.clone(), name.name.clone());
+                        self.err(
+                            Diagnostic::error("E0291", format!("`{cn}.{n}` needs the type it is for"), span)
+                                .with_label(format!("each instance of `{cn}` gives its own `{n}`"))
+                                .with_help(format!("write `{cn}.{n} t` for the type `t`, e.g. `{cn}.{n} a` under a clause `{cn} a`")),
+                        );
+                        return (Tm::Error, Val::Error);
+                    }
+                    let is_member = cd.members.iter().any(|m| !matches!(m, ast::ClassMember::Type { .. }) && m.name().name == name.name);
                     return match member {
                         Some(s @ Sym::Def(d)) if is_member => {
                             self.index_sym(x.span, Sym::Ty(tid));
@@ -2051,9 +2100,7 @@ impl Elab {
                             let names: Vec<String> = cd
                                 .members
                                 .iter()
-                                .map(|m| match m {
-                                    ast::ClassMember::Fn { name, .. } | ast::ClassMember::Lemma { name, .. } => name.name.clone(),
-                                })
+                                .map(|m| m.name().name.clone())
                                 .collect();
                             self.err(
                                 Diagnostic::error("E0206", format!("class `{}` has no function or lemma `{}`", cd.name, name.name), name.span)

@@ -60,11 +60,7 @@ pub fn regions(text: &str, module: &Module) -> Vec<Vec<Line>> {
         match &d.kind {
             DeclKind::Enum { ctors, .. } => starts.extend(ctors.iter().map(|c| c.span.start as usize)),
             DeclKind::Record { fields, .. } => starts.extend(fields.iter().map(|f| f.span.start as usize)),
-            DeclKind::Class { members, .. } => starts.extend(members.iter().map(|m| match m {
-                crate::syntax::ast::ClassMember::Fn { span, .. } | crate::syntax::ast::ClassMember::Lemma { span, .. } => {
-                    span.start as usize
-                }
-            })),
+            DeclKind::Class { members, .. } => starts.extend(members.iter().map(|m| m.span().start as usize)),
             _ => {}
         }
     }
