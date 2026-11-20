@@ -678,7 +678,7 @@ impl Elab {
             Some(e) => (vec![Some(e.p)], e.cond.map(|c| (0, c)).into_iter().collect()),
             None => (vec![], vec![]),
         };
-        self.calls.push(CallRec { caller, callee: d, args, span, conds });
+        self.calls.push(CallRec { caller, callee: d, args, same: Vec::new(), span, conds });
     }
 
     pub fn sym_term(&mut self, _cx: &Cx, s: Sym, span: Span) -> (Tm, Val) {
@@ -841,12 +841,14 @@ impl Elab {
         if let Some(i) = head_call {
             let mut conds = Vec::new();
             let mut classified = Vec::new();
+            let mut same = Vec::new();
             for (k, a) in args.iter().enumerate() {
                 let part = self.part_of(cx, a);
                 if let Some((_, Some(c))) = part {
                     conds.push((k, c));
                 }
                 classified.push(part.map(|(p, _)| p));
+                same.push(self.param_itself(cx, a));
             }
             if let Some(e) = elem_sub {
                 let callee = self.calls[i].callee;
@@ -858,6 +860,7 @@ impl Elab {
                 }
             }
             self.calls[i].args = classified;
+            self.calls[i].same = same;
             self.calls[i].conds = conds;
         }
         // What the callee's signature says about its function parameters
@@ -1670,6 +1673,14 @@ impl Elab {
     fn part_of(&self, cx: &Cx, a: &Expr) -> Option<(usize, Option<u32>)> {
         match &a.kind {
             ExprKind::Var(n) => cx.lookup(n).and_then(|l| cx.locals[l].sub.map(|p| (p, cx.locals[l].sub_cond))),
+            _ => None,
+        }
+    }
+
+    /// `a` as parameter `p` itself (#109).
+    fn param_itself(&self, cx: &Cx, a: &Expr) -> Option<usize> {
+        match &a.kind {
+            ExprKind::Var(n) => cx.lookup(n).and_then(|l| cx.locals[l].param),
             _ => None,
         }
     }

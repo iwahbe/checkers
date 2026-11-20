@@ -76,6 +76,9 @@ pub struct CallRec {
     pub callee: DefId,
     /// For each explicit argument: Some(p) if it is a strict structural subterm of the caller's parameter p.
     pub args: Vec<Option<usize>>,
+    /// For each explicit argument: Some(p) if it is the caller's parameter p
+    /// itself, passed on unchanged (#109).
+    pub same: Vec<Option<usize>>,
     pub span: Span,
     /// `(i, c)`: `args[i]` holds only if condition `c` does (an element
     /// promise read from a body, decided once the module's bodies are
