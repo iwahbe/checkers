@@ -3,6 +3,7 @@ error[E0450]: cannot prove that the index is in bounds (`i + 1 < len xs`)
    |
 31 |     array.init (len xs) (\i -> xs[i + 1])
    |                                ^^^^^^^^^ indexing needs `i + 1 < len xs`
+   = note: facts in scope: `i < (len xs)`
    = note: counterexample: xs = array.from_list [5], i = 0
    = help: check the index first, e.g. `if i + 1 < len xs then xs[i + 1] else …`
 

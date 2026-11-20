@@ -68,7 +68,7 @@ check size [[True], [], [False, True]] == 3
 
 There is at most one instance of a class for a type, wherever it is used:
 
-- an instance is for a type constructor applied to distinct type variables (`List a`, `Pair a`, `Int`), not for a type such as `List Int` (E0281), and of the kind the class expects (E0286);
+- an instance is for a type constructor applied to distinct type variables (`List a`, `Pair a`, `(a, b)`, `Int`, `Bool`, `()`), not for a type such as `List Int` (E0281), and of the kind the class expects (E0286); `Unit` names `()`, so `instance Show Unit` is that instance too, but an instance is never for another type alias; `(a, b, c)` is `(a, (b, c))`, so `instance C (a, b)` covers every tuple of two or more parts, `b` being the rest, and an instance for `(a, b, c)` is E0281;
 - it is declared in the package of the class or of the type, never in a third (E0282), as Rust's orphan rule asks;
 - no two instances of a class have the same type constructor (E0283).
 

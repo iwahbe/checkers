@@ -2,8 +2,8 @@
 //! nothing reached builds (W023), record fields nothing reached reads (W024).
 //!
 //! Every resolved name is a reference from the declaration it is written
-//! in (found by its span) to what it names. Marking from the roots (`main`,
-//! or a library's exports; every `check`, lemma and instance) over those
+//! in (found by its span) to what it names. Marking from the roots (`main`
+//! and every export; every `check`, lemma and instance) over those
 //! references finds what is used, mutual recursion that nothing else
 //! reaches included.
 
@@ -190,7 +190,7 @@ impl Elab {
                 edges.entry(owner_at(&r.module, r.span)).or_default().push((r.target, r.kind));
             }
         }
-        // Roots: `main`, or a library's exports; and everything `check`s,
+        // Roots: `main` and every export; and everything `check`s,
         // lemmas and instances name.
         let mut live: HashSet<Target> = HashSet::new();
         let mut built: HashSet<ConId> = HashSet::new();
@@ -209,7 +209,7 @@ impl Elab {
         for m in own {
             for e in self.decl_table.get(m).map(|v| v.as_slice()).unwrap_or(&[]) {
                 let is_main = m == root && e.name.as_ref().is_some_and(|n| n.0 == "main") && (e.what == "function" || e.what == "constant" && e.export);
-                if !(is_main || (!program && e.export) || (scratch && m == root)) {
+                if !(is_main || e.export || (scratch && m == root)) {
                     continue;
                 }
                 if let Owner::Node(t) = node_of(e) {
@@ -287,13 +287,13 @@ impl Elab {
                     }
                     users.sort();
                     let mut d = Diagnostic::warning("W020", format!("{} `{name}` is never used", e.what), *at)
-                        .with_label(if program { "nothing `main` reaches uses it" } else { "nothing exported reaches it" });
+                        .with_label(if program { "neither `main` nor an export reaches it" } else { "nothing exported reaches it" });
                     if !users.is_empty() {
                         let list = users.iter().map(|u| format!("`{u}`")).collect::<Vec<_>>().join(", ");
                         let them = if users.len() == 1 { "it is unused too" } else { "they are unused too" };
                         d = d.with_note(format!("only {list} use{} it, and {them}", if users.len() == 1 { "s" } else { "" }));
                     }
-                    d = d.with_help(if program { "remove it" } else { "remove it, or export it if other modules should use it" });
+                    d = d.with_help("remove it, or export it if other modules should use it");
                     out.warnings.push((m.clone(), d));
                     continue;
                 }

@@ -3,6 +3,7 @@ error[E0240]: this pattern does not cover `[]`
    |
 18 |     let firsts = list.map (\(x :: _) -> x) ls
    |                             ^^^^^^^^ not exhaustive
+   = note: counterexample: ls = [[]]
    = help: take it apart with a `match` that handles that case too, or make the facts here rule it out (a precondition, an `if`)
 
 error[E0240]: this pattern does not cover `[]`

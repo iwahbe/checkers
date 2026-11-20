@@ -76,7 +76,43 @@ pub struct CallRec {
     pub callee: DefId,
     /// For each explicit argument: Some(p) if it is a strict structural subterm of the caller's parameter p.
     pub args: Vec<Option<usize>>,
+    /// For each explicit argument: Some(p) if it is the caller's parameter p
+    /// itself, passed on unchanged (#109).
+    pub same: Vec<Option<usize>>,
     pub span: Span,
+    /// `(i, c)`: `args[i]` holds only if condition `c` does (an element
+    /// promise read from a body, decided once the module's bodies are
+    /// checked; #102). Otherwise `args[i]` is `None`.
+    pub conds: Vec<(usize, u32)>,
+}
+
+/// Where a function value passed to a call gets its argument (#102): a
+/// strict part of the caller's parameter `p`, if condition `cond` holds
+/// (`None`: it does, from the callee's signature).
+#[derive(Clone, Copy, Debug)]
+pub struct ElemSub {
+    pub p: usize,
+    pub cond: Option<u32>,
+}
+
+/// One use of a parameter in a function's body (#102): the parameters `j`
+/// it is a function called only with strict parts of here, each if a
+/// condition holds. Empty: any other use, which promises nothing.
+pub type ParamUse = Vec<(usize, Option<u32>)>;
+
+/// A promise `(callee, k, j)`: `k` is called only with strict parts of `j` (#102).
+pub type ElemAlt = (DefId, usize, usize);
+
+/// A function parameter's precondition `pred … j … x …` (#102): `k` and
+/// `j` are explicit parameters of the function; `c` and `s` are the
+/// explicit argument positions of `pred` that `j` and the subject fill.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ElemPromise {
+    pub k: usize,
+    pub j: usize,
+    pub pred: DefId,
+    pub c: usize,
+    pub s: usize,
 }
 
 #[derive(Clone)]
@@ -90,10 +126,17 @@ pub struct Local {
     pub param: Option<usize>,
     /// This local is a strict structural subterm of parameter p.
     pub sub: Option<usize>,
+    /// ... if this condition holds (an element of a list passed to a
+    /// function whose promise is read from its body, #102).
+    pub sub_cond: Option<u32>,
     /// Known at compile time (§8.9): a `comptime` parameter, or a field of one.
     pub comptime: bool,
     /// Where its name is bound, if known (for the index, §15.5).
     pub span: Option<Span>,
+    /// A parameter whose refinements mention later parameters (#102): its
+    /// type with them, which a use of it has. `ty` is the type without
+    /// them, over the locals before it, as every local's type is.
+    pub refined: Option<Val>,
 }
 
 #[derive(Clone, Default)]
@@ -115,19 +158,24 @@ impl Cx {
     pub fn env(&self) -> Env {
         self.env.clone()
     }
+    /// The type a use of local `l` has: with the refinements that mention
+    /// later parameters, for such a parameter (#102).
+    pub fn ty_of(&self, l: usize) -> Val {
+        self.locals[l].refined.clone().unwrap_or_else(|| self.locals[l].ty.clone())
+    }
     pub fn names(&self) -> Vec<Name> {
         self.locals.iter().map(|l| l.name.clone()).collect()
     }
     pub fn bind(&mut self, name: &str, ty: Val, mult: Mult) -> usize {
         let l = self.lvl();
         Rc::make_mut(&mut self.env).push(Val::var(l));
-        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: true, param: None, sub: None, comptime: false, span: None });
+        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: true, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None });
         l
     }
     pub fn define(&mut self, name: &str, ty: Val, val: Val, mult: Mult) -> usize {
         let l = self.lvl();
         Rc::make_mut(&mut self.env).push(val);
-        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: false, param: None, sub: None, comptime: false, span: None });
+        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: false, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None });
         l
     }
     pub fn pop(&mut self) {
@@ -263,6 +311,8 @@ pub struct ObLocal {
     pub ty: Val,
     /// The value of a `let`-bound local.
     pub def: Option<Val>,
+    /// Its type with refinements that mention later locals (#102).
+    pub refined: Option<Val>,
 }
 
 /// `Γ ⊢ goal` (§7.1). Values are level-based over `ctx`.
@@ -320,6 +370,27 @@ pub struct Spec {
     pub ensures: Option<Pred>,
     /// `decreasing e` / `decreasing (a, b)`: components over the binders, and the text.
     pub measure: Option<(Vec<Tm>, String)>,
+    /// Parameters whose refinements mention later parameters (#102).
+    pub late: Vec<Late>,
+    /// Explicit parameter `k` is a function whose precondition is a
+    /// predicate relating its argument to explicit parameter `j`
+    /// (`k~(x~A -> B, contains j x)`). Termination reads it as a promise to
+    /// call `k` only with strict parts of `j` where that predicate is a
+    /// membership, as its body shows (#102).
+    pub elems: Vec<ElemPromise>,
+}
+
+/// A parameter whose type's refinements mention later parameters (#102).
+#[derive(Clone, Debug)]
+pub struct Late {
+    /// Its binder (implicit ones counted).
+    pub binder: usize,
+    /// Its refined type, over all the binders (not the result).
+    pub ty: Tm,
+    /// The later binders the refinements mention.
+    pub deps: Vec<usize>,
+    /// The number of binders `ty` is over.
+    pub n: usize,
 }
 
 /// The postconditions to check at each value the current function returns.
@@ -517,8 +588,28 @@ pub struct Elab {
     pub guard_vars: HashMap<(DefId, String), Span>,
     /// The function result type when elaborating a tail position (for `try`).
     pub stdlib_mode: bool,
-    /// Element locals of `map f xs` where xs is a subterm of parameter p.
-    pub map_elem_sub: Option<usize>,
+    /// A function value checked here is applied to a strict part of the
+    /// caller's parameter (#102).
+    pub map_elem_sub: Option<ElemSub>,
+    /// A parameter of the current function used next, as a function called
+    /// only with parts of these parameters (#102).
+    pub use_ctx: Option<ParamUse>,
+    /// Each parameter's uses in the module's function bodies (#102).
+    pub param_uses: HashMap<(DefId, usize), Vec<ParamUse>>,
+    /// The module's functions whose bodies were checked (#102).
+    pub body_fns: Vec<DefId>,
+    /// Conditions: any of these `(callee, k, j)` promises (#102).
+    pub elem_conds: Vec<Vec<ElemAlt>>,
+    /// A condition made at a call: the callee's text, and the container
+    /// argument's text and position, for E0301's help (#102).
+    pub elem_cond_at: HashMap<u32, (String, String, usize)>,
+    /// The element promises read from each checked function's body:
+    /// `(k, j)` as in `Spec::elems` (#102).
+    pub body_elems: HashMap<DefId, Vec<(usize, usize)>>,
+    /// `(pred, c, s)`: whether `pred` is a membership, true only where its
+    /// explicit argument `s` equals a strict part of argument `c` (#102);
+    /// for the module being checked.
+    pub memberships: HashMap<(DefId, usize, usize), bool>,
     /// Span of the `match` being compiled (for exhaustiveness errors).
     pub match_span: Span,
     /// The `match` being checked is a binding's one pattern (a `let`, a
@@ -530,10 +621,11 @@ pub struct Elab {
     pub class_defs: HashMap<TyId, classes::ClassDef>,
     /// This module's classes, until their types are registered.
     pub pending_classes: Vec<(String, String, Vec<ast::ClassMember>, Span)>,
-    /// A class function's parameters written `own`, by `module.Class.function`:
-    /// its dictionary field takes them exactly once, so generic code can pass
-    /// it a resource (D156 i).
-    pub class_own: HashMap<String, Vec<bool>>,
+    /// A class function's parameters' multiplicities, by `module.Class.function`,
+    /// when one is written `own` or `ghost`: its dictionary field takes an `own`
+    /// one exactly once, so generic code can pass it a resource (D156 i), and a
+    /// `ghost` one erased.
+    pub class_mults: HashMap<String, Vec<Mult>>,
     /// Where an instance's head type stands for its class's parameter, by
     /// module and span start: an `own` there is the class's, not written.
     pub inst_heads: HashSet<(String, u32)>,
@@ -672,12 +764,19 @@ impl Elab {
             guard_vars: HashMap::new(),
             stdlib_mode: false,
             map_elem_sub: None,
+            use_ctx: None,
+            param_uses: HashMap::new(),
+            body_fns: Vec::new(),
+            elem_conds: Vec::new(),
+            elem_cond_at: HashMap::new(),
+            body_elems: HashMap::new(),
+            memberships: HashMap::new(),
             match_span: Span::default(),
             match_binding: false,
             pm: Default::default(),
             class_defs: HashMap::new(),
             pending_classes: Vec::new(),
-            class_own: HashMap::new(),
+            class_mults: HashMap::new(),
             inst_heads: HashSet::new(),
             part_reported: HashSet::new(),
             pending_insts: Vec::new(),
@@ -1537,6 +1636,7 @@ impl Elab {
             .map(|l| ObLocal {
                 name: cx.locals[l].name.clone(),
                 ty: cx.locals[l].ty.clone(),
+                refined: cx.locals[l].refined.clone(),
                 def: if cx.locals[l].bound { None } else { Some(cx.env[l].clone()) },
             })
             .collect();

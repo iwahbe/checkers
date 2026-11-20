@@ -1,0 +1,8 @@
+error[E0281]: `instance Size (a, b, c)` must be for a pair
+ --> instance_tuple_head.ck:7:15
+  |
+7 | instance Size (a, b, c)
+  |               ^^^^^^^^^ this is `(a, (b, c))`
+  = help: write `instance Size (a, b)`: it covers every tuple of two or more parts, `b` being the rest
+
+instance_tuple_head.ck: 1 error, 0 warnings

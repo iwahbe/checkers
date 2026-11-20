@@ -13,7 +13,7 @@ error[E0450]: cannot prove lemma `few`
 47 |     ensures xs == ys
    |             ^^^^^^^^ `xs == ys`
    = note: facts in scope: `(len xs) == (len ys)`, `forall ((k~Int, k >= 0, k < 2) -> if k < (len xs) then xs[k] == ys[k] else True)`
-   = note: counterexample: xs = b"\x08", ys = b"\x04"
+   = note: counterexample: xs = b"\x16\x13\n", ys = b"\x16\x13\x06"
    = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
 
 joins.ck: 2 errors, 0 warnings

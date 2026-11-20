@@ -1,5 +1,6 @@
-# Unused code (D144): `main` is the root; `check`s, lemmas and instances
-# count as uses; anything else no root reaches is reported.
+# Unused code: `main` and every module's exports are the roots; `check`s,
+# lemmas and instances count as uses; anything else no root reaches is
+# reported.
 module unused
 
 import std.system (System, ExitCode)

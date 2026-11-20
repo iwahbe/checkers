@@ -26,6 +26,10 @@ pub struct Sig {
     pub comptime: Vec<usize>,
     /// Named preconditions (D137): name and index in `preds`.
     pub hyps: Vec<(String, usize)>,
+    /// Parameters whose refinements mention later parameters (#102): the
+    /// binder, and its refined type over all the binders. The binder's own
+    /// type in `binders` is the type without its refinements.
+    pub late: Vec<Late>,
 }
 
 impl Elab {
@@ -954,13 +958,13 @@ impl Elab {
                     (Tm::Error, Mult::Many)
                 }
             };
-            // A class function's `own` parameters (D156 i).
+            // A class function's `own` and `ghost` parameters (D156 i).
             let key = {
                 let ti = &self.g.tys[tid.0 as usize];
                 format!("{}.{}.{}", ti.module, ti.name, n.name)
             };
-            let ty = match self.class_own.get(&key) {
-                Some(owns) => own_params(&ty, owns),
+            let ty = match self.class_mults.get(&key) {
+                Some(mults) => mult_params(&ty, mults),
                 None => ty,
             };
             let v = self.eval(&cx, &ty);
@@ -974,10 +978,14 @@ impl Elab {
             }
             fields.push((Rc::from(n.name.as_str()), mult, Icit::Expl, ty));
         }
+        // Each condition may rely on those before it, as a signature's do
+        // (fields' types are facts already through their locals).
         for c in cs {
             match c {
                 Constraint::Pred(e) | Constraint::Named(_, e) => {
                     let p = self.elab_pred(&mut cx, e, false);
+                    let v = self.eval(&cx, &p.tm);
+                    cx.assume(v);
                     invs.push((p.tm, p.text, p.span, cx.lvl(), None));
                 }
                 Constraint::Typed { name, .. } if !declared.contains(&name.name) => {
@@ -992,6 +1000,8 @@ impl Elab {
         }
         for e in extra_preds {
             let p = self.elab_pred(&mut cx, e, false);
+            let v = self.eval(&cx, &p.tm);
+            cx.assume(v);
             invs.push((p.tm, p.text, p.span, cx.lvl(), None));
         }
         // Every invariant as a term over params ++ fields.
@@ -1553,8 +1563,24 @@ impl Elab {
         }
         let n_implicit = binders.len();
         let mut comptime = Vec::new();
+        // A refinement may mention a later parameter (#102): the parameter's
+        // type is elaborated without its refinements here, and with them once
+        // every parameter is in scope.
+        let mut late_exprs: Vec<(usize, &Expr)> = Vec::new();
         for (k, p) in params.iter().enumerate() {
             let (ty, mult, ct) = match Self::typed_constraint(cs, &p.name) {
+                Some((e, m)) if params[k + 1..].iter().any(|q| q.name != p.name && mentions_free(e, &q.name)) => {
+                    late_exprs.push((binders.len(), e));
+                    // Its names are indexed when it is elaborated in full.
+                    let saved = (self.index_of.take(), self.index_all.take());
+                    let ty = self.elab_type(&mut cx, &strip_refinements(e));
+                    (self.index_of, self.index_all) = saved;
+                    let mult = Self::mult_of(m);
+                    if mult == Mult::One {
+                        self.check_own(&cx, &ty, e.span);
+                    }
+                    (ty, mult, m == ast::Mult::Comptime)
+                }
                 Some((e, m)) => {
                     let ty = self.elab_type(&mut cx, e);
                     let mult = Self::mult_of(m);
@@ -1574,6 +1600,22 @@ impl Elab {
                 comptime.push(binders.len());
             }
             binders.push((Rc::from(p.name.as_str()), mult, Icit::Expl, ty));
+        }
+        let mut late = Vec::new();
+        for (b, e) in late_exprs {
+            let full = self.elab_type(&mut cx, e);
+            let nb = binders.len();
+            // The same type as its base: unifying them solves what the
+            // refinements' elaboration left open.
+            let fv = self.eval(&cx, &full);
+            let bv = self.eval(&cx, &rename_free(&binders[b].3, 0, &|i| i + (nb - b)));
+            let _ = unify(&self.g, cx.lvl(), &fv, &bv);
+            let full = crate::core::zonk_metas(&self.g, nb, &full);
+            let mut free = std::collections::BTreeSet::new();
+            free_vars(&full, 0, &mut free);
+            let deps: Vec<usize> = free.iter().map(|i| nb - 1 - i).filter(|j| *j > b).collect();
+            cx.locals[b].refined = Some(self.eval(&cx, &full));
+            late.push(Late { binder: b, ty: full, deps, n: nb });
         }
         let result_ty = match result.and_then(|r| Self::typed_constraint(cs, &r.name)) {
             Some((e, _)) => self.elab_type(&mut cx, e),
@@ -1672,7 +1714,38 @@ impl Elab {
         }
         cx.facts.truncate(facts_before);
         cx.pop();
-        Sig { cx, binders, result: result_ty, n_implicit, preds, result_name: rname, comptime, hyps }
+        Sig { cx, binders, result: result_ty, n_implicit, preds, result_name: rname, comptime, hyps, late }
+    }
+
+    /// The preconditions of a signature's function parameters that relate
+    /// their argument to another parameter: `k~(x~A -> B, pred … j … x …)`,
+    /// explicit parameters counted. Termination reads one as a promise
+    /// where `pred` is a membership (#102).
+    pub fn elem_promises(&self, sig: &Sig) -> Vec<ElemPromise> {
+        let nb = sig.binders.len();
+        let mut out = Vec::new();
+        for b in sig.n_implicit..nb {
+            // The type and the number of binders it is over.
+            let (ty, lvl) = match sig.late.iter().find(|l| l.binder == b) {
+                Some(l) => (&l.ty, nb),
+                None => (&sig.binders[b].3, b),
+            };
+            let Tm::Pi(_, _, Icit::Expl, dom, _) = ty else { continue };
+            let (Tm::Def(alias), captured) = dom.spine() else { continue };
+            let Some(preds) = self.alias_preds.get(alias) else { continue };
+            for p in preds {
+                for (pred, q, c, s) in pred_subject(&p.tm) {
+                    // `Var(1 + q)` is the alias's captured local `captured.len() - 1 - q`.
+                    let Some(cap) = captured.len().checked_sub(q + 1).and_then(|i| captured.get(i)) else { continue };
+                    let Tm::Var(i) = &***cap else { continue };
+                    let Some(level) = lvl.checked_sub(i + 1) else { continue };
+                    if level >= sig.n_implicit && level != b {
+                        out.push(ElemPromise { k: b - sig.n_implicit, j: level - sig.n_implicit, pred, c, s });
+                    }
+                }
+            }
+        }
+        out
     }
 
     pub fn pi_of(binders: &[(Name, Mult, Icit, Tm)], result: Tm) -> Tm {
@@ -1769,7 +1842,14 @@ impl Elab {
                     );
                     self.specs.insert(
                         *did,
-                        Spec { preds: sig.preds.clone(), n_binders: sig.binders.len(), n_implicit: sig.n_implicit, ..Default::default() },
+                        Spec {
+                            preds: sig.preds.clone(),
+                            n_binders: sig.binders.len(),
+                            n_implicit: sig.n_implicit,
+                            late: sig.late.clone(),
+                            elems: self.elem_promises(&sig),
+                            ..Default::default()
+                        },
                     );
                     sig
                 }
@@ -1855,6 +1935,7 @@ impl Elab {
                     }
                     self.cur_fn = Some(*did);
                     self.module_fns.push(*did);
+                    self.body_fns.push(*did);
                     let rty = self.eval(&sig.cx, &sig.result);
                     self.assume_pres(&mut sig);
                     let posts: Vec<Pred> = sig.preds.iter().filter(|p| p.is_post).cloned().collect();
@@ -1973,6 +2054,8 @@ impl Elab {
                 lets: lets_tm,
                 ensures: Some(ens),
                 measure,
+                late: sig.late.clone(),
+                elems: Vec::new(),
             };
             self.specs.insert(*did, spec);
         }
@@ -2031,6 +2114,7 @@ impl Elab {
                 result_name: sig.result_name.clone(),
                 comptime: sig.comptime.clone(),
                 hyps: sig.hyps.clone(),
+                late: sig.late.clone(),
             };
             self.cur_fn = Some(*did);
             self.assume_pres(&mut sig);
@@ -2076,6 +2160,55 @@ impl Elab {
 
 fn is_builtin(b: &ast::Block) -> bool {
     b.stmts.is_empty() && matches!(&b.result.kind, ExprKind::Var(n) if n == "__builtin")
+}
+
+/// A type with the predicates of its refinements removed: `(x~a -> Bool,
+/// p x)` is `(x~a -> Bool)`, the type a parameter has before the later
+/// parameters its predicates mention are in scope (#102).
+fn strip_refinements(e: &Expr) -> Expr {
+    let go = |x: &Expr| Box::new(strip_refinements(x));
+    let kind = match &e.kind {
+        ExprKind::Refine(r) => ExprKind::Refine(Box::new(ast::RefineTy {
+            param: r.param.clone(),
+            own: r.own,
+            dom: strip_refinements(&r.dom),
+            arrow: r.arrow.as_ref().map(|(n, t)| (n.clone(), strip_refinements(t))),
+            preds: Vec::new(),
+        })),
+        ExprKind::App(a, b) => ExprKind::App(go(a), go(b)),
+        ExprKind::Arrow(a, b) => ExprKind::Arrow(go(a), go(b)),
+        ExprKind::Tuple(xs) => ExprKind::Tuple(xs.iter().map(strip_refinements).collect()),
+        ExprKind::List(xs) => ExprKind::List(xs.iter().map(strip_refinements).collect()),
+        ExprKind::Par(xs) => ExprKind::Par(xs.iter().map(strip_refinements).collect()),
+        k => k.clone(),
+    };
+    Expr { kind, span: e.span }
+}
+
+/// Whether the type `e` mentions `name` where a refinement's own names
+/// (`x` of `(x~Int -> Int, x >= 5)`) don't hide it.
+fn mentions_free(e: &Expr, name: &str) -> bool {
+    match &e.kind {
+        ExprKind::Var(n) => n == name,
+        ExprKind::Refine(r) => {
+            if r.types().into_iter().take(1).any(|t| mentions_free(t, name)) {
+                return true;
+            }
+            // The result type is in the parameter's scope; the predicates
+            // in both names' scopes.
+            let bound = r.binders();
+            if r.param.as_ref().is_some_and(|p| p.name == name) {
+                return false;
+            }
+            if r.arrow.as_ref().is_some_and(|(_, t)| mentions_free(t, name)) {
+                return true;
+            }
+            !bound.iter().any(|b| b == name) && r.preds.iter().any(|p| mentions(p, name))
+        }
+        ExprKind::App(a, b) | ExprKind::Arrow(a, b) => mentions_free(a, name) || mentions_free(b, name),
+        ExprKind::Tuple(v) | ExprKind::List(v) | ExprKind::Par(v) => v.iter().any(|x| mentions_free(x, name)),
+        _ => mentions(e, name),
+    }
 }
 
 fn mentions(e: &Expr, name: &str) -> bool {
@@ -2160,15 +2293,45 @@ fn case_arms(c: &CaseTm) -> impl Iterator<Item = (usize, &Tm)> {
     branches.chain(c.lits.iter().map(|(_, b)| (0, b))).chain(c.default.iter().map(|b| (0, b)))
 }
 
-/// A class function's field type with its `own` parameters marked: the
-/// explicit parameters after its implicit type parameters, in order.
-fn own_params(t: &Tm, owns: &[bool]) -> Tm {
+/// A class function's field type with its `own` and `ghost` parameters
+/// marked: the explicit parameters after its implicit type parameters, in order.
+fn mult_params(t: &Tm, mults: &[Mult]) -> Tm {
     match t {
-        Tm::Pi(x, m, Icit::Impl, a, b) => Tm::Pi(x.clone(), *m, Icit::Impl, a.clone(), Rc::new(own_params(b, owns))),
-        Tm::Pi(x, m, i, a, b) if !owns.is_empty() => {
-            let m = if owns[0] { Mult::One } else { *m };
-            Tm::Pi(x.clone(), m, *i, a.clone(), Rc::new(own_params(b, &owns[1..])))
+        Tm::Pi(x, m, Icit::Impl, a, b) => Tm::Pi(x.clone(), *m, Icit::Impl, a.clone(), Rc::new(mult_params(b, mults))),
+        Tm::Pi(x, m, i, a, b) if !mults.is_empty() => {
+            let m = if mults[0] == Mult::Many { *m } else { mults[0] };
+            Tm::Pi(x.clone(), m, *i, a.clone(), Rc::new(mult_params(b, &mults[1..])))
         }
         _ => t.clone(),
     }
+}
+
+/// `p` as a call `pred a0 a1 …` with the refinement's subject (`Var 0`) as
+/// explicit argument `s` and a captured local (`Var (1 + q)`) as explicit
+/// argument `c`: each such `(pred, q, c, s)` (#102).
+fn pred_subject(p: &Tm) -> Vec<(DefId, usize, usize, usize)> {
+    let mut h = p;
+    let mut expl = Vec::new();
+    while let Tm::App(f, a, i, _) = h {
+        if *i == Icit::Expl {
+            expl.push(&**a);
+        }
+        h = f;
+    }
+    expl.reverse();
+    let Tm::Def(d) = h else { return Vec::new() };
+    let mut out = Vec::new();
+    for (s, x) in expl.iter().enumerate() {
+        if !matches!(x, Tm::Var(0)) {
+            continue;
+        }
+        for (c, e) in expl.iter().enumerate() {
+            if let Tm::Var(e) = e {
+                if *e >= 1 {
+                    out.push((*d, e - 1, c, s));
+                }
+            }
+        }
+    }
+    out
 }

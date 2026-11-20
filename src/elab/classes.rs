@@ -65,7 +65,10 @@ impl ClassDef {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum HeadKey {
     Ty(TyId),
-    Tuple(usize),
+    /// `()`, the tuple type of no parts.
+    Unit,
+    /// The pair: every tuple type is pairs, `(a, b, c)` being `(a, (b, c))`.
+    Pair,
 }
 
 /// An instance, once registered.
@@ -696,12 +699,19 @@ impl Elab {
                         continue;
                     }
                     let rty = rty.unwrap();
-                    let owns: Vec<bool> = params
+                    // Each parameter's `own` or `ghost` (D156 i): the field's type takes it the same way.
+                    let mults: Vec<Mult> = params
                         .iter()
-                        .map(|p| constraints.iter().any(|c| matches!(c, Constraint::Typed { name, mult: ast::Mult::Own, .. } if name.name == p.name)))
+                        .map(|p| {
+                            let m = constraints.iter().find_map(|c| match c {
+                                Constraint::Typed { name, mult, .. } if name.name == p.name => Some(*mult),
+                                _ => None,
+                            });
+                            Self::mult_of(m.unwrap_or(ast::Mult::Many))
+                        })
                         .collect();
-                    if owns.contains(&true) {
-                        self.class_own.insert(format!("{}.{}.{}", self.cur, name.name, f.name), owns);
+                    if mults.iter().any(|m| *m != Mult::Many) {
+                        self.class_mults.insert(format!("{}.{}.{}", self.cur, name.name, f.name), mults);
                     }
                     // Its own type variables make the field polymorphic: an
                     // implicit, erased parameter of type `Type` each (M25).
@@ -808,6 +818,20 @@ impl Elab {
         self.pending_classes.push((name.name.clone(), param.name.clone(), members.to_vec(), name.span));
     }
 
+    /// Whether an instance's head is the unit type: `()`, or an alias of it
+    /// declared elsewhere (the prelude's `Unit`).
+    fn is_unit_head(&self, ty: &Expr) -> bool {
+        match &ty.kind {
+            ExprKind::Unit => true,
+            ExprKind::Tuple(xs) => xs.is_empty(),
+            ExprKind::Con(n) if !self.local_ty_params.contains_key(n) && !self.local_names.contains_key(n) => match self.resolve(n, true) {
+                Some(Sym::Def(d)) => matches!(&self.g.defs[d.0 as usize].body, Some(Tm::TupleTy(xs)) if xs.is_empty()),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn desugar_instance(
         &mut self,
@@ -838,9 +862,13 @@ impl Elab {
                 }
             },
         };
+        // `()`, written so or as the prelude's `Unit`: the tuple type of no
+        // elements, a type constructor with no parameters.
+        let unit_head = Expr { kind: ExprKind::Tuple(Vec::new()), span: ty.span };
+        let head_ty = if self.is_unit_head(ty) { &unit_head } else { ty };
         // The head: a type constructor applied to distinct type variables.
         let mut args = Vec::new();
-        let mut h = ty;
+        let mut h = head_ty;
         while let ExprKind::App(f, a) = &h.kind {
             args.push((**a).clone());
             h = f;
@@ -849,9 +877,25 @@ impl Elab {
         let mut vars: Vec<String> = Vec::new();
         let ok = match &h.kind {
             ExprKind::Con(_) => args.iter().all(|a| matches!(&a.kind, ExprKind::Var(v) if !vars.contains(v) && { vars.push(v.clone()); true })),
-            ExprKind::Tuple(xs) if args.is_empty() => xs.iter().all(|a| matches!(&a.kind, ExprKind::Var(v) if !vars.contains(v) && { vars.push(v.clone()); true })),
+            ExprKind::Tuple(xs) if args.is_empty() && matches!(xs.len(), 0 | 2) => xs.iter().all(|a| matches!(&a.kind, ExprKind::Var(v) if !vars.contains(v) && { vars.push(v.clone()); true })),
             _ => false,
         };
+        match &h.kind {
+            ExprKind::Tuple(xs) if args.is_empty() && xs.len() > 2 => {
+                let part = |x: &Expr| self.src_text(x.span).trim().to_string();
+                let rest: Vec<String> = xs[1..].iter().map(part).collect();
+                self.err(
+                    Diagnostic::error("E0281", format!("`instance {text}` must be for a pair"), ty.span)
+                        .with_label(format!("this is `({}, ({}))`", part(&xs[0]), rest.join(", ")))
+                        .with_help(format!(
+                            "write `instance {} (a, b)`: it covers every tuple of two or more parts, `b` being the rest",
+                            class.name
+                        )),
+                );
+                return;
+            }
+            _ => {}
+        }
         if !ok {
             self.err(
                 Diagnostic::error("E0281", format!("`instance {text}` must be for a type applied to distinct type variables"), ty.span)
@@ -1210,7 +1254,7 @@ impl Elab {
         self.pending_insts.push(PendingInst {
             class: class_tid,
             class_name: class.name.clone(),
-            head: ty.clone(),
+            head: head_ty.clone(),
             vars,
             context: ctx,
             span: d.span,
@@ -1273,7 +1317,8 @@ impl Elab {
             h = f;
         }
         let key = match &h.kind {
-            ExprKind::Tuple(xs) => HeadKey::Tuple(xs.len()),
+            ExprKind::Tuple(xs) if xs.is_empty() => HeadKey::Unit,
+            ExprKind::Tuple(_) => HeadKey::Pair,
             ExprKind::Con(n) => match self.resolve(n, true) {
                 Some(Sym::Ty(t)) => HeadKey::Ty(t),
                 Some(Sym::Def(_)) => {
@@ -1292,7 +1337,7 @@ impl Elab {
         let class_pkg = self.package_of(&self.class_defs[&class].module);
         let ty_pkg = match key {
             HeadKey::Ty(t) => self.package_of(&self.g.tys[t.0 as usize].module),
-            HeadKey::Tuple(_) => "std".to_string(),
+            HeadKey::Unit | HeadKey::Pair => "std".to_string(),
         };
         if pkg != class_pkg && pkg != ty_pkg {
             let cname = self.class_defs[&class].name.clone();
@@ -1333,7 +1378,7 @@ impl Elab {
             self.inst_member_of.insert(*d, def);
             // Using the dictionary may rely on the lemmas (termination, D136).
             if self.def_class.get(d) == Some(&"lemma") {
-                self.calls.push(CallRec { caller: def, callee: *d, args: Vec::new(), span: p.span });
+                self.calls.push(CallRec { caller: def, callee: *d, args: Vec::new(), same: Vec::new(), span: p.span, conds: Vec::new() });
             }
         }
         self.instances.insert(
@@ -1372,7 +1417,16 @@ impl Elab {
                     _ => return Err("none".into()),
                 }
             }
-            Val::TupleTy(xs) => (HeadKey::Tuple(xs.len()), xs.clone()),
+            // `()`, or a tuple: a pair of its first part and the rest.
+            Val::TupleTy(xs) => {
+                let xs = crate::core::flat_parts(&self.g, xs, true);
+                match xs.len() {
+                    0 => (HeadKey::Unit, Vec::new()),
+                    1 => return Err("none".into()),
+                    2 => (HeadKey::Pair, xs),
+                    _ => (HeadKey::Pair, vec![xs[0].clone(), Val::TupleTy(xs[1..].to_vec())]),
+                }
+            }
             Val::Neutral(Head::Meta(_), _) => return Err("unknown".into()),
             _ => return Err("none".into()),
         };
@@ -1392,7 +1446,7 @@ impl Elab {
         // Using an instance of this module: a call, for termination (D136).
         if inst.module == self.cur && !req.in_spec {
             if let Some(caller) = req.owner {
-                self.calls.push(CallRec { caller, callee: inst.def, args: Vec::new(), span: req.span });
+                self.calls.push(CallRec { caller, callee: inst.def, args: Vec::new(), same: Vec::new(), span: req.span, conds: Vec::new() });
             }
         }
         Ok(t)

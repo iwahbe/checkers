@@ -45,9 +45,248 @@ impl Elab {
         self.rec_calls.push(RecCall { caller, callee, args, ob });
     }
 
+    /// The promises the module's function bodies make (#102): explicit
+    /// parameter `k` of `f` is a function called only with strict parts of
+    /// parameter `j` if every use of `k` in `f`'s body is such a call, or
+    /// passes `k` to a function that promises it. The largest set of
+    /// promises that holds, as functions may pass their parameters to each
+    /// other (or themselves) recursively.
+    fn body_promises(&mut self) -> HashSet<ElemAlt> {
+        let fns: Vec<DefId> = std::mem::take(&mut self.body_fns);
+        let uses = std::mem::take(&mut self.param_uses);
+        let mut held: HashSet<ElemAlt> = HashSet::new();
+        for f in &fns {
+            let n = self.fn_meta.get(f).map_or(0, |m| m.params.len());
+            for k in 0..n {
+                for j in (0..n).filter(|j| *j != k) {
+                    held.insert((*f, k, j));
+                }
+            }
+        }
+        let empty = Vec::new();
+        loop {
+            let failed: Vec<ElemAlt> = held
+                .iter()
+                .copied()
+                .filter(|&(f, k, j)| {
+                    let us = uses.get(&(f, k)).unwrap_or(&empty);
+                    !us.iter().all(|u| u.iter().any(|&(p, c)| p == j && self.cond_holds(c, &held)))
+                })
+                .collect();
+            if failed.is_empty() {
+                break;
+            }
+            for x in failed {
+                held.remove(&x);
+            }
+        }
+        for f in &fns {
+            let mut ps: Vec<(usize, usize)> = held.iter().filter(|x| x.0 == *f).map(|x| (x.1, x.2)).collect();
+            ps.sort();
+            self.body_elems.insert(*f, ps);
+        }
+        held
+    }
+
+    /// Whether condition `c` holds: one of its promises does (#102), in
+    /// the callee's signature (a precondition that is a membership), or
+    /// read from its body (this module's, in `held`, or a `transparent`
+    /// function's of another module).
+    fn cond_holds(&self, c: Option<u32>, held: &HashSet<ElemAlt>) -> bool {
+        let Some(c) = c else { return true };
+        self.elem_conds[c as usize].iter().any(|&(d, k, j)| {
+            self.specs.get(&d).is_some_and(|s| {
+                s.elems.iter().any(|e| e.k == k && e.j == j && self.memberships.get(&(e.pred, e.c, e.s)) == Some(&true))
+            }) || held.contains(&(d, k, j))
+                || (*self.g.defs[d.0 as usize].module != *self.cur
+                    && self.transparent.contains(&d)
+                    && self.body_elems.get(&d).is_some_and(|ps| ps.contains(&(k, j))))
+        })
+    }
+
+    /// Why condition `cond`, made where `rec` is passed to a function, fails
+    /// (#102): E0301's help.
+    fn unkept_help(&self, cond: u32, rec: DefId) -> Option<String> {
+        let (head, arg, j) = self.elem_cond_at.get(&cond)?;
+        let &(d, k, _) = self.elem_conds[cond as usize].first()?;
+        let j = *j;
+        let rec = self.fn_meta.get(&rec).map(|m| m.name.clone()).unwrap_or_default();
+        let params = self.fn_meta.get(&d).map(|m| m.params.clone()).unwrap_or_default();
+        let (pk, pj) = (params.get(k).map(|p| p.0.clone())?, params.get(j).map(|p| p.0.clone())?);
+        let promise = self.specs.get(&d).and_then(|s| s.elems.iter().find(|e| e.k == k && e.j == j).copied());
+        let why = match promise {
+            Some(e) => {
+                let pred = self.g.defs[e.pred.0 as usize].name.to_string();
+                if self.body_visible(e.pred) && !self.g.defs[e.pred.0 as usize].opaque {
+                    format!(
+                        "`{pred}`, in its precondition on `{pk}`, isn't a membership: it must be true only of something equal to a part of `{pj}`"
+                    )
+                } else {
+                    format!("`{pred}`, in its precondition on `{pk}`, is sealed, so it can't be seen to be a membership")
+                }
+            }
+            None if self.body_visible(d) => format!(
+                "it uses `{pk}` other than by calling it with a part of `{pj}` or passing it on to a function that does"
+            ),
+            None => format!(
+                "its body is sealed; its signature can promise it with a precondition on `{pk}` such as `{pk}~(x~a -> b, list.contains {pj} x)`"
+            ),
+        };
+        Some(format!("`{head}` isn't known to call `{rec}` only with parts of `{arg}`: {why}"))
+    }
+
+    /// Decide, for each signature promise a condition names, whether its
+    /// predicate is a membership (#102).
+    fn decide_memberships(&mut self) {
+        // Whether a body is visible depends on the module checked.
+        self.memberships.clear();
+        let mut todo = Vec::new();
+        for alts in &self.elem_conds {
+            for &(d, k, j) in alts {
+                for e in self.specs.get(&d).map(|s| s.elems.as_slice()).unwrap_or(&[]) {
+                    if e.k == k && e.j == j {
+                        todo.push((e.pred, e.c, e.s));
+                    }
+                }
+            }
+        }
+        for key in todo {
+            if !self.memberships.contains_key(&key) {
+                let mut visiting = HashSet::new();
+                let m = self.is_membership(key, &mut visiting);
+                self.memberships.insert(key, m);
+            }
+        }
+    }
+
+    /// Whether predicate `pred` is true only where its explicit argument
+    /// `s` equals (`==`, which compares structure) a strict part of its
+    /// explicit argument `c`, as its body shows (#102): its body must be
+    /// visible, as for proofs. A recursive use of a predicate being decided
+    /// is assumed to be one: it is total, so this is an induction on its
+    /// recursion.
+    fn is_membership(&mut self, key: (DefId, usize, usize), visiting: &mut HashSet<(DefId, usize, usize)>) -> bool {
+        if let Some(m) = self.memberships.get(&key) {
+            return *m;
+        }
+        if !visiting.insert(key) {
+            return true;
+        }
+        let (pred, c, s) = key;
+        let info = &self.g.defs[pred.0 as usize];
+        let partial = self.fn_meta.get(&pred).is_some_and(|m| m.partial);
+        let Some(body) = info.body.clone().filter(|_| !info.opaque && !partial && self.body_visible(pred)) else {
+            return false;
+        };
+        let mut ctx = Vec::new();
+        let mut t = &body;
+        let mut explicit = 0;
+        while let Tm::Lam(_, _, i, b) = t {
+            ctx.push(match i {
+                Icit::Impl => Kind::Other,
+                Icit::Expl => {
+                    explicit += 1;
+                    if explicit - 1 == c {
+                        Kind::Container
+                    } else if explicit - 1 == s {
+                        Kind::Subject
+                    } else {
+                        Kind::Other
+                    }
+                }
+            });
+            t = b;
+        }
+        let t = t.clone();
+        self.only_if_member(&t, &mut ctx, visiting)
+    }
+
+    /// Whether `t`, a `Bool`, is `True` only where the subject equals a
+    /// strict part of the container (#102).
+    fn only_if_member(&mut self, t: &Tm, ctx: &mut Vec<Kind>, visiting: &mut HashSet<(DefId, usize, usize)>) -> bool {
+        let wk = &self.g.well_known;
+        let (tc, fc) = (wk.true_con, wk.false_con);
+        match t {
+            Tm::ConApp(con, args) => args.is_empty() && Some(*con) == fc,
+            Tm::Con(con) => Some(*con) == fc,
+            Tm::PrimApp(Prim::Eq, xs) if xs.len() == 2 => {
+                let (a, b) = (kind_of(&xs[0], ctx), kind_of(&xs[1], ctx));
+                matches!((a, b), (Kind::Part, Kind::Subject) | (Kind::Subject, Kind::Part))
+            }
+            Tm::Let(_, _, _, v, b) => {
+                let k = kind_of(v, ctx);
+                ctx.push(k);
+                let r = self.only_if_member(b, ctx, visiting);
+                ctx.pop();
+                r
+            }
+            Tm::Case(scrut, ct) => {
+                let field = match kind_of(scrut, ctx) {
+                    Kind::Container | Kind::Part => Kind::Part,
+                    _ => Kind::Other,
+                };
+                let ct = ct.clone();
+                for (con, n, b) in &ct.branches {
+                    let before = ctx.len();
+                    ctx.extend(std::iter::repeat_n(field, *n));
+                    let mut ok = self.only_if_member(b, ctx, visiting);
+                    ctx.truncate(before);
+                    // `if c then b else …`: `c` true too.
+                    if !ok && *n == 0 && Some(*con) == tc {
+                        ok = self.only_if_member(scrut, ctx, visiting);
+                    }
+                    if !ok {
+                        return false;
+                    }
+                }
+                ct.lits.iter().all(|(_, b)| self.only_if_member(b, ctx, visiting))
+                    && ct.default.as_ref().is_none_or(|b| self.only_if_member(b, ctx, visiting))
+            }
+            Tm::App(..) => {
+                let (head, args) = t.spine();
+                let Tm::Def(d) = head else { return false };
+                let d = *d;
+                let expl: Vec<Kind> = args
+                    .iter()
+                    .zip(app_icits(t))
+                    .filter(|(_, i)| *i == Icit::Expl)
+                    .map(|(a, _)| kind_of(a, ctx.as_slice()))
+                    .collect();
+                for (s2, ks) in expl.iter().enumerate() {
+                    if *ks != Kind::Subject {
+                        continue;
+                    }
+                    for (c2, kc) in expl.iter().enumerate() {
+                        if matches!(kc, Kind::Container | Kind::Part) && self.is_membership((d, c2, s2), visiting) {
+                            return true;
+                        }
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
     pub fn check_termination(&mut self) {
+        self.decide_memberships();
+        let held = self.body_promises();
         let fns: Vec<DefId> = std::mem::take(&mut self.module_fns);
-        let calls: Vec<CallRec> = std::mem::take(&mut self.calls);
+        let mut calls: Vec<CallRec> = std::mem::take(&mut self.calls);
+        // Parts that hold only if a promise does (#102).
+        let mut unkept: HashMap<Span, String> = HashMap::new();
+        for c in &mut calls {
+            for &(i, cond) in &c.conds {
+                if !self.cond_holds(Some(cond), &held) {
+                    c.args[i] = None;
+                    if let Some(help) = self.unkept_help(cond, c.callee) {
+                        unkept.entry(c.span).or_insert(help);
+                    }
+                }
+            }
+        }
+        self.elem_conds.clear();
+        self.elem_cond_at.clear();
         let rec_calls: Vec<RecCall> = std::mem::take(&mut self.rec_calls);
         let idx: HashMap<DefId, usize> = fns.iter().enumerate().map(|(i, d)| (*d, i)).collect();
         let n = fns.len();
@@ -112,9 +351,10 @@ impl Elab {
                 .iter()
                 .filter(|c| members.contains(&c.caller) && members.contains(&c.callee))
                 .collect();
-            if structural(&members, &metas, &inner) {
-                continue;
-            }
+            let cycle = match size_change(&members, &metas, &inner) {
+                Ok(()) => continue,
+                Err(cycle) => cycle,
+            };
             // Recursion through an instance's dictionary (D136): a use of
             // the class's function at the instance's own type.
             if let Some(c) = inner.iter().find(|c| self.dict_defs.contains(&c.callee) && !self.dict_defs.contains(&c.caller)) {
@@ -132,24 +372,56 @@ impl Elab {
             if self.guess_measure(&members, &metas, &inner, &rec_calls) {
                 continue;
             }
-            // Report at the first recursive call made by a function without `decreasing`.
-            let bad = inner
+            // Report at a call of a cycle that isn't smaller (#109): one passed
+            // to a function that isn't known to call it only with parts first
+            // (#102), then one that passes no strict part, made by a function
+            // without `decreasing`.
+            let unmarked = |c: &&CallRec| {
+                let k = members.iter().position(|d| *d == c.caller).unwrap();
+                !metas[k].partial && !metas[k].decreasing
+            };
+            let in_cycle: Vec<&CallRec> = if cycle.is_empty() { inner.clone() } else { cycle.iter().map(|&i| inner[i]).collect() };
+            let bad = in_cycle
                 .iter()
-                .find(|c| {
-                    let k = members.iter().position(|d| *d == c.caller).unwrap();
-                    !metas[k].partial && !metas[k].decreasing
-                })
+                .filter(|c| unmarked(c))
+                .find(|c| unkept.contains_key(&c.span))
+                .or_else(|| in_cycle.iter().filter(|c| unmarked(c)).find(|c| c.args.iter().all(Option::is_none)))
+                .or_else(|| in_cycle.iter().find(|c| unmarked(c)))
+                .or_else(|| inner.iter().find(|c| unmarked(c)))
                 .copied();
             if let Some(c) = bad {
                 let k = members.iter().position(|d| *d == c.caller).unwrap();
                 let name = metas[k].name.clone();
-                let msg = if members.len() == 1 {
+                let name_of = |d: DefId| metas[members.iter().position(|m| *m == d).unwrap()].name.clone();
+                // The cycle, from the call reported: `a` → `b` → `a`.
+                let at = in_cycle.iter().position(|x| std::ptr::eq(*x, c)).unwrap_or(0);
+                let mut turn: Vec<&CallRec> = in_cycle[at..].iter().chain(&in_cycle[..at]).copied().collect();
+                // One call, repeated: it is the cycle.
+                if turn.iter().all(|x| std::ptr::eq(*x, c)) {
+                    turn.truncate(1);
+                }
+                let mut route: Vec<String> = turn.iter().map(|x| format!("`{}`", name_of(x.caller))).collect();
+                route.push(format!("`{name}`"));
+                let file = self.sources.get(&self.cur);
+                let line = |sp: Span| file.map_or(0, |f| f.line_col(sp.start).0);
+                let note = (!cycle.is_empty() && turn.len() > 1).then(|| {
+                    let steps: Vec<String> =
+                        turn.iter().map(|x| format!("`{}` calls `{}` on line {}", name_of(x.caller), name_of(x.callee), line(x.span))).collect();
+                    format!("the cycle: {}", steps.join(", then "))
+                });
+                let msg = if members.len() == 1 && turn.len() <= 1 {
                     format!("cannot show that `{name}` terminates: no argument gets structurally smaller in this recursive call")
+                } else if members.len() == 1 {
+                    format!("cannot show that `{name}` terminates: no argument gets structurally smaller over these recursive calls in turn")
+                } else if cycle.is_empty() {
+                    let names: Vec<String> = metas.iter().map(|m| format!("`{}`", m.name)).collect();
+                    format!("cannot show that {} terminate: they call each other, and no argument gets structurally smaller", names.join(", "))
                 } else {
                     let names: Vec<String> = metas.iter().map(|m| format!("`{}`", m.name)).collect();
                     format!(
-                        "cannot show that {} terminate: they call each other, and no argument gets structurally smaller",
-                        names.join(", ")
+                        "cannot show that {} terminate: they call each other, and no argument gets structurally smaller around {}",
+                        names.join(", "),
+                        route.join(" → ")
                     )
                 };
                 let is_lemma = !metas[k].is_fn;
@@ -170,7 +442,12 @@ impl Elab {
                         ),
                     )
                 };
-                self.err(Diagnostic::error("E0301", msg, c.span).with_label(label).with_help(help));
+                let help = unkept.get(&c.span).cloned().unwrap_or(help);
+                let mut d = Diagnostic::error("E0301", msg, c.span).with_label(label);
+                if let Some(note) = note {
+                    d = d.with_note(note);
+                }
+                self.err(d.with_help(help));
             }
         }
     }
@@ -352,33 +629,138 @@ fn reindex(t: &Tm, from: usize, to: usize, depth: usize) -> Option<Tm> {
     })
 }
 
-/// Is there a choice of one parameter per function such that every call
-/// inside the group passes a strict subterm of the caller's chosen parameter
-/// in the callee's chosen position?
-fn structural(members: &[DefId], metas: &[FnMeta], calls: &[&CallRec]) -> bool {
-    let arities: Vec<usize> = metas.iter().map(|m| m.params.len()).collect();
-    if arities.contains(&0) {
-        return false;
-    }
-    let total: usize = arities.iter().product();
-    if total > 4096 {
-        return false;
-    }
-    let mut choice = vec![0usize; members.len()];
-    for k in 0..total {
-        let mut r = k;
-        for (i, a) in arities.iter().enumerate() {
-            choice[i] = r % a;
-            r /= a;
+/// How an argument relates to a parameter of the caller (#109).
+const NONE: u8 = 0;
+const SAME: u8 = 1;
+const SMALLER: u8 = 2;
+
+/// A size-change graph (#109): from the caller's parameters to the
+/// callee's, `rel[i * to_arity + j]` how the callee's parameter `j` relates
+/// to the caller's parameter `i`, made by the calls `path` in turn.
+#[derive(Clone)]
+struct Graph {
+    from: usize,
+    to: usize,
+    rel: Vec<u8>,
+    path: Vec<usize>,
+}
+
+/// More than this many graphs and the group is refused, as not shown to
+/// terminate.
+const MAX_GRAPHS: usize = 20_000;
+
+/// Size-change termination (#109; Lee, Jones and Ben-Amram, POPL 2001).
+/// Each call relates each of the callee's parameters to the caller's: a
+/// strict part of one (`<`), one itself (`=`), or neither. The group
+/// terminates if every cycle of calls, composed, makes some parameter
+/// strictly smaller: every composed graph from a function to itself that is
+/// idempotent has a `<` from a parameter to itself. Otherwise, the calls
+/// (indices into `calls`) of a cycle that isn't smaller, or none if there
+/// were too many graphs to tell.
+fn size_change(members: &[DefId], metas: &[FnMeta], calls: &[&CallRec]) -> Result<(), Vec<usize>> {
+    let arity: Vec<usize> = metas.iter().map(|m| m.params.len()).collect();
+    let pos = |d: DefId| members.iter().position(|m| *m == d).unwrap();
+    let base: Vec<Graph> = calls
+        .iter()
+        .enumerate()
+        .map(|(k, c)| {
+            let (from, to) = (pos(c.caller), pos(c.callee));
+            let (af, at) = (arity[from], arity[to]);
+            let mut rel = vec![NONE; af * at];
+            for j in 0..at {
+                if let Some(i) = c.args.get(j).copied().flatten().filter(|i| *i < af) {
+                    rel[i * at + j] = SMALLER;
+                } else if let Some(i) = c.same.get(j).copied().flatten().filter(|i| *i < af) {
+                    rel[i * at + j] = SAME;
+                }
+            }
+            Graph { from, to, rel, path: vec![k] }
+        })
+        .collect();
+    let compose = |g: &Graph, h: &Graph| -> Vec<u8> {
+        let (a, b, c) = (arity[g.from], arity[g.to], arity[h.to]);
+        let mut rel = vec![NONE; a * c];
+        for i in 0..a {
+            for j in 0..b {
+                let x = g.rel[i * b + j];
+                if x == NONE {
+                    continue;
+                }
+                for k in 0..c {
+                    let y = h.rel[j * c + k];
+                    if y != NONE {
+                        let r = if x == SMALLER || y == SMALLER { SMALLER } else { SAME };
+                        rel[i * c + k] = rel[i * c + k].max(r);
+                    }
+                }
+            }
         }
-        let ok = calls.iter().all(|c| {
-            let fi = members.iter().position(|d| *d == c.caller).unwrap();
-            let gi = members.iter().position(|d| *d == c.callee).unwrap();
-            c.args.get(choice[gi]).copied().flatten() == Some(choice[fi])
-        });
-        if ok {
-            return true;
+        rel
+    };
+    // Every composition of calls, breadth first, so a cycle reported is a
+    // short one.
+    let mut seen: HashSet<(usize, usize, Vec<u8>)> = HashSet::new();
+    let mut all: Vec<Graph> = Vec::new();
+    for g in &base {
+        if seen.insert((g.from, g.to, g.rel.clone())) {
+            all.push(g.clone());
         }
     }
-    false
+    let mut next = 0;
+    while next < all.len() {
+        if all.len() > MAX_GRAPHS {
+            return Err(Vec::new());
+        }
+        let g = all[next].clone();
+        next += 1;
+        for h in base.iter().filter(|h| h.from == g.to) {
+            let rel = compose(&g, h);
+            if seen.insert((g.from, h.to, rel.clone())) {
+                let mut path = g.path.clone();
+                path.extend(&h.path);
+                all.push(Graph { from: g.from, to: h.to, rel, path });
+            }
+        }
+    }
+    for g in all.iter().filter(|g| g.from == g.to) {
+        let a = arity[g.from];
+        let idempotent = compose(g, g) == g.rel;
+        if idempotent && !(0..a).any(|i| g.rel[i * a + i] == SMALLER) {
+            return Err(g.path.clone());
+        }
+    }
+    Ok(())
+}
+
+/// What a local of a predicate being decided is (#102).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Kind {
+    Container,
+    Part,
+    Subject,
+    Other,
+}
+
+/// `t`'s kind: a local's, or a field of the container or of a part.
+fn kind_of(t: &Tm, ctx: &[Kind]) -> Kind {
+    match t {
+        Tm::Var(i) => ctx.len().checked_sub(i + 1).map_or(Kind::Other, |l| ctx[l]),
+        Tm::Field(a, _, _) | Tm::Proj(a, _, _) => match kind_of(a, ctx) {
+            Kind::Container | Kind::Part => Kind::Part,
+            _ => Kind::Other,
+        },
+        _ => Kind::Other,
+    }
+}
+
+/// The plicity of each argument of an application, outermost last.
+fn app_icits(t: &Tm) -> Vec<Icit> {
+    let mut out = Vec::new();
+    let mut h = t;
+    while let Tm::App(f, _, i, _) = h {
+        out.push(*i);
+        h = f;
+    }
+    out.reverse();
+    out
 }

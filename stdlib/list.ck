@@ -9,14 +9,16 @@ export transparent fn length xs -> n : xs~List a, n~Nat
         []        -> 0
         _ :: rest -> 1 + length rest
 
-# `f` applied to each element, in order.
-export transparent fn map f xs -> ys : f~(a -> b), xs~List a, ys~List b
+# `f` applied to each element, in order. `f` is called only with elements
+# of `xs`, so it may assume `contains xs x`.
+export transparent fn map f xs -> ys : f~(x~a -> b, contains xs x), xs~List a, ys~List b
     match xs
         []        -> []
         x :: rest -> f x :: map f rest
 
-# Whether `p` holds for every element (`True` for an empty list).
-export fn all p xs -> r : p~(a -> Bool), xs~List a, r~Bool
+# Whether `p` holds for every element (`True` for an empty list). `p` is
+# called only with elements of `xs`, so it may assume `contains xs x`.
+export fn all p xs -> r : p~(x~a -> Bool, contains xs x), xs~List a, r~Bool
     match xs
         []        -> True
         x :: rest -> p x and all p rest
@@ -71,14 +73,16 @@ export transparent fn max_of xs -> m : xs~List Nat, m~Nat
 
 # The first `n` elements, or all of `xs` if it is shorter.
 export fn take n xs -> ys : n~Nat, xs~List a, ys~List a,
-                            length ys <= length xs, n <= length xs implies length ys == n
+                            length ys <= length xs, n <= length xs implies length ys == n,
+                            length xs <= n implies ys == xs
     match xs
         []        -> []
         x :: rest -> if n == 0 then [] else x :: take (n - 1) rest
 
 # All but the first `n` elements; empty if `xs` is shorter.
 export fn drop n xs -> ys : n~Nat, xs~List a, ys~List a,
-                            length ys <= length xs, n <= length xs implies length ys + n == length xs
+                            length ys <= length xs, n <= length xs implies length ys + n == length xs,
+                            length xs <= n implies ys == []
     match xs
         []        -> []
         _ :: rest -> if n == 0 then xs else drop (n - 1) rest
@@ -263,6 +267,14 @@ export lemma append_nil xs : xs~List a
             []        -> auto
             _ :: rest -> have append_nil rest
 
+# `xs ++ ys` is as long as `xs` and `ys` together.
+export lemma length_append xs ys : xs~List a, ys~List a
+    ensures length (xs ++ ys) == length xs + length ys
+    proof
+        match xs
+            []        -> auto
+            _ :: rest -> have length_append rest ys
+
 # `++` is associative.
 export lemma append_assoc xs ys zs : xs~List a, ys~List a, zs~List a
     ensures (xs ++ ys) ++ zs == xs ++ (ys ++ zs)
@@ -280,6 +292,35 @@ lemma rev_onto_app xs acc : xs~List a, acc~List a
                 have rev_onto_app rest (x :: acc)
                 have rev_onto_app rest [x]
                 have append_assoc (reverse_onto rest []) [x] acc
+
+lemma length_rev_onto xs acc : xs~List a, acc~List a
+    ensures length (reverse_onto xs acc) == length xs + length acc
+    proof
+        match xs
+            []        -> auto
+            x :: rest -> have length_rev_onto rest (x :: acc)
+
+# Reversing keeps a list's length.
+export lemma length_reverse xs : xs~List a
+    ensures length (reverse xs) == length xs
+    proof
+        have length_rev_onto xs []
+
+# Mapping keeps a list's length.
+export lemma length_map f xs : f~(x~a -> b, contains xs x), xs~List a
+    ensures length (map f xs) == length xs
+    proof
+        match xs
+            []        -> auto
+            _ :: rest -> have length_map f rest
+
+# A list of pairs has as many keys as pairs.
+export lemma length_keys ps : ps~List (k, v)
+    ensures length (keys ps) == length ps
+    proof
+        match ps
+            []        -> auto
+            _ :: rest -> have length_keys rest
 
 lemma keys_rev_onto ps acc : ps~List (k, v), acc~List (k, v)
     ensures keys (reverse_onto ps acc) == reverse_onto (keys ps) (keys acc)

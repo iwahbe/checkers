@@ -336,12 +336,24 @@ impl Elab {
         }
     }
 
+    /// A type as shown in a message: an inline refinement with its
+    /// arguments put in (`(x~Nat, contains xs x)` for `(x~a, contains xs
+    /// x)` at `a` = `Nat`), any other type as it is.
+    fn show_refined(&self, cx: &Cx, v: &Val) -> String {
+        match self.refined_alias(v) {
+            Some((d, args)) if is_anon_alias(&self.g, d) && !args.is_empty() => {
+                rename_words(&self.g.defs[d.0 as usize].name, &self.alias_param_names(cx, d, &args))
+            }
+            _ => self.show_val(cx, v),
+        }
+    }
+
     /// For any value of `sub`, the predicates of `sup` (D83, D85).
     fn weaken_obligation(&mut self, cx: &mut Cx, sub: &Val, sup: &Val, role: WeakenRole, w: &Walk) {
         let Some((alias, args)) = self.refined_alias(sup) else { return };
         let Some(preds) = self.alias_preds.get(&alias).cloned() else { return };
         let name = self.alias_subject.get(&alias).cloned().unwrap_or_else(|| Rc::from("x"));
-        let (sub_s, sup_s) = (self.show_val(cx, sub), self.show_val(cx, sup));
+        let (sub_s, sup_s) = (self.show_refined(cx, sub), self.show_refined(cx, sup));
         let l = cx.lvl();
         cx.bind(&name, sub.clone(), Mult::Zero);
         for p in &preds {
@@ -449,7 +461,20 @@ impl Elab {
         let bv = self.eval(cx, &b);
         let y = name(res);
         cx.bind(&y, bv, Mult::Zero);
-        let preds: Vec<Pred> = r.preds.iter().map(|e| self.elab_pred(cx, e, false)).collect();
+        // An implicit argument in a predicate (`nonempty i` with `nonempty :
+        // xs~List a`) is an unknown applied to every local in scope, the
+        // result too. Its solution (`Int`) is substituted before asking which
+        // locals a predicate mentions; one left open (`nonempty []`) can't
+        // depend on the result: nothing about the result determined it.
+        let preds: Vec<Pred> = r
+            .preds
+            .iter()
+            .map(|e| {
+                let p = self.elab_pred(cx, e, false);
+                crate::core::forget_var(&self.g, cx.lvl(), &p.tm, cx.lvl() - 1);
+                Pred { tm: crate::core::zonk_metas(&self.g, cx.lvl(), &p.tm), ..p }
+            })
+            .collect();
         cx.pop();
         // A predicate that mentions the result is a postcondition (D82).
         let (posts, pres): (Vec<Pred>, Vec<Pred>) = preds.into_iter().partition(|p| {
