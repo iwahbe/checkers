@@ -696,12 +696,19 @@ impl Elab {
                         continue;
                     }
                     let rty = rty.unwrap();
-                    let owns: Vec<bool> = params
+                    // Each parameter's `own` or `ghost` (D156 i): the field's type takes it the same way.
+                    let mults: Vec<Mult> = params
                         .iter()
-                        .map(|p| constraints.iter().any(|c| matches!(c, Constraint::Typed { name, mult: ast::Mult::Own, .. } if name.name == p.name)))
+                        .map(|p| {
+                            let m = constraints.iter().find_map(|c| match c {
+                                Constraint::Typed { name, mult, .. } if name.name == p.name => Some(*mult),
+                                _ => None,
+                            });
+                            Self::mult_of(m.unwrap_or(ast::Mult::Many))
+                        })
                         .collect();
-                    if owns.contains(&true) {
-                        self.class_own.insert(format!("{}.{}.{}", self.cur, name.name, f.name), owns);
+                    if mults.iter().any(|m| *m != Mult::Many) {
+                        self.class_mults.insert(format!("{}.{}.{}", self.cur, name.name, f.name), mults);
                     }
                     // Its own type variables make the field polymorphic: an
                     // implicit, erased parameter of type `Type` each (M25).

@@ -621,10 +621,11 @@ pub struct Elab {
     pub class_defs: HashMap<TyId, classes::ClassDef>,
     /// This module's classes, until their types are registered.
     pub pending_classes: Vec<(String, String, Vec<ast::ClassMember>, Span)>,
-    /// A class function's parameters written `own`, by `module.Class.function`:
-    /// its dictionary field takes them exactly once, so generic code can pass
-    /// it a resource (D156 i).
-    pub class_own: HashMap<String, Vec<bool>>,
+    /// A class function's parameters' multiplicities, by `module.Class.function`,
+    /// when one is written `own` or `ghost`: its dictionary field takes an `own`
+    /// one exactly once, so generic code can pass it a resource (D156 i), and a
+    /// `ghost` one erased.
+    pub class_mults: HashMap<String, Vec<Mult>>,
     /// Where an instance's head type stands for its class's parameter, by
     /// module and span start: an `own` there is the class's, not written.
     pub inst_heads: HashSet<(String, u32)>,
@@ -775,7 +776,7 @@ impl Elab {
             pm: Default::default(),
             class_defs: HashMap::new(),
             pending_classes: Vec::new(),
-            class_own: HashMap::new(),
+            class_mults: HashMap::new(),
             inst_heads: HashSet::new(),
             part_reported: HashSet::new(),
             pending_insts: Vec::new(),

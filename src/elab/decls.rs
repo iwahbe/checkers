@@ -958,13 +958,13 @@ impl Elab {
                     (Tm::Error, Mult::Many)
                 }
             };
-            // A class function's `own` parameters (D156 i).
+            // A class function's `own` and `ghost` parameters (D156 i).
             let key = {
                 let ti = &self.g.tys[tid.0 as usize];
                 format!("{}.{}.{}", ti.module, ti.name, n.name)
             };
-            let ty = match self.class_own.get(&key) {
-                Some(owns) => own_params(&ty, owns),
+            let ty = match self.class_mults.get(&key) {
+                Some(mults) => mult_params(&ty, mults),
                 None => ty,
             };
             let v = self.eval(&cx, &ty);
@@ -2287,14 +2287,14 @@ fn case_arms(c: &CaseTm) -> impl Iterator<Item = (usize, &Tm)> {
     branches.chain(c.lits.iter().map(|(_, b)| (0, b))).chain(c.default.iter().map(|b| (0, b)))
 }
 
-/// A class function's field type with its `own` parameters marked: the
-/// explicit parameters after its implicit type parameters, in order.
-fn own_params(t: &Tm, owns: &[bool]) -> Tm {
+/// A class function's field type with its `own` and `ghost` parameters
+/// marked: the explicit parameters after its implicit type parameters, in order.
+fn mult_params(t: &Tm, mults: &[Mult]) -> Tm {
     match t {
-        Tm::Pi(x, m, Icit::Impl, a, b) => Tm::Pi(x.clone(), *m, Icit::Impl, a.clone(), Rc::new(own_params(b, owns))),
-        Tm::Pi(x, m, i, a, b) if !owns.is_empty() => {
-            let m = if owns[0] { Mult::One } else { *m };
-            Tm::Pi(x.clone(), m, *i, a.clone(), Rc::new(own_params(b, &owns[1..])))
+        Tm::Pi(x, m, Icit::Impl, a, b) => Tm::Pi(x.clone(), *m, Icit::Impl, a.clone(), Rc::new(mult_params(b, mults))),
+        Tm::Pi(x, m, i, a, b) if !mults.is_empty() => {
+            let m = if mults[0] == Mult::Many { *m } else { mults[0] };
+            Tm::Pi(x.clone(), m, *i, a.clone(), Rc::new(mult_params(b, &mults[1..])))
         }
         _ => t.clone(),
     }
