@@ -788,10 +788,28 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
                 }
             }
         }
+        // Each measure's calls it wasn't shown smaller at, and of those the
+        // one to name: first in the group's preference (#124), the call
+        // losing the parameter recursed on.
+        let inside = |a: Span, b: Span| a == b || b.start <= a.start && a.end <= b.end;
+        let unproved: Vec<Vec<Span>> = obs
+            .iter()
+            .enumerate()
+            .map(|(ci, os)| {
+                let ans = &answers[base[ci]..base[ci] + os.len()];
+                os.iter().zip(ans).filter(|(_, a)| !matches!(a, Some(Answer::Unsat))).map(|(o, _)| o.span).collect()
+            })
+            .collect();
+        let pick = |fails: &[Span]| {
+            gr.prefer
+                .iter()
+                .find_map(|p| fails.iter().find(|f| inside(**f, *p) || inside(*p, **f)))
+                .or(fails.first())
+                .copied()
+        };
         let mut tried: Vec<(String, Option<Span>)> = Vec::new();
-        for (ci, os) in obs.iter().enumerate() {
-            let ans = &answers[base[ci]..base[ci] + os.len()];
-            let failed = doomed[ci].or_else(|| os.iter().zip(ans).find(|(_, a)| !matches!(a, Some(Answer::Unsat))).map(|(o, _)| o.span));
+        for (ci, fails) in unproved.iter().enumerate() {
+            let failed = doomed[ci].or_else(|| pick(fails));
             tried.push((combos[ci].iter().map(|m| format!("`{}`", m.1)).collect::<Vec<_>>().join(" and "), failed));
         }
         let first_call = gr.calls.first().map(|c| c.ob.span);
@@ -805,7 +823,17 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
                 }
             }
             None => {
-                let Some(at) = first_call else { continue };
+                // At a call no measure was shown smaller at: for the measures
+                // that leave the fewest calls unproved, the one `pick` names.
+                let fewest = (0..obs.len())
+                    .filter(|ci| doomed[*ci].is_none() && !obs[*ci].is_empty())
+                    .min_by_key(|ci| unproved[*ci].len());
+                let Some(at) = fewest.and_then(|ci| pick(&unproved[ci])).or_else(|| gr.prefer.first().and_then(|p| {
+                    gr.calls.iter().map(|c| c.ob.span).find(|s| inside(*s, *p) || inside(*p, *s))
+                })).or(first_call)
+                else {
+                    continue;
+                };
                 let names: Vec<String> = gr.members.iter().map(|d| format!("`{}`", e.g.defs[d.0 as usize].name)).collect();
                 let src = e.sources.get(user);
                 let line = |sp: Span| src.map(|f| f.line_col(sp.start).0).unwrap_or(0);
