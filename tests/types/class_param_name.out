@@ -1,7 +1,7 @@
 error[E0369]: parameter `a` of `by_param` has the name of the class's parameter `a`
  --> class_param_name.ck:6:17
   |
-6 |     fn by_param a -> r : a~ghost Type, r~Int
+6 |     fn by_param a -> r : a~a, r~Int
   |                 ^ the class's parameter is `a`
   = help: give the parameter another name
 
@@ -19,11 +19,4 @@ error[E0369]: parameter `a` of `by_lemma` has the name of the class's parameter 
    |                    ^ the class's parameter is `a`
    = help: give the parameter another name
 
-error[E0369]: parameter `t` of `by_second` has the name of the class's parameter `t`
-  --> class_param_name.ck:17:20
-   |
-17 |     fn by_second x t -> r : x~s, t~ghost Type, r~t
-   |                    ^ the class's parameter is `t`
-   = help: give the parameter another name
-
-class_param_name.ck: 4 errors, 0 warnings
+class_param_name.ck: 3 errors, 0 warnings

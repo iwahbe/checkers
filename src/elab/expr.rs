@@ -654,6 +654,11 @@ impl Elab {
                         );
                     }
                 }
+                if let Sym::Def(d) = s {
+                    if !self.check_pinned_applied(d, span) {
+                        return (Tm::Error, Val::Error);
+                    }
+                }
                 let (t, ty) = self.sym_term(cx, s, span);
                 self.insert(cx, t, ty)
             }
@@ -880,6 +885,7 @@ impl Elab {
         let elem_sub = self.map_elem_sub.take();
         let ncalls = self.calls.len();
         let saved_head = std::mem::replace(&mut self.in_app_head, true);
+        let saved_args = std::mem::replace(&mut self.app_head_args, args.len());
         // A parameter called here (#102): what its first argument is part of.
         if let ExprKind::Var(n) = &head.kind {
             if cx.lookup(n).is_some_and(|l| cx.locals[l].param.is_some()) {
@@ -889,6 +895,15 @@ impl Elab {
         let (ft, fty) = self.infer(cx, head);
         self.use_ctx = None;
         self.in_app_head = saved_head;
+        self.app_head_args = saved_args;
+        // The call doesn't pass a type its function must be given (E0293):
+        // its arguments are checked, and nothing else is reported.
+        if std::mem::take(&mut self.pinned_failed) {
+            for a in &args {
+                let _ = self.infer(cx, a);
+            }
+            return (Tm::Error, Val::Error);
+        }
         self.note_tag_call(head, &fty, e.span, args[0]);
         // `debug x` shows each of `x`'s fields: they are read (#126).
         if let (ExprKind::Var(n), Some(d)) = (&head.kind, self.std_def("debug")) {
@@ -931,6 +946,7 @@ impl Elab {
         let callee_spec = crate::core::head_def(&ft).and_then(|d| self.specs.get(&d));
         let callee_def = crate::core::head_def(&ft);
         let late = callee_spec.map(|s| s.late.clone()).unwrap_or_default();
+        let pinned = callee_spec.map(|s| s.pinned.clone()).unwrap_or_default();
         let n_implicit = callee_spec.map_or(0, |s| s.n_implicit);
         self.head_checks_aliases = match &ft {
             Tm::Def(d) => self.specs.get(d).is_some_and(|s| s.preds.iter().any(|p| p.alias.is_some() && !p.is_post)),
@@ -943,6 +959,11 @@ impl Elab {
             None => (ft, fty),
         };
         let (ft, fty) = self.look_ahead(cx, ft, fty, &args);
+        // The implicit arguments a type passed explicitly decides (#161).
+        let implicits: Vec<Tm> = match ft.spine_cloned() {
+            (Tm::Def(_), xs) if !pinned.is_empty() && xs.len() == n_implicit => xs,
+            _ => Vec::new(),
+        };
         // `Tx a`, where `Tx` names an abstract type of another module whose
         // constructor shares its name (D155).
         if let Tm::TyCon(tid) = &ft {
@@ -990,6 +1011,18 @@ impl Elab {
             let (t2, ty2) = self.apply_one_as(cx, t, ty, a, expected, elem, ready.remove(&k));
             self.use_ctx = None;
             self.map_elem_sub = None;
+            if let (Some((_, j)), Tm::App(_, arg, Icit::Expl, _)) = (pinned.iter().find(|(b, _)| *b == n_implicit + k), &t2) {
+                if let Some(imp) = implicits.get(*j) {
+                    let (iv, av) = (self.eval(cx, imp), self.eval(cx, arg));
+                    if unify(&self.g, cx.lvl(), &iv, &av).is_err() {
+                        let (want, got) = (self.show_val(cx, &iv), self.show_val(cx, &av));
+                        self.err(
+                            Diagnostic::error("E0201", format!("type mismatch: expected `{want}`, found `{got}`"), a.span)
+                                .with_label(format!("the call's type makes this `{want}`")),
+                        );
+                    }
+                }
+            }
             t = t2;
             ty = ty2;
         }
@@ -1004,6 +1037,29 @@ impl Elab {
             return (Tm::Error, Val::Error);
         }
         (t, ty)
+    }
+
+    /// A use of `d` (with `app_head_args` explicit arguments if it is
+    /// called): a type it takes explicitly that a clause names (#161) is
+    /// decided by the call's argument, so the call must pass it.
+    fn check_pinned_applied(&mut self, d: DefId, span: Span) -> bool {
+        let n = if self.in_app_head { self.app_head_args } else { 0 };
+        let Some(spec) = self.specs.get(&d) else { return true };
+        let Some(&(b, _)) = spec.pinned.iter().find(|(b, _)| *b >= spec.n_implicit + n) else { return true };
+        let k = b - spec.n_implicit;
+        let Some(meta) = self.fn_meta.get(&d) else { return true };
+        let name = meta.name.clone();
+        let pname = meta.params.get(k).map(|p| p.0.clone()).unwrap_or_default();
+        let ps: Vec<&str> = meta.params.iter().map(|p| p.0.as_str()).collect();
+        let rest: Vec<&str> = ps.iter().enumerate().filter(|(j, _)| !spec.pinned.iter().any(|(b, _)| *b == spec.n_implicit + j)).map(|(_, p)| *p).collect();
+        let example = if rest.is_empty() { format!("{name} {}", ps.join(" ")) } else { format!("\\{} -> {name} {}", rest.join(" "), ps.join(" ")) };
+        self.err(
+            Diagnostic::error("E0293", format!("`{name}` takes the type `{pname}`, so it must be called with it"), span)
+                .with_label(format!("no argument for `{pname}`"))
+                .with_help(format!("the type passed decides which instance it uses; to pass `{name}` as a value, wrap the call in a lambda that passes the type, e.g. `{example}`")),
+        );
+        self.pinned_failed = self.in_app_head;
+        false
     }
 
     /// A call of a function with `comptime` parameters (D59): it must be
@@ -2151,6 +2207,9 @@ impl Elab {
                             self.index_sym(x.span, Sym::Ty(tid));
                             self.index_sym(name.span, s);
                             self.note_reference(d, span);
+                            if !self.check_pinned_applied(d, span) {
+                                return (Tm::Error, Val::Error);
+                            }
                             self.name_span = span;
                             let (t, ty) = self.sym_term(cx, s, span);
                             self.insert(cx, t, ty)
@@ -2180,6 +2239,9 @@ impl Elab {
                             self.index_sym(name.span, s);
                             if let Sym::Def(d) = s {
                                 self.note_reference(d, span);
+                                if !self.check_pinned_applied(d, span) {
+                                    return (Tm::Error, Val::Error);
+                                }
                             }
                             self.name_span = span;
                             let (t, ty) = self.sym_term(cx, s, span);

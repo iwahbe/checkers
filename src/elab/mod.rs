@@ -381,6 +381,8 @@ pub struct Spec {
     /// call `k` only with strict parts of `j` where that predicate is a
     /// membership, as its body shows (#102).
     pub elems: Vec<ElemPromise>,
+    /// Explicit binders that decide an implicit one (#161): see `Sig`.
+    pub pinned: Vec<(usize, usize)>,
 }
 
 /// A parameter whose type's refinements mention later parameters (#102).
@@ -535,6 +537,12 @@ pub struct Elab {
     /// Elaborating the head of an application: a bare function name gets its
     /// refined type only as a value (D85).
     pub in_app_head: bool,
+    /// The number of explicit arguments of the call whose head is being
+    /// elaborated, while `in_app_head`.
+    pub app_head_args: usize,
+    /// The head just elaborated was such a call's function, without the
+    /// type it must be passed (E0293).
+    pub pinned_failed: bool,
     /// Postconditions to check where the current function returns (§7.1).
     pub post_target: Option<PostTarget>,
     /// The goal of the proof being elaborated (D49).
@@ -777,6 +785,8 @@ impl Elab {
             insts: Vec::new(),
             pending_inst: None,
             in_app_head: false,
+            app_head_args: 0,
+            pinned_failed: false,
             proof_goal: None,
             post_target: None,
             admits: Vec::new(),

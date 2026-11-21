@@ -30,6 +30,11 @@ pub struct Sig {
     /// binder, and its refined type over all the binders. The binder's own
     /// type in `binders` is the type without its refinements.
     pub late: Vec<Late>,
+    /// Explicit parameters `t~ghost Type` that a class clause names
+    /// (#161): the binder, and the implicit binder that is the type the
+    /// clause and the rest of the signature mean. A call's argument for
+    /// the first decides the second.
+    pub pinned: Vec<(usize, usize)>,
 }
 
 impl Elab {
@@ -1577,6 +1582,19 @@ impl Elab {
                 _ => None,
             })
             .collect();
+        // A type passed explicitly that a clause names (`t~ghost Type,
+        // Parse t`, #161): the clause's dictionary comes before every
+        // explicit parameter, so `t` there (and everywhere in the
+        // signature and body) is an implicit parameter, and the explicit
+        // one decides it at each call.
+        let pinned_names: Vec<String> = params
+            .iter()
+            .filter(|p| is_ghost_type(cs, &p.name) && class_clauses.iter().any(|e| mentions_free(e, &p.name)))
+            .map(|p| p.name.clone())
+            .collect();
+        for n in &pinned_names {
+            declared.remove(n);
+        }
         for c in cs {
             if let Constraint::Typed { ty, .. } = c {
                 self.collect_free(&cx, ty, &declared, &mut autos);
@@ -1584,6 +1602,12 @@ impl Elab {
         }
         for e in &class_clauses {
             self.collect_free(&cx, e, &declared, &mut autos);
+        }
+        for n in &pinned_names {
+            if !autos.contains(n) {
+                autos.push(n.clone());
+            }
+            declared.insert(n.clone());
         }
         for a in &autos {
             // Applied to arguments (`f a`), it is a type constructor (M25).
@@ -1623,6 +1647,7 @@ impl Elab {
         // type is elaborated without its refinements here, and with them once
         // every parameter is in scope.
         let mut late_exprs: Vec<(usize, &Expr)> = Vec::new();
+        let mut pinned = Vec::new();
         for (k, p) in params.iter().enumerate() {
             let (ty, mult, ct) = match Self::typed_constraint(cs, &p.name) {
                 Some((e, m)) if params[k + 1..].iter().any(|q| q.name != p.name && mentions_free(e, &q.name)) => {
@@ -1648,7 +1673,15 @@ impl Elab {
                 None => (self.fresh_meta(&cx), Mult::Many, false),
             };
             let v = self.eval(&cx, &ty);
-            let l = cx.bind(&p.name, v, mult);
+            // A pinned type (#161): its name means the implicit parameter.
+            let pin = pinned_names.contains(&p.name).then(|| autos.iter().position(|a| *a == p.name)).flatten();
+            let l = match pin {
+                Some(j) => {
+                    pinned.push((binders.len(), j));
+                    cx.bind(&format!("${}", p.name), v, mult)
+                }
+                None => cx.bind(&p.name, v, mult),
+            };
             cx.locals[l].param = Some(k);
             self.bound_at(&mut cx, l, p.span);
             if ct {
@@ -1782,7 +1815,7 @@ impl Elab {
         self.in_spec -= 1;
         cx.facts.truncate(facts_before);
         cx.pop();
-        Sig { cx, binders, result: result_ty, n_implicit, preds, result_name: rname, comptime, hyps, late }
+        Sig { cx, binders, result: result_ty, n_implicit, preds, result_name: rname, comptime, hyps, late, pinned }
     }
 
     /// The preconditions of a signature's function parameters that relate
@@ -1917,6 +1950,7 @@ impl Elab {
                             n_implicit: sig.n_implicit,
                             late: sig.late.clone(),
                             elems: self.elem_promises(&sig),
+                            pinned: sig.pinned.clone(),
                             ..Default::default()
                         },
                     );
@@ -2127,6 +2161,7 @@ impl Elab {
                 measure,
                 late: sig.late.clone(),
                 elems: Vec::new(),
+                pinned: sig.pinned.clone(),
             };
             self.specs.insert(*did, spec);
         }
@@ -2187,6 +2222,7 @@ impl Elab {
                 comptime: sig.comptime.clone(),
                 hyps: sig.hyps.clone(),
                 late: sig.late.clone(),
+                pinned: sig.pinned.clone(),
             };
             self.cur_fn = Some(*did);
             self.assume_pres(&mut sig);
@@ -2410,4 +2446,11 @@ fn pred_subject(p: &Tm) -> Vec<(DefId, usize, usize, usize)> {
         }
     }
     out
+}
+
+/// Is `name` given the type `ghost Type` among `cs` (#161)?
+pub(crate) fn is_ghost_type(cs: &[Constraint], name: &str) -> bool {
+    cs.iter().any(|c| {
+        matches!(c, Constraint::Typed { name: n, mult: ast::Mult::Ghost, ty } if n.name == name && matches!(&ty.kind, ExprKind::Con(t) if t == "Type"))
+    })
 }

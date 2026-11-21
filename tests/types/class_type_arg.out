@@ -1,0 +1,21 @@
+error[E0284]: no instance of `TryFrom` for `String` and `List Int`
+  --> class_type_arg.ck:50:5
+   |
+50 |     try_from "1" (List Int)
+   |     ^^^^^^^^ needs `TryFrom String (List Int)`
+   = help: declare `instance TryFrom …` for these types, beside the class or the first type
+
+error[E0201]: type mismatch: expected `Option Bool`, found `Option Int`
+  --> class_type_arg.ck:54:5
+   |
+54 |     try_from "1" Int
+   |     ^^^^^^^^^^^^^^^^ this expression has type `Option Int`
+
+error[E0293]: `try_from` takes the type `t`, so it must be called with it
+  --> class_type_arg.ck:58:13
+   |
+58 |     let f = try_from "1"
+   |             ^^^^^^^^ no argument for `t`
+   = help: the type passed decides which instance it uses; to pass `try_from` as a value, wrap the call in a lambda that passes the type, e.g. `\x -> try_from x t`
+
+class_type_arg.ck: 3 errors, 0 warnings
