@@ -16,7 +16,7 @@ pub const TABLE: &[Builtin] = &[
 ];
 
 // `debug x` (#126): `x` as Checkers source.
-builtin!(ckb_debug, |a| new_str(&crate::ops::show(a[0], 0)));
+builtin!(ckb_debug, |a| new_str(&crate::ops::show_typed(a[1], &crate::desc::Ty::of_word(a[0]), 0)));
 
 // The digits of the natural number `n` in base `b` (2 to 36), lower case.
 builtin!(ckb_string_digits, |a| {

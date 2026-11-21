@@ -390,6 +390,10 @@ pub struct WellKnown {
     /// Hand-written `instance Debug T`: the type and the instance's
     /// `debug`, which the runtime calls for `T`'s constructors (#126).
     pub debug_insts: Vec<(TyId, DefId)>,
+    /// The type parameters (by position) of each function that shows
+    /// values of them, itself or through functions it calls: they are
+    /// passed their type's descriptor, not only its layout (#170).
+    pub desc_params: HashMap<DefId, std::collections::BTreeSet<usize>>,
 }
 
 pub const DEFAULT_FUEL: u64 = 200_000;
@@ -455,6 +459,31 @@ impl Globals {
     /// Is field `i` of constructor `c` a type (of type `Type`)?
     pub fn is_type_field(&self, c: ConId, i: usize) -> bool {
         self.cons.get(c.0 as usize).and_then(|ci| ci.fields.get(i)).is_some_and(|f| matches!(f.3, Tm::Univ(_)))
+    }
+
+    /// A class's type in its dictionary (#133): a field of multiplicity 0
+    /// that is kept at run time, holding its type's word, for generic code's
+    /// arrays of it and for showing it.
+    pub fn is_dict_type_field(&self, c: ConId, k: usize) -> bool {
+        self.is_type_field(c, k) && self.cons[c.0 as usize].fields[k].0.starts_with('$')
+    }
+
+    /// Whether field `k` of constructor `c` is kept at run time.
+    pub fn is_runtime_field(&self, c: ConId, k: usize) -> bool {
+        self.cons[c.0 as usize].fields[k].1 != Mult::Zero || self.is_dict_type_field(c, k)
+    }
+
+    /// A type with one constructor whose fields keep exactly one value at
+    /// run time is stored as that value, with no object around it (#170):
+    /// that field's position, for the type's constructor `c`.
+    pub fn unboxed_field(&self, c: ConId) -> Option<usize> {
+        let ci = self.cons.get(c.0 as usize)?;
+        if self.tys[ci.ty.0 as usize].ctors.len() != 1 {
+            return None;
+        }
+        let mut kept = (0..ci.fields.len()).filter(|&k| self.is_runtime_field(c, k));
+        let k = kept.next()?;
+        kept.next().is_none().then_some(k)
     }
 
     pub fn arity_ty(&self, t: TyId) -> usize {
@@ -620,7 +649,7 @@ pub fn unfold(g: &Globals, v: &Val) -> Option<Val> {
 
 /// Is this the type of a type (or of a function returning one), as for a
 /// type alias?
-fn is_type_former(ty: &Tm) -> bool {
+pub fn is_type_former(ty: &Tm) -> bool {
     let mut t = ty;
     while let Tm::Pi(_, _, _, _, b) = t {
         t = b;
@@ -684,6 +713,67 @@ pub fn layout_of(g: &Globals, v: &Val) -> Result<u8, usize> {
         Val::TyCon(id, _) if Some(id) == g.well_known.bool_ty => Ok(checkers_rt::array::Layout::Bool as u8),
         Val::Neutral(Head::Var(x), sp) if sp.is_empty() => Err(x),
         _ => Ok(0),
+    }
+}
+
+/// A type's descriptor (#170), as code builds it: what `checkers_rt::desc`
+/// reads at run time.
+#[derive(Clone, Debug)]
+pub enum Desc {
+    /// A type with its arguments' descriptors (none: a type without
+    /// arguments, or one whose arguments aren't said).
+    Known(u64, Vec<Desc>),
+    /// The type variable at this level: its word at run time.
+    Var(usize),
+    /// A class's type kept in the dictionary at this level (#133).
+    Dict(usize, ConId, usize),
+}
+
+impl Desc {
+    /// A type the descriptor doesn't name, laid out as `layout`.
+    pub fn unknown(layout: u8) -> Desc {
+        Desc::Known(checkers_rt::desc::tag(None, layout), Vec::new())
+    }
+}
+
+/// The descriptor of `v`, a type (#170). Its layout is `layout_of`'s; a
+/// type variable is its word at run time.
+pub fn desc_of(g: &Globals, v: &Val) -> Desc {
+    desc_at(g, v, 0)
+}
+
+fn desc_at(g: &Globals, v: &Val, depth: usize) -> Desc {
+    let layout = match layout_of(g, v) {
+        Ok(l) => l,
+        Err(level) => return Desc::Var(level),
+    };
+    if depth > 32 {
+        return Desc::unknown(layout);
+    }
+    match force(g, v.clone()) {
+        Val::TyCon(id, args) => {
+            let ti = &g.tys[id.0 as usize];
+            let args = args
+                .iter()
+                .enumerate()
+                .map(|(k, a)| match ti.params.get(k) {
+                    // Only type parameters have descriptors; a value
+                    // parameter (`Vec a n`'s `n`) says nothing to show by.
+                    Some((_, t)) if is_type_former(t) => desc_at(g, a, depth + 1),
+                    _ => Desc::unknown(0),
+                })
+                .collect();
+            Desc::Known(checkers_rt::desc::tag(Some(id.0), layout), args)
+        }
+        Val::TupleTy(ts) => {
+            let parts = flat_parts(g, &ts, true);
+            Desc::Known(checkers_rt::desc::tag(Some(checkers_rt::desc::TUPLE), 0), parts.iter().map(|t| desc_at(g, t, depth + 1)).collect())
+        }
+        Val::Neutral(Head::Var(x), sp) => match sp.as_slice() {
+            [Elim::Field(c, i)] if g.is_dict_type_field(*c, *i) => Desc::Dict(x, *c, *i),
+            _ => Desc::unknown(layout),
+        },
+        _ => Desc::unknown(layout),
     }
 }
 

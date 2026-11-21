@@ -16,6 +16,31 @@ pub struct ConInfo {
     pub shown: Vec<bool>,
     /// Its type's hand-written `debug` (#126): an index into `Prog::debug`.
     pub debug: Option<usize>,
+    /// Its type's number (#170).
+    pub ty: Option<u32>,
+    /// Per field: its type, from the type's parameters (#170).
+    pub templates: Vec<crate::desc::Template>,
+}
+
+/// What `debug` needs to know of a type to show it by its descriptor (#170).
+#[derive(Clone, Debug, Default)]
+pub struct TyInfo {
+    pub kind: TyKind,
+    /// Stored as its one kept field: the constructor and the field.
+    pub unboxed: Option<(u32, usize)>,
+    /// Its hand-written `debug`: an index into `Prog::debug`, and how many
+    /// type parameters that function takes before the value.
+    pub debug: Option<(usize, usize)>,
+}
+
+/// Types shown otherwise than by their constructors.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TyKind {
+    #[default]
+    Other,
+    List,
+    Array,
+    String,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -48,6 +73,8 @@ pub struct Prog {
     pub names: Vec<String>,
     pub known: Known,
     pub system_fields: Vec<String>,
+    /// Types by number (#170).
+    pub tys: std::collections::HashMap<u32, TyInfo>,
     pub invoke: Invoke,
     /// The hand-written `Debug` instances' functions (#126), set once
     /// after `install` (`set_debug`); kept for good.
@@ -73,15 +100,18 @@ fn prog_opt() -> Option<&'static Prog> {
 }
 
 /// The descriptor (one item per line):
-/// `con NAME ARITY NP SHOWN` (SHOWN: a string of 0/1 per field),
-/// `def NAME`, `known KEY ID`, `system FIELD`, `debug CON INDEX` (after
-/// the constructors).
+/// `con NAME ARITY NP SHOWN TY TEMPLATES` (SHOWN: a string of 0/1 per
+/// field; TY: its type's number; TEMPLATES: each field's type, `;` between
+/// them, `-` for none), `ty ID KIND UNBOXED` (KIND: `list`, `array`,
+/// `string` or `-`; UNBOXED: `CON:FIELD` or `-`), `def NAME`, `known KEY
+/// ID`, `system FIELD`, `debug TY INDEX NTYPES` (after the types).
 pub fn install(desc: &str, invoke: Invoke) {
     let mut p = Prog {
         cons: Vec::new(),
         names: Vec::new(),
         known: Known::default(),
         system_fields: Vec::new(),
+        tys: std::collections::HashMap::new(),
         invoke,
         debug: std::sync::OnceLock::new(),
     };
@@ -93,13 +123,32 @@ pub fn install(desc: &str, invoke: Invoke) {
                 let arity = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
                 let np = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
                 let shown = it.next().unwrap_or("").bytes().map(|b| b == b'1').collect();
-                p.cons.push(ConInfo { name, arity, np, shown, debug: None });
+                let ty = it.next().and_then(|x| x.parse().ok());
+                let templates = match it.next() {
+                    None | Some("-") => Vec::new(),
+                    Some(ts) => ts.split(';').map(crate::desc::Template::parse).collect(),
+                };
+                p.cons.push(ConInfo { name, arity, np, shown, debug: None, ty, templates });
+            }
+            Some("ty") => {
+                let Some(id) = it.next().and_then(|x| x.parse().ok()) else { continue };
+                let kind = match it.next() {
+                    Some("list") => TyKind::List,
+                    Some("array") => TyKind::Array,
+                    Some("string") => TyKind::String,
+                    _ => TyKind::Other,
+                };
+                let unboxed = it.next().and_then(|x| x.split_once(':')).and_then(|(c, f)| Some((c.parse().ok()?, f.parse().ok()?)));
+                p.tys.insert(id, TyInfo { kind, unboxed, debug: None });
             }
             Some("debug") => {
-                let c: Option<usize> = it.next().and_then(|x| x.parse().ok());
-                let k = it.next().and_then(|x| x.parse().ok());
-                if let Some(ci) = c.and_then(|c| p.cons.get_mut(c)) {
-                    ci.debug = k;
+                let ty: Option<u32> = it.next().and_then(|x| x.parse().ok());
+                let k: Option<usize> = it.next().and_then(|x| x.parse().ok());
+                let n: usize = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
+                let (Some(ty), Some(k)) = (ty, k) else { continue };
+                p.tys.entry(ty).or_default().debug = Some((k, n));
+                for ci in p.cons.iter_mut().filter(|c| c.ty == Some(ty)) {
+                    ci.debug = Some(k);
                 }
             }
             Some("def") => p.names.push(it.next().unwrap_or("").to_string()),
@@ -144,11 +193,22 @@ pub fn set_debug(fs: W) {
     let _ = prog().debug.set(items);
 }
 
-/// The hand-written `debug` of constructor `c`'s type, if it has one.
-pub fn debug_fn(c: u32) -> Option<W> {
+/// The hand-written `debug` of constructor `c`'s type, if it has one, and
+/// how many type parameters it takes before the value.
+pub fn debug_fn(c: u32) -> Option<(W, usize)> {
     let p = prog();
-    let k = p.cons.get(c as usize)?.debug?;
-    p.debug.get()?.get(k).copied()
+    let ci = p.cons.get(c as usize)?;
+    let k = ci.debug?;
+    let n = ci.ty.and_then(|t| p.tys.get(&t)).and_then(|t| t.debug).map_or(0, |d| d.1);
+    Some((*p.debug.get()?.get(k)?, n))
+}
+
+/// The hand-written `debug` of type `ty`, if it has one, and how many type
+/// parameters it takes before the value.
+pub fn debug_fn_of_type(ty: u32) -> Option<(W, usize)> {
+    let p = prog();
+    let (k, n) = p.tys.get(&ty)?.debug?;
+    Some((*p.debug.get()?.get(k)?, n))
 }
 
 // ── values the runtime builds ───────────────────────────────────────────────

@@ -60,9 +60,10 @@ pub const MODULES: &[&[Builtin]] = &[
     prelude::TABLE,
 ];
 
-/// Builtins that get their type parameters, as element layouts (D133).
+/// Builtins that get their type parameters' words: `std.array`'s, as
+/// element layouts (D133); `debug`, as its type's descriptor (#170).
 pub fn keeps_types(name: &str) -> bool {
-    name.starts_with("std.array.")
+    name.starts_with("std.array.") || name == "std.string.debug"
 }
 
 /// Builtins called through their wrapper function, which owns its

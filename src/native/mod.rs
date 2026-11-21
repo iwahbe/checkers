@@ -23,18 +23,35 @@ pub(crate) fn descriptor(g: &Globals, p: &lower::Program) -> String {
             .iter()
             .map(|f| if f.2 == crate::core::Icit::Expl && f.1 != crate::core::Mult::Zero { '1' } else { '0' })
             .collect();
-        let _ = i;
-        d += &format!("con {} {} {} {}\n", c.name, g.arity_con(crate::core::ConId(i as u32)), g.arity_ty(c.ty), shown);
+        let templates: Vec<String> = (0..c.fields.len()).map(|k| field_template(g, crate::core::ConId(i as u32), k).write()).collect();
+        let templates = if templates.is_empty() { "-".to_string() } else { templates.join(";") };
+        d += &format!("con {} {} {} {} {} {templates}\n", c.name, g.arity_con(crate::core::ConId(i as u32)), g.arity_ty(c.ty), shown, c.ty.0);
+    }
+    // Types shown otherwise than by their constructors (#170).
+    let wk = &g.well_known;
+    for (i, t) in g.tys.iter().enumerate() {
+        let id = Some(crate::core::TyId(i as u32));
+        let kind = if id == wk.list {
+            "list"
+        } else if id == wk.array {
+            "array"
+        } else if id == wk.string {
+            "string"
+        } else {
+            "-"
+        };
+        let unboxed = t.ctors.first().and_then(|c| g.unboxed_field(*c).map(|k| format!("{}:{k}", c.0)));
+        if kind != "-" || unboxed.is_some() {
+            d += &format!("ty {i} {kind} {}\n", unboxed.as_deref().unwrap_or("-"));
+        }
     }
     for n in &p.names {
         d += &format!("def {n}\n");
     }
-    // Each constructor of a type with a hand-written `Debug`: which of
-    // the instances' functions shows it (#126).
-    for (k, (t, _)) in g.well_known.debug_insts.iter().enumerate() {
-        for c in &g.tys[t.0 as usize].ctors {
-            d += &format!("debug {} {k}\n", c.0);
-        }
+    // Each type with a hand-written `Debug`: which of the instances'
+    // functions shows it (#126), and how many type parameters it takes.
+    for (k, (t, f)) in g.well_known.debug_insts.iter().enumerate() {
+        d += &format!("debug {} {k} {}\n", t.0, lower::type_params(g, *f));
     }
     let wk = &g.well_known;
     let find = |module: &str, name: &str| {
@@ -70,6 +87,24 @@ pub(crate) fn descriptor(g: &Globals, p: &lower::Program) -> String {
         }
     }
     d
+}
+
+/// Field `k` of constructor `c`'s type, from its type's parameters (#170).
+fn field_template(g: &Globals, c: crate::core::ConId, k: usize) -> checkers_rt::desc::Template {
+    use crate::core::Desc;
+    use checkers_rt::desc::Template;
+    let ci = &g.cons[c.0 as usize];
+    let np = g.arity_ty(ci.ty);
+    let env = std::rc::Rc::new((0..np + k).map(crate::core::Val::var).collect::<Vec<_>>());
+    let v = crate::core::eval(g, &env, &ci.fields[k].3);
+    fn go(d: &Desc, np: usize) -> Template {
+        match d {
+            Desc::Known(tag, args) => Template::Con(*tag, args.iter().map(|a| go(a, np)).collect()),
+            Desc::Var(l) if *l < np => Template::Param(*l),
+            _ => Template::Unknown,
+        }
+    }
+    go(&crate::core::desc_of(g, &v), np)
 }
 
 /// Closure-convert and reference-count the program.

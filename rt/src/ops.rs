@@ -5,6 +5,7 @@ use crate::num::Num;
 use crate::obj::*;
 use crate::prog::*;
 use crate::word::*;
+use crate::desc::Ty;
 
 fn num2(a: W, b: W) -> (Num, Num) {
     (num_of(a), num_of(b))
@@ -230,10 +231,102 @@ pub fn show_derived(w: W, p: u8) -> String {
     render(w, p, false)
 }
 
+/// `show`, for a value of the type `ty` describes (#170): what the type
+/// says and the value doesn't (a type stored as its one field, a string)
+/// is shown as the type says.
+pub fn show_typed(w: W, ty: &Ty, p: u8) -> String {
+    render_typed(w, ty, p, true)
+}
+
+/// `show_derived`, by type.
+pub fn show_typed_derived(w: W, ty: &Ty, p: u8) -> String {
+    render_typed(w, ty, p, false)
+}
+
+fn render_typed(w: W, ty: &Ty, p: u8, hand: bool) -> String {
+    let Some(id) = ty.id() else { return render(w, p, hand) };
+    let pg = prog();
+    if id == crate::desc::TUPLE {
+        if !is_kind(w, K_TUPLE) {
+            return render(w, p, hand);
+        }
+        let parts: Vec<String> = (0..nfields(w)).map(|i| render_typed(slot(w, i), &ty.arg(i), 0, hand)).collect();
+        return format!("({})", parts.join(", "));
+    }
+    let other = crate::prog::TyInfo::default();
+    let info = pg.tys.get(&id).unwrap_or(&other);
+    if hand {
+        if let Some((f, n)) = crate::prog::debug_fn_of_type(id) {
+            return custom(f, (0..n).map(|i| ty.arg(i).to_word()).collect(), w, p);
+        }
+    }
+    match info.kind {
+        TyKind::String if is_kind(w, K_STR) => return format!("{:?}", str_of(w)),
+        TyKind::String if is_kind(w, K_BYTES) => return format!("{:?}", String::from_utf8_lossy(blob(w))),
+        TyKind::List if is_list(w) => {
+            let elem = ty.arg(0);
+            let items: Vec<String> = list_items(w).into_iter().map(|x| render_typed(x, &elem, 0, hand)).collect();
+            return format!("[{}]", items.join(", "));
+        }
+        TyKind::Array if crate::array::is_array(w) => {
+            let elem = ty.arg(0);
+            // An array of bytes by its element type, not by how it is stored.
+            if elem.layout() == crate::array::Layout::U8 && is_kind(w, K_BYTES) {
+                return show_bytes(blob(w));
+            }
+            let items: Vec<String> = crate::array::items(w)
+                .into_iter()
+                .map(|x| {
+                    let s = render_typed(x, &elem, 0, hand);
+                    drop_w(x);
+                    s
+                })
+                .collect();
+            return format!("[{}]", items.join(", "));
+        }
+        _ => {}
+    }
+    // Stored as its one kept field: the value is that field.
+    if let Some((c, k)) = info.unboxed {
+        let ci = &pg.cons[c as usize];
+        if !ci.shown.get(k).copied().unwrap_or(false) {
+            return ci.name.clone();
+        }
+        let fty = ci.templates.get(k).map_or(Ty::Unknown, |t| t.at(ty));
+        return paren(p > 0, format!("{} {}", ci.name, render_typed(w, &fty, 1, hand)));
+    }
+    let Some(c) = con_of(w) else { return render(w, p, hand) };
+    let ci = &pg.cons[c as usize];
+    if ci.ty != Some(id) {
+        return render(w, p, hand);
+    }
+    let fields: Vec<W> = if is_nullary(w) { Vec::new() } else { (0..nfields(w)).map(|i| slot(w, i)).collect() };
+    let args: Vec<String> = fields
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| ci.shown.get(*i).copied().unwrap_or(false))
+        .map(|(i, v)| render_typed(*v, &ci.templates.get(i).map_or(Ty::Unknown, |t| t.at(ty)), 1, hand))
+        .collect();
+    if args.is_empty() {
+        ci.name.clone()
+    } else {
+        paren(p > 0, format!("{} {}", ci.name, args.join(" ")))
+    }
+}
+
+/// Whether `w` is a list: `[]` or a cell.
+fn is_list(w: W) -> bool {
+    let k = &prog().known;
+    con_of(w).is_some_and(|c| Some(c) == k.nil || Some(c) == k.cons)
+}
+
 /// What a hand-written `debug` gives, in argument position in parentheses
-/// if it has a space outside brackets and quotes.
-fn custom(f: W, w: W, p: u8) -> String {
-    let r = crate::apply::apply(dup(f), vec![dup(w)]);
+/// if it has a space outside brackets and quotes. `targs` (owned) are its
+/// type parameters' words.
+fn custom(f: W, targs: Vec<W>, w: W, p: u8) -> String {
+    let mut args = targs;
+    args.push(dup(w));
+    let r = crate::apply::apply(dup(f), args);
     let s = if is_kind(r, K_STR) { str_of(r).to_string() } else { bug("a `debug` that didn't give a string") };
     drop_w(r);
     if p == 0 {
@@ -282,8 +375,8 @@ fn render(w: W, p: u8, hand: bool) -> String {
         .into();
     }
     if let Some(c) = con_of(w) {
-        if let Some(f) = debug_fn(c).filter(|_| hand) {
-            return custom(f, w, p);
+        if let Some((f, n)) = debug_fn(c).filter(|_| hand) {
+            return custom(f, vec![ERASED; n], w, p);
         }
         if Some(c) == k.nil || Some(c) == k.cons {
             let items: Vec<String> = list_items(w).into_iter().map(|x| show(x, 0)).collect();
