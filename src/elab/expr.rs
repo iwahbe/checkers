@@ -490,7 +490,12 @@ impl Elab {
                 // body, as in checking mode.
                 let mut body: Expr = (**body).clone();
                 let mut taken_apart = Vec::new();
-                for p in pats {
+                // Each parameter's type is an unknown of the lambda's
+                // context, not of the parameters before it: applied to a
+                // value that isn't a variable (`(\a b -> …) 1 "two"`), a
+                // type depending on `a` couldn't be solved.
+                let tys: Vec<Val> = pats.iter().map(|_| self.fresh_meta_val(cx)).collect();
+                for (p, a) in pats.iter().zip(tys) {
                     let name = match &p.kind {
                         ast::PatKind::Var(n) => n.clone(),
                         ast::PatKind::Wild => "_".to_string(),
@@ -500,7 +505,6 @@ impl Elab {
                             n
                         }
                     };
-                    let a = self.fresh_meta_val(cx);
                     let at = quote(&self.g, cx.lvl(), &a);
                     let l = cx.bind(&name, a, Mult::Many);
                     if name != "_" {
@@ -2220,6 +2224,13 @@ impl Elab {
             }
         }
         let (xt, xty) = self.infer(cx, x);
+        // A class's type at an instance not found yet (`q"…".sql`, its
+        // type `Template.Result Building`, #132): find the instances the
+        // types known so far choose, and look again.
+        if !matches!(self.force(&xty), Val::TyCon(..)) && !self.inst_reqs.is_empty() {
+            self.solve_instances(false);
+            self.retry_waiting(false);
+        }
         match self.force(&xty) {
             Val::TyCon(tid, _) if self.g.tys[tid.0 as usize].is_record && self.sealed_from(tid).is_some() => {
                 self.err(self.sealed_error(tid, "fields", name.span));

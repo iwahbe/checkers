@@ -1,0 +1,14 @@
+-- stdout
+<p>&lt;Ann&gt;</p><b>hi</b>
+<li>&lt;Ann&gt;</li>
+<li><b>hi</b></li>
+{&lt;Ann&gt;}
+select * from t where id = $1 and n < $2
+[7, 8]
+id = ?
+(6, 2)
+(0, 0)
+<Ann> is 37 years old: [1, 2], Some Raw
+a and 2
+-- stderr
+-- exit 0

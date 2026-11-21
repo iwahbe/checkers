@@ -1432,42 +1432,36 @@ impl Parser {
                 _ => {}
             }
         }
-        let (value_toks, option_toks) = match split {
-            Some(i) => (toks[..i].to_vec(), Some((toks[i].span, toks[i + 1..].to_vec()))),
-            None => (toks, None),
+        // Each part is parsed up to the token after it: the `|`, or the
+        // hole's `}`.
+        let close = Token { tok: Tok::RBrace, span: Span { start: span.end - 1, end: span.end }, space_before: false };
+        let (value_toks, value_end, option_toks) = match split {
+            Some(i) => (toks[..i].to_vec(), toks[i].clone(), Some(toks[i + 1..].to_vec())),
+            None => (toks, close.clone(), None),
         };
         let value = if value_toks.is_empty() {
             None
         } else {
-            let end = Span::empty_at(value_toks.last().unwrap().span.end);
-            self.sub_parse(value_toks, end, "`|` or `}`", |p| p.expr())
+            self.sub_parse(value_toks, value_end, "`|` or `}`", |p| p.expr())
         };
         let options = match option_toks {
             None => Vec::new(),
-            Some((bar, ts)) if ts.is_empty() => {
-                self.diags.push(
-                    Diagnostic::error("E0100", "expected an option after `|`", Span::empty_at(bar.end))
-                        .with_label("expected an option")
-                        .with_help("write the options after `|`, separated by commas, or leave out the `|`"),
-                );
-                Vec::new()
-            }
-            Some((_, ts)) => {
-                let end = Span::empty_at(ts.last().unwrap().span.end);
-                self.sub_parse(ts, end, "`,` or `}`", |p| {
+            Some(ts) => self
+                .sub_parse(ts, close, "`,` or `}`", |p| {
                     let mut items = Vec::new();
                     p.commas(&mut items, Self::expr)?;
                     Ok(items)
                 })
-                .unwrap_or_default()
-            }
+                .unwrap_or_default(),
         };
         TemplatePiece::Hole { value, options, span }
     }
 
-    /// Parse `toks` (a hole's) with `f`, which must use all of them.
-    fn sub_parse<T>(&mut self, mut toks: Vec<Token>, end: Span, what: &str, f: impl FnOnce(&mut Self) -> PResult<T>) -> Option<T> {
-        toks.push(Token { tok: Tok::Eof, span: end, space_before: false });
+    /// Parse `toks` (part of a hole) with `f`, which must use all of them,
+    /// stopping at `end`, the token after them.
+    fn sub_parse<T>(&mut self, mut toks: Vec<Token>, end: Token, what: &str, f: impl FnOnce(&mut Self) -> PResult<T>) -> Option<T> {
+        let last = toks.len();
+        toks.push(end);
         let mut p = Parser {
             toks,
             pos: 0,
@@ -1482,7 +1476,7 @@ impl Parser {
             keyword_params: Vec::new(),
         };
         let r = f(&mut p).ok().filter(|_| {
-            if p.at(&Tok::Eof) {
+            if p.pos == last {
                 true
             } else {
                 // `:` is no part of any expression, so it ends up here.

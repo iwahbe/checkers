@@ -21,10 +21,12 @@ replaces 11:26-11:26
   add_zero           lemma           lemma add_zero x : Add a, x~a  (documented)
   antisym            lemma           lemma antisym x y : x~a, y~a, le x y, le y x  (documented)
   assoc              lemma           lemma assoc x y z : Add a, x~a, y~a, z~a  (documented)
+  finish             function        fn finish st -> r : st~s, r~Result  (documented)
   fmap               function        fn fmap g xs -> ys : g~(a -> b), xs~f a, ys~f b  (documented)
   fmap_comp          lemma           lemma fmap_comp g h xs : g~(b -> c), h~(a -> b), xs~f a  (documented)
   fmap_id            lemma           lemma fmap_id xs : xs~f a  (documented)
   format             function        
+  hole               function        fn hole st x os -> r : st~s, x~h, os~List Options, r~s  (documented)
   le                 function        fn le x y -> r : x~a, y~a, r~Bool  (documented)
   len                function        
   list               module          module std.list
@@ -33,6 +35,7 @@ replaces 11:26-11:26
   not                function        export transparent fn not b -> r : b~Bool, r~Bool  (documented)
   refl               lemma           export lemma refl x : Ord a, x~a  (documented)
   sub                function        fn sub x y -> r : x~a, y~a, r~a
+  text               function        fn text st str -> r : st~s, str~String, r~s  (documented)
   total              lemma           lemma total x y : x~a, y~a  (documented)
   trans              lemma           lemma trans x y z : x~a, y~a, z~a, le x y, le y z  (documented)
   zero               function        fn zero -> r : r~a
@@ -44,11 +47,13 @@ replaces 17:14-17:14
   twice              lemma           lemma twice xs : xs~List Int  (documented)
   Add                class           export class Add a  (documented)
   Functor            class           export class Functor f  (documented)
+  Hole               class           export class Hole s h  (documented)
   Monoid             class           export class Monoid a  (documented)
   Mul                class           export class Mul a  (documented)
   Neg                class           export class Neg a  (documented)
   Ord                class           export class Ord a  (documented)
   Sub                class           export class Sub a  (documented)
+  Template           class           export class Template s  (documented)
   add_zero           lemma           lemma add_zero x : Add a, x~a  (documented)
   antisym            lemma           lemma antisym x y : x~a, y~a, le x y, le y x  (documented)
   assoc              lemma           lemma assoc x y z : Add a, x~a, y~a, z~a  (documented)
@@ -84,10 +89,12 @@ replaces 23:9-23:9
   add_zero           lemma           lemma add_zero x : Add a, x~a  (documented)
   antisym            lemma           lemma antisym x y : x~a, y~a, le x y, le y x  (documented)
   assoc              lemma           lemma assoc x y z : Add a, x~a, y~a, z~a  (documented)
+  finish             function        fn finish st -> r : st~s, r~Result  (documented)
   fmap               function        fn fmap g xs -> ys : g~(a -> b), xs~f a, ys~f b  (documented)
   fmap_comp          lemma           lemma fmap_comp g h xs : g~(b -> c), h~(a -> b), xs~f a  (documented)
   fmap_id            lemma           lemma fmap_id xs : xs~f a  (documented)
   format             function        
+  hole               function        fn hole st x os -> r : st~s, x~h, os~List Options, r~s  (documented)
   le                 function        fn le x y -> r : x~a, y~a, r~Bool  (documented)
   len                function        
   list               module          module std.list
@@ -96,6 +103,7 @@ replaces 23:9-23:9
   not                function        export transparent fn not b -> r : b~Bool, r~Bool  (documented)
   refl               lemma           export lemma refl x : Ord a, x~a  (documented)
   sub                function        fn sub x y -> r : x~a, y~a, r~a
+  text               function        fn text st str -> r : st~s, str~String, r~s  (documented)
   total              lemma           lemma total x y : x~a, y~a  (documented)
   trans              lemma           lemma trans x y z : x~a, y~a, z~a, le x y, le y z  (documented)
   zero               function        fn zero -> r : r~a

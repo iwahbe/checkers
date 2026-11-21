@@ -604,7 +604,10 @@ impl<'a> RawLexer<'a> {
                 }
                 Some(b'#') => {
                     // Not a comment: the hole would never close.
-                    self.err("a comment can't be written inside a hole", self.pos, self.pos + 1);
+                    self.diags.push(
+                        Diagnostic::error("E0001", "a comment can't be written inside a hole", Span::new(self.pos, self.pos + 1))
+                            .with_help("close the hole with `}` first; a comment ends the line"),
+                    );
                     self.pos += 1;
                     toks.push(Token { tok: Tok::Error, span: Span::new(self.pos - 1, self.pos), space_before });
                     space_before = false;
@@ -617,11 +620,10 @@ impl<'a> RawLexer<'a> {
             let tok = self.token();
             // A string in the hole that runs to the end of the line: the
             // hole is what was left open (`"a{x"`).
-            if matches!(self.src.get(start), Some(b'"')) || matches!(tok, Some(Tok::Template(_))) || tok.is_none() {
-                if matches!(self.peek(), None | Some(b'\n')) && self.diags.len() > errors && self.diags[errors..].iter().any(|d| d.message.starts_with("unterminated")) {
-                    self.diags.truncate(errors);
-                    return unclosed(self);
-                }
+            let unterminated = self.diags[errors..].iter().any(|d| d.message.starts_with("unterminated"));
+            if unterminated && matches!(self.peek(), None | Some(b'\n')) {
+                self.diags.truncate(errors);
+                return unclosed(self);
             }
             match tok {
                 Some(Tok::LParen | Tok::LBracket | Tok::LBrace) => depth += 1,

@@ -9,6 +9,7 @@ replaces 4:12-4:12
   decimal            module          
   env                module          
   files              module          
+  format             module          
   future             module          
   html               module          
   json               module          
