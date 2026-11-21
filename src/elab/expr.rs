@@ -863,22 +863,19 @@ impl Elab {
         // Overloaded built-ins (D38).
         if let ExprKind::Var(n) = &head.kind {
             if cx.lookup(n).is_none() {
-                match self.resolve(n, false) {
-                    Some(Sym::Len) => {
-                        let (at, aty) = self.infer(cx, args[0]);
-                        self.deferred.push(Deferred {
-                            ty: aty,
-                            kind: OpClass::HasLen,
-                            span: args[0].span,
-                            what: "`len`".into(),
-                            lvl: cx.lvl(),
-                            names: cx.names(),
-                            owner: self.cur_fn,
-                        });
-                        let r = (Tm::PrimApp(Prim::Len, vec![at]), self.nat());
-                        return self.apply_rest(cx, r, &args[1..], e.span);
-                    }
-                    _ => {}
+                if let Some(Sym::Len) = self.resolve(n, false) {
+                    let (at, aty) = self.infer(cx, args[0]);
+                    self.deferred.push(Deferred {
+                        ty: aty,
+                        kind: OpClass::HasLen,
+                        span: args[0].span,
+                        what: "`len`".into(),
+                        lvl: cx.lvl(),
+                        names: cx.names(),
+                        owner: self.cur_fn,
+                    });
+                    let r = (Tm::PrimApp(Prim::Len, vec![at]), self.nat());
+                    return self.apply_rest(cx, r, &args[1..], e.span);
                 }
             }
         }

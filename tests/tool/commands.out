@@ -102,7 +102,7 @@ examples/wc.ck:101:7  computed check ends_in_word b"" True
 <std>/terminal.ck:10:11  builtin  std.terminal.print_line
 <std>/terminal.ck:36:11  builtin  std.terminal.stdin
 solver: Z3 5.3.3.0
-cache: 8 of 364 Z3 answers reused
+cache: 16 of 364 Z3 answers reused
 -- stderr
 -- exit 0
 $ checkers build --release tests/tool/admitted.ck -o tests/tool/admitted.out-never-written
