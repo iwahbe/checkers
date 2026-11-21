@@ -4,8 +4,9 @@ module main_inferred
 
 import std.system (System, ExitCode)
 import std.terminal
+import std.string (debug)
 
 export fn main args sys -> code
     let System { term } = sys
-    terminal.print_line (format (len args)) term
+    terminal.print_line (debug (len args)) term
     Success

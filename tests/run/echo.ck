@@ -4,12 +4,13 @@ module echo
 
 import std.system (System, ExitCode)
 import std.terminal (Term)
+import std.string (debug)
 
 partial fn number n term : n~Nat, term~Term
     match terminal.read_line term
         None   -> ()
         Some l ->
-            terminal.print_line (format n ++ ": " ++ l) term
+            terminal.print_line (debug n ++ ": " ++ l) term
             number (n + 1) term
 
 export partial fn main args sys -> code : args~List String, sys~System, code~ExitCode

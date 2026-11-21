@@ -1,5 +1,7 @@
 module class_params_errors
 
+import std.string (debug)
+
 # What is wrong with a class of several parameters, its instances, and
 # their uses.
 
@@ -22,7 +24,7 @@ instance Hole Plain String
 
 instance Hole Plain Int
     fn hole p x
-        format x
+        debug x
 
 # Overlaps `Hole Format a`: both match `Format` and `String`.
 instance Hole Format String

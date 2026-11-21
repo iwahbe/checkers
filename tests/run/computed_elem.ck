@@ -6,6 +6,7 @@ module computed_elem
 import std.array
 import std.system (System, ExitCode)
 import std.terminal
+import std.string (debug)
 
 fn single x -> xs : x~a, xs~Array a
     array.from_list [x]
@@ -14,6 +15,6 @@ fn boxed b x -> xs : b~Bool, x~(if b then U8 else Int), xs~Array (List (if b the
     single [x]
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
-    terminal.print_line (format (len (boxed False 3000))) sys.term
-    terminal.print_line (format (len (boxed True 3))) sys.term
+    terminal.print_line (debug (len (boxed False 3000))) sys.term
+    terminal.print_line (debug (len (boxed True 3))) sys.term
     Success

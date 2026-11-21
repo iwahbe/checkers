@@ -34,6 +34,28 @@ fn int(n: usize, span: Span) -> Expr {
     mk(ExprKind::Lit(ast::Lit::Int(n.to_string())), span)
 }
 
+/// `s` without parentheses around all of it.
+fn unparen(s: &str) -> String {
+    let b = s.as_bytes();
+    if b.first() != Some(&b'(') || b.last() != Some(&b')') {
+        return s.to_string();
+    }
+    let mut depth = 0;
+    for (i, c) in b.iter().enumerate() {
+        match c {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 && i + 1 < b.len() {
+                    return s.to_string();
+                }
+            }
+            _ => {}
+        }
+    }
+    unparen(s[1..s.len() - 1].trim())
+}
+
 impl Elab {
     /// The definition a template's generated name stands for.
     pub(super) fn template_sym(&self, name: &str) -> Option<Sym> {
@@ -47,6 +69,50 @@ impl Elab {
         match m.values.get(n) {
             Some(s @ Sym::Def(_)) => Some(*s),
             _ => None,
+        }
+    }
+
+    /// `std.string`'s definition `name`, if it is loaded.
+    pub(super) fn std_def(&self, name: &str) -> Option<DefId> {
+        match self.modules.get("std.string")?.values.get(name) {
+            Some(Sym::Def(d)) => Some(*d),
+            _ => None,
+        }
+    }
+
+    /// Help for an unknown name that the standard library exports: the
+    /// import that brings it in.
+    pub(super) fn std_export_help(&self, n: &str) -> Option<String> {
+        let ms = crate::elab::stdlib::exporters(n);
+        let first = ms.first()?;
+        let others = ms[1..].iter().map(|m| format!("`{m}`")).collect::<Vec<_>>();
+        let rest = if others.is_empty() { String::new() } else { format!(" (or {})", others.join(", ")) };
+        Some(format!("`{n}` is in `{first}`: add `import {first} ({n})`{rest}"))
+    }
+
+    /// A call of a template's tag, `tag x` (#126): a function whose result
+    /// has a `Template` instance, called outside a template. A type error
+    /// at the call or at its first argument gets a help line saying so.
+    pub(super) fn note_tag_call(&mut self, head: &Expr, ft: &Val, call: Span, arg: &Expr) {
+        let ExprKind::Var(n) = &head.kind else { return };
+        if self.in_tag {
+            return;
+        }
+        let Some(Sym::Ty(class)) = self.modules.get("std.string").and_then(|m| m.types.get("Template")).copied() else { return };
+        let mut ty = self.force(ft);
+        let mut lvl = 0;
+        while let Val::Pi(_, _, _, _, c) = ty {
+            ty = self.force(&apply_closure(&self.g, &c, Val::var(lvl)));
+            lvl += 1;
+        }
+        let Val::TyCon(id, _) = ty else { return };
+        if !self.instances.contains_key(&(class, HeadKey::Ty(id))) {
+            return;
+        }
+        let x = unparen(self.src_text(arg.span).trim());
+        let help = format!("`{n}` is a template's tag: write `{n}\"…{{{x}}}…\"` to put `{x}` in a template");
+        for s in [call, arg.span] {
+            self.tag_calls.insert((self.cur.clone(), s.start, s.end), help.clone());
         }
     }
 
@@ -100,7 +166,9 @@ impl Elab {
         // isn't a function, or takes other arguments) points at it.
         let lit = Span { start: ts.end, end: e.span.end };
         let first = app(app((**tag).clone(), int(bytes, lit), e.span), int(holes, lit), e.span);
+        let saved = std::mem::replace(&mut self.in_tag, true);
         let (t0, ty0) = self.infer(cx, &first);
+        self.in_tag = saved;
         if matches!(t0, Tm::Error) {
             return (Tm::Error, Val::Error);
         }

@@ -1,5 +1,7 @@
 module class_params
 
+import std.string (debug)
+
 # A class of several type parameters: which hole types each formatter
 # accepts is a property of the pair.
 
@@ -8,7 +10,7 @@ class Display a
 
 instance Display Int
     fn display x
-        format x
+        debug x
 
 record Format
     prefix~String
@@ -39,7 +41,7 @@ instance Hole Plain String
 
 instance Hole Plain Int
     fn hole p x
-        format x ++ p.sep
+        debug x ++ p.sep
 
 fn each_used -> r : r~List String
     [hole (Format "f:") 3, hole (Page "p:") "x", hole (Plain ";") "s", hole (Plain ";") 4]
@@ -78,8 +80,8 @@ instance Fill Format Int
     type Options = Pad
     fn fill f x os
         match os
-            [Left] -> " " ++ format x
-            _      -> format x
+            [Left] -> " " ++ debug x
+            _      -> debug x
 
 fn padded -> r : r~String
     fill (Format "") 7 [Left]

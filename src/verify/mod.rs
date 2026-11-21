@@ -385,6 +385,10 @@ fn ask_all(texts: &[Option<String>]) -> Vec<Option<Answer>> {
     let workers = std::thread::available_parallelism().map_or(2, |n| n.get()).min(8);
     let next = std::sync::atomic::AtomicUsize::new(0);
     let results: Vec<std::sync::Mutex<Option<Answer>>> = texts.iter().map(|_| std::sync::Mutex::new(None)).collect();
+    // A query asked again in the same batch waits for the first: in
+    // parallel, whether its answer were reused would depend on timing.
+    let mut seen = std::collections::HashSet::new();
+    let again: Vec<bool> = texts.iter().map(|t| t.as_ref().is_some_and(|t| !seen.insert(t.as_str()))).collect();
     std::thread::scope(|s| {
         for _ in 0..workers {
             // Z3 recurses deeply on large terms: give it a big stack.
@@ -392,7 +396,7 @@ fn ask_all(texts: &[Option<String>]) -> Vec<Option<Answer>> {
             let spawned = worker.spawn_scoped(s, || loop {
                 let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let Some(t) = texts.get(i) else { break };
-                if let Some(t) = t {
+                if let (Some(t), false) = (t, again[i]) {
                     let a = ask(t);
                     *results[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(a);
                 }
@@ -402,6 +406,11 @@ fn ask_all(texts: &[Option<String>]) -> Vec<Option<Answer>> {
             }
         }
     });
+    for (i, t) in texts.iter().enumerate() {
+        if let (Some(t), true) = (t, again[i]) {
+            *results[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(ask(t));
+        }
+    }
     results.into_iter().map(|m| m.into_inner().unwrap_or_else(|e| e.into_inner())).collect()
 }
 

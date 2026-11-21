@@ -41,6 +41,8 @@ A function with `comptime` parameters is proved once, with those parameters unkn
 A `comptime` argument may decide the type of the call. Here `fmt`'s format string decides how many arguments it takes, and of which types: `fmt "{} is {n}"` is a `String -> Int -> String`.
 
 ```checkers
+import std.string (display)
+
 enum Piece
     Text s : s~String
     Str
@@ -58,7 +60,7 @@ fn go ps acc -> f : ps~comptime List Piece, acc~String, f~format_type ps
         []             -> acc
         Text t :: rest -> go rest (acc ++ t)
         Str :: rest    -> \x -> go rest (acc ++ x)
-        Num :: rest    -> \n -> go rest (acc ++ format n)
+        Num :: rest    -> \n -> go rest (acc ++ display n [])
 
 fn greet name age -> s : name~String, age~Int, s~String
     go [Str, Text " is ", Num, Text " years old"] "" name age

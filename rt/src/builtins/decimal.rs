@@ -7,7 +7,13 @@ use super::*;
 pub const TABLE: &[Builtin] = &[
     ("std.decimal.render", "ckb_decimal_render", ckb_decimal_render),
     ("std.decimal.of_int", "ckb_decimal_of_int", ckb_decimal_of_int),
+    ("std.decimal.fixed", "ckb_decimal_fixed", ckb_decimal_fixed),
 ];
+
+builtin!(ckb_decimal_fixed, |a| match obj(a[0]) {
+    Some(Obj::Decimal(d)) => new_str(&d.fixed(num_of(a[1]).to_usize().unwrap_or(usize::MAX))),
+    _ => bug("expected a Decimal"),
+});
 
 builtin!(ckb_decimal_render, |a| match obj(a[0]) {
     Some(Obj::Decimal(d)) => new_str(&d.render()),

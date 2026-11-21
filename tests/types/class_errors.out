@@ -79,7 +79,7 @@ error[E0284]: no instance of `Ord` for `Int -> Int`
    |
 75 |     le f f
    |     ^^ needs `Ord (Int -> Int)`
-   = help: declare `instance Ord …` for this type, beside the class or the type
+   = help: declare `instance Ord …` for this type, beside the type
 
 error[E0285]: can't tell which instance of `Ord` to use: the type isn't known here
   --> class_errors.ck:79:5

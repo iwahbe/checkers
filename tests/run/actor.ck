@@ -6,6 +6,7 @@ import std.system (System, ExitCode)
 import std.actor (Actor)
 import std.future (Future)
 import std.terminal (Term)
+import std.string (debug)
 
 type Balance = n~Nat
 
@@ -16,7 +17,7 @@ fn withdraw k b -> r : k~Nat, b~Balance, r~Balance
     if k <= b then b - k else b
 
 fn report term b -> r : term~Term, b~Balance, r~Balance
-    terminal.print_line ("balance " ++ format b) term
+    terminal.print_line ("balance " ++ debug b) term
     b
 
 export fn main args sys -> code : args~List String, sys~System, code~Future ExitCode

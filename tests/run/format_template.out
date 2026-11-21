@@ -1,0 +1,10 @@
+-- stdout
+Ada is 36
+0x24 "Ada"
+x and 0xff
+Point 1 2 "Ada"
+[1, 2]
+{37}
+plain
+-- stderr
+-- exit 0

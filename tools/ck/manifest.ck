@@ -72,7 +72,7 @@ export partial fn parse_version s -> r : s~String, r~Option Version
                         None        -> None
 
 export fn show v -> s : v~Version, s~String
-    format v.major ++ "." ++ format v.minor ++ "." ++ format v.patch
+    string.format"{v.major}.{v.minor}.{v.patch}"
 
 export fn older a b -> r : a~Version, b~Version, r~Bool
     a.major < b.major
@@ -156,13 +156,13 @@ fn lines src pos i line col -> r : src~Bytes, pos~Nat, i~Nat, i <= len src, line
 # `FILE:LINE:COL: message`.
 export fn describe file src p -> s : file~String, src~Bytes, p~Problem, s~String
     let (line, col) = lines src p.pos 0 1 1
-    file ++ ":" ++ format line ++ ":" ++ format col ++ ": " ++ p.message
+    string.format"{file}:{line}:{col}: {p.message}"
 
 # ── Reading ──────────────────────────────────────────────────────────────────
 
 # A byte as it reads: `'}'`, or its number if it isn't printable ASCII.
 fn shown b -> s : b~U8, s~String
-    if b >= 0x20 and b < 0x7F then "`" ++ string.from_char (char.from_ascii b) ++ "`" else "byte " ++ format b
+    if b >= 0x20 and b < 0x7F then "`" ++ string.from_char (char.from_ascii b) ++ "`" else string.format"byte {b}"
 
 fn syntax k -> s : k~ErrorKind, s~String
     match k

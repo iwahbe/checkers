@@ -7,6 +7,7 @@ import std.future (Future)
 import std.future
 import std.system (System, ExitCode)
 import std.terminal
+import std.string (debug)
 
 export enum Shape
     One
@@ -39,7 +40,7 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
         20
     let many = [future.ready 1, future.fork sched (\_ -> 2), future.ready 3]
     let vs = join Many many
-    terminal.print_line ("many: " ++ format vs) term
+    terminal.print_line ("many: " ++ debug vs) term
     let n = join One one
-    terminal.print_line ("one: " ++ format n ++ ", count: " ++ format (len vs)) term
+    terminal.print_line ("one: " ++ debug n ++ ", count: " ++ debug (len vs)) term
     Success

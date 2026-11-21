@@ -1,5 +1,7 @@
 module class_type
 
+import std.string (debug)
+
 # A class's type: each instance gives it, or takes the class's default.
 
 class Display a
@@ -19,13 +21,13 @@ instance Display Money
     type Options = MoneyOption
     fn display m os
         match os
-            [Cents] -> format m.cents
-            _       -> format (m.cents / 100)
+            [Cents] -> debug m.cents
+            _       -> debug (m.cents / 100)
 
 # Its `Options` is the default, `NoOptions`.
 instance Display Int
     fn display x os
-        format x
+        debug x
 
 record Pair a
     first~a

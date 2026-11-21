@@ -13,6 +13,7 @@ import std.decimal
 import std.markdown
 import std.list
 import std.string
+import std.string (debug)
 
 record Example
     number~String
@@ -62,7 +63,7 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
                     let failed = report (list.map example items) only term
                     let total = list.length items
                     let passed = if total >= failed then total - failed else 0
-                    terminal.print_line (format passed ++ " of " ++ format total ++ " examples pass") term
+                    terminal.print_line (debug passed ++ " of " ++ debug total ++ " examples pass") term
                     if failed == 0 then Success else Failure 1
                 _              ->
                     terminal.eprint_line (path ++ ": not a JSON array") term

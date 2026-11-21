@@ -1,0 +1,27 @@
+-- stdout
+255
+0xff
+0b11111111
+0o377
++255
+00255
++0x00ff
+-0x002a
+-42
++0
+0b11111111
+255
+naïve "quote"
+
+"naïve \"quote\"\n"
+naï
+"naï"
+na
+1234
++1234
+1234.00
+-7.0
+1234
+True False
+-- stderr
+-- exit 0

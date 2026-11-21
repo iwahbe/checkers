@@ -49,7 +49,7 @@ decreasing  partial  ghost  own  comptime
 when  using  par
 ```
 
-`not`, `len` and `format` are ordinary functions of the prelude, not keywords.
+`not` and `len` are ordinary functions of the prelude, not keywords.
 
 A keyword where a name belongs is error E0122:
 

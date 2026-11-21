@@ -6,6 +6,7 @@ module specialize
 import std.system (System, ExitCode)
 import std.terminal (Term)
 import std.string
+import std.string (debug)
 
 fn count c src i -> n : c~comptime Nat, src~Bytes, i~Nat, i <= len src, n~Nat
     decreasing len src - i
@@ -25,5 +26,5 @@ fn lines_and_spaces src -> n : src~Bytes, n~Nat
 
 export partial fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let text = string.bytes "one two\nthree\n"
-    terminal.print_line (format (newlines text) ++ " " ++ format (lines_and_spaces text)) sys.term
+    terminal.print_line (debug (newlines text) ++ " " ++ debug (lines_and_spaces text)) sys.term
     Success

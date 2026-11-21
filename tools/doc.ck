@@ -574,7 +574,7 @@ partial fn std_modules ckc p -> r : ckc~String, p~Proc, r~List Module
 # A warning, as the compiler shows one, at `file:line:col`.
 partial fn warning_text w file line col -> r : w~Warning, file~String, line~Nat, col~Nat, r~String
     let help = if w.help == "" then "" else "\n  = help: " ++ w.help
-    string.concat ["warning[", w.code, "]: ", w.message, "\n  --> ", file, ":", format line, ":", format col, help, "\n"]
+    string.format"warning[{w.code}]: {w.message}\n  --> {file}:{line}:{col}{help}\n"
 
 # Warnings about a page of `text` read from `file`.
 partial fn page_warnings ws file text term -> r : ws~List Warning, file~String, text~Bytes, term~Term, r~Nat

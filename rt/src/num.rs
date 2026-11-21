@@ -232,6 +232,45 @@ impl Decimal {
         Decimal::new(m, e)
     }
 
+    /// With exactly `places` digits after the point (none: no point),
+    /// rounded half away from zero; never with an exponent.
+    pub fn fixed(&self, places: usize) -> String {
+        let ten = BigInt::from(10);
+        let shift = &self.e + BigInt::from(places);
+        let scaled = match shift.to_usize() {
+            Some(k) => &self.m * num_traits::pow(ten.clone(), k),
+            None if shift.is_negative() => {
+                let k = shift.magnitude().to_usize().unwrap_or(usize::MAX);
+                let digits = self.m.magnitude().to_string().len();
+                if k > digits {
+                    BigInt::zero()
+                } else {
+                    let d = num_traits::pow(ten.clone(), k);
+                    let (q, r) = (self.m.magnitude() / d.magnitude(), self.m.magnitude() % d.magnitude());
+                    let q: BigInt = BigInt::from(q) + if BigInt::from(r) * 2 >= d { 1 } else { 0 };
+                    if self.m.is_negative() {
+                        -q
+                    } else {
+                        q
+                    }
+                }
+            }
+            // Too many digits to write out.
+            None => return self.render(),
+        };
+        let neg = scaled.is_negative();
+        let mut digits = scaled.magnitude().to_string();
+        if digits.len() <= places {
+            digits = "0".repeat(places + 1 - digits.len()) + &digits;
+        }
+        let sign = if neg { "-" } else { "" };
+        if places == 0 {
+            return format!("{sign}{digits}");
+        }
+        let p = digits.len() - places;
+        format!("{sign}{}.{}", &digits[..p], &digits[p..])
+    }
+
     /// Shortest exact JSON rendering.
     pub fn render(&self) -> String {
         let neg = self.m.is_negative();
@@ -259,6 +298,21 @@ mod tests {
 
     fn scan(s: &str) -> Option<(String, usize)> {
         Decimal::scan_json(s.as_bytes(), 0).map(|(d, k)| (d.render(), k))
+    }
+
+    #[test]
+    fn fixed_places() {
+        let d = |m: i64, e: i64| Decimal::new(BigInt::from(m), BigInt::from(e));
+        assert_eq!(d(1250, -2).fixed(2), "12.50");
+        assert_eq!(d(125, -1).fixed(0), "13");
+        assert_eq!(d(-125, -1).fixed(0), "-13");
+        assert_eq!(d(12345, -4).fixed(2), "1.23");
+        assert_eq!(d(5, -3).fixed(2), "0.01");
+        assert_eq!(d(4, -3).fixed(2), "0.00");
+        assert_eq!(d(-4, -3).fixed(2), "0.00");
+        assert_eq!(d(7, 2).fixed(1), "700.0");
+        assert_eq!(d(1, -30).fixed(3), "0.000");
+        assert_eq!(d(0, 0).fixed(2), "0.00");
     }
 
     #[test]

@@ -56,8 +56,15 @@ fn exit_code(r: W, owner: u32) -> i32 {
 
 /// Run `main` (a closure taking the arguments and the root capability) and
 /// its behaviours; the exit code. Call on a thread with a large stack.
-pub fn run_main(desc: &str, invoke: Invoke, main: W, owner: u32, args: &[String], threads: usize) -> i32 {
+///
+/// `debug`, when not 0, is code computing the hand-written `Debug`
+/// instances' functions (#126).
+#[allow(clippy::too_many_arguments)]
+pub fn run_main(desc: &str, invoke: Invoke, debug: u64, main: W, owner: u32, args: &[String], threads: usize) -> i32 {
     install(desc, invoke);
+    if debug != 0 {
+        set_debug(invoke(debug, ERASED, std::ptr::null(), 0));
+    }
     let track = std::env::var_os("CHECKERS_RC_CHECK").is_some();
     TRACK.store(track, std::sync::atomic::Ordering::Relaxed);
     crate::behav::start_pool(threads);
@@ -99,6 +106,7 @@ pub unsafe extern "C" fn ck_aot_main(
     desc: *const u8,
     desc_len: u64,
     invoke: Invoke,
+    debug: u64,
     main: W,
     owner: u64,
 ) -> i32 {
@@ -114,7 +122,7 @@ pub unsafe extern "C" fn ck_aot_main(
     let threads = default_threads();
     std::thread::Builder::new()
         .stack_size(1 << 30)
-        .spawn(move || run_main(&d, invoke, main as W, owner as u32, &args, threads))
+        .spawn(move || run_main(&d, invoke, debug, main as W, owner as u32, &args, threads))
         .expect("spawn the main thread")
         .join()
         .unwrap_or(70)

@@ -24,7 +24,6 @@ replaces 11:26-11:26
   fmap               function        fn fmap g xs -> ys : g~(a -> b), xs~f a, ys~f b  (documented)
   fmap_comp          lemma           lemma fmap_comp g h xs : g~(b -> c), h~(a -> b), xs~f a  (documented)
   fmap_id            lemma           lemma fmap_id xs : xs~f a  (documented)
-  format             function        
   le                 function        fn le x y -> r : x~a, y~a, r~Bool  (documented)
   len                function        
   list               module          module std.list
@@ -87,7 +86,6 @@ replaces 23:9-23:9
   fmap               function        fn fmap g xs -> ys : g~(a -> b), xs~f a, ys~f b  (documented)
   fmap_comp          lemma           lemma fmap_comp g h xs : g~(b -> c), h~(a -> b), xs~f a  (documented)
   fmap_id            lemma           lemma fmap_id xs : xs~f a  (documented)
-  format             function        
   le                 function        fn le x y -> r : x~a, y~a, r~Bool  (documented)
   len                function        
   list               module          module std.list

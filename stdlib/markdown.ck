@@ -230,7 +230,7 @@ fn clean_from b start i acc -> r : b~Bytes, start~Nat, i~Nat, acc~List Bytes, r~
 
 # The bytes of `n` in decimal.
 fn decimal n -> r : n~Nat, r~Bytes
-    string.bytes (format n)
+    string.bytes (string.display n [])
 
 # ── Characters ───────────────────────────────────────────────────────────────
 

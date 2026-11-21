@@ -44,7 +44,6 @@ pub fn symbols() -> Vec<(&'static str, *const u8)> {
         ("ck_concat", ops::ck_concat as *const u8),
         ("ck_len", ops::ck_len as *const u8),
         ("ck_index", ops::ck_index as *const u8),
-        ("ck_format", ops::ck_format as *const u8),
         ("ck_big_lit", ops::ck_big_lit as *const u8),
         ("ck_fail", prog::ck_fail as *const u8),
         ("ck_error", prog::ck_error as *const u8),

@@ -4,6 +4,7 @@ module big_literals
 
 import std.system (System, ExitCode)
 import std.terminal (Term)
+import std.string (debug)
 
 fn pow b e -> r : b~Int, e~Nat, r~Int
     decreasing e
@@ -38,10 +39,10 @@ fn line s term : s~String, term~Term
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let term = sys.term
-    line (format value) term
-    line (format above) term
-    line (format (-170141183460469231731687303715884105728)) term
-    line (format 0x1_0000_0000_0000_0000_0000_0000_0000_0000) term
+    line (debug value) term
+    line (debug above) term
+    line (debug (-170141183460469231731687303715884105728)) term
+    line (debug 0x1_0000_0000_0000_0000_0000_0000_0000_0000) term
     line (name (pow 2 127)) term
     line (name (pow 2 200)) term
     line (name (-value - 1)) term

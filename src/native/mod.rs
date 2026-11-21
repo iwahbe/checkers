@@ -29,6 +29,13 @@ pub(crate) fn descriptor(g: &Globals, p: &lower::Program) -> String {
     for n in &p.names {
         d += &format!("def {n}\n");
     }
+    // Each constructor of a type with a hand-written `Debug`: which of
+    // the instances' functions shows it (#126).
+    for (k, (t, _)) in g.well_known.debug_insts.iter().enumerate() {
+        for c in &g.tys[t.0 as usize].ctors {
+            d += &format!("debug {} {k}\n", c.0);
+        }
+    }
     let wk = &g.well_known;
     let find = |module: &str, name: &str| {
         g.cons.iter().position(|c| &*c.name == name && &*g.tys[c.ty.0 as usize].module == module).map(|i| i as u32)
@@ -172,8 +179,10 @@ pub fn run(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId, args
     gen.define_new();
     let main_clo = gen.main_closure();
     let invoke = gen.invoke;
+    let debug = gen.p.debug.map(|f| gen.func_id(f));
     let mut module = gen.m;
     module.finalize_definitions().expect("finish native code");
+    let debug = debug.map_or(0, |f| module.get_finalized_function(f) as u64);
     let inv = module.get_finalized_function(invoke);
     let (clo, _) = module.get_finalized_data(main_clo);
     let invoke: checkers_rt::prog::Invoke = unsafe { std::mem::transmute(inv) };
@@ -183,7 +192,7 @@ pub fn run(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId, args
     // `main` and its callees may recurse deeply: a large stack.
     let code = std::thread::Builder::new()
         .stack_size(1 << 30)
-        .spawn(move || checkers_rt::entry::run_main(&desc, invoke, main_w, owner, &args, threads))
+        .spawn(move || checkers_rt::entry::run_main(&desc, invoke, debug, main_w, owner, &args, threads))
         .expect("spawn the main thread")
         .join()
         .unwrap_or(70);
