@@ -861,7 +861,7 @@ impl Elab {
     }
 
     fn phase_aliases(&mut self, m: &ast::Module, ids: &[Option<Sym>]) {
-        for (d, id) in m.decls.iter().zip(ids) {
+        for (k, (d, id)) in m.decls.iter().zip(ids).enumerate() {
             let DeclKind::Alias { params, constraints, .. } = &d.kind else { continue };
             let Some(Sym::Def(did)) = id else { continue };
             self.g.fuel.set(DEFAULT_FUEL);
@@ -870,8 +870,17 @@ impl Elab {
             // A parameter's type is what the alias's definition makes it
             // (`lo <= n` with `n~Int` makes `lo` an `Int`), and a type when
             // nothing decides.
-            for p in params {
-                let mt = self.fresh_meta(&cx);
+            for (i, p) in params.iter().enumerate() {
+                let mt = match self.decl_origin.get(k) {
+                    Some(super::classes::Origin::ClassDefault(arities)) => {
+                        let mut kind = Tm::Univ(0);
+                        for _ in 0..arities[i] {
+                            kind = Tm::Pi(Rc::from("_"), Mult::Many, Icit::Expl, Rc::new(Tm::Univ(0)), Rc::new(kind));
+                        }
+                        kind
+                    }
+                    _ => self.fresh_meta(&cx),
+                };
                 let mv = self.eval(&cx, &mt);
                 cx.bind(&p.name, mv, Mult::Zero);
                 ptys.push(mt);

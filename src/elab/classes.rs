@@ -23,6 +23,8 @@ pub enum Origin {
     #[default]
     Written,
     ClassRecord,
+    /// A default checked as a private alias, with the class parameters' kinds.
+    ClassDefault(Vec<usize>),
     /// A class's function, reading field `field` of the dictionary.
     ClassMethod,
     ClassLemma,
@@ -287,12 +289,38 @@ pub(crate) fn applied_arity(e: &Expr, param: &str) -> usize {
                 go(b, param, best);
             }
             ExprKind::Tuple(xs) | ExprKind::List(xs) => xs.iter().for_each(|x| go(x, param, best)),
-            ExprKind::Refine(r) => r.types().into_iter().for_each(|t| go(t, param, best)),
+            ExprKind::Refine(r) => {
+                go(&r.dom, param, best);
+                if !r.binders().iter().any(|n| n == param) {
+                    if let Some((_, t)) = &r.arrow {
+                        go(t, param, best);
+                    }
+                }
+            }
             _ => {}
         }
     }
     go(e, param, &mut best);
     best
+}
+
+/// Infer each class parameter's kind from every type supplied by the class.
+fn class_param_arity(members: &[ClassMember], param: &str) -> usize {
+    members
+        .iter()
+        .map(|m| match m {
+            ClassMember::Type { default, .. } => default.as_ref().map_or(0, |e| applied_arity(e, param)),
+            ClassMember::Fn { constraints, .. } | ClassMember::Lemma { constraints, .. } => constraints
+                .iter()
+                .filter_map(|c| match c {
+                    Constraint::Typed { ty, .. } => Some(applied_arity(ty, param)),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0),
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// The type variables of a class function's types other than the class's
@@ -966,18 +994,7 @@ impl Elab {
         // apply it to one argument, and so on (M25).
         let mut rcs = Vec::new();
         for param in params {
-            let mut arity = 0;
-            for mem in members {
-                let cs = match mem {
-                    ClassMember::Fn { constraints, .. } | ClassMember::Lemma { constraints, .. } => constraints,
-                    ClassMember::Type { .. } => continue,
-                };
-                for c in cs {
-                    if let Constraint::Typed { ty, .. } = c {
-                        arity = arity.max(applied_arity(ty, &param.name));
-                    }
-                }
-            }
+            let arity = class_param_arity(members, &param.name);
             let mut kind = con("Type", sp);
             for _ in 0..arity {
                 kind = Expr { kind: ExprKind::Arrow(Box::new(con("Type", sp)), Box::new(kind)), span: sp };
@@ -997,6 +1014,21 @@ impl Elab {
             span: d.span,
         });
         origins.push(Origin::ClassRecord);
+        // Defaults are private aliases: checked once in the class's scope,
+        // then instantiated by core substitution rather than by copying syntax.
+        for member in members {
+            let ClassMember::Type { name: tn, default: Some(ty), span } = member else { continue };
+            decls.push(Decl {
+                export: Export::No,
+                kind: DeclKind::Alias {
+                    name: ident(&format!("$default#{}.{}", name.name, tn.name), tn.span),
+                    params: params.to_vec(),
+                    constraints: vec![Constraint::Typed { name: ident("$subject", tn.span), mult: ast::Mult::Ghost, ty: ty.clone() }],
+                },
+                span: *span,
+            });
+            origins.push(Origin::ClassDefault(params.iter().map(|p| class_param_arity(members, &p.name)).collect()));
+        }
         self.pending_classes.push((name.name.clone(), pnames, members.to_vec(), name.span));
     }
 
@@ -1231,20 +1263,7 @@ impl Elab {
         }
         // Each type's kind: a class over types of `n` parameters (M25)
         // takes a type constructor short of `n` arguments.
-        let want_of = |param: &str| {
-            cmembers
-                .iter()
-                .flat_map(|m| match m {
-                    ClassMember::Fn { constraints, .. } | ClassMember::Lemma { constraints, .. } => constraints.as_slice(),
-                    ClassMember::Type { .. } => &[],
-                })
-                .filter_map(|c| match c {
-                    Constraint::Typed { ty, .. } => Some(applied_arity(ty, param)),
-                    _ => None,
-                })
-                .max()
-                .unwrap_or(0)
-        };
+        let want_of = |param: &str| class_param_arity(&cmembers, param);
         let mut vars: Vec<String> = Vec::new();
         let mut heads: Vec<Expr> = Vec::new();
         let mut head_names: Vec<Option<String>> = Vec::new();
@@ -1371,15 +1390,14 @@ impl Elab {
             });
             let t = match (given, default) {
                 (Some(t), _) => t,
-                (None, Some(dflt)) => match foreign.as_deref() {
-                    Some(m) => {
-                        let at = self.synthetic_span(header);
-                        let text = self.text_in(m, dflt.span);
-                        self.text_override.insert((self.cur.clone(), at.start, at.end), text);
-                        srw.expr(&respan(dflt, at), &[])
-                    }
-                    None => srw.expr(dflt, &[]),
-                },
+                (None, Some(_)) => {
+                    let helper = format!("$default#{}.{}", class.name, tn.name);
+                    let helper = match foreign.as_deref() {
+                        Some(m) => self.modules.get(m).and_then(|mi| mi.types.get(&helper)).map(|s| Self::sym_name(*s)).unwrap_or(helper),
+                        None => helper,
+                    };
+                    tys.iter().fold(con(&helper, header), |f, t| app(f, t.clone()))
+                }
                 (None, None) => {
                     self.err(
                         Diagnostic::error("E0364", format!("`instance {text}` doesn't give `{}`", tn.name), d.span)
@@ -1632,19 +1650,7 @@ impl Elab {
     fn register_assoc(&mut self, c: &ClassDef) {
         let Some(&con) = self.g.tys[c.tid.0 as usize].ctors.first() else { return };
         let kind_of = |param: &str| {
-            let arity = c
-                .members
-                .iter()
-                .flat_map(|m| match m {
-                    ClassMember::Fn { constraints, .. } | ClassMember::Lemma { constraints, .. } => constraints.as_slice(),
-                    ClassMember::Type { .. } => &[],
-                })
-                .filter_map(|k| match k {
-                    Constraint::Typed { ty, .. } => Some(applied_arity(ty, param)),
-                    _ => None,
-                })
-                .max()
-                .unwrap_or(0);
+            let arity = class_param_arity(&c.members, param);
             let mut kind = Tm::Univ(0);
             for _ in 0..arity {
                 kind = Tm::Pi(Rc::from("_"), Mult::Many, Icit::Expl, Rc::new(Tm::Univ(0)), Rc::new(kind));

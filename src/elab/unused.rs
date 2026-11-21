@@ -136,7 +136,7 @@ impl Elab {
         for m in own {
             let entries = self.decl_table.get(m).map(|v| v.as_slice()).unwrap_or(&[]);
             for e in entries {
-                if let (Origin::ClassMethod | Origin::ClassLemma, Some(Sym::Def(d))) = (&e.origin, e.sym) {
+                if let (Origin::ClassMethod | Origin::ClassLemma | Origin::ClassDefault(_), Some(Sym::Def(d))) = (&e.origin, e.sym) {
                     let class = entries
                         .iter()
                         .filter(|c| matches!(c.origin, Origin::ClassRecord) && c.span.start <= e.span.start && e.span.end <= c.span.end)
@@ -153,7 +153,7 @@ impl Elab {
         let node_of = |e: &Entry| -> Owner {
             match (&e.origin, e.sym) {
                 (Origin::InstDict(_) | Origin::InstMember(_), _) => Owner::Root,
-                (Origin::ClassMethod | Origin::ClassLemma, Some(Sym::Def(d))) => match member_of.get(&d) {
+                (Origin::ClassMethod | Origin::ClassLemma | Origin::ClassDefault(_), Some(Sym::Def(d))) => match member_of.get(&d) {
                     Some(t) => Owner::Node(Target::Ty(*t)),
                     None => Owner::Root,
                 },

@@ -1,0 +1,39 @@
+error[E0204]: unknown name `Lisst`
+ --> class_type_default_checked.ck:5:18
+  |
+5 |     type Value = Lisst a
+  |                  ^^^^^ not found
+
+error[E0204]: unknown name `Missing`
+ --> class_type_default_checked.ck:8:18
+  |
+8 |     type Value = Missing
+  |                  ^^^^^^^ not found
+
+error[E0204]: unknown name `missing`
+  --> class_type_default_checked.ck:19:18
+   |
+19 |     type Value = missing a
+   |                  ^^^^^^^ not found
+
+error[E0210]: a number literal needs numbers (`Nat` or `Int`), but this is `Type`
+  --> class_type_default_checked.ck:22:18
+   |
+22 |     type Value = 1
+   |                  ^ has type `Type`
+
+error[E0202]: expected a type, found a value of type `(a1~Type) -> Type`
+  --> class_type_default_checked.ck:25:18
+   |
+25 |     type Value = List
+   |                  ^^^^
+   = help: after `~` write a type, such as `Nat` or `List String`
+
+error[E0202]: expected a type, found a value of type `Type -> Type`
+  --> class_type_default_checked.ck:29:18
+   |
+29 |     type Value = f
+   |                  ^
+   = help: after `~` write a type, such as `Nat` or `List String`
+
+class_type_default_checked.ck: 6 errors, 0 warnings
