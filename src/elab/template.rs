@@ -11,11 +11,10 @@ use super::*;
 use crate::syntax::ast::{Expr, ExprKind, TemplatePiece};
 
 /// The names a template's calls use: the prelude's class functions (no
-/// user name can start with `$`), and `std.format`'s formatter.
+/// user name can start with `$`).
 pub const TEXT: &str = "$tpl#text";
 pub const HOLE: &str = "$tpl#hole";
 pub const FINISH: &str = "$tpl#finish";
-pub const FORMAT: &str = "$tpl#format";
 
 fn mk(kind: ExprKind, span: Span) -> Expr {
     Expr { kind, span }
@@ -36,14 +35,13 @@ fn int(n: usize, span: Span) -> Expr {
 impl Elab {
     /// The definition a template's generated name stands for.
     pub(super) fn template_sym(&self, name: &str) -> Option<Sym> {
-        let (module, n) = match name {
-            TEXT => ("std.prelude", "text"),
-            HOLE => ("std.prelude", "hole"),
-            FINISH => ("std.prelude", "finish"),
-            FORMAT => ("std.format", "format"),
+        let n = match name {
+            TEXT => "text",
+            HOLE => "hole",
+            FINISH => "finish",
             _ => return None,
         };
-        let m = self.modules.get(module)?;
+        let m = self.modules.get("std.prelude")?;
         match m.values.get(n) {
             Some(s @ Sym::Def(_)) => Some(*s),
             _ => None,
@@ -61,19 +59,8 @@ impl Elab {
     /// span is the piece it builds, and a class function's name has the
     /// span of what chooses its instance: the tag for `text` and `finish`,
     /// a hole's value (or the hole, without one) for `hole`.
-    pub(super) fn desugar_template(&mut self, cx: &Cx, e: &Expr) -> Expr {
+    pub(super) fn desugar_template(&self, e: &Expr) -> Expr {
         let ExprKind::Template(tag, pieces) = &e.kind else { unreachable!() };
-        // The prelude's `format`, as a tag, is `std.format`'s formatter.
-        let tag_e = match &tag.kind {
-            ExprKind::Var(n) if n == "format" && cx.lookup(n).is_none() && self.resolve(n, false) == Some(Sym::Format) => {
-                if self.template_sym(FORMAT).is_none() {
-                    self.err(Diagnostic::error("E0361", "the standard library has no `std.format` with a `format` function", tag.span));
-                    return mk(ExprKind::Error, e.span);
-                }
-                var(FORMAT, tag.span)
-            }
-            _ => (**tag).clone(),
-        };
         let bytes: usize = pieces
             .iter()
             .map(|p| match p {
@@ -83,7 +70,7 @@ impl Elab {
             .sum();
         let holes = pieces.iter().filter(|p| matches!(p, TemplatePiece::Hole { .. })).count();
         let ts = tag.span;
-        let mut st = app(app(tag_e, int(bytes, ts), ts), int(holes, ts), ts);
+        let mut st = app(app((**tag).clone(), int(bytes, ts), ts), int(holes, ts), ts);
         let mut params = Vec::new();
         for p in pieces {
             match p {

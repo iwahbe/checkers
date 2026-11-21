@@ -40,10 +40,10 @@ error[E0284]: no instance of `Hole` for `Plain` and `Bool`
    = help: declare `instance Hole …` for these types, beside the class or the first type
 
 error[E0450]: cannot prove that the divisor is not zero
-  --> template_errors.ck:71:13
+  --> template_errors.ck:71:12
    |
-71 |     format"{10 / d}"
-   |             ^^^^^^ `/` and `%` need a non-zero right side
+71 |     plain"{10 / d}"
+   |            ^^^^^^ `/` and `%` need a non-zero right side
    = note: counterexample: d = 0
    = help: check the divisor first, e.g. `if d != 0 then n / d else …`
 

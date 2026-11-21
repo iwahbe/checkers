@@ -595,7 +595,7 @@ A trailing `->` or `=` outside brackets does **not** continue the line; it opens
 | `c'…'` | `Char` | `c'é'`, `c'\u{1F600}'` |
 | `"…"` | `String` (UTF-8) | `"'"`, `"a\u{e9}"`, escapes `\" \\ \n \r \t \0 \u{…}` |
 | `b"…"` | `Bytes` | `b"null"`, escapes as strings plus `\xNN` |
-| `tag"…"` | its formatter's `Result` (§9.10) | `page"<p>{name}</p>"`, `format"{n} items"` |
+| `tag"…"` | its formatter's `Result` (§9.10) | `page"<p>{name}</p>"` |
 
 **Keywords:** `module import as export abstract transparent fn enum record type let lemma ensures proof have auto admit check match if then else try and or implies decreasing partial ghost own comptime when using par`. `not` is an ordinary prelude function.
 
@@ -926,8 +926,6 @@ with the prelude's functions, whatever the module's own names mean. Empty text p
 
 - Each call is an ordinary use of a class (§9.8), at a span inside the template. `hole`'s instance is found at the hole's value (at the hole, for a positional one): a value of a type no instance takes is E0284 there ("no instance of `Hole` for `Page` and `Nat`"), and one whose type never becomes known is E0285 there. `text`'s and `finish`'s are found at the tag, so a tag whose result has no `Template` instance is E0284 at the tag. An option of the wrong type, and an obligation inside a hole, are reported at the option or the expression.
 - In the prover a template is its calls: what is known of the result comes from the instances' functions, as for any code.
-
-**`format`.** The prelude's `format`, as a tag, is `std.format`'s formatter (applied to a value, it is still `format x`, §13.2). `format"{name} is {age}"` builds a `String`: a hole takes a value of any type, rendered as `format x` renders it (a string as itself), with no options.
 
 ---
 
@@ -1313,8 +1311,7 @@ The standard library is these modules. Its scope is still to be settled (D106); 
 
 | Module | Layer | Exports | Status |
 |---|---|---|---|
-| `std.prelude` | prelude + builtin | `Type`, `Nat`, `Int`, `String`, `Array`, `Bytes`, `Bool`, `Unit`, `Option`, `Result`, `List`, `U8`…`U64`, `I8`…`I64`, `Char`, `not`; the class `Ord` (`le`, `trans`, `total`, `antisym`), `refl`, instances for `Int`, `Bool`, `String` (by `string_le`, D138), `List`, `Option`; the classes `Add`, `Sub`, `Mul`, `Neg`, `Monoid` (`zero`, `assoc`, `zero_add`, `add_zero`) with instances for `Int` (M24); the class `Functor` (`fmap`, `fmap_id`, `fmap_comp`) with instances for `List`, `Option` (M25); the classes `Template` (`Result`, `text`, `finish`) and `Hole` (`Options`, `hole`), and `NoOptions` (§9.10); `format` as a template's tag is `std.format`'s | exists |
-| `std.format` | Checkers | `Format`, `format`: the formatter of `format"…"`, which every module may write without an import; a hole takes any value (§9.10) | exists |
+| `std.prelude` | prelude + builtin | `Type`, `Nat`, `Int`, `String`, `Array`, `Bytes`, `Bool`, `Unit`, `Option`, `Result`, `List`, `U8`…`U64`, `I8`…`I64`, `Char`, `not`; the class `Ord` (`le`, `trans`, `total`, `antisym`), `refl`, instances for `Int`, `Bool`, `String` (by `string_le`, D138), `List`, `Option`; the classes `Add`, `Sub`, `Mul`, `Neg`, `Monoid` (`zero`, `assoc`, `zero_add`, `add_zero`) with instances for `Int` (M24); the class `Functor` (`fmap`, `fmap_id`, `fmap_comp`) with instances for `List`, `Option` (M25); the classes `Template` (`Result`, `text`, `finish`) and `Hole` (`Options`, `hole`), and `NoOptions` (§9.10) | exists |
 | `std.list` | Checkers | `length`, `map`, `all` (both call their function only with elements of the list, §5.3), `reverse`, `join`, `keys`, `contains`, `unique`, `count`, `max_of`, `take`, `drop` (past the end, `take` gives all of `xs` and `drop` gives `[]`, in their postconditions, #107), `head`, `sorted`, `sorted_as`, `sorted_by`, `perm` (any element type, D138), `sort`, `sort_as`, `sort_by` (stable merge sorts, proved sorted, permutations, of the same length; D138, D147), lemmas (among them `perm_middle`, `map_id`, `map_comp`) (among them `keys_append`, `contains_append`, `contains_reverse`, `unique_split`, D119); lengths: `length_append` (`length (xs ++ ys) == length xs + length ys`), `length_reverse`, `length_map`, `length_keys` (#107; lemmas rather than postconditions of `reverse`, `map`, `keys`, which cost every query that mentions them, **(proposed)**) | exists; planned: `filter`, `fold`, `find`, `any`, `zip`, `concat`, `index_of` with lemmas |
 | `std.option`, `std.result` | Checkers | `map`, `and_then`, `or_else`, `with_default`, `is_some` / `is_ok` | planned |
 | `std.bag` | builtin | `Bag a`, `of`, `count`, `sum` (multisets of any element type, for permutation proofs, D47, D138) | exists |

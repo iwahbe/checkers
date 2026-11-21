@@ -68,4 +68,4 @@ fn neither flag : flag~Bool
     plain"{flag}"
 
 fn divided d : d~Int
-    format"{10 / d}"
+    plain"{10 / d}"

@@ -152,12 +152,6 @@ impl Elab {
             let me = self.modules.get_mut(name).unwrap();
             me.import_types.extend(ts);
             me.import_values.extend(vs);
-            // `format"…"` is `std.format`'s formatter (#132), loaded for
-            // a module that may write one.
-            if name != "std.format" && self.sources.get(name).is_some_and(|f| f.text.contains("format\"")) {
-                self.load_stdlib("std.format");
-                self.cur = name.to_string();
-            }
         }
         for imp in &m.imports {
             let path = imp.path.dotted();

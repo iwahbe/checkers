@@ -262,7 +262,7 @@ impl Elab {
             }
             (ExprKind::Unit, Val::Univ(_)) => Tm::TupleTy(vec![]),
             (ExprKind::Template(..), _) => {
-                let d = self.desugar_template(cx, e);
+                let d = self.desugar_template(e);
                 self.check_inner(cx, &d, expected, tail)
             }
             _ => {
@@ -578,7 +578,7 @@ impl Elab {
                 }
             },
             ExprKind::Template(..) => {
-                let d = self.desugar_template(cx, e);
+                let d = self.desugar_template(e);
                 self.infer(cx, &d)
             }
             ExprKind::Error => (Tm::Error, Val::Error),
@@ -855,21 +855,10 @@ impl Elab {
             }
         }
 
-        // Overloaded built-ins (D38), also named through the prelude's
-        // qualifier (`prelude.format x`, where `format` means another).
-        let builtin = match &head.kind {
-            ExprKind::Var(n) if cx.lookup(n).is_none() => Some(self.resolve(n, false)),
-            ExprKind::Field(q, name) => match &q.kind {
-                ExprKind::Var(q) if cx.lookup(q).is_none() && self.qualifier(q).as_deref() == Some("std.prelude") => {
-                    Some(self.resolve_qualified("std.prelude", &name.name, false))
-                }
-                _ => None,
-            },
-            _ => None,
-        };
-        if let Some(builtin) = builtin {
-            {
-                match builtin {
+        // Overloaded built-ins (D38).
+        if let ExprKind::Var(n) = &head.kind {
+            if cx.lookup(n).is_none() {
+                match self.resolve(n, false) {
                     Some(Sym::Len) => {
                         let (at, aty) = self.infer(cx, args[0]);
                         self.deferred.push(Deferred {

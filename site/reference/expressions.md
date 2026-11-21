@@ -165,14 +165,7 @@ check parse_two '4' 'x' == Err "not a digit"
 
 ## Templates
 
-A string glued to a function's name, `tag"text {e} text"`, is a **template**: the function, its *tag*, makes a formatter, which is given the text and the values in the holes in order, and then finishes. The prelude's `format` is a tag that builds a `String`, rendering each value as `format x` does:
-
-```checkers
-fn greeting name age -> s : name~String, age~Nat, s~String
-    format"{name} is {age} years old"
-
-check greeting "Ann" 30 == "Ann is 30 years old"
-```
+A string glued to a function's name, `tag"text {e} text"`, is a **template**: the function, its *tag*, makes a formatter, which is given the text and the values in the holes in order, and then finishes. What a template builds, and which values its holes take, is up to the formatter (below, `page`).
 
 A hole is written in one of four ways:
 
@@ -184,13 +177,6 @@ A hole is written in one of four ways:
 | `{\| o1, o2}` | a new parameter, with options |
 
 The expressions in a hole are ordinary expressions in the template's scope, and errors in them are reported where they are written, inside the string. `|` separates the options only outside brackets, and the options are separated by commas, as in a list.
-
-```checkers
-fn pair -> s : s~String
-    format"{} and {}" 1 "two"
-
-check pair == "1 and two"
-```
 
 **Formatters.** A template is a series of calls of the prelude's classes `Template` and `Hole` ([Classes](classes.md#the-prelude-s-classes)). The tag is applied to the number of bytes of text and the number of holes, and gives the formatter's first state; `Template.text` takes each piece of text, `Hole.hole` each hole's value and its options as a list, and `Template.finish` gives the result:
 

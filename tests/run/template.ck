@@ -2,8 +2,8 @@ module template
 
 # Templates: a formatter that escapes HTML and takes only strings, with
 # named and positional holes and options; one whose result isn't a
-# string; one configured by partial application; the sizes a tag is
-# given; and `format`.
+# string; one configured by partial application; and the sizes a tag is
+# given, with positional holes of different types.
 
 import std.system (System, ExitCode)
 import std.terminal
@@ -100,6 +100,5 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     terminal.print_line m"id = {id}".sql t
     terminal.print_line (format sizes"ab{1}c\u{e9}{{{2}") t
     terminal.print_line (format sizes"") t
-    terminal.print_line format"{name} is {id + 30} years old: {[1, 2]}, {Some Raw}" t
-    terminal.print_line (format"{} and {}" "a" 2) t
+    terminal.print_line (format (sizes"{} and {}" "a" 2)) t
     Success

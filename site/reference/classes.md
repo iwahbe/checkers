@@ -278,7 +278,7 @@ A class's type takes a type for each parameter outside the class: `Hole.Options 
 | `Add a`, `Sub a`, `Mul a`, `Neg a` | `add`, `sub`, `mul`, `neg` | `Int` |
 | `Monoid a` | `zero`; lemmas `assoc`, `zero_add`, `add_zero` | `Int` |
 | `Functor f` | `fmap`; lemmas `fmap_id`, `fmap_comp` | `List`, `Option`; `Array` in `std.array` |
-| `Template s` | the type `Result`; `text`, `finish` | none; `Format` in `std.format` ([Templates](expressions.md#templates)) |
-| `Hole s h` | the type `Options` (`NoOptions`, an enum with no constructors, by default); `hole` | none; `Format` with any type in `std.format` |
+| `Template s` | the type `Result`; `text`, `finish` | none ([Templates](expressions.md#templates)) |
+| `Hole s h` | the type `Options` (`NoOptions`, an enum with no constructors, by default); `hole` | none |
 
 The prelude also has the lemma `refl` (`le x x`), which follows from `total`.
