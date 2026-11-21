@@ -1093,6 +1093,9 @@ impl<'a> Builder<'a> {
                 // A refinement alias (`U8`) brings its predicates.
                 let raw = quote(&self.e.g, lvl, &l.ty);
                 self.alias_facts(&env, &raw, &name, &s);
+                if s == Sort::Str {
+                    self.string_fact(&name);
+                }
                 // A tuple's parts carry theirs (`(Char, (stop~Nat, k < stop))`).
                 self.tuple_facts(&env, &tyt, &name, &s);
                 if let Sort::Data(id, sargs) = &s {
@@ -1133,6 +1136,37 @@ impl<'a> Builder<'a> {
     /// For each constructor of `id`: if `x` is that constructor, its `Nat`
     /// fields are non-negative and its invariants hold.
     /// If `ty` is a refinement alias, assert its predicates about `x`.
+    /// The prelude's `valid_utf8`, applied to `t` (bytes): its term.
+    fn valid_utf8(&mut self, t: &str) -> Option<String> {
+        let g = &self.e.g;
+        let d = g.defs.iter().position(|d| &*d.module == "std.prelude" && &*d.name == "valid_utf8")?;
+        let env = vec![Ent::Term(t.to_string(), Sort::Seq(Box::new(Sort::Int)))];
+        let tm = Tm::App(Rc::new(Tm::Def(DefId(d as u32))), Rc::new(Tm::Var(0)), crate::core::Icit::Expl, Mult::Many);
+        match self.term(&env, &tm) {
+            Ok((ft, Sort::Bool)) => Some(ft),
+            _ => None,
+        }
+    }
+
+    /// A string's bytes are UTF-8 (#170): what `String`'s field says.
+    fn string_fact(&mut self, t: &str) {
+        if let Some(f) = self.valid_utf8(t) {
+            self.asserts.push(f);
+        }
+    }
+
+    /// Whether the bytes of a literal are UTF-8, which `valid_utf8` says of
+    /// it: the prover knows nothing else of that builtin (#170).
+    fn literal_utf8(&mut self, b: &[u8]) {
+        let lit = smt_bytes(b);
+        if self.in_def || !self.fact_seen.insert(format!("utf8 {lit}")) {
+            return;
+        }
+        if let Some(f) = self.valid_utf8(&lit) {
+            self.asserts.push(if std::str::from_utf8(b).is_ok() { f } else { format!("(not {f})") });
+        }
+    }
+
     fn alias_facts(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort) {
         let ts = self.alias_terms(env, ty, x, xs);
         self.asserts.extend(ts);
@@ -1540,9 +1574,13 @@ impl<'a> Builder<'a> {
             Tm::Lit(Lit::Num(n)) => Ok((smt_int(*n), Sort::Int)),
             Tm::Lit(Lit::Big(n)) => Ok((smt_int((**n).clone()), Sort::Int)),
             Tm::Lit(Lit::Str(s)) => {
+                self.literal_utf8(s.as_bytes());
                 Ok((smt_bytes(s.as_bytes()), Sort::Str))
             }
-            Tm::Lit(Lit::Bytes(b)) => Ok((smt_bytes(b), Sort::Seq(Box::new(Sort::Int)))),
+            Tm::Lit(Lit::Bytes(b)) => {
+                self.literal_utf8(b);
+                Ok((smt_bytes(b), Sort::Seq(Box::new(Sort::Int))))
+            }
             Tm::Tuple(xs) => {
                 let mut ts = Vec::new();
                 let mut ss = Vec::new();
@@ -1593,6 +1631,10 @@ impl<'a> Builder<'a> {
             }
             Tm::Field(x, c, i) => {
                 let (xt, xs) = self.term(env, x)?;
+                // A string is its bytes (D58, #170).
+                if xs == Sort::Str {
+                    return Ok((xt, Sort::Seq(Box::new(Sort::Int))));
+                }
                 let Sort::Data(_, sargs) = &xs else { return out("a field of a non-record") };
                 let fs = self.con_fields(*c, &self.sort_env(self.e.g.cons[c.0 as usize].ty, sargs))?;
                 let Some((_, s)) = fs.iter().find(|(k, _)| k == i).cloned() else {
@@ -1667,6 +1709,11 @@ impl<'a> Builder<'a> {
         let np = self.e.g.arity_ty(id);
         if args.len() < np + ci.len() {
             return out("a partially applied constructor");
+        }
+        // A string is its bytes (D58, #170).
+        if Some(id) == wk.string {
+            let (t, _) = self.term(env, &args[np])?;
+            return Ok((t, Sort::Str));
         }
         let sort = {
             let ptys: Vec<Tm> = args[..np].to_vec();
@@ -2631,6 +2678,18 @@ impl<'a> Builder<'a> {
                     }
                     let (bt, bs) = self.term(&env2, body)?;
                     arms.push((Some(format!("({} {x})", tester(self.e, *con))), bt, bs));
+                }
+            }
+            // A string's one constructor holds its bytes, which it is (#170).
+            Sort::Str => {
+                for (_, n, body) in &c.branches {
+                    if matches!(body, Tm::Error) {
+                        continue;
+                    }
+                    let mut env2 = env.to_vec();
+                    env2.extend((0..*n).map(|_| Ent::Term(x.clone(), Sort::Seq(Box::new(Sort::Int)))));
+                    let (bt, bs) = self.term(&env2, body)?;
+                    arms.push((None, bt, bs));
                 }
             }
             Sort::Tuple(_) => {

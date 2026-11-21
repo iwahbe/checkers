@@ -245,10 +245,17 @@ impl<'g> Stager<'g> {
         r
     }
 
-    /// The type of a closed application of a definition, if it is one.
+    /// The type of a closed application of a definition or constructor, if
+    /// it is one.
     fn result_type(&self, t: &Tm) -> Option<Tm> {
         let g = self.g;
         let (h, args) = t.spine();
+        // A constructor: its type, at the type arguments it is given.
+        if let Tm::Con(c) = h {
+            let ty = g.cons[c.0 as usize].ty;
+            let np = g.arity_ty(ty);
+            return (args.len() >= np).then(|| Tm::TyConApp(ty, args[..np].iter().map(|a| (***a).clone()).collect()));
+        }
         let Tm::Def(d) = h else { return None };
         let empty = Rc::new(Vec::new());
         let mut ty = crate::core::eval(g, &empty, &g.defs.get(d.0 as usize)?.ty);
@@ -268,6 +275,11 @@ impl<'g> Stager<'g> {
         if matches!(&v, Tm::ConApp(c2, _) if *c2 == c) {
             return v;
         }
+        // A string literal is `String` of its bytes.
+        let v = match v {
+            Tm::Lit(Lit::Str(s)) if Some(g.cons[c.0 as usize].ty) == g.well_known.string => Tm::Lit(Lit::Bytes(Rc::from(s.as_bytes()))),
+            v => v,
+        };
         let ci = &g.cons[c.0 as usize];
         let mut args: Vec<Tm> = (0..g.arity_ty(ci.ty)).map(|_| Tm::Univ(0)).collect();
         for j in 0..ci.fields.len() {

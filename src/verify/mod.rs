@@ -1163,10 +1163,9 @@ fn failed(e: &Elab, o: &Obligation, model: Option<String>) -> Diagnostic {
     crate::elab::collect_sealed(&quote(&e.g, lvl, &o.goal), &e.g, &o.module, &mut sealed);
     let sealed_note = sealed.first().map(|d| {
         let info = &e.g.defs[d.0 as usize];
-        format!(
-            "`{}` is sealed in `{}`: here the prover knows only its postconditions and the lemmas you bring in with `have`",
-            info.name, info.module
-        )
+        // A builtin has no body for the prover to see, wherever it is used.
+        let what = if info.body.is_none() { format!("is built into `{}`", info.module) } else { format!("is sealed in `{}`", info.module) };
+        format!("`{}` {what}: here the prover knows only its postconditions and the lemmas you bring in with `have`", info.name)
     });
     match model.filter(|m| !m.is_empty()) {
         Some(m) if sealed_note.is_none() => d = d.with_note(format!("counterexample: {m}")),

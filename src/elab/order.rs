@@ -148,9 +148,12 @@ pub fn plan(m: &ast::Module, dicts: &[usize]) -> Plan {
             DeclKind::Check { .. } | DeclKind::Class { .. } | DeclKind::Instance { .. } => {}
         }
     }
-    // Any function or lemma may use an instance (D136).
+    // Any function or lemma may use an instance (D136), except a builtin,
+    // whose body is in the runtime: the prelude's `valid_utf8`, which
+    // `String`'s field uses, comes before `String`'s own instances (#170).
+    let builtin = |k: usize| matches!(&m.decls[k].kind, DeclKind::Fn { body, .. } if super::decls::is_builtin(body));
     for k in 0..m.decls.len() {
-        if has_body(k) && !dicts.contains(&k) {
+        if has_body(k) && !dicts.contains(&k) && !builtin(k) {
             for &d in dicts {
                 edges.entry(Node::Head(k)).or_default().insert(Node::Head(d));
                 edges.entry(Node::Body(k)).or_default().insert(Node::Head(d));

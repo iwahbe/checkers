@@ -97,10 +97,16 @@ pub(crate) fn args<'a>(p: *const W, n: u64) -> &'a [W] {
 }
 
 pub(crate) fn s(w: W) -> &'static str {
-    if !is_kind(w, K_STR) {
+    if !is_kind(w, K_BYTES) {
         bug("expected a string");
     }
     str_of(w)
+}
+
+/// A string's object (borrowed), checked.
+pub(crate) fn s_obj(w: W) -> W {
+    s(w);
+    w
 }
 
 pub(crate) fn b(w: W) -> &'static [u8] {

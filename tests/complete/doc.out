@@ -25,7 +25,7 @@ replaces 1:68-1:70
   Ord                type            
   Result             type            
   Some               constructor     
-  String             type            
+  String             constructor     
   Sub                type            
   True               constructor     
   Type               function        
@@ -51,6 +51,7 @@ replaces 1:68-1:70
   total              function        
   trans              function        
   twice              function        
+  valid_utf8         function        
   zero               function        
   zero_add           function        
 == line 5, column 14

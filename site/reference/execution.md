@@ -4,7 +4,7 @@
 
 ## Erasure
 
-Before a program runs, it is staged ([Staging](staging.md)) and then **erased**: types, type arguments, `ghost` parameters and fields, predicates, lemmas, `have`s and proofs are removed. What remains is a functional program over numbers, strings, arrays, constructors, tuples, closures and capabilities. Proofs therefore cost nothing at run time, and a refinement such as `U8` is not checked when the program runs: it was proved.
+Before a program runs, it is staged ([Staging](staging.md)) and then **erased**: types, type arguments, `ghost` parameters and fields, predicates, lemmas, `have`s and proofs are removed. What remains is a functional program over numbers, strings, arrays, constructors, tuples, closures and capabilities. Proofs therefore cost nothing at run time, and a refinement such as `U8` is not checked when the program runs: it was proved. A type with one constructor whose fields keep one value when the program runs, such as `record Meters` with `m~Int`, is stored as that value, so wrapping a value in it costs nothing; `String` is stored as its bytes.
 
 ## Evaluation
 
@@ -42,7 +42,7 @@ check debug (Some "hi") == "Some \"hi\""
 
 Where two options conflict, the later one wins. Containers (`List`, `Option`, tuples, …) and `()` have no `Display`: show their parts, or use `debug`.
 
-`debug` writes a value the way it would be written in source. A type's own module may replace this with `instance Debug T`; it is then used wherever a `T` is shown, inside other values too:
+`debug` writes a value the way it would be written in source, as its type says: a `String` and a `Bytes` are both bytes when the program runs, but one is written `"…"` and the other `b"…"`. A type's own module may replace this with `instance Debug T`; it is then used wherever a `T` is shown, inside other values too:
 
 | Value | Written |
 |---|---|
@@ -64,6 +64,8 @@ check debug b"hi" == "b\"hi\""
 ```
 
 A failed `check` shows its values in this derived form, whatever a type's own `Debug` says, so that two different values never look the same there.
+
+Generic code shows values as well as code at a known type: a function that shows values of its type parameter, with `debug` or through a function that does, is given what it needs to know about that type when it is called. So the type must be known when the program is compiled: a type that depends on a value, such as `x~(if b then U8 else Int)`, can't be given to it (E0293).
 
 ## Run-time checks
 

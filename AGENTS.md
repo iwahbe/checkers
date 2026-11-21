@@ -37,6 +37,7 @@ src/elab/index.rs    names for tools: each use, its definition, kind and hover t
 src/elab/interval.rs arithmetic keeps constant bounds: ranges as anonymous refinements, joined branches, their array layouts (D135)
 src/elab/refine.rs   refinements inside types: inline and function-type refinements, implication, variance, E0262 (D71, D82–D87)
 src/elab/eq.rs       `==` never compares functions: in compiled code, and through type parameters (D125)
+src/elab/descr.rs    showing values by type (#170): which type parameters get descriptors, closed over calls; E0293
 src/doc.rs           `ckc doc FILE`: a module's exported declarations and descriptions as JSON lines (§15.6, D131)
 src/elab/termination.rs  structural recursion over call-graph SCCs (§5.3)
 src/literate.rs      doc comments' links and code blocks: W030–W033, their index and completion (D148 e, f)
@@ -45,7 +46,7 @@ src/elab/order.rs   declaration order by dependencies, cycles (D65); strongly co
 src/elab/stdlib.rs   finding and loading the standard library from disk (D104), program modules from `a/b.ck` (D53), packages' modules (D111)
 src/usage.rs         `own`/`ghost` usage (QTT multiplicities)
 src/stage.rs         staging (§8.9): expands compile-time functions before erasure; `checkers stage`
-src/native/ir.rs     erasure: core terms → runtime code (§13.1)
+src/native/ir.rs     erasure: core terms → runtime code (§13.1); a one-field type is its field, type arguments' layouts or descriptors (#170)
 src/native/lower.rs  closure conversion: runtime code → first-order functions (§14)
 src/native/tailrec.rs recursion made tail recursion before reference counting: `f.dps` (a constructor around the call), `f.acc` (`+`, `*`, `++` after it); an optimization (§14)
 src/native/rc.rs     reference counting, Perceus style: dup/drop, borrowing, reuse (D74)
@@ -55,6 +56,7 @@ src/native/mod.rs    `ckc run` (in memory), `ckc build` (link with libcheckers_r
 rt/src/              runtime crate checkers_rt: words and objects, format, I/O, lock-free scheduler (D77), entry
 rt/src/builtins/     the standard library's builtins, one file per module (§16.1)
 rt/src/array.rs      arrays (D133): `K_ARRAY` objects laid out by element (words, or packed 1/2/4/8 bytes); an `Array U8` is a bytes object
+rt/src/desc.rs       type descriptors (#170): what a type argument's word says, field types from the program descriptor
 rt/src/fiber.rs      a stack per behaviour, the switch, parking, `blocking` (M16, D113, D117; x86-64 Linux, ARM64, D126)
 rt/src/poll.rs       epoll (Linux) or kqueue (macOS): our ends of child pipes wait without a thread
 rt/src/blocking.rs   threads for calls that can't be polled

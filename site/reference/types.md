@@ -98,11 +98,15 @@ check offset 3 1 == 2
 
 ### Text
 
-A `String` is UTF-8 text; it can't hold invalid UTF-8. `len s` is its length in **bytes**, and `string.bytes s` gives those bytes. A `Char` is one Unicode scalar value, written `c'é'`; a byte literal `'a'` is a `U8`. Joining strings is `++`.
+A `String` is UTF-8 text; it can't hold invalid UTF-8. It is a record of its bytes, `bytes~Bytes, valid_utf8 bytes`, and is stored as them, so `s.bytes` (or `string.bytes s`) costs nothing. `len s` is its length in **bytes**. Building a string from bytes needs them proven UTF-8: `String b` where `valid_utf8 b` is known, or `string.from_utf8 b`, which checks. The prover knows every string's bytes are UTF-8. A `Char` is one Unicode scalar value, written `c'é'`; a byte literal `'a'` is a `U8`. Joining strings is `++`.
 
 ```checkers
 check len "é" == 2
 check "ab" ++ "c" == "abc"
+check "é".bytes == b"\xC3\xA9"
+
+fn checked b -> r : b~Bytes, r~Option String
+    if valid_utf8 b then Some (String b) else None
 ```
 
 ### Arrays

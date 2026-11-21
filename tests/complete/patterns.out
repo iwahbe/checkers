@@ -31,4 +31,5 @@ replaces 14:9-14:9
   None               constructor     None  (of `Option`)
   Ok                 constructor     Ok x : x~a  (of `Result`)
   Some               constructor     Some x : x~a  (of `Option`)
+  String             constructor     export record String  (documented)
   True               constructor     True  (of `Bool`)

@@ -250,7 +250,7 @@ impl<'p, M: Module> Gen<'p, M> {
     fn lay_out(v: &Static, out: &mut Vec<u8>, relocs: &mut Vec<(usize, usize)>) -> Result<u64, usize> {
         let (kind, tag, fields) = match v {
             Static::Word(x) => return Ok(*x),
-            Static::Str(s) => return Err(Self::lay_out_bytes(w::K_STR, s.as_bytes(), out)),
+            Static::Str(s) => return Err(Self::lay_out_bytes(w::K_BYTES, s.as_bytes(), out)),
             Static::Bytes(b) => return Err(Self::lay_out_bytes(w::K_BYTES, b, out)),
             Static::Con(c, xs) => (w::K_CON, *c as u64, xs),
             Static::Tuple(xs) => (w::K_TUPLE, 0, xs),
@@ -511,7 +511,7 @@ impl<'p, M: Module> Gen<'p, M> {
             E::Erased => b.ins().iconst(I64, 0),
             E::Unit => b.ins().iconst(I64, w::UNIT as i64),
             E::Str(s) => {
-                let d = self.lit(w::K_STR, s.as_bytes());
+                let d = self.lit(w::K_BYTES, s.as_bytes());
                 self.addr(b, st, d)
             }
             E::Bytes(x) => {
@@ -1023,11 +1023,9 @@ impl<'p, M: Module> Gen<'p, M> {
                 b.switch_to_block(kinds);
                 let info = b.ins().load(I64, flags(), a[0], 8);
                 let kind = b.ins().band_imm_s(info, 0xff);
-                let s = b.ins().icmp_imm_s(IntCC::Equal, kind, w::K_STR as i64);
                 let y = b.ins().icmp_imm_s(IntCC::Equal, kind, w::K_BYTES as i64);
                 let z = b.ins().icmp_imm_s(IntCC::Equal, kind, checkers_rt::array::K_ARRAY as i64);
-                let sy = b.ins().bor(s, y);
-                let any = b.ins().bor(sy, z);
+                let any = b.ins().bor(y, z);
                 b.ins().brif(any, fast, &[], slow, &[]);
                 b.switch_to_block(fast);
                 let n = b.ins().load(I64, flags(), a[0], w::HDR as i32);

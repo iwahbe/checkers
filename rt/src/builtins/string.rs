@@ -31,7 +31,8 @@ builtin!(ckb_from_chars, |a| {
 
 builtin!(ckb_from_char, |a| new_str(&ch(a[0]).to_string()));
 
-builtin!(ckb_string_bytes, |a| new_bytes(s(a[0]).as_bytes()));
+// A string is stored as its bytes (#170): the same object.
+builtin!(ckb_string_bytes, |a| dup(s_obj(a[0])));
 
 builtin!(ckb_string_concat, |a| {
     let parts = list_items(a[0]);
@@ -42,8 +43,9 @@ builtin!(ckb_string_concat, |a| {
     new_str(&out)
 });
 
+// Bytes that are UTF-8 are a string as they are (#170): the same object.
 builtin!(ckb_from_utf8, |a| match std::str::from_utf8(b(a[0])) {
-    Ok(t) => some(new_str(t)),
+    Ok(_) => some(dup(a[0])),
     Err(_) => none(),
 });
 

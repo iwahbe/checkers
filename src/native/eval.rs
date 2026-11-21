@@ -88,6 +88,10 @@ impl<'g> Evaluator<'g> {
                 let items: Vec<String> = ts.iter().enumerate().map(|(i, t)| self.show_typed(w::slot(v, i), t, 0)).collect();
                 format!("({})", items.join(", "))
             }
+            // A string is stored as its bytes (#170).
+            Tm::TyConApp(id, _) if Some(*id) == g.well_known.string && w::is_ptr(v) && w::kind(v) == w::K_BYTES => {
+                format!("{:?}", w::str_of(v))
+            }
             Tm::TyConApp(id, args) => {
                 // Stored as its one kept field (#170): the value is that field.
                 if let Some((c, k)) = unboxed_con(g, *id) {
@@ -161,6 +165,10 @@ impl<'g> Evaluator<'g> {
             Tm::TupleTy(ts) if w::is_ptr(v) && w::kind(v) == w::K_TUPLE && w::nfields(v) == ts.len() => {
                 (0..ts.len()).map(|i| self.reify_as(w::slot(v, i), &ts[i])).collect::<Option<Vec<_>>>().map(Tm::Tuple)
             }
+            // A string is stored as its bytes (#170).
+            Tm::TyConApp(id, _) if Some(*id) == g.well_known.string && w::is_ptr(v) && w::kind(v) == w::K_BYTES => {
+                Some(Tm::Lit(Lit::Str(Rc::from(w::str_of(v)))))
+            }
             Tm::TyConApp(id, args) => {
                 let np = g.arity_ty(*id);
                 if let Some((c, k)) = unboxed_con(g, *id) {
@@ -225,7 +233,6 @@ impl<'g> Evaluator<'g> {
             return None;
         }
         match w::kind(v) {
-            w::K_STR => Some(Tm::Lit(Lit::Str(Rc::from(w::str_of(v))))),
             w::K_BYTES => Some(Tm::Lit(Lit::Bytes(Rc::from(w::blob(v))))),
             w::K_TUPLE => (0..w::nfields(v)).map(|i| self.reify(w::slot(v, i))).collect::<Option<Vec<_>>>().map(Tm::Tuple),
             _ => None,

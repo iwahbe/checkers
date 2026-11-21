@@ -109,7 +109,7 @@ pub fn equal(a: W, b: W) -> Result<bool, &'static str> {
         return Ok(false);
     }
     Ok(match ka {
-        K_STR | K_BYTES => blob(a) == blob(b),
+        K_BYTES => blob(a) == blob(b),
         K_CON | K_TUPLE => {
             if ka == K_CON && tag(a) != tag(b) || nfields(a) != nfields(b) {
                 return Ok(false);
@@ -161,11 +161,6 @@ pub extern "C" fn ck_ne(a: W, b: W, owner: u64) -> W {
 
 #[no_mangle]
 pub extern "C" fn ck_concat(a: W, b: W) -> W {
-    if is_kind(a, K_STR) {
-        let mut s = str_of(a).to_string();
-        s.push_str(str_of(b));
-        return new_str(&s);
-    }
     if is_kind(a, K_BYTES) && is_kind(b, K_BYTES) {
         let mut v = blob(a).to_vec();
         v.extend_from_slice(blob(b));
@@ -179,7 +174,7 @@ pub extern "C" fn ck_concat(a: W, b: W) -> W {
 
 #[no_mangle]
 pub extern "C" fn ck_len(a: W) -> W {
-    if is_kind(a, K_STR) || is_kind(a, K_BYTES) {
+    if is_kind(a, K_BYTES) {
         return nat(blob(a).len());
     }
     if is_kind(a, crate::array::K_ARRAY) {
@@ -261,8 +256,7 @@ fn render_typed(w: W, ty: &Ty, p: u8, hand: bool) -> String {
         }
     }
     match info.kind {
-        TyKind::String if is_kind(w, K_STR) => return format!("{:?}", str_of(w)),
-        TyKind::String if is_kind(w, K_BYTES) => return format!("{:?}", String::from_utf8_lossy(blob(w))),
+        TyKind::String if is_kind(w, K_BYTES) => return format!("{:?}", str_of(w)),
         TyKind::List if is_list(w) => {
             let elem = ty.arg(0);
             let items: Vec<String> = list_items(w).into_iter().map(|x| render_typed(x, &elem, 0, hand)).collect();
@@ -327,7 +321,7 @@ fn custom(f: W, targs: Vec<W>, w: W, p: u8) -> String {
     let mut args = targs;
     args.push(dup(w));
     let r = crate::apply::apply(dup(f), args);
-    let s = if is_kind(r, K_STR) { str_of(r).to_string() } else { bug("a `debug` that didn't give a string") };
+    let s = if is_kind(r, K_BYTES) { str_of(r).to_string() } else { bug("a `debug` that didn't give a string") };
     drop_w(r);
     if p == 0 {
         return s;
@@ -389,7 +383,6 @@ fn render(w: W, p: u8, hand: bool) -> String {
         return if args.is_empty() { ci.name.clone() } else { paren(p > 0, format!("{} {}", ci.name, args.join(" "))) };
     }
     match kind(w) {
-        K_STR => format!("{:?}", str_of(w)),
         K_BYTES => show_bytes(blob(w)),
         crate::array::K_ARRAY => {
             let items: Vec<String> = crate::array::items(w)

@@ -388,10 +388,8 @@ pub unsafe extern "C" fn ck_error(owner: u64, msg: *const u8, len: u64) -> W {
 pub extern "C" fn ck_nomatch(w: W, owner: u64) -> W {
     let kind = if crate::obj::is_num(w) {
         "number"
-    } else if is_kind(w, K_STR) {
-        "string"
     } else if is_kind(w, K_BYTES) {
-        "bytes"
+        "bytes or a string"
     } else if con_of(w).is_some() {
         "constructor"
     } else {

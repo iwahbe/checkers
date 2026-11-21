@@ -851,6 +851,8 @@ fn proj(g: &Globals, v: Val, i: usize, rest: bool) -> Val {
 
 fn field(g: &Globals, v: Val, c: ConId, i: usize) -> Val {
     match force(g, v.clone()) {
+        // A string literal's bytes (#170).
+        Val::Lit(Lit::Str(s)) if Some(g.cons[c.0 as usize].ty) == g.well_known.string => Val::Lit(Lit::Bytes(Rc::from(s.as_bytes()))),
         Val::Con(_, args) => {
             let np = g.arity_ty(g.cons[c.0 as usize].ty);
             args.get(np + i).cloned().unwrap_or(Val::Error)
@@ -883,6 +885,14 @@ fn case(g: &Globals, v: Val, c: Rc<CaseTm>, env: Env) -> Val {
             for (lit, body) in &c.lits {
                 if *lit == l {
                     return eval(g, &env, body);
+                }
+            }
+            // A string literal matched as `String b`: its bytes (#170).
+            if let Lit::Str(s) = &l {
+                if let Some((_, n, body)) = c.branches.iter().find(|(cid, _, _)| Some(g.cons[cid.0 as usize].ty) == g.well_known.string) {
+                    let mut e = (*env).clone();
+                    e.extend(std::iter::repeat_n(Val::Lit(Lit::Bytes(Rc::from(s.as_bytes()))), *n));
+                    return eval(g, &Rc::new(e), body);
                 }
             }
             match &c.default {
