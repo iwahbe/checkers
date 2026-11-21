@@ -13,6 +13,10 @@
 
 use crate::array::Layout;
 use crate::word::*;
+use std::borrow::Cow;
+
+/// A type the runtime knows nothing more of than the value says.
+pub static UNKNOWN: Ty = Ty::Unknown;
 
 /// The number standing for tuple types.
 pub const TUPLE: u32 = u32::MAX;
@@ -74,10 +78,10 @@ impl Ty {
     }
 
     /// Argument `i`, unknown if the word didn't say it.
-    pub fn arg(&self, i: usize) -> Ty {
+    pub fn arg(&self, i: usize) -> &Ty {
         match self {
-            Ty::Con { args, .. } => args.get(i).cloned().unwrap_or(Ty::Unknown),
-            Ty::Unknown => Ty::Unknown,
+            Ty::Con { args, .. } => args.get(i).unwrap_or(&UNKNOWN),
+            Ty::Unknown => &UNKNOWN,
         }
     }
 
@@ -109,12 +113,13 @@ pub enum Template {
 }
 
 impl Template {
-    /// The type this is, with the type's arguments `args`.
-    pub fn at(&self, args: &Ty) -> Ty {
+    /// The type this is, with the type's arguments `args`: borrowed from
+    /// them where it is one of them.
+    pub fn at<'a>(&self, args: &'a Ty) -> Cow<'a, Ty> {
         match self {
-            Template::Unknown => Ty::Unknown,
-            Template::Param(i) => args.arg(*i),
-            Template::Con(tag, xs) => Ty::Con { tag: *tag, args: xs.iter().map(|x| x.at(args)).collect() },
+            Template::Unknown => Cow::Borrowed(&UNKNOWN),
+            Template::Param(i) => Cow::Borrowed(args.arg(*i)),
+            Template::Con(tag, xs) => Cow::Owned(Ty::Con { tag: *tag, args: xs.iter().map(|x| x.at(args).into_owned()).collect() }),
         }
     }
 

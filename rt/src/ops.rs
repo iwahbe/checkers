@@ -245,12 +245,12 @@ fn render_typed(w: W, ty: &Ty, p: u8, hand: bool) -> String {
         if !is_kind(w, K_TUPLE) {
             return render(w, p, hand);
         }
-        let parts: Vec<String> = (0..nfields(w)).map(|i| render_typed(slot(w, i), &ty.arg(i), 0, hand)).collect();
+        let parts: Vec<String> = (0..nfields(w)).map(|i| render_typed(slot(w, i), ty.arg(i), 0, hand)).collect();
         return format!("({})", parts.join(", "));
     }
     let other = crate::prog::TyInfo::default();
-    let info = pg.tys.get(&id).unwrap_or(&other);
-    if hand {
+    let info = pg.tys.get(id as usize).unwrap_or(&other);
+    if hand && info.debug.is_some() {
         if let Some((f, n)) = crate::prog::debug_fn_of_type(id) {
             return custom(f, (0..n).map(|i| ty.arg(i).to_word()).collect(), w, p);
         }
@@ -259,7 +259,7 @@ fn render_typed(w: W, ty: &Ty, p: u8, hand: bool) -> String {
         TyKind::String if is_kind(w, K_BYTES) => return format!("{:?}", str_of(w)),
         TyKind::List if is_list(w) => {
             let elem = ty.arg(0);
-            let items: Vec<String> = list_items(w).into_iter().map(|x| render_typed(x, &elem, 0, hand)).collect();
+            let items: Vec<String> = list_items(w).into_iter().map(|x| render_typed(x, elem, 0, hand)).collect();
             return format!("[{}]", items.join(", "));
         }
         TyKind::Array if crate::array::is_array(w) => {
@@ -271,7 +271,7 @@ fn render_typed(w: W, ty: &Ty, p: u8, hand: bool) -> String {
             let items: Vec<String> = crate::array::items(w)
                 .into_iter()
                 .map(|x| {
-                    let s = render_typed(x, &elem, 0, hand);
+                    let s = render_typed(x, elem, 0, hand);
                     drop_w(x);
                     s
                 })
@@ -286,7 +286,7 @@ fn render_typed(w: W, ty: &Ty, p: u8, hand: bool) -> String {
         if !ci.shown.get(k).copied().unwrap_or(false) {
             return ci.name.clone();
         }
-        let fty = ci.templates.get(k).map_or(Ty::Unknown, |t| t.at(ty));
+        let fty = ci.templates.get(k).map_or(std::borrow::Cow::Borrowed(&crate::desc::UNKNOWN), |t| t.at(ty));
         return paren(p > 0, format!("{} {}", ci.name, render_typed(w, &fty, 1, hand)));
     }
     let Some(c) = con_of(w) else { return render(w, p, hand) };
@@ -299,7 +299,10 @@ fn render_typed(w: W, ty: &Ty, p: u8, hand: bool) -> String {
         .iter()
         .enumerate()
         .filter(|(i, _)| ci.shown.get(*i).copied().unwrap_or(false))
-        .map(|(i, v)| render_typed(*v, &ci.templates.get(i).map_or(Ty::Unknown, |t| t.at(ty)), 1, hand))
+        .map(|(i, v)| {
+            let fty = ci.templates.get(i).map_or(std::borrow::Cow::Borrowed(&crate::desc::UNKNOWN), |t| t.at(ty));
+            render_typed(*v, &fty, 1, hand)
+        })
         .collect();
     if args.is_empty() {
         ci.name.clone()

@@ -74,11 +74,22 @@ pub struct Prog {
     pub known: Known,
     pub system_fields: Vec<String>,
     /// Types by number (#170).
-    pub tys: std::collections::HashMap<u32, TyInfo>,
+    pub tys: Vec<TyInfo>,
     pub invoke: Invoke,
     /// The hand-written `Debug` instances' functions (#126), set once
     /// after `install` (`set_debug`); kept for good.
     pub debug: std::sync::OnceLock<Vec<W>>,
+}
+
+impl Prog {
+    /// Type `id`'s entry, made if it isn't there yet.
+    fn ty_mut(&mut self, id: u32) -> &mut TyInfo {
+        let i = id as usize;
+        if self.tys.len() <= i {
+            self.tys.resize(i + 1, TyInfo::default());
+        }
+        &mut self.tys[i]
+    }
 }
 
 /// The current program. `checkers check` installs one per file it
@@ -111,7 +122,7 @@ pub fn install(desc: &str, invoke: Invoke) {
         names: Vec::new(),
         known: Known::default(),
         system_fields: Vec::new(),
-        tys: std::collections::HashMap::new(),
+        tys: Vec::new(),
         invoke,
         debug: std::sync::OnceLock::new(),
     };
@@ -139,14 +150,14 @@ pub fn install(desc: &str, invoke: Invoke) {
                     _ => TyKind::Other,
                 };
                 let unboxed = it.next().and_then(|x| x.split_once(':')).and_then(|(c, f)| Some((c.parse().ok()?, f.parse().ok()?)));
-                p.tys.insert(id, TyInfo { kind, unboxed, debug: None });
+                *p.ty_mut(id) = TyInfo { kind, unboxed, debug: None };
             }
             Some("debug") => {
                 let ty: Option<u32> = it.next().and_then(|x| x.parse().ok());
                 let k: Option<usize> = it.next().and_then(|x| x.parse().ok());
                 let n: usize = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
                 let (Some(ty), Some(k)) = (ty, k) else { continue };
-                p.tys.entry(ty).or_default().debug = Some((k, n));
+                p.ty_mut(ty).debug = Some((k, n));
                 for ci in p.cons.iter_mut().filter(|c| c.ty == Some(ty)) {
                     ci.debug = Some(k);
                 }
@@ -199,7 +210,7 @@ pub fn debug_fn(c: u32) -> Option<(W, usize)> {
     let p = prog();
     let ci = p.cons.get(c as usize)?;
     let k = ci.debug?;
-    let n = ci.ty.and_then(|t| p.tys.get(&t)).and_then(|t| t.debug).map_or(0, |d| d.1);
+    let n = ci.ty.and_then(|t| p.tys.get(t as usize)).and_then(|t| t.debug).map_or(0, |d| d.1);
     Some((*p.debug.get()?.get(k)?, n))
 }
 
@@ -207,7 +218,7 @@ pub fn debug_fn(c: u32) -> Option<(W, usize)> {
 /// parameters it takes before the value.
 pub fn debug_fn_of_type(ty: u32) -> Option<(W, usize)> {
     let p = prog();
-    let (k, n) = p.tys.get(&ty)?.debug?;
+    let (k, n) = p.tys.get(ty as usize)?.debug?;
     Some((*p.debug.get()?.get(k)?, n))
 }
 
