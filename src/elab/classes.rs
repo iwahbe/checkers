@@ -1827,8 +1827,8 @@ impl Elab {
 
     /// A dictionary for `class` at `tys`, as a term at level `lvl`: one in
     /// scope, or an instance's, with its context found the same way. An
-    /// instance is chosen once it is the only one whose types can still
-    /// match (#145); an unknown type it then fixes is solved.
+    /// instance is chosen once the types are known wherever it names a type
+    /// constructor (#145); until then the request waits.
     fn find_dict(&mut self, req: &InstReq, class: TyId, tys: &[Val], depth: usize) -> Result<Tm, String> {
         if depth > 32 {
             return Err("instances nested too deeply".into());
@@ -1861,14 +1861,34 @@ impl Elab {
             Some(Shape::Unknown) => return Err("unknown".into()),
             _ => return Err("none".into()),
         };
-        let matching = self.could_match(class, key, &shapes);
-        let inst = match matching.as_slice() {
-            [] => return Err("none".into()),
-            [one] => one.clone(),
-            _ => return Err("unknown".into()),
+        // An instance is chosen once the use's types are known wherever it
+        // names a type constructor; never because the others are ruled out,
+        // as which instances are visible depends on the modules loaded (#145).
+        let cands = self.instances.get(&(class, key)).cloned().unwrap_or_default();
+        let mut undecided = false;
+        let mut chosen = None;
+        for inst in cands {
+            let mut fits = Some(true);
+            for (p, s) in inst.pats.iter().zip(&shapes) {
+                match (p, s) {
+                    (InstPat::Var(_), _) => {}
+                    (InstPat::Head(k, vs), Shape::Known(k2, args)) if k == k2 && args.len() >= vs.len() => {}
+                    (InstPat::Head(..), Shape::Unknown) => fits = fits.map(|_| false),
+                    _ => fits = None,
+                }
+            }
+            match fits {
+                Some(true) => chosen = Some(inst),
+                Some(false) => undecided = true,
+                None => {}
+            }
+        }
+        let inst = match chosen {
+            Some(i) => i,
+            None if undecided => return Err("unknown".into()),
+            None => return Err("none".into()),
         };
-        // The instance's variables, from the types: an unknown type at a
-        // type constructor is that constructor applied to new unknowns.
+        // The instance's variables, from the types.
         let mut bound: Vec<Option<Val>> = vec![None; inst.n_vars];
         for ((p, s), ty) in inst.pats.iter().zip(&shapes).zip(&tys) {
             match (p, s) {
@@ -1879,26 +1899,7 @@ impl Elab {
                         bound[*v] = Some(a.clone());
                     }
                 }
-                (InstPat::Head(k, vs), _) => {
-                    let fresh: Vec<Val> = vs.iter().map(|_| self.meta_at(req.lvl)).collect();
-                    let head = match k {
-                        HeadKey::Ty(t) => {
-                            // A type constructor short of the class's arguments (M25).
-                            let n = self.g.tys[t.0 as usize].params.len();
-                            if n != vs.len() {
-                                return Err("unknown".into());
-                            }
-                            Val::TyCon(*t, fresh.clone())
-                        }
-                        HeadKey::Unit | HeadKey::Pair => Val::TupleTy(fresh.clone()),
-                    };
-                    if unify(&self.g, req.lvl, ty, &head).is_err() {
-                        return Err("none".into());
-                    }
-                    for (v, a) in vs.iter().zip(fresh) {
-                        bound[*v] = Some(a);
-                    }
-                }
+                _ => return Err("unknown".into()),
             }
         }
         let Some(args) = bound.into_iter().collect::<Option<Vec<Val>>>() else { return Err("none".into()) };
@@ -1918,39 +1919,6 @@ impl Elab {
             }
         }
         Ok(t)
-    }
-
-    /// The instances of `class` for the type constructor `key` whose types
-    /// can match `shapes`, now or once the unknown types are known.
-    fn could_match(&self, class: TyId, key: HeadKey, shapes: &[Shape]) -> Vec<InstInfo> {
-        let fits = |inst: &InstInfo| {
-            inst.pats.iter().zip(shapes).all(|(p, s)| match (p, s) {
-                (InstPat::Var(_), _) | (InstPat::Head(..), Shape::Unknown) => true,
-                (InstPat::Head(k, vs), Shape::Known(k2, args)) => k == k2 && args.len() >= vs.len(),
-                _ => false,
-            })
-        };
-        self.instances.get(&(class, key)).map(|v| v.iter().filter(|i| fits(i)).cloned().collect()).unwrap_or_default()
-    }
-
-    /// The instances a request could still mean, as written (`Hole Plain Int`).
-    fn ambiguous(&self, r: &InstReq) -> Vec<String> {
-        let shapes: Vec<Shape> = r.tys.iter().map(|t| self.shape(r.lvl, t)).collect();
-        match shapes.first() {
-            Some(Shape::Known(k, _)) if shapes.len() > 1 => self.could_match(r.class, *k, &shapes).into_iter().map(|i| i.text).collect(),
-            _ => Vec::new(),
-        }
-    }
-
-    /// A new unknown at level `lvl`, which may depend on every variable in scope.
-    fn meta_at(&mut self, lvl: usize) -> Val {
-        let m = self.g.fresh_meta();
-        let mut t = Tm::Meta(m);
-        for k in 0..lvl {
-            t = Tm::App(Rc::new(t), Rc::new(Tm::Var(lvl - k - 1)), Icit::Expl, Mult::Many);
-        }
-        let env = Rc::new((0..lvl).map(Val::var).collect::<Vec<_>>());
-        eval(&self.g, &env, &t)
     }
 
     /// An instance's type defined through its own (#133): a dictionary
@@ -2121,15 +2089,9 @@ impl Elab {
                     let clause = format!("{cname} {}", args.join(" "));
                     let several = r.tys.len() > 1;
                     let param = r.tys.iter().zip(&shown).find(|(t, _)| matches!(self.force(t), Val::Neutral(Head::Var(_), _)));
-                    let could = self.ambiguous(&r);
-                    let d = if why == "unknown" && could.len() > 1 {
-                        Diagnostic::error("E0285", format!("can't tell which instance of `{cname}` to use: the types aren't known here"), r.span)
-                            .with_label(format!("`{clause}` could be {}", joined(&could, "or")))
-                            .with_help("give the types, e.g. with a constraint `x~Int` in the signature")
-                    } else if why == "unknown" {
-                        let (what, give) = if several { ("the types aren't", "the types") } else { ("the type isn't", "the type") };
-                        Diagnostic::error("E0285", format!("can't tell which instance of `{cname}` to use: {what} known here"), r.span)
-                            .with_help(format!("give {give}, e.g. with a constraint `x~List Int` in the signature"))
+                    let d = if why == "unknown" {
+                        Diagnostic::error("E0285", format!("can't tell which instance of `{cname}` to use: the type isn't known here"), r.span)
+                            .with_help("give the type, e.g. with a constraint `x~List Int` in the signature")
                     } else if let Some((_, p)) = param {
                         Diagnostic::error("E0284", format!("no instance of `{cname}` for {}", joined(&shown, "and")), r.span)
                             .with_label(format!("`{p}` is a type parameter"))

@@ -59,11 +59,6 @@ fn waits -> r : r~String
 
 check waits == "4;"
 
-# `Page` has one instance: it is chosen at once, and fixes the hole's type.
-fn chosen -> r : r~Nat
-    let f = \v -> hole (Page "p:") v
-    0
-
 # `Format`'s instance is chosen at once; its `Display a` waits for `a`.
 fn context_waits -> r : r~String
     (\v -> hole (Format "f:") v) 2

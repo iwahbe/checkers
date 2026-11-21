@@ -266,7 +266,7 @@ Each function and lemma of the class mentions every one of its parameters in its
 
 An instance gives a type for each parameter (E0292). Each is a type constructor applied to distinct type variables, as for one parameter, or a bare type variable, except the first (E0281). The first type decides where the instance may be declared: in the package of the class or of the first type's constructor (E0282). Two instances of a class whose types could match the same types overlap (E0283): `Hole Format a` and `Hole Format String` would, `Hole Format a` and `Hole Page String` don't.
 
-At a use, an instance is chosen once it is the only one whose types can still match what is known: a use at `Page` chooses `Hole Page String`, and the value's type is then `String`; a use at `Plain` waits until the value's type is known, and is E0285 if it never is. With no instance that can match, as for `Plain` and `Bool`, it is E0284.
+At a use, an instance is chosen once the use's types are known wherever the instance names a type constructor; where it has a variable, the type needn't be known yet. A use at `Format` chooses `Hole Format a` at once. A use at `Page` waits until the value's type is known, even though `Hole Page String` is `Page`'s only instance: another module, loaded later, may give `Page` another, and a use shouldn't mean something different depending on what is loaded. If the type never becomes known, the use is E0285. With no instance that can match, as for `Plain` and `Bool`, it is E0284.
 
 A class's type takes a type for each parameter outside the class: `Hole.Options s h` for a `type Options` declared in `Hole`.
 
