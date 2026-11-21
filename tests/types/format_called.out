@@ -1,0 +1,8 @@
+error[E0293]: `format` is a template's tag, not a function of a value
+ --> format_called.ck:9:5
+  |
+9 |     format (n + 1)
+  |     ^^^^^^ called here
+  = help: to show `n + 1` write `format"{n + 1}"` or `display (n + 1) []`, or `debug (n + 1)` for Checkers source
+
+format_called.ck: 1 error, 0 warnings

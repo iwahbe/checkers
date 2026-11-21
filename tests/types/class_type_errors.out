@@ -1,60 +1,60 @@
 error[E0288]: the default of `Wrapped` can't mention the class's parameter `a`
-  --> class_type_errors.ck:30:20
+  --> class_type_errors.ck:32:20
    |
-30 |     type Wrapped = List a
+32 |     type Wrapped = List a
    |                    ^^^^^^
    = help: a default is the same type at every instance; an instance that needs `a` gives `type Wrapped = …` itself
 
 error[E0364]: `instance Sized Int` doesn't give `Unit`
-  --> class_type_errors.ck:33:1
+  --> class_type_errors.ck:35:1
    |
-33 | instance Sized Int
+35 | instance Sized Int
    | ^^^^^^^^^^^^^^^^^^ `Unit` missing
    = help: add `type Unit = …` with the type for `Int`
 
 error[E0363]: class `Sized` has no type `Extra`
-  --> class_type_errors.ck:40:10
+  --> class_type_errors.ck:42:10
    |
-40 |     type Extra = Int
+42 |     type Extra = Int
    |          ^^^^^
    = help: its members are `Unit`, `Wrapped`, `size`
 
 error[E0201]: type mismatch: expected `NoOptions`, found `MoneyOption`
-  --> class_type_errors.ck:46:16
+  --> class_type_errors.ck:48:16
    |
-46 |     display 5 [Cents]
+48 |     display 5 [Cents]
    |                ^^^^^
 
 error[E0201]: type mismatch: expected `Display.Options a`, found `MoneyOption`
-  --> class_type_errors.ck:50:16
+  --> class_type_errors.ck:52:16
    |
-50 |     display x [Cents]
+52 |     display x [Cents]
    |                ^^^^^
 
 error[E0201]: type mismatch: expected `Display.Options a`, found `MoneyOption`
-  --> class_type_errors.ck:53:5
+  --> class_type_errors.ck:55:5
    |
-53 |     Cents
+55 |     Cents
    |     ^^^^^
 
 error[E0284]: no instance of `Display` for `a`
-  --> class_type_errors.ck:56:38
+  --> class_type_errors.ck:58:38
    |
-56 | fn no_clause x -> os : x~a, os~List (Display.Options a)
+58 | fn no_clause x -> os : x~a, os~List (Display.Options a)
    |                                      ^^^^^^^^^^^^^^^^^ `a` is a type parameter
    = help: add `Display a` to the function's signature
 
 error[E0291]: `Display.Options` needs the type it is for
-  --> class_type_errors.ck:61:5
+  --> class_type_errors.ck:63:5
    |
-61 |     Display.Options
+63 |     Display.Options
    |     ^^^^^^^^^^^^^^^ each instance of `Display` gives its own `Options`
    = help: write `Display.Options t` for the type `t`, e.g. `Display.Options a` under a clause `Display a`
 
 error[E0285]: can't tell which instance of `Display` to use: the type isn't known here
-  --> class_type_errors.ck:65:19
+  --> class_type_errors.ck:67:19
    |
-65 |     let f = \v -> display v []
+67 |     let f = \v -> display v []
    |                   ^^^^^^^
    = help: give the type, e.g. with a constraint `x~List Int` in the signature
 

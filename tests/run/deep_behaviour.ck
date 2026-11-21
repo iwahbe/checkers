@@ -6,6 +6,7 @@ import std.system (System, ExitCode)
 import std.terminal
 import std.list (map, length)
 import std.future (Future)
+import std.string (debug)
 
 fn upto n -> xs : n~Nat, xs~List Nat
     decreasing n
@@ -17,5 +18,5 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { term, sched } = sys
     let r = future.fork sched $ \_ ->
         length (map (+ 1) (upto 1000000))
-    terminal.print_line (format (future.join r)) term
+    terminal.print_line (debug (future.join r)) term
     Success

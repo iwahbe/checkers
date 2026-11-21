@@ -13,13 +13,13 @@ pub const TABLE: &[Builtin] = &[
 builtin!(ckb_bag_of, |a| {
     let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for v in list_items(a[0]) {
-        *counts.entry(crate::ops::show(v, 0)).or_default() += 1;
+        *counts.entry(crate::ops::show_derived(v, 0)).or_default() += 1;
     }
     new_obj(Obj::Bag(counts.into_iter().collect()))
 });
 
 builtin!(ckb_bag_count, |a| {
-    let x = crate::ops::show(a[0], 0);
+    let x = crate::ops::show_derived(a[0], 0);
     match obj(a[1]) {
         Some(Obj::Bag(bag)) => nat(bag.iter().find(|(v, _)| *v == x).map_or(0, |(_, c)| *c)),
         _ => bug("`bag.count` needs a bag"),

@@ -379,7 +379,7 @@ impl Elab {
             Sym::Ty(t) => index::Target::Ty(t),
             Sym::Con(c) => index::Target::Con(c),
             Sym::Univ => index::Target::Univ,
-            Sym::Len | Sym::Format => {
+            Sym::Len => {
                 return Some(Candidate { label: name.to_string(), class: "function", detail: None, doc: None, group, fits: false });
             }
         };

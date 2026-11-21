@@ -260,7 +260,7 @@ fn item count -> s : count~Nat, s~String
 
 ## Other expressions
 
-- `len e` is the length of a `String` (in bytes), an `Array` or a `List`; `format e` renders any value as text ([Running programs](execution.md#format)). Both must be applied to their argument (E0214).
+- `len e` is the length of a `String` (in bytes), an `Array` or a `List`. It must be applied to its argument (E0214). To show a value as text, see [Showing values](execution.md#showing-values).
 - `par (e1, e2, …)` evaluates the components in parallel ([Concurrency](concurrency.md#par)).
 - `auto` and `admit` are allowed only in proofs (E0212, [Proofs](proofs.md)).
 - `()` is the unit value; `(a, b)` a tuple; `[a, b]` a list.

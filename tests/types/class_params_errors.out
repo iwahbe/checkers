@@ -1,63 +1,63 @@
 error[E0283]: `instance Hole Format String` overlaps another instance
-  --> class_params_errors.ck:28:1
+  --> class_params_errors.ck:30:1
    |
-28 | instance Hole Format String
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Hole Format a` is already declared on line 15
+30 | instance Hole Format String
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Hole Format a` is already declared on line 17
    = help: no two instances of a class may match the same types; make one of them for other types
 
 error[E0281]: the first type of `instance Hole a Bool` can't be a type variable
-  --> class_params_errors.ck:33:15
+  --> class_params_errors.ck:35:15
    |
-33 | instance Hole a Bool
+35 | instance Hole a Bool
    |               ^ a type variable
    = help: an instance is found by its first type: write it for a type constructor, e.g. `instance Hole (List a) …`
 
 error[E0292]: `Hole` takes 2 types, but `instance Hole Plain` gives 1
-  --> class_params_errors.ck:38:15
+  --> class_params_errors.ck:40:15
    |
-38 | instance Hole Plain
+40 | instance Hole Plain
    |               ^^^^^ 1 type here
    = help: give a type for each of `s` and `h`
 
 error[E0281]: `instance Hole (List a) a` uses the type variable `a` twice
-  --> class_params_errors.ck:43:24
+  --> class_params_errors.ck:45:24
    |
-43 | instance Hole (List a) a
+45 | instance Hole (List a) a
    |                        ^ `a` again
    = help: an instance's types have distinct type variables; give this one its own name
 
 error[E0368]: function `pick` doesn't mention the class's parameter `h`
-  --> class_params_errors.ck:49:8
+  --> class_params_errors.ck:51:8
    |
-49 |     fn pick tag -> r : tag~s, r~h
+51 |     fn pick tag -> r : tag~s, r~h
    |        ^^^^ no parameter's type mentions `h`
    = help: a use of `pick` must tell which instance of `Pick s h` it means: give one of its parameters a type that mentions `h`
 
 error[E0284]: no instance of `Hole` for `Plain` and `Bool`
-  --> class_params_errors.ck:53:5
+  --> class_params_errors.ck:55:5
    |
-53 |     hole (Plain ";") True
+55 |     hole (Plain ";") True
    |     ^^^^ needs `Hole Plain Bool`
    = help: declare `instance Hole …` for these types, beside the class or the first type
 
 error[E0285]: can't tell which instance of `Hole` to use: the type isn't known here
-  --> class_params_errors.ck:57:19
+  --> class_params_errors.ck:59:19
    |
-57 |     let f = \x -> hole (Plain ";") x
+59 |     let f = \x -> hole (Plain ";") x
    |                   ^^^^ `Hole Plain _` could be `Hole Plain String` or `Hole Plain Int`
    = help: give the type, e.g. with a constraint `x~List Int` in the signature
 
 error[E0284]: no instance of `Hole` for `s` and `h`
-  --> class_params_errors.ck:62:5
+  --> class_params_errors.ck:64:5
    |
-62 |     hole t x
+64 |     hole t x
    |     ^^^^ `s` is a type parameter
    = help: add `Hole s h` to the function's signature
 
 error[E0291]: `Fill.Options` needs the 2 types it is for
-  --> class_params_errors.ck:68:5
+  --> class_params_errors.ck:70:5
    |
-68 |     Fill.Options Plain
+70 |     Fill.Options Plain
    |     ^^^^^^^^^^^^^^^^^^ each instance of `Fill` gives its own `Options`
    = help: write `Fill.Options s h` under a clause `Fill s h`
 

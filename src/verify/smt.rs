@@ -2544,12 +2544,6 @@ impl<'a> Builder<'a> {
                 }
                 Ok((t, elem))
             }
-            Prim::Format => {
-                let s = ts[0].1.render(self.e);
-                let f = sym(&format!("format<{s}>"));
-                self.funs.insert(f.clone(), format!("(declare-fun {f} ({s}) (Seq Int))"));
-                Ok((format!("({f} {})", ts[0].0), Sort::Str))
-            }
             Prim::Par => Ok(ts[0].clone()),
             Prim::When => out("a `when`"),
             Prim::Builtin(n) => out(format!("the builtin `{n}`")),

@@ -34,6 +34,28 @@ fn int(n: usize, span: Span) -> Expr {
     mk(ExprKind::Lit(ast::Lit::Int(n.to_string())), span)
 }
 
+/// `s` without parentheses around all of it.
+fn unparen(s: &str) -> String {
+    let b = s.as_bytes();
+    if b.first() != Some(&b'(') || b.last() != Some(&b')') {
+        return s.to_string();
+    }
+    let mut depth = 0;
+    for (i, c) in b.iter().enumerate() {
+        match c {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 && i + 1 < b.len() {
+                    return s.to_string();
+                }
+            }
+            _ => {}
+        }
+    }
+    unparen(s[1..s.len() - 1].trim())
+}
+
 impl Elab {
     /// The definition a template's generated name stands for.
     pub(super) fn template_sym(&self, name: &str) -> Option<Sym> {
@@ -47,6 +69,51 @@ impl Elab {
         match m.values.get(n) {
             Some(s @ Sym::Def(_)) => Some(*s),
             _ => None,
+        }
+    }
+
+    /// `std.string`'s definition `name`, if it is loaded.
+    pub(super) fn std_def(&self, name: &str) -> Option<DefId> {
+        match self.modules.get("std.string")?.values.get(name) {
+            Some(Sym::Def(d)) => Some(*d),
+            _ => None,
+        }
+    }
+
+    /// Help for an unknown name that `std.string` exports (#126).
+    pub(super) fn std_string_help(&self, n: &str) -> Option<String> {
+        matches!(n, "format" | "debug" | "display").then(|| format!("`{n}` is in `std.string`: add `import std.string ({n})`"))
+    }
+
+    /// `format x`, `format` called as a function (#126): it is a template's
+    /// tag. An error if so (E0204 where it isn't imported, E0293 where it
+    /// is), with how to show `x`.
+    pub(super) fn format_called(&mut self, cx: &Cx, head: &Expr, arg: &Expr) -> bool {
+        let ExprKind::Var(n) = &head.kind else { return false };
+        if n != "format" || self.in_tag || cx.lookup(n).is_some() {
+            return false;
+        }
+        let x = unparen(self.src_text(arg.span).trim());
+        let a = if x.contains(' ') { format!("({x})") } else { x.clone() };
+        let help = format!("to show `{x}` write `format\"{{{x}}}\"` or `display {a} []`, or `debug {a}` for Checkers source");
+        match self.resolve(n, false) {
+            None => {
+                self.err(
+                    Diagnostic::error("E0204", "unknown name `format`", head.span)
+                        .with_label("`std.string`'s `format` is a template's tag, and isn't imported")
+                        .with_help(format!("{help}, with `import std.string (format, display, debug)`")),
+                );
+                true
+            }
+            Some(Sym::Def(d)) if Some(d) == self.std_def("format") => {
+                self.err(
+                    Diagnostic::error("E0293", "`format` is a template's tag, not a function of a value", head.span)
+                        .with_label("called here")
+                        .with_help(help),
+                );
+                true
+            }
+            _ => false,
         }
     }
 
@@ -100,7 +167,9 @@ impl Elab {
         // isn't a function, or takes other arguments) points at it.
         let lit = Span { start: ts.end, end: e.span.end };
         let first = app(app((**tag).clone(), int(bytes, lit), e.span), int(holes, lit), e.span);
+        let saved = std::mem::replace(&mut self.in_tag, true);
         let (t0, ty0) = self.infer(cx, &first);
+        self.in_tag = saved;
         if matches!(t0, Tm::Error) {
             return (Tm::Error, Val::Error);
         }

@@ -2,6 +2,8 @@
 # into fewer parts, its last the rest.
 module tuples_nested
 
+import std.string (debug)
+
 fn rest p -> r : p~(a, b, c), r~(b, c)
     let (_, more) = p
     more
@@ -13,7 +15,7 @@ fn swap_tail p -> r : p~(a, (b, c)), r~(a, c, b)
 check rest (1, 2, 3) == (2, 3)
 check swap_tail (1, 2, 3) == (1, 3, 2)
 check (1, (2, 3)) == (1, 2, 3)
-check format (1, (2, 3)) == "(1, 2, 3)"
+check debug (1, (2, 3)) == "(1, 2, 3)"
 
 fn pair x t -> r : x~a, t~b, r~(a, b)
     (x, t)

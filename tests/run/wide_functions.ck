@@ -4,6 +4,7 @@ module wide_functions
 
 import std.system (System, ExitCode)
 import std.terminal (Term)
+import std.string (debug)
 
 enum Wide t
     Wide a0 a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12 a13 a14 a15 a16 a17 a18 a19 a20 a21 a22 a23 a24 a25 a26 a27 a28 a29 a30 a31 a32 a33 a34 a35 a36 a37 a38 a39 a40 a41 a42 a43 a44 a45 a46 a47 a48 a49 a50 a51 a52 a53 a54 a55 a56 a57 a58 a59 a60 a61 a62 a63 a64 : a0~t, a1~ghost Int, a2~Int, a3~Int, a4~Int, a5~Int, a6~Int, a7~Int, a8~Int, a9~Int, a10~Int, a11~Int, a12~Int, a13~Int, a14~Int, a15~Int, a16~Int, a17~Int, a18~Int, a19~Int, a20~Int, a21~Int, a22~Int, a23~Int, a24~Int, a25~Int, a26~Int, a27~Int, a28~Int, a29~Int, a30~Int, a31~Int, a32~Int, a33~Int, a34~Int, a35~Int, a36~Int, a37~Int, a38~Int, a39~Int, a40~Int, a41~Int, a42~Int, a43~Int, a44~Int, a45~Int, a46~Int, a47~Int, a48~Int, a49~Int, a50~Int, a51~Int, a52~Int, a53~Int, a54~Int, a55~Int, a56~Int, a57~Int, a58~Int, a59~Int, a60~Int, a61~Int, a62~Int, a63~Int, a64~Int
@@ -39,7 +40,7 @@ fn label w -> r : w~Wide String, r~String
         Wide s _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ -> s
 
 fn line n term : n~Int, term~Term
-    terminal.print_line (format n) term
+    terminal.print_line (debug n) term
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let term = sys.term

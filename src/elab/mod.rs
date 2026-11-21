@@ -33,9 +33,8 @@ pub enum Sym {
     Def(DefId),
     Ty(TyId),
     Con(ConId),
-    /// Overloaded built-ins (D38)
+    /// The overloaded built-in `len` (D38)
     Len,
-    Format,
     Univ,
 }
 
@@ -491,6 +490,11 @@ pub struct Elab {
     /// Values whose every field is observed: formatted, or compared with
     /// `==` (their type, solved later), for unused fields (D144).
     pub observed: Vec<(String, Span, Val)>,
+    /// Elaborating a template's tag (#126: `format` there is no call).
+    pub in_tag: bool,
+    /// The context an instance needed and didn't find, while a dictionary
+    /// was looked for: the class, the types, and the instance as written.
+    pub ctx_missing: Option<(TyId, Vec<Val>, String)>,
     /// Each program module's declarations, for unused code (D144).
     pub decl_table: HashMap<String, Vec<unused::Entry>>,
     /// Declarations found unused: their branches aren't asked about.
@@ -736,6 +740,8 @@ impl Elab {
             root: None,
             refs: Vec::new(),
             observed: Vec::new(),
+            in_tag: false,
+            ctx_missing: None,
             decl_table: HashMap::new(),
             dead: Vec::new(),
             paths: HashMap::new(),

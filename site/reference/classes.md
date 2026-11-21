@@ -146,7 +146,10 @@ check doubled (Some 5) == Some 10
 A class may let each instance choose a type. `type Name` declares one; inside the class, its members use it by its bare name, anywhere a type may appear, a precondition included. `type Name = T` gives it a default, used by every instance that doesn't give its own; a default can't mention the class's parameter (E0288), so it is the same type wherever it applies. A class's type takes no parameters of its own (E0124).
 
 ```checkers
+import std.string (debug)
+
 # How to show a value; each type says which options its display takes.
+# (`std.string` has this class; it is written out here to show how.)
 class Display a
     type Options = NoOptions
     fn display x os -> s : x~a, os~List Options, s~String
@@ -165,13 +168,13 @@ instance Display Money
     type Options = MoneyOption
     fn display m os
         match os
-            [Cents] -> format m.cents ++ "¢"
-            _       -> "$" ++ format (m.cents / 100)
+            [Cents] -> debug m.cents ++ "¢"
+            _       -> "$" ++ debug (m.cents / 100)
 
 # `Options` is `NoOptions` here.
 instance Display Int
     fn display x os
-        format x
+        debug x
 
 check display (Money 1250) [Cents] == "1250¢"
 check display 7 [] == "7"
@@ -216,6 +219,8 @@ At run time the type is erased, but an array of it, made in generic code, is lai
 A class may take several type parameters, when what is allowed depends on the types together. Here a formatter decides which types of values its holes accept: one takes anything with a display, one only strings, one strings and ints.
 
 ```checkers
+import std.string (debug)
+
 class Hole s h
     fn hole tag x -> r : tag~s, x~h, r~String
 
@@ -224,7 +229,7 @@ class Show a
 
 instance Show Int
     fn show x
-        format x
+        debug x
 
 record Format
     prefix~String
@@ -252,7 +257,7 @@ instance Hole Plain String
 
 instance Hole Plain Int
     fn hole p x
-        format x ++ p.sep
+        debug x ++ p.sep
 
 fn fill t x -> r : Hole s h, t~s, x~h, r~String
     hole t x

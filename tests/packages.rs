@@ -98,7 +98,7 @@ fn errors(o: &Output) -> String {
 const COUNT_1_0: &str = "module count\n\nexport fn double n -> m : n~Nat, m~Nat, m == n + n\n    n + n\n";
 const COUNT_1_1: &str = "module count\n\nexport fn double n -> m : n~Nat, m~Nat, m == n + n\n    n + n\n\nexport fn triple n -> m : n~Nat, m~Nat, m == 3 * n\n    n + n + n\n";
 
-const SHARED: &str = "module text.greet\n\nimport util.count\n\nexport fn greeting name n -> s : name~String, n~Nat, s~String\n    \"hello, \" ++ name ++ \" \" ++ format (count.double n)\n\nexport fn at_least n -> m : n~Nat, m~Nat, m >= n\n    n + 1\n";
+const SHARED: &str = "module text.greet\n\nimport util.count\nimport std.string (format)\n\nexport fn greeting name n -> s : name~String, n~Nat, s~String\n    format\"hello, {name} {count.double n}\"\n\nexport fn at_least n -> m : n~Nat, m~Nat, m >= n\n    n + 1\n";
 
 const MAIN: &str = "module main\n\nimport std.system (System, ExitCode)\nimport std.terminal\nimport shared.text.greet\n\nexport fn main args sys -> code : args~List String, sys~System, code~ExitCode\n    let System { term } = sys\n    terminal.print_line (greet.greeting \"you\" 2) term\n    Success\n";
 
@@ -284,7 +284,7 @@ fn instance_orphan_rule_by_any_type() {
     // This package's type, after the class's and another package's.
     assert_eq!(check("later", "instance Hole Format Mine\n    fn hole f m\n        f.prefix\n"), (Some(0), "later.ck: 0 errors, 0 warnings\n".to_string()));
     // This package's type first.
-    assert_eq!(check("first", "instance Hole Mine Int\n    fn hole m x\n        format x\n"), (Some(0), "first.ck: 0 errors, 0 warnings\n".to_string()));
+    assert_eq!(check("first", "instance Hole Mine Int\n    fn hole m x\n        \"int\"\n"), (Some(0), "first.ck: 0 errors, 0 warnings\n".to_string()));
     // No type of this package.
     assert_eq!(
         check("none", "instance Hole Format Int\n    fn hole f x\n        f.prefix\n"),

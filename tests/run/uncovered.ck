@@ -4,11 +4,12 @@ module uncovered
 
 import std.system (System, ExitCode)
 import std.terminal
+import std.string (debug)
 
 fn head xs -> r : xs~List Int, xs != [], r~Int
     match xs
         x :: _ -> x
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
-    terminal.print_line (format (head [7, 8])) sys.term
+    terminal.print_line (debug (head [7, 8])) sys.term
     Success

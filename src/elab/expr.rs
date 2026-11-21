@@ -672,6 +672,8 @@ impl Elab {
                     let mut d = Diagnostic::error("E0204", format!("unknown name `{n}`"), span).with_label("not found");
                     if let Some(m) = self.private_in_imports(n) {
                         d = d.with_help(Self::private_help(&m, n));
+                    } else if let Some(h) = self.std_string_help(n) {
+                        d = d.with_help(h);
                     }
                     self.err(d);
                 }
@@ -718,11 +720,10 @@ impl Elab {
                 (Tm::Con(c), eval(&self.g, &empty, &ty))
             }
             Sym::Univ => (Tm::Univ(0), Val::Univ(1)),
-            Sym::Len | Sym::Format => {
-                let name = if s == Sym::Len { "len" } else { "format" };
+            Sym::Len => {
                 self.err(Diagnostic::error(
                     "E0214",
-                    format!("`{name}` must be applied to an argument here, e.g. `{name} x`"),
+                    "`len` must be applied to an argument here, e.g. `len x`".to_string(),
                     span,
                 ));
                 (Tm::Error, Val::Error)
@@ -853,6 +854,12 @@ impl Elab {
             }
         }
 
+        if self.format_called(cx, head, args[0]) {
+            for a in args {
+                self.infer(cx, a);
+            }
+            return (Tm::Error, Val::Error);
+        }
         // Overloaded built-ins (D38).
         if let ExprKind::Var(n) = &head.kind {
             if cx.lookup(n).is_none() {
@@ -869,12 +876,6 @@ impl Elab {
                             owner: self.cur_fn,
                         });
                         let r = (Tm::PrimApp(Prim::Len, vec![at]), self.nat());
-                        return self.apply_rest(cx, r, &args[1..], e.span);
-                    }
-                    Some(Sym::Format) => {
-                        let (at, aty) = self.infer(cx, args[0]);
-                        self.observe(args[0].span, aty);
-                        let r = (Tm::PrimApp(Prim::Format, vec![at]), self.string());
                         return self.apply_rest(cx, r, &args[1..], e.span);
                     }
                     _ => {}
@@ -897,6 +898,14 @@ impl Elab {
         let (ft, fty) = self.infer(cx, head);
         self.use_ctx = None;
         self.in_app_head = saved_head;
+        // `debug x` shows each of `x`'s fields: they are read (#126).
+        if let (ExprKind::Var(n), Some(d)) = (&head.kind, self.std_def("debug")) {
+            if cx.lookup(n).is_none() && self.resolve(n, false) == Some(Sym::Def(d)) {
+                if let Val::Pi(_, _, _, dom, _) = self.force(&fty) {
+                    self.observe(args[0].span, (*dom).clone());
+                }
+            }
+        }
         let head_call = (self.calls.len() == ncalls + 1 && matches!(head.kind, ExprKind::Var(_))).then_some(ncalls);
         if let Some(i) = head_call {
             let mut conds = Vec::new();

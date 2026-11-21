@@ -11,7 +11,18 @@ pub const TABLE: &[Builtin] = &[
     ("std.string.bytes", "ckb_string_bytes", ckb_string_bytes),
     ("std.string.concat", "ckb_string_concat", ckb_string_concat),
     ("std.string.from_utf8", "ckb_from_utf8", ckb_from_utf8),
+    ("std.string.debug", "ckb_debug", ckb_debug),
+    ("std.string.digits", "ckb_string_digits", ckb_string_digits),
 ];
+
+// `debug x` (#126): `x` as Checkers source.
+builtin!(ckb_debug, |a| new_str(&crate::ops::show(a[0], 0)));
+
+// The digits of the natural number `n` in base `b` (2 to 36), lower case.
+builtin!(ckb_string_digits, |a| {
+    let b = num_of(a[1]).to_u32().filter(|b| (2..=36).contains(b)).unwrap_or(10);
+    new_str(&num_of(a[0]).big().to_str_radix(b))
+});
 
 builtin!(ckb_from_chars, |a| {
     let st: String = list_items(a[0]).into_iter().map(ch).collect();

@@ -39,7 +39,6 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("ck_concat", 2, true),
     ("ck_len", 1, true),
     ("ck_index", 3, true),
-    ("ck_format", 1, true),
     ("ck_big_lit", 2, true),
     ("ck_fail", 3, true),
     ("ck_error", 3, true),
@@ -1079,7 +1078,6 @@ impl<'p, M: Module> Gen<'p, M> {
                 b.switch_to_block(done);
                 r
             }
-            Op::Format => self.call1(b, st, "ck_format", &[a[0]]),
             Op::When => self.call1(b, st, "ck_when", &[a[1], a[2]]),
             Op::Par => a[0],
         }
@@ -1242,7 +1240,7 @@ impl<'p, M: Module> Gen<'p, M> {
         let main_id = self.m.declare_function("main", Linkage::Export, &s).expect("declare main");
         let mut aot = Signature::new(call_conv);
         aot.params.push(AbiParam::new(I32));
-        for _ in 0..6 {
+        for _ in 0..7 {
             aot.params.push(AbiParam::new(I64));
         }
         aot.returns.push(AbiParam::new(I32));
@@ -1263,10 +1261,17 @@ impl<'p, M: Module> Gen<'p, M> {
             let dl = b.ins().iconst(I64, desc.len() as i64);
             let inv = self.fref(&mut b, &mut st, self.invoke);
             let inv = b.ins().func_addr(I64, inv);
+            let debug = match self.p.debug {
+                Some(f) => {
+                    let r = self.fref(&mut b, &mut st, self.func_id(f));
+                    b.ins().func_addr(I64, r)
+                }
+                None => b.ins().iconst(I64, 0),
+            };
             let mc = self.addr(&mut b, &mut st, clo);
             let ow = b.ins().iconst(I64, self.p.main as i64);
             let r = self.fref(&mut b, &mut st, aot_id);
-            let inst = b.ins().call(r, &[ps[0], ps[1], d, dl, inv, mc, ow]);
+            let inst = b.ins().call(r, &[ps[0], ps[1], d, dl, inv, debug, mc, ow]);
             let code = b.inst_results(inst)[0];
             b.ins().return_(&[code]);
             b.seal_all_blocks();

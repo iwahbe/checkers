@@ -61,7 +61,6 @@ pub enum Op {
     Concat,
     Len,
     Index,
-    Format,
     Par,
     When,
 }
@@ -84,7 +83,6 @@ impl Op {
             Prim::Concat => Op::Concat,
             Prim::Len => Op::Len,
             Prim::Index => Op::Index,
-            Prim::Format => Op::Format,
             Prim::Par => Op::Par,
             Prim::When => Op::When,
             Prim::Builtin(_) | Prim::Forall => return None,

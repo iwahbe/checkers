@@ -27,7 +27,14 @@ impl<'g> Evaluator<'g> {
         let invoke = gen.m.get_finalized_function(gen.invoke);
         let invoke: checkers_rt::prog::Invoke = unsafe { std::mem::transmute(invoke) };
         checkers_rt::prog::install(&super::descriptor(g, &gen.p), invoke);
-        Evaluator { g, gen }
+        let mut ev = Evaluator { g, gen };
+        // The hand-written `Debug` instances (#126), for values shown here.
+        if let Some(t) = super::lower::debug_table(g) {
+            if let Ok(fs) = ev.eval(&t) {
+                checkers_rt::prog::set_debug(fs);
+            }
+        }
+        ev
     }
 
     /// The value of a closed term: an owned word, or the runtime error.
@@ -45,9 +52,10 @@ impl<'g> Evaluator<'g> {
         self.g.well_known.false_con.is_some_and(|c| v == w::nullary(c.0))
     }
 
-    /// As `format` would print it.
+    /// In the derived form `debug` has (#126), whatever a type's own
+    /// `Debug` says: what a failed `check` shows.
     pub fn show(&self, v: W) -> String {
-        checkers_rt::ops::show(v, 0)
+        checkers_rt::ops::show_derived(v, 0)
     }
 
     /// `v` shown as a value of type `ty` where the type tells more than the
@@ -61,7 +69,7 @@ impl<'g> Evaluator<'g> {
 
     fn show_typed(&self, v: W, ty: &Tm, p: u8) -> String {
         let g = self.g;
-        let rt = || checkers_rt::ops::show(v, p);
+        let rt = || checkers_rt::ops::show_derived(v, p);
         match ty {
             Tm::Def(d) => {
                 let info = &g.defs[d.0 as usize];
@@ -104,7 +112,7 @@ impl<'g> Evaluator<'g> {
                     let fty = subst_params(g, fty, args, i);
                     shown.push(match fty {
                         Some(t) => self.show_typed(fv, &t, 1),
-                        None => checkers_rt::ops::show(fv, 1),
+                        None => checkers_rt::ops::show_derived(fv, 1),
                     });
                 }
                 if shown.is_empty() {

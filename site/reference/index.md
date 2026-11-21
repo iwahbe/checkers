@@ -20,7 +20,7 @@ Every example on these pages is compiled when the site is built. An example mark
 12. [Concurrency](concurrency.md): cowns, behaviours, futures and `par`.
 13. [Staging](staging.md): `comptime` parameters and code that runs while compiling.
 14. [Documentation comments](documentation.md): descriptions, links to symbols, and code that is compiled.
-15. [Running programs](execution.md): erasure, evaluation order, `format`, run-time checks and exit codes.
+15. [Running programs](execution.md): erasure, evaluation order, showing values (`display`, `debug`, `format`), run-time checks and exit codes.
 16. [Diagnostics](diagnostics.md): every error and warning the compiler reports.
 
 The standard library is outside this reference except where the language depends on it: the prelude's types and classes ([Types](types.md), [Classes](classes.md)) and the capability types ([Capabilities](effects.md)).

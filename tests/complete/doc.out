@@ -41,7 +41,6 @@ replaces 1:68-1:70
   fmap               function        
   fmap_comp          function        
   fmap_id            function        
-  format             function        
   le                 function        
   len                function        
   mul                function        

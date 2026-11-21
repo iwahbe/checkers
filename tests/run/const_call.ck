@@ -5,6 +5,7 @@ module const_call
 
 import std.system (System, ExitCode)
 import std.terminal (Term)
+import std.string (debug)
 
 let ANSWER = double 21
 let GREETING = shout "hi"
@@ -18,5 +19,5 @@ fn shout s -> t : s~String, t~String
 check ANSWER == 42
 
 export partial fn main args sys -> code : args~List String, sys~System, code~ExitCode
-    terminal.print_line (format ANSWER ++ " " ++ GREETING) sys.term
+    terminal.print_line (debug ANSWER ++ " " ++ GREETING) sys.term
     Success

@@ -5,6 +5,7 @@ module instance_unit
 
 import std.system (System, ExitCode)
 import std.terminal
+import std.string (debug)
 
 class Size t
     fn size x -> n : x~t, n~Nat
@@ -31,6 +32,6 @@ instance Name ()
 
 export fn main args sys -> code
     let System { term } = sys
-    terminal.print_line (format (size (True, (False, ())))) term
+    terminal.print_line (debug (size (True, (False, ())))) term
     terminal.print_line (name ()) term
     Success
