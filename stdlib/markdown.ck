@@ -47,6 +47,7 @@ import std.bytes
 import std.char
 import std.html
 import std.list
+import std.number (render_nat)
 import std.string
 import std.utf8
 
@@ -227,10 +228,6 @@ fn clean_from b start i acc -> r : b~Bytes, start~Nat, i~Nat, acc~List Bytes, r~
             clean_from b start (i + 1) acc
     else
         part b start i :: acc
-
-# The bytes of `n` in decimal.
-fn decimal n -> r : n~Nat, r~Bytes
-    string.bytes (format n)
 
 # ── Characters ───────────────────────────────────────────────────────────────
 
@@ -2055,7 +2052,7 @@ fn render_block code tight b r -> q : code~(String -> String -> Option String), 
         Paragraph xs _           ->
             if tight then render_inlines xs False r else cr (lit (render_inlines xs False (lit (cr r) b"<p>")) b"</p>")
         Heading level xs _       ->
-            let n = decimal level
+            let n = render_nat level
             cr (lit (render_inlines xs False (lit (cr r) (bytes.concat [b"<h", n, b">"]))) (bytes.concat [b"</h", n, b">"]))
         ThematicBreak _          -> cr (lit (cr r) b"<hr />")
         Quote bs _               ->
@@ -2063,7 +2060,7 @@ fn render_block code tight b r -> q : code~(String -> String -> Option String), 
         Bullets t items _        ->
             cr (lit (cr (render_items code t items (cr (lit (cr r) b"<ul>")))) b"</ul>")
         Numbered start t items _ ->
-            let open = if start == 1 then b"<ol>" else bytes.concat [b"<ol start=\"", decimal start, b"\">"]
+            let open = if start == 1 then b"<ol>" else bytes.concat [b"<ol start=\"", render_nat start, b"\">"]
             cr (lit (cr (render_items code t items (cr (lit (cr r) open)))) b"</ol>")
         Code info text _ _       ->
             match code info text
