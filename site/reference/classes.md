@@ -20,7 +20,7 @@ class Size a
         ensures size x >= 0
 ```
 
-A member is named `C.f` (`Size.size`), or `f` alone where the class is in scope or imported unqualified. A member's parameter written `own` (`x~own a`) may receive a resource ([Capabilities](effects.md#resources)).
+A member is named `C.f` (`Size.size`), or `f` alone where the class is in scope or imported unqualified. A member's parameter written `own` (`x~own a`) may receive a resource ([Capabilities](effects.md#resources)). A member's parameters and result can't have the name of the class's parameter, which its signature already uses (E0369).
 
 ## Instances
 
