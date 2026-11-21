@@ -69,3 +69,13 @@ fn neither flag : flag~Bool
 
 fn divided d : d~Int
     plain"{10 / d}"
+
+fn unknown_tag x : x~String
+    missing"a{x}b{x | Bold}"
+
+fn not_a_function x : x~String
+    let five = 5
+    five"a{x}"
+
+fn generic_tag mk x -> r : mk~(Nat -> Nat -> s), x~String, r~s
+    mk"a{x}"

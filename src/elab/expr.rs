@@ -261,10 +261,7 @@ impl Elab {
                 Tm::TupleTy(items.iter().map(|it| self.elab_type(cx, it)).collect())
             }
             (ExprKind::Unit, Val::Univ(_)) => Tm::TupleTy(vec![]),
-            (ExprKind::Template(..), _) => {
-                let d = self.desugar_template(e);
-                self.check_inner(cx, &d, expected, tail)
-            }
+            (ExprKind::Template(..), _) => self.elab_template(cx, e, Some(expected)).0,
             _ => {
                 // A dictionary (D136): its class's type constructor (M25) comes
                 // from the instance's head before its functions are checked.
@@ -577,10 +574,7 @@ impl Elab {
                     (Tm::Error, Val::Error)
                 }
             },
-            ExprKind::Template(..) => {
-                let d = self.desugar_template(e);
-                self.infer(cx, &d)
-            }
+            ExprKind::Template(..) => self.elab_template(cx, e, None),
             ExprKind::Error => (Tm::Error, Val::Error),
         }
     }

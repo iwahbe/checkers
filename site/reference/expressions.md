@@ -190,7 +190,7 @@ is a tag, and `tag"a{x}b{y | o}c"` means
 finish (text (hole (text (hole (text (tag 3 2) "a") x []) "b") y [o]) "c")
 ```
 
-What a formatter accepts in its holes, and which options, is up to its instances of `Hole`, one for each type of value (or one for every type). A value of a type no instance takes is E0284 at the value, and a tag whose result has no `Template` instance is E0284 at the tag:
+What a formatter accepts in its holes, and which options, is up to its instances of `Hole`, one for each type of value (or one for every type). A value of a type no instance takes is E0284 at the value. The tag is checked first: if it is unknown, or its result has no `Template` instance, that is the only error, at the tag, and the holes aren't checked:
 
 ```checkers
 module page

@@ -11,19 +11,12 @@ error[E0201]: type mismatch: expected `Mode`, found `Style`
 58 |     page"<p>{name | Bold}</p>"
    |                     ^^^^
 
-error[E0284]: no instance of `Template` for `Int`
+error[E0284]: no instance of `Template` for `Int`: `count` isn't a template's tag
   --> template_errors.ck:61:5
    |
 61 |     count"a{x}"
-   |     ^^^^^ needs `Template Int`
-   = help: declare `instance Template …` for this type, beside the class or the type
-
-error[E0284]: no instance of `Hole` for `Int` and `String`
-  --> template_errors.ck:61:13
-   |
-61 |     count"a{x}"
-   |             ^ needs `Hole Int String`
-   = help: declare `instance Hole …` for these types, beside the class or the first type
+   |     ^^^^^ its result is `Int`
+   = help: a tag gives a formatter: a type with an instance of `Template` (from `std.string`)
 
 error[E0285]: can't tell which instance of `Hole` to use: the type isn't known here
   --> template_errors.ck:64:25
@@ -47,4 +40,23 @@ error[E0450]: cannot prove that the divisor is not zero
    = note: counterexample: d = 0
    = help: check the divisor first, e.g. `if d != 0 then n / d else …`
 
-template_errors.ck: 7 errors, 0 warnings
+error[E0204]: unknown name `missing`
+  --> template_errors.ck:74:5
+   |
+74 |     missing"a{x}b{x | Bold}"
+   |     ^^^^^^^ not found
+
+error[E0205]: too many arguments: this has type `Nat`, which is not a function
+  --> template_errors.ck:78:9
+   |
+78 |     five"a{x}"
+   |         ^^^^^^ extra argument
+
+error[E0284]: no instance of `Template` for `s`: `mk` isn't a template's tag
+  --> template_errors.ck:81:5
+   |
+81 |     mk"a{x}"
+   |     ^^ its result is `s`
+   = help: add `Template s` to the function's signature (`Template` is `std.string`'s)
+
+template_errors.ck: 9 errors, 0 warnings
