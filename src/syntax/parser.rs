@@ -729,7 +729,10 @@ impl Parser {
     fn class_decl(&mut self) -> PResult<DeclKind> {
         self.bump(); // class
         let name = self.ident("a class name")?;
-        let param = self.ident("the class's type parameter")?;
+        let mut params = vec![self.ident("the class's type parameter")?];
+        while matches!(self.tok().tok, Tok::LName(_)) {
+            params.push(self.ident("a type parameter")?);
+        }
         self.open_block("list of the class's functions and lemmas")?;
         let mut members = Vec::new();
         while !self.at(&Tok::Dedent) && !self.at(&Tok::Eof) {
@@ -797,13 +800,16 @@ impl Parser {
             }
         }
         self.bump(); // dedent
-        Ok(DeclKind::Class { name, param, members })
+        Ok(DeclKind::Class { name, params, members })
     }
 
     fn instance_decl(&mut self) -> PResult<DeclKind> {
         self.bump(); // instance
         let class = self.ident("a class name")?;
-        let ty = self.postfix()?;
+        let mut tys = vec![self.postfix()?];
+        while !self.at(&Tok::Colon) && !self.at(&Tok::Newline) && !self.at(&Tok::Eof) {
+            tys.push(self.postfix()?);
+        }
         let mut context = Vec::new();
         if self.eat(&Tok::Colon) {
             context.push(self.expr()?);
@@ -814,7 +820,7 @@ impl Parser {
         let mut members = Vec::new();
         if !(self.at(&Tok::Newline) && *self.peek_at(1) == Tok::Indent) {
             self.end_line()?;
-            return Ok(DeclKind::Instance { class, ty, context, members });
+            return Ok(DeclKind::Instance { class, tys, context, members });
         }
         self.open_block("list of the instance's functions and lemmas")?;
         while !self.at(&Tok::Dedent) && !self.at(&Tok::Eof) {
@@ -887,7 +893,7 @@ impl Parser {
             }
         }
         self.bump(); // dedent
-        Ok(DeclKind::Instance { class, ty, context, members })
+        Ok(DeclKind::Instance { class, tys, context, members })
     }
 
     fn const_decl(&mut self) -> PResult<DeclKind> {

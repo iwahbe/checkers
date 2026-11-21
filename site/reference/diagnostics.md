@@ -85,8 +85,8 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0273` | compile-time evaluation failed |
 | `E0280` | an instance of something that isn't a class |
 | `E0281` | an instance for a type that isn't a type constructor applied to distinct variables |
-| `E0282` | an instance outside the package of its class and of its type |
-| `E0283` | two instances of a class for one type constructor |
+| `E0282` | an instance outside the package of its class and of its types (or with a type variable before its package's type) |
+| `E0283` | two instances of a class that can match the same types |
 | `E0284` | no instance of a class for a type |
 | `E0285` | which instance to use can't be decided: the type isn't known there |
 | `E0286` | an instance for a type of the wrong kind |
@@ -94,7 +94,8 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0288` | a class's type whose default mentions the class's parameter |
 | `E0289` | `forall` outside a named precondition or a lemma's `ensures`, or in a negative place |
 | `E0290` | `have` with the wrong number of values for a `forall`'s variables |
-| `E0291` | a class's type (`C.Name`) without the type it is for |
+| `E0291` | a class's type (`C.Name`) without the types it is for |
+| `E0292` | an instance without a type for each of its class's parameters |
 
 ## Termination
 
@@ -126,6 +127,7 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0365` | an instance member with other parameters than the class's |
 | `E0366` | `main`'s signature isn't `args~List String, sys~System, code~ExitCode` |
 | `E0367` | a recursive type has no values: every constructor needs a value of the type |
+| `E0368` | a function or lemma of a class of several parameters whose parameters' types don't mention one of them |
 
 ## Usage: resources and `ghost`
 

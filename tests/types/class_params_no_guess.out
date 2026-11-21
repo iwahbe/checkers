@@ -1,0 +1,8 @@
+error[E0285]: can't tell which instance of `Hole` to use: the type isn't known here
+  --> class_params_no_guess.ck:17:19
+   |
+17 |     let f = \x -> Hole.hole p x
+   |                   ^^^^^^^^^
+   = help: give the type, e.g. with a constraint `x~List Int` in the signature
+
+class_params_no_guess.ck: 1 error, 0 warnings

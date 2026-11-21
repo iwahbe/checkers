@@ -37,7 +37,8 @@ pub enum Origin {
 pub struct ClassDef {
     pub module: String,
     pub name: String,
-    pub param: String,
+    /// Its type parameters (several, #145).
+    pub params: Vec<String>,
     pub members: Vec<ClassMember>,
     pub tid: TyId,
     pub span: Span,
@@ -71,9 +72,14 @@ fn type_names(members: &[ClassMember]) -> Vec<String> {
     members.iter().filter_map(|m| if let ClassMember::Type { name, .. } = m { Some(name.name.clone()) } else { None }).collect()
 }
 
-/// Inside a class, its type `Name` is `C.Name a` (#133).
-fn assoc_use(class: &str, param: &str, name: &str, s: Span) -> Expr {
-    app(Expr { kind: ExprKind::Field(Box::new(con(class, s)), ident(name, s)), span: s }, var(param, s))
+/// Inside a class, its type `Name` is `C.Name a` (#133), `C.Name s h` for
+/// a class of several parameters (#145).
+fn assoc_use(class: &str, params: &[String], name: &str, s: Span) -> Expr {
+    let mut e = Expr { kind: ExprKind::Field(Box::new(con(class, s)), ident(name, s)), span: s };
+    for p in params {
+        e = app(e, var(p, s));
+    }
+    e
 }
 
 /// The dictionary's field holding the class's type `Name` (#133).
@@ -101,12 +107,32 @@ pub struct InstInfo {
     pub span: Span,
     /// How many type variables its head has (`List a`: 1).
     pub n_vars: usize,
+    /// Its types, one for each of the class's parameters (#145).
+    pub pats: Vec<InstPat>,
     /// Its context: a class and which of its variables (`Ord a`).
-    pub context: Vec<(TyId, usize)>,
+    pub context: Vec<(TyId, Vec<usize>)>,
     /// Its members by name (functions and lemmas).
     pub members: HashMap<String, DefId>,
     /// As written: `Ord (List a)`.
     pub text: String,
+}
+
+/// One of an instance's types: a type constructor applied to some of the
+/// instance's variables (their positions), or one variable (#145).
+#[derive(Clone, Debug)]
+pub enum InstPat {
+    Head(HeadKey, Vec<usize>),
+    Var(usize),
+}
+
+/// What is known of a type an instance is asked for.
+enum Shape {
+    /// A type constructor and its arguments.
+    Known(HeadKey, Vec<Val>),
+    /// Not known yet.
+    Unknown,
+    /// A type parameter, a function type: no instance's type constructor.
+    Other,
 }
 
 /// An instance being desugared in this module (registered with its
@@ -115,9 +141,13 @@ pub struct InstInfo {
 pub struct PendingInst {
     pub class: Option<TyId>,
     pub class_name: String,
-    pub head: Expr,
+    /// Its types, one for each of the class's parameters (#145).
+    pub heads: Vec<Expr>,
+    /// Each type's type constructor, or `None` for a variable.
+    pub head_names: Vec<Option<String>>,
     pub vars: Vec<String>,
-    pub context: Vec<(String, String)>,
+    /// Its context: classes of its variables (`Display a`).
+    pub context: Vec<(String, Vec<String>)>,
     pub span: Span,
     pub text: String,
     pub members: Vec<(String, usize)>,
@@ -128,14 +158,15 @@ pub struct PendingInst {
 pub struct InstReq {
     pub meta: Val,
     pub class: TyId,
-    pub ty: Val,
+    /// The types it is for, one for each of the class's parameters.
+    pub tys: Vec<Val>,
     pub lvl: usize,
     pub names: Vec<Name>,
     pub span: Span,
     pub owner: Option<DefId>,
     pub in_spec: bool,
-    /// Dictionaries in scope: level, class, type.
-    pub given: Vec<(usize, TyId, Val)>,
+    /// Dictionaries in scope: level, class, types.
+    pub given: Vec<(usize, TyId, Vec<Val>)>,
     /// For a class's type, `C.Name` (#133): the dictionary is read for it.
     pub assoc: Option<String>,
     /// In an instance's signature: that instance, used if the type is
@@ -144,12 +175,12 @@ pub struct InstReq {
 }
 
 /// The instance whose member's signature is being elaborated (#146): its
-/// class, its head's type constructor and the head's variables.
+/// class, and for each of its types (#145) the type constructor (`None`
+/// for a bare variable) and the variables.
 #[derive(Clone)]
 pub struct SigInst {
     pub class: TyId,
-    pub key: HeadKey,
-    pub vars: Vec<String>,
+    pub heads: Vec<(Option<HeadKey>, Vec<String>)>,
 }
 
 /// `e` with every span `s`: code from another module, shown at `s`.
@@ -200,6 +231,15 @@ fn respan_constraints(cs: &[Constraint], s: Span) -> Vec<Constraint> {
         .collect()
 }
 
+/// "`a` and `b`", "`a`, `b` and `c`" (or "or").
+fn joined(xs: &[String], conj: &str) -> String {
+    match xs.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("`{}` {conj} `{last}`", rest.join("`, `")),
+        Some((last, _)) => format!("`{last}`"),
+        None => String::new(),
+    }
+}
+
 fn count(n: usize, what: &str) -> String {
     if n == 1 {
         format!("1 {what}")
@@ -241,10 +281,10 @@ pub(crate) fn applied_arity(e: &Expr, param: &str) -> usize {
 
 /// The type variables of a class function's types other than the class's
 /// own (`a` and `b` of `fn map g xs : g~(a -> b), xs~f a`), in order.
-fn method_vars(tys: &[&Expr], param: &str, out: &mut Vec<String>) {
-    fn go(e: &Expr, param: &str, out: &mut Vec<String>) {
+fn method_vars(tys: &[&Expr], params: &[String], out: &mut Vec<String>) {
+    fn go(e: &Expr, param: &[String], out: &mut Vec<String>) {
         match &e.kind {
-            ExprKind::Var(v) if v != param && !out.contains(v) => out.push(v.clone()),
+            ExprKind::Var(v) if !param.contains(v) && !out.contains(v) => out.push(v.clone()),
             ExprKind::App(a, b) | ExprKind::Arrow(a, b) | ExprKind::Binary(_, a, b) => {
                 go(a, param, out);
                 go(b, param, out);
@@ -255,14 +295,14 @@ fn method_vars(tys: &[&Expr], param: &str, out: &mut Vec<String>) {
         }
     }
     for t in tys {
-        go(t, param, out);
+        go(t, params, out);
     }
 }
 
 /// The class function's own type variables that would be captured by the
 /// instance's names (its parameters, or its type's variables), each given a
 /// fresh name: `b` in `g~(a -> b)` when the instance names a parameter `b`.
-fn hygiene(cs: &[Constraint], param: &str, taken: &[String]) -> HashMap<String, String> {
+fn hygiene(cs: &[Constraint], params: &[String], taken: &[String]) -> HashMap<String, String> {
     let tys: Vec<&Expr> = cs
         .iter()
         .filter_map(|c| match c {
@@ -271,7 +311,7 @@ fn hygiene(cs: &[Constraint], param: &str, taken: &[String]) -> HashMap<String, 
         })
         .collect();
     let mut own = Vec::new();
-    method_vars(&tys, param, &mut own);
+    method_vars(&tys, params, &mut own);
     let mut map = HashMap::new();
     for v in own.iter().filter(|v| taken.contains(v)) {
         let mut k = 1;
@@ -491,6 +531,11 @@ impl Elab {
     /// Is `e` a class clause (`Ord a`)? The class, if so.
     pub fn class_clause(&self, e: &Expr) -> Option<TyId> {
         let ExprKind::App(f, _) = &e.kind else { return None };
+        let mut f: &Expr = f;
+        // `Hole s h`: a class of several parameters (#145).
+        while let ExprKind::App(g, _) = &f.kind {
+            f = g;
+        }
         let ExprKind::Con(n) = &f.kind else { return None };
         match self.resolve(n, true) {
             Some(Sym::Ty(t)) if self.class_defs.contains_key(&t) => Some(t),
@@ -651,11 +696,13 @@ impl Elab {
         let mut decls = Vec::new();
         let mut origins = Vec::new();
         self.member_heads.clear();
-        let local: HashMap<String, (String, Vec<ClassMember>, Span)> = m
+        let local: HashMap<String, (Vec<String>, Vec<ClassMember>, Span)> = m
             .decls
             .iter()
             .filter_map(|d| match &d.kind {
-                DeclKind::Class { name, param, members } => Some((name.name.clone(), (param.name.clone(), members.clone(), name.span))),
+                DeclKind::Class { name, params, members } => {
+                    Some((name.name.clone(), (params.iter().map(|p| p.name.clone()).collect(), members.clone(), name.span)))
+                }
                 _ => None,
             })
             .collect();
@@ -683,9 +730,9 @@ impl Elab {
             .collect();
         for d in &m.decls {
             match &d.kind {
-                DeclKind::Class { name, param, members } => self.desugar_class(d, name, param, members, &mut decls, &mut origins),
-                DeclKind::Instance { class, ty, context, members } => {
-                    self.desugar_instance(d, class, ty, context, members, &local, &mut decls, &mut origins)
+                DeclKind::Class { name, params, members } => self.desugar_class(d, name, params, members, &mut decls, &mut origins),
+                DeclKind::Instance { class, tys, context, members } => {
+                    self.desugar_instance(d, class, tys, context, members, &local, &mut decls, &mut origins)
                 }
                 _ => {
                     decls.push(d.clone());
@@ -696,9 +743,19 @@ impl Elab {
         (ast::Module { name: m.name.clone(), imports: m.imports.clone(), decls }, origins)
     }
 
-    fn desugar_class(&mut self, d: &Decl, name: &Ident, param: &Ident, members: &[ClassMember], decls: &mut Vec<Decl>, origins: &mut Vec<Origin>) {
+    fn desugar_class(&mut self, d: &Decl, name: &Ident, params: &[Ident], members: &[ClassMember], decls: &mut Vec<Decl>, origins: &mut Vec<Origin>) {
         let sp = name.span;
-        let clause = app(con(&name.name, sp), var(&param.name, sp));
+        let pnames: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+        let mut clause = con(&name.name, sp);
+        for p in params {
+            clause = app(clause, var(&p.name, sp));
+        }
+        // Each parameter once.
+        for (k, p) in params.iter().enumerate() {
+            if params[..k].iter().any(|q| q.name == p.name) {
+                self.err(Diagnostic::error("E0350", format!("`{}` is defined twice in class `{}`", p.name, name.name), p.span));
+            }
+        }
         let mut fields = Vec::new();
         let mut type_fields = Vec::new();
         let mut seen = HashSet::new();
@@ -706,8 +763,8 @@ impl Elab {
         // functions' and lemmas' signatures, `C.Name a`.
         let tnames = type_names(members);
         let to_field = |n: &str, s: Span| if tnames.iter().any(|t| t == n) { Some(var(&assoc_field_name(n), s)) } else { None };
-        let (cname, pname) = (name.name.clone(), param.name.clone());
-        let to_assoc = |n: &str, s: Span| if tnames.iter().any(|t| t == n) { Some(assoc_use(&cname, &pname, n, s)) } else { None };
+        let cname = name.name.clone();
+        let to_assoc = |n: &str, s: Span| if tnames.iter().any(|t| t == n) { Some(assoc_use(&cname, &pnames, n, s)) } else { None };
         let none = |_: &str, _: Span| None;
         let nq = |_: &str, _: &str, _: Span| None;
         let frw = Rewrite { var: &none, con: &to_field, qualified: &nq };
@@ -720,7 +777,8 @@ impl Elab {
             }
             match mem {
                 ClassMember::Type { name: t, default, .. } => {
-                    if let Some(e) = default.as_ref().filter(|e| super::decls::mentions_free(e, &param.name)) {
+                    let mentioned = default.as_ref().and_then(|e| params.iter().find(|p| super::decls::mentions_free(e, &p.name)).map(|p| (e, p)));
+                    if let Some((e, param)) = mentioned {
                         self.err(
                             Diagnostic::error("E0288", format!("the default of `{}` can't mention the class's parameter `{}`", t.name, param.name), e.span)
                                 .with_help(format!("a default is the same type at every instance; an instance that needs `{}` gives `type {} = …` itself", param.name, t.name)),
@@ -784,7 +842,7 @@ impl Elab {
                     // implicit, erased parameter of type `Type` each (M25).
                     let mut own = Vec::new();
                     let refs: Vec<&Expr> = tys.iter().chain(std::iter::once(&rty)).collect();
-                    method_vars(&refs, &param.name, &mut own);
+                    method_vars(&refs, &pnames, &mut own);
                     let ren: HashMap<String, String> = own.iter().map(|v| (v.clone(), format!("'{v}"))).collect();
                     let to_q = |n: &str, s: Span| ren.get(n).map(|m| var(m, s));
                     let none = |_: &str, _: Span| None;
@@ -853,37 +911,78 @@ impl Elab {
                 }
             }
         }
-        // The parameter's kind: `Type`, or `Type -> Type` if the members
-        // apply it to one argument, and so on (M25).
-        let mut arity = 0;
-        for mem in members {
-            let cs = match mem {
-                ClassMember::Fn { constraints, .. } | ClassMember::Lemma { constraints, .. } => constraints,
-                ClassMember::Type { .. } => continue,
-            };
-            for c in cs {
-                if let Constraint::Typed { ty, .. } = c {
-                    arity = arity.max(applied_arity(ty, &param.name));
+        // With several parameters (#145), each function and lemma mentions
+        // each of them in its parameters' types: otherwise a use couldn't
+        // tell which instance it means.
+        if params.len() > 1 {
+            for mem in members {
+                let (mname, mparams, cs, what) = match mem {
+                    ClassMember::Fn { name, params, constraints, .. } => (name, params, constraints, "function"),
+                    ClassMember::Lemma { name, params, constraints, .. } => (name, params, constraints, "lemma"),
+                    ClassMember::Type { .. } => continue,
+                };
+                let tys: Vec<&Expr> = cs
+                    .iter()
+                    .filter_map(|c| match c {
+                        Constraint::Typed { name, ty, .. } if mparams.iter().any(|p| p.name == name.name) => Some(ty),
+                        _ => None,
+                    })
+                    .collect();
+                for p in params {
+                    if !tys.iter().any(|t| super::decls::mentions_free(t, &p.name)) {
+                        let ps: Vec<&str> = params.iter().map(|q| q.name.as_str()).collect();
+                        self.err(
+                            Diagnostic::error("E0368", format!("{what} `{}` doesn't mention the class's parameter `{}`", mname.name, p.name), mname.span)
+                                .with_label(format!("no parameter's type mentions `{}`", p.name))
+                                .with_help(format!(
+                                    "a use of `{}` must tell which instance of `{} {}` it means: give one of its parameters a type that mentions `{}`",
+                                    mname.name,
+                                    name.name,
+                                    ps.join(" "),
+                                    p.name
+                                )),
+                        );
+                        break;
+                    }
                 }
             }
         }
-        let mut kind = con("Type", sp);
-        for _ in 0..arity {
-            kind = Expr { kind: ExprKind::Arrow(Box::new(con("Type", sp)), Box::new(kind)), span: sp };
+        // Each parameter's kind: `Type`, or `Type -> Type` if the members
+        // apply it to one argument, and so on (M25).
+        let mut rcs = Vec::new();
+        for param in params {
+            let mut arity = 0;
+            for mem in members {
+                let cs = match mem {
+                    ClassMember::Fn { constraints, .. } | ClassMember::Lemma { constraints, .. } => constraints,
+                    ClassMember::Type { .. } => continue,
+                };
+                for c in cs {
+                    if let Constraint::Typed { ty, .. } = c {
+                        arity = arity.max(applied_arity(ty, &param.name));
+                    }
+                }
+            }
+            let mut kind = con("Type", sp);
+            for _ in 0..arity {
+                kind = Expr { kind: ExprKind::Arrow(Box::new(con("Type", sp)), Box::new(kind)), span: sp };
+            }
+            if arity > 0 {
+                rcs.push(Constraint::Typed { name: param.clone(), mult: ast::Mult::Many, ty: kind });
+            }
         }
-        let rcs = if arity == 0 { Vec::new() } else { vec![Constraint::Typed { name: param.clone(), mult: ast::Mult::Many, ty: kind }] };
         decls.push(Decl {
             export: if d.export == Export::No { Export::No } else { Export::Abstract },
             kind: DeclKind::Record {
                 name: name.clone(),
-                params: vec![ast::Param { polarity: None, name: param.clone() }],
+                params: params.iter().map(|p| ast::Param { polarity: None, name: p.clone() }).collect(),
                 constraints: rcs,
                 fields: type_fields.into_iter().chain(fields).collect(),
             },
             span: d.span,
         });
         origins.push(Origin::ClassRecord);
-        self.pending_classes.push((name.name.clone(), param.name.clone(), members.to_vec(), name.span));
+        self.pending_classes.push((name.name.clone(), pnames, members.to_vec(), name.span));
     }
 
     /// Whether an instance's head is the unit type: `()`, or an alias of it
@@ -900,54 +999,67 @@ impl Elab {
         }
     }
 
+    /// One of an instance's types, checked: a type constructor applied to
+    /// distinct type variables (pushed onto `vars`), or, except for the
+    /// first type of a class of several parameters, a bare type variable
+    /// (#145). The type (`()` for the prelude's `Unit`) and its type
+    /// constructor's name (`None` for a variable), or `None` if reported.
     #[allow(clippy::too_many_arguments)]
-    fn desugar_instance(
+    fn instance_arg(
         &mut self,
-        d: &Decl,
+        text: &str,
         class: &Ident,
         ty: &Expr,
-        context: &[Expr],
-        members: &[InstMember],
-        local: &HashMap<String, (String, Vec<ClassMember>, Span)>,
-        decls: &mut Vec<Decl>,
-        origins: &mut Vec<Origin>,
-    ) {
-        let text = format!("{} {}", class.name, self.src_text(ty.span).trim());
-        // The class: declared here, or imported.
-        let (param, cmembers, class_tid) = match local.get(&class.name) {
-            Some((p, ms, _)) => (p.clone(), ms.clone(), None),
-            None => match self.resolve(&class.name, true) {
-                Some(Sym::Ty(t)) if self.class_defs.contains_key(&t) => {
-                    let c = self.class_defs[&t].clone();
-                    (c.param.clone(), self.members_for_instance(&c), Some(t))
-                }
-                _ => {
+        param: (usize, &str, usize),
+        want: usize,
+        vars: &mut Vec<String>,
+        local: &HashMap<String, (Vec<String>, Vec<ClassMember>, Span)>,
+    ) -> Option<(Expr, Option<String>)> {
+        let (index, pname, nparams) = param;
+        // A bare variable (#145): any type at this parameter.
+        if let ExprKind::Var(v) = &ty.kind {
+            if nparams > 1 && index == 0 {
+                self.err(
+                    Diagnostic::error("E0281", format!("the first type of `instance {text}` can't be a type variable"), ty.span)
+                        .with_label("a type variable")
+                        .with_help(format!(
+                            "an instance is found by its first type: write it for a type constructor, e.g. `instance {} (List a) …`",
+                            class.name
+                        )),
+                );
+                return None;
+            }
+            if nparams > 1 {
+                if vars.contains(v) {
                     self.err(
-                        Diagnostic::error("E0280", format!("`{}` is not a class", class.name), class.span)
-                            .with_help("an instance is of a class declared with `class`"),
+                        Diagnostic::error("E0281", format!("`instance {text}` uses the type variable `{v}` twice"), ty.span)
+                            .with_label(format!("`{v}` again"))
+                            .with_help("an instance's types have distinct type variables; give this one its own name"),
                     );
-                    return;
+                    return None;
                 }
-            },
-        };
+                vars.push(v.clone());
+                return Some((ty.clone(), None));
+            }
+        }
         // `()`, written so or as the prelude's `Unit`: the tuple type of no
         // elements, a type constructor with no parameters.
         let unit_head = Expr { kind: ExprKind::Tuple(Vec::new()), span: ty.span };
-        let head_ty = if self.is_unit_head(ty) { &unit_head } else { ty };
+        let head_ty = if self.is_unit_head(ty) { unit_head } else { ty.clone() };
         // The head: a type constructor applied to distinct type variables.
         let mut args = Vec::new();
-        let mut h = head_ty;
+        let mut h = &head_ty;
         while let ExprKind::App(f, a) = &h.kind {
             args.push((**a).clone());
             h = f;
         }
         args.reverse();
-        let mut vars: Vec<String> = Vec::new();
         let ok = match &h.kind {
             ExprKind::Con(_) => args.iter().all(|a| matches!(&a.kind, ExprKind::Var(v) if !vars.contains(v) && { vars.push(v.clone()); true })),
             ExprKind::Tuple(xs) if args.is_empty() && matches!(xs.len(), 0 | 2) => xs.iter().all(|a| matches!(&a.kind, ExprKind::Var(v) if !vars.contains(v) && { vars.push(v.clone()); true })),
             _ => false,
         };
+        let shown_ty = self.src_text(ty.span).trim().to_string();
         match &h.kind {
             ExprKind::Tuple(xs) if args.is_empty() && xs.len() > 2 => {
                 let part = |x: &Expr| self.src_text(x.span).trim().to_string();
@@ -960,7 +1072,7 @@ impl Elab {
                             class.name
                         )),
                 );
-                return;
+                return None;
             }
             _ => {}
         }
@@ -970,22 +1082,8 @@ impl Elab {
                     .with_label("not a type constructor applied to variables")
                     .with_help("write it for every element type, e.g. `instance Ord (List a) : Ord a`"),
             );
-            return;
+            return None;
         }
-        // Its kind: a class over types of `n` parameters (M25) takes a type
-        // constructor short of `n` arguments.
-        let want = cmembers
-            .iter()
-            .flat_map(|m| match m {
-                ClassMember::Fn { constraints, .. } | ClassMember::Lemma { constraints, .. } => constraints.as_slice(),
-                ClassMember::Type { .. } => &[],
-            })
-            .filter_map(|c| match c {
-                Constraint::Typed { ty, .. } => Some(applied_arity(ty, &param)),
-                _ => None,
-            })
-            .max()
-            .unwrap_or(0);
         // This module's names aren't registered yet: its types are in
         // `local_ty_params`, its other names in `local_names`.
         let alias = |n: &str| match self.local_names.get(n) {
@@ -998,7 +1096,7 @@ impl Elab {
                     Diagnostic::error("E0281", format!("`instance {text}` is for a type alias"), ty.span)
                         .with_help("write the instance for the type the alias stands for; it applies to the alias too"),
                 );
-                return;
+                return None;
             }
             ExprKind::Con(n) => match self.local_ty_params.get(n) {
                 Some(k) => Some(*k),
@@ -1011,7 +1109,7 @@ impl Elab {
                             e = e.with_help(Self::private_help(&m, n));
                         }
                         self.err(e);
-                        return;
+                        return None;
                     }
                     // A class declared here: its kind is checked later.
                     _ if local.contains_key(n) => None,
@@ -1024,12 +1122,14 @@ impl Elab {
                                 .with_label(label)
                                 .with_help("an instance is for a type constructor applied to distinct type variables, e.g. `instance Ord (List a) : Ord a`"),
                         );
-                        return;
+                        return None;
                     }
                 },
             },
             _ => Some(args.len()),
         };
+        // Its kind: a class over types of `n` parameters (M25) takes a type
+        // constructor short of `n` arguments.
         if let Some(k) = have.filter(|k| k.checked_sub(args.len()) != Some(want)) {
             let shown = |n: usize| match n {
                 0 => "a type, like `Int`".to_string(),
@@ -1044,29 +1144,128 @@ impl Elab {
             let given = k.saturating_sub(args.len());
             let fix = if want == 0 {
                 let vs: Vec<String> = (0..given).map(|i| ((b'a' + (i % 26) as u8) as char).to_string()).collect();
-                format!("give it its parameters, as in `instance {} ({} {})`", class.name, self.src_text(ty.span).trim(), vs.join(" "))
+                if nparams > 1 {
+                    format!("give it its parameters, as in `({shown_ty} {})`", vs.join(" "))
+                } else {
+                    format!("give it its parameters, as in `instance {} ({shown_ty} {})`", class.name, vs.join(" "))
+                }
             } else if want < given {
                 "leave the last parameters off; the class's functions supply them".to_string()
             } else {
                 format!("`{}` is for a type that takes its element type as its last parameter, like `List` or `Option`", class.name)
             };
+            let whose = if nparams > 1 { format!("`{}`'s parameter `{pname}`", class.name) } else { format!("`{}`", class.name) };
+            self.err(Diagnostic::error("E0286", format!("{whose} is for {}, but `{shown_ty}` is {}", shown(want), plain(given)), ty.span).with_help(fix));
+            return None;
+        }
+        let name = match &h.kind {
+            ExprKind::Tuple(xs) => format!("tuple{}", xs.len()),
+            ExprKind::Con(n) => n.clone(),
+            _ => String::new(),
+        };
+        Some((head_ty, Some(name)))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn desugar_instance(
+        &mut self,
+        d: &Decl,
+        class: &Ident,
+        tys: &[Expr],
+        context: &[Expr],
+        members: &[InstMember],
+        local: &HashMap<String, (Vec<String>, Vec<ClassMember>, Span)>,
+        decls: &mut Vec<Decl>,
+        origins: &mut Vec<Origin>,
+    ) {
+        let (first, last) = (tys[0].span, tys[tys.len() - 1].span);
+        let tys_span = Span { start: first.start, end: last.end };
+        let tys_text = self.src_text(tys_span).trim().to_string();
+        let text = format!("{} {tys_text}", class.name);
+        // The class: declared here, or imported.
+        let (cparams, cmembers, class_tid) = match local.get(&class.name) {
+            Some((p, ms, _)) => (p.clone(), ms.clone(), None),
+            None => match self.resolve(&class.name, true) {
+                Some(Sym::Ty(t)) if self.class_defs.contains_key(&t) => {
+                    let c = self.class_defs[&t].clone();
+                    (c.params.clone(), self.members_for_instance(&c), Some(t))
+                }
+                _ => {
+                    self.err(
+                        Diagnostic::error("E0280", format!("`{}` is not a class", class.name), class.span)
+                            .with_help("an instance is of a class declared with `class`"),
+                    );
+                    return;
+                }
+            },
+        };
+        // A type for each of the class's parameters (#145).
+        if tys.len() != cparams.len() {
+            let want = count(cparams.len(), "type");
+            let help = if cparams.len() == 1 {
+                format!("put the type in parentheses: `instance {} ({tys_text})`", class.name)
+            } else {
+                format!("give a type for each of {}", joined(&cparams, "and"))
+            };
             self.err(
-                Diagnostic::error("E0286", format!("`{}` is for {}, but `{}` is {}", class.name, shown(want), self.src_text(ty.span).trim(), plain(given)), ty.span)
-                    .with_help(fix),
+                Diagnostic::error("E0292", format!("`{}` takes {want}, but `instance {text}` gives {}", class.name, tys.len()), tys_span)
+                    .with_label(format!("{} here", count(tys.len(), "type")))
+                    .with_help(help),
             );
             return;
+        }
+        // Each type's kind: a class over types of `n` parameters (M25)
+        // takes a type constructor short of `n` arguments.
+        let want_of = |param: &str| {
+            cmembers
+                .iter()
+                .flat_map(|m| match m {
+                    ClassMember::Fn { constraints, .. } | ClassMember::Lemma { constraints, .. } => constraints.as_slice(),
+                    ClassMember::Type { .. } => &[],
+                })
+                .filter_map(|c| match c {
+                    Constraint::Typed { ty, .. } => Some(applied_arity(ty, param)),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0)
+        };
+        let mut vars: Vec<String> = Vec::new();
+        let mut heads: Vec<Expr> = Vec::new();
+        let mut head_names: Vec<Option<String>> = Vec::new();
+        for (k, ty) in tys.iter().enumerate() {
+            let want = want_of(&cparams[k]);
+            let Some((h, n)) = self.instance_arg(&text, class, ty, (k, &cparams[k], cparams.len()), want, &mut vars, local) else { return };
+            heads.push(h);
+            head_names.push(n);
         }
         // Its context: classes of its variables.
         let mut ctx = Vec::new();
         for c in context {
-            let good = match &c.kind {
-                ExprKind::App(f, a) => match (&f.kind, &a.kind) {
-                    (ExprKind::Con(cn), ExprKind::Var(v)) if vars.contains(v) => {
-                        ctx.push((cn.clone(), v.clone()));
-                        true
+            let mut cargs = Vec::new();
+            let mut f = c;
+            while let ExprKind::App(g, a) = &f.kind {
+                cargs.push(a);
+                f = g;
+            }
+            cargs.reverse();
+            let good = match &f.kind {
+                ExprKind::Con(cn) if !cargs.is_empty() => {
+                    let vs: Option<Vec<String>> = cargs
+                        .iter()
+                        .map(|a| match &a.kind {
+                            ExprKind::Var(v) if vars.contains(v) => Some(v.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    match vs {
+                        Some(vs) => {
+                            ctx.push((cn.clone(), vs));
+                            true
+                        }
+                        None => false,
                     }
-                    _ => false,
-                },
+                }
                 _ => false,
             };
             if !good {
@@ -1082,35 +1281,32 @@ impl Elab {
         let foreign: Option<String> = class_tid.map(|t| self.class_defs[&t].module.clone()).filter(|m| *m != self.cur);
         let all_members = cmembers.clone();
         let cmembers: Vec<ClassMember> = cmembers.into_iter().filter(fn_member_ok).collect();
-        // Two instances here for the same class and type (one elsewhere is
-        // found when it is registered).
-        let head_name = match &h.kind {
-            ExprKind::Con(n) => n.clone(),
-            _ => format!("tuple{}", vars.len()),
+        // Two instances here for the same class whose types can be the same
+        // (one elsewhere is found when it is registered): at each position,
+        // the same type constructor, or a variable in either (#145).
+        let overlaps = |p: &PendingInst| {
+            p.class_name == class.name
+                && p.head_names.len() == head_names.len()
+                && p.head_names.iter().zip(&head_names).all(|(a, b)| a.is_none() || b.is_none() || a == b)
         };
-        if let Some(prev) = self.pending_insts.iter().find(|p| {
-            let mut ph = &p.head;
-            while let ExprKind::App(f, _) = &ph.kind {
-                ph = f;
-            }
-            let pn = match &ph.kind {
-                ExprKind::Con(n) => n.clone(),
-                _ => format!("tuple{}", p.vars.len()),
-            };
-            p.class_name == class.name && pn == head_name
-        }) {
+        if let Some(prev) = self.pending_insts.iter().find(|p| overlaps(p)) {
             let line = self.sources.get(&self.cur).map(|f| f.line_col(prev.span.start).0).unwrap_or(0);
             let prev_text = prev.text.clone();
+            let help = if cparams.len() == 1 {
+                "a type has one instance of each class; give the other order through a wrapper type, or `sort_as`/`sort_by`"
+            } else {
+                "no two instances of a class may match the same types; make one of them for other types"
+            };
             self.err(
                 Diagnostic::error("E0283", format!("`instance {text}` overlaps another instance"), d.span)
                     .with_label(format!("`{prev_text}` is already declared on line {line}"))
-                    .with_help("a type has one instance of each class; give the other order through a wrapper type, or `sort_as`/`sort_by`"),
+                    .with_help(help),
             );
             return;
         }
         let inst_ix = self.pending_insts.len();
         let mut head_vars = Vec::new();
-        method_vars(&[ty], "", &mut head_vars);
+        method_vars(&tys.iter().collect::<Vec<_>>(), &[], &mut head_vars);
         let gen = |n: &str| format!("{text}.{n}");
         // Each member's name in this instance.
         let mut rename: HashMap<String, String> = HashMap::new();
@@ -1145,7 +1341,7 @@ impl Elab {
         }
         // The class's types at this instance (#133): given, or the class's
         // default (written in the class, so shown at the instance's header).
-        let header = Span { start: d.span.start, end: ty.span.end };
+        let header = Span { start: d.span.start, end: tys_span.end };
         let mut types: Vec<(String, Expr)> = Vec::new();
         for cm in &all_members {
             let ClassMember::Type { name: tn, default, .. } = cm else { continue };
@@ -1168,7 +1364,7 @@ impl Elab {
                     self.err(
                         Diagnostic::error("E0364", format!("`instance {text}` doesn't give `{}`", tn.name), d.span)
                             .with_label(format!("`{}` missing", tn.name))
-                            .with_help(format!("add `type {} = …` with the type for `{}`", tn.name, self.src_text(ty.span).trim())),
+                            .with_help(format!("add `type {} = …` with the type for `{tys_text}`", tn.name)),
                     );
                     bad = true;
                     continue;
@@ -1182,10 +1378,11 @@ impl Elab {
         let nq = |_: &str, _: &str, _: Span| None;
         let rw = Rewrite { var: &renamer, con: &none, qualified: &nq };
         let trw = Rewrite { var: &none, con: &tsub, qualified: &nq };
-        self.inst_heads.insert((self.cur.clone(), ty.span.start));
-        let subst_ty = ty.clone();
-        let param_c = param.clone();
-        let sub = move |n: &str, _s: Span| if n == param_c { Some(subst_ty.clone()) } else { None };
+        for ty in tys {
+            self.inst_heads.insert((self.cur.clone(), ty.span.start));
+        }
+        let subst: HashMap<String, Expr> = cparams.iter().cloned().zip(tys.iter().cloned()).collect();
+        let sub = move |n: &str, _s: Span| subst.get(n).cloned();
         let srw = Rewrite { var: &sub, con: &none, qualified: &nq };
         let mut member_list = Vec::new();
         // Functions first: an instance missing one gets no lemmas, which
@@ -1224,7 +1421,7 @@ impl Elab {
                     let map: HashMap<String, String> = params.iter().zip(iparams.iter()).map(|(a, b)| (a.name.clone(), b.name.clone())).collect();
                     let mut taken: Vec<String> = iparams.iter().map(|p| p.name.clone()).chain(result.iter().map(|r| r.name.clone())).collect();
                     taken.extend(head_vars.iter().cloned());
-                    let constraints = &rename_vars(constraints, &hygiene(constraints, &param, &taken));
+                    let constraints = &rename_vars(constraints, &hygiene(constraints, &cparams, &taken));
                     let mut cs = ctx_preds.clone();
                     let theirs = trw.constraints(&srw.constraints(&rename_binders(constraints, &map), &[]), &[]);
                     cs.extend(self.shown_here(foreign.as_deref(), constraints, theirs, span));
@@ -1248,7 +1445,7 @@ impl Elab {
                         span,
                     });
                     origins.push(Origin::InstMember(inst_ix));
-                    self.member_heads.insert(decls.len() - 1, (class.name.clone(), head_ty.clone(), vars.clone()));
+                    self.member_heads.insert(decls.len() - 1, (class.name.clone(), heads.clone()));
                 }
                 ClassMember::Lemma { name, params, constraints, lets, ensures, .. } => {
                     let given = members.iter().find_map(|m| match m {
@@ -1262,7 +1459,7 @@ impl Elab {
                     let (iparams, decreasing, proof, span, name_span) = match given {
                         Some(g) => g,
                         None => {
-                            let header = Span { start: d.span.start, end: ty.span.end };
+                            let header = Span { start: d.span.start, end: tys_span.end };
                             let ps: Vec<Ident> = params.iter().map(|p| ident(&p.name, self.synthetic_span(header))).collect();
                             (ps, None, None, header, Span { start: d.span.start, end: d.span.start })
                         }
@@ -1278,7 +1475,7 @@ impl Elab {
                     }
                     let mut taken: Vec<String> = iparams.iter().map(|p| p.name.clone()).collect();
                     taken.extend(head_vars.iter().cloned());
-                    let hyg = hygiene(constraints, &param, &taken);
+                    let hyg = hygiene(constraints, &cparams, &taken);
                     let constraints = &rename_vars(constraints, &hyg);
                     let mut map: HashMap<String, String> = params.iter().zip(iparams.iter()).map(|(a, b)| (a.name.clone(), b.name.clone())).collect();
                     map.extend(hyg);
@@ -1316,7 +1513,7 @@ impl Elab {
                         span,
                     });
                     origins.push(Origin::InstMember(inst_ix));
-                    self.member_heads.insert(decls.len() - 1, (class.name.clone(), head_ty.clone(), vars.clone()));
+                    self.member_heads.insert(decls.len() - 1, (class.name.clone(), heads.clone()));
                 }
             }
         }
@@ -1345,7 +1542,8 @@ impl Elab {
             }
         }
         let mut cs = ctx_preds.clone();
-        cs.push(Constraint::Typed { name: ident("$dict", sp), mult: ast::Mult::Many, ty: app(con(&class.name, sp), ty.clone()) });
+        let dict_ty = tys.iter().fold(con(&class.name, sp), |f, t| app(f, t.clone()));
+        cs.push(Constraint::Typed { name: ident("$dict", sp), mult: ast::Mult::Many, ty: dict_ty });
         decls.push(Decl {
             export: Export::No,
             kind: DeclKind::Fn {
@@ -1363,7 +1561,8 @@ impl Elab {
         self.pending_insts.push(PendingInst {
             class: class_tid,
             class_name: class.name.clone(),
-            head: head_ty.clone(),
+            heads,
+            head_names,
             vars,
             context: ctx,
             span: d.span,
@@ -1374,14 +1573,14 @@ impl Elab {
 
     /// After registration: the module's classes and instances into the tables.
     pub fn register_classes(&mut self, m: &ast::Module, ids: &[Option<Sym>]) {
-        for (name, param, members, span) in std::mem::take(&mut self.pending_classes) {
+        for (name, params, members, span) in std::mem::take(&mut self.pending_classes) {
             let Some(Some(Sym::Ty(tid))) = m.decls.iter().zip(ids).find_map(|(d, id)| match &d.kind {
                 DeclKind::Record { name: n, .. } if n.name == name => Some(*id),
                 _ => None,
             }) else {
                 continue;
             };
-            let def = ClassDef { module: self.cur.clone(), name, param, members, tid, span };
+            let def = ClassDef { module: self.cur.clone(), name, params, members, tid, span };
             self.register_assoc(&def);
             self.class_defs.insert(tid, def);
         }
@@ -1413,44 +1612,46 @@ impl Elab {
 
     /// A class's types (#133): for each, `C.Name`, the definition
     /// `\t {d~C t} -> d.$Name` of type `t~K -> {C t} -> Type`, `K` the
-    /// kind of the class's parameter.
+    /// kind of the class's parameter; with several parameters (#145),
+    /// `\s h {d~C s h} -> d.$Name`.
     fn register_assoc(&mut self, c: &ClassDef) {
         let Some(&con) = self.g.tys[c.tid.0 as usize].ctors.first() else { return };
-        let arity = c
-            .members
-            .iter()
-            .flat_map(|m| match m {
-                ClassMember::Fn { constraints, .. } | ClassMember::Lemma { constraints, .. } => constraints.as_slice(),
-                ClassMember::Type { .. } => &[],
-            })
-            .filter_map(|k| match k {
-                Constraint::Typed { ty, .. } => Some(applied_arity(ty, &c.param)),
-                _ => None,
-            })
-            .max()
-            .unwrap_or(0);
-        let mut kind = Tm::Univ(0);
-        for _ in 0..arity {
-            kind = Tm::Pi(Rc::from("_"), Mult::Many, Icit::Expl, Rc::new(Tm::Univ(0)), Rc::new(kind));
-        }
+        let kind_of = |param: &str| {
+            let arity = c
+                .members
+                .iter()
+                .flat_map(|m| match m {
+                    ClassMember::Fn { constraints, .. } | ClassMember::Lemma { constraints, .. } => constraints.as_slice(),
+                    ClassMember::Type { .. } => &[],
+                })
+                .filter_map(|k| match k {
+                    Constraint::Typed { ty, .. } => Some(applied_arity(ty, param)),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0);
+            let mut kind = Tm::Univ(0);
+            for _ in 0..arity {
+                kind = Tm::Pi(Rc::from("_"), Mult::Many, Icit::Expl, Rc::new(Tm::Univ(0)), Rc::new(kind));
+            }
+            kind
+        };
+        let kinds: Vec<Tm> = c.params.iter().map(|p| kind_of(p)).collect();
+        let n = c.params.len();
         // Its types are the dictionary's first fields.
         for (k, t) in c.types().iter().enumerate() {
             let d = self.new_def(&format!("{}.{t}", c.name));
-            let dict = Tm::TyConApp(c.tid, vec![Tm::Var(0)]);
+            // Under the parameters, parameter `i` is `Var(n - 1 - i)`.
+            let dict = Tm::TyConApp(c.tid, (0..n).map(|i| Tm::Var(n - 1 - i)).collect());
+            let mut ty = Tm::Pi(Rc::from("$d"), Mult::Many, Icit::Impl, Rc::new(dict), Rc::new(Tm::Univ(0)));
+            let mut body = Tm::Lam(Rc::from("$d"), Mult::Many, Icit::Impl, Rc::new(Tm::Field(Rc::new(Tm::Var(0)), con, k)));
+            for (p, kind) in c.params.iter().zip(&kinds).rev() {
+                ty = Tm::Pi(Rc::from(p.as_str()), Mult::Zero, Icit::Expl, Rc::new(kind.clone()), Rc::new(ty));
+                body = Tm::Lam(Rc::from(p.as_str()), Mult::Zero, Icit::Expl, Rc::new(body));
+            }
             let info = &mut self.g.defs[d.0 as usize];
-            info.ty = Tm::Pi(
-                Rc::from(c.param.as_str()),
-                Mult::Zero,
-                Icit::Expl,
-                Rc::new(kind.clone()),
-                Rc::new(Tm::Pi(Rc::from("$d"), Mult::Many, Icit::Impl, Rc::new(dict), Rc::new(Tm::Univ(0)))),
-            );
-            info.body = Some(Tm::Lam(
-                Rc::from(c.param.as_str()),
-                Mult::Zero,
-                Icit::Expl,
-                Rc::new(Tm::Lam(Rc::from("$d"), Mult::Many, Icit::Impl, Rc::new(Tm::Field(Rc::new(Tm::Var(0)), con, k)))),
-            ));
+            info.ty = ty;
+            info.body = Some(body);
             self.transparent.insert(d);
             self.assoc_defs.insert((c.tid, t.clone()), d);
         }
@@ -1466,58 +1667,123 @@ impl Elab {
                 _ => return,
             },
         };
-        // The head's type constructor.
-        let mut h = &p.head;
-        while let ExprKind::App(f, _) = &h.kind {
-            h = f;
+        // Each type: its type constructor and variables, or a variable.
+        let mut pats = Vec::new();
+        for head in &p.heads {
+            let mut args = Vec::new();
+            let mut h = head;
+            while let ExprKind::App(f, a) = &h.kind {
+                args.push(a);
+                h = f;
+            }
+            args.reverse();
+            let pos = |e: &Expr| match &e.kind {
+                ExprKind::Var(v) => p.vars.iter().position(|x| x == v),
+                _ => None,
+            };
+            let key = match &h.kind {
+                ExprKind::Var(v) if args.is_empty() => {
+                    let Some(k) = p.vars.iter().position(|x| x == v) else { return };
+                    pats.push(InstPat::Var(k));
+                    continue;
+                }
+                ExprKind::Tuple(xs) if xs.is_empty() => HeadKey::Unit,
+                ExprKind::Tuple(xs) => {
+                    let vs: Option<Vec<usize>> = xs.iter().map(pos).collect();
+                    let Some(vs) = vs else { return };
+                    pats.push(InstPat::Head(HeadKey::Pair, vs));
+                    continue;
+                }
+                ExprKind::Con(n) => match self.resolve(n, true) {
+                    Some(Sym::Ty(t)) => HeadKey::Ty(t),
+                    Some(Sym::Def(_)) => {
+                        self.err(
+                            Diagnostic::error("E0281", format!("`instance {}` is for a type alias", p.text), head.span)
+                                .with_help("write the instance for the type the alias stands for; it applies to the alias too"),
+                        );
+                        return;
+                    }
+                    _ => return,
+                },
+                _ => return,
+            };
+            let vs: Option<Vec<usize>> = args.iter().map(|a| pos(a)).collect();
+            let Some(vs) = vs else { return };
+            pats.push(InstPat::Head(key, vs));
         }
-        let key = match &h.kind {
-            ExprKind::Tuple(xs) if xs.is_empty() => HeadKey::Unit,
-            ExprKind::Tuple(_) => HeadKey::Pair,
-            ExprKind::Con(n) => match self.resolve(n, true) {
-                Some(Sym::Ty(t)) => HeadKey::Ty(t),
-                Some(Sym::Def(_)) => {
+        let Some(InstPat::Head(key, _)) = pats.first().cloned() else { return };
+        // Rust's orphan rule (D136 b, RFC 2451), by package: the class is
+        // this package's, or one of the types is, with no bare variable
+        // before it (#145).
+        let pkg = self.package_of(&self.cur);
+        let class_pkg = self.package_of(&self.class_defs[&class].module);
+        let pkg_of = |e: &Self, k: &HeadKey| match k {
+            HeadKey::Ty(t) => e.package_of(&e.g.tys[t.0 as usize].module),
+            HeadKey::Unit | HeadKey::Pair => "std".to_string(),
+        };
+        if pkg != class_pkg {
+            let cname = self.class_defs[&class].name.clone();
+            let local = pats.iter().position(|q| matches!(q, InstPat::Head(k, _) if pkg_of(self, k) == pkg));
+            let var_before = pats.iter().take(local.unwrap_or(0)).position(|q| matches!(q, InstPat::Var(_)));
+            match (local, var_before) {
+                (Some(_), None) => {}
+                (Some(l), Some(v)) => {
+                    let shown = |e: &Expr| self.src_text(e.span).trim().to_string();
+                    let (vt, lt) = (shown(&p.heads[v]), shown(&p.heads[l]));
                     self.err(
-                        Diagnostic::error("E0281", format!("`instance {}` is for a type alias", p.text), p.head.span)
-                            .with_help("write the instance for the type the alias stands for; it applies to the alias too"),
+                        Diagnostic::error("E0282", format!("`instance {}` must be in the package of `{cname}` or of one of its types", p.text), p.heads[v].span)
+                            .with_label(format!("`{vt}` comes before `{lt}`, this package's type"))
+                            .with_help("an instance whose types begin with a type variable could overlap another package's; put this package's type before any variable"),
                     );
                     return;
                 }
-                _ => return,
-            },
-            _ => return,
-        };
-        // Rust's orphan rule (D136 b), by package: the class or the type is this package's.
-        let pkg = self.package_of(&self.cur);
-        let class_pkg = self.package_of(&self.class_defs[&class].module);
-        let ty_pkg = match key {
-            HeadKey::Ty(t) => self.package_of(&self.g.tys[t.0 as usize].module),
-            HeadKey::Unit | HeadKey::Pair => "std".to_string(),
-        };
-        if pkg != class_pkg && pkg != ty_pkg {
-            let cname = self.class_defs[&class].name.clone();
-            self.err(
-                Diagnostic::error("E0282", format!("`instance {}` must be in the package of `{cname}` or of the type", p.text), p.span)
-                    .with_label("neither is declared in this package")
-                    .with_help("an instance goes with its class or its type, so there is only ever one (Rust's orphan rule); wrap the type in a record of your own to give it this instance"),
-            );
-            return;
+                (None, _) => {
+                    let (msg, label, help) = if p.heads.len() == 1 {
+                        (
+                            format!("`instance {}` must be in the package of `{cname}` or of the type", p.text),
+                            "neither is declared in this package",
+                            "an instance goes with its class or its type, so there is only ever one (Rust's orphan rule); wrap the type in a record of your own to give it this instance",
+                        )
+                    } else {
+                        (
+                            format!("`instance {}` must be in the package of `{cname}` or of one of its types", p.text),
+                            "none of them is declared in this package",
+                            "an instance goes with its class or one of its types (Rust's orphan rule); wrap a type in a record of your own to give it this instance",
+                        )
+                    };
+                    self.err(Diagnostic::error("E0282", msg, p.span).with_label(label).with_help(help));
+                    return;
+                }
+            }
         }
-        if let Some(other) = self.instances.get(&(class, key)) {
+        // No two instances whose types can be the same (#145): at each
+        // position the same type constructor, or a variable in either.
+        let same = |a: &InstPat, b: &InstPat| match (a, b) {
+            (InstPat::Head(x, _), InstPat::Head(y, _)) => x == y,
+            _ => true,
+        };
+        if let Some(other) = self.instances.get(&(class, key)).and_then(|v| v.iter().find(|o| o.pats.iter().zip(&pats).all(|(a, b)| same(a, b)))) {
             let (om, os) = (other.module.clone(), other.span);
             let line = self.sources.get(&om).map(|f| f.line_col(os.start).0).unwrap_or(0);
+            let help = if p.heads.len() == 1 {
+                "a type has one instance of each class; give the other order through a wrapper type, or `sort_as`/`sort_by`"
+            } else {
+                "no two instances of a class may match the same types; make one of them for other types"
+            };
             self.err(
                 Diagnostic::error("E0283", format!("`instance {}` overlaps another instance", p.text), p.span)
                     .with_label(format!("`{}` is already declared at {om}:{line}", other.text))
-                    .with_help("a type has one instance of each class; give the other order through a wrapper type, or `sort_as`/`sort_by`"),
+                    .with_help(help),
             );
             return;
         }
-        let context: Vec<(TyId, usize)> = p
+        let context: Vec<(TyId, Vec<usize>)> = p
             .context
             .iter()
-            .filter_map(|(c, v)| match self.resolve(c, true) {
-                Some(Sym::Ty(t)) if self.class_defs.contains_key(&t) => Some((t, p.vars.iter().position(|x| x == v)?)),
+            .filter_map(|(c, vs)| match self.resolve(c, true) {
+                Some(Sym::Ty(t)) if self.class_defs.contains_key(&t) => {
+                    Some((t, vs.iter().map(|v| p.vars.iter().position(|x| x == v)).collect::<Option<Vec<_>>>()?))
+                }
                 _ => None,
             })
             .collect();
@@ -1536,66 +1802,135 @@ impl Elab {
                 self.calls.push(CallRec { caller: def, callee: *d, args: Vec::new(), same: Vec::new(), span: p.span, conds: Vec::new() });
             }
         }
-        self.instances.insert(
-            (class, key),
-            InstInfo { class, def, module: self.cur.clone(), span: p.span, n_vars: p.vars.len(), context, members, text: p.text.clone() },
-        );
+        self.instances.entry((class, key)).or_default().push(InstInfo {
+            class,
+            def,
+            module: self.cur.clone(),
+            span: p.span,
+            n_vars: p.vars.len(),
+            pats,
+            context,
+            members,
+            text: p.text.clone(),
+        });
     }
 
-    /// A dictionary for `class` at `ty`, as a term at level `lvl`: one in
-    /// scope, or an instance's, with its context found the same way.
-    fn find_dict(&mut self, req: &InstReq, class: TyId, ty: &Val, depth: usize) -> Result<Tm, String> {
-        if depth > 32 {
-            return Err("instances nested too deeply".into());
-        }
-        let ty = self.force(ty);
-        let tq = quote(&self.g, req.lvl, &ty);
-        // A known type's dictionary is its instance's (coherence); one in
-        // scope is used for a type parameter.
-        let concrete = matches!(ty, Val::TyCon(..) | Val::TupleTy(_));
-        for (l, c, t) in req.given.iter().filter(|_| !concrete) {
-            if *c == class && format!("{:?}", quote(&self.g, req.lvl, &self.force(t))) == format!("{tq:?}") {
-                return Ok(Tm::Var(req.lvl - l - 1));
-            }
-        }
-        let (key, args) = match &ty {
-            Val::TyCon(t, args) => (HeadKey::Ty(*t), args.clone()),
+    /// What is known of `ty`: its type constructor and arguments.
+    fn shape(&self, lvl: usize, ty: &Val) -> Shape {
+        match self.force(ty) {
+            Val::TyCon(t, args) => Shape::Known(HeadKey::Ty(t), args),
             // A type constructor not applied to its last argument (`List`
             // for `Functor`, M25): `\y -> T … y`.
             Val::Lam(_, _, _, c) => {
-                let y = Val::var(req.lvl + 1000);
-                match self.force(&apply_closure(&self.g, c, y)) {
-                    Val::TyCon(t, mut args) if args.last().is_some_and(|a| matches!(a, Val::Neutral(Head::Var(v), sp) if *v == req.lvl + 1000 && sp.is_empty())) => {
+                let y = Val::var(lvl + 1000);
+                match self.force(&apply_closure(&self.g, &c, y)) {
+                    Val::TyCon(t, mut args) if args.last().is_some_and(|a| matches!(a, Val::Neutral(Head::Var(v), sp) if *v == lvl + 1000 && sp.is_empty())) => {
                         args.pop();
-                        (HeadKey::Ty(t), args)
+                        Shape::Known(HeadKey::Ty(t), args)
                     }
-                    _ => return Err("none".into()),
+                    _ => Shape::Other,
                 }
             }
             // `()`, or a tuple: a pair of its first part and the rest.
             Val::TupleTy(xs) => {
-                let xs = crate::core::flat_parts(&self.g, xs, true);
+                let xs = crate::core::flat_parts(&self.g, &xs, true);
                 match xs.len() {
-                    0 => (HeadKey::Unit, Vec::new()),
-                    1 => return Err("none".into()),
-                    2 => (HeadKey::Pair, xs),
-                    _ => (HeadKey::Pair, vec![xs[0].clone(), Val::TupleTy(xs[1..].to_vec())]),
+                    0 => Shape::Known(HeadKey::Unit, Vec::new()),
+                    1 => Shape::Other,
+                    2 => Shape::Known(HeadKey::Pair, xs),
+                    _ => Shape::Known(HeadKey::Pair, vec![xs[0].clone(), Val::TupleTy(xs[1..].to_vec())]),
                 }
             }
-            Val::Neutral(Head::Meta(_), _) => return Err("unknown".into()),
+            Val::Neutral(Head::Meta(_), _) => Shape::Unknown,
+            _ => Shape::Other,
+        }
+    }
+
+    /// A dictionary for `class` at `tys`, as a term at level `lvl`: one in
+    /// scope, or an instance's, with its context found the same way. An
+    /// instance is chosen once the types are known wherever it names a type
+    /// constructor (#145); until then the request waits.
+    fn find_dict(&mut self, req: &InstReq, class: TyId, tys: &[Val], depth: usize) -> Result<Tm, String> {
+        if depth > 32 {
+            return Err("instances nested too deeply".into());
+        }
+        let tys: Vec<Val> = tys.iter().map(|t| self.force(t)).collect();
+        let shown: Vec<String> = tys.iter().map(|t| format!("{:?}", quote(&self.g, req.lvl, t))).collect();
+        let shapes: Vec<Shape> = tys.iter().map(|t| self.shape(req.lvl, t)).collect();
+        // A known type's dictionary is its instance's (coherence); one in
+        // scope is used for types that aren't all known.
+        let concrete = shapes.iter().all(|s| matches!(s, Shape::Known(..)));
+        for (l, c, ts) in req.given.iter().filter(|_| !concrete) {
+            if *c == class && ts.len() == tys.len() && ts.iter().zip(&shown).all(|(t, s)| format!("{:?}", quote(&self.g, req.lvl, &self.force(t))) == *s) {
+                return Ok(Tm::Var(req.lvl - l - 1));
+            }
+        }
+        // One in scope that may still be meant, once the unknown types are known.
+        let unknown = shapes.iter().any(|s| matches!(s, Shape::Unknown));
+        if unknown && !concrete {
+            let maybe = req.given.iter().any(|(_, c, ts)| {
+                *c == class
+                    && ts.len() == tys.len()
+                    && ts.iter().zip(&shown).zip(&shapes).all(|((t, s), sh)| matches!(sh, Shape::Unknown) || format!("{:?}", quote(&self.g, req.lvl, &self.force(t))) == *s)
+            });
+            if maybe {
+                return Err("unknown".into());
+            }
+        }
+        let key = match shapes.first() {
+            Some(Shape::Known(k, _)) => *k,
+            Some(Shape::Unknown) => return Err("unknown".into()),
             _ => return Err("none".into()),
         };
-        let Some(inst) = self.instances.get(&(class, key)).cloned() else { return Err("none".into()) };
-        if args.len() < inst.n_vars {
-            return Err("none".into());
+        // An instance is chosen once the use's types are known wherever it
+        // names a type constructor; never because the others are ruled out,
+        // as which instances are visible depends on the modules loaded (#145).
+        let cands = self.instances.get(&(class, key)).cloned().unwrap_or_default();
+        let mut undecided = false;
+        let mut chosen = None;
+        for inst in cands {
+            let mut fits = Some(true);
+            for (p, s) in inst.pats.iter().zip(&shapes) {
+                match (p, s) {
+                    (InstPat::Var(_), _) => {}
+                    (InstPat::Head(k, vs), Shape::Known(k2, args)) if k == k2 && args.len() >= vs.len() => {}
+                    (InstPat::Head(..), Shape::Unknown) => fits = fits.map(|_| false),
+                    _ => fits = None,
+                }
+            }
+            match fits {
+                Some(true) => chosen = Some(inst),
+                Some(false) => undecided = true,
+                None => {}
+            }
         }
-        let args = &args[args.len() - inst.n_vars..];
+        let inst = match chosen {
+            Some(i) => i,
+            None if undecided => return Err("unknown".into()),
+            None => return Err("none".into()),
+        };
+        // The instance's variables, from the types.
+        let mut bound: Vec<Option<Val>> = vec![None; inst.n_vars];
+        for ((p, s), ty) in inst.pats.iter().zip(&shapes).zip(&tys) {
+            match (p, s) {
+                (InstPat::Var(v), _) => bound[*v] = Some(ty.clone()),
+                (InstPat::Head(_, vs), Shape::Known(_, args)) => {
+                    let args = &args[args.len() - vs.len()..];
+                    for (v, a) in vs.iter().zip(args) {
+                        bound[*v] = Some(a.clone());
+                    }
+                }
+                _ => return Err("unknown".into()),
+            }
+        }
+        let Some(args) = bound.into_iter().collect::<Option<Vec<Val>>>() else { return Err("none".into()) };
         let mut t = Tm::Def(inst.def);
-        for a in args {
+        for a in &args {
             t = Tm::App(Rc::new(t), Rc::new(quote(&self.g, req.lvl, a)), Icit::Impl, Mult::Zero);
         }
-        for (c, v) in &inst.context {
-            let d = self.find_dict(req, *c, &args[*v], depth + 1)?;
+        for (c, vs) in &inst.context {
+            let ctys: Vec<Val> = vs.iter().map(|v| args[*v].clone()).collect();
+            let d = self.find_dict(req, *c, &ctys, depth + 1)?;
             t = Tm::App(Rc::new(t), Rc::new(d), Icit::Impl, Mult::Many);
         }
         // Using an instance of this module: a call, for termination (D136).
@@ -1605,6 +1940,21 @@ impl Elab {
             }
         }
         Ok(t)
+    }
+
+    /// The instances a request still waiting could mean, as written
+    /// (`Hole Plain Int`): those whose types it may match once known.
+    fn undecided(&self, r: &InstReq) -> Vec<String> {
+        let shapes: Vec<Shape> = r.tys.iter().map(|t| self.shape(r.lvl, t)).collect();
+        let Some(Shape::Known(key, _)) = shapes.first() else { return Vec::new() };
+        let fits = |inst: &InstInfo| {
+            inst.pats.iter().zip(&shapes).all(|(p, s)| match (p, s) {
+                (InstPat::Var(_), _) | (InstPat::Head(..), Shape::Unknown) => true,
+                (InstPat::Head(k, vs), Shape::Known(k2, args)) => k == k2 && args.len() >= vs.len(),
+                _ => false,
+            })
+        };
+        self.instances.get(&(r.class, *key)).map(|v| v.iter().filter(|i| fits(i)).map(|i| i.text.clone()).collect()).unwrap_or_default()
     }
 
     /// An instance's type defined through its own (#133): a dictionary
@@ -1633,10 +1983,20 @@ impl Elab {
             self.assoc_edges.push((owner, *target));
             return false;
         }
-        let shown = show(&self.g, &r.names, &quote(&self.g, r.lvl, &r.ty));
-        let shown = if shown.contains(' ') { format!("({shown})") } else { shown };
+        let shown: Vec<String> = r
+            .tys
+            .iter()
+            .map(|t| {
+                let s = show(&self.g, &r.names, &quote(&self.g, r.lvl, t));
+                if s.contains(' ') {
+                    format!("({s})")
+                } else {
+                    s
+                }
+            })
+            .collect();
         self.err(
-            Diagnostic::error("E0225", format!("`{name} {shown}` depends on itself"), r.span)
+            Diagnostic::error("E0225", format!("`{name} {}` depends on itself", shown.join(" ")), r.span)
                 .with_help("an instance's type stands for the type it is given, so this would never end; give the type itself"),
         );
         true
@@ -1645,46 +2005,68 @@ impl Elab {
     /// The instance whose member's signature is `decl` (an index into the
     /// desugared module), if it is one (#146).
     pub fn sig_inst_of(&self, decl: usize) -> Option<SigInst> {
-        let (cname, head, vars) = self.member_heads.get(&decl)?;
+        let (cname, heads) = self.member_heads.get(&decl)?;
         let class = match self.resolve(cname, true) {
             Some(Sym::Ty(t)) if self.class_defs.contains_key(&t) => t,
             _ => return None,
         };
-        let mut h = head;
-        while let ExprKind::App(f, _) = &h.kind {
-            h = f;
-        }
-        let key = match &h.kind {
-            ExprKind::Tuple(xs) if xs.is_empty() => HeadKey::Unit,
-            ExprKind::Tuple(_) => HeadKey::Pair,
-            ExprKind::Con(n) => match self.resolve(n, true) {
-                Some(Sym::Ty(t)) => HeadKey::Ty(t),
+        let mut out = Vec::new();
+        for head in heads {
+            let mut vars = Vec::new();
+            let mut h = head;
+            while let ExprKind::App(f, a) = &h.kind {
+                if let ExprKind::Var(v) = &a.kind {
+                    vars.push(v.clone());
+                }
+                h = f;
+            }
+            vars.reverse();
+            let key = match &h.kind {
+                ExprKind::Var(v) => {
+                    out.push((None, vec![v.clone()]));
+                    continue;
+                }
+                ExprKind::Tuple(xs) if xs.is_empty() => HeadKey::Unit,
+                ExprKind::Tuple(xs) => {
+                    vars = xs.iter().filter_map(|x| if let ExprKind::Var(v) = &x.kind { Some(v.clone()) } else { None }).collect();
+                    HeadKey::Pair
+                }
+                ExprKind::Con(n) => match self.resolve(n, true) {
+                    Some(Sym::Ty(t)) => HeadKey::Ty(t),
+                    _ => return None,
+                },
                 _ => return None,
-            },
-            _ => return None,
-        };
-        Some(SigInst { class, key, vars: vars.clone() })
+            };
+            out.push((Some(key), vars));
+        }
+        Some(SigInst { class, heads: out })
     }
 
-    /// Solve `r`, whose type isn't known, with the instance whose member's
-    /// signature it is in: its head's variables are locals there.
+    /// Solve `r`, whose types aren't known, with the instance whose
+    /// member's signature it is in: its types' variables are locals there.
     fn use_fallback(&mut self, r: &InstReq) -> bool {
         let Some(f) = &r.fallback else { return false };
-        let mut args = Vec::new();
-        for v in &f.vars {
-            let Some(l) = r.names.iter().rposition(|n| **n == **v) else { return false };
-            args.push(Val::var(l));
-        }
-        let head = match f.key {
-            HeadKey::Ty(t) if self.g.arity_ty(t) == args.len() => Val::TyCon(t, args),
-            HeadKey::Unit => Val::TupleTy(Vec::new()),
-            HeadKey::Pair if args.len() == 2 => Val::TupleTy(args),
-            _ => return false,
-        };
-        if unify(&self.g, r.lvl, &r.ty, &head).is_err() {
+        if f.heads.len() != r.tys.len() {
             return false;
         }
-        match self.find_dict(r, r.class, &r.ty, 0) {
+        for ((key, vars), ty) in f.heads.iter().zip(&r.tys) {
+            let mut args = Vec::new();
+            for v in vars {
+                let Some(l) = r.names.iter().rposition(|n| **n == **v) else { return false };
+                args.push(Val::var(l));
+            }
+            let head = match key {
+                None => args.remove(0),
+                Some(HeadKey::Ty(t)) if self.g.arity_ty(*t) == args.len() => Val::TyCon(*t, args),
+                Some(HeadKey::Unit) => Val::TupleTy(Vec::new()),
+                Some(HeadKey::Pair) if args.len() == 2 => Val::TupleTy(args),
+                _ => return false,
+            };
+            if unify(&self.g, r.lvl, ty, &head).is_err() {
+                return false;
+            }
+        }
+        match self.find_dict(r, r.class, &r.tys, 0) {
             Ok(t) => {
                 let env = Rc::new((0..r.lvl).map(Val::var).collect::<Vec<_>>());
                 let v = eval(&self.g, &env, &t);
@@ -1708,7 +2090,7 @@ impl Elab {
                 }
                 continue;
             }
-            match self.find_dict(&r, r.class, &r.ty, 0) {
+            match self.find_dict(&r, r.class, &r.tys, 0) {
                 Ok(t) => {
                     if self.assoc_cycle(&r, &t) {
                         continue;
@@ -1723,29 +2105,44 @@ impl Elab {
                 Err(why) if why == "unknown" && self.use_fallback(&r) => {}
                 Err(why) => {
                     // An unknown type in a reported mismatch: that error's (D141 c).
-                    if why == "unknown" && self.unknowns(r.lvl, &r.ty).iter().any(|m| self.blamed.contains(m)) {
+                    if why == "unknown" && r.tys.iter().any(|t| self.unknowns(r.lvl, t).iter().any(|m| self.blamed.contains(m))) {
                         continue;
                     }
                     let cname = self.class_defs.get(&r.class).map(|c| c.name.clone()).unwrap_or_default();
-                    let shown = match self.force(&r.ty) {
-                        // `\y -> List y` is `List`.
-                        Val::Lam(_, _, _, c) => match self.force(&apply_closure(&self.g, &c, Val::var(r.lvl))) {
-                            Val::TyCon(t, args) if args.len() == 1 => self.g.tys[t.0 as usize].name.to_string(),
-                            _ => show(&self.g, &r.names, &quote(&self.g, r.lvl, &r.ty)),
-                        },
-                        _ => show(&self.g, &r.names, &quote(&self.g, r.lvl, &r.ty)),
-                    };
-                    let shown_arg = if shown.contains(' ') { format!("({shown})") } else { shown.clone() };
+                    let shown: Vec<String> = r
+                        .tys
+                        .iter()
+                        .map(|t| match self.force(t) {
+                            // `\y -> List y` is `List`.
+                            Val::Lam(_, _, _, c) => match self.force(&apply_closure(&self.g, &c, Val::var(r.lvl))) {
+                                Val::TyCon(t, args) if args.len() == 1 => self.g.tys[t.0 as usize].name.to_string(),
+                                _ => show(&self.g, &r.names, &quote(&self.g, r.lvl, t)),
+                            },
+                            _ => show(&self.g, &r.names, &quote(&self.g, r.lvl, t)),
+                        })
+                        .collect();
+                    let args: Vec<String> = shown.iter().map(|s| if s.contains(' ') { format!("({s})") } else { s.clone() }).collect();
+                    let clause = format!("{cname} {}", args.join(" "));
+                    let several = r.tys.len() > 1;
+                    let param = r.tys.iter().zip(&shown).find(|(t, _)| matches!(self.force(t), Val::Neutral(Head::Var(_), _)));
+                    let could = if why == "unknown" { self.undecided(&r) } else { Vec::new() };
                     let d = if why == "unknown" {
-                        Diagnostic::error("E0285", format!("can't tell which instance of `{cname}` to use: the type isn't known here"), r.span)
-                            .with_help("give the type, e.g. with a constraint `x~List Int` in the signature")
-                    } else if matches!(self.force(&r.ty), Val::Neutral(Head::Var(_), _)) {
-                        Diagnostic::error("E0284", format!("no instance of `{cname}` for `{shown}`"), r.span)
-                            .with_label(format!("`{shown}` is a type parameter"))
-                            .with_help(format!("add `{cname} {shown_arg}` to the function's signature"))
+                        let d = Diagnostic::error("E0285", format!("can't tell which instance of `{cname}` to use: the type isn't known here"), r.span);
+                        // Several instances could match: the label names them (#145).
+                        let d = if could.len() > 1 { d.with_label(format!("`{clause}` could be {}", joined(&could, "or"))) } else { d };
+                        d.with_help("give the type, e.g. with a constraint `x~List Int` in the signature")
+                    } else if let Some((_, p)) = param {
+                        Diagnostic::error("E0284", format!("no instance of `{cname}` for {}", joined(&shown, "and")), r.span)
+                            .with_label(format!("`{p}` is a type parameter"))
+                            .with_help(format!("add `{clause}` to the function's signature"))
+                    } else if several {
+                        Diagnostic::error("E0284", format!("no instance of `{cname}` for {}", joined(&shown, "and")), r.span)
+                            .with_label(format!("needs `{clause}`"))
+                            .with_help(format!("declare `instance {cname} …` for these types, beside the class or the first type"))
                     } else {
+                        let shown = &shown[0];
                         Diagnostic::error("E0284", format!("no instance of `{cname}` for `{shown}`"), r.span)
-                            .with_label(format!("needs `{cname} {shown_arg}`"))
+                            .with_label(format!("needs `{clause}`"))
                             .with_help(format!("declare `instance {cname} …` for this type, beside the class or the type"))
                     };
                     self.err(d);
@@ -1768,8 +2165,8 @@ impl Elab {
     /// body isn't elaborated yet?
     fn on_pending_dict(&self, t: &Tm) -> bool {
         if let (Tm::Def(d), args) = t.spine() {
-            if args.len() == 2 && self.g.assoc_field(*d).is_some() {
-                if let Tm::Def(dd) = args[1].head() {
+            if let Some(n) = self.g.assoc_def(*d).map(|(_, _, n)| n).filter(|n| args.len() == n + 1) {
+                if let Tm::Def(dd) = args[n].head() {
                     if self.dict_defs.contains(dd) && self.g.defs[dd.0 as usize].body.is_none() {
                         return true;
                     }
@@ -1793,7 +2190,7 @@ impl Elab {
     /// instance's (#133): `NoOptions` for `Display.Options Int`, in messages.
     pub fn reduce_assoc(&self, lvl: usize, t: &Tm) -> Tm {
         if let (Tm::Def(d), args) = t.spine() {
-            if args.len() == 2 && self.g.assoc_field(*d).is_some() {
+            if self.g.assoc_def(*d).is_some_and(|(_, _, n)| args.len() == n + 1) {
                 let env = Rc::new((0..lvl).map(Val::var).collect::<Vec<_>>());
                 let v = force(&self.g, eval(&self.g, &env, t));
                 let stuck = matches!(&v, Val::Neutral(_, sp) if matches!(sp.last(), Some(Elim::Field(..))));
@@ -1862,25 +2259,22 @@ impl Elab {
     /// An implicit parameter being given a meta: if it is a dictionary,
     /// remember to find it.
     pub fn note_dict(&mut self, cx: &Cx, meta: &Val, dom: &Val, span: Span) {
-        let Val::TyCon(tid, args) = self.force(dom) else { return };
-        if !self.class_defs.contains_key(&tid) {
+        let Val::TyCon(tid, tys) = self.force(dom) else { return };
+        if !self.class_defs.contains_key(&tid) || tys.is_empty() {
             return;
         }
-        let Some(ty) = args.last().cloned() else { return };
         let mut given = Vec::new();
         for (l, loc) in cx.locals.iter().enumerate() {
             if let Val::TyCon(c, a) = self.force(&loc.ty) {
-                if self.class_defs.contains_key(&c) {
-                    if let Some(t) = a.last() {
-                        given.push((l, c, t.clone()));
-                    }
+                if self.class_defs.contains_key(&c) && !a.is_empty() {
+                    given.push((l, c, a));
                 }
             }
         }
         self.inst_reqs.push(InstReq {
             meta: meta.clone(),
             class: tid,
-            ty,
+            tys,
             lvl: cx.lvl(),
             names: cx.names(),
             span,

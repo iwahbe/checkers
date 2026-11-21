@@ -224,9 +224,9 @@ impl Linter {
                 self.expr(value);
             }
             DeclKind::Check { expr } => self.expr(expr),
-            DeclKind::Class { name, param, members } => {
+            DeclKind::Class { name, params, members } => {
                 self.camel(name, "class name");
-                self.snake(param, "type parameter");
+                params.iter().for_each(|p| self.snake(p, "type parameter"));
                 for m in members {
                     match m {
                         ClassMember::Type { name, default, .. } => {

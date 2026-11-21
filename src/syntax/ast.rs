@@ -178,16 +178,18 @@ pub enum DeclKind {
     Check {
         expr: Expr,
     },
-    /// `class Ord a` and what each instance must supply (D136).
+    /// `class Ord a` and what each instance must supply (D136); a class may
+    /// take several type parameters (`class Hole s h`, #145).
     Class {
         name: Ident,
-        param: Ident,
+        params: Vec<Ident>,
         members: Vec<ClassMember>,
     },
-    /// `instance Ord (List a) : Ord a` (D136).
+    /// `instance Ord (List a) : Ord a` (D136); a type for each of the
+    /// class's parameters (`instance Hole Format a : Display a`, #145).
     Instance {
         class: Ident,
-        ty: Expr,
+        tys: Vec<Expr>,
         context: Vec<Expr>,
         members: Vec<InstMember>,
     },

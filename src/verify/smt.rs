@@ -629,7 +629,7 @@ impl<'a> Builder<'a> {
                     // A class's type (#133): at a known instance, its type;
                     // at a dictionary in scope, for a type `t`, a sort of its
                     // own applied to `t`'s (one instance per type).
-                    Tm::Def(d) if args.len() == 2 && self.e.g.assoc_field(*d).is_some() => {
+                    Tm::Def(d) if self.e.g.assoc_def(*d).is_some_and(|(_, _, n)| args.len() == n + 1) => {
                         // Known values (an instance's dictionary) as they are.
                         let n = env.len();
                         let empty = Rc::new(Vec::new());
@@ -650,7 +650,7 @@ impl<'a> Builder<'a> {
                                 let crate::core::Elim::Field(c, i) = sp[0] else { return out("a class's type at a dictionary it can't name") };
                                 // The sort of the type the dictionary is for.
                                 match self.resolve(env, n - 1 - l)? {
-                                    Ent::Term(_, Sort::Data(_, sargs)) if !sargs.is_empty() => Ok(self.assoc_sort(c, i, sargs[0].clone())),
+                                    Ent::Term(_, Sort::Data(_, sargs)) if !sargs.is_empty() => Ok(self.assoc_sort(c, i, sargs)),
                                     _ => out("a class's type at a dictionary it can't name"),
                                 }
                             }
@@ -728,14 +728,15 @@ impl<'a> Builder<'a> {
     }
 
     /// The sort of a class's type (field `i` of its dictionary's
-    /// constructor `c`, #133) at a type of sort `arg`: a sort constructor
-    /// of its own, `Display.Options a`.
-    fn assoc_sort(&mut self, c: ConId, i: usize, arg: Sort) -> Sort {
+    /// constructor `c`, #133) at types of sorts `args` (one for each of the
+    /// class's parameters, #145): a sort constructor of its own,
+    /// `Display.Options a`.
+    fn assoc_sort(&mut self, c: ConId, i: usize, args: Vec<Sort>) -> Sort {
         let ci = &self.e.g.cons[c.0 as usize];
         let ti = &self.e.g.tys[ci.ty.0 as usize];
         let name = format!("{}.{}.{}", ti.module, ti.name, ci.fields[i].0.trim_start_matches('$'));
-        self.sorts.insert(name.clone(), 1);
-        Sort::Unin(name, vec![arg])
+        self.sorts.insert(name.clone(), args.len());
+        Sort::Unin(name, args)
     }
 
     /// A type-valued field's sort, in a datatype's declaration: a class's
@@ -743,8 +744,10 @@ impl<'a> Builder<'a> {
     fn type_field_sort(&mut self, c: ConId, i: usize, env: &[Ent]) -> Sort {
         let f = &self.e.g.cons[c.0 as usize].fields[i];
         if f.0.starts_with('$') {
-            if let Some(Ent::Ty(p)) = env.first() {
-                return self.assoc_sort(c, i, p.clone());
+            let n = self.e.g.arity_ty(self.e.g.cons[c.0 as usize].ty);
+            let ps: Vec<Sort> = env.iter().take(n).filter_map(|e| if let Ent::Ty(p) = e { Some(p.clone()) } else { None }).collect();
+            if n > 0 && ps.len() == n {
+                return self.assoc_sort(c, i, ps);
             }
         }
         self.sorts.insert("field".into(), 0);
@@ -2053,7 +2056,7 @@ impl<'a> Builder<'a> {
                 if k >= pos {
                     break;
                 }
-                if self.is_type(&a) && *x != *cd.param {
+                if self.is_type(&a) && !cd.params.iter().any(|p| **p == *x) {
                     tyargs.push(inner[k].clone());
                 }
                 t = (*b).clone();

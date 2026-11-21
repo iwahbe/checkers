@@ -634,8 +634,8 @@ pub struct Elab {
     /// find cycles.
     pub assoc_edges: Vec<(DefId, DefId)>,
     /// Each instance member of the module being desugared, by its index:
-    /// its class's name, its instance's head and the head's variables (#146).
-    pub member_heads: HashMap<usize, (String, ast::Expr, Vec<String>)>,
+    /// its class's name and its instance's types (#146, #145).
+    pub member_heads: HashMap<usize, (String, Vec<ast::Expr>)>,
     /// The instance whose member's signature is being elaborated (#146).
     pub sig_inst: Option<classes::SigInst>,
     /// Comparisons waiting for a dictionary (#133): level, expected,
@@ -644,7 +644,7 @@ pub struct Elab {
     /// Those waiting for an instance's dictionary to be elaborated (#146).
     pub waiting_late: Vec<(usize, Val, Val, Span, Vec<Name>)>,
     /// This module's classes, until their types are registered.
-    pub pending_classes: Vec<(String, String, Vec<ast::ClassMember>, Span)>,
+    pub pending_classes: Vec<(String, Vec<String>, Vec<ast::ClassMember>, Span)>,
     /// A class function's parameters' multiplicities, by `module.Class.function`,
     /// when one is written `own` or `ghost`: its dictionary field takes an `own`
     /// one exactly once, so generic code can pass it a resource (D156 i), and a
@@ -678,7 +678,7 @@ pub struct Elab {
     /// Each instance member's dictionary function.
     pub inst_member_of: HashMap<DefId, DefId>,
     /// Instances, by class and the head of their type.
-    pub instances: HashMap<(TyId, classes::HeadKey), classes::InstInfo>,
+    pub instances: HashMap<(TyId, classes::HeadKey), Vec<classes::InstInfo>>,
     /// Dictionaries to find once types are known.
     pub inst_reqs: Vec<classes::InstReq>,
     /// Inside a named precondition: `forall` is allowed (D137).

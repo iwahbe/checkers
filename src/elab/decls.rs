@@ -1468,7 +1468,7 @@ impl Elab {
     /// `List (Display.Options Tree)`.
     fn assoc_holder(&self, t: &Tm, me: TyId) -> Option<String> {
         if let (Tm::Def(d), args) = t.spine() {
-            if self.g.assoc_field(*d).is_some() && args.first().is_some_and(|a| occurs_ty(a, me)) {
+            if self.g.assoc_def(*d).is_some_and(|(_, _, n)| args.iter().take(n).any(|a| occurs_ty(a, me))) {
                 return Some(self.g.defs[d.0 as usize].name.to_string());
             }
         }

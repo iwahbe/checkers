@@ -777,23 +777,26 @@ impl Elab {
     // ── application ─────────────────────────────────────────────────────────
 
     /// `C.Name t` (#133): the class's type `Name` at `t`, read from the
-    /// dictionary found for `t` once `t` is known.
+    /// dictionary found for `t` once `t` is known; `C.Name s h` for a class
+    /// of several parameters (#145), one type for each.
     #[allow(clippy::too_many_arguments)]
-    fn elab_assoc(&mut self, cx: &mut Cx, tid: TyId, acc: DefId, class_span: Span, name: &ast::Ident, arg: &Expr, span: Span) -> (Tm, Val) {
+    fn elab_assoc(&mut self, cx: &mut Cx, tid: TyId, acc: DefId, class_span: Span, name: &ast::Ident, args: &[&Expr], span: Span) -> (Tm, Val) {
         self.index_sym(class_span, Sym::Ty(tid));
         self.index_sym(name.span, Sym::Def(acc));
         self.note_reference(acc, span);
-        let (f, fty) = self.sym_term(cx, Sym::Def(acc), span);
-        let Val::Pi(_, m, _, dom, c) = self.force(&fty) else { return (Tm::Error, Val::Error) };
-        let saved = cx.type_pos;
-        cx.type_pos = true;
-        self.in_spec += 1;
-        let at = self.check(cx, arg, &dom, false);
-        self.in_spec -= 1;
-        cx.type_pos = saved;
-        let av = self.eval(cx, &at);
-        let t = Tm::App(Rc::new(f), Rc::new(at), Icit::Expl, m);
-        let ty = apply_closure(&self.g, &c, av);
+        let (mut t, mut ty) = self.sym_term(cx, Sym::Def(acc), span);
+        for arg in args {
+            let Val::Pi(_, m, _, dom, c) = self.force(&ty) else { return (Tm::Error, Val::Error) };
+            let saved = cx.type_pos;
+            cx.type_pos = true;
+            self.in_spec += 1;
+            let at = self.check(cx, arg, &dom, false);
+            self.in_spec -= 1;
+            cx.type_pos = saved;
+            let av = self.eval(cx, &at);
+            t = Tm::App(Rc::new(t), Rc::new(at), Icit::Expl, m);
+            ty = apply_closure(&self.g, &c, av);
+        }
         self.name_span = span;
         let n = self.inst_reqs.len();
         let r = self.insert(cx, t, ty);
@@ -826,8 +829,13 @@ impl Elab {
             if let ExprKind::Con(c) = &x.kind {
                 if let Some(Sym::Ty(tid)) = self.resolve(c, true) {
                     if let Some(acc) = self.assoc_defs.get(&(tid, name.name.clone())).copied() {
-                        let r = self.elab_assoc(cx, tid, acc, x.span, name, args[0], head.span.to(args[0].span));
-                        return self.apply_rest(cx, r, &args[1..], e.span);
+                        // One type for each of the class's parameters (#145).
+                        let n = self.class_defs.get(&tid).map_or(1, |c| c.params.len());
+                        if args.len() < n {
+                            return self.assoc_without_types(tid, acc, x.span, name, e.span);
+                        }
+                        let r = self.elab_assoc(cx, tid, acc, x.span, name, &args[..n], head.span.to(args[n - 1].span));
+                        return self.apply_rest(cx, r, &args[n..], e.span);
                     }
                 }
             }
@@ -2092,6 +2100,26 @@ impl Elab {
 
     // ── fields and qualified names ──────────────────────────────────────────
 
+    /// `C.Name` without the types it is for (E0291).
+    fn assoc_without_types(&mut self, tid: TyId, acc: DefId, class_span: Span, name: &Ident, span: Span) -> (Tm, Val) {
+        self.index_sym(class_span, Sym::Ty(tid));
+        self.index_sym(name.span, Sym::Def(acc));
+        let Some(cd) = self.class_defs.get(&tid) else { return (Tm::Error, Val::Error) };
+        let (cn, n) = (cd.name.clone(), name.name.clone());
+        let d = if cd.params.len() == 1 {
+            Diagnostic::error("E0291", format!("`{cn}.{n}` needs the type it is for"), span)
+                .with_label(format!("each instance of `{cn}` gives its own `{n}`"))
+                .with_help(format!("write `{cn}.{n} t` for the type `t`, e.g. `{cn}.{n} a` under a clause `{cn} a`"))
+        } else {
+            let ps = cd.params.join(" ");
+            Diagnostic::error("E0291", format!("`{cn}.{n}` needs the {} types it is for", cd.params.len()), span)
+                .with_label(format!("each instance of `{cn}` gives its own `{n}`"))
+                .with_help(format!("write `{cn}.{n} {ps}` under a clause `{cn} {ps}`"))
+        };
+        self.err(d);
+        (Tm::Error, Val::Error)
+    }
+
     fn elab_field(&mut self, cx: &mut Cx, x: &Expr, name: &Ident, span: Span) -> (Tm, Val) {
         if Self::is_cursor(&name.name) {
             return self.note_member(cx, x);
@@ -2102,15 +2130,7 @@ impl Elab {
                 if let Some(cd) = self.class_defs.get(&tid).cloned() {
                     let member = self.modules.get(&cd.module).and_then(|m| m.values.get(&name.name)).copied();
                     if let Some(acc) = self.assoc_defs.get(&(tid, name.name.clone())).copied() {
-                        self.index_sym(x.span, Sym::Ty(tid));
-                        self.index_sym(name.span, Sym::Def(acc));
-                        let (cn, n) = (cd.name.clone(), name.name.clone());
-                        self.err(
-                            Diagnostic::error("E0291", format!("`{cn}.{n}` needs the type it is for"), span)
-                                .with_label(format!("each instance of `{cn}` gives its own `{n}`"))
-                                .with_help(format!("write `{cn}.{n} t` for the type `t`, e.g. `{cn}.{n} a` under a clause `{cn} a`")),
-                        );
-                        return (Tm::Error, Val::Error);
+                        return self.assoc_without_types(tid, acc, x.span, name, span);
                     }
                     let is_member = cd.members.iter().any(|m| !matches!(m, ast::ClassMember::Type { .. }) && m.name().name == name.name);
                     return match member {
