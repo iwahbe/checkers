@@ -2129,6 +2129,18 @@ impl Elab {
     /// Find the dictionaries asked for so far. With `last`, report those
     /// whose type still isn't known.
     pub fn solve_instances(&mut self, last: bool) {
+        // Before reporting, settle what can be: one request's dictionary can
+        // make another's type known (`show (made 1)`: `Make Int` reduces
+        // `Made`, then `Show Int` is known), whatever order they came in.
+        if last {
+            loop {
+                let before = self.inst_reqs.len();
+                self.solve_instances(false);
+                if self.inst_reqs.len() == before {
+                    break;
+                }
+            }
+        }
         let reqs = std::mem::take(&mut self.inst_reqs);
         for r in reqs {
             if !matches!(self.force(&r.meta), Val::Neutral(Head::Meta(_), _)) {
