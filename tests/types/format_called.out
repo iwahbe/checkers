@@ -1,0 +1,36 @@
+error[E0201]: type mismatch: expected `String`, found `(k~Nat) -> Format`
+  --> format_called.ck:28:5
+   |
+28 |     format (n + 1)
+   |     ^^^^^^^^^^^^^^ this expression has type `(k~Nat) -> Format`
+   = help: `format` is a template's tag: write `format"…{n + 1}…"` to put `n + 1` in a template
+
+error[E0201]: type mismatch: expected `String`, found `(k~Nat) -> Format`
+  --> format_called.ck:31:5
+   |
+31 |     format name
+   |     ^^^^^^^^^^^ this expression has type `(k~Nat) -> Format`
+   = help: `format` is a template's tag: write `format"…{name}…"` to put `name` in a template
+
+error[E0201]: type mismatch: expected `Nat`, found `String`
+  --> format_called.ck:31:12
+   |
+31 |     format name
+   |            ^^^^ this expression has type `String`
+   = help: `format` is a template's tag: write `format"…{name}…"` to put `name` in a template
+
+error[E0201]: type mismatch: expected `String`, found `(k~Nat) -> Page`
+  --> format_called.ck:34:5
+   |
+34 |     page name
+   |     ^^^^^^^^^ this expression has type `(k~Nat) -> Page`
+   = help: `page` is a template's tag: write `page"…{name}…"` to put `name` in a template
+
+error[E0201]: type mismatch: expected `Nat`, found `String`
+  --> format_called.ck:34:10
+   |
+34 |     page name
+   |          ^^^^ this expression has type `String`
+   = help: `page` is a template's tag: write `page"…{name}…"` to put `name` in a template
+
+format_called.ck: 5 errors, 0 warnings

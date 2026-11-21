@@ -181,6 +181,9 @@ pub struct Program {
     pub names: Vec<String>,
     /// `main`, when the program has one.
     pub main: u32,
+    /// The code computing the hand-written `Debug` instances' functions, a
+    /// list in the order of `Globals::well_known.debug_insts` (#126).
+    pub debug: Option<u32>,
 }
 
 /// Code with no definition (a `check`, a value staging computes).
@@ -227,8 +230,35 @@ impl Program {
             con_wraps: HashMap::new(),
             names,
             main: NO_OWNER,
+            debug: None,
         }
     }
+}
+
+/// The hand-written `Debug` instances' functions (#126), as a closed term:
+/// a list of them, each applied to its type's (erased) parameters. `None`
+/// if the program has none.
+pub fn debug_table(g: &Globals) -> Option<Tm> {
+    use crate::core::Icit;
+    use std::rc::Rc;
+    let insts = &g.well_known.debug_insts;
+    let (nil, cons) = (g.well_known.nil?, g.well_known.cons?);
+    if insts.is_empty() {
+        return None;
+    }
+    let erased = |f: Tm| Tm::App(Rc::new(f), Rc::new(Tm::Univ(0)), Icit::Impl, Mult::Zero);
+    let mut list = erased(Tm::Con(nil));
+    for (_, d) in insts.iter().rev() {
+        let mut f = Tm::Def(*d);
+        let mut ty = &g.defs[d.0 as usize].ty;
+        while let Tm::Pi(_, Mult::Zero, Icit::Impl, _, b) = ty {
+            f = erased(f);
+            ty = b;
+        }
+        let c = erased(Tm::Con(cons));
+        list = Tm::App(Rc::new(Tm::App(Rc::new(c), Rc::new(f), Icit::Expl, Mult::Many)), Rc::new(list), Icit::Expl, Mult::Many);
+    }
+    Some(list)
 }
 
 /// The whole program reachable from `main`.
@@ -236,6 +266,9 @@ pub fn lower(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId) ->
     let mut p = Program::new(g, staged);
     Lowerer::new(g, staged, &mut p).add_defs(&[main.0]);
     p.main = main.0;
+    if let Some(t) = debug_table(g) {
+        p.debug = Some(Lowerer::new(g, staged, &mut p).add_closed(&t));
+    }
     p
 }
 

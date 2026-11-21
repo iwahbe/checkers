@@ -1,7 +1,7 @@
 module template_errors
 
 import std.list
-import std.string (Template, Hole)
+import std.string (Template, Hole, debug)
 
 record Page
     parts~List String
@@ -46,7 +46,7 @@ instance Hole Plain String
 
 instance Hole Plain Int
     fn hole p x os
-        Plain (format x :: p.parts)
+        Plain (debug x :: p.parts)
 
 fn count n k -> c : n~Nat, k~Nat, c~Int
     k

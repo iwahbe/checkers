@@ -448,8 +448,7 @@ impl U<'_> {
                 | Prim::Gt
                 | Prim::Ge
                 | Prim::Concat
-                | Prim::Len
-                | Prim::Format,
+                | Prim::Len,
                 _,
             ) => {}
             // A closure, a match, an element, a builtin: everything they mention.

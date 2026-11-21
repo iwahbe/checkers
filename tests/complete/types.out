@@ -75,7 +75,6 @@ replaces 16:33-16:33
   Sub                class           export class Sub a  (documented)
   add                function        fn add x y -> r : x~a, y~a, r~a
   fmap               function        fn fmap g xs -> ys : g~(a -> b), xs~f a, ys~f b  (documented)
-  format             function        
   len                function        
   mul                function        fn mul x y -> r : x~a, y~a, r~a
   neg                function        fn neg x -> r : x~a, r~a

@@ -283,6 +283,6 @@ A `comptime` parameter must be known when the program is compiled; calls with it
 The prelude is in scope in every module. Besides the types above, it has:
 
 - the function `not` on `Bool`;
-- `len e`, the length of a `String` (in bytes), an `Array` or a `List`, and `format e`, any value as text ([Running programs](execution.md#format)): built-in operators written like functions, which must be applied (E0214) and can't be passed as values (write `\x -> len x`);
+- `len e`, the length of a `String` (in bytes), an `Array` or a `List`: a built-in operator written like a function, which must be applied (E0214) and can't be passed as a value (write `\x -> len x`);
 - the classes `Ord`, `Add`, `Sub`, `Mul`, `Neg`, `Monoid` and `Functor`, with their instances for its types ([Classes](classes.md#the-prelude-s-classes));
 - the operators, whose meanings are in [Expressions](expressions.md#operators).

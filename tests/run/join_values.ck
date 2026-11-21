@@ -6,6 +6,7 @@ import std.future (Future)
 import std.future
 import std.system (System, ExitCode)
 import std.terminal
+import std.string (debug)
 
 fn sum xs -> n : xs~List Nat, n~Nat
     match xs
@@ -20,6 +21,6 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let c = future.ready 15
     # `ts` is inferred: Then Nat (Then String (Last Nat)) (D175).
     let (x, y, z) = future.join (a, b, c)
-    terminal.print_line (format x ++ " is " ++ y) term
+    terminal.print_line (debug x ++ " is " ++ y) term
     let w = future.join a
     if x + z == 21 and w == 6 then Success else Failure 1

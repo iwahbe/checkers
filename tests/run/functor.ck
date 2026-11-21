@@ -7,6 +7,7 @@ import std.system (System, ExitCode)
 import std.terminal (Term)
 import std.terminal
 import std.array
+import std.string (debug)
 
 # A pair of values of one type.
 record Two a
@@ -32,10 +33,10 @@ check doubled (Two 3 4) == Two 6 8
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let t = sys.term
-    terminal.print_line (format (doubled [1, 2, 3])) t
-    terminal.print_line (format (doubled (Some 5))) t
-    terminal.print_line (format (doubled (array.from_list [7, 8]))) t
+    terminal.print_line (debug (doubled [1, 2, 3])) t
+    terminal.print_line (debug (doubled (Some 5))) t
+    terminal.print_line (debug (doubled (array.from_list [7, 8]))) t
     let p = doubled (Two 10 20)
-    terminal.print_line (format [p.first, p.second]) t
-    terminal.print_line (format (fmap (\s -> s ++ "!") ["a", "b"])) t
+    terminal.print_line (debug [p.first, p.second]) t
+    terminal.print_line (debug (fmap (\s -> s ++ "!") ["a", "b"])) t
     Success

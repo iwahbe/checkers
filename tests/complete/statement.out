@@ -29,7 +29,6 @@ replaces 19:5-19:5
   add                function        fn add x y -> r : x~a, y~a, r~a
   char               module          module std.char
   fmap               function        fn fmap g xs -> ys : g~(a -> b), xs~f a, ys~f b  (documented)
-  format             function        
   le                 function        fn le x y -> r : x~a, y~a, r~Bool  (documented)
   len                function        
   mul                function        fn mul x y -> r : x~a, y~a, r~a
@@ -68,7 +67,6 @@ replaces 24:5-24:7
   add                function        fn add x y -> r : x~a, y~a, r~a
   char               module          module std.char
   fmap               function        fn fmap g xs -> ys : g~(a -> b), xs~f a, ys~f b  (documented)
-  format             function        
   le                 function        fn le x y -> r : x~a, y~a, r~Bool  (documented)
   len                function        
   mul                function        fn mul x y -> r : x~a, y~a, r~a
@@ -103,7 +101,6 @@ replaces 28:10-28:10
   add                function        fn add x y -> r : x~a, y~a, r~a
   char               module          module std.char
   fmap               function        fn fmap g xs -> ys : g~(a -> b), xs~f a, ys~f b  (documented)
-  format             function        
   le                 function        fn le x y -> r : x~a, y~a, r~Bool  (documented)
   len                function        
   mul                function        fn mul x y -> r : x~a, y~a, r~a
@@ -154,7 +151,6 @@ replaces 46:11-46:11
   add                function        fn add x y -> r : x~a, y~a, r~a
   char               module          module std.char
   fmap               function        fn fmap g xs -> ys : g~(a -> b), xs~f a, ys~f b  (documented)
-  format             function        
   le                 function        fn le x y -> r : x~a, y~a, r~Bool  (documented)
   len                function        
   mul                function        fn mul x y -> r : x~a, y~a, r~a

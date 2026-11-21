@@ -1,0 +1,22 @@
+error[E0204]: unknown name `format`
+ --> format_unimported.ck:8:5
+  |
+8 |     format"n is {n}"
+  |     ^^^^^^ not found
+  = help: `format` is in `std.string`: add `import std.string (format)`
+
+error[E0204]: unknown name `display`
+  --> format_unimported.ck:11:5
+   |
+11 |     display n [] ++ debug n
+   |     ^^^^^^^ not found
+   = help: `display` is in `std.string`: add `import std.string (display)`
+
+error[E0204]: unknown name `debug`
+  --> format_unimported.ck:11:21
+   |
+11 |     display n [] ++ debug n
+   |                     ^^^^^ not found
+   = help: `debug` is in `std.string`: add `import std.string (debug)`
+
+format_unimported.ck: 3 errors, 0 warnings

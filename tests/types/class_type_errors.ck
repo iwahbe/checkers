@@ -1,5 +1,7 @@
 module class_type_errors
 
+import std.string (debug)
+
 # What is wrong with a class's type, and with using it.
 
 class Display a
@@ -22,7 +24,7 @@ instance Display Money
 
 instance Display Int
     fn display x os
-        format x
+        debug x
 
 # A type with no default, and a default mentioning the class's parameter.
 class Sized a

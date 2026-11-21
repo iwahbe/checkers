@@ -1,4 +1,4 @@
-//! What the runtime knows of the program: constructors (for `format` and the
+//! What the runtime knows of the program: constructors (for `debug` and the
 //! values builtins build), definition names (for error messages), and how
 //! to call compiled code. Native code passes it as a text descriptor.
 
@@ -12,8 +12,10 @@ pub struct ConInfo {
     pub arity: usize,
     /// Type parameters.
     pub np: usize,
-    /// Per field: printed by `format`?
+    /// Per field: printed by `debug`?
     pub shown: Vec<bool>,
+    /// Its type's hand-written `debug` (#126): an index into `Prog::debug`.
+    pub debug: Option<usize>,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -47,6 +49,9 @@ pub struct Prog {
     pub known: Known,
     pub system_fields: Vec<String>,
     pub invoke: Invoke,
+    /// The hand-written `Debug` instances' functions (#126), set once
+    /// after `install` (`set_debug`); kept for good.
+    pub debug: std::sync::OnceLock<Vec<W>>,
 }
 
 /// The current program. `checkers check` installs one per file it
@@ -69,9 +74,17 @@ fn prog_opt() -> Option<&'static Prog> {
 
 /// The descriptor (one item per line):
 /// `con NAME ARITY NP SHOWN` (SHOWN: a string of 0/1 per field),
-/// `def NAME`, `known KEY ID`, `system FIELD`.
+/// `def NAME`, `known KEY ID`, `system FIELD`, `debug CON INDEX` (after
+/// the constructors).
 pub fn install(desc: &str, invoke: Invoke) {
-    let mut p = Prog { cons: Vec::new(), names: Vec::new(), known: Known::default(), system_fields: Vec::new(), invoke };
+    let mut p = Prog {
+        cons: Vec::new(),
+        names: Vec::new(),
+        known: Known::default(),
+        system_fields: Vec::new(),
+        invoke,
+        debug: std::sync::OnceLock::new(),
+    };
     for line in desc.lines() {
         let mut it = line.split(' ');
         match it.next() {
@@ -80,7 +93,14 @@ pub fn install(desc: &str, invoke: Invoke) {
                 let arity = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
                 let np = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
                 let shown = it.next().unwrap_or("").bytes().map(|b| b == b'1').collect();
-                p.cons.push(ConInfo { name, arity, np, shown });
+                p.cons.push(ConInfo { name, arity, np, shown, debug: None });
+            }
+            Some("debug") => {
+                let c: Option<usize> = it.next().and_then(|x| x.parse().ok());
+                let k = it.next().and_then(|x| x.parse().ok());
+                if let Some(ci) = c.and_then(|c| p.cons.get_mut(c)) {
+                    ci.debug = k;
+                }
             }
             Some("def") => p.names.push(it.next().unwrap_or("").to_string()),
             Some("known") => {
@@ -114,6 +134,21 @@ pub fn install(desc: &str, invoke: Invoke) {
         }
     }
     PROG.store(Box::into_raw(Box::new(p)), Ordering::Release);
+}
+
+/// The hand-written `Debug` instances' functions (#126): `fs`, an owned
+/// list of them, in the order of the descriptor's indices.
+pub fn set_debug(fs: W) {
+    let items: Vec<W> = list_items(fs).into_iter().map(dup).collect();
+    drop_w(fs);
+    let _ = prog().debug.set(items);
+}
+
+/// The hand-written `debug` of constructor `c`'s type, if it has one.
+pub fn debug_fn(c: u32) -> Option<W> {
+    let p = prog();
+    let k = p.cons.get(c as usize)?.debug?;
+    p.debug.get()?.get(k).copied()
 }
 
 // ── values the runtime builds ───────────────────────────────────────────────

@@ -470,7 +470,7 @@ Data is immutable, so sharing it never races; parallel evaluation of pure code i
 
   ```
   when l = log, n = total using sched
-      terminal.print_line (format (len l)) term
+      terminal.print_line format"{len l}" term
       (l, n + 1)
   ```
 
@@ -559,12 +559,12 @@ Worked example: `examples/format.ck`, a typed `fmt` whose format string is `comp
 fn greet name age =
     let acc = "" ++ name
     let acc1 = acc ++ " is "
-    let acc2 = acc1 ++ (format age)
+    let acc2 = acc1 ++ (display age [])
     let acc3 = acc2 ++ " years old"
     acc3
 ```
 
-with no format string left to parse at run time. A bad placeholder is a compile-time error: its type is `BadPlaceholder`, so `fmt "{x}" name` reports too many arguments for a `BadPlaceholder`, and `fmt`'s precondition `valid (string.bytes s) 0` catches the rest.
+with no format string left to parse at run time (`display` is `std.string`'s, §9.11). A bad placeholder is a compile-time error: its type is `BadPlaceholder`, so `fmt "{x}" name` reports too many arguments for a `BadPlaceholder`, and `fmt`'s precondition `valid (string.bytes s) 0` catches the rest.
 
 ---
 
@@ -901,7 +901,7 @@ A string literal glued to a lower-case name before it is a **template**: `tag"te
 - A hole ends at the `}` that closes it; it may hold brackets, strings and templates (`{f "a"}`). `|` splits it only outside brackets. A hole still open at the end of the line is E0006. A `:` in one is E0100 (it is no part of an expression), and so is a `#` (E0001: a comment would never let the hole close).
 - The options are the inside of a list, as a direct call writes it: `{x | Precision 20, Padding 20}` passes `[Precision 20, Padding 20]`. `{x |}` is E0100.
 
-**Formatters.** `std.string` declares the classes a template is built through, and `NoOptions`, an enum with no constructors. A template needs no import: `std.string` is loaded for a module that has one. A formatter's instances name the classes, so its module imports them, `import std.string (Template, Hole)`; their functions are names only where imported.
+**Formatters.** `std.string` declares the classes a template is built through, and `NoOptions`, an enum with no constructors. A template needs no import: `std.string` is loaded for a module that has one (its tag is a name like any other: `std.string`'s own, `format`, is imported, §9.11). A formatter's instances name the classes, so its module imports them, `import std.string (Template, Hole)`; their functions are names only where imported.
 
 ```checkers
 export class Template s
@@ -927,6 +927,71 @@ with `std.string`'s functions, whether or not the module imports them, and whate
 - Each call is an ordinary use of a class (§9.8), at a span inside the template. `hole`'s instance is found at the hole's value (at the hole, for a positional one): a value of a type no instance takes is E0284 there ("no instance of `Hole` for `Page` and `Nat`"), and one whose type never becomes known is E0285 there. `text`'s and `finish`'s are found at the tag. An option of the wrong type, and an obligation inside a hole, are reported at the option or the expression.
 - **The tag first.** The tag's first state, `tag n k`, is checked before anything else. If that fails (`tag` is unknown, or isn't a function of two numbers), or its type can't have a `Template` instance (it has none, or it is a type parameter without the clause `Template s`), that is the template's only error, at the tag (E0284 for a missing instance: "no instance of `Template` for `Int`: `count` isn't a template's tag"); the holes and options are not checked. A type not yet known waits, as for any use of a class.
 - In the prover a template is its calls: what is known of the result comes from the instances' functions, as for any code.
+
+### 9.11 Showing values (#126)
+
+There is no built-in `format`: `std.string` shows values through two classes, and its `format` is a template's tag (§9.10) built on one of them. None of these is in the prelude; a module imports them, `import std.string (format, display, debug)`.
+
+```checkers
+export class Display a
+    type Options = NoOptions
+    fn display x os -> s : x~a, os~List Options, s~String
+
+export class Debug a
+    fn debug x -> s : x~a, s~String
+```
+
+**`Display`: for users, with options of the type's own.** `display x []` shows `x` without options. An instance chooses its options' type, or leaves it out for `NoOptions`. Options are typed, so an option a type doesn't take is a type error at the option, and every list of a type's options is accepted: where two conflict, the later one wins. No instance is derived: a type shows for users only as its author writes it, in the module that declares the type (§9.8's coherence). At a type parameter, `display` needs the clause `Display a` (E0284 without it); generic code can pass only `[]` or options it was given. There are no instances for containers (`List`, `Option`, `Result`, tuples, `Array`), not even conditional ones, and none for `Unit`. Padding is not an option: a program pads with ordinary functions.
+
+| Type | Options | Shows |
+|-|-|-|
+| `Int` (so `Nat`, the fixed-width types and `Char`, which are refinements of it) | `IntOption`: `Hex`, `Binary`, `Octal` (after `0x`, `0b`, `0o`, lower case), `Plus` (a `+` before a non-negative number), `Digits n` (at least `n` digits, zeros before them and after the sign and prefix) | decimal |
+| `String` | `StringOption`: `Quoted` (as `debug` shows it), `Take n` (the first `n` scalar values, then quoted if asked) | the string itself |
+| `Bool` | `NoOptions` | `True`, `False` |
+| `Decimal` (`std.decimal`) | `DecimalOption`: `decimal.Plus`, `Places n` (rounded to `n` digits after the point, half away from zero, never with an exponent) | as `decimal.render` writes it |
+
+The instances for `Int`, `String` and `Bool` are in `std.string`, beside the class; `Decimal`'s is in `std.decimal`. `std.decimal`'s `Plus` is written `decimal.Plus` where `std.string`'s is also in scope.
+
+**`Debug`: Checkers source, for every type.** Every type has a derived instance that writes a value as source: `Some (Ok 1)`, `[1, 2]`, `(1, "a")`, `b"…"`. Strings are quoted at every level, the top included (`debug "a"` is `"a"` with the quotes); functions and capabilities are `<function>`, `<Term>` and so on, so a failed `check`, a counterexample and generic code can always show a value. `debug x` needs no clause at a type parameter.
+
+- A type's own module may write `instance Debug T` to replace the derived one. Elsewhere it is E0282 (another package, §9.8's orphan rule) or E0283 (another module of `T`'s package: it overlaps the derived instance). It takes no context (E0281): the runtime finds it from the value alone, with its type arguments erased, so it has no dictionary to pass, and `debug` needs none.
+- It is found at run time through the value's constructor: each constructor's descriptor points at its type's `debug`, so it is used wherever a `T` is shown, inside other values and through generic code. In argument position its text is put in parentheses if it has a space outside brackets and quotes, as a constructor's fields are.
+- `Debug` takes no options, and templates treat it like any function: `format"{debug x}"`, or `format"{}" (debug x)`.
+- The runtime's printer is the derived instance, and the text of a failed `check` (§13.3) and of a counterexample, at every level, whatever a type's own `Debug` says: two different values never look the same there.
+
+**`format`.** `std.string`'s template tag:
+
+```checkers
+export record Format
+    parts~List String                 # the last first
+
+export fn format n k -> f : n~Nat, k~Nat, f~Format
+    Format []
+
+instance Template Format
+    type Result = String
+    fn text f str
+        Format (str :: f.parts)
+    fn finish f
+        concat (list.reverse f.parts)
+
+instance Hole Format a : Display a
+    type Options = Display.Options a
+    fn hole f x os
+        Format (display x os :: f.parts)
+```
+
+```checkers
+format"{name} is {age}"               # Ada is 36
+format"{n | Hex, Digits 4}"           # 0x00ff
+format"{| Quoted}" name               # "Ada"
+format"{debug point}"                 # Point 1 2
+format"{point}"                       # error at `point`: no `Display` instance for `Point`
+```
+
+- It accepts any type with a display, through one instance over all of them; a hole's options are its value's type's own, and an error in a hole is at the hole (E0284 for a value with no `Display`, a type error at an option of another type).
+- It is imported like any other `std.string` name: `import std.string (format)` for `format"…"`, or `import std.string` for `string.format"…"`. Without an import it is an unknown name (E0204). The compiler knows nothing special about it: an unknown name that a standard-library module exports gets a `help:` naming the import (`add \`import std.string (format)\``), whatever the name.
+- `format x`, a call of a tag on a value, is an ordinary type error, as for any function of two numbers. Where a function whose result has a `Template` instance is called outside a template, a type error at the call or at its first argument gets a `help:` saying the function is a tag: ``write `format"…{x}…"` to put `x` in a template``.
 
 ---
 
@@ -1117,7 +1182,7 @@ first-order code ──codegen.rs──▶ Cranelift IR ──┬──▶ in me
 
 **Recursion made tail recursion (optimization).** Before reference counting, `src/native/tailrec.rs` rewrites a definition's function whose recursive calls leave a little work after them, so that it runs in constant stack. It changes no result, failure or order of effects; which functions it rewrites is not part of the language, and a program must not rely on it. Today, for calls of the function itself in tail position but for: a constructor around the call (`n :: f (n - 1)`; the cell is built first with the field empty, and a helper `f.dps` fills it and calls itself in tail position), with only variables or literals in the fields after the call; or `+` or `*` on the call and a variable or literal, or `++` with the call on its left (`f (n - 1) ++ s`), where a helper `f.acc` carries the operations so far as an extra argument. These operators are associative for every value (`Nat` and `Int` have no fixed size); a class's `+` is a call and is never rewritten. `CHECKERS_NATIVE_DUMP=1` shows the helpers.
 
-**Runtime.** `checkers_rt`: allocation and freeing, big integers (`rt/src/num.rs`), the `__builtin`s of `stdlib/` (`rt/src/builtins/`), `format` and `==`, I/O with atomic terminal calls (D68), behaviours and `par`, the scheduler, fibers, the poller and the blocking pool (§13.8), and runtime errors (``runtime error in `f`: …``, exit code 70). Native code describes its constructors and definitions to the runtime in a short text descriptor. `checkers build` links with `libcheckers_rt.a`: the one named by `CHECKERS_RT_LIB`, else the newest next to the `checkers` executable or in `deps/` beside it.
+**Runtime.** `checkers_rt`: allocation and freeing, big integers (`rt/src/num.rs`), the `__builtin`s of `stdlib/` (`rt/src/builtins/`), `debug`'s derived instance (finding a type's own `debug` through its constructors' descriptor, §9.11) and `==`, I/O with atomic terminal calls (D68), behaviours and `par`, the scheduler, fibers, the poller and the blocking pool (§13.8), and runtime errors (``runtime error in `f`: …``, exit code 70). Native code describes its constructors and definitions to the runtime in a short text descriptor. `checkers build` links with `libcheckers_rt.a`: the one named by `CHECKERS_RT_LIB`, else the newest next to the `checkers` executable or in `deps/` beside it.
 
 **Scheduler (D77).** `rt/src/sched.rs`: Verona's per-resource queues with atomic links (§13.5), runnable behaviours on a lock-free queue (Vyukov's bounded multi-producer, multi-consumer queue, with a locked overflow), a worker running next the behaviour its own completion made runnable, and idle workers polling briefly before they sleep. A behaviour keeps the cells it names until it has released them.
 
@@ -1319,10 +1384,10 @@ The standard library is these modules. Its scope is still to be settled (D106); 
 | `std.map`, `std.set` | Checkers | `Map k +v`, `Set k`: `empty`, `insert`, `remove`, `lookup`, `member`, `size`, `to_list` and their lemmas (`lookup_insert`, …), ordered keys (D15) | planned (§9.5) |
 | `std.array` | builtin + Checkers | `from_list`, `to_list`, `repeat`, `init`, `map`, `set`, `slice`, `concat`, `reverse`, `all`, `contains`, `count`, `take`, `drop` (D133); `sort`, `sort_as`, `sort_by` (D138), the axioms `to_list_from_list`, `from_list_to_list`, `to_list_map`, and `slice_at`, `slice_append`, `concat_nil`, `concat_cons` (what `slice` and `concat` give, #69; `concat_nil xs` says `xs ++ concat [] == xs`, since `concat []` alone doesn't fix the element type); the lemmas `ext` (equal lengths and elements make equal arrays) and `slice_join` (`slice xs i j ++ slice xs j k == slice xs i k`), proved (#75); `instance Functor Array` (M25) | exists (M21) |
 | `std.bytes` | builtin + Checkers | `matches_at`, `slice`, `concat`; the axioms `slice_at`, `slice_append`, `concat_nil`, `concat_cons` (what `slice` and `concat` give, #69); the lemmas `ext` and `slice_join`, proved (#75) | exists |
-| `std.string` | builtin + Checkers | `bytes`, `from_utf8`, `from_char`, `from_chars`, `chars`, `concat`, `concat_map` (Checkers, D139), `fold_case` (Unicode's full case folding, a generated table, D151), axioms relating them (D119; `concat_join` in place of the axiom `concat_map_chars`, now proved, M22); the classes `Template` (`Result`, `text`, `finish`) and `Hole` (`Options`, `hole`), and `NoOptions`, which templates are built through (§9.10) | exists; planned: `join`, `split`, `starts_with`, `ends_with`, `trim` |
+| `std.string` | builtin + Checkers | `bytes`, `from_utf8`, `from_char`, `from_chars`, `chars`, `concat`, `concat_map` (Checkers, D139), `fold_case` (Unicode's full case folding, a generated table, D151), axioms relating them (D119; `concat_join` in place of the axiom `concat_map_chars`, now proved, M22); the classes `Template` (`Result`, `text`, `finish`) and `Hole` (`Options`, `hole`), and `NoOptions`, which templates are built through (§9.10); the classes `Display` (`Options`, `display`) and `Debug` (`debug`, the runtime's printer), `IntOption`, `StringOption`, instances of `Display` for `Int`, `String`, `Bool`, and the template tag `format` with `Format` (§9.11); not exported: `digits` (a number's digits in a base) | exists; planned: `join`, `split`, `starts_with`, `ends_with`, `trim` |
 | `std.char` | Checkers | `code`, `from_scalar`, `from_ascii`, `from_surrogates` (D119); `is_punctuation` (general category P or S), `is_space_separator` (Zs), from generated tables (D151) | exists |
 | `std.utf8` | builtin + Checkers | `decode_at` (`Option (Char, (stop~Nat, k < stop, stop <= len src))`: a character and where its encoding ends, #44), `encode`, `encode_append`, `decode_from_char` | exists |
-| `std.decimal` | builtin + Checkers | `Decimal`, `render`, `of_int` | exists; planned: `nat.parse` as `std.number` (`parse_nat`, `parse_int`, `render_nat`) |
+| `std.decimal` | builtin + Checkers | `Decimal`, `render`, `of_int`, `DecimalOption` and an instance of `Display` (§9.11); not exported: `fixed` (a number with a given count of places) | exists; planned: `nat.parse` as `std.number` (`parse_nat`, `parse_int`, `render_nat`) |
 | `std.html` | Checkers | `escape`, `entity` (HTML5's named character references, a generated table, D151) | exists (M27) |
 | `std.markdown` | Checkers | `Document`, `Block`, `Inline`, `Item`, `Span`, `Target`, `Definition`, `Reference`, `parse`, `parse_with`, `to_html`, `to_html_with`, `label_key`, `language`, `plain` (CommonMark 0.31.2, a port of commonmark.js, D148, D151) | exists (M27) |
 | `std.json` | builtin + Checkers | `Json`, `Error`, `ErrorKind`, `parse`, `render`, `depth`, `MAX_DEPTH`, the round-trip lemma; not exported: `scan_number` (a number's text, D145) | exists (M13; proven without `admit`s, M18) |

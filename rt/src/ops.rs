@@ -207,19 +207,7 @@ pub unsafe extern "C" fn ck_big_lit(p: *const u8, len: u64) -> W {
     of_num(Num::from_big(b))
 }
 
-#[no_mangle]
-pub extern "C" fn ck_format(a: W) -> W {
-    new_str(&format(a))
-}
-
-// ── `format` (D42), as the interpreter prints values ────────────────────────
-
-pub fn format(w: W) -> String {
-    if is_kind(w, K_STR) {
-        return str_of(w).to_string();
-    }
-    show(w, 0)
-}
+// ── `debug` (#126): values as Checkers source ──────────────────────────────
 
 fn paren(b: bool, s: String) -> String {
     if b {
@@ -229,8 +217,45 @@ fn paren(b: bool, s: String) -> String {
     }
 }
 
-/// Render as Checkers source; `p > 0` means "in argument position".
+/// Render as Checkers source, as `debug` does (#126): a type's hand-written
+/// `Debug` where it has one, else the derived form. `p > 0` means "in
+/// argument position".
 pub fn show(w: W, p: u8) -> String {
+    render(w, p, true)
+}
+
+/// The derived form only, at every level: a value's structure (a bag's
+/// key, which must not depend on code the program writes).
+pub fn show_derived(w: W, p: u8) -> String {
+    render(w, p, false)
+}
+
+/// What a hand-written `debug` gives, in argument position in parentheses
+/// if it has a space outside brackets and quotes.
+fn custom(f: W, w: W, p: u8) -> String {
+    let r = crate::apply::apply(dup(f), vec![dup(w)]);
+    let s = if is_kind(r, K_STR) { str_of(r).to_string() } else { bug("a `debug` that didn't give a string") };
+    drop_w(r);
+    if p == 0 {
+        return s;
+    }
+    let (mut depth, mut quoted, mut escaped, mut spaced) = (0i32, false, false, false);
+    for c in s.chars() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            '(' | '[' | '{' if !quoted => depth += 1,
+            ')' | ']' | '}' if !quoted => depth -= 1,
+            ' ' if !quoted && depth == 0 => spaced = true,
+            _ => {}
+        }
+    }
+    paren(spaced, s)
+}
+
+fn render(w: W, p: u8, hand: bool) -> String {
+    let show = |w: W, p: u8| render(w, p, hand);
     let pg = prog();
     let k = &pg.known;
     if is_num(w) {
@@ -257,6 +282,9 @@ pub fn show(w: W, p: u8) -> String {
         .into();
     }
     if let Some(c) = con_of(w) {
+        if let Some(f) = debug_fn(c).filter(|_| hand) {
+            return custom(f, w, p);
+        }
         if Some(c) == k.nil || Some(c) == k.cons {
             let items: Vec<String> = list_items(w).into_iter().map(|x| show(x, 0)).collect();
             return format!("[{}]", items.join(", "));

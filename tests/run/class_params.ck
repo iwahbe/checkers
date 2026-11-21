@@ -7,6 +7,7 @@ module class_params
 import std.system (System, ExitCode)
 import std.terminal
 import std.array
+import std.string (debug)
 
 record Format
     prefix~String
@@ -22,7 +23,7 @@ class Hole s h
 instance Hole Format Int
     type Cell = U8
     fn hole f x
-        f.prefix ++ format x
+        f.prefix ++ debug x
     fn cell f x
         7
 
@@ -45,6 +46,6 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let t = sys.term
     terminal.print_line (fill_all (Format "#") [1, 2, 3]) t
     terminal.print_line (fill_all (Plain ";") ["a", "b"]) t
-    terminal.print_line (format (array.to_list (cells (Format "") 1 3))) t
-    terminal.print_line (format (array.to_list (cells (Plain "") "x" 2))) t
+    terminal.print_line (debug (array.to_list (cells (Format "") 1 3))) t
+    terminal.print_line (debug (array.to_list (cells (Plain "") "x" 2))) t
     Success

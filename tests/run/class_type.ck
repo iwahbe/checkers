@@ -6,6 +6,7 @@ module class_type
 import std.system (System, ExitCode)
 import std.terminal
 import std.array
+import std.string (debug)
 
 class Display a
     type Options = NoOptions
@@ -24,12 +25,12 @@ instance Display Money
     type Options = MoneyOption
     fn display m os
         match os
-            [Cents] -> format m.cents ++ "¢"
-            _       -> "$" ++ format (m.cents / 100)
+            [Cents] -> debug m.cents ++ "¢"
+            _       -> "$" ++ debug (m.cents / 100)
 
 instance Display Int
     fn display x os
-        format x
+        debug x
 
 class Packed a
     type Elem
@@ -55,8 +56,8 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     terminal.print_line (display (Money 1250) []) t
     terminal.print_line (display 7 []) t
     let bytes = row 1 3
-    terminal.print_line (format (array.to_list bytes)) t
-    terminal.print_line (format bytes[2]) t
+    terminal.print_line (debug (array.to_list bytes)) t
+    terminal.print_line (debug bytes[2]) t
     let strings = row True 2
-    terminal.print_line (format (array.to_list strings)) t
+    terminal.print_line (debug (array.to_list strings)) t
     Success

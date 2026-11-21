@@ -5,6 +5,7 @@ module class_ghost_param
 
 import std.system (System, ExitCode)
 import std.terminal
+import std.string (debug)
 
 class Sized a
     fn limit x -> n : x~ghost a, n~Nat
@@ -22,6 +23,6 @@ fn by_clause x -> n : Sized a, x~ghost a, n~Nat
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let term = sys.term
-    terminal.print_line (format (Sized.limit 3)) term
-    terminal.print_line (format (by_clause True)) term
+    terminal.print_line (debug (Sized.limit 3)) term
+    terminal.print_line (debug (by_clause True)) term
     Success

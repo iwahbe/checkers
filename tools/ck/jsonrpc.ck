@@ -150,7 +150,7 @@ export partial fn read f -> r : f~File, r~(Incoming, File)
 # Write `v` as a message, at once: the client is waiting for it.
 export fn write v f -> r : v~Json, f~File, r~(Result Unit IoError, File)
     let body = string.bytes (json.render v)
-    let head = string.bytes ("Content-Length: " ++ format (len body) ++ "\r\n\r\n")
+    let head = string.bytes string.format"Content-Length: {len body}\r\n\r\n"
     let (w, f) = files.write_bytes (bytes.concat [head, body]) f
     match w
         Ok _  -> files.flush f

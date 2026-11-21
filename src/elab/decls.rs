@@ -576,10 +576,8 @@ impl Elab {
         }
         if self.cur == "std.prelude" {
             let me = self.modules.get_mut("std.prelude").unwrap();
-            for (n, s) in [("len", Sym::Len), ("format", Sym::Format)] {
-                me.values.insert(n.into(), s);
-                me.exported_values.insert(n.into());
-            }
+            me.values.insert("len".into(), Sym::Len);
+            me.exported_values.insert("len".into());
         }
         ids
     }

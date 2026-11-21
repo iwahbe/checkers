@@ -611,7 +611,6 @@ impl Elab {
             Sym::Con(c) => format!("$sym#C{}", c.0),
             Sym::Univ => "$sym#U0".into(),
             Sym::Len => "len".into(),
-            Sym::Format => "format".into(),
         }
     }
 
@@ -921,8 +920,16 @@ impl Elab {
                     for p in params {
                         call = app(call, var(&p.name, at_end));
                     }
-                    let mut cs = vec![Constraint::Pred(clause.clone())];
+                    // `std.string`'s `Debug` (#126): every type has an
+                    // instance, so `debug` needs no clause; it is the
+                    // runtime's printer, which finds a hand-written
+                    // instance through the value's constructor.
+                    let derived = self.is_debug_class(&name.name);
+                    let mut cs = if derived { Vec::new() } else { vec![Constraint::Pred(clause.clone())] };
                     cs.extend(arw.constraints(constraints, &[]));
+                    if derived {
+                        call = var("__builtin", at_end);
+                    }
                     decls.push(Decl {
                         export: if d.export == Export::No { Export::No } else { Export::Transparent },
                         kind: DeclKind::Fn {
@@ -1033,6 +1040,12 @@ impl Elab {
         });
         origins.push(Origin::ClassRecord);
         self.pending_classes.push((name.name.clone(), pnames, members.to_vec(), name.span));
+    }
+
+    /// Whether the class `name` declared here is `std.string`'s `Debug`
+    /// (#126).
+    pub fn is_debug_class(&self, name: &str) -> bool {
+        self.cur == "std.string" && name == "Debug"
     }
 
     /// Whether an instance's head is the unit type: `()`, or an alias of it
@@ -1468,9 +1481,27 @@ impl Elab {
                         bad = true;
                         continue;
                     }
-                    let map: HashMap<String, String> = params.iter().zip(iparams.iter()).map(|(a, b)| (a.name.clone(), b.name.clone())).collect();
+                    let mut map: HashMap<String, String> = params.iter().zip(iparams.iter()).map(|(a, b)| (a.name.clone(), b.name.clone())).collect();
                     let mut taken: Vec<String> = iparams.iter().map(|p| p.name.clone()).chain(result.iter().map(|r| r.name.clone())).collect();
                     taken.extend(head_vars.iter().cloned());
+                    // The class's name for the result, if the instance names
+                    // a parameter so (`fn debug s` for `-> s`), is another.
+                    let result = match result {
+                        Some(r) if iparams.iter().any(|p| p.name == r.name) => {
+                            let mut k = 1;
+                            let fresh = loop {
+                                let n = format!("{}{k}", r.name);
+                                if !taken.contains(&n) && !params.iter().any(|p| p.name == n) {
+                                    break n;
+                                }
+                                k += 1;
+                            };
+                            map.insert(r.name.clone(), fresh.clone());
+                            taken.push(fresh.clone());
+                            Some(ident(&fresh, r.span))
+                        }
+                        r => r.clone(),
+                    };
                     let constraints = &rename_vars(constraints, &hygiene(constraints, &cparams, &taken));
                     let mut cs = ctx_preds.clone();
                     let theirs = trw.constraints(&srw.constraints(&rename_binders(constraints, &map), &[]), &[]);
@@ -1806,6 +1837,32 @@ impl Elab {
                 }
             }
         }
+        // `Debug` (#126): every type has the derived instance, which only
+        // the type's own module may replace, with no context.
+        let cdef = &self.class_defs[&class];
+        let is_debug = cdef.module == "std.string" && cdef.name == "Debug";
+        if is_debug {
+            let ty_module = match key {
+                HeadKey::Ty(t) => self.g.tys[t.0 as usize].module.to_string(),
+                HeadKey::Unit | HeadKey::Pair => "std.prelude".to_string(),
+            };
+            let shown = self.src_text(p.heads[0].span).trim().to_string();
+            if ty_module != self.cur {
+                self.err(
+                    Diagnostic::error("E0283", format!("`instance {}` overlaps the derived instance of `{shown}`", p.text), p.span)
+                        .with_label(format!("`{shown}` is declared in `{ty_module}`"))
+                        .with_help(format!("every type has a derived `Debug`; only `{shown}`'s own module, `{ty_module}`, may replace it")),
+                );
+                return;
+            }
+            if !p.context.is_empty() {
+                self.err(
+                    Diagnostic::error("E0281", format!("`instance {}` can't have a context", p.text), p.span)
+                        .with_help("`debug` works at every type without a clause; remove the context"),
+                );
+                return;
+            }
+        }
         // No two instances whose types can be the same (#145): at each
         // position the same type constructor, or a variable in either.
         let same = |a: &InstPat, b: &InstPat| match (a, b) {
@@ -1851,6 +1908,9 @@ impl Elab {
             if self.def_class.get(d) == Some(&"lemma") {
                 self.calls.push(CallRec { caller: def, callee: *d, args: Vec::new(), same: Vec::new(), span: p.span, conds: Vec::new() });
             }
+        }
+        if let (true, HeadKey::Ty(t), Some(f)) = (is_debug, key, members.get("debug")) {
+            self.g.well_known.debug_insts.push((t, *f));
         }
         self.instances.entry((class, key)).or_default().push(InstInfo {
             class,
@@ -1980,7 +2040,16 @@ impl Elab {
         }
         for (c, vs) in &inst.context {
             let ctys: Vec<Val> = vs.iter().map(|v| args[*v].clone()).collect();
-            let d = self.find_dict(req, *c, &ctys, depth + 1)?;
+            let d = match self.find_dict(req, *c, &ctys, depth + 1) {
+                Ok(d) => d,
+                Err(e) => {
+                    // The innermost missing one is what to report.
+                    if e == "none" && self.ctx_missing.is_none() {
+                        self.ctx_missing = Some((*c, ctys, inst.text.clone()));
+                    }
+                    return Err(e);
+                }
+            };
             t = Tm::App(Rc::new(t), Rc::new(d), Icit::Impl, Mult::Many);
         }
         // Using an instance of this module: a call, for termination (D136).
@@ -2152,6 +2221,7 @@ impl Elab {
                 }
                 continue;
             }
+            self.ctx_missing = None;
             match self.find_dict(&r, r.class, &r.tys, 0) {
                 Ok(t) => {
                     if self.assoc_cycle(&r, &t) {
@@ -2170,9 +2240,14 @@ impl Elab {
                     if why == "unknown" && r.tys.iter().any(|t| self.unknowns(r.lvl, t).iter().any(|m| self.blamed.contains(m))) {
                         continue;
                     }
-                    let cname = self.class_defs.get(&r.class).map(|c| c.name.clone()).unwrap_or_default();
-                    let shown: Vec<String> = r
-                        .tys
+                    // An instance chosen whose context isn't there: that is
+                    // what is missing (`Display Point` for `Hole Format a`).
+                    let (class, tys, via) = match self.ctx_missing.take().filter(|_| why == "none") {
+                        Some((c, ts, text)) => (c, ts, Some(text)),
+                        None => (r.class, r.tys.clone(), None),
+                    };
+                    let cname = self.class_defs.get(&class).map(|c| c.name.clone()).unwrap_or_default();
+                    let shown: Vec<String> = tys
                         .iter()
                         .map(|t| match self.force(t) {
                             // `\y -> List y` is `List`.
@@ -2185,8 +2260,12 @@ impl Elab {
                         .collect();
                     let args: Vec<String> = shown.iter().map(|s| if s.contains(' ') { format!("({s})") } else { s.clone() }).collect();
                     let clause = format!("{cname} {}", args.join(" "));
-                    let several = r.tys.len() > 1;
-                    let param = r.tys.iter().zip(&shown).find(|(t, _)| matches!(self.force(t), Val::Neutral(Head::Var(_), _)));
+                    let several = tys.len() > 1;
+                    let param = tys.iter().zip(&shown).find(|(t, _)| matches!(self.force(t), Val::Neutral(Head::Var(_), _)));
+                    let needs = match &via {
+                        Some(text) => format!("needs `{clause}`, for `instance {text}`"),
+                        None => format!("needs `{clause}`"),
+                    };
                     let could = if why == "unknown" { self.undecided(&r) } else { Vec::new() };
                     let d = if why == "unknown" {
                         let d = Diagnostic::error("E0285", format!("can't tell which instance of `{cname}` to use: the type isn't known here"), r.span);
@@ -2199,13 +2278,16 @@ impl Elab {
                             .with_help(format!("add `{clause}` to the function's signature"))
                     } else if several {
                         Diagnostic::error("E0284", format!("no instance of `{cname}` for {}", joined(&shown, "and")), r.span)
-                            .with_label(format!("needs `{clause}`"))
+                            .with_label(needs)
                             .with_help(format!("declare `instance {cname} …` for these types, beside the class or the first type"))
                     } else {
                         let shown = &shown[0];
+                        // A class of another package: only beside the type.
+                        let theirs = self.class_defs.get(&class).is_some_and(|c| self.package_of(&c.module) != self.package_of(&self.cur));
+                        let where_ = if theirs { "beside the type" } else { "beside the class or the type" };
                         Diagnostic::error("E0284", format!("no instance of `{cname}` for `{shown}`"), r.span)
-                            .with_label(format!("needs `{clause}`"))
-                            .with_help(format!("declare `instance {cname} …` for this type, beside the class or the type"))
+                            .with_label(needs)
+                            .with_help(format!("declare `instance {cname} …` for this type, {where_}"))
                     };
                     self.err(d);
                 }

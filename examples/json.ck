@@ -26,7 +26,7 @@ fn lines src pos i line col -> r : src~Bytes, pos~Nat, pos <= len src, i~Nat, i 
 
 # A byte as it reads: `']'`, or its number if it isn't printable ASCII.
 fn shown b -> s : b~U8, s~String
-    if b >= 0x20 and b < 0x7F then "'" ++ string.from_char (char.from_ascii b) ++ "'" else "byte " ++ format b
+    if b >= 0x20 and b < 0x7F then "'" ++ string.from_char (char.from_ascii b) ++ "'" else string.format"byte {b}"
 
 fn explain k -> s : k~ErrorKind, s~String
     match k
@@ -36,12 +36,12 @@ fn explain k -> s : k~ErrorKind, s~String
         BadUtf8          -> "bytes that are not UTF-8"
         ControlInString  -> "a control character in a string"
         DuplicateKey k   -> "the key \"" ++ k ++ "\" twice"
-        TooDeep          -> "nesting deeper than " ++ format json.MAX_DEPTH
+        TooDeep          -> string.format"nesting deeper than {json.MAX_DEPTH}"
         TrailingInput    -> "more after the value"
 
 fn describe src e -> s : src~Bytes, e~Error src, s~String
     let (line, col) = line_col src e.pos
-    "<stdin>:" ++ format line ++ ":" ++ format col ++ ": " ++ explain e.kind
+    string.format"<stdin>:{line}:{col}: {explain e.kind}"
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { term } = sys

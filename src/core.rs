@@ -106,7 +106,6 @@ pub enum Prim {
     Concat,
     Len,
     Index,
-    Format,
     /// `par t` — identity to the type checker and prover (D34).
     Par,
     When,
@@ -386,6 +385,11 @@ pub struct WellKnown {
     pub future: Option<TyId>,
     pub cown: Option<TyId>,
     pub sched: Option<TyId>,
+    /// `std.string`'s `debug`, the derived `Debug` (#126).
+    pub debug: Option<DefId>,
+    /// Hand-written `instance Debug T`: the type and the instance's
+    /// `debug`, which the runtime calls for `T`'s constructors (#126).
+    pub debug_insts: Vec<(TyId, DefId)>,
 }
 
 pub const DEFAULT_FUEL: u64 = 200_000;
@@ -1542,7 +1546,6 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
                     let name = match pr {
                         Prim::Builtin(n) => n.to_string(),
                         Prim::Len => "len".into(),
-                        Prim::Format => "format".into(),
                         Prim::Index => "index".into(),
                         Prim::Neg => "negate".into(),
                         other => format!("{other:?}").to_lowercase(),

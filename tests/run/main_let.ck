@@ -6,9 +6,10 @@ module main_let
 import std.system (System, ExitCode)
 import std.list
 import std.terminal
+import std.string (debug)
 
 fn greet args sys -> code : args~List String, sys~System, code~ExitCode
-    terminal.print_line ("arguments: " ++ format (list.length args)) sys.term
+    terminal.print_line ("arguments: " ++ debug (list.length args)) sys.term
     Failure 3
 
 fn entry n -> f : n~Nat, f~(List String -> System -> ExitCode)

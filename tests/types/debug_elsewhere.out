@@ -1,0 +1,22 @@
+error[E0283]: `instance Debug Point` overlaps the derived instance of `Point`
+  --> debug_elsewhere.ck:10:1
+   |
+10 | instance Debug Point
+   | ^^^^^^^^^^^^^^^^^^^^ `Point` is declared in `shapes.point`
+   = help: every type has a derived `Debug`; only `Point`'s own module, `shapes.point`, may replace it
+
+error[E0282]: `instance Debug Int` must be in the package of `Debug` or of the type
+  --> debug_elsewhere.ck:14:1
+   |
+14 | instance Debug Int
+   | ^^^^^^^^^^^^^^^^^^ neither is declared in this package
+   = help: an instance goes with its class or its type, so there is only ever one (Rust's orphan rule); wrap the type in a record of your own to give it this instance
+
+error[E0281]: `instance Debug (Box a)` can't have a context
+  --> debug_elsewhere.ck:21:1
+   |
+21 | instance Debug (Box a) : Debug a
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: `debug` works at every type without a clause; remove the context
+
+debug_elsewhere.ck: 3 errors, 0 warnings

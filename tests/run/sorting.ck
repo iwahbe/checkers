@@ -8,6 +8,7 @@ import std.terminal (Term)
 import std.terminal
 import std.list (sort, sort_as, sort_by)
 import std.array
+import std.string (debug)
 
 record Person
     name~String
@@ -34,7 +35,7 @@ instance Ord Person
                 auto
 
 fn show xs term -> r : xs~List a, term~Term, r~Unit
-    terminal.print_line (format xs) term
+    terminal.print_line (debug xs) term
 
 fn names ps -> r : ps~List Person, r~List String
     match ps
@@ -58,7 +59,7 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     show (names (sort_as (\p -> p.age) people)) t
     show (sort_by (\x y -> x >= y) [5, 3, 9, 1, 3]) t
     show (array.to_list (array.sort (array.from_list [3, 1, 2]))) t
-    terminal.print_line (format (array.sort (array.from_list [200, 7, 64]))) t
+    terminal.print_line (debug (array.sort (array.from_list [200, 7, 64]))) t
     terminal.print_line (smallest people (Person "none" 0)).name t
     terminal.print_line (smallest ["b", "a"] "") t
     Success

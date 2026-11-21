@@ -55,7 +55,7 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0210` | an operator applied to a type it doesn't work on |
 | `E0212` | `auto` or `admit` outside a proof |
 | `E0213` | a module used as a value |
-| `E0214` | `len` or `format` not applied to an argument |
+| `E0214` | `len` not applied to an argument |
 | `E0215` | a line whose value would be thrown away (only `Unit` calls may stand alone) |
 | `E0220` | no standard-library module of that name |
 | `E0221` | an import list names something the module doesn't export |

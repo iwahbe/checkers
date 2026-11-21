@@ -8,7 +8,7 @@ module template
 import std.system (System, ExitCode)
 import std.terminal
 import std.list
-import std.string (Template, Hole)
+import std.string (Template, Hole, debug)
 import std.html
 
 record Page
@@ -59,7 +59,7 @@ instance Template Building
 instance Hole Building Int
     fn hole b x os
         let mark = match b.dialect
-            Numbered -> "$" ++ format (list.length b.params + 1)
+            Numbered -> "$" ++ debug (list.length b.params + 1)
             Marks    -> "?"
         Building b.dialect (b.sql ++ mark) (x :: b.params)
 
@@ -95,10 +95,10 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let id = 7
     let r = q"select * from t where id = {id} and n < {id + 1}"
     terminal.print_line r.sql t
-    terminal.print_line (format r.params) t
+    terminal.print_line (debug r.params) t
     let m = query Marks
     terminal.print_line m"id = {id}".sql t
-    terminal.print_line (format sizes"ab{1}c\u{e9}{{{2}") t
-    terminal.print_line (format sizes"") t
-    terminal.print_line (format (sizes"{} and {}" "a" 2)) t
+    terminal.print_line (debug sizes"ab{1}c\u{e9}{{{2}") t
+    terminal.print_line (debug sizes"") t
+    terminal.print_line (debug (sizes"{} and {}" "a" 2)) t
     Success
