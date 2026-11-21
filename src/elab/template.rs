@@ -80,40 +80,39 @@ impl Elab {
         }
     }
 
-    /// Help for an unknown name that `std.string` exports (#126).
-    pub(super) fn std_string_help(&self, n: &str) -> Option<String> {
-        matches!(n, "format" | "debug" | "display").then(|| format!("`{n}` is in `std.string`: add `import std.string ({n})`"))
+    /// Help for an unknown name that the standard library exports: the
+    /// import that brings it in.
+    pub(super) fn std_export_help(&self, n: &str) -> Option<String> {
+        let ms = crate::elab::stdlib::exporters(n);
+        let first = ms.first()?;
+        let others = ms[1..].iter().map(|m| format!("`{m}`")).collect::<Vec<_>>();
+        let rest = if others.is_empty() { String::new() } else { format!(" (or {})", others.join(", ")) };
+        Some(format!("`{n}` is in `{first}`: add `import {first} ({n})`{rest}"))
     }
 
-    /// `format x`, `format` called as a function (#126): it is a template's
-    /// tag. An error if so (E0204 where it isn't imported, E0293 where it
-    /// is), with how to show `x`.
-    pub(super) fn format_called(&mut self, cx: &Cx, head: &Expr, arg: &Expr) -> bool {
-        let ExprKind::Var(n) = &head.kind else { return false };
-        if n != "format" || self.in_tag || cx.lookup(n).is_some() {
-            return false;
+    /// A call of a template's tag, `tag x` (#126): a function whose result
+    /// has a `Template` instance, called outside a template. A type error
+    /// at the call or at its first argument gets a help line saying so.
+    pub(super) fn note_tag_call(&mut self, head: &Expr, ft: &Val, call: Span, arg: &Expr) {
+        let ExprKind::Var(n) = &head.kind else { return };
+        if self.in_tag {
+            return;
+        }
+        let Some(Sym::Ty(class)) = self.modules.get("std.string").and_then(|m| m.types.get("Template")).copied() else { return };
+        let mut ty = self.force(ft);
+        let mut lvl = 0;
+        while let Val::Pi(_, _, _, _, c) = ty {
+            ty = self.force(&apply_closure(&self.g, &c, Val::var(lvl)));
+            lvl += 1;
+        }
+        let Val::TyCon(id, _) = ty else { return };
+        if !self.instances.contains_key(&(class, HeadKey::Ty(id))) {
+            return;
         }
         let x = unparen(self.src_text(arg.span).trim());
-        let a = if x.contains(' ') { format!("({x})") } else { x.clone() };
-        let help = format!("to show `{x}` write `format\"{{{x}}}\"` or `display {a} []`, or `debug {a}` for Checkers source");
-        match self.resolve(n, false) {
-            None => {
-                self.err(
-                    Diagnostic::error("E0204", "unknown name `format`", head.span)
-                        .with_label("`std.string`'s `format` is a template's tag, and isn't imported")
-                        .with_help(format!("{help}, with `import std.string (format, display, debug)`")),
-                );
-                true
-            }
-            Some(Sym::Def(d)) if Some(d) == self.std_def("format") => {
-                self.err(
-                    Diagnostic::error("E0293", "`format` is a template's tag, not a function of a value", head.span)
-                        .with_label("called here")
-                        .with_help(help),
-                );
-                true
-            }
-            _ => false,
+        let help = format!("`{n}` is a template's tag: write `{n}\"…{{{x}}}…\"` to put `{x}` in a template");
+        for s in [call, arg.span] {
+            self.tag_calls.insert((self.cur.clone(), s.start, s.end), help.clone());
         }
     }
 

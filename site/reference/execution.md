@@ -31,7 +31,7 @@ check display "hi" [Quoted] == "\"hi\""
 check debug (Some "hi") == "Some \"hi\""
 ```
 
-`format` is a template's tag, not a function of a value: `format x` is an error (E0293). The standard library's instances of `Display`:
+`format` is a template's tag, not a function of a value: `format x` is a type error, whose help says to write `format"…{x}…"`. The standard library's instances of `Display`:
 
 | Type | Options | Shown |
 |---|---|---|

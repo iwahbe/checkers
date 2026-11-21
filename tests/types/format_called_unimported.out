@@ -1,8 +1,0 @@
-error[E0204]: unknown name `format`
- --> format_called_unimported.ck:7:5
-  |
-7 |     format n
-  |     ^^^^^^ `std.string`'s `format` is a template's tag, and isn't imported
-  = help: to show `n` write `format"{n}"` or `display n []`, or `debug n` for Checkers source, with `import std.string (format, display, debug)`
-
-format_called_unimported.ck: 1 error, 0 warnings

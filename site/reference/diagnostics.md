@@ -97,7 +97,6 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0290` | `have` with the wrong number of values for a `forall`'s variables |
 | `E0291` | a class's type (`C.Name`) without the types it is for |
 | `E0292` | an instance without a type for each of its class's parameters |
-| `E0293` | `format` called on a value: it is a template's tag (`format"{x}"`) |
 
 ## Termination
 

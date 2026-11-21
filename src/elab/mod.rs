@@ -495,6 +495,9 @@ pub struct Elab {
     /// The context an instance needed and didn't find, while a dictionary
     /// was looked for: the class, the types, and the instance as written.
     pub ctx_missing: Option<(TyId, Vec<Val>, String)>,
+    /// Calls of a template's tag outside a template (#126), by module and
+    /// span: the help a type error there gets.
+    pub tag_calls: HashMap<(String, u32, u32), String>,
     /// Each program module's declarations, for unused code (D144).
     pub decl_table: HashMap<String, Vec<unused::Entry>>,
     /// Declarations found unused: their branches aren't asked about.
@@ -742,6 +745,7 @@ impl Elab {
             observed: Vec::new(),
             in_tag: false,
             ctx_missing: None,
+            tag_calls: HashMap::new(),
             decl_table: HashMap::new(),
             dead: Vec::new(),
             paths: HashMap::new(),
@@ -842,6 +846,13 @@ impl Elab {
     }
 
     pub fn err(&mut self, d: Diagnostic) {
+        // A type error at a call of a template's tag (#126).
+        let mut d = d;
+        if d.code == "E0201" && d.help.is_none() {
+            if let Some(h) = self.tag_calls.get(&(self.cur.clone(), d.span.start, d.span.end)) {
+                d.help = Some(h.clone());
+            }
+        }
         // An unknown name is reported at its first use only; the fix is the same for all.
         let (start, end) = if d.code == "E0204" { (0, 0) } else { (d.span.start, d.span.end) };
         let key = (self.cur.clone(), start, end, d.message.clone());

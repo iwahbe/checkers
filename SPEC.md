@@ -990,8 +990,8 @@ format"{point}"                       # error at `point`: no `Display` instance 
 ```
 
 - It accepts any type with a display, through one instance over all of them; a hole's options are its value's type's own, and an error in a hole is at the hole (E0284 for a value with no `Display`, a type error at an option of another type).
-- It is imported like any other `std.string` name: `import std.string (format)` for `format"…"`, or `import std.string` for `string.format"…"`. Without an import, `format`, `display` and `debug` are unknown names (E0204), whose `help:` names the import.
-- `format x`, a call of it on a value, is an error: E0204 with a `help:` suggesting `format"{x}"`, `display x []` or `debug x` where `format` isn't imported, else E0293 with the same help **(proposed)**.
+- It is imported like any other `std.string` name: `import std.string (format)` for `format"…"`, or `import std.string` for `string.format"…"`. Without an import it is an unknown name (E0204). The compiler knows nothing special about it: an unknown name that a standard-library module exports gets a `help:` naming the import (`add \`import std.string (format)\``), whatever the name.
+- `format x`, a call of a tag on a value, is an ordinary type error, as for any function of two numbers. Where a function whose result has a `Template` instance is called outside a template, a type error at the call or at its first argument gets a `help:` saying the function is a tag: ``write `format"…{x}…"` to put `x` in a template``.
 
 ---
 

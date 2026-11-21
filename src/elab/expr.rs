@@ -672,7 +672,7 @@ impl Elab {
                     let mut d = Diagnostic::error("E0204", format!("unknown name `{n}`"), span).with_label("not found");
                     if let Some(m) = self.private_in_imports(n) {
                         d = d.with_help(Self::private_help(&m, n));
-                    } else if let Some(h) = self.std_string_help(n) {
+                    } else if let Some(h) = self.std_export_help(n) {
                         d = d.with_help(h);
                     }
                     self.err(d);
@@ -854,12 +854,6 @@ impl Elab {
             }
         }
 
-        if self.format_called(cx, head, args[0]) {
-            for a in args {
-                self.infer(cx, a);
-            }
-            return (Tm::Error, Val::Error);
-        }
         // Overloaded built-ins (D38).
         if let ExprKind::Var(n) = &head.kind {
             if cx.lookup(n).is_none() {
@@ -895,6 +889,7 @@ impl Elab {
         let (ft, fty) = self.infer(cx, head);
         self.use_ctx = None;
         self.in_app_head = saved_head;
+        self.note_tag_call(head, &fty, e.span, args[0]);
         // `debug x` shows each of `x`'s fields: they are read (#126).
         if let (ExprKind::Var(n), Some(d)) = (&head.kind, self.std_def("debug")) {
             if cx.lookup(n).is_none() && self.resolve(n, false) == Some(Sym::Def(d)) {
