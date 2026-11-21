@@ -35,7 +35,6 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0110` | `_` outside a pattern |
 | `E0112` | `when` without `using` and a scheduler |
 | `E0115` | `par` without a tuple of two or more |
-| `E0117` | a block ending with `when` |
 | `E0120` | `export` on an instance |
 | `E0121` | a class member with a body, or an instance member with a signature |
 | `E0122` | a keyword where a name belongs |

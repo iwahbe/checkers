@@ -280,13 +280,7 @@ impl Linter {
                     self.expr(e);
                 }
                 Stmt::Have(e) | Stmt::Expr(e) | Stmt::HaveType(_, e) => self.expr(e),
-                Stmt::When(w) => {
-                    for (n, c) in &w.binds {
-                        self.snake(n, "variable");
-                        self.expr(c);
-                    }
-                    self.block(&w.body);
-                }
+
             }
         }
         self.expr(&b.result);
@@ -308,6 +302,13 @@ impl Linter {
 
     fn expr(&mut self, e: &Expr) {
         match &e.kind {
+                ExprKind::When(w) => {
+                    for (n, c) in &w.binds {
+                        self.snake(n, "variable");
+                        self.expr(c);
+                    }
+                    self.block(&w.body);
+                }
             ExprKind::Tuple(v) | ExprKind::List(v) | ExprKind::Par(v) => v.iter().for_each(|x| self.expr(x)),
             ExprKind::App(a, b) | ExprKind::Binary(_, a, b) | ExprKind::Arrow(a, b) | ExprKind::Index(a, b) => {
                 self.expr(a);

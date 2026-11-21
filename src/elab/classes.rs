@@ -459,6 +459,12 @@ impl Rewrite<'_> {
                 b.extend(vs.iter().map(|v| v.name.clone()));
                 ExprKind::Forall(vs.clone(), self.constraints(cs, &b))
             }
+            ExprKind::When(w) => {
+                let binds = w.binds.iter().map(|(n, e)| (n.clone(), self.expr(e, bound))).collect();
+                let mut b = bound.to_vec();
+                b.extend(w.binds.iter().map(|(n, _)| n.name.clone()));
+                ExprKind::When(ast::When { binds, sched: w.sched.clone(), body: self.block(&w.body, &b), span: w.span })
+            }
             ExprKind::Block(blk) => ExprKind::Block(self.block(blk, bound)),
             ExprKind::Template(t, ps) => ExprKind::Template(go(t), map_pieces(ps, |x| self.expr(x, bound), None)),
             _ => e.kind.clone(),
@@ -497,7 +503,6 @@ impl Rewrite<'_> {
                 Stmt::Have(e) => Stmt::Have(self.expr(e, &b)),
                 Stmt::HaveType(x, t) => Stmt::HaveType(x.clone(), self.expr(t, &b)),
                 Stmt::Expr(e) => Stmt::Expr(self.expr(e, &b)),
-                Stmt::When(w) => Stmt::When(w.clone()),
             });
         }
         Block { stmts, result: Box::new(self.expr(&blk.result, &b)), span: blk.span }

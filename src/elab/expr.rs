@@ -319,6 +319,10 @@ impl Elab {
 
     pub fn infer(&mut self, cx: &mut Cx, e: &Expr) -> (Tm, Val) {
         match &e.kind {
+            ExprKind::When(w) => {
+                let t = self.elab_when(cx, w);
+                (t, self.unit())
+            }
             ExprKind::Forall(..) => self.elab_forall(cx, e),
             ExprKind::Var(n) => {
                 let (t, ty) = self.infer_var(cx, n, e.span);
@@ -2386,15 +2390,7 @@ impl Elab {
                 cx.pop();
                 Tm::Let(Rc::from("_"), Mult::Many, Rc::new(Tm::TupleTy(vec![])), Rc::new(t), Rc::new(body))
             }
-            Stmt::When(w) => {
-                let t = self.elab_when(cx, w);
-                let unit = self.unit();
-                let v = self.eval(cx, &t);
-                cx.define("_", unit, v, Mult::Many);
-                let body = self.block_from(cx, rest, result, expected, tail);
-                cx.pop();
-                Tm::Let(Rc::from("_"), Mult::Many, Rc::new(Tm::TupleTy(vec![])), Rc::new(t), Rc::new(body))
-            }
+
         }
     }
 

@@ -381,13 +381,6 @@ impl Refs {
                 Stmt::Have(e) | Stmt::Expr(e) => self.expr(e, &bound, false),
                 // `x` is a local: only the type refers to declarations.
                 Stmt::HaveType(_, t) => self.expr(t, &bound, false),
-                Stmt::When(w) => {
-                    for (x, e) in &w.binds {
-                        self.expr(e, &bound, false);
-                        bound.push(x.name.clone());
-                    }
-                    self.block(&w.body, &bound);
-                }
             }
         }
         self.expr(&b.result, &bound, false);
@@ -396,6 +389,17 @@ impl Refs {
     fn expr(&mut self, e: &Expr, bound: &[String], in_type: bool) {
         let go = |s: &mut Self, x: &Expr| s.expr(x, bound, in_type);
         match &e.kind {
+            ExprKind::When(w) => {
+                for (_, e) in &w.binds {
+                    self.expr(e, bound, in_type);
+                }
+                if !bound.contains(&w.sched.name) {
+                    self.0.push((w.sched.name.clone(), in_type));
+                }
+                let mut bound = bound.to_vec();
+                bound.extend(w.binds.iter().map(|(x, _)| x.name.clone()));
+                self.block(&w.body, &bound);
+            }
             ExprKind::Var(n) | ExprKind::Con(n) => {
                 if !bound.iter().any(|b| b == n) {
                     self.0.push((n.clone(), in_type));
