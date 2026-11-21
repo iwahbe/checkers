@@ -948,14 +948,14 @@ export class Debug a
 | `Int` (so `Nat`, the fixed-width types and `Char`, which are refinements of it) | `IntOption`: `Hex`, `Binary`, `Octal` (after `0x`, `0b`, `0o`, lower case), `Plus` (a `+` before a non-negative number), `Digits n` (at least `n` digits, zeros before them and after the sign and prefix) | decimal |
 | `String` | `StringOption`: `Quoted` (as `debug` shows it), `Take n` (the first `n` scalar values, then quoted if asked) | the string itself |
 | `Bool` | `NoOptions` | `True`, `False` |
-| `Decimal` (`std.decimal`) | `DecimalOption`: `decimal.Plus`, `Places n` (rounded to `n` digits after the point, half away from zero **(proposed)**, never with an exponent) | as `decimal.render` writes it |
+| `Decimal` (`std.decimal`) | `DecimalOption`: `decimal.Plus`, `Places n` (rounded to `n` digits after the point, half away from zero, never with an exponent) | as `decimal.render` writes it |
 
 The instances for `Int`, `String` and `Bool` are in `std.string`, beside the class; `Decimal`'s is in `std.decimal`. `std.decimal`'s `Plus` is written `decimal.Plus` where `std.string`'s is also in scope.
 
 **`Debug`: Checkers source, for every type.** Every type has a derived instance that writes a value as source: `Some (Ok 1)`, `[1, 2]`, `(1, "a")`, `b"…"`. Strings are quoted at every level, the top included (`debug "a"` is `"a"` with the quotes); functions and capabilities are `<function>`, `<Term>` and so on, so a failed `check`, a counterexample and generic code can always show a value. `debug x` needs no clause at a type parameter.
 
 - A type's own module may write `instance Debug T` to replace the derived one. Elsewhere it is E0282 (another package, §9.8's orphan rule) or E0283 (another module of `T`'s package: it overlaps the derived instance). It takes no context (E0281): the runtime finds it from the value alone, with its type arguments erased, so it has no dictionary to pass, and `debug` needs none.
-- It is found at run time through the value's constructor: each constructor's descriptor points at its type's `debug`, so it is used wherever a `T` is shown, inside other values and through generic code. In argument position its text is put in parentheses if it has a space outside brackets and quotes **(proposed)**, as a constructor's fields are.
+- It is found at run time through the value's constructor: each constructor's descriptor points at its type's `debug`, so it is used wherever a `T` is shown, inside other values and through generic code. In argument position its text is put in parentheses if it has a space outside brackets and quotes, as a constructor's fields are.
 - `Debug` takes no options, and templates treat it like any function: `format"{debug x}"`, or `format"{}" (debug x)`.
 - The runtime's printer is the derived instance, and the text of a failed `check` (§13.3) and of a counterexample, at every level, whatever a type's own `Debug` says: two different values never look the same there.
 
