@@ -1402,6 +1402,8 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
             let anon_dom = matches!(head_def(a), Some(d) if is_anon_alias(g, d));
             let s = match i {
                 Icit::Expl if anon_dom && *m != Mult::Zero => format!("{mul}{dom} -> {cod}"),
+                // A dictionary (`$d0`, D136): its class clause alone.
+                Icit::Impl if x.starts_with("$d") => format!("{{{dom}}} -> {cod}"),
                 Icit::Impl => format!("{{{x2}~{mul}{dom}}} -> {cod}"),
                 Icit::Expl if x.as_ref() == "_" && *m == Mult::Many => format!("{dom} -> {cod}"),
                 Icit::Expl => format!("({x2}~{mul}{dom}) -> {cod}"),

@@ -887,6 +887,8 @@ impl Elab {
             }
         }
         let (ft, fty) = self.infer(cx, head);
+        // Where an implicit argument after an explicit one (#161) is shown.
+        let head_name_span = self.name_span;
         self.use_ctx = None;
         self.in_app_head = saved_head;
         self.note_tag_call(head, &fty, e.span, args[0]);
@@ -932,6 +934,7 @@ impl Elab {
         let callee_def = crate::core::head_def(&ft);
         let late = callee_spec.map(|s| s.late.clone()).unwrap_or_default();
         let n_implicit = callee_spec.map_or(0, |s| s.n_implicit);
+        let inner = callee_spec.map(|s| s.inner.clone()).unwrap_or_default();
         self.head_checks_aliases = match &ft {
             Tm::Def(d) => self.specs.get(d).is_some_and(|s| s.preds.iter().any(|p| p.alias.is_some() && !p.is_post)),
             Tm::Con(c) => self.con_invs.contains_key(c),
@@ -963,8 +966,8 @@ impl Elab {
         let mut ready: HashMap<usize, (Tm, Val)> = HashMap::new();
         for (k, a) in args.iter().enumerate() {
             let mut expected = None;
-            if let Some(l) = late.iter().find(|l| l.binder == n_implicit + k) {
-                if !ready.contains_key(&k) && l.deps.iter().all(|j| j - n_implicit < args.len()) {
+            if let Some(l) = late.iter().find(|l| l.binder == super::expl_binder(n_implicit, &inner, k)) {
+                if !ready.contains_key(&k) && l.deps.iter().all(|j| super::expl_index(n_implicit, &inner, *j).is_some_and(|j| j < args.len())) {
                     let (t1, ty1, e) = self.late_expected(cx, t, ty, k, l, &args, &mut ready);
                     (t, ty, expected) = (t1, ty1, e);
                 }
@@ -987,6 +990,7 @@ impl Elab {
                     self.use_ctx = Some(ctx);
                 }
             }
+            self.name_span = head_name_span;
             let (t2, ty2) = self.apply_one_as(cx, t, ty, a, expected, elem, ready.remove(&k));
             self.use_ctx = None;
             self.map_elem_sub = None;
@@ -994,6 +998,7 @@ impl Elab {
             ty = ty2;
         }
         self.arg_of = saved_arg_of;
+        self.name_span = head_name_span;
         let (t, ty) = self.insert(cx, t, ty);
         self.call_obligations(cx, &t, e.span, head.span);
         // A partial application (D86).
@@ -1017,7 +1022,7 @@ impl Elab {
         }
         let mut ok = true;
         let name = self.g.defs[d.0 as usize].name.to_string();
-        let n_implicit = self.fn_meta.get(d).map(|m| m.n_implicit).unwrap_or(0);
+        let (n_implicit, inner) = self.fn_meta.get(d).map(|m| (m.n_implicit, m.inner.clone())).unwrap_or_default();
         let mut arity = 0;
         let mut ty = self.g.defs[d.0 as usize].ty.clone();
         while let Tm::Pi(_, _, _, _, b) = ty {
@@ -1033,8 +1038,9 @@ impl Elab {
                 return false;
             };
             if !self.tm_static(cx, arg, 0, cx.lvl()) {
-                let pname = self.fn_meta.get(d).and_then(|m| m.params.get(b.saturating_sub(n_implicit))).map(|p| p.0.clone()).unwrap_or_default();
-                let at = args.get(b.saturating_sub(n_implicit)).map(|a| a.span).unwrap_or(span);
+                let k = super::expl_index(n_implicit, &inner, b).unwrap_or(0);
+                let pname = self.fn_meta.get(d).and_then(|m| m.params.get(k)).map(|p| p.0.clone()).unwrap_or_default();
+                let at = args.get(k).map(|a| a.span).unwrap_or(span);
                 self.err(
                     Diagnostic::error("E0270", format!("`{pname}` of `{name}` must be known at compile time"), at)
                         .with_label("this depends on a value only known when the program runs")
@@ -1471,7 +1477,7 @@ impl Elab {
         let Some(Sym::Def(d)) = sym else { return (e, Vec::new()) };
         let Some(spec) = self.specs.get(&d) else { return (e, Vec::new()) };
         let concludes_forall = spec.ensures.as_ref().is_some_and(|p| matches!(p.tm, Tm::PrimApp(Prim::Forall, _)));
-        let n = spec.n_binders - spec.n_implicit;
+        let n = spec.n_binders - spec.n_implicit - spec.inner.len();
         if !concludes_forall || spine.len() <= n {
             return (e, Vec::new());
         }

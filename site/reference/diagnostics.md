@@ -128,8 +128,8 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0365` | an instance member with other parameters than the class's |
 | `E0366` | `main`'s signature isn't `args~List String, sys~System, code~ExitCode` |
 | `E0367` | a recursive type has no values: every constructor needs a value of the type |
-| `E0368` | a function or lemma of a class of several parameters whose parameters' types don't mention one of them |
-| `E0369` | a class's function or lemma with a parameter, or a result, named like the class's parameter |
+| `E0368` | a function or lemma of a class of several parameters whose parameters' types don't mention one of them, and which doesn't take it as a `ghost Type` parameter |
+| `E0369` | a class's function or lemma with a parameter, or a result, named like the class's parameter (except a parameter of type `ghost Type`, which is the class's parameter passed explicitly) |
 
 ## Usage: resources and `ghost`
 

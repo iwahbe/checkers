@@ -30,6 +30,10 @@ pub struct Sig {
     /// binder, and its refined type over all the binders. The binder's own
     /// type in `binders` is the type without its refinements.
     pub late: Vec<Late>,
+    /// Implicit binders among the explicit ones (all at `n_implicit` or
+    /// later): the dictionaries of clauses naming a parameter, each right
+    /// after the last one it names (`t~ghost Type, Parse t`, #161).
+    pub inner: Vec<usize>,
 }
 
 impl Elab {
@@ -620,7 +624,8 @@ impl Elab {
     /// code~ExitCode` (D31; `code` may be a `Future ExitCode`): what isn't
     /// written is that, what is must agree (E0366).
     fn check_main(&mut self, sig: &Sig, at: Span) {
-        let params: Vec<(Name, Val)> = (sig.n_implicit..sig.binders.len()).map(|k| (sig.binders[k].0.clone(), self.eval(&sig.cx, &sig.binders[k].3))).collect();
+        let params: Vec<(Name, Val)> =
+            (sig.n_implicit..sig.binders.len()).filter(|k| !sig.inner.contains(k)).map(|k| (sig.binders[k].0.clone(), self.eval(&sig.cx, &sig.binders[k].3))).collect();
         let res = self.eval(&sig.cx, &sig.result);
         let mut wrong = self.main_mismatches(&sig.cx, &params, &sig.result_name, &res);
         if wrong.is_empty() {
@@ -1555,6 +1560,15 @@ impl Elab {
         }
     }
 
+    /// Bind clause `k`'s dictionary (`Ord a`, D136), an implicit parameter.
+    fn bind_dict(&mut self, cx: &mut Cx, binders: &mut Vec<(Name, Mult, Icit, Tm)>, k: usize, e: &Expr) {
+        let ty = self.elab_type(cx, e);
+        let v = self.eval(cx, &ty);
+        let name = format!("$d{k}");
+        cx.bind(&name, v, Mult::Many);
+        binders.push((Rc::from(name.as_str()), Mult::Many, Icit::Impl, ty));
+    }
+
     /// Elaborate `fn name params -> result : constraints` into a context and Π-type.
     // The loop over binders also visits the result slot (`k == nb`).
     #[allow(clippy::needless_range_loop)]
@@ -1585,6 +1599,11 @@ impl Elab {
         for e in &class_clauses {
             self.collect_free(&cx, e, &declared, &mut autos);
         }
+        // A clause naming a parameter (`t~ghost Type, Parse t`, #161): its
+        // dictionary comes right after the last parameter it names, so
+        // the call's argument for that parameter decides it.
+        let after: Vec<Option<usize>> =
+            class_clauses.iter().map(|e| params.iter().rposition(|p| mentions_free(e, &p.name))).collect();
         for a in &autos {
             // Applied to arguments (`f a`), it is a type constructor (M25).
             let arity = cs
@@ -1611,13 +1630,12 @@ impl Elab {
             binders.push((Rc::from(a.as_str()), Mult::Zero, Icit::Impl, mv));
         }
         for (k, e) in class_clauses.iter().enumerate() {
-            let ty = self.elab_type(&mut cx, e);
-            let v = self.eval(&cx, &ty);
-            let name = format!("$d{k}");
-            cx.bind(&name, v, Mult::Many);
-            binders.push((Rc::from(name.as_str()), Mult::Many, Icit::Impl, ty));
+            if after[k].is_none() {
+                self.bind_dict(&mut cx, &mut binders, k, e);
+            }
         }
         let n_implicit = binders.len();
+        let mut inner = Vec::new();
         let mut comptime = Vec::new();
         // A refinement may mention a later parameter (#102): the parameter's
         // type is elaborated without its refinements here, and with them once
@@ -1656,6 +1674,12 @@ impl Elab {
                 comptime.push(binders.len());
             }
             binders.push((Rc::from(p.name.as_str()), mult, Icit::Expl, ty));
+            for (j, e) in class_clauses.iter().enumerate() {
+                if after[j] == Some(k) {
+                    inner.push(binders.len());
+                    self.bind_dict(&mut cx, &mut binders, j, e);
+                }
+            }
         }
         let mut late = Vec::new();
         for (b, e) in late_exprs {
@@ -1782,7 +1806,7 @@ impl Elab {
         self.in_spec -= 1;
         cx.facts.truncate(facts_before);
         cx.pop();
-        Sig { cx, binders, result: result_ty, n_implicit, preds, result_name: rname, comptime, hyps, late }
+        Sig { cx, binders, result: result_ty, n_implicit, preds, result_name: rname, comptime, hyps, late, inner }
     }
 
     /// The preconditions of a signature's function parameters that relate
@@ -1792,7 +1816,7 @@ impl Elab {
     pub fn elem_promises(&self, sig: &Sig) -> Vec<ElemPromise> {
         let nb = sig.binders.len();
         let mut out = Vec::new();
-        for b in sig.n_implicit..nb {
+        for b in (sig.n_implicit..nb).filter(|b| !sig.inner.contains(b)) {
             // The type and the number of binders it is over.
             let (ty, lvl) = match sig.late.iter().find(|l| l.binder == b) {
                 Some(l) => (&l.ty, nb),
@@ -1807,8 +1831,9 @@ impl Elab {
                     let Some(cap) = captured.len().checked_sub(q + 1).and_then(|i| captured.get(i)) else { continue };
                     let Tm::Var(i) = &***cap else { continue };
                     let Some(level) = lvl.checked_sub(i + 1) else { continue };
-                    if level >= sig.n_implicit && level != b {
-                        out.push(ElemPromise { k: b - sig.n_implicit, j: level - sig.n_implicit, pred, c, s });
+                    let ix = |b| super::expl_index(sig.n_implicit, &sig.inner, b);
+                    if let (Some(k), Some(j), true) = (ix(b), ix(level), level != b) {
+                        out.push(ElemPromise { k, j, pred, c, s });
                     }
                 }
             }
@@ -1851,7 +1876,7 @@ impl Elab {
                         self.transparent.insert(*did);
                     }
                     // Parameters of a resource type are `own` whether or not it is written (D39).
-                    for k in sig.n_implicit..sig.binders.len() {
+                    for k in (sig.n_implicit..sig.binders.len()).filter(|k| !sig.inner.contains(k)) {
                         let b = &sig.binders[k];
                         if b.1 == Mult::Zero || !self.type_linear(&b.3) {
                             continue;
@@ -1901,10 +1926,11 @@ impl Elab {
                             is_fn: true,
                             params: params
                                 .iter()
-                                .zip(sig.binders.iter().skip(sig.n_implicit))
+                                .zip(sig.binders.iter().skip(sig.n_implicit).filter(|b| b.2 == Icit::Expl))
                                 .map(|(p, b)| (p.name.clone(), b.1, p.span))
                                 .collect(),
                             n_implicit: sig.n_implicit,
+                            inner: sig.inner.clone(),
                             builtin,
                             result: result.as_ref().map(|r| r.name.clone()),
                         },
@@ -1917,6 +1943,7 @@ impl Elab {
                             n_implicit: sig.n_implicit,
                             late: sig.late.clone(),
                             elems: self.elem_promises(&sig),
+                            inner: sig.inner.clone(),
                             ..Default::default()
                         },
                     );
@@ -1933,10 +1960,11 @@ impl Elab {
                             decreasing: decreasing.is_some(),
                             params: params
                                 .iter()
-                                .zip(sig.binders.iter().skip(sig.n_implicit))
+                                .zip(sig.binders.iter().skip(sig.n_implicit).filter(|b| b.2 == Icit::Expl))
                                 .map(|(p, b)| (p.name.clone(), b.1, p.span))
                                 .collect(),
                             n_implicit: sig.n_implicit,
+                            inner: sig.inner.clone(),
                             ..Default::default()
                         },
                     );
@@ -2127,6 +2155,7 @@ impl Elab {
                 measure,
                 late: sig.late.clone(),
                 elems: Vec::new(),
+                inner: sig.inner.clone(),
             };
             self.specs.insert(*did, spec);
         }
@@ -2187,6 +2216,7 @@ impl Elab {
                 comptime: sig.comptime.clone(),
                 hyps: sig.hyps.clone(),
                 late: sig.late.clone(),
+                inner: sig.inner.clone(),
             };
             self.cur_fn = Some(*did);
             self.assume_pres(&mut sig);
@@ -2410,4 +2440,11 @@ fn pred_subject(p: &Tm) -> Vec<(DefId, usize, usize, usize)> {
         }
     }
     out
+}
+
+/// Is `name` given the type `ghost Type` among `cs` (#161)?
+pub(crate) fn is_ghost_type(cs: &[Constraint], name: &str) -> bool {
+    cs.iter().any(|c| {
+        matches!(c, Constraint::Typed { name: n, mult: ast::Mult::Ghost, ty } if n.name == name && matches!(&ty.kind, ExprKind::Con(t) if t == "Type"))
+    })
 }

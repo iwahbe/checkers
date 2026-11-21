@@ -54,6 +54,26 @@ pub struct ModuleInfo {
     pub failed_imports: HashSet<String>,
 }
 
+/// The binder of explicit parameter `k`, given the leading implicit
+/// binders and the implicit ones among the explicit (#161).
+pub fn expl_binder(n_implicit: usize, inner: &[usize], k: usize) -> usize {
+    let mut b = n_implicit + k;
+    for i in inner {
+        if *i <= b {
+            b += 1;
+        }
+    }
+    b
+}
+
+/// The explicit parameter binder `b` is, if it is one.
+pub fn expl_index(n_implicit: usize, inner: &[usize], b: usize) -> Option<usize> {
+    if b < n_implicit || inner.contains(&b) {
+        return None;
+    }
+    Some(b - n_implicit - inner.iter().filter(|i| **i < b).count())
+}
+
 /// Per-function facts used by the termination and usage checks.
 #[derive(Clone, Default)]
 pub struct FnMeta {
@@ -65,9 +85,18 @@ pub struct FnMeta {
     /// Explicit parameter names and multiplicities, in order.
     pub params: Vec<(String, Mult, Span)>,
     pub n_implicit: usize,
+    /// Implicit binders among the explicit ones (#161): see `Sig`.
+    pub inner: Vec<usize>,
     pub builtin: bool,
     /// The result's name, if it has one (`-> y`).
     pub result: Option<String>,
+}
+
+impl FnMeta {
+    /// Its binders: implicit and explicit.
+    pub fn n_binders(&self) -> usize {
+        self.n_implicit + self.inner.len() + self.params.len()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -381,6 +410,8 @@ pub struct Spec {
     /// call `k` only with strict parts of `j` where that predicate is a
     /// membership, as its body shows (#102).
     pub elems: Vec<ElemPromise>,
+    /// Implicit binders among the explicit ones (#161): see `Sig`.
+    pub inner: Vec<usize>,
 }
 
 /// A parameter whose type's refinements mention later parameters (#102).

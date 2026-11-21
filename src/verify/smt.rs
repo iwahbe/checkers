@@ -1611,12 +1611,17 @@ impl<'a> Builder<'a> {
                 }
                 Ok((t, s))
             }
-            Tm::Let(_, _, _, v, b) => {
+            Tm::Let(_, _, ty, v, b) => {
                 // Substituted rather than `let`-bound, so terms collected inside
                 // (postconditions of calls) stay closed.
-                let (vt, vs) = self.term(env, v)?;
                 let mut env2 = env.to_vec();
-                env2.push(Ent::Term(vt, vs));
+                // A type (an instance's class parameter by its name, #161).
+                if self.is_type(ty) {
+                    env2.push(Ent::Ty(self.sort_of(env, v)?));
+                } else {
+                    let (vt, vs) = self.term(env, v)?;
+                    env2.push(Ent::Term(vt, vs));
+                }
                 self.term(&env2, b)
             }
             Tm::App(..) | Tm::Def(_) | Tm::Con(_) => self.app(env, t),
@@ -2082,7 +2087,24 @@ impl<'a> Builder<'a> {
             }
             ienv.extend(tyargs);
         }
-        let rest: Vec<Ent> = inner[pos + 1..].to_vec();
+        // The arguments after the dictionary, and the explicit ones before
+        // it but a class's parameter passed explicitly (#161), which the
+        // dictionary's field doesn't take.
+        let mut rest: Vec<Ent> = Vec::new();
+        {
+            let mut t = self.e.g.defs[d.0 as usize].ty.clone();
+            let mut k = 0;
+            while let Tm::Pi(x, _, i, a, b) = t {
+                let class_param = self.is_type(&a) && cd.params.iter().any(|p| **p == *x);
+                if k > pos || (k < pos && i == crate::core::Icit::Expl && !class_param) {
+                    let Some(e) = inner.get(k) else { break };
+                    rest.push(e.clone());
+                }
+                t = (*b).clone();
+                k += 1;
+            }
+            rest.extend(inner.get(k..).unwrap_or_default().iter().cloned());
+        }
         let n = rest.len();
         ienv.extend(rest);
         let mut app = crate::stage::shift(&field, n, 0);

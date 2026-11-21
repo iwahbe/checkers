@@ -20,7 +20,7 @@ class Size a
         ensures size x >= 0
 ```
 
-A member is named `C.f` (`Size.size`), or `f` alone where the class is in scope or imported unqualified. A member's parameter written `own` (`x~own a`) may receive a resource ([Capabilities](effects.md#resources)). A member's parameters and result can't have the name of the class's parameter, which its signature already uses (E0369).
+A member is named `C.f` (`Size.size`), or `f` alone where the class is in scope or imported unqualified. A member's parameter written `own` (`x~own a`) may receive a resource ([Capabilities](effects.md#resources)). A member's parameter of type `ghost Type` named like the class's parameter is that parameter, passed explicitly (see [Classes of several types](#classes-of-several-types)). Any other parameter, and the result, can't have the name of the class's parameter, which its signature already uses (E0369).
 
 ## Instances
 
@@ -267,7 +267,25 @@ check hole (Page "p: ") "x" == "p: x"
 check fill (Plain ";") 4 == "4;"
 ```
 
-Each function and lemma of the class mentions every one of its parameters in its parameters' types (E0368): a use finds the instance from the types of its arguments.
+Each function and lemma of the class mentions every one of its parameters in its parameters' types (E0368): a use finds the instance from the types of its arguments. A parameter that no argument's type can mention, such as the type a conversion gives, is taken explicitly instead: a parameter of type `ghost Type` named like the class's parameter is that parameter, and a use passes the type.
+
+```checkers
+class TryFrom s t
+    fn try_from x t -> r : x~s, t~ghost Type, r~Option t
+
+instance TryFrom String Bool
+    fn try_from x t
+        if x == "yes" then Some True else if x == "no" then Some False else None
+
+check try_from "yes" Bool == Some True
+
+fn convert x t -> r : x~String, t~ghost Type, TryFrom String t, r~Option t
+    try_from x t
+
+check convert "no" Bool == Some False
+```
+
+The type passed is erased, and it isn't part of the instance's record of functions. As with any function taking a type, a partial application can leave it for later: `let f = try_from "yes"` has type `(t~ghost Type) -> {TryFrom String t} -> Option t`, and `f Bool` finds the instance. An instance writes the parameter like any other, and there it is the instance's type (`Bool` above). A clause can name a type passed explicitly, in any signature, so a function can pass the type on, as `convert` does above.
 
 An instance gives a type for each parameter (E0292). Each is a type constructor applied to distinct type variables, as for one parameter, or a bare type variable, except the first (E0281). An instance may be declared in the package of the class, or in the package of one of its types, provided no type before it is a bare variable (E0282), as Rust's orphan rule asks: `instance Hole Format Mine` may be in `Mine`'s package even though `Hole` and `Format` are another package's, but `instance Rel Format a Mine` may not, since `a` comes first. Two instances of a class whose types could match the same types overlap (E0283): `Hole Format a` and `Hole Format String` would, `Hole Format a` and `Hole Page String` don't.
 
