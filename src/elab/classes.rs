@@ -45,8 +45,13 @@ pub struct ClassDef {
 }
 
 /// A class's function gives a type for each parameter and its result
-/// (else E0362, and instances leave it out).
-fn fn_member_ok(m: &ClassMember) -> bool {
+/// (else E0362), and no parameter of a function or lemma has the name of
+/// one of the class's (else E0369); instances leave out a member that
+/// doesn't.
+fn member_ok(m: &ClassMember, cparams: &[String]) -> bool {
+    if shadowed_param(m, cparams).is_some() {
+        return false;
+    }
     match m {
         ClassMember::Fn { params, result, constraints, .. } => {
             let typed = |n: &str| constraints.iter().any(|c| matches!(c, Constraint::Typed { name, .. } if name.name == n));
@@ -54,6 +59,18 @@ fn fn_member_ok(m: &ClassMember) -> bool {
         }
         ClassMember::Lemma { .. } | ClassMember::Type { .. } => true,
     }
+}
+
+/// A parameter (or the result) of a class's function or lemma with the name
+/// of one of the class's parameters (E0369): in the member's signature the
+/// name would mean both.
+fn shadowed_param<'m>(m: &'m ClassMember, cparams: &[String]) -> Option<&'m Ident> {
+    let names: Vec<&Ident> = match m {
+        ClassMember::Fn { params, result, .. } => params.iter().chain(result).collect(),
+        ClassMember::Lemma { params, .. } => params.iter().collect(),
+        ClassMember::Type { .. } => return None,
+    };
+    names.into_iter().find(|p| cparams.contains(&p.name))
 }
 
 impl ClassDef {
@@ -797,6 +814,14 @@ impl Elab {
                 self.err(Diagnostic::error("E0350", format!("`{}` is defined twice in class `{}`", mname.name, name.name), mname.span));
                 continue;
             }
+            if let Some(p) = shadowed_param(mem, &pnames) {
+                self.err(
+                    Diagnostic::error("E0369", format!("parameter `{}` of `{}` has the name of the class's parameter `{}`", p.name, mname.name, p.name), p.span)
+                        .with_label(format!("the class's parameter is `{}`", p.name))
+                        .with_help("give the parameter another name"),
+                );
+                continue;
+            }
             match mem {
                 ClassMember::Type { name: t, default, .. } => {
                     let mentioned = default.as_ref().and_then(|e| params.iter().find(|p| super::decls::mentions_free(e, &p.name)).map(|p| (e, p)));
@@ -943,6 +968,9 @@ impl Elab {
                     ClassMember::Lemma { name, params, constraints, .. } => (name, params, constraints, "lemma"),
                     ClassMember::Type { .. } => continue,
                 };
+                if shadowed_param(mem, &pnames).is_some() {
+                    continue;
+                }
                 let tys: Vec<&Expr> = cs
                     .iter()
                     .filter_map(|c| match c {
@@ -1302,7 +1330,7 @@ impl Elab {
         // A class from another module: its code is shown at the instance.
         let foreign: Option<String> = class_tid.map(|t| self.class_defs[&t].module.clone()).filter(|m| *m != self.cur);
         let all_members = cmembers.clone();
-        let cmembers: Vec<ClassMember> = cmembers.into_iter().filter(fn_member_ok).collect();
+        let cmembers: Vec<ClassMember> = cmembers.into_iter().filter(|m| member_ok(m, &cparams)).collect();
         // Two instances here for the same class whose types can be the same
         // (one elsewhere is found when it is registered): at each position,
         // the same type constructor, or a variable in either (#145).
