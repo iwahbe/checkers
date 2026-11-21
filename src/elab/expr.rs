@@ -654,11 +654,6 @@ impl Elab {
                         );
                     }
                 }
-                if let Sym::Def(d) = s {
-                    if !self.check_pinned_applied(d, span) {
-                        return (Tm::Error, Val::Error);
-                    }
-                }
                 let (t, ty) = self.sym_term(cx, s, span);
                 self.insert(cx, t, ty)
             }
@@ -885,7 +880,6 @@ impl Elab {
         let elem_sub = self.map_elem_sub.take();
         let ncalls = self.calls.len();
         let saved_head = std::mem::replace(&mut self.in_app_head, true);
-        let saved_args = std::mem::replace(&mut self.app_head_args, args.len());
         // A parameter called here (#102): what its first argument is part of.
         if let ExprKind::Var(n) = &head.kind {
             if cx.lookup(n).is_some_and(|l| cx.locals[l].param.is_some()) {
@@ -893,17 +887,10 @@ impl Elab {
             }
         }
         let (ft, fty) = self.infer(cx, head);
+        // Where an implicit argument after an explicit one (#161) is shown.
+        let head_name_span = self.name_span;
         self.use_ctx = None;
         self.in_app_head = saved_head;
-        self.app_head_args = saved_args;
-        // The call doesn't pass a type its function must be given (E0293):
-        // its arguments are checked, and nothing else is reported.
-        if std::mem::take(&mut self.pinned_failed) {
-            for a in &args {
-                let _ = self.infer(cx, a);
-            }
-            return (Tm::Error, Val::Error);
-        }
         self.note_tag_call(head, &fty, e.span, args[0]);
         // `debug x` shows each of `x`'s fields: they are read (#126).
         if let (ExprKind::Var(n), Some(d)) = (&head.kind, self.std_def("debug")) {
@@ -946,8 +933,8 @@ impl Elab {
         let callee_spec = crate::core::head_def(&ft).and_then(|d| self.specs.get(&d));
         let callee_def = crate::core::head_def(&ft);
         let late = callee_spec.map(|s| s.late.clone()).unwrap_or_default();
-        let pinned = callee_spec.map(|s| s.pinned.clone()).unwrap_or_default();
         let n_implicit = callee_spec.map_or(0, |s| s.n_implicit);
+        let inner = callee_spec.map(|s| s.inner.clone()).unwrap_or_default();
         self.head_checks_aliases = match &ft {
             Tm::Def(d) => self.specs.get(d).is_some_and(|s| s.preds.iter().any(|p| p.alias.is_some() && !p.is_post)),
             Tm::Con(c) => self.con_invs.contains_key(c),
@@ -959,11 +946,6 @@ impl Elab {
             None => (ft, fty),
         };
         let (ft, fty) = self.look_ahead(cx, ft, fty, &args);
-        // The implicit arguments a type passed explicitly decides (#161).
-        let implicits: Vec<Tm> = match ft.spine_cloned() {
-            (Tm::Def(_), xs) if !pinned.is_empty() && xs.len() == n_implicit => xs,
-            _ => Vec::new(),
-        };
         // `Tx a`, where `Tx` names an abstract type of another module whose
         // constructor shares its name (D155).
         if let Tm::TyCon(tid) = &ft {
@@ -984,8 +966,8 @@ impl Elab {
         let mut ready: HashMap<usize, (Tm, Val)> = HashMap::new();
         for (k, a) in args.iter().enumerate() {
             let mut expected = None;
-            if let Some(l) = late.iter().find(|l| l.binder == n_implicit + k) {
-                if !ready.contains_key(&k) && l.deps.iter().all(|j| j - n_implicit < args.len()) {
+            if let Some(l) = late.iter().find(|l| l.binder == super::expl_binder(n_implicit, &inner, k)) {
+                if !ready.contains_key(&k) && l.deps.iter().all(|j| super::expl_index(n_implicit, &inner, *j).is_some_and(|j| j < args.len())) {
                     let (t1, ty1, e) = self.late_expected(cx, t, ty, k, l, &args, &mut ready);
                     (t, ty, expected) = (t1, ty1, e);
                 }
@@ -1008,25 +990,15 @@ impl Elab {
                     self.use_ctx = Some(ctx);
                 }
             }
+            self.name_span = head_name_span;
             let (t2, ty2) = self.apply_one_as(cx, t, ty, a, expected, elem, ready.remove(&k));
             self.use_ctx = None;
             self.map_elem_sub = None;
-            if let (Some((_, j)), Tm::App(_, arg, Icit::Expl, _)) = (pinned.iter().find(|(b, _)| *b == n_implicit + k), &t2) {
-                if let Some(imp) = implicits.get(*j) {
-                    let (iv, av) = (self.eval(cx, imp), self.eval(cx, arg));
-                    if unify(&self.g, cx.lvl(), &iv, &av).is_err() {
-                        let (want, got) = (self.show_val(cx, &iv), self.show_val(cx, &av));
-                        self.err(
-                            Diagnostic::error("E0201", format!("type mismatch: expected `{want}`, found `{got}`"), a.span)
-                                .with_label(format!("the call's type makes this `{want}`")),
-                        );
-                    }
-                }
-            }
             t = t2;
             ty = ty2;
         }
         self.arg_of = saved_arg_of;
+        self.name_span = head_name_span;
         let (t, ty) = self.insert(cx, t, ty);
         self.call_obligations(cx, &t, e.span, head.span);
         // A partial application (D86).
@@ -1037,29 +1009,6 @@ impl Elab {
             return (Tm::Error, Val::Error);
         }
         (t, ty)
-    }
-
-    /// A use of `d` (with `app_head_args` explicit arguments if it is
-    /// called): a type it takes explicitly that a clause names (#161) is
-    /// decided by the call's argument, so the call must pass it.
-    fn check_pinned_applied(&mut self, d: DefId, span: Span) -> bool {
-        let n = if self.in_app_head { self.app_head_args } else { 0 };
-        let Some(spec) = self.specs.get(&d) else { return true };
-        let Some(&(b, _)) = spec.pinned.iter().find(|(b, _)| *b >= spec.n_implicit + n) else { return true };
-        let k = b - spec.n_implicit;
-        let Some(meta) = self.fn_meta.get(&d) else { return true };
-        let name = meta.name.clone();
-        let pname = meta.params.get(k).map(|p| p.0.clone()).unwrap_or_default();
-        let ps: Vec<&str> = meta.params.iter().map(|p| p.0.as_str()).collect();
-        let rest: Vec<&str> = ps.iter().enumerate().filter(|(j, _)| !spec.pinned.iter().any(|(b, _)| *b == spec.n_implicit + j)).map(|(_, p)| *p).collect();
-        let example = if rest.is_empty() { format!("{name} {}", ps.join(" ")) } else { format!("\\{} -> {name} {}", rest.join(" "), ps.join(" ")) };
-        self.err(
-            Diagnostic::error("E0293", format!("`{name}` takes the type `{pname}`, so it must be called with it"), span)
-                .with_label(format!("no argument for `{pname}`"))
-                .with_help(format!("the type passed decides which instance it uses; to pass `{name}` as a value, wrap the call in a lambda that passes the type, e.g. `{example}`")),
-        );
-        self.pinned_failed = self.in_app_head;
-        false
     }
 
     /// A call of a function with `comptime` parameters (D59): it must be
@@ -1073,7 +1022,7 @@ impl Elab {
         }
         let mut ok = true;
         let name = self.g.defs[d.0 as usize].name.to_string();
-        let n_implicit = self.fn_meta.get(d).map(|m| m.n_implicit).unwrap_or(0);
+        let (n_implicit, inner) = self.fn_meta.get(d).map(|m| (m.n_implicit, m.inner.clone())).unwrap_or_default();
         let mut arity = 0;
         let mut ty = self.g.defs[d.0 as usize].ty.clone();
         while let Tm::Pi(_, _, _, _, b) = ty {
@@ -1089,8 +1038,9 @@ impl Elab {
                 return false;
             };
             if !self.tm_static(cx, arg, 0, cx.lvl()) {
-                let pname = self.fn_meta.get(d).and_then(|m| m.params.get(b.saturating_sub(n_implicit))).map(|p| p.0.clone()).unwrap_or_default();
-                let at = args.get(b.saturating_sub(n_implicit)).map(|a| a.span).unwrap_or(span);
+                let k = super::expl_index(n_implicit, &inner, b).unwrap_or(0);
+                let pname = self.fn_meta.get(d).and_then(|m| m.params.get(k)).map(|p| p.0.clone()).unwrap_or_default();
+                let at = args.get(k).map(|a| a.span).unwrap_or(span);
                 self.err(
                     Diagnostic::error("E0270", format!("`{pname}` of `{name}` must be known at compile time"), at)
                         .with_label("this depends on a value only known when the program runs")
@@ -1527,7 +1477,7 @@ impl Elab {
         let Some(Sym::Def(d)) = sym else { return (e, Vec::new()) };
         let Some(spec) = self.specs.get(&d) else { return (e, Vec::new()) };
         let concludes_forall = spec.ensures.as_ref().is_some_and(|p| matches!(p.tm, Tm::PrimApp(Prim::Forall, _)));
-        let n = spec.n_binders - spec.n_implicit;
+        let n = spec.n_binders - spec.n_implicit - spec.inner.len();
         if !concludes_forall || spine.len() <= n {
             return (e, Vec::new());
         }
@@ -2207,9 +2157,6 @@ impl Elab {
                             self.index_sym(x.span, Sym::Ty(tid));
                             self.index_sym(name.span, s);
                             self.note_reference(d, span);
-                            if !self.check_pinned_applied(d, span) {
-                                return (Tm::Error, Val::Error);
-                            }
                             self.name_span = span;
                             let (t, ty) = self.sym_term(cx, s, span);
                             self.insert(cx, t, ty)
@@ -2239,9 +2186,6 @@ impl Elab {
                             self.index_sym(name.span, s);
                             if let Sym::Def(d) = s {
                                 self.note_reference(d, span);
-                                if !self.check_pinned_applied(d, span) {
-                                    return (Tm::Error, Val::Error);
-                                }
                             }
                             self.name_span = span;
                             let (t, ty) = self.sym_term(cx, s, span);

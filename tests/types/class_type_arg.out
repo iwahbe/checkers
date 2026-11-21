@@ -11,11 +11,10 @@ error[E0201]: type mismatch: expected `Option Bool`, found `Option Int`
 54 |     try_from "1" Int
    |     ^^^^^^^^^^^^^^^^ this expression has type `Option Int`
 
-error[E0293]: `try_from` takes the type `t`, so it must be called with it
-  --> class_type_arg.ck:58:13
+error[E0201]: type mismatch: expected `Option Bool`, found `Option Int`
+  --> class_type_arg.ck:66:5
    |
-58 |     let f = try_from "1"
-   |             ^^^^^^^^ no argument for `t`
-   = help: the type passed decides which instance it uses; to pass `try_from` as a value, wrap the call in a lambda that passes the type, e.g. `\x -> try_from x t`
+66 |     f Int
+   |     ^^^^^ this expression has type `Option Int`
 
 class_type_arg.ck: 3 errors, 0 warnings

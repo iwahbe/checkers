@@ -22,4 +22,7 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let term = sys.term
     terminal.print_line (debug (try_from "123" Int)) term
     terminal.print_line (debug (try_from "yes" Bool)) term
+    # Partly applied: the type, and so the instance, comes later.
+    let f = try_from "no"
+    terminal.print_line (debug (f Bool)) term
     Success

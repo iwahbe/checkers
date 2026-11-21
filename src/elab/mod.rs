@@ -54,6 +54,26 @@ pub struct ModuleInfo {
     pub failed_imports: HashSet<String>,
 }
 
+/// The binder of explicit parameter `k`, given the leading implicit
+/// binders and the implicit ones among the explicit (#161).
+pub fn expl_binder(n_implicit: usize, inner: &[usize], k: usize) -> usize {
+    let mut b = n_implicit + k;
+    for i in inner {
+        if *i <= b {
+            b += 1;
+        }
+    }
+    b
+}
+
+/// The explicit parameter binder `b` is, if it is one.
+pub fn expl_index(n_implicit: usize, inner: &[usize], b: usize) -> Option<usize> {
+    if b < n_implicit || inner.contains(&b) {
+        return None;
+    }
+    Some(b - n_implicit - inner.iter().filter(|i| **i < b).count())
+}
+
 /// Per-function facts used by the termination and usage checks.
 #[derive(Clone, Default)]
 pub struct FnMeta {
@@ -65,9 +85,18 @@ pub struct FnMeta {
     /// Explicit parameter names and multiplicities, in order.
     pub params: Vec<(String, Mult, Span)>,
     pub n_implicit: usize,
+    /// Implicit binders among the explicit ones (#161): see `Sig`.
+    pub inner: Vec<usize>,
     pub builtin: bool,
     /// The result's name, if it has one (`-> y`).
     pub result: Option<String>,
+}
+
+impl FnMeta {
+    /// Its binders: implicit and explicit.
+    pub fn n_binders(&self) -> usize {
+        self.n_implicit + self.inner.len() + self.params.len()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -381,8 +410,8 @@ pub struct Spec {
     /// call `k` only with strict parts of `j` where that predicate is a
     /// membership, as its body shows (#102).
     pub elems: Vec<ElemPromise>,
-    /// Explicit binders that decide an implicit one (#161): see `Sig`.
-    pub pinned: Vec<(usize, usize)>,
+    /// Implicit binders among the explicit ones (#161): see `Sig`.
+    pub inner: Vec<usize>,
 }
 
 /// A parameter whose type's refinements mention later parameters (#102).
@@ -537,12 +566,6 @@ pub struct Elab {
     /// Elaborating the head of an application: a bare function name gets its
     /// refined type only as a value (D85).
     pub in_app_head: bool,
-    /// The number of explicit arguments of the call whose head is being
-    /// elaborated, while `in_app_head`.
-    pub app_head_args: usize,
-    /// The head just elaborated was such a call's function, without the
-    /// type it must be passed (E0293).
-    pub pinned_failed: bool,
     /// Postconditions to check where the current function returns (§7.1).
     pub post_target: Option<PostTarget>,
     /// The goal of the proof being elaborated (D49).
@@ -785,8 +808,6 @@ impl Elab {
             insts: Vec::new(),
             pending_inst: None,
             in_app_head: false,
-            app_head_args: 0,
-            pinned_failed: false,
             proof_goal: None,
             post_target: None,
             admits: Vec::new(),

@@ -53,7 +53,18 @@ fn missing -> r : r~Option (List Int)
 fn differs -> r : r~Option Bool
     try_from "1" Int
 
-# The call decides the type, so it must pass it.
-fn as_value -> r : r~Option Int
+# Partly applied, the type is passed later, as to any function taking one.
+fn later -> r : r~Option Int
     let f = try_from "1"
     f Int
+
+check later == Some 12
+
+# The type passed later differs from the type expected.
+fn later_differs -> r : r~Option Bool
+    let f = try_from "1"
+    f Int
+
+# A known instance's function is visible to the prover.
+fn proved -> r : r~Option Bool, r == Some True
+    try_from "yes" Bool
