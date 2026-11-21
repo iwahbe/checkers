@@ -757,7 +757,7 @@ impl Elab {
                 }
             }
         }
-        (ast::Module { name: m.name.clone(), imports: m.imports.clone(), decls }, origins)
+        (ast::Module { name: m.name.clone(), imports: m.imports.clone(), decls, templates: m.templates }, origins)
     }
 
     fn desugar_class(&mut self, d: &Decl, name: &Ident, params: &[Ident], members: &[ClassMember], decls: &mut Vec<Decl>, origins: &mut Vec<Origin>) {

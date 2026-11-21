@@ -9,7 +9,6 @@ replaces 1:68-1:70
   Err                constructor     
   False              constructor     
   Functor            type            
-  Hole               type            
   I32                function        
   I64                function        
   I8                 function        
@@ -20,7 +19,6 @@ replaces 1:68-1:70
   Nat                function        
   Neg                type            
   Nil                constructor     
-  NoOptions          type            
   None               constructor     
   Ok                 constructor     
   Option             type            
@@ -29,7 +27,6 @@ replaces 1:68-1:70
   Some               constructor     
   String             type            
   Sub                type            
-  Template           type            
   True               constructor     
   Type               function        
   U16                function        
@@ -41,12 +38,10 @@ replaces 1:68-1:70
   add_zero           function        
   antisym            function        
   assoc              function        
-  finish             function        
   fmap               function        
   fmap_comp          function        
   fmap_id            function        
   format             function        
-  hole               function        
   le                 function        
   len                function        
   mul                function        
@@ -54,7 +49,6 @@ replaces 1:68-1:70
   not                function        
   refl               function        
   sub                function        
-  text               function        
   total              function        
   trans              function        
   twice              function        

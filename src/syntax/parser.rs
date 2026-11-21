@@ -24,6 +24,7 @@ pub fn parse_with_place(tokens: Vec<Token>) -> (Module, Vec<Diagnostic>, Option<
         body_start: false,
         in_type: 0,
         keyword_params: Vec::new(),
+        templates: false,
     };
     let m = p.module();
     (m, p.diags, p.place)
@@ -98,6 +99,8 @@ struct Parser {
     /// Keywords a header used as parameter names (reported, E0122): its
     /// constraints may name them without a second report.
     keyword_params: Vec<String>,
+    /// A template was parsed (#132).
+    templates: bool,
 }
 
 impl Parser {
@@ -340,7 +343,7 @@ impl Parser {
                 Err(_) => self.recover_top(),
             }
         }
-        Module { name, imports, decls }
+        Module { name, imports, decls, templates: self.templates }
     }
 
     fn qname(&mut self) -> PResult<QName> {
@@ -1395,6 +1398,7 @@ impl Parser {
             } else if glued && matches!(self.peek(), Tok::Template(_)) {
                 // A template: the string is glued to its tag (#132).
                 let t = self.bump();
+                self.templates = true;
                 let Tok::Template(parts) = t.tok else { unreachable!() };
                 let pieces = parts.into_iter().map(|p| self.template_piece(p)).collect();
                 let span = e.span.to(t.span);
@@ -1474,6 +1478,7 @@ impl Parser {
             body_start: false,
             in_type: 0,
             keyword_params: Vec::new(),
+            templates: false,
         };
         let r = f(&mut p).ok().filter(|_| {
             if p.pos == last {

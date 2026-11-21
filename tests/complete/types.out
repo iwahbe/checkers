@@ -15,7 +15,6 @@ replaces 10:33-10:33
   Int                type            export abstract enum Int  (documented)
   List               type            export enum List a : a~Type  (documented)
   Nat                type            export type Nat = n~Int, n >= 0  (documented)
-  NoOptions          type            export enum NoOptions  (documented)
   Option             type            export enum Option a : a~Type  (documented)
   Result             type            export enum Result a e : a~Type, e~Type  (documented)
   String             type            export abstract enum String  (documented)
@@ -38,7 +37,6 @@ replaces 13:29-13:29
   Int                type            export abstract enum Int  (documented)
   List               type            export enum List a : a~Type  (documented)
   Nat                type            export type Nat = n~Int, n >= 0  (documented)
-  NoOptions          type            export enum NoOptions  (documented)
   Option             type            export enum Option a : a~Type  (documented)
   Result             type            export enum Result a e : a~Type, e~Type  (documented)
   String             type            export abstract enum String  (documented)
@@ -66,7 +64,6 @@ replaces 16:33-16:33
   Cons               constructor     Cons x xs : x~a, xs~List a  (of `List`)
   Err                constructor     Err x : x~e  (of `Result`)
   Functor            class           export class Functor f  (documented)
-  Hole               class           export class Hole s h  (documented)
   Monoid             class           export class Monoid a  (documented)
   Mul                class           export class Mul a  (documented)
   Neg                class           export class Neg a  (documented)
@@ -76,17 +73,13 @@ replaces 16:33-16:33
   Ord                class           export class Ord a  (documented)
   Some               constructor     Some x : x~a  (of `Option`)
   Sub                class           export class Sub a  (documented)
-  Template           class           export class Template s  (documented)
   add                function        fn add x y -> r : x~a, y~a, r~a
-  finish             function        fn finish st -> r : st~s, r~Result  (documented)
   fmap               function        fn fmap g xs -> ys : g~(a -> b), xs~f a, ys~f b  (documented)
   format             function        
-  hole               function        fn hole st x os -> r : st~s, x~h, os~List Options, r~s  (documented)
   len                function        
   mul                function        fn mul x y -> r : x~a, y~a, r~a
   neg                function        fn neg x -> r : x~a, r~a
   sub                function        fn sub x y -> r : x~a, y~a, r~a
-  text               function        fn text st str -> r : st~s, str~String, r~s  (documented)
   zero               function        fn zero -> r : r~a
 == line 20, column 10
 replaces 20:10-20:10
@@ -103,7 +96,6 @@ replaces 20:10-20:10
   Int                type            export abstract enum Int  (documented)
   List               type            export enum List a : a~Type  (documented)
   Nat                type            export type Nat = n~Int, n >= 0  (documented)
-  NoOptions          type            export enum NoOptions  (documented)
   Option             type            export enum Option a : a~Type  (documented)
   Result             type            export enum Result a e : a~Type, e~Type  (documented)
   String             type            export abstract enum String  (documented)

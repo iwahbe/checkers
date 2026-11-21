@@ -15,6 +15,9 @@ pub struct Module {
     pub name: Option<QName>,
     pub imports: Vec<Import>,
     pub decls: Vec<Decl>,
+    /// It has a template (#132): `std.string`, which declares the classes
+    /// templates are built through, is loaded for it.
+    pub templates: bool,
 }
 
 #[derive(Clone, Debug)]

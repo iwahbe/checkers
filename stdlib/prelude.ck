@@ -291,37 +291,6 @@ instance Functor Option
             None   -> None
             Some x -> Some (g x)
 
-# ── Templates ────────────────────────────────────────────────────────────────
-# `tag"a{x}b{y | o}c"` is a template: `tag` makes a formatter, which is given
-# the text and the holes in order, then finishes:
-#
-#     finish (text (hole (text (hole (text (tag 3 2) "a") x []) "b") y [o]) "c")
-#
-# A hole `{}` (or `{| o}`) is a new parameter: `tag"{}, {}"` is a function of
-# two values.
-
-# A formatter, a state `s` that takes a template's text and finishes into a
-# `Result`. A template's tag, applied to the number of bytes of its text and
-# its number of holes, gives the first state.
-export class Template s
-    # What a finished template is.
-    type Result
-    # The state after the text `str`.
-    fn text st str -> r : st~s, str~String, r~s
-    # The finished template.
-    fn finish st -> r : st~s, r~Result
-
-# The holes formatter `s` takes for values of type `h`, and with which
-# options.
-export class Hole s h
-    # The options a hole may have, after `|`.
-    type Options = NoOptions
-    # The state after a hole holding `x`, with the options `os`.
-    fn hole st x os -> r : st~s, x~h, os~List Options, r~s
-
-# No options: the only list of them is `[]`.
-export enum NoOptions
-
 # Whether `x` comes before `y` by their bytes (`Ord String`).
 fn string_le x y -> r : x~String, y~String, r~Bool
     __builtin

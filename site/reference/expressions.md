@@ -178,7 +178,7 @@ A hole is written in one of four ways:
 
 The expressions in a hole are ordinary expressions in the template's scope, and errors in them are reported where they are written, inside the string. `|` separates the options only outside brackets, and the options are separated by commas, as in a list.
 
-**Formatters.** A template is a series of calls of the prelude's classes `Template` and `Hole` ([Classes](classes.md#the-prelude-s-classes)). The tag is applied to the number of bytes of text and the number of holes, and gives the formatter's first state; `Template.text` takes each piece of text, `Hole.hole` each hole's value and its options as a list, and `Template.finish` gives the result:
+**Formatters.** A template is a series of calls of the classes `Template` and `Hole` of `std.string`. A template needs no import; a formatter's instances do, `import std.string (Template, Hole)`. The tag is applied to the number of bytes of text and the number of holes, and gives the formatter's first state; `Template.text` takes each piece of text, `Hole.hole` each hole's value and its options as a list, and `Template.finish` gives the result:
 
 ```text
 fn tag n k -> p : n~Nat, k~Nat, p~Page
@@ -197,7 +197,7 @@ module page
 
 import std.html
 import std.list
-import std.string
+import std.string (Template, Hole)
 
 # HTML being built: its pieces, the last first.
 record Page
@@ -231,7 +231,7 @@ check page"<li>{}</li>" "x" == "<li>x</li>"
 module page_count
 
 import std.list
-import std.string
+import std.string (Template, Hole)
 
 record Page
     parts~List String

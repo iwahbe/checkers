@@ -153,6 +153,12 @@ impl Elab {
             me.import_types.extend(ts);
             me.import_values.extend(vs);
         }
+        // A template's calls are of `std.string`'s classes (#132), which
+        // it may use without importing them.
+        if m.templates && name != "std.string" {
+            self.load_stdlib("std.string");
+            self.cur = name.to_string();
+        }
         for imp in &m.imports {
             let path = imp.path.dotted();
             self.cur = name.to_string();

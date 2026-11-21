@@ -1,0 +1,8 @@
+error[E0284]: no instance of `Template` for `Int`
+  --> template_no_string.ck:10:5
+   |
+10 |     count"text"
+   |     ^^^^^ needs `Template Int`
+   = help: declare `instance Template …` for this type, beside the class or the type
+
+template_no_string.ck: 1 error, 0 warnings

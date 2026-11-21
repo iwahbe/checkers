@@ -8,7 +8,7 @@ module template
 import std.system (System, ExitCode)
 import std.terminal
 import std.list
-import std.string
+import std.string (Template, Hole)
 import std.html
 
 record Page

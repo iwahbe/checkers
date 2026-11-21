@@ -1,7 +1,7 @@
 module template_errors
 
 import std.list
-import std.string
+import std.string (Template, Hole)
 
 record Page
     parts~List String

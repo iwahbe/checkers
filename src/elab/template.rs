@@ -1,4 +1,4 @@
-//! Templates (#132): `tag"a{x}b{y | o}c"` is calls of the prelude's
+//! Templates (#132): `tag"a{x}b{y | o}c"` is calls of `std.string`'s
 //! `Template` and `Hole` classes' functions, one for each piece:
 //!
 //! ```text
@@ -10,8 +10,8 @@
 use super::*;
 use crate::syntax::ast::{Expr, ExprKind, TemplatePiece};
 
-/// The names a template's calls use: the prelude's class functions (no
-/// user name can start with `$`).
+/// The names a template's calls use: `std.string`'s class functions (no
+/// user name can start with `$`), whether or not the module imports them.
 pub const TEXT: &str = "$tpl#text";
 pub const HOLE: &str = "$tpl#hole";
 pub const FINISH: &str = "$tpl#finish";
@@ -41,7 +41,7 @@ impl Elab {
             FINISH => "finish",
             _ => return None,
         };
-        let m = self.modules.get("std.prelude")?;
+        let m = self.modules.get("std.string")?;
         match m.values.get(n) {
             Some(s @ Sym::Def(_)) => Some(*s),
             _ => None,
