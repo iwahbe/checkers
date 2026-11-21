@@ -67,6 +67,7 @@ fn first own n -> r : own~Nat, n~Nat, r~Nat
 | character, `c'…'` | `Char` | `c'é'`, `c'\u{1F600}'` |
 | string, `"…"` | `String` | `"hello"`, `"'"`, `"caf\u{e9}"` |
 | bytes, `b"…"` | `Bytes` | `b"null"`, `b"\xff\x00"` |
+| template, `tag"…"` | what its tag's formatter builds | `format"{n} items"` |
 
 **Integers** are written in decimal or, after `0x`, in hexadecimal. `_` may appear between digits and means nothing. A literal has no sign: `-1` is a sign applied to `1` ([Signs](#signs)), and in a pattern it matches minus one. There are no floating-point literals or types.
 
@@ -86,6 +87,13 @@ check 'a' + 1 == 98
 check "caf\u{e9}" == "café"
 check b"\u{e9}" == b"\xc3\xa9"
 check b"\xff"[0] == 255
+```
+
+**Templates.** A string glued to a lowercase name before it, `tag"…"`, is a template ([Expressions](expressions.md#templates)). Its text is read as a string's, with the same escapes, and `{{` and `}}` stand for `{` and `}`; `{…}` is a hole, which holds tokens up to the `}` that closes it, strings and brackets included. A `}` that closes no hole is E0005, and a hole still open at the end of the line is E0006. A string with a space before it, or glued to a keyword, is an ordinary string.
+
+```checkers
+check format"{1 + 1} {{braces}}" == "2 {braces}"
+check format "{x}" == "{x}"
 ```
 
 ## Operators and punctuation

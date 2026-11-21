@@ -92,6 +92,67 @@ fn quote_end src i e q -> r : src~Bytes, i~Nat, e~Nat, i <= e, e <= len src, q~U
                     None   -> None
                     Some j -> Some j
 
+# Just past the quote that closes a template whose body starts at `i`: its
+# holes, `{…}`, may hold strings and templates; `{{` and `}}` are braces.
+fn template_end src i e -> r : src~Bytes, i~Nat, e~Nat, i <= e, e <= len src,
+                               r~Option (j~Nat, i < j, j <= e)
+    decreasing e - i
+    match peek src i e
+        None   -> None
+        Some c ->
+            if c == '"'
+                Some (i + 1)
+            else if c == '\\' or two src i e '{' '{' or two src i e '}' '}'
+                if i + 2 <= e
+                    match template_end src (i + 2) e
+                        None   -> None
+                        Some j -> Some j
+                else
+                    None
+            else if c == '{'
+                match hole_end src (i + 1) e 0
+                    None   -> None
+                    Some k ->
+                        match template_end src k e
+                            None   -> None
+                            Some j -> Some j
+            else
+                match template_end src (i + 1) e
+                    None   -> None
+                    Some j -> Some j
+
+# Just past the `}` that closes a template's hole whose inside starts at
+# `i`, `depth` brackets being open in it.
+fn hole_end src i e depth -> r : src~Bytes, i~Nat, e~Nat, i <= e, e <= len src, depth~Nat,
+                                 r~Option (j~Nat, i < j, j <= e)
+    decreasing e - i
+    match peek src i e
+        None   -> None
+        Some c ->
+            if c == '}' and depth == 0
+                Some (i + 1)
+            else if c == '"' or c == '\''
+                let inner = if c == '"' and i > 0 and is_word src[i - 1]
+                    template_end src (i + 1) e
+                else
+                    quote_end src (i + 1) e c
+                match inner
+                    None   -> None
+                    Some k ->
+                        match hole_end src k e depth
+                            None   -> None
+                            Some j -> Some j
+            else
+                let d = if c == '(' or c == '[' or c == '{'
+                    depth + 1
+                else if (c == ')' or c == ']' or c == '}') and depth > 0
+                    depth - 1
+                else
+                    depth
+                match hole_end src (i + 1) e d
+                    None   -> None
+                    Some j -> Some j
+
 fn error n col msg -> r : n~Nat, col~Nat, msg~String, r~SyntaxError
     SyntaxError n col msg
 
@@ -116,9 +177,18 @@ fn one_char c : c~U8
         or c == '{' or c == '}' or c == ',' or c == ':' or c == '~' or c == '\\'
         or c == '|' or c == '='
 
-# One token starting at `i` (not a space or a comment).
-fn scan src i e n col -> r : src~Bytes, i~Nat, e~Nat, i < e, e <= len src, n~Nat, col~Nat,
-                             r~Result (Scan i e) SyntaxError
+# A template, glued to its tag, whose body starts at `body`.
+fn template src i body e n col -> r : src~Bytes, i~Nat, body~Nat, i < body, body <= e, e <= len src,
+                                      n~Nat, col~Nat,
+                                      r~Result (Scan i e) SyntaxError
+    match template_end src body e
+        Some j -> Ok (Scan Literal j)
+        None   -> Err (error n col "unterminated literal")
+
+# One token starting at `i` (not a space or a comment); `tagged`: a name is
+# glued before it, so a string there is a template.
+fn scan src i e n col tagged -> r : src~Bytes, i~Nat, e~Nat, i < e, e <= len src, n~Nat, col~Nat, tagged~Bool,
+                                    r~Result (Scan i e) SyntaxError
     let c = src[i]
     if c == 'c' and i + 1 < e and src[i + 1] == '\''
         literal src i (i + 2) e '\'' n col
@@ -132,6 +202,8 @@ fn scan src i e n col -> r : src~Bytes, i~Nat, e~Nat, i < e, e <= len src, n~Nat
         Ok (Scan Number (word_end src (i + 1) e))
     else if c == '\''
         literal src i (i + 1) e '\'' n col
+    else if c == '"' and tagged
+        template src i (i + 1) e n col
     else if c == '"'
         literal src i (i + 1) e '"' n col
     else if two_char src i e
@@ -167,10 +239,19 @@ fn lex_line src ls i e n col acc -> r : src~Bytes, ls~Nat, i~Nat, e~Nat, ls <= i
                     let j = trim_end src i e
                     Ok (Line n (reverse acc) (Some (Tok Comment (bytes.slice src i j) col (width src i j) spaced)))
                 else
-                    let s = try scan src i e n col
+                    let tagged = match acc
+                        t :: _ -> not spaced and tag_name t
+                        []     -> False
+                    let s = try scan src i e n col tagged
                     let w = width src i s.stop
                     let t = Tok s.kind (bytes.slice src i s.stop) col w spaced
                     lex_line src ls s.stop e n (col + w) (t :: acc)
+
+# A name a template may be glued to: not a keyword or `and`, `or`, `implies`.
+fn tag_name t : t~Tok
+    match t.kind
+        Name -> not (is_keyword t) and t.text != b"and" and t.text != b"or" and t.text != b"implies"
+        _    -> False
 
 fn line_end src i -> j : src~Bytes, i~Nat, i <= len src, j~Nat, i <= j, j <= len src
     decreasing len src - i

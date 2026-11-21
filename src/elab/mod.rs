@@ -16,6 +16,7 @@ mod order;
 mod pattern;
 pub use pattern::BINDING_HELP;
 mod refine;
+mod template;
 pub mod stdlib;
 pub mod termination;
 pub mod unused;

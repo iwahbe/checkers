@@ -94,7 +94,7 @@ fn gap prev t in_sig -> n : prev~After, t~Tok, in_sig~Bool, n~Nat
                 0
             else if syntax.is_punct t b"~" or syntax.is_punct p b"~" or syntax.is_punct p b"\\"
                 0
-            else if glued_postfix p t
+            else if glued_postfix p t or template p t
                 0
             else if in_sig and syntax.is_punct t b":" and not t.spaced and is_name p
                 # A named precondition, `total: forall …` (D137).
@@ -105,6 +105,12 @@ fn gap prev t in_sig -> n : prev~After, t~Tok, in_sig~Bool, n~Nat
 # A glued `.` or `[` after an operand: field access or indexing (D22).
 fn glued_postfix p t : p~Tok, t~Tok
     (syntax.is_punct t b"." or syntax.is_punct t b"[") and not t.spaced and operand_end p
+
+# A string glued to the name before it: a template, `tag"…"`.
+fn template p t : p~Tok, t~Tok
+    match t.kind
+        Literal -> not t.spaced and is_name p
+        _       -> False
 
 # ── Rendering one logical line ───────────────────────────────────────────────
 

@@ -295,8 +295,21 @@ pub enum ExprKind {
     /// `forall x y : x~a, y~a, p x y` (D137): variables, then clauses that
     /// mention them, the last the conclusion.
     Forall(Vec<Ident>, Vec<Constraint>),
+    /// `tag"text {e | o1, o2} text"` (#132): the tag, and the template's
+    /// text and holes in order.
+    Template(Box<Expr>, Vec<TemplatePiece>),
     /// Placeholder for a token the lexer rejected.
     Error,
+}
+
+/// A piece of a template (#132).
+#[derive(Clone, Debug)]
+pub enum TemplatePiece {
+    /// Text, its escapes read, and where it is written.
+    Text(String, Span),
+    /// `{e | o1, o2}`: the value (None for `{}` and `{| …}`, a new
+    /// parameter), the options, and the span of the hole, braces included.
+    Hole { value: Option<Expr>, options: Vec<Expr>, span: Span },
 }
 
 #[derive(Clone, Debug)]
@@ -327,6 +340,17 @@ pub enum PatKind {
     Or(Vec<Pattern>),
     /// `Ctor { a, b = p }` (D32)
     Record(Ident, Vec<(Ident, Pattern)>),
+}
+
+impl TemplatePiece {
+    /// The expressions in it: a hole's value, then its options.
+    pub fn exprs(&self) -> impl Iterator<Item = &Expr> {
+        let (v, os): (Option<&Expr>, &[Expr]) = match self {
+            TemplatePiece::Text(..) => (None, &[]),
+            TemplatePiece::Hole { value, options, .. } => (value.as_ref(), options),
+        };
+        v.into_iter().chain(os.iter())
+    }
 }
 
 impl ClassMember {

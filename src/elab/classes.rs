@@ -216,9 +216,25 @@ fn respan(e: &Expr, s: Span) -> Expr {
             preds: r.preds.iter().map(|p| respan(p, s)).collect(),
         })),
         ExprKind::Forall(vs, cs) => ExprKind::Forall(vs.iter().map(id).collect(), respan_constraints(cs, s)),
+        ExprKind::Template(t, ps) => ExprKind::Template(go(t), map_pieces(ps, |x| respan(x, s), Some(s))),
         k => k.clone(),
     };
     Expr { kind, span: s }
+}
+
+/// A template's pieces with `f` applied to each expression in them, and
+/// with every span `s` if given.
+fn map_pieces(ps: &[ast::TemplatePiece], mut f: impl FnMut(&Expr) -> Expr, s: Option<Span>) -> Vec<ast::TemplatePiece> {
+    ps.iter()
+        .map(|p| match p {
+            ast::TemplatePiece::Text(t, sp) => ast::TemplatePiece::Text(t.clone(), s.unwrap_or(*sp)),
+            ast::TemplatePiece::Hole { value, options, span } => ast::TemplatePiece::Hole {
+                value: value.as_ref().map(&mut f),
+                options: options.iter().map(&mut f).collect(),
+                span: s.unwrap_or(*span),
+            },
+        })
+        .collect()
 }
 
 fn respan_constraints(cs: &[Constraint], s: Span) -> Vec<Constraint> {
@@ -444,6 +460,7 @@ impl Rewrite<'_> {
                 ExprKind::Forall(vs.clone(), self.constraints(cs, &b))
             }
             ExprKind::Block(blk) => ExprKind::Block(self.block(blk, bound)),
+            ExprKind::Template(t, ps) => ExprKind::Template(go(t), map_pieces(ps, |x| self.expr(x, bound), None)),
             _ => e.kind.clone(),
         };
         Expr { kind, span: e.span }

@@ -1,7 +1,7 @@
 //! Recursive-descent parser for the surface grammar (§9.2).
 
 use super::ast::*;
-use super::token::{Assoc, Kw, Op, Tok, Token};
+use super::token::{Assoc, Kw, Op, TemplatePart, Tok, Token};
 use crate::diag::Diagnostic;
 use crate::source::Span;
 
@@ -1392,6 +1392,13 @@ impl Parser {
                 let name = self.ident("a field or member name after `.`")?;
                 let span = e.span.to(name.span);
                 e = Expr { kind: ExprKind::Field(Box::new(e), name), span };
+            } else if glued && matches!(self.peek(), Tok::Template(_)) {
+                // A template: the string is glued to its tag (#132).
+                let t = self.bump();
+                let Tok::Template(parts) = t.tok else { unreachable!() };
+                let pieces = parts.into_iter().map(|p| self.template_piece(p)).collect();
+                let span = e.span.to(t.span);
+                e = Expr { kind: ExprKind::Template(Box::new(e), pieces), span };
             } else if glued && self.at(&Tok::LBracket) {
                 self.bump();
                 let i = self.expr()?;
@@ -1402,6 +1409,92 @@ impl Parser {
                 return Ok(e);
             }
         }
+    }
+
+    /// A template's piece (#132); a hole's tokens are parsed by a parser of
+    /// their own, so an error inside one stays inside it.
+    fn template_piece(&mut self, part: TemplatePart) -> TemplatePiece {
+        let (toks, span) = match part {
+            TemplatePart::Text(s, sp) => return TemplatePiece::Text(s, sp),
+            TemplatePart::Hole(toks, span) => (toks, span),
+        };
+        // `|` splits the hole at bracket depth 0.
+        let mut depth = 0usize;
+        let mut split = None;
+        for (i, t) in toks.iter().enumerate() {
+            match t.tok {
+                Tok::LParen | Tok::LBracket | Tok::LBrace => depth += 1,
+                Tok::RParen | Tok::RBracket | Tok::RBrace => depth = depth.saturating_sub(1),
+                Tok::Pipe if depth == 0 => {
+                    split = Some(i);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let (value_toks, option_toks) = match split {
+            Some(i) => (toks[..i].to_vec(), Some((toks[i].span, toks[i + 1..].to_vec()))),
+            None => (toks, None),
+        };
+        let value = if value_toks.is_empty() {
+            None
+        } else {
+            let end = Span::empty_at(value_toks.last().unwrap().span.end);
+            self.sub_parse(value_toks, end, "`|` or `}`", |p| p.expr())
+        };
+        let options = match option_toks {
+            None => Vec::new(),
+            Some((bar, ts)) if ts.is_empty() => {
+                self.diags.push(
+                    Diagnostic::error("E0100", "expected an option after `|`", Span::empty_at(bar.end))
+                        .with_label("expected an option")
+                        .with_help("write the options after `|`, separated by commas, or leave out the `|`"),
+                );
+                Vec::new()
+            }
+            Some((_, ts)) => {
+                let end = Span::empty_at(ts.last().unwrap().span.end);
+                self.sub_parse(ts, end, "`,` or `}`", |p| {
+                    let mut items = Vec::new();
+                    p.commas(&mut items, Self::expr)?;
+                    Ok(items)
+                })
+                .unwrap_or_default()
+            }
+        };
+        TemplatePiece::Hole { value, options, span }
+    }
+
+    /// Parse `toks` (a hole's) with `f`, which must use all of them.
+    fn sub_parse<T>(&mut self, mut toks: Vec<Token>, end: Span, what: &str, f: impl FnOnce(&mut Self) -> PResult<T>) -> Option<T> {
+        toks.push(Token { tok: Tok::Eof, span: end, space_before: false });
+        let mut p = Parser {
+            toks,
+            pos: 0,
+            diags: Vec::new(),
+            last_dedent: false,
+            indent: 0,
+            no_arrow: false,
+            place: None,
+            in_proof: self.in_proof,
+            body_start: false,
+            in_type: 0,
+            keyword_params: Vec::new(),
+        };
+        let r = f(&mut p).ok().filter(|_| {
+            if p.at(&Tok::Eof) {
+                true
+            } else {
+                // `:` is no part of any expression, so it ends up here.
+                p.error_here(what);
+                false
+            }
+        });
+        self.diags.append(&mut p.diags);
+        if self.place.is_none() {
+            self.place = p.place;
+        }
+        r
     }
 
     fn atom(&mut self) -> PResult<Expr> {
@@ -1752,6 +1845,7 @@ fn expr_mentions(e: &Expr, names: &[String]) -> bool {
         ExprKind::If(a, b, c) => go(a) || go(b) || go(c),
         ExprKind::Match(a, arms) => go(a) || arms.iter().any(|arm| go(&arm.body) || arm.guard.as_ref().is_some_and(go)),
         ExprKind::Lambda(_, b) => go(b),
+        ExprKind::Template(t, ps) => go(t) || ps.iter().any(|p| p.exprs().any(go)),
         ExprKind::Refine(r) => r.types().into_iter().any(go) || r.preds.iter().any(go),
         ExprKind::Forall(_, cs) => cs.iter().any(|c| constraint_mentions(c, names)),
         ExprKind::Block(b) => go(&b.result),

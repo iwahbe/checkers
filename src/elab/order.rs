@@ -454,6 +454,10 @@ impl Refs {
                 self.constraints(cs, &b);
             }
             ExprKind::Block(b) => self.block(b, bound),
+            ExprKind::Template(t, ps) => {
+                go(self, t);
+                ps.iter().flat_map(|p| p.exprs()).for_each(|x| go(self, x));
+            }
             _ => {}
         }
     }

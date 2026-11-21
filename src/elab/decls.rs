@@ -152,6 +152,12 @@ impl Elab {
             let me = self.modules.get_mut(name).unwrap();
             me.import_types.extend(ts);
             me.import_values.extend(vs);
+            // `format"…"` is `std.format`'s formatter (#132), loaded for
+            // a module that may write one.
+            if name != "std.format" && self.sources.get(name).is_some_and(|f| f.text.contains("format\"")) {
+                self.load_stdlib("std.format");
+                self.cur = name.to_string();
+            }
         }
         for imp in &m.imports {
             let path = imp.path.dotted();
@@ -315,7 +321,7 @@ impl Elab {
 
     pub fn resolve(&self, name: &str, type_pos: bool) -> Option<Sym> {
         if name.starts_with('$') {
-            if let Some(s) = self.generated_sym(name) {
+            if let Some(s) = self.generated_sym(name).or_else(|| self.template_sym(name)) {
                 return Some(s);
             }
         }
@@ -2310,6 +2316,10 @@ fn walk(e: &Expr, f: &mut dyn FnMut(&Expr)) {
         ExprKind::Refine(r) => {
             r.types().into_iter().for_each(|t| walk(t, f));
             r.preds.iter().for_each(|p| walk(p, f));
+        }
+        ExprKind::Template(t, ps) => {
+            walk(t, f);
+            ps.iter().flat_map(|p| p.exprs()).for_each(|x| walk(x, f));
         }
         _ => {}
     }

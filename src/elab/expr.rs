@@ -261,6 +261,10 @@ impl Elab {
                 Tm::TupleTy(items.iter().map(|it| self.elab_type(cx, it)).collect())
             }
             (ExprKind::Unit, Val::Univ(_)) => Tm::TupleTy(vec![]),
+            (ExprKind::Template(..), _) => {
+                let d = self.desugar_template(cx, e);
+                self.check_inner(cx, &d, expected, tail)
+            }
             _ => {
                 // A dictionary (D136): its class's type constructor (M25) comes
                 // from the instance's head before its functions are checked.
@@ -569,6 +573,10 @@ impl Elab {
                     (Tm::Error, Val::Error)
                 }
             },
+            ExprKind::Template(..) => {
+                let d = self.desugar_template(cx, e);
+                self.infer(cx, &d)
+            }
             ExprKind::Error => (Tm::Error, Val::Error),
         }
     }
@@ -632,7 +640,9 @@ impl Elab {
                         return (Tm::Error, Val::Error);
                     }
                 }
-                self.index_sym(span, s);
+                if !Self::is_template_call(n) {
+                    self.index_sym(span, s);
+                }
                 if let Sym::Def(d) = s {
                     self.note_reference(d, span);
                     if !self.in_app_head && !self.g.defs[d.0 as usize].comptime.is_empty() {
@@ -841,10 +851,21 @@ impl Elab {
             }
         }
 
-        // Overloaded built-ins (D38).
-        if let ExprKind::Var(n) = &head.kind {
-            if cx.lookup(n).is_none() {
-                match self.resolve(n, false) {
+        // Overloaded built-ins (D38), also named through the prelude's
+        // qualifier (`prelude.format x`, where `format` means another).
+        let builtin = match &head.kind {
+            ExprKind::Var(n) if cx.lookup(n).is_none() => Some(self.resolve(n, false)),
+            ExprKind::Field(q, name) => match &q.kind {
+                ExprKind::Var(q) if cx.lookup(q).is_none() && self.qualifier(q).as_deref() == Some("std.prelude") => {
+                    Some(self.resolve_qualified("std.prelude", &name.name, false))
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(builtin) = builtin {
+            {
+                match builtin {
                     Some(Sym::Len) => {
                         let (at, aty) = self.infer(cx, args[0]);
                         self.deferred.push(Deferred {
@@ -2655,6 +2676,10 @@ fn any_forall(e: &Expr) -> Option<Span> {
             ExprKind::Match(s, arms) => {
                 go(s, found);
                 arms.iter().for_each(|a| go(&a.body, found));
+            }
+            ExprKind::Template(t, ps) => {
+                go(t, found);
+                ps.iter().flat_map(|p| p.exprs()).for_each(|x| go(x, found));
             }
             _ => {}
         }
