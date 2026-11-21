@@ -16,6 +16,8 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0002` | the file's first line is indented |
 | `E0003` | a line returns to an indentation no enclosing block used |
 | `E0004` | a bracket is never closed (found at a line that starts a declaration or statement) |
+| `E0005` | a `}` in a template that closes no hole (write `}}`) |
+| `E0006` | a template's hole still open at the end of the line |
 
 ## Syntax
 

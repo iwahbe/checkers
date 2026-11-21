@@ -1,0 +1,8 @@
+error[E0284]: no instance of `Template` for `Int`: `count` isn't a template's tag
+  --> template_no_string.ck:10:5
+   |
+10 |     count"text"
+   |     ^^^^^ its result is `Int`
+   = help: a tag gives a formatter: a type with an instance of `Template` (from `std.string`)
+
+template_no_string.ck: 1 error, 0 warnings

@@ -343,6 +343,10 @@ impl Linter {
                 self.expr(b);
             }
             ExprKind::Block(b) => self.block(b),
+            ExprKind::Template(t, ps) => {
+                self.expr(t);
+                ps.iter().flat_map(|p| p.exprs()).for_each(|x| self.expr(x));
+            }
             ExprKind::Var(_)
             | ExprKind::Con(_)
             | ExprKind::Lit(_)

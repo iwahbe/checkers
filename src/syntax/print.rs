@@ -325,6 +325,23 @@ pub fn expr(e: &Expr, depth: usize) -> String {
         ExprKind::Auto => "auto".into(),
         ExprKind::Admit => "admit".into(),
         ExprKind::Error => "<error>".into(),
+        ExprKind::Template(t, ps) => {
+            let mut out = format!("(template {}", expr(t, depth));
+            for p in ps {
+                out += &match p {
+                    TemplatePiece::Text(s, _) => format!(" {s:?}"),
+                    TemplatePiece::Hole { value, options, .. } => {
+                        let v = value.as_ref().map_or("_".to_string(), |v| expr(v, depth));
+                        if options.is_empty() {
+                            format!(" (hole {v})")
+                        } else {
+                            format!(" (hole {v} | {})", list(options, depth))
+                        }
+                    }
+                };
+            }
+            out + ")"
+        }
         ExprKind::Par(v) => format!("(par {})", list(v, depth)),
     }
 }

@@ -153,6 +153,12 @@ impl Elab {
             me.import_types.extend(ts);
             me.import_values.extend(vs);
         }
+        // A template's calls are of `std.string`'s classes (#132), which
+        // it may use without importing them.
+        if m.templates && name != "std.string" {
+            self.load_stdlib("std.string");
+            self.cur = name.to_string();
+        }
         for imp in &m.imports {
             let path = imp.path.dotted();
             self.cur = name.to_string();
@@ -315,7 +321,7 @@ impl Elab {
 
     pub fn resolve(&self, name: &str, type_pos: bool) -> Option<Sym> {
         if name.starts_with('$') {
-            if let Some(s) = self.generated_sym(name) {
+            if let Some(s) = self.generated_sym(name).or_else(|| self.template_sym(name)) {
                 return Some(s);
             }
         }
@@ -2310,6 +2316,10 @@ fn walk(e: &Expr, f: &mut dyn FnMut(&Expr)) {
         ExprKind::Refine(r) => {
             r.types().into_iter().for_each(|t| walk(t, f));
             r.preds.iter().for_each(|p| walk(p, f));
+        }
+        ExprKind::Template(t, ps) => {
+            walk(t, f);
+            ps.iter().flat_map(|p| p.exprs()).for_each(|x| walk(x, f));
         }
         _ => {}
     }
