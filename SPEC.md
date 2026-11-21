@@ -822,7 +822,7 @@ fn doubled xs -> ys : Functor f, xs~f Int, ys~f Int
     fmap (\x -> x * 2) xs
 ```
 
-**A class's types (#133).** A class may declare a type, `type Name`, that each instance gives: it names a type that depends on the class's parameter. Inside the class, its functions and lemmas use it by its bare name, anywhere a type may appear (a precondition's predicate too). It takes no parameters of its own (E0124). `type Name = T` gives it a default, which may not mention the class's parameter (E0288), so it means the same at every instance.
+**A class's types (#133).** A class may declare a type, `type Name`, that each instance gives: it names a type that depends on the class's parameter. Inside the class, its functions and lemmas use it by its bare name, anywhere a type may appear (a precondition's predicate too). It takes no parameters of its own (E0124). `type Name = T` gives it a default, which may mention the class's parameters. An instance that omits the type uses the default with the instance's head substituted for those parameters; an explicit definition overrides it. A default does not make the type equal to `T` in generic code with an unknown dictionary.
 
 ```checkers
 class Display a

@@ -1,10 +1,3 @@
-error[E0288]: the default of `Wrapped` can't mention the class's parameter `a`
-  --> class_type_errors.ck:30:20
-   |
-30 |     type Wrapped = List a
-   |                    ^^^^^^
-   = help: a default is the same type at every instance; an instance that needs `a` gives `type Wrapped = …` itself
-
 error[E0364]: `instance Sized Int` doesn't give `Unit`
   --> class_type_errors.ck:33:1
    |
@@ -58,4 +51,4 @@ error[E0285]: can't tell which instance of `Display` to use: the type isn't know
    |                   ^^^^^^^
    = help: give the type, e.g. with a constraint `x~List Int` in the signature
 
-class_type_errors.ck: 9 errors, 0 warnings
+class_type_errors.ck: 8 errors, 0 warnings

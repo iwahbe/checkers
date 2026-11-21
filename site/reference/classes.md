@@ -143,7 +143,7 @@ check doubled (Some 5) == Some 10
 
 ## A class's types
 
-A class may let each instance choose a type. `type Name` declares one; inside the class, its members use it by its bare name, anywhere a type may appear, a precondition included. `type Name = T` gives it a default, used by every instance that doesn't give its own; a default can't mention the class's parameter (E0288), so it is the same type wherever it applies. A class's type takes no parameters of its own (E0124).
+A class may let each instance choose a type. `type Name` declares one; inside the class, its members use it by its bare name, anywhere a type may appear, a precondition included. `type Name = T` gives it a default, used by every instance that doesn't give its own; a default may mention the class's parameters, which are replaced by the instance's types. An explicit type overrides the default; with an unknown dictionary in generic code, the type remains abstract. A class's type takes no parameters of its own (E0124).
 
 ```checkers
 # How to show a value; each type says which options its display takes.

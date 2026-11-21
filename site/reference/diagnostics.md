@@ -92,7 +92,6 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0285` | which instance to use can't be decided: the type isn't known there |
 | `E0286` | an instance for a type of the wrong kind |
 | `E0287` | a class's dictionary built other than by an instance |
-| `E0288` | a class's type whose default mentions the class's parameter |
 | `E0289` | `forall` outside a named precondition or a lemma's `ensures`, or in a negative place |
 | `E0290` | `have` with the wrong number of values for a `forall`'s variables |
 | `E0291` | a class's type (`C.Name`) without the types it is for |

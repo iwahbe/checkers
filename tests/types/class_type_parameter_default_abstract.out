@@ -1,0 +1,7 @@
+error[E0201]: type mismatch: expected `List a`, found `Wrapped.Value a`
+ --> class_type_parameter_default_abstract.ck:8:5
+  |
+8 |     wrap x
+  |     ^^^^^^
+
+class_type_parameter_default_abstract.ck: 1 error, 0 warnings

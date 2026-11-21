@@ -798,14 +798,7 @@ impl Elab {
                 continue;
             }
             match mem {
-                ClassMember::Type { name: t, default, .. } => {
-                    let mentioned = default.as_ref().and_then(|e| params.iter().find(|p| super::decls::mentions_free(e, &p.name)).map(|p| (e, p)));
-                    if let Some((e, param)) = mentioned {
-                        self.err(
-                            Diagnostic::error("E0288", format!("the default of `{}` can't mention the class's parameter `{}`", t.name, param.name), e.span)
-                                .with_help(format!("a default is the same type at every instance; an instance that needs `{}` gives `type {} = …` itself", param.name, t.name)),
-                        );
-                    }
+                ClassMember::Type { name: t, .. } => {
                     type_fields.push(ast::Field {
                         name: ident(&assoc_field_name(&t.name), t.span),
                         mult: ast::Mult::Ghost,
@@ -1364,6 +1357,11 @@ impl Elab {
         // The class's types at this instance (#133): given, or the class's
         // default (written in the class, so shown at the instance's header).
         let header = Span { start: d.span.start, end: tys_span.end };
+        let none = |_: &str, _: Span| None;
+        let nq = |_: &str, _: &str, _: Span| None;
+        let subst: HashMap<String, Expr> = cparams.iter().cloned().zip(tys.iter().cloned()).collect();
+        let sub = move |n: &str, _s: Span| subst.get(n).cloned();
+        let srw = Rewrite { var: &sub, con: &none, qualified: &nq };
         let mut types: Vec<(String, Expr)> = Vec::new();
         for cm in &all_members {
             let ClassMember::Type { name: tn, default, .. } = cm else { continue };
@@ -1378,9 +1376,9 @@ impl Elab {
                         let at = self.synthetic_span(header);
                         let text = self.text_in(m, dflt.span);
                         self.text_override.insert((self.cur.clone(), at.start, at.end), text);
-                        respan(dflt, at)
+                        srw.expr(&respan(dflt, at), &[])
                     }
-                    None => dflt.clone(),
+                    None => srw.expr(dflt, &[]),
                 },
                 (None, None) => {
                     self.err(
@@ -1396,16 +1394,11 @@ impl Elab {
         }
         let tsub = |n: &str, _s: Span| types.iter().find(|(t, _)| t == n).map(|(_, e)| e.clone());
         let renamer = |n: &str, s: Span| rename.get(n).map(|g| var(g, s));
-        let none = |_: &str, _: Span| None;
-        let nq = |_: &str, _: &str, _: Span| None;
         let rw = Rewrite { var: &renamer, con: &none, qualified: &nq };
         let trw = Rewrite { var: &none, con: &tsub, qualified: &nq };
         for ty in tys {
             self.inst_heads.insert((self.cur.clone(), ty.span.start));
         }
-        let subst: HashMap<String, Expr> = cparams.iter().cloned().zip(tys.iter().cloned()).collect();
-        let sub = move |n: &str, _s: Span| subst.get(n).cloned();
-        let srw = Rewrite { var: &sub, con: &none, qualified: &nq };
         let mut member_list = Vec::new();
         // Functions first: an instance missing one gets no lemmas, which
         // need its dictionary.
