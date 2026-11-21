@@ -85,7 +85,7 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0273` | compile-time evaluation failed |
 | `E0280` | an instance of something that isn't a class |
 | `E0281` | an instance for a type that isn't a type constructor applied to distinct variables |
-| `E0282` | an instance outside the package of its class and of its (first) type |
+| `E0282` | an instance outside the package of its class and of its types (or with a type variable before its package's type) |
 | `E0283` | two instances of a class that can match the same types |
 | `E0284` | no instance of a class for a type |
 | `E0285` | which instance to use can't be decided: the type isn't known there |

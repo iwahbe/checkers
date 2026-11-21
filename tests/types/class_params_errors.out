@@ -44,7 +44,7 @@ error[E0285]: can't tell which instance of `Hole` to use: the type isn't known h
   --> class_params_errors.ck:57:19
    |
 57 |     let f = \x -> hole (Plain ";") x
-   |                   ^^^^
+   |                   ^^^^ `Hole Plain _` could be `Hole Plain String` or `Hole Plain Int`
    = help: give the type, e.g. with a constraint `x~List Int` in the signature
 
 error[E0284]: no instance of `Hole` for `s` and `h`

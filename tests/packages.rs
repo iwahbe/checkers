@@ -267,25 +267,50 @@ fn ckc_package_flags_and_messages() {
 }
 
 /// An instance of a class of several types goes in the package of the class
-/// or of its first type (#145): another of its types being this package's
-/// isn't enough.
+/// or of one of its types, with no bare variable before that type (Rust's
+/// orphan rule, #145); an overlap with a dependency's instance is found here.
 #[test]
-fn instance_orphan_rule_by_first_type() {
+fn instance_orphan_rule_by_any_type() {
     let w = World::new("orphan");
     w.write(
         "lib/hole.ck",
-        "module hole\n\nexport class Hole s h\n    fn hole tag x -> r : tag~s, x~h, r~String\n\nexport record Format\n    prefix~String\n",
+        "module hole\n\nexport class Hole s h\n    fn hole tag x -> r : tag~s, x~h, r~String\n\nexport class Rel s a t\n    fn rel x y z -> r : x~s, y~a, z~t, r~Bool\n\nexport record Format\n    prefix~String\n\nexport record Page\n    title~String\n\ninstance Hole Page a\n    fn hole p x\n        p.title\n",
     );
-    w.write(
-        "prog/p.ck",
-        "module p\n\nimport lib.hole (Hole, Format)\n\nrecord Mine\n    n~Int\n\ninstance Hole Mine Int\n    fn hole m x\n        format x\n\ninstance Hole Format Mine\n    fn hole f m\n        f.prefix\n",
-    );
-    let out = ckc(&w, "prog", &["check", "--package", "lib=../lib", "--uses", ".=lib", "p.ck"]);
-    assert_eq!(out.status.code(), Some(1));
+    let check = |name: &str, body: &str| {
+        w.write(&format!("prog/{name}.ck"), &format!("module {name}\n\nimport lib.hole (Hole, Rel, Format, Page)\n\nrecord Mine\n    n~Int\n\n{body}"));
+        let out = ckc(&w, "prog", &["check", "--package", "lib=../lib", "--uses", ".=lib", &format!("{name}.ck")]);
+        (out.status.code(), text(&out.stderr))
+    };
+    // This package's type, after the class's and another package's.
+    assert_eq!(check("later", "instance Hole Format Mine\n    fn hole f m\n        f.prefix\n"), (Some(0), "later.ck: 0 errors, 0 warnings\n".to_string()));
+    // This package's type first.
+    assert_eq!(check("first", "instance Hole Mine Int\n    fn hole m x\n        format x\n"), (Some(0), "first.ck: 0 errors, 0 warnings\n".to_string()));
+    // No type of this package.
     assert_eq!(
-        text(&out.stderr),
-        "error[E0282]: `instance Hole Format Mine` must be in the package of `Hole` or of its first type\n  --> p.ck:12:1\n   |\n12 | instance Hole Format Mine\n   | ^^^^^^^^^^^^^^^^^^^^^^^^^ neither is declared in this package\n   = help: an instance goes with its class or its first type, so there is only ever one (Rust's orphan rule); wrap the first type in a record of your own to give it this instance\n\n\
-         p.ck: 1 error, 0 warnings\n"
+        check("none", "instance Hole Format Int\n    fn hole f x\n        f.prefix\n"),
+        (
+            Some(1),
+            "error[E0282]: `instance Hole Format Int` must be in the package of `Hole` or of one of its types\n --> none.ck:8:1\n  |\n8 | instance Hole Format Int\n  | ^^^^^^^^^^^^^^^^^^^^^^^^ none of them is declared in this package\n  = help: an instance goes with its class or one of its types (Rust's orphan rule); wrap a type in a record of your own to give it this instance\n\nnone.ck: 1 error, 0 warnings\n"
+                .to_string()
+        )
+    );
+    // A bare variable before this package's type.
+    assert_eq!(
+        check("var_first", "instance Rel Format a Mine\n    fn rel f x m\n        True\n"),
+        (
+            Some(1),
+            "error[E0282]: `instance Rel Format a Mine` must be in the package of `Rel` or of one of its types\n --> var_first.ck:8:21\n  |\n8 | instance Rel Format a Mine\n  |                     ^ `a` comes before `Mine`, this package's type\n  = help: an instance whose types begin with a type variable could overlap another package's; put this package's type before any variable\n\nvar_first.ck: 1 error, 0 warnings\n"
+                .to_string()
+        )
+    );
+    // Overlaps the dependency's `instance Hole Page a`: reported here.
+    assert_eq!(
+        check("overlap", "instance Hole Page Mine\n    fn hole p m\n        p.title\n"),
+        (
+            Some(1),
+            "error[E0283]: `instance Hole Page Mine` overlaps another instance\n --> overlap.ck:8:1\n  |\n8 | instance Hole Page Mine\n  | ^^^^^^^^^^^^^^^^^^^^^^^ `Hole Page a` is already declared at lib.hole:15\n  = help: no two instances of a class may match the same types; make one of them for other types\n\noverlap.ck: 1 error, 0 warnings\n"
+                .to_string()
+        )
     );
 }
 

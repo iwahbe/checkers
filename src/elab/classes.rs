@@ -1712,28 +1712,49 @@ impl Elab {
             pats.push(InstPat::Head(key, vs));
         }
         let Some(InstPat::Head(key, _)) = pats.first().cloned() else { return };
-        // Rust's orphan rule (D136 b), by package: the class or the (first) type is this package's.
+        // Rust's orphan rule (D136 b, RFC 2451), by package: the class is
+        // this package's, or one of the types is, with no bare variable
+        // before it (#145).
         let pkg = self.package_of(&self.cur);
         let class_pkg = self.package_of(&self.class_defs[&class].module);
-        let ty_pkg = match key {
-            HeadKey::Ty(t) => self.package_of(&self.g.tys[t.0 as usize].module),
+        let pkg_of = |e: &Self, k: &HeadKey| match k {
+            HeadKey::Ty(t) => e.package_of(&e.g.tys[t.0 as usize].module),
             HeadKey::Unit | HeadKey::Pair => "std".to_string(),
         };
-        if pkg != class_pkg && pkg != ty_pkg {
+        if pkg != class_pkg {
             let cname = self.class_defs[&class].name.clone();
-            let (msg, help) = if p.heads.len() == 1 {
-                (
-                    format!("`instance {}` must be in the package of `{cname}` or of the type", p.text),
-                    "an instance goes with its class or its type, so there is only ever one (Rust's orphan rule); wrap the type in a record of your own to give it this instance",
-                )
-            } else {
-                (
-                    format!("`instance {}` must be in the package of `{cname}` or of its first type", p.text),
-                    "an instance goes with its class or its first type, so there is only ever one (Rust's orphan rule); wrap the first type in a record of your own to give it this instance",
-                )
-            };
-            self.err(Diagnostic::error("E0282", msg, p.span).with_label("neither is declared in this package").with_help(help));
-            return;
+            let local = pats.iter().position(|q| matches!(q, InstPat::Head(k, _) if pkg_of(self, k) == pkg));
+            let var_before = pats.iter().take(local.unwrap_or(0)).position(|q| matches!(q, InstPat::Var(_)));
+            match (local, var_before) {
+                (Some(_), None) => {}
+                (Some(l), Some(v)) => {
+                    let shown = |e: &Expr| self.src_text(e.span).trim().to_string();
+                    let (vt, lt) = (shown(&p.heads[v]), shown(&p.heads[l]));
+                    self.err(
+                        Diagnostic::error("E0282", format!("`instance {}` must be in the package of `{cname}` or of one of its types", p.text), p.heads[v].span)
+                            .with_label(format!("`{vt}` comes before `{lt}`, this package's type"))
+                            .with_help("an instance whose types begin with a type variable could overlap another package's; put this package's type before any variable"),
+                    );
+                    return;
+                }
+                (None, _) => {
+                    let (msg, label, help) = if p.heads.len() == 1 {
+                        (
+                            format!("`instance {}` must be in the package of `{cname}` or of the type", p.text),
+                            "neither is declared in this package",
+                            "an instance goes with its class or its type, so there is only ever one (Rust's orphan rule); wrap the type in a record of your own to give it this instance",
+                        )
+                    } else {
+                        (
+                            format!("`instance {}` must be in the package of `{cname}` or of one of its types", p.text),
+                            "none of them is declared in this package",
+                            "an instance goes with its class or one of its types (Rust's orphan rule); wrap a type in a record of your own to give it this instance",
+                        )
+                    };
+                    self.err(Diagnostic::error("E0282", msg, p.span).with_label(label).with_help(help));
+                    return;
+                }
+            }
         }
         // No two instances whose types can be the same (#145): at each
         // position the same type constructor, or a variable in either.
@@ -1921,6 +1942,21 @@ impl Elab {
         Ok(t)
     }
 
+    /// The instances a request still waiting could mean, as written
+    /// (`Hole Plain Int`): those whose types it may match once known.
+    fn undecided(&self, r: &InstReq) -> Vec<String> {
+        let shapes: Vec<Shape> = r.tys.iter().map(|t| self.shape(r.lvl, t)).collect();
+        let Some(Shape::Known(key, _)) = shapes.first() else { return Vec::new() };
+        let fits = |inst: &InstInfo| {
+            inst.pats.iter().zip(&shapes).all(|(p, s)| match (p, s) {
+                (InstPat::Var(_), _) | (InstPat::Head(..), Shape::Unknown) => true,
+                (InstPat::Head(k, vs), Shape::Known(k2, args)) => k == k2 && args.len() >= vs.len(),
+                _ => false,
+            })
+        };
+        self.instances.get(&(r.class, *key)).map(|v| v.iter().filter(|i| fits(i)).map(|i| i.text.clone()).collect()).unwrap_or_default()
+    }
+
     /// An instance's type defined through its own (#133): a dictionary
     /// that reads a type from the instance that is building it, through
     /// any chain of instances. Reported (E0225), and the type left unknown.
@@ -2089,9 +2125,12 @@ impl Elab {
                     let clause = format!("{cname} {}", args.join(" "));
                     let several = r.tys.len() > 1;
                     let param = r.tys.iter().zip(&shown).find(|(t, _)| matches!(self.force(t), Val::Neutral(Head::Var(_), _)));
+                    let could = if why == "unknown" { self.undecided(&r) } else { Vec::new() };
                     let d = if why == "unknown" {
-                        Diagnostic::error("E0285", format!("can't tell which instance of `{cname}` to use: the type isn't known here"), r.span)
-                            .with_help("give the type, e.g. with a constraint `x~List Int` in the signature")
+                        let d = Diagnostic::error("E0285", format!("can't tell which instance of `{cname}` to use: the type isn't known here"), r.span);
+                        // Several instances could match: the label names them (#145).
+                        let d = if could.len() > 1 { d.with_label(format!("`{clause}` could be {}", joined(&could, "or"))) } else { d };
+                        d.with_help("give the type, e.g. with a constraint `x~List Int` in the signature")
                     } else if let Some((_, p)) = param {
                         Diagnostic::error("E0284", format!("no instance of `{cname}` for {}", joined(&shown, "and")), r.span)
                             .with_label(format!("`{p}` is a type parameter"))
