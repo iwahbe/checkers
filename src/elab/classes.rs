@@ -138,6 +138,18 @@ pub struct InstReq {
     pub given: Vec<(usize, TyId, Val)>,
     /// For a class's type, `C.Name` (#133): the dictionary is read for it.
     pub assoc: Option<String>,
+    /// In an instance's signature: that instance, used if the type is
+    /// never known (#146).
+    pub fallback: Option<SigInst>,
+}
+
+/// The instance whose member's signature is being elaborated (#146): its
+/// class, its head's type constructor and the head's variables.
+#[derive(Clone)]
+pub struct SigInst {
+    pub class: TyId,
+    pub key: HeadKey,
+    pub vars: Vec<String>,
 }
 
 /// `e` with every span `s`: code from another module, shown at `s`.
@@ -638,6 +650,7 @@ impl Elab {
         }
         let mut decls = Vec::new();
         let mut origins = Vec::new();
+        self.member_heads.clear();
         let local: HashMap<String, (String, Vec<ClassMember>, Span)> = m
             .decls
             .iter()
@@ -1168,20 +1181,7 @@ impl Elab {
         let none = |_: &str, _: Span| None;
         let nq = |_: &str, _: &str, _: Span| None;
         let rw = Rewrite { var: &renamer, con: &none, qualified: &nq };
-        // In a signature, the class's function at this instance is this
-        // instance's: the class's type doesn't tell which instance (#133).
-        let mut own_fns: HashMap<String, String> = HashMap::new();
-        for cm in cmembers.iter().filter(|_| !types.is_empty()) {
-            let ClassMember::Fn { name, .. } = cm else { continue };
-            let Some(g) = rename.get(&name.name) else { continue };
-            own_fns.insert(name.name.clone(), g.clone());
-            let class_mod = class_tid.map(|t| self.class_defs[&t].module.clone());
-            if let Some(Sym::Def(d)) = class_mod.as_ref().and_then(|m| self.modules.get(m)).and_then(|mi| mi.values.get(&name.name)) {
-                own_fns.insert(Self::sym_name(Sym::Def(*d)), g.clone());
-            }
-        }
-        let own_fn = |n: &str, s: Span| own_fns.get(n).map(|g| var(g, s));
-        let trw = Rewrite { var: &own_fn, con: &tsub, qualified: &nq };
+        let trw = Rewrite { var: &none, con: &tsub, qualified: &nq };
         self.inst_heads.insert((self.cur.clone(), ty.span.start));
         let subst_ty = ty.clone();
         let param_c = param.clone();
@@ -1248,6 +1248,7 @@ impl Elab {
                         span,
                     });
                     origins.push(Origin::InstMember(inst_ix));
+                    self.member_heads.insert(decls.len() - 1, (class.name.clone(), head_ty.clone(), vars.clone()));
                 }
                 ClassMember::Lemma { name, params, constraints, lets, ensures, .. } => {
                     let given = members.iter().find_map(|m| match m {
@@ -1315,6 +1316,7 @@ impl Elab {
                         span,
                     });
                     origins.push(Origin::InstMember(inst_ix));
+                    self.member_heads.insert(decls.len() - 1, (class.name.clone(), head_ty.clone(), vars.clone()));
                 }
             }
         }
@@ -1640,6 +1642,58 @@ impl Elab {
         true
     }
 
+    /// The instance whose member's signature is `decl` (an index into the
+    /// desugared module), if it is one (#146).
+    pub fn sig_inst_of(&self, decl: usize) -> Option<SigInst> {
+        let (cname, head, vars) = self.member_heads.get(&decl)?;
+        let class = match self.resolve(cname, true) {
+            Some(Sym::Ty(t)) if self.class_defs.contains_key(&t) => t,
+            _ => return None,
+        };
+        let mut h = head;
+        while let ExprKind::App(f, _) = &h.kind {
+            h = f;
+        }
+        let key = match &h.kind {
+            ExprKind::Tuple(xs) if xs.is_empty() => HeadKey::Unit,
+            ExprKind::Tuple(_) => HeadKey::Pair,
+            ExprKind::Con(n) => match self.resolve(n, true) {
+                Some(Sym::Ty(t)) => HeadKey::Ty(t),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        Some(SigInst { class, key, vars: vars.clone() })
+    }
+
+    /// Solve `r`, whose type isn't known, with the instance whose member's
+    /// signature it is in: its head's variables are locals there.
+    fn use_fallback(&mut self, r: &InstReq) -> bool {
+        let Some(f) = &r.fallback else { return false };
+        let mut args = Vec::new();
+        for v in &f.vars {
+            let Some(l) = r.names.iter().rposition(|n| **n == **v) else { return false };
+            args.push(Val::var(l));
+        }
+        let head = match f.key {
+            HeadKey::Ty(t) if self.g.arity_ty(t) == args.len() => Val::TyCon(t, args),
+            HeadKey::Unit => Val::TupleTy(Vec::new()),
+            HeadKey::Pair if args.len() == 2 => Val::TupleTy(args),
+            _ => return false,
+        };
+        if unify(&self.g, r.lvl, &r.ty, &head).is_err() {
+            return false;
+        }
+        match self.find_dict(r, r.class, &r.ty, 0) {
+            Ok(t) => {
+                let env = Rc::new((0..r.lvl).map(Val::var).collect::<Vec<_>>());
+                let v = eval(&self.g, &env, &t);
+                unify(&self.g, r.lvl, &r.meta, &v).is_ok()
+            }
+            Err(_) => false,
+        }
+    }
+
     /// Find the dictionaries asked for so far. With `last`, report those
     /// whose type still isn't known.
     pub fn solve_instances(&mut self, last: bool) {
@@ -1664,6 +1718,9 @@ impl Elab {
                     let _ = unify(&self.g, r.lvl, &r.meta, &v);
                 }
                 Err(why) if why == "unknown" && !last => self.inst_reqs.push(r),
+                // In an instance's signature, a class's function whose type
+                // its arguments don't tell is the instance's own (#146).
+                Err(why) if why == "unknown" && self.use_fallback(&r) => {}
                 Err(why) => {
                     // An unknown type in a reported mismatch: that error's (D141 c).
                     if why == "unknown" && self.unknowns(r.lvl, &r.ty).iter().any(|m| self.blamed.contains(m)) {
@@ -1705,6 +1762,31 @@ impl Elab {
             self.g.postponed.borrow_mut().clear();
             self.waiting.push((lvl, expected.clone(), actual.clone(), span, names.to_vec()));
         }
+    }
+
+    /// Does `t` read a class's type from an instance's dictionary whose
+    /// body isn't elaborated yet?
+    fn on_pending_dict(&self, t: &Tm) -> bool {
+        if let (Tm::Def(d), args) = t.spine() {
+            if args.len() == 2 && self.g.assoc_field(*d).is_some() {
+                if let Tm::Def(dd) = args[1].head() {
+                    if self.dict_defs.contains(dd) && self.g.defs[dd.0 as usize].body.is_none() {
+                        return true;
+                    }
+                }
+            }
+        }
+        t.any_sub(|x, _| self.on_pending_dict(x))
+    }
+
+    /// At the end of a module: the comparisons that waited for its
+    /// instances' dictionaries.
+    pub fn retry_late(&mut self) {
+        self.waiting.append(&mut self.waiting_late);
+        self.retry_waiting(true);
+        // Still waiting: a dictionary never elaborated (its instance has
+        // errors, reported there).
+        self.waiting_late.clear();
     }
 
     /// `t` with each class's type at a known instance replaced by the
@@ -1750,6 +1832,12 @@ impl Elab {
                     }
                 }
                 Ok(()) => {}
+                // A dictionary whose body isn't elaborated yet (an instance's
+                // own, in its members' signatures): compared again at the
+                // end of the module.
+                Err(_) if self.on_pending_dict(&quote(&self.g, l, &a)) || self.on_pending_dict(&quote(&self.g, l, &b)) => {
+                    self.waiting_late.push((l, a, b, span, names));
+                }
                 Err(_) => {
                     let e = show(&self.g, &names, &self.reduce_assoc(l, &quote(&self.g, l, &a)));
                     let f = show(&self.g, &names, &self.reduce_assoc(l, &quote(&self.g, l, &b)));
@@ -1800,6 +1888,7 @@ impl Elab {
             in_spec: self.in_spec > 0,
             given,
             assoc: None,
+            fallback: self.sig_inst.clone().filter(|f| f.class == tid),
         });
     }
 }
