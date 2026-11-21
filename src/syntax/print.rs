@@ -215,13 +215,7 @@ fn block(b: &Block, depth: usize) -> String {
             Stmt::Have(e) => format!("(have {})", expr(e, depth + 1)),
             Stmt::HaveType(x, t) => format!("(have-type {} {})", x.name, expr(t, depth + 1)),
             Stmt::Expr(e) => expr(e, depth + 1),
-            Stmt::When(w) => format!(
-                "(when ({}) using {}\n{}{})",
-                w.binds.iter().map(|(n, c)| format!("({} {})", n.name, expr(c, depth + 2))).collect::<Vec<_>>().join(" "),
-                w.sched.name,
-                ind(depth + 2),
-                block(&w.body, depth + 2)
-            ),
+
         });
     }
     parts.push(expr(&b.result, depth + 1));
@@ -256,6 +250,13 @@ fn escape_byte(b: u8) -> String {
 
 pub fn expr(e: &Expr, depth: usize) -> String {
     match &e.kind {
+            ExprKind::When(w) => format!(
+                "(when ({}) using {}\n{}{})",
+                w.binds.iter().map(|(n, c)| format!("({} {})", n.name, expr(c, depth + 2))).collect::<Vec<_>>().join(" "),
+                w.sched.name,
+                ind(depth + 2),
+                block(&w.body, depth + 2)
+            ),
         ExprKind::Var(n) | ExprKind::Con(n) => n.clone(),
         ExprKind::Forall(vs, cs) => {
             let vars: Vec<&str> = vs.iter().map(|v| v.name.as_str()).collect();

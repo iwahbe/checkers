@@ -228,8 +228,6 @@ pub enum Stmt {
     HaveType(Ident, Expr),
     /// A bare expression line that is not the block's last; must be `Unit` (D35)
     Expr(Expr),
-    /// `when x = c, … using sched` + block (D30)
-    When(When),
 }
 
 #[derive(Clone, Debug)]
@@ -257,6 +255,8 @@ pub enum Lit {
 
 #[derive(Clone, Debug)]
 pub enum ExprKind {
+    /// Schedule a behaviour asynchronously; has type `Unit`.
+    When(When),
     /// lower-case name
     Var(String),
     /// Upper-case name: constructor, type, or constant (resolved later, D26)

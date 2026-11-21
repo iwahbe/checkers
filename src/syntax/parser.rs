@@ -981,20 +981,6 @@ impl Parser {
             if self.at(&Tok::Dedent) || self.at(&Tok::Eof) {
                 return Err(self.error_here("an expression ending the block"));
             }
-            if self.at_kw(Kw::When) {
-                let w = self.when_stmt()?;
-                let kw = Span::new(w.span.start as usize, w.span.start as usize + 4);
-                stmts.push(Stmt::When(w));
-                if self.at(&Tok::Dedent) || self.at(&Tok::Eof) {
-                    self.diags.push(
-                        Diagnostic::error("E0117", "a block cannot end with `when`", kw)
-                            .with_label("`when` schedules work and has no value")
-                            .with_help("add the block's result on the next line, e.g. `()`"),
-                    );
-                    return Err(Failed);
-                }
-                return Ok(None);
-            }
             if self.eat_kw(Kw::Let) {
                 let p = self.pattern()?;
                 self.expect(Tok::Eq, "`=`")?;
@@ -1063,7 +1049,7 @@ impl Parser {
     }
 
     /// `when x = c, … using sched` NL INDENT block DEDENT (D30)
-    fn when_stmt(&mut self) -> PResult<When> {
+    fn when_expr(&mut self) -> PResult<When> {
         let start = self.bump().span; // when
         let mut binds = Vec::new();
         loop {
@@ -1105,6 +1091,11 @@ impl Parser {
     pub fn expr(&mut self) -> PResult<Expr> {
         let start = self.span();
         match self.peek() {
+            Tok::Kw(Kw::When) => {
+                let w = self.when_expr()?;
+                let span = w.span;
+                Ok(Expr { kind: ExprKind::When(w), span })
+            }
             Tok::Kw(Kw::If) => self.if_expr(),
             Tok::Kw(Kw::Match) => self.match_expr(),
             Tok::Backslash => {
@@ -1276,7 +1267,7 @@ impl Parser {
     fn starts_tail_expr(&self) -> bool {
         matches!(
             self.peek(),
-            Tok::Kw(Kw::If) | Tok::Kw(Kw::Match) | Tok::Backslash | Tok::Kw(Kw::Try) | Tok::Kw(Kw::Forall)
+            Tok::Kw(Kw::When) | Tok::Kw(Kw::If) | Tok::Kw(Kw::Match) | Tok::Backslash | Tok::Kw(Kw::Try) | Tok::Kw(Kw::Forall)
         )
     }
 

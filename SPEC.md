@@ -407,7 +407,7 @@ The kernel still checks exact linearity, and no two calls share a token. When a 
 2. *Closures that capture an authority are single-use.* `let g = \u -> files.read p fs` captures one token, so `g` may be called once; the compiler rejects a second call and suggests passing `fs` as a parameter. Behaviour bodies (`fork`, `join`, `when`) run once, so they may capture authorities freely; the enclosing code keeps using them.
 3. *Concurrent branches can race on the operating system* (two forks writing one file), as in any language.
 
-**Effect statements.** A call whose result is `Unit` may stand alone as a statement line in a block, e.g. `terminal.print_line "done" term`. Only calls returning `Unit` may: discarding any other value needs `let _ = …`.
+**Effect statements.** An expression whose result is `Unit` may stand alone as a statement line in a block, e.g. `terminal.print_line "done" term`. Only expressions returning `Unit` may: discarding any other value needs `let _ = …`.
 
 ### 8.4 Resources: linear, threaded with `let` (D29, D171)
 
@@ -474,7 +474,7 @@ Data is immutable, so sharing it never races; parallel evaluation of pure code i
       (l, n + 1)
   ```
 
-  This *schedules* the body, which runs once it holds all the listed cowns at once. Inside, `l` and `t` are the current contents, with full ownership, and the body evaluates to the new contents (a tuple, in the order listed; a single value for one cown). `when` is a statement. The body may use authority capabilities from the enclosing scope (here `term`) and may schedule further behaviours with `sched`.
+  This *schedules* the body, which runs once it holds all the listed cowns at once. Inside, `l` and `t` are the current contents, with full ownership, and the body evaluates to the new contents (a tuple, in the order listed; a single value for one cown). `when` is an expression of type `Unit`: its result reports only that the body has been scheduled, not that it has finished. The body may use authority capabilities from the enclosing scope (here `term`) and may schedule further behaviours with `sched`.
 
 Guarantees, by construction:
 1. **No data races.** Contents are only reachable inside a behaviour holding that cown.
@@ -636,9 +636,9 @@ stmt        ::= 'let' pattern '=' ( expr | NL INDENT block DEDENT )
               | 'have' expr                                  -- lemma application; adds its conclusion
               | 'have' lname '~' type                        -- a typing (D170)
               | expr                                         -- D35: must have type Unit
-              | 'when' lname '=' expr { ',' lname '=' expr } 'using' lname NL
-                INDENT block DEDENT                          -- D30: schedule a behaviour
-expr        ::= 'if' expr 'then' expr 'else' expr
+expr        ::= 'when' lname '=' expr { ',' lname '=' expr } 'using' lname NL
+                INDENT block DEDENT                          -- schedules a behaviour; type Unit
+              | 'if' expr 'then' expr 'else' expr
               | 'if' expr NL INDENT block DEDENT
                 'else' ( 'if' … | NL INDENT block DEDENT )   -- `else if` chains; `else` is required
               | 'match' expr NL INDENT { arm } DEDENT
