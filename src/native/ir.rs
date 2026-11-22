@@ -39,6 +39,9 @@ pub enum Ir {
     /// `par (e1, …, en)`: the components, evaluated in parallel (D69).
     Par(Vec<Arc<Ir>>),
     Case(Arc<Ir>, Arc<IrCase>),
+    /// Code of definition `d` (or of none) placed in another's by an
+    /// optimization (`inline`): a runtime error in it names `d`.
+    At(Option<DefId>, Arc<Ir>),
     /// Code the type checker reported an error for; never reached in a checked program.
     Fail(&'static str),
 }
@@ -569,10 +572,70 @@ pub fn shift(ir: &Ir, k: usize, cutoff: usize) -> Ir {
                     default: c.default.as_ref().map(|d| a(d, depth)),
                 }),
             ),
+            Ir::At(o, x) => Ir::At(*o, a(x, depth)),
             Ir::Fail(m) => Ir::Fail(m),
         }
     }
     go(ir, k, cutoff)
+}
+
+impl Ir {
+    /// The immediate subterms, each with the number of variables it is under
+    /// that `self` binds.
+    pub fn subterms(&self) -> Vec<(&Ir, usize)> {
+        match self {
+            Ir::Var(_) | Ir::Global(_) | Ir::Erased | Ir::Lit(_) | Ir::ConFn(_) | Ir::Fail(_) => Vec::new(),
+            Ir::Lam(_, b) => vec![(&**b, 1)],
+            Ir::Call(h, xs) => std::iter::once(&**h).chain(xs.iter().map(|x| &**x)).map(|x| (x, 0)).collect(),
+            Ir::Let(v, b) => vec![(&**v, 0), (&**b, 1)],
+            Ir::Tuple(xs) | Ir::Con(_, xs) | Ir::Prim(_, xs, _) | Ir::Par(xs) => xs.iter().map(|x| (&**x, 0)).collect(),
+            Ir::Proj(x, _, _) | Ir::Field(x, _) | Ir::At(_, x) => vec![(&**x, 0)],
+            Ir::Case(s, c) => {
+                let mut out = vec![(&**s, 0)];
+                out.extend(c.branches.iter().map(|(_, n, b)| (&**b, *n)));
+                out.extend(c.lits.iter().map(|(_, b)| (&**b, 0)));
+                out.extend(c.default.iter().map(|d| (&**d, 0)));
+                out
+            }
+        }
+    }
+
+    /// The same node with each immediate subterm `s` replaced by `f(s, k)`,
+    /// `k` being the number of variables `self` binds around it.
+    pub fn map_subterms(&self, mut f: impl FnMut(&Ir, usize) -> Ir) -> Ir {
+        let mut a = |x: &Arc<Ir>, k: usize| Arc::new(f(x, k));
+        match self {
+            Ir::Var(i) => Ir::Var(*i),
+            Ir::Global(d) => Ir::Global(*d),
+            Ir::Erased => Ir::Erased,
+            Ir::Lit(v) => Ir::Lit(v.clone()),
+            Ir::ConFn(c) => Ir::ConFn(*c),
+            Ir::Fail(m) => Ir::Fail(m),
+            Ir::Lam(o, b) => Ir::Lam(*o, a(b, 1)),
+            Ir::Call(h, xs) => {
+                let h = a(h, 0);
+                Ir::Call(h, xs.iter().map(|x| a(x, 0)).collect())
+            }
+            Ir::Let(v, b) => {
+                let v = a(v, 0);
+                Ir::Let(v, a(b, 1))
+            }
+            Ir::Tuple(xs) => Ir::Tuple(xs.iter().map(|x| a(x, 0)).collect()),
+            Ir::Con(c, xs) => Ir::Con(*c, xs.iter().map(|x| a(x, 0)).collect()),
+            Ir::Prim(op, xs, n) => Ir::Prim(*op, xs.iter().map(|x| a(x, 0)).collect(), *n),
+            Ir::Par(xs) => Ir::Par(xs.iter().map(|x| a(x, 0)).collect()),
+            Ir::Proj(x, i, r) => Ir::Proj(a(x, 0), *i, *r),
+            Ir::Field(x, i) => Ir::Field(a(x, 0), *i),
+            Ir::At(o, x) => Ir::At(*o, a(x, 0)),
+            Ir::Case(s, c) => {
+                let s = a(s, 0);
+                let branches = c.branches.iter().map(|(con, n, b)| (*con, *n, a(b, *n))).collect();
+                let lits = c.lits.iter().map(|(l, b)| (l.clone(), a(b, 0))).collect();
+                let default = c.default.as_ref().map(|d| a(d, 0));
+                Ir::Case(s, Arc::new(IrCase { branches, lits, default }))
+            }
+        }
+    }
 }
 
 /// The body to run for `d`: staged, generated (numbered after `g.defs`), or
@@ -604,7 +667,7 @@ pub fn globals_in(ir: &Ir, out: &mut Vec<DefId>) {
             globals_in(b, out);
         }
         Ir::Tuple(xs) | Ir::Con(_, xs) | Ir::Prim(_, xs, _) | Ir::Par(xs) => xs.iter().for_each(|x| globals_in(x, out)),
-        Ir::Proj(x, _, _) | Ir::Field(x, _) => globals_in(x, out),
+        Ir::Proj(x, _, _) | Ir::Field(x, _) | Ir::At(_, x) => globals_in(x, out),
         Ir::Case(s, c) => {
             globals_in(s, out);
             c.branches.iter().for_each(|(_, _, b)| globals_in(b, out));

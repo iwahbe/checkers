@@ -1,0 +1,20 @@
+-- stdout
+10
+0
+Some 4
+some 5
+none
+digit 7
+not a digit: 12
+a
+b
+first 5
+c
+ignored
+d
+twice 8
+some 3
+none
+some 1
+-- stderr
+-- exit 0

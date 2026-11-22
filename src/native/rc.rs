@@ -88,6 +88,10 @@ impl Fv {
                 }
                 Fv { vars, parts }
             }
+            E::At(_, b) => {
+                let b = Fv::of(b);
+                Fv { vars: b.vars.clone(), parts: vec![b] }
+            }
             // No parts are visited: atomic arguments, or code the pass made.
             _ => Fv::leaf(free_vars(e)),
         }
@@ -226,6 +230,7 @@ impl Rc<'_> {
                 let default = default.map(|d| Box::new(self.rc(*d, parts.next().unwrap(), own.clone())));
                 E::Case { scrut, arms: arms2, lits: lits2, default }
             }
+            E::At(o, b) => E::At(o, Box::new(self.rc(*b, parts.next().unwrap(), own))),
             E::Dup(..) | E::Drop(..) | E::DropReuse(..) => e,
         }
     }
@@ -247,6 +252,7 @@ impl Rc<'_> {
                     fields.iter_mut().find_map(|f| find(f, n, fields_of))
                 }
                 E::Let(_, a, b) => find(b, n, fields_of).or_else(|| find(a, n, fields_of)),
+                E::At(_, b) => find(b, n, fields_of),
                 E::Call { args, .. } | E::Tuple(args) | E::Par(args) => args.iter_mut().find_map(|a| find(a, n, fields_of)),
                 E::Apply { f, args, .. } => args.iter_mut().find_map(|a| find(a, n, fields_of)).or_else(|| find(f, n, fields_of)),
                 E::Case { arms, lits, default, .. } => {
