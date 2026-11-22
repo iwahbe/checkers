@@ -1,0 +1,11 @@
+-- stdout
+3
+2
+5
+Some 33
+Some 122
+Some False
+1000000
+2000000
+-- stderr
+-- exit 0

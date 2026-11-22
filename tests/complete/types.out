@@ -72,6 +72,7 @@ replaces 16:33-16:33
   None               constructor     None  (of `Option`)
   Ok                 constructor     Ok x : x~a  (of `Result`)
   Ord                class           export class Ord a  (documented)
+  Seq                class           export class Seq s  (documented)
   Some               constructor     Some x : x~a  (of `Option`)
   String             constructor     export record String  (documented)
   Sub                class           export class Sub a  (documented)
@@ -80,7 +81,9 @@ replaces 16:33-16:33
   len                function        
   mul                function        fn mul x y -> r : x~a, y~a, r~a
   neg                function        fn neg x -> r : x~a, r~a
+  size               function        fn size xs -> n : xs~s, n~Nat  (documented)
   sub                function        fn sub x y -> r : x~a, y~a, r~a
+  uncons             function        fn uncons xs -> r : xs~s, r~Option (Elem, s),  (documented)
   zero               function        fn zero -> r : r~a
 == line 20, column 10
 replaces 20:10-20:10
