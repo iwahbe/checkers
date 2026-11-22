@@ -82,13 +82,16 @@ export record Reference
     label~String
     span~Span
 
+# A heading's level: 1 to 6.
+export type Level = n~Nat, 1 <= n, n <= 6
+
 # A block: a paragraph, a heading (`level` 1 to 6), a thematic break, a
 # block quote, a list (`tight` when its items' paragraphs aren't separated
 # by blank lines; a numbered list starts at `start`), code (its info string,
 # its text, and the span of each line of the text), or raw HTML.
 export enum Block
     Paragraph inlines span          : inlines~List Inline, span~Span
-    Heading level inlines span      : level~Nat, inlines~List Inline, span~Span
+    Heading level inlines span      : level~Level, inlines~List Inline, span~Span
     ThematicBreak span              : span~Span
     Quote blocks span               : blocks~List Block, span~Span
     Bullets tight items span        : tight~Bool, items~List Item, span~Span
@@ -314,9 +317,7 @@ fn entity_at b i -> r : b~Bytes, i~Nat, r~Option (Bytes, Nat)
     else if is_letter (at b (i + 1))
         let stop = skip is_alnum b (i + 1)
         if sub stop (i + 1) >= 2 and sub stop (i + 1) <= 32 and at b stop == 59
-            match html.entity (text_of (part b (i + 1) stop))
-                Some s -> Some (string.bytes s, stop + 1)
-                None   -> None
+            fmap (\s -> (string.bytes s, stop + 1)) (html.entity (text_of (part b (i + 1) stop)))
         else
             None
     else
@@ -384,16 +385,16 @@ fn percent c -> r : c~Nat, r~Bytes
 # ── Link parts ───────────────────────────────────────────────────────────────
 
 # Spaces, then at most one line ending, then spaces: where they end.
-fn spnl b i -> r : b~Bytes, i~Nat, r~Nat
+fn spnl b i -> r : b~Bytes, i~Nat, r~Nat, i <= r, (i <= len b implies r <= len b)
     let j = skip_byte 32 b i
     if at b j == 10 then skip_byte 32 b (j + 1) else j
 
 # A link label at `i`, `[` to `]`, with at most 999 characters between and no
 # unescaped bracket: where it ends.
-fn link_label b i -> r : b~Bytes, i~Nat, r~Option Nat
+fn link_label b i -> r : b~Bytes, i~Nat, r~Option (j~Nat, i < j, j <= len b)
     if at b i == 91 then label_from b (i + 1) 0 else None
 
-fn label_from b i n -> r : b~Bytes, i~Nat, n~Nat, r~Option Nat
+fn label_from b i n -> r : b~Bytes, i~Nat, n~Nat, r~Option (j~Nat, i < j, j <= len b)
     if n > 999 or i >= len b
         None
     else
@@ -415,7 +416,7 @@ fn counts c -> r : c~Nat, r~Nat
 # A link destination at `i`: `<…>`, or bytes with balanced parentheses and
 # no space or control character. Its text, unescaped and encoded, and where
 # it ends.
-fn destination b i -> r : b~Bytes, i~Nat, r~Option (Bytes, Nat)
+fn destination b i -> r : b~Bytes, i~Nat, i <= len b, r~Option (Bytes, (d~Nat, i <= d, d <= len b))
     if at b i == 60
         match angled b (i + 1)
             Some stop -> Some (encode_url (unescape (part b (i + 1) stop)), stop + 1)
@@ -425,7 +426,7 @@ fn destination b i -> r : b~Bytes, i~Nat, r~Option (Bytes, Nat)
             Some stop -> if stop == i and at b stop != 41 then None else Some (encode_url (unescape (part b i stop)), stop)
             None      -> None
 
-fn angled b i -> r : b~Bytes, i~Nat, r~Option Nat
+fn angled b i -> r : b~Bytes, i~Nat, r~Option (j~Nat, i <= j, j < len b)
     if i < len b
         let c = b[i]
         if c == 62
@@ -439,7 +440,7 @@ fn angled b i -> r : b~Bytes, i~Nat, r~Option Nat
     else
         None
 
-fn bare b i depth -> r : b~Bytes, i~Nat, depth~Nat, r~Option Nat
+fn bare b i depth -> r : b~Bytes, i~Nat, i <= len b, depth~Nat, r~Option (j~Nat, i <= j, j <= len b)
     if i < len b
         let c = b[i]
         if c == 92 and is_escapable (at b (i + 1))
@@ -457,7 +458,7 @@ fn bare b i depth -> r : b~Bytes, i~Nat, depth~Nat, r~Option Nat
 
 # A link title at `i`, in `"…"`, `'…'` or `(…)`: its text, unescaped, and
 # where it ends.
-fn title b i -> r : b~Bytes, i~Nat, r~Option (Bytes, Nat)
+fn title b i -> r : b~Bytes, i~Nat, r~Option (Bytes, (e~Nat, i < e, e <= len b))
     let open = at b i
     let close = if open == 40 then 41 else open
     if open == 34 or open == 39 or open == 40
@@ -467,7 +468,7 @@ fn title b i -> r : b~Bytes, i~Nat, r~Option (Bytes, Nat)
     else
         None
 
-fn title_end b i open close -> r : b~Bytes, i~Nat, open~Nat, close~Nat, r~Option Nat
+fn title_end b i open close -> r : b~Bytes, i~Nat, open~Nat, close~Nat, r~Option (j~Nat, i <= j, j < len b)
     if i < len b
         let c = b[i]
         if c == close
@@ -496,26 +497,18 @@ fn html_tag b i -> r : b~Bytes, i~Nat, r~Option Nat
         else if c == 47
             close_tag b (i + 2)
         else if c == 63
-            match find b b"?>" (i + 2)
-                Some k -> Some (k + 2)
-                None   -> None
+            fmap (\k -> k + 2) (find b b"?>" (i + 2))
         else if c == 33
             if bytes.matches_at b (i + 2) b"-->"
                 Some (i + 5)
             else if bytes.matches_at b (i + 2) b"--->"
                 Some (i + 6)
             else if bytes.matches_at b (i + 2) b"--"
-                match find b b"-->" (i + 4)
-                    Some k -> Some (k + 3)
-                    None   -> None
+                fmap (\k -> k + 3) (find b b"-->" (i + 4))
             else if bytes.matches_at b (i + 2) b"[CDATA["
-                match find b b"]]>" (i + 9)
-                    Some k -> Some (k + 3)
-                    None   -> None
+                fmap (\k -> k + 3) (find b b"]]>" (i + 9))
             else if is_letter (at b (i + 2))
-                match find b b">" (i + 3)
-                    Some k -> Some (k + 1)
-                    None   -> None
+                fmap (\k -> k + 1) (find b b">" (i + 3))
             else
                 None
         else
@@ -526,11 +519,11 @@ fn is_tag_char c : c~Nat
 
 # An open tag's name at `i`, then its attributes, `/` and `>`.
 fn open_tag b i -> r : b~Bytes, i~Nat, r~Option Nat
-    attributes b (skip is_tag_char b i) (len b)
+    attributes b (skip is_tag_char b i)
 
-# `fuel` bounds the attributes left: each takes at least a byte.
-fn attributes b i fuel -> r : b~Bytes, i~Nat, fuel~Nat, r~Option Nat
-    decreasing fuel
+# Attributes from `i` (each takes at least a byte), then `/` and `>`.
+fn attributes b i -> r : b~Bytes, i~Nat, r~Option Nat
+    decreasing sub (len b) i
     let j = skip is_ascii_space b i
     let c = at b j
     if c == 62
@@ -539,8 +532,8 @@ fn attributes b i fuel -> r : b~Bytes, i~Nat, fuel~Nat, r~Option Nat
         if at b (j + 1) == 62 then Some (j + 2) else None
     else if j > i and (is_letter c or c == 95 or c == 58)
         match attribute_value b (skip is_attribute_char b j)
-            Some k if fuel > 0 -> attributes b k (fuel - 1)
-            _ -> None
+            Some k -> attributes b k
+            None   -> None
     else
         None
 
@@ -548,7 +541,7 @@ fn is_attribute_char c : c~Nat
     is_alnum c or c == 95 or c == 58 or c == 46 or c == 45
 
 # After an attribute's name: `= value`, if any, and where it ends.
-fn attribute_value b i -> r : b~Bytes, i~Nat, r~Option Nat
+fn attribute_value b i -> r : b~Bytes, i~Nat, i <= len b, r~Option (k~Nat, i <= k, k <= len b)
     let j = skip is_ascii_space b i
     if at b j != 61
         Some i
@@ -556,9 +549,8 @@ fn attribute_value b i -> r : b~Bytes, i~Nat, r~Option Nat
         let k = skip is_ascii_space b (j + 1)
         let c = at b k
         if c == 34 or c == 39
-            match find b (part b k (k + 1)) (k + 1)
-                Some e -> Some (e + 1)
-                None   -> None
+            let e = skip (\x -> x != c) b (k + 1)
+            if e < len b then Some (e + 1) else None
         else
             let e = skip is_unquoted b k
             if e > k then Some e else None
@@ -593,7 +585,7 @@ enum Kind
     KQuote
     KList data                : data~ListData
     KItem data                : data~ListData
-    KHeading level            : level~Nat
+    KHeading level            : level~Level
     KBreak
     KFence mark length indent : mark~Nat, length~Nat, indent~Nat
     KIndented
@@ -618,7 +610,7 @@ record Where
 # A closed block, before its text is parsed for inlines.
 enum Raw
     RPara segs w             : segs~List Seg, w~Where
-    RHeading level segs w    : level~Nat, segs~List Seg, w~Where
+    RHeading level segs w    : level~Level, segs~List Seg, w~Where
     RBreak w                 : w~Where
     RQuote children w        : children~List Raw, w~Where
     RList data tight items w : data~ListData, tight~Bool, items~List Raw, w~Where
@@ -719,10 +711,11 @@ fn pk src ln i -> r : src~Bytes, ln~Ln, i~Nat, r~Nat
     if i < ln.stop then at src i else 256
 
 # Where the line's next byte other than a space or a tab is, and its column.
-fn nonspace src ln -> r : src~Bytes, ln~Ln, r~(Nat, Nat)
+fn nonspace src ln -> r : src~Bytes, ln~Ln, r~((n~Nat, ln.offset <= n, pk src ln n != 9), Nat)
     nonspace_from src ln.stop ln.offset ln.column
 
-fn nonspace_from src stop i col -> r : src~Bytes, stop~Nat, i~Nat, col~Nat, r~(Nat, Nat)
+fn nonspace_from src stop i col -> r : src~Bytes, stop~Nat, i~Nat, col~Nat,
+                                       r~((n~Nat, i <= n, (n < stop implies at src n != 9)), Nat)
     if i < stop and i < len src and src[i] == 32
         nonspace_from src stop (i + 1) (col + 1)
     else if i < stop and i < len src and src[i] == 9
@@ -734,8 +727,13 @@ fn with_offset ln offset column in_tab -> r : ln~Ln, offset~Nat, column~Nat, in_
     Ln ln.start ln.stop offset column in_tab
 
 # Read `count` more of the line: columns if `columns` (a tab may be read in
-# part), else bytes.
-fn advance src ln count columns -> r : src~Bytes, ln~Ln, count~Nat, columns~Bool, r~Ln
+# part), else bytes. Reading something from what is left of the line moves
+# the column on, and the offset too unless only part of a tab was read.
+fn advance src ln count columns -> r : src~Bytes, ln~Ln, count~Nat, columns~Bool,
+                                       r~Ln, r.stop == ln.stop, ln.offset <= r.offset, ln.column <= r.column,
+                                       ((count > 0 and ln.offset < ln.stop) implies ln.column < r.column),
+                                       ((count > 0 and ln.offset < ln.stop and (not columns or at src ln.offset != 9))
+                                        implies ln.offset < r.offset)
     if count > 0 and ln.offset < ln.stop
         if at src ln.offset == 9
             let to_tab = 4 - ln.column % 4
@@ -751,7 +749,8 @@ fn advance src ln count columns -> r : src~Bytes, ln~Ln, count~Nat, columns~Bool
     else
         ln
 
-fn advance_nonspace src ln -> r : src~Bytes, ln~Ln, r~Ln
+fn advance_nonspace src ln -> r : src~Bytes, ln~Ln, r~Ln, r.stop == ln.stop, ln.offset <= r.offset,
+                                  pk src ln r.offset != 9
     match nonspace src ln
         (i, col) -> with_offset ln i col False
 
@@ -919,7 +918,8 @@ fn continues src k has_child ln -> r : src~Bytes, k~Kind, has_child~Bool, ln~Ln,
                 KBreak                          -> Failed
                 _                               -> Matched ln
 
-fn after_quote_marker src ln -> r : src~Bytes, ln~Ln, r~Ln
+fn after_quote_marker src ln -> r : src~Bytes, ln~Ln, r~Ln, r.stop == ln.stop,
+                                    ((advance_nonspace src ln).offset < ln.stop implies ln.offset < r.offset)
     let l2 = advance src (advance_nonspace src ln) 1 False
     if is_space_or_tab (pk src l2 l2.offset) then advance src l2 1 True else l2
 
@@ -956,9 +956,11 @@ fn walk src path d tip ln -> r : src~Bytes, path~List Open, d~Nat, tip~Nat, ln~L
 
 # ── Starting blocks ──────────────────────────────────────────────────────────
 
-enum Start
+# What a line starts, read from `ln`: a container block, whose start takes
+# at least a byte of the line, or a leaf block.
+enum Start ln : ln~ghost Ln
     NoStart
-    Container s : s~S
+    Container s : s~S, s.ln.stop == ln.stop, ln.offset < s.ln.offset
     Leaf s      : s~S
 
 # A character that may start a block, other than indented code.
@@ -968,10 +970,10 @@ fn maybe_special c : c~Nat
 
 # Start the blocks the line starts, inside the container, while they are
 # containers.
-fn starts src s fuel -> r : src~Bytes, s~S, fuel~Nat, r~S
-    decreasing fuel
+fn starts src s -> r : src~Bytes, s~S, r~S
+    decreasing sub s.ln.stop s.ln.offset
     let k = kind_at s.opens s.container
-    if fuel == 0 or (accepts_lines k and not (is_para k))
+    if accepts_lines k and not (is_para k)
         s
     else
         match nonspace src s.ln
@@ -981,11 +983,12 @@ fn starts src s fuel -> r : src~Bytes, s~S, fuel~Nat, r~S
                     with_ln s (advance_nonspace src s.ln)
                 else
                     match start src s k nn indent
-                        Container s2 -> starts src s2 (fuel - 1)
+                        Container s2 -> starts src s2
                         Leaf s2      -> s2
                         NoStart      -> with_ln s (advance_nonspace src s.ln)
 
-fn start src s k nn indent -> r : src~Bytes, s~S, k~Kind, nn~Nat, indent~Nat, r~Start
+fn start src s k nn indent -> r : src~Bytes, s~S, k~Kind, nn~Nat, nn == (advance_nonspace src s.ln).offset,
+                                  indent~Nat, r~Start s.ln
     let ln = s.ln
     let c = pk src ln nn
     let blank = nn >= ln.stop
@@ -1022,7 +1025,7 @@ fn start src s k nn indent -> r : src~Bytes, s~S, k~Kind, nn~Nat, indent~Nat, r~
                 _       -> heading
 
 # An ATX heading: `#` to `######`, then a space, a tab or the line's end.
-fn atx src s nn -> r : src~Bytes, s~S, nn~Nat, r~Start
+fn atx src s nn -> r : src~Bytes, s~S, nn~Nat, at src nn == 35, r~Start s.ln
     let ln = s.ln
     let e = skip_byte 35 src nn
     let level = sub e nn
@@ -1054,7 +1057,7 @@ fn fence src ln i c -> r : src~Bytes, ln~Ln, i~Nat, c~Nat, r~Nat
     if c == 96 and find (part src e ln.stop) b"`" 0 != None then 0 else sub e i
 
 # A setext heading's underline at `i`: its level, or 0.
-fn setext src ln i -> r : src~Bytes, ln~Ln, i~Nat, r~Nat
+fn setext src ln i -> r : src~Bytes, ln~Ln, i~Nat, r~Nat, r <= 2
     let c = pk src ln i
     if c == 61 or c == 45
         let e = skip_byte c src i
@@ -1080,12 +1083,12 @@ fn break_count src ln i c n -> r : src~Bytes, ln~Ln, i~Nat, c~Nat, n~Nat, r~Nat
 
 # The paragraph that is the container becomes a heading; the link reference
 # definitions it starts with stay a paragraph before it.
-fn setext_heading src s level -> r : src~Bytes, s~S, level~Nat, r~Start
+fn setext_heading src s level -> r : src~Bytes, s~S, level~Level, r~Start s.ln
     let s2 = close_unmatched s
     match s2.opens
         o :: rest ->
             let content = seg_bytes o.segs
-            let refs = definitions_length content 0 (len content)
+            let refs = definitions_length content
             if len content > refs
                 let segs = list.reverse o.segs
                 let heading_segs = drop_bytes segs refs
@@ -1126,15 +1129,14 @@ fn seg_end segs dflt -> r : segs~List Seg, dflt~Nat, r~Nat
         None   -> dflt
 
 # How many bytes the link reference definitions at the start of `b` take.
-fn definitions_length b i fuel -> r : b~Bytes, i~Nat, fuel~Nat, r~Nat
-    decreasing fuel
-    match reference b i
-        Some d if fuel > 0 and d.stop > i -> definitions_length b d.stop (fuel - 1)
-        _ -> i
+fn definitions_length b -> r : b~Bytes, r~Nat
+    match take_definitions b 0 []
+        (_, n) -> n
 
 # A list item's marker, then up to 4 spaces: the item, and the list if the
 # marker doesn't continue the innermost one.
-fn list_item src s k nn indent -> r : src~Bytes, s~S, k~Kind, nn~Nat, indent~Nat, r~Start
+fn list_item src s k nn indent -> r : src~Bytes, s~S, k~Kind, nn~Nat, nn == (advance_nonspace src s.ln).offset,
+                                      indent~Nat, r~Start s.ln
     match list_marker src s.ln k nn indent
         Some (data, ln) ->
             let s2 = close_unmatched (with_ln s ln)
@@ -1147,7 +1149,8 @@ fn list_item src s k nn indent -> r : src~Bytes, s~S, k~Kind, nn~Nat, indent~Nat
 fn same_list a b : a~ListData, b~ListData
     a.ordered == b.ordered and a.mark == b.mark
 
-fn list_marker src ln k nn indent -> r : src~Bytes, ln~Ln, k~Kind, nn~Nat, indent~Nat, r~Option (ListData, Ln)
+fn list_marker src ln k nn indent -> r : src~Bytes, ln~Ln, k~Kind, nn~Nat, nn == (advance_nonspace src ln).offset,
+                                         indent~Nat, r~Option (ListData, (l~Ln, l.stop == ln.stop, ln.offset < l.offset))
     let c = pk src ln nn
     let digits = sub (min (skip is_digit src nn) ln.stop) nn
     let delim = pk src ln (nn + digits)
@@ -1163,21 +1166,21 @@ fn list_marker src ln k nn indent -> r : src~Bytes, ln~Ln, k~Kind, nn~Nat, inden
         None
     else
         let l1 = advance src (advance_nonspace src ln) size True
-        let l2 = spaces_after src (advance src l1 1 True) l1.column 5
+        have ln.offset < l1.offset          # the marker isn't a tab, so reading it reads a byte
+        let l2 = spaces_after src (advance src l1 1 True) l1.column
         let spaces = sub l2.column l1.column
         if spaces >= 5 or spaces < 1 or pk src l2 l2.offset == 256
-            let l3 = with_offset l1 l1.offset l1.column l1.in_tab
-            let l4 = if is_space_or_tab (pk src l3 l3.offset) then advance src l3 1 True else l3
+            let l4 = if is_space_or_tab (pk src l1 l1.offset) then advance src l1 1 True else l1
             Some (ListData ordered (if bullet then c else delim) number indent (size + 1), l4)
         else
             Some (ListData ordered (if bullet then c else delim) number indent (size + spaces), l2)
 
 # Read single columns of spaces and tabs while fewer than 5 have been
-# read since column `from` (`fuel` bounds them).
-fn spaces_after src ln from fuel -> r : src~Bytes, ln~Ln, from~Nat, fuel~Nat, r~Ln
-    decreasing fuel
-    if fuel > 0 and sub ln.column from < 5 and is_space_or_tab (pk src ln ln.offset)
-        spaces_after src (advance src ln 1 True) from (fuel - 1)
+# read since column `from`.
+fn spaces_after src ln from -> r : src~Bytes, ln~Ln, from~Nat, r~Ln, r.stop == ln.stop, ln.offset <= r.offset
+    decreasing sub (from + 5) ln.column
+    if sub ln.column from < 5 and is_space_or_tab (pk src ln ln.offset)
+        spaces_after src (advance src ln 1 True) from
     else
         ln
 
@@ -1267,7 +1270,7 @@ fn incorporate src s -> r : src~Bytes, s~S, r~S
     match walk src (list.drop 1 (list.reverse s.opens)) 1 tip s.ln
         WDone ln -> with_opens (with_ln s ln) (close s.opens s.line ln.stop)
         WAt m ln ->
-            let s2 = starts src (S s.opens s.line s.prev ln m m (m == tip)) (sub ln.stop ln.start + 2)
+            let s2 = starts src (S s.opens s.line s.prev ln m m (m == tip))
             line_text src s2
 
 # The rest of the line: a lazy continuation of a paragraph, or the
@@ -1322,47 +1325,50 @@ record Def
     label~Bytes
     url~Bytes
     title~Option Bytes
-    stop~Nat
+
+# Something read from `src` starting at `start`, and where it stopped. It
+# takes at least a byte, so reading one after another ends.
+record Parsed a src start : a~Type, src~ghost Bytes, start~ghost Nat
+    value~a
+    stop~Nat, start < stop, stop <= len src
 
 # A link reference definition at `i`: `[label]:`, a destination, maybe a
 # title, and nothing else on the line.
-fn reference b i -> r : b~Bytes, i~Nat, r~Option Def
+fn reference b i -> r : b~Bytes, i~Nat, r~Option (Parsed Def b i)
     match link_label b i
         Some j if at b j == 58 ->
             let label = part b (i + 1) (sub j 1)
             let key = label_key (text_of label)
             match destination b (spnl b (j + 1))
-                Some (url, d) ->
+                Some (url, d) if key != "" ->
                     let t = spnl b d
                     let titled = if t > d then title b t else None
                     let full = match titled
                         Some (tt, e) -> match line_end b e
-                            Some stop -> Some (Def key label url (Some tt) stop)
+                            Some stop -> Some (Parsed (Def key label url (Some tt)) stop)
                             None      -> None
                         None         -> None
-                    let bare_def = match line_end b d
-                        Some stop -> Some (Def key label url None stop)
-                        None      -> None
-                    if key == ""
-                        None
-                    else
-                        match full
-                            Some x -> Some x
-                            None   -> bare_def
-                None          -> None
+                    match full
+                        Some x -> Some x
+                        None   -> match line_end b d
+                            Some stop -> Some (Parsed (Def key label url None) stop)
+                            None      -> None
+                _ -> None
         _ -> None
 
 # Spaces, then a line ending or the end: where they end.
-fn line_end b i -> r : b~Bytes, i~Nat, r~Option Nat
+fn line_end b i -> r : b~Bytes, i~Nat, i <= len b, r~Option (j~Nat, i <= j, j <= len b)
     let j = skip_byte 32 b i
     if j >= len b then Some j else if b[j] == 10 then Some (j + 1) else None
 
-# The definitions a paragraph starts with, last first, and where they end.
-fn take_definitions b i fuel acc -> r : b~Bytes, i~Nat, fuel~Nat, acc~List (Def, Nat), r~(List (Def, Nat), Nat)
-    decreasing fuel
+# The definitions a paragraph starts with from `i`, onto `acc` (last
+# first), each with where it starts and stops; and where they end.
+fn take_definitions b i acc -> r : b~Bytes, i~Nat, i <= len b, acc~List (Def, Nat, Nat),
+                                   r~(List (Def, Nat, Nat), Nat)
+    decreasing len b - i
     match reference b i
-        Some d if fuel > 0 and d.stop > i -> take_definitions b d.stop (fuel - 1) ((d, i) :: acc)
-        _ -> (acc, i)
+        Some d -> take_definitions b d.stop ((d.value, i, d.stop) :: acc)
+        None   -> (acc, i)
 
 # Take the link reference definitions out of the paragraphs, in order: the
 # blocks left, and the definitions (last first).
@@ -1371,7 +1377,7 @@ fn strip_definitions bs acc -> r : bs~List Raw, acc~List (Def, Span), r~(List Ra
         []                        -> ([], acc)
         RPara segs w :: rest      ->
             let content = bytes.concat (list.map (\g -> g.text) segs)
-            match take_definitions content 0 (len content) []
+            match take_definitions content 0 []
                 (found, used) ->
                     let acc2 = add_definitions segs found acc
                     let left = drop_bytes segs used
@@ -1402,15 +1408,15 @@ fn strip_definitions bs acc -> r : bs~List Raw, acc~List (Def, Span), r~(List Ra
                 (others, acc2) -> (b :: others, acc2)
 
 # The definitions found (last first), with their spans, onto `acc`.
-fn add_definitions segs found acc -> r : segs~List Seg, found~List (Def, Nat), acc~List (Def, Span), r~List (Def, Span)
+fn add_definitions segs found acc -> r : segs~List Seg, found~List (Def, Nat, Nat), acc~List (Def, Span), r~List (Def, Span)
     match list.reverse found
         [] -> acc
         ds -> add_each segs ds acc
 
-fn add_each segs ds acc -> r : segs~List Seg, ds~List (Def, Nat), acc~List (Def, Span), r~List (Def, Span)
+fn add_each segs ds acc -> r : segs~List Seg, ds~List (Def, Nat, Nat), acc~List (Def, Span), r~List (Def, Span)
     match ds
-        (d, at) :: rest -> add_each segs rest ((d, Span (position (seg_map segs) at) (position (seg_map segs) (sub d.stop 1))) :: acc)
-        []              -> acc
+        (d, at, stop) :: rest -> add_each segs rest ((d, Span (position (seg_map segs) at) (position (seg_map segs) (sub stop 1))) :: acc)
+        []                    -> acc
 
 # Where each segment starts in the text made of them, in the source, and
 # its padding.
@@ -1700,9 +1706,7 @@ fn lookup cx l -> r : cx~Cx, l~Bytes, r~Option Target
             None   -> cx.resolve (text_of l)
 
 fn title_text t -> r : t~Option Bytes, r~Option String
-    match t
-        Some x -> Some (text_of x)
-        None   -> None
+    fmap text_of t
 
 fn find_def key defs -> r : key~String, defs~List (Def, Span), r~Option Def
     match defs
@@ -1780,7 +1784,7 @@ fn is_scheme_char c : c~Nat
 # An email address at `i`: where it ends.
 fn email b i -> r : b~Bytes, i~Nat, r~Option Nat
     let at_sign = skip is_email_char b i
-    if at_sign > i and at b at_sign == 64 then domain b (at_sign + 1) (len b) else None
+    if at_sign > i and at b at_sign == 64 then domain b (at_sign + 1) else None
 
 fn is_email_char c : c~Nat
     is_alnum c or c == '.' or c == '!' or c == '#' or c == '$' or c == '%' or c == '&' or c == '\'' or c == '*'
@@ -1789,14 +1793,14 @@ fn is_email_char c : c~Nat
 
 # Labels of letters, digits and inner hyphens, at most 63 long, separated by
 # dots.
-fn domain b i fuel -> r : b~Bytes, i~Nat, fuel~Nat, r~Option Nat
-    decreasing fuel
+fn domain b i -> r : b~Bytes, i~Nat, r~Option Nat
+    decreasing sub (len b) i
     let e = skip (\c -> is_alnum c or c == 45) b i
     let n = sub e i
     if n == 0 or n > 63 or at b i == 45 or at b (sub e 1) == 45
         None
-    else if at b e == 46 and fuel > 0 and is_alnum (at b (e + 1))
-        domain b (e + 1) (fuel - 1)
+    else if at b e == 46 and is_alnum (at b (e + 1))
+        domain b (e + 1)
     else
         Some e
 
@@ -1822,8 +1826,7 @@ fn decode_from b start i acc -> r : b~Bytes, start~Nat, i~Nat, acc~List Bytes, r
 # each run that can close, left to right, with the nearest run before it
 # that can open it.
 fn emphasis cx toks -> r : cx~Cx, toks~List Tok, r~List Inline
-    let fuel = list.length toks + delim_total toks + 1
-    as_inlines cx (list.reverse (match_runs cx [] toks fuel))
+    as_inlines cx (list.reverse (match_runs cx [] toks))
 
 fn delim_total toks -> r : toks~List Tok, r~Nat
     match toks
@@ -1832,37 +1835,36 @@ fn delim_total toks -> r : toks~List Tok, r~Nat
         []               -> 0
 
 # `left`: the tokens done (last first); `right`: the ones still to look at.
-fn match_runs cx left right fuel -> r : cx~Cx, left~List Tok, right~List Tok, fuel~Nat, r~List Tok
-    decreasing fuel
+# Each step moves a token from `right` to `left`, or uses up some of a run
+# in `right`.
+fn match_runs cx left right -> r : cx~Cx, left~List Tok, right~List Tok, r~List Tok
+    decreasing list.length right + delim_total right
     match right
         []        -> left
         t :: rest ->
-            if fuel == 0
-                list.reverse right ++ left
-            else
-                match t
-                    TDelim d if d.can_close ->
-                        match opener left d 0
-                            Some (k, o) ->
-                                let use = if d.count >= 2 and o.count >= 2 then 2 else 1
-                                let inner = list.reverse (list.take k left)
-                                let before = list.drop (k + 1) left
-                                let s = span cx (o.start + sub o.count use) (d.start + use)
-                                let content = as_inlines cx inner
-                                let x = if use == 1 then Emph content s else Strong content s
-                                let o2 = Delim o.ch (sub o.count use) o.orig o.can_open o.can_close o.start
-                                let d2 = Delim d.ch (sub d.count use) d.orig d.can_open d.can_close (d.start + use)
-                                let left2 = TInline x :: (if o2.count > 0 then TDelim o2 :: before else before)
-                                if d2.count > 0
-                                    match_runs cx left2 (TDelim d2 :: rest) (fuel - 1)
-                                else
-                                    match_runs cx left2 rest (fuel - 1)
-                            None        ->
-                                if d.can_open
-                                    match_runs cx (t :: left) rest (fuel - 1)
-                                else
-                                    match_runs cx (delim_text d :: left) rest (fuel - 1)
-                    _ -> match_runs cx (t :: left) rest (fuel - 1)
+            match t
+                TDelim d if d.can_close ->
+                    match opener left d 0
+                        Some (k, o) ->
+                            let use = if d.count >= 2 and o.count >= 2 then 2 else 1
+                            let inner = list.reverse (list.take k left)
+                            let before = list.drop (k + 1) left
+                            let s = span cx (o.start + sub o.count use) (d.start + use)
+                            let content = as_inlines cx inner
+                            let x = if use == 1 then Emph content s else Strong content s
+                            let o2 = Delim o.ch (sub o.count use) o.orig o.can_open o.can_close o.start
+                            let d2 = Delim d.ch (sub d.count use) d.orig d.can_open d.can_close (d.start + use)
+                            let left2 = TInline x :: (if o2.count > 0 then TDelim o2 :: before else before)
+                            if d2.count > 0
+                                match_runs cx left2 (TDelim d2 :: rest)
+                            else
+                                match_runs cx left2 rest
+                        None        ->
+                            if d.can_open
+                                match_runs cx (t :: left) rest
+                            else
+                                match_runs cx (delim_text d :: left) rest
+                _ -> match_runs cx (t :: left) rest
 
 # The nearest run in `left` (last first) that can open emphasis closed by
 # `d`: how many tokens come after it, and the run.
