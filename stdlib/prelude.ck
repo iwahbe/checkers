@@ -317,8 +317,8 @@ export class Seq s
     # there are none.
     fn uncons xs -> r : xs~s, r~Option (Elem, s),
                         match r
-        None -> size xs == 0
-        Some (_, rest) -> size rest < size xs
+                            None           -> size xs == 0
+                            Some (_, rest) -> size rest < size xs
 
 # A list's `match` is built in; this instance is for generic code.
 instance Seq (List a)

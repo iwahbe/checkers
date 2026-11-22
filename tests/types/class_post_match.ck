@@ -9,8 +9,8 @@ class Peel s
     fn size xs -> n : xs~s, n~Nat
     fn peel xs -> r : xs~s, r~Option s,
                       match r
-        None -> True
-        Some y -> size y < size xs
+                          None   -> True
+                          Some y -> size y < size xs
 
 instance Peel Int
     fn size xs
