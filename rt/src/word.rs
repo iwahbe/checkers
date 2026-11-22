@@ -158,8 +158,7 @@ fn size_of(w: W) -> usize {
     match kind(w) {
         K_CON | K_TUPLE => HDR + 8 * n,
         K_CLO | K_PAP => HDR + 8 + 8 * n,
-        K_BYTES => HDR + 8 + (slot(w, 0) as usize).div_ceil(8) * 8,
-        crate::array::K_ARRAY => crate::array::size(w),
+        K_BYTES | crate::array::K_ARRAY => crate::array::size(w),
         _ => HDR + 8,
     }
 }
@@ -212,9 +211,10 @@ pub fn new_tuple(items: &[W]) -> W {
 }
 
 fn new_blob(kind: u64, b: &[u8]) -> W {
-    let w = alloc_obj(info(kind, 0, 0), HDR + 8 + b.len().div_ceil(8) * 8);
+    let w = alloc_obj(info(kind, 0, 0), HDR + 16 + b.len().div_ceil(8) * 8);
     set_slot(w, 0, b.len() as u64);
-    unsafe { std::ptr::copy_nonoverlapping(b.as_ptr(), (w as usize + HDR + 8) as *mut u8, b.len()) };
+    set_slot(w, 1, 0);
+    unsafe { std::ptr::copy_nonoverlapping(b.as_ptr(), (w as usize + HDR + 16) as *mut u8, b.len()) };
     w
 }
 
@@ -230,7 +230,7 @@ pub fn new_bytes(b: &[u8]) -> W {
 /// The bytes of a bytes object (a string's too).
 pub fn blob<'a>(w: W) -> &'a [u8] {
     let n = slot(w, 0) as usize;
-    unsafe { std::slice::from_raw_parts((w as usize + HDR + 8) as *const u8, n) }
+    unsafe { std::slice::from_raw_parts(crate::array::data(w) as *const u8, n) }
 }
 
 /// The text of a string: a bytes object that a `String` is, so UTF-8.
@@ -294,7 +294,7 @@ pub extern "C" fn ck_free(w: W) {
             K_PAP => (0..=n).for_each(|i| release(slot(w, i))),
             K_BIG => unsafe { drop(Box::from_raw(slot(w, 0) as *mut num_bigint::BigInt)) },
             K_RUST => unsafe { drop(Box::from_raw(slot(w, 0) as *mut crate::obj::Obj)) },
-            crate::array::K_ARRAY => crate::array::held(w).for_each(&mut release),
+            K_BYTES | crate::array::K_ARRAY => crate::array::held(w).for_each(&mut release),
             _ => {}
         }
         if TRACK.load(Ordering::Relaxed) {

@@ -15,12 +15,13 @@ builtin!(ckb_matches_at, |a| {
     bool_w(i.checked_add(word.len()).is_some_and(|end| end <= src.len() && &src[i..end] == word))
 });
 
+// A slice sharing the bytes' storage, in constant time (#169).
 builtin!(ckb_bytes_slice, |a| {
     let (src, i, j) = (b(a[0]), n(a[1]), n(a[2]));
-    match src.get(i..j) {
-        Some(x) => new_bytes(x),
-        None => bug("`bytes.slice` out of range"),
+    if i > j || j > src.len() {
+        bug("`bytes.slice` out of range");
     }
+    crate::array::slice(a[0], i, j)
 });
 
 builtin!(ckb_bytes_concat, |a| {

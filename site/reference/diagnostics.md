@@ -75,6 +75,7 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0245` | a pattern of another type among literal arms |
 | `E0246` | a tuple pattern of the wrong size |
 | `E0247` | building, matching or reading the fields of an abstract type outside its module |
+| `E0248` | a `match` on a type other than a list that takes it apart both with `[]` or `::` and with its constructors |
 | `E0260` | a `check` is false |
 | `E0261` | a `check` stopped with a run-time error |
 | `E0262` | a refinement gained through a type argument of an existing value (`List Int` as `List Nat`) |

@@ -601,6 +601,9 @@ pub struct Elab {
     /// Calls between functions of this module with no measure, which may
     /// recurse: for guessing a measure (D150).
     pub rec_calls: Vec<termination::RecCall>,
+    /// For each function, `Seq.size` of what its sequence patterns take
+    /// apart (§9.8): a term at a level, and its text; measures to guess.
+    pub seq_sizes: HashMap<DefId, Vec<(Tm, usize, String)>>,
     /// Recursive groups whose measure is guessed in the proofs phase (D150).
     pub guess_groups: Vec<termination::GuessGroup>,
     /// Their functions: terminating by a measure, as with `decreasing`.
@@ -830,6 +833,7 @@ impl Elab {
             measure_obs: Vec::new(),
             ends_everywhere: Default::default(),
             rec_calls: Vec::new(),
+            seq_sizes: HashMap::new(),
             guess_groups: Vec::new(),
             guessed: HashSet::new(),
             saturated_heads: HashSet::new(),

@@ -215,6 +215,8 @@ impl<'p, M: Module> Gen<'p, M> {
         bytes.extend_from_slice(&w::STATIC_RC.to_le_bytes());
         bytes.extend_from_slice(&w::info(kind, 0, 0).to_le_bytes());
         bytes.extend_from_slice(&(b.len() as u64).to_le_bytes());
+        // Not a slice: the bytes follow (#169).
+        bytes.extend_from_slice(&0u64.to_le_bytes());
         bytes.extend_from_slice(b);
         while bytes.len() % 8 != 0 {
             bytes.push(0);
@@ -275,6 +277,7 @@ impl<'p, M: Module> Gen<'p, M> {
         out.extend_from_slice(&w::STATIC_RC.to_le_bytes());
         out.extend_from_slice(&w::info(kind, 0, 0).to_le_bytes());
         out.extend_from_slice(&(b.len() as u64).to_le_bytes());
+        out.extend_from_slice(&0u64.to_le_bytes());
         out.extend_from_slice(b);
         while !out.len().is_multiple_of(8) {
             out.push(0);
@@ -1067,8 +1070,13 @@ impl<'p, M: Module> Gen<'p, M> {
                 let inb = b.ins().icmp(IntCC::UnsignedLessThan, i, len);
                 b.ins().brif(inb, fast, &[], slow, &[]);
                 b.switch_to_block(fast);
-                let base = b.ins().iadd(a[0], i);
-                let byte = b.ins().uload8(I64, flags(), base, (w::HDR + 8) as i32);
+                // The bytes follow the header, or a slice points at them (#169).
+                let ptr = b.ins().load(I64, flags(), a[0], (w::HDR + 8) as i32);
+                let inline = b.ins().iadd_imm_s(a[0], (w::HDR + 16) as i64);
+                let sliced = b.ins().icmp_imm_s(IntCC::NotEqual, ptr, 0);
+                let data = b.ins().select(sliced, ptr, inline);
+                let base = b.ins().iadd(data, i);
+                let byte = b.ins().uload8(I64, flags(), base, 0);
                 let sh = b.ins().ishl_imm_s(byte, 1);
                 let v = b.ins().bor_imm_s(sh, 1);
                 b.ins().jump(done, &[BlockArg::Value(v)]);

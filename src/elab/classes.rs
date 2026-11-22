@@ -620,6 +620,28 @@ fn rename_binders(cs: &[Constraint], map: &HashMap<String, String>) -> Vec<Const
         .collect()
 }
 
+/// A class member's constraints at an instance: its parameters renamed by
+/// `map` to the instance's names, and the class's parameters and types
+/// replaced by `subst` (the instance's types). The renaming goes through
+/// names no program can write, so an instance's parameter named as the
+/// class's parameter (`fn size s` in `Seq s`) isn't taken for it.
+fn at_instance(cs: &[Constraint], map: &HashMap<String, String>, subst: &dyn Fn(&[Constraint]) -> Vec<Constraint>) -> Vec<Constraint> {
+    let (fresh, back) = fresh_names(map);
+    rename_binders(&subst(&rename_binders(cs, &fresh)), &back)
+}
+
+/// `map` through fresh names: to them, and from them to `map`'s values.
+fn fresh_names(map: &HashMap<String, String>) -> (HashMap<String, String>, HashMap<String, String>) {
+    let mut fresh = HashMap::new();
+    let mut back = HashMap::new();
+    for (k, (from, to)) in map.iter().enumerate() {
+        let f = format!("$inst{k}");
+        fresh.insert(from.clone(), f.clone());
+        back.insert(f, to.clone());
+    }
+    (fresh, back)
+}
+
 impl Elab {
     /// Is `e` a class clause (`Ord a`)? The class, if so.
     pub fn class_clause(&self, e: &Expr) -> Option<TyId> {
@@ -1574,7 +1596,7 @@ impl Elab {
                     };
                     let constraints = &rename_vars(constraints, &hygiene(constraints, &cparams, &taken));
                     let mut cs = ctx_preds.clone();
-                    let theirs = trw.constraints(&srw.constraints(&rename_binders(constraints, &map), &[]), &[]);
+                    let theirs = at_instance(constraints, &map, &|c| trw.constraints(&srw.constraints(c, &[]), &[]));
                     cs.extend(self.shown_here(foreign.as_deref(), constraints, theirs, span));
                     let mut bound: Vec<String> = iparams.iter().map(|p| p.name.clone()).collect();
                     bound.extend(result.iter().map(|r| r.name.clone()));
@@ -1635,18 +1657,22 @@ impl Elab {
                     let constraints = &rename_vars(constraints, &hyg);
                     let mut map: HashMap<String, String> = params.iter().zip(iparams.iter()).map(|(a, b)| (a.name.clone(), b.name.clone())).collect();
                     map.extend(hyg);
-                    let to_new = |n: &str, s: Span| map.get(n).map(|m| var(m, s));
-                    let prw = Rewrite { var: &to_new, con: &none, qualified: &nq };
+                    // Through fresh names, as `at_instance` does.
+                    let (fresh, back) = fresh_names(&map);
+                    let to_fresh = |n: &str, s: Span| fresh.get(n).map(|m| var(m, s));
+                    let from_fresh = |n: &str, s: Span| back.get(n).map(|m| var(m, s));
+                    let prw = Rewrite { var: &to_fresh, con: &none, qualified: &nq };
+                    let brw = Rewrite { var: &from_fresh, con: &none, qualified: &nq };
                     let mut cs = ctx_preds.clone();
-                    let theirs = trw.constraints(&srw.constraints(&rename_binders(constraints, &map), &[]), &[]);
+                    let theirs = at_instance(constraints, &map, &|c| trw.constraints(&srw.constraints(c, &[]), &[]));
                     cs.extend(self.shown_here(foreign.as_deref(), constraints, theirs, span));
                     let mut bound: Vec<String> = iparams.iter().map(|p| p.name.clone()).collect();
                     let mut ls = Vec::new();
                     for (p, e) in lets {
-                        ls.push((p.clone(), trw.expr(&srw.expr(&prw.expr(e, &[]), &[]), &[])));
+                        ls.push((p.clone(), brw.expr(&trw.expr(&srw.expr(&prw.expr(e, &[]), &[]), &[]), &[])));
                         pat_binds(p, &mut bound);
                     }
-                    let mut ens = trw.expr(&srw.expr(&prw.expr(ensures, &[]), &[]), &[]);
+                    let mut ens = brw.expr(&trw.expr(&srw.expr(&prw.expr(ensures, &[]), &[]), &[]), &[]);
                     if let Some(m) = foreign.as_deref() {
                         let at = self.synthetic_span(span);
                         let text = self.text_in(m, ensures.span);

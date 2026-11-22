@@ -301,5 +301,6 @@ A class's type takes a type for each parameter outside the class: `Hole.Options 
 | `Add a`, `Sub a`, `Mul a`, `Neg a` | `add`, `sub`, `mul`, `neg` | `Int` |
 | `Monoid a` | `zero`; lemmas `assoc`, `zero_add`, `add_zero` | `Int` |
 | `Functor f` | `fmap`; lemmas `fmap_id`, `fmap_comp` | `List`, `Option`; `Array` in `std.array` |
+| `Seq s` | the type `Elem`; `size`, `uncons` | `List a`, `Array a` (and so `Bytes`), `String` (its characters); [sequence patterns](patterns.md#sequence-patterns) use it |
 
 The prelude also has the lemma `refl` (`le x x`), which follows from `total`.
