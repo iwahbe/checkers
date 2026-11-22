@@ -5,6 +5,7 @@
 
 pub mod codegen;
 pub mod eval;
+pub mod inline;
 pub mod ir;
 pub mod lower;
 pub mod rc;
@@ -178,6 +179,7 @@ fn dump(e: &lower::E, d: usize) -> String {
         E::Dup(x, b) => format!("{ind}dup v{x}\n{}", dump(b, d)),
         E::Drop(x, b) => format!("{ind}drop v{x}\n{}", dump(b, d)),
         E::DropReuse(x, t, n, b) => format!("{ind}v{t} = drop_reuse v{x} ({n})\n{}", dump(b, d)),
+        E::At(o, b) => format!("{ind}at def{o}:\n{}", dump(b, d + 1)),
         E::Case { scrut, arms, lits, default } => {
             let mut s = format!("{ind}case v{scrut}");
             for a in arms {

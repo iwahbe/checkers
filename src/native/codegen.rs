@@ -626,6 +626,11 @@ impl<'p, M: Module> Gen<'p, M> {
                 let x = self.call_array(b, st, "ck_par", &vs);
                 Self::finish(b, &mode, x)
             }
+            E::At(o, x) => {
+                let saved = std::mem::replace(&mut st.owner, *o);
+                self.emit(b, st, x, mode);
+                st.owner = saved;
+            }
             E::Fail(m) => {
                 let o = self.owner(b, st);
                 let (p, n) = self.message(b, st, m);

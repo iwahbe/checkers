@@ -52,6 +52,9 @@ pub enum E {
     /// fields; if it was the only reference, its memory becomes `token`
     /// (else `token` is 0).
     DropReuse(V, V, usize, Box<E>),
+    /// Code of another definition (`Ir::At`): its runtime errors name that
+    /// definition.
+    At(u32, Box<E>),
 }
 
 /// A value known when the program is compiled (`E::Static`).
@@ -184,6 +187,8 @@ pub struct Program {
     /// The code computing the hand-written `Debug` instances' functions, a
     /// list in the order of `Globals::well_known.debug_insts` (#126).
     pub debug: Option<u32>,
+    /// Which definitions are recursive, for `inline`.
+    pub recursive: HashMap<u32, bool>,
 }
 
 /// Code with no definition (a `check`, a value staging computes).
@@ -231,6 +236,7 @@ impl Program {
             names,
             main: NO_OWNER,
             debug: None,
+            recursive: HashMap::new(),
         }
     }
 }
@@ -353,7 +359,7 @@ impl<'a, 'g> Lowerer<'a, 'g> {
             self.p.defs.insert(d, shape);
         }
         for d in &new {
-            let ir = self.p.code[d].clone();
+            let ir = self.inline(&self.p.code[d].clone(), Some(DefId(*d)));
             let (DefShape::Fn { func, .. } | DefShape::Caf { func }) = self.p.defs[d].clone() else { continue };
             self.owner = *d;
             self.next = 0;
@@ -386,7 +392,8 @@ impl<'a, 'g> Lowerer<'a, 'g> {
         self.owner = NO_OWNER;
         self.next = 0;
         let mut ctx = Vec::new();
-        let body = self.expr(ir, &mut ctx, true);
+        let ir = self.inline(ir, None);
+        let body = self.expr(&ir, &mut ctx, true);
         let f = &mut self.p.funcs[func as usize];
         f.body = body;
         f.nvars = self.next;
@@ -415,6 +422,13 @@ pub fn show_table(g: &Globals) -> Option<Ir> {
 }
 
 impl Lowerer<'_, '_> {
+    /// `ir`, the code of `owner`, with `match`es on small functions' results
+    /// resolved (`inline`).
+    fn inline(&mut self, ir: &Ir, owner: Option<DefId>) -> Ir {
+        let p = &mut *self.p;
+        crate::native::inline::Inliner { code: &p.code, recursive: &mut p.recursive }.program(ir, owner)
+    }
+
     fn fresh(&mut self) -> V {
         self.next += 1;
         self.next - 1
@@ -491,6 +505,16 @@ impl Lowerer<'_, '_> {
             Ir::Erased => E::Erased,
             Ir::Lit(v) => Self::lit(v),
             Ir::Fail(m) => E::Fail(m),
+            Ir::At(o, x) => {
+                let o = o.map_or(NO_OWNER, |d| d.0);
+                if o == self.owner {
+                    return self.expr(x, ctx, tail);
+                }
+                let saved = std::mem::replace(&mut self.owner, o);
+                let e = self.expr(x, ctx, tail);
+                self.owner = saved;
+                E::At(o, Box::new(e))
+            }
             Ir::Lam(..) => self.lambda(ir, ctx),
             Ir::ConFn(c) => {
                 let arity = self.g.arity_con(*c);
@@ -729,6 +753,7 @@ fn fv(e: &E, s: &mut BTreeSet<V>) {
             s.insert(*x);
             fv(b, s);
         }
+        E::At(_, b) => fv(b, s),
         E::DropReuse(x, t, _, b) => {
             s.insert(*x);
             let mut inner = BTreeSet::new();
