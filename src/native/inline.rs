@@ -54,32 +54,30 @@ impl Inliner<'_> {
     }
 
     fn go(&mut self, ir: &Ir, here: Owner, depth: usize) -> Ir {
-        let mut a = |x: &Arc<Ir>, h: Owner| Arc::new(self.go(x, h, depth));
         match ir {
-            Ir::Var(_) | Ir::Global(_) | Ir::Erased | Ir::Lit(_) | Ir::ConFn(_) | Ir::Fail(_) => clone(ir),
-            Ir::Lam(o, b) => Ir::Lam(*o, a(b, here)),
-            Ir::Call(h, xs) => Ir::Call(a(h, here), xs.iter().map(|x| a(x, here)).collect()),
             Ir::Let(v, b) => {
-                let v = a(v, here);
+                let v = self.go(v, here, depth);
                 let b = self.go(b, here, depth);
-                bind(v, b)
+                // `let x = e in match x`, `x` used nowhere else: `match e`.
+                if let Ir::Case(x, c) = &b {
+                    if matches!(**x, Ir::Var(0)) && !case_uses(c, 0) {
+                        return self.case(v, lower_case(c), here, depth);
+                    }
+                }
+                bind(Arc::new(v), b)
             }
-            Ir::Tuple(xs) => Ir::Tuple(xs.iter().map(|x| a(x, here)).collect()),
-            Ir::Proj(x, i, r) => Ir::Proj(a(x, here), *i, *r),
-            Ir::Field(x, i) => Ir::Field(a(x, here), *i),
-            Ir::Con(c, xs) => Ir::Con(*c, xs.iter().map(|x| a(x, here)).collect()),
-            Ir::Prim(op, xs, n) => Ir::Prim(*op, xs.iter().map(|x| a(x, here)).collect(), *n),
-            Ir::Par(xs) => Ir::Par(xs.iter().map(|x| a(x, here)).collect()),
             Ir::At(o, x) => at(*o, self.go(x, *o, depth)),
             Ir::Case(s, c) => {
                 let s = self.go(s, here, depth);
+                let mut a = |x: &Arc<Ir>| Arc::new(self.go(x, here, depth));
                 let c = IrCase {
-                    branches: c.branches.iter().map(|(con, n, b)| (*con, *n, a(b, here))).collect(),
-                    lits: c.lits.iter().map(|(l, b)| (l.clone(), a(b, here))).collect(),
-                    default: c.default.as_ref().map(|d| a(d, here)),
+                    branches: c.branches.iter().map(|(con, n, b)| (*con, *n, a(b))).collect(),
+                    lits: c.lits.iter().map(|(l, b)| (l.clone(), a(b))).collect(),
+                    default: c.default.as_ref().map(&mut a),
                 };
                 self.case(s, c, here, depth)
             }
+            _ => ir.map_subterms(|x, _| self.go(x, here, depth)),
         }
     }
 
@@ -320,6 +318,8 @@ fn split(b: &Ir, m: usize, depth: usize) -> Ir {
         Ir::Proj(e, i, _) if matches!(&**e, Ir::Var(v) if *v == depth) => Ir::Var(depth + m - 1 - i),
         Ir::Var(v) if *v > depth => Ir::Var(v + m - 1),
         Ir::Var(v) => Ir::Var(*v),
+        // `let x = p.i`: now a variable, substituted.
+        Ir::Let(v, body) => bind(Arc::new(split(v, m, depth)), split(body, m, depth + 1)),
         _ => b.map_subterms(|s, k| split(s, m, depth + k)),
     }
 }
@@ -335,6 +335,37 @@ fn subst0(b: &Ir, v: &Ir) -> Ir {
         }
     }
     go(b, v, 0)
+}
+
+/// Whether an arm of `c` uses variable `x`.
+fn case_uses(c: &IrCase, x: usize) -> bool {
+    c.branches.iter().any(|(_, n, b)| uses(b, x + n)) || c.lits.iter().any(|(_, b)| uses(b, x)) || c.default.as_ref().is_some_and(|d| uses(d, x))
+}
+
+fn uses(ir: &Ir, x: usize) -> bool {
+    match ir {
+        Ir::Var(i) => *i == x,
+        _ => ir.subterms().iter().any(|(s, k)| uses(s, x + k)),
+    }
+}
+
+/// The arms `c`, which don't use variable 0, without its binder.
+fn lower_case(c: &IrCase) -> IrCase {
+    let down = |b: &Ir, n: usize| Arc::new(shift_down(b, n));
+    IrCase {
+        branches: c.branches.iter().map(|(con, n, b)| (*con, *n, down(b, *n))).collect(),
+        lits: c.lits.iter().map(|(l, b)| (l.clone(), down(b, 0))).collect(),
+        default: c.default.as_ref().map(|d| down(d, 0)),
+    }
+}
+
+/// `ir` without the binder of variable `depth`, which it doesn't use.
+fn shift_down(ir: &Ir, depth: usize) -> Ir {
+    match ir {
+        Ir::Var(i) if *i > depth => Ir::Var(i - 1),
+        Ir::Var(i) => Ir::Var(*i),
+        _ => ir.map_subterms(|s, k| shift_down(s, depth + k)),
+    }
 }
 
 /// The arms `c` under `k` more binders.
@@ -435,3 +466,4 @@ mod tests {
         assert!(matches!(&**scrut, Ir::Case(..)));
     }
 }
+
