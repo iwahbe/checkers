@@ -35,7 +35,9 @@ replaces 19:5-19:5
   mul                function        fn mul x y -> r : x~a, y~a, r~a
   neg                function        fn neg x -> r : x~a, r~a
   not                function        export transparent fn not b -> r : b~Bool, r~Bool  (documented)
+  size               function        fn size xs -> n : xs~s, n~Nat  (documented)
   sub                function        fn sub x y -> r : x~a, y~a, r~a
+  uncons             function        fn uncons xs -> r : xs~s, r~Option (Elem, s),  (documented)
   valid_utf8         function        export fn valid_utf8 b -> r : b~Bytes, r~Bool  (documented)
   zero               function        fn zero -> r : r~a
 == line 24, column 7
@@ -75,7 +77,9 @@ replaces 24:5-24:7
   mul                function        fn mul x y -> r : x~a, y~a, r~a
   neg                function        fn neg x -> r : x~a, r~a
   not                function        export transparent fn not b -> r : b~Bool, r~Bool  (documented)
+  size               function        fn size xs -> n : xs~s, n~Nat  (documented)
   sub                function        fn sub x y -> r : x~a, y~a, r~a
+  uncons             function        fn uncons xs -> r : xs~s, r~Option (Elem, s),  (documented)
   valid_utf8         function        export fn valid_utf8 b -> r : b~Bytes, r~Bool  (documented)
   zero               function        fn zero -> r : r~a
 == line 28, column 10
@@ -111,7 +115,9 @@ replaces 28:10-28:10
   mul                function        fn mul x y -> r : x~a, y~a, r~a
   neg                function        fn neg x -> r : x~a, r~a
   not                function        export transparent fn not b -> r : b~Bool, r~Bool  (documented)
+  size               function        fn size xs -> n : xs~s, n~Nat  (documented)
   sub                function        fn sub x y -> r : x~a, y~a, r~a
+  uncons             function        fn uncons xs -> r : xs~s, r~Option (Elem, s),  (documented)
   valid_utf8         function        export fn valid_utf8 b -> r : b~Bytes, r~Bool  (documented)
   zero               function        fn zero -> r : r~a
 == line 32, column 7
@@ -163,6 +169,8 @@ replaces 46:11-46:11
   mul                function        fn mul x y -> r : x~a, y~a, r~a
   neg                function        fn neg x -> r : x~a, r~a
   not                function        export transparent fn not b -> r : b~Bool, r~Bool  (documented)
+  size               function        fn size xs -> n : xs~s, n~Nat  (documented)
   sub                function        fn sub x y -> r : x~a, y~a, r~a
+  uncons             function        fn uncons xs -> r : xs~s, r~Option (Elem, s),  (documented)
   valid_utf8         function        export fn valid_utf8 b -> r : b~Bytes, r~Bool  (documented)
   zero               function        fn zero -> r : r~a

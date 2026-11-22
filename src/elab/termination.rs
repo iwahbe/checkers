@@ -531,6 +531,15 @@ impl Elab {
             ty = (*body).clone();
             k += 1;
         }
+        // `Seq.size` of a parameter taken apart by sequence patterns (§9.8).
+        for (t, lvl, text) in self.seq_sizes.get(&d).into_iter().flatten() {
+            let t = crate::core::zonk_metas(&self.g, *lvl, t);
+            if let Some(t) = reindex(&t, *lvl, n, 0) {
+                if !sizes.iter().any(|s| s.1 == *text) {
+                    sizes.push((vec![t], text.clone()));
+                }
+            }
+        }
         let mut out: Vec<Measure> = sizes.clone();
         let push = |m: Measure, out: &mut Vec<Measure>| {
             if !out.iter().any(|o| o.1 == m.1) {

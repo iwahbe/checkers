@@ -302,6 +302,71 @@ instance Functor Option
             None   -> None
             Some x -> Some (g x)
 
+# ── Sequences ────────────────────────────────────────────────────────────────
+# On a type with a `Seq` instance other than `List`, `[]` in a `match` means
+# `uncons` gave `None`, and `x :: rest` that it gave `Some (x, rest)`.
+
+# A sequence that can be taken apart from the front: `[]`, `x :: rest` and
+# `[p1, …, pn]` in a `match` on one.
+export class Seq s
+    # The elements' type.
+    type Elem
+    # How many elements: what recursion on the rest makes smaller.
+    fn size xs -> n : xs~s, n~Nat
+    # The first element and the rest, which is smaller; `None` only when
+    # there are none.
+    fn uncons xs -> r : xs~s, r~Option (Elem, s),
+                        match r
+        None -> size xs == 0
+        Some (_, rest) -> size rest < size xs
+
+# A list's `match` is built in; this instance is for generic code.
+instance Seq (List a)
+    type Elem = a
+    fn size xs
+        match xs
+            []        -> 0
+            _ :: rest -> 1 + size rest
+    fn uncons xs
+        match xs
+            []        -> None
+            x :: rest -> Some (x, rest)
+
+# The rest is a slice of the array: constant time.
+instance Seq (Array a)
+    type Elem = a
+    fn size xs
+        len xs
+    fn uncons xs
+        if len xs == 0 then None else Some (xs[0], array_rest xs)
+
+# By characters; the size is the number of bytes.
+instance Seq String
+    type Elem = Char
+    fn size s
+        len s.bytes
+    fn uncons s
+        string_uncons s
+
+# All but the first element: a slice sharing the array's storage.
+fn array_rest xs -> r : xs~Array a, len xs > 0, r~Array a, len r + 1 == len xs
+    __builtin
+
+# The first character and the rest, a slice of the string's bytes; `None`
+# for the empty string.
+fn string_uncons s -> r : s~String, r~Option (Char, String), shorter_string s r
+    __builtin
+
+# `r` is `None` for the empty string, or holds a shorter rest.
+fn shorter_string s r -> b : s~String, r~Option (Char, String), b~Bool
+    match r
+        None           -> len s.bytes == 0
+        Some (_, rest) -> len rest.bytes < len s.bytes
+
+check string_uncons "" == None
+check string_uncons "€x" == Some (c'€', "x")
+check array_rest b"abc" == b"bc"
+
 # Whether `x` comes before `y` by their bytes (`Ord String`).
 fn string_le x y -> r : x~String, y~String, r~Bool
     __builtin

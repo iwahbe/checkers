@@ -24,6 +24,7 @@ replaces 1:68-1:70
   Option             type            
   Ord                type            
   Result             type            
+  Seq                type            
   Some               constructor     
   String             constructor     
   Sub                type            
@@ -47,10 +48,12 @@ replaces 1:68-1:70
   neg                function        
   not                function        
   refl               function        
+  size               function        
   sub                function        
   total              function        
   trans              function        
   twice              function        
+  uncons             function        
   valid_utf8         function        
   zero               function        
   zero_add           function        

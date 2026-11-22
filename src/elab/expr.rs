@@ -1984,7 +1984,7 @@ impl Elab {
     /// The prelude class `class`'s function `method`, if `ty` has an
     /// instance of it (or a dictionary of it is in scope) and isn't a
     /// built-in number.
-    fn operator_method(&self, cx: &Cx, class: &str, method: &str, ty: &Val) -> Option<DefId> {
+    pub(super) fn operator_method(&self, cx: &Cx, class: &str, method: &str, ty: &Val) -> Option<DefId> {
         let prelude = self.modules.get("std.prelude")?;
         let Some(Sym::Ty(ctid)) = prelude.types.get(class).copied() else { return None };
         if !self.class_defs.contains_key(&ctid) {
@@ -2047,7 +2047,7 @@ impl Elab {
     }
 
     /// Apply `f : fty` to an elaborated argument `a : aty`.
-    fn apply_tm(&mut self, cx: &Cx, f: Tm, fty: Val, a: Tm, aty: &Val, span: Span) -> (Tm, Val) {
+    pub(super) fn apply_tm(&mut self, cx: &Cx, f: Tm, fty: Val, a: Tm, aty: &Val, span: Span) -> (Tm, Val) {
         match self.force(&fty) {
             Val::Pi(_, m, i, dom, c) => {
                 self.unify_at(cx, &dom, aty, span, "this operand");
