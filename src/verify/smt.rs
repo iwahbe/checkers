@@ -128,6 +128,12 @@ fn tuple_sel(n: usize, k: usize) -> String {
     format!("|tuple{n}.{k}|")
 }
 
+/// How many datatypes deep `value_terms` looks into a value's fields:
+/// `Result (Parsed a src i) (Error src)` gives what `Parsed`'s fields say,
+/// not what `Error`'s kind's do. Deeper facts made `std.json`'s proofs too
+/// slow for Z3.
+const DATA_DEPTH: usize = 2;
+
 /// What a de Bruijn variable stands for during translation.
 #[derive(Clone)]
 enum Ent {
@@ -180,10 +186,10 @@ struct PostUse {
     env: Vec<Ent>,
     /// The result is a `Nat`: assumed where the precondition holds.
     nat: bool,
-    /// The result's type, over `env` without the result, when it is a tuple
-    /// with refined parts (`(Nat, (j~Nat, i <= j))`): their predicates are
-    /// assumed too, where the precondition holds.
-    parts: Option<Tm>,
+    /// What the result's type says of it (`value_terms`: `(Nat, (j~Nat, i
+    /// <= j))`, `Pair Nat (j~Nat, i <= j)`), assumed too where the
+    /// precondition holds.
+    parts: Vec<String>,
 }
 
 /// What it takes to reflect only some definitions: the declarations that
@@ -1112,24 +1118,20 @@ impl<'a> Builder<'a> {
                 let tyt = quote(&self.e.g, lvl, &ty);
                 let s = self.sort_of(&env, &tyt)?;
                 self.consts.push(format!("(declare-const {name} {})", s.render(self.e)));
-                if self.is_nat_val(&l.ty) {
-                    self.asserts.push(format!("(>= {name} 0)"));
-                }
-                // A value of a datatype carries its constructor's invariants (D11).
-                // A refinement alias (`U8`) brings its predicates.
+                let nat = self.is_nat_val(&l.ty).then(|| format!("(>= {name} 0)"));
+                self.asserts.extend(nat.clone());
+                // What its type says beyond the sort: a refinement alias's
+                // predicates (`U8`), its parts' and fields' (`(Char,
+                // (stop~Nat, k < stop))`, `Parsed Members …`), its
+                // constructor's invariants (D11).
                 let raw = quote(&self.e.g, lvl, &l.ty);
-                self.alias_facts(&env, &raw, &name, &s);
+                let facts = self.value_terms(&env, &raw, &name, &s);
+                self.asserts.extend(facts.into_iter().filter(|t| Some(t) != nat.as_ref()));
                 if s == Sort::Str {
                     self.string_fact(&name);
                 }
-                // A tuple's parts carry theirs (`(Char, (stop~Nat, k < stop))`).
-                self.tuple_facts(&env, &tyt, &name, &s);
-                if let Sort::Data(id, sargs) = &s {
-                    let vals = self.value_args(&env, &tyt);
-                    self.datatype_facts(&name, *id, sargs, &vals);
-                    // A field at a type parameter instantiated with a
-                    // refinement alias (`Parsed Members …`) has its predicates.
-                    self.field_alias_facts(&env, &raw, &name, *id, sargs);
+                if let Sort::Data(id, _) = &s {
+                    self.real_values.push((name.clone(), *id));
                 }
                 if !l.name.starts_with('$') && !l.name.starts_with('_') {
                     self.shown.push((name.clone(), l.name.to_string()));
@@ -1159,9 +1161,6 @@ impl<'a> Builder<'a> {
         Ok(ent)
     }
 
-    /// For each constructor of `id`: if `x` is that constructor, its `Nat`
-    /// fields are non-negative and its invariants hold.
-    /// If `ty` is a refinement alias, assert its predicates about `x`.
     /// The prelude's `valid_utf8`, applied to `t` (bytes): its term.
     fn valid_utf8(&mut self, t: &str) -> Option<String> {
         let g = &self.e.g;
@@ -1193,11 +1192,6 @@ impl<'a> Builder<'a> {
         }
     }
 
-    fn alias_facts(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort) {
-        let ts = self.alias_terms(env, ty, x, xs);
-        self.asserts.extend(ts);
-    }
-
     /// A call `f a…` of a local function whose type is refined (D84): where
     /// its preconditions hold at the arguments, its postconditions hold at
     /// the result.
@@ -1212,13 +1206,12 @@ impl<'a> Builder<'a> {
                 inner.push(Ent::Opaque("type argument".into()));
             } else {
                 let Ok((at, s)) = self.term(env, a) else { return };
-                pres.extend(self.alias_terms(&inner, &dom, &at, &s));
+                pres.extend(self.domain_terms(&inner, &dom, &at, &s));
                 inner.push(Ent::Term(at, s));
             }
             t = (*cod).clone();
         }
-        let mut posts = self.alias_terms(&inner, &t, app, rs);
-        posts.extend(self.tuple_terms(&inner, &t, app, rs));
+        let posts = self.value_terms(&inner, &t, app, rs);
         if posts.is_empty() {
             return;
         }
@@ -1246,7 +1239,7 @@ impl<'a> Builder<'a> {
             } else {
                 let Ok(s) = self.sort_of(&inner, &dom) else { return };
                 let v = format!("x{}", vars.len());
-                pres.extend(self.alias_terms(&inner, &dom, &v, &s));
+                pres.extend(self.domain_terms(&inner, &dom, &v, &s));
                 vars.push((v.clone(), s.clone()));
                 inner.push(Ent::Term(v, s));
             }
@@ -1257,8 +1250,7 @@ impl<'a> Builder<'a> {
         for (v, _) in &vars {
             app = format!("(select {app} {v})");
         }
-        let mut posts = self.alias_terms(&inner, &t, &app, &rs);
-        posts.extend(self.tuple_terms(&inner, &t, &app, &rs));
+        let posts = self.value_terms(&inner, &t, &app, &rs);
         if posts.is_empty() || vars.is_empty() {
             return;
         }
@@ -1269,48 +1261,196 @@ impl<'a> Builder<'a> {
         self.asserts.push(format!("(forall ({}) (! {body} :pattern ({app})))", binds.join(" ")));
     }
 
-    /// A tuple's parts at refined types (D71, D82) have their predicates:
-    /// a `Nat` part is non-negative and a refinement alias's predicates hold,
-    /// in tuples written inside it too. `ty` is the tuple type, `xs` its sort, in which
-    /// a last part that is a tuple is flattened (D174): there the last part
-    /// is the tuple of the remaining components.
-    fn tuple_facts(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort) {
-        let (Tm::TupleTy(ts), Sort::Tuple(ss)) = (ty, xs) else { return };
-        let n = ss.len();
-        for (k, t) in ts.iter().enumerate() {
-            let (part, ps) = if k + 1 == ts.len() && ts.len() < n {
-                let rest = Sort::Tuple(ss[k..].to_vec());
-                self.tuples.insert(n - k);
-                let parts: Vec<String> = (k..n).map(|j| format!("({} {x})", tuple_sel(n, j))).collect();
-                (format!("((as {} {}) {})", tuple_con(n - k), rest.render(self.e), parts.join(" ")), rest)
-            } else {
-                let Some(p) = ss.get(k) else { return };
-                (format!("({} {x})", tuple_sel(n, k)), p.clone())
-            };
-            if self.is_nat_tm(t) {
-                self.asserts.push(format!("(>= {part} 0)"));
-            }
-            self.alias_facts(env, t, &part, &ps);
-            self.tuple_facts(env, t, &part, &ps);
+    /// What a value `x` of type `ty` (sort `xs`) satisfies beyond its sort
+    /// (D71, D82): a `Nat` is non-negative, a refinement alias's predicates
+    /// hold, and so do those of its parts and fields, nested: a tuple's
+    /// parts, and a datatype's fields at their declared types, with the
+    /// type's arguments put in (`Pair Nat (j~Nat, i <= j)`, `Parsed Members
+    /// …`), each constructor's under its tester, with its invariants (D11).
+    /// As facts to assume of a value the program has.
+    fn value_terms(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort) -> Vec<String> {
+        self.type_terms(env, ty, x, xs, Some(&mut Vec::new()), true)
+    }
+
+    /// `value_terms` of `x`'s parts and fields only, not of `x` itself: a
+    /// call's result, whose own refinement its postconditions give.
+    fn part_terms(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort) -> Vec<String> {
+        self.type_terms(env, ty, x, xs, Some(&mut Vec::new()), false)
+    }
+
+    /// `value_terms` without looking inside datatypes: what a value must
+    /// satisfy to be in the type, as a guard (a `forall`'s variables, a
+    /// function value's arguments), where Z3 must show it of the values it
+    /// picks.
+    fn domain_terms(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort) -> Vec<String> {
+        self.type_terms(env, ty, x, xs, None, true)
+    }
+
+    /// `value_terms`, and `domain_terms` without `inside`. `inside` holds the
+    /// datatypes being looked into: a field of one of them again (a list's
+    /// tail, of the same type as the list) is not, so the facts stay finite,
+    /// and nor is one `DATA_DEPTH` datatypes deep (a value deeper has its
+    /// facts where the program names it, by a pattern or a field). Without
+    /// `top`, only what is said of the parts.
+    fn type_terms(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort, inside: Option<&mut Vec<String>>, top: bool) -> Vec<String> {
+        let mut out = Vec::new();
+        // A function's refinements are its own (`fun_axiom`, D139).
+        if matches!(xs, Sort::Fun(..)) {
+            return out;
         }
+        let ty = if has_meta(ty) { self.zonk(env.len(), ty) } else { ty.clone() };
+        // `Nat` is also the alias `n~Int, n >= 0`: each term once.
+        let add = |out: &mut Vec<String>, ts: Vec<String>| {
+            for t in ts {
+                if !out.contains(&t) {
+                    out.push(t);
+                }
+            }
+        };
+        if top {
+            if self.is_nat_tm(&ty) {
+                out.push(format!("(>= {x} 0)"));
+            }
+            let ts = self.alias_terms(env, &ty, x, xs);
+            add(&mut out, ts);
+        }
+        // Its shape: through the aliases it is written with.
+        let shape = match ty.head() {
+            Tm::Def(_) => {
+                let n = env.len();
+                let vars = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+                quote(&self.e.g, n, &force(&self.e.g, eval(&self.e.g, &vars, &ty)))
+            }
+            _ => ty,
+        };
+        match (&shape, xs) {
+            (Tm::TupleTy(ts), Sort::Tuple(ss)) => {
+                let mut inside = inside;
+                let n = ss.len();
+                for (k, t) in ts.iter().enumerate() {
+                    // A last part that is a tuple is flattened (D174): the
+                    // last of `ts` is the tuple of the remaining components.
+                    let (part, ps) = if k + 1 == ts.len() && ts.len() < n {
+                        let rest = Sort::Tuple(ss[k..].to_vec());
+                        self.tuples.insert(n - k);
+                        let parts: Vec<String> = (k..n).map(|j| format!("({} {x})", tuple_sel(n, j))).collect();
+                        (format!("((as {} {}) {})", tuple_con(n - k), rest.render(self.e), parts.join(" ")), rest)
+                    } else {
+                        let Some(p) = ss.get(k) else { break };
+                        (format!("({} {x})", tuple_sel(n, k)), p.clone())
+                    };
+                    let ts = self.type_terms(env, t, &part, &ps, inside.as_deref_mut(), true);
+                    add(&mut out, ts);
+                }
+            }
+            (_, Sort::Data(id, sargs)) => {
+                if let Some(inside) = inside {
+                    // The type, the same at any depth of locals.
+                    let n = env.len();
+                    let vars = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+                    let key = format!("{:?}", quote(&self.e.g, 1 << 20, &eval(&self.e.g, &vars, &shape)));
+                    if !inside.contains(&key) && inside.len() < DATA_DEPTH {
+                        inside.push(key);
+                        let ts = self.field_terms(env, &shape, x, *id, sargs, inside);
+                        inside.pop();
+                        add(&mut out, ts);
+                    }
+                }
+            }
+            _ => {}
+        }
+        out
     }
 
-    /// `tuple_facts`, as terms instead of facts.
-    fn tuple_terms(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort) -> Vec<String> {
-        let saved = std::mem::take(&mut self.asserts);
-        self.tuple_facts(env, ty, x, xs);
-        std::mem::replace(&mut self.asserts, saved)
+    /// The fields of `x`, of datatype `ty` (`id` at sorts `sargs`): for each
+    /// constructor, what its fields' types say of them and its invariants,
+    /// under its tester unless it is the only one. A field's type is the
+    /// declared one with `ty`'s arguments (types and values) and the fields
+    /// before it put in, by evaluation, so nothing is captured.
+    fn field_terms(&mut self, env: &[Ent], ty: &Tm, x: &str, id: TyId, sargs: &[Sort], inside: &mut Vec<String>) -> Vec<String> {
+        let (h, mut args) = ty.spine_cloned();
+        match h {
+            Tm::TyConApp(i, v) if *i == id => {
+                let mut all = v.clone();
+                all.extend(args);
+                args = all;
+            }
+            Tm::TyCon(i) if *i == id => {}
+            _ => return Vec::new(),
+        }
+        if args.len() != self.e.g.tys[id.0 as usize].params.len() {
+            return Vec::new();
+        }
+        let n = env.len();
+        let vars = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+        let params: Vec<Val> = args.iter().map(|a| eval(&self.e.g, &vars, a)).collect();
+        let senv = self.sort_env(id, sargs);
+        let ctors = self.e.g.tys[id.0 as usize].ctors.clone();
+        let mut out = Vec::new();
+        for &c in &ctors {
+            let Ok(fs) = self.con_fields(c, &senv) else { continue };
+            let fields = self.e.g.cons[c.0 as usize].fields.clone();
+            let mut ext = env.to_vec();
+            let mut vals = params.clone();
+            let mut facts: Vec<String> = Vec::new();
+            for (k, f) in fields.iter().enumerate() {
+                match fs.iter().find(|(i, _)| *i == k) {
+                    Some((_, fsort)) => {
+                        let sel = format!("({} {x})", sel_sym(self.e, c, k));
+                        let fty = quote(&self.e.g, n + k, &eval(&self.e.g, &Rc::new(vals.clone()), &f.3));
+                        for t in self.type_terms(&ext, &fty, &sel, fsort, Some(inside), true) {
+                            if !facts.contains(&t) {
+                                facts.push(t);
+                            }
+                        }
+                        ext.push(Ent::Term(sel, fsort.clone()));
+                    }
+                    None => {
+                        let s = self.type_field_sort(c, k, &senv);
+                        ext.push(Ent::Ty(s));
+                    }
+                }
+                vals.push(Val::var(n + k));
+            }
+            // Invariants may mention the type's value parameters
+            // (`stop <= len src`).
+            let vals = Rc::new(vals);
+            for inv in self.e.con_invs.get(&c).cloned().unwrap_or_default() {
+                let tm = quote(&self.e.g, n + fields.len(), &eval(&self.e.g, &vals, &inv.tm));
+                let saved = self.in_def;
+                self.in_def = true;
+                if let Ok((t, Sort::Bool)) = self.term(&ext, &tm) {
+                    if !facts.contains(&t) {
+                        facts.push(t);
+                    }
+                }
+                self.in_def = saved;
+            }
+            if facts.is_empty() {
+                continue;
+            }
+            let all = if facts.len() == 1 { facts.pop().unwrap() } else { format!("(and {})", facts.join(" ")) };
+            if ctors.len() != 1 {
+                self.tested.insert(Sort::Data(id, sargs.to_vec()));
+            }
+            out.push(if ctors.len() == 1 { all } else { format!("(=> ({} {x}) {all})", tester(self.e, c)) });
+        }
+        out
     }
 
-    /// `ty` is a tuple type with a part that `tuple_facts` has facts about:
-    /// a `Nat`, a refinement alias, or such a tuple.
-    fn refined_tuple(&self, ty: &Tm) -> bool {
-        let Tm::TupleTy(ts) = ty else { return false };
-        ts.iter().any(|t| {
-            self.is_nat_tm(t)
-                || matches!(t.head(), Tm::Def(d) if self.e.alias_preds.contains_key(d))
-                || self.refined_tuple(t)
-        })
+    /// The type `ty`'s result at the arguments `args` (over `env`), when its
+    /// parameter types aren't computed from them (D176): its parameters,
+    /// types and values, put in by evaluation.
+    fn result_type_at(&self, n: usize, ty: &Tm, args: &[(Tm, Mult)]) -> Option<Tm> {
+        let vars = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+        let mut v = eval(&self.e.g, &Rc::new(Vec::new()), ty);
+        for (a, _) in args {
+            match force(&self.e.g, v) {
+                Val::Pi(_, _, _, _, c) => v = crate::core::apply_closure(&self.e.g, &c, eval(&self.e.g, &vars, a)),
+                _ => return None,
+            }
+        }
+        Some(quote(&self.e.g, n, &v))
     }
 
     /// The predicates of the refinement alias `ty` at `x`, as terms.
@@ -1355,113 +1495,6 @@ impl<'a> Builder<'a> {
             }
         }
         out
-    }
-
-    fn field_alias_facts(&mut self, env: &[Ent], ty: &Tm, x: &str, id: TyId, sargs: &[Sort]) {
-        let (h, mut args) = ty.spine_cloned();
-        if let Tm::TyConApp(_, v) = h {
-            let mut all = v.clone();
-            all.extend(args);
-            args = all;
-        }
-        if !args.iter().any(|a| matches!(a, Tm::Def(_) | Tm::App(..))) {
-            return;
-        }
-        let ctors = self.e.g.tys[id.0 as usize].ctors.clone();
-        if ctors.len() != 1 {
-            return;
-        }
-        let c = ctors[0];
-        let n = self.e.g.tys[id.0 as usize].params.len();
-        let senv = self.sort_env(id, sargs);
-        let Ok(fs) = self.con_fields(c, &senv) else { return };
-        let fields = self.e.g.cons[c.0 as usize].fields.clone();
-        for (k, f) in fields.iter().enumerate() {
-            let Tm::Var(i) = f.3 else { continue };
-            let Some(level) = (n + k).checked_sub(1 + i) else { continue };
-            let (Some(arg), Some((_, fsort))) = (args.get(level), fs.iter().find(|(j, _)| *j == k)) else { continue };
-            if level >= n {
-                continue;
-            }
-            let sel = format!("({} {x})", sel_sym(self.e, c, k));
-            let (arg, fsort) = (arg.clone(), fsort.clone());
-            self.alias_facts(env, &arg, &sel, &fsort);
-        }
-    }
-
-    /// The value arguments of a datatype type (`Parsed Json src i` → `src`,
-    /// `i`), translated where possible, by parameter position.
-    fn value_args(&mut self, env: &[Ent], ty: &Tm) -> Vec<Option<(String, Sort)>> {
-        let (h, mut args) = ty.spine_cloned();
-        let id = match h {
-            Tm::TyConApp(id, v) => {
-                let mut all = v.clone();
-                all.extend(args);
-                args = all;
-                *id
-            }
-            Tm::TyCon(id) => *id,
-            _ => return Vec::new(),
-        };
-        let params = self.e.g.tys[id.0 as usize].params.clone();
-        let mut out_ = Vec::new();
-        for (k, (_, pty)) in params.iter().enumerate() {
-            out_.push(match args.get(k) {
-                Some(a) if !self.is_type(pty) => self.term(env, a).ok(),
-                _ => None,
-            });
-        }
-        out_
-    }
-
-    fn datatype_facts(&mut self, x: &str, id: TyId, sargs: &[Sort], vals: &[Option<(String, Sort)>]) {
-        self.real_values.push((x.to_string(), id));
-        let mut senv = self.sort_env(id, sargs);
-        // Invariants may mention the type's value parameters (`stop <= len src`).
-        for (k, v) in vals.iter().enumerate() {
-            if let (Some((t, s)), Some(slot @ Ent::Opaque(_))) = (v, senv.get_mut(k)) {
-                *slot = Ent::Term(t.clone(), s.clone());
-            }
-        }
-        let ctors = self.e.g.tys[id.0 as usize].ctors.clone();
-        for c in ctors {
-            let Ok(fs) = self.con_fields(c, &senv) else { continue };
-            let fields = self.e.g.cons[c.0 as usize].fields.clone();
-            let mut env = senv.clone();
-            let mut facts = Vec::new();
-            for (k, f) in fields.iter().enumerate() {
-                match fs.iter().find(|(i, _)| *i == k) {
-                    Some((_, fsort)) => {
-                        let sel = format!("({} {x})", sel_sym(self.e, c, k));
-                        if self.is_nat_tm(&f.3) {
-                            facts.push(format!("(>= {sel} 0)"));
-                        }
-                        env.push(Ent::Term(sel, fsort.clone()));
-                    }
-                    None => {
-                        let s = self.type_field_sort(c, k, &senv);
-                        env.push(Ent::Ty(s));
-                    }
-                }
-            }
-            for inv in self.e.con_invs.get(&c).cloned().unwrap_or_default() {
-                let saved = self.in_def;
-                self.in_def = true;
-                if let Ok((t, Sort::Bool)) = self.term(&env, &inv.tm) {
-                    facts.push(t);
-                }
-                self.in_def = saved;
-            }
-            if facts.is_empty() {
-                continue;
-            }
-            let all = if facts.len() == 1 { facts[0].clone() } else { format!("(and {})", facts.join(" ")) };
-            let only = self.e.g.tys[id.0 as usize].ctors.len() == 1;
-            if !only {
-                self.tested.insert(Sort::Data(id, sargs.to_vec()));
-            }
-            self.asserts.push(if only { all } else { format!("(=> ({} {x}) {all})", tester(self.e, c)) });
-        }
     }
 
     /// Translate a term over the first `lvl` obligation locals.
@@ -1670,14 +1703,27 @@ impl<'a> Builder<'a> {
                     return out("a type-valued field");
                 };
                 let t = format!("({} {xt})", sel_sym(self.e, *c, *i));
-                if self.is_nat_tm(&self.e.g.cons[c.0 as usize].fields[*i].3.clone()) {
-                    self.nat_fact(&t);
-                }
-                // A field that is itself a datatype carries its constructor's
-                // invariants (D11), as a local of that type does.
-                if let Sort::Data(id, fargs) = &s {
-                    if !self.in_def && self.fact_seen.insert(t.clone()) {
-                        self.datatype_facts(&t, *id, fargs, &[]);
+                // A field has what its declared type says (`value_terms`), at
+                // the sorts of the type's parameters: a local of the record's
+                // type has more, with its type's arguments.
+                if !self.in_def && self.fact_seen.insert(t.clone()) {
+                    let rec = self.e.g.cons[c.0 as usize].ty;
+                    let mut fenv = self.sort_env(rec, sargs);
+                    let senv = fenv.clone();
+                    for j in 0..*i {
+                        match fs.iter().find(|(k, _)| *k == j) {
+                            Some((_, js)) => fenv.push(Ent::Term(format!("({} {xt})", sel_sym(self.e, *c, j)), js.clone())),
+                            None => {
+                                let js = self.type_field_sort(*c, j, &senv);
+                                fenv.push(Ent::Ty(js));
+                            }
+                        }
+                    }
+                    let fty = self.e.g.cons[c.0 as usize].fields[*i].3.clone();
+                    let facts = self.value_terms(&fenv, &fty, &t, &s);
+                    self.asserts.extend(facts);
+                    if let Sort::Data(id, _) = &s {
+                        self.real_values.push((t.clone(), *id));
                     }
                 }
                 Ok((t, s))
@@ -1924,23 +1970,6 @@ impl<'a> Builder<'a> {
             return out("a `forall` that is not a `Bool`");
         }
         Ok((format!("(forall ({}) {})", binds.join(" "), implies(&guards, bt)), Sort::Bool))
-    }
-
-    /// What a value `x` of type `ty` (sort `xs`) satisfies beyond its sort:
-    /// a `Nat` is non-negative, a refinement's predicates hold, and so do
-    /// those of a tuple's refined parts.
-    fn domain_terms(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort) -> Vec<String> {
-        let mut out = Vec::new();
-        if self.is_nat_tm(ty) {
-            out.push(format!("(>= {x} 0)"));
-        }
-        // `Nat` is also the alias `n~Int, n >= 0`: each term once.
-        for t in self.alias_terms(env, ty, x, xs).into_iter().chain(self.tuple_terms(env, ty, x, xs)) {
-            if !out.contains(&t) {
-                out.push(t);
-            }
-        }
-        out
     }
 
     /// Apply the function value `ft` (of sort `s`) to `args` (D139).
@@ -2318,6 +2347,7 @@ impl<'a> Builder<'a> {
         let info = &self.e.g.defs[d.0 as usize];
         let qualified = format!("{}.{}", info.module, info.name);
         let ty = info.ty.clone();
+        let info_ty = ty.clone();
         // Walk the binders: type arguments pick the instance, values are arguments.
         let mut tys = Vec::new();
         let mut funs: Vec<String> = Vec::new();
@@ -2476,7 +2506,7 @@ impl<'a> Builder<'a> {
                     let has_post = self.e.specs.get(&d).is_some_and(|s| s.preds.iter().any(|p| p.is_post));
                     if has_post && self.post_seen.insert(app.clone()) {
                         post_env.push(Ent::Term(app.clone(), rs.clone()));
-                        self.posts.push(PostUse { def: d, env: post_env, nat: false, parts: None });
+                        self.posts.push(PostUse { def: d, env: post_env, nat: false, parts: Vec::new() });
                     }
                 }
                 return Ok((app, rs));
@@ -2502,7 +2532,7 @@ impl<'a> Builder<'a> {
                     let has_post = self.e.specs.get(&d).is_some_and(|s| s.preds.iter().any(|p| p.is_post));
                     if has_post && self.post_seen.insert(app.clone()) {
                         post_env.push(Ent::Term(app.clone(), rs.clone()));
-                        self.posts.push(PostUse { def: d, env: post_env, nat: false, parts: None });
+                        self.posts.push(PostUse { def: d, env: post_env, nat: false, parts: Vec::new() });
                     }
                 }
                 return Ok((app, rs));
@@ -2540,8 +2570,17 @@ impl<'a> Builder<'a> {
                 let a = app.clone();
                 self.nat_fact(&a);
             }
-            let parts = if self.refined_tuple(&t) { Some(t.clone()) } else { None };
-            if (has_post || (nat && has_pre) || parts.is_some()) && self.post_seen.insert(app.clone()) {
+            let mut parts = Vec::new();
+            if !self.post_seen.contains(&app) {
+                // The result's type at these arguments: a type argument
+                // may be refined too (`Pair Bool (s~Nat, s > 3)` for `Pair a b`).
+                let at = if computed { None } else { self.result_type_at(env.len(), &info_ty, args) };
+                parts = match at {
+                    Some(rt) => self.part_terms(env, &rt, &app, &rs),
+                    None => self.part_terms(&post_env, &t, &app, &rs),
+                };
+            }
+            if (has_post || (nat && has_pre) || !parts.is_empty()) && self.post_seen.insert(app.clone()) {
                 post_env.push(Ent::Term(app.clone(), rs.clone()));
                 self.posts.push(PostUse { def: d, env: post_env, nat: nat && has_pre, parts });
             }
@@ -2630,10 +2669,7 @@ impl<'a> Builder<'a> {
                 // `Bytes` is `>= 0` and `< 256`.
                 if !self.in_def && self.fact_seen.insert(t.clone()) {
                     if let Some(ety) = args.get(2) {
-                        let mut facts = self.alias_terms(env, ety, &t, &elem);
-                        if self.is_nat_tm(ety) {
-                            facts.push(format!("(>= {t} 0)"));
-                        }
+                        let facts = self.value_terms(env, ety, &t, &elem);
                         self.asserts.extend(facts);
                     }
                     if let Sort::Data(id, _) = &elem {
@@ -3187,9 +3223,7 @@ impl<'a> Builder<'a> {
                         goals.push(t);
                     }
                 }
-                if let (Some(ty), Some((Ent::Term(r, rs), params))) = (&p.parts, p.env.split_last()) {
-                    goals.extend(self.tuple_terms(params, ty, r, rs));
-                }
+                goals.extend(p.parts);
                 for t in goals {
                     self.asserts.push(implies(&pres, t));
                 }

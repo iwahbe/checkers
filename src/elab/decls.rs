@@ -95,6 +95,7 @@ impl Elab {
                         self.phase_aliases(m, &mask);
                         self.phase_type_conds(m, &mask);
                         self.phase_ctors(m, &mask);
+                        self.group_polarity(&mask);
                     }
                     DeclKind::Const { .. } => self.phase_consts(m, &mask),
                     _ => {
@@ -1121,26 +1122,8 @@ impl Elab {
     }
 
     fn phase_positivity(&mut self, m: &ast::Module, ids: &[Option<Sym>]) {
-        // Parameter polarity (used for nested occurrences, e.g. `List Json` inside `Json`).
-        // Start optimistic and compute a fixpoint.
         let tys: Vec<TyId> = ids.iter().flatten().filter_map(|s| if let Sym::Ty(t) = s { Some(*t) } else { None }).collect();
-        for t in &tys {
-            if !self.g.tys[t.0 as usize].ctors.is_empty() {
-                let np = self.g.arity_ty(*t);
-                self.g.tys[t.0 as usize].positive = vec![true; np];
-            }
-        }
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for t in &tys {
-                let before = self.g.tys[t.0 as usize].positive.clone();
-                self.compute_polarity(*t);
-                if self.g.tys[t.0 as usize].positive != before {
-                    changed = true;
-                }
-            }
-        }
+        self.polarity_fixpoint(&tys);
         self.check_polarity_marks(m, ids);
         let rejected = self.check_strict_positivity(m, ids);
         self.check_recursive_types_have_values(m, ids, &rejected);
@@ -1318,6 +1301,44 @@ impl Elab {
             let ti = &mut self.g.tys[tid.0 as usize];
             ti.positive = params.iter().map(|p| p.polarity == Some(ast::Polarity::Pos)).collect();
             ti.negative = params.iter().map(|p| p.polarity == Some(ast::Polarity::Neg)).collect();
+        }
+    }
+
+    /// The polarity of the parameters of a group of types declared
+    /// together, as soon as their constructors are: the bodies checked
+    /// before `phase_positivity` compare refinements inside them by it, so
+    /// `Pair Nat (j~Nat, i < j)` is a `Pair Nat (j~Nat, i <= j)` as `(Nat,
+    /// (j~Nat, i < j))` is a `(Nat, (j~Nat, i <= j))` (D71). An abstract
+    /// type's marks are what the rest of the module sees.
+    fn group_polarity(&mut self, ids: &[Option<Sym>]) {
+        let tys: Vec<TyId> = ids
+            .iter()
+            .flatten()
+            .filter_map(|s| if let Sym::Ty(t) = s { Some(*t) } else { None })
+            .filter(|t| !self.g.tys[t.0 as usize].is_abstract)
+            .collect();
+        self.polarity_fixpoint(&tys);
+    }
+
+    /// Parameter polarity (used for nested occurrences, e.g. `List Json`
+    /// inside `Json`): start optimistic and compute a fixpoint.
+    fn polarity_fixpoint(&mut self, tys: &[TyId]) {
+        for t in tys {
+            if !self.g.tys[t.0 as usize].ctors.is_empty() {
+                let np = self.g.arity_ty(*t);
+                self.g.tys[t.0 as usize].positive = vec![true; np];
+            }
+        }
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for t in tys {
+                let before = self.g.tys[t.0 as usize].positive.clone();
+                self.compute_polarity(*t);
+                if self.g.tys[t.0 as usize].positive != before {
+                    changed = true;
+                }
+            }
         }
     }
 
