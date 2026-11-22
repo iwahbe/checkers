@@ -844,7 +844,7 @@ impl Elab {
             .collect();
         for d in &m.decls {
             match &d.kind {
-                DeclKind::Class { name, params, members } => self.desugar_class(d, name, params, members, &mut decls, &mut origins),
+                DeclKind::Class { name, params, members } => self.desugar_class(d, name, params, members, &local, &mut decls, &mut origins),
                 DeclKind::Instance { class, tys, context, members } => {
                     self.desugar_instance(d, class, tys, context, members, &local, &mut decls, &mut origins)
                 }
@@ -857,7 +857,17 @@ impl Elab {
         (ast::Module { name: m.name.clone(), imports: m.imports.clone(), decls, templates: m.templates }, origins)
     }
 
-    fn desugar_class(&mut self, d: &Decl, name: &Ident, params: &[Ident], members: &[ClassMember], decls: &mut Vec<Decl>, origins: &mut Vec<Origin>) {
+    #[allow(clippy::too_many_arguments)]
+    fn desugar_class(
+        &mut self,
+        d: &Decl,
+        name: &Ident,
+        params: &[Ident],
+        members: &[ClassMember],
+        local: &HashMap<String, (Vec<String>, Vec<ClassMember>, Span)>,
+        decls: &mut Vec<Decl>,
+        origins: &mut Vec<Origin>,
+    ) {
         let sp = name.span;
         let pnames: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
         let mut clause = con(&name.name, sp);
@@ -979,6 +989,30 @@ impl Elab {
                     for t in tys.into_iter().rev() {
                         let span = t.span;
                         fty = Expr { kind: ExprKind::Arrow(Box::new(qrw.expr(&frw.expr(&t, &[]), &[])), Box::new(fty)), span };
+                    }
+                    // Its own class clauses (`Seq s`): implicit parameters
+                    // of the field, the dictionaries each call passes, so
+                    // an instance's function gets them as any function
+                    // with a clause does.
+                    let clauses: Vec<&Expr> = constraints
+                        .iter()
+                        .filter_map(|c| match c {
+                            Constraint::Pred(e) if self.is_class_clause(e, local) => Some(e),
+                            _ => None,
+                        })
+                        .collect();
+                    for (k, c) in clauses.iter().enumerate().rev() {
+                        let span = c.span;
+                        fty = Expr {
+                            kind: ExprKind::Refine(Box::new(ast::RefineTy {
+                                param: Some(ident(&format!("'$c{k}"), span)),
+                                own: false,
+                                dom: qrw.expr(&frw.expr(c, &[]), &[]),
+                                arrow: Some((None, fty)),
+                                preds: Vec::new(),
+                            })),
+                            span,
+                        };
                     }
                     for v in own.iter().rev() {
                         let span = fty.span;
@@ -1124,6 +1158,32 @@ impl Elab {
         });
         origins.push(Origin::ClassRecord);
         self.pending_classes.push((name.name.clone(), pnames, members.to_vec(), name.span));
+    }
+
+    /// Is `e` a class clause (`Seq s`), of a class declared elsewhere or in
+    /// this module (`local`, not registered yet)?
+    fn is_class_clause(&self, e: &Expr, local: &HashMap<String, (Vec<String>, Vec<ClassMember>, Span)>) -> bool {
+        let mut f = e;
+        let mut args = 0;
+        while let ExprKind::App(g, _) = &f.kind {
+            f = g;
+            args += 1;
+        }
+        match &f.kind {
+            ExprKind::Con(n) if args > 0 => local.contains_key(n) || self.class_clause(e).is_some(),
+            _ => false,
+        }
+    }
+
+    /// The header of the instance of this module that `def` is a member of
+    /// or builds the dictionary of, as written (`instance Ord (List a) :
+    /// Ord a`).
+    fn instance_header(&self, def: DefId) -> Option<String> {
+        let inst = self.instances.values().flatten().find(|i| i.module == self.cur && (i.def == def || i.members.values().any(|m| *m == def)))?;
+        let text = self.sources.get(&self.cur)?.text.get(inst.span.start as usize..inst.span.end as usize)?;
+        let line = text.lines().next()?.trim_end();
+        let line = line.split(" #").next()?.trim_end();
+        line.starts_with("instance ").then(|| line.to_string())
     }
 
     /// Whether the class `name` declared here is `std.string`'s `Debug`
@@ -2382,9 +2442,16 @@ impl Elab {
                         let d = if could.len() > 1 { d.with_label(format!("`{clause}` could be {}", joined(&could, "or"))) } else { d };
                         d.with_help("give the type, e.g. with a constraint `x~List Int` in the signature")
                     } else if let Some((_, p)) = param {
+                        // In an instance, its members have the class's
+                        // signatures: the clause goes in its context.
+                        let help = match r.owner.and_then(|o| self.instance_header(o)) {
+                            Some(h) if h.contains(" : ") => format!("add `{clause}` to the instance's context: `{h}, {clause}`"),
+                            Some(h) => format!("add `{clause}` to the instance's context: `{h} : {clause}`"),
+                            None => format!("add `{clause}` to the function's signature"),
+                        };
                         Diagnostic::error("E0284", format!("no instance of `{cname}` for {}", joined(&shown, "and")), r.span)
                             .with_label(format!("`{p}` is a type parameter"))
-                            .with_help(format!("add `{clause}` to the function's signature"))
+                            .with_help(help)
                     } else if several {
                         Diagnostic::error("E0284", format!("no instance of `{cname}` for {}", joined(&shown, "and")), r.span)
                             .with_label(needs)

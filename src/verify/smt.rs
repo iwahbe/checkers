@@ -2210,6 +2210,17 @@ impl<'a> Builder<'a> {
             }
             rest.extend(inner.get(k..).unwrap_or_default().iter().cloned());
         }
+        // The function's own class clauses' dictionaries (`Seq s` of
+        // `fn weigh by xs : Seq s, …`), the first arguments after the
+        // class's: bound directly too, as its body may use its type
+        // parameters.
+        let mut rest = rest.into_iter();
+        while let Tm::Lam(_, Mult::Many, crate::core::Icit::Impl, b) = &field {
+            let Some(e) = rest.next() else { break };
+            ienv.push(e);
+            field = (**b).clone();
+        }
+        let rest: Vec<Ent> = rest.collect();
         let n = rest.len();
         ienv.extend(rest);
         let mut app = crate::stage::shift(&field, n, 0);
