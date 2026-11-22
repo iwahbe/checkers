@@ -936,6 +936,11 @@ impl Elab {
                     if matches!(&u, Val::Neutral(_, sp) if sp.iter().any(|e| matches!(e, Elim::Case(..)))) {
                         break;
                     }
+                    // A class's type at a dictionary not known: as written
+                    // (`Seq.Elem s`), not the dictionary's field.
+                    if self.g.reads_type_field(&u) {
+                        break;
+                    }
                     v = u;
                 }
                 None => break,
@@ -2256,6 +2261,8 @@ impl Elab {
                 let declared = quote(&self.g, d.lvl, &d.ty);
                 let shown_tm = match crate::core::head_def(&declared) {
                     Some(a) if self.alias_preds.contains_key(&a) => declared,
+                    // A class's type as written (`Seq.Elem s`), not its dictionary's field.
+                    _ if self.g.reads_type_field(&t) => declared,
                     _ => quote(&self.g, d.lvl, &t),
                 };
                 let shown = show(&self.g, &d.names, &shown_tm);

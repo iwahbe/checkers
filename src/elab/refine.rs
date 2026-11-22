@@ -281,7 +281,10 @@ impl Elab {
                     if sub_ref || role == WeakenRole::Param {
                         self.weaken_obligation(cx, sub, sup, role, w);
                     } else {
-                        return Some(Gained { expected: e.clone(), found: f.clone(), variance: pol, via });
+                        // A class's type is shown as written (`Seq.Elem s`),
+                        // not as its dictionary's field.
+                        let f = if self.g.reads_type_field(&f) { found.clone() } else { f.clone() };
+                        return Some(Gained { expected: e.clone(), found: f, variance: pol, via });
                     }
                 }
             }
