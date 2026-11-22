@@ -581,7 +581,19 @@ The worked example for this section is `std.json` (`stdlib/json.ck`; `examples/j
 2. the line's last token is `,` or a binary operator (`+ - * / % ++ :: == != < <= > >= and or implies $ .` and the type operator `->` **inside brackets only**); or
 3. the next line's first token is a binary operator from that list, or `:`. A sign is not a binary operator (D169): a line starting with `-1` starts a new logical line, at any indentation (a block's first line, a `match` arm `-1 -> …`), and one starting with `- b` continues.
 
-A trailing `->` or `=` outside brackets does **not** continue the line; it opens a block (a match arm body, a multi-line `let`). Indentation uses spaces only; a tab in leading whitespace is an error. When a logical line is followed by a more-indented line, the lexer emits `INDENT`; on return to an enclosing level it emits matching `DEDENT`s (an inconsistent dedent is an error). Blank and comment-only lines are ignored for layout.
+A trailing `->` or `=` outside brackets does **not** continue the line; it opens a block (a match arm body, a multi-line `let`). Indentation uses spaces only; a tab in leading whitespace is an error. When a logical line is followed by a more-indented line, the lexer emits `INDENT`; on return to an enclosing level it emits matching `DEDENT`s (an inconsistent dedent is an error). A block indented past the continuation line that opens it (a `match` among a signature's constraints) belongs to that line: its lines are laid out from that line's column, and a line that returns from it to a column between the logical line's own and the block's opens the logical line's next block (`NEWLINE INDENT`: the function's body):
+
+```checkers
+fn pick o -> r : o~Option Int, r~Int,
+                 match o
+                     None   -> r == 0
+                     Some x -> r == x
+    match o
+        None   -> 0
+        Some x -> x
+```
+
+Blank and comment-only lines are ignored for layout.
 
 **Comments:** `#` to end of line.
 
@@ -1292,7 +1304,7 @@ The language already has what the tools need: total code with proven bounds and 
 
 The formatter keeps the line breaks the author chose and normalizes everything else, as gofmt does. The rules (D92):
 
-- **Indentation:** 4 spaces per block level. A continuation line lines up with the first item after the open bracket it is inside, or after the `:` of a signature; otherwise it keeps the indentation its author gave it relative to the line it continues, at least 4 (D99).
+- **Indentation:** 4 spaces per block level. A continuation line lines up with the first item after the open bracket it is inside, or after the `:` of a signature; otherwise it keeps the indentation its author gave it relative to the line it continues, at least 4 (D99). A block a continuation line opens (§9.1) is indented 4 from that line.
 - **Spaces:** one on each side of a binary operator, `->` and `=`, and after `,` and a signature's `:`. None around `~`, inside `( )` and `[ ]`, after a unary `-` or `\\`, or around a glued `.` or `[` (D22); one inside `{ }` (D99). Application is separated by single spaces.
 - **Alignment:** the `->` of the arms of one `match` line up (an arm with a guard is left out, D99), as do the `:` of the constructors of one `enum` (a constructor without constraints is skipped), unless a blank line separates them. Trailing `#` comments on consecutive lines start in one column; a blank line or a line without a trailing comment ends the run. The column is the furthest of each line's code end plus the spaces its author put before the comment, at least two (D99): a run that is already aligned stays aligned, wherever its code moves, and formatting twice changes nothing.
 - **Blank lines:** at most one in a row; none at the start or end of a block; the file ends with exactly one newline. Trailing whitespace is removed.

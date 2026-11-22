@@ -12,8 +12,8 @@ class Seq s
     fn size xs -> n : xs~s, n~Nat
     fn uncons xs -> r : xs~s, r~Option (Elem, s),
                         match r
-        None -> size xs == 0
-        Some (_, rest) -> size rest < size xs
+                            None           -> size xs == 0
+                            Some (_, rest) -> size rest < size xs
 
 instance Seq (List a)
     type Elem = a
