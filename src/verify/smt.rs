@@ -631,19 +631,33 @@ impl<'a> Builder<'a> {
                     // own applied to `t`'s (one instance per type).
                     Tm::Def(d) if self.e.g.assoc_def(*d).is_some_and(|(_, _, n)| args.len() == n + 1) => {
                         // Known values (an instance's dictionary) as they are.
+                        // A dictionary an instance builds from arguments
+                        // (`C (List a)`, #168): the instance's function
+                        // applied to variables past `env`, standing for the
+                        // arguments kept by its key.
                         let n = env.len();
                         let empty = Rc::new(Vec::new());
-                        let venv: Vec<Val> = env
-                            .iter()
-                            .enumerate()
-                            .map(|(k, e)| match e {
+                        let mut extra: Vec<Ent> = Vec::new();
+                        let mut venv: Vec<Val> = Vec::with_capacity(n);
+                        for (k, e) in env.iter().enumerate() {
+                            let v = match e {
                                 Ent::Known(key) => match self.known.get(key) {
                                     Some(tm) if crate::core::max_var(tm).is_none() => crate::core::eval(&self.e.g, &empty, tm),
-                                    _ => Val::var(k),
+                                    Some(tm) => match (dict_over_vars(tm), self.dict_args.get(key)) {
+                                        (Some((f, m)), Some(ents)) if ents.len() == m => {
+                                            let base = n + extra.len();
+                                            extra.extend(ents.iter().cloned());
+                                            let args: Vec<Val> = (0..m).map(|j| Val::var(base + j)).collect();
+                                            crate::core::eval(&self.e.g, &Rc::new(args), &f)
+                                        }
+                                        _ => Val::var(k),
+                                    },
+                                    None => Val::var(k),
                                 },
                                 _ => Val::var(k),
-                            })
-                            .collect();
+                            };
+                            venv.push(v);
+                        }
                         let v = crate::core::force(&self.e.g, crate::core::eval(&self.e.g, &Rc::new(venv), t));
                         match &v {
                             Val::Neutral(crate::core::Head::Var(l), sp) if sp.len() == 1 && *l < n => {
@@ -654,11 +668,11 @@ impl<'a> Builder<'a> {
                                     _ => out("a class's type at a dictionary it can't name"),
                                 }
                             }
+                            // Reduced to a variable: a type parameter, or a
+                            // dictionary's argument (`type E = a`).
+                            Val::Neutral(crate::core::Head::Var(_), sp) if sp.is_empty() => self.sort_under(env, extra, &v),
                             Val::Neutral(..) => out("a class's type at a dictionary it can't name"),
-                            _ => {
-                                let tm = quote(&self.e.g, n, &v);
-                                self.sort_of(env, &tm)
-                            }
+                            _ => self.sort_under(env, extra, &v),
                         }
                     }
                     Tm::Def(d) => {
@@ -725,6 +739,15 @@ impl<'a> Builder<'a> {
             Tm::Univ(_) => out("a universe"),
             _ => out("an unsupported type"),
         }
+    }
+
+    /// The sort of a type value under `env` and then `extra` (a
+    /// dictionary's arguments, bound past `env`).
+    fn sort_under(&mut self, env: &[Ent], extra: Vec<Ent>, v: &Val) -> Tx<Sort> {
+        let mut env2 = env.to_vec();
+        env2.extend(extra);
+        let tm = quote(&self.e.g, env2.len(), v);
+        self.sort_of(&env2, &tm)
     }
 
     /// The sort of a class's type (field `i` of its dictionary's
@@ -3332,6 +3355,28 @@ impl<'a> Builder<'a> {
             array_vars: self.array_vars,
         })
     }
+}
+
+/// A dictionary an instance builds, `d a…` (its head a definition): the
+/// same application to the variables of an environment of its arguments
+/// alone (`d #m-1 … #0`), and their number.
+fn dict_over_vars(t: &Tm) -> Option<(Tm, usize)> {
+    let mut apps = Vec::new();
+    let mut h = t;
+    while let Tm::App(f, _, i, m) = h {
+        apps.push((*i, *m));
+        h = f;
+    }
+    if !matches!(h, Tm::Def(_)) {
+        return None;
+    }
+    apps.reverse();
+    let n = apps.len();
+    let mut out_ = h.clone();
+    for (j, (i, m)) in apps.into_iter().enumerate() {
+        out_ = Tm::App(Rc::new(out_), Rc::new(Tm::Var(n - 1 - j)), i, m);
+    }
+    Some((out_, n))
 }
 
 /// No variable of `t` reaches outside `depth` enclosing binders.
