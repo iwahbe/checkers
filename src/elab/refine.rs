@@ -436,13 +436,14 @@ impl Elab {
         let av = self.eval(cx, &a);
         let x = name(&r.param);
         // A class function's own type variable (M25): an implicit, erased
-        // parameter.
+        // parameter; or its own class clause, an implicit dictionary.
         if let (Some(p), Some((None, b_expr))) = (&r.param, &r.arrow) {
             if p.name.starts_with('\'') {
-                cx.bind(&p.name, av, Mult::Zero);
+                let m = if self.class_clause(&r.dom).is_some() { Mult::Many } else { Mult::Zero };
+                cx.bind(&p.name, av, m);
                 let b = self.elab_type(cx, b_expr);
                 cx.pop();
-                return Tm::Pi(Rc::from(&p.name[1..]), Mult::Zero, Icit::Impl, Rc::new(a), Rc::new(b));
+                return Tm::Pi(Rc::from(&p.name[1..]), m, Icit::Impl, Rc::new(a), Rc::new(b));
             }
         }
         let Some((res, b_expr)) = &r.arrow else {
