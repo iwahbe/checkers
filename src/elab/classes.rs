@@ -1939,7 +1939,7 @@ impl Elab {
                 let s = self.synthetic_span(*at);
                 let ptext = self.text_in(&module, p.span);
                 self.text_override.insert((self.cur.clone(), s.start, s.end), ptext);
-                let ens = respan(&trw.expr(&srw.expr(p, &[binder.name.clone()]), &[binder.name.clone()]), s);
+                let ens = respan(&trw.expr(&srw.expr(p, std::slice::from_ref(&binder.name)), std::slice::from_ref(&binder.name)), s);
                 let mut cs = ctx_preds.clone();
                 cs.push(Constraint::Typed { name: ident(&binder.name, s), mult: ast::Mult::Many, ty: ty.clone() });
                 decls.push(Decl {
@@ -2115,7 +2115,7 @@ impl Elab {
                 let mut out = Vec::new();
                 self.in_class_type_pred = true;
                 for p in preds {
-                    let e = arw.expr(p, &[binder.name.clone()]);
+                    let e = arw.expr(p, std::slice::from_ref(&binder.name));
                     out.push(self.elab_pred(&mut cx, &e, false));
                 }
                 self.solve_deferred();
