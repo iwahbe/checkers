@@ -574,6 +574,22 @@ impl Rewrite<'_> {
     }
 }
 
+/// Whether `name` occurs free in `e`, respecting what lambdas, `match`,
+/// `let` and `forall` bind.
+pub(super) fn mentions_var(e: &Expr, name: &str) -> bool {
+    let found = std::cell::Cell::new(false);
+    let f = |n: &str, _: Span| {
+        if n == name {
+            found.set(true);
+        }
+        None
+    };
+    let none = |_: &str, _: Span| None;
+    let nq = |_: &str, _: &str, _: Span| None;
+    Rewrite { var: &f, con: &none, qualified: &nq }.expr(e, &[]);
+    found.get()
+}
+
 /// Rename the names a signature binds (its parameters) in its constraints.
 /// Free variables renamed (binders kept).
 fn rename_vars(cs: &[Constraint], map: &HashMap<String, String>) -> Vec<Constraint> {

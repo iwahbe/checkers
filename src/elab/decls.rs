@@ -2313,44 +2313,11 @@ pub(crate) fn mentions_free(e: &Expr, name: &str) -> bool {
     }
 }
 
+/// Whether `name` occurs free in `e`, anywhere in it (a `match`, a
+/// lambda, a block): a predicate mentioning a function's result is its
+/// postcondition.
 fn mentions(e: &Expr, name: &str) -> bool {
-    let mut found = false;
-    walk(e, &mut |x| {
-        if let ExprKind::Var(n) = &x.kind {
-            if n == name {
-                found = true;
-            }
-        }
-    });
-    found
-}
-
-fn walk(e: &Expr, f: &mut dyn FnMut(&Expr)) {
-    f(e);
-    match &e.kind {
-        ExprKind::App(a, b) | ExprKind::Binary(_, a, b) | ExprKind::Arrow(a, b) | ExprKind::Index(a, b) => {
-            walk(a, f);
-            walk(b, f);
-        }
-        ExprKind::Tuple(v) | ExprKind::List(v) | ExprKind::Par(v) => v.iter().for_each(|x| walk(x, f)),
-        ExprKind::Neg(x) | ExprKind::SectionL(_, x) | ExprKind::SectionR(_, x) | ExprKind::Try(x) | ExprKind::Field(x, _) => {
-            walk(x, f)
-        }
-        ExprKind::If(a, b, c) => {
-            walk(a, f);
-            walk(b, f);
-            walk(c, f);
-        }
-        ExprKind::Refine(r) => {
-            r.types().into_iter().for_each(|t| walk(t, f));
-            r.preds.iter().for_each(|p| walk(p, f));
-        }
-        ExprKind::Template(t, ps) => {
-            walk(t, f);
-            ps.iter().flat_map(|p| p.exprs()).for_each(|x| walk(x, f));
-        }
-        _ => {}
-    }
+    super::classes::mentions_var(e, name)
 }
 
 /// Does variable `idx` occur anywhere in `t`?
