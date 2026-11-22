@@ -429,7 +429,7 @@ mod tests {
     fn resolves_known_constructors() {
         let inner = Ir::Case(
             a(Ir::Var(0)),
-            a(IrCase {
+            Arc::new(IrCase {
                 branches: vec![
                     (FALSE, 0, a(Ir::Con(SOME, vec![a(Ir::Tuple(vec![a(Ir::Prim(super::super::ir::Op::Add, vec![a(Ir::Var(0)), a(Ir::Var(1))], false)), a(Ir::Var(1))]))]))),
                     (TRUE, 0, a(Ir::Con(NONE, vec![]))),
@@ -440,7 +440,7 @@ mod tests {
         );
         let outer = Ir::Case(
             a(inner),
-            a(IrCase { branches: vec![(NONE, 0, a(s("none"))), (SOME, 1, a(Ir::Proj(a(Ir::Var(0)), 0, false)))], lits: vec![], default: None }),
+            Arc::new(IrCase { branches: vec![(NONE, 0, a(s("none"))), (SOME, 1, a(Ir::Proj(a(Ir::Var(0)), 0, false)))], lits: vec![], default: None }),
         );
         let out = run(&outer);
         assert_eq!(count(&out, &|x| matches!(x, Ir::Con(..) | Ir::Tuple(_) | Ir::Proj(..))), 0);
@@ -454,13 +454,13 @@ mod tests {
     fn leaves_an_arm_in_one_place() {
         let inner = Ir::Case(
             a(Ir::Var(0)),
-            a(IrCase {
+            Arc::new(IrCase {
                 branches: vec![(FALSE, 0, a(Ir::Con(SOME, vec![a(Ir::Lit(Lit::Num(1)))]))), (TRUE, 0, a(Ir::Var(1)))],
                 lits: vec![],
                 default: None,
             }),
         );
-        let outer = Ir::Case(a(inner), a(IrCase { branches: vec![(NONE, 0, a(s("none"))), (SOME, 1, a(s("some")))], lits: vec![], default: None }));
+        let outer = Ir::Case(a(inner), Arc::new(IrCase { branches: vec![(NONE, 0, a(s("none"))), (SOME, 1, a(s("some")))], lits: vec![], default: None }));
         let out = run(&outer);
         assert_eq!(count(&out, &|x| matches!(x, Ir::Lit(Lit::Str(_)))), 2);
         let Ir::Case(scrut, _) = &out else { panic!("the outer `match` stays") };
