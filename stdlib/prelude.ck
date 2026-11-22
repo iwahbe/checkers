@@ -346,25 +346,27 @@ instance Seq String
     fn size s
         len s.bytes
     fn uncons s
-        string_uncons s
+        if len s.bytes == 0 then None else Some (string_first s, string_rest s)
 
 # All but the first element: a slice sharing the array's storage.
 fn array_rest xs -> r : xs~Array a, len xs > 0, r~Array a, len r + 1 == len xs
     __builtin
 
-# The first character and the rest, a slice of the string's bytes; `None`
-# for the empty string.
-fn string_uncons s -> r : s~String, r~Option (Char, String), shorter_string s r
+# A non-empty string's first character.
+fn string_first s -> c : s~String, len s.bytes > 0, c~Char
     __builtin
 
-# `r` is `None` for the empty string, or holds a shorter rest.
-fn shorter_string s r -> b : s~String, r~Option (Char, String), b~Bool
-    match r
-        None           -> len s.bytes == 0
-        Some (_, rest) -> len rest.bytes < len s.bytes
+# All but a non-empty string's first character: a slice sharing its bytes.
+fn string_rest s -> r : s~String, len s.bytes > 0, r~String,
+                        len r.bytes < len s.bytes
+    __builtin
 
-check string_uncons "" == None
-check string_uncons "€x" == Some (c'€', "x")
+check string_first "€x" == c'€'
+check string_rest "€x" == "x"
+check string_first "a" == c'a'
+check string_rest "a" == ""
+check uncons "" == None
+check uncons "€x" == Some (c'€', "x")
 check array_rest b"abc" == b"bc"
 
 # Whether `x` comes before `y` by their bytes (`Ord String`).
