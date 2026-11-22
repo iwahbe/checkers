@@ -10,29 +10,41 @@ pub const TABLE: &[Builtin] = &[
     ("std.bag.sum", "ckb_bag_sum", ckb_bag_sum),
 ];
 
-builtin!(ckb_bag_of, |a| {
-    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
-    for v in list_items(a[0]) {
-        *counts.entry(crate::ops::show_derived(v, 0)).or_default() += 1;
+/// Entries by their text, sorted.
+type Entries = std::collections::BTreeMap<String, crate::obj::BagEntry>;
+
+fn add(m: &mut Entries, key: String, value: W, count: usize) {
+    match m.get_mut(&key) {
+        Some(e) => e.count += count,
+        None => {
+            m.insert(key.clone(), crate::obj::BagEntry { key, value: dup(value), count });
+        }
     }
-    new_obj(Obj::Bag(counts.into_iter().collect()))
+}
+
+builtin!(ckb_bag_of, |a| {
+    let mut m = Entries::new();
+    for v in list_items(a[0]) {
+        add(&mut m, crate::ops::show_derived(v, 0), v, 1);
+    }
+    new_obj(Obj::Bag(m.into_values().collect()))
 });
 
 builtin!(ckb_bag_count, |a| {
     let x = crate::ops::show_derived(a[0], 0);
     match obj(a[1]) {
-        Some(Obj::Bag(bag)) => nat(bag.iter().find(|(v, _)| *v == x).map_or(0, |(_, c)| *c)),
+        Some(Obj::Bag(bag)) => nat(bag.iter().find(|e| e.key == x).map_or(0, |e| e.count)),
         _ => bug("`bag.count` needs a bag"),
     }
 });
 
 builtin!(ckb_bag_sum, |a| match (obj(a[0]), obj(a[1])) {
     (Some(Obj::Bag(x)), Some(Obj::Bag(y))) => {
-        let mut counts: std::collections::BTreeMap<String, usize> = x.iter().cloned().collect();
-        for (v, c) in y.iter() {
-            *counts.entry(v.clone()).or_default() += c;
+        let mut m = Entries::new();
+        for e in x.iter().chain(y.iter()) {
+            add(&mut m, e.key.clone(), e.value, e.count);
         }
-        new_obj(Obj::Bag(counts.into_iter().collect()))
+        new_obj(Obj::Bag(m.into_values().collect()))
     }
     _ => bug("`bag.sum` needs bags"),
 });

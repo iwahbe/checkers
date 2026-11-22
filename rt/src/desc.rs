@@ -21,6 +21,10 @@ pub static UNKNOWN: Ty = Ty::Unknown;
 /// The number standing for tuple types.
 pub const TUPLE: u32 = u32::MAX;
 
+/// The number marking a value in a descriptor: a value argument of a type
+/// that its fields' types are computed from (`(value, tag)`).
+pub const VALUE: u32 = u32::MAX - 1;
+
 /// The tag of type `id` (or of an unnamed type, `None`) laid out as `layout`.
 pub fn tag(id: Option<u32>, layout: u8) -> u64 {
     id.map_or(0, |t| (t as u64 + 1) << 4) | layout as u64
@@ -42,6 +46,8 @@ pub enum Ty {
     /// Type `tag` applied to `args` (fewer than its parameters when the
     /// word didn't say them: those are unknown).
     Con { tag: u64, args: Vec<Ty> },
+    /// A value argument (borrowed from the descriptor it is read from).
+    Value(W),
 }
 
 impl Ty {
@@ -55,7 +61,11 @@ impl Ty {
             let n = nfields(w);
             let last = slot(w, n - 1);
             if n >= 2 && is_int(last) && int_of(last) > 0 {
-                return Ty::Con { tag: int_of(last) as u64, args: (0..n - 1).map(|i| Ty::of_word(slot(w, i))).collect() };
+                let tag = int_of(last) as u64;
+                if tag_id(tag) == Some(VALUE) && n == 2 {
+                    return Ty::Value(slot(w, 0));
+                }
+                return Ty::Con { tag, args: (0..n - 1).map(|i| Ty::of_word(slot(w, i))).collect() };
             }
         }
         Ty::Unknown
@@ -65,7 +75,7 @@ impl Ty {
     pub fn id(&self) -> Option<u32> {
         match self {
             Ty::Con { tag, .. } => tag_id(*tag),
-            Ty::Unknown => None,
+            _ => None,
         }
     }
 
@@ -73,7 +83,7 @@ impl Ty {
     pub fn layout(&self) -> Layout {
         match self {
             Ty::Con { tag, .. } => Layout::of_code(tag & 15),
-            Ty::Unknown => Layout::Words,
+            _ => Layout::Words,
         }
     }
 
@@ -81,7 +91,16 @@ impl Ty {
     pub fn arg(&self, i: usize) -> &Ty {
         match self {
             Ty::Con { args, .. } => args.get(i).unwrap_or(&UNKNOWN),
-            Ty::Unknown => &UNKNOWN,
+            _ => &UNKNOWN,
+        }
+    }
+
+    /// What a function computing a field's type is given for it (owned):
+    /// a value argument as the value itself, a type as its word.
+    pub fn to_arg(&self) -> W {
+        match self {
+            Ty::Value(w) => dup(*w),
+            t => t.to_word(),
         }
     }
 
@@ -89,6 +108,7 @@ impl Ty {
     pub fn to_word(&self) -> W {
         match self {
             Ty::Unknown => ERASED,
+            Ty::Value(w) => new_tuple(&[dup(*w), mk_int(tag(Some(VALUE), 0) as i64)]),
             Ty::Con { tag, args } if args.is_empty() => mk_int(*tag as i64),
             Ty::Con { tag, args } => {
                 let mut items: Vec<W> = args.iter().map(Ty::to_word).collect();
@@ -96,6 +116,20 @@ impl Ty {
                 new_tuple(&items)
             }
         }
+    }
+}
+
+/// The descriptor of type constructor `f` applied to one more argument,
+/// `a` (both borrowed; the result is owned): `f a` where `f` is a type
+/// constructor parameter (M25). A word that names no type stays unnamed.
+#[no_mangle]
+pub extern "C" fn ck_type_apply(f: W, a: W) -> W {
+    match Ty::of_word(f) {
+        Ty::Con { tag, mut args } if tag_id(tag).is_some() => {
+            args.push(Ty::of_word(a));
+            Ty::Con { tag, args }.to_word()
+        }
+        _ => ERASED,
     }
 }
 
@@ -110,6 +144,9 @@ pub enum Template {
     Param(usize),
     /// A type applied to arguments.
     Con(u64, Vec<Template>),
+    /// Computed from earlier fields: by function `i` of the program's table
+    /// (`prog::field_type`), given the type's arguments and those fields.
+    Fn(usize),
 }
 
 impl Template {
@@ -117,7 +154,7 @@ impl Template {
     /// them where it is one of them.
     pub fn at<'a>(&self, args: &'a Ty) -> Cow<'a, Ty> {
         match self {
-            Template::Unknown => Cow::Borrowed(&UNKNOWN),
+            Template::Unknown | Template::Fn(_) => Cow::Borrowed(&UNKNOWN),
             Template::Param(i) => Cow::Borrowed(args.arg(*i)),
             Template::Con(tag, xs) => Cow::Owned(Ty::Con { tag: *tag, args: xs.iter().map(|x| x.at(args).into_owned()).collect() }),
         }
@@ -138,6 +175,10 @@ impl Template {
             b'p' => {
                 *s = &s[1..];
                 Some(Template::Param(Template::number(s)? as usize))
+            }
+            b'f' => {
+                *s = &s[1..];
+                Some(Template::Fn(Template::number(s)? as usize))
             }
             _ => {
                 let tag = Template::number(s)?;
@@ -173,6 +214,7 @@ impl Template {
         match self {
             Template::Unknown => "?".into(),
             Template::Param(i) => format!("p{i}"),
+            Template::Fn(i) => format!("f{i}"),
             Template::Con(tag, xs) if xs.is_empty() => tag.to_string(),
             Template::Con(tag, xs) => format!("{tag}({})", xs.iter().map(Template::write).collect::<Vec<_>>().join(",")),
         }

@@ -29,8 +29,8 @@ impl<'g> Evaluator<'g> {
         checkers_rt::prog::install(&super::descriptor(g, &gen.p), invoke);
         let mut ev = Evaluator { g, gen };
         // The hand-written `Debug` instances (#126), for values shown here.
-        if let Some(t) = super::lower::debug_table(g) {
-            if let Ok(fs) = ev.eval(&t) {
+        if let Some(ir) = super::lower::show_table(g) {
+            if let Ok(fs) = ev.eval_ir(&ir) {
                 checkers_rt::prog::set_debug(fs);
             }
         }
@@ -39,7 +39,13 @@ impl<'g> Evaluator<'g> {
 
     /// The value of a closed term: an owned word, or the runtime error.
     pub fn eval(&mut self, t: &Tm) -> Result<W, String> {
-        let f = Lowerer::new(self.g, None, &mut self.gen.p).add_closed(t);
+        let ir = super::ir::Compiler { g: self.g, owner: None }.compile(t);
+        self.eval_ir(&ir)
+    }
+
+    /// The value of closed code: an owned word, or the runtime error.
+    pub fn eval_ir(&mut self, ir: &super::ir::Ir) -> Result<W, String> {
+        let f = Lowerer::new(self.g, None, &mut self.gen.p).add_closed_ir(ir);
         super::rc_new(self.g, &mut self.gen.p);
         self.gen.define_new();
         self.gen.m.finalize_definitions().map_err(|e| format!("compiling: {e}"))?;
@@ -69,7 +75,8 @@ impl<'g> Evaluator<'g> {
 
     fn show_typed(&self, v: W, ty: &Tm, p: u8) -> String {
         let g = self.g;
-        let rt = || checkers_rt::ops::show_derived(v, p);
+        // What this function doesn't handle itself: by the type's descriptor.
+        let rt = || self.show_by_descriptor(v, ty, p);
         match ty {
             Tm::Def(d) => {
                 let info = &g.defs[d.0 as usize];
@@ -88,9 +95,11 @@ impl<'g> Evaluator<'g> {
                 let items: Vec<String> = ts.iter().enumerate().map(|(i, t)| self.show_typed(w::slot(v, i), t, 0)).collect();
                 format!("({})", items.join(", "))
             }
-            // A string is stored as its bytes (#170).
+            // A string as a string literal, as a `Char` is written `c'a'`:
+            // a failed `check` may be in a module that doesn't load
+            // `std.string`, whose `Debug String` writes it the same way.
             Tm::TyConApp(id, _) if Some(*id) == g.well_known.string && w::is_ptr(v) && w::kind(v) == w::K_BYTES => {
-                format!("{:?}", w::str_of(v))
+                string_literal(w::str_of(v))
             }
             Tm::TyConApp(id, args) => {
                 // Stored as its one kept field (#170): the value is that field.
@@ -146,6 +155,19 @@ impl<'g> Evaluator<'g> {
             }
             _ => rt(),
         }
+    }
+
+    /// `v` shown by the runtime's printer, by the descriptor of the closed
+    /// type `ty` (#170).
+    fn show_by_descriptor(&self, v: W, ty: &Tm, p: u8) -> String {
+        fn rt_ty(d: &crate::core::Desc) -> checkers_rt::desc::Ty {
+            match d {
+                crate::core::Desc::Known(tag, args) => checkers_rt::desc::Ty::Con { tag: *tag, args: args.iter().map(rt_ty).collect() },
+                _ => checkers_rt::desc::Ty::Unknown,
+            }
+        }
+        let tv = crate::core::eval(self.g, &Rc::new(Vec::new()), ty);
+        checkers_rt::ops::show_typed_derived(v, &rt_ty(&crate::core::desc_of(self.g, &tv)), p)
     }
 
     pub fn release(&self, v: W) {
@@ -253,6 +275,26 @@ fn unfolded(g: &Globals, ty: &Tm) -> Option<Tm> {
     let v = crate::core::eval(g, &Rc::new(Vec::new()), ty);
     let u = crate::core::unfold(g, &v)?;
     Some(crate::core::quote(g, 0, &crate::core::force(g, u)))
+}
+
+/// A string literal as the lexer reads it, escaped as `std.string`'s
+/// `Debug String` escapes it.
+fn string_literal(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\0' => out.push_str("\\0"),
+            c if (c as u32) < 0x20 || (0x7f..0xa0).contains(&(c as u32)) => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// A character literal as the lexer reads it.

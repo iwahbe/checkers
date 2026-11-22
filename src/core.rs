@@ -356,6 +356,9 @@ pub struct Globals {
     /// another type (#133): neither failed nor guessed, they wait for the
     /// dictionary (level, the two types).
     pub postponed: RefCell<Vec<(usize, Val, Val)>>,
+    /// Each type's value parameters that its fields' types are computed
+    /// from (#170), once worked out (`value_params_needed`).
+    pub value_params: RefCell<HashMap<TyId, std::collections::BTreeSet<usize>>>,
 }
 
 #[derive(Default, Clone)]
@@ -409,6 +412,7 @@ impl Globals {
             fuel: Cell::new(DEFAULT_FUEL),
             well_known: WellKnown::default(),
             postponed: RefCell::new(Vec::new()),
+            value_params: RefCell::new(HashMap::new()),
         }
     }
 
@@ -727,6 +731,11 @@ pub enum Desc {
     Var(usize),
     /// A class's type kept in the dictionary at this level (#133).
     Dict(usize, ConId, usize),
+    /// A type constructor variable at this level applied to arguments (M25).
+    Apply(usize, Vec<Desc>),
+    /// A value argument of a type, which its fields' types are computed
+    /// from (`ByParam True`): the value, in the descriptor.
+    Value(Val),
 }
 
 impl Desc {
@@ -752,14 +761,17 @@ fn desc_at(g: &Globals, v: &Val, depth: usize) -> Desc {
     }
     match force(g, v.clone()) {
         Val::TyCon(id, args) => {
+            let needed = value_params_needed(g, id);
             let ti = &g.tys[id.0 as usize];
             let args = args
                 .iter()
                 .enumerate()
                 .map(|(k, a)| match ti.params.get(k) {
-                    // Only type parameters have descriptors; a value
-                    // parameter (`Vec a n`'s `n`) says nothing to show by.
                     Some((_, t)) if is_type_former(t) => desc_at(g, a, depth + 1),
+                    // A value parameter that a field's type is computed from.
+                    _ if needed.contains(&k) => Desc::Value(a.clone()),
+                    // Any other value parameter (`Vec a n`'s `n`) says
+                    // nothing to show by.
                     _ => Desc::unknown(0),
                 })
                 .collect();
@@ -771,10 +783,153 @@ fn desc_at(g: &Globals, v: &Val, depth: usize) -> Desc {
         }
         Val::Neutral(Head::Var(x), sp) => match sp.as_slice() {
             [Elim::Field(c, i)] if g.is_dict_type_field(*c, *i) => Desc::Dict(x, *c, *i),
+            sp if sp.iter().all(|e| matches!(e, Elim::App(..))) => Desc::Apply(
+                x,
+                sp.iter()
+                    .map(|e| match e {
+                        Elim::App(a, _) => desc_at(g, a, depth + 1),
+                        _ => Desc::unknown(0),
+                    })
+                    .collect(),
+            ),
             _ => Desc::unknown(layout),
         },
+        // A type constructor written as a function (`\a -> Option a`, M25):
+        // the type it applies to its argument, short of that argument.
+        Val::Lam(_, _, _, c) => {
+            const PROBE: usize = usize::MAX / 2;
+            match force(g, apply_closure(g, &c, Val::var(PROBE))) {
+                Val::TyCon(id, mut args) if matches!(args.last(), Some(Val::Neutral(Head::Var(PROBE), sp)) if sp.is_empty()) => {
+                    args.pop();
+                    match desc_at(g, &Val::TyCon(id, args), depth + 1) {
+                        Desc::Known(tag, ds) => Desc::Known(tag, ds),
+                        d => d,
+                    }
+                }
+                _ => Desc::unknown(layout),
+            }
+        }
         _ => Desc::unknown(layout),
     }
+}
+
+/// The value parameters of type `id` that its fields' types are computed
+/// from (#170), directly or through a type a field holds: their values go
+/// in its descriptor.
+pub fn value_params_needed(g: &Globals, id: TyId) -> std::collections::BTreeSet<usize> {
+    if let Some(s) = g.value_params.borrow().get(&id) {
+        return s.clone();
+    }
+    // Recursive types reach themselves: none, until worked out.
+    g.value_params.borrow_mut().insert(id, Default::default());
+    let mut out = std::collections::BTreeSet::new();
+    let ti = &g.tys[id.0 as usize];
+    let np = ti.params.len();
+    let is_value = |l: usize| l < np && !is_type_former(&ti.params[l].1);
+    for c in &ti.ctors {
+        let ci = &g.cons[c.0 as usize];
+        for k in 0..ci.fields.len() {
+            if !g.is_runtime_field(*c, k) {
+                continue;
+            }
+            let n = np + k;
+            let env = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+            let v = force(g, eval(g, &env, &ci.fields[k].3));
+            let mut levels = std::collections::BTreeSet::new();
+            if fixed_type(&v) {
+                value_args(g, &v, n, 0, &mut levels);
+            } else {
+                let mut free = std::collections::BTreeSet::new();
+                free_vars(&quote(g, n, &v), 0, &mut free);
+                levels.extend(free.into_iter().map(|i| n - 1 - i));
+            }
+            out.extend(levels.into_iter().filter(|l| is_value(*l)));
+        }
+    }
+    g.value_params.borrow_mut().insert(id, out.clone());
+    out
+}
+
+/// The levels (at `n`) that the value arguments in type `v` mention, at
+/// the value parameters of the types it applies that their fields need.
+fn value_args(g: &Globals, v: &Val, n: usize, depth: usize, out: &mut std::collections::BTreeSet<usize>) {
+    if depth > 32 {
+        return;
+    }
+    match force(g, v.clone()) {
+        Val::TyCon(id, args) => {
+            let needed = value_params_needed(g, id);
+            let params = &g.tys[id.0 as usize].params;
+            for (k, a) in args.iter().enumerate() {
+                if params.get(k).is_some_and(|p| is_type_former(&p.1)) {
+                    value_args(g, a, n, depth + 1, out);
+                } else if needed.contains(&k) {
+                    let mut free = std::collections::BTreeSet::new();
+                    free_vars(&quote(g, n, a), 0, &mut free);
+                    out.extend(free.into_iter().map(|i| n - 1 - i));
+                }
+            }
+        }
+        Val::TupleTy(ts) => ts.iter().for_each(|t| value_args(g, t, n, depth + 1, out)),
+        _ => {}
+    }
+}
+
+/// Whether a type (forced) is a type former applied, not computed from
+/// values: a type, a tuple or function type, or a type variable (applied).
+fn fixed_type(v: &Val) -> bool {
+    match v {
+        Val::Neutral(Head::Var(_), sp) => sp.iter().all(|e| matches!(e, Elim::App(..))) || matches!(sp.as_slice(), [Elim::Field(..)]),
+        Val::Neutral(..) => false,
+        _ => true,
+    }
+}
+
+/// Whether a descriptor holds a value (`Desc::Value`).
+fn has_value(d: &Desc) -> bool {
+    match d {
+        Desc::Value(_) => true,
+        Desc::Known(_, xs) | Desc::Apply(_, xs) => xs.iter().any(has_value),
+        _ => false,
+    }
+}
+
+/// How a constructor's field has its type (#170).
+pub enum FieldType {
+    /// From its type's parameters alone: a descriptor template says it.
+    Fixed,
+    /// Computed when the value is shown, from earlier fields (`v~(if
+    /// is_text then String else Int)`) or from value parameters of its
+    /// type (`ByParam b`), which its descriptor holds: this type, in the
+    /// context of the parameters and earlier fields.
+    FromFields(Tm),
+    /// Computed from a field that isn't kept when the program runs (this
+    /// level: the type's parameters, then the fields).
+    NotKept(usize),
+}
+
+/// How field `k` of constructor `c` has its type.
+pub fn field_type(g: &Globals, c: ConId, k: usize) -> FieldType {
+    let ci = &g.cons[c.0 as usize];
+    let np = g.arity_ty(ci.ty);
+    let n = np + k;
+    let env = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+    let v = force(g, eval(g, &env, &ci.fields[k].3));
+    let t = quote(g, n, &v);
+    if fixed_type(&v) {
+        // A type holding a value its own fields need (`ByParam b`), from
+        // this type's: computed when shown, as the value is known then.
+        return if has_value(&desc_of(g, &v)) { FieldType::FromFields(t) } else { FieldType::Fixed };
+    }
+    let mut free = std::collections::BTreeSet::new();
+    free_vars(&t, 0, &mut free);
+    for i in free {
+        let level = n - 1 - i;
+        if level >= np && !g.is_runtime_field(c, level - np) {
+            return FieldType::NotKept(level);
+        }
+    }
+    FieldType::FromFields(t)
 }
 
 pub fn force(g: &Globals, v: Val) -> Val {

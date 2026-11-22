@@ -8,5 +8,10 @@ Hidden (Box 4)
 ["text", "é"]
 b"text"
 [1, 2]
+"an int"
+Some "x"
+(ByField True "y", ByField False 2)
+[ByParam "p"]
+<Bag {"a", "a", "b"}>
 -- stderr
 -- exit 0

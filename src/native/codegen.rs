@@ -49,6 +49,7 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("ck_par", 2, true),
     ("ck_tuple_flat", 1, true),
     ("ck_tuple_rest", 2, true),
+    ("ck_type_apply", 2, true),
 ];
 
 fn flags() -> MemFlagsData {
@@ -1007,6 +1008,7 @@ impl<'p, M: Module> Gen<'p, M> {
                 self.bool_of(b, r)
             }
             Op::Concat => self.call1(b, st, "ck_concat", &[a[0], a[1]]),
+            Op::TypeApply => self.call1(b, st, "ck_type_apply", &[a[0], a[1]]),
             Op::Len => {
                 // Inline for strings, bytes and arrays, which keep their
                 // length in their first word (D133); lists go to the runtime.

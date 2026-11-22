@@ -250,17 +250,24 @@ fn render_typed(w: W, ty: &Ty, p: u8, hand: bool) -> String {
     }
     let other = crate::prog::TyInfo::default();
     let info = pg.tys.get(id as usize).unwrap_or(&other);
-    if hand && info.debug.is_some() {
+    if (hand || info.std_debug) && info.debug.is_some() {
         if let Some((f, n)) = crate::prog::debug_fn_of_type(id) {
             return custom(f, (0..n).map(|i| ty.arg(i).to_word()).collect(), w, p);
         }
     }
     match info.kind {
-        TyKind::String if is_kind(w, K_BYTES) => return format!("{:?}", str_of(w)),
         TyKind::List if is_list(w) => {
             let elem = ty.arg(0);
             let items: Vec<String> = list_items(w).into_iter().map(|x| render_typed(x, elem, 0, hand)).collect();
             return format!("[{}]", items.join(", "));
+        }
+        // A bag's values by its element type, each as many times as it is there.
+        TyKind::Bag => {
+            if let Some(Obj::Bag(b)) = obj(w) {
+                let elem = ty.arg(0);
+                let items: Vec<String> = b.iter().flat_map(|e| std::iter::repeat_n(render_typed(e.value, elem, 0, hand), e.count)).collect();
+                return format!("<Bag {{{}}}>", items.join(", "));
+            }
         }
         TyKind::Array if crate::array::is_array(w) => {
             let elem = ty.arg(0);
@@ -286,8 +293,22 @@ fn render_typed(w: W, ty: &Ty, p: u8, hand: bool) -> String {
         if !ci.shown.get(k).copied().unwrap_or(false) {
             return ci.name.clone();
         }
-        let fty = ci.templates.get(k).map_or(std::borrow::Cow::Borrowed(&crate::desc::UNKNOWN), |t| t.at(ty));
-        return paren(p > 0, format!("{} {}", ci.name, render_typed(w, &fty, 1, hand)));
+        let inner = match ci.templates.get(k) {
+            // Computed from the type's value arguments: the fields before it
+            // aren't kept, so they are given as erased.
+            Some(crate::desc::Template::Fn(f)) => {
+                let targs = (0..ci.np).map(|j| ty.arg(j).to_arg()).collect();
+                let d = crate::prog::field_type(*f, targs, &vec![ERASED; k]);
+                let s = render_typed(w, &Ty::of_word(d), 1, hand);
+                drop_w(d);
+                s
+            }
+            t => {
+                let fty = t.map_or(std::borrow::Cow::Borrowed(&crate::desc::UNKNOWN), |t| t.at(ty));
+                render_typed(w, &fty, 1, hand)
+            }
+        };
+        return paren(p > 0, format!("{} {inner}", ci.name));
     }
     let Some(c) = con_of(w) else { return render(w, p, hand) };
     let ci = &pg.cons[c as usize];
@@ -299,9 +320,19 @@ fn render_typed(w: W, ty: &Ty, p: u8, hand: bool) -> String {
         .iter()
         .enumerate()
         .filter(|(i, _)| ci.shown.get(*i).copied().unwrap_or(false))
-        .map(|(i, v)| {
-            let fty = ci.templates.get(i).map_or(std::borrow::Cow::Borrowed(&crate::desc::UNKNOWN), |t| t.at(ty));
-            render_typed(*v, &fty, 1, hand)
+        .map(|(i, v)| match ci.templates.get(i) {
+            // A type computed from earlier fields: computed now.
+            Some(crate::desc::Template::Fn(f)) => {
+                let targs = (0..ci.np).map(|j| ty.arg(j).to_arg()).collect();
+                let d = crate::prog::field_type(*f, targs, &fields[..i]);
+                let s = render_typed(*v, &Ty::of_word(d), 1, hand);
+                drop_w(d);
+                s
+            }
+            t => {
+                let fty = t.map_or(std::borrow::Cow::Borrowed(&crate::desc::UNKNOWN), |t| t.at(ty));
+                render_typed(*v, &fty, 1, hand)
+            }
         })
         .collect();
     if args.is_empty() {
@@ -372,7 +403,7 @@ fn render(w: W, p: u8, hand: bool) -> String {
         .into();
     }
     if let Some(c) = con_of(w) {
-        if let Some((f, n)) = debug_fn(c).filter(|_| hand) {
+        if let Some((f, n, _)) = debug_fn(c).filter(|d| hand || d.2) {
             return custom(f, vec![ERASED; n], w, p);
         }
         if Some(c) == k.nil || Some(c) == k.cons {
@@ -403,7 +434,7 @@ fn render(w: W, p: u8, hand: bool) -> String {
         K_RUST => match obj(w) {
             Some(Obj::Decimal(d)) => d.render(),
             Some(Obj::Bag(b)) => {
-                let items: Vec<String> = b.iter().flat_map(|(v, n)| std::iter::repeat_n(v.clone(), *n)).collect();
+                let items: Vec<String> = b.iter().flat_map(|e| std::iter::repeat_n(e.key.clone(), e.count)).collect();
                 format!("<Bag {{{}}}>", items.join(", "))
             }
             Some(Obj::File(_)) => "<File>".into(),

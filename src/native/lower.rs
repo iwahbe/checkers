@@ -274,8 +274,8 @@ pub fn lower(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId) ->
     let mut p = Program::new(g, staged);
     Lowerer::new(g, staged, &mut p).add_defs(&[main.0]);
     p.main = main.0;
-    if let Some(t) = debug_table(g) {
-        p.debug = Some(Lowerer::new(g, staged, &mut p).add_closed(&t));
+    if let Some(ir) = show_table(g) {
+        p.debug = Some(Lowerer::new(g, staged, &mut p).add_closed_ir(&ir));
     }
     p
 }
@@ -372,8 +372,13 @@ impl<'a, 'g> Lowerer<'a, 'g> {
     /// afresh each time it runs): its index.
     pub fn add_closed(&mut self, t: &Tm) -> u32 {
         let ir = Compiler { g: self.g, owner: None }.compile(t);
+        self.add_closed_ir(&ir)
+    }
+
+    /// Closed code as a function of no arguments (see `add_closed`).
+    pub fn add_closed_ir(&mut self, ir: &Ir) -> u32 {
         let mut gs = Vec::new();
-        globals_in(&ir, &mut gs);
+        globals_in(ir, &mut gs);
         let roots: Vec<u32> = gs.iter().map(|x| x.0).collect();
         self.add_defs(&roots);
         let func = self.p.funcs.len() as u32;
@@ -381,12 +386,32 @@ impl<'a, 'g> Lowerer<'a, 'g> {
         self.owner = NO_OWNER;
         self.next = 0;
         let mut ctx = Vec::new();
-        let body = self.expr(&ir, &mut ctx, true);
+        let body = self.expr(ir, &mut ctx, true);
         let f = &mut self.p.funcs[func as usize];
         f.body = body;
         f.nvars = self.next;
         func
     }
+}
+
+/// What the runtime's printer calls (#126, #170), as closed code: a pair of
+/// the hand-written `Debug` instances' functions (`debug_table`) and the
+/// functions computing fields' types from earlier fields (`field_fns`), each
+/// a list. `None` if the program has neither.
+pub fn show_table(g: &Globals) -> Option<Ir> {
+    let (nil, cons) = (g.well_known.nil?, g.well_known.cons?);
+    let fields = crate::native::field_fns(g);
+    let debug = debug_table(g);
+    if debug.is_none() && fields.is_empty() {
+        return None;
+    }
+    let c = Compiler { g, owner: None };
+    let debug = match debug {
+        Some(t) => c.go_pub(&t),
+        None => Ir::Con(nil, Vec::new()),
+    };
+    let fields = fields.iter().rev().fold(Ir::Con(nil, Vec::new()), |rest, (con, k, t)| Ir::Con(cons, vec![Arc::new(c.field_type_fn(*con, *k, t)), Arc::new(rest)]));
+    Some(Ir::Tuple(vec![Arc::new(debug), Arc::new(fields)]))
 }
 
 impl Lowerer<'_, '_> {

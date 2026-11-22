@@ -65,7 +65,7 @@ check debug b"hi" == "b\"hi\""
 
 A failed `check` shows its values in this derived form, whatever a type's own `Debug` says, so that two different values never look the same there.
 
-Generic code shows values as well as code at a known type: a function that shows values of its type parameter, with `debug` or through a function that does, is given what it needs to know about that type when it is called. So the type must be known when the program is compiled: a type that depends on a value, such as `x~(if b then U8 else Int)`, can't be given to it (E0293).
+Values are shown as their type says at every level: in generic code, through a class's types, and in fields whose types are computed from other fields. A function that shows values of its type parameter, with `debug` or through a function that does, is given what it needs to know about that type when it is called. So the type must be known when the program is compiled: a type that depends on a value known only when the program runs, such as `x~(if b then U8 else Int)`, can't be given to it (E0293). `String`'s `debug` is written in Checkers, in `std.string`.
 
 ## Run-time checks
 

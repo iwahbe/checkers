@@ -16,4 +16,16 @@ error[E0293]: `shown` shows values of type `a` (through `debug`), so `a` must be
 18 |     shown [x]                                   # error E0293
    |     ^^^^^ `a` is `List (if b then U8 else Int)` here, which depends on `b`
 
-describe_runtime_type.ck: 3 errors, 0 warnings
+error[E0293]: `debug` shows values of type `a`, so `a` must be known when the program is compiled
+  --> describe_runtime_type.ck:26:5
+   |
+26 |     debug r                                     # error E0293
+   |     ^^^^^ `a` is `ByGhost` here, and the type of `ByGhost`'s field `v` is computed from `is_text`, which isn't kept when the program runs
+
+error[E0293]: `shown` shows values of type `a` (through `debug`), so `a` must be known when the program is compiled
+  --> describe_runtime_type.ck:37:5
+   |
+37 |     shown r                                     # error E0293
+   |     ^^^^^ `a` is `ByParam b` here, which depends on `b`
+
+describe_runtime_type.ck: 5 errors, 0 warnings

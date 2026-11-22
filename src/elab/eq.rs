@@ -163,7 +163,9 @@ impl Elab {
     /// functions, then check every use.
     pub(super) fn resolve_insts(&mut self) {
         let insts = std::mem::take(&mut self.insts);
-        self.resolve_descs(&insts);
+        let mut uses = insts.clone();
+        uses.extend(std::mem::take(&mut self.dict_insts));
+        self.resolve_descs(&uses);
         loop {
             let mut changed = false;
             for i in &insts {
