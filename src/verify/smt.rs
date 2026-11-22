@@ -1299,6 +1299,19 @@ impl<'a> Builder<'a> {
             return out;
         }
         let ty = if has_meta(ty) { self.zonk(env.len(), ty) } else { ty.clone() };
+        // A class's type at a known instance is the instance's, refinements
+        // and all (#190).
+        let ty = match ty.head() {
+            Tm::Def(_) => {
+                let n = env.len();
+                let vars = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+                match crate::core::class_type_at(&self.e.g, &eval(&self.e.g, &vars, &ty)) {
+                    Some(v) => quote(&self.e.g, n, &v),
+                    None => ty,
+                }
+            }
+            _ => ty,
+        };
         // `Nat` is also the alias `n~Int, n >= 0`: each term once.
         let add = |out: &mut Vec<String>, ts: Vec<String>| {
             for t in ts {
