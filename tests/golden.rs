@@ -32,10 +32,10 @@
 //!                         `$TEXT(file)` a file's text as a JSON string), `< N`
 //!                         waits for N more messages; NAME.out is every message
 //!                         received, in order, and the exit code.
-//! tools/, examples/, stdlib/, tests/{types,run,stage,stress}: every .ck file must be
+//! tools/, examples/, bench/, stdlib/, tests/{types,run,stage,stress}: every .ck file must be
 //!                         formatted; every .ck file in the repository must format to a
 //!                         fixed point with the same syntax tree (D93).
-//! examples/*.ck        → must check with no errors and no warnings.
+//! examples/*.ck, bench/*.ck → must check with no errors and no warnings.
 //! site/*.md, README.md, the standard library's documentation → `checkers site`
 //!                         and `checkers doc` give no warnings: links resolve, code
 //!                         blocks compile and run (D148).
@@ -335,9 +335,9 @@ fn build_tool(root: &Path, update: bool, failures: &mut Vec<String>) -> usize {
 
     // The repository: formatted where it should be; everywhere, formatting
     // is a fixed point that keeps the syntax tree.
-    let formatted = ["tools", "examples", "stdlib", "tests/types", "tests/run", "tests/stage", "tests/stress"];
+    let formatted = ["tools", "examples", "bench", "stdlib", "tests/types", "tests/run", "tests/stage", "tests/stress"];
     let mut all = Vec::new();
-    for d in ["tools", "examples", "stdlib", "tests"] {
+    for d in ["tools", "examples", "bench", "stdlib", "tests"] {
         ck_tree(&root.join(d), &mut all);
     }
     for path in all {
@@ -576,13 +576,15 @@ fn golden() {
 
     count += build_tool(root, update, &mut failures);
 
-    for path in ck_files(&root.join("examples")) {
-        count += 1;
-        let file = path.file_name().unwrap().to_string_lossy().to_string();
-        let text = fs::read_to_string(&path).unwrap();
-        let c = checkers::check_in(&file, &text, &root.join("examples"));
-        if !c.diags.is_empty() {
-            failures.push(format!("── examples/{file} must be clean ──\n{}", c.report()));
+    for dir in ["examples", "bench"] {
+        for path in ck_files(&root.join(dir)) {
+            count += 1;
+            let file = path.file_name().unwrap().to_string_lossy().to_string();
+            let text = fs::read_to_string(&path).unwrap();
+            let c = checkers::check_in(&file, &text, &root.join(dir));
+            if !c.diags.is_empty() {
+                failures.push(format!("── {dir}/{file} must be clean ──\n{}", c.report()));
+            }
         }
     }
 
