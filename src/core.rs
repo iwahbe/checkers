@@ -471,6 +471,12 @@ impl Globals {
         self.cons.get(c.0 as usize).and_then(|ci| ci.fields.get(i)).is_some_and(|f| matches!(f.3, Tm::Univ(_)))
     }
 
+    /// Is `v` a class's type read from a dictionary not known (#133),
+    /// `d.$Elem`? Messages show it as written instead (`Seq.Elem s`).
+    pub fn reads_type_field(&self, v: &Val) -> bool {
+        matches!(v, Val::Neutral(_, sp) if matches!(sp.last(), Some(Elim::Field(c, i)) if self.is_type_field(*c, *i)))
+    }
+
     /// A class's type in its dictionary (#133): a field of multiplicity 0
     /// that is kept at run time, holding its type's word, for generic code's
     /// arrays of it and for showing it.
