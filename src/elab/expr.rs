@@ -953,7 +953,11 @@ impl Elab {
             Some(w) => self.presolve_result(cx, ft, fty, args.len(), &w),
             None => (ft, fty),
         };
-        let (ft, fty) = self.look_ahead(cx, ft, fty, &args);
+        let head_text = self.src_text(head.span);
+        let mut ready: HashMap<usize, (Tm, Val)> = HashMap::new();
+        let saved_arg_of = self.arg_of.replace(head_text);
+        let (ft, fty) = self.look_ahead(cx, ft, fty, &args, head_name_span, &mut ready);
+        self.arg_of = saved_arg_of;
         // `Tx a`, where `Tx` names an abstract type of another module whose
         // constructor shares its name (D155).
         if let Tm::TyCon(tid) = &ft {
@@ -971,7 +975,6 @@ impl Elab {
         let mut ty = fty;
         let head_text = self.src_text(head.span);
         let saved_arg_of = self.arg_of.replace(head_text);
-        let mut ready: HashMap<usize, (Tm, Val)> = HashMap::new();
         for (k, a) in args.iter().enumerate() {
             let mut expected = None;
             if let Some(l) = late.iter().find(|l| l.binder == super::expl_binder(n_implicit, &inner, k)) {
@@ -1545,7 +1548,18 @@ impl Elab {
     /// `map sub5 xs`): take the variable's type first, so the function is
     /// checked against the most precise type (`Small`, not `Nat`; D71, D87).
     /// Looking up a local has no effects, so nothing is elaborated twice.
-    fn look_ahead(&mut self, cx: &Cx, t: Tm, ty: Val, args: &[&Expr]) -> (Tm, Val) {
+    /// A later argument that is a call whose type can't be read that way
+    /// (its result type mentions its arguments: `find b i`) is checked here,
+    /// before the function, into `ready`, so it too is checked only once.
+    fn look_ahead(
+        &mut self,
+        cx: &mut Cx,
+        t: Tm,
+        ty: Val,
+        args: &[&Expr],
+        head_name_span: Span,
+        ready: &mut HashMap<usize, (Tm, Val)>,
+    ) -> (Tm, Val) {
         let (t, ty) = self.insert(cx, t, ty);
         let mut r = ty.clone();
         let mut first_fn = None;
@@ -1555,10 +1569,18 @@ impl Elab {
                 first_fn = Some(k);
             }
             if first_fn.is_some_and(|f| k > f) {
-                if let Some(aty) = self.shallow_type(cx, a) {
-                    let q = quote(&self.g, cx.lvl() + k, &dom);
-                    if !mentions_level_from(&q, cx.lvl() + k, cx.lvl(), 0) {
+                let q = quote(&self.g, cx.lvl() + k, &dom);
+                // Only an argument whose parameter's type doesn't depend on
+                // the ones before it can be checked out of order.
+                if !mentions_level_from(&q, cx.lvl() + k, cx.lvl(), 0) {
+                    if let Some(aty) = self.shallow_type(cx, a) {
                         let _ = unify(&self.g, cx.lvl(), &dom, &aty);
+                    } else if matches!(a.kind, ExprKind::App(..)) && !matches!(self.force(&dom), Val::Pi(..)) {
+                        self.alias_covered = self.head_checks_aliases && self.is_direct_alias(&dom);
+                        self.name_span = head_name_span;
+                        let at = self.check(cx, a, &dom, false);
+                        let av = self.eval(cx, &at);
+                        ready.insert(k, (at, av));
                     }
                 }
             }
