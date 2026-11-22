@@ -40,6 +40,9 @@
 //!                         and `checkers doc` give no warnings: links resolve, code
 //!                         blocks compile and run (D148).
 //!
+//! The cases run in parallel, on CHECKERS_GOLDEN_THREADS threads (default: one
+//! per core); failures are reported in the order above.
+//!
 //! `UPDATE_GOLDEN=1 cargo test --test golden` rewrites the .out files.
 
 use std::fs;
@@ -224,17 +227,10 @@ fn tree(name: &str, text: &str) -> Option<String> {
     c.diags.is_empty().then(|| checkers::syntax::print::module(&c.module))
 }
 
-/// The build tool (M11, D95): it checks clean; it builds; `checkers fmt`
-/// and `checkers` commands give their golden output; the repository is
-/// formatted.
-fn build_tool(root: &Path, update: bool, failures: &mut Vec<String>) -> usize {
-    let mut count = 1;
-    let tools = root.join("tools");
-    let main = tools.join("checkers.ck");
-    let c = checkers::check_in("checkers.ck", &fs::read_to_string(&main).unwrap(), &tools);
-    if !c.diags.is_empty() {
-        failures.push(format!("── tools/checkers.ck must be clean ──\n{}", c.report()));
-    }
+/// The build tool (M11, D95): it builds; `checkers fmt` and `checkers`
+/// commands give their golden output; the repository is formatted. The
+/// cases that run `checkers` are added as jobs once it is built.
+fn build_tool(pool: &Pool, root: &'static Path, update: bool) -> Outcome {
     let exe = std::env::temp_dir().join(format!("checkers-golden-{}-tool", std::process::id()));
     let built = std::process::Command::new(env!("CARGO_BIN_EXE_ckc"))
         .env("CHECKERS_NO_CACHE", "1")
@@ -244,25 +240,42 @@ fn build_tool(root: &Path, update: bool, failures: &mut Vec<String>) -> usize {
         .output()
         .expect("run ckc build");
     if !built.status.success() {
-        failures.push(format!("── build tools/checkers.ck ──\n{}", String::from_utf8_lossy(&built.stderr)));
-        return count;
+        return (0, vec![format!("── build tools/checkers.ck ──\n{}", String::from_utf8_lossy(&built.stderr))]);
     }
-    let fmt = |text: &[u8]| run_with(&exe, &["fmt", "-"], text, root);
+    let exe = std::sync::Arc::new(Removed(exe));
+    let rel = |p: &Path| p.strip_prefix(root).unwrap_or(p).display().to_string();
+    // Reported in this order (keys from 2: 0 and 1 are the check and the build).
+    let mut jobs: Vec<(String, Task)> = Vec::new();
+    // Started first: the site takes longest.
+    let mut first: Vec<(String, Task)> = Vec::new();
 
     for path in ck_files(&root.join("tests").join("fmt")) {
-        count += 1;
-        let actual = shown(&fmt(&fs::read(&path).unwrap()));
-        compare(root, &path.with_extension("out"), &actual, update, failures);
+        let exe = exe.clone();
+        jobs.push((
+            rel(&path),
+            Box::new(move |_: &Pool| {
+                let mut failures = Vec::new();
+                let actual = shown(&fmt(&exe.0, &fs::read(&path).unwrap(), root));
+                compare(root, &path.with_extension("out"), &actual, update, &mut failures);
+                (1, failures)
+            }),
+        ));
     }
-    let tool_dir = root.join("tests").join("tool");
-    for path in files_with(&tool_dir, "args") {
-        count += 1;
-        let mut actual = String::new();
-        for line in fs::read_to_string(&path).unwrap().lines() {
-            let args: Vec<&str> = line.split_whitespace().collect();
-            actual += &format!("$ checkers {line}\n{}", shown(&run_with(&exe, &args, b"", root)));
-        }
-        compare(root, &path.with_extension("out"), &actual, update, failures);
+    for path in files_with(&root.join("tests").join("tool"), "args") {
+        let exe = exe.clone();
+        jobs.push((
+            rel(&path),
+            Box::new(move |_: &Pool| {
+                let mut failures = Vec::new();
+                let mut actual = String::new();
+                for line in fs::read_to_string(&path).unwrap().lines() {
+                    let args: Vec<&str> = line.split_whitespace().collect();
+                    actual += &format!("$ checkers {line}\n{}", shown(&run_with(&exe.0, &args, b"", root)));
+                }
+                compare(root, &path.with_extension("out"), &actual, update, &mut failures);
+                (1, failures)
+            }),
+        ));
     }
 
     // Documentation (§15.6): a package's `ckc doc` lines and the pages
@@ -271,126 +284,164 @@ fn build_tool(root: &Path, update: bool, failures: &mut Vec<String>) -> usize {
     let mut cases: Vec<PathBuf> = fs::read_dir(&doc_dir).map(|rd| rd.map(|e| e.unwrap().path()).filter(|p| p.is_dir()).collect()).unwrap_or_default();
     cases.sort();
     for case in cases {
-        count += 1;
-        let name = case.file_name().unwrap().to_string_lossy().to_string();
-        let rel = case.strip_prefix(root).unwrap().display().to_string();
-        let out = std::env::temp_dir().join(format!("checkers-golden-{}-doc-{name}", std::process::id()));
-        let _ = fs::remove_dir_all(&out);
-        let out_s = out.display().to_string();
-        let mut actual = String::new();
-        // A package with a manifest is documented from its own directory,
-        // as `.`, and named by its manifest.
-        let named = case.join("checkers.json").exists();
-        let result = if case.join("index.md").exists() {
-            run_with(&exe, &["site", &rel, "-o", &out_s], b"", root)
-        } else {
-            let mut sources = Vec::new();
-            ck_tree(&case, &mut sources);
-            for src in sources {
-                let src_rel = src.strip_prefix(root).unwrap().display().to_string();
-                let o = std::process::Command::new(env!("CARGO_BIN_EXE_ckc")).args(["doc", &src_rel]).current_dir(root).output().unwrap();
-                actual += &format!("$ ckc doc {src_rel}\n{}", shown(&o));
-            }
-            if named {
-                run_with(&exe, &["doc", ".", "-o", &out_s], b"", &case)
-            } else {
-                run_with(&exe, &["doc", &rel, "-o", &out_s, "--name", &name], b"", root)
-            }
-        };
-        let command = if case.join("index.md").exists() {
-            format!("site {rel} -o OUT")
-        } else if named {
-            format!("doc . -o OUT  (in {rel})")
-        } else {
-            format!("doc {rel} -o OUT")
-        };
-        actual += &format!("$ checkers {command}\n{}", shown(&result));
-        let mut written = Vec::new();
-        let mut stack = vec![out.clone()];
-        while let Some(d) = stack.pop() {
-            for e in fs::read_dir(&d).into_iter().flatten() {
-                let p = e.unwrap().path();
-                if p.is_dir() {
-                    stack.push(p);
-                } else {
-                    written.push(p);
-                }
-            }
-        }
-        written.sort();
-        for p in written {
-            let text = fs::read_to_string(&p).unwrap();
-            actual += &format!("== OUT/{}\n{text}", p.strip_prefix(&out).unwrap().display());
-        }
-        let _ = fs::remove_dir_all(&out);
-        compare(root, &doc_dir.join(format!("{name}.out")), &actual.replace(&out_s, "OUT"), update, failures);
+        let exe = exe.clone();
+        let doc_dir = doc_dir.clone();
+        jobs.push((rel(&case), Box::new(move |_: &Pool| (1, doc_case(&exe.0, root, &doc_dir, &case, update)))));
     }
 
-    let lsp_dir = root.join("tests").join("lsp");
-    for path in files_with(&lsp_dir, "session") {
-        count += 1;
-        let actual = lsp_session(&exe, root, &path);
-        compare(root, &path.with_extension("out"), &actual, update, failures);
+    for path in files_with(&root.join("tests").join("lsp"), "session") {
+        let exe = exe.clone();
+        jobs.push((
+            rel(&path),
+            Box::new(move |_: &Pool| {
+                let mut failures = Vec::new();
+                let actual = lsp_session(&exe.0, root, &path);
+                compare(root, &path.with_extension("out"), &actual, update, &mut failures);
+                (1, failures)
+            }),
+        ));
     }
 
     // The repository: formatted where it should be; everywhere, formatting
     // is a fixed point that keeps the syntax tree.
-    let formatted = ["tools", "examples", "bench", "stdlib", "tests/types", "tests/run", "tests/stage", "tests/stress"];
     let mut all = Vec::new();
     for d in ["tools", "examples", "bench", "stdlib", "tests"] {
         ck_tree(&root.join(d), &mut all);
     }
     for path in all {
-        let rel = path.strip_prefix(root).unwrap();
-        let name = rel.display().to_string();
-        let text = fs::read(&path).unwrap();
-        let once = fmt(&text);
-        if !once.status.success() {
-            continue; // not lexically valid: tests/check has such files on purpose
-        }
-        count += 1;
-        let twice = fmt(&once.stdout);
-        if twice.stdout != once.stdout {
-            failures.push(format!("── formatting {name} twice changes it ──"));
-        }
-        let (a, b) = (String::from_utf8_lossy(&text), String::from_utf8_lossy(&once.stdout));
-        if let Some(t) = tree(&name, &a) {
-            if tree(&name, &b).as_ref() != Some(&t) {
-                failures.push(format!("── formatting {name} changes its syntax tree ──\n{b}"));
-            }
-        }
-        if formatted.iter().any(|d| rel.starts_with(d)) && once.stdout != text {
-            failures.push(format!("── {name} is not formatted (`checkers fmt {name}`) ──"));
-        }
+        let exe = exe.clone();
+        jobs.push((rel(&path), Box::new(move |_: &Pool| formatted(&exe.0, root, &path))));
     }
-    count += literate_clean(&exe, root, failures);
-    let _ = fs::remove_file(&exe);
-    count
+
+    // The site, the README and the standard library's documentation: their
+    // links resolve and their code compiles (and runs) with no warnings (D148 e).
+    for (i, what) in ["site/", "README.md", "the standard library's documentation"].into_iter().enumerate() {
+        let exe = exe.clone();
+        first.push((what.to_string(), Box::new(move |_: &Pool| literate_clean(&exe.0, root, i, what))));
+    }
+
+    let n = jobs.len();
+    let keyed = |j: Vec<(String, Task)>, from: usize| j.into_iter().enumerate().map(move |(i, (name, t))| ((9, from + i), name, t));
+    let mut queue: Vec<(Key, String, Task)> = keyed(first, 2 + n).collect();
+    queue.extend(keyed(jobs, 2));
+    pool.add_first(queue);
+    (0, Vec::new())
 }
 
-/// The site, the README and the standard library's documentation: their
-/// links resolve and their code compiles (and runs) with no warnings (D148 e).
-fn literate_clean(exe: &Path, root: &Path, failures: &mut Vec<String>) -> usize {
-    let tmp = std::env::temp_dir().join(format!("checkers-golden-{}-literate", std::process::id()));
-    let _ = fs::remove_dir_all(&tmp);
-    fs::create_dir_all(tmp.join("readme")).unwrap();
-    fs::copy(root.join("README.md"), tmp.join("readme").join("index.md")).unwrap();
-    let out = |name: &str| tmp.join(name).display().to_string();
-    let readme = tmp.join("readme").display().to_string();
-    let runs: [(&str, Vec<String>); 3] = [
-        ("site/", vec!["site".into(), "site".into(), "-o".into(), out("site")]),
-        ("README.md", vec!["site".into(), readme, "-o".into(), out("readme-out")]),
-        ("the standard library's documentation", vec!["doc".into(), "stdlib".into(), "-o".into(), out("std"), "--name".into(), "std".into()]),
-    ];
-    for (what, args) in &runs {
-        let args: Vec<&str> = args.iter().map(|a| a.as_str()).collect();
-        let o = run_with(exe, &args, b"", root);
-        if !o.status.success() || !o.stderr.is_empty() {
-            failures.push(format!("── {what} must have no warnings (D148) ──\n{}", String::from_utf8_lossy(&o.stderr)));
+fn fmt(exe: &Path, text: &[u8], root: &Path) -> std::process::Output {
+    run_with(exe, &["fmt", "-"], text, root)
+}
+
+/// A `tests/doc/NAME/` case (§15.6).
+fn doc_case(exe: &Path, root: &Path, doc_dir: &Path, case: &Path, update: bool) -> Vec<String> {
+    let mut failures = Vec::new();
+    let name = case.file_name().unwrap().to_string_lossy().to_string();
+    let rel = case.strip_prefix(root).unwrap().display().to_string();
+    let out = std::env::temp_dir().join(format!("checkers-golden-{}-doc-{name}", std::process::id()));
+    let _ = fs::remove_dir_all(&out);
+    let out_s = out.display().to_string();
+    let mut actual = String::new();
+    // A package with a manifest is documented from its own directory,
+    // as `.`, and named by its manifest.
+    let named = case.join("checkers.json").exists();
+    let result = if case.join("index.md").exists() {
+        run_with(exe, &["site", &rel, "-o", &out_s], b"", root)
+    } else {
+        let mut sources = Vec::new();
+        ck_tree(case, &mut sources);
+        for src in sources {
+            let src_rel = src.strip_prefix(root).unwrap().display().to_string();
+            let o = std::process::Command::new(env!("CARGO_BIN_EXE_ckc")).args(["doc", &src_rel]).current_dir(root).output().unwrap();
+            actual += &format!("$ ckc doc {src_rel}\n{}", shown(&o));
+        }
+        if named {
+            run_with(exe, &["doc", ".", "-o", &out_s], b"", case)
+        } else {
+            run_with(exe, &["doc", &rel, "-o", &out_s, "--name", &name], b"", root)
+        }
+    };
+    let command = if case.join("index.md").exists() {
+        format!("site {rel} -o OUT")
+    } else if named {
+        format!("doc . -o OUT  (in {rel})")
+    } else {
+        format!("doc {rel} -o OUT")
+    };
+    actual += &format!("$ checkers {command}\n{}", shown(&result));
+    let mut written = Vec::new();
+    let mut stack = vec![out.clone()];
+    while let Some(d) = stack.pop() {
+        for e in fs::read_dir(&d).into_iter().flatten() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                stack.push(p);
+            } else {
+                written.push(p);
+            }
         }
     }
+    written.sort();
+    for p in written {
+        let text = fs::read_to_string(&p).unwrap();
+        actual += &format!("== OUT/{}\n{text}", p.strip_prefix(&out).unwrap().display());
+    }
+    let _ = fs::remove_dir_all(&out);
+    compare(root, &doc_dir.join(format!("{name}.out")), &actual.replace(&out_s, "OUT"), update, &mut failures);
+    failures
+}
+
+/// One `.ck` file of the repository: formatting it twice changes nothing
+/// more, keeps its syntax tree, and, where the repository must be
+/// formatted, changes nothing at all.
+fn formatted(exe: &Path, root: &Path, path: &Path) -> Outcome {
+    const FORMATTED: [&str; 8] = ["tools", "examples", "bench", "stdlib", "tests/types", "tests/run", "tests/stage", "tests/stress"];
+    let mut failures = Vec::new();
+    let rel = path.strip_prefix(root).unwrap();
+    let name = rel.display().to_string();
+    let text = fs::read(path).unwrap();
+    let once = fmt(exe, &text, root);
+    if !once.status.success() {
+        return (0, failures); // not lexically valid: tests/check has such files on purpose
+    }
+    let twice = fmt(exe, &once.stdout, root);
+    if twice.stdout != once.stdout {
+        failures.push(format!("── formatting {name} twice changes it ──"));
+    }
+    let (a, b) = (String::from_utf8_lossy(&text), String::from_utf8_lossy(&once.stdout));
+    if let Some(t) = tree(&name, &a) {
+        if tree(&name, &b).as_ref() != Some(&t) {
+            failures.push(format!("── formatting {name} changes its syntax tree ──\n{b}"));
+        }
+    }
+    if FORMATTED.iter().any(|d| rel.starts_with(d)) && once.stdout != text {
+        failures.push(format!("── {name} is not formatted (`checkers fmt {name}`) ──"));
+    }
+    (1, failures)
+}
+
+/// The site (0), the README (1) or the standard library's documentation (2):
+/// no warnings (D148 e).
+fn literate_clean(exe: &Path, root: &Path, which: usize, what: &str) -> Outcome {
+    let tmp = std::env::temp_dir().join(format!("checkers-golden-{}-literate-{which}", std::process::id()));
     let _ = fs::remove_dir_all(&tmp);
-    runs.len()
+    fs::create_dir_all(&tmp).unwrap();
+    let out = tmp.join("out").display().to_string();
+    let args: Vec<String> = match which {
+        0 => vec!["site".into(), "site".into(), "-o".into(), out],
+        1 => {
+            fs::create_dir_all(tmp.join("readme")).unwrap();
+            fs::copy(root.join("README.md"), tmp.join("readme").join("index.md")).unwrap();
+            vec!["site".into(), tmp.join("readme").display().to_string(), "-o".into(), out]
+        }
+        _ => vec!["doc".into(), "stdlib".into(), "-o".into(), out, "--name".into(), "std".into()],
+    };
+    let args: Vec<&str> = args.iter().map(|a| a.as_str()).collect();
+    let o = run_with(exe, &args, b"", root);
+    let _ = fs::remove_dir_all(&tmp);
+    if !o.status.success() || !o.stderr.is_empty() {
+        return (1, vec![format!("── {what} must have no warnings (D148) ──\n{}", String::from_utf8_lossy(&o.stderr))]);
+    }
+    (1, Vec::new())
 }
 
 /// A run result with its stdout lines sorted.
@@ -406,6 +457,16 @@ fn sorted_stdout(out: &str) -> String {
     s + "-- stderr\n" + rest
 }
 
+/// Held while checking in this process: evaluating `check`s installs the
+/// runtime's program descriptor, one per process, so two checks evaluated
+/// at once would read each other's. Subprocesses don't need it.
+static IN_PROCESS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn in_process<T>(f: impl FnOnce() -> T) -> T {
+    let _held = IN_PROCESS.lock().unwrap_or_else(|e| e.into_inner());
+    f()
+}
+
 fn run(path: &Path, mode: &str) -> String {
     let text = fs::read_to_string(path).unwrap();
     let name = path.file_name().unwrap().to_string_lossy().to_string();
@@ -413,7 +474,7 @@ fn run(path: &Path, mode: &str) -> String {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let dir = path.parent().unwrap().strip_prefix(root).unwrap_or(Path::new("")).to_path_buf();
     let c = if mode == "types" || mode == "stage" {
-        checkers::check_in(&name, &text, &dir)
+        in_process(|| checkers::check_in(&name, &text, &dir))
     } else {
         checkers::parse_only(&name, &text)
     };
@@ -433,171 +494,315 @@ fn run(path: &Path, mode: &str) -> String {
 }
 
 fn main() {
-    // Checking recurses deeply: a big stack.
+    // Checking recurses deeply: a big stack (each worker has one too).
     checkers::with_big_stack(golden);
 }
 
-fn golden() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let update = std::env::var_os("UPDATE_GOLDEN").is_some();
-    let mut failures = Vec::new();
-    let mut count = 0;
+/// What a job reports: how many cases it ran, and their failures.
+type Outcome = (usize, Vec<String>);
+type Task = Box<dyn FnOnce(&Pool) -> Outcome + Send>;
 
-    for mode in ["parse", "check", "types", "stage"] {
-        for path in ck_files(&root.join("tests").join(mode)) {
-            count += 1;
-            compare_as(root, &path, &path.with_extension("out"), &run(&path, mode), update, &mut failures);
+/// Where a job's failures are reported: its section, then its place in it.
+type Key = (usize, usize);
+
+/// The cases as jobs, run by several threads. A job can add jobs: the cases
+/// that need `checkers` wait for its build. Jobs that check in this process
+/// run one at a time (`in_process`), and take no worker while they wait.
+/// Failures are reported in the order of their keys, whatever order the
+/// jobs finish in.
+#[derive(Default)]
+struct Pool {
+    state: std::sync::Mutex<PoolState>,
+    ready: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct PoolState {
+    queue: std::collections::VecDeque<(Key, String, Task)>,
+    /// Jobs that check in this process; `local_busy` while one runs.
+    local: std::collections::VecDeque<(Key, String, Task)>,
+    local_busy: bool,
+    running: usize,
+    outcomes: Vec<(Key, Outcome)>,
+}
+
+impl Pool {
+    fn lock(&self) -> std::sync::MutexGuard<'_, PoolState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Add a job after those waiting.
+    fn add(&self, key: Key, name: String, task: impl FnOnce(&Pool) -> Outcome + Send + 'static) {
+        self.lock().queue.push_back((key, name, Box::new(task)));
+        self.ready.notify_one();
+    }
+
+    /// Add a job that checks in this process.
+    fn add_local(&self, key: Key, name: String, task: impl FnOnce(&Pool) -> Outcome + Send + 'static) {
+        self.lock().local.push_back((key, name, Box::new(task)));
+        self.ready.notify_one();
+    }
+
+    /// Add jobs before those waiting, in this order.
+    fn add_first(&self, jobs: Vec<(Key, String, Task)>) {
+        let mut st = self.lock();
+        for job in jobs.into_iter().rev() {
+            st.queue.push_front(job);
+        }
+        drop(st);
+        self.ready.notify_all();
+    }
+
+    /// Run every job, and every job they add, on `threads` threads.
+    fn run(&self, threads: usize) -> Outcome {
+        std::thread::scope(|s| {
+            for _ in 0..threads.max(1) {
+                std::thread::Builder::new().stack_size(1 << 30).spawn_scoped(s, || self.work()).expect("spawn a golden worker");
+            }
+        });
+        let mut outcomes = std::mem::take(&mut self.lock().outcomes);
+        outcomes.sort_by_key(|(k, _)| *k);
+        let count = outcomes.iter().map(|(_, (n, _))| n).sum();
+        (count, outcomes.into_iter().flat_map(|(_, (_, f))| f).collect())
+    }
+
+    fn work(&self) {
+        loop {
+            let mut st = self.lock();
+            let (local, (key, name, task)) = loop {
+                if !st.local_busy {
+                    if let Some(job) = st.local.pop_front() {
+                        st.local_busy = true;
+                        st.running += 1;
+                        break (true, job);
+                    }
+                }
+                if let Some(job) = st.queue.pop_front() {
+                    st.running += 1;
+                    break (false, job);
+                }
+                if st.running == 0 {
+                    return;
+                }
+                st = self.ready.wait(st).unwrap_or_else(|e| e.into_inner());
+            };
+            drop(st);
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| task(self))).unwrap_or_else(|p| {
+                let why = p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_default();
+                (1, vec![format!("── {name} panicked ──\n{why}\n")])
+            });
+            let mut st = self.lock();
+            st.running -= 1;
+            st.outcomes.push((key, outcome));
+            if local {
+                st.local_busy = false;
+            }
+            if local || (st.running == 0 && st.queue.is_empty()) {
+                self.ready.notify_all();
+            }
+        }
+    }
+}
+
+/// A file removed when the last job using it is done.
+struct Removed(PathBuf);
+
+impl Drop for Removed {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+fn golden() {
+    let root: &'static Path = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let update = std::env::var_os("UPDATE_GOLDEN").is_some();
+    let threads = std::env::var("CHECKERS_GOLDEN_THREADS")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()));
+    let pool = Pool::default();
+    let rel = |p: &Path| p.strip_prefix(root).unwrap_or(p).display().to_string();
+
+    // The longest jobs start first: the build of `checkers` (the site waits
+    // for it), the stress tests, the standard library.
+    pool.add((9, 1), "build tools/checkers.ck".into(), move |pool| build_tool(pool, root, update));
+
+    // Stress tests: every run on many threads must give the same result.
+    let runs: usize = std::env::var("CHECKERS_STRESS_RUNS").ok().and_then(|n| n.parse().ok()).unwrap_or(10);
+    for (i, path) in files_with(&root.join("tests").join("stress"), "args").into_iter().enumerate() {
+        pool.add((7, i), rel(&path), move |_| {
+            let mut failures = Vec::new();
+            let mut seen: Vec<String> = Vec::new();
+            for _ in 0..runs.max(1) {
+                let actual = sorted_stdout(&run_native(&path, 8));
+                if !seen.contains(&actual) {
+                    seen.push(actual);
+                }
+            }
+            if seen.len() > 1 {
+                let name = path.strip_prefix(root).unwrap().display();
+                failures.push(format!("── {name}: {} different results in {runs} runs ──\n{}", seen.len(), seen.join("--- or\n")));
+            } else {
+                compare_as(root, &path, &path.with_extension("out"), &seen[0], update, &mut failures);
+            }
+            (1, failures)
+        });
+    }
+
+    // The standard library's own lemmas and postconditions are proven too.
+    pool.add_local((11, 0), "the standard library".into(), |_| {
+        let stdlib = in_process(checkers::check_stdlib);
+        (1, if stdlib.is_empty() { vec![] } else { vec![format!("── the standard library must verify ──\n{stdlib}")] })
+    });
+
+    pool.add_local((9, 0), "check tools/checkers.ck".into(), move |_| {
+        let tools = root.join("tools");
+        let c = in_process(|| checkers::check_in("checkers.ck", &fs::read_to_string(tools.join("checkers.ck")).unwrap(), &tools));
+        (1, if c.diags.is_empty() { vec![] } else { vec![format!("── tools/checkers.ck must be clean ──\n{}", c.report())] })
+    });
+
+    for (m, mode) in ["parse", "check", "types", "stage"].into_iter().enumerate() {
+        for (i, path) in ck_files(&root.join("tests").join(mode)).into_iter().enumerate() {
+            let name = rel(&path);
+            let job = move |_: &Pool| {
+                let mut failures = Vec::new();
+                compare_as(root, &path, &path.with_extension("out"), &run(&path, mode), update, &mut failures);
+                (1, failures)
+            };
+            if mode == "types" || mode == "stage" {
+                pool.add_local((m, i), name, job);
+            } else {
+                pool.add((m, i), name, job);
+            }
         }
     }
 
     // `ckc complete` (§15.5, D142): each `‸` in the file is a cursor.
-    for path in ck_files(&root.join("tests").join("complete")) {
-        count += 1;
-        let rel = path.strip_prefix(root).unwrap().to_string_lossy().to_string();
-        let marked = fs::read_to_string(&path).unwrap();
-        let text = marked.replace('‸', "");
-        let mut actual = String::new();
-        let mut removed = 0;
-        for (at, _) in marked.match_indices('‸') {
-            let at = at - removed;
-            removed += '‸'.len_utf8();
-            let line = text[..at].matches('\n').count();
-            let col = at - text[..at].rfind('\n').map_or(0, |i| i + 1);
-            let overlay = format!("{{{}:{}}}", json_str(&rel), json_str(&text));
-            let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_ckc"))
+    for (i, path) in ck_files(&root.join("tests").join("complete")).into_iter().enumerate() {
+        pool.add((4, i), rel(&path), move |_| {
+            let mut failures = Vec::new();
+            let rel = path.strip_prefix(root).unwrap().to_string_lossy().to_string();
+            let marked = fs::read_to_string(&path).unwrap();
+            let text = marked.replace('‸', "");
+            let mut actual = String::new();
+            let mut removed = 0;
+            for (at, _) in marked.match_indices('‸') {
+                let at = at - removed;
+                removed += '‸'.len_utf8();
+                let line = text[..at].matches('\n').count();
+                let col = at - text[..at].rfind('\n').map_or(0, |i| i + 1);
+                let overlay = format!("{{{}:{}}}", json_str(&rel), json_str(&text));
+                let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_ckc"))
+                    .env("CHECKERS_NO_CACHE", "1")
+                    .current_dir(root)
+                    .args(["complete", "--overlay", "-", &rel, &line.to_string(), &col.to_string()])
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .expect("run ckc complete");
+                use std::io::Write as _;
+                child.stdin.take().unwrap().write_all(overlay.as_bytes()).unwrap();
+                let out = child.wait_with_output().unwrap();
+                actual += &format!("== line {}, column {}\n", line + 1, col + 1);
+                for l in String::from_utf8_lossy(&out.stdout).lines() {
+                    actual += &complete_line(l);
+                }
+                actual += &String::from_utf8_lossy(&out.stderr);
+            }
+            compare(root, &path.with_extension("out"), &actual, update, &mut failures);
+            (1, failures)
+        });
+    }
+
+    // `ckc check --json` (§15.5).
+    for (i, path) in ck_files(&root.join("tests").join("json")).into_iter().enumerate() {
+        pool.add((5, i), rel(&path), move |_| {
+            let mut failures = Vec::new();
+            let rel = path.strip_prefix(root).unwrap().to_string_lossy().to_string();
+            let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_ckc"));
+            cmd.env("CHECKERS_NO_CACHE", "1").current_dir(root).arg("check").arg("--json");
+            let overlay = path.with_extension("overlay");
+            if overlay.exists() {
+                cmd.arg("--overlay").arg(&overlay);
+            }
+            let out = cmd.arg(&rel).output().expect("run ckc check --json");
+            let root_text = root.canonicalize().unwrap().to_string_lossy().to_string();
+            let actual = format!("{}-- exit {}\n", String::from_utf8_lossy(&out.stdout), out.status.code().unwrap_or(-1))
+                .replace(&root_text, "$ROOT")
+                + &String::from_utf8_lossy(&out.stderr);
+            compare_as(root, &path, &path.with_extension("out"), &actual, update, &mut failures);
+            (1, failures)
+        });
+    }
+
+    let run_dir = root.join("tests").join("run");
+    for (i, path) in files_with(&run_dir, "args").into_iter().enumerate() {
+        pool.add((6, i), rel(&path), move |_| {
+            let mut failures = Vec::new();
+            compare_as(root, &path, &path.with_extension("out"), &run_native(&path, 1), update, &mut failures);
+            (1, failures)
+        });
+    }
+
+    // Executables (`checkers build`): built, then run like a run case.
+    for (i, (args_name, program)) in [("wc_stdin", "examples/wc.ck"), ("behaviours", "tests/run/behaviours.ck")].into_iter().enumerate() {
+        let run_dir = run_dir.clone();
+        pool.add((8, i), format!("build {program}"), move |_| {
+            let exe = Removed(std::env::temp_dir().join(format!("checkers-golden-{}-{args_name}", std::process::id())));
+            let built = std::process::Command::new(env!("CARGO_BIN_EXE_ckc"))
                 .env("CHECKERS_NO_CACHE", "1")
+                .args(["build", program, "-o"])
+                .arg(&exe.0)
                 .current_dir(root)
-                .args(["complete", "--overlay", "-", &rel, &line.to_string(), &col.to_string()])
+                .output()
+                .expect("run ckc build");
+            if !built.status.success() {
+                return (1, vec![format!("── build {program} ──\n{}", String::from_utf8_lossy(&built.stderr))]);
+            }
+            let args_path = run_dir.join(format!("{args_name}.args"));
+            let spec = fs::read_to_string(&args_path).unwrap();
+            let stdin = fs::read(args_path.with_extension("in")).unwrap_or_default();
+            let mut child = std::process::Command::new(&exe.0)
+                .args(spec.lines().skip(1))
+                .env("CHECKERS_THREADS", "1")
+                .current_dir(&run_dir)
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .spawn()
-                .expect("run ckc complete");
-            use std::io::Write as _;
-            child.stdin.take().unwrap().write_all(overlay.as_bytes()).unwrap();
+                .expect("run the executable");
+            child.stdin.take().unwrap().write_all(&stdin).unwrap();
             let out = child.wait_with_output().unwrap();
-            actual += &format!("== line {}, column {}\n", line + 1, col + 1);
-            for l in String::from_utf8_lossy(&out.stdout).lines() {
-                actual += &complete_line(l);
-            }
-            actual += &String::from_utf8_lossy(&out.stderr);
-        }
-        compare(root, &path.with_extension("out"), &actual, update, &mut failures);
+            let actual = format!(
+                "-- stdout\n{}-- stderr\n{}-- exit {}\n",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr),
+                out.status.code().unwrap_or(-1)
+            );
+            let expected = fs::read_to_string(args_path.with_extension("out")).unwrap_or_default();
+            (1, if actual == expected { vec![] } else { vec![format!("── built {program} ──\n--- expected\n{expected}\n--- actual\n{actual}")] })
+        });
     }
 
-    // `ckc check --json` (§15.5).
-    for path in ck_files(&root.join("tests").join("json")) {
-        count += 1;
-        let rel = path.strip_prefix(root).unwrap().to_string_lossy().to_string();
-        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_ckc"));
-        cmd.env("CHECKERS_NO_CACHE", "1").current_dir(root).arg("check").arg("--json");
-        let overlay = path.with_extension("overlay");
-        if overlay.exists() {
-            cmd.arg("--overlay").arg(&overlay);
-        }
-        let out = cmd.arg(&rel).output().expect("run ckc check --json");
-        let root_text = root.canonicalize().unwrap().to_string_lossy().to_string();
-        let actual = format!("{}-- exit {}\n", String::from_utf8_lossy(&out.stdout), out.status.code().unwrap_or(-1))
-            .replace(&root_text, "$ROOT")
-            + &String::from_utf8_lossy(&out.stderr);
-        compare_as(root, &path, &path.with_extension("out"), &actual, update, &mut failures);
-    }
-
-    let run_dir = root.join("tests").join("run");
-    std::env::set_current_dir(&run_dir).unwrap();
-    for path in files_with(&run_dir, "args") {
-        count += 1;
-        compare_as(root, &path, &path.with_extension("out"), &run_native(&path, 1), update, &mut failures);
-    }
-
-    // Stress tests: every run on many threads must give the same result.
-    let stress_dir = root.join("tests").join("stress");
-    let runs: usize = std::env::var("CHECKERS_STRESS_RUNS").ok().and_then(|n| n.parse().ok()).unwrap_or(10);
-    std::env::set_current_dir(&stress_dir).unwrap();
-    for path in files_with(&stress_dir, "args") {
-        count += 1;
-        let mut seen: Vec<String> = Vec::new();
-        for _ in 0..runs.max(1) {
-            let actual = sorted_stdout(&run_native(&path, 8));
-            if !seen.contains(&actual) {
-                seen.push(actual);
-            }
-        }
-        if seen.len() > 1 {
-            let name = path.strip_prefix(root).unwrap().display();
-            failures.push(format!("── {name}: {} different results in {runs} runs ──\n{}", seen.len(), seen.join("--- or\n")));
-        } else {
-            compare_as(root, &path, &path.with_extension("out"), &seen[0], update, &mut failures);
-        }
-    }
-    std::env::set_current_dir(root).unwrap();
-
-    // Executables (`checkers build`): built, then run like a run case.
-    for (args_name, program) in [("wc_stdin", "examples/wc.ck"), ("behaviours", "tests/run/behaviours.ck")] {
-        count += 1;
-        let exe = std::env::temp_dir().join(format!("checkers-golden-{}-{args_name}", std::process::id()));
-        let built = std::process::Command::new(env!("CARGO_BIN_EXE_ckc"))
-            .env("CHECKERS_NO_CACHE", "1")
-            .args(["build", program, "-o"])
-            .arg(&exe)
-            .current_dir(root)
-            .output()
-            .expect("run ckc build");
-        if !built.status.success() {
-            failures.push(format!("── build {program} ──\n{}", String::from_utf8_lossy(&built.stderr)));
-            continue;
-        }
-        let args_path = run_dir.join(format!("{args_name}.args"));
-        let spec = fs::read_to_string(&args_path).unwrap();
-        let stdin = fs::read(args_path.with_extension("in")).unwrap_or_default();
-        let mut child = std::process::Command::new(&exe)
-            .args(spec.lines().skip(1))
-            .env("CHECKERS_THREADS", "1")
-            .current_dir(&run_dir)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .expect("run the executable");
-        child.stdin.take().unwrap().write_all(&stdin).unwrap();
-        let out = child.wait_with_output().unwrap();
-        let _ = fs::remove_file(&exe);
-        let actual = format!(
-            "-- stdout\n{}-- stderr\n{}-- exit {}\n",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr),
-            out.status.code().unwrap_or(-1)
-        );
-        let expected = fs::read_to_string(args_path.with_extension("out")).unwrap_or_default();
-        if actual != expected {
-            failures.push(format!("── built {program} ──\n--- expected\n{expected}\n--- actual\n{actual}"));
-        }
-    }
-
-    count += build_tool(root, update, &mut failures);
-
+    let mut i = 0;
     for dir in ["examples", "bench"] {
         for path in ck_files(&root.join(dir)) {
-            count += 1;
-            let file = path.file_name().unwrap().to_string_lossy().to_string();
-            let text = fs::read_to_string(&path).unwrap();
-            let c = checkers::check_in(&file, &text, &root.join(dir));
-            if !c.diags.is_empty() {
-                failures.push(format!("── {dir}/{file} must be clean ──\n{}", c.report()));
-            }
+            pool.add_local((10, i), rel(&path), move |_| {
+                let file = path.file_name().unwrap().to_string_lossy().to_string();
+                let text = fs::read_to_string(&path).unwrap();
+                let c = in_process(|| checkers::check_in(&file, &text, &root.join(dir)));
+                (1, if c.diags.is_empty() { vec![] } else { vec![format!("── {dir}/{file} must be clean ──\n{}", c.report())] })
+            });
+            i += 1;
         }
     }
 
-
-    // The standard library's own lemmas and postconditions are proven too.
-    count += 1;
-    let stdlib = checkers::check_stdlib();
-    if !stdlib.is_empty() {
-        failures.push(format!("── the standard library must verify ──\n{stdlib}"));
-    }
-
+    let start = std::time::Instant::now();
+    let (count, failures) = pool.run(threads);
+    let took = start.elapsed().as_secs_f64();
     if failures.is_empty() {
-        println!("golden: {count} files ok");
+        println!("golden: {count} files ok ({took:.0}s on {threads} threads)");
     } else {
         for f in &failures {
             println!("{f}");
