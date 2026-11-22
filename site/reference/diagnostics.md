@@ -97,6 +97,7 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0290` | `have` with the wrong number of values for a `forall`'s variables |
 | `E0291` | a class's type (`C.Name`) without the types it is for |
 | `E0292` | an instance without a type for each of its class's parameters |
+| `E0293` | a value shown by a type that isn't known when the program is compiled (it depends on a value known only when the program runs, or holds a field computed from a ghost field) |
 
 ## Termination
 

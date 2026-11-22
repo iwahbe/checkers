@@ -356,6 +356,9 @@ pub struct Globals {
     /// another type (#133): neither failed nor guessed, they wait for the
     /// dictionary (level, the two types).
     pub postponed: RefCell<Vec<(usize, Val, Val)>>,
+    /// Each type's value parameters that its fields' types are computed
+    /// from (#170), once worked out (`value_params_needed`).
+    pub value_params: RefCell<HashMap<TyId, std::collections::BTreeSet<usize>>>,
 }
 
 #[derive(Default, Clone)]
@@ -390,6 +393,10 @@ pub struct WellKnown {
     /// Hand-written `instance Debug T`: the type and the instance's
     /// `debug`, which the runtime calls for `T`'s constructors (#126).
     pub debug_insts: Vec<(TyId, DefId)>,
+    /// The type parameters (by position) of each function that shows
+    /// values of them, itself or through functions it calls: they are
+    /// passed their type's descriptor, not only its layout (#170).
+    pub desc_params: HashMap<DefId, std::collections::BTreeSet<usize>>,
 }
 
 pub const DEFAULT_FUEL: u64 = 200_000;
@@ -405,6 +412,7 @@ impl Globals {
             fuel: Cell::new(DEFAULT_FUEL),
             well_known: WellKnown::default(),
             postponed: RefCell::new(Vec::new()),
+            value_params: RefCell::new(HashMap::new()),
         }
     }
 
@@ -455,6 +463,31 @@ impl Globals {
     /// Is field `i` of constructor `c` a type (of type `Type`)?
     pub fn is_type_field(&self, c: ConId, i: usize) -> bool {
         self.cons.get(c.0 as usize).and_then(|ci| ci.fields.get(i)).is_some_and(|f| matches!(f.3, Tm::Univ(_)))
+    }
+
+    /// A class's type in its dictionary (#133): a field of multiplicity 0
+    /// that is kept at run time, holding its type's word, for generic code's
+    /// arrays of it and for showing it.
+    pub fn is_dict_type_field(&self, c: ConId, k: usize) -> bool {
+        self.is_type_field(c, k) && self.cons[c.0 as usize].fields[k].0.starts_with('$')
+    }
+
+    /// Whether field `k` of constructor `c` is kept at run time.
+    pub fn is_runtime_field(&self, c: ConId, k: usize) -> bool {
+        self.cons[c.0 as usize].fields[k].1 != Mult::Zero || self.is_dict_type_field(c, k)
+    }
+
+    /// A type with one constructor whose fields keep exactly one value at
+    /// run time is stored as that value, with no object around it (#170):
+    /// that field's position, for the type's constructor `c`.
+    pub fn unboxed_field(&self, c: ConId) -> Option<usize> {
+        let ci = self.cons.get(c.0 as usize)?;
+        if self.tys[ci.ty.0 as usize].ctors.len() != 1 {
+            return None;
+        }
+        let mut kept = (0..ci.fields.len()).filter(|&k| self.is_runtime_field(c, k));
+        let k = kept.next()?;
+        kept.next().is_none().then_some(k)
     }
 
     pub fn arity_ty(&self, t: TyId) -> usize {
@@ -620,7 +653,7 @@ pub fn unfold(g: &Globals, v: &Val) -> Option<Val> {
 
 /// Is this the type of a type (or of a function returning one), as for a
 /// type alias?
-fn is_type_former(ty: &Tm) -> bool {
+pub fn is_type_former(ty: &Tm) -> bool {
     let mut t = ty;
     while let Tm::Pi(_, _, _, _, b) = t {
         t = b;
@@ -685,6 +718,218 @@ pub fn layout_of(g: &Globals, v: &Val) -> Result<u8, usize> {
         Val::Neutral(Head::Var(x), sp) if sp.is_empty() => Err(x),
         _ => Ok(0),
     }
+}
+
+/// A type's descriptor (#170), as code builds it: what `checkers_rt::desc`
+/// reads at run time.
+#[derive(Clone, Debug)]
+pub enum Desc {
+    /// A type with its arguments' descriptors (none: a type without
+    /// arguments, or one whose arguments aren't said).
+    Known(u64, Vec<Desc>),
+    /// The type variable at this level: its word at run time.
+    Var(usize),
+    /// A class's type kept in the dictionary at this level (#133).
+    Dict(usize, ConId, usize),
+    /// A type constructor variable at this level applied to arguments (M25).
+    Apply(usize, Vec<Desc>),
+    /// A value argument of a type, which its fields' types are computed
+    /// from (`ByParam True`): the value, in the descriptor.
+    Value(Val),
+}
+
+impl Desc {
+    /// A type the descriptor doesn't name, laid out as `layout`.
+    pub fn unknown(layout: u8) -> Desc {
+        Desc::Known(checkers_rt::desc::tag(None, layout), Vec::new())
+    }
+}
+
+/// The descriptor of `v`, a type (#170). Its layout is `layout_of`'s; a
+/// type variable is its word at run time.
+pub fn desc_of(g: &Globals, v: &Val) -> Desc {
+    desc_at(g, v, 0)
+}
+
+fn desc_at(g: &Globals, v: &Val, depth: usize) -> Desc {
+    let layout = match layout_of(g, v) {
+        Ok(l) => l,
+        Err(level) => return Desc::Var(level),
+    };
+    if depth > 32 {
+        return Desc::unknown(layout);
+    }
+    match force(g, v.clone()) {
+        Val::TyCon(id, args) => {
+            let needed = value_params_needed(g, id);
+            let ti = &g.tys[id.0 as usize];
+            let args = args
+                .iter()
+                .enumerate()
+                .map(|(k, a)| match ti.params.get(k) {
+                    Some((_, t)) if is_type_former(t) => desc_at(g, a, depth + 1),
+                    // A value parameter that a field's type is computed from.
+                    _ if needed.contains(&k) => Desc::Value(a.clone()),
+                    // Any other value parameter (`Vec a n`'s `n`) says
+                    // nothing to show by.
+                    _ => Desc::unknown(0),
+                })
+                .collect();
+            Desc::Known(checkers_rt::desc::tag(Some(id.0), layout), args)
+        }
+        Val::TupleTy(ts) => {
+            let parts = flat_parts(g, &ts, true);
+            Desc::Known(checkers_rt::desc::tag(Some(checkers_rt::desc::TUPLE), 0), parts.iter().map(|t| desc_at(g, t, depth + 1)).collect())
+        }
+        Val::Neutral(Head::Var(x), sp) => match sp.as_slice() {
+            [Elim::Field(c, i)] if g.is_dict_type_field(*c, *i) => Desc::Dict(x, *c, *i),
+            sp if sp.iter().all(|e| matches!(e, Elim::App(..))) => Desc::Apply(
+                x,
+                sp.iter()
+                    .map(|e| match e {
+                        Elim::App(a, _) => desc_at(g, a, depth + 1),
+                        _ => Desc::unknown(0),
+                    })
+                    .collect(),
+            ),
+            _ => Desc::unknown(layout),
+        },
+        // A type constructor written as a function (`\a -> Option a`, M25):
+        // the type it applies to its argument, short of that argument.
+        Val::Lam(_, _, _, c) => {
+            const PROBE: usize = usize::MAX / 2;
+            match force(g, apply_closure(g, &c, Val::var(PROBE))) {
+                Val::TyCon(id, mut args) if matches!(args.last(), Some(Val::Neutral(Head::Var(PROBE), sp)) if sp.is_empty()) => {
+                    args.pop();
+                    match desc_at(g, &Val::TyCon(id, args), depth + 1) {
+                        Desc::Known(tag, ds) => Desc::Known(tag, ds),
+                        d => d,
+                    }
+                }
+                _ => Desc::unknown(layout),
+            }
+        }
+        _ => Desc::unknown(layout),
+    }
+}
+
+/// The value parameters of type `id` that its fields' types are computed
+/// from (#170), directly or through a type a field holds: their values go
+/// in its descriptor.
+pub fn value_params_needed(g: &Globals, id: TyId) -> std::collections::BTreeSet<usize> {
+    if let Some(s) = g.value_params.borrow().get(&id) {
+        return s.clone();
+    }
+    // Recursive types reach themselves: none, until worked out.
+    g.value_params.borrow_mut().insert(id, Default::default());
+    let mut out = std::collections::BTreeSet::new();
+    let ti = &g.tys[id.0 as usize];
+    let np = ti.params.len();
+    let is_value = |l: usize| l < np && !is_type_former(&ti.params[l].1);
+    for c in &ti.ctors {
+        let ci = &g.cons[c.0 as usize];
+        for k in 0..ci.fields.len() {
+            if !g.is_runtime_field(*c, k) {
+                continue;
+            }
+            let n = np + k;
+            let env = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+            let v = force(g, eval(g, &env, &ci.fields[k].3));
+            let mut levels = std::collections::BTreeSet::new();
+            if fixed_type(&v) {
+                value_args(g, &v, n, 0, &mut levels);
+            } else {
+                let mut free = std::collections::BTreeSet::new();
+                free_vars(&quote(g, n, &v), 0, &mut free);
+                levels.extend(free.into_iter().map(|i| n - 1 - i));
+            }
+            out.extend(levels.into_iter().filter(|l| is_value(*l)));
+        }
+    }
+    g.value_params.borrow_mut().insert(id, out.clone());
+    out
+}
+
+/// The levels (at `n`) that the value arguments in type `v` mention, at
+/// the value parameters of the types it applies that their fields need.
+fn value_args(g: &Globals, v: &Val, n: usize, depth: usize, out: &mut std::collections::BTreeSet<usize>) {
+    if depth > 32 {
+        return;
+    }
+    match force(g, v.clone()) {
+        Val::TyCon(id, args) => {
+            let needed = value_params_needed(g, id);
+            let params = &g.tys[id.0 as usize].params;
+            for (k, a) in args.iter().enumerate() {
+                if params.get(k).is_some_and(|p| is_type_former(&p.1)) {
+                    value_args(g, a, n, depth + 1, out);
+                } else if needed.contains(&k) {
+                    let mut free = std::collections::BTreeSet::new();
+                    free_vars(&quote(g, n, a), 0, &mut free);
+                    out.extend(free.into_iter().map(|i| n - 1 - i));
+                }
+            }
+        }
+        Val::TupleTy(ts) => ts.iter().for_each(|t| value_args(g, t, n, depth + 1, out)),
+        _ => {}
+    }
+}
+
+/// Whether a type (forced) is a type former applied, not computed from
+/// values: a type, a tuple or function type, or a type variable (applied).
+fn fixed_type(v: &Val) -> bool {
+    match v {
+        Val::Neutral(Head::Var(_), sp) => sp.iter().all(|e| matches!(e, Elim::App(..))) || matches!(sp.as_slice(), [Elim::Field(..)]),
+        Val::Neutral(..) => false,
+        _ => true,
+    }
+}
+
+/// Whether a descriptor holds a value (`Desc::Value`).
+fn has_value(d: &Desc) -> bool {
+    match d {
+        Desc::Value(_) => true,
+        Desc::Known(_, xs) | Desc::Apply(_, xs) => xs.iter().any(has_value),
+        _ => false,
+    }
+}
+
+/// How a constructor's field has its type (#170).
+pub enum FieldType {
+    /// From its type's parameters alone: a descriptor template says it.
+    Fixed,
+    /// Computed when the value is shown, from earlier fields (`v~(if
+    /// is_text then String else Int)`) or from value parameters of its
+    /// type (`ByParam b`), which its descriptor holds: this type, in the
+    /// context of the parameters and earlier fields.
+    FromFields(Tm),
+    /// Computed from a field that isn't kept when the program runs (this
+    /// level: the type's parameters, then the fields).
+    NotKept(usize),
+}
+
+/// How field `k` of constructor `c` has its type.
+pub fn field_type(g: &Globals, c: ConId, k: usize) -> FieldType {
+    let ci = &g.cons[c.0 as usize];
+    let np = g.arity_ty(ci.ty);
+    let n = np + k;
+    let env = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+    let v = force(g, eval(g, &env, &ci.fields[k].3));
+    let t = quote(g, n, &v);
+    if fixed_type(&v) {
+        // A type holding a value its own fields need (`ByParam b`), from
+        // this type's: computed when shown, as the value is known then.
+        return if has_value(&desc_of(g, &v)) { FieldType::FromFields(t) } else { FieldType::Fixed };
+    }
+    let mut free = std::collections::BTreeSet::new();
+    free_vars(&t, 0, &mut free);
+    for i in free {
+        let level = n - 1 - i;
+        if level >= np && !g.is_runtime_field(c, level - np) {
+            return FieldType::NotKept(level);
+        }
+    }
+    FieldType::FromFields(t)
 }
 
 pub fn force(g: &Globals, v: Val) -> Val {
@@ -761,6 +1006,8 @@ fn proj(g: &Globals, v: Val, i: usize, rest: bool) -> Val {
 
 fn field(g: &Globals, v: Val, c: ConId, i: usize) -> Val {
     match force(g, v.clone()) {
+        // A string literal's bytes (#170).
+        Val::Lit(Lit::Str(s)) if Some(g.cons[c.0 as usize].ty) == g.well_known.string => Val::Lit(Lit::Bytes(Rc::from(s.as_bytes()))),
         Val::Con(_, args) => {
             let np = g.arity_ty(g.cons[c.0 as usize].ty);
             args.get(np + i).cloned().unwrap_or(Val::Error)
@@ -793,6 +1040,14 @@ fn case(g: &Globals, v: Val, c: Rc<CaseTm>, env: Env) -> Val {
             for (lit, body) in &c.lits {
                 if *lit == l {
                     return eval(g, &env, body);
+                }
+            }
+            // A string literal matched as `String b`: its bytes (#170).
+            if let Lit::Str(s) = &l {
+                if let Some((_, n, body)) = c.branches.iter().find(|(cid, _, _)| Some(g.cons[cid.0 as usize].ty) == g.well_known.string) {
+                    let mut e = (*env).clone();
+                    e.extend(std::iter::repeat_n(Val::Lit(Lit::Bytes(Rc::from(s.as_bytes()))), *n));
+                    return eval(g, &Rc::new(e), body);
                 }
             }
             match &c.default {

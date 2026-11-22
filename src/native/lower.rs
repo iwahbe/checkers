@@ -235,9 +235,20 @@ impl Program {
     }
 }
 
+/// How many type parameters function `d` takes before its other arguments.
+pub fn type_params(g: &Globals, d: DefId) -> usize {
+    let mut n = 0;
+    let mut ty = &g.defs[d.0 as usize].ty;
+    while let Tm::Pi(_, Mult::Zero, crate::core::Icit::Impl, _, b) = ty {
+        n += 1;
+        ty = b;
+    }
+    n
+}
+
 /// The hand-written `Debug` instances' functions (#126), as a closed term:
-/// a list of them, each applied to its type's (erased) parameters. `None`
-/// if the program has none.
+/// a list of them, each taking its type's parameters' words (#170), then
+/// the value. `None` if the program has none.
 pub fn debug_table(g: &Globals) -> Option<Tm> {
     use crate::core::Icit;
     use std::rc::Rc;
@@ -249,12 +260,9 @@ pub fn debug_table(g: &Globals) -> Option<Tm> {
     let erased = |f: Tm| Tm::App(Rc::new(f), Rc::new(Tm::Univ(0)), Icit::Impl, Mult::Zero);
     let mut list = erased(Tm::Con(nil));
     for (_, d) in insts.iter().rev() {
-        let mut f = Tm::Def(*d);
-        let mut ty = &g.defs[d.0 as usize].ty;
-        while let Tm::Pi(_, Mult::Zero, Icit::Impl, _, b) = ty {
-            f = erased(f);
-            ty = b;
-        }
+        // Its type parameters come from the runtime, which knows them from
+        // the value's type's descriptor (#170).
+        let f = Tm::Def(*d);
         let c = erased(Tm::Con(cons));
         list = Tm::App(Rc::new(Tm::App(Rc::new(c), Rc::new(f), Icit::Expl, Mult::Many)), Rc::new(list), Icit::Expl, Mult::Many);
     }
@@ -266,8 +274,8 @@ pub fn lower(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId) ->
     let mut p = Program::new(g, staged);
     Lowerer::new(g, staged, &mut p).add_defs(&[main.0]);
     p.main = main.0;
-    if let Some(t) = debug_table(g) {
-        p.debug = Some(Lowerer::new(g, staged, &mut p).add_closed(&t));
+    if let Some(ir) = show_table(g) {
+        p.debug = Some(Lowerer::new(g, staged, &mut p).add_closed_ir(&ir));
     }
     p
 }
@@ -364,8 +372,13 @@ impl<'a, 'g> Lowerer<'a, 'g> {
     /// afresh each time it runs): its index.
     pub fn add_closed(&mut self, t: &Tm) -> u32 {
         let ir = Compiler { g: self.g, owner: None }.compile(t);
+        self.add_closed_ir(&ir)
+    }
+
+    /// Closed code as a function of no arguments (see `add_closed`).
+    pub fn add_closed_ir(&mut self, ir: &Ir) -> u32 {
         let mut gs = Vec::new();
-        globals_in(&ir, &mut gs);
+        globals_in(ir, &mut gs);
         let roots: Vec<u32> = gs.iter().map(|x| x.0).collect();
         self.add_defs(&roots);
         let func = self.p.funcs.len() as u32;
@@ -373,12 +386,32 @@ impl<'a, 'g> Lowerer<'a, 'g> {
         self.owner = NO_OWNER;
         self.next = 0;
         let mut ctx = Vec::new();
-        let body = self.expr(&ir, &mut ctx, true);
+        let body = self.expr(ir, &mut ctx, true);
         let f = &mut self.p.funcs[func as usize];
         f.body = body;
         f.nvars = self.next;
         func
     }
+}
+
+/// What the runtime's printer calls (#126, #170), as closed code: a pair of
+/// the hand-written `Debug` instances' functions (`debug_table`) and the
+/// functions computing fields' types from earlier fields (`field_fns`), each
+/// a list. `None` if the program has neither.
+pub fn show_table(g: &Globals) -> Option<Ir> {
+    let (nil, cons) = (g.well_known.nil?, g.well_known.cons?);
+    let fields = crate::native::field_fns(g);
+    let debug = debug_table(g);
+    if debug.is_none() && fields.is_empty() {
+        return None;
+    }
+    let c = Compiler { g, owner: None };
+    let debug = match debug {
+        Some(t) => c.go_pub(&t),
+        None => Ir::Con(nil, Vec::new()),
+    };
+    let fields = fields.iter().rev().fold(Ir::Con(nil, Vec::new()), |rest, (con, k, t)| Ir::Con(cons, vec![Arc::new(c.field_type_fn(*con, *k, t)), Arc::new(rest)]));
+    Some(Ir::Tuple(vec![Arc::new(debug), Arc::new(fields)]))
 }
 
 impl Lowerer<'_, '_> {
@@ -632,37 +665,7 @@ impl Lowerer<'_, '_> {
 
 /// Shift free de Bruijn indices of `ir` up by `k` (for wrapping in a lambda).
 fn shift(ir: &Ir, k: usize) -> Ir {
-    fn go(ir: &Ir, k: usize, depth: usize) -> Ir {
-        let a = |x: &Arc<Ir>, d: usize| Arc::new(go(x, k, d));
-        let all = |xs: &[Arc<Ir>], d: usize| xs.iter().map(|x| a(x, d)).collect::<Vec<_>>();
-        match ir {
-            Ir::Var(i) if *i >= depth => Ir::Var(i + k),
-            Ir::Var(i) => Ir::Var(*i),
-            Ir::Global(d) => Ir::Global(*d),
-            Ir::Erased => Ir::Erased,
-            Ir::Lit(v) => Ir::Lit(v.clone()),
-            Ir::Lam(o, b) => Ir::Lam(*o, a(b, depth + 1)),
-            Ir::Call(h, xs) => Ir::Call(a(h, depth), all(xs, depth)),
-            Ir::Let(v, b) => Ir::Let(a(v, depth), a(b, depth + 1)),
-            Ir::Tuple(xs) => Ir::Tuple(all(xs, depth)),
-            Ir::Proj(x, i, r) => Ir::Proj(a(x, depth), *i, *r),
-            Ir::Field(x, i) => Ir::Field(a(x, depth), *i),
-            Ir::Con(c, xs) => Ir::Con(*c, all(xs, depth)),
-            Ir::ConFn(c) => Ir::ConFn(*c),
-            Ir::Prim(op, xs, n) => Ir::Prim(*op, all(xs, depth), *n),
-            Ir::Par(xs) => Ir::Par(all(xs, depth)),
-            Ir::Case(s, c) => Ir::Case(
-                a(s, depth),
-                Arc::new(crate::native::ir::IrCase {
-                    branches: c.branches.iter().map(|(con, n, b)| (*con, *n, a(b, depth + n))).collect(),
-                    lits: c.lits.iter().map(|(l, b)| (l.clone(), a(b, depth))).collect(),
-                    default: c.default.as_ref().map(|d| a(d, depth)),
-                }),
-            ),
-            Ir::Fail(m) => Ir::Fail(m),
-        }
-    }
-    go(ir, k, 0)
+    crate::native::ir::shift(ir, k, 0)
 }
 
 /// The definitions code refers to.

@@ -63,6 +63,8 @@ pub enum Op {
     Index,
     Par,
     When,
+    /// A type constructor's descriptor applied to one more argument's (#170).
+    TypeApply,
 }
 
 impl Op {
@@ -115,34 +117,66 @@ impl Compiler<'_> {
         Arc::new(self.go(t))
     }
 
+    pub fn go_pub(&self, t: &Tm) -> Ir {
+        self.go(t)
+    }
+
     fn go(&self, t: &Tm) -> Ir {
         match t {
             Tm::Var(i) => Ir::Var(*i),
             Tm::Def(d) => Ir::Global(*d),
-            Tm::Con(c) => Ir::ConFn(*c),
+            // A constructor stored as its one kept field (#170), used as a
+            // function: it returns that argument.
+            Tm::Con(c) => match self.g.unboxed_field(*c) {
+                Some(k) => {
+                    let np = self.g.arity_ty(self.g.cons[c.0 as usize].ty);
+                    let n = self.g.arity_con(*c);
+                    let body = if self.g.is_dict_type_field(*c, k) { Ir::Erased } else { Ir::Var(n - 1 - np - k) };
+                    (0..n).fold(body, |b, _| Ir::Lam(self.owner, Arc::new(b)))
+                }
+                None => Ir::ConFn(*c),
+            },
             Tm::TyCon(_) | Tm::Univ(_) | Tm::Pi(..) | Tm::TupleTy(_) | Tm::TyConApp(..) | Tm::Meta(_) => Ir::Erased,
             Tm::Lam(_, _, _, b) => Ir::Lam(self.owner, self.compile(b)),
             Tm::App(..) => {
-                let mut args = Vec::new();
+                let mut spine = Vec::new();
                 let mut h = t;
                 while let Tm::App(f, a, _, m) = h {
-                    args.push(if *m == Mult::Zero { Arc::new(self.erased(a)) } else { self.compile(a) });
+                    spine.push((a, *m));
                     h = f;
                 }
-                args.reverse();
+                spine.reverse();
+                // A function showing values of a type parameter gets that
+                // type's descriptor (#170).
+                let described = match h {
+                    Tm::Def(d) => self.g.well_known.desc_params.get(d),
+                    _ => None,
+                };
+                let args: Vec<Arc<Ir>> = spine
+                    .into_iter()
+                    .enumerate()
+                    .map(|(k, (a, m))| match m {
+                        Mult::Zero if described.is_some_and(|ps| ps.contains(&k)) => Arc::new(self.descriptor(a)),
+                        Mult::Zero => Arc::new(self.erased(a)),
+                        _ => self.compile(a),
+                    })
+                    .collect();
                 // A constructor with all its arguments is built directly.
                 if let Tm::Con(c) = h {
                     if args.len() == self.g.arity_con(*c) {
                         let ci = &self.g.cons[c.0 as usize];
                         let np = self.g.arity_ty(ci.ty);
                         let (_, targs) = t.spine();
+                        if let Some(k) = self.g.unboxed_field(*c) {
+                            return if self.g.is_dict_type_field(*c, k) { self.descriptor(targs[np + k]) } else { self.go(targs[np + k]) };
+                        }
                         let fields = args
                             .into_iter()
                             .skip(np)
                             .zip(&ci.fields)
                             .enumerate()
                             .map(|(k, (a, f))| match f.1 {
-                                Mult::Zero if self.dict_type_field(*c, k) => Arc::new(self.erased(targs[np + k])),
+                                Mult::Zero if self.dict_type_field(*c, k) => Arc::new(self.descriptor(targs[np + k])),
                                 Mult::Zero => Arc::new(Ir::Erased),
                                 _ => a,
                             })
@@ -159,16 +193,23 @@ impl Compiler<'_> {
             Tm::Lit(l) => Ir::Lit(lit_value(l)),
             Tm::Tuple(xs) => Ir::Tuple(xs.iter().map(|x| self.compile(x)).collect()),
             Tm::Proj(x, i, rest) => Ir::Proj(self.compile(x), *i, *rest),
-            Tm::Field(x, _, i) => Ir::Field(self.compile(x), *i),
+            Tm::Field(x, c, i) => match self.g.unboxed_field(*c) {
+                Some(k) if k == *i => self.go(x),
+                Some(_) => Ir::Erased,
+                None => Ir::Field(self.compile(x), *i),
+            },
             Tm::ConApp(c, args) => {
                 let ci = &self.g.cons[c.0 as usize];
                 let np = self.g.arity_ty(ci.ty);
+                if let Some(k) = self.g.unboxed_field(*c) {
+                    return if self.g.is_dict_type_field(*c, k) { self.descriptor(&args[np + k]) } else { self.go(&args[np + k]) };
+                }
                 let fields = args[np..]
                     .iter()
                     .zip(&ci.fields)
                     .enumerate()
                     .map(|(k, (a, f))| match f.1 {
-                        Mult::Zero if self.dict_type_field(*c, k) => Arc::new(self.erased(a)),
+                        Mult::Zero if self.dict_type_field(*c, k) => Arc::new(self.descriptor(a)),
                         Mult::Zero => Arc::new(Ir::Erased),
                         _ => self.compile(a),
                     })
@@ -192,7 +233,22 @@ impl Compiler<'_> {
                     None => Ir::Fail("an unexpected primitive"),
                 }
             }
-            Tm::Case(s, c) => Ir::Case(self.compile(s), Arc::new(self.case(c))),
+            Tm::Case(s, c) => match c.branches.first() {
+                // A value stored as its one kept field (#170): the arm's
+                // fields are that value and erased ones.
+                Some((con, n, body)) if self.g.unboxed_field(*con).is_some() => {
+                    let k = self.g.unboxed_field(*con).unwrap_or(0);
+                    // `s` is bound first, then each field: field `j` sees
+                    // `s` at index `j`. The body's other variables move past `s`.
+                    let mut ir = shift(&self.go(body), 1, *n);
+                    for j in (0..*n).rev() {
+                        let v = if j == k { Ir::Var(j) } else { Ir::Erased };
+                        ir = Ir::Let(Arc::new(v), Arc::new(ir));
+                    }
+                    Ir::Let(self.compile(s), Arc::new(ir))
+                }
+                _ => Ir::Case(self.compile(s), Arc::new(self.case(c))),
+            },
             Tm::Error => Ir::Fail("no arm of a `match` matches this value (`--unverified`)"),
         }
     }
@@ -208,7 +264,7 @@ impl Compiler<'_> {
     /// A class's type in its dictionary (#133): a field the dictionary
     /// keeps the type's layout word in, for generic code's arrays of it.
     fn dict_type_field(&self, c: crate::core::ConId, k: usize) -> bool {
-        self.g.is_type_field(c, k) && self.g.cons[c.0 as usize].fields[k].0.starts_with('$')
+        self.g.is_dict_type_field(c, k)
     }
 
     /// An erased argument. A type is passed as its layout word (D133): an
@@ -231,7 +287,7 @@ impl Compiler<'_> {
         if let Val::Neutral(Head::Var(x), sp) = crate::core::force(self.g, v.clone()) {
             if let [Elim::Field(c, i)] = sp.as_slice() {
                 if x < depth && self.dict_type_field(*c, *i) {
-                    return Ir::Field(Arc::new(Ir::Var(depth - 1 - x)), *i);
+                    return self.dict_field(depth - 1 - x, *c, *i);
                 }
             }
         }
@@ -240,6 +296,88 @@ impl Compiler<'_> {
             Ok(l) => Ir::Lit(Lit::Num(l as i128)),
             Err(level) if level < depth => Ir::Var(depth - 1 - level),
             Err(_) => Ir::Erased,
+        }
+    }
+
+    /// A function computing the descriptor of field `k` of constructor `c`,
+    /// whose type `t` is computed from earlier fields (#170): it takes the
+    /// type's parameters' descriptors, then those fields' values.
+    pub fn field_type_fn(&self, c: crate::core::ConId, k: usize, t: &Tm) -> Ir {
+        let n = self.g.arity_ty(self.g.cons[c.0 as usize].ty) + k;
+        (0..n).fold(self.type_code(t), |b, _| Ir::Lam(self.owner, Arc::new(b)))
+    }
+
+    /// Code computing a type's descriptor: `match`es on values (earlier
+    /// fields) pick the type; each type picked is described.
+    fn type_code(&self, t: &Tm) -> Ir {
+        match t {
+            Tm::Case(s, c) => match c.branches.first() {
+                Some((con, n, body)) if self.g.unboxed_field(*con).is_some() => {
+                    let k = self.g.unboxed_field(*con).unwrap_or(0);
+                    let mut ir = shift(&self.type_code(body), 1, *n);
+                    for j in (0..*n).rev() {
+                        let v = if j == k { Ir::Var(j) } else { Ir::Erased };
+                        ir = Ir::Let(Arc::new(v), Arc::new(ir));
+                    }
+                    Ir::Let(self.compile(s), Arc::new(ir))
+                }
+                _ => Ir::Case(
+                    self.compile(s),
+                    Arc::new(IrCase {
+                        branches: c.branches.iter().map(|(con, n, b)| (*con, *n, Arc::new(self.type_code(b)))).collect(),
+                        lits: c.lits.iter().map(|(l, b)| (lit_value(l), Arc::new(self.type_code(b)))).collect(),
+                        default: c.default.as_ref().map(|d| Arc::new(self.type_code(d))),
+                    }),
+                ),
+            },
+            Tm::Let(_, m, _, v, b) => {
+                let v = if *m == Mult::Zero { Arc::new(Ir::Erased) } else { self.compile(v) };
+                Ir::Let(v, Arc::new(self.type_code(b)))
+            }
+            _ => self.descriptor(t),
+        }
+    }
+
+    /// A type argument's descriptor (#170): built from its arguments'
+    /// descriptors, a type variable's word, or a dictionary's type.
+    fn descriptor(&self, a: &Tm) -> Ir {
+        let depth = max_var(a).map_or(0, |m| m + 1);
+        let env = std::rc::Rc::new((0..depth).map(Val::var).collect::<Vec<_>>());
+        let v = eval(self.g, &env, a);
+        self.desc_ir(&crate::core::desc_of(self.g, &v), depth)
+    }
+
+    /// Field `i` of the dictionary at index `x`, of constructor `c`: the
+    /// dictionary itself if that is its only kept field (#170).
+    fn dict_field(&self, x: usize, c: crate::core::ConId, i: usize) -> Ir {
+        if self.g.unboxed_field(c) == Some(i) {
+            Ir::Var(x)
+        } else {
+            Ir::Field(Arc::new(Ir::Var(x)), i)
+        }
+    }
+
+    fn desc_ir(&self, d: &crate::core::Desc, depth: usize) -> Ir {
+        use crate::core::Desc;
+        match d {
+            Desc::Known(tag, args) if args.is_empty() => Ir::Lit(Lit::Num(*tag as i128)),
+            Desc::Known(tag, args) => {
+                let mut parts: Vec<Arc<Ir>> = args.iter().map(|x| Arc::new(self.desc_ir(x, depth))).collect();
+                parts.push(Arc::new(Ir::Lit(Lit::Num(*tag as i128))));
+                Ir::Tuple(parts)
+            }
+            Desc::Var(level) if *level < depth => Ir::Var(depth - 1 - level),
+            Desc::Dict(level, c, i) if *level < depth => self.dict_field(depth - 1 - level, *c, *i),
+            // A value: computed here, and marked as one.
+            Desc::Value(v) => {
+                let t = crate::core::quote(self.g, depth, v);
+                let tag = checkers_rt::desc::tag(Some(checkers_rt::desc::VALUE), 0);
+                Ir::Tuple(vec![Arc::new(self.go(&t)), Arc::new(Ir::Lit(Lit::Num(tag as i128)))])
+            }
+            Desc::Apply(level, args) if *level < depth => args.iter().fold(Ir::Var(depth - 1 - level), |f, a| {
+                Ir::Prim(Op::TypeApply, vec![Arc::new(f), Arc::new(self.desc_ir(a, depth))], false)
+            }),
+            _ => Ir::Erased,
         }
     }
 
@@ -256,6 +394,41 @@ impl Compiler<'_> {
         let env = std::rc::Rc::new((0..depth).map(Val::var).collect::<Vec<_>>());
         crate::core::is_nat(self.g, &eval(self.g, &env, ty))
     }
+}
+
+/// Shift the free de Bruijn indices of `ir` from `cutoff` on up by `k`.
+pub fn shift(ir: &Ir, k: usize, cutoff: usize) -> Ir {
+    fn go(ir: &Ir, k: usize, depth: usize) -> Ir {
+        let a = |x: &Arc<Ir>, d: usize| Arc::new(go(x, k, d));
+        let all = |xs: &[Arc<Ir>], d: usize| xs.iter().map(|x| a(x, d)).collect::<Vec<_>>();
+        match ir {
+            Ir::Var(i) if *i >= depth => Ir::Var(i + k),
+            Ir::Var(i) => Ir::Var(*i),
+            Ir::Global(d) => Ir::Global(*d),
+            Ir::Erased => Ir::Erased,
+            Ir::Lit(v) => Ir::Lit(v.clone()),
+            Ir::Lam(o, b) => Ir::Lam(*o, a(b, depth + 1)),
+            Ir::Call(h, xs) => Ir::Call(a(h, depth), all(xs, depth)),
+            Ir::Let(v, b) => Ir::Let(a(v, depth), a(b, depth + 1)),
+            Ir::Tuple(xs) => Ir::Tuple(all(xs, depth)),
+            Ir::Proj(x, i, r) => Ir::Proj(a(x, depth), *i, *r),
+            Ir::Field(x, i) => Ir::Field(a(x, depth), *i),
+            Ir::Con(c, xs) => Ir::Con(*c, all(xs, depth)),
+            Ir::ConFn(c) => Ir::ConFn(*c),
+            Ir::Prim(op, xs, n) => Ir::Prim(*op, all(xs, depth), *n),
+            Ir::Par(xs) => Ir::Par(all(xs, depth)),
+            Ir::Case(s, c) => Ir::Case(
+                a(s, depth),
+                Arc::new(IrCase {
+                    branches: c.branches.iter().map(|(con, n, b)| (*con, *n, a(b, depth + n))).collect(),
+                    lits: c.lits.iter().map(|(l, b)| (l.clone(), a(b, depth))).collect(),
+                    default: c.default.as_ref().map(|d| a(d, depth)),
+                }),
+            ),
+            Ir::Fail(m) => Ir::Fail(m),
+        }
+    }
+    go(ir, k, cutoff)
 }
 
 /// The body to run for `d`: staged, generated (numbered after `g.defs`), or

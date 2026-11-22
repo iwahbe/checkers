@@ -29,8 +29,8 @@ impl<'g> Evaluator<'g> {
         checkers_rt::prog::install(&super::descriptor(g, &gen.p), invoke);
         let mut ev = Evaluator { g, gen };
         // The hand-written `Debug` instances (#126), for values shown here.
-        if let Some(t) = super::lower::debug_table(g) {
-            if let Ok(fs) = ev.eval(&t) {
+        if let Some(ir) = super::lower::show_table(g) {
+            if let Ok(fs) = ev.eval_ir(&ir) {
                 checkers_rt::prog::set_debug(fs);
             }
         }
@@ -39,7 +39,13 @@ impl<'g> Evaluator<'g> {
 
     /// The value of a closed term: an owned word, or the runtime error.
     pub fn eval(&mut self, t: &Tm) -> Result<W, String> {
-        let f = Lowerer::new(self.g, None, &mut self.gen.p).add_closed(t);
+        let ir = super::ir::Compiler { g: self.g, owner: None }.compile(t);
+        self.eval_ir(&ir)
+    }
+
+    /// The value of closed code: an owned word, or the runtime error.
+    pub fn eval_ir(&mut self, ir: &super::ir::Ir) -> Result<W, String> {
+        let f = Lowerer::new(self.g, None, &mut self.gen.p).add_closed_ir(ir);
         super::rc_new(self.g, &mut self.gen.p);
         self.gen.define_new();
         self.gen.m.finalize_definitions().map_err(|e| format!("compiling: {e}"))?;
@@ -69,7 +75,8 @@ impl<'g> Evaluator<'g> {
 
     fn show_typed(&self, v: W, ty: &Tm, p: u8) -> String {
         let g = self.g;
-        let rt = || checkers_rt::ops::show_derived(v, p);
+        // What this function doesn't handle itself: by the type's descriptor.
+        let rt = || self.show_by_descriptor(v, ty, p);
         match ty {
             Tm::Def(d) => {
                 let info = &g.defs[d.0 as usize];
@@ -78,13 +85,36 @@ impl<'g> Evaluator<'g> {
                     let c = n.to_string().parse::<u32>().ok().and_then(char::from_u32);
                     return c.map(char_literal).unwrap_or_else(rt);
                 }
-                rt()
+                // An alias: the type it names.
+                match unfolded(g, ty) {
+                    Some(t) => self.show_typed(v, &t, p),
+                    None => rt(),
+                }
             }
             Tm::TupleTy(ts) if w::is_ptr(v) && w::kind(v) == w::K_TUPLE && w::nfields(v) == ts.len() => {
                 let items: Vec<String> = ts.iter().enumerate().map(|(i, t)| self.show_typed(w::slot(v, i), t, 0)).collect();
                 format!("({})", items.join(", "))
             }
+            // A string as a string literal, as a `Char` is written `c'a'`:
+            // a failed `check` may be in a module that doesn't load
+            // `std.string`, whose `Debug String` writes it the same way.
+            Tm::TyConApp(id, _) if Some(*id) == g.well_known.string && w::is_ptr(v) && w::kind(v) == w::K_BYTES => {
+                string_literal(w::str_of(v))
+            }
             Tm::TyConApp(id, args) => {
+                // Stored as its one kept field (#170): the value is that field.
+                if let Some((c, k)) = unboxed_con(g, *id) {
+                    let ci = &g.cons[c.0 as usize];
+                    let (_, m, icit, fty) = &ci.fields[k];
+                    if *icit != crate::core::Icit::Expl || *m == crate::core::Mult::Zero {
+                        return ci.name.to_string();
+                    }
+                    let shown = match subst_params(g, fty, args, k) {
+                        Some(t) => self.show_typed(v, &t, 1),
+                        None => checkers_rt::ops::show_derived(v, 1),
+                    };
+                    return if p > 0 { format!("({} {shown})", ci.name) } else { format!("{} {shown}", ci.name) };
+                }
                 let Some(c) = w::con_of(v) else { return rt() };
                 let wk = &g.well_known;
                 if Some(*id) == wk.list && (Some(ConId(c)) == wk.nil || Some(ConId(c)) == wk.cons) {
@@ -127,8 +157,78 @@ impl<'g> Evaluator<'g> {
         }
     }
 
+    /// `v` shown by the runtime's printer, by the descriptor of the closed
+    /// type `ty` (#170).
+    fn show_by_descriptor(&self, v: W, ty: &Tm, p: u8) -> String {
+        fn rt_ty(d: &crate::core::Desc) -> checkers_rt::desc::Ty {
+            match d {
+                crate::core::Desc::Known(tag, args) => checkers_rt::desc::Ty::Con { tag: *tag, args: args.iter().map(rt_ty).collect() },
+                _ => checkers_rt::desc::Ty::Unknown,
+            }
+        }
+        let tv = crate::core::eval(self.g, &Rc::new(Vec::new()), ty);
+        checkers_rt::ops::show_typed_derived(v, &rt_ty(&crate::core::desc_of(self.g, &tv)), p)
+    }
+
     pub fn release(&self, v: W) {
         w::drop_w(v)
+    }
+
+    /// A value of type `ty` (a closed type) as a term, where it has one
+    /// (staging, §8.9). The type tells what the value alone doesn't: a
+    /// type stored as its one kept field (#170) is that field.
+    pub fn reify_as(&self, v: W, ty: &Tm) -> Option<Tm> {
+        let g = self.g;
+        match ty {
+            Tm::Def(_) => match unfolded(g, ty) {
+                Some(t) => self.reify_as(v, &t),
+                None => self.reify(v),
+            },
+            Tm::TupleTy(ts) if w::is_ptr(v) && w::kind(v) == w::K_TUPLE && w::nfields(v) == ts.len() => {
+                (0..ts.len()).map(|i| self.reify_as(w::slot(v, i), &ts[i])).collect::<Option<Vec<_>>>().map(Tm::Tuple)
+            }
+            // A string is stored as its bytes (#170).
+            Tm::TyConApp(id, _) if Some(*id) == g.well_known.string && w::is_ptr(v) && w::kind(v) == w::K_BYTES => {
+                Some(Tm::Lit(Lit::Str(Rc::from(w::str_of(v)))))
+            }
+            Tm::TyConApp(id, args) => {
+                let np = g.arity_ty(*id);
+                if let Some((c, k)) = unboxed_con(g, *id) {
+                    let ci = &g.cons[c.0 as usize];
+                    let mut out: Vec<Tm> = (0..np).map(|_| Tm::Univ(0)).collect();
+                    for j in 0..ci.fields.len() {
+                        out.push(if j != k {
+                            Tm::Tuple(vec![])
+                        } else if g.is_dict_type_field(c, k) {
+                            return None;
+                        } else {
+                            match subst_params(g, &ci.fields[k].3, args, k) {
+                                Some(t) => self.reify_as(v, &t)?,
+                                None => self.reify(v)?,
+                            }
+                        });
+                    }
+                    return Some(Tm::ConApp(c, out));
+                }
+                let Some(c) = w::con_of(v) else { return self.reify(v) };
+                let ci = &g.cons[c as usize];
+                if ci.ty != *id || (!w::is_nullary(v) && w::nfields(v) != ci.fields.len()) {
+                    return self.reify(v);
+                }
+                let mut out: Vec<Tm> = (0..np).map(|_| Tm::Univ(0)).collect();
+                if !w::is_nullary(v) {
+                    for (i, f) in ci.fields.iter().enumerate() {
+                        let fv = w::field(v, i);
+                        out.push(match subst_params(g, &f.3, args, i) {
+                            Some(t) => self.reify_as(fv, &t)?,
+                            None => self.reify(fv)?,
+                        });
+                    }
+                }
+                Some(Tm::ConApp(ConId(c), out))
+            }
+            _ => self.reify(v),
+        }
     }
 
     /// A value as a term, where it has one (staging, §8.9).
@@ -155,12 +255,46 @@ impl<'g> Evaluator<'g> {
             return None;
         }
         match w::kind(v) {
-            w::K_STR => Some(Tm::Lit(Lit::Str(Rc::from(w::str_of(v))))),
             w::K_BYTES => Some(Tm::Lit(Lit::Bytes(Rc::from(w::blob(v))))),
             w::K_TUPLE => (0..w::nfields(v)).map(|i| self.reify(w::slot(v, i))).collect::<Option<Vec<_>>>().map(Tm::Tuple),
             _ => None,
         }
     }
+}
+
+/// The constructor of type `id` and its one kept field, if the type is
+/// stored as that field (#170).
+fn unboxed_con(g: &Globals, id: crate::core::TyId) -> Option<(ConId, usize)> {
+    let ctors = &g.tys[id.0 as usize].ctors;
+    let c = *ctors.first()?;
+    g.unboxed_field(c).map(|k| (c, k))
+}
+
+/// The type an alias names, as a closed term, if `ty` unfolds.
+fn unfolded(g: &Globals, ty: &Tm) -> Option<Tm> {
+    let v = crate::core::eval(g, &Rc::new(Vec::new()), ty);
+    let u = crate::core::unfold(g, &v)?;
+    Some(crate::core::quote(g, 0, &crate::core::force(g, u)))
+}
+
+/// A string literal as the lexer reads it, escaped as `std.string`'s
+/// `Debug String` escapes it.
+fn string_literal(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\0' => out.push_str("\\0"),
+            c if (c as u32) < 0x20 || (0x7f..0xa0).contains(&(c as u32)) => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// A character literal as the lexer reads it.

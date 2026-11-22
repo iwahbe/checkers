@@ -47,14 +47,11 @@ impl Layout {
         }
     }
 
-    /// The layout a type argument's word names: an erased argument (`0`, or
-    /// anything else that isn't a layout) is `Words`.
+    /// The layout a type argument's word names: its layout or its type's
+    /// descriptor (`desc`, #170); an erased argument (`0`, or anything else
+    /// that is neither) is `Words`.
     pub fn of_word(w: W) -> Layout {
-        if is_int(w) && int_of(w) >= 0 {
-            Layout::of_code(int_of(w) as u64)
-        } else {
-            Words
-        }
+        crate::desc::Ty::of_word(w).layout()
     }
 
     pub fn width(self) -> usize {
@@ -354,7 +351,9 @@ mod tests {
         // The compiler passes `2n + 1` for layout `n`; an erased argument is 0.
         assert_eq!(Layout::of_word(layout_word(I32)), I32);
         assert_eq!(Layout::of_word(ERASED), Words);
-        assert_eq!(Layout::of_word(mk_int(99)), Words);
+        // A descriptor's tag keeps the layout in its low four bits (#170).
+        assert_eq!(Layout::of_word(mk_int(crate::desc::tag(Some(5), U16 as u8) as i64)), U16);
+        assert_eq!(Layout::of_word(mk_int(-3)), Words);
     }
 
     #[test]

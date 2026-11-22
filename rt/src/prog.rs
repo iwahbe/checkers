@@ -16,6 +16,34 @@ pub struct ConInfo {
     pub shown: Vec<bool>,
     /// Its type's hand-written `debug` (#126): an index into `Prog::debug`.
     pub debug: Option<usize>,
+    /// Its type's number (#170).
+    pub ty: Option<u32>,
+    /// Per field: its type, from the type's parameters (#170).
+    pub templates: Vec<crate::desc::Template>,
+}
+
+/// What `debug` needs to know of a type to show it by its descriptor (#170).
+#[derive(Clone, Debug, Default)]
+pub struct TyInfo {
+    pub kind: TyKind,
+    /// Stored as its one kept field: the constructor and the field.
+    pub unboxed: Option<(u32, usize)>,
+    /// Its hand-written `debug`: an index into `Prog::debug`, and how many
+    /// type parameters that function takes before the value.
+    pub debug: Option<(usize, usize)>,
+    /// That `debug` is the standard library's, so the derived form (a
+    /// failed `check`'s text) uses it too.
+    pub std_debug: bool,
+}
+
+/// Types shown otherwise than by their constructors.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TyKind {
+    #[default]
+    Other,
+    List,
+    Array,
+    Bag,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -48,10 +76,26 @@ pub struct Prog {
     pub names: Vec<String>,
     pub known: Known,
     pub system_fields: Vec<String>,
+    /// Types by number (#170).
+    pub tys: Vec<TyInfo>,
     pub invoke: Invoke,
     /// The hand-written `Debug` instances' functions (#126), set once
     /// after `install` (`set_debug`); kept for good.
     pub debug: std::sync::OnceLock<Vec<W>>,
+    /// The functions computing fields' types from earlier fields (#170),
+    /// set with `debug`.
+    pub field_types: std::sync::OnceLock<Vec<W>>,
+}
+
+impl Prog {
+    /// Type `id`'s entry, made if it isn't there yet.
+    fn ty_mut(&mut self, id: u32) -> &mut TyInfo {
+        let i = id as usize;
+        if self.tys.len() <= i {
+            self.tys.resize(i + 1, TyInfo::default());
+        }
+        &mut self.tys[i]
+    }
 }
 
 /// The current program. `checkers check` installs one per file it
@@ -73,17 +117,22 @@ fn prog_opt() -> Option<&'static Prog> {
 }
 
 /// The descriptor (one item per line):
-/// `con NAME ARITY NP SHOWN` (SHOWN: a string of 0/1 per field),
-/// `def NAME`, `known KEY ID`, `system FIELD`, `debug CON INDEX` (after
-/// the constructors).
+/// `con NAME ARITY NP SHOWN TY TEMPLATES` (SHOWN: a string of 0/1 per
+/// field; TY: its type's number; TEMPLATES: each field's type, `;` between
+/// them, `-` for none), `ty ID KIND UNBOXED` (KIND: `list`, `array` or
+/// `-`; UNBOXED: `CON:FIELD` or `-`), `def NAME`, `known KEY ID`, `system
+/// FIELD`, `debug TY INDEX NTYPES FROM` (after the types; FROM: `std` for
+/// the standard library's).
 pub fn install(desc: &str, invoke: Invoke) {
     let mut p = Prog {
         cons: Vec::new(),
         names: Vec::new(),
         known: Known::default(),
         system_fields: Vec::new(),
+        tys: Vec::new(),
         invoke,
         debug: std::sync::OnceLock::new(),
+        field_types: std::sync::OnceLock::new(),
     };
     for line in desc.lines() {
         let mut it = line.split(' ');
@@ -93,13 +142,34 @@ pub fn install(desc: &str, invoke: Invoke) {
                 let arity = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
                 let np = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
                 let shown = it.next().unwrap_or("").bytes().map(|b| b == b'1').collect();
-                p.cons.push(ConInfo { name, arity, np, shown, debug: None });
+                let ty = it.next().and_then(|x| x.parse().ok());
+                let templates = match it.next() {
+                    None | Some("-") => Vec::new(),
+                    Some(ts) => ts.split(';').map(crate::desc::Template::parse).collect(),
+                };
+                p.cons.push(ConInfo { name, arity, np, shown, debug: None, ty, templates });
+            }
+            Some("ty") => {
+                let Some(id) = it.next().and_then(|x| x.parse().ok()) else { continue };
+                let kind = match it.next() {
+                    Some("list") => TyKind::List,
+                    Some("array") => TyKind::Array,
+                    Some("bag") => TyKind::Bag,
+                    _ => TyKind::Other,
+                };
+                let unboxed = it.next().and_then(|x| x.split_once(':')).and_then(|(c, f)| Some((c.parse().ok()?, f.parse().ok()?)));
+                *p.ty_mut(id) = TyInfo { kind, unboxed, debug: None, std_debug: false };
             }
             Some("debug") => {
-                let c: Option<usize> = it.next().and_then(|x| x.parse().ok());
-                let k = it.next().and_then(|x| x.parse().ok());
-                if let Some(ci) = c.and_then(|c| p.cons.get_mut(c)) {
-                    ci.debug = k;
+                let ty: Option<u32> = it.next().and_then(|x| x.parse().ok());
+                let k: Option<usize> = it.next().and_then(|x| x.parse().ok());
+                let n: usize = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
+                let std = it.next() == Some("std");
+                let (Some(ty), Some(k)) = (ty, k) else { continue };
+                p.ty_mut(ty).debug = Some((k, n));
+                p.ty_mut(ty).std_debug = std;
+                for ci in p.cons.iter_mut().filter(|c| c.ty == Some(ty)) {
+                    ci.debug = Some(k);
                 }
             }
             Some("def") => p.names.push(it.next().unwrap_or("").to_string()),
@@ -136,19 +206,52 @@ pub fn install(desc: &str, invoke: Invoke) {
     PROG.store(Box::into_raw(Box::new(p)), Ordering::Release);
 }
 
-/// The hand-written `Debug` instances' functions (#126): `fs`, an owned
-/// list of them, in the order of the descriptor's indices.
-pub fn set_debug(fs: W) {
+/// What the printer calls (owned): a pair of the hand-written `Debug`
+/// instances' functions (#126) and the functions computing fields' types
+/// from earlier fields (#170), each a list in the descriptor's order.
+pub fn set_debug(table: W) {
+    let (fs, ts) = (slot(table, 0), slot(table, 1));
     let items: Vec<W> = list_items(fs).into_iter().map(dup).collect();
-    drop_w(fs);
+    let types: Vec<W> = list_items(ts).into_iter().map(dup).collect();
+    drop_w(table);
     let _ = prog().debug.set(items);
+    let _ = prog().field_types.set(types);
 }
 
-/// The hand-written `debug` of constructor `c`'s type, if it has one.
-pub fn debug_fn(c: u32) -> Option<W> {
+/// The descriptor of a field whose type is computed from earlier fields
+/// (#170): function `i` of the table, given the type's arguments' words and
+/// those fields (borrowed). An owned word.
+pub fn field_type(i: usize, targs: Vec<W>, fields: &[W]) -> W {
+    let Some(f) = prog().field_types.get().and_then(|t| t.get(i)).copied() else { return ERASED };
+    let mut args = targs;
+    args.extend(fields.iter().map(|w| dup(*w)));
+    // A field of a type without parameters before it (`inner~ByParam True`
+    // as the first field of a record without parameters): the descriptor
+    // itself, not a function.
+    if args.is_empty() {
+        return dup(f);
+    }
+    crate::apply::apply(dup(f), args)
+}
+
+/// The hand-written `debug` of constructor `c`'s type, if it has one, how
+/// many type parameters it takes before the value, and whether it is the
+/// standard library's.
+pub fn debug_fn(c: u32) -> Option<(W, usize, bool)> {
     let p = prog();
-    let k = p.cons.get(c as usize)?.debug?;
-    p.debug.get()?.get(k).copied()
+    let ci = p.cons.get(c as usize)?;
+    let k = ci.debug?;
+    let t = ci.ty.and_then(|t| p.tys.get(t as usize));
+    let n = t.and_then(|t| t.debug).map_or(0, |d| d.1);
+    Some((*p.debug.get()?.get(k)?, n, t.is_some_and(|t| t.std_debug)))
+}
+
+/// The hand-written `debug` of type `ty`, if it has one, and how many type
+/// parameters it takes before the value.
+pub fn debug_fn_of_type(ty: u32) -> Option<(W, usize)> {
+    let p = prog();
+    let (k, n) = p.tys.get(ty as usize)?.debug?;
+    Some((*p.debug.get()?.get(k)?, n))
 }
 
 // ── values the runtime builds ───────────────────────────────────────────────
@@ -328,10 +431,8 @@ pub unsafe extern "C" fn ck_error(owner: u64, msg: *const u8, len: u64) -> W {
 pub extern "C" fn ck_nomatch(w: W, owner: u64) -> W {
     let kind = if crate::obj::is_num(w) {
         "number"
-    } else if is_kind(w, K_STR) {
-        "string"
     } else if is_kind(w, K_BYTES) {
-        "bytes"
+        "bytes or a string"
     } else if con_of(w).is_some() {
         "constructor"
     } else {

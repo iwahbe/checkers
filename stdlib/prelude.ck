@@ -7,8 +7,19 @@ export abstract enum Type
 
 # Built-in types; their values come from literals and primitives.
 export abstract enum Int
-# Text: UTF-8, immutable. The prover sees a string as its UTF-8 bytes.
-export abstract enum String
+
+# Text: immutable bytes that are valid UTF-8. A string is stored as its
+# bytes, so `s.bytes` costs nothing, and the prover sees it as them.
+export record String
+    bytes~Bytes, valid_utf8 bytes
+
+# Whether `b` is well-formed UTF-8 (RFC 3629): no overlong forms, no
+# surrogates, nothing above U+10FFFF.
+export fn valid_utf8 b -> r : b~Bytes, r~Bool
+    __builtin
+
+check valid_utf8 b"h\xE2\x82\xAC" and valid_utf8 b""
+check not (valid_utf8 b"\xC0\x80") and not (valid_utf8 b"\xED\xA0\x80") and not (valid_utf8 b"\x80")
 # An immutable array: `len xs` and `xs[i]` take constant time. Arrays of
 # fixed-width numbers are packed; `std.array` has its functions.
 export abstract enum Array +a : a~Type

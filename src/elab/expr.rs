@@ -106,6 +106,14 @@ impl Elab {
             return Tm::Error;
         }
         let exp = self.force(expected);
+        // A name where a type is expected is the type, not a record's
+        // constructor of the same name (`String`, #170).
+        if matches!(exp, Val::Univ(_)) && matches!(e.kind, ExprKind::Con(_)) && !cx.type_pos {
+            cx.type_pos = true;
+            let t = self.check_inner(cx, e, expected, tail);
+            cx.type_pos = false;
+            return t;
+        }
         // An implicit Π expected and a non-lambda given: insert an implicit lambda.
         if let Val::Pi(x, m, Icit::Impl, a, c) = &exp {
             let v = Val::var(cx.lvl());

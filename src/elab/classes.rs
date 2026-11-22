@@ -1897,7 +1897,8 @@ impl Elab {
             }
         }
         // `Debug` (#126): every type has the derived instance, which only
-        // the type's own module may replace, with no context.
+        // the type's own module, or the class's (`std.string`'s instance
+        // for the prelude's `String`), may replace, with no context.
         let cdef = &self.class_defs[&class];
         let is_debug = cdef.module == "std.string" && cdef.name == "Debug";
         if is_debug {
@@ -1906,7 +1907,7 @@ impl Elab {
                 HeadKey::Unit | HeadKey::Pair => "std.prelude".to_string(),
             };
             let shown = self.src_text(p.heads[0].span).trim().to_string();
-            if ty_module != self.cur {
+            if ty_module != self.cur && cdef.module != self.cur {
                 self.err(
                     Diagnostic::error("E0283", format!("`instance {}` overlaps the derived instance of `{shown}`", p.text), p.span)
                         .with_label(format!("`{shown}` is declared in `{ty_module}`"))
@@ -2110,6 +2111,11 @@ impl Elab {
                 }
             };
             t = Tm::App(Rc::new(t), Rc::new(d), Icit::Impl, Mult::Many);
+        }
+        // Its class's types are kept in the dictionary as descriptors, built
+        // from the instance's types (#170): a use of the function building it.
+        if !req.in_spec && !args.is_empty() {
+            self.dict_insts.push(Inst { caller: req.owner, callee: inst.def, args: args.clone(), lvl: req.lvl, names: req.names.clone(), span: req.span });
         }
         // Using an instance of this module: a call, for termination (D136).
         if inst.module == self.cur && !req.in_spec {

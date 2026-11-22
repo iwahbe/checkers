@@ -5,6 +5,7 @@ use crate::num::Num;
 use crate::obj::*;
 use crate::prog::*;
 use crate::word::*;
+use crate::desc::Ty;
 
 fn num2(a: W, b: W) -> (Num, Num) {
     (num_of(a), num_of(b))
@@ -108,7 +109,7 @@ pub fn equal(a: W, b: W) -> Result<bool, &'static str> {
         return Ok(false);
     }
     Ok(match ka {
-        K_STR | K_BYTES => blob(a) == blob(b),
+        K_BYTES => blob(a) == blob(b),
         K_CON | K_TUPLE => {
             if ka == K_CON && tag(a) != tag(b) || nfields(a) != nfields(b) {
                 return Ok(false);
@@ -160,11 +161,6 @@ pub extern "C" fn ck_ne(a: W, b: W, owner: u64) -> W {
 
 #[no_mangle]
 pub extern "C" fn ck_concat(a: W, b: W) -> W {
-    if is_kind(a, K_STR) {
-        let mut s = str_of(a).to_string();
-        s.push_str(str_of(b));
-        return new_str(&s);
-    }
     if is_kind(a, K_BYTES) && is_kind(b, K_BYTES) {
         let mut v = blob(a).to_vec();
         v.extend_from_slice(blob(b));
@@ -178,7 +174,7 @@ pub extern "C" fn ck_concat(a: W, b: W) -> W {
 
 #[no_mangle]
 pub extern "C" fn ck_len(a: W) -> W {
-    if is_kind(a, K_STR) || is_kind(a, K_BYTES) {
+    if is_kind(a, K_BYTES) {
         return nat(blob(a).len());
     }
     if is_kind(a, crate::array::K_ARRAY) {
@@ -230,11 +226,136 @@ pub fn show_derived(w: W, p: u8) -> String {
     render(w, p, false)
 }
 
+/// `show`, for a value of the type `ty` describes (#170): what the type
+/// says and the value doesn't (a type stored as its one field, a string)
+/// is shown as the type says.
+pub fn show_typed(w: W, ty: &Ty, p: u8) -> String {
+    render_typed(w, ty, p, true)
+}
+
+/// `show_derived`, by type.
+pub fn show_typed_derived(w: W, ty: &Ty, p: u8) -> String {
+    render_typed(w, ty, p, false)
+}
+
+fn render_typed(w: W, ty: &Ty, p: u8, hand: bool) -> String {
+    let Some(id) = ty.id() else { return render(w, p, hand) };
+    let pg = prog();
+    if id == crate::desc::TUPLE {
+        if !is_kind(w, K_TUPLE) {
+            return render(w, p, hand);
+        }
+        let parts: Vec<String> = (0..nfields(w)).map(|i| render_typed(slot(w, i), ty.arg(i), 0, hand)).collect();
+        return format!("({})", parts.join(", "));
+    }
+    let other = crate::prog::TyInfo::default();
+    let info = pg.tys.get(id as usize).unwrap_or(&other);
+    if (hand || info.std_debug) && info.debug.is_some() {
+        if let Some((f, n)) = crate::prog::debug_fn_of_type(id) {
+            return custom(f, (0..n).map(|i| ty.arg(i).to_word()).collect(), w, p);
+        }
+    }
+    match info.kind {
+        TyKind::List if is_list(w) => {
+            let elem = ty.arg(0);
+            let items: Vec<String> = list_items(w).into_iter().map(|x| render_typed(x, elem, 0, hand)).collect();
+            return format!("[{}]", items.join(", "));
+        }
+        // A bag's values by its element type, each as many times as it is there.
+        TyKind::Bag => {
+            if let Some(Obj::Bag(b)) = obj(w) {
+                let elem = ty.arg(0);
+                let items: Vec<String> = b.iter().flat_map(|e| std::iter::repeat_n(render_typed(e.value, elem, 0, hand), e.count)).collect();
+                return format!("<Bag {{{}}}>", items.join(", "));
+            }
+        }
+        TyKind::Array if crate::array::is_array(w) => {
+            let elem = ty.arg(0);
+            // An array of bytes by its element type, not by how it is stored.
+            if elem.layout() == crate::array::Layout::U8 && is_kind(w, K_BYTES) {
+                return show_bytes(blob(w));
+            }
+            let items: Vec<String> = crate::array::items(w)
+                .into_iter()
+                .map(|x| {
+                    let s = render_typed(x, elem, 0, hand);
+                    drop_w(x);
+                    s
+                })
+                .collect();
+            return format!("[{}]", items.join(", "));
+        }
+        _ => {}
+    }
+    // Stored as its one kept field: the value is that field.
+    if let Some((c, k)) = info.unboxed {
+        let ci = &pg.cons[c as usize];
+        if !ci.shown.get(k).copied().unwrap_or(false) {
+            return ci.name.clone();
+        }
+        let inner = match ci.templates.get(k) {
+            // Computed from the type's value arguments: the fields before it
+            // aren't kept, so they are given as erased.
+            Some(crate::desc::Template::Fn(f)) => {
+                let targs = (0..ci.np).map(|j| ty.arg(j).to_arg()).collect();
+                let d = crate::prog::field_type(*f, targs, &vec![ERASED; k]);
+                let s = render_typed(w, &Ty::of_word(d), 1, hand);
+                drop_w(d);
+                s
+            }
+            t => {
+                let fty = t.map_or(std::borrow::Cow::Borrowed(&crate::desc::UNKNOWN), |t| t.at(ty));
+                render_typed(w, &fty, 1, hand)
+            }
+        };
+        return paren(p > 0, format!("{} {inner}", ci.name));
+    }
+    let Some(c) = con_of(w) else { return render(w, p, hand) };
+    let ci = &pg.cons[c as usize];
+    if ci.ty != Some(id) {
+        return render(w, p, hand);
+    }
+    let fields: Vec<W> = if is_nullary(w) { Vec::new() } else { (0..nfields(w)).map(|i| slot(w, i)).collect() };
+    let args: Vec<String> = fields
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| ci.shown.get(*i).copied().unwrap_or(false))
+        .map(|(i, v)| match ci.templates.get(i) {
+            // A type computed from earlier fields: computed now.
+            Some(crate::desc::Template::Fn(f)) => {
+                let targs = (0..ci.np).map(|j| ty.arg(j).to_arg()).collect();
+                let d = crate::prog::field_type(*f, targs, &fields[..i]);
+                let s = render_typed(*v, &Ty::of_word(d), 1, hand);
+                drop_w(d);
+                s
+            }
+            t => {
+                let fty = t.map_or(std::borrow::Cow::Borrowed(&crate::desc::UNKNOWN), |t| t.at(ty));
+                render_typed(*v, &fty, 1, hand)
+            }
+        })
+        .collect();
+    if args.is_empty() {
+        ci.name.clone()
+    } else {
+        paren(p > 0, format!("{} {}", ci.name, args.join(" ")))
+    }
+}
+
+/// Whether `w` is a list: `[]` or a cell.
+fn is_list(w: W) -> bool {
+    let k = &prog().known;
+    con_of(w).is_some_and(|c| Some(c) == k.nil || Some(c) == k.cons)
+}
+
 /// What a hand-written `debug` gives, in argument position in parentheses
-/// if it has a space outside brackets and quotes.
-fn custom(f: W, w: W, p: u8) -> String {
-    let r = crate::apply::apply(dup(f), vec![dup(w)]);
-    let s = if is_kind(r, K_STR) { str_of(r).to_string() } else { bug("a `debug` that didn't give a string") };
+/// if it has a space outside brackets and quotes. `targs` (owned) are its
+/// type parameters' words.
+fn custom(f: W, targs: Vec<W>, w: W, p: u8) -> String {
+    let mut args = targs;
+    args.push(dup(w));
+    let r = crate::apply::apply(dup(f), args);
+    let s = if is_kind(r, K_BYTES) { str_of(r).to_string() } else { bug("a `debug` that didn't give a string") };
     drop_w(r);
     if p == 0 {
         return s;
@@ -282,8 +403,8 @@ fn render(w: W, p: u8, hand: bool) -> String {
         .into();
     }
     if let Some(c) = con_of(w) {
-        if let Some(f) = debug_fn(c).filter(|_| hand) {
-            return custom(f, w, p);
+        if let Some((f, n, _)) = debug_fn(c).filter(|d| hand || d.2) {
+            return custom(f, vec![ERASED; n], w, p);
         }
         if Some(c) == k.nil || Some(c) == k.cons {
             let items: Vec<String> = list_items(w).into_iter().map(|x| show(x, 0)).collect();
@@ -296,7 +417,6 @@ fn render(w: W, p: u8, hand: bool) -> String {
         return if args.is_empty() { ci.name.clone() } else { paren(p > 0, format!("{} {}", ci.name, args.join(" "))) };
     }
     match kind(w) {
-        K_STR => format!("{:?}", str_of(w)),
         K_BYTES => show_bytes(blob(w)),
         crate::array::K_ARRAY => {
             let items: Vec<String> = crate::array::items(w)
@@ -314,7 +434,7 @@ fn render(w: W, p: u8, hand: bool) -> String {
         K_RUST => match obj(w) {
             Some(Obj::Decimal(d)) => d.render(),
             Some(Obj::Bag(b)) => {
-                let items: Vec<String> = b.iter().flat_map(|(v, n)| std::iter::repeat_n(v.clone(), *n)).collect();
+                let items: Vec<String> = b.iter().flat_map(|e| std::iter::repeat_n(e.key.clone(), e.count)).collect();
                 format!("<Bag {{{}}}>", items.join(", "))
             }
             Some(Obj::File(_)) => "<File>".into(),

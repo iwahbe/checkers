@@ -25,6 +25,7 @@ replaces 19:5-19:5
   None               constructor     None  (of `Option`)
   Ok                 constructor     Ok x : x~a  (of `Result`)
   Some               constructor     Some x : x~a  (of `Option`)
+  String             constructor     export record String  (documented)
   True               constructor     True  (of `Bool`)
   add                function        fn add x y -> r : x~a, y~a, r~a
   char               module          module std.char
@@ -35,6 +36,7 @@ replaces 19:5-19:5
   neg                function        fn neg x -> r : x~a, r~a
   not                function        export transparent fn not b -> r : b~Bool, r~Bool  (documented)
   sub                function        fn sub x y -> r : x~a, y~a, r~a
+  valid_utf8         function        export fn valid_utf8 b -> r : b~Bytes, r~Bool  (documented)
   zero               function        fn zero -> r : r~a
 == line 24, column 7
 replaces 24:5-24:7
@@ -63,6 +65,7 @@ replaces 24:5-24:7
   None               constructor     None  (of `Option`)
   Ok                 constructor     Ok x : x~a  (of `Result`)
   Some               constructor     Some x : x~a  (of `Option`)
+  String             constructor     export record String  (documented)
   True               constructor     True  (of `Bool`)
   add                function        fn add x y -> r : x~a, y~a, r~a
   char               module          module std.char
@@ -73,6 +76,7 @@ replaces 24:5-24:7
   neg                function        fn neg x -> r : x~a, r~a
   not                function        export transparent fn not b -> r : b~Bool, r~Bool  (documented)
   sub                function        fn sub x y -> r : x~a, y~a, r~a
+  valid_utf8         function        export fn valid_utf8 b -> r : b~Bytes, r~Bool  (documented)
   zero               function        fn zero -> r : r~a
 == line 28, column 10
 replaces 28:10-28:10
@@ -97,6 +101,7 @@ replaces 28:10-28:10
   None               constructor     None  (of `Option`)
   Ok                 constructor     Ok x : x~a  (of `Result`)
   Some               constructor     Some x : x~a  (of `Option`)
+  String             constructor     export record String  (documented)
   True               constructor     True  (of `Bool`)
   add                function        fn add x y -> r : x~a, y~a, r~a
   char               module          module std.char
@@ -107,6 +112,7 @@ replaces 28:10-28:10
   neg                function        fn neg x -> r : x~a, r~a
   not                function        export transparent fn not b -> r : b~Bool, r~Bool  (documented)
   sub                function        fn sub x y -> r : x~a, y~a, r~a
+  valid_utf8         function        export fn valid_utf8 b -> r : b~Bytes, r~Bool  (documented)
   zero               function        fn zero -> r : r~a
 == line 32, column 7
 replaces 32:7-32:7
@@ -147,6 +153,7 @@ replaces 46:11-46:11
   None               constructor     None  (of `Option`)
   Ok                 constructor     Ok x : x~a  (of `Result`)
   Some               constructor     Some x : x~a  (of `Option`)
+  String             constructor     export record String  (documented)
   True               constructor     True  (of `Bool`)
   add                function        fn add x y -> r : x~a, y~a, r~a
   char               module          module std.char
@@ -157,4 +164,5 @@ replaces 46:11-46:11
   neg                function        fn neg x -> r : x~a, r~a
   not                function        export transparent fn not b -> r : b~Bool, r~Bool  (documented)
   sub                function        fn sub x y -> r : x~a, y~a, r~a
+  valid_utf8         function        export fn valid_utf8 b -> r : b~Bytes, r~Bool  (documented)
   zero               function        fn zero -> r : r~a

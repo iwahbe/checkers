@@ -2260,7 +2260,7 @@ impl Elab {
     }
 }
 
-fn is_builtin(b: &ast::Block) -> bool {
+pub(super) fn is_builtin(b: &ast::Block) -> bool {
     b.stmts.is_empty() && matches!(&b.result.kind, ExprKind::Var(n) if n == "__builtin")
 }
 

@@ -223,6 +223,50 @@ export enum StringOption
     Quoted           # in quotes and escaped, as `debug` shows it
     Take n : n~Nat   # only the first `n` characters
 
+# A string as a literal: in quotes, with `"`, `\` and control characters
+# escaped, so that reading it back gives the same string.
+instance Debug String
+    fn debug s
+        if plain (bytes s) 0 then "\"" ++ s ++ "\"" else "\"" ++ concat_map escaped s ++ "\""
+
+# Whether no character from byte `i` on needs escaping: none is `"`, `\` or
+# a control character (C0, DEL, or C1, which is 0xC2 then 0x80–0x9F).
+fn plain src i -> r : src~Bytes, i~Nat, i <= len src, r~Bool
+    decreasing len src - i
+    if i == len src
+        True
+    else
+        let b = src[i]
+        if b < 0x20 or b == 0x22 or b == 0x5C or b == 0x7F
+            False
+        else if b == 0xC2 and i + 1 < len src and src[i + 1] < 0xA0
+            False
+        else
+            plain src (i + 1)
+
+# One character as it is written inside a string literal.
+fn escaped c -> s : c~Char, s~String
+    let n = char.code c
+    if c == c'"'
+        "\\\""
+    else if c == c'\\'
+        "\\\\"
+    else if c == c'\n'
+        "\\n"
+    else if c == c'\r'
+        "\\r"
+    else if c == c'\t'
+        "\\t"
+    else if n == 0
+        "\\0"
+    else if n < 0x20 or (0x7F <= n and n < 0xA0)
+        "\\u{" ++ digits n 16 ++ "}"
+    else
+        from_char c
+
+check debug "a\"b\\c\n\u{7}é" == "\"a\\\"b\\\\c\\n\\u{7}é\""
+check debug "plain é" == "\"plain é\"" and debug "\u{85}" == "\"\\u{85}\""
+
 # The string itself, or as the options say.
 instance Display String
     type Options = StringOption

@@ -11,6 +11,7 @@ pub mod array;
 pub mod behav;
 pub mod blocking;
 pub mod builtins;
+pub mod desc;
 pub mod entry;
 pub mod fiber;
 pub mod io;
@@ -54,6 +55,7 @@ pub fn symbols() -> Vec<(&'static str, *const u8)> {
         ("ck_par", behav::ck_par as *const u8),
         ("ck_tuple_flat", ops::ck_tuple_flat as *const u8),
         ("ck_tuple_rest", ops::ck_tuple_rest as *const u8),
+        ("ck_type_apply", desc::ck_type_apply as *const u8),
         ("ck_aot_main", entry::ck_aot_main as *const u8),
     ];
     v.extend(builtins::addresses());

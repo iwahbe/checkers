@@ -60,9 +60,10 @@ pub const MODULES: &[&[Builtin]] = &[
     prelude::TABLE,
 ];
 
-/// Builtins that get their type parameters, as element layouts (D133).
+/// Builtins that get their type parameters' words: `std.array`'s, as
+/// element layouts (D133); `debug`, as its type's descriptor (#170).
 pub fn keeps_types(name: &str) -> bool {
-    name.starts_with("std.array.")
+    name.starts_with("std.array.") || name == "std.string.debug"
 }
 
 /// Builtins called through their wrapper function, which owns its
@@ -96,10 +97,16 @@ pub(crate) fn args<'a>(p: *const W, n: u64) -> &'a [W] {
 }
 
 pub(crate) fn s(w: W) -> &'static str {
-    if !is_kind(w, K_STR) {
+    if !is_kind(w, K_BYTES) {
         bug("expected a string");
     }
     str_of(w)
+}
+
+/// A string's object (borrowed), checked.
+pub(crate) fn s_obj(w: W) -> W {
+    s(w);
+    w
 }
 
 pub(crate) fn b(w: W) -> &'static [u8] {

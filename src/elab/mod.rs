@@ -9,6 +9,7 @@ mod classes;
 pub mod complete;
 mod decls;
 mod expr;
+mod descr;
 mod eq;
 mod interval;
 pub mod index;
@@ -254,6 +255,7 @@ pub enum OpClass {
 
 /// A use of a generic function in compiled code: its type parameters'
 /// arguments, for D125 (b).
+#[derive(Clone)]
 pub struct Inst {
     pub caller: Option<DefId>,
     pub callee: DefId,
@@ -559,8 +561,14 @@ pub struct Elab {
     /// Type parameters compared with `==` in compiled code, by function and
     /// binder position (D125 b).
     pub eq_reqs: HashMap<DefId, BTreeMap<usize, EqReq>>,
+    /// The type parameters each function needs described (#170): the
+    /// function its requirement comes from, and the parameter's name there.
+    pub desc_reqs: HashMap<DefId, BTreeMap<usize, EqReq>>,
     /// This module's uses of generic functions, resolved after its bodies.
     pub insts: Vec<Inst>,
+    /// Each dictionary built from an instance in compiled code, as a use of
+    /// the function building it with the instance's types (#170).
+    pub dict_insts: Vec<Inst>,
     /// The last definition `sym_term` gave, for `insert` to record its use.
     pub pending_inst: Option<(DefId, Span)>,
     /// Elaborating the head of an application: a bare function name gets its
@@ -805,7 +813,9 @@ impl Elab {
             in_spec: 0,
             in_proof: 0,
             eq_reqs: HashMap::new(),
+            desc_reqs: HashMap::new(),
             insts: Vec::new(),
+            dict_insts: Vec::new(),
             pending_inst: None,
             in_app_head: false,
             proof_goal: None,

@@ -39,7 +39,8 @@ pub const K_CLO: u64 = 3;
 /// A partial application: the function is the first word after the
 /// header, then the arguments it holds.
 pub const K_PAP: u64 = 4;
-pub const K_STR: u64 = 5;
+/// Bytes, and strings, which are stored as their bytes (#170). (Kind 5
+/// was strings' own.)
 pub const K_BYTES: u64 = 6;
 pub const K_BIG: u64 = 7;
 /// A Rust value (`Obj`): decimals, bags, files, cowns, futures, …
@@ -157,7 +158,7 @@ fn size_of(w: W) -> usize {
     match kind(w) {
         K_CON | K_TUPLE => HDR + 8 * n,
         K_CLO | K_PAP => HDR + 8 + 8 * n,
-        K_STR | K_BYTES => HDR + 8 + (slot(w, 0) as usize).div_ceil(8) * 8,
+        K_BYTES => HDR + 8 + (slot(w, 0) as usize).div_ceil(8) * 8,
         crate::array::K_ARRAY => crate::array::size(w),
         _ => HDR + 8,
     }
@@ -217,20 +218,22 @@ fn new_blob(kind: u64, b: &[u8]) -> W {
     w
 }
 
+/// A string: a bytes object (#170).
 pub fn new_str(s: &str) -> W {
-    new_blob(K_STR, s.as_bytes())
+    new_blob(K_BYTES, s.as_bytes())
 }
 
 pub fn new_bytes(b: &[u8]) -> W {
     new_blob(K_BYTES, b)
 }
 
-/// The bytes of a string or bytes object.
+/// The bytes of a bytes object (a string's too).
 pub fn blob<'a>(w: W) -> &'a [u8] {
     let n = slot(w, 0) as usize;
     unsafe { std::slice::from_raw_parts((w as usize + HDR + 8) as *const u8, n) }
 }
 
+/// The text of a string: a bytes object that a `String` is, so UTF-8.
 pub fn str_of<'a>(w: W) -> &'a str {
     unsafe { std::str::from_utf8_unchecked(blob(w)) }
 }
