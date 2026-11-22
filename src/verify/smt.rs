@@ -323,6 +323,8 @@ pub struct Builder<'a> {
     real_values: Vec<(String, TyId)>,
     /// Datatypes given a stand-in base constructor, so Z3 accepts them.
     based: BTreeSet<TyId>,
+    /// The sorts a constructor's recognizer is applied at (see `query`).
+    tested: BTreeSet<Sort>,
     /// Give `forall` facts to Z3, quantified: only to check a counterexample
     /// against them, never to prove (D137).
     foralls: bool,
@@ -357,6 +359,7 @@ impl<'a> Builder<'a> {
             ctx: Vec::new(),
             ctx_src: Vec::new(),
             shown: Vec::new(),
+            tested: BTreeSet::new(),
             string_vars: Vec::new(),
             array_vars: Vec::new(),
             real_values: Vec::new(),
@@ -1454,6 +1457,9 @@ impl<'a> Builder<'a> {
             }
             let all = if facts.len() == 1 { facts[0].clone() } else { format!("(and {})", facts.join(" ")) };
             let only = self.e.g.tys[id.0 as usize].ctors.len() == 1;
+            if !only {
+                self.tested.insert(Sort::Data(id, sargs.to_vec()));
+            }
             self.asserts.push(if only { all } else { format!("(=> ({} {x}) {all})", tester(self.e, c)) });
         }
     }
@@ -2683,6 +2689,7 @@ impl<'a> Builder<'a> {
                 }
             }
             Sort::Data(id, sargs) => {
+                self.tested.insert(ss.clone());
                 let senv = self.sort_env(*id, sargs);
                 for (con, n, body) in &c.branches {
                     if matches!(body, Tm::Error) {
@@ -3288,6 +3295,7 @@ impl<'a> Builder<'a> {
             text += &s;
             text += "\n";
         }
+        let sorts_end = text.len();
         for f in self.funs.values() {
             if f.starts_with("(declare-fun") {
                 text += f;
@@ -3323,6 +3331,26 @@ impl<'a> Builder<'a> {
         if !self.shown.is_empty() {
             text += &format!("(get-value ({}))\n", self.shown.iter().map(|s| s.0.clone()).collect::<Vec<_>>().join(" "));
         }
+        // Z3 instantiates a parametric datatype at a sort only once the
+        // sort is written: a recognizer at `(Option s)` reached only through
+        // another datatype's field (a dictionary's `s -> Option s`) is an
+        // unknown constant without it. Declared only where a recognizer
+        // comes before the sort is written, so other queries are unchanged
+        // (and their cached answers kept).
+        let mut written = String::new();
+        for (k, s) in self.tested.iter().enumerate() {
+            let Sort::Data(id, args) = s else { continue };
+            if args.is_empty() {
+                continue;
+            }
+            let r = s.render(self.e);
+            let first_test = self.e.g.tys[id.0 as usize].ctors.iter().filter_map(|c| text.find(&format!("({} ", tester(self.e, *c)))).min();
+            if first_test.is_some_and(|t| text.find(&r).is_none_or(|w| w > t)) {
+                written += &format!("(declare-const |tested#{k}| {r})\n");
+            }
+        }
+        text.insert_str(sorts_end, &written);
+        let (defs_at, defs_end, split) = (defs_at + written.len(), defs_end + written.len(), split + written.len());
         let without_axioms = (!axioms.is_empty()).then(|| format!("{}{}", &text[..split], &text[split + axioms.len()..]));
         let facts_only = reflected.then(|| {
             let decls: String = opaque_defs.iter().map(|d| format!("{d}\n")).collect();
