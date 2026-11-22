@@ -952,6 +952,28 @@ pub fn force(g: &Globals, v: Val) -> Val {
     v
 }
 
+/// A class's type at a known instance (#133), as the instance gives it:
+/// `Seq.Elem (Array U8)` is `U8`, the alias kept, so its refinement is known
+/// (#190). `None` if `v` isn't one, or its dictionary isn't known.
+pub fn class_type_at(g: &Globals, v: &Val) -> Option<Val> {
+    let is_class_type = |v: &Val| matches!(v, Val::Neutral(Head::Def(d), sp) if g.assoc_def(*d).is_some_and(|(_, _, n)| sp.len() == n + 1));
+    let mut v = force_meta(g, v.clone());
+    if !is_class_type(&v) {
+        return None;
+    }
+    // Unfold the class's type, then its dictionary, until the field is read.
+    for _ in 0..32 {
+        let reading = is_class_type(&v) || matches!(&v, Val::Neutral(Head::Def(_), sp) if sp.iter().any(|e| matches!(e, Elim::Field(..))));
+        if !reading {
+            // Stuck on a dictionary that is a variable: not known.
+            let stuck = matches!(&v, Val::Neutral(_, sp) if sp.iter().any(|e| matches!(e, Elim::Field(..))));
+            return (!stuck).then_some(v);
+        }
+        v = force_meta(g, unfold(g, &v)?);
+    }
+    None
+}
+
 fn with_elim(h: Head, sp: &Rc<Vec<Elim>>, e: Elim) -> Val {
     let mut s = (**sp).clone();
     s.push(e);

@@ -315,7 +315,16 @@ impl Elab {
                     return Tm::Error;
                 }
                 // A refinement inside a type argument is never gained (D71).
-                if let Some(g) = self.refined_mismatch(cx, expected, &ty, e.span) {
+                let mut gained = self.refined_mismatch(cx, expected, &ty, e.span);
+                // A class's type at an instance not found yet (`Seq.Elem` of
+                // `Seq.uncons xs`, #190): find the instances the types known
+                // so far choose, and look again.
+                if gained.is_some() && !self.inst_reqs.is_empty() {
+                    self.solve_instances(false);
+                    self.retry_waiting(false);
+                    gained = self.refined_mismatch(cx, expected, &ty, e.span);
+                }
+                if let Some(g) = gained {
                     self.report_gained(cx, expected, &ty, &g, e.span, "this expression");
                     return Tm::Error;
                 }
