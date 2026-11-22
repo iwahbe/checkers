@@ -290,11 +290,12 @@ fn bind(v: Arc<Ir>, b: Ir) -> Ir {
 }
 
 /// Code that does nothing when it runs and is a word: a variable, an
-/// erased value, a small number. (A definition's value may be a constant
+/// erased value, a constructor without fields, a small number. (A definition's value may be a constant
 /// computed on first use, which can fail: not an atom.)
 fn is_atom(v: &Ir) -> bool {
     match v {
         Ir::Var(_) | Ir::Erased => true,
+        Ir::Con(_, xs) => xs.is_empty(),
         Ir::Lit(Lit::Num(n)) => checkers_rt::word::fits(*n),
         _ => false,
     }
