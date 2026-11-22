@@ -122,6 +122,11 @@ impl Elab {
         v
     }
 
+    /// Is `v` a class's type read from a dictionary not known (#133)?
+    fn on_type_field(&self, v: &Val) -> bool {
+        matches!(v, Val::Neutral(_, sp) if matches!(sp.last(), Some(Elim::Field(c, i)) if self.g.is_type_field(*c, *i)))
+    }
+
     /// A refinement alias's base, with all aliases unfolded at the head.
     fn base(&self, v: &Val) -> Val {
         self.force(v)
@@ -281,7 +286,10 @@ impl Elab {
                     if sub_ref || role == WeakenRole::Param {
                         self.weaken_obligation(cx, sub, sup, role, w);
                     } else {
-                        return Some(Gained { expected: e.clone(), found: f.clone(), variance: pol, via });
+                        // A class's type is shown as written (`Seq.Elem s`),
+                        // not as its dictionary's field.
+                        let f = if self.on_type_field(&f) { found.clone() } else { f.clone() };
+                        return Some(Gained { expected: e.clone(), found: f, variance: pol, via });
                     }
                 }
             }

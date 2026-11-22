@@ -936,6 +936,11 @@ impl Elab {
                     if matches!(&u, Val::Neutral(_, sp) if sp.iter().any(|e| matches!(e, Elim::Case(..)))) {
                         break;
                     }
+                    // A class's type at a dictionary not known: as written
+                    // (`Seq.Elem s`), not the dictionary's field.
+                    if matches!(&u, Val::Neutral(_, sp) if matches!(sp.last(), Some(Elim::Field(c, i)) if self.g.is_type_field(*c, *i))) {
+                        break;
+                    }
                     v = u;
                 }
                 None => break,
