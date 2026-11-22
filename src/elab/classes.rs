@@ -466,7 +466,11 @@ fn with_types(blk: &Block, types: &[(String, Expr)]) -> Block {
     let mut stmts: Vec<Stmt> = types
         .iter()
         .filter(|(n, _)| n != "_")
-        .map(|(n, ty)| Stmt::Let(Pattern { kind: PatKind::Var(n.clone()), span: ty.span }, ty.clone()))
+        // Elaborated as a type: `Ascii` is the type, not its record's constructor.
+        .map(|(n, ty)| {
+            let as_type = ast::RefineTy { param: None, own: false, dom: ty.clone(), arrow: None, preds: Vec::new() };
+            Stmt::Let(Pattern { kind: PatKind::Var(n.clone()), span: ty.span }, Expr { kind: ExprKind::Refine(Box::new(as_type)), span: ty.span })
+        })
         .collect();
     if stmts.is_empty() {
         return blk.clone();
@@ -989,7 +993,7 @@ impl Elab {
             }
             match mem {
                 ClassMember::Type { name: t, default, constraints: tcs, .. } => {
-                    self.class_type_constraints(&cname, t, default.as_ref(), tcs, &clause, local, &frw, &mut clause_fields, decls, origins);
+                    self.class_type_constraints(t, tcs, local, &frw, &mut clause_fields);
                     let mentioned = default.as_ref().and_then(|e| params.iter().find(|p| super::decls::mentions_free(e, &p.name)).map(|p| (e, p)));
                     if let Some((e, param)) = mentioned {
                         self.err(
@@ -1242,21 +1246,15 @@ impl Elab {
     }
 
     /// A class's type's constraints (#176): each class clause (`Ord Item`)
-    /// is a field of the dictionary, after the types; with a default, each
-    /// predicate is a lemma about the default's values, checked once here.
-    #[allow(clippy::too_many_arguments)]
+    /// is a field of the dictionary, after the types; its predicates name a
+    /// value of it (`u~Unit`), and are checked at each instance.
     fn class_type_constraints(
         &mut self,
-        class: &str,
         t: &Ident,
-        default: Option<&Expr>,
         cs: &[Constraint],
-        clause: &Expr,
         local: &HashMap<String, (Vec<String>, Vec<ClassMember>, Span)>,
         frw: &Rewrite,
         clause_fields: &mut Vec<ast::Field>,
-        decls: &mut Vec<Decl>,
-        origins: &mut Vec<Origin>,
     ) {
         let mut binders = 0;
         for c in cs {
@@ -1310,37 +1308,11 @@ impl Elab {
         }
         let (binder, preds) = type_preds(cs);
         let Some(first) = preds.first() else { return };
-        let Some(binder) = binder else {
+        if binder.is_none() {
             self.err(
                 Diagnostic::error("E0370", format!("a predicate on `{}` needs a name for its value", t.name), first.span)
                     .with_help(format!("name it first: `type {} : x~{}, …`", t.name, t.name)),
             );
-            return;
-        };
-        // A default means the same at every instance: its values are
-        // checked once, here.
-        let Some(dflt) = default else { return };
-        let shown_ty = self.src_text(dflt.span);
-        for (k, p) in preds.iter().enumerate() {
-            let lname = format!("{class}.{}#{k}", t.name);
-            self.class_type_checks.insert(lname.clone(), (format!("{class}.{}", t.name), shown_ty.clone()));
-            decls.push(Decl {
-                export: Export::No,
-                kind: DeclKind::Lemma {
-                    name: ident(&lname, Span { start: dflt.span.start, end: dflt.span.start }),
-                    params: vec![binder.clone()],
-                    constraints: vec![
-                        Constraint::Pred(clause.clone()),
-                        Constraint::Typed { name: binder.clone(), mult: ast::Mult::Many, ty: dflt.clone() },
-                    ],
-                    decreasing: None,
-                    lets: Vec::new(),
-                    ensures: (*p).clone(),
-                    proof: None,
-                },
-                span: t.span,
-            });
-            origins.push(Origin::Written);
         }
     }
 
@@ -1949,12 +1921,15 @@ impl Elab {
                 }
             }
         }
-        // Each predicate on a class's type given here holds of every value
-        // of the type given (#176): a lemma, proved by Z3, reported at the
-        // instance's `type Name = T`.
+        // Each predicate on a class's type holds of every value of the type
+        // this instance gives it, or takes as the default (#176): a lemma,
+        // proved by Z3, reported at the instance's `type Name = T` (or its
+        // header). A predicate is about the class's functions, which are the
+        // instance's, so a default is checked at each instance too.
         for cm in &all_members {
             let ClassMember::Type { name: tn, constraints: tcs, .. } = cm else { continue };
-            let Some((_, ty, at)) = given_types.iter().find(|(n, _, _)| *n == tn.name) else { continue };
+            let Some((_, ty)) = types.iter().find(|(n, _)| *n == tn.name) else { continue };
+            let at = &given_types.iter().find(|(n, _, _)| *n == tn.name).map(|(_, _, s)| *s).unwrap_or(header);
             let (Some(binder), preds) = type_preds(tcs) else { continue };
             let module = foreign.clone().unwrap_or_else(|| self.cur.clone());
             for (k, p) in preds.iter().enumerate() {
@@ -2124,14 +2099,27 @@ impl Elab {
                     pvals.push(Val::var(l));
                 }
                 let d = cx.bind("$d", Val::TyCon(c.tid, pvals), Mult::Many);
-                let ty = crate::core::elim(&self.g, Val::var(d), Elim::Field(con, k));
+                // `C.Name a`, as written (its field of the dictionary in scope).
+                let tname = &tnames[k];
+                let ty = match self.assoc_defs.get(&(c.tid, tname.clone())) {
+                    Some(acc) => {
+                        let mut v = Val::Neutral(Head::Def(*acc), Rc::new(Vec::new()));
+                        for l in 0..params.len() {
+                            v = crate::core::app(&self.g, v, Val::var(l), Icit::Expl);
+                        }
+                        crate::core::app(&self.g, v, Val::var(d), Icit::Impl)
+                    }
+                    None => crate::core::elim(&self.g, Val::var(d), Elim::Field(con, k)),
+                };
                 cx.bind(&binder.name, ty, Mult::Many);
                 let mut out = Vec::new();
+                self.in_class_type_pred = true;
                 for p in preds {
                     let e = arw.expr(p, &[binder.name.clone()]);
                     out.push(self.elab_pred(&mut cx, &e, false));
                 }
                 self.solve_deferred();
+                self.in_class_type_pred = false;
                 for p in &mut out {
                     p.tm = crate::core::zonk_metas(&self.g, cx.lvl(), &p.tm);
                 }

@@ -2089,7 +2089,10 @@ impl Elab {
                     let goal = self.eval(&sig.cx, &ens.tm);
                     match proof {
                         None => {
-                            let kind = ObKind::Lemma { name: name.name.clone() };
+                            let kind = match self.class_type_checks.get(&name.name) {
+                                Some((n, g)) => ObKind::ClassType { name: n.clone(), given: g.clone() },
+                                None => ObKind::Lemma { name: name.name.clone() },
+                            };
                             self.oblige(&sig.cx, ensures.span, kind, ens.text.clone(), goal, None);
                         }
                         Some(block) => {

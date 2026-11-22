@@ -3,6 +3,7 @@ error[E0210]: a number literal needs numbers (`Nat` or `Int`), but this is `Seq.
   |
 6 |         x :: _ -> x == 1
   |                        ^ has type `Seq.Elem s`
+  = help: `Seq.Elem s` is a type of its own, not a number: reach a number through its class's functions
 
 error[E0201]: type mismatch: expected `Option Int`, found `Option (Seq.Elem s)`
   --> class_type_shown.ck:11:19
@@ -10,12 +11,4 @@ error[E0201]: type mismatch: expected `Option Int`, found `Option (Seq.Elem s)`
 11 |         x :: _ -> Some x
    |                   ^^^^^^ this expression has type `Option (Seq.Elem s)`
 
-error[E0262]: type mismatch: expected `Option (U8, Array U8)`, found `Option (Seq.Elem (Array U8), Array U8)`
-  --> class_type_shown.ck:14:5
-   |
-14 |     Seq.uncons xs
-   |     ^^^^^^^^^^^^^ this expression has type `Option (Seq.Elem (Array U8), Array U8)`, so its `Seq.Elem (Array U8)` values aren't known to be `U8`
-   = note: a refinement inside a type is never gained from an existing value: that would need a proof about every element
-   = help: give the value the type `Option (U8, Array U8)` where it is built, so that each part is checked there
-
-class_type_shown.ck: 3 errors, 0 warnings
+class_type_shown.ck: 2 errors, 0 warnings
