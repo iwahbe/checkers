@@ -104,11 +104,12 @@ fn decl(d: &Decl) -> String {
             let mut s = format!("({ex}class {} {}", name.name, names(params));
             for m in members {
                 match m {
-                    ClassMember::Type { name, default, .. } => {
+                    ClassMember::Type { name, default, constraints, .. } => {
                         s += &format!("\n{}(type {}", ind(1), name.name);
                         if let Some(t) = default {
                             s += &format!(" {}", expr(t, 2));
                         }
+                        s += &cons(constraints, 2);
                         s += ")";
                     }
                     ClassMember::Fn { name, params, result, constraints, .. } => {

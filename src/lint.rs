@@ -229,11 +229,12 @@ impl Linter {
                 params.iter().for_each(|p| self.snake(p, "type parameter"));
                 for m in members {
                     match m {
-                        ClassMember::Type { name, default, .. } => {
+                        ClassMember::Type { name, default, constraints, .. } => {
                             self.camel(name, "type name");
                             if let Some(t) = default {
                                 self.expr(t);
                             }
+                            self.constraints(constraints);
                         }
                         ClassMember::Fn { name, params, constraints, .. } => {
                             self.snake(name, "function name");

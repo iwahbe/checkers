@@ -2146,7 +2146,7 @@ impl<'a> Builder<'a> {
         all.drain(..np);
         let Some(cd) = self.e.class_defs.get(&cty) else { return Ok(None) };
         // The dictionary's fields: the class's types (#133), then its functions.
-        let Some(fi) = cd.methods().iter().position(|m| **m == *name).map(|k| k + cd.types().len()) else { return Ok(None) };
+        let Some(fi) = cd.methods().iter().position(|m| **m == *name).map(|k| k + cd.method_offset()) else { return Ok(None) };
         let Some(field) = all.get(fi).cloned() else { return Ok(None) };
         // The environment: the dictionary's arguments, then the call's explicit ones.
         let mut ienv: Vec<Ent> = Vec::new();

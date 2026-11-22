@@ -110,6 +110,7 @@ impl Elab {
                 }
             }
         }
+        self.elab_class_type_preds();
         self.phase_positivity(m, &ids);
         self.phase_bodies(m, &ids, HashMap::new(), true);
         self.retry_late();

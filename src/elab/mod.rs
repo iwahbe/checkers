@@ -683,6 +683,14 @@ pub struct Elab {
     /// An instance's dictionary reading a type from another's (#133), to
     /// find cycles.
     pub assoc_edges: Vec<(DefId, DefId)>,
+    /// A class's type's predicates (#176), by the dictionary's constructor
+    /// and the type's field: over the class's parameters, the dictionary,
+    /// then a value of the type. Every value of the type satisfies them.
+    pub class_type_preds: HashMap<(ConId, usize), Vec<Pred>>,
+    /// The lemmas checking a class's type's predicates at an instance or
+    /// at the class's default (#176), by name: the class's type as written
+    /// (`Encoding.Unit`) and the type given (`Nat`).
+    pub class_type_checks: HashMap<String, (String, String)>,
     /// Each instance member of the module being desugared, by its index:
     /// its class's name and its instance's types (#146, #145).
     pub member_heads: HashMap<usize, (String, Vec<ast::Expr>)>,
@@ -864,6 +872,8 @@ impl Elab {
             waiting: Vec::new(),
             waiting_late: Vec::new(),
             pending_classes: Vec::new(),
+            class_type_preds: HashMap::new(),
+            class_type_checks: HashMap::new(),
             class_mults: HashMap::new(),
             inst_heads: HashSet::new(),
             part_reported: HashSet::new(),
