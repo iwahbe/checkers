@@ -63,7 +63,7 @@ $ checkers trust examples/wc.ck
 <std>/array.ck  proved   74 by smt, 24 computed
 <std>/char.ck  proved   20 by smt, 22 computed
 <std>/list.ck  proved   141 by smt, 6 computed
-<std>/prelude.ck  proved   60 by smt, 6 computed
+<std>/prelude.ck  proved   63 by smt, 14 computed
 <std>/string.ck:69:14  axiom    builtin axiom std.string.concat_join
 <std>/string.ck  proved   39 by smt, 22 computed
 examples/wc.ck:23:42  smt      postcondition of `count`: c.bytes == len src (for `count_from src 0 False (Counts 0 0 0)`, line 24)  [6635dc1391bc9c1b]
@@ -102,7 +102,7 @@ examples/wc.ck:101:7  computed check ends_in_word b"" True
 <std>/terminal.ck:10:11  builtin  std.terminal.print_line
 <std>/terminal.ck:36:11  builtin  std.terminal.stdin
 solver: Z3 5.3.3.0
-cache: 20 of 389 Z3 answers reused
+cache: 21 of 392 Z3 answers reused
 -- stderr
 -- exit 0
 $ checkers build --release tests/tool/admitted.ck -o tests/tool/admitted.out-never-written
