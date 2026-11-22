@@ -1770,6 +1770,7 @@ impl Elab {
             match (o, id) {
                 (Origin::ClassMethod, Some(Sym::Def(d))) => {
                     self.class_methods.insert(*d);
+                    self.g.well_known.class_fns.insert(*d);
                 }
                 (Origin::ClassLemma, Some(Sym::Def(d))) => {
                     self.class_lemmas.insert(*d);
@@ -1842,6 +1843,7 @@ impl Elab {
     fn register_instance(&mut self, ix: usize, def: DefId, ids: &[Option<Sym>]) {
         let p = self.pending_insts[ix].clone();
         self.dict_defs.insert(def);
+        self.g.well_known.dict_fns.insert(def);
         let class = match p.class {
             Some(t) => t,
             None => match self.resolve(&p.class_name, true) {

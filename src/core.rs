@@ -397,6 +397,12 @@ pub struct WellKnown {
     /// values of them, itself or through functions it calls: they are
     /// passed their type's descriptor, not only its layout (#170).
     pub desc_params: HashMap<DefId, std::collections::BTreeSet<usize>>,
+    /// Classes' functions, each reading a field of its dictionary, and the
+    /// functions building instances' dictionaries (D136): a class's
+    /// function at a known instance's dictionary is compiled as a direct
+    /// call of that instance's function (§14).
+    pub class_fns: std::collections::HashSet<DefId>,
+    pub dict_fns: std::collections::HashSet<DefId>,
 }
 
 pub const DEFAULT_FUEL: u64 = 200_000;

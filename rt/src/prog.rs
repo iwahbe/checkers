@@ -172,7 +172,9 @@ pub fn install(desc: &str, invoke: Invoke) {
                     ci.debug = Some(k);
                 }
             }
-            Some("def") => p.names.push(it.next().unwrap_or("").to_string()),
+            // The rest of the line: an instance's function is named with
+            // spaces (`Ord (List a).le`).
+            Some("def") => p.names.push(line.strip_prefix("def ").unwrap_or("").to_string()),
             Some("known") => {
                 let key = it.next().unwrap_or("");
                 let id = it.next().and_then(|x| x.parse().ok());
