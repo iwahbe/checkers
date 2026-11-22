@@ -8,7 +8,8 @@ pub const TABLE: &[Builtin] = &[
     ("std.prelude.string_le", "ckb_string_le", ckb_string_le),
     ("std.prelude.valid_utf8", "ckb_valid_utf8", ckb_valid_utf8),
     ("std.prelude.array_rest", "ckb_array_rest", ckb_array_rest),
-    ("std.prelude.string_uncons", "ckb_string_uncons", ckb_string_uncons),
+    ("std.prelude.string_first", "ckb_string_first", ckb_string_first),
+    ("std.prelude.string_rest", "ckb_string_rest", ckb_string_rest),
 ];
 
 // Whether bytes are UTF-8: what every string is (#170).
@@ -22,15 +23,19 @@ builtin!(ckb_string_le, |a| bool_w(s(a[0]).as_bytes() <= s(a[1]).as_bytes()));
 // storage (`Seq`'s instance for arrays, #169).
 builtin!(ckb_array_rest, |a| crate::array::slice(a[0], 1, crate::array::len(a[0])));
 
-// A string's first character and the rest, a slice of its bytes; `None` for
-// the empty string (`Seq`'s instance for strings, #169).
-builtin!(ckb_string_uncons, |a| {
+// A non-empty string's first character, decoded (`Seq`'s instance for
+// strings, #169).
+builtin!(ckb_string_first, |a| match s(a[0]).chars().next() {
+    Some(c) => nat(c as usize),
+    None => bug("string_first of the empty string"),
+});
+
+// All but a non-empty string's first character: a slice sharing its bytes
+// (`Seq`'s instance for strings, #169).
+builtin!(ckb_string_rest, |a| {
     let w = s_obj(a[0]);
     match s(w).chars().next() {
-        Some(c) => {
-            let k = c.len_utf8();
-            some(new_tuple(&[nat(c as usize), crate::array::slice(w, k, blob(w).len())]))
-        }
-        None => none(),
+        Some(c) => crate::array::slice(w, c.len_utf8(), blob(w).len()),
+        None => bug("string_rest of the empty string"),
     }
 });
