@@ -323,6 +323,13 @@ impl Elab {
                     return Tm::Error;
                 }
                 // A refinement inside a type argument is never gained (D71).
+                // An instance's function with a signature of its own, in its
+                // dictionary, is checked to refine the class's by the prover
+                // (#225, E0371).
+                if self.refined_in_dict(t.head()) {
+                    self.last_inferred = Some(ty);
+                    return t;
+                }
                 let mut gained = self.refined_mismatch(cx, expected, &ty, e.span);
                 // A class's type at an instance not found yet (`Seq.Elem` of
                 // `Seq.uncons xs`, #190): find the instances the types known
@@ -1140,18 +1147,15 @@ impl Elab {
                     }
                     return;
                 }
-                let mut env: Vec<Val> = args[..spec.n_binders].iter().map(|a| self.eval(cx, a)).collect();
-                env.push(self.eval(cx, t));
-                for p in spec.preds.iter().filter(|p| !p.is_post) {
-                    if let Some((k, _)) = p.alias {
-                        if env.get(k).is_some_and(|a| self.nat_pred_holds(cx, p, a)) {
-                            continue;
-                        }
-                    }
-                    let goal = self.inst_pred(p, env.clone());
-                    self.oblige(cx, span, ObKind::Pre { callee: name.clone() }, p.text.clone(), goal, None);
+                // A class's function: at a known instance whose function has
+                // a signature of its own, that signature's preconditions
+                // (#225). Which instance is known once the dictionaries are
+                // found, at the end of the module.
+                if self.class_methods.contains(d) {
+                    self.pending_class_pres.push(PendingPre { cx: cx.clone(), call: t.clone(), span, owner: self.cur_fn, in_spec: self.in_spec });
+                    return;
                 }
-
+                self.pre_obligations(cx, *d, &name, &args, t, span);
             }
             Tm::TyCon(tid) => {
                 // Wherever a type is applied, its conditions on its
@@ -1185,6 +1189,61 @@ impl Elab {
             }
             _ => {}
         }
+    }
+
+    /// Is `h` an instance's function with a signature of its own (#225),
+    /// in its instance's dictionary?
+    fn refined_in_dict(&self, h: &Tm) -> bool {
+        matches!(h, Tm::Def(d) if self.refined_inst_fns.contains(d))
+            && self.cur_fn.is_some_and(|f| self.g.well_known.dict_fns.contains(&f))
+    }
+
+    /// The preconditions of `d`, called with `args` (at least its binders)
+    /// as `t`; `name` is the callee as shown.
+    fn pre_obligations(&mut self, cx: &Cx, d: DefId, name: &str, args: &[Rc<Tm>], t: &Tm, span: Span) {
+        let Some(spec) = self.specs.get(&d).cloned() else { return };
+        let mut env: Vec<Val> = args[..spec.n_binders].iter().map(|a| self.eval(cx, a)).collect();
+        env.push(self.eval(cx, t));
+        for p in spec.preds.iter().filter(|p| !p.is_post) {
+            if let Some((k, _)) = p.alias {
+                if env.get(k).is_some_and(|a| self.nat_pred_holds(cx, p, a)) {
+                    continue;
+                }
+            }
+            let goal = self.inst_pred(p, env.clone());
+            self.oblige(cx, span, ObKind::Pre { callee: name.to_string() }, p.text.clone(), goal, None);
+        }
+    }
+
+    /// The preconditions of calls of classes' functions, once their
+    /// dictionaries are found (#225): at a known instance whose function
+    /// has a signature of its own, its preconditions; otherwise the
+    /// class's.
+    pub(super) fn class_call_obligations(&mut self) {
+        let pending = std::mem::take(&mut self.pending_class_pres);
+        let saved = (self.cur_fn, self.in_spec);
+        for PendingPre { cx, call, span, owner, in_spec } in pending {
+            (self.cur_fn, self.in_spec) = (owner, in_spec);
+            let call = crate::core::zonk_metas(&self.g, cx.lvl(), &call);
+            let (h, args) = call.spine();
+            let Tm::Def(d) = h else { continue };
+            let name = self.g.defs[d.0 as usize].name.to_string();
+            let direct = crate::native::ir::known_instance(&self.g, &call);
+            if let Some(direct) = direct {
+                let (ih, iargs) = direct.spine();
+                if let Tm::Def(f) = ih {
+                    if self.refined_inst_fns.contains(f) && self.specs.get(f).is_some_and(|s| iargs.len() >= s.n_binders) {
+                        let iargs: Vec<Rc<Tm>> = iargs.into_iter().cloned().collect();
+                        self.pre_obligations(&cx, *f, &name, &iargs, &direct, span);
+                        continue;
+                    }
+                }
+            }
+            let d = *d;
+            let args: Vec<Rc<Tm>> = args.into_iter().cloned().collect();
+            self.pre_obligations(&cx, d, &name, &args, &call, span);
+        }
+        (self.cur_fn, self.in_spec) = saved;
     }
 
     /// A call of `callee` from a function with a measure: the callee's measure at

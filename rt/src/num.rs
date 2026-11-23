@@ -326,8 +326,8 @@ mod tests {
         assert_eq!(scan("1.x"), Some(("1".into(), 1)));
     }
 
-    /// The axioms `json.scan_number_render` and `decimal.render_starts`
-    /// (stdlib/decimal.ck, D56), on many values, prefixes and suffixes.
+    /// The axiom `json.scan_number_render` (stdlib/json.ck, D56), and what
+    /// `decimal.render_starts` proves, on many values, prefixes and suffixes.
     #[test]
     fn render_scan_axioms() {
         let mut values = Vec::new();
@@ -348,6 +348,58 @@ mod tests {
                     assert_eq!(got, Some((d.clone(), pre.len() + b.len())), "scan_number_render: {src:?}");
                 }
             }
+        }
+    }
+
+    /// Mantissas and exponents for the axioms of `std.decimal`: small, past
+    /// 64 bits, and with trailing zeros to normalize.
+    fn samples() -> Vec<(BigInt, BigInt)> {
+        let big: BigInt = "123456789012345678901234567890123456789".parse().unwrap();
+        let mut ms: Vec<BigInt> = [0i64, 1, -1, 7, -12, 10, -100, 25, 1005, 123456789, -987654321, i64::MAX, i64::MIN]
+            .into_iter()
+            .map(BigInt::from)
+            .collect();
+        ms.extend([big.clone(), -big.clone(), &big * BigInt::from(1000), BigInt::from(u64::MAX) + 1]);
+        let mut es: Vec<BigInt> = (-30i64..=30).map(BigInt::from).collect();
+        for e in [i64::MIN as i128 - 1, i64::MIN as i128, i64::MAX as i128, i64::MAX as i128 + 1, 1i128 << 100] {
+            es.push(BigInt::from(e));
+            es.push(-BigInt::from(e));
+        }
+        ms.iter().flat_map(|m| es.iter().map(move |e| (m.clone(), e.clone()))).collect()
+    }
+
+    /// `std.decimal`'s builtins `mantissa` and `exponent` (`d.m`, `d.e`):
+    /// the axiom `scaled_parts`, `scaled (mantissa d) (exponent d) == d`,
+    /// and the normal form their documentation promises.
+    #[test]
+    fn scaled_parts_axiom() {
+        let ten = BigInt::from(10);
+        for (m, e) in samples() {
+            let d = Decimal::new(m.clone(), e.clone());
+            assert_eq!(Decimal::new(d.m.clone(), d.e.clone()), d, "scaled_parts: {m} {e}");
+            if d.m.is_zero() {
+                assert!(d.e.is_zero(), "zero's exponent: {m} {e}");
+            } else {
+                assert!(!(&d.m % &ten).is_zero(), "a last digit of zero: {m} {e}");
+                // The same number: `m × 10^e` with `m`'s zeros moved to `e`.
+                let mut k = BigInt::zero();
+                let mut mm = m.clone();
+                while (&mm % &ten).is_zero() {
+                    mm /= &ten;
+                    k += 1;
+                }
+                assert_eq!((d.m.clone(), d.e.clone()), (mm, &e + k), "normal form: {m} {e}");
+            }
+        }
+    }
+
+    /// The axiom `scaled_ten`: `scaled (m * 10) e == scaled m (e + 1)`.
+    #[test]
+    fn scaled_ten_axiom() {
+        for (m, e) in samples() {
+            let a = Decimal::new(&m * BigInt::from(10), e.clone());
+            let b = Decimal::new(m.clone(), &e + 1);
+            assert_eq!(a, b, "scaled_ten: {m} {e}");
         }
     }
 
