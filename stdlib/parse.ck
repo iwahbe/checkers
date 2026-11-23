@@ -357,7 +357,6 @@ export lemma natural_decimal n post : n~Nat, post~Bytes, len post == 0 or not (c
 export lemma parse_display n post : n~Int, post~Bytes, len post == 0 or not (char.is_digit post[0])
     ensures Parsable.parse ((string.display n []).bytes ++ post) Int Int == Ok (n, post)
     proof
-        have string.display_int n
         if n < 0
             let r = (string.decimal (-n)).bytes
             let b = b"-" ++ r ++ post

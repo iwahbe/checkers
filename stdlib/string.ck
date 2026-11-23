@@ -249,10 +249,12 @@ export enum IntOption
     Digits n : n~Nat   # at least `n` digits, zeros before them
 
 # A number in decimal, or as the options say: `display 255 [Hex, Digits 4]`
-# is `0x00ff`. `Nat`, `Char` and the fixed-width numbers show this way too.
+# is `0x00ff`. Without options it is `decimal` of its size, after `-` if it
+# is negative. `Nat`, `Char` and the fixed-width numbers show this way too.
 instance Display Int
     type Options = IntOption
-    fn display n os
+    fn display n os -> s : n~Int, os~List IntOption, s~String,
+                           os == [] implies s == (if n < 0 then "-" ++ decimal (-n) else decimal n)
         let (base, plus, least) = int_options os 10 False 0
         let ds = if base == 10 then decimal (if n < 0 then -n else n) else digits (if n < 0 then -n else n) base
         let sign = if n < 0 then "-" else if plus then "+" else ""
@@ -359,11 +361,6 @@ fn string_options os quoted take -> r : os~List StringOption, quoted~Bool, take~
 instance Display Bool
     fn display b os
         if b then "True" else "False"
-
-# Without options, a number is `decimal` of its size, after `-` if it is
-# negative.
-export lemma display_int n : n~Int
-    ensures display n [] == (if n < 0 then "-" ++ decimal (-n) else decimal n)
 
 check display 255 [Hex, Digits 4] == "0x00ff" and display (-5) [Plus, Digits 3] == "-005"
 check display "héllo" [Take 2, Quoted] == "\"hé\"" and display True [] == "True"
