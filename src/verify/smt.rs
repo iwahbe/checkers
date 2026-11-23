@@ -1131,6 +1131,16 @@ impl<'a> Builder<'a> {
         if let Some(Some(e)) = self.ctx.get(lvl) {
             return Ok(e.clone());
         }
+        // A program local's facts hold everywhere, wherever it is first met
+        // (a reflected body, a quantified axiom's guard).
+        let saved = std::mem::replace(&mut self.in_def, false);
+        let r = self.declare_local(lvl);
+        self.in_def = saved;
+        r
+    }
+
+    /// `local`'s work: declare the local `lvl`, with its facts.
+    fn declare_local(&mut self, lvl: usize) -> Tx<Ent> {
         let l = self.ctx_src[lvl].clone();
         let env: Vec<Ent> = (0..lvl).map(|k| Ent::Opaque(format!("@{k}"))).collect();
         let ty = force(&self.e.g, l.ty.clone());
@@ -1151,6 +1161,10 @@ impl<'a> Builder<'a> {
                 let tyt = quote(&self.e.g, lvl, &ty);
                 let s = self.sort_of(&env, &tyt)?;
                 self.consts.push(format!("(declare-const {name} {})", s.render(self.e)));
+                // Declared, so known from here on: its specification is over
+                // all the locals, and may mention it (a precondition's
+                // dictionary is applied to every local in scope, #210).
+                self.ctx[lvl] = Some(Ent::Term(name.clone(), s.clone()));
                 // Its refinements may mention later locals (#102): its
                 // specification is over all of them.
                 let (at, spec) = match &l.refined {
@@ -1275,6 +1289,14 @@ impl<'a> Builder<'a> {
     /// postconditions hold, for each application Z3 makes (unfolding `map f`,
     /// D139). A pattern-guarded axiom, like `nat_axiom`'s.
     fn fun_axiom(&mut self, name: &str, lvl: usize) {
+        // Its terms are over the axiom's bound variables: facts about them
+        // (`Seq.size x0` is a `Nat`) can't be stated outside it (#210).
+        let saved = std::mem::replace(&mut self.in_def, true);
+        self.fun_axiom_in(name, lvl);
+        self.in_def = saved;
+    }
+
+    fn fun_axiom_in(&mut self, name: &str, lvl: usize) {
         let Some((_, ty)) = self.fun_tys.get(name).cloned() else { return };
         let mut inner: Vec<Ent> = (0..lvl).map(|k| Ent::Opaque(format!("@{k}"))).collect();
         let mut pres = Vec::new();
