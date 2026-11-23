@@ -719,6 +719,8 @@ pub struct Elab {
     /// Instances' functions with signatures of their own, by declaration
     /// (as `member_heads`), with the class's signature to refine (#225).
     pub inst_refines: HashMap<usize, classes::InstRefine>,
+    /// Instances' functions marked `transparent`, by declaration (#249).
+    pub transparent_members: HashSet<usize>,
     /// Instances' functions with signatures of their own (#225).
     pub refined_inst_fns: HashSet<DefId>,
     /// Calls of classes' functions with preconditions, to check once their
@@ -899,6 +901,7 @@ impl Elab {
             assoc_edges: Vec::new(),
             member_heads: HashMap::new(),
             inst_refines: HashMap::new(),
+            transparent_members: HashSet::new(),
             refined_inst_fns: HashSet::new(),
             pending_class_pres: Vec::new(),
             sig_inst: None,
@@ -2526,6 +2529,18 @@ pub fn collect_sealed(t: &Tm, g: &Globals, cur: &str, out: &mut Vec<DefId>) {
         let info = &g.defs[d.0 as usize];
         if info.sealed && *info.module != *cur && !out.contains(d) {
             out.push(*d);
+        }
+    }
+    // A class's function at a known instance is that instance's function,
+    // which may be sealed (#249).
+    if matches!(t, Tm::App(..)) {
+        if let Some(direct) = crate::native::ir::known_instance(g, t) {
+            if let (Tm::Def(f), _) = direct.spine() {
+                let info = &g.defs[f.0 as usize];
+                if info.sealed && *info.module != *cur && !out.contains(f) {
+                    out.push(*f);
+                }
+            }
         }
     }
     t.each_sub(|x, _| collect_sealed(x, g, cur, out));

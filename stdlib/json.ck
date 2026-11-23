@@ -87,11 +87,11 @@ export record Located
     kind~JsonToken
 
 instance Token JsonToken JsonToken
-    fn token v t
+    transparent fn token v t
         v
 
 instance Token Located JsonToken
-    fn token v t
+    transparent fn token v t
         v.kind
 
 # An input's tokens in order, and how it ends: with nothing but whitespace
@@ -104,11 +104,11 @@ export enum Tokens
 
 instance Seq Tokens
     type Elem = Located
-    fn size ts
+    transparent fn size ts
         match ts
             More _ rest -> 1 + size rest
             _           -> 0
-    fn uncons ts
+    transparent fn uncons ts
         match ts
             More t rest -> Some (t, rest)
             _           -> None
@@ -726,6 +726,8 @@ lemma lex_items items post total d : items~List Json, post~Bytes, delimits post,
                         have lex_value x (b"]" ++ post) total d
                         have uncons_one b"]" post
                         have lex_punct b"]" EndArray post total d
+                        have nested d EndArray == d - 1
+                        have total - len ys + width x == total - len (b"]" ++ post)
                     _  ->
                         let zs = utf8.encode (join "," (map render rest) ++ "]") ++ post
                         have join "," (map render items) == render x ++ "," ++ join "," (map render rest)

@@ -27,7 +27,7 @@ A member is named `C.f` (`Size.size`), or `f` alone where the class is in scope 
 ```text
 instance ::= 'instance' Uname type { type } [ ':' constraints ] NL INDENT { member } DEDENT
 member   ::= 'type' Uname '=' type NL
-           | 'fn' lname { lname } [ [ '->' lname ] ':' constraints ] NL INDENT block DEDENT
+           | [ 'transparent' ] 'fn' lname { lname } [ [ '->' lname ] ':' constraints ] NL INDENT block DEDENT
            | 'lemma' lname { lname } [ NL INDENT 'proof' NL INDENT block DEDENT DEDENT ]
 ```
 
@@ -96,6 +96,19 @@ It must refine the class's signature, which the prover checks (E0371 otherwise, 
 
 The body is checked against the instance's signature. A call at a known instance (the instance for the argument's type, not a constraint of the calling function) checks the instance's preconditions and assumes its postconditions; the class's function as a value has the class's signature. Lemmas keep the class's statements.
 
+### Sealed instance functions
+
+Outside its module, an instance's function is sealed, like any exported function ([Modules](modules.md#sealing)): another module's proofs know its signature, the instance's own or else the class's, and not its body. So changing an instance's body never breaks a proof elsewhere. `transparent fn` shows the body to every importer, as `export transparent fn` does. Prefer a signature of the instance's own where the body says more than the specification needs; `transparent` suits a body that is its own specification:
+
+```checkers
+record Celsius
+    degrees~Int
+
+instance Ord Celsius
+    transparent fn le a b
+        a.degrees <= b.degrees
+```
+
 ### Coherence
 
 There is at most one instance of a class for a type, wherever it is used:
@@ -125,7 +138,7 @@ check larger 3 7 == 7
 
 At each call, once the types are known, the instance is found: a constraint of the calling function for that type, or the instance for the type's constructor, whose own constraints are found the same way. E0284 if there is none; E0285 if the type isn't known there.
 
-**At run time**, each class constraint is an argument: a record of the instance's functions. Lemmas are erased. **To the prover**, a class's function at a type parameter is an unknown function, about which it knows the class's lemmas, brought in with `have` (`have total x y`, or `have Ord.total x y`); at a known type it is the instance's function, whose body is visible everywhere.
+**At run time**, each class constraint is an argument: a record of the instance's functions. Lemmas are erased. **To the prover**, a class's function at a type parameter is an unknown function, about which it knows the class's lemmas, brought in with `have` (`have total x y`, or `have Ord.total x y`); at a known type it is the instance's function, known by its signature outside the instance's module, and by its body inside it or where it is marked `transparent` ([Sealed instance functions](#sealed-instance-functions)).
 
 ## Operators
 

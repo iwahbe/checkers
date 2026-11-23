@@ -135,6 +135,11 @@ impl Elab {
                 defs_in(b, &mut used);
             }
             for u in used {
+                // An instance's function a dictionary holds isn't its helper:
+                // it is sealed unless marked `transparent` (#249).
+                if self.inst_fns.contains(&u) {
+                    continue;
+                }
                 let info = &self.g.defs[u.0 as usize];
                 if *info.module == *name && info.body.is_some() && !info.opaque && !exported.contains(&u) && self.transparent.insert(u) {
                     stack.push(u);

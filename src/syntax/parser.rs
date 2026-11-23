@@ -845,7 +845,17 @@ impl Parser {
                 let span = start.to(self.prev_span());
                 self.end_line()?;
                 members.push(InstMember::Type { name: mname, ty, span });
-            } else if self.eat_kw(Kw::Fn) {
+            } else if self.at_kw(Kw::Fn) || self.at_kw(Kw::Transparent) {
+                // `transparent`: its body is visible to importers (#249).
+                let transparent = self.eat_kw(Kw::Transparent);
+                if transparent && !self.at_kw(Kw::Fn) {
+                    self.diags.push(
+                        Diagnostic::error("E0105", "`transparent` applies only to a function", self.span())
+                            .with_help("write `transparent fn …`; an instance's types and lemmas are always visible"),
+                    );
+                    return Err(Failed);
+                }
+                self.expect_kw(Kw::Fn)?;
                 let mname = self.ident("a function name")?;
                 let params = self.names_until_header_end();
                 // A signature of its own refines the class's (#225).
@@ -866,7 +876,7 @@ impl Parser {
                 };
                 let body = self.block_rest()?;
                 let span = start.to(self.prev_span());
-                members.push(InstMember::Fn { name: mname, params, sig, decreasing, body, span });
+                members.push(InstMember::Fn { transparent, name: mname, params, sig, decreasing, body, span });
             } else if self.eat_kw(Kw::Lemma) {
                 let mname = self.ident("a lemma name")?;
                 let params = self.names_until_header_end();
