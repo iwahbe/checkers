@@ -11,6 +11,7 @@ pub mod lower;
 pub mod rc;
 pub mod spec;
 pub mod tailrec;
+pub mod unbox;
 
 use crate::core::{DefId, Globals};
 use cranelift_codegen::settings::{self, Configurable};
@@ -147,12 +148,14 @@ pub(crate) fn rc_new(g: &Globals, p: &mut lower::Program) {
     let fields_of = |c: u32| g.cons[c as usize].fields.len();
     let from = p.rc_done;
     tailrec::program(&mut p.funcs, from);
+    unbox::program(p, from);
     for f in &mut p.funcs[from..] {
         rc::function(f, &fields_of);
     }
     if std::env::var_os("CHECKERS_NATIVE_DUMP").is_some() {
         for (i, f) in p.funcs.iter().enumerate().skip(from) {
-            eprintln!("ckf_{i} {} ({} params):\n{}", f.name, f.params.len(), dump(&f.body, 1));
+            let rets = if f.rets == 1 { String::new() } else { format!(", {} results", f.rets) };
+            eprintln!("ckf_{i} {} ({} params{rets}):\n{}", f.name, f.params.len(), dump(&f.body, 1));
         }
     }
     p.rc_done = p.funcs.len();
@@ -219,6 +222,13 @@ fn dump(e: &lower::E, d: usize) -> String {
         E::Int(n) => format!("{ind}{n}"),
         E::Global(g) => format!("{ind}global{g}"),
         E::Tuple(xs) => format!("{ind}({})", xs.iter().map(|a| dump(a, 0).trim().to_string()).collect::<Vec<_>>().join(", ")),
+        E::Multi(xs) => format!("{ind}multi({})", xs.iter().map(|a| dump(a, 0).trim().to_string()).collect::<Vec<_>>().join(", ")),
+        E::LetMulti(xs, a, b) => format!(
+            "{ind}let {} =\n{}\n{}",
+            xs.iter().map(|x| format!("v{x}")).collect::<Vec<_>>().join(" "),
+            dump(a, d + 1),
+            dump(b, d)
+        ),
         E::Str(s) => format!("{ind}{s:?}"),
         E::Static(_) => format!("{ind}static"),
         other => format!("{ind}{}", match other {

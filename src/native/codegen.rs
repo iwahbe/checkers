@@ -99,17 +99,25 @@ struct St {
 }
 
 enum Mode {
-    Tail,
+    /// Return the value: one word, or this many (`unbox`).
+    Tail(usize),
     /// Jump to this block with the value.
     Val(ir::Block),
 }
 
 fn tail_sig(n: usize) -> Signature {
+    tail_sig_rets(n, 1)
+}
+
+/// A function of `n` arguments (and its environment) returning `rets` words.
+fn tail_sig_rets(n: usize, rets: usize) -> Signature {
     let mut s = Signature::new(CallConv::Tail);
     for _ in 0..=n {
         s.params.push(AbiParam::new(I64));
     }
-    s.returns.push(AbiParam::new(I64));
+    for _ in 0..rets {
+        s.returns.push(AbiParam::new(I64));
+    }
     s
 }
 
@@ -313,11 +321,12 @@ impl<'p, M: Module> Gen<'p, M> {
         for i in self.funcs.len()..self.p.funcs.len() {
             let n = arity_of(&self.p.funcs[i]);
             assert!(n <= MAX_ARITY, "`{}` takes {n} arguments: lowering curries past {MAX_ARITY}", self.p.funcs[i].name);
-            let id = self.m.declare_function(&format!("ckf_{i}"), Linkage::Local, &tail_sig(n)).expect("declare a function");
+            let sig = tail_sig_rets(n, self.p.funcs[i].rets);
+            let id = self.m.declare_function(&format!("ckf_{i}"), Linkage::Local, &sig).expect("declare a function");
             self.funcs.push(id);
         }
         for i in self.defined..self.p.funcs.len() {
-            ctx.func.signature = tail_sig(arity_of(&self.p.funcs[i]));
+            ctx.func.signature = tail_sig_rets(arity_of(&self.p.funcs[i]), self.p.funcs[i].rets);
             ctx.func.name = ir::UserFuncName::user(0, i as u32);
             {
                 let mut b = FunctionBuilder::new(&mut ctx.func, &mut fctx);
@@ -357,7 +366,7 @@ impl<'p, M: Module> Gen<'p, M> {
                 for (k, v) in f.params.iter().enumerate() {
                     st.vars[*v as usize] = Some(params[k + 1]);
                 }
-                self.emit(b, &mut st, &f.body, Mode::Tail);
+                self.emit(b, &mut st, &f.body, Mode::Tail(f.rets));
             }
             FnKind::Lambda { captured } => {
                 for (k, v) in f.params.iter().enumerate() {
@@ -369,7 +378,7 @@ impl<'p, M: Module> Gen<'p, M> {
                     st.vars[*v as usize] = Some(x);
                 }
                 self.drop_v(b, &mut st, env);
-                self.emit(b, &mut st, &f.body, Mode::Tail);
+                self.emit(b, &mut st, &f.body, Mode::Tail(f.rets));
             }
             FnKind::BuiltinWrap { sym, keep } => {
                 let kept: Vec<Value> = keep.iter().enumerate().filter(|(_, k)| **k).map(|(j, _)| params[j + 1]).collect();
@@ -505,14 +514,30 @@ impl<'p, M: Module> Gen<'p, M> {
 
     // ── expressions ─────────────────────────────────────────────────────────
 
-    /// Finish with `x`: return it, or pass it on.
+    /// Finish with `x`: return it, or pass it on. Where several words are
+    /// expected, `x` is a failure's (it never returns): the rest are 0.
     fn finish(b: &mut FunctionBuilder, mode: &Mode, x: Value) {
+        let n = match mode {
+            Mode::Tail(n) => *n,
+            Mode::Val(k) => b.func.dfg.num_block_params(*k),
+        };
+        let mut xs = vec![x];
+        if n > 1 {
+            let z = b.ins().iconst(I64, 0);
+            xs.resize(n, z);
+        }
+        Self::finish_all(b, mode, &xs)
+    }
+
+    /// Finish with all of `xs`, the words expected.
+    fn finish_all(b: &mut FunctionBuilder, mode: &Mode, xs: &[Value]) {
         match mode {
-            Mode::Tail => {
-                b.ins().return_(&[x]);
+            Mode::Tail(_) => {
+                b.ins().return_(xs);
             }
             Mode::Val(k) => {
-                b.ins().jump(*k, &[BlockArg::Value(x)]);
+                let args: Vec<BlockArg> = xs.iter().map(|x| BlockArg::Value(*x)).collect();
+                b.ins().jump(*k, &args);
             }
         }
     }
@@ -524,6 +549,7 @@ impl<'p, M: Module> Gen<'p, M> {
             E::Int(n) => b.ins().iconst(I64, w::mk_int(*n) as i64),
             E::Erased => b.ins().iconst(I64, 0),
             E::Unit => b.ins().iconst(I64, w::UNIT as i64),
+            E::Con { con, fields, reuse: None } if fields.is_empty() => b.ins().iconst(I64, w::nullary(*con) as i64),
             E::Str(s) => {
                 let d = self.lit(w::K_BYTES, s.as_bytes());
                 self.addr(b, st, d)
@@ -582,13 +608,13 @@ impl<'p, M: Module> Gen<'p, M> {
                 }
                 let r = self.fref(b, st, self.funcs[*f as usize]);
                 match mode {
-                    Mode::Tail => {
+                    Mode::Tail(_) => {
                         b.ins().return_call(r, &vs);
                     }
                     Mode::Val(k) => {
                         let inst = b.ins().call(r, &vs);
-                        let x = b.inst_results(inst)[0];
-                        b.ins().jump(k, &[BlockArg::Value(x)]);
+                        let xs = b.inst_results(inst).to_vec();
+                        Self::finish_all(b, &Mode::Val(k), &xs);
                     }
                 }
             }
@@ -615,6 +641,20 @@ impl<'p, M: Module> Gen<'p, M> {
                 let tok = reuse.map(|t| self.var(b, st, t));
                 let x = self.build_con(b, st, *con, &vs, tok);
                 Self::finish(b, &mode, x)
+            }
+            E::Multi(xs) => {
+                let vs: Vec<Value> = xs.iter().map(|a| self.val(b, st, a)).collect();
+                Self::finish_all(b, &mode, &vs)
+            }
+            E::LetMulti(xs, a, body) => {
+                let k = b.create_block();
+                let vs: Vec<Value> = xs.iter().map(|_| b.append_block_param(k, I64)).collect();
+                self.emit(b, st, a, Mode::Val(k));
+                b.switch_to_block(k);
+                for (x, v) in xs.iter().zip(vs) {
+                    st.vars[*x as usize] = Some(v);
+                }
+                self.emit(b, st, body, mode)
             }
             E::Tuple(xs) => {
                 let vs: Vec<Value> = xs.iter().map(|a| self.val(b, st, a)).collect();
@@ -819,7 +859,8 @@ impl<'p, M: Module> Gen<'p, M> {
         let mut vs = vec![f];
         vs.extend_from_slice(args);
         match mode {
-            Mode::Tail => {
+            Mode::Tail(n) => {
+                debug_assert_eq!(n, 1, "a closure returns one word");
                 b.ins().return_call_indirect(sig, code, &vs);
             }
             Mode::Val(k) => {
@@ -1397,7 +1438,7 @@ impl<'p, M: Module> Gen<'p, M> {
 impl Mode {
     fn again(&self) -> Mode {
         match self {
-            Mode::Tail => Mode::Tail,
+            Mode::Tail(n) => Mode::Tail(*n),
             Mode::Val(k) => Mode::Val(*k),
         }
     }
