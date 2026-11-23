@@ -1,0 +1,10 @@
+error[E0371]: `count` doesn't promise `n > 0`, which class `Count` does
+  --> instance_refined_weaker.ck:12:8
+   |
+12 |     fn count b -> n : b~Box, n~Int
+   |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `n > 0` doesn't follow from this signature
+   = note: class `Count` declares `fn count x -> n : x~a, n~Int, n > 0`
+   = note: counterexample: n = 0
+   = help: promise at least what class `Count` does: add `n > 0` to this signature, or a condition implying it
+
+instance_refined_weaker.ck: 1 error, 0 warnings

@@ -27,11 +27,11 @@ A member is named `C.f` (`Size.size`), or `f` alone where the class is in scope 
 ```text
 instance ::= 'instance' Uname type { type } [ ':' constraints ] NL INDENT { member } DEDENT
 member   ::= 'type' Uname '=' type NL
-           | 'fn' lname { lname } NL INDENT block DEDENT
+           | 'fn' lname { lname } [ [ '->' lname ] ':' constraints ] NL INDENT block DEDENT
            | 'lemma' lname { lname } [ NL INDENT 'proof' NL INDENT block DEDENT DEDENT ]
 ```
 
-An instance gives each of the class's functions a body for one type (E0364 if one is missing, E0363 for one the class doesn't have, E0365 if its parameters don't match the class's), and may give each lemma a `proof`; without one, Z3 proves it, as for any lemma. A proof by induction may start with `decreasing e`, as any lemma's may ([Termination](termination.md#lemmas)). The signatures are the class's, at the instance's type. After `:`, the constraints are what the instance needs of its type's parameters.
+An instance gives each of the class's functions a body for one type (E0364 if one is missing, E0363 for one the class doesn't have, E0365 if its parameters don't match the class's), and may give each lemma a `proof`; without one, Z3 proves it, as for any lemma. A proof by induction may start with `decreasing e`, as any lemma's may ([Termination](termination.md#lemmas)). A function's signature is the class's, at the instance's type, unless it writes its own ([A signature of its own](#a-signature-of-its-own)). After `:`, the constraints are what the instance needs of its type's parameters.
 
 ```checkers
 record Version
@@ -67,6 +67,34 @@ instance Size (List a) : Size a
 check size [True, False] == 2
 check size [[True], [], [False, True]] == 3
 ```
+
+### A signature of its own
+
+An instance's function may write a signature, to promise more than the class does, or to require less. Where the instance is known, a call relies on that signature; generic code still sees only the class's.
+
+```checkers
+class Count a
+    fn count x -> n : x~a, n~Int
+
+instance Count (List a)
+    fn count xs -> n : xs~List a, n~Nat
+        match xs
+            []        -> 0
+            _ :: rest -> 1 + count rest
+
+# At lists, `count` promises a `Nat`.
+fn known xs -> n : xs~List Int, n~Nat
+    Count.count xs
+```
+
+Its parameters are the class's, in order, each `own` or `ghost` as in the class, with the class's types at the instance's type, up to refinement: `n~Nat` for the class's `n~Int` is allowed, `n~Bool` is E0365. A parameter that is the class's parameter passed explicitly is written `t~ghost Type`. The instance's context isn't repeated.
+
+It must refine the class's signature, which the prover checks (E0371 otherwise, with the class's signature as a note):
+
+- the class's preconditions imply each of the instance's: a call through the class doesn't establish more;
+- where the class's preconditions hold, the instance's postconditions imply each of the class's, a refinement of the result's type included.
+
+The body is checked against the instance's signature. A call at a known instance (the instance for the argument's type, not a constraint of the calling function) checks the instance's preconditions and assumes its postconditions; the class's function as a value has the class's signature. Lemmas keep the class's statements.
 
 ### Coherence
 
