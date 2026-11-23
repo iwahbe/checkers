@@ -7,10 +7,15 @@ module parse_int
 import std.system (System, ExitCode)
 import std.terminal (Term)
 import std.array
-import std.parse (Parsable)
-import std.string (NumberError, debug, display)
+import std.parse (Parsable, NumberError)
+import std.string (debug, display)
 
 fn shown r -> t : Seq s, r~Result (Int, s) NumberError, t~String
+    match r
+        Ok (n, rest) -> display n [] ++ ", " ++ debug (Seq.size rest) ++ " left"
+        Err e        -> debug e
+
+fn natural r -> t : Seq s, r~Result (Nat, s) NumberError, t~String
     match r
         Ok (n, rest) -> display n [] ++ ", " ++ debug (Seq.size rest) ++ " left"
         Err e        -> debug e
@@ -18,6 +23,7 @@ fn shown r -> t : Seq s, r~Result (Int, s) NumberError, t~String
 fn both b term -> r : b~Bytes, term~Term, r~Unit
     terminal.print_line (shown (Parsable.parse b Int Int)) term
     terminal.print_line (shown (Parsable.parse (array.to_list b) Int Int)) term
+    terminal.print_line (natural (parse.natural b)) term
 
 fn back n term -> r : n~Int, term~Term, r~Unit
     terminal.print_line (shown (Parsable.parse (display n [] ++ ")") Int Int)) term

@@ -8,7 +8,7 @@ import std.string
 import std.bytes
 import std.char
 import std.list (contains)
-import ck.text
+import std.parse
 
 export record Version
     major~Nat
@@ -47,12 +47,12 @@ export record Problem
 # A number and a `.` at the front of `b`: the number and what follows the
 # dot.
 fn part b -> r : b~Bytes, r~Option (Nat, Bytes)
-    match text.natural b
-        Some (n, rest) ->
+    match parse.natural b
+        Ok (n, rest) ->
             match rest
                 c :: after -> if c == '.' then Some (n, after) else None
                 []         -> None
-        None           -> None
+        Err _        -> None
 
 # `MAJOR.MINOR.PATCH`.
 export fn parse_version s -> r : s~String, r~Option Version
@@ -62,9 +62,9 @@ export fn parse_version s -> r : s~String, r~Option Version
             match part b
                 None        -> None
                 Some (y, c) ->
-                    match text.natural c
-                        Some (z, rest) -> if len rest == 0 then Some (Version x y z) else None
-                        None           -> None
+                    match parse.natural c
+                        Ok (z, rest) -> if len rest == 0 then Some (Version x y z) else None
+                        Err _        -> None
 
 export fn show v -> s : v~Version, s~String
     string.format"{v.major}.{v.minor}.{v.patch}"

@@ -1032,7 +1032,7 @@ export class Debug a
 
 | Type | Options | Shows |
 |-|-|-|
-| `Int` (so `Nat`, the fixed-width types and `Char`, which are refinements of it) | `IntOption`: `Hex`, `Binary`, `Octal` (after `0x`, `0b`, `0o`, lower case), `Plus` (a `+` before a non-negative number), `Digits n` (at least `n` digits, zeros before them and after the sign and prefix) | decimal; without options, `Parsable.parse` reads it back, as the instance's own signature promises (§9.8) |
+| `Int` (so `Nat`, the fixed-width types and `Char`, which are refinements of it) | `IntOption`: `Hex`, `Binary`, `Octal` (after `0x`, `0b`, `0o`, lower case), `Plus` (a `+` before a non-negative number), `Digits n` (at least `n` digits, zeros before them and after the sign and prefix) | decimal: `display n []` is `string.decimal` of its size, after `-` if it is negative, as the instance's own signature promises (§9.8) |
 | `String` | `StringOption`: `Quoted` (as `debug` shows it), `Take n` (the first `n` scalar values, then quoted if asked) | the string itself |
 | `Bool` | `NoOptions` | `True`, `False` |
 | `Decimal` (`std.decimal`) | `DecimalOption`: `decimal.Plus`, `Places n` (rounded to `n` digits after the point, half away from zero, never with an exponent) | as `decimal.render` writes it |

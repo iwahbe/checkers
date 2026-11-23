@@ -1,14 +1,24 @@
 -- stdout
 42, 0 left
 42, 0 left
+42, 0 left
 -42, 1 left
 -42, 1 left
+NotFound
+7, 1 left
 7, 1 left
 7, 1 left
 0, 0 left
 0, 0 left
+NotFound
 0, 2 left
 0, 2 left
+0, 2 left
+NotFound
+NotFound
+NotFound
+NotFound
+NotFound
 NotFound
 NotFound
 NotFound

@@ -6,20 +6,7 @@ module ck.text
 
 import std.string
 import std.bytes
-import std.char
 import std.list
-import std.parse (Parsable)
-
-# The whole number whose digits `b` starts with, and the bytes after them;
-# `None` if `b` doesn't start with a digit, so a sign (`-1`, `+1`, `-0`)
-# isn't read.
-export fn natural b -> r : b~Bytes, r~Option (Nat, Bytes)
-    if len b > 0 and char.is_digit b[0]
-        match Parsable.parse b Int Int
-            Ok (n, rest) -> if n >= 0 then Some (n, rest) else None
-            Err _        -> None
-    else
-        None
 
 # Whether `s` ends with `suffix`; then it is at least as long.
 export fn ends_with s suffix -> r : s~String, suffix~String, r~Bool,
@@ -167,6 +154,3 @@ export partial fn uri_of path -> r : path~String, r~String
     match string.from_utf8 (escape (string.bytes path) 0 [b"file://"])
         Some u -> u
         None   -> "file://" ++ path
-
-check natural b"12.3" == Some (12, b".3") and natural b"007" == Some (7, b"")
-check natural b"-0" == None and natural b"+1" == None and natural b"" == None
