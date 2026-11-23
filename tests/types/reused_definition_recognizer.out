@@ -1,0 +1,9 @@
+error[E0450]: cannot prove `within r xs`, the postcondition of `unchecked`
+  --> reused_definition_recognizer.ck:22:50
+   |
+22 | fn unchecked xs -> r : Seq s, Step s, xs~s, r~s, within r xs
+   |                                                  ^^^^^^^^^^^ promised here
+   = note: for the value returned on line 23: `Step.step xs`
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+reused_definition_recognizer.ck: 1 error, 0 warnings
