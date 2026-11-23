@@ -5,7 +5,7 @@ module parse_combinators
 
 import std.system (System, ExitCode)
 import std.terminal
-import std.parse (consumed, satisfy, at_end, map, both, or_else, optional, many, many1, sep_by1, chain_left, complete,
+import std.parse (consumed, suffix_trans, satisfy, at_end, map, both, or_else, optional, many, many1, sep_by1, chain_left, complete,
                   fix)
 import std.string (debug)
 
@@ -42,12 +42,12 @@ fn sum xs -> r : xs~Bytes, r~Result (Expr, Bytes) Unit, consumed r xs
     fix (\zs self -> chain_left (\ys -> term self zs ys) plus Add zs) xs
 
 # `self` is `sum`, callable on less than `top`.
-fn term self top xs -> r : self~(ys~Bytes -> sr~Result (Expr, Bytes) Unit, len ys < len top, consumed sr ys),
-                           top~ghost Bytes, xs~Bytes, len xs <= len top, r~Result (Expr, Bytes) Unit, consumed r xs
+fn term self top xs -> r : self~(ys~Bytes -> sr~Result (Expr, Bytes) Unit, Seq.size ys < Seq.size top, consumed sr ys),
+                           top~ghost Bytes, xs~Bytes, Seq.size xs <= Seq.size top, r~Result (Expr, Bytes) Unit, consumed r xs
     or_else (\ys -> map Num number ys) (\ys -> bracketed self top ys) xs
 
-fn bracketed self top xs -> r : self~(ys~Bytes -> sr~Result (Expr, Bytes) Unit, len ys < len top, consumed sr ys),
-                                top~ghost Bytes, xs~Bytes, len xs <= len top,
+fn bracketed self top xs -> r : self~(ys~Bytes -> sr~Result (Expr, Bytes) Unit, Seq.size ys < Seq.size top, consumed sr ys),
+                                top~ghost Bytes, xs~Bytes, Seq.size xs <= Seq.size top,
                                 r~Result (Expr, Bytes) Unit, consumed r xs
     match byte_of '(' xs
         Err e         -> Err e
@@ -57,7 +57,10 @@ fn bracketed self top xs -> r : self~(ys~Bytes -> sr~Result (Expr, Bytes) Unit, 
                 Ok (inner, mid) ->
                     match byte_of ')' mid
                         Err e        -> Err e
-                        Ok (_, rest) -> Ok (inner, rest)
+                        Ok (_, rest) ->
+                            have suffix_trans mid after xs
+                            have suffix_trans rest mid xs
+                            Ok (inner, rest)
 
 fn shown e -> s : e~Expr, s~String
     match e
