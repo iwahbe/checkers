@@ -4,7 +4,6 @@ module std.string
 import std.array
 import std.char
 import std.list
-import std.parse (Parsable, Token, consumed, suffix, suffix_refl, suffix_size, token)
 
 # The characters, one after another.
 export fn from_chars cs -> s : cs~List Char, s~String
@@ -154,6 +153,74 @@ export class Hole s h
 # No options: the only list of them is `[]`.
 export enum NoOptions
 
+# ── Whole numbers in decimal ─────────────────────────────────────────────────
+
+# Whether every byte of `b` from `i` up to (not including) `j` is a digit:
+# `True` if there are none (`j <= i`), `False` if `j` is past the end.
+export transparent fn all_digits b i j -> r : b~Bytes, i~Nat, j~Nat, r~Bool
+    decreasing j
+    if j <= i
+        True
+    else if j <= len b
+        all_digits b i (j - 1) and char.is_digit b[j - 1]
+    else
+        False
+
+# The number the bytes of `b` from `i` up to `j` write in decimal. No bytes
+# write `0`; a byte that isn't a digit counts as `0`, and so does a `j` past
+# the end.
+export transparent fn decimal_value b i j -> n : b~Bytes, i~Nat, j~Nat, n~Nat
+    decreasing j
+    if i < j and j <= len b
+        let c = b[j - 1]
+        decimal_value b i (j - 1) * 10 + (if char.is_digit c then c - '0' else 0)
+    else
+        0
+
+# `n` in decimal: digits only (no sign, never an exponent), at least one,
+# and no leading zero except in `0` itself. `display n []` is this.
+export fn decimal n -> s : n~Nat, s~String, len s.bytes > 0, all_digits s.bytes 0 (len s.bytes),
+                           s.bytes[0] == '0' implies len s.bytes == 1,
+                           decimal_value s.bytes 0 (len s.bytes) == n
+    decreasing n
+    if n < 10
+        digit n
+    else
+        let a = decimal (n / 10)
+        let c = digit (n % 10)
+        have decimal_prefix a.bytes c.bytes 0 (len a.bytes)
+        a ++ c
+
+# The digit `d`, as a string of one byte.
+export fn digit d -> s : d~Nat, d < 10, s~String, len s.bytes == 1, s.bytes[0] == '0' + d
+    if d < 5
+        if d == 0 then "0" else if d == 1 then "1" else if d == 2 then "2" else if d == 3 then "3" else "4"
+    else
+        if d == 5 then "5" else if d == 6 then "6" else if d == 7 then "7" else if d == 8 then "8" else "9"
+
+# Bytes after `a` don't change what `a`'s bytes from `i` to `j` write.
+export lemma decimal_prefix a c i j : a~Bytes, c~Bytes, i~Nat, j~Nat, j <= len a
+    ensures decimal_value (a ++ c) i j == decimal_value a i j and all_digits (a ++ c) i j == all_digits a i j
+    proof
+        decreasing j
+        if i < j
+            have decimal_prefix a c i (j - 1)
+        else
+            auto
+
+# Every byte of digits is a digit.
+export lemma all_digits_at b i j k : b~Bytes, i~Nat, j~Nat, all_digits b i j, k~Nat, i <= k, k < j
+    ensures k < len b and char.is_digit b[k]
+    proof
+        decreasing j
+        if k + 1 < j
+            have all_digits_at b i (j - 1) k
+        else
+            auto
+
+check decimal 0 == "0" and decimal 7 == "7" and decimal 1234567890 == "1234567890"
+check decimal 170141183460469231731687303715884105728 == "170141183460469231731687303715884105728"
+
 # ── Showing values ───────────────────────────────────────────────────────────
 
 # How values of type `a` are shown to a user: `display x []`, or a hole of
@@ -182,23 +249,21 @@ export enum IntOption
     Digits n : n~Nat   # at least `n` digits, zeros before them
 
 # A number in decimal, or as the options say: `display 255 [Hex, Digits 4]`
-# is `0x00ff`. Without options, `Parsable.parse` reads it back. `Nat`, `Char` and the fixed-width numbers show this way too.
+# is `0x00ff`. Without options it is `decimal` of its size, after `-` if it
+# is negative. `Nat`, `Char` and the fixed-width numbers show this way too.
 instance Display Int
     type Options = IntOption
     fn display n os -> s : n~Int, os~List IntOption, s~String,
-                           os == [] implies Parsable.parse s.bytes Int Int == Ok (n, b"")
+                           os == [] implies s == (if n < 0 then "-" ++ decimal (-n) else decimal n)
         let (base, plus, least) = int_options os 10 False 0
-        let ds = digits (if n < 0 then -n else n) base
-        have parse_shown n b""
+        let ds = if base == 10 then decimal (if n < 0 then -n else n) else digits (if n < 0 then -n else n) base
         let sign = if n < 0 then "-" else if plus then "+" else ""
         let pad = if len ds < least then zeros (least - len ds) else ""
         sign ++ base_prefix base ++ pad ++ ds
 
 # The base, whether to write `+`, and the fewest digits the options ask for.
-fn int_options os base plus least -> r : os~List IntOption, base~Nat, 2 <= base, base <= 36, plus~Bool,
-                                         least~Nat, r~(Nat, Bool, Nat),
-                                         match r
-                                             (b, _, _) -> 2 <= b and b <= 36
+fn int_options os base plus least -> r : os~List IntOption, base~Nat, plus~Bool, least~Nat,
+                                         r~(Nat, Bool, Nat)
     match os
         []        -> (base, plus, least)
         o :: rest ->
@@ -217,6 +282,11 @@ fn base_prefix b -> s : b~Nat, s~String
 fn zeros k -> s : k~Nat, s~String
     decreasing k
     if k == 0 then "" else "0" ++ zeros (k - 1)
+
+# The digits of `n` in base `base` (from 2 to 36), lower case: `digits 255
+# 16` is `ff`.
+fn digits n base -> s : n~Nat, base~Nat, s~String
+    __builtin
 
 # A string's options.
 export enum StringOption
@@ -294,242 +364,6 @@ instance Display Bool
 
 check display 255 [Hex, Digits 4] == "0x00ff" and display (-5) [Plus, Digits 3] == "-005"
 check display "héllo" [Take 2, Quoted] == "\"hé\"" and display True [] == "True"
-
-# ── Whole numbers ────────────────────────────────────────────────────────────
-#
-# `display` writes them and `Parsable.parse` reads them back. What is proved
-# about decimal digits is said with the bytes of a range, `b` from `i` up to
-# (not including) `j`, so the prover can evaluate it on literals.
-
-# Whether every byte of `b` from `i` to `j` is a digit: `True` if there are
-# none (`j <= i`), `False` if `j` is past the end.
-fn all_digits b i j -> r : b~Bytes, i~Nat, j~Nat, r~Bool
-    decreasing j
-    if j <= i
-        True
-    else if j <= len b
-        all_digits b i (j - 1) and char.is_digit b[j - 1]
-    else
-        False
-
-# The number the bytes of `b` from `i` to `j` write in decimal. No bytes
-# write `0`; a byte that isn't a digit counts as `0`, and so does a `j` past
-# the end.
-fn decimal_value b i j -> n : b~Bytes, i~Nat, j~Nat, n~Nat
-    decreasing j
-    if i < j and j <= len b
-        let c = b[j - 1]
-        decimal_value b i (j - 1) * 10 + (if char.is_digit c then c - '0' else 0)
-    else
-        0
-
-# The digits of `n` in base `base`, lower case: `digits 255 16` is `ff`. At
-# least one, and in base 10, digits only, no leading zero except in `0`
-# itself, and their value is `n`.
-fn digits n base -> s : n~Nat, base~Nat, 2 <= base, base <= 36, s~String, len s.bytes > 0,
-                        base == 10 implies all_digits s.bytes 0 (len s.bytes)
-                        and (s.bytes[0] == '0' implies len s.bytes == 1)
-                        and decimal_value s.bytes 0 (len s.bytes) == n
-    decreasing n
-    if n < base
-        digit n
-    else
-        let a = digits (n / base) base
-        let c = digit (n % base)
-        have digits_prefix a.bytes c.bytes 0 (len a.bytes)
-        a ++ c
-
-# The digit `d`: `0` to `9`, then `a` to `z`.
-fn digit d -> s : d~Nat, d < 36, s~String, len s.bytes == 1, d < 10 implies s.bytes[0] == '0' + d
-    let c = char.from_ascii (if d < 10 then '0' + d else 'a' + (d - 10))
-    have from_char_bytes c
-    from_char c
-
-# Bytes after `a` don't change what `a`'s bytes from `i` to `j` write.
-lemma digits_prefix a c i j : a~Bytes, c~Bytes, i~Nat, j~Nat, j <= len a
-    ensures decimal_value (a ++ c) i j == decimal_value a i j and all_digits (a ++ c) i j == all_digits a i j
-    proof
-        decreasing j
-        if i < j
-            have digits_prefix a c i (j - 1)
-        else
-            auto
-
-# Every byte of digits is a digit.
-lemma all_digits_at b i j k : b~Bytes, i~Nat, j~Nat, all_digits b i j, k~Nat, i <= k, k < j
-    ensures k < len b and char.is_digit b[k]
-    proof
-        decreasing j
-        if k + 1 < j
-            have all_digits_at b i (j - 1) k
-        else
-            auto
-
-check digits 0 10 == "0" and digits 7 10 == "7" and digits 1234567890 10 == "1234567890"
-check digits 170141183460469231731687303715884105728 10 == "170141183460469231731687303715884105728"
-check digits 255 16 == "ff" and digits 5 2 == "101" and digits 35 36 == "z" and digits 0 16 == "0"
-
-# Why no number could be read.
-export enum NumberError
-    NotFound  # the tokens don't start with a number
-
-# A whole number in decimal, with `-` before it if it is negative: what
-# `display n []` writes, and also `-0`, which is `0`, and leading zeros
-# (`007` is `7`). As many digits as there are are read.
-instance Parsable Int Int
-    type Error = NumberError
-    fn parse xs a t
-        match xs
-            x :: rest ->
-                if token x Int == '-'
-                    match natural rest
-                        Ok (n, after) ->
-                            have suffix_size after rest
-                            Ok (-n, after)
-                        Err e         -> Err e
-                else
-                    match natural xs
-                        Ok (n, after) -> Ok (n, after)
-                        Err e         -> Err e
-            []        -> Err NotFound
-
-# `Parsable.parse` reads back what `display n []` writes, and leaves what
-# follows it if that doesn't start with a digit.
-export lemma parse_display n post : n~Int, post~Bytes, len post == 0 or not (char.is_digit post[0])
-    ensures Parsable.parse ((display n []).bytes ++ post) Int Int == Ok (n, post)
-    proof
-        have parse_shown n post
-
-# One or more digits at the front of `xs`, as many as there are, and what
-# follows them.
-fn natural xs -> r : Seq s, Token (Seq.Elem s) Int, xs~s, r~Result (Nat, s) NumberError, consumed r xs
-    match xs
-        x :: rest ->
-            let c = token x Int
-            if char.is_digit c
-                let (n, after) = more_digits rest (c - '0')
-                have suffix_size after rest
-                Ok (n, after)
-            else
-                Err NotFound
-        []        -> Err NotFound
-
-# The digits at the front of `xs`, after digits making `acc`: what they all
-# make, and what follows them.
-fn more_digits xs acc -> r : Seq s, Token (Seq.Elem s) Int, xs~s, acc~Nat, r~(Nat, s),
-                             match r
-                                 (_, rest) -> suffix rest xs
-    match xs
-        x :: rest ->
-            let c = token x Int
-            if char.is_digit c
-                let (n, after) = more_digits rest (acc * 10 + (c - '0'))
-                (n, after)
-            else
-                have suffix_refl xs
-                (acc, xs)
-        []        ->
-            have suffix_refl xs
-            (acc, xs)
-
-# What `display n []` is: the decimal digits of `n`'s size, after `-` if it
-# is negative.
-fn shown n -> s : n~Int, s~String
-    if n < 0 then "-" ++ digits (-n) 10 else digits n 10
-
-# `Parsable.parse` reads back `shown n`, and leaves what follows it if that
-# doesn't start with a digit.
-lemma parse_shown n post : n~Int, post~Bytes, len post == 0 or not (char.is_digit post[0])
-    ensures Parsable.parse ((shown n).bytes ++ post) Int Int == Ok (n, post)
-    proof
-        if n < 0
-            let r = (digits (-n) 10).bytes
-            let b = b"-" ++ r ++ post
-            have array.uncons_slice b
-            have array.slice_append b"-" (r ++ post) b""
-            have natural_digits (-n) post
-        else
-            let r = (digits n 10).bytes
-            have array.uncons_slice (r ++ post)
-            have all_digits_at r 0 (len r) 0
-            have natural_digits n post
-
-# `natural` reads back the decimal digits of `n`, and leaves what follows
-# them if that doesn't start with a digit.
-lemma natural_digits n post : n~Nat, post~Bytes, len post == 0 or not (char.is_digit post[0])
-    ensures natural ((digits n 10).bytes ++ post) == Ok (n, post)
-    proof
-        let r = (digits n 10).bytes
-        let b = r ++ post
-        have digits_prefix r post 0 (len r)
-        have digits_end_at b 0 0 (len r)
-        have natural_bytes b
-        have array.slice_append r post b""
-
-# Where the digits of `b` from `i` on end: the first index from `i` whose
-# byte isn't a digit, or the end.
-fn digits_end b i -> k : b~Bytes, i~Nat, i <= len b, k~Nat, i <= k, k <= len b
-    decreasing len b - i
-    if i < len b and char.is_digit b[i] then digits_end b (i + 1) else i
-
-# `natural` on bytes: the digits from the start up to `digits_end b 0`, if
-# there is one, and the bytes after them.
-lemma natural_bytes b : b~Bytes
-    let k = digits_end b 0
-    ensures natural b == (if k == 0 then Err NotFound else Ok (decimal_value b 0 k, array.slice b k (len b)))
-    proof
-        if len b > 0
-            have array.uncons_slice b
-            if char.is_digit b[0]
-                have more_digits_bytes b 0 1
-            else
-                auto
-        else
-            auto
-
-# `more_digits` on bytes from `j` on, after the digits from `i` to `j`.
-lemma more_digits_bytes b i j : b~Bytes, i~Nat, j~Nat, i <= j, j <= len b, all_digits b i j
-    let k = digits_end b j
-    ensures more_digits (array.slice b j (len b)) (decimal_value b i j)
-        == (decimal_value b i k, array.slice b k (len b))
-    proof
-        decreasing len b - j
-        if j < len b
-            have uncons_from b j
-            if char.is_digit b[j]
-                have more_digits_bytes b i (j + 1)
-            else
-                auto
-        else
-            auto
-
-# `x :: rest` on the bytes of `b` from `j` on: byte `j`, and the bytes
-# after it.
-lemma uncons_from b j : b~Bytes, j~Nat, j < len b
-    ensures Seq.uncons (array.slice b j (len b)) == Some (b[j], array.slice b (j + 1) (len b))
-    proof
-        have array.uncons_slice (array.slice b j (len b))
-        have array.slice_at b j (len b) 0
-        have array.slice_join b j (j + 1) (len b)
-        have array.slice_append (array.slice b j (j + 1)) (array.slice b (j + 1) (len b)) b""
-
-# Where digits from `i` to `k` stop at `k`, the digits from any `j` between
-# them end at `k`.
-lemma digits_end_at b i j k : b~Bytes, i~Nat, j~Nat, k~Nat, i <= j, j <= k, k <= len b, all_digits b i k,
-                              k == len b or not (char.is_digit b[k])
-    ensures digits_end b j == k
-    proof
-        decreasing k - j
-        if j < k
-            have all_digits_at b i k j
-            have digits_end_at b i (j + 1) k
-        else
-            auto
-
-check Parsable.parse b"-42," Int Int == Ok (-42, b",") and Parsable.parse b"-0" Int Int == Ok (0, b"")
-check Parsable.parse b"007x" Int Int == Ok (7, b"x") and Parsable.parse b"x" Int Int == Err NotFound
-check Parsable.parse b"-" Int Int == Err NotFound and Parsable.parse b"+1" Int Int == Err NotFound
-check Parsable.parse "12 34" Int Int == Ok (12, " 34") and Parsable.parse "" Int Int == Err NotFound
 
 # ── format ───────────────────────────────────────────────────────────────────
 
