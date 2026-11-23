@@ -2297,8 +2297,10 @@ impl<'a> Builder<'a> {
         // The arguments after the dictionary, and the explicit ones before
         // it but a class's parameter passed explicitly (#161), which the
         // dictionary's field doesn't take. The function's own class clauses'
-        // dictionaries come first even when they precede the class's (which
-        // follows a class's parameter passed explicitly).
+        // dictionaries come first, wherever they are: the class's follows a
+        // class's parameter passed explicitly, so a clause may precede it,
+        // or, when the clause mentions that parameter, follow it after the
+        // call's explicit arguments.
         let mut rest: Vec<Ent> = Vec::new();
         {
             let mut t = self.e.g.defs[d.0 as usize].ty.clone();
@@ -2306,7 +2308,7 @@ impl<'a> Builder<'a> {
             let mut clauses = 0;
             while let Tm::Pi(x, m, i, a, b) = t {
                 let class_param = self.is_type(&a) && cd.params.iter().any(|p| **p == *x);
-                if k < pos && m == Mult::Many && i == crate::core::Icit::Impl && self.is_dict_ty(&a) {
+                if k != pos && m == Mult::Many && i == crate::core::Icit::Impl && self.is_dict_ty(&a) {
                     let Some(e) = inner.get(k) else { break };
                     rest.insert(clauses, e.clone());
                     clauses += 1;
