@@ -3452,61 +3452,61 @@ impl Elab {
                 self.oblige(&cx, span, kind(None, true), format!("every value of `{alias_s}` in its result"), goal, None);
             }
         }
-        // Its function parameters: called by the instance only with
-        // values of the alias. The instance's own types for them, where
-        // its function has a signature of its own (#225).
-        let inst_fn = ad.members.get(&member).copied();
-        let mut inst_params: Vec<Val> = Vec::new();
-        if let Some(g) = inst_fn {
-            let mut ty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[g.0 as usize].ty);
-            let mut k = 0;
-            while let Val::Pi(_, _, icit, d, c) = self.force(&ty) {
-                if icit == Icit::Expl {
-                    inst_params.push((*d).clone());
-                }
-                ty = apply_closure(&self.g, &c, Val::var(usize::MAX / 4 + k));
-                k += 1;
-            }
-        }
-        let class_expl: Vec<usize> = (0..lay.arity).filter(|i| params.iter().any(|p| p.0 == *i)).collect();
+        // Its function parameters: the instance calls them with values it
+        // gives, and hands them functions giving such values. The class's
+        // type for each at the alias must imply the instance's own (its
+        // signature's, #225, else the class's at the base), as a refined
+        // function type does (D85): at any depth, refinements written as
+        // aliases or inline.
+        let inst_params = self.inst_param_types(ad.members.get(&member).copied(), &args_t);
         for (i, x, dt, db) in params {
             if !self.alias_differs(lvl, &dt, &db, false, 0) {
                 continue;
             }
-            // The instance's type for the same parameter, among its explicit ones.
-            let nth = class_expl.iter().position(|j| *j == i);
-            let idom = nth.and_then(|n| inst_params.get(n + (inst_params.len().saturating_sub(class_expl.len()))).cloned());
-            let mut ok = false;
-            if let (Val::Pi(y, _, _, at, _), Val::Pi(_, _, _, ab, _)) = (self.force(&self.peel(&dt)), self.force(&self.peel(&db))) {
-                let pt = self.peel(&at);
-                let head = self.refined_alias(&pt).filter(|(d, _)| self.refined_alias(&self.peel(&ab)).is_none_or(|(e, _)| e != *d));
-                let rest_same = !self.alias_differs(lvl, &dt, &db, false, 0) || head.is_some();
-                if let (Some((d, args)), true) = (head, rest_same) {
-                    // The instance's domain for it, if it is in this context.
-                    let dom = idom
-                        .and_then(|t| match self.force(&self.peel(&t)) {
-                            Val::Pi(_, _, _, a, _) => Some((*a).clone()),
-                            _ => None,
-                        })
-                        .filter(|a| !mentions_dangling(&quote(&self.g, lvl, a), lvl));
-                    let dom = dom.unwrap_or((*ab).clone());
-                    let mut cx2 = cx.clone();
-                    let l = cx2.bind(&y, dom, Mult::Zero);
-                    for p in self.alias_preds.get(&d).cloned().unwrap_or_default() {
-                        let mut e = args.clone();
-                        e.push(Val::var(l));
-                        let goal = self.inst_pred(&p, e);
-                        self.oblige(&cx2, span, kind(Some(x.clone()), false), p.text.clone(), goal, None);
-                    }
-                    ok = true;
-                }
-            }
-            if !ok {
+            let idom = inst_params.get(&i).cloned().unwrap_or(db);
+            if !self.refined_implies(&cx, &idom, &dt, span, kind(Some(x.clone()), false)) {
                 let goal = self.eval(&cx, &falsity);
                 self.oblige(&cx, span, kind(Some(x.clone()), false), format!("every value it gives `{x}` is a `{alias_s}`"), goal, None);
             }
         }
         self.cur_fn = saved;
+    }
+
+    /// The types an instance's function `g` gives its explicit parameters,
+    /// by the class's binder each is (its explicit ones, in order), at the
+    /// class's arguments `args`: where `g`'s signature says them in terms
+    /// of `args` alone. None where the two don't line up.
+    fn inst_param_types(&self, g: Option<DefId>, args: &[(Val, Icit, Mult)]) -> HashMap<usize, Val> {
+        let mut out = HashMap::new();
+        let Some(g) = g else { return out };
+        let class_expl: Vec<usize> = (0..args.len()).filter(|i| args[*i].1 == Icit::Expl).collect();
+        let mut ty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[g.0 as usize].ty);
+        let (mut j, mut k) = (0, 0);
+        let mut found = Vec::new();
+        while let Val::Pi(_, _, icit, d, c) = self.force(&ty) {
+            // Its own implicit binders (an instance's type variables) are
+            // placeholders no context binds.
+            let v = match icit {
+                Icit::Expl => {
+                    let Some(i) = class_expl.get(j) else { return out };
+                    found.push((*i, (*d).clone()));
+                    j += 1;
+                    args[*i].0.clone()
+                }
+                _ => Val::var(PLACEHOLDER + k),
+            };
+            ty = apply_closure(&self.g, &c, v);
+            k += 1;
+        }
+        if j != class_expl.len() {
+            return out;
+        }
+        for (i, d) in found {
+            if !mentions_placeholder(&self.g, &d) {
+                out.insert(i, d);
+            }
+        }
+        out
     }
 
     /// The dictionaries found through a refinement alias in this module
@@ -3564,14 +3564,19 @@ impl Elab {
     }
 }
 
-/// Whether `t`, a term at level `lvl`, mentions a variable bound outside
-/// any context (a placeholder for an instance's own binders).
-fn mentions_dangling(t: &Tm, lvl: usize) -> bool {
-    fn go(t: &Tm, depth: usize, lvl: usize) -> bool {
+/// The first level of the placeholders standing for an instance function's
+/// own binders, which no context binds.
+const PLACEHOLDER: usize = usize::MAX / 4;
+
+/// Whether `v` mentions a placeholder (`PLACEHOLDER` and above). Quoted
+/// above every level, so that none underflows.
+fn mentions_placeholder(g: &Globals, v: &Val) -> bool {
+    const TOP: usize = usize::MAX / 2;
+    fn go(t: &Tm, depth: usize) -> bool {
         match t {
-            Tm::Var(i) => *i >= depth + lvl,
-            _ => t.any_sub(|x, n| go(x, depth + n, lvl)),
+            Tm::Var(i) if *i >= depth => TOP - 1 - (i - depth) >= PLACEHOLDER,
+            _ => t.any_sub(|x, n| go(x, depth + n)),
         }
     }
-    go(t, 0, lvl)
+    go(&quote(g, TOP, v), 0)
 }

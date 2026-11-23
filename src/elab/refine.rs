@@ -57,6 +57,8 @@ pub struct Walk {
     span: Span,
     value: String,
     callee: Option<String>,
+    /// What its obligations are for, if not a weakened refinement.
+    kind: Option<ObKind>,
 }
 
 #[derive(Clone, Copy)]
@@ -189,8 +191,25 @@ impl Elab {
             Some(inner) if !inner.contains(['(', ')']) => inner.to_string(),
             _ => text,
         };
-        let w = Walk { span, value, callee: self.arg_of.clone() };
+        let w = Walk { span, value, callee: self.arg_of.clone(), kind: None };
         self.gain(&mut cx2, expected, found, Variance::Co, Via::Nothing, false, 0, &w)
+    }
+
+    /// Whether every `found` is an `expected`, two types that unify, as
+    /// `refined_mismatch` compares them: true with an obligation of `kind`
+    /// at `span` for each refinement to imply, false where one would be
+    /// gained.
+    pub fn refined_implies(&mut self, cx: &Cx, expected: &Val, found: &Val, span: Span, kind: ObKind) -> bool {
+        if self.same_type(expected, found) {
+            return true;
+        }
+        if unify(&self.g, cx.lvl(), expected, found).is_err() {
+            return false;
+        }
+        let mut cx2 = cx.clone();
+        let w = Walk { span, value: String::new(), callee: None, kind: Some(kind) };
+        // From depth 1: a refinement at the top is compared too.
+        self.gain(&mut cx2, expected, found, Variance::Co, Via::Nothing, false, 1, &w).is_none()
     }
 
     /// The same type, structurally (without unfolding): false if unsure.
@@ -367,7 +386,7 @@ impl Elab {
             let mut env = args.clone();
             env.push(Val::var(l));
             let goal = self.inst_pred(p, env);
-            let kind = ObKind::Weaken { role, value: w.value.clone(), sub: sub_s.clone(), sup: sup_s.clone(), callee: w.callee.clone() };
+            let kind = w.kind.clone().unwrap_or_else(|| ObKind::Weaken { role, value: w.value.clone(), sub: sub_s.clone(), sup: sup_s.clone(), callee: w.callee.clone() });
             let text = rename_words(&p.text, &self.alias_param_names(cx, alias, &args));
             self.oblige(cx, w.span, kind, text, goal, None);
         }
