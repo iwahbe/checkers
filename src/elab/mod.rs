@@ -719,6 +719,8 @@ pub struct Elab {
     /// Instances' functions with signatures of their own, by declaration
     /// (as `member_heads`), with the class's signature to refine (#225).
     pub inst_refines: HashMap<usize, classes::InstRefine>,
+    /// Instances' functions marked `transparent`, by declaration (#249).
+    pub transparent_members: HashSet<usize>,
     /// Instances' functions with signatures of their own (#225).
     pub refined_inst_fns: HashSet<DefId>,
     /// Calls of classes' functions with preconditions, to check once their
@@ -899,6 +901,7 @@ impl Elab {
             assoc_edges: Vec::new(),
             member_heads: HashMap::new(),
             inst_refines: HashMap::new(),
+            transparent_members: HashSet::new(),
             refined_inst_fns: HashSet::new(),
             pending_class_pres: Vec::new(),
             sig_inst: None,
@@ -2522,13 +2525,38 @@ fn touches(t: &Tm, g: &Globals, defs: &HashSet<DefId>, tys: &HashSet<TyId>) -> b
 
 /// Definitions sealed by another module (D54) that occur in `t`.
 pub fn collect_sealed(t: &Tm, g: &Globals, cur: &str, out: &mut Vec<DefId>) {
+    sealed_in(t, g, cur, out, &mut Vec::new());
+}
+
+/// `collect_sealed`, with the transparent instance functions whose bodies
+/// were looked into (each once).
+fn sealed_in(t: &Tm, g: &Globals, cur: &str, out: &mut Vec<DefId>, seen: &mut Vec<DefId>) {
     if let Tm::Def(d) = t {
         let info = &g.defs[d.0 as usize];
         if info.sealed && *info.module != *cur && !out.contains(d) {
             out.push(*d);
         }
     }
-    t.each_sub(|x, _| collect_sealed(x, g, cur, out));
+    // A class's function at a known instance is that instance's function,
+    // which may be sealed (#249).
+    if matches!(t, Tm::App(..)) {
+        if let Some(direct) = crate::native::ir::known_instance(g, t) {
+            if let (Tm::Def(f), _) = direct.spine() {
+                let info = &g.defs[f.0 as usize];
+                if info.sealed && *info.module != *cur && !out.contains(f) {
+                    out.push(*f);
+                } else if !info.sealed && *info.module != *cur {
+                    // A `transparent` one's body: what it calls of its
+                    // module may be sealed (#246).
+                    if let (Some(b), false) = (&info.body, seen.contains(f)) {
+                        seen.push(*f);
+                        sealed_in(b, g, cur, out, seen);
+                    }
+                }
+            }
+        }
+    }
+    t.each_sub(|x, _| sealed_in(x, g, cur, out, seen));
 }
 
 /// The levels of the locals `t` mentions (for termination, D150).

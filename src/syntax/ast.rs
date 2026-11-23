@@ -216,7 +216,16 @@ pub enum InstMember {
     Type { name: Ident, ty: Expr, span: Span },
     /// `sig`: a signature of its own, refining the class's (#225): the
     /// result's name and the constraints. `None`: the class's.
-    Fn { name: Ident, params: Vec<Ident>, sig: Option<(Option<Ident>, Vec<Constraint>)>, decreasing: Option<Expr>, body: Block, span: Span },
+    /// `transparent`: its body is visible to importers' proofs (#249).
+    Fn {
+        transparent: bool,
+        name: Ident,
+        params: Vec<Ident>,
+        sig: Option<(Option<Ident>, Vec<Constraint>)>,
+        decreasing: Option<Expr>,
+        body: Block,
+        span: Span,
+    },
     Lemma { name: Ident, params: Vec<Ident>, decreasing: Option<Expr>, proof: Option<Block>, span: Span },
 }
 

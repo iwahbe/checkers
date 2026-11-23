@@ -155,7 +155,7 @@ export lemma slice_join xs i j k : xs~Array a, i~Nat, j~Nat, k~Nat, i <= j, j <=
         have join_at xs i j k
 
 instance Functor Array
-    fn fmap g xs
+    transparent fn fmap g xs
         map g xs
     lemma fmap_id xs
         proof

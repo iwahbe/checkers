@@ -902,6 +902,7 @@ impl Elab {
         // What another module's instances left is about its declarations.
         self.member_heads.clear();
         self.inst_refines.clear();
+        self.transparent_members.clear();
         let has = m.decls.iter().any(|d| matches!(d.kind, DeclKind::Class { .. } | DeclKind::Instance { .. }));
         if !has {
             return (m.clone(), vec![Origin::Written; m.decls.len()]);
@@ -1782,12 +1783,12 @@ impl Elab {
                 ClassMember::Type { .. } => continue,
                 ClassMember::Fn { name, params, result, constraints, .. } => {
                     let given = members.iter().find_map(|m| match m {
-                        InstMember::Fn { name: n, params, sig, decreasing, body, span } if n.name == name.name => {
-                            Some((params, sig, decreasing, body, *span, n.span))
+                        InstMember::Fn { transparent, name: n, params, sig, decreasing, body, span } if n.name == name.name => {
+                            Some((params, sig, decreasing, body, *span, n.span, *transparent))
                         }
                         _ => None,
                     });
-                    let Some((iparams, isig, decreasing, body, span, own_name)) = given else {
+                    let Some((iparams, isig, decreasing, body, span, own_name, transparent)) = given else {
                         self.err(
                             Diagnostic::error("E0364", format!("`instance {text}` doesn't give `{}`", name.name), d.span)
                                 .with_label(format!("`{}` missing", name.name))
@@ -1902,6 +1903,9 @@ impl Elab {
                     });
                     origins.push(Origin::InstMember(inst_ix));
                     self.member_heads.insert(decls.len() - 1, (class.name.clone(), heads.clone()));
+                    if transparent {
+                        self.transparent_members.insert(decls.len() - 1);
+                    }
                 }
                 ClassMember::Lemma { name, params, constraints, lets, ensures, .. } => {
                     let given = members.iter().find_map(|m| match m {
@@ -2118,8 +2122,11 @@ impl Elab {
                     if !lemma {
                         self.inst_fns.insert(*d);
                     }
-                    // What an instance's functions do is visible wherever it is used.
-                    self.transparent.insert(*d);
+                    // An instance's function is sealed outside its module, as
+                    // any function is, unless marked `transparent` (#249).
+                    if lemma || self.transparent_members.contains(&k) {
+                        self.transparent.insert(*d);
+                    }
                 }
                 (Origin::InstDict(ix), Some(Sym::Def(d))) => {
                     self.transparent.insert(*d);

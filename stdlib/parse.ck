@@ -9,7 +9,7 @@ export class Token x t
 # Characters and bytes: `Char` and `U8` are `Int`s, so this covers
 # `String`, `List Char`, `Bytes` and `List U8`.
 instance Token Int Int
-    fn token v t
+    transparent fn token v t
         v
 
 # Whether `rest` is what is left of `xs` after taking some elements off its

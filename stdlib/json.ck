@@ -87,11 +87,11 @@ export record Located
     kind~JsonToken
 
 instance Token JsonToken JsonToken
-    fn token v t
+    transparent fn token v t
         v
 
 instance Token Located JsonToken
-    fn token v t
+    transparent fn token v t
         v.kind
 
 # An input's tokens in order, and how it ends: with nothing but whitespace
@@ -104,11 +104,11 @@ export enum Tokens
 
 instance Seq Tokens
     type Elem = Located
-    fn size ts
+    transparent fn size ts
         match ts
             More _ rest -> 1 + size rest
             _           -> 0
-    fn uncons ts
+    transparent fn uncons ts
         match ts
             More t rest -> Some (t, rest)
             _           -> None

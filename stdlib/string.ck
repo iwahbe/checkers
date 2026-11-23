@@ -191,7 +191,8 @@ instance Display Int
                            os == [] implies Parsable.parse s.bytes Int Int == Ok (n, b""),
                            os == [] and n >= 0
                            implies len s.bytes > 0 and char.is_digit s.bytes[0]
-                           and (s.bytes[0] == '0' implies s.bytes == b"0" and n == 0)
+                           and (s.bytes[0] == '0' implies s.bytes == b"0" and n == 0),
+                           n < 0 implies len s.bytes > 0 and s.bytes[0] == '-'
         let (base, plus, least) = int_options os 10 False 0
         let ds = digits (if n < 0 then -n else n) base
         have parse_shown n b""

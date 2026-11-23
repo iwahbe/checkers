@@ -145,8 +145,9 @@ fn decl(d: &Decl) -> String {
                     InstMember::Type { name, ty, .. } => {
                         s += &format!("\n{}(type {} {})", ind(1), name.name, expr(ty, 2));
                     }
-                    InstMember::Fn { name, params, sig, decreasing, body, .. } => {
-                        s += &format!("\n{}(fn {} ({})", ind(1), name.name, names(params));
+                    InstMember::Fn { transparent, name, params, sig, decreasing, body, .. } => {
+                        let t = if *transparent { "transparent " } else { "" };
+                        s += &format!("\n{}({t}fn {} ({})", ind(1), name.name, names(params));
                         if let Some((result, constraints)) = sig {
                             if let Some(r) = result {
                                 s += &format!(" -> {}", r.name);
