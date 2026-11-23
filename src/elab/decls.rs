@@ -2434,9 +2434,12 @@ fn pred_subject(p: &Tm) -> Vec<(DefId, usize, usize, usize)> {
     out
 }
 
-/// Is `name` given the type `ghost Type` among `cs` (#161)?
+/// Is `name` given the type `ghost Type` among `cs` (#161)? A class's
+/// members seen from another module have their names resolved where the
+/// class is (`members_for_instance`), so there `Type` is the universe's
+/// symbol (#198).
 pub(crate) fn is_ghost_type(cs: &[Constraint], name: &str) -> bool {
     cs.iter().any(|c| {
-        matches!(c, Constraint::Typed { name: n, mult: ast::Mult::Ghost, ty } if n.name == name && matches!(&ty.kind, ExprKind::Con(t) if t == "Type"))
+        matches!(c, Constraint::Typed { name: n, mult: ast::Mult::Ghost, ty } if n.name == name && matches!(&ty.kind, ExprKind::Con(t) if t == "Type" || *t == Elab::sym_name(Sym::Univ)))
     })
 }

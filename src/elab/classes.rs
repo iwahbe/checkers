@@ -754,7 +754,7 @@ impl Elab {
         None
     }
 
-    fn sym_name(s: Sym) -> String {
+    pub(super) fn sym_name(s: Sym) -> String {
         match s {
             Sym::Def(d) => format!("$sym#D{}", d.0),
             Sym::Ty(t) => format!("$sym#T{}", t.0),
