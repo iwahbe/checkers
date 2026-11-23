@@ -56,7 +56,7 @@ fn bracketed self top xs -> r : self~(ys~Bytes -> sr~Result (Expr, Bytes) Unit, 
                 Err e           -> Err e
                 Ok (inner, mid) ->
                     match byte_of ')' mid
-                        Err e          -> Err e
+                        Err e        -> Err e
                         Ok (_, rest) -> Ok (inner, rest)
 
 fn shown e -> s : e~Expr, s~String

@@ -87,7 +87,7 @@ export fn satisfy f e xs -> r : Seq s, f~(Seq.Elem s -> Bool), e~err, xs~s,
 # Nothing, if `xs` is empty; else `Err e`.
 export fn at_end e xs -> r : Seq s, e~err, xs~s, r~Result (Unit, s) err, within r xs
     match xs
-        [] ->
+        []     ->
             have suffix_refl xs
             Ok ((), xs)
         _ :: _ -> Err e
@@ -144,7 +144,7 @@ export fn many p xs -> r : Seq s, p~(ys~s -> pr~Result (a, s) e, Seq.size ys <= 
                 Ok (vs, rest) ->
                     have suffix_trans rest mid xs
                     Ok (v :: vs, rest)
-                Err x -> Err x
+                Err x         -> Err x
 
 # `p` at least once.
 export fn many1 p xs -> r : Seq s, p~(ys~s -> pr~Result (a, s) e, Seq.size ys <= Seq.size xs, consumed pr ys),
@@ -157,7 +157,7 @@ export fn many1 p xs -> r : Seq s, p~(ys~s -> pr~Result (a, s) e, Seq.size ys <=
                     have suffix_trans rest mid xs
                     have suffix_size rest mid
                     Ok (v :: vs, rest)
-                Err x -> Err x
+                Err x         -> Err x
 
 # `p` once, then `p` after each `sep`, keeping only `p`'s values: `1, 2, 3`.
 export fn sep_by1 p sep xs -> r : Seq s, p~(ys~s -> pr~Result (a, s) e, Seq.size ys <= Seq.size xs, consumed pr ys),
@@ -166,18 +166,17 @@ export fn sep_by1 p sep xs -> r : Seq s, p~(ys~s -> pr~Result (a, s) e, Seq.size
     match p xs
         Err x       -> Err x
         Ok (v, mid) ->
-            match sep_rest p sep xs mid
+            match sep_rest p sep mid
                 Ok (vs, rest) ->
                     have suffix_trans rest mid xs
                     have suffix_size rest mid
                     Ok (v :: vs, rest)
-                Err x -> Err x
+                Err x         -> Err x
 
-# Each `sep p` at the front of `xs`, until there is none; `xs` is less
-# than `top`, what the parsers may be given less of.
-fn sep_rest p sep top xs -> r : Seq s, p~(ys~s -> pr~Result (a, s) e, Seq.size ys < Seq.size top, consumed pr ys),
-                                sep~(ys~s -> qr~Result (b, s) e, Seq.size ys < Seq.size top, consumed qr ys),
-                                top~ghost s, xs~s, Seq.size xs < Seq.size top, r~Result (List a, s) e, within r xs
+# Each `sep p` at the front of `xs`, until there is none.
+fn sep_rest p sep xs -> r : Seq s, p~(ys~s -> pr~Result (a, s) e, Seq.size ys < Seq.size xs, consumed pr ys),
+                            sep~(ys~s -> qr~Result (b, s) e, Seq.size ys <= Seq.size xs, consumed qr ys), xs~s,
+                            r~Result (List a, s) e, within r xs
     decreasing Seq.size xs
     match sep xs
         Err _       ->
@@ -189,12 +188,12 @@ fn sep_rest p sep top xs -> r : Seq s, p~(ys~s -> pr~Result (a, s) e, Seq.size y
                     have suffix_refl xs
                     Ok ([], xs)
                 Ok (v, after) ->
-                    match sep_rest p sep top after
+                    match sep_rest p sep after
                         Ok (vs, rest) ->
                             have suffix_trans after mid xs
                             have suffix_trans rest after xs
                             Ok (v :: vs, rest)
-                        Err x -> Err x
+                        Err x         -> Err x
 
 # `p`, then any number of `sep p`, combined from the left with `f`: with `+`
 # as `sep`, `1 + 2 + 3` is `f (f 1 2) 3`.
@@ -205,20 +204,18 @@ export fn chain_left p sep f xs -> r : Seq s,
     match p xs
         Err x       -> Err x
         Ok (v, mid) ->
-            match chain_rest p sep f xs v mid
+            match chain_rest p sep f v mid
                 Ok (w, rest) ->
                     have suffix_trans rest mid xs
                     have suffix_size rest mid
                     Ok (w, rest)
-                Err x -> Err x
+                Err x        -> Err x
 
-# After `acc`: each `sep p` folded into it, until there is none; `xs` is
-# less than `top`, what the parsers may be given less of.
-fn chain_rest p sep f top acc xs -> r : Seq s,
-                                        p~(ys~s -> pr~Result (a, s) e, Seq.size ys < Seq.size top, consumed pr ys),
-                                        sep~(ys~s -> qr~Result (b, s) e, Seq.size ys < Seq.size top, consumed qr ys),
-                                        f~(a -> a -> a), top~ghost s, acc~a, xs~s, Seq.size xs < Seq.size top,
-                                        r~Result (a, s) e, within r xs
+# After `acc`: each `sep p` folded into it, until there is none.
+fn chain_rest p sep f acc xs -> r : Seq s,
+                                    p~(ys~s -> pr~Result (a, s) e, Seq.size ys < Seq.size xs, consumed pr ys),
+                                    sep~(ys~s -> qr~Result (b, s) e, Seq.size ys <= Seq.size xs, consumed qr ys),
+                                    f~(a -> a -> a), acc~a, xs~s, r~Result (a, s) e, within r xs
     decreasing Seq.size xs
     match sep xs
         Err _       ->
@@ -230,12 +227,12 @@ fn chain_rest p sep f top acc xs -> r : Seq s,
                     have suffix_refl xs
                     Ok (acc, xs)
                 Ok (v, after) ->
-                    match chain_rest p sep f top (f acc v) after
+                    match chain_rest p sep f (f acc v) after
                         Ok (w, rest) ->
                             have suffix_trans after mid xs
                             have suffix_trans rest after xs
                             Ok (w, rest)
-                        Err x -> Err x
+                        Err x        -> Err x
 
 # `p`, which must read all of `xs`; `Err left` if anything is left.
 export fn complete p left xs -> r : Seq s, p~(ys~s -> pr~Result (a, s) e, Seq.size ys <= Seq.size xs, consumed pr ys),
@@ -248,14 +245,13 @@ export fn complete p left xs -> r : Seq s, p~(ys~s -> pr~Result (a, s) e, Seq.si
                 _ :: _ -> Err left
 
 # A rule that refers to itself: `body` gets the input and `self`, the rule,
-# which it may call only on less input than it was given.
-#
-#     fn sum xs -> r : …, consumed r xs
-#         fix (\zs self -> chain_left digit plus Add zs) xs
+# which it may call only on less input than it was given. So a bracketed
+# term may contain a whole sum again, and the grammar still ends: each
+# `self` call is on what is left after the opening bracket.
 export fn fix body xs -> r : Seq s, xs~s,
                              body~(zs~s -> (self~(ys~s -> sr~Result (a, s) e, Seq.size ys < Seq.size zs,
                                                   consumed sr ys)
-                                   -> br~Result (a, s) e, consumed br zs)),
+                                            -> br~Result (a, s) e, consumed br zs)),
                              r~Result (a, s) e, consumed r xs
     decreasing Seq.size xs
     body xs (\ys -> fix body ys)
