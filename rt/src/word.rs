@@ -276,16 +276,21 @@ pub fn unique(w: W) -> bool {
 }
 
 /// Free an object whose count reached zero, and drop what it holds. Uses a
-/// work list rather than recursion: a long list is a deep chain.
+/// work list rather than recursion: a long list is a deep chain. The list's
+/// top is kept apart, so freeing allocates only when an object frees two.
 #[no_mangle]
 pub extern "C" fn ck_free(w: W) {
-    let mut todo = vec![w];
-    while let Some(w) = todo.pop() {
+    let mut todo = Vec::new();
+    let mut next = Some(w);
+    while let Some(w) = next.take().or_else(|| todo.pop()) {
         let n = nfields(w);
         let mut release = |c: W| {
             if is_ptr(c) && hdr(c).rc.fetch_sub(1, Ordering::Release) == 1 {
                 fence(Ordering::Acquire);
-                todo.push(c);
+                // The top of the stack is `next`.
+                if let Some(p) = next.replace(c) {
+                    todo.push(p);
+                }
             }
         };
         match kind(w) {
@@ -294,6 +299,8 @@ pub extern "C" fn ck_free(w: W) {
             K_PAP => (0..=n).for_each(|i| release(slot(w, i))),
             K_BIG => unsafe { drop(Box::from_raw(slot(w, 0) as *mut num_bigint::BigInt)) },
             K_RUST => unsafe { drop(Box::from_raw(slot(w, 0) as *mut crate::obj::Obj)) },
+            // Bytes and packed arrays hold nothing unless they are slices.
+            K_BYTES if slot(w, 1) == 0 => {}
             K_BYTES | crate::array::K_ARRAY => crate::array::held(w).for_each(&mut release),
             _ => {}
         }
