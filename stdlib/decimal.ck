@@ -330,9 +330,13 @@ lemma unsigned_magnitude a e neg post : a~Nat, e~Int, neg~Bool, post~Bytes,
                 have string.decimal_prefix t post (p + 1) (len t)
                 have unsigned_bytes b p neg
                 have value_after_prefix t post (string.decimal_value t 0 p) (p + 1) (len t)
-                have fraction_point b p (len t) (string.decimal_value b 0 p) neg
+                let q = string.decimal_value b 0 p
+                have fraction_point b p (len t) q neg
                 have array.slice_append t post b""
-                have exponent_end post a (0 - f) neg
+                have array.slice b (len t) (len b) == post
+                have exponent_end post (value_after q b (p + 1) (len t)) (0 - f) neg
+                have value_after q b (p + 1) (len t) == a
+                have unsigned b neg == Ok (number a (0 - f) neg, post)
                 have (magnitude a e).bytes == t
             else
                 let rest = b"e" ++ (string.display e []).bytes ++ post
