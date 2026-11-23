@@ -1598,9 +1598,19 @@ impl<'a> Builder<'a> {
                 Ok(s) if self.is_type(a) => Ent::Ty(s),
                 sort => match self.term(env, a) {
                     Ok((t, s)) => Ent::Term(t, s),
+                    // A known function or dictionary (an instance's, which a
+                    // generic signature's refinement captured at a use,
+                    // `Seq.size ys` at `s` = `Bytes`): known, as a call's
+                    // argument is, so its predicates name the same function.
                     Err(_) => match sort {
                         Ok(s) => Ent::Ty(s),
-                        Err(_) => Ent::Opaque("alias argument".into()),
+                        Err(_) => match self.known_fun(env, a) {
+                            Some(k) => Ent::Known(k),
+                            None => match self.known_dict(env, a) {
+                                Ok(Some(k)) => Ent::Known(k),
+                                _ => Ent::Opaque("alias argument".into()),
+                            },
+                        },
                     },
                 },
             });
