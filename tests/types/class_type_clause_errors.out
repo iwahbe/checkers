@@ -1,0 +1,50 @@
+error[E0284]: no instance of `Ord` for `Point`
+  --> class_type_clause_errors.ck:18:5
+   |
+18 |     type Item = Point
+   |     ^^^^^^^^^^^^^^^^^ needs `Ord Point`
+   = help: declare `instance Ord …` for this type, beside the type
+
+error[E0284]: no instance of `Ord` for `a`
+  --> class_type_clause_errors.ck:24:5
+   |
+24 |     type Item = a
+   |     ^^^^^^^^^^^^^ `a` is a type parameter
+   = help: add `Ord a` to the instance's context: `instance Take (List a) : Ord a`
+
+error[E0210]: `+` needs numbers (`Nat` or `Int`), but this is `Take.Item s`
+  --> class_type_clause_errors.ck:34:25
+   |
+34 |         Some x -> Some (x + x)
+   |                         ^^^^^ has type `Take.Item s`
+   = help: `Take.Item s` is a type of its own, not a number: `+` on it needs the clause `Add (Take.Item s)`, in the signature or on the class's type
+
+error[E0370]: a clause on `Item` is a class of `Item` itself
+  --> class_type_clause_errors.ck:38:17
+   |
+38 |     type Item : Ord s
+   |                 ^^^^^ this is not a class of `Item` alone
+   = help: write e.g. `Ord Item`; a clause about the class's parameter goes on its functions
+
+error[E0370]: `x` in the predicates on `Other` must have type `Other`
+  --> class_type_clause_errors.ck:39:20
+   |
+39 |     type Other : x~s
+   |                    ^ expected `Other`
+   = help: write `x~Other`
+
+error[E0370]: `x` in the predicates on `Third` must have type `Third`
+  --> class_type_clause_errors.ck:40:20
+   |
+40 |     type Third : x~Item, y~Item
+   |                    ^^^^ expected `Third`
+   = help: write `x~Third`
+
+error[E0370]: the predicates on `Third` name one value of it
+  --> class_type_clause_errors.ck:40:26
+   |
+40 |     type Third : x~Item, y~Item
+   |                          ^ a second name
+   = help: each predicate is about any one value of `Third`: use the first name
+
+class_type_clause_errors.ck: 7 errors, 0 warnings

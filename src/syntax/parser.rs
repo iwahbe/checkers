@@ -752,9 +752,10 @@ impl Parser {
                     return Err(Failed);
                 }
                 let default = if self.eat(&Tok::Eq) { Some(self.type_expr()?) } else { None };
+                let constraints = self.opt_constraints()?;
                 let span = start.to(self.prev_span());
                 self.end_line()?;
-                members.push(ClassMember::Type { name: mname, default, span });
+                members.push(ClassMember::Type { name: mname, default, constraints, span });
             } else if self.eat_kw(Kw::Fn) {
                 let mname = self.ident("a function name")?;
                 let params = self.names_until_header_end();

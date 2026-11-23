@@ -201,8 +201,10 @@ pub enum DeclKind {
 /// A requirement of a class: a function's signature, or a lemma's statement.
 #[derive(Clone, Debug)]
 pub enum ClassMember {
-    /// `type Name`, or `type Name = T` with a default (#133).
-    Type { name: Ident, default: Option<Expr>, span: Span },
+    /// `type Name`, or `type Name = T` with a default (#133); either may
+    /// be followed by constraints on it (`: Ord Name`, `: u~Name, u < 256`,
+    /// #176).
+    Type { name: Ident, default: Option<Expr>, constraints: Vec<Constraint>, span: Span },
     Fn { name: Ident, params: Vec<Ident>, result: Option<Ident>, constraints: Vec<Constraint>, span: Span },
     Lemma { name: Ident, params: Vec<Ident>, constraints: Vec<Constraint>, lets: Vec<(Pattern, Expr)>, ensures: Expr, span: Span },
 }

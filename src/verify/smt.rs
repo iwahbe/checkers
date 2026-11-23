@@ -746,6 +746,15 @@ impl<'a> Builder<'a> {
                 Ok(ps.into_iter().rev().fold(r, |r, p| Sort::Fun(Box::new(p), Box::new(r))))
             }
             Tm::Univ(_) => out("a universe"),
+            // A class's type read from a dictionary in scope (`$d.$Unit`, as
+            // its functions' fields have it): the sort of `C.Name t`.
+            Tm::Field(x, c, i) if self.e.g.is_type_field(*c, *i) => match &**x {
+                Tm::Var(l) => match self.resolve(env, *l)? {
+                    Ent::Term(_, Sort::Data(_, sargs)) if !sargs.is_empty() => Ok(self.assoc_sort(*c, *i, sargs)),
+                    _ => out("a class's type at a dictionary it can't name"),
+                },
+                _ => out("a class's type at a dictionary it can't name"),
+            },
             _ => out("an unsupported type"),
         }
     }
@@ -1320,6 +1329,10 @@ impl<'a> Builder<'a> {
                 }
             }
         };
+        // A class's type at a dictionary in scope: its declared predicates
+        // hold of every value of it (#176), a call's result too.
+        let ts = self.class_type_terms(env, &ty, x, xs);
+        add(&mut out, ts);
         if top {
             if self.is_nat_tm(&ty) {
                 out.push(format!("(>= {x} 0)"));
@@ -1464,6 +1477,35 @@ impl<'a> Builder<'a> {
             }
         }
         Some(quote(&self.e.g, n, &v))
+    }
+
+    /// The predicates declared on a class's type (#176), of `x` of type
+    /// `ty`, when `ty` is that type read from a dictionary in scope.
+    fn class_type_terms(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort) -> Vec<String> {
+        if self.e.class_type_preds.is_empty() {
+            return Vec::new();
+        }
+        let n = env.len();
+        let vars = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+        let v = force(&self.e.g, eval(&self.e.g, &vars, ty));
+        let Val::Neutral(h, sp) = &v else { return Vec::new() };
+        let Some(crate::core::Elim::Field(c, i)) = sp.last() else { return Vec::new() };
+        let Some(preds) = self.e.class_type_preds.get(&(*c, *i)).cloned() else { return Vec::new() };
+        let base = Val::Neutral(h.clone(), Rc::new(sp[..sp.len() - 1].to_vec()));
+        let dict = quote(&self.e.g, n, &base);
+        let Ok((dt, ds)) = self.term(env, &dict) else { return Vec::new() };
+        let Sort::Data(_, sargs) = &ds else { return Vec::new() };
+        // The class's parameters, its dictionary, the value.
+        let mut inner: Vec<Ent> = sargs.iter().map(|s| Ent::Ty(s.clone())).collect();
+        inner.push(Ent::Term(dt, ds.clone()));
+        inner.push(Ent::Term(x.to_string(), xs.clone()));
+        let mut out = Vec::new();
+        for p in preds {
+            if let Ok((t, Sort::Bool)) = self.term(&inner, &p.tm) {
+                out.push(t);
+            }
+        }
+        out
     }
 
     /// The predicates of the refinement alias `ty` at `x`, as terms.
@@ -2146,7 +2188,7 @@ impl<'a> Builder<'a> {
         all.drain(..np);
         let Some(cd) = self.e.class_defs.get(&cty) else { return Ok(None) };
         // The dictionary's fields: the class's types (#133), then its functions.
-        let Some(fi) = cd.methods().iter().position(|m| **m == *name).map(|k| k + cd.types().len()) else { return Ok(None) };
+        let Some(fi) = cd.methods().iter().position(|m| **m == *name).map(|k| k + cd.method_offset()) else { return Ok(None) };
         let Some(field) = all.get(fi).cloned() else { return Ok(None) };
         // The environment: the dictionary's arguments, then the call's explicit ones.
         let mut ienv: Vec<Ent> = Vec::new();

@@ -42,6 +42,9 @@ pub struct ClassDef {
     pub members: Vec<ClassMember>,
     pub tid: TyId,
     pub span: Span,
+    /// Its types' clauses (#176): the type's field, the clause's class, and
+    /// the field holding its dictionary.
+    pub clauses: Vec<(usize, TyId, usize)>,
 }
 
 /// A class's function gives a type for each parameter and its result
@@ -95,11 +98,78 @@ impl ClassDef {
     pub fn types(&self) -> Vec<String> {
         type_names(&self.members)
     }
+
+    /// Where its functions start in the dictionary: after its types and
+    /// their clauses' dictionaries (#133, #176).
+    pub fn method_offset(&self) -> usize {
+        self.types().len() + type_clauses(&self.members).len()
+    }
 }
 
 /// The names of a class's types (#133).
 fn type_names(members: &[ClassMember]) -> Vec<String> {
     members.iter().filter_map(|m| if let ClassMember::Type { name, .. } = m { Some(name.name.clone()) } else { None }).collect()
+}
+
+/// The class clauses on a class's types (`type Item : Ord Item`, #176),
+/// in order: the type's name and the clause. A constraint is a clause when
+/// it is a type constructor applied to arguments; anything else is a
+/// predicate on the type's values.
+fn type_clauses(members: &[ClassMember]) -> Vec<(String, &Expr)> {
+    let mut out = Vec::new();
+    for m in members {
+        if let ClassMember::Type { name, constraints, .. } = m {
+            for c in constraints {
+                if let Constraint::Pred(e) = c {
+                    if clause_on(e, &name.name) {
+                        out.push((name.name.clone(), e));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `C Name`: a clause on the class's type `Name` itself.
+fn clause_on(e: &Expr, name: &str) -> bool {
+    matches!(&e.kind, ExprKind::App(f, a) if matches!(f.kind, ExprKind::Con(_)) && matches!(&a.kind, ExprKind::Con(n) if n == name))
+}
+
+/// `C t …`: a type constructor applied to arguments.
+fn is_clause_shape(e: &Expr) -> bool {
+    let mut f = e;
+    let mut n = 0;
+    while let ExprKind::App(g, _) = &f.kind {
+        f = g;
+        n += 1;
+    }
+    n > 0 && matches!(f.kind, ExprKind::Con(_))
+}
+
+/// A class's type's predicates (#176): the name of its value (`u` of
+/// `u~Unit`), if given, and the predicates.
+fn type_preds(constraints: &[Constraint]) -> (Option<&Ident>, Vec<&Expr>) {
+    let binder = constraints.iter().find_map(|c| if let Constraint::Typed { name, .. } = c { Some(name) } else { None });
+    let preds = constraints
+        .iter()
+        .filter_map(|c| match c {
+            Constraint::Pred(e) if !is_clause_shape(e) => Some(e),
+            Constraint::Named(_, e) => Some(e),
+            _ => None,
+        })
+        .collect();
+    (binder, preds)
+}
+
+/// An instance's dictionary's field holding a dictionary for one of its
+/// class's types (#176): found as an implicit argument is.
+pub const FIND_DICT: &str = "$find_dict";
+
+/// The dictionary's field holding the dictionary of a class's type's
+/// `k`th clause (#176).
+fn clause_field_name(name: &str, k: usize) -> String {
+    format!("${name}#{k}")
 }
 
 /// Inside a class, its type `Name` is `C.Name a` (#133), `C.Name s h` for
@@ -396,7 +466,11 @@ fn with_types(blk: &Block, types: &[(String, Expr)]) -> Block {
     let mut stmts: Vec<Stmt> = types
         .iter()
         .filter(|(n, _)| n != "_")
-        .map(|(n, ty)| Stmt::Let(Pattern { kind: PatKind::Var(n.clone()), span: ty.span }, ty.clone()))
+        // Elaborated as a type: `Ascii` is the type, not its record's constructor.
+        .map(|(n, ty)| {
+            let as_type = ast::RefineTy { param: None, own: false, dom: ty.clone(), arrow: None, preds: Vec::new() };
+            Stmt::Let(Pattern { kind: PatKind::Var(n.clone()), span: ty.span }, Expr { kind: ExprKind::Refine(Box::new(as_type)), span: ty.span })
+        })
         .collect();
     if stmts.is_empty() {
         return blk.clone();
@@ -725,8 +799,17 @@ impl Elab {
         c.members
             .iter()
             .map(|m| match m {
-                ClassMember::Type { name, default, span } => {
-                    ClassMember::Type { name: name.clone(), default: default.as_ref().map(|e| rw.expr(e, &[])), span: *span }
+                ClassMember::Type { name, default, constraints, span } => {
+                    let bound: Vec<String> = constraints
+                        .iter()
+                        .filter_map(|c| if let Constraint::Typed { name, .. } = c { Some(name.name.clone()) } else { None })
+                        .collect();
+                    ClassMember::Type {
+                        name: name.clone(),
+                        default: default.as_ref().map(|e| rw.expr(e, &[])),
+                        constraints: rw.constraints(constraints, &bound),
+                        span: *span,
+                    }
                 }
                 ClassMember::Fn { name, params, result, constraints, span } => {
                     let mut bound: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
@@ -882,6 +965,7 @@ impl Elab {
         }
         let mut fields = Vec::new();
         let mut type_fields = Vec::new();
+        let mut clause_fields = Vec::new();
         let mut seen = HashSet::new();
         // Its types (#133): in the dictionary, a field of its own; in its
         // functions' and lemmas' signatures, `C.Name a`.
@@ -908,7 +992,8 @@ impl Elab {
                 continue;
             }
             match mem {
-                ClassMember::Type { name: t, default, .. } => {
+                ClassMember::Type { name: t, default, constraints: tcs, .. } => {
+                    self.class_type_constraints(t, tcs, local, &frw, &mut clause_fields);
                     let mentioned = default.as_ref().and_then(|e| params.iter().find(|p| super::decls::mentions_free(e, &p.name)).map(|p| (e, p)));
                     if let Some((e, param)) = mentioned {
                         self.err(
@@ -1152,12 +1237,83 @@ impl Elab {
                 name: name.clone(),
                 params: params.iter().map(|p| ast::Param { polarity: None, name: p.clone() }).collect(),
                 constraints: rcs,
-                fields: type_fields.into_iter().chain(fields).collect(),
+                fields: type_fields.into_iter().chain(clause_fields).chain(fields).collect(),
             },
             span: d.span,
         });
         origins.push(Origin::ClassRecord);
         self.pending_classes.push((name.name.clone(), pnames, members.to_vec(), name.span));
+    }
+
+    /// A class's type's constraints (#176): each class clause (`Ord Item`)
+    /// is a field of the dictionary, after the types; its predicates name a
+    /// value of it (`u~Unit`), and are checked at each instance.
+    fn class_type_constraints(
+        &mut self,
+        t: &Ident,
+        cs: &[Constraint],
+        local: &HashMap<String, (Vec<String>, Vec<ClassMember>, Span)>,
+        frw: &Rewrite,
+        clause_fields: &mut Vec<ast::Field>,
+    ) {
+        let mut binders = 0;
+        for c in cs {
+            match c {
+                Constraint::Typed { name, ty, .. } => {
+                    binders += 1;
+                    let own = matches!(&ty.kind, ExprKind::Con(n) if *n == t.name);
+                    if binders > 1 {
+                        self.err(
+                            Diagnostic::error("E0370", format!("the predicates on `{}` name one value of it", t.name), name.span)
+                                .with_label("a second name")
+                                .with_help(format!("each predicate is about any one value of `{}`: use the first name", t.name)),
+                        );
+                    } else if !own {
+                        self.err(
+                            Diagnostic::error("E0370", format!("`{}` in the predicates on `{}` must have type `{}`", name.name, t.name, t.name), ty.span)
+                                .with_label(format!("expected `{}`", t.name))
+                                .with_help(format!("write `{}~{}`", name.name, t.name)),
+                        );
+                    }
+                }
+                Constraint::Pred(e) if is_clause_shape(e) => {
+                    let ExprKind::App(f, _) = &e.kind else { continue };
+                    if !clause_on(e, &t.name) {
+                        let shown = match &f.kind {
+                            ExprKind::Con(n) => n.clone(),
+                            _ => "C".into(),
+                        };
+                        self.err(
+                            Diagnostic::error("E0370", format!("a clause on `{}` is a class of `{}` itself", t.name, t.name), e.span)
+                                .with_label(format!("this is not a class of `{}` alone", t.name))
+                                .with_help(format!("write e.g. `{shown} {}`; a clause about the class's parameter goes on its functions", t.name)),
+                        );
+                        continue;
+                    }
+                    let k = clause_fields.len();
+                    let ty = if self.is_class_clause(e, local) {
+                        frw.expr(e, &[])
+                    } else {
+                        let ExprKind::Con(n) = &f.kind else { continue };
+                        self.err(
+                            Diagnostic::error("E0280", format!("`{n}` is not a class"), f.span)
+                                .with_help(format!("a clause on `{}` names a class declared with `class`", t.name)),
+                        );
+                        Expr { kind: ExprKind::Unit, span: e.span }
+                    };
+                    clause_fields.push(ast::Field { name: ident(&clause_field_name(&t.name, k), e.span), mult: ast::Mult::Many, ty, preds: Vec::new(), span: e.span });
+                }
+                _ => {}
+            }
+        }
+        let (binder, preds) = type_preds(cs);
+        let Some(first) = preds.first() else { return };
+        if binder.is_none() {
+            self.err(
+                Diagnostic::error("E0370", format!("a predicate on `{}` needs a name for its value", t.name), first.span)
+                    .with_help(format!("name it first: `type {} : x~{}, …`", t.name, t.name)),
+            );
+        }
     }
 
     /// Is `e` a class clause (`Seq s`), of a class declared elsewhere or in
@@ -1550,12 +1706,18 @@ impl Elab {
         // default (written in the class, so shown at the instance's header).
         let header = Span { start: d.span.start, end: tys_span.end };
         let mut types: Vec<(String, Expr)> = Vec::new();
+        // Those given here, with where: their predicates are checked (#176).
+        let mut given_types: Vec<(String, Expr, Span)> = Vec::new();
         for cm in &all_members {
             let ClassMember::Type { name: tn, default, .. } = cm else { continue };
             let given = members.iter().find_map(|m| match m {
-                InstMember::Type { name, ty, .. } if name.name == tn.name => Some(ty.clone()),
+                InstMember::Type { name, ty, span } if name.name == tn.name => Some((ty.clone(), *span)),
                 _ => None,
             });
+            if let Some((t, span)) = &given {
+                given_types.push((tn.name.clone(), t.clone(), *span));
+            }
+            let given = given.map(|(t, _)| t);
             let t = match (given, default) {
                 (Some(t), _) => t,
                 (None, Some(dflt)) => match foreign.as_deref() {
@@ -1759,6 +1921,44 @@ impl Elab {
                 }
             }
         }
+        // Each predicate on a class's type holds of every value of the type
+        // this instance gives it, or takes as the default (#176): a lemma,
+        // proved by Z3, reported at the instance's `type Name = T` (or its
+        // header). A predicate is about the class's functions, which are the
+        // instance's, so a default is checked at each instance too.
+        for cm in &all_members {
+            let ClassMember::Type { name: tn, constraints: tcs, .. } = cm else { continue };
+            let Some((_, ty)) = types.iter().find(|(n, _)| *n == tn.name) else { continue };
+            let at = &given_types.iter().find(|(n, _, _)| *n == tn.name).map(|(_, _, s)| *s).unwrap_or(header);
+            let (Some(binder), preds) = type_preds(tcs) else { continue };
+            let module = foreign.clone().unwrap_or_else(|| self.cur.clone());
+            for (k, p) in preds.iter().enumerate() {
+                let lname = format!("{text}.{}#{k}", tn.name);
+                self.class_type_checks.insert(lname.clone(), (format!("{}.{}", class.name, tn.name), self.src_text(ty.span)));
+                // The class's predicate, shown at the instance's type.
+                let s = self.synthetic_span(*at);
+                let ptext = self.text_in(&module, p.span);
+                self.text_override.insert((self.cur.clone(), s.start, s.end), ptext);
+                let ens = respan(&trw.expr(&srw.expr(p, std::slice::from_ref(&binder.name)), std::slice::from_ref(&binder.name)), s);
+                let mut cs = ctx_preds.clone();
+                cs.push(Constraint::Typed { name: ident(&binder.name, s), mult: ast::Mult::Many, ty: ty.clone() });
+                decls.push(Decl {
+                    export: Export::No,
+                    kind: DeclKind::Lemma {
+                        name: ident(&lname, Span { start: at.start, end: at.start }),
+                        params: vec![ident(&binder.name, s)],
+                        constraints: cs,
+                        decreasing: None,
+                        lets: Vec::new(),
+                        ensures: ens,
+                        proof: None,
+                    },
+                    span: *at,
+                });
+                origins.push(Origin::InstMember(inst_ix));
+                self.member_heads.insert(decls.len() - 1, (class.name.clone(), heads.clone()));
+            }
+        }
         if bad {
             // Keep what was generated (its errors are useful), but no dictionary.
             return;
@@ -1777,6 +1977,12 @@ impl Elab {
         for (_, t) in &types {
             let as_type = ast::RefineTy { param: None, own: false, dom: t.clone(), arrow: None, preds: Vec::new() };
             body = app(body, Expr { kind: ExprKind::Refine(Box::new(as_type)), span: t.span });
+        }
+        // Its types' clauses (#176): each dictionary found for the type
+        // given, reported at `type Name = T` (or the header, for a default).
+        for (tn, _) in type_clauses(&all_members) {
+            let at = given_types.iter().find(|(n, _, _)| *n == tn).map(|(_, _, s)| *s).unwrap_or(header);
+            body = app(body, var(FIND_DICT, at));
         }
         for cm in &cmembers {
             if let ClassMember::Fn { name, .. } = cm {
@@ -1822,7 +2028,17 @@ impl Elab {
             }) else {
                 continue;
             };
-            let def = ClassDef { module: self.cur.clone(), name, params, members, tid, span };
+            // Its types' clauses' dictionaries: fields after its types (#176).
+            let tnames = type_names(&members);
+            let clauses = type_clauses(&members)
+                .iter()
+                .enumerate()
+                .filter_map(|(j, (t, e))| {
+                    let ty = tnames.iter().position(|n| n == t)?;
+                    Some((ty, self.class_clause(e)?, tnames.len() + j))
+                })
+                .collect();
+            let def = ClassDef { module: self.cur.clone(), name, params, members, tid, span, clauses };
             self.register_assoc(&def);
             self.class_defs.insert(tid, def);
         }
@@ -1849,6 +2065,65 @@ impl Elab {
                     self.register_instance(*ix, *d, ids)
                 }
                 _ => {}
+            }
+        }
+    }
+
+    /// The predicates on this module's classes' types (#176), elaborated
+    /// once their functions' signatures are (a predicate may use them):
+    /// over the class's parameters, its dictionary, and a value of the type.
+    pub fn elab_class_type_preds(&mut self) {
+        let mut defs: Vec<ClassDef> = self.class_defs.values().filter(|c| c.module == self.cur).cloned().collect();
+        defs.sort_by_key(|c| c.span.start);
+        for c in defs {
+            let Some(&con) = self.g.tys[c.tid.0 as usize].ctors.first() else { continue };
+            let tnames = c.types();
+            let (cname, pnames) = (c.name.clone(), c.params.clone());
+            let to_assoc = |n: &str, s: Span| if tnames.iter().any(|t| t == n) { Some(assoc_use(&cname, &pnames, n, s)) } else { None };
+            let none = |_: &str, _: Span| None;
+            let nq = |_: &str, _: &str, _: Span| None;
+            let arw = Rewrite { var: &none, con: &to_assoc, qualified: &nq };
+            for (k, m) in c.members.iter().filter(|m| matches!(m, ClassMember::Type { .. })).enumerate() {
+                let ClassMember::Type { constraints, .. } = m else { continue };
+                let (Some(binder), preds) = type_preds(constraints) else { continue };
+                if preds.is_empty() {
+                    continue;
+                }
+                self.g.fuel.set(DEFAULT_FUEL);
+                let mut cx = Cx::default();
+                let params = self.g.tys[c.tid.0 as usize].params.clone();
+                let mut pvals = Vec::new();
+                for (n, kind) in &params {
+                    let kv = self.eval(&cx, kind);
+                    let l = cx.bind(n, kv, Mult::Zero);
+                    pvals.push(Val::var(l));
+                }
+                let d = cx.bind("$d", Val::TyCon(c.tid, pvals), Mult::Many);
+                // `C.Name a`, as written (its field of the dictionary in scope).
+                let tname = &tnames[k];
+                let ty = match self.assoc_defs.get(&(c.tid, tname.clone())) {
+                    Some(acc) => {
+                        let mut v = Val::Neutral(Head::Def(*acc), Rc::new(Vec::new()));
+                        for l in 0..params.len() {
+                            v = crate::core::app(&self.g, v, Val::var(l), Icit::Expl);
+                        }
+                        crate::core::app(&self.g, v, Val::var(d), Icit::Impl)
+                    }
+                    None => crate::core::elim(&self.g, Val::var(d), Elim::Field(con, k)),
+                };
+                cx.bind(&binder.name, ty, Mult::Many);
+                let mut out = Vec::new();
+                self.in_class_type_pred = true;
+                for p in preds {
+                    let e = arw.expr(p, std::slice::from_ref(&binder.name));
+                    out.push(self.elab_pred(&mut cx, &e, false));
+                }
+                self.solve_deferred();
+                self.in_class_type_pred = false;
+                for p in &mut out {
+                    p.tm = crate::core::zonk_metas(&self.g, cx.lvl(), &p.tm);
+                }
+                self.class_type_preds.insert((con, k), out);
             }
         }
     }
@@ -2139,6 +2414,11 @@ impl Elab {
                 return Ok(Tm::Var(req.lvl - l - 1));
             }
         }
+        // A class's type read from a dictionary not known (`Seq.Elem s`):
+        // a clause declared on it is a field of that dictionary (#176).
+        if let Some(t) = self.clause_of_class_type(req.lvl, class, &tys) {
+            return Ok(t);
+        }
         // One in scope that may still be meant, once the unknown types are known.
         let unknown = shapes.iter().any(|s| matches!(s, Shape::Unknown));
         if unknown && !concrete {
@@ -2228,6 +2508,21 @@ impl Elab {
             }
         }
         Ok(t)
+    }
+
+    /// The dictionary for `class` at `tys`, if that is one type read from a
+    /// dictionary (`d.$Elem`) whose class declares the clause on it (#176):
+    /// the field of `d` holding it.
+    fn clause_of_class_type(&self, lvl: usize, class: TyId, tys: &[Val]) -> Option<Tm> {
+        let [Val::Neutral(h, sp)] = tys else { return None };
+        let Some(Elim::Field(c, i)) = sp.last() else { return None };
+        if matches!(h, Head::Meta(_)) || !self.g.is_type_field(*c, *i) {
+            return None;
+        }
+        let cd = self.class_defs.get(&self.g.cons[c.0 as usize].ty)?;
+        let (_, _, field) = cd.clauses.iter().find(|(t, k, _)| *t == *i && *k == class)?;
+        let base = Val::Neutral(h.clone(), Rc::new(sp[..sp.len() - 1].to_vec()));
+        Some(Tm::Field(Rc::new(quote(&self.g, lvl, &base)), *c, *field))
     }
 
     /// The instances a request still waiting could mean, as written

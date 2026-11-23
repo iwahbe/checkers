@@ -297,6 +297,10 @@ pub enum ObKind {
     Div,
     Index,
     Lemma { name: String },
+    /// A predicate on a class's type, for every value of the type an
+    /// instance gives it (#176): the class's type (`Encoding.Unit`) and the
+    /// type given (`Nat`).
+    ClassType { name: String, given: String },
     Auto,
     Have,
     /// A case a `match` leaves out can't occur there (D144 e): its pattern.
@@ -683,6 +687,17 @@ pub struct Elab {
     /// An instance's dictionary reading a type from another's (#133), to
     /// find cycles.
     pub assoc_edges: Vec<(DefId, DefId)>,
+    /// A class's type's predicates (#176), by the dictionary's constructor
+    /// and the type's field: over the class's parameters, the dictionary,
+    /// then a value of the type. Every value of the type satisfies them.
+    pub class_type_preds: HashMap<(ConId, usize), Vec<Pred>>,
+    /// The lemmas checking a class's type's predicates at an instance or
+    /// at the class's default (#176), by name: the class's type as written
+    /// (`Encoding.Unit`) and the type given (`Nat`).
+    pub class_type_checks: HashMap<String, (String, String)>,
+    /// While a class's type's predicates are elaborated (#176): an operator
+    /// on its values there needs a class function, not a clause.
+    pub in_class_type_pred: bool,
     /// Each instance member of the module being desugared, by its index:
     /// its class's name and its instance's types (#146, #145).
     pub member_heads: HashMap<usize, (String, Vec<ast::Expr>)>,
@@ -864,6 +879,9 @@ impl Elab {
             waiting: Vec::new(),
             waiting_late: Vec::new(),
             pending_classes: Vec::new(),
+            class_type_preds: HashMap::new(),
+            class_type_checks: HashMap::new(),
+            in_class_type_pred: false,
             class_mults: HashMap::new(),
             inst_heads: HashSet::new(),
             part_reported: HashSet::new(),
@@ -2275,6 +2293,25 @@ impl Elab {
                 };
                 let mut diag = Diagnostic::error("E0210", format!("{} needs {need}, but this is `{shown}`", d.what), d.span)
                     .with_label(format!("has type `{shown}`"));
+                // A class's type (#176): an operator needs its class as a clause.
+                if matches!(d.kind, OpClass::Numeric | OpClass::Ordered) && self.g.reads_type_field(&t) {
+                    let class = match d.what.as_str() {
+                        _ if self.in_class_type_pred => None,
+                        "`+`" => Some("Add"),
+                        "`-`" => Some("Sub"),
+                        "`*`" => Some("Mul"),
+                        "`<`" | "`<=`" | "`>`" | "`>=`" => Some("Ord"),
+                        _ => None,
+                    };
+                    let arg = if shown.contains(' ') { format!("({shown})") } else { shown.clone() };
+                    diag = diag.with_help(match class {
+                        Some(c) => format!(
+                            "`{shown}` is a type of its own, not a number: {} on it needs the clause `{c} {arg}`, in the signature or on the class's type",
+                            d.what
+                        ),
+                        None => format!("`{shown}` is a type of its own, not a number: reach a number through its class's functions"),
+                    });
+                }
                 if d.what == "`+`" && matches!(&t, Val::TyCon(id, _) if Some(*id) == wk.string || Some(*id) == wk.array || Some(*id) == wk.list) {
                     diag = diag.with_help("to join strings, lists or arrays, use `++`");
                 }
