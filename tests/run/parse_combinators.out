@@ -1,0 +1,19 @@
+-- stdout
+Ok (7, b"x")
+Ok (123, b"x")
+Ok (Some 43, b"1")
+Ok (None, b"1")
+Ok ([1, 2], b"x")
+Ok ([], b"x")
+Err ()
+Ok ((1, 43), b"")
+Ok (5, b"")
+Ok ([1, 22, 333], b";")
+Ok (6, b"")
+Ok 42
+Err ()
+Ok ((), b"")
+((1 + (2 + 3)) + 4), 0 left
+no expression
+-- stderr
+-- exit 0
