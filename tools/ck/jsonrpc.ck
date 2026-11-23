@@ -9,16 +9,16 @@ import std.decimal
 import std.string
 import std.bytes
 import std.list (keys, unique)
-import std.parse (Parsable)
+import ck.text
 import std.list
 
 # ── Numbers ──────────────────────────────────────────────────────────────────
 
-# The number that is all of `b`, if it is one that isn't negative.
+# The number that is all of `b`, if `b` is one or more digits.
 fn whole b -> r : b~Bytes, r~Option Nat
-    match Parsable.parse b Int Int
-        Ok (n, rest) -> if n >= 0 and len rest == 0 then Some n else None
-        Err _        -> None
+    match text.natural b
+        Some (n, rest) -> if len rest == 0 then Some n else None
+        None           -> None
 
 # A whole number, as a `Nat`.
 export fn nat_of j -> r : j~Json, r~Option Nat
