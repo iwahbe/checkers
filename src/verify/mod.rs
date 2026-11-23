@@ -977,6 +977,7 @@ fn describe(e: &Elab, o: &Obligation) -> String {
         ObKind::ClassType { name, given } => format!("every `{given}` satisfies `{name}`: {}", o.text),
         ObKind::Refines { class, member, pre: true, .. } => format!("`{member}` requires no more than class `{class}`: {}", o.text),
         ObKind::Refines { class, member, pre: false, .. } => format!("`{member}` promises what class `{class}` does: {}", o.text),
+        ObKind::AtAlias { class, alias, member, .. } => format!("`{class}` at `{alias}`: `{member}` gives `{alias}`s: {}", o.text),
         ObKind::Auto => format!("auto: {}", o.text),
         ObKind::Have => format!("have {}", o.text),
         ObKind::Uncovered { case, binding: false } => format!("`match` needs no arm for {case}: it can't occur"),
@@ -1108,6 +1109,25 @@ fn headline(o: &Obligation) -> (String, String, String) {
             format!("`{}` doesn't follow from this signature", o.text),
             format!("promise at least what class `{class}` does: add `{}` to this signature, or a condition implying it", o.text),
         ),
+        ObKind::AtAlias { class, alias, base, member, param: Some(x), .. } => (
+            format!("`{class}` at `{alias}` runs `{base}`'s instance, whose `{member}` may give `{x}` a value that isn't a `{alias}`"),
+            format!("`{class}` is used at `{alias}` here"),
+            format!("use `{base}` here, with a function that accepts every `{base}`; or give `instance {class} {base}`'s `{member}` a signature in which `{x}` is given only `{alias}`s"),
+        ),
+        ObKind::AtAlias { class, alias, base, member, call: Some(c), param: None, inside } => (
+            if *inside {
+                format!("cannot prove `{}` of the `{alias}`s inside `{c}`", o.text)
+            } else {
+                format!("cannot prove that `{c}` is a `{alias}` (`{}`)", o.text)
+            },
+            format!("`{class}` at `{alias}` runs `{base}`'s instance, and its `{member}` isn't shown to give a `{alias}` here"),
+            format!("use `{base}` here and check the result where a `{alias}` is needed; or promise it in a signature of `instance {class} {base}`'s `{member}`"),
+        ),
+        ObKind::AtAlias { class, alias, base, member, call: None, param: None, .. } => (
+            format!("`{class}` at `{alias}` runs `{base}`'s instance, whose `{member}` isn't shown to return a `{alias}` (`{}`)", o.text),
+            format!("`{class}` is used at `{alias}` here, by code that may call `{member}` with any arguments"),
+            format!("use `{base}` here instead of `{alias}`; or promise it, for every argument, in a signature of `instance {class} {base}`'s `{member}`"),
+        ),
         ObKind::Auto => (
             format!("`auto` cannot prove `{}`", o.text),
             "the goal here".into(),
@@ -1162,6 +1182,7 @@ fn failed(e: &Elab, o: &Obligation, model: Option<String>) -> Diagnostic {
     let code = match o.kind {
         ObKind::Uncovered { .. } => "E0240",
         ObKind::Refines { .. } => "E0371",
+        ObKind::AtAlias { .. } => "E0456",
         _ => "E0450",
     };
     let mut d = Diagnostic::error(code, msg, o.span).with_label(label);

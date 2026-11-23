@@ -1108,6 +1108,11 @@ impl Elab {
         let args: Vec<Rc<Tm>> = args.into_iter().cloned().collect();
         match h {
             Tm::Def(d) => {
+                // A class's function: its dictionary may be found through a
+                // refinement alias (#226).
+                if self.class_methods.contains(d) && self.in_spec == 0 && self.in_proof == 0 {
+                    self.class_calls.push(PendingPre { cx: cx.clone(), call: t.clone(), span, owner: self.cur_fn, in_spec: 0 });
+                }
                 // Only what is needed: most calls have no measure to compare
                 // and no precondition, and evaluating their arguments for
                 // nothing was much of the time this took.

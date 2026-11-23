@@ -112,7 +112,7 @@ impl Elab {
 
     /// Solve metas and unfold plain (unrefined) aliases, keeping refinement
     /// aliases.
-    fn peel(&self, v: &Val) -> Val {
+    pub(super) fn peel(&self, v: &Val) -> Val {
         let mut v = force_meta(&self.g, v.clone());
         for _ in 0..32 {
             if self.refined_alias(&v).is_some() {

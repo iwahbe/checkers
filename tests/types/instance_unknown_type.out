@@ -28,6 +28,6 @@ error[E0281]: `instance Ord Age` is for a type alias
    |
 19 | instance Ord Age
    |              ^^^
-   = help: write the instance for the type the alias stands for; it applies to the alias too
+   = help: write the instance for the type the alias stands for: the class at the alias uses it, where its signature shows that the values it gives are of the alias
 
 instance_unknown_type.ck: 5 errors, 0 warnings

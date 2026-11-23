@@ -306,6 +306,14 @@ pub enum ObKind {
     /// postcondition of the class's that the instance's don't imply. The
     /// class's declaration of the function, as written.
     Refines { class: String, member: String, pre: bool, declared: String },
+    /// A class used at a refinement alias runs the instance of the type the
+    /// alias stands for (#226): a value of the class's type that instance
+    /// gives must be of the alias. The class, the alias and its type, the
+    /// class's function; where the use is a call, its text, else the
+    /// function's parameter that the instance may call with values of the
+    /// type (`param`), or neither: a result, at any arguments. `inside`: a
+    /// value inside the result (`Some`'s), not the result itself.
+    AtAlias { class: String, alias: String, base: String, member: String, call: Option<String>, param: Option<String>, inside: bool },
     Auto,
     Have,
     /// A case a `match` leaves out can't occur there (D144 e): its pattern.
@@ -726,6 +734,10 @@ pub struct Elab {
     /// Calls of classes' functions with preconditions, to check once their
     /// dictionaries are found (#225).
     pub pending_class_pres: Vec<PendingPre>,
+    /// Calls of classes' functions, and dictionaries found through a
+    /// refinement alias, to check at the end of the module (#226).
+    pub class_calls: Vec<PendingPre>,
+    pub alias_dicts: Vec<classes::AliasDict>,
     /// The instance whose member's signature is being elaborated (#146).
     pub sig_inst: Option<classes::SigInst>,
     /// Comparisons waiting for a dictionary (#133): level, expected,
@@ -904,6 +916,8 @@ impl Elab {
             transparent_members: HashSet::new(),
             refined_inst_fns: HashSet::new(),
             pending_class_pres: Vec::new(),
+            class_calls: Vec::new(),
+            alias_dicts: Vec::new(),
             sig_inst: None,
             waiting: Vec::new(),
             waiting_late: Vec::new(),

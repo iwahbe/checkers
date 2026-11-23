@@ -2155,6 +2155,7 @@ impl Elab {
         // instances build is known (#225).
         if checks {
             self.class_call_obligations();
+            self.alias_dict_obligations();
         }
         self.resolve_insts();
     }
