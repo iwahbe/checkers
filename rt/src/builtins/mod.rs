@@ -27,7 +27,6 @@ pub mod utf8;
 #[path = "char.rs"]
 pub mod chars;
 pub mod decimal;
-pub mod json;
 pub mod bag;
 pub mod cown;
 pub mod future;
@@ -50,7 +49,6 @@ pub const MODULES: &[&[Builtin]] = &[
     utf8::TABLE,
     chars::TABLE,
     decimal::TABLE,
-    json::TABLE,
     bag::TABLE,
     cown::TABLE,
     future::TABLE,
