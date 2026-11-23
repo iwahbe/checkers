@@ -151,7 +151,7 @@ impl<'g> Compiler<'g> {
             Tm::TyCon(_) | Tm::Univ(_) | Tm::Pi(..) | Tm::TupleTy(_) | Tm::TyConApp(..) | Tm::Meta(_) => Ir::Erased,
             Tm::Lam(_, _, _, b) => Ir::Lam(self.owner, self.compile(b)),
             Tm::App(..) => {
-                if let Some(direct) = self.known_instance(t) {
+                if let Some(direct) = known_instance(self.g, t) {
                     return self.go(&direct);
                 }
                 let mut spine = Vec::new();
@@ -173,7 +173,7 @@ impl<'g> Compiler<'g> {
                     let m = if *m == Mult::Zero || am == Mult::Zero { Mult::Zero } else { *m };
                     // One that computes nothing is put in: a dictionary
                     // stays known.
-                    if m == Mult::Zero || matches!(**a, Tm::Var(_) | Tm::Lit(_)) || self.known_dict(a) {
+                    if m == Mult::Zero || matches!(**a, Tm::Var(_) | Tm::Lit(_)) || known_dict(self.g, a) {
                         return self.go(&subst(&body, &[(**a).clone()], 0));
                     }
                     return self.go(&Tm::Let(x.clone(), m, Rc::new(Tm::Error), a.clone(), Rc::new(body)));
@@ -293,141 +293,6 @@ impl<'g> Compiler<'g> {
                 _ => Ir::Case(self.compile(s), Arc::new(self.case(c))),
             },
             Tm::Error => Ir::Fail("no arm of a `match` matches this value (`--unverified`)"),
-        }
-    }
-
-    /// A class's function at a known instance's dictionary, as a direct
-    /// call of that instance's function (§14): `f {Seq (Array a)} xs` is
-    /// `Seq (Array a).f a xs`, the field the dictionary's function would
-    /// build, with the dictionary's arguments (its types and its context's
-    /// dictionaries). Building a dictionary does nothing but allocate, so
-    /// not building it changes no result; the call's own arguments are
-    /// passed in the same order. `None` when `t` isn't such a call.
-    fn known_instance(&self, t: &Tm) -> Option<Tm> {
-        let wk = &self.g.well_known;
-        let mut spine = Vec::new();
-        let mut h = t;
-        while let Tm::App(f, a, i, m) = h {
-            spine.push((a.clone(), *i, *m));
-            h = f;
-        }
-        spine.reverse();
-        let Tm::Def(f) = h else { return None };
-        if !wk.class_fns.contains(f) {
-            return None;
-        }
-        // The class's function: `\ … {d} x y -> d.f x y`.
-        let mut body = self.g.defs.get(f.0 as usize)?.body.as_ref()?;
-        let mut mults = Vec::new();
-        while let Tm::Lam(_, m, _, b) = body {
-            mults.push(*m);
-            body = b;
-        }
-        let k = mults.len();
-        if spine.len() < k {
-            return None;
-        }
-        let mut read = Vec::new();
-        let mut r = body;
-        while let Tm::App(g, a, i, m) = r {
-            read.push((a.clone(), *i, *m));
-            r = g;
-        }
-        read.reverse();
-        let Tm::Field(x, con, field) = r else { return None };
-        let Tm::Var(j) = **x else { return None };
-        if j >= k {
-            return None;
-        }
-        // Each parameter it keeps is passed once, in order: the call
-        // evaluates the same arguments in the same order. An argument that
-        // computes nothing (a variable, a literal, a dictionary built from
-        // instances, as a class's function's own clauses pass theirs) may
-        // be passed in another place.
-        let mut passed = Vec::new();
-        for (a, _, _) in &read {
-            match **a {
-                Tm::Var(v) if v < k && v != j && !passed.contains(&(k - 1 - v)) => passed.push(k - 1 - v),
-                _ => return None,
-            }
-        }
-        let kept: Vec<usize> = (0..k).filter(|p| mults[*p] != Mult::Zero && *p != k - 1 - j).collect();
-        let passed_kept: Vec<usize> = passed.iter().copied().filter(|p| mults[*p] != Mult::Zero).collect();
-        let mut sorted = passed_kept.clone();
-        sorted.sort_unstable();
-        let inert = |p: &usize| matches!(*spine[*p].0, Tm::Var(_) | Tm::Lit(_)) || self.known_dict(&spine[*p].0);
-        let computed: Vec<usize> = passed_kept.iter().copied().filter(|p| !inert(p)).collect();
-        if sorted != kept || computed.windows(2).any(|w| w[0] >= w[1]) {
-            return None;
-        }
-        // The dictionary: an instance's function applied to all its arguments.
-        let dict = &spine[k - 1 - j].0;
-        let (dh, dargs) = dict.spine();
-        let Tm::Def(b) = dh else { return None };
-        if !wk.dict_fns.contains(b) {
-            return None;
-        }
-        let mut built = self.g.defs.get(b.0 as usize)?.body.as_ref()?;
-        let mut bmults = Vec::new();
-        while let Tm::Lam(_, m, _, x) = built {
-            bmults.push(*m);
-            built = x;
-        }
-        if bmults.len() != dargs.len() {
-            return None;
-        }
-        // Its kept arguments (the context's dictionaries) are dictionaries
-        // in scope or known instances': values, computed by nothing else.
-        if !dargs.iter().zip(&bmults).all(|(a, m)| *m == Mult::Zero || self.known_dict(a)) {
-            return None;
-        }
-        let (bh, fields) = built.spine_cloned();
-        let (c, all) = match (built, bh) {
-            (Tm::ConApp(c, v), _) => (*c, v.clone()),
-            (_, Tm::Con(c)) if fields.len() == self.g.arity_con(*c) => (*c, fields),
-            _ => return None,
-        };
-        if c != *con {
-            return None;
-        }
-        let np = self.g.arity_ty(self.g.cons[c.0 as usize].ty);
-        let member = all.get(np + field)?;
-        let dargs: Vec<Tm> = dargs.iter().map(|a| (***a).clone()).collect();
-        let mut out = subst(member, &dargs, 0);
-        let mut args = Vec::new();
-        for (a, i, m) in &read {
-            let Tm::Var(v) = **a else { return None };
-            args.push((spine[k - 1 - v].0.clone(), *i, *m));
-        }
-        args.extend(spine[k..].iter().cloned());
-        // A field of a polymorphic function (a class over a type
-        // constructor) takes its own types first: they are erased, so
-        // substituted.
-        let mut args = args.into_iter().peekable();
-        while let (Tm::Lam(_, Mult::Zero, _, b), Some(_)) = (&out, args.peek()) {
-            let (a, _, _) = args.next()?;
-            out = subst(b, &[(*a).clone()], 0);
-        }
-        Some(args.fold(out, |f, (a, i, m)| Tm::App(Rc::new(f), a, i, m)))
-    }
-
-    /// A dictionary computed by nothing but building dictionaries: a
-    /// variable, or an instance's function applied to such dictionaries
-    /// and types.
-    fn known_dict(&self, t: &Tm) -> bool {
-        match t.spine() {
-            (Tm::Var(_), args) => args.is_empty(),
-            (Tm::Def(b), args) if self.g.well_known.dict_fns.contains(b) => {
-                let mut built = self.g.defs.get(b.0 as usize).and_then(|i| i.body.as_ref());
-                args.iter().all(|a| match built {
-                    Some(Tm::Lam(_, m, _, x)) => {
-                        built = Some(x);
-                        *m == Mult::Zero || self.known_dict(a)
-                    }
-                    _ => false,
-                })
-            }
-            _ => false,
         }
     }
 
@@ -621,6 +486,143 @@ pub fn shift(ir: &Ir, k: usize, cutoff: usize) -> Ir {
     }
     go(ir, k, cutoff)
 }
+
+/// A class's function at a known instance's dictionary, as a direct
+/// call of that instance's function (§14; and for its preconditions,
+/// #225): `f {Seq (Array a)} xs` is
+/// `Seq (Array a).f a xs`, the field the dictionary's function would
+/// build, with the dictionary's arguments (its types and its context's
+/// dictionaries). Building a dictionary does nothing but allocate, so
+/// not building it changes no result; the call's own arguments are
+/// passed in the same order. `None` when `t` isn't such a call.
+pub fn known_instance(g: &Globals, t: &Tm) -> Option<Tm> {
+    let wk = &g.well_known;
+    let mut spine = Vec::new();
+    let mut h = t;
+    while let Tm::App(f, a, i, m) = h {
+        spine.push((a.clone(), *i, *m));
+        h = f;
+    }
+    spine.reverse();
+    let Tm::Def(f) = h else { return None };
+    if !wk.class_fns.contains(f) {
+        return None;
+    }
+    // The class's function: `\ … {d} x y -> d.f x y`.
+    let mut body = g.defs.get(f.0 as usize)?.body.as_ref()?;
+    let mut mults = Vec::new();
+    while let Tm::Lam(_, m, _, b) = body {
+        mults.push(*m);
+        body = b;
+    }
+    let k = mults.len();
+    if spine.len() < k {
+        return None;
+    }
+    let mut read = Vec::new();
+    let mut r = body;
+    while let Tm::App(g, a, i, m) = r {
+        read.push((a.clone(), *i, *m));
+        r = g;
+    }
+    read.reverse();
+    let Tm::Field(x, con, field) = r else { return None };
+    let Tm::Var(j) = **x else { return None };
+    if j >= k {
+        return None;
+    }
+    // Each parameter it keeps is passed once, in order: the call
+    // evaluates the same arguments in the same order. An argument that
+    // computes nothing (a variable, a literal, a dictionary built from
+    // instances, as a class's function's own clauses pass theirs) may
+    // be passed in another place.
+    let mut passed = Vec::new();
+    for (a, _, _) in &read {
+        match **a {
+            Tm::Var(v) if v < k && v != j && !passed.contains(&(k - 1 - v)) => passed.push(k - 1 - v),
+            _ => return None,
+        }
+    }
+    let kept: Vec<usize> = (0..k).filter(|p| mults[*p] != Mult::Zero && *p != k - 1 - j).collect();
+    let passed_kept: Vec<usize> = passed.iter().copied().filter(|p| mults[*p] != Mult::Zero).collect();
+    let mut sorted = passed_kept.clone();
+    sorted.sort_unstable();
+    let inert = |p: &usize| matches!(*spine[*p].0, Tm::Var(_) | Tm::Lit(_)) || known_dict(g, &spine[*p].0);
+    let computed: Vec<usize> = passed_kept.iter().copied().filter(|p| !inert(p)).collect();
+    if sorted != kept || computed.windows(2).any(|w| w[0] >= w[1]) {
+        return None;
+    }
+    // The dictionary: an instance's function applied to all its arguments.
+    let dict = &spine[k - 1 - j].0;
+    let (dh, dargs) = dict.spine();
+    let Tm::Def(b) = dh else { return None };
+    if !wk.dict_fns.contains(b) {
+        return None;
+    }
+    let mut built = g.defs.get(b.0 as usize)?.body.as_ref()?;
+    let mut bmults = Vec::new();
+    while let Tm::Lam(_, m, _, x) = built {
+        bmults.push(*m);
+        built = x;
+    }
+    if bmults.len() != dargs.len() {
+        return None;
+    }
+    // Its kept arguments (the context's dictionaries) are dictionaries
+    // in scope or known instances': values, computed by nothing else.
+    if !dargs.iter().zip(&bmults).all(|(a, m)| *m == Mult::Zero || known_dict(g, a)) {
+        return None;
+    }
+    let (bh, fields) = built.spine_cloned();
+    let (c, all) = match (built, bh) {
+        (Tm::ConApp(c, v), _) => (*c, v.clone()),
+        (_, Tm::Con(c)) if fields.len() == g.arity_con(*c) => (*c, fields),
+        _ => return None,
+    };
+    if c != *con {
+        return None;
+    }
+    let np = g.arity_ty(g.cons[c.0 as usize].ty);
+    let member = all.get(np + field)?;
+    let dargs: Vec<Tm> = dargs.iter().map(|a| (***a).clone()).collect();
+    let mut out = subst(member, &dargs, 0);
+    let mut args = Vec::new();
+    for (a, i, m) in &read {
+        let Tm::Var(v) = **a else { return None };
+        args.push((spine[k - 1 - v].0.clone(), *i, *m));
+    }
+    args.extend(spine[k..].iter().cloned());
+    // A field of a polymorphic function (a class over a type
+    // constructor) takes its own types first: they are erased, so
+    // substituted.
+    let mut args = args.into_iter().peekable();
+    while let (Tm::Lam(_, Mult::Zero, _, b), Some(_)) = (&out, args.peek()) {
+        let (a, _, _) = args.next()?;
+        out = subst(b, &[(*a).clone()], 0);
+    }
+    Some(args.fold(out, |f, (a, i, m)| Tm::App(Rc::new(f), a, i, m)))
+}
+
+/// A dictionary computed by nothing but building dictionaries: a
+/// variable, or an instance's function applied to such dictionaries
+/// and types.
+fn known_dict(g: &Globals, t: &Tm) -> bool {
+    match t.spine() {
+        (Tm::Var(_), args) => args.is_empty(),
+        (Tm::Def(b), args) if g.well_known.dict_fns.contains(b) => {
+            let mut built = g.defs.get(b.0 as usize).and_then(|i| i.body.as_ref());
+            args.iter().all(|a| match built {
+                Some(Tm::Lam(_, m, _, x)) => {
+                    built = Some(x);
+                    *m == Mult::Zero || known_dict(g, a)
+                }
+                _ => false,
+            })
+        }
+        _ => false,
+    }
+}
+
 
 impl Ir {
     /// The immediate subterms, each with the number of variables it is under
