@@ -271,8 +271,13 @@ export lemma parse_render n post : n~Decimal, post~Bytes,
             let b = b"-" ++ t ++ post
             have array.uncons_slice b
             have array.slice_append b"-" (t ++ post) b""
+            have utf8.encode (render n) ++ post == b
+            have Parsable.parse b Decimal Int == unsigned (t ++ post) True
         else
             have array.uncons_slice (t ++ post)
+            have utf8.encode (render n) ++ post == t ++ post
+            have (t ++ post)[0] != '-'
+            have Parsable.parse (t ++ post) Decimal Int == unsigned (t ++ post) False
 
 # A rendered number starts with `-` or a digit.
 export lemma render_starts n : n~Decimal
