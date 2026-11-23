@@ -185,3 +185,13 @@ export lemma render_starts n : n~Decimal
     ensures len b > 0 and (b[0] == '-' or (b[0] >= '0' and b[0] <= '9'))
     proof
         __builtin
+
+# Reading what `render` writes gives the number back, whatever follows that
+# can't continue a number.
+export lemma parse_render n post : n~Decimal, post~Bytes,
+                                   len post == 0
+                                   or not ((post[0] >= '0' and post[0] <= '9') or post[0] == '.' or post[0] == 'e'
+                                           or post[0] == 'E')
+    ensures Parsable.parse (utf8.encode (render n) ++ post) Decimal Int == Ok (n, post)
+    proof
+        __builtin
