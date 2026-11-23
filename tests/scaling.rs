@@ -57,35 +57,36 @@ fn a_chain_of_concatenations_checks_in_linear_time() {
 }
 
 /// The peak resident memory, in KB, of `ckc check` on `check <chain> == n`:
-/// the child's high-water mark (`VmHWM`), read until it exits.
+/// the child's high-water mark (`ru_maxrss`), which the kernel reports when
+/// it is reaped. `wait4` reaps this child alone, so other tests' children,
+/// running at the same time, don't count.
 #[cfg(target_os = "linux")]
 fn check_peak_kb(dir: &Path, name: &str, n: usize) -> u64 {
     let file = dir.join(format!("{name}.ck"));
     let chain = vec!["1"; n].join(" + ");
     std::fs::write(&file, format!("module {name}\n\ncheck {chain} == {n}\n")).unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_ckc"))
+    let child = Command::new(env!("CARGO_BIN_EXE_ckc"))
         .args(["check", "--no-cache", &format!("{name}.ck")])
         .current_dir(dir)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("run ckc");
-    let status = format!("/proc/{}/status", child.id());
-    let mut peak = 0;
-    loop {
-        // The mark only rises, so the last read before exit is the peak (up
-        // to the polling interval, after the code generation that matters).
-        if let Ok(s) = std::fs::read_to_string(&status) {
-            if let Some(kb) = s.lines().find_map(|l| l.strip_prefix("VmHWM:")) {
-                peak = peak.max(kb.trim().trim_end_matches("kB").trim().parse().unwrap());
-            }
+    let pid = child.id() as libc::pid_t;
+    let mut status = 0;
+    // SAFETY: `rusage` is plain data; `wait4` writes `status` and `usage`.
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    let reaped = loop {
+        let r = unsafe { libc::wait4(pid, &mut status, 0, &mut usage) };
+        if r != -1 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+            break r;
         }
-        if let Some(st) = child.try_wait().unwrap() {
-            assert!(st.success(), "{name}: ckc failed");
-            return peak;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(2));
-    }
+    };
+    assert_eq!(reaped, pid, "{name}: wait4: {}", std::io::Error::last_os_error());
+    // `child` is reaped already: dropping it neither waits nor kills.
+    drop(child);
+    assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0, "{name}: ckc failed");
+    usage.ru_maxrss as u64
 }
 
 /// Code generation keeps memory in proportion to the function: Cranelift's
