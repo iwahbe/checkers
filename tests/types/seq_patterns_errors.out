@@ -18,7 +18,7 @@ error[E0240]: this `match` does not cover `_ :: []`
    |
 17 |     match xs
    |     ^^^^^^^^ not exhaustive
-   = note: counterexample: xs = b"\x94"
+   = note: counterexample: xs = b"\xad"
    = help: add an arm `_ :: [] -> …`, or a catch-all `_ -> …`
 
 error[E0241]: `Nil` is a constructor of `List`, but the value being matched has type `Box`

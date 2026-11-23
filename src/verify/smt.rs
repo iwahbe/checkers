@@ -2176,8 +2176,10 @@ impl<'a> Builder<'a> {
                 continue;
             }
             let Sort::Fun(p, r) = sort else { return out("an application of a non-function") };
-            let at = match self.term(env, a) {
-                Ok((at, _)) => at,
+            // A function argument is a function value: a lambda is Z3's
+            // `lambda`, inside a reflected body too (#231).
+            let at = match if matches!(*p, Sort::Fun(..)) { self.fun_value(env, a, &p) } else { self.term(env, a).map(|(t, _)| t) } {
+                Ok(at) => at,
                 // A function value the prover can't represent (a lambda, a
                 // partial application), given to a function it knows only by
                 // its type: a fresh value of its sort, of which nothing is
@@ -2666,6 +2668,26 @@ impl<'a> Builder<'a> {
                     // At an opaque dictionary (below), a function is passed
                     // as a value, so that equal functions are equal.
                     let opaque = !dict && dpos.and_then(|p| inner.get(p)).is_some_and(|e| matches!(e, Ent::Term(_, Sort::Unin(..))));
+                    // So does a function Z3 can't see into (sealed, or a
+                    // builtin), where the argument can be a value (#231): a
+                    // specialized symbol would be unrelated to the same call
+                    // made with the function as a value, as inside a body
+                    // where the lambda mentions the body's variables.
+                    let as_value = if !dict && !opaque && !self.reflected(d) {
+                        let want = self.sort_of(&inner, &a)?;
+                        self.fun_value(env, arg, &want).ok().map(|fv| (fv, want))
+                    } else {
+                        None
+                    };
+                    if let Some((fv, want)) = as_value {
+                        funs.push("*".into());
+                        vals.push(fv.clone());
+                        inner.push(Ent::Term(fv.clone(), want.clone()));
+                        post_env.push(Ent::Term(fv, want));
+                        t = (*b).clone();
+                        k += 1;
+                        continue;
+                    }
                     let known = if opaque {
                         None
                     } else if dict {
@@ -2725,6 +2747,13 @@ impl<'a> Builder<'a> {
             }
             // A string is already its UTF-8 bytes.
             "std.utf8.encode" | "std.string.bytes" => return Ok((vals[0].clone(), Sort::Seq(Box::new(Sort::Int)))),
+            // An array but its first element: the slice after it, as the
+            // runtime's primitive makes it, so a sequence pattern's rest is
+            // known (`x :: rest` on `b"ab" ++ post` leaves `b"b" ++ post`, #232).
+            "std.prelude.array_rest" => {
+                let xs = &vals[0];
+                return Ok((format!("(seq.extract {xs} 1 (- (seq.len {xs}) 1))"), rs));
+            }
             // `word` occurs in `src` at `i` (the Rust primitive, exactly).
             "std.bytes.matches_at" => {
                 let (src, i, w) = (&vals[0], &vals[1], &vals[2]);

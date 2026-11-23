@@ -255,3 +255,13 @@ export fn fix body xs -> r : Seq s, xs~s,
                              r~Result (a, s) e, consumed r xs
     decreasing Seq.size xs
     body xs (\ys -> fix body ys)
+
+# `fix body` is `body` given the rule itself as `self`: what a proof about
+# a grammar made with `fix` unfolds it by.
+export lemma fix_unfold body xs : Seq s, xs~s,
+                                  body~(zs~s -> (self~(ys~s -> sr~Result (a, s) e, Seq.size ys < Seq.size zs,
+                                                       consumed sr ys)
+                                                 -> br~Result (a, s) e, consumed br zs))
+    ensures fix body xs == body xs (\ys -> fix body ys)
+    proof
+        auto
