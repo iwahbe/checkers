@@ -1,0 +1,23 @@
+error[E0365]: `size` takes 1 parameter in class `Size`, but 2 here
+  --> instance_refined_shape.ck:20:5
+   |
+20 |     fn size x extra -> n : x~C, extra~Int, n~Int
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0365]: `size`'s result doesn't match class `Size`
+  --> instance_refined_shape.ck:27:29
+   |
+27 |     fn size x -> n : x~D, n~Bool
+   |                             ^^^^ `n` is `Bool` here, `Int` in the class
+   = note: class `Size` declares `fn size x -> n : x~a, n~Int`
+   = help: an instance's signature has the class's types at the instance's type; it may only refine them
+
+error[E0365]: `size`'s parameter `x` doesn't match class `Size`
+  --> instance_refined_shape.ck:34:30
+   |
+34 |     fn size x -> n : x~ghost E, n~Int
+   |                              ^ `ghost E` here, `E` in the class
+   = note: class `Size` declares `fn size x -> n : x~a, n~Int`
+   = help: an instance's signature has the class's types at the instance's type; it may only refine them
+
+instance_refined_shape.ck: 3 errors, 0 warnings

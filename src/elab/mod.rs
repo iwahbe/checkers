@@ -301,6 +301,11 @@ pub enum ObKind {
     /// instance gives it (#176): the class's type (`Encoding.Unit`) and the
     /// type given (`Nat`).
     ClassType { name: String, given: String },
+    /// An instance's function with a signature of its own (#225): a
+    /// precondition of it that the class's don't imply (`pre`), or a
+    /// postcondition of the class's that the instance's don't imply. The
+    /// class's declaration of the function, as written.
+    Refines { class: String, member: String, pre: bool, declared: String },
     Auto,
     Have,
     /// A case a `match` leaves out can't occur there (D144 e): its pattern.
@@ -431,6 +436,16 @@ pub struct Late {
     pub deps: Vec<usize>,
     /// The number of binders `ty` is over.
     pub n: usize,
+}
+
+/// A call of a class's function with preconditions, whose dictionary may
+/// not be found yet (#225): the context, the call, and where it is.
+pub struct PendingPre {
+    pub cx: Cx,
+    pub call: Tm,
+    pub span: Span,
+    pub owner: Option<DefId>,
+    pub in_spec: usize,
 }
 
 /// The postconditions to check at each value the current function returns.
@@ -701,6 +716,14 @@ pub struct Elab {
     /// Each instance member of the module being desugared, by its index:
     /// its class's name and its instance's types (#146, #145).
     pub member_heads: HashMap<usize, (String, Vec<ast::Expr>)>,
+    /// Instances' functions with signatures of their own, by declaration
+    /// (as `member_heads`), with the class's signature to refine (#225).
+    pub inst_refines: HashMap<usize, classes::InstRefine>,
+    /// Instances' functions with signatures of their own (#225).
+    pub refined_inst_fns: HashSet<DefId>,
+    /// Calls of classes' functions with preconditions, to check once their
+    /// dictionaries are found (#225).
+    pub pending_class_pres: Vec<PendingPre>,
     /// The instance whose member's signature is being elaborated (#146).
     pub sig_inst: Option<classes::SigInst>,
     /// Comparisons waiting for a dictionary (#133): level, expected,
@@ -875,6 +898,9 @@ impl Elab {
             assoc_defs: HashMap::new(),
             assoc_edges: Vec::new(),
             member_heads: HashMap::new(),
+            inst_refines: HashMap::new(),
+            refined_inst_fns: HashSet::new(),
+            pending_class_pres: Vec::new(),
             sig_inst: None,
             waiting: Vec::new(),
             waiting_late: Vec::new(),
