@@ -22,7 +22,7 @@ builtin!(ckb_from_chars, |a| {
     new_str(&st)
 });
 
-builtin!(ckb_from_char, |a| new_str(&ch(a[0]).to_string()));
+builtin!(ckb_from_char, |a| new_str(ch(a[0]).encode_utf8(&mut [0; 4])));
 
 // A string is stored as its bytes (#170): the same object.
 builtin!(ckb_string_bytes, |a| dup(s_obj(a[0])));

@@ -39,7 +39,8 @@ impl<'g> Evaluator<'g> {
 
     /// The value of a closed term: an owned word, or the runtime error.
     pub fn eval(&mut self, t: &Tm) -> Result<W, String> {
-        let ir = super::ir::Compiler { g: self.g, owner: None }.compile(t);
+        let spec = super::spec::SpecCx { table: &self.gen.p.specs, staged: None, depth: 0 };
+        let ir = super::ir::Compiler { g: self.g, owner: None, spec: Some(spec) }.compile(t);
         self.eval_ir(&ir)
     }
 
