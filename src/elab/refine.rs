@@ -46,6 +46,10 @@ pub struct Gained {
     /// What made the position contravariant or invariant: a function's
     /// argument, or a parameter of a type constructor.
     pub via: Via,
+    /// The context `expected` and `found` live in: inside a function
+    /// type's result, its parameter is bound (`sr~Option s, shorter sr ys`
+    /// mentions `ys`), so they are shown there, not at the comparison's.
+    pub cx: Cx,
 }
 
 /// Where a comparison of refinements was asked for, for its obligations.
@@ -284,7 +288,7 @@ impl Elab {
                         // A class's type is shown as written (`Seq.Elem s`),
                         // not as its dictionary's field.
                         let f = if self.g.reads_type_field(&f) { found.clone() } else { f.clone() };
-                        return Some(Gained { expected: e.clone(), found: f, variance: pol, via });
+                        return Some(Gained { expected: e.clone(), found: f, variance: pol, via, cx: cx.clone() });
                     }
                 }
             }
@@ -397,7 +401,7 @@ impl Elab {
     /// E0262: a refinement gained through a type argument.
     pub fn report_gained(&mut self, cx: &Cx, expected: &Val, found: &Val, g: &Gained, span: Span, what: &str) {
         let (e, f) = (self.show_val(cx, expected), self.show_val(cx, found));
-        let (ge, gf) = (self.show_val(cx, &g.expected), self.show_val(cx, &g.found));
+        let (ge, gf) = (self.show_val(&g.cx, &g.expected), self.show_val(&g.cx, &g.found));
         let mut d = Diagnostic::error("E0262", format!("type mismatch: expected `{e}`, found `{f}`"), span);
         let ty = |t: TyId| self.g.tys[t.0 as usize].name.to_string();
         d = match (g.variance, g.via) {

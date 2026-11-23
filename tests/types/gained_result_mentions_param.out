@@ -1,0 +1,9 @@
+error[E0262]: type mismatch: expected `(x~Nat) -> (y~Nat, y <= x)`, found `(x~Nat) -> Nat`
+  --> gained_result_mentions_param.ck:11:11
+   |
+11 |     apply same                                  # error E0262: `Nat` results aren't known to be `y <= x`
+   |           ^^^^ this expression has type `(x~Nat) -> Nat`, so its `Nat` values aren't known to be `(y~Nat, y <= x)`
+   = note: a refinement inside a type is never gained from an existing value: that would need a proof about every element
+   = help: give the value the type `(x~Nat) -> (y~Nat, y <= x)` where it is built, so that each part is checked there
+
+gained_result_mentions_param.ck: 1 error, 0 warnings
