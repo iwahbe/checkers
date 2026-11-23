@@ -959,6 +959,7 @@ impl Elab {
         let callee_spec = crate::core::head_def(&ft).and_then(|d| self.specs.get(&d));
         let callee_def = crate::core::head_def(&ft);
         let late = callee_spec.map(|s| s.late.clone()).unwrap_or_default();
+        let late: Vec<Late> = late.into_iter().map(|l| Late { deps: self.late_deps(&l), ..l }).collect();
         let n_implicit = callee_spec.map_or(0, |s| s.n_implicit);
         let inner = callee_spec.map(|s| s.inner.clone()).unwrap_or_default();
         self.head_checks_aliases = match &ft {
@@ -997,7 +998,7 @@ impl Elab {
             let mut expected = None;
             if let Some(l) = late.iter().find(|l| l.binder == super::expl_binder(n_implicit, &inner, k)) {
                 if !ready.contains_key(&k) && l.deps.iter().all(|j| super::expl_index(n_implicit, &inner, *j).is_some_and(|j| j < args.len())) {
-                    let (t1, ty1, e) = self.late_expected(cx, t, ty, k, l, &args, &mut ready);
+                    let (t1, ty1, e) = self.late_expected(cx, t, ty, k, l, &late, &args, &mut ready);
                     (t, ty, expected) = (t1, ty1, e);
                 }
             }
@@ -1676,6 +1677,7 @@ impl Elab {
         ty: Val,
         k: usize,
         late: &Late,
+        lates: &[Late],
         args: &[&Expr],
         ready: &mut HashMap<usize, (Tm, Val)>,
     ) -> (Tm, Val, Option<Val>) {
@@ -1689,16 +1691,27 @@ impl Elab {
         env.push(Val::Error);
         let l = cx.lvl();
         let mut r = apply_closure(&self.g, &c, Val::var(l));
+        // Levels from `l` on stand for arguments not checked here: this one,
+        // and any other parameter between it and the last it needs whose own
+        // refinements mention later parameters, which must be checked
+        // against its refined type at its own turn, not its base type now.
+        let mut unchecked = 1;
         let last = late.deps.iter().max().copied().unwrap_or(late.binder);
         for b in late.binder + 1..=last {
             let j = k + b - late.binder;
             let Val::Pi(_, _, Icit::Expl, dom, c) = self.force(&r) else { return (t, ty, None) };
             let Some(arg) = args.get(j) else { return (t, ty, None) };
+            if !late.deps.contains(&b) && !ready.contains_key(&j) && lates.iter().any(|o| o.binder == b) {
+                env.push(Val::Error);
+                r = apply_closure(&self.g, &c, Val::var(l + unchecked));
+                unchecked += 1;
+                continue;
+            }
             let av = match ready.get(&j) {
                 Some((_, av)) => av.clone(),
                 None => {
-                    let q = quote(&self.g, l + 1, &dom);
-                    if mentions_level_from(&q, l + 1, l, 0) {
+                    let q = quote(&self.g, l + unchecked, &dom);
+                    if mentions_level_from(&q, l + unchecked, l, 0) {
                         return (t, ty, None);
                     }
                     self.alias_covered = self.head_checks_aliases && self.is_direct_alias(&dom);

@@ -1,0 +1,18 @@
+error[E0450]: cannot prove that `g` can be called here
+  --> later_param_second_fn.ck:25:17
+   |
+25 |     both_wide f g n
+   |                 ^ `both_wide` may call this with any `(i~Int, i <= n)`
+   = note: it needs `i < n`
+   = note: counterexample: n = 0, i = 0
+   = help: pass a function that accepts every `(i~Int, i <= n)`
+
+error[E0450]: cannot prove that `g` can be called here
+  --> later_param_second_fn.ck:33:23
+   |
+33 |     both_wide_sized f g xs
+   |                       ^ `both_wide_sized` may call this with any `(ys~s, Seq.size ys <= Seq.size xs)`
+   = note: it needs `Seq.size ys < Seq.size xs`
+   = help: pass a function that accepts every `(ys~s, Seq.size ys <= Seq.size xs)`
+
+later_param_second_fn.ck: 2 errors, 0 warnings

@@ -548,6 +548,64 @@ impl Elab {
         t
     }
 
+    /// The later binders a parameter's refined type (#102) needs the
+    /// arguments of. Its refinements were elaborated before the class
+    /// dictionaries they use were found, as unknowns over every local, so
+    /// their aliases capture every parameter: once those are solved, only
+    /// the parameters the aliases' predicates still mention count.
+    pub fn late_deps(&self, late: &Late) -> Vec<usize> {
+        let ty = crate::core::zonk_metas(&self.g, late.n, &late.ty);
+        let mut free = std::collections::BTreeSet::new();
+        self.used_free(&ty, 0, &mut free, 0);
+        free.iter().filter(|i| **i < late.n).map(|i| late.n - 1 - i).filter(|j| *j > late.binder).collect()
+    }
+
+    /// `free_vars`, except that an argument of an inline refinement's alias
+    /// counts only where the alias uses it.
+    fn used_free(&self, t: &Tm, depth: usize, out: &mut std::collections::BTreeSet<usize>, nest: usize) {
+        if let (Tm::Def(d), args) = t.spine() {
+            if nest < 16 && !args.is_empty() && is_anon_alias(&self.g, *d) {
+                let uses = self.alias_uses(*d, args.len(), nest + 1);
+                for (a, used) in args.iter().zip(uses) {
+                    if used {
+                        self.used_free(a, depth, out, nest);
+                    }
+                }
+                return;
+            }
+        }
+        match t {
+            Tm::Var(i) if *i >= depth => {
+                out.insert(i - depth);
+            }
+            _ => t.each_sub(|x, n| self.used_free(x, depth + n, out, nest)),
+        }
+    }
+
+    /// Which of its `k` captured locals an inline refinement's alias uses:
+    /// in its base or, with what has been solved put in, its predicates.
+    fn alias_uses(&self, d: DefId, k: usize, nest: usize) -> Vec<bool> {
+        let mut free = std::collections::BTreeSet::new();
+        match &self.g.defs[d.0 as usize].body {
+            Some(body) => {
+                let mut b = body;
+                for _ in 0..k {
+                    match b {
+                        Tm::Lam(_, _, _, x) => b = x,
+                        _ => return vec![true; k],
+                    }
+                }
+                self.used_free(b, 0, &mut free, nest);
+            }
+            None => return vec![true; k],
+        }
+        for p in self.alias_preds.get(&d).into_iter().flatten() {
+            let tm = crate::core::zonk_metas(&self.g, k + 1, &p.tm);
+            self.used_free(&tm, 1, &mut free, nest);
+        }
+        (0..k).map(|p| free.contains(&(k - 1 - p))).collect()
+    }
+
     /// The type of `t`, a function with a specification applied to fewer
     /// arguments than it has binders (none, for a bare name), as a refined
     /// function type (D85, D86): each remaining parameter carries the
