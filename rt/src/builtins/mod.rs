@@ -65,8 +65,14 @@ pub fn keeps_types(name: &str) -> bool {
 }
 
 /// Builtins called through their wrapper function, which owns its
-/// arguments, so they can update an unshared argument in place (D133).
-pub const OWNING: &[&str] = &["ckb_array_set"];
+/// arguments, so they can update an unshared argument in place (D133):
+/// setting an element, and moving a slice forward (`Seq`'s `uncons`).
+pub const OWNING: &[&str] = &["ckb_array_set", "ckb_array_rest", "ckb_string_rest"];
+
+/// Builtins that compute a value and nothing else, and can't fail where
+/// they are called (their callers establish their preconditions first):
+/// a `let` of one may be moved to where it is used (`float_in`, SPEC §14).
+pub const PURE: &[&str] = &["ckb_array_rest", "ckb_string_first", "ckb_string_rest"];
 
 /// Every builtin.
 pub fn all() -> impl Iterator<Item = &'static Builtin> {

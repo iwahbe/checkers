@@ -20,8 +20,9 @@ builtin!(ckb_valid_utf8, |a| bool_w(std::str::from_utf8(b(a[0])).is_ok()));
 builtin!(ckb_string_le, |a| bool_w(s(a[0]).as_bytes() <= s(a[1]).as_bytes()));
 
 // All but the first element of a non-empty array: a slice sharing its
-// storage (`Seq`'s instance for arrays, #169).
-builtin!(ckb_array_rest, |a| crate::array::slice(a[0], 1, crate::array::len(a[0])));
+// storage (`Seq`'s instance for arrays, #169); an unshared slice moved
+// forward in place (`OWNING`).
+builtin!(ckb_array_rest, |a| crate::array::advance(a[0], 1));
 
 // A non-empty string's first character, decoded (`Seq`'s instance for
 // strings, #169).
@@ -31,10 +32,12 @@ builtin!(ckb_string_first, |a| match s(a[0]).chars().next() {
 });
 
 // All but a non-empty string's first character: a slice sharing its bytes
-// (`Seq`'s instance for strings, #169).
+// (`Seq`'s instance for strings, #169); an unshared slice moved forward in
+// place (`OWNING`).
 builtin!(ckb_string_rest, |a| {
     let w = s_obj(a[0]);
     match s(w).chars().next() {
+        Some(c) if c.len_utf8() < blob(w).len() => crate::array::advance(w, c.len_utf8()),
         Some(c) => crate::array::slice(w, c.len_utf8(), blob(w).len()),
         None => bug("string_rest of the empty string"),
     }
