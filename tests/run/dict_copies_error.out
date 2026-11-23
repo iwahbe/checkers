@@ -1,0 +1,14 @@
+-- stdout
+before
+-- stderr
+error[E0450]: cannot prove that this `Nat` subtraction stays at or above zero
+  --> dict_copies_error.ck:12:34
+   |
+12 |         x :: _ -> if le x x then len xs - 3 else 0
+   |                                  ^^^^^^^^^^ `-` on `Nat` needs the left side to be at least the right
+   = help: check it first (`if a >= b then a - b else …`), or write `a + (-b)` for a signed result
+
+dict_copies_error.ck: 1 error, 0 warnings
+running with 1 unproven obligation(s) (--unverified)
+runtime error in `drop_three`: `-` on `Nat` would go below zero (2 - 3)
+-- exit 70

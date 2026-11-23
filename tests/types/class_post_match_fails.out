@@ -1,0 +1,11 @@
+error[E0450]: cannot prove `match r None -> True Some y -> size y < size xs`, the postcondition of `Peel Int.peel`
+ --> class_post_match_fails.ck:9:23
+  |
+9 |                       match r
+  |                       ^^^^^^^ promised here
+  = note: for the value returned on line 17: `Some xs`
+  = note: facts in scope: `not (xs <= 0)`
+  = note: counterexample: xs = 1
+  = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+class_post_match_fails.ck: 1 error, 0 warnings

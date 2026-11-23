@@ -6,6 +6,7 @@ module tailrec_op
 import std.system (System, ExitCode)
 import std.terminal (Term)
 import std.terminal
+import std.string (debug)
 
 fn sum n -> r : n~Nat, r~Nat
     if n == 0 then 0 else n + sum (n - 1)
@@ -18,10 +19,10 @@ fn product n -> r : n~Nat, r~Nat
     if n == 0 then 1 else n * product (n - 1)
 
 fn by_append n -> r : n~Nat, r~String
-    if n == 0 then "" else by_append (n - 1) ++ format n
+    if n == 0 then "" else by_append (n - 1) ++ debug n
 
 fn by_prepend n -> r : n~Nat, r~String
-    if n == 0 then "" else format n ++ by_prepend (n - 1)
+    if n == 0 then "" else debug n ++ by_prepend (n - 1)
 
 fn lists n -> r : n~Nat, r~List Nat
     if n == 0 then [] else lists (n - 1) ++ [n, n]
@@ -30,7 +31,7 @@ fn alternate n -> r : n~Nat, r~Int
     if n == 0 then 0 else n - alternate (n - 1)
 
 fn noisy n term -> r : n~Nat, term~Term, r~Nat
-    terminal.print_line (format n) term
+    terminal.print_line (debug n) term
     n
 
 # The other operand does something: it runs after the call.
@@ -50,13 +51,13 @@ fn diffs n -> r : n~Nat, r~Diff
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let term = sys.term
-    terminal.print_line (format (sum 10000000)) term
-    terminal.print_line (format (sum_left 10000000)) term
-    terminal.print_line (format (product 30)) term
+    terminal.print_line (debug (sum 10000000)) term
+    terminal.print_line (debug (sum_left 10000000)) term
+    terminal.print_line (debug (product 30)) term
     terminal.print_line (by_append 12) term
     terminal.print_line (by_prepend 12) term
-    terminal.print_line (format (lists 3)) term
-    terminal.print_line (format (alternate 5)) term
-    terminal.print_line (format (after 3 term)) term
-    terminal.print_line (format (diffs 4).value) term
+    terminal.print_line (debug (lists 3)) term
+    terminal.print_line (debug (alternate 5)) term
+    terminal.print_line (debug (after 3 term)) term
+    terminal.print_line (debug (diffs 4).value) term
     Success

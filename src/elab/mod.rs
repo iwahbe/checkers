@@ -9,6 +9,7 @@ mod classes;
 pub mod complete;
 mod decls;
 mod expr;
+mod descr;
 mod eq;
 mod interval;
 pub mod index;
@@ -16,6 +17,7 @@ mod order;
 mod pattern;
 pub use pattern::BINDING_HELP;
 mod refine;
+mod template;
 pub mod stdlib;
 pub mod termination;
 pub mod unused;
@@ -32,9 +34,8 @@ pub enum Sym {
     Def(DefId),
     Ty(TyId),
     Con(ConId),
-    /// Overloaded built-ins (D38)
+    /// The overloaded built-in `len` (D38)
     Len,
-    Format,
     Univ,
 }
 
@@ -54,6 +55,26 @@ pub struct ModuleInfo {
     pub failed_imports: HashSet<String>,
 }
 
+/// The binder of explicit parameter `k`, given the leading implicit
+/// binders and the implicit ones among the explicit (#161).
+pub fn expl_binder(n_implicit: usize, inner: &[usize], k: usize) -> usize {
+    let mut b = n_implicit + k;
+    for i in inner {
+        if *i <= b {
+            b += 1;
+        }
+    }
+    b
+}
+
+/// The explicit parameter binder `b` is, if it is one.
+pub fn expl_index(n_implicit: usize, inner: &[usize], b: usize) -> Option<usize> {
+    if b < n_implicit || inner.contains(&b) {
+        return None;
+    }
+    Some(b - n_implicit - inner.iter().filter(|i| **i < b).count())
+}
+
 /// Per-function facts used by the termination and usage checks.
 #[derive(Clone, Default)]
 pub struct FnMeta {
@@ -65,9 +86,18 @@ pub struct FnMeta {
     /// Explicit parameter names and multiplicities, in order.
     pub params: Vec<(String, Mult, Span)>,
     pub n_implicit: usize,
+    /// Implicit binders among the explicit ones (#161): see `Sig`.
+    pub inner: Vec<usize>,
     pub builtin: bool,
     /// The result's name, if it has one (`-> y`).
     pub result: Option<String>,
+}
+
+impl FnMeta {
+    /// Its binders: implicit and explicit.
+    pub fn n_binders(&self) -> usize {
+        self.n_implicit + self.inner.len() + self.params.len()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -76,6 +106,9 @@ pub struct CallRec {
     pub callee: DefId,
     /// For each explicit argument: Some(p) if it is a strict structural subterm of the caller's parameter p.
     pub args: Vec<Option<usize>>,
+    /// For each explicit argument: Some(p) if it is the caller's parameter p
+    /// itself, passed on unchanged (#109).
+    pub same: Vec<Option<usize>>,
     pub span: Span,
     /// `(i, c)`: `args[i]` holds only if condition `c` does (an element
     /// promise read from a body, decided once the module's bodies are
@@ -222,6 +255,7 @@ pub enum OpClass {
 
 /// A use of a generic function in compiled code: its type parameters'
 /// arguments, for D125 (b).
+#[derive(Clone)]
 pub struct Inst {
     pub caller: Option<DefId>,
     pub callee: DefId,
@@ -247,6 +281,9 @@ pub enum ObKind {
     Pre { callee: String },
     Post { func: String, at: Span },
     Invariant { con: String },
+    /// A condition on a type's parameters, where the type is applied (#136):
+    /// the type's name and the application as written.
+    TypeParams { ty: String, written: String },
     /// A behaviour must hand back contents of the cown's refinement (§8.5).
     CownInvariant { alias: String },
     /// A value checked against a refinement alias from a type argument (D71).
@@ -260,6 +297,23 @@ pub enum ObKind {
     Div,
     Index,
     Lemma { name: String },
+    /// A predicate on a class's type, for every value of the type an
+    /// instance gives it (#176): the class's type (`Encoding.Unit`) and the
+    /// type given (`Nat`).
+    ClassType { name: String, given: String },
+    /// An instance's function with a signature of its own (#225): a
+    /// precondition of it that the class's don't imply (`pre`), or a
+    /// postcondition of the class's that the instance's don't imply. The
+    /// class's declaration of the function, as written.
+    Refines { class: String, member: String, pre: bool, declared: String },
+    /// A class used at a refinement alias runs the instance of the type the
+    /// alias stands for (#226): a value of the class's type that instance
+    /// gives must be of the alias. The class, the alias and its type, the
+    /// class's function; where the use is a call, its text, else the
+    /// function's parameter that the instance may call with values of the
+    /// type (`param`), or neither: a result, at any arguments. `inside`: a
+    /// value inside the result (`Some`'s), not the result itself.
+    AtAlias { class: String, alias: String, base: String, member: String, call: Option<String>, param: Option<String>, inside: bool },
     Auto,
     Have,
     /// A case a `match` leaves out can't occur there (D144 e): its pattern.
@@ -375,6 +429,8 @@ pub struct Spec {
     /// call `k` only with strict parts of `j` where that predicate is a
     /// membership, as its body shows (#102).
     pub elems: Vec<ElemPromise>,
+    /// Implicit binders among the explicit ones (#161): see `Sig`.
+    pub inner: Vec<usize>,
 }
 
 /// A parameter whose type's refinements mention later parameters (#102).
@@ -388,6 +444,16 @@ pub struct Late {
     pub deps: Vec<usize>,
     /// The number of binders `ty` is over.
     pub n: usize,
+}
+
+/// A call of a class's function with preconditions, whose dictionary may
+/// not be found yet (#225): the context, the call, and where it is.
+pub struct PendingPre {
+    pub cx: Cx,
+    pub call: Tm,
+    pub span: Span,
+    pub owner: Option<DefId>,
+    pub in_spec: usize,
 }
 
 /// The postconditions to check at each value the current function returns.
@@ -484,6 +550,14 @@ pub struct Elab {
     /// Values whose every field is observed: formatted, or compared with
     /// `==` (their type, solved later), for unused fields (D144).
     pub observed: Vec<(String, Span, Val)>,
+    /// Elaborating a template's tag (#126: `format` there is no call).
+    pub in_tag: bool,
+    /// The context an instance needed and didn't find, while a dictionary
+    /// was looked for: the class, the types, and the instance as written.
+    pub ctx_missing: Option<(TyId, Vec<Val>, String)>,
+    /// Calls of a template's tag outside a template (#126), by module and
+    /// span: the help a type error there gets.
+    pub tag_calls: HashMap<(String, u32, u32), String>,
     /// Each program module's declarations, for unused code (D144).
     pub decl_table: HashMap<String, Vec<unused::Entry>>,
     /// Declarations found unused: their branches aren't asked about.
@@ -493,6 +567,12 @@ pub struct Elab {
     pub transparent: HashSet<DefId>,
     /// Constructor invariants, over the type's parameters then the fields.
     pub con_invs: HashMap<ConId, Vec<Pred>>,
+    /// A type's conditions on its parameters, over the parameters (#136):
+    /// obligations where the type is applied, facts in its fields.
+    pub ty_conds: HashMap<TyId, Vec<Pred>>,
+    /// While a signature's types are elaborated, the type applications whose
+    /// conditions are checked once all its preconditions are known (#136).
+    pub ty_cond_defer: Option<Vec<(Span, TyId, Vec<Val>)>>,
     /// Refinement aliases' predicates, over the alias's parameters then its binder.
     pub alias_preds: HashMap<DefId, Vec<Pred>>,
     /// The name a refinement alias binds (`n` in `type Big = n~Int, …`).
@@ -508,8 +588,14 @@ pub struct Elab {
     /// Type parameters compared with `==` in compiled code, by function and
     /// binder position (D125 b).
     pub eq_reqs: HashMap<DefId, BTreeMap<usize, EqReq>>,
+    /// The type parameters each function needs described (#170): the
+    /// function its requirement comes from, and the parameter's name there.
+    pub desc_reqs: HashMap<DefId, BTreeMap<usize, EqReq>>,
     /// This module's uses of generic functions, resolved after its bodies.
     pub insts: Vec<Inst>,
+    /// Each dictionary built from an instance in compiled code, as a use of
+    /// the function building it with the instance's types (#170).
+    pub dict_insts: Vec<Inst>,
     /// The last definition `sym_term` gave, for `insert` to record its use.
     pub pending_inst: Option<(DefId, Span)>,
     /// Elaborating the head of an application: a bare function name gets its
@@ -542,6 +628,9 @@ pub struct Elab {
     /// Calls between functions of this module with no measure, which may
     /// recurse: for guessing a measure (D150).
     pub rec_calls: Vec<termination::RecCall>,
+    /// For each function, `Seq.size` of what its sequence patterns take
+    /// apart (§9.8): a term at a level, and its text; measures to guess.
+    pub seq_sizes: HashMap<DefId, Vec<(Tm, usize, String)>>,
     /// Recursive groups whose measure is guessed in the proofs phase (D150).
     pub guess_groups: Vec<termination::GuessGroup>,
     /// Their functions: terminating by a measure, as with `decreasing`.
@@ -616,12 +705,53 @@ pub struct Elab {
     pub pm: pattern::PatState,
     /// Classes (D136), by their dictionary's type.
     pub class_defs: HashMap<TyId, classes::ClassDef>,
+    /// A class's types (#133): `C.Name`'s definition, by class and name.
+    pub assoc_defs: HashMap<(TyId, String), DefId>,
+    /// An instance's dictionary reading a type from another's (#133), to
+    /// find cycles.
+    pub assoc_edges: Vec<(DefId, DefId)>,
+    /// A class's type's predicates (#176), by the dictionary's constructor
+    /// and the type's field: over the class's parameters, the dictionary,
+    /// then a value of the type. Every value of the type satisfies them.
+    pub class_type_preds: HashMap<(ConId, usize), Vec<Pred>>,
+    /// The lemmas checking a class's type's predicates at an instance or
+    /// at the class's default (#176), by name: the class's type as written
+    /// (`Encoding.Unit`) and the type given (`Nat`).
+    pub class_type_checks: HashMap<String, (String, String)>,
+    /// While a class's type's predicates are elaborated (#176): an operator
+    /// on its values there needs a class function, not a clause.
+    pub in_class_type_pred: bool,
+    /// Each instance member of the module being desugared, by its index:
+    /// its class's name and its instance's types (#146, #145).
+    pub member_heads: HashMap<usize, (String, Vec<ast::Expr>)>,
+    /// Instances' functions with signatures of their own, by declaration
+    /// (as `member_heads`), with the class's signature to refine (#225).
+    pub inst_refines: HashMap<usize, classes::InstRefine>,
+    /// Instances' functions marked `transparent`, by declaration (#249).
+    pub transparent_members: HashSet<usize>,
+    /// Instances' functions with signatures of their own (#225).
+    pub refined_inst_fns: HashSet<DefId>,
+    /// Calls of classes' functions with preconditions, to check once their
+    /// dictionaries are found (#225).
+    pub pending_class_pres: Vec<PendingPre>,
+    /// Calls of classes' functions, and dictionaries found through a
+    /// refinement alias, to check at the end of the module (#226).
+    pub class_calls: Vec<PendingPre>,
+    pub alias_dicts: Vec<classes::AliasDict>,
+    /// The instance whose member's signature is being elaborated (#146).
+    pub sig_inst: Option<classes::SigInst>,
+    /// Comparisons waiting for a dictionary (#133): level, expected,
+    /// actual, where, the locals' names.
+    pub waiting: Vec<(usize, Val, Val, Span, Vec<Name>)>,
+    /// Those waiting for an instance's dictionary to be elaborated (#146).
+    pub waiting_late: Vec<(usize, Val, Val, Span, Vec<Name>)>,
     /// This module's classes, until their types are registered.
-    pub pending_classes: Vec<(String, String, Vec<ast::ClassMember>, Span)>,
-    /// A class function's parameters written `own`, by `module.Class.function`:
-    /// its dictionary field takes them exactly once, so generic code can pass
-    /// it a resource (D156 i).
-    pub class_own: HashMap<String, Vec<bool>>,
+    pub pending_classes: Vec<(String, Vec<String>, Vec<ast::ClassMember>, Span)>,
+    /// A class function's parameters' multiplicities, by `module.Class.function`,
+    /// when one is written `own` or `ghost`: its dictionary field takes an `own`
+    /// one exactly once, so generic code can pass it a resource (D156 i), and a
+    /// `ghost` one erased.
+    pub class_mults: HashMap<String, Vec<Mult>>,
     /// Where an instance's head type stands for its class's parameter, by
     /// module and span start: an `own` there is the class's, not written.
     pub inst_heads: HashSet<(String, u32)>,
@@ -650,7 +780,7 @@ pub struct Elab {
     /// Each instance member's dictionary function.
     pub inst_member_of: HashMap<DefId, DefId>,
     /// Instances, by class and the head of their type.
-    pub instances: HashMap<(TyId, classes::HeadKey), classes::InstInfo>,
+    pub instances: HashMap<(TyId, classes::HeadKey), Vec<classes::InstInfo>>,
     /// Dictionaries to find once types are known.
     pub inst_reqs: Vec<classes::InstReq>,
     /// Inside a named precondition: `forall` is allowed (D137).
@@ -707,6 +837,9 @@ impl Elab {
             root: None,
             refs: Vec::new(),
             observed: Vec::new(),
+            in_tag: false,
+            ctx_missing: None,
+            tag_calls: HashMap::new(),
             decl_table: HashMap::new(),
             dead: Vec::new(),
             paths: HashMap::new(),
@@ -726,6 +859,8 @@ impl Elab {
             specs: HashMap::new(),
             transparent: HashSet::new(),
             con_invs: HashMap::new(),
+            ty_conds: HashMap::new(),
+            ty_cond_defer: None,
             alias_preds: HashMap::new(),
             alias_subject: HashMap::new(),
             result_metas: HashMap::new(),
@@ -733,7 +868,9 @@ impl Elab {
             in_spec: 0,
             in_proof: 0,
             eq_reqs: HashMap::new(),
+            desc_reqs: HashMap::new(),
             insts: Vec::new(),
+            dict_insts: Vec::new(),
             pending_inst: None,
             in_app_head: false,
             proof_goal: None,
@@ -748,6 +885,7 @@ impl Elab {
             measure_obs: Vec::new(),
             ends_everywhere: Default::default(),
             rec_calls: Vec::new(),
+            seq_sizes: HashMap::new(),
             guess_groups: Vec::new(),
             guessed: HashSet::new(),
             saturated_heads: HashSet::new(),
@@ -771,8 +909,23 @@ impl Elab {
             match_binding: false,
             pm: Default::default(),
             class_defs: HashMap::new(),
+            assoc_defs: HashMap::new(),
+            assoc_edges: Vec::new(),
+            member_heads: HashMap::new(),
+            inst_refines: HashMap::new(),
+            transparent_members: HashSet::new(),
+            refined_inst_fns: HashSet::new(),
+            pending_class_pres: Vec::new(),
+            class_calls: Vec::new(),
+            alias_dicts: Vec::new(),
+            sig_inst: None,
+            waiting: Vec::new(),
+            waiting_late: Vec::new(),
             pending_classes: Vec::new(),
-            class_own: HashMap::new(),
+            class_type_preds: HashMap::new(),
+            class_type_checks: HashMap::new(),
+            in_class_type_pred: false,
+            class_mults: HashMap::new(),
             inst_heads: HashSet::new(),
             part_reported: HashSet::new(),
             pending_insts: Vec::new(),
@@ -799,6 +952,13 @@ impl Elab {
     }
 
     pub fn err(&mut self, d: Diagnostic) {
+        // A type error at a call of a template's tag (#126).
+        let mut d = d;
+        if d.code == "E0201" && d.help.is_none() {
+            if let Some(h) = self.tag_calls.get(&(self.cur.clone(), d.span.start, d.span.end)) {
+                d.help = Some(h.clone());
+            }
+        }
         // An unknown name is reported at its first use only; the fix is the same for all.
         let (start, end) = if d.code == "E0204" { (0, 0) } else { (d.span.start, d.span.end) };
         let key = (self.cur.clone(), start, end, d.message.clone());
@@ -835,6 +995,11 @@ impl Elab {
                     let u = crate::core::force_meta(&self.g, u);
                     // Stuck on an unknown: keep the application, as written.
                     if matches!(&u, Val::Neutral(_, sp) if sp.iter().any(|e| matches!(e, Elim::Case(..)))) {
+                        break;
+                    }
+                    // A class's type at a dictionary not known: as written
+                    // (`Seq.Elem s`), not the dictionary's field.
+                    if self.g.reads_type_field(&u) {
                         break;
                     }
                     v = u;
@@ -933,6 +1098,8 @@ impl Elab {
             // Stuck on an unknown: as written (`values s Int`), not `match s …`.
             _ => match self.force(v) {
                 Val::Neutral(_, sp) if sp.iter().any(|e| matches!(e, Elim::Case(..))) => self.show_val(cx, v),
+                // A class's type at a type parameter (#133): `Display.Options a`.
+                Val::Neutral(_, sp) if sp.iter().any(|e| matches!(e, Elim::Field(c, i) if self.g.is_type_field(*c, *i))) => self.show_val(cx, v),
                 f => self.show_val(cx, &f),
             },
         }
@@ -1018,6 +1185,11 @@ impl Elab {
                     return false;
                 }
             }
+        }
+        if r.is_ok() {
+            self.note_postponed(cx.lvl(), expected, actual, span, &cx.names());
+        } else {
+            self.g.postponed.borrow_mut().clear();
         }
         match r {
             Ok(()) => true,
@@ -1560,7 +1732,10 @@ impl Elab {
 
     /// Does some constructor of this type have a field that is a type?
     pub(crate) fn holds_types(&self, id: TyId) -> bool {
-        self.g.cons.iter().filter(|c| c.ty == id).any(|c| c.fields.iter().any(|f| matches!(f.3, Tm::Univ(_))))
+        // A class's dictionary holds its types (#133), but is passed and
+        // found as a dictionary.
+        !self.class_defs.contains_key(&id)
+            && self.g.cons.iter().filter(|c| c.ty == id).any(|c| c.fields.iter().any(|f| matches!(f.3, Tm::Univ(_))))
     }
 
     fn mentions_type_var(&self, cx: &Cx, t: &Tm, under: usize) -> bool {
@@ -1615,7 +1790,7 @@ impl Elab {
         // mustn't speak of a call that can't be made (M17, D118). A
         // specification elaborated twice (a lemma's `ensures`) obliges once.
         if self.in_spec > 0 {
-            if !matches!(kind, ObKind::Pre { .. }) {
+            if !matches!(kind, ObKind::Pre { .. } | ObKind::TypeParams { .. }) {
                 return;
             }
             if self.obligations.iter().any(|o| o.span == span && o.module == self.cur && o.kind == kind) {
@@ -2109,6 +2284,7 @@ impl Elab {
 
     pub fn solve_deferred(&mut self) {
         self.solve_instances(false);
+        self.retry_waiting(false);
         let ds = std::mem::take(&mut self.deferred);
         for d in &ds {
             if let Val::Neutral(Head::Meta(_), _) = self.force(&d.ty) {
@@ -2122,6 +2298,7 @@ impl Elab {
             self.settle_arith(a);
         }
         self.solve_instances(true);
+        self.retry_waiting(true);
         for d in ds {
             if d.kind == OpClass::Comparable {
                 self.solve_comparable(&d);
@@ -2145,6 +2322,8 @@ impl Elab {
                 let declared = quote(&self.g, d.lvl, &d.ty);
                 let shown_tm = match crate::core::head_def(&declared) {
                     Some(a) if self.alias_preds.contains_key(&a) => declared,
+                    // A class's type as written (`Seq.Elem s`), not its dictionary's field.
+                    _ if self.g.reads_type_field(&t) => declared,
                     _ => quote(&self.g, d.lvl, &t),
                 };
                 let shown = show(&self.g, &d.names, &shown_tm);
@@ -2157,6 +2336,25 @@ impl Elab {
                 };
                 let mut diag = Diagnostic::error("E0210", format!("{} needs {need}, but this is `{shown}`", d.what), d.span)
                     .with_label(format!("has type `{shown}`"));
+                // A class's type (#176): an operator needs its class as a clause.
+                if matches!(d.kind, OpClass::Numeric | OpClass::Ordered) && self.g.reads_type_field(&t) {
+                    let class = match d.what.as_str() {
+                        _ if self.in_class_type_pred => None,
+                        "`+`" => Some("Add"),
+                        "`-`" => Some("Sub"),
+                        "`*`" => Some("Mul"),
+                        "`<`" | "`<=`" | "`>`" | "`>=`" => Some("Ord"),
+                        _ => None,
+                    };
+                    let arg = if shown.contains(' ') { format!("({shown})") } else { shown.clone() };
+                    diag = diag.with_help(match class {
+                        Some(c) => format!(
+                            "`{shown}` is a type of its own, not a number: {} on it needs the clause `{c} {arg}`, in the signature or on the class's type",
+                            d.what
+                        ),
+                        None => format!("`{shown}` is a type of its own, not a number: reach a number through its class's functions"),
+                    });
+                }
                 if d.what == "`+`" && matches!(&t, Val::TyCon(id, _) if Some(*id) == wk.string || Some(*id) == wk.array || Some(*id) == wk.list) {
                     diag = diag.with_help("to join strings, lists or arrays, use `++`");
                 }
@@ -2341,13 +2539,38 @@ fn touches(t: &Tm, g: &Globals, defs: &HashSet<DefId>, tys: &HashSet<TyId>) -> b
 
 /// Definitions sealed by another module (D54) that occur in `t`.
 pub fn collect_sealed(t: &Tm, g: &Globals, cur: &str, out: &mut Vec<DefId>) {
+    sealed_in(t, g, cur, out, &mut Vec::new());
+}
+
+/// `collect_sealed`, with the transparent instance functions whose bodies
+/// were looked into (each once).
+fn sealed_in(t: &Tm, g: &Globals, cur: &str, out: &mut Vec<DefId>, seen: &mut Vec<DefId>) {
     if let Tm::Def(d) = t {
         let info = &g.defs[d.0 as usize];
         if info.sealed && *info.module != *cur && !out.contains(d) {
             out.push(*d);
         }
     }
-    t.each_sub(|x, _| collect_sealed(x, g, cur, out));
+    // A class's function at a known instance is that instance's function,
+    // which may be sealed (#249).
+    if matches!(t, Tm::App(..)) {
+        if let Some(direct) = crate::native::ir::known_instance(g, t) {
+            if let (Tm::Def(f), _) = direct.spine() {
+                let info = &g.defs[f.0 as usize];
+                if info.sealed && *info.module != *cur && !out.contains(f) {
+                    out.push(*f);
+                } else if !info.sealed && *info.module != *cur {
+                    // A `transparent` one's body: what it calls of its
+                    // module may be sealed (#246).
+                    if let (Some(b), false) = (&info.body, seen.contains(f)) {
+                        seen.push(*f);
+                        sealed_in(b, g, cur, out, seen);
+                    }
+                }
+            }
+        }
+    }
+    t.each_sub(|x, _| sealed_in(x, g, cur, out, seen));
 }
 
 /// The levels of the locals `t` mentions (for termination, D150).

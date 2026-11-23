@@ -1,0 +1,55 @@
+(module template_errors)
+(const UNCLOSED (tag <error>))
+(const CLOSE (tag <error>))
+(const COLON (template tag (hole _)))
+(const EMPTY_OPTIONS (template tag (hole x)))
+(const TWO (template tag (hole _)))
+(const COMMENT (template tag (hole (x <error> y))))
+(const BAD_OPTION (template tag (hole x)))
+
+error[E0006]: this hole is never closed
+ --> template_errors.ck:3:21
+  |
+3 | let UNCLOSED = tag"a{x"
+  |                     ^ the hole opened here
+  = help: close it with `}`, or write `{{` for the character `{`
+
+error[E0005]: a `}` in a template is written `}}`
+ --> template_errors.ck:4:18
+  |
+4 | let CLOSE = tag"a}b"
+  |                  ^ no hole is open here
+  = help: write `}}` for the character `}`
+
+error[E0100]: expected `|` or `}`, found `:`
+ --> template_errors.ck:5:19
+  |
+5 | let COLON = tag"{x: Hex}"
+  |                   ^ expected `|` or `}`
+
+error[E0100]: expected an expression, found `}`
+ --> template_errors.ck:6:29
+  |
+6 | let EMPTY_OPTIONS = tag"{x |}"
+  |                             ^ expected an expression
+
+error[E0100]: expected `|` or `}`, found `,`
+ --> template_errors.ck:7:17
+  |
+7 | let TWO = tag"{x, y}"
+  |                 ^ expected `|` or `}`
+
+error[E0001]: a comment can't be written inside a hole
+ --> template_errors.ck:8:22
+  |
+8 | let COMMENT = tag"{x # y}"
+  |                      ^
+  = help: close the hole with `}` first; a comment ends the line
+
+error[E0100]: expected an expression, found `}`
+ --> template_errors.ck:9:35
+  |
+9 | let BAD_OPTION = tag"{x | Hex Hex,}"
+  |                                   ^ expected an expression
+
+template_errors.ck: 7 errors, 0 warnings

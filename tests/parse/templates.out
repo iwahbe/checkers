@@ -1,0 +1,18 @@
+(module templates)
+(const NAMED (template tag "a" (hole x) "b"))
+(const OPTIONS (template tag (hole x | Hex (Width 4))))
+(const POSITIONAL (template tag (hole _) ", " (hole _)))
+(const POSITIONAL_OPTIONS (template tag (hole _ | Hex)))
+(const QUALIFIED (template app.page "<p>" (hole name) "</p>"))
+(const BRACES (template tag "{x} {" (hole x) "}"))
+(const BRACKETS (template tag (hole (f (g [1 2]) [y]))))
+(const STRING_IN_HOLE (template tag (hole (f "a{b}"))))
+(const NESTED (template tag (hole (template inner (hole x)))))
+(const CONS_IN_HOLE (template tag (hole (:: x xs))))
+(const PIPE_IN_TEMPLATE (template tag (hole (template inner (hole x | A)) | B)))
+(const ESCAPES (template tag "\"" (hole x) "\né"))
+(const APPLIED (f (template tag (hole x)) y))
+(const SPACED (tag "{x}"))
+(const KEYWORD (if c
+    "{x}"
+    "{y}"))

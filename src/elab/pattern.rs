@@ -23,13 +23,23 @@ enum Column {
     Tuple,
     Con,
     Lit,
+    /// `[]` and `x :: rest` on a sequence that isn't a list: a `match` on
+    /// `Seq.uncons`'s result (§9.8).
+    Seq(DefId),
 }
+
+/// The names of `Option`'s constructors in the patterns a sequence pattern
+/// becomes: no program can write them, so no declaration shadows them.
+const SEQ_NONE: &str = "$None";
+const SEQ_SOME: &str = "$Some";
 
 /// How a value on the current decision path was taken apart.
 #[derive(Clone, Debug)]
 enum Frame {
     Ctor(ConId, Vec<usize>),
     Tuple(Vec<usize>),
+    /// A sequence taken apart by `uncons`, its result at this occurrence.
+    Seq(usize),
 }
 
 /// Exhaustiveness bookkeeping for one `match`.
@@ -69,6 +79,17 @@ impl Elab {
         let Some((_, f)) = self.pm.frames.iter().rev().find(|(x, _)| *x == o) else { return "_".into() };
         let wrap = |s: String| if s.contains(' ') && !s.starts_with('(') { format!("({s})") } else { s };
         match f {
+            Frame::Seq(u) => {
+                let wk = &self.g.well_known;
+                let Some((_, Frame::Ctor(c, fs))) = self.pm.frames.iter().rev().find(|(x, _)| x == u) else { return "_".into() };
+                if Some(*c) == wk.none {
+                    return "[]".into();
+                }
+                let Some((_, Frame::Tuple(parts))) = fs.first().and_then(|p| self.pm.frames.iter().rev().find(|(x, _)| x == p)) else {
+                    return "_ :: _".into();
+                };
+                format!("{} :: {}", wrap(self.render_occ(parts[0])), self.render_occ(parts[1]))
+            }
             Frame::Tuple(cs) => format!("({})", cs.iter().map(|c| self.render_occ(*c)).collect::<Vec<_>>().join(", ")),
             Frame::Ctor(c, fs) => {
                 let wk = &self.g.well_known;
@@ -300,12 +321,21 @@ impl Elab {
         let col = match &pat.kind {
             PatKind::Tuple(_) => Column::Tuple,
             PatKind::Lit(_) | PatKind::Neg(_) => Column::Lit,
-            _ => Column::Con,
+            _ => match self.seq_column(cx, &rows, occ) {
+                Some(m) => Column::Seq(m),
+                None => Column::Con,
+            },
         };
         match col {
             Column::Tuple => self.compile_tuple(cx, rows, occ, &pat, expected, tail),
             Column::Lit => self.compile_lit(cx, rows, occ, expected, tail),
             Column::Con => self.compile_con(cx, rows, occ, &pat, expected, tail),
+            Column::Seq(m) => {
+                if self.mixed_seq(cx, &rows, occ) {
+                    return Tm::Error;
+                }
+                self.compile_seq(cx, rows, occ, m, expected, tail)
+            }
         }
     }
 
@@ -399,12 +429,14 @@ impl Elab {
         for (_, f) in &self.pm.frames {
             match f {
                 Frame::Ctor(_, fs) | Frame::Tuple(fs) => occs.extend(fs.iter().copied()),
+                Frame::Seq(u) => occs.push(*u),
             }
         }
         // A part of a value bound whole (`other` in a later arm) isn't dropped.
         let parent = |o: usize| {
             self.pm.frames.iter().find_map(|(p, f)| match f {
                 Frame::Ctor(_, fs) | Frame::Tuple(fs) => fs.contains(&o).then_some(*p),
+                Frame::Seq(u) => (*u == o).then_some(*p),
             })
         };
         let bound = |o: usize| row.binds.iter().any(|(_, x, _)| *x == o);
@@ -681,6 +713,8 @@ impl Elab {
             this.pat_err(d);
         };
         match &p.kind {
+            PatKind::Con(name, args) if name.name == SEQ_NONE => Some((wk.none?, Some(args.clone()))),
+            PatKind::Con(name, args) if name.name == SEQ_SOME => Some((wk.some?, Some(args.clone()))),
             PatKind::Con(name, args) => match self.resolve(&name.name, false) {
                 Some(Sym::Con(c)) => {
                     self.index_pattern(name.span, index::Target::Con(c));
@@ -738,14 +772,18 @@ impl Elab {
                     let shown = self.show_val(cx, &other);
                     let cname = self.g.cons[c0.0 as usize].name.clone();
                     let tname = self.g.tys[tid.0 as usize].name.clone();
-                    self.pat_err(
-                        Diagnostic::error(
-                            "E0241",
-                            format!("`{cname}` is a constructor of `{tname}`, but the value being matched has type `{shown}`"),
-                            pat.span,
-                        )
-                        .with_label(format!("expected a `{shown}` pattern")),
-                    );
+                    let mut d = Diagnostic::error(
+                        "E0241",
+                        format!("`{cname}` is a constructor of `{tname}`, but the value being matched has type `{shown}`"),
+                        pat.span,
+                    )
+                    .with_label(format!("expected a `{shown}` pattern"));
+                    if matches!(pat.kind, PatKind::List(_) | PatKind::Cons(..)) {
+                        d = d.with_help(format!(
+                            "`[]` and `x :: rest` take apart a list, or a value of a type with a `Seq` instance; `{shown}` has none"
+                        ));
+                    }
+                    self.pat_err(d);
                     return Tm::Error;
                 }
                 metas
@@ -931,6 +969,121 @@ impl Elab {
             branches.push((c, fields.len(), body));
         }
         Tm::Case(Rc::new(scrut), Rc::new(CaseTm { branches, lits: vec![], default: None }))
+    }
+}
+
+impl Elab {
+    /// `Seq.uncons`, if the rows take occurrence `occ` apart with `[]` or
+    /// `x :: rest` and its type isn't a list but has a `Seq` instance or a
+    /// clause in scope (§9.8). A list, or a type not known yet, is matched
+    /// as a list, built in.
+    fn seq_column(&mut self, cx: &Cx, rows: &[Row], occ: usize) -> Option<DefId> {
+        let any_seq = rows
+            .iter()
+            .flat_map(|r| r.pats.iter())
+            .any(|(o, p)| *o == occ && matches!(p.kind, PatKind::List(_) | PatKind::Cons(..)));
+        if !any_seq {
+            return None;
+        }
+        let ty = self.force(&cx.ty_of(occ));
+        if matches!(&ty, Val::TyCon(t, _) if Some(*t) == self.g.well_known.list) {
+            return None;
+        }
+        self.operator_method(cx, "Seq", "uncons", &ty)
+    }
+
+    /// E0248 if the rows mix sequence patterns with the type's own
+    /// constructors at `occ`.
+    fn mixed_seq(&mut self, cx: &Cx, rows: &[Row], occ: usize) -> bool {
+        let Some(con) = rows
+            .iter()
+            .flat_map(|r| r.pats.iter())
+            .find(|(o, p)| *o == occ && matches!(p.kind, PatKind::Con(..) | PatKind::Record(..)))
+            .map(|(_, p)| p.span)
+        else {
+            return false;
+        };
+        let shown = self.show_val(cx, &cx.ty_of(occ));
+        self.pat_err(
+            Diagnostic::error("E0248", format!("this `match` takes a `{shown}` apart both with `[]` or `::` and with its constructors"), con)
+                .with_label(format!("a constructor of `{shown}`"))
+                .with_note(format!("`[]` and `x :: rest` take a `{shown}` apart with `Seq.uncons`, not with its constructors"))
+                .with_help("use one kind of pattern in each `match`"),
+        );
+        true
+    }
+
+    /// `Seq.size` of occurrence `occ`, a measure to guess for the
+    /// function (§5.3): `call`, `uncons` applied to it, with `size` for
+    /// `uncons` (the two take the same implicit arguments).
+    fn note_seq_size(&mut self, cx: &Cx, call: &Tm, occ: usize) {
+        let Some(f) = self.cur_fn else { return };
+        let Some(prelude) = self.modules.get("std.prelude") else { return };
+        let Some(Sym::Def(size)) = prelude.values.get("size").copied() else { return };
+        fn head_to(t: &Tm, to: DefId) -> Option<Tm> {
+            match t {
+                Tm::App(a, b, i, m) => Some(Tm::App(Rc::new(head_to(a, to)?), b.clone(), *i, *m)),
+                Tm::Def(_) => Some(Tm::Def(to)),
+                _ => None,
+            }
+        }
+        let Some(t) = head_to(call, size) else { return };
+        let text = format!("Seq.size {}", cx.locals[occ].name);
+        let v = self.seq_sizes.entry(f).or_default();
+        if !v.iter().any(|(_, _, x)| *x == text) {
+            v.push((t, cx.lvl(), text));
+        }
+    }
+
+    /// Take occurrence `occ` apart with `uncons` (`m`): bind its result
+    /// once, and match `None` for `[]` and `Some (p, q)` for `p :: q`
+    /// (§9.8). Rest patterns are taken apart again in the same way.
+    fn compile_seq(&mut self, cx: &mut Cx, rows: Vec<Row>, occ: usize, m: DefId, expected: &Val, tail: bool) -> Tm {
+        let span = self.match_span;
+        let occ_ty = cx.ty_of(occ);
+        let (f, fty) = self.sym_term(cx, Sym::Def(m), span);
+        self.name_span = span;
+        let (f, fty) = self.insert(cx, f, fty);
+        let (call, rty) = self.apply_tm(cx, f, fty, cx.var(occ), &occ_ty, span);
+        // At a known instance its dictionary, found now, gives the element
+        // type (`Char` for a string), which the patterns' variables have.
+        self.solve_instances(false);
+        let rty = self.reduce_type(&rty);
+        self.note_seq_size(cx, &call, occ);
+        let start = cx.lvl();
+        let v = self.eval(cx, &call);
+        let tyt = quote(&self.g, cx.lvl(), &rty);
+        let u = cx.define("$uncons", rty, v, Mult::Many);
+        let mut new_rows = Vec::new();
+        for mut r in rows {
+            if let Some(i) = r.pats.iter().position(|(o, _)| *o == occ) {
+                let (_, p) = r.pats.remove(i);
+                let con = |name: &str, args: Vec<Pattern>| Pattern {
+                    kind: PatKind::Con(ast::Ident { name: name.to_string(), span: p.span }, args),
+                    span: p.span,
+                };
+                let pair = |h: Pattern, t: Pattern| {
+                    let span = h.span.to(t.span);
+                    con(SEQ_SOME, vec![Pattern { kind: PatKind::Tuple(vec![h, t]), span }])
+                };
+                let q = match p.kind {
+                    PatKind::List(ref items) if items.is_empty() => con(SEQ_NONE, vec![]),
+                    PatKind::List(ref items) => {
+                        let rest = Pattern { kind: PatKind::List(items[1..].to_vec()), span: p.span };
+                        pair(items[0].clone(), rest)
+                    }
+                    PatKind::Cons(ref h, ref t) => pair((**h).clone(), (**t).clone()),
+                    _ => unreachable!("mixed_seq ruled out other patterns"),
+                };
+                r.pats.insert(i, (u, q));
+            }
+            new_rows.push(r);
+        }
+        self.pm.frames.push((occ, Frame::Seq(u)));
+        let body = self.compile(cx, new_rows, expected, tail);
+        self.pm.frames.pop();
+        cx.truncate(start);
+        Tm::Let(Rc::from("$uncons"), Mult::Many, Rc::new(tyt), Rc::new(call), Rc::new(body))
     }
 }
 

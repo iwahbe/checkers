@@ -148,9 +148,12 @@ pub fn plan(m: &ast::Module, dicts: &[usize]) -> Plan {
             DeclKind::Check { .. } | DeclKind::Class { .. } | DeclKind::Instance { .. } => {}
         }
     }
-    // Any function or lemma may use an instance (D136).
+    // Any function or lemma may use an instance (D136), except a builtin,
+    // whose body is in the runtime: the prelude's `valid_utf8`, which
+    // `String`'s field uses, comes before `String`'s own instances (#170).
+    let builtin = |k: usize| matches!(&m.decls[k].kind, DeclKind::Fn { body, .. } if super::decls::is_builtin(body));
     for k in 0..m.decls.len() {
-        if has_body(k) && !dicts.contains(&k) {
+        if has_body(k) && !dicts.contains(&k) && !builtin(k) {
             for &d in dicts {
                 edges.entry(Node::Head(k)).or_default().insert(Node::Head(d));
                 edges.entry(Node::Body(k)).or_default().insert(Node::Head(d));
@@ -381,13 +384,6 @@ impl Refs {
                 Stmt::Have(e) | Stmt::Expr(e) => self.expr(e, &bound, false),
                 // `x` is a local: only the type refers to declarations.
                 Stmt::HaveType(_, t) => self.expr(t, &bound, false),
-                Stmt::When(w) => {
-                    for (x, e) in &w.binds {
-                        self.expr(e, &bound, false);
-                        bound.push(x.name.clone());
-                    }
-                    self.block(&w.body, &bound);
-                }
             }
         }
         self.expr(&b.result, &bound, false);
@@ -396,6 +392,17 @@ impl Refs {
     fn expr(&mut self, e: &Expr, bound: &[String], in_type: bool) {
         let go = |s: &mut Self, x: &Expr| s.expr(x, bound, in_type);
         match &e.kind {
+            ExprKind::When(w) => {
+                for (_, e) in &w.binds {
+                    self.expr(e, bound, in_type);
+                }
+                if !bound.contains(&w.sched.name) {
+                    self.0.push((w.sched.name.clone(), in_type));
+                }
+                let mut bound = bound.to_vec();
+                bound.extend(w.binds.iter().map(|(x, _)| x.name.clone()));
+                self.block(&w.body, &bound);
+            }
             ExprKind::Var(n) | ExprKind::Con(n) => {
                 if !bound.iter().any(|b| b == n) {
                     self.0.push((n.clone(), in_type));
@@ -454,6 +461,10 @@ impl Refs {
                 self.constraints(cs, &b);
             }
             ExprKind::Block(b) => self.block(b, bound),
+            ExprKind::Template(t, ps) => {
+                go(self, t);
+                ps.iter().flat_map(|p| p.exprs()).for_each(|x| go(self, x));
+            }
             _ => {}
         }
     }

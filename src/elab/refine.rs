@@ -46,6 +46,10 @@ pub struct Gained {
     /// What made the position contravariant or invariant: a function's
     /// argument, or a parameter of a type constructor.
     pub via: Via,
+    /// The context `expected` and `found` live in: inside a function
+    /// type's result, its parameter is bound (`sr~Option s, shorter sr ys`
+    /// mentions `ys`), so they are shown there, not at the comparison's.
+    pub cx: Cx,
 }
 
 /// Where a comparison of refinements was asked for, for its obligations.
@@ -108,7 +112,7 @@ impl Elab {
 
     /// Solve metas and unfold plain (unrefined) aliases, keeping refinement
     /// aliases.
-    fn peel(&self, v: &Val) -> Val {
+    pub(super) fn peel(&self, v: &Val) -> Val {
         let mut v = force_meta(&self.g, v.clone());
         for _ in 0..32 {
             if self.refined_alias(&v).is_some() {
@@ -281,7 +285,10 @@ impl Elab {
                     if sub_ref || role == WeakenRole::Param {
                         self.weaken_obligation(cx, sub, sup, role, w);
                     } else {
-                        return Some(Gained { expected: e.clone(), found: f.clone(), variance: pol, via });
+                        // A class's type is shown as written (`Seq.Elem s`),
+                        // not as its dictionary's field.
+                        let f = if self.g.reads_type_field(&f) { found.clone() } else { f.clone() };
+                        return Some(Gained { expected: e.clone(), found: f, variance: pol, via, cx: cx.clone() });
                     }
                 }
             }
@@ -394,7 +401,7 @@ impl Elab {
     /// E0262: a refinement gained through a type argument.
     pub fn report_gained(&mut self, cx: &Cx, expected: &Val, found: &Val, g: &Gained, span: Span, what: &str) {
         let (e, f) = (self.show_val(cx, expected), self.show_val(cx, found));
-        let (ge, gf) = (self.show_val(cx, &g.expected), self.show_val(cx, &g.found));
+        let (ge, gf) = (self.show_val(&g.cx, &g.expected), self.show_val(&g.cx, &g.found));
         let mut d = Diagnostic::error("E0262", format!("type mismatch: expected `{e}`, found `{f}`"), span);
         let ty = |t: TyId| self.g.tys[t.0 as usize].name.to_string();
         d = match (g.variance, g.via) {
@@ -436,13 +443,14 @@ impl Elab {
         let av = self.eval(cx, &a);
         let x = name(&r.param);
         // A class function's own type variable (M25): an implicit, erased
-        // parameter.
+        // parameter; or its own class clause, an implicit dictionary.
         if let (Some(p), Some((None, b_expr))) = (&r.param, &r.arrow) {
             if p.name.starts_with('\'') {
-                cx.bind(&p.name, av, Mult::Zero);
+                let m = if self.class_clause(&r.dom).is_some() { Mult::Many } else { Mult::Zero };
+                cx.bind(&p.name, av, m);
                 let b = self.elab_type(cx, b_expr);
                 cx.pop();
-                return Tm::Pi(Rc::from(&p.name[1..]), Mult::Zero, Icit::Impl, Rc::new(a), Rc::new(b));
+                return Tm::Pi(Rc::from(&p.name[1..]), m, Icit::Impl, Rc::new(a), Rc::new(b));
             }
         }
         let Some((res, b_expr)) = &r.arrow else {
@@ -538,6 +546,64 @@ impl Elab {
             t = Tm::App(Rc::new(t), Rc::new(Tm::Var(l - 1 - lv)), Icit::Expl, Mult::Zero);
         }
         t
+    }
+
+    /// The later binders a parameter's refined type (#102) needs the
+    /// arguments of. Its refinements were elaborated before the class
+    /// dictionaries they use were found, as unknowns over every local, so
+    /// their aliases capture every parameter: once those are solved, only
+    /// the parameters the aliases' predicates still mention count.
+    pub fn late_deps(&self, late: &Late) -> Vec<usize> {
+        let ty = crate::core::zonk_metas(&self.g, late.n, &late.ty);
+        let mut free = std::collections::BTreeSet::new();
+        self.used_free(&ty, 0, &mut free, 0);
+        free.iter().filter(|i| **i < late.n).map(|i| late.n - 1 - i).filter(|j| *j > late.binder).collect()
+    }
+
+    /// `free_vars`, except that an argument of an inline refinement's alias
+    /// counts only where the alias uses it.
+    fn used_free(&self, t: &Tm, depth: usize, out: &mut std::collections::BTreeSet<usize>, nest: usize) {
+        if let (Tm::Def(d), args) = t.spine() {
+            if nest < 16 && !args.is_empty() && is_anon_alias(&self.g, *d) {
+                let uses = self.alias_uses(*d, args.len(), nest + 1);
+                for (a, used) in args.iter().zip(uses) {
+                    if used {
+                        self.used_free(a, depth, out, nest);
+                    }
+                }
+                return;
+            }
+        }
+        match t {
+            Tm::Var(i) if *i >= depth => {
+                out.insert(i - depth);
+            }
+            _ => t.each_sub(|x, n| self.used_free(x, depth + n, out, nest)),
+        }
+    }
+
+    /// Which of its `k` captured locals an inline refinement's alias uses:
+    /// in its base or, with what has been solved put in, its predicates.
+    fn alias_uses(&self, d: DefId, k: usize, nest: usize) -> Vec<bool> {
+        let mut free = std::collections::BTreeSet::new();
+        match &self.g.defs[d.0 as usize].body {
+            Some(body) => {
+                let mut b = body;
+                for _ in 0..k {
+                    match b {
+                        Tm::Lam(_, _, _, x) => b = x,
+                        _ => return vec![true; k],
+                    }
+                }
+                self.used_free(b, 0, &mut free, nest);
+            }
+            None => return vec![true; k],
+        }
+        for p in self.alias_preds.get(&d).into_iter().flatten() {
+            let tm = crate::core::zonk_metas(&self.g, k + 1, &p.tm);
+            self.used_free(&tm, 1, &mut free, nest);
+        }
+        (0..k).map(|p| free.contains(&(k - 1 - p))).collect()
     }
 
     /// The type of `t`, a function with a specification applied to fewer

@@ -1,0 +1,9 @@
+(module instance_transparent)
+(instance Size (List a)
+  (transparent fn size (xs)
+    (len xs))
+  (transparent fn bounded (xs) -> n
+    (: (xs~(List a)) (n~Int) (>= n 0))
+    (len xs))
+  (fn sealed (xs)
+    0))

@@ -5,11 +5,12 @@ module too_large_wraps_words
 import std.system (System, ExitCode)
 import std.terminal
 import std.array
+import std.string (debug)
 
 fn name i -> r : i~Nat, r~String
-    format i
+    debug i
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let xs = array.init 2305843009213693952 name
-    terminal.print_line (format (len xs)) sys.term
+    terminal.print_line (debug (len xs)) sys.term
     Success

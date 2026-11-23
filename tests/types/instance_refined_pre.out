@@ -1,0 +1,18 @@
+error[E0371]: `pick` requires `x > 1`, which class `Pick` doesn't
+  --> instance_refined_pre.ck:27:39
+   |
+27 |     fn pick w x -> r : w~Cell, x~Int, x > 1, r~Int
+   |                                       ^^^^^ not implied by the class's preconditions
+   = note: class `Pick` declares `fn pick w x -> r : w~a, x~Int, x > 0, r~Int`
+   = note: facts in scope: `x > 0`
+   = note: counterexample: x = 1
+   = help: a call through class `Pick` needn't establish it: remove it, or check it in the body
+
+error[E0450]: cannot prove `x > 0`, required to call `pick`
+  --> instance_refined_pre.ck:31:5
+   |
+31 |     pick w 0
+   |     ^^^^^^^^ `pick` requires `x > 0`
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+instance_refined_pre.ck: 2 errors, 0 warnings

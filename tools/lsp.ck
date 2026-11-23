@@ -16,6 +16,7 @@ import std.proc (Streams, Spawned, Pipe, Discard, Child, Killer)
 import std.cown (Cown, Sched)
 import std.json (Json, Null, Bool, Num, Str, Arr, Obj)
 import std.string
+import std.string (Digits)
 import std.bytes
 import std.list
 import ck.jsonrpc (Incoming, Message, Malformed, Closed)
@@ -440,7 +441,7 @@ partial fn step o ch acc g root docs c : o~File, ch~Child, acc~Acc, g~Nat, root~
             # 137: killed by a newer check.
             match code
                 Ok n if acc2.phases == 0 and n != 137 ->
-                    show_error ("`" ++ c.ckc ++ "` stopped without checking (exit " ++ format n ++ ")") c
+                    show_error string.format"`{c.ckc}` stopped without checking (exit {n})" c
                 _ -> ()
             if acc2.phases < 2 then settle g root c else ()
     ()
@@ -727,7 +728,7 @@ partial fn edits_by paths places new docs c -> r : paths~List String, places~Lis
 # as an overlay, its output read in a behaviour of its own; it neither waits
 # for the document's check nor stops it.
 partial fn complete id w docs c : id~Json, w~Where, docs~List Doc, c~Caps
-    let args = c.flags ++ ["complete", "--overlay", "-", w.doc.path, format w.line, format w.col]
+    let args = c.flags ++ ["complete", "--overlay", "-", w.doc.path, string.display w.line [], string.display w.col []]
     match proc.spawn c.ckc args (Streams Pipe Pipe Discard) c.proc
         Err e                           ->
             show_error ("could not run `" ++ c.ckc ++ "`: " ++ files.describe e ++ "; set CKC to the compiler") c
@@ -806,8 +807,7 @@ fn item_kind role -> k : role~String, k~Nat
 
 # `0042`: the order of item `n`, as text that sorts like it.
 fn sort_key n -> s : n~Nat, s~String
-    let t = format n
-    if n < 10 then "000" ++ t else if n < 100 then "00" ++ t else if n < 1000 then "0" ++ t else t
+    string.display n [Digits 4]
 
 # The semantic token types and modifiers (`initialize`'s legend).
 let TOKEN_TYPES = ["namespace", "type", "enumMember", "property", "function", "parameter", "variable",

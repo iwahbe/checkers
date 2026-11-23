@@ -15,7 +15,6 @@
 //!   link to it is told apart from one to nothing (W031, D148 c).
 
 use crate::json;
-use crate::syntax::ast;
 use crate::syntax::ast::{Decl, DeclKind, Export, Module};
 
 /// The source from `start` up to the line where `body` starts (all of it
@@ -129,15 +128,9 @@ fn decl(text: &str, d: &Decl, line_of: &dyn Fn(usize) -> usize) -> Option<String
         DeclKind::Class { name, members, .. } => {
             let items = members
                 .iter()
-                .map(|m| match m {
-                    ast::ClassMember::Fn { name, span, .. } | ast::ClassMember::Lemma { name, span, .. } => {
-                        item(text, &name.name, span.start as usize, span.end as usize)
-                    }
-                })
+                .map(|m| item(text, &m.name().name, m.span().start as usize, m.span().end as usize))
                 .collect();
-            let first = members.first().map(|m| match m {
-                ast::ClassMember::Fn { span, .. } | ast::ClassMember::Lemma { span, .. } => span.start as usize,
-            });
+            let first = members.first().map(|m| m.span().start as usize);
             ("class", &name.name, first, items)
         }
     };

@@ -15,6 +15,9 @@ pub struct Module {
     pub name: Option<QName>,
     pub imports: Vec<Import>,
     pub decls: Vec<Decl>,
+    /// It has a template (#132): `std.string`, which declares the classes
+    /// templates are built through, is loaded for it.
+    pub templates: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -178,16 +181,18 @@ pub enum DeclKind {
     Check {
         expr: Expr,
     },
-    /// `class Ord a` and what each instance must supply (D136).
+    /// `class Ord a` and what each instance must supply (D136); a class may
+    /// take several type parameters (`class Hole s h`, #145).
     Class {
         name: Ident,
-        param: Ident,
+        params: Vec<Ident>,
         members: Vec<ClassMember>,
     },
-    /// `instance Ord (List a) : Ord a` (D136).
+    /// `instance Ord (List a) : Ord a` (D136); a type for each of the
+    /// class's parameters (`instance Hole Format a : Display a`, #145).
     Instance {
         class: Ident,
-        ty: Expr,
+        tys: Vec<Expr>,
         context: Vec<Expr>,
         members: Vec<InstMember>,
     },
@@ -196,6 +201,10 @@ pub enum DeclKind {
 /// A requirement of a class: a function's signature, or a lemma's statement.
 #[derive(Clone, Debug)]
 pub enum ClassMember {
+    /// `type Name`, or `type Name = T` with a default (#133); either may
+    /// be followed by constraints on it (`: Ord Name`, `: u~Name, u < 256`,
+    /// #176).
+    Type { name: Ident, default: Option<Expr>, constraints: Vec<Constraint>, span: Span },
     Fn { name: Ident, params: Vec<Ident>, result: Option<Ident>, constraints: Vec<Constraint>, span: Span },
     Lemma { name: Ident, params: Vec<Ident>, constraints: Vec<Constraint>, lets: Vec<(Pattern, Expr)>, ensures: Expr, span: Span },
 }
@@ -203,7 +212,20 @@ pub enum ClassMember {
 /// What an instance supplies: a function's body, or a lemma's proof.
 #[derive(Clone, Debug)]
 pub enum InstMember {
-    Fn { name: Ident, params: Vec<Ident>, decreasing: Option<Expr>, body: Block, span: Span },
+    /// `type Name = T`: the class's type at this instance (#133).
+    Type { name: Ident, ty: Expr, span: Span },
+    /// `sig`: a signature of its own, refining the class's (#225): the
+    /// result's name and the constraints. `None`: the class's.
+    /// `transparent`: its body is visible to importers' proofs (#249).
+    Fn {
+        transparent: bool,
+        name: Ident,
+        params: Vec<Ident>,
+        sig: Option<(Option<Ident>, Vec<Constraint>)>,
+        decreasing: Option<Expr>,
+        body: Block,
+        span: Span,
+    },
     Lemma { name: Ident, params: Vec<Ident>, decreasing: Option<Expr>, proof: Option<Block>, span: Span },
 }
 
@@ -222,8 +244,6 @@ pub enum Stmt {
     HaveType(Ident, Expr),
     /// A bare expression line that is not the block's last; must be `Unit` (D35)
     Expr(Expr),
-    /// `when x = c, … using sched` + block (D30)
-    When(When),
 }
 
 #[derive(Clone, Debug)]
@@ -251,6 +271,8 @@ pub enum Lit {
 
 #[derive(Clone, Debug)]
 pub enum ExprKind {
+    /// Schedule a behaviour asynchronously; has type `Unit`.
+    When(When),
     /// lower-case name
     Var(String),
     /// Upper-case name: constructor, type, or constant (resolved later, D26)
@@ -289,8 +311,21 @@ pub enum ExprKind {
     /// `forall x y : x~a, y~a, p x y` (D137): variables, then clauses that
     /// mention them, the last the conclusion.
     Forall(Vec<Ident>, Vec<Constraint>),
+    /// `tag"text {e | o1, o2} text"` (#132): the tag, and the template's
+    /// text and holes in order.
+    Template(Box<Expr>, Vec<TemplatePiece>),
     /// Placeholder for a token the lexer rejected.
     Error,
+}
+
+/// A piece of a template (#132).
+#[derive(Clone, Debug)]
+pub enum TemplatePiece {
+    /// Text, its escapes read, and where it is written.
+    Text(String, Span),
+    /// `{e | o1, o2}`: the value (None for `{}` and `{| …}`, a new
+    /// parameter), the options, and the span of the hole, braces included.
+    Hole { value: Option<Expr>, options: Vec<Expr>, span: Span },
 }
 
 #[derive(Clone, Debug)]
@@ -321,4 +356,37 @@ pub enum PatKind {
     Or(Vec<Pattern>),
     /// `Ctor { a, b = p }` (D32)
     Record(Ident, Vec<(Ident, Pattern)>),
+}
+
+impl TemplatePiece {
+    /// The expressions in it: a hole's value, then its options.
+    pub fn exprs(&self) -> impl Iterator<Item = &Expr> {
+        let (v, os): (Option<&Expr>, &[Expr]) = match self {
+            TemplatePiece::Text(..) => (None, &[]),
+            TemplatePiece::Hole { value, options, .. } => (value.as_ref(), options),
+        };
+        v.into_iter().chain(os.iter())
+    }
+}
+
+impl ClassMember {
+    pub fn name(&self) -> &Ident {
+        match self {
+            ClassMember::Type { name, .. } | ClassMember::Fn { name, .. } | ClassMember::Lemma { name, .. } => name,
+        }
+    }
+
+    pub fn span(&self) -> Span {
+        match self {
+            ClassMember::Type { span, .. } | ClassMember::Fn { span, .. } | ClassMember::Lemma { span, .. } => *span,
+        }
+    }
+}
+
+impl InstMember {
+    pub fn name(&self) -> &Ident {
+        match self {
+            InstMember::Type { name, .. } | InstMember::Fn { name, .. } | InstMember::Lemma { name, .. } => name,
+        }
+    }
 }

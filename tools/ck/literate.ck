@@ -482,7 +482,7 @@ partial fn sample documented k info source spans start -> r : documented~Option 
     match module_named compiled
         Some name -> Sample info source name (with_own documented name start compiled) shown
         None      ->
-            let name = "sample_" ++ format k
+            let name = string.format"sample_{k}"
             let header = (string.bytes ("module " ++ name), start)
             Sample info source name (header :: with_own documented name start compiled) shown
 
@@ -632,7 +632,7 @@ partial fn run c s file all p -> r : c~Compiler, s~Sample, file~String, all~Byte
             if out.code == 0
                 Outcome [] output
             else
-                Outcome [Warning "W034" ("this block's `main` exits with code " ++ format out.code) start ""] output
+                Outcome [Warning "W034" string.format"this block's `main` exits with code {out.code}" start ""] output
 
 # `b` without each `dir` in it (the paths of the files a report names).
 partial fn without_dir b dir -> r : b~Bytes, dir~Bytes, r~Bytes
@@ -761,7 +761,7 @@ partial fn lookup_output outputs links info body -> r : outputs~List (String, By
 partial fn page_block text b -> r : text~Bytes, b~Block, r~Block
     match b
         Heading level xs s ->
-            let n = string.bytes (format level)
+            let n = string.bytes (string.display level [])
             let id = slug (string.bytes (markdown.plain xs))
             Html (as_string (bytes.concat [b"<h", n, b" id=\"", id, b"\">", inline_html xs, b"</h", n, b">"])) s
         Paragraph xs s     ->

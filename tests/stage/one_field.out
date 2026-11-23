@@ -1,0 +1,9 @@
+fn doubled x =
+    6 * x
+
+fn reached x =
+    Meters (10 + x)
+
+fn origin x =
+    (Meters 1, x)
+

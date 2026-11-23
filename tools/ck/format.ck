@@ -9,7 +9,7 @@ import std.list (reverse)
 import std.list
 import ck.syntax as syntax
 import ck.syntax (Tok, Line, Placed, Role, Kind, SyntaxError, Name, Upper, Number, Literal, Punct, Comment,
-                  Blank, Start, Cont, Note)
+                  Blank, Start, Nested, Fresh, Cont, Note)
 
 export let INDENT = 4
 
@@ -94,7 +94,7 @@ fn gap prev t in_sig -> n : prev~After, t~Tok, in_sig~Bool, n~Nat
                 0
             else if syntax.is_punct t b"~" or syntax.is_punct p b"~" or syntax.is_punct p b"\\"
                 0
-            else if glued_postfix p t
+            else if glued_postfix p t or template p t
                 0
             else if in_sig and syntax.is_punct t b":" and not t.spaced and is_name p
                 # A named precondition, `total: forall …` (D137).
@@ -105,6 +105,12 @@ fn gap prev t in_sig -> n : prev~After, t~Tok, in_sig~Bool, n~Nat
 # A glued `.` or `[` after an operand: field access or indexing (D22).
 fn glued_postfix p t : p~Tok, t~Tok
     (syntax.is_punct t b"." or syntax.is_punct t b"[") and not t.spaced and operand_end p
+
+# A string glued to the name before it: a template, `tag"…"`.
+fn template p t : p~Tok, t~Tok
+    match t.kind
+        Literal -> not t.spaced and is_name p
+        _       -> False
 
 # ── Rendering one logical line ───────────────────────────────────────────────
 
@@ -309,15 +315,31 @@ fn pop_frames frames lvl -> r : frames~List Frame, lvl~Nat, r~List Frame
         f :: rest -> if f.lvl >= lvl then pop_frames rest lvl else frames
         []        -> []
 
+# A fresh block (§9.1) is a new run in its logical line: the frame of that
+# line starts over, with nothing to align.
+fn restart frames lvl next -> r : frames~List Frame, lvl~Nat, next~Nat, r~List Frame
+    match pop_frames frames lvl
+        f :: rest -> Frame f.lvl next Plain :: rest
+        []        -> []
+
+# A continuation line with a `match` opens arms, which align.
+fn continued frames toks -> r : frames~List Frame, toks~List Tok, r~List Frame
+    match frames
+        f :: rest -> if has_match toks 0 then Frame f.lvl f.id Arms :: rest else frames
+        []        -> []
+
 fn entries placed frames next blanks acc -> r : placed~List Placed, frames~List Frame, next~Nat, blanks~Nat,
                                                 acc~List Entry, r~List Entry
     match placed
         []        -> reverse acc
         p :: rest ->
-            match p.role
-                Blank     -> entries rest frames next (blanks + 1) acc
-                Start lvl ->
-                    let fs = pop_frames frames lvl
+            match (syntax.starts p.role, p.role)
+                (_, Blank)    -> entries rest frames next (blanks + 1) acc
+                (_, Cont)     -> entries rest (continued frames p.line.toks) next blanks acc
+                (Some lvl, _) ->
+                    let (fs, next) = match p.role
+                        Fresh _ -> (restart frames lvl next, next + 1)
+                        _       -> (pop_frames frames lvl, next)
                     let (parent, block) = match fs
                         f :: _ -> if f.lvl + 1 == lvl then (f.id, f.block) else (next, Plain)
                         []     -> (next, Plain)
@@ -333,7 +355,7 @@ fn entries placed frames next blanks acc -> r : placed~List Placed, frames~List 
                                 None     -> Entry parent blanks None what
                         None      -> Entry parent blanks None b""
                     entries rest (Frame lvl next (block_of toks) :: fs) (next + 1) blanks (e :: acc)
-                _         -> entries rest frames next blanks acc
+                _             -> entries rest frames next blanks acc
 
 fn run_max es parent blanks m -> r : es~List Entry, parent~Nat, blanks~Nat, m~Nat, r~Nat
     match es
@@ -358,10 +380,10 @@ fn targets es all -> r : es~List Entry, all~List Entry, r~List (Option Nat, Byte
 # ── Blank lines ──────────────────────────────────────────────────────────────
 
 fn level_of p cur -> l : p~Placed, cur~Nat, l~Nat
-    match p.role
-        Start l -> l
-        Note l  -> l
-        _       -> cur
+    match (syntax.starts p.role, p.role)
+        (Some l, _) -> l
+        (_, Note l) -> l
+        _           -> cur
 
 # Keep a blank line only between two non-blank lines, once, and not just
 # before a line deeper than the one before it (the start of a block).
@@ -403,43 +425,64 @@ enum Out
     Alone text                  : text~Bytes                                  # a comment on its own line
     Code text width comment gap : text~Bytes, width~Nat, comment~Option Tok, gap~Nat
 
-# Render the lines, each logical line with its alignment target.
-fn render placed ts lvl origin cur acc -> r : placed~List Placed, ts~List (Option Nat, Bytes), lvl~Nat, origin~Nat,
-                                              cur~Cursor,
-                                              acc~List Out, r~List Out
+# Where block levels start: the blocks continuation lines opened (§9.1),
+# each a level and its column, innermost first. Other levels are 4 apart
+# from the innermost such block below them, or from column 0.
+fn level_col bases n -> c : bases~List (Nat, Nat), n~Nat, c~Nat
+    match bases
+        (l, col) :: rest -> if l <= n then col + (n - l) * INDENT else level_col rest n
+        []               -> n * INDENT
+
+# The bases of levels up to `n` (`below`: under `n`).
+fn bases_to bases n below -> r : bases~List (Nat, Nat), n~Nat, below~Bool, r~List (Nat, Nat)
+    match bases
+        (l, col) :: rest -> if l > n or (below and l == n) then bases_to rest n below else bases
+        []               -> []
+
+# Render the lines, each logical line with its alignment target. `indent`:
+# the column of the logical line; `origin`: its column in the input; `line`:
+# the column of the last physical line.
+fn render placed ts indent origin line bases cur acc -> r : placed~List Placed, ts~List (Option Nat, Bytes), indent~Nat,
+                                                            origin~Nat, line~Nat, bases~List (Nat, Nat), cur~Cursor,
+                                                            acc~List Out, r~List Out
     match placed
         []        -> reverse acc
         p :: rest ->
             let l = p.line
-            match p.role
-                Blank   -> render rest ts lvl origin cur (Gap :: acc)
-                Note n  ->
-                    let text = spaces (n * INDENT) ++ comment_text l.comment
-                    render rest ts lvl origin cur (Alone text :: acc)
-                Start n ->
-                    let (target, what, ts2) = match ts
-                        (t, w) :: more -> (t, w, more)
-                        []             -> (None, b"", [])
-                    let indent = n * INDENT
-                    let abs = match target
-                        Some t -> Some (indent + t)
-                        None   -> None
-                    let arm = what == b"->"
-                    let (pieces, c2) = emit l.toks (fresh indent arm (type_header l.toks)) abs what indent True []
-                    let text = spaces indent ++ bytes.concat pieces
-                    render rest ts2 n (first_col l.toks) c2 (Code text c2.col l.comment (author_gap l) :: acc)
-                Cont    ->
+            match (syntax.starts p.role, p.role)
+                (_, Blank)  -> render rest ts indent origin line bases cur (Gap :: acc)
+                (_, Note n) ->
+                    let text = spaces (level_col bases n) ++ comment_text l.comment
+                    render rest ts indent origin line bases cur (Alone text :: acc)
+                (_, Cont)   ->
                     let first = match l.toks
                         t :: _ -> Some t
                         []     -> None
-                    let col = cont_col cur first (lvl * INDENT) origin
+                    let col = cont_col cur first indent origin
                     match l.toks
-                        [] -> render rest ts lvl origin cur (Alone (spaces col ++ comment_text l.comment) :: acc)
+                        [] -> render rest ts indent origin line bases cur (Alone (spaces col ++ comment_text l.comment) :: acc)
                         _  ->
                             let start = Cursor col cur.prev cur.brackets cur.sig cur.sig_wait False cur.header
                             let (pieces, c2) = emit l.toks start None b"" col True []
                             let text = spaces col ++ bytes.concat pieces
-                            render rest ts lvl origin c2 (Code text c2.col l.comment (author_gap l) :: acc)
+                            render rest ts indent origin col bases c2 (Code text c2.col l.comment (author_gap l) :: acc)
+                (Some n, _) ->
+                    let bases2 = match p.role
+                        Nested _ -> (n, line + INDENT) :: bases_to bases n False
+                        Fresh _  -> bases_to bases n True
+                        _        -> bases_to bases n False
+                    let (target, what, ts2) = match ts
+                        (t, w) :: more -> (t, w, more)
+                        []             -> (None, b"", [])
+                    let at = level_col bases2 n
+                    let abs = match target
+                        Some t -> Some (at + t)
+                        None   -> None
+                    let arm = what == b"->"
+                    let (pieces, c2) = emit l.toks (fresh at arm (type_header l.toks)) abs what at True []
+                    let text = spaces at ++ bytes.concat pieces
+                    render rest ts2 at (first_col l.toks) at bases2 c2 (Code text c2.col l.comment (author_gap l) :: acc)
+                _           -> render rest ts indent origin line bases cur acc
 
 # The spaces between a line's code and its comment, as written.
 fn author_gap l -> g : l~Line, g~Nat
@@ -499,5 +542,5 @@ export fn format src -> r : src~Bytes, r~Result Bytes SyntaxError
     let placed = try syntax.layout lines
     let kept = blanks placed None False []
     let es = entries kept [] 0 0 []
-    let outs = render kept (targets es es) 0 0 (fresh 0 False False) []
+    let outs = render kept (targets es es) 0 0 0 [] (fresh 0 False False) []
     Ok (lines_text (finish outs None []))

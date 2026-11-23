@@ -1,0 +1,15 @@
+error[E0284]: no instance of `Display` for `Point`
+  --> display_missing.ck:13:16
+   |
+13 |     format"at {p}"
+   |                ^ needs `Display Point`, for `instance Hole Format a`
+   = help: declare `instance Display …` for this type, beside the type
+
+error[E0284]: no instance of `Display` for `a`
+  --> display_missing.ck:16:16
+   |
+16 |     format"at {x}"
+   |                ^ `a` is a type parameter
+   = help: add `Display a` to the function's signature
+
+display_missing.ck: 2 errors, 0 warnings

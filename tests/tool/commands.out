@@ -46,38 +46,73 @@ there are any. `-` formats standard input to standard output.
 -- exit 2
 $ checkers trust examples/wc.ck
 -- stdout
-<std>/prelude.ck  proved   53 by smt, 0 computed
-examples/wc.ck:22:42  smt      postcondition of `count`: c.bytes == len src (for `count_from src 0 False (Counts 0 0 0)`, line 23)  [9475353a640ad927]
-examples/wc.ck:23:5  smt      precondition of `count_from`: i <= len src  [5361bfb014f88971]
-examples/wc.ck:26:50  smt      postcondition of `count_from`: c.bytes == acc.bytes + (len src - i) (for `acc`, line 29)  [85fa725c3e6fe156]
-examples/wc.ck:26:50  smt      postcondition of `count_from`: c.bytes == acc.bytes + (len src - i) (for `count_from src (i + 1) (not space) (Coun…`, line 35)  [05384b456d8b506d]
-examples/wc.ck:27:16  smt      `Nat` subtraction `len src - i` stays at or above zero  [126506d273441548]
-examples/wc.ck:31:17  smt      index in bounds: i < len src  [3be32e402f707f98]
-examples/wc.ck:32:21  smt      precondition of `is_space`: b < 256  [399a072687a1b44b]
-examples/wc.ck:35:9  smt      precondition of `count_from`: i <= len src  [f29b5ec8261406e0]
-examples/wc.ck:35:9  smt      termination of `count_from`: `decreasing len src - i` gets smaller  [e5644859c97aa850]
-examples/wc.ck:42:43  smt      precondition of `is_space`: b < 256  [512d10fe65620d9c]
-examples/wc.ck:42:53  smt      index in bounds: len src - 1 < len src  [fa95efd32866468b]
-examples/wc.ck:42:57  smt      `Nat` subtraction `len src - 1` stays at or above zero  [1494cd0f7822e8fe]
-examples/wc.ck:55:55  smt      precondition of `count_from`: i <= len src  [ca79178e51266307]
-examples/wc.ck:73:21  computed invariant of `Failure`: n < 256
-examples/wc.ck:73:21  computed invariant of `Failure`: n > 0
-examples/wc.ck:88:33  computed invariant of `Failure`: n < 256
-examples/wc.ck:88:33  computed invariant of `Failure`: n > 0
-examples/wc.ck:95:7  computed check count b"hello world\nbye\n" == Counts 2 3 16
-examples/wc.ck:96:7  computed check count b"" == Counts 0 0 0
-examples/wc.ck:97:7  computed check render (Counts 1 2 3) "f.txt" == "1 2 3 f.txt"
-examples/wc.ck:98:7  computed check ends_in_word b"ab" False
-examples/wc.ck:99:7  computed check not (ends_in_word b"ab " True)
-examples/wc.ck:100:7  computed check ends_in_word b"" True
+<std>/array.ck:144:14  axiom    builtin axiom std.array.slice_at
+<std>/array.ck:146:18  axiom    builtin axiom std.array.slice_at
+<std>/array.ck:148:18  axiom    builtin axiom std.array.slice_at
+<std>/array.ck:162:18  axiom    builtin axiom std.array.from_list_to_list
+<std>/array.ck:163:18  axiom    builtin axiom std.array.to_list_map
+<std>/array.ck:165:18  axiom    builtin axiom std.array.from_list_to_list
+<std>/array.ck:168:18  axiom    builtin axiom std.array.from_list_to_list
+<std>/array.ck:169:18  axiom    builtin axiom std.array.from_list_to_list
+<std>/array.ck:170:18  axiom    builtin axiom std.array.to_list_map
+<std>/array.ck:171:18  axiom    builtin axiom std.array.to_list_map
+<std>/array.ck:172:18  axiom    builtin axiom std.array.to_list_map
+<std>/array.ck:182:10  axiom    builtin axiom std.array.to_list_from_list
+<std>/array.ck:189:10  axiom    builtin axiom std.array.to_list_from_list
+<std>/array.ck:198:10  axiom    builtin axiom std.array.to_list_from_list
+<std>/array.ck  proved   74 by smt, 24 computed
+<std>/char.ck  proved   20 by smt, 22 computed
+<std>/list.ck  proved   141 by smt, 6 computed
+<std>/parse.ck  proved   97 by smt, 15 computed
+<std>/prelude.ck  proved   63 by smt, 14 computed
+<std>/string.ck:70:14  axiom    builtin axiom std.string.concat_join
+<std>/string.ck:364:10  axiom    builtin axiom std.string.from_char_bytes
+<std>/string.ck:467:18  axiom    builtin axiom std.array.uncons_slice
+<std>/string.ck:468:18  axiom    builtin axiom std.array.slice_append
+<std>/string.ck:472:18  axiom    builtin axiom std.array.uncons_slice
+<std>/string.ck:486:14  axiom    builtin axiom std.array.slice_append
+<std>/string.ck:501:18  axiom    builtin axiom std.array.uncons_slice
+<std>/string.ck:530:14  axiom    builtin axiom std.array.uncons_slice
+<std>/string.ck:531:14  axiom    builtin axiom std.array.slice_at
+<std>/string.ck:533:14  axiom    builtin axiom std.array.slice_append
+<std>/string.ck  proved   195 by smt, 79 computed
+examples/wc.ck:23:42  smt      postcondition of `count`: c.bytes == len src (for `count_from src 0 False (Counts 0 0 0)`, line 24)  [6635dc1391bc9c1b]
+examples/wc.ck:24:5  smt      precondition of `count_from`: i <= len src  [5361bfb014f88971]
+examples/wc.ck:27:50  smt      postcondition of `count_from`: c.bytes == acc.bytes + (len src - i) (for `acc`, line 30)  [5e5b7f26419a054d]
+examples/wc.ck:27:50  smt      postcondition of `count_from`: c.bytes == acc.bytes + (len src - i) (for `count_from src (i + 1) (not space) (Coun…`, line 36)  [7bc3ca4f98b8b7fd]
+examples/wc.ck:28:16  smt      `Nat` subtraction `len src - i` stays at or above zero  [4f3a3024d5466a1e]
+examples/wc.ck:32:17  smt      index in bounds: i < len src  [11498465b3bd3bda]
+examples/wc.ck:33:21  smt      precondition of `is_space`: b < 256  [cad65cc60f05401c]
+examples/wc.ck:36:9  smt      precondition of `count_from`: i <= len src  [7638f357c8261352]
+examples/wc.ck:36:9  smt      termination of `count_from`: `decreasing len src - i` gets smaller  [c66310c169326b86]
+examples/wc.ck:43:43  smt      precondition of `is_space`: b < 256  [fa8c903b4fe42d43]
+examples/wc.ck:43:53  smt      index in bounds: len src - 1 < len src  [fa95efd32866468b]
+examples/wc.ck:43:57  smt      `Nat` subtraction `len src - 1` stays at or above zero  [1494cd0f7822e8fe]
+examples/wc.ck:56:55  smt      precondition of `count_from`: i <= len src  [ca79178e51266307]
+examples/wc.ck:74:21  computed invariant of `Failure`: n < 256
+examples/wc.ck:74:21  computed invariant of `Failure`: n > 0
+examples/wc.ck:89:33  computed invariant of `Failure`: n < 256
+examples/wc.ck:89:33  computed invariant of `Failure`: n > 0
+examples/wc.ck:96:7  computed check count b"hello world\nbye\n" == Counts 2 3 16
+examples/wc.ck:97:7  computed check count b"" == Counts 0 0 0
+examples/wc.ck:98:7  computed check render (Counts 1 2 3) "f.txt" == "1 2 3 f.txt"
+examples/wc.ck:99:7  computed check ends_in_word b"ab" False
+examples/wc.ck:100:7  computed check not (ends_in_word b"ab " True)
+examples/wc.ck:101:7  computed check ends_in_word b"" True
 <std>/files.ck:43:11  builtin  std.files.close
 <std>/files.ck:31:11  builtin  std.files.describe
 <std>/files.ck:35:11  builtin  std.files.open
 <std>/files.ck:58:11  builtin  std.files.read_some
+<std>/string.ck:34:11  builtin  std.string.chars
+<std>/string.ck:26:11  builtin  std.string.concat
+<std>/string.ck:174:8  builtin  std.string.debug
+<std>/string.ck:14:11  builtin  std.string.from_char
+<std>/string.ck:10:11  builtin  std.string.from_chars
 <std>/terminal.ck:14:11  builtin  std.terminal.eprint_line
 <std>/terminal.ck:10:11  builtin  std.terminal.print_line
 <std>/terminal.ck:36:11  builtin  std.terminal.stdin
 solver: Z3 5.3.3.0
+cache: 35 of 658 Z3 answers reused
 -- stderr
 -- exit 0
 $ checkers build --release tests/tool/admitted.ck -o tests/tool/admitted.out-never-written
@@ -97,3 +132,60 @@ $ checkers build --release --unverified examples/wc.ck -o tests/tool/never
 -- stderr
 error: `--release` builds only proven programs, so it can't be used with `--unverified`
 -- exit 2
+$ checkers trust tests/tool/axioms.ck
+-- stdout
+<std>/array.ck:144:14  axiom    builtin axiom std.array.slice_at
+<std>/array.ck:146:18  axiom    builtin axiom std.array.slice_at
+<std>/array.ck:148:18  axiom    builtin axiom std.array.slice_at
+<std>/array.ck:162:18  axiom    builtin axiom std.array.from_list_to_list
+<std>/array.ck:163:18  axiom    builtin axiom std.array.to_list_map
+<std>/array.ck:165:18  axiom    builtin axiom std.array.from_list_to_list
+<std>/array.ck:168:18  axiom    builtin axiom std.array.from_list_to_list
+<std>/array.ck:169:18  axiom    builtin axiom std.array.from_list_to_list
+<std>/array.ck:170:18  axiom    builtin axiom std.array.to_list_map
+<std>/array.ck:171:18  axiom    builtin axiom std.array.to_list_map
+<std>/array.ck:172:18  axiom    builtin axiom std.array.to_list_map
+<std>/array.ck:182:10  axiom    builtin axiom std.array.to_list_from_list
+<std>/array.ck:189:10  axiom    builtin axiom std.array.to_list_from_list
+<std>/array.ck:198:10  axiom    builtin axiom std.array.to_list_from_list
+<std>/array.ck  proved   74 by smt, 24 computed
+<std>/char.ck  proved   20 by smt, 22 computed
+<std>/decimal.ck:261:14  axiom    builtin axiom std.array.uncons_slice
+<std>/decimal.ck:274:14  axiom    builtin axiom std.decimal.scaled_parts
+<std>/decimal.ck:278:18  axiom    builtin axiom std.array.uncons_slice
+<std>/decimal.ck:279:18  axiom    builtin axiom std.array.slice_append
+<std>/decimal.ck:284:18  axiom    builtin axiom std.array.uncons_slice
+<std>/decimal.ck:345:18  axiom    builtin axiom std.decimal.scaled_ten
+<std>/decimal.ck:355:14  axiom    builtin axiom std.array.uncons_slice
+<std>/decimal.ck:357:18  axiom    builtin axiom std.array.slice_append
+<std>/decimal.ck:368:14  axiom    builtin axiom std.array.uncons_slice
+<std>/decimal.ck:369:14  axiom    builtin axiom std.array.slice_append
+<std>/decimal.ck:383:18  axiom    builtin axiom std.array.uncons_slice
+<std>/decimal.ck:384:18  axiom    builtin axiom std.array.slice_append
+<std>/decimal.ck:394:22  axiom    builtin axiom std.array.uncons_slice
+<std>/decimal.ck:403:18  axiom    builtin axiom std.array.uncons_slice
+<std>/decimal.ck:412:18  axiom    builtin axiom std.array.uncons_slice
+<std>/decimal.ck:421:14  axiom    builtin axiom std.array.uncons_slice
+<std>/decimal.ck:422:14  axiom    builtin axiom std.array.slice_append
+<std>/decimal.ck:423:14  axiom    builtin axiom std.array.uncons_slice
+<std>/decimal.ck  proved   195 by smt, 29 computed
+<std>/list.ck  proved   141 by smt, 6 computed
+<std>/parse.ck  proved   97 by smt, 15 computed
+<std>/prelude.ck  proved   63 by smt, 14 computed
+<std>/string.ck:70:14  axiom    builtin axiom std.string.concat_join
+<std>/string.ck:364:10  axiom    builtin axiom std.string.from_char_bytes
+<std>/string.ck:467:18  axiom    builtin axiom std.array.uncons_slice
+<std>/string.ck:468:18  axiom    builtin axiom std.array.slice_append
+<std>/string.ck:472:18  axiom    builtin axiom std.array.uncons_slice
+<std>/string.ck:486:14  axiom    builtin axiom std.array.slice_append
+<std>/string.ck:501:18  axiom    builtin axiom std.array.uncons_slice
+<std>/string.ck:530:14  axiom    builtin axiom std.array.uncons_slice
+<std>/string.ck:531:14  axiom    builtin axiom std.array.slice_at
+<std>/string.ck:533:14  axiom    builtin axiom std.array.slice_append
+<std>/string.ck  proved   195 by smt, 79 computed
+<std>/utf8.ck  proved   8 by smt, 6 computed
+tests/tool/axioms.ck:9:10  computed precondition of `parse_render`: len post == 0 or not (char.is_digit post[0] or post[0] == '.' or post[0] == 'e' or post[0] == 'E')
+solver: Z3 5.3.3.0
+cache: 50 of 854 Z3 answers reused
+-- stderr
+-- exit 0

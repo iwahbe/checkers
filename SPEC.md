@@ -170,9 +170,9 @@ fn head xs -> r : xs~List Int, xs != [], r~Int
 
 ### 5.3 Recursion and totality
 All code that may appear in types or proofs must be **total**:
-- **Structural recursion** is compiled to recursors (D4).
+- **Structural recursion** is compiled to recursors (D4). It is checked by **size change** (#109): each call relates each of the callee's parameters to the caller's, as a strict part of one (bound by matching on it, `<`), the parameter itself passed on unchanged (`=`), or neither. A group of functions that call each other is structural when every cycle of calls, composed, makes some parameter strictly smaller: composing `<` with `<` or `=` gives `<`, `=` with `=` gives `=`, and every composed cycle from a function back to itself that composes to itself has a `<` from a parameter to the same parameter (Lee, Jones and Ben-Amram, *The size-change principle for program termination*, POPL 2001). So a helper may pass its parameter on as it is (`walk t` → `through kids` → `walk_all kids` → `walk t2`, with `kids` a part of `t` and `t2` of `kids`), arguments may change places (`swap a b` → `swap b p`, `p` a part of `a`), and the order may be lexicographic (`lex a q`, `lex p b`). When no measure is written or guessed and a cycle isn't smaller, E0301 points at the call where the cycle loses what it recursed on (#124): first one that passes on no parameter and no part of one, then one that passes no strict part; a call passing a parameter on unchanged keeps it. It names the cycle. When a measure was guessed and none was shown smaller (D150), E0301 points, for the measure left unproved at the fewest calls, at the first unproved call in that same order.
 - **Well-founded recursion** via a measure (required for merge sort, quicksort, etc.). The termination measure is a proof obligation like any other, so it goes to Z3 (D55). In the kernel this corresponds to recursion on the accessibility predicate `Acc` of `<` on `Nat` (lexicographic for tuples).
-- **Guessed measures (D150):** with no `decreasing`, a function whose recursion isn't structural gets a measure guessed from its parameters' sizes and the distances its guards bound (`i < len src` gives `len src - i`), alone or in pairs, and checked by the prover; E0301 names those tried if none works.
+- **Guessed measures (D150):** with no `decreasing`, a function whose recursion isn't structural gets a measure guessed from its parameters' sizes and the distances its guards bound (`i < len src` gives `len src - i`), alone or in pairs, and checked by the prover; E0301 names those tried if none works. A parameter taken apart by sequence patterns (§9.8, #169) has `Seq.size` of it among them, so a function recursing on the rest of a `::` needs no `decreasing`.
 - **Surface form:** `decreasing e` on the first line of a function body gives the measure. `e` is a `nat` or a tuple of `nat`s, compared lexicographically. Mutually recursive functions share one measure space; each call must strictly decrease it (worked example: `value`/`array`/`elements` in `stdlib/json.ck`).
 - **Lemmas (#76, #104).** A lemma that uses itself (`have l …` in its proof) is a proof by induction and must terminate the same way: structurally, by a measure written as `decreasing e` on the first line of its `proof` (the measure is part of the proof; it may use the lemma's `let`s), or by one guessed as for a function. At each recursive `have`, the measure at its arguments must be smaller, given the facts there. An induction on a position (`decreasing len src - i`) follows a parser's own recursion. An instance's lemma gives its measure the same way, in its proof; a class's lemma, a statement only, has none.
 - **Recursion through containers (#102).** A function value passed to a callee counts as called only with strict parts of the caller's parameter when the callee calls its function argument only with strict parts of another argument, and that argument is a parameter of the function being checked or a strict part of one. Where the callee's body is visible, as for anything else (§6: the same module, or exported `transparent`), its body shows it; across a module boundary, from a sealed function, only its signature does, so changing a sealed body never breaks an importer.
@@ -212,8 +212,10 @@ Rules:
    | `export abstract enum/record T a +b` | the type constructor and its parameter polarities only (D16): importers can't build one, match on it or read its fields (E0247, D155); only the functions its module exports can |
    | `export lemma` | statement only |
    | `export transparent fn` | everything, including the body (it unfolds in conversion and in the solver) |
+   | an instance's `fn` | its signature: its own (§9.8), or else the class's at the instance's type (#249) |
+   | an instance's `transparent fn` | everything, including the body, as for `export transparent fn` |
 3. **Proofs are part of the interface.** Because bodies are sealed, a library must export the lemmas and postconditions its users need. A sorting module exports `sort` *and* `sort_sorted`, `sort_perm`. This is how libraries "ship with proofs."
-4. `export transparent`: use sparingly; the body becomes part of the stable interface. Typical use: small definitional helpers that specifications are written in terms of (`list.keys`, `len`).
+4. `export transparent`: use sparingly; the body becomes part of the stable interface. Typical use: small definitional helpers that specifications are written in terms of (`list.keys`, `len`). The functions a transparent body calls that the module doesn't export are visible with it, or it would say nothing; so are those a `transparent` instance function calls. An exported function such a body calls stays sealed: importers see its signature only. An instance's dictionary is visible wherever the instance is used (which function a class's function is, at a known instance), but an instance's function is sealed like any other unless marked `transparent` (#249).
 
 5. **Files (D53).** `import a.b` finds the standard-library module `a.b`, or else the file `a/b.ck` beside the file being checked; that file declares `module a.b`. Checking a program checks every module it imports, including their proofs, and `checkers trust` prints the ledger of all of them.
 6. **What sealing means for proofs (D54).** In an importer's queries a sealed function is uninterpreted: the importer knows exactly its postconditions and the lemmas it brings in with `have`, nothing about its body. A fact the library does not export cannot be proven outside it; the library has to export a lemma (rule 3).
@@ -232,6 +234,7 @@ Elaboration produces obligations `Γ ⊢ φ` with `φ : Bool`. Sources, each rep
 | precondition | every call of a function with predicates over its parameters (including refinement-alias parameter types such as `b~U8`) | the predicates, with the arguments substituted |
 | postcondition | the end of a function body | the predicates mentioning the result, with the body substituted |
 | constructor invariant (D11) | every constructor application | the constructor's predicates, including refinement-alias field types |
+| type parameter condition (#136) | every application of a type whose parameters have predicates (`Ordered 5 1` for `record Ordered lo hi : lo~Nat, hi~Nat, lo <= hi`), wherever it is written: a parameter, the result, a field | the type's predicates, with the arguments substituted |
 | weakened refinement (D83) | a value whose refinement is replaced by a weaker one in a covariant position (`List (n~Int, n >= 6)` as `List (n~Int, n >= 5)`) | for any `n`: the found predicates imply the expected ones |
 | call of a function-typed value (D84) | `f a` where `f`'s type has preconditions | the preconditions at `a`; afterwards its postconditions at `a` and `f a` are facts |
 | function passed as a value (D85) | a named function, partial application or lambda passed where a function type is expected | for any argument: the expected precondition implies the function's own; with it, the function's postcondition implies the expected one |
@@ -244,7 +247,7 @@ Elaboration produces obligations `Γ ⊢ φ` with `φ : Bool`. Sources, each rep
 | case left out (D144) | each case a `match` (outside a specification) does not cover | the case can't occur: `False` from the facts there; E0240 if not proved |
 | `check` | `check e` | evaluated (D40), no solver |
 
-Predicates inside types and specifications are not themselves checked for well-definedness (a precondition of a function called in a postcondition is not an obligation).
+Inside types and specifications only two obligations are made: a called function's precondition (M17) and a type's parameter conditions (#136). Each predicate may rely on those written before it.
 
 Γ, the **facts in scope**, contains: the preconditions of the enclosing function; the definitions of `let`-bound variables; `n >= 0` for every `Nat`; **path conditions**, namely the guards of enclosing `if`s (true in `then`, false in `else`), the left operand of a short-circuiting `and`/`or`/`implies`, the constructor equation of the current `match` arm (`xs == y :: rest`) together with that constructor's invariants, the literal of a literal arm or the negations of the others in its `_` arm, and an arm's guard; the `ensures` of every lemma brought in with `have`, and every `have` fact (D49); and the postcondition of every function applied in the goal or the facts (D50).
 
@@ -266,16 +269,18 @@ Decidable fragment, following Liquid Haskell: quantifier-free linear integer ari
 | `Int`, `Nat`, `U8`, … | `Int`, with `n >= 0` for `Nat` and the alias's predicates for refinements |
 | `Bool` | `Bool` |
 | `==`, `!=`, `<`, `<=`, `+`, `-`, `*`, `/`, `%` | native (`div`, `mod`: Euclidean, like Checkers) |
-| `Array a` (and `Bytes`, `Array U8`) | `(Seq S)` for `a`'s sort `S`; `len`, `a[i]`, `++` native; each `a[i]` is known to satisfy the element type's refinement (`< 256` for `U8`) (D133) |
-| `String` | its UTF-8 bytes, `(Seq Int)` (D58): `len` (bytes, not characters), `++` and `utf8.encode` native |
+| `Array a` (and `Bytes`, `Array U8`) | `(Seq S)` for `a`'s sort `S`; `len`, `a[i]`, `++` native; each `a[i]` is known to satisfy the element type's refinement (`< 256` for `U8`) (D133); what a sequence pattern leaves (`array_rest`, §9.8) is `seq.extract` from the second element, as the runtime's slice is (#232) |
+| `String` | its UTF-8 bytes, `(Seq Int)` (D58): `len` (bytes, not characters), `++` and `utf8.encode` native; `s.bytes`, `String b` and a `match` on its constructor are the bytes themselves (#170). Every string's bytes satisfy `valid_utf8`, which is uninterpreted, and each byte or string literal in a query comes with whether it is UTF-8, so `string.bytes s != b"\x80"` is proved |
 | `Bag` (D47) | `(Array Int Int)` |
-| enums, records, `List`, `Option`, `Result`, tuples | `declare-datatypes`, with type parameters (value parameters are dropped from the sort); a value's constructor invariants are assumed, with the value parameters of its type filled in (`e~Error src` gives `e.pos <= len src`); a tuple's parts at refined types, or `Nat`, have their predicates (`t~(Bool, (s~Nat, s > 3))` gives `s > 3` of its second part, however a pattern takes it apart; a call's result has them where the callee's preconditions hold, the callee recursive or not); a type whose values reach it again only through an array or a function (`Cells cells : cells~Array Grid`, `FromEmpty f : f~(Empty -> Absurd)`), which Z3 would refuse as not well-founded, gets one more constructor without fields that no program builds, and every value the query names (a parameter, a field, an array element) is known not to be it |
+| enums, records, `List`, `Option`, `Result`, tuples | `declare-datatypes`, with type parameters (value parameters are dropped from the sort); a value's constructor invariants are assumed, with the value parameters of its type filled in (`e~Error src` gives `e.pos <= len src`); a value has what its type says of its parts, one rule for tuples and datatypes (#156): a tuple's parts and a datatype's fields at refined types, or `Nat`, have their predicates, nested (`t~(Bool, (s~Nat, s > 3))` gives `s > 3` of its second part, and `p~Option (Pair Bool (s~Nat, s > 3))` of `p`'s `snd` where `p` is a `Some`), a field's type taking the type's arguments, types and values, and the fields before it, a constructor's fields and invariants under its tester; this holds of a local however a pattern takes it apart, of a field read, of an array element, and of a call's result's parts and fields where the callee's preconditions hold, the callee recursive or not; a value is looked into two datatypes deep and not again at its own type (a list's tail), a value deeper having its facts where the program names it (a pattern, a field read), an abstract type is not looked into, and a sealed function's result has what its signature says, not its body; a type whose values reach it again only through an array or a function (`Cells cells : cells~Array Grid`, `FromEmpty f : f~(Empty -> Absurd)`), which Z3 would refuse as not well-founded, gets one more constructor without fields that no program builds, and every value the query names (a parameter, a field, an array element) is known not to be it |
 | type variables, abstract types | uninterpreted sorts |
 | a parameter of function type | an uninterpreted function; if its type is refined, its postconditions hold at every application where its preconditions do (a pattern-guarded axiom, D139) |
-| a function value (D139) | Z3's `(Array A B)`, curried (`Int -> Int -> Int` is `(Array Int (Array Int Int))`); applying it is `select`; a lambda, even one using local variables, is Z3's `lambda`, and a named function, a partial application or a function parameter passed as a value is one applying it; a known function argument (a named function, a lambda without free variables) still picks a specialized instance (D57) |
+| a function value (D139) | Z3's `(Array A B)`, curried (`Int -> Int -> Int` is `(Array Int (Array Int Int))`); applying it is `select`; a lambda, even one using local variables, is Z3's `lambda`, also where it is given to a function parameter inside a reflected body (`body xs (\ys -> fix body ys)`, #231), and a named function, a partial application or a function parameter passed as a value is one applying it; a known function argument (a named function, a lambda without free variables) still picks a specialized instance of a reflected function (D57), while a function Z3 can't see into (sealed, a builtin) takes it as a value, so a call in a body and the same call in a lemma are one term (#231) |
 | function `f` defined in this module, or imported `transparent` | **reflected** (D12) as `define-fun-rec`, instantiated per type; Z3 unfolds the definition where needed |
 | other imported functions, builtins | uninterpreted, plus their postconditions |
 | `match`, `if`, `let` | `ite` on testers, `let` |
+
+A sequence pattern (§9.8) is the `match` on `Seq.uncons`'s result it stands for: at a known instance its functions are the instance's (the prelude's `Seq` instances for lists, arrays and strings are `transparent`, so their bodies are visible everywhere), and at a clause `Seq s` `uncons` and `size` are uninterpreted, with `uncons`'s postcondition at each call.
 
 Effects (`when`, `fork`, `join`) and functions of types (polymorphic function values) are outside the fragment (E0451); prove facts about them with a lemma.
 
@@ -283,7 +288,7 @@ Z3 sees more values than the program can build: `Option Nat` is `Option Int` to 
 - at each call in the query, under `f`'s precondition, like a postcondition;
 - for every argument, including in terms Z3 creates by unfolding definitions, only if that holds for every solver value: `f` is not reflected (then it is free), or `f` has no precondition, recurses only structurally, and its body is built from non-negative parts (`0`, `1 + length rest`, other such functions). `max_of`'s `if x > m then x else m` is not such a body, so `max_of xs >= 0` is known only where `max_of xs` appears in the query; `have max_of xs >= 0` puts it there.
 
-If Z3 rejects a query, which is a checkers bug, the obligation is reported unproven, never proven. A definition recursing by `decreasing` is given to Z3 only where its recursion ends (D118): `f x = if D then body else f#outside x`, where `D` is its `Nat` parameters being non-negative and, if its termination depends on them, its preconditions; elsewhere its value is unknown, so an equation such as `half 0 = 1 + half 0` (no solution) never reaches Z3. Calls in specifications must meet their callees' preconditions, as calls in bodies do, so a specification can't name a value no program computes.
+If Z3 rejects a query, which is a checkers bug, the obligation is reported unproven, never proven. A definition recursing by `decreasing` is given to Z3 only where its recursion ends (D118): `f x = if D then body else f#outside x`, where `D` is its `Nat` parameters being non-negative and, if its termination depends on them, its preconditions; elsewhere its value is unknown, so an equation such as `half 0 = 1 + half 0` (no solution) never reaches Z3. Calls in specifications must meet their callees' preconditions, as calls in bodies do, so a specification can't name a value no program computes. Each condition may rely on those written before it, as facts: in a function's signature, a constructor's list, and a record's fields, where the conditions of the fields before it come first (#108).
 
 **Equal arrays** (#75). Z3 doesn't conclude that two sequences are equal from their elements, so an obligation whose goal is `xs == ys` on arrays (`Bytes` too) is also proved by `len xs == len ys` and `xs[w] == ys[w]` at a fresh index `w`, where `0 <= w < len xs`. A `forall` in scope over one variable of type `Nat` or `Int` is given at `w` (as at a `forall` goal, §9.9; not one over a refinement of them, which may not hold at `w`), so a lemma whose `ensures` is `forall k : k~Nat, k < len xs, xs[k] == ys[k]`, brought in with `have`, proves `xs == ys`. Only a goal that is the equality itself: for one inside `and`, `if` or another expression, `array.ext` and `bytes.ext` state the rule as lemmas.
 
@@ -331,7 +336,7 @@ error[E0450]: cannot prove that `at_least 7` can be called here
   = help: pass a function that accepts every `Big`
 ```
 
-**How it is checked.** An inline refinement is an anonymous alias, so D71's machinery applies unchanged: obligations where a value is built, variance through type arguments. What changes is the comparison of two refinements in one position: by implication for any value (D83), proven by Z3, where D71 asked for the same alias. For function types the comparison runs both ways (D85): preconditions contravariantly, postconditions covariantly. All of these are about one value or one argument at a time, so they need no induction.
+**How it is checked.** An inline refinement is an anonymous alias, so D71's machinery applies unchanged: obligations where a value is built, variance through type arguments. What changes is the comparison of two refinements in one position: by implication for any value (D83), proven by Z3, where D71 asked for the same alias. A type's own declaration gives the variance of its parameters (covariant where strictly positive, as tuples' parts are), from where it is declared on, so `Pair Nat (j~Nat, i < j)` is a `Pair Nat (j~Nat, i <= j)` in its own module too (#156); an abstract type's marks are what importers and the rest of its module see (D16). For function types the comparison runs both ways (D85): preconditions contravariantly, postconditions covariantly. All of these are about one value or one argument at a time, so they need no induction.
 
 A function type's precondition may mention a parameter of the enclosing function given after it, as `list.contains xs x` does in `fn all p xs -> r : p~(x~a -> Bool, list.contains xs x), xs~List a, r~Bool` (§9.3, #102). The function promises to call `p` only with elements of `xs`, and callers may pass a function that only accepts those.
 
@@ -408,7 +413,7 @@ The kernel still checks exact linearity, and no two calls share a token. When a 
 2. *Closures that capture an authority are single-use.* `let g = \u -> files.read p fs` captures one token, so `g` may be called once; the compiler rejects a second call and suggests passing `fs` as a parameter. Behaviour bodies (`fork`, `join`, `when`) run once, so they may capture authorities freely; the enclosing code keeps using them.
 3. *Concurrent branches can race on the operating system* (two forks writing one file), as in any language.
 
-**Effect statements.** A call whose result is `Unit` may stand alone as a statement line in a block, e.g. `terminal.print_line "done" term`. Only calls returning `Unit` may: discarding any other value needs `let _ = …`.
+**Effect statements.** An expression whose result is `Unit` may stand alone as a statement line in a block, e.g. `terminal.print_line "done" term`. Only expressions returning `Unit` may: discarding any other value needs `let _ = …`.
 
 ### 8.4 Resources: linear, threaded with `let` (D29, D171)
 
@@ -471,11 +476,11 @@ Data is immutable, so sharing it never races; parallel evaluation of pure code i
 
   ```
   when l = log, n = total using sched
-      terminal.print_line (format (len l)) term
+      terminal.print_line format"{len l}" term
       (l, n + 1)
   ```
 
-  This *schedules* the body, which runs once it holds all the listed cowns at once. Inside, `l` and `t` are the current contents, with full ownership, and the body evaluates to the new contents (a tuple, in the order listed; a single value for one cown). `when` is a statement. The body may use authority capabilities from the enclosing scope (here `term`) and may schedule further behaviours with `sched`.
+  This *schedules* the body, which runs once it holds all the listed cowns at once. Inside, `l` and `t` are the current contents, with full ownership, and the body evaluates to the new contents (a tuple, in the order listed; a single value for one cown). `when` is an expression of type `Unit`: its result reports only that the body has been scheduled, not that it has finished. The body may use authority capabilities from the enclosing scope (here `term`) and may schedule further behaviours with `sched`.
 
 Guarantees, by construction:
 1. **No data races.** Contents are only reachable inside a behaviour holding that cown.
@@ -560,12 +565,12 @@ Worked example: `examples/format.ck`, a typed `fmt` whose format string is `comp
 fn greet name age =
     let acc = "" ++ name
     let acc1 = acc ++ " is "
-    let acc2 = acc1 ++ (format age)
+    let acc2 = acc1 ++ (display age [])
     let acc3 = acc2 ++ " years old"
     acc3
 ```
 
-with no format string left to parse at run time. A bad placeholder is a compile-time error: its type is `BadPlaceholder`, so `fmt "{x}" name` reports too many arguments for a `BadPlaceholder`, and `fmt`'s precondition `valid (string.bytes s) 0` catches the rest.
+with no format string left to parse at run time (`display` is `std.string`'s, §9.11). A bad placeholder is a compile-time error: its type is `BadPlaceholder`, so `fmt "{x}" name` reports too many arguments for a `BadPlaceholder`, and `fmt`'s precondition `valid (string.bytes s) 0` catches the rest.
 
 ---
 
@@ -580,7 +585,19 @@ The worked example for this section is `std.json` (`stdlib/json.ck`; `examples/j
 2. the line's last token is `,` or a binary operator (`+ - * / % ++ :: == != < <= > >= and or implies $ .` and the type operator `->` **inside brackets only**); or
 3. the next line's first token is a binary operator from that list, or `:`. A sign is not a binary operator (D169): a line starting with `-1` starts a new logical line, at any indentation (a block's first line, a `match` arm `-1 -> …`), and one starting with `- b` continues.
 
-A trailing `->` or `=` outside brackets does **not** continue the line; it opens a block (a match arm body, a multi-line `let`). Indentation uses spaces only; a tab in leading whitespace is an error. When a logical line is followed by a more-indented line, the lexer emits `INDENT`; on return to an enclosing level it emits matching `DEDENT`s (an inconsistent dedent is an error). Blank and comment-only lines are ignored for layout.
+A trailing `->` or `=` outside brackets does **not** continue the line; it opens a block (a match arm body, a multi-line `let`). Indentation uses spaces only; a tab in leading whitespace is an error. When a logical line is followed by a more-indented line, the lexer emits `INDENT`; on return to an enclosing level it emits matching `DEDENT`s (an inconsistent dedent is an error). A block indented past the continuation line that opens it (a `match` among a signature's constraints) belongs to that line: its lines are laid out from that line's column, and a line that returns from it to a column between the logical line's own and the block's opens the logical line's next block (`NEWLINE INDENT`: the function's body):
+
+```checkers
+fn pick o -> r : o~Option Int, r~Int,
+                 match o
+                     None   -> r == 0
+                     Some x -> r == x
+    match o
+        None   -> 0
+        Some x -> x
+```
+
+Blank and comment-only lines are ignored for layout.
 
 **Comments:** `#` to end of line.
 
@@ -596,6 +613,7 @@ A trailing `->` or `=` outside brackets does **not** continue the line; it opens
 | `c'…'` | `Char` | `c'é'`, `c'\u{1F600}'` |
 | `"…"` | `String` (UTF-8) | `"'"`, `"a\u{e9}"`, escapes `\" \\ \n \r \t \0 \u{…}` |
 | `b"…"` | `Bytes` | `b"null"`, escapes as strings plus `\xNN` |
+| `tag"…"` | its formatter's `Result` (§9.10) | `page"<p>{name}</p>"` |
 
 **Keywords:** `module import as export abstract transparent fn enum record type let lemma ensures proof have auto admit check match if then else try and or implies decreasing partial ghost own comptime when using par`. `not` is an ordinary prelude function.
 
@@ -637,9 +655,9 @@ stmt        ::= 'let' pattern '=' ( expr | NL INDENT block DEDENT )
               | 'have' expr                                  -- lemma application; adds its conclusion
               | 'have' lname '~' type                        -- a typing (D170)
               | expr                                         -- D35: must have type Unit
-              | 'when' lname '=' expr { ',' lname '=' expr } 'using' lname NL
-                INDENT block DEDENT                          -- D30: schedule a behaviour
-expr        ::= 'if' expr 'then' expr 'else' expr
+expr        ::= 'when' lname '=' expr { ',' lname '=' expr } 'using' lname NL
+                INDENT block DEDENT                          -- schedules a behaviour; type Unit
+              | 'if' expr 'then' expr 'else' expr
               | 'if' expr NL INDENT block DEDENT
                 'else' ( 'if' … | NL INDENT block DEDENT )   -- `else if` chains; `else` is required
               | 'match' expr NL INDENT { arm } DEDENT
@@ -650,7 +668,9 @@ expr        ::= 'if' expr 'then' expr 'else' expr
               | opexpr                                       -- precedence climbing over §9.4
 arm         ::= pattern [ 'if' expr ] '->' ( expr NL | NL INDENT block DEDENT )
 app         ::= postfix { postfix }                          -- juxtaposition, left-assoc (D8)
-postfix     ::= atom { '.' lname | '[' expr ']' }            -- glued only (D22)
+postfix     ::= atom { '.' lname | '[' expr ']' | template } -- glued only (D22)
+template    ::= '"' { text | '{{' | '}}' | hole } '"'        -- glued to a lower-case name (§9.10)
+hole        ::= '{' [ expr ] [ '|' expr { ',' expr } ] '}'
 atom        ::= lname | Uname | literal
               | '(' ')' | '(' expr ')' | '(' expr ',' expr { ',' expr } ')'
               | '(' op ')' | '(' op expr ')' | '(' expr op ')'    -- operator sections
@@ -675,6 +695,7 @@ apat        ::= '_' | lname | literal | Uname
 | predicate over inputs only | precondition | refinement on the inputs |
 | predicate mentioning the result name | postcondition | return type `{r : R \| P}` |
 | predicate in a constructor/field list | invariant (D11) | `Holds` field, erased |
+| predicate over a type's parameters (`record Ordered lo hi : lo~Nat, hi~Nat, lo <= hi`) | condition on the type (#136): an obligation wherever the type is applied (§7.1), a fact in its fields | erased |
 | free `lname` in a type position, not in scope (`a` in `xs~List a`) | implicit type parameter (D10); a name used as a qualifier (`future` in `future.Future`) is never auto-bound | `{a :0 Type}` |
 
 A constraint is only required where inference fails; `fn is_ws b : b~U8` infers its `Bool` result.
@@ -733,7 +754,7 @@ All prelude types are immutable.
 | `Result a e` | enum | `Ok x`, `Err x`; works with `try` |
 | `List a` | enum | `[]`, `x :: xs`, `[1, 2]` |
 | `Bytes` | `Array U8` (D133) | `b"…"`; packed, one byte per element |
-| `String` | builtin | valid UTF-8 (D20); `string.bytes s` gives its `Bytes` |
+| `String` | record (#170): `bytes~Bytes, valid_utf8 bytes` | valid UTF-8 (D20); stored as its bytes (§14), so `s.bytes` and `string.bytes s` cost nothing; `String b` needs `valid_utf8 b`. Where a type is expected, `String` is the type, not its constructor |
 | `Array a` | builtin (D133) | O(1) `len` and index; `std.array`; arrays of fixed-width numbers packed |
 | `Map k +v`, `Set k` | abstract, sealed modules | ordered by `Ord k` (D15); export lemmas such as `lookup_insert` |
 
@@ -775,7 +796,7 @@ Other warnings:
 | W033 | a `compile_fail` block that compiles, or fails with another error than it names (D148 d) |
 | W034 | a code block whose `main` doesn't exit with `Success` (`checkers doc` and `checkers site`, D148 d) |
 
-Used means reached, through any reference, from the roots: `main` in a program, the exports in a library (no `main`), every declaration of a module with neither, and in all three every `check`, lemma and instance (D144). The standard library and dependencies are not reported, and none of these is reported while there is an error in the names and types phase (a name that failed to resolve would look unused).
+Used means reached, through any reference, from the roots: `main` and the exports of every module of the program, with an exported type's constructors and fields; every declaration of a root module with neither `main` nor an export; and always every `check`, lemma and instance (D144, #95). A program can also be a library: what its modules export counts as used, whether or not `main` uses it. The standard library and dependencies are not reported, and none of these is reported while there is an error in the names and types phase (a name that failed to resolve would look unused).
 
 ### 9.8 Classes and instances (D136, M23–M25)
 
@@ -795,12 +816,44 @@ instance Ord (List a) : Ord a
 fn larger x y -> r : Ord a, x~a, y~a, r~a, le x r and le y r
 ```
 
-- **A class** lists functions (a signature, with a type for each parameter and the result, E0362) and lemmas (a statement); `C.f` names one. A lemma that follows from them is written outside the class, as an ordinary lemma with the clause `C a`.
-- **An instance** gives each function a body (E0364 if one is missing, E0365 if its parameters don't match, E0363 for one the class doesn't have) and may give each lemma a proof, whose first line may be `decreasing e` (§5.3); without one, Z3 proves it. Its signatures are the class's, at its type. Inside an instance a member's name is the instance's own (recursion on the type is ordinary recursion, checked for termination); the class's function at another type is `C.f`. Using the class's function at the instance's own type from inside it is recursion through the dictionary, which can't be checked (E0301).
-- **Coherence.** An instance is for a type constructor applied to distinct variables (E0281), of the class's kind (E0286); its context is classes of those variables. It is declared in the package of the class or of the type (Rust's orphan rule, E0282). No two instances of a class have the same type constructor (E0283). An instance is visible wherever its module is loaded.
-- **Using a class.** A clause `C t` in a signature is an implicit parameter, the dictionary. Each use of a function with such a parameter finds it once the types are known: a dictionary in scope (a clause of the enclosing function) for that class and type, or the instance for the type's constructor, with its context found the same way (E0284 if there is none, E0285 if the type isn't known). Only instances build dictionaries (E0287).
+- **A class** lists functions (a signature, with a type for each parameter and the result, E0362; a parameter may be `own` or `ghost`, as in any signature, and its field in the dictionary takes it the same way) and lemmas (a statement); `C.f` names one. A member's parameter of type `ghost Type` with the name of the class's parameter *is* that parameter, passed explicitly (#161): `fn try_from x t -> r : x~s, t~ghost Type, r~Option t` is used as `try_from "123" Int`. It isn't in the dictionary (it is erased, and the dictionary is already for that type); in an instance the member writes it like any other parameter (E0365), and there it is the instance's type. Any other parameter (or result) can't have the name of the class's parameter, which its signature already uses (E0369). A function may have class clauses of its own (`fn weigh by xs -> n : Seq s, by~w, xs~s, n~Int`): its field in the dictionary takes their dictionaries as implicit parameters, so each call passes them, found where it is called, and an instance's function has them as any function with a clause does; the instance needs no context for them (#189). A lemma that follows from them is written outside the class, as an ordinary lemma with the clause `C a`.
+- **An instance** gives each function a body (E0364 if one is missing, E0365 if its parameters don't match, E0363 for one the class doesn't have) and may give each lemma a proof, whose first line may be `decreasing e` (§5.3); without one, Z3 proves it. A function's signature is the class's, at its type, unless it writes one of its own (below); a lemma's statement is always the class's. Inside an instance a member's name is the instance's own (recursion on the type is ordinary recursion, checked for termination); the class's function at another type is `C.f`. Using the class's function at the instance's own type from inside it is recursion through the dictionary, which can't be checked (E0301). A class its functions use at the instance's variables is the instance's context (`instance Ord (List a) : Ord a`); without it, E0284's `help:` says to add it there (#189).
+- **A signature of its own (#225).** An instance's function may write an ordinary signature, to promise more than its class, or require less, where the instance is known:
+
+  ```checkers
+  class Size a
+      fn size x -> n : x~a, n~Int
+
+  instance Size (List a)
+      fn size xs -> n : xs~List a, n~Int, n >= 0
+          match xs
+              []        -> 0
+              _ :: rest -> 1 + size rest
+
+  fn known xs -> r : xs~List Int, r~Int, r >= 0
+      Size.size xs                # the instance's postcondition
+  ```
+
+  - **Its shape is the class's.** The same parameters, in order, each `own` or `ghost` as in the class, a parameter for the class's `t~ghost Type` one (#161) written `t~ghost Type` (where it is the instance's type, as in the body; E0365 for another type), and the class's class clauses; the types are the class's at the instance's type, up to refinement: `n~Nat` for the class's `n~Int` is allowed (`Nat` is `Int` refined), `n~Bool` is E0365, at the type, with the class's declaration as a note. The names are the instance's own. Its context is the instance's, written in its header; a clause of the context written in the signature too is the same clause. A class's type (`Options`) is the instance's, as in the class's signature at the instance.
+  - **It refines the class's**, checked by the prover as a refined function type is (§7.5): preconditions contravariant, postconditions covariant. For any values of the class's parameter types, the class's preconditions imply each of the instance's (E0371 at the instance's precondition otherwise: a call through the class needn't establish it); and where the class's preconditions hold, the instance's preconditions and postconditions imply each of the class's postconditions, a refinement of the result's type included (E0371 at the instance's signature otherwise, naming the class's condition; `n~Int` for the class's `n~Nat` doesn't promise `n >= 0`). Each E0371 has the class's declaration as a note, and a counterexample when there is one. A signature identical to the class's is allowed, with no warning.
+  - **The body is checked against it**, so the stronger promise is proved once, where the instance is (E0450 at the instance's postcondition).
+  - **At a known instance** (the call's dictionary is that instance's, as for the direct call, §14, and in the prover), a call checks the instance's preconditions instead of the class's and assumes its postconditions as well as the class's; its body is visible to the prover as any instance function's is: in its module, or everywhere if it is `transparent` (below). Whether a dictionary is known is decided once the module's bodies are checked, so it doesn't matter where the instance is declared. A partial application of the class's function, or the class's function as a value, has the class's signature (§7.5) at every instance.
+  - **Generic code** (a dictionary from a clause, or an instance's context) sees only the class's signature: adding a signature to an instance never changes what a generic caller may assume or must establish.
+  - **Lemmas** are unchanged: their statements are the class's at the instance; a proof may use the instance's stronger postconditions.
+  - **At run time** nothing changes: the dictionary holds the instance's function, which a known call calls directly.
+
+- **Sealed by default (#249).** An instance's function is sealed outside its module, as any function is (§6): an importer's proofs know its signature (its own, or the class's at the instance's type) and not its body. `transparent fn` in an instance makes the body visible to importers, with the functions it calls that its module doesn't export, as `export transparent fn` does; `transparent` on an instance's type or lemma is E0105. In its own module an instance's function is visible without the modifier. Its dictionary is always visible, so a known instance is always known; only what its functions do is sealed. Run time is unchanged: the direct call and specialization still call the instance's function. Where an importer's proof needs what a body does, prefer a signature of the instance's own (above) to `transparent`, unless the body is the natural specification (`le x y` is `x <= y`). In the standard library, these are `transparent`: the prelude's `Ord`, `Add`, `Sub`, `Mul`, `Neg`, `Monoid`, `Functor` and `Seq` instances, `Functor Array`, `Token Int Int`, and `std.json`'s `Token` and `Seq Tokens` instances.
+
+- **Coherence.** An instance is for a type constructor applied to distinct variables (E0281), of the class's kind (E0286). A tuple type `(a, b)` counts, and so does `()` (its constructor takes no parameters, as `Bool`'s doesn't), written `()` or `Unit`; any other alias is E0281; its context is classes of those variables. A tuple's type constructor is the pair (D174): `instance C (a, b)` covers every tuple of two or more parts, `b` being the rest, so `(1, 2, 3)` uses it with `b` as `(Int, Int)`; an instance for `(a, b, c)`, which is `(a, (b, c))`, is E0281 (#130). It is declared in the package of the class or of the type (Rust's orphan rule, E0282). No two instances of a class have the same type constructor (E0283). An instance is visible wherever its module is loaded.
+- **Using a class.** A clause `C t` in a signature is an implicit parameter, the dictionary. `t` may be a parameter `t~ghost Type` passed explicitly (#161): the dictionary is then an implicit parameter right after `t`, found once the type passed is known. A partial application that hasn't reached `t` has the clause in its type, `(t~ghost Type) -> {Parse t} -> Option t`, as any function taking a `ghost Type` does with what follows it. Each use of a function with such a parameter finds it once the types are known: a dictionary in scope (a clause of the enclosing function) for that class and type, or the instance for the type's constructor, with its context found the same way (E0284 if there is none, E0285 if the type isn't known). Only instances build dictionaries (E0287).
+- **At a refinement alias** (#226). A class used at a refinement alias `T` of a type `B` (`Make Nat`) runs `B`'s instance (`Make Int`'s), which is valid only where that instance gives `T`'s values: E0456 at the use otherwise, whose `help:` suggests using `B` instead. An instance for an alias itself is E0281, whose `help:` says this. Only a value of the class's type the instance *gives* needs it; a value it is given needs nothing, as a `T` is a `B`.
+  - **Results.** At a call of the class's function whose dictionary is that instance's (`make (-1)`, or `Read.read 5 Nat` passing the type explicitly), each value of the class's type in the result (the result itself, or one inside it: `Some`'s, a tuple's part, a field) must be a `T`, from what the prover knows at that call: the instance's signature at the call's arguments (§9.8's "A signature of its own") and its body where that is visible (in the instance's module, or where it is `transparent`, below). So `make (-1)` at `Nat` is E0456, "cannot prove that `make (-1)` is a `Nat` (`(make (-1)) >= 0`)", unless `Make Int`'s `make` promises `r >= 0`; with `Some v -> v == x`, `Read.read 5 Nat` gives a `Nat` and `Read.read (-1) Nat` doesn't. A value of the class's type under a recursive type (`List t`) or a function's result is not looked for at a call: the use is E0456.
+  - **Through the dictionary.** Anywhere else the dictionary goes (to a function with the clause `C a`, a partial application, an instance's context such as `Make (List a) : Make a` at `List Nat`), generic code may call any of the class's functions with any arguments its signature allows at `T`: for each of them, wherever the class's preconditions hold, with its parameters of the class's type `T`s, its result's values of the class's type must be `T`s. So `larger x y`, of two `Nat`s, is a `Nat`: `Ord`'s functions give no value of the class's type; `made 1`, with `fn made u -> r : Make t, u~Int, r~t`, is E0456 unless `Make Int`'s `make` promises `r >= 0` for every `u`.
+  - **Function parameters.** A parameter of a function type that takes the class's type (`f~(t -> Bool)`) is called by the instance with values it gives: its own signature must take only `T`s there (`f~(Nat -> Bool)`), else the use is E0456, at a call as through the dictionary.
+  - A refinement alias inside a type argument (`U8` in `Seq (Array U8)`) is the instance's variable, which it is generic in: nothing is checked, unless the instance's context uses the class at it (`Make (List a) : Make a`), where it is checked as above.
+  - The instance's body counts only where the prover sees it: outside the instance's module, a sealed instance function (the default) is known by its signature alone, so `make 5` at `Nat` with `make u = u` and no signature is E0456 there, and accepted if `make` is `transparent`.
 - **At run time** a dictionary is a record of the class's functions, passed as an argument; lemmas are erased.
-- **In the prover** a class's function reading an unknown dictionary is a field of it, uninterpreted; with a known instance's dictionary it is that instance's function, whose body is visible (instances' functions are transparent). A class's lemma is assumed for every dictionary, as each instance proves it; it is used with `have C.l …` (or `have l …`).
+- **In the prover** a class's function reading an unknown dictionary is a field of it, uninterpreted; with a known instance's dictionary it is that instance's function: inside the instance's module its body is visible, as any function's is; outside it, the function is sealed (§6): the prover knows its signature (its own, or the class's at the instance's type) and its body only if it is marked `transparent` (#249). A class's lemma is assumed for every dictionary, as each instance proves it; it is used with `have C.l …` (or `have l …`).
 - **Termination.** Using an instance of the same module is a call of the function building its dictionary, which calls its functions and lemmas, so recursion through a dictionary is found like any other.
 
 **Operators (M24).** On numbers, `+ - *`, negation and comparisons are built in, as before. On a type with an instance of the prelude's `Add`, `Sub`, `Mul`, `Neg` or `Ord` (or a type parameter with such a clause), `x + y` is `add x y`, `-x` is `neg x`, `x <= y` is `le x y`, `x >= y` is `le y x`, `x < y` is `not (le y x)` and `x > y` is `not (le x y)`. With no instance, the error is as for numbers (E0210). `Monoid` adds `zero` and the lemmas `assoc`, `zero_add`, `add_zero` (stated with `+`, so each needs `Add a`). `Int` has instances of all of these, so generic code works at numbers.
@@ -819,7 +872,103 @@ fn doubled xs -> ys : Functor f, xs~f Int, ys~f Int
     fmap (\x -> x * 2) xs
 ```
 
-The prelude declares `Ord` (`le`; `trans`, `total`, `antisym`) and the lemma `refl`, with instances for `Int` (so `Nat`, `Char` and the fixed-width numbers), `Bool` (`False` first), `String` (by bytes, which is by scalar values; a builtin with three axioms), `List a` (lexicographic) and `Option a` (`None` first); and `Functor`, with instances for `List` and `Option` (`std.array` has `Array`'s).
+**A class's types (#133).** A class may declare a type, `type Name`, that each instance gives: it names a type that depends on the class's parameter. Inside the class, its functions and lemmas use it by its bare name, anywhere a type may appear (a precondition's predicate too). It takes no parameters of its own (E0124). `type Name = T` gives it a default, which may not mention the class's parameter (E0288), so it means the same at every instance.
+
+```checkers
+class Display a
+    type Options = NoOptions
+    fn display x os -> s : x~a, os~List Options, s~String
+
+enum NoOptions                        # no constructors: the only list of them is `[]`
+
+instance Display Money
+    type Options = MoneyOption
+    fn display m os
+        …
+
+instance Display Int                  # its `Options` is `NoOptions`
+    fn display x os
+        …
+
+instance Display (Pair a) : Display a
+    type Options = Display.Options a  # may use its context's types
+    …
+```
+
+- **An instance** gives it with `type Name = T`, or leaves it out to take the default; with no default, leaving it out is E0364, and giving a type the class doesn't have is E0363. In the instance's signatures, `Name` is that type. A class's function used in them (in a precondition, say) finds its instance from its arguments, as anywhere; where they don't tell (`valid os`, `os` a list of options), it is the instance's own (#146).
+- **Using it.** Outside the class it is `C.Name t` (`Display.Options Money`; `C.Name` alone is E0291). At a type whose instance is known it **is** the instance's type, both when types are compared and in the prover: `display price [Cents]` checks, and a `match` on `Cents` with it. Its refinement comes with it: `Seq.Elem (Array U8)` is `U8`, so the first element `Seq.uncons` gives is known to be `< 256`, as in a `x :: rest` pattern. At a type parameter `a` with the clause `C a`, it is a type of its own, equal only to itself: generic code can pass `[]`, or values it was given at that type, and what its constraints (below) allow, and nothing else. Without a clause for `a` it is E0284, as for a class's function.
+- **It doesn't determine the class's type.** `Int` and another type may both have `NoOptions`. So comparing `C.Name a`, while `a` isn't known yet, with another type neither fails nor guesses: it waits until `a` is known (from another argument, or a later use of the same value), and is then compared again; if `a` is never known, the use is E0285. `(\v -> display v [Cents]) (Money 1250)` checks.
+- **In core** the dictionary is a record whose fields may depend on earlier fields: its types first (`$Options~ghost Type`), then the dictionaries of their clauses (below), then its functions, whose types use them. `C.Name t` is a definition reading that field of the dictionary found for `t` (Lean's classes, structures with fields of type `Type`, work so).
+- **At run time** the type is erased, but the dictionary keeps its layout word (D133), as a type argument's slot does, so generic code lays out an array of `C.Name a` as the instance's type is laid out.
+- **In the prover** a known instance's type is that type. At a dictionary in scope for `t`, it is a sort of its own applied to `t`'s sort (`Display.Options a`): one instance per type, so two uses at the same type are the same sort.
+- **Cycles and positivity.** An instance's type defined through itself, directly or through other instances (`type Options = Display.Options Money` in `Money`'s instance), is E0225, as for a type alias. A recursive type may not hold a class's type at itself (`kids~List (Display.Options Tree)` in `Tree`, E0354): what the instance gives isn't known while the type is checked, so it is taken as possibly negative.
+- **`==`** (D125 b) treats `C.Name a` as it treats a type parameter. **Coherence** is unchanged: one instance per type constructor, so `Display.Options Money` has one meaning wherever `Money`'s instance is loaded.
+
+**Constraints on a class's types (#176).** After `type Name`, or a default `type Name = T`, come the constraints a signature takes, about `Name`: class clauses, and predicates on a value of it.
+
+```checkers
+class Seq s
+    type Elem : Ord Elem                       # its values have an order
+    fn uncons xs -> r : xs~s, r~Option (Elem, s)
+
+class Encoding s
+    type Unit : u~Unit, code s u < 256         # every value's code is below 256
+    fn code s u -> n : s~ghost Type, u~Unit, n~Nat
+    fn units x -> us : x~s, us~List Unit
+```
+
+- **A clause** is a class of the type itself, `D Name` (E0370 otherwise). Each instance's type must have it: the dictionary is found at the instance's `type Name = T` (at its header for a default), as any clause is (E0284 if there is none, `help:` naming the context to add). In generic code with the clause `C a`, `C.Name a` has it: the dictionary is a field of `C a`'s, so `le x y`, `x <= y` and passing values to a function with the clause `D b` work. A clause on a class's type in a signature (`Add (Seq.Elem s)`) is an ordinary clause: an implicit parameter, found once `s` is known.
+- **A predicate** names a value of the type first, `u~Unit` (E0370 if it doesn't, if the name's type isn't the type, or if a second name is given), and may use the class's functions. A class's type is a type of its own (above), so a predicate reaches its values through them: `u < 256` is E0210, whose `help:` says so. A function used there whose arguments don't tell the instance takes the class's parameter explicitly (`s~ghost Type`, #161), since `C.Name a` doesn't determine `a`.
+- **Checked at each instance.** Every predicate holds of every value of the type the instance gives, or takes as the default: a proof by Z3, with the instance's functions. `type Unit = U8`, with `code` its value, proves `code s u < 256`; `type Unit = Nat` is E0450 at `type Unit = Nat`, "cannot prove that every `Nat` satisfies `code s u < 256`, as `Encoding.Unit` requires", with a counterexample (`u = 256`). A default is checked at each instance that takes it (reported at its header), since its predicates are about that instance's functions.
+- **Assumed in generic code.** With the clause `C a` in scope, every value of `C.Name a` satisfies the predicates: the prover assumes them of each such value, a parameter, a local, a field, an element, a call's result, as it assumes a refinement alias's (§7.3). At a known instance, `C.Name t` is the instance's type, whose own refinement implies them.
+- **At run time** a clause's dictionary is a field of the class's dictionary; predicates are erased.
+
+**Classes of several types (#145).** A class may take several type parameters, `class Hole s h`, when what is allowed is a property of the types together: which hole types a formatter accepts.
+
+```checkers
+class Hole s h
+    fn hole tag x -> r : tag~s, x~h, r~String
+
+instance Hole Format a : Display a    # any type with a display
+instance Hole Page String             # only strings
+instance Hole Plain String
+instance Hole Plain Int               # strings and ints, nothing else
+```
+
+- **Declaring.** Each function and lemma mentions every parameter of the class in its parameters' types, or takes it explicitly as `t~ghost Type` (above), as `class TryFrom s t` with `fn try_from x t -> r : x~s, t~ghost Type, r~Option t` does (E0368 otherwise, at the member, naming the parameter): otherwise a use couldn't tell which instance it means. Each parameter's kind comes from how the members use it, as for one parameter (M25).
+- **An instance** gives a type for each parameter (E0292 otherwise). Each is a type constructor applied to distinct type variables (E0281), or a bare type variable, except the first, which can't be (E0281); the variables are distinct across all the types (E0281). Its context is classes of those variables. With one parameter, `instance Ord List a` is E0292 too (`instance Ord (List a)` is meant).
+- **Coherence.** An instance is declared in the package of the class, or in the package of the type constructor of one of its types, provided no type before it is a bare variable (E0282, labelled at the variable when one comes first): Rust's orphan rule ([RFC 2451](https://rust-lang.github.io/rfcs/2451-re-rebalancing-coherence.html)). So `instance Hole Format Money` may be in `Money`'s package though `Hole` and `Format` are foreign there; `instance Rel Format a Money` may not, since the bare `a` comes first (it may be in `Format`'s). This is coherent across packages: of two overlapping instances in different packages, allowed by their types at positions i and j, i = j can't overlap (types of different packages at the same position); if i < j, the second has at position i the first's type (a bare variable there is forbidden), so its package depends on the first's and sees its instance, and the overlap is found there; j < i likewise. An instance in the class's package is seen by every package that can use the class. Two instances whose types can match the same types are E0283: at each position the same type constructor, or a variable in either (`Hole Format a` and `Hole Format String` overlap; `Hole Format a` and `Hole Page String` don't).
+- **Using a class.** A clause `Hole s h` is an implicit parameter, the dictionary, as for one parameter. An instance is chosen once the use's types are known wherever the instance names a type constructor; where it has a bare variable, that type need not be known yet. With `instance Hole Format a : Display a`, a use at `Format` with the hole's type not yet known chooses it at once, and its `Display a` waits for `a`. With `instance Hole Page String`, the use waits until the hole's type is known, even though it is `Page`'s only instance; with `Hole Plain String` and `Hole Plain Int`, the same. An instance is never chosen because the others have been ruled out: instances are registered as their modules are checked, so the set visible at a use depends on what has been loaded, and choosing "the only one left" would give a use different meanings in different module orders. E0284 if no instance can match; E0285 if the types an instance needs never become known (its label names the instances that could match, when there are several). A dictionary in scope is used for exactly its types: a use whose unknown types it could match waits for them.
+- **A class's types** are given by each instance; outside the class, `Hole.Options s h`, a type for each parameter (E0291 with fewer). In the prover, at a dictionary in scope, it is a sort of its own applied to the sorts of all the types.
+- Everything else is as for one parameter: the dictionary is a record of the class's functions; a known instance's functions are visible to the prover and an unknown dictionary's fields are uninterpreted; a class's lemma is assumed for every dictionary; termination through dictionaries is found the same way. A class with one parameter is unchanged.
+
+**Sequences (#169).** The prelude's class `Seq` lets the patterns `[]`, `x :: rest` and `[p1, …, pn]` take apart any type with an instance, as `Add` lets `+` work on any type with one: a function written once works on lists, arrays (`Bytes` too) and strings.
+
+```checkers
+export class Seq s
+    type Elem
+    fn size xs -> n : xs~s, n~Nat
+    fn uncons xs -> r : xs~s, r~Option (Elem, s),
+                        match r
+                            None           -> size xs == 0
+                            Some (_, rest) -> size rest < size xs
+
+fn count xs -> n : Seq s, xs~s, n~Nat
+    match xs
+        []        -> 0
+        _ :: rest -> 1 + count rest
+```
+
+- **Instances.** `List a` (`Elem` is `a`; `size` is the length), `Array a` (`Elem` is `a`, so a `Bytes`' is `U8`; `size` is `len`) and `String` (`Elem` is `Char`; `size` is the number of bytes, which `uncons` makes smaller by a whole character). All three are in the prelude, so a `match` needs no import.
+- **Patterns.** On a value whose type is not `List` and has a `Seq` instance, or is a type parameter with a clause `Seq s` in scope, `[]` matches where `Seq.uncons xs` is `None`, `p :: q` where it is `Some (x, rest)` with `p` matching `x` and `q` matching `rest`, and `[p1, …, pn]` is `p1 :: … :: pn :: []`. A nested pattern takes `rest` apart with another `uncons`. `uncons` is called once for each value taken apart, however many arms test it. On `List a` a `match` is built in, unchanged (its constructors and these patterns mix, its proofs and memory reuse are as before), as numbers keep their built-in `+`; so is a `match` on a value whose type isn't known yet. A `let` or a lambda's parameter takes a sequence apart the same way.
+- **Mixing** these patterns with the type's own constructors in one `match` (`String b` and `[]` on a string) is E0248. A type with no instance and no clause is E0241, as before.
+- **Exhaustiveness** is that of a `match` on `Option`: `[]` and `_ :: _` cover everything. A missing case is shown as a pattern of the sequence (`[]`, `_ :: []`).
+- **Termination (§5.3).** `uncons`'s postcondition is a fact after each of its calls, as for any call (D50), so in a `::` arm `Seq.size rest < Seq.size xs` is known; guessed measures try `Seq.size` of a parameter taken apart so. Each instance proves the postcondition in its `uncons`.
+- **In the prover (§7.3)** the patterns are the `match` on `uncons`'s result they stand for.
+- **At run time** `uncons` on an array takes constant time: the rest is a slice sharing the array's storage (§14). On a string it is written in Checkers from two builtins on a non-empty string, `string_first` (the first character, decoded) and `string_rest` (the rest of the bytes, a slice sharing them): `if len s.bytes == 0 then None else Some (string_first s, string_rest s)`.
+- **Building values** is not part of this: `[]`, `x :: xs` and list literals build lists.
+
+The prelude declares `Ord` (`le`; `trans`, `total`, `antisym`) and the lemma `refl`, with instances for `Int` (so `Nat`, `Char` and the fixed-width numbers), `Bool` (`False` first), `String` (by bytes, which is by scalar values; a builtin with three axioms), `List a` (lexicographic) and `Option a` (`None` first); `Functor`, with instances for `List` and `Option` (`std.array` has `Array`'s); and `Seq` (`Elem`, `size`, `uncons`), with instances for `List a`, `Array a` and `String`.
 
 ### 9.9 Named preconditions and `forall` (D137, M23)
 
@@ -837,6 +986,110 @@ lemma total_by key : Ord k, key~(a -> k)
     proof
         have total (key x) (key y)
 ```
+
+### 9.10 Templates (#132)
+
+A string literal glued to a lower-case name before it is a **template**: `tag"text {e} text"`. The name is the *tag*, a function in scope: a qualified one (`app.page"…"`) and a partial application bound to a name (`let q = sql conn`, then `q"…"`) are tags too. A string not glued to a name is unchanged, as is one glued to a keyword (`then"a"`).
+
+- Inside the quotes, text is as in a string, with its escapes; `{{` and `}}` are `{` and `}`. `{…}` is a **hole**; a `}` that closes none is E0005.
+- A hole is `{e}`, the expression `e`; `{e | o1, o2}`, `e` with the options `o1`, `o2`; `{}`, a new parameter of the template; or `{| o1, o2}`, a new parameter with options. `e` and the options are expressions, checked in the template's scope, each with its span inside the literal.
+- A hole ends at the `}` that closes it; it may hold brackets, strings and templates (`{f "a"}`). `|` splits it only outside brackets. A hole still open at the end of the line is E0006. A `:` in one is E0100 (it is no part of an expression), and so is a `#` (E0001: a comment would never let the hole close).
+- The options are the inside of a list, as a direct call writes it: `{x | Precision 20, Padding 20}` passes `[Precision 20, Padding 20]`. `{x |}` is E0100.
+
+**Formatters.** `std.string` declares the classes a template is built through, and `NoOptions`, an enum with no constructors. A template needs no import: `std.string` is loaded for a module that has one (its tag is a name like any other: `std.string`'s own, `format`, is imported, §9.11). A formatter's instances name the classes, so its module imports them, `import std.string (Template, Hole)`; their functions are names only where imported.
+
+```checkers
+export class Template s
+    type Result
+    fn text st str -> r : st~s, str~String, r~s
+    fn finish st -> r : st~s, r~Result
+
+export class Hole s h
+    type Options = NoOptions
+    fn hole st x os -> r : st~s, x~h, os~List Options, r~s
+```
+
+A tag is applied to the number of bytes of the template's text (its escapes read, `{{` one byte) and its number of holes, and gives the first state. A hole's options are `Hole.Options` of the state's type and the value's, so each value type a formatter takes may have options of its own.
+
+**Meaning.** `tag"a{x}b{y | o}c"` is
+
+```checkers
+Template.finish (Template.text (Hole.hole (Template.text (Hole.hole (Template.text (tag 3 2) "a") x []) "b") y [o]) "c")
+```
+
+with `std.string`'s functions, whether or not the module imports them, and whatever its own names mean. Empty text pieces are left out. With positional holes it is a lambda taking them in order: `tag"{}, {}"` is `\a0 a1 -> Template.finish …`, so a positional hole's type comes from where the template is used, as a lambda parameter's does (`page"<li>{}</li>" name`).
+
+- Each call is an ordinary use of a class (§9.8), at a span inside the template. `hole`'s instance is found at the hole's value (at the hole, for a positional one): a value of a type no instance takes is E0284 there ("no instance of `Hole` for `Page` and `Nat`"), and one whose type never becomes known is E0285 there. `text`'s and `finish`'s are found at the tag. An option of the wrong type, and an obligation inside a hole, are reported at the option or the expression.
+- **The tag first.** The tag's first state, `tag n k`, is checked before anything else. If that fails (`tag` is unknown, or isn't a function of two numbers), or its type can't have a `Template` instance (it has none, or it is a type parameter without the clause `Template s`), that is the template's only error, at the tag (E0284 for a missing instance: "no instance of `Template` for `Int`: `count` isn't a template's tag"); the holes and options are not checked. A type not yet known waits, as for any use of a class.
+- In the prover a template is its calls: what is known of the result comes from the instances' functions, as for any code.
+
+### 9.11 Showing values (#126)
+
+There is no built-in `format`: `std.string` shows values through two classes, and its `format` is a template's tag (§9.10) built on one of them. None of these is in the prelude; a module imports them, `import std.string (format, display, debug)`.
+
+```checkers
+export class Display a
+    type Options = NoOptions
+    fn display x os -> s : x~a, os~List Options, s~String
+
+export class Debug a
+    fn debug x -> s : x~a, s~String
+```
+
+**`Display`: for users, with options of the type's own.** `display x []` shows `x` without options. An instance chooses its options' type, or leaves it out for `NoOptions`. Options are typed, so an option a type doesn't take is a type error at the option, and every list of a type's options is accepted: where two conflict, the later one wins. No instance is derived: a type shows for users only as its author writes it, in the module that declares the type (§9.8's coherence). At a type parameter, `display` needs the clause `Display a` (E0284 without it); generic code can pass only `[]` or options it was given. There are no instances for containers (`List`, `Option`, `Result`, tuples, `Array`), not even conditional ones, and none for `Unit`. Padding is not an option: a program pads with ordinary functions.
+
+| Type | Options | Shows |
+|-|-|-|
+| `Int` (so `Nat`, the fixed-width types and `Char`, which are refinements of it) | `IntOption`: `Hex`, `Binary`, `Octal` (after `0x`, `0b`, `0o`, lower case), `Plus` (a `+` before a non-negative number), `Digits n` (at least `n` digits, zeros before them and after the sign and prefix) | decimal; without options, `Parsable.parse` reads it back, and a number that isn't negative starts with a digit, and with `0` only when it is `0`, as the instance's own signature promises (§9.8) |
+| `String` | `StringOption`: `Quoted` (as `debug` shows it), `Take n` (the first `n` scalar values, then quoted if asked) | the string itself |
+| `Bool` | `NoOptions` | `True`, `False` |
+| `Decimal` (`std.decimal`) | `DecimalOption`: `decimal.Plus`, `Places n` (rounded to `n` digits after the point, half away from zero, never with an exponent) | as `decimal.render` writes it |
+
+The instances for `Int`, `String` and `Bool` are in `std.string`, beside the class; `Decimal`'s is in `std.decimal`. `std.decimal`'s `Plus` is written `decimal.Plus` where `std.string`'s is also in scope.
+
+**`Debug`: Checkers source, for every type.** Every type has a derived instance that writes a value as source: `Some (Ok 1)`, `[1, 2]`, `(1, "a")`, `b"…"`. Strings are quoted at every level, the top included (`debug "a"` is `"a"` with the quotes); functions and capabilities are `<function>`, `<Term>` and so on, so a failed `check`, a counterexample and generic code can always show a value. `debug x` needs no clause at a type parameter.
+
+- **By type (#170).** A value is shown as its type says, not only as it is stored, at every level: a type stored as its one field (§14) shows its constructor (`Meters 3`); a `String` and a `Bytes` are both bytes, and show as `"…"` and `b"…"`; an `Array U8` shows as `b"…"` and an `Array U32` as `[…]`. At run time `debug` is given its type's descriptor (§14), and so is every function that shows values of its type parameter, with `debug` or through a function it calls with that parameter: generic code shows values as code at a known type does. So does everywhere else a type comes from: a class's type kept in a dictionary (§9.8), a type constructor parameter applied (`f String`, M25), a field whose type is computed from earlier fields (`v~(if is_text then String else Int)`) or from a value its type is applied to (`ByParam True`), and a `Bag`'s elements.
+- **A type not known when the program is compiled is an error (E0293).** Where such a function is given a type that depends on a value known only when the program runs, there is no descriptor to give: `` `show` shows values of type `a`, so `a` must be known when the program is compiled``. The label names the type and what it depends on: a variable (`if b then U8 else Int`, `ByParam b` where the field's type is computed from `b`), or a field whose type is computed from something not kept when the program runs (a ghost field). Through other functions, as for `==` (D125 b): `(through \`debug\`)`.
+- **`String`** is shown by `std.string`'s `instance Debug String`, written in Checkers: in quotes, with `"`, `\`, newline (`\n`), carriage return (`\r`), tab (`\t`), NUL (`\0`) and the other control characters (`\u{…}`) escaped. Nothing else about strings is special to `debug`.
+- A type's own module may write `instance Debug T` to replace the derived one, and so may the class's module, `std.string` (which is how the prelude's `String` has its own). Elsewhere it is E0282 (another package, §9.8's orphan rule) or E0283 (another module of `T`'s package: it overlaps the derived instance). It takes no context (E0281): `debug` needs no clause at a type parameter, so a context would add nothing. Its function is given the descriptors of `T`'s arguments, so it may show values of them with `debug`.
+- It is found at run time through the value's type: wherever a `T` is shown, inside other values and through generic code. In argument position its text is put in parentheses if it has a space outside brackets and quotes, as a constructor's fields are.
+- `Debug` takes no options, and templates treat it like any function: `format"{debug x}"`, or `format"{}" (debug x)`.
+- The runtime's printer is the derived instance, and the text of a failed `check` (§13.3) and of a counterexample, at every level, whatever a type's own `Debug` says: two different values never look the same there. The standard library's own instances (`String`'s) are used there too. A failed `check` writes a `String` as a string literal, with the same escapes, as it writes a `Char` as `c'a'`: its module may not load `std.string`.
+
+**`format`.** `std.string`'s template tag:
+
+```checkers
+export record Format
+    parts~List String                 # the last first
+
+export fn format n k -> f : n~Nat, k~Nat, f~Format
+    Format []
+
+instance Template Format
+    type Result = String
+    fn text f str
+        Format (str :: f.parts)
+    fn finish f
+        concat (list.reverse f.parts)
+
+instance Hole Format a : Display a
+    type Options = Display.Options a
+    fn hole f x os
+        Format (display x os :: f.parts)
+```
+
+```checkers
+format"{name} is {age}"               # Ada is 36
+format"{n | Hex, Digits 4}"           # 0x00ff
+format"{| Quoted}" name               # "Ada"
+format"{debug point}"                 # Point 1 2
+format"{point}"                       # error at `point`: no `Display` instance for `Point`
+```
+
+- It accepts any type with a display, through one instance over all of them; a hole's options are its value's type's own, and an error in a hole is at the hole (E0284 for a value with no `Display`, a type error at an option of another type).
+- It is imported like any other `std.string` name: `import std.string (format)` for `format"…"`, or `import std.string` for `string.format"…"`. Without an import it is an unknown name (E0204). The compiler knows nothing special about it: an unknown name that a standard-library module exports gets a `help:` naming the import (`add \`import std.string (format)\``), whatever the name.
+- `format x`, a call of a tag on a value, is an ordinary type error, as for any function of two numbers. Where a function whose result has a `Template` instance is called outside a template, a type error at the call or at its first argument gets a `help:` saying the function is a tag: ``write `format"…{x}…"` to put `x` in a template``.
 
 ---
 
@@ -1009,7 +1262,9 @@ Today a behaviour that waits for input, for a child or for a pipe to drain holds
 
 ```
 staged, erased code (src/run/ir.rs)
+  │ `match`es on small functions' results resolved (inline.rs)
   │ closure conversion (lower.rs): every lambda becomes a function taking its closure and arguments
+  │ recursion made tail recursion (tailrec.rs); results returned as their parts (unbox.rs)
   │ reference counting (rc.rs): dup, drop and reuse inserted (D74)
   ▼
 first-order code ──codegen.rs──▶ Cranelift IR ──┬──▶ in memory (JIT): `checkers run`
@@ -1018,17 +1273,38 @@ first-order code ──codegen.rs──▶ Cranelift IR ──┬──▶ in me
 
 **Parameters (D179).** The language has no limit on the parameters of a function or the fields of a constructor. A native function takes at most 64 parameters. Closure conversion curries a wider function: the function takes the first 64 parameters and returns a closure that takes the next ones, up to 64 at a time.
 
-**Values (D73).** A value is one 64-bit word: `2n + 1` for an integer `n` that fits in 63 bits; `0` for an erased value; `8k + 2` for constructor `k` without fields; `8k + 4` for unit and the capabilities; otherwise a pointer to a heap object. An object is a header (reference count; kind, field count and constructor or arity) followed by its words. Closures hold a code pointer and their free variables; a partial application holds the function and the arguments so far. Strings and bytes hold their bytes. Numbers that don't fit, decimals, bags, files, cowns and futures are Rust values behind an object. Literals and the closures of definitions are static data that is never freed. Addition, subtraction, multiplication and comparisons of small integers, equality of small integers, byte indexing, and calls of closures of the right arity are inline; the rest calls the runtime. **Not yet:** leaving out the overflow check where a refinement bounds a number (`U8`); it changes no result.
+**Values (D73).** A value is one 64-bit word: `2n + 1` for an integer `n` that fits in 63 bits; `0` for an erased value; `8k + 2` for constructor `k` without fields; `8k + 4` for unit and the capabilities; otherwise a pointer to a heap object. An object is a header (reference count; kind, field count and constructor or arity) followed by its words. Closures hold a code pointer and their free variables; a partial application holds the function and the arguments so far. Bytes hold their bytes, and a string is stored as its bytes (#170). Numbers that don't fit, decimals, bags, files, cowns and futures are Rust values behind an object. Literals and the closures of definitions are static data that is never freed. Addition, subtraction, multiplication, division, remainder and comparisons of small integers, equality of small integers, byte indexing, and calls of closures of the right arity are inline; the rest calls the runtime. **Not yet:** leaving out the overflow check where a refinement bounds a number (`U8`); it changes no result.
+
+**One-field types (#170).** A type with one constructor whose fields keep exactly one value at run time (ghost and implicit fields of multiplicity 0 don't count; a class's type kept in a dictionary does) is stored as that value, with no object around it: `record Meters` with `m~Int` is an integer, `String` is its bytes, a class's dictionary with one function is that function. Building one, reading its field and matching on it cost nothing. `==` and reference counting are unchanged, since such a value is equal to another exactly when their fields are; so is the prover (§7.3), which still sees a datatype (and, for `String`, its bytes). Every such type is stored so: nothing marks it.
 
 **Arrays (D133).** An array object's header gives its length and how its elements are stored: one word each, or packed at 1, 2, 4 or 8 bytes, signed or not. Reading goes by the header. Code that creates an array from elements lays it out for its element type: every type argument is passed as its layout's word, in the argument slot it already had (until now `0`), so a generic function knows the layout of each of its type parameters and passes it on. `++`, `set` and slicing keep their arrays' layouts (D133 f).
 
-**Memory (D74).** Functions receive their arguments owned and consume them. Each variable a function binds goes to the last part of an expression that uses it; earlier parts borrow it, and a borrowed variable is duplicated only where it is kept (returned, stored, passed on). Primitives and builtins borrow their arguments. A `match` duplicates the fields its arm uses; if the arm doesn't use the value matched on, it is dropped, and if the arm builds a constructor with as many fields, the drop becomes a *reuse*: when it was the only reference, the new value is built in its memory. Counts are atomic. Constants (definitions without parameters) are computed on first use and kept for good. `CHECKERS_RC_CHECK=1` counts the objects left at exit (only constants' values should remain); `CHECKERS_NATIVE_DUMP=1` prints the first-order code with its reference counting.
+**Slices (#169).** Slicing an array (`array.slice`, `array.take`, `array.drop`, `bytes.slice`, `uncons`'s rest) takes constant time: the slice is an object holding its length, a pointer to its first element and a reference to the array whose storage it shares (an array made any other way holds its elements after its length). A slice of a slice refers to the first array. So does a string's `uncons`, whose rest is a slice of its bytes. The shared array is freed with its last slice, so a short slice keeps a long array alive; `set` updates in place only an array that is not a slice and has no other reference. Reading an element, `len`, `==` and every builtin go through the pointer, so a slice and a copy behave the same; byte indexing stays inline.
+
+**Type descriptors (#170).** A type argument's word is its layout (an integer whose low four bits are the layout's code) or, where values of the type are shown (§9.11), its *descriptor*: an integer tag `(n + 1) · 16 + layout` naming type `n` of the program, for a type without arguments, or a tuple of its arguments' descriptors followed by its tag. Tuple types have a tag of their own. The layout is read from either in the same way, so arrays don't care which they are given. A descriptor of a known type is static data; one built from a type parameter's (`List a` in generic code) is built where it is passed. Only the type parameters of functions that show values of them get descriptors (`debug`; every function that passes its own type parameter to one; an instance whose class's types, kept in its dictionary, are built from its own; each closed over each module's uses of generic functions and dictionaries, as for D125 b); every other type argument stays its layout, so code that shows nothing pays nothing. A class's type is kept in its dictionary as a descriptor. A type constructor parameter applied (`f a`) is described when the program runs, by adding `a`'s descriptor to `f`'s. A value argument of a type that its fields' types are computed from (`ByParam True`) is in its descriptor, marked as a value; it is known when the program is compiled (E0293 otherwise).
+
+The runtime shows a value by its type's descriptor. Its constructors' field types, from the type's parameters, are in the program's descriptor, and so is how each type is shown (a list, an array, a bag, a type stored as its one field). A field whose type is computed from earlier fields or from the type's value arguments has a function computing its descriptor from them, compiled with the program; the runtime calls it when it shows the field. A `Bag` keeps one of each of its values, to show it by the element type. A failed `check`'s text and staging's reading back of computed values (§8.9) go by the type the compiler knows.
+
+**Memory (D74).** Functions receive their arguments owned and consume them. Each variable a function binds goes to the last part of an expression that uses it; earlier parts borrow it, and a borrowed variable is duplicated only where it is kept (returned, stored, passed on). Primitives and builtins borrow their arguments, but for those that update an argument no one else refers to in place, which own theirs: `std.array.set`, the rest of an array or string in `Seq`'s `uncons`, which moves an unshared slice forward instead of making another (proposed), and `++`'s left side where `++` is its last use (see below). A comparison's result, `True` or `False`, is never counted. A `match` duplicates the fields its arm uses; if the arm doesn't use the value matched on, it is dropped, and if the arm builds a constructor with as many fields, the drop becomes a *reuse*: when it was the only reference, the new value is built in its memory. Counts are atomic. Constants (definitions without parameters) are computed on first use and kept for good. `CHECKERS_RC_CHECK=1` counts the objects left at exit (only constants' values should remain); `CHECKERS_NATIVE_DUMP=1` prints the first-order code with its reference counting.
+
+**`++` in place (optimization).** Where `a ++ b` is the last use of the variable `a`, `++` takes `a` rather than borrowing it, and when that was the only reference to a string, bytes or array (not a slice, and not `b`) stored as `b` is (both bytes, or arrays of one layout), `b`'s elements are written after `a`'s in `a`'s own memory, grown if needed; otherwise the result is new and `a` is dropped. So `decimal (n / 10) ++ digit (n % 10)` builds its string without copying it at every step. It changes no result, failure or order of effects (a value no one else holds can't be seen to change); which `++`s it applies to is not part of the language, and a program must not rely on it.
 
 **Calls (D75).** Every function uses Cranelift's `tail` convention; calls in tail position are `return_call` or `return_call_indirect`, so tail recursion runs in constant stack. Code runs on stacks of 256 MiB: every behaviour's fiber, `main`'s too (D123), reserved but only touched as used. The runtime calls compiled code through a generated trampoline, `ck_invoke`.
 
 **Recursion made tail recursion (optimization).** Before reference counting, `src/native/tailrec.rs` rewrites a definition's function whose recursive calls leave a little work after them, so that it runs in constant stack. It changes no result, failure or order of effects; which functions it rewrites is not part of the language, and a program must not rely on it. Today, for calls of the function itself in tail position but for: a constructor around the call (`n :: f (n - 1)`; the cell is built first with the field empty, and a helper `f.dps` fills it and calls itself in tail position), with only variables or literals in the fields after the call; or `+` or `*` on the call and a variable or literal, or `++` with the call on its left (`f (n - 1) ++ s`), where a helper `f.acc` carries the operations so far as an extra argument. These operators are associative for every value (`Nat` and `Int` have no fixed size); a class's `+` is a call and is never rewritten. `CHECKERS_NATIVE_DUMP=1` shows the helpers.
 
-**Runtime.** `checkers_rt`: allocation and freeing, big integers (`rt/src/num.rs`), the `__builtin`s of `stdlib/` (`rt/src/builtins/`), `format` and `==`, I/O with atomic terminal calls (D68), behaviours and `par`, the scheduler, fibers, the poller and the blocking pool (§13.8), and runtime errors (``runtime error in `f`: …``, exit code 70). Native code describes its constructors and definitions to the runtime in a short text descriptor. `checkers build` links with `libcheckers_rt.a`: the one named by `CHECKERS_RT_LIB`, else the newest next to the `checkers` executable or in `deps/` beside it.
+**Results returned as their parts (optimization, proposed).** After `tailrec`, `src/native/unbox.rs` keeps constructor values that are built only to be taken apart from being built. What is known of every value an expression can give is its *layout*: built by one of some constructors, each with its fields' layouts, or a tuple of its components' layouts, or unknown. A value laid out as a constructor is a word naming the constructor (the word it would be without fields) followed by the words of its fields, laid out in turn; a type's constructors share the words after the first, and those a constructor doesn't use are `0`. So `Ok (v, rest)` and `Err e`, from one function, are three words: `Ok`, `v`, `rest` or `Err`, `e`, `0`. A tuple whose last component is a tuple keeps that component whole, since at run time `(a, (b, c))` is `(a, b, c)`. A layout is at most 8 words (what the `tail` convention returns in registers), nested as deep as fits.
+- *Functions.* When every path of a definition's function `f` ends in a constructor or tuple it builds (literals included), a failure, or a call in tail position of another such function, and some caller takes `f`'s result apart, `f`'s code moves to a function `f.parts` returning the words. Functions that call each other in tail position share one layout, so those calls stay tail calls. `f` itself calls `f.parts` and builds the value, for closures; a call whose value is needed whole calls `f.parts` and builds it in place; a tail call of `f` from another function stays a tail call of `f`.
+- *Callers.* `let x = e`, where every value `e` can give is built in `e` or returned as words by a call, and the code after it only takes `x` apart (a `match` on it, a record's field, a tuple's components but the last, the last as the rest), binds the words to variables instead: `match x` chooses by the first, a field is its words. A field laid out in turn is taken apart the same way, or built where it is needed whole. This also covers a `match` on a small function's result that `inline.rs` couldn't resolve (its `let`s and branches in the way).
+Each word is owned, as the field of a value no one else holds would be, so reference counting (below) treats them as variables; there is no value to drop or reuse. It applies wherever code is compiled (`ckc run`, `ckc build`, `check`s and staging). It changes no result, failure or order of effects: the words are computed in the order the fields were, and a value built anew can't be told from one never built. Building a value in place where a function used to return a literal one (a closure's call of `f` giving `Err "end"`) allocates where it didn't. Which functions and `let`s it rewrites is not part of the language, and a program must not rely on it. `CHECKERS_NATIVE_DUMP=1` shows `f.parts`, its result count, `multi(…)` for the words and `let v1 v2 v3 =` for their binding. After Baker-Finch, Glynn and Peyton Jones, *Constructed Product Result Analysis for Haskell* (JFP 2004), with sums and nesting as in GHC's worker/wrapper split.
+
+**Classes' functions at known instances (optimization).** Where a class's function is called with a known instance's dictionary (`Seq.uncons xs` at `Array Int`, `le x y` at `List Int`), `src/native/ir.rs` compiles a direct call of that instance's function (`Seq (Array a).uncons`), with the arguments the instance's dictionary would give it: its types and its context's dictionaries (`Ord a` for `Ord (List a)`). The dictionary isn't built: building one computes nothing but the dictionary, and there is one instance per type (§9.8), so the call is the one reading the dictionary would make, as in the prover. It applies wherever code is compiled (`ckc run`, `ckc build`, `check`s and staging). It changes no result, failure or order of effects, and a runtime error names the instance's function as before; which calls it rewrites is not part of the language, and a program must not rely on it. `CHECKERS_NATIVE_DUMP=1` shows the direct calls.
+
+**Specialization by dictionary (optimization; proposed).** Where a definition's function is called with a known instance's dictionary (built by an instance, maybe from other known instances through its context: `Ord (List Int)` from `Ord Int`), with no variables in it, `src/native/spec.rs` compiles the call as a call of a copy of the function in which that parameter is that dictionary, and so are the call's types and other erased arguments without variables. Inside the copy the class's functions are at a known instance, so they are direct calls (above), and its calls passing the dictionary on are specialized in turn: a generic parser over `Seq` and `Token` called on `Bytes` runs as code written for `Bytes`. It covers functions with clauses, instances' functions with their context's dictionaries, class functions with clauses of their own, classes with several parameters or over type constructors, and dictionaries passed through lambdas and partial applications in the copy. The copy keeps every parameter, and the call passes the same arguments in the same order (those put into the copy as nothing); building a dictionary computes nothing but the dictionary, so it changes no result, failure or order of effects, and a runtime error in a copy names the function it copies. There is one copy per function and arguments put in, so recursion and mutual recursion use the copy; code growth is bounded: an argument put in is at most 64 nodes, copies are made inside copies at most 16 deep, and a program has at most 4096 copies; past a bound the call reads the dictionary as before. A lambda applied directly (an instance's function as its dictionary holds it) is compiled as `let`s, a dictionary or variable substituted. It applies wherever code is compiled (`ckc run`, `ckc build`, `check`s and staging); which calls it specializes is not part of the language, and a program must not rely on it. `CHECKERS_NATIVE_DUMP=1` shows the copies under their function's name; `CHECKERS_NO_SPEC=1` turns it off, to measure it.
+
+**A `match` on a small function's result (optimization).** Before closure conversion, `src/native/inline.rs` resolves a `match` on a call where it can, so that `match xs` with `[]` and `x :: rest` on an array builds neither the `Some` nor the tuple `uncons` returns. A `match` whose scrutinee calls, with all its arguments, a definition's function that is small (its erased body at most 40 nodes) and not recursive (no chain of calls from it leads back to it) gets that function's body instead, each argument bound by a `let` in order, so each is computed once, before the body, as for the call. A `match` on a `let`, an `if` or a `match` then moves past the `let`s and into the branches, but only where no arm of the outer `match` would end up in two places (no code is copied; otherwise only the `let`s are passed). A `match` on a constructor applied to its fields binds them in order and runs that constructor's arm, and a tuple used only through its components isn't built. Then a `let` whose value computes nothing that can fail or be seen (arithmetic but division and `Nat` subtraction, comparisons, constructors, fields, lambdas, and the builtins `Seq`'s instances use for `uncons`, whose callers establish their preconditions) is moved past the `let`s after it into the one branch of the `match` that uses it (proposed), and `let x = e in x` is `e`, so a call there is a tail call. It applies wherever code is compiled (`ckc run`, `ckc build`, `check`s and staging). It changes no result, failure or order of effects, and a runtime error in code taken from a function names that function, as the call did; which `match`es it resolves is not part of the language, and a program must not rely on it. `CHECKERS_NATIVE_DUMP=1` shows code taken from another definition as `at defN:`.
+
+**Runtime.** `checkers_rt`: allocation and freeing (each thread keeps the memory of the small objects it frees, a list per size up to a header and 15 words, at most 4096 blocks each, and allocates from it before the system allocator; proposed), big integers (`rt/src/num.rs`), the `__builtin`s of `stdlib/` (`rt/src/builtins/`), `debug`'s derived instance (finding a type's own `debug` through its constructors' descriptor, §9.11) and `==`, I/O with atomic terminal calls (D68), behaviours and `par`, the scheduler, fibers, the poller and the blocking pool (§13.8), and runtime errors (``runtime error in `f`: …``, exit code 70). Native code describes its constructors and definitions to the runtime in a short text descriptor. `checkers build` links with `libcheckers_rt.a`: the one named by `CHECKERS_RT_LIB`, else the newest next to the `checkers` executable or in `deps/` beside it.
 
 **Scheduler (D77).** `rt/src/sched.rs`: Verona's per-resource queues with atomic links (§13.5), runnable behaviours on a lock-free queue (Vyukov's bounded multi-producer, multi-consumer queue, with a locked overflow), a worker running next the behaviour its own completion made runnable, and idle workers polling briefly before they sleep. A behaviour keeps the cells it names until it has released them.
 
@@ -1094,7 +1370,7 @@ The language already has what the tools need: total code with proven bounds and 
 
 The formatter keeps the line breaks the author chose and normalizes everything else, as gofmt does. The rules (D92):
 
-- **Indentation:** 4 spaces per block level. A continuation line lines up with the first item after the open bracket it is inside, or after the `:` of a signature; otherwise it keeps the indentation its author gave it relative to the line it continues, at least 4 (D99).
+- **Indentation:** 4 spaces per block level. A continuation line lines up with the first item after the open bracket it is inside, or after the `:` of a signature; otherwise it keeps the indentation its author gave it relative to the line it continues, at least 4 (D99). A block a continuation line opens (§9.1) is indented 4 from that line.
 - **Spaces:** one on each side of a binary operator, `->` and `=`, and after `,` and a signature's `:`. None around `~`, inside `( )` and `[ ]`, after a unary `-` or `\\`, or around a glued `.` or `[` (D22); one inside `{ }` (D99). Application is separated by single spaces.
 - **Alignment:** the `->` of the arms of one `match` line up (an arm with a guard is left out, D99), as do the `:` of the constructors of one `enum` (a constructor without constraints is skipped), unless a blank line separates them. Trailing `#` comments on consecutive lines start in one column; a blank line or a line without a trailing comment ends the run. The column is the furthest of each line's code end plus the spaces its author put before the comment, at least two (D99): a run that is already aligned stays aligned, wherever its code moves, and formatting twice changes nothing.
 - **Blank lines:** at most one in a row; none at the start or end of a block; the file ends with exactly one newline. Trailing whitespace is removed.
@@ -1156,7 +1432,7 @@ The keywords at each kind of place, from the grammar (§9.2):
 | A lemma's body, before `ensures` | `let`, `ensures` | none |
 | After a lemma's `ensures` line | `proof` | none |
 | After a multi-line `if`'s branch | `else` | none |
-| A class's or instance's body | `fn`, `lemma` | none |
+| A class's or instance's body | `fn`, `lemma`, `type` | none |
 
 ### 15.6 Documentation and the site (D131)
 
@@ -1223,20 +1499,21 @@ The standard library is these modules. Its scope is still to be settled (D106); 
 
 | Module | Layer | Exports | Status |
 |---|---|---|---|
-| `std.prelude` | prelude + builtin | `Type`, `Nat`, `Int`, `String`, `Array`, `Bytes`, `Bool`, `Unit`, `Option`, `Result`, `List`, `U8`…`U64`, `I8`…`I64`, `Char`, `not`; the class `Ord` (`le`, `trans`, `total`, `antisym`), `refl`, instances for `Int`, `Bool`, `String` (by `string_le`, D138), `List`, `Option`; the classes `Add`, `Sub`, `Mul`, `Neg`, `Monoid` (`zero`, `assoc`, `zero_add`, `add_zero`) with instances for `Int` (M24); the class `Functor` (`fmap`, `fmap_id`, `fmap_comp`) with instances for `List`, `Option` (M25) | exists |
-| `std.list` | Checkers | `length`, `map`, `all` (both call their function only with elements of the list, §5.3), `reverse`, `join`, `keys`, `contains`, `unique`, `count`, `max_of`, `take`, `drop`, `head`, `sorted`, `sorted_as`, `sorted_by`, `perm` (any element type, D138), `sort`, `sort_as`, `sort_by` (stable merge sorts, proved sorted, permutations, of the same length; D138, D147), lemmas (among them `perm_middle`, `map_id`, `map_comp`) (among them `keys_append`, `contains_append`, `contains_reverse`, `unique_split`, D119) | exists; planned: `filter`, `fold`, `find`, `any`, `zip`, `concat`, `index_of` with lemmas |
+| `std.prelude` | prelude + builtin | `Type`, `Nat`, `Int`, `String` (a record of its bytes, #170), `valid_utf8` (whether bytes are UTF-8, a builtin), `Array`, `Bytes`, `Bool`, `Unit`, `Option`, `Result`, `List`, `U8`…`U64`, `I8`…`I64`, `Char`, `not`; the class `Ord` (`le`, `trans`, `total`, `antisym`), `refl`, instances for `Int`, `Bool`, `String` (by `string_le`, D138), `List`, `Option`; the classes `Add`, `Sub`, `Mul`, `Neg`, `Monoid` (`zero`, `assoc`, `zero_add`, `add_zero`) with instances for `Int` (M24); the class `Functor` (`fmap`, `fmap_id`, `fmap_comp`) with instances for `List`, `Option` (M25); the class `Seq` (`Elem`, `size`, `uncons`) with instances for `List`, `Array`, `String`, which sequence patterns use (§9.8); not exported: `string_le`, `string_first` and `string_rest` (a non-empty string's first character, and the rest as a slice of its bytes, in constant time, builtins) and `array_rest` (an array but its first element, a slice) for `Seq`'s instances | exists |
+| `std.list` | Checkers | `length`, `map`, `all` (both call their function only with elements of the list, §5.3), `reverse`, `join`, `keys`, `contains`, `unique`, `count`, `max_of`, `take`, `drop` (past the end, `take` gives all of `xs` and `drop` gives `[]`, in their postconditions, #107), `head`, `sorted`, `sorted_as`, `sorted_by`, `perm` (any element type, D138), `sort`, `sort_as`, `sort_by` (stable merge sorts, proved sorted, permutations, of the same length; D138, D147), lemmas (among them `perm_middle`, `map_id`, `map_comp`) (among them `keys_append`, `contains_append`, `contains_reverse`, `unique_split`, D119); lengths: `length_append` (`length (xs ++ ys) == length xs + length ys`), `length_reverse`, `length_map`, `length_keys` (#107; lemmas rather than postconditions of `reverse`, `map`, `keys`, which cost every query that mentions them, **(proposed)**) | exists; planned: `filter`, `fold`, `find`, `any`, `zip`, `concat`, `index_of` with lemmas |
 | `std.option`, `std.result` | Checkers | `map`, `and_then`, `or_else`, `with_default`, `is_some` / `is_ok` | planned |
 | `std.bag` | builtin | `Bag a`, `of`, `count`, `sum` (multisets of any element type, for permutation proofs, D47, D138) | exists |
 | `std.map`, `std.set` | Checkers | `Map k +v`, `Set k`: `empty`, `insert`, `remove`, `lookup`, `member`, `size`, `to_list` and their lemmas (`lookup_insert`, …), ordered keys (D15) | planned (§9.5) |
-| `std.array` | builtin + Checkers | `from_list`, `to_list`, `repeat`, `init`, `map`, `set`, `slice`, `concat`, `reverse`, `all`, `contains`, `count`, `take`, `drop` (D133); `sort`, `sort_as`, `sort_by` (D138), the axioms `to_list_from_list`, `from_list_to_list`, `to_list_map`, and `slice_at`, `slice_append`, `concat_nil`, `concat_cons` (what `slice` and `concat` give, #69; `concat_nil xs` says `xs ++ concat [] == xs`, since `concat []` alone doesn't fix the element type); the lemmas `ext` (equal lengths and elements make equal arrays) and `slice_join` (`slice xs i j ++ slice xs j k == slice xs i k`), proved (#75); `instance Functor Array` (M25) | exists (M21) |
+| `std.array` | builtin + Checkers | `from_list`, `to_list`, `repeat`, `init`, `map`, `set`, `slice`, `concat`, `reverse`, `all`, `contains`, `count`, `take`, `drop` (D133); `sort`, `sort_as`, `sort_by` (D138), the axioms `to_list_from_list`, `from_list_to_list`, `to_list_map`, and `slice_at`, `slice_append`, `concat_nil`, `concat_cons` (what `slice` and `concat` give, #69; `concat_nil xs` says `xs ++ concat [] == xs`, since `concat []` alone doesn't fix the element type); the lemmas `ext` (equal lengths and elements make equal arrays) and `slice_join` (`slice xs i j ++ slice xs j k == slice xs i k`), proved (#75); the axiom `uncons_slice` (`x :: rest` on an array: its first element and the slice after it, §9.8); `instance Functor Array` (M25) | exists (M21) |
 | `std.bytes` | builtin + Checkers | `matches_at`, `slice`, `concat`; the axioms `slice_at`, `slice_append`, `concat_nil`, `concat_cons` (what `slice` and `concat` give, #69); the lemmas `ext` and `slice_join`, proved (#75) | exists |
-| `std.string` | builtin + Checkers | `bytes`, `from_utf8`, `from_char`, `from_chars`, `chars`, `concat`, `concat_map` (Checkers, D139), `fold_case` (Unicode's full case folding, a generated table, D151), axioms relating them (D119; `concat_join` in place of the axiom `concat_map_chars`, now proved, M22) | exists; planned: `join`, `split`, `starts_with`, `ends_with`, `trim` |
-| `std.char` | Checkers | `code`, `from_scalar`, `from_ascii`, `from_surrogates` (D119); `is_punctuation` (general category P or S), `is_space_separator` (Zs), from generated tables (D151) | exists |
+| `std.string` | builtin + Checkers | `bytes`, `from_utf8`, `from_char`, `from_chars`, `chars`, `concat`, `concat_map` (Checkers, D139), `fold_case` (Unicode's full case folding, a generated table, D151), axioms relating them (D119; `concat_join` in place of the axiom `concat_map_chars`, now proved, M22); the classes `Template` (`Result`, `text`, `finish`) and `Hole` (`Options`, `hole`), and `NoOptions`, which templates are built through (§9.10); the classes `Display` (`Options`, `display`) and `Debug` (`debug`, the runtime's printer), `IntOption`, `StringOption`, instances of `Display` for `Int`, `String`, `Bool`, and the template tag `format` with `Format` (§9.11); `NumberError` (`NotFound`) and an instance of `Parsable` from `Int` tokens (`std.parse`): a whole number in decimal, with `-` before a negative one, as many digits as there are (`-0` is `0`, and leading zeros are allowed); `instance Display Int` promises in its own signature that `Parsable.parse` reads `display n []` back, and that a number that isn't negative is written starting with a digit, and with `0` only when it is `0` (#233, proposed); the lemma `parse_display` says it is read back with anything after it that doesn't start with a digit; not exported: `digits` (a number's digits in a base, in Checkers: at least one, and in base 10, proved to be digits with no leading zero whose value is the number) | exists; planned: `join`, `split`, `starts_with`, `ends_with`, `trim` |
+| `std.char` | Checkers | `code`, `from_scalar`, `from_ascii`, `from_surrogates` (D119); `is_digit` (`0` to `9`, a character or a byte); `is_punctuation` (general category P or S), `is_space_separator` (Zs), from generated tables (D151) | exists |
 | `std.utf8` | builtin + Checkers | `decode_at` (`Option (Char, (stop~Nat, k < stop, stop <= len src))`: a character and where its encoding ends, #44), `encode`, `encode_append`, `decode_from_char` | exists |
-| `std.decimal` | builtin + Checkers | `Decimal`, `render`, `of_int` | exists; planned: `nat.parse` as `std.number` (`parse_nat`, `parse_int`, `render_nat`) |
+| `std.decimal` | builtin + Checkers | `Decimal`, `of_int`, `scaled` (`m × 10^e`), `mantissa` and `exponent` (the `m` and `e` of a number's form `m × 10^e` whose `m` has no zero as its last digit; zero's are `0` and `0`), the axioms `scaled_parts` (`scaled (mantissa d) (exponent d) == d`) and `scaled_ten` (`scaled (m * 10) e == scaled m (e + 1)`) (#233, proposed); `render` (Checkers, from `display` of whole numbers: `mantissa`'s digits with zeros after them for an exponent from 0 to 21, with a point among or before them for a negative exponent leaving at most 6 zeros after the point, otherwise with `e` and the exponent), `DecimalOption` and an instance of `Display` (§9.11); `DecimalError` (`NotFound`) and an instance of `Parsable` from `Int` tokens (`std.parse`), so from characters or bytes: a number as JSON writes it, the longest such prefix (`1.x` reads `1`, `012` reads `0`), its whole-number parts read with `Parsable Int Int`; the lemmas `render_starts` (`-` or a digit first) and `parse_render` (reading what `render` writes, followed by anything that isn't a digit, `.`, `e` or `E`, gives the number and what followed), proved; not exported: `fixed` (a number with a given count of places) | exists |
+| `std.parse` | Checkers | the class `Parsable a t` (`Error`, `parse`): a value of type `a` read from the front of any sequence (`Seq`) of tokens of type `t`, with what is left of it, a suffix and shorter; both types are named at each use (`parse xs Decimal Int`), so one type can be read from several kinds of tokens; a type that may read nothing reports it as an error; the class `Token x t` (`token`, an element read as a token), with an instance for `Int`, so characters and bytes (`Char` and `U8` are `Int`s): `String`, `List Char`, `Bytes`, `List U8`; `suffix` (`rest` is what is left of `xs` after taking elements off its front) and its lemmas `suffix_refl`, `suffix_trans`, `suffix_size`; `consumed r xs` (a success left a shorter suffix: `parse`'s postcondition) and `within r xs` (a suffix, maybe all); combinators, each taking parsers as functions whose types say how much input each is given (no more than the combinator's, or less): `satisfy`, `at_end`, `map`, `both`, `or_else`, `optional`, `many`, `many1`, `sep_by1`, `chain_left`, `complete`, and `fix` (a rule that refers to itself: its body gets the rule as `self`, callable only on less input, so recursive grammars terminate without a proof of their own), with the lemma `fix_unfold` (`fix body xs` is `body xs (\ys -> fix body ys)`: what a proof about a rule made with `fix` unfolds it by, #231) | exists |
 | `std.html` | Checkers | `escape`, `entity` (HTML5's named character references, a generated table, D151) | exists (M27) |
-| `std.markdown` | Checkers | `Document`, `Block`, `Inline`, `Item`, `Span`, `Target`, `Definition`, `Reference`, `parse`, `parse_with`, `to_html`, `to_html_with`, `label_key`, `language`, `plain` (CommonMark 0.31.2, a port of commonmark.js, D148, D151) | exists (M27) |
-| `std.json` | builtin + Checkers | `Json`, `Error`, `ErrorKind`, `parse`, `render`, `depth`, `MAX_DEPTH`, the round-trip lemma; not exported: `scan_number` (a number's text, D145) | exists (M13; proven without `admit`s, M18) |
+| `std.markdown` | Checkers | `Document`, `Block`, `Inline`, `Item`, `Span`, `Target`, `Definition`, `Reference`, `Level` (a heading's level, `1 <= n <= 6`: `Heading` takes only these, #164), `parse`, `parse_with`, `to_html`, `to_html_with`, `label_key`, `language`, `plain` (CommonMark 0.31.2, a port of commonmark.js, D148, D151); the parser has no fuel: each loop's measure is a position that moves on, proved (a link reference definition, an open tag's attributes, a domain's labels, a line's container blocks), or, for emphasis, the tokens and delimiter characters left (#164) | exists (M27) |
+| `std.json` | Checkers | `Json`, `Error`, `ErrorKind`, `parse`, `render`, `depth`, `MAX_DEPTH`, the round-trip lemma `roundtrip`; parsing in two stages, each a parser in `std.parse`'s sense: `tokenize` reads bytes into `Tokens` (`End`; `Stop at pos kind`, bytes that aren't a token or nest deeper than `MAX_DEPTH`, with where they start and where and why reading them failed; `More t rest`, with an instance of `Seq`), each a `Located` (`at`, its first byte's offset, and `kind`, a `JsonToken`: `BeginArray`, `EndArray`, `BeginObject`, `EndObject`, `NameSeparator`, `ValueSeparator`, `StringToken s`, `NumberToken n` read by `Parsable Decimal Int`, `TrueToken`, `FalseToken`, `NullToken`), and `inside ts n` (its positions are in an input of `n` bytes); `instance Parsable Json JsonToken` (built with `fix`; its `Error` is `TokenError`: `left`, the tokens left where it happened, and `TokenErrorKind`: `UnexpectedToken`, `MissingValue`, `MissingKey`, `MissingSeparator`, `RepeatedKey k`), with `Token` instances for `JsonToken` and `Located`; `parse` reports the first error left to right, as one pass would: a builder error where the tokens stop at bytes that aren't a token is the error reading those bytes as what was wanted there gives; the round trip is the two stages' round trips composed (`render`'s bytes are read as its tokens, and the tokens as the value) | exists (M13; proven without `admit`s, M18) |
 | `std.path` | Checkers | `join`, `parent`, `name`, `extension` (paths as `String`, `/`-separated) | planned (the tools compute these by hand today) |
 | `std.system` | — | `System`, `ExitCode`, the authority types | exists |
 | `std.terminal` | builtin | `Term`, `print_line`, `eprint_line`, `write`, `write_bytes`, `read_line`, `read_all`, `stdin`, `stdout`, `stderr` | exists |

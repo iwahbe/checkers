@@ -76,7 +76,7 @@ fn go ps acc -> f : ps~comptime List Piece, acc~String, f~format_type ps
         []             -> acc
         Text t :: rest -> go rest (acc ++ t)
         Str :: rest    -> \x -> go rest (acc ++ x)
-        Num :: rest    -> \n -> go rest (acc ++ format n)
+        Num :: rest    -> \n -> go rest (acc ++ string.display n [])
         Bad :: _       -> Rejected
 
 export fn fmt s -> f : s~comptime String, valid (string.bytes s) 0,

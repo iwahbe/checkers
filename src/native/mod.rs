@@ -5,10 +5,13 @@
 
 pub mod codegen;
 pub mod eval;
+pub mod inline;
 pub mod ir;
 pub mod lower;
 pub mod rc;
+pub mod spec;
 pub mod tailrec;
+pub mod unbox;
 
 use crate::core::{DefId, Globals};
 use cranelift_codegen::settings::{self, Configurable};
@@ -17,17 +20,45 @@ use cranelift_codegen::settings::{self, Configurable};
 /// The descriptor the runtime reads (`checkers_rt::prog::install`).
 pub(crate) fn descriptor(g: &Globals, p: &lower::Program) -> String {
     let mut d = String::new();
+    let fns: Vec<(crate::core::ConId, usize)> = field_fns(g).into_iter().map(|(c, k, _)| (c, k)).collect();
     for (i, c) in g.cons.iter().enumerate() {
         let shown: String = c
             .fields
             .iter()
             .map(|f| if f.2 == crate::core::Icit::Expl && f.1 != crate::core::Mult::Zero { '1' } else { '0' })
             .collect();
-        let _ = i;
-        d += &format!("con {} {} {} {}\n", c.name, g.arity_con(crate::core::ConId(i as u32)), g.arity_ty(c.ty), shown);
+        let templates: Vec<String> = (0..c.fields.len()).map(|k| field_template(g, crate::core::ConId(i as u32), k, &fns).write()).collect();
+        let templates = if templates.is_empty() { "-".to_string() } else { templates.join(";") };
+        d += &format!("con {} {} {} {} {} {templates}\n", c.name, g.arity_con(crate::core::ConId(i as u32)), g.arity_ty(c.ty), shown, c.ty.0);
+    }
+    // Types shown otherwise than by their constructors (#170).
+    let wk = &g.well_known;
+    for (i, t) in g.tys.iter().enumerate() {
+        let id = Some(crate::core::TyId(i as u32));
+        let kind = if id == wk.list {
+            "list"
+        } else if id == wk.array {
+            "array"
+        } else if &*t.module == "std.bag" && &*t.name == "Bag" {
+            "bag"
+        } else {
+            "-"
+        };
+        let unboxed = t.ctors.first().and_then(|c| g.unboxed_field(*c).map(|k| format!("{}:{k}", c.0)));
+        if kind != "-" || unboxed.is_some() {
+            d += &format!("ty {i} {kind} {}\n", unboxed.as_deref().unwrap_or("-"));
+        }
     }
     for n in &p.names {
         d += &format!("def {n}\n");
+    }
+    // Each type with a hand-written `Debug`: which of the instances'
+    // functions shows it (#126), how many type parameters it takes, and
+    // whether it is the standard library's (`std`), which the derived form
+    // uses too: it is how `String` is shown.
+    for (k, (t, f)) in g.well_known.debug_insts.iter().enumerate() {
+        let from = if g.defs[f.0 as usize].module.starts_with("std.") { "std" } else { "-" };
+        d += &format!("debug {} {k} {} {from}\n", t.0, lower::type_params(g, *f));
     }
     let wk = &g.well_known;
     let find = |module: &str, name: &str| {
@@ -65,6 +96,46 @@ pub(crate) fn descriptor(g: &Globals, p: &lower::Program) -> String {
     d
 }
 
+/// The fields whose types are computed from earlier fields (#170), in the
+/// order of the runtime's table of functions computing them: constructor,
+/// field, and its type.
+pub(crate) fn field_fns(g: &Globals) -> Vec<(crate::core::ConId, usize, crate::core::Tm)> {
+    let mut out = Vec::new();
+    for (i, ci) in g.cons.iter().enumerate() {
+        let c = crate::core::ConId(i as u32);
+        for k in 0..ci.fields.len() {
+            if g.is_runtime_field(c, k) && ci.fields[k].2 == crate::core::Icit::Expl {
+                if let crate::core::FieldType::FromFields(t) = crate::core::field_type(g, c, k) {
+                    out.push((c, k, t));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Field `k` of constructor `c`'s type, from its type's parameters (#170);
+/// `fns`: the fields whose types are computed, in their table's order.
+fn field_template(g: &Globals, c: crate::core::ConId, k: usize, fns: &[(crate::core::ConId, usize)]) -> checkers_rt::desc::Template {
+    use crate::core::Desc;
+    use checkers_rt::desc::Template;
+    if let Some(i) = fns.iter().position(|x| *x == (c, k)) {
+        return Template::Fn(i);
+    }
+    let ci = &g.cons[c.0 as usize];
+    let np = g.arity_ty(ci.ty);
+    let env = std::rc::Rc::new((0..np + k).map(crate::core::Val::var).collect::<Vec<_>>());
+    let v = crate::core::eval(g, &env, &ci.fields[k].3);
+    fn go(d: &Desc, np: usize) -> Template {
+        match d {
+            Desc::Known(tag, args) => Template::Con(*tag, args.iter().map(|a| go(a, np)).collect()),
+            Desc::Var(l) if *l < np => Template::Param(*l),
+            _ => Template::Unknown,
+        }
+    }
+    go(&crate::core::desc_of(g, &v), np)
+}
+
 /// Closure-convert and reference-count the program.
 fn prepare(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId) -> lower::Program {
     let mut p = lower::lower(g, staged, main);
@@ -77,12 +148,14 @@ pub(crate) fn rc_new(g: &Globals, p: &mut lower::Program) {
     let fields_of = |c: u32| g.cons[c as usize].fields.len();
     let from = p.rc_done;
     tailrec::program(&mut p.funcs, from);
+    unbox::program(p, from);
     for f in &mut p.funcs[from..] {
         rc::function(f, &fields_of);
     }
     if std::env::var_os("CHECKERS_NATIVE_DUMP").is_some() {
         for (i, f) in p.funcs.iter().enumerate().skip(from) {
-            eprintln!("ckf_{i} {} ({} params):\n{}", f.name, f.params.len(), dump(&f.body, 1));
+            let rets = if f.rets == 1 { String::new() } else { format!(", {} results", f.rets) };
+            eprintln!("ckf_{i} {} ({} params{rets}):\n{}", f.name, f.params.len(), dump(&f.body, 1));
         }
     }
     p.rc_done = p.funcs.len();
@@ -110,6 +183,7 @@ fn dump(e: &lower::E, d: usize) -> String {
         E::Dup(x, b) => format!("{ind}dup v{x}\n{}", dump(b, d)),
         E::Drop(x, b) => format!("{ind}drop v{x}\n{}", dump(b, d)),
         E::DropReuse(x, t, n, b) => format!("{ind}v{t} = drop_reuse v{x} ({n})\n{}", dump(b, d)),
+        E::At(o, b) => format!("{ind}at def{o}:\n{}", dump(b, d + 1)),
         E::Case { scrut, arms, lits, default } => {
             let mut s = format!("{ind}case v{scrut}");
             for a in arms {
@@ -148,6 +222,13 @@ fn dump(e: &lower::E, d: usize) -> String {
         E::Int(n) => format!("{ind}{n}"),
         E::Global(g) => format!("{ind}global{g}"),
         E::Tuple(xs) => format!("{ind}({})", xs.iter().map(|a| dump(a, 0).trim().to_string()).collect::<Vec<_>>().join(", ")),
+        E::Multi(xs) => format!("{ind}multi({})", xs.iter().map(|a| dump(a, 0).trim().to_string()).collect::<Vec<_>>().join(", ")),
+        E::LetMulti(xs, a, b) => format!(
+            "{ind}let {} =\n{}\n{}",
+            xs.iter().map(|x| format!("v{x}")).collect::<Vec<_>>().join(" "),
+            dump(a, d + 1),
+            dump(b, d)
+        ),
         E::Str(s) => format!("{ind}{s:?}"),
         E::Static(_) => format!("{ind}static"),
         other => format!("{ind}{}", match other {
@@ -172,8 +253,10 @@ pub fn run(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId, args
     gen.define_new();
     let main_clo = gen.main_closure();
     let invoke = gen.invoke;
+    let debug = gen.p.debug.map(|f| gen.func_id(f));
     let mut module = gen.m;
     module.finalize_definitions().expect("finish native code");
+    let debug = debug.map_or(0, |f| module.get_finalized_function(f) as u64);
     let inv = module.get_finalized_function(invoke);
     let (clo, _) = module.get_finalized_data(main_clo);
     let invoke: checkers_rt::prog::Invoke = unsafe { std::mem::transmute(inv) };
@@ -183,7 +266,7 @@ pub fn run(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId, args
     // `main` and its callees may recurse deeply: a large stack.
     let code = std::thread::Builder::new()
         .stack_size(1 << 30)
-        .spawn(move || checkers_rt::entry::run_main(&desc, invoke, main_w, owner, &args, threads))
+        .spawn(move || checkers_rt::entry::run_main(&desc, invoke, debug, main_w, owner, &args, threads))
         .expect("spawn the main thread")
         .join()
         .unwrap_or(70);

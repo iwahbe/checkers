@@ -177,7 +177,7 @@ pub fn keywords(p: &Place) -> Vec<&'static str> {
         PlaceKind::LemmaBody => k.extend(["let", "ensures"]),
         PlaceKind::Proof => k.push("proof"),
         PlaceKind::Else => k.push("else"),
-        PlaceKind::Members => k.extend(["fn", "lemma"]),
+        PlaceKind::Members => k.extend(["fn", "lemma", "type"]),
         PlaceKind::Type { .. } | PlaceKind::Have | PlaceKind::Member | PlaceKind::Pattern | PlaceKind::Import(_) | PlaceKind::ImportItem(_) => {}
     }
     k
@@ -238,9 +238,12 @@ impl Elab {
                 Some(Member::Class(t)) => {
                     if let Some(cd) = self.class_defs.get(t) {
                         for m in &cd.members {
-                            let n = match m {
-                                ast::ClassMember::Fn { name, .. } | ast::ClassMember::Lemma { name, .. } => &name.name,
-                            };
+                            let n = &m.name().name;
+                            if let ast::ClassMember::Type { .. } = m {
+                                let detail = Some(format!("type {}.{n}", cd.name));
+                                out.push(Candidate { label: n.clone(), class: "type", detail, doc: None, group: 2, fits: false });
+                                continue;
+                            }
                             if let Some(s) = self.modules.get(&cd.module).and_then(|mi| mi.values.get(n)) {
                                 if let Some(c) = self.global(n, *s, 2, true, &info) {
                                     out.push(c);
@@ -376,7 +379,7 @@ impl Elab {
             Sym::Ty(t) => index::Target::Ty(t),
             Sym::Con(c) => index::Target::Con(c),
             Sym::Univ => index::Target::Univ,
-            Sym::Len | Sym::Format => {
+            Sym::Len => {
                 return Some(Candidate { label: name.to_string(), class: "function", detail: None, doc: None, group, fits: false });
             }
         };

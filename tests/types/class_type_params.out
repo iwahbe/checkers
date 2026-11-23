@@ -1,0 +1,8 @@
+error[E0124]: a class's type `Elem` takes no parameters
+ --> class_type_params.ck:6:15
+  |
+6 |     type Elem b
+  |               ^
+  = help: write `type Elem`; each instance gives it for its own type
+
+class_type_params.ck: 1 error, 0 warnings

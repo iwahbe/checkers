@@ -1,0 +1,7 @@
+error[E0201]: type mismatch: expected `Nat`, found `Unit`
+ --> when_result.ck:6:5
+  |
+6 |     when v = c using sched
+  |     ^^^^^^^^^^^^^^^^^^^^^^ this expression has type `Unit`
+
+when_result.ck: 1 error, 0 warnings

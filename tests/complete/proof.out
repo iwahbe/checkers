@@ -16,6 +16,7 @@ replaces 11:26-11:26
   None               constructor     None  (of `Option`)
   Ok                 constructor     Ok x : x~a  (of `Result`)
   Some               constructor     Some x : x~a  (of `Option`)
+  String             constructor     export record String  (documented)
   True               constructor     True  (of `Bool`)
   add                function        fn add x y -> r : x~a, y~a, r~a
   add_zero           lemma           lemma add_zero x : Add a, x~a  (documented)
@@ -24,7 +25,6 @@ replaces 11:26-11:26
   fmap               function        fn fmap g xs -> ys : g~(a -> b), xs~f a, ys~f b  (documented)
   fmap_comp          lemma           lemma fmap_comp g h xs : g~(b -> c), h~(a -> b), xs~f a  (documented)
   fmap_id            lemma           lemma fmap_id xs : xs~f a  (documented)
-  format             function        
   le                 function        fn le x y -> r : x~a, y~a, r~Bool  (documented)
   len                function        
   list               module          module std.list
@@ -32,9 +32,12 @@ replaces 11:26-11:26
   neg                function        fn neg x -> r : x~a, r~a
   not                function        export transparent fn not b -> r : b~Bool, r~Bool  (documented)
   refl               lemma           export lemma refl x : Ord a, x~a  (documented)
+  size               function        fn size xs -> n : xs~s, n~Nat  (documented)
   sub                function        fn sub x y -> r : x~a, y~a, r~a
   total              lemma           lemma total x y : x~a, y~a  (documented)
   trans              lemma           lemma trans x y z : x~a, y~a, z~a, le x y, le y z  (documented)
+  uncons             function        fn uncons xs -> r : xs~s, r~Option (Elem, s),  (documented)
+  valid_utf8         function        export fn valid_utf8 b -> r : b~Bytes, r~Bool  (documented)
   zero               function        fn zero -> r : r~a
   zero_add           lemma           lemma zero_add x : Add a, x~a  (documented)
 == line 17, column 14
@@ -48,6 +51,7 @@ replaces 17:14-17:14
   Mul                class           export class Mul a  (documented)
   Neg                class           export class Neg a  (documented)
   Ord                class           export class Ord a  (documented)
+  Seq                class           export class Seq s  (documented)
   Sub                class           export class Sub a  (documented)
   add_zero           lemma           lemma add_zero x : Add a, x~a  (documented)
   antisym            lemma           lemma antisym x y : x~a, y~a, le x y, le y x  (documented)
@@ -79,6 +83,7 @@ replaces 23:9-23:9
   None               constructor     None  (of `Option`)
   Ok                 constructor     Ok x : x~a  (of `Result`)
   Some               constructor     Some x : x~a  (of `Option`)
+  String             constructor     export record String  (documented)
   True               constructor     True  (of `Bool`)
   add                function        fn add x y -> r : x~a, y~a, r~a
   add_zero           lemma           lemma add_zero x : Add a, x~a  (documented)
@@ -87,7 +92,6 @@ replaces 23:9-23:9
   fmap               function        fn fmap g xs -> ys : g~(a -> b), xs~f a, ys~f b  (documented)
   fmap_comp          lemma           lemma fmap_comp g h xs : g~(b -> c), h~(a -> b), xs~f a  (documented)
   fmap_id            lemma           lemma fmap_id xs : xs~f a  (documented)
-  format             function        
   le                 function        fn le x y -> r : x~a, y~a, r~Bool  (documented)
   len                function        
   list               module          module std.list
@@ -95,8 +99,11 @@ replaces 23:9-23:9
   neg                function        fn neg x -> r : x~a, r~a
   not                function        export transparent fn not b -> r : b~Bool, r~Bool  (documented)
   refl               lemma           export lemma refl x : Ord a, x~a  (documented)
+  size               function        fn size xs -> n : xs~s, n~Nat  (documented)
   sub                function        fn sub x y -> r : x~a, y~a, r~a
   total              lemma           lemma total x y : x~a, y~a  (documented)
   trans              lemma           lemma trans x y z : x~a, y~a, z~a, le x y, le y z  (documented)
+  uncons             function        fn uncons xs -> r : xs~s, r~Option (Elem, s),  (documented)
+  valid_utf8         function        export fn valid_utf8 b -> r : b~Bytes, r~Bool  (documented)
   zero               function        fn zero -> r : r~a
   zero_add           lemma           lemma zero_add x : Add a, x~a  (documented)

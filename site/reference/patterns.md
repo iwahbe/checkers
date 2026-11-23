@@ -23,8 +23,8 @@ apat     ::= '_' | lname | literal | '-' number | Uname
 | `0`, `-1`, `'a'`, `c'é'`, `"one"` | that literal | nothing |
 | `None`, `Leaf` | a constructor without fields | nothing |
 | `Some x`, `Node l v r` | a constructor, its fields matching the patterns in order | what they bind |
-| `x :: rest` | a non-empty list | its first element and the rest |
-| `[]`, `[a, b]` | a list of exactly that many elements | what they bind |
+| `x :: rest` | a non-empty list, array or string | its first element and the rest |
+| `[]`, `[a, b]` | a list, array or string of exactly that many elements | what they bind |
 | `(a, b)` | a tuple | its components; the last, the rest of a longer tuple |
 | `Point { x, y = py }` | a record | the fields named; `y = p` matches field `y` against `p` |
 | `p \| q` | what `p` or `q` matches | the same names, from whichever matched |
@@ -74,6 +74,31 @@ fn manhattan p -> n : p~Point, n~Nat
 
 check manhattan (Point 3 (-4)) == 7
 ```
+
+### Sequence patterns
+
+`[]`, `x :: rest` and `[a, b]` take apart more than lists: any value whose type has an instance of the prelude's class `Seq`, which arrays (`Bytes` too) and strings have, or whose type is a parameter `s` with the clause `Seq s`. `[]` matches when `Seq.uncons` gives `None`, and `x :: rest` when it gives `Some (x, rest)`; the elements are the type's `Seq.Elem` (a string's are `Char`s, a `Bytes`' are `U8`s). A function written so works on all of them:
+
+```checkers
+fn count xs -> n : Seq s, xs~s, n~Nat
+    match xs
+        []        -> 0
+        _ :: rest -> 1 + count rest
+
+fn first_two s -> r : s~String, r~Option (Char, Char)
+    match s
+        a :: b :: _ -> Some (a, b)
+        _           -> None
+
+check count [1, 2, 3] == 3
+check count b"abcd" == 4
+check count "h€llo" == 5
+check first_two "h€llo" == Some (c'h', c'€')
+```
+
+`count` needs no `decreasing`: `uncons` promises that `rest` is smaller (`Seq.size rest < Seq.size xs`), and that is the measure guessed ([Termination](termination.md#guessed-measures)). Taking apart an array or a string this way takes constant time per element: the rest shares the value's storage.
+
+On a list, a `match` is built in, as before, and its constructors `Nil` and `Cons` may be mixed with these patterns. On any other type, a `match` uses either these patterns or the type's own constructors, not both (E0248). These patterns only take values apart: `[]`, `x :: xs` and `[1, 2]` in an expression build lists.
 
 ## `match`
 

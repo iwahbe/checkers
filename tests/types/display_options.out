@@ -1,0 +1,19 @@
+error[E0201]: type mismatch: expected `MoneyOption`, found `IntOption`
+  --> display_options.ck:26:16
+   |
+26 |     display m [Hex]
+   |                ^^^
+
+error[E0201]: type mismatch: expected `MoneyOption`, found `IntOption`
+  --> display_options.ck:29:24
+   |
+29 |     format"{m | Cents, Hex}"
+   |                        ^^^
+
+error[E0201]: type mismatch: expected `IntOption`, found `MoneyOption`
+  --> display_options.ck:32:17
+   |
+32 |     format"{n | Cents}"
+   |                 ^^^^^
+
+display_options.ck: 3 errors, 0 warnings

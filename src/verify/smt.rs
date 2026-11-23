@@ -49,6 +49,17 @@ fn sym(s: &str) -> String {
 }
 
 impl Sort {
+    /// Whether the uninterpreted sort named `n` occurs in this one.
+    fn mentions(&self, n: &str) -> bool {
+        match self {
+            Sort::Int | Sort::Bool | Sort::Str => false,
+            Sort::Seq(x) | Sort::Bag(x) => x.mentions(n),
+            Sort::Data(_, args) | Sort::Tuple(args) => args.iter().any(|a| a.mentions(n)),
+            Sort::Unin(m, args) => m == n || args.iter().any(|a| a.mentions(n)),
+            Sort::Fun(p, r) => p.mentions(n) || r.mentions(n),
+        }
+    }
+
     fn render(&self, e: &Elab) -> String {
         match self {
             Sort::Int => "Int".into(),
@@ -128,6 +139,12 @@ fn tuple_sel(n: usize, k: usize) -> String {
     format!("|tuple{n}.{k}|")
 }
 
+/// How many datatypes deep `value_terms` looks into a value's fields:
+/// `Result (Parsed a src i) (Error src)` gives what `Parsed`'s fields say,
+/// not what `Error`'s kind's do. Deeper facts made `std.json`'s proofs too
+/// slow for Z3.
+const DATA_DEPTH: usize = 2;
+
 /// What a de Bruijn variable stands for during translation.
 #[derive(Clone)]
 enum Ent {
@@ -180,10 +197,10 @@ struct PostUse {
     env: Vec<Ent>,
     /// The result is a `Nat`: assumed where the precondition holds.
     nat: bool,
-    /// The result's type, over `env` without the result, when it is a tuple
-    /// with refined parts (`(Nat, (j~Nat, i <= j))`): their predicates are
-    /// assumed too, where the precondition holds.
-    parts: Option<Tm>,
+    /// What the result's type says of it (`value_terms`: `(Nat, (j~Nat, i
+    /// <= j))`, `Pair Nat (j~Nat, i <= j)`), assumed too where the
+    /// precondition holds.
+    parts: Vec<String>,
 }
 
 /// What it takes to reflect only some definitions: the declarations that
@@ -261,6 +278,9 @@ struct Delta {
     axioms: Vec<(String, String)>,
     asserts: Vec<String>,
     consts: Vec<String>,
+    /// The sorts its recognizers are applied at: each query that uses the
+    /// translation may need them declared (see `query`).
+    tested: Vec<Sort>,
 }
 
 /// Translated definitions, shared by the builders of one module.
@@ -313,6 +333,8 @@ pub struct Builder<'a> {
     in_def: bool,
     /// How many lambdas are being translated (names their parameters).
     lam_depth: usize,
+    /// Function values given to a local function as fresh constants (`select`).
+    fun_args: usize,
     ctx: Vec<Option<Ent>>,
     ctx_src: Vec<ObLocal>,
     pub shown: Vec<(String, String)>,
@@ -323,6 +345,8 @@ pub struct Builder<'a> {
     real_values: Vec<(String, TyId)>,
     /// Datatypes given a stand-in base constructor, so Z3 accepts them.
     based: BTreeSet<TyId>,
+    /// The sorts a constructor's recognizer is applied at (see `query`).
+    tested: BTreeSet<Sort>,
     /// Give `forall` facts to Z3, quantified: only to check a counterexample
     /// against them, never to prove (D137).
     foralls: bool,
@@ -351,12 +375,14 @@ impl<'a> Builder<'a> {
             axioms: BTreeMap::new(),
             posts: Vec::new(),
             post_seen: HashSet::new(),
+            fun_args: 0,
             fact_seen: HashSet::new(),
             in_def: false,
             lam_depth: 0,
             ctx: Vec::new(),
             ctx_src: Vec::new(),
             shown: Vec::new(),
+            tested: BTreeSet::new(),
             string_vars: Vec::new(),
             array_vars: Vec::new(),
             real_values: Vec::new(),
@@ -399,6 +425,7 @@ impl<'a> Builder<'a> {
                     std::mem::take(&mut self.axioms),
                     std::mem::take(&mut self.asserts),
                     std::mem::take(&mut self.consts),
+                    std::mem::take(&mut self.tested),
                 );
                 let known_before: HashSet<String> = self.known.keys().cloned().collect();
                 let dict_before: HashSet<String> = self.dict_args.keys().cloned().collect();
@@ -414,6 +441,7 @@ impl<'a> Builder<'a> {
                     axioms: std::mem::replace(&mut self.axioms, saved.6).into_iter().collect(),
                     asserts: std::mem::replace(&mut self.asserts, saved.7),
                     consts: std::mem::replace(&mut self.consts, saved.8),
+                    tested: std::mem::replace(&mut self.tested, saved.9).into_iter().collect(),
                 };
                 self.inst_queue = saved.5;
                 defs.0.borrow_mut().insert(inst.clone(), (r.clone(), d.clone()));
@@ -451,6 +479,7 @@ impl<'a> Builder<'a> {
                 self.consts.push(c);
             }
         }
+        self.tested.extend(d.tested);
         r
     }
 
@@ -626,6 +655,67 @@ impl<'a> Builder<'a> {
                         }
                         _ => out("a type that depends on a value"),
                     },
+                    // A class's type (#133): at a known instance, its type;
+                    // at a dictionary in scope, for a type `t`, a sort of its
+                    // own applied to `t`'s (one instance per type).
+                    Tm::Def(d) if self.e.g.assoc_def(*d).is_some_and(|(_, _, n)| args.len() == n + 1) => {
+                        // Known values (an instance's dictionary) as they are.
+                        // A dictionary an instance builds from arguments
+                        // (`C (List a)`, #168): the instance's function
+                        // applied to variables past `env`, standing for the
+                        // arguments kept by its key.
+                        let n = env.len();
+                        let empty = Rc::new(Vec::new());
+                        let mut extra: Vec<Ent> = Vec::new();
+                        let mut venv: Vec<Val> = Vec::with_capacity(n);
+                        for (k, e) in env.iter().enumerate() {
+                            let v = match e {
+                                Ent::Known(key) => match self.known.get(key) {
+                                    Some(tm) if crate::core::max_var(tm).is_none() => crate::core::eval(&self.e.g, &empty, tm),
+                                    Some(tm) => match (dict_over_vars(tm), self.dict_args.get(key)) {
+                                        (Some((f, m)), Some(ents)) if ents.len() == m => {
+                                            let base = n + extra.len();
+                                            extra.extend(ents.iter().cloned());
+                                            let args: Vec<Val> = (0..m).map(|j| Val::var(base + j)).collect();
+                                            crate::core::eval(&self.e.g, &Rc::new(args), &f)
+                                        }
+                                        _ => Val::var(k),
+                                    },
+                                    None => Val::var(k),
+                                },
+                                _ => Val::var(k),
+                            };
+                            venv.push(v);
+                        }
+                        let v = crate::core::force(&self.e.g, crate::core::eval(&self.e.g, &Rc::new(venv), t));
+                        match &v {
+                            Val::Neutral(crate::core::Head::Var(l), sp) if sp.len() == 1 && *l < n => {
+                                let crate::core::Elim::Field(c, i) = sp[0] else { return out("a class's type at a dictionary it can't name") };
+                                // The sort of the type the dictionary is for.
+                                match self.resolve(env, n - 1 - l)? {
+                                    Ent::Term(_, Sort::Data(_, sargs)) if !sargs.is_empty() => Ok(self.assoc_sort(c, i, sargs)),
+                                    // A dictionary Z3 can't see into (a class
+                                    // over a type constructor): named by the
+                                    // class's arguments, a type constructor
+                                    // by a sort of its own.
+                                    Ent::Term(_, Sort::Unin(..)) => {
+                                        let cn = args.len() - 1;
+                                        let mut ss = Vec::with_capacity(cn);
+                                        for a in &args[..cn] {
+                                            ss.push(self.class_arg_sort(env, a)?);
+                                        }
+                                        Ok(self.assoc_sort(c, i, ss))
+                                    }
+                                    _ => out("a class's type at a dictionary it can't name"),
+                                }
+                            }
+                            // Reduced to a variable: a type parameter, or a
+                            // dictionary's argument (`type E = a`).
+                            Val::Neutral(crate::core::Head::Var(_), sp) if sp.is_empty() => self.sort_under(env, extra, &v),
+                            Val::Neutral(..) => out("a class's type at a dictionary it can't name"),
+                            _ => self.sort_under(env, extra, &v),
+                        }
+                    }
                     Tm::Def(d) => {
                         // A type function applied to closed arguments
                         // (`values (Last Nat)`, D176): the type it gives.
@@ -675,10 +765,15 @@ impl<'a> Builder<'a> {
                     if self.is_type(&a) {
                         return out("a function of a type (a polymorphic function value)");
                     }
+                    // A parameter's sort names the types read from it (a
+                    // class's type at a dictionary parameter).
                     if m != Mult::Zero {
-                        ps.push(self.sort_of(&inner, &a)?);
+                        let s = self.sort_of(&inner, &a)?;
+                        ps.push(s.clone());
+                        inner.push(Ent::Term(String::new(), s));
+                    } else {
+                        inner.push(Ent::Opaque("parameter".into()));
                     }
-                    inner.push(Ent::Opaque("parameter".into()));
                     t = (*b).clone();
                 }
                 if ps.is_empty() {
@@ -688,8 +783,68 @@ impl<'a> Builder<'a> {
                 Ok(ps.into_iter().rev().fold(r, |r, p| Sort::Fun(Box::new(p), Box::new(r))))
             }
             Tm::Univ(_) => out("a universe"),
+            // A class's type read from a dictionary in scope (`$d.$Unit`, as
+            // its functions' fields have it): the sort of `C.Name t`.
+            Tm::Field(x, c, i) if self.e.g.is_type_field(*c, *i) => match &**x {
+                Tm::Var(l) => match self.resolve(env, *l)? {
+                    Ent::Term(_, Sort::Data(_, sargs)) if !sargs.is_empty() => Ok(self.assoc_sort(*c, *i, sargs)),
+                    _ => out("a class's type at a dictionary it can't name"),
+                },
+                _ => out("a class's type at a dictionary it can't name"),
+            },
             _ => out("an unsupported type"),
         }
+    }
+
+    /// The sort standing for a class's argument in its types' sorts: a
+    /// type's sort, or for a type constructor, a sort of its own.
+    fn class_arg_sort(&mut self, env: &[Ent], a: &Tm) -> Tx<Sort> {
+        if let Ok(s) = self.sort_of(env, a) {
+            return Ok(s);
+        }
+        let key = match self.ty_fun(env, a) {
+            Some(Ent::TyFun(t, ps)) => format!("tyfun#{t:?}{ps:?}"),
+            Some(Ent::TyVar(n)) => format!("tyvar#{n}"),
+            _ => return out("a class's type at a dictionary it can't name"),
+        };
+        self.sorts.insert(key.clone(), 0);
+        Ok(Sort::Unin(key, Vec::new()))
+    }
+
+    /// The sort of a type value under `env` and then `extra` (a
+    /// dictionary's arguments, bound past `env`).
+    fn sort_under(&mut self, env: &[Ent], extra: Vec<Ent>, v: &Val) -> Tx<Sort> {
+        let mut env2 = env.to_vec();
+        env2.extend(extra);
+        let tm = quote(&self.e.g, env2.len(), v);
+        self.sort_of(&env2, &tm)
+    }
+
+    /// The sort of a class's type (field `i` of its dictionary's
+    /// constructor `c`, #133) at types of sorts `args` (one for each of the
+    /// class's parameters, #145): a sort constructor of its own,
+    /// `Display.Options a`.
+    fn assoc_sort(&mut self, c: ConId, i: usize, args: Vec<Sort>) -> Sort {
+        let ci = &self.e.g.cons[c.0 as usize];
+        let ti = &self.e.g.tys[ci.ty.0 as usize];
+        let name = format!("{}.{}.{}", ti.module, ti.name, ci.fields[i].0.trim_start_matches('$'));
+        self.sorts.insert(name.clone(), args.len());
+        Sort::Unin(name, args)
+    }
+
+    /// A type-valued field's sort, in a datatype's declaration: a class's
+    /// type at the class's parameter (#133), or a sort of its own.
+    fn type_field_sort(&mut self, c: ConId, i: usize, env: &[Ent]) -> Sort {
+        let f = &self.e.g.cons[c.0 as usize].fields[i];
+        if f.0.starts_with('$') {
+            let n = self.e.g.arity_ty(self.e.g.cons[c.0 as usize].ty);
+            let ps: Vec<Sort> = env.iter().take(n).filter_map(|e| if let Ent::Ty(p) = e { Some(p.clone()) } else { None }).collect();
+            if n > 0 && ps.len() == n {
+                return self.assoc_sort(c, i, ps);
+            }
+        }
+        self.sorts.insert("field".into(), 0);
+        Sort::Unin("field".into(), vec![])
     }
 
     fn ty_sort(&mut self, env: &[Ent], id: TyId, args: &[Tm]) -> Tx<Sort> {
@@ -751,9 +906,10 @@ impl<'a> Builder<'a> {
         for c in self.e.g.tys[id.0 as usize].ctors.clone() {
             let fields = self.e.g.cons[c.0 as usize].fields.clone();
             let mut env = env.clone();
-            for f in &fields {
+            for (k, f) in fields.iter().enumerate() {
                 if self.is_type(&f.3) {
-                    env.push(Ent::Ty(Sort::Unin("field".into(), vec![])));
+                    let s = self.type_field_sort(c, k, &env);
+                    env.push(Ent::Ty(s));
                     continue;
                 }
                 match self.sort_of(&env, &f.3) {
@@ -796,7 +952,10 @@ impl<'a> Builder<'a> {
         let mut out_ = Vec::new();
         for (k, f) in fields.iter().enumerate() {
             match &f.3 {
-                ty if self.is_type(ty) => env.push(Ent::Ty(Sort::Unin("field".into(), vec![]))),
+                ty if self.is_type(ty) => {
+                    let s = self.type_field_sort(c, k, &env);
+                    env.push(Ent::Ty(s));
+                }
                 ty => {
                     let s = self.sort_of(&env, ty)?;
                     out_.push((k, s.clone()));
@@ -986,6 +1145,16 @@ impl<'a> Builder<'a> {
         if let Some(Some(e)) = self.ctx.get(lvl) {
             return Ok(e.clone());
         }
+        // A program local's facts hold everywhere, wherever it is first met
+        // (a reflected body, a quantified axiom's guard).
+        let saved = std::mem::replace(&mut self.in_def, false);
+        let r = self.declare_local(lvl);
+        self.in_def = saved;
+        r
+    }
+
+    /// `local`'s work: declare the local `lvl`, with its facts.
+    fn declare_local(&mut self, lvl: usize) -> Tx<Ent> {
         let l = self.ctx_src[lvl].clone();
         let env: Vec<Ent> = (0..lvl).map(|k| Ent::Opaque(format!("@{k}"))).collect();
         let ty = force(&self.e.g, l.ty.clone());
@@ -1006,6 +1175,10 @@ impl<'a> Builder<'a> {
                 let tyt = quote(&self.e.g, lvl, &ty);
                 let s = self.sort_of(&env, &tyt)?;
                 self.consts.push(format!("(declare-const {name} {})", s.render(self.e)));
+                // Declared, so known from here on: its specification is over
+                // all the locals, and may mention it (a precondition's
+                // dictionary is applied to every local in scope, #210).
+                self.ctx[lvl] = Some(Ent::Term(name.clone(), s.clone()));
                 // Its refinements may mention later locals (#102): its
                 // specification is over all of them.
                 let (at, spec) = match &l.refined {
@@ -1020,21 +1193,20 @@ impl<'a> Builder<'a> {
                 let tyt = quote(&self.e.g, lvl, &ty);
                 let s = self.sort_of(&env, &tyt)?;
                 self.consts.push(format!("(declare-const {name} {})", s.render(self.e)));
-                if self.is_nat_val(&l.ty) {
-                    self.asserts.push(format!("(>= {name} 0)"));
-                }
-                // A value of a datatype carries its constructor's invariants (D11).
-                // A refinement alias (`U8`) brings its predicates.
+                let nat = self.is_nat_val(&l.ty).then(|| format!("(>= {name} 0)"));
+                self.asserts.extend(nat.clone());
+                // What its type says beyond the sort: a refinement alias's
+                // predicates (`U8`), its parts' and fields' (`(Char,
+                // (stop~Nat, k < stop))`, `Parsed Members …`), its
+                // constructor's invariants (D11).
                 let raw = quote(&self.e.g, lvl, &l.ty);
-                self.alias_facts(&env, &raw, &name, &s);
-                // A tuple's parts carry theirs (`(Char, (stop~Nat, k < stop))`).
-                self.tuple_facts(&env, &tyt, &name, &s);
-                if let Sort::Data(id, sargs) = &s {
-                    let vals = self.value_args(&env, &tyt);
-                    self.datatype_facts(&name, *id, sargs, &vals);
-                    // A field at a type parameter instantiated with a
-                    // refinement alias (`Parsed Members …`) has its predicates.
-                    self.field_alias_facts(&env, &raw, &name, *id, sargs);
+                let facts = self.value_terms(&env, &raw, &name, &s);
+                self.asserts.extend(facts.into_iter().filter(|t| Some(t) != nat.as_ref()));
+                if s == Sort::Str {
+                    self.string_fact(&name);
+                }
+                if let Sort::Data(id, _) = &s {
+                    self.real_values.push((name.clone(), *id));
                 }
                 if !l.name.starts_with('$') && !l.name.starts_with('_') {
                     self.shown.push((name.clone(), l.name.to_string()));
@@ -1064,35 +1236,59 @@ impl<'a> Builder<'a> {
         Ok(ent)
     }
 
-    /// For each constructor of `id`: if `x` is that constructor, its `Nat`
-    /// fields are non-negative and its invariants hold.
-    /// If `ty` is a refinement alias, assert its predicates about `x`.
-    fn alias_facts(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort) {
-        let ts = self.alias_terms(env, ty, x, xs);
-        self.asserts.extend(ts);
+    /// The prelude's `valid_utf8`, applied to `t` (bytes): its term.
+    fn valid_utf8(&mut self, t: &str) -> Option<String> {
+        let g = &self.e.g;
+        let d = g.defs.iter().position(|d| &*d.module == "std.prelude" && &*d.name == "valid_utf8")?;
+        let env = vec![Ent::Term(t.to_string(), Sort::Seq(Box::new(Sort::Int)))];
+        let tm = Tm::App(Rc::new(Tm::Def(DefId(d as u32))), Rc::new(Tm::Var(0)), crate::core::Icit::Expl, Mult::Many);
+        match self.term(&env, &tm) {
+            Ok((ft, Sort::Bool)) => Some(ft),
+            _ => None,
+        }
+    }
+
+    /// A string's bytes are UTF-8 (#170): what `String`'s field says.
+    fn string_fact(&mut self, t: &str) {
+        if let Some(f) = self.valid_utf8(t) {
+            self.asserts.push(f);
+        }
+    }
+
+    /// Whether the bytes of a literal are UTF-8, which `valid_utf8` says of
+    /// it: the prover knows nothing else of that builtin (#170).
+    fn literal_utf8(&mut self, b: &[u8]) {
+        let lit = smt_bytes(b);
+        if self.in_def || !self.fact_seen.insert(format!("utf8 {lit}")) {
+            return;
+        }
+        if let Some(f) = self.valid_utf8(&lit) {
+            self.asserts.push(if std::str::from_utf8(b).is_ok() { f } else { format!("(not {f})") });
+        }
     }
 
     /// A call `f a…` of a local function whose type is refined (D84): where
     /// its preconditions hold at the arguments, its postconditions hold at
     /// the result.
-    fn fun_post_facts(&mut self, env: &[Ent], name: &str, args: &[(Tm, Mult)], app: &str, rs: &Sort) {
+    /// `ats` are the explicit arguments' terms and sorts, as the call has them.
+    fn fun_post_facts(&mut self, args: &[(Tm, Mult)], ats: &[(String, Sort)], name: &str, app: &str, rs: &Sort) {
         let Some((lvl, ty)) = self.fun_tys.get(name).cloned() else { return };
         let mut inner: Vec<Ent> = (0..lvl).map(|k| Ent::Opaque(format!("@{k}"))).collect();
         let mut pres = Vec::new();
         let mut t = ty;
-        for (a, m) in args {
+        let mut ats = ats.iter();
+        for (_, m) in args {
             let Tm::Pi(_, _, _, dom, cod) = t else { return };
             if *m == Mult::Zero {
                 inner.push(Ent::Opaque("type argument".into()));
             } else {
-                let Ok((at, s)) = self.term(env, a) else { return };
-                pres.extend(self.alias_terms(&inner, &dom, &at, &s));
+                let Some((at, s)) = ats.next().cloned() else { return };
+                pres.extend(self.domain_terms(&inner, &dom, &at, &s));
                 inner.push(Ent::Term(at, s));
             }
             t = (*cod).clone();
         }
-        let mut posts = self.alias_terms(&inner, &t, app, rs);
-        posts.extend(self.tuple_terms(&inner, &t, app, rs));
+        let posts = self.value_terms(&inner, &t, app, rs);
         if posts.is_empty() {
             return;
         }
@@ -1109,6 +1305,14 @@ impl<'a> Builder<'a> {
     /// postconditions hold, for each application Z3 makes (unfolding `map f`,
     /// D139). A pattern-guarded axiom, like `nat_axiom`'s.
     fn fun_axiom(&mut self, name: &str, lvl: usize) {
+        // Its terms are over the axiom's bound variables: facts about them
+        // (`Seq.size x0` is a `Nat`) can't be stated outside it (#210).
+        let saved = std::mem::replace(&mut self.in_def, true);
+        self.fun_axiom_in(name, lvl);
+        self.in_def = saved;
+    }
+
+    fn fun_axiom_in(&mut self, name: &str, lvl: usize) {
         let Some((_, ty)) = self.fun_tys.get(name).cloned() else { return };
         let mut inner: Vec<Ent> = (0..lvl).map(|k| Ent::Opaque(format!("@{k}"))).collect();
         let mut pres = Vec::new();
@@ -1120,7 +1324,7 @@ impl<'a> Builder<'a> {
             } else {
                 let Ok(s) = self.sort_of(&inner, &dom) else { return };
                 let v = format!("x{}", vars.len());
-                pres.extend(self.alias_terms(&inner, &dom, &v, &s));
+                pres.extend(self.domain_terms(&inner, &dom, &v, &s));
                 vars.push((v.clone(), s.clone()));
                 inner.push(Ent::Term(v, s));
             }
@@ -1131,8 +1335,7 @@ impl<'a> Builder<'a> {
         for (v, _) in &vars {
             app = format!("(select {app} {v})");
         }
-        let mut posts = self.alias_terms(&inner, &t, &app, &rs);
-        posts.extend(self.tuple_terms(&inner, &t, &app, &rs));
+        let posts = self.value_terms(&inner, &t, &app, &rs);
         if posts.is_empty() || vars.is_empty() {
             return;
         }
@@ -1143,48 +1346,242 @@ impl<'a> Builder<'a> {
         self.asserts.push(format!("(forall ({}) (! {body} :pattern ({app})))", binds.join(" ")));
     }
 
-    /// A tuple's parts at refined types (D71, D82) have their predicates:
-    /// a `Nat` part is non-negative and a refinement alias's predicates hold,
-    /// in tuples written inside it too. `ty` is the tuple type, `xs` its sort, in which
-    /// a last part that is a tuple is flattened (D174): there the last part
-    /// is the tuple of the remaining components.
-    fn tuple_facts(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort) {
-        let (Tm::TupleTy(ts), Sort::Tuple(ss)) = (ty, xs) else { return };
-        let n = ss.len();
-        for (k, t) in ts.iter().enumerate() {
-            let (part, ps) = if k + 1 == ts.len() && ts.len() < n {
-                let rest = Sort::Tuple(ss[k..].to_vec());
-                self.tuples.insert(n - k);
-                let parts: Vec<String> = (k..n).map(|j| format!("({} {x})", tuple_sel(n, j))).collect();
-                (format!("((as {} {}) {})", tuple_con(n - k), rest.render(self.e), parts.join(" ")), rest)
-            } else {
-                let Some(p) = ss.get(k) else { return };
-                (format!("({} {x})", tuple_sel(n, k)), p.clone())
-            };
-            if self.is_nat_tm(t) {
-                self.asserts.push(format!("(>= {part} 0)"));
-            }
-            self.alias_facts(env, t, &part, &ps);
-            self.tuple_facts(env, t, &part, &ps);
+    /// What a value `x` of type `ty` (sort `xs`) satisfies beyond its sort
+    /// (D71, D82): a `Nat` is non-negative, a refinement alias's predicates
+    /// hold, and so do those of its parts and fields, nested: a tuple's
+    /// parts, and a datatype's fields at their declared types, with the
+    /// type's arguments put in (`Pair Nat (j~Nat, i <= j)`, `Parsed Members
+    /// …`), each constructor's under its tester, with its invariants (D11).
+    /// As facts to assume of a value the program has.
+    fn value_terms(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort) -> Vec<String> {
+        self.type_terms(env, ty, x, xs, Some(&mut Vec::new()), true)
+    }
+
+    /// `value_terms` of `x`'s parts and fields only, not of `x` itself: a
+    /// call's result, whose own refinement its postconditions give.
+    fn part_terms(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort) -> Vec<String> {
+        self.type_terms(env, ty, x, xs, Some(&mut Vec::new()), false)
+    }
+
+    /// `value_terms` without looking inside datatypes: what a value must
+    /// satisfy to be in the type, as a guard (a `forall`'s variables, a
+    /// function value's arguments), where Z3 must show it of the values it
+    /// picks.
+    fn domain_terms(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort) -> Vec<String> {
+        self.type_terms(env, ty, x, xs, None, true)
+    }
+
+    /// `value_terms`, and `domain_terms` without `inside`. `inside` holds the
+    /// datatypes being looked into: a field of one of them again (a list's
+    /// tail, of the same type as the list) is not, so the facts stay finite,
+    /// and nor is one `DATA_DEPTH` datatypes deep (a value deeper has its
+    /// facts where the program names it, by a pattern or a field). Without
+    /// `top`, only what is said of the parts.
+    fn type_terms(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort, inside: Option<&mut Vec<String>>, top: bool) -> Vec<String> {
+        let mut out = Vec::new();
+        // A function's refinements are its own (`fun_axiom`, D139).
+        if matches!(xs, Sort::Fun(..)) {
+            return out;
         }
+        let ty = if has_meta(ty) { self.zonk(env.len(), ty) } else { ty.clone() };
+        // A class's type at a known instance is the instance's, refinements
+        // and all (#190).
+        let ty = match ty.head() {
+            Tm::Def(_) => {
+                let n = env.len();
+                let vars = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+                match crate::core::class_type_at(&self.e.g, &eval(&self.e.g, &vars, &ty)) {
+                    Some(v) => quote(&self.e.g, n, &v),
+                    None => ty,
+                }
+            }
+            _ => ty,
+        };
+        // `Nat` is also the alias `n~Int, n >= 0`: each term once.
+        let add = |out: &mut Vec<String>, ts: Vec<String>| {
+            for t in ts {
+                if !out.contains(&t) {
+                    out.push(t);
+                }
+            }
+        };
+        // A class's type at a dictionary in scope: its declared predicates
+        // hold of every value of it (#176), a call's result too.
+        let ts = self.class_type_terms(env, &ty, x, xs);
+        add(&mut out, ts);
+        if top {
+            if self.is_nat_tm(&ty) {
+                out.push(format!("(>= {x} 0)"));
+            }
+            let ts = self.alias_terms(env, &ty, x, xs);
+            add(&mut out, ts);
+        }
+        // Its shape: through the aliases it is written with.
+        let shape = match ty.head() {
+            Tm::Def(_) => {
+                let n = env.len();
+                let vars = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+                quote(&self.e.g, n, &force(&self.e.g, eval(&self.e.g, &vars, &ty)))
+            }
+            _ => ty,
+        };
+        match (&shape, xs) {
+            (Tm::TupleTy(ts), Sort::Tuple(ss)) => {
+                let mut inside = inside;
+                let n = ss.len();
+                for (k, t) in ts.iter().enumerate() {
+                    // A last part that is a tuple is flattened (D174): the
+                    // last of `ts` is the tuple of the remaining components.
+                    let (part, ps) = if k + 1 == ts.len() && ts.len() < n {
+                        let rest = Sort::Tuple(ss[k..].to_vec());
+                        self.tuples.insert(n - k);
+                        let parts: Vec<String> = (k..n).map(|j| format!("({} {x})", tuple_sel(n, j))).collect();
+                        (format!("((as {} {}) {})", tuple_con(n - k), rest.render(self.e), parts.join(" ")), rest)
+                    } else {
+                        let Some(p) = ss.get(k) else { break };
+                        (format!("({} {x})", tuple_sel(n, k)), p.clone())
+                    };
+                    let ts = self.type_terms(env, t, &part, &ps, inside.as_deref_mut(), true);
+                    add(&mut out, ts);
+                }
+            }
+            (_, Sort::Data(id, sargs)) => {
+                if let Some(inside) = inside {
+                    // The type, the same at any depth of locals.
+                    let n = env.len();
+                    let vars = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+                    let key = format!("{:?}", quote(&self.e.g, 1 << 20, &eval(&self.e.g, &vars, &shape)));
+                    if !inside.contains(&key) && inside.len() < DATA_DEPTH {
+                        inside.push(key);
+                        let ts = self.field_terms(env, &shape, x, *id, sargs, inside);
+                        inside.pop();
+                        add(&mut out, ts);
+                    }
+                }
+            }
+            _ => {}
+        }
+        out
     }
 
-    /// `tuple_facts`, as terms instead of facts.
-    fn tuple_terms(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort) -> Vec<String> {
-        let saved = std::mem::take(&mut self.asserts);
-        self.tuple_facts(env, ty, x, xs);
-        std::mem::replace(&mut self.asserts, saved)
+    /// The fields of `x`, of datatype `ty` (`id` at sorts `sargs`): for each
+    /// constructor, what its fields' types say of them and its invariants,
+    /// under its tester unless it is the only one. A field's type is the
+    /// declared one with `ty`'s arguments (types and values) and the fields
+    /// before it put in, by evaluation, so nothing is captured.
+    fn field_terms(&mut self, env: &[Ent], ty: &Tm, x: &str, id: TyId, sargs: &[Sort], inside: &mut Vec<String>) -> Vec<String> {
+        let (h, mut args) = ty.spine_cloned();
+        match h {
+            Tm::TyConApp(i, v) if *i == id => {
+                let mut all = v.clone();
+                all.extend(args);
+                args = all;
+            }
+            Tm::TyCon(i) if *i == id => {}
+            _ => return Vec::new(),
+        }
+        if args.len() != self.e.g.tys[id.0 as usize].params.len() {
+            return Vec::new();
+        }
+        let n = env.len();
+        let vars = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+        let params: Vec<Val> = args.iter().map(|a| eval(&self.e.g, &vars, a)).collect();
+        let senv = self.sort_env(id, sargs);
+        let ctors = self.e.g.tys[id.0 as usize].ctors.clone();
+        let mut out = Vec::new();
+        for &c in &ctors {
+            let Ok(fs) = self.con_fields(c, &senv) else { continue };
+            let fields = self.e.g.cons[c.0 as usize].fields.clone();
+            let mut ext = env.to_vec();
+            let mut vals = params.clone();
+            let mut facts: Vec<String> = Vec::new();
+            for (k, f) in fields.iter().enumerate() {
+                match fs.iter().find(|(i, _)| *i == k) {
+                    Some((_, fsort)) => {
+                        let sel = format!("({} {x})", sel_sym(self.e, c, k));
+                        let fty = quote(&self.e.g, n + k, &eval(&self.e.g, &Rc::new(vals.clone()), &f.3));
+                        for t in self.type_terms(&ext, &fty, &sel, fsort, Some(inside), true) {
+                            if !facts.contains(&t) {
+                                facts.push(t);
+                            }
+                        }
+                        ext.push(Ent::Term(sel, fsort.clone()));
+                    }
+                    None => {
+                        let s = self.type_field_sort(c, k, &senv);
+                        ext.push(Ent::Ty(s));
+                    }
+                }
+                vals.push(Val::var(n + k));
+            }
+            // Invariants may mention the type's value parameters
+            // (`stop <= len src`).
+            let vals = Rc::new(vals);
+            for inv in self.e.con_invs.get(&c).cloned().unwrap_or_default() {
+                let tm = quote(&self.e.g, n + fields.len(), &eval(&self.e.g, &vals, &inv.tm));
+                let saved = self.in_def;
+                self.in_def = true;
+                if let Ok((t, Sort::Bool)) = self.term(&ext, &tm) {
+                    if !facts.contains(&t) {
+                        facts.push(t);
+                    }
+                }
+                self.in_def = saved;
+            }
+            if facts.is_empty() {
+                continue;
+            }
+            let all = if facts.len() == 1 { facts.pop().unwrap() } else { format!("(and {})", facts.join(" ")) };
+            if ctors.len() != 1 {
+                self.tested.insert(Sort::Data(id, sargs.to_vec()));
+            }
+            out.push(if ctors.len() == 1 { all } else { format!("(=> ({} {x}) {all})", tester(self.e, c)) });
+        }
+        out
     }
 
-    /// `ty` is a tuple type with a part that `tuple_facts` has facts about:
-    /// a `Nat`, a refinement alias, or such a tuple.
-    fn refined_tuple(&self, ty: &Tm) -> bool {
-        let Tm::TupleTy(ts) = ty else { return false };
-        ts.iter().any(|t| {
-            self.is_nat_tm(t)
-                || matches!(t.head(), Tm::Def(d) if self.e.alias_preds.contains_key(d))
-                || self.refined_tuple(t)
-        })
+    /// The type `ty`'s result at the arguments `args` (over `env`), when its
+    /// parameter types aren't computed from them (D176): its parameters,
+    /// types and values, put in by evaluation.
+    fn result_type_at(&self, n: usize, ty: &Tm, args: &[(Tm, Mult)]) -> Option<Tm> {
+        let vars = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+        let mut v = eval(&self.e.g, &Rc::new(Vec::new()), ty);
+        for (a, _) in args {
+            match force(&self.e.g, v) {
+                Val::Pi(_, _, _, _, c) => v = crate::core::apply_closure(&self.e.g, &c, eval(&self.e.g, &vars, a)),
+                _ => return None,
+            }
+        }
+        Some(quote(&self.e.g, n, &v))
+    }
+
+    /// The predicates declared on a class's type (#176), of `x` of type
+    /// `ty`, when `ty` is that type read from a dictionary in scope.
+    fn class_type_terms(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort) -> Vec<String> {
+        if self.e.class_type_preds.is_empty() {
+            return Vec::new();
+        }
+        let n = env.len();
+        let vars = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+        let v = force(&self.e.g, eval(&self.e.g, &vars, ty));
+        let Val::Neutral(h, sp) = &v else { return Vec::new() };
+        let Some(crate::core::Elim::Field(c, i)) = sp.last() else { return Vec::new() };
+        let Some(preds) = self.e.class_type_preds.get(&(*c, *i)).cloned() else { return Vec::new() };
+        let base = Val::Neutral(h.clone(), Rc::new(sp[..sp.len() - 1].to_vec()));
+        let dict = quote(&self.e.g, n, &base);
+        let Ok((dt, ds)) = self.term(env, &dict) else { return Vec::new() };
+        let Sort::Data(_, sargs) = &ds else { return Vec::new() };
+        // The class's parameters, its dictionary, the value.
+        let mut inner: Vec<Ent> = sargs.iter().map(|s| Ent::Ty(s.clone())).collect();
+        inner.push(Ent::Term(dt, ds.clone()));
+        inner.push(Ent::Term(x.to_string(), xs.clone()));
+        let mut out = Vec::new();
+        for p in preds {
+            if let Ok((t, Sort::Bool)) = self.term(&inner, &p.tm) {
+                out.push(t);
+            }
+        }
+        out
     }
 
     /// The predicates of the refinement alias `ty` at `x`, as terms.
@@ -1201,9 +1598,19 @@ impl<'a> Builder<'a> {
                 Ok(s) if self.is_type(a) => Ent::Ty(s),
                 sort => match self.term(env, a) {
                     Ok((t, s)) => Ent::Term(t, s),
+                    // A known function or dictionary (an instance's, which a
+                    // generic signature's refinement captured at a use,
+                    // `Seq.size ys` at `s` = `Bytes`): known, as a call's
+                    // argument is, so its predicates name the same function.
                     Err(_) => match sort {
                         Ok(s) => Ent::Ty(s),
-                        Err(_) => Ent::Opaque("alias argument".into()),
+                        Err(_) => match self.known_fun(env, a) {
+                            Some(k) => Ent::Known(k),
+                            None => match self.known_dict(env, a) {
+                                Ok(Some(k)) => Ent::Known(k),
+                                _ => Ent::Opaque("alias argument".into()),
+                            },
+                        },
                     },
                 },
             });
@@ -1229,107 +1636,6 @@ impl<'a> Builder<'a> {
             }
         }
         out
-    }
-
-    fn field_alias_facts(&mut self, env: &[Ent], ty: &Tm, x: &str, id: TyId, sargs: &[Sort]) {
-        let (h, mut args) = ty.spine_cloned();
-        if let Tm::TyConApp(_, v) = h {
-            let mut all = v.clone();
-            all.extend(args);
-            args = all;
-        }
-        if !args.iter().any(|a| matches!(a, Tm::Def(_) | Tm::App(..))) {
-            return;
-        }
-        let ctors = self.e.g.tys[id.0 as usize].ctors.clone();
-        if ctors.len() != 1 {
-            return;
-        }
-        let c = ctors[0];
-        let n = self.e.g.tys[id.0 as usize].params.len();
-        let senv = self.sort_env(id, sargs);
-        let Ok(fs) = self.con_fields(c, &senv) else { return };
-        let fields = self.e.g.cons[c.0 as usize].fields.clone();
-        for (k, f) in fields.iter().enumerate() {
-            let Tm::Var(i) = f.3 else { continue };
-            let Some(level) = (n + k).checked_sub(1 + i) else { continue };
-            let (Some(arg), Some((_, fsort))) = (args.get(level), fs.iter().find(|(j, _)| *j == k)) else { continue };
-            if level >= n {
-                continue;
-            }
-            let sel = format!("({} {x})", sel_sym(self.e, c, k));
-            let (arg, fsort) = (arg.clone(), fsort.clone());
-            self.alias_facts(env, &arg, &sel, &fsort);
-        }
-    }
-
-    /// The value arguments of a datatype type (`Parsed Json src i` → `src`,
-    /// `i`), translated where possible, by parameter position.
-    fn value_args(&mut self, env: &[Ent], ty: &Tm) -> Vec<Option<(String, Sort)>> {
-        let (h, mut args) = ty.spine_cloned();
-        let id = match h {
-            Tm::TyConApp(id, v) => {
-                let mut all = v.clone();
-                all.extend(args);
-                args = all;
-                *id
-            }
-            Tm::TyCon(id) => *id,
-            _ => return Vec::new(),
-        };
-        let params = self.e.g.tys[id.0 as usize].params.clone();
-        let mut out_ = Vec::new();
-        for (k, (_, pty)) in params.iter().enumerate() {
-            out_.push(match args.get(k) {
-                Some(a) if !self.is_type(pty) => self.term(env, a).ok(),
-                _ => None,
-            });
-        }
-        out_
-    }
-
-    fn datatype_facts(&mut self, x: &str, id: TyId, sargs: &[Sort], vals: &[Option<(String, Sort)>]) {
-        self.real_values.push((x.to_string(), id));
-        let mut senv = self.sort_env(id, sargs);
-        // Invariants may mention the type's value parameters (`stop <= len src`).
-        for (k, v) in vals.iter().enumerate() {
-            if let (Some((t, s)), Some(slot @ Ent::Opaque(_))) = (v, senv.get_mut(k)) {
-                *slot = Ent::Term(t.clone(), s.clone());
-            }
-        }
-        let ctors = self.e.g.tys[id.0 as usize].ctors.clone();
-        for c in ctors {
-            let Ok(fs) = self.con_fields(c, &senv) else { continue };
-            let fields = self.e.g.cons[c.0 as usize].fields.clone();
-            let mut env = senv.clone();
-            let mut facts = Vec::new();
-            for (k, f) in fields.iter().enumerate() {
-                match fs.iter().find(|(i, _)| *i == k) {
-                    Some((_, fsort)) => {
-                        let sel = format!("({} {x})", sel_sym(self.e, c, k));
-                        if self.is_nat_tm(&f.3) {
-                            facts.push(format!("(>= {sel} 0)"));
-                        }
-                        env.push(Ent::Term(sel, fsort.clone()));
-                    }
-                    None => env.push(Ent::Ty(Sort::Unin("field".into(), vec![]))),
-                }
-            }
-            for inv in self.e.con_invs.get(&c).cloned().unwrap_or_default() {
-                let saved = self.in_def;
-                self.in_def = true;
-                if let Ok((t, Sort::Bool)) = self.term(&env, &inv.tm) {
-                    facts.push(t);
-                }
-                self.in_def = saved;
-            }
-            if facts.is_empty() {
-                continue;
-            }
-            let all = if facts.len() == 1 { facts[0].clone() } else { format!("(and {})", facts.join(" ")) };
-            let only = self.e.g.tys[id.0 as usize].ctors.len() == 1;
-            self.asserts.push(if only { all } else { format!("(=> ({} {x}) {all})", tester(self.e, c)) });
-        }
     }
 
     /// Translate a term over the first `lvl` obligation locals.
@@ -1471,9 +1777,13 @@ impl<'a> Builder<'a> {
             Tm::Lit(Lit::Num(n)) => Ok((smt_int(*n), Sort::Int)),
             Tm::Lit(Lit::Big(n)) => Ok((smt_int((**n).clone()), Sort::Int)),
             Tm::Lit(Lit::Str(s)) => {
+                self.literal_utf8(s.as_bytes());
                 Ok((smt_bytes(s.as_bytes()), Sort::Str))
             }
-            Tm::Lit(Lit::Bytes(b)) => Ok((smt_bytes(b), Sort::Seq(Box::new(Sort::Int)))),
+            Tm::Lit(Lit::Bytes(b)) => {
+                self.literal_utf8(b);
+                Ok((smt_bytes(b), Sort::Seq(Box::new(Sort::Int))))
+            }
             Tm::Tuple(xs) => {
                 let mut ts = Vec::new();
                 let mut ss = Vec::new();
@@ -1523,31 +1833,60 @@ impl<'a> Builder<'a> {
                 }
             }
             Tm::Field(x, c, i) => {
+                // A field of a value built here (a known instance's
+                // dictionary): the value given for it.
+                if !matches!(self.e.g.cons[c.0 as usize].fields[*i].3, Tm::Pi(..)) {
+                    if let Some(a) = self.built_field(x, *c, *i) {
+                        return self.term(env, &a);
+                    }
+                }
                 let (xt, xs) = self.term(env, x)?;
+                // A string is its bytes (D58, #170).
+                if xs == Sort::Str {
+                    return Ok((xt, Sort::Seq(Box::new(Sort::Int))));
+                }
                 let Sort::Data(_, sargs) = &xs else { return out("a field of a non-record") };
                 let fs = self.con_fields(*c, &self.sort_env(self.e.g.cons[c.0 as usize].ty, sargs))?;
                 let Some((_, s)) = fs.iter().find(|(k, _)| k == i).cloned() else {
                     return out("a type-valued field");
                 };
                 let t = format!("({} {xt})", sel_sym(self.e, *c, *i));
-                if self.is_nat_tm(&self.e.g.cons[c.0 as usize].fields[*i].3.clone()) {
-                    self.nat_fact(&t);
-                }
-                // A field that is itself a datatype carries its constructor's
-                // invariants (D11), as a local of that type does.
-                if let Sort::Data(id, fargs) = &s {
-                    if !self.in_def && self.fact_seen.insert(t.clone()) {
-                        self.datatype_facts(&t, *id, fargs, &[]);
+                // A field has what its declared type says (`value_terms`), at
+                // the sorts of the type's parameters: a local of the record's
+                // type has more, with its type's arguments.
+                if !self.in_def && self.fact_seen.insert(t.clone()) {
+                    let rec = self.e.g.cons[c.0 as usize].ty;
+                    let mut fenv = self.sort_env(rec, sargs);
+                    let senv = fenv.clone();
+                    for j in 0..*i {
+                        match fs.iter().find(|(k, _)| *k == j) {
+                            Some((_, js)) => fenv.push(Ent::Term(format!("({} {xt})", sel_sym(self.e, *c, j)), js.clone())),
+                            None => {
+                                let js = self.type_field_sort(*c, j, &senv);
+                                fenv.push(Ent::Ty(js));
+                            }
+                        }
+                    }
+                    let fty = self.e.g.cons[c.0 as usize].fields[*i].3.clone();
+                    let facts = self.value_terms(&fenv, &fty, &t, &s);
+                    self.asserts.extend(facts);
+                    if let Sort::Data(id, _) = &s {
+                        self.real_values.push((t.clone(), *id));
                     }
                 }
                 Ok((t, s))
             }
-            Tm::Let(_, _, _, v, b) => {
+            Tm::Let(_, _, ty, v, b) => {
                 // Substituted rather than `let`-bound, so terms collected inside
                 // (postconditions of calls) stay closed.
-                let (vt, vs) = self.term(env, v)?;
                 let mut env2 = env.to_vec();
-                env2.push(Ent::Term(vt, vs));
+                // A type (an instance's class parameter by its name, #161).
+                if self.is_type(ty) {
+                    env2.push(Ent::Ty(self.sort_of(env, v)?));
+                } else {
+                    let (vt, vs) = self.term(env, v)?;
+                    env2.push(Ent::Term(vt, vs));
+                }
                 self.term(&env2, b)
             }
             Tm::App(..) | Tm::Def(_) | Tm::Con(_) => self.app(env, t),
@@ -1580,6 +1919,29 @@ impl<'a> Builder<'a> {
             .collect()
     }
 
+    /// The value given for field `i` of constructor `c` where `x` is that
+    /// constructor applied (`C p… f…`).
+    fn built_field(&self, x: &Tm, c: ConId, i: usize) -> Option<Tm> {
+        let np = self.e.g.arity_ty(self.e.g.cons[c.0 as usize].ty);
+        match x {
+            Tm::ConApp(c2, args) if *c2 == c => args.get(np + i).cloned(),
+            Tm::App(..) => {
+                let mut args = Vec::new();
+                let mut h = x;
+                while let Tm::App(f, a, _, _) = h {
+                    args.push(a);
+                    h = f;
+                }
+                args.reverse();
+                match h {
+                    Tm::Con(c2) if *c2 == c => args.get(np + i).map(|a| Tm::clone(a)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     fn con_app(&mut self, env: &[Ent], c: ConId, args: &[Tm]) -> Tx<(String, Sort)> {
         let wk = self.wk().clone();
         if Some(c) == wk.true_con {
@@ -1594,12 +1956,29 @@ impl<'a> Builder<'a> {
         if args.len() < np + ci.len() {
             return out("a partially applied constructor");
         }
+        // A string is its bytes (D58, #170).
+        if Some(id) == wk.string {
+            let (t, _) = self.term(env, &args[np])?;
+            return Ok((t, Sort::Str));
+        }
         let sort = {
             let ptys: Vec<Tm> = args[..np].to_vec();
             self.ty_sort(env, id, &ptys)?
         };
         let Sort::Data(_, sargs) = &sort else { return out("a constructor of an abstract type") };
         let fs = self.con_fields(c, &self.sort_env(id, sargs))?;
+        // A class's type is a sort of its own in its dictionary's fields
+        // (`Seq.Elem s`), which a known type (`Int`) can't stand for: a
+        // dictionary whose functions use its class's types can't be built.
+        for k in 0..ci.len() {
+            if self.e.g.is_type_field(c, k) {
+                if let Sort::Unin(n, _) = self.type_field_sort(c, k, &self.sort_env(id, sargs)) {
+                    if fs.iter().any(|(_, s)| s.mentions(&n)) {
+                        return out("a dictionary whose functions use its class's types");
+                    }
+                }
+            }
+        }
         let mut ts = Vec::new();
         for (k, s) in &fs {
             let t = match s {
@@ -1636,6 +2015,17 @@ impl<'a> Builder<'a> {
                 _ => out("an application of a non-function"),
             },
             Tm::Lam(..) => self.apply_known(env, h, &args),
+            // A function from a value built here (a known instance's
+            // dictionary, `Seq.size` at `Seq (Array Int)`): that function
+            // applied, without building the value.
+            Tm::Field(x, c, i) if self.built_field(x, *c, *i).is_some() => {
+                let mut app = self.built_field(x, *c, *i).unwrap();
+                for (a, m) in args {
+                    let icit = if m == Mult::Zero { crate::core::Icit::Impl } else { crate::core::Icit::Expl };
+                    app = Tm::App(Rc::new(app), Rc::new(a), icit, m);
+                }
+                self.term(env, &app)
+            }
             Tm::Field(..) | Tm::Proj(..) | Tm::Case(..) | Tm::Let(..) => {
                 let (ft, s) = self.term(env, h)?;
                 self.select(env, &ft, &s, &args)
@@ -1776,40 +2166,44 @@ impl<'a> Builder<'a> {
         Ok((format!("(forall ({}) {})", binds.join(" "), implies(&guards, bt)), Sort::Bool))
     }
 
-    /// What a value `x` of type `ty` (sort `xs`) satisfies beyond its sort:
-    /// a `Nat` is non-negative, a refinement's predicates hold, and so do
-    /// those of a tuple's refined parts.
-    fn domain_terms(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort) -> Vec<String> {
-        let mut out = Vec::new();
-        if self.is_nat_tm(ty) {
-            out.push(format!("(>= {x} 0)"));
-        }
-        // `Nat` is also the alias `n~Int, n >= 0`: each term once.
-        for t in self.alias_terms(env, ty, x, xs).into_iter().chain(self.tuple_terms(env, ty, x, xs)) {
-            if !out.contains(&t) {
-                out.push(t);
-            }
-        }
-        out
-    }
-
     /// Apply the function value `ft` (of sort `s`) to `args` (D139).
     fn select(&mut self, env: &[Ent], ft: &str, s: &Sort, args: &[(Tm, Mult)]) -> Tx<(String, Sort)> {
         let mut app = ft.to_string();
         let mut sort = s.clone();
+        let mut ats = Vec::new();
         for (a, m) in args {
             if *m == Mult::Zero {
                 continue;
             }
-            let Sort::Fun(_, r) = sort else { return out("an application of a non-function") };
-            let at = self.term(env, a)?.0;
+            let Sort::Fun(p, r) = sort else { return out("an application of a non-function") };
+            // A function argument is a function value: a lambda is Z3's
+            // `lambda`, inside a reflected body too (#231).
+            let at = match if matches!(*p, Sort::Fun(..)) { self.fun_value(env, a, &p) } else { self.term(env, a).map(|(t, _)| t) } {
+                Ok(at) => at,
+                // A function value the prover can't represent (a lambda, a
+                // partial application), given to a function it knows only by
+                // its type: a fresh value of its sort, of which nothing is
+                // assumed. Its refinements are checked where it is given, and
+                // the call's result has what the callee's type promises of
+                // every argument. Not where the value depends on bound
+                // variables (a reflected body, a lambda's, a `forall`'s), as
+                // one constant would stand for all of them.
+                Err(_) if matches!(*p, Sort::Fun(..)) && !self.in_def => {
+                    let n = sym(&format!("fun#{}", self.fun_args));
+                    self.fun_args += 1;
+                    self.consts.push(format!("(declare-const {n} {})", p.render(self.e)));
+                    n
+                }
+                Err(e) => return Err(e),
+            };
             app = format!("(select {app} {at})");
+            ats.push((at, *p));
             sort = *r;
         }
         // A local function of a refined type: its postconditions (D84).
         if !self.in_def && !matches!(sort, Sort::Fun(..)) && self.fun_tys.contains_key(ft) && self.post_seen.insert(app.clone()) {
             let ft = ft.to_string();
-            self.fun_post_facts(env, &ft, args, &app, &sort);
+            self.fun_post_facts(args, &ats, &ft, &app, &sort);
         }
         Ok((app, sort))
     }
@@ -1891,11 +2285,30 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// `f x …` for class function `f` (`d`) given a known instance's
-    /// dictionary: the instance's own function, applied to the same
-    /// arguments, taken from the dictionary's definition.
-    /// The position of a class function's dictionary binder.
+    /// The position of a class function's dictionary binder: the one its
+    /// body reads its field from. Its own class clauses' dictionaries are
+    /// implicit too, and come first when it takes a class's parameter
+    /// explicitly (the class's dictionary follows that parameter).
     fn dict_pos(&self, d: DefId) -> Option<usize> {
+        let mut body = self.e.g.defs[d.0 as usize].body.as_ref();
+        let mut k = 0;
+        while let Some(Tm::Lam(_, _, _, b)) = body {
+            body = Some(&**b);
+            k += 1;
+        }
+        if let Some(mut r) = body {
+            while let Tm::App(f, ..) = r {
+                r = f;
+            }
+            if let Tm::Field(x, _, _) = r {
+                if let Tm::Var(j) = **x {
+                    if j < k {
+                        return Some(k - 1 - j);
+                    }
+                }
+            }
+        }
+        // Without a body: the first dictionary binder.
         let mut t = self.e.g.defs[d.0 as usize].ty.clone();
         let mut k = 0;
         while let Tm::Pi(_, m, i, a, b) = t {
@@ -1908,21 +2321,11 @@ impl<'a> Builder<'a> {
         None
     }
 
+    /// `f x …` for class function `f` (`d`) given a known instance's
+    /// dictionary: the instance's own function, applied to the same
+    /// arguments, taken from the dictionary's definition.
     fn member_app(&mut self, env: &[Ent], d: DefId, args: &[(Tm, Mult)], inner: &[Ent]) -> Tx<Option<(String, Sort)>> {
-        // The dictionary's binder: the class's (Many, implicit) one.
-        let ty = self.e.g.defs[d.0 as usize].ty.clone();
-        let mut t = ty;
-        let mut pos = None;
-        let mut k = 0;
-        while let Tm::Pi(_, m, i, a, b) = t {
-            if m == Mult::Many && i == crate::core::Icit::Impl && self.is_dict_ty(&a) {
-                pos = Some(k);
-                break;
-            }
-            t = (*b).clone();
-            k += 1;
-        }
-        let Some(pos) = pos else { return Ok(None) };
+        let Some(pos) = self.dict_pos(d) else { return Ok(None) };
         let Some(Ent::Known(key)) = inner.get(pos) else { return Ok(None) };
         let Some(dict) = self.known.get(key).cloned() else { return Ok(None) };
         // The dictionary: an instance's function applied to its arguments.
@@ -1953,7 +2356,8 @@ impl<'a> Builder<'a> {
         }
         all.drain(..np);
         let Some(cd) = self.e.class_defs.get(&cty) else { return Ok(None) };
-        let Some(fi) = cd.methods().iter().position(|m| **m == *name) else { return Ok(None) };
+        // The dictionary's fields: the class's types (#133), then its functions.
+        let Some(fi) = cd.methods().iter().position(|m| **m == *name).map(|k| k + cd.method_offset()) else { return Ok(None) };
         let Some(field) = all.get(fi).cloned() else { return Ok(None) };
         // The environment: the dictionary's arguments, then the call's explicit ones.
         let mut ienv: Vec<Ent> = Vec::new();
@@ -1986,7 +2390,7 @@ impl<'a> Builder<'a> {
                 if k >= pos {
                     break;
                 }
-                if self.is_type(&a) && *x != *cd.param {
+                if self.is_type(&a) && !cd.params.iter().any(|p| **p == *x) {
                     tyargs.push(inner[k].clone());
                 }
                 t = (*b).clone();
@@ -2012,7 +2416,44 @@ impl<'a> Builder<'a> {
             }
             ienv.extend(tyargs);
         }
-        let rest: Vec<Ent> = inner[pos + 1..].to_vec();
+        // The arguments after the dictionary, and the explicit ones before
+        // it but a class's parameter passed explicitly (#161), which the
+        // dictionary's field doesn't take. The function's own class clauses'
+        // dictionaries come first, wherever they are: the class's follows a
+        // class's parameter passed explicitly, so a clause may precede it,
+        // or, when the clause mentions that parameter, follow it after the
+        // call's explicit arguments.
+        let mut rest: Vec<Ent> = Vec::new();
+        {
+            let mut t = self.e.g.defs[d.0 as usize].ty.clone();
+            let mut k = 0;
+            let mut clauses = 0;
+            while let Tm::Pi(x, m, i, a, b) = t {
+                let class_param = self.is_type(&a) && cd.params.iter().any(|p| **p == *x);
+                if k != pos && m == Mult::Many && i == crate::core::Icit::Impl && self.is_dict_ty(&a) {
+                    let Some(e) = inner.get(k) else { break };
+                    rest.insert(clauses, e.clone());
+                    clauses += 1;
+                } else if k > pos || (k < pos && i == crate::core::Icit::Expl && !class_param) {
+                    let Some(e) = inner.get(k) else { break };
+                    rest.push(e.clone());
+                }
+                t = (*b).clone();
+                k += 1;
+            }
+            rest.extend(inner.get(k..).unwrap_or_default().iter().cloned());
+        }
+        // The function's own class clauses' dictionaries (`Seq s` of
+        // `fn weigh by xs : Seq s, …`), the first arguments after the
+        // class's: bound directly too, as its body may use its type
+        // parameters.
+        let mut rest = rest.into_iter();
+        while let Tm::Lam(_, Mult::Many, crate::core::Icit::Impl, b) = &field {
+            let Some(e) = rest.next() else { break };
+            ienv.push(e);
+            field = (**b).clone();
+        }
+        let rest: Vec<Ent> = rest.collect();
         let n = rest.len();
         ienv.extend(rest);
         let mut app = crate::stage::shift(&field, n, 0);
@@ -2065,6 +2506,7 @@ impl<'a> Builder<'a> {
                     std::mem::take(&mut self.funs),
                     std::mem::take(&mut self.asserts),
                     std::mem::take(&mut self.table_facts),
+                    std::mem::take(&mut self.tested),
                 );
                 let r = self.table_fresh(d, rs);
                 let delta = Delta {
@@ -2073,6 +2515,7 @@ impl<'a> Builder<'a> {
                     sorts: std::mem::replace(&mut self.sorts, saved.2).into_iter().collect(),
                     funs: std::mem::replace(&mut self.funs, saved.3).into_iter().collect(),
                     asserts: std::mem::replace(&mut self.asserts, saved.4),
+                    tested: std::mem::replace(&mut self.tested, saved.6).into_iter().collect(),
                     ..Delta::default()
                 };
                 let facts = std::mem::replace(&mut self.table_facts, saved.5);
@@ -2091,6 +2534,7 @@ impl<'a> Builder<'a> {
             self.funs.entry(k).or_insert(v);
         }
         self.asserts.extend(delta.asserts);
+        self.tested.extend(delta.tested);
         self.table_facts.extend(facts);
         Ok(Some((name, rs.clone())))
     }
@@ -2150,6 +2594,7 @@ impl<'a> Builder<'a> {
         let info = &self.e.g.defs[d.0 as usize];
         let qualified = format!("{}.{}", info.module, info.name);
         let ty = info.ty.clone();
+        let info_ty = ty.clone();
         // Walk the binders: type arguments pick the instance, values are arguments.
         let mut tys = Vec::new();
         let mut funs: Vec<String> = Vec::new();
@@ -2223,6 +2668,26 @@ impl<'a> Builder<'a> {
                     // At an opaque dictionary (below), a function is passed
                     // as a value, so that equal functions are equal.
                     let opaque = !dict && dpos.and_then(|p| inner.get(p)).is_some_and(|e| matches!(e, Ent::Term(_, Sort::Unin(..))));
+                    // So does a function Z3 can't see into (sealed, or a
+                    // builtin), where the argument can be a value (#231): a
+                    // specialized symbol would be unrelated to the same call
+                    // made with the function as a value, as inside a body
+                    // where the lambda mentions the body's variables.
+                    let as_value = if !dict && !opaque && !self.reflected(d) {
+                        let want = self.sort_of(&inner, &a)?;
+                        self.fun_value(env, arg, &want).ok().map(|fv| (fv, want))
+                    } else {
+                        None
+                    };
+                    if let Some((fv, want)) = as_value {
+                        funs.push("*".into());
+                        vals.push(fv.clone());
+                        inner.push(Ent::Term(fv.clone(), want.clone()));
+                        post_env.push(Ent::Term(fv, want));
+                        t = (*b).clone();
+                        k += 1;
+                        continue;
+                    }
                     let known = if opaque {
                         None
                     } else if dict {
@@ -2282,6 +2747,13 @@ impl<'a> Builder<'a> {
             }
             // A string is already its UTF-8 bytes.
             "std.utf8.encode" | "std.string.bytes" => return Ok((vals[0].clone(), Sort::Seq(Box::new(Sort::Int)))),
+            // An array but its first element: the slice after it, as the
+            // runtime's primitive makes it, so a sequence pattern's rest is
+            // known (`x :: rest` on `b"ab" ++ post` leaves `b"b" ++ post`, #232).
+            "std.prelude.array_rest" => {
+                let xs = &vals[0];
+                return Ok((format!("(seq.extract {xs} 1 (- (seq.len {xs}) 1))"), rs));
+            }
             // `word` occurs in `src` at `i` (the Rust primitive, exactly).
             "std.bytes.matches_at" => {
                 let (src, i, w) = (&vals[0], &vals[1], &vals[2]);
@@ -2308,7 +2780,7 @@ impl<'a> Builder<'a> {
                     let has_post = self.e.specs.get(&d).is_some_and(|s| s.preds.iter().any(|p| p.is_post));
                     if has_post && self.post_seen.insert(app.clone()) {
                         post_env.push(Ent::Term(app.clone(), rs.clone()));
-                        self.posts.push(PostUse { def: d, env: post_env, nat: false, parts: None });
+                        self.posts.push(PostUse { def: d, env: post_env, nat: false, parts: Vec::new() });
                     }
                 }
                 return Ok((app, rs));
@@ -2334,7 +2806,7 @@ impl<'a> Builder<'a> {
                     let has_post = self.e.specs.get(&d).is_some_and(|s| s.preds.iter().any(|p| p.is_post));
                     if has_post && self.post_seen.insert(app.clone()) {
                         post_env.push(Ent::Term(app.clone(), rs.clone()));
-                        self.posts.push(PostUse { def: d, env: post_env, nat: false, parts: None });
+                        self.posts.push(PostUse { def: d, env: post_env, nat: false, parts: Vec::new() });
                     }
                 }
                 return Ok((app, rs));
@@ -2372,8 +2844,17 @@ impl<'a> Builder<'a> {
                 let a = app.clone();
                 self.nat_fact(&a);
             }
-            let parts = if self.refined_tuple(&t) { Some(t.clone()) } else { None };
-            if (has_post || (nat && has_pre) || parts.is_some()) && self.post_seen.insert(app.clone()) {
+            let mut parts = Vec::new();
+            if !self.post_seen.contains(&app) {
+                // The result's type at these arguments: a type argument
+                // may be refined too (`Pair Bool (s~Nat, s > 3)` for `Pair a b`).
+                let at = if computed { None } else { self.result_type_at(env.len(), &info_ty, args) };
+                parts = match at {
+                    Some(rt) => self.part_terms(env, &rt, &app, &rs),
+                    None => self.part_terms(&post_env, &t, &app, &rs),
+                };
+            }
+            if (has_post || (nat && has_pre) || !parts.is_empty()) && self.post_seen.insert(app.clone()) {
                 post_env.push(Ent::Term(app.clone(), rs.clone()));
                 self.posts.push(PostUse { def: d, env: post_env, nat: nat && has_pre, parts });
             }
@@ -2462,10 +2943,7 @@ impl<'a> Builder<'a> {
                 // `Bytes` is `>= 0` and `< 256`.
                 if !self.in_def && self.fact_seen.insert(t.clone()) {
                     if let Some(ety) = args.get(2) {
-                        let mut facts = self.alias_terms(env, ety, &t, &elem);
-                        if self.is_nat_tm(ety) {
-                            facts.push(format!("(>= {t} 0)"));
-                        }
+                        let facts = self.value_terms(env, ety, &t, &elem);
                         self.asserts.extend(facts);
                     }
                     if let Sort::Data(id, _) = &elem {
@@ -2473,12 +2951,6 @@ impl<'a> Builder<'a> {
                     }
                 }
                 Ok((t, elem))
-            }
-            Prim::Format => {
-                let s = ts[0].1.render(self.e);
-                let f = sym(&format!("format<{s}>"));
-                self.funs.insert(f.clone(), format!("(declare-fun {f} ({s}) (Seq Int))"));
-                Ok((format!("({f} {})", ts[0].0), Sort::Str))
             }
             Prim::Par => Ok(ts[0].clone()),
             Prim::When => out("a `when`"),
@@ -2527,6 +2999,7 @@ impl<'a> Builder<'a> {
                 }
             }
             Sort::Data(id, sargs) => {
+                self.tested.insert(ss.clone());
                 let senv = self.sort_env(*id, sargs);
                 for (con, n, body) in &c.branches {
                     if matches!(body, Tm::Error) {
@@ -2537,11 +3010,26 @@ impl<'a> Builder<'a> {
                     for k in 0..*n {
                         match fs.iter().find(|(i, _)| *i == k) {
                             Some((_, fsort)) => env2.push(Ent::Term(format!("({} {x})", sel_sym(self.e, *con, k)), fsort.clone())),
-                            None => env2.push(Ent::Ty(Sort::Unin("field".into(), vec![]))),
+                            None => {
+                                let s = self.type_field_sort(*con, k, &senv);
+                                env2.push(Ent::Ty(s));
+                            }
                         }
                     }
                     let (bt, bs) = self.term(&env2, body)?;
                     arms.push((Some(format!("({} {x})", tester(self.e, *con))), bt, bs));
+                }
+            }
+            // A string's one constructor holds its bytes, which it is (#170).
+            Sort::Str => {
+                for (_, n, body) in &c.branches {
+                    if matches!(body, Tm::Error) {
+                        continue;
+                    }
+                    let mut env2 = env.to_vec();
+                    env2.extend((0..*n).map(|_| Ent::Term(x.clone(), Sort::Seq(Box::new(Sort::Int)))));
+                    let (bt, bs) = self.term(&env2, body)?;
+                    arms.push((None, bt, bs));
                 }
             }
             Sort::Tuple(_) => {
@@ -2613,7 +3101,19 @@ impl<'a> Builder<'a> {
         let mut opaque = Vec::new();
         let mut group = Vec::new();
         let all: Vec<(Inst, Option<Defn>)> = self.insts.iter().map(|(a, b)| (a.clone(), b.clone())).collect();
+        // Instances at types of one sort (`String` and `Bytes` are both
+        // `(Seq Int)`, §7.3) have one SMT name: each name is defined, or
+        // else declared, once.
+        let defined: HashSet<String> = all.iter().filter_map(|(_, d)| d.as_ref().map(|(n, _, _)| n.clone())).collect();
+        let mut seen = HashSet::new();
         for (inst, def) in &all {
+            let name = match def {
+                Some((n, _, _)) => n.clone(),
+                None => self.inst_name(inst),
+            };
+            if (def.is_none() && defined.contains(&name)) || !seen.insert(name) {
+                continue;
+            }
             match def {
                 Some((name, head, body)) => {
                     heads.push(head.clone());
@@ -2997,9 +3497,7 @@ impl<'a> Builder<'a> {
                         goals.push(t);
                     }
                 }
-                if let (Some(ty), Some((Ent::Term(r, rs), params))) = (&p.parts, p.env.split_last()) {
-                    goals.extend(self.tuple_terms(params, ty, r, rs));
-                }
+                goals.extend(p.parts);
                 for t in goals {
                     self.asserts.push(implies(&pres, t));
                 }
@@ -3105,6 +3603,7 @@ impl<'a> Builder<'a> {
             text += &s;
             text += "\n";
         }
+        let sorts_end = text.len();
         for f in self.funs.values() {
             if f.starts_with("(declare-fun") {
                 text += f;
@@ -3140,6 +3639,26 @@ impl<'a> Builder<'a> {
         if !self.shown.is_empty() {
             text += &format!("(get-value ({}))\n", self.shown.iter().map(|s| s.0.clone()).collect::<Vec<_>>().join(" "));
         }
+        // Z3 instantiates a parametric datatype at a sort only once the
+        // sort is written: a recognizer at `(Option s)` reached only through
+        // another datatype's field (a dictionary's `s -> Option s`) is an
+        // unknown constant without it. Declared only where a recognizer
+        // comes before the sort is written, so other queries are unchanged
+        // (and their cached answers kept).
+        let mut written = String::new();
+        for (k, s) in self.tested.iter().enumerate() {
+            let Sort::Data(id, args) = s else { continue };
+            if args.is_empty() {
+                continue;
+            }
+            let r = s.render(self.e);
+            let first_test = self.e.g.tys[id.0 as usize].ctors.iter().filter_map(|c| text.find(&format!("({} ", tester(self.e, *c)))).min();
+            if first_test.is_some_and(|t| text.find(&r).is_none_or(|w| w > t)) {
+                written += &format!("(declare-const |tested#{k}| {r})\n");
+            }
+        }
+        text.insert_str(sorts_end, &written);
+        let (defs_at, defs_end, split) = (defs_at + written.len(), defs_end + written.len(), split + written.len());
         let without_axioms = (!axioms.is_empty()).then(|| format!("{}{}", &text[..split], &text[split + axioms.len()..]));
         let facts_only = reflected.then(|| {
             let decls: String = opaque_defs.iter().map(|d| format!("{d}\n")).collect();
@@ -3172,6 +3691,28 @@ impl<'a> Builder<'a> {
             array_vars: self.array_vars,
         })
     }
+}
+
+/// A dictionary an instance builds, `d a…` (its head a definition): the
+/// same application to the variables of an environment of its arguments
+/// alone (`d #m-1 … #0`), and their number.
+fn dict_over_vars(t: &Tm) -> Option<(Tm, usize)> {
+    let mut apps = Vec::new();
+    let mut h = t;
+    while let Tm::App(f, _, i, m) = h {
+        apps.push((*i, *m));
+        h = f;
+    }
+    if !matches!(h, Tm::Def(_)) {
+        return None;
+    }
+    apps.reverse();
+    let n = apps.len();
+    let mut out_ = h.clone();
+    for (j, (i, m)) in apps.into_iter().enumerate() {
+        out_ = Tm::App(Rc::new(out_), Rc::new(Tm::Var(n - 1 - j)), i, m);
+    }
+    Some((out_, n))
 }
 
 /// No variable of `t` reaches outside `depth` enclosing binders.

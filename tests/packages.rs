@@ -98,7 +98,7 @@ fn errors(o: &Output) -> String {
 const COUNT_1_0: &str = "module count\n\nexport fn double n -> m : n~Nat, m~Nat, m == n + n\n    n + n\n";
 const COUNT_1_1: &str = "module count\n\nexport fn double n -> m : n~Nat, m~Nat, m == n + n\n    n + n\n\nexport fn triple n -> m : n~Nat, m~Nat, m == 3 * n\n    n + n + n\n";
 
-const SHARED: &str = "module text.greet\n\nimport util.count\n\nexport fn greeting name n -> s : name~String, n~Nat, s~String\n    \"hello, \" ++ name ++ \" \" ++ format (count.double n)\n\nexport fn at_least n -> m : n~Nat, m~Nat, m >= n\n    n + 1\n";
+const SHARED: &str = "module text.greet\n\nimport util.count\nimport std.string (format)\n\nexport fn greeting name n -> s : name~String, n~Nat, s~String\n    format\"hello, {name} {count.double n}\"\n\nexport fn at_least n -> m : n~Nat, m~Nat, m >= n\n    n + 1\n";
 
 const MAIN: &str = "module main\n\nimport std.system (System, ExitCode)\nimport std.terminal\nimport shared.text.greet\n\nexport fn main args sys -> code : args~List String, sys~System, code~ExitCode\n    let System { term } = sys\n    terminal.print_line (greet.greeting \"you\" 2) term\n    Success\n";
 
@@ -264,6 +264,54 @@ fn ckc_package_flags_and_messages() {
     assert_eq!((bad.status.code(), text(&bad.stderr)), (Some(2), "error: `--package lib=../nowhere`: no directory `../nowhere`\n".to_string()));
     let bad = ckc(&w, "prog", &["check", "--package", "lib=../lib", "--uses", ".=lib,other", "p.ck"]);
     assert_eq!((bad.status.code(), text(&bad.stderr)), (Some(2), "error: `--uses .=…` names `other`, which no `--package` gives\n".to_string()));
+}
+
+/// An instance of a class of several types goes in the package of the class
+/// or of one of its types, with no bare variable before that type (Rust's
+/// orphan rule, #145); an overlap with a dependency's instance is found here.
+#[test]
+fn instance_orphan_rule_by_any_type() {
+    let w = World::new("orphan");
+    w.write(
+        "lib/hole.ck",
+        "module hole\n\nexport class Hole s h\n    fn hole tag x -> r : tag~s, x~h, r~String\n\nexport class Rel s a t\n    fn rel x y z -> r : x~s, y~a, z~t, r~Bool\n\nexport record Format\n    prefix~String\n\nexport record Page\n    title~String\n\ninstance Hole Page a\n    fn hole p x\n        p.title\n",
+    );
+    let check = |name: &str, body: &str| {
+        w.write(&format!("prog/{name}.ck"), &format!("module {name}\n\nimport lib.hole (Hole, Rel, Format, Page)\n\nrecord Mine\n    n~Int\n\n{body}"));
+        let out = ckc(&w, "prog", &["check", "--package", "lib=../lib", "--uses", ".=lib", &format!("{name}.ck")]);
+        (out.status.code(), text(&out.stderr))
+    };
+    // This package's type, after the class's and another package's.
+    assert_eq!(check("later", "instance Hole Format Mine\n    fn hole f m\n        f.prefix\n"), (Some(0), "later.ck: 0 errors, 0 warnings\n".to_string()));
+    // This package's type first.
+    assert_eq!(check("first", "instance Hole Mine Int\n    fn hole m x\n        \"int\"\n"), (Some(0), "first.ck: 0 errors, 0 warnings\n".to_string()));
+    // No type of this package.
+    assert_eq!(
+        check("none", "instance Hole Format Int\n    fn hole f x\n        f.prefix\n"),
+        (
+            Some(1),
+            "error[E0282]: `instance Hole Format Int` must be in the package of `Hole` or of one of its types\n --> none.ck:8:1\n  |\n8 | instance Hole Format Int\n  | ^^^^^^^^^^^^^^^^^^^^^^^^ none of them is declared in this package\n  = help: an instance goes with its class or one of its types (Rust's orphan rule); wrap a type in a record of your own to give it this instance\n\nnone.ck: 1 error, 0 warnings\n"
+                .to_string()
+        )
+    );
+    // A bare variable before this package's type.
+    assert_eq!(
+        check("var_first", "instance Rel Format a Mine\n    fn rel f x m\n        True\n"),
+        (
+            Some(1),
+            "error[E0282]: `instance Rel Format a Mine` must be in the package of `Rel` or of one of its types\n --> var_first.ck:8:21\n  |\n8 | instance Rel Format a Mine\n  |                     ^ `a` comes before `Mine`, this package's type\n  = help: an instance whose types begin with a type variable could overlap another package's; put this package's type before any variable\n\nvar_first.ck: 1 error, 0 warnings\n"
+                .to_string()
+        )
+    );
+    // Overlaps the dependency's `instance Hole Page a`: reported here.
+    assert_eq!(
+        check("overlap", "instance Hole Page Mine\n    fn hole p m\n        p.title\n"),
+        (
+            Some(1),
+            "error[E0283]: `instance Hole Page Mine` overlaps another instance\n --> overlap.ck:8:1\n  |\n8 | instance Hole Page Mine\n  | ^^^^^^^^^^^^^^^^^^^^^^^ `Hole Page a` is already declared at lib.hole:15\n  = help: no two instances of a class may match the same types; make one of them for other types\n\noverlap.ck: 1 error, 0 warnings\n"
+                .to_string()
+        )
+    );
 }
 
 #[test]

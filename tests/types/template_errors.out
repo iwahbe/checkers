@@ -1,0 +1,62 @@
+error[E0284]: no instance of `Hole` for `Page` and `Nat`
+  --> template_errors.ck:55:14
+   |
+55 |     page"<p>{count}</p>"
+   |              ^^^^^ needs `Hole Page Nat`
+   = help: declare `instance Hole …` for these types, beside the class or the first type
+
+error[E0201]: type mismatch: expected `Mode`, found `Style`
+  --> template_errors.ck:58:21
+   |
+58 |     page"<p>{name | Bold}</p>"
+   |                     ^^^^
+
+error[E0284]: no instance of `Template` for `Int`: `count` isn't a template's tag
+  --> template_errors.ck:61:5
+   |
+61 |     count"a{x}"
+   |     ^^^^^ its result is `Int`
+   = help: a tag gives a formatter: a type with an instance of `Template` (from `std.string`)
+
+error[E0285]: can't tell which instance of `Hole` to use: the type isn't known here
+  --> template_errors.ck:64:25
+   |
+64 |     let item = page"<li>{}</li>"
+   |                         ^^
+   = help: give the type, e.g. with a constraint `x~List Int` in the signature
+
+error[E0284]: no instance of `Hole` for `Plain` and `Bool`
+  --> template_errors.ck:68:12
+   |
+68 |     plain"{flag}"
+   |            ^^^^ needs `Hole Plain Bool`
+   = help: declare `instance Hole …` for these types, beside the class or the first type
+
+error[E0450]: cannot prove that the divisor is not zero
+  --> template_errors.ck:71:12
+   |
+71 |     plain"{10 / d}"
+   |            ^^^^^^ `/` and `%` need a non-zero right side
+   = note: counterexample: d = 0
+   = help: check the divisor first, e.g. `if d != 0 then n / d else …`
+
+error[E0204]: unknown name `missing`
+  --> template_errors.ck:74:5
+   |
+74 |     missing"a{x}b{x | Bold}"
+   |     ^^^^^^^ not found
+
+error[E0205]: too many arguments: this has type `Nat`, which is not a function
+  --> template_errors.ck:78:9
+   |
+78 |     five"a{x}"
+   |         ^^^^^^ extra argument
+
+error[E0284]: no instance of `Template` for `s`: `mk` isn't a template's tag
+  --> template_errors.ck:81:5
+   |
+81 |     mk"a{x}"
+   |     ^^ its result is `s`
+   = help: add `Template s` to the function's signature (`Template` is `std.string`'s)
+
+template_errors.ck: 9 errors, 0 warnings

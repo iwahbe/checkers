@@ -1,0 +1,31 @@
+error[E0450]: cannot prove `1 <= level`, required to build `Heading`
+ --> markdown_heading_level.ck:9:5
+  |
+9 |     Heading n [] (Span 0 0)
+  |     ^^^^^^^^^^^^^^^^^^^^^^^ `Heading` requires `1 <= level`
+  = note: counterexample: n = 0
+  = help: check the value before building it, e.g. with an `if`
+
+error[E0450]: cannot prove `level <= 6`, required to build `Heading`
+ --> markdown_heading_level.ck:9:5
+  |
+9 |     Heading n [] (Span 0 0)
+  |     ^^^^^^^^^^^^^^^^^^^^^^^ `Heading` requires `level <= 6`
+  = note: counterexample: n = 7
+  = help: check the value before building it, e.g. with an `if`
+
+error[E0450]: cannot prove `level <= 6`, required to build `Heading`
+  --> markdown_heading_level.ck:12:5
+   |
+12 |     Heading 7 [] (Span 0 0)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^ `Heading` requires `level <= 6`
+   = help: check the value before building it, e.g. with an `if`
+
+error[E0450]: cannot prove `1 <= level`, required to build `Heading`
+  --> markdown_heading_level.ck:15:5
+   |
+15 |     Heading 0 [] (Span 0 0)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^ `Heading` requires `1 <= level`
+   = help: check the value before building it, e.g. with an `if`
+
+markdown_heading_level.ck: 4 errors, 0 warnings

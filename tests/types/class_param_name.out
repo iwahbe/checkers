@@ -1,0 +1,22 @@
+error[E0369]: parameter `a` of `by_param` has the name of the class's parameter `a`
+ --> class_param_name.ck:6:17
+  |
+6 |     fn by_param a -> r : a~a, r~Int
+  |                 ^ the class's parameter is `a`
+  = help: give the parameter another name
+
+error[E0369]: parameter `a` of `by_result` has the name of the class's parameter `a`
+ --> class_param_name.ck:9:23
+  |
+9 |     fn by_result x -> a : x~Int, a~Int
+  |                       ^ the class's parameter is `a`
+  = help: give the parameter another name
+
+error[E0369]: parameter `a` of `by_lemma` has the name of the class's parameter `a`
+  --> class_param_name.ck:13:20
+   |
+13 |     lemma by_lemma a : a~a
+   |                    ^ the class's parameter is `a`
+   = help: give the parameter another name
+
+class_param_name.ck: 3 errors, 0 warnings

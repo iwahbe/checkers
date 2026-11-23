@@ -1,0 +1,8 @@
+-- stdout
+Secret <hidden>
+Secret <hidden>
+[Some (Secret <hidden>), None]
+(small, big 3)
+[Some small, Some (big 4)]
+-- stderr
+-- exit 0

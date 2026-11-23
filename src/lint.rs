@@ -224,11 +224,18 @@ impl Linter {
                 self.expr(value);
             }
             DeclKind::Check { expr } => self.expr(expr),
-            DeclKind::Class { name, param, members } => {
+            DeclKind::Class { name, params, members } => {
                 self.camel(name, "class name");
-                self.snake(param, "type parameter");
+                params.iter().for_each(|p| self.snake(p, "type parameter"));
                 for m in members {
                     match m {
+                        ClassMember::Type { name, default, constraints, .. } => {
+                            self.camel(name, "type name");
+                            if let Some(t) = default {
+                                self.expr(t);
+                            }
+                            self.constraints(constraints);
+                        }
                         ClassMember::Fn { name, params, constraints, .. } => {
                             self.snake(name, "function name");
                             params.iter().for_each(|p| self.snake(p, "parameter"));
@@ -246,8 +253,15 @@ impl Linter {
             DeclKind::Instance { members, .. } => {
                 for m in members {
                     match m {
-                        InstMember::Fn { params, body, .. } => {
+                        InstMember::Type { ty, .. } => self.expr(ty),
+                        InstMember::Fn { params, sig, body, .. } => {
                             params.iter().for_each(|p| self.snake(p, "parameter"));
+                            if let Some((result, constraints)) = sig {
+                                if let Some(r) = result {
+                                    self.snake(r, "result name");
+                                }
+                                self.constraints(constraints);
+                            }
                             self.block(body);
                         }
                         InstMember::Lemma { params, decreasing, proof, .. } => {
@@ -273,13 +287,7 @@ impl Linter {
                     self.expr(e);
                 }
                 Stmt::Have(e) | Stmt::Expr(e) | Stmt::HaveType(_, e) => self.expr(e),
-                Stmt::When(w) => {
-                    for (n, c) in &w.binds {
-                        self.snake(n, "variable");
-                        self.expr(c);
-                    }
-                    self.block(&w.body);
-                }
+
             }
         }
         self.expr(&b.result);
@@ -301,6 +309,13 @@ impl Linter {
 
     fn expr(&mut self, e: &Expr) {
         match &e.kind {
+                ExprKind::When(w) => {
+                    for (n, c) in &w.binds {
+                        self.snake(n, "variable");
+                        self.expr(c);
+                    }
+                    self.block(&w.body);
+                }
             ExprKind::Tuple(v) | ExprKind::List(v) | ExprKind::Par(v) => v.iter().for_each(|x| self.expr(x)),
             ExprKind::App(a, b) | ExprKind::Binary(_, a, b) | ExprKind::Arrow(a, b) | ExprKind::Index(a, b) => {
                 self.expr(a);
@@ -336,6 +351,10 @@ impl Linter {
                 self.expr(b);
             }
             ExprKind::Block(b) => self.block(b),
+            ExprKind::Template(t, ps) => {
+                self.expr(t);
+                ps.iter().flat_map(|p| p.exprs()).for_each(|x| self.expr(x));
+            }
             ExprKind::Var(_)
             | ExprKind::Con(_)
             | ExprKind::Lit(_)
