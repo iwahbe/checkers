@@ -400,6 +400,20 @@ export lemma parse_display n post : n~Int, post~Bytes, len post == 0 or not (cha
     proof
         have parse_shown n post
 
+# `display n []` writes a whole number as digits, starting with `0` only
+# when the number is `0`.
+export lemma display_digits n : n~Nat
+    let b = (display n []).bytes
+    ensures len b > 0 and char.is_digit b[0] and (b[0] == '0' implies b == b"0" and n == 0)
+    proof
+        let r = (digits n 10).bytes
+        have b == r
+        have all_digits_at r 0 (len r) 0
+        if r[0] == '0'
+            have array.ext r b"0"
+        else
+            auto
+
 # One or more digits at the front of `xs`, as many as there are, and what
 # follows them.
 fn natural xs -> r : Seq s, Token (Seq.Elem s) Int, xs~s, r~Result (Nat, s) NumberError, consumed r xs

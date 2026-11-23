@@ -80,65 +80,40 @@ export fn render d -> s : d~Decimal, s~String
 # `a × 10^e` as `render` writes it, without a sign.
 fn magnitude a e -> s : a~Nat, e~Int, s~String, len s.bytes > 0, char.is_digit s.bytes[0]
     if e >= 0 and e <= 21
-        let s = string.decimal (a * pow10 e)
-        have string.all_digits_at s.bytes 0 (len s.bytes) 0
-        s
+        have string.display_digits (a * pow10 e)
+        display (a * pow10 e) []
     else
-        let ds = string.decimal a
+        let ds = display a []
+        have string.display_digits a
         if e < 0 and 0 - e <= len ds.bytes + 6
-            let s = point a (0 - e)
-            have string.all_digits_at s.bytes 0 (len s.bytes - (0 - e) - 1) 0
-            s
+            let p = pow10 (0 - e)
+            have string.display_digits (a / p)
+            display (a / p) [] ++ "." ++ places (a % p) (0 - e)
         else
-            have string.all_digits_at ds.bytes 0 (len ds.bytes) 0
             ds ++ "e" ++ display e []
 
 # `10^k`.
-fn pow10 k -> p : k~Nat, p~Nat
+fn pow10 k -> p : k~Nat, p~Nat, p >= 1
     decreasing k
     if k == 0 then 1 else 10 * pow10 (k - 1)
 
-# `a × 10^(-f)` with `f` digits after the point: `point 1005 3` is `1.005`,
-# `point 5 3` is `0.005`.
-fn point a f -> s : a~Nat, f~Nat, s~String, len s.bytes >= f + 2, s.bytes[len s.bytes - f - 1] == '.',
-                    string.all_digits s.bytes 0 (len s.bytes - f - 1),
-                    s.bytes[0] == '0' implies len s.bytes - f - 1 == 1,
-                    string.all_digits s.bytes (len s.bytes - f) (len s.bytes),
-                    point_value s.bytes f == a
+# The `f` digits of `r`, zeros first if it has fewer: `places 5 3` is `005`.
+fn places r f -> s : r~Nat, f~Nat, r < pow10 f, s~String, len s.bytes == f
     decreasing f
     if f == 0
-        let d = string.decimal a
-        have string.decimal_prefix d.bytes b"." 0 (len d.bytes)
-        d ++ "."
+        ""
     else
-        let q = point (a / 10) (f - 1)
-        let c = string.digit (a % 10)
-        let p = len q.bytes - f
-        have string.decimal_prefix q.bytes c.bytes 0 p
-        have string.decimal_prefix q.bytes c.bytes (p + 1) (len q.bytes)
-        let m = string.decimal_value q.bytes 0 p
-        have value_after_prefix q.bytes c.bytes m (p + 1) (len q.bytes)
-        have point_value q.bytes (f - 1) == value_after m q.bytes (p + 1) (len q.bytes)
-        have value_after m (q.bytes ++ c.bytes) (p + 1) (len q.bytes + 1)
-            == value_after m q.bytes (p + 1) (len q.bytes) * 10 + a % 10
-        have point_value (q.bytes ++ c.bytes) f == value_after m (q.bytes ++ c.bytes) (p + 1) (len q.bytes + 1)
-        q ++ c
+        let p = pow10 (f - 1)
+        digit (r / p) ++ places (r % p) (f - 1)
 
-# The digits of `b`, which has a point before its last `f` bytes, as one
-# number without the point.
-fn point_value b f -> n : b~Bytes, f~Nat, len b >= f + 1, n~Int
-    value_after (string.decimal_value b 0 (len b - f - 1)) b (len b - f) (len b)
-
-# The number the bytes of `b` from `i` up to `j` write in decimal after the
-# digits making `m`: `string.decimal_value` is this after none.
-fn value_after m b i j -> n : m~Int, b~Bytes, i~Nat, j~Nat, n~Int
-    decreasing j
-    if i < j and j <= len b
-        let c = b[j - 1]
-        value_after m b i (j - 1) * 10 + (if char.is_digit c then c - '0' else 0)
+# The digit `d`, as a string of one byte.
+fn digit d -> s : d~Nat, d < 10, s~String, len s.bytes == 1, s.bytes[0] == '0' + d
+    if d < 5
+        if d == 0 then "0" else if d == 1 then "1" else if d == 2 then "2" else if d == 3 then "3" else "4"
     else
-        m
+        if d == 5 then "5" else if d == 6 then "6" else if d == 7 then "7" else if d == 8 then "8" else "9"
 
+check places 5 3 == "005" and places 1234 4 == "1234" and places 0 2 == "00"
 check render (scaled 125 (-1)) == "12.5" and render (scaled (-1) (-3)) == "-0.001" and render (scaled 1 30) == "1e30"
 check render (scaled 1 21) == "1000000000000000000000" and render (scaled 1 (-7)) == "0.0000001" and render (scaled 1 (-8)) == "1e-8"
 check render (scaled 0 5) == "0" and render (scaled (-15) (-10)) == "-15e-10"
@@ -180,11 +155,13 @@ fn unsigned xs neg -> r : Seq s, Token (Seq.Elem s) Int, xs~s, neg~Bool, r~Resul
                 have suffix_size after rest
                 Ok (d, after)
             else if c >= '1' and c <= '9'
-                let ds = digits rest (c - '0') 0
-                let (d, after) = fraction ds.rest ds.value neg
-                have suffix_trans after ds.rest rest
-                have suffix_size after rest
-                Ok (d, after)
+                match Parsable.parse xs Int Int
+                    Ok (m, after) ->
+                        let (d, rest2) = fraction after m neg
+                        have suffix_trans rest2 after xs
+                        have suffix_size rest2 after
+                        Ok (d, rest2)
+                    Err _         -> Err NotFound
             else
                 Err NotFound
         []        -> Err NotFound
@@ -236,30 +213,43 @@ fn exponent_part xs m e neg -> r : Seq s, Token (Seq.Elem s) Int, xs~s, m~Int, e
     match xs
         x :: rest ->
             if token x Int == 'e' or token x Int == 'E'
-                let (eneg, after_sign) = sign rest
-                let ds = digits after_sign 0 0
-                if ds.count == 0
-                    (number m e neg, xs)
-                else
-                    have suffix_trans ds.rest after_sign rest
-                    (number m (if eneg then e - ds.value else e + ds.value) neg, ds.rest)
+                match signed rest
+                    Some (k, after) ->
+                        have suffix_trans after rest xs
+                        (number m (e + k) neg, after)
+                    None            -> (number m e neg, xs)
             else
                 (number m e neg, xs)
         []        -> (number m e neg, xs)
 
-# An optional `+` or `-`: whether it was `-`, and what follows.
-fn sign xs -> r : Seq s, Token (Seq.Elem s) Int, xs~s, r~(Bool, s),
-                  match r
-                      (_, rest) -> suffix rest xs
+# A whole number with an optional `+` or `-` before its digits, and what
+# follows it; `None` if there are no digits.
+fn signed xs -> r : Seq s, Token (Seq.Elem s) Int, xs~s, r~Option (Int, s),
+                    match r
+                        Some (_, rest) -> suffix rest xs
+                        None           -> True
     match xs
         x :: rest ->
-            if token x Int == '-'
-                (True, rest)
-            else if token x Int == '+'
-                (False, rest)
+            let c = token x Int
+            if char.is_digit c or c == '-'
+                match Parsable.parse xs Int Int
+                    Ok (k, after) -> Some (k, after)
+                    Err _         -> None
+            else if c == '+'
+                match rest
+                    y :: _ ->
+                        if char.is_digit (token y Int)
+                            match Parsable.parse rest Int Int
+                                Ok (k, after) ->
+                                    have suffix_trans after rest xs
+                                    Some (k, after)
+                                Err _         -> None
+                        else
+                            None
+                    []     -> None
             else
-                (False, xs)
-        []        -> (False, xs)
+                None
+        []        -> None
 
 # `m × 10^e`, negated if `neg`.
 fn number m e neg -> d : m~Int, e~Int, neg~Bool, d~Decimal
@@ -309,38 +299,29 @@ lemma unsigned_magnitude a e neg post : a~Nat, e~Int, neg~Bool, post~Bytes,
     proof
         if e >= 0 and e <= 21
             let v = a * pow10 e
-            let t = (string.decimal v).bytes
-            let b = t ++ post
-            have string.decimal_prefix t post 0 (len t)
-            have unsigned_bytes b (len t) neg
-            have array.slice_append t post b""
+            have (magnitude a e).bytes == (display v []).bytes
+            have integer_part v post neg
             have fraction_other post v neg
             have exponent_end post v 0 neg
-            have (magnitude a e).bytes == t
             have scaled ((if neg then 0 - a else a) * pow10 e) 0 == scaled (if neg then 0 - v else v) 0
             have scaled_pow (if neg then 0 - a else a) 0 e
         else
-            let ds = (string.decimal a).bytes
+            let ds = (display a []).bytes
             if e < 0 and 0 - e <= len ds + 6
                 let f = 0 - e
-                let t = (point a f).bytes
-                let p = len t - f - 1
-                let b = t ++ post
-                have string.decimal_prefix t post 0 p
-                have string.decimal_prefix t post (p + 1) (len t)
-                have unsigned_bytes b p neg
-                have value_after_prefix t post (string.decimal_value t 0 p) (p + 1) (len t)
-                have fraction_point b p (len t) (string.decimal_value b 0 p) neg
-                have array.slice_append t post b""
-                have exponent_end post a (0 - f) neg
-                have (magnitude a e).bytes == t
+                let p = pow10 f
+                let q = a / p
+                let r = a % p
+                let rest = b"." ++ (places r f).bytes ++ post
+                have (magnitude a e).bytes ++ post == (display q []).bytes ++ rest
+                have integer_part q rest neg
+                have fraction_point q r f neg post
+                have exponent_end post (q * p + r) (0 - f) neg
+                have q * p + r == a
             else
-                let rest = b"e" ++ (string.display e []).bytes ++ post
-                let b = ds ++ rest
-                have string.decimal_prefix ds rest 0 (len ds)
-                have unsigned_bytes b (len ds) neg
-                have array.slice_append ds rest b""
-                have (magnitude a e).bytes ++ post == b
+                let rest = b"e" ++ (display e []).bytes ++ post
+                have (magnitude a e).bytes ++ post == ds ++ rest
+                have integer_part a rest neg
                 have fraction_other rest a neg
                 have exponent_written a e neg post
 
@@ -355,30 +336,54 @@ lemma scaled_pow m e k : m~Int, e~Int, k~Nat
         else
             auto
 
-# `unsigned` on bytes starting with the digits of a number, which end at
-# `p`: they make the number, and what follows them is read after it.
-lemma unsigned_bytes b p neg : b~Bytes, p~Nat, neg~Bool, 0 < p, p <= len b, string.all_digits b 0 p,
-                               b[0] == '0' implies p == 1, p == len b or not (char.is_digit b[p])
-    ensures unsigned b neg == Ok (fraction (array.slice b p (len b)) (string.decimal_value b 0 p) neg)
+# `unsigned` reads the digits `display v []` writes, and then the rest.
+lemma integer_part v rest neg : v~Nat, rest~Bytes, neg~Bool, len rest == 0 or not (char.is_digit rest[0])
+    ensures unsigned ((display v []).bytes ++ rest) neg == Ok (fraction rest v neg)
     proof
-        have array.uncons_slice b
-        have string.all_digits_at b 0 p 0
-        if b[0] == '0'
-            auto
+        let d = (display v []).bytes
+        have string.display_digits v
+        have array.uncons_slice (d ++ rest)
+        if d[0] == '0'
+            have array.slice_append b"0" rest b""
         else
-            have digits_bytes b 0 0 1 0
-            have parse.digits_end_at b 0 1 p
-            have value_zero b 0 p
+            have string.parse_display v rest
 
-# `fraction` at a point followed by digits up to `k`.
-lemma fraction_point b p k q neg : b~Bytes, p~Nat, k~Nat, q~Int, neg~Bool, p + 1 < k, k <= len b, b[p] == '.',
-                                   string.all_digits b (p + 1) k, k == len b or not (char.is_digit b[k])
-    ensures fraction (array.slice b p (len b)) q neg
-        == exponent_part (array.slice b k (len b)) (value_after q b (p + 1) k) (0 - (k - p - 1)) neg
+# `fraction` at a point followed by `f` places writing `r`.
+lemma fraction_point q r f neg post : q~Int, r~Nat, f~Nat, 0 < f, r < pow10 f, neg~Bool, post~Bytes,
+                                      len post == 0 or not (char.is_digit post[0])
+    ensures fraction (b"." ++ (places r f).bytes ++ post) q neg
+        == exponent_part post (q * pow10 f + r) (0 - f) neg
     proof
-        have parse.uncons_from b p
-        have digits_bytes b q (p + 1) (p + 1) 0
-        have parse.digits_end_at b (p + 1) (p + 1) k
+        let w = (places r f).bytes
+        have array.uncons_slice (b"." ++ w ++ post)
+        have array.slice_append b"." (w ++ post) b""
+        have digits_places r f q 0 post
+
+# `digits` reads back what `places` writes.
+lemma digits_places r f m n post : r~Nat, f~Nat, r < pow10 f, m~Int, n~Nat, post~Bytes,
+                                   len post == 0 or not (char.is_digit post[0])
+    ensures digits ((places r f).bytes ++ post) m n == Digits (m * pow10 f + r) (n + f) post
+    proof
+        decreasing f
+        if f > 0
+            let p = pow10 (f - 1)
+            let c = (digit (r / p)).bytes
+            let w = (places (r % p) (f - 1)).bytes
+            have (places r f).bytes ++ post == c ++ w ++ post
+            have array.uncons_slice (c ++ w ++ post)
+            have array.slice_append c (w ++ post) b""
+            have (c ++ w ++ post)[0] == '0' + r / p
+            have array.slice (c ++ w ++ post) 1 (len (c ++ w ++ post)) == w ++ post
+            have digits (c ++ w ++ post) m n == digits (w ++ post) (m * 10 + r / p) (n + 1)
+            have digits_places (r % p) (f - 1) (m * 10 + r / p) (n + 1) post
+            have (m * 10 + r / p) * p + r % p == m * pow10 f + r
+        else
+            have (places r f).bytes ++ post == post
+            have m * pow10 f + r == m
+            if len post > 0
+                have array.uncons_slice post
+            else
+                auto
 
 # `fraction` at anything but a point.
 lemma fraction_other xs q neg : xs~Bytes, q~Int, neg~Bool, len xs == 0 or xs[0] != '.'
@@ -405,67 +410,12 @@ lemma exponent_written m x neg post : m~Int, x~Int, neg~Bool, post~Bytes, len po
         let w = (string.display x []).bytes
         have array.uncons_slice (b"e" ++ w ++ post)
         have array.slice_append b"e" (w ++ post) b""
+        have array.uncons_slice (w ++ post)
+        have string.parse_display x post
         if x < 0
-            let r = (string.decimal (0 - x)).bytes
-            have array.uncons_slice (b"-" ++ r ++ post)
-            have array.slice_append b"-" (r ++ post) b""
-            have digits_decimal (0 - x) post
+            have w[0] == '-'
         else
-            let r = (string.decimal x).bytes
-            have array.uncons_slice (r ++ post)
-            have string.all_digits_at r 0 (len r) 0
-            have digits_decimal x post
-
-# `digits` reads back what `string.decimal` writes.
-lemma digits_decimal v post : v~Nat, post~Bytes, len post == 0 or not (char.is_digit post[0])
-    let r = (string.decimal v).bytes
-    ensures digits (r ++ post) 0 0 == Digits v (len r) post
-    proof
-        let b = r ++ post
-        have array.uncons_slice b
-        have string.all_digits_at r 0 (len r) 0
-        have string.decimal_prefix r post 0 (len r)
-        have digits_bytes b 0 0 1 1
-        have parse.digits_end_at b 0 1 (len r)
-        have value_zero b 0 (len r)
-        have array.slice_append r post b""
-
-# `digits` on the bytes of `b` from `j` on, after digits making
-# `value_after m b i j`.
-lemma digits_bytes b m i j n : b~Bytes, m~Int, i~Nat, j~Nat, n~Nat, i <= j, j <= len b
-    let k = parse.digits_end b j
-    ensures digits (array.slice b j (len b)) (value_after m b i j) n
-        == Digits (value_after m b i k) (n + (k - j)) (array.slice b k (len b))
-    proof
-        decreasing len b - j
-        if j < len b
-            have parse.uncons_from b j
-            if char.is_digit b[j]
-                have digits_bytes b m i (j + 1) (n + 1)
-            else
-                auto
-        else
-            auto
-
-# After no digits, `value_after` is `string.decimal_value`.
-lemma value_zero b i j : b~Bytes, i~Nat, j~Nat
-    ensures value_after 0 b i j == string.decimal_value b i j
-    proof
-        decreasing j
-        if i < j and j <= len b
-            have value_zero b i (j - 1)
-        else
-            auto
-
-# Bytes after `a` don't change what its bytes from `i` to `j` write.
-lemma value_after_prefix a c m i j : a~Bytes, c~Bytes, m~Int, i~Nat, j~Nat, j <= len a
-    ensures value_after m (a ++ c) i j == value_after m a i j
-    proof
-        decreasing j
-        if i < j
-            have value_after_prefix a c m i (j - 1)
-        else
-            auto
+            have string.display_digits x
 
 # ── Facts about the primitives above, trusted like the primitives ────────────
 
