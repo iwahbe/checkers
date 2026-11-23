@@ -1,0 +1,10 @@
+error[E0450]: cannot prove `n >= 0`, the postcondition of `Size Box.size`
+  --> instance_refined_body.ck:12:36
+   |
+12 |     fn size b -> n : b~Box, n~Int, n >= 0
+   |                                    ^^^^^^ promised here
+   = note: for the value returned on line 13: `b.v`
+   = note: counterexample: b = Box -1
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+instance_refined_body.ck: 1 error, 0 warnings

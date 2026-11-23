@@ -197,6 +197,19 @@ pub enum HeadKey {
     Pair,
 }
 
+/// An instance's function with a signature of its own (#225): the class's
+/// signature at the instance, which it must refine.
+pub struct InstRefine {
+    pub class: String,
+    pub member: String,
+    /// The class's name for the result, and its constraints at the
+    /// instance (the instance's context first).
+    pub result: Option<Ident>,
+    pub constraints: Vec<Constraint>,
+    /// The class's declaration of the function, as written.
+    pub declared: String,
+}
+
 /// An instance, once registered.
 #[derive(Clone)]
 pub struct InstInfo {
@@ -886,13 +899,15 @@ impl Elab {
     /// Desugar the module's classes and instances (D136). Returns the new
     /// module and where each of its declarations came from.
     pub fn desugar_classes(&mut self, m: &ast::Module) -> (ast::Module, Vec<Origin>) {
+        // What another module's instances left is about its declarations.
+        self.member_heads.clear();
+        self.inst_refines.clear();
         let has = m.decls.iter().any(|d| matches!(d.kind, DeclKind::Class { .. } | DeclKind::Instance { .. }));
         if !has {
             return (m.clone(), vec![Origin::Written; m.decls.len()]);
         }
         let mut decls = Vec::new();
         let mut origins = Vec::new();
-        self.member_heads.clear();
         let local: HashMap<String, (Vec<String>, Vec<ClassMember>, Span)> = m
             .decls
             .iter()
@@ -1767,10 +1782,12 @@ impl Elab {
                 ClassMember::Type { .. } => continue,
                 ClassMember::Fn { name, params, result, constraints, .. } => {
                     let given = members.iter().find_map(|m| match m {
-                        InstMember::Fn { name: n, params, decreasing, body, span } if n.name == name.name => Some((params, decreasing, body, *span, n.span)),
+                        InstMember::Fn { name: n, params, sig, decreasing, body, span } if n.name == name.name => {
+                            Some((params, sig, decreasing, body, *span, n.span))
+                        }
                         _ => None,
                     });
-                    let Some((iparams, decreasing, body, span, own_name)) = given else {
+                    let Some((iparams, isig, decreasing, body, span, own_name)) = given else {
                         self.err(
                             Diagnostic::error("E0364", format!("`instance {text}` doesn't give `{}`", name.name), d.span)
                                 .with_label(format!("`{}` missing", name.name))
@@ -1826,6 +1843,50 @@ impl Elab {
                     member_list.push((name.name.clone(), decls.len()));
                     // The class's name for the result isn't written here.
                     let result = result.as_ref().map(|r| ident(&r.name, self.synthetic_span(span)));
+                    // A signature of its own (#225): the function has it, and
+                    // the class's, at this instance, is kept to check that it
+                    // refines it. A parameter that is the class's (#161) is
+                    // the instance's type in it, as in the body.
+                    let (result, cs) = match isig {
+                        None => (result, cs),
+                        Some((iresult, icons)) => {
+                            let pinned_names: Vec<String> = pinned_types.iter().map(|(n, _)| n.clone()).collect();
+                            for c in icons {
+                                if let Constraint::Typed { name: pn, mult, ty } = c {
+                                    let is_type = matches!(&ty.kind, ExprKind::Con(t) if t == "Type") && *mult == ast::Mult::Ghost;
+                                    if pinned_names.contains(&pn.name) && !is_type {
+                                        self.err(
+                                            Diagnostic::error("E0365", format!("`{}` takes the class's parameter: its type is `ghost Type`", pn.name), ty.span)
+                                                .with_help(format!("write `{}~ghost Type`", pn.name)),
+                                        );
+                                        bad = true;
+                                    }
+                                }
+                            }
+                            let to_type = |n: &str, _s: Span| pinned_types.iter().find(|(p, _)| p == n).map(|(_, t)| t.clone());
+                            let prw = Rewrite { var: &to_type, con: &none, qualified: &nq };
+                            // The context is the instance's; a clause of it
+                            // written here too is the same one.
+                            let ctx_texts: Vec<String> = context.iter().map(|c| self.src_text(c.span)).collect();
+                            let own: Vec<Constraint> = untyped(icons, &pinned_names)
+                                .into_iter()
+                                .filter(|c| !matches!(c, Constraint::Pred(e) if ctx_texts.contains(&self.src_text(e.span))))
+                                .collect();
+                            let mut ics = ctx_preds.clone();
+                            // The class's types are the instance's (#133).
+                            ics.extend(trw.constraints(&prw.constraints(&own, &[]), &[]));
+                            let text = match foreign.as_deref() {
+                                Some(m) => self.text_in(m, cm.span()),
+                                None => self.src_text(cm.span()),
+                            };
+                            let declared = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                            self.inst_refines.insert(
+                                decls.len(),
+                                InstRefine { class: class.name.clone(), member: name.name.clone(), result, constraints: cs, declared },
+                            );
+                            (iresult.clone(), ics)
+                        }
+                    };
                     decls.push(Decl {
                         export: Export::No,
                         kind: DeclKind::Fn {
@@ -2899,5 +2960,147 @@ impl Elab {
             assoc: None,
             fallback: self.sig_inst.clone().filter(|f| f.class == tid),
         });
+    }
+}
+
+impl Elab {
+    /// An instance's function with a signature of its own (#225): the same
+    /// parameters and types as the class's signature at the instance, up
+    /// to refinement (else E0365), and a refinement of it (E0371, by the
+    /// prover): the class's preconditions imply the instance's, and the
+    /// instance's postconditions, where the class's preconditions hold,
+    /// imply the class's. When the shapes differ, the class's type, for
+    /// the function as the dictionary has it: one error, not two.
+    /// When its signature has errors already, it is only given the class's
+    /// type.
+    pub fn check_inst_refines(&mut self, k: usize, d: &Decl, sig: &super::decls::Sig, failed: bool) -> Option<Tm> {
+        let r = self.inst_refines.get(&k)?;
+        let DeclKind::Fn { name, params, result, constraints, .. } = &d.kind else { return None };
+        let (class, member, declared) = (r.class.clone(), r.member.clone(), r.declared.clone());
+        let (cresult, ccs) = (r.result.clone(), r.constraints.clone());
+        let diags_before = self.diags.len();
+        let csig = self.signature(params, cresult.as_ref(), &ccs);
+        // The class's signature was checked where it was declared.
+        self.diags.truncate(diags_before);
+        let note = format!("class `{class}` declares `{declared}`");
+        // Its signature, without the instance's context (in its header).
+        let header = constraints.iter().fold(name.span, |s, c| {
+            let end = match c {
+                Constraint::Typed { ty, .. } => ty.span,
+                Constraint::Pred(e) | Constraint::Named(_, e) => e.span,
+            };
+            if end.start > s.start {
+                s.to(end)
+            } else {
+                s
+            }
+        });
+        // Where a parameter's (or the result's) type is written.
+        let type_span = |n: &str| {
+            constraints
+                .iter()
+                .find_map(|c| match c {
+                    Constraint::Typed { name, ty, .. } if name.name == n => Some(ty.span),
+                    _ => None,
+                })
+                .unwrap_or(header)
+        };
+        // The same shape: binder by binder, then the result.
+        let shape = |e: &Self, sig: &super::decls::Sig| e.eval(&Cx::default(), &Self::pi_of(&sig.binders, sig.result.clone()));
+        let (mut mine, mut theirs) = (shape(self, sig), shape(self, &csig));
+        let mut lvl = 0;
+        let mut cx = Cx::default();
+        let class_ty = Self::pi_of(&csig.binders, csig.result.clone());
+        if failed {
+            return Some(class_ty);
+        }
+        let rname = result.as_ref().map_or("the result".to_string(), |r| r.name.clone());
+        loop {
+            let (a, b) = (force_meta(&self.g, mine.clone()), force_meta(&self.g, theirs.clone()));
+            match (&a, &b) {
+                (Val::Pi(x, m1, i1, d1, c1), Val::Pi(_, m2, i2, d2, c2)) => {
+                    let explicit = *i1 == Icit::Expl;
+                    if m1 != m2 || i1 != i2 || unify(&self.g, lvl, d1, d2).is_err() {
+                        let (span, what) = if explicit {
+                            (type_span(x), format!("parameter `{x}`"))
+                        } else {
+                            (header, "type parameters and class clauses".to_string())
+                        };
+                        let (mine_s, theirs_s) = (self.show_val(&cx, d1), self.show_val(&cx, d2));
+                        let shown = |m: &Mult, s: &str| match m {
+                            Mult::Zero => format!("ghost {s}"),
+                            Mult::One => format!("own {s}"),
+                            _ => s.to_string(),
+                        };
+                        let mut diag = Diagnostic::error("E0365", format!("`{member}`'s {what} doesn't match class `{class}`"), span);
+                        if explicit {
+                            diag = diag
+                                .with_label(format!("`{}` here, `{}` in the class", shown(m1, &mine_s), shown(m2, &theirs_s)))
+                                .with_help("an instance's signature has the class's types at the instance's type; it may only refine them");
+                        }
+                        self.err(diag.with_note(note));
+                        return Some(class_ty);
+                    }
+                    cx.bind(x, (**d1).clone(), *m1);
+                    mine = apply_closure(&self.g, c1, Val::var(lvl));
+                    theirs = apply_closure(&self.g, c2, Val::var(lvl));
+                    lvl += 1;
+                }
+                (Val::Pi(..), _) | (_, Val::Pi(..)) => {
+                    let diag = Diagnostic::error("E0365", format!("`{member}` doesn't take the class's parameters and class clauses"), header)
+                        .with_help("an instance's signature has the class's parameters, types and class clauses, at the instance's type");
+                    self.err(diag.with_note(note));
+                    return Some(class_ty);
+                }
+                _ => {
+                    if unify(&self.g, lvl, &a, &b).is_err() {
+                        let (mine_s, theirs_s) = (self.show_val(&cx, &a), self.show_val(&cx, &b));
+                        let span = result.as_ref().map_or(header, |r| type_span(&r.name));
+                        self.err(
+                            Diagnostic::error("E0365", format!("`{member}`'s result doesn't match class `{class}`"), span)
+                                .with_label(format!("`{rname}` is `{mine_s}` here, `{theirs_s}` in the class"))
+                                .with_help("an instance's signature has the class's types at the instance's type; it may only refine them")
+                                .with_note(note),
+                        );
+                        return Some(class_ty);
+                    }
+                    break;
+                }
+            }
+        }
+        // The class's parameters, as a caller through the class has them.
+        let mut cx = csig.cx.clone();
+        let mut env = cx.env.to_vec();
+        let rlvl = cx.lvl();
+        env.push(Val::var(rlvl));
+        let pres = |s: &super::decls::Sig| s.preds.iter().filter(|p| !p.is_post).cloned().collect::<Vec<_>>();
+        let posts = |s: &super::decls::Sig| s.preds.iter().filter(|p| p.is_post).cloned().collect::<Vec<_>>();
+        let kind = |pre: bool| ObKind::Refines { class: class.clone(), member: member.clone(), pre, declared: declared.clone() };
+        let saved = self.cur_fn.take();
+        for p in pres(&csig) {
+            let v = self.inst_pred(&p, env.clone());
+            cx.assume(v);
+        }
+        // Each of the instance's preconditions follows from the class's.
+        for p in pres(sig) {
+            let goal = self.inst_pred(&p, env.clone());
+            let span = if p.span.start < p.span.end { p.span } else { header };
+            self.oblige(&cx, span, kind(true), p.text.clone(), goal, None);
+        }
+        // Its result, of the instance's type: with the instance's
+        // preconditions (which hold) and postconditions, the class's
+        // postconditions hold.
+        let rty = self.eval(&cx, &sig.result);
+        cx.bind(&rname, rty, Mult::Zero);
+        for p in pres(sig).iter().chain(posts(sig).iter()) {
+            let v = self.inst_pred(p, env.clone());
+            cx.assume(v);
+        }
+        for p in posts(&csig) {
+            let goal = self.inst_pred(&p, env.clone());
+            self.oblige(&cx, header, kind(false), p.text.clone(), goal, None);
+        }
+        self.cur_fn = saved;
+        None
     }
 }

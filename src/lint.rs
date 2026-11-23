@@ -254,8 +254,14 @@ impl Linter {
                 for m in members {
                     match m {
                         InstMember::Type { ty, .. } => self.expr(ty),
-                        InstMember::Fn { params, body, .. } => {
+                        InstMember::Fn { params, sig, body, .. } => {
                             params.iter().for_each(|p| self.snake(p, "parameter"));
+                            if let Some((result, constraints)) = sig {
+                                if let Some(r) = result {
+                                    self.snake(r, "result name");
+                                }
+                                self.constraints(constraints);
+                            }
                             self.block(body);
                         }
                         InstMember::Lemma { params, decreasing, proof, .. } => {
