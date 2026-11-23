@@ -899,14 +899,15 @@ impl Elab {
     /// Desugar the module's classes and instances (D136). Returns the new
     /// module and where each of its declarations came from.
     pub fn desugar_classes(&mut self, m: &ast::Module) -> (ast::Module, Vec<Origin>) {
+        // What another module's instances left is about its declarations.
+        self.member_heads.clear();
+        self.inst_refines.clear();
         let has = m.decls.iter().any(|d| matches!(d.kind, DeclKind::Class { .. } | DeclKind::Instance { .. }));
         if !has {
             return (m.clone(), vec![Origin::Written; m.decls.len()]);
         }
         let mut decls = Vec::new();
         let mut origins = Vec::new();
-        self.member_heads.clear();
-        self.inst_refines.clear();
         let local: HashMap<String, (Vec<String>, Vec<ClassMember>, Span)> = m
             .decls
             .iter()
