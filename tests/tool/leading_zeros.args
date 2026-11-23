@@ -1,0 +1,6 @@
+doc tests/tool/leading_zeros/major -o tests/tool/never
+doc tests/tool/leading_zeros/minor -o tests/tool/never
+doc tests/tool/leading_zeros/patch -o tests/tool/never
+doc tests/tool/leading_zeros/both -o tests/tool/never
+doc tests/tool/leading_zeros/toolchain -o tests/tool/never
+doc tests/tool/leading_zeros/dependency -o tests/tool/never

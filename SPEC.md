@@ -1543,7 +1543,7 @@ A package is a directory with `checkers.json`, its modules (`a/b.ck` is module `
 | `toolchain` | yes | the oldest `ckc` this package works with |
 | `dependencies` | no | name → `{ "git": URL, "version": "MAJOR.MINOR.PATCH" }` (the oldest version that works, a tag `vMAJOR.MINOR.PATCH`) or `{ "path": DIR }`; the name is what this package imports it as |
 
-An unknown field, a missing required one, or a malformed value is an error with its line and column in `checkers.json`. The lock file (D111):
+A version, here and in the lock file, is three whole numbers in decimal, each `0` or without leading zeros (`1.01.0` is an error), as [Semantic Versioning §2](https://semver.org/#spec-item-2) requires. An unknown field, a missing required one, or a malformed value is an error with its line and column in `checkers.json`. The lock file (D111):
 
 ```json
 {
