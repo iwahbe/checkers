@@ -213,7 +213,7 @@ Rules:
    | `export lemma` | statement only |
    | `export transparent fn` | everything, including the body (it unfolds in conversion and in the solver) |
 3. **Proofs are part of the interface.** Because bodies are sealed, a library must export the lemmas and postconditions its users need. A sorting module exports `sort` *and* `sort_sorted`, `sort_perm`. This is how libraries "ship with proofs."
-4. `export transparent`: use sparingly; the body becomes part of the stable interface. Typical use: small definitional helpers that specifications are written in terms of (`list.keys`, `len`).
+4. `export transparent`: use sparingly; the body becomes part of the stable interface. Typical use: small definitional helpers that specifications are written in terms of (`list.keys`, `len`). The functions a transparent body calls that the module doesn't export are visible with it, or it would say nothing; so are those an instance's functions call, since an instance's functions are visible wherever it is used. An exported function such a body calls stays sealed: importers see its signature only.
 
 5. **Files (D53).** `import a.b` finds the standard-library module `a.b`, or else the file `a/b.ck` beside the file being checked; that file declares `module a.b`. Checking a program checks every module it imports, including their proofs, and `checkers trust` prints the ledger of all of them.
 6. **What sealing means for proofs (D54).** In an importer's queries a sealed function is uninterpreted: the importer knows exactly its postconditions and the lemmas it brings in with `have`, nothing about its body. A fact the library does not export cannot be proven outside it; the library has to export a lemma (rule 3).
