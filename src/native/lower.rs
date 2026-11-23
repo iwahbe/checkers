@@ -189,6 +189,9 @@ pub struct Program {
     pub debug: Option<u32>,
     /// Which definitions are recursive, for `inline`.
     pub recursive: HashMap<u32, bool>,
+    /// Functions' copies specialized to known instances' dictionaries
+    /// (`spec`), numbered after the definitions.
+    pub specs: std::cell::RefCell<crate::native::spec::Specs>,
 }
 
 /// Code with no definition (a `check`, a value staging computes).
@@ -227,7 +230,9 @@ impl Program {
         if let Some(s) = staged {
             names.extend(s.extra.iter().map(|e| e.0.clone()));
         }
+        let base = names.len() as u32;
         Program {
+            specs: std::cell::RefCell::new(crate::native::spec::Specs::new(base)),
             funcs: Vec::new(),
             rc_done: 0,
             code: HashMap::new(),
@@ -301,14 +306,23 @@ impl<'a, 'g> Lowerer<'a, 'g> {
         let mut referenced = BTreeSet::new();
         let mut todo: Vec<u32> = roots.to_vec();
         while let Some(d) = todo.pop() {
-            if self.p.code.contains_key(&d) || self.p.defs.contains_key(&d) || d as usize >= ndefs {
+            if self.p.code.contains_key(&d) || self.p.defs.contains_key(&d) {
                 continue;
             }
-            let Some(body) = crate::native::ir::body_of(g, staged, DefId(d)) else {
+            // A specialized copy (`spec`): its body, compiled as code of
+            // the function it copies.
+            let copy = self.p.specs.borrow().copy(d).map(|c| (c.of, c.body.clone(), c.depth));
+            let (owner, body, depth) = match copy {
+                Some(c) => (c.0, Some(c.1), c.2),
+                None if (d as usize) < ndefs => (DefId(d), crate::native::ir::body_of(g, staged, DefId(d)), 0),
+                None => continue,
+            };
+            let Some(body) = body else {
                 referenced.insert(d);
                 continue;
             };
-            let c = Compiler { g, owner: Some(DefId(d)) }.compile(&body);
+            let spec = crate::native::spec::SpecCx { table: &self.p.specs, staged, depth };
+            let c = Compiler { g, owner: Some(owner), spec: Some(spec) }.compile(&body);
             let mut gs = Vec::new();
             globals_in(&c, &mut gs);
             todo.extend(gs.iter().map(|x| x.0));
@@ -320,9 +334,10 @@ impl<'a, 'g> Lowerer<'a, 'g> {
         for d in &new {
             let (n, _) = lams(&self.p.code[d]);
             let func = self.p.funcs.len() as u32;
+            let owner = self.p.specs.borrow().origin(*d);
             self.p.funcs.push(Func {
-                name: self.p.names[*d as usize].clone(),
-                owner: *d,
+                name: self.p.names[owner as usize].clone(),
+                owner,
                 kind: if n > 0 { FnKind::Global } else { FnKind::Caf },
                 params: Vec::new(),
                 body: E::Erased,
@@ -359,9 +374,10 @@ impl<'a, 'g> Lowerer<'a, 'g> {
             self.p.defs.insert(d, shape);
         }
         for d in &new {
-            let ir = self.inline(&self.p.code[d].clone(), Some(DefId(*d)));
+            let origin = self.p.specs.borrow().origin(*d);
+            let ir = self.inline(&self.p.code[d].clone(), Some(DefId(origin)));
             let (DefShape::Fn { func, .. } | DefShape::Caf { func }) = self.p.defs[d].clone() else { continue };
-            self.owner = *d;
+            self.owner = self.p.specs.borrow().origin(*d);
             self.next = 0;
             let (n, body) = lams(&ir);
             let params: Vec<V> = (0..n).map(|_| self.fresh()).collect();
@@ -377,7 +393,8 @@ impl<'a, 'g> Lowerer<'a, 'g> {
     /// A closed term as a function of no arguments (a `Caf` computed
     /// afresh each time it runs): its index.
     pub fn add_closed(&mut self, t: &Tm) -> u32 {
-        let ir = Compiler { g: self.g, owner: None }.compile(t);
+        let spec = crate::native::spec::SpecCx { table: &self.p.specs, staged: self.staged, depth: 0 };
+        let ir = Compiler { g: self.g, owner: None, spec: Some(spec) }.compile(t);
         self.add_closed_ir(&ir)
     }
 
@@ -412,7 +429,7 @@ pub fn show_table(g: &Globals) -> Option<Ir> {
     if debug.is_none() && fields.is_empty() {
         return None;
     }
-    let c = Compiler { g, owner: None };
+    let c = Compiler::new(g, None);
     let debug = match debug {
         Some(t) => c.go_pub(&t),
         None => Ir::Con(nil, Vec::new()),
@@ -426,7 +443,14 @@ impl Lowerer<'_, '_> {
     /// resolved (`inline`).
     fn inline(&mut self, ir: &Ir, owner: Option<DefId>) -> Ir {
         let p = &mut *self.p;
-        crate::native::inline::Inliner { code: &p.code, recursive: &mut p.recursive }.program(ir, owner)
+        let specs = p.specs.borrow();
+        let origin = |d: u32| specs.origin(d);
+        let ir = crate::native::inline::Inliner { code: &p.code, recursive: &mut p.recursive, origin: &origin }.program(ir, owner);
+        let defs = &p.defs;
+        let pure_call = |d: DefId, n: usize| {
+            matches!(defs.get(&d.0), Some(DefShape::Builtin { sym, keep, .. }) if keep.len() == n && checkers_rt::builtins::PURE.contains(sym))
+        };
+        crate::native::inline::float_in(&ir, &pure_call)
     }
 
     fn fresh(&mut self) -> V {

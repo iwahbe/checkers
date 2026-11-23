@@ -2,7 +2,7 @@
 //! arguments become `Erased`; everything else keeps its shape (de Bruijn
 //! indices included). Closure conversion (`lower`) starts from here.
 
-use crate::core::{eval, max_var, CaseTm, ConId, DefId, Elim, Globals, Head, Mult, Prim, Tm, Val};
+use crate::core::{eval, max_var, CaseTm, ConId, DefId, Elim, Globals, Head, Icit, Mult, Prim, Tm, Val};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -114,9 +114,17 @@ pub fn lit_value(l: &crate::core::Lit) -> Lit {
 pub struct Compiler<'g> {
     pub g: &'g Globals,
     pub owner: Option<DefId>,
+    /// Where calls passing known instances' dictionaries get specialized
+    /// copies (`spec`); `None`: nowhere.
+    pub spec: Option<super::spec::SpecCx<'g>>,
 }
 
-impl Compiler<'_> {
+impl<'g> Compiler<'g> {
+    /// Erasure without specialization.
+    pub fn new(g: &'g Globals, owner: Option<DefId>) -> Self {
+        Compiler { g, owner, spec: None }
+    }
+
     pub fn compile(&self, t: &Tm) -> Arc<Ir> {
         Arc::new(self.go(t))
     }
@@ -153,16 +161,41 @@ impl Compiler<'_> {
                     h = f;
                 }
                 spine.reverse();
+                // A lambda applied (an instance's function as its dictionary
+                // has it, at a known instance): `let`s, in order, as the
+                // call would bind its parameters.
+                if let Tm::Lam(x, m, _, b) = h {
+                    let mut body = (**b).clone();
+                    for (a, am) in &spine[1..] {
+                        body = Tm::App(Rc::new(body), Rc::new(crate::core::rename_free(a, 0, &|v| v + 1)), Icit::Expl, *am);
+                    }
+                    let (a, am) = spine[0];
+                    let m = if *m == Mult::Zero || am == Mult::Zero { Mult::Zero } else { *m };
+                    // One that computes nothing is put in: a dictionary
+                    // stays known.
+                    if m == Mult::Zero || matches!(**a, Tm::Var(_) | Tm::Lit(_)) || known_dict(self.g, a) {
+                        return self.go(&subst(&body, &[(**a).clone()], 0));
+                    }
+                    return self.go(&Tm::Let(x.clone(), m, Rc::new(Tm::Error), a.clone(), Rc::new(body)));
+                }
+                // A call passing a known instance's dictionary: its copy
+                // with the dictionary put in (`spec`).
+                let copy = match (h, self.spec) {
+                    (Tm::Def(f), Some(cx)) => super::spec::specialize(self.g, cx, *f, &spine),
+                    _ => None,
+                };
                 // A function showing values of a type parameter gets that
                 // type's descriptor (#170).
                 let described = match h {
                     Tm::Def(d) => self.g.well_known.desc_params.get(d),
                     _ => None,
                 };
+                let put = |k: usize| copy.as_ref().is_some_and(|(_, p)| p.get(k).copied().unwrap_or(false));
                 let args: Vec<Arc<Ir>> = spine
                     .into_iter()
                     .enumerate()
                     .map(|(k, (a, m))| match m {
+                        _ if put(k) => Arc::new(Ir::Erased),
                         Mult::Zero if described.is_some_and(|ps| ps.contains(&k)) => Arc::new(self.descriptor(a)),
                         Mult::Zero => Arc::new(self.erased(a)),
                         _ => self.compile(a),
@@ -191,7 +224,10 @@ impl Compiler<'_> {
                         return Ir::Con(*c, fields);
                     }
                 }
-                Ir::Call(self.compile(h), args)
+                match copy {
+                    Some((c, _)) => Ir::Call(Arc::new(Ir::Global(c)), args),
+                    None => Ir::Call(self.compile(h), args),
+                }
             }
             Tm::Let(_, m, _, v, b) => {
                 let v = if *m == Mult::Zero { Arc::new(Ir::Erased) } else { self.compile(v) };
@@ -496,17 +532,24 @@ pub fn known_instance(g: &Globals, t: &Tm) -> Option<Tm> {
         return None;
     }
     // Each parameter it keeps is passed once, in order: the call
-    // evaluates the same arguments in the same order.
+    // evaluates the same arguments in the same order. An argument that
+    // computes nothing (a variable, a literal, a dictionary built from
+    // instances, as a class's function's own clauses pass theirs) may
+    // be passed in another place.
     let mut passed = Vec::new();
     for (a, _, _) in &read {
         match **a {
-            Tm::Var(v) if v < k && v != j => passed.push(k - 1 - v),
+            Tm::Var(v) if v < k && v != j && !passed.contains(&(k - 1 - v)) => passed.push(k - 1 - v),
             _ => return None,
         }
     }
     let kept: Vec<usize> = (0..k).filter(|p| mults[*p] != Mult::Zero && *p != k - 1 - j).collect();
     let passed_kept: Vec<usize> = passed.iter().copied().filter(|p| mults[*p] != Mult::Zero).collect();
-    if passed_kept != kept || passed.windows(2).any(|w| w[0] >= w[1]) {
+    let mut sorted = passed_kept.clone();
+    sorted.sort_unstable();
+    let inert = |p: &usize| matches!(*spine[*p].0, Tm::Var(_) | Tm::Lit(_)) || known_dict(g, &spine[*p].0);
+    let computed: Vec<usize> = passed_kept.iter().copied().filter(|p| !inert(p)).collect();
+    if sorted != kept || computed.windows(2).any(|w| w[0] >= w[1]) {
         return None;
     }
     // The dictionary: an instance's function applied to all its arguments.
