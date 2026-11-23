@@ -267,6 +267,9 @@ struct Delta {
     axioms: Vec<(String, String)>,
     asserts: Vec<String>,
     consts: Vec<String>,
+    /// The sorts its recognizers are applied at: each query that uses the
+    /// translation may need them declared (see `query`).
+    tested: Vec<Sort>,
 }
 
 /// Translated definitions, shared by the builders of one module.
@@ -408,6 +411,7 @@ impl<'a> Builder<'a> {
                     std::mem::take(&mut self.axioms),
                     std::mem::take(&mut self.asserts),
                     std::mem::take(&mut self.consts),
+                    std::mem::take(&mut self.tested),
                 );
                 let known_before: HashSet<String> = self.known.keys().cloned().collect();
                 let dict_before: HashSet<String> = self.dict_args.keys().cloned().collect();
@@ -423,6 +427,7 @@ impl<'a> Builder<'a> {
                     axioms: std::mem::replace(&mut self.axioms, saved.6).into_iter().collect(),
                     asserts: std::mem::replace(&mut self.asserts, saved.7),
                     consts: std::mem::replace(&mut self.consts, saved.8),
+                    tested: std::mem::replace(&mut self.tested, saved.9).into_iter().collect(),
                 };
                 self.inst_queue = saved.5;
                 defs.0.borrow_mut().insert(inst.clone(), (r.clone(), d.clone()));
@@ -460,6 +465,7 @@ impl<'a> Builder<'a> {
                 self.consts.push(c);
             }
         }
+        self.tested.extend(d.tested);
         r
     }
 
@@ -2328,6 +2334,7 @@ impl<'a> Builder<'a> {
                     std::mem::take(&mut self.funs),
                     std::mem::take(&mut self.asserts),
                     std::mem::take(&mut self.table_facts),
+                    std::mem::take(&mut self.tested),
                 );
                 let r = self.table_fresh(d, rs);
                 let delta = Delta {
@@ -2336,6 +2343,7 @@ impl<'a> Builder<'a> {
                     sorts: std::mem::replace(&mut self.sorts, saved.2).into_iter().collect(),
                     funs: std::mem::replace(&mut self.funs, saved.3).into_iter().collect(),
                     asserts: std::mem::replace(&mut self.asserts, saved.4),
+                    tested: std::mem::replace(&mut self.tested, saved.6).into_iter().collect(),
                     ..Delta::default()
                 };
                 let facts = std::mem::replace(&mut self.table_facts, saved.5);
@@ -2354,6 +2362,7 @@ impl<'a> Builder<'a> {
             self.funs.entry(k).or_insert(v);
         }
         self.asserts.extend(delta.asserts);
+        self.tested.extend(delta.tested);
         self.table_facts.extend(facts);
         Ok(Some((name, rs.clone())))
     }
