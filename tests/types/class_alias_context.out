@@ -1,0 +1,9 @@
+error[E0456]: `Make` at `Nat` runs `Int`'s instance, whose `make` isn't shown to return a `Nat` (`n >= 0`)
+  --> class_alias_context.ck:27:5
+   |
+27 |     make 1
+   |     ^^^^ `Make` is used at `Nat` here, by code that may call `make` with any arguments
+   = note: counterexample: u = -1
+   = help: use `Int` here instead of `Nat`; or promise it, for every argument, in a signature of `instance Make Int`'s `make`
+
+class_alias_context.ck: 1 error, 0 warnings
