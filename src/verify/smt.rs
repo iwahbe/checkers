@@ -2163,11 +2163,30 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// `f x …` for class function `f` (`d`) given a known instance's
-    /// dictionary: the instance's own function, applied to the same
-    /// arguments, taken from the dictionary's definition.
-    /// The position of a class function's dictionary binder.
+    /// The position of a class function's dictionary binder: the one its
+    /// body reads its field from. Its own class clauses' dictionaries are
+    /// implicit too, and come first when it takes a class's parameter
+    /// explicitly (the class's dictionary follows that parameter).
     fn dict_pos(&self, d: DefId) -> Option<usize> {
+        let mut body = self.e.g.defs[d.0 as usize].body.as_ref();
+        let mut k = 0;
+        while let Some(Tm::Lam(_, _, _, b)) = body {
+            body = Some(&**b);
+            k += 1;
+        }
+        if let Some(mut r) = body {
+            while let Tm::App(f, ..) = r {
+                r = f;
+            }
+            if let Tm::Field(x, _, _) = r {
+                if let Tm::Var(j) = **x {
+                    if j < k {
+                        return Some(k - 1 - j);
+                    }
+                }
+            }
+        }
+        // Without a body: the first dictionary binder.
         let mut t = self.e.g.defs[d.0 as usize].ty.clone();
         let mut k = 0;
         while let Tm::Pi(_, m, i, a, b) = t {
@@ -2180,21 +2199,11 @@ impl<'a> Builder<'a> {
         None
     }
 
+    /// `f x …` for class function `f` (`d`) given a known instance's
+    /// dictionary: the instance's own function, applied to the same
+    /// arguments, taken from the dictionary's definition.
     fn member_app(&mut self, env: &[Ent], d: DefId, args: &[(Tm, Mult)], inner: &[Ent]) -> Tx<Option<(String, Sort)>> {
-        // The dictionary's binder: the class's (Many, implicit) one.
-        let ty = self.e.g.defs[d.0 as usize].ty.clone();
-        let mut t = ty;
-        let mut pos = None;
-        let mut k = 0;
-        while let Tm::Pi(_, m, i, a, b) = t {
-            if m == Mult::Many && i == crate::core::Icit::Impl && self.is_dict_ty(&a) {
-                pos = Some(k);
-                break;
-            }
-            t = (*b).clone();
-            k += 1;
-        }
-        let Some(pos) = pos else { return Ok(None) };
+        let Some(pos) = self.dict_pos(d) else { return Ok(None) };
         let Some(Ent::Known(key)) = inner.get(pos) else { return Ok(None) };
         let Some(dict) = self.known.get(key).cloned() else { return Ok(None) };
         // The dictionary: an instance's function applied to its arguments.
@@ -2287,14 +2296,21 @@ impl<'a> Builder<'a> {
         }
         // The arguments after the dictionary, and the explicit ones before
         // it but a class's parameter passed explicitly (#161), which the
-        // dictionary's field doesn't take.
+        // dictionary's field doesn't take. The function's own class clauses'
+        // dictionaries come first even when they precede the class's (which
+        // follows a class's parameter passed explicitly).
         let mut rest: Vec<Ent> = Vec::new();
         {
             let mut t = self.e.g.defs[d.0 as usize].ty.clone();
             let mut k = 0;
-            while let Tm::Pi(x, _, i, a, b) = t {
+            let mut clauses = 0;
+            while let Tm::Pi(x, m, i, a, b) = t {
                 let class_param = self.is_type(&a) && cd.params.iter().any(|p| **p == *x);
-                if k > pos || (k < pos && i == crate::core::Icit::Expl && !class_param) {
+                if k < pos && m == Mult::Many && i == crate::core::Icit::Impl && self.is_dict_ty(&a) {
+                    let Some(e) = inner.get(k) else { break };
+                    rest.insert(clauses, e.clone());
+                    clauses += 1;
+                } else if k > pos || (k < pos && i == crate::core::Icit::Expl && !class_param) {
                     let Some(e) = inner.get(k) else { break };
                     rest.push(e.clone());
                 }
