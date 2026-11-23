@@ -321,6 +321,46 @@ pub fn concat(a: W, b: W) -> W {
     from_items(la.join(lb), v)
 }
 
+/// `a ++ b`, `a` owned and `b` borrowed: when `a` is the only reference to
+/// its storage (not a slice, not `b`) and `b` has its layout, `b`'s elements
+/// are written after `a`'s in place, its memory grown if they don't fit;
+/// otherwise a new array, and `a` dropped.
+pub fn concat_own(a: W, b: W) -> W {
+    let l = layout(a);
+    if l != layout(b) || a == b || !unique(a) || is_slice(a) {
+        let r = concat(a, b);
+        drop_w(a);
+        return r;
+    }
+    let w = l.width();
+    let (n, m) = (len(a), len(b));
+    let old = size(a);
+    let Some(new) = (n + m).checked_mul(w).and_then(|b| b.checked_next_multiple_of(8)).and_then(|b| b.checked_add(HDR + 16)) else {
+        crate::fatal("out of memory")
+    };
+    let a = if new > old {
+        // The old layout is the one it was allocated with: its size is
+        // computed from its length, like `size`.
+        let p = unsafe { std::alloc::realloc(a as *mut u8, std::alloc::Layout::from_size_align(old, 8).unwrap(), new) };
+        if p.is_null() {
+            crate::fatal("out of memory");
+        }
+        p as W
+    } else {
+        a
+    };
+    if l == Words {
+        let (src, dst) = (data(b) as *const W, data(a) as *mut W);
+        for i in 0..m {
+            unsafe { *dst.add(n + i) = dup(*src.add(i)) };
+        }
+    } else {
+        unsafe { std::ptr::copy_nonoverlapping(data(b), data(a).add(n * w), m * w) };
+    }
+    set_slot(a, 0, (n + m) as u64);
+    a
+}
+
 /// `a` (borrowed) with element `i` (in bounds) replaced by `x` (borrowed).
 /// In place if `a` has no other reference and can hold `x`: the caller must
 /// then own `a` (`std.array.set` is called through its wrapper, which does).
