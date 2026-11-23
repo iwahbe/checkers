@@ -1316,6 +1316,7 @@ fn describe(e: &Elab, o: &Obligation) -> String {
         ObKind::Div => format!("divisor of `{}` is not zero", o.text),
         ObKind::Index => format!("index in bounds: {}", o.text),
         ObKind::Lemma { name } => format!("lemma `{name}`: {}", o.text),
+        ObKind::ClassType { name, given } => format!("every `{given}` satisfies `{name}`: {}", o.text),
         ObKind::Auto => format!("auto: {}", o.text),
         ObKind::Have => format!("have {}", o.text),
         ObKind::Uncovered { case, binding: false } => format!("`match` needs no arm for {case}: it can't occur"),
@@ -1431,6 +1432,11 @@ fn headline(o: &Obligation) -> (String, String, String) {
             format!("cannot prove lemma `{name}`"),
             format!("`{}`", o.text),
             "add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs".into(),
+        ),
+        ObKind::ClassType { name, given } => (
+            format!("cannot prove that every `{given}` satisfies `{}`, as `{name}` requires", o.text),
+            format!("`{}` is `{given}` here", name.rsplit('.').next().unwrap_or(name)),
+            format!("give `{}` a type whose values all satisfy it", name.rsplit('.').next().unwrap_or(name)),
         ),
         ObKind::Auto => (
             format!("`auto` cannot prove `{}`", o.text),

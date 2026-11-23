@@ -1,0 +1,38 @@
+error[E0450]: cannot prove that every `Nat` satisfies `code s u < 256`, as `Encoding.Unit` requires
+  --> class_type_pred_errors.ck:14:5
+   |
+14 |     type Unit = Nat
+   |     ^^^^^^^^^^^^^^^ `Unit` is `Nat` here
+   = note: counterexample: u = 256
+   = help: give `Unit` a type whose values all satisfy it
+
+error[E0450]: cannot prove that every `Nat` satisfies `value s d < 10`, as `Small.Digit` requires
+  --> class_type_pred_errors.ck:27:1
+   |
+27 | instance Small Int
+   | ^^^^^^^^^^^^^^^^^^ `Digit` is `Nat` here
+   = note: counterexample: d = 10
+   = help: give `Digit` a type whose values all satisfy it
+
+error[E0450]: cannot prove that this `Nat` subtraction stays at or above zero
+  --> class_type_pred_errors.ck:35:5
+   |
+35 |     code s u - 200
+   |     ^^^^^^^^^^^^^^ `-` on `Nat` needs the left side to be at least the right
+   = help: check it first (`if a >= b then a - b else …`), or write `a + (-b)` for a signed result
+
+error[E0210]: `<` needs numbers (`Nat` or `Int`) to compare, but this is `Numeric.Unit s`
+  --> class_type_pred_errors.ck:40:25
+   |
+40 |     type Unit : u~Unit, u < 256
+   |                         ^^^^^^^ has type `Numeric.Unit s`
+   = help: `Numeric.Unit s` is a type of its own, not a number: reach a number through its class's functions
+
+error[E0210]: a number literal needs numbers (`Nat` or `Int`), but this is `Numeric.Unit s`
+  --> class_type_pred_errors.ck:40:29
+   |
+40 |     type Unit : u~Unit, u < 256
+   |                             ^^^ has type `Numeric.Unit s`
+   = help: `Numeric.Unit s` is a type of its own, not a number: reach a number through its class's functions
+
+class_type_pred_errors.ck: 5 errors, 0 warnings

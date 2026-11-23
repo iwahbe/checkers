@@ -860,13 +860,32 @@ instance Display (Pair a) : Display a
 ```
 
 - **An instance** gives it with `type Name = T`, or leaves it out to take the default; with no default, leaving it out is E0364, and giving a type the class doesn't have is E0363. In the instance's signatures, `Name` is that type. A class's function used in them (in a precondition, say) finds its instance from its arguments, as anywhere; where they don't tell (`valid os`, `os` a list of options), it is the instance's own (#146).
-- **Using it.** Outside the class it is `C.Name t` (`Display.Options Money`; `C.Name` alone is E0291). At a type whose instance is known it **is** the instance's type, both when types are compared and in the prover: `display price [Cents]` checks, and a `match` on `Cents` with it. Its refinement comes with it: `Seq.Elem (Array U8)` is `U8`, so the first element `Seq.uncons` gives is known to be `< 256`, as in a `x :: rest` pattern. At a type parameter `a` with the clause `C a`, it is a type of its own, equal only to itself: generic code can pass `[]`, or values it was given at that type, and nothing else. Without a clause for `a` it is E0284, as for a class's function.
+- **Using it.** Outside the class it is `C.Name t` (`Display.Options Money`; `C.Name` alone is E0291). At a type whose instance is known it **is** the instance's type, both when types are compared and in the prover: `display price [Cents]` checks, and a `match` on `Cents` with it. Its refinement comes with it: `Seq.Elem (Array U8)` is `U8`, so the first element `Seq.uncons` gives is known to be `< 256`, as in a `x :: rest` pattern. At a type parameter `a` with the clause `C a`, it is a type of its own, equal only to itself: generic code can pass `[]`, or values it was given at that type, and what its constraints (below) allow, and nothing else. Without a clause for `a` it is E0284, as for a class's function.
 - **It doesn't determine the class's type.** `Int` and another type may both have `NoOptions`. So comparing `C.Name a`, while `a` isn't known yet, with another type neither fails nor guesses: it waits until `a` is known (from another argument, or a later use of the same value), and is then compared again; if `a` is never known, the use is E0285. `(\v -> display v [Cents]) (Money 1250)` checks.
-- **In core** the dictionary is a record whose fields may depend on earlier fields: its types first (`$Options~ghost Type`), then its functions, whose types use them. `C.Name t` is a definition reading that field of the dictionary found for `t` (Lean's classes, structures with fields of type `Type`, work so).
+- **In core** the dictionary is a record whose fields may depend on earlier fields: its types first (`$Options~ghost Type`), then the dictionaries of their clauses (below), then its functions, whose types use them. `C.Name t` is a definition reading that field of the dictionary found for `t` (Lean's classes, structures with fields of type `Type`, work so).
 - **At run time** the type is erased, but the dictionary keeps its layout word (D133), as a type argument's slot does, so generic code lays out an array of `C.Name a` as the instance's type is laid out.
 - **In the prover** a known instance's type is that type. At a dictionary in scope for `t`, it is a sort of its own applied to `t`'s sort (`Display.Options a`): one instance per type, so two uses at the same type are the same sort.
 - **Cycles and positivity.** An instance's type defined through itself, directly or through other instances (`type Options = Display.Options Money` in `Money`'s instance), is E0225, as for a type alias. A recursive type may not hold a class's type at itself (`kids~List (Display.Options Tree)` in `Tree`, E0354): what the instance gives isn't known while the type is checked, so it is taken as possibly negative.
 - **`==`** (D125 b) treats `C.Name a` as it treats a type parameter. **Coherence** is unchanged: one instance per type constructor, so `Display.Options Money` has one meaning wherever `Money`'s instance is loaded.
+
+**Constraints on a class's types (#176).** After `type Name`, or a default `type Name = T`, come the constraints a signature takes, about `Name`: class clauses, and predicates on a value of it.
+
+```checkers
+class Seq s
+    type Elem : Ord Elem                       # its values have an order
+    fn uncons xs -> r : xs~s, r~Option (Elem, s)
+
+class Encoding s
+    type Unit : u~Unit, code s u < 256         # every value's code is below 256
+    fn code s u -> n : s~ghost Type, u~Unit, n~Nat
+    fn units x -> us : x~s, us~List Unit
+```
+
+- **A clause** is a class of the type itself, `D Name` (E0370 otherwise). Each instance's type must have it: the dictionary is found at the instance's `type Name = T` (at its header for a default), as any clause is (E0284 if there is none, `help:` naming the context to add). In generic code with the clause `C a`, `C.Name a` has it: the dictionary is a field of `C a`'s, so `le x y`, `x <= y` and passing values to a function with the clause `D b` work. A clause on a class's type in a signature (`Add (Seq.Elem s)`) is an ordinary clause: an implicit parameter, found once `s` is known.
+- **A predicate** names a value of the type first, `u~Unit` (E0370 if it doesn't, if the name's type isn't the type, or if a second name is given), and may use the class's functions. A class's type is a type of its own (above), so a predicate reaches its values through them: `u < 256` is E0210, whose `help:` says so. A function used there whose arguments don't tell the instance takes the class's parameter explicitly (`s~ghost Type`, #161), since `C.Name a` doesn't determine `a`.
+- **Checked at each instance.** Every predicate holds of every value of the type the instance gives, or takes as the default: a proof by Z3, with the instance's functions. `type Unit = U8`, with `code` its value, proves `code s u < 256`; `type Unit = Nat` is E0450 at `type Unit = Nat`, "cannot prove that every `Nat` satisfies `code s u < 256`, as `Encoding.Unit` requires", with a counterexample (`u = 256`). A default is checked at each instance that takes it (reported at its header), since its predicates are about that instance's functions.
+- **Assumed in generic code.** With the clause `C a` in scope, every value of `C.Name a` satisfies the predicates: the prover assumes them of each such value, a parameter, a local, a field, an element, a call's result, as it assumes a refinement alias's (§7.3). At a known instance, `C.Name t` is the instance's type, whose own refinement implies them.
+- **At run time** a clause's dictionary is a field of the class's dictionary; predicates are erased.
 
 **Classes of several types (#145).** A class may take several type parameters, `class Hole s h`, when what is allowed is a property of the types together: which hole types a formatter accepts.
 

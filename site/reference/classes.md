@@ -214,6 +214,48 @@ A class's type doesn't tell which instance it is: `Int` and another type may bot
 
 At run time the type is erased, but an array of it, made in generic code, is laid out as the instance's type is: the instance's record of functions carries what the layout needs.
 
+### Constraints on a class's types
+
+After `type Name` (or `type Name = T`) may come constraints on it, as in a signature: class clauses, and predicates on a value of it. Each instance's type is checked against them, and generic code may use them.
+
+```checkers
+class Take s
+    type Item : Ord Item
+    fn take xs -> r : xs~s, r~Option Item
+
+instance Take (List a) : Ord a
+    type Item = a
+    fn take xs
+        match xs
+            []     -> None
+            x :: _ -> Some x
+
+# `<=` on `Take.Item s`: its `Ord` comes with `Take s`.
+fn first_smaller xs ys -> r : Take s, xs~s, ys~s, r~Bool
+    match (take xs, take ys)
+        (Some x, Some y) -> x <= y
+        _                -> False
+```
+
+A clause is a class of the type itself (`Ord Item`; E0370 otherwise). An instance whose type has no such instance is E0284, at its `type Item = …`.
+
+A predicate names a value of the type first (`u~Unit`). A class's type is a type of its own, even inside the class, so a predicate reaches its values through the class's functions; a function whose arguments don't tell the instance takes the class's parameter as a `ghost Type`:
+
+```checkers
+class Encoding s
+    type Unit : u~Unit, code s u < 256
+    fn code s u -> n : s~ghost Type, u~Unit, n~Nat
+    fn units x -> us : x~s, us~List Unit
+
+# Every `Encoding.Unit s` has a code below 256, so this is a `U8`.
+fn first_code x -> b : Encoding s, x~s, b~U8
+    match units x
+        []     -> 0
+        u :: _ -> code s u
+```
+
+Z3 proves each predicate for every value of the type each instance gives (or takes as the default), with that instance's functions: with `type Unit = U8` and `code` its value, `code s u < 256` holds; with `type Unit = Nat` it is E0450 at `type Unit = Nat`, with a counterexample.
+
 ## Classes of several types
 
 A class may take several type parameters, when what is allowed depends on the types together. Here a formatter decides which types of values its holes accept: one takes anything with a display, one only strings, one strings and ints.

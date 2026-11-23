@@ -132,6 +132,7 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0367` | a recursive type has no values: every constructor needs a value of the type |
 | `E0368` | a function or lemma of a class of several parameters whose parameters' types don't mention one of them, and which doesn't take it as a `ghost Type` parameter |
 | `E0369` | a class's function or lemma with a parameter, or a result, named like the class's parameter (except a parameter of type `ghost Type`, which is the class's parameter passed explicitly) |
+| `E0370` | a constraint on a class's type that isn't a clause of the type itself (`Ord Item`) or a predicate on one named value of it (`u~Unit, …`) |
 
 ## Usage: resources and `ghost`
 

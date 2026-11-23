@@ -106,6 +106,14 @@ impl Elab {
             return Tm::Error;
         }
         let exp = self.force(expected);
+        // An instance's dictionary's field for a clause on one of its
+        // class's types (#176): found as an implicit argument is.
+        if matches!(&e.kind, ExprKind::Var(n) if n == super::classes::FIND_DICT) {
+            let mt = self.fresh_meta(cx);
+            let mv = self.eval(cx, &mt);
+            self.note_dict(cx, &mv, &exp, e.span);
+            return mt;
+        }
         // A name where a type is expected is the type, not a record's
         // constructor of the same name (`String`, #170).
         if matches!(exp, Val::Univ(_)) && matches!(e.kind, ExprKind::Con(_)) && !cx.type_pos {
@@ -430,6 +438,7 @@ impl Elab {
                     return (Tm::Lit(Lit::int(-n)), int);
                 }
                 let (t, xty) = self.infer(cx, x);
+                self.find_type_dicts(&xty);
                 // `-x` on a type with an instance of `Neg` (M24).
                 if let Some(m) = self.operator_method(cx, "Neg", "neg", &xty) {
                     let (f, fty) = self.sym_term(cx, Sym::Def(m), e.span);
@@ -2007,6 +2016,12 @@ impl Elab {
             Val::TupleTy(xs) if xs.is_empty() => self.instances.contains_key(&(ctid, super::classes::HeadKey::Unit)),
             Val::TupleTy(xs) if xs.len() >= 2 => self.instances.contains_key(&(ctid, super::classes::HeadKey::Pair)),
             Val::Neutral(Head::Meta(_), _) | Val::Error => false,
+            // A class's type with the clause declared on it (#176).
+            Val::Neutral(_, sp)
+                if matches!(sp.last(), Some(Elim::Field(c, i)) if self.class_defs.get(&self.g.cons[c.0 as usize].ty).is_some_and(|cd| cd.clauses.iter().any(|(t, k, _)| t == i && *k == ctid))) =>
+            {
+                true
+            }
             _ => {
                 // A type parameter: a dictionary in scope.
                 let tq = format!("{:?}", quote(&self.g, cx.lvl(), &t));
@@ -2022,6 +2037,7 @@ impl Elab {
     /// `l op r` through a class's function (M24), if `l`'s type has one.
     /// `lt` back if there is none.
     fn class_operator(&mut self, cx: &mut Cx, op: Op, lt: Tm, lty: &Val, r: &Expr, span: Span) -> Result<(Tm, Val), Tm> {
+        self.find_type_dicts(lty);
         if !self.has_class_operator(cx, op, lty) {
             return Err(lt);
         }
@@ -2031,6 +2047,17 @@ impl Elab {
             return Err(lt);
         }
         self.class_operator_tms(cx, op, lt, rt, lty, span).ok_or(Tm::Error)
+    }
+
+    /// A class's type read from a dictionary not found yet (`Seq.Elem s`
+    /// of a `Seq.uncons` just called): find the dictionaries the types
+    /// known so far choose, so its operators are known (#176).
+    pub(super) fn find_type_dicts(&mut self, ty: &Val) {
+        let on_meta = matches!(self.force(ty), Val::Neutral(Head::Meta(_), sp) if sp.iter().any(|e| matches!(e, Elim::Field(..))));
+        if on_meta && !self.inst_reqs.is_empty() {
+            self.solve_instances(false);
+            self.retry_waiting(false);
+        }
     }
 
     /// Whether `op` on `ty` is a class's function (M24).

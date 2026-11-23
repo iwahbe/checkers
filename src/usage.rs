@@ -514,7 +514,7 @@ impl U<'_> {
     fn go_once(&mut self, t: &Tm) -> Counts {
         match t {
             Tm::Lam(..) => self.lam_once(t),
-            Tm::App(..) => self.app(t, true),
+            Tm::App(..) if !head_is_meta(t) => self.app(t, true),
             _ => self.go(t),
         }
     }
