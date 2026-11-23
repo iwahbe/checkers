@@ -1,0 +1,7 @@
+$ checkers trust tests/tool/probes_counted.ck
+-- stdout
+<std>/prelude.ck  proved   63 by smt, 14 computed
+solver: Z3 5.3.3.0
+cache: 3 of 67 Z3 answers reused
+-- stderr
+-- exit 0
