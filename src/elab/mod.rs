@@ -2525,6 +2525,12 @@ fn touches(t: &Tm, g: &Globals, defs: &HashSet<DefId>, tys: &HashSet<TyId>) -> b
 
 /// Definitions sealed by another module (D54) that occur in `t`.
 pub fn collect_sealed(t: &Tm, g: &Globals, cur: &str, out: &mut Vec<DefId>) {
+    sealed_in(t, g, cur, out, &mut Vec::new());
+}
+
+/// `collect_sealed`, with the transparent instance functions whose bodies
+/// were looked into (each once).
+fn sealed_in(t: &Tm, g: &Globals, cur: &str, out: &mut Vec<DefId>, seen: &mut Vec<DefId>) {
     if let Tm::Def(d) = t {
         let info = &g.defs[d.0 as usize];
         if info.sealed && *info.module != *cur && !out.contains(d) {
@@ -2539,11 +2545,18 @@ pub fn collect_sealed(t: &Tm, g: &Globals, cur: &str, out: &mut Vec<DefId>) {
                 let info = &g.defs[f.0 as usize];
                 if info.sealed && *info.module != *cur && !out.contains(f) {
                     out.push(*f);
+                } else if !info.sealed && *info.module != *cur {
+                    // A `transparent` one's body: what it calls of its
+                    // module may be sealed (#246).
+                    if let (Some(b), false) = (&info.body, seen.contains(f)) {
+                        seen.push(*f);
+                        sealed_in(b, g, cur, out, seen);
+                    }
                 }
             }
         }
     }
-    t.each_sub(|x, _| collect_sealed(x, g, cur, out));
+    t.each_sub(|x, _| sealed_in(x, g, cur, out, seen));
 }
 
 /// The levels of the locals `t` mentions (for termination, D150).
