@@ -293,6 +293,7 @@ pub struct InstReq {
 /// A dictionary found through a refinement alias (#226): the instance of
 /// the type the alias stands for, checked at the end of the module to
 /// give the alias's values wherever it returns the class's type.
+#[derive(Clone)]
 pub struct AliasDict {
     /// The unknown it was found for, if asked for by a use (not by an
     /// instance's context).
@@ -3166,15 +3167,15 @@ impl Elab {
 /// A class's function's binders, for a check at a refinement alias (#226):
 /// its class, which binder is its dictionary, which of the class's types
 /// each binder is (if one), and their number.
-struct MethodLayout {
-    class: TyId,
-    dict: usize,
+pub(super) struct MethodLayout {
+    pub class: TyId,
+    pub dict: usize,
     pos: Vec<Option<usize>>,
-    arity: usize,
+    pub arity: usize,
 }
 
 impl Elab {
-    fn method_layout(&self, f: DefId) -> Option<MethodLayout> {
+    pub(super) fn method_layout(&self, f: DefId) -> Option<MethodLayout> {
         let mut ty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[f.0 as usize].ty);
         let mut pos = Vec::new();
         let mut dict = None;
@@ -3516,20 +3517,36 @@ impl Elab {
     pub(super) fn alias_dict_obligations(&mut self) {
         let dicts = std::mem::take(&mut self.alias_dicts);
         let calls = std::mem::take(&mut self.class_calls);
+        let uses = std::mem::take(&mut self.class_value_uses);
+        let local_calls = std::mem::take(&mut self.class_local_calls);
         if dicts.is_empty() {
             return;
         }
-        // The calls whose dictionary is a request's.
-        let mut direct: HashMap<MetaId, (DefId, PendingPre)> = HashMap::new();
-        for c in calls {
-            let (h, spine) = c.call.spine();
-            let Tm::Def(f) = h else { continue };
-            let Some(lay) = self.method_layout(*f) else { continue };
-            if spine.len() < lay.arity {
-                continue;
+        // The calls whose dictionary is a request's: one, or each call of
+        // a local defined as the class's function (#252).
+        let mut direct: HashMap<MetaId, Vec<(DefId, PendingPre)>> = HashMap::new();
+        let calls = calls.into_iter().filter_map(|c| match c.call.spine() {
+            (Tm::Def(f), spine) => {
+                let lay = self.method_layout(*f)?;
+                match spine.get(lay.dict).map(|d| d.head()) {
+                    Some(Tm::Meta(m)) if spine.len() >= lay.arity => Some((*m, c)),
+                    _ => None,
+                }
             }
-            if let Tm::Meta(m) = spine[lay.dict].head() {
-                direct.insert(*m, (*f, c));
+            _ => None,
+        });
+        for (m, c) in calls.collect::<Vec<_>>().into_iter().chain(local_calls) {
+            if let Tm::Def(f) = c.call.head() {
+                direct.entry(m).or_default().push((*f, c));
+            }
+        }
+        // Its uses as a value: those not compared with an expected type
+        // are checked at any arguments, where they are.
+        let mut values: HashMap<MetaId, Vec<(DefId, Span)>> = HashMap::new();
+        for (m, f, span, _) in &uses {
+            let at = values.entry(*m).or_default();
+            if !uses.iter().any(|(n, _, s, checked)| n == m && s == span && *checked) && !at.contains(&(*f, *span)) {
+                at.push((*f, *span));
             }
         }
         let mut done = HashSet::new();
@@ -3540,24 +3557,26 @@ impl Elab {
             if !done.insert(key) {
                 continue;
             }
-            match ad.meta.and_then(|m| direct.get(&m)) {
-                Some((f, c)) => {
+            // Each call, and each use as a value (#252).
+            let cs = ad.meta.and_then(|m| direct.get(&m));
+            let used = ad.meta.is_some_and(|m| uses.iter().any(|u| u.0 == m));
+            if cs.is_some() || used {
+                for (f, c) in cs.into_iter().flatten() {
                     let (f, cx) = (*f, c.cx.clone());
                     let call = crate::core::zonk_metas(&self.g, cx.lvl(), &c.call);
-                    let span = c.span;
-                    self.alias_method_obligations(&ad, f, Some((&cx, &call, span)));
+                    self.alias_method_obligations(&ad, f, Some((&cx, &call, c.span)));
                 }
-                None => {
-                    let fs: Vec<DefId> = {
-                        let mut fs: Vec<DefId> =
-                            self.class_methods.iter().copied().filter(|f| self.method_layout(*f).is_some_and(|l| l.class == ad.class)).collect();
-                        fs.sort();
-                        fs
-                    };
-                    for f in fs {
-                        self.alias_method_obligations(&ad, f, None);
-                    }
+                for (f, span) in ad.meta.and_then(|m| values.get(&m)).into_iter().flatten() {
+                    let at = AliasDict { span: *span, ..ad.clone() };
+                    self.alias_method_obligations(&at, *f, None);
                 }
+                continue;
+            }
+            let mut fs: Vec<DefId> =
+                self.class_methods.iter().copied().filter(|f| self.method_layout(*f).is_some_and(|l| l.class == ad.class)).collect();
+            fs.sort();
+            for f in fs {
+                self.alias_method_obligations(&ad, f, None);
             }
         }
         self.in_spec = saved_spec;
