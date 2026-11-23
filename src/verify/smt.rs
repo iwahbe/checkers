@@ -680,6 +680,18 @@ impl<'a> Builder<'a> {
                                 // The sort of the type the dictionary is for.
                                 match self.resolve(env, n - 1 - l)? {
                                     Ent::Term(_, Sort::Data(_, sargs)) if !sargs.is_empty() => Ok(self.assoc_sort(c, i, sargs)),
+                                    // A dictionary Z3 can't see into (a class
+                                    // over a type constructor): named by the
+                                    // class's arguments, a type constructor
+                                    // by a sort of its own.
+                                    Ent::Term(_, Sort::Unin(..)) => {
+                                        let cn = args.len() - 1;
+                                        let mut ss = Vec::with_capacity(cn);
+                                        for a in &args[..cn] {
+                                            ss.push(self.class_arg_sort(env, a)?);
+                                        }
+                                        Ok(self.assoc_sort(c, i, ss))
+                                    }
                                     _ => out("a class's type at a dictionary it can't name"),
                                 }
                             }
@@ -739,10 +751,15 @@ impl<'a> Builder<'a> {
                     if self.is_type(&a) {
                         return out("a function of a type (a polymorphic function value)");
                     }
+                    // A parameter's sort names the types read from it (a
+                    // class's type at a dictionary parameter).
                     if m != Mult::Zero {
-                        ps.push(self.sort_of(&inner, &a)?);
+                        let s = self.sort_of(&inner, &a)?;
+                        ps.push(s.clone());
+                        inner.push(Ent::Term(String::new(), s));
+                    } else {
+                        inner.push(Ent::Opaque("parameter".into()));
                     }
-                    inner.push(Ent::Opaque("parameter".into()));
                     t = (*b).clone();
                 }
                 if ps.is_empty() {
@@ -763,6 +780,21 @@ impl<'a> Builder<'a> {
             },
             _ => out("an unsupported type"),
         }
+    }
+
+    /// The sort standing for a class's argument in its types' sorts: a
+    /// type's sort, or for a type constructor, a sort of its own.
+    fn class_arg_sort(&mut self, env: &[Ent], a: &Tm) -> Tx<Sort> {
+        if let Ok(s) = self.sort_of(env, a) {
+            return Ok(s);
+        }
+        let key = match self.ty_fun(env, a) {
+            Some(Ent::TyFun(t, ps)) => format!("tyfun#{t:?}{ps:?}"),
+            Some(Ent::TyVar(n)) => format!("tyvar#{n}"),
+            _ => return out("a class's type at a dictionary it can't name"),
+        };
+        self.sorts.insert(key.clone(), 0);
+        Ok(Sort::Unin(key, Vec::new()))
     }
 
     /// The sort of a type value under `env` and then `extra` (a
