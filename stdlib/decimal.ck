@@ -254,6 +254,12 @@ fn number m e neg -> d : m~Int, e~Int, neg~Bool, d~Decimal
 
 # ── What `render` writes reads back ──────────────────────────────────────────
 
+# A number with `-` before it reads as the number without it, negated.
+lemma parse_minus b : b~Bytes, len b > 0, b[0] == '-'
+    ensures Parsable.parse b Decimal Int == unsigned (array.slice b 1 (len b)) True
+    proof
+        have array.uncons_slice b
+
 # Reading what `render` writes gives the number back, and leaves what
 # follows if it can't continue a number: anything but a digit, `.`, `e` or
 # `E`.
@@ -272,10 +278,8 @@ export lemma parse_render n post : n~Decimal, post~Bytes,
             have array.uncons_slice b
             have array.slice_append b"-" (t ++ post) b""
             have utf8.encode (render n) ++ post == b
-            have b[0] == '-'
             have array.slice b 1 (len b) == t ++ post
-            have Seq.uncons b == Some ('-', t ++ post)
-            have Parsable.parse b Decimal Int == unsigned (t ++ post) True
+            have parse_minus b
         else
             have array.uncons_slice (t ++ post)
             have utf8.encode (render n) ++ post == t ++ post
