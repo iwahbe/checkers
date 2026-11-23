@@ -36,7 +36,7 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0112` | `when` without `using` and a scheduler |
 | `E0115` | `par` without a tuple of two or more |
 | `E0120` | `export` on an instance |
-| `E0121` | a class member with a body, or an instance member with a signature |
+| `E0121` | a class member with a body, or an instance's lemma with a statement |
 | `E0122` | a keyword where a name belongs |
 | `E0123` | `ghost`, `comptime`, or `own` other than on a function type's parameter, written inside a type |
 | `E0124` | a class's type with parameters (`type Elem b`) |
@@ -127,12 +127,13 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0362` | a class function without a type for each parameter and its result |
 | `E0363` | an instance member the class doesn't have |
 | `E0364` | an instance missing one of the class's functions, or a type the class gives no default for |
-| `E0365` | an instance member with other parameters than the class's |
+| `E0365` | an instance member with other parameters than the class's, or a signature of its own whose types aren't the class's, up to refinement |
 | `E0366` | `main`'s signature isn't `args~List String, sys~System, code~ExitCode` |
 | `E0367` | a recursive type has no values: every constructor needs a value of the type |
 | `E0368` | a function or lemma of a class of several parameters whose parameters' types don't mention one of them, and which doesn't take it as a `ghost Type` parameter |
 | `E0369` | a class's function or lemma with a parameter, or a result, named like the class's parameter (except a parameter of type `ghost Type`, which is the class's parameter passed explicitly) |
 | `E0370` | a constraint on a class's type that isn't a clause of the type itself (`Ord Item`) or a predicate on one named value of it (`u~Unit, …`) |
+| `E0371` | an instance function's own signature that doesn't refine the class's: a precondition the class's don't imply, or a postcondition of the class's it doesn't promise |
 
 ## Usage: resources and `ghost`
 

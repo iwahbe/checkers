@@ -1896,9 +1896,14 @@ impl Elab {
             let Some(Sym::Def(did)) = id else { continue };
             self.g.fuel.set(DEFAULT_FUEL);
             self.sig_inst = self.sig_inst_of(k);
+            // An instance's function whose signature doesn't have the
+            // class's shape (#225): the class's type.
+            let mut class_ty = None;
             let sig = match &d.kind {
                 DeclKind::Fn { name, params, result, constraints, partial, decreasing, body } => {
+                    let diags_before = self.diags.len();
                     let mut sig = self.signature(params, result.as_ref(), constraints);
+                    let sig_failed = self.diags.len() > diags_before;
                     if name.name == "main" && d.export != Export::No && self.root.as_deref() == Some(self.cur.as_str()) {
                         self.check_main(&sig, name.span);
                     }
@@ -1980,6 +1985,10 @@ impl Elab {
                             ..Default::default()
                         },
                     );
+                    if self.inst_refines.contains_key(&k) {
+                        self.refined_inst_fns.insert(*did);
+                        class_ty = self.check_inst_refines(k, d, &sig, sig_failed);
+                    }
                     sig
                 }
                 DeclKind::Lemma { name, params, constraints, decreasing, .. } => {
@@ -2011,7 +2020,7 @@ impl Elab {
                 }
                 _ => continue,
             };
-            let ty = Self::pi_of(&sig.binders, sig.result.clone());
+            let ty = class_ty.take().unwrap_or_else(|| Self::pi_of(&sig.binders, sig.result.clone()));
             self.g.defs[did.0 as usize].ty = ty;
             if !sig.comptime.is_empty() {
                 let (what, bad) = match &d.kind {
@@ -2136,6 +2145,11 @@ impl Elab {
                 }
                 _ => {}
             }
+        }
+        // Once every body in the module is checked, every dictionary its
+        // instances build is known (#225).
+        if checks {
+            self.class_call_obligations();
         }
         self.resolve_insts();
     }

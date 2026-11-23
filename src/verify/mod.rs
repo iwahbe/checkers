@@ -975,6 +975,8 @@ fn describe(e: &Elab, o: &Obligation) -> String {
         ObKind::Index => format!("index in bounds: {}", o.text),
         ObKind::Lemma { name } => format!("lemma `{name}`: {}", o.text),
         ObKind::ClassType { name, given } => format!("every `{given}` satisfies `{name}`: {}", o.text),
+        ObKind::Refines { class, member, pre: true, .. } => format!("`{member}` requires no more than class `{class}`: {}", o.text),
+        ObKind::Refines { class, member, pre: false, .. } => format!("`{member}` promises what class `{class}` does: {}", o.text),
         ObKind::Auto => format!("auto: {}", o.text),
         ObKind::Have => format!("have {}", o.text),
         ObKind::Uncovered { case, binding: false } => format!("`match` needs no arm for {case}: it can't occur"),
@@ -1096,6 +1098,16 @@ fn headline(o: &Obligation) -> (String, String, String) {
             format!("`{}` is `{given}` here", name.rsplit('.').next().unwrap_or(name)),
             format!("give `{}` a type whose values all satisfy it", name.rsplit('.').next().unwrap_or(name)),
         ),
+        ObKind::Refines { class, member, pre: true, .. } => (
+            format!("`{member}` requires `{}`, which class `{class}` doesn't", o.text),
+            "not implied by the class's preconditions".into(),
+            format!("a call through class `{class}` needn't establish it: remove it, or check it in the body"),
+        ),
+        ObKind::Refines { class, member, pre: false, .. } => (
+            format!("`{member}` doesn't promise `{}`, which class `{class}` does", o.text),
+            format!("`{}` doesn't follow from this signature", o.text),
+            format!("promise at least what class `{class}` does: add `{}` to this signature, or a condition implying it", o.text),
+        ),
         ObKind::Auto => (
             format!("`auto` cannot prove `{}`", o.text),
             "the goal here".into(),
@@ -1147,8 +1159,15 @@ fn merge_uncovered(mut d: Diagnostic, cases: &[String]) -> Diagnostic {
 
 fn failed(e: &Elab, o: &Obligation, model: Option<String>) -> Diagnostic {
     let (msg, label, help) = headline(o);
-    let code = if matches!(o.kind, ObKind::Uncovered { .. }) { "E0240" } else { "E0450" };
+    let code = match o.kind {
+        ObKind::Uncovered { .. } => "E0240",
+        ObKind::Refines { .. } => "E0371",
+        _ => "E0450",
+    };
     let mut d = Diagnostic::error(code, msg, o.span).with_label(label);
+    if let ObKind::Refines { class, declared, .. } = &o.kind {
+        d = d.with_note(format!("class `{class}` declares `{declared}`"));
+    }
     if let ObKind::Weaken { .. } = &o.kind {
         d = d.with_note(format!("it needs `{}`", o.text));
     }

@@ -9,6 +9,7 @@ pub mod inline;
 pub mod ir;
 pub mod lower;
 pub mod rc;
+pub mod spec;
 pub mod tailrec;
 
 use crate::core::{DefId, Globals};
