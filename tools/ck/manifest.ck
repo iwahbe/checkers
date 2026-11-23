@@ -8,7 +8,7 @@ import std.string
 import std.bytes
 import std.char
 import std.list (contains)
-import std.parse
+import std.parse (Parsable)
 
 export record Version
     major~Nat
@@ -44,13 +44,13 @@ export record Problem
 
 # ── Versions ─────────────────────────────────────────────────────────────────
 
-# A number and a `.` at the front of `b`: the number and what follows the
-# dot.
+# A number that isn't negative and a `.` at the front of `b`: the number
+# and what follows the dot.
 fn part b -> r : b~Bytes, r~Option (Nat, Bytes)
-    match parse.natural b
+    match Parsable.parse b Int Int
         Ok (n, rest) ->
             match rest
-                c :: after -> if c == '.' then Some (n, after) else None
+                c :: after -> if n >= 0 and c == '.' then Some (n, after) else None
                 []         -> None
         Err _        -> None
 
@@ -62,8 +62,8 @@ export fn parse_version s -> r : s~String, r~Option Version
             match part b
                 None        -> None
                 Some (y, c) ->
-                    match parse.natural c
-                        Ok (z, rest) -> if len rest == 0 then Some (Version x y z) else None
+                    match Parsable.parse c Int Int
+                        Ok (z, rest) -> if z >= 0 and len rest == 0 then Some (Version x y z) else None
                         Err _        -> None
 
 export fn show v -> s : v~Version, s~String
