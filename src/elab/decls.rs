@@ -117,6 +117,17 @@ impl Elab {
         self.check_termination();
         // A transparent function's private helpers are visible to the prover
         // too, or its body would say nothing (D54): close the set over calls.
+        // An exported function it calls is not a helper: its signature is its
+        // interface, so it stays sealed (#244).
+        let exported: HashSet<DefId> = m
+            .decls
+            .iter()
+            .zip(&ids)
+            .filter_map(|(d, id)| match (&d.kind, id) {
+                (DeclKind::Fn { .. }, Some(Sym::Def(did))) if d.export == Export::Yes => Some(*did),
+                _ => None,
+            })
+            .collect();
         let mut stack: Vec<DefId> = self.transparent.iter().copied().filter(|d| *self.g.defs[d.0 as usize].module == *name).collect();
         while let Some(d) = stack.pop() {
             let mut used = Vec::new();
@@ -125,7 +136,7 @@ impl Elab {
             }
             for u in used {
                 let info = &self.g.defs[u.0 as usize];
-                if *info.module == *name && info.body.is_some() && !info.opaque && self.transparent.insert(u) {
+                if *info.module == *name && info.body.is_some() && !info.opaque && !exported.contains(&u) && self.transparent.insert(u) {
                     stack.push(u);
                 }
             }
