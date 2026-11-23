@@ -17,7 +17,6 @@ module std.json
 import std.decimal (Decimal)          # sealed: exact decimal numbers, read and rendered
 import std.utf8                       # sealed: decode_at, encode, and their lemmas
 import std.array
-import std.bytes                      # sealed: matches_at
 import std.string
 import std.char
 import std.list (keys, unique, contains, reverse, join, map, max_of)   # `keys` is exported transparent
@@ -142,21 +141,21 @@ export fn tokenize src -> r : src~Bytes, r~Tokens, inside r (len src)
     lex src (len src) 0
 
 # The tokens of `xs`, the last `len xs` bytes of `total`, inside `depth`
-# arrays and objects.
+# arrays and objects. Whitespace between them is skipped.
 fn lex xs total depth -> r : xs~Bytes, total~Nat, len xs <= total, depth~Nat, r~Tokens, inside r total
     decreasing len xs
-    let ys = skip_ws xs
-    have suffix_size ys xs
-    match ys
-        []     -> End
-        b :: _ ->
-            let at = total - len ys
-            if (b == '[' or b == '{') and depth >= MAX_DEPTH
+    match xs
+        []        -> End
+        b :: rest ->
+            let at = total - len xs
+            if is_ws b
+                lex rest total depth
+            else if (b == '[' or b == '{') and depth >= MAX_DEPTH
                 Stop at at TooDeep
             else
-                match read_token ys
-                    Err e        -> Stop at (total - e.left) e.kind
-                    Ok (t, rest) -> More (Located at t) (lex rest total (nested depth t))
+                match read_token xs
+                    Err e         -> Stop at (total - e.left) e.kind
+                    Ok (t, after) -> More (Located at t) (lex after total (nested depth t))
 
 # How deeply the token after `t` is nested.
 fn nested depth t -> d : depth~Nat, t~JsonToken, d~Nat
@@ -169,39 +168,6 @@ fn nested depth t -> d : depth~Nat, t~JsonToken, d~Nat
 
 fn is_ws b : b~U8
     b == ' ' or b == '\t' or b == '\n' or b == '\r'
-
-# `xs` after the whitespace at its front.
-fn skip_ws xs -> r : xs~Bytes, r~Bytes, suffix r xs
-    let i = ws_end xs 0
-    if i == 0
-        have suffix_refl xs
-        xs
-    else
-        rest_from xs i
-
-# Where the whitespace from `i` ends.
-fn ws_end xs i -> j : xs~Bytes, i~Nat, i <= len xs, j~Nat, i <= j, j <= len xs
-    decreasing len xs - i
-    if i < len xs and is_ws xs[i] then ws_end xs (i + 1) else i
-
-# `xs` from byte `i` on: what is left after reading `i` bytes.
-fn rest_from xs i -> r : xs~Bytes, i~Nat, i <= len xs, r~Bytes, suffix r xs, len r + i == len xs
-    have drop_suffix xs i
-    array.slice xs i (len xs)
-
-# What is left after `k` bytes of `xs` is a suffix of it.
-lemma drop_suffix xs k : xs~Bytes, k~Nat, k <= len xs
-    ensures suffix (array.slice xs k (len xs)) xs
-    proof
-        let n = len xs
-        if k == 0
-            have array.slice_append b"" xs b""
-            have suffix_refl xs
-        else
-            have array.uncons_slice xs
-            have array.slice_join xs 1 k n
-            have array.slice_append (array.slice xs 1 k) (array.slice xs k n) b""
-            have drop_suffix (array.slice xs 1 n) (k - 1)
 
 # One token from the front of `xs`.
 fn read_token xs -> r : xs~Bytes, r~Result (JsonToken, Bytes) LexError, consumed r xs, fails_within r xs
@@ -221,84 +187,101 @@ fn read_token xs -> r : xs~Bytes, r~Result (JsonToken, Bytes) LexError, consumed
             else if b == ','
                 Ok (ValueSeparator, rest)
             else if b == '"'
-                string_token xs
-            else if b == 'n'
-                name xs b"null" NullToken
-            else if b == 't'
-                name xs b"true" TrueToken
-            else if b == 'f'
-                name xs b"false" FalseToken
+                match chars rest []
+                    Ok (s, after) ->
+                        have suffix_size after rest
+                        Ok (StringToken s, after)
+                    Err e         -> Err e
+            else if b == 'n' or b == 't' or b == 'f'
+                name xs
             else
                 match Parsable.parse xs Decimal Int
                     Ok (n, after) -> Ok (NumberToken n, after)
                     Err _         -> Err (LexError (len xs) (UnexpectedByte b))
 
-# The name `word`, read as `t`.
-fn name xs word t -> r : xs~Bytes, len xs > 0, word~Bytes, len word > 0, t~JsonToken,
-                         r~Result (JsonToken, Bytes) LexError, consumed r xs, fails_within r xs
-    if bytes.matches_at xs 0 word           # exported postcondition: len word <= len xs
-        Ok (t, rest_from xs (len word))
-    else
-        Err (LexError (len xs) (UnexpectedByte xs[0]))
+# `null`, `true` or `false`.
+fn name xs -> r : xs~Bytes, r~Result (JsonToken, Bytes) LexError, consumed r xs, fails_within r xs
+    match xs
+        'n' :: 'u' :: 'l' :: 'l' :: rest        -> Ok (NullToken, rest)
+        't' :: 'r' :: 'u' :: 'e' :: rest        -> Ok (TrueToken, rest)
+        'f' :: 'a' :: 'l' :: 's' :: 'e' :: rest -> Ok (FalseToken, rest)
+        b :: _                                  -> Err (LexError (len xs) (UnexpectedByte b))
+        []                                      -> Err (LexError 0 UnexpectedEnd)
 
 # ── Strings ──────────────────────────────────────────────────────────────────
 
-# A string, from its opening quote to its closing one.
-fn string_token xs -> r : xs~Bytes, len xs > 0, r~Result (JsonToken, Bytes) LexError, consumed r xs,
-                          fails_within r xs
-    match chars xs 1 []
-        Ok (s, stop) -> Ok (StringToken s, rest_from xs stop)
-        Err e        -> Err e
+# A string's characters after those in `acc` (reversed), up to and past its
+# closing quote.
+fn chars xs acc -> r : xs~Bytes, acc~List Char, r~Result (String, Bytes) LexError, consumed r xs,
+                       fails_within r xs
+    match xs
+        []        -> Err (LexError 0 UnexpectedEnd)
+        b :: rest ->
+            if b == '"'
+                Ok (string.from_chars (reverse acc), rest)
+            else if b == '\\'
+                match escape rest
+                    Err e         -> Err e
+                    Ok (c, after) ->
+                        match chars after (c :: acc)
+                            Err e        -> Err e
+                            Ok (s, more) ->
+                                have suffix_trans more after rest
+                                have suffix_size more after
+                                Ok (s, more)
+            else if b < 0x20
+                Err (LexError (len xs) ControlInString)
+            else
+                match utf8.decode_at xs 0
+                    Some (c, stop) ->
+                        let after = skip xs stop
+                        match chars after (c :: acc)
+                            Err e        -> Err e
+                            Ok (s, more) ->
+                                have suffix_trans more after xs
+                                have suffix_size more after
+                                Ok (s, more)
+                    None           -> Err (LexError (len xs) BadUtf8)
 
-# The characters from `k`, after those in `acc` (reversed), and where the
-# string ends: just past its closing quote.
-fn chars xs k acc -> r : xs~Bytes, k~Nat, 0 < k, k <= len xs, acc~List Char,
-                         r~Result (String, (stop~Nat, k < stop, stop <= len xs)) LexError, fails_within r xs
-    decreasing len xs - k
-    if k == len xs
-        Err (LexError 0 UnexpectedEnd)
-    else
-        let b = xs[k]
-        if b == '"'
-            Ok (string.from_chars (reverse acc), k + 1)
-        else if b == '\\'
-            match escape xs (k + 1)
-                Err e         -> Err e
-                Ok (c, after) -> chars xs after (c :: acc)
-        else if b < 0x20
-            Err (LexError (len xs - k) ControlInString)
-        else
-            match utf8.decode_at xs k           # k < stop: always advances
-                Some (c, stop) -> chars xs stop (c :: acc)
-                None           -> Err (LexError (len xs - k) BadUtf8)
+# `xs` without its first `k` bytes, `0 < k <= len xs`.
+fn skip xs k -> r : xs~Bytes, k~Nat, 0 < k, k <= len xs, r~Bytes, suffix r xs, len r + k == len xs
+    match xs
+        _ :: rest ->
+            if k == 1
+                rest
+            else
+                skip rest (k - 1)
+        []        -> xs
 
-# The character an escape at `i`, after `\`, stands for, and where it ends.
-fn escape xs i -> r : xs~Bytes, i~Nat, i <= len xs, r~Result (Char, (stop~Nat, i < stop, stop <= len xs)) LexError,
-                      fails_within r xs
-    if i == len xs
-        Err (LexError 0 BadEscape)
-    else
-        let b = xs[i]
-        if b == '"'
-            Ok (c'"', i + 1)
-        else if b == '\\'
-            Ok (c'\\', i + 1)
-        else if b == '/'
-            Ok (c'/', i + 1)
-        else if b == 'b'
-            Ok (c'\x08', i + 1)
-        else if b == 'f'
-            Ok (c'\x0c', i + 1)
-        else if b == 'n'
-            Ok (c'\n', i + 1)
-        else if b == 'r'
-            Ok (c'\r', i + 1)
-        else if b == 't'
-            Ok (c'\t', i + 1)
-        else if b == 'u'
-            unicode_escape xs (i + 1)
-        else
-            Err (LexError (len xs - i) BadEscape)
+# The character an escape after `\` stands for.
+fn escape xs -> r : xs~Bytes, r~Result (Char, Bytes) LexError, consumed r xs, fails_within r xs
+    match xs
+        b :: rest ->
+            if b == '"'
+                Ok (c'"', rest)
+            else if b == '\\'
+                Ok (c'\\', rest)
+            else if b == '/'
+                Ok (c'/', rest)
+            else if b == 'b'
+                Ok (c'\x08', rest)
+            else if b == 'f'
+                Ok (c'\x0c', rest)
+            else if b == 'n'
+                Ok (c'\n', rest)
+            else if b == 'r'
+                Ok (c'\r', rest)
+            else if b == 't'
+                Ok (c'\t', rest)
+            else if b == 'u'
+                match unicode_escape rest
+                    Err e         -> Err e
+                    Ok (c, after) ->
+                        have suffix_size after rest
+                        Ok (c, after)
+            else
+                Err (LexError (len xs) BadEscape)
+        []        -> Err (LexError 0 BadEscape)
 
 type Hex16 = n~Nat, n < 0x10000
 
@@ -310,36 +293,39 @@ fn hex_digit b : b~U8
 fn hex_value b -> n : b~U8, hex_digit b, n~Nat, n < 16
     if b <= '9' then b - '0' else if b <= 'F' then b - 'A' + 10 else b - 'a' + 10
 
-# Four hex digits at `i`.
-fn hex4 xs i -> r : xs~Bytes, i~Nat, i <= len xs, r~Result Hex16 LexError, fails_within r xs,
-                    match r
-                        Ok _  -> i + 4 <= len xs
-                        Err _ -> True
-    if i + 4 <= len xs and hex_digit xs[i] and hex_digit xs[i + 1]
-                       and hex_digit xs[i + 2] and hex_digit xs[i + 3]
-        Ok (hex_value xs[i] * 4096 + hex_value xs[i + 1] * 256
-            + hex_value xs[i + 2] * 16 + hex_value xs[i + 3])         # < 0x10000: each digit < 16
-    else
-        Err (LexError (len xs - i) BadEscape)
-
-# The character after `\u` at `i`: four hex digits, or a surrogate pair.
-fn unicode_escape xs i -> r : xs~Bytes, i~Nat, i <= len xs, r~Result (Char, (stop~Nat, i < stop, stop <= len xs)) LexError,
-                              fails_within r xs
-    let hi = try hex4 xs i
-    let j = i + 4
-    if 0xD800 <= hi and hi < 0xDC00                 # high surrogate: needs a pair
-        if bytes.matches_at xs j b"\\u"
-            let lo = try hex4 xs (j + 2)
-            if 0xDC00 <= lo and lo < 0xE000
-                Ok (char.from_surrogates hi lo, j + 6)
+# Four hex digits.
+fn hex4 xs -> r : xs~Bytes, r~Result (Hex16, Bytes) LexError, consumed r xs, fails_within r xs
+    match xs
+        a :: b :: c :: d :: _ ->
+            if hex_digit a and hex_digit b and hex_digit c and hex_digit d
+                Ok (hex_value a * 4096 + hex_value b * 256 + hex_value c * 16 + hex_value d, skip xs 4)  # < 0x10000: each digit < 16
             else
-                Err (LexError (len xs - j) BadEscape)
-        else
-            Err (LexError (len xs - j) BadEscape)
-    else if 0xDC00 <= hi and hi < 0xE000            # lone low surrogate
-        Err (LexError (len xs - i) BadEscape)
-    else
-        Ok (char.from_scalar hi, j)                 # requires: not a surrogate — proven above
+                Err (LexError (len xs) BadEscape)
+        _                     -> Err (LexError (len xs) BadEscape)
+
+# The character after `\u`: four hex digits, or a surrogate pair of them.
+fn unicode_escape xs -> r : xs~Bytes, r~Result (Char, Bytes) LexError, consumed r xs, fails_within r xs
+    match hex4 xs
+        Err e          -> Err e
+        Ok (hi, after) ->
+            if 0xD800 <= hi and hi < 0xDC00                 # high surrogate: needs a pair
+                match after
+                    '\\' :: 'u' :: more ->
+                        have suffix_refl more
+                        match hex4 more
+                            Err e         -> Err e
+                            Ok (lo, rest) ->
+                                if 0xDC00 <= lo and lo < 0xE000
+                                    have suffix_trans rest more xs
+                                    have suffix_size rest more
+                                    Ok (char.from_surrogates hi lo, rest)
+                                else
+                                    Err (LexError (len after) BadEscape)
+                    _                   -> Err (LexError (len after) BadEscape)
+            else if 0xDC00 <= hi and hi < 0xE000            # lone low surrogate
+                Err (LexError (len xs) BadEscape)
+            else
+                Ok (char.from_scalar hi, after)             # requires: not a surrogate — proven above
 
 # ── Values from tokens ───────────────────────────────────────────────────────
 
@@ -644,15 +630,11 @@ lemma lex_value v post total d : v~Json, post~Bytes, delimits post, total~Nat, d
     proof
         have render_first v
         match v
-            Null       ->
-                have rest_from_append b"null" post
-                have lex_step xs NullToken post total d
+            Null       -> have lex_step xs NullToken post total d
             Bool b     ->
                 if b
-                    have rest_from_append b"true" post
                     have lex_step xs TrueToken post total d
                 else
-                    have rest_from_append b"false" post
                     have lex_step xs FalseToken post total d
             Num n      ->
                 have decimal.render_starts n
@@ -690,10 +672,7 @@ lemma lex_step xs t rest total d : xs~Bytes, len xs > 0, not (is_ws xs[0]), tota
                                    t~JsonToken, rest~Bytes, read_token xs == Ok (t, rest)
     ensures lex xs total d == More (Located (total - len xs) t) (lex rest total (nested d t))
     proof
-        have ws_end xs 0 == 0
-        have skip_ws xs == xs
         have array.uncons_slice xs
-        have Seq.uncons (skip_ws xs) == Some (xs[0], array.slice xs 1 (len xs))
 
 # A number is read as its token.
 lemma read_number xs n rest : xs~Bytes, len xs > 0, xs[0] == '-' or (xs[0] >= '0' and xs[0] <= '9'), n~Decimal,
@@ -709,11 +688,13 @@ lemma uncons_one a rest : a~Bytes, len a == 1, rest~Bytes
         have array.uncons_slice (a ++ rest)
         have array.slice_append a rest b""
 
-# What is left after reading `pre` off `pre ++ post` is `post`.
-lemma rest_from_append pre post : pre~Bytes, post~Bytes
-    ensures rest_from (pre ++ post) (len pre) == post
+# Taking `len a` bytes off `a ++ b` leaves `b`.
+lemma skip_append a b : a~Bytes, len a > 0, b~Bytes
+    ensures skip (a ++ b) (len a) == b
     proof
-        have array.slice_append pre post b""
+        match a
+            []        -> auto
+            _ :: rest -> if len rest == 0 then auto else have skip_append rest b
 
 # A punctuation byte is read as its token, whatever follows.
 lemma lex_punct p t post total d : p~Bytes, len p == 1, t~JsonToken, post~Bytes, total~Nat, d~Nat,
@@ -796,6 +777,11 @@ lemma lex_fields fields post total d : fields~List (String, Json), post~Bytes, d
                         have lex after total d == More (Located e ValueSeparator) (lex zs total d)
                         have lex_fields rest post total d
                         have total - len zs == e + 1
+                        let at = total - len ys
+                        let c = at + len (utf8.encode (quote k))
+                        let more = fields_of rest (e + 1) (lex post total (d - 1))
+                        have lex after total d == More (Located e ValueSeparator) more
+                        have lex ys total d == More (Located at (StringToken k)) (More (Located c NameSeparator) (tokens_of x (c + 1) (More (Located e ValueSeparator) more)))
 
 # One member, `"k":x`, before what follows it.
 lemma lex_member k x after total d : k~String, x~Json, after~Bytes, delimits after, total~Nat, d~Nat,
@@ -855,20 +841,23 @@ lemma hex4_bytes n : n~Nat, n < 0x10000
         have string.from_chars_nil
 
 # `hex4` reads back what `hex4_string` writes.
-lemma hex4_round n pre post : n~Nat, n < 0x10000, pre~Bytes, post~Bytes
-    let xs = pre ++ utf8.encode (hex4_string n) ++ post
-    ensures len (utf8.encode (hex4_string n)) == 4 and hex4 xs (len pre) == Ok n
+lemma hex4_round n post : n~Nat, n < 0x10000, post~Bytes
+    ensures len (utf8.encode (hex4_string n)) == 4 and hex4 (utf8.encode (hex4_string n) ++ post) == Ok (n, post)
     proof
         have hex4_bytes n
         have hex_char_round (n / 4096)
         have hex_char_round (n / 256 % 16)
         have hex_char_round (n / 16 % 16)
         have hex_char_round (n % 16)
+        let xs = utf8.encode (hex4_string n) ++ post
+        have skip_append (utf8.encode (hex4_string n)) post
+        have skip xs 4 == post
+        have hex_digit xs[0] and hex_digit xs[1] and hex_digit xs[2] and hex_digit xs[3]
+        have hex_value xs[0] * 4096 + hex_value xs[1] * 256 + hex_value xs[2] * 16 + hex_value xs[3] == n
 
 # One character, escaped, is read back as itself, whatever follows.
-lemma char_step c pre post acc : c~Char, pre~Bytes, len pre > 0, post~Bytes, acc~List Char
-    let xs = pre ++ utf8.encode (escape_char c) ++ post
-    ensures chars xs (len pre) acc == chars xs (len pre + len (utf8.encode (escape_char c))) (c :: acc)
+lemma char_step c post acc : c~Char, post~Bytes, acc~List Char
+    ensures chars (utf8.encode (escape_char c) ++ post) acc == chars post (c :: acc)
     proof
         match c
             c'"'  -> auto
@@ -877,25 +866,23 @@ lemma char_step c pre post acc : c~Char, pre~Bytes, len pre > 0, post~Bytes, acc
             c'\r' -> auto
             c'\t' -> auto
             _ if char.code c < 0x20 ->
-                have hex4_round (char.code c) (pre ++ b"\\u") post
+                have hex4_round (char.code c) post
                 auto
             _     ->
                 have string.from_char_bytes c
-                have utf8.decode_from_char c pre post
-                auto
+                have utf8.decode_from_char c b"" post
+                have skip_append (utf8.encode (escape_char c)) post
 
 # Induction over the characters; the recursive `have` is the induction hypothesis.
-lemma chars_render cs acc pre post : cs~List Char, acc~List Char, pre~Bytes, len pre > 0, post~Bytes
-    let xs = pre ++ utf8.encode (escaped cs ++ "\"") ++ post
-    ensures chars xs (len pre) acc == Ok (string.from_chars (reverse acc ++ cs), len xs - len post)
+lemma chars_render cs acc post : cs~List Char, acc~List Char, post~Bytes
+    ensures chars (utf8.encode (escaped cs ++ "\"") ++ post) acc == Ok (string.from_chars (reverse acc ++ cs), post)
     proof
         match cs
             []        -> have list.append_nil (reverse acc)
             c :: rest ->
-                let e = utf8.encode (escape_char c)
                 have escaped cs == escape_char c ++ escaped rest
-                have char_step c pre (utf8.encode (escaped rest ++ "\"") ++ post) acc
-                have chars_render rest (c :: acc) (pre ++ e) post
+                have char_step c (utf8.encode (escaped rest ++ "\"") ++ post) acc
+                have chars_render rest (c :: acc) post
                 have list.reverse_cons_append acc c rest
 
 # A quoted string is read back as its token, whatever follows it.
@@ -903,10 +890,12 @@ lemma string_token_render s post : s~String, post~Bytes
     let xs = utf8.encode (quote s) ++ post
     ensures read_token xs == Ok (StringToken s, post)
     proof
+        let body = utf8.encode (escaped (string.chars s) ++ "\"") ++ post
         have string.concat_map_chars escape_char s
         have string.from_chars_chars s
-        have chars_render (string.chars s) [] b"\"" post
-        have rest_from_append (utf8.encode (quote s)) post
+        have xs == b"\"" ++ body
+        have uncons_one b"\"" body
+        have chars_render (string.chars s) [] post
 
 # ── Objects' text ────────────────────────────────────────────────────────────
 
