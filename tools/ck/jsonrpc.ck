@@ -9,28 +9,21 @@ import std.decimal
 import std.string
 import std.bytes
 import std.list (keys, unique)
+import ck.text
 import std.list
 
 # ── Numbers ──────────────────────────────────────────────────────────────────
 
-fn digit_value b -> n : b~U8, b >= '0', b <= '9', n~Nat
-    b - '0'
-
-# The number written in `b` from `i` on, if it is only digits.
-partial fn digits b i acc -> r : b~Bytes, i~Nat, acc~Nat, r~Option Nat
-    if i >= len b
-        Some acc
-    else if b[i] >= '0' and b[i] <= '9'
-        digits b (i + 1) (acc * 10 + digit_value b[i])
-    else
-        None
+# The number that is all of `b`, if `b` is one or more digits.
+fn whole b -> r : b~Bytes, r~Option Nat
+    match text.natural b
+        Some (n, rest) -> if len rest == 0 then Some n else None
+        None           -> None
 
 # A whole number, as a `Nat`.
-export partial fn nat_of j -> r : j~Json, r~Option Nat
+export fn nat_of j -> r : j~Json, r~Option Nat
     match j
-        Num d ->
-            let b = string.bytes (decimal.render d)
-            if len b == 0 then None else digits b 0 0
+        Num d -> whole (string.bytes (decimal.render d))
         _     -> None
 
 export fn num n -> j : n~Nat, j~Json
@@ -89,28 +82,27 @@ fn unique_of ps -> r : ps~List (String, Json), r~(fs~List (String, Json), unique
 fn starts_with b prefix : b~Bytes, prefix~Bytes
     bytes.matches_at b 0 prefix
 
-partial fn trimmed_end b -> r : b~Bytes, r~Bytes
+fn trimmed_end b -> r : b~Bytes, r~Bytes
+    decreasing len b
     if len b > 0 and (b[len b - 1] == '\r' or b[len b - 1] == ' ')
         trimmed_end (bytes.slice b 0 (len b - 1))
     else
         b
 
 # The `Content-Length` of a header line, if it is that header.
-partial fn content_length line -> r : line~String, r~Option Nat
+fn content_length line -> r : line~String, r~Option Nat
     let b = trimmed_end (string.bytes line)
     let name = b"Content-Length:"
     if starts_with b name
-        digits (skip_spaces b (len name)) 0 0
+        whole (skip_spaces (bytes.slice b (len name) (len b)))
     else
         None
 
-partial fn skip_spaces b i -> r : b~Bytes, i~Nat, r~Bytes
-    if i < len b and b[i] == ' '
-        skip_spaces b (i + 1)
-    else if i <= len b
-        bytes.slice b i (len b)
-    else
-        b""
+# `b` without the spaces at its start.
+fn skip_spaces b -> r : b~Bytes, r~Bytes
+    match b
+        x :: rest -> if x == ' ' then skip_spaces rest else b
+        []        -> b
 
 # What reading a message gave.
 export enum Incoming
