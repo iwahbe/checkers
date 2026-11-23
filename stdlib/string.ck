@@ -182,14 +182,20 @@ export enum IntOption
     Digits n : n~Nat   # at least `n` digits, zeros before them
 
 # A number in decimal, or as the options say: `display 255 [Hex, Digits 4]`
-# is `0x00ff`. Without options, `Parsable.parse` reads it back. `Nat`, `Char` and the fixed-width numbers show this way too.
+# is `0x00ff`. Without options, `Parsable.parse` reads it back, and a
+# number that isn't negative starts with a digit, and with `0` only when
+# it is `0`. `Nat`, `Char` and the fixed-width numbers show this way too.
 instance Display Int
     type Options = IntOption
     fn display n os -> s : n~Int, os~List IntOption, s~String,
-                           os == [] implies Parsable.parse s.bytes Int Int == Ok (n, b"")
+                           os == [] implies Parsable.parse s.bytes Int Int == Ok (n, b""),
+                           os == [] and n >= 0
+                           implies len s.bytes > 0 and char.is_digit s.bytes[0]
+                           and (s.bytes[0] == '0' implies s.bytes == b"0" and n == 0)
         let (base, plus, least) = int_options os 10 False 0
         let ds = digits (if n < 0 then -n else n) base
         have parse_shown n b""
+        have digits_first (if n < 0 then -n else n)
         let sign = if n < 0 then "-" else if plus then "+" else ""
         let pad = if len ds < least then zeros (least - len ds) else ""
         sign ++ base_prefix base ++ pad ++ ds
@@ -338,6 +344,18 @@ fn digits n base -> s : n~Nat, base~Nat, 2 <= base, base <= 36, s~String, len s.
         let c = digit (n % base)
         have digits_prefix a.bytes c.bytes 0 (len a.bytes)
         a ++ c
+
+# The decimal digits of `n` start with a digit, and with `0` only for `0`.
+lemma digits_first n : n~Nat
+    let r = (digits n 10).bytes
+    ensures char.is_digit r[0] and (r[0] == '0' implies r == b"0" and n == 0)
+    proof
+        let r = (digits n 10).bytes
+        have all_digits_at r 0 (len r) 0
+        if r[0] == '0'
+            have array.ext r b"0"
+        else
+            auto
 
 # The digit `d`: `0` to `9`, then `a` to `z`.
 fn digit d -> s : d~Nat, d < 36, s~String, len s.bytes == 1, d < 10 implies s.bytes[0] == '0' + d
