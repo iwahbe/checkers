@@ -49,6 +49,17 @@ fn sym(s: &str) -> String {
 }
 
 impl Sort {
+    /// Whether the uninterpreted sort named `n` occurs in this one.
+    fn mentions(&self, n: &str) -> bool {
+        match self {
+            Sort::Int | Sort::Bool | Sort::Str => false,
+            Sort::Seq(x) | Sort::Bag(x) => x.mentions(n),
+            Sort::Data(_, args) | Sort::Tuple(args) => args.iter().any(|a| a.mentions(n)),
+            Sort::Unin(m, args) => m == n || args.iter().any(|a| a.mentions(n)),
+            Sort::Fun(p, r) => p.mentions(n) || r.mentions(n),
+        }
+    }
+
     fn render(&self, e: &Elab) -> String {
         match self {
             Sort::Int => "Int".into(),
@@ -1812,6 +1823,13 @@ impl<'a> Builder<'a> {
                 }
             }
             Tm::Field(x, c, i) => {
+                // A field of a value built here (a known instance's
+                // dictionary): the value given for it.
+                if !matches!(self.e.g.cons[c.0 as usize].fields[*i].3, Tm::Pi(..)) {
+                    if let Some(a) = self.built_field(x, *c, *i) {
+                        return self.term(env, &a);
+                    }
+                }
                 let (xt, xs) = self.term(env, x)?;
                 // A string is its bytes (D58, #170).
                 if xs == Sort::Str {
@@ -1891,6 +1909,29 @@ impl<'a> Builder<'a> {
             .collect()
     }
 
+    /// The value given for field `i` of constructor `c` where `x` is that
+    /// constructor applied (`C p… f…`).
+    fn built_field(&self, x: &Tm, c: ConId, i: usize) -> Option<Tm> {
+        let np = self.e.g.arity_ty(self.e.g.cons[c.0 as usize].ty);
+        match x {
+            Tm::ConApp(c2, args) if *c2 == c => args.get(np + i).cloned(),
+            Tm::App(..) => {
+                let mut args = Vec::new();
+                let mut h = x;
+                while let Tm::App(f, a, _, _) = h {
+                    args.push(a);
+                    h = f;
+                }
+                args.reverse();
+                match h {
+                    Tm::Con(c2) if *c2 == c => args.get(np + i).map(|a| Tm::clone(a)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     fn con_app(&mut self, env: &[Ent], c: ConId, args: &[Tm]) -> Tx<(String, Sort)> {
         let wk = self.wk().clone();
         if Some(c) == wk.true_con {
@@ -1916,6 +1957,18 @@ impl<'a> Builder<'a> {
         };
         let Sort::Data(_, sargs) = &sort else { return out("a constructor of an abstract type") };
         let fs = self.con_fields(c, &self.sort_env(id, sargs))?;
+        // A class's type is a sort of its own in its dictionary's fields
+        // (`Seq.Elem s`), which a known type (`Int`) can't stand for: a
+        // dictionary whose functions use its class's types can't be built.
+        for k in 0..ci.len() {
+            if self.e.g.is_type_field(c, k) {
+                if let Sort::Unin(n, _) = self.type_field_sort(c, k, &self.sort_env(id, sargs)) {
+                    if fs.iter().any(|(_, s)| s.mentions(&n)) {
+                        return out("a dictionary whose functions use its class's types");
+                    }
+                }
+            }
+        }
         let mut ts = Vec::new();
         for (k, s) in &fs {
             let t = match s {
@@ -1952,6 +2005,17 @@ impl<'a> Builder<'a> {
                 _ => out("an application of a non-function"),
             },
             Tm::Lam(..) => self.apply_known(env, h, &args),
+            // A function from a value built here (a known instance's
+            // dictionary, `Seq.size` at `Seq (Array Int)`): that function
+            // applied, without building the value.
+            Tm::Field(x, c, i) if self.built_field(x, *c, *i).is_some() => {
+                let mut app = self.built_field(x, *c, *i).unwrap();
+                for (a, m) in args {
+                    let icit = if m == Mult::Zero { crate::core::Icit::Impl } else { crate::core::Icit::Expl };
+                    app = Tm::App(Rc::new(app), Rc::new(a), icit, m);
+                }
+                self.term(env, &app)
+            }
             Tm::Field(..) | Tm::Proj(..) | Tm::Case(..) | Tm::Let(..) => {
                 let (ft, s) = self.term(env, h)?;
                 self.select(env, &ft, &s, &args)
