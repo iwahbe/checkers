@@ -387,7 +387,7 @@ lemma more_digits_bytes b i j : b~Bytes, i~Nat, j~Nat, i <= j, j <= len b, strin
 
 # `x :: rest` on the bytes of `b` from `j` on: byte `j`, and the bytes
 # after it.
-lemma uncons_from b j : b~Bytes, j~Nat, j < len b
+export lemma uncons_from b j : b~Bytes, j~Nat, j < len b
     ensures Seq.uncons (array.slice b j (len b)) == Some (b[j], array.slice b (j + 1) (len b))
     proof
         have array.uncons_slice (array.slice b j (len b))
@@ -397,8 +397,8 @@ lemma uncons_from b j : b~Bytes, j~Nat, j < len b
 
 # Where digits from `i` to `k` stop at `k`, the digits from any `j` between
 # them end at `k`.
-lemma digits_end_at b i j k : b~Bytes, i~Nat, j~Nat, k~Nat, i <= j, j <= k, k <= len b, string.all_digits b i k,
-                              k == len b or not (char.is_digit b[k])
+export lemma digits_end_at b i j k : b~Bytes, i~Nat, j~Nat, k~Nat, i <= j, j <= k, k <= len b, string.all_digits b i k,
+                                     k == len b or not (char.is_digit b[k])
     ensures digits_end b j == k
     proof
         decreasing k - j

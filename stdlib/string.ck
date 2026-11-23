@@ -192,7 +192,7 @@ export fn decimal n -> s : n~Nat, s~String, len s.bytes > 0, all_digits s.bytes 
         a ++ c
 
 # The digit `d`, as a string of one byte.
-fn digit d -> s : d~Nat, d < 10, s~String, len s.bytes == 1, s.bytes[0] == '0' + d
+export fn digit d -> s : d~Nat, d < 10, s~String, len s.bytes == 1, s.bytes[0] == '0' + d
     if d < 5
         if d == 0 then "0" else if d == 1 then "1" else if d == 2 then "2" else if d == 3 then "3" else "4"
     else
