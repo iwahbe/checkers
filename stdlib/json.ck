@@ -726,6 +726,12 @@ lemma lex_items items post total d : items~List Json, post~Bytes, delimits post,
                         have lex_value x (b"]" ++ post) total d
                         have uncons_one b"]" post
                         have lex_punct b"]" EndArray post total d
+                        let at = total - len ys
+                        let e = at + width x
+                        have total - len (b"]" ++ post) == e
+                        have nested d EndArray == d - 1
+                        have lex (b"]" ++ post) total d == More (Located e EndArray) (lex post total (d - 1))
+                        have lex ys total d == tokens_of x at (More (Located e EndArray) (lex post total (d - 1)))
                     _  ->
                         let zs = utf8.encode (join "," (map render rest) ++ "]") ++ post
                         have join "," (map render items) == render x ++ "," ++ join "," (map render rest)
@@ -734,9 +740,14 @@ lemma lex_items items post total d : items~List Json, post~Bytes, delimits post,
                         have uncons_one b"," zs
                         have lex_punct b"," ValueSeparator zs total d
                         have lex_items rest post total d
-                        have total - len (b"," ++ zs) == total - len ys + width x
-                        have total - len zs == total - len ys + width x + 1
+                        let at = total - len ys
+                        let e = at + width x
+                        have total - len (b"," ++ zs) == e
+                        have total - len zs == e + 1
                         have nested d ValueSeparator == d
+                        let more = items_of rest (e + 1) (lex post total (d - 1))
+                        have lex (b"," ++ zs) total d == More (Located e ValueSeparator) more
+                        have lex ys total d == tokens_of x at (More (Located e ValueSeparator) more)
 
 # An object's members and `}`, inside an object at `d`.
 lemma lex_fields fields post total d : fields~List (String, Json), post~Bytes, delimits post, total~Nat, d~Nat, 0 < d,
