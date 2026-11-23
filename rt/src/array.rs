@@ -289,6 +289,20 @@ pub fn slice(a: W, i: usize, j: usize) -> W {
     r
 }
 
+/// Elements `i..` of `a` (`i < len a`), as `slice`, but a slice no one
+/// else refers to is moved forward in place instead of copied: the caller
+/// must then own `a` (`Seq`'s `uncons` calls the builtins using this
+/// through their wrappers, which do, as `set`'s).
+pub fn advance(a: W, i: usize) -> W {
+    let n = len(a);
+    if unique(a) && is_slice(a) && i < n {
+        set_slot(a, 0, (n - i) as u64);
+        set_slot(a, 1, unsafe { data(a).add(i * layout(a).width()) } as W);
+        return dup(a);
+    }
+    slice(a, i, n)
+}
+
 /// `a ++ b` (both borrowed): the narrowest layout holding both.
 pub fn concat(a: W, b: W) -> W {
     let (la, lb) = (layout(a), layout(b));
@@ -305,6 +319,46 @@ pub fn concat(a: W, b: W) -> W {
     let mut v = items(a);
     v.extend(items(b));
     from_items(la.join(lb), v)
+}
+
+/// `a ++ b`, `a` owned and `b` borrowed: when `a` is the only reference to
+/// its storage (not a slice, not `b`) and `b` has its layout, `b`'s elements
+/// are written after `a`'s in place, its memory grown if they don't fit;
+/// otherwise a new array, and `a` dropped.
+pub fn concat_own(a: W, b: W) -> W {
+    let l = layout(a);
+    if l != layout(b) || a == b || !unique(a) || is_slice(a) {
+        let r = concat(a, b);
+        drop_w(a);
+        return r;
+    }
+    let w = l.width();
+    let (n, m) = (len(a), len(b));
+    let old = size(a);
+    let Some(new) = (n + m).checked_mul(w).and_then(|b| b.checked_next_multiple_of(8)).and_then(|b| b.checked_add(HDR + 16)) else {
+        crate::fatal("out of memory")
+    };
+    let a = if new > old {
+        // The old layout is the one it was allocated with: its size is
+        // computed from its length, like `size`.
+        let p = unsafe { std::alloc::realloc(a as *mut u8, std::alloc::Layout::from_size_align(old, 8).unwrap(), new) };
+        if p.is_null() {
+            crate::fatal("out of memory");
+        }
+        p as W
+    } else {
+        a
+    };
+    if l == Words {
+        let (src, dst) = (data(b) as *const W, data(a) as *mut W);
+        for i in 0..m {
+            unsafe { *dst.add(n + i) = dup(*src.add(i)) };
+        }
+    } else {
+        unsafe { std::ptr::copy_nonoverlapping(data(b), data(a).add(n * w), m * w) };
+    }
+    set_slot(a, 0, (n + m) as u64);
+    a
 }
 
 /// `a` (borrowed) with element `i` (in bounds) replaced by `x` (borrowed).

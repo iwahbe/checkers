@@ -161,15 +161,24 @@ pub extern "C" fn ck_ne(a: W, b: W, owner: u64) -> W {
 
 #[no_mangle]
 pub extern "C" fn ck_concat(a: W, b: W) -> W {
-    if is_kind(a, K_BYTES) && is_kind(b, K_BYTES) {
-        let mut v = blob(a).to_vec();
-        v.extend_from_slice(blob(b));
-        return new_bytes(&v);
-    }
+    // Strings and bytes are arrays of `U8`: one allocation.
     if crate::array::is_array(a) {
         return crate::array::concat(a, b);
     }
     list_onto(list_items(a).into_iter().map(dup).collect(), dup(b))
+}
+
+/// `a ++ b` where this is `a`'s last use: `a` is owned (consumed), `b`
+/// borrowed. An array or string with no other reference is appended to in
+/// place.
+#[no_mangle]
+pub extern "C" fn ck_concat_own(a: W, b: W) -> W {
+    if crate::array::is_array(a) {
+        return crate::array::concat_own(a, b);
+    }
+    let r = ck_concat(a, b);
+    drop_w(a);
+    r
 }
 
 #[no_mangle]
