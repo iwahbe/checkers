@@ -1,7 +1,7 @@
 module parse_decimal
 
-# Numbers read from the front of bytes and of lists of bytes, and how many
-# bytes are left after each.
+# Numbers read from the front of bytes, lists of bytes and strings, and how
+# many tokens are left after each.
 
 import std.system (System, ExitCode)
 import std.terminal (Term)
@@ -16,8 +16,8 @@ fn shown r -> t : Seq s, r~Result (Decimal, s) DecimalError, t~String
         Err e        -> debug e
 
 fn both b term -> r : b~Bytes, term~Term, r~Unit
-    terminal.print_line (shown (Parsable.parse b Decimal)) term
-    terminal.print_line (shown (Parsable.parse (array.to_list b) Decimal)) term
+    terminal.print_line (shown (Parsable.parse b Decimal Int)) term
+    terminal.print_line (shown (Parsable.parse (array.to_list b) Decimal Int)) term
 
 export fn main args sys -> code
     let System { term } = sys
@@ -32,4 +32,6 @@ export fn main args sys -> code
     both b"-" term
     both b"x" term
     both b"" term
+    terminal.print_line (shown (Parsable.parse "2.5e1 apples" Decimal Int)) term
+    terminal.print_line (shown (Parsable.parse "€1" Decimal Int)) term
     Success
