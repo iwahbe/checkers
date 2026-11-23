@@ -322,6 +322,8 @@ pub struct Builder<'a> {
     in_def: bool,
     /// How many lambdas are being translated (names their parameters).
     lam_depth: usize,
+    /// Function values given to a local function as fresh constants (`select`).
+    fun_args: usize,
     ctx: Vec<Option<Ent>>,
     ctx_src: Vec<ObLocal>,
     pub shown: Vec<(String, String)>,
@@ -362,6 +364,7 @@ impl<'a> Builder<'a> {
             axioms: BTreeMap::new(),
             posts: Vec::new(),
             post_seen: HashSet::new(),
+            fun_args: 0,
             fact_seen: HashSet::new(),
             in_def: false,
             lam_depth: 0,
@@ -1256,17 +1259,19 @@ impl<'a> Builder<'a> {
     /// A call `f a…` of a local function whose type is refined (D84): where
     /// its preconditions hold at the arguments, its postconditions hold at
     /// the result.
-    fn fun_post_facts(&mut self, env: &[Ent], name: &str, args: &[(Tm, Mult)], app: &str, rs: &Sort) {
+    /// `ats` are the explicit arguments' terms and sorts, as the call has them.
+    fn fun_post_facts(&mut self, args: &[(Tm, Mult)], ats: &[(String, Sort)], name: &str, app: &str, rs: &Sort) {
         let Some((lvl, ty)) = self.fun_tys.get(name).cloned() else { return };
         let mut inner: Vec<Ent> = (0..lvl).map(|k| Ent::Opaque(format!("@{k}"))).collect();
         let mut pres = Vec::new();
         let mut t = ty;
-        for (a, m) in args {
+        let mut ats = ats.iter();
+        for (_, m) in args {
             let Tm::Pi(_, _, _, dom, cod) = t else { return };
             if *m == Mult::Zero {
                 inner.push(Ent::Opaque("type argument".into()));
             } else {
-                let Ok((at, s)) = self.term(env, a) else { return };
+                let Some((at, s)) = ats.next().cloned() else { return };
                 pres.extend(self.domain_terms(&inner, &dom, &at, &s));
                 inner.push(Ent::Term(at, s));
             }
@@ -2091,19 +2096,38 @@ impl<'a> Builder<'a> {
     fn select(&mut self, env: &[Ent], ft: &str, s: &Sort, args: &[(Tm, Mult)]) -> Tx<(String, Sort)> {
         let mut app = ft.to_string();
         let mut sort = s.clone();
+        let mut ats = Vec::new();
         for (a, m) in args {
             if *m == Mult::Zero {
                 continue;
             }
-            let Sort::Fun(_, r) = sort else { return out("an application of a non-function") };
-            let at = self.term(env, a)?.0;
+            let Sort::Fun(p, r) = sort else { return out("an application of a non-function") };
+            let at = match self.term(env, a) {
+                Ok((at, _)) => at,
+                // A function value the prover can't represent (a lambda, a
+                // partial application), given to a function it knows only by
+                // its type: a fresh value of its sort, of which nothing is
+                // assumed. Its refinements are checked where it is given, and
+                // the call's result has what the callee's type promises of
+                // every argument. Not where the value depends on bound
+                // variables (a reflected body, a lambda's, a `forall`'s), as
+                // one constant would stand for all of them.
+                Err(_) if matches!(*p, Sort::Fun(..)) && !self.in_def => {
+                    let n = sym(&format!("fun#{}", self.fun_args));
+                    self.fun_args += 1;
+                    self.consts.push(format!("(declare-const {n} {})", p.render(self.e)));
+                    n
+                }
+                Err(e) => return Err(e),
+            };
             app = format!("(select {app} {at})");
+            ats.push((at, *p));
             sort = *r;
         }
         // A local function of a refined type: its postconditions (D84).
         if !self.in_def && !matches!(sort, Sort::Fun(..)) && self.fun_tys.contains_key(ft) && self.post_seen.insert(app.clone()) {
             let ft = ft.to_string();
-            self.fun_post_facts(env, &ft, args, &app, &sort);
+            self.fun_post_facts(args, &ats, &ft, &app, &sort);
         }
         Ok((app, sort))
     }
