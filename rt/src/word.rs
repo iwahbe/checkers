@@ -163,12 +163,73 @@ fn size_of(w: W) -> usize {
     }
 }
 
+// ── small objects' memory ───────────────────────────────────────────────────
+//
+// Each thread keeps the memory of the small objects it frees, a list per
+// size, and allocates from it first: most objects are a header and a few
+// words, made and freed at a high rate. Memory freed on one thread may be
+// used by another; it all came from the system allocator with its size.
+
+/// Sizes kept: `HDR + 8k` for `k < SMALL`.
+const SMALL: usize = 16;
+/// At most this many blocks kept per size and thread; more are released.
+const KEEP: u32 = 4096;
+
+struct Free {
+    head: [std::cell::Cell<*mut u8>; SMALL],
+    len: [std::cell::Cell<u32>; SMALL],
+}
+
+thread_local! {
+    static FREE: Free = const {
+        Free { head: [const { std::cell::Cell::new(std::ptr::null_mut()) }; SMALL], len: [const { std::cell::Cell::new(0) }; SMALL] }
+    };
+}
+
+/// The list for blocks of `size` bytes, if they are kept.
+#[inline]
+fn class(size: usize) -> Option<usize> {
+    let k = size.wrapping_sub(HDR) / 8;
+    (size >= HDR && size.is_multiple_of(8) && k < SMALL).then_some(k)
+}
+
+#[inline]
+fn take_block(size: usize) -> *mut u8 {
+    let Some(k) = class(size) else { return std::ptr::null_mut() };
+    FREE.try_with(|f| {
+        let p = f.head[k].get();
+        if !p.is_null() {
+            f.head[k].set(unsafe { *(p as *mut *mut u8) });
+            f.len[k].set(f.len[k].get() - 1);
+        }
+        p
+    })
+    .unwrap_or(std::ptr::null_mut())
+}
+
+/// Keep `p`, a block of `size` bytes; false if it isn't kept.
+#[inline]
+fn keep_block(p: *mut u8, size: usize) -> bool {
+    let Some(k) = class(size) else { return false };
+    FREE.try_with(|f| {
+        if f.len[k].get() >= KEEP {
+            return false;
+        }
+        unsafe { *(p as *mut *mut u8) = f.head[k].get() };
+        f.head[k].set(p);
+        f.len[k].set(f.len[k].get() + 1);
+        true
+    })
+    .unwrap_or(false)
+}
+
 /// A new object with reference count 1; its words are uninitialised. If
 /// it can't be allocated, the program ends: `out of memory` (§13.3, D184).
 pub fn alloc_obj(info_word: u64, size: usize) -> W {
     // A size above what an allocation can be has no layout (D184).
     let Ok(layout) = Layout::from_size_align(size.max(HDR), 8) else { crate::fatal("out of memory") };
-    let p = unsafe { alloc(layout) };
+    let p = take_block(layout.size());
+    let p = if p.is_null() { unsafe { alloc(layout) } } else { p };
     if p.is_null() {
         crate::fatal("out of memory");
     }
@@ -307,8 +368,10 @@ pub extern "C" fn ck_free(w: W) {
         if TRACK.load(Ordering::Relaxed) {
             LIVE.fetch_sub(1, Ordering::Relaxed);
         }
-        let size = size_of(w);
-        unsafe { dealloc(w as *mut u8, Layout::from_size_align(size.max(HDR), 8).unwrap()) };
+        let size = size_of(w).max(HDR);
+        if !keep_block(w as *mut u8, size) {
+            unsafe { dealloc(w as *mut u8, Layout::from_size_align(size, 8).unwrap()) };
+        }
     }
 }
 

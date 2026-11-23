@@ -55,6 +55,14 @@ pub enum E {
     /// Code of another definition (`Ir::At`): its runtime errors name that
     /// definition.
     At(u32, Box<E>),
+    // Inserted by `unbox` (a value's parts returned in registers, §14).
+    /// Several values at once, each owned: the parts of a constructor
+    /// value that is never built. Only where the code's value goes to a
+    /// `LetMulti` or is the result of a function returning several words.
+    Multi(Vec<E>),
+    /// `LetMulti(xs, a, b)`: bind the values `a` gives (`Multi`, or a call
+    /// of a function returning several words) to `xs`, then `b`.
+    LetMulti(Vec<V>, Box<E>, Box<E>),
 }
 
 /// A value known when the program is compiled (`E::Static`).
@@ -156,6 +164,8 @@ pub struct Func {
     pub body: E,
     /// Variables are numbered from 0 to `nvars`.
     pub nvars: u32,
+    /// How many words it returns: 1, or a value's parts (`unbox`).
+    pub rets: usize,
 }
 
 /// How a definition is called.
@@ -192,6 +202,9 @@ pub struct Program {
     /// Functions' copies specialized to known instances' dictionaries
     /// (`spec`), numbered after the definitions.
     pub specs: std::cell::RefCell<crate::native::spec::Specs>,
+    /// Functions whose results are returned as their parts (`unbox`): the
+    /// function returning them, and their layout.
+    pub workers: HashMap<u32, (u32, crate::native::unbox::Shape)>,
 }
 
 /// Code with no definition (a `check`, a value staging computes).
@@ -242,6 +255,7 @@ impl Program {
             main: NO_OWNER,
             debug: None,
             recursive: HashMap::new(),
+            workers: HashMap::new(),
         }
     }
 }
@@ -342,6 +356,7 @@ impl<'a, 'g> Lowerer<'a, 'g> {
                 params: Vec::new(),
                 body: E::Erased,
                 nvars: 0,
+                rets: 1,
             });
             self.p.defs.insert(*d, if n > 0 { DefShape::Fn { func, arity: n } } else { DefShape::Caf { func } });
         }
@@ -405,7 +420,7 @@ impl<'a, 'g> Lowerer<'a, 'g> {
         let roots: Vec<u32> = gs.iter().map(|x| x.0).collect();
         self.add_defs(&roots);
         let func = self.p.funcs.len() as u32;
-        self.p.funcs.push(Func { name: "check".into(), owner: NO_OWNER, kind: FnKind::Caf, params: Vec::new(), body: E::Erased, nvars: 0 });
+        self.p.funcs.push(Func { name: "check".into(), owner: NO_OWNER, kind: FnKind::Caf, params: Vec::new(), body: E::Erased, nvars: 0, rets: 1 });
         self.owner = NO_OWNER;
         self.next = 0;
         let mut ctx = Vec::new();
@@ -461,7 +476,7 @@ impl Lowerer<'_, '_> {
     /// A wrapper function (builtin or constructor) of `arity` parameters.
     fn wrapper(&mut self, name: &str, owner: u32, kind: FnKind, arity: usize) -> u32 {
         let params: Vec<V> = (0..arity as u32).collect();
-        self.p.funcs.push(Func { name: name.to_string(), owner, kind, params, body: E::Erased, nvars: arity as u32 });
+        self.p.funcs.push(Func { name: name.to_string(), owner, kind, params, body: E::Erased, nvars: arity as u32, rets: 1 });
         (self.p.funcs.len() - 1) as u32
     }
 
@@ -652,6 +667,7 @@ impl Lowerer<'_, '_> {
             params,
             body: b,
             nvars,
+            rets: 1,
         });
         E::MkClo { f, captured: captured_outer }
     }
@@ -740,7 +756,16 @@ fn fv(e: &E, s: &mut BTreeSet<V>) {
             inner.remove(x);
             s.extend(inner);
         }
-        E::Call { args, .. } | E::Tuple(args) | E::Par(args) => args.iter().for_each(|a| fv(a, s)),
+        E::Call { args, .. } | E::Tuple(args) | E::Par(args) | E::Multi(args) => args.iter().for_each(|a| fv(a, s)),
+        E::LetMulti(xs, a, b) => {
+            fv(a, s);
+            let mut inner = BTreeSet::new();
+            fv(b, &mut inner);
+            for x in xs {
+                inner.remove(x);
+            }
+            s.extend(inner);
+        }
         E::Con { fields, reuse, .. } => {
             fields.iter().for_each(|a| fv(a, s));
             if let Some(r) = reuse {
