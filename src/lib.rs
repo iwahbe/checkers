@@ -560,8 +560,7 @@ pub fn check_stdlib() -> String {
     if !out.is_empty() {
         return out;
     }
-    for m in &modules {
-        let mut v = verify::verify(&e, m);
+    for (m, mut v) in modules.iter().zip(verify::verify_all(&e, &modules)) {
         for d in &mut v.diags {
             d.span = e.real_span(m, d.span);
         }
@@ -691,6 +690,10 @@ fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
     let (mut asked, mut reused) = (0, 0);
     let mut fresh: Vec<(String, verify::Verified)> = Vec::new();
     let all = program_modules(e, user);
+    // The modules not verified before, proved together (Z3 solves one
+    // while the next is prepared).
+    let unknown: Vec<String> = all.iter().filter(|m| !known.contains_key(*m)).cloned().collect();
+    let mut proved = verify::verify_all(e, &unknown).into_iter();
     for m in &all {
         let m = m.clone();
         // Verified before, with nothing it depends on changed: what it gave then.
@@ -704,7 +707,7 @@ fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
                 reused: 0,
             },
             None => {
-                let v = verify::verify(e, &m);
+                let v = proved.next().expect("a module verified for each not known");
                 let warnings = v.diags.iter().filter(|d| d.code == "W022").cloned().collect();
                 fresh.push((m.clone(), verify::Verified { diags: warnings, ledger: v.ledger.clone(), z3_version: v.z3_version.clone(), proved: v.proved, asked: 0, reused: 0 }));
                 v

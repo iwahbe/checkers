@@ -82,8 +82,45 @@ pub const SAFETY_MS: u64 = 60_000;
 
 /// Where Z3's answers are cached (D100), if anywhere.
 static CACHE: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
-static ASKED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-static REUSED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The queries one stage of proving asked (a module's preparation, its
+/// solving, its diagnostics): each one's text, as a hash and length, and
+/// whether its answer came from the disk cache (D100). Stages of different
+/// modules run at once, so the answers reused are counted afterwards, in
+/// module order (`tally`): the count is the same however the stages interleave.
+#[derive(Default)]
+struct Log(std::sync::Mutex<Vec<(u64, usize, bool)>>);
+
+impl Log {
+    fn note(&self, query: &str, from_disk: bool) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).push((fnv(query), query.len(), from_disk));
+    }
+}
+
+/// How many queries the stages asked, and how many of their answers were
+/// reused: from the disk cache, or asked before in this process (as if
+/// the stages had run one after another, in the order given).
+fn tally(logs: &[&Log]) -> (usize, usize) {
+    static SEEN: std::sync::Mutex<Option<std::collections::HashSet<(u64, usize)>>> = std::sync::Mutex::new(None);
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    let seen = seen.get_or_insert_with(Default::default);
+    let (mut asked, mut reused) = (0, 0);
+    for log in logs {
+        for &(h, n, from_disk) in log.0.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+            asked += 1;
+            let new = seen.insert((h, n));
+            if from_disk || !new {
+                reused += 1;
+            }
+        }
+    }
+    (asked, reused)
+}
+
+/// How many Z3 contexts solve at once: the pool's threads.
+fn solvers() -> usize {
+    std::thread::available_parallelism().map_or(2, |n| n.get()).min(8)
+}
 
 /// Cache Z3's answers in `dir` (`None`: don't).
 pub fn set_cache(dir: Option<std::path::PathBuf>) {
@@ -263,56 +300,116 @@ fn store(query: &str, out: &str) {
 }
 
 /// Z3's answer to one SMT-LIB script, from the cache or a fresh Z3 context.
-fn ask(query: &str) -> Answer {
-    ASKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+fn ask(query: &str, log: &Log) -> Answer {
+    ask_all(&[Some(query.to_string())], log).pop().flatten().unwrap_or_else(|| Answer::Unknown("Z3 could not start".into()))
+}
+
+/// Z3's output for a query asked before: in this process, or on disk (D100,
+/// `true`).
+fn known(query: &str) -> Option<(String, bool)> {
     // The same query asked twice in this process: Z3's answer depends only
     // on the text, so it is reused (D154).
-    static MEMO: std::sync::Mutex<Option<std::collections::HashMap<String, String>>> = std::sync::Mutex::new(None);
-    let memo = |out: &str| {
-        MEMO.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).insert(query.to_string(), out.to_string());
-    };
     if let Some(out) = MEMO.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(query)).cloned() {
-        REUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        return answer(out);
+        return Some((out, false));
     }
-    let out = match cached(query) {
-        Some(out) => {
-            REUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            out
+    cached(query).map(|out| (out, true))
+}
+
+static MEMO: std::sync::Mutex<Option<std::collections::HashMap<String, String>>> = std::sync::Mutex::new(None);
+
+/// Z3's output for a query not asked before, from a fresh Z3 context; kept
+/// for the next time it is asked.
+fn fresh(query: &str) -> String {
+    let start = std::time::Instant::now();
+    let timed = std::env::var_os("CHECKERS_SMT_TIME").is_some();
+    // Timed, Z3's statistics follow its output, for the work it used;
+    // they are cut off before the output is read or stored.
+    let mut out = if timed { run_z3(&format!("{query}(get-info :all-statistics)\n")) } else { run_z3(query) };
+    let mut used = String::from("?");
+    if timed {
+        if let Some(at) = out.rfind("(:") {
+            used = out[at..].split(":rlimit-count").nth(1).and_then(|r| r.split_whitespace().next()).unwrap_or("?").trim_end_matches(')').to_string();
+            out.truncate(at);
         }
-        None => {
-            let start = std::time::Instant::now();
-            let timed = std::env::var_os("CHECKERS_SMT_TIME").is_some();
-            // Timed, Z3's statistics follow its output, for the work it used;
-            // they are cut off before the output is read or stored.
-            let mut out = if timed { run_z3(&format!("{query}(get-info :all-statistics)\n")) } else { run_z3(query) };
-            let mut used = String::from("?");
-            if timed {
-                if let Some(at) = out.rfind("(:") {
-                    used = out[at..].split(":rlimit-count").nth(1).and_then(|r| r.split_whitespace().next()).unwrap_or("?").trim_end_matches(')').to_string();
-                    out.truncate(at);
-                }
-            }
-            // `CHECKERS_SMT_TIME=1`: each query Z3 answered, its time, size,
-            // answer, work limit and the work it used.
-            if timed {
-                let what = query.lines().find(|l| l.starts_with("(assert (not")).unwrap_or("").chars().take(120).collect::<String>();
-                let said = out.split_whitespace().next().unwrap_or("?");
-                let limit = query.split("(set-option :rlimit ").nth(1).and_then(|r| r.split(')').next()).unwrap_or("?");
-                eprintln!("smt {:>6} ms {:>7} bytes {said:>7} rlimit {limit:>8} used {used:>8} {what}", start.elapsed().as_millis(), query.len());
-                if let Some(err) = out.lines().find(|l| l.starts_with("(error")) {
-                    eprintln!("smt error {err}");
-                }
-            }
-            let cut_off = out.starts_with("unknown") && start.elapsed().as_millis() as u64 >= SAFETY_MS * 9 / 10;
-            if !cut_off {
-                store(query, &out);
-                memo(&out);
-            }
-            out
+    }
+    // `CHECKERS_SMT_TIME=1`: each query Z3 answered, its time, size,
+    // answer, work limit and the work it used.
+    if timed {
+        let what = query.lines().find(|l| l.starts_with("(assert (not")).unwrap_or("").chars().take(120).collect::<String>();
+        let said = out.split_whitespace().next().unwrap_or("?");
+        let limit = query.split("(set-option :rlimit ").nth(1).and_then(|r| r.split(')').next()).unwrap_or("?");
+        eprintln!("smt {:>6} ms {:>7} bytes {said:>7} rlimit {limit:>8} used {used:>8} {what}", start.elapsed().as_millis(), query.len());
+        if let Some(err) = out.lines().find(|l| l.starts_with("(error")) {
+            eprintln!("smt error {err}");
         }
-    };
-    answer(out)
+    }
+    let cut_off = out.starts_with("unknown") && start.elapsed().as_millis() as u64 >= SAFETY_MS * 9 / 10;
+    if !cut_off {
+        store(query, &out);
+        MEMO.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).insert(query.to_string(), out.clone());
+    }
+    out
+}
+
+/// The threads Z3 runs on: `solvers()` of them for the whole process,
+/// shared by every module being proved, each with a big stack (Z3 recurses
+/// deeply on large terms). Kept, not started for each batch of queries:
+/// Z3 allocates heavily, and a thread's allocator caches stay warm.
+struct Pool {
+    jobs: std::sync::Mutex<std::collections::VecDeque<Job>>,
+    ready: std::sync::Condvar,
+}
+
+/// A query for the pool, and where its output goes.
+type Job = (usize, String, std::sync::mpsc::Sender<(usize, String)>);
+
+/// The pool, if any of its threads started.
+fn pool() -> Option<&'static Pool> {
+    static POOL: std::sync::OnceLock<Pool> = std::sync::OnceLock::new();
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    static WORKING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let p: &'static Pool = POOL.get_or_init(|| Pool { jobs: Default::default(), ready: Default::default() });
+    STARTED.call_once(|| {
+        let mut any = false;
+        for _ in 0..solvers() {
+            let worker = std::thread::Builder::new().stack_size(512 << 20).spawn(move || loop {
+                let (i, query, done) = {
+                    let mut jobs = p.jobs.lock().unwrap_or_else(|e| e.into_inner());
+                    loop {
+                        match jobs.pop_front() {
+                            Some(j) => break j,
+                            None => jobs = p.ready.wait(jobs).unwrap_or_else(|e| e.into_inner()),
+                        }
+                    }
+                };
+                let _ = done.send((i, fresh(&query)));
+            });
+            any |= worker.is_ok();
+        }
+        WORKING.store(any, std::sync::atomic::Ordering::Relaxed);
+    });
+    WORKING.load(std::sync::atomic::Ordering::Relaxed).then_some(p)
+}
+
+/// Z3's outputs for queries not asked before, solved by the pool (in order
+/// asked, so the modules proved first finish first).
+fn fresh_all(queries: Vec<String>) -> Vec<String> {
+    let Some(p) = pool() else { return queries.iter().map(|q| fresh(q)).collect() };
+    let n = queries.len();
+    let (done, outs) = std::sync::mpsc::channel();
+    {
+        let mut jobs = p.jobs.lock().unwrap_or_else(|e| e.into_inner());
+        for (i, q) in queries.into_iter().enumerate() {
+            jobs.push_back((i, q, done.clone()));
+        }
+    }
+    p.ready.notify_all();
+    drop(done);
+    let mut out = vec![String::new(); n];
+    for (i, o) in outs.iter().take(n) {
+        out[i] = o;
+    }
+    out
 }
 
 /// The Z3 release Checkers pins (crate `z3-src`, D46). Another release, as a
@@ -380,38 +477,38 @@ fn answer(out: String) -> Answer {
     }
 }
 
-/// Solve the queries on a few worker threads (each Z3 context is heavy).
-fn ask_all(texts: &[Option<String>]) -> Vec<Option<Answer>> {
-    let workers = std::thread::available_parallelism().map_or(2, |n| n.get()).min(8);
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let results: Vec<std::sync::Mutex<Option<Answer>>> = texts.iter().map(|_| std::sync::Mutex::new(None)).collect();
+/// Z3's answers to the queries: those asked before from the cache, the rest
+/// solved by the pool's threads, in parallel.
+fn ask_all(texts: &[Option<String>], log: &Log) -> Vec<Option<Answer>> {
     // A query asked again in the same batch waits for the first: in
     // parallel, whether its answer were reused would depend on timing.
     let mut seen = std::collections::HashSet::new();
     let again: Vec<bool> = texts.iter().map(|t| t.as_ref().is_some_and(|t| !seen.insert(t.as_str()))).collect();
-    std::thread::scope(|s| {
-        for _ in 0..workers {
-            // Z3 recurses deeply on large terms: give it a big stack.
-            let worker = std::thread::Builder::new().stack_size(512 << 20);
-            let spawned = worker.spawn_scoped(s, || loop {
-                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let Some(t) = texts.get(i) else { break };
-                if let (Some(t), false) = (t, again[i]) {
-                    let a = ask(t);
-                    *results[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(a);
-                }
-            });
-            if spawned.is_err() {
-                break;
+    let mut results: Vec<Option<Answer>> = texts.iter().map(|_| None).collect();
+    let mut asking: Vec<usize> = Vec::new();
+    for (i, t) in texts.iter().enumerate() {
+        let (Some(t), false) = (t, again[i]) else { continue };
+        match known(t) {
+            Some((out, from_disk)) => {
+                log.note(t, from_disk);
+                results[i] = Some(answer(out));
+            }
+            None => {
+                log.note(t, false);
+                asking.push(i);
             }
         }
-    });
+    }
+    let outs = fresh_all(asking.iter().filter_map(|i| texts[*i].clone()).collect());
+    for (i, out) in asking.into_iter().zip(outs) {
+        results[i] = Some(answer(out));
+    }
     for (i, t) in texts.iter().enumerate() {
         if let (Some(t), true) = (t, again[i]) {
-            *results[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(ask(t));
+            results[i] = Some(ask(t, log));
         }
     }
-    results.into_iter().map(|m| m.into_inner().unwrap_or_else(|e| e.into_inner())).collect()
+    results
 }
 
 /// FNV-1a, for the ledger's query hashes.
@@ -428,7 +525,7 @@ fn fnv(s: &str) -> u64 {
 /// preconditions: every termination obligation in their bodies holds with
 /// the preconditions left out (D118). Recorded on the elaborator, so a
 /// standard-library function decided once stays decided for its users.
-fn ends_everywhere(e: &Elab, obs: &[&Obligation]) {
+fn ends_everywhere(e: &Elab, obs: &[&Obligation], log: &Log) {
     use crate::elab::ObKind;
     // Each candidate's termination obligations, without its preconditions.
     let mut cands: Vec<(crate::core::DefId, Vec<Obligation>)> = Vec::new();
@@ -454,7 +551,7 @@ fn ends_everywhere(e: &Elab, obs: &[&Obligation]) {
     let defs = smt::Defs::default();
     let texts: Vec<Option<String>> =
         all.iter().map(|o| smt::Builder::new(e, user).sharing(&defs).query(o).ok().map(|q| q.text)).collect();
-    let answers = ask_all(&texts);
+    let answers = ask_all(&texts, log);
     let mut k = 0;
     let mut set = e.ends_everywhere.lock().unwrap_or_else(|e| e.into_inner());
     for (d, v) in &cands {
@@ -468,29 +565,181 @@ fn ends_everywhere(e: &Elab, obs: &[&Obligation]) {
 
 /// Prove the obligations of module `user` (§7.2).
 pub fn verify(e: &Elab, user: &str) -> Verified {
-    let obs: Vec<&Obligation> = e
-        .obligations
-        .iter()
-        .filter(|o| o.module == user)
-        .filter(|o| o.only_if_nat.as_ref().is_none_or(|t| smt::is_nat(e, t)))
-        .collect();
-    let mut v = Verified { diags: Vec::new(), ledger: Vec::new(), z3_version: None, proved: 0, asked: 0, reused: 0 };
-    let (asked0, reused0) = (ASKED.load(std::sync::atomic::Ordering::Relaxed), REUSED.load(std::sync::atomic::Ordering::Relaxed));
+    verify_all(e, &[user.to_string()]).pop().unwrap_or_else(Verified::empty)
+}
+
+/// Prove the obligations of each module, in order (§7.2): what each gives.
+///
+/// Each module's queries are made on this thread (the elaborator isn't
+/// `Send`), and Z3 answers them on threads of their own while this one makes
+/// the next module's: a module's slow queries no longer hold up the next
+/// module's. First its branches' and candidate measures' queries, which
+/// are asked at once; then its obligations'. Making them stays in order, as
+/// one module after another: a module's queries depend on what the modules
+/// before it found (`ends_everywhere`), and on nothing after it. Each
+/// module's diagnostics are made last, from the answers.
+pub fn verify_all(e: &Elab, modules: &[String]) -> Vec<Verified> {
+    let mut prepared: Vec<Prepared> = Vec::new();
+    let answered: Vec<(Early, Option<Solved>)> = std::thread::scope(|s| {
+        let mut pending = Vec::new();
+        for m in modules {
+            let (mut p, early) = prepare_early(e, m);
+            let early = on_thread(s, move || ask_early(early));
+            prepare(e, m, &mut p);
+            let solved = p.plan.take().map(|plan| on_thread(s, move || solve(plan)));
+            pending.push((early, solved));
+            prepared.push(p);
+        }
+        pending.into_iter().map(|(early, solved)| (early.join(), solved.map(Pending::join))).collect()
+    });
+    let mut out = Vec::new();
+    for ((m, p), (early, solved)) in modules.iter().zip(prepared).zip(answered) {
+        out.push(finish(e, m, p, early, solved));
+    }
+    out
+}
+
+/// Work given to a thread of its own, or done already if none could start.
+enum Pending<'s, T> {
+    Thread(std::thread::ScopedJoinHandle<'s, T>),
+    Done(T),
+}
+
+impl<T> Pending<'_, T> {
+    fn join(self) -> T {
+        match self {
+            Pending::Thread(h) => h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)),
+            Pending::Done(x) => x,
+        }
+    }
+}
+
+/// Run `f` on a thread of its own (Z3 itself runs on the pool's).
+fn on_thread<'s, T, F>(s: &'s std::thread::Scope<'s, '_>, f: F) -> Pending<'s, T>
+where
+    T: Send + 's,
+    F: FnOnce() -> T + Send + 's,
+{
+    fn run<T, F: FnOnce() -> T>(f: &std::sync::Mutex<Option<F>>) -> Option<T> {
+        f.lock().unwrap_or_else(|e| e.into_inner()).take().map(|f| f())
+    }
+    let f = std::sync::Arc::new(std::sync::Mutex::new(Some(f)));
+    let theirs = f.clone();
+    match std::thread::Builder::new().spawn_scoped(s, move || run(&theirs).expect("run once")) {
+        Ok(h) => Pending::Thread(h),
+        Err(_) => Pending::Done(run(&f).expect("run once")),
+    }
+}
+
+impl Verified {
+    fn empty() -> Verified {
+        Verified { diags: Vec::new(), ledger: Vec::new(), z3_version: None, proved: 0, asked: 0, reused: 0 }
+    }
+}
+
+/// A module's queries, made: what doesn't need Z3's answers, and what is
+/// needed to make its diagnostics from them.
+struct Prepared<'e> {
+    v: Verified,
+    /// Where in the ledger the guessed measures' entries go.
+    guess_at: usize,
+    /// Its branches asked about (W022), and its recursive groups' candidate
+    /// measures (D150).
+    probes: Vec<&'e Probe>,
+    guesses: Vec<Guess<'e>>,
+    obs: Vec<&'e Obligation>,
+    queries: Vec<Result<smt::Query, smt::Outside>>,
+    /// The translated definitions its queries share, for its diagnostics'.
+    defs: smt::Defs,
+    /// `ends_everywhere` as its queries were made with it.
+    ends: std::collections::HashSet<crate::core::DefId>,
+    /// What making its queries asked Z3 (`ends_everywhere`).
+    log: Log,
+    /// Its obligations' queries, to solve; None if it has none to ask about.
+    plan: Option<Plan>,
+}
+
+/// The texts of a module's queries about its branches and measures.
+struct EarlyAsk {
+    probes: Vec<Option<String>>,
+    guesses: Vec<GuessAsk>,
+}
+
+/// Z3's answers about a module's branches and measures.
+struct Early {
+    probes: Vec<Option<Answer>>,
+    guesses: Vec<Guessed>,
+    log: Log,
+}
+
+/// The texts of a module's obligations' queries.
+struct Plan {
+    texts: Vec<Option<String>>,
+    /// The weaker queries (§7.2): facts only, focused, without axioms.
+    weaker: Vec<[Option<String>; 3]>,
+    fallbacks: Vec<Option<String>>,
+}
+
+/// Z3's answers to a module's obligations' queries.
+struct Solved {
+    answers: Vec<Option<Answer>>,
+    /// The query that proved each obligation, as Z3 was given it.
+    proof: Vec<Option<String>>,
+    log: Log,
+}
+
+/// A module's trusted and axiom entries, and the queries about its branches
+/// and measures.
+fn prepare_early<'e>(e: &'e Elab, user: &str) -> (Prepared<'e>, EarlyAsk) {
+    let mut v = Verified::empty();
     for t in e.admits.iter().filter(|t| t.module == user) {
         v.ledger.push(LedgerEntry { span: t.span, how: "trusted", what: t.what.clone(), hash: None });
     }
     for t in e.builtin_axioms.iter().filter(|t| t.module == user) {
         v.ledger.push(LedgerEntry { span: t.span, how: "axiom", what: t.what.clone(), hash: None });
     }
-    v.diags.extend(unreachable(e, user));
-    guess_measures(e, user, &mut v);
+    let guess_at = v.ledger.len();
+    let (probes, probe_texts) = unreachable(e, user);
+    let guesses = guesses(e, user);
+    let ask = EarlyAsk { probes: probe_texts, guesses: guesses.iter().map(|g| g.ask.clone()).collect() };
+    let p = Prepared {
+        v,
+        guess_at,
+        probes,
+        guesses,
+        obs: Vec::new(),
+        queries: Vec::new(),
+        defs: smt::Defs::default(),
+        ends: Default::default(),
+        log: Log::default(),
+        plan: None,
+    };
+    (p, ask)
+}
+
+fn ask_early(a: EarlyAsk) -> Early {
+    let log = Log::default();
+    let probes = if a.probes.is_empty() { Vec::new() } else { ask_all(&a.probes, &log) };
+    let guesses = a.guesses.iter().map(|g| guess_ask(g, &log)).collect();
+    Early { probes, guesses, log }
+}
+
+/// A module's obligations' queries.
+fn prepare<'e>(e: &'e Elab, user: &str, p: &mut Prepared<'e>) {
+    let v = &mut p.v;
+    let obs: Vec<&Obligation> = e
+        .obligations
+        .iter()
+        .filter(|o| o.module == user)
+        .filter(|o| o.only_if_nat.as_ref().is_none_or(|t| smt::is_nat(e, t)))
+        .collect();
     for (m, span, _) in e.checks.iter().filter(|c| c.0 == user) {
         let _ = m;
         let text = e.sources.get(user).and_then(|f| f.text.get(span.start as usize..span.end as usize)).unwrap_or("");
         v.ledger.push(LedgerEntry { span: *span, how: "computed", what: format!("check {}", text.trim()), hash: None });
     }
     if obs.is_empty() {
-        return v;
+        return;
     }
     // A goal that evaluated to `True` while elaborating is proven by computation.
     let (trivial, obs): (Vec<&Obligation>, Vec<&Obligation>) = obs.into_iter().partition(|o| {
@@ -501,27 +750,42 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
         v.ledger.push(LedgerEntry { span: o.span, how: "computed", what: describe(e, o), hash: None });
     }
     if obs.is_empty() {
-        return v;
+        return;
     }
     // Which functions recursing by `decreasing` end whatever their
     // preconditions say: their definitions need no precondition guard (M17).
-    ends_everywhere(e, &obs);
-    // Translate on this thread (the elaborator isn't `Send`), solve in parallel.
-    let defs = smt::Defs::default();
-    let queries: Vec<Result<smt::Query, smt::Outside>> = obs.iter().map(|o| smt::Builder::new(e, user).sharing(&defs).query(o)).collect();
+    ends_everywhere(e, &obs, &p.log);
+    p.ends = e.ends_everywhere.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let queries: Vec<Result<smt::Query, smt::Outside>> = obs.iter().map(|o| smt::Builder::new(e, user).sharing(&p.defs).query(o)).collect();
     let texts: Vec<Option<String>> = queries.iter().map(|q| q.as_ref().ok().map(|q| q.text.clone())).collect();
     let fallbacks: Vec<Option<String>> = queries.iter().map(|q| q.as_ref().ok().and_then(|q| q.without_axioms.clone())).collect();
+    let weaker: Vec<[Option<String>; 3]> = queries
+        .iter()
+        .map(|q| match q {
+            Ok(q) => [q.facts_only.clone(), q.focused.clone(), q.without_axioms.clone()],
+            Err(_) => [None, None, None],
+        })
+        .collect();
     if std::env::var_os("CHECKERS_SMT_DUMP").is_some() {
         for (o, t) in obs.iter().zip(&texts) {
             eprintln!(";; ── {:?} at {:?}\n{}", o.kind, o.span, t.as_deref().unwrap_or(";; outside the fragment"));
         }
     }
+    p.obs = obs;
+    p.queries = queries;
+    p.plan = Some(Plan { texts, weaker, fallbacks });
+}
+
+/// Ask Z3 about a module's queries: needs only their texts.
+fn solve(plan: Plan) -> Solved {
+    let Plan { texts, weaker, fallbacks } = plan;
+    let log = Log::default();
     // 1. Everything, with a small work limit (D154): most goals need little
     //    work, and this query's answer is final either way: `unsat` is a
     //    proof, `sat` a real counterexample.
     let first: Vec<Option<String>> = texts.iter().map(|t| t.as_ref().map(|t| with_limit(t, FIRST_RLIMIT))).collect();
     let mut answers: Vec<Option<Answer>> =
-        ask_all(&first).into_iter().map(|a| a.filter(|a| matches!(a, Answer::Unsat | Answer::Sat(_)))).collect();
+        ask_all(&first, &log).into_iter().map(|a| a.filter(|a| matches!(a, Answer::Unsat | Answer::Sat(_)))).collect();
     // The query that proved each obligation, as Z3 was given it.
     let mut proof: Vec<Option<String>> =
         answers.iter().zip(&first).map(|(a, t)| if matches!(a, Some(Answer::Unsat)) { t.clone() } else { None }).collect();
@@ -535,16 +799,16 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     // Each with the small work limit, then again with a larger one where Z3
     // gave up: a query that can't prove its goal often searches until its
     // limit.
-    let weaker: Vec<[Option<&String>; 3]> = queries
+    let weaker: Vec<[Option<&String>; 3]> = weaker
         .iter()
         .zip(&answers)
-        .map(|(q, a)| match (q, a) {
-            (Ok(q), None) => [q.facts_only.as_ref(), q.focused.as_ref(), q.without_axioms.as_ref()],
+        .map(|(w, a)| match a {
+            None => [w[0].as_ref(), w[1].as_ref(), w[2].as_ref()],
             _ => [None, None, None],
         })
         .collect();
     // Whether each weaker query gave up with the small limit.
-    let mut gave_up: Vec<[bool; 3]> = vec![[true; 3]; obs.len()];
+    let mut gave_up: Vec<[bool; 3]> = vec![[true; 3]; texts.len()];
     for limit in [FIRST_RLIMIT, QUICK_RLIMIT] {
         for tier in 0..3 {
             let ask_q: Vec<Option<String>> = weaker
@@ -560,7 +824,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
                     Some(with_limit(t, limit))
                 })
                 .collect();
-            for (k, a) in ask_all(&ask_q).into_iter().enumerate() {
+            for (k, a) in ask_all(&ask_q, &log).into_iter().enumerate() {
                 match a {
                     Some(Answer::Unsat) => proof[k] = ask_q[k].clone(),
                     Some(Answer::Sat(_)) => gave_up[k][tier] = false,
@@ -576,7 +840,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
         .enumerate()
         .map(|(k, t)| if proof[k].is_some() || answers[k].is_some() { None } else { t.clone() })
         .collect();
-    for (k, a) in ask_all(&rest).into_iter().enumerate() {
+    for (k, a) in ask_all(&rest, &log).into_iter().enumerate() {
         if proof[k].is_some() {
             answers[k] = Some(Answer::Unsat);
         } else if a.is_some() {
@@ -591,12 +855,35 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
         .map(|(a, f)| if matches!(a, Some(Answer::Unknown(_))) { f.clone() } else { None })
         .collect();
     if retry.iter().any(|r| r.is_some()) {
-        for (a, r) in answers.iter_mut().zip(ask_all(&retry)) {
+        for (a, r) in answers.iter_mut().zip(ask_all(&retry, &log)) {
             if let Some(r @ Answer::Sat(_)) = r {
                 *a = Some(r);
             }
         }
     }
+    Solved { answers, proof, log }
+}
+
+/// A module's diagnostics and ledger, from Z3's answers.
+fn finish(e: &Elab, user: &str, p: Prepared, early: Early, solved: Option<Solved>) -> Verified {
+    let Prepared { mut v, guess_at, probes, guesses, obs, queries, defs, ends, log, .. } = p;
+    // Its branches' and measures' diagnostics come first, and its guessed
+    // measures' ledger entries after its trusted ones.
+    let mut head = Verified::empty();
+    if !probes.is_empty() {
+        head.diags = unreachable_report(e, user, &probes, &early.probes);
+    }
+    for (g, r) in guesses.iter().zip(early.guesses) {
+        guess_report(e, user, g, r, &mut head);
+    }
+    v.proved += head.proved;
+    v.ledger.splice(guess_at..guess_at, head.ledger);
+    v.diags = head.diags;
+    let Some(Solved { answers, proof, log: solving }) = solved else {
+        (v.asked, v.reused) = tally(&[&early.log, &log]);
+        return v;
+    };
+    let reporting = Log::default();
     // Cases one `match` leaves out that may occur: one error (E0240).
     let mut uncovered: Vec<(Span, Vec<String>, usize)> = Vec::new();
     for (k, ((o, q), a)) in obs.iter().zip(&queries).zip(answers).enumerate() {
@@ -620,7 +907,8 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
             (Ok(q), Some(Answer::Sat(model))) => {
                 // A model of a query without the `forall` facts may break
                 // them: shown only once checked against them.
-                let (shown, broken) = if q.foralls { check_foralls(e, user, o, &defs, &model) } else { (Some(model.clone()), None) };
+                let (shown, broken) =
+                    if q.foralls { check_foralls(e, user, o, &defs, &ends, &model, &reporting) } else { (Some(model.clone()), None) };
                 let shown = shown.map(|m| render_model(&m, &q.shown, &q.string_vars, &q.array_vars));
                 let any = shown.is_some();
                 let mut d = failed(e, o, shown);
@@ -643,13 +931,12 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
             (Ok(_), None) => {}
         }
     }
-        for (_, cases, at) in &uncovered {
+    for (_, cases, at) in &uncovered {
         let d = v.diags[*at].clone();
         v.diags[*at] = merge_uncovered(d, cases);
     }
     v.z3_version = z3_version();
-    v.asked = ASKED.load(std::sync::atomic::Ordering::Relaxed) - asked0;
-    v.reused = REUSED.load(std::sync::atomic::Ordering::Relaxed) - reused0;
+    (v.asked, v.reused) = tally(&[&early.log, &log, &solving, &reporting]);
     v
 }
 
@@ -657,9 +944,14 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
 /// and then in pairs compared lexicographically, that the prover shows every
 /// recursive call makes smaller while staying a natural number. E0301 if
 /// none is.
-fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
+///
+/// Done in three parts: the candidates' obligations are translated here
+/// (`guesses`), asked about on a thread of their own (`guess_ask`), and
+/// reported on (`guess_report`).
+fn guesses<'e>(e: &'e Elab, user: &str) -> Vec<Guess<'e>> {
     use crate::core::{eval, quote, Lit, Prim, Tm, Val};
     use crate::elab::termination::Measure;
+    let mut out = Vec::new();
     for gr in e.guess_groups.iter().filter(|g| g.module == user) {
         // Combinations to try: one measure per member.
         let mut combos: Vec<Vec<Measure>> = Vec::new();
@@ -695,7 +987,7 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
         }
         let idx = |d| gr.members.iter().position(|m| *m == d).unwrap_or(0);
         let wk = &e.g.well_known;
-        let (Some(tc), Some(fc)) = (wk.true_con, wk.false_con) else { return };
+        let (Some(tc), Some(fc)) = (wk.true_con, wk.false_con) else { return out };
         let and = |a: Tm, b: Tm| {
             Tm::Case(
                 std::rc::Rc::new(a),
@@ -755,10 +1047,6 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
             obs.push(v);
             doomed.push(same_at);
         }
-        // Ask about the single measures, then the pairs, each first with a
-        // small work limit (a measure that holds is usually quick to show,
-        // and one that doesn't is slow to give up on), then the rest with
-        // the quick one; take the first proved.
         let defs = smt::Defs::default();
         let base: Vec<usize> = obs.iter().scan(0, |k, os| {
             let at = *k;
@@ -770,33 +1058,79 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
             .flatten()
             .map(|o| quick(smt::Builder::new(e, user).sharing(&defs).query(o).ok().map(|q| q.no_tables.unwrap_or(q.text))))
             .collect();
-        let mut answers: Vec<Option<Answer>> = texts.iter().map(|_| None).collect();
         let singles = combos.iter().take_while(|c| c.iter().all(|m| m.0.len() == 1)).count();
-        let small = |t: &Option<String>| {
-            t.as_ref().map(|t| t.replacen(&format!("(set-option :rlimit {QUICK_RLIMIT})"), &format!("(set-option :rlimit {PROBE_RLIMIT})"), 1))
-        };
-        let proved = |answers: &[Option<Answer>], ci: usize| {
-            !obs[ci].is_empty() && answers[base[ci]..base[ci] + obs[ci].len()].iter().all(|a| matches!(a, Some(Answer::Unsat)))
-        };
-        let mut chosen: Option<(usize, usize)> = None;
-        'tiers: for limit in [true, false] {
-            for tier in [0..singles, singles..combos.len()] {
-                let ks: Vec<usize> = tier
-                    .clone()
-                    .filter(|ci| doomed[*ci].is_none())
-                    .flat_map(|ci| base[ci]..base[ci] + obs[ci].len())
-                    .filter(|k| !matches!(answers[*k], Some(Answer::Unsat)))
-                    .collect();
-                let asked: Vec<Option<String>> = ks.iter().map(|k| if limit { small(&texts[*k]) } else { texts[*k].clone() }).collect();
-                for (k, a) in ks.iter().zip(ask_all(&asked)) {
-                    answers[*k] = a;
-                }
-                if let Some(ci) = tier.clone().find(|ci| proved(&answers, *ci)) {
-                    chosen = Some((ci, base[ci]));
-                    break 'tiers;
-                }
+        let ask = GuessAsk { texts, base, lens: obs.iter().map(|o| o.len()).collect(), doomed: doomed.iter().map(|d| d.is_some()).collect(), singles };
+        out.push(Guess { gr, combos, obs, doomed, ask });
+    }
+    out
+}
+
+/// A recursive group's candidate measures (D150), translated.
+struct Guess<'e> {
+    gr: &'e crate::elab::termination::GuessGroup,
+    combos: Vec<Vec<crate::elab::termination::Measure>>,
+    /// The obligation at each call, for each combination.
+    obs: Vec<Vec<Obligation>>,
+    /// Where a combination can't be smaller (the same at a call), if it can't.
+    doomed: Vec<Option<Span>>,
+    ask: GuessAsk,
+}
+
+/// What to ask Z3 about a group's candidates: needs only texts.
+#[derive(Clone)]
+struct GuessAsk {
+    texts: Vec<Option<String>>,
+    /// Each combination's first query, and how many it has.
+    base: Vec<usize>,
+    lens: Vec<usize>,
+    doomed: Vec<bool>,
+    /// How many combinations are single measures (the rest are pairs).
+    singles: usize,
+}
+
+/// Z3's answers about a group's candidates, and the combination shown to
+/// end, with its first query, if one was.
+type Guessed = (Vec<Option<Answer>>, Option<(usize, usize)>);
+
+/// Ask about the single measures, then the pairs, each first with a small
+/// work limit (a measure that holds is usually quick to show, and one that
+/// doesn't is slow to give up on), then the rest with the quick one; take
+/// the first proved.
+fn guess_ask(g: &GuessAsk, log: &Log) -> Guessed {
+    let GuessAsk { texts, base, lens, doomed, singles } = g;
+    let mut answers: Vec<Option<Answer>> = texts.iter().map(|_| None).collect();
+    let small = |t: &Option<String>| {
+        t.as_ref().map(|t| t.replacen(&format!("(set-option :rlimit {QUICK_RLIMIT})"), &format!("(set-option :rlimit {PROBE_RLIMIT})"), 1))
+    };
+    let proved = |answers: &[Option<Answer>], ci: usize| {
+        lens[ci] != 0 && answers[base[ci]..base[ci] + lens[ci]].iter().all(|a| matches!(a, Some(Answer::Unsat)))
+    };
+    for limit in [true, false] {
+        for tier in [0..*singles, *singles..lens.len()] {
+            let ks: Vec<usize> = tier
+                .clone()
+                .filter(|ci| !doomed[*ci])
+                .flat_map(|ci| base[ci]..base[ci] + lens[ci])
+                .filter(|k| !matches!(answers[*k], Some(Answer::Unsat)))
+                .collect();
+            let asked: Vec<Option<String>> = ks.iter().map(|k| if limit { small(&texts[*k]) } else { texts[*k].clone() }).collect();
+            for (k, a) in ks.iter().zip(ask_all(&asked, log)) {
+                answers[*k] = a;
+            }
+            if let Some(ci) = tier.clone().find(|ci| proved(&answers, *ci)) {
+                return (answers, Some((ci, base[ci])));
             }
         }
+    }
+    (answers, None)
+}
+
+/// A group's measure, from Z3's answers: its obligations in the ledger, or
+/// E0301 where none was shown smaller.
+fn guess_report(e: &Elab, user: &str, g: &Guess, guessed: Guessed, v: &mut Verified) {
+    let Guess { gr, combos, obs, doomed, ask } = g;
+    let (GuessAsk { texts, base, .. }, (answers, chosen)) = (ask, guessed);
+    {
         // Each measure's calls it wasn't shown smaller at, and of those the
         // one to name: first in the group's preference (#124), the call
         // losing the parameter recursed on.
@@ -841,7 +1175,7 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
                     gr.calls.iter().map(|c| c.ob.span).find(|s| inside(*s, *p) || inside(*p, *s))
                 })).or(first_call)
                 else {
-                    continue;
+                    return;
                 };
                 let names: Vec<String> = gr.members.iter().map(|d| format!("`{}`", e.g.defs[d.0 as usize].name)).collect();
                 let src = e.sources.get(user);
@@ -864,7 +1198,7 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
                         .with_note(note)
                         .with_help(format!("use {name} only on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of its proof"));
                     v.diags.push(d);
-                    continue;
+                    return;
                 }
                 let who = if names.len() == 1 { format!("{} terminates", names[0]) } else { format!("{} terminate", names.join(", ")) };
                 let mut d = Diagnostic::error("E0301", format!("cannot show that {who}: no measure found that every recursive call makes smaller"), at)
@@ -878,16 +1212,19 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
 
 /// W022 (D144 d): the branches of the program's own used code whose facts
 /// contradict each other, by the facts alone.
-fn unreachable(e: &Elab, user: &str) -> Vec<Diagnostic> {
+///
+/// Done in two parts: the branches' queries are made here, and reported on
+/// (`unreachable_report`) once Z3 has answered them, on another thread.
+fn unreachable<'e>(e: &'e Elab, user: &str) -> (Vec<&'e Probe>, Vec<Option<String>>) {
     if e.package_of(user) != "." {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
     let inside = |a: Span, b: Span| b.start <= a.start && a.end <= b.end;
     let dead: Vec<Span> = e.dead.iter().filter(|(m, _)| m == user).map(|x| x.1).collect();
     let probes: Vec<&Probe> =
         e.probes.iter().filter(|p| p.ob.module == user && !dead.iter().any(|d| inside(p.ob.span, *d))).collect();
     if probes.is_empty() {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
     let defs = smt::Defs::default();
     let texts: Vec<Option<String>> =
@@ -899,11 +1236,16 @@ fn unreachable(e: &Elab, user: &str) -> Vec<Diagnostic> {
             q.map(|t| t.replacen(&format!("(set-option :rlimit {RLIMIT})"), &format!("(set-option :rlimit {PROBE_RLIMIT})"), 1) + ";; reachable?\n")
         })
         .collect();
-    let answers = ask_all(&texts);
+    (probes, texts)
+}
+
+/// W022 for the branches Z3 found never run.
+fn unreachable_report(e: &Elab, user: &str, probes: &[&Probe], answers: &[Option<Answer>]) -> Vec<Diagnostic> {
+    let inside = |a: Span, b: Span| b.start <= a.start && a.end <= b.end;
     // A branch reached along several paths (an arm under several cases)
     // never runs only if no path reaches it.
     let mut groups: Vec<(Span, ProbeKind, bool, &Probe)> = Vec::new();
-    for (p, a) in probes.iter().zip(&answers) {
+    for (p, a) in probes.iter().zip(answers) {
         let never = matches!(a, Some(Answer::Unsat));
         match groups.iter_mut().find(|g| g.0 == p.ob.span && g.1 == p.kind) {
             Some(g) => g.2 &= never,
@@ -1193,14 +1535,22 @@ fn outside(e: &Elab, o: &Obligation, why: &str) -> Diagnostic {
 /// query left out (D137): the same query with them given to Z3, quantified,
 /// first with the model's values fixed, then free. A model of that query is
 /// a counterexample; without one, the note saying why none is shown.
-fn check_foralls(e: &Elab, user: &str, o: &Obligation, defs: &smt::Defs, model: &str) -> (Option<String>, Option<String>) {
+fn check_foralls(
+    e: &Elab,
+    user: &str,
+    o: &Obligation,
+    defs: &smt::Defs,
+    ends: &std::collections::HashSet<crate::core::DefId>,
+    model: &str,
+    log: &Log,
+) -> (Option<String>, Option<String>) {
     let why = |broken: bool| {
         Some(format!(
             "no counterexample: the one Z3 found {} a `forall` in scope, which the prover uses only by name, with `have`",
             if broken { "breaks" } else { "could not be checked against" }
         ))
     };
-    let Ok(q) = smt::Builder::new(e, user).sharing(defs).with_foralls().query(o) else { return (None, why(false)) };
+    let Ok(q) = smt::Builder::new(e, user).sharing(defs).ending(ends).with_foralls().query(o) else { return (None, why(false)) };
     let text = with_limit(&q.text, QUICK_RLIMIT);
     let Some(at) = text.rfind("(check-sat)") else { return (None, why(false)) };
     let mut pins = String::new();
@@ -1219,12 +1569,12 @@ fn check_foralls(e: &Elab, user: &str, o: &Obligation, defs: &smt::Defs, model: 
         }
     }
     let pinned = format!("{}{pins}{}", &text[..at], &text[at..]);
-    let broken = match ask(&pinned) {
+    let broken = match ask(&pinned, log) {
         Answer::Sat(m) => return (Some(m), None),
         Answer::Unsat => true,
         Answer::Unknown(_) => false,
     };
-    match ask(&text) {
+    match ask(&text, log) {
         Answer::Sat(m) => (Some(m), None),
         _ => (None, why(broken)),
     }

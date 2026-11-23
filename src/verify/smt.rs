@@ -285,6 +285,10 @@ thread_local! {
 pub struct Builder<'a> {
     e: &'a Elab,
     defs: Option<&'a Defs>,
+    /// The functions whose recursion ends without their preconditions, as
+    /// they were when the module's queries were made (`ending`); None: as
+    /// the elaborator has them now.
+    ends: Option<&'a HashSet<DefId>>,
     user: String,
     datatypes: BTreeMap<TyId, usize>,
     tuples: HashSet<usize>,
@@ -341,6 +345,7 @@ impl<'a> Builder<'a> {
         Builder {
             e,
             defs: None,
+            ends: None,
             user: user.to_string(),
             datatypes: BTreeMap::new(),
             tuples: HashSet::new(),
@@ -379,6 +384,14 @@ impl<'a> Builder<'a> {
     /// against (D137 keeps them out of proofs).
     pub fn with_foralls(mut self) -> Builder<'a> {
         self.foralls = true;
+        self
+    }
+
+    /// Take the functions whose recursion ends without their preconditions
+    /// from `ends`, not the elaborator: a module's diagnostics are made after
+    /// later modules have added to it, and must ask what its proofs asked.
+    pub fn ending(mut self, ends: &'a HashSet<DefId>) -> Builder<'a> {
+        self.ends = Some(ends);
         self
     }
 
@@ -3186,7 +3199,10 @@ impl<'a> Builder<'a> {
             return Ok(None);
         }
         // Its recursion ends without the preconditions: only `Nat`s matter.
-        let everywhere = self.e.ends_everywhere.lock().unwrap_or_else(|e| e.into_inner()).contains(&inst.def);
+        let everywhere = match self.ends {
+            Some(ends) => ends.contains(&inst.def),
+            None => self.e.ends_everywhere.lock().unwrap_or_else(|e| e.into_inner()).contains(&inst.def),
+        };
         let mut conds = Vec::new();
         // Nat parameters.
         let mut ty = self.e.g.defs[inst.def.0 as usize].ty.clone();
