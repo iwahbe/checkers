@@ -193,9 +193,10 @@ export fn decimal n -> s : n~Nat, s~String, len s.bytes > 0, all_digits s.bytes 
 
 # The digit `d`, as a string of one byte.
 fn digit d -> s : d~Nat, d < 10, s~String, len s.bytes == 1, s.bytes[0] == '0' + d
-    let c = char.from_ascii ('0' + d)
-    have from_char_bytes c
-    from_char c
+    if d < 5
+        if d == 0 then "0" else if d == 1 then "1" else if d == 2 then "2" else if d == 3 then "3" else "4"
+    else
+        if d == 5 then "5" else if d == 6 then "6" else if d == 7 then "7" else if d == 8 then "8" else "9"
 
 # Bytes after `a` don't change what `a`'s bytes from `i` to `j` write.
 export lemma decimal_prefix a c i j : a~Bytes, c~Bytes, i~Nat, j~Nat, j <= len a
