@@ -117,6 +117,17 @@ impl Elab {
         self.check_termination();
         // A transparent function's private helpers are visible to the prover
         // too, or its body would say nothing (D54): close the set over calls.
+        // An exported function it calls is not a helper: its signature is its
+        // interface, so it stays sealed (#244).
+        let exported: HashSet<DefId> = m
+            .decls
+            .iter()
+            .zip(&ids)
+            .filter_map(|(d, id)| match (&d.kind, id) {
+                (DeclKind::Fn { .. }, Some(Sym::Def(did))) if d.export == Export::Yes => Some(*did),
+                _ => None,
+            })
+            .collect();
         let mut stack: Vec<DefId> = self.transparent.iter().copied().filter(|d| *self.g.defs[d.0 as usize].module == *name).collect();
         while let Some(d) = stack.pop() {
             let mut used = Vec::new();
@@ -125,7 +136,7 @@ impl Elab {
             }
             for u in used {
                 let info = &self.g.defs[u.0 as usize];
-                if *info.module == *name && info.body.is_some() && !info.opaque && self.transparent.insert(u) {
+                if *info.module == *name && info.body.is_some() && !info.opaque && !exported.contains(&u) && self.transparent.insert(u) {
                     stack.push(u);
                 }
             }
@@ -1885,9 +1896,14 @@ impl Elab {
             let Some(Sym::Def(did)) = id else { continue };
             self.g.fuel.set(DEFAULT_FUEL);
             self.sig_inst = self.sig_inst_of(k);
+            // An instance's function whose signature doesn't have the
+            // class's shape (#225): the class's type.
+            let mut class_ty = None;
             let sig = match &d.kind {
                 DeclKind::Fn { name, params, result, constraints, partial, decreasing, body } => {
+                    let diags_before = self.diags.len();
                     let mut sig = self.signature(params, result.as_ref(), constraints);
+                    let sig_failed = self.diags.len() > diags_before;
                     if name.name == "main" && d.export != Export::No && self.root.as_deref() == Some(self.cur.as_str()) {
                         self.check_main(&sig, name.span);
                     }
@@ -1969,6 +1985,10 @@ impl Elab {
                             ..Default::default()
                         },
                     );
+                    if self.inst_refines.contains_key(&k) {
+                        self.refined_inst_fns.insert(*did);
+                        class_ty = self.check_inst_refines(k, d, &sig, sig_failed);
+                    }
                     sig
                 }
                 DeclKind::Lemma { name, params, constraints, decreasing, .. } => {
@@ -2000,7 +2020,7 @@ impl Elab {
                 }
                 _ => continue,
             };
-            let ty = Self::pi_of(&sig.binders, sig.result.clone());
+            let ty = class_ty.take().unwrap_or_else(|| Self::pi_of(&sig.binders, sig.result.clone()));
             self.g.defs[did.0 as usize].ty = ty;
             if !sig.comptime.is_empty() {
                 let (what, bad) = match &d.kind {
@@ -2126,6 +2146,11 @@ impl Elab {
                 _ => {}
             }
         }
+        // Once every body in the module is checked, every dictionary its
+        // instances build is known (#225).
+        if checks {
+            self.class_call_obligations();
+        }
         self.resolve_insts();
     }
 
@@ -2133,9 +2158,14 @@ impl Elab {
     /// `have` may use a lemma declared later.
     fn phase_lemma_statements(&mut self, m: &ast::Module, ids: &[Option<Sym>], sigs: &mut HashMap<usize, Sig>) {
         for (k, (d, id)) in m.decls.iter().zip(ids).enumerate() {
-            let DeclKind::Lemma { lets, ensures, decreasing, .. } = &d.kind else { continue };
+            let DeclKind::Lemma { lets, ensures, decreasing, proof, .. } = &d.kind else { continue };
             let Some(Sym::Def(did)) = id else { continue };
             let Some(sig) = sigs.get(&k) else { continue };
+            // An axiom (D56) is known as one before any proof uses it, so a
+            // use before its declaration is in the ledger too (#245).
+            if self.stdlib_mode && proof.as_ref().is_some_and(is_builtin) {
+                self.axiom_defs.insert(*did);
+            }
             self.g.fuel.set(DEFAULT_FUEL);
             self.sig_inst = self.sig_inst_of(k);
             let mut cx = sig.cx.clone();

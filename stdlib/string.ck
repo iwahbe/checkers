@@ -153,6 +153,74 @@ export class Hole s h
 # No options: the only list of them is `[]`.
 export enum NoOptions
 
+# ── Whole numbers in decimal ─────────────────────────────────────────────────
+
+# Whether every byte of `b` from `i` up to (not including) `j` is a digit:
+# `True` if there are none (`j <= i`), `False` if `j` is past the end.
+export transparent fn all_digits b i j -> r : b~Bytes, i~Nat, j~Nat, r~Bool
+    decreasing j
+    if j <= i
+        True
+    else if j <= len b
+        all_digits b i (j - 1) and char.is_digit b[j - 1]
+    else
+        False
+
+# The number the bytes of `b` from `i` up to `j` write in decimal. No bytes
+# write `0`; a byte that isn't a digit counts as `0`, and so does a `j` past
+# the end.
+export transparent fn decimal_value b i j -> n : b~Bytes, i~Nat, j~Nat, n~Nat
+    decreasing j
+    if i < j and j <= len b
+        let c = b[j - 1]
+        decimal_value b i (j - 1) * 10 + (if char.is_digit c then c - '0' else 0)
+    else
+        0
+
+# `n` in decimal: digits only (no sign, never an exponent), at least one,
+# and no leading zero except in `0` itself. `display n []` is this.
+export fn decimal n -> s : n~Nat, s~String, len s.bytes > 0, all_digits s.bytes 0 (len s.bytes),
+                           s.bytes[0] == '0' implies len s.bytes == 1,
+                           decimal_value s.bytes 0 (len s.bytes) == n
+    decreasing n
+    if n < 10
+        digit n
+    else
+        let a = decimal (n / 10)
+        let c = digit (n % 10)
+        have decimal_prefix a.bytes c.bytes 0 (len a.bytes)
+        a ++ c
+
+# The digit `d`, as a string of one byte.
+export fn digit d -> s : d~Nat, d < 10, s~String, len s.bytes == 1, s.bytes[0] == '0' + d
+    if d < 5
+        if d == 0 then "0" else if d == 1 then "1" else if d == 2 then "2" else if d == 3 then "3" else "4"
+    else
+        if d == 5 then "5" else if d == 6 then "6" else if d == 7 then "7" else if d == 8 then "8" else "9"
+
+# Bytes after `a` don't change what `a`'s bytes from `i` to `j` write.
+export lemma decimal_prefix a c i j : a~Bytes, c~Bytes, i~Nat, j~Nat, j <= len a
+    ensures decimal_value (a ++ c) i j == decimal_value a i j and all_digits (a ++ c) i j == all_digits a i j
+    proof
+        decreasing j
+        if i < j
+            have decimal_prefix a c i (j - 1)
+        else
+            auto
+
+# Every byte of digits is a digit.
+export lemma all_digits_at b i j k : b~Bytes, i~Nat, j~Nat, all_digits b i j, k~Nat, i <= k, k < j
+    ensures k < len b and char.is_digit b[k]
+    proof
+        decreasing j
+        if k + 1 < j
+            have all_digits_at b i (j - 1) k
+        else
+            auto
+
+check decimal 0 == "0" and decimal 7 == "7" and decimal 1234567890 == "1234567890"
+check decimal 170141183460469231731687303715884105728 == "170141183460469231731687303715884105728"
+
 # ── Showing values ───────────────────────────────────────────────────────────
 
 # How values of type `a` are shown to a user: `display x []`, or a hole of
@@ -181,12 +249,14 @@ export enum IntOption
     Digits n : n~Nat   # at least `n` digits, zeros before them
 
 # A number in decimal, or as the options say: `display 255 [Hex, Digits 4]`
-# is `0x00ff`. `Nat`, `Char` and the fixed-width numbers show this way too.
+# is `0x00ff`. Without options it is `decimal` of its size, after `-` if it
+# is negative. `Nat`, `Char` and the fixed-width numbers show this way too.
 instance Display Int
     type Options = IntOption
-    fn display n os
+    fn display n os -> s : n~Int, os~List IntOption, s~String,
+                           os == [] implies s == (if n < 0 then "-" ++ decimal (-n) else decimal n)
         let (base, plus, least) = int_options os 10 False 0
-        let ds = digits (if n < 0 then -n else n) base
+        let ds = if base == 10 then decimal (if n < 0 then -n else n) else digits (if n < 0 then -n else n) base
         let sign = if n < 0 then "-" else if plus then "+" else ""
         let pad = if len ds < least then zeros (least - len ds) else ""
         sign ++ base_prefix base ++ pad ++ ds

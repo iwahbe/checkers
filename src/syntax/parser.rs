@@ -848,13 +848,13 @@ impl Parser {
             } else if self.eat_kw(Kw::Fn) {
                 let mname = self.ident("a function name")?;
                 let params = self.names_until_header_end();
-                if self.at(&Tok::Colon) || self.at(&Tok::Arrow) {
-                    self.diags.push(
-                        Diagnostic::error("E0121", format!("an instance's function `{}` takes its signature from the class", mname.name), self.span())
-                            .with_help("write only its name and parameters, then its body"),
-                    );
-                    return Err(Failed);
-                }
+                // A signature of its own refines the class's (#225).
+                let sig = if self.at(&Tok::Colon) || self.at(&Tok::Arrow) {
+                    let result = if self.eat(&Tok::Arrow) { Some(self.ident("a result name after `->`")?) } else { None };
+                    Some((result, self.opt_constraints()?))
+                } else {
+                    None
+                };
                 self.open_block("function body")?;
                 self.body_start = true;
                 let decreasing = if self.eat_kw(Kw::Decreasing) {
@@ -866,7 +866,7 @@ impl Parser {
                 };
                 let body = self.block_rest()?;
                 let span = start.to(self.prev_span());
-                members.push(InstMember::Fn { name: mname, params, decreasing, body, span });
+                members.push(InstMember::Fn { name: mname, params, sig, decreasing, body, span });
             } else if self.eat_kw(Kw::Lemma) {
                 let mname = self.ident("a lemma name")?;
                 let params = self.names_until_header_end();

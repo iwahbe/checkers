@@ -1,0 +1,38 @@
+-- stdout
+42, 0 left
+42, 0 left
+42, 0 left
+-42, 1 left
+-42, 1 left
+NotFound
+7, 1 left
+7, 1 left
+7, 1 left
+0, 0 left
+0, 0 left
+NotFound
+0, 2 left
+0, 2 left
+0, 2 left
+NotFound
+NotFound
+NotFound
+NotFound
+NotFound
+NotFound
+NotFound
+NotFound
+NotFound
+NotFound
+NotFound
+NotFound
+NotFound
+NotFound
+NotFound
+12345678901234567890123456789, 7 left
+NotFound
+0, 1 left
+-7, 1 left
+170141183460469231731687303715884105728, 1 left
+-- stderr
+-- exit 0
