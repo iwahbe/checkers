@@ -80,14 +80,11 @@ export fn render d -> s : d~Decimal, s~String
 # `a × 10^e` as `render` writes it, without a sign.
 fn magnitude a e -> s : a~Nat, e~Int, s~String, len s.bytes > 0, char.is_digit s.bytes[0]
     if e >= 0 and e <= 21
-        have string.display_digits (a * pow10 e)
         display (a * pow10 e) []
     else
         let ds = display a []
-        have string.display_digits a
         if e < 0 and 0 - e <= len ds.bytes + 6
             let p = pow10 (0 - e)
-            have string.display_digits (a / p)
             display (a / p) [] ++ "." ++ places (a % p) (0 - e)
         else
             ds ++ "e" ++ display e []
@@ -318,12 +315,14 @@ lemma unsigned_magnitude a e neg post : a~Nat, e~Int, neg~Bool, post~Bytes,
                 have fraction_point q r f neg post
                 have exponent_end post (q * p + r) (0 - f) neg
                 have q * p + r == a
+                have unsigned ((magnitude a e).bytes ++ post) neg == Ok (number a e neg, post)
             else
                 let rest = b"e" ++ (display e []).bytes ++ post
                 have (magnitude a e).bytes ++ post == ds ++ rest
                 have integer_part a rest neg
                 have fraction_other rest a neg
                 have exponent_written a e neg post
+                have unsigned ((magnitude a e).bytes ++ post) neg == Ok (number a e neg, post)
 
 # `scaled (m × 10^k) e` is `scaled m (e + k)`.
 lemma scaled_pow m e k : m~Int, e~Int, k~Nat
@@ -341,7 +340,6 @@ lemma integer_part v rest neg : v~Nat, rest~Bytes, neg~Bool, len rest == 0 or no
     ensures unsigned ((display v []).bytes ++ rest) neg == Ok (fraction rest v neg)
     proof
         let d = (display v []).bytes
-        have string.display_digits v
         have array.uncons_slice (d ++ rest)
         if d[0] == '0'
             have array.slice_append b"0" rest b""
@@ -415,7 +413,7 @@ lemma exponent_written m x neg post : m~Int, x~Int, neg~Bool, post~Bytes, len po
         if x < 0
             have w[0] == '-'
         else
-            have string.display_digits x
+            auto
 
 # ── Facts about the primitives above, trusted like the primitives ────────────
 
