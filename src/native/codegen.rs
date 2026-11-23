@@ -20,7 +20,7 @@ use cranelift_codegen::ir::{
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Runtime functions: name, parameters, whether they return a word.
 const RUNTIME: &[(&str, usize, bool)] = &[
@@ -37,6 +37,7 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("ck_eq", 3, true),
     ("ck_ne", 3, true),
     ("ck_concat", 2, true),
+    ("ck_concat_own", 2, true),
     ("ck_len", 1, true),
     ("ck_index", 3, true),
     ("ck_big_lit", 2, true),
@@ -89,6 +90,9 @@ struct St {
     /// keeps a map per variable as long as the block count, quadratic in
     /// generated code (#67).
     vars: Vec<Option<Value>>,
+    /// Values that are never pointers (a comparison's `Bool`): dropping or
+    /// duplicating one does nothing, so no code is emitted for it.
+    imm: HashSet<Value>,
     owner: u32,
     frefs: HashMap<FuncId, FuncRef>,
     gvs: HashMap<DataId, GlobalValue>,
@@ -346,7 +350,7 @@ impl<'p, M: Module> Gen<'p, M> {
         b.switch_to_block(entry);
         let params: Vec<Value> = b.block_params(entry).to_vec();
         let vars = vec![None; f.nvars.max(f.params.len() as u32) as usize];
-        let mut st = St { vars, owner: f.owner, frefs: HashMap::new(), gvs: HashMap::new() };
+        let mut st = St { vars, imm: HashSet::new(), owner: f.owner, frefs: HashMap::new(), gvs: HashMap::new() };
         let env = params[0];
         match &f.kind {
             FnKind::Global | FnKind::Caf => {
@@ -460,7 +464,10 @@ impl<'p, M: Module> Gen<'p, M> {
         b.ins().band(a, nz)
     }
 
-    fn dup(&mut self, b: &mut FunctionBuilder, _st: &mut St, x: Value) {
+    fn dup(&mut self, b: &mut FunctionBuilder, st: &mut St, x: Value) {
+        if st.imm.contains(&x) {
+            return;
+        }
         let inc = b.create_block();
         let done = b.create_block();
         let c = Self::is_ptr(b, x);
@@ -473,6 +480,9 @@ impl<'p, M: Module> Gen<'p, M> {
     }
 
     fn drop_v(&mut self, b: &mut FunctionBuilder, st: &mut St, x: Value) {
+        if st.imm.contains(&x) {
+            return;
+        }
         let dec = b.create_block();
         let free = b.create_block();
         let done = b.create_block();
@@ -559,6 +569,9 @@ impl<'p, M: Module> Gen<'p, M> {
             }
             E::Let(x, a, body) => {
                 let v = self.val(b, st, a);
+                if Self::immediate(a) {
+                    st.imm.insert(v);
+                }
                 st.vars[*x as usize] = Some(v);
                 self.emit(b, st, body, mode)
             }
@@ -610,6 +623,18 @@ impl<'p, M: Module> Gen<'p, M> {
                     b.ins().store(flags(), *v, x, (w::HDR + 8 * k) as i32);
                 }
                 let x = self.flatten_tuple(b, st, x, vs[vs.len() - 1]);
+                Self::finish(b, &mode, x)
+            }
+            E::Borrow { op: BOp::Prim(Op::Concat, _), args, drops } if Self::gives_left(args, drops).is_some() => {
+                // The last use of the left side: `++` takes it, so a string
+                // or array no one else holds is appended to in place.
+                let given = Self::gives_left(args, drops);
+                let vs: Vec<Value> = args.iter().map(|a| self.val(b, st, a)).collect();
+                let x = self.call1(b, st, "ck_concat_own", &[vs[0], vs[1]]);
+                for d in drops.iter().filter(|d| Some(**d) != given) {
+                    let dv = self.var(b, st, *d);
+                    self.drop_v(b, st, dv);
+                }
                 Self::finish(b, &mode, x)
             }
             E::Borrow { op, args, drops } => {
@@ -816,6 +841,22 @@ impl<'p, M: Module> Gen<'p, M> {
         b.ins().select(c, t, f)
     }
 
+    /// `a ++ b` whose left side is a variable this is the last use of (it
+    /// would be dropped right after), and not also the right side: that
+    /// variable, which `++` may then take.
+    fn gives_left(args: &[E], drops: &[V]) -> Option<V> {
+        match args {
+            [E::Var(v), y] if drops.iter().filter(|d| *d == v).count() == 1 && !matches!(y, E::Var(u) if u == v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Is `e`'s value never a pointer? A comparison gives `True` or `False`,
+    /// constructors without fields.
+    fn immediate(e: &E) -> bool {
+        matches!(e, E::Borrow { op: BOp::Prim(Op::Eq | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge, _), .. })
+    }
+
     /// Both small integers?
     fn both_int(b: &mut FunctionBuilder, x: Value, y: Value) -> Value {
         let a = b.ins().band(x, y);
@@ -848,6 +889,56 @@ impl<'p, M: Module> Gen<'p, M> {
         let mut args = vec![x, y];
         args.extend(extra);
         let s = self.call1(b, st, slow, &args);
+        b.ins().jump(done, &[BlockArg::Value(s)]);
+        b.switch_to_block(done);
+        r
+    }
+
+    /// Euclidean `/` or `%` (the remainder never negative), inline when both
+    /// are small integers and the divisor isn't zero; otherwise the runtime,
+    /// which also reports division by zero.
+    fn divide(&mut self, b: &mut FunctionBuilder, st: &mut St, rem: bool, x: Value, y: Value, owner: Value) -> Value {
+        let fast = b.create_block();
+        let slow = b.create_block();
+        let done = b.create_block();
+        let r = b.append_block_param(done, I64);
+        let ints = Self::both_int(b, x, y);
+        let ints = b.ins().icmp_imm_s(IntCC::NotEqual, ints, 0);
+        // The word for 0 is 1.
+        let nonzero = b.ins().icmp_imm_s(IntCC::NotEqual, y, 1);
+        let go = b.ins().band(ints, nonzero);
+        b.ins().brif(go, fast, &[], slow, &[]);
+        b.switch_to_block(fast);
+        // Small integers have 63 bits, so neither division overflows i64.
+        let n = b.ins().sshr_imm_s(x, 1);
+        let d = b.ins().sshr_imm_s(y, 1);
+        let q = b.ins().sdiv(n, d);
+        let m = b.ins().srem(n, d);
+        // A negative remainder: one more `|d|` makes it Euclidean, and the
+        // quotient moves one step away from `d`'s sign.
+        let neg = b.ins().icmp_imm_s(IntCC::SignedLessThan, m, 0);
+        let (v, ov) = if rem {
+            let ad = b.ins().iabs(d);
+            let m1 = b.ins().iadd(m, ad);
+            let m = b.ins().select(neg, m1, m);
+            // |m| < |d|: it fits.
+            let m2 = b.ins().iadd(m, m);
+            (b.ins().iadd_imm_s(m2, 1), b.ins().iconst(I8, 0))
+        } else {
+            let dpos = b.ins().icmp_imm_s(IntCC::SignedGreaterThan, d, 0);
+            let one = b.ins().iconst(I64, 1);
+            let minus = b.ins().iconst(I64, -1);
+            let step = b.ins().select(dpos, minus, one);
+            let zero = b.ins().iconst(I64, 0);
+            let step = b.ins().select(neg, step, zero);
+            let q = b.ins().iadd(q, step);
+            // Only -2^62 / -1 leaves the small integers.
+            let (q2, ov) = b.ins().sadd_overflow(q, q);
+            (b.ins().iadd_imm_s(q2, 1), ov)
+        };
+        b.ins().brif(ov, slow, &[], done, &[BlockArg::Value(v)]);
+        b.switch_to_block(slow);
+        let s = self.call1(b, st, if rem { "ck_rem" } else { "ck_div" }, &[x, y, owner]);
         b.ins().jump(done, &[BlockArg::Value(s)]);
         b.switch_to_block(done);
         r
@@ -970,8 +1061,7 @@ impl<'p, M: Module> Gen<'p, M> {
                 "ck_mul",
                 None,
             ),
-            Op::Div => self.call1(b, st, "ck_div", &[a[0], a[1], o]),
-            Op::Rem => self.call1(b, st, "ck_rem", &[a[0], a[1], o]),
+            Op::Div | Op::Rem => self.divide(b, st, p == Op::Rem, a[0], a[1], o),
             Op::Neg => self.call1(b, st, "ck_neg", &[a[0]]),
             Op::Eq | Op::Ne => {
                 let ints = Self::both_int(b, a[0], a[1]);
@@ -1105,7 +1195,15 @@ impl<'p, M: Module> Gen<'p, M> {
             let mut targets = Vec::new();
             if all_nullary {
                 // Compare the words: constructors without fields are words.
-                for a in arms {
+                // A comparison's `Bool` is one of two: when both have arms,
+                // the last needs no test.
+                let words: Vec<i64> = arms.iter().map(|a| w::nullary(a.con) as i64).collect();
+                let both = st.imm.contains(&x) && words.contains(&self.true_w) && words.contains(&self.false_w);
+                for (k, a) in arms.iter().enumerate() {
+                    if both && k + 1 == arms.len() {
+                        targets.push(b.current_block().expect("a block"));
+                        break;
+                    }
                     let yes = b.create_block();
                     let no = b.create_block();
                     let c = b.ins().icmp_imm_s(IntCC::Equal, x, w::nullary(a.con) as i64);
@@ -1113,7 +1211,9 @@ impl<'p, M: Module> Gen<'p, M> {
                     targets.push(yes);
                     b.switch_to_block(no);
                 }
-                b.ins().jump(fallback, &[]);
+                if !both {
+                    b.ins().jump(fallback, &[]);
+                }
             } else {
                 // The constructor: in the word, or in the object's header.
                 let imm = b.create_block();
@@ -1265,7 +1365,7 @@ impl<'p, M: Module> Gen<'p, M> {
         ctx.func.signature = s;
         {
             let mut b = FunctionBuilder::new(&mut ctx.func, &mut fctx);
-            let mut st = St { vars: Vec::new(), owner: self.p.main, frefs: HashMap::new(), gvs: HashMap::new() };
+            let mut st = St { vars: Vec::new(), imm: HashSet::new(), owner: self.p.main, frefs: HashMap::new(), gvs: HashMap::new() };
             let entry = b.create_block();
             b.append_block_params_for_function_params(entry);
             b.switch_to_block(entry);
