@@ -45,6 +45,9 @@ pub struct Inliner<'a> {
     pub code: &'a HashMap<u32, Arc<Ir>>,
     /// Which definitions are recursive, as found so far.
     pub recursive: &'a mut HashMap<u32, bool>,
+    /// The definition whose code each definition's is: itself, or the one
+    /// a specialized copy copies (`spec`), which a runtime error names.
+    pub origin: &'a dyn Fn(u32) -> u32,
 }
 
 impl Inliner<'_> {
@@ -121,7 +124,7 @@ impl Inliner<'_> {
         }
         // The body's variables are its parameters, the first outermost:
         // bound by `let`s in the same order, each under the ones before.
-        let mut out = at(Some(*f), clone(body));
+        let mut out = at(Some(DefId((self.origin)(f.0))), clone(body));
         for (k, x) in args.iter().enumerate().rev() {
             out = bind(Arc::new(shift(x, k, 0)), out);
         }
@@ -394,6 +397,131 @@ fn clone(ir: &Ir) -> Ir {
     shift(ir, 0, 0)
 }
 
+/// How many `let`s and markers a `let` is moved past, at most: moving
+/// renames the code it passes.
+const MAX_FLOAT: usize = 16;
+
+/// `ir` with each `let` whose value computes nothing that can fail or be
+/// seen (`pure`) moved into the one branch of a `match` after it that uses
+/// it, past the `let`s before that `match` (SPEC §14). The value is then
+/// computed only where it is needed, and after the other branch's last use
+/// of what it reads: `rest` of `x :: rest` (a slice of the array) is made
+/// where the array may be used for the last time, so the array is unshared
+/// there and the slice is moved forward in place. Nothing it moves can
+/// fail or be seen, so the results, failures and effects are those of the
+/// code it rewrites. `pure_call(d, n)`: whether calling definition `d`
+/// with `n` arguments is such a value.
+pub fn float_in(ir: &Ir, pure_call: &dyn Fn(DefId, usize) -> bool) -> Ir {
+    match ir {
+        Ir::Let(v, b) => {
+            let v = float_in(v, pure_call);
+            let b = float_in(b, pure_call);
+            // `let x = v in x` is `v`, so a call there is a tail call.
+            if matches!(b, Ir::Var(0)) {
+                return v;
+            }
+            if pure(&v, pure_call) {
+                if let Some(out) = sink(&v, &b, MAX_FLOAT) {
+                    return out;
+                }
+            }
+            Ir::Let(Arc::new(v), Arc::new(b))
+        }
+        _ => ir.map_subterms(|x, _| float_in(x, pure_call)),
+    }
+}
+
+/// Code that computes a value and nothing else, and can't fail: no
+/// division, indexing, `Nat` subtraction, call of a function (unless
+/// `pure_call` says so), or definition's value (a constant computed on
+/// first use).
+fn pure(ir: &Ir, pure_call: &dyn Fn(DefId, usize) -> bool) -> bool {
+    use super::ir::Op;
+    match ir {
+        Ir::Var(_) | Ir::Erased | Ir::Lit(_) | Ir::ConFn(_) | Ir::Lam(..) => true,
+        Ir::Tuple(xs) | Ir::Con(_, xs) => xs.iter().all(|x| pure(x, pure_call)),
+        Ir::Proj(x, ..) | Ir::Field(x, _) | Ir::At(_, x) => pure(x, pure_call),
+        Ir::Prim(op, xs, nat) => {
+            let safe = match op {
+                Op::Add | Op::Mul | Op::Neg | Op::Eq | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge | Op::Len | Op::Concat | Op::TypeApply => true,
+                Op::Sub => !nat,
+                Op::Div | Op::Rem | Op::Index | Op::Par | Op::When => false,
+            };
+            safe && xs.iter().all(|x| pure(x, pure_call))
+        }
+        Ir::Call(h, xs) => matches!(&**h, Ir::Global(d) if pure_call(*d, xs.len())) && xs.iter().all(|x| pure(x, pure_call)),
+        _ => false,
+    }
+}
+
+/// `let v in b`, with the `let` moved into `b` as far as it goes; `None`
+/// if it stays where it is.
+fn sink(v: &Ir, b: &Ir, fuel: usize) -> Option<Ir> {
+    if fuel == 0 {
+        return None;
+    }
+    match b {
+        Ir::At(o, x) => sink(v, x, fuel - 1).map(|x| Ir::At(*o, Arc::new(x))),
+        // `let x = v in let y = w in e`, `w` not using `x`: `let y = w in
+        // let x = v in e`.
+        Ir::Let(w, e) if !uses(w, 0) => {
+            let w = rename(w, &|i| i - 1);
+            let v = rename(v, &|i| i + 1);
+            let e = rename(e, &|i| match i {
+                0 => 1,
+                1 => 0,
+                i => i,
+            });
+            // Only if it then reaches a `match` it goes into.
+            let inner = sink(&v, &e, fuel - 1)?;
+            Some(Ir::Let(Arc::new(w), Arc::new(inner)))
+        }
+        Ir::Case(s, c) if !uses(s, 0) => {
+            let users = c.branches.iter().filter(|(_, n, x)| uses(x, *n)).count()
+                + c.lits.iter().filter(|(_, x)| uses(x, 0)).count()
+                + c.default.iter().filter(|x| uses(x, 0)).count();
+            if users != 1 {
+                return None;
+            }
+            // In an arm binding `n` fields, `v`'s variable is `n`; the arm
+            // that uses it gets the `let`, first, under its fields.
+            let arm = |x: &Ir, n: usize| -> Arc<Ir> {
+                if uses(x, n) {
+                    let body = rename(x, &|i| match i {
+                        i if i < n => i + 1,
+                        i if i == n => 0,
+                        i => i,
+                    });
+                    let v = rename(v, &|i| i + n);
+                    Arc::new(Ir::Let(Arc::new(v), Arc::new(body)))
+                } else {
+                    Arc::new(rename(x, &|i| if i < n { i } else { i - 1 }))
+                }
+            };
+            Some(Ir::Case(
+                Arc::new(rename(s, &|i| i - 1)),
+                Arc::new(IrCase {
+                    branches: c.branches.iter().map(|(con, n, x)| (*con, *n, arm(x, *n))).collect(),
+                    lits: c.lits.iter().map(|(l, x)| (l.clone(), arm(x, 0))).collect(),
+                    default: c.default.as_ref().map(|x| arm(x, 0)),
+                }),
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// `ir` with each free variable `i` renamed to `f(i)`.
+fn rename(ir: &Ir, f: &dyn Fn(usize) -> usize) -> Ir {
+    fn go(ir: &Ir, f: &dyn Fn(usize) -> usize, depth: usize) -> Ir {
+        match ir {
+            Ir::Var(i) if *i >= depth => Ir::Var(f(i - depth) + depth),
+            _ => ir.map_subterms(|x, n| go(x, f, depth + n)),
+        }
+    }
+    go(ir, f, 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,7 +547,7 @@ mod tests {
     fn run(ir: &Ir) -> Ir {
         let code = HashMap::new();
         let mut rec = HashMap::new();
-        Inliner { code: &code, recursive: &mut rec }.program(ir, None)
+        Inliner { code: &code, recursive: &mut rec, origin: &|d| d }.program(ir, None)
     }
 
     /// `match (if v0 then None else Some (v0, v1))` with `None -> "none"` and

@@ -289,6 +289,20 @@ pub fn slice(a: W, i: usize, j: usize) -> W {
     r
 }
 
+/// Elements `i..` of `a` (`i < len a`), as `slice`, but a slice no one
+/// else refers to is moved forward in place instead of copied: the caller
+/// must then own `a` (`Seq`'s `uncons` calls the builtins using this
+/// through their wrappers, which do, as `set`'s).
+pub fn advance(a: W, i: usize) -> W {
+    let n = len(a);
+    if unique(a) && is_slice(a) && i < n {
+        set_slot(a, 0, (n - i) as u64);
+        set_slot(a, 1, unsafe { data(a).add(i * layout(a).width()) } as W);
+        return dup(a);
+    }
+    slice(a, i, n)
+}
+
 /// `a ++ b` (both borrowed): the narrowest layout holding both.
 pub fn concat(a: W, b: W) -> W {
     let (la, lb) = (layout(a), layout(b));
