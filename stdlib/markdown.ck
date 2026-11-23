@@ -157,17 +157,14 @@ fn is_space_or_tab c : c~Nat
 fn is_ascii_space c : c~Nat
     c == 32 or c == 9 or c == 10 or c == 11 or c == 12 or c == 13
 
-fn is_digit c : c~Nat
-    c >= 48 and c <= 57
-
 fn is_hex c : c~Nat
-    is_digit c or (c >= 97 and c <= 102) or (c >= 65 and c <= 70)
+    char.is_digit c or (c >= 97 and c <= 102) or (c >= 65 and c <= 70)
 
 fn is_letter c : c~Nat
     (c >= 97 and c <= 122) or (c >= 65 and c <= 90)
 
 fn is_alnum c : c~Nat
-    is_letter c or is_digit c
+    is_letter c or char.is_digit c
 
 fn lower c -> r : c~Nat, r~Nat
     if c >= 65 and c <= 90 then c + 32 else c
@@ -304,7 +301,7 @@ fn entity_at b i -> r : b~Bytes, i~Nat, r~Option (Bytes, Nat)
     else if at b (i + 1) == 35
         let hex = lower (at b (i + 2)) == 120
         let first = if hex then i + 3 else i + 2
-        let stop = if hex then skip is_hex b first else skip is_digit b first
+        let stop = if hex then skip is_hex b first else skip char.is_digit b first
         let count = sub stop first
         if count >= 1 and (if hex then count <= 6 else count <= 7) and at b stop == 59
             Some (code_point (number b first stop (if hex then 16 else 10) 0), stop + 1)
@@ -323,7 +320,7 @@ fn entity_at b i -> r : b~Bytes, i~Nat, r~Option (Bytes, Nat)
 fn number b i j base acc -> r : b~Bytes, i~Nat, j~Nat, base~Nat, acc~Nat, r~Nat
     if i < j and i < len b
         let c = lower b[i]
-        let d = if is_digit c then c - 48 else sub c 87
+        let d = if char.is_digit c then c - 48 else sub c 87
         number b (i + 1) j base (acc * base + d)
     else
         acc
@@ -962,7 +959,7 @@ enum Start ln : ln~ghost Ln
 # A character that may start a block, other than indented code.
 fn maybe_special c : c~Nat
     c == 35 or c == 96 or c == 126 or c == 42 or c == 43 or c == 95 or c == 61 or c == 60 or c == 62
-        or c == 45 or is_digit c
+        or c == 45 or char.is_digit c
 
 # Start the blocks the line starts, inside the container, while they are
 # containers.
@@ -1148,7 +1145,7 @@ fn same_list a b : a~ListData, b~ListData
 fn list_marker src ln k nn indent -> r : src~Bytes, ln~Ln, k~Kind, nn~Nat, nn == (advance_nonspace src ln).offset,
                                          indent~Nat, r~Option (ListData, (l~Ln, l.stop == ln.stop, ln.offset < l.offset))
     let c = pk src ln nn
-    let digits = sub (min (skip is_digit src nn) ln.stop) nn
+    let digits = sub (min (skip char.is_digit src nn) ln.stop) nn
     let delim = pk src ln (nn + digits)
     let bullet = c == 45 or c == 43 or c == 42
     let number = number src nn (nn + digits) 10 0
@@ -2053,7 +2050,7 @@ fn render_block code tight b r -> q : code~(String -> String -> Option String), 
         Paragraph xs _           ->
             if tight then render_inlines xs False r else cr (lit (render_inlines xs False (lit (cr r) b"<p>")) b"</p>")
         Heading level xs _       ->
-            let n = (string.decimal level).bytes
+            let n = string.bytes (string.display level [])
             cr (lit (render_inlines xs False (lit (cr r) (bytes.concat [b"<h", n, b">"]))) (bytes.concat [b"</h", n, b">"]))
         ThematicBreak _          -> cr (lit (cr r) b"<hr />")
         Quote bs _               ->
@@ -2061,7 +2058,7 @@ fn render_block code tight b r -> q : code~(String -> String -> Option String), 
         Bullets t items _        ->
             cr (lit (cr (render_items code t items (cr (lit (cr r) b"<ul>")))) b"</ul>")
         Numbered start t items _ ->
-            let open = if start == 1 then b"<ol>" else bytes.concat [b"<ol start=\"", (string.decimal start).bytes, b"\">"]
+            let open = if start == 1 then b"<ol>" else bytes.concat [b"<ol start=\"", string.bytes (string.display start []), b"\">"]
             cr (lit (cr (render_items code t items (cr (lit (cr r) open)))) b"</ol>")
         Code info text _ _       ->
             match code info text
