@@ -39,10 +39,9 @@
 //!                         formatted; every .ck file in the repository must format to a
 //!                         fixed point with the same syntax tree (D93).
 //! examples/*.ck, bench/*.ck → must check with no errors and no warnings.
-//! smt/                 → the solver package (#72): each module checks with no errors and
-//!                         no warnings, and so does its command, `smt/cli/main.ck` (its own
-//!                         package, depending on `smt`).
-//! tests/smt/NAME.smt2  → NAME.out is what `smt/cli/main.ck parse` writes for it: the
+//! smt/*.ck             → the solver package (#72): each module, its command `main.ck`
+//!                         too, checks with no errors and no warnings.
+//! tests/smt/NAME.smt2  → NAME.out is what `smt/main.ck parse` writes for it: the
 //!                         query written back, or the error reading it (line and column).
 //! site/*.md, README.md, the standard library's documentation → `checkers site`
 //!                         and `checkers doc` give no warnings: links resolve, code
@@ -853,9 +852,8 @@ fn golden() {
     }
 }
 
-/// The solver package (#72): its modules check clean; its command, a
-/// package of its own that depends on it, checks clean and builds; and
-/// `main parse` gives each `tests/smt/*.smt2` case's output.
+/// The solver package (#72): its modules check clean; its command builds;
+/// and `main parse` gives each `tests/smt/*.smt2` case's output.
 fn smt_package(pool: &Pool, root: &'static Path, update: bool) {
     let pkg = root.join("smt");
     for (i, path) in ck_files(&pkg).into_iter().enumerate() {
@@ -867,32 +865,18 @@ fn smt_package(pool: &Pool, root: &'static Path, update: bool) {
             (1, if c.diags.is_empty() { vec![] } else { vec![format!("── {name} must be clean ──\n{}", c.report())] })
         });
     }
-    pool.add((13, 0), "smt/cli/main.ck".into(), move |_| {
-        let cli = ["--package", "smt=smt", "--uses", ".=smt", "smt/cli/main.ck"];
+    pool.add((13, 0), "build smt/main.ck".into(), move |_| {
         let mut failures = Vec::new();
-        let checked = std::process::Command::new(env!("CARGO_BIN_EXE_ckc"))
-            .env("CHECKERS_NO_CACHE", "1")
-            .args(["check", "--deny-warnings"])
-            .args(cli)
-            .current_dir(root)
-            .output()
-            .expect("run ckc check");
-        if !checked.status.success() {
-            failures.push(format!("── smt/cli/main.ck must be clean ──\n{}", shown(&checked)));
-        }
         let exe = Removed(std::env::temp_dir().join(format!("checkers-golden-{}-smt", std::process::id())));
         let built = std::process::Command::new(env!("CARGO_BIN_EXE_ckc"))
             .env("CHECKERS_NO_CACHE", "1")
-            .arg("build")
-            .args(cli)
-            .arg("-o")
+            .args(["build", "smt/main.ck", "-o"])
             .arg(&exe.0)
             .current_dir(root)
             .output()
             .expect("run ckc build");
         if !built.status.success() {
-            failures.push(format!("── build smt/cli/main.ck ──\n{}", String::from_utf8_lossy(&built.stderr)));
-            return (1, failures);
+            return (1, vec![format!("── build smt/main.ck ──\n{}", String::from_utf8_lossy(&built.stderr))]);
         }
         let mut count = 1;
         for path in files_with(&root.join("tests").join("smt"), "smt2") {

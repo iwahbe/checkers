@@ -1,6 +1,0 @@
-{
-  "name": "smt_cli",
-  "version": "0.1.0",
-  "toolchain": "0.1.0",
-  "dependencies": { "smt": { "path": ".." } }
-}

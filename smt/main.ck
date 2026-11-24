@@ -14,8 +14,8 @@ import std.files (Fs, Entry)
 import std.string
 import std.bytes
 import std.list
-import smt.smtlib (Shape, Group)
-import smt.term
+import smtlib (Shape, Group)
+import term
 
 let USAGE = "usage: main parse < QUERY\n       main roundtrip DIR..."
 
@@ -53,8 +53,8 @@ fn roundtrip dirs io fs -> code : dirs~List String, io~Term, fs~Fs, code~ExitCod
     match in_dirs dirs io fs (Tally 0 0)
         None   -> Failure 2
         Some t ->
-            let summary = string.concat [decimal t.read, " queries read, ", decimal t.same, " round-trip, ",
-                                         decimal (t.read - t.same), " don't"]
+            let summary = string.concat [string.display t.read [], " queries read, ", string.display t.same [], " round-trip, ",
+                                         string.display (t.read - t.same) [], " don't"]
             let _ = terminal.print_line summary io
             if t.same == t.read then Success else Failure 1
 
@@ -74,11 +74,6 @@ fn in_dirs dirs io fs t -> r : dirs~List String, io~Term, fs~Fs, t~Tally, t.same
 fn is_query name -> r : name~String, r~Bool
     let b = string.bytes name
     len b > 5 and bytes.matches_at b (len b - 5) b".smt2"
-
-fn decimal n -> s : n~Int, s~String
-    match string.from_utf8 (smtlib.numeral (if n < 0 then 0 else n))
-        Some s -> s
-        None   -> "?"
 
 fn each dir es io fs t -> r : dir~String, es~List Entry, io~Term, fs~Fs, t~Tally, t.same <= t.read, r~Tally,
                               r.same <= r.read

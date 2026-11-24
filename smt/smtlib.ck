@@ -14,6 +14,8 @@ module smtlib
 import std.array
 import std.bytes
 import std.list
+import std.parse (Parsable)
+import std.string
 import term (Name, Sort, Bool, Int, Seq, Arr, Data, Unin, Param, SortDecl, Field, Ctor, Datatype)
 import term (FunKind, Declared, Constant, Defined, FunDecl)
 import term (Op, Not, And, Or, Implies, Ite, Eq, Add, Sub, Neg, Mul, Div, Mod, Lt, Le, Gt, Ge, Select, Store, MapAdd)
@@ -101,10 +103,6 @@ fn symbol_end src i -> j : src~Bytes, i~Nat, i <= len src, j~Nat, i <= j, j <= l
     decreasing len src - i
     if i < len src and symbol_byte src[i] then symbol_end src (i + 1) else i
 
-fn digits_end src i -> j : src~Bytes, i~Nat, i <= len src, j~Nat, i <= j, j <= len src
-    decreasing len src - i
-    if i < len src and is_digit src[i] then digits_end src (i + 1) else i
-
 # Where the quoted symbol whose text starts at `i` ends: the offset of its
 # closing `|`, or an error at an unexpected `\`.
 fn quoted_end src start i -> r : src~Bytes, start~Nat, start < i, i <= len src,
@@ -118,11 +116,6 @@ fn quoted_end src start i -> r : src~Bytes, start~Nat, start < i, i <= len src,
         Err (Error i b"a `\\` in a quoted symbol is outside the subset `ckc` writes")
     else
         quoted_end src start (i + 1)
-
-# The value of the decimal digits from `i` to `j`.
-fn digits_value src i j acc -> n : src~Bytes, i~Nat, j~Nat, i <= j, j <= len src, acc~Nat, n~Nat
-    decreasing j - i
-    if i < j and is_digit src[i] then digits_value src (i + 1) j (acc * 10 + (src[i] - '0')) else acc
 
 # One S-expression starting at `i`, which isn't white space.
 fn expr src i -> r : src~Bytes, i~Nat, i < len src, r~Result (Parsed (SExpr src) src i) (Error src)
@@ -142,13 +135,16 @@ fn expr src i -> r : src~Bytes, i~Nat, i < len src, r~Result (Parsed (SExpr src)
         else
             Ok (Parsed (Leaf (Keyword (bytes.slice src (i + 1) j)) i) j)
     else if is_digit b
-        let j = digits_end src (i + 1)
-        if j < len src and (symbol_byte src[j] or src[j] == '|')
-            Err (Error i b"only whole numbers are in the subset `ckc` writes")
-        else if b == '0' and j > i + 1
-            Err (Error i b"a numeral other than `0` can't start with `0`")
-        else
-            Ok (Parsed (Leaf (Numeral (digits_value src i j 0)) i) j)
+        match Parsable.parse (bytes.slice src i (len src)) Nat Int
+            Ok (n, after) ->
+                let j = len src - len after
+                if j < len src and (symbol_byte src[j] or src[j] == '|')
+                    Err (Error i b"only whole numbers are in the subset `ckc` writes")
+                else if b == '0' and j > i + 1
+                    Err (Error i b"a numeral other than `0` can't start with `0`")
+                else
+                    Ok (Parsed (Leaf (Numeral n) i) j)
+            Err _         -> Err (Error i b"expected a numeral")
     else if symbol_byte b
         let j = symbol_end src (i + 1)
         Ok (Parsed (Leaf (Symbol (bytes.slice src i j) False) i) j)
@@ -432,29 +428,29 @@ fn term_from src sig vars e -> r : src~Bytes, sig~Sig, vars~List (Name, Sort), e
             else if n == b"_"
                 Err (Error hp b"an indexed name is in the subset `ckc` writes only as `(_ map (+ (Int Int) Int))`")
             else
-                # Written out here and in the next case: a helper taking
-                # `args` on to `terms_from` isn't accepted as structural (#109).
                 let h = try head_of src sig n hp (list.length args)
-                let (ts, ss) = try terms_from src sig vars args
-                applied src sig h ts ss hp
+                apply_to src sig vars h args hp
         Node (Leaf (Symbol n True) hp :: args) _                    ->
             let h = try head_of src sig n hp (list.length args)
-            let (ts, ss) = try terms_from src sig vars args
-            applied src sig h ts ss hp
+            apply_to src sig vars h args hp
         Node (Node (Leaf (Symbol q False) _ :: inner) hp :: args) _ ->
             if q == b"as"
                 let h = try qualified_head src sig inner hp
-                let (ts, ss) = try terms_from src sig vars args
-                applied src sig h ts ss hp
+                apply_to src sig vars h args hp
             else if q == b"_"
                 if map_add inner
-                    let (ts, ss) = try terms_from src sig vars args
-                    applied src sig (Prim MapAdd) ts ss hp
+                    apply_to src sig vars (Prim MapAdd) args hp
                 else
                     Err (Error hp b"an indexed name is in the subset `ckc` writes only as `(_ map (+ (Int Int) Int))`")
             else
                 Err (Error hp b"expected a function's name")
         Node (_ :: _) p                                             -> Err (Error p b"expected a function's name at the start")
+
+# Head `h` (at `hp`) applied to the terms `args` write.
+fn apply_to src sig vars h args hp -> r : src~Bytes, sig~Sig, vars~List (Name, Sort), h~Head, args~List (SExpr src),
+                                          hp~Nat, hp < len src, r~Result Sorted (Error src)
+    let (ts, ss) = try terms_from src sig vars args
+    applied src sig h ts ss hp
 
 fn terms_from src sig vars es -> r : src~Bytes, sig~Sig, vars~List (Name, Sort), es~List (SExpr src),
                                      r~Result (List Term, List Sort) (Error src)
@@ -955,10 +951,7 @@ fn problem_message sig pr -> r : sig~Sig, pr~Problem, r~Bytes
 
 # `n` in decimal digits.
 export fn numeral n -> r : n~Nat, r~Bytes
-    if n < 10 then digit n else numeral (n / 10) ++ digit (n % 10)
-
-fn digit d -> r : d~Nat, r~Bytes
-    if d < 10 then bytes.slice b"0123456789" d (d + 1) else b"?"
+    (string.display n []).bytes
 
 # Pieces of output are collected last first, then joined (`text`).
 
@@ -973,14 +966,10 @@ fn simple n i -> r : n~Name, i~Nat, i <= len n, r~Bool
     decreasing len n - i
     if i >= len n then True else symbol_byte n[i] and simple n (i + 1)
 
-# The name of bound variable `i`. Every variable of a context's terms is
-# bound, so `?` is never written for one: `parse` builds only such terms.
-# Proving it (a precondition like `heads_ok`'s) needs the length of
-# `list.reverse xs ++ ys`, which `std.list` doesn't state (#107).
-fn name_at ns i -> r : ns~List Name, i~Nat, r~Name
+# The name of bound variable `i`.
+fn name_at ns i -> r : ns~List Name, i~Nat, i < list.length ns, r~Name
     match list.head (list.drop i ns)
         Some n -> n
-        None   -> b"?"
 
 # A sort; `params` name a datatype's parameters.
 fn w_sort sig params s acc -> r : sig~Sig, params~List Name, s~Sort, term.sort_ok sig (list.length params) s,
@@ -1032,34 +1021,39 @@ fn w_head sig h acc -> r : sig~Sig, h~Head, term.head_ok sig h, acc~List Bytes, 
         EmptySeq s   -> b")" :: w_sort sig [] s (b"(as seq.empty " :: acc)
 
 # A term; `vars` name the bound variables, innermost first.
-fn w_term sig vars t acc -> r : sig~Sig, vars~List Name, t~Term, term.heads_ok sig t, acc~List Bytes, r~List Bytes
+fn w_term sig vars t acc -> r : sig~Sig, vars~List Name, t~Term, term.heads_ok sig t,
+                                term.scoped (list.length vars) t, acc~List Bytes, r~List Bytes
     match t
         Var i          -> w_name (name_at vars i) acc
         App h []       -> w_head sig h acc
         App h args     -> b")" :: w_args sig vars args (w_head sig h (b"(" :: acc))
         Let binds body ->
             let a = w_binds sig vars binds (b"(let (" :: acc)
-            b")" :: w_term sig (list.reverse (list.keys binds) ++ vars) body (b") " :: a)
+            let inner = list.reverse (list.keys binds) ++ vars
+            have list.length_keys binds
+            have list.length_reverse (list.keys binds)
+            have list.length_append (list.reverse (list.keys binds)) vars
+            b")" :: w_term sig inner body (b") " :: a)
         Lam n s body   ->
             let a = w_sort sig [] s (b" " :: w_name n (b"(lambda ((" :: acc))
             b")" :: w_term sig (n :: vars) body (b")) " :: a)
 
 # Terms, each after a space.
-fn w_args sig vars ts acc -> r : sig~Sig, vars~List Name, ts~List Term, term.all_heads_ok sig ts, acc~List Bytes,
-                                 r~List Bytes
+fn w_args sig vars ts acc -> r : sig~Sig, vars~List Name, ts~List Term, term.all_heads_ok sig ts,
+                                 term.all_scoped (list.length vars) ts, acc~List Bytes, r~List Bytes
     match ts
         []        -> acc
         t :: rest -> w_args sig vars rest (w_term sig vars t (b" " :: acc))
 
 # Terms separated by spaces.
-fn w_term_list sig vars ts acc -> r : sig~Sig, vars~List Name, ts~List Term, term.all_heads_ok sig ts, acc~List Bytes,
-                                      r~List Bytes
+fn w_term_list sig vars ts acc -> r : sig~Sig, vars~List Name, ts~List Term, term.all_heads_ok sig ts,
+                                      term.all_scoped (list.length vars) ts, acc~List Bytes, r~List Bytes
     match ts
         []        -> acc
         t :: rest -> w_args sig vars rest (w_term sig vars t acc)
 
 fn w_binds sig vars bs acc -> r : sig~Sig, vars~List Name, bs~List (Name, Term), term.binds_heads_ok sig bs,
-                                  acc~List Bytes, r~List Bytes
+                                  term.binds_scoped (list.length vars) bs, acc~List Bytes, r~List Bytes
     match bs
         []             -> acc
         (n, t) :: rest ->
@@ -1103,15 +1097,24 @@ fn w_command sig c acc -> r : sig~Sig, c~Command, term.command_ok sig c, acc~Lis
                     b")\n" :: w_sort sig [] f.result a
         DefineFuns True [d] ->
             let a = b" " :: w_sort sig [] d.result (b" " :: w_vars sig d.params (b" " :: w_name d.name (b"(define-fun-rec " :: acc)))
+            have params_env d.params
             b")\n" :: w_term sig (list.reverse (list.keys d.params)) d.body a
         DefineFuns _ ds     ->
             let a = b") (" :: w_def_heads sig ds (b"(define-funs-rec (" :: acc)
             b"))\n" :: w_def_bodies sig ds a
         Assume ax           ->
             let env = list.reverse (list.keys ax.vars)
+            have params_env ax.vars
             let a = w_term sig env ax.body (b" (! " :: w_vars sig ax.vars (b"(assert (forall " :: acc))
             b")))\n" :: w_patterns sig env ax.patterns a
         Assert t            -> b")\n" :: w_term sig [] t (b"(assert " :: acc)
+
+# The names a binder list's body sees, one for each binder.
+lemma params_env vs : vs~List (Name, Sort)
+    ensures list.length (list.reverse (list.keys vs)) == list.length vs
+    proof
+        have list.length_keys vs
+        have list.length_reverse (list.keys vs)
 
 fn w_dt_heads ds acc -> r : ds~List Datatype, acc~List Bytes, r~List Bytes
     match ds
@@ -1169,13 +1172,14 @@ fn w_def_bodies sig ds acc -> r : sig~Sig, ds~List Def, term.defs_ok sig ds, acc
     match ds
         []        -> acc
         d :: rest ->
+            have params_env d.params
             let a = w_term sig (list.reverse (list.keys d.params)) d.body acc
             match rest
                 [] -> a
                 _  -> w_def_bodies sig rest (b" " :: a)
 
 fn w_patterns sig env ps acc -> r : sig~Sig, env~List Name, ps~List (List Term), term.patterns_heads_ok sig ps,
-                                    acc~List Bytes, r~List Bytes
+                                    term.patterns_scoped (list.length env) ps, acc~List Bytes, r~List Bytes
     match ps
         []        -> acc
         p :: rest -> w_patterns sig env rest (b")" :: w_term_list sig env p (b" :pattern (" :: acc))

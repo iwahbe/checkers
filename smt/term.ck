@@ -841,9 +841,33 @@ export lemma axioms_well_sorted c : c~Context
         have axioms_ok_sig c (axioms c)
 
 # ── What writing a context needs ─────────────────────────────────────────────
-# Every number in a well-formed context names a declaration, so its name can
-# be written. These say so without sorts: `heads_ok` checks the heads and
-# sorts of a term, not its variables.
+# Every number in a well-formed context names a declaration, and every
+# variable a binder around it, so its name can be written. These say so
+# without sorts: `heads_ok` checks the heads and sorts of a term, `scoped`
+# its variables.
+
+# Whether every variable of `t` is bound, with `n` variables bound around it.
+export transparent fn scoped n t -> r : n~Nat, t~Term, r~Bool
+    match t
+        Var i          -> i < n
+        App _ args     -> all_scoped n args
+        Let binds body -> binds_scoped n binds and scoped (n + list.length binds) body
+        Lam _ _ body   -> scoped (n + 1) body
+
+export transparent fn all_scoped n ts -> r : n~Nat, ts~List Term, r~Bool
+    match ts
+        []        -> True
+        t :: rest -> scoped n t and all_scoped n rest
+
+export transparent fn binds_scoped n bs -> r : n~Nat, bs~List (Name, Term), r~Bool
+    match bs
+        []             -> True
+        (_, t) :: rest -> scoped n t and binds_scoped n rest
+
+export transparent fn patterns_scoped n ps -> r : n~Nat, ps~List (List Term), r~Bool
+    match ps
+        []        -> True
+        p :: rest -> all_scoped n p and patterns_scoped n rest
 
 # Whether `h`'s numbers name declarations of `sig`, and its sorts are sorts.
 export transparent fn head_ok sig h -> r : sig~Sig, h~Head, r~Bool
@@ -897,7 +921,7 @@ export transparent fn defs_ok sig ds -> r : sig~Sig, ds~List Def, r~Bool
         []        -> True
         d :: rest ->
             sorts_ok sig 0 (var_sorts d.params) and sort_ok sig 0 d.result and heads_ok sig d.body
-                and defs_ok sig rest
+                and scoped (list.length d.params) d.body and defs_ok sig rest
 
 # Whether everything `cmd` names is declared in `sig`.
 export transparent fn command_ok sig cmd -> r : sig~Sig, cmd~Command, r~Bool
@@ -908,7 +932,8 @@ export transparent fn command_ok sig cmd -> r : sig~Sig, cmd~Command, r~Bool
         DefineFuns _ ds     -> defs_ok sig ds
         Assume a            ->
             sorts_ok sig 0 (var_sorts a.vars) and heads_ok sig a.body and patterns_heads_ok sig a.patterns
-        Assert t            -> heads_ok sig t
+                and scoped (list.length a.vars) a.body and patterns_scoped (list.length a.vars) a.patterns
+        Assert t            -> heads_ok sig t and scoped 0 t
 
 export transparent fn commands_ok sig cmds -> r : sig~Sig, cmds~List Command, r~Bool
     match cmds
@@ -966,6 +991,93 @@ lemma bound_heads sig env bs ss : sig~Sig, env~List Sort, bs~List (Name, Term), 
                         have sort_of_heads sig env t s
                         have bound_heads sig env rest more
                     _               -> auto
+
+# A variable's sort is found only for an index below the environment's length.
+lemma drop_head i xs : i~Nat, xs~List a, list.head (list.drop i xs) != None
+    ensures i < list.length xs
+    proof
+        auto
+
+lemma sort_of_scoped sig env t s : sig~Sig, env~List Sort, t~Term, s~Sort, sort_of sig env t == Ok s
+    ensures scoped (list.length env) t
+    proof
+        match t
+            Var i          -> have drop_head i env
+            App _ args     ->
+                match sorts_of sig env args
+                    Ok found -> have sorts_of_scoped sig env args found
+                    Err _    -> auto
+            Let binds body ->
+                match bound_sorts sig env binds
+                    Ok ss ->
+                        have bound_scoped sig env binds ss
+                        have list.length_reverse ss
+                        have list.length_append (list.reverse ss) env
+                        have sort_of_scoped sig (list.reverse ss ++ env) body s
+                    Err _ -> auto
+            Lam _ v body   ->
+                match sort_of sig (v :: env) body
+                    Ok b  -> have sort_of_scoped sig (v :: env) body b
+                    Err _ -> auto
+
+lemma sorts_of_scoped sig env ts ss : sig~Sig, env~List Sort, ts~List Term, ss~List Sort, sorts_of sig env ts == Ok ss
+    ensures all_scoped (list.length env) ts
+    proof
+        match ts
+            []        -> auto
+            t :: rest ->
+                match (sort_of sig env t, sorts_of sig env rest)
+                    (Ok s, Ok more) ->
+                        have sort_of_scoped sig env t s
+                        have sorts_of_scoped sig env rest more
+                    _               -> auto
+
+lemma bound_scoped sig env bs ss : sig~Sig, env~List Sort, bs~List (Name, Term), ss~List Sort,
+                                   bound_sorts sig env bs == Ok ss
+    ensures binds_scoped (list.length env) bs and list.length ss == list.length bs
+    proof
+        match bs
+            []             -> auto
+            (_, t) :: rest ->
+                match (sort_of sig env t, bound_sorts sig env rest)
+                    (Ok s, Ok more) ->
+                        have sort_of_scoped sig env t s
+                        have bound_scoped sig env rest more
+                    _               -> auto
+
+lemma check_term_scoped sig env t want : sig~Sig, env~List Sort, t~Term, want~Sort, check_term sig env t want == Ok ()
+    ensures scoped (list.length env) t
+    proof
+        match sort_of sig env t
+            Ok s  -> have sort_of_scoped sig env t s
+            Err _ -> auto
+
+lemma check_patterns_scoped sig env ps : sig~Sig, env~List Sort, ps~List (List Term),
+                                         check_patterns sig env ps == Ok ()
+    ensures patterns_scoped (list.length env) ps
+    proof
+        match ps
+            []        -> auto
+            p :: rest ->
+                match sorts_of sig env p
+                    Ok ss ->
+                        have sorts_of_scoped sig env p ss
+                        have check_patterns_scoped sig env rest
+                    Err _ -> auto
+
+# A binder list's body has a variable for each binder.
+lemma binder_env_length vs : vs~List (Name, Sort)
+    ensures list.length (binder_env vs) == list.length vs
+    proof
+        have var_sorts_length vs
+        have list.length_reverse (var_sorts vs)
+
+lemma var_sorts_length vs : vs~List (Name, Sort)
+    ensures list.length (var_sorts vs) == list.length vs
+    proof
+        match vs
+            []        -> auto
+            _ :: rest -> have var_sorts_length rest
 
 lemma head_grow sig a b c h : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, h~Head, head_ok sig h
     ensures head_ok (grow sig a b c) h
@@ -1154,6 +1266,8 @@ lemma check_defs_ok sig big a b c ds : sig~Sig, big~Sig, a~Array SortDecl, b~Arr
                 have check_sort sig 0 d.result == Ok ()
                 have sort_ok_grow sig a b c 0 d.result
                 have check_term_heads big (binder_env d.params) d.body d.result
+                have check_term_scoped big (binder_env d.params) d.body d.result
+                have binder_env_length d.params
                 have check_defs_ok sig big a b c rest
 
 lemma check_patterns_ok sig env ps : sig~Sig, env~List Sort, ps~List (List Term), check_patterns sig env ps == Ok ()
@@ -1194,7 +1308,12 @@ lemma checked_command_ok sig cmd : sig~Sig, cmd~Command, check_command sig cmd =
                 have check_sorts_ok sig 0 (var_sorts x.vars)
                 have check_term_heads sig (binder_env x.vars) x.body Bool
                 have check_patterns_ok sig (binder_env x.vars) x.patterns
-            Assert t            -> have check_term_heads sig [] t Bool
+                have check_term_scoped sig (binder_env x.vars) x.body Bool
+                have check_patterns_scoped sig (binder_env x.vars) x.patterns
+                have binder_env_length x.vars
+            Assert t            ->
+                have check_term_heads sig [] t Bool
+                have check_term_scoped sig [] t Bool
 
 lemma checked_commands_ok sig cmds : sig~Sig, cmds~List Command, check_all sig cmds == Ok ()
     ensures commands_ok (extend_all sig cmds) cmds
@@ -1213,16 +1332,20 @@ export lemma commands_well_formed c : c~Context
     proof
         have checked_commands_ok empty_sig c.commands
 
-# Every head of a fact is declared in the context.
+# Every head of a fact is declared in the context, and it has no free
+# variables.
 export lemma fact_heads c t : c~Context, t~Term, fact_ok c t
-    ensures heads_ok (signature c) t
+    ensures heads_ok (signature c) t and scoped 0 t
     proof
         have check_term_heads c.sig [] t Bool
+        have check_term_scoped c.sig [] t Bool
 
 # Every head of terms of the context is declared in it.
 export lemma terms_heads c ts : c~Context, ts~List Term, terms_ok c ts
-    ensures all_heads_ok (signature c) ts
+    ensures all_heads_ok (signature c) ts and all_scoped 0 ts
     proof
         match sorts_of c.sig [] ts
-            Ok ss -> have sorts_of_heads c.sig [] ts ss
+            Ok ss ->
+                have sorts_of_heads c.sig [] ts ss
+                have sorts_of_scoped c.sig [] ts ss
             Err _ -> auto
