@@ -135,7 +135,10 @@ fn expr src i -> r : src~Bytes, i~Nat, i < len src, r~Result (Parsed (SExpr src)
         else
             Ok (Parsed (Leaf (Keyword (bytes.slice src (i + 1) j)) i) j)
     else if is_digit b
-        match Parsable.parse (bytes.slice src i (len src)) Nat Int
+        let ds = bytes.slice src i (len src)
+        have bytes.slice_at src i (len src) 0
+        have string.parse_digits ds
+        match Parsable.parse ds Int Int
             Ok (n, after) ->
                 let j = len src - len after
                 if j < len src and (symbol_byte src[j] or src[j] == '|')
@@ -144,7 +147,6 @@ fn expr src i -> r : src~Bytes, i~Nat, i < len src, r~Result (Parsed (SExpr src)
                     Err (Error i b"a numeral other than `0` can't start with `0`")
                 else
                     Ok (Parsed (Leaf (Numeral n) i) j)
-            Err _         -> Err (Error i b"expected a numeral")
     else if symbol_byte b
         let j = symbol_end src (i + 1)
         Ok (Parsed (Leaf (Symbol (bytes.slice src i j) False) i) j)
