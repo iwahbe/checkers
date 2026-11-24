@@ -21,7 +21,7 @@ A GitHub issue with the label `proposal` records each language decision. [DECISI
 
 - Only Ian adds `accepted` or declines a proposal.
 - A pull request that implements a decision puts the rule in the numbered sections of this document. The issue holds the reason for the rule.
-- The pull request that completes a decision says `Closes #N`. An earlier pull request for the same decision says `Part of #N`. CI rejects `Closes #N` for a proposal without `accepted`.
+- A pull request that implements a decision says `Closes #N` or `Fixes #N`, never `Part of #N`. CI fails a pull request that closes a proposal without `accepted`.
 - To change a decision, open a new issue and add `superseded` to the old issue. Do not reopen the old issue.
 - Cite a decision as `#N`, or as `Dn` for D0–D186. Nothing a Checkers user reads cites a decision.
 
