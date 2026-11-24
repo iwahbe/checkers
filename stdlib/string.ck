@@ -419,6 +419,25 @@ export lemma parse_display n post : n~Int, post~Bytes, len post == 0 or not (cha
     proof
         have parse_shown n post
 
+# `Parsable.parse` reads a number from bytes that start with a digit: one
+# that isn't negative, from the digits at the front. What is left is the
+# bytes after them, from the first byte that isn't a digit, if there is one.
+export lemma parse_digits b : b~Bytes, len b > 0, char.is_digit b[0]
+    ensures match Parsable.parse b Int Int
+        Ok (n, rest) ->
+            n >= 0 and len rest < len b and rest == array.slice b (len b - len rest) (len b)
+            and (len rest == 0 or not (char.is_digit rest[0]))
+        Err _        -> False
+    proof
+        let k = digits_end b 0
+        have array.uncons_slice b
+        have natural_bytes b
+        have digits_end_stops b 0
+        if k < len b
+            have array.slice_at b k (len b) 0
+        else
+            auto
+
 # One or more digits at the front of `xs`, as many as there are, and what
 # follows them.
 fn natural xs -> r : Seq s, Token (Seq.Elem s) Int, xs~s, r~Result (Nat, s) NumberError, consumed r xs
@@ -490,6 +509,17 @@ lemma natural_digits n post : n~Nat, post~Bytes, len post == 0 or not (char.is_d
 fn digits_end b i -> k : b~Bytes, i~Nat, i <= len b, k~Nat, i <= k, k <= len b
     decreasing len b - i
     if i < len b and char.is_digit b[i] then digits_end b (i + 1) else i
+
+# The digits of `b` from `i` end at its end or at a byte that isn't a digit.
+lemma digits_end_stops b i : b~Bytes, i~Nat, i <= len b
+    let k = digits_end b i
+    ensures k == len b or not (char.is_digit b[k])
+    proof
+        decreasing len b - i
+        if i < len b and char.is_digit b[i]
+            have digits_end_stops b (i + 1)
+        else
+            auto
 
 # `natural` on bytes: the digits from the start up to `digits_end b 0`, if
 # there is one, and the bytes after them.
