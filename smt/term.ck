@@ -501,16 +501,25 @@ fn check_patterns sig env ps -> r : sig~Sig, env~List Sort, ps~List (List Term),
 #    value"; each round takes shapes out of the finite list of those not
 #    yet found, so the rounds end (`decreasing` on that list).
 #
-# 2. **None is in an array's index in its own group** (see
-#    `in_index_check`): not written there, and not through a parameter of
-#    a datatype that puts the parameter in an index. With arrays as all
-#    functions (the standard interpretation), `T = mk (Array T Int)` would
-#    need as many values as functions from `T` to `Int`, and there is no
-#    such set (Cantor). Z3 rejects these too ("datatype is not co-variant").
-#    In an array's values or in a sequence, a datatype is a tree with many
-#    branches, which exists. An uninterpreted sort constructor applied to
-#    the datatype doesn't count: its interpretation may ignore its
-#    arguments, so `(Array (U T) Int)` has one.
+# 2. **None is in an array's index in its own group**: a datatype of the
+#    group may not occur in the index sort of an array in the group's
+#    fields, written there or reached through a parameter of a datatype
+#    that puts it there; this is refused whatever the array's values are.
+#    With arrays as all functions (the standard interpretation), most such
+#    types are no set at all: `T = mk (Array T Int)` would need as many
+#    values as functions from `T` to `Int` (Cantor). A few have one, such as
+#    `T = mk (Array T Unit)`, which Z3 refuses too; the rule doesn't look at
+#    the array's values. In an array's values or in a sequence, a datatype
+#    is a tree with many branches, which exists. A datatype counts only
+#    where it is used: not as an argument of an uninterpreted sort
+#    constructor (its interpretation may ignore it), nor at a parameter its
+#    datatype never uses (`P A = p` holds no `A`), for the same reason.
+#
+#    Z3 (5.3.3) differs both ways, as it looks only at what is written in a
+#    group's own fields: it refuses `T` written in an index even where it
+#    isn't used (`Array (P T) Int`, `Array (U T) Int`), and accepts `T`
+#    reached through an earlier datatype's parameter (`W Int T` where `W`
+#    puts its second parameter in an index), which has no set of values.
 #
 # Z3 is less exact about values: it rejects `T = mk (Seq T)`, which has
 # `(mk [])`, and accepts `(U T)` through `(Box (U T))` in one group, which
@@ -692,53 +701,46 @@ fn ctor_witness stored first found bits cs k -> r : stored~Array Witness, first~
                 Some ws -> Some (WCon k ws)
                 None    -> ctor_witness stored first found bits rest (k + 1)
 
-# The least fixed point: rounds over the shapes not yet found, until a
-# round finds none. A round that finds one leaves fewer (`pick_length`).
+# One pass over `todo`, in order: each shape with a witness from those
+# found so far (this pass's included) is found.
+fn sweep sig first found todo -> r : sig~Sig, first~Nat, found~List (Shape, Witness), todo~List Shape,
+                                     r~Picked Shape Witness
+    match todo
+        []        -> Picked [] []
+        x :: rest ->
+            match shape_witness sig first found x
+                Some w ->
+                    let p = sweep sig first (found ++ [(x, w)]) rest
+                    Picked ((x, w) :: p.got) p.left
+                None   ->
+                    let p = sweep sig first found rest
+                    Picked p.got (x :: p.left)
+
+lemma sweep_length sig first found todo : sig~Sig, first~Nat, found~List (Shape, Witness), todo~List Shape
+    ensures list.length (sweep sig first found todo).got + list.length (sweep sig first found todo).left
+        == list.length todo
+    proof
+        match todo
+            []        -> auto
+            x :: rest ->
+                match shape_witness sig first found x
+                    Some w -> have sweep_length sig first (found ++ [(x, w)]) rest
+                    None   -> have sweep_length sig first found rest
+
+# The least fixed point: passes over the shapes not yet found, until a pass
+# finds none. A pass that finds one leaves fewer (`sweep_length`).
 fn fixed sig first found todo -> r : sig~Sig, first~Nat, found~List (Shape, Witness), todo~List Shape,
                                      r~List (Shape, Witness)
     decreasing list.length todo
-    let next = pick (shape_witness sig first found) todo
-    have pick_length (shape_witness sig first found) todo
+    let next = sweep sig first found todo
+    have sweep_length sig first found todo
     match next.got
-        []     -> found
-        _ :: _ -> fixed sig first (found ++ next.got) next.left
+        []        -> found
+        x :: more ->
+            have list.length next.got == 1 + list.length more
+            fixed sig first (found ++ next.got) next.left
 
 # ── The shapes to search ─────────────────────────────────────────────────────
-
-# The datatypes `s` applies to arguments that mention a parameter or a
-# datatype numbered `first` or after: only through those can a parameter or
-# a datatype of the group be without a value. (A datatype declared before,
-# applied otherwise, has its kept witness.)
-fn flows_in first s -> r : first~Nat, s~Sort, r~List Nat
-    match s
-        Bool        -> []
-        Int         -> []
-        Seq e       -> flows_in first e
-        Arr i v     -> flows_in first i ++ flows_in first v
-        Data e args -> (if any_open first args then [e] else []) ++ all_flows_in first args
-        Unin _ args -> all_flows_in first args
-        Param _     -> []
-
-fn all_flows_in first ss -> r : first~Nat, ss~List Sort, r~List Nat
-    match ss
-        []        -> []
-        s :: rest -> flows_in first s ++ all_flows_in first rest
-
-# Whether `s` mentions a parameter or a datatype numbered `first` or after.
-fn open_sort first s -> r : first~Nat, s~Sort, r~Bool
-    match s
-        Bool        -> False
-        Int         -> False
-        Seq e       -> open_sort first e
-        Arr i v     -> open_sort first i or open_sort first v
-        Data e args -> e >= first or any_open first args
-        Unin _ args -> any_open first args
-        Param _     -> True
-
-fn any_open first ss -> r : first~Nat, ss~List Sort, r~Bool
-    match ss
-        []        -> False
-        s :: rest -> open_sort first s or any_open first rest
 
 fn ctors_fields cs -> r : cs~List Ctor, r~List Sort
     match cs
@@ -748,94 +750,227 @@ fn ctors_fields cs -> r : cs~List Ctor, r~List Sort
 fn fields_of sig e -> r : sig~Sig, e~Nat, r~List Sort
     if e < len sig.datatypes then ctors_fields sig.datatypes[e].ctors else []
 
-fn flows_from sig first xs -> r : sig~Sig, first~Nat, xs~List Nat, r~List Nat
-    match xs
-        []        -> []
-        x :: rest -> all_flows_in first (fields_of sig x) ++ flows_from sig first rest
-
-fn is_named named x -> r : named~List Nat, x~Nat, r~Option Unit
-    if list.contains named x then Some () else None
-
-# The datatypes a parameter or the group can flow into from `frontier`
-# (and those before it, `reached`): rounds that take from `rest`, those
-# not yet reached, until a round takes none.
-fn relevant sig first reached frontier rest -> r : sig~Sig, first~Nat, reached~List Nat, frontier~List Nat,
-                                                   rest~List Nat, r~List Nat
-    decreasing list.length rest
-    let named = flows_from sig first frontier
-    let next = pick (is_named named) rest
-    have pick_length (is_named named) rest
-    match next.got
-        []        -> reached
-        x :: more ->
-            have list.length next.got == 1 + list.length more
-            relevant sig first (reached ++ list.keys next.got) (list.keys next.got) next.left
-
 # `count` numbers from `i`.
 fn upto count i -> r : count~Nat, i~Nat, r~List Nat
     if count == 0 then [] else i :: upto (count - 1) (i + 1)
 
-# Every choice of `True` and `False` for `n` places.
-fn choices n -> r : n~Nat, r~List (List Bool)
+# Every choice of `True` and `False` for places `k` to `k + n - 1`, with
+# `False` only at the places in `opens`.
+fn choices opens k n -> r : opens~List Nat, k~Nat, n~Nat, r~List (List Bool)
     if n == 0
         [[]]
     else
-        let rest = choices (n - 1)
-        list.map (\c -> True :: c) rest ++ list.map (\c -> False :: c) rest
+        let rest = choices opens (k + 1) (n - 1)
+        let with_true = list.map (\c -> True :: c) rest
+        if list.contains opens k then with_true ++ list.map (\c -> False :: c) rest else with_true
 
-fn shapes_of sig es -> r : sig~Sig, es~List Nat, r~List Shape
+# Whether `s` might be without a value: it mentions a datatype of the group
+# (numbered `first` or after), or a parameter at a place of `x` in `opens`.
+fn may_lack first opens x s -> r : first~Nat, opens~(Nat -> Nat -> Bool), x~Nat, s~Sort, r~Bool
+    match s
+        Bool        -> False
+        Int         -> False
+        Seq e       -> may_lack first opens x e
+        Arr i v     -> may_lack first opens x i or may_lack first opens x v
+        Data e args -> e >= first or any_may_lack first opens x args
+        Unin _ args -> any_may_lack first opens x args
+        Param k     -> opens x k
+
+fn any_may_lack first opens x ss -> r : first~Nat, opens~(Nat -> Nat -> Bool), x~Nat, ss~List Sort, r~Bool
+    match ss
+        []        -> False
+        s :: rest -> may_lack first opens x s or any_may_lack first opens x rest
+
+# The places in `s` (a field of `x`) where a datatype is applied to an
+# argument that might be without a value.
+fn opened_in first opens x s -> r : first~Nat, opens~(Nat -> Nat -> Bool), x~Nat, s~Sort, r~List Place
+    match s
+        Bool        -> []
+        Int         -> []
+        Seq y       -> opened_in first opens x y
+        Arr i v     -> opened_in first opens x i ++ opened_in first opens x v
+        Data d args -> lacking first opens x d args 0 ++ all_opened_in first opens x args
+        Unin _ args -> all_opened_in first opens x args
+        Param _     -> []
+
+fn all_opened_in first opens x ss -> r : first~Nat, opens~(Nat -> Nat -> Bool), x~Nat, ss~List Sort, r~List Place
+    match ss
+        []        -> []
+        s :: rest -> opened_in first opens x s ++ all_opened_in first opens x rest
+
+fn lacking first opens x d args k -> r : first~Nat, opens~(Nat -> Nat -> Bool), x~Nat, d~Nat, args~List Sort, k~Nat,
+                                         r~List Place
+    match args
+        []        -> []
+        a :: rest -> (if may_lack first opens x a then [(d, k)] else []) ++ lacking first opens x d rest (k + 1)
+
+fn opened_by sig first opens xs -> r : sig~Sig, first~Nat, opens~(Nat -> Nat -> Bool), xs~List Nat, r~List Place
+    match xs
+        []        -> []
+        x :: rest -> all_opened_in first opens x (fields_of sig x) ++ opened_by sig first opens rest
+
+fn place_in ps pl -> r : ps~List Place, pl~Place, r~Option Unit
+    if list.contains ps pl then Some () else None
+
+# The places where an argument might be without a value: the least fixed
+# point, starting from none (every parameter of the group's datatypes has
+# a value), by rounds that scan the fields of the group and of the
+# datatypes with such a place, and take what they open from `rest` (the
+# places not yet found). Only through these can a datatype be needed with
+# fewer than all its parameters having values.
+fn opens_fixed sig first group known owners rest -> r : sig~Sig, first~Nat, group~List Nat, known~Known,
+                                                        owners~List Nat, rest~List Place, r~Known
+    decreasing list.length rest
+    let opened = opened_by sig first (place_set known) (group ++ owners)
+    let next = pick (place_in opened) rest
+    have pick_length (place_in opened) rest
+    match next.got
+        []        -> known
+        x :: more ->
+            have list.length next.got == 1 + list.length more
+            let found = list.keys next.got
+            opens_fixed sig first group (add_places known found) (owners ++ list.keys found) next.left
+
+fn open_places sig first group -> r : sig~Sig, first~Nat, group~List Nat, r~Known
+    opens_fixed sig first group (no_places sig) [] (all_places sig (upto (len sig.datatypes) 0))
+
+# The datatypes before `first` among `es` with a place found.
+fn owners opens first es -> r : opens~Known, first~Nat, es~List Nat, r~List Nat
+    match es
+        []        -> []
+        e :: rest -> if e < first and opens_of opens e != [] then e :: owners opens first rest else owners opens first rest
+
+fn opens_of opens e -> r : opens~Known, e~Nat, r~List Nat
+    if e < len opens then opens[e] else []
+
+# The shapes to search for `es`: each with every parameter having a value,
+# and with fewer only at the places where an argument might have none.
+fn shapes_of sig opens es -> r : sig~Sig, opens~Known, es~List Nat, r~List Shape
     match es
         []        -> []
         e :: rest ->
             let n = if e < len sig.datatypes then list.length sig.datatypes[e].params else 0
-            list.map (\b -> (e, b)) (choices n) ++ shapes_of sig rest
+            list.map (\b -> (e, b)) (choices (opens_of opens e) 0 n) ++ shapes_of sig opens rest
 
 # ── Arrays' indices ──────────────────────────────────────────────────────────
+# Computed over every datatype of the signature, with nothing left out.
 
 # A place: datatype `e`'s `k`-th parameter.
 type Place = pl~(Nat, Nat)
 
-# Whether, in `s`, a parameter in `ks` is in an array's index (`inside`:
-# `s` itself is), through `in_place` for the parameters of datatypes.
-# `Unin` arguments don't count (see above).
-fn param_in_index in_place ks s inside -> r : in_place~(Nat -> Nat -> Bool), ks~List Nat, s~Sort, inside~Bool,
-                                              r~Bool
+# Places found, kept by datatype: `known[e]` holds the parameters of `e`
+# found (a datatype outside the array has none).
+type Known = k~Array (List Nat)
+
+fn known_has known e k -> r : known~Known, e~Nat, k~Nat, r~Bool
+    e < len known and list.contains known[e] k
+
+fn known_add known pl -> r : known~Known, pl~Place, r~Known
+    let (e, k) = pl
+    if e < len known then array.set known e (k :: known[e]) else known
+
+# One pass over `todo`, in order: each place that `test` accepts, given the
+# places found so far (this pass's included), is found.
+fn sweep_places test known todo -> r : test~(Known -> Place -> Bool), known~Known, todo~List Place, r~Picked Place Unit
+    match todo
+        []        -> Picked [] []
+        x :: rest ->
+            if test known x
+                let p = sweep_places test (known_add known x) rest
+                Picked ((x, ()) :: p.got) p.left
+            else
+                let p = sweep_places test known rest
+                Picked p.got (x :: p.left)
+
+lemma sweep_places_length test known todo : test~(Known -> Place -> Bool), known~Known, todo~List Place
+    ensures list.length (sweep_places test known todo).got + list.length (sweep_places test known todo).left
+        == list.length todo
+    proof
+        match todo
+            []        -> auto
+            x :: rest ->
+                if test known x
+                    have sweep_places_length test (known_add known x) rest
+                else
+                    have sweep_places_length test known rest
+
+fn add_places known ps -> r : known~Known, ps~List Place, r~Known
+    match ps
+        []        -> known
+        p :: rest -> add_places (known_add known p) rest
+
+# The least fixed point of `test` over `rest`: passes until one finds none.
+fn places_fixed test known rest -> r : test~(Known -> Place -> Bool), known~Known, rest~List Place, r~Known
+    decreasing list.length rest
+    let next = sweep_places test known rest
+    have sweep_places_length test known rest
+    match next.got
+        []        -> known
+        x :: more ->
+            have list.length next.got == 1 + list.length more
+            places_fixed test (add_places known (list.keys next.got)) next.left
+
+fn no_places sig -> r : sig~Sig, r~Known
+    array.repeat (len sig.datatypes) []
+
+# Whether parameter `j` occurs in `s`, where `used` says which places of
+# datatypes use their parameter (occur in its fields). An uninterpreted
+# sort's arguments don't count: its interpretation may ignore them.
+fn param_occurs used s j -> r : used~(Nat -> Nat -> Bool), s~Sort, j~Nat, r~Bool
     match s
         Bool        -> False
         Int         -> False
-        Seq e       -> param_in_index in_place ks e inside
-        Arr i v     -> param_in_index in_place ks i True or param_in_index in_place ks v inside
-        Data e args -> args_in_index in_place ks e args 0 inside
+        Seq e       -> param_occurs used e j
+        Arr i v     -> param_occurs used i j or param_occurs used v j
+        Data e args -> args_occur used e args j 0
         Unin _ _    -> False
-        Param k     -> inside and list.contains ks k
+        Param k     -> k == j
 
-fn args_in_index in_place ks e args j inside -> r : in_place~(Nat -> Nat -> Bool), ks~List Nat, e~Nat,
-                                                    args~List Sort, j~Nat, inside~Bool, r~Bool
+fn args_occur used e args j k -> r : used~(Nat -> Nat -> Bool), e~Nat, args~List Sort, j~Nat, k~Nat, r~Bool
+    match args
+        []        -> False
+        a :: rest -> (used e k and param_occurs used a j) or args_occur used e rest j (k + 1)
+
+# Whether parameter `j` is in an array's index in `s` (`inside`: `s` itself
+# is), where `index` says which places put their parameter in one.
+fn param_in_index used index s j inside -> r : used~(Nat -> Nat -> Bool), index~(Nat -> Nat -> Bool), s~Sort, j~Nat,
+                                               inside~Bool, r~Bool
+    match s
+        Bool        -> False
+        Int         -> False
+        Seq e       -> param_in_index used index e j inside
+        Arr i v     -> param_in_index used index i j True or param_in_index used index v j inside
+        Data e args -> args_in_index used index e args j 0 inside
+        Unin _ _    -> False
+        Param k     -> inside and k == j
+
+fn args_in_index used index e args j k inside -> r : used~(Nat -> Nat -> Bool), index~(Nat -> Nat -> Bool), e~Nat,
+                                                     args~List Sort, j~Nat, k~Nat, inside~Bool, r~Bool
     match args
         []        -> False
         a :: rest ->
-            param_in_index in_place ks a (inside or in_place e j) or args_in_index in_place ks e rest (j + 1) inside
+            (used e k and param_in_index used index a j (inside or index e k))
+                or args_in_index used index e rest j (k + 1) inside
 
-# Whether a datatype in `group` is in an array's index in `s`, by the same
-# rules.
-fn group_in_index in_place group s inside -> r : in_place~(Nat -> Nat -> Bool), group~List Nat, s~Sort,
-                                                 inside~Bool, r~Bool
+# Whether a datatype of `group` is in an array's index in `s`.
+fn group_in_index used index group s inside -> r : used~(Nat -> Nat -> Bool), index~(Nat -> Nat -> Bool),
+                                                   group~List Nat, s~Sort, inside~Bool, r~Bool
     match s
         Bool        -> False
         Int         -> False
-        Seq e       -> group_in_index in_place group e inside
-        Arr i v     -> group_in_index in_place group i True or group_in_index in_place group v inside
-        Data e args -> (inside and list.contains group e) or group_args_index in_place group e args 0 inside
+        Seq e       -> group_in_index used index group e inside
+        Arr i v     -> group_in_index used index group i True or group_in_index used index group v inside
+        Data e args -> (inside and list.contains group e) or group_args used index group e args 0 inside
         Unin _ _    -> False
         Param _     -> False
 
-fn group_args_index in_place group e args j inside -> r : in_place~(Nat -> Nat -> Bool), group~List Nat, e~Nat,
-                                                          args~List Sort, j~Nat, inside~Bool, r~Bool
+fn group_args used index group e args k inside -> r : used~(Nat -> Nat -> Bool), index~(Nat -> Nat -> Bool),
+                                                      group~List Nat, e~Nat, args~List Sort, k~Nat, inside~Bool, r~Bool
     match args
         []        -> False
         a :: rest ->
-            group_in_index in_place group a (inside or in_place e j)
-                or group_args_index in_place group e rest (j + 1) inside
+            (used e k and group_in_index used index group a (inside or index e k))
+                or group_args used index group e rest (k + 1) inside
 
 fn all_places sig es -> r : sig~Sig, es~List Nat, r~List Place
     match es
@@ -844,47 +979,60 @@ fn all_places sig es -> r : sig~Sig, es~List Nat, r~List Place
             let n = if e < len sig.datatypes then list.length sig.datatypes[e].params else 0
             list.map (\k -> (e, k)) (upto n 0) ++ all_places sig rest
 
-fn any_in_index sig in_place e k ss -> r : sig~Sig, in_place~(Nat -> Nat -> Bool), e~Nat, k~Nat, ss~List Sort, r~Bool
+fn place_set known -> f : known~Known, f~(Nat -> Nat -> Bool)
+    \e k -> known_has known e k
+
+fn occurs_somewhere used ss j -> r : used~(Nat -> Nat -> Bool), ss~List Sort, j~Nat, r~Bool
     match ss
         []        -> False
-        s :: rest -> param_in_index in_place [k] s False or any_in_index sig in_place e k rest
+        s :: rest -> param_occurs used s j or occurs_somewhere used rest j
 
-# The places whose parameter is in an array's index: rounds that take from
-# `rest` those found, given those found so far, until none is.
-fn index_places sig found rest -> r : sig~Sig, found~List Place, rest~List Place, r~List Place
-    decreasing list.length rest
-    let next = pick (is_in sig found) rest
-    have pick_length (is_in sig found) rest
-    match next.got
-        []     -> found
-        _ :: _ -> index_places sig (found ++ list.keys next.got) next.left
-
-fn is_in sig found pl -> r : sig~Sig, found~List Place, pl~Place, r~Option Unit
+fn is_used sig found pl -> r : sig~Sig, found~Known, pl~Place, r~Bool
     let (e, k) = pl
-    if any_in_index sig (\d j -> list.contains found (d, j)) e k (fields_of sig e) then Some () else None
+    occurs_somewhere (place_set found) (fields_of sig e) k
+
+# The places whose datatype uses its parameter: the least fixed point.
+fn used_places sig places -> r : sig~Sig, places~List Place, r~Known
+    places_fixed (is_used sig) (no_places sig) places
+
+fn in_index_somewhere used index ss j -> r : used~(Nat -> Nat -> Bool), index~(Nat -> Nat -> Bool), ss~List Sort,
+                                             j~Nat, r~Bool
+    match ss
+        []        -> False
+        s :: rest -> param_in_index used index s j False or in_index_somewhere used index rest j
+
+fn is_in sig used found pl -> r : sig~Sig, used~Known, found~Known, pl~Place, r~Bool
+    let (e, k) = pl
+    in_index_somewhere (place_set used) (place_set found) (fields_of sig e) k
+
+# The places whose parameter is in an array's index: the least fixed point.
+fn index_places sig used places -> r : sig~Sig, used~Known, places~List Place, r~Known
+    places_fixed (is_in sig used) (no_places sig) places
 
 # The first of `ds` (numbered from `first`) with a datatype of its group in
-# an array's index in a field.
-fn in_index_check sig first ds reach -> r : sig~Sig, first~Nat, ds~List Datatype, reach~List Nat, r~Option Datatype
+# an array's index in a field, over every datatype of `sig`.
+fn in_index_check sig first ds -> r : sig~Sig, first~Nat, ds~List Datatype, r~Option Datatype
     let group = upto (list.length ds) first
-    let places = index_places sig [] (all_places sig reach)
-    let in_place = \e k -> list.contains places (e, k)
-    first_in_index in_place group ds
+    let places = all_places sig (upto (len sig.datatypes) 0)
+    let used = used_places sig places
+    let index = index_places sig used places
+    first_in_index (place_set used) (place_set index) group ds
 
-fn first_in_index in_place group ds -> r : in_place~(Nat -> Nat -> Bool), group~List Nat, ds~List Datatype,
-                                           r~Option Datatype
+fn first_in_index used index group ds -> r : used~(Nat -> Nat -> Bool), index~(Nat -> Nat -> Bool), group~List Nat,
+                                             ds~List Datatype, r~Option Datatype
     match ds
         []        -> None
         d :: rest ->
-            if any_group_in_index in_place group (ctors_fields d.ctors)
+            if any_group_in_index used index group (ctors_fields d.ctors)
                 Some d
             else
-                first_in_index in_place group rest
+                first_in_index used index group rest
 
-fn any_group_in_index in_place group ss -> r : in_place~(Nat -> Nat -> Bool), group~List Nat, ss~List Sort, r~Bool
+fn any_group_in_index used index group ss -> r : used~(Nat -> Nat -> Bool), index~(Nat -> Nat -> Bool),
+                                                 group~List Nat, ss~List Sort, r~Bool
     match ss
         []        -> False
-        s :: rest -> group_in_index in_place group s False or any_group_in_index in_place group rest
+        s :: rest -> group_in_index used index group s False or any_group_in_index used index group rest
 
 # ── The check ────────────────────────────────────────────────────────────────
 
@@ -894,22 +1042,14 @@ fn trues n -> r : n~Nat, r~List Bool
 fn params_of count i -> r : count~Nat, i~Nat, r~List Sort
     if count == 0 then [] else Param i :: params_of (count - 1) (i + 1)
 
-# The datatypes that matter for the group of `ds`, numbered from `first`
-# in `sig`: the group, and those a parameter or the group flows into.
-fn group_reach sig first ds -> r : sig~Sig, first~Nat, ds~List Datatype, r~List Nat
-    let group = upto (list.length ds) first
-    if flows_from sig first group == []
-        group
-    else
-        let others = pick (\x -> if list.contains group x then None else Some ()) (upto (len sig.datatypes) 0)
-        relevant sig first group group (list.keys others.got)
-
-# A witness for each of `ds`, declared after `sig`, with all its parameters
 # having values; `WTrue` (which fits no datatype) where none was found.
 export fn group_values sig ds -> r : sig~Sig, ds~List Datatype, r~List Witness
     let first = len sig.datatypes
     let big = Sig sig.sorts (sig.datatypes ++ array.from_list ds) sig.funs sig.values
-    let found = fixed big first [] (shapes_of big (group_reach big first ds))
+    let group = upto (list.length ds) first
+    let opens = open_places big first group
+    let reach = group ++ owners opens first (upto first 0)
+    let found = fixed big first [] (shapes_of big opens (list.reverse reach))
     each_value big.values first found ds 0
 
 fn each_value stored first found ds i -> r : stored~Array Witness, first~Nat, found~List (Shape, Witness),
@@ -927,7 +1067,7 @@ fn each_value stored first found ds i -> r : stored~Array Witness, first~Nat, fo
 # signature after them), each have a value and are in no array's index in
 # their group's fields. Acceptance rests on `fits` of the kept witness.
 fn check_values sig first ds -> r : sig~Sig, first~Nat, ds~List Datatype, r~Result Unit Problem
-    match in_index_check sig first ds (group_reach sig first ds)
+    match in_index_check sig first ds
         Some d -> Err (NotCovariant d)
         None   ->
             match first_unfit sig first ds 0
@@ -947,9 +1087,7 @@ fn first_unfit sig first ds i -> r : sig~Sig, first~Nat, ds~List Datatype, i~Nat
 export fn check_command sig c -> r : sig~Sig, c~Command, r~Result Unit Problem
     match c
         DeclareSort _       -> Ok ()
-        DeclareDatatypes ds ->
-            let _ = try check_datatypes (extend sig c) ds
-            check_values (extend sig c) (len sig.datatypes) ds
+        DeclareDatatypes ds -> check_group (extend sig c) (len sig.datatypes) ds
         DeclareFun f        ->
             match f.kind
                 Constant if f.params != [] -> Err (ConstantParams f)
@@ -1779,6 +1917,20 @@ lemma check_patterns_ok sig env ps : sig~Sig, env~List Sort, ps~List (List Term)
                         have check_patterns_ok sig env rest
                     Err _ -> auto
 
+# The datatypes `ds` of `big`, numbered from `first`: well-formed, each
+# with a value, and in no array's index in their group.
+fn check_group big first ds -> r : big~Sig, first~Nat, ds~List Datatype, r~Result Unit Problem
+    let _ = try check_datatypes big ds
+    check_values big first ds
+
+# A group that checks has datatypes that check.
+lemma group_checked big first ds : big~Sig, first~Nat, ds~List Datatype, check_group big first ds == Ok ()
+    ensures check_datatypes big ds == Ok ()
+    proof
+        match check_datatypes big ds
+            Ok _  -> auto
+            Err _ -> auto
+
 lemma checked_command_ok sig cmd : sig~Sig, cmd~Command, check_command sig cmd == Ok ()
     ensures command_ok (extend sig cmd) cmd
     proof
@@ -1790,7 +1942,9 @@ lemma checked_command_ok sig cmd : sig~Sig, cmd~Command, check_command sig cmd =
         have sig.datatypes ++ no_dts == sig.datatypes
         match cmd
             DeclareSort _       -> auto
-            DeclareDatatypes ds -> have check_datatypes_ok (extend sig cmd) ds
+            DeclareDatatypes ds ->
+                have group_checked (extend sig cmd) (len sig.datatypes) ds
+                have check_datatypes_ok (extend sig cmd) ds
             DeclareFun f        ->
                 have check_sorts_ok sig 0 f.params
                 have check_sort sig 0 f.result == Ok ()

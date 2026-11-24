@@ -1,4 +1,4 @@
 -- stdout
-(error "line 5 column 1: the datatype `T` is in the index of an array in its own fields: no set of values can be that")
+(error "line 5 column 1: the datatype `T` is in the index sort of an array in its own fields, which is not allowed")
 -- stderr
 -- exit 1

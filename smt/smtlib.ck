@@ -1015,7 +1015,7 @@ fn problem_message sig pr -> r : sig~Sig, pr~Problem, r~Bytes
         Expected want got -> b"expected a term of sort " ++ sort_text sig want ++ b", found one of sort " ++ sort_text sig got
         NoPattern         -> b"a `:pattern` needs at least one term"
         NotWellFounded d  -> b"the datatype " ++ shown d.name ++ b" has no values: each constructor needs a value of a sort that has none"
-        NotCovariant d    -> b"the datatype " ++ shown d.name ++ b" is in the index of an array in its own fields: no set of values can be that"
+        NotCovariant d    -> b"the datatype " ++ shown d.name ++ b" is in the index sort of an array in its own fields, which is not allowed"
 
 # ── Writing ──────────────────────────────────────────────────────────────────
 
