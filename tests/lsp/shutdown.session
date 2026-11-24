@@ -1,0 +1,12 @@
+# After `shutdown` the server sends nothing of its own: a request is an
+# error (`InvalidRequest`), a notification is ignored, so a document opened
+# then is not checked and gets no diagnostics.
+> {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"capabilities":{"general":{"positionEncodings":["utf-8"]}}}}
+< 1
+> {"jsonrpc":"2.0","method":"initialized","params":{}}
+> {"jsonrpc":"2.0","id":2,"method":"shutdown"}
+< 1
+> {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/past_errors.ck","languageId":"checkers","version":1,"text":$TEXT(past_errors.ck)}}}
+> {"jsonrpc":"2.0","id":3,"method":"textDocument/hover","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/past_errors.ck"},"position":{"line":4,"character":4}}}
+< 1
+> {"jsonrpc":"2.0","method":"exit"}
