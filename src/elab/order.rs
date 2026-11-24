@@ -396,6 +396,10 @@ impl Refs {
                 Stmt::Have(e) | Stmt::Expr(e) => self.expr(e, &bound, false),
                 // `x` is a local: only the type refers to declarations.
                 Stmt::HaveType(_, t) => self.expr(t, &bound, false),
+                Stmt::GhostLet(x, e) => {
+                    self.expr(e, &bound, false);
+                    bound.push(x.name.clone());
+                }
             }
         }
         self.expr(&b.result, &bound, false);

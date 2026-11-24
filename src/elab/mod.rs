@@ -620,6 +620,13 @@ pub struct Elab {
     pub in_spec: usize,
     /// Inside a lemma's proof, which is never compiled (D125).
     pub in_proof: usize,
+    /// Inside an argument to a `ghost` parameter, or a type bound `ghost`:
+    /// erased, so a `ghost` variable used there isn't used at run time.
+    pub in_erased: usize,
+    /// Where each `ghost` local of a function is used outside a type, a
+    /// specification, a proof or an erased argument, in order: the use a
+    /// usage error (E0403) points at.
+    pub ghost_uses: HashMap<(DefId, String), Vec<Span>>,
     /// Type parameters compared with `==` in compiled code, by function and
     /// binder position (D125 b).
     pub eq_reqs: HashMap<DefId, BTreeMap<usize, EqReq>>,
@@ -909,6 +916,8 @@ impl Elab {
             arg_of: None,
             in_spec: 0,
             in_proof: 0,
+            in_erased: 0,
+            ghost_uses: HashMap::new(),
             eq_reqs: HashMap::new(),
             desc_reqs: HashMap::new(),
             insts: Vec::new(),
