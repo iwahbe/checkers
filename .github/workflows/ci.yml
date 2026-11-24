@@ -1,8 +1,10 @@
-# CI (D129). One job per platform, so the checks a branch rule requires have
-# the same names for pull requests and the merge queue:
-# - every pull request: clippy and the unit tests;
-# - the merge queue, and `main` after a merge: everything, integration tests
-#   included (golden files, packages, parking, the standard library, the cache).
+# CI (D129). One job per platform (Linux and macOS), with the same steps for
+# every event, so the checks a branch rule requires have the same names for
+# pull requests, the merge queue and `main`: clippy, the unit tests and the
+# integration tests (golden files, packages, parking, the standard library,
+# the cache). Pull requests run the whole suite on both platforms because the
+# repository has no merge queue (a personal account's repositories can't), and
+# platform-only failures used to reach `main` (#287).
 # Only `main` saves the build cache (Z3 compiled from source is most of it);
 # pull requests and the merge queue restore it. On `main`, the Linux job also
 # uploads `ckc` and `checkers` for the site (pages.yml).
@@ -57,7 +59,6 @@ jobs:
       - name: Unit tests
         run: cargo test --release --locked --workspace --lib --bins
       - name: Integration tests
-        if: github.event_name != 'pull_request'
         run: cargo test --release --locked --workspace --tests
       # On `main`, the tools for the site (pages.yml), which builds nothing.
       - name: Tools for the site

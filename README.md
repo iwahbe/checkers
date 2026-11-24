@@ -76,7 +76,7 @@ Golden tests live in `tests/parse/` (syntax tree), `tests/check/` (parse diagnos
 
 ## CI and releases
 
-Pull requests merge through a merge queue that runs the whole suite on Linux (x86-64) and macOS (ARM64); each pull request runs clippy and the unit tests (`.github/workflows/ci.yml`). Pushing a tag `vX.Y.Z` that matches `Cargo.toml` publishes an immutable release with an archive per platform (`.github/workflows/release.yml`).
+Every pull request, and `main` after each merge, runs clippy and the whole test suite on Linux (x86-64) and macOS (ARM64) (`.github/workflows/ci.yml`). Pushing a tag `vX.Y.Z` that matches `Cargo.toml` publishes an immutable release with an archive per platform (`.github/workflows/release.yml`).
 
 ## Reporting a problem
 
