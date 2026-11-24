@@ -23,10 +23,15 @@ A constraint list follows `:` in a function's or lemma's signature, a constructo
 | `name: e` | a named predicate, used by name ([Proofs](proofs.md#forall)) |
 | `C t` | a class constraint ([Classes](classes.md)) |
 
-A name has one type: a second typing for it is an error (E0372), even one that only refines the first. A condition on it is a predicate, or a refinement in its one type.
+A name may be given several typings, and they combine: `x~Int, x~Nat` is an `Int` that is also a `Nat`, as `x~Int, x >= 0` is. Each typing's refinement is checked as the first's is, in any order. They must share a base type (E0372 for `x~Int, x~Bool`), and a refinement inside a type doesn't combine: `xs~List Int, xs~List Nat` is E0372 too.
+
+```checkers
+fn positive x -> r : x~Int, x~(n~Int, n > 0), r~Int, r~Nat
+    x
+```
 
 ```checkers,compile_fail,E0372
-fn positive x -> r : x~Int, x~(n~Int, n > 0), r~Int  # write `x~Int, x > 0`
+fn both x : x~Int, x~Bool
     x
 ```
 

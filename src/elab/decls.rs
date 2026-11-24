@@ -54,7 +54,6 @@ impl Elab {
         self.stdlib_mode = is_stdlib;
         // Classes and instances become records, functions and lemmas (D136).
         self.pending_insts.clear();
-        self.repeated_typings(m);
         let (desugared, origins) = self.desugar_classes(m);
         self.decl_origin = origins;
         let m = &desugared;
@@ -766,97 +765,82 @@ impl Elab {
 
     // ── phases ──────────────────────────────────────────────────────────────
 
-    /// E0372: a name given a second type (`x~Int, x~(n~Int, n > 0)`) in a
-    /// declaration's constraints, a class's or an instance's member's
-    /// included. Only the first is its type; the others are still
-    /// elaborated where the first is, so their names resolve.
-    fn repeated_typings(&mut self, m: &ast::Module) {
-        fn names_of<'a>(params: impl IntoIterator<Item = &'a Ident>, result: Option<&'a Ident>) -> Vec<&'a str> {
-            params.into_iter().chain(result).map(|i| i.name.as_str()).collect()
-        }
-        let mut lists: Vec<(Vec<&str>, &[Constraint])> = Vec::new();
-        for d in &m.decls {
-            match &d.kind {
-                DeclKind::Fn { params, result, constraints, .. } => {
-                    lists.push((names_of(params, result.as_ref()), constraints));
-                }
-                DeclKind::Lemma { params, constraints, .. } => lists.push((names_of(params, None), constraints)),
-                DeclKind::Enum { params, constraints, ctors, .. } => {
-                    lists.push((names_of(params.iter().map(|p| &p.name), None), constraints));
-                    for c in ctors {
-                        lists.push((names_of(&c.params, None), &c.constraints));
-                    }
-                }
-                DeclKind::Record { params, constraints, .. } => {
-                    lists.push((names_of(params.iter().map(|p| &p.name), None), constraints));
-                }
-                DeclKind::Class { members, .. } => {
-                    for mem in members {
-                        match mem {
-                            ast::ClassMember::Fn { params, result, constraints, .. } => {
-                                lists.push((names_of(params, result.as_ref()), constraints));
-                            }
-                            ast::ClassMember::Lemma { params, constraints, .. } => {
-                                lists.push((names_of(params, None), constraints));
-                            }
-                            ast::ClassMember::Type { .. } => {}
-                        }
-                    }
-                }
-                DeclKind::Instance { members, .. } => {
-                    for mem in members {
-                        if let ast::InstMember::Fn { params, sig: Some((result, constraints)), .. } = mem {
-                            lists.push((names_of(params, result.as_ref()), constraints));
-                        }
-                    }
-                }
-                // A type alias's second binder is E0351.
-                DeclKind::Alias { .. } | DeclKind::Const { .. } | DeclKind::Check { .. } => {}
+    /// Several typings of one name combine (`x~Int, x~Nat`): the first is
+    /// its type, and each later one is elaborated here, in `cx`, where every
+    /// name it may mention is bound. Its base type must be the name's
+    /// (E0372 otherwise), and it is returned, `(local, type, level, span)`,
+    /// the type over the first `level` locals, for its refinement's facts
+    /// (`alias_facts`): conditions on the name, as the first's are.
+    /// A refinement inside a type (`List Nat`) doesn't combine: typings of
+    /// a name one of which has one must be the same type (E0372).
+    /// `local` gives a name's local and its type, or `None` for a name
+    /// that isn't the declaration's (E0355, E0353).
+    fn combine_typings(&mut self, cx: &mut Cx, cs: &[Constraint], local: &dyn Fn(&Cx, &str) -> Option<(usize, Val)>) -> Vec<(usize, Tm, usize, Span)> {
+        let mut facts = Vec::new();
+        let mut done: HashSet<&str> = HashSet::new();
+        for c in cs {
+            let Constraint::Typed { name, ty: first, .. } = c else { continue };
+            if !done.insert(&name.name) {
+                continue;
             }
-        }
-        for (names, cs) in lists {
-            let mut first: HashMap<&str, &Expr> = HashMap::new();
-            for c in cs {
-                let Constraint::Typed { name, ty, .. } = c else { continue };
-                // A name that isn't the declaration's is reported once each
-                // time (E0355, E0353).
-                if !names.contains(&name.name.as_str()) {
+            let later: Vec<&Expr> = cs
+                .iter()
+                .filter_map(|c| match c {
+                    Constraint::Typed { name: n, ty, .. } if n.name == name.name => Some(ty),
+                    _ => None,
+                })
+                .skip(1)
+                .collect();
+            if later.is_empty() {
+                continue;
+            }
+            let Some((l, base)) = local(cx, &name.name) else {
+                for e in later {
+                    let _ = self.elab_type(cx, e);
+                }
+                continue;
+            };
+            let at = cx.lvl();
+            let mut inside = self.refined_below_top(&base, at);
+            let mut same = true;
+            for e in later {
+                let t = self.elab_type(cx, e);
+                let v = self.eval(cx, &t);
+                if unify(&self.g, at, &base, &v).is_err() {
+                    let n = &name.name;
+                    self.err(
+                        Diagnostic::error(
+                            "E0372",
+                            format!("`{n}` is given two types that don't agree: `{}` and `{}`", self.src_text(first.span), self.src_text(e.span)),
+                            e.span,
+                        )
+                        .with_label(format!("`{n}` already has the type `{}`", self.src_text(first.span)))
+                        .with_help(format!("each typing of `{n}` may refine its type, as `{n}~Int, {n}~Nat` does, but they must have one base type")),
+                    );
                     continue;
                 }
-                match first.get(name.name.as_str()) {
-                    None => {
-                        first.insert(&name.name, ty);
-                    }
-                    Some(t) => {
-                        let n = &name.name;
-                        let t = self.src_text(t.span);
-                        self.err(
-                            Diagnostic::error("E0372", format!("`{n}` is given a second type"), name.span.to(ty.span))
-                                .with_label(format!("`{n}` already has the type `{t}`"))
-                                .with_help(format!(
-                                    "keep one type for `{n}`, and write a condition on it as a predicate after `{n}~{t}`"
-                                )),
-                        );
-                    }
+                inside |= self.refined_below_top(&v, at);
+                same &= self.same_type(&base, &v);
+                if inside && !same {
+                    let n = &name.name;
+                    self.err(
+                        Diagnostic::error("E0372", format!("`{n}`'s types can't be combined: a refinement inside a type doesn't combine"), e.span)
+                            .with_label(format!("`{n}` already has the type `{}`", self.src_text(first.span)))
+                            .with_help(format!("give `{n}` one type with every refinement inside it")),
+                    );
+                    break;
                 }
+                facts.push((l, t, at, e.span));
             }
         }
+        facts
     }
 
-    /// Elaborate the types of `cs`'s typings after the first for one name
-    /// (E0372), in `cx`, so that their names resolve; the terms are dropped.
-    fn elab_repeated_typings(&mut self, cx: &mut Cx, cs: &[Constraint]) {
-        let mut seen: HashSet<&str> = HashSet::new();
-        for c in cs {
-            if let Constraint::Typed { name, ty, .. } = c {
-                if !seen.insert(&name.name) && cx.lookup(&name.name).is_some() {
-                    // Nor do its type's conditions (#136) oblige anything.
-                    let saved = self.ty_cond_defer.replace(Vec::new());
-                    let _ = self.elab_type(cx, ty);
-                    self.ty_cond_defer = saved;
-                }
-            }
-        }
+    /// Does `v`'s type have a refinement other than of the whole value:
+    /// inside it (`List Nat`), or of a function's parameter or result?
+    fn refined_below_top(&self, v: &Val, lvl: usize) -> bool {
+        let p = self.peel(v);
+        self.refined_inside(&p, lvl, 0) || self.refined_alias(&p).is_some() && matches!(self.base(&p), Val::Pi(..))
     }
 
     fn typed_constraint<'a>(cs: &'a [Constraint], name: &str) -> Option<(&'a Expr, ast::Mult)> {
@@ -938,7 +922,12 @@ impl Elab {
                 cx.bind(&p.name.name, v, Mult::Zero);
                 out.push((Rc::from(p.name.name.as_str()), ty));
             }
-            self.elab_repeated_typings(&mut cx, cs);
+            // A refinement of a type's parameter is no condition on it.
+            let names: Vec<&str> = params.iter().map(|p| p.name.name.as_str()).collect();
+            let _ = self.combine_typings(&mut cx, cs, &|cx, n| {
+                let l = cx.lookup(n).filter(|_| names.contains(&n))?;
+                Some((l, cx.locals[l].ty.clone()))
+            });
             self.g.tys[tid.0 as usize].params = out;
             self.solve_deferred();
         }
@@ -1136,7 +1125,19 @@ impl Elab {
             }
             fields.push((Rc::from(n.name.as_str()), mult, Icit::Expl, ty));
         }
-        self.elab_repeated_typings(&mut cx, cs);
+        // A field's typings after the first: their refinements are
+        // invariants too.
+        let facts = self.combine_typings(&mut cx, cs, &|cx, n| {
+            let l = cx.lookup(n).filter(|_| declared.contains(n))?;
+            Some((l, cx.locals[l].ty.clone()))
+        });
+        for (l, t, at, span) in facts {
+            for (fact, text, _) in self.alias_facts(&cx, at, &t, Val::var(l)) {
+                let tm = quote(&self.g, cx.lvl(), &fact);
+                cx.assume(fact);
+                invs.push((tm, text, span, cx.lvl(), None));
+            }
+        }
         // Each condition may rely on those before it, as a signature's do
         // (fields' types are facts already through their locals).
         for c in cs {
@@ -1857,7 +1858,19 @@ impl Elab {
                 }
             }
         }
-        self.elab_repeated_typings(&mut cx, cs);
+        // A parameter's or the result's typings after the first: their
+        // refinements are preconditions and postconditions.
+        let result_base = self.eval(&cx, &result_ty);
+        let nb_here = binders.len();
+        let rname_here = result.map(|r| r.name.as_str());
+        let pnames: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+        let extra = self.combine_typings(&mut cx, cs, &|cx, n| {
+            if Some(n) == rname_here {
+                return Some((nb_here, result_base.clone()));
+            }
+            let l = cx.lookup(n).filter(|_| pnames.contains(&n))?;
+            Some((l, cx.locals[l].ty.clone()))
+        });
         let deferred = std::mem::replace(&mut self.ty_cond_defer, saved_defer).unwrap_or_default();
         // Predicates may mention the result, so check them with it in scope.
         let rv = self.eval(&cx, &result_ty);
@@ -1887,6 +1900,12 @@ impl Elab {
             for (fact, text, alias) in self.alias_facts(&cx, k, &ty, Val::var(k)) {
                 let tm = quote(&self.g, cx.lvl(), &fact);
                 preds.push(Pred { tm, text, span, is_post: k == nb, alias: Some((k, alias)) });
+            }
+        }
+        for (k, t, at, span) in extra {
+            for (fact, text, _) in self.alias_facts(&cx, at, &t, Val::var(k)) {
+                let tm = quote(&self.g, cx.lvl(), &fact);
+                preds.push(Pred { tm, text, span, is_post: k == nb, alias: None });
             }
         }
         let _ = rl;
