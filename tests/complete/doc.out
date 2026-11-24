@@ -59,7 +59,7 @@ replaces 1:68-1:70
   zero_add           function        
 == line 5, column 14
 replaces 5:14-5:14
-  all                function        export fn all p xs -> r : p~(x~a -> Bool, contains xs x), xs~List a, r~Bool  (documented)
+  all                function        export transparent fn all p xs -> r : p~(x~a -> Bool, contains xs x), xs~List a, r~Bool  (documented)
   append_assoc       lemma           export lemma append_assoc xs ys zs : xs~List a, ys~List a, zs~List a  (documented)
   append_nil         lemma           export lemma append_nil xs : xs~List a  (documented)
   bag_append         lemma           export lemma bag_append xs ys : xs~List a, ys~List a  (documented)
