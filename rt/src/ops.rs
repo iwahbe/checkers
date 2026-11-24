@@ -173,6 +173,14 @@ pub extern "C" fn ck_concat(a: W, b: W) -> W {
 /// place.
 #[no_mangle]
 pub extern "C" fn ck_concat_own(a: W, b: W) -> W {
+    if let Some(r) = crate::array::append_in_room(a, b) {
+        return r;
+    }
+    concat_own(a, b)
+}
+
+#[inline(never)]
+fn concat_own(a: W, b: W) -> W {
     if crate::array::is_array(a) {
         return crate::array::concat_own(a, b);
     }
