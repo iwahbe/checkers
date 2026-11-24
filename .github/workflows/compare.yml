@@ -5,7 +5,8 @@
 # (src/verify/), or this file. Not part of `cargo test`, which needs no
 # `z3` executable.
 #
-# `ckc` is built against the libz3 the `z3-solver` package ships (AGENTS.md),
+# `ckc` is built against the libz3 the `z3-solver` package ships (AGENTS.md;
+# `Z3_NO_PKG_CONFIG=1`, or the runner's own older Z3 is linked instead),
 # so Z3 isn't compiled from source and is the same release as the `z3`
 # executable. The table goes to the job's summary; the rows that changed
 # since smt/baseline.tsv are uploaded as `changed-rows`.
@@ -34,6 +35,7 @@ env:
 jobs:
   compare:
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -49,6 +51,9 @@ jobs:
           lib=$("$RUNNER_TEMP/z3/bin/python" -c 'import os, z3; print(os.path.join(os.path.dirname(z3.__file__), "lib"))')
           echo "Z3_LIBRARY_PATH_OVERRIDE=$lib" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$lib" >> "$GITHUB_ENV"
+          # The runner has Ubuntu's own Z3 (4.8), which pkg-config would find
+          # first (AGENTS.md).
+          echo "Z3_NO_PKG_CONFIG=1" >> "$GITHUB_ENV"
       - name: The Z3 is the pinned release
         run: z3 -version | tee /dev/stderr | grep -q "^Z3 version $Z3_VERSION "
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -56,6 +61,14 @@ jobs:
           shared-key: compare
       - name: Build ckc
         run: cargo build --release --locked --no-default-features --bin ckc
+      # `ckc` warns when the Z3 it runs with isn't the pinned release; here
+      # that is a broken setup (an older Z3 can take hours), so stop.
+      - name: ckc runs with the pinned Z3
+        run: |
+          set -o pipefail
+          printf 'module pinned\n\nfn next x -> r : x~Nat, r~Nat, r > x\n    x + 1\n' > "$RUNNER_TEMP/pinned.ck"
+          timeout 300 target/release/ckc check --no-cache "$RUNNER_TEMP/pinned.ck" 2>&1 | tee pinned.log
+          if grep -q "but Checkers pins Z3" pinned.log; then exit 1; fi
       - name: Build the solver package
         run: target/release/ckc build smt/main.ck -o smt-main
       - name: Compare
