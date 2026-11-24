@@ -32,7 +32,11 @@
 //!                         `> JSON` sends a message (`$ROOT` is the repository,
 //!                         `$TEXT(file)` a file's text as a JSON string), `< N`
 //!                         waits for N more messages; NAME.out is every message
-//!                         received, in order, and the exit code.
+//!                         received, in order, and the exit code. A session
+//!                         waits for each check's diagnostics (a message per
+//!                         phase with any) before its next request: they arrive
+//!                         whenever the check gets to them, and the server
+//!                         sends nothing after answering `shutdown`.
 //! tools/, examples/, bench/, stdlib/, tests/{types,run,stage,stress}: every .ck file must be
 //!                         formatted; every .ck file in the repository must format to a
 //!                         fixed point with the same syntax tree (D93).
