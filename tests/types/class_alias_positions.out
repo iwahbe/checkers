@@ -1,0 +1,33 @@
+error[E0456]: `Visit` at `Nat` runs `Int`'s instance, whose `visit` may give `f` a function whose results aren't `Nat`s
+  --> class_alias_positions.ck:51:5
+   |
+51 |     Visit.visit on_visit
+   |     ^^^^^^^^^^^^^^^^^^^^ `Visit` is used at `Nat` here
+   = note: counterexample: n = -1
+   = help: use `Int` here, with a function that accepts every `Int -> Int`; or give `instance Visit Int`'s `visit` a signature in which `f` is given only functions whose results are `Nat`s, such as `f~((Int -> Nat) -> Bool)`
+
+error[E0456]: `Nest` at `Nat` runs `Int`'s instance, whose `nest` may give `f` a function whose results aren't `Nat`s
+  --> class_alias_positions.ck:54:5
+   |
+54 |     Nest.nest on_nest
+   |     ^^^^^^^^^^^^^^^^^ `Nest` is used at `Nat` here
+   = note: counterexample: n = -1
+   = help: use `Int` here, with a function that accepts every `Int -> Int -> Int`; or give `instance Nest Int`'s `nest` a signature in which `f` is given only functions whose results are `Nat`s, such as `f~((Int -> Int -> Nat) -> Bool)`
+
+error[E0456]: `Wrap` at `Nat` runs `Int`'s instance, whose `wrap` may give `f` a value with parts that aren't `Nat`s
+  --> class_alias_positions.ck:57:5
+   |
+57 |     Wrap.wrap on_wrap
+   |     ^^^^^^^^^^^^^^^^^ `Wrap` is used at `Nat` here
+   = note: counterexample: n = -1
+   = help: use `Int` here, with a function that accepts every `Option Int`; or give `instance Wrap Int`'s `wrap` a signature in which `f` is given only values with parts that are `Nat`s, such as `f~(Option Nat -> Bool)`
+
+error[E0456]: `Pass` at `Nat` runs `Int`'s instance, whose `pass` may give `f` a function that calls its function argument with values that aren't `Nat`s
+  --> class_alias_positions.ck:60:5
+   |
+60 |     Pass.pass on_pass
+   |     ^^^^^^^^^^^^^^^^^ `Pass` is used at `Nat` here
+   = note: counterexample: n = -1
+   = help: use `Int` here, with a function that accepts every `(Int -> Bool) -> Bool`; or give `instance Pass Int`'s `pass` a signature in which `f` is given only functions that call their function arguments with `Nat`s, such as `f~(((Nat -> Bool) -> Bool) -> Bool)`
+
+class_alias_positions.ck: 4 errors, 0 warnings

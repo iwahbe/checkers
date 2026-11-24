@@ -3416,7 +3416,7 @@ impl Elab {
             }
         }
         let call_text = call.map(|(_, _, s)| self.src_text(s));
-        let kind = |param: Option<String>, inside: bool| ObKind::AtAlias {
+        let kind = |param: Option<super::AliasParam>, inside: bool| ObKind::AtAlias {
             class: cname.clone(),
             alias: alias_s.clone(),
             base: base_s.clone(),
@@ -3463,13 +3463,109 @@ impl Elab {
             if !self.alias_differs(lvl, &dt, &db, false, 0) {
                 continue;
             }
+            let param = Some(self.alias_param(&cx, &x, &dt, &db, &alias_s));
             let idom = inst_params.get(&i).cloned().unwrap_or(db);
-            if !self.refined_implies(&cx, &idom, &dt, span, kind(Some(x.clone()), false)) {
+            if !self.refined_implies(&cx, &idom, &dt, span, kind(param.clone(), false)) {
                 let goal = self.eval(&cx, &falsity);
-                self.oblige(&cx, span, kind(Some(x.clone()), false), format!("every value it gives `{x}` is a `{alias_s}`"), goal, None);
+                self.oblige(&cx, span, kind(param, false), format!("every value it gives `{x}` is a `{alias_s}`"), goal, None);
             }
         }
         self.cur_fn = saved;
+    }
+
+    /// The places in `t` where it has a refinement alias that `b`, the same
+    /// type at the alias's base, doesn't, at which a value is produced
+    /// (`co`), as `alias_differs` finds them: each as the steps reaching it.
+    fn alias_paths(&self, lvl: usize, t: &Val, b: &Val, co: bool, path: &mut Vec<Step>, out: &mut Vec<Vec<Step>>) {
+        if path.len() > 16 || out.len() > 4 {
+            return;
+        }
+        let (pt, pb) = (self.peel(t), self.peel(b));
+        if co {
+            if let Some((d, _)) = self.refined_alias(&pt) {
+                if self.refined_alias(&pb).is_none_or(|(e, _)| e != d) {
+                    out.push(path.clone());
+                    return;
+                }
+            }
+        }
+        let mut at = |s: &Elab, step: Step, x: &Val, y: &Val, co: bool, lvl: usize, out: &mut Vec<Vec<Step>>| {
+            path.push(step);
+            s.alias_paths(lvl, x, y, co, path, out);
+            path.pop();
+        };
+        match (self.force(&pt), self.force(&pb)) {
+            (Val::TyCon(t1, a1), Val::TyCon(t2, a2)) if t1 == t2 && a1.len() == a2.len() => {
+                let vs = self.variance(t1);
+                for (k, (x, y)) in a1.iter().zip(&a2).enumerate() {
+                    match vs.get(k) {
+                        Some(super::refine::Variance::Co) => at(self, Step::Part, x, y, co, lvl, out),
+                        Some(super::refine::Variance::Contra) => at(self, Step::Other, x, y, !co, lvl, out),
+                        _ => {
+                            at(self, Step::Other, x, y, co, lvl, out);
+                            at(self, Step::Other, x, y, !co, lvl, out);
+                        }
+                    }
+                }
+            }
+            (Val::TupleTy(x), Val::TupleTy(y)) if x.len() == y.len() => {
+                for (x, y) in x.iter().zip(&y) {
+                    at(self, Step::Part, x, y, co, lvl, out);
+                }
+            }
+            (Val::Pi(_, _, _, a1, c1), Val::Pi(_, _, _, a2, c2)) => {
+                at(self, Step::Arg, &a1, &a2, !co, lvl, out);
+                let (r1, r2) = (apply_closure(&self.g, &c1, Val::var(lvl)), apply_closure(&self.g, &c2, Val::var(lvl)));
+                at(self, Step::Res, &r1, &r2, co, lvl + 1, out);
+            }
+            _ => {}
+        }
+    }
+
+    /// Function parameter `x` of type `t` at the alias (`b` at its base),
+    /// as a message about the values of the alias the instance gives it
+    /// says it (#254): where it gives them (its argument, a function's
+    /// results, …), from the places `t` has the alias.
+    fn alias_param(&self, cx: &Cx, x: &str, t: &Val, b: &Val, alias: &str) -> super::AliasParam {
+        let lvl = cx.lvl();
+        let mut paths = Vec::new();
+        self.alias_paths(lvl, t, b, false, &mut Vec::new(), &mut paths);
+        let a = format!("`{alias}`");
+        let mut gives: Vec<String> = Vec::new();
+        let mut only: Vec<String> = Vec::new();
+        for p in &paths {
+            // A function of several arguments gives its results after the
+            // last: `Int -> Int -> t` is a function whose results are `t`s.
+            let mut p = p.clone();
+            p.dedup_by(|x, y| *x == Step::Res && *y == Step::Res);
+            let (g, o) = match p.split_first() {
+                Some((Step::Arg, rest)) => (given_one(rest, &a), given_all(rest, &a, false)),
+                _ => (None, None),
+            };
+            let g = g.unwrap_or_else(|| format!("a value that isn't a {a}"));
+            let o = o.unwrap_or_else(|| format!("{a}s"));
+            if !gives.contains(&g) {
+                gives.push(g);
+            }
+            if !only.contains(&o) {
+                only.push(o);
+            }
+        }
+        if gives.is_empty() {
+            gives.push(format!("a value that isn't a {a}"));
+            only.push(format!("{a}s"));
+        }
+        let direct = paths.iter().all(|p| p.as_slice() == [Step::Arg]);
+        let (bt, tt) = (self.peel(b), self.peel(t));
+        let accepts = match self.force(&bt) {
+            Val::Pi(_, _, _, d, _) => self.show_val(cx, &d),
+            _ => self.show_val(cx, &bt),
+        };
+        let example = (!direct).then(|| {
+            let s = self.show_val(cx, &tt);
+            if s.contains(' ') { format!("({s})") } else { s }
+        });
+        super::AliasParam { name: x.to_string(), gives: gives.join(" or "), only: only.join(" and "), accepts, example }
     }
 
     /// The types an instance's function `g` gives its explicit parameters,
@@ -3579,4 +3675,52 @@ fn mentions_placeholder(g: &Globals, v: &Val) -> bool {
         }
     }
     go(&quote(g, TOP, v), 0)
+}
+
+/// A step into a type, to a place a refinement alias is (#254): a
+/// function's argument or result, a part of a value (a covariant type
+/// argument, a tuple's component), or anything else.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Step {
+    Arg,
+    Res,
+    Part,
+    Other,
+}
+
+/// What a value given at `path` is, one of them, where it isn't of alias
+/// `a` (`a function whose results aren't `Nat`s`). None for a place this
+/// can't say.
+fn given_one(path: &[Step], a: &str) -> Option<String> {
+    match path {
+        [] => Some(format!("a value that isn't a {a}")),
+        [Step::Res, rest @ ..] => Some(format!("a function whose results {}", given_pred(rest, a, true)?)),
+        [Step::Part, rest @ ..] => Some(format!("a value with parts that {}", given_pred(rest, a, true)?)),
+        [Step::Arg, Step::Arg, rest @ ..] => Some(format!("a function that calls its function argument with {}", given_all(rest, a, true)?)),
+        _ => None,
+    }
+}
+
+/// The values given at `path`, all of them: those that aren't of alias `a`
+/// (`neg`), or those that are.
+fn given_all(path: &[Step], a: &str, neg: bool) -> Option<String> {
+    match path {
+        [] if neg => Some(format!("values that aren't {a}s")),
+        [] => Some(format!("{a}s")),
+        [Step::Res, rest @ ..] => Some(format!("functions whose results {}", given_pred(rest, a, neg)?)),
+        [Step::Part, rest @ ..] => Some(format!("values with parts that {}", given_pred(rest, a, neg)?)),
+        [Step::Arg, Step::Arg, rest @ ..] => Some(format!("functions that call their function arguments with {}", given_all(rest, a, neg)?)),
+        _ => None,
+    }
+}
+
+/// What the values at `path` are, said of several: `aren't `Nat`s`, `are
+/// functions whose results …`.
+fn given_pred(path: &[Step], a: &str, neg: bool) -> Option<String> {
+    match path {
+        [] if neg => Some(format!("aren't {a}s")),
+        [] => Some(format!("are {a}s")),
+        [Step::Part, rest @ ..] => Some(format!("have parts that {}", given_pred(rest, a, neg)?)),
+        _ => Some(format!("are {}", given_all(path, a, neg)?)),
+    }
 }
