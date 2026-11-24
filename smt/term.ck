@@ -128,7 +128,11 @@ export enum Term
 # ── Definitions and axioms ───────────────────────────────────────────────────
 
 # A recursive definition: `define-fun-rec`. `terminates` is the caller's
-# promise that evaluating it terminates (trusted only for counterexamples).
+# promise that the body terminates at every argument of its parameters'
+# sorts, in every interpretation of the declared functions, so that the
+# definition has exactly one solution. It is trusted only for
+# counterexamples (`model.refutes`); `ckc` owes it (#299), and `parse`
+# marks none.
 export record Def
     name~Name
     params~List (Name, Sort)
@@ -218,6 +222,9 @@ export enum Problem
     # A datatype with no values: every constructor needs a value of a sort
     # that has none, such as the datatype itself.
     NotWellFounded d    : d~Datatype
+    # A datatype in the index of an array in its own fields: there is no
+    # such set.
+    NotCovariant d      : d~Datatype
 
 # ── Well-formed sorts ────────────────────────────────────────────────────────
 
@@ -469,87 +476,305 @@ fn check_patterns sig env ps -> r : sig~Sig, env~List Sort, ps~List (List Term),
                 check_patterns sig env rest
 
 # ── Datatypes with values ────────────────────────────────────────────────────
-# Every sort must have a value (SMT-LIB 2.6, §5.3: a structure's domains
-# are non-empty). `Bool`, `Int`, sequences (the empty one) and uninterpreted
-# sorts always do; an array of `v` does when `v` does; a datatype does when
-# one of its constructors' fields all do. Z3 asks this of each declaration
-# ("datatype is not well-founded"), though less precisely: it rejects a
-# field `(Seq T)` of a new `T`, which has values, and accepts a field
-# `(Box T)` through a datatype declared before, which has none if `T` has
-# none. This checks the definition itself.
+# Every sort must have a value (SMT-LIB 2.6, §5.3: a structure's domains are
+# non-empty), so `check_values` asks two things of the datatypes one
+# `declare-datatypes` declares (the group).
+#
+# 1. Each has a value. What "has a value" means: `Bool`, `Int`, sequences
+#    (the empty one) and uninterpreted sorts always do; `(Array i v)` does
+#    when `v` does; a parameter does, since it stands for a sort; and
+#    `(D a1 … an)` does when one of `D`'s constructors has a value for each
+#    field, its parameters standing for `a1 … an`. That is the least fixed
+#    point of these rules. Whether `(D a1 … an)` has a value depends only on
+#    which of `a1 … an` have values, so it is computed over pairs (`Shape`):
+#    a datatype and, for each parameter, whether its argument has a value.
+#    There are finitely many, so rounds that add every pair whose
+#    constructor's fields all have values, from the pairs found so far,
+#    reach the fixed point. Each group datatype is asked with every
+#    parameter having a value.
+#
+# 2. None is in the index of an array in a field of the group: not written
+#    there, and not through a datatype declared before that puts its
+#    parameter there. With arrays as all functions, `T = mk (Array T Int)`
+#    would need as many values as functions from `T` to `Int`, and there is
+#    no such set (Cantor). Z3 rejects these ("datatype is not co-variant"),
+#    though not through earlier datatypes. In an array's values or in a
+#    sequence a datatype is a tree with many branches, which exists.
+#
+# Z3 is less exact about values: it rejects `T = mk (Seq T)` and accepts
+# `U T = u (Box (U T))` with `Box` in the same group, neither of which
+# matches these rules (the first has `(mk [])`, the second no value).
 
-# How many arrays `s` is of arrays of: `has_value`'s measure.
-fn arrays_in s -> n : s~Sort, n~Nat
-    match s
-        Arr _ v -> 1 + arrays_in v
-        _       -> 0
+# A datatype applied to arguments, as far as values go: its number, and
+# whether each argument has a value.
+type Shape = sh~(Nat, List Bool)
 
-# Whether `s` has a value, where `first` is the number of the first datatype
-# being declared, `known` those of them known to have values, and `depth`
-# how many datatypes deep a value may be looked for.
-fn has_value sig first known s depth -> r : sig~Sig, first~Nat, known~List Nat, s~Sort, depth~Nat, r~Bool
-    decreasing (depth, 0, arrays_in s)
+# Whether `xs` is at most `ys`, place by place (`False` before `True`).
+fn at_most xs ys -> r : xs~List Bool, ys~List Bool, r~Bool
+    match (xs, ys)
+        ([], [])           -> True
+        (x :: xr, y :: yr) -> (not x or y) and at_most xr yr
+        _                  -> False
+
+# Whether a shape found to have a value is at most `(e, bits)`: then
+# `(e, bits)` has one too, as more arguments with values can only help.
+fn found_below found e bits -> r : found~List Shape, e~Nat, bits~List Bool, r~Bool
+    match found
+        []             -> False
+        (d, b) :: rest -> (d == e and at_most b bits) or found_below rest e bits
+
+# Whether `s` has a value, from the shapes `found` to have one, where
+# `bits` says which parameters have values.
+fn sort_has found bits s -> r : found~List Shape, bits~List Bool, s~Sort, r~Bool
     match s
-        Arr _ v     -> has_value sig first known v depth
-        Data d args ->
-            if d >= first
-                list.contains known d
-            else if depth == 0 or d >= len sig.datatypes
-                False
-            else
-                some_ctor_has sig first known args sig.datatypes[d].ctors (depth - 1)
+        Param k     ->
+            match list.head (list.drop k bits)
+                Some b -> b
+                None   -> False
+        Arr _ v     -> sort_has found bits v
+        Data e args -> found_below found e (sorts_have found bits args)
         _           -> True
 
-fn all_have sig first known ss depth -> r : sig~Sig, first~Nat, known~List Nat, ss~List Sort, depth~Nat, r~Bool
-    decreasing (depth, 1, list.length ss)
+fn sorts_have found bits ss -> r : found~List Shape, bits~List Bool, ss~List Sort, r~List Bool
     match ss
-        []        -> True
-        s :: rest -> has_value sig first known s depth and all_have sig first known rest depth
+        []        -> []
+        s :: rest -> sort_has found bits s :: sorts_have found bits rest
 
-# Whether one of `cs`, at sort arguments `args`, has all its fields with
-# values.
-fn some_ctor_has sig first known args cs depth -> r : sig~Sig, first~Nat, known~List Nat, args~List Sort,
-                                                      cs~List Ctor, depth~Nat, r~Bool
-    decreasing (depth, 2, list.length cs)
+fn all_true bs -> r : bs~List Bool, r~Bool
+    match bs
+        []        -> True
+        b :: rest -> b and all_true rest
+
+# Whether some constructor of `cs` has a value for every field.
+fn some_ctor found bits cs -> r : found~List Shape, bits~List Bool, cs~List Ctor, r~Bool
     match cs
         []        -> False
-        c :: rest ->
-            all_have sig first known (list.map (instantiate args) (field_sorts c.fields)) depth
-                or some_ctor_has sig first known args rest depth
+        c :: rest -> all_true (sorts_have found bits (field_sorts c.fields)) or some_ctor found bits rest
 
-# The datatypes of `ds` (numbered from `first`) that get values once those
-# in `known` have them, added to `known`.
-fn grow_known sig first known ds i -> r : sig~Sig, first~Nat, known~List Nat, ds~List Datatype, i~Nat, r~List Nat
-    match ds
-        []        -> known
-        d :: rest ->
-            let n = first + i
-            let more =
-                if not (list.contains known n) and some_ctor_has sig first known [] d.ctors (len sig.datatypes)
-                    n :: known
+fn shape_has sig found sh -> r : sig~Sig, found~List Shape, sh~Shape, r~Bool
+    let (e, bits) = sh
+    e < len sig.datatypes and some_ctor found bits sig.datatypes[e].ctors
+
+# The shapes the fields of `sh`'s constructors use, with `found` deciding
+# their arguments.
+fn shapes_in found bits s -> r : found~List Shape, bits~List Bool, s~Sort, r~List Shape
+    match s
+        Seq e       -> shapes_in found bits e
+        Arr i v     -> shapes_in found bits i ++ shapes_in found bits v
+        Data e args -> (e, sorts_have found bits args) :: all_shapes_in found bits args
+        _           -> []
+
+fn all_shapes_in found bits ss -> r : found~List Shape, bits~List Bool, ss~List Sort, r~List Shape
+    match ss
+        []        -> []
+        s :: rest -> shapes_in found bits s ++ all_shapes_in found bits rest
+
+fn ctor_shapes found bits cs -> r : found~List Shape, bits~List Bool, cs~List Ctor, r~List Shape
+    match cs
+        []        -> []
+        c :: rest -> all_shapes_in found bits (field_sorts c.fields) ++ ctor_shapes found bits rest
+
+fn next_shapes sig found sh -> r : sig~Sig, found~List Shape, sh~Shape, r~List Shape
+    let (e, bits) = sh
+    if e < len sig.datatypes then ctor_shapes found bits sig.datatypes[e].ctors else []
+
+# Every shape reachable from `todo`, given `found`; `fuel` bounds the
+# search, and what it leaves out is only never found (a datatype rejected,
+# never one accepted).
+fn reach sig found todo seen fuel -> r : sig~Sig, found~List Shape, todo~List Shape, seen~List Shape, fuel~Nat,
+                                         r~List Shape
+    if fuel == 0
+        seen
+    else
+        match todo
+            []        -> seen
+            x :: rest ->
+                if list.contains seen x
+                    reach sig found rest seen (fuel - 1)
                 else
-                    known
-            grow_known sig first more rest (i + 1)
+                    reach sig found (next_shapes sig found x ++ rest) (x :: seen) (fuel - 1)
 
-# `known` grown `rounds` times: each round adds at least one datatype or
-# changes nothing, so as many rounds as datatypes reach the end.
-fn settle sig first known ds rounds -> r : sig~Sig, first~Nat, known~List Nat, ds~List Datatype, rounds~Nat,
-                                           r~List Nat
-    if rounds == 0 then known else settle sig first (grow_known sig first known ds 0) ds (rounds - 1)
+# The shapes of `xs` not yet below one found that have a value now.
+fn add_found sig found xs -> r : sig~Sig, found~List Shape, xs~List Shape, r~List Shape
+    match xs
+        []             -> found
+        (e, b) :: rest ->
+            if not (found_below found e b) and shape_has sig found (e, b)
+                add_found sig ((e, b) :: found) rest
+            else
+                add_found sig found rest
 
-# The first of `ds` (numbered from `first`) not in `known`.
-fn first_without first known ds i -> r : first~Nat, known~List Nat, ds~List Datatype, i~Nat, r~Option Datatype
+# The least fixed point, from the roots: a round adds at least one shape or
+# changes nothing, so `rounds` rounds as many as there are shapes reach it.
+fn fixed sig roots found rounds bound -> r : sig~Sig, roots~List Shape, found~List Shape, rounds~Nat, bound~Nat,
+                                             r~List Shape
+    if rounds == 0
+        found
+    else
+        let more = add_found sig found (reach sig found roots [] bound)
+        if list.length more == list.length found then found else fixed sig roots more (rounds - 1) bound
+
+fn trues n -> r : n~Nat, r~List Bool
+    if n == 0 then [] else True :: trues (n - 1)
+
+fn roots first ds i -> r : first~Nat, ds~List Datatype, i~Nat, r~List Shape
+    match ds
+        []        -> []
+        d :: rest -> (first + i, trues (list.length d.params)) :: roots first rest (i + 1)
+
+# How many shapes there can be: each datatype with each choice of which
+# parameters have values.
+fn shape_count dts i -> n : dts~Array Datatype, i~Nat, i <= len dts, n~Nat
+    decreasing len dts - i
+    if i >= len dts then 0 else pow2 (list.length dts[i].params) + shape_count dts (i + 1)
+
+fn pow2 n -> r : n~Nat, r~Nat
+    if n == 0 then 1 else 2 * pow2 (n - 1)
+
+# A place of a datatype's parameter: datatype `e`'s `k`-th.
+type Place = pl~(Nat, Nat)
+
+# Whether parameter `k` of datatype `e` is in an array's index in `e`'s
+# fields, directly or through the datatypes they use: a search over places,
+# each looked at once.
+fn place_in_array sig todo seen fuel -> r : sig~Sig, todo~List Place, seen~List Place, fuel~Nat, r~Bool
+    if fuel == 0
+        True
+    else
+        match todo
+            []             -> False
+            (e, k) :: rest ->
+                if list.contains seen (e, k) or e >= len sig.datatypes
+                    place_in_array sig rest seen (fuel - 1)
+                else
+                    let fs = ctors_fields sig.datatypes[e].ctors
+                    if param_under fs k
+                        True
+                    else
+                        place_in_array sig (param_places fs k ++ rest) ((e, k) :: seen) (fuel - 1)
+
+fn ctors_fields cs -> r : cs~List Ctor, r~List Sort
+    match cs
+        []        -> []
+        c :: rest -> field_sorts c.fields ++ ctors_fields rest
+
+# Whether `Param k` is in an array's index in one of `ss`.
+fn param_under ss k -> r : ss~List Sort, k~Nat, r~Bool
+    match ss
+        []        -> False
+        s :: rest -> under_in s k False or param_under rest k
+
+fn under_in s k inside -> r : s~Sort, k~Nat, inside~Bool, r~Bool
+    match s
+        Param j     -> inside and j == k
+        Seq e       -> under_in e k inside
+        Arr i v     -> under_in i k True or under_in v k inside
+        Data _ args -> under_all args k inside
+        Unin _ args -> under_all args k inside
+        _           -> False
+
+fn under_all ss k inside -> r : ss~List Sort, k~Nat, inside~Bool, r~Bool
+    match ss
+        []        -> False
+        s :: rest -> under_in s k inside or under_all rest k inside
+
+# The places `Param k` is an argument at in `ss`.
+fn param_places ss k -> r : ss~List Sort, k~Nat, r~List Place
+    match ss
+        []        -> []
+        s :: rest -> places_in s k ++ param_places rest k
+
+fn places_in s k -> r : s~Sort, k~Nat, r~List Place
+    match s
+        Data e args -> arg_places e args k 0 ++ param_places args k
+        _           -> []
+
+fn arg_places e args k j -> r : e~Nat, args~List Sort, k~Nat, j~Nat, r~List Place
+    match args
+        []        -> []
+        a :: rest -> (if mentions_param a k then [(e, j)] else []) ++ arg_places e rest k (j + 1)
+
+fn mentions_param s k -> r : s~Sort, k~Nat, r~Bool
+    match s
+        Param j     -> j == k
+        Seq e       -> mentions_param e k
+        Arr i v     -> mentions_param i k or mentions_param v k
+        Data _ args -> any_mentions args k
+        Unin _ args -> any_mentions args k
+        _           -> False
+
+fn any_mentions ss k -> r : ss~List Sort, k~Nat, r~Bool
+    match ss
+        []        -> False
+        s :: rest -> mentions_param s k or any_mentions rest k
+
+# Whether a datatype numbered `first` or after is in an array's index in
+# `s` (`inside`: `s` itself is), directly or through a parameter some
+# datatype puts in one.
+fn group_inside sig first s inside -> r : sig~Sig, first~Nat, s~Sort, inside~Bool, r~Bool
+    match s
+        Seq e       -> group_inside sig first e inside
+        Arr i v     -> group_inside sig first i True or group_inside sig first v inside
+        Data e args -> (inside and e >= first) or group_args sig first e args 0 inside
+        Unin _ args -> group_all sig first args inside
+        _           -> False
+
+fn group_all sig first ss inside -> r : sig~Sig, first~Nat, ss~List Sort, inside~Bool, r~Bool
+    match ss
+        []        -> False
+        s :: rest -> group_inside sig first s inside or group_all sig first rest inside
+
+# The arguments of datatype `e` from the `j`-th: each in an index if it is,
+# or if `e` puts its parameter in one.
+fn group_args sig first e args j inside -> r : sig~Sig, first~Nat, e~Nat, args~List Sort, j~Nat, inside~Bool, r~Bool
+    match args
+        []        -> False
+        a :: rest ->
+            let wrapped = inside or (mentions_group first a and place_in_array sig [(e, j)] [] (shape_count sig.datatypes 0 + 1))
+            group_inside sig first a wrapped or group_args sig first e rest (j + 1) inside
+
+fn mentions_group first s -> r : first~Nat, s~Sort, r~Bool
+    match s
+        Seq e       -> mentions_group first e
+        Arr i v     -> mentions_group first i or mentions_group first v
+        Data e args -> e >= first or mentions_any first args
+        Unin _ args -> mentions_any first args
+        _           -> False
+
+fn mentions_any first ss -> r : first~Nat, ss~List Sort, r~Bool
+    match ss
+        []        -> False
+        s :: rest -> mentions_group first s or mentions_any first rest
+
+# The first of `ds` with a datatype of the group in an array's index in a
+# field.
+fn first_wrapped sig first ds -> r : sig~Sig, first~Nat, ds~List Datatype, r~Option Datatype
     match ds
         []        -> None
-        d :: rest -> if list.contains known (first + i) then first_without first known rest (i + 1) else Some d
+        d :: rest -> if group_all sig first (ctors_fields d.ctors) False then Some d else first_wrapped sig first rest
 
-# Whether each of `ds`, the datatypes of `sig` numbered from `first`, has
-# a value.
+# The first of `ds` (numbered from `first`) without a value.
+fn first_without sig found first ds i -> r : sig~Sig, found~List Shape, first~Nat, ds~List Datatype, i~Nat,
+                                             r~Option Datatype
+    match ds
+        []        -> None
+        d :: rest ->
+            if found_below found (first + i) (trues (list.length d.params))
+                first_without sig found first rest (i + 1)
+            else
+                Some d
+
+# Whether `ds`, the datatypes of `sig` numbered from `first`, each have a
+# value and is in no array's index in their fields.
 fn check_values sig first ds -> r : sig~Sig, first~Nat, ds~List Datatype, r~Result Unit Problem
-    let known = settle sig first [] ds (list.length ds)
-    match first_without first known ds 0
-        Some d -> Err (NotWellFounded d)
-        None   -> Ok ()
+    match first_wrapped sig first ds
+        Some d -> Err (NotCovariant d)
+        None   ->
+            let bound = shape_count sig.datatypes 0 + 1
+            let found = fixed sig (roots first ds 0) [] bound (bound * bound)
+            match first_without sig found first ds 0
+                Some d -> Err (NotWellFounded d)
+                None   -> Ok ()
 
 # Whether `c` is well-formed after the commands that gave `sig`.
 export fn check_command sig c -> r : sig~Sig, c~Command, r~Result Unit Problem

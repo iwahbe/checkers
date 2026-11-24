@@ -1,0 +1,8 @@
+-- stdout
+(set-logic ALL)
+(declare-datatypes ((T 0)) (((mk (x (Array Int T))) (base))))
+(declare-const c T)
+(assert (not false))
+(check-sat)
+-- stderr
+-- exit 0

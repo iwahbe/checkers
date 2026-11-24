@@ -1,0 +1,4 @@
+-- stdout
+(error "line 4 column 1: the datatype `U` has no values: each constructor needs a value of a sort that has none")
+-- stderr
+-- exit 1

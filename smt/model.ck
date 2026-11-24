@@ -25,13 +25,16 @@
 # that isn't part of the one being evaluated, so each goes one level down,
 # and `Model.fuel` bounds how many levels there are; past it the answer is
 # `OutOfFuel`. Comparing two constant arrays with stores compares the values
-# at their indices one level down in the same way (so with `fuel = 0`, such
-# arrays compare `OutOfFuel`). Comparing sequences and data goes by their
-# structure and uses no fuel.
+# at their indices one level down in the same way (so with `fuel = 0`, two
+# such arrays that aren't the same value compare `OutOfFuel`). Comparing
+# sequences and data goes by their structure and uses no fuel: with
+# `fuel = 0`, `(= 1 1)` is true.
 #
-# **Terms of the context only.** `eval`, `holds_at` and `refutes` evaluate a
-# term only if it is a term of the context (`term.fact_ok`, `term.axiom_ok`);
-# anything else is `IllSorted`.
+# **Terms of the context only.** `eval` and `eval_unfolding` evaluate a term
+# only if it has a sort in the context with no variables free, `holds_at`
+# an axiom only if it is one of the context's (`term.axiom_ok`), and
+# `refutes` a goal only if it is a fact of it (`term.fact_ok`); anything
+# else is `IllSorted`, or not held.
 #
 # **Two modes.** `eval`, `holds`, `fails`, `holds_all` and `holds_at` are the
 # meaning: every function, defined ones included, is what `Model.funs` says,
@@ -55,13 +58,25 @@
 # `Axiom` with `patterns = []` is a fact like the others, #82): a model is
 # never shown to satisfy one, so a query with one is never `Invalid`.
 #
-# **What a model can't represent here** (for #85, model limits): equality of
-# two arrays is decided only when both are a constant array with stores and
-# the answer follows from the stored indices (see `equal`); otherwise it is
-# `ArraysCompared`. Arrays given by the model (`ModelArray s k`, one family
-# for each array sort `s`) are functions of values; a model function, selector or `seq.nth` applied to a value that
-# holds an array is `ArraysCompared` too, since two different values may
-# then be the same array, and a function must give them the same result.
+# **What a `Model` can't represent here** (for #85, model limits; how it
+# could is proposed on #84). These limit the meaning itself, so also what a
+# theorem stated with `holds_all` or `holds_at` as a premise covers, not
+# only counterexamples:
+#
+# - equality of two arrays is decided only when both are a constant array
+#   with stores and the answer follows from the stored indices (see
+#   `equal_with`), or they are the same value with nothing unknown inside;
+#   otherwise it is `ArraysCompared`, so a fact `(= a (lambda …))` holds in
+#   no model;
+# - a model function, a model array, `seq.nth` out of range or a selector of
+#   another constructor's value is never asked about a value holding an
+#   array (`ArraysCompared`): two different values may be the same array,
+#   and nothing here could make the model give them the same result. So a
+#   fact applying a declared function to an array holds in no model, and a
+#   definition with an array parameter is undetermined at array arguments.
+#
+# Arrays given by the model are `ModelArray s k`, one family for each array
+# sort `s`.
 
 module model
 
@@ -131,8 +146,9 @@ export enum Domain
 
 # An interpretation of a context's symbols, and of what SMT-LIB leaves
 # unspecified. Each function may answer `None`: then the model doesn't say,
-# and a term that needs it is `NotGiven`. A complete model answers `Some`
-# everywhere.
+# and a term that needs it is `NotGiven`. A model that answers `Some`
+# everywhere is complete, but `eval` still leaves some terms undetermined
+# (array equality, fuel: see the module's comment).
 #
 # - `funs f vs`: the `f`-th function at arguments `vs`; a constant at `[]`.
 # - `arrays s k v`: the model's `k`-th array of sort `s` at index `v`.
@@ -378,7 +394,9 @@ export enum Mode
     AsGiven
     Unfolding
 
-# Evaluation one level down: a term in an environment, and equality.
+# What evaluation at one level uses: `value`, evaluation one level down (a
+# `lambda`'s or a definition's body), and `equal`, equality at this level
+# (which compares the values at array stores one level down).
 record Lower
     value~(List (Result Value Unknown) -> List Sort -> Term -> Result Value Unknown)
     equal~(Value -> Value -> Result Bool Unknown)
@@ -386,9 +404,9 @@ record Lower
 # Evaluation `fuel` levels deep at most.
 fn level mode c m fuel -> low : mode~Mode, c~Context, m~Model, fuel~Nat, low~Lower
     if fuel == 0
-        Lower (\_ _ _ -> Err OutOfFuel) (\_ _ -> Err OutOfFuel)
+        Lower (\_ _ _ -> Err OutOfFuel) (equal_to 0)
     else
-        Lower (\env senv t -> value (level mode c m (fuel - 1)) mode c m env senv t) (equal_to (fuel - 1))
+        Lower (\env senv t -> value (level mode c m (fuel - 1)) mode c m env senv t) (equal_to fuel)
 
 # The value of `t`, where `env` gives the values of its variables (`Var 0`
 # first) and `senv` their sorts.
@@ -403,9 +421,12 @@ fn value low mode c m env senv t -> r : low~Lower, mode~Mode, c~Context, m~Model
         Let binds body ->
             # A `let` binds all its names at once, each in the outer
             # environment; it must bind at least one (`term.sort_of`).
-            match if binds == [] then Err term.EmptyLet else term.sorts_of (term.signature c) senv (bound_terms binds)
-                Ok ss -> value low mode c m (list.reverse (bound low mode c m env senv binds) ++ env) (list.reverse ss ++ senv) body
-                Err _ -> Err IllSorted
+            if binds == []
+                Err IllSorted
+            else
+                match term.sorts_of (term.signature c) senv (bound_terms binds)
+                    Ok ss -> value low mode c m (list.reverse (bound low mode c m env senv binds) ++ env) (list.reverse ss ++ senv) body
+                    Err _ -> Err IllSorted
         Lam _ s body   -> Ok (LambdaArray env senv s body)
 
 fn bound_terms binds -> ts : binds~List (Name, Term), ts~List Term
@@ -724,8 +745,9 @@ export fn values_of_sorts c m ss vs -> r : c~Context, m~Model, ss~List Sort, vs~
 
 # Whether axiom `a` holds at the values `vs` of its variables, in order.
 # Values that aren't of the variables' sorts in `m` are not among the ones
-# `a` speaks of, so it holds at them. An axiom that isn't one of `c`
-# (`term.axiom_ok`) holds nowhere.
+# `a` speaks of, so it holds at them: as a hypothesis ("`a` holds at all
+# values") this asks nothing of them, and as a conclusion it says nothing
+# about them. An axiom that isn't one of `c` (`term.axiom_ok`) holds nowhere.
 export fn holds_at c m a vs -> r : c~Context, m~Model, a~Axiom, vs~List Value, r~Bool
     if not (term.axiom_ok c a)
         False
@@ -767,6 +789,13 @@ fn all_marked ds -> r : ds~List (Nat, Def), r~Bool
 # fact holds and the goal fails with each definition run as its own body.
 # Then the interpretation `m` describes, with each definition its unique
 # solution, satisfies every assertion of `c` and `not goal`.
+#
+# For definitions this rests entirely on the marks (`Def.terminates`): a
+# mark promises that the definition's body terminates at every argument of
+# its sorts, in every interpretation of the declared functions, so that the
+# definition has exactly one solution. A wrong mark makes `refutes` wrong
+# (`g x = g x + 1` marked and never called is "refuted", though the context
+# has no model). The caller owes the marks: `ckc` (how it says so is #299).
 export fn refutes c goal m -> r : c~Context, goal~Term, m~Model, r~Bool
     term.fact_ok c goal and term.axioms c == [] and all_marked (term.defs c) and facts_hold_unfolding c m (term.facts c)
         and eval_unfolding c m goal == Ok (Truth False)
