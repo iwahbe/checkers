@@ -1,0 +1,6 @@
+(set-logic ALL)
+(declare-fun f (Int) Int)
+(assert (forall ((x Int)) (> (f x) 0)))
+(assert (not false))
+(check-sat)
+(get-value ((f 3)))

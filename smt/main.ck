@@ -4,6 +4,9 @@
 # `main roundtrip DIR…` reads each query (`*.smt2`) in each DIR, writes it
 # back, and checks that what it wrote is the same query. A query that can't be read gives
 # `(error "line L column C: message")`, as Z3 reports one, and exit status 1.
+# `main models DIR…` checks Z3's models in the corpus with `smt.model`, and
+# `main model QUERY ANSWER` one query's assertions in one answer's model
+# (`models.ck` says how).
 
 module main
 
@@ -16,15 +19,30 @@ import std.bytes
 import std.list
 import smtlib (Shape, Group)
 import term
+import models
 
-let USAGE = "usage: main parse < QUERY\n       main roundtrip DIR..."
+let USAGE = "usage: main parse < QUERY\n       main roundtrip DIR...\n       main models DIR...\n       main model QUERY ANSWER"
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     match args
         ["parse"]           -> parse_stdin sys.term
         "roundtrip" :: dirs -> roundtrip dirs sys.term sys.fs
+        "models" :: dirs    -> if models.run dirs sys.term sys.fs then Success else Failure 1
+        ["model", q, a]     -> model_one q a sys.term sys.fs
         _                   ->
             let _ = terminal.eprint_line USAGE sys.term
+            Failure 2
+
+fn model_one query ans io fs -> code : query~String, ans~String, io~Term, fs~Fs, code~ExitCode
+    match (files.read query fs, files.read ans fs)
+        (Ok src, Ok z3) ->
+            let _ = terminal.write_bytes (models.one src z3) io
+            Success
+        (Err e, _)      ->
+            let _ = terminal.eprint_line ("error: " ++ query ++ ": " ++ files.describe e) io
+            Failure 2
+        (_, Err e)      ->
+            let _ = terminal.eprint_line ("error: " ++ ans ++ ": " ++ files.describe e) io
             Failure 2
 
 fn error_line src e -> r : src~Bytes, e~smtlib.Error src, r~Bytes

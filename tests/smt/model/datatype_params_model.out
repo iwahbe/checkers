@@ -1,0 +1,8 @@
+-- stdout
+z3: sat
+fact 1: not determined: a selector of another constructor's value: Z3 didn't print its value
+fact 2: not determined: a selector of another constructor's value: Z3 didn't print its value
+the negated goal: holds
+refutes: no
+-- stderr
+-- exit 0

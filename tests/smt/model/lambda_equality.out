@@ -1,0 +1,6 @@
+-- stdout
+z3: unsat
+the negated goal: not determined: two arrays compared, which `smt.model` doesn't decide
+refutes: no
+-- stderr
+-- exit 0

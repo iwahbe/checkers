@@ -44,6 +44,9 @@
 //!                         too, checks with no errors and no warnings.
 //! tests/smt/NAME.smt2  → NAME.out is what `smt/main.ck parse` writes for it: the
 //!                         query written back, or the error reading it (line and column).
+//! tests/smt/model/NAME.smt2 → NAME.out is what `smt/main.ck model NAME.smt2 NAME.z3`
+//!                         writes: each assertion in the model of Z3's answer NAME.z3
+//!                         (written by `scripts/smt-model-answers.sh`, which asks Z3).
 //! site/*.md, README.md, the standard library's documentation → `checkers site`
 //!                         and `checkers doc` give no warnings: links resolve, code
 //!                         blocks compile and run (D148).
@@ -887,6 +890,13 @@ fn smt_package(pool: &Pool, root: &'static Path, update: bool) {
         for path in files_with(&root.join("tests").join("smt"), "smt2") {
             count += 1;
             let actual = shown(&run_with(&exe.0, &["parse"], &fs::read(&path).unwrap(), root));
+            compare(root, &path.with_extension("out"), &actual, update, &mut failures);
+        }
+        for path in files_with(&root.join("tests").join("smt").join("model"), "smt2") {
+            count += 1;
+            let query = path.strip_prefix(root).unwrap().display().to_string();
+            let answer = path.with_extension("z3").strip_prefix(root).unwrap().display().to_string();
+            let actual = shown(&run_with(&exe.0, &["model", &query, &answer], b"", root));
             compare(root, &path.with_extension("out"), &actual, update, &mut failures);
         }
         (count, failures)

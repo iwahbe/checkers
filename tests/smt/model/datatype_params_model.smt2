@@ -1,0 +1,8 @@
+(set-logic ALL)
+(declare-datatypes ((Lst 1)) ((par (T) ((none) (more (first T) (rest (Lst T)))))))
+(declare-const xs (Lst Int))
+(assert (= (first xs) 2))
+(assert (= (rest xs) (as none (Lst Int))))
+(assert (not false))
+(check-sat)
+(get-value (xs))

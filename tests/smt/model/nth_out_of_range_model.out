@@ -1,0 +1,8 @@
+-- stdout
+z3: sat
+fact 1: holds
+fact 2: holds
+the negated goal: holds
+refutes: yes
+-- stderr
+-- exit 0
