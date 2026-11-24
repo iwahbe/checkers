@@ -5,7 +5,7 @@ module match_uncons
 
 fn by_uncons xs -> n : Seq s, xs~s, n~Nat
     match Seq.uncons xs
-        Some (_, rest) -> 1 + by_uncons rest
+        Some (_, rest) -> 1 + Seq.size rest
         None           -> 0
 
 # At a known instance, with a wildcard, an or-pattern and a nested pattern.

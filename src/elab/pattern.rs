@@ -231,10 +231,12 @@ impl Elab {
             return;
         }
         let Some(pats) = arms.iter().map(|(p, _, _)| self.seq_pattern_text(p)).collect::<Option<Vec<String>>>() else { return };
-        let mut seq = self.src_text(arg.span);
-        if !matches!(arg.kind, ExprKind::Var(_) | ExprKind::Field(..) | ExprKind::Index(..) | ExprKind::List(_) | ExprKind::Tuple(_) | ExprKind::Lit(_)) {
-            seq = format!("({seq})");
-        }
+        // An argument's span has its parentheses, which `match` doesn't need.
+        let written = self.src_text(arg.span);
+        let seq = match written.strip_prefix('(').and_then(|t| t.strip_suffix(')')) {
+            Some(t) if !matches!(arg.kind, ExprKind::Tuple(_) | ExprKind::Unit) => t.to_string(),
+            _ => written.clone(),
+        };
         let rewrites: Vec<String> = arms
             .iter()
             .zip(&pats)
@@ -249,7 +251,7 @@ impl Elab {
             format!("write `match {seq}`, with {}", and_list(&rewrites))
         };
         self.err(
-            Diagnostic::warning("W011", format!("match on `{seq}` itself, not on `Seq.uncons {seq}`"), scrut.span)
+            Diagnostic::warning("W011", format!("match on `{seq}` itself, not on `Seq.uncons {written}`"), scrut.span)
                 .with_label("`[]` and `x :: rest` take a sequence apart with `Seq.uncons`")
                 .with_help(help),
         );

@@ -1,3 +1,10 @@
+warning[W011]: match on `xs` itself, not on `Seq.uncons xs`
+ --> reused_definition_recognizer.ck:8:11
+  |
+8 |     match Seq.uncons xs
+  |           ^^^^^^^^^^^^^ `[]` and `x :: rest` take a sequence apart with `Seq.uncons`
+  = help: write `match xs`, with `[]` for `None` and `_ :: ys` for `Some (_, ys)`
+
 error[E0450]: cannot prove `within r xs`, the postcondition of `unchecked`
   --> reused_definition_recognizer.ck:22:50
    |
@@ -6,4 +13,4 @@ error[E0450]: cannot prove `within r xs`, the postcondition of `unchecked`
    = note: for the value returned on line 23: `Step.step xs`
    = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
 
-reused_definition_recognizer.ck: 1 error, 0 warnings
+reused_definition_recognizer.ck: 1 error, 1 warning
