@@ -85,9 +85,18 @@ fn magnitude a e -> s : a~Nat, e~Int, s~String, len s.bytes > 0, char.is_digit s
         let ds = display a []
         if e < 0 and 0 - e <= len ds.bytes + 6
             let p = pow10 (0 - e)
-            display (a / p) [] ++ "." ++ places (a % p) (0 - e)
+            have quotient_nat a p
+            let w = display (a / p) []
+            have len w.bytes > 0 and char.is_digit w.bytes[0]
+            w ++ "." ++ places (a % p) (0 - e)
         else
             ds ++ "e" ++ display e []
+
+# A whole number divided by a positive one isn't negative.
+lemma quotient_nat a p : a~Nat, p~Nat, p >= 1
+    ensures a / p >= 0
+    proof
+        auto
 
 # `10^k`.
 fn pow10 k -> p : k~Nat, p~Nat, p >= 1
