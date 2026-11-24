@@ -23,16 +23,14 @@ class Several t
 
 instance Several Int
     fn several n -> r : n~Nat, r~List Int, list.all (\x -> x >= 0) r
-        have none
-        []
+        [n, 1]
 
 class Loose t
     fn loose n -> r : n~Int, r~List t
 
 instance Loose Int
     fn loose n -> r : n~Int, r~List Int, list.all (\x -> x >= -1) r
-        have none
-        []
+        [-1]
 
 class Bare t
     fn bare n -> r : n~Int, r~Tree t
@@ -40,12 +38,6 @@ class Bare t
 instance Bare Int
     fn bare n -> r : n~Int, r~Tree Int
         Node Leaf n Leaf
-
-# `list.all` is sealed: what an empty list satisfies is assumed here.
-lemma none
-    ensures list.all (\x -> x >= 0) [] and list.all (\x -> x >= -1) []
-    proof
-        admit
 
 fn by_type -> t : t~Tree Nat
     grow 1

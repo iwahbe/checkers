@@ -1,24 +1,23 @@
 error[E0456]: cannot prove that `bare (-1)` has type `Tree Nat`
-  --> class_alias_recursive.ck:63:5
+  --> class_alias_recursive.ck:55:5
    |
-63 |     bare (-1)
+55 |     bare (-1)
    |     ^^^^^^^^^ `Bare` at `Nat` runs `Int`'s instance, and its `bare` isn't shown to give a `Nat` here
    = help: use `Int` here and check the result where a `Nat` is needed; or promise it in a signature of `instance Bare Int`'s `bare`: `Tree Nat` in its result
 
 error[E0456]: cannot prove that `loose 1` has type `List Nat` (`list.all (\n -> n >= 0) (loose 1)`)
-  --> class_alias_recursive.ck:66:5
+  --> class_alias_recursive.ck:58:5
    |
-66 |     loose 1
+58 |     loose 1
    |     ^^^^^^^ `Loose` at `Nat` runs `Int`'s instance, and its `loose` isn't shown to give a `Nat` here
-   = note: `all` is sealed in `std.list`: here the prover knows only its postconditions and the lemmas you bring in with `have`
    = help: use `Int` here and check the result where a `Nat` is needed; or promise it in a signature of `instance Loose Int`'s `loose`: `List Nat` in its result, or `list.all (\n -> n >= 0)` of it
 
 error[E0456]: `Loose` at `Nat` runs `Int`'s instance, whose `loose` isn't shown to return a value of type `List Nat`
-  --> class_alias_recursive.ck:72:5
+  --> class_alias_recursive.ck:64:5
    |
-72 |     loose_generic
+64 |     loose_generic
    |     ^^^^^^^^^^^^^ `Loose` is used at `Nat` here, by code that may call `loose` with any arguments
-   = note: `all` is sealed in `std.list`: here the prover knows only its postconditions and the lemmas you bring in with `have`
+   = note: counterexample: n = 2
    = help: use `Int` here instead of `Nat`; or promise it, for every argument, in a signature of `instance Loose Int`'s `loose`: `List Nat` in its result, or `list.all (\n -> n >= 0)` of it
 
 class_alias_recursive.ck: 3 errors, 0 warnings
