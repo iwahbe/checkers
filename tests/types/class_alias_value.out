@@ -2,7 +2,7 @@ error[E0450]: cannot prove that `make` returns a `Nat`
   --> class_alias_value.ck:24:14
    |
 24 |     list.map make [-1]
-   |              ^^^^ its result is a `(r~Int, if x >= 0 then r >= 0 else True)`, which must be a `Nat`
+   |              ^^^^ its result is a `(r~Int, x >= 0 implies r >= 0)`, which must be a `Nat`
    = note: it needs `n >= 0`
    = note: counterexample: x = -1, n = -1
    = help: pass a function whose result is always a `Nat`
