@@ -384,9 +384,15 @@ lemma digits_places r f m n post : r~Nat, f~Nat, r < pow10 f, m~Int, n~Nat, post
             have array.slice_append c (w ++ post) b""
             have (c ++ w ++ post)[0] == '0' + r / p
             have array.slice (c ++ w ++ post) 1 (len (c ++ w ++ post)) == w ++ post
-            have digits (c ++ w ++ post) m n == digits (w ++ post) (m * 10 + r / p) (n + 1)
-            have digits_places (r % p) (f - 1) (m * 10 + r / p) (n + 1) post
-            have (m * 10 + r / p) * p + r % p == m * pow10 f + r
+            # One step at a time: the arithmetic apart, then equalities.
+            let k = m * 10 + r / p
+            have digits (c ++ w ++ post) m n == digits (w ++ post) k (n + 1)
+            have digits ((places r f).bytes ++ post) m n == digits (w ++ post) k (n + 1)
+            have digits_places (r % p) (f - 1) k (n + 1) post
+            have pow10 f == 10 * p
+            have (r / p) * p + r % p == r
+            have k * p + r % p == m * pow10 f + r
+            have digits (w ++ post) k (n + 1) == Digits (m * pow10 f + r) (n + f) post
         else
             have (places r f).bytes ++ post == post
             have m * pow10 f + r == m
