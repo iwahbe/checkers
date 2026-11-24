@@ -1961,6 +1961,11 @@ impl Elab {
                 }
                 // A call of a function (global or local) whose result type is `Nat`.
                 let call = match &v {
+                    // Not a class's function with preconditions: at a known
+                    // instance whose function requires less, the call meets
+                    // only that function's, and the class promises a `Nat`
+                    // only where its own hold (the prover knows so much).
+                    Val::Neutral(Head::Def(d), _) if self.class_methods.contains(d) && self.specs.get(d).is_some_and(|s| s.preds.iter().any(|p| !p.is_post)) => false,
                     Val::Neutral(Head::Def(d), sp) => {
                         let ty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[d.0 as usize].ty);
                         self.returns_nat(&ty, sp)

@@ -2,8 +2,8 @@ module instance_refined_value_result
 
 # A class's result type promises its refinement only where the class's
 # preconditions hold. An instance dropping a precondition doesn't make a
-# value of its function give that refinement without it: the value keeps
-# the class's signature.
+# value of its function give that refinement without it: the value has the
+# instance's result type.
 
 record Box
     v~Int
