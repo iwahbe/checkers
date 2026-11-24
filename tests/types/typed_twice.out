@@ -1,0 +1,63 @@
+error[E0372]: `x` is given a second type
+ --> typed_twice.ck:6:28
+  |
+6 | fn refined x -> r : x~Int, x~(n~Int, n > 0), r~Int
+  |                            ^^^^^^^^^^^^^^^^ `x` already has the type `Int`
+  = help: keep one type for `x`, and write a condition on it as a predicate after `x~Int`
+
+error[E0372]: `r` is given a second type
+ --> typed_twice.ck:9:34
+  |
+9 | fn result x -> r : x~Int, r~Int, r~Bool
+  |                                  ^^^^^^ `r` already has the type `Int`
+  = help: keep one type for `r`, and write a condition on it as a predicate after `r~Int`
+
+error[E0372]: `x` is given a second type
+  --> typed_twice.ck:12:23
+   |
+12 | fn unknown x : x~Int, x~Missing
+   |                       ^^^^^^^^^ `x` already has the type `Int`
+   = help: keep one type for `x`, and write a condition on it as a predicate after `x~Int`
+
+error[E0204]: unknown name `Missing`
+  --> typed_twice.ck:12:25
+   |
+12 | fn unknown x : x~Int, x~Missing
+   |                         ^^^^^^^ not found
+
+error[E0372]: `x` is given a second type
+  --> typed_twice.ck:15:25
+   |
+15 | lemma stated x : x~Int, x~Nat
+   |                         ^^^^^ `x` already has the type `Int`
+   = help: keep one type for `x`, and write a condition on it as a predicate after `x~Int`
+
+error[E0372]: `side` is given a second type
+  --> typed_twice.ck:19:29
+   |
+19 |     Square side : side~Int, side~Nat
+   |                             ^^^^^^^^ `side` already has the type `Int`
+   = help: keep one type for `side`, and write a condition on it as a predicate after `side~Int`
+
+error[E0372]: `a` is given a second type
+  --> typed_twice.ck:21:25
+   |
+21 | record Pair a : a~Type, a~Type
+   |                         ^^^^^^ `a` already has the type `Type`
+   = help: keep one type for `a`, and write a condition on it as a predicate after `a~Type`
+
+error[E0372]: `w` is given a second type
+  --> typed_twice.ck:25:27
+   |
+25 |     fn pick w -> r : w~a, w~a, r~Int
+   |                           ^^^ `w` already has the type `a`
+   = help: keep one type for `w`, and write a condition on it as a predicate after `w~a`
+
+error[E0372]: `r` is given a second type
+  --> typed_twice.ck:28:37
+   |
+28 |     fn pick w -> r : w~Bool, r~Int, r~Nat
+   |                                     ^^^^^ `r` already has the type `Int`
+   = help: keep one type for `r`, and write a condition on it as a predicate after `r~Int`
+
+typed_twice.ck: 9 errors, 0 warnings
