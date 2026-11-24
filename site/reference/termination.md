@@ -44,7 +44,7 @@ fn labelled r -> b : r~Rose, b~Bool
         Rose label kids -> label != "" and every kids labelled
 ```
 
-A sealed function of another module makes the promise in its signature instead, so that changing its body never breaks an importer: its function parameter's precondition says the argument is in the container, as `list.all`'s `p~(x~a -> Bool, list.contains xs x)` does. Any membership works, `list.contains` or a container's own, as long as its body is visible (in the same module, or exported `transparent`) and shows it is true only of something equal to a part of the container. The function's body must keep the promise, which is proved like any precondition.
+A sealed function of another module makes the promise in its signature instead, so that changing its body never breaks an importer: its function parameter's precondition says the argument is in the container, as `list.all`'s `p~(x~a -> Bool, list.contains xs x)` does (`list.all` is exported `transparent`, and makes the promise anyway). Any membership works, `list.contains` or a container's own, as long as its body is visible (in the same module, or exported `transparent`) and shows it is true only of something equal to a part of the container. The function's body must keep the promise, which is proved like any precondition.
 
 ```checkers
 import std.list

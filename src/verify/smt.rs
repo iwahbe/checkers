@@ -2777,10 +2777,14 @@ impl<'a> Builder<'a> {
             if let Some(r) = self.member_app(env, d, args, &inner)? {
                 let (app, _) = r;
                 if !self.in_def {
-                    let has_post = self.e.specs.get(&d).is_some_and(|s| s.preds.iter().any(|p| p.is_post));
-                    if has_post && self.post_seen.insert(app.clone()) {
+                    // A `Nat` result where the class's preconditions hold.
+                    let spec = self.e.specs.get(&d);
+                    let has_pre = spec.is_some_and(|s| s.preds.iter().any(|p| !p.is_post));
+                    let nat = has_pre && self.is_nat_tm(&t);
+                    let has_post = spec.is_some_and(|s| s.preds.iter().any(|p| p.is_post));
+                    if (has_post || nat) && self.post_seen.insert(app.clone()) {
                         post_env.push(Ent::Term(app.clone(), rs.clone()));
-                        self.posts.push(PostUse { def: d, env: post_env, nat: false, parts: Vec::new() });
+                        self.posts.push(PostUse { def: d, env: post_env, nat, parts: Vec::new() });
                     }
                 }
                 return Ok((app, rs));

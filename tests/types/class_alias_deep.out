@@ -1,0 +1,9 @@
+error[E0456]: `Visit` at `Nat` runs `Int`'s instance, whose `visit` may give `f` a function whose results aren't `Nat`s
+  --> class_alias_deep.ck:26:5
+   |
+26 |     Visit.visit at_zero
+   |     ^^^^^^^^^^^^^^^^^^^ `Visit` is used at `Nat` here
+   = note: counterexample: n = -1
+   = help: use `Int` here, with a function that accepts every `Int -> Int`; or give `instance Visit Int`'s `visit` a signature in which `f` is given only functions whose results are `Nat`s, such as `f~((Int -> Nat) -> Bool)`
+
+class_alias_deep.ck: 1 error, 0 warnings

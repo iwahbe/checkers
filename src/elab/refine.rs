@@ -57,6 +57,8 @@ pub struct Walk {
     span: Span,
     value: String,
     callee: Option<String>,
+    /// What its obligations are for, if not a weakened refinement.
+    kind: Option<ObKind>,
 }
 
 #[derive(Clone, Copy)]
@@ -189,7 +191,38 @@ impl Elab {
             Some(inner) if !inner.contains(['(', ')']) => inner.to_string(),
             _ => text,
         };
-        let w = Walk { span, value, callee: self.arg_of.clone() };
+        let w = Walk { span, value, callee: self.arg_of.clone(), kind: None };
+        self.gain(&mut cx2, expected, found, Variance::Co, Via::Nothing, false, 0, &w)
+    }
+
+    /// Whether every `found` is an `expected`, two types that unify, as
+    /// `refined_mismatch` compares them: true with an obligation of `kind`
+    /// at `span` for each refinement to imply, false where one would be
+    /// gained.
+    pub fn refined_implies(&mut self, cx: &Cx, expected: &Val, found: &Val, span: Span, kind: ObKind) -> bool {
+        if self.same_type(expected, found) {
+            return true;
+        }
+        if unify(&self.g, cx.lvl(), expected, found).is_err() {
+            return false;
+        }
+        let mut cx2 = cx.clone();
+        let w = Walk { span, value: String::new(), callee: None, kind: Some(kind) };
+        // From depth 1: a refinement at the top is compared too.
+        self.gain(&mut cx2, expected, found, Variance::Co, Via::Nothing, false, 1, &w).is_none()
+    }
+
+    /// Whether every `found` is an `expected` below their tops (a
+    /// refinement at the top is the caller's to compare), as
+    /// `refined_implies` compares them: obligations of `kind` at `span`
+    /// for each refinement to imply, and the place where one would be
+    /// gained, if any.
+    pub fn refined_implies_inside(&mut self, cx: &Cx, expected: &Val, found: &Val, span: Span, kind: ObKind) -> Option<Gained> {
+        if self.same_type(expected, found) || (!self.refined_inside(expected, cx.lvl(), 0) && !self.refined_inside(found, cx.lvl(), 0)) {
+            return None;
+        }
+        let mut cx2 = cx.clone();
+        let w = Walk { span, value: String::new(), callee: None, kind: Some(kind) };
         self.gain(&mut cx2, expected, found, Variance::Co, Via::Nothing, false, 0, &w)
     }
 
@@ -367,7 +400,7 @@ impl Elab {
             let mut env = args.clone();
             env.push(Val::var(l));
             let goal = self.inst_pred(p, env);
-            let kind = ObKind::Weaken { role, value: w.value.clone(), sub: sub_s.clone(), sup: sup_s.clone(), callee: w.callee.clone() };
+            let kind = w.kind.clone().unwrap_or_else(|| ObKind::Weaken { role, value: w.value.clone(), sub: sub_s.clone(), sup: sup_s.clone(), callee: w.callee.clone() });
             let text = rename_words(&p.text, &self.alias_param_names(cx, alias, &args));
             self.oblige(cx, w.span, kind, text, goal, None);
         }
@@ -613,14 +646,96 @@ impl Elab {
     /// postconditions, with the given arguments put in. Preconditions about
     /// given arguments alone are checked at the call (`call_obligations`).
     pub fn refined_fn_type(&mut self, cx: &Cx, t: &Tm, ty: Val) -> Val {
-        let (h, args) = t.spine_cloned();
-        let Tm::Def(d) = h else { return ty };
+        let Tm::Def(d) = t.head() else { return ty };
+        // A class's function at a known instance: the instance's function,
+        // with its signature (#252).
+        if self.class_methods.contains(d) {
+            if !self.inst_reqs.is_empty() && self.class_use(cx, t).is_some_and(|u| !u.3) {
+                self.solve_instances(false);
+                self.retry_waiting(false);
+            }
+            if let Some((direct, dty)) = self.instance_value(cx, t) {
+                return self.spec_fn_type(cx, &direct, dty);
+            }
+        }
         // An instance's function is used only in its dictionary, and called
         // only through the class's function, whose preconditions are its own
         // (D136): its field's type needs none of them.
         if self.inst_fns.contains(d) {
             return ty;
         }
+        self.spec_fn_type(cx, t, ty)
+    }
+
+    /// A class's function applied to its dictionary and to fewer
+    /// arguments than it takes, where the dictionary is a known
+    /// instance's whose function has a signature of its own (#252): that
+    /// function applied to the dictionary's arguments and the given ones,
+    /// as a direct call of it would be (`known_instance`), and its type
+    /// there. `None` when `t` isn't such a value.
+    pub(super) fn instance_value(&self, cx: &Cx, t: &Tm) -> Option<(Tm, Val)> {
+        let t = crate::core::zonk_metas(&self.g, cx.lvl(), t);
+        let (h, args) = t.spine();
+        let Tm::Def(f) = h else { return None };
+        // The class's binders: `\ … {d} x y -> d.f x y`.
+        let mut ty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[f.0 as usize].ty);
+        let mut binders = Vec::new();
+        let mut body = self.g.defs[f.0 as usize].body.as_ref()?;
+        while let Tm::Lam(_, _, _, b) = body {
+            let Val::Pi(_, m, i, _, c) = self.force(&ty) else { return None };
+            binders.push((i, m));
+            ty = apply_closure(&self.g, &c, Val::var(usize::MAX / 4 + binders.len()));
+            body = b;
+        }
+        let given = args.len();
+        if given >= binders.len() {
+            return None;
+        }
+        // Called with a fresh local for each binder not given.
+        let rest = binders.len() - given;
+        let mut call = crate::core::rename_free(&t, 0, &|i| i + rest);
+        for (j, (i, m)) in binders[given..].iter().enumerate() {
+            call = Tm::App(Rc::new(call), Rc::new(Tm::Var(rest - 1 - j)), *i, *m);
+        }
+        let direct = crate::native::ir::known_instance(&self.g, &call)?;
+        let mut spine = Vec::new();
+        let mut h = &direct;
+        while let Tm::App(g, a, i, m) = h {
+            spine.push((a.clone(), *i, *m));
+            h = g;
+        }
+        spine.reverse();
+        let Tm::Def(g) = h else { return None };
+        if !self.refined_inst_fns.contains(g) {
+            return None;
+        }
+        // Those locals are its last arguments, in order; the others don't
+        // mention them.
+        let k = spine.len().checked_sub(rest)?;
+        if (0..rest).any(|j| !matches!(*spine[k + j].0, Tm::Var(v) if v == rest - 1 - j)) {
+            return None;
+        }
+        let mut out = Tm::Def(*g);
+        let mut gty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[g.0 as usize].ty);
+        for (a, i, m) in &spine[..k] {
+            let mut fv = std::collections::BTreeSet::new();
+            free_vars(a, 0, &mut fv);
+            if fv.first().is_some_and(|v| *v < rest) {
+                return None;
+            }
+            let a = crate::core::rename_free(a, 0, &|v| v - rest);
+            let Val::Pi(_, _, _, _, c) = self.force(&gty) else { return None };
+            gty = apply_closure(&self.g, &c, self.eval(cx, &a));
+            out = Tm::App(Rc::new(out), Rc::new(a), *i, *m);
+        }
+        Some((out, gty))
+    }
+
+    /// `refined_fn_type` for `t`, whose head is a function with a
+    /// specification.
+    pub(super) fn spec_fn_type(&mut self, cx: &Cx, t: &Tm, ty: Val) -> Val {
+        let (h, args) = t.spine_cloned();
+        let Tm::Def(d) = h else { return ty };
         let Some(spec) = self.specs.get(d).cloned() else { return ty };
         let n = spec.n_binders;
         let given = args.len();

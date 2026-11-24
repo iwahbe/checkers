@@ -7,7 +7,8 @@
 //!                         report if checking fails (SPEC §8.9).
 //! tests/run/NAME.args  → run the program named on its first line (SPEC §13.6);
 //!                         NAME.out is its stdout, stderr and exit code, from
-//!                         the `ckc` binary (`ckc run --threads 1`).
+//!                         the `ckc` binary (`ckc run --threads 1`), with the
+//!                         environment variables NAME.env sets (`VAR=value` lines).
 //! tests/stress/NAME.args → as a run test, but with 8 threads, several times
 //!                         (CHECKERS_STRESS_RUNS, default 10); stdout lines are
 //!                         compared sorted, since behaviours that share no cown
@@ -77,8 +78,12 @@ fn run_native(args_path: &Path, threads: usize) -> String {
         None => (vec![], first),
     };
     let stdin = fs::read(args_path.with_extension("in")).unwrap_or_default();
+    // `NAME.env`: a variable to set on each line, `NAME=VALUE`.
+    let vars = fs::read_to_string(args_path.with_extension("env")).unwrap_or_default();
+    let vars = vars.lines().filter_map(|l| l.split_once('='));
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_ckc"))
         .env("CHECKERS_NO_CACHE", "1")
+        .envs(vars)
         .arg("run")
         .args(["--threads", &threads.to_string()])
         .args(flags)
