@@ -64,14 +64,14 @@ only there.
    help, stop that line of work. File an issue as SPEC §12 asks ("found X,
    expected Y", the smallest `.ck` that shows it, abstracted from the solver),
    search for a duplicate first, mark the sub-issue `blocked on #N`, and pick up
-   something else. A separate worker fixes the bug in `ckc` (golden test
-   first, AGENTS.md) by pull request to `main`'s usual process: branch from
-   `main`, pull request to `main`, Ian merges. `smt` then merges `main`.
+   something else. Label the issue `smt-blocker` if it blocks solver work.
+   Do not fix it and do not open a pull request for it: Ian prioritizes the
+   fix on `main`. `smt` then merges `main`.
 2. **A missing `std` lemma or constraint is a bug in `std`.** If an exported
    `std` function's signature doesn't state what the solver needs to know
    about it, or the lemma about it doesn't exist, do not restate or re-prove
    it in the solver package, and do not write a local copy of the function.
-   File it and fix it in `std`, as in rule 1.
+   File it and label it, as in rule 1.
 3. **A workaround is anything written differently because the direct way
    failed for a reason that isn't the solver's own.** When unsure, it is one.
    The pull request description lists every place the author did this
@@ -109,6 +109,16 @@ only there.
   step 7), after steps 1–6. Its design is a proposal for Ian before any code.
 - The package lives at `smt/` and is called `smt` (#80).
 - How the corpus is stored (#81) is the leader's to decide.
+- Bugs in `ckc`, `std` or the tools that block solver work get the
+  `smt-blocker` label. No solver session raises a pull request to fix one;
+  Ian prioritizes the fix.
+- A `forall` without `:pattern` (#82): the leader's to decide, without
+  cutting corners on correctness. Decided: `parse` accepts it as an axiom
+  with no patterns. It is never dropped; `Valid` comes only through the
+  certificate; a query with one is never `Invalid` unless `smt.model` shows
+  the model satisfies it (else `Unknown`); the comparison tool reports these
+  queries as their own row. How a model is checked against one is a design
+  to propose under #84.
 
 ## Merging into `smt`
 
