@@ -109,6 +109,13 @@ only there.
   step 7), after steps 1–6. Its design is a proposal for Ian before any code.
 - The package lives at `smt/` and is called `smt` (#80).
 - How the corpus is stored (#81) is the leader's to decide.
+- A `forall` without `:pattern` (#82): the leader's to decide, without
+  cutting corners on correctness. Decided: `parse` accepts it as an axiom
+  with no patterns. It is never dropped; `Valid` comes only through the
+  certificate; a query with one is never `Invalid` unless `smt.model` shows
+  the model satisfies it (else `Unknown`); the comparison tool reports these
+  queries as their own row. How a model is checked against one is a design
+  to propose under #84.
 
 ## Merging into `smt`
 
