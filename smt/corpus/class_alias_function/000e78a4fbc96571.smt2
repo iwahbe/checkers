@@ -1,7 +1,0 @@
-(set-option :produce-models true)
-(set-option :rlimit 200000)
-(set-option :timeout 60000)
-(set-logic ALL)
-(declare-const |_#0| Int)
-(assert (not (>= |_#0| 0)))
-(check-sat)
