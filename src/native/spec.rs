@@ -32,7 +32,9 @@
 //! variable is called and makes the copy for it where it is passed, and
 //! uses the variable, its one closure, anywhere else. A copy keeps a
 //! parameter it uses as a value in that way too (`keeps`): the call
-//! passes the closure as well.
+//! passes the closure as well. Such a variable inside a function put into
+//! a copy is replaced by its function unless the copy uses it as a value
+//! (`settle`), so the caller isn't made to build its closure.
 //!
 //! Code growth is bounded: one copy per function and arguments put into
 //! it (memoized, so recursion and mutual recursion reuse the copy), each
@@ -97,8 +99,12 @@ pub struct SpecCx<'a> {
     pub depth: usize,
 }
 
-/// Nodes of `t`, counting up to `limit + 1`.
+/// Nodes of `t`, counting up to `limit + 1`. A variable bound to a known
+/// function counts as the function, which its calls are.
 fn size(t: &Tm, limit: usize) -> usize {
+    if let Some((_, f)) = known_var(t) {
+        return size(f, limit);
+    }
     let mut n = 1;
     t.any_sub(|x, _| {
         n += size(x, limit - n.min(limit));
@@ -312,7 +318,8 @@ pub fn specialize(g: &Globals, cx: SpecCx, owner: Option<DefId>, f: DefId, args:
             Mult::Zero => (max_var(a).is_none() && size(a, MAX_ARG) <= MAX_ARG).then(|| (***a).clone()),
             _ if closed_dict(g, a) => Some((***a).clone()),
             _ if fun(a) => {
-                let a = known_var(a).map_or(&***a, |(_, f)| f);
+                let a = settle(g, cx, known_var(a).map_or(&***a, |(_, f)| f));
+                let a = &a;
                 free_in_order(a, 0, &mut caps);
                 kept[j] = keeps(g, cx, f, j);
                 Some(mark(a, owner))
@@ -381,6 +388,41 @@ fn keeps(g: &Globals, cx: SpecCx, f: DefId, j: usize) -> bool {
     }
     cx.table.borrow_mut().kept.insert((f.0, j), kept);
     kept
+}
+
+/// A known function put into a copy, with each variable in it bound to a
+/// known function (`known`) that it only calls or passes to parameters not
+/// used as values replaced by that function: the copy needs no closure for
+/// it, so the caller isn't made to keep one.
+fn settle(g: &Globals, cx: SpecCx, t: &Tm) -> Tm {
+    let un = |a: &Tm| known_var(a).map(|(_, f)| settle(g, cx, f));
+    match t {
+        Tm::App(..) => {
+            let mut args = Vec::new();
+            let mut h = t;
+            while let Tm::App(f, a, i, m) = h {
+                args.push((a, *i, *m));
+                h = f;
+            }
+            args.reverse();
+            let wk = &g.well_known;
+            let callee = match h {
+                Tm::Def(d) if !wk.class_fns.contains(d) && !wk.dict_fns.contains(d) => arity(g, cx.staged, *d).map(|n| (*d, n)),
+                _ => None,
+            };
+            let head = un(h).unwrap_or_else(|| settle(g, cx, h));
+            args.iter().enumerate().fold(head, |c, (j, (a, i, m))| {
+                let a = match callee {
+                    Some((d, n)) if *m != Mult::Zero && j < n && known_var(a).is_some() && !keeps(g, cx, d, j) => un(a).unwrap_or(Tm::Error),
+                    _ if known_var(a).is_some() => (***a).clone(),
+                    _ => settle(g, cx, a),
+                };
+                Tm::App(Rc::new(c), Rc::new(a), *i, *m)
+            })
+        }
+        _ if known_var(t).is_some() => t.clone(),
+        _ => t.map_sub(|x, _| settle(g, cx, x)),
+    }
 }
 
 /// Whether variable `v` is used as a value in `t` (`keeps`); the
