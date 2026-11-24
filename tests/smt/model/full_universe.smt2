@@ -1,0 +1,11 @@
+(set-logic ALL)
+; Each element of an uninterpreted sort is printed, so its domain is known.
+(declare-sort U 0)
+(declare-const a U)
+(declare-const b U)
+(declare-fun g (U) U)
+(assert (not (= a b)))
+(assert (= (g a) b))
+(assert (= (g b) a))
+(assert (not false))
+(check-sat)

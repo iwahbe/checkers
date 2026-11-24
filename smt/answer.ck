@@ -73,7 +73,7 @@ fn ctor_named cs n k -> r : cs~List Ctor, n~Name, k~Nat, r~Option (Nat, Ctor)
         []        -> None
         c :: rest -> if c.name == n then Some (k, c) else ctor_named rest n (k + 1)
 
-fn digits_value b -> r : b~Bytes, r~Option Nat
+export fn digits_value b -> r : b~Bytes, r~Option Nat
     if len b > 0 and char.is_digit b[0]
         have string.parse_digits b
         match Parsable.parse b Int Int

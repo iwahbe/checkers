@@ -1,5 +1,6 @@
 -- stdout
 z3: sat
+model: (get-value …)
 fact 1: holds
 fact 2: holds
 fact 3: holds

@@ -1,0 +1,10 @@
+(set-logic ALL)
+; div0, mod0 and seq.nth_u: what get-model prints for the unspecified cases.
+(declare-const x Int)
+(declare-const s (Seq Int))
+(assert (= (div x 0) 7))
+(assert (= (mod x 0) (- 2)))
+(assert (= (seq.len s) 1))
+(assert (= (seq.nth s 4) 9))
+(assert (not false))
+(check-sat)
