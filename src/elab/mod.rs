@@ -274,6 +274,26 @@ pub struct EqReq {
     pub param: Name,
 }
 
+/// A function parameter of a class's function, at a refinement alias,
+/// that the instance may give values of the class's type to (#226), with
+/// where it gives them, as a message says it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AliasParam {
+    pub name: String,
+    /// What the instance may give it, at its first place where it isn't of
+    /// the alias: `a value that isn't a `Nat``, `a function whose results
+    /// aren't `Nat`s`.
+    pub gives: String,
+    /// What it must be given instead: `` `Nat`s ``, `functions whose
+    /// results are `Nat`s`.
+    pub only: String,
+    /// The type of the values it is given at the base (`Int`, `Int ->
+    /// Int`), and, where those aren't the alias itself, its type at the
+    /// alias, a signature for it that would do.
+    pub accepts: String,
+    pub example: Option<String>,
+}
+
 /// Predicates recorded for the prover (M3).
 /// What an obligation is for; decides how a failure is reported (§7.1).
 #[derive(Clone, Debug, PartialEq)]
@@ -310,12 +330,12 @@ pub enum ObKind {
     /// alias stands for (#226): a value of the class's type that instance
     /// gives must be of the alias. The class, the alias and its type, the
     /// class's function; where the use is a call, its text, else the
-    /// function's parameter that the instance may call with values of the
-    /// type (`param`), or neither: a result, at any arguments. `inside`: a
+    /// function's parameter the instance may give values of the type to
+    /// (`param`), or neither: a result, at any arguments. `inside`: a
     /// value inside the result (`Some`'s), not the result itself.
     /// `whole`: a part of the result checked as one (under a recursive
     /// type, or a function): its type at the alias and at the base.
-    AtAlias { class: String, alias: String, base: String, member: String, call: Option<String>, param: Option<String>, inside: bool, whole: Option<(String, String)> },
+    AtAlias { class: String, alias: String, base: String, member: String, call: Option<String>, param: Option<AliasParam>, inside: bool, whole: Option<(String, String)> },
     Auto,
     Have,
     /// A case a `match` leaves out can't occur there (D144 e): its pattern.

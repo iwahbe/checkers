@@ -1109,10 +1109,16 @@ fn headline(o: &Obligation) -> (String, String, String) {
             format!("`{}` doesn't follow from this signature", o.text),
             format!("promise at least what class `{class}` does: add `{}` to this signature, or a condition implying it", o.text),
         ),
-        ObKind::AtAlias { class, alias, base, member, param: Some(x), .. } => (
-            format!("`{class}` at `{alias}` runs `{base}`'s instance, whose `{member}` may give `{x}` a value that isn't a `{alias}`"),
+        ObKind::AtAlias { class, alias, base, member, param: Some(p), .. } => (
+            format!("`{class}` at `{alias}` runs `{base}`'s instance, whose `{member}` may give `{}` {}", p.name, p.gives),
             format!("`{class}` is used at `{alias}` here"),
-            format!("use `{base}` here, with a function that accepts every `{base}`; or give `instance {class} {base}`'s `{member}` a signature in which `{x}` is given only `{alias}`s"),
+            format!(
+                "use `{base}` here, with a function that accepts every `{}`; or give `instance {class} {base}`'s `{member}` a signature in which `{}` is given only {}{}",
+                p.accepts,
+                p.name,
+                p.only,
+                p.example.as_ref().map_or(String::new(), |e| format!(", such as `{}~{e}`", p.name))
+            ),
         ),
         ObKind::AtAlias { class, alias, base, member, call, param: None, inside, whole: Some((wt, wb)) } => {
             // A part checked as one: the instance's signature can promise
