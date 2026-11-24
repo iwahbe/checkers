@@ -52,4 +52,11 @@ error[E0450]: cannot prove `lo <= hi`, required to write the type `Ordered 2 1`
    |           ^^^^^^^^^^^ `Ordered` requires `lo <= hi`
    = help: give arguments for which it holds, or require it where the type is written: in the function's preconditions, or in a condition on the enclosing type's parameters
 
-type_param_conditions.ck: 7 errors, 0 warnings
+error[E0450]: cannot prove `hi <= 10`, required to write the type `Bounded 0 11`
+  --> type_param_conditions.ck:57:30
+   |
+57 | fn second_condition -> r : r~Bounded 0 11
+   |                              ^^^^^^^^^^^^ `Bounded` requires `hi <= 10`
+   = help: give arguments for which it holds, or require it where the type is written: in the function's preconditions, or in a condition on the enclosing type's parameters
+
+type_param_conditions.ck: 8 errors, 0 warnings

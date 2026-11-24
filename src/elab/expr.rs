@@ -2057,8 +2057,12 @@ impl Elab {
                 let dom = expected.unwrap_or((*dom).clone());
                 // A refined function type's precondition (D84): required to
                 // call the function.
+                // A type's parameter's refinement is a condition on the type,
+                // checked where it is applied to all its parameters (#136).
+                let (head, prior) = t.spine();
+                let ty_cond = matches!(head, Tm::TyCon(tid) if prior.len() + 1 == self.g.tys[tid.0 as usize].params.len());
                 let pre = match self.refined_alias(&dom) {
-                    Some((d, args)) if !self.head_checks_aliases && self.is_direct_alias(&dom) && is_anon_alias(&self.g, d) => Some((d, args)),
+                    Some((d, args)) if !ty_cond && !self.head_checks_aliases && self.is_direct_alias(&dom) && is_anon_alias(&self.g, d) => Some((d, args)),
                     _ => None,
                 };
                 self.alias_covered = (self.head_checks_aliases && self.is_direct_alias(&dom)) || pre.is_some();

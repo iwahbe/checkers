@@ -695,12 +695,12 @@ apat        ::= '_' | lname | literal | Uname
 | predicate over inputs only | precondition | refinement on the inputs |
 | predicate mentioning the result name | postcondition | return type `{r : R \| P}` |
 | predicate in a constructor/field list | invariant (D11) | `Holds` field, erased |
-| predicate over a type's parameters (`record Ordered lo hi : lo~Nat, hi~Nat, lo <= hi`) | condition on the type (#136): an obligation wherever the type is applied (§7.1), a fact in its fields | erased |
+| predicate over a type's parameters (`record Ordered lo hi : lo~Nat, hi~Nat, lo <= hi`) | condition on the type (#136): an obligation wherever the type is applied (§7.1), a fact in its fields; so is a refinement in a type parameter's typing (`lo~Nat` is `lo >= 0`, #312) | erased |
 | free `lname` in a type position, not in scope (`a` in `xs~List a`) | implicit type parameter (D10); a name used as a qualifier (`future` in `future.Future`) is never auto-bound | `{a :0 Type}` |
 
 A constraint is only required where inference fails; `fn is_ws b : b~U8` infers its `Bool` result.
 
-**Several typings of one name combine.** `x~Int, x~Nat` means `x` is an `Int` that is also a `Nat`, as `x~Int, x >= 0` does with a predicate, for a parameter, the result, a field or a type's parameter. Each typing's refinement is a condition on the name, as the first's is (a precondition, a postcondition, an invariant), in any order. The typings must have one base type: `x~Int, x~Bool` is E0372, at the second. A refinement inside a type (`xs~List Int, xs~List Nat`) doesn't combine: typings of a name one of which has one must be the same type (E0372). Every typing's names are resolved.
+**Several typings of one name combine.** `x~Int, x~Nat` means `x` is an `Int` that is also a `Nat`, as `x~Int, x >= 0` does with a predicate, for a parameter, the result, a field or a type's parameter. Each typing's refinement is a condition on the name, as the first's is (a precondition, a postcondition, an invariant, a condition on the type), in any order. The typings must have one base type: `x~Int, x~Bool` is E0372, at the second. A refinement inside a type (`xs~List Int, xs~List Nat`) doesn't combine: typings of a name one of which has one must be the same type (E0372). Every typing's names are resolved.
 
 **Refinements may mention later parameters (#102).** A predicate in a parameter's type, at any depth (a function-typed parameter's precondition, an element type's refinement), may mention any parameter of the function, earlier or later: `fn all p xs -> r : p~(x~a -> Bool, list.contains xs x), xs~List a, r~Bool`. Only the predicates may: the rest of the type may mention only earlier parameters (a later one is E0204). The parameter's type without those predicates is its type in the function's core type (§3); with them, it is its type in the body and at a call:
 
