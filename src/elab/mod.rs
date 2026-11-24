@@ -324,8 +324,10 @@ pub enum ObKind {
     /// An instance's function with a signature of its own (#225): a
     /// precondition of it that the class's don't imply (`pre`), or a
     /// postcondition of the class's that the instance's don't imply. The
-    /// class's declaration of the function, as written.
-    Refines { class: String, member: String, pre: bool, declared: String },
+    /// class's declaration of the function, as written. `at`: a refinement
+    /// inside a parameter's (`pre`) or the result's type: its name, its
+    /// type in the instance, and in the class.
+    Refines { class: String, member: String, pre: bool, declared: String, at: Option<(String, String, String)> },
     /// A class used at a refinement alias runs the instance of the type the
     /// alias stands for (#226): a value of the class's type that instance
     /// gives must be of the alias. The class, the alias and its type, the
@@ -333,7 +335,14 @@ pub enum ObKind {
     /// function's parameter the instance may give values of the type to
     /// (`param`), or neither: a result, at any arguments. `inside`: a
     /// value inside the result (`Some`'s), not the result itself.
-    AtAlias { class: String, alias: String, base: String, member: String, call: Option<String>, param: Option<AliasParam>, inside: bool },
+    /// `inst`: the instance that runs, at its types (`Conv Bool Int`).
+    AtAlias { class: String, inst: String, alias: String, base: String, member: String, call: Option<String>, param: Option<AliasParam>, inside: bool },
+    /// A call of a class's function at a known instance whose function
+    /// requires less than the class's: a refinement of the class's result
+    /// type (the alias, the result itself or a value `inside` it), which
+    /// the class promises only where its preconditions (`pres`, as
+    /// written) hold. The call, the instance (`Pos Box`), the function.
+    KnownResult { call: String, alias: String, inside: bool, pres: String, inst: String, member: String },
     Auto,
     Have,
     /// A case a `match` leaves out can't occur there (D144 e): its pattern.

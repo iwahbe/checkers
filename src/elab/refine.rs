@@ -212,6 +212,20 @@ impl Elab {
         self.gain(&mut cx2, expected, found, Variance::Co, Via::Nothing, false, 1, &w).is_none()
     }
 
+    /// Whether every `found` is an `expected` below their tops (a
+    /// refinement at the top is the caller's to compare), as
+    /// `refined_implies` compares them: obligations of `kind` at `span`
+    /// for each refinement to imply, and the place where one would be
+    /// gained, if any.
+    pub fn refined_implies_inside(&mut self, cx: &Cx, expected: &Val, found: &Val, span: Span, kind: ObKind) -> Option<Gained> {
+        if self.same_type(expected, found) || (!self.refined_inside(expected, cx.lvl(), 0) && !self.refined_inside(found, cx.lvl(), 0)) {
+            return None;
+        }
+        let mut cx2 = cx.clone();
+        let w = Walk { span, value: String::new(), callee: None, kind: Some(kind) };
+        self.gain(&mut cx2, expected, found, Variance::Co, Via::Nothing, false, 0, &w)
+    }
+
     /// The same type, structurally (without unfolding): false if unsure.
     fn same_type(&self, a: &Val, b: &Val) -> bool {
         if matches!(a, Val::Neutral(Head::Meta(_), _)) || matches!(b, Val::Neutral(Head::Meta(_), _)) {

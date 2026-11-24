@@ -3133,7 +3133,8 @@ impl Elab {
         env.push(Val::var(rlvl));
         let pres = |s: &super::decls::Sig| s.preds.iter().filter(|p| !p.is_post).cloned().collect::<Vec<_>>();
         let posts = |s: &super::decls::Sig| s.preds.iter().filter(|p| p.is_post).cloned().collect::<Vec<_>>();
-        let kind = |pre: bool| ObKind::Refines { class: class.clone(), member: member.clone(), pre, declared: declared.clone() };
+        let kind_at = |pre: bool, at: Option<(String, String, String)>| ObKind::Refines { class: class.clone(), member: member.clone(), pre, declared: declared.clone(), at };
+        let kind = |pre: bool| kind_at(pre, None);
         let saved = self.cur_fn.take();
         for p in pres(&csig) {
             let v = self.inst_pred(&p, env.clone());
@@ -3145,11 +3146,28 @@ impl Elab {
             let span = if p.span.start < p.span.end { p.span } else { header };
             self.oblige(&cx, span, kind(true), p.text.clone(), goal, None);
         }
+        // Refinements inside its parameters' types (a refinement at the
+        // top is a precondition, above): every value of the class's type
+        // is one of the instance's (§7.5).
+        for (i, ((x, _, icit, ity), (_, _, _, cty))) in sig.binders.iter().zip(&csig.binders).enumerate() {
+            if *icit != Icit::Expl || i > rlvl {
+                continue;
+            }
+            let benv = Rc::new(env[..i].to_vec());
+            let (iv, cv) = (eval(&self.g, &benv, ity), eval(&self.g, &benv, cty));
+            let at = (x.to_string(), self.show_val(&cx, &iv), self.show_val(&cx, &cv));
+            let k = kind_at(true, Some(at.clone()));
+            let span = type_span(x);
+            if let Some(g) = self.refined_implies_inside(&cx, &iv, &cv, span, k) {
+                self.inside_gained(&g, &at, true, &class, &member, span, &note);
+            }
+        }
         // Its result, of the instance's type: with the instance's
         // preconditions (which hold) and postconditions, the class's
         // postconditions hold.
         let rty = self.eval(&cx, &sig.result);
-        cx.bind(&rname, rty, Mult::Zero);
+        let crty = self.eval(&cx, &csig.result);
+        cx.bind(&rname, rty.clone(), Mult::Zero);
         for p in pres(sig).iter().chain(posts(sig).iter()) {
             let v = self.inst_pred(p, env.clone());
             cx.assume(v);
@@ -3158,8 +3176,49 @@ impl Elab {
             let goal = self.inst_pred(&p, env.clone());
             self.oblige(&cx, header, kind(false), p.text.clone(), goal, None);
         }
+        // And the refinements inside its type: every value of the
+        // instance's result type is one of the class's.
+        let at = (rname.clone(), self.show_val(&cx, &rty), self.show_val(&cx, &crty));
+        let k = kind_at(false, Some(at.clone()));
+        let span = result.as_ref().map_or(header, |r| type_span(&r.name));
+        if let Some(g) = self.refined_implies_inside(&cx, &crty, &rty, span, k) {
+            self.inside_gained(&g, &at, false, &class, &member, span, &note);
+        }
         self.cur_fn = saved;
         None
+    }
+}
+
+impl Elab {
+    /// E0371 for a refinement inside an instance's signature's type that
+    /// its class's type doesn't imply, and no proof could give: it would be
+    /// gained (an unrefined type where the class's is refined, or the
+    /// reverse for a parameter). `at`: the parameter (`pre`) or result, its
+    /// type in the instance and in the class.
+    #[allow(clippy::too_many_arguments)]
+    fn inside_gained(&mut self, g: &super::refine::Gained, at: &(String, String, String), pre: bool, class: &str, member: &str, span: Span, note: &str) {
+        let (x, mine, theirs) = at;
+        let (e, f) = (self.show_val(&g.cx, &g.expected), self.show_val(&g.cx, &g.found));
+        let (msg, why, help) = if pre {
+            (
+                format!("`{member}` requires more of `{x}` than class `{class}` does"),
+                format!("a call through class `{class}` may pass any `{theirs}`, whose `{f}` values aren't known to be `{e}`"),
+                format!("give `{x}` the class's type `{theirs}`, or a type it implies, and check its values in the body"),
+            )
+        } else {
+            (
+                format!("`{member}`'s result `{x}` doesn't promise what class `{class}`'s does"),
+                format!("its `{f}` values aren't known to be `{e}`, as class `{class}` promises"),
+                format!("give `{x}` the class's type `{theirs}`, or a type implying it"),
+            )
+        };
+        self.err(
+            Diagnostic::error("E0371", msg, span)
+                .with_label(format!("`{mine}` here, `{theirs}` in the class"))
+                .with_note(note.to_string())
+                .with_note(format!("{why}: a refinement inside a type is never gained from an existing value"))
+                .with_help(help),
+        );
     }
 }
 
@@ -3259,7 +3318,7 @@ impl Elab {
     /// where such a part can't be reached by a finite walk (under a
     /// recursive type, or a function's result).
     #[allow(clippy::type_complexity)]
-    fn alias_goals(&self, env: &[Val], v: &Tm, t: &Val, b: &Val, seen: &mut Vec<TyId>) -> Option<Vec<(Tm, String, DefId)>> {
+    fn alias_goals(&self, cx: &Cx, env: &[Val], v: &Tm, t: &Val, b: &Val, seen: &mut Vec<TyId>) -> Option<Vec<(Tm, String, DefId)>> {
         let lvl = env.len();
         if !self.alias_differs(lvl, t, b, true, 0) {
             return Some(Vec::new());
@@ -3269,13 +3328,16 @@ impl Elab {
             if self.refined_alias(&pb).is_none_or(|(e, _)| e != d) {
                 let vv = eval(&self.g, &Rc::new(env.to_vec()), v);
                 let preds = self.alias_preds.get(&d).cloned().unwrap_or_default();
+                // The predicates at this use's arguments: `n < 7` for
+                // `Below 7`, not `n < k`.
+                let names = self.alias_param_names(cx, d, &args);
                 return Some(
                     preds
                         .iter()
                         .map(|p| {
                             let mut e = args.clone();
                             e.push(vv.clone());
-                            (quote(&self.g, lvl, &self.inst_pred(p, e)), p.text.clone(), d)
+                            (quote(&self.g, lvl, &self.inst_pred(p, e)), rename_words(&p.text, &names), d)
                         })
                         .collect(),
                 );
@@ -3290,7 +3352,7 @@ impl Elab {
                 }
                 let mut out = Vec::new();
                 for (i, (a, c)) in x.iter().zip(&y).enumerate() {
-                    out.extend(self.alias_goals(env, &Tm::Proj(Rc::new(v.clone()), i, false), a, c, seen)?);
+                    out.extend(self.alias_goals(cx, env, &Tm::Proj(Rc::new(v.clone()), i, false), a, c, seen)?);
                 }
                 Some(out)
             }
@@ -3306,11 +3368,15 @@ impl Elab {
                     let mut et = a1.clone();
                     let mut eb = a2.clone();
                     let mut inner = env.to_vec();
+                    let mut icx = cx.clone();
                     let mut parts = Vec::new();
                     for (i, (_, _, _, fty)) in fields.iter().enumerate() {
                         let ft = eval(&self.g, &Rc::new(et.clone()), fty);
                         let fb = eval(&self.g, &Rc::new(eb.clone()), fty);
                         let x = Val::var(lvl + i);
+                        if icx.lvl() == lvl + i {
+                            icx.bind("_", ft.clone(), Mult::Zero);
+                        }
                         et.push(x.clone());
                         eb.push(x.clone());
                         parts.push((ft, fb));
@@ -3318,7 +3384,7 @@ impl Elab {
                     }
                     for (i, (ft, fb)) in parts.iter().enumerate() {
                         let fv = Tm::Var(n - 1 - i);
-                        for (g, text, d) in self.alias_goals(&inner, &fv, ft, fb, seen)? {
+                        for (g, text, d) in self.alias_goals(&icx, &inner, &fv, ft, fb, seen)? {
                             let case = Tm::Case(
                                 Rc::new(v.clone()),
                                 Rc::new(CaseTm { branches: vec![(c, n, g)], lits: Vec::new(), default: Some(tru.clone()) }),
@@ -3332,6 +3398,20 @@ impl Elab {
             }
             _ => None,
         }
+    }
+
+    /// `alias_goals`, for a call's result (`known_result_obligations`).
+    #[allow(clippy::type_complexity)]
+    pub(super) fn alias_goals_pub(&self, cx: &Cx, env: &[Val], v: &Tm, t: &Val, b: &Val) -> Option<Vec<(Tm, String, DefId)>> {
+        self.alias_goals(cx, env, v, t, b, &mut Vec::new())
+    }
+
+    /// Whether `t`, unlike `b`, has a refinement alias at its top: the
+    /// goals `alias_goals` gives are then about the value itself, else
+    /// about values inside it.
+    pub(super) fn alias_at_top(&self, t: &Val, b: &Val) -> bool {
+        let (pt, pb) = (self.peel(t), self.peel(b));
+        self.refined_alias(&pt).is_some_and(|(d, _)| self.refined_alias(&pb).is_none_or(|(e, _)| e != d))
     }
 
     /// The obligations of one class's function `f` used at a refinement
@@ -3416,7 +3496,18 @@ impl Elab {
             }
         }
         let call_text = call.map(|(_, _, s)| self.src_text(s));
+        // The instance that runs: the class at its types, the alias's base
+        // in the alias's place (`Conv Bool Int`).
+        let inst_s = std::iter::once(cname.clone())
+            .chain(ad.tys.iter().enumerate().map(|(k, t)| {
+                let t = if k == ad.pos { base_ty.clone() } else { t.clone() };
+                let s = self.show_val(&cx, &t);
+                if s.contains(' ') && !(s.starts_with('(') && s.ends_with(')')) { format!("({s})") } else { s }
+            }))
+            .collect::<Vec<_>>()
+            .join(" ");
         let kind = |param: Option<super::AliasParam>, inside: bool| ObKind::AtAlias {
+            inst: inst_s.clone(),
             class: cname.clone(),
             alias: alias_s.clone(),
             base: base_s.clone(),
@@ -3430,12 +3521,13 @@ impl Elab {
         self.cur_fn = ad.owner;
         // Its result.
         let env = cx.env.to_vec();
-        match self.alias_goals(&env, &value, &ty_t, &ty_b, &mut Vec::new()) {
+        let top = self.alias_at_top(&ty_t, &ty_b);
+        match self.alias_goals(&cx, &env, &value, &ty_t, &ty_b, &mut Vec::new()) {
             Some(goals) => {
                 for (g, text, d) in goals {
                     // The result itself is shown as the call; a value inside
-                    // it by the alias's own name.
-                    let inside = matches!(g, Tm::Case(..));
+                    // it (a tuple's part, `Some`'s) by the alias's own name.
+                    let inside = !top;
                     let text = match (&call_text, inside) {
                         (Some(c), false) => {
                             let subject = self.alias_subject.get(&d).map(|s| s.to_string()).unwrap_or_default();
