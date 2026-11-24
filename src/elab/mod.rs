@@ -540,6 +540,10 @@ pub struct Elab {
     pub user_modules: Vec<String>,
     /// Each module's imports, by name (for D143's keys).
     pub module_deps: HashMap<String, Vec<String>>,
+    /// The modules of the instances each module's checking chose, other
+    /// than its own (D143's keys, #272): an instance is found wherever its
+    /// module is loaded, so it may be in a module not imported.
+    pub instance_deps: HashMap<String, std::collections::BTreeSet<String>>,
     /// The package of each module of a dependency (D111); others are the
     /// program's own package, or `std`.
     pub module_pkg: HashMap<String, String>,
@@ -968,6 +972,7 @@ impl Elab {
             completion: None,
             completing: None,
             module_deps: HashMap::new(),
+            instance_deps: HashMap::new(),
         }
     }
 

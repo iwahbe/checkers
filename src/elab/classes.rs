@@ -2556,6 +2556,10 @@ impl Elab {
             None if undecided => return Err("unknown".into()),
             None => return Err("none".into()),
         };
+        // What this module's proofs may now depend on (#272).
+        if inst.module != self.cur {
+            self.instance_deps.entry(self.cur.clone()).or_default().insert(inst.module.clone());
+        }
         // The instance's variables, from the types.
         let mut bound: Vec<Option<Val>> = vec![None; inst.n_vars];
         for ((p, s), ty) in inst.pats.iter().zip(&shapes).zip(&tys) {
