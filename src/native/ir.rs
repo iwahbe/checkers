@@ -161,6 +161,12 @@ impl<'g> Compiler<'g> {
                     h = f;
                 }
                 spine.reverse();
+                // A variable bound to a known function, called: the
+                // function, called directly.
+                if let Some((_, f)) = super::spec::known_var(h) {
+                    let call = spine.iter().fold((*f).clone(), |c, (a, m)| Tm::App(Rc::new(c), (*a).clone(), Icit::Expl, *m));
+                    return self.go(&call);
+                }
                 // Code of another definition applied (a lambda's body put
                 // into a copy, `spec`): the arguments, then that code.
                 if let Some((o, inner)) = super::spec::marked(h) {
@@ -183,8 +189,9 @@ impl<'g> Compiler<'g> {
                     let (a, am) = spine[0];
                     let m = if *m == Mult::Zero || am == Mult::Zero { Mult::Zero } else { *m };
                     // One that computes nothing is put in: a dictionary
-                    // stays known.
-                    if m == Mult::Zero || matches!(**a, Tm::Var(_) | Tm::Lit(_)) || known_dict(self.g, a) || self.known_fn(a) {
+                    // stays known. A known function is bound by the `let`
+                    // (below), so that it stays known too.
+                    if m == Mult::Zero || matches!(**a, Tm::Var(_) | Tm::Lit(_)) || known_dict(self.g, a) {
                         return self.go(&subst(&body, &[(**a).clone()], 0));
                     }
                     return self.go(&Tm::Let(x.clone(), m, Rc::new(Tm::Error), a.clone(), Rc::new(body)));
@@ -251,8 +258,20 @@ impl<'g> Compiler<'g> {
                 let Some((o, b)) = super::spec::marked(t) else { unreachable!() };
                 Ir::At(o, Arc::new(self.at(o).go(&crate::core::rename_free(b, 0, &|v| v - 1))))
             }
-            // A known function stays known where it is used (`spec`).
-            Tm::Let(_, m, _, v, b) if *m != Mult::Zero && self.known_fn(v) => self.go(&subst(b, &[(**v).clone()], 0)),
+            // A variable bound to a known function, as a value.
+            Tm::Let(..) if super::spec::known_var(t).is_some() => {
+                let Some((v, _)) = super::spec::known_var(t) else { unreachable!() };
+                self.go(v)
+            }
+            // A known function stays known where it is called or passed to
+            // a copy (`spec`); its closure is built only if the body uses
+            // it otherwise, and then once.
+            Tm::Let(_, m, _, v, b) if *m != Mult::Zero && self.known_fn(v) => {
+                let f = super::spec::known_var(v).map_or(&**v, |(_, f)| f);
+                let body = self.compile(&super::spec::know(b, f, 0));
+                let v = if uses(&body, 0) { self.compile(v) } else { Arc::new(Ir::Erased) };
+                Ir::Let(v, body)
+            }
             Tm::Let(_, m, _, v, b) => {
                 let v = if *m == Mult::Zero { Arc::new(Ir::Erased) } else { self.compile(v) };
                 Ir::Let(v, self.compile(b))
@@ -484,6 +503,14 @@ fn subst(t: &Tm, args: &[Tm], depth: usize) -> Tm {
         }
         Tm::Var(i) if *i >= depth => Tm::Var(i - args.len()),
         _ => t.map_sub(|x, n| subst(x, args, depth + n)),
+    }
+}
+
+/// Whether `ir` uses variable `v`.
+fn uses(ir: &Ir, v: usize) -> bool {
+    match ir {
+        Ir::Var(x) => *x == v,
+        _ => ir.subterms().into_iter().any(|(x, n)| uses(x, v + n)),
     }
 }
 
