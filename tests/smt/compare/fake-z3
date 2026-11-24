@@ -1,0 +1,9 @@
+#!/bin/sh
+# Stands in for `z3` in the golden test of `main compare`: `-version`
+# names it; `-in` prints the lines of the query that start with
+# `; z3 says: `, without that prefix.
+if [ "$1" = -version ]; then
+    echo "fake Z3"
+else
+    sed -n 's/^; z3 says: //p'
+fi

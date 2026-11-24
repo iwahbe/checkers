@@ -1,0 +1,10 @@
+(set-option :produce-models true)
+(set-option :rlimit 1000)
+(set-logic ALL)
+(declare-const x Int)
+(assert (not (= x 0.5)))
+(check-sat)
+(get-value (x))
+; z3 says: sat
+; z3 says: ((x 0))
+; z3 says: (:rlimit-count 3)
