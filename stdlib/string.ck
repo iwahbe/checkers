@@ -426,7 +426,7 @@ export lemma parse_digits b : b~Bytes, len b > 0, char.is_digit b[0]
     ensures match Parsable.parse b Int Int
         Ok (n, rest) ->
             n >= 0 and len rest < len b and rest == array.slice b (len b - len rest) (len b)
-            and (len rest == 0 or not (char.is_digit rest[0]))
+                and (len rest == 0 or not (char.is_digit rest[0]))
         Err _        -> False
     proof
         let k = digits_end b 0
