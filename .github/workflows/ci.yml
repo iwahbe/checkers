@@ -56,13 +56,6 @@ jobs:
         run: cargo clippy --release --locked --workspace --all-targets -- -D warnings
       - name: Unit tests
         run: cargo test --release --locked --workspace --lib --bins
-      # TEMPORARY (PR #287): every Z3 query for tests/tool/axioms.ck, to compare platforms.
-      - name: Z3 queries (temporary)
-        if: github.event_name == 'pull_request'
-        run: |
-          cargo build --release --locked
-          CHECKERS_NO_CACHE=1 CHECKERS_SMT_TIME=1 target/release/ckc check tests/tool/axioms.ck 2>&1 | grep -E '^smt +[0-9]+ ms' | sed -E 's/^smt +[0-9]+ ms//' | sort | md5sum
-          CHECKERS_NO_CACHE=1 CHECKERS_SMT_TIME=1 target/release/ckc check tests/tool/axioms.ck 2>&1 | grep -E '^smt +[0-9]+ ms' | sed -E 's/^smt +[0-9]+ ms +[0-9]+ bytes//' | cut -c1-400 | sort
       - name: Integration tests
         # TEMPORARY (PR #287): run on this pull request too; dropped before merge.
         run: cargo test --release --locked --workspace --tests
