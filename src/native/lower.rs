@@ -205,6 +205,10 @@ pub struct Program {
     /// Functions whose results are returned as their parts (`unbox`): the
     /// function returning them, and their layout.
     pub workers: HashMap<u32, (u32, crate::native::unbox::Shape)>,
+    /// The most words a function returns (`unbox`): what the machine the
+    /// code is compiled for returns in registers. This machine's, unless
+    /// set before reference counting.
+    pub max_parts: usize,
 }
 
 /// Code with no definition (a `check`, a value staging computes).
@@ -256,6 +260,7 @@ impl Program {
             debug: None,
             recursive: HashMap::new(),
             workers: HashMap::new(),
+            max_parts: crate::native::host_return_words(),
         }
     }
 }
