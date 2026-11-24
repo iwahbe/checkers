@@ -212,6 +212,20 @@ impl Elab {
         self.gain(&mut cx2, expected, found, Variance::Co, Via::Nothing, false, 1, &w).is_none()
     }
 
+    /// Whether every `found` is an `expected` below their tops (a
+    /// refinement at the top is the caller's to compare), as
+    /// `refined_implies` compares them: obligations of `kind` at `span`
+    /// for each refinement to imply, and the place where one would be
+    /// gained, if any.
+    pub fn refined_implies_inside(&mut self, cx: &Cx, expected: &Val, found: &Val, span: Span, kind: ObKind) -> Option<Gained> {
+        if self.same_type(expected, found) || (!self.refined_inside(expected, cx.lvl(), 0) && !self.refined_inside(found, cx.lvl(), 0)) {
+            return None;
+        }
+        let mut cx2 = cx.clone();
+        let w = Walk { span, value: String::new(), callee: None, kind: Some(kind) };
+        self.gain(&mut cx2, expected, found, Variance::Co, Via::Nothing, false, 0, &w)
+    }
+
     /// The same type, structurally (without unfolding): false if unsure.
     fn same_type(&self, a: &Val, b: &Val) -> bool {
         if matches!(a, Val::Neutral(Head::Meta(_), _)) || matches!(b, Val::Neutral(Head::Meta(_), _)) {
@@ -663,36 +677,18 @@ impl Elab {
         let t = crate::core::zonk_metas(&self.g, cx.lvl(), t);
         let (h, args) = t.spine();
         let Tm::Def(f) = h else { return None };
-        // The class's binders: `\ … {d} x y -> d.f x y`, at the given
-        // arguments.
+        // The class's binders: `\ … {d} x y -> d.f x y`.
         let mut ty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[f.0 as usize].ty);
         let mut binders = Vec::new();
         let mut body = self.g.defs[f.0 as usize].body.as_ref()?;
-        let mut refined_param = false;
-        let mut lcx = cx.clone();
         while let Tm::Lam(_, _, _, b) = body {
-            let Val::Pi(x, m, i, dom, c) = self.force(&ty) else { return None };
-            if i == Icit::Expl && self.has_refined(&lcx, &dom, 0) {
-                refined_param = true;
-            }
-            let v = match args.get(binders.len()) {
-                Some(a) => self.eval(cx, a),
-                None => Val::var(lcx.bind(&x, (*dom).clone(), Mult::Zero)),
-            };
+            let Val::Pi(_, m, i, _, c) = self.force(&ty) else { return None };
             binders.push((i, m));
-            ty = apply_closure(&self.g, &c, v);
+            ty = apply_closure(&self.g, &c, Val::var(usize::MAX / 4 + binders.len()));
             body = b;
         }
         let given = args.len();
         if given >= binders.len() {
-            return None;
-        }
-        // The class's result type promises its refinement only where the
-        // class's preconditions hold, which a call with the instance's
-        // weaker ones needn't meet: where it has one, the value keeps the
-        // class's signature.
-        let class_pre = refined_param || self.specs.get(f).is_some_and(|s| s.preds.iter().any(|p| !p.is_post));
-        if class_pre && self.has_refined(&lcx, &ty, 0) {
             return None;
         }
         // Called with a fresh local for each binder not given.

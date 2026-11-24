@@ -1340,6 +1340,7 @@ impl Elab {
                     if self.refined_inst_fns.contains(f) && self.specs.get(f).is_some_and(|s| iargs.len() >= s.n_binders) {
                         let iargs: Vec<Rc<Tm>> = iargs.into_iter().cloned().collect();
                         self.pre_obligations(&cx, *f, &name, &iargs, &direct, span);
+                        self.known_result_obligations(&cx, *d, *f, &args, &iargs, &call, span);
                         continue;
                     }
                 }
@@ -1348,6 +1349,96 @@ impl Elab {
             self.pre_obligations(&cx, d, &name, &args, &call, span);
         }
         (self.cur_fn, self.in_spec) = saved;
+    }
+
+    /// A call `call` of class function `d` (its arguments `args`) at a
+    /// known instance whose function `f` (its arguments `iargs`) has a
+    /// signature of its own: the call checked `f`'s preconditions, so the
+    /// class's refined result type holds only where the class's
+    /// preconditions do too. Elsewhere, each refinement in the class's
+    /// result type that the instance's result type doesn't have must
+    /// follow from what is known of the call (the instance's signature at
+    /// its arguments).
+    #[allow(clippy::too_many_arguments)]
+    fn known_result_obligations(&mut self, cx: &Cx, d: DefId, f: DefId, args: &[Rc<Tm>], iargs: &[Rc<Tm>], call: &Tm, span: Span) {
+        let Some(spec) = self.specs.get(&d).cloned() else { return };
+        let pres: Vec<_> = spec.preds.iter().filter(|p| !p.is_post).cloned().collect();
+        if pres.is_empty() || args.len() < spec.n_binders {
+            return;
+        }
+        // The result's type at these arguments: the class's, the instance's.
+        let at = |e: &Self, def: DefId, args: &[Rc<Tm>]| -> Option<(Val, Vec<(Name, Val)>)> {
+            let mut ty = eval(&e.g, &Rc::new(Vec::new()), &e.g.defs[def.0 as usize].ty);
+            let mut doms = Vec::new();
+            for a in args {
+                let Val::Pi(x, _, _, dom, c) = e.force(&ty) else { return None };
+                doms.push((x.clone(), (*dom).clone()));
+                ty = apply_closure(&e.g, &c, e.eval(cx, a));
+            }
+            (!matches!(e.force(&ty), Val::Pi(..))).then_some((ty, doms))
+        };
+        let (Some((cty, doms)), Some((ity, _))) = (at(self, d, args), at(self, f, iargs)) else { return };
+        let lvl = cx.lvl();
+        let env = cx.env.to_vec();
+        // `None`: a refinement under a recursive type, which a call can't
+        // be shown to give but where the class's preconditions hold.
+        let goals = self.alias_goals_pub(&env, call, &cty, &ity);
+        if goals.as_ref().is_some_and(|g| g.is_empty()) {
+            return;
+        }
+        // Where the class's preconditions hold, the instance's signature
+        // refines the class's (E0371): nothing to prove.
+        let mut penv: Vec<Val> = args[..spec.n_binders].iter().map(|a| self.eval(cx, a)).collect();
+        penv.push(self.eval(cx, call));
+        let mut held = self.bool_lit(true);
+        for p in pres.iter().rev() {
+            let v = self.inst_pred(p, penv.clone());
+            held = self.if_tm(quote(&self.g, lvl, &v), held, self.bool_lit(false));
+        }
+        // The class's preconditions at the call's arguments (`-5 > 0`).
+        let names: Vec<(String, String)> = doms
+            .iter()
+            .zip(&penv)
+            .filter(|((x, _), _)| x.as_ref() != "_")
+            .map(|((x, _), v)| {
+                let shown = self.show_val(cx, v);
+                (x.to_string(), if shown.contains(' ') { format!("({shown})") } else { shown })
+            })
+            .collect();
+        let pre_text = pres.iter().map(|p| format!("`{}`", rename_words(&p.text, &names))).collect::<Vec<_>>().join(" and ");
+        let call_text = self.src_text(span);
+        let member = self.g.defs[d.0 as usize].name.rsplit('.').next().unwrap_or_default().to_string();
+        // The instance, as its dictionary's type shows it (`Pos Box`).
+        let inst = doms.iter().find_map(|(_, t)| match self.force(t) {
+            Val::TyCon(c, _) if self.class_defs.contains_key(&c) => Some(self.show_val(cx, t)),
+            _ => None,
+        });
+        let inst = inst.unwrap_or_default();
+        let Some(goals) = goals else {
+            let kind = ObKind::KnownResult { call: call_text, alias: self.show_val(cx, &cty), inside: false, pres: pre_text.clone(), inst, member };
+            let goal = self.eval(cx, &held);
+            self.oblige(cx, span, kind, pre_text.replace('`', ""), goal, None);
+            return;
+        };
+        for (g, text, alias, inside) in goals {
+            let text = if inside {
+                text
+            } else {
+                let subject = self.alias_subject.get(&alias).map(|s| s.to_string()).unwrap_or_default();
+                rename_words(&text, &[(subject, if call_text.contains(' ') { format!("({call_text})") } else { call_text.clone() })])
+            };
+            let goal = self.if_tm(held.clone(), self.bool_lit(true), g);
+            let goal = self.eval(cx, &goal);
+            let kind = ObKind::KnownResult {
+                call: call_text.clone(),
+                alias: self.g.defs[alias.0 as usize].name.to_string(),
+                inside,
+                pres: pre_text.clone(),
+                inst: inst.clone(),
+                member: member.clone(),
+            };
+            self.oblige(cx, span, kind, text, goal, None);
+        }
     }
 
     /// A call of `callee` from a function with a measure: the callee's measure at

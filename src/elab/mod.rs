@@ -324,8 +324,10 @@ pub enum ObKind {
     /// An instance's function with a signature of its own (#225): a
     /// precondition of it that the class's don't imply (`pre`), or a
     /// postcondition of the class's that the instance's don't imply. The
-    /// class's declaration of the function, as written.
-    Refines { class: String, member: String, pre: bool, declared: String },
+    /// class's declaration of the function, as written. `at`: a refinement
+    /// inside a parameter's (`pre`) or the result's type: its name, its
+    /// type in the instance, and in the class.
+    Refines { class: String, member: String, pre: bool, declared: String, at: Option<(String, String, String)> },
     /// A class used at a refinement alias runs the instance of the type the
     /// alias stands for (#226): a value of the class's type that instance
     /// gives must be of the alias. The class, the alias and its type, the
@@ -335,7 +337,14 @@ pub enum ObKind {
     /// value inside the result (`Some`'s), not the result itself.
     /// `whole`: a part of the result checked as one (under a recursive
     /// type, or a function): its type at the alias and at the base.
-    AtAlias { class: String, alias: String, base: String, member: String, call: Option<String>, param: Option<AliasParam>, inside: bool, whole: Option<(String, String)> },
+    /// `inst`: the instance that runs, at its types (`Conv Bool Int`).
+    AtAlias { class: String, inst: String, alias: String, base: String, member: String, call: Option<String>, param: Option<AliasParam>, inside: bool, whole: Option<(String, String)> },
+    /// A call of a class's function at a known instance whose function
+    /// requires less than the class's: a refinement of the class's result
+    /// type (the alias, the result itself or a value `inside` it), which
+    /// the class promises only where its preconditions (`pres`, as
+    /// written) hold. The call, the instance (`Pos Box`), the function.
+    KnownResult { call: String, alias: String, inside: bool, pres: String, inst: String, member: String },
     Auto,
     Have,
     /// A case a `match` leaves out can't occur there (D144 e): its pattern.
@@ -1952,6 +1961,11 @@ impl Elab {
                 }
                 // A call of a function (global or local) whose result type is `Nat`.
                 let call = match &v {
+                    // Not a class's function with preconditions: at a known
+                    // instance whose function requires less, the call meets
+                    // only that function's, and the class promises a `Nat`
+                    // only where its own hold (the prover knows so much).
+                    Val::Neutral(Head::Def(d), _) if self.class_methods.contains(d) && self.specs.get(d).is_some_and(|s| s.preds.iter().any(|p| !p.is_post)) => false,
                     Val::Neutral(Head::Def(d), sp) => {
                         let ty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[d.0 as usize].ty);
                         self.returns_nat(&ty, sp)

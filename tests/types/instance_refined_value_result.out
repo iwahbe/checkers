@@ -1,8 +1,10 @@
-error[E0450]: cannot prove `x > 0`, required to call `f`
-  --> instance_refined_value_result.ck:20:7
+error[E0450]: cannot prove `r >= 0`, the postcondition of `by_value`
+  --> instance_refined_value_result.ck:18:18
    |
-20 |     f (-5)
-   |       ^^^^ `f` requires `x > 0`
-   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+18 | fn by_value b -> r : b~Box, r~Nat
+   |                  ^ promised here
+   = note: for the value returned on line 20: `f (-5)`
+   = note: counterexample: b = Box 2
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
 
 instance_refined_value_result.ck: 1 error, 0 warnings
