@@ -1,4 +1,4 @@
 -- stdout
-(error "line 3 column 1: the last assertion before `(check-sat)` must be the negated goal, `(assert (not GOAL))`")
+(error "line 4 column 1: no negated goal, `(assert (not GOAL))`, before `(check-sat)`")
 -- stderr
 -- exit 1

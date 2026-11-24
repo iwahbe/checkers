@@ -535,11 +535,17 @@ lemma extend_append sig xs ys : sig~Sig, xs~List Command, ys~List Command
 # `c` with `cmd` after its commands, if `cmd` is well-formed there.
 # Appending copies the commands, so `context` of n commands takes time
 # quadratic in n; `prepare` (#86) will want better.
-export fn add c cmd -> r : c~Context, cmd~Command, r~Result Context Problem
+export fn add c cmd -> r : c~Context, cmd~Command, r~Result Context Problem, added c cmd r
     let _ = try check_command c.sig cmd
     have check_append empty_sig c.commands [cmd]
     have extend_append empty_sig c.commands [cmd]
     Ok (Context (c.commands ++ [cmd]) (extend c.sig cmd))
+
+# Whether `r` is `c` with `cmd` after its commands, if it is a context.
+export transparent fn added c cmd r -> b : c~Context, cmd~Command, r~Result Context Problem, b~Bool
+    match r
+        Ok d  -> commands d == commands c ++ [cmd]
+        Err _ -> True
 
 # The context of `cmds`, if each is well-formed after those before it.
 export fn context cmds -> r : cmds~List Command, r~Result Context Problem
