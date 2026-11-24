@@ -121,6 +121,32 @@ fn tail_sig_rets(n: usize, rets: usize) -> Signature {
     s
 }
 
+/// The most words a function of the `tail` calling convention returns in
+/// registers on `isa`, up to `unbox::MAX_PARTS`: past them Cranelift would
+/// need a return area (8 on x86-64; 6 on ARM64, whose `tail` convention
+/// keeps `x0` and `x1` for itself).
+pub fn return_words(isa: &dyn cranelift_codegen::isa::TargetIsa) -> usize {
+    (1..=super::unbox::MAX_PARTS).rev().find(|n| returns_in_registers(isa, *n)).unwrap_or(1)
+}
+
+/// Whether a function returning `n` words compiles on `isa`.
+fn returns_in_registers(isa: &dyn cranelift_codegen::isa::TargetIsa, n: usize) -> bool {
+    let mut func = ir::Function::with_name_signature(ir::UserFuncName::default(), tail_sig_rets(0, n));
+    let mut fctx = FunctionBuilderContext::new();
+    {
+        let mut b = FunctionBuilder::new(&mut func, &mut fctx);
+        let entry = b.create_block();
+        b.append_block_params_for_function_params(entry);
+        b.switch_to_block(entry);
+        let zero = b.ins().iconst(I64, 0);
+        b.ins().return_(&vec![zero; n]);
+        b.seal_all_blocks();
+        b.finalize(isa.frontend_config());
+    }
+    let mut ctx = cranelift_codegen::Context::for_function(func);
+    ctx.compile(isa, &mut Default::default()).is_ok()
+}
+
 fn arity_of(f: &Func) -> usize {
     match &f.kind {
         FnKind::Caf => 0,

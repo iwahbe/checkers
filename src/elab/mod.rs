@@ -274,6 +274,26 @@ pub struct EqReq {
     pub param: Name,
 }
 
+/// A function parameter of a class's function, at a refinement alias,
+/// that the instance may give values of the class's type to (#226), with
+/// where it gives them, as a message says it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AliasParam {
+    pub name: String,
+    /// What the instance may give it, at its first place where it isn't of
+    /// the alias: `a value that isn't a `Nat``, `a function whose results
+    /// aren't `Nat`s`.
+    pub gives: String,
+    /// What it must be given instead: `` `Nat`s ``, `functions whose
+    /// results are `Nat`s`.
+    pub only: String,
+    /// The type of the values it is given at the base (`Int`, `Int ->
+    /// Int`), and, where those aren't the alias itself, its type at the
+    /// alias, a signature for it that would do.
+    pub accepts: String,
+    pub example: Option<String>,
+}
+
 /// Predicates recorded for the prover (M3).
 /// What an obligation is for; decides how a failure is reported (§7.1).
 #[derive(Clone, Debug, PartialEq)]
@@ -304,16 +324,27 @@ pub enum ObKind {
     /// An instance's function with a signature of its own (#225): a
     /// precondition of it that the class's don't imply (`pre`), or a
     /// postcondition of the class's that the instance's don't imply. The
-    /// class's declaration of the function, as written.
-    Refines { class: String, member: String, pre: bool, declared: String },
+    /// class's declaration of the function, as written. `at`: a refinement
+    /// inside a parameter's (`pre`) or the result's type: its name, its
+    /// type in the instance, and in the class.
+    Refines { class: String, member: String, pre: bool, declared: String, at: Option<(String, String, String)> },
     /// A class used at a refinement alias runs the instance of the type the
     /// alias stands for (#226): a value of the class's type that instance
     /// gives must be of the alias. The class, the alias and its type, the
     /// class's function; where the use is a call, its text, else the
-    /// function's parameter that the instance may call with values of the
-    /// type (`param`), or neither: a result, at any arguments. `inside`: a
+    /// function's parameter the instance may give values of the type to
+    /// (`param`), or neither: a result, at any arguments. `inside`: a
     /// value inside the result (`Some`'s), not the result itself.
-    AtAlias { class: String, alias: String, base: String, member: String, call: Option<String>, param: Option<String>, inside: bool },
+    /// `whole`: a part of the result checked as one (under a recursive
+    /// type, or a function): its type at the alias and at the base.
+    /// `inst`: the instance that runs, at its types (`Conv Bool Int`).
+    AtAlias { class: String, inst: String, alias: String, base: String, member: String, call: Option<String>, param: Option<AliasParam>, inside: bool, whole: Option<(String, String)> },
+    /// A call of a class's function at a known instance whose function
+    /// requires less than the class's: a refinement of the class's result
+    /// type (the alias, the result itself or a value `inside` it), which
+    /// the class promises only where its preconditions (`pres`, as
+    /// written) hold. The call, the instance (`Pos Box`), the function.
+    KnownResult { call: String, alias: String, inside: bool, pres: String, inst: String, member: String },
     Auto,
     Have,
     /// A case a `match` leaves out can't occur there (D144 e): its pattern.
@@ -520,6 +551,10 @@ pub struct Elab {
     pub user_modules: Vec<String>,
     /// Each module's imports, by name (for D143's keys).
     pub module_deps: HashMap<String, Vec<String>>,
+    /// The modules of the instances each module's checking chose, other
+    /// than its own (D143's keys, #272): an instance is found wherever its
+    /// module is loaded, so it may be in a module not imported.
+    pub instance_deps: HashMap<String, std::collections::BTreeSet<String>>,
     /// The package of each module of a dependency (D111); others are the
     /// program's own package, or `std`.
     pub module_pkg: HashMap<String, String>,
@@ -738,6 +773,13 @@ pub struct Elab {
     /// refinement alias, to check at the end of the module (#226).
     pub class_calls: Vec<PendingPre>,
     pub alias_dicts: Vec<classes::AliasDict>,
+    /// Uses of classes' functions as values (#252), by their dictionary's
+    /// unknown: where, and whether compared there with the function type
+    /// expected, at a known instance (through a refinement alias, that
+    /// comparison is their check). A local defined as one: each call of
+    /// it, a call of the class's function with that dictionary.
+    pub class_value_uses: Vec<(MetaId, DefId, Span, bool)>,
+    pub class_local_calls: Vec<(MetaId, PendingPre)>,
     /// The instance whose member's signature is being elaborated (#146).
     pub sig_inst: Option<classes::SigInst>,
     /// Comparisons waiting for a dictionary (#133): level, expected,
@@ -918,6 +960,8 @@ impl Elab {
             pending_class_pres: Vec::new(),
             class_calls: Vec::new(),
             alias_dicts: Vec::new(),
+            class_value_uses: Vec::new(),
+            class_local_calls: Vec::new(),
             sig_inst: None,
             waiting: Vec::new(),
             waiting_late: Vec::new(),
@@ -948,6 +992,7 @@ impl Elab {
             completion: None,
             completing: None,
             module_deps: HashMap::new(),
+            instance_deps: HashMap::new(),
         }
     }
 
@@ -1921,6 +1966,11 @@ impl Elab {
                 }
                 // A call of a function (global or local) whose result type is `Nat`.
                 let call = match &v {
+                    // Not a class's function with preconditions: at a known
+                    // instance whose function requires less, the call meets
+                    // only that function's, and the class promises a `Nat`
+                    // only where its own hold (the prover knows so much).
+                    Val::Neutral(Head::Def(d), _) if self.class_methods.contains(d) && self.specs.get(d).is_some_and(|s| s.preds.iter().any(|p| !p.is_post)) => false,
                     Val::Neutral(Head::Def(d), sp) => {
                         let ty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[d.0 as usize].ty);
                         self.returns_nat(&ty, sp)

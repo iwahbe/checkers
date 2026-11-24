@@ -1,0 +1,26 @@
+error[E0450]: cannot prove that `pos b (-5)` is a `Nat` (`(pos b (-5)) >= 0`)
+  --> instance_known_result.ck:18:5
+   |
+18 |     pos b (-5)
+   |     ^^^^^^^^^^ the class promises a `Nat` only where `-5 > 0`
+   = note: this calls `instance Pos Box`'s `pos`, whose signature requires less than the class's and doesn't promise it here
+   = note: counterexample: b = Box 2
+   = help: make the call meet the class's precondition, or have `instance Pos Box`'s `pos` promise a `Nat` at these arguments too
+
+error[E0450]: cannot prove `n >= 0` of the `Nat`s inside `wrapped b (-5)`
+  --> instance_known_result.ck:35:5
+   |
+35 |     wrapped b (-5)
+   |     ^^^^^^^^^^^^^^ the class promises `Nat`s in the result only where `-5 > 0`
+   = note: this calls `instance Wrapped Box`'s `wrapped`, whose signature requires less than the class's and doesn't promise it here
+   = help: make the call meet the class's precondition, or have `instance Wrapped Box`'s `wrapped` promise `Nat`s in its result at these arguments too
+
+error[E0450]: cannot prove that `listed b (-5)` is a `List Nat` (`-5 > 0`)
+  --> instance_known_result.ck:49:5
+   |
+49 |     listed b (-5)
+   |     ^^^^^^^^^^^^^ the class promises a `List Nat` only where `-5 > 0`
+   = note: this calls `instance Listed Box`'s `listed`, whose signature requires less than the class's and doesn't promise it here
+   = help: make the call meet the class's precondition, or have `instance Listed Box`'s `listed` promise a `List Nat` at these arguments too
+
+instance_known_result.ck: 3 errors, 0 warnings

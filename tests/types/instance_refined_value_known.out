@@ -1,0 +1,19 @@
+error[E0450]: cannot prove `r >= 0`, the postcondition of `by_let`
+  --> instance_refined_value_known.ck:17:16
+   |
+17 | fn by_let b -> r : b~Box, r~Nat
+   |                ^ promised here
+   = note: for the value returned on line 19: `f (-5)`
+   = note: counterexample: b = Box 2
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+error[E0450]: cannot prove that `pos b` returns a `Nat`
+  --> instance_refined_value_known.ck:33:11
+   |
+33 |     apply (pos b)
+   |           ^^^^^^^ its result is a `(r~Int, x > 0 implies r >= 0)`, which must be a `Nat`
+   = note: it needs `n >= 0`
+   = note: counterexample: x = 0, n = -1
+   = help: pass a function whose result is always a `Nat`
+
+instance_refined_value_known.ck: 2 errors, 0 warnings

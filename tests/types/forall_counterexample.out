@@ -12,7 +12,7 @@ error[E0450]: cannot prove lemma `kept`
    |
 12 |     ensures x < 3
    |             ^^^^^ `x < 3`
-   = note: facts in scope: `forall ((k~Nat) -> if k < x then k < 5 else True)`
+   = note: facts in scope: `forall ((k~Nat) -> k < x implies k < 5)`
    = note: counterexample: x = 3
    = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
 
