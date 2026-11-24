@@ -385,6 +385,25 @@ A program takes what it needs with a record pattern, `let System { fs, term } = 
 
 `ExitCode` is an enum: `Success`, `Failure n` with `n~U8, n > 0`.
 
+**Time (#313).** `std.time` reads the clock with a `Clock`:
+
+```checkers
+export abstract enum Instant          # a reading of the monotonic clock
+export record Duration                # never negative
+    ns~Nat
+
+export fn now c -> t : c~Clock, t~Instant
+export fn since later earlier -> d : later~Instant, earlier~Instant, d~Duration
+export fn add t d -> u : t~Instant, d~Duration, u~Instant
+export fn sleep c d : c~Clock, d~Duration
+```
+
+- An `Instant` is opaque: no number can be taken out of it, only the `Duration` between two (`since`), and it compares with `<`, `<=` and `==`. It is not the time of day (a wall-clock type will be another, `Timestamp`). The clock counts while the machine is suspended: `CLOCK_BOOTTIME` on Linux, `CLOCK_MONOTONIC_RAW` on macOS (`mach_continuous_time`, unlike `CLOCK_UPTIME_RAW`, which stops; Apple's `clock_gettime(3)` and Libc's `clock_gettime.c`).
+- `since later earlier` is zero when `earlier` is after `later`, as Rust's `Instant::duration_since` is: the order of two readings can't be proved.
+- Durations add and compare (`+`, `<`, `<=`, `==`). Each is written with its unit: `Duration ns`, `millis n`, `secs n`; a bare number is not a duration.
+- `sleep c d` waits for `d` at least, by the same clock. A sleeping behaviour holds no thread: it is a timer in the poller (§13.8).
+- Compile-time code has no `Clock`, so it can't read the time (§8.9).
+
 ### 8.3 Authority capabilities: copied on use (D28)
 
 An authority capability can be used any number of times. Operations on it return only their result:
@@ -1048,9 +1067,10 @@ export class Debug a
 | `Int` (so `Nat`, the fixed-width types and `Char`, which are refinements of it) | `IntOption`: `Hex`, `Binary`, `Octal` (after `0x`, `0b`, `0o`, lower case), `Plus` (a `+` before a non-negative number), `Digits n` (at least `n` digits, zeros before them and after the sign and prefix) | decimal; without options, `Parsable.parse` reads it back, and a number that isn't negative starts with a digit, and with `0` only when it is `0`, as the instance's own signature promises (§9.8) |
 | `String` | `StringOption`: `Quoted` (as `debug` shows it), `Take n` (the first `n` scalar values, then quoted if asked) | the string itself |
 | `Bool` | `NoOptions` | `True`, `False` |
+| `Duration` (`std.time`) | `Unit`: `Nanos` (`ns`), `Micros` (`µs`), `Millis` (`ms`), `Seconds` (`s`), `Minutes` (`m`), `Hours` (`h`) | without units, as Rust's `Debug` shows it: in the largest of `ns`, `µs`, `ms`, `s` in which it is at least 1, as an exact decimal with no zeros at its end (`1.5s`, `250ms`, `1.000000001s`; zero is `0ns`). With units, the units given, as a set, split the duration: each has a whole count but the smallest, which has the rest as a decimal with no zeros at its end. Then each unit of the list, in the list's order, repeats included, shows its part and its symbol, even a zero one: 63 s with `[Minutes, Seconds, Minutes]` is `1m3s1m`, with `[Seconds, Minutes]` `3s1m`; 3.5 s with `[Hours, Minutes, Seconds]` is `0h0m3.5s`; 1.5 s with `[Millis]` is `1500ms`. Nothing checks the units' order. A rest in minutes or hours that no decimal writes exactly is cut off at 11 or 13 places, where a nanosecond is still more than the last place (`100s` with `[Minutes]` is `1.66666666666m`) **(proposed, #316)** |
 | `Decimal` (`std.decimal`) | `DecimalOption`: `decimal.Plus`, `Places n` (rounded to `n` digits after the point, half away from zero, never with an exponent) | as `decimal.render` writes it |
 
-The instances for `Int`, `String` and `Bool` are in `std.string`, beside the class; `Decimal`'s is in `std.decimal`. `std.decimal`'s `Plus` is written `decimal.Plus` where `std.string`'s is also in scope.
+The instances for `Int`, `String` and `Bool` are in `std.string`, beside the class; `Decimal`'s is in `std.decimal`, `Duration`'s in `std.time`. `std.decimal`'s `Plus` is written `decimal.Plus` where `std.string`'s is also in scope.
 
 **`Debug`: Checkers source, for every type.** Every type has a derived instance that writes a value as source: `Some (Ok 1)`, `[1, 2]`, `(1, "a")`, `b"…"`. Strings are quoted at every level, the top included (`debug "a"` is `"a"` with the quotes); functions and capabilities are `<function>`, `<Term>` and so on, so a failed `check`, a counterexample and generic code can always show a value. `debug x` needs no clause at a type parameter.
 
@@ -1219,7 +1239,7 @@ A failure prints a runtime error that names the failing operation and the functi
 
 ### 13.4 `main` and the root capability
 
-`main` receives the command-line arguments after the file name, as `List String`, and the root `System` (§8.2). `term` reads standard input and writes standard output and error; `fs` is the process's file system with relative paths resolved against the current directory, and `files.within dir fs` confines it to `dir` (absolute paths and `..` are then refused). Operations on `env`, `proc`, `net` and `clock` are not implemented yet.
+`main` receives the command-line arguments after the file name, as `List String`, and the root `System` (§8.2). `term` reads standard input and writes standard output and error; `fs` is the process's file system with relative paths resolved against the current directory, and `files.within dir fs` confines it to `dir` (absolute paths and `..` are then refused). `clock` reads the monotonic clock and sleeps (`std.time`, §8.2). Operations on `net` are not implemented yet.
 
 `IoError` values describe the operating-system error, as in `No such file or directory`. `read_line` (on `term` or a `File`) returns a line without its `\n`; bytes that are not valid UTF-8 become U+FFFD.
 
@@ -1519,6 +1539,7 @@ The standard library is these modules. Its scope is still to be settled (D106); 
 | `std.parse` | Checkers | the class `Parsable a t` (`Error`, `parse`): a value of type `a` read from the front of any sequence (`Seq`) of tokens of type `t`, with what is left of it, a suffix and shorter; both types are named at each use (`parse xs Decimal Int`), so one type can be read from several kinds of tokens; a type that may read nothing reports it as an error; the class `Token x t` (`token`, an element read as a token), with an instance for `Int`, so characters and bytes (`Char` and `U8` are `Int`s): `String`, `List Char`, `Bytes`, `List U8`; `suffix` (`rest` is what is left of `xs` after taking elements off its front) and its lemmas `suffix_refl`, `suffix_trans`, `suffix_size`; `consumed r xs` (a success left a shorter suffix: `parse`'s postcondition) and `within r xs` (a suffix, maybe all); combinators, each taking parsers as functions whose types say how much input each is given (no more than the combinator's, or less): `satisfy`, `at_end`, `map`, `both`, `or_else`, `optional`, `many`, `many1`, `sep_by1`, `chain_left`, `complete`, and `fix` (a rule that refers to itself: its body gets the rule as `self`, callable only on less input, so recursive grammars terminate without a proof of their own), with the lemma `fix_unfold` (`fix body xs` is `body xs (\ys -> fix body ys)`: what a proof about a rule made with `fix` unfolds it by, #231) | exists |
 | `std.html` | Checkers | `escape`, `entity` (HTML5's named character references, a generated table, D151) | exists (M27) |
 | `std.markdown` | Checkers | `Document`, `Block`, `Inline`, `Item`, `Span`, `Target`, `Definition`, `Reference`, `Level` (a heading's level, `1 <= n <= 6`: `Heading` takes only these, #164), `parse`, `parse_with`, `to_html`, `to_html_with`, `label_key`, `language`, `plain` (CommonMark 0.31.2, a port of commonmark.js, D148, D151); the parser has no fuel: each loop's measure is a position that moves on, proved (a link reference definition, an open tag's attributes, a domain's labels, a line's container blocks), or, for emphasis, the tokens and delimiter characters left (#164) | exists (M27) |
+| `std.time` | builtin + Checkers | `Instant` (abstract), `Duration` (`ns`), `now`, `since`, `add`, `millis`, `secs`, `sleep`, instances of `Ord` for both and of `Add` for `Duration`, `Unit` (`Nanos`, `Micros`, `Millis`, `Seconds`, `Minutes`, `Hours`) and an instance of `Display` for `Duration` (§8.2, §9.11); not exported: `monotonic` (the clock in nanoseconds) and `sleep_ns`, builtins | exists |
 | `std.json` | Checkers | `Json`, `Error`, `ErrorKind`, `parse`, `render`, `depth`, `MAX_DEPTH`, the round-trip lemma `roundtrip`; parsing in two stages, each a parser in `std.parse`'s sense: `tokenize` reads bytes into `Tokens` (`End`; `Stop at pos kind`, bytes that aren't a token or nest deeper than `MAX_DEPTH`, with where they start and where and why reading them failed; `More t rest`, with an instance of `Seq`), each a `Located` (`at`, its first byte's offset, and `kind`, a `JsonToken`: `BeginArray`, `EndArray`, `BeginObject`, `EndObject`, `NameSeparator`, `ValueSeparator`, `StringToken s`, `NumberToken n` read by `Parsable Decimal Int`, `TrueToken`, `FalseToken`, `NullToken`), and `inside ts n` (its positions are in an input of `n` bytes); `instance Parsable Json JsonToken` (built with `fix`; its `Error` is `TokenError`: `left`, the tokens left where it happened, and `TokenErrorKind`: `UnexpectedToken`, `MissingValue`, `MissingKey`, `MissingSeparator`, `RepeatedKey k`), with `Token` instances for `JsonToken` and `Located`; `parse` reports the first error left to right, as one pass would: a builder error where the tokens stop at bytes that aren't a token is the error reading those bytes as what was wanted there gives; the round trip is the two stages' round trips composed (`render`'s bytes are read as its tokens, and the tokens as the value) | exists (M13; proven without `admit`s, M18) |
 | `std.path` | Checkers | `join`, `parent`, `name`, `extension` (paths as `String`, `/`-separated) | planned (the tools compute these by hand today) |
 | `std.system` | — | `System`, `ExitCode`, the authority types | exists |
