@@ -1,0 +1,5 @@
+(set-logic ALL)
+(declare-datatypes ((P 0)) (((mk (fst Int) (snd Int)))))
+(declare-const p P)
+(assert (not (= (fst p) (snd (fst p)))))
+(check-sat)

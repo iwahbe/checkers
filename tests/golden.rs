@@ -36,10 +36,14 @@
 //!                         `$TEXT(file)` a file's text as a JSON string), `< N`
 //!                         waits for N more messages; NAME.out is every message
 //!                         received, in order, and the exit code.
-//! tools/, examples/, bench/, stdlib/, tests/{types,run,stage,stress}: every .ck file must be
+//! tools/, examples/, bench/, stdlib/, smt/, tests/{types,run,stage,stress}: every .ck file must be
 //!                         formatted; every .ck file in the repository must format to a
 //!                         fixed point with the same syntax tree (D93).
 //! examples/*.ck, bench/*.ck → must check with no errors and no warnings.
+//! smt/*.ck             → the solver package (#72): each module, its command `main.ck`
+//!                         too, checks with no errors and no warnings.
+//! tests/smt/NAME.smt2  → NAME.out is what `smt/main.ck parse` writes for it: the
+//!                         query written back, or the error reading it (line and column).
 //! site/*.md, README.md, the standard library's documentation → `checkers site`
 //!                         and `checkers doc` give no warnings: links resolve, code
 //!                         blocks compile and run (D148).
@@ -313,7 +317,7 @@ fn build_tool(pool: &Pool, root: &'static Path, update: bool) -> Outcome {
     // The repository: formatted where it should be; everywhere, formatting
     // is a fixed point that keeps the syntax tree.
     let mut all = Vec::new();
-    for d in ["tools", "examples", "bench", "stdlib", "tests"] {
+    for d in ["tools", "examples", "bench", "stdlib", "smt", "tests"] {
         ck_tree(&root.join(d), &mut all);
     }
     for path in all {
@@ -402,7 +406,7 @@ fn doc_case(exe: &Path, root: &Path, doc_dir: &Path, case: &Path, update: bool) 
 /// more, keeps its syntax tree, and, where the repository must be
 /// formatted, changes nothing at all.
 fn formatted(exe: &Path, root: &Path, path: &Path) -> Outcome {
-    const FORMATTED: [&str; 8] = ["tools", "examples", "bench", "stdlib", "tests/types", "tests/run", "tests/stage", "tests/stress"];
+    const FORMATTED: [&str; 9] = ["tools", "examples", "bench", "stdlib", "smt", "tests/types", "tests/run", "tests/stage", "tests/stress"];
     let mut failures = Vec::new();
     let rel = path.strip_prefix(root).unwrap();
     let name = rel.display().to_string();
@@ -837,6 +841,8 @@ fn golden() {
         }
     }
 
+    smt_package(&pool, root, update);
+
     let start = std::time::Instant::now();
     let (count, failures) = pool.run(threads);
     let took = start.elapsed().as_secs_f64();
@@ -849,6 +855,42 @@ fn golden() {
         println!("golden: {} of {count} failed (UPDATE_GOLDEN=1 to accept)", failures.len());
         std::process::exit(1);
     }
+}
+
+/// The solver package (#72): its modules check clean; its command builds;
+/// and `main parse` gives each `tests/smt/*.smt2` case's output.
+fn smt_package(pool: &Pool, root: &'static Path, update: bool) {
+    let pkg = root.join("smt");
+    for (i, path) in ck_files(&pkg).into_iter().enumerate() {
+        let pkg = pkg.clone();
+        let name = path.strip_prefix(root).unwrap().display().to_string();
+        pool.add_local((13, i), name.clone(), move |_| {
+            let file = path.file_name().unwrap().to_string_lossy().to_string();
+            let c = in_process(|| checkers::check_in(&file, &fs::read_to_string(&path).unwrap(), &pkg));
+            (1, if c.diags.is_empty() { vec![] } else { vec![format!("── {name} must be clean ──\n{}", c.report())] })
+        });
+    }
+    pool.add((14, 0), "build smt/main.ck".into(), move |_| {
+        let mut failures = Vec::new();
+        let exe = Removed(std::env::temp_dir().join(format!("checkers-golden-{}-smt", std::process::id())));
+        let built = std::process::Command::new(env!("CARGO_BIN_EXE_ckc"))
+            .env("CHECKERS_NO_CACHE", "1")
+            .args(["build", "smt/main.ck", "-o"])
+            .arg(&exe.0)
+            .current_dir(root)
+            .output()
+            .expect("run ckc build");
+        if !built.status.success() {
+            return (1, vec![format!("── build smt/main.ck ──\n{}", String::from_utf8_lossy(&built.stderr))]);
+        }
+        let mut count = 1;
+        for path in files_with(&root.join("tests").join("smt"), "smt2") {
+            count += 1;
+            let actual = shown(&run_with(&exe.0, &["parse"], &fs::read(&path).unwrap(), root));
+            compare(root, &path.with_extension("out"), &actual, update, &mut failures);
+        }
+        (count, failures)
+    });
 }
 
 /// Run a `tests/lsp/NAME.session` against `checkers lsp` (§15.5).

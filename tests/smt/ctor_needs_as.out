@@ -1,0 +1,4 @@
+-- stdout
+(error "line 4 column 19: write `Nil` as `(as Nil SORT)`: its datatype has parameters")
+-- stderr
+-- exit 1

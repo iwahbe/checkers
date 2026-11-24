@@ -1,0 +1,9 @@
+-- stdout
+(set-logic ALL)
+(declare-const x Int)
+(assert (not (= x 1)))
+(assert (= x 0))
+(check-sat)
+(get-value (x))
+-- stderr
+-- exit 0

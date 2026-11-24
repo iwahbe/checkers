@@ -1,0 +1,4 @@
+-- stdout
+(error "line 4 column 1: only assertions may follow the negated goal, `(assert (not GOAL))`")
+-- stderr
+-- exit 1

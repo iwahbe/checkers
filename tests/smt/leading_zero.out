@@ -1,0 +1,4 @@
+-- stdout
+(error "line 5 column 20: a numeral other than `0` can't start with `0`")
+-- stderr
+-- exit 1

@@ -1,0 +1,8 @@
+-- stdout
+(set-logic ALL)
+(declare-fun f (Int) Int)
+(assert (not (= (f 1) 1)))
+(assert (forall ((a Int)) (>= (f a) 0)))
+(check-sat)
+-- stderr
+-- exit 0

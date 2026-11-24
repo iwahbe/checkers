@@ -1,0 +1,4 @@
+-- stdout
+(error "line 3 column 52: a `:pattern` needs at least one term")
+-- stderr
+-- exit 1
