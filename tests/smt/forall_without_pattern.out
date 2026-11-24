@@ -1,4 +1,8 @@
 -- stdout
-(error "line 3 column 27: a `forall` without `(! … :pattern (…))` is outside the subset `ckc` writes")
+(set-logic ALL)
+(declare-fun f (Int) Int)
+(assert (forall ((a Int)) (>= (f a) 0)))
+(assert (not (= (f 1) 1)))
+(check-sat)
 -- stderr
--- exit 1
+-- exit 0

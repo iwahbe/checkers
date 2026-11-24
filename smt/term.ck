@@ -136,8 +136,15 @@ export record Def
     body~Term
     terminates~Bool
 
-# A pattern-guarded universal formula: `forall vars, body`, used only at
-# instances of `patterns` (each a list of terms that must all match).
+# A universal formula: `forall vars, body`. Each of `patterns` is a list of
+# terms that must all match for E-matching to make an instance.
+#
+# With `patterns = []` the axiom is still a fact of the problem; it only
+# gives E-matching nothing to match, so it is never instantiated that way.
+# A later stage may instantiate it at ground terms of its variables' sorts:
+# an instance is a consequence, so a proof that uses one is sound. It must
+# not be dropped, and a problem holding one is never answered `Invalid`
+# unless the model is shown to satisfy it.
 export record Axiom
     vars~List (Name, Sort)
     body~Term
@@ -206,7 +213,7 @@ export enum Problem
     # Something of sort `found` where `want` is needed: a fact or axiom
     # that isn't a `Bool`, a definition's body that isn't its result sort.
     Expected want found : want~Sort, found~Sort
-    # An axiom without patterns, or a pattern without terms.
+    # A pattern without terms.
     NoPattern
 
 # ── Well-formed sorts ────────────────────────────────────────────────────────
@@ -476,7 +483,7 @@ export fn check_command sig c -> r : sig~Sig, c~Command, r~Result Unit Problem
             let _ = try check_sorts sig 0 (var_sorts a.vars)
             let env = binder_env a.vars
             let _ = try check_term sig env a.body Bool
-            if a.patterns == [] then Err NoPattern else check_patterns sig env a.patterns
+            check_patterns sig env a.patterns
         Assert t            -> check_term sig [] t Bool
 
 # Whether each of `cs` is well-formed after `sig` and the commands before it.

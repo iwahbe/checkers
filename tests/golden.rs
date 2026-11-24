@@ -859,13 +859,13 @@ fn smt_package(pool: &Pool, root: &'static Path, update: bool) {
     for (i, path) in ck_files(&pkg).into_iter().enumerate() {
         let pkg = pkg.clone();
         let name = path.strip_prefix(root).unwrap().display().to_string();
-        pool.add_local((12, i), name.clone(), move |_| {
+        pool.add_local((13, i), name.clone(), move |_| {
             let file = path.file_name().unwrap().to_string_lossy().to_string();
             let c = in_process(|| checkers::check_in(&file, &fs::read_to_string(&path).unwrap(), &pkg));
             (1, if c.diags.is_empty() { vec![] } else { vec![format!("── {name} must be clean ──\n{}", c.report())] })
         });
     }
-    pool.add((13, 0), "build smt/main.ck".into(), move |_| {
+    pool.add((14, 0), "build smt/main.ck".into(), move |_| {
         let mut failures = Vec::new();
         let exe = Removed(std::env::temp_dir().join(format!("checkers-golden-{}-smt", std::process::id())));
         let built = std::process::Command::new(env!("CARGO_BIN_EXE_ckc"))

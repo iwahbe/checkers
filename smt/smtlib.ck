@@ -419,7 +419,7 @@ fn term_from src sig vars e -> r : src~Bytes, sig~Sig, vars~List (Name, Sort), e
             else if n == b"lambda"
                 lambda_term src sig vars args p
             else if n == b"forall" or n == b"exists"
-                Err (Error hp (b"a quantifier is in the subset `ckc` writes only as a whole assertion, `(assert (forall … (! … :pattern (…))))`"))
+                Err (Error hp (b"a quantifier is in the subset `ckc` writes only as a whole assertion, `(assert (forall …))`"))
             else if n == b"!"
                 Err (Error hp b"`!` is in the subset `ckc` writes only around a `forall`'s body")
             else if n == b"as"
@@ -686,24 +686,32 @@ fn finish src rest opts logic c pending p -> r : src~Bytes, rest~List (SExpr src
             Err (Error q b"the last assertion before `(check-sat)` must be the negated goal, `(assert (not GOAL))`")
         None                         -> Err (Error p b"no assertion before `(check-sat)`: expected `(assert (not GOAL))`")
 
-# `(forall ((x S) …) (! body :pattern (t …) …))`, from what follows `forall`.
+# `(forall ((x S) …) (! body :pattern (t …) …))`, or `(forall ((x S) …) body)`
+# without patterns, from what follows `forall`.
 fn axiom_from src sig q p -> r : src~Bytes, sig~Sig, q~List (SExpr src), p~Nat, p < len src, r~Result Axiom (Error src)
     match q
-        [Node vs _, Node (Leaf (Symbol bang False) _ :: b :: attrs) _] if bang == b"!" ->
+        [Node vs _, Node (Leaf (Symbol bang False) bp :: b :: attrs) _] if bang == b"!" ->
+            if attrs == []
+                Err (Error bp b"expected `:pattern (TERM …)` after a `forall`'s body")
+            else
+                let vars = try sorted_vars src sig vs
+                let env = list.reverse vars
+                let t = try term_of src sig env b Bool b"a `forall`'s body"
+                let ps = try patterns src sig env attrs
+                Ok (Axiom vars t ps)
+        [Node vs _, b] ->
             let vars = try sorted_vars src sig vs
-            let env = list.reverse vars
-            let t = try term_of src sig env b Bool b"a `forall`'s body"
-            let ps = try patterns src sig env attrs
-            Ok (Axiom vars t ps)
-        [Node _ _, b] ->
-            Err (Error (at b) b"a `forall` without `(! … :pattern (…))` is outside the subset `ckc` writes")
-        _             ->
-            Err (Error p b"expected `(forall ((NAME SORT) …) (! TERM :pattern (TERM …)))`")
+            let t = try term_of src sig (list.reverse vars) b Bool b"a `forall`'s body"
+            Ok (Axiom vars t [])
+        _              ->
+            Err (Error p b"expected `(forall ((NAME SORT) …) TERM)`, with `(! TERM :pattern (TERM …))` for patterns")
 
 fn patterns src sig env attrs -> r : src~Bytes, sig~Sig, env~List (Name, Sort), attrs~List (SExpr src),
                                      r~Result (List (List Term)) (Error src)
     match attrs
         []     -> Ok []
+        Leaf (Keyword k) _ :: Node [] at :: _ if k == b"pattern" ->
+            Err (Error at b"a `:pattern` needs at least one term")
         Leaf (Keyword k) _ :: Node ts _ :: rest if k == b"pattern" ->
             let (p, _) = try terms_from src sig env ts
             let ps = try patterns src sig env rest
@@ -945,7 +953,7 @@ fn problem_message sig pr -> r : sig~Sig, pr~Problem, r~Bytes
         EmptyLet          -> b"a `let` that binds nothing"
         ConstantParams f  -> b"the constant " ++ shown f.name ++ b" has parameters"
         Expected want got -> b"expected a term of sort " ++ sort_text sig want ++ b", found one of sort " ++ sort_text sig got
-        NoPattern         -> b"a `forall` needs a `:pattern`, and a pattern a term"
+        NoPattern         -> b"a `:pattern` needs at least one term"
 
 # ── Writing ──────────────────────────────────────────────────────────────────
 
@@ -1105,8 +1113,10 @@ fn w_command sig c acc -> r : sig~Sig, c~Command, term.command_ok sig c, acc~Lis
         Assume ax           ->
             let env = list.reverse (list.keys ax.vars)
             have params_env ax.vars
-            let a = w_term sig env ax.body (b" (! " :: w_vars sig ax.vars (b"(assert (forall " :: acc))
-            b")))\n" :: w_patterns sig env ax.patterns a
+            let head = b" " :: w_vars sig ax.vars (b"(assert (forall " :: acc)
+            match ax.patterns
+                [] -> b"))\n" :: w_term sig env ax.body head
+                ps -> b")))\n" :: w_patterns sig env ps (w_term sig env ax.body (b"(! " :: head))
         Assert t            -> b")\n" :: w_term sig [] t (b"(assert " :: acc)
 
 # The names a binder list's body sees, one for each binder.

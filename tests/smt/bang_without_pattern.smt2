@@ -1,0 +1,5 @@
+(set-logic ALL)
+(declare-fun f (Int) Int)
+(assert (forall ((a Int)) (! (>= (f a) 0))))
+(assert (not (= (f 1) 1)))
+(check-sat)
