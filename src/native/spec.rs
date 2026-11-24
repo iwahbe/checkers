@@ -27,8 +27,14 @@
 //! the same function, and recursion passing it on (`fix`'s `self`) reuses
 //! it. A lambda's body is marked as code of the definition it is written
 //! in (`AT`), so that a runtime error in it names that definition wherever
-//! its code is copied. `ir` substitutes a known function for a `let` or a
-//! lambda's parameter bound to it, so that it stays known.
+//! its code is copied. A `let` or a lambda's parameter bound to a known
+//! function stays known (`known`): `ir` calls the function where the
+//! variable is called and makes the copy for it where it is passed, and
+//! uses the variable, its one closure, anywhere else. A copy keeps a
+//! parameter it uses as a value in that way too (`keeps`): the call
+//! passes the closure as well. Such a variable inside a function put into
+//! a copy is replaced by its function unless the copy uses it as a value
+//! (`settle`), so the caller isn't made to build its closure.
 //!
 //! Code growth is bounded: one copy per function and arguments put into
 //! it (memoized, so recursion and mutual recursion reuse the copy), each
@@ -64,11 +70,13 @@ pub struct Specs {
     pub base: u32,
     memo: HashMap<String, u32>,
     pub copies: Vec<Copy>,
+    /// Whether a function's parameter is used as a value (`kept`).
+    kept: HashMap<(u32, usize), bool>,
 }
 
 impl Specs {
     pub fn new(base: u32) -> Specs {
-        Specs { base, memo: HashMap::new(), copies: Vec::new() }
+        Specs { base, memo: HashMap::new(), copies: Vec::new(), kept: HashMap::new() }
     }
 
     /// The copy definition `d` is, if it is one.
@@ -91,8 +99,12 @@ pub struct SpecCx<'a> {
     pub depth: usize,
 }
 
-/// Nodes of `t`, counting up to `limit + 1`.
+/// Nodes of `t`, counting up to `limit + 1`. A variable bound to a known
+/// function counts as the function, which its calls are.
 fn size(t: &Tm, limit: usize) -> usize {
+    if let Some((_, f)) = known_var(t) {
+        return size(f, limit);
+    }
     let mut n = 1;
     t.any_sub(|x, _| {
         n += size(x, limit - n.min(limit));
@@ -145,6 +157,35 @@ pub fn marked(t: &Tm) -> Option<(Option<DefId>, &Tm)> {
     }
 }
 
+/// The name of the `let` marking a variable bound to a known function:
+/// its type is the variable, its value the function (`ir`).
+pub const KNOWN: &str = "\u{0}known";
+
+/// Variable `v`, bound to the known function `f`: a call of it calls `f`
+/// directly, and a copy is made for `f` where it is passed (`ir`); any
+/// other use is the variable, so the closure it holds is built once.
+pub fn known(v: Tm, f: Tm) -> Tm {
+    Tm::Let(KNOWN.into(), Mult::Zero, Rc::new(v), Rc::new(f), Rc::new(Tm::Error))
+}
+
+/// The variable and the function, if `t` is a variable bound to a known
+/// function.
+pub fn known_var(t: &Tm) -> Option<(&Tm, &Tm)> {
+    match t {
+        Tm::Let(x, Mult::Zero, v, f, _) if &**x == KNOWN => Some((v, f)),
+        _ => None,
+    }
+}
+
+/// `t` with the variable `depth` binds marked as bound to `f` (`f` is
+/// outside that binder): `known`.
+pub fn know(t: &Tm, f: &Tm, depth: usize) -> Tm {
+    match t {
+        Tm::Var(v) if *v == depth => known(Tm::Var(*v), crate::core::rename_free(f, 0, &|x| x + depth + 1)),
+        _ => t.map_sub(|x, n| know(x, f, depth + n)),
+    }
+}
+
 /// A known function with each lambda's body (under all its parameters)
 /// marked as code of `owner`, unless it is marked already.
 fn mark(t: &Tm, owner: Option<DefId>) -> Tm {
@@ -187,6 +228,9 @@ fn arity(g: &Globals, staged: Option<&crate::stage::Staged>, d: DefId) -> Option
 /// argument, a known dictionary or a known function. Computing one
 /// computes nothing but a closure.
 pub fn known_fn(g: &Globals, staged: Option<&crate::stage::Staged>, t: &Tm) -> bool {
+    if let Some((_, f)) = known_var(t) {
+        return known_fn(g, staged, f);
+    }
     let mut args = Vec::new();
     let mut h = t;
     while let Tm::App(f, a, _, m) = h {
@@ -210,6 +254,7 @@ pub fn known_fn(g: &Globals, staged: Option<&crate::stage::Staged>, t: &Tm) -> b
 
 /// A known function small enough to put into a copy or a `let`'s body.
 pub fn small_fn(g: &Globals, staged: Option<&crate::stage::Staged>, t: &Tm) -> bool {
+    let t = known_var(t).map_or(t, |(_, f)| f);
     size(t, MAX_ARG) <= MAX_ARG && known_fn(g, staged, t)
 }
 
@@ -263,14 +308,20 @@ pub fn specialize(g: &Globals, cx: SpecCx, owner: Option<DefId>, f: DefId, args:
     let k = n.min(args.len());
     // A function's variables become the copy's parameters after the first
     // `k`: `caps`, the caller's variables, in the order they occur.
+    // A function the copy uses as a value is passed to it too (`keeps`).
     let mut caps = Vec::new();
+    let mut kept = vec![false; k];
     let mut pick: Vec<Option<Tm>> = args[..k]
         .iter()
-        .map(|(a, m)| match m {
+        .enumerate()
+        .map(|(j, (a, m))| match m {
             Mult::Zero => (max_var(a).is_none() && size(a, MAX_ARG) <= MAX_ARG).then(|| (***a).clone()),
             _ if closed_dict(g, a) => Some((***a).clone()),
             _ if fun(a) => {
+                let a = settle(g, cx, known_var(a).map_or(&***a, |(_, f)| f));
+                let a = &a;
                 free_in_order(a, 0, &mut caps);
+                kept[j] = keeps(g, cx, f, j);
                 Some(mark(a, owner))
             }
             _ => None,
@@ -294,32 +345,151 @@ pub fn specialize(g: &Globals, cx: SpecCx, owner: Option<DefId>, f: DefId, args:
             }
             let id = t.base + t.copies.len() as u32;
             let picked: Vec<Option<&Tm>> = pick.iter().map(Option::as_ref).collect();
-            t.copies.push(Copy { of: f, body: put_in(&body, &picked, m, 0), depth: cx.depth + 1 });
+            t.copies.push(Copy { of: f, body: put_in(&body, &picked, &kept, m, 0), depth: cx.depth + 1 });
             t.memo.insert(key, id);
             id
         }
     };
-    Some(Spec { id: DefId(id), put: pick.iter().map(Option::is_some).collect(), at: k, caps })
+    Some(Spec { id: DefId(id), put: pick.iter().zip(&kept).map(|(p, kept)| p.is_some() && !kept).collect(), at: k, caps })
+}
+
+/// Whether parameter `j` of `f`, given a known function, is used as a
+/// value: anywhere but called or passed to a parameter of a definition's
+/// function (whose copy is made for it) that is not used as a value in
+/// turn. Then `f`'s copy keeps the parameter, the call passes the
+/// function's closure, and the copy uses that closure wherever it uses the
+/// function as a value, rather than building it again at each use.
+fn keeps(g: &Globals, cx: SpecCx, f: DefId, j: usize) -> bool {
+    if let Some(k) = cx.table.borrow().kept.get(&(f.0, j)) {
+        return *k;
+    }
+    // Parameters the function is passed on to, each looked at once.
+    let mut seen = std::collections::HashSet::new();
+    let mut todo = vec![(f, j)];
+    let mut kept = false;
+    while let Some((h, i)) = todo.pop() {
+        if !seen.insert((h, i)) {
+            continue;
+        }
+        let Some(body) = crate::native::ir::body_of(g, cx.staged, h) else {
+            kept = true;
+            break;
+        };
+        let mut n = 0;
+        let mut b = &body;
+        while let Tm::Lam(_, _, _, x) = b {
+            n += 1;
+            b = x;
+        }
+        if i >= n || used_as_value(g, cx.staged, b, n - 1 - i, &mut todo) {
+            kept = true;
+            break;
+        }
+    }
+    cx.table.borrow_mut().kept.insert((f.0, j), kept);
+    kept
+}
+
+/// A known function put into a copy, with each variable in it bound to a
+/// known function (`known`) that it only calls or passes to parameters not
+/// used as values replaced by that function: the copy needs no closure for
+/// it, so the caller isn't made to keep one.
+fn settle(g: &Globals, cx: SpecCx, t: &Tm) -> Tm {
+    let un = |a: &Tm| known_var(a).map(|(_, f)| settle(g, cx, f));
+    match t {
+        Tm::App(..) => {
+            let mut args = Vec::new();
+            let mut h = t;
+            while let Tm::App(f, a, i, m) = h {
+                args.push((a, *i, *m));
+                h = f;
+            }
+            args.reverse();
+            let wk = &g.well_known;
+            let callee = match h {
+                Tm::Def(d) if !wk.class_fns.contains(d) && !wk.dict_fns.contains(d) => arity(g, cx.staged, *d).map(|n| (*d, n)),
+                _ => None,
+            };
+            let head = un(h).unwrap_or_else(|| settle(g, cx, h));
+            args.iter().enumerate().fold(head, |c, (j, (a, i, m))| {
+                let a = match callee {
+                    Some((d, n)) if *m != Mult::Zero && j < n && known_var(a).is_some() && !keeps(g, cx, d, j) => un(a).unwrap_or(Tm::Error),
+                    _ if known_var(a).is_some() => (***a).clone(),
+                    _ => settle(g, cx, a),
+                };
+                Tm::App(Rc::new(c), Rc::new(a), *i, *m)
+            })
+        }
+        _ if known_var(t).is_some() => t.clone(),
+        _ => t.map_sub(|x, _| settle(g, cx, x)),
+    }
+}
+
+/// Whether variable `v` is used as a value in `t` (`keeps`); the
+/// parameters it is passed to are added to `todo`.
+fn used_as_value(g: &Globals, staged: Option<&crate::stage::Staged>, t: &Tm, v: usize, todo: &mut Vec<(DefId, usize)>) -> bool {
+    match t {
+        Tm::Var(x) => *x == v,
+        Tm::App(..) => {
+            let mut args = Vec::new();
+            let mut h = t;
+            while let Tm::App(f, a, _, m) = h {
+                args.push((a, *m));
+                h = f;
+            }
+            args.reverse();
+            let wk = &g.well_known;
+            let callee = match h {
+                Tm::Def(d) if !wk.class_fns.contains(d) && !wk.dict_fns.contains(d) => arity(g, staged, *d).map(|n| (*d, n)),
+                _ => None,
+            };
+            let is_v = |a: &Tm| matches!(a, Tm::Var(x) if *x == v);
+            // A lambda applied binds its parameter to it: as a value.
+            if matches!(h, Tm::Lam(..)) && args.iter().any(|(a, _)| is_v(a)) {
+                return true;
+            }
+            if !is_v(h) && used_as_value(g, staged, h, v, todo) {
+                return true;
+            }
+            args.iter().enumerate().any(|(j, (a, m))| match callee {
+                _ if *m == Mult::Zero => false,
+                Some((d, n)) if j < n && is_v(a) => {
+                    todo.push((d, j));
+                    false
+                }
+                _ => used_as_value(g, staged, a, v, todo),
+            })
+        }
+        // An erased `let` (a type, a proof, `AT`) computes nothing.
+        Tm::Let(_, Mult::Zero, _, _, b) => used_as_value(g, staged, b, v + 1, todo),
+        // Another name for it.
+        Tm::Let(_, _, _, x, b) if matches!(**x, Tm::Var(y) if y == v) => {
+            used_as_value(g, staged, b, 0, todo) || used_as_value(g, staged, b, v + 1, todo)
+        }
+        _ => t.any_sub(|x, n| used_as_value(g, staged, x, v + n, todo)),
+    }
 }
 
 /// `t`, a function's body from its `i`th parameter on, with the picked
 /// parameters replaced by their arguments, and `m` parameters for those
 /// arguments' variables after them. The parameters stay.
-fn put_in(t: &Tm, pick: &[Option<&Tm>], m: usize, i: usize) -> Tm {
+fn put_in(t: &Tm, pick: &[Option<&Tm>], kept: &[bool], m: usize, i: usize) -> Tm {
     match t {
-        Tm::Lam(x, mu, ic, b) if i < pick.len() => Tm::Lam(x.clone(), *mu, *ic, Rc::new(put_in(b, pick, m, i + 1))),
-        _ => (0..m).fold(replace(t, pick, m, 0), |b, _| Tm::Lam("cap".into(), Mult::Many, crate::core::Icit::Expl, Rc::new(b))),
+        Tm::Lam(x, mu, ic, b) if i < pick.len() => Tm::Lam(x.clone(), *mu, *ic, Rc::new(put_in(b, pick, kept, m, i + 1))),
+        _ => (0..m).fold(replace(t, pick, kept, m, 0), |b, _| Tm::Lam("cap".into(), Mult::Many, crate::core::Icit::Expl, Rc::new(b))),
     }
 }
 
-fn replace(t: &Tm, pick: &[Option<&Tm>], m: usize, depth: usize) -> Tm {
+/// A kept parameter stays, marked as bound to its function (`known`).
+fn replace(t: &Tm, pick: &[Option<&Tm>], kept: &[bool], m: usize, depth: usize) -> Tm {
     let k = pick.len();
     match t {
         Tm::Var(v) if *v >= depth && v - depth < k => match pick[k - 1 - (v - depth)] {
+            Some(c) if kept[k - 1 - (v - depth)] => known(Tm::Var(v + m), crate::core::rename_free(c, 0, &|x| x + depth)),
             Some(c) => crate::core::rename_free(c, 0, &|x| x + depth),
             None => Tm::Var(v + m),
         },
         Tm::Var(v) if *v >= depth => Tm::Var(v + m),
-        _ => t.map_sub(|x, n| replace(x, pick, m, depth + n)),
+        _ => t.map_sub(|x, n| replace(x, pick, kept, m, depth + n)),
     }
 }
