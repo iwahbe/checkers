@@ -39,8 +39,10 @@ use super::lower::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// At most this many words returned: what the `tail` calling convention
-/// returns in registers on x86-64 and ARM64.
+/// At most this many words returned, on any machine. A program returns at
+/// most `Program::max_parts`: what the `tail` calling convention returns in
+/// registers on the machine it is compiled for (`codegen::return_words`:
+/// 8 on x86-64, 6 on ARM64).
 pub const MAX_PARTS: usize = 8;
 
 /// What is known of every value an expression can give.
@@ -102,13 +104,13 @@ impl Shape {
         }
     }
 
-    /// The layout to return or bind: as deep as fits in `MAX_PARTS` words,
-    /// if that is worth it (a constructor with fields, or a tuple).
-    fn fit(&self) -> Option<Shape> {
+    /// The layout to return or bind: as deep as fits in `max` words, if
+    /// that is worth it (a constructor with fields, or a tuple).
+    fn fit(&self, max: usize) -> Option<Shape> {
         if !matches!(self, Shape::Con(_) | Shape::Tuple(_)) {
             return None;
         }
-        let s = (1..=4).rev().map(|d| self.prune(d)).find(|s| s.size() <= MAX_PARTS)?;
+        let s = (1..=4).rev().map(|d| self.prune(d)).find(|s| s.size() <= max.min(MAX_PARTS))?;
         (s.size() >= 2).then_some(s)
     }
 
@@ -326,6 +328,8 @@ fn taken_apart(x: V, s: &Shape, e: &E) -> bool {
 struct Rw<'a> {
     workers: &'a HashMap<u32, (u32, Shape)>,
     next: V,
+    /// `Program::max_parts`.
+    max: usize,
 }
 
 impl Rw<'_> {
@@ -360,7 +364,7 @@ impl Rw<'_> {
         for s in &calls {
             j = j.join((*s).clone());
         }
-        let s = j.fit()?;
+        let s = j.fit(self.max)?;
         calls.iter().all(|c| **c == s).then_some((s, !built && !calls.is_empty()))
     }
 
@@ -566,6 +570,7 @@ fn find(up: &mut [usize], i: usize) -> usize {
 
 /// Rewrite the functions in `p.funcs[from..]`, adding `.parts` functions.
 pub fn program(p: &mut Program, from: usize) {
+    let max = p.max_parts;
     let end = p.funcs.len();
     let n = end - from;
     let local = |i: u32| (i as usize) >= from && (i as usize) < end;
@@ -605,7 +610,7 @@ pub fn program(p: &mut Program, from: usize) {
             shapes.insert(r, old.join(s.clone()));
         }
     }
-    let shapes: HashMap<usize, Shape> = shapes.into_iter().filter_map(|(r, s)| s.fit().map(|s| (r, s))).collect();
+    let shapes: HashMap<usize, Shape> = shapes.into_iter().filter_map(|(r, s)| s.fit(max).map(|s| (r, s))).collect();
     // The candidates, as if each returned parts; those some caller takes
     // apart are kept.
     let mut cands: HashMap<u32, (u32, Shape)> = p.workers.clone();
@@ -616,7 +621,7 @@ pub fn program(p: &mut Program, from: usize) {
     }
     let mut wanted = std::collections::HashSet::new();
     {
-        let rw = Rw { workers: &cands, next: 0 };
+        let rw = Rw { workers: &cands, next: 0, max };
         for f in &p.funcs[from..end] {
             wants(&rw, &f.body, &mut |g| {
                 if local(g) && cands.contains_key(&g) {
@@ -646,7 +651,7 @@ pub fn program(p: &mut Program, from: usize) {
         if workers.contains(&i) {
             continue;
         }
-        let mut rw = Rw { workers: &p.workers, next: p.funcs[i].nvars };
+        let mut rw = Rw { workers: &p.workers, next: p.funcs[i].nvars, max };
         let body = std::mem::replace(&mut p.funcs[i].body, E::Erased);
         let mut body = rw.local(body, true);
         if p.funcs[i].rets > 1 {

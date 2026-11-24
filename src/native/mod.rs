@@ -136,11 +136,34 @@ fn field_template(g: &Globals, c: crate::core::ConId, k: usize, fns: &[(crate::c
     go(&crate::core::desc_of(g, &v), np)
 }
 
-/// Closure-convert and reference-count the program.
-fn prepare(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId) -> lower::Program {
+/// Closure-convert and reference-count the program, for a machine whose
+/// functions return at most `max_parts` words (`codegen::return_words`).
+fn prepare(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId, max_parts: usize) -> lower::Program {
     let mut p = lower::lower(g, staged, main);
+    p.max_parts = max_parts;
     rc_new(g, &mut p);
     p
+}
+
+/// Code generation for this machine, as `ckc build` writes it.
+fn host_isa() -> Result<std::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>, String> {
+    cranelift_native::builder()?.finish(flags()?).map_err(|e| e.to_string())
+}
+
+/// The settings for compiled programs: optimized, position independent.
+fn flags() -> Result<settings::Flags, String> {
+    let mut fb = settings::builder();
+    fb.set("opt_level", "speed").map_err(|e| e.to_string())?;
+    fb.set("is_pic", "true").map_err(|e| e.to_string())?;
+    // Cranelift's tail calls rely on frame pointers.
+    fb.set("preserve_frame_pointers", "true").map_err(|e| e.to_string())?;
+    Ok(settings::Flags::new(fb))
+}
+
+/// The most words a function returns in registers on this machine.
+pub fn host_return_words() -> usize {
+    static WORDS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *WORDS.get_or_init(|| host_isa().map_or(1, |isa| codegen::return_words(&*isa)))
 }
 
 /// Reference counting for the functions added since the last call.
@@ -246,7 +269,7 @@ fn dump(e: &lower::E, d: usize) -> String {
 
 /// Compile in memory and run `main` (`checkers run`): the exit code.
 pub fn run(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId, args: &[String], threads: usize) -> i32 {
-    let p = prepare(g, staged, main);
+    let p = prepare(g, staged, main, host_return_words());
     let desc = descriptor(g, &p);
     let module = jit_module();
     let mut gen = codegen::Gen::new(module, p, g);
@@ -275,27 +298,27 @@ pub fn run(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId, args
     code
 }
 
-/// Write an executable (`checkers build`).
-pub fn build(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId, out: &std::path::Path) -> Result<(), String> {
-    let p = prepare(g, staged, main);
+/// The program as an object file for `isa`, with a C `main`.
+pub fn object(
+    g: &Globals,
+    staged: Option<&crate::stage::Staged>,
+    main: DefId,
+    isa: std::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>,
+) -> Result<Vec<u8>, String> {
+    let p = prepare(g, staged, main, codegen::return_words(&*isa));
     let desc = descriptor(g, &p);
-    let mut fb = settings::builder();
-    fb.set("opt_level", "speed").map_err(|e| e.to_string())?;
-    fb.set("is_pic", "true").map_err(|e| e.to_string())?;
-    // Cranelift's tail calls rely on frame pointers.
-    fb.set("preserve_frame_pointers", "true").map_err(|e| e.to_string())?;
-    let isa = cranelift_native::builder()
-        .map_err(|e| e.to_string())?
-        .finish(settings::Flags::new(fb))
-        .map_err(|e| e.to_string())?;
     let ob = cranelift_object::ObjectBuilder::new(isa, "checkers_program", cranelift_module::default_libcall_names())
         .map_err(|e| e.to_string())?;
     let module = cranelift_object::ObjectModule::new(ob);
     let mut gen = codegen::Gen::new(module, p, g);
     gen.define_new();
     gen.define_c_main(&desc);
-    let product = gen.m.finish();
-    let bytes = product.emit().map_err(|e| e.to_string())?;
+    gen.m.finish().emit().map_err(|e| e.to_string())
+}
+
+/// Write an executable (`checkers build`).
+pub fn build(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId, out: &std::path::Path) -> Result<(), String> {
+    let bytes = object(g, staged, main, host_isa()?)?;
     let dir = std::env::temp_dir().join(format!("checkers-build-{}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let obj = dir.join("program.o");
@@ -348,4 +371,46 @@ fn runtime_library() -> Option<std::path::PathBuf> {
         }
     }
     best.map(|(_, p)| p)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MACHINES: [(&str, usize); 4] =
+        [("x86_64-unknown-linux-gnu", 8), ("x86_64-apple-darwin", 8), ("aarch64-unknown-linux-gnu", 6), ("aarch64-apple-darwin", 6)];
+
+    fn isa(triple: &str) -> std::sync::Arc<dyn cranelift_codegen::isa::TargetIsa> {
+        cranelift_codegen::isa::lookup_by_name(triple).expect(triple).finish(flags().unwrap()).expect(triple)
+    }
+
+    /// Each machine returns as many words in registers as its `tail`
+    /// calling convention has registers for, and no more.
+    #[test]
+    fn return_words_by_machine() {
+        for (triple, n) in MACHINES {
+            assert_eq!(codegen::return_words(&*isa(triple)), n, "{triple}");
+        }
+    }
+
+    /// Results returned as their parts, six to eight words wide
+    /// (tests/run/unboxed_wide.ck), compile for every machine: none returns
+    /// more words than the machine has registers for, and each returns as
+    /// many as it can.
+    #[test]
+    fn wide_results_compile_for_every_machine() {
+        crate::with_big_stack(|| {
+            let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/run/unboxed_wide.ck");
+            let text = std::fs::read_to_string(path).unwrap();
+            let dir = std::path::Path::new(path).parent().unwrap();
+            let (e, main, staged, report) = crate::ready_to_run("unboxed_wide.ck", &text, dir, false).map_err(|r| r.report).unwrap();
+            assert_eq!(report, "");
+            for (triple, n) in MACHINES {
+                let p = prepare(&e.g, Some(&staged), main, n);
+                let widest = p.funcs.iter().map(|f| f.rets).max().unwrap();
+                assert_eq!(widest, n, "{triple}: the widest result");
+                object(&e.g, Some(&staged), main, isa(triple)).unwrap_or_else(|m| panic!("{triple}: {m}"));
+            }
+        })
+    }
 }
