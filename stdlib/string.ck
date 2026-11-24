@@ -394,10 +394,18 @@ export enum NumberError
 
 # A whole number in decimal, with `-` before it if it is negative: what
 # `display n []` writes, and also `-0`, which is `0`, and leading zeros
-# (`007` is `7`). As many digits as there are are read.
+# (`007` is `7`). As many digits as there are are read. Tokens whose first
+# is a digit are always read, as a number that isn't negative.
 instance Parsable Int Int
     type Error = NumberError
-    fn parse xs a t
+    fn parse xs a t -> r : Seq s, Token (Seq.Elem s) Int, xs~s, a~ghost Type, t~ghost Type,
+                           r~Result (Int, s) NumberError, consumed r xs,
+                           match Seq.uncons xs
+                               Some (x, _) ->
+                                   match r
+                                       Ok (n, _) -> char.is_digit (token x Int) implies n >= 0
+                                       Err _     -> not (char.is_digit (token x Int))
+                               None        -> True
         match xs
             x :: rest ->
                 if token x Int == '-'
@@ -487,9 +495,18 @@ lemma natural_digits n post : n~Nat, post~Bytes, len post == 0 or not (char.is_d
 
 # Where the digits of `b` from `i` on end: the first index from `i` whose
 # byte isn't a digit, or the end.
-fn digits_end b i -> k : b~Bytes, i~Nat, i <= len b, k~Nat, i <= k, k <= len b
+export transparent fn digits_end b i -> k : b~Bytes, i~Nat, i <= len b, k~Nat, i <= k, k <= len b
     decreasing len b - i
     if i < len b and char.is_digit b[i] then digits_end b (i + 1) else i
+
+# What `Parsable.parse` leaves of bytes that start with a digit: the bytes
+# after the digits.
+export lemma parse_digits b : b~Bytes, len b > 0, char.is_digit b[0]
+    ensures match Parsable.parse b Int Int
+        Ok (_, rest) -> rest == array.slice b (digits_end b 0) (len b)
+        Err _        -> False
+    proof
+        have natural_bytes b
 
 # `natural` on bytes: the digits from the start up to `digits_end b 0`, if
 # there is one, and the bytes after them.
