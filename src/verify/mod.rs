@@ -434,6 +434,10 @@ fn ask_all(module: &str, texts: &[Option<String>]) -> Vec<Option<Answer>> {
     let workers = std::thread::available_parallelism().map_or(2, |n| n.get()).min(8);
     let next = std::sync::atomic::AtomicUsize::new(0);
     let results: Vec<std::sync::Mutex<Option<Answer>>> = texts.iter().map(|_| std::sync::Mutex::new(None)).collect();
+    // A query asked again in the same batch waits for the first: in
+    // parallel, whether its answer were reused would depend on timing.
+    let mut seen = std::collections::HashSet::new();
+    let again: Vec<bool> = texts.iter().map(|t| t.as_ref().is_some_and(|t| !seen.insert(t.as_str()))).collect();
     std::thread::scope(|s| {
         for _ in 0..workers {
             // Z3 recurses deeply on large terms: give it a big stack.
@@ -441,7 +445,7 @@ fn ask_all(module: &str, texts: &[Option<String>]) -> Vec<Option<Answer>> {
             let spawned = worker.spawn_scoped(s, || loop {
                 let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let Some(t) = texts.get(i) else { break };
-                if let Some(t) = t {
+                if let (Some(t), false) = (t, again[i]) {
                     let a = ask(module, t);
                     *results[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(a);
                 }
@@ -451,6 +455,11 @@ fn ask_all(module: &str, texts: &[Option<String>]) -> Vec<Option<Answer>> {
             }
         }
     });
+    for (i, t) in texts.iter().enumerate() {
+        if let (Some(t), true) = (t, again[i]) {
+            *results[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(ask(module, t));
+        }
+    }
     results.into_iter().map(|m| m.into_inner().unwrap_or_else(|e| e.into_inner())).collect()
 }
 
@@ -837,10 +846,28 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
                 }
             }
         }
+        // Each measure's calls it wasn't shown smaller at, and of those the
+        // one to name: first in the group's preference (#124), the call
+        // losing the parameter recursed on.
+        let inside = |a: Span, b: Span| a == b || b.start <= a.start && a.end <= b.end;
+        let unproved: Vec<Vec<Span>> = obs
+            .iter()
+            .enumerate()
+            .map(|(ci, os)| {
+                let ans = &answers[base[ci]..base[ci] + os.len()];
+                os.iter().zip(ans).filter(|(_, a)| !matches!(a, Some(Answer::Unsat))).map(|(o, _)| o.span).collect()
+            })
+            .collect();
+        let pick = |fails: &[Span]| {
+            gr.prefer
+                .iter()
+                .find_map(|p| fails.iter().find(|f| inside(**f, *p) || inside(*p, **f)))
+                .or(fails.first())
+                .copied()
+        };
         let mut tried: Vec<(String, Option<Span>)> = Vec::new();
-        for (ci, os) in obs.iter().enumerate() {
-            let ans = &answers[base[ci]..base[ci] + os.len()];
-            let failed = doomed[ci].or_else(|| os.iter().zip(ans).find(|(_, a)| !matches!(a, Some(Answer::Unsat))).map(|(o, _)| o.span));
+        for (ci, fails) in unproved.iter().enumerate() {
+            let failed = doomed[ci].or_else(|| pick(fails));
             tried.push((combos[ci].iter().map(|m| format!("`{}`", m.1)).collect::<Vec<_>>().join(" and "), failed));
         }
         let first_call = gr.calls.first().map(|c| c.ob.span);
@@ -854,7 +881,17 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
                 }
             }
             None => {
-                let Some(at) = first_call else { continue };
+                // At a call no measure was shown smaller at: for the measures
+                // that leave the fewest calls unproved, the one `pick` names.
+                let fewest = (0..obs.len())
+                    .filter(|ci| doomed[*ci].is_none() && !obs[*ci].is_empty())
+                    .min_by_key(|ci| unproved[*ci].len());
+                let Some(at) = fewest.and_then(|ci| pick(&unproved[ci])).or_else(|| gr.prefer.first().and_then(|p| {
+                    gr.calls.iter().map(|c| c.ob.span).find(|s| inside(*s, *p) || inside(*p, *s))
+                })).or(first_call)
+                else {
+                    continue;
+                };
                 let names: Vec<String> = gr.members.iter().map(|d| format!("`{}`", e.g.defs[d.0 as usize].name)).collect();
                 let src = e.sources.get(user);
                 let line = |sp: Span| src.map(|f| f.line_col(sp.start).0).unwrap_or(0);
@@ -977,6 +1014,7 @@ fn describe(e: &Elab, o: &Obligation) -> String {
             format!("postcondition of `{func}`: {} (for `{text}`, line {line})", o.text)
         }
         ObKind::Invariant { con } => format!("invariant of `{con}`: {}", o.text),
+        ObKind::TypeParams { written, .. } => format!("`{written}` is a type: {}", o.text),
         ObKind::CownInvariant { alias } => format!("cown contents stay `{alias}`: {}", o.text),
         ObKind::Refined { alias, value } => format!("`{value}` is a `{alias}`: {}", o.text),
         ObKind::Weaken { sub, sup, .. } => format!("every `{sub}` is a `{sup}`: {}", o.text),
@@ -985,6 +1023,10 @@ fn describe(e: &Elab, o: &Obligation) -> String {
         ObKind::Div => format!("divisor of `{}` is not zero", o.text),
         ObKind::Index => format!("index in bounds: {}", o.text),
         ObKind::Lemma { name } => format!("lemma `{name}`: {}", o.text),
+        ObKind::ClassType { name, given } => format!("every `{given}` satisfies `{name}`: {}", o.text),
+        ObKind::Refines { class, member, pre: true, .. } => format!("`{member}` requires no more than class `{class}`: {}", o.text),
+        ObKind::Refines { class, member, pre: false, .. } => format!("`{member}` promises what class `{class}` does: {}", o.text),
+        ObKind::AtAlias { class, alias, member, .. } => format!("`{class}` at `{alias}`: `{member}` gives `{alias}`s: {}", o.text),
         ObKind::Auto => format!("auto: {}", o.text),
         ObKind::Have => format!("have {}", o.text),
         ObKind::Uncovered { case, binding: false } => format!("`match` needs no arm for {case}: it can't occur"),
@@ -1037,6 +1079,11 @@ fn headline(o: &Obligation) -> (String, String, String) {
             format!("cannot prove `{}`, required to build `{con}`", o.text),
             format!("`{con}` requires `{}`", o.text),
             "check the value before building it, e.g. with an `if`".into(),
+        ),
+        ObKind::TypeParams { ty, written } => (
+            format!("cannot prove `{}`, required to write the type `{written}`", o.text),
+            format!("`{ty}` requires `{}`", o.text),
+            "give arguments for which it holds, or require it where the type is written: in the function's preconditions, or in a condition on the enclosing type's parameters".into(),
         ),
         ObKind::CownInvariant { alias } => (
             format!("cannot prove `{}`, the invariant of a cown holding `{alias}`", o.text),
@@ -1096,6 +1143,40 @@ fn headline(o: &Obligation) -> (String, String, String) {
             format!("`{}`", o.text),
             "add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs".into(),
         ),
+        ObKind::ClassType { name, given } => (
+            format!("cannot prove that every `{given}` satisfies `{}`, as `{name}` requires", o.text),
+            format!("`{}` is `{given}` here", name.rsplit('.').next().unwrap_or(name)),
+            format!("give `{}` a type whose values all satisfy it", name.rsplit('.').next().unwrap_or(name)),
+        ),
+        ObKind::Refines { class, member, pre: true, .. } => (
+            format!("`{member}` requires `{}`, which class `{class}` doesn't", o.text),
+            "not implied by the class's preconditions".into(),
+            format!("a call through class `{class}` needn't establish it: remove it, or check it in the body"),
+        ),
+        ObKind::Refines { class, member, pre: false, .. } => (
+            format!("`{member}` doesn't promise `{}`, which class `{class}` does", o.text),
+            format!("`{}` doesn't follow from this signature", o.text),
+            format!("promise at least what class `{class}` does: add `{}` to this signature, or a condition implying it", o.text),
+        ),
+        ObKind::AtAlias { class, alias, base, member, param: Some(x), .. } => (
+            format!("`{class}` at `{alias}` runs `{base}`'s instance, whose `{member}` may give `{x}` a value that isn't a `{alias}`"),
+            format!("`{class}` is used at `{alias}` here"),
+            format!("use `{base}` here, with a function that accepts every `{base}`; or give `instance {class} {base}`'s `{member}` a signature in which `{x}` is given only `{alias}`s"),
+        ),
+        ObKind::AtAlias { class, alias, base, member, call: Some(c), param: None, inside } => (
+            if *inside {
+                format!("cannot prove `{}` of the `{alias}`s inside `{c}`", o.text)
+            } else {
+                format!("cannot prove that `{c}` is a `{alias}` (`{}`)", o.text)
+            },
+            format!("`{class}` at `{alias}` runs `{base}`'s instance, and its `{member}` isn't shown to give a `{alias}` here"),
+            format!("use `{base}` here and check the result where a `{alias}` is needed; or promise it in a signature of `instance {class} {base}`'s `{member}`"),
+        ),
+        ObKind::AtAlias { class, alias, base, member, call: None, param: None, .. } => (
+            format!("`{class}` at `{alias}` runs `{base}`'s instance, whose `{member}` isn't shown to return a `{alias}` (`{}`)", o.text),
+            format!("`{class}` is used at `{alias}` here, by code that may call `{member}` with any arguments"),
+            format!("use `{base}` here instead of `{alias}`; or promise it, for every argument, in a signature of `instance {class} {base}`'s `{member}`"),
+        ),
         ObKind::Auto => (
             format!("`auto` cannot prove `{}`", o.text),
             "the goal here".into(),
@@ -1147,8 +1228,16 @@ fn merge_uncovered(mut d: Diagnostic, cases: &[String]) -> Diagnostic {
 
 fn failed(e: &Elab, o: &Obligation, model: Option<String>) -> Diagnostic {
     let (msg, label, help) = headline(o);
-    let code = if matches!(o.kind, ObKind::Uncovered { .. }) { "E0240" } else { "E0450" };
+    let code = match o.kind {
+        ObKind::Uncovered { .. } => "E0240",
+        ObKind::Refines { .. } => "E0371",
+        ObKind::AtAlias { .. } => "E0456",
+        _ => "E0450",
+    };
     let mut d = Diagnostic::error(code, msg, o.span).with_label(label);
+    if let ObKind::Refines { class, declared, .. } = &o.kind {
+        d = d.with_note(format!("class `{class}` declares `{declared}`"));
+    }
     if let ObKind::Weaken { .. } = &o.kind {
         d = d.with_note(format!("it needs `{}`", o.text));
     }
@@ -1169,10 +1258,9 @@ fn failed(e: &Elab, o: &Obligation, model: Option<String>) -> Diagnostic {
     crate::elab::collect_sealed(&quote(&e.g, lvl, &o.goal), &e.g, &o.module, &mut sealed);
     let sealed_note = sealed.first().map(|d| {
         let info = &e.g.defs[d.0 as usize];
-        format!(
-            "`{}` is sealed in `{}`: here the prover knows only its postconditions and the lemmas you bring in with `have`",
-            info.name, info.module
-        )
+        // A builtin has no body for the prover to see, wherever it is used.
+        let what = if info.body.is_none() { format!("is built into `{}`", info.module) } else { format!("is sealed in `{}`", info.module) };
+        format!("`{}` {what}: here the prover knows only its postconditions and the lemmas you bring in with `have`", info.name)
     });
     match model.filter(|m| !m.is_empty()) {
         Some(m) if sealed_note.is_none() => d = d.with_note(format!("counterexample: {m}")),

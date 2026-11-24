@@ -193,6 +193,7 @@ module counter
 import std.system (System, ExitCode)
 import std.cown (Cown)
 import std.future (Future)
+import std.string (format)
 import std.terminal
 
 # A cown owns a value. Behaviours (`when`) that name it run one at a time,
@@ -203,7 +204,7 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     when n = hits using sched
         n + 1
     when n = hits using sched
-        terminal.print_line ("hits: " ++ format n) term
+        terminal.print_line format"hits: {n}" term
         n
     let a = future.fork sched $ \_ ->
         20

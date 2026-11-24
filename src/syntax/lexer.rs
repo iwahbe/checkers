@@ -1,6 +1,6 @@
 //! Lexer: characters → raw tokens → logical lines with INDENT/DEDENT (§9.1, D23).
 
-use super::token::{Kw, Op, Tok, Token};
+use super::token::{Kw, Op, TemplatePart, Tok, Token};
 use crate::diag::Diagnostic;
 use crate::source::Span;
 
@@ -14,7 +14,7 @@ struct Raw {
 }
 
 pub fn lex(text: &str) -> (Vec<Token>, Vec<Diagnostic>) {
-    let mut lx = RawLexer { src: text.as_bytes(), text, pos: 0, line_start: 0, diags: Vec::new(), comments: Vec::new() };
+    let mut lx = RawLexer { src: text.as_bytes(), text, pos: 0, line_start: 0, diags: Vec::new(), comments: Vec::new(), last_lname_end: None };
     let raws = lx.run();
     let mut diags = lx.diags;
     let toks = layout(raws, text.len(), &mut diags);
@@ -33,7 +33,7 @@ pub fn lex_with_cursor(text: &str, at: usize) -> Option<(Vec<Token>, Vec<Diagnos
     if at > text.len() || !text.is_char_boundary(at) {
         return None;
     }
-    let mut lx = RawLexer { src: text.as_bytes(), text, pos: 0, line_start: 0, diags: Vec::new(), comments: Vec::new() };
+    let mut lx = RawLexer { src: text.as_bytes(), text, pos: 0, line_start: 0, diags: Vec::new(), comments: Vec::new(), last_lname_end: None };
     let mut raws = lx.run();
     if lx.comments.iter().any(|c| (c.start as usize) < at && at <= c.end as usize) {
         return None;
@@ -72,7 +72,7 @@ pub fn lex_with_cursor(text: &str, at: usize) -> Option<(Vec<Token>, Vec<Diagnos
 /// The tokens as written (no layout tokens) and the comments, for
 /// highlighting (§15.5).
 pub fn tokens_and_comments(text: &str) -> (Vec<(Tok, Span)>, Vec<Span>) {
-    let mut lx = RawLexer { src: text.as_bytes(), text, pos: 0, line_start: 0, diags: Vec::new(), comments: Vec::new() };
+    let mut lx = RawLexer { src: text.as_bytes(), text, pos: 0, line_start: 0, diags: Vec::new(), comments: Vec::new(), last_lname_end: None };
     let raws = lx.run();
     (raws.into_iter().map(|r| (r.tok, r.span)).collect(), lx.comments)
 }
@@ -84,6 +84,9 @@ struct RawLexer<'a> {
     line_start: usize,
     diags: Vec<Diagnostic>,
     comments: Vec<Span>,
+    /// Where the last token ended, if it was a lower-case name: a `"`
+    /// there starts a template (#132).
+    last_lname_end: Option<usize>,
 }
 
 impl<'a> RawLexer<'a> {
@@ -166,6 +169,12 @@ impl<'a> RawLexer<'a> {
 
     /// Lex one token starting at `self.pos`. Returns None after reporting an error.
     fn token(&mut self) -> Option<Tok> {
+        let tok = self.token_inner();
+        self.last_lname_end = matches!(tok, Some(Tok::LName(_))).then_some(self.pos);
+        tok
+    }
+
+    fn token_inner(&mut self) -> Option<Tok> {
         let c = self.peek().unwrap();
         let start = self.pos;
         // Prefixed literals: c'…' and b"…"
@@ -206,6 +215,10 @@ impl<'a> RawLexer<'a> {
         }
         if c == b'"' {
             self.pos += 1;
+            // Glued to a name before it: a template (#132).
+            if self.last_lname_end == Some(start) {
+                return self.template_lit(start);
+            }
             return self.string_lit(start, false).map(|b| Tok::Str(String::from_utf8(b).unwrap()));
         }
         if c >= 0x80 {
@@ -492,6 +505,137 @@ impl<'a> RawLexer<'a> {
     }
 }
 
+impl<'a> RawLexer<'a> {
+    /// A template, after its opening quote (#132): text as in a string,
+    /// `{{` and `}}` for braces, and holes `{…}` lexed as tokens.
+    fn template_lit(&mut self, start: usize) -> Option<Tok> {
+        let mut parts = Vec::new();
+        let mut text = Vec::new();
+        let mut text_start = self.pos;
+        let mut ok = true;
+        let flush = |parts: &mut Vec<TemplatePart>, text: &mut Vec<u8>, from: usize, to: usize| {
+            if !text.is_empty() {
+                parts.push(TemplatePart::Text(String::from_utf8(std::mem::take(text)).unwrap(), Span::new(from, to)));
+            }
+        };
+        loop {
+            match self.peek() {
+                None | Some(b'\n') => {
+                    self.err("unterminated string literal", start, self.pos);
+                    return None;
+                }
+                Some(b'"') => {
+                    flush(&mut parts, &mut text, text_start, self.pos);
+                    self.pos += 1;
+                    break;
+                }
+                Some(b'\\') => {
+                    self.pos += 1;
+                    match self.escape(LitKind::String) {
+                        Some(v) => {
+                            let mut buf = [0u8; 4];
+                            text.extend_from_slice(char::from_u32(v).unwrap().encode_utf8(&mut buf).as_bytes());
+                        }
+                        None => ok = false,
+                    }
+                }
+                Some(b'{') if self.peek_at(1) == Some(b'{') => {
+                    text.push(b'{');
+                    self.pos += 2;
+                }
+                Some(b'}') if self.peek_at(1) == Some(b'}') => {
+                    text.push(b'}');
+                    self.pos += 2;
+                }
+                Some(b'}') => {
+                    self.diags.push(
+                        Diagnostic::error("E0005", "a `}` in a template is written `}}`", Span::new(self.pos, self.pos + 1))
+                            .with_label("no hole is open here")
+                            .with_help("write `}}` for the character `}`"),
+                    );
+                    self.pos += 1;
+                    ok = false;
+                }
+                Some(b'{') => {
+                    flush(&mut parts, &mut text, text_start, self.pos);
+                    let hole = self.hole()?;
+                    parts.push(hole);
+                    text_start = self.pos;
+                }
+                Some(c) => {
+                    text.push(c);
+                    self.pos += 1;
+                }
+            }
+        }
+        self.last_lname_end = None;
+        ok.then_some(Tok::Template(parts))
+    }
+
+    /// A template's hole, at its `{`: the tokens up to the `}` that closes
+    /// it. None if the line ends first.
+    fn hole(&mut self) -> Option<TemplatePart> {
+        let open = self.pos;
+        self.pos += 1;
+        self.last_lname_end = None;
+        let mut toks = Vec::new();
+        let mut depth = 0usize;
+        let mut space_before = false;
+        let unclosed = |lx: &mut Self| {
+            lx.diags.push(
+                Diagnostic::error("E0006", "this hole is never closed", Span::new(open, open + 1))
+                    .with_label("the hole opened here")
+                    .with_help("close it with `}`, or write `{{` for the character `{`"),
+            );
+            None
+        };
+        loop {
+            match self.peek() {
+                None | Some(b'\n') => return unclosed(self),
+                Some(b' ' | b'\t' | b'\r') => {
+                    self.pos += 1;
+                    space_before = true;
+                    self.last_lname_end = None;
+                    continue;
+                }
+                Some(b'}') if depth == 0 => {
+                    self.pos += 1;
+                    return Some(TemplatePart::Hole(toks, Span::new(open, self.pos)));
+                }
+                Some(b'#') => {
+                    // Not a comment: the hole would never close.
+                    self.diags.push(
+                        Diagnostic::error("E0001", "a comment can't be written inside a hole", Span::new(self.pos, self.pos + 1))
+                            .with_help("close the hole with `}` first; a comment ends the line"),
+                    );
+                    self.pos += 1;
+                    toks.push(Token { tok: Tok::Error, span: Span::new(self.pos - 1, self.pos), space_before });
+                    space_before = false;
+                    continue;
+                }
+                _ => {}
+            }
+            let start = self.pos;
+            let errors = self.diags.len();
+            let tok = self.token();
+            // A string in the hole that runs to the end of the line: the
+            // hole is what was left open (`"a{x"`).
+            let unterminated = self.diags[errors..].iter().any(|d| d.message.starts_with("unterminated"));
+            if unterminated && matches!(self.peek(), None | Some(b'\n')) {
+                self.diags.truncate(errors);
+                return unclosed(self);
+            }
+            match tok {
+                Some(Tok::LParen | Tok::LBracket | Tok::LBrace) => depth += 1,
+                Some(Tok::RParen | Tok::RBracket | Tok::RBrace) => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+            toks.push(Token { tok: tok.unwrap_or(Tok::Error), span: Span::new(start, self.pos), space_before });
+            space_before = false;
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LitKind {
     Byte,
@@ -546,10 +690,14 @@ fn continues_before(t: &Tok) -> bool {
 
 fn layout(raws: Vec<Raw>, eof: usize, diags: &mut Vec<Diagnostic>) -> Vec<Token> {
     let mut out: Vec<Token> = Vec::with_capacity(raws.len() + raws.len() / 4);
-    let mut indents: Vec<usize> = vec![0];
+    // Open blocks: each one's column, and whether a continuation line
+    // opened it (the block is indented past that line).
+    let mut indents: Vec<(usize, bool)> = vec![(0, false)];
     // Open brackets: the closer, where it opened, and its line's indentation.
     let mut open: Vec<(Tok, Span, usize)> = Vec::new();
     let mut line_col = 0;
+    // The last physical line: its column, and whether it continued a logical line.
+    let (mut phys_col, mut phys_cont) = (0, false);
     let mut have_line = false;
     for raw in raws {
         // A line at or left of the first open bracket's line, starting
@@ -584,21 +732,29 @@ fn layout(raws: Vec<Raw>, eof: usize, diags: &mut Vec<Diagnostic>) -> Vec<Token>
                 }
                 line_col = raw.col;
                 let here = Span::empty_at(raw.span.start);
-                let top = *indents.last().unwrap();
+                let top = indents.last().unwrap().0;
                 if raw.col > top {
                     if !have_line {
                         diags.push(Diagnostic::error("E0002", "unexpected indentation at start of file", raw.span));
                     } else {
-                        indents.push(raw.col);
+                        indents.push((raw.col, phys_cont && raw.col > phys_col));
                         out.push(Token { tok: Tok::Indent, span: here, space_before: true });
                     }
                 } else if raw.col < top {
-                    let mut last = top;
-                    while raw.col < *indents.last().unwrap() {
+                    let mut last = (top, false);
+                    while raw.col < indents.last().unwrap().0 {
                         last = indents.pop().unwrap();
                         out.push(Token { tok: Tok::Dedent, span: here, space_before: true });
                     }
-                    if raw.col != *indents.last().unwrap() {
+                    if raw.col != indents.last().unwrap().0 && last.1 {
+                        // Back out of a block a continuation line opened (a
+                        // `match` among a signature's constraints), to a
+                        // column inside its logical line's block: the line
+                        // opens a new block of that logical line (its body).
+                        out.push(Token { tok: Tok::Newline, span: here, space_before: false });
+                        out.push(Token { tok: Tok::Indent, span: here, space_before: true });
+                        indents.push((raw.col, false));
+                    } else if raw.col != indents.last().unwrap().0 {
                         diags.push(
                             Diagnostic::error("E0003", "unindent does not match any outer indentation level", raw.span)
                                 .with_label("this line's indentation"),
@@ -609,6 +765,13 @@ fn layout(raws: Vec<Raw>, eof: usize, diags: &mut Vec<Diagnostic>) -> Vec<Token>
                     }
                 }
             }
+            phys_cont = cont;
+        } else if raw.first_on_line {
+            // Inside brackets: continues its logical line.
+            phys_cont = true;
+        }
+        if raw.first_on_line {
+            phys_col = raw.col;
         }
         match raw.tok {
             Tok::LParen => open.push((Tok::RParen, raw.span, line_col)),
@@ -669,6 +832,8 @@ mod tests {
         assert_eq!(kinds("(a\nb)\n"), "( a b ) NL EOF");
         // trailing -> opens a block
         assert_eq!(kinds("p ->\n    e\n"), "p -> NL IN e NL DE EOF");
+        // a block a continuation line opens, then the logical line's own block
+        assert_eq!(kinds("f a,\n  b ->\n    c\n d\n"), "f a , b -> NL IN c NL DE NL IN d NL DE EOF");
         // a leading operator at the logical line's own indentation starts a line
         assert_eq!(kinds("0 -> a\n-1 -> b\n"), "0 -> a NL - 1 -> b NL EOF");
     }

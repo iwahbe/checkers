@@ -1,0 +1,9 @@
+error[E0450]: cannot prove `r >= 0`, the postcondition of `generic`
+  --> instance_refined_generic.ck:15:43
+   |
+15 | fn generic xs -> r : Size a, xs~a, r~Int, r >= 0
+   |                                           ^^^^^^ promised here
+   = note: for the value returned on line 16: `Size.size xs`
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+instance_refined_generic.ck: 1 error, 0 warnings

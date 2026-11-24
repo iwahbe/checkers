@@ -7,9 +7,10 @@ import std.system (System, ExitCode)
 import std.terminal (Term)
 import std.terminal
 import std.array
+import std.string (debug)
 
 fn show xs term -> r : xs~Array a, term~Term, r~Unit
-    terminal.print_line (format (array.to_list xs) ++ " as " ++ format xs) term
+    terminal.print_line (debug (array.to_list xs) ++ " as " ++ debug xs) term
 
 # Generic: the element type is a parameter, so its layout comes from the
 # caller (D133).
@@ -91,7 +92,7 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     show (array.set (array.from_list [1, 2, 3]) 2 7) t
     let wide = widen b"ab"
     show (array.set wide 0 300) t
-    terminal.print_line (format (wide == array.from_list [97, 98])) t
-    terminal.print_line (format (array.reverse b"abc" == b"cba")) t
-    terminal.print_line (format (len (array.concat [u8, u8])) ++ " " ++ (if 2 < len u8 then format u8[2] else "?")) t
+    terminal.print_line (debug (wide == array.from_list [97, 98])) t
+    terminal.print_line (debug (array.reverse b"abc" == b"cba")) t
+    terminal.print_line (debug (len (array.concat [u8, u8])) ++ " " ++ (if 2 < len u8 then debug u8[2] else "?")) t
     Success

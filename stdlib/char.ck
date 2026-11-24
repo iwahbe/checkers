@@ -24,6 +24,10 @@ export transparent fn from_surrogates hi lo -> c : hi~Nat, lo~Nat, 0xD800 <= hi,
 
 # ── Classes of characters ───────────────────────────────────────────────────
 
+# Whether `c` is an ASCII digit, `0` to `9`: a character, or a byte.
+export transparent fn is_digit c : c~Int
+    '0' <= c and c <= '9'
+
 # Whether `c` is punctuation or a symbol: general category P or S, what
 # CommonMark calls a Unicode punctuation character.
 export fn is_punctuation c : c~Char

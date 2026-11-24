@@ -5,8 +5,9 @@ module too_large_count
 import std.system (System, ExitCode)
 import std.terminal
 import std.array
+import std.string (debug)
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let xs = array.repeat 1000000000000000000000000000000 7
-    terminal.print_line (format (len xs)) sys.term
+    terminal.print_line (debug (len xs)) sys.term
     Success

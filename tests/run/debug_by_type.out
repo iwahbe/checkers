@@ -1,0 +1,17 @@
+-- stdout
+Meters 3
+Box (Meters 5)
+[Some (Meters 7), Some (Meters 7)]
+(Meters 1, Box "x")
+[Meters 1, Meters 2]
+Hidden (Box 4)
+["text", "é"]
+b"text"
+[1, 2]
+"an int"
+Some "x"
+(ByField True "y", ByField False 2)
+[ByParam "p"]
+<Bag {"a", "a", "b"}>
+-- stderr
+-- exit 0

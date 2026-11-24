@@ -1,0 +1,10 @@
+error[E0450]: cannot prove `r != xs`, the postcondition of `wrong`
+ --> later_param_class_precondition.ck:6:103
+  |
+6 | fn wrong f xs -> r : f~(ys~List Int -> List Int, Seq.size ys < Seq.size xs), xs~List Int, r~List Int, r != xs
+  |                                                                                                       ^^^^^^^ promised here
+  = note: for the value returned on line 9: `f t`
+  = note: counterexample: xs = [2]
+  = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+later_param_class_precondition.ck: 1 error, 0 warnings

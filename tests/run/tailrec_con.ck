@@ -6,6 +6,7 @@ import std.system (System, ExitCode)
 import std.terminal (Term)
 import std.terminal
 import std.list (length)
+import std.string (debug)
 
 fn build n -> r : n~Nat, r~List Nat
     if n == 0 then [] else n :: build (n - 1)
@@ -31,7 +32,7 @@ fn walk t -> r : t~Tree, r~List Nat
         Node l x r -> walk l ++ [x] ++ walk r
 
 fn noisy n term -> r : n~Nat, term~Term, r~Nat
-    terminal.print_line (format n) term
+    terminal.print_line (debug n) term
     n
 
 enum Chain
@@ -48,8 +49,8 @@ fn before n term -> r : n~Nat, term~Term, r~List Nat
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let term = sys.term
-    terminal.print_line (format (length (build 10000000))) term
-    terminal.print_line (format (walk (insert_all [5, 2, 8, 1, 9, 3, 7] Leaf))) term
-    terminal.print_line (format (after 3 term)) term
-    terminal.print_line (format (before 3 term)) term
+    terminal.print_line (debug (length (build 10000000))) term
+    terminal.print_line (debug (walk (insert_all [5, 2, 8, 1, 9, 3, 7] Leaf))) term
+    terminal.print_line (debug (after 3 term)) term
+    terminal.print_line (debug (before 3 term)) term
     Success

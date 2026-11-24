@@ -1,0 +1,13 @@
+(set-option :produce-models true)
+(set-option :rlimit 200000)
+(set-option :timeout 60000)
+(set-logic ALL)
+(declare-fun |ck.manifest.valid_name| ((Seq Int)) Bool)
+(declare-fun |std.prelude.valid_utf8| ((Seq Int)) Bool)
+(declare-const |name#0| (Seq Int))
+(assert (|std.prelude.valid_utf8| |name#0|))
+(assert (= (|ck.manifest.valid_name| |name#0|) true))
+(assert (not false))
+(check-sat)
+(get-value (|name#0|))
+;; reachable?

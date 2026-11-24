@@ -1,0 +1,8 @@
+(set-option :produce-models true)
+(set-option :rlimit 200000)
+(set-option :timeout 60000)
+(set-logic ALL)
+(define-funs-rec ((|refined_fn_types.apply[fn#f6965149]| ((p1 Int)) Int)) ((- p1 9)))
+(assert (=> (>= 9 5) (>= (|refined_fn_types.apply[fn#f6965149]| 9) 0)))
+(assert (not (>= (|refined_fn_types.apply[fn#f6965149]| 9) 0)))
+(check-sat)

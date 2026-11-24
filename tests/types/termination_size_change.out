@@ -1,0 +1,16 @@
+error[E0301]: cannot show that `spin_all`, `spin` terminate: they call each other, and no argument gets structurally smaller around `spin_all` → `spin` → `spin_all`
+  --> termination_size_change.ck:58:22
+   |
+58 |         _ :: rest -> spin (Node rest)
+   |                      ^^^^ recursive call
+   = note: the cycle: `spin_all` calls `spin` on line 58, then `spin` calls `spin_all` on line 53
+   = help: recurse on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of `spin_all`, or mark it `partial`
+
+error[E0301]: cannot show that `flip` terminates: no argument gets structurally smaller in this recursive call
+  --> termination_size_change.ck:64:19
+   |
+64 |         Succ _ -> flip b a
+   |                   ^^^^ recursive call
+   = help: recurse on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of `flip`, or mark it `partial`
+
+termination_size_change.ck: 2 errors, 0 warnings

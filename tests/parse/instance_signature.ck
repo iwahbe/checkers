@@ -1,0 +1,7 @@
+module instance_signature
+
+instance Size (List a)
+    fn size xs -> n : xs~List a, n~Int, n >= 0
+        len xs
+    fn plain xs
+        0

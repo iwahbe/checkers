@@ -1,3 +1,0 @@
-;; work 347
-sat
-((|t#0| (ck.syntax.Tok ck.syntax.Comment (seq.unit 2) 0 7719 false)))

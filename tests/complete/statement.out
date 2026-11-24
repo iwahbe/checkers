@@ -25,17 +25,20 @@ replaces 19:5-19:5
   None               constructor     None  (of `Option`)
   Ok                 constructor     Ok x : x~a  (of `Result`)
   Some               constructor     Some x : x~a  (of `Option`)
+  String             constructor     export record String  (documented)
   True               constructor     True  (of `Bool`)
   add                function        fn add x y -> r : x~a, y~a, r~a
   char               module          module std.char
   fmap               function        fn fmap g xs -> ys : g~(a -> b), xs~f a, ys~f b  (documented)
-  format             function        
   le                 function        fn le x y -> r : x~a, y~a, r~Bool  (documented)
   len                function        
   mul                function        fn mul x y -> r : x~a, y~a, r~a
   neg                function        fn neg x -> r : x~a, r~a
   not                function        export transparent fn not b -> r : b~Bool, r~Bool  (documented)
+  size               function        fn size xs -> n : xs~s, n~Nat  (documented)
   sub                function        fn sub x y -> r : x~a, y~a, r~a
+  uncons             function        fn uncons xs -> r : xs~s, r~Option (Elem, s),  (documented)
+  valid_utf8         function        export fn valid_utf8 b -> r : b~Bytes, r~Bool  (documented)
   zero               function        fn zero -> r : r~a
 == line 24, column 7
 replaces 24:5-24:7
@@ -64,17 +67,20 @@ replaces 24:5-24:7
   None               constructor     None  (of `Option`)
   Ok                 constructor     Ok x : x~a  (of `Result`)
   Some               constructor     Some x : x~a  (of `Option`)
+  String             constructor     export record String  (documented)
   True               constructor     True  (of `Bool`)
   add                function        fn add x y -> r : x~a, y~a, r~a
   char               module          module std.char
   fmap               function        fn fmap g xs -> ys : g~(a -> b), xs~f a, ys~f b  (documented)
-  format             function        
   le                 function        fn le x y -> r : x~a, y~a, r~Bool  (documented)
   len                function        
   mul                function        fn mul x y -> r : x~a, y~a, r~a
   neg                function        fn neg x -> r : x~a, r~a
   not                function        export transparent fn not b -> r : b~Bool, r~Bool  (documented)
+  size               function        fn size xs -> n : xs~s, n~Nat  (documented)
   sub                function        fn sub x y -> r : x~a, y~a, r~a
+  uncons             function        fn uncons xs -> r : xs~s, r~Option (Elem, s),  (documented)
+  valid_utf8         function        export fn valid_utf8 b -> r : b~Bytes, r~Bool  (documented)
   zero               function        fn zero -> r : r~a
 == line 28, column 10
 replaces 28:10-28:10
@@ -99,17 +105,20 @@ replaces 28:10-28:10
   None               constructor     None  (of `Option`)
   Ok                 constructor     Ok x : x~a  (of `Result`)
   Some               constructor     Some x : x~a  (of `Option`)
+  String             constructor     export record String  (documented)
   True               constructor     True  (of `Bool`)
   add                function        fn add x y -> r : x~a, y~a, r~a
   char               module          module std.char
   fmap               function        fn fmap g xs -> ys : g~(a -> b), xs~f a, ys~f b  (documented)
-  format             function        
   le                 function        fn le x y -> r : x~a, y~a, r~Bool  (documented)
   len                function        
   mul                function        fn mul x y -> r : x~a, y~a, r~a
   neg                function        fn neg x -> r : x~a, r~a
   not                function        export transparent fn not b -> r : b~Bool, r~Bool  (documented)
+  size               function        fn size xs -> n : xs~s, n~Nat  (documented)
   sub                function        fn sub x y -> r : x~a, y~a, r~a
+  uncons             function        fn uncons xs -> r : xs~s, r~Option (Elem, s),  (documented)
+  valid_utf8         function        export fn valid_utf8 b -> r : b~Bytes, r~Bool  (documented)
   zero               function        fn zero -> r : r~a
 == line 32, column 7
 replaces 32:7-32:7
@@ -121,6 +130,7 @@ replaces 35:10-35:10
   from_ascii         function        export transparent fn from_ascii b -> c : b~U8, b < 128, c~Char  (documented)
   from_scalar        function        export transparent fn from_scalar n -> c : n~Nat, n < 0x110000, (n < 0xD800 or 0xE000 <= n), c~Char  (documented)
   from_surrogates    function        export transparent fn from_surrogates hi lo -> c : hi~Nat, lo~Nat, 0xD800 <= hi, hi < 0xDC00,  (documented)
+  is_digit           function        export transparent fn is_digit c : c~Int  (documented)
   is_punctuation     function        export fn is_punctuation c : c~Char  (documented)
   is_space_separator function        export fn is_space_separator c : c~Char  (documented)
 == line 41, column 5
@@ -150,15 +160,18 @@ replaces 46:11-46:11
   None               constructor     None  (of `Option`)
   Ok                 constructor     Ok x : x~a  (of `Result`)
   Some               constructor     Some x : x~a  (of `Option`)
+  String             constructor     export record String  (documented)
   True               constructor     True  (of `Bool`)
   add                function        fn add x y -> r : x~a, y~a, r~a
   char               module          module std.char
   fmap               function        fn fmap g xs -> ys : g~(a -> b), xs~f a, ys~f b  (documented)
-  format             function        
   le                 function        fn le x y -> r : x~a, y~a, r~Bool  (documented)
   len                function        
   mul                function        fn mul x y -> r : x~a, y~a, r~a
   neg                function        fn neg x -> r : x~a, r~a
   not                function        export transparent fn not b -> r : b~Bool, r~Bool  (documented)
+  size               function        fn size xs -> n : xs~s, n~Nat  (documented)
   sub                function        fn sub x y -> r : x~a, y~a, r~a
+  uncons             function        fn uncons xs -> r : xs~s, r~Option (Elem, s),  (documented)
+  valid_utf8         function        export fn valid_utf8 b -> r : b~Bytes, r~Bool  (documented)
   zero               function        fn zero -> r : r~a

@@ -83,7 +83,7 @@ A recursive function used as a value inside its own recursion (passed to another
 
 ## Guessed measures
 
-A function whose recursion isn't structural and that has no `decreasing` gets a measure guessed by the compiler, which checks it as if it had been written. The candidates are, for each parameter, its size (a number itself, the length of a list, array, string or bytes), the distance each comparison guarding a recursive call bounds (`i < len src` gives `len src - i`, `x < 0` gives `0 - x`), and the sum of two parameters' sizes; each alone, then pairs compared lexicographically. The first that every recursive call makes smaller is the measure, and the trust ledger names it.
+A function whose recursion isn't structural and that has no `decreasing` gets a measure guessed by the compiler, which checks it as if it had been written. The candidates are, for each parameter, its size (a number itself, the length of a list, array, string or bytes), the distance each comparison guarding a recursive call bounds (`i < len src` gives `len src - i`, `x < 0` gives `0 - x`), and the sum of two parameters' sizes; each alone, then pairs compared lexicographically. The first that every recursive call makes smaller is the measure, and the trust ledger names it. A parameter taken apart with `[]` and `x :: rest` at a type other than a list ([sequence patterns](patterns.md#sequence-patterns)) has `Seq.size` of it among the candidates: `uncons` promises that the rest is smaller.
 
 ```checkers
 fn fib n -> r : n~Nat, r~Nat

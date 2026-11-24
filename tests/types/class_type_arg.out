@@ -1,0 +1,20 @@
+error[E0284]: no instance of `TryFrom` for `String` and `List Int`
+  --> class_type_arg.ck:50:5
+   |
+50 |     try_from "1" (List Int)
+   |     ^^^^^^^^ needs `TryFrom String (List Int)`
+   = help: declare `instance TryFrom …` for these types, beside the class or the first type
+
+error[E0201]: type mismatch: expected `Option Bool`, found `Option Int`
+  --> class_type_arg.ck:54:5
+   |
+54 |     try_from "1" Int
+   |     ^^^^^^^^^^^^^^^^ this expression has type `Option Int`
+
+error[E0201]: type mismatch: expected `Option Bool`, found `Option Int`
+  --> class_type_arg.ck:66:5
+   |
+66 |     f Int
+   |     ^^^^^ this expression has type `Option Int`
+
+class_type_arg.ck: 3 errors, 0 warnings

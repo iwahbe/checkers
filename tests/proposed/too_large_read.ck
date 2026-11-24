@@ -6,6 +6,7 @@ module too_large_read
 import std.system (System, ExitCode)
 import std.terminal
 import std.files
+import std.string (debug)
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { term } = sys
@@ -13,5 +14,5 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let (some, input) = files.read_some 1000000000000000000000000000000 input
     let (rest, input) = files.read_exactly 1000000000000000000000000000000 input
     files.close input
-    terminal.print_line (format some ++ " " ++ format rest) term
+    terminal.print_line (debug some ++ " " ++ debug rest) term
     Success

@@ -1,0 +1,12 @@
+(set-option :produce-models true)
+(set-option :rlimit 200000)
+(set-option :timeout 60000)
+(set-logic ALL)
+(declare-fun |std.prelude.valid_utf8| ((Seq Int)) Bool)
+(declare-const |l#0| (Seq Int))
+(assert (|std.prelude.valid_utf8| (seq.++ (seq.unit 32) (seq.unit 32) (seq.unit 32) (seq.unit 32) (seq.unit 32) (seq.unit 32) (seq.unit 32))))
+(assert (= (and (<= (+ 0 (seq.len (seq.++ (seq.unit 32) (seq.unit 32) (seq.unit 32) (seq.unit 32) (seq.unit 32) (seq.unit 32) (seq.unit 32)))) (seq.len |l#0|)) (= (seq.extract |l#0| 0 (seq.len (seq.++ (seq.unit 32) (seq.unit 32) (seq.unit 32) (seq.unit 32) (seq.unit 32) (seq.unit 32) (seq.unit 32)))) (seq.++ (seq.unit 32) (seq.unit 32) (seq.unit 32) (seq.unit 32) (seq.unit 32) (seq.unit 32) (seq.unit 32)))) false))
+(assert (not false))
+(check-sat)
+(get-value (|l#0|))
+;; reachable?

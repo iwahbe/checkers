@@ -1,0 +1,25 @@
+error[E0450]: cannot prove `r == 5`, the postcondition of `only_promised`
+ --> function_arg_post_fails.ck:6:80
+  |
+6 | fn only_promised body -> r : body~(f~(k~Nat -> j~Nat) -> n~Nat, n > 3), r~Nat, r == 5
+  |                                                                                ^^^^^^ promised here
+  = note: for the value returned on line 7: `body (\k -> 5)`
+  = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+error[E0450]: cannot prove `r`, the postcondition of `distinct_calls`
+ --> function_arg_post_fails.ck:9:82
+  |
+9 | fn distinct_calls body -> r : body~(f~(k~Nat -> j~Nat) -> n~Nat, n > 3), r~Bool, r
+  |                                                                                  ^ promised here
+  = note: for the value returned on line 10: `body (\k -> k) == body (\k -> k + 1)`
+  = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+error[E0450]: cannot prove that `k` is a `(j~Nat, j > k)` (`k > k`)
+  --> function_arg_post_fails.ck:13:17
+   |
+13 |     body (\k -> k)
+   |                 ^ this must be a `(j~Nat, j > k)`
+   = note: counterexample: k = 0
+   = help: make it true first, e.g. with an `if`, or start from a value that is already a `(j~Nat, j > k)`
+
+function_arg_post_fails.ck: 3 errors, 0 warnings

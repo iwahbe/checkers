@@ -6,6 +6,7 @@ module par_stress
 import std.system (System, ExitCode)
 import std.future (Future)
 import std.terminal (Term)
+import std.string (debug)
 
 fn fib n -> r : n~Nat, r~Nat
     decreasing n
@@ -17,5 +18,5 @@ fn fib n -> r : n~Nat, r~Nat
 
 export fn main args sys -> code : args~List String, sys~System, code~Future ExitCode
     let System { term } = sys
-    terminal.print_line ("fib 20 = " ++ format (fib 20)) term
+    terminal.print_line ("fib 20 = " ++ debug (fib 20)) term
     future.ready Success

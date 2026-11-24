@@ -163,13 +163,104 @@ check parse_two '4' '2' == Ok 42
 check parse_two '4' 'x' == Err "not a digit"
 ```
 
+## Templates
+
+A string glued to a function's name, `tag"text {e} text"`, is a **template**: the function, its *tag*, makes a formatter, which is given the text and the values in the holes in order, and then finishes. What a template builds, and which values its holes take, is up to the formatter (below, `page`).
+
+A hole is written in one of four ways:
+
+| Hole | Meaning |
+|---|---|
+| `{e}` | the value of the expression `e` |
+| `{e \| o1, o2}` | `e`, with the options `o1` and `o2` |
+| `{}` | a new parameter: the template is a function of its values, in order |
+| `{\| o1, o2}` | a new parameter, with options |
+
+The expressions in a hole are ordinary expressions in the template's scope, and errors in them are reported where they are written, inside the string. `|` separates the options only outside brackets, and the options are separated by commas, as in a list.
+
+**Formatters.** A template is a series of calls of the classes `Template` and `Hole` of `std.string`. A template needs no import; a formatter's instances do, `import std.string (Template, Hole)`. The tag is applied to the number of bytes of text and the number of holes, and gives the formatter's first state; `Template.text` takes each piece of text, `Hole.hole` each hole's value and its options as a list, and `Template.finish` gives the result:
+
+```text
+fn tag n k -> p : n~Nat, k~Nat, p~Page
+```
+
+is a tag, and `tag"a{x}b{y | o}c"` means
+
+```text
+finish (text (hole (text (hole (text (tag 3 2) "a") x []) "b") y [o]) "c")
+```
+
+What a formatter accepts in its holes, and which options, is up to its instances of `Hole`, one for each type of value (or one for every type). A value of a type no instance takes is E0284 at the value. The tag is checked first: if it is unknown, or its result has no `Template` instance, that is the only error, at the tag, and the holes aren't checked:
+
+```checkers
+module page
+
+import std.html
+import std.list
+import std.string (Template, Hole)
+
+# HTML being built: its pieces, the last first.
+record Page
+    parts~List String
+
+# What a hole may say about its value.
+enum Mode
+    Raw                        # the value as it is, not escaped
+
+fn page n k -> p : n~Nat, k~Nat, p~Page
+    Page []
+
+instance Template Page
+    type Result = String
+    fn text p str
+        Page (str :: p.parts)
+    fn finish p
+        string.concat (list.reverse p.parts)
+
+# Strings only, escaped unless the hole says `Raw`.
+instance Hole Page String
+    type Options = Mode
+    fn hole p x os
+        Page ((if list.contains os Raw then x else html.escape x) :: p.parts)
+
+check page"<p>{"a<b"}</p>{"<br>" | Raw}" == "<p>a&lt;b</p><br>"
+check page"<li>{}</li>" "x" == "<li>x</li>"
+```
+
+```checkers,compile_fail,E0284
+module page_count
+
+import std.list
+import std.string (Template, Hole)
+
+record Page
+    parts~List String
+
+fn page n k -> p : n~Nat, k~Nat, p~Page
+    Page []
+
+instance Template Page
+    type Result = String
+    fn text p str
+        Page (str :: p.parts)
+    fn finish p
+        string.concat (list.reverse p.parts)
+
+instance Hole Page String
+    fn hole p x os
+        Page (x :: p.parts)
+
+fn item count -> s : count~Nat, s~String
+    page"<li>{count}</li>"
+```
+
 ## Field access and indexing
 
 `r.f` reads the field `f` of a record `r` (E0207 if it has none). `a[i]` is element `i` of an array or of `Bytes`, and needs `i < len a` proven; lists are not indexed.
 
 ## Other expressions
 
-- `len e` is the length of a `String` (in bytes), an `Array` or a `List`; `format e` renders any value as text ([Running programs](execution.md#format)). Both must be applied to their argument (E0214).
+- `len e` is the length of a `String` (in bytes), an `Array` or a `List`. It must be applied to its argument (E0214). To show a value as text, see [Showing values](execution.md#showing-values).
 - `par (e1, e2, …)` evaluates the components in parallel ([Concurrency](concurrency.md#par)).
 - `auto` and `admit` are allowed only in proofs (E0212, [Proofs](proofs.md)).
 - `()` is the unit value; `(a, b)` a tuple; `[a, b]` a list.

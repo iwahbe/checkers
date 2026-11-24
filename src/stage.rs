@@ -187,7 +187,7 @@ impl<'g> Stager<'g> {
                 R::D(d) => R::D(Tm::Proj(Rc::new(d), *i, *rest)),
             },
             Tm::Field(x, c, i) => match self.pe(x, env, lvl)? {
-                R::S(s) => match self.whnf(&s) {
+                R::S(s) => match self.whnf(&s).map(|v| self.boxed(v, *c)) {
                     Some(Tm::ConApp(c2, args)) if c2 == *c => {
                         let np = self.g.arity_ty(self.g.cons[c.0 as usize].ty);
                         R::S(args[np + i].clone())
@@ -228,12 +228,64 @@ impl<'g> Stager<'g> {
     /// Compute a closed term at compile time; `None` if it fails there (it
     /// will fail at run time instead) or its value can't be written as a term.
     fn compute(&mut self, t: &Tm) -> Option<Tm> {
+        self.compute_as(t, None)
+    }
+
+    /// `compute`, read back as a value of type `ty` where it is known: a
+    /// type stored as its one kept field (#170) needs it.
+    fn compute_as(&mut self, t: &Tm, ty: Option<&Tm>) -> Option<Tm> {
         let g = self.g;
         let ev = self.ev.get_or_insert_with(|| Evaluator::new(g));
         let v = ev.eval(t).ok()?;
-        let r = ev.reify(v);
+        let r = match ty {
+            Some(ty) => ev.reify_as(v, ty),
+            None => ev.reify(v),
+        };
         ev.release(v);
         r
+    }
+
+    /// The type of a closed application of a definition or constructor, if
+    /// it is one.
+    fn result_type(&self, t: &Tm) -> Option<Tm> {
+        let g = self.g;
+        let (h, args) = t.spine();
+        // A constructor: its type, at the type arguments it is given.
+        if let Tm::Con(c) = h {
+            let ty = g.cons[c.0 as usize].ty;
+            let np = g.arity_ty(ty);
+            return (args.len() >= np).then(|| Tm::TyConApp(ty, args[..np].iter().map(|a| (***a).clone()).collect()));
+        }
+        let Tm::Def(d) = h else { return None };
+        let empty = Rc::new(Vec::new());
+        let mut ty = crate::core::eval(g, &empty, &g.defs.get(d.0 as usize)?.ty);
+        for a in args {
+            let crate::core::Val::Pi(_, _, _, _, c) = crate::core::force(g, ty) else { return None };
+            ty = crate::core::apply_closure(g, &c, crate::core::eval(g, &empty, a));
+        }
+        Some(crate::core::quote(g, 0, &ty))
+    }
+
+    /// A known value `v` of constructor `c`'s type, as an application of
+    /// `c` when the type is stored as its one kept field (#170) and `v`
+    /// came back from native code as that field.
+    fn boxed(&self, v: Tm, c: ConId) -> Tm {
+        let g = self.g;
+        let Some(k) = g.unboxed_field(c) else { return v };
+        if matches!(&v, Tm::ConApp(c2, _) if *c2 == c) {
+            return v;
+        }
+        // A string literal is `String` of its bytes.
+        let v = match v {
+            Tm::Lit(Lit::Str(s)) if Some(g.cons[c.0 as usize].ty) == g.well_known.string => Tm::Lit(Lit::Bytes(Rc::from(s.as_bytes()))),
+            v => v,
+        };
+        let ci = &g.cons[c.0 as usize];
+        let mut args: Vec<Tm> = (0..g.arity_ty(ci.ty)).map(|_| Tm::Univ(0)).collect();
+        for j in 0..ci.fields.len() {
+            args.push(if j == k { v.clone() } else { Tm::Tuple(vec![]) });
+        }
+        Tm::ConApp(c, args)
     }
 
     /// A known value in constructor or literal form, if it has one.
@@ -300,7 +352,8 @@ impl<'g> Stager<'g> {
         // Everything known, and the callee ends (not `partial`): compute it.
         if all && !partial && closed(&out, 0) {
             let erased = erase_types(&out);
-            return Ok(match self.compute(&erased) {
+            let ty = self.result_type(&out);
+            return Ok(match self.compute_as(&erased, ty.as_ref()) {
                 Some(v) => R::S(v),
                 None => R::S(out),
             });
@@ -490,7 +543,11 @@ impl<'g> Stager<'g> {
     fn case(&mut self, s: &Tm, c: &CaseTm, env: &[Ent], lvl: usize) -> Res<R> {
         let sr = self.pe(s, env, lvl)?;
         if let R::S(st) = &sr {
-            if let Some(v) = self.whnf(st) {
+            let con = c.branches.first().map(|b| b.0);
+            if let Some(v) = self.whnf(st).map(|v| match con {
+                Some(con) => self.boxed(v, con),
+                None => v,
+            }) {
                 // A known value picks its branch.
                 let mut env2 = env.to_vec();
                 match &v {

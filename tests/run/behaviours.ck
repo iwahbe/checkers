@@ -6,17 +6,18 @@ import std.system (System, ExitCode)
 import std.cown (Cown, Sched)
 import std.future (Future)
 import std.terminal (Term)
+import std.string (debug)
 
 export fn main args sys -> code : args~List String, sys~System, code~Future ExitCode
     let System { term, sched } = sys
     let counter = cown.new 0 sched
     when n = counter using sched
-        terminal.print_line ("first sees " ++ format n) term
+        terminal.print_line ("first sees " ++ debug n) term
         n + 1
     when n = counter using sched
-        terminal.print_line ("second sees " ++ format n) term
+        terminal.print_line ("second sees " ++ debug n) term
         when m = counter using sched
-            terminal.print_line ("nested sees " ++ format m) term
+            terminal.print_line ("nested sees " ++ debug m) term
             m * 10
         n + 1
     terminal.print_line "main returns" term
@@ -30,5 +31,5 @@ export fn main args sys -> code : args~List String, sys~System, code~Future Exit
     # `main` may give a future of its exit code (D31).
     future.fork sched $ \_ ->
         let s = future.join sum
-        terminal.print_line ("sum " ++ format s) term
+        terminal.print_line ("sum " ++ debug s) term
         if s == 42 then Failure 42 else Success

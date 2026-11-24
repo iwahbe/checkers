@@ -1,0 +1,25 @@
+error[E0301]: cannot show that `walk_all`, `through`, `walk` terminate: they call each other, and no argument gets structurally smaller around `through` → `walk_all` → `walk` → `through`
+  --> termination_group_span.ck:18:5
+   |
+18 |     walk_all (Leaf :: kids)
+   |     ^^^^^^^^ recursive call
+   = note: the cycle: `through` calls `walk_all` on line 18, then `walk_all` calls `walk` on line 23, then `walk` calls `through` on line 15
+   = help: recurse on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of `through`, or mark it `partial`
+
+error[E0301]: cannot show that `lose`, `keep` terminate: they call each other, and no argument gets structurally smaller around `lose` → `keep` → `lose`
+  --> termination_group_span.ck:32:19
+   |
+32 |         Node _ -> keep (Node [t])
+   |                   ^^^^ recursive call
+   = note: the cycle: `lose` calls `keep` on line 32, then `keep` calls `lose` on line 27
+   = help: recurse on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of `lose`, or mark it `partial`
+
+error[E0301]: cannot show that `up`, `same` terminate: no measure found that every recursive call makes smaller
+  --> termination_group_span.ck:39:27
+   |
+39 |     if n == 0 then 0 else same (n + 1)
+   |                           ^^^^^^^^^^^^ recursive call
+   = note: measures tried, none shown smaller here: `n` and `n`
+   = help: add `decreasing <measure>` as the first line of the function, or mark it `partial`
+
+termination_group_span.ck: 3 errors, 0 warnings

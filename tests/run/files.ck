@@ -5,6 +5,7 @@ module files_test
 import std.system (System, ExitCode)
 import std.terminal (Term)
 import std.files (Fs, File, IoError)
+import std.string (debug)
 
 partial fn print_lines f term : f~File, term~Term
     let (line, f) = files.read_line f
@@ -32,13 +33,13 @@ export partial fn main args sys -> code : args~List String, sys~System, code~Exi
         Err e -> terminal.print_line (files.describe e) term
     report (files.write "whole.tmp" b"bytes!" fs) term
     match files.read "whole.tmp" fs
-        Ok b  -> terminal.print_line (format b) term
+        Ok b  -> terminal.print_line (debug b) term
         Err e -> terminal.print_line (files.describe e) term
     let data = files.within "data" fs
     match files.read "one.txt" data
-        Ok b  -> terminal.print_line (format b) term
+        Ok b  -> terminal.print_line (debug b) term
         Err e -> terminal.print_line (files.describe e) term
     match files.read "../wc_stdin.in" data
-        Ok b  -> terminal.print_line (format b) term
+        Ok b  -> terminal.print_line (debug b) term
         Err e -> terminal.print_line (files.describe e) term
     Success

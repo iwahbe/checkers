@@ -8,6 +8,7 @@ import std.string
 import std.bytes
 import std.char
 import std.list (contains)
+import ck.text
 
 export record Version
     major~Nat
@@ -43,36 +44,30 @@ export record Problem
 
 # ── Versions ─────────────────────────────────────────────────────────────────
 
-# The number written at `b[i]`, and the position after it.
-partial fn number b i n seen -> r : b~Bytes, i~Nat, n~Nat, seen~Bool, r~Option (Nat, Nat)
-    if i < len b and b[i] >= '0' and b[i] <= '9'
-        number b (i + 1) (n * 10 + (b[i] - '0')) True
-    else if seen
-        Some (n, i)
-    else
-        None
-
-# `n.` at `b[i]`: the number and the position after the dot.
-partial fn part b i -> r : b~Bytes, i~Nat, r~Option (Nat, Nat)
-    match number b i 0 False
-        Some (n, j) -> if j < len b and b[j] == '.' then Some (n, j + 1) else None
-        None        -> None
+# A number and a `.` at the front of `b`: the number and what follows the
+# dot.
+fn part b -> r : b~Bytes, r~Option (Nat, Bytes)
+    match text.natural b
+        Some (n, rest) ->
+            match rest
+                c :: after -> if c == '.' then Some (n, after) else None
+                []         -> None
+        None           -> None
 
 # `MAJOR.MINOR.PATCH`.
-export partial fn parse_version s -> r : s~String, r~Option Version
-    let b = string.bytes s
-    match part b 0
+export fn parse_version s -> r : s~String, r~Option Version
+    match part (string.bytes s)
         None        -> None
-        Some (x, i) ->
-            match part b i
+        Some (x, b) ->
+            match part b
                 None        -> None
-                Some (y, j) ->
-                    match number b j 0 False
-                        Some (z, k) -> if k == len b then Some (Version x y z) else None
-                        None        -> None
+                Some (y, c) ->
+                    match text.natural c
+                        Some (z, rest) -> if len rest == 0 then Some (Version x y z) else None
+                        None           -> None
 
 export fn show v -> s : v~Version, s~String
-    format v.major ++ "." ++ format v.minor ++ "." ++ format v.patch
+    string.format"{v.major}.{v.minor}.{v.patch}"
 
 export fn older a b -> r : a~Version, b~Version, r~Bool
     a.major < b.major
@@ -156,13 +151,13 @@ fn lines src pos i line col -> r : src~Bytes, pos~Nat, i~Nat, i <= len src, line
 # `FILE:LINE:COL: message`.
 export fn describe file src p -> s : file~String, src~Bytes, p~Problem, s~String
     let (line, col) = lines src p.pos 0 1 1
-    file ++ ":" ++ format line ++ ":" ++ format col ++ ": " ++ p.message
+    string.format"{file}:{line}:{col}: {p.message}"
 
 # ── Reading ──────────────────────────────────────────────────────────────────
 
 # A byte as it reads: `'}'`, or its number if it isn't printable ASCII.
 fn shown b -> s : b~U8, s~String
-    if b >= 0x20 and b < 0x7F then "`" ++ string.from_char (char.from_ascii b) ++ "`" else "byte " ++ format b
+    if b >= 0x20 and b < 0x7F then "`" ++ string.from_char (char.from_ascii b) ++ "`" else string.format"byte {b}"
 
 fn syntax k -> s : k~ErrorKind, s~String
     match k

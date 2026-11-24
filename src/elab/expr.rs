@@ -106,6 +106,22 @@ impl Elab {
             return Tm::Error;
         }
         let exp = self.force(expected);
+        // An instance's dictionary's field for a clause on one of its
+        // class's types (#176): found as an implicit argument is.
+        if matches!(&e.kind, ExprKind::Var(n) if n == super::classes::FIND_DICT) {
+            let mt = self.fresh_meta(cx);
+            let mv = self.eval(cx, &mt);
+            self.note_dict(cx, &mv, &exp, e.span);
+            return mt;
+        }
+        // A name where a type is expected is the type, not a record's
+        // constructor of the same name (`String`, #170).
+        if matches!(exp, Val::Univ(_)) && matches!(e.kind, ExprKind::Con(_)) && !cx.type_pos {
+            cx.type_pos = true;
+            let t = self.check_inner(cx, e, expected, tail);
+            cx.type_pos = false;
+            return t;
+        }
         // An implicit Π expected and a non-lambda given: insert an implicit lambda.
         if let Val::Pi(x, m, Icit::Impl, a, c) = &exp {
             let v = Val::var(cx.lvl());
@@ -261,6 +277,7 @@ impl Elab {
                 Tm::TupleTy(items.iter().map(|it| self.elab_type(cx, it)).collect())
             }
             (ExprKind::Unit, Val::Univ(_)) => Tm::TupleTy(vec![]),
+            (ExprKind::Template(..), _) => self.elab_template(cx, e, Some(expected)).0,
             _ => {
                 // A dictionary (D136): its class's type constructor (M25) comes
                 // from the instance's head before its functions are checked.
@@ -306,7 +323,23 @@ impl Elab {
                     return Tm::Error;
                 }
                 // A refinement inside a type argument is never gained (D71).
-                if let Some(g) = self.refined_mismatch(cx, expected, &ty, e.span) {
+                // An instance's function with a signature of its own, in its
+                // dictionary, is checked to refine the class's by the prover
+                // (#225, E0371).
+                if self.refined_in_dict(t.head()) {
+                    self.last_inferred = Some(ty);
+                    return t;
+                }
+                let mut gained = self.refined_mismatch(cx, expected, &ty, e.span);
+                // A class's type at an instance not found yet (`Seq.Elem` of
+                // `Seq.uncons xs`, #190): find the instances the types known
+                // so far choose, and look again.
+                if gained.is_some() && !self.inst_reqs.is_empty() {
+                    self.solve_instances(false);
+                    self.retry_waiting(false);
+                    gained = self.refined_mismatch(cx, expected, &ty, e.span);
+                }
+                if let Some(g) = gained {
                     self.report_gained(cx, expected, &ty, &g, e.span, "this expression");
                     return Tm::Error;
                 }
@@ -318,6 +351,10 @@ impl Elab {
 
     pub fn infer(&mut self, cx: &mut Cx, e: &Expr) -> (Tm, Val) {
         match &e.kind {
+            ExprKind::When(w) => {
+                let t = self.elab_when(cx, w);
+                (t, self.unit())
+            }
             ExprKind::Forall(..) => self.elab_forall(cx, e),
             ExprKind::Var(n) => {
                 let (t, ty) = self.infer_var(cx, n, e.span);
@@ -408,6 +445,7 @@ impl Elab {
                     return (Tm::Lit(Lit::int(-n)), int);
                 }
                 let (t, xty) = self.infer(cx, x);
+                self.find_type_dicts(&xty);
                 // `-x` on a type with an instance of `Neg` (M24).
                 if let Some(m) = self.operator_method(cx, "Neg", "neg", &xty) {
                     let (f, fty) = self.sym_term(cx, Sym::Def(m), e.span);
@@ -486,7 +524,12 @@ impl Elab {
                 // body, as in checking mode.
                 let mut body: Expr = (**body).clone();
                 let mut taken_apart = Vec::new();
-                for p in pats {
+                // Each parameter's type is an unknown of the lambda's
+                // context, not of the parameters before it: applied to a
+                // value that isn't a variable (`(\a b -> …) 1 "two"`), a
+                // type depending on `a` couldn't be solved.
+                let tys: Vec<Val> = pats.iter().map(|_| self.fresh_meta_val(cx)).collect();
+                for (p, a) in pats.iter().zip(tys) {
                     let name = match &p.kind {
                         ast::PatKind::Var(n) => n.clone(),
                         ast::PatKind::Wild => "_".to_string(),
@@ -496,7 +539,6 @@ impl Elab {
                             n
                         }
                     };
-                    let a = self.fresh_meta_val(cx);
                     let at = quote(&self.g, cx.lvl(), &a);
                     let l = cx.bind(&name, a, Mult::Many);
                     if name != "_" {
@@ -569,6 +611,7 @@ impl Elab {
                     (Tm::Error, Val::Error)
                 }
             },
+            ExprKind::Template(..) => self.elab_template(cx, e, None),
             ExprKind::Error => (Tm::Error, Val::Error),
         }
     }
@@ -632,7 +675,9 @@ impl Elab {
                         return (Tm::Error, Val::Error);
                     }
                 }
-                self.index_sym(span, s);
+                if !Self::is_template_call(n) {
+                    self.index_sym(span, s);
+                }
                 if let Sym::Def(d) = s {
                     self.note_reference(d, span);
                     if !self.in_app_head && !self.g.defs[d.0 as usize].comptime.is_empty() {
@@ -660,6 +705,8 @@ impl Elab {
                     let mut d = Diagnostic::error("E0204", format!("unknown name `{n}`"), span).with_label("not found");
                     if let Some(m) = self.private_in_imports(n) {
                         d = d.with_help(Self::private_help(&m, n));
+                    } else if let Some(h) = self.std_export_help(n) {
+                        d = d.with_help(h);
                     }
                     self.err(d);
                 }
@@ -678,7 +725,7 @@ impl Elab {
             Some(e) => (vec![Some(e.p)], e.cond.map(|c| (0, c)).into_iter().collect()),
             None => (vec![], vec![]),
         };
-        self.calls.push(CallRec { caller, callee: d, args, span, conds });
+        self.calls.push(CallRec { caller, callee: d, args, same: Vec::new(), span, conds });
     }
 
     pub fn sym_term(&mut self, _cx: &Cx, s: Sym, span: Span) -> (Tm, Val) {
@@ -706,11 +753,10 @@ impl Elab {
                 (Tm::Con(c), eval(&self.g, &empty, &ty))
             }
             Sym::Univ => (Tm::Univ(0), Val::Univ(1)),
-            Sym::Len | Sym::Format => {
-                let name = if s == Sym::Len { "len" } else { "format" };
+            Sym::Len => {
                 self.err(Diagnostic::error(
                     "E0214",
-                    format!("`{name}` must be applied to an argument here, e.g. `{name} x`"),
+                    "`len` must be applied to an argument here, e.g. `len x`".to_string(),
                     span,
                 ));
                 (Tm::Error, Val::Error)
@@ -776,6 +822,37 @@ impl Elab {
 
     // ── application ─────────────────────────────────────────────────────────
 
+    /// `C.Name t` (#133): the class's type `Name` at `t`, read from the
+    /// dictionary found for `t` once `t` is known; `C.Name s h` for a class
+    /// of several parameters (#145), one type for each.
+    #[allow(clippy::too_many_arguments)]
+    fn elab_assoc(&mut self, cx: &mut Cx, tid: TyId, acc: DefId, class_span: Span, name: &ast::Ident, args: &[&Expr], span: Span) -> (Tm, Val) {
+        self.index_sym(class_span, Sym::Ty(tid));
+        self.index_sym(name.span, Sym::Def(acc));
+        self.note_reference(acc, span);
+        let (mut t, mut ty) = self.sym_term(cx, Sym::Def(acc), span);
+        for arg in args {
+            let Val::Pi(_, m, _, dom, c) = self.force(&ty) else { return (Tm::Error, Val::Error) };
+            let saved = cx.type_pos;
+            cx.type_pos = true;
+            self.in_spec += 1;
+            let at = self.check(cx, arg, &dom, false);
+            self.in_spec -= 1;
+            cx.type_pos = saved;
+            let av = self.eval(cx, &at);
+            t = Tm::App(Rc::new(t), Rc::new(at), Icit::Expl, m);
+            ty = apply_closure(&self.g, &c, av);
+        }
+        self.name_span = span;
+        let n = self.inst_reqs.len();
+        let r = self.insert(cx, t, ty);
+        let shown = self.g.defs[acc.0 as usize].name.to_string();
+        for q in &mut self.inst_reqs[n..] {
+            q.assoc = Some(shown.clone());
+        }
+        r
+    }
+
     fn elab_app(&mut self, cx: &mut Cx, e: &Expr) -> (Tm, Val) {
         let want = self.app_expected.take();
         let saved_checks = std::mem::replace(&mut self.head_checks_aliases, false);
@@ -793,31 +870,39 @@ impl Elab {
         }
         args.reverse();
 
+        // A class's type at a type, `Display.Options Money` (#133).
+        if let ExprKind::Field(x, name) = &head.kind {
+            if let ExprKind::Con(c) = &x.kind {
+                if let Some(Sym::Ty(tid)) = self.resolve(c, true) {
+                    if let Some(acc) = self.assoc_defs.get(&(tid, name.name.clone())).copied() {
+                        // One type for each of the class's parameters (#145).
+                        let n = self.class_defs.get(&tid).map_or(1, |c| c.params.len());
+                        if args.len() < n {
+                            return self.assoc_without_types(tid, acc, x.span, name, e.span);
+                        }
+                        let r = self.elab_assoc(cx, tid, acc, x.span, name, &args[..n], head.span.to(args[n - 1].span));
+                        return self.apply_rest(cx, r, &args[n..], e.span);
+                    }
+                }
+            }
+        }
+
         // Overloaded built-ins (D38).
         if let ExprKind::Var(n) = &head.kind {
             if cx.lookup(n).is_none() {
-                match self.resolve(n, false) {
-                    Some(Sym::Len) => {
-                        let (at, aty) = self.infer(cx, args[0]);
-                        self.deferred.push(Deferred {
-                            ty: aty,
-                            kind: OpClass::HasLen,
-                            span: args[0].span,
-                            what: "`len`".into(),
-                            lvl: cx.lvl(),
-                            names: cx.names(),
-                            owner: self.cur_fn,
-                        });
-                        let r = (Tm::PrimApp(Prim::Len, vec![at]), self.nat());
-                        return self.apply_rest(cx, r, &args[1..], e.span);
-                    }
-                    Some(Sym::Format) => {
-                        let (at, aty) = self.infer(cx, args[0]);
-                        self.observe(args[0].span, aty);
-                        let r = (Tm::PrimApp(Prim::Format, vec![at]), self.string());
-                        return self.apply_rest(cx, r, &args[1..], e.span);
-                    }
-                    _ => {}
+                if let Some(Sym::Len) = self.resolve(n, false) {
+                    let (at, aty) = self.infer(cx, args[0]);
+                    self.deferred.push(Deferred {
+                        ty: aty,
+                        kind: OpClass::HasLen,
+                        span: args[0].span,
+                        what: "`len`".into(),
+                        lvl: cx.lvl(),
+                        names: cx.names(),
+                        owner: self.cur_fn,
+                    });
+                    let r = (Tm::PrimApp(Prim::Len, vec![at]), self.nat());
+                    return self.apply_rest(cx, r, &args[1..], e.span);
                 }
             }
         }
@@ -835,18 +920,31 @@ impl Elab {
             }
         }
         let (ft, fty) = self.infer(cx, head);
+        // Where an implicit argument after an explicit one (#161) is shown.
+        let head_name_span = self.name_span;
         self.use_ctx = None;
         self.in_app_head = saved_head;
+        self.note_tag_call(head, &fty, e.span, args[0]);
+        // `debug x` shows each of `x`'s fields: they are read (#126).
+        if let (ExprKind::Var(n), Some(d)) = (&head.kind, self.std_def("debug")) {
+            if cx.lookup(n).is_none() && self.resolve(n, false) == Some(Sym::Def(d)) {
+                if let Val::Pi(_, _, _, dom, _) = self.force(&fty) {
+                    self.observe(args[0].span, (*dom).clone());
+                }
+            }
+        }
         let head_call = (self.calls.len() == ncalls + 1 && matches!(head.kind, ExprKind::Var(_))).then_some(ncalls);
         if let Some(i) = head_call {
             let mut conds = Vec::new();
             let mut classified = Vec::new();
+            let mut same = Vec::new();
             for (k, a) in args.iter().enumerate() {
                 let part = self.part_of(cx, a);
                 if let Some((_, Some(c))) = part {
                     conds.push((k, c));
                 }
                 classified.push(part.map(|(p, _)| p));
+                same.push(self.param_itself(cx, a));
             }
             if let Some(e) = elem_sub {
                 let callee = self.calls[i].callee;
@@ -858,6 +956,7 @@ impl Elab {
                 }
             }
             self.calls[i].args = classified;
+            self.calls[i].same = same;
             self.calls[i].conds = conds;
         }
         // What the callee's signature says about its function parameters
@@ -867,7 +966,9 @@ impl Elab {
         let callee_spec = crate::core::head_def(&ft).and_then(|d| self.specs.get(&d));
         let callee_def = crate::core::head_def(&ft);
         let late = callee_spec.map(|s| s.late.clone()).unwrap_or_default();
+        let late: Vec<Late> = late.into_iter().map(|l| Late { deps: self.late_deps(&l), ..l }).collect();
         let n_implicit = callee_spec.map_or(0, |s| s.n_implicit);
+        let inner = callee_spec.map(|s| s.inner.clone()).unwrap_or_default();
         self.head_checks_aliases = match &ft {
             Tm::Def(d) => self.specs.get(d).is_some_and(|s| s.preds.iter().any(|p| p.alias.is_some() && !p.is_post)),
             Tm::Con(c) => self.con_invs.contains_key(c),
@@ -878,7 +979,11 @@ impl Elab {
             Some(w) => self.presolve_result(cx, ft, fty, args.len(), &w),
             None => (ft, fty),
         };
-        let (ft, fty) = self.look_ahead(cx, ft, fty, &args);
+        let head_text = self.src_text(head.span);
+        let mut ready: HashMap<usize, (Tm, Val)> = HashMap::new();
+        let saved_arg_of = self.arg_of.replace(head_text);
+        let (ft, fty) = self.look_ahead(cx, ft, fty, &args, head_name_span, &mut ready);
+        self.arg_of = saved_arg_of;
         // `Tx a`, where `Tx` names an abstract type of another module whose
         // constructor shares its name (D155).
         if let Tm::TyCon(tid) = &ft {
@@ -896,12 +1001,11 @@ impl Elab {
         let mut ty = fty;
         let head_text = self.src_text(head.span);
         let saved_arg_of = self.arg_of.replace(head_text);
-        let mut ready: HashMap<usize, (Tm, Val)> = HashMap::new();
         for (k, a) in args.iter().enumerate() {
             let mut expected = None;
-            if let Some(l) = late.iter().find(|l| l.binder == n_implicit + k) {
-                if !ready.contains_key(&k) && l.deps.iter().all(|j| j - n_implicit < args.len()) {
-                    let (t1, ty1, e) = self.late_expected(cx, t, ty, k, l, &args, &mut ready);
+            if let Some(l) = late.iter().find(|l| l.binder == super::expl_binder(n_implicit, &inner, k)) {
+                if !ready.contains_key(&k) && l.deps.iter().all(|j| super::expl_index(n_implicit, &inner, *j).is_some_and(|j| j < args.len())) {
+                    let (t1, ty1, e) = self.late_expected(cx, t, ty, k, l, &late, &args, &mut ready);
                     (t, ty, expected) = (t1, ty1, e);
                 }
             }
@@ -923,6 +1027,7 @@ impl Elab {
                     self.use_ctx = Some(ctx);
                 }
             }
+            self.name_span = head_name_span;
             let (t2, ty2) = self.apply_one_as(cx, t, ty, a, expected, elem, ready.remove(&k));
             self.use_ctx = None;
             self.map_elem_sub = None;
@@ -930,6 +1035,7 @@ impl Elab {
             ty = ty2;
         }
         self.arg_of = saved_arg_of;
+        self.name_span = head_name_span;
         let (t, ty) = self.insert(cx, t, ty);
         self.call_obligations(cx, &t, e.span, head.span);
         // A partial application (D86).
@@ -953,7 +1059,7 @@ impl Elab {
         }
         let mut ok = true;
         let name = self.g.defs[d.0 as usize].name.to_string();
-        let n_implicit = self.fn_meta.get(d).map(|m| m.n_implicit).unwrap_or(0);
+        let (n_implicit, inner) = self.fn_meta.get(d).map(|m| (m.n_implicit, m.inner.clone())).unwrap_or_default();
         let mut arity = 0;
         let mut ty = self.g.defs[d.0 as usize].ty.clone();
         while let Tm::Pi(_, _, _, _, b) = ty {
@@ -969,8 +1075,9 @@ impl Elab {
                 return false;
             };
             if !self.tm_static(cx, arg, 0, cx.lvl()) {
-                let pname = self.fn_meta.get(d).and_then(|m| m.params.get(b.saturating_sub(n_implicit))).map(|p| p.0.clone()).unwrap_or_default();
-                let at = args.get(b.saturating_sub(n_implicit)).map(|a| a.span).unwrap_or(span);
+                let k = super::expl_index(n_implicit, &inner, b).unwrap_or(0);
+                let pname = self.fn_meta.get(d).and_then(|m| m.params.get(k)).map(|p| p.0.clone()).unwrap_or_default();
+                let at = args.get(k).map(|a| a.span).unwrap_or(span);
                 self.err(
                     Diagnostic::error("E0270", format!("`{pname}` of `{name}` must be known at compile time"), at)
                         .with_label("this depends on a value only known when the program runs")
@@ -982,12 +1089,30 @@ impl Elab {
         ok
     }
 
+    /// The conditions on a type's parameters, for its application to `env`
+    /// at `span` (#136).
+    pub fn oblige_ty_conds(&mut self, cx: &Cx, span: Span, tid: TyId, env: Vec<Val>) {
+        let Some(conds) = self.ty_conds.get(&tid).cloned() else { return };
+        let ty = self.g.tys[tid.0 as usize].name.to_string();
+        let written = self.src_text(span);
+        for p in &conds {
+            let goal = self.inst_pred(p, env.clone());
+            let kind = ObKind::TypeParams { ty: ty.clone(), written: written.clone() };
+            self.oblige(cx, span, kind, p.text.clone(), goal, None);
+        }
+    }
+
     /// Preconditions of a call and invariants of a constructor application (§7.1).
     fn call_obligations(&mut self, cx: &Cx, t: &Tm, span: Span, head_span: Span) {
         let (h, args) = t.spine();
         let args: Vec<Rc<Tm>> = args.into_iter().cloned().collect();
         match h {
             Tm::Def(d) => {
+                // A class's function: its dictionary may be found through a
+                // refinement alias (#226).
+                if self.class_methods.contains(d) && self.in_spec == 0 && self.in_proof == 0 {
+                    self.class_calls.push(PendingPre { cx: cx.clone(), call: t.clone(), span, owner: self.cur_fn, in_spec: 0 });
+                }
                 // Only what is needed: most calls have no measure to compare
                 // and no precondition, and evaluating their arguments for
                 // nothing was much of the time this took.
@@ -1027,18 +1152,28 @@ impl Elab {
                     }
                     return;
                 }
-                let mut env: Vec<Val> = args[..spec.n_binders].iter().map(|a| self.eval(cx, a)).collect();
-                env.push(self.eval(cx, t));
-                for p in spec.preds.iter().filter(|p| !p.is_post) {
-                    if let Some((k, _)) = p.alias {
-                        if env.get(k).is_some_and(|a| self.nat_pred_holds(cx, p, a)) {
-                            continue;
-                        }
-                    }
-                    let goal = self.inst_pred(p, env.clone());
-                    self.oblige(cx, span, ObKind::Pre { callee: name.clone() }, p.text.clone(), goal, None);
+                // A class's function: at a known instance whose function has
+                // a signature of its own, that signature's preconditions
+                // (#225). Which instance is known once the dictionaries are
+                // found, at the end of the module.
+                if self.class_methods.contains(d) {
+                    self.pending_class_pres.push(PendingPre { cx: cx.clone(), call: t.clone(), span, owner: self.cur_fn, in_spec: self.in_spec });
+                    return;
                 }
-
+                self.pre_obligations(cx, *d, &name, &args, t, span);
+            }
+            Tm::TyCon(tid) => {
+                // Wherever a type is applied, its conditions on its
+                // parameters must hold (#136).
+                if !self.ty_conds.contains_key(tid) || args.len() < self.g.tys[tid.0 as usize].params.len() {
+                    return;
+                }
+                let env: Vec<Val> = args.iter().map(|a| self.eval(cx, a)).collect();
+                if let Some(d) = &mut self.ty_cond_defer {
+                    d.push((span, *tid, env));
+                    return;
+                }
+                self.oblige_ty_conds(cx, span, *tid, env);
             }
             Tm::Con(c) => {
                 let Some(invs) = self.con_invs.get(c).cloned() else { return };
@@ -1059,6 +1194,61 @@ impl Elab {
             }
             _ => {}
         }
+    }
+
+    /// Is `h` an instance's function with a signature of its own (#225),
+    /// in its instance's dictionary?
+    fn refined_in_dict(&self, h: &Tm) -> bool {
+        matches!(h, Tm::Def(d) if self.refined_inst_fns.contains(d))
+            && self.cur_fn.is_some_and(|f| self.g.well_known.dict_fns.contains(&f))
+    }
+
+    /// The preconditions of `d`, called with `args` (at least its binders)
+    /// as `t`; `name` is the callee as shown.
+    fn pre_obligations(&mut self, cx: &Cx, d: DefId, name: &str, args: &[Rc<Tm>], t: &Tm, span: Span) {
+        let Some(spec) = self.specs.get(&d).cloned() else { return };
+        let mut env: Vec<Val> = args[..spec.n_binders].iter().map(|a| self.eval(cx, a)).collect();
+        env.push(self.eval(cx, t));
+        for p in spec.preds.iter().filter(|p| !p.is_post) {
+            if let Some((k, _)) = p.alias {
+                if env.get(k).is_some_and(|a| self.nat_pred_holds(cx, p, a)) {
+                    continue;
+                }
+            }
+            let goal = self.inst_pred(p, env.clone());
+            self.oblige(cx, span, ObKind::Pre { callee: name.to_string() }, p.text.clone(), goal, None);
+        }
+    }
+
+    /// The preconditions of calls of classes' functions, once their
+    /// dictionaries are found (#225): at a known instance whose function
+    /// has a signature of its own, its preconditions; otherwise the
+    /// class's.
+    pub(super) fn class_call_obligations(&mut self) {
+        let pending = std::mem::take(&mut self.pending_class_pres);
+        let saved = (self.cur_fn, self.in_spec);
+        for PendingPre { cx, call, span, owner, in_spec } in pending {
+            (self.cur_fn, self.in_spec) = (owner, in_spec);
+            let call = crate::core::zonk_metas(&self.g, cx.lvl(), &call);
+            let (h, args) = call.spine();
+            let Tm::Def(d) = h else { continue };
+            let name = self.g.defs[d.0 as usize].name.to_string();
+            let direct = crate::native::ir::known_instance(&self.g, &call);
+            if let Some(direct) = direct {
+                let (ih, iargs) = direct.spine();
+                if let Tm::Def(f) = ih {
+                    if self.refined_inst_fns.contains(f) && self.specs.get(f).is_some_and(|s| iargs.len() >= s.n_binders) {
+                        let iargs: Vec<Rc<Tm>> = iargs.into_iter().cloned().collect();
+                        self.pre_obligations(&cx, *f, &name, &iargs, &direct, span);
+                        continue;
+                    }
+                }
+            }
+            let d = *d;
+            let args: Vec<Rc<Tm>> = args.into_iter().cloned().collect();
+            self.pre_obligations(&cx, d, &name, &args, &call, span);
+        }
+        (self.cur_fn, self.in_spec) = saved;
     }
 
     /// A call of `callee` from a function with a measure: the callee's measure at
@@ -1381,7 +1571,7 @@ impl Elab {
         let Some(Sym::Def(d)) = sym else { return (e, Vec::new()) };
         let Some(spec) = self.specs.get(&d) else { return (e, Vec::new()) };
         let concludes_forall = spec.ensures.as_ref().is_some_and(|p| matches!(p.tm, Tm::PrimApp(Prim::Forall, _)));
-        let n = spec.n_binders - spec.n_implicit;
+        let n = spec.n_binders - spec.n_implicit - spec.inner.len();
         if !concludes_forall || spine.len() <= n {
             return (e, Vec::new());
         }
@@ -1441,7 +1631,18 @@ impl Elab {
     /// `map sub5 xs`): take the variable's type first, so the function is
     /// checked against the most precise type (`Small`, not `Nat`; D71, D87).
     /// Looking up a local has no effects, so nothing is elaborated twice.
-    fn look_ahead(&mut self, cx: &Cx, t: Tm, ty: Val, args: &[&Expr]) -> (Tm, Val) {
+    /// A later argument that is a call whose type can't be read that way
+    /// (its result type mentions its arguments: `find b i`) is checked here,
+    /// before the function, into `ready`, so it too is checked only once.
+    fn look_ahead(
+        &mut self,
+        cx: &mut Cx,
+        t: Tm,
+        ty: Val,
+        args: &[&Expr],
+        head_name_span: Span,
+        ready: &mut HashMap<usize, (Tm, Val)>,
+    ) -> (Tm, Val) {
         let (t, ty) = self.insert(cx, t, ty);
         let mut r = ty.clone();
         let mut first_fn = None;
@@ -1451,10 +1652,18 @@ impl Elab {
                 first_fn = Some(k);
             }
             if first_fn.is_some_and(|f| k > f) {
-                if let Some(aty) = self.shallow_type(cx, a) {
-                    let q = quote(&self.g, cx.lvl() + k, &dom);
-                    if !mentions_level_from(&q, cx.lvl() + k, cx.lvl(), 0) {
+                let q = quote(&self.g, cx.lvl() + k, &dom);
+                // Only an argument whose parameter's type doesn't depend on
+                // the ones before it can be checked out of order.
+                if !mentions_level_from(&q, cx.lvl() + k, cx.lvl(), 0) {
+                    if let Some(aty) = self.shallow_type(cx, a) {
                         let _ = unify(&self.g, cx.lvl(), &dom, &aty);
+                    } else if matches!(a.kind, ExprKind::App(..)) && !matches!(self.force(&dom), Val::Pi(..)) {
+                        self.alias_covered = self.head_checks_aliases && self.is_direct_alias(&dom);
+                        self.name_span = head_name_span;
+                        let at = self.check(cx, a, &dom, false);
+                        let av = self.eval(cx, &at);
+                        ready.insert(k, (at, av));
                     }
                 }
             }
@@ -1532,6 +1741,7 @@ impl Elab {
         ty: Val,
         k: usize,
         late: &Late,
+        lates: &[Late],
         args: &[&Expr],
         ready: &mut HashMap<usize, (Tm, Val)>,
     ) -> (Tm, Val, Option<Val>) {
@@ -1545,16 +1755,27 @@ impl Elab {
         env.push(Val::Error);
         let l = cx.lvl();
         let mut r = apply_closure(&self.g, &c, Val::var(l));
+        // Levels from `l` on stand for arguments not checked here: this one,
+        // and any other parameter between it and the last it needs whose own
+        // refinements mention later parameters, which must be checked
+        // against its refined type at its own turn, not its base type now.
+        let mut unchecked = 1;
         let last = late.deps.iter().max().copied().unwrap_or(late.binder);
         for b in late.binder + 1..=last {
             let j = k + b - late.binder;
             let Val::Pi(_, _, Icit::Expl, dom, c) = self.force(&r) else { return (t, ty, None) };
             let Some(arg) = args.get(j) else { return (t, ty, None) };
+            if !late.deps.contains(&b) && !ready.contains_key(&j) && lates.iter().any(|o| o.binder == b) {
+                env.push(Val::Error);
+                r = apply_closure(&self.g, &c, Val::var(l + unchecked));
+                unchecked += 1;
+                continue;
+            }
             let av = match ready.get(&j) {
                 Some((_, av)) => av.clone(),
                 None => {
-                    let q = quote(&self.g, l + 1, &dom);
-                    if mentions_level_from(&q, l + 1, l, 0) {
+                    let q = quote(&self.g, l + unchecked, &dom);
+                    if mentions_level_from(&q, l + unchecked, l, 0) {
                         return (t, ty, None);
                     }
                     self.alias_covered = self.head_checks_aliases && self.is_direct_alias(&dom);
@@ -1670,6 +1891,14 @@ impl Elab {
     fn part_of(&self, cx: &Cx, a: &Expr) -> Option<(usize, Option<u32>)> {
         match &a.kind {
             ExprKind::Var(n) => cx.lookup(n).and_then(|l| cx.locals[l].sub.map(|p| (p, cx.locals[l].sub_cond))),
+            _ => None,
+        }
+    }
+
+    /// `a` as parameter `p` itself (#109).
+    fn param_itself(&self, cx: &Cx, a: &Expr) -> Option<usize> {
+        match &a.kind {
+            ExprKind::Var(n) => cx.lookup(n).and_then(|l| cx.locals[l].param),
             _ => None,
         }
     }
@@ -1850,7 +2079,7 @@ impl Elab {
     /// The prelude class `class`'s function `method`, if `ty` has an
     /// instance of it (or a dictionary of it is in scope) and isn't a
     /// built-in number.
-    fn operator_method(&self, cx: &Cx, class: &str, method: &str, ty: &Val) -> Option<DefId> {
+    pub(super) fn operator_method(&self, cx: &Cx, class: &str, method: &str, ty: &Val) -> Option<DefId> {
         let prelude = self.modules.get("std.prelude")?;
         let Some(Sym::Ty(ctid)) = prelude.types.get(class).copied() else { return None };
         if !self.class_defs.contains_key(&ctid) {
@@ -1861,8 +2090,15 @@ impl Elab {
         let found = match &t {
             Val::TyCon(id, _) if Some(*id) == self.g.well_known.int => false,
             Val::TyCon(id, _) => self.instances.contains_key(&(ctid, super::classes::HeadKey::Ty(*id))),
-            Val::TupleTy(xs) => self.instances.contains_key(&(ctid, super::classes::HeadKey::Tuple(xs.len()))),
+            Val::TupleTy(xs) if xs.is_empty() => self.instances.contains_key(&(ctid, super::classes::HeadKey::Unit)),
+            Val::TupleTy(xs) if xs.len() >= 2 => self.instances.contains_key(&(ctid, super::classes::HeadKey::Pair)),
             Val::Neutral(Head::Meta(_), _) | Val::Error => false,
+            // A class's type with the clause declared on it (#176).
+            Val::Neutral(_, sp)
+                if matches!(sp.last(), Some(Elim::Field(c, i)) if self.class_defs.get(&self.g.cons[c.0 as usize].ty).is_some_and(|cd| cd.clauses.iter().any(|(t, k, _)| t == i && *k == ctid))) =>
+            {
+                true
+            }
             _ => {
                 // A type parameter: a dictionary in scope.
                 let tq = format!("{:?}", quote(&self.g, cx.lvl(), &t));
@@ -1878,6 +2114,7 @@ impl Elab {
     /// `l op r` through a class's function (M24), if `l`'s type has one.
     /// `lt` back if there is none.
     fn class_operator(&mut self, cx: &mut Cx, op: Op, lt: Tm, lty: &Val, r: &Expr, span: Span) -> Result<(Tm, Val), Tm> {
+        self.find_type_dicts(lty);
         if !self.has_class_operator(cx, op, lty) {
             return Err(lt);
         }
@@ -1887,6 +2124,17 @@ impl Elab {
             return Err(lt);
         }
         self.class_operator_tms(cx, op, lt, rt, lty, span).ok_or(Tm::Error)
+    }
+
+    /// A class's type read from a dictionary not found yet (`Seq.Elem s`
+    /// of a `Seq.uncons` just called): find the dictionaries the types
+    /// known so far choose, so its operators are known (#176).
+    pub(super) fn find_type_dicts(&mut self, ty: &Val) {
+        let on_meta = matches!(self.force(ty), Val::Neutral(Head::Meta(_), sp) if sp.iter().any(|e| matches!(e, Elim::Field(..))));
+        if on_meta && !self.inst_reqs.is_empty() {
+            self.solve_instances(false);
+            self.retry_waiting(false);
+        }
     }
 
     /// Whether `op` on `ty` is a class's function (M24).
@@ -1912,7 +2160,7 @@ impl Elab {
     }
 
     /// Apply `f : fty` to an elaborated argument `a : aty`.
-    fn apply_tm(&mut self, cx: &Cx, f: Tm, fty: Val, a: Tm, aty: &Val, span: Span) -> (Tm, Val) {
+    pub(super) fn apply_tm(&mut self, cx: &Cx, f: Tm, fty: Val, a: Tm, aty: &Val, span: Span) -> (Tm, Val) {
         match self.force(&fty) {
             Val::Pi(_, m, i, dom, c) => {
                 self.unify_at(cx, &dom, aty, span, "this operand");
@@ -2014,6 +2262,26 @@ impl Elab {
 
     // ── fields and qualified names ──────────────────────────────────────────
 
+    /// `C.Name` without the types it is for (E0291).
+    fn assoc_without_types(&mut self, tid: TyId, acc: DefId, class_span: Span, name: &Ident, span: Span) -> (Tm, Val) {
+        self.index_sym(class_span, Sym::Ty(tid));
+        self.index_sym(name.span, Sym::Def(acc));
+        let Some(cd) = self.class_defs.get(&tid) else { return (Tm::Error, Val::Error) };
+        let (cn, n) = (cd.name.clone(), name.name.clone());
+        let d = if cd.params.len() == 1 {
+            Diagnostic::error("E0291", format!("`{cn}.{n}` needs the type it is for"), span)
+                .with_label(format!("each instance of `{cn}` gives its own `{n}`"))
+                .with_help(format!("write `{cn}.{n} t` for the type `t`, e.g. `{cn}.{n} a` under a clause `{cn} a`"))
+        } else {
+            let ps = cd.params.join(" ");
+            Diagnostic::error("E0291", format!("`{cn}.{n}` needs the {} types it is for", cd.params.len()), span)
+                .with_label(format!("each instance of `{cn}` gives its own `{n}`"))
+                .with_help(format!("write `{cn}.{n} {ps}` under a clause `{cn} {ps}`"))
+        };
+        self.err(d);
+        (Tm::Error, Val::Error)
+    }
+
     fn elab_field(&mut self, cx: &mut Cx, x: &Expr, name: &Ident, span: Span) -> (Tm, Val) {
         if Self::is_cursor(&name.name) {
             return self.note_member(cx, x);
@@ -2023,9 +2291,10 @@ impl Elab {
             if let Some(Sym::Ty(tid)) = self.resolve(c, true) {
                 if let Some(cd) = self.class_defs.get(&tid).cloned() {
                     let member = self.modules.get(&cd.module).and_then(|m| m.values.get(&name.name)).copied();
-                    let is_member = cd.members.iter().any(|m| match m {
-                        ast::ClassMember::Fn { name: n, .. } | ast::ClassMember::Lemma { name: n, .. } => n.name == name.name,
-                    });
+                    if let Some(acc) = self.assoc_defs.get(&(tid, name.name.clone())).copied() {
+                        return self.assoc_without_types(tid, acc, x.span, name, span);
+                    }
+                    let is_member = cd.members.iter().any(|m| !matches!(m, ast::ClassMember::Type { .. }) && m.name().name == name.name);
                     return match member {
                         Some(s @ Sym::Def(d)) if is_member => {
                             self.index_sym(x.span, Sym::Ty(tid));
@@ -2039,9 +2308,7 @@ impl Elab {
                             let names: Vec<String> = cd
                                 .members
                                 .iter()
-                                .map(|m| match m {
-                                    ast::ClassMember::Fn { name, .. } | ast::ClassMember::Lemma { name, .. } => name.name.clone(),
-                                })
+                                .map(|m| m.name().name.clone())
                                 .collect();
                             self.err(
                                 Diagnostic::error("E0206", format!("class `{}` has no function or lemma `{}`", cd.name, name.name), name.span)
@@ -2094,6 +2361,13 @@ impl Elab {
             }
         }
         let (xt, xty) = self.infer(cx, x);
+        // A class's type at an instance not found yet (`q"…".sql`, its
+        // type `Template.Result Building`, #132): find the instances the
+        // types known so far choose, and look again.
+        if !matches!(self.force(&xty), Val::TyCon(..)) && !self.inst_reqs.is_empty() {
+            self.solve_instances(false);
+            self.retry_waiting(false);
+        }
         match self.force(&xty) {
             Val::TyCon(tid, _) if self.g.tys[tid.0 as usize].is_record && self.sealed_from(tid).is_some() => {
                 self.err(self.sealed_error(tid, "fields", name.span));
@@ -2266,15 +2540,7 @@ impl Elab {
                 cx.pop();
                 Tm::Let(Rc::from("_"), Mult::Many, Rc::new(Tm::TupleTy(vec![])), Rc::new(t), Rc::new(body))
             }
-            Stmt::When(w) => {
-                let t = self.elab_when(cx, w);
-                let unit = self.unit();
-                let v = self.eval(cx, &t);
-                cx.define("_", unit, v, Mult::Many);
-                let body = self.block_from(cx, rest, result, expected, tail);
-                cx.pop();
-                Tm::Let(Rc::from("_"), Mult::Many, Rc::new(Tm::TupleTy(vec![])), Rc::new(t), Rc::new(body))
-            }
+
         }
     }
 
@@ -2550,6 +2816,10 @@ fn any_forall(e: &Expr) -> Option<Span> {
             ExprKind::Match(s, arms) => {
                 go(s, found);
                 arms.iter().for_each(|a| go(&a.body, found));
+            }
+            ExprKind::Template(t, ps) => {
+                go(t, found);
+                ps.iter().flat_map(|p| p.exprs()).for_each(|x| go(x, found));
             }
             _ => {}
         }

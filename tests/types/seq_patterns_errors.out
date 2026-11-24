@@ -1,0 +1,31 @@
+error[E0248]: this `match` takes a `String` apart both with `[]` or `::` and with its constructors
+ --> seq_patterns_errors.ck:9:9
+  |
+9 |         String b -> 0
+  |         ^^^^^^^^ a constructor of `String`
+  = note: `[]` and `x :: rest` take a `String` apart with `Seq.uncons`, not with its constructors
+  = help: use one kind of pattern in each `match`
+
+error[E0240]: this `match` does not cover `[]` or `_ :: _ :: _`
+  --> seq_patterns_errors.ck:13:5
+   |
+13 |     match xs
+   |     ^^^^^^^^ not exhaustive
+   = help: add arms for these, or a catch-all `_ -> …`
+
+error[E0240]: this `match` does not cover `_ :: []`
+  --> seq_patterns_errors.ck:17:5
+   |
+17 |     match xs
+   |     ^^^^^^^^ not exhaustive
+   = note: counterexample: xs = b"\xad"
+   = help: add an arm `_ :: [] -> …`, or a catch-all `_ -> …`
+
+error[E0241]: `Nil` is a constructor of `List`, but the value being matched has type `Box`
+  --> seq_patterns_errors.ck:26:9
+   |
+26 |         []     -> 0
+   |         ^^ expected a `Box` pattern
+   = help: `[]` and `x :: rest` take apart a list, or a value of a type with a `Seq` instance; `Box` has none
+
+seq_patterns_errors.ck: 4 errors, 0 warnings

@@ -9,11 +9,11 @@
 (fn behaviours (jobs screen sched)
   (do
     (when ((j jobs)) using sched
-      j)
+        j)
     (when ((j jobs) (s screen)) using sched
-      (do
-        (let j2 (add 1 j))
-        (tuple j2 s)))
+        (do
+          (let j2 (add 1 j))
+          (tuple j2 s)))
     0))
 (fn block_lambda (xs)
   (do

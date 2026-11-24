@@ -170,66 +170,43 @@ impl Decimal {
         Decimal { m, e }
     }
 
-    /// Scan an RFC 8259 number at `i`. Returns the value and the index after it.
-    pub fn scan_json(src: &[u8], i: usize) -> Option<(Decimal, usize)> {
-        let mut k = i;
-        let at = |k: usize| src.get(k).copied();
-        let neg = at(k) == Some(b'-');
-        if neg {
-            k += 1;
-        }
-        let int_start = k;
-        match at(k) {
-            Some(b'0') => k += 1,
-            Some(b'1'..=b'9') => {
-                while matches!(at(k), Some(b'0'..=b'9')) {
-                    k += 1;
+    /// With exactly `places` digits after the point (none: no point),
+    /// rounded half away from zero; never with an exponent.
+    pub fn fixed(&self, places: usize) -> String {
+        let ten = BigInt::from(10);
+        let shift = &self.e + BigInt::from(places);
+        let scaled = match shift.to_usize() {
+            Some(k) => &self.m * num_traits::pow(ten.clone(), k),
+            None if shift.is_negative() => {
+                let k = shift.magnitude().to_usize().unwrap_or(usize::MAX);
+                let digits = self.m.magnitude().to_string().len();
+                if k > digits {
+                    BigInt::zero()
+                } else {
+                    let d = num_traits::pow(ten.clone(), k);
+                    let (q, r) = (self.m.magnitude() / d.magnitude(), self.m.magnitude() % d.magnitude());
+                    let q: BigInt = BigInt::from(q) + if BigInt::from(r) * 2 >= d { 1 } else { 0 };
+                    if self.m.is_negative() {
+                        -q
+                    } else {
+                        q
+                    }
                 }
             }
-            _ => return None,
+            // Too many digits to write out.
+            None => return self.render(),
+        };
+        let neg = scaled.is_negative();
+        let mut digits = scaled.magnitude().to_string();
+        if digits.len() <= places {
+            digits = "0".repeat(places + 1 - digits.len()) + &digits;
         }
-        let mut digits: Vec<u8> = src[int_start..k].to_vec();
-        let mut e = BigInt::zero();
-        if at(k) == Some(b'.') {
-            let frac_start = k + 1;
-            let mut j = frac_start;
-            while matches!(at(j), Some(b'0'..=b'9')) {
-                j += 1;
-            }
-            if j == frac_start {
-                // `1.` is not a number; the number ends before the dot.
-                return Some((Self::from_digits(neg, &digits, e), k));
-            }
-            digits.extend_from_slice(&src[frac_start..j]);
-            e -= j - frac_start;
-            k = j;
+        let sign = if neg { "-" } else { "" };
+        if places == 0 {
+            return format!("{sign}{digits}");
         }
-        if matches!(at(k), Some(b'e' | b'E')) {
-            let mut j = k + 1;
-            let eneg = at(j) == Some(b'-');
-            if matches!(at(j), Some(b'+' | b'-')) {
-                j += 1;
-            }
-            let exp_start = j;
-            while matches!(at(j), Some(b'0'..=b'9')) {
-                j += 1;
-            }
-            if j > exp_start {
-                let x = BigInt::parse_bytes(&src[exp_start..j], 10)?;
-                e += if eneg { -x } else { x };
-                k = j;
-            }
-        }
-        Some((Self::from_digits(neg, &digits, e), k))
-    }
-
-    fn from_digits(neg: bool, digits: &[u8], e: BigInt) -> Decimal {
-        let text = std::str::from_utf8(digits).unwrap_or("0");
-        let mut m: BigInt = text.parse().unwrap_or_default();
-        if neg {
-            m = -m;
-        }
-        Decimal::new(m, e)
+        let p = digits.len() - places;
+        format!("{sign}{}.{}", &digits[..p], &digits[p..])
     }
 
     /// Shortest exact JSON rendering.
@@ -257,43 +234,84 @@ impl Decimal {
 mod tests {
     use super::*;
 
-    fn scan(s: &str) -> Option<(String, usize)> {
-        Decimal::scan_json(s.as_bytes(), 0).map(|(d, k)| (d.render(), k))
+    #[test]
+    fn fixed_places() {
+        let d = |m: i64, e: i64| Decimal::new(BigInt::from(m), BigInt::from(e));
+        assert_eq!(d(1250, -2).fixed(2), "12.50");
+        assert_eq!(d(125, -1).fixed(0), "13");
+        assert_eq!(d(-125, -1).fixed(0), "-13");
+        assert_eq!(d(12345, -4).fixed(2), "1.23");
+        assert_eq!(d(5, -3).fixed(2), "0.01");
+        assert_eq!(d(4, -3).fixed(2), "0.00");
+        assert_eq!(d(-4, -3).fixed(2), "0.00");
+        assert_eq!(d(7, 2).fixed(1), "700.0");
+        assert_eq!(d(1, -30).fixed(3), "0.000");
+        assert_eq!(d(0, 0).fixed(2), "0.00");
     }
 
+    /// What `decimal.render_starts` proves of the Checkers `render`, of the
+    /// runtime's printer too, on many values.
     #[test]
-    fn json_numbers() {
-        assert_eq!(scan("0"), Some(("0".into(), 1)));
-        assert_eq!(scan("-12.50,"), Some(("-12.5".into(), 6)));
-        assert_eq!(scan("1e3"), Some(("1000".into(), 3)));
-        assert_eq!(scan("2.5E-3"), Some(("0.0025".into(), 6)));
-        assert_eq!(scan("01"), Some(("0".into(), 1)));
-        assert_eq!(scan("-"), None);
-        assert_eq!(scan("1.x"), Some(("1".into(), 1)));
-    }
-
-    /// The axioms `json.scan_number_render` and `decimal.render_starts`
-    /// (stdlib/decimal.ck, D56), on many values, prefixes and suffixes.
-    #[test]
-    fn render_scan_axioms() {
-        let mut values = Vec::new();
+    fn render_starts() {
         for m in [0i64, 1, -1, 7, -12, 10, 100, 123456789, -987654321, 5, 25] {
             let beyond_i64 = [i64::MIN as i128 - 1, i64::MIN as i128, i64::MAX as i128, i64::MAX as i128 + 1];
             for e in [-30i128, -8, -7, -6, -3, -1, 0, 1, 2, 5, 21, 22, 23, 40].into_iter().chain(beyond_i64) {
-                values.push(Decimal::new(BigInt::from(m), BigInt::from(e)));
+                let r = Decimal::new(BigInt::from(m), BigInt::from(e)).render();
+                let b = r.as_bytes();
+                assert!(!b.is_empty() && (b[0] == b'-' || b[0].is_ascii_digit()), "render_starts: {r}");
             }
         }
-        for d in values {
-            let r = d.render();
-            let b = r.as_bytes();
-            assert!(!b.is_empty() && (b[0] == b'-' || b[0].is_ascii_digit()), "render_starts: {r}");
-            for pre in ["", "[", "x: "] {
-                for post in ["", ",", "]", "}", " ", "\n", "x", "-"] {
-                    let src = format!("{pre}{r}{post}");
-                    let got = Decimal::scan_json(src.as_bytes(), pre.len());
-                    assert_eq!(got, Some((d.clone(), pre.len() + b.len())), "scan_number_render: {src:?}");
+    }
+
+    /// Mantissas and exponents for the axioms of `std.decimal`: small, past
+    /// 64 bits, and with trailing zeros to normalize.
+    fn samples() -> Vec<(BigInt, BigInt)> {
+        let big: BigInt = "123456789012345678901234567890123456789".parse().unwrap();
+        let mut ms: Vec<BigInt> = [0i64, 1, -1, 7, -12, 10, -100, 25, 1005, 123456789, -987654321, i64::MAX, i64::MIN]
+            .into_iter()
+            .map(BigInt::from)
+            .collect();
+        ms.extend([big.clone(), -big.clone(), &big * BigInt::from(1000), BigInt::from(u64::MAX) + 1]);
+        let mut es: Vec<BigInt> = (-30i64..=30).map(BigInt::from).collect();
+        for e in [i64::MIN as i128 - 1, i64::MIN as i128, i64::MAX as i128, i64::MAX as i128 + 1, 1i128 << 100] {
+            es.push(BigInt::from(e));
+            es.push(-BigInt::from(e));
+        }
+        ms.iter().flat_map(|m| es.iter().map(move |e| (m.clone(), e.clone()))).collect()
+    }
+
+    /// `std.decimal`'s builtins `mantissa` and `exponent` (`d.m`, `d.e`):
+    /// the axiom `scaled_parts`, `scaled (mantissa d) (exponent d) == d`,
+    /// and the normal form their documentation promises.
+    #[test]
+    fn scaled_parts_axiom() {
+        let ten = BigInt::from(10);
+        for (m, e) in samples() {
+            let d = Decimal::new(m.clone(), e.clone());
+            assert_eq!(Decimal::new(d.m.clone(), d.e.clone()), d, "scaled_parts: {m} {e}");
+            if d.m.is_zero() {
+                assert!(d.e.is_zero(), "zero's exponent: {m} {e}");
+            } else {
+                assert!(!(&d.m % &ten).is_zero(), "a last digit of zero: {m} {e}");
+                // The same number: `m × 10^e` with `m`'s zeros moved to `e`.
+                let mut k = BigInt::zero();
+                let mut mm = m.clone();
+                while (&mm % &ten).is_zero() {
+                    mm /= &ten;
+                    k += 1;
                 }
+                assert_eq!((d.m.clone(), d.e.clone()), (mm, &e + k), "normal form: {m} {e}");
             }
+        }
+    }
+
+    /// The axiom `scaled_ten`: `scaled (m * 10) e == scaled m (e + 1)`.
+    #[test]
+    fn scaled_ten_axiom() {
+        for (m, e) in samples() {
+            let a = Decimal::new(&m * BigInt::from(10), e.clone());
+            let b = Decimal::new(m.clone(), &e + 1);
+            assert_eq!(a, b, "scaled_ten: {m} {e}");
         }
     }
 

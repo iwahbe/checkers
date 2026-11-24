@@ -35,11 +35,37 @@ pub struct ChildCell {
     pub reaped: Mutex<bool>,
 }
 
+/// One value of a bag: its text (what equal values share), the value (one
+/// reference, to show it by its type, #170), and how many times it is there.
+pub struct BagEntry {
+    pub key: String,
+    pub value: W,
+    pub count: usize,
+}
+
+impl Clone for BagEntry {
+    fn clone(&self) -> BagEntry {
+        BagEntry { key: self.key.clone(), value: dup(self.value), count: self.count }
+    }
+}
+
+impl Drop for BagEntry {
+    fn drop(&mut self) {
+        drop_w(self.value);
+    }
+}
+
+impl PartialEq for BagEntry {
+    fn eq(&self, o: &BagEntry) -> bool {
+        self.key == o.key && self.count == o.count
+    }
+}
+
 pub enum Obj {
     Decimal(Decimal),
-    /// Sorted (value, count) pairs (D47, D138), each value by how it is
-    /// shown (a bag is only made by `check`s on specifications).
-    Bag(Vec<(String, usize)>),
+    /// Sorted by the values' text (D47, D138): equal values have equal
+    /// text, whatever their type.
+    Bag(Vec<BagEntry>),
     File(Mutex<Option<FileState>>),
     /// A child process, until it is waited for.
     Child(Arc<ChildCell>),

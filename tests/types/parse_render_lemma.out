@@ -1,0 +1,8 @@
+error[E0450]: cannot prove `len post == 0 or not (char.is_digit post[0] or post[0] == '.' or post[0] == 'e' or post[0] == 'E')`, required to call `parse_render`
+  --> parse_render_lemma.ck:23:10
+   |
+23 |     have decimal.parse_render n b"0"
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `parse_render` requires `len post == 0 or not (char.is_digit post[0] or post[0] == '.' or post[0] == 'e' or post[0] == 'E')`
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+parse_render_lemma.ck: 1 error, 0 warnings

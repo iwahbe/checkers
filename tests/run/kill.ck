@@ -7,6 +7,7 @@ import std.system (System, ExitCode)
 import std.proc (Streams, Spawned, Discard)
 import std.terminal
 import std.files
+import std.string (debug)
 
 export partial fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { term, proc = p } = sys
@@ -20,7 +21,7 @@ export partial fn main args sys -> code : args~List String, sys~System, code~Exi
             match proc.wait child
                 Ok n  ->
                     proc.kill k
-                    terminal.print_line ("exit " ++ format n) term
+                    terminal.print_line ("exit " ++ debug n) term
                     Success
                 Err e ->
                     terminal.print_line ("wait failed: " ++ files.describe e) term

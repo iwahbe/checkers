@@ -1,0 +1,8 @@
+error[E0456]: `Test` at `Nat` runs `Int`'s instance, whose `test` may give `f` a value that isn't a `Nat`
+  --> class_alias_function.ck:25:5
+   |
+25 |     Test.test small
+   |     ^^^^^^^^^^^^^^^ `Test` is used at `Nat` here
+   = help: use `Int` here, with a function that accepts every `Int`; or give `instance Test Int`'s `test` a signature in which `f` is given only `Nat`s
+
+class_alias_function.ck: 1 error, 0 warnings

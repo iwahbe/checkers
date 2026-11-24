@@ -39,7 +39,8 @@ pub const K_CLO: u64 = 3;
 /// A partial application: the function is the first word after the
 /// header, then the arguments it holds.
 pub const K_PAP: u64 = 4;
-pub const K_STR: u64 = 5;
+/// Bytes, and strings, which are stored as their bytes (#170). (Kind 5
+/// was strings' own.)
 pub const K_BYTES: u64 = 6;
 pub const K_BIG: u64 = 7;
 /// A Rust value (`Obj`): decimals, bags, files, cowns, futures, …
@@ -157,10 +158,69 @@ fn size_of(w: W) -> usize {
     match kind(w) {
         K_CON | K_TUPLE => HDR + 8 * n,
         K_CLO | K_PAP => HDR + 8 + 8 * n,
-        K_STR | K_BYTES => HDR + 8 + (slot(w, 0) as usize).div_ceil(8) * 8,
-        crate::array::K_ARRAY => crate::array::size(w),
+        K_BYTES | crate::array::K_ARRAY => crate::array::size(w),
         _ => HDR + 8,
     }
+}
+
+// ── small objects' memory ───────────────────────────────────────────────────
+//
+// Each thread keeps the memory of the small objects it frees, a list per
+// size, and allocates from it first: most objects are a header and a few
+// words, made and freed at a high rate. Memory freed on one thread may be
+// used by another; it all came from the system allocator with its size.
+
+/// Sizes kept: `HDR + 8k` for `k < SMALL`.
+const SMALL: usize = 16;
+/// At most this many blocks kept per size and thread; more are released.
+const KEEP: u32 = 4096;
+
+struct Free {
+    head: [std::cell::Cell<*mut u8>; SMALL],
+    len: [std::cell::Cell<u32>; SMALL],
+}
+
+thread_local! {
+    static FREE: Free = const {
+        Free { head: [const { std::cell::Cell::new(std::ptr::null_mut()) }; SMALL], len: [const { std::cell::Cell::new(0) }; SMALL] }
+    };
+}
+
+/// The list for blocks of `size` bytes, if they are kept.
+#[inline]
+fn class(size: usize) -> Option<usize> {
+    let k = size.wrapping_sub(HDR) / 8;
+    (size >= HDR && size.is_multiple_of(8) && k < SMALL).then_some(k)
+}
+
+#[inline]
+fn take_block(size: usize) -> *mut u8 {
+    let Some(k) = class(size) else { return std::ptr::null_mut() };
+    FREE.try_with(|f| {
+        let p = f.head[k].get();
+        if !p.is_null() {
+            f.head[k].set(unsafe { *(p as *mut *mut u8) });
+            f.len[k].set(f.len[k].get() - 1);
+        }
+        p
+    })
+    .unwrap_or(std::ptr::null_mut())
+}
+
+/// Keep `p`, a block of `size` bytes; false if it isn't kept.
+#[inline]
+fn keep_block(p: *mut u8, size: usize) -> bool {
+    let Some(k) = class(size) else { return false };
+    FREE.try_with(|f| {
+        if f.len[k].get() >= KEEP {
+            return false;
+        }
+        unsafe { *(p as *mut *mut u8) = f.head[k].get() };
+        f.head[k].set(p);
+        f.len[k].set(f.len[k].get() + 1);
+        true
+    })
+    .unwrap_or(false)
 }
 
 /// A new object with reference count 1; its words are uninitialised. If
@@ -168,7 +228,8 @@ fn size_of(w: W) -> usize {
 pub fn alloc_obj(info_word: u64, size: usize) -> W {
     // A size above what an allocation can be has no layout (D184).
     let Ok(layout) = Layout::from_size_align(size.max(HDR), 8) else { crate::fatal("out of memory") };
-    let p = unsafe { alloc(layout) };
+    let p = take_block(layout.size());
+    let p = if p.is_null() { unsafe { alloc(layout) } } else { p };
     if p.is_null() {
         crate::fatal("out of memory");
     }
@@ -211,26 +272,29 @@ pub fn new_tuple(items: &[W]) -> W {
 }
 
 fn new_blob(kind: u64, b: &[u8]) -> W {
-    let w = alloc_obj(info(kind, 0, 0), HDR + 8 + b.len().div_ceil(8) * 8);
+    let w = alloc_obj(info(kind, 0, 0), HDR + 16 + b.len().div_ceil(8) * 8);
     set_slot(w, 0, b.len() as u64);
-    unsafe { std::ptr::copy_nonoverlapping(b.as_ptr(), (w as usize + HDR + 8) as *mut u8, b.len()) };
+    set_slot(w, 1, 0);
+    unsafe { std::ptr::copy_nonoverlapping(b.as_ptr(), (w as usize + HDR + 16) as *mut u8, b.len()) };
     w
 }
 
+/// A string: a bytes object (#170).
 pub fn new_str(s: &str) -> W {
-    new_blob(K_STR, s.as_bytes())
+    new_blob(K_BYTES, s.as_bytes())
 }
 
 pub fn new_bytes(b: &[u8]) -> W {
     new_blob(K_BYTES, b)
 }
 
-/// The bytes of a string or bytes object.
+/// The bytes of a bytes object (a string's too).
 pub fn blob<'a>(w: W) -> &'a [u8] {
     let n = slot(w, 0) as usize;
-    unsafe { std::slice::from_raw_parts((w as usize + HDR + 8) as *const u8, n) }
+    unsafe { std::slice::from_raw_parts(crate::array::data(w) as *const u8, n) }
 }
 
+/// The text of a string: a bytes object that a `String` is, so UTF-8.
 pub fn str_of<'a>(w: W) -> &'a str {
     unsafe { std::str::from_utf8_unchecked(blob(w)) }
 }
@@ -273,16 +337,21 @@ pub fn unique(w: W) -> bool {
 }
 
 /// Free an object whose count reached zero, and drop what it holds. Uses a
-/// work list rather than recursion: a long list is a deep chain.
+/// work list rather than recursion: a long list is a deep chain. The list's
+/// top is kept apart, so freeing allocates only when an object frees two.
 #[no_mangle]
 pub extern "C" fn ck_free(w: W) {
-    let mut todo = vec![w];
-    while let Some(w) = todo.pop() {
+    let mut todo = Vec::new();
+    let mut next = Some(w);
+    while let Some(w) = next.take().or_else(|| todo.pop()) {
         let n = nfields(w);
         let mut release = |c: W| {
             if is_ptr(c) && hdr(c).rc.fetch_sub(1, Ordering::Release) == 1 {
                 fence(Ordering::Acquire);
-                todo.push(c);
+                // The top of the stack is `next`.
+                if let Some(p) = next.replace(c) {
+                    todo.push(p);
+                }
             }
         };
         match kind(w) {
@@ -291,14 +360,18 @@ pub extern "C" fn ck_free(w: W) {
             K_PAP => (0..=n).for_each(|i| release(slot(w, i))),
             K_BIG => unsafe { drop(Box::from_raw(slot(w, 0) as *mut num_bigint::BigInt)) },
             K_RUST => unsafe { drop(Box::from_raw(slot(w, 0) as *mut crate::obj::Obj)) },
-            crate::array::K_ARRAY => crate::array::held(w).for_each(&mut release),
+            // Bytes and packed arrays hold nothing unless they are slices.
+            K_BYTES if slot(w, 1) == 0 => {}
+            K_BYTES | crate::array::K_ARRAY => crate::array::held(w).for_each(&mut release),
             _ => {}
         }
         if TRACK.load(Ordering::Relaxed) {
             LIVE.fetch_sub(1, Ordering::Relaxed);
         }
-        let size = size_of(w);
-        unsafe { dealloc(w as *mut u8, Layout::from_size_align(size.max(HDR), 8).unwrap()) };
+        let size = size_of(w).max(HDR);
+        if !keep_block(w as *mut u8, size) {
+            unsafe { dealloc(w as *mut u8, Layout::from_size_align(size, 8).unwrap()) };
+        }
     }
 }
 
