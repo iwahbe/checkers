@@ -783,6 +783,7 @@ Other warnings:
 | Code | Rule |
 |---|---|
 | W010 | `own` on a type that is already linear (D45) |
+| W011 | a `match` on `Seq.uncons e` that sequence patterns on `e` can write (§9.8, #269) |
 | W020 | a declaration nothing used reaches (D144) |
 | W021 | a `match` arm that earlier arms already cover (D144) |
 | W022 | a branch that never runs: the facts there contradict each other (D144) |
@@ -961,6 +962,7 @@ fn count xs -> n : Seq s, xs~s, n~Nat
 - **Patterns.** On a value whose type is not `List` and has a `Seq` instance, or is a type parameter with a clause `Seq s` in scope, `[]` matches where `Seq.uncons xs` is `None`, `p :: q` where it is `Some (x, rest)` with `p` matching `x` and `q` matching `rest`, and `[p1, …, pn]` is `p1 :: … :: pn :: []`. A nested pattern takes `rest` apart with another `uncons`. `uncons` is called once for each value taken apart, however many arms test it. On `List a` a `match` is built in, unchanged (its constructors and these patterns mix, its proofs and memory reuse are as before), as numbers keep their built-in `+`; so is a `match` on a value whose type isn't known yet. A `let` or a lambda's parameter takes a sequence apart the same way.
 - **Mixing** these patterns with the type's own constructors in one `match` (`String b` and `[]` on a string) is E0248. A type with no instance and no clause is E0241, as before.
 - **Exhaustiveness** is that of a `match` on `Option`: `[]` and `_ :: _` cover everything. A missing case is shown as a pattern of the sequence (`[]`, `_ :: []`).
+- **Written as patterns (W011, #269).** A `match` on `Seq.uncons e` (however `uncons` is named) whose every arm is `None`, `Some (p, q)`, `Some _`, `_`, or `|` of these, is a warning: it is the `match e` with `[]`, `p :: q` and `_ :: _` in their places, and the `help:` gives those arms. Not warned: an arm that binds the `Option` or the pair (`r`, `Some pair`), a `let`'s or a lambda's pattern, a `match` whose sequence's type isn't known yet (there `[]` and `::` would be a list's), and the standard library and dependencies. **(proposed)**: the code W011 and these exceptions.
 - **Termination (§5.3).** `uncons`'s postcondition is a fact after each of its calls, as for any call (D50), so in a `::` arm `Seq.size rest < Seq.size xs` is known; guessed measures try `Seq.size` of a parameter taken apart so. Each instance proves the postcondition in its `uncons`.
 - **In the prover (§7.3)** the patterns are the `match` on `uncons`'s result they stand for.
 - **At run time** `uncons` on an array takes constant time: the rest is a slice sharing the array's storage (§14). On a string it is written in Checkers from two builtins on a non-empty string, `string_first` (the first character, decoded) and `string_rest` (the rest of the bytes, a slice sharing them): `if len s.bytes == 0 then None else Some (string_first s, string_rest s)`.

@@ -206,6 +206,86 @@ impl Elab {
         r
     }
 
+    /// W011: a `match` on `Seq.uncons e` whose arms sequence patterns on
+    /// `e` can write (§9.8): `None` is `[]` and `Some (p, q)` is `p :: q`.
+    /// Not for a `let`'s or a lambda's pattern, nor where the sequence's
+    /// type isn't known yet (there `[]` and `::` would be a list's).
+    fn lint_uncons_match(&mut self, scrut: &Expr, st: &Tm, sty: &Val, arms: &[(Pattern, Option<&Expr>, ArmBody<'_>)]) {
+        if self.match_binding || self.stdlib_mode || self.package_of(&self.cur) != "." || scrut.span.start >= SYNTHETIC {
+            return;
+        }
+        let ExprKind::App(_, arg) = &scrut.kind else { return };
+        let Some(Sym::Def(uncons)) = self.modules.get("std.prelude").and_then(|m| m.values.get("uncons").copied()) else { return };
+        if !matches!(st.head(), Tm::Def(d) if *d == uncons) {
+            return;
+        }
+        // `Option (Elem, s)`: `s` must be known.
+        let known = match self.force(sty) {
+            Val::TyCon(_, args) => match args.first().map(|a| self.force(a)) {
+                Some(Val::TupleTy(xs)) if xs.len() == 2 => !matches!(self.force(&xs[1]), Val::Neutral(Head::Meta(_), _) | Val::Error),
+                _ => false,
+            },
+            _ => false,
+        };
+        if !known {
+            return;
+        }
+        let Some(pats) = arms.iter().map(|(p, _, _)| self.seq_pattern_text(p)).collect::<Option<Vec<String>>>() else { return };
+        let mut seq = self.src_text(arg.span);
+        if !matches!(arg.kind, ExprKind::Var(_) | ExprKind::Field(..) | ExprKind::Index(..) | ExprKind::List(_) | ExprKind::Tuple(_) | ExprKind::Lit(_)) {
+            seq = format!("({seq})");
+        }
+        let rewrites: Vec<String> = arms
+            .iter()
+            .zip(&pats)
+            .filter_map(|((p, _, _), q)| {
+                let was = self.src_text(p.span);
+                (was != *q).then(|| format!("`{q}` for `{was}`"))
+            })
+            .collect();
+        let help = if rewrites.is_empty() {
+            format!("write `match {seq}`")
+        } else {
+            format!("write `match {seq}`, with {}", and_list(&rewrites))
+        };
+        self.err(
+            Diagnostic::warning("W011", format!("match on `{seq}` itself, not on `Seq.uncons {seq}`"), scrut.span)
+                .with_label("`[]` and `x :: rest` take a sequence apart with `Seq.uncons`")
+                .with_help(help),
+        );
+    }
+
+    /// A pattern on `Seq.uncons`'s result written as a sequence pattern, if
+    /// it can be: `None` is `[]`, `Some (p, q)` is `p :: q`.
+    fn seq_pattern_text(&self, p: &Pattern) -> Option<String> {
+        let wk = &self.g.well_known;
+        let con = |n: &ast::Ident| match self.resolve(&n.name, false) {
+            Some(Sym::Con(c)) => Some(c),
+            _ => None,
+        };
+        match &p.kind {
+            PatKind::Wild => Some("_".to_string()),
+            PatKind::Con(n, args) if args.is_empty() && con(n).is_some() && con(n) == wk.none => Some("[]".to_string()),
+            PatKind::Con(n, args) if args.len() == 1 && con(n).is_some() && con(n) == wk.some => match &args[0].kind {
+                PatKind::Wild => Some("_ :: _".to_string()),
+                PatKind::Tuple(xs) if xs.len() == 2 => {
+                    let side = |q: &Pattern, left: bool| {
+                        let t = self.src_text(q.span);
+                        if matches!(q.kind, PatKind::Or(_)) || (left && matches!(q.kind, PatKind::Cons(..))) {
+                            format!("({t})")
+                        } else {
+                            t
+                        }
+                    };
+                    Some(format!("{} :: {}", side(&xs[0], true), side(&xs[1], false)))
+                }
+                _ => None,
+            },
+            PatKind::Or(alts) => alts.iter().map(|a| self.seq_pattern_text(a)).collect::<Option<Vec<_>>>().map(|v| v.join(" | ")),
+            _ => None,
+        }
+    }
+
     fn elab_match_inner<'a>(
         &mut self,
         cx: &mut Cx,
@@ -255,6 +335,7 @@ impl Elab {
             ExprKind::Var(n) if cx.lookup(n).is_some() => (cx.lookup(n).unwrap(), None),
             _ => {
                 let (st, sty) = self.infer(cx, scrut);
+                self.lint_uncons_match(scrut, &st, &sty, &arms);
                 let v = self.eval(cx, &st);
                 let tyt = quote(&self.g, cx.lvl(), &sty);
                 let l = cx.define("$s", sty, v, Mult::Many);

@@ -166,6 +166,7 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `W002` | a function, variable, field or module name that isn't `lower_snake_case` |
 | `W003` | a constant name that isn't `SCREAMING_SNAKE_CASE` |
 | `W010` | `own` on a type that is a resource anyway |
+| `W011` | a `match` on `Seq.uncons xs` that `match xs` with `[]` and `x :: rest` can write |
 | `W020` | a declaration nothing reachable uses |
 | `W021` | a `match` arm earlier arms already cover |
 | `W022` | an arm or branch no value reaches: the facts there contradict each other |

@@ -77,7 +77,7 @@ check manhattan (Point 3 (-4)) == 7
 
 ### Sequence patterns
 
-`[]`, `x :: rest` and `[a, b]` take apart more than lists: any value whose type has an instance of the prelude's class `Seq`, which arrays (`Bytes` too) and strings have, or whose type is a parameter `s` with the clause `Seq s`. `[]` matches when `Seq.uncons` gives `None`, and `x :: rest` when it gives `Some (x, rest)`; the elements are the type's `Seq.Elem` (a string's are `Char`s, a `Bytes`' are `U8`s). A function written so works on all of them:
+`[]`, `x :: rest` and `[a, b]` take apart more than lists: any value whose type has an instance of the prelude's class `Seq`, which arrays (`Bytes` too) and strings have, or whose type is a parameter `s` with the clause `Seq s`. `[]` matches when `Seq.uncons` gives `None`, and `x :: rest` when it gives `Some (x, rest)`, so a `match` on `Seq.uncons xs` that these patterns can write is a warning (W011); the elements are the type's `Seq.Elem` (a string's are `Char`s, a `Bytes`' are `U8`s). A function written so works on all of them:
 
 ```checkers
 fn count xs -> n : Seq s, xs~s, n~Nat
