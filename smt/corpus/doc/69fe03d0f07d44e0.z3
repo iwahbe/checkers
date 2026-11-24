@@ -1,7 +1,0 @@
-;; work 925
-sat
-((|args#0| (std.prelude.Cons (as seq.empty (Seq Int))
-                  (std.prelude.Cons (seq.++ (seq.unit 45) (seq.unit 111))
-                                    (std.prelude.Cons (seq.unit 115)
-                                                      std.prelude.Nil))))
- (|fs#3| std.files.Fs!val!0))

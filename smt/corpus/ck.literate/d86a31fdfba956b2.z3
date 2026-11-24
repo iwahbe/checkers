@@ -1,7 +1,0 @@
-;; work 601
-sat
-((|b#1| (std.markdown.Numbered
-  0
-  false
-  (as std.prelude.Nil (std.prelude.List std.markdown.Item))
-  (std.markdown.Span 0 7719))))

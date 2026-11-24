@@ -1,0 +1,13 @@
+(set-option :produce-models true)
+(set-option :rlimit 200000)
+(set-option :timeout 60000)
+(set-logic ALL)
+(declare-fun |std.prelude.valid_utf8| ((Seq Int)) Bool)
+(declare-const |label#3| (Seq Int))
+(assert (|std.prelude.valid_utf8| |label#3|))
+(assert (|std.prelude.valid_utf8| (as seq.empty (Seq Int))))
+(assert (= (= |label#3| (as seq.empty (Seq Int))) false))
+(assert (not false))
+(check-sat)
+(get-value (|label#3|))
+;; reachable?

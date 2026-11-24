@@ -1,7 +1,0 @@
-(set-option :produce-models true)
-(set-option :rlimit 200000)
-(set-option :timeout 60000)
-(set-logic ALL)
-(define-funs-rec ((|arrays.widen| ((p0 (Seq Int))) (Seq Int))) (p0))
-(assert (not (< 0 (seq.len (|arrays.widen| (seq.++ (seq.unit 97) (seq.unit 98)))))))
-(check-sat)

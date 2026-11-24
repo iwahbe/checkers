@@ -1,0 +1,13 @@
+(set-option :produce-models true)
+(set-option :rlimit 200000)
+(set-option :timeout 60000)
+(set-logic ALL)
+(declare-fun |std.prelude.valid_utf8| ((Seq Int)) Bool)
+(declare-const |dir#0| (Seq Int))
+(assert (|std.prelude.valid_utf8| |dir#0|))
+(assert (|std.prelude.valid_utf8| (seq.unit 46)))
+(assert (= (= |dir#0| (seq.unit 46)) false))
+(assert (not false))
+(check-sat)
+(get-value (|dir#0|))
+;; reachable?

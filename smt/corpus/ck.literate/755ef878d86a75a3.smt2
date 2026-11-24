@@ -1,0 +1,11 @@
+(set-option :produce-models true)
+(set-option :rlimit 200000)
+(set-option :timeout 60000)
+(set-logic ALL)
+(declare-datatypes ((|std.prelude.List| 1)) ((par (T0) ((|std.prelude.Nil|) (|std.prelude.Cons| (|std.prelude.Cons.0| |T0|) (|std.prelude.Cons.1| (|std.prelude.List| |T0|)))))))
+(declare-const |names#1| (|std.prelude.List| (Seq Int)))
+(assert (= |names#1| (as |std.prelude.Nil| (|std.prelude.List| (Seq Int)))))
+(assert (not false))
+(check-sat)
+(get-value (|names#1|))
+;; reachable?

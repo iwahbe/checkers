@@ -1,0 +1,12 @@
+(set-option :produce-models true)
+(set-option :rlimit 200000)
+(set-option :timeout 60000)
+(set-logic ALL)
+(declare-datatypes ((|std.prelude.List| 1)) ((par (T0) ((|std.prelude.Nil|) (|std.prelude.Cons| (|std.prelude.Cons.0| |T0|) (|std.prelude.Cons.1| (|std.prelude.List| |T0|)))))))
+(declare-const |text#0| (|std.prelude.List| Int))
+(assert (=> (|is-std.prelude.Cons| |text#0|) (and (>= (|std.prelude.Cons.0| |text#0|) 0) (< (|std.prelude.Cons.0| |text#0|) 1114112) (ite (not (< (|std.prelude.Cons.0| |text#0|) 55296)) (<= 57344 (|std.prelude.Cons.0| |text#0|)) true))))
+(assert (= |text#0| (as |std.prelude.Nil| (|std.prelude.List| Int))))
+(assert (not false))
+(check-sat)
+(get-value (|text#0|))
+;; reachable?
