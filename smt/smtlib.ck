@@ -632,19 +632,29 @@ fn add_commands src c cmds -> r : src~Bytes, c~Context, cmds~List (Command, (p~N
             let d = try add_command src c cmd p
             add_commands src d rest
 
-# The last negated goal read so far: `(assert (not goal))` at `at`, with `k`
-# commands before it, and the assertions after it, last first.
+# The last negated goal read so far: `(assert (not goal))` at `at`, and the
+# assertions after it, last first. While it is held, nothing is added to
+# the context, so the goal comes after all of the context's commands.
 record Held src : src~Bytes
     goal~Term
     at~Nat, at < len src
-    k~Nat
     after~List (Command, (p~Nat, p < len src))
 
-# Whether `h` can still be the goal of `c`: no command was added after it.
-fn held_ok src c h -> r : src~Bytes, c~Context, h~Option (Held src), r~Bool
-    match h
-        Some x -> x.k <= list.length (term.commands c)
-        None   -> True
+# `g` if `t` is `(not g)`.
+fn negated t -> r : t~Term, r~Option Term
+    match t
+        App (Prim Not) [g] -> Some g
+        _                  -> None
+
+# An assertion `cmd` at `p` that isn't the goal: added to `c`, or, if a goal
+# is held, held after it.
+fn keep src c held cmd p -> r : src~Bytes, c~Context, held~Option (Held src), cmd~Command, p~Nat, p < len src,
+                                r~Result (Context, Option (Held src)) (Error src)
+    match held
+        None   ->
+            let d = try add_command src c cmd p
+            Ok (d, None)
+        Some h -> Ok (c, Some (Held h.goal h.at ((cmd, p) :: h.after)))
 
 # `c` with the held goal and the assertions after it added as facts: they
 # turned out not to be the goal.
@@ -677,7 +687,7 @@ fn setup src es acc -> r : src~Bytes, es~List (SExpr src), acc~List Opt, r~Resul
 # `(check-sat)`, it is the negated goal. `broken` is where a declaration
 # followed the last one held back.
 fn body src es opts logic c held broken -> r : src~Bytes, es~List (SExpr src), opts~List Opt, logic~Name,
-                                               c~Context, held~Option (Held src), held_ok src c held,
+                                               c~Context, held~Option (Held src),
                                                broken~Option (p~Nat, p < len src), r~Result Query (Error src)
     match es
         []        -> Err (Error (len src) b"expected `(check-sat)`")
@@ -687,25 +697,17 @@ fn body src es opts logic c held broken -> r : src~Bytes, es~List (SExpr src), o
                     finish src rest opts logic c held broken p
                 Node [Leaf (Symbol n False) _, Node (Leaf (Symbol f False) _ :: q) fp] p if n == b"assert" and f == b"forall" ->
                     let a = try axiom_from src (term.signature c) q fp
-                    match held
-                        None   ->
-                            let d = try add_command src c (Assume a) p
-                            body src rest opts logic d None broken
-                        Some h -> body src rest opts logic c (Some (Held h.goal h.at h.k ((Assume a, p) :: h.after))) broken
+                    let (d, h) = try keep src c held (Assume a) p
+                    body src rest opts logic d h broken
                 Node [Leaf (Symbol n False) _, t] p if n == b"assert" ->
                     let tm = try term_of src (term.signature c) [] t Bool b"an assertion"
-                    match tm
-                        App (Prim Not) [g] ->
+                    match negated tm
+                        Some g ->
                             let d = try flush src c held
-                            body src rest opts logic d (Some (Held g p (list.length (term.commands d)) [])) None
-                        _                  ->
-                            match held
-                                None   ->
-                                    let d = try add_command src c (Assert tm) p
-                                    body src rest opts logic d None broken
-                                Some h ->
-                                    let kept = Held h.goal h.at h.k ((Assert tm, p) :: h.after)
-                                    body src rest opts logic c (Some kept) broken
+                            body src rest opts logic d (Some (Held g p [])) None
+                        None   ->
+                            let (d, h) = try keep src c held (Assert tm) p
+                            body src rest opts logic d h broken
                 Node (Leaf (Symbol n False) hp :: args) p ->
                     let d = try flush src c held
                     let cmd = try declaration src (term.signature d) n hp args p
@@ -717,22 +719,23 @@ fn body src es opts logic c held broken -> r : src~Bytes, es~List (SExpr src), o
 # `(check-sat)` at `p`: the goal held back is the goal, and the assertions
 # after it are facts; then `(get-value …)` may follow.
 fn finish src rest opts logic c held broken p -> r : src~Bytes, rest~List (SExpr src), opts~List Opt, logic~Name,
-                                                     c~Context, held~Option (Held src), held_ok src c held,
+                                                     c~Context, held~Option (Held src),
                                                      broken~Option (q~Nat, q < len src), p~Nat, p < len src,
                                                      r~Result Query (Error src)
     match held
         Some h ->
+            let k = list.length (term.commands c)
             let d = try add_commands src c (list.reverse h.after)
             match term.check_fact d h.goal
                 Err pr -> Err (Error h.at (b"the goal: " ++ problem_message (term.signature d) pr))
                 Ok ()  ->
                     match rest
-                        []     -> Ok (Query opts logic d h.goal h.k None)
+                        []     -> Ok (Query opts logic d h.goal k None)
                         [Node [Leaf (Symbol n False) _, Node ts tp] _] if n == b"get-value" ->
                             let (vs, _) = try terms_from src (term.signature d) [] ts
                             match term.check_terms d vs
                                 Err pr -> Err (Error tp (problem_message (term.signature d) pr))
-                                Ok ()  -> Ok (Query opts logic d h.goal h.k (Some vs))
+                                Ok ()  -> Ok (Query opts logic d h.goal k (Some vs))
                         e :: _ ->
                             Err (Error (at e) b"only `(get-value (TERM …))` may follow `(check-sat)`")
         None   ->
