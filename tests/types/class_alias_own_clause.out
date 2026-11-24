@@ -1,0 +1,43 @@
+error[E0456]: cannot prove that `Make.make True Nat` is a `Nat` (`(Make.make True Nat) >= 0`)
+  --> class_alias_own_clause.ck:29:5
+   |
+29 |     Make.make True Nat
+   |     ^^^^^^^^^^^^^^^^^^ `Make` at `Nat` runs `Int`'s instance, and its `make` isn't shown to give a `Nat` here
+   = help: use `Int` here and check the result where a `Nat` is needed; or promise it in a signature of `instance Make Int`'s `make`
+
+error[E0456]: cannot prove that `Make.pair True False` is a `Nat` (`(Make.pair True False) >= 0`)
+  --> class_alias_own_clause.ck:32:5
+   |
+32 |     Make.pair True False
+   |     ^^^^^^^^^^^^^^^^^^^^ `Make` at `Nat` runs `Int`'s instance, and its `pair` isn't shown to give a `Nat` here
+   = help: use `Int` here and check the result where a `Nat` is needed; or promise it in a signature of `instance Make Int`'s `pair`
+
+error[E0456]: `Make` at `Nat` runs `Int`'s instance, whose `make` isn't shown to return a `Nat` (`n >= 0`)
+  --> class_alias_own_clause.ck:38:5
+   |
+38 |     made True
+   |     ^^^^ `Make` is used at `Nat` here, by code that may call `make` with any arguments
+   = help: use `Int` here instead of `Nat`; or promise it, for every argument, in a signature of `instance Make Int`'s `make`
+
+error[E0456]: `Make` at `Nat` runs `Int`'s instance, whose `pair` isn't shown to return a `Nat` (`n >= 0`)
+  --> class_alias_own_clause.ck:38:5
+   |
+38 |     made True
+   |     ^^^^ `Make` is used at `Nat` here, by code that may call `pair` with any arguments
+   = help: use `Int` here instead of `Nat`; or promise it, for every argument, in a signature of `instance Make Int`'s `pair`
+
+error[E0456]: `Make` at `Nat` runs `Int`'s instance, whose `test` may give `f` a value that isn't a `Nat`
+  --> class_alias_own_clause.ck:38:5
+   |
+38 |     made True
+   |     ^^^^ `Make` is used at `Nat` here
+   = help: use `Int` here, with a function that accepts every `Int`; or give `instance Make Int`'s `test` a signature in which `f` is given only `Nat`s
+
+error[E0456]: `Make` at `Nat` runs `Int`'s instance, whose `test` may give `f` a value that isn't a `Nat`
+  --> class_alias_own_clause.ck:44:5
+   |
+44 |     Make.test True small
+   |     ^^^^^^^^^^^^^^^^^^^^ `Make` is used at `Nat` here
+   = help: use `Int` here, with a function that accepts every `Int`; or give `instance Make Int`'s `test` a signature in which `f` is given only `Nat`s
+
+class_alias_own_clause.ck: 6 errors, 0 warnings

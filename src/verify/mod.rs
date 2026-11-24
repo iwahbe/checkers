@@ -1120,17 +1120,50 @@ fn headline(o: &Obligation) -> (String, String, String) {
                 p.example.as_ref().map_or(String::new(), |e| format!(", such as `{}~{e}`", p.name))
             ),
         ),
-        ObKind::AtAlias { class, alias, base, member, call: Some(c), param: None, inside } => (
-            if *inside {
-                format!("cannot prove `{}` of the `{alias}`s inside `{c}`", o.text)
-            } else {
-                format!("cannot prove that `{c}` is a `{alias}` (`{}`)", o.text)
+        ObKind::AtAlias { class, alias, base, member, call, param: None, inside, whole: Some((wt, wb)) } => {
+            // A part checked as one: the instance's signature can promise
+            // it by its type, or for a list with `list.all`.
+            let formula = (!o.text.is_empty()).then(|| o.text.clone());
+            let promise = match &formula {
+                Some(f) => format!("`{wt}` in its result, or `{f}` of it"),
+                None => format!("`{wt}` in its result"),
+            };
+            match call {
+                Some(c) => (
+                    match (inside, &formula) {
+                        (false, Some(f)) => format!("cannot prove that `{c}` has type `{wt}` (`{f} {}`)", if c.contains(' ') { format!("({c})") } else { c.clone() }),
+                        (false, None) => format!("cannot prove that `{c}` has type `{wt}`"),
+                        (true, _) => format!("cannot prove that the `{wb}` inside `{c}` has type `{wt}`"),
+                    },
+                    format!("`{class}` at `{alias}` runs `{base}`'s instance, and its `{member}` isn't shown to give a `{alias}` here"),
+                    format!("use `{base}` here and check the result where a `{alias}` is needed; or promise it in a signature of `instance {class} {base}`'s `{member}`: {promise}"),
+                ),
+                None => (
+                    if *inside {
+                        format!("`{class}` at `{alias}` runs `{base}`'s instance, whose `{member}` isn't shown to give a value of type `{wt}` inside its result")
+                    } else {
+                        format!("`{class}` at `{alias}` runs `{base}`'s instance, whose `{member}` isn't shown to return a value of type `{wt}`")
+                    },
+                    format!("`{class}` is used at `{alias}` here, by code that may call `{member}` with any arguments"),
+                    format!("use `{base}` here instead of `{alias}`; or promise it, for every argument, in a signature of `instance {class} {base}`'s `{member}`: {promise}"),
+                ),
+            }
+        }
+        ObKind::AtAlias { class, alias, base, member, call: Some(c), param: None, inside, whole: None } => (
+            match (inside, o.text.is_empty()) {
+                (_, true) => format!("cannot prove that the `{alias}`s inside `{c}` are `{alias}`s"),
+                (true, false) => format!("cannot prove `{}` of the `{alias}`s inside `{c}`", o.text),
+                (false, false) => format!("cannot prove that `{c}` is a `{alias}` (`{}`)", o.text),
             },
             format!("`{class}` at `{alias}` runs `{base}`'s instance, and its `{member}` isn't shown to give a `{alias}` here"),
             format!("use `{base}` here and check the result where a `{alias}` is needed; or promise it in a signature of `instance {class} {base}`'s `{member}`"),
         ),
-        ObKind::AtAlias { class, alias, base, member, call: None, param: None, .. } => (
-            format!("`{class}` at `{alias}` runs `{base}`'s instance, whose `{member}` isn't shown to return a `{alias}` (`{}`)", o.text),
+        ObKind::AtAlias { class, alias, base, member, call: None, param: None, whole: None, .. } => (
+            if o.text.is_empty() {
+                format!("`{class}` at `{alias}` runs `{base}`'s instance, whose `{member}` isn't shown to return `{alias}`s")
+            } else {
+                format!("`{class}` at `{alias}` runs `{base}`'s instance, whose `{member}` isn't shown to return a `{alias}` (`{}`)", o.text)
+            },
             format!("`{class}` is used at `{alias}` here, by code that may call `{member}` with any arguments"),
             format!("use `{base}` here instead of `{alias}`; or promise it, for every argument, in a signature of `instance {class} {base}`'s `{member}`"),
         ),

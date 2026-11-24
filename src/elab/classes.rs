@@ -3176,13 +3176,17 @@ pub(super) struct MethodLayout {
 
 impl Elab {
     pub(super) fn method_layout(&self, f: DefId) -> Option<MethodLayout> {
+        // Its dictionary is the binder its body reads the function from
+        // (`$d.make …`): a clause of the function's own (`Seq s`) may be
+        // bound before it, as when the class's type is a parameter.
+        let own = self.method_dict(f)?;
         let mut ty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[f.0 as usize].ty);
         let mut pos = Vec::new();
         let mut dict = None;
         let mut i = 0;
         while let Val::Pi(_, _, _, d, c) = self.force(&ty) {
             pos.push(None);
-            if dict.is_none() {
+            if dict.is_none() && i == own {
                 if let Val::TyCon(class, tys) = self.force(&d) {
                     if self.class_defs.contains_key(&class) {
                         dict = Some((i, class));
@@ -3201,6 +3205,24 @@ impl Elab {
         }
         let (dict, class) = dict?;
         Some(MethodLayout { class, dict, pos, arity: i })
+    }
+
+    /// Which binder of class function `f` is its class's dictionary: the
+    /// one its body (`$d.f x …`, under a lambda per binder) reads.
+    fn method_dict(&self, f: DefId) -> Option<usize> {
+        let mut b = self.g.defs[f.0 as usize].body.as_ref()?;
+        let mut n = 0;
+        while let Tm::Lam(_, _, _, body) = b {
+            b = body;
+            n += 1;
+        }
+        match b.head() {
+            Tm::Field(d, _, _) => match **d {
+                Tm::Var(k) if k < n => Some(n - 1 - k),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// `t` without the refinement aliases at its head: the type the alias
@@ -3254,85 +3276,206 @@ impl Elab {
     }
 
     /// The conditions for value `v` (a term at `env`'s level) of type `t`
-    /// to be of it where `b`, the same type at the alias's base, isn't:
-    /// each a goal (under `match`es reaching the part, other cases
-    /// trivially true), the predicate as written, and the alias. `None`
-    /// where such a part can't be reached by a finite walk (under a
-    /// recursive type, or a function's result).
-    #[allow(clippy::type_complexity)]
-    fn alias_goals(&self, env: &[Val], v: &Tm, t: &Val, b: &Val, seen: &mut Vec<TyId>) -> Option<Vec<(Tm, String, DefId)>> {
+    /// to be of it where `b`, the same type at the alias's base, isn't. A
+    /// part a finite walk reaches gives goals about the value (under
+    /// `match`es reaching it, other cases trivially true); one under a
+    /// recursive type, or a function, is an `AliasGoal::Part`, checked by
+    /// the instance's own type for it (`ti`, the instance's type for `v`
+    /// where known) or, for a list, by `list.all`. `Err(t)` where the walk
+    /// came back to the type `t` it is inside, which makes that a part.
+    #[allow(clippy::too_many_arguments)]
+    fn alias_goals(&self, env: &[Val], outer: usize, v: &Tm, t: &Val, b: &Val, ti: Option<&Val>, seen: &mut Vec<TyId>) -> Result<Vec<AliasGoal>, TyId> {
         let lvl = env.len();
         if !self.alias_differs(lvl, t, b, true, 0) {
-            return Some(Vec::new());
+            return Ok(Vec::new());
         }
         let (pt, pb) = (self.peel(t), self.peel(b));
         if let Some((d, args)) = self.refined_alias(&pt) {
             if self.refined_alias(&pb).is_none_or(|(e, _)| e != d) {
                 let vv = eval(&self.g, &Rc::new(env.to_vec()), v);
                 let preds = self.alias_preds.get(&d).cloned().unwrap_or_default();
-                return Some(
-                    preds
-                        .iter()
-                        .map(|p| {
-                            let mut e = args.clone();
-                            e.push(vv.clone());
-                            (quote(&self.g, lvl, &self.inst_pred(p, e)), p.text.clone(), d)
-                        })
-                        .collect(),
-                );
+                return Ok(preds
+                    .iter()
+                    .map(|p| {
+                        let mut e = args.clone();
+                        e.push(vv.clone());
+                        AliasGoal::Value(quote(&self.g, lvl, &self.inst_pred(p, e)), p.text.clone(), d)
+                    })
+                    .collect());
             }
         }
+        let part = |seen: &mut Vec<TyId>| self.alias_part(env, outer, v, t, b, ti, seen);
+        let ti = ti.map(|x| self.force(&self.peel(x)));
         let tru = quote(&self.g, lvl, &self.g.bool_val(true));
         match (self.force(&pt), self.force(&pb)) {
             (Val::TupleTy(x), Val::TupleTy(y)) => {
                 let (x, y) = (crate::core::flat_parts(&self.g, &x, true), crate::core::flat_parts(&self.g, &y, true));
                 if x.len() != y.len() {
-                    return None;
+                    return Ok(vec![part(seen)]);
                 }
+                let z = match &ti {
+                    Some(Val::TupleTy(z)) => Some(crate::core::flat_parts(&self.g, z, true)).filter(|z| z.len() == x.len()),
+                    _ => None,
+                };
                 let mut out = Vec::new();
                 for (i, (a, c)) in x.iter().zip(&y).enumerate() {
-                    out.extend(self.alias_goals(env, &Tm::Proj(Rc::new(v.clone()), i, false), a, c, seen)?);
+                    out.extend(self.alias_goals(env, outer, &Tm::Proj(Rc::new(v.clone()), i, false), a, c, z.as_ref().map(|z| &z[i]), seen)?);
                 }
-                Some(out)
+                Ok(out)
             }
             (Val::TyCon(t1, a1), Val::TyCon(t2, a2)) if t1 == t2 && a1.len() == a2.len() => {
-                if seen.contains(&t1) || seen.len() > 4 {
-                    return None;
+                if Some(t1) == self.g.well_known.list {
+                    return Ok(vec![part(seen)]);
                 }
+                if seen.contains(&t1) {
+                    return Err(t1);
+                }
+                if seen.len() > 4 {
+                    return Ok(vec![part(seen)]);
+                }
+                let ai = match &ti {
+                    Some(Val::TyCon(t3, a3)) if *t3 == t1 && a3.len() == a1.len() => Some(a3.clone()),
+                    _ => None,
+                };
                 seen.push(t1);
                 let mut out = Vec::new();
-                for c in self.g.tys[t1.0 as usize].ctors.clone() {
+                let mut recursive = false;
+                'ctors: for c in self.g.tys[t1.0 as usize].ctors.clone() {
                     let fields = self.g.cons[c.0 as usize].fields.clone();
                     let n = fields.len();
                     let mut et = a1.clone();
                     let mut eb = a2.clone();
+                    let mut ei = ai.clone();
                     let mut inner = env.to_vec();
                     let mut parts = Vec::new();
                     for (i, (_, _, _, fty)) in fields.iter().enumerate() {
                         let ft = eval(&self.g, &Rc::new(et.clone()), fty);
                         let fb = eval(&self.g, &Rc::new(eb.clone()), fty);
+                        let fi = ei.as_ref().map(|e| eval(&self.g, &Rc::new(e.clone()), fty));
                         let x = Val::var(lvl + i);
                         et.push(x.clone());
                         eb.push(x.clone());
-                        parts.push((ft, fb));
+                        if let Some(e) = &mut ei {
+                            e.push(x.clone());
+                        }
+                        parts.push((ft, fb, fi));
                         inner.push(x);
                     }
-                    for (i, (ft, fb)) in parts.iter().enumerate() {
+                    for (i, (ft, fb, fi)) in parts.iter().enumerate() {
                         let fv = Tm::Var(n - 1 - i);
-                        for (g, text, d) in self.alias_goals(&inner, &fv, ft, fb, seen)? {
-                            let case = Tm::Case(
-                                Rc::new(v.clone()),
-                                Rc::new(CaseTm { branches: vec![(c, n, g)], lits: Vec::new(), default: Some(tru.clone()) }),
-                            );
-                            out.push((case, text, d));
+                        let goals = match self.alias_goals(&inner, outer, &fv, ft, fb, fi.as_ref(), seen) {
+                            Ok(goals) => goals,
+                            Err(r) if r == t1 => {
+                                recursive = true;
+                                break 'ctors;
+                            }
+                            Err(r) => {
+                                seen.pop();
+                                return Err(r);
+                            }
+                        };
+                        let case = |g: Tm| {
+                            Tm::Case(Rc::new(v.clone()), Rc::new(CaseTm { branches: vec![(c, n, g)], lits: Vec::new(), default: Some(tru.clone()) }))
+                        };
+                        for g in goals {
+                            out.push(match g {
+                                AliasGoal::Value(g, text, d) => AliasGoal::Value(case(g), text, d),
+                                AliasGoal::Part { t, b, inst, each, .. } => {
+                                    let each = each.map(|(gs, text)| (gs.into_iter().map(case).collect(), text));
+                                    AliasGoal::Part { t, b, inst, each, inside: true }
+                                }
+                            });
                         }
                     }
                 }
                 seen.pop();
-                Some(out)
+                if recursive {
+                    return Ok(vec![part(seen)]);
+                }
+                Ok(out)
             }
-            _ => None,
+            _ => Ok(vec![part(seen)]),
         }
+    }
+
+    /// `v` of type `t` (`b` at the alias's base) as a part `alias_goals`
+    /// doesn't walk into: the instance's own type `ti` for it, if it and
+    /// `t` say nothing of the values the walk bound; for a list, the goal
+    /// that `list.all` elements satisfy what an element needs.
+    #[allow(clippy::too_many_arguments)]
+    fn alias_part(&self, env: &[Val], outer: usize, v: &Tm, t: &Val, b: &Val, ti: Option<&Val>, seen: &mut Vec<TyId>) -> AliasGoal {
+        let lvl = env.len();
+        let (t_full, b_full) = (t, b);
+        let closed = |x: &Val| !mentions_from(&quote(&self.g, lvl, x), lvl - outer);
+        let (t, b) = if closed(t) && closed(b) { (Some(t.clone()), Some(b.clone())) } else { (None, None) };
+        let inst = ti.filter(|x| t.is_some() && closed(x)).cloned();
+        AliasGoal::Part { each: self.list_all_goal(env, outer, v, t_full, b_full, seen), t, b, inst, inside: lvl > outer || matches!(v, Tm::Proj(..)) }
+    }
+
+    /// For `v`, a list of type `t`: the goal `list.all (\x -> g) v`, with
+    /// `g` what each element needs, and how it is written. None where
+    /// `t` isn't a list, `std.list` isn't loaded, or an element's goals
+    /// can't be written so.
+    fn list_all_goal(&self, env: &[Val], outer: usize, v: &Tm, t: &Val, b: &Val, seen: &mut Vec<TyId>) -> Option<(Vec<Tm>, String)> {
+        let list = self.g.well_known.list?;
+        let (Val::TyCon(l1, a1), Val::TyCon(l2, a2)) = (self.force(&self.peel(t)), self.force(&self.peel(b))) else { return None };
+        if l1 != list || l2 != list || a1.len() != 1 || a2.len() != 1 {
+            return None;
+        }
+        let all = self.g.defs.iter().position(|d| &*d.module == "std.list" && &*d.name == "all").map(|i| DefId(i as u32))?;
+        let lvl = env.len();
+        let mut inner = env.to_vec();
+        inner.push(Val::var(lvl));
+        // What each element needs, as one predicate of it.
+        let mut body: Option<Tm> = None;
+        let mut texts: Vec<String> = Vec::new();
+        let mut subject: Option<Name> = None;
+        let mut direct = true;
+        for g in self.alias_goals(&inner, outer, &Tm::Var(0), &a1[0], &a2[0], None, seen).ok()? {
+            let (gs, text) = match g {
+                AliasGoal::Value(g, text, d) => {
+                    let s = self.alias_subject.get(&d).cloned();
+                    direct &= !matches!(g, Tm::Case(..) | Tm::Proj(..)) && s.is_some() && (subject.is_none() || subject == s);
+                    subject = subject.or(s);
+                    (vec![g], text)
+                }
+                AliasGoal::Part { each: Some((gs, text)), .. } if !text.is_empty() => {
+                    direct &= subject.is_none();
+                    texts.push(format!("{text} x"));
+                    subject = Some(Rc::from("x"));
+                    (gs, String::new())
+                }
+                _ => return None,
+            };
+            if !text.is_empty() {
+                texts.push(text);
+            }
+            for g in gs {
+                body = Some(match body {
+                    None => g,
+                    Some(a) => self.if_tm(a, g, self.bool_lit(false)),
+                });
+            }
+        }
+        let body = body?;
+        let x: Name = subject.clone().unwrap_or_else(|| Rc::from("x"));
+        let text = if direct { format!("list.all (\\{x} -> {})", texts.join(" and ")) } else { String::new() };
+        // `list.all` at the element type at the base, the predicate, `v`.
+        let mut ty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[all.0 as usize].ty);
+        let mut call = Tm::Def(all);
+        let mut expl = vec![Tm::Lam(x, Mult::Many, Icit::Expl, Rc::new(body)), v.clone()].into_iter();
+        while let Val::Pi(_, m, icit, _, c) = self.force(&ty) {
+            let (a, va) = match icit {
+                Icit::Impl => (quote(&self.g, lvl, &a2[0]), a2[0].clone()),
+                Icit::Expl => (expl.next()?, Val::var(usize::MAX / 2)),
+            };
+            call = Tm::App(Rc::new(call), Rc::new(a), icit, m);
+            ty = apply_closure(&self.g, &c, va);
+        }
+        if expl.next().is_some() {
+            return None;
+        }
+        Some((vec![call], text))
     }
 
     /// The obligations of one class's function `f` used at a refinement
@@ -3417,7 +3560,7 @@ impl Elab {
             }
         }
         let call_text = call.map(|(_, _, s)| self.src_text(s));
-        let kind = |param: Option<super::AliasParam>, inside: bool| ObKind::AtAlias {
+        let kind = |param: Option<super::AliasParam>, inside: bool, whole: Option<(String, String)>| ObKind::AtAlias {
             class: cname.clone(),
             alias: alias_s.clone(),
             base: base_s.clone(),
@@ -3425,18 +3568,26 @@ impl Elab {
             call: call_text.clone(),
             param,
             inside,
+            whole,
         };
         let falsity = quote(&self.g, lvl, &self.g.bool_val(false));
         let saved = self.cur_fn;
         self.cur_fn = ad.owner;
+        // The instance's own types for its parameters and result, from its
+        // signature, at these arguments.
+        let (inst_params, inst_result) = self.inst_param_types(ad.members.get(&member).copied(), &args_t);
         // Its result.
         let env = cx.env.to_vec();
-        match self.alias_goals(&env, &value, &ty_t, &ty_b, &mut Vec::new()) {
-            Some(goals) => {
-                for (g, text, d) in goals {
+        let goals = match self.alias_goals(&env, lvl, &value, &ty_t, &ty_b, inst_result.as_ref(), &mut Vec::new()) {
+            Ok(goals) => goals,
+            Err(_) => vec![AliasGoal::Part { t: None, b: None, inst: None, each: None, inside: false }],
+        };
+        for goal in goals {
+            match goal {
+                AliasGoal::Value(g, text, d) => {
                     // The result itself is shown as the call; a value inside
                     // it by the alias's own name.
-                    let inside = matches!(g, Tm::Case(..));
+                    let inside = matches!(g, Tm::Case(..) | Tm::Proj(..));
                     let text = match (&call_text, inside) {
                         (Some(c), false) => {
                             let subject = self.alias_subject.get(&d).map(|s| s.to_string()).unwrap_or_default();
@@ -3445,12 +3596,32 @@ impl Elab {
                         _ => text,
                     };
                     let goal = self.eval(&cx, &g);
-                    self.oblige(&cx, span, kind(None, inside), text, goal, None);
+                    self.oblige(&cx, span, kind(None, inside, None), text, goal, None);
                 }
-            }
-            None => {
-                let goal = self.eval(&cx, &falsity);
-                self.oblige(&cx, span, kind(None, true), format!("every value of `{alias_s}` in its result"), goal, None);
+                AliasGoal::Part { t, b, inst, each, inside } => {
+                    let whole = t.as_ref().zip(b.as_ref()).map(|(t, b)| (self.show_val(&cx, t), self.show_val(&cx, b)));
+                    // The instance's signature gives it a type that implies
+                    // the class's at the alias (D85): `List Nat`, `Tree Small`,
+                    // `(x~Int -> y~Int, y >= 0)` for `Int -> Nat`.
+                    if let (Some(t), Some(i)) = (&t, &inst) {
+                        let n = self.obligations.len();
+                        if self.refined_implies(&cx, t, i, span, kind(None, inside, whole.clone())) {
+                            continue;
+                        }
+                        self.obligations.truncate(n);
+                    }
+                    // A list: `list.all` of its elements, from what the
+                    // prover knows of it (the instance's postconditions).
+                    if let Some((gs, text)) = each {
+                        for g in gs {
+                            let goal = self.eval(&cx, &g);
+                            self.oblige(&cx, span, kind(None, inside, whole.clone()), text.clone(), goal, None);
+                        }
+                        continue;
+                    }
+                    let goal = self.eval(&cx, &falsity);
+                    self.oblige(&cx, span, kind(None, inside, whole), String::new(), goal, None);
+                }
             }
         }
         // Its function parameters: the instance calls them with values it
@@ -3459,16 +3630,15 @@ impl Elab {
         // signature's, #225, else the class's at the base), as a refined
         // function type does (D85): at any depth, refinements written as
         // aliases or inline.
-        let inst_params = self.inst_param_types(ad.members.get(&member).copied(), &args_t);
         for (i, x, dt, db) in params {
             if !self.alias_differs(lvl, &dt, &db, false, 0) {
                 continue;
             }
             let param = Some(self.alias_param(&cx, &x, &dt, &db, &alias_s));
             let idom = inst_params.get(&i).cloned().unwrap_or(db);
-            if !self.refined_implies(&cx, &idom, &dt, span, kind(param.clone(), false)) {
+            if !self.refined_implies(&cx, &idom, &dt, span, kind(param.clone(), false, None)) {
                 let goal = self.eval(&cx, &falsity);
-                self.oblige(&cx, span, kind(param, false), format!("every value it gives `{x}` is a `{alias_s}`"), goal, None);
+                self.oblige(&cx, span, kind(param, false, None), format!("every value it gives `{x}` is a `{alias_s}`"), goal, None);
             }
         }
         self.cur_fn = saved;
@@ -3570,12 +3740,12 @@ impl Elab {
     }
 
     /// The types an instance's function `g` gives its explicit parameters,
-    /// by the class's binder each is (its explicit ones, in order), at the
-    /// class's arguments `args`: where `g`'s signature says them in terms
-    /// of `args` alone. None where the two don't line up.
-    fn inst_param_types(&self, g: Option<DefId>, args: &[(Val, Icit, Mult)]) -> HashMap<usize, Val> {
+    /// by the class's binder each is (its explicit ones, in order), and its
+    /// result, at the class's arguments `args`: where `g`'s signature says
+    /// them in terms of `args` alone. None where the two don't line up.
+    fn inst_param_types(&self, g: Option<DefId>, args: &[(Val, Icit, Mult)]) -> (HashMap<usize, Val>, Option<Val>) {
         let mut out = HashMap::new();
-        let Some(g) = g else { return out };
+        let Some(g) = g else { return (out, None) };
         let class_expl: Vec<usize> = (0..args.len()).filter(|i| args[*i].1 == Icit::Expl).collect();
         let mut ty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[g.0 as usize].ty);
         let (mut j, mut k) = (0, 0);
@@ -3585,7 +3755,7 @@ impl Elab {
             // placeholders no context binds.
             let v = match icit {
                 Icit::Expl => {
-                    let Some(i) = class_expl.get(j) else { return out };
+                    let Some(i) = class_expl.get(j) else { return (out, None) };
                     found.push((*i, (*d).clone()));
                     j += 1;
                     args[*i].0.clone()
@@ -3596,14 +3766,14 @@ impl Elab {
             k += 1;
         }
         if j != class_expl.len() {
-            return out;
+            return (out, None);
         }
         for (i, d) in found {
             if !mentions_placeholder(&self.g, &d) {
                 out.insert(i, d);
             }
         }
-        out
+        (out, Some(ty).filter(|t| !mentions_placeholder(&self.g, t)))
     }
 
     /// The dictionaries found through a refinement alias in this module
@@ -3677,6 +3847,31 @@ impl Elab {
         }
         self.in_spec = saved_spec;
     }
+}
+
+/// One condition for a value of a type with a refinement alias inside to be
+/// of it, where the same type at the alias's base isn't (`alias_goals`).
+enum AliasGoal {
+    /// A goal about the value (under `match`es reaching the part), the
+    /// predicate as written, and the alias.
+    Value(Tm, String, DefId),
+    /// A part a finite walk doesn't reach (a recursive type, a function),
+    /// inside the value or the value itself: its type at the alias and at
+    /// the base (if they say nothing of values the walk bound), the
+    /// instance's own type for it (likewise), and for a list, the goals
+    /// that `list.all` its elements are of the alias, and how written.
+    Part { t: Option<Val>, b: Option<Val>, inst: Option<Val>, each: Option<(Vec<Tm>, String)>, inside: bool },
+}
+
+/// Whether `t` mentions one of the `n` innermost variables it is under.
+fn mentions_from(t: &Tm, n: usize) -> bool {
+    fn go(t: &Tm, depth: usize, n: usize) -> bool {
+        match t {
+            Tm::Var(i) => *i >= depth && *i < depth + n,
+            _ => t.any_sub(|x, k| go(x, depth + k, n)),
+        }
+    }
+    go(t, 0, n)
 }
 
 /// The first level of the placeholders standing for an instance function's
