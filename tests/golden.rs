@@ -966,7 +966,10 @@ fn datatype_scaling(exe: &Path, root: &Path, failures: &mut Vec<String>) {
             })
             .fold(f64::INFINITY, f64::min)
     };
-    let cases: [(&str, fn(usize) -> String, usize, f64); 5] = [
+    // A name, the query of size `n`, the smaller `n`, and how many times as
+    // long the larger may take.
+    type Case = (&'static str, fn(usize) -> String, usize, f64);
+    let cases: [Case; 5] = [
         ("parameters", params, 16, 10.0),
         ("rotated parameters", rotated, 16, 10.0),
         ("nested in itself", nested, 16, 10.0),
