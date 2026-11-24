@@ -369,10 +369,11 @@ fn sum_time os acc missing -> r : os~List Outcome, acc~Nat, missing~Nat, r~(Nat,
 
 fn against_corpus os -> r : os~List Outcome, r~List String
     let differ = answers_differ os
+    let same_answer = count_same_answer os 0
     let same_out = count_same_output os 0
     let same_work = count_same_work os 0
     let n = list.length os
-    ["Z3 now against what the corpus records: " ++ display (n - min n (list.length differ)) [] ++ " of "
+    ["Z3 now against what the corpus records: " ++ display same_answer [] ++ " of "
      ++ queries n ++ " get the same answer, " ++ display same_out [] ++ " the same output (a model may differ), "
      ++ display same_work [] ++ " the same work."]
         ++ (if differ == [] then [] else ["", "Answers that differ:"] ++ differ)
@@ -380,9 +381,6 @@ fn against_corpus os -> r : os~List Outcome, r~List String
 # `n queries`, or `1 query`.
 fn queries n -> r : n~Nat, r~String
     display n [] ++ (if n == 1 then " query" else " queries")
-
-fn min a b -> r : a~Nat, b~Nat, r~Nat
-    if a <= b then a else b
 
 fn answers_differ os -> r : os~List Outcome, r~List String
     match os
@@ -407,6 +405,11 @@ fn work_text w -> r : w~Option Nat, r~String
     match w
         Some n -> display n []
         None   -> "not known"
+
+fn count_same_answer os acc -> r : os~List Outcome, acc~Nat, r~Nat
+    match os
+        []        -> acc
+        o :: rest -> count_same_answer rest (if o.now.answer == o.was.answer then acc + 1 else acc)
 
 fn count_same_output os acc -> r : os~List Outcome, acc~Nat, r~Nat
     match os
