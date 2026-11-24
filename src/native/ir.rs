@@ -161,6 +161,17 @@ impl<'g> Compiler<'g> {
                     h = f;
                 }
                 spine.reverse();
+                // Code of another definition applied (a lambda's body put
+                // into a copy, `spec`): the arguments, then that code.
+                if let Some((o, inner)) = super::spec::marked(h) {
+                    let n = spine.len();
+                    let inner = self.at(o).go(&crate::core::rename_free(inner, 0, &|v| v - 1));
+                    let call = Ir::Call(Arc::new(shift(&inner, n, 0)), (0..n).rev().map(|i| Arc::new(Ir::Var(i))).collect());
+                    return spine.iter().rev().fold(Ir::At(o, Arc::new(call)), |b, (a, m)| {
+                        let v = if *m == Mult::Zero { Arc::new(self.erased(a)) } else { self.compile(a) };
+                        Ir::Let(v, Arc::new(b))
+                    });
+                }
                 // A lambda applied (an instance's function as its dictionary
                 // has it, at a known instance): `let`s, in order, as the
                 // call would bind its parameters.
@@ -173,7 +184,7 @@ impl<'g> Compiler<'g> {
                     let m = if *m == Mult::Zero || am == Mult::Zero { Mult::Zero } else { *m };
                     // One that computes nothing is put in: a dictionary
                     // stays known.
-                    if m == Mult::Zero || matches!(**a, Tm::Var(_) | Tm::Lit(_)) || known_dict(self.g, a) {
+                    if m == Mult::Zero || matches!(**a, Tm::Var(_) | Tm::Lit(_)) || known_dict(self.g, a) || self.known_fn(a) {
                         return self.go(&subst(&body, &[(**a).clone()], 0));
                     }
                     return self.go(&Tm::Let(x.clone(), m, Rc::new(Tm::Error), a.clone(), Rc::new(body)));
@@ -181,7 +192,7 @@ impl<'g> Compiler<'g> {
                 // A call passing a known instance's dictionary: its copy
                 // with the dictionary put in (`spec`).
                 let copy = match (h, self.spec) {
-                    (Tm::Def(f), Some(cx)) => super::spec::specialize(self.g, cx, *f, &spine),
+                    (Tm::Def(f), Some(cx)) => super::spec::specialize(self.g, cx, self.owner, *f, &spine),
                     _ => None,
                 };
                 // A function showing values of a type parameter gets that
@@ -190,8 +201,8 @@ impl<'g> Compiler<'g> {
                     Tm::Def(d) => self.g.well_known.desc_params.get(d),
                     _ => None,
                 };
-                let put = |k: usize| copy.as_ref().is_some_and(|(_, p)| p.get(k).copied().unwrap_or(false));
-                let args: Vec<Arc<Ir>> = spine
+                let put = |k: usize| copy.as_ref().is_some_and(|c| c.put.get(k).copied().unwrap_or(false));
+                let mut args: Vec<Arc<Ir>> = spine
                     .into_iter()
                     .enumerate()
                     .map(|(k, (a, m))| match m {
@@ -225,10 +236,23 @@ impl<'g> Compiler<'g> {
                     }
                 }
                 match copy {
-                    Some((c, _)) => Ir::Call(Arc::new(Ir::Global(c)), args),
+                    Some(c) => {
+                        // The functions' variables, after the arguments the
+                        // copy is made for.
+                        let tail = args.split_off(c.at);
+                        args.extend(c.caps.iter().map(|v| Arc::new(Ir::Var(*v))));
+                        args.extend(tail);
+                        Ir::Call(Arc::new(Ir::Global(c.id)), args)
+                    }
                     None => Ir::Call(self.compile(h), args),
                 }
             }
+            Tm::Let(..) if super::spec::marked(t).is_some() => {
+                let Some((o, b)) = super::spec::marked(t) else { unreachable!() };
+                Ir::At(o, Arc::new(self.at(o).go(&crate::core::rename_free(b, 0, &|v| v - 1))))
+            }
+            // A known function stays known where it is used (`spec`).
+            Tm::Let(_, m, _, v, b) if *m != Mult::Zero && self.known_fn(v) => self.go(&subst(b, &[(**v).clone()], 0)),
             Tm::Let(_, m, _, v, b) => {
                 let v = if *m == Mult::Zero { Arc::new(Ir::Erased) } else { self.compile(v) };
                 Ir::Let(v, self.compile(b))
@@ -294,6 +318,18 @@ impl<'g> Compiler<'g> {
             },
             Tm::Error => Ir::Fail("no arm of a `match` matches this value (`--unverified`)"),
         }
+    }
+
+    /// This compiler, for code of definition `o` (a runtime error in it
+    /// names `o`).
+    fn at(&self, o: Option<DefId>) -> Compiler<'g> {
+        Compiler { g: self.g, owner: o, spec: self.spec }
+    }
+
+    /// A known function small enough to substitute (`spec`), where
+    /// functions are specialized.
+    fn known_fn(&self, t: &Tm) -> bool {
+        self.spec.is_some_and(|cx| super::spec::substitutes_fns() && super::spec::small_fn(self.g, cx.staged, t))
     }
 
     fn case(&self, c: &CaseTm) -> IrCase {
@@ -606,7 +642,7 @@ pub fn known_instance(g: &Globals, t: &Tm) -> Option<Tm> {
 /// A dictionary computed by nothing but building dictionaries: a
 /// variable, or an instance's function applied to such dictionaries
 /// and types.
-fn known_dict(g: &Globals, t: &Tm) -> bool {
+pub fn known_dict(g: &Globals, t: &Tm) -> bool {
     match t.spine() {
         (Tm::Var(_), args) => args.is_empty(),
         (Tm::Def(b), args) if g.well_known.dict_fns.contains(b) => {
