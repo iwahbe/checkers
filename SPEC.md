@@ -700,6 +700,8 @@ apat        ::= '_' | lname | literal | Uname
 
 A constraint is only required where inference fails; `fn is_ws b : b~U8` infers its `Bool` result.
 
+A name has one type: a second typing for a parameter, the result, a field or a type's parameter (`x~Int, x~Nat`) is E0372, at the second, whatever its type; its names are still resolved. A condition on the name is a predicate (`x~Int, x > 0`) or a refinement in its one type (`x~(n~Int, n > 0)`).
+
 **Refinements may mention later parameters (#102).** A predicate in a parameter's type, at any depth (a function-typed parameter's precondition, an element type's refinement), may mention any parameter of the function, earlier or later: `fn all p xs -> r : p~(x~a -> Bool, list.contains xs x), xs~List a, r~Bool`. Only the predicates may: the rest of the type may mention only earlier parameters (a later one is E0204). The parameter's type without those predicates is its type in the function's core type (§3); with them, it is its type in the body and at a call:
 
 - In the body, the parameter has its full type, so calling `p y` obliges `list.contains xs y` (D84).

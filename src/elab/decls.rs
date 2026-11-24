@@ -54,6 +54,7 @@ impl Elab {
         self.stdlib_mode = is_stdlib;
         // Classes and instances become records, functions and lemmas (D136).
         self.pending_insts.clear();
+        self.repeated_typings(m);
         let (desugared, origins) = self.desugar_classes(m);
         self.decl_origin = origins;
         let m = &desugared;
@@ -765,6 +766,99 @@ impl Elab {
 
     // ── phases ──────────────────────────────────────────────────────────────
 
+    /// E0372: a name given a second type (`x~Int, x~(n~Int, n > 0)`) in a
+    /// declaration's constraints, a class's or an instance's member's
+    /// included. Only the first is its type; the others are still
+    /// elaborated where the first is, so their names resolve.
+    fn repeated_typings(&mut self, m: &ast::Module) {
+        fn names_of<'a>(params: impl IntoIterator<Item = &'a Ident>, result: Option<&'a Ident>) -> Vec<&'a str> {
+            params.into_iter().chain(result).map(|i| i.name.as_str()).collect()
+        }
+        let mut lists: Vec<(Vec<&str>, &[Constraint])> = Vec::new();
+        for d in &m.decls {
+            match &d.kind {
+                DeclKind::Fn { params, result, constraints, .. } => {
+                    lists.push((names_of(params, result.as_ref()), constraints));
+                }
+                DeclKind::Lemma { params, constraints, .. } => lists.push((names_of(params, None), constraints)),
+                DeclKind::Enum { params, constraints, ctors, .. } => {
+                    lists.push((names_of(params.iter().map(|p| &p.name), None), constraints));
+                    for c in ctors {
+                        lists.push((names_of(&c.params, None), &c.constraints));
+                    }
+                }
+                DeclKind::Record { params, constraints, .. } => {
+                    lists.push((names_of(params.iter().map(|p| &p.name), None), constraints));
+                }
+                DeclKind::Class { members, .. } => {
+                    for mem in members {
+                        match mem {
+                            ast::ClassMember::Fn { params, result, constraints, .. } => {
+                                lists.push((names_of(params, result.as_ref()), constraints));
+                            }
+                            ast::ClassMember::Lemma { params, constraints, .. } => {
+                                lists.push((names_of(params, None), constraints));
+                            }
+                            ast::ClassMember::Type { .. } => {}
+                        }
+                    }
+                }
+                DeclKind::Instance { members, .. } => {
+                    for mem in members {
+                        if let ast::InstMember::Fn { params, sig: Some((result, constraints)), .. } = mem {
+                            lists.push((names_of(params, result.as_ref()), constraints));
+                        }
+                    }
+                }
+                // A type alias's second binder is E0351.
+                DeclKind::Alias { .. } | DeclKind::Const { .. } | DeclKind::Check { .. } => {}
+            }
+        }
+        for (names, cs) in lists {
+            let mut first: HashMap<&str, &Expr> = HashMap::new();
+            for c in cs {
+                let Constraint::Typed { name, ty, .. } = c else { continue };
+                // A name that isn't the declaration's is reported once each
+                // time (E0355, E0353).
+                if !names.contains(&name.name.as_str()) {
+                    continue;
+                }
+                match first.get(name.name.as_str()) {
+                    None => {
+                        first.insert(&name.name, ty);
+                    }
+                    Some(t) => {
+                        let n = &name.name;
+                        let t = self.src_text(t.span);
+                        self.err(
+                            Diagnostic::error("E0372", format!("`{n}` is given a second type"), name.span.to(ty.span))
+                                .with_label(format!("`{n}` already has the type `{t}`"))
+                                .with_help(format!(
+                                    "keep one type for `{n}`, and write a condition on it as a predicate after `{n}~{t}`"
+                                )),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Elaborate the types of `cs`'s typings after the first for one name
+    /// (E0372), in `cx`, so that their names resolve; the terms are dropped.
+    fn elab_repeated_typings(&mut self, cx: &mut Cx, cs: &[Constraint]) {
+        let mut seen: HashSet<&str> = HashSet::new();
+        for c in cs {
+            if let Constraint::Typed { name, ty, .. } = c {
+                if !seen.insert(&name.name) && cx.lookup(&name.name).is_some() {
+                    // Nor do its type's conditions (#136) oblige anything.
+                    let saved = self.ty_cond_defer.replace(Vec::new());
+                    let _ = self.elab_type(cx, ty);
+                    self.ty_cond_defer = saved;
+                }
+            }
+        }
+    }
+
     fn typed_constraint<'a>(cs: &'a [Constraint], name: &str) -> Option<(&'a Expr, ast::Mult)> {
         cs.iter().find_map(|c| match c {
             Constraint::Typed { name: n, mult, ty } if n.name == name => Some((ty, *mult)),
@@ -844,6 +938,7 @@ impl Elab {
                 cx.bind(&p.name.name, v, Mult::Zero);
                 out.push((Rc::from(p.name.name.as_str()), ty));
             }
+            self.elab_repeated_typings(&mut cx, cs);
             self.g.tys[tid.0 as usize].params = out;
             self.solve_deferred();
         }
@@ -1041,6 +1136,7 @@ impl Elab {
             }
             fields.push((Rc::from(n.name.as_str()), mult, Icit::Expl, ty));
         }
+        self.elab_repeated_typings(&mut cx, cs);
         // Each condition may rely on those before it, as a signature's do
         // (fields' types are facts already through their locals).
         for c in cs {
@@ -1761,6 +1857,7 @@ impl Elab {
                 }
             }
         }
+        self.elab_repeated_typings(&mut cx, cs);
         let deferred = std::mem::replace(&mut self.ty_cond_defer, saved_defer).unwrap_or_default();
         // Predicates may mention the result, so check them with it in scope.
         let rv = self.eval(&cx, &result_ty);
