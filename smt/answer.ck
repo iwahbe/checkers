@@ -278,7 +278,7 @@ enum Says
 # The model that knows nothing: every question is `NotGiven`.
 export fn empty_model fuel -> m : fuel~Nat, m~Model
     let none5 = \_ _ _ _ _ -> None
-    Model (\_ _ -> None) (\_ _ -> None) (\_ -> None) (\_ -> None) (\_ _ _ -> None) none5 (\_ _ -> Countable) fuel
+    Model (\_ _ -> None) (\_ _ _ -> None) (\_ -> None) (\_ -> None) (\_ _ _ -> None) none5 (\_ _ -> Countable) fuel
 
 fn known c fuel ts -> r : c~Context, fuel~Nat, ts~List Term, r~Option (List Value)
     match ts
@@ -357,4 +357,4 @@ export fn model_of c pairs fuel -> m : c~Context, pairs~List (Term, Value), fuel
     let funs = \f vs -> fun_at ss f vs
     let nth = \e xs i -> nth_at ss e xs i
     let sel = \d k j args x -> sel_at ss d k j args x
-    Model funs (\_ _ -> None) (\n -> div_at ss n) (\n -> mod_at ss n) nth sel (\_ _ -> Countable) fuel
+    Model funs (\_ _ _ -> None) (\n -> div_at ss n) (\n -> mod_at ss n) nth sel (\_ _ -> Countable) fuel

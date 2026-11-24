@@ -1,0 +1,11 @@
+(set-logic ALL)
+; Kleene: false and/or/=> with an operand the model doesn't give.
+(declare-const p Bool)
+(declare-const q Bool)
+(assert (= q false))
+(assert (not (and p q)))
+(assert (or p (not q)))
+(assert (=> q p))
+(assert (not false))
+(check-sat)
+(get-value (q))

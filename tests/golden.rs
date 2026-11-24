@@ -45,7 +45,8 @@
 //! tests/smt/NAME.smt2  → NAME.out is what `smt/main.ck parse` writes for it: the
 //!                         query written back, or the error reading it (line and column).
 //! tests/smt/model/NAME.smt2 → NAME.out is what `smt/main.ck model NAME.smt2 NAME.z3`
-//!                         writes: each assertion in the model of Z3's answer NAME.z3
+//!                         writes (with `--unmarked` for `unmarked_*`): each assertion in
+//!                         the model of Z3's answer NAME.z3
 //!                         (written by `scripts/smt-model-answers.sh`, which asks Z3).
 //! site/*.md, README.md, the standard library's documentation → `checkers site`
 //!                         and `checkers doc` give no warnings: links resolve, code
@@ -896,7 +897,9 @@ fn smt_package(pool: &Pool, root: &'static Path, update: bool) {
             count += 1;
             let query = path.strip_prefix(root).unwrap().display().to_string();
             let answer = path.with_extension("z3").strip_prefix(root).unwrap().display().to_string();
-            let actual = shown(&run_with(&exe.0, &["model", &query, &answer], b"", root));
+            let unmarked = path.file_name().unwrap().to_string_lossy().starts_with("unmarked_");
+            let args: Vec<&str> = if unmarked { vec!["model", "--unmarked", &query, &answer] } else { vec!["model", &query, &answer] };
+            let actual = shown(&run_with(&exe.0, &args, b"", root));
             compare(root, &path.with_extension("out"), &actual, update, &mut failures);
         }
         (count, failures)

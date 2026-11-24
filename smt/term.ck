@@ -215,6 +215,9 @@ export enum Problem
     Expected want found : want~Sort, found~Sort
     # A pattern without terms.
     NoPattern
+    # A datatype with no values: every constructor needs a value of a sort
+    # that has none, such as the datatype itself.
+    NotWellFounded d    : d~Datatype
 
 # ── Well-formed sorts ────────────────────────────────────────────────────────
 
@@ -465,11 +468,96 @@ fn check_patterns sig env ps -> r : sig~Sig, env~List Sort, ps~List (List Term),
                 let _ = try sorts_of sig env p
                 check_patterns sig env rest
 
+# ── Datatypes with values ────────────────────────────────────────────────────
+# Every sort must have a value (SMT-LIB 2.6, §5.3: a structure's domains
+# are non-empty). `Bool`, `Int`, sequences (the empty one) and uninterpreted
+# sorts always do; an array of `v` does when `v` does; a datatype does when
+# one of its constructors' fields all do. Z3 asks this of each declaration
+# ("datatype is not well-founded"), though less precisely: it rejects a
+# field `(Seq T)` of a new `T`, which has values, and accepts a field
+# `(Box T)` through a datatype declared before, which has none if `T` has
+# none. This checks the definition itself.
+
+# How many arrays `s` is of arrays of: `has_value`'s measure.
+fn arrays_in s -> n : s~Sort, n~Nat
+    match s
+        Arr _ v -> 1 + arrays_in v
+        _       -> 0
+
+# Whether `s` has a value, where `first` is the number of the first datatype
+# being declared, `known` those of them known to have values, and `depth`
+# how many datatypes deep a value may be looked for.
+fn has_value sig first known s depth -> r : sig~Sig, first~Nat, known~List Nat, s~Sort, depth~Nat, r~Bool
+    decreasing (depth, 0, arrays_in s)
+    match s
+        Arr _ v     -> has_value sig first known v depth
+        Data d args ->
+            if d >= first
+                list.contains known d
+            else if depth == 0 or d >= len sig.datatypes
+                False
+            else
+                some_ctor_has sig first known args sig.datatypes[d].ctors (depth - 1)
+        _           -> True
+
+fn all_have sig first known ss depth -> r : sig~Sig, first~Nat, known~List Nat, ss~List Sort, depth~Nat, r~Bool
+    decreasing (depth, 1, list.length ss)
+    match ss
+        []        -> True
+        s :: rest -> has_value sig first known s depth and all_have sig first known rest depth
+
+# Whether one of `cs`, at sort arguments `args`, has all its fields with
+# values.
+fn some_ctor_has sig first known args cs depth -> r : sig~Sig, first~Nat, known~List Nat, args~List Sort,
+                                                      cs~List Ctor, depth~Nat, r~Bool
+    decreasing (depth, 2, list.length cs)
+    match cs
+        []        -> False
+        c :: rest ->
+            all_have sig first known (list.map (instantiate args) (field_sorts c.fields)) depth
+                or some_ctor_has sig first known args rest depth
+
+# The datatypes of `ds` (numbered from `first`) that get values once those
+# in `known` have them, added to `known`.
+fn grow_known sig first known ds i -> r : sig~Sig, first~Nat, known~List Nat, ds~List Datatype, i~Nat, r~List Nat
+    match ds
+        []        -> known
+        d :: rest ->
+            let n = first + i
+            let more =
+                if not (list.contains known n) and some_ctor_has sig first known [] d.ctors (len sig.datatypes)
+                    n :: known
+                else
+                    known
+            grow_known sig first more rest (i + 1)
+
+# `known` grown `rounds` times: each round adds at least one datatype or
+# changes nothing, so as many rounds as datatypes reach the end.
+fn settle sig first known ds rounds -> r : sig~Sig, first~Nat, known~List Nat, ds~List Datatype, rounds~Nat,
+                                           r~List Nat
+    if rounds == 0 then known else settle sig first (grow_known sig first known ds 0) ds (rounds - 1)
+
+# The first of `ds` (numbered from `first`) not in `known`.
+fn first_without first known ds i -> r : first~Nat, known~List Nat, ds~List Datatype, i~Nat, r~Option Datatype
+    match ds
+        []        -> None
+        d :: rest -> if list.contains known (first + i) then first_without first known rest (i + 1) else Some d
+
+# Whether each of `ds`, the datatypes of `sig` numbered from `first`, has
+# a value.
+fn check_values sig first ds -> r : sig~Sig, first~Nat, ds~List Datatype, r~Result Unit Problem
+    let known = settle sig first [] ds (list.length ds)
+    match first_without first known ds 0
+        Some d -> Err (NotWellFounded d)
+        None   -> Ok ()
+
 # Whether `c` is well-formed after the commands that gave `sig`.
 export fn check_command sig c -> r : sig~Sig, c~Command, r~Result Unit Problem
     match c
         DeclareSort _       -> Ok ()
-        DeclareDatatypes ds -> check_datatypes (extend sig c) ds
+        DeclareDatatypes ds ->
+            let _ = try check_datatypes (extend sig c) ds
+            check_values (extend sig c) (len sig.datatypes) ds
         DeclareFun f        ->
             match f.kind
                 Constant if f.params != [] -> Err (ConstantParams f)

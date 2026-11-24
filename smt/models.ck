@@ -34,8 +34,9 @@
 #   print, or something `smt.model` doesn't decide; counted by the first
 #   such reason. These are never counted as holding.
 #
-# `main model QUERY ANSWER` evaluates one query's assertions in the model
-# of one answer (what `(get-model)` printed, if the answer ends with it;
+# `main model [--unmarked] QUERY ANSWER` evaluates one query's assertions
+# in the model of one answer (with `--unmarked`, the definitions as `parse`
+# gives them, none marked terminating) (what `(get-model)` printed, if the answer ends with it;
 # else the `(get-value …)` values), and says for each whether it holds,
 # fails, or why it isn't determined.
 
@@ -79,7 +80,7 @@ enum Outcome
     Disagrees
 
 # `c` with every definition marked terminating.
-fn marked c -> r : c~Context, r~Result Context Bytes
+export fn marked c -> r : c~Context, r~Result Context Bytes
     match term.context (list.map mark (term.commands c))
         Ok d  -> Ok d
         Err _ -> Err b"the context with its definitions marked doesn't check"
@@ -448,7 +449,7 @@ fn fact_lines c rs -> r : c~Context, rs~List (Nat, Came), r~Bytes
 
 # `main model QUERY ANSWER`: each assertion of the query in the model of
 # the answer (the model that knows nothing, if Z3 printed no values).
-export fn one src z3 -> r : src~Bytes, z3~Bytes, r~Bytes
+export fn one src z3 mark -> r : src~Bytes, z3~Bytes, mark~Bool, r~Bytes
     let head = b"z3: " ++ verdict_text (answer.verdict z3) ++ b"\n"
     match smtlib.parse src
         Err e -> head ++ b"the query doesn't read: " ++ smtlib.describe src e ++ b"\n"
@@ -456,7 +457,7 @@ export fn one src z3 -> r : src~Bytes, z3~Bytes, r~Bytes
             match model_maker q z3
                 Err why         -> head ++ b"the answer doesn't read: " ++ why ++ b"\n"
                 Ok (kind, make) ->
-                    match marked q.context
+                    match (if mark then marked q.context else Ok q.context)
                         Err why -> head ++ why ++ b"\n"
                         Ok c    ->
                             let m = make c

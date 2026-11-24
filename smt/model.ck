@@ -24,7 +24,14 @@
 # **Fuel.** Applying a `lambda` and unfolding a definition evaluate a term
 # that isn't part of the one being evaluated, so each goes one level down,
 # and `Model.fuel` bounds how many levels there are; past it the answer is
-# `OutOfFuel`. Comparing arrays goes down a level in the same way.
+# `OutOfFuel`. Comparing two constant arrays with stores compares the values
+# at their indices one level down in the same way (so with `fuel = 0`, such
+# arrays compare `OutOfFuel`). Comparing sequences and data goes by their
+# structure and uses no fuel.
+#
+# **Terms of the context only.** `eval`, `holds_at` and `refutes` evaluate a
+# term only if it is a term of the context (`term.fact_ok`, `term.axiom_ok`);
+# anything else is `IllSorted`.
 #
 # **Two modes.** `eval`, `holds`, `fails`, `holds_all` and `holds_at` are the
 # meaning: every function, defined ones included, is what `Model.funs` says,
@@ -33,8 +40,14 @@
 # equation). `refutes`, which `Answer.Invalid` uses, evaluates instead with
 # each definition marked terminating (`Def.terminates`) run as its own body
 # (design 3): its equation then holds by construction wherever evaluation
-# finishes, because a terminating definition has exactly one solution. A
-# definition not marked terminating is `NotTerminating` there.
+# finishes, because a terminating definition has exactly one solution.
+# `refutes` requires every definition of the context to be marked: one that
+# isn't may have no solution at all (`g x = g x + 1`), and then no model
+# satisfies the context, whether or not an assertion calls it (SMT-LIB 2.6,
+# §4.2.3, note 4). Z3 5.3.3 answers `sat` to such a context; this module
+# does not follow it there. Unfolding a definition not marked terminating is
+# `NotTerminating`. In the meaning, a model satisfies definition `d` when it
+# satisfies `definition_axiom n d` at all values (`holds_at`).
 #
 # **Quantified axioms.** `holds_at c m a vs` evaluates the body of axiom `a`
 # at the values `vs`. A `forall` over an infinite sort can't be evaluated, so
@@ -45,8 +58,8 @@
 # **What a model can't represent here** (for #85, model limits): equality of
 # two arrays is decided only when both are a constant array with stores and
 # the answer follows from the stored indices (see `equal`); otherwise it is
-# `ArraysCompared`. Arrays given by the model (`ModelArray`) are functions of
-# values; a model function, selector or `seq.nth` applied to a value that
+# `ArraysCompared`. Arrays given by the model (`ModelArray s k`, one family
+# for each array sort `s`) are functions of values; a model function, selector or `seq.nth` applied to a value that
 # holds an array is `ArraysCompared` too, since two different values may
 # then be the same array, and a function must give them the same result.
 
@@ -75,7 +88,7 @@ import term (Head, Fun, Con, Is, Sel, Num, Boolean, Prim, ConstArr, EmptySeq, Te
 #   is `a` with index `j` mapped to `v`; `LambdaArray env senv s body` is a
 #   `lambda` over a variable of sort `s`, with the values and sorts of the
 #   variables bound around it; `SumArray a b` is `(_ map (+ (Int Int) Int))`
-#   of `a` and `b`; `ModelArray k` is the model's `k`-th array
+#   of `a` and `b`; `ModelArray s k` is the model's `k`-th array of sort `s`
 #   (`Model.arrays`).
 export enum Value
     Truth b                     : b~Bool
@@ -87,7 +100,7 @@ export enum Value
     StoreArray a j v            : a~Value, j~Value, v~Value
     LambdaArray env senv s body : env~List (Result Value Unknown), senv~List Sort, s~Sort, body~Term
     SumArray a b                : a~Value, b~Value
-    ModelArray k                : k~Nat
+    ModelArray s k              : s~Sort, k~Nat
 
 # Why a term has no value here.
 export enum Unknown
@@ -122,7 +135,7 @@ export enum Domain
 # everywhere.
 #
 # - `funs f vs`: the `f`-th function at arguments `vs`; a constant at `[]`.
-# - `arrays k v`: the model's `k`-th array at index `v`.
+# - `arrays s k v`: the model's `k`-th array of sort `s` at index `v`.
 # - `div_zero n`, `mod_zero n`: `(div n 0)` and `(mod n 0)`. SMT-LIB leaves
 #   them unspecified; each is a function of `n`, and the two are unrelated.
 # - `nth_out e xs i`: `(seq.nth xs i)` for `i` outside `xs`, where the
@@ -138,7 +151,7 @@ export enum Domain
 # model can't make a term take a value outside its sort.
 export record Model
     funs~(Nat -> List Value -> Option Value)
-    arrays~(Nat -> Value -> Option Value)
+    arrays~(Sort -> Nat -> Value -> Option Value)
     div_zero~(Int -> Option Int)
     mod_zero~(Int -> Option Int)
     nth_out~(Sort -> List Value -> Int -> Option Value)
@@ -162,7 +175,7 @@ export fn of_sort c m s v -> r : c~Context, m~Model, s~Sort, v~Value, r~Bool
         (Seq e, Sequence xs)            -> all_of_sort c m e xs
         (Arr i w, ConstArray j x)       -> i == j and of_sort c m w x
         (Arr i w, StoreArray a j x)     -> of_sort c m s a and of_sort c m i j and of_sort c m w x
-        (Arr _ _, ModelArray _)         -> True
+        (Arr _ _, ModelArray t _)       -> t == s
         (Data d args, Constructed k fs) ->
             match term.ctor (term.signature c) d k
                 Some k_ctor -> fields_of_sort c m (list.map (term.instantiate args) (term.field_sorts k_ctor.fields)) fs
@@ -226,14 +239,41 @@ fn equal_with down a b -> r : down~(Value -> Value -> Result Bool Unknown), a~Va
         (Element _, _)                       -> Err IllSorted
         (Sequence _, _)                      -> Err IllSorted
         (Constructed _ _, _)                 -> Err IllSorted
-        _                                    -> if a == b then Ok True else equal_arrays down a b
+        _                                    -> if a == b and settled a then Ok True else equal_arrays down a b
 
-# Element by element, with Kleene's `and`: a definite `False` wins.
+# Element by element, with Kleene's `and`: a definite `False` wins. Lists
+# of different lengths are not values of one sort.
 fn equal_all down xs ys -> r : down~(Value -> Value -> Result Bool Unknown), xs~List Value, ys~List Value,
                                r~Result Bool Unknown
     match (xs, ys)
-        (x :: xr, y :: yr) -> both (down x y) (equal_all down xr yr)
-        _                  -> Ok True
+        ([], [])           -> Ok True
+        (x :: xr, y :: yr) -> both (equal_with down x y) (equal_all down xr yr)
+        _                  -> Err IllSorted
+
+# Whether `v` holds no `Unknown` (in a `lambda`'s captured variables): then
+# two values that are the same data are the same value. Two closures that
+# each captured an unknown value are not known to be the same function, even
+# when the reasons are the same.
+fn settled v -> r : v~Value, r~Bool
+    match v
+        Sequence xs           -> all_settled xs
+        Constructed _ fs      -> all_settled fs
+        ConstArray _ x        -> settled x
+        StoreArray a j x      -> settled a and settled j and settled x
+        LambdaArray env _ _ _ -> env_settled env
+        SumArray a b          -> settled a and settled b
+        _                     -> True
+
+fn all_settled vs -> r : vs~List Value, r~Bool
+    match vs
+        []        -> True
+        v :: rest -> settled v and all_settled rest
+
+fn env_settled rs -> r : rs~List (Result Value Unknown), r~Bool
+    match rs
+        []           -> True
+        Ok v :: rest -> settled v and env_settled rest
+        Err _ :: _   -> False
 
 # Kleene's `and` of two answers.
 fn both p q -> r : p~Result Bool Unknown, q~Result Bool Unknown, r~Result Bool Unknown
@@ -361,7 +401,9 @@ fn value low mode c m env senv t -> r : low~Lower, mode~Mode, c~Context, m~Model
                 None   -> Err IllSorted
         App h args     -> apply low mode c m env senv t h args
         Let binds body ->
-            match term.sorts_of (term.signature c) senv (bound_terms binds)
+            # A `let` binds all its names at once, each in the outer
+            # environment; it must bind at least one (`term.sort_of`).
+            match if binds == [] then Err term.EmptyLet else term.sorts_of (term.signature c) senv (bound_terms binds)
                 Ok ss -> value low mode c m (list.reverse (bound low mode c m env senv binds) ++ env) (list.reverse ss ++ senv) body
                 Err _ -> Err IllSorted
         Lam _ s body   -> Ok (LambdaArray env senv s body)
@@ -413,6 +455,8 @@ fn apply low mode c m env senv t h args -> r : low~Lower, mode~Mode, c~Context, 
                     let x = try v
                     Ok (ConstArray i x)
                 _              -> Err IllSorted
+        # The datatype `d` is not needed: a well-sorted term applies a
+        # tester or selector only to values of its own datatype.
         Con _ k _  ->
             let vs = try all_known (values low mode c m env senv args)
             Ok (Constructed k vs)
@@ -640,15 +684,25 @@ fn select low c m s a i -> r : low~Lower, c~Context, m~Model, s~Sort, a~Value, i
         LambdaArray env senv sort body -> low.value (Ok i :: env) (sort :: senv) body
         SumArray x y                   ->
             ints (select low c m s x i) (select low c m s y i) (\p q -> Ok (Integer (p + q)))
-        ModelArray k                   ->
-            if plain i then given c m s (Prim Select) (m.arrays k i) else Err ArraysCompared
+        ModelArray t k                 ->
+            if plain i then given c m s (Prim Select) (m.arrays t k i) else Err ArraysCompared
         _                              -> Err IllSorted
 
 # ── The meaning ──────────────────────────────────────────────────────────────
 
-# The value of `t`, a term of `c` without free variables, in `m`.
+# The value of `t` in `m`, if `t` is a term of `c` without free variables
+# (else `IllSorted`).
 export fn eval c m t -> r : c~Context, m~Model, t~Term, r~Result Value Unknown
-    value (level AsGiven c m m.fuel) AsGiven c m [] [] t
+    if closed c t
+        value (level AsGiven c m m.fuel) AsGiven c m [] [] t
+    else
+        Err IllSorted
+
+# Whether `t` is a term of `c` without free variables: it has a sort there.
+fn closed c t -> r : c~Context, t~Term, r~Bool
+    match term.sort_of (term.signature c) [] t
+        Ok _  -> True
+        Err _ -> False
 
 # Whether `t` is true in `m`.
 export fn holds c m t -> r : c~Context, m~Model, t~Term, r~Bool
@@ -670,26 +724,52 @@ export fn values_of_sorts c m ss vs -> r : c~Context, m~Model, ss~List Sort, vs~
 
 # Whether axiom `a` holds at the values `vs` of its variables, in order.
 # Values that aren't of the variables' sorts in `m` are not among the ones
-# `a` speaks of, so it holds at them.
+# `a` speaks of, so it holds at them. An axiom that isn't one of `c`
+# (`term.axiom_ok`) holds nowhere.
 export fn holds_at c m a vs -> r : c~Context, m~Model, a~Axiom, vs~List Value, r~Bool
-    if values_of_sorts c m (term.var_sorts a.vars) vs
+    if not (term.axiom_ok c a)
+        False
+    else if values_of_sorts c m (term.var_sorts a.vars) vs
         value (level AsGiven c m m.fuel) AsGiven c m (list.reverse (list.map (\v -> Ok v) vs)) (term.binder_env a.vars) a.body
             == Ok (Truth True)
     else
         True
 
-# The value of `t` with each definition marked terminating run as its own
-# body.
-export fn eval_unfolding c m t -> r : c~Context, m~Model, t~Term, r~Result Value Unknown
-    value (level Unfolding c m m.fuel) Unfolding c m [] [] t
+# The equation of definition `d`, the `n`-th function: for all values of
+# its parameters, `(= (f x1 … xk) body)`. In the meaning a definition is
+# this fact, so a model satisfies `d` when `holds_at` is true for it at all
+# values.
+export fn definition_axiom n d -> a : n~Nat, d~Def, a~Axiom
+    let k = list.length d.params
+    Axiom d.params (App (Prim Eq) [App (Fun n) (params_from k), d.body]) []
 
-# Whether `m` is a counterexample to `goal` in `c`: `c` has no axioms, each
-# fact holds and the goal fails, with each definition marked terminating
-# run as its own body. Then the interpretation `m` describes, with each
-# definition its unique solution, satisfies every assertion of `c` and
-# `not goal`.
+# `Var (k - 1)`, …, `Var 0`: the parameters of a binder list of `k`, in
+# order (the last one bound is `Var 0`).
+fn params_from k -> ts : k~Nat, ts~List Term
+    if k == 0 then [] else Var (k - 1) :: params_from (k - 1)
+
+# The value of `t` with each definition marked terminating run as its own
+# body, if `t` is a term of `c` without free variables (else `IllSorted`).
+export fn eval_unfolding c m t -> r : c~Context, m~Model, t~Term, r~Result Value Unknown
+    if closed c t
+        value (level Unfolding c m m.fuel) Unfolding c m [] [] t
+    else
+        Err IllSorted
+
+# Whether every definition of `ds` is marked terminating.
+fn all_marked ds -> r : ds~List (Nat, Def), r~Bool
+    match ds
+        []             -> True
+        (_, d) :: rest -> d.terminates and all_marked rest
+
+# Whether `m` is a counterexample to `goal` in `c`: `goal` is a fact of `c`,
+# `c` has no axioms and every definition is marked terminating, and each
+# fact holds and the goal fails with each definition run as its own body.
+# Then the interpretation `m` describes, with each definition its unique
+# solution, satisfies every assertion of `c` and `not goal`.
 export fn refutes c goal m -> r : c~Context, goal~Term, m~Model, r~Bool
-    term.axioms c == [] and facts_hold_unfolding c m (term.facts c) and eval_unfolding c m goal == Ok (Truth False)
+    term.fact_ok c goal and term.axioms c == [] and all_marked (term.defs c) and facts_hold_unfolding c m (term.facts c)
+        and eval_unfolding c m goal == Ok (Truth False)
 
 fn facts_hold_unfolding c m ts -> r : c~Context, m~Model, ts~List Term, r~Bool
     match ts

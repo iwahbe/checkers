@@ -23,6 +23,7 @@ import term (SeqLen, SeqNth, SeqUnit, SeqConcat, SeqExtract)
 import term (Head, Fun, Con, Is, Sel, Num, Boolean, Prim, ConstArr, EmptySeq, Term, Var, App, Let, Lam)
 import term (Def, Axiom, Command, DeclareSort, DeclareDatatypes, DeclareFun, DefineFuns, Assume, Assert)
 import term (Sig, Context, Problem, BadSort, NoCtors, BadApply, Unbound, EmptyLet, ConstantParams, Expected, NoPattern)
+import term (NotWellFounded)
 
 # ── Errors ───────────────────────────────────────────────────────────────────
 
@@ -1013,6 +1014,7 @@ fn problem_message sig pr -> r : sig~Sig, pr~Problem, r~Bytes
         ConstantParams f  -> b"the constant " ++ shown f.name ++ b" has parameters"
         Expected want got -> b"expected a term of sort " ++ sort_text sig want ++ b", found one of sort " ++ sort_text sig got
         NoPattern         -> b"a `:pattern` needs at least one term"
+        NotWellFounded d  -> b"the datatype " ++ shown d.name ++ b" has no values: each constructor needs a value of a sort that has none"
 
 # ── Writing ──────────────────────────────────────────────────────────────────
 

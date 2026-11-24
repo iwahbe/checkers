@@ -6,7 +6,7 @@
 # `(error "line L column C: message")`, as Z3 reports one, and exit status 1.
 # `main models [--z3 PROGRAM] DIR…` checks Z3's models in the corpus with
 # `smt.model` (recorded, or asked of PROGRAM now), and
-# `main model QUERY ANSWER` one query's assertions in one answer's model
+# `main model [--unmarked] QUERY ANSWER` one query's assertions in one answer's model
 # (`models.ck` says how).
 
 module main
@@ -22,22 +22,23 @@ import smtlib (Shape, Group)
 import term
 import models
 
-let USAGE = "usage: main parse < QUERY\n       main roundtrip DIR...\n       main models [--z3 PROGRAM] DIR...\n       main model QUERY ANSWER"
+let USAGE = "usage: main parse < QUERY\n       main roundtrip DIR...\n       main models [--z3 PROGRAM] DIR...\n       main model [--unmarked] QUERY ANSWER"
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     match args
-        ["parse"]           -> parse_stdin sys.term
-        "roundtrip" :: dirs -> roundtrip dirs sys.term sys.fs
-        "models" :: dirs    -> if models.run dirs sys.term sys.fs sys.proc then Success else Failure 1
-        ["model", q, a]     -> model_one q a sys.term sys.fs
-        _                   ->
+        ["parse"]                     -> parse_stdin sys.term
+        "roundtrip" :: dirs           -> roundtrip dirs sys.term sys.fs
+        "models" :: dirs              -> if models.run dirs sys.term sys.fs sys.proc then Success else Failure 1
+        ["model", q, a]               -> model_one q a True sys.term sys.fs
+        ["model", "--unmarked", q, a] -> model_one q a False sys.term sys.fs
+        _                             ->
             let _ = terminal.eprint_line USAGE sys.term
             Failure 2
 
-fn model_one query ans io fs -> code : query~String, ans~String, io~Term, fs~Fs, code~ExitCode
+fn model_one query ans mark io fs -> code : query~String, ans~String, mark~Bool, io~Term, fs~Fs, code~ExitCode
     match (files.read query fs, files.read ans fs)
         (Ok src, Ok z3) ->
-            let _ = terminal.write_bytes (models.one src z3) io
+            let _ = terminal.write_bytes (models.one src z3 mark) io
             Success
         (Err e, _)      ->
             let _ = terminal.eprint_line ("error: " ++ query ++ ": " ++ files.describe e) io

@@ -316,9 +316,9 @@ fn interp sig full env lets s e depth -> r : sig~Sig, full~Full src, env~List (N
                                     Some k -> Ok (Element k)
                                     None   -> answer.value_from sig s e [] d
             Leaf _ _                                 -> answer.value_from sig s e [] d
-            Node [Leaf (Symbol l False) _, _, _] _ if l == b"lambda" -> array_ref full e
+            Node [Leaf (Symbol l False) _, _, _] _ if l == b"lambda" -> array_ref full s e
             Node [Leaf (Symbol u False) _, Leaf (Symbol a False) _, _] _ if u == b"_" and a == b"as-array" ->
-                array_ref full e
+                array_ref full s e
             Node [Leaf (Symbol m False) _, Leaf (Numeral n) _] _ if m == b"-" -> Ok (Integer (0 - n))
             Node [Leaf (Symbol a False) _, _, _] _ if a == b"as" -> answer.value_from sig s e [] d
             Node [Leaf (Symbol l False) _, Node binds _, body] _ if l == b"let" ->
@@ -349,9 +349,9 @@ fn let_binds es -> r : es~List (SExpr src), r~Result (List (Name, SExpr src)) By
             Ok ((n, e) :: more)
         _                                       -> Err b"a `let` binding that isn't `(NAME VALUE)`"
 
-fn array_ref full e -> r : full~Full src, e~SExpr src, r~Result Value Bytes
+fn array_ref full s e -> r : full~Full src, s~Sort, e~SExpr src, r~Result Value Bytes
     match index_of full.arrays e 0
-        Some k -> Ok (ModelArray k)
+        Some k -> Ok (ModelArray s k)
         None   -> Err b"an array this reader didn't number"
 
 # `n` applied to `args`.
@@ -582,7 +582,7 @@ fn by_zero sig full name n -> r : sig~Sig, full~Full src, name~Name, n~Int, r~Op
 export fn model_of c full fuel -> m : c~Context, full~Full src, fuel~Nat, m~Model
     let sig = term.signature c
     let funs = \f vs -> fun_at sig full f vs
-    let arrays = \k i -> array_at sig full k i
+    let arrays = \_ k i -> array_at sig full k i
     let div_zero = \n -> by_zero sig full b"div0" n
     let mod_zero = \n -> by_zero sig full b"mod0" n
     let nth = \e xs i ->
