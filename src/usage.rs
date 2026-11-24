@@ -448,8 +448,7 @@ impl U<'_> {
                 | Prim::Gt
                 | Prim::Ge
                 | Prim::Concat
-                | Prim::Len
-                | Prim::Format,
+                | Prim::Len,
                 _,
             ) => {}
             // A closure, a match, an element, a builtin: everything they mention.
@@ -515,7 +514,7 @@ impl U<'_> {
     fn go_once(&mut self, t: &Tm) -> Counts {
         match t {
             Tm::Lam(..) => self.lam_once(t),
-            Tm::App(..) => self.app(t, true),
+            Tm::App(..) if !head_is_meta(t) => self.app(t, true),
             _ => self.go(t),
         }
     }
@@ -527,7 +526,7 @@ impl U<'_> {
         let d = head_def(t)?;
         let meta = self.e.fn_meta.get(&d)?;
         let args = t.spine().1;
-        if args.len() >= meta.n_implicit + meta.params.len() {
+        if args.len() >= meta.n_binders() {
             return None;
         }
         args.into_iter()
@@ -669,7 +668,7 @@ pub fn check_fn(e: &mut Elab, did: DefId, body: &Tm) {
     let mut u = U { e, did, binders: Vec::new(), reported: false, copied_by: Default::default(), captured: Default::default() };
     // The function's own parameters; a lambda after them is a closure it
     // returns, which may be called any number of times (D171).
-    let limit = u.e.fn_meta.get(&did).map_or(usize::MAX, |m| m.n_implicit + m.params.len());
+    let limit = u.e.fn_meta.get(&did).map_or(usize::MAX, |m| m.n_binders());
     let mut t = body;
     let mut n = 0;
     while let (Tm::Lam(x, m, _, b), true) = (t, n < limit) {

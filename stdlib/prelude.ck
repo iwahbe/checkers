@@ -7,8 +7,19 @@ export abstract enum Type
 
 # Built-in types; their values come from literals and primitives.
 export abstract enum Int
-# Text: UTF-8, immutable. The prover sees a string as its UTF-8 bytes.
-export abstract enum String
+
+# Text: immutable bytes that are valid UTF-8. A string is stored as its
+# bytes, so `s.bytes` costs nothing, and the prover sees it as them.
+export record String
+    bytes~Bytes, valid_utf8 bytes
+
+# Whether `b` is well-formed UTF-8 (RFC 3629): no overlong forms, no
+# surrogates, nothing above U+10FFFF.
+export fn valid_utf8 b -> r : b~Bytes, r~Bool
+    __builtin
+
+check valid_utf8 b"h\xE2\x82\xAC" and valid_utf8 b""
+check not (valid_utf8 b"\xC0\x80") and not (valid_utf8 b"\xED\xA0\x80") and not (valid_utf8 b"\x80")
 # An immutable array: `len xs` and `xs[i]` take constant time. Arrays of
 # fixed-width numbers are packed; `std.array` has its functions.
 export abstract enum Array +a : a~Type
@@ -92,18 +103,18 @@ export lemma refl x : Ord a, x~a
 # Numbers, by size; this is also the order of `Nat`, `Char` and the
 # fixed-width numbers.
 instance Ord Int
-    fn le x y
+    transparent fn le x y
         x <= y
 
 # `False` before `True`.
 instance Ord Bool
-    fn le x y
+    transparent fn le x y
         not x or y
 
 # Strings by their characters' scalar values, which is the order of their
 # UTF-8 bytes.
 instance Ord String
-    fn le x y
+    transparent fn le x y
         string_le x y
     lemma trans x y z
         proof
@@ -118,7 +129,7 @@ instance Ord String
 # Lists by their first elements where they differ; a list before any longer
 # one that starts with it.
 instance Ord (List a) : Ord a
-    fn le xs ys
+    transparent fn le xs ys
         match xs
             []      -> True
             x :: xr ->
@@ -166,7 +177,7 @@ instance Ord (List a) : Ord a
 
 # `None` before every `Some`, which are ordered by what they hold.
 instance Ord (Option a) : Ord a
-    fn le p q
+    transparent fn le p q
         match p
             None   -> True
             Some x ->
@@ -236,23 +247,23 @@ export class Monoid a
         ensures x + zero == x
 
 instance Add Int
-    fn add x y
+    transparent fn add x y
         x + y
 
 instance Sub Int
-    fn sub x y
+    transparent fn sub x y
         x - y
 
 instance Mul Int
-    fn mul x y
+    transparent fn mul x y
         x * y
 
 instance Neg Int
-    fn neg x
+    transparent fn neg x
         0 - x
 
 instance Monoid Int
-    fn zero
+    transparent fn zero
         0
 
 # ── Functors (M25) ───────────────────────────────────────────────────────────
@@ -270,7 +281,7 @@ export class Functor f
         ensures fmap (\x -> g (h x)) xs == fmap g (fmap h xs)
 
 instance Functor List
-    fn fmap g xs
+    transparent fn fmap g xs
         match xs
             []        -> []
             x :: rest -> g x :: fmap g rest
@@ -286,10 +297,77 @@ instance Functor List
                 _ :: rest -> have fmap_comp g h rest
 
 instance Functor Option
-    fn fmap g o
+    transparent fn fmap g o
         match o
             None   -> None
             Some x -> Some (g x)
+
+# ── Sequences ────────────────────────────────────────────────────────────────
+# On a type with a `Seq` instance other than `List`, `[]` in a `match` means
+# `uncons` gave `None`, and `x :: rest` that it gave `Some (x, rest)`.
+
+# A sequence that can be taken apart from the front: `[]`, `x :: rest` and
+# `[p1, …, pn]` in a `match` on one.
+export class Seq s
+    # The elements' type.
+    type Elem
+    # How many elements: what recursion on the rest makes smaller.
+    fn size xs -> n : xs~s, n~Nat
+    # The first element and the rest, which is smaller; `None` only when
+    # there are none.
+    fn uncons xs -> r : xs~s, r~Option (Elem, s),
+                        match r
+                            None           -> size xs == 0
+                            Some (_, rest) -> size rest < size xs
+
+# A list's `match` is built in; this instance is for generic code.
+instance Seq (List a)
+    type Elem = a
+    transparent fn size xs
+        match xs
+            []        -> 0
+            _ :: rest -> 1 + size rest
+    transparent fn uncons xs
+        match xs
+            []        -> None
+            x :: rest -> Some (x, rest)
+
+# The rest is a slice of the array: constant time.
+instance Seq (Array a)
+    type Elem = a
+    transparent fn size xs
+        len xs
+    transparent fn uncons xs
+        if len xs == 0 then None else Some (xs[0], array_rest xs)
+
+# By characters; the size is the number of bytes.
+instance Seq String
+    type Elem = Char
+    transparent fn size s
+        len s.bytes
+    transparent fn uncons s
+        if len s.bytes == 0 then None else Some (string_first s, string_rest s)
+
+# All but the first element: a slice sharing the array's storage.
+fn array_rest xs -> r : xs~Array a, len xs > 0, r~Array a, len r + 1 == len xs
+    __builtin
+
+# A non-empty string's first character.
+fn string_first s -> c : s~String, len s.bytes > 0, c~Char
+    __builtin
+
+# All but a non-empty string's first character: a slice sharing its bytes.
+fn string_rest s -> r : s~String, len s.bytes > 0, r~String,
+                        len r.bytes < len s.bytes
+    __builtin
+
+check string_first "€x" == c'€'
+check string_rest "€x" == "x"
+check string_first "a" == c'a'
+check string_rest "a" == ""
+check uncons "" == None
+check uncons "€x" == Some (c'€', "x")
+check array_rest b"abc" == b"bc"
 
 # Whether `x` comes before `y` by their bytes (`Ord String`).
 fn string_le x y -> r : x~String, y~String, r~Bool

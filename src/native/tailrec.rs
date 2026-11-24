@@ -102,6 +102,7 @@ fn scan(e: &E, me: u32, s: &mut Scan) {
             Some(p) => s.acc.push(p),
             None => scan(b, me, s),
         },
+        E::At(_, b) => scan(b, me, s),
         E::Case { arms, lits, default, .. } => {
             arms.iter().for_each(|a| scan(&a.body, me, s));
             lits.iter().for_each(|(_, b)| scan(b, me, s));
@@ -162,6 +163,7 @@ fn untail(e: E) -> E {
 fn map_tail(e: E, leaf: &mut dyn FnMut(E) -> E) -> E {
     match e {
         E::Let(x, a, b) => E::Let(x, a, Box::new(map_tail(*b, leaf))),
+        E::At(o, b) => E::At(o, Box::new(map_tail(*b, leaf))),
         E::Case { scrut, arms, lits, default } => E::Case {
             scrut,
             arms: arms.into_iter().map(|a| Arm { body: map_tail(a.body, leaf), ..a }).collect(),
@@ -178,7 +180,7 @@ fn new_helper(funcs: &mut Vec<Func>, i: usize, suffix: &str, extra: &[V], body: 
     params.extend_from_slice(extra);
     let name = format!("{}.{suffix}", f.name);
     let owner = f.owner;
-    funcs.push(Func { name, owner, kind: FnKind::Global, params, body, nvars });
+    funcs.push(Func { name, owner, kind: FnKind::Global, params, body, nvars, rets: 1 });
 }
 
 // ── an operator after the call ──────────────────────────────────────────────
@@ -252,6 +254,7 @@ fn map_acc(e: E, me: u32, leaf: &mut dyn FnMut(Site, &mut Fresh) -> E, fresh: &m
             }
             E::Let(r, a, Box::new(map_acc(*b, me, leaf, fresh)))
         }
+        E::At(o, b) => E::At(o, Box::new(map_acc(*b, me, leaf, fresh))),
         E::Case { scrut, arms, lits, default } => E::Case {
             scrut,
             arms: arms.into_iter().map(|a| Arm { body: map_acc(a.body, me, leaf, fresh), ..a }).collect(),

@@ -23,6 +23,7 @@ module counter
 
 import std.system (System, ExitCode)
 import std.cown
+import std.string (format)
 import std.terminal
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
@@ -32,7 +33,7 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     when h = hits using sched
         h + 1
     when h = hits, m = misses using sched
-        terminal.print_line ("hits: " ++ format h ++ ", misses: " ++ format m) term
+        terminal.print_line format"hits: {h}, misses: {m}" term
         (h, m + 1)
     Success
 ```

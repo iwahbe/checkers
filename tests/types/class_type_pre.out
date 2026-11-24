@@ -1,0 +1,8 @@
+error[E0450]: cannot prove `valid os`, required to call `display`
+  --> class_type_pre.ck:45:5
+   |
+45 |     display (Money 1) [Cents, Whole]
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `display` requires `valid os`
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+class_type_pre.ck: 1 error, 0 warnings

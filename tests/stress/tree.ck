@@ -8,6 +8,7 @@ import std.system (System, ExitCode)
 import std.cown (Sched)
 import std.future (Future)
 import std.terminal (Term)
+import std.string (debug)
 
 fn sum lo n sched -> f : lo~Nat, n~Nat, sched~Sched, f~Future Nat
     decreasing n
@@ -26,5 +27,5 @@ fn sum lo n sched -> f : lo~Nat, n~Nat, sched~Sched, f~Future Nat
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { term, sched } = sys
     let s = future.join (sum 1 1024 sched)
-    terminal.print_line ("sum " ++ format s) term
+    terminal.print_line ("sum " ++ debug s) term
     Success

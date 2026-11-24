@@ -52,6 +52,17 @@ pub enum E {
     /// fields; if it was the only reference, its memory becomes `token`
     /// (else `token` is 0).
     DropReuse(V, V, usize, Box<E>),
+    /// Code of another definition (`Ir::At`): its runtime errors name that
+    /// definition.
+    At(u32, Box<E>),
+    // Inserted by `unbox` (a value's parts returned in registers, §14).
+    /// Several values at once, each owned: the parts of a constructor
+    /// value that is never built. Only where the code's value goes to a
+    /// `LetMulti` or is the result of a function returning several words.
+    Multi(Vec<E>),
+    /// `LetMulti(xs, a, b)`: bind the values `a` gives (`Multi`, or a call
+    /// of a function returning several words) to `xs`, then `b`.
+    LetMulti(Vec<V>, Box<E>, Box<E>),
 }
 
 /// A value known when the program is compiled (`E::Static`).
@@ -153,6 +164,8 @@ pub struct Func {
     pub body: E,
     /// Variables are numbered from 0 to `nvars`.
     pub nvars: u32,
+    /// How many words it returns: 1, or a value's parts (`unbox`).
+    pub rets: usize,
 }
 
 /// How a definition is called.
@@ -181,6 +194,17 @@ pub struct Program {
     pub names: Vec<String>,
     /// `main`, when the program has one.
     pub main: u32,
+    /// The code computing the hand-written `Debug` instances' functions, a
+    /// list in the order of `Globals::well_known.debug_insts` (#126).
+    pub debug: Option<u32>,
+    /// Which definitions are recursive, for `inline`.
+    pub recursive: HashMap<u32, bool>,
+    /// Functions' copies specialized to known instances' dictionaries
+    /// (`spec`), numbered after the definitions.
+    pub specs: std::cell::RefCell<crate::native::spec::Specs>,
+    /// Functions whose results are returned as their parts (`unbox`): the
+    /// function returning them, and their layout.
+    pub workers: HashMap<u32, (u32, crate::native::unbox::Shape)>,
 }
 
 /// Code with no definition (a `check`, a value staging computes).
@@ -219,7 +243,9 @@ impl Program {
         if let Some(s) = staged {
             names.extend(s.extra.iter().map(|e| e.0.clone()));
         }
+        let base = names.len() as u32;
         Program {
+            specs: std::cell::RefCell::new(crate::native::spec::Specs::new(base)),
             funcs: Vec::new(),
             rc_done: 0,
             code: HashMap::new(),
@@ -227,8 +253,45 @@ impl Program {
             con_wraps: HashMap::new(),
             names,
             main: NO_OWNER,
+            debug: None,
+            recursive: HashMap::new(),
+            workers: HashMap::new(),
         }
     }
+}
+
+/// How many type parameters function `d` takes before its other arguments.
+pub fn type_params(g: &Globals, d: DefId) -> usize {
+    let mut n = 0;
+    let mut ty = &g.defs[d.0 as usize].ty;
+    while let Tm::Pi(_, Mult::Zero, crate::core::Icit::Impl, _, b) = ty {
+        n += 1;
+        ty = b;
+    }
+    n
+}
+
+/// The hand-written `Debug` instances' functions (#126), as a closed term:
+/// a list of them, each taking its type's parameters' words (#170), then
+/// the value. `None` if the program has none.
+pub fn debug_table(g: &Globals) -> Option<Tm> {
+    use crate::core::Icit;
+    use std::rc::Rc;
+    let insts = &g.well_known.debug_insts;
+    let (nil, cons) = (g.well_known.nil?, g.well_known.cons?);
+    if insts.is_empty() {
+        return None;
+    }
+    let erased = |f: Tm| Tm::App(Rc::new(f), Rc::new(Tm::Univ(0)), Icit::Impl, Mult::Zero);
+    let mut list = erased(Tm::Con(nil));
+    for (_, d) in insts.iter().rev() {
+        // Its type parameters come from the runtime, which knows them from
+        // the value's type's descriptor (#170).
+        let f = Tm::Def(*d);
+        let c = erased(Tm::Con(cons));
+        list = Tm::App(Rc::new(Tm::App(Rc::new(c), Rc::new(f), Icit::Expl, Mult::Many)), Rc::new(list), Icit::Expl, Mult::Many);
+    }
+    Some(list)
 }
 
 /// The whole program reachable from `main`.
@@ -236,6 +299,9 @@ pub fn lower(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId) ->
     let mut p = Program::new(g, staged);
     Lowerer::new(g, staged, &mut p).add_defs(&[main.0]);
     p.main = main.0;
+    if let Some(ir) = show_table(g) {
+        p.debug = Some(Lowerer::new(g, staged, &mut p).add_closed_ir(&ir));
+    }
     p
 }
 
@@ -254,14 +320,23 @@ impl<'a, 'g> Lowerer<'a, 'g> {
         let mut referenced = BTreeSet::new();
         let mut todo: Vec<u32> = roots.to_vec();
         while let Some(d) = todo.pop() {
-            if self.p.code.contains_key(&d) || self.p.defs.contains_key(&d) || d as usize >= ndefs {
+            if self.p.code.contains_key(&d) || self.p.defs.contains_key(&d) {
                 continue;
             }
-            let Some(body) = crate::native::ir::body_of(g, staged, DefId(d)) else {
+            // A specialized copy (`spec`): its body, compiled as code of
+            // the function it copies.
+            let copy = self.p.specs.borrow().copy(d).map(|c| (c.of, c.body.clone(), c.depth));
+            let (owner, body, depth) = match copy {
+                Some(c) => (c.0, Some(c.1), c.2),
+                None if (d as usize) < ndefs => (DefId(d), crate::native::ir::body_of(g, staged, DefId(d)), 0),
+                None => continue,
+            };
+            let Some(body) = body else {
                 referenced.insert(d);
                 continue;
             };
-            let c = Compiler { g, owner: Some(DefId(d)) }.compile(&body);
+            let spec = crate::native::spec::SpecCx { table: &self.p.specs, staged, depth };
+            let c = Compiler { g, owner: Some(owner), spec: Some(spec) }.compile(&body);
             let mut gs = Vec::new();
             globals_in(&c, &mut gs);
             todo.extend(gs.iter().map(|x| x.0));
@@ -273,13 +348,15 @@ impl<'a, 'g> Lowerer<'a, 'g> {
         for d in &new {
             let (n, _) = lams(&self.p.code[d]);
             let func = self.p.funcs.len() as u32;
+            let owner = self.p.specs.borrow().origin(*d);
             self.p.funcs.push(Func {
-                name: self.p.names[*d as usize].clone(),
-                owner: *d,
+                name: self.p.names[owner as usize].clone(),
+                owner,
                 kind: if n > 0 { FnKind::Global } else { FnKind::Caf },
                 params: Vec::new(),
                 body: E::Erased,
                 nvars: 0,
+                rets: 1,
             });
             self.p.defs.insert(*d, if n > 0 { DefShape::Fn { func, arity: n } } else { DefShape::Caf { func } });
         }
@@ -312,9 +389,10 @@ impl<'a, 'g> Lowerer<'a, 'g> {
             self.p.defs.insert(d, shape);
         }
         for d in &new {
-            let ir = self.p.code[d].clone();
+            let origin = self.p.specs.borrow().origin(*d);
+            let ir = self.inline(&self.p.code[d].clone(), Some(DefId(origin)));
             let (DefShape::Fn { func, .. } | DefShape::Caf { func }) = self.p.defs[d].clone() else { continue };
-            self.owner = *d;
+            self.owner = self.p.specs.borrow().origin(*d);
             self.next = 0;
             let (n, body) = lams(&ir);
             let params: Vec<V> = (0..n).map(|_| self.fresh()).collect();
@@ -330,16 +408,23 @@ impl<'a, 'g> Lowerer<'a, 'g> {
     /// A closed term as a function of no arguments (a `Caf` computed
     /// afresh each time it runs): its index.
     pub fn add_closed(&mut self, t: &Tm) -> u32 {
-        let ir = Compiler { g: self.g, owner: None }.compile(t);
+        let spec = crate::native::spec::SpecCx { table: &self.p.specs, staged: self.staged, depth: 0 };
+        let ir = Compiler { g: self.g, owner: None, spec: Some(spec) }.compile(t);
+        self.add_closed_ir(&ir)
+    }
+
+    /// Closed code as a function of no arguments (see `add_closed`).
+    pub fn add_closed_ir(&mut self, ir: &Ir) -> u32 {
         let mut gs = Vec::new();
-        globals_in(&ir, &mut gs);
+        globals_in(ir, &mut gs);
         let roots: Vec<u32> = gs.iter().map(|x| x.0).collect();
         self.add_defs(&roots);
         let func = self.p.funcs.len() as u32;
-        self.p.funcs.push(Func { name: "check".into(), owner: NO_OWNER, kind: FnKind::Caf, params: Vec::new(), body: E::Erased, nvars: 0 });
+        self.p.funcs.push(Func { name: "check".into(), owner: NO_OWNER, kind: FnKind::Caf, params: Vec::new(), body: E::Erased, nvars: 0, rets: 1 });
         self.owner = NO_OWNER;
         self.next = 0;
         let mut ctx = Vec::new();
+        let ir = self.inline(ir, None);
         let body = self.expr(&ir, &mut ctx, true);
         let f = &mut self.p.funcs[func as usize];
         f.body = body;
@@ -348,7 +433,41 @@ impl<'a, 'g> Lowerer<'a, 'g> {
     }
 }
 
+/// What the runtime's printer calls (#126, #170), as closed code: a pair of
+/// the hand-written `Debug` instances' functions (`debug_table`) and the
+/// functions computing fields' types from earlier fields (`field_fns`), each
+/// a list. `None` if the program has neither.
+pub fn show_table(g: &Globals) -> Option<Ir> {
+    let (nil, cons) = (g.well_known.nil?, g.well_known.cons?);
+    let fields = crate::native::field_fns(g);
+    let debug = debug_table(g);
+    if debug.is_none() && fields.is_empty() {
+        return None;
+    }
+    let c = Compiler::new(g, None);
+    let debug = match debug {
+        Some(t) => c.go_pub(&t),
+        None => Ir::Con(nil, Vec::new()),
+    };
+    let fields = fields.iter().rev().fold(Ir::Con(nil, Vec::new()), |rest, (con, k, t)| Ir::Con(cons, vec![Arc::new(c.field_type_fn(*con, *k, t)), Arc::new(rest)]));
+    Some(Ir::Tuple(vec![Arc::new(debug), Arc::new(fields)]))
+}
+
 impl Lowerer<'_, '_> {
+    /// `ir`, the code of `owner`, with `match`es on small functions' results
+    /// resolved (`inline`).
+    fn inline(&mut self, ir: &Ir, owner: Option<DefId>) -> Ir {
+        let p = &mut *self.p;
+        let specs = p.specs.borrow();
+        let origin = |d: u32| specs.origin(d);
+        let ir = crate::native::inline::Inliner { code: &p.code, recursive: &mut p.recursive, origin: &origin }.program(ir, owner);
+        let defs = &p.defs;
+        let pure_call = |d: DefId, n: usize| {
+            matches!(defs.get(&d.0), Some(DefShape::Builtin { sym, keep, .. }) if keep.len() == n && checkers_rt::builtins::PURE.contains(sym))
+        };
+        crate::native::inline::float_in(&ir, &pure_call)
+    }
+
     fn fresh(&mut self) -> V {
         self.next += 1;
         self.next - 1
@@ -357,7 +476,7 @@ impl Lowerer<'_, '_> {
     /// A wrapper function (builtin or constructor) of `arity` parameters.
     fn wrapper(&mut self, name: &str, owner: u32, kind: FnKind, arity: usize) -> u32 {
         let params: Vec<V> = (0..arity as u32).collect();
-        self.p.funcs.push(Func { name: name.to_string(), owner, kind, params, body: E::Erased, nvars: arity as u32 });
+        self.p.funcs.push(Func { name: name.to_string(), owner, kind, params, body: E::Erased, nvars: arity as u32, rets: 1 });
         (self.p.funcs.len() - 1) as u32
     }
 
@@ -425,6 +544,16 @@ impl Lowerer<'_, '_> {
             Ir::Erased => E::Erased,
             Ir::Lit(v) => Self::lit(v),
             Ir::Fail(m) => E::Fail(m),
+            Ir::At(o, x) => {
+                let o = o.map_or(NO_OWNER, |d| d.0);
+                if o == self.owner {
+                    return self.expr(x, ctx, tail);
+                }
+                let saved = std::mem::replace(&mut self.owner, o);
+                let e = self.expr(x, ctx, tail);
+                self.owner = saved;
+                E::At(o, Box::new(e))
+            }
             Ir::Lam(..) => self.lambda(ir, ctx),
             Ir::ConFn(c) => {
                 let arity = self.g.arity_con(*c);
@@ -538,6 +667,7 @@ impl Lowerer<'_, '_> {
             params,
             body: b,
             nvars,
+            rets: 1,
         });
         E::MkClo { f, captured: captured_outer }
     }
@@ -599,37 +729,7 @@ impl Lowerer<'_, '_> {
 
 /// Shift free de Bruijn indices of `ir` up by `k` (for wrapping in a lambda).
 fn shift(ir: &Ir, k: usize) -> Ir {
-    fn go(ir: &Ir, k: usize, depth: usize) -> Ir {
-        let a = |x: &Arc<Ir>, d: usize| Arc::new(go(x, k, d));
-        let all = |xs: &[Arc<Ir>], d: usize| xs.iter().map(|x| a(x, d)).collect::<Vec<_>>();
-        match ir {
-            Ir::Var(i) if *i >= depth => Ir::Var(i + k),
-            Ir::Var(i) => Ir::Var(*i),
-            Ir::Global(d) => Ir::Global(*d),
-            Ir::Erased => Ir::Erased,
-            Ir::Lit(v) => Ir::Lit(v.clone()),
-            Ir::Lam(o, b) => Ir::Lam(*o, a(b, depth + 1)),
-            Ir::Call(h, xs) => Ir::Call(a(h, depth), all(xs, depth)),
-            Ir::Let(v, b) => Ir::Let(a(v, depth), a(b, depth + 1)),
-            Ir::Tuple(xs) => Ir::Tuple(all(xs, depth)),
-            Ir::Proj(x, i, r) => Ir::Proj(a(x, depth), *i, *r),
-            Ir::Field(x, i) => Ir::Field(a(x, depth), *i),
-            Ir::Con(c, xs) => Ir::Con(*c, all(xs, depth)),
-            Ir::ConFn(c) => Ir::ConFn(*c),
-            Ir::Prim(op, xs, n) => Ir::Prim(*op, all(xs, depth), *n),
-            Ir::Par(xs) => Ir::Par(all(xs, depth)),
-            Ir::Case(s, c) => Ir::Case(
-                a(s, depth),
-                Arc::new(crate::native::ir::IrCase {
-                    branches: c.branches.iter().map(|(con, n, b)| (*con, *n, a(b, depth + n))).collect(),
-                    lits: c.lits.iter().map(|(l, b)| (l.clone(), a(b, depth))).collect(),
-                    default: c.default.as_ref().map(|d| a(d, depth)),
-                }),
-            ),
-            Ir::Fail(m) => Ir::Fail(m),
-        }
-    }
-    go(ir, k, 0)
+    crate::native::ir::shift(ir, k, 0)
 }
 
 /// The definitions code refers to.
@@ -656,7 +756,16 @@ fn fv(e: &E, s: &mut BTreeSet<V>) {
             inner.remove(x);
             s.extend(inner);
         }
-        E::Call { args, .. } | E::Tuple(args) | E::Par(args) => args.iter().for_each(|a| fv(a, s)),
+        E::Call { args, .. } | E::Tuple(args) | E::Par(args) | E::Multi(args) => args.iter().for_each(|a| fv(a, s)),
+        E::LetMulti(xs, a, b) => {
+            fv(a, s);
+            let mut inner = BTreeSet::new();
+            fv(b, &mut inner);
+            for x in xs {
+                inner.remove(x);
+            }
+            s.extend(inner);
+        }
         E::Con { fields, reuse, .. } => {
             fields.iter().for_each(|a| fv(a, s));
             if let Some(r) = reuse {
@@ -693,6 +802,7 @@ fn fv(e: &E, s: &mut BTreeSet<V>) {
             s.insert(*x);
             fv(b, s);
         }
+        E::At(_, b) => fv(b, s),
         E::DropReuse(x, t, _, b) => {
             s.insert(*x);
             let mut inner = BTreeSet::new();

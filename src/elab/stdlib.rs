@@ -90,6 +90,32 @@ pub fn is_std_file(name: &str, path: &std::path::Path) -> bool {
     same(&own) == same(path)
 }
 
+/// The standard-library modules exporting the value `name`: a function,
+/// constant or lemma declared `export`, or a function of an exported
+/// class. Read from the sources, for an unknown name's help.
+pub fn exporters(name: &str) -> Vec<String> {
+    let declares = |line: &str| {
+        let mut words = line.split_whitespace().skip_while(|w| matches!(*w, "export" | "transparent" | "partial"));
+        matches!(words.next(), Some("fn" | "let" | "lemma")) && words.next() == Some(name)
+    };
+    let mut out = Vec::new();
+    for m in modules() {
+        let Some(src) = source(&m) else { continue };
+        let mut in_class = false;
+        let found = src.lines().any(|l| {
+            if !l.starts_with(' ') && !l.is_empty() {
+                in_class = l.starts_with("export class ");
+                return l.starts_with("export ") && declares(l);
+            }
+            in_class && l.starts_with("    fn ") && declares(l)
+        });
+        if found {
+            out.push(m);
+        }
+    }
+    out
+}
+
 /// Every standard-library module, sorted by name.
 pub fn modules() -> Vec<String> {
     fn walk(base: &std::path::Path, d: &std::path::Path, out: &mut Vec<String>) {

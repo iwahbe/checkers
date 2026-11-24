@@ -6,6 +6,7 @@ module par_join_stress
 import std.system (System, ExitCode)
 import std.terminal
 import std.future
+import std.string (debug)
 
 fn slow n -> r : n~Nat, r~Nat
     decreasing n
@@ -14,5 +15,5 @@ fn slow n -> r : n~Nat, r~Nat
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let later = future.fork sys.sched (\_ -> slow 30)
     let (a, b) = par (future.join later, 1)
-    terminal.print_line (format (a + b)) sys.term
+    terminal.print_line (debug (a + b)) sys.term
     Success

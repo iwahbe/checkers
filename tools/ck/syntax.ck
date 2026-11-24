@@ -92,6 +92,67 @@ fn quote_end src i e q -> r : src~Bytes, i~Nat, e~Nat, i <= e, e <= len src, q~U
                     None   -> None
                     Some j -> Some j
 
+# Just past the quote that closes a template whose body starts at `i`: its
+# holes, `{…}`, may hold strings and templates; `{{` and `}}` are braces.
+fn template_end src i e -> r : src~Bytes, i~Nat, e~Nat, i <= e, e <= len src,
+                               r~Option (j~Nat, i < j, j <= e)
+    decreasing e - i
+    match peek src i e
+        None   -> None
+        Some c ->
+            if c == '"'
+                Some (i + 1)
+            else if c == '\\' or two src i e '{' '{' or two src i e '}' '}'
+                if i + 2 <= e
+                    match template_end src (i + 2) e
+                        None   -> None
+                        Some j -> Some j
+                else
+                    None
+            else if c == '{'
+                match hole_end src (i + 1) e 0
+                    None   -> None
+                    Some k ->
+                        match template_end src k e
+                            None   -> None
+                            Some j -> Some j
+            else
+                match template_end src (i + 1) e
+                    None   -> None
+                    Some j -> Some j
+
+# Just past the `}` that closes a template's hole whose inside starts at
+# `i`, `depth` brackets being open in it.
+fn hole_end src i e depth -> r : src~Bytes, i~Nat, e~Nat, i <= e, e <= len src, depth~Nat,
+                                 r~Option (j~Nat, i < j, j <= e)
+    decreasing e - i
+    match peek src i e
+        None   -> None
+        Some c ->
+            if c == '}' and depth == 0
+                Some (i + 1)
+            else if c == '"' or c == '\''
+                let inner = if c == '"' and i > 0 and is_word src[i - 1]
+                    template_end src (i + 1) e
+                else
+                    quote_end src (i + 1) e c
+                match inner
+                    None   -> None
+                    Some k ->
+                        match hole_end src k e depth
+                            None   -> None
+                            Some j -> Some j
+            else
+                let d = if c == '(' or c == '[' or c == '{'
+                    depth + 1
+                else if (c == ')' or c == ']' or c == '}') and depth > 0
+                    depth - 1
+                else
+                    depth
+                match hole_end src (i + 1) e d
+                    None   -> None
+                    Some j -> Some j
+
 fn error n col msg -> r : n~Nat, col~Nat, msg~String, r~SyntaxError
     SyntaxError n col msg
 
@@ -116,9 +177,18 @@ fn one_char c : c~U8
         or c == '{' or c == '}' or c == ',' or c == ':' or c == '~' or c == '\\'
         or c == '|' or c == '='
 
-# One token starting at `i` (not a space or a comment).
-fn scan src i e n col -> r : src~Bytes, i~Nat, e~Nat, i < e, e <= len src, n~Nat, col~Nat,
-                             r~Result (Scan i e) SyntaxError
+# A template, glued to its tag, whose body starts at `body`.
+fn template src i body e n col -> r : src~Bytes, i~Nat, body~Nat, i < body, body <= e, e <= len src,
+                                      n~Nat, col~Nat,
+                                      r~Result (Scan i e) SyntaxError
+    match template_end src body e
+        Some j -> Ok (Scan Literal j)
+        None   -> Err (error n col "unterminated literal")
+
+# One token starting at `i` (not a space or a comment); `tagged`: a name is
+# glued before it, so a string there is a template.
+fn scan src i e n col tagged -> r : src~Bytes, i~Nat, e~Nat, i < e, e <= len src, n~Nat, col~Nat, tagged~Bool,
+                                    r~Result (Scan i e) SyntaxError
     let c = src[i]
     if c == 'c' and i + 1 < e and src[i + 1] == '\''
         literal src i (i + 2) e '\'' n col
@@ -132,6 +202,8 @@ fn scan src i e n col -> r : src~Bytes, i~Nat, e~Nat, i < e, e <= len src, n~Nat
         Ok (Scan Number (word_end src (i + 1) e))
     else if c == '\''
         literal src i (i + 1) e '\'' n col
+    else if c == '"' and tagged
+        template src i (i + 1) e n col
     else if c == '"'
         literal src i (i + 1) e '"' n col
     else if two_char src i e
@@ -167,10 +239,19 @@ fn lex_line src ls i e n col acc -> r : src~Bytes, ls~Nat, i~Nat, e~Nat, ls <= i
                     let j = trim_end src i e
                     Ok (Line n (reverse acc) (Some (Tok Comment (bytes.slice src i j) col (width src i j) spaced)))
                 else
-                    let s = try scan src i e n col
+                    let tagged = match acc
+                        t :: _ -> not spaced and tag_name t
+                        []     -> False
+                    let s = try scan src i e n col tagged
                     let w = width src i s.stop
                     let t = Tok s.kind (bytes.slice src i s.stop) col w spaced
                     lex_line src ls s.stop e n (col + w) (t :: acc)
+
+# A name a template may be glued to: not a keyword or `and`, `or`, `implies`.
+fn tag_name t : t~Tok
+    match t.kind
+        Name -> not (is_keyword t) and t.text != b"and" and t.text != b"or" and t.text != b"implies"
+        _    -> False
 
 fn line_end src i -> j : src~Bytes, i~Nat, i <= len src, j~Nat, i <= j, j <= len src
     decreasing len src - i
@@ -245,26 +326,42 @@ export fn depth_after toks d -> r : toks~List Tok, d~Nat, r~Nat
 
 # What a line is: blank, the start of a logical line at a block level, a
 # continuation of the logical line before, or a comment on its own, at the
-# level of the line it belongs with.
+# level of the line it belongs with. A logical line starting a block that a
+# continuation line opened (indented past it) is `Nested`; one starting the
+# next block of that continuation's logical line, after it, is `Fresh` (§9.1).
 export enum Role
     Blank
-    Start lvl : lvl~Nat
+    Start lvl  : lvl~Nat
+    Nested lvl : lvl~Nat
+    Fresh lvl  : lvl~Nat
     Cont
-    Note lvl  : lvl~Nat
+    Note lvl   : lvl~Nat
+
+# The block level of a line that starts a logical line.
+export fn starts r -> o : r~Role, o~Option Nat
+    match r
+        Start lvl  -> Some lvl
+        Nested lvl -> Some lvl
+        Fresh lvl  -> Some lvl
+        _          -> None
 
 export record Placed
     role~Role
     line~Line
 
-# Layout state: the columns of the open blocks (innermost first), the
-# bracket depth, the last code token so far, the column of the logical
-# line, and of the logical line the outermost open bracket is on.
+# Layout state: the open blocks (innermost first: each one's column, and
+# whether a continuation line opened it), the bracket depth, the last code
+# token so far, the column of the logical line, of the logical line the
+# outermost open bracket is on, and of the last physical line, and whether
+# that line continued a logical line.
 record State
-    stack~List Nat
+    stack~List (Nat, Bool)
     depth~Nat
     last~Option Tok
     col~Nat
     open~Nat
+    line~Nat
+    cont~Bool
 
 fn last_of toks -> r : toks~List Tok, r~Option Tok
     match toks
@@ -307,20 +404,30 @@ export fn is_sign t rest : t~Tok, rest~List Tok
         []     -> False
 
 # The level of the innermost open block whose column is at most `col`.
-fn level_at stack col -> l : stack~List Nat, col~Nat, l~Nat
+fn level_at stack col -> l : stack~List (Nat, Bool), col~Nat, l~Nat
     match stack
-        []        -> 0
-        c :: rest -> if c <= col then list.length rest else level_at rest col
+        []             -> 0
+        (c, _) :: rest -> if c <= col then list.length rest else level_at rest col
 
 # Close blocks down to `col`: the remaining stack, if `col` is one of its
-# columns.
-fn dedent stack col -> r : stack~List Nat, col~Nat, r~Option (List Nat)
+# columns, or, leaving a block a continuation line opened for a column
+# inside its logical line's block, that stack with a new block at `col`
+# (true: a fresh block).
+fn dedent stack col -> r : stack~List (Nat, Bool), col~Nat, r~Option (List (Nat, Bool), Bool)
     match stack
-        []        -> None
-        c :: rest -> if c == col then Some stack else if c < col then None else dedent rest col
+        []                  -> None
+        (c, nested) :: rest ->
+            if c == col
+                Some (stack, False)
+            else if c < col
+                None
+            else
+                match rest
+                    (d, _) :: _ if nested and d < col -> Some ((col, False) :: rest, True)
+                    _ -> dedent rest col
 
 # The level of the innermost block.
-fn level_of stack -> l : stack~List Nat, l~Nat
+fn level_of stack -> l : stack~List (Nat, Bool), l~Nat
     match stack
         []        -> 0
         _ :: rest -> list.length rest
@@ -339,31 +446,34 @@ fn place lines st acc -> r : lines~List Line, st~State, acc~List Placed, r~Resul
                             let role = if cont then Cont else Note (level_at st.stack c.col)
                             place rest st (Placed role l :: acc)
                 first :: _ ->
-                    let st = if closes st first then State st.stack 0 st.last st.col st.open else st
+                    let st = if closes st first then State st.stack 0 st.last st.col st.open st.line st.cont else st
                     let cont = st.last != None and continues st l.toks
                     let col = if cont then st.col else first.col
                     let depth = depth_after l.toks st.depth
                     let open = if st.depth == 0 and depth > 0 then col else st.open
-                    let next = State st.stack depth (last_of l.toks) col open
                     if cont
-                        place rest next (Placed Cont l :: acc)
+                        place rest (State st.stack depth (last_of l.toks) col open first.col True) (Placed Cont l :: acc)
                     else
                         let top = match st.stack
-                            []     -> 0
-                            c :: _ -> c
+                            []          -> 0
+                            (c, _) :: _ -> c
                         if first.col > top
                             if st.last == None
                                 Err (error l.num first.col "unexpected indentation at the start of the file")
                             else
-                                let stack = first.col :: st.stack
-                                let p = Placed (Start (list.length st.stack)) l
-                                place rest (State stack next.depth next.last col open) (p :: acc)
+                                # Indented past the continuation line before it: that line's block.
+                                let nested = st.cont and first.col > st.line
+                                let stack = (first.col, nested) :: st.stack
+                                let lvl = list.length st.stack
+                                let p = Placed (if nested then Nested lvl else Start lvl) l
+                                place rest (State stack depth (last_of l.toks) col open first.col False) (p :: acc)
                         else
                             match dedent st.stack first.col
-                                None       -> Err (error l.num first.col "unindent does not match any outer indentation level")
-                                Some stack ->
-                                    let p = Placed (Start (level_of stack)) l
-                                    place rest (State stack next.depth next.last col open) (p :: acc)
+                                None                -> Err (error l.num first.col "unindent does not match any outer indentation level")
+                                Some (stack, fresh) ->
+                                    let lvl = level_of stack
+                                    let p = Placed (if fresh then Fresh lvl else Start lvl) l
+                                    place rest (State stack depth (last_of l.toks) col open first.col False) (p :: acc)
 
 # A comment on its own line belongs with the next line if it is indented at
 # least as far, else with the block its column is in.
@@ -371,13 +481,13 @@ fn resolve placed next acc -> r : placed~List Placed, next~Option (Nat, Nat), ac
     match placed
         []        -> acc
         p :: rest ->
-            match p.role
-                Start lvl ->
+            match (starts p.role, p.role)
+                (Some lvl, _)  ->
                     let col = match p.line.toks
                         []     -> 0
                         t :: _ -> t.col
                     resolve rest (Some (col, lvl)) (p :: acc)
-                Note back ->
+                (_, Note back) ->
                     let col = match p.line.comment
                         Some c -> c.col
                         None   -> 0
@@ -385,11 +495,11 @@ fn resolve placed next acc -> r : placed~List Placed, next~Option (Nat, Nat), ac
                         Some (c, l) -> if col >= c then l else back
                         None        -> back
                     resolve rest next (Placed (Note lvl) p.line :: acc)
-                _         -> resolve rest next (p :: acc)
+                _              -> resolve rest next (p :: acc)
 
 # The lines of a file, each with its role.
 export fn layout lines -> r : lines~List Line, r~Result (List Placed) SyntaxError
-    let placed = try place lines (State [0] 0 None 0 0) []
+    let placed = try place lines (State [(0, False)] 0 None 0 0 0 False) []
     Ok (resolve (reverse placed) None [])
 
 # ── Indentation for a new line (D158) ───────────────────────────────────────
@@ -471,10 +581,21 @@ fn last_logical placed acc -> r : placed~List Placed, acc~List Line, r~List Line
     match placed
         []        -> acc
         p :: rest ->
-            match p.role
-                Start _ -> p.line :: acc
-                Cont    -> if p.line.toks == [] then last_logical rest acc else last_logical rest (p.line :: acc)
-                _       -> if acc == [] then last_logical rest acc else acc
+            match (starts p.role, p.role)
+                (Some _, _) -> p.line :: acc
+                (_, Cont)   -> if p.line.toks == [] then last_logical rest acc else last_logical rest (p.line :: acc)
+                _           -> if acc == [] then last_logical rest acc else acc
+
+fn last_line lines -> r : lines~List Line, r~Option Line
+    match lines
+        []        -> None
+        [l]       -> Some l
+        _ :: rest -> last_line rest
+
+fn first_col toks -> c : toks~List Tok, c~Nat
+    match toks
+        t :: _ -> t.col
+        []     -> 0
 
 fn all_toks lines -> r : lines~List Line, r~List Tok
     match lines
@@ -513,4 +634,11 @@ export fn indent_after lines first -> c : lines~List Line, first~Option Tok, c~N
                             let ends_open = match last_of toks
                                 Some t -> (is_binop t and not (is_punct t b".")) or is_punct t b","
                                 None   -> False
-                            if ends_open or opens_block toks then base + LEVEL else base
+                            # A continuation line that opens a block (a `match`
+                            # among a signature's constraints): one level in from it.
+                            let continued = match (more, last_line more)
+                                (_ :: _, Some l) -> if opens_block l.toks then Some (first_col l.toks) else None
+                                _                -> None
+                            match continued
+                                Some c if not ends_open -> c + LEVEL
+                                _ -> if ends_open or opens_block toks then base + LEVEL else base

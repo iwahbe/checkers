@@ -1,0 +1,8 @@
+# instance_transparent.ck — `transparent` on an instance's function.
+module instance_transparent
+
+instance Size  Bool
+  transparent   fn size b
+    if b then 1 else 0
+  transparent fn  bounded b->n:b~Bool,n~Int,n>=0
+    0

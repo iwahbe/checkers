@@ -1,0 +1,9 @@
+error[E0450]: cannot prove `a <= b`, required to call `pred`
+  --> field_condition_order.ck:21:15
+   |
+21 |     stop~Nat, pred start stop, start <= stop
+   |               ^^^^^^^^^^^^^^^ `pred` requires `a <= b`
+   = note: counterexample: start = 1, stop = 0
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+field_condition_order.ck: 1 error, 0 warnings

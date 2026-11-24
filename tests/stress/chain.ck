@@ -10,6 +10,7 @@ import std.future (Future)
 import std.terminal (Term)
 import std.cown (Sched)
 import std.list
+import std.string (debug)
 
 fn step term k a sched x -> y : term~Term, k~Nat, a~Actor (List Nat), sched~Sched, x~List Nat, y~List Nat
     decreasing k
@@ -31,7 +32,7 @@ fn count a k sched -> u : a~Actor Nat, k~Nat, sched~Sched, u~()
         count a (k - 1) sched
 
 fn report term name x -> y : term~Term, name~String, x~a, y~a
-    terminal.print_line (name ++ " " ++ format x) term
+    terminal.print_line (name ++ " " ++ debug x) term
     x
 
 fn first_three xs -> ys : xs~List Nat, ys~List Nat
@@ -40,7 +41,7 @@ fn first_three xs -> ys : xs~List Nat, ys~List Nat
         _                -> xs
 
 fn trail term xs -> ys : term~Term, xs~List Nat, ys~List Nat
-    terminal.print_line ("trail " ++ format (list.length xs) ++ " " ++ format (first_three xs)) term
+    terminal.print_line ("trail " ++ debug (list.length xs) ++ " " ++ debug (first_three xs)) term
     xs
 
 export fn main args sys -> code : args~List String, sys~System, code~Future ExitCode

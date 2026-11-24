@@ -41,7 +41,7 @@ partial fn entries dir es fs -> r : dir~String, es~List Entry, fs~Fs, r~List Str
             here ++ entries dir rest fs
 
 fn describe where e -> s : where~String, e~SyntaxError, s~String
-    where ++ ":" ++ format e.line ++ ":" ++ format (e.col + 1) ++ ": " ++ e.message
+    string.format"{where}:{e.line}:{e.col + 1}: {e.message}"
 
 # What happened to the files so far.
 record Tally

@@ -215,6 +215,9 @@ pub enum Tok {
     Str(String),
     /// `b"…"`
     Bytes(Vec<u8>),
+    /// A string literal glued to the name before it, `tag"a{x}b"` (#132):
+    /// its text and its holes, each hole's tokens lexed in place.
+    Template(Vec<TemplatePart>),
     Kw(Kw),
     Op(Op),
     /// A `-` that is a sign: after white space or an opening bracket, and
@@ -252,6 +255,7 @@ impl fmt::Display for Tok {
             Tok::Char(_) => write!(f, "char literal"),
             Tok::Str(_) => write!(f, "string literal"),
             Tok::Bytes(_) => write!(f, "bytes literal"),
+            Tok::Template(_) => write!(f, "template"),
             Tok::Kw(k) => write!(f, "`{}`", k.as_str()),
             Tok::Op(o) => write!(f, "`{}`", o.as_str()),
             Tok::LParen => write!(f, "`(`"),
@@ -277,7 +281,18 @@ impl fmt::Display for Tok {
     }
 }
 
-#[derive(Clone, Debug)]
+/// A piece of a template (#132).
+#[derive(Clone, Debug, PartialEq)]
+pub enum TemplatePart {
+    /// Text between holes, its escapes and `{{`, `}}` read; its span is
+    /// where it is written.
+    Text(String, Span),
+    /// `{…}`: the tokens inside the braces (no layout tokens), and the span
+    /// of the whole hole, braces included.
+    Hole(Vec<Token>, Span),
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Token {
     pub tok: Tok,
     pub span: Span,

@@ -8,6 +8,7 @@ import std.system (System, ExitCode)
 import std.cown (Cown, Sched)
 import std.future (Future)
 import std.terminal (Term)
+import std.string (debug)
 
 fn bump c k sched -> u : c~Cown Nat, k~Nat, sched~Sched, u~()
     decreasing k
@@ -29,6 +30,6 @@ export fn main args sys -> code : args~List String, sys~System, code~Future Exit
     bump c 200 sched
     bump d 200 sched
     when w = a, x = b, y = c, z = d using sched
-        terminal.print_line ("total " ++ format (w + x + y + z)) term
+        terminal.print_line ("total " ++ debug (w + x + y + z)) term
         (w, x, y, z)
     future.ready Success

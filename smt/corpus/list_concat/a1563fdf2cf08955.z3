@@ -1,3 +1,0 @@
-;; work 200152
-unknown
-(error "line 19 column 25: model is not available")

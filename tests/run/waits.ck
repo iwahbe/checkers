@@ -9,6 +9,7 @@ import std.system (System, ExitCode, Proc)
 import std.terminal (Term)
 import std.files (File)
 import std.proc (Streams, Spawned, Pipe, Inherit, Child)
+import std.string (debug)
 
 # A child `cat`: its input, its output, and the child.
 record Kid
@@ -54,14 +55,14 @@ partial fn feed ins n : ins~List File, n~Nat
     match ins
         []        -> ()
         w :: rest ->
-            let (_, w) = files.write_line ("line " ++ format n) w
+            let (_, w) = files.write_line ("line " ++ debug n) w
             files.close w
             feed rest (n + 1)
 
 # What a slot holds, as text.
 fn shown s -> r : s~Slot, r~String
     match s
-        Read t code -> format t ++ " " ++ format code
+        Read t code -> debug t ++ " " ++ debug code
         Failed      -> "failed"
 
 export partial fn main args sys -> code : args~List String, sys~System, code~ExitCode

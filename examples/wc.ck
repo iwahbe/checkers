@@ -12,6 +12,7 @@ module wc
 import std.system (System, ExitCode)
 import std.terminal (Term)
 import std.files (Fs, File, IoError)
+import std.string (format)
 
 record Counts
     lines~Nat
@@ -58,7 +59,7 @@ partial fn count_file f in_word acc -> r : f~File, in_word~Bool, acc~Counts, r~R
             Err e
 
 fn render c name -> s : c~Counts, name~String, s~String
-    format c.lines ++ " " ++ format c.words ++ " " ++ format c.bytes ++ " " ++ name
+    format"{c.lines} {c.words} {c.bytes} {name}"
 
 export partial fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { fs, term } = sys

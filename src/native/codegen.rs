@@ -20,7 +20,7 @@ use cranelift_codegen::ir::{
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Runtime functions: name, parameters, whether they return a word.
 const RUNTIME: &[(&str, usize, bool)] = &[
@@ -37,9 +37,9 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("ck_eq", 3, true),
     ("ck_ne", 3, true),
     ("ck_concat", 2, true),
+    ("ck_concat_own", 2, true),
     ("ck_len", 1, true),
     ("ck_index", 3, true),
-    ("ck_format", 1, true),
     ("ck_big_lit", 2, true),
     ("ck_fail", 3, true),
     ("ck_error", 3, true),
@@ -50,6 +50,7 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("ck_par", 2, true),
     ("ck_tuple_flat", 1, true),
     ("ck_tuple_rest", 2, true),
+    ("ck_type_apply", 2, true),
 ];
 
 fn flags() -> MemFlagsData {
@@ -89,23 +90,34 @@ struct St {
     /// keeps a map per variable as long as the block count, quadratic in
     /// generated code (#67).
     vars: Vec<Option<Value>>,
+    /// Values that are never pointers (a comparison's `Bool`): dropping or
+    /// duplicating one does nothing, so no code is emitted for it.
+    imm: HashSet<Value>,
     owner: u32,
     frefs: HashMap<FuncId, FuncRef>,
     gvs: HashMap<DataId, GlobalValue>,
 }
 
 enum Mode {
-    Tail,
+    /// Return the value: one word, or this many (`unbox`).
+    Tail(usize),
     /// Jump to this block with the value.
     Val(ir::Block),
 }
 
 fn tail_sig(n: usize) -> Signature {
+    tail_sig_rets(n, 1)
+}
+
+/// A function of `n` arguments (and its environment) returning `rets` words.
+fn tail_sig_rets(n: usize, rets: usize) -> Signature {
     let mut s = Signature::new(CallConv::Tail);
     for _ in 0..=n {
         s.params.push(AbiParam::new(I64));
     }
-    s.returns.push(AbiParam::new(I64));
+    for _ in 0..rets {
+        s.returns.push(AbiParam::new(I64));
+    }
     s
 }
 
@@ -215,6 +227,8 @@ impl<'p, M: Module> Gen<'p, M> {
         bytes.extend_from_slice(&w::STATIC_RC.to_le_bytes());
         bytes.extend_from_slice(&w::info(kind, 0, 0).to_le_bytes());
         bytes.extend_from_slice(&(b.len() as u64).to_le_bytes());
+        // Not a slice: the bytes follow (#169).
+        bytes.extend_from_slice(&0u64.to_le_bytes());
         bytes.extend_from_slice(b);
         while bytes.len() % 8 != 0 {
             bytes.push(0);
@@ -251,7 +265,7 @@ impl<'p, M: Module> Gen<'p, M> {
     fn lay_out(v: &Static, out: &mut Vec<u8>, relocs: &mut Vec<(usize, usize)>) -> Result<u64, usize> {
         let (kind, tag, fields) = match v {
             Static::Word(x) => return Ok(*x),
-            Static::Str(s) => return Err(Self::lay_out_bytes(w::K_STR, s.as_bytes(), out)),
+            Static::Str(s) => return Err(Self::lay_out_bytes(w::K_BYTES, s.as_bytes(), out)),
             Static::Bytes(b) => return Err(Self::lay_out_bytes(w::K_BYTES, b, out)),
             Static::Con(c, xs) => (w::K_CON, *c as u64, xs),
             Static::Tuple(xs) => (w::K_TUPLE, 0, xs),
@@ -275,6 +289,7 @@ impl<'p, M: Module> Gen<'p, M> {
         out.extend_from_slice(&w::STATIC_RC.to_le_bytes());
         out.extend_from_slice(&w::info(kind, 0, 0).to_le_bytes());
         out.extend_from_slice(&(b.len() as u64).to_le_bytes());
+        out.extend_from_slice(&0u64.to_le_bytes());
         out.extend_from_slice(b);
         while !out.len().is_multiple_of(8) {
             out.push(0);
@@ -306,11 +321,12 @@ impl<'p, M: Module> Gen<'p, M> {
         for i in self.funcs.len()..self.p.funcs.len() {
             let n = arity_of(&self.p.funcs[i]);
             assert!(n <= MAX_ARITY, "`{}` takes {n} arguments: lowering curries past {MAX_ARITY}", self.p.funcs[i].name);
-            let id = self.m.declare_function(&format!("ckf_{i}"), Linkage::Local, &tail_sig(n)).expect("declare a function");
+            let sig = tail_sig_rets(n, self.p.funcs[i].rets);
+            let id = self.m.declare_function(&format!("ckf_{i}"), Linkage::Local, &sig).expect("declare a function");
             self.funcs.push(id);
         }
         for i in self.defined..self.p.funcs.len() {
-            ctx.func.signature = tail_sig(arity_of(&self.p.funcs[i]));
+            ctx.func.signature = tail_sig_rets(arity_of(&self.p.funcs[i]), self.p.funcs[i].rets);
             ctx.func.name = ir::UserFuncName::user(0, i as u32);
             {
                 let mut b = FunctionBuilder::new(&mut ctx.func, &mut fctx);
@@ -343,14 +359,14 @@ impl<'p, M: Module> Gen<'p, M> {
         b.switch_to_block(entry);
         let params: Vec<Value> = b.block_params(entry).to_vec();
         let vars = vec![None; f.nvars.max(f.params.len() as u32) as usize];
-        let mut st = St { vars, owner: f.owner, frefs: HashMap::new(), gvs: HashMap::new() };
+        let mut st = St { vars, imm: HashSet::new(), owner: f.owner, frefs: HashMap::new(), gvs: HashMap::new() };
         let env = params[0];
         match &f.kind {
             FnKind::Global | FnKind::Caf => {
                 for (k, v) in f.params.iter().enumerate() {
                     st.vars[*v as usize] = Some(params[k + 1]);
                 }
-                self.emit(b, &mut st, &f.body, Mode::Tail);
+                self.emit(b, &mut st, &f.body, Mode::Tail(f.rets));
             }
             FnKind::Lambda { captured } => {
                 for (k, v) in f.params.iter().enumerate() {
@@ -362,7 +378,7 @@ impl<'p, M: Module> Gen<'p, M> {
                     st.vars[*v as usize] = Some(x);
                 }
                 self.drop_v(b, &mut st, env);
-                self.emit(b, &mut st, &f.body, Mode::Tail);
+                self.emit(b, &mut st, &f.body, Mode::Tail(f.rets));
             }
             FnKind::BuiltinWrap { sym, keep } => {
                 let kept: Vec<Value> = keep.iter().enumerate().filter(|(_, k)| **k).map(|(j, _)| params[j + 1]).collect();
@@ -457,7 +473,10 @@ impl<'p, M: Module> Gen<'p, M> {
         b.ins().band(a, nz)
     }
 
-    fn dup(&mut self, b: &mut FunctionBuilder, _st: &mut St, x: Value) {
+    fn dup(&mut self, b: &mut FunctionBuilder, st: &mut St, x: Value) {
+        if st.imm.contains(&x) {
+            return;
+        }
         let inc = b.create_block();
         let done = b.create_block();
         let c = Self::is_ptr(b, x);
@@ -470,6 +489,9 @@ impl<'p, M: Module> Gen<'p, M> {
     }
 
     fn drop_v(&mut self, b: &mut FunctionBuilder, st: &mut St, x: Value) {
+        if st.imm.contains(&x) {
+            return;
+        }
         let dec = b.create_block();
         let free = b.create_block();
         let done = b.create_block();
@@ -492,14 +514,30 @@ impl<'p, M: Module> Gen<'p, M> {
 
     // ── expressions ─────────────────────────────────────────────────────────
 
-    /// Finish with `x`: return it, or pass it on.
+    /// Finish with `x`: return it, or pass it on. Where several words are
+    /// expected, `x` is a failure's (it never returns): the rest are 0.
     fn finish(b: &mut FunctionBuilder, mode: &Mode, x: Value) {
+        let n = match mode {
+            Mode::Tail(n) => *n,
+            Mode::Val(k) => b.func.dfg.num_block_params(*k),
+        };
+        let mut xs = vec![x];
+        if n > 1 {
+            let z = b.ins().iconst(I64, 0);
+            xs.resize(n, z);
+        }
+        Self::finish_all(b, mode, &xs)
+    }
+
+    /// Finish with all of `xs`, the words expected.
+    fn finish_all(b: &mut FunctionBuilder, mode: &Mode, xs: &[Value]) {
         match mode {
-            Mode::Tail => {
-                b.ins().return_(&[x]);
+            Mode::Tail(_) => {
+                b.ins().return_(xs);
             }
             Mode::Val(k) => {
-                b.ins().jump(*k, &[BlockArg::Value(x)]);
+                let args: Vec<BlockArg> = xs.iter().map(|x| BlockArg::Value(*x)).collect();
+                b.ins().jump(*k, &args);
             }
         }
     }
@@ -511,8 +549,9 @@ impl<'p, M: Module> Gen<'p, M> {
             E::Int(n) => b.ins().iconst(I64, w::mk_int(*n) as i64),
             E::Erased => b.ins().iconst(I64, 0),
             E::Unit => b.ins().iconst(I64, w::UNIT as i64),
+            E::Con { con, fields, reuse: None } if fields.is_empty() => b.ins().iconst(I64, w::nullary(*con) as i64),
             E::Str(s) => {
-                let d = self.lit(w::K_STR, s.as_bytes());
+                let d = self.lit(w::K_BYTES, s.as_bytes());
                 self.addr(b, st, d)
             }
             E::Bytes(x) => {
@@ -556,6 +595,9 @@ impl<'p, M: Module> Gen<'p, M> {
             }
             E::Let(x, a, body) => {
                 let v = self.val(b, st, a);
+                if Self::immediate(a) {
+                    st.imm.insert(v);
+                }
                 st.vars[*x as usize] = Some(v);
                 self.emit(b, st, body, mode)
             }
@@ -566,13 +608,13 @@ impl<'p, M: Module> Gen<'p, M> {
                 }
                 let r = self.fref(b, st, self.funcs[*f as usize]);
                 match mode {
-                    Mode::Tail => {
+                    Mode::Tail(_) => {
                         b.ins().return_call(r, &vs);
                     }
                     Mode::Val(k) => {
                         let inst = b.ins().call(r, &vs);
-                        let x = b.inst_results(inst)[0];
-                        b.ins().jump(k, &[BlockArg::Value(x)]);
+                        let xs = b.inst_results(inst).to_vec();
+                        Self::finish_all(b, &Mode::Val(k), &xs);
                     }
                 }
             }
@@ -600,6 +642,20 @@ impl<'p, M: Module> Gen<'p, M> {
                 let x = self.build_con(b, st, *con, &vs, tok);
                 Self::finish(b, &mode, x)
             }
+            E::Multi(xs) => {
+                let vs: Vec<Value> = xs.iter().map(|a| self.val(b, st, a)).collect();
+                Self::finish_all(b, &mode, &vs)
+            }
+            E::LetMulti(xs, a, body) => {
+                let k = b.create_block();
+                let vs: Vec<Value> = xs.iter().map(|_| b.append_block_param(k, I64)).collect();
+                self.emit(b, st, a, Mode::Val(k));
+                b.switch_to_block(k);
+                for (x, v) in xs.iter().zip(vs) {
+                    st.vars[*x as usize] = Some(v);
+                }
+                self.emit(b, st, body, mode)
+            }
             E::Tuple(xs) => {
                 let vs: Vec<Value> = xs.iter().map(|a| self.val(b, st, a)).collect();
                 let x = self.alloc(b, st, w::info(w::K_TUPLE, vs.len() as u64, 0), w::HDR + 8 * vs.len());
@@ -607,6 +663,18 @@ impl<'p, M: Module> Gen<'p, M> {
                     b.ins().store(flags(), *v, x, (w::HDR + 8 * k) as i32);
                 }
                 let x = self.flatten_tuple(b, st, x, vs[vs.len() - 1]);
+                Self::finish(b, &mode, x)
+            }
+            E::Borrow { op: BOp::Prim(Op::Concat, _), args, drops } if Self::gives_left(args, drops).is_some() => {
+                // The last use of the left side: `++` takes it, so a string
+                // or array no one else holds is appended to in place.
+                let given = Self::gives_left(args, drops);
+                let vs: Vec<Value> = args.iter().map(|a| self.val(b, st, a)).collect();
+                let x = self.call1(b, st, "ck_concat_own", &[vs[0], vs[1]]);
+                for d in drops.iter().filter(|d| Some(**d) != given) {
+                    let dv = self.var(b, st, *d);
+                    self.drop_v(b, st, dv);
+                }
                 Self::finish(b, &mode, x)
             }
             E::Borrow { op, args, drops } => {
@@ -622,6 +690,11 @@ impl<'p, M: Module> Gen<'p, M> {
                 let vs: Vec<Value> = xs.iter().map(|a| self.val(b, st, a)).collect();
                 let x = self.call_array(b, st, "ck_par", &vs);
                 Self::finish(b, &mode, x)
+            }
+            E::At(o, x) => {
+                let saved = std::mem::replace(&mut st.owner, *o);
+                self.emit(b, st, x, mode);
+                st.owner = saved;
             }
             E::Fail(m) => {
                 let o = self.owner(b, st);
@@ -786,7 +859,8 @@ impl<'p, M: Module> Gen<'p, M> {
         let mut vs = vec![f];
         vs.extend_from_slice(args);
         match mode {
-            Mode::Tail => {
+            Mode::Tail(n) => {
+                debug_assert_eq!(n, 1, "a closure returns one word");
                 b.ins().return_call_indirect(sig, code, &vs);
             }
             Mode::Val(k) => {
@@ -806,6 +880,22 @@ impl<'p, M: Module> Gen<'p, M> {
         let t = b.ins().iconst(I64, self.true_w);
         let f = b.ins().iconst(I64, self.false_w);
         b.ins().select(c, t, f)
+    }
+
+    /// `a ++ b` whose left side is a variable this is the last use of (it
+    /// would be dropped right after), and not also the right side: that
+    /// variable, which `++` may then take.
+    fn gives_left(args: &[E], drops: &[V]) -> Option<V> {
+        match args {
+            [E::Var(v), y] if drops.iter().filter(|d| *d == v).count() == 1 && !matches!(y, E::Var(u) if u == v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Is `e`'s value never a pointer? A comparison gives `True` or `False`,
+    /// constructors without fields.
+    fn immediate(e: &E) -> bool {
+        matches!(e, E::Borrow { op: BOp::Prim(Op::Eq | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge, _), .. })
     }
 
     /// Both small integers?
@@ -840,6 +930,56 @@ impl<'p, M: Module> Gen<'p, M> {
         let mut args = vec![x, y];
         args.extend(extra);
         let s = self.call1(b, st, slow, &args);
+        b.ins().jump(done, &[BlockArg::Value(s)]);
+        b.switch_to_block(done);
+        r
+    }
+
+    /// Euclidean `/` or `%` (the remainder never negative), inline when both
+    /// are small integers and the divisor isn't zero; otherwise the runtime,
+    /// which also reports division by zero.
+    fn divide(&mut self, b: &mut FunctionBuilder, st: &mut St, rem: bool, x: Value, y: Value, owner: Value) -> Value {
+        let fast = b.create_block();
+        let slow = b.create_block();
+        let done = b.create_block();
+        let r = b.append_block_param(done, I64);
+        let ints = Self::both_int(b, x, y);
+        let ints = b.ins().icmp_imm_s(IntCC::NotEqual, ints, 0);
+        // The word for 0 is 1.
+        let nonzero = b.ins().icmp_imm_s(IntCC::NotEqual, y, 1);
+        let go = b.ins().band(ints, nonzero);
+        b.ins().brif(go, fast, &[], slow, &[]);
+        b.switch_to_block(fast);
+        // Small integers have 63 bits, so neither division overflows i64.
+        let n = b.ins().sshr_imm_s(x, 1);
+        let d = b.ins().sshr_imm_s(y, 1);
+        let q = b.ins().sdiv(n, d);
+        let m = b.ins().srem(n, d);
+        // A negative remainder: one more `|d|` makes it Euclidean, and the
+        // quotient moves one step away from `d`'s sign.
+        let neg = b.ins().icmp_imm_s(IntCC::SignedLessThan, m, 0);
+        let (v, ov) = if rem {
+            let ad = b.ins().iabs(d);
+            let m1 = b.ins().iadd(m, ad);
+            let m = b.ins().select(neg, m1, m);
+            // |m| < |d|: it fits.
+            let m2 = b.ins().iadd(m, m);
+            (b.ins().iadd_imm_s(m2, 1), b.ins().iconst(I8, 0))
+        } else {
+            let dpos = b.ins().icmp_imm_s(IntCC::SignedGreaterThan, d, 0);
+            let one = b.ins().iconst(I64, 1);
+            let minus = b.ins().iconst(I64, -1);
+            let step = b.ins().select(dpos, minus, one);
+            let zero = b.ins().iconst(I64, 0);
+            let step = b.ins().select(neg, step, zero);
+            let q = b.ins().iadd(q, step);
+            // Only -2^62 / -1 leaves the small integers.
+            let (q2, ov) = b.ins().sadd_overflow(q, q);
+            (b.ins().iadd_imm_s(q2, 1), ov)
+        };
+        b.ins().brif(ov, slow, &[], done, &[BlockArg::Value(v)]);
+        b.switch_to_block(slow);
+        let s = self.call1(b, st, if rem { "ck_rem" } else { "ck_div" }, &[x, y, owner]);
         b.ins().jump(done, &[BlockArg::Value(s)]);
         b.switch_to_block(done);
         r
@@ -962,8 +1102,7 @@ impl<'p, M: Module> Gen<'p, M> {
                 "ck_mul",
                 None,
             ),
-            Op::Div => self.call1(b, st, "ck_div", &[a[0], a[1], o]),
-            Op::Rem => self.call1(b, st, "ck_rem", &[a[0], a[1], o]),
+            Op::Div | Op::Rem => self.divide(b, st, p == Op::Rem, a[0], a[1], o),
             Op::Neg => self.call1(b, st, "ck_neg", &[a[0]]),
             Op::Eq | Op::Ne => {
                 let ints = Self::both_int(b, a[0], a[1]);
@@ -1008,6 +1147,7 @@ impl<'p, M: Module> Gen<'p, M> {
                 self.bool_of(b, r)
             }
             Op::Concat => self.call1(b, st, "ck_concat", &[a[0], a[1]]),
+            Op::TypeApply => self.call1(b, st, "ck_type_apply", &[a[0], a[1]]),
             Op::Len => {
                 // Inline for strings, bytes and arrays, which keep their
                 // length in their first word (D133); lists go to the runtime.
@@ -1024,11 +1164,9 @@ impl<'p, M: Module> Gen<'p, M> {
                 b.switch_to_block(kinds);
                 let info = b.ins().load(I64, flags(), a[0], 8);
                 let kind = b.ins().band_imm_s(info, 0xff);
-                let s = b.ins().icmp_imm_s(IntCC::Equal, kind, w::K_STR as i64);
                 let y = b.ins().icmp_imm_s(IntCC::Equal, kind, w::K_BYTES as i64);
                 let z = b.ins().icmp_imm_s(IntCC::Equal, kind, checkers_rt::array::K_ARRAY as i64);
-                let sy = b.ins().bor(s, y);
-                let any = b.ins().bor(sy, z);
+                let any = b.ins().bor(y, z);
                 b.ins().brif(any, fast, &[], slow, &[]);
                 b.switch_to_block(fast);
                 let n = b.ins().load(I64, flags(), a[0], w::HDR as i32);
@@ -1068,8 +1206,13 @@ impl<'p, M: Module> Gen<'p, M> {
                 let inb = b.ins().icmp(IntCC::UnsignedLessThan, i, len);
                 b.ins().brif(inb, fast, &[], slow, &[]);
                 b.switch_to_block(fast);
-                let base = b.ins().iadd(a[0], i);
-                let byte = b.ins().uload8(I64, flags(), base, (w::HDR + 8) as i32);
+                // The bytes follow the header, or a slice points at them (#169).
+                let ptr = b.ins().load(I64, flags(), a[0], (w::HDR + 8) as i32);
+                let inline = b.ins().iadd_imm_s(a[0], (w::HDR + 16) as i64);
+                let sliced = b.ins().icmp_imm_s(IntCC::NotEqual, ptr, 0);
+                let data = b.ins().select(sliced, ptr, inline);
+                let base = b.ins().iadd(data, i);
+                let byte = b.ins().uload8(I64, flags(), base, 0);
                 let sh = b.ins().ishl_imm_s(byte, 1);
                 let v = b.ins().bor_imm_s(sh, 1);
                 b.ins().jump(done, &[BlockArg::Value(v)]);
@@ -1079,7 +1222,6 @@ impl<'p, M: Module> Gen<'p, M> {
                 b.switch_to_block(done);
                 r
             }
-            Op::Format => self.call1(b, st, "ck_format", &[a[0]]),
             Op::When => self.call1(b, st, "ck_when", &[a[1], a[2]]),
             Op::Par => a[0],
         }
@@ -1094,7 +1236,15 @@ impl<'p, M: Module> Gen<'p, M> {
             let mut targets = Vec::new();
             if all_nullary {
                 // Compare the words: constructors without fields are words.
-                for a in arms {
+                // A comparison's `Bool` is one of two: when both have arms,
+                // the last needs no test.
+                let words: Vec<i64> = arms.iter().map(|a| w::nullary(a.con) as i64).collect();
+                let both = st.imm.contains(&x) && words.contains(&self.true_w) && words.contains(&self.false_w);
+                for (k, a) in arms.iter().enumerate() {
+                    if both && k + 1 == arms.len() {
+                        targets.push(b.current_block().expect("a block"));
+                        break;
+                    }
                     let yes = b.create_block();
                     let no = b.create_block();
                     let c = b.ins().icmp_imm_s(IntCC::Equal, x, w::nullary(a.con) as i64);
@@ -1102,7 +1252,9 @@ impl<'p, M: Module> Gen<'p, M> {
                     targets.push(yes);
                     b.switch_to_block(no);
                 }
-                b.ins().jump(fallback, &[]);
+                if !both {
+                    b.ins().jump(fallback, &[]);
+                }
             } else {
                 // The constructor: in the word, or in the object's header.
                 let imm = b.create_block();
@@ -1242,7 +1394,7 @@ impl<'p, M: Module> Gen<'p, M> {
         let main_id = self.m.declare_function("main", Linkage::Export, &s).expect("declare main");
         let mut aot = Signature::new(call_conv);
         aot.params.push(AbiParam::new(I32));
-        for _ in 0..6 {
+        for _ in 0..7 {
             aot.params.push(AbiParam::new(I64));
         }
         aot.returns.push(AbiParam::new(I32));
@@ -1254,7 +1406,7 @@ impl<'p, M: Module> Gen<'p, M> {
         ctx.func.signature = s;
         {
             let mut b = FunctionBuilder::new(&mut ctx.func, &mut fctx);
-            let mut st = St { vars: Vec::new(), owner: self.p.main, frefs: HashMap::new(), gvs: HashMap::new() };
+            let mut st = St { vars: Vec::new(), imm: HashSet::new(), owner: self.p.main, frefs: HashMap::new(), gvs: HashMap::new() };
             let entry = b.create_block();
             b.append_block_params_for_function_params(entry);
             b.switch_to_block(entry);
@@ -1263,10 +1415,17 @@ impl<'p, M: Module> Gen<'p, M> {
             let dl = b.ins().iconst(I64, desc.len() as i64);
             let inv = self.fref(&mut b, &mut st, self.invoke);
             let inv = b.ins().func_addr(I64, inv);
+            let debug = match self.p.debug {
+                Some(f) => {
+                    let r = self.fref(&mut b, &mut st, self.func_id(f));
+                    b.ins().func_addr(I64, r)
+                }
+                None => b.ins().iconst(I64, 0),
+            };
             let mc = self.addr(&mut b, &mut st, clo);
             let ow = b.ins().iconst(I64, self.p.main as i64);
             let r = self.fref(&mut b, &mut st, aot_id);
-            let inst = b.ins().call(r, &[ps[0], ps[1], d, dl, inv, mc, ow]);
+            let inst = b.ins().call(r, &[ps[0], ps[1], d, dl, inv, debug, mc, ow]);
             let code = b.inst_results(inst)[0];
             b.ins().return_(&[code]);
             b.seal_all_blocks();
@@ -1279,7 +1438,7 @@ impl<'p, M: Module> Gen<'p, M> {
 impl Mode {
     fn again(&self) -> Mode {
         match self {
-            Mode::Tail => Mode::Tail,
+            Mode::Tail(n) => Mode::Tail(*n),
             Mode::Val(k) => Mode::Val(*k),
         }
     }

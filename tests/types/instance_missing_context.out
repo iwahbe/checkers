@@ -1,0 +1,15 @@
+error[E0284]: no instance of `Ord` for `a`
+  --> instance_missing_context.ck:12:31
+   |
+12 |             x :: y :: _ -> if le x y then 1 else 2
+   |                               ^^ `a` is a type parameter
+   = help: add `Ord a` to the instance's context: `instance Measure (List a) : Ord a`
+
+error[E0284]: no instance of `Ord` for `a`
+  --> instance_missing_context.ck:18:26
+   |
+18 |             Some x -> if le x x then Measure.measure x else 0
+   |                          ^^ `a` is a type parameter
+   = help: add `Ord a` to the instance's context: `instance Measure (Option a) : Measure a, Ord a`
+
+instance_missing_context.ck: 2 errors, 0 warnings

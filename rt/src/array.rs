@@ -2,8 +2,10 @@
 //!
 //! An array of `U8` is a bytes object (`K_BYTES`), so `Bytes` is unchanged.
 //! Any other array is a `K_ARRAY` object: its layout in the header's tag,
-//! its length in the first word, then its elements, one word each for
-//! `WORDS`, packed otherwise. Reading goes by the header; code that creates
+//! its length in the first word, then `0` and its elements, one word each
+//! for `WORDS`, packed otherwise. A slice (#169) has, after its length, a
+//! pointer to its first element and the array whose elements they are,
+//! which it holds a reference to: slicing takes constant time. Reading goes by the header; code that creates
 //! an array is given the layout of its element type (a type argument's
 //! word, `layout_word`).
 
@@ -47,14 +49,11 @@ impl Layout {
         }
     }
 
-    /// The layout a type argument's word names: an erased argument (`0`, or
-    /// anything else that isn't a layout) is `Words`.
+    /// The layout a type argument's word names: its layout or its type's
+    /// descriptor (`desc`, #170); an erased argument (`0`, or anything else
+    /// that is neither) is `Words`.
     pub fn of_word(w: W) -> Layout {
-        if is_int(w) && int_of(w) >= 0 {
-            Layout::of_code(int_of(w) as u64)
-        } else {
-            Words
-        }
+        crate::desc::Ty::of_word(w).layout()
     }
 
     pub fn width(self) -> usize {
@@ -134,28 +133,47 @@ pub fn len(a: W) -> usize {
     slot(a, 0) as usize
 }
 
-fn data(a: W) -> *mut u8 {
-    (a as usize + HDR + 8) as *mut u8
+/// Whether `a` (an array, or bytes) is a slice of another array.
+pub fn is_slice(a: W) -> bool {
+    slot(a, 1) != 0
 }
 
-/// The size of a `K_ARRAY` object, for freeing.
+/// Where `a`'s elements are: after its header, or another array's.
+pub fn data(a: W) -> *mut u8 {
+    match slot(a, 1) {
+        0 => (a as usize + HDR + 16) as *mut u8,
+        p => p as *mut u8,
+    }
+}
+
+/// The size of an array or bytes object, for freeing.
 pub fn size(a: W) -> usize {
-    HDR + 8 + (len(a) * layout(a).width()).div_ceil(8) * 8
+    if is_slice(a) {
+        HDR + 24
+    } else {
+        HDR + 16 + (len(a) * layout(a).width()).div_ceil(8) * 8
+    }
 }
 
-/// The words a `K_ARRAY` of words holds, for freeing.
+/// The references an array or bytes object holds, for freeing: a slice's
+/// array, or the elements of an array of words.
 pub fn held(a: W) -> impl Iterator<Item = W> {
-    let n = if layout(a) == Words { len(a) } else { 0 };
-    (0..n).map(move |i| slot(a, i + 1))
+    let (owner, n) = match (is_slice(a), layout(a)) {
+        (true, _) => (Some(slot(a, 2)), 0),
+        (false, Words) => (None, len(a)),
+        (false, _) => (None, 0),
+    };
+    owner.into_iter().chain((0..n).map(move |i| slot(a, i + 2)))
 }
 
 /// A new array of `n` elements laid out as `l`, its elements unset. A size
 /// no machine word holds is one no machine has: out of memory (D184).
 fn alloc_array(l: Layout, n: usize) -> W {
-    let bytes = n.checked_mul(l.width()).and_then(|b| b.checked_next_multiple_of(8)).and_then(|b| b.checked_add(HDR + 8));
+    let bytes = n.checked_mul(l.width()).and_then(|b| b.checked_next_multiple_of(8)).and_then(|b| b.checked_add(HDR + 16));
     let Some(size) = bytes else { crate::fatal("out of memory") };
     let w = if l == U8 { alloc_obj(info(K_BYTES, 0, 0), size) } else { alloc_obj(info(K_ARRAY, 0, l as u64), size) };
     set_slot(w, 0, n as u64);
+    set_slot(w, 1, 0);
     w
 }
 
@@ -252,19 +270,37 @@ pub fn items(a: W) -> Vec<W> {
     (0..len(a)).map(|i| get(a, i)).collect()
 }
 
-/// Elements `i..j` of `a` (borrowed), in `a`'s layout.
+/// Elements `i..j` of `a` (borrowed), in `a`'s layout: a slice sharing
+/// its storage, in constant time (#169). A slice of a slice is one of the
+/// same array; an empty one shares nothing.
 pub fn slice(a: W, i: usize, j: usize) -> W {
     let l = layout(a);
-    let r = alloc_array(l, j - i);
-    if l == Words {
-        for k in i..j {
-            unsafe { *(data(r) as *mut W).add(k - i) = get(a, k) };
-        }
-    } else {
-        let w = l.width();
-        unsafe { std::ptr::copy_nonoverlapping(data(a).add(i * w), data(r), (j - i) * w) };
+    if i == j {
+        return alloc_array(l, 0);
     }
+    if i == 0 && j == len(a) {
+        return dup(a);
+    }
+    let owner = if is_slice(a) { slot(a, 2) } else { a };
+    let r = if l == U8 { alloc_obj(info(K_BYTES, 0, 0), HDR + 24) } else { alloc_obj(info(K_ARRAY, 0, l as u64), HDR + 24) };
+    set_slot(r, 0, (j - i) as u64);
+    set_slot(r, 1, unsafe { data(a).add(i * l.width()) } as W);
+    set_slot(r, 2, dup(owner));
     r
+}
+
+/// Elements `i..` of `a` (`i < len a`), as `slice`, but a slice no one
+/// else refers to is moved forward in place instead of copied: the caller
+/// must then own `a` (`Seq`'s `uncons` calls the builtins using this
+/// through their wrappers, which do, as `set`'s).
+pub fn advance(a: W, i: usize) -> W {
+    let n = len(a);
+    if unique(a) && is_slice(a) && i < n {
+        set_slot(a, 0, (n - i) as u64);
+        set_slot(a, 1, unsafe { data(a).add(i * layout(a).width()) } as W);
+        return dup(a);
+    }
+    slice(a, i, n)
 }
 
 /// `a ++ b` (both borrowed): the narrowest layout holding both.
@@ -285,12 +321,53 @@ pub fn concat(a: W, b: W) -> W {
     from_items(la.join(lb), v)
 }
 
+/// `a ++ b`, `a` owned and `b` borrowed: when `a` is the only reference to
+/// its storage (not a slice, not `b`) and `b` has its layout, `b`'s elements
+/// are written after `a`'s in place, its memory grown if they don't fit;
+/// otherwise a new array, and `a` dropped.
+pub fn concat_own(a: W, b: W) -> W {
+    let l = layout(a);
+    if l != layout(b) || a == b || !unique(a) || is_slice(a) {
+        let r = concat(a, b);
+        drop_w(a);
+        return r;
+    }
+    let w = l.width();
+    let (n, m) = (len(a), len(b));
+    let old = size(a);
+    let Some(new) = (n + m).checked_mul(w).and_then(|b| b.checked_next_multiple_of(8)).and_then(|b| b.checked_add(HDR + 16)) else {
+        crate::fatal("out of memory")
+    };
+    let a = if new > old {
+        // The old layout is the one it was allocated with: its size is
+        // computed from its length, like `size`.
+        let p = unsafe { std::alloc::realloc(a as *mut u8, std::alloc::Layout::from_size_align(old, 8).unwrap(), new) };
+        if p.is_null() {
+            crate::fatal("out of memory");
+        }
+        p as W
+    } else {
+        a
+    };
+    if l == Words {
+        let (src, dst) = (data(b) as *const W, data(a) as *mut W);
+        for i in 0..m {
+            unsafe { *dst.add(n + i) = dup(*src.add(i)) };
+        }
+    } else {
+        unsafe { std::ptr::copy_nonoverlapping(data(b), data(a).add(n * w), m * w) };
+    }
+    set_slot(a, 0, (n + m) as u64);
+    a
+}
+
 /// `a` (borrowed) with element `i` (in bounds) replaced by `x` (borrowed).
 /// In place if `a` has no other reference and can hold `x`: the caller must
 /// then own `a` (`std.array.set` is called through its wrapper, which does).
 pub fn set(a: W, i: usize, x: W) -> W {
     let l = layout(a);
-    if unique(a) && l.holds(x) {
+    // A slice's elements are its array's, which others may see.
+    if unique(a) && !is_slice(a) && l.holds(x) {
         if l == Words {
             let p = unsafe { (data(a) as *mut W).add(i) };
             unsafe {
@@ -354,7 +431,9 @@ mod tests {
         // The compiler passes `2n + 1` for layout `n`; an erased argument is 0.
         assert_eq!(Layout::of_word(layout_word(I32)), I32);
         assert_eq!(Layout::of_word(ERASED), Words);
-        assert_eq!(Layout::of_word(mk_int(99)), Words);
+        // A descriptor's tag keeps the layout in its low four bits (#170).
+        assert_eq!(Layout::of_word(mk_int(crate::desc::tag(Some(5), U16 as u8) as i64)), U16);
+        assert_eq!(Layout::of_word(mk_int(-3)), Words);
     }
 
     #[test]
@@ -371,7 +450,7 @@ mod tests {
     #[test]
     fn packed_size() {
         let a = from_items(U16, (0..5).map(|n| mk_int(n * 1000)).collect());
-        assert_eq!(size(a), HDR + 8 + 16);
+        assert_eq!(size(a), HDR + 16 + 16);
         assert_eq!((0..5).map(|i| int_of(get(a, i))).collect::<Vec<_>>(), [0, 1000, 2000, 3000, 4000]);
         let s = slice(a, 1, 3);
         assert_eq!((layout(s), len(s), int_of(get(s, 1))), (U16, 2, 2000));

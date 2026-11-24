@@ -11,16 +11,21 @@ pub const TABLE: &[Builtin] = &[
     ("std.string.bytes", "ckb_string_bytes", ckb_string_bytes),
     ("std.string.concat", "ckb_string_concat", ckb_string_concat),
     ("std.string.from_utf8", "ckb_from_utf8", ckb_from_utf8),
+    ("std.string.debug", "ckb_debug", ckb_debug),
 ];
+
+// `debug x` (#126): `x` as Checkers source.
+builtin!(ckb_debug, |a| new_str(&crate::ops::show_typed(a[1], &crate::desc::Ty::of_word(a[0]), 0)));
 
 builtin!(ckb_from_chars, |a| {
     let st: String = list_items(a[0]).into_iter().map(ch).collect();
     new_str(&st)
 });
 
-builtin!(ckb_from_char, |a| new_str(&ch(a[0]).to_string()));
+builtin!(ckb_from_char, |a| new_str(ch(a[0]).encode_utf8(&mut [0; 4])));
 
-builtin!(ckb_string_bytes, |a| new_bytes(s(a[0]).as_bytes()));
+// A string is stored as its bytes (#170): the same object.
+builtin!(ckb_string_bytes, |a| dup(s_obj(a[0])));
 
 builtin!(ckb_string_concat, |a| {
     let parts = list_items(a[0]);
@@ -31,8 +36,9 @@ builtin!(ckb_string_concat, |a| {
     new_str(&out)
 });
 
+// Bytes that are UTF-8 are a string as they are (#170): the same object.
 builtin!(ckb_from_utf8, |a| match std::str::from_utf8(b(a[0])) {
-    Ok(t) => some(new_str(t)),
+    Ok(_) => some(dup(a[0])),
     Err(_) => none(),
 });
 

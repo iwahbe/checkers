@@ -58,7 +58,13 @@ impl Fv {
                 vars.extend(b.vars.iter().filter(|v| *v != x).copied());
                 Fv { vars, parts: vec![a, b] }
             }
-            E::Call { args, .. } | E::Tuple(args) | E::Par(args) => Fv::of_parts(args.iter().map(Fv::of).collect()),
+            E::Call { args, .. } | E::Tuple(args) | E::Par(args) | E::Multi(args) => Fv::of_parts(args.iter().map(Fv::of).collect()),
+            E::LetMulti(xs, a, b) => {
+                let (a, b) = (Fv::of(a), Fv::of(b));
+                let mut vars = a.vars.clone();
+                vars.extend(b.vars.iter().filter(|v| !xs.contains(v)).copied());
+                Fv { vars, parts: vec![a, b] }
+            }
             E::Apply { f, args, .. } => Fv::of_parts(std::iter::once(&**f).chain(args).map(Fv::of).collect()),
             E::Con { fields, reuse, .. } => {
                 let mut parts: Vec<Fv> = fields.iter().map(Fv::of).collect();
@@ -87,6 +93,10 @@ impl Fv {
                     parts.push(p);
                 }
                 Fv { vars, parts }
+            }
+            E::At(_, b) => {
+                let b = Fv::of(b);
+                Fv { vars: b.vars.clone(), parts: vec![b] }
             }
             // No parts are visited: atomic arguments, or code the pass made.
             _ => Fv::leaf(free_vars(e)),
@@ -151,6 +161,21 @@ impl Rc<'_> {
                 let a2 = self.rc(*a, fa, oa);
                 let b2 = self.rc(*b, fb, ob);
                 E::Let(x, Box::new(a2), Box::new(b2))
+            }
+            E::LetMulti(xs, a, b) => {
+                let (fa, fb) = (parts.next().unwrap(), parts.next().unwrap());
+                // As `Let`, binding several variables.
+                let in_b = |v: &V| !xs.contains(v) && fb.vars.contains(v);
+                let oa: Set = own.iter().filter(|v| fa.vars.contains(v) && !in_b(v)).copied().collect();
+                let mut ob: Set = own.iter().filter(|v| in_b(v)).copied().collect();
+                ob.extend(xs.iter().copied());
+                let a2 = self.rc(*a, fa, oa);
+                let b2 = self.rc(*b, fb, ob);
+                E::LetMulti(xs, Box::new(a2), Box::new(b2))
+            }
+            E::Multi(xs) => {
+                let (dups, xs) = self.children(xs, parts.collect(), &own);
+                Self::with_dups(dups, E::Multi(xs))
             }
             E::Call { f, args, tail } => {
                 let (dups, args) = self.children(args, parts.collect(), &own);
@@ -226,6 +251,7 @@ impl Rc<'_> {
                 let default = default.map(|d| Box::new(self.rc(*d, parts.next().unwrap(), own.clone())));
                 E::Case { scrut, arms: arms2, lits: lits2, default }
             }
+            E::At(o, b) => E::At(o, Box::new(self.rc(*b, parts.next().unwrap(), own))),
             E::Dup(..) | E::Drop(..) | E::DropReuse(..) => e,
         }
     }
@@ -246,8 +272,9 @@ impl Rc<'_> {
                     }
                     fields.iter_mut().find_map(|f| find(f, n, fields_of))
                 }
-                E::Let(_, a, b) => find(b, n, fields_of).or_else(|| find(a, n, fields_of)),
-                E::Call { args, .. } | E::Tuple(args) | E::Par(args) => args.iter_mut().find_map(|a| find(a, n, fields_of)),
+                E::Let(_, a, b) | E::LetMulti(_, a, b) => find(b, n, fields_of).or_else(|| find(a, n, fields_of)),
+                E::At(_, b) => find(b, n, fields_of),
+                E::Call { args, .. } | E::Tuple(args) | E::Par(args) | E::Multi(args) => args.iter_mut().find_map(|a| find(a, n, fields_of)),
                 E::Apply { f, args, .. } => args.iter_mut().find_map(|a| find(a, n, fields_of)).or_else(|| find(f, n, fields_of)),
                 E::Case { arms, lits, default, .. } => {
                     // Only in one place: a cell can be reused once.

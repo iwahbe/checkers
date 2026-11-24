@@ -1,0 +1,12 @@
+(set-option :produce-models true)
+(set-option :rlimit 200000)
+(set-option :timeout 60000)
+(set-logic ALL)
+(declare-datatypes ((|tailrec_con.Tree| 0)) (((|tailrec_con.Leaf|) (|tailrec_con.Node| (|tailrec_con.Node.0| |tailrec_con.Tree|) (|tailrec_con.Node.1| Int) (|tailrec_con.Node.2| |tailrec_con.Tree|)))))
+(declare-const |t#0| |tailrec_con.Tree|)
+(assert (=> (|is-tailrec_con.Node| |t#0|) (>= (|tailrec_con.Node.1| |t#0|) 0)))
+(assert (= |t#0| (as |tailrec_con.Leaf| |tailrec_con.Tree|)))
+(assert (not false))
+(check-sat)
+(get-value (|t#0|))
+;; reachable?

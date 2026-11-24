@@ -124,6 +124,13 @@ export lemma concat_cons x xs : x~Array a, xs~List (Array a)
     proof
         __builtin
 
+# `x :: rest` on a non-empty array: `x` is its first element and `rest`
+# the slice after it.
+export lemma uncons_slice xs : xs~Array a, len xs > 0
+    ensures Seq.uncons xs == Some (xs[0], slice xs 1 (len xs))
+    proof
+        __builtin
+
 # Two arrays are equal when their lengths are and so are their elements.
 export lemma ext xs ys : xs~Array a, ys~Array a, len xs == len ys,
                          same: forall k : k~Nat, k < len xs, xs[k] == ys[k]
@@ -148,7 +155,7 @@ export lemma slice_join xs i j k : xs~Array a, i~Nat, j~Nat, k~Nat, i <= j, j <=
         have join_at xs i j k
 
 instance Functor Array
-    fn fmap g xs
+    transparent fn fmap g xs
         map g xs
     lemma fmap_id xs
         proof

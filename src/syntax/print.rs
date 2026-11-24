@@ -100,10 +100,18 @@ fn decl(d: &Decl) -> String {
         }
         DeclKind::Const { name, value } => format!("({ex}const {} {})", name.name, expr(value, 1)),
         DeclKind::Check { expr: e } => format!("(check {})", expr(e, 1)),
-        DeclKind::Class { name, param, members } => {
-            let mut s = format!("({ex}class {} {}", name.name, param.name);
+        DeclKind::Class { name, params, members } => {
+            let mut s = format!("({ex}class {} {}", name.name, names(params));
             for m in members {
                 match m {
+                    ClassMember::Type { name, default, constraints, .. } => {
+                        s += &format!("\n{}(type {}", ind(1), name.name);
+                        if let Some(t) = default {
+                            s += &format!(" {}", expr(t, 2));
+                        }
+                        s += &cons(constraints, 2);
+                        s += ")";
+                    }
                     ClassMember::Fn { name, params, result, constraints, .. } => {
                         s += &format!("\n{}(fn {} ({})", ind(1), name.name, names(params));
                         if let Some(r) = result {
@@ -124,15 +132,28 @@ fn decl(d: &Decl) -> String {
             }
             s + ")"
         }
-        DeclKind::Instance { class, ty, context, members } => {
-            let mut s = format!("(instance {} {}", class.name, expr(ty, 1));
+        DeclKind::Instance { class, tys, context, members } => {
+            let mut s = format!("(instance {}", class.name);
+            for ty in tys {
+                s += &format!(" {}", expr(ty, 1));
+            }
             if !context.is_empty() {
                 s += &format!(" (: {})", list(context, 1));
             }
             for m in members {
                 match m {
-                    InstMember::Fn { name, params, decreasing, body, .. } => {
-                        s += &format!("\n{}(fn {} ({})", ind(1), name.name, names(params));
+                    InstMember::Type { name, ty, .. } => {
+                        s += &format!("\n{}(type {} {})", ind(1), name.name, expr(ty, 2));
+                    }
+                    InstMember::Fn { transparent, name, params, sig, decreasing, body, .. } => {
+                        let t = if *transparent { "transparent " } else { "" };
+                        s += &format!("\n{}({t}fn {} ({})", ind(1), name.name, names(params));
+                        if let Some((result, constraints)) = sig {
+                            if let Some(r) = result {
+                                s += &format!(" -> {}", r.name);
+                            }
+                            s += &cons(constraints, 2);
+                        }
                         if let Some(e) = decreasing {
                             s += &format!("\n{}(decreasing {})", ind(2), expr(e, 2));
                         }
@@ -202,13 +223,7 @@ fn block(b: &Block, depth: usize) -> String {
             Stmt::Have(e) => format!("(have {})", expr(e, depth + 1)),
             Stmt::HaveType(x, t) => format!("(have-type {} {})", x.name, expr(t, depth + 1)),
             Stmt::Expr(e) => expr(e, depth + 1),
-            Stmt::When(w) => format!(
-                "(when ({}) using {}\n{}{})",
-                w.binds.iter().map(|(n, c)| format!("({} {})", n.name, expr(c, depth + 2))).collect::<Vec<_>>().join(" "),
-                w.sched.name,
-                ind(depth + 2),
-                block(&w.body, depth + 2)
-            ),
+
         });
     }
     parts.push(expr(&b.result, depth + 1));
@@ -243,6 +258,13 @@ fn escape_byte(b: u8) -> String {
 
 pub fn expr(e: &Expr, depth: usize) -> String {
     match &e.kind {
+            ExprKind::When(w) => format!(
+                "(when ({}) using {}\n{}{})",
+                w.binds.iter().map(|(n, c)| format!("({} {})", n.name, expr(c, depth + 2))).collect::<Vec<_>>().join(" "),
+                w.sched.name,
+                ind(depth + 2),
+                block(&w.body, depth + 2)
+            ),
         ExprKind::Var(n) | ExprKind::Con(n) => n.clone(),
         ExprKind::Forall(vs, cs) => {
             let vars: Vec<&str> = vs.iter().map(|v| v.name.as_str()).collect();
@@ -312,6 +334,23 @@ pub fn expr(e: &Expr, depth: usize) -> String {
         ExprKind::Auto => "auto".into(),
         ExprKind::Admit => "admit".into(),
         ExprKind::Error => "<error>".into(),
+        ExprKind::Template(t, ps) => {
+            let mut out = format!("(template {}", expr(t, depth));
+            for p in ps {
+                out += &match p {
+                    TemplatePiece::Text(s, _) => format!(" {s:?}"),
+                    TemplatePiece::Hole { value, options, .. } => {
+                        let v = value.as_ref().map_or("_".to_string(), |v| expr(v, depth));
+                        if options.is_empty() {
+                            format!(" (hole {v})")
+                        } else {
+                            format!(" (hole {v} | {})", list(options, depth))
+                        }
+                    }
+                };
+            }
+            out + ")"
+        }
         ExprKind::Par(v) => format!("(par {})", list(v, depth)),
     }
 }

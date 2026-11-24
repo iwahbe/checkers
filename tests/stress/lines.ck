@@ -8,6 +8,7 @@ import std.system (System, ExitCode)
 import std.cown (Cown, Sched)
 import std.future (Future)
 import std.terminal (Term)
+import std.string (debug)
 
 fn rep k s -> r : k~Nat, s~String, r~String
     decreasing k
@@ -23,7 +24,7 @@ fn shout term sched k -> u : term~Term, sched~Sched, k~Nat, u~()
     else
         let c = cown.new k sched
         when n = c using sched
-            terminal.print_line ("line " ++ format n ++ " " ++ rep 200 "ab") term
+            terminal.print_line ("line " ++ debug n ++ " " ++ rep 200 "ab") term
             n
         shout term sched (k - 1)
 

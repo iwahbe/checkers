@@ -8,6 +8,7 @@ module log
 import std.system (System, ExitCode)
 import std.terminal (Term)
 import std.cown (Cown, Sched)
+import std.string (format)
 
 # The invariant lives in the type: every behaviour that touches the log must
 # hand back a list of at most 100 entries.
@@ -28,6 +29,6 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
         append "started" l
     when l = log, d = dropped using sched              # holds both cowns at once
         let full = len l == 100
-        terminal.print_line ("log has " ++ format (len l) ++ " entries") term
+        terminal.print_line format"log has {len l} entries" term
         (append "checked" l, if full then d + 1 else d)
     Success

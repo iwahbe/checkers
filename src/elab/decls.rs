@@ -30,6 +30,10 @@ pub struct Sig {
     /// binder, and its refined type over all the binders. The binder's own
     /// type in `binders` is the type without its refinements.
     pub late: Vec<Late>,
+    /// Implicit binders among the explicit ones (all at `n_implicit` or
+    /// later): the dictionaries of clauses naming a parameter, each right
+    /// after the last one it names (`t~ghost Type, Parse t`, #161).
+    pub inner: Vec<usize>,
 }
 
 impl Elab {
@@ -89,7 +93,9 @@ impl Elab {
                 super::order::Node::Head(k) => match &m.decls[k].kind {
                     DeclKind::Enum { .. } | DeclKind::Record { .. } | DeclKind::Alias { .. } => {
                         self.phase_aliases(m, &mask);
+                        self.phase_type_conds(m, &mask);
                         self.phase_ctors(m, &mask);
+                        self.group_polarity(&mask);
                     }
                     DeclKind::Const { .. } => self.phase_consts(m, &mask),
                     _ => {
@@ -104,11 +110,24 @@ impl Elab {
                 }
             }
         }
+        self.elab_class_type_preds();
         self.phase_positivity(m, &ids);
         self.phase_bodies(m, &ids, HashMap::new(), true);
+        self.retry_late();
         self.check_termination();
         // A transparent function's private helpers are visible to the prover
         // too, or its body would say nothing (D54): close the set over calls.
+        // An exported function it calls is not a helper: its signature is its
+        // interface, so it stays sealed (#244).
+        let exported: HashSet<DefId> = m
+            .decls
+            .iter()
+            .zip(&ids)
+            .filter_map(|(d, id)| match (&d.kind, id) {
+                (DeclKind::Fn { .. }, Some(Sym::Def(did))) if d.export == Export::Yes => Some(*did),
+                _ => None,
+            })
+            .collect();
         let mut stack: Vec<DefId> = self.transparent.iter().copied().filter(|d| *self.g.defs[d.0 as usize].module == *name).collect();
         while let Some(d) = stack.pop() {
             let mut used = Vec::new();
@@ -116,8 +135,13 @@ impl Elab {
                 defs_in(b, &mut used);
             }
             for u in used {
+                // An instance's function a dictionary holds isn't its helper:
+                // it is sealed unless marked `transparent` (#249).
+                if self.inst_fns.contains(&u) {
+                    continue;
+                }
                 let info = &self.g.defs[u.0 as usize];
-                if *info.module == *name && info.body.is_some() && !info.opaque && self.transparent.insert(u) {
+                if *info.module == *name && info.body.is_some() && !info.opaque && !exported.contains(&u) && self.transparent.insert(u) {
                     stack.push(u);
                 }
             }
@@ -150,6 +174,12 @@ impl Elab {
             let me = self.modules.get_mut(name).unwrap();
             me.import_types.extend(ts);
             me.import_values.extend(vs);
+        }
+        // A template's calls are of `std.string`'s classes (#132), which
+        // it may use without importing them.
+        if m.templates && name != "std.string" {
+            self.load_stdlib("std.string");
+            self.cur = name.to_string();
         }
         for imp in &m.imports {
             let path = imp.path.dotted();
@@ -313,7 +343,7 @@ impl Elab {
 
     pub fn resolve(&self, name: &str, type_pos: bool) -> Option<Sym> {
         if name.starts_with('$') {
-            if let Some(s) = self.generated_sym(name) {
+            if let Some(s) = self.generated_sym(name).or_else(|| self.template_sym(name)) {
                 return Some(s);
             }
         }
@@ -568,10 +598,8 @@ impl Elab {
         }
         if self.cur == "std.prelude" {
             let me = self.modules.get_mut("std.prelude").unwrap();
-            for (n, s) in [("len", Sym::Len), ("format", Sym::Format)] {
-                me.values.insert(n.into(), s);
-                me.exported_values.insert(n.into());
-            }
+            me.values.insert("len".into(), Sym::Len);
+            me.exported_values.insert("len".into());
         }
         ids
     }
@@ -614,7 +642,8 @@ impl Elab {
     /// code~ExitCode` (D31; `code` may be a `Future ExitCode`): what isn't
     /// written is that, what is must agree (E0366).
     fn check_main(&mut self, sig: &Sig, at: Span) {
-        let params: Vec<(Name, Val)> = (sig.n_implicit..sig.binders.len()).map(|k| (sig.binders[k].0.clone(), self.eval(&sig.cx, &sig.binders[k].3))).collect();
+        let params: Vec<(Name, Val)> =
+            (sig.n_implicit..sig.binders.len()).filter(|k| !sig.inner.contains(k)).map(|k| (sig.binders[k].0.clone(), self.eval(&sig.cx, &sig.binders[k].3))).collect();
         let res = self.eval(&sig.cx, &sig.result);
         let mut wrong = self.main_mismatches(&sig.cx, &params, &sig.result_name, &res);
         if wrong.is_empty() {
@@ -809,13 +838,36 @@ impl Elab {
                 cx.bind(&p.name.name, v, Mult::Zero);
                 out.push((Rc::from(p.name.name.as_str()), ty));
             }
-            for c in cs {
-                if let Constraint::Pred(e) = c {
-                    self.elab_pred(&mut cx, e, false);
-                }
-            }
             self.g.tys[tid.0 as usize].params = out;
             self.solve_deferred();
+        }
+    }
+
+    /// A type's conditions on its parameters (`lo <= hi` in `record P lo hi :
+    /// lo~Nat, hi~Nat, lo <= hi`), in dependency order, so that the functions
+    /// they call have their signatures (#136). Each may rely on those before it.
+    fn phase_type_conds(&mut self, m: &ast::Module, ids: &[Option<Sym>]) {
+        for (d, id) in m.decls.iter().zip(ids) {
+            let cs = match &d.kind {
+                DeclKind::Enum { constraints, .. } | DeclKind::Record { constraints, .. } => constraints,
+                _ => continue,
+            };
+            let Some(Sym::Ty(tid)) = id else { continue };
+            self.g.fuel.set(DEFAULT_FUEL);
+            let mut cx = self.bind_type_params(*tid);
+            let mut preds = Vec::new();
+            for c in cs {
+                if let Constraint::Pred(e) | Constraint::Named(_, e) = c {
+                    let p = self.elab_pred(&mut cx, e, false);
+                    let v = self.eval(&cx, &p.tm);
+                    cx.assume(v);
+                    preds.push(p);
+                }
+            }
+            self.solve_deferred();
+            if !preds.is_empty() {
+                self.ty_conds.insert(*tid, preds);
+            }
         }
     }
 
@@ -924,6 +976,11 @@ impl Elab {
     fn elab_fields(&mut self, tid: TyId, cid: ConId, names: &[&Ident], cs: &[Constraint], extra_preds: &[&Expr]) {
         self.g.fuel.set(DEFAULT_FUEL);
         let mut cx = self.bind_type_params(tid);
+        // The type's conditions on its parameters hold in its fields (#136).
+        for p in self.ty_conds.get(&tid).cloned().unwrap_or_default() {
+            let v = self.eval(&cx, &p.tm);
+            cx.assume(v);
+        }
         let mut fields: Vec<(Name, Mult, Icit, Tm)> = Vec::new();
         let mut invs: Vec<FieldInv> = Vec::new();
         // Auto-bound implicit fields (D10), e.g. `m` in `xs~Vec a m`.
@@ -958,13 +1015,13 @@ impl Elab {
                     (Tm::Error, Mult::Many)
                 }
             };
-            // A class function's `own` parameters (D156 i).
+            // A class function's `own` and `ghost` parameters (D156 i).
             let key = {
                 let ti = &self.g.tys[tid.0 as usize];
                 format!("{}.{}.{}", ti.module, ti.name, n.name)
             };
-            let ty = match self.class_own.get(&key) {
-                Some(owns) => own_params(&ty, owns),
+            let ty = match self.class_mults.get(&key) {
+                Some(mults) => mult_params(&ty, mults),
                 None => ty,
             };
             let v = self.eval(&cx, &ty);
@@ -978,10 +1035,14 @@ impl Elab {
             }
             fields.push((Rc::from(n.name.as_str()), mult, Icit::Expl, ty));
         }
+        // Each condition may rely on those before it, as a signature's do
+        // (fields' types are facts already through their locals).
         for c in cs {
             match c {
                 Constraint::Pred(e) | Constraint::Named(_, e) => {
                     let p = self.elab_pred(&mut cx, e, false);
+                    let v = self.eval(&cx, &p.tm);
+                    cx.assume(v);
                     invs.push((p.tm, p.text, p.span, cx.lvl(), None));
                 }
                 Constraint::Typed { name, .. } if !declared.contains(&name.name) => {
@@ -996,6 +1057,8 @@ impl Elab {
         }
         for e in extra_preds {
             let p = self.elab_pred(&mut cx, e, false);
+            let v = self.eval(&cx, &p.tm);
+            cx.assume(v);
             invs.push((p.tm, p.text, p.span, cx.lvl(), None));
         }
         // Every invariant as a term over params ++ fields.
@@ -1076,26 +1139,8 @@ impl Elab {
     }
 
     fn phase_positivity(&mut self, m: &ast::Module, ids: &[Option<Sym>]) {
-        // Parameter polarity (used for nested occurrences, e.g. `List Json` inside `Json`).
-        // Start optimistic and compute a fixpoint.
         let tys: Vec<TyId> = ids.iter().flatten().filter_map(|s| if let Sym::Ty(t) = s { Some(*t) } else { None }).collect();
-        for t in &tys {
-            if !self.g.tys[t.0 as usize].ctors.is_empty() {
-                let np = self.g.arity_ty(*t);
-                self.g.tys[t.0 as usize].positive = vec![true; np];
-            }
-        }
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for t in &tys {
-                let before = self.g.tys[t.0 as usize].positive.clone();
-                self.compute_polarity(*t);
-                if self.g.tys[t.0 as usize].positive != before {
-                    changed = true;
-                }
-            }
-        }
+        self.polarity_fixpoint(&tys);
         self.check_polarity_marks(m, ids);
         let rejected = self.check_strict_positivity(m, ids);
         self.check_recursive_types_have_values(m, ids, &rejected);
@@ -1276,6 +1321,44 @@ impl Elab {
         }
     }
 
+    /// The polarity of the parameters of a group of types declared
+    /// together, as soon as their constructors are: the bodies checked
+    /// before `phase_positivity` compare refinements inside them by it, so
+    /// `Pair Nat (j~Nat, i < j)` is a `Pair Nat (j~Nat, i <= j)` as `(Nat,
+    /// (j~Nat, i < j))` is a `(Nat, (j~Nat, i <= j))` (D71). An abstract
+    /// type's marks are what the rest of the module sees.
+    fn group_polarity(&mut self, ids: &[Option<Sym>]) {
+        let tys: Vec<TyId> = ids
+            .iter()
+            .flatten()
+            .filter_map(|s| if let Sym::Ty(t) = s { Some(*t) } else { None })
+            .filter(|t| !self.g.tys[t.0 as usize].is_abstract)
+            .collect();
+        self.polarity_fixpoint(&tys);
+    }
+
+    /// Parameter polarity (used for nested occurrences, e.g. `List Json`
+    /// inside `Json`): start optimistic and compute a fixpoint.
+    fn polarity_fixpoint(&mut self, tys: &[TyId]) {
+        for t in tys {
+            if !self.g.tys[t.0 as usize].ctors.is_empty() {
+                let np = self.g.arity_ty(*t);
+                self.g.tys[t.0 as usize].positive = vec![true; np];
+            }
+        }
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for t in tys {
+                let before = self.g.tys[t.0 as usize].positive.clone();
+                self.compute_polarity(*t);
+                if self.g.tys[t.0 as usize].positive != before {
+                    changed = true;
+                }
+            }
+        }
+    }
+
     fn compute_polarity(&mut self, tid: TyId) {
         {
             let tid = &tid;
@@ -1313,7 +1396,10 @@ impl Elab {
                 for (fi, (fname, _, _, t)) in fields.iter().enumerate() {
                     if !self.ty_positive(t, *tid) {
                         let name = self.g.tys[tid.0 as usize].name.clone();
-                        let diag = if let Some(f) = self.param_holder(t, *tid, &self.g.tys[tid.0 as usize].params.clone(), fi) {
+                        let diag = if let Some(a) = self.assoc_holder(t, *tid) {
+                            Diagnostic::error("E0354", format!("`{name}` occurs in field `{fname}` as the argument of `{a}`, a type each instance gives, which may use it in a negative position"), d.span)
+                                .with_help(format!("a recursive type can't hold a class's type at itself: the instance's type isn't known while `{name}` is checked; write that type in the field"))
+                        } else if let Some(f) = self.param_holder(t, *tid, &self.g.tys[tid.0 as usize].params.clone(), fi) {
                             Diagnostic::error("E0354", format!("`{name}` occurs in field `{fname}` as an argument of `{f}`, a parameter, which may use it in a negative position"), d.span)
                                 .with_help(format!("a recursive type may appear only directly or as an argument of a type that holds only values of it, like `List`; `{f}` could be any type constructor, so nothing is known of how it uses its argument"))
                         } else { match self.unmarked_holder(t, *tid) {
@@ -1425,6 +1511,22 @@ impl Elab {
         go(t, me, 0, params, params.len() + field)
     }
 
+    /// A class's type (#133) at a type holding `me`: `Display.Options` in
+    /// `List (Display.Options Tree)`.
+    fn assoc_holder(&self, t: &Tm, me: TyId) -> Option<String> {
+        if let (Tm::Def(d), args) = t.spine() {
+            if self.g.assoc_def(*d).is_some_and(|(_, _, n)| args.iter().take(n).any(|a| occurs_ty(a, me))) {
+                return Some(self.g.defs[d.0 as usize].name.to_string());
+            }
+        }
+        let mut found = None;
+        t.any_sub(|x, _| {
+            found = self.assoc_holder(x, me);
+            found.is_some()
+        });
+        found
+    }
+
     /// The type constructor that holds `me` in a parameter not known to be
     /// strictly positive, if that (rather than an `->`) is why `t` fails.
     fn unmarked_holder(&self, t: &Tm, me: TyId) -> Option<TyId> {
@@ -1496,10 +1598,22 @@ impl Elab {
         }
     }
 
+    /// Bind clause `k`'s dictionary (`Ord a`, D136), an implicit parameter.
+    fn bind_dict(&mut self, cx: &mut Cx, binders: &mut Vec<(Name, Mult, Icit, Tm)>, k: usize, e: &Expr) {
+        let ty = self.elab_type(cx, e);
+        let v = self.eval(cx, &ty);
+        let name = format!("$d{k}");
+        cx.bind(&name, v, Mult::Many);
+        binders.push((Rc::from(name.as_str()), Mult::Many, Icit::Impl, ty));
+    }
+
     /// Elaborate `fn name params -> result : constraints` into a context and Π-type.
     // The loop over binders also visits the result slot (`k == nb`).
     #[allow(clippy::needless_range_loop)]
     pub fn signature(&mut self, params: &[Ident], result: Option<&Ident>, cs: &[Constraint]) -> Sig {
+        // A type written here is checked against its conditions with every
+        // precondition known, wherever it is written (#136).
+        let saved_defer = self.ty_cond_defer.replace(Vec::new());
         let mut cx = Cx::default();
         let mut binders = Vec::new();
         let mut declared: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
@@ -1523,6 +1637,11 @@ impl Elab {
         for e in &class_clauses {
             self.collect_free(&cx, e, &declared, &mut autos);
         }
+        // A clause naming a parameter (`t~ghost Type, Parse t`, #161): its
+        // dictionary comes right after the last parameter it names, so
+        // the call's argument for that parameter decides it.
+        let after: Vec<Option<usize>> =
+            class_clauses.iter().map(|e| params.iter().rposition(|p| mentions_free(e, &p.name))).collect();
         for a in &autos {
             // Applied to arguments (`f a`), it is a type constructor (M25).
             let arity = cs
@@ -1549,13 +1668,12 @@ impl Elab {
             binders.push((Rc::from(a.as_str()), Mult::Zero, Icit::Impl, mv));
         }
         for (k, e) in class_clauses.iter().enumerate() {
-            let ty = self.elab_type(&mut cx, e);
-            let v = self.eval(&cx, &ty);
-            let name = format!("$d{k}");
-            cx.bind(&name, v, Mult::Many);
-            binders.push((Rc::from(name.as_str()), Mult::Many, Icit::Impl, ty));
+            if after[k].is_none() {
+                self.bind_dict(&mut cx, &mut binders, k, e);
+            }
         }
         let n_implicit = binders.len();
+        let mut inner = Vec::new();
         let mut comptime = Vec::new();
         // A refinement may mention a later parameter (#102): the parameter's
         // type is elaborated without its refinements here, and with them once
@@ -1594,6 +1712,12 @@ impl Elab {
                 comptime.push(binders.len());
             }
             binders.push((Rc::from(p.name.as_str()), mult, Icit::Expl, ty));
+            for (j, e) in class_clauses.iter().enumerate() {
+                if after[j] == Some(k) {
+                    inner.push(binders.len());
+                    self.bind_dict(&mut cx, &mut binders, j, e);
+                }
+            }
         }
         let mut late = Vec::new();
         for (b, e) in late_exprs {
@@ -1631,6 +1755,7 @@ impl Elab {
                 }
             }
         }
+        let deferred = std::mem::replace(&mut self.ty_cond_defer, saved_defer).unwrap_or_default();
         // Predicates may mention the result, so check them with it in scope.
         let rv = self.eval(&cx, &result_ty);
         let rname = result.map(|r| r.name.clone()).unwrap_or_else(|| "_result".to_string());
@@ -1706,9 +1831,20 @@ impl Elab {
                 preds.push(p);
             }
         }
+        // The types' conditions, from the preconditions only.
+        cx.facts.truncate(facts_before);
+        for p in preds.iter().filter(|p| !p.is_post) {
+            let v = self.eval(&cx, &p.tm);
+            cx.assume(v);
+        }
+        self.in_spec += 1;
+        for (span, tid, env) in deferred {
+            self.oblige_ty_conds(&cx, span, tid, env);
+        }
+        self.in_spec -= 1;
         cx.facts.truncate(facts_before);
         cx.pop();
-        Sig { cx, binders, result: result_ty, n_implicit, preds, result_name: rname, comptime, hyps, late }
+        Sig { cx, binders, result: result_ty, n_implicit, preds, result_name: rname, comptime, hyps, late, inner }
     }
 
     /// The preconditions of a signature's function parameters that relate
@@ -1718,7 +1854,7 @@ impl Elab {
     pub fn elem_promises(&self, sig: &Sig) -> Vec<ElemPromise> {
         let nb = sig.binders.len();
         let mut out = Vec::new();
-        for b in sig.n_implicit..nb {
+        for b in (sig.n_implicit..nb).filter(|b| !sig.inner.contains(b)) {
             // The type and the number of binders it is over.
             let (ty, lvl) = match sig.late.iter().find(|l| l.binder == b) {
                 Some(l) => (&l.ty, nb),
@@ -1733,8 +1869,9 @@ impl Elab {
                     let Some(cap) = captured.len().checked_sub(q + 1).and_then(|i| captured.get(i)) else { continue };
                     let Tm::Var(i) = &***cap else { continue };
                     let Some(level) = lvl.checked_sub(i + 1) else { continue };
-                    if level >= sig.n_implicit && level != b {
-                        out.push(ElemPromise { k: b - sig.n_implicit, j: level - sig.n_implicit, pred, c, s });
+                    let ix = |b| super::expl_index(sig.n_implicit, &sig.inner, b);
+                    if let (Some(k), Some(j), true) = (ix(b), ix(level), level != b) {
+                        out.push(ElemPromise { k, j, pred, c, s });
                     }
                 }
             }
@@ -1763,9 +1900,15 @@ impl Elab {
         for (k, (d, id)) in m.decls.iter().zip(ids).enumerate() {
             let Some(Sym::Def(did)) = id else { continue };
             self.g.fuel.set(DEFAULT_FUEL);
+            self.sig_inst = self.sig_inst_of(k);
+            // An instance's function whose signature doesn't have the
+            // class's shape (#225): the class's type.
+            let mut class_ty = None;
             let sig = match &d.kind {
                 DeclKind::Fn { name, params, result, constraints, partial, decreasing, body } => {
+                    let diags_before = self.diags.len();
                     let mut sig = self.signature(params, result.as_ref(), constraints);
+                    let sig_failed = self.diags.len() > diags_before;
                     if name.name == "main" && d.export != Export::No && self.root.as_deref() == Some(self.cur.as_str()) {
                         self.check_main(&sig, name.span);
                     }
@@ -1776,7 +1919,7 @@ impl Elab {
                         self.transparent.insert(*did);
                     }
                     // Parameters of a resource type are `own` whether or not it is written (D39).
-                    for k in sig.n_implicit..sig.binders.len() {
+                    for k in (sig.n_implicit..sig.binders.len()).filter(|k| !sig.inner.contains(k)) {
                         let b = &sig.binders[k];
                         if b.1 == Mult::Zero || !self.type_linear(&b.3) {
                             continue;
@@ -1826,10 +1969,11 @@ impl Elab {
                             is_fn: true,
                             params: params
                                 .iter()
-                                .zip(sig.binders.iter().skip(sig.n_implicit))
+                                .zip(sig.binders.iter().skip(sig.n_implicit).filter(|b| b.2 == Icit::Expl))
                                 .map(|(p, b)| (p.name.clone(), b.1, p.span))
                                 .collect(),
                             n_implicit: sig.n_implicit,
+                            inner: sig.inner.clone(),
                             builtin,
                             result: result.as_ref().map(|r| r.name.clone()),
                         },
@@ -1842,9 +1986,14 @@ impl Elab {
                             n_implicit: sig.n_implicit,
                             late: sig.late.clone(),
                             elems: self.elem_promises(&sig),
+                            inner: sig.inner.clone(),
                             ..Default::default()
                         },
                     );
+                    if self.inst_refines.contains_key(&k) {
+                        self.refined_inst_fns.insert(*did);
+                        class_ty = self.check_inst_refines(k, d, &sig, sig_failed);
+                    }
                     sig
                 }
                 DeclKind::Lemma { name, params, constraints, decreasing, .. } => {
@@ -1858,10 +2007,11 @@ impl Elab {
                             decreasing: decreasing.is_some(),
                             params: params
                                 .iter()
-                                .zip(sig.binders.iter().skip(sig.n_implicit))
+                                .zip(sig.binders.iter().skip(sig.n_implicit).filter(|b| b.2 == Icit::Expl))
                                 .map(|(p, b)| (p.name.clone(), b.1, p.span))
                                 .collect(),
                             n_implicit: sig.n_implicit,
+                            inner: sig.inner.clone(),
                             ..Default::default()
                         },
                     );
@@ -1875,7 +2025,7 @@ impl Elab {
                 }
                 _ => continue,
             };
-            let ty = Self::pi_of(&sig.binders, sig.result.clone());
+            let ty = class_ty.take().unwrap_or_else(|| Self::pi_of(&sig.binders, sig.result.clone()));
             self.g.defs[did.0 as usize].ty = ty;
             if !sig.comptime.is_empty() {
                 let (what, bad) = match &d.kind {
@@ -1903,6 +2053,7 @@ impl Elab {
             }
             sigs.insert(k, sig);
         }
+        self.sig_inst = None;
         sigs
     }
 
@@ -1963,7 +2114,10 @@ impl Elab {
                     let goal = self.eval(&sig.cx, &ens.tm);
                     match proof {
                         None => {
-                            let kind = ObKind::Lemma { name: name.name.clone() };
+                            let kind = match self.class_type_checks.get(&name.name) {
+                                Some((n, g)) => ObKind::ClassType { name: n.clone(), given: g.clone() },
+                                None => ObKind::Lemma { name: name.name.clone() },
+                            };
                             self.oblige(&sig.cx, ensures.span, kind, ens.text.clone(), goal, None);
                         }
                         Some(block) => {
@@ -1997,6 +2151,12 @@ impl Elab {
                 _ => {}
             }
         }
+        // Once every body in the module is checked, every dictionary its
+        // instances build is known (#225).
+        if checks {
+            self.class_call_obligations();
+            self.alias_dict_obligations();
+        }
         self.resolve_insts();
     }
 
@@ -2004,10 +2164,16 @@ impl Elab {
     /// `have` may use a lemma declared later.
     fn phase_lemma_statements(&mut self, m: &ast::Module, ids: &[Option<Sym>], sigs: &mut HashMap<usize, Sig>) {
         for (k, (d, id)) in m.decls.iter().zip(ids).enumerate() {
-            let DeclKind::Lemma { lets, ensures, decreasing, .. } = &d.kind else { continue };
+            let DeclKind::Lemma { lets, ensures, decreasing, proof, .. } = &d.kind else { continue };
             let Some(Sym::Def(did)) = id else { continue };
             let Some(sig) = sigs.get(&k) else { continue };
+            // An axiom (D56) is known as one before any proof uses it, so a
+            // use before its declaration is in the ledger too (#245).
+            if self.stdlib_mode && proof.as_ref().is_some_and(is_builtin) {
+                self.axiom_defs.insert(*did);
+            }
             self.g.fuel.set(DEFAULT_FUEL);
+            self.sig_inst = self.sig_inst_of(k);
             let mut cx = sig.cx.clone();
             // The hypotheses are known while the conclusion is elaborated (M17).
             // They were elaborated with a (lemma-less) result in scope.
@@ -2050,9 +2216,11 @@ impl Elab {
                 measure,
                 late: sig.late.clone(),
                 elems: Vec::new(),
+                inner: sig.inner.clone(),
             };
             self.specs.insert(*did, spec);
         }
+        self.sig_inst = None;
     }
 
     /// Elaborate a lemma's header `let`s into `cx`, returning their terms.
@@ -2109,6 +2277,7 @@ impl Elab {
                 comptime: sig.comptime.clone(),
                 hyps: sig.hyps.clone(),
                 late: sig.late.clone(),
+                inner: sig.inner.clone(),
             };
             self.cur_fn = Some(*did);
             self.assume_pres(&mut sig);
@@ -2152,7 +2321,7 @@ impl Elab {
     }
 }
 
-fn is_builtin(b: &ast::Block) -> bool {
+pub(super) fn is_builtin(b: &ast::Block) -> bool {
     b.stmts.is_empty() && matches!(&b.result.kind, ExprKind::Var(n) if n == "__builtin")
 }
 
@@ -2181,7 +2350,7 @@ fn strip_refinements(e: &Expr) -> Expr {
 
 /// Whether the type `e` mentions `name` where a refinement's own names
 /// (`x` of `(x~Int -> Int, x >= 5)`) don't hide it.
-fn mentions_free(e: &Expr, name: &str) -> bool {
+pub(crate) fn mentions_free(e: &Expr, name: &str) -> bool {
     match &e.kind {
         ExprKind::Var(n) => n == name,
         ExprKind::Refine(r) => {
@@ -2205,40 +2374,11 @@ fn mentions_free(e: &Expr, name: &str) -> bool {
     }
 }
 
+/// Whether `name` occurs free in `e`, anywhere in it (a `match`, a
+/// lambda, a block): a predicate mentioning a function's result is its
+/// postcondition.
 fn mentions(e: &Expr, name: &str) -> bool {
-    let mut found = false;
-    walk(e, &mut |x| {
-        if let ExprKind::Var(n) = &x.kind {
-            if n == name {
-                found = true;
-            }
-        }
-    });
-    found
-}
-
-fn walk(e: &Expr, f: &mut dyn FnMut(&Expr)) {
-    f(e);
-    match &e.kind {
-        ExprKind::App(a, b) | ExprKind::Binary(_, a, b) | ExprKind::Arrow(a, b) | ExprKind::Index(a, b) => {
-            walk(a, f);
-            walk(b, f);
-        }
-        ExprKind::Tuple(v) | ExprKind::List(v) | ExprKind::Par(v) => v.iter().for_each(|x| walk(x, f)),
-        ExprKind::Neg(x) | ExprKind::SectionL(_, x) | ExprKind::SectionR(_, x) | ExprKind::Try(x) | ExprKind::Field(x, _) => {
-            walk(x, f)
-        }
-        ExprKind::If(a, b, c) => {
-            walk(a, f);
-            walk(b, f);
-            walk(c, f);
-        }
-        ExprKind::Refine(r) => {
-            r.types().into_iter().for_each(|t| walk(t, f));
-            r.preds.iter().for_each(|p| walk(p, f));
-        }
-        _ => {}
-    }
+    super::classes::mentions_var(e, name)
 }
 
 /// Does variable `idx` occur anywhere in `t`?
@@ -2287,14 +2427,14 @@ fn case_arms(c: &CaseTm) -> impl Iterator<Item = (usize, &Tm)> {
     branches.chain(c.lits.iter().map(|(_, b)| (0, b))).chain(c.default.iter().map(|b| (0, b)))
 }
 
-/// A class function's field type with its `own` parameters marked: the
-/// explicit parameters after its implicit type parameters, in order.
-fn own_params(t: &Tm, owns: &[bool]) -> Tm {
+/// A class function's field type with its `own` and `ghost` parameters
+/// marked: the explicit parameters after its implicit type parameters, in order.
+fn mult_params(t: &Tm, mults: &[Mult]) -> Tm {
     match t {
-        Tm::Pi(x, m, Icit::Impl, a, b) => Tm::Pi(x.clone(), *m, Icit::Impl, a.clone(), Rc::new(own_params(b, owns))),
-        Tm::Pi(x, m, i, a, b) if !owns.is_empty() => {
-            let m = if owns[0] { Mult::One } else { *m };
-            Tm::Pi(x.clone(), m, *i, a.clone(), Rc::new(own_params(b, &owns[1..])))
+        Tm::Pi(x, m, Icit::Impl, a, b) => Tm::Pi(x.clone(), *m, Icit::Impl, a.clone(), Rc::new(mult_params(b, mults))),
+        Tm::Pi(x, m, i, a, b) if !mults.is_empty() => {
+            let m = if mults[0] == Mult::Many { *m } else { mults[0] };
+            Tm::Pi(x.clone(), m, *i, a.clone(), Rc::new(mult_params(b, &mults[1..])))
         }
         _ => t.clone(),
     }
@@ -2328,4 +2468,14 @@ fn pred_subject(p: &Tm) -> Vec<(DefId, usize, usize, usize)> {
         }
     }
     out
+}
+
+/// Is `name` given the type `ghost Type` among `cs` (#161)? A class's
+/// members seen from another module have their names resolved where the
+/// class is (`members_for_instance`), so there `Type` is the universe's
+/// symbol (#198).
+pub(crate) fn is_ghost_type(cs: &[Constraint], name: &str) -> bool {
+    cs.iter().any(|c| {
+        matches!(c, Constraint::Typed { name: n, mult: ast::Mult::Ghost, ty } if n.name == name && matches!(&ty.kind, ExprKind::Con(t) if t == "Type" || *t == Elab::sym_name(Sym::Univ)))
+    })
 }

@@ -1,0 +1,17 @@
+error[E0450]: cannot prove that `x` is a `U8` (`x < 256`)
+  --> class_type_refined.ck:30:24
+   |
+30 |         Some x -> Some x
+   |                        ^ this must be a `U8`
+   = note: counterexample: xs = array.from_list [256]
+   = help: make it true first, e.g. with an `if`, or start from a value that is already a `U8`
+
+error[E0262]: type mismatch: expected `Option U8`, found `Option (Take.Item (Array Nat))`
+  --> class_type_refined.ck:33:5
+   |
+33 |     take xs
+   |     ^^^^^^^ this expression has type `Option (Take.Item (Array Nat))`, so its `Nat` values aren't known to be `U8`
+   = note: a refinement inside a type is never gained from an existing value: that would need a proof about every element
+   = help: give the value the type `Option U8` where it is built, so that each part is checked there
+
+class_type_refined.ck: 2 errors, 0 warnings
