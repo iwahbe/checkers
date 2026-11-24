@@ -479,12 +479,15 @@ pub struct Late {
 
 /// A call of a class's function with preconditions, whose dictionary may
 /// not be found yet (#225): the context, the call, and where it is.
+/// `typed`: its type is its known instance's result type already
+/// (`instance_call_type`).
 pub struct PendingPre {
     pub cx: Cx,
     pub call: Tm,
     pub span: Span,
     pub owner: Option<DefId>,
     pub in_spec: usize,
+    pub typed: bool,
 }
 
 /// The postconditions to check at each value the current function returns.

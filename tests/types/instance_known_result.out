@@ -1,26 +1,28 @@
-error[E0450]: cannot prove that `pos b (-5)` is a `Nat` (`(pos b (-5)) >= 0`)
-  --> instance_known_result.ck:18:5
+error[E0450]: cannot prove `r >= 0`, the postcondition of `wrong`
+  --> instance_known_result.ck:17:15
    |
-18 |     pos b (-5)
-   |     ^^^^^^^^^^ the class promises a `Nat` only where `-5 > 0`
-   = note: this calls `instance Pos Box`'s `pos`, whose signature requires less than the class's and doesn't promise it here
+17 | fn wrong b -> r : b~Box, r~Nat
+   |               ^ promised here
+   = note: for the value returned on line 18: `pos b (-5)`
    = note: counterexample: b = Box 2
-   = help: make the call meet the class's precondition, or have `instance Pos Box`'s `pos` promise a `Nat` at these arguments too
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
 
-error[E0450]: cannot prove `n >= 0` of the `Nat`s inside `wrapped b (-5)`
+error[E0450]: cannot prove that every `(n~Int, -5 > 0 implies n >= 0)` is a `Nat`
   --> instance_known_result.ck:35:5
    |
 35 |     wrapped b (-5)
-   |     ^^^^^^^^^^^^^^ the class promises `Nat`s in the result only where `-5 > 0`
-   = note: this calls `instance Wrapped Box`'s `wrapped`, whose signature requires less than the class's and doesn't promise it here
-   = help: make the call meet the class's precondition, or have `instance Wrapped Box`'s `wrapped` promise `Nat`s in its result at these arguments too
+   |     ^^^^^^^^^^^^^^ `wrapped b (-5)` holds `(n~Int, -5 > 0 implies n >= 0)` values where `Nat` values are expected
+   = note: it needs `n >= 0`
+   = note: counterexample: n = -1
+   = help: give the values the type `Nat` where they are built, so that each is checked there
 
-error[E0450]: cannot prove that `listed b (-5)` is a `List Nat` (`-5 > 0`)
+error[E0450]: cannot prove that every `(n~Int, -5 > 0 implies n >= 0)` is a `Nat`
   --> instance_known_result.ck:49:5
    |
 49 |     listed b (-5)
-   |     ^^^^^^^^^^^^^ the class promises a `List Nat` only where `-5 > 0`
-   = note: this calls `instance Listed Box`'s `listed`, whose signature requires less than the class's and doesn't promise it here
-   = help: make the call meet the class's precondition, or have `instance Listed Box`'s `listed` promise a `List Nat` at these arguments too
+   |     ^^^^^^^^^^^^^ `listed b (-5)` holds `(n~Int, -5 > 0 implies n >= 0)` values where `Nat` values are expected
+   = note: it needs `n >= 0`
+   = note: counterexample: n = -1
+   = help: give the values the type `Nat` where they are built, so that each is checked there
 
 instance_known_result.ck: 3 errors, 0 warnings

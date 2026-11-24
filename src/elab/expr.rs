@@ -1063,7 +1063,13 @@ impl Elab {
         self.arg_of = saved_arg_of;
         self.name_span = head_name_span;
         let (t, ty) = self.insert(cx, t, ty);
-        self.call_obligations(cx, &t, e.span, head.span);
+        // A call at a known instance whose function has a signature of its
+        // own has that function's result type (#289).
+        let (ty, typed) = match self.instance_call_type(cx, &t) {
+            Some(ity) => (ity, true),
+            None => (ty, false),
+        };
+        self.call_obligations(cx, &t, e.span, head.span, typed);
         // A partial application (D86).
         let ty = self.refined_fn_type(cx, &t, ty);
         // A compile-time argument that isn't known: its type may not compute
@@ -1129,7 +1135,7 @@ impl Elab {
     }
 
     /// Preconditions of a call and invariants of a constructor application (§7.1).
-    fn call_obligations(&mut self, cx: &Cx, t: &Tm, span: Span, head_span: Span) {
+    fn call_obligations(&mut self, cx: &Cx, t: &Tm, span: Span, head_span: Span, typed: bool) {
         let (h, args) = t.spine();
         let args: Vec<Rc<Tm>> = args.into_iter().cloned().collect();
         match h {
@@ -1137,7 +1143,7 @@ impl Elab {
                 // A class's function: its dictionary may be found through a
                 // refinement alias (#226).
                 if self.class_methods.contains(d) && self.in_spec == 0 && self.in_proof == 0 {
-                    self.class_calls.push(PendingPre { cx: cx.clone(), call: t.clone(), span, owner: self.cur_fn, in_spec: 0 });
+                    self.class_calls.push(PendingPre { cx: cx.clone(), call: t.clone(), span, owner: self.cur_fn, in_spec: 0, typed: false });
                 }
                 // Only what is needed: most calls have no measure to compare
                 // and no precondition, and evaluating their arguments for
@@ -1167,7 +1173,7 @@ impl Elab {
                 // known once the dictionaries are found, at the end of the
                 // module.
                 if self.class_methods.contains(d) {
-                    self.pending_class_pres.push(PendingPre { cx: cx.clone(), call: t.clone(), span, owner: self.cur_fn, in_spec: self.in_spec });
+                    self.pending_class_pres.push(PendingPre { cx: cx.clone(), call: t.clone(), span, owner: self.cur_fn, in_spec: self.in_spec, typed });
                     return;
                 }
                 if args.len() < spec.n_binders {
@@ -1212,7 +1218,7 @@ impl Elab {
                 // use of it as a value.
                 if let Some((m, f, call, saturated)) = self.class_use(cx, t) {
                     if saturated {
-                        self.class_local_calls.push((m, PendingPre { cx: cx.clone(), call, span, owner: self.cur_fn, in_spec: 0 }));
+                        self.class_local_calls.push((m, PendingPre { cx: cx.clone(), call, span, owner: self.cur_fn, in_spec: 0, typed: false }));
                     } else {
                         self.class_value_uses.push((m, f, span, false));
                     }
@@ -1285,6 +1291,43 @@ impl Elab {
             && self.cur_fn.is_some_and(|f| self.g.well_known.dict_fns.contains(&f))
     }
 
+    /// A call `t` of a class's function with all its arguments, where the
+    /// dictionary is a known instance's whose function has a signature of
+    /// its own (#289): that function's result type at the call's
+    /// arguments, as a value of it would give (`instance_value`). `None`
+    /// otherwise, where the instance isn't known yet (the class's result
+    /// type then, with what the class promises checked at the call once it
+    /// is: `known_result_obligations`), or where the dictionary is found
+    /// through a refinement alias.
+    fn instance_call_type(&mut self, cx: &Cx, t: &Tm) -> Option<Val> {
+        let Tm::Def(d) = t.head() else { return None };
+        if !self.class_methods.contains(d) || self.refined_inst_fns.is_empty() || self.in_spec > 0 || self.in_proof > 0 {
+            return None;
+        }
+        let Some((m, _, _, true)) = self.class_use(cx, t) else { return None };
+        if !self.inst_reqs.is_empty() {
+            self.solve_instances(false);
+            self.retry_waiting(false);
+        }
+        // Through a refinement alias (`Nat`'s dictionary is `Int`'s), the
+        // class's result type at the alias, checked as such (#226).
+        if self.alias_dicts.iter().any(|a| a.meta == Some(m)) {
+            return None;
+        }
+        let call = crate::core::zonk_metas(&self.g, cx.lvl(), t);
+        let direct = crate::native::ir::known_instance(&self.g, &call)?;
+        let (Tm::Def(f), iargs) = direct.spine() else { return None };
+        if !self.refined_inst_fns.contains(f) {
+            return None;
+        }
+        let mut ty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[f.0 as usize].ty);
+        for a in iargs {
+            let Val::Pi(_, _, _, _, c) = self.force(&ty) else { return None };
+            ty = apply_closure(&self.g, &c, self.eval(cx, a));
+        }
+        (!matches!(self.force(&ty), Val::Pi(..))).then_some(ty)
+    }
+
     /// The preconditions of `d`, called with `args` (at least its binders)
     /// as `t`; `name` is the callee as shown.
     fn pre_obligations(&mut self, cx: &Cx, d: DefId, name: &str, args: &[Rc<Tm>], t: &Tm, span: Span) {
@@ -1309,7 +1352,7 @@ impl Elab {
     pub(super) fn class_call_obligations(&mut self) {
         let pending = std::mem::take(&mut self.pending_class_pres);
         let saved = (self.cur_fn, self.in_spec);
-        for PendingPre { cx, call, span, owner, in_spec } in pending {
+        for PendingPre { cx, call, span, owner, in_spec, typed } in pending {
             (self.cur_fn, self.in_spec) = (owner, in_spec);
             let call = crate::core::zonk_metas(&self.g, cx.lvl(), &call);
             let (h, args) = call.spine();
@@ -1340,7 +1383,9 @@ impl Elab {
                     if self.refined_inst_fns.contains(f) && self.specs.get(f).is_some_and(|s| iargs.len() >= s.n_binders) {
                         let iargs: Vec<Rc<Tm>> = iargs.into_iter().cloned().collect();
                         self.pre_obligations(&cx, *f, &name, &iargs, &direct, span);
-                        self.known_result_obligations(&cx, *d, *f, &args, &iargs, &call, span);
+                        if !typed {
+                            self.known_result_obligations(&cx, *d, *f, &args, &iargs, &call, span);
+                        }
                         continue;
                     }
                 }
