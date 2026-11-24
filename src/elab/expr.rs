@@ -658,6 +658,11 @@ impl Elab {
             // A use of a parameter, for the promises its body makes (#102):
             // code in a specification or proof never runs.
             let ctx = self.use_ctx.take();
+            if let (Mult::Zero, Some(f)) = (cx.locals[l].mult, self.cur_fn) {
+                if !cx.type_pos && self.in_spec == 0 && self.in_proof == 0 && self.in_erased == 0 {
+                    self.ghost_uses.entry((f, cx.locals[l].name.to_string())).or_default().push(span);
+                }
+            }
             if let (Some(k), Some(f)) = (cx.locals[l].param, self.cur_fn) {
                 if self.in_spec == 0 && self.in_proof == 0 {
                     self.param_uses.entry((f, k)).or_default().push(ctx.unwrap_or_default());
@@ -2013,7 +2018,10 @@ impl Elab {
                 };
                 self.alias_covered = (self.head_checks_aliases && self.is_direct_alias(&dom)) || pre.is_some();
                 self.map_elem_sub = elem;
+                let erased = m == Mult::Zero;
+                self.in_erased += erased as usize;
                 let at = self.check(cx, a, &dom, false);
+                self.in_erased -= erased as usize;
                 self.map_elem_sub = None;
                 let av = self.eval(cx, &at);
                 if let Some((d, args)) = pre {
@@ -2661,29 +2669,7 @@ impl Elab {
                             ast::PatKind::Var(n) => n.clone(),
                             _ => "_".to_string(),
                         };
-                        let (t, ty) = self.infer(cx, rhs);
-                        let ty = self.reduce_type(&ty);
-                        if name == "_" && self.val_linear(&ty) {
-                            self.report_dropped(cx, &ty, pat.span);
-                        }
-                        let mult = self.named_mult(cx, &name, &ty, pat.span, Mult::Many);
-                        let v = self.eval(cx, &t);
-                        let tyt = quote(&self.g, cx.lvl(), &ty);
-                        let l = cx.define(&name, ty, v, mult);
-                        if name != "_" {
-                            self.bound_at(cx, l, pat.span);
-                        }
-                        // `let x = y` keeps y's structural information.
-                        if let ExprKind::Var(src) = &rhs.kind {
-                            if let Some(sl) = cx.locals[..l].iter().rposition(|x| x.name.as_ref() == src.as_str()) {
-                                cx.locals[l].sub = cx.locals[sl].sub;
-                                cx.locals[l].sub_cond = cx.locals[sl].sub_cond;
-                            }
-                        }
-                        let body = self.block_from(cx, rest, result, expected, tail);
-                        cx.pop();
-                        let nm = if name != "_" { self.binder_name(&name, pat.span) } else { Rc::from("_") };
-                        Tm::Let(nm, mult, Rc::new(tyt), Rc::new(t), Rc::new(body))
+                        self.let_var(cx, &name, pat.span, rhs, Mult::Many, rest, result, expected, tail)
                     }
                     _ => {
                         let arms = vec![(pat.clone(), None, ArmBody::Rest(rest, result))];
@@ -2691,6 +2677,7 @@ impl Elab {
                     }
                 }
             }
+            Stmt::GhostLet(x, rhs) => self.let_var(cx, &x.name, x.span, rhs, Mult::Zero, rest, result, expected, tail),
             Stmt::HaveType(x, ty) => {
                 let saved = cx.facts.len();
                 self.have_type(cx, x, ty);
@@ -2732,6 +2719,50 @@ impl Elab {
             }
 
         }
+    }
+
+    /// `let name = rhs` and the rest of the block. `declared`: `Many`, or
+    /// `Zero` for a type bound `ghost` (`Stmt::GhostLet`); a value whose
+    /// type is a resource makes a `Many` one `own` (D39).
+    #[allow(clippy::too_many_arguments)]
+    fn let_var(
+        &mut self,
+        cx: &mut Cx,
+        name: &str,
+        span: Span,
+        rhs: &Expr,
+        declared: Mult,
+        rest: &[Stmt],
+        result: &Expr,
+        expected: &Val,
+        tail: bool,
+    ) -> Tm {
+        let erased = declared == Mult::Zero;
+        self.in_erased += erased as usize;
+        let (t, ty) = self.infer(cx, rhs);
+        self.in_erased -= erased as usize;
+        let ty = self.reduce_type(&ty);
+        if name == "_" && self.val_linear(&ty) {
+            self.report_dropped(cx, &ty, span);
+        }
+        let mult = self.named_mult(cx, name, &ty, span, declared);
+        let v = self.eval(cx, &t);
+        let tyt = quote(&self.g, cx.lvl(), &ty);
+        let l = cx.define(name, ty, v, mult);
+        if name != "_" {
+            self.bound_at(cx, l, span);
+        }
+        // `let x = y` keeps y's structural information.
+        if let ExprKind::Var(src) = &rhs.kind {
+            if let Some(sl) = cx.locals[..l].iter().rposition(|x| x.name.as_ref() == src.as_str()) {
+                cx.locals[l].sub = cx.locals[sl].sub;
+                cx.locals[l].sub_cond = cx.locals[sl].sub_cond;
+            }
+        }
+        let body = self.block_from(cx, rest, result, expected, tail);
+        cx.pop();
+        let nm = if name != "_" { self.binder_name(name, span) } else { Rc::from("_") };
+        Tm::Let(nm, mult, Rc::new(tyt), Rc::new(t), Rc::new(body))
     }
 
     fn try_not_tail(&mut self, span: Span) {
