@@ -57,7 +57,7 @@ jobs:
       - name: Unit tests
         run: cargo test --release --locked --workspace --lib --bins
       - name: Integration tests
-        # TEMPORARY (PR #287): run on this pull request too; dropped before merge.
+        if: github.event_name != 'pull_request'
         run: cargo test --release --locked --workspace --tests
       # On `main`, the tools for the site (pages.yml), which builds nothing.
       - name: Tools for the site
