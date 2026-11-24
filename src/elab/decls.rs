@@ -65,7 +65,13 @@ impl Elab {
         // Declarations in the order of what they use, not of the file (D65).
         let dicts: Vec<usize> =
             self.decl_origin.iter().enumerate().filter(|(_, o)| matches!(o, super::classes::Origin::InstDict(_))).map(|(k, _)| k).collect();
-        let plan = super::order::plan(m, &dicts);
+        let classes: Vec<(String, Vec<String>)> = self
+            .class_defs
+            .values()
+            .filter(|c| c.module == self.cur)
+            .map(|c| (c.name.clone(), c.members.iter().filter(|m| !matches!(m, ast::ClassMember::Type { .. })).map(|m| m.name().name.clone()).collect()))
+            .collect();
+        let plan = super::order::plan(m, &dicts, &classes);
         for chain in &plan.cycles {
             let name = |k: usize| decl_name(&m.decls[k]).map(|n| n.name.clone()).unwrap_or_default();
             let span = decl_name(&m.decls[chain[0]]).map(|n| n.span).unwrap_or(m.decls[chain[0]].span);
