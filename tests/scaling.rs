@@ -60,6 +60,15 @@ fn a_chain_of_concatenations_checks_in_linear_time() {
 /// the child's high-water mark (`ru_maxrss`), which the kernel reports when
 /// it is reaped. `wait4` reaps this child alone, so other tests' children,
 /// running at the same time, don't count.
+///
+/// The allocator, mimalloc, returns freed memory to the system immediately
+/// (`MIMALLOC_PURGE_DELAY=0`), so the peak is the memory `ckc` holds. By
+/// default it waits 10 ms, and returns it only when it is next called after
+/// that: whether the `check`'s code generation, freed when it ends, is still
+/// resident when Z3 (whose own allocator can't reuse it) starts proving
+/// depends on timing. Over 20 runs each, 2,000 operators peaked at 224 MB or
+/// 292 MB and 8,000 at 585 MB or 670 MB; with the memory returned at once, at
+/// 192 MB to 195 MB and 549 MB to 550 MB.
 #[cfg(target_os = "linux")]
 fn check_peak_kb(dir: &Path, name: &str, n: usize) -> u64 {
     let file = dir.join(format!("{name}.ck"));
@@ -68,6 +77,7 @@ fn check_peak_kb(dir: &Path, name: &str, n: usize) -> u64 {
     let child = Command::new(env!("CARGO_BIN_EXE_ckc"))
         .args(["check", "--no-cache", &format!("{name}.ck")])
         .current_dir(dir)
+        .env("MIMALLOC_PURGE_DELAY", "0")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -91,9 +101,10 @@ fn check_peak_kb(dir: &Path, name: &str, n: usize) -> u64 {
 
 /// Code generation keeps memory in proportion to the function: Cranelift's
 /// SSA builder, given a variable per `let`, kept a map per variable as long as
-/// the function's block count, n² for a chain of n additions (8,000 took
-/// 1.2 GB). Four times the operators may take at most three times the memory;
-/// quadratic memory took about five.
+/// the function's block count, n² for a chain of n additions (2,000 took
+/// 192 MB, 8,000 took 1.45 GB). Four times the operators may take at most four
+/// times the memory, as linear memory with a fixed part does: 2,000 take about
+/// 193 MB, 8,000 about 550 MB.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_chain_of_additions_compiles_in_linear_memory() {
@@ -102,5 +113,5 @@ fn a_chain_of_additions_compiles_in_linear_memory() {
     let small = check_peak_kb(&dir, "mem2000", 2000);
     let large = check_peak_kb(&dir, "mem8000", 8000);
     let _ = std::fs::remove_dir_all(&dir);
-    assert!(large < 3 * small, "2000 operators took {} MB at peak, 8000 took {} MB", small / 1024, large / 1024);
+    assert!(large < 4 * small, "2000 operators took {} MB at peak, 8000 took {} MB", small / 1024, large / 1024);
 }
