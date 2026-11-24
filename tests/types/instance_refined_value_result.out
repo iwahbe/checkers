@@ -1,0 +1,8 @@
+error[E0450]: cannot prove `x > 0`, required to call `f`
+  --> instance_refined_value_result.ck:20:7
+   |
+20 |     f (-5)
+   |       ^^^^ `f` requires `x > 0`
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+instance_refined_value_result.ck: 1 error, 0 warnings

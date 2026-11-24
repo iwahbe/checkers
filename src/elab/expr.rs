@@ -330,6 +330,27 @@ impl Elab {
                     self.last_inferred = Some(ty);
                     return t;
                 }
+                // A class's function as a value: at a known instance whose
+                // function has a signature of its own, it has that
+                // signature (#252), compared with the type expected here.
+                // Through a refinement alias, that comparison is the check
+                // that it gives the alias's values.
+                let ty = match self.class_use(cx, &t) {
+                    Some((m, f, term, false)) => {
+                        if !self.inst_reqs.is_empty() {
+                            self.solve_instances(false);
+                            self.retry_waiting(false);
+                        }
+                        match self.instance_value(cx, &term) {
+                            Some((direct, dty)) => {
+                                self.class_value_uses.push((m, f, e.span, true));
+                                self.spec_fn_type(cx, &direct, dty)
+                            }
+                            None => ty,
+                        }
+                    }
+                    _ => ty,
+                };
                 let mut gained = self.refined_mismatch(cx, expected, &ty, e.span);
                 // A class's type at an instance not found yet (`Seq.Elem` of
                 // `Seq.uncons xs`, #190): find the instances the types known
@@ -360,6 +381,11 @@ impl Elab {
                 let (t, ty) = self.infer_var(cx, n, e.span);
                 if self.in_app_head {
                     return (t, ty);
+                }
+                // A local defined as a class's function, used as a value
+                // (#252).
+                if let (Tm::Var(_), Some((m, f, _, false))) = (&t, self.class_use(cx, &t)) {
+                    self.class_value_uses.push((m, f, e.span, false));
                 }
                 // A function with a specification, as a value (D85).
                 let ty = self.refined_fn_type(cx, &t, ty);
@@ -1135,29 +1161,17 @@ impl Elab {
                 }
                 let spec = self.specs[d].clone();
                 let name = self.g.defs[d.0 as usize].name.to_string();
-                if args.len() < spec.n_binders {
-                    // A partial application (D86): preconditions about the
-                    // arguments given are checked here; the others are in
-                    // its type (`refined_fn_type`).
-                    let given = args.len();
-                    let total = spec.n_binders + 1;
-                    let now = spec.preds.iter().filter(|p| !p.is_post && !mentions_level_from(&p.tm, total, given, 0));
-                    let mut env: Vec<Val> = args.iter().map(|a| self.eval(cx, a)).collect();
-                    for k in given..total {
-                        env.push(Val::var(usize::MAX / 2 + k));
-                    }
-                    for p in now {
-                        let goal = self.inst_pred(p, env.clone());
-                        self.oblige(cx, span, ObKind::Pre { callee: name.clone() }, p.text.clone(), goal, None);
-                    }
-                    return;
-                }
                 // A class's function: at a known instance whose function has
                 // a signature of its own, that signature's preconditions
-                // (#225). Which instance is known once the dictionaries are
-                // found, at the end of the module.
+                // (#225), partially applied too (#252). Which instance is
+                // known once the dictionaries are found, at the end of the
+                // module.
                 if self.class_methods.contains(d) {
                     self.pending_class_pres.push(PendingPre { cx: cx.clone(), call: t.clone(), span, owner: self.cur_fn, in_spec: self.in_spec });
+                    return;
+                }
+                if args.len() < spec.n_binders {
+                    self.partial_pre_obligations(cx, *d, &name, &args, span);
                     return;
                 }
                 self.pre_obligations(cx, *d, &name, &args, t, span);
@@ -1192,8 +1206,76 @@ impl Elab {
                     self.oblige(cx, span, ObKind::Invariant { con: name.clone() }, p.text.clone(), goal, None);
                 }
             }
+            Tm::Var(_) => {
+                // A local defined as a class's function (#252): a call of
+                // it is a call of the class's function; a partial one, a
+                // use of it as a value.
+                if let Some((m, f, call, saturated)) = self.class_use(cx, t) {
+                    if saturated {
+                        self.class_local_calls.push((m, PendingPre { cx: cx.clone(), call, span, owner: self.cur_fn, in_spec: 0 }));
+                    } else {
+                        self.class_value_uses.push((m, f, span, false));
+                    }
+                }
+            }
             _ => {}
         }
+    }
+
+    /// The preconditions of `d` partially applied to `args` (D86) that are
+    /// about those arguments alone; the others are in its type
+    /// (`refined_fn_type`).
+    fn partial_pre_obligations(&mut self, cx: &Cx, d: DefId, name: &str, args: &[Rc<Tm>], span: Span) {
+        let Some(spec) = self.specs.get(&d).cloned() else { return };
+        let given = args.len();
+        let total = spec.n_binders + 1;
+        let now = spec.preds.iter().filter(|p| !p.is_post && !mentions_level_from(&p.tm, total, given, 0));
+        let mut env: Vec<Val> = args.iter().map(|a| self.eval(cx, a)).collect();
+        for k in given..total {
+            env.push(Val::var(usize::MAX / 2 + k));
+        }
+        for p in now {
+            let goal = self.inst_pred(p, env.clone());
+            self.oblige(cx, span, ObKind::Pre { callee: name.to_string() }, p.text.clone(), goal, None);
+        }
+    }
+
+    /// `t` as a class's function applied to its dictionary, an unknown
+    /// (#252): itself, or a local defined as one applied to arguments.
+    /// The unknown, the class's function, the application, and whether it
+    /// has all the function's arguments.
+    pub(super) fn class_use(&self, cx: &Cx, t: &Tm) -> Option<(MetaId, DefId, Tm, bool)> {
+        if self.in_spec > 0 || self.in_proof > 0 {
+            return None;
+        }
+        let (m, term) = match t.head() {
+            Tm::Def(f) => {
+                let lay = self.method_layout(*f)?;
+                let (_, args) = t.spine();
+                let Tm::Meta(m) = args.get(lay.dict)?.head() else { return None };
+                (*m, t.clone())
+            }
+            Tm::Var(i) => {
+                let l = cx.lvl().checked_sub(i + 1)?;
+                if cx.locals.get(l)?.bound {
+                    return None;
+                }
+                let Val::Neutral(Head::Def(f), sp) = &cx.env[l] else { return None };
+                let lay = self.method_layout(*f)?;
+                let Some(Elim::App(Val::Neutral(Head::Meta(m), dsp), _)) = sp.get(lay.dict) else { return None };
+                if !dsp.is_empty() {
+                    return None;
+                }
+                (*m, quote(&self.g, cx.lvl(), &self.eval(cx, t)))
+            }
+            _ => return None,
+        };
+        let (Tm::Def(f), args) = term.spine() else { return None };
+        if !self.class_methods.contains(f) {
+            return None;
+        }
+        let saturated = args.len() >= self.method_layout(*f)?.arity;
+        Some((m, *f, term.clone(), saturated))
     }
 
     /// Is `h` an instance's function with a signature of its own (#225),
@@ -1233,6 +1315,24 @@ impl Elab {
             let (h, args) = call.spine();
             let Tm::Def(d) = h else { continue };
             let name = self.g.defs[d.0 as usize].name.to_string();
+            let args: Vec<Rc<Tm>> = args.into_iter().cloned().collect();
+            if self.specs.get(d).is_some_and(|s| args.len() < s.n_binders) {
+                // Partially applied (#252): the instance's preconditions
+                // about the arguments given, at a known instance whose
+                // function has a signature of its own.
+                match self.instance_value(&cx, &call) {
+                    Some((direct, _)) => {
+                        let (Tm::Def(f), iargs) = direct.spine() else { continue };
+                        let iargs: Vec<Rc<Tm>> = iargs.into_iter().cloned().collect();
+                        self.partial_pre_obligations(&cx, *f, &name, &iargs, span);
+                    }
+                    None => {
+                        let d = *d;
+                        self.partial_pre_obligations(&cx, d, &name, &args, span);
+                    }
+                }
+                continue;
+            }
             let direct = crate::native::ir::known_instance(&self.g, &call);
             if let Some(direct) = direct {
                 let (ih, iargs) = direct.spine();
@@ -1245,7 +1345,6 @@ impl Elab {
                 }
             }
             let d = *d;
-            let args: Vec<Rc<Tm>> = args.into_iter().cloned().collect();
             self.pre_obligations(&cx, d, &name, &args, &call, span);
         }
         (self.cur_fn, self.in_spec) = saved;

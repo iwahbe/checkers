@@ -760,6 +760,13 @@ pub struct Elab {
     /// refinement alias, to check at the end of the module (#226).
     pub class_calls: Vec<PendingPre>,
     pub alias_dicts: Vec<classes::AliasDict>,
+    /// Uses of classes' functions as values (#252), by their dictionary's
+    /// unknown: where, and whether compared there with the function type
+    /// expected, at a known instance (through a refinement alias, that
+    /// comparison is their check). A local defined as one: each call of
+    /// it, a call of the class's function with that dictionary.
+    pub class_value_uses: Vec<(MetaId, DefId, Span, bool)>,
+    pub class_local_calls: Vec<(MetaId, PendingPre)>,
     /// The instance whose member's signature is being elaborated (#146).
     pub sig_inst: Option<classes::SigInst>,
     /// Comparisons waiting for a dictionary (#133): level, expected,
@@ -940,6 +947,8 @@ impl Elab {
             pending_class_pres: Vec::new(),
             class_calls: Vec::new(),
             alias_dicts: Vec::new(),
+            class_value_uses: Vec::new(),
+            class_local_calls: Vec::new(),
             sig_inst: None,
             waiting: Vec::new(),
             waiting_late: Vec::new(),

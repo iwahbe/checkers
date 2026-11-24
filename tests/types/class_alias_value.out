@@ -1,0 +1,17 @@
+error[E0450]: cannot prove that `make` returns a `Nat`
+  --> class_alias_value.ck:24:14
+   |
+24 |     list.map make [-1]
+   |              ^^^^ its result is a `(r~Int, x >= 0 implies r >= 0)`, which must be a `Nat`
+   = note: it needs `n >= 0`
+   = note: counterexample: x = -1, n = -1
+   = help: pass a function whose result is always a `Nat`
+
+error[E0456]: cannot prove that `f (-1)` is a `Nat` (`(f (-1)) >= 0`)
+  --> class_alias_value.ck:28:5
+   |
+28 |     f (-1)
+   |     ^^^^^^ `Make` at `Nat` runs `Int`'s instance, and its `make` isn't shown to give a `Nat` here
+   = help: use `Int` here and check the result where a `Nat` is needed; or promise it in a signature of `instance Make Int`'s `make`
+
+class_alias_value.ck: 2 errors, 0 warnings

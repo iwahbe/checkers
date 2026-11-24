@@ -1,0 +1,16 @@
+error[E0450]: cannot prove `k > 0`, required to call `count`
+  --> instance_refined_value.ck:25:13
+   |
+25 |     let f = count 0
+   |             ^^^^^^^ `count` requires `k > 0`
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+error[E0262]: type mismatch: expected `(y~a) -> (n~Int, n >= 0)`, found `(x1~a) -> Int`
+  --> instance_refined_value.ck:29:11
+   |
+29 |     apply (count 1) x
+   |           ^^^^^^^^^ this expression has type `(x1~a) -> Int`, so its `Int` values aren't known to be `(n~Int, n >= 0)`
+   = note: a refinement inside a type is never gained from an existing value: that would need a proof about every element
+   = help: give the value the type `(y~a) -> (n~Int, n >= 0)` where it is built, so that each part is checked there
+
+instance_refined_value.ck: 2 errors, 0 warnings
