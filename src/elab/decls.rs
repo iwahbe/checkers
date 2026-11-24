@@ -11,6 +11,8 @@ type TypeInstance = (TyId, Vec<bool>);
 /// its text and span, the level it was made at, and the field's alias if it
 /// comes from a refinement-alias field type.
 type FieldInv = (Tm, String, Span, usize, Option<(usize, DefId)>);
+/// A declaration's name's local and its type, if it is the declaration's.
+type NameLocal<'a> = dyn Fn(&Cx, &str) -> Option<(usize, Val)> + 'a;
 
 /// Signature of a function or lemma, elaborated into a context.
 pub struct Sig {
@@ -775,7 +777,7 @@ impl Elab {
     /// a name one of which has one must be the same type (E0372).
     /// `local` gives a name's local and its type, or `None` for a name
     /// that isn't the declaration's (E0355, E0353).
-    fn combine_typings(&mut self, cx: &mut Cx, cs: &[Constraint], local: &dyn Fn(&Cx, &str) -> Option<(usize, Val)>) -> Vec<(usize, Tm, usize, Span)> {
+    fn combine_typings(&mut self, cx: &mut Cx, cs: &[Constraint], local: &NameLocal) -> Vec<(usize, Tm, usize, Span)> {
         let mut facts = Vec::new();
         let mut done: HashSet<&str> = HashSet::new();
         for c in cs {
