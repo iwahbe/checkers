@@ -1,0 +1,8 @@
+(set-option :produce-models true)
+(set-option :rlimit 200000)
+(set-option :timeout 60000)
+(set-logic ALL)
+(define-funs-rec ((|class_alias_own_clause_proved.Make Int.pair<Bool,Bool>[class_alias_own_clause_proved.Tag Bool,class_alias_own_clause_proved.Tag Bool]| ((p4 Bool) (p5 Bool)) Int)) (0))
+(assert (>= (|class_alias_own_clause_proved.Make Int.pair<Bool,Bool>[class_alias_own_clause_proved.Tag Bool,class_alias_own_clause_proved.Tag Bool]| true false) 0))
+(assert (not (>= (|class_alias_own_clause_proved.Make Int.pair<Bool,Bool>[class_alias_own_clause_proved.Tag Bool,class_alias_own_clause_proved.Tag Bool]| true false) 0)))
+(check-sat)

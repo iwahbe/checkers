@@ -41,6 +41,11 @@ cranelift-object = "0.137.1"
 cranelift-native = "0.137.1"
 target-lexicon = "0.13.5"
 
+# Code generation for other machines than this one, in unit tests: what
+# each returns in registers (src/native/mod.rs).
+[dev-dependencies]
+cranelift-codegen = { version = "0.137.1", features = ["x86", "arm64"] }
+
 # `wait4` for a child's peak memory in tests/scaling.rs; already a dependency
 # of the runtime (rt/).
 [target.'cfg(target_os = "linux")'.dev-dependencies]

@@ -1,0 +1,5 @@
+-- stdout
+42
+-- stderr
+checkers runtime: 16 objects live at exit
+-- exit 0
