@@ -3234,13 +3234,17 @@ struct MethodLayout {
 
 impl Elab {
     fn method_layout(&self, f: DefId) -> Option<MethodLayout> {
+        // Its dictionary is the binder its body reads the function from
+        // (`$d.make …`): a clause of the function's own (`Seq s`) may be
+        // bound before it, as when the class's type is a parameter.
+        let own = self.method_dict(f)?;
         let mut ty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[f.0 as usize].ty);
         let mut pos = Vec::new();
         let mut dict = None;
         let mut i = 0;
         while let Val::Pi(_, _, _, d, c) = self.force(&ty) {
             pos.push(None);
-            if dict.is_none() {
+            if dict.is_none() && i == own {
                 if let Val::TyCon(class, tys) = self.force(&d) {
                     if self.class_defs.contains_key(&class) {
                         dict = Some((i, class));
@@ -3259,6 +3263,24 @@ impl Elab {
         }
         let (dict, class) = dict?;
         Some(MethodLayout { class, dict, pos, arity: i })
+    }
+
+    /// Which binder of class function `f` is its class's dictionary: the
+    /// one its body (`$d.f x …`, under a lambda per binder) reads.
+    fn method_dict(&self, f: DefId) -> Option<usize> {
+        let mut b = self.g.defs[f.0 as usize].body.as_ref()?;
+        let mut n = 0;
+        while let Tm::Lam(_, _, _, body) = b {
+            b = body;
+            n += 1;
+        }
+        match b.head() {
+            Tm::Field(d, _, _) => match **d {
+                Tm::Var(k) if k < n => Some(n - 1 - k),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// `t` without the refinement aliases at its head: the type the alias
