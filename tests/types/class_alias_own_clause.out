@@ -31,6 +31,7 @@ error[E0456]: `Make` at `Nat` runs `Int`'s instance, whose `test` may give `f` a
    |
 38 |     made True
    |     ^^^^ `Make` is used at `Nat` here
+   = note: counterexample: n = -1
    = help: use `Int` here, with a function that accepts every `Int`; or give `instance Make Int`'s `test` a signature in which `f` is given only `Nat`s
 
 error[E0456]: `Make` at `Nat` runs `Int`'s instance, whose `test` may give `f` a value that isn't a `Nat`
@@ -38,6 +39,7 @@ error[E0456]: `Make` at `Nat` runs `Int`'s instance, whose `test` may give `f` a
    |
 44 |     Make.test True small
    |     ^^^^^^^^^^^^^^^^^^^^ `Make` is used at `Nat` here
+   = note: counterexample: n = -1
    = help: use `Int` here, with a function that accepts every `Int`; or give `instance Make Int`'s `test` a signature in which `f` is given only `Nat`s
 
 class_alias_own_clause.ck: 6 errors, 0 warnings
