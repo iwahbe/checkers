@@ -1,0 +1,8 @@
+-- stdout
+(set-logic ALL)
+(declare-datatypes ((M 14)) ((par (A1 A2 A3 A4 A5 A6 A7 A8 A9 A10 A11 A12 A13 A14) ((m (f1 A1) (f2 A2) (f3 A3) (f4 A4) (f5 A5) (f6 A6) (f7 A7) (f8 A8) (f9 A9) (f10 A10) (f11 A11) (f12 A12) (f13 A13) (f14 A14))))))
+(declare-datatypes ((T 0)) (((leaf) (node (x (M T T T T T T T T T T T T T T))))))
+(assert (not false))
+(check-sat)
+-- stderr
+-- exit 0

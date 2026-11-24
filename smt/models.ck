@@ -464,7 +464,12 @@ export fn one src z3 mark -> r : src~Bytes, z3~Bytes, mark~Bool, r~Bytes
                             let goal = came (model.eval_unfolding c m q.goal) False
                             let axioms = term.axioms c
                             let note = if axioms == [] then b"" else b"a `forall`: not evaluated\n"
-                            head ++ kind ++ note ++ fact_lines c (each_fact c m (term.facts c) 1) ++ b"the negated goal: "
+                            let defs =
+                                if mark and term.defs c != []
+                                    b"definitions: each taken as terminating (`--unmarked`: none)\n"
+                                else
+                                    b""
+                            head ++ kind ++ defs ++ note ++ fact_lines c (each_fact c m (term.facts c) 1) ++ b"the negated goal: "
                                 ++ came_text c goal ++ b"\n" ++ b"refutes: " ++ (if model.refutes c q.goal m then b"yes" else b"no")
                                 ++ b"\n"
 

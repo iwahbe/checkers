@@ -274,3 +274,9 @@ fn noax_refuted -> r : r~Bool
         None   -> False
 
 check noax_refuted
+
+# Different constant arrays with no stores are different arrays, whatever
+# the index sort.
+let CU = b"(set-logic ALL)(declare-sort U 0)(assert (not (= ((as const (Array U Int)) 0) ((as const (Array U Int)) 1))))(assert (not false))(check-sat)"
+
+check model.holds (context CU) NOTHING (fact CU 0)

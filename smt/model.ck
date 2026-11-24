@@ -33,7 +33,7 @@
 # **Terms of the context only.** `eval` and `eval_unfolding` evaluate a term
 # only if it has a sort in the context with no variables free, `holds_at`
 # an axiom only if it is one of the context's (`term.axiom_ok`), and
-# `refutes` a goal only if it is a fact of it (`term.fact_ok`); anything
+# `refutes` a goal only if it is a closed `Bool` term of it (`term.fact_ok`); anything
 # else is `IllSorted`, or not held.
 #
 # **Two modes.** `eval`, `holds`, `fails`, `holds_all` and `holds_at` are the
@@ -72,8 +72,17 @@
 #   another constructor's value is never asked about a value holding an
 #   array (`ArraysCompared`): two different values may be the same array,
 #   and nothing here could make the model give them the same result. So a
-#   fact applying a declared function to an array holds in no model, and a
-#   definition with an array parameter is undetermined at array arguments.
+#   fact applying a declared function to an array holds in no model.
+#
+# Since `holds_at` is true only where the body evaluates to true, these
+# make some axioms false in every model, not just undetermined:
+# `holds_at c m (definition_axiom n d) vs` is false at array arguments for a
+# definition with an array parameter, and at every argument for one whose
+# body is a `lambda` or `map` (its equation compares arrays); and an axiom
+# that compares a quantified array with anything but itself, such as
+# `forall a i. (= (store a i (select a i)) a)`, is false at every
+# `ModelArray`. A premise that such an axiom holds at all values is
+# therefore false for every `Model`.
 #
 # Arrays given by the model are `ModelArray s k`, one family for each array
 # sort `s`.
@@ -138,8 +147,11 @@ export enum Unknown
 
 # The elements of an uninterpreted sort: `UpTo n` is `Element 0` to
 # `Element n` (never empty, as SMT-LIB requires); `Countable` is every
-# `Element n`. Countable domains are all first-order logic needs
-# (Löwenheim–Skolem).
+# `Element n`. For an uninterpreted sort in first-order logic, countable
+# domains are all that is needed (Löwenheim–Skolem); that argument doesn't
+# cover arrays taken as all functions, whose domains can be uncountable
+# (see #85). Every `Model` here is a Checkers value, so its functions are
+# computable: "every model" in this module means every such one.
 export enum Domain
     UpTo n : n~Nat
     Countable
@@ -239,8 +251,10 @@ fn all_plain vs -> r : vs~List Value, r~Bool
 # the same value is the same array; two constant arrays with stores are
 # compared at every stored index of either, and if they agree there, their
 # constants decide: equal constants make equal arrays, and different ones
-# different arrays when the index sort is infinite (`Int`, `Seq`), or
-# `Bool` with both indices stored. Anything else is `ArraysCompared`.
+# different arrays when neither has stores (no sort is empty), when the
+# index sort is infinite (`Int`, `Seq`), or when it is `Bool` and an index
+# isn't stored; with both `Bool` indices stored they are equal. Anything
+# else is `ArraysCompared`.
 fn equal_with down a b -> r : down~(Value -> Value -> Result Bool Unknown), a~Value, b~Value, r~Result Bool Unknown
     match (a, b)
         (Truth x, Truth y)                   -> Ok (x == y)
@@ -360,6 +374,13 @@ fn agree_at down f g is -> r : down~(Value -> Value -> Result Bool Unknown), f~F
 # constants: different exactly when some index isn't stored.
 fn different_bases down index is -> r : down~(Value -> Value -> Result Bool Unknown), index~Sort, is~List Value,
                                         r~Result Bool Unknown
+    if is == [] then Ok False else different_somewhere down index is
+
+# The same with at least one stored index: different when the index sort
+# has an index not stored, which is decided for infinite sorts and `Bool`.
+# (With no stores, every sort has an index, since none is empty.)
+fn different_somewhere down index is -> r : down~(Value -> Value -> Result Bool Unknown), index~Sort,
+                                            is~List Value, r~Result Bool Unknown
     match index
         Int   -> Ok False
         Seq _ -> Ok False

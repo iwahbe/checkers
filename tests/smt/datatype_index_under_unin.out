@@ -1,0 +1,8 @@
+-- stdout
+(set-logic ALL)
+(declare-sort U 1)
+(declare-datatypes ((T 0)) (((mk (x (Array (U T) Int))))))
+(assert (not false))
+(check-sat)
+-- stderr
+-- exit 0

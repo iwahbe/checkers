@@ -167,14 +167,18 @@ export enum Command
 
 # ── Signatures ───────────────────────────────────────────────────────────────
 
-# Everything declared so far, numbered in order.
+# Everything declared so far, numbered in order. `values` holds, for each
+# datatype, a value of it found when it was declared (`Witness`; see
+# "Datatypes with values"): kept so that later declarations need not look
+# again.
 export record Sig
     sorts~Array SortDecl
     datatypes~Array Datatype
     funs~Array FunDecl
+    values~Array Witness
 
 export fn empty_sig -> s : s~Sig
-    Sig (array.from_list []) (array.from_list []) (array.from_list [])
+    Sig (array.from_list []) (array.from_list []) (array.from_list []) (array.from_list [])
 
 fn def_fun d -> f : d~Def, f~FunDecl
     FunDecl d.name (list.map (\(_, s) -> s) d.params) d.result Defined
@@ -185,10 +189,10 @@ fn def_funs ds -> fs : ds~List Def, fs~List FunDecl
 # The signature after `c`.
 export fn extend sig c -> r : sig~Sig, c~Command, r~Sig
     match c
-        DeclareSort d       -> Sig (sig.sorts ++ array.from_list [d]) sig.datatypes sig.funs
-        DeclareDatatypes ds -> Sig sig.sorts (sig.datatypes ++ array.from_list ds) sig.funs
-        DeclareFun f        -> Sig sig.sorts sig.datatypes (sig.funs ++ array.from_list [f])
-        DefineFuns _ ds     -> Sig sig.sorts sig.datatypes (sig.funs ++ array.from_list (def_funs ds))
+        DeclareSort d       -> Sig (sig.sorts ++ array.from_list [d]) sig.datatypes sig.funs sig.values
+        DeclareDatatypes ds -> Sig sig.sorts (sig.datatypes ++ array.from_list ds) sig.funs (sig.values ++ array.from_list (group_values sig ds))
+        DeclareFun f        -> Sig sig.sorts sig.datatypes (sig.funs ++ array.from_list [f]) sig.values
+        DefineFuns _ ds     -> Sig sig.sorts sig.datatypes (sig.funs ++ array.from_list (def_funs ds)) sig.values
         Assume _            -> sig
         Assert _            -> sig
 
@@ -477,36 +481,118 @@ fn check_patterns sig env ps -> r : sig~Sig, env~List Sort, ps~List (List Term),
 
 # ── Datatypes with values ────────────────────────────────────────────────────
 # Every sort must have a value (SMT-LIB 2.6, §5.3: a structure's domains are
-# non-empty), so `check_values` asks two things of the datatypes one
+# non-empty). `check_values` asks two things of the datatypes one
 # `declare-datatypes` declares (the group).
 #
-# 1. Each has a value. What "has a value" means: `Bool`, `Int`, sequences
-#    (the empty one) and uninterpreted sorts always do; `(Array i v)` does
-#    when `v` does; a parameter does, since it stands for a sort; and
-#    `(D a1 … an)` does when one of `D`'s constructors has a value for each
-#    field, its parameters standing for `a1 … an`. That is the least fixed
-#    point of these rules. Whether `(D a1 … an)` has a value depends only on
-#    which of `a1 … an` have values, so it is computed over pairs (`Shape`):
-#    a datatype and, for each parameter, whether its argument has a value.
-#    There are finitely many, so rounds that add every pair whose
-#    constructor's fields all have values, from the pairs found so far,
-#    reach the fixed point. Each group datatype is asked with every
-#    parameter having a value.
+# 1. **Each has a value, shown by one.** A datatype is accepted only with a
+#    `Witness`: a value built from its constructors, in which its
+#    parameters may stand for values of the sorts they will be. `fits`
+#    checks a witness against the datatype's sort, by structure alone, and
+#    that check is what acceptance rests on: whatever the search below
+#    does, a datatype is accepted only if `fits` holds of the witness it
+#    found, so a sort with no values can't be accepted.
 #
-# 2. None is in the index of an array in a field of the group: not written
-#    there, and not through a datatype declared before that puts its
-#    parameter there. With arrays as all functions, `T = mk (Array T Int)`
-#    would need as many values as functions from `T` to `Int`, and there is
-#    no such set (Cantor). Z3 rejects these ("datatype is not co-variant"),
-#    though not through earlier datatypes. In an array's values or in a
-#    sequence a datatype is a tree with many branches, which exists.
+#    The search: whether `(D a1 … an)` has a value depends only on which
+#    of `a1 … an` do. So it looks for a witness for each pair (`Shape`) of
+#    a datatype that can be reached from the group and a choice of which of
+#    its parameters have values: rounds, each adding every shape with a
+#    constructor whose fields all have witnesses from the shapes found so
+#    far, until a round adds none. That is the least fixed point of "has a
+#    value"; each round takes shapes out of the finite list of those not
+#    yet found, so the rounds end (`decreasing` on that list).
 #
-# Z3 is less exact about values: it rejects `T = mk (Seq T)` and accepts
-# `U T = u (Box (U T))` with `Box` in the same group, neither of which
-# matches these rules (the first has `(mk [])`, the second no value).
+# 2. **None is in an array's index in its own group** (see
+#    `in_index_check`): not written there, and not through a parameter of
+#    a datatype that puts the parameter in an index. With arrays as all
+#    functions (the standard interpretation), `T = mk (Array T Int)` would
+#    need as many values as functions from `T` to `Int`, and there is no
+#    such set (Cantor). Z3 rejects these too ("datatype is not co-variant").
+#    In an array's values or in a sequence, a datatype is a tree with many
+#    branches, which exists. An uninterpreted sort constructor applied to
+#    the datatype doesn't count: its interpretation may ignore its
+#    arguments, so `(Array (U T) Int)` has one.
+#
+# Z3 is less exact about values: it rejects `T = mk (Seq T)`, which has
+# `(mk [])`, and accepts `(U T)` through `(Box (U T))` in one group, which
+# has none.
 
-# A datatype applied to arguments, as far as values go: its number, and
-# whether each argument has a value.
+# A value of a sort in which parameters may stand: `true`, `0`, the empty
+# sequence, an uninterpreted sort's first element, the constant array of a
+# value, parameter `k`'s value, constructor `k` applied to fields, or the
+# witness kept for datatype `e` (declared in an earlier command) at the
+# arguments' values.
+export enum Witness
+    WTrue
+    WZero
+    WEmpty
+    WElement
+    WConst v      : v~Witness
+    WParam k      : k~Nat
+    WCon k fields : k~Nat, fields~List Witness
+    WOf e args    : e~Nat, args~List Witness
+
+# Whether `w` is a value of sort `s` of `sig`, whatever values the
+# parameters below `np` stand for, where the datatypes numbered below
+# `first` were accepted before. This is the statement acceptance rests on:
+# a datatype with a witness that fits its sort has a value for every choice
+# of values for its parameters. `WOf e ws` fits `(e args)` when `e` was
+# accepted before and each of `ws` fits its argument: `e`'s kept witness
+# fitted `e`'s sort when it was accepted (`check_values`, for every
+# `declare-datatypes` of a `Context`), so it fits at these arguments.
+export fn fits sig first np w s -> r : sig~Sig, first~Nat, np~Nat, w~Witness, s~Sort, r~Bool
+    match (w, s)
+        (WTrue, Bool)            -> True
+        (WZero, Int)             -> True
+        (WEmpty, Seq _)          -> True
+        (WElement, Unin _ _)     -> True
+        (WConst v, Arr _ e)      -> fits sig first np v e
+        (WParam k, Param j)      -> k == j and k < np
+        (WCon k fs, Data d args) ->
+            match ctor sig d k
+                Some c ->
+                    list.length args == list.length sig.datatypes[d].params
+                        and fits_all sig first np fs (list.map (instantiate args) (field_sorts c.fields))
+                None   -> False
+        (WOf e ws, Data d args)  ->
+            e == d and e < first and e < len sig.datatypes
+                and list.length args == list.length sig.datatypes[e].params and fits_all sig first np ws args
+        _                        -> False
+
+fn fits_all sig first np ws ss -> r : sig~Sig, first~Nat, np~Nat, ws~List Witness, ss~List Sort, r~Bool
+    match (ws, ss)
+        ([], [])           -> True
+        (w :: wr, s :: sr) -> fits sig first np w s and fits_all sig first np wr sr
+        _                  -> False
+
+# ── Lists that shrink ────────────────────────────────────────────────────────
+
+# `xs` sorted by `f`: those it gives something for, with what, and the
+# rest.
+record Picked a b : a~Type, b~Type
+    got~List (a, b)
+    left~List a
+
+fn pick f xs -> r : f~(a -> Option b), xs~List a, r~Picked a b
+    match xs
+        []        -> Picked [] []
+        x :: rest ->
+            let p = pick f rest
+            match f x
+                Some y -> Picked ((x, y) :: p.got) p.left
+                None   -> Picked p.got (x :: p.left)
+
+# Every element goes one way or the other: when something is picked, fewer
+# are left.
+lemma pick_length f xs : f~(a -> Option b), xs~List a
+    ensures list.length (pick f xs).got + list.length (pick f xs).left == list.length xs
+    proof
+        match xs
+            []        -> auto
+            _ :: rest -> have pick_length f rest
+
+# ── The search for witnesses ─────────────────────────────────────────────────
+
+# A datatype, and whether each of its parameters has a value.
 type Shape = sh~(Nat, List Bool)
 
 # Whether `xs` is at most `ys`, place by place (`False` before `True`).
@@ -516,265 +602,346 @@ fn at_most xs ys -> r : xs~List Bool, ys~List Bool, r~Bool
         (x :: xr, y :: yr) -> (not x or y) and at_most xr yr
         _                  -> False
 
-# Whether a shape found to have a value is at most `(e, bits)`: then
-# `(e, bits)` has one too, as more arguments with values can only help.
-fn found_below found e bits -> r : found~List Shape, e~Nat, bits~List Bool, r~Bool
+# A witness found for `e` with parameters `bits` or fewer having values.
+fn found_in found e bits -> r : found~List (Shape, Witness), e~Nat, bits~List Bool, r~Option Witness
     match found
-        []             -> False
-        (d, b) :: rest -> (d == e and at_most b bits) or found_below rest e bits
+        []                  -> None
+        ((d, b), w) :: rest -> if d == e and at_most b bits then Some w else found_in rest e bits
 
-# Whether `s` has a value, from the shapes `found` to have one, where
-# `bits` says which parameters have values.
-fn sort_has found bits s -> r : found~List Shape, bits~List Bool, s~Sort, r~Bool
+# `w` with parameter `j` replaced by the `j`-th of `args`.
+fn subst w args -> r : w~Witness, args~List Witness, r~Witness
+    match w
+        WConst v  -> WConst (subst v args)
+        WParam j  ->
+            match list.head (list.drop j args)
+                Some a -> a
+                None   -> WParam j
+        WCon k fs -> WCon k (subst_all fs args)
+        WOf e ws  -> WOf e (subst_all ws args)
+        other     -> other
+
+fn subst_all ws args -> r : ws~List Witness, args~List Witness, r~List Witness
+    match ws
+        []        -> []
+        w :: rest -> subst w args :: subst_all rest args
+
+# A witness for `s`, from the shapes found, where parameter `k` has one if
+# `bits` says so.
+fn witness stored first found bits s -> r : stored~Array Witness, first~Nat, found~List (Shape, Witness), bits~List Bool, s~Sort, r~Option Witness
     match s
+        Bool        -> Some WTrue
+        Int         -> Some WZero
+        Seq _       -> Some WEmpty
+        Unin _ _    -> Some WElement
+        Arr _ v     ->
+            match witness stored first found bits v
+                Some w -> Some (WConst w)
+                None   -> None
         Param k     ->
             match list.head (list.drop k bits)
-                Some b -> b
-                None   -> False
-        Arr _ v     -> sort_has found bits v
-        Data e args -> found_below found e (sorts_have found bits args)
-        _           -> True
+                Some True -> Some (WParam k)
+                _         -> None
+        Data e args ->
+            let ws = witnesses stored first found bits args
+            match all_some ws
+                Some vs if e < first and e < len stored -> Some (WOf e vs)
+                _ ->
+                    match found_in found e (have_all ws)
+                        Some w -> Some (subst w (or_params ws))
+                        None   -> None
 
-fn sorts_have found bits ss -> r : found~List Shape, bits~List Bool, ss~List Sort, r~List Bool
+fn witnesses stored first found bits ss -> r : stored~Array Witness, first~Nat, found~List (Shape, Witness), bits~List Bool, ss~List Sort, r~List (Option Witness)
     match ss
         []        -> []
-        s :: rest -> sort_has found bits s :: sorts_have found bits rest
+        s :: rest -> witness stored first found bits s :: witnesses stored first found bits rest
 
-fn all_true bs -> r : bs~List Bool, r~Bool
-    match bs
-        []        -> True
-        b :: rest -> b and all_true rest
+fn have_all ws -> r : ws~List (Option Witness), r~List Bool
+    match ws
+        []             -> []
+        Some _ :: rest -> True :: have_all rest
+        None :: rest   -> False :: have_all rest
 
-# Whether some constructor of `cs` has a value for every field.
-fn some_ctor found bits cs -> r : found~List Shape, bits~List Bool, cs~List Ctor, r~Bool
-    match cs
-        []        -> False
-        c :: rest -> all_true (sorts_have found bits (field_sorts c.fields)) or some_ctor found bits rest
+# The witnesses, with a parameter standing where there is none (only where
+# `found_for` chose a witness that doesn't use it).
+fn or_params ws -> r : ws~List (Option Witness), r~List Witness
+    match ws
+        []             -> []
+        Some w :: rest -> w :: or_params rest
+        None :: rest   -> WParam 0 :: or_params rest
 
-fn shape_has sig found sh -> r : sig~Sig, found~List Shape, sh~Shape, r~Bool
+fn all_some ws -> r : ws~List (Option Witness), r~Option (List Witness)
+    match ws
+        []             -> Some []
+        Some w :: rest ->
+            match all_some rest
+                Some vs -> Some (w :: vs)
+                None    -> None
+        None :: _      -> None
+
+# A witness for the shape: its first constructor whose fields all have one.
+fn shape_witness sig first found sh -> r : sig~Sig, first~Nat, found~List (Shape, Witness), sh~Shape, r~Option Witness
     let (e, bits) = sh
-    e < len sig.datatypes and some_ctor found bits sig.datatypes[e].ctors
+    if e < len sig.datatypes then ctor_witness sig.values first found bits sig.datatypes[e].ctors 0 else None
 
-# The shapes the fields of `sh`'s constructors use, with `found` deciding
-# their arguments.
-fn shapes_in found bits s -> r : found~List Shape, bits~List Bool, s~Sort, r~List Shape
+fn ctor_witness stored first found bits cs k -> r : stored~Array Witness, first~Nat, found~List (Shape, Witness),
+                                                    bits~List Bool, cs~List Ctor, k~Nat, r~Option Witness
+    match cs
+        []        -> None
+        c :: rest ->
+            match all_some (witnesses stored first found bits (field_sorts c.fields))
+                Some ws -> Some (WCon k ws)
+                None    -> ctor_witness stored first found bits rest (k + 1)
+
+# The least fixed point: rounds over the shapes not yet found, until a
+# round finds none. A round that finds one leaves fewer (`pick_length`).
+fn fixed sig first found todo -> r : sig~Sig, first~Nat, found~List (Shape, Witness), todo~List Shape,
+                                     r~List (Shape, Witness)
+    decreasing list.length todo
+    let next = pick (shape_witness sig first found) todo
+    have pick_length (shape_witness sig first found) todo
+    match next.got
+        []     -> found
+        _ :: _ -> fixed sig first (found ++ next.got) next.left
+
+# ── The shapes to search ─────────────────────────────────────────────────────
+
+# The datatypes `s` applies to arguments that mention a parameter or a
+# datatype numbered `first` or after: only through those can a parameter or
+# a datatype of the group be without a value. (A datatype declared before,
+# applied otherwise, has its kept witness.)
+fn flows_in first s -> r : first~Nat, s~Sort, r~List Nat
     match s
-        Seq e       -> shapes_in found bits e
-        Arr i v     -> shapes_in found bits i ++ shapes_in found bits v
-        Data e args -> (e, sorts_have found bits args) :: all_shapes_in found bits args
-        _           -> []
+        Bool        -> []
+        Int         -> []
+        Seq e       -> flows_in first e
+        Arr i v     -> flows_in first i ++ flows_in first v
+        Data e args -> (if any_open first args then [e] else []) ++ all_flows_in first args
+        Unin _ args -> all_flows_in first args
+        Param _     -> []
 
-fn all_shapes_in found bits ss -> r : found~List Shape, bits~List Bool, ss~List Sort, r~List Shape
+fn all_flows_in first ss -> r : first~Nat, ss~List Sort, r~List Nat
     match ss
         []        -> []
-        s :: rest -> shapes_in found bits s ++ all_shapes_in found bits rest
+        s :: rest -> flows_in first s ++ all_flows_in first rest
 
-fn ctor_shapes found bits cs -> r : found~List Shape, bits~List Bool, cs~List Ctor, r~List Shape
-    match cs
-        []        -> []
-        c :: rest -> all_shapes_in found bits (field_sorts c.fields) ++ ctor_shapes found bits rest
+# Whether `s` mentions a parameter or a datatype numbered `first` or after.
+fn open_sort first s -> r : first~Nat, s~Sort, r~Bool
+    match s
+        Bool        -> False
+        Int         -> False
+        Seq e       -> open_sort first e
+        Arr i v     -> open_sort first i or open_sort first v
+        Data e args -> e >= first or any_open first args
+        Unin _ args -> any_open first args
+        Param _     -> True
 
-fn next_shapes sig found sh -> r : sig~Sig, found~List Shape, sh~Shape, r~List Shape
-    let (e, bits) = sh
-    if e < len sig.datatypes then ctor_shapes found bits sig.datatypes[e].ctors else []
-
-# Every shape reachable from `todo`, given `found`; `fuel` bounds the
-# search, and what it leaves out is only never found (a datatype rejected,
-# never one accepted).
-fn reach sig found todo seen fuel -> r : sig~Sig, found~List Shape, todo~List Shape, seen~List Shape, fuel~Nat,
-                                         r~List Shape
-    if fuel == 0
-        seen
-    else
-        match todo
-            []        -> seen
-            x :: rest ->
-                if list.contains seen x
-                    reach sig found rest seen (fuel - 1)
-                else
-                    reach sig found (next_shapes sig found x ++ rest) (x :: seen) (fuel - 1)
-
-# The shapes of `xs` not yet below one found that have a value now.
-fn add_found sig found xs -> r : sig~Sig, found~List Shape, xs~List Shape, r~List Shape
-    match xs
-        []             -> found
-        (e, b) :: rest ->
-            if not (found_below found e b) and shape_has sig found (e, b)
-                add_found sig ((e, b) :: found) rest
-            else
-                add_found sig found rest
-
-# The least fixed point, from the roots: a round adds at least one shape or
-# changes nothing, so `rounds` rounds as many as there are shapes reach it.
-fn fixed sig roots found rounds bound -> r : sig~Sig, roots~List Shape, found~List Shape, rounds~Nat, bound~Nat,
-                                             r~List Shape
-    if rounds == 0
-        found
-    else
-        let more = add_found sig found (reach sig found roots [] bound)
-        if list.length more == list.length found then found else fixed sig roots more (rounds - 1) bound
-
-fn trues n -> r : n~Nat, r~List Bool
-    if n == 0 then [] else True :: trues (n - 1)
-
-fn roots first ds i -> r : first~Nat, ds~List Datatype, i~Nat, r~List Shape
-    match ds
-        []        -> []
-        d :: rest -> (first + i, trues (list.length d.params)) :: roots first rest (i + 1)
-
-# How many shapes there can be: each datatype with each choice of which
-# parameters have values.
-fn shape_count dts i -> n : dts~Array Datatype, i~Nat, i <= len dts, n~Nat
-    decreasing len dts - i
-    if i >= len dts then 0 else pow2 (list.length dts[i].params) + shape_count dts (i + 1)
-
-fn pow2 n -> r : n~Nat, r~Nat
-    if n == 0 then 1 else 2 * pow2 (n - 1)
-
-# A place of a datatype's parameter: datatype `e`'s `k`-th.
-type Place = pl~(Nat, Nat)
-
-# Whether parameter `k` of datatype `e` is in an array's index in `e`'s
-# fields, directly or through the datatypes they use: a search over places,
-# each looked at once.
-fn place_in_array sig todo seen fuel -> r : sig~Sig, todo~List Place, seen~List Place, fuel~Nat, r~Bool
-    if fuel == 0
-        True
-    else
-        match todo
-            []             -> False
-            (e, k) :: rest ->
-                if list.contains seen (e, k) or e >= len sig.datatypes
-                    place_in_array sig rest seen (fuel - 1)
-                else
-                    let fs = ctors_fields sig.datatypes[e].ctors
-                    if param_under fs k
-                        True
-                    else
-                        place_in_array sig (param_places fs k ++ rest) ((e, k) :: seen) (fuel - 1)
+fn any_open first ss -> r : first~Nat, ss~List Sort, r~Bool
+    match ss
+        []        -> False
+        s :: rest -> open_sort first s or any_open first rest
 
 fn ctors_fields cs -> r : cs~List Ctor, r~List Sort
     match cs
         []        -> []
         c :: rest -> field_sorts c.fields ++ ctors_fields rest
 
-# Whether `Param k` is in an array's index in one of `ss`.
-fn param_under ss k -> r : ss~List Sort, k~Nat, r~Bool
-    match ss
-        []        -> False
-        s :: rest -> under_in s k False or param_under rest k
+fn fields_of sig e -> r : sig~Sig, e~Nat, r~List Sort
+    if e < len sig.datatypes then ctors_fields sig.datatypes[e].ctors else []
 
-fn under_in s k inside -> r : s~Sort, k~Nat, inside~Bool, r~Bool
-    match s
-        Param j     -> inside and j == k
-        Seq e       -> under_in e k inside
-        Arr i v     -> under_in i k True or under_in v k inside
-        Data _ args -> under_all args k inside
-        Unin _ args -> under_all args k inside
-        _           -> False
-
-fn under_all ss k inside -> r : ss~List Sort, k~Nat, inside~Bool, r~Bool
-    match ss
-        []        -> False
-        s :: rest -> under_in s k inside or under_all rest k inside
-
-# The places `Param k` is an argument at in `ss`.
-fn param_places ss k -> r : ss~List Sort, k~Nat, r~List Place
-    match ss
+fn flows_from sig first xs -> r : sig~Sig, first~Nat, xs~List Nat, r~List Nat
+    match xs
         []        -> []
-        s :: rest -> places_in s k ++ param_places rest k
+        x :: rest -> all_flows_in first (fields_of sig x) ++ flows_from sig first rest
 
-fn places_in s k -> r : s~Sort, k~Nat, r~List Place
-    match s
-        Data e args -> arg_places e args k 0 ++ param_places args k
-        _           -> []
+fn is_named named x -> r : named~List Nat, x~Nat, r~Option Unit
+    if list.contains named x then Some () else None
 
-fn arg_places e args k j -> r : e~Nat, args~List Sort, k~Nat, j~Nat, r~List Place
-    match args
+# The datatypes a parameter or the group can flow into from `frontier`
+# (and those before it, `reached`): rounds that take from `rest`, those
+# not yet reached, until a round takes none.
+fn relevant sig first reached frontier rest -> r : sig~Sig, first~Nat, reached~List Nat, frontier~List Nat,
+                                                   rest~List Nat, r~List Nat
+    decreasing list.length rest
+    let named = flows_from sig first frontier
+    let next = pick (is_named named) rest
+    have pick_length (is_named named) rest
+    match next.got
+        []        -> reached
+        x :: more ->
+            have list.length next.got == 1 + list.length more
+            relevant sig first (reached ++ list.keys next.got) (list.keys next.got) next.left
+
+# `count` numbers from `i`.
+fn upto count i -> r : count~Nat, i~Nat, r~List Nat
+    if count == 0 then [] else i :: upto (count - 1) (i + 1)
+
+# Every choice of `True` and `False` for `n` places.
+fn choices n -> r : n~Nat, r~List (List Bool)
+    if n == 0
+        [[]]
+    else
+        let rest = choices (n - 1)
+        list.map (\c -> True :: c) rest ++ list.map (\c -> False :: c) rest
+
+fn shapes_of sig es -> r : sig~Sig, es~List Nat, r~List Shape
+    match es
         []        -> []
-        a :: rest -> (if mentions_param a k then [(e, j)] else []) ++ arg_places e rest k (j + 1)
+        e :: rest ->
+            let n = if e < len sig.datatypes then list.length sig.datatypes[e].params else 0
+            list.map (\b -> (e, b)) (choices n) ++ shapes_of sig rest
 
-fn mentions_param s k -> r : s~Sort, k~Nat, r~Bool
+# ── Arrays' indices ──────────────────────────────────────────────────────────
+
+# A place: datatype `e`'s `k`-th parameter.
+type Place = pl~(Nat, Nat)
+
+# Whether, in `s`, a parameter in `ks` is in an array's index (`inside`:
+# `s` itself is), through `in_place` for the parameters of datatypes.
+# `Unin` arguments don't count (see above).
+fn param_in_index in_place ks s inside -> r : in_place~(Nat -> Nat -> Bool), ks~List Nat, s~Sort, inside~Bool,
+                                              r~Bool
     match s
-        Param j     -> j == k
-        Seq e       -> mentions_param e k
-        Arr i v     -> mentions_param i k or mentions_param v k
-        Data _ args -> any_mentions args k
-        Unin _ args -> any_mentions args k
-        _           -> False
+        Bool        -> False
+        Int         -> False
+        Seq e       -> param_in_index in_place ks e inside
+        Arr i v     -> param_in_index in_place ks i True or param_in_index in_place ks v inside
+        Data e args -> args_in_index in_place ks e args 0 inside
+        Unin _ _    -> False
+        Param k     -> inside and list.contains ks k
 
-fn any_mentions ss k -> r : ss~List Sort, k~Nat, r~Bool
-    match ss
-        []        -> False
-        s :: rest -> mentions_param s k or any_mentions rest k
-
-# Whether a datatype numbered `first` or after is in an array's index in
-# `s` (`inside`: `s` itself is), directly or through a parameter some
-# datatype puts in one.
-fn group_inside sig first s inside -> r : sig~Sig, first~Nat, s~Sort, inside~Bool, r~Bool
-    match s
-        Seq e       -> group_inside sig first e inside
-        Arr i v     -> group_inside sig first i True or group_inside sig first v inside
-        Data e args -> (inside and e >= first) or group_args sig first e args 0 inside
-        Unin _ args -> group_all sig first args inside
-        _           -> False
-
-fn group_all sig first ss inside -> r : sig~Sig, first~Nat, ss~List Sort, inside~Bool, r~Bool
-    match ss
-        []        -> False
-        s :: rest -> group_inside sig first s inside or group_all sig first rest inside
-
-# The arguments of datatype `e` from the `j`-th: each in an index if it is,
-# or if `e` puts its parameter in one.
-fn group_args sig first e args j inside -> r : sig~Sig, first~Nat, e~Nat, args~List Sort, j~Nat, inside~Bool, r~Bool
+fn args_in_index in_place ks e args j inside -> r : in_place~(Nat -> Nat -> Bool), ks~List Nat, e~Nat,
+                                                    args~List Sort, j~Nat, inside~Bool, r~Bool
     match args
         []        -> False
         a :: rest ->
-            let wrapped = inside or (mentions_group first a and place_in_array sig [(e, j)] [] (shape_count sig.datatypes 0 + 1))
-            group_inside sig first a wrapped or group_args sig first e rest (j + 1) inside
+            param_in_index in_place ks a (inside or in_place e j) or args_in_index in_place ks e rest (j + 1) inside
 
-fn mentions_group first s -> r : first~Nat, s~Sort, r~Bool
+# Whether a datatype in `group` is in an array's index in `s`, by the same
+# rules.
+fn group_in_index in_place group s inside -> r : in_place~(Nat -> Nat -> Bool), group~List Nat, s~Sort,
+                                                 inside~Bool, r~Bool
     match s
-        Seq e       -> mentions_group first e
-        Arr i v     -> mentions_group first i or mentions_group first v
-        Data e args -> e >= first or mentions_any first args
-        Unin _ args -> mentions_any first args
-        _           -> False
+        Bool        -> False
+        Int         -> False
+        Seq e       -> group_in_index in_place group e inside
+        Arr i v     -> group_in_index in_place group i True or group_in_index in_place group v inside
+        Data e args -> (inside and list.contains group e) or group_args_index in_place group e args 0 inside
+        Unin _ _    -> False
+        Param _     -> False
 
-fn mentions_any first ss -> r : first~Nat, ss~List Sort, r~Bool
+fn group_args_index in_place group e args j inside -> r : in_place~(Nat -> Nat -> Bool), group~List Nat, e~Nat,
+                                                          args~List Sort, j~Nat, inside~Bool, r~Bool
+    match args
+        []        -> False
+        a :: rest ->
+            group_in_index in_place group a (inside or in_place e j)
+                or group_args_index in_place group e rest (j + 1) inside
+
+fn all_places sig es -> r : sig~Sig, es~List Nat, r~List Place
+    match es
+        []        -> []
+        e :: rest ->
+            let n = if e < len sig.datatypes then list.length sig.datatypes[e].params else 0
+            list.map (\k -> (e, k)) (upto n 0) ++ all_places sig rest
+
+fn any_in_index sig in_place e k ss -> r : sig~Sig, in_place~(Nat -> Nat -> Bool), e~Nat, k~Nat, ss~List Sort, r~Bool
     match ss
         []        -> False
-        s :: rest -> mentions_group first s or mentions_any first rest
+        s :: rest -> param_in_index in_place [k] s False or any_in_index sig in_place e k rest
 
-# The first of `ds` with a datatype of the group in an array's index in a
-# field.
-fn first_wrapped sig first ds -> r : sig~Sig, first~Nat, ds~List Datatype, r~Option Datatype
-    match ds
-        []        -> None
-        d :: rest -> if group_all sig first (ctors_fields d.ctors) False then Some d else first_wrapped sig first rest
+# The places whose parameter is in an array's index: rounds that take from
+# `rest` those found, given those found so far, until none is.
+fn index_places sig found rest -> r : sig~Sig, found~List Place, rest~List Place, r~List Place
+    decreasing list.length rest
+    let next = pick (is_in sig found) rest
+    have pick_length (is_in sig found) rest
+    match next.got
+        []     -> found
+        _ :: _ -> index_places sig (found ++ list.keys next.got) next.left
 
-# The first of `ds` (numbered from `first`) without a value.
-fn first_without sig found first ds i -> r : sig~Sig, found~List Shape, first~Nat, ds~List Datatype, i~Nat,
-                                             r~Option Datatype
+fn is_in sig found pl -> r : sig~Sig, found~List Place, pl~Place, r~Option Unit
+    let (e, k) = pl
+    if any_in_index sig (\d j -> list.contains found (d, j)) e k (fields_of sig e) then Some () else None
+
+# The first of `ds` (numbered from `first`) with a datatype of its group in
+# an array's index in a field.
+fn in_index_check sig first ds reach -> r : sig~Sig, first~Nat, ds~List Datatype, reach~List Nat, r~Option Datatype
+    let group = upto (list.length ds) first
+    let places = index_places sig [] (all_places sig reach)
+    let in_place = \e k -> list.contains places (e, k)
+    first_in_index in_place group ds
+
+fn first_in_index in_place group ds -> r : in_place~(Nat -> Nat -> Bool), group~List Nat, ds~List Datatype,
+                                           r~Option Datatype
     match ds
         []        -> None
         d :: rest ->
-            if found_below found (first + i) (trues (list.length d.params))
-                first_without sig found first rest (i + 1)
-            else
+            if any_group_in_index in_place group (ctors_fields d.ctors)
                 Some d
+            else
+                first_in_index in_place group rest
 
-# Whether `ds`, the datatypes of `sig` numbered from `first`, each have a
-# value and is in no array's index in their fields.
+fn any_group_in_index in_place group ss -> r : in_place~(Nat -> Nat -> Bool), group~List Nat, ss~List Sort, r~Bool
+    match ss
+        []        -> False
+        s :: rest -> group_in_index in_place group s False or any_group_in_index in_place group rest
+
+# ── The check ────────────────────────────────────────────────────────────────
+
+fn trues n -> r : n~Nat, r~List Bool
+    if n == 0 then [] else True :: trues (n - 1)
+
+fn params_of count i -> r : count~Nat, i~Nat, r~List Sort
+    if count == 0 then [] else Param i :: params_of (count - 1) (i + 1)
+
+# The datatypes that matter for the group of `ds`, numbered from `first`
+# in `sig`: the group, and those a parameter or the group flows into.
+fn group_reach sig first ds -> r : sig~Sig, first~Nat, ds~List Datatype, r~List Nat
+    let group = upto (list.length ds) first
+    if flows_from sig first group == []
+        group
+    else
+        let others = pick (\x -> if list.contains group x then None else Some ()) (upto (len sig.datatypes) 0)
+        relevant sig first group group (list.keys others.got)
+
+# A witness for each of `ds`, declared after `sig`, with all its parameters
+# having values; `WTrue` (which fits no datatype) where none was found.
+export fn group_values sig ds -> r : sig~Sig, ds~List Datatype, r~List Witness
+    let first = len sig.datatypes
+    let big = Sig sig.sorts (sig.datatypes ++ array.from_list ds) sig.funs sig.values
+    let found = fixed big first [] (shapes_of big (group_reach big first ds))
+    each_value big.values first found ds 0
+
+fn each_value stored first found ds i -> r : stored~Array Witness, first~Nat, found~List (Shape, Witness),
+                                             ds~List Datatype, i~Nat, r~List Witness
+    match ds
+        []        -> []
+        d :: rest ->
+            let w =
+                match found_in found (first + i) (trues (list.length d.params))
+                    Some x -> x
+                    None   -> WTrue
+            w :: each_value stored first found rest (i + 1)
+
+# Whether `ds`, the datatypes of `sig` numbered from `first` (`sig` is the
+# signature after them), each have a value and are in no array's index in
+# their group's fields. Acceptance rests on `fits` of the kept witness.
 fn check_values sig first ds -> r : sig~Sig, first~Nat, ds~List Datatype, r~Result Unit Problem
-    match first_wrapped sig first ds
+    match in_index_check sig first ds (group_reach sig first ds)
         Some d -> Err (NotCovariant d)
         None   ->
-            let bound = shape_count sig.datatypes 0 + 1
-            let found = fixed sig (roots first ds 0) [] bound (bound * bound)
-            match first_without sig found first ds 0
+            match first_unfit sig first ds 0
                 Some d -> Err (NotWellFounded d)
                 None   -> Ok ()
+
+fn first_unfit sig first ds i -> r : sig~Sig, first~Nat, ds~List Datatype, i~Nat, r~Option Datatype
+    match ds
+        []        -> None
+        d :: rest ->
+            let n = list.length d.params
+            let e = first + i
+            let ok = e < len sig.values and fits sig first n sig.values[e] (Data e (params_of n 0))
+            if ok then first_unfit sig first rest (i + 1) else Some d
 
 # Whether `c` is well-formed after the commands that gave `sig`.
 export fn check_command sig c -> r : sig~Sig, c~Command, r~Result Unit Problem
@@ -958,100 +1125,100 @@ fn numbered n ds -> r : n~Nat, ds~List Def, r~List (Nat, Def)
 # ── Weakening ────────────────────────────────────────────────────────────────
 
 # `sig` with more declarations after its own.
-fn grow sig a b c -> r : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, r~Sig
-    Sig (sig.sorts ++ a) (sig.datatypes ++ b) (sig.funs ++ c)
+fn grow sig a b c w -> r : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, w~Array Witness, r~Sig
+    Sig (sig.sorts ++ a) (sig.datatypes ++ b) (sig.funs ++ c) (sig.values ++ w)
 
-lemma sort_ok_grow sig a b c np s : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, np~Nat, s~Sort,
-                                    sort_ok sig np s
-    ensures sort_ok (grow sig a b c) np s
+lemma sort_ok_grow sig a b c w np s : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, w~Array Witness, np~Nat, s~Sort,
+                                      sort_ok sig np s
+    ensures sort_ok (grow sig a b c w) np s
     proof
         match s
-            Seq e       -> have sort_ok_grow sig a b c np e
+            Seq e       -> have sort_ok_grow sig a b c w np e
             Arr i v     ->
-                have sort_ok_grow sig a b c np i
-                have sort_ok_grow sig a b c np v
-            Data _ args -> have sorts_ok_grow sig a b c np args
-            Unin _ args -> have sorts_ok_grow sig a b c np args
+                have sort_ok_grow sig a b c w np i
+                have sort_ok_grow sig a b c w np v
+            Data _ args -> have sorts_ok_grow sig a b c w np args
+            Unin _ args -> have sorts_ok_grow sig a b c w np args
             _           -> auto
 
-lemma sorts_ok_grow sig a b c np ss : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, np~Nat,
-                                      ss~List Sort, sorts_ok sig np ss
-    ensures sorts_ok (grow sig a b c) np ss
+lemma sorts_ok_grow sig a b c w np ss : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, w~Array Witness, np~Nat,
+                                        ss~List Sort, sorts_ok sig np ss
+    ensures sorts_ok (grow sig a b c w) np ss
     proof
         match ss
             []        -> auto
             s :: rest ->
-                have sort_ok_grow sig a b c np s
-                have sorts_ok_grow sig a b c np rest
+                have sort_ok_grow sig a b c w np s
+                have sorts_ok_grow sig a b c w np rest
 
-lemma ctor_grow sig a b c d k : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, d~Nat, k~Nat,
-                                ctor sig d k != None
-    ensures ctor (grow sig a b c) d k == ctor sig d k
+lemma ctor_grow sig a b c w d k : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, w~Array Witness, d~Nat, k~Nat,
+                                  ctor sig d k != None
+    ensures ctor (grow sig a b c w) d k == ctor sig d k
     proof
         auto
 
-lemma apply_grow sig a b c h found s : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, h~Head,
-                                       found~List Sort, s~Sort, apply_sort sig h found == Ok s
-    ensures apply_sort (grow sig a b c) h found == Ok s
+lemma apply_grow sig a b c w h found s : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, w~Array Witness, h~Head,
+                                         found~List Sort, s~Sort, apply_sort sig h found == Ok s
+    ensures apply_sort (grow sig a b c w) h found == Ok s
     proof
         match h
             Con d k args ->
-                have ctor_grow sig a b c d k
-                have sort_ok_grow sig a b c 0 (Data d args)
-            Is d k       -> have ctor_grow sig a b c d k
-            Sel d k _    -> have ctor_grow sig a b c d k
-            ConstArr t   -> have sort_ok_grow sig a b c 0 t
-            EmptySeq t   -> have sort_ok_grow sig a b c 0 t
+                have ctor_grow sig a b c w d k
+                have sort_ok_grow sig a b c w 0 (Data d args)
+            Is d k       -> have ctor_grow sig a b c w d k
+            Sel d k _    -> have ctor_grow sig a b c w d k
+            ConstArr t   -> have sort_ok_grow sig a b c w 0 t
+            EmptySeq t   -> have sort_ok_grow sig a b c w 0 t
             _            -> auto
 
-lemma sort_of_grow sig a b c env t s : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl,
-                                       env~List Sort, t~Term, s~Sort, sort_of sig env t == Ok s
-    ensures sort_of (grow sig a b c) env t == Ok s
+lemma sort_of_grow sig a b c w env t s : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, w~Array Witness,
+                                         env~List Sort, t~Term, s~Sort, sort_of sig env t == Ok s
+    ensures sort_of (grow sig a b c w) env t == Ok s
     proof
         match t
             Var _          -> auto
             App h args     ->
                 match sorts_of sig env args
                     Ok found ->
-                        have sorts_of_grow sig a b c env args found
-                        have apply_grow sig a b c h found s
+                        have sorts_of_grow sig a b c w env args found
+                        have apply_grow sig a b c w h found s
                     Err _    -> auto
             Let binds body ->
                 match bound_sorts sig env binds
                     Ok ss ->
-                        have bound_grow sig a b c env binds ss
-                        have sort_of_grow sig a b c (list.reverse ss ++ env) body s
+                        have bound_grow sig a b c w env binds ss
+                        have sort_of_grow sig a b c w (list.reverse ss ++ env) body s
                     Err _ -> auto
             Lam _ v body   ->
-                have sort_ok_grow sig a b c 0 v
+                have sort_ok_grow sig a b c w 0 v
                 match sort_of sig (v :: env) body
-                    Ok bs -> have sort_of_grow sig a b c (v :: env) body bs
+                    Ok bs -> have sort_of_grow sig a b c w (v :: env) body bs
                     Err _ -> auto
 
-lemma sorts_of_grow sig a b c env ts ss : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl,
-                                          env~List Sort, ts~List Term, ss~List Sort, sorts_of sig env ts == Ok ss
-    ensures sorts_of (grow sig a b c) env ts == Ok ss
+lemma sorts_of_grow sig a b c w env ts ss : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, w~Array Witness,
+                                            env~List Sort, ts~List Term, ss~List Sort, sorts_of sig env ts == Ok ss
+    ensures sorts_of (grow sig a b c w) env ts == Ok ss
     proof
         match ts
             []        -> auto
             t :: rest ->
                 match (sort_of sig env t, sorts_of sig env rest)
                     (Ok s, Ok more) ->
-                        have sort_of_grow sig a b c env t s
-                        have sorts_of_grow sig a b c env rest more
+                        have sort_of_grow sig a b c w env t s
+                        have sorts_of_grow sig a b c w env rest more
                     _               -> auto
 
-lemma bound_grow sig a b c env bs ss : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl,
-                                       env~List Sort, bs~List (Name, Term), ss~List Sort, bound_sorts sig env bs == Ok ss
-    ensures bound_sorts (grow sig a b c) env bs == Ok ss
+lemma bound_grow sig a b c w env bs ss : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, w~Array Witness,
+                                         env~List Sort, bs~List (Name, Term), ss~List Sort, bound_sorts sig env bs == Ok ss
+    ensures bound_sorts (grow sig a b c w) env bs == Ok ss
     proof
         match bs
             []             -> auto
             (_, t) :: rest ->
                 match (sort_of sig env t, bound_sorts sig env rest)
                     (Ok s, Ok more) ->
-                        have sort_of_grow sig a b c env t s
-                        have bound_grow sig a b c env rest more
+                        have sort_of_grow sig a b c w env t s
+                        have bound_grow sig a b c w env rest more
                     _               -> auto
 
 # A term keeps its sort when a command declares more.
@@ -1061,22 +1228,24 @@ lemma sort_of_extend sig cmd env t s : sig~Sig, cmd~Command, env~List Sort, t~Te
         let no_sorts = array.from_list []
         let no_dts = array.from_list []
         let no_funs = array.from_list []
+        let no_vals = array.from_list []
         have sig.sorts ++ no_sorts == sig.sorts
         have sig.datatypes ++ no_dts == sig.datatypes
         have sig.funs ++ no_funs == sig.funs
+        have sig.values ++ no_vals == sig.values
         match cmd
             DeclareSort d       ->
-                have extend sig cmd == grow sig (array.from_list [d]) no_dts no_funs
-                have sort_of_grow sig (array.from_list [d]) no_dts no_funs env t s
+                have extend sig cmd == grow sig (array.from_list [d]) no_dts no_funs no_vals
+                have sort_of_grow sig (array.from_list [d]) no_dts no_funs no_vals env t s
             DeclareDatatypes ds ->
-                have extend sig cmd == grow sig no_sorts (array.from_list ds) no_funs
-                have sort_of_grow sig no_sorts (array.from_list ds) no_funs env t s
+                have extend sig cmd == grow sig no_sorts (array.from_list ds) no_funs (array.from_list (group_values sig ds))
+                have sort_of_grow sig no_sorts (array.from_list ds) no_funs (array.from_list (group_values sig ds)) env t s
             DeclareFun f        ->
-                have extend sig cmd == grow sig no_sorts no_dts (array.from_list [f])
-                have sort_of_grow sig no_sorts no_dts (array.from_list [f]) env t s
+                have extend sig cmd == grow sig no_sorts no_dts (array.from_list [f]) no_vals
+                have sort_of_grow sig no_sorts no_dts (array.from_list [f]) no_vals env t s
             DefineFuns _ ds     ->
-                have extend sig cmd == grow sig no_sorts no_dts (array.from_list (def_funs ds))
-                have sort_of_grow sig no_sorts no_dts (array.from_list (def_funs ds)) env t s
+                have extend sig cmd == grow sig no_sorts no_dts (array.from_list (def_funs ds)) no_vals
+                have sort_of_grow sig no_sorts no_dts (array.from_list (def_funs ds)) no_vals env t s
             _                   -> auto
 
 # A term keeps its sort when commands declare more.
@@ -1405,112 +1574,112 @@ lemma var_sorts_length vs : vs~List (Name, Sort)
             []        -> auto
             _ :: rest -> have var_sorts_length rest
 
-lemma head_grow sig a b c h : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, h~Head, head_ok sig h
-    ensures head_ok (grow sig a b c) h
+lemma head_grow sig a b c w h : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, w~Array Witness, h~Head, head_ok sig h
+    ensures head_ok (grow sig a b c w) h
     proof
         match h
             Con d k args ->
-                have ctor_grow sig a b c d k
-                have sort_ok_grow sig a b c 0 (Data d args)
-            Is d k       -> have ctor_grow sig a b c d k
-            Sel d k _    -> have ctor_grow sig a b c d k
-            ConstArr t   -> have sort_ok_grow sig a b c 0 t
-            EmptySeq t   -> have sort_ok_grow sig a b c 0 t
+                have ctor_grow sig a b c w d k
+                have sort_ok_grow sig a b c w 0 (Data d args)
+            Is d k       -> have ctor_grow sig a b c w d k
+            Sel d k _    -> have ctor_grow sig a b c w d k
+            ConstArr t   -> have sort_ok_grow sig a b c w 0 t
+            EmptySeq t   -> have sort_ok_grow sig a b c w 0 t
             _            -> auto
 
-lemma heads_grow sig a b c t : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, t~Term, heads_ok sig t
-    ensures heads_ok (grow sig a b c) t
+lemma heads_grow sig a b c w t : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, w~Array Witness, t~Term, heads_ok sig t
+    ensures heads_ok (grow sig a b c w) t
     proof
         match t
             Var _          -> auto
             App h args     ->
-                have head_grow sig a b c h
-                have all_heads_grow sig a b c args
+                have head_grow sig a b c w h
+                have all_heads_grow sig a b c w args
             Let binds body ->
-                have binds_heads_grow sig a b c binds
-                have heads_grow sig a b c body
+                have binds_heads_grow sig a b c w binds
+                have heads_grow sig a b c w body
             Lam _ v body   ->
-                have sort_ok_grow sig a b c 0 v
-                have heads_grow sig a b c body
+                have sort_ok_grow sig a b c w 0 v
+                have heads_grow sig a b c w body
 
-lemma all_heads_grow sig a b c ts : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, ts~List Term,
-                                    all_heads_ok sig ts
-    ensures all_heads_ok (grow sig a b c) ts
+lemma all_heads_grow sig a b c w ts : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, w~Array Witness, ts~List Term,
+                                      all_heads_ok sig ts
+    ensures all_heads_ok (grow sig a b c w) ts
     proof
         match ts
             []        -> auto
             t :: rest ->
-                have heads_grow sig a b c t
-                have all_heads_grow sig a b c rest
+                have heads_grow sig a b c w t
+                have all_heads_grow sig a b c w rest
 
-lemma binds_heads_grow sig a b c bs : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl,
-                                      bs~List (Name, Term), binds_heads_ok sig bs
-    ensures binds_heads_ok (grow sig a b c) bs
+lemma binds_heads_grow sig a b c w bs : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, w~Array Witness,
+                                        bs~List (Name, Term), binds_heads_ok sig bs
+    ensures binds_heads_ok (grow sig a b c w) bs
     proof
         match bs
             []             -> auto
             (_, t) :: rest ->
-                have heads_grow sig a b c t
-                have binds_heads_grow sig a b c rest
+                have heads_grow sig a b c w t
+                have binds_heads_grow sig a b c w rest
 
-lemma patterns_heads_grow sig a b c ps : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl,
-                                         ps~List (List Term), patterns_heads_ok sig ps
-    ensures patterns_heads_ok (grow sig a b c) ps
+lemma patterns_heads_grow sig a b c w ps : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, w~Array Witness,
+                                           ps~List (List Term), patterns_heads_ok sig ps
+    ensures patterns_heads_ok (grow sig a b c w) ps
     proof
         match ps
             []        -> auto
             p :: rest ->
-                have all_heads_grow sig a b c p
-                have patterns_heads_grow sig a b c rest
+                have all_heads_grow sig a b c w p
+                have patterns_heads_grow sig a b c w rest
 
-lemma ctors_grow sig a b c np cs : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, np~Nat,
-                                   cs~List Ctor, ctors_ok sig np cs
-    ensures ctors_ok (grow sig a b c) np cs
+lemma ctors_grow sig a b c w np cs : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, w~Array Witness, np~Nat,
+                                     cs~List Ctor, ctors_ok sig np cs
+    ensures ctors_ok (grow sig a b c w) np cs
     proof
         match cs
             []        -> auto
             k :: rest ->
-                have sorts_ok_grow sig a b c np (field_sorts k.fields)
-                have ctors_grow sig a b c np rest
+                have sorts_ok_grow sig a b c w np (field_sorts k.fields)
+                have ctors_grow sig a b c w np rest
 
-lemma datatypes_grow sig a b c ds : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl,
-                                    ds~List Datatype, datatypes_ok sig ds
-    ensures datatypes_ok (grow sig a b c) ds
+lemma datatypes_grow sig a b c w ds : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, w~Array Witness,
+                                      ds~List Datatype, datatypes_ok sig ds
+    ensures datatypes_ok (grow sig a b c w) ds
     proof
         match ds
             []        -> auto
             d :: rest ->
-                have ctors_grow sig a b c (list.length d.params) d.ctors
-                have datatypes_grow sig a b c rest
+                have ctors_grow sig a b c w (list.length d.params) d.ctors
+                have datatypes_grow sig a b c w rest
 
-lemma defs_grow sig a b c ds : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, ds~List Def,
-                               defs_ok sig ds
-    ensures defs_ok (grow sig a b c) ds
+lemma defs_grow sig a b c w ds : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, w~Array Witness, ds~List Def,
+                                 defs_ok sig ds
+    ensures defs_ok (grow sig a b c w) ds
     proof
         match ds
             []        -> auto
             d :: rest ->
-                have sorts_ok_grow sig a b c 0 (var_sorts d.params)
-                have sort_ok_grow sig a b c 0 d.result
-                have heads_grow sig a b c d.body
-                have defs_grow sig a b c rest
+                have sorts_ok_grow sig a b c w 0 (var_sorts d.params)
+                have sort_ok_grow sig a b c w 0 d.result
+                have heads_grow sig a b c w d.body
+                have defs_grow sig a b c w rest
 
-lemma command_grow sig a b c cmd : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, cmd~Command,
-                                   command_ok sig cmd
-    ensures command_ok (grow sig a b c) cmd
+lemma command_grow sig a b c w cmd : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, w~Array Witness, cmd~Command,
+                                     command_ok sig cmd
+    ensures command_ok (grow sig a b c w) cmd
     proof
         match cmd
             DeclareSort _       -> auto
-            DeclareDatatypes ds -> have datatypes_grow sig a b c ds
+            DeclareDatatypes ds -> have datatypes_grow sig a b c w ds
             DeclareFun f        ->
-                have sorts_ok_grow sig a b c 0 f.params
-                have sort_ok_grow sig a b c 0 f.result
-            DefineFuns _ ds     -> have defs_grow sig a b c ds
+                have sorts_ok_grow sig a b c w 0 f.params
+                have sort_ok_grow sig a b c w 0 f.result
+            DefineFuns _ ds     -> have defs_grow sig a b c w ds
             Assume x            ->
-                have sorts_ok_grow sig a b c 0 (var_sorts x.vars)
-                have heads_grow sig a b c x.body
-                have patterns_heads_grow sig a b c x.patterns
-            Assert t            -> have heads_grow sig a b c t
+                have sorts_ok_grow sig a b c w 0 (var_sorts x.vars)
+                have heads_grow sig a b c w x.body
+                have patterns_heads_grow sig a b c w x.patterns
+            Assert t            -> have heads_grow sig a b c w t
 
 lemma command_extend sig cmd x : sig~Sig, cmd~Command, x~Command, command_ok sig x
     ensures command_ok (extend sig cmd) x
@@ -1518,22 +1687,24 @@ lemma command_extend sig cmd x : sig~Sig, cmd~Command, x~Command, command_ok sig
         let no_sorts = array.from_list []
         let no_dts = array.from_list []
         let no_funs = array.from_list []
+        let no_vals = array.from_list []
         have sig.sorts ++ no_sorts == sig.sorts
         have sig.datatypes ++ no_dts == sig.datatypes
         have sig.funs ++ no_funs == sig.funs
+        have sig.values ++ no_vals == sig.values
         match cmd
             DeclareSort d       ->
-                have extend sig cmd == grow sig (array.from_list [d]) no_dts no_funs
-                have command_grow sig (array.from_list [d]) no_dts no_funs x
+                have extend sig cmd == grow sig (array.from_list [d]) no_dts no_funs no_vals
+                have command_grow sig (array.from_list [d]) no_dts no_funs no_vals x
             DeclareDatatypes ds ->
-                have extend sig cmd == grow sig no_sorts (array.from_list ds) no_funs
-                have command_grow sig no_sorts (array.from_list ds) no_funs x
+                have extend sig cmd == grow sig no_sorts (array.from_list ds) no_funs (array.from_list (group_values sig ds))
+                have command_grow sig no_sorts (array.from_list ds) no_funs (array.from_list (group_values sig ds)) x
             DeclareFun f        ->
-                have extend sig cmd == grow sig no_sorts no_dts (array.from_list [f])
-                have command_grow sig no_sorts no_dts (array.from_list [f]) x
+                have extend sig cmd == grow sig no_sorts no_dts (array.from_list [f]) no_vals
+                have command_grow sig no_sorts no_dts (array.from_list [f]) no_vals x
             DefineFuns _ ds     ->
-                have extend sig cmd == grow sig no_sorts no_dts (array.from_list (def_funs ds))
-                have command_grow sig no_sorts no_dts (array.from_list (def_funs ds)) x
+                have extend sig cmd == grow sig no_sorts no_dts (array.from_list (def_funs ds)) no_vals
+                have command_grow sig no_sorts no_dts (array.from_list (def_funs ds)) no_vals x
             _                   -> auto
 
 lemma command_extend_all sig cmds x : sig~Sig, cmds~List Command, x~Command, command_ok sig x
@@ -1579,22 +1750,22 @@ lemma check_datatypes_ok sig ds : sig~Sig, ds~List Datatype, check_datatypes sig
 
 # `defs_ok` for definitions whose signatures were checked in `sig` and
 # bodies in `big`, which `sig` grows into.
-lemma check_defs_ok sig big a b c ds : sig~Sig, big~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl,
-                                       big == grow sig a b c, ds~List Def,
-                                       check_sigs sig ds == Ok (), check_bodies big ds == Ok ()
+lemma check_defs_ok sig big a b c w ds : sig~Sig, big~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, w~Array Witness,
+                                         big == grow sig a b c w, ds~List Def,
+                                         check_sigs sig ds == Ok (), check_bodies big ds == Ok ()
     ensures defs_ok big ds
     proof
         match ds
             []        -> auto
             d :: rest ->
                 have check_sorts_ok sig 0 (var_sorts d.params)
-                have sorts_ok_grow sig a b c 0 (var_sorts d.params)
+                have sorts_ok_grow sig a b c w 0 (var_sorts d.params)
                 have check_sort sig 0 d.result == Ok ()
-                have sort_ok_grow sig a b c 0 d.result
+                have sort_ok_grow sig a b c w 0 d.result
                 have check_term_heads big (binder_env d.params) d.body d.result
                 have check_term_scoped big (binder_env d.params) d.body d.result
                 have binder_env_length d.params
-                have check_defs_ok sig big a b c rest
+                have check_defs_ok sig big a b c w rest
 
 lemma check_patterns_ok sig env ps : sig~Sig, env~List Sort, ps~List (List Term), check_patterns sig env ps == Ok ()
     ensures patterns_heads_ok sig ps
@@ -1614,6 +1785,7 @@ lemma checked_command_ok sig cmd : sig~Sig, cmd~Command, check_command sig cmd =
         let no_sorts = array.from_list []
         let no_dts = array.from_list []
         let no_funs = array.from_list []
+        let no_vals = array.from_list []
         have sig.sorts ++ no_sorts == sig.sorts
         have sig.datatypes ++ no_dts == sig.datatypes
         match cmd
@@ -1624,12 +1796,12 @@ lemma checked_command_ok sig cmd : sig~Sig, cmd~Command, check_command sig cmd =
                 have check_sort sig 0 f.result == Ok ()
                 have command_extend sig cmd cmd
                 have sorts_ok sig 0 f.params
-                have extend sig cmd == grow sig no_sorts no_dts (array.from_list [f])
-                have sorts_ok_grow sig no_sorts no_dts (array.from_list [f]) 0 f.params
-                have sort_ok_grow sig no_sorts no_dts (array.from_list [f]) 0 f.result
+                have extend sig cmd == grow sig no_sorts no_dts (array.from_list [f]) no_vals
+                have sorts_ok_grow sig no_sorts no_dts (array.from_list [f]) no_vals 0 f.params
+                have sort_ok_grow sig no_sorts no_dts (array.from_list [f]) no_vals 0 f.result
             DefineFuns _ ds     ->
-                have extend sig cmd == grow sig no_sorts no_dts (array.from_list (def_funs ds))
-                have check_defs_ok sig (extend sig cmd) no_sorts no_dts (array.from_list (def_funs ds)) ds
+                have extend sig cmd == grow sig no_sorts no_dts (array.from_list (def_funs ds)) no_vals
+                have check_defs_ok sig (extend sig cmd) no_sorts no_dts (array.from_list (def_funs ds)) no_vals ds
             Assume x            ->
                 have check_sorts_ok sig 0 (var_sorts x.vars)
                 have check_term_heads sig (binder_env x.vars) x.body Bool

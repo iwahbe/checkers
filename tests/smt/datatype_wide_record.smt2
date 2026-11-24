@@ -1,0 +1,6 @@
+(set-logic ALL)
+; A record of sixteen datatype fields. Accepted.
+(declare-datatypes ((B 0)) (((b0) (b1))))
+(declare-datatypes ((R 0)) (((r (f1 B) (f2 B) (f3 B) (f4 B) (f5 B) (f6 B) (f7 B) (f8 B) (f9 B) (f10 B) (f11 B) (f12 B) (f13 B) (f14 B) (f15 B) (f16 B)))))
+(assert (not false))
+(check-sat)

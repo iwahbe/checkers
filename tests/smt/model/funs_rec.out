@@ -1,5 +1,6 @@
 -- stdout
 z3: unsat
+definitions: each taken as terminating (`--unmarked`: none)
 the negated goal: fails
 refutes: no
 -- stderr
