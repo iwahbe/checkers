@@ -159,6 +159,7 @@ fn size_of(w: W) -> usize {
         K_CON | K_TUPLE => HDR + 8 * n,
         K_CLO | K_PAP => HDR + 8 + 8 * n,
         K_BYTES | crate::array::K_ARRAY => crate::array::size(w),
+        K_BIG if crate::obj::big_inline(w) => HDR + 16,
         _ => HDR + 8,
     }
 }
@@ -358,7 +359,7 @@ pub extern "C" fn ck_free(w: W) {
             K_CON | K_TUPLE => (0..n).for_each(|i| release(slot(w, i))),
             K_CLO => (0..n).for_each(|i| release(slot(w, i + 1))),
             K_PAP => (0..=n).for_each(|i| release(slot(w, i))),
-            K_BIG => unsafe { drop(Box::from_raw(slot(w, 0) as *mut num_bigint::BigInt)) },
+            K_BIG if !crate::obj::big_inline(w) => unsafe { drop(Box::from_raw(slot(w, 0) as *mut num_bigint::BigInt)) },
             K_RUST => unsafe { drop(Box::from_raw(slot(w, 0) as *mut crate::obj::Obj)) },
             // Bytes and packed arrays hold nothing unless they are slices.
             K_BYTES if slot(w, 1) == 0 => {}
