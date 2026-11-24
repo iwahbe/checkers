@@ -313,7 +313,9 @@ pub enum ObKind {
     /// function's parameter that the instance may call with values of the
     /// type (`param`), or neither: a result, at any arguments. `inside`: a
     /// value inside the result (`Some`'s), not the result itself.
-    AtAlias { class: String, alias: String, base: String, member: String, call: Option<String>, param: Option<String>, inside: bool },
+    /// `whole`: a part of the result checked as one (under a recursive
+    /// type, or a function): its type at the alias and at the base.
+    AtAlias { class: String, alias: String, base: String, member: String, call: Option<String>, param: Option<String>, inside: bool, whole: Option<(String, String)> },
     Auto,
     Have,
     /// A case a `match` leaves out can't occur there (D144 e): its pattern.
