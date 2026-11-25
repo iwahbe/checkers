@@ -1,0 +1,19 @@
+-- stdout
+0ns
+7ns
+1.5µs
+250ms
+1.5s
+1.000000001s
+3600s
+1m3s1m
+3s1m
+0h0m3.5s
+1m30.25s
+1500ms
+1h123.5s
+0s
+1ms234µs567ns
+1.5m
+-- stderr
+-- exit 0
