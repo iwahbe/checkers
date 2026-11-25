@@ -386,7 +386,7 @@ impl Elab {
                 None => {
                     let mut d = Diagnostic::error("E0204", format!("unknown name `{n}`"), e.span).with_label("not found");
                     if let Some(m) = self.private_in_imports(n) {
-                        d = d.with_help(Self::private_help(&m, n));
+                        d = self.private_help(d, &self.cur, &m, n);
                     }
                     self.err(d);
                     (Tm::Error, Val::Error)
@@ -704,7 +704,7 @@ impl Elab {
                 } else {
                     let mut d = Diagnostic::error("E0204", format!("unknown name `{n}`"), span).with_label("not found");
                     if let Some(m) = self.private_in_imports(n) {
-                        d = d.with_help(Self::private_help(&m, n));
+                        d = self.private_help(d, &self.cur, &m, n);
                     } else if let Some(h) = self.std_export_help(n) {
                         d = d.with_help(h);
                     }
@@ -2341,7 +2341,7 @@ impl Elab {
                                 name.span,
                             );
                             if self.declares_privately(&m, &name.name) {
-                                d = d.with_help(Self::private_help(&m, &name.name));
+                                d = self.private_help(d, &self.cur, &m, &name.name);
                             }
                             self.err(d);
                             (Tm::Error, Val::Error)

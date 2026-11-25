@@ -1,36 +1,50 @@
 error[E0221]: module `private.shapes` has no export named `perimeter`
- --> private_name.ck:5:30
+ --> private_name.ck:7:30
   |
-5 | import private.shapes (area, perimeter)
+7 | import private.shapes (area, perimeter, Size)
   |                              ^^^^^^^^^
   = help: `private.shapes` declares `perimeter` but doesn't export it; mark it `export` there to use it here
 
 error[E0204]: unknown name `perimeter`
- --> private_name.ck:9:7
-  |
-9 | check perimeter 2 3 == 10
-  |       ^^^^^^^^^ not found
-  = help: `private.shapes` declares `perimeter` but doesn't export it; mark it `export` there to use it here
+  --> private_name.ck:11:7
+   |
+11 | check perimeter 2 3 == 10
+   |       ^^^^^^^^^ not found
+   = help: `private.shapes` declares `perimeter` but doesn't export it; mark it `export` there to use it here
 
 error[E0206]: module `private.shapes` has no export named `perimeter`
-  --> private_name.ck:10:9
+  --> private_name.ck:12:9
    |
-10 | check s.perimeter 2 3 == 10
+12 | check s.perimeter 2 3 == 10
    |         ^^^^^^^^^
    = help: `private.shapes` declares `perimeter` but doesn't export it; mark it `export` there to use it here
 
 error[E0206]: module `private.shapes` has no export named `Corner`
-  --> private_name.ck:12:22
+  --> private_name.ck:14:22
    |
-12 | fn corner -> c : c~s.Corner
+14 | fn corner -> c : c~s.Corner
    |                      ^^^^^^
    = help: `private.shapes` declares `Corner` but doesn't export it; mark it `export` there to use it here
 
 error[E0206]: module `private.shapes` has no export named `Corner`
-  --> private_name.ck:13:7
+  --> private_name.ck:15:7
    |
-13 |     s.Corner 0 0
+15 |     s.Corner 0 0
    |       ^^^^^^
    = help: `private.shapes` declares `Corner` but doesn't export it; mark it `export` there to use it here
 
-private_name.ck: 5 errors, 0 warnings
+error[E0204]: unknown name `Measured`
+  --> private_name.ck:18:5
+   |
+18 |     Measured 3
+   |     ^^^^^^^^ not found
+   = help: `Size` is `export abstract` in `private.shapes`, so its constructors are private; drop `abstract` there to use them here
+
+error[E0206]: module `private.shapes` has no export named `Measured`
+  --> private_name.ck:21:7
+   |
+21 |     s.Measured 3
+   |       ^^^^^^^^
+   = help: `Size` is `export abstract` in `private.shapes`, so its constructors are private; drop `abstract` there to use them here
+
+private_name.ck: 7 errors, 0 warnings

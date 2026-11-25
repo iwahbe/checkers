@@ -9,3 +9,9 @@ fn perimeter w h -> p : w~Nat, h~Nat, p~Nat
 record Corner
     x~Nat
     y~Nat
+
+export abstract enum Size
+    Measured n : n~Nat
+
+export fn size n -> s : n~Nat, s~Size
+    Measured n
