@@ -3,21 +3,21 @@ error[E0450]: cannot prove lemma `Functor Bad.fmap_id`
    |
 33 | instance Functor Bad
    | ^^^^^^^^^^^^^^^^^^^^ `fmap (\x -> x) xs == xs`
-   = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+   = help: add a `proof` block: `match` on a parameter or a call's result for case analysis, and `have` for facts it needs
 
 error[E0450]: cannot prove lemma `no_lemma`
   --> functor.ck:51:13
    |
 51 |     ensures fmap (\x -> x) xs == xs
    |             ^^^^^^^^^^^^^^^^^^^^^^^ `fmap (\x -> x) xs == xs`
-   = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+   = help: add a `proof` block: `match` on a parameter or a call's result for case analysis, and `have` for facts it needs
 
 error[E0450]: cannot prove lemma `not_every`
   --> functor.ck:55:13
    |
 55 |     ensures fmap (\x -> x + 1) xs == xs
    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `fmap (\x -> x + 1) xs == xs`
-   = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+   = help: add a `proof` block: `match` on a parameter or a call's result for case analysis, and `have` for facts it needs
 
 error[E0286]: `Functor` is for a type constructor of one parameter, like `List`, but `Int` is a type
   --> functor.ck:65:18

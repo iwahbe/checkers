@@ -1,0 +1,36 @@
+$ checkers doc tests/tool/leading_zeros/major -o tests/tool/never
+-- stdout
+-- stderr
+checkers: tests/tool/leading_zeros/major/checkers.json:3:14: `version` can't have leading zeros
+help: write "1.2.3"
+-- exit 1
+$ checkers doc tests/tool/leading_zeros/minor -o tests/tool/never
+-- stdout
+-- stderr
+checkers: tests/tool/leading_zeros/minor/checkers.json:3:14: `version` can't have leading zeros
+help: write "1.1.0"
+-- exit 1
+$ checkers doc tests/tool/leading_zeros/patch -o tests/tool/never
+-- stdout
+-- stderr
+checkers: tests/tool/leading_zeros/patch/checkers.json:3:14: `version` can't have leading zeros
+help: write "1.2.3"
+-- exit 1
+$ checkers doc tests/tool/leading_zeros/both -o tests/tool/never
+-- stdout
+-- stderr
+checkers: tests/tool/leading_zeros/both/checkers.json:3:14: `version` can't have leading zeros
+help: write "0.0.0"
+-- exit 1
+$ checkers doc tests/tool/leading_zeros/toolchain -o tests/tool/never
+-- stdout
+-- stderr
+checkers: tests/tool/leading_zeros/toolchain/checkers.json:4:16: `toolchain` can't have leading zeros
+help: write "0.1.0"
+-- exit 1
+$ checkers doc tests/tool/leading_zeros/dependency -o tests/tool/never
+-- stdout
+-- stderr
+checkers: tests/tool/leading_zeros/dependency/checkers.json:6:44: `version` can't have leading zeros
+help: write "1.0.10"
+-- exit 1

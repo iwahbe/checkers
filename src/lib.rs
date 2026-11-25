@@ -614,13 +614,14 @@ fn route(c: &mut Checked, e: &elab::Elab, user: &str, m: &str, mut d: Diagnostic
     }
 }
 
-/// Discharge the proof obligations (§7.2) not set aside by errors (D122).
-/// Each module's key (D143): its text, its imports' keys, its name, the
-/// standard library's text (all of it: its modules give one another, and
+/// Each module's key (D143): its name and text, the text of every program
+/// or dependency module it depends on, directly or through others (the
+/// modules it imports and those of the instances its checking chose, #272),
+/// the standard library's text (all of it: its modules give one another, and
 /// every module, the well-known types), the Z3 release and the `ckc`
-/// executable. None for a module without its text.
+/// executable. None for a module without its text, or depending on one.
 fn module_keys(e: &elab::Elab) -> std::collections::HashMap<String, String> {
-    use std::collections::HashMap;
+    use std::collections::{BTreeSet, HashMap};
     let exe = std::env::current_exe()
         .and_then(std::fs::metadata)
         .map(|m| format!("{} {:?}", m.len(), m.modified().ok()))
@@ -632,31 +633,34 @@ fn module_keys(e: &elab::Elab) -> std::collections::HashMap<String, String> {
         }
     }
     let tool = format!("ckc {} {exe} z3 {} std {}", env!("CARGO_PKG_VERSION"), verify::z3_version().unwrap_or_default(), verify::digest(&std_text));
-    fn key(e: &elab::Elab, m: &str, tool: &str, keys: &mut HashMap<String, Option<String>>) -> Option<String> {
-        if let Some(k) = keys.get(m) {
-            return k.clone();
-        }
-        keys.insert(m.to_string(), None); // a cycle has no key
-        let text = &e.sources.get(m)?.text;
-        let mut deps: Vec<String> = e.module_deps.get(m).cloned().unwrap_or_default();
-        deps.retain(|d| !d.starts_with("std."));
-        deps.sort();
-        deps.dedup();
-        let mut input = format!("{tool}\nmodule {m}\n");
-        for d in &deps {
-            input += &format!("import {d} {}\n", key(e, d, tool, keys)?);
-        }
-        input += text;
-        let k = verify::digest(&input);
-        keys.insert(m.to_string(), Some(k.clone()));
-        Some(k)
-    }
+    // Each module's text, hashed once; the standard library's is in `tool`.
+    let texts: HashMap<&str, String> =
+        e.modules.keys().filter(|m| !m.starts_with("std.")).filter_map(|m| Some((m.as_str(), verify::digest(&e.sources.get(m)?.text)))).collect();
+    let edges = |m: &str| {
+        let imports = e.module_deps.get(m).into_iter().flatten();
+        let instances = e.instance_deps.get(m).into_iter().flatten();
+        imports.chain(instances).filter(|d| !d.starts_with("std.")).cloned().collect::<Vec<String>>()
+    };
     let mut keys = HashMap::new();
-    let names: Vec<String> = e.modules.keys().cloned().collect();
-    for m in &names {
-        key(e, m, &tool, &mut keys);
+    'modules: for m in e.modules.keys() {
+        let Some(text) = e.sources.get(m) else { continue };
+        // Everything it depends on; a cycle through instances is fine.
+        let mut seen = BTreeSet::new();
+        let mut todo = edges(m);
+        while let Some(d) = todo.pop() {
+            if d != *m && seen.insert(d.clone()) {
+                todo.extend(edges(&d));
+            }
+        }
+        let mut input = format!("{tool}\nmodule {m}\n");
+        for d in &seen {
+            let Some(k) = texts.get(d.as_str()) else { continue 'modules };
+            input += &format!("uses {d} {k}\n");
+        }
+        input += &text.text;
+        keys.insert(m.clone(), verify::digest(&input));
     }
-    keys.into_iter().filter_map(|(m, k)| k.map(|k| (m, k))).collect()
+    keys
 }
 
 /// The program's modules verified before (D143), with their keys.

@@ -244,6 +244,10 @@ pub enum Stmt {
     HaveType(Ident, Expr),
     /// A bare expression line that is not the block's last; must be `Unit` (D35)
     Expr(Expr),
+    /// `let t = T`, binding a type `ghost`: what an instance's function has
+    /// for a class's parameter it takes explicitly (`t~ghost Type`, #161).
+    /// Never parsed; made when an instance is read.
+    GhostLet(Ident, Expr),
 }
 
 #[derive(Clone, Debug)]

@@ -1,0 +1,56 @@
+error[E0450]: cannot prove `x > 0`, required to call `refined`
+  --> typed_twice.ck:10:7
+   |
+10 | check refined 0 == 0
+   |       ^^^^^^^^^ `refined` requires `x > 0`
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+error[E0450]: cannot prove `x > 0`, required to call `reversed`
+  --> typed_twice.ck:15:7
+   |
+15 | check reversed 0 == 0
+   |       ^^^^^^^^^^ `reversed` requires `x > 0`
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+error[E0450]: cannot prove `r >= 0`, the postcondition of `result`
+  --> typed_twice.ck:23:36
+   |
+23 | fn result x -> r : x~Int, r~Int, r~Nat
+   |                                    ^^^ promised here
+   = note: for the value returned on line 24: `x`
+   = note: counterexample: x = -1
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+error[E0450]: cannot prove `side >= 0`, required to build `Square`
+  --> typed_twice.ck:33:5
+   |
+33 |     Square (-1)
+   |     ^^^^^^^^^^^ `Square` requires `side >= 0`
+   = help: check the value before building it, e.g. with an `if`
+
+error[E0450]: cannot prove `r >= 0`, the postcondition of `Pick Bool.pick`
+  --> typed_twice.ck:36:36
+   |
+36 |     fn pick w -> r : w~a, r~Int, r~Nat
+   |                                    ^^^ promised here
+   = note: for the value returned on line 40: `-1`
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+error[E0450]: cannot prove `r >= 0`, the postcondition of `Pick Unit.pick`
+  --> typed_twice.ck:43:39
+   |
+43 |     fn pick w -> r : w~Unit, r~Int, r~Nat
+   |                                       ^^^ promised here
+   = note: for the value returned on line 44: `-1`
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+error[E0371]: `pick` doesn't promise `r >= 0`, which class `Pick` does
+  --> typed_twice.ck:47:8
+   |
+47 |     fn pick w -> r : w~Int, r~Int
+   |        ^^^^^^^^^^^^^^^^^^^^^^^^^^ `r >= 0` doesn't follow from this signature
+   = note: class `Pick` declares `fn pick w -> r : w~a, r~Int, r~Nat`
+   = note: counterexample: r = -1
+   = help: promise at least what class `Pick` does: add `r >= 0` to this signature, or a condition implying it
+
+typed_twice.ck: 7 errors, 0 warnings

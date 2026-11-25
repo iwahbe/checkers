@@ -5,7 +5,7 @@ error[E0450]: cannot prove lemma `from_nat`
   |             ^^^^^^^^^^^^^^^^^^^^^ `forall k : k~Int, f k`
   = note: facts in scope: `forall ((k~Nat) -> f k)`
   = note: counterexample: k = -1
-  = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+  = help: add a `proof` block: `match` on a parameter or a call's result for case analysis, and `have` for facts it needs
 
 error[E0450]: cannot prove lemma `from_range`
   --> forall_domain.ck:13:13
@@ -14,7 +14,7 @@ error[E0450]: cannot prove lemma `from_range`
    |             ^^^^^^^^^^^^^^^^^^^^^ `forall k : k~Int, f k`
    = note: facts in scope: `forall ((k~Int, k < 0) -> f k)`
    = note: counterexample: k = 0
-   = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+   = help: add a `proof` block: `match` on a parameter or a call's result for case analysis, and `have` for facts it needs
 
 error[E0450]: cannot prove `forall k : k~Nat, f k`, required to call `needs_nat`
   --> forall_domain.ck:28:5

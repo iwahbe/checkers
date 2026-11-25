@@ -11,6 +11,8 @@ type TypeInstance = (TyId, Vec<bool>);
 /// its text and span, the level it was made at, and the field's alias if it
 /// comes from a refinement-alias field type.
 type FieldInv = (Tm, String, Span, usize, Option<(usize, DefId)>);
+/// A declaration's name's local and its type, if it is the declaration's.
+type NameLocal<'a> = dyn Fn(&Cx, &str) -> Option<(usize, Val)> + 'a;
 
 /// Signature of a function or lemma, elaborated into a context.
 pub struct Sig {
@@ -65,7 +67,13 @@ impl Elab {
         // Declarations in the order of what they use, not of the file (D65).
         let dicts: Vec<usize> =
             self.decl_origin.iter().enumerate().filter(|(_, o)| matches!(o, super::classes::Origin::InstDict(_))).map(|(k, _)| k).collect();
-        let plan = super::order::plan(m, &dicts);
+        let classes: Vec<(String, Vec<String>)> = self
+            .class_defs
+            .values()
+            .filter(|c| c.module == self.cur)
+            .map(|c| (c.name.clone(), c.members.iter().filter(|m| !matches!(m, ast::ClassMember::Type { .. })).map(|m| m.name().name.clone()).collect()))
+            .collect();
+        let plan = super::order::plan(m, &dicts, &classes);
         for chain in &plan.cycles {
             let name = |k: usize| decl_name(&m.decls[k]).map(|n| n.name.clone()).unwrap_or_default();
             let span = decl_name(&m.decls[chain[0]]).map(|n| n.span).unwrap_or(m.decls[chain[0]].span);
@@ -782,6 +790,84 @@ impl Elab {
 
     // ── phases ──────────────────────────────────────────────────────────────
 
+    /// Several typings of one name combine (`x~Int, x~Nat`): the first is
+    /// its type, and each later one is elaborated here, in `cx`, where every
+    /// name it may mention is bound. Its base type must be the name's
+    /// (E0372 otherwise), and it is returned, `(local, type, level, span)`,
+    /// the type over the first `level` locals, for its refinement's facts
+    /// (`alias_facts`): conditions on the name, as the first's are.
+    /// A refinement inside a type (`List Nat`) doesn't combine: typings of
+    /// a name one of which has one must be the same type (E0372).
+    /// `local` gives a name's local and its type, or `None` for a name
+    /// that isn't the declaration's (E0355, E0353).
+    fn combine_typings(&mut self, cx: &mut Cx, cs: &[Constraint], local: &NameLocal) -> Vec<(usize, Tm, usize, Span)> {
+        let mut facts = Vec::new();
+        let mut done: HashSet<&str> = HashSet::new();
+        for c in cs {
+            let Constraint::Typed { name, ty: first, .. } = c else { continue };
+            if !done.insert(&name.name) {
+                continue;
+            }
+            let later: Vec<&Expr> = cs
+                .iter()
+                .filter_map(|c| match c {
+                    Constraint::Typed { name: n, ty, .. } if n.name == name.name => Some(ty),
+                    _ => None,
+                })
+                .skip(1)
+                .collect();
+            if later.is_empty() {
+                continue;
+            }
+            let Some((l, base)) = local(cx, &name.name) else {
+                for e in later {
+                    let _ = self.elab_type(cx, e);
+                }
+                continue;
+            };
+            let at = cx.lvl();
+            let mut inside = self.refined_below_top(&base, at);
+            let mut same = true;
+            for e in later {
+                let t = self.elab_type(cx, e);
+                let v = self.eval(cx, &t);
+                if unify(&self.g, at, &base, &v).is_err() {
+                    let n = &name.name;
+                    self.err(
+                        Diagnostic::error(
+                            "E0372",
+                            format!("`{n}` is given two types that don't agree: `{}` and `{}`", self.src_text(first.span), self.src_text(e.span)),
+                            e.span,
+                        )
+                        .with_label(format!("`{n}` already has the type `{}`", self.src_text(first.span)))
+                        .with_help(format!("each typing of `{n}` may refine its type, as `{n}~Int, {n}~Nat` does, but they must have one base type")),
+                    );
+                    continue;
+                }
+                inside |= self.refined_below_top(&v, at);
+                same &= self.same_type(&base, &v);
+                if inside && !same {
+                    let n = &name.name;
+                    self.err(
+                        Diagnostic::error("E0372", format!("`{n}`'s types can't be combined: a refinement inside a type doesn't combine"), e.span)
+                            .with_label(format!("`{n}` already has the type `{}`", self.src_text(first.span)))
+                            .with_help(format!("give `{n}` one type with every refinement inside it")),
+                    );
+                    break;
+                }
+                facts.push((l, t, at, e.span));
+            }
+        }
+        facts
+    }
+
+    /// Does `v`'s type have a refinement other than of the whole value:
+    /// inside it (`List Nat`), or of a function's parameter or result?
+    fn refined_below_top(&self, v: &Val, lvl: usize) -> bool {
+        let p = self.peel(v);
+        self.refined_inside(&p, lvl, 0) || self.refined_alias(&p).is_some() && matches!(self.base(&p), Val::Pi(..))
+    }
+
     fn typed_constraint<'a>(cs: &'a [Constraint], name: &str) -> Option<(&'a Expr, ast::Mult)> {
         cs.iter().find_map(|c| match c {
             Constraint::Typed { name: n, mult, ty } if n.name == name => Some((ty, *mult)),
@@ -861,6 +947,16 @@ impl Elab {
                 cx.bind(&p.name.name, v, Mult::Zero);
                 out.push((Rc::from(p.name.name.as_str()), ty));
             }
+            // The later typings' refinements are conditions on the type,
+            // as the first's are (`phase_type_conds`).
+            let names: Vec<&str> = params.iter().map(|p| p.name.name.as_str()).collect();
+            let facts = self.combine_typings(&mut cx, cs, &|cx, n| {
+                let l = cx.lookup(n).filter(|_| names.contains(&n))?;
+                Some((l, cx.locals[l].ty.clone()))
+            });
+            if !facts.is_empty() {
+                self.ty_param_typings.insert(*tid, facts);
+            }
             self.g.tys[tid.0 as usize].params = out;
             self.solve_deferred();
         }
@@ -869,16 +965,32 @@ impl Elab {
     /// A type's conditions on its parameters (`lo <= hi` in `record P lo hi :
     /// lo~Nat, hi~Nat, lo <= hi`), in dependency order, so that the functions
     /// they call have their signatures (#136). Each may rely on those before it.
+    /// The refinements of the parameters' types come first (`lo >= 0` from
+    /// `lo~Nat`, every typing's): they are conditions as the predicates are.
     fn phase_type_conds(&mut self, m: &ast::Module, ids: &[Option<Sym>]) {
         for (d, id) in m.decls.iter().zip(ids) {
-            let cs = match &d.kind {
-                DeclKind::Enum { constraints, .. } | DeclKind::Record { constraints, .. } => constraints,
+            let (params, cs) = match &d.kind {
+                DeclKind::Enum { params, constraints, .. } | DeclKind::Record { params, constraints, .. } => (params, constraints),
                 _ => continue,
             };
             let Some(Sym::Ty(tid)) = id else { continue };
             self.g.fuel.set(DEFAULT_FUEL);
             let mut cx = self.bind_type_params(*tid);
             let mut preds = Vec::new();
+            let ptys = self.g.tys[tid.0 as usize].params.clone();
+            let mut typings: Vec<(usize, Tm, usize, Span)> = Vec::new();
+            for (k, (p, (_, t))) in params.iter().zip(&ptys).enumerate() {
+                let span = Self::typed_constraint(cs, &p.name.name).map_or(p.name.span, |(e, _)| e.span);
+                typings.push((k, t.clone(), k, span));
+            }
+            typings.extend(self.ty_param_typings.remove(tid).unwrap_or_default());
+            for (k, t, at, span) in typings {
+                for (fact, text, _) in self.alias_facts(&cx, at, &t, Val::var(k)) {
+                    let tm = quote(&self.g, cx.lvl(), &fact);
+                    cx.assume(fact);
+                    preds.push(Pred { tm, text, span, is_post: false, alias: None });
+                }
+            }
             for c in cs {
                 if let Constraint::Pred(e) | Constraint::Named(_, e) = c {
                     let p = self.elab_pred(&mut cx, e, false);
@@ -1057,6 +1169,19 @@ impl Elab {
                 invs.push((tm, text, n.span, cx.lvl(), Some((at, alias))));
             }
             fields.push((Rc::from(n.name.as_str()), mult, Icit::Expl, ty));
+        }
+        // A field's typings after the first: their refinements are
+        // invariants too.
+        let facts = self.combine_typings(&mut cx, cs, &|cx, n| {
+            let l = cx.lookup(n).filter(|_| declared.contains(n))?;
+            Some((l, cx.locals[l].ty.clone()))
+        });
+        for (l, t, at, span) in facts {
+            for (fact, text, _) in self.alias_facts(&cx, at, &t, Val::var(l)) {
+                let tm = quote(&self.g, cx.lvl(), &fact);
+                cx.assume(fact);
+                invs.push((tm, text, span, cx.lvl(), None));
+            }
         }
         // Each condition may rely on those before it, as a signature's do
         // (fields' types are facts already through their locals).
@@ -1778,6 +1903,19 @@ impl Elab {
                 }
             }
         }
+        // A parameter's or the result's typings after the first: their
+        // refinements are preconditions and postconditions.
+        let result_base = self.eval(&cx, &result_ty);
+        let nb_here = binders.len();
+        let rname_here = result.map(|r| r.name.as_str());
+        let pnames: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+        let extra = self.combine_typings(&mut cx, cs, &|cx, n| {
+            if Some(n) == rname_here {
+                return Some((nb_here, result_base.clone()));
+            }
+            let l = cx.lookup(n).filter(|_| pnames.contains(&n))?;
+            Some((l, cx.locals[l].ty.clone()))
+        });
         let deferred = std::mem::replace(&mut self.ty_cond_defer, saved_defer).unwrap_or_default();
         // Predicates may mention the result, so check them with it in scope.
         let rv = self.eval(&cx, &result_ty);
@@ -1807,6 +1945,12 @@ impl Elab {
             for (fact, text, alias) in self.alias_facts(&cx, k, &ty, Val::var(k)) {
                 let tm = quote(&self.g, cx.lvl(), &fact);
                 preds.push(Pred { tm, text, span, is_post: k == nb, alias: Some((k, alias)) });
+            }
+        }
+        for (k, t, at, span) in extra {
+            for (fact, text, _) in self.alias_facts(&cx, at, &t, Val::var(k)) {
+                let tm = quote(&self.g, cx.lvl(), &fact);
+                preds.push(Pred { tm, text, span, is_post: k == nb, alias: None });
             }
         }
         let _ = rl;

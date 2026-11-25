@@ -96,6 +96,14 @@ export lemma to_list_map f xs : f~(a -> b), xs~Array a
     proof
         __builtin
 
+# Element `i` of an array made from `x :: xs`: first `x`, then the elements
+# of the array made from `xs`. Element `n` of any list's array follows by
+# induction on the list, and an array's list through `from_list_to_list`.
+export lemma from_list_cons x xs i : x~a, xs~List a, i~Nat, i <= list.length xs
+    ensures (from_list (x :: xs))[i] == (if i == 0 then x else (from_list xs)[i - 1])
+    proof
+        __builtin
+
 # The signatures above give only lengths; these axioms say which elements
 # `slice` and `concat` give.
 
@@ -219,3 +227,6 @@ check to_list (slice (from_list [1, 2, 3] ++ from_list [4, 5] ++ from_list [6]) 
 check (slice (from_list [1, 2, 3, 4]) 1 3)[1] == (from_list [1, 2, 3, 4])[2]
 check to_list (concat [from_list [1, 2], from_list [3]]) == to_list (from_list [1, 2] ++ concat [from_list [3]])
 check to_list (from_list [1, 2] ++ concat []) == [1, 2]
+check (from_list [7, 8, 9])[0] == 7 and (from_list [7, 8, 9])[2] == (from_list [8, 9])[1]
+check (from_list [300, 70000])[1] == (from_list [70000])[0] and (from_list [-1, 2])[0] == -1
+check (from_list ["a", "b", "c"])[0] == "a" and (from_list ["a", "b", "c"])[1] == (from_list ["b", "c"])[0]
