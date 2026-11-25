@@ -1,0 +1,15 @@
+-- stdout
+3
+3
+4
+apple
+[1, 2, 2]
+once
+8
+a
+b
+1
+True
+False
+-- stderr
+-- exit 0
