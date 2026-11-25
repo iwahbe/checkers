@@ -2183,7 +2183,7 @@ impl Elab {
             let nq = |_: &str, _: &str, _: Span| None;
             let arw = Rewrite { var: &none, con: &to_assoc, qualified: &nq };
             for (k, m) in c.members.iter().filter(|m| matches!(m, ClassMember::Type { .. })).enumerate() {
-                let ClassMember::Type { constraints, .. } = m else { continue };
+                let ClassMember::Type { name: member, constraints, .. } = m else { continue };
                 let (Some(binder), preds) = type_preds(constraints) else { continue };
                 if preds.is_empty() {
                     continue;
@@ -2222,6 +2222,15 @@ impl Elab {
                 for p in &mut out {
                     p.tm = crate::core::zonk_metas(&self.g, cx.lvl(), &p.tm);
                 }
+                // Whether they can all hold (E0457).
+                let mut all = cx.clone();
+                for p in &out {
+                    let v = self.eval(&all, &p.tm);
+                    all.assume(v);
+                }
+                let conds = out.iter().map(|p| Some(p.text.clone())).collect();
+                let kind = VacuityKind::ClassType { subject: binder.name.clone() };
+                self.ask_vacuity(&all, kind, &format!("{cname}.{}", member.name), member.span, conds, None);
                 self.class_type_preds.insert((con, k), out);
             }
         }

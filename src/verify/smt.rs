@@ -357,6 +357,9 @@ pub struct Builder<'a> {
     /// Give `forall` facts to Z3, quantified: only to check a counterexample
     /// against them, never to prove (D137).
     foralls: bool,
+    /// Name each fact of the obligation, `|fact.k|` for its `k`th, and ask
+    /// for the unsat core: which of them contradict each other.
+    named: bool,
 }
 
 impl<'a> Builder<'a> {
@@ -395,7 +398,15 @@ impl<'a> Builder<'a> {
             real_values: Vec::new(),
             based: BTreeSet::new(),
             foralls: false,
+            named: false,
         }
+    }
+
+    /// Name the obligation's facts and ask Z3 which of them an `unsat`
+    /// answer needed (`(get-unsat-core)`, after `(check-sat)`).
+    pub fn named_facts(mut self) -> Builder<'a> {
+        self.named = true;
+        self
     }
 
     /// Give the `forall` facts in scope to Z3 as quantified formulas, so a
@@ -3575,7 +3586,7 @@ impl<'a> Builder<'a> {
         }
         let mut dropped = Vec::new();
         let mut foralls = false;
-        for f in &ob.facts {
+        for (k, f) in ob.facts.iter().enumerate() {
             let tm = quote(&self.e.g, lvl, f);
             // A `forall` is used only by name, with `have` (D137), except
             // to check a counterexample.
@@ -3585,6 +3596,7 @@ impl<'a> Builder<'a> {
             }
             // A fact the solver can't see is simply not assumed.
             match self.term_ctx(lvl, &tm) {
+                Ok((t, Sort::Bool)) if self.named => facts.push(format!("(! {t} :named |fact.{k}|)")),
                 Ok((t, Sort::Bool)) => facts.push(t),
                 Ok(_) => {}
                 Err(why) => {
@@ -3605,6 +3617,9 @@ impl<'a> Builder<'a> {
             }
         }
         let mut text = String::new();
+        if self.named {
+            text += "(set-option :produce-unsat-cores true)\n";
+        }
         text += &format!(
             "(set-option :produce-models true)\n(set-option :rlimit {})\n(set-option :timeout {})\n(set-logic ALL)\n",
             super::RLIMIT,
@@ -3643,10 +3658,16 @@ impl<'a> Builder<'a> {
             text += c;
             text += "\n";
         }
-        for a in self.asserts.iter().chain(facts.iter()) {
+        for (k, a) in self.asserts.iter().enumerate() {
+            text += &if self.named { format!("(assert (! {a} :named |given.{k}|))\n") } else { format!("(assert {a})\n") };
+        }
+        for a in &facts {
             text += &format!("(assert {a})\n");
         }
         text += &format!("(assert (not {goal}))\n(check-sat)\n");
+        if self.named {
+            text += "(get-unsat-core)\n";
+        }
         if !self.shown.is_empty() {
             text += &format!("(get-value ({}))\n", self.shown.iter().map(|s| s.0.clone()).collect::<Vec<_>>().join(" "));
         }

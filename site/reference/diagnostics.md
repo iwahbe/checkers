@@ -158,6 +158,7 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0454` | `have` of a lemma without all its arguments |
 | `E0455` | a release build of a program that relies on an `admit` |
 | `E0456` | a class used at a refinement alias, whose instance (the type the alias stands for) isn't shown to give values of the alias: a result, or a value it passes to a function parameter |
+| `E0457` | conditions that can never all hold: a function's or lemma's preconditions, a type's conditions on its parameters, a constructor's invariants, an alias's predicates, the predicates on a class's type |
 
 ## Warnings
 
