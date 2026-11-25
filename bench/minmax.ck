@@ -33,8 +33,8 @@ fn hand k i acc -> r : k~Nat, i~Int, acc~Int, r~Int
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let n = 200000000
     let r = match args
-        [_, "generic"] -> generic n 0 0
-        [_, "mono"]    -> mono n 0 0
-        _              -> hand n 0 0
+        ["generic"] -> generic n 0 0
+        ["mono"]    -> mono n 0 0
+        _           -> hand n 0 0
     terminal.print_line (debug r) sys.term
     Success
