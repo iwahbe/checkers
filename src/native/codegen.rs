@@ -14,8 +14,8 @@ use checkers_rt::word as w;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::types::{I32, I64, I8};
 use cranelift_codegen::ir::{
-    self, AbiParam, AtomicRmwOp, BlockArg, FuncRef, GlobalValue, InstBuilder, MemFlagsData, Signature, StackSlotData,
-    StackSlotKind, Value,
+    self, AbiParam, AtomicRmwOp, BlockArg, FuncRef, GlobalValue, InstBuilder, InstructionData, MemFlagsData, Opcode, Signature,
+    StackSlotData, StackSlotKind, Value, ValueDef,
 };
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
@@ -94,6 +94,15 @@ struct St {
     /// Values that are never pointers (a comparison's `Bool`): dropping or
     /// duplicating one does nothing, so no code is emitted for it.
     imm: HashSet<Value>,
+    /// Values known to be small integers where code is being emitted: an
+    /// arithmetic operation's operands on its fast path, a `%`'s result,
+    /// `x` in the arm where `x == 3` holds. (Constants are seen in the
+    /// code itself, `small`.) Facts that hold only in some blocks are
+    /// added before emitting those blocks and removed after.
+    ints: HashSet<Value>,
+    /// A comparison's `Bool` word: the condition it was made from, so a
+    /// `match` on it branches on the comparison itself.
+    conds: HashMap<Value, Cond>,
     owner: u32,
     frefs: HashMap<FuncId, FuncRef>,
     gvs: HashMap<DataId, GlobalValue>,
@@ -101,6 +110,14 @@ struct St {
     /// call to itself in tail position jumps there, a loop rather than a
     /// call (no frame torn down and set up again).
     this: Option<(u32, ir::Block)>,
+}
+
+/// A comparison's condition (`I8`), and what holds when it is true or false.
+#[derive(Clone)]
+struct Cond {
+    c: Value,
+    /// Small integers when it is true (`x == 3`: `x`), and when false (`x != 3`).
+    small_if: [Vec<Value>; 2],
 }
 
 enum Mode {
@@ -390,7 +407,7 @@ impl<'p, M: Module> Gen<'p, M> {
         b.switch_to_block(entry);
         let params: Vec<Value> = b.block_params(entry).to_vec();
         let vars = vec![None; f.nvars.max(f.params.len() as u32) as usize];
-        let mut st = St { vars, imm: HashSet::new(), owner: f.owner, frefs: HashMap::new(), gvs: HashMap::new(), this: None };
+        let mut st = St { vars, imm: HashSet::new(), ints: HashSet::new(), conds: HashMap::new(), owner: f.owner, frefs: HashMap::new(), gvs: HashMap::new(), this: None };
         let env = params[0];
         match &f.kind {
             FnKind::Global | FnKind::Caf => {
@@ -505,15 +522,17 @@ impl<'p, M: Module> Gen<'p, M> {
 
     // ── reference counts (D74) ──────────────────────────────────────────────
 
+    /// Is `x` a pointer, a non-zero multiple of 8? Rotated right by 3, its
+    /// low bits become its top bits: it is then a number from 1 to 2^61 - 1.
+    /// One condition, so a test moved out of a loop holds one register.
     fn is_ptr(b: &mut FunctionBuilder, x: Value) -> Value {
-        let low = b.ins().band_imm_s(x, 7);
-        let a = b.ins().icmp_imm_s(IntCC::Equal, low, 0);
-        let nz = b.ins().icmp_imm_s(IntCC::NotEqual, x, 0);
-        b.ins().band(a, nz)
+        let r = b.ins().rotr_imm_s(x, 3);
+        let m = b.ins().iadd_imm_s(r, -1);
+        b.ins().icmp_imm_s(IntCC::UnsignedLessThan, m, (1i64 << 61) - 1)
     }
 
     fn dup(&mut self, b: &mut FunctionBuilder, st: &mut St, x: Value) {
-        if st.imm.contains(&x) {
+        if st.imm.contains(&x) || Self::small(b, st, x) {
             return;
         }
         let inc = b.create_block();
@@ -528,7 +547,7 @@ impl<'p, M: Module> Gen<'p, M> {
     }
 
     fn drop_v(&mut self, b: &mut FunctionBuilder, st: &mut St, x: Value) {
-        if st.imm.contains(&x) {
+        if st.imm.contains(&x) || Self::small(b, st, x) {
             return;
         }
         let dec = b.create_block();
@@ -601,6 +620,9 @@ impl<'p, M: Module> Gen<'p, M> {
                 let d = self.statik(v);
                 self.addr(b, st, d)
             }
+            // In the current block: a comparison's `Bool` is then the value
+            // a `match` on it finds in `St::conds`.
+            E::Borrow { op, args, drops } => self.borrow_e(b, st, *op, args, drops),
             _ => {
                 let k = b.create_block();
                 let r = b.append_block_param(k, I64);
@@ -709,25 +731,8 @@ impl<'p, M: Module> Gen<'p, M> {
                 let x = self.flatten_tuple(b, st, x, vs[vs.len() - 1]);
                 Self::finish(b, &mode, x)
             }
-            E::Borrow { op: BOp::Prim(Op::Concat, _), args, drops } if Self::gives_left(args, drops).is_some() => {
-                // The last use of the left side: `++` takes it, so a string
-                // or array no one else holds is appended to in place.
-                let given = Self::gives_left(args, drops);
-                let vs: Vec<Value> = args.iter().map(|a| self.val(b, st, a)).collect();
-                let x = self.call1(b, st, "ck_concat_own", &[vs[0], vs[1]]);
-                for d in drops.iter().filter(|d| Some(**d) != given) {
-                    let dv = self.var(b, st, *d);
-                    self.drop_v(b, st, dv);
-                }
-                Self::finish(b, &mode, x)
-            }
             E::Borrow { op, args, drops } => {
-                let vs: Vec<Value> = args.iter().map(|a| self.val(b, st, a)).collect();
-                let x = self.borrow(b, st, *op, &vs);
-                for d in drops {
-                    let dv = self.var(b, st, *d);
-                    self.drop_v(b, st, dv);
-                }
+                let x = self.borrow_e(b, st, *op, args, drops);
                 Self::finish(b, &mode, x)
             }
             E::Par(xs) => {
@@ -764,6 +769,48 @@ impl<'p, M: Module> Gen<'p, M> {
             }
             E::Case { scrut, arms, lits, default } => self.case(b, st, *scrut, arms, lits, default.as_deref(), mode),
         }
+    }
+
+    /// `op args`, then `drops` dropped.
+    fn borrow_e(&mut self, b: &mut FunctionBuilder, st: &mut St, op: BOp, args: &[E], drops: &[V]) -> Value {
+        let vs: Vec<Value> = args.iter().map(|a| self.val(b, st, a)).collect();
+        if let (BOp::Prim(Op::Concat, _), Some(given)) = (op, Self::gives_left(args, drops)) {
+            // The last use of the left side: `++` takes it, so a string
+            // or array no one else holds is appended to in place.
+            let x = self.call1(b, st, "ck_concat_own", &[vs[0], vs[1]]);
+            for d in drops.iter().filter(|d| **d != given) {
+                let dv = self.var(b, st, *d);
+                self.drop_v(b, st, dv);
+            }
+            return x;
+        }
+        let mut ds: Vec<Value> = drops.iter().map(|d| self.var(b, st, *d)).collect();
+        let x = match op {
+            // Integer operations drop their operands on each path: on the
+            // fast path they are small integers, so there is nothing to do.
+            BOp::Prim(p, nat) => {
+                let mine = Self::take_args(&vs, &mut ds);
+                self.prim(b, st, p, nat, &vs, &mine)
+            }
+            op => self.borrow(b, st, op, &vs),
+        };
+        for d in ds {
+            self.drop_v(b, st, d);
+        }
+        x
+    }
+
+    /// The values of `drops` that are among `args`, taken out of `drops`.
+    fn take_args(args: &[Value], drops: &mut Vec<Value>) -> Vec<Value> {
+        let mut mine = Vec::new();
+        drops.retain(|d| {
+            let arg = args.contains(d);
+            if arg {
+                mine.push(*d);
+            }
+            !arg
+        });
+        mine
     }
 
     fn alloc(&mut self, b: &mut FunctionBuilder, st: &mut St, info: u64, size: usize) -> Value {
@@ -926,6 +973,14 @@ impl<'p, M: Module> Gen<'p, M> {
         b.ins().select(c, t, f)
     }
 
+    /// A comparison's `Bool` from its condition, which a `match` on it
+    /// branches on instead (`St::conds`).
+    fn bool_cond(&self, b: &mut FunctionBuilder, st: &mut St, c: Value, small_if: [Vec<Value>; 2]) -> Value {
+        let w = self.bool_of(b, c);
+        st.conds.insert(w, Cond { c, small_if });
+        w
+    }
+
     /// `a ++ b` whose left side is a variable this is the last use of (it
     /// would be dropped right after), and not also the right side: that
     /// variable, which `++` may then take.
@@ -942,38 +997,93 @@ impl<'p, M: Module> Gen<'p, M> {
         matches!(e, E::Borrow { op: BOp::Prim(Op::Eq | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge, _), .. })
     }
 
-    /// Both small integers?
-    fn both_int(b: &mut FunctionBuilder, x: Value, y: Value) -> Value {
-        let a = b.ins().band(x, y);
-        b.ins().band_imm_s(a, 1)
+    // ── small integers ──────────────────────────────────────────────────────
+
+    /// The word `x` is, if it is a constant.
+    fn const_word(b: &FunctionBuilder, x: Value) -> Option<i64> {
+        let ValueDef::Result(inst, _) = b.func.dfg.value_def(x) else { return None };
+        match b.func.dfg.insts[inst] {
+            InstructionData::UnaryImm { opcode: Opcode::Iconst, imm } => Some(imm.bits()),
+            _ => None,
+        }
     }
 
-    /// `fast` if both are small integers and it doesn't overflow, else the
-    /// runtime's `slow`.
+    /// Is `x` known to be a small integer where code is being emitted: a
+    /// constant one (only integers' words are odd), or a fact in `St::ints`?
+    fn small(b: &FunctionBuilder, st: &St, x: Value) -> bool {
+        st.ints.contains(&x) || Self::const_word(b, x).is_some_and(|w| w & 1 == 1)
+    }
+
+    /// Take `xs` to be small integers; those that weren't known, to `forget`
+    /// once the code where they are has been emitted.
+    fn assume_small(st: &mut St, xs: &[Value]) -> Vec<Value> {
+        xs.iter().copied().filter(|x| st.ints.insert(*x)).collect()
+    }
+
+    fn forget(st: &mut St, added: Vec<Value>) {
+        for x in added {
+            st.ints.remove(&x);
+        }
+    }
+
+    /// Go on to `yes` if all of `xs` are small integers, else to `no`. Only
+    /// the words not already known to be are tested.
+    fn if_small(b: &mut FunctionBuilder, st: &St, xs: &[Value], yes: ir::Block, no: ir::Block) {
+        let mut unknown: Vec<Value> = Vec::new();
+        for x in xs {
+            if !Self::small(b, st, *x) && !unknown.contains(x) {
+                unknown.push(*x);
+            }
+        }
+        let Some((first, rest)) = unknown.split_first() else {
+            b.ins().jump(yes, &[]);
+            return;
+        };
+        let all = rest.iter().fold(*first, |a, x| b.ins().band(a, *x));
+        let t = b.ins().band_imm_s(all, 1);
+        b.ins().brif(t, yes, &[], no, &[]);
+    }
+
+    /// An integer operation on `xs`: `fast` (its value, still to be tagged
+    /// with `+ 1` if `tag`, and whether it overflowed) if they are small
+    /// integers and it doesn't overflow, else the runtime's `slow` on `xs`
+    /// and `extra`. The operands' `drops` are dropped on the slow path only:
+    /// on the fast path they are small integers.
     #[allow(clippy::too_many_arguments)]
     fn arith(
         &mut self,
         b: &mut FunctionBuilder,
         st: &mut St,
-        x: Value,
-        y: Value,
+        xs: &[Value],
         fast: impl FnOnce(&mut FunctionBuilder) -> (Value, Value),
+        tag: bool,
         slow: &str,
         extra: Option<Value>,
+        drops: &[Value],
     ) -> Value {
         let try_fast = b.create_block();
+        let ok = b.create_block();
         let slow_b = b.create_block();
+        b.set_cold_block(slow_b);
         let done = b.create_block();
         let r = b.append_block_param(done, I64);
-        let ints = Self::both_int(b, x, y);
-        b.ins().brif(ints, try_fast, &[], slow_b, &[]);
+        Self::if_small(b, st, xs, try_fast, slow_b);
         b.switch_to_block(try_fast);
         let (v, overflow) = fast(b);
-        b.ins().brif(overflow, slow_b, &[], done, &[BlockArg::Value(v)]);
+        b.ins().brif(overflow, slow_b, &[], ok, &[]);
+        // The value's other uses are in a block of their own: on x86-64,
+        // the one instruction setting the overflow flag (`imul`) then gives
+        // the value too, rather than being repeated for it.
+        b.switch_to_block(ok);
+        let v = if tag { b.ins().iadd_imm_s(v, 1) } else { v };
+        b.ins().jump(done, &[BlockArg::Value(v)]);
         b.switch_to_block(slow_b);
-        let mut args = vec![x, y];
+        let mut args = xs.to_vec();
         args.extend(extra);
         let s = self.call1(b, st, slow, &args);
+        for d in drops {
+            self.drop_v(b, st, *d);
+        }
         b.ins().jump(done, &[BlockArg::Value(s)]);
         b.switch_to_block(done);
         r
@@ -982,17 +1092,26 @@ impl<'p, M: Module> Gen<'p, M> {
     /// Euclidean `/` or `%` (the remainder never negative), inline when both
     /// are small integers and the divisor isn't zero; otherwise the runtime,
     /// which also reports division by zero.
-    fn divide(&mut self, b: &mut FunctionBuilder, st: &mut St, rem: bool, x: Value, y: Value, owner: Value) -> Value {
+    #[allow(clippy::too_many_arguments)]
+    fn divide(&mut self, b: &mut FunctionBuilder, st: &mut St, rem: bool, x: Value, y: Value, owner: Value, drops: &[Value]) -> Value {
+        let check = b.create_block();
         let fast = b.create_block();
         let slow = b.create_block();
+        b.set_cold_block(slow);
         let done = b.create_block();
         let r = b.append_block_param(done, I64);
-        let ints = Self::both_int(b, x, y);
-        let ints = b.ins().icmp_imm_s(IntCC::NotEqual, ints, 0);
+        Self::if_small(b, st, &[x, y], check, slow);
+        b.switch_to_block(check);
         // The word for 0 is 1.
-        let nonzero = b.ins().icmp_imm_s(IntCC::NotEqual, y, 1);
-        let go = b.ins().band(ints, nonzero);
-        b.ins().brif(go, fast, &[], slow, &[]);
+        match Self::const_word(b, y) {
+            Some(w) if w != 1 => {
+                b.ins().jump(fast, &[]);
+            }
+            _ => {
+                let nonzero = b.ins().icmp_imm_s(IntCC::NotEqual, y, 1);
+                b.ins().brif(nonzero, fast, &[], slow, &[]);
+            }
+        }
         b.switch_to_block(fast);
         // Small integers have 63 bits, so neither division overflows i64.
         let n = b.ins().sshr_imm_s(x, 1);
@@ -1004,13 +1123,14 @@ impl<'p, M: Module> Gen<'p, M> {
         // A negative remainder: one more `|d|` makes it Euclidean, and the
         // quotient moves one step away from `d`'s sign.
         let neg = b.ins().icmp_imm_s(IntCC::SignedLessThan, m, 0);
-        let (v, ov) = if rem {
+        if rem {
             let ad = b.ins().iabs(d);
             let m1 = b.ins().iadd(m, ad);
             let m = b.ins().select(neg, m1, m);
             // |m| < |d|: it fits.
             let m2 = b.ins().iadd(m, m);
-            (b.ins().iadd_imm_s(m2, 1), b.ins().iconst(I8, 0))
+            let v = b.ins().iadd_imm_s(m2, 1);
+            b.ins().jump(done, &[BlockArg::Value(v)]);
         } else {
             let dpos = b.ins().icmp_imm_s(IntCC::SignedGreaterThan, d, 0);
             let one = b.ins().iconst(I64, 1);
@@ -1021,14 +1141,79 @@ impl<'p, M: Module> Gen<'p, M> {
             let q = b.ins().iadd(q, step);
             // Only -2^62 / -1 leaves the small integers.
             let (q2, ov) = b.ins().sadd_overflow(q, q);
-            (b.ins().iadd_imm_s(q2, 1), ov)
-        };
-        b.ins().brif(ov, slow, &[], done, &[BlockArg::Value(v)]);
+            let ok = b.create_block();
+            b.ins().brif(ov, slow, &[], ok, &[]);
+            b.switch_to_block(ok);
+            let v = b.ins().iadd_imm_s(q2, 1);
+            b.ins().jump(done, &[BlockArg::Value(v)]);
+        }
         b.switch_to_block(slow);
         let s = self.call1(b, st, if rem { "ck_rem" } else { "ck_div" }, &[x, y, owner]);
+        for d in drops {
+            self.drop_v(b, st, *d);
+        }
         b.ins().jump(done, &[BlockArg::Value(s)]);
         b.switch_to_block(done);
+        // A remainder is smaller than its divisor, and an integer that
+        // fits in a word is always a small one.
+        if rem && Self::small(b, st, y) {
+            st.ints.insert(r);
+        }
         r
+    }
+
+    /// `==`, `!=`, `<`, `<=`, `>` or `>=`: a `Bool`, remembered with its
+    /// condition (`bool_cond`).
+    #[allow(clippy::too_many_arguments)]
+    fn compare(&mut self, b: &mut FunctionBuilder, st: &mut St, p: Op, x: Value, y: Value, owner: Value, drops: &[Value]) -> Value {
+        let cc = match p {
+            Op::Eq => IntCC::Equal,
+            Op::Ne => IntCC::NotEqual,
+            Op::Lt => IntCC::SignedLessThan,
+            Op::Le => IntCC::SignedLessThanOrEqual,
+            Op::Gt => IntCC::SignedGreaterThan,
+            _ => IntCC::SignedGreaterThanOrEqual,
+        };
+        let eq = matches!(p, Op::Eq | Op::Ne);
+        let (sx, sy) = (Self::small(b, st, x), Self::small(b, st, y));
+        // Small integers compare as their words do. So does a small integer
+        // with any other value of its type: the runtime keeps every integer
+        // that fits in a word as a small one, so a number object is never
+        // equal to it.
+        if sx && sy || eq && (sx || sy) {
+            let c = b.ins().icmp(cc, x, y);
+            for d in drops {
+                self.drop_v(b, st, *d);
+            }
+            // Where `x == 3` holds, `x` is a small integer too.
+            let other: Vec<Value> = [x, y].into_iter().filter(|v| !Self::small(b, st, *v)).collect();
+            let small_if = if p == Op::Eq { [other, Vec::new()] } else { [Vec::new(), other] };
+            return self.bool_cond(b, st, c, if eq { small_if } else { [Vec::new(), Vec::new()] });
+        }
+        let fast = b.create_block();
+        let slow = b.create_block();
+        b.set_cold_block(slow);
+        let done = b.create_block();
+        let r = b.append_block_param(done, I8);
+        Self::if_small(b, st, &[x, y], fast, slow);
+        b.switch_to_block(fast);
+        let c = b.ins().icmp(cc, x, y);
+        b.ins().jump(done, &[BlockArg::Value(c)]);
+        b.switch_to_block(slow);
+        let c2 = if eq {
+            let name = if p == Op::Eq { "ck_eq" } else { "ck_ne" };
+            let e = self.call1(b, st, name, &[x, y, owner]);
+            b.ins().icmp_imm_s(IntCC::Equal, e, self.true_w)
+        } else {
+            let s = self.call1(b, st, "ck_cmp", &[x, y]);
+            b.ins().icmp_imm_s(cc, s, 0)
+        };
+        for d in drops {
+            self.drop_v(b, st, *d);
+        }
+        b.ins().jump(done, &[BlockArg::Value(c2)]);
+        b.switch_to_block(done);
+        self.bool_cond(b, st, r, [Vec::new(), Vec::new()])
     }
 
     /// A tuple just built whose last component is a tuple object is
@@ -1038,11 +1223,7 @@ impl<'p, M: Module> Gen<'p, M> {
         let slow = b.create_block();
         let done = b.create_block();
         let r = b.append_block_param(done, I64);
-        // A pointer: a non-zero multiple of 8.
-        let low = b.ins().band_imm_u(last, 7);
-        let aligned = b.ins().icmp_imm_s(IntCC::Equal, low, 0);
-        let nonzero = b.ins().icmp_imm_s(IntCC::NotEqual, last, 0);
-        let ptr = b.ins().band(aligned, nonzero);
+        let ptr = Self::is_ptr(b, last);
         b.ins().brif(ptr, check, &[], done, &[BlockArg::Value(x)]);
         b.switch_to_block(check);
         b.seal_block(check);
@@ -1079,119 +1260,114 @@ impl<'p, M: Module> Gen<'p, M> {
                 b.ins().iconst(I64, w::UNIT as i64)
             }
             BOp::Builtin(sym) => self.call_array(b, st, sym, a),
-            BOp::Prim(p, nat) => self.prim(b, st, p, nat, a),
+            BOp::Prim(p, nat) => self.prim(b, st, p, nat, a, &[]),
         }
     }
 
-    fn prim(&mut self, b: &mut FunctionBuilder, st: &mut St, p: Op, nat: bool, a: &[Value]) -> Value {
+    /// A primitive on `a`; `drops`, among `a`, are dropped after it.
+    fn prim(&mut self, b: &mut FunctionBuilder, st: &mut St, p: Op, nat: bool, a: &[Value], drops: &[Value]) -> Value {
         let o = self.owner(b, st);
         match p {
+            // Words `2x + 1` and `2y + 1`: `2x + 1 + 2y` is `2(x + y) + 1`,
+            // and it overflows i64 exactly when `x + y` has more than 63 bits.
             Op::Add => self.arith(
                 b,
                 st,
-                a[0],
-                a[1],
+                &[a[0], a[1]],
                 |b| {
                     let y1 = b.ins().iadd_imm_s(a[1], -1);
                     b.ins().sadd_overflow(a[0], y1)
                 },
+                false,
                 "ck_add",
                 None,
+                drops,
             ),
             Op::Sub if nat => {
                 // Words compare as their integers do.
-                let ints = Self::both_int(b, a[0], a[1]);
+                let check = b.create_block();
                 let fast = b.create_block();
                 let slow = b.create_block();
+                b.set_cold_block(slow);
                 let done = b.create_block();
                 let r = b.append_block_param(done, I64);
-                let ok_ints = b.ins().icmp_imm_s(IntCC::NotEqual, ints, 0);
+                Self::if_small(b, st, &[a[0], a[1]], check, slow);
+                b.switch_to_block(check);
                 let not_below = b.ins().icmp(IntCC::SignedGreaterThanOrEqual, a[0], a[1]);
-                let go = b.ins().band(ok_ints, not_below);
-                b.ins().brif(go, fast, &[], slow, &[]);
+                b.ins().brif(not_below, fast, &[], slow, &[]);
                 b.switch_to_block(fast);
-                let d = b.ins().isub(a[0], a[1]);
-                let v = b.ins().iadd_imm_s(d, 1);
+                // Both `Nat`s, the first no less: `x - y` fits.
+                let y1 = b.ins().iadd_imm_s(a[1], -1);
+                let v = b.ins().isub(a[0], y1);
                 b.ins().jump(done, &[BlockArg::Value(v)]);
                 b.switch_to_block(slow);
                 let s = self.call1(b, st, "ck_natsub", &[a[0], a[1], o]);
+                for d in drops {
+                    self.drop_v(b, st, *d);
+                }
                 b.ins().jump(done, &[BlockArg::Value(s)]);
                 b.switch_to_block(done);
                 r
             }
+            // `2x + 1 - 2y` is `2(x - y) + 1`.
             Op::Sub => self.arith(
                 b,
                 st,
-                a[0],
-                a[1],
+                &[a[0], a[1]],
                 |b| {
-                    let (d, ov) = b.ins().ssub_overflow(a[0], a[1]);
-                    // (2x+1) - (2y+1) = 2(x-y): add the tag back.
-                    let one = b.ins().iconst(I64, 1);
-                    let (v, ov2) = b.ins().sadd_overflow(d, one);
-                    (v, b.ins().bor(ov, ov2))
+                    let y1 = b.ins().iadd_imm_s(a[1], -1);
+                    b.ins().ssub_overflow(a[0], y1)
                 },
+                false,
                 "ck_sub",
                 None,
+                drops,
             ),
+            // `x · 2y` is `2xy`, which overflows i64 exactly when `xy` has
+            // more than 63 bits; it is even, so `+ 1` then can't.
             Op::Mul => self.arith(
                 b,
                 st,
-                a[0],
-                a[1],
+                &[a[0], a[1]],
                 |b| {
                     let x = b.ins().sshr_imm_s(a[0], 1);
                     let y1 = b.ins().iadd_imm_s(a[1], -1);
-                    let (m, ov) = b.ins().smul_overflow(x, y1);
-                    (b.ins().iadd_imm_s(m, 1), ov)
+                    b.ins().smul_overflow(x, y1)
                 },
+                true,
                 "ck_mul",
                 None,
+                drops,
             ),
-            Op::Div | Op::Rem => self.divide(b, st, p == Op::Rem, a[0], a[1], o),
-            Op::Neg => self.call1(b, st, "ck_neg", &[a[0]]),
-            Op::Eq | Op::Ne => {
-                let ints = Self::both_int(b, a[0], a[1]);
-                let fast = b.create_block();
-                let slow = b.create_block();
-                let done = b.create_block();
-                let r = b.append_block_param(done, I64);
-                b.ins().brif(ints, fast, &[], slow, &[]);
-                b.switch_to_block(fast);
-                let cc = if p == Op::Eq { IntCC::Equal } else { IntCC::NotEqual };
-                let c = b.ins().icmp(cc, a[0], a[1]);
-                let v = self.bool_of(b, c);
-                b.ins().jump(done, &[BlockArg::Value(v)]);
-                b.switch_to_block(slow);
-                let name = if p == Op::Eq { "ck_eq" } else { "ck_ne" };
-                let s = self.call1(b, st, name, &[a[0], a[1], o]);
-                b.ins().jump(done, &[BlockArg::Value(s)]);
-                b.switch_to_block(done);
+            Op::Div | Op::Rem => self.divide(b, st, p == Op::Rem, a[0], a[1], o, drops),
+            // `2 - (2x + 1)` is `2(-x) + 1`; it overflows only for `x = -2^62`.
+            Op::Neg => self.arith(
+                b,
+                st,
+                &[a[0]],
+                |b| {
+                    let two = b.ins().iconst(I64, 2);
+                    b.ins().ssub_overflow(two, a[0])
+                },
+                false,
+                "ck_neg",
+                None,
+                drops,
+            ),
+            Op::Eq | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge => self.compare(b, st, p, a[0], a[1], o, drops),
+            _ => {
+                let r = self.other_prim(b, st, p, nat, a, o);
+                for d in drops {
+                    self.drop_v(b, st, *d);
+                }
                 r
             }
-            Op::Lt | Op::Le | Op::Gt | Op::Ge => {
-                let cc = match p {
-                    Op::Lt => IntCC::SignedLessThan,
-                    Op::Le => IntCC::SignedLessThanOrEqual,
-                    Op::Gt => IntCC::SignedGreaterThan,
-                    _ => IntCC::SignedGreaterThanOrEqual,
-                };
-                let ints = Self::both_int(b, a[0], a[1]);
-                let fast = b.create_block();
-                let slow = b.create_block();
-                let done = b.create_block();
-                let r = b.append_block_param(done, I8);
-                b.ins().brif(ints, fast, &[], slow, &[]);
-                b.switch_to_block(fast);
-                let c = b.ins().icmp(cc, a[0], a[1]);
-                b.ins().jump(done, &[BlockArg::Value(c)]);
-                b.switch_to_block(slow);
-                let s = self.call1(b, st, "ck_cmp", &[a[0], a[1]]);
-                let c2 = b.ins().icmp_imm_s(cc, s, 0);
-                b.ins().jump(done, &[BlockArg::Value(c2)]);
-                b.switch_to_block(done);
-                self.bool_of(b, r)
-            }
+        }
+    }
+
+    /// The primitives that aren't on integers.
+    fn other_prim(&mut self, b: &mut FunctionBuilder, st: &mut St, p: Op, nat: bool, a: &[Value], o: Value) -> Value {
+        match p {
             Op::Concat => self.call1(b, st, "ck_concat", &[a[0], a[1]]),
             Op::TypeApply => self.call1(b, st, "ck_type_apply", &[a[0], a[1]]),
             Op::Len => {
@@ -1202,10 +1378,7 @@ impl<'p, M: Module> Gen<'p, M> {
                 let slow = b.create_block();
                 let done = b.create_block();
                 let r = b.append_block_param(done, I64);
-                let low = b.ins().band_imm_s(a[0], 7);
-                let aligned = b.ins().icmp_imm_s(IntCC::Equal, low, 0);
-                let nonzero = b.ins().icmp_imm_s(IntCC::NotEqual, a[0], 0);
-                let is_ptr = b.ins().band(aligned, nonzero);
+                let is_ptr = Self::is_ptr(b, a[0]);
                 b.ins().brif(is_ptr, kinds, &[], slow, &[]);
                 b.switch_to_block(kinds);
                 let info = b.ins().load(I64, flags(), a[0], 8);
@@ -1223,6 +1396,8 @@ impl<'p, M: Module> Gen<'p, M> {
                 let c = self.call1(b, st, "ck_len", &[a[0]]);
                 b.ins().jump(done, &[BlockArg::Value(c)]);
                 b.switch_to_block(done);
+                // A length is a small integer.
+                st.ints.insert(r);
                 r
             }
             Op::Index => {
@@ -1270,12 +1445,18 @@ impl<'p, M: Module> Gen<'p, M> {
             }
             Op::When => self.call1(b, st, "ck_when", &[a[1], a[2]]),
             Op::Par => a[0],
+            _ => unreachable!("an integer primitive"),
         }
     }
 
     #[allow(clippy::too_many_arguments)]
     fn case(&mut self, b: &mut FunctionBuilder, st: &mut St, scrut: V, arms: &[Arm], lits: &[(E, E)], default: Option<&E>, mode: Mode) {
         let x = self.var(b, st, scrut);
+        if let Some(cond) = st.conds.get(&x).cloned() {
+            if lits.is_empty() && self.on_cond(b, st, &cond, arms, default, &mode) {
+                return;
+            }
+        }
         let fallback = b.create_block();
         if !arms.is_empty() {
             let all_nullary = arms.iter().all(|a| a.fields.is_empty());
@@ -1356,9 +1537,12 @@ impl<'p, M: Module> Gen<'p, M> {
                 b.switch_to_block(no);
             }
             b.ins().jump(fallback, &[]);
-            for ((_, body), blk) in lits.iter().zip(targets) {
+            for ((l, body), blk) in lits.iter().zip(targets) {
                 b.switch_to_block(blk);
+                // `x` is this integer.
+                let added = if matches!(l, E::Int(_)) { Self::assume_small(st, &[x]) } else { Vec::new() };
                 self.emit(b, st, body, mode.again());
+                Self::forget(st, added);
             }
         } else {
             b.ins().jump(fallback, &[]);
@@ -1372,6 +1556,51 @@ impl<'p, M: Module> Gen<'p, M> {
                 Self::finish(b, &mode, v);
             }
         }
+    }
+
+    /// A `match` on a comparison's `Bool`, as a branch on the comparison
+    /// itself; false if the arms aren't `True` and `False`.
+    fn on_cond(&mut self, b: &mut FunctionBuilder, st: &mut St, cond: &Cond, arms: &[Arm], default: Option<&E>, mode: &Mode) -> bool {
+        let side = |a: &Arm| -> Option<usize> {
+            let w = w::nullary(a.con) as i64;
+            if !a.fields.is_empty() {
+                None
+            } else if w == self.true_w {
+                Some(0)
+            } else if w == self.false_w {
+                Some(1)
+            } else {
+                None
+            }
+        };
+        if arms.is_empty() || arms.iter().any(|a| side(a).is_none()) {
+            return false;
+        }
+        // Each side's arm, or the default (or no match).
+        let mut bodies: [Option<&E>; 2] = [None, None];
+        for a in arms {
+            let k = side(a).expect("checked");
+            if bodies[k].is_none() {
+                bodies[k] = Some(&a.body);
+            }
+        }
+        let blocks = [b.create_block(), b.create_block()];
+        b.ins().brif(cond.c, blocks[0], &[], blocks[1], &[]);
+        for k in 0..2 {
+            b.switch_to_block(blocks[k]);
+            let added = Self::assume_small(st, &cond.small_if[k]);
+            match bodies[k].or(default) {
+                Some(e) => self.emit(b, st, e, mode.again()),
+                None => {
+                    let o = self.owner(b, st);
+                    let x = self.bool_of(b, cond.c);
+                    let v = self.call1(b, st, "ck_nomatch", &[x, o]);
+                    Self::finish(b, mode, v);
+                }
+            }
+            Self::forget(st, added);
+        }
+        true
     }
 
     // ── calls from Rust ─────────────────────────────────────────────────────
@@ -1452,7 +1681,7 @@ impl<'p, M: Module> Gen<'p, M> {
         ctx.func.signature = s;
         {
             let mut b = FunctionBuilder::new(&mut ctx.func, &mut fctx);
-            let mut st = St { vars: Vec::new(), imm: HashSet::new(), owner: self.p.main, frefs: HashMap::new(), gvs: HashMap::new(), this: None };
+            let mut st = St { vars: Vec::new(), imm: HashSet::new(), ints: HashSet::new(), conds: HashMap::new(), owner: self.p.main, frefs: HashMap::new(), gvs: HashMap::new(), this: None };
             let entry = b.create_block();
             b.append_block_params_for_function_params(entry);
             b.switch_to_block(entry);

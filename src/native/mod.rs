@@ -413,4 +413,21 @@ mod tests {
             }
         })
     }
+
+    /// Small integers' inline paths (tests/run/small_int_edges.ck: overflow
+    /// checks, constants, comparisons branched on) compile for every
+    /// machine, whose overflow-checking instructions differ.
+    #[test]
+    fn integer_paths_compile_for_every_machine() {
+        crate::with_big_stack(|| {
+            let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/run/small_int_edges.ck");
+            let text = std::fs::read_to_string(path).unwrap();
+            let dir = std::path::Path::new(path).parent().unwrap();
+            let (e, main, staged, report) = crate::ready_to_run("small_int_edges.ck", &text, dir, false).map_err(|r| r.report).unwrap();
+            assert_eq!(report, "");
+            for (triple, _) in MACHINES {
+                object(&e.g, Some(&staged), main, isa(triple)).unwrap_or_else(|m| panic!("{triple}: {m}"));
+            }
+        })
+    }
 }
