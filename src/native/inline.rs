@@ -1,17 +1,20 @@
-//! A `match` on a small function's result, resolved (SPEC §14): an
-//! optimization over erased code (`Ir`), before closure conversion, so
-//! that `match xs` with `[]` and `x :: rest` on a known array builds
+//! Small functions inlined, and a `match` on their result resolved (SPEC
+//! §14): an optimization over erased code (`Ir`), before closure
+//! conversion, so that `min x y` at `Int` is a comparison in its caller,
+//! and `match xs` with `[]` and `x :: rest` on a known array builds
 //! neither the `Some` nor the tuple `uncons` returns. Three rewrites, each
 //! giving exactly the results, failures and effects (and their order) of
 //! the code it replaces:
 //!
-//! 1. **Inlining.** A `match` whose scrutinee is a call, with all its
-//!    arguments, of a definition's function that is not recursive (it
-//!    reaches no call of itself, through any definitions) and small (its
-//!    body at most `MAX_SIZE` nodes) gets that body instead, each argument
-//!    bound by a `let`, in order: each is computed once, before the body,
-//!    as the call computed them. An argument that is a variable or a
-//!    literal is substituted (computing one does nothing).
+//! 1. **Inlining.** A call, with all its arguments, of a definition's
+//!    function that is not recursive (it reaches no call of itself,
+//!    through any definitions) and small gets that function's body, each
+//!    argument bound by a `let`, in order: each is computed once, before
+//!    the body, as the call computed them. An argument that is a variable
+//!    or a literal is substituted (computing one does nothing). Small is
+//!    measured on the body after its own calls are inlined (each body is
+//!    rewritten once, in `done`): at most `CALL_SIZE` nodes anywhere, at
+//!    most `MAX_SIZE` where the call is a `match`'s scrutinee.
 //! 2. **Case of case.** A `match` on a `let`, an `if` or a `match` is
 //!    pushed past the `let` and into the branches, but only when no arm of
 //!    the outer `match` then appears in more than one place, so no code is
@@ -30,12 +33,18 @@ use crate::core::DefId;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-/// The largest body inlined: nodes of erased code (each variable, literal,
-/// call, constructor, operation, `let`, `match` and arm counts one). An
-/// array's `uncons` is 18.
+/// The largest body inlined where its call is a `match`'s scrutinee:
+/// nodes of erased code, after the calls in it are inlined (each variable,
+/// literal, call, constructor, operation, `let` and `match` counts one; a
+/// mark of whose code it is, none). An array's `uncons` is 18.
 pub const MAX_SIZE: usize = 40;
 
-/// How deep inlining goes inside code it inlined.
+/// The largest body inlined at any other call: `if x <= y then x else y`
+/// is 6, a call of two arguments 4.
+pub const CALL_SIZE: usize = 12;
+
+/// How deep the rewriting goes again inside code it inlined, where an
+/// argument is a constructor it may resolve.
 const MAX_DEPTH: usize = 4;
 
 type Owner = Option<DefId>;
@@ -45,6 +54,8 @@ pub struct Inliner<'a> {
     pub code: &'a HashMap<u32, Arc<Ir>>,
     /// Which definitions are recursive, as found so far.
     pub recursive: &'a mut HashMap<u32, bool>,
+    /// Each definition's code after this rewriting, as far as computed.
+    pub done: &'a mut HashMap<u32, Arc<Ir>>,
     /// The definition whose code each definition's is: itself, or the one
     /// a specialized copy copies (`spec`), which a runtime error names.
     pub origin: &'a dyn Fn(u32) -> u32,
@@ -54,6 +65,17 @@ impl Inliner<'_> {
     /// `ir`, the code of `owner` (or of no definition), rewritten.
     pub fn program(&mut self, ir: &Ir, owner: Owner) -> Ir {
         self.go(ir, owner, 0)
+    }
+
+    /// Definition `d`'s code, rewritten (once).
+    pub fn definition(&mut self, d: u32) -> Option<Arc<Ir>> {
+        if let Some(x) = self.done.get(&d) {
+            return Some(x.clone());
+        }
+        let code = self.code.get(&d)?.clone();
+        let out = Arc::new(self.go(&code, Some(DefId((self.origin)(d))), 0));
+        self.done.insert(d, out.clone());
+        Some(out)
     }
 
     fn go(&mut self, ir: &Ir, here: Owner, depth: usize) -> Ir {
@@ -80,16 +102,17 @@ impl Inliner<'_> {
                 };
                 self.case(s, c, here, depth)
             }
+            Ir::Call(..) => {
+                let call = ir.map_subterms(|x, _| self.go(x, here, depth));
+                self.inline(&call, CALL_SIZE, here, depth).unwrap_or(call)
+            }
             _ => ir.map_subterms(|x, _| self.go(x, here, depth)),
         }
     }
 
     /// `match s` with the (rewritten) arms `c`, in code of `here`.
     fn case(&mut self, s: Ir, c: IrCase, here: Owner, depth: usize) -> Ir {
-        let s = match self.inline(&s, depth) {
-            Some(body) => self.go(&body, here, depth + 1),
-            None => s,
-        };
+        let s = self.inline(&s, MAX_SIZE, here, depth).unwrap_or(s);
         if !c.lits.is_empty() || !pushable(&s) {
             return Ir::Case(Arc::new(s), Arc::new(c));
         }
@@ -104,22 +127,21 @@ impl Inliner<'_> {
         ir
     }
 
-    /// The body of the function `s` calls with all its arguments, bound to
-    /// them, if it is inlined.
-    fn inline(&mut self, s: &Ir, depth: usize) -> Option<Ir> {
-        if depth >= MAX_DEPTH {
-            return None;
-        }
+    /// The (rewritten) call `s`, in code of `here`, with the body of the
+    /// function it calls with all its arguments bound to them, if that
+    /// function is not recursive and its body, rewritten, is at most
+    /// `limit` nodes.
+    fn inline(&mut self, s: &Ir, limit: usize, here: Owner, depth: usize) -> Option<Ir> {
         let Ir::Call(h, args) = s else { return None };
         let Ir::Global(f) = &**h else { return None };
         let code = self.code.get(&f.0)?;
-        let mut n = 0;
-        let mut body = &**code;
-        while let Ir::Lam(_, b) = body {
-            n += 1;
-            body = b;
+        if lambdas(code).0 != args.len() || args.is_empty() || self.is_recursive(f.0) {
+            return None;
         }
-        if n == 0 || n != args.len() || size(body, MAX_SIZE + 1) > MAX_SIZE || self.is_recursive(f.0) {
+        // Not recursive: rewriting it doesn't come back here.
+        let code = self.definition(f.0)?;
+        let (_, body) = lambdas(&code);
+        if size(body, limit + 1) > limit {
             return None;
         }
         // The body's variables are its parameters, the first outermost:
@@ -127,6 +149,10 @@ impl Inliner<'_> {
         let mut out = at(Some(DefId((self.origin)(f.0))), clone(body));
         for (k, x) in args.iter().enumerate().rev() {
             out = bind(Arc::new(shift(x, k, 0)), out);
+        }
+        // A constructor passed in may now meet a `match` on it.
+        if depth < MAX_DEPTH && args.iter().any(|x| is_con(x)) {
+            out = self.go(&out, here, depth + 1);
         }
         Some(out)
     }
@@ -158,6 +184,26 @@ impl Inliner<'_> {
         }
         self.recursive.insert(f, found);
         found
+    }
+}
+
+/// How many lambdas code starts with, and what is under them.
+fn lambdas(ir: &Ir) -> (usize, &Ir) {
+    let mut n = 0;
+    let mut body = ir;
+    while let Ir::Lam(_, b) = body {
+        n += 1;
+        body = b;
+    }
+    (n, body)
+}
+
+/// Whether `x` is a constructor applied to its fields.
+fn is_con(x: &Ir) -> bool {
+    match x {
+        Ir::At(_, x) => is_con(x),
+        Ir::Con(..) => true,
+        _ => false,
     }
 }
 
@@ -381,9 +427,10 @@ fn shift_case(c: &IrCase, k: usize) -> IrCase {
     }
 }
 
-/// The number of nodes of `ir`, counting up to `limit`.
+/// The number of nodes of `ir` (a mark of whose code it is counts none),
+/// counting up to `limit`.
 pub fn size(ir: &Ir, limit: usize) -> usize {
-    let mut n = 1;
+    let mut n = usize::from(!matches!(ir, Ir::At(..)));
     for (s, _) in ir.subterms() {
         if n > limit {
             break;
@@ -547,7 +594,59 @@ mod tests {
     fn run(ir: &Ir) -> Ir {
         let code = HashMap::new();
         let mut rec = HashMap::new();
-        Inliner { code: &code, recursive: &mut rec, origin: &|d| d }.program(ir, None)
+        let mut done = HashMap::new();
+        Inliner { code: &code, recursive: &mut rec, done: &mut done, origin: &|d| d }.program(ir, None)
+    }
+
+    fn run_with(code: &HashMap<u32, Arc<Ir>>, ir: &Ir) -> Ir {
+        let mut rec = HashMap::new();
+        let mut done = HashMap::new();
+        Inliner { code, recursive: &mut rec, done: &mut done, origin: &|d| d }.program(ir, None)
+    }
+
+    fn calls(ir: &Ir) -> usize {
+        count(ir, &|x| matches!(x, Ir::Call(..)))
+    }
+
+    /// `\x y -> if x <= y then x else y`.
+    fn min() -> Arc<Ir> {
+        let le = Ir::Prim(super::super::ir::Op::Le, vec![a(Ir::Var(1)), a(Ir::Var(0))], false);
+        let body = Ir::Case(a(le), Arc::new(IrCase { branches: vec![(FALSE, 0, a(Ir::Var(0))), (TRUE, 0, a(Ir::Var(1)))], lits: vec![], default: None }));
+        a(Ir::Lam(None, a(Ir::Lam(None, a(body)))))
+    }
+
+    /// `min v0 v1 + 1`: the call, not a `match`'s scrutinee, is inlined,
+    /// and so is a call of a function calling it.
+    #[test]
+    fn inlines_a_call_anywhere() {
+        let mut code = HashMap::new();
+        code.insert(0, min());
+        // `\x y -> min x y`
+        code.insert(1, a(Ir::Lam(None, a(Ir::Lam(None, a(Ir::Call(a(Ir::Global(DefId(0))), vec![a(Ir::Var(1)), a(Ir::Var(0))])))))));
+        let add1 = |f: u32| Ir::Prim(super::super::ir::Op::Add, vec![a(Ir::Call(a(Ir::Global(DefId(f))), vec![a(Ir::Var(0)), a(Ir::Var(1))])), a(Ir::Lit(Lit::Num(1)))], false);
+        for f in [0, 1] {
+            let out = run_with(&code, &add1(f));
+            assert_eq!(calls(&out), 0);
+            assert_eq!(count(&out, &|x| matches!(x, Ir::Case(..))), 1);
+        }
+    }
+
+    /// A recursive function, and one too large outside a `match`, stay calls.
+    #[test]
+    fn leaves_recursive_and_large_calls() {
+        let mut code = HashMap::new();
+        // `\x -> f x`, calling itself.
+        code.insert(0, a(Ir::Lam(None, a(Ir::Call(a(Ir::Global(DefId(0))), vec![a(Ir::Var(0))])))));
+        // `\x -> x + x + … + x`, larger than `CALL_SIZE`.
+        let mut big = Ir::Var(0);
+        for _ in 0..CALL_SIZE {
+            big = Ir::Prim(super::super::ir::Op::Add, vec![a(big), a(Ir::Var(0))], false);
+        }
+        code.insert(1, a(Ir::Lam(None, a(big))));
+        for f in [0, 1] {
+            let call = Ir::Call(a(Ir::Global(DefId(f))), vec![a(Ir::Var(0))]);
+            assert_eq!(calls(&run_with(&code, &call)), 1);
+        }
     }
 
     /// `match (if v0 then None else Some (v0, v1))` with `None -> "none"` and

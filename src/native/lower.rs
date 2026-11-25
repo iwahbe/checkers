@@ -199,6 +199,8 @@ pub struct Program {
     pub debug: Option<u32>,
     /// Which definitions are recursive, for `inline`.
     pub recursive: HashMap<u32, bool>,
+    /// Each definition's code after `inline`, as far as computed.
+    pub inlined: HashMap<u32, Arc<Ir>>,
     /// Functions' copies specialized to known instances' dictionaries
     /// (`spec`), numbered after the definitions.
     pub specs: std::cell::RefCell<crate::native::spec::Specs>,
@@ -255,6 +257,7 @@ impl Program {
             main: NO_OWNER,
             debug: None,
             recursive: HashMap::new(),
+            inlined: HashMap::new(),
             workers: HashMap::new(),
         }
     }
@@ -389,8 +392,7 @@ impl<'a, 'g> Lowerer<'a, 'g> {
             self.p.defs.insert(d, shape);
         }
         for d in &new {
-            let origin = self.p.specs.borrow().origin(*d);
-            let ir = self.inline(&self.p.code[d].clone(), Some(DefId(origin)));
+            let ir = self.inline_def(*d);
             let (DefShape::Fn { func, .. } | DefShape::Caf { func }) = self.p.defs[d].clone() else { continue };
             self.owner = self.p.specs.borrow().origin(*d);
             self.next = 0;
@@ -454,18 +456,31 @@ pub fn show_table(g: &Globals) -> Option<Ir> {
 }
 
 impl Lowerer<'_, '_> {
-    /// `ir`, the code of `owner`, with `match`es on small functions' results
-    /// resolved (`inline`).
+    /// `ir`, the code of `owner`, with small functions inlined (`inline`).
     fn inline(&mut self, ir: &Ir, owner: Option<DefId>) -> Ir {
+        let ir = self.inliner(|i| i.program(ir, owner));
+        self.float_in(&ir)
+    }
+
+    /// Definition `d`'s code, with small functions inlined (`inline`).
+    fn inline_def(&mut self, d: u32) -> Ir {
+        let ir = self.inliner(|i| i.definition(d)).expect("a definition with code");
+        self.float_in(&ir)
+    }
+
+    fn inliner<T>(&mut self, f: impl FnOnce(&mut crate::native::inline::Inliner) -> T) -> T {
         let p = &mut *self.p;
         let specs = p.specs.borrow();
         let origin = |d: u32| specs.origin(d);
-        let ir = crate::native::inline::Inliner { code: &p.code, recursive: &mut p.recursive, origin: &origin }.program(ir, owner);
-        let defs = &p.defs;
+        f(&mut crate::native::inline::Inliner { code: &p.code, recursive: &mut p.recursive, done: &mut p.inlined, origin: &origin })
+    }
+
+    fn float_in(&self, ir: &Ir) -> Ir {
+        let defs = &self.p.defs;
         let pure_call = |d: DefId, n: usize| {
             matches!(defs.get(&d.0), Some(DefShape::Builtin { sym, keep, .. }) if keep.len() == n && checkers_rt::builtins::PURE.contains(sym))
         };
-        crate::native::inline::float_in(&ir, &pure_call)
+        crate::native::inline::float_in(ir, &pure_call)
     }
 
     fn fresh(&mut self) -> V {
