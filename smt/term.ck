@@ -177,6 +177,9 @@ export record Sig
     funs~Array FunDecl
     values~Array Witness
 
+fn no_datatypes -> ds : ds~List Datatype
+    []
+
 export fn empty_sig -> s : s~Sig
     Sig (array.from_list []) (array.from_list []) (array.from_list []) (array.from_list [])
 
@@ -1039,7 +1042,7 @@ fn any_group_in_index used index group ss -> r : used~(Nat -> Nat -> Bool), inde
 fn trues n -> r : n~Nat, r~List Bool
     if n == 0 then [] else True :: trues (n - 1)
 
-fn params_of count i -> r : count~Nat, i~Nat, r~List Sort
+export fn params_of count i -> r : count~Nat, i~Nat, r~List Sort
     if count == 0 then [] else Param i :: params_of (count - 1) (i + 1)
 
 # having values; `WTrue` (which fits no datatype) where none was found.
@@ -1623,6 +1626,191 @@ export lemma defs_well_sorted c : c~Context
     proof
         have defs_checked empty_sig c.commands
         have defs_ok_sig c (defs c)
+
+# ── Datatypes ────────────────────────────────────────────────────────────────
+
+# Whether datatype `e` of `sig` is as accepting it made it: its
+# constructors' field sorts use only its own parameters, and its kept
+# witness fits its sort with every datatype before it accepted.
+export fn datatype_ok sig e -> r : sig~Sig, e~Nat, r~Bool
+    if e < len sig.datatypes and e < len sig.values
+        let n = list.length sig.datatypes[e].params
+        ctors_ok sig n sig.datatypes[e].ctors and fits sig e n sig.values[e] (Data e (params_of n 0))
+    else
+        False
+
+# A witness that fits stays one when the signature grows.
+lemma fits_grow sig a b c w first np x s : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, w~Array Witness,
+                                           first~Nat, np~Nat, x~Witness, s~Sort, fits sig first np x s
+    ensures fits (grow sig a b c w) first np x s
+    proof
+        match (x, s)
+            (WConst v, Arr _ e)      -> have fits_grow sig a b c w first np v e
+            (WCon k fs, Data d args) ->
+                have ctor_grow sig a b c w d k
+                match ctor sig d k
+                    Some k_ctor ->
+                        have fits_all_grow sig a b c w first np fs (list.map (instantiate args) (field_sorts k_ctor.fields))
+                    None        -> auto
+            (WOf _ ws, Data _ args)  -> have fits_all_grow sig a b c w first np ws args
+            _                        -> auto
+
+lemma fits_all_grow sig a b c w first np xs ss : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl,
+                                                 w~Array Witness, first~Nat, np~Nat, xs~List Witness, ss~List Sort,
+                                                 fits_all sig first np xs ss
+    ensures fits_all (grow sig a b c w) first np xs ss
+    proof
+        match (xs, ss)
+            (x :: xr, s :: sr) ->
+                have fits_grow sig a b c w first np x s
+                have fits_all_grow sig a b c w first np xr sr
+            _                  -> auto
+
+# More datatypes accepted before: a witness that fits still does.
+lemma fits_later sig first later np x s : sig~Sig, first~Nat, later~Nat, first <= later, np~Nat, x~Witness, s~Sort,
+                                          fits sig first np x s
+    ensures fits sig later np x s
+    proof
+        match (x, s)
+            (WConst v, Arr _ e)      -> have fits_later sig first later np v e
+            (WCon k fs, Data d args) ->
+                match ctor sig d k
+                    Some k_ctor -> have fits_all_later sig first later np fs (list.map (instantiate args) (field_sorts k_ctor.fields))
+                    None        -> auto
+            (WOf _ ws, Data _ args)  -> have fits_all_later sig first later np ws args
+            _                        -> auto
+
+lemma fits_all_later sig first later np xs ss : sig~Sig, first~Nat, later~Nat, first <= later, np~Nat, xs~List Witness,
+                                                ss~List Sort, fits_all sig first np xs ss
+    ensures fits_all sig later np xs ss
+    proof
+        match (xs, ss)
+            (x :: xr, s :: sr) ->
+                have fits_later sig first later np x s
+                have fits_all_later sig first later np xr sr
+            _                  -> auto
+
+# A datatype as accepted stays so when the signature grows.
+lemma datatype_ok_grow sig a b c w e : sig~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl, w~Array Witness, e~Nat,
+                                       datatype_ok sig e
+    ensures datatype_ok (grow sig a b c w) e
+    proof
+        let n = list.length sig.datatypes[e].params
+        have ctors_grow sig a b c w n sig.datatypes[e].ctors
+        have fits_grow sig a b c w e n sig.values[e] (Data e (params_of n 0))
+
+# The `i`-th of datatypes that `datatypes_ok` holds of has well-formed
+# constructors.
+lemma datatypes_ok_at sig ds i : sig~Sig, ds~List Datatype, datatypes_ok sig ds, i~Nat, i < list.length ds
+    ensures ctors_ok sig (list.length (array.from_list ds)[i].params) (array.from_list ds)[i].ctors
+    proof
+        match ds
+            d :: rest ->
+                have array.from_list_cons d rest i
+                if i > 0 then have datatypes_ok_at sig rest (i - 1) else auto
+            []        -> auto
+
+# Whether datatype `e`'s kept witness fits its sort, with `n` parameters,
+# where the datatypes before `first` are accepted.
+fn kept_fits sig first n e -> r : sig~Sig, first~Nat, n~Nat, e~Nat, r~Bool
+    e < len sig.values and fits sig first n sig.values[e] (Data e (params_of n 0))
+
+# What `first_unfit` finding none says of the `k`-th datatype after `j`.
+lemma first_unfit_at sig first ds j k : sig~Sig, first~Nat, ds~List Datatype, j~Nat, first_unfit sig first ds j == None,
+                                        k~Nat, k < list.length ds
+    ensures kept_fits sig first (list.length (array.from_list ds)[k].params) (first + j + k)
+    proof
+        match ds
+            d :: rest ->
+                have array.from_list_cons d rest k
+                if k > 0 then have first_unfit_at sig first rest (j + 1) (k - 1) else auto
+            []        -> auto
+
+# Each datatype a checked `declare-datatypes` adds is as accepting it made
+# it.
+lemma declared_ok sig ds k : sig~Sig, ds~List Datatype, check_command sig (DeclareDatatypes ds) == Ok (), k~Nat,
+                             k < list.length ds
+    ensures datatype_ok (extend sig (DeclareDatatypes ds)) (len sig.datatypes + k)
+    proof
+        let big = extend sig (DeclareDatatypes ds)
+        let first = len sig.datatypes
+        have check_datatypes big ds == Ok ()
+        have check_values big first ds == Ok ()
+        have first_unfit big first ds 0 == None
+        have check_datatypes_ok big ds
+        have datatypes_ok_at big ds k
+        have first_unfit_at big first ds 0 k
+        have big.datatypes[first + k] == (array.from_list ds)[k]
+        let n = list.length (array.from_list ds)[k].params
+        have fits_later big first (first + k) n big.values[first + k] (Data (first + k) (params_of n 0))
+        have len (array.from_list ds) == list.length ds
+        have big.datatypes == sig.datatypes ++ array.from_list ds
+        have first + k < len big.datatypes
+        have big.datatypes[first + k] == (array.from_list ds)[k]
+        have kept_fits big (first + k) n (first + k)
+        have list.length big.datatypes[first + k].params == n
+        have ctors_ok big n big.datatypes[first + k].ctors
+        have first + k < len big.values
+        have fits big (first + k) n big.values[first + k] (Data (first + k) (params_of n 0))
+
+# A checked command keeps every datatype as accepting it made it.
+lemma extend_ok sig cmd : sig~Sig, cmd~Command, check_command sig cmd == Ok (),
+                          before: forall x : x~Nat, x < len sig.datatypes implies datatype_ok sig x
+    ensures forall y : y~Nat, y < len (extend sig cmd).datatypes implies datatype_ok (extend sig cmd) y
+    proof
+        let no_sorts = array.from_list []
+        let no_dts = array.from_list []
+        let no_funs = array.from_list []
+        let no_vals = array.from_list []
+        have sig.sorts ++ no_sorts == sig.sorts
+        have sig.datatypes ++ no_dts == sig.datatypes
+        have sig.funs ++ no_funs == sig.funs
+        have sig.values ++ no_vals == sig.values
+        match cmd
+            DeclareDatatypes ds ->
+                let dts = array.from_list ds
+                let vals = array.from_list (group_values sig ds)
+                have extend sig cmd == grow sig no_sorts dts no_funs vals
+                have len dts == list.length ds
+                if y < len sig.datatypes
+                    have before y
+                    have datatype_ok_grow sig no_sorts dts no_funs vals y
+                else
+                    have declared_ok sig ds (y - len sig.datatypes)
+            DeclareSort d       ->
+                have before y
+                have extend sig cmd == grow sig (array.from_list [d]) no_dts no_funs no_vals
+                have datatype_ok_grow sig (array.from_list [d]) no_dts no_funs no_vals y
+            DeclareFun f        ->
+                have before y
+                have extend sig cmd == grow sig no_sorts no_dts (array.from_list [f]) no_vals
+                have datatype_ok_grow sig no_sorts no_dts (array.from_list [f]) no_vals y
+            DefineFuns _ ds     ->
+                have before y
+                have extend sig cmd == grow sig no_sorts no_dts (array.from_list (def_funs ds)) no_vals
+                have datatype_ok_grow sig no_sorts no_dts (array.from_list (def_funs ds)) no_vals y
+            _                   -> have before y
+
+lemma kept_all sig cmds e : sig~Sig, cmds~List Command, check_all sig cmds == Ok (),
+                            before: forall x : x~Nat, x < len sig.datatypes implies datatype_ok sig x, e~Nat,
+                            e < len (extend_all sig cmds).datatypes
+    ensures datatype_ok (extend_all sig cmds) e
+    proof
+        match cmds
+            []          -> have before e
+            cmd :: rest ->
+                have check_command sig cmd == Ok ()
+                have extend_ok sig cmd
+                have kept_all (extend sig cmd) rest e
+
+# Every datatype of a context is as accepting it made it: its
+# constructors' fields use only its parameters, and its kept witness fits
+# its sort (`term.fits`), with the datatypes before it accepted.
+export lemma datatypes_hold c : c~Context
+    ensures forall e : e~Nat, e < len (signature c).datatypes implies datatype_ok (signature c) e
+    proof
+        have len (array.from_list no_datatypes) == 0
+        have kept_all empty_sig c.commands e
 
 # ── What writing a context needs ─────────────────────────────────────────────
 # Every number in a well-formed context names a declaration, and every

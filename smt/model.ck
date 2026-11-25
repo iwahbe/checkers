@@ -333,10 +333,6 @@ fn values_of sig ss -> r : sig~Sig, ss~List Sort, r~Option (List Value)
                 (Some v, Some vs) -> Some (v :: vs)
                 _                 -> None
 
-# `Param from`, …, `Param (from + n - 1)`.
-fn params_of n from -> r : n~Nat, from~Nat, r~List Sort
-    if n == 0 then [] else Param from :: params_of (n - 1) (from + 1)
-
 # Witness `w` of a value of template sort `t` (whose `Param k` is `args`'
 # `k`-th sort), where `WParam k` is `vs`' `k`-th value; it is part of
 # datatype `d`'s kept witness, so a `WOf e` in it has `e < d`.
@@ -385,7 +381,7 @@ fn witness_values sig d args vs ws ts -> r : sig~Sig, d~Nat, args~List Sort, vs~
 fn kept_at sig e args vs -> r : sig~Sig, e~Nat, args~List Sort, vs~List Value, r~Option Value
     decreasing (e, witness_size (if e < len sig.values then sig.values[e] else WTrue) + 1)
     if e < len sig.values and e < len sig.datatypes
-        witness_value sig e args vs sig.values[e] (Data e (params_of (list.length sig.datatypes[e].params) 0))
+        witness_value sig e args vs sig.values[e] (Data e (term.params_of (list.length sig.datatypes[e].params) 0))
     else
         None
 
