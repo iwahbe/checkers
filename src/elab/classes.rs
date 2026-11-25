@@ -505,9 +505,10 @@ fn with_types(blk: &Block, types: &[(String, Expr)]) -> Block {
         .iter()
         .filter(|(n, _)| n != "_")
         // Elaborated as a type: `Ascii` is the type, not its record's constructor.
+        // `ghost`, as the class's parameter is.
         .map(|(n, ty)| {
             let as_type = ast::RefineTy { param: None, own: false, dom: ty.clone(), arrow: None, preds: Vec::new() };
-            Stmt::Let(Pattern { kind: PatKind::Var(n.clone()), span: ty.span }, Expr { kind: ExprKind::Refine(Box::new(as_type)), span: ty.span })
+            Stmt::GhostLet(ident(n, ty.span), Expr { kind: ExprKind::Refine(Box::new(as_type)), span: ty.span })
         })
         .collect();
     if stmts.is_empty() {
@@ -670,6 +671,11 @@ impl Rewrite<'_> {
                 Stmt::Have(e) => Stmt::Have(self.expr(e, &b)),
                 Stmt::HaveType(x, t) => Stmt::HaveType(x.clone(), self.expr(t, &b)),
                 Stmt::Expr(e) => Stmt::Expr(self.expr(e, &b)),
+                Stmt::GhostLet(x, e) => {
+                    let e = self.expr(e, &b);
+                    b.push(x.name.clone());
+                    Stmt::GhostLet(x.clone(), e)
+                }
             });
         }
         Block { stmts, result: Box::new(self.expr(&blk.result, &b)), span: blk.span }

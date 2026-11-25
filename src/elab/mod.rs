@@ -479,12 +479,15 @@ pub struct Late {
 
 /// A call of a class's function with preconditions, whose dictionary may
 /// not be found yet (#225): the context, the call, and where it is.
+/// `typed`: its type is its known instance's result type already
+/// (`instance_call_type`).
 pub struct PendingPre {
     pub cx: Cx,
     pub call: Tm,
     pub span: Span,
     pub owner: Option<DefId>,
     pub in_spec: usize,
+    pub typed: bool,
 }
 
 /// The postconditions to check at each value the current function returns.
@@ -605,6 +608,9 @@ pub struct Elab {
     /// A type's conditions on its parameters, over the parameters (#136):
     /// obligations where the type is applied, facts in its fields.
     pub ty_conds: HashMap<TyId, Vec<Pred>>,
+    /// A type's parameters' typings after the first (`n~Int, n~Nat`), with
+    /// the span of each, until their refinements join its conditions.
+    pub ty_param_typings: HashMap<TyId, Vec<(usize, Tm, usize, Span)>>,
     /// While a signature's types are elaborated, the type applications whose
     /// conditions are checked once all its preconditions are known (#136).
     pub ty_cond_defer: Option<Vec<(Span, TyId, Vec<Val>)>>,
@@ -620,6 +626,13 @@ pub struct Elab {
     pub in_spec: usize,
     /// Inside a lemma's proof, which is never compiled (D125).
     pub in_proof: usize,
+    /// Inside an argument to a `ghost` parameter, or a type bound `ghost`:
+    /// erased, so a `ghost` variable used there isn't used at run time.
+    pub in_erased: usize,
+    /// Where each `ghost` local of a function is used outside a type, a
+    /// specification, a proof or an erased argument, in order: the use a
+    /// usage error (E0403) points at.
+    pub ghost_uses: HashMap<(DefId, String), Vec<Span>>,
     /// Type parameters compared with `==` in compiled code, by function and
     /// binder position (D125 b).
     pub eq_reqs: HashMap<DefId, BTreeMap<usize, EqReq>>,
@@ -902,6 +915,7 @@ impl Elab {
             transparent: HashSet::new(),
             con_invs: HashMap::new(),
             ty_conds: HashMap::new(),
+            ty_param_typings: HashMap::new(),
             ty_cond_defer: None,
             alias_preds: HashMap::new(),
             alias_subject: HashMap::new(),
@@ -909,6 +923,8 @@ impl Elab {
             arg_of: None,
             in_spec: 0,
             in_proof: 0,
+            in_erased: 0,
+            ghost_uses: HashMap::new(),
             eq_reqs: HashMap::new(),
             desc_reqs: HashMap::new(),
             insts: Vec::new(),
@@ -1833,12 +1849,13 @@ impl Elab {
     pub fn oblige(&mut self, cx: &Cx, span: Span, kind: ObKind, text: String, goal: Val, only_if_nat: Option<Val>) {
         // In a specification only a callee's precondition is checked: a spec
         // mustn't speak of a call that can't be made (M17, D118). A
-        // specification elaborated twice (a lemma's `ensures`) obliges once.
+        // specification elaborated twice (a lemma's `ensures`) obliges once;
+        // each of several conditions at one place is its own obligation.
         if self.in_spec > 0 {
             if !matches!(kind, ObKind::Pre { .. } | ObKind::TypeParams { .. }) {
                 return;
             }
-            if self.obligations.iter().any(|o| o.span == span && o.module == self.cur && o.kind == kind) {
+            if self.obligations.iter().any(|o| o.span == span && o.module == self.cur && o.kind == kind && o.text == text) {
                 return;
             }
         }

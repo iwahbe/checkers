@@ -1,0 +1,15 @@
+error[E0403]: `a` is `ghost`: it may only appear in types and constraints, but `by_value` uses it at runtime
+  --> ghost_type_runtime.ck:16:10
+   |
+16 |     keep a
+   |          ^ used at runtime here
+   = help: remove `ghost` if the value is needed at runtime
+
+error[E0403]: `t` is `ghost`: it may only appear in types and constraints, but `Make Bool.make` uses it at runtime
+  --> ghost_type_runtime.ck:24:14
+   |
+24 |         keep t
+   |              ^ used at runtime here
+   = help: remove `ghost` if the value is needed at runtime
+
+ghost_type_runtime.ck: 2 errors, 0 warnings

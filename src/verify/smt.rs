@@ -212,10 +212,10 @@ pub struct Focus {
 }
 
 impl Focus {
-    /// Reflect the definitions `goal` mentions; leave the rest
+    /// Reflect the definitions `terms` mention; leave the rest
     /// uninterpreted. `None` if that is all or none of them.
-    fn for_goal(&self, goal: &str) -> Option<String> {
-        let (on, off): (Vec<_>, Vec<_>) = self.group.iter().partition(|(n, ..)| goal.contains(n.as_str()));
+    fn mentioned_in(&self, terms: &str) -> Option<String> {
+        let (on, off): (Vec<_>, Vec<_>) = self.group.iter().partition(|(n, ..)| terms.contains(n.as_str()));
         if on.is_empty() || off.is_empty() {
             return None;
         }
@@ -250,6 +250,13 @@ pub struct Query {
     /// quantified axioms: weaker again, and Z3 doesn't unfold functions
     /// whose results the facts in scope already give (M12).
     pub focused: Option<String>,
+    /// Only the definitions the facts in scope mention reflected, without
+    /// the quantified axioms: the premises unfolded, the goal's functions
+    /// not. Z3 unfolds a recursive function without end when the negated
+    /// goal rules out its base case's result: each unfolding is forced by
+    /// propagation alone, which Z3's limit on unfolding depth doesn't bound,
+    /// so it never gets to the case split a premise's body needs.
+    pub premised: Option<String>,
     /// Why facts in scope could not be given to the solver.
     pub dropped: Vec<String>,
     /// Some facts in scope are `forall`s, not given to the solver (D137):
@@ -3668,9 +3675,9 @@ impl<'a> Builder<'a> {
             let decls: String = opaque_defs.iter().map(|d| format!("{d}\n")).collect();
             format!("{}{decls}{}", &text[..defs_at], &text[defs_end..])
         });
-        let focused = focus
-            .for_goal(&goal)
-            .map(|d| format!("{}{d}{}{}", &text[..defs_at], &text[defs_end..split], &text[split + axioms.len()..]));
+        let with_defs = |d: String| format!("{}{d}{}{}", &text[..defs_at], &text[defs_end..split], &text[split + axioms.len()..]);
+        let focused = focus.mentioned_in(&goal).map(with_defs);
+        let premised = focus.mentioned_in(&facts.join("\n")).map(with_defs);
         // Tables' elements go only in the full query: the weaker ones first
         // try without them, and most proofs about a table need only its
         // length (D153).
@@ -3688,6 +3695,7 @@ impl<'a> Builder<'a> {
             without_axioms,
             facts_only,
             focused,
+            premised,
             dropped,
             foralls,
             shown: self.shown,
