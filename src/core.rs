@@ -1020,8 +1020,15 @@ pub fn flat_parts(g: &Globals, vs: &[Val], ty: bool) -> Vec<Val> {
     vs
 }
 
+// A projection or a field read doesn't unfold what it reads: a call's
+// result stays a call until something needs its value (`force`, which
+// unfolds the head and reads the field then). Reading a field of
+// `wrap (build 4000 [])` must not run `build` while checking. A field that
+// holds a type is read at once: it is a type checking needs (a class's type
+// from its instance's dictionary, `Seq.Elem String` is `Char`).
+
 fn proj(g: &Globals, v: Val, i: usize, rest: bool) -> Val {
-    match force(g, v.clone()) {
+    match force_meta(g, v) {
         Val::Tuple(vs) => {
             let vs = flat_parts(g, &vs, false);
             match vs.len() {
@@ -1029,26 +1036,28 @@ fn proj(g: &Globals, v: Val, i: usize, rest: bool) -> Val {
                 _ => vs.get(i).cloned().unwrap_or(Val::Error),
             }
         }
-        f @ Val::Neutral(..) => match stuck_base(g, v, f) {
-            Val::Neutral(h, sp) => with_elim(h, &sp, Elim::Proj(i, rest)),
-            _ => Val::Error,
-        },
+        Val::Neutral(h, sp) => with_elim(h, &sp, Elim::Proj(i, rest)),
         _ => Val::Error,
     }
 }
 
 fn field(g: &Globals, v: Val, c: ConId, i: usize) -> Val {
-    match force(g, v.clone()) {
+    match force_meta(g, v) {
         // A string literal's bytes (#170).
         Val::Lit(Lit::Str(s)) if Some(g.cons[c.0 as usize].ty) == g.well_known.string => Val::Lit(Lit::Bytes(Rc::from(s.as_bytes()))),
         Val::Con(_, args) => {
             let np = g.arity_ty(g.cons[c.0 as usize].ty);
             args.get(np + i).cloned().unwrap_or(Val::Error)
         }
-        f @ Val::Neutral(..) => match stuck_base(g, v, f) {
-            Val::Neutral(h, sp) => with_elim(h, &sp, Elim::Field(c, i)),
+        v @ Val::Neutral(..) if g.is_type_field(c, i) => match force(g, v.clone()) {
+            f @ (Val::Con(..) | Val::Lit(_)) => field(g, f, c, i),
+            f @ Val::Neutral(..) => match stuck_base(g, v, f) {
+                Val::Neutral(h, sp) => with_elim(h, &sp, Elim::Field(c, i)),
+                _ => Val::Error,
+            },
             _ => Val::Error,
         },
+        Val::Neutral(h, sp) => with_elim(h, &sp, Elim::Field(c, i)),
         _ => Val::Error,
     }
 }

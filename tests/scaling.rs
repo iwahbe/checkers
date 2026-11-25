@@ -1,7 +1,7 @@
 //! Checking takes time in proportion to the program: a chain of n operators
 //! (`1 + 1 + … + 1`) is a tree n deep, and work done again at each level for
-//! everything below it makes the time grow with n². And running a call while
-//! checking takes time in proportion to its steps.
+//! everything below it makes the time grow with n². And a literal in the
+//! program doesn't make checking slower than the work its types need.
 
 use std::path::Path;
 use std::process::Command;
@@ -93,6 +93,19 @@ fn running_a_call_while_checking_takes_linear_time() {
         format!(
             "module {name}\n\n{BUILD}fn pick xs -> t : xs~List Nat, t~Type\n    match xs\n        []     -> Bool\n        _ :: _ -> Nat\n\n\
              export fn by_type -> v : v~pick (build {n} [])\n    0\n"
+        )
+    });
+}
+
+/// A field of a call's result, where no type needs the call's value:
+/// checking doesn't run it, so the literal doesn't change the time. (Running
+/// it would stop at the unfolding limit, still many times as long.)
+#[test]
+fn reading_a_field_of_a_call_does_not_run_it() {
+    assert_literal_costs("by_field", 2000, 2_000_000, 3.0, |name, n| {
+        format!(
+            "module {name}\n\nrecord Box\n    value~Nat\n\n{BUILD}fn wrap xs -> r : xs~List Nat, r~Box\n    match xs\n        []     -> Box 0\n        _ :: _ -> Box 1\n\n\
+             export fn by_field -> v : v~Nat\n    (wrap (build {n} [])).value\n"
         )
     });
 }
