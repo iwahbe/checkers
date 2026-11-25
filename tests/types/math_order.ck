@@ -1,5 +1,5 @@
 # `std.math`'s `min` and `max` work in any type's order: at a type
-# parameter through their lemmas, at a known instance through its
+# parameter with `Ord`'s lemmas, at a known instance through its
 # definitions.
 module math_order
 
@@ -14,13 +14,15 @@ instance Ord Rank
         x.n <= y.n
 
 fn lower x y -> r : Ord a, x~a, y~a, r~a, r <= x, r <= y
-    have math.min_le_left x y
-    have math.min_le_right x y
+    have refl x
+    have refl y
+    have total x y
     math.min x y
 
 fn upper x y -> r : Ord a, x~a, y~a, r~a, x <= r, y <= r
-    have math.le_max_left x y
-    have math.le_max_right x y
+    have refl x
+    have refl y
+    have total x y
     math.max x y
 
 fn one_of x y -> r : Ord a, x~a, y~a, r~Bool, r

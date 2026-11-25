@@ -1,4 +1,5 @@
-# What `std.math`'s definitions don't give: `pow n k > 0` needs induction.
+# What `std.math`'s definitions and `pow`'s promises don't give: a fact
+# about `pow n k` for every `k` needs induction.
 module math_unknown
 
 import std.math
@@ -6,5 +7,5 @@ import std.math
 fn min_left x y -> r : x~Int, y~Int, r~Int, r < x
     math.min x y
 
-fn positive n k -> r : n~Int, n > 0, k~Nat, r~Int, r > 0
+fn grows n k -> r : n~Int, n >= 2, k~Nat, r~Int, r > k
     math.pow n k

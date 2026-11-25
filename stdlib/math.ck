@@ -11,35 +11,11 @@ export transparent fn min x y -> r : Ord a, x~a, y~a, r~a
 export transparent fn max x y -> r : Ord a, x~a, y~a, r~a
     if x >= y then x else y
 
-# `min x y` comes before or with `x`.
-export lemma min_le_left x y : Ord a, x~a, y~a
-    ensures min x y <= x
-    proof
-        have refl x
-        have total x y
-
-# `min x y` comes before or with `y`.
-export lemma min_le_right x y : Ord a, x~a, y~a
-    ensures min x y <= y
-    proof
-        have refl y
-
-# `max x y` comes after or with `x`.
-export lemma le_max_left x y : Ord a, x~a, y~a
-    ensures x <= max x y
-    proof
-        have refl x
-        have total x y
-
-# `max x y` comes after or with `y`.
-export lemma le_max_right x y : Ord a, x~a, y~a
-    ensures y <= max x y
-    proof
-        have refl y
-
 # `n` multiplied by itself `k` times: `pow n 0` is `1`, and
-# `pow n (k + 1)` is `n * pow n k`.
-export transparent fn pow n k -> r : n~Int, k~Nat, r~Int
+# `pow n (k + 1)` is `n * pow n k`. It is never negative for a base that
+# isn't, and positive for a positive base, so `pow 10 k` is a `Nat` of at
+# least 1.
+export transparent fn pow n k -> r : n~Int, k~Nat, r~Int, n >= 0 implies r >= 0, n > 0 implies r > 0
     decreasing k
     if k == 0 then 1 else n * pow n (k - 1)
 
