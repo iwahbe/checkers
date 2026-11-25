@@ -1,6 +1,6 @@
 -- stdout
 z3: unsat
-the negated goal: fails
+the negated goal: not determined: a `lambda`, which has no normal form
 refutes: no
 -- stderr
 -- exit 0

@@ -52,7 +52,7 @@ import std.bytes
 import std.list
 import smtlib (Query, SExpr, Leaf, Node, Symbol)
 import term (Context, Command, DefineFuns, Def, Axiom, Head, Fun, Prim, Sel, ConstArr, Div, Mod, SeqNth, Select, Store, MapAdd)
-import model (Value, Truth, Unknown, NotGiven, LambdaNotGiven, OutOfFuel, ArraysCompared, NotTerminating, WrongSort, IllSorted)
+import model (Value, Truth, Unknown, NotGiven, LambdaNotGiven, OutOfFuel, NotTerminating, WrongSort, IllSorted)
 import answer (Verdict, Sat, Unsat, GaveUp, Other)
 import z3model
 
@@ -97,7 +97,7 @@ fn unpatterned xs -> r : xs~List Axiom, r~Bool
 
 # Why a term has no value, in words; `kind` leaves out the names, to count
 # reasons by.
-let NO_NORMAL_FORM = b"an array with no normal form: its index sort is finite and not `Bool`, or not one `smt.model` can show infinite, or it holds an array Z3 printed without one"
+let NO_NORMAL_FORM = b"an array with no normal form: a store at an index sort `smt.model` can't show finite and listed, or unbounded"
 
 fn reason c u kind -> r : c~Context, u~Unknown, kind~Bool, r~Bytes
     match u
@@ -118,9 +118,8 @@ fn reason c u kind -> r : c~Context, u~Unknown, kind~Bool, r~Bytes
         NotGiven (Prim MapAdd) -> NO_NORMAL_FORM
         NotGiven (ConstArr _)  -> NO_NORMAL_FORM
         NotGiven _             -> b"something Z3 didn't print"
-        LambdaNotGiven         -> b"a `lambda`, which `smt.model` names no array for"
+        LambdaNotGiven         -> b"a `lambda`, which has no normal form"
         OutOfFuel              -> b"evaluation needed more levels than it may go down"
-        ArraysCompared         -> b"two arrays compared, one of them a `lambda` or printed by Z3 without a normal form"
         NotTerminating         -> b"a definition not marked terminating"
         WrongSort              -> b"a value Z3 printed isn't of its term's sort"
         IllSorted              -> b"a term that isn't well-sorted"

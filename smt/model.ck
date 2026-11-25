@@ -7,36 +7,41 @@
 #
 # **A model is an SMT-LIB structure.** Every sort is a set of elements and
 # every symbol a function of them. An uninterpreted sort's elements are
-# `Element n`; an array sort's are `ArrayElem s id`, as in SMT-LIB's
-# `ArraysEx`, whose array sorts are sets of elements of the structure (2.6,
-# §5.3). The model says what every operation that makes an array gives:
-# `const`, `store`, `map +` (`sum`) and `lambda`, and what `select` reads.
-# Two arrays are equal exactly when they are the same element, so equality
-# is decided for every pair of values, and a model's function may take
-# arrays. What makes these SMT-LIB's arrays (read over write, extensionality
-# and the rest) is not computed here: `arrays_ok` below states it, for a
-# theorem to take as its premises.
+# `Element n`, and an array sort's are `ArrayElem k`, numbers the model
+# names (`Model.array_in`), as in SMT-LIB's `ArraysEx`, whose array sorts
+# are sets of elements of the structure (2.6, §5.3). The model says what
+# every operation that makes an array gives (`const`, `store`, `map +` as
+# `sum`, `lambda`) and what `select` reads. Two arrays are equal exactly
+# when they are the same element, so equality is decided for every pair of
+# values, and a model's function may take arrays. What makes these
+# SMT-LIB's arrays (read over write, extensionality and the rest) is not
+# computed here: `arrays_ok` below states it, for a theorem to take as its
+# premise.
 #
 # **Three answers.** Evaluating a term gives its value, or `Unknown` with a
 # reason: the model doesn't say (a partial model, such as the values Z3
-# printed), evaluation ran out of fuel, or the model gave a value of the
-# wrong sort. `holds c m t` is true only when `t` evaluates to true, and
-# `fails c m t` only when it evaluates to false; when neither, nothing is
-# claimed. A definite answer is always the term's value in the structure
-# the model describes.
+# printed), evaluation ran out of fuel (in `refutes`), or the model gave a
+# value of the wrong sort. `holds c m t` is true only when `t` evaluates to
+# true, and `fails c m t` only when it evaluates to false; when neither,
+# nothing is claimed. A definite answer is always the term's value in the
+# structure the model describes.
 #
 # **Connectives are Kleene's.** `and` is false as soon as one argument is
 # false, whatever the others are, and true only if all are true; `or`
 # dually; `=>` is `(not a) or b`. This is exact: every term has a value in
 # every structure, so a conjunction with a false argument is false whatever
 # the unknown arguments' values are. `ite` evaluates its condition, then
-# only the branch it chooses.
+# only the branch it chooses. So a definite answer depends only on the
+# parts it evaluated: an argument it didn't need may be unknown, or even a
+# value of the wrong sort from the model, and the answer stands, because
+# it is the same for every value that argument could have. That
+# monotonicity is the argument here; it is not yet a lemma.
 #
 # **Terms of the context only.** `eval` and `eval_unfolding` evaluate a term
 # only if it has a sort in the context with no variables free, `holds_at`
 # an axiom only if it is one of the context's (`term.axiom_ok`), and
-# `refutes` a goal only if it is a closed `Bool` term of it (`term.fact_ok`); anything
-# else is `IllSorted`, or not held.
+# `refutes` a goal only if it is a closed `Bool` term of it
+# (`term.fact_ok`); anything else is `IllSorted`, or not held.
 #
 # **Two modes.** `eval`, `holds`, `fails`, `holds_all` and `holds_at` are the
 # meaning: every function, defined ones included, is what `Model.funs` says,
@@ -59,18 +64,17 @@
 # satisfies `definition_axiom n d` at all values (`holds_at`).
 #
 # **`refutes` builds its arrays.** It can't take `arrays_ok` on trust, so it
-# evaluates in `normal_arrays sig m`: the same model with arrays named by a
-# normal form (a constant and the stores that differ from it, in order),
-# so that two arrays are the same element exactly when they are the same
-# function. Every constant array has one; stores have one at `Bool`, at a
+# evaluates in `normal_arrays sig m`: the given model with its arrays
+# replaced by normal forms (a constant and the stores that differ from it,
+# in order), each array the number `code` gives its normal form. Only those
+# numbers are arrays there, so every array `refutes` sees is one, and two
+# arrays are the same element exactly when they are the same function.
+# Every constant array has a normal form; stores have one at `Bool`, at a
 # domain the model lists, and at sorts this module can show unbounded
-# (`Int`, sequences, a countable domain, arrays of those), but not at a
-# datatype, which may be finite (`NotGiven`). Z3 prints some arrays with no
-# normal form (a `lambda` over a range): those stay `Named`, read through
-# what Z3 printed. A `lambda` is read by running its body, within the fuel.
-# Comparing two different arrays where one holds a `Named` array or a
-# `lambda` is `ArraysCompared`.
-
+# (`Int`, sequences, a countable domain, arrays of those), not at a
+# datatype, which may be finite. A `lambda` has none (`LambdaNotGiven`),
+# and nor has an array Z3 prints as a function over a range.
+#
 # **Quantified axioms.** `holds_at c m a vs` evaluates the body of axiom `a`
 # at the values `vs`. A `forall` over an infinite sort can't be evaluated, so
 # `refutes` is false for a context with any axiom, patterned or not (an
@@ -79,10 +83,10 @@
 #
 # **What a `Model` can't represent** (for #85, model limits). A `Model` is a
 # Checkers value, so its functions are computable, and its domains are
-# countable (`Element n`, `ArrayElem s (Named k)`). Every first-order
-# structure has a countable elementary substructure, which covers arrays
-# too, since `ArraysEx` with extensionality is first-order; computability is
-# the limit this module adds.
+# countable (`Element n`, `ArrayElem k`). Every first-order structure has a
+# countable elementary substructure, which covers arrays too, since
+# `ArraysEx` with extensionality is first-order; computability is the limit
+# this module adds.
 
 module model
 
@@ -105,27 +109,15 @@ import term (Head, Fun, Con, Is, Sel, Num, Boolean, Prim, ConstArr, EmptySeq, Te
 #   constructor.
 # - `Element n`: the `n`-th element of an uninterpreted sort (`declare-sort`).
 #   Elements with different numbers are different.
-# - `ArrayElem s id`: the element `id` of array sort `s`. Elements with
-#   different `id`s are different.
+# - `ArrayElem k`: the `k`-th element of an array sort, if the model names
+#   it (`Model.array_in`). Elements with different numbers are different.
 export enum Value
     Truth b              : b~Bool
     Integer n            : n~Int
     Sequence xs          : xs~List Value
     Constructed k fields : k~Nat, fields~List Value
     Element n            : n~Nat
-    ArrayElem s id       : s~Sort, id~ArrayId
-
-# Which element of an array sort: the model's `k`-th (`Named k`), or the
-# one a normal form names (`Normal base stores`: `base` everywhere except at
-# the indices of `stores`). In the meaning both are names and nothing more;
-# `normal_arrays` gives `Normal` ones their meaning as functions. `Closure`
-# is a `lambda` in `refutes`, read by evaluating its body (the values and
-# sorts of the variables around it, and the sort of its own); no model
-# gives one.
-export enum ArrayId
-    Named k                    : k~Nat
-    Normal base stores         : base~Value, stores~List (Value, Value)
-    Closure env senv sort body : env~List (Result Value Unknown), senv~List Sort, sort~Sort, body~Term
+    ArrayElem k          : k~Nat
 
 # Why a term has no value here.
 export enum Unknown
@@ -139,9 +131,6 @@ export enum Unknown
     LambdaNotGiven
     # Evaluation needed more than `Model.fuel` levels (in `refutes` only).
     OutOfFuel
-    # Two arrays compared where one is an array Z3 printed without a normal
-    # form, or a `lambda` (in `refutes` only).
-    ArraysCompared
     # A call of a definition not marked terminating, in `refutes`.
     NotTerminating
     # The model gave a value that isn't of the sort needed.
@@ -149,10 +138,10 @@ export enum Unknown
     # The term isn't a term of the context. Never for one that is.
     IllSorted
 
-# The elements of an uninterpreted or array sort: `UpTo n` is element 0 to
-# element `n` (never empty, as SMT-LIB requires); `Countable` is every
-# element. Countable domains are all that is needed (Löwenheim–Skolem, see
-# the module's comment). Every `Model` here is a Checkers value, so its
+# The elements of an uninterpreted sort: `UpTo n` is `Element 0` to
+# `Element n` (never empty, as SMT-LIB requires); `Countable` is every
+# `Element n`. Countable domains are all that is needed (Löwenheim–Skolem,
+# see the module's comment). Every `Model` here is a Checkers value, so its
 # functions are computable: "every model" in this module means every such
 # one.
 export enum Domain
@@ -165,17 +154,17 @@ export enum Domain
 # everywhere is complete.
 #
 # - `funs f vs`: the `f`-th function at arguments `vs`; a constant at `[]`.
-# - `select s id i`: element `id` of array sort `s` at index `i`.
-# - `const s v`: the element of array sort `s` that is `v` everywhere.
-# - `store s id i v`: the element that is `id` with index `i` mapped to `v`.
-# - `sum s a b`: the element that is `(_ map (+ (Int Int) Int))` of `a`
-#   and `b`.
-# - `lambda s env senv x body`: the element that is a `lambda` over a
+# - `select s k i`: array `k` of sort `s` at index `i`.
+# - `const s v`: the array of sort `s` that is `v` everywhere.
+# - `store s k i v`: the array that is `k` with index `i` mapped to `v`.
+# - `sum s k l`: the array that is `(_ map (+ (Int Int) Int))` of `k` and
+#   `l`.
+# - `lambda s env senv x body`: the array that is a `lambda` over a
 #   variable of sort `x`, with the variables bound around it having the
 #   values `env` (`Var 0` first) and the sorts `senv`.
-# - `array_domain s`: the `Named` elements of array sort `s`.
-# - `differ s a b`: an index where elements `a` and `b` of `s` differ (for
-#   extensionality: `arrays_ok`).
+# - `array_in s k`: whether `k` is an array of sort `s`.
+# - `differ s k l`: an index where arrays `k` and `l` of `s` differ (for
+#   extensionality: `ext_law`).
 # - `div_zero n`, `mod_zero n`: `(div n 0)` and `(mod n 0)`. SMT-LIB leaves
 #   them unspecified; each is a function of `n`, and the two are unrelated.
 # - `nth_out e xs i`: `(seq.nth xs i)` for `i` outside `xs`, where the
@@ -191,13 +180,13 @@ export enum Domain
 # model can't make a term take a value outside its sort.
 export record Model
     funs~(Nat -> List Value -> Option Value)
-    select~(Sort -> ArrayId -> Value -> Option Value)
-    const~(Sort -> Value -> Option ArrayId)
-    store~(Sort -> ArrayId -> Value -> Value -> Option ArrayId)
-    sum~(Sort -> ArrayId -> ArrayId -> Option ArrayId)
-    lambda~(Sort -> List Value -> List Sort -> Sort -> Term -> Option ArrayId)
-    array_domain~(Sort -> Domain)
-    differ~(Sort -> ArrayId -> ArrayId -> Value)
+    select~(Sort -> Nat -> Value -> Option Value)
+    const~(Sort -> Value -> Option Nat)
+    store~(Sort -> Nat -> Value -> Value -> Option Nat)
+    sum~(Sort -> Nat -> Nat -> Option Nat)
+    lambda~(Sort -> List Value -> List Sort -> Sort -> Term -> Option Nat)
+    array_in~(Sort -> Nat -> Bool)
+    differ~(Sort -> Nat -> Nat -> Value)
     div_zero~(Int -> Option Int)
     mod_zero~(Int -> Option Int)
     nth_out~(Sort -> List Value -> Int -> Option Value)
@@ -205,8 +194,8 @@ export record Model
     domain~(Nat -> List Sort -> Domain)
     fuel~Nat
 
-# A model whose functions and unspecified results are those given, which
-# says nothing about arrays: every array question is `NotGiven`.
+# A model whose functions and unspecified results are those given, and
+# which has no arrays: every array question is `NotGiven`.
 export fn without_arrays funs div_zero mod_zero nth_out wrong_sel domain fuel -> m : funs~(Nat -> List Value -> Option Value),
                                                                                      div_zero~(Int -> Option Int),
                                                                                      mod_zero~(Int -> Option Int),
@@ -219,8 +208,9 @@ export fn without_arrays funs div_zero mod_zero nth_out wrong_sel domain fuel ->
     let store = \_ _ _ _ -> None
     let sum = \_ _ _ -> None
     let lambda = \_ _ _ _ _ -> None
+    let array_in = \_ _ -> False
     let differ = \_ _ _ -> Truth False
-    Model funs select const store sum lambda (\_ -> Countable) differ div_zero mod_zero nth_out wrong_sel domain fuel
+    Model funs select const store sum lambda array_in differ div_zero mod_zero nth_out wrong_sel domain fuel
 
 # ── Sorts of values ──────────────────────────────────────────────────────────
 
@@ -230,25 +220,19 @@ fn in_domain d n -> r : d~Domain, n~Nat, r~Bool
         Countable -> True
 
 # Whether `v`, given by the model, is a value of sort `s`. An array is one
-# of the model's elements of its sort, or a normal form of its sort.
+# the model names as an element of its sort.
 export fn of_sort c m s v -> r : c~Context, m~Model, s~Sort, v~Value, r~Bool
     match (s, v)
         (Bool, Truth _)                 -> True
         (Int, Integer _)                -> True
         (Seq e, Sequence xs)            -> all_of_sort c m e xs
-        (Arr i w, ArrayElem t id)       -> t == s and array_of_sort c m s i w id
+        (Arr _ _, ArrayElem k)          -> m.array_in s k
         (Data d args, Constructed k fs) ->
             match term.ctor (term.signature c) d k
                 Some k_ctor -> fields_of_sort c m (list.map (term.instantiate args) (term.field_sorts k_ctor.fields)) fs
                 None        -> False
         (Unin u args, Element n)        -> in_domain (m.domain u args) n
         _                               -> False
-
-fn array_of_sort c m s i w id -> r : c~Context, m~Model, s~Sort, i~Sort, w~Sort, id~ArrayId, r~Bool
-    match id
-        Named k         -> in_domain (m.array_domain s) k
-        Normal b st     -> of_sort c m w b and stores_of_sort c m i w st and canonical (term.signature c) m.domain i b st
-        Closure _ _ _ _ -> False
 
 fn all_of_sort c m s vs -> r : c~Context, m~Model, s~Sort, vs~List Value, r~Bool
     match vs
@@ -261,82 +245,59 @@ fn fields_of_sort c m ss vs -> r : c~Context, m~Model, ss~List Sort, vs~List Val
         (s :: sr, v :: vr) -> of_sort c m s v and fields_of_sort c m sr vr
         _                  -> False
 
-fn stores_of_sort c m i w st -> r : c~Context, m~Model, i~Sort, w~Sort, st~List (Value, Value), r~Bool
-    match st
-        []             -> True
-        (j, x) :: rest -> of_sort c m i j and of_sort c m w x and stores_of_sort c m i w rest
-
 # What the model said, `got`, for a term of sort `s` that needs `h`.
 fn given c m s h got -> r : c~Context, m~Model, s~Sort, h~Head, got~Option Value, r~Result Value Unknown
     match got
         None   -> Err (NotGiven h)
         Some v -> if of_sort c m s v then Ok v else Err WrongSort
 
-# The element of array sort `s` the model named, `got`; `missing` if none.
-fn given_array c m s missing got -> r : c~Context, m~Model, s~Sort, missing~Unknown, got~Option ArrayId,
+# The array of sort `s` the model named, `got`; `missing` if none.
+fn given_array c m s missing got -> r : c~Context, m~Model, s~Sort, missing~Unknown, got~Option Nat,
                                         r~Result Value Unknown
     match got
-        None    -> Err missing
-        Some id -> if of_sort c m s (ArrayElem s id) then Ok (ArrayElem s id) else Err WrongSort
-
-# Whether `v` holds no `Named` array: no array Z3 printed without a normal
-# form. Two such values built by `normal_arrays` are the same function
-# exactly when they are equal as data.
-export fn pure v -> r : v~Value, r~Bool
-    match v
-        Sequence xs                   -> all_pure xs
-        Constructed _ fs              -> all_pure fs
-        ArrayElem _ (Named _)         -> False
-        ArrayElem _ (Closure _ _ _ _) -> False
-        ArrayElem _ (Normal b st)     -> pure b and stores_pure st
-        _                             -> True
-
-fn all_pure vs -> r : vs~List Value, r~Bool
-    match vs
-        []        -> True
-        v :: rest -> pure v and all_pure rest
-
-fn stores_pure st -> r : st~List (Value, Value), r~Bool
-    match st
-        []             -> True
-        (j, x) :: rest -> pure j and pure x and stores_pure rest
+        None   -> Err missing
+        Some k -> if m.array_in s k then Ok (ArrayElem k) else Err WrongSort
 
 # ── A value of every sort ────────────────────────────────────────────────────
 # Every sort of a context has a value: that is what accepting a datatype
 # rests on (`term.fits`). `value_of` writes one: for a datatype, its kept
 # witness (`Sig.values`) at values of its arguments; for an uninterpreted
 # sort, `Element 0`, which every domain has; for an array sort, the
-# constant array of a value of its element sort.
+# constant array `konst` names for a value of its element sort.
 
 # A value of sort `s` (with no `Param` in it), if `sig` has one.
-export fn value_of sig s -> r : sig~Sig, s~Sort, r~Option Value
+export fn value_of sig konst s -> r : sig~Sig, konst~(Sort -> Value -> Option Nat), s~Sort, r~Option Value
     match s
         Bool        -> Some (Truth True)
         Int         -> Some (Integer 0)
         Seq _       -> Some (Sequence [])
         Unin _ _    -> Some (Element 0)
         Arr _ w     ->
-            match value_of sig w
-                Some v -> Some (ArrayElem s (Normal v []))
+            match value_of sig konst w
+                Some v ->
+                    match konst s v
+                        Some k -> Some (ArrayElem k)
+                        None   -> None
                 None   -> None
         Data d args ->
-            match values_of sig args
-                Some vs -> kept_at sig d args vs
+            match values_of sig konst args
+                Some vs -> kept_at sig konst d args vs
                 None    -> None
         Param _     -> None
 
-fn values_of sig ss -> r : sig~Sig, ss~List Sort, r~Option (List Value)
+fn values_of sig konst ss -> r : sig~Sig, konst~(Sort -> Value -> Option Nat), ss~List Sort, r~Option (List Value)
     match ss
         []        -> Some []
         s :: rest ->
-            match (value_of sig s, values_of sig rest)
+            match (value_of sig konst s, values_of sig konst rest)
                 (Some v, Some vs) -> Some (v :: vs)
                 _                 -> None
 
 # Witness `w` of a value of template sort `t` (whose `Param k` is `args`'
 # `k`-th sort), where `WParam k` is `vs`' `k`-th value; it is part of
 # datatype `d`'s kept witness, so a `WOf e` in it has `e < d`.
-fn witness_value sig d args vs w t -> r : sig~Sig, d~Nat, args~List Sort, vs~List Value, w~Witness, t~Sort, r~Option Value
+fn witness_value sig konst d args vs w t -> r : sig~Sig, konst~(Sort -> Value -> Option Nat), d~Nat, args~List Sort,
+                                                vs~List Value, w~Witness, t~Sort, r~Option Value
     decreasing (d, witness_size w)
     match (w, t)
         (WTrue, Bool)             -> Some (Truth True)
@@ -344,33 +305,36 @@ fn witness_value sig d args vs w t -> r : sig~Sig, d~Nat, args~List Sort, vs~Lis
         (WEmpty, Seq _)           -> Some (Sequence [])
         (WElement, Unin _ _)      -> Some (Element 0)
         (WConst v, Arr _ e)       ->
-            match witness_value sig d args vs v e
-                Some x -> Some (ArrayElem (term.instantiate args t) (Normal x []))
+            match witness_value sig konst d args vs v e
+                Some x ->
+                    match konst (term.instantiate args t) x
+                        Some k -> Some (ArrayElem k)
+                        None   -> None
                 None   -> None
         (WParam k, Param _)       -> list.head (list.drop k vs)
         (WCon k fs, Data e targs) ->
             match term.ctor sig e k
                 Some c ->
-                    match witness_values sig d args vs fs (list.map (term.instantiate targs) (term.field_sorts c.fields))
+                    match witness_values sig konst d args vs fs (list.map (term.instantiate targs) (term.field_sorts c.fields))
                         Some xs -> Some (Constructed k xs)
                         None    -> None
                 None   -> None
         (WOf e ws, Data _ targs)  ->
             if e < d
-                match witness_values sig d args vs ws targs
-                    Some xs -> kept_at sig e (list.map (term.instantiate args) targs) xs
+                match witness_values sig konst d args vs ws targs
+                    Some xs -> kept_at sig konst e (list.map (term.instantiate args) targs) xs
                     None    -> None
             else
                 None
         _                         -> None
 
-fn witness_values sig d args vs ws ts -> r : sig~Sig, d~Nat, args~List Sort, vs~List Value, ws~List Witness, ts~List Sort,
-                                             r~Option (List Value)
+fn witness_values sig konst d args vs ws ts -> r : sig~Sig, konst~(Sort -> Value -> Option Nat), d~Nat, args~List Sort,
+                                                   vs~List Value, ws~List Witness, ts~List Sort, r~Option (List Value)
     decreasing (d, witnesses_size ws)
     match (ws, ts)
         ([], [])           -> Some []
         (w :: wr, t :: tr) ->
-            match (witness_value sig d args vs w t, witness_values sig d args vs wr tr)
+            match (witness_value sig konst d args vs w t, witness_values sig konst d args vs wr tr)
                 (Some x, Some xs) -> Some (x :: xs)
                 _                 -> None
         _                  -> None
@@ -378,10 +342,11 @@ fn witness_values sig d args vs ws ts -> r : sig~Sig, d~Nat, args~List Sort, vs~
 # Datatype `e`'s kept witness at arguments `args`, whose values are `vs`
 # (from inside a witness, `e` is before the datatype the witness belongs
 # to).
-fn kept_at sig e args vs -> r : sig~Sig, e~Nat, args~List Sort, vs~List Value, r~Option Value
+fn kept_at sig konst e args vs -> r : sig~Sig, konst~(Sort -> Value -> Option Nat), e~Nat, args~List Sort, vs~List Value,
+                                      r~Option Value
     decreasing (e, witness_size (if e < len sig.values then sig.values[e] else WTrue) + 1)
     if e < len sig.values and e < len sig.datatypes
-        witness_value sig e args vs sig.values[e] (Data e (term.params_of (list.length sig.datatypes[e].params) 0))
+        witness_value sig konst e args vs sig.values[e] (Data e (term.params_of (list.length sig.datatypes[e].params) 0))
     else
         None
 
@@ -396,6 +361,158 @@ fn witnesses_size ws -> n : ws~List Witness, n~Nat
     match ws
         []        -> 1
         w :: rest -> 1 + witness_size w + witnesses_size rest
+
+# ── Numbering normal forms ───────────────────────────────────────────────────
+# The model `refutes` builds names each array by a number: its normal form
+# (`Form`) written as bytes (`form_bytes`) and read as a base-256 number
+# after a leading 1, so that the number's size grows with the form's.
+# `decode` reads it back. An array inside a form is written as its number,
+# which is smaller than the number of the form holding it.
+
+# A normal form: `base` everywhere except at the indices of `stores`.
+export record Form
+    base~Value
+    stores~List (Value, Value)
+
+export fn code f -> n : f~Form, n~Nat
+    number_of (1 :: form_bytes f) 0
+
+fn number_of ds acc -> n : ds~List Nat, acc~Nat, n~Nat
+    match ds
+        []        -> acc
+        d :: rest -> number_of rest (acc * 256 + d)
+
+fn form_bytes f -> bs : f~Form, bs~List Nat
+    value_bytes f.base ++ nat_bytes (list.length f.stores) ++ stores_bytes f.stores
+
+fn stores_bytes st -> bs : st~List (Value, Value), bs~List Nat
+    match st
+        []             -> []
+        (j, x) :: rest -> value_bytes j ++ value_bytes x ++ stores_bytes rest
+
+fn value_bytes v -> bs : v~Value, bs~List Nat
+    match v
+        Truth b          -> [0, if b then 1 else 0]
+        Integer n        -> if n >= 0 then 1 :: 0 :: nat_bytes n else 1 :: 1 :: nat_bytes (0 - n)
+        Sequence xs      -> 2 :: nat_bytes (list.length xs) ++ values_bytes xs
+        Constructed k fs -> 3 :: nat_bytes k ++ nat_bytes (list.length fs) ++ values_bytes fs
+        Element n        -> 4 :: nat_bytes n
+        ArrayElem k      -> 5 :: nat_bytes k
+
+fn values_bytes vs -> bs : vs~List Value, bs~List Nat
+    match vs
+        []        -> []
+        v :: rest -> value_bytes v ++ values_bytes rest
+
+# `n` in seven-bit groups, lowest first, each but the last with 128 added.
+fn nat_bytes n -> bs : n~Nat, bs~List Nat
+    decreasing n
+    if n < 128 then [n] else (128 + n % 128) :: nat_bytes (n / 128)
+
+# The form numbered `n`, if `n` numbers one.
+export fn decode n -> r : n~Nat, r~Option Form
+    match digits_of n []
+        1 :: bs ->
+            match read_form bs
+                Some (f, []) -> Some f
+                _            -> None
+        _       -> None
+
+fn digits_of n acc -> ds : n~Nat, acc~List Nat, ds~List Nat
+    decreasing n
+    if n == 0 then acc else digits_of (n / 256) (n % 256 :: acc)
+
+# Whether reading left `rest` shorter than `bs`.
+fn shorter r bs -> b : r~Option (a, List Nat), bs~List Nat, b~Bool
+    match r
+        Some (_, rest) -> list.length rest < list.length bs
+        None           -> True
+
+fn read_form bs -> r : bs~List Nat, r~Option (Form, List Nat)
+    match read_value bs
+        Some (base, rest) ->
+            match read_nat rest
+                Some (n, more) ->
+                    match read_stores n more
+                        Some (st, left) -> Some (Form base st, left)
+                        None            -> None
+                None           -> None
+        None              -> None
+
+fn read_nat bs -> r : bs~List Nat, r~Option (Nat, List Nat), shorter r bs
+    match bs
+        []        -> None
+        d :: rest ->
+            if d < 128
+                Some (d, rest)
+            else if d < 256
+                match read_nat rest
+                    Some (n, more) -> Some (d - 128 + 128 * n, more)
+                    None           -> None
+            else
+                None
+
+fn read_value bs -> r : bs~List Nat, r~Option (Value, List Nat), shorter r bs
+    decreasing (list.length bs, 1)
+    match bs
+        0 :: b :: rest -> if b == 0 then Some (Truth False, rest) else if b == 1 then Some (Truth True, rest) else None
+        1 :: s :: rest ->
+            match read_nat rest
+                Some (n, more) -> if s == 0 then Some (Integer n, more) else if s == 1 then Some (Integer (0 - n), more) else None
+                None           -> None
+        2 :: rest      ->
+            match read_nat rest
+                Some (n, more) ->
+                    match read_values n more
+                        Some (xs, left) -> Some (Sequence xs, left)
+                        None            -> None
+                None           -> None
+        3 :: rest      ->
+            match read_nat rest
+                Some (k, more) ->
+                    match read_nat more
+                        Some (n, after) ->
+                            match read_values n after
+                                Some (fs, left) -> Some (Constructed k fs, left)
+                                None            -> None
+                        None            -> None
+                None           -> None
+        4 :: rest      ->
+            match read_nat rest
+                Some (n, more) -> Some (Element n, more)
+                None           -> None
+        5 :: rest      ->
+            match read_nat rest
+                Some (k, more) -> Some (ArrayElem k, more)
+                None           -> None
+        _              -> None
+
+fn read_values n bs -> r : n~Nat, bs~List Nat, r~Option (List Value, List Nat), shorter r bs or n == 0
+    decreasing (list.length bs, 2)
+    if n == 0
+        Some ([], bs)
+    else
+        match read_value bs
+            Some (v, rest) ->
+                match read_values (n - 1) rest
+                    Some (vs, left) -> Some (v :: vs, left)
+                    None            -> None
+            None           -> None
+
+fn read_stores n bs -> r : n~Nat, bs~List Nat, r~Option (List (Value, Value), List Nat)
+    decreasing list.length bs
+    if n == 0
+        Some ([], bs)
+    else
+        match read_value bs
+            Some (j, rest) ->
+                match read_value rest
+                    Some (x, more) ->
+                        match read_stores (n - 1) more
+                            Some (st, left) -> Some ((j, x) :: st, left)
+                            None            -> None
+                    None           -> None
+            None           -> None
 
 # ── Normal forms ─────────────────────────────────────────────────────────────
 # An array is named by one normal form: its constant `base` and the stores
@@ -415,6 +532,12 @@ fn witnesses_size ws -> n : ws~List Witness, n~Nat
 # if their bases differ, they differ at the first listed element, at an
 # index stored in neither (`fresh`), or, for constant arrays, anywhere (no
 # sort is empty); if their bases agree, at a stored index.
+#
+# "No sort is empty" and "`(Seq e)` is unbounded" rest on every sort of a
+# context having a value, which `value_of` writes: the lemma that it does
+# (from `term.datatypes_hold`, by the kept witnesses) waits for #357.
+# Until then `fresh` and `normal_differ` find their index by computing it,
+# and a sort `value_of` gave none for would make them answer `Truth False`.
 
 # How normal forms are made at an index sort.
 enum Kind
@@ -438,17 +561,21 @@ fn elements_upto n -> es : n~Nat, es~List Value
 fn elements_from k count -> es : k~Nat, count~Nat, es~List Value
     if count == 0 then [] else Element k :: elements_from (k + 1) (count - 1)
 
+# The number of the constant array of `v`: its normal form has no stores,
+# at every index sort.
+fn constant_number s v -> r : s~Sort, v~Value, r~Option Nat
+    Some (code (Form v []))
+
 # Whether this module can write a value of `s` outside any finite set.
 fn unbounded sig dom s -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), s~Sort, r~Bool
     match s
         Int         -> True
-        Seq e       -> value_of sig e != None
+        Seq e       -> value_of sig constant_number e != None
         Unin u args -> dom u args == Countable
         Arr _ w     -> unbounded sig dom w
         _           -> False
 
-# A strict total order on values without `Named` arrays (and, for arrays,
-# of one sort): by constructor, then by contents.
+# A strict total order on values: by constructor, then by contents.
 fn before a b -> r : a~Value, b~Value, r~Bool
     match (a, b)
         (Truth x, Truth y)                   -> not x and y
@@ -456,7 +583,7 @@ fn before a b -> r : a~Value, b~Value, r~Bool
         (Sequence xs, Sequence ys)           -> all_before xs ys
         (Constructed k xs, Constructed l ys) -> k < l or (k == l and all_before xs ys)
         (Element x, Element y)               -> x < y
-        (ArrayElem _ p, ArrayElem _ q)       -> id_before p q
+        (ArrayElem k, ArrayElem l)           -> k < l
         _                                    -> rank a < rank b
 
 fn rank v -> r : v~Value, r~Nat
@@ -466,7 +593,7 @@ fn rank v -> r : v~Value, r~Nat
         Sequence _      -> 2
         Constructed _ _ -> 3
         Element _       -> 4
-        ArrayElem _ _   -> 5
+        ArrayElem _     -> 5
 
 # Lists compared element by element, a shorter one first when it is a
 # prefix of the other.
@@ -477,22 +604,6 @@ fn all_before xs ys -> r : xs~List Value, ys~List Value, r~Bool
         (_, [])            -> False
         (x :: xr, y :: yr) -> before x y or (x == y and all_before xr yr)
 
-fn id_before p q -> r : p~ArrayId, q~ArrayId, r~Bool
-    match (p, q)
-        (Named k, Named l)         -> k < l
-        (Named _, Normal _ _)      -> True
-        (Normal _ _, Named _)      -> False
-        (Normal b st, Normal c su) -> before b c or (b == c and stores_before st su)
-        _                          -> False
-
-fn stores_before st su -> r : st~List (Value, Value), su~List (Value, Value), r~Bool
-    match (st, su)
-        ([], [])                     -> False
-        ([], _)                      -> True
-        (_, [])                      -> False
-        ((j, x) :: sr, (k, y) :: ur) ->
-            before j k or (j == k and (before x y or (x == y and stores_before sr ur)))
-
 # A value of unbounded sort `s` that isn't one of `used`: an integer or an
 # element above them all, a sequence longer than them all, a constant
 # array whose constant is none of theirs.
@@ -501,12 +612,12 @@ fn fresh sig s used -> r : sig~Sig, s~Sort, used~List Value, r~Option Value
         Int      -> Some (Integer (1 + max_int used))
         Unin _ _ -> Some (Element (1 + max_element used))
         Seq e    ->
-            match value_of sig e
+            match value_of sig constant_number e
                 Some d -> Some (Sequence (repeat (1 + max_length used) d))
                 None   -> None
         Arr _ w  ->
             match fresh sig w (bases used)
-                Some b -> Some (ArrayElem s (Normal b []))
+                Some b -> Some (ArrayElem (code (Form b [])))
                 None   -> None
         _        -> None
 
@@ -531,11 +642,15 @@ fn max_length vs -> r : vs~List Value, r~Nat
 fn repeat n x -> r : n~Nat, x~Value, r~List Value
     if n == 0 then [] else x :: repeat (n - 1) x
 
+# The constants of the arrays numbered by `vs`.
 fn bases vs -> r : vs~List Value, r~List Value
     match vs
-        []                               -> []
-        ArrayElem _ (Normal b _) :: rest -> b :: bases rest
-        _ :: rest                        -> bases rest
+        []                  -> []
+        ArrayElem k :: rest ->
+            match decode k
+                Some f -> f.base :: bases rest
+                None   -> bases rest
+        _ :: rest           -> bases rest
 
 # Whether `base` and `stores` are a normal form at index sort `i`.
 fn canonical sig dom i base stores -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), i~Sort, base~Value,
@@ -566,10 +681,10 @@ fn no_store_of base st -> r : base~Value, st~List (Value, Value), r~Bool
 
 # What `stores` hold at `i`, the first store at `i` hiding later ones, or
 # `base`.
-fn read_stores stores base i -> r : stores~List (Value, Value), base~Value, i~Value, r~Value
+fn read_stores_at stores base i -> r : stores~List (Value, Value), base~Value, i~Value, r~Value
     match stores
         []             -> base
-        (j, x) :: rest -> if j == i then x else read_stores rest base i
+        (j, x) :: rest -> if j == i then x else read_stores_at rest base i
 
 # `(j, x)` put in `st`, which is sorted, in its place, replacing a store at
 # `j`.
@@ -593,16 +708,16 @@ fn sort_stores stores -> r : stores~List (Value, Value), r~List (Value, Value)
 # The normal form of `base` with `stores` (the first store at an index
 # hiding later ones), for index sort `i`.
 fn normalize sig dom i base stores -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), i~Sort, base~Value,
-                                          stores~List (Value, Value), r~Option ArrayId
+                                          stores~List (Value, Value), r~Option Form
     match index_kind sig dom i
         Listed es ->
             match es
                 first :: others ->
-                    let at_first = read_stores stores base first
-                    Some (Normal at_first (listed_stores others stores base at_first))
+                    let at_first = read_stores_at stores base first
+                    Some (Form at_first (listed_stores others stores base at_first))
                 []              -> None
-        Unbounded -> Some (Normal base (drop_base base (sort_stores stores)))
-        Opaque    -> if stores == [] then Some (Normal base []) else None
+        Unbounded -> Some (Form base (drop_base base (sort_stores stores)))
+        Opaque    -> if stores == [] then Some (Form base []) else None
 
 # The stores at `es` (in order) of `stores` over `base`, but those equal to
 # `at_first`.
@@ -611,7 +726,7 @@ fn listed_stores es stores base at_first -> r : es~List Value, stores~List (Valu
     match es
         []        -> []
         e :: rest ->
-            let x = read_stores stores base e
+            let x = read_stores_at stores base e
             if x == at_first then listed_stores rest stores base at_first else (e, x) :: listed_stores rest stores base at_first
 
 # The index sort of array sort `s`.
@@ -620,56 +735,63 @@ fn index_of s -> r : s~Sort, r~Option Sort
         Arr i _ -> Some i
         _       -> None
 
-fn normal_const sig dom s v -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), s~Sort, v~Value, r~Option ArrayId
-    match index_of s
-        Some i -> if pure v then normalize sig dom i v [] else None
+fn numbered r -> n : r~Option Form, n~Option Nat
+    match r
+        Some f -> Some (code f)
         None   -> None
 
-fn normal_store sig dom s id j x -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), s~Sort, id~ArrayId, j~Value, x~Value,
-                                        r~Option ArrayId
-    match (index_of s, id)
-        (Some i, Normal b st) -> if pure j and pure x then normalize sig dom i b ((j, x) :: st) else None
-        _                     -> None
+fn normal_const sig dom s v -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), s~Sort, v~Value, r~Option Nat
+    match index_of s
+        Some i -> numbered (normalize sig dom i v [])
+        None   -> None
 
-fn normal_select id i -> r : id~ArrayId, i~Value, r~Option Value
-    match id
-        Normal b st -> if pure i then Some (read_stores st b i) else None
-        _           -> None
+fn normal_store sig dom s k j x -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), s~Sort, k~Nat, j~Value, x~Value,
+                                       r~Option Nat
+    match (index_of s, decode k)
+        (Some i, Some f) -> numbered (normalize sig dom i f.base ((j, x) :: f.stores))
+        _                -> None
+
+fn normal_select k i -> r : k~Nat, i~Value, r~Option Value
+    match decode k
+        Some f -> Some (read_stores_at f.stores f.base i)
+        None   -> None
 
 # `a` plus `b` at every index, for arrays of `Int`s.
-fn normal_sum sig dom s a b -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), s~Sort, a~ArrayId, b~ArrayId,
-                                   r~Option ArrayId
-    match (index_of s, a, b)
-        (Some i, Normal (Integer x) sa, Normal (Integer y) sb) ->
-            match sums_at sa sb (Integer x) (Integer y) (list.keys sa ++ list.keys sb)
-                Some st -> normalize sig dom i (Integer (x + y)) st
-                None    -> None
-        _                                                      -> None
+fn normal_sum sig dom s a b -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), s~Sort, a~Nat, b~Nat, r~Option Nat
+    match (index_of s, decode a, decode b)
+        (Some i, Some f, Some g) ->
+            match (f.base, g.base)
+                (Integer x, Integer y) ->
+                    match sums_at f.stores g.stores f.base g.base (list.keys f.stores ++ list.keys g.stores)
+                        Some st -> numbered (normalize sig dom i (Integer (x + y)) st)
+                        None    -> None
+                _                      -> None
+        _                        -> None
 
 fn sums_at sa sb ba bb is -> r : sa~List (Value, Value), sb~List (Value, Value), ba~Value, bb~Value, is~List Value,
                                  r~Option (List (Value, Value))
     match is
         []        -> Some []
         j :: rest ->
-            match (read_stores sa ba j, read_stores sb bb j, sums_at sa sb ba bb rest)
+            match (read_stores_at sa ba j, read_stores_at sb bb j, sums_at sa sb ba bb rest)
                 (Integer p, Integer q, Some st) -> Some ((j, Integer (p + q)) :: st)
                 _                               -> None
 
-# An index where normal forms `a` and `b` of array sort `s` differ, if
-# they are different: where their bases differ, the first listed element,
-# an index stored in neither, or any index; else the first stored index
-# where they differ.
-fn normal_differ sig dom s a b -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), s~Sort, a~ArrayId, b~ArrayId, r~Value
-    match (index_of s, a, b)
-        (Some i, Normal ba sa, Normal bb sb) ->
-            if ba != bb
+# An index where the arrays numbered `a` and `b` of array sort `s` differ,
+# if they are different normal forms: where their bases differ, the first
+# listed element, an index stored in neither, or any index; else the first
+# stored index where they differ.
+fn normal_differ sig dom s a b -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), s~Sort, a~Nat, b~Nat, r~Value
+    match (index_of s, decode a, decode b)
+        (Some i, Some f, Some g) ->
+            if f.base != g.base
                 match index_kind sig dom i
                     Listed (e :: _) -> e
-                    Unbounded       -> or_any (fresh sig i (list.keys sa ++ list.keys sb))
-                    _               -> or_any (value_of sig i)
+                    Unbounded       -> or_any (fresh sig i (list.keys f.stores ++ list.keys g.stores))
+                    _               -> or_any (value_of sig constant_number i)
             else
-                first_difference sa sb ba (list.keys sa ++ list.keys sb)
-        _                                    -> Truth False
+                first_difference f.stores g.stores f.base (list.keys f.stores ++ list.keys g.stores)
+        _                        -> Truth False
 
 fn or_any r -> v : r~Option Value, v~Value
     match r
@@ -680,82 +802,107 @@ fn first_difference sa sb base is -> r : sa~List (Value, Value), sb~List (Value,
                                          r~Value
     match is
         []        -> Truth False
-        j :: rest -> if read_stores sa base j != read_stores sb base j then j else first_difference sa sb base rest
+        j :: rest ->
+            if read_stores_at sa base j != read_stores_at sb base j then j else first_difference sa sb base rest
 
-# `m` with its arrays given their meaning as functions: constant arrays,
-# stores and `map +` make normal forms, a normal form is read by its
-# stores, and a `Named` array is read as `m` reads it. A `lambda` is not
-# given. This is the model `refutes` evaluates in.
+# Whether `k` numbers a normal form of array sort `s`: canonical, with a
+# base and stores of the sorts `s` needs. An array inside it has a smaller
+# number (it is written inside `k`'s bytes), which is what ends the check.
+fn normal_in sig dom s k -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), s~Sort, k~Nat, r~Bool
+    decreasing (k + 1, 0)
+    match (s, decode k)
+        (Arr i w, Some f) ->
+            canonical sig dom i f.base f.stores and normal_value sig dom w f.base k
+                and normal_stores sig dom i w f.stores k
+        _                 -> False
+
+# Whether `v` is a value of sort `s` in the built model, where the arrays
+# in it number less than `bound`.
+fn normal_value sig dom s v bound -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), s~Sort, v~Value, bound~Nat, r~Bool
+    decreasing (bound, value_size v)
+    match (s, v)
+        (Bool, Truth _)                 -> True
+        (Int, Integer _)                -> True
+        (Seq e, Sequence xs)            -> normal_values sig dom e xs bound
+        (Arr _ _, ArrayElem k)          -> k < bound and normal_in sig dom s k
+        (Data d args, Constructed k fs) ->
+            match term.ctor sig d k
+                Some c -> normal_fields sig dom (list.map (term.instantiate args) (term.field_sorts c.fields)) fs bound
+                None   -> False
+        (Unin u args, Element n)        -> in_domain (dom u args) n
+        _                               -> False
+
+fn normal_values sig dom s vs bound -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), s~Sort, vs~List Value, bound~Nat,
+                                           r~Bool
+    decreasing (bound, values_size vs)
+    match vs
+        []        -> True
+        v :: rest -> normal_value sig dom s v bound and normal_values sig dom s rest bound
+
+fn normal_fields sig dom ss vs bound -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), ss~List Sort, vs~List Value,
+                                            bound~Nat, r~Bool
+    decreasing (bound, values_size vs)
+    match (ss, vs)
+        ([], [])           -> True
+        (s :: sr, v :: vr) -> normal_value sig dom s v bound and normal_fields sig dom sr vr bound
+        _                  -> False
+
+fn normal_stores sig dom i w st bound -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), i~Sort, w~Sort,
+                                             st~List (Value, Value), bound~Nat, r~Bool
+    decreasing (bound, stores_size st)
+    match st
+        []             -> True
+        (j, x) :: rest ->
+            normal_value sig dom i j bound and normal_value sig dom w x bound and normal_stores sig dom i w rest bound
+
+fn value_size v -> n : v~Value, n~Nat
+    match v
+        Sequence xs      -> 1 + values_size xs
+        Constructed _ fs -> 1 + values_size fs
+        _                -> 1
+
+fn values_size vs -> n : vs~List Value, n~Nat
+    match vs
+        []        -> 1
+        v :: rest -> 1 + value_size v + values_size rest
+
+fn stores_size st -> n : st~List (Value, Value), n~Nat
+    match st
+        []             -> 1
+        (j, x) :: rest -> 1 + value_size j + value_size x + stores_size rest
+
+# `m` with its arrays replaced by the normal forms' model: an array is the
+# number of a normal form of its sort (`normal_in`); constant arrays,
+# stores and `map +` make normal forms; a normal form is read by its
+# stores; a `lambda` is not given. This is the model `refutes` evaluates
+# in; `m`'s own arrays are not used.
 export fn normal_arrays sig m -> r : sig~Sig, m~Model, r~Model
-    let select = \s id i ->
-        match id
-            Named _ -> m.select s id i
-            _       -> normal_select id i
-    let const = \s v -> normal_const sig m.domain s v
-    let store = \s id j x -> normal_store sig m.domain s id j x
-    let sum = \s a b -> normal_sum sig m.domain s a b
+    let dom = m.domain
+    let select = \_ k i -> normal_select k i
+    let const = \s v -> normal_const sig dom s v
+    let store = \s k j x -> normal_store sig dom s k j x
+    let sum = \s a b -> normal_sum sig dom s a b
     let lambda = \_ _ _ _ _ -> None
-    let differ = \s a b -> normal_differ sig m.domain s a b
-    Model m.funs select const store sum lambda m.array_domain differ m.div_zero m.mod_zero m.nth_out m.wrong_sel m.domain m.fuel
+    let array_in = \s k -> normal_in sig dom s k
+    let differ = \s a b -> normal_differ sig dom s a b
+    Model m.funs select const store sum lambda array_in differ m.div_zero m.mod_zero m.nth_out m.wrong_sel dom m.fuel
 
-# The normal form Z3's `((as const s) v)` names: for the readers of Z3's
-# output.
+# The array Z3's `((as const s) v)` is in the normal forms' model, with
+# the domains `dom`: for the readers of Z3's output.
 export fn const_array sig dom s v -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), s~Sort, v~Value, r~Option Value
     match normal_const sig dom s v
-        Some id -> Some (ArrayElem s id)
-        None    -> None
+        Some k -> Some (ArrayElem k)
+        None   -> None
 
-# The normal form Z3's `(store a j x)` names, for `a` a normal form.
+# The array Z3's `(store a j x)` is there.
 export fn store_array sig dom s a j x -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), s~Sort, a~Value, j~Value, x~Value,
                                              r~Option Value
     match a
-        ArrayElem _ id ->
-            match normal_store sig dom s id j x
-                Some id2 -> Some (ArrayElem s id2)
-                None     -> None
-        _              -> None
-
-# ── Equality ─────────────────────────────────────────────────────────────────
-
-# Whether `a` and `b`, values of one sort, are equal. In the meaning, two
-# values are equal exactly when they are equal as data: arrays are the same
-# element. In `refutes`, a `Named` array is one Z3 printed without a normal
-# form, and a `Closure` a `lambda`: either may be the same function as
-# another array, so two different values where one holds such an array are
-# not compared.
-fn equal mode a b -> r : mode~Mode, a~Value, b~Value, r~Result Bool Unknown
-    match mode
-        AsGiven   -> Ok (a == b)
-        Unfolding ->
-            if a == b and settled a then Ok True else if pure a and pure b then Ok False else Err ArraysCompared
-
-# Whether `v` holds no `Unknown` (in a `lambda`'s captured variables):
-# then two values that are the same data are the same value. Two closures
-# that each captured an unknown are not known to be the same function, even
-# when the reasons are the same.
-fn settled v -> r : v~Value, r~Bool
-    match v
-        Sequence xs                     -> all_settled xs
-        Constructed _ fs                -> all_settled fs
-        ArrayElem _ (Normal b st)       -> settled b and stores_settled st
-        ArrayElem _ (Closure env _ _ _) -> env_settled env
-        _                               -> True
-
-fn all_settled vs -> r : vs~List Value, r~Bool
-    match vs
-        []        -> True
-        v :: rest -> settled v and all_settled rest
-
-fn stores_settled st -> r : st~List (Value, Value), r~Bool
-    match st
-        []             -> True
-        (j, x) :: rest -> settled j and settled x and stores_settled rest
-
-fn env_settled rs -> r : rs~List (Result Value Unknown), r~Bool
-    match rs
-        []           -> True
-        Ok v :: rest -> settled v and env_settled rest
-        Err _ :: _   -> False
+        ArrayElem k ->
+            match normal_store sig dom s k j x
+                Some l -> Some (ArrayElem l)
+                None   -> None
+        _           -> None
 
 # Kleene's `and` of two answers.
 fn both p q -> r : p~Result Bool Unknown, q~Result Bool Unknown, r~Result Bool Unknown
@@ -775,7 +922,7 @@ export enum Mode
     Unfolding
 
 # What evaluation at one level uses: `value`, evaluation one level down (a
-# definition's body, or a `lambda`'s, in `Unfolding`).
+# definition's body, in `Unfolding`).
 record Lower
     value~(List (Result Value Unknown) -> List Sort -> Term -> Result Value Unknown)
 
@@ -805,15 +952,12 @@ fn value low mode c m env senv t -> r : low~Lower, mode~Mode, c~Context, m~Model
                 match term.sorts_of (term.signature c) senv (bound_terms binds)
                     Ok ss -> value low mode c m (list.reverse (bound low mode c m env senv binds) ++ env) (list.reverse ss ++ senv) body
                     Err _ -> Err IllSorted
-        # In the meaning, the array the model names for this `lambda` and
-        # the values of the variables around it; in `refutes`, the closure.
+        # The array the model names for this `lambda` and the values of
+        # the variables around it.
         Lam _ x body   ->
             let s = try sort_here c senv t
-            match mode
-                AsGiven   ->
-                    let vs = try all_known env
-                    given_array c m s LambdaNotGiven (m.lambda s vs senv x body)
-                Unfolding -> Ok (ArrayElem s (Closure env senv x body))
+            let vs = try all_known env
+            given_array c m s LambdaNotGiven (m.lambda s vs senv x body)
 
 fn bound_terms binds -> ts : binds~List (Name, Term), ts~List Term
     match binds
@@ -1004,7 +1148,7 @@ fn prim low mode c m env senv t op args -> r : low~Lower, mode~Mode, c~Context, 
         (Eq, [a, b])            ->
             let x = try value low mode c m env senv a
             let y = try value low mode c m env senv b
-            truth (equal mode x y)
+            Ok (Truth (x == y))
         (Add, [a, b])           -> ints (value low mode c m env senv a) (value low mode c m env senv b) (\x y -> Ok (Integer (x + y)))
         (Sub, [a, b])           -> ints (value low mode c m env senv a) (value low mode c m env senv b) (\x y -> Ok (Integer (x - y)))
         (Mul, [a, b])           -> ints (value low mode c m env senv a) (value low mode c m env senv b) (\x y -> Ok (Integer (x * y)))
@@ -1028,24 +1172,23 @@ fn prim low mode c m env senv t op args -> r : low~Lower, mode~Mode, c~Context, 
             let s = try sort_here c senv a
             let w = try sort_here c senv t
             match x
-                ArrayElem _ (Closure cenv csenv x_sort body) -> low.value (Ok j :: cenv) (x_sort :: csenv) body
-                ArrayElem _ id                               -> given c m w (Prim Select) (m.select s id j)
-                _                                            -> Err IllSorted
+                ArrayElem k -> given c m w (Prim Select) (m.select s k j)
+                _           -> Err IllSorted
         (Store, [a, i, v])      ->
             let x = try value low mode c m env senv a
             let j = try value low mode c m env senv i
             let y = try value low mode c m env senv v
             let s = try sort_here c senv t
             match x
-                ArrayElem _ id -> given_array c m s (NotGiven (Prim Store)) (m.store s id j y)
-                _              -> Err IllSorted
+                ArrayElem k -> given_array c m s (NotGiven (Prim Store)) (m.store s k j y)
+                _           -> Err IllSorted
         (MapAdd, [a, b])        ->
             let x = try value low mode c m env senv a
             let y = try value low mode c m env senv b
             let s = try sort_here c senv t
             match (x, y)
-                (ArrayElem _ p, ArrayElem _ q) -> given_array c m s (NotGiven (Prim MapAdd)) (m.sum s p q)
-                _                              -> Err IllSorted
+                (ArrayElem p, ArrayElem q) -> given_array c m s (NotGiven (Prim MapAdd)) (m.sum s p q)
+                _                          -> Err IllSorted
         (SeqLen, [a])           ->
             let xs = try items (value low mode c m env senv a)
             Ok (Integer (list.length xs))
@@ -1167,17 +1310,10 @@ fn all_marked ds -> r : ds~List (Nat, Def), r~Bool
 # each definition its unique solution, satisfies every assertion of `c` and
 # `not goal`.
 #
-# For arrays this rests on `normal_arrays`: its normal forms are the same
-# element exactly when they are the same function, and an answer that
-# compares an array Z3 printed without one is `ArraysCompared`, so no
-# definite answer depends on how those compare.
-#
-# For definitions this rests entirely on the marks (`Def.terminates`): a
-# mark promises that the definition's body terminates at every argument of
-# its sorts, in every interpretation of the declared functions, so that the
-# definition has exactly one solution. A wrong mark makes `refutes` wrong
-# (`g x = g x + 1` marked and never called is "refuted", though the context
-# has no model). The caller owes the marks: `ckc` (how it says so is #299).
+# For arrays this rests on `normal_arrays`: its only arrays are normal
+# forms, which are the same element exactly when they are the same
+# function, so it satisfies `arrays_ok` (a lemma for #86, `check`ed at
+# points in `model_checks`).
 export fn refutes c goal m -> r : c~Context, goal~Term, m~Model, r~Bool
     let n = normal_arrays (term.signature c) m
     term.fact_ok c goal and term.axioms c == [] and all_marked (term.defs c) and facts_hold_unfolding c n (term.facts c)
@@ -1189,27 +1325,64 @@ fn facts_hold_unfolding c m ts -> r : c~Context, m~Model, ts~List Term, r~Bool
         t :: rest -> eval_unfolding c m t == Ok (Truth True) and facts_hold_unfolding c m rest
 
 # ── What makes them SMT-LIB's arrays: `arrays_ok` ────────────────────────────
-# Each predicate below, held at all values of its arguments, is one of the
-# conditions that make a model's arrays SMT-LIB's: `ArraysEx` (read over
-# write, constant arrays), `map +` pointwise, a `lambda` read as its body,
-# and extensionality. `arrays_ok` is all of `const_law`, `store_law`,
-# `sum_law`, `lambda_law` and `ext_law` at all values; `arrays_total` is
-# all of the `gives_` ones. They can't be computed, since each quantifies
-# over every value: a theorem takes each as a named `forall` hypothesis
-# (SPEC §9.9), such as
+# At an array sort of the context (`array_sort`), a model's arrays are
+# SMT-LIB's when, at all values of their arguments:
 #
-#     store: forall s id j x i : s~Sort, id~ArrayId, j~Value, x~Value, i~Value, model.store_law c m s id j x i
+#     arrays_ok:    forall s a b i j x env senv xs body : …, model.arrays_ok_at c m s a b i j x env senv xs body
+#     arrays_total: forall s a b i j x env senv xs body : …, model.arrays_total_at c m s a b i j x env senv xs body
 #
-# Nothing in `eval` relies on them; only with them is a `Model` an SMT-LIB
-# structure. Each says nothing where an argument isn't of its sort.
+# a theorem's named `forall` premises (SPEC §9.9), with the arguments'
+# types: `s~Sort, a~Nat, b~Nat, i~Value, j~Value, x~Value, env~List Value,
+# senv~List Sort, xs~Sort, body~Term`. `arrays_ok_at` is the laws:
+# constant arrays, read over write, `map +`, `lambda`, extensionality;
+# `arrays_total_at` says the model answers. Nothing in `eval` relies on
+# them.
+#
+# **What a partial model owes.** A law asks nothing at a point where a read
+# it needs isn't given (`None`), and nothing of arguments outside their
+# sorts: there it is true. So a law is about what the model says, and
+# `arrays_total` is the separate promise that it says everything.
 
-# The model answers `select` at elements and indices of their sorts, with a
-# value of the element sort.
-export fn gives_select c m s id i -> r : c~Context, m~Model, s~Sort, id~ArrayId, i~Value, r~Bool
+# Whether `s` is an array sort of `c`.
+export fn array_sort c s -> r : c~Context, s~Sort, r~Bool
+    match s
+        Arr _ _ -> term.sort_ok (term.signature c) 0 s
+        _       -> False
+
+# The laws at one point.
+export fn arrays_ok_at c m s a b i j x env senv xs body -> r : c~Context, m~Model, s~Sort, a~Nat, b~Nat, i~Value,
+                                                               j~Value, x~Value, env~List Value, senv~List Sort,
+                                                               xs~Sort, body~Term, r~Bool
+    const_law c m s x i and store_law c m s a j x i and sum_law c m s a b i and lambda_law c m s env senv xs body i
+        and ext_law c m s a b
+
+# What the model answers, at one point.
+export fn arrays_total_at c m s a b i j x env senv xs body -> r : c~Context, m~Model, s~Sort, a~Nat, b~Nat, i~Value,
+                                                                  j~Value, x~Value, env~List Value, senv~List Sort,
+                                                                  xs~Sort, body~Term, r~Bool
+    gives_select c m s a i and gives_const c m s x and gives_store c m s a j x and gives_sum c m s a b
+        and gives_lambda c m s env senv xs body
+
+# Whether `k` is an array, `i` an index and `x` a value of array sort `s`
+# of `c`.
+fn sorted_at c m s k i x -> r : c~Context, m~Model, s~Sort, k~Nat, i~Value, x~Value, r~Bool
+    match s
+        Arr ix w -> array_sort c s and m.array_in s k and of_sort c m ix i and of_sort c m w x
+        _        -> False
+
+# Whether `i` is an index and `x` a value of array sort `s` of `c`.
+fn index_and_value c m s i x -> r : c~Context, m~Model, s~Sort, i~Value, x~Value, r~Bool
+    match s
+        Arr ix w -> array_sort c s and of_sort c m ix i and of_sort c m w x
+        _        -> False
+
+# `select` answers at arrays and indices of their sorts, with a value of the
+# element sort.
+export fn gives_select c m s k i -> r : c~Context, m~Model, s~Sort, k~Nat, i~Value, r~Bool
     match s
         Arr ix w ->
-            if of_sort c m s (ArrayElem s id) and of_sort c m ix i
-                match m.select s id i
+            if array_sort c s and m.array_in s k and of_sort c m ix i
+                match m.select s k i
                     Some v -> of_sort c m w v
                     None   -> False
             else
@@ -1219,100 +1392,105 @@ export fn gives_select c m s id i -> r : c~Context, m~Model, s~Sort, id~ArrayId,
 # The model names the constant array of `v`.
 export fn gives_const c m s v -> r : c~Context, m~Model, s~Sort, v~Value, r~Bool
     match s
-        Arr _ w -> if of_sort c m w v then names_one c m s (m.const s v) else True
+        Arr _ w -> if array_sort c s and of_sort c m w v then names_one m s (m.const s v) else True
         _       -> True
 
-# The model names the store of `x` at `j` in `id`.
-export fn gives_store c m s id j x -> r : c~Context, m~Model, s~Sort, id~ArrayId, j~Value, x~Value, r~Bool
-    match s
-        Arr ix w ->
-            if of_sort c m s (ArrayElem s id) and of_sort c m ix j and of_sort c m w x
-                names_one c m s (m.store s id j x)
-            else
-                True
-        _        -> True
+# The model names the store of `x` at `j` in `k`.
+export fn gives_store c m s k j x -> r : c~Context, m~Model, s~Sort, k~Nat, j~Value, x~Value, r~Bool
+    if sorted_at c m s k j x then names_one m s (m.store s k j x) else True
 
 # The model names the sum of `a` and `b`, arrays of `Int`s.
-export fn gives_sum c m s a b -> r : c~Context, m~Model, s~Sort, a~ArrayId, b~ArrayId, r~Bool
+export fn gives_sum c m s a b -> r : c~Context, m~Model, s~Sort, a~Nat, b~Nat, r~Bool
     match s
-        Arr _ Int ->
-            if of_sort c m s (ArrayElem s a) and of_sort c m s (ArrayElem s b) then names_one c m s (m.sum s a b) else True
+        Arr _ Int -> if array_sort c s and m.array_in s a and m.array_in s b then names_one m s (m.sum s a b) else True
         _         -> True
 
-# The model names the array of every `lambda` of sort `s` whose variables
-# around it have values `env` of sorts `senv`.
-export fn gives_lambda c m s env senv x body -> r : c~Context, m~Model, s~Sort, env~List Value, senv~List Sort, x~Sort,
-                                                    body~Term, r~Bool
-    if term.sort_of (term.signature c) senv (Lam b"x" x body) == Ok s and values_of_sorts c m (list.reverse senv) (list.reverse env)
-        names_one c m s (m.lambda s env senv x body)
-    else
-        True
+# Whether a `lambda` over a variable of sort `xs`, with body `body`, is a
+# term of array sort `s` of `c` where the variables around it have sorts
+# `senv` and values `env`.
+fn lambda_sorted c m s env senv xs body -> r : c~Context, m~Model, s~Sort, env~List Value, senv~List Sort, xs~Sort,
+                                               body~Term, r~Bool
+    array_sort c s and term.sort_of (term.signature c) senv (Lam b"x" xs body) == Ok s
+        and values_of_sorts c m (list.reverse senv) (list.reverse env)
 
-fn names_one c m s got -> r : c~Context, m~Model, s~Sort, got~Option ArrayId, r~Bool
+# The model names the array of every `lambda` of sort `s`.
+export fn gives_lambda c m s env senv xs body -> r : c~Context, m~Model, s~Sort, env~List Value, senv~List Sort, xs~Sort,
+                                                     body~Term, r~Bool
+    if lambda_sorted c m s env senv xs body then names_one m s (m.lambda s env senv xs body) else True
+
+fn names_one m s got -> r : m~Model, s~Sort, got~Option Nat, r~Bool
     match got
-        Some id -> of_sort c m s (ArrayElem s id)
-        None    -> False
+        Some k -> m.array_in s k
+        None   -> False
 
-# Whether `j` and `i` are indices and `x` a value of array sort `s`.
-fn sorted_at c m s j i x -> r : c~Context, m~Model, s~Sort, j~Value, i~Value, x~Value, r~Bool
-    match s
-        Arr ix w -> of_sort c m ix j and of_sort c m ix i and of_sort c m w x
-        _        -> False
-
-# A constant array is `v` at every index `i`.
-export fn const_law c m s v i -> r : c~Context, m~Model, s~Sort, v~Value, i~Value, r~Bool
-    if sorted_at c m s i i v
-        match m.const s v
-            Some id -> m.select s id i == Some v
-            None    -> True
+# A constant array is `x` at every index `i`.
+export fn const_law c m s x i -> r : c~Context, m~Model, s~Sort, x~Value, i~Value, r~Bool
+    if index_and_value c m s i x
+        match m.const s x
+            Some k ->
+                match m.select s k i
+                    Some y -> y == x
+                    None   -> True
+            None   -> True
     else
         True
 
 # Read over write: a store of `x` at `j` is `x` at `j`, and elsewhere what
 # it was.
-export fn store_law c m s id j x i -> r : c~Context, m~Model, s~Sort, id~ArrayId, j~Value, x~Value, i~Value, r~Bool
-    if sorted_at c m s j i x and of_sort c m s (ArrayElem s id)
-        match m.store s id j x
-            Some id2 -> m.select s id2 i == (if i == j then Some x else m.select s id i)
-            None     -> True
+export fn store_law c m s k j x i -> r : c~Context, m~Model, s~Sort, k~Nat, j~Value, x~Value, i~Value, r~Bool
+    if sorted_at c m s k j x and index_and_value c m s i x
+        match m.store s k j x
+            Some l ->
+                match (m.select s l i, if i == j then Some x else m.select s k i)
+                    (Some p, Some q) -> p == q
+                    _                -> True
+            None   -> True
     else
         True
 
 # `map +` adds the two arrays at every index `i`.
-export fn sum_law c m s a b i -> r : c~Context, m~Model, s~Sort, a~ArrayId, b~ArrayId, i~Value, r~Bool
-    if sorted_at c m s i i (Integer 0) and of_sort c m s (ArrayElem s a) and of_sort c m s (ArrayElem s b)
-        match m.sum s a b
-            Some id ->
-                match (m.select s a i, m.select s b i)
-                    (Some (Integer p), Some (Integer q)) -> m.select s id i == Some (Integer (p + q))
-                    _                                    -> False
-            None    -> True
-    else
-        True
+export fn sum_law c m s a b i -> r : c~Context, m~Model, s~Sort, a~Nat, b~Nat, i~Value, r~Bool
+    match s
+        Arr _ Int ->
+            if sorted_at c m s a i (Integer 0) and m.array_in s b
+                match m.sum s a b
+                    Some l ->
+                        match (m.select s l i, m.select s a i, m.select s b i)
+                            (Some (Integer p), Some (Integer q), Some (Integer r)) -> p == q + r
+                            _                                                      -> True
+                    None   -> True
+            else
+                True
+        _         -> True
 
 # A `lambda` is, at every index `i`, its body with the variable at `i`,
 # wherever the body has a value there.
-export fn lambda_law c m s env senv x body i -> r : c~Context, m~Model, s~Sort, env~List Value, senv~List Sort, x~Sort,
-                                                    body~Term, i~Value, r~Bool
-    if of_sort c m x i
-        match m.lambda s env senv x body
-            Some id ->
+export fn lambda_law c m s env senv xs body i -> r : c~Context, m~Model, s~Sort, env~List Value, senv~List Sort,
+                                                     xs~Sort, body~Term, i~Value, r~Bool
+    if lambda_sorted c m s env senv xs body and of_sort c m xs i
+        match m.lambda s env senv xs body
+            Some k ->
                 let at = Ok i :: list.map (\v -> Ok v) env
-                match value (level AsGiven c m m.fuel) AsGiven c m at (x :: senv) body
-                    Ok v  -> m.select s id i == Some v
-                    Err _ -> True
-            None    -> True
+                match (value (level AsGiven c m m.fuel) AsGiven c m at (xs :: senv) body, m.select s k i)
+                    (Ok v, Some y) -> y == v
+                    _              -> True
+            None   -> True
     else
         True
 
-# Extensionality: two different elements of `s` differ at the index
-# `differ` gives.
-export fn ext_law c m s a b -> r : c~Context, m~Model, s~Sort, a~ArrayId, b~ArrayId, r~Bool
+# Extensionality: two different arrays of `s` differ at the index `differ`
+# gives.
+export fn ext_law c m s a b -> r : c~Context, m~Model, s~Sort, a~Nat, b~Nat, r~Bool
     match s
         Arr ix _ ->
-            if a != b and of_sort c m s (ArrayElem s a) and of_sort c m s (ArrayElem s b)
+            if array_sort c s and a != b and m.array_in s a and m.array_in s b
                 let i = m.differ s a b
-                of_sort c m ix i and m.select s a i != m.select s b i
+                of_sort c m ix i and differ_at m s a b i
             else
                 True
         _        -> True
+
+fn differ_at m s a b i -> r : m~Model, s~Sort, a~Nat, b~Nat, i~Value, r~Bool
+    match (m.select s a i, m.select s b i)
+        (Some p, Some q) -> p != q
+        _                -> True

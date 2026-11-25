@@ -1812,6 +1812,43 @@ export lemma datatypes_hold c : c~Context
         have len (array.from_list no_datatypes) == 0
         have kept_all empty_sig c.commands e
 
+# Whether each `declare-datatypes` of `cmds`, after `sig`, keeps its group
+# out of arrays' indices in its fields (`in_index_check`), in the
+# signature it was checked in. The rule is about a declaration's group,
+# which the signature doesn't keep, so it is stated per command.
+export fn index_free sig cmds -> r : sig~Sig, cmds~List Command, r~Bool
+    match cmds
+        []          -> True
+        cmd :: rest -> group_index_free sig cmd and index_free (extend sig cmd) rest
+
+fn group_index_free sig cmd -> r : sig~Sig, cmd~Command, r~Bool
+    match cmd
+        DeclareDatatypes ds -> in_index_check (extend sig cmd) (len sig.datatypes) ds == None
+        _                   -> True
+
+lemma checked_index_free sig cmds : sig~Sig, cmds~List Command, check_all sig cmds == Ok ()
+    ensures index_free sig cmds
+    proof
+        match cmds
+            []          -> auto
+            cmd :: rest ->
+                have check_command sig cmd == Ok ()
+                have checked_index_free (extend sig cmd) rest
+                match cmd
+                    DeclareDatatypes ds ->
+                        have check_values (extend sig cmd) (len sig.datatypes) ds == Ok ()
+                        have in_index_check (extend sig cmd) (len sig.datatypes) ds == None
+                        have group_index_free sig cmd
+                    _                   -> have group_index_free sig cmd
+
+# Every group of datatypes a context declares is in no array's index in
+# its own fields: what makes a `lambda` over such an index satisfiable
+# with extensionality (`T = mk (Array T Bool)` has no model).
+export lemma index_rule_holds c : c~Context
+    ensures index_free empty_sig c.commands
+    proof
+        have checked_index_free empty_sig c.commands
+
 # ── What writing a context needs ─────────────────────────────────────────────
 # Every number in a well-formed context names a declaration, and every
 # variable a binder around it, so its name can be written. These say so

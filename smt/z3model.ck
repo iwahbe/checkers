@@ -30,7 +30,7 @@ import std.bytes
 import answer
 import smtlib (Atom, Symbol, Keyword, Numeral, SExpr, Leaf, Node)
 import term (Name, Sort, Bool, Int, Seq, Arr, Data, Unin, Param, Ctor, Datatype, Sig, Context)
-import model (Value, Truth, Integer, Sequence, Constructed, Element, ArrayElem, ArrayId, Named)
+import model (Value, Truth, Integer, Sequence, Constructed, Element, ArrayElem)
 import model (Model, Domain, UpTo, Countable)
 
 # A `define-fun` Z3 printed.
@@ -40,12 +40,10 @@ record Printed src : src~Bytes
     result~Sort
     body~SExpr src
 
-# What a `(get-model)` printed: its definitions, the arrays it builds from a
-# function or a `lambda` (numbered, for `Named`), and how many elements
+# What a `(get-model)` printed: its definitions, and how many elements
 # each uninterpreted sort has.
 export record Full src : src~Bytes
     defs~List (Printed src)
-    arrays~List (SExpr src)
     universes~List (Sort, Nat)
 
 # ── Sorts ────────────────────────────────────────────────────────────────────
@@ -102,7 +100,7 @@ fn named sig n args -> r : sig~Sig, n~Name, args~List Sort, r~Result Sort Bytes
                     Some u -> Ok (Unin u args)
                     None   -> Err (b"an unknown sort: " ++ n)
 
-let NO_NORMAL_FORM = b"an array with no normal form (its index sort is finite and not `Bool`, or not one `smt.model` can show infinite)"
+let NO_NORMAL_FORM = b"an array with no normal form (a store at an index sort `smt.model` can't show finite and listed, or unbounded)"
 
 # ── Reading the model ────────────────────────────────────────────────────────
 
@@ -123,40 +121,19 @@ fn bump us n -> r : us~List (Sort, Nat), n~Sort, r~List (Sort, Nat)
 # The model in the items of a `(get-model)` list.
 export fn full sig items -> r : sig~Sig, items~List (SExpr src), r~Result (Full src) Bytes
     match items
-        []        -> Ok (Full [] [] [])
+        []        -> Ok (Full [] [])
         e :: rest ->
             let f = try full sig rest
             match e
                 Node [Leaf (Symbol k False) _, Leaf (Symbol n _) _, Node ps _, s, body] _ if k == b"define-fun" ->
                     let params = try params_from sig ps
                     let result = try sort_from sig s
-                    Ok (Full (Printed n params result body :: f.defs) (lambdas body ++ f.arrays) f.universes)
+                    Ok (Full (Printed n params result body :: f.defs) f.universes)
                 Node [Leaf (Symbol k False) _, Leaf (Symbol _ _) _, Node [] _, s] _ if k == b"declare-fun" ->
                     let sort = try sort_from sig s
-                    Ok (Full f.defs f.arrays (bump f.universes sort))
+                    Ok (Full f.defs (bump f.universes sort))
                 Node (Leaf (Symbol k False) _ :: _) _ if k == b"forall" -> Ok f
                 _ -> Err b"an item of the model that isn't `define-fun`, `declare-fun` or a cardinality constraint"
-
-# Every `lambda` and `(_ as-array f)` in `e`, outermost first.
-fn lambdas e -> r : e~SExpr src, r~List (SExpr src)
-    match e
-        Leaf _ _     -> []
-        Node [Leaf (Symbol l False) _, _, body] _ if l == b"lambda" -> e :: lambdas body
-        Node [Leaf (Symbol u False) _, Leaf (Symbol a False) _, _] _ if u == b"_" and a == b"as-array" -> [e]
-        Node items _ -> all_lambdas items
-
-fn all_lambdas es -> r : es~List (SExpr src), r~List (SExpr src)
-    match es
-        []        -> []
-        e :: rest -> lambdas e ++ all_lambdas rest
-
-fn index_of xs x i -> r : xs~List (SExpr src), x~SExpr src, i~Nat, r~Option Nat
-    match xs
-        []        -> None
-        y :: rest -> if y == x then Some i else index_of rest x (i + 1)
-
-fn nth_of xs k -> r : xs~List a, k~Nat, r~Option a
-    list.head (list.drop k xs)
 
 fn find_def ds n arity -> r : ds~List (Printed src), n~Name, arity~Nat, r~Option (Printed src)
     match ds
@@ -318,9 +295,9 @@ fn interp sig full env lets s e depth -> r : sig~Sig, full~Full src, env~List (N
                                     Some k -> Ok (Element k)
                                     None   -> answer.value_from sig s e [] d
             Leaf _ _                                 -> answer.value_from sig s e [] d
-            Node [Leaf (Symbol l False) _, _, _] _ if l == b"lambda" -> array_ref full s e
+            Node [Leaf (Symbol l False) _, _, _] _ if l == b"lambda" -> array_from sig full s e d
             Node [Leaf (Symbol u False) _, Leaf (Symbol a False) _, _] _ if u == b"_" and a == b"as-array" ->
-                array_ref full s e
+                array_from sig full s e d
             Node [Leaf (Symbol m False) _, Leaf (Numeral n) _] _ if m == b"-" -> Ok (Integer (0 - n))
             Node [Leaf (Symbol a False) _, _, _] _ if a == b"as" -> answer.value_from sig s e [] d
             Node [Leaf (Symbol l False) _, Node binds _, body] _ if l == b"let" ->
@@ -353,10 +330,55 @@ fn let_binds es -> r : es~List (SExpr src), r~Result (List (Name, SExpr src)) By
             Ok ((n, e) :: more)
         _                                       -> Err b"a `let` binding that isn't `(NAME VALUE)`"
 
-fn array_ref full s e -> r : full~Full src, s~Sort, e~SExpr src, r~Result Value Bytes
-    match index_of full.arrays e 0
-        Some k -> Ok (ArrayElem s (Named k))
-        None   -> Err b"an array this reader didn't number"
+# An array Z3 printed as a function of its index, a `lambda` or
+# `(_ as-array f)`, as a normal form: when the function is a chain of
+# `(ite (= x c) v …)` ending in a value that doesn't use `x`. Any other
+# function (a range, `(<= 2 x)`) has no normal form, and isn't read.
+fn array_from sig full s e depth -> r : sig~Sig, full~Full src, s~Sort, e~SExpr src, depth~Nat, r~Result Value Bytes
+    decreasing depth
+    if depth == 0
+        Err TOO_DEEP
+    else
+        match (s, e)
+            (Arr i w, Node [_, Node [Node [Leaf (Symbol x _) _, _] _] _, body] _) -> chain sig full s i w x body (depth - 1)
+            (Arr i w, Node [_, _, Leaf (Symbol f _) _] _)                         ->
+                match find_def full.defs f 1
+                    Some p ->
+                        match p.params
+                            [(x, _)] -> chain sig full s i w x p.body (depth - 1)
+                            _        -> Err NO_NORMAL_FORM
+                    None   -> Err b"an array whose function Z3 didn't print"
+            _                                                                     -> Err NO_NORMAL_FORM
+
+# The array whose index `x` is mapped by `body`: stores for each
+# `(ite (= x c) v rest)`, outermost hiding the rest, over the constant
+# `rest` ends in.
+fn chain sig full s i w x body depth -> r : sig~Sig, full~Full src, s~Sort, i~Sort, w~Sort, x~Name, body~SExpr src,
+                                            depth~Nat, r~Result Value Bytes
+    decreasing depth
+    if depth == 0
+        Err TOO_DEEP
+    else
+        let d = depth - 1
+        let dom = \u args -> domain_of full u args
+        match body
+            Node [Leaf (Symbol ite False) _, Node [Leaf (Symbol eq False) _, l, r] _, v, rest] _ if ite == b"ite" and eq == b"=" ->
+                let c = try (if is_var l x then interp sig full [] [] i r d else if is_var r x then interp sig full [] [] i l d else Err NO_NORMAL_FORM)
+                let at = try interp sig full [] [] w v d
+                let under = try chain sig full s i w x rest d
+                match model.store_array sig dom s under c at
+                    Some a -> Ok a
+                    None   -> Err NO_NORMAL_FORM
+            _ ->
+                let base = try interp sig full [] [] w body d
+                match model.const_array sig dom s base
+                    Some a -> Ok a
+                    None   -> Err NO_NORMAL_FORM
+
+fn is_var e x -> r : e~SExpr src, x~Name, r~Bool
+    match e
+        Leaf (Symbol n _) _ -> n == x
+        _                   -> False
 
 # `n` applied to `args`.
 fn call sig full env lets s n args depth -> r : sig~Sig, full~Full src, env~List (Name, Value, Sort), lets~List (Name, SExpr src), s~Sort, n~Name,
@@ -391,12 +413,7 @@ fn call sig full env lets s n args depth -> r : sig~Sig, full~Full src, env~List
                     Some t ->
                         let x = try interp sig full env lets t a d
                         let y = try interp sig full env lets t b d
-                        if x == y
-                            Ok (Truth True)
-                        else if model.pure x and model.pure y
-                            Ok (Truth False)
-                        else
-                            Err b"`=` of arrays Z3 printed without a normal form"
+                        Ok (Truth (x == y))
                     None   -> Err b"`=` of terms whose sort this reader can't tell"
             (_, [a, b]) if n == b"+" -> arith (int a) (int b) (\x y -> Ok (Integer (x + y)))
             (_, [a, b]) if n == b"-" -> arith (int a) (int b) (\x y -> Ok (Integer (x - y)))
@@ -533,22 +550,6 @@ fn apply_def sig full d vs -> r : sig~Sig, full~Full src, d~Printed src, vs~List
             Ok v  -> Some v
             Err _ -> None
 
-# The `k`-th array of the model at index `i`.
-fn array_at sig full k i -> r : sig~Sig, full~Full src, k~Nat, i~Value, r~Option Value
-    match nth_of full.arrays k
-        Some (Node [Leaf (Symbol _ _) _, Node [Node [Leaf (Symbol v _) _, s] _] _, body] _) ->
-            match (sort_from sig s, sort_of_expr sig full [] body DEPTH)
-                (Ok vs, Some rs) ->
-                    match interp sig full [(v, i, vs)] [] rs body DEPTH
-                        Ok x  -> Some x
-                        Err _ -> None
-                _                -> None
-        Some (Node [_, _, Leaf (Symbol f _) _] _)                                           ->
-            match find_def full.defs f 1
-                Some d -> apply_def sig full d [i]
-                None   -> None
-        _                                                                                   -> None
-
 # The `seq.nth_u` for sequences of `e`.
 fn nth_def ds e -> r : ds~List (Printed src), e~Sort, r~Option (Printed src)
     match ds
@@ -593,10 +594,6 @@ fn by_zero sig full name n -> r : sig~Sig, full~Full src, name~Name, n~Int, r~Op
 export fn model_of c full fuel -> m : c~Context, full~Full src, fuel~Nat, m~Model
     let sig = term.signature c
     let funs = \f vs -> fun_at sig full f vs
-    let select = \_ id i ->
-        match id
-            Named k -> array_at sig full k i
-            _       -> None
     let div_zero = \n -> by_zero sig full b"div0" n
     let mod_zero = \n -> by_zero sig full b"mod0" n
     let nth = \e xs i ->
@@ -605,8 +602,7 @@ export fn model_of c full fuel -> m : c~Context, full~Full src, fuel~Nat, m~Mode
             None   -> None
     let none5 = \_ _ _ _ _ -> None
     let domain = \u args -> domain_of full u args
-    let base = model.without_arrays funs div_zero mod_zero nth none5 domain fuel
-    model.normal_arrays sig (Model base.funs select base.const base.store base.sum base.lambda base.array_domain base.differ base.div_zero base.mod_zero base.nth_out base.wrong_sel base.domain base.fuel)
+    model.normal_arrays sig (model.without_arrays funs div_zero mod_zero nth none5 domain fuel)
 
 # Whether Z3 printed an interpretation of the `f`-th function.
 export fn printed_fun sig full f -> r : sig~Sig, full~Full src, f~Nat, r~Bool

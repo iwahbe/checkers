@@ -1,6 +1,6 @@
 -- stdout
 z3: unsat
-the negated goal: not determined: two arrays compared, one of them a `lambda` or printed by Z3 without a normal form
+the negated goal: not determined: a `lambda`, which has no normal form
 refutes: no
 -- stderr
 -- exit 0

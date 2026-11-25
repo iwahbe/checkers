@@ -244,7 +244,7 @@ fn concat_from sig s es lets depth -> r : sig~Sig, s~Sort, es~List (SExpr src), 
 
 let TOO_DEEP = b"a value nested too deep"
 
-let NO_NORMAL_FORM = b"an array with no normal form (its index sort is finite and not `Bool`, or not one `smt.model` can show infinite)"
+let NO_NORMAL_FORM = b"an array with no normal form (a store at an index sort `smt.model` can't show finite and listed, or unbounded)"
 
 # How deep a printed value may nest.
 let DEPTH = 100000
