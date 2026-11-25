@@ -286,7 +286,7 @@ impl Linter {
                     self.pat(p);
                     self.expr(e);
                 }
-                Stmt::Have(e) | Stmt::Expr(e) | Stmt::HaveType(_, e) => self.expr(e),
+                Stmt::Have(e) | Stmt::Expr(e) | Stmt::HaveType(_, e) | Stmt::GhostLet(_, e) => self.expr(e),
 
             }
         }

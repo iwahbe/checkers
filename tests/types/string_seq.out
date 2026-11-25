@@ -1,1 +1,8 @@
-string_seq.ck: 0 errors, 0 warnings; 9 obligations proved
+warning[W011]: match on `s` itself, not on `Seq.uncons s`
+  --> string_seq.ck:30:11
+   |
+30 |     match Seq.uncons s
+   |           ^^^^^^^^^^^^ `[]` and `x :: rest` take a sequence apart with `Seq.uncons`
+   = help: write `match s`, with `[]` for `None` and `_ :: rest` for `Some (_, rest)`
+
+string_seq.ck: 0 errors, 1 warning; 9 obligations proved

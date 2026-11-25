@@ -1,0 +1,28 @@
+error[E0450]: cannot prove `r >= 0`, the postcondition of `wrong`
+  --> instance_known_result.ck:17:15
+   |
+17 | fn wrong b -> r : b~Box, r~Nat
+   |               ^ promised here
+   = note: for the value returned on line 18: `pos b (-5)`
+   = note: counterexample: b = Box 2
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+error[E0450]: cannot prove that every `(n~Int, -5 > 0 implies n >= 0)` is a `Nat`
+  --> instance_known_result.ck:35:5
+   |
+35 |     wrapped b (-5)
+   |     ^^^^^^^^^^^^^^ `wrapped b (-5)` holds `(n~Int, -5 > 0 implies n >= 0)` values where `Nat` values are expected
+   = note: it needs `n >= 0`
+   = note: counterexample: n = -1
+   = help: give the values the type `Nat` where they are built, so that each is checked there
+
+error[E0450]: cannot prove that every `(n~Int, -5 > 0 implies n >= 0)` is a `Nat`
+  --> instance_known_result.ck:49:5
+   |
+49 |     listed b (-5)
+   |     ^^^^^^^^^^^^^ `listed b (-5)` holds `(n~Int, -5 > 0 implies n >= 0)` values where `Nat` values are expected
+   = note: it needs `n >= 0`
+   = note: counterexample: n = -1
+   = help: give the values the type `Nat` where they are built, so that each is checked there
+
+instance_known_result.ck: 3 errors, 0 warnings

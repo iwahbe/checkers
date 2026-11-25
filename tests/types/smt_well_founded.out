@@ -4,7 +4,7 @@ error[E0450]: cannot prove lemma `all_equal`
 40 |     ensures t == u                          # error: two grids can differ
    |             ^^^^^^ `t == u`
    = note: counterexample: t = Cells …, u = Cells …
-   = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+   = help: add a `proof` block: `match` on a parameter or a call's result for case analysis, and `have` for facts it needs
 
 error[E0450]: cannot prove lemma `all_differ`
   --> smt_well_founded.ck:43:13
@@ -12,6 +12,6 @@ error[E0450]: cannot prove lemma `all_differ`
 43 |     ensures t != u                          # error: there is one `Absurd`
    |             ^^^^^^ `t != u`
    = note: counterexample: t = FromEmpty …, u = FromEmpty …
-   = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+   = help: add a `proof` block: `match` on a parameter or a call's result for case analysis, and `have` for facts it needs
 
 smt_well_founded.ck: 2 errors, 0 warnings

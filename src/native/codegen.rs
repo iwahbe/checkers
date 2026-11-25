@@ -85,8 +85,9 @@ pub struct Gen<'p, M: Module> {
 
 struct St {
     /// Each variable's value. Lowered code defines every variable once, before
-    /// its uses and at a point that dominates them (no loops: tail calls are
-    /// `return_call`), so no Cranelift `Variable`s are needed; the SSA builder
+    /// its uses and at a point that dominates them (the one loop, a call to
+    /// itself in tail position, passes its values as the body's block
+    /// parameters), so no Cranelift `Variable`s are needed; the SSA builder
     /// keeps a map per variable as long as the block count, quadratic in
     /// generated code (#67).
     vars: Vec<Option<Value>>,
@@ -96,6 +97,10 @@ struct St {
     owner: u32,
     frefs: HashMap<FuncId, FuncRef>,
     gvs: HashMap<DataId, GlobalValue>,
+    /// The function being defined and the block its body starts at: a
+    /// call to itself in tail position jumps there, a loop rather than a
+    /// call (no frame torn down and set up again).
+    this: Option<(u32, ir::Block)>,
 }
 
 enum Mode {
@@ -119,6 +124,32 @@ fn tail_sig_rets(n: usize, rets: usize) -> Signature {
         s.returns.push(AbiParam::new(I64));
     }
     s
+}
+
+/// The most words a function of the `tail` calling convention returns in
+/// registers on `isa`, up to `unbox::MAX_PARTS`: past them Cranelift would
+/// need a return area (8 on x86-64; 6 on ARM64, whose `tail` convention
+/// keeps `x0` and `x1` for itself).
+pub fn return_words(isa: &dyn cranelift_codegen::isa::TargetIsa) -> usize {
+    (1..=super::unbox::MAX_PARTS).rev().find(|n| returns_in_registers(isa, *n)).unwrap_or(1)
+}
+
+/// Whether a function returning `n` words compiles on `isa`.
+fn returns_in_registers(isa: &dyn cranelift_codegen::isa::TargetIsa, n: usize) -> bool {
+    let mut func = ir::Function::with_name_signature(ir::UserFuncName::default(), tail_sig_rets(0, n));
+    let mut fctx = FunctionBuilderContext::new();
+    {
+        let mut b = FunctionBuilder::new(&mut func, &mut fctx);
+        let entry = b.create_block();
+        b.append_block_params_for_function_params(entry);
+        b.switch_to_block(entry);
+        let zero = b.ins().iconst(I64, 0);
+        b.ins().return_(&vec![zero; n]);
+        b.seal_all_blocks();
+        b.finalize(isa.frontend_config());
+    }
+    let mut ctx = cranelift_codegen::Context::for_function(func);
+    ctx.compile(isa, &mut Default::default()).is_ok()
 }
 
 fn arity_of(f: &Func) -> usize {
@@ -359,10 +390,18 @@ impl<'p, M: Module> Gen<'p, M> {
         b.switch_to_block(entry);
         let params: Vec<Value> = b.block_params(entry).to_vec();
         let vars = vec![None; f.nvars.max(f.params.len() as u32) as usize];
-        let mut st = St { vars, imm: HashSet::new(), owner: f.owner, frefs: HashMap::new(), gvs: HashMap::new() };
+        let mut st = St { vars, imm: HashSet::new(), owner: f.owner, frefs: HashMap::new(), gvs: HashMap::new(), this: None };
         let env = params[0];
         match &f.kind {
             FnKind::Global | FnKind::Caf => {
+                // The body starts at a block of its own, which a call to
+                // itself in tail position jumps back to.
+                let top = b.create_block();
+                let args: Vec<BlockArg> = params.iter().map(|p| BlockArg::Value(*p)).collect();
+                let params: Vec<Value> = params.iter().map(|_| b.append_block_param(top, I64)).collect();
+                b.ins().jump(top, &args);
+                b.switch_to_block(top);
+                st.this = Some((i as u32, top));
                 for (k, v) in f.params.iter().enumerate() {
                     st.vars[*v as usize] = Some(params[k + 1]);
                 }
@@ -608,6 +647,11 @@ impl<'p, M: Module> Gen<'p, M> {
                 }
                 let r = self.fref(b, st, self.funcs[*f as usize]);
                 match mode {
+                    Mode::Tail(_) if st.this.is_some_and(|(i, _)| i == *f) => {
+                        let top = st.this.unwrap().1;
+                        let args: Vec<BlockArg> = vs.iter().map(|v| BlockArg::Value(*v)).collect();
+                        b.ins().jump(top, &args);
+                    }
                     Mode::Tail(_) => {
                         b.ins().return_call(r, &vs);
                     }
@@ -954,7 +998,9 @@ impl<'p, M: Module> Gen<'p, M> {
         let n = b.ins().sshr_imm_s(x, 1);
         let d = b.ins().sshr_imm_s(y, 1);
         let q = b.ins().sdiv(n, d);
-        let m = b.ins().srem(n, d);
+        // One division: the remainder from the quotient.
+        let qd = b.ins().imul(q, d);
+        let m = b.ins().isub(n, qd);
         // A negative remainder: one more `|d|` makes it Euclidean, and the
         // quotient moves one step away from `d`'s sign.
         let neg = b.ins().icmp_imm_s(IntCC::SignedLessThan, m, 0);
@@ -1406,7 +1452,7 @@ impl<'p, M: Module> Gen<'p, M> {
         ctx.func.signature = s;
         {
             let mut b = FunctionBuilder::new(&mut ctx.func, &mut fctx);
-            let mut st = St { vars: Vec::new(), imm: HashSet::new(), owner: self.p.main, frefs: HashMap::new(), gvs: HashMap::new() };
+            let mut st = St { vars: Vec::new(), imm: HashSet::new(), owner: self.p.main, frefs: HashMap::new(), gvs: HashMap::new(), this: None };
             let entry = b.create_block();
             b.append_block_params_for_function_params(entry);
             b.switch_to_block(entry);

@@ -212,7 +212,7 @@ fn manifest_problems_have_a_position() {
     app(&w);
     let cases = [
         ("\"toolchain\"", "\"toolchian\"", "checkers: checkers.json:4:3: unknown field `toolchian`: the fields are `name`, `version`, `toolchain` and `dependencies`\n"),
-        ("\"version\": \"0.1.0\"", "\"version\": \"0.1\"", "checkers: checkers.json:3:3: `version` must be MAJOR.MINOR.PATCH, like 1.2.0\n"),
+        ("\"version\": \"0.1.0\"", "\"version\": \"0.1\"", "checkers: checkers.json:3:14: `version` must be MAJOR.MINOR.PATCH, like 1.2.0\n"),
         ("\"name\": \"app\",", "\"name\": \"app\"", "checkers: checkers.json:3:3: unexpected `\"`\n"),
         ("\"name\": \"app\"", "\"name\": \"App\"", "checkers: checkers.json:2:3: `App` isn't a package name: lower-case letters, digits and `_`, starting with a letter; not `std`\n"),
         ("{ \"path\": \"../shared\" }", "{ \"path\": \"../shared\", \"version\": \"1.0.0\" }", "checkers: checkers.json:6:38: a path dependency has no `version`: it is used as it is\n"),
@@ -227,6 +227,18 @@ fn manifest_problems_have_a_position() {
         assert_eq!(out.status.code(), Some(1), "{to}");
         assert_eq!(errors(&out), expected, "{to}");
     }
+}
+
+#[test]
+fn lock_file_versions_have_no_leading_zeros() {
+    let w = World::new("lockzeros");
+    app(&w);
+    w.write("app/checkers.lock", "{\n  \"util\": { \"git\": \"../util\", \"version\": \"1.01.0\", \"commit\": \"0\" }\n}\n");
+    let out = w.checkers("app", &["check"]);
+    assert_eq!(
+        (out.status.code(), errors(&out)),
+        (Some(1), "checkers: checkers.lock:2:42: `version` can't have leading zeros\nhelp: write \"1.1.0\"\n".to_string())
+    );
 }
 
 #[test]

@@ -107,8 +107,26 @@ pub fn new_cell(v: W) -> Arc<Cell> {
 
 // ── numbers ─────────────────────────────────────────────────────────────────
 
+/// A `K_BIG` object whose number fits in an `i128` holds it in its two
+/// words (tag 1); a larger one holds a `BigInt` (tag 0). Numbers past 63
+/// bits but within 127 then take one small allocation, and arithmetic on
+/// them none of `BigInt`'s.
+const BIG_I128: u64 = 1;
+
+/// Whether `w` (a `K_BIG` object) holds its number in its words.
+#[inline]
+pub fn big_inline(w: W) -> bool {
+    tag(w) as u64 == BIG_I128
+}
+
+/// The number of a `K_BIG` object holding a `BigInt`.
 pub fn big_of<'a>(w: W) -> &'a BigInt {
     unsafe { &*(slot(w, 0) as *const BigInt) }
+}
+
+#[inline]
+fn big_i128(w: W) -> i128 {
+    ((slot(w, 1) as u128) << 64 | slot(w, 0) as u128) as i128
 }
 
 pub fn is_num(w: W) -> bool {
@@ -119,7 +137,11 @@ pub fn num_of(w: W) -> Num {
     if is_int(w) {
         Num::S(int_of(w) as i128)
     } else if is_kind(w, K_BIG) {
-        Num::from_big(big_of(w).clone())
+        if big_inline(w) {
+            Num::S(big_i128(w))
+        } else {
+            Num::from_big(big_of(w).clone())
+        }
     } else {
         crate::bug("expected a number")
     }
@@ -128,12 +150,20 @@ pub fn num_of(w: W) -> Num {
 pub fn of_num(n: Num) -> W {
     match n {
         Num::S(s) if fits(s) => mk_int(s as i64),
-        Num::S(s) => of_big(BigInt::from(s)),
-        Num::B(b) => match b.to_i64() {
-            Some(s) if fits(s as i128) => mk_int(s),
-            _ => of_big((*b).clone()),
+        Num::S(s) => of_i128(s),
+        Num::B(b) => match b.to_i128() {
+            Some(s) if fits(s) => mk_int(s as i64),
+            Some(s) => of_i128(s),
+            None => of_big(std::sync::Arc::try_unwrap(b).unwrap_or_else(|b| (*b).clone())),
         },
     }
+}
+
+fn of_i128(s: i128) -> W {
+    let w = alloc_obj(info(K_BIG, 0, BIG_I128), HDR + 16);
+    set_slot(w, 0, s as u128 as u64);
+    set_slot(w, 1, ((s as u128) >> 64) as u64);
+    w
 }
 
 fn of_big(b: BigInt) -> W {

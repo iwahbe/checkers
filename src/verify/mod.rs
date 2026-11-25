@@ -530,23 +530,26 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     // 2. Definitions uninterpreted: fast when the facts in scope suffice.
     // 3. Only the definitions the goal mentions: Z3 doesn't unfold the
     //    functions whose results the facts in scope give.
-    // 4. Every definition, without the quantified postconditions of other
+    // 4. Only the definitions the facts in scope mention: the premises
+    //    unfolded, not the goal's functions, which Z3 can unfold without end.
+    // 5. Every definition, without the quantified postconditions of other
     //    functions, which can send Z3 searching (D101).
     // Each with the small work limit, then again with a larger one where Z3
     // gave up: a query that can't prove its goal often searches until its
     // limit.
-    let weaker: Vec<[Option<&String>; 3]> = queries
+    const TIERS: usize = 4;
+    let weaker: Vec<[Option<&String>; TIERS]> = queries
         .iter()
         .zip(&answers)
         .map(|(q, a)| match (q, a) {
-            (Ok(q), None) => [q.facts_only.as_ref(), q.focused.as_ref(), q.without_axioms.as_ref()],
-            _ => [None, None, None],
+            (Ok(q), None) => [q.facts_only.as_ref(), q.focused.as_ref(), q.premised.as_ref(), q.without_axioms.as_ref()],
+            _ => [None; TIERS],
         })
         .collect();
     // Whether each weaker query gave up with the small limit.
-    let mut gave_up: Vec<[bool; 3]> = vec![[true; 3]; obs.len()];
+    let mut gave_up: Vec<[bool; TIERS]> = vec![[true; TIERS]; obs.len()];
     for limit in [FIRST_RLIMIT, QUICK_RLIMIT] {
-        for tier in 0..3 {
+        for tier in 0..TIERS {
             let ask_q: Vec<Option<String>> = weaker
                 .iter()
                 .enumerate()
@@ -569,7 +572,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
             }
         }
     }
-    // 5. Everything, with the full work limit: the query whose
+    // 6. Everything, with the full work limit: the query whose
     //    counterexample is real.
     let rest: Vec<Option<String>> = texts
         .iter()
@@ -583,7 +586,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
             answers[k] = a;
         }
     }
-    // 6. Z3 gave up on everything: a counterexample without the axioms, with
+    // 7. Z3 gave up on everything: a counterexample without the axioms, with
     //    the full work limit, is better than nothing (§7.2).
     let retry: Vec<Option<String>> = answers
         .iter()
@@ -599,7 +602,19 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     }
     // Cases one `match` leaves out that may occur: one error (E0240).
     let mut uncovered: Vec<(Span, Vec<String>, usize)> = Vec::new();
+    // A call whose result isn't shown to be of its type (E0456, or at a
+    // known instance requiring less): a postcondition failing for the
+    // same value returned is the same error, reported once.
+    let mut bad_calls: Vec<Span> = Vec::new();
+    let mut post_fails: Vec<(usize, Span)> = Vec::new();
     for (k, ((o, q), a)) in obs.iter().zip(&queries).zip(answers).enumerate() {
+        if !matches!((q, &a), (Ok(_), Some(Answer::Unsat)) | (Ok(_), None)) {
+            match &o.kind {
+                ObKind::AtAlias { call: Some(_), .. } | ObKind::KnownResult { .. } => bad_calls.push(o.span),
+                ObKind::Post { at, .. } => post_fails.push((v.diags.len(), *at)),
+                _ => {}
+            }
+        }
         if let (ObKind::Uncovered { case, .. }, false) = (&o.kind, matches!((q, &a), (Ok(_), Some(Answer::Unsat)))) {
             if let Some(u) = uncovered.iter_mut().find(|u| u.0 == o.span) {
                 if !u.1.contains(case) {
@@ -646,6 +661,11 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
         for (_, cases, at) in &uncovered {
         let d = v.diags[*at].clone();
         v.diags[*at] = merge_uncovered(d, cases);
+    }
+    for (k, at) in post_fails.into_iter().rev() {
+        if bad_calls.contains(&at) && k < v.diags.len() {
+            v.diags.remove(k);
+        }
     }
     v.z3_version = z3_version();
     v.asked = ASKED.load(std::sync::atomic::Ordering::Relaxed) - asked0;
@@ -978,6 +998,7 @@ fn describe(e: &Elab, o: &Obligation) -> String {
         ObKind::Refines { class, member, pre: true, .. } => format!("`{member}` requires no more than class `{class}`: {}", o.text),
         ObKind::Refines { class, member, pre: false, .. } => format!("`{member}` promises what class `{class}` does: {}", o.text),
         ObKind::AtAlias { class, alias, member, .. } => format!("`{class}` at `{alias}`: `{member}` gives `{alias}`s: {}", o.text),
+        ObKind::KnownResult { call, alias, .. } => format!("`{call}` is a `{alias}`: {}", o.text),
         ObKind::Auto => format!("auto: {}", o.text),
         ObKind::Have => format!("have {}", o.text),
         ObKind::Uncovered { case, binding: false } => format!("`match` needs no arm for {case}: it can't occur"),
@@ -1092,12 +1113,22 @@ fn headline(o: &Obligation) -> (String, String, String) {
         ObKind::Lemma { name } => (
             format!("cannot prove lemma `{name}`"),
             format!("`{}`", o.text),
-            "add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs".into(),
+            "add a `proof` block: `match` on a parameter or a call's result for case analysis, and `have` for facts it needs".into(),
         ),
         ObKind::ClassType { name, given } => (
             format!("cannot prove that every `{given}` satisfies `{}`, as `{name}` requires", o.text),
             format!("`{}` is `{given}` here", name.rsplit('.').next().unwrap_or(name)),
             format!("give `{}` a type whose values all satisfy it", name.rsplit('.').next().unwrap_or(name)),
+        ),
+        ObKind::Refines { class, member, pre: true, at: Some((x, mine, theirs)), .. } => (
+            format!("`{member}` requires more of `{x}` than class `{class}` does"),
+            format!("`{mine}` here, `{theirs}` in the class"),
+            format!("a call through class `{class}` may pass any `{theirs}`: give `{x}` that type, or a type it implies"),
+        ),
+        ObKind::Refines { class, member, pre: false, at: Some((x, mine, theirs)), .. } => (
+            format!("`{member}`'s result `{x}` doesn't promise what class `{class}`'s does"),
+            format!("`{mine}` here, `{theirs}` in the class"),
+            format!("give `{x}` the class's type `{theirs}`, or a type implying it"),
         ),
         ObKind::Refines { class, member, pre: true, .. } => (
             format!("`{member}` requires `{}`, which class `{class}` doesn't", o.text),
@@ -1109,24 +1140,76 @@ fn headline(o: &Obligation) -> (String, String, String) {
             format!("`{}` doesn't follow from this signature", o.text),
             format!("promise at least what class `{class}` does: add `{}` to this signature, or a condition implying it", o.text),
         ),
-        ObKind::AtAlias { class, alias, base, member, param: Some(x), .. } => (
-            format!("`{class}` at `{alias}` runs `{base}`'s instance, whose `{member}` may give `{x}` a value that isn't a `{alias}`"),
+        ObKind::AtAlias { class, inst, alias, base, member, param: Some(p), .. } => (
+            format!("`{class}` at `{alias}` runs `{base}`'s instance, whose `{member}` may give `{}` {}", p.name, p.gives),
             format!("`{class}` is used at `{alias}` here"),
-            format!("use `{base}` here, with a function that accepts every `{base}`; or give `instance {class} {base}`'s `{member}` a signature in which `{x}` is given only `{alias}`s"),
+            format!(
+                "use `{base}` here, with a function that accepts every `{}`; or give `instance {inst}`'s `{member}` a signature in which `{}` is given only {}{}",
+                p.accepts,
+                p.name,
+                p.only,
+                p.example.as_ref().map_or(String::new(), |e| format!(", such as `{}~{e}`", p.name))
+            ),
         ),
-        ObKind::AtAlias { class, alias, base, member, call: Some(c), param: None, inside } => (
-            if *inside {
-                format!("cannot prove `{}` of the `{alias}`s inside `{c}`", o.text)
-            } else {
-                format!("cannot prove that `{c}` is a `{alias}` (`{}`)", o.text)
+        ObKind::AtAlias { class, inst, alias, base, member, call, param: None, inside, whole: Some((wt, wb)) } => {
+            // A part checked as one: the instance's signature can promise
+            // it by its type, or for a list with `list.all`.
+            let formula = (!o.text.is_empty()).then(|| o.text.clone());
+            let promise = match &formula {
+                Some(f) => format!("`{wt}` in its result, or `{f}` of it"),
+                None => format!("`{wt}` in its result"),
+            };
+            match call {
+                Some(c) => (
+                    match (inside, &formula) {
+                        (false, Some(f)) => format!("cannot prove that `{c}` has type `{wt}` (`{f} {}`)", if c.contains(' ') { format!("({c})") } else { c.clone() }),
+                        (false, None) => format!("cannot prove that `{c}` has type `{wt}`"),
+                        (true, _) => format!("cannot prove that the `{wb}` inside `{c}` has type `{wt}`"),
+                    },
+                    format!("`{class}` at `{alias}` runs `{base}`'s instance, and its `{member}` isn't shown to give a `{alias}` here"),
+                    format!("use `{base}` here and check the result where a `{alias}` is needed; or promise it in a signature of `instance {inst}`'s `{member}`: {promise}"),
+                ),
+                None => (
+                    if *inside {
+                        format!("`{class}` at `{alias}` runs `{base}`'s instance, whose `{member}` isn't shown to give a value of type `{wt}` inside its result")
+                    } else {
+                        format!("`{class}` at `{alias}` runs `{base}`'s instance, whose `{member}` isn't shown to return a value of type `{wt}`")
+                    },
+                    format!("`{class}` is used at `{alias}` here, by code that may call `{member}` with any arguments"),
+                    format!("use `{base}` here instead of `{alias}`; or promise it, for every argument, in a signature of `instance {inst}`'s `{member}`: {promise}"),
+                ),
+            }
+        }
+        ObKind::AtAlias { class, inst, alias, base, member, call: Some(c), param: None, inside, whole: None } => (
+            match (inside, o.text.is_empty()) {
+                (_, true) => format!("cannot prove that the `{alias}`s inside `{c}` are `{alias}`s"),
+                (true, false) => format!("cannot prove `{}` of the `{alias}`s inside `{c}`", o.text),
+                (false, false) => format!("cannot prove that `{c}` is a `{alias}` (`{}`)", o.text),
             },
             format!("`{class}` at `{alias}` runs `{base}`'s instance, and its `{member}` isn't shown to give a `{alias}` here"),
-            format!("use `{base}` here and check the result where a `{alias}` is needed; or promise it in a signature of `instance {class} {base}`'s `{member}`"),
+            format!("use `{base}` here and check the result where a `{alias}` is needed; or promise it in a signature of `instance {inst}`'s `{member}`"),
         ),
-        ObKind::AtAlias { class, alias, base, member, call: None, param: None, .. } => (
-            format!("`{class}` at `{alias}` runs `{base}`'s instance, whose `{member}` isn't shown to return a `{alias}` (`{}`)", o.text),
+        ObKind::AtAlias { class, inst, alias, base, member, call: None, param: None, whole: None, .. } => (
+            if o.text.is_empty() {
+                format!("`{class}` at `{alias}` runs `{base}`'s instance, whose `{member}` isn't shown to return `{alias}`s")
+            } else {
+                format!("`{class}` at `{alias}` runs `{base}`'s instance, whose `{member}` isn't shown to return a `{alias}` (`{}`)", o.text)
+            },
             format!("`{class}` is used at `{alias}` here, by code that may call `{member}` with any arguments"),
-            format!("use `{base}` here instead of `{alias}`; or promise it, for every argument, in a signature of `instance {class} {base}`'s `{member}`"),
+            format!("use `{base}` here instead of `{alias}`; or promise it, for every argument, in a signature of `instance {inst}`'s `{member}`"),
+        ),
+        ObKind::KnownResult { call, alias, inside, pres, inst, member } => (
+            if *inside {
+                format!("cannot prove `{}` of the `{alias}`s inside `{call}`", o.text)
+            } else {
+                format!("cannot prove that `{call}` is a `{alias}` (`{}`)", o.text)
+            },
+            if *inside { format!("the class promises `{alias}`s in the result only where {pres}") } else { format!("the class promises a `{alias}` only where {pres}") },
+            if *inside {
+                format!("make the call meet the class's precondition, or have `instance {inst}`'s `{member}` promise `{alias}`s in its result at these arguments too")
+            } else {
+                format!("make the call meet the class's precondition, or have `instance {inst}`'s `{member}` promise a `{alias}` at these arguments too")
+            },
         ),
         ObKind::Auto => (
             format!("`auto` cannot prove `{}`", o.text),
@@ -1186,11 +1269,17 @@ fn failed(e: &Elab, o: &Obligation, model: Option<String>) -> Diagnostic {
         _ => "E0450",
     };
     let mut d = Diagnostic::error(code, msg, o.span).with_label(label);
-    if let ObKind::Refines { class, declared, .. } = &o.kind {
+    if let ObKind::Refines { class, declared, at, .. } = &o.kind {
         d = d.with_note(format!("class `{class}` declares `{declared}`"));
+        if at.is_some() {
+            d = d.with_note(format!("it needs `{}`", o.text));
+        }
     }
     if let ObKind::Weaken { .. } = &o.kind {
         d = d.with_note(format!("it needs `{}`", o.text));
+    }
+    if let ObKind::KnownResult { inst, member, .. } = &o.kind {
+        d = d.with_note(format!("this calls `instance {inst}`'s `{member}`, whose signature requires less than the class's and doesn't promise it here"));
     }
     if let ObKind::Post { at, .. } = &o.kind {
         if let Some(f) = e.sources.get(&o.module) {

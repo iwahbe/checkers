@@ -34,6 +34,7 @@ pub mod future;
 pub mod array;
 pub mod env;
 pub mod proc;
+pub mod time;
 pub mod prelude;
 
 /// A builtin: its standard-library name (`std.terminal.print_line`), its
@@ -56,6 +57,7 @@ pub const MODULES: &[&[Builtin]] = &[
     array::TABLE,
     env::TABLE,
     proc::TABLE,
+    time::TABLE,
     prelude::TABLE,
 ];
 

@@ -4,6 +4,9 @@
 < 1
 > {"jsonrpc":"2.0","method":"initialized","params":{}}
 > {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/indent_continued.ck","languageId":"checkers","version":1,"text":"module indent_continued\n\nfn f x -> r : x~Nat, r~Nat,\n              match r\n\n"}}}
+# The document's diagnostics, after each phase of its check (types, `check`s,
+# proofs): waited for, so they come before the replies.
+< 3
 > {"jsonrpc":"2.0","id":2,"method":"textDocument/onTypeFormatting","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/indent_continued.ck"},"position":{"line":4,"character":0},"ch":"\n","options":{"tabSize":4,"insertSpaces":true}}}
 < 1
 > {"jsonrpc":"2.0","id":3,"method":"shutdown"}
