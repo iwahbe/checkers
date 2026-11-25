@@ -591,7 +591,7 @@ impl Elab {
             .min()
             .unwrap_or(ps.len());
         let ty = match self.force(&cx.ty_of(occ)) {
-            Val::TupleTy(ts) => Val::TupleTy(crate::core::flat_parts(&self.g, &ts, true)),
+            Val::TupleTy(ts) => Val::TupleTy(crate::core::flat_parts(&self.g, &ts, true).into()),
             t => t,
         };
         let comps_ty = match ty {
@@ -611,7 +611,7 @@ impl Elab {
                 // The occurrence's type can't depend on the occurrence itself.
                 let mut outer = cx.clone();
                 outer.truncate(occ);
-                let metas: Vec<Val> = (0..n).map(|_| self.fresh_meta_val(&outer)).collect();
+                let metas: Rc<[Val]> = (0..n).map(|_| self.fresh_meta_val(&outer)).collect();
                 let want = Val::TupleTy(metas.clone());
                 if !self.unify_at(cx, &other, &want, pat.span, "this pattern") {
                     self.authority_hint(cx, ps, occ);
@@ -849,7 +849,7 @@ impl Elab {
                 let n = self.g.arity_ty(tid);
                 let mut outer = cx.clone();
                 outer.truncate(occ);
-                let metas: Vec<Val> = (0..n).map(|_| self.fresh_meta_val(&outer)).collect();
+                let metas: Rc<[Val]> = (0..n).map(|_| self.fresh_meta_val(&outer)).collect();
                 let want = Val::TyCon(tid, metas.clone());
                 if unify(&self.g, cx.lvl(), &other, &want).is_err() {
                     let shown = self.show_val(cx, &other);
@@ -879,7 +879,7 @@ impl Elab {
         for c in ctors {
             let start = cx.lvl();
             let fields = self.g.cons[c.0 as usize].fields.clone();
-            let mut env: Vec<Val> = params.clone();
+            let mut env: Vec<Val> = params.to_vec();
             let mut lvls = Vec::new();
             let sub = cx.locals[occ].sub.or(cx.locals[occ].param);
             let sub_cond = if cx.locals[occ].sub.is_some() { cx.locals[occ].sub_cond } else { None };
@@ -974,12 +974,11 @@ impl Elab {
             // In this arm the value is this constructor, and its invariants hold (§7.1).
             let saved = cx.facts.len();
             let fvals: Vec<Val> = lvls.iter().map(|l| Val::var(*l)).collect();
-            let mut all: Vec<Val> = params.clone();
-            all.extend(fvals);
+            let all: Rc<[Val]> = params.iter().cloned().chain(fvals).collect();
             let occ_val = cx.env[occ].clone();
             cx.assume(Self::prim_val(Prim::Eq, vec![occ_val, Val::Con(c, all.clone())]));
             for inv in self.con_invs.get(&c).cloned().unwrap_or_default() {
-                let f = self.inst_pred(&inv, all.clone());
+                let f = self.inst_pred(&inv, all.to_vec());
                 cx.assume(f);
             }
             // Dependent matching: where the matched value is a variable, the

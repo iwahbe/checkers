@@ -279,11 +279,11 @@ pub enum Val {
     Lam(Name, Mult, Icit, Closure),
     Pi(Name, Mult, Icit, Rc<Val>, Closure),
     Univ(u32),
-    TyCon(TyId, Vec<Val>),
-    Con(ConId, Vec<Val>),
+    TyCon(TyId, Rc<[Val]>),
+    Con(ConId, Rc<[Val]>),
     Lit(Lit),
-    TupleTy(Vec<Val>),
-    Tuple(Vec<Val>),
+    TupleTy(Rc<[Val]>),
+    Tuple(Rc<[Val]>),
     Error,
 }
 
@@ -438,7 +438,7 @@ impl Globals {
     pub fn bool_val(&self, b: bool) -> Val {
         let c = if b { self.well_known.true_con } else { self.well_known.false_con };
         match c {
-            Some(c) => Val::Con(c, Vec::new()),
+            Some(c) => Val::Con(c, Rc::new([])),
             None => Val::Error,
         }
     }
@@ -555,7 +555,7 @@ pub fn eval(g: &Globals, env: &Env, t: &Tm) -> Val {
         Tm::TyCon(t) => {
             let n = g.arity_ty(*t);
             if n == 0 {
-                Val::TyCon(*t, Vec::new())
+                Val::TyCon(*t, Rc::new([]))
             } else {
                 let tid = *t;
                 eval(g, &Rc::new(Vec::new()), &eta(n, &[], |args| Tm::TyConApp(tid, args)))
@@ -564,7 +564,7 @@ pub fn eval(g: &Globals, env: &Env, t: &Tm) -> Val {
         Tm::Con(c) => {
             let n = g.arity_con(*c);
             if n == 0 {
-                Val::Con(*c, Vec::new())
+                Val::Con(*c, Rc::new([]))
             } else {
                 let cid = *c;
                 let icits = con_icits(g, cid);
@@ -811,9 +811,8 @@ fn desc_at(g: &Globals, v: &Val, depth: usize) -> Desc {
         Val::Lam(_, _, _, c) => {
             const PROBE: usize = usize::MAX / 2;
             match force(g, apply_closure(g, &c, Val::var(PROBE))) {
-                Val::TyCon(id, mut args) if matches!(args.last(), Some(Val::Neutral(Head::Var(PROBE), sp)) if sp.is_empty()) => {
-                    args.pop();
-                    match desc_at(g, &Val::TyCon(id, args), depth + 1) {
+                Val::TyCon(id, args) if matches!(args.last(), Some(Val::Neutral(Head::Var(PROBE), sp)) if sp.is_empty()) => {
+                    match desc_at(g, &Val::TyCon(id, args[..args.len() - 1].into()), depth + 1) {
                         Desc::Known(tag, ds) => Desc::Known(tag, ds),
                         d => d,
                     }
@@ -1013,7 +1012,7 @@ pub fn flat_parts(g: &Globals, vs: &[Val], ty: bool) -> Vec<Val> {
         match (ty, force(g, vs[vs.len() - 1].clone())) {
             (true, Val::TupleTy(ws)) | (false, Val::Tuple(ws)) if ws.len() >= 2 => {
                 vs.pop();
-                vs.extend(ws);
+                vs.extend(ws.iter().cloned());
             }
             _ => break,
         }
@@ -1026,7 +1025,7 @@ fn proj(g: &Globals, v: Val, i: usize, rest: bool) -> Val {
         Val::Tuple(vs) => {
             let vs = flat_parts(g, &vs, false);
             match vs.len() {
-                n if rest && n > i + 1 => Val::Tuple(vs[i..].to_vec()),
+                n if rest && n > i + 1 => Val::Tuple(vs[i..].into()),
                 _ => vs.get(i).cloned().unwrap_or(Val::Error),
             }
         }
@@ -1550,7 +1549,7 @@ fn unify_tuple(g: &Globals, l: usize, x: &[Val], y: &[Val], ty: bool) -> Result<
         return Err(UnifyError::Mismatch);
     }
     let k = short.len() - 1;
-    let rest = if ty { Val::TupleTy(long[k..].to_vec()) } else { Val::Tuple(long[k..].to_vec()) };
+    let rest = if ty { Val::TupleTy(long[k..].into()) } else { Val::Tuple(long[k..].into()) };
     let mut long2 = long[..k].to_vec();
     long2.push(rest);
     if flip { unify_many(g, l, &long2, short) } else { unify_many(g, l, short, &long2) }
@@ -2096,7 +2095,7 @@ fn invert_case(g: &Globals, l: usize, m: MetaId, sp: &[Elim], other: &Val) -> Op
     let info = &g.cons[con.0 as usize];
     let n = g.tys[info.ty.0 as usize].params.len() + info.fields.len();
     // Fresh unknowns in the same context as `m`: applied to the same arguments.
-    let fresh: Vec<Val> = (0..n).map(|_| Val::Neutral(Head::Meta(g.fresh_meta()), Rc::new(args.to_vec()))).collect();
+    let fresh: Rc<[Val]> = (0..n).map(|_| Val::Neutral(Head::Meta(g.fresh_meta()), Rc::new(args.to_vec()))).collect();
     if solve(g, l, m, args, &Val::Con(con, fresh)).is_err() {
         return None;
     }

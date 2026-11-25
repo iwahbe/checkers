@@ -236,8 +236,8 @@ impl Elab {
             return self.same_type(&a, &b);
         }
         match (a, b) {
-            (Val::TyCon(t1, x1), Val::TyCon(t2, x2)) => t1 == t2 && x1.len() == x2.len() && x1.iter().zip(x2).all(|(x, y)| self.same_type(x, y)),
-            (Val::TupleTy(x1), Val::TupleTy(x2)) => x1.len() == x2.len() && x1.iter().zip(x2).all(|(x, y)| self.same_type(x, y)),
+            (Val::TyCon(t1, x1), Val::TyCon(t2, x2)) => t1 == t2 && x1.len() == x2.len() && x1.iter().zip(x2.iter()).all(|(x, y)| self.same_type(x, y)),
+            (Val::TupleTy(x1), Val::TupleTy(x2)) => x1.len() == x2.len() && x1.iter().zip(x2.iter()).all(|(x, y)| self.same_type(x, y)),
             (Val::Univ(u1), Val::Univ(u2)) => u1 == u2,
             (Val::Neutral(h1, s1), Val::Neutral(h2, s2)) => {
                 let heads = match (h1, h2) {
@@ -330,7 +330,7 @@ impl Elab {
         match (&e, &f) {
             (Val::TyCon(t1, a1), Val::TyCon(t2, a2)) if t1 == t2 && a1.len() == a2.len() => {
                 let vs = self.variance(*t1);
-                for (k, (x, y)) in a1.iter().zip(a2).enumerate() {
+                for (k, (x, y)) in a1.iter().zip(a2.iter()).enumerate() {
                     let v = vs.get(k).copied().unwrap_or(Variance::Inv);
                     let via = if v == Variance::Co { via } else { Via::Ty(*t1) };
                     if let Some(g) = self.gain(cx, x, y, pol.then(v), via, in_result, depth + 1, w) {
@@ -340,7 +340,7 @@ impl Elab {
                 None
             }
             (Val::TupleTy(x), Val::TupleTy(y)) if x.len() == y.len() => {
-                for (a, b) in x.iter().zip(y) {
+                for (a, b) in x.iter().zip(y.iter()) {
                     if let Some(g) = self.gain(cx, a, b, pol, via, in_result, depth + 1, w) {
                         return Some(g);
                     }
