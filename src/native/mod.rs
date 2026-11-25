@@ -485,8 +485,9 @@ mod tests {
 
     /// A parameter a loop only reads and passes on unchanged is borrowed
     /// (tests/run/borrowed_params.ck): `walk`'s `n` is neither duplicated
-    /// nor dropped, and a call passing one of its values to a borrowed and
-    /// an owned parameter duplicates it once and drops it after.
+    /// nor dropped; `longer` borrows the string it compares with and owns
+    /// the list whose cells it reuses. Both are recursive, so neither is
+    /// inlined.
     #[test]
     fn loops_borrow_what_they_pass_on() {
         funcs_of("borrowed_params.ck", |p| {
@@ -494,7 +495,7 @@ mod tests {
             let walk = func("walk");
             assert_eq!(p.borrowed.get(&(walk as u32)).map(Vec::as_slice), Some(&[true, false, false][..]));
             assert!(!counts(&p.funcs[walk].body, p.funcs[walk].params[0]));
-            assert_eq!(p.borrowed.get(&(func("note") as u32)).map(Vec::as_slice), Some(&[true, false][..]));
+            assert_eq!(p.borrowed.get(&(func("longer") as u32)).map(Vec::as_slice), Some(&[true, false][..]));
         })
     }
 

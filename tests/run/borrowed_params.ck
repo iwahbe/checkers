@@ -19,13 +19,16 @@ fn walk n k acc -> r : n~Int, k~Nat, acc~Int, r~Int
 fn keep s rest -> r : s~String, rest~List String, r~List String
     if len s > 3 then s :: rest else rest
 
-# `s` is only read: borrowed; `rest` is stored.
-fn note s rest -> r : s~String, rest~List String, r~List String
-    if len s > 3 then "long" :: rest else rest
+# `s` is only read and passed on: borrowed. `xs`'s cells are reused for
+# the result: owned.
+fn longer s xs -> r : s~String, xs~List String, r~List String
+    match xs
+        []        -> []
+        x :: rest -> if len x > len s then x :: longer s rest else longer s rest
 
 # The same value to a borrowed and an owned parameter of one call.
 fn both s -> r : s~String, r~List String
-    note s [s]
+    longer s [s ++ "!", s]
 
 # Functions that borrow, kept in a list as values: called as closures.
 fn long s -> r : s~String, r~Bool
