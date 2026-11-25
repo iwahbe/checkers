@@ -1,0 +1,10 @@
+(set-option :produce-models true)
+(set-option :rlimit 1000)
+(set-logic ALL)
+(declare-const x Int)
+(assert (not (= (* x x) (* x x))))
+(check-sat)
+(get-value (x))
+; z3 says: unknown
+; z3 says: (error "line 7 column 14: model is not available")
+; z3 says: (:rlimit-count 1004)

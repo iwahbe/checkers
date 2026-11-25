@@ -1,0 +1,4 @@
+m/agree	unknown(no-solver)/unsat
+m/gone	unknown(no-solver)/sat
+m/model	valid/sat
+m/unpatterned	unknown(no-solver)/sat/unpatterned

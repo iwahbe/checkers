@@ -32,10 +32,11 @@ export record Error src : src~ghost Bytes
     message~Bytes
 
 # The line and column of byte `pos`, both from 1; columns count bytes.
-export fn position src pos -> r : src~Bytes, pos~Nat, r~(Nat, Nat)
+export fn position src pos -> r : src~Bytes, pos~Nat, r~((l~Nat, l >= 1), (c~Nat, c >= 1))
     count_lines src 0 pos 1 1
 
-fn count_lines src i pos line col -> r : src~Bytes, i~Nat, i <= len src, pos~Nat, line~Nat, col~Nat, r~(Nat, Nat)
+fn count_lines src i pos line col -> r : src~Bytes, i~Nat, i <= len src, pos~Nat, line~Nat, line >= 1, col~Nat, col >= 1,
+                                         r~((l~Nat, l >= 1), (c~Nat, c >= 1))
     decreasing len src - i
     if i < pos and i < len src
         if src[i] == '\n' then count_lines src (i + 1) pos (line + 1) 1 else count_lines src (i + 1) pos line (col + 1)
@@ -169,6 +170,11 @@ fn items src start k acc -> r : src~Bytes, start~Nat, k~Nat, start < k, k <= len
     else
         let e = try expr src j
         items src start e.stop (e.value :: acc)
+
+# Where the S-expression starting at `i` ends: the offset just after it.
+export fn end_of src i -> r : src~Bytes, i~Nat, i < len src, r~Result (j~Nat, i < j, j <= len src) (Error src)
+    let e = try expr src i
+    Ok e.stop
 
 # Every S-expression in `src`, in order.
 export fn read src -> r : src~Bytes, r~Result (List (SExpr src)) (Error src)
