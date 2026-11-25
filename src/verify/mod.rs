@@ -1113,7 +1113,7 @@ fn headline(o: &Obligation) -> (String, String, String) {
         ObKind::Lemma { name } => (
             format!("cannot prove lemma `{name}`"),
             format!("`{}`", o.text),
-            "add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs".into(),
+            "add a `proof` block: `match` on a parameter or a call's result for case analysis, and `have` for facts it needs".into(),
         ),
         ObKind::ClassType { name, given } => (
             format!("cannot prove that every `{given}` satisfies `{}`, as `{name}` requires", o.text),
