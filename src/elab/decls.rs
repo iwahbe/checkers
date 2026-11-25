@@ -443,6 +443,9 @@ impl Elab {
             DeclKind::Record { fields, .. } => fields.first().map(|f| f.span.start),
             _ => None,
         };
+        // A body where the declaration ends isn't written: a header being
+        // written, or a class's function.
+        let body = body.filter(|&b| b < d.span.end);
         let end = match body {
             // Up to the start of the body's line, if it is on a later line.
             Some(b) => {
@@ -900,7 +903,7 @@ impl Elab {
         let tm = self.check(cx, e, &b, false);
         self.in_spec -= 1;
         cx.type_pos = saved;
-        Pred { tm, text: self.src_text(e.span), span: e.span, is_post, alias: None }
+        Pred { tm, text: self.expr_text(e), span: e.span, is_post, alias: None }
     }
 
     fn phase_type_params(&mut self, m: &ast::Module, ids: &[Option<Sym>]) {

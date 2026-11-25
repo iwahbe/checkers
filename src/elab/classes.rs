@@ -898,11 +898,12 @@ impl Elab {
 
     /// Source text of `span` in module `m`.
     fn text_in(&self, m: &str, span: Span) -> String {
-        self.sources
-            .get(m)
-            .and_then(|f| f.text.get(span.start as usize..span.end as usize))
-            .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "))
-            .unwrap_or_default()
+        self.sources.get(m).map(|f| crate::elab::source_text(&f.text, span, false)).unwrap_or_default()
+    }
+
+    /// The text of a predicate in another module, a block keeping its lines.
+    fn expr_text_in(&self, m: &str, e: &Expr) -> String {
+        self.sources.get(m).map(|f| crate::elab::source_text(&f.text, e.span, crate::elab::has_block(e))).unwrap_or_default()
     }
 
     /// A class's constraints for an instance member in another module:
@@ -916,11 +917,10 @@ impl Elab {
                 // A distinct span for each, within the member's.
                 let _ = k;
                 let s = self.synthetic_span(at);
-                let oe = match o {
-                    Constraint::Typed { ty, .. } => ty.span,
-                    Constraint::Pred(e) | Constraint::Named(_, e) => e.span,
+                let text = match o {
+                    Constraint::Typed { ty, .. } => self.text_in(m, ty.span),
+                    Constraint::Pred(e) | Constraint::Named(_, e) => self.expr_text_in(m, e),
                 };
-                let text = self.text_in(m, oe);
                 self.text_override.insert((self.cur.clone(), s.start, s.end), text);
                 respan_constraints(std::slice::from_ref(c), s).remove(0)
             })
@@ -1993,7 +1993,7 @@ impl Elab {
                     let mut ens = brw.expr(&trw.expr(&srw.expr(&prw.expr(ensures, &[]), &[]), &[]), &[]);
                     if let Some(m) = foreign.as_deref() {
                         let at = self.synthetic_span(span);
-                        let text = self.text_in(m, ensures.span);
+                        let text = self.expr_text_in(m, ensures);
                         self.text_override.insert((self.cur.clone(), at.start, at.end), text);
                         ens = respan(&ens, at);
                     }
@@ -2033,7 +2033,7 @@ impl Elab {
                 self.class_type_checks.insert(lname.clone(), (format!("{}.{}", class.name, tn.name), self.src_text(ty.span)));
                 // The class's predicate, shown at the instance's type.
                 let s = self.synthetic_span(*at);
-                let ptext = self.text_in(&module, p.span);
+                let ptext = self.expr_text_in(&module, p);
                 self.text_override.insert((self.cur.clone(), s.start, s.end), ptext);
                 let ens = respan(&trw.expr(&srw.expr(p, std::slice::from_ref(&binder.name)), std::slice::from_ref(&binder.name)), s);
                 let mut cs = ctx_preds.clone();

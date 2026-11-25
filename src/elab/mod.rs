@@ -2095,11 +2095,16 @@ impl Elab {
         if let Some(t) = self.text_override.get(&(self.cur.clone(), span.start, span.end)) {
             return t.clone();
         }
-        self.sources
-            .get(&self.cur)
-            .and_then(|f| f.text.get(span.start as usize..span.end as usize))
-            .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "))
-            .unwrap_or_default()
+        self.sources.get(&self.cur).map(|f| source_text(&f.text, span, false)).unwrap_or_default()
+    }
+
+    /// An expression's text, as `src_text`, keeping a block's lines (a
+    /// `match` across several): what is shown of a predicate.
+    pub fn expr_text(&self, e: &crate::syntax::ast::Expr) -> String {
+        if let Some(t) = self.text_override.get(&(self.cur.clone(), e.span.start, e.span.end)) {
+            return t.clone();
+        }
+        self.sources.get(&self.cur).map(|f| source_text(&f.text, e.span, has_block(e))).unwrap_or_default()
     }
 
     /// If `ty`, a type term over the first `at` locals of `cx`, is a refinement
@@ -2660,6 +2665,48 @@ fn free_levels(t: &Tm, lvl: usize, depth: usize, out: &mut Vec<usize>) {
 
 /// `text` with each whole word that `names` maps replaced: identifiers,
 /// not parts of them, and nothing inside a string literal.
+/// The source text at `span`: one line with its whitespace collapsed, or,
+/// with `lines`, its lines as written (less the first's indentation), when
+/// it has several.
+pub fn source_text(src: &str, span: Span, lines: bool) -> String {
+    let Some(t) = src.get(span.start as usize..span.end as usize) else { return String::new() };
+    if !lines || !t.contains('\n') {
+        return t.split_whitespace().collect::<Vec<_>>().join(" ");
+    }
+    let line_start = src[..span.start as usize].rfind('\n').map_or(0, |i| i + 1);
+    let col = src[line_start..span.start as usize].chars().count();
+    let mut out: Vec<&str> = Vec::new();
+    for (k, l) in t.lines().enumerate() {
+        let l = l.trim_end();
+        if l.trim().is_empty() {
+            continue;
+        }
+        let lead = l.len() - l.trim_start().len();
+        out.push(if k == 0 { l } else { &l[lead.min(col)..] });
+    }
+    out.join("\n")
+}
+
+/// Is `e` a layout block, or one of its branches: written on several lines
+/// whose breaks are part of it?
+pub fn has_block(e: &crate::syntax::ast::Expr) -> bool {
+    use crate::syntax::ast::ExprKind;
+    match &e.kind {
+        ExprKind::Match(..) | ExprKind::Block(_) | ExprKind::When(_) => true,
+        ExprKind::If(_, t, f) => has_block(t) || has_block(f),
+        _ => false,
+    }
+}
+
+/// A predicate's text for a one-line message: its first line, with `…` for
+/// the rest of a block.
+pub fn first_line(text: &str) -> String {
+    match text.split_once('\n') {
+        Some((first, _)) => format!("{first} …"),
+        None => text.to_string(),
+    }
+}
+
 pub fn rename_words(text: &str, names: &[(String, String)]) -> String {
     let mut out = String::new();
     let mut word = String::new();
