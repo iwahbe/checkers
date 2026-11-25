@@ -407,12 +407,30 @@ mod tests {
 
     /// A copy made for a known dictionary takes neither the dictionary nor
     /// the type (tests/run/copy_params.ck): `lo`'s copies take `x` and `y`.
-    /// A copy that would take nothing keeps one parameter.
+    /// A copy that would take nothing keeps one parameter. The copies are
+    /// read as `spec` makes them, before small functions are inlined.
     #[test]
     fn copies_take_no_dictionaries() {
         funcs_of("copy_params.ck", |p| {
-            let arity = |name: &str| p.funcs.iter().filter(|f| f.name == name).map(|f| f.params.len()).collect::<Vec<_>>();
-            assert_eq!(arity("lo"), [2, 2, 2, 2]);
+            let specs = p.specs.borrow();
+            let arity = |name: &str| {
+                let mut out: Vec<usize> = specs
+                    .copies
+                    .iter()
+                    .filter(|c| p.names[c.of.0 as usize] == name)
+                    .map(|c| {
+                        let (mut n, mut b) = (0, &c.body);
+                        while let crate::core::Tm::Lam(_, _, _, x) = b {
+                            n += 1;
+                            b = x;
+                        }
+                        n
+                    })
+                    .collect();
+                out.dedup();
+                out
+            };
+            assert_eq!(arity("lo"), [2]);
             assert_eq!(arity("nothing"), [1]);
         })
     }
