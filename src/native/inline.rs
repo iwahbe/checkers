@@ -301,12 +301,20 @@ fn at_in(ctx: Owner, o: Owner, x: Ir) -> Ir {
     }
 }
 
-/// `x` as code of `o`. Variables, literals and code already marked need no mark.
+/// `x` as code of `o`. Variables, literals, code already marked, and code
+/// that can't fail (so has no error to name) need no mark: a comparison
+/// stays one that code generation sees as giving a `Bool`. A lambda's body
+/// may fail, so code with one keeps its mark.
 pub fn at(o: Owner, x: Ir) -> Ir {
     match x {
         Ir::Var(_) | Ir::Global(_) | Ir::Erased | Ir::Lit(_) | Ir::ConFn(_) | Ir::At(..) => x,
+        x if pure(&x, &|_, _| false) && !has_lambda(&x) => x,
         x => Ir::At(o, Arc::new(x)),
     }
+}
+
+fn has_lambda(ir: &Ir) -> bool {
+    matches!(ir, Ir::Lam(..)) || ir.subterms().iter().any(|(x, _)| has_lambda(x))
 }
 
 /// `let v in b`: a variable or literal substituted; a tuple whose every use
