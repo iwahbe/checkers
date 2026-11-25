@@ -924,12 +924,16 @@ impl Elab {
                 cx.bind(&p.name.name, v, Mult::Zero);
                 out.push((Rc::from(p.name.name.as_str()), ty));
             }
-            // A refinement of a type's parameter is no condition on it.
+            // The later typings' refinements are conditions on the type,
+            // as the first's are (`phase_type_conds`).
             let names: Vec<&str> = params.iter().map(|p| p.name.name.as_str()).collect();
-            let _ = self.combine_typings(&mut cx, cs, &|cx, n| {
+            let facts = self.combine_typings(&mut cx, cs, &|cx, n| {
                 let l = cx.lookup(n).filter(|_| names.contains(&n))?;
                 Some((l, cx.locals[l].ty.clone()))
             });
+            if !facts.is_empty() {
+                self.ty_param_typings.insert(*tid, facts);
+            }
             self.g.tys[tid.0 as usize].params = out;
             self.solve_deferred();
         }
@@ -938,16 +942,32 @@ impl Elab {
     /// A type's conditions on its parameters (`lo <= hi` in `record P lo hi :
     /// lo~Nat, hi~Nat, lo <= hi`), in dependency order, so that the functions
     /// they call have their signatures (#136). Each may rely on those before it.
+    /// The refinements of the parameters' types come first (`lo >= 0` from
+    /// `lo~Nat`, every typing's): they are conditions as the predicates are.
     fn phase_type_conds(&mut self, m: &ast::Module, ids: &[Option<Sym>]) {
         for (d, id) in m.decls.iter().zip(ids) {
-            let cs = match &d.kind {
-                DeclKind::Enum { constraints, .. } | DeclKind::Record { constraints, .. } => constraints,
+            let (params, cs) = match &d.kind {
+                DeclKind::Enum { params, constraints, .. } | DeclKind::Record { params, constraints, .. } => (params, constraints),
                 _ => continue,
             };
             let Some(Sym::Ty(tid)) = id else { continue };
             self.g.fuel.set(DEFAULT_FUEL);
             let mut cx = self.bind_type_params(*tid);
             let mut preds = Vec::new();
+            let ptys = self.g.tys[tid.0 as usize].params.clone();
+            let mut typings: Vec<(usize, Tm, usize, Span)> = Vec::new();
+            for (k, (p, (_, t))) in params.iter().zip(&ptys).enumerate() {
+                let span = Self::typed_constraint(cs, &p.name.name).map_or(p.name.span, |(e, _)| e.span);
+                typings.push((k, t.clone(), k, span));
+            }
+            typings.extend(self.ty_param_typings.remove(tid).unwrap_or_default());
+            for (k, t, at, span) in typings {
+                for (fact, text, _) in self.alias_facts(&cx, at, &t, Val::var(k)) {
+                    let tm = quote(&self.g, cx.lvl(), &fact);
+                    cx.assume(fact);
+                    preds.push(Pred { tm, text, span, is_post: false, alias: None });
+                }
+            }
             for c in cs {
                 if let Constraint::Pred(e) | Constraint::Named(_, e) = c {
                     let p = self.elab_pred(&mut cx, e, false);
