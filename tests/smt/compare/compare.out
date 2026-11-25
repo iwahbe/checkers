@@ -13,7 +13,7 @@ Compared 6 queries in tests/smt/compare/corpus with `tests/smt/compare/fake-z3 -
 Bug rows: 0 queries.
 
 Work: ours 0 (there is no solver yet); Z3's 1064 (`:rlimit-count`, summed; not in the statistics of 1 query). The two aren't counted in the same unit.
-Time: Z3's 0.03 s (its `:time`, summed; not in the statistics of 4 queries); ours isn't measured: `std` has no way to read the clock.
+Time: ours TIME (reading and answering each query, summed); Z3's 0.03 s (its `:time`, summed; not in the statistics of 4 queries).
 
 Z3 now against what the corpus records: 5 of 6 queries get the same answer, 4 the same output (a model may differ), 3 the same work.
 

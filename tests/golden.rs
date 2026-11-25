@@ -924,13 +924,27 @@ fn smt_package(pool: &Pool, root: &'static Path, update: bool) {
         );
         let actual = format!(
             "{}-- changed\n{}-- saved\n{}",
-            shown(&out),
+            our_time_masked(&shown(&out)),
             fs::read_to_string(&changed.0).unwrap_or_default(),
             fs::read_to_string(&saved.0).unwrap_or_default()
         );
         compare(root, &root.join(dir).join("compare.out"), &actual, update, &mut failures);
         (count, failures)
     });
+}
+
+/// `text` with the time `main compare` measured for our answers, which
+/// differs from run to run, shown as `TIME`: `Time: ours TIME (…`.
+fn our_time_masked(text: &str) -> String {
+    let key = "Time: ours ";
+    match text.find(key) {
+        Some(at) => {
+            let start = at + key.len();
+            let end = text[start..].find(" (").map_or(start, |n| start + n);
+            format!("{}TIME{}", &text[..start], &text[end..])
+        }
+        None => text.to_string(),
+    }
 }
 
 /// Run a `tests/lsp/NAME.session` against `checkers lsp` (§15.5).
