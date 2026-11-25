@@ -1,7 +1,7 @@
 -- stdout
 z3: sat
 model: (get-model)
-fact 1: not determined: two arrays compared, which `smt.model` doesn't decide
+fact 1: not determined: two arrays compared, one of them a `lambda` or printed by Z3 without a normal form
 fact 2: holds
 fact 3: holds
 the negated goal: holds

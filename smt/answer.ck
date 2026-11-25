@@ -24,7 +24,7 @@ import std.parse (Parsable)
 import smtlib (Atom, Symbol, Keyword, Numeral, SExpr, Leaf, Node)
 import term (Name, Sort, Bool, Int, Seq, Arr, Data, Unin, Param, Ctor, Datatype, SortDecl, Sig, Context)
 import term (Head, Fun, Prim, Sel, Term, App, Op, Div, Mod, SeqNth)
-import model (Value, Truth, Integer, Sequence, Constructed, Element, ConstArray, StoreArray, Model, Domain, Countable)
+import model (Value, Truth, Integer, Sequence, Constructed, Element, Model, Domain, Countable)
 
 # What Z3 answered: its first word after the work line.
 export enum Verdict
@@ -207,7 +207,9 @@ fn applied sig s head args lets depth -> r : sig~Sig, s~Sort, head~SExpr src, ar
                             let av = try value_from sig s a lets less
                             let jv = try value_from sig i j lets less
                             let xv = try value_from sig w x lets less
-                            Ok (StoreArray av jv xv)
+                            match model.store_array sig (\_ _ -> Countable) s av jv xv
+                                Some v -> Ok v
+                                None   -> Err NO_NORMAL_FORM
                         _                    -> Err b"store where the sort isn't an array"
                 else
                     built sig s n args lets less
@@ -216,7 +218,9 @@ fn applied sig s head args lets depth -> r : sig~Sig, s~Sort, head~SExpr src, ar
                     match (s, args)
                         (Arr i w, [x]) ->
                             let v = try value_from sig w x lets less
-                            Ok (ConstArray i v)
+                            match model.const_array sig (\_ _ -> Countable) s v
+                                Some a -> Ok a
+                                None   -> Err NO_NORMAL_FORM
                         _              -> Err b"a constant array where the sort isn't an array"
                 else
                     built sig s n args lets less
@@ -239,6 +243,8 @@ fn concat_from sig s es lets depth -> r : sig~Sig, s~Sort, es~List (SExpr src), 
                     _                          -> Err b"seq.++ of something that isn't a sequence"
 
 let TOO_DEEP = b"a value nested too deep"
+
+let NO_NORMAL_FORM = b"an array with no normal form (its index sort is finite and not `Bool`, or not one `smt.model` can show infinite)"
 
 # How deep a printed value may nest.
 let DEPTH = 100000
@@ -275,16 +281,17 @@ enum Says
     SelAt d k j args x v : d~Nat, k~Nat, j~Nat, args~List Sort, x~Value, v~Value
     Nothing
 
-# The model that knows nothing: every question is `NotGiven`.
-export fn empty_model fuel -> m : fuel~Nat, m~Model
+# The model that knows nothing: every question is `NotGiven`, except what
+# `normal_arrays` computes.
+export fn empty_model sig fuel -> m : sig~Sig, fuel~Nat, m~Model
     let none5 = \_ _ _ _ _ -> None
-    Model (\_ _ -> None) (\_ _ _ -> None) (\_ -> None) (\_ -> None) (\_ _ _ -> None) none5 (\_ _ -> Countable) fuel
+    model.normal_arrays sig (model.without_arrays (\_ _ -> None) (\_ -> None) (\_ -> None) (\_ _ _ -> None) none5 (\_ _ -> Countable) fuel)
 
 fn known c fuel ts -> r : c~Context, fuel~Nat, ts~List Term, r~Option (List Value)
     match ts
         []        -> Some []
         t :: rest ->
-            match (model.eval c (empty_model fuel) t, known c fuel rest)
+            match (model.eval c (empty_model (term.signature c) fuel) t, known c fuel rest)
                 (Ok v, Some vs) -> Some (v :: vs)
                 _               -> None
 
@@ -357,4 +364,4 @@ export fn model_of c pairs fuel -> m : c~Context, pairs~List (Term, Value), fuel
     let funs = \f vs -> fun_at ss f vs
     let nth = \e xs i -> nth_at ss e xs i
     let sel = \d k j args x -> sel_at ss d k j args x
-    Model funs (\_ _ _ -> None) (\n -> div_at ss n) (\n -> mod_at ss n) nth sel (\_ _ -> Countable) fuel
+    model.normal_arrays (term.signature c) (model.without_arrays funs (\n -> div_at ss n) (\n -> mod_at ss n) nth sel (\_ _ -> Countable) fuel)

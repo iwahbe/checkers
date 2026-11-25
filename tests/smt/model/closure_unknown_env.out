@@ -1,6 +1,6 @@
 -- stdout
 z3: unsat
-fact 1: not determined: two arrays compared, which `smt.model` doesn't decide
+fact 1: not determined: two arrays compared, one of them a `lambda` or printed by Z3 without a normal form
 the negated goal: holds
 refutes: no
 -- stderr

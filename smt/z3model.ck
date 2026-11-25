@@ -30,7 +30,7 @@ import std.bytes
 import answer
 import smtlib (Atom, Symbol, Keyword, Numeral, SExpr, Leaf, Node)
 import term (Name, Sort, Bool, Int, Seq, Arr, Data, Unin, Param, Ctor, Datatype, Sig, Context)
-import model (Value, Truth, Integer, Sequence, Constructed, Element, ConstArray, StoreArray, ModelArray)
+import model (Value, Truth, Integer, Sequence, Constructed, Element, ArrayElem, ArrayId, Named)
 import model (Model, Domain, UpTo, Countable)
 
 # A `define-fun` Z3 printed.
@@ -41,7 +41,7 @@ record Printed src : src~Bytes
     body~SExpr src
 
 # What a `(get-model)` printed: its definitions, the arrays it builds from a
-# function or a `lambda` (numbered, for `ModelArray`), and how many elements
+# function or a `lambda` (numbered, for `Named`), and how many elements
 # each uninterpreted sort has.
 export record Full src : src~Bytes
     defs~List (Printed src)
@@ -101,6 +101,8 @@ fn named sig n args -> r : sig~Sig, n~Name, args~List Sort, r~Result Sort Bytes
                 match find_sort_named sig n 0
                     Some u -> Ok (Unin u args)
                     None   -> Err (b"an unknown sort: " ++ n)
+
+let NO_NORMAL_FORM = b"an array with no normal form (its index sort is finite and not `Bool`, or not one `smt.model` can show infinite)"
 
 # ── Reading the model ────────────────────────────────────────────────────────
 
@@ -330,7 +332,9 @@ fn interp sig full env lets s e depth -> r : sig~Sig, full~Full src, env~List (N
                     match (s, args)
                         (Arr i v, [x]) ->
                             let w = try interp sig full env lets v x d
-                            Ok (ConstArray i w)
+                            match model.const_array sig (\u args -> domain_of full u args) s w
+                                Some a -> Ok a
+                                None   -> Err NO_NORMAL_FORM
                         _              -> Err b"a constant array where the sort isn't an array"
                 else
                     construct sig full env lets s c args d
@@ -351,7 +355,7 @@ fn let_binds es -> r : es~List (SExpr src), r~Result (List (Name, SExpr src)) By
 
 fn array_ref full s e -> r : full~Full src, s~Sort, e~SExpr src, r~Result Value Bytes
     match index_of full.arrays e 0
-        Some k -> Ok (ModelArray s k)
+        Some k -> Ok (ArrayElem s (Named k))
         None   -> Err b"an array this reader didn't number"
 
 # `n` applied to `args`.
@@ -387,7 +391,12 @@ fn call sig full env lets s n args depth -> r : sig~Sig, full~Full src, env~List
                     Some t ->
                         let x = try interp sig full env lets t a d
                         let y = try interp sig full env lets t b d
-                        if model.plain x and model.plain y then Ok (Truth (x == y)) else Err b"`=` of arrays"
+                        if x == y
+                            Ok (Truth True)
+                        else if model.pure x and model.pure y
+                            Ok (Truth False)
+                        else
+                            Err b"`=` of arrays Z3 printed without a normal form"
                     None   -> Err b"`=` of terms whose sort this reader can't tell"
             (_, [a, b]) if n == b"+" -> arith (int a) (int b) (\x y -> Ok (Integer (x + y)))
             (_, [a, b]) if n == b"-" -> arith (int a) (int b) (\x y -> Ok (Integer (x - y)))
@@ -412,7 +421,9 @@ fn call sig full env lets s n args depth -> r : sig~Sig, full~Full src, env~List
                         let x = try interp sig full env lets s a d
                         let j = try interp sig full env lets is i d
                         let w = try interp sig full env lets vs v d
-                        Ok (StoreArray x j w)
+                        match model.store_array sig (\u args -> domain_of full u args) s x j w
+                            Some a -> Ok a
+                            None   -> Err NO_NORMAL_FORM
                     _         -> Err b"store where the sort isn't an array"
             _ ->
                 match find_def full.defs n (list.length args)
@@ -582,7 +593,10 @@ fn by_zero sig full name n -> r : sig~Sig, full~Full src, name~Name, n~Int, r~Op
 export fn model_of c full fuel -> m : c~Context, full~Full src, fuel~Nat, m~Model
     let sig = term.signature c
     let funs = \f vs -> fun_at sig full f vs
-    let arrays = \_ k i -> array_at sig full k i
+    let select = \_ id i ->
+        match id
+            Named k -> array_at sig full k i
+            _       -> None
     let div_zero = \n -> by_zero sig full b"div0" n
     let mod_zero = \n -> by_zero sig full b"mod0" n
     let nth = \e xs i ->
@@ -591,7 +605,8 @@ export fn model_of c full fuel -> m : c~Context, full~Full src, fuel~Nat, m~Mode
             None   -> None
     let none5 = \_ _ _ _ _ -> None
     let domain = \u args -> domain_of full u args
-    Model funs arrays div_zero mod_zero nth none5 domain fuel
+    let base = model.without_arrays funs div_zero mod_zero nth none5 domain fuel
+    model.normal_arrays sig (Model base.funs select base.const base.store base.sum base.lambda base.array_domain base.differ base.div_zero base.mod_zero base.nth_out base.wrong_sel base.domain base.fuel)
 
 # Whether Z3 printed an interpretation of the `f`-th function.
 export fn printed_fun sig full f -> r : sig~Sig, full~Full src, f~Nat, r~Bool
