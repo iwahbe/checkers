@@ -2,9 +2,10 @@ module inline_call
 
 # A small function's body in place of its call, wherever the call is (§14):
 # as an argument, in tail position, generic at a known instance, inside a
-# lambda, and nested. Arguments with effects are each computed once and in
-# order, and an argument the body doesn't use is still computed. Each gives
-# what the call gives.
+# lambda, and nested; and passed as a value, so still a function too.
+# Arguments with effects are each computed once and in order, and an
+# argument the body doesn't use is still computed. Each gives what the call
+# gives.
 
 import std.system (System, ExitCode)
 import std.terminal
@@ -48,6 +49,7 @@ export fn main args sys -> code
     terminal.print_line (smaller "pear" "apple") term
     terminal.print_line (debug (list.map (\n -> smaller n 2) [1, 2, 3])) term
     terminal.print_line (debug (twice (say "once" 4 term))) term
+    terminal.print_line (debug (list.map twice [1, 2])) term
     terminal.print_line (debug (first (say "a" 1 term) (say "b" 2 term))) term
     terminal.print_line (debug (is_none None)) term
     terminal.print_line (debug (is_none (Some 1))) term
