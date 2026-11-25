@@ -6,10 +6,10 @@ error[E0406]: reading `lines` would drop the rest of this `One`, and `out` holds
    = help: take it apart with `match` (`One out lines -> …`) and use `out` too
 
 error[E0406]: reading `a` would drop the rest of this `Two`, and `b` holds a resource
-  --> resource_parts.ck:20:19
+  --> resource_parts.ck:20:13
    |
-20 |     files.close t.a
-   |                   ^ reading a field uses the whole record
+20 |     close t.a
+   |             ^ reading a field uses the whole record
    = help: take it apart with `match` (`Two a b -> …`) and use `b` too
 
 error[E0406]: reading `lines` would drop the rest of this `One`, and `out` holds a resource
@@ -20,23 +20,23 @@ error[E0406]: reading `lines` would drop the rest of this `One`, and `out` holds
    = help: take it apart with `match` (`One out lines -> …`) and use `out` too
 
 error[E0407]: indexing would drop the array's other elements, and each is a resource (`File`)
-  --> resource_parts.ck:26:17
+  --> resource_parts.ck:26:11
    |
-26 |     files.close a[0]
-   |                 ^^^^ indexing uses the whole array
+26 |     close a[0]
+   |           ^^^^ indexing uses the whole array
    = help: keep the resources in a `List` and take it apart with `match`, using each one
 
 error[E0408]: this guard uses `g`, a resource, which the arm's body needs
   --> resource_parts.ck:68:14
    |
-68 |         g if ready g -> files.close g
+68 |         g if ready g -> close g
    |              ^^^^^^^ the guard runs before the body, so it can't use the resource
    = help: test `g` inside the arm's body instead, with `if` or another `match`
 
 error[E0401]: `close_it` uses `f`, a resource, so it must be called exactly once, but `captured` never calls it
   --> resource_parts.ck:74:9
    |
-74 |     let close_it = \u -> files.close f
+74 |     let close_it = \u -> close f
    |         ^^^^^^^^
    = help: call `close_it`, or pass it on to a parameter declared `own`
 

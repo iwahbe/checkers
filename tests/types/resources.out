@@ -8,14 +8,14 @@ error[E0401]: `f` holds a resource (`File`), so it must be used exactly once, bu
 error[E0402]: `f` holds a resource (`File`), but `closed_on_one_path` uses it on some paths and not on others
   --> resources.ck:14:12
    |
-14 |         Ok f  -> if b then files.close f else ()
+14 |         Ok f  -> if b then close f else ()
    |            ^
    = help: a resource must be used exactly once on every path, e.g. closed in every branch
 
 error[E0404]: this drops a resource of type `File`
   --> resources.ck:19:9
    |
-19 |         (Ok _, Ok g) -> files.close g
+19 |         (Ok _, Ok g) -> close g
    |         ^^^^^^^^^^^^ a resource must be used exactly once
    = help: bind it to a name, then close it or pass it on
 

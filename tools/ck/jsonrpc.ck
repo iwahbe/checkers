@@ -114,8 +114,10 @@ export enum Incoming
 partial fn headers found f -> r : found~Option Nat, f~File, r~(Option (Option Nat), File)
     let (line, f) = files.read_line f
     match line
-        None   -> (None, f)
-        Some l ->
+        # The stream can't be read any further, as for a body that can't.
+        Err _       -> (None, f)
+        Ok None     -> (None, f)
+        Ok (Some l) ->
             let b = trimmed_end (string.bytes l)
             if len b == 0
                 (Some found, f)

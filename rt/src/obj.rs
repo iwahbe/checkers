@@ -13,10 +13,56 @@ use std::sync::{Arc, Mutex};
 /// with `std.terminal`.
 pub enum FileState {
     Read(Box<dyn BufRead + Send>),
-    Write(Box<dyn Write + Send>),
+    Write(Box<dyn Sink>),
     Stdin,
     Stdout,
     Stderr,
+}
+
+/// A `File` open for writing: a buffer before a descriptor.
+pub trait Sink: Write + Send {
+    /// Write out what is buffered, then close the descriptor: the first
+    /// error of the two (`files.close`, §13.4).
+    fn finish(self: Box<Self>) -> std::io::Result<()>;
+}
+
+/// What writes to a descriptor of its own, and gives it up to be closed.
+pub trait IntoFd {
+    fn into_fd(self) -> std::os::fd::OwnedFd;
+}
+
+impl<T: Write + Send + IntoFd> Sink for std::io::BufWriter<T> {
+    fn finish(self: Box<Self>) -> std::io::Result<()> {
+        match (*self).into_inner() {
+            Ok(inner) => close_fd(inner.into_fd()),
+            Err(e) => {
+                // Taken apart, the writer is dropped without trying again;
+                // the descriptor is closed with it.
+                let (e, w) = e.into_parts();
+                drop(w.into_parts());
+                Err(e)
+            }
+        }
+    }
+}
+
+/// Close a descriptor, reporting the error `close` gives. After `EINTR` the
+/// descriptor is closed (Linux, macOS) and nothing is lost: not an error.
+pub fn close_fd(fd: std::os::fd::OwnedFd) -> std::io::Result<()> {
+    use std::os::fd::IntoRawFd;
+    let raw = fd.into_raw_fd();
+    // Closing can wait on a network file system: not on a behaviour's thread.
+    crate::fiber::blocking(move || {
+        if unsafe { libc::close(raw) } == 0 {
+            return Ok(());
+        }
+        let e = std::io::Error::last_os_error();
+        if e.kind() == std::io::ErrorKind::Interrupted {
+            Ok(())
+        } else {
+            Err(e)
+        }
+    })
 }
 
 /// A resource for the scheduler (D66): a cown or a future.
@@ -182,5 +228,47 @@ pub fn to_usize(w: W) -> Option<usize> {
         usize::try_from(int_of(w)).ok()
     } else {
         num_of(w).to_usize()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::fd::{FromRawFd, OwnedFd};
+
+    fn sink(w: impl Write + Send + IntoFd + 'static) -> Box<dyn Sink> {
+        Box::new(std::io::BufWriter::new(w))
+    }
+
+    #[test]
+    fn finish_writes_out_and_closes() {
+        let p = std::env::temp_dir().join(format!("checkers-finish-{}", std::process::id()));
+        let mut s = sink(crate::fiber::BlockingWrite(std::fs::File::create(&p).unwrap()));
+        s.write_all(b"kept").unwrap();
+        s.finish().unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), b"kept");
+        std::fs::remove_file(&p).unwrap();
+    }
+
+    /// What is buffered for a pipe nobody reads any more can't be written:
+    /// `finish` says so.
+    #[test]
+    fn finish_reports_a_broken_pipe() {
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let (r, w) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        drop(r);
+        let mut s = sink(crate::poll::PollFd::new(w));
+        s.write_all(b"lost").unwrap();
+        assert_eq!(s.finish().unwrap_err().kind(), std::io::ErrorKind::BrokenPipe);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn finish_reports_a_full_device() {
+        let f = std::fs::OpenOptions::new().write(true).open("/dev/full").unwrap();
+        let mut s = sink(crate::fiber::BlockingWrite(f));
+        s.write_all(b"lost").unwrap();
+        assert_eq!(s.finish().unwrap_err().raw_os_error(), Some(libc::ENOSPC));
     }
 }

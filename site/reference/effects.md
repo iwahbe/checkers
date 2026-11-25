@@ -100,13 +100,13 @@ A `try` that returns early ([Expressions](expressions.md#try)) is a path like an
 An operation on a resource consumes it and returns a fresh one with its result, `(result, resource)`, the resource last. A `let` takes the pair apart, binding the result and rebinding the resource under its old name:
 
 ```checkers
-import std.files (File)
+import std.files (File, IoError)
 import std.files
 
 # The first line of a file and the file closed.
-fn first_line f -> r : f~File, r~Option String
+fn first_line f -> r : f~File, r~Result (Option String) IoError
     let (line, f) = files.read_line f
-    files.close f
+    let _ = files.close f
     line
 ```
 
@@ -123,24 +123,24 @@ A closure (a lambda, or a function applied to some of its arguments) that uses a
 Anywhere else (passed to a parameter that isn't `own`, returned, called twice or never) is E0401. The function given to `future.fork` is one-shot, so work scheduled with it can take a resource along ([Concurrency](concurrency.md#futures)).
 
 ```checkers
-import std.files (File)
+import std.files (File, IoError)
 import std.files
 
-fn run k -> r : k~own (Unit -> Unit), r~Unit
+fn run k -> r : k~own (Unit -> a), r~a
     k ()
 
-fn close_later f -> r : f~File, r~Unit
+fn close_later f -> r : f~File, r~Result Unit IoError
     run (\_ -> files.close f)
 ```
 
 ```checkers,compile_fail,E0401
-import std.files (File)
+import std.files (File, IoError)
 import std.files
 
-fn many k -> r : k~(Unit -> Unit), r~Unit
+fn many k -> r : k~(Unit -> a), r~a
     k ()
 
-fn close_twice f -> r : f~File, r~Unit
+fn close_twice f -> r : f~File, r~Result Unit IoError
     many (\_ -> files.close f)
 ```
 
@@ -159,13 +159,13 @@ fn keep x -> r : x~own a, r~a
 
 | Operation | Gives |
 |---|---|
-| `files.read_line f` | the next line without its `\n` (bytes that aren't UTF-8 become U+FFFD), or `None` at the end |
+| `files.read_line f` | the next line without its `\n` (bytes that aren't UTF-8 become U+FFFD): `Ok None` only at the end, and an error if reading fails |
 | `files.read_some n f` | at most `n` bytes, at least one unless at the end |
 | `files.read_exactly n f` | `n` bytes, fewer only at the end |
 | `files.read_rest f` | everything to the end |
 | `files.write_line s f`, `files.write_bytes b f` | writes |
 | `files.flush f` | writes out what is buffered |
-| `files.close f` | consumes the file |
+| `files.close f` | consumes the file; one open for writing has what is buffered written out first, and an error doing that or closing it is the result |
 
 `files.read path fs` and `files.write path bytes fs` read or write a whole file in one call, without a resource. `terminal.print_line`, `eprint_line`, `write` and `read_line` are shorthands on `Term`.
 
@@ -189,7 +189,7 @@ fn listing p -> r : p~Proc, r~Result Bytes IoError
     match proc.spawn "ls" [] (Streams Discard Pipe Inherit) p
         Ok (Spawned child () out ()) ->
             let (text, out) = files.read_rest out
-            files.close out
+            let _ = files.close out
             let _ = proc.wait child
             text
         Err e                        -> Err e

@@ -205,8 +205,10 @@ record Acc
 partial fn pump out acc g docs c -> r : out~File, acc~Acc, g~Nat, docs~List Doc, c~Caps, r~(Acc, File)
     let (line, out) = files.read_line out
     match line
-        None   -> (acc, out)
-        Some l ->
+        # The compiler's output can't be read any further: as at its end.
+        Err _       -> (acc, out)
+        Ok None     -> (acc, out)
+        Ok (Some l) ->
             match json.parse (string.bytes l)
                 Err _ -> pump out acc g docs c
                 Ok j  ->
@@ -271,7 +273,7 @@ partial fn publish phase acc g root docs c : phase~String, acc~Acc, g~Nat, root~
             let roots = Root root g True before.showing before.proofs :: other_roots root sh.roots
             let o = terminal.stdout c.term
             let (_, o) = answer_all (of_root root sh.pending) index o
-            files.close o
+            let _ = files.close o
             (Shared roots index (not_of_root root sh.pending) sh.shutdown, turn)
         else
             # Until this check's proofs are known, its root's last ones stay.
@@ -281,7 +283,7 @@ partial fn publish phase acc g root docs c : phase~String, acc~Acc, g~Nat, root~
             let touched = paths_of showing (paths_of before.showing [])
             let o = terminal.stdout c.term
             let (_, o) = send_all touched (all_showing roots) docs c o
-            files.close o
+            let _ = files.close o
             (Shared roots sh.index sh.pending sh.shutdown, turn)
     ()
 
@@ -298,7 +300,7 @@ partial fn settle g root c : g~Nat, root~String, c~Caps
             let roots = Root root g True before.showing before.proofs :: other_roots root sh.roots
             let o = terminal.stdout c.term
             let (_, o) = answer_all (of_root root sh.pending) sh.index o
-            files.close o
+            let _ = files.close o
             (Shared roots sh.index (not_of_root root sh.pending) sh.shutdown, turn)
     ()
 
@@ -382,7 +384,8 @@ partial fn overlay docs -> j : docs~List Doc, j~Json
 
 partial fn feed input o -> r : input~Bytes, o~File, r~()
     let (_, o) = files.write_bytes input o
-    files.close o
+    let _ = files.close o
+    ()
 
 # Start a check of `doc`, killing its check in progress (D127 e).
 partial fn start doc st c -> r : doc~Doc, st~Server, c~Caps, r~Server
@@ -439,7 +442,7 @@ partial fn step o ch acc g root docs c : o~File, ch~Child, acc~Acc, g~Nat, root~
             publish (phase_name acc2.phases) acc2 g root docs c
             step o2 ch acc2 g root docs c
         else
-            files.close o2
+            let _ = files.close o2
             let code = proc.wait ch
             # 137: killed by a newer check.
             match code
@@ -592,7 +595,7 @@ partial fn answer_or id path f c : id~Json, path~String, f~(List Entry -> Result
         if (root_in path sh.roots).indexed
             let o = terminal.stdout c.term
             let (_, o) = rpc.write (respond id (f sh.index)) o
-            files.close o
+            let _ = files.close o
             (sh, turn)
         else
             (Shared sh.roots sh.index (Pending id path f :: sh.pending) sh.shutdown, turn)
@@ -609,7 +612,7 @@ partial fn show_error message c : message~String, c~Caps
         else
             let o = terminal.stdout c.term
             let (_, o) = rpc.write (rpc.notification "window/showMessage" params) o
-            files.close o
+            let _ = files.close o
             (sh, turn)
     ()
 
@@ -622,11 +625,13 @@ partial fn shut_down id c : id~Option Json, c~Caps
     when sh = c.shared, turn = c.out using sched
         let o = terminal.stdout c.term
         let (_, o) = answer_all (list.reverse sh.pending) sh.index o
-        match id
-            Some i ->
-                let (_, o) = rpc.write (rpc.response i Null) o
-                files.close o
-            None   -> files.close o
+        let o =
+            match id
+                Some i ->
+                    let (_, o) = rpc.write (rpc.response i Null) o
+                    o
+                None   -> o
+        let _ = files.close o
         (Shared sh.roots sh.index [] True, turn)
     ()
 
@@ -658,7 +663,7 @@ partial fn reply msg c : msg~Json, c~Caps
     when turn = c.out using sched
         let o = terminal.stdout c.term
         let (_, o) = rpc.write msg o
-        files.close o
+        let _ = files.close o
         turn
     ()
 
@@ -678,7 +683,7 @@ partial fn with_package id w docs c f : id~Json, w~Where, docs~List Doc, c~Caps,
             let sched = c.sched
             let _ = future.fork sched $ \_ ->
                 let (es, o2) = read_entries out []
-                files.close o2
+                let _ = files.close o2
                 let _ = proc.wait child
                 reply (respond id (f es)) c
             ()
@@ -687,8 +692,10 @@ partial fn with_package id w docs c f : id~Json, w~Where, docs~List Doc, c~Caps,
 partial fn read_entries out acc -> r : out~File, acc~List Entry, r~(List Entry, File)
     let (line, out) = files.read_line out
     match line
-        None   -> (acc, out)
-        Some l ->
+        # The compiler's output can't be read any further: as at its end.
+        Err _       -> (acc, out)
+        Ok None     -> (acc, out)
+        Ok (Some l) ->
             match json.parse (string.bytes l)
                 Ok j if str_or "kind" j == "name" ->
                     match entry_of j
@@ -769,7 +776,7 @@ partial fn complete id w docs c : id~Json, w~Where, docs~List Doc, c~Caps
             let text = w.doc.text
             let _ = future.fork sched $ \_ ->
                 let (items, o2) = read_items out text c None [] 0
-                files.close o2
+                let _ = files.close o2
                 let _ = proc.wait child
                 let list = rpc.obj [("isIncomplete", Bool False), ("items", Arr items)]
                 reply (rpc.response id list) c
@@ -780,8 +787,10 @@ partial fn read_items out text c range acc n -> r : out~File, text~Bytes, c~Caps
                                                     n~Nat, r~(List Json, File)
     let (line, out) = files.read_line out
     match line
-        None   -> (list.reverse acc, out)
-        Some l ->
+        # The compiler's output can't be read any further: as at its end.
+        Err _       -> (list.reverse acc, out)
+        Ok None     -> (list.reverse acc, out)
+        Ok (Some l) ->
             match json.parse (string.bytes l)
                 Err _ -> read_items out text c range acc n
                 Ok j  ->
@@ -1208,5 +1217,5 @@ export partial fn run ckc flags term fs p sched -> code : ckc~String, flags~List
     let shared = cown.new (Shared [] [] [] False) sched
     let c = Caps fs p sched term out shared ckc flags False
     let (code, rest) = begin (terminal.stdin term) c
-    files.close rest
+    let _ = files.close rest
     code

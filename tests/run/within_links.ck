@@ -23,14 +23,14 @@ fn read what path fs term : what~String, path~String, fs~Fs, term~Term
 fn open path fs term : path~String, fs~Fs, term~Term
     match files.open path fs
         Ok f  ->
-            files.close f
+            let _ = files.close f
             terminal.print_line ("open " ++ path ++ ": ok") term
         Err e -> terminal.print_line ("open " ++ path ++ ": " ++ files.describe e) term
 
 fn create path fs term : path~String, fs~Fs, term~Term
     match files.create path fs
         Ok f  ->
-            files.close f
+            let _ = files.close f
             terminal.print_line ("create " ++ path ++ ": ok") term
         Err e -> terminal.print_line ("create " ++ path ++ ": " ++ files.describe e) term
 

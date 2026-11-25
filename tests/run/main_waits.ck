@@ -14,7 +14,8 @@ import std.proc (Streams, Spawned, Pipe, Discard)
 # Write a line to the file and close it.
 fn send w : w~File
     let (_, w) = files.write_line "ping" w
-    files.close w
+    let _ = files.close w
+    ()
 
 export partial fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { term, proc = p, sched } = sys
@@ -26,12 +27,12 @@ export partial fn main args sys -> code : args~List String, sys~System, code~Exi
             let _ = future.fork sched $ \_ ->
                 send input
             let (line, output) = files.read_line output
-            files.close output
+            let _ = files.close output
             let _ = proc.wait child
             match line
-                Some l ->
+                Ok (Some l) ->
                     terminal.print_line ("main read: " ++ l) term
                     Success
-                None   ->
+                _           ->
                     terminal.print_line "main read nothing" term
                     Failure 1
