@@ -85,9 +85,18 @@ fn magnitude a e -> s : a~Nat, e~Int, s~String, len s.bytes > 0, char.is_digit s
         let ds = display a []
         if e < 0 and 0 - e <= len ds.bytes + 6
             let p = pow10 (0 - e)
-            display (a / p) [] ++ "." ++ places (a % p) (0 - e)
+            have quotient_nat a p
+            let w = display (a / p) []
+            have len w.bytes > 0 and char.is_digit w.bytes[0]
+            w ++ "." ++ places (a % p) (0 - e)
         else
             ds ++ "e" ++ display e []
+
+# A whole number divided by a positive one isn't negative.
+lemma quotient_nat a p : a~Nat, p~Nat, p >= 1
+    ensures a / p >= 0
+    proof
+        auto
 
 # `10^k`.
 fn pow10 k -> p : k~Nat, p~Nat, p >= 1
@@ -384,9 +393,15 @@ lemma digits_places r f m n post : r~Nat, f~Nat, r < pow10 f, m~Int, n~Nat, post
             have array.slice_append c (w ++ post) b""
             have (c ++ w ++ post)[0] == '0' + r / p
             have array.slice (c ++ w ++ post) 1 (len (c ++ w ++ post)) == w ++ post
-            have digits (c ++ w ++ post) m n == digits (w ++ post) (m * 10 + r / p) (n + 1)
-            have digits_places (r % p) (f - 1) (m * 10 + r / p) (n + 1) post
-            have (m * 10 + r / p) * p + r % p == m * pow10 f + r
+            # One step at a time: the arithmetic apart, then equalities.
+            let k = m * 10 + r / p
+            have digits (c ++ w ++ post) m n == digits (w ++ post) k (n + 1)
+            have digits ((places r f).bytes ++ post) m n == digits (w ++ post) k (n + 1)
+            have digits_places (r % p) (f - 1) k (n + 1) post
+            have pow10 f == 10 * p
+            have (r / p) * p + r % p == r
+            have k * p + r % p == m * pow10 f + r
+            have digits (w ++ post) k (n + 1) == Digits (m * pow10 f + r) (n + f) post
         else
             have (places r f).bytes ++ post == post
             have m * pow10 f + r == m

@@ -1,7 +1,8 @@
 //! Z3's answers are cached (D100): a second check reuses them, an entry
 //! whose query doesn't match exactly is ignored, and `--no-cache` neither
 //! reads nor writes the cache. Verified modules are remembered (D143): a
-//! module whose text and imports are unchanged isn't verified again.
+//! module is not verified again while nothing it depends on has changed:
+//! its text, its imports, and the modules of the instances it uses.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -171,5 +172,50 @@ fn remembered_module_keeps_its_warnings() {
     assert!(second.contains("W022"), "still reported when the module is remembered (D143):\n{second}");
     let trust = ckc(&dir, &["trust", "never.ck"]);
     assert!(modules(&trust).is_some_and(|(k, n)| k == n), "{trust}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A module can use an instance declared in a module it doesn't import
+/// (instances are found wherever their module is loaded, §9.8): editing that
+/// instance forgets the module that used it.
+#[test]
+fn editing_an_unimported_instance_forgets_its_user() {
+    let dir = scratch("instance");
+    std::fs::create_dir_all(dir.join("k")).unwrap();
+    std::fs::write(dir.join("k/cls.ck"), "module k.cls\n\nexport class Make t\n    fn make u -> r : u~Int, r~t\n").unwrap();
+    let inst = |post: &str, body: &str| {
+        format!("module k.inst\n\nimport k.cls (Make)\n\ninstance Make Int\n    fn make u -> r : u~Int, r~Int, r == {post}\n        {body}\n")
+    };
+    std::fs::write(dir.join("k/inst.ck"), inst("u + 1", "u + 1")).unwrap();
+    // Doesn't import `k.inst`.
+    std::fs::write(dir.join("k/user.ck"), "module k.user\n\nimport k.cls (Make)\n\nexport fn six -> r : r~Int, r == 6\n    Make.make 5\n").unwrap();
+    std::fs::write(dir.join("main.ck"), "module main\n\nimport k.inst\nimport k.user (six)\n\ncheck six == six\n").unwrap();
+    let (ok, first) = ckc_status(&dir, &["check", "main.ck"]);
+    assert!(ok, "{first}");
+    std::fs::write(dir.join("k/inst.ck"), inst("u", "u")).unwrap();
+    let (ok, again) = ckc_status(&dir, &["check", "main.ck"]);
+    assert!(!ok && again.contains("E0450"), "`six` is proved again, and fails:\n{again}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The same through an operator: `<=` on a type with an `Ord` instance in a
+/// module not imported.
+#[test]
+fn editing_an_unimported_operator_instance_forgets_its_user() {
+    let dir = scratch("operator");
+    std::fs::create_dir_all(dir.join("k")).unwrap();
+    std::fs::write(dir.join("k/box.ck"), "module k.box\n\nexport record Box\n    n~Int\n").unwrap();
+    let inst = |op: &str| {
+        format!("module k.inst\n\nimport k.box (Box)\n\ninstance Ord Box\n    fn le x y -> r : x~Box, y~Box, r~Bool, r == (x.n {op} y.n)\n        x.n {op} y.n\n")
+    };
+    std::fs::write(dir.join("k/inst.ck"), inst("<=")).unwrap();
+    // Doesn't import `k.inst`.
+    std::fs::write(dir.join("k/user.ck"), "module k.user\n\nimport k.box (Box)\n\nexport fn ordered -> r : r~Bool, r\n    Box 1 <= Box 2\n").unwrap();
+    std::fs::write(dir.join("main.ck"), "module main\n\nimport k.inst\nimport k.user (ordered)\n\ncheck ordered == ordered\n").unwrap();
+    let (ok, first) = ckc_status(&dir, &["check", "main.ck"]);
+    assert!(ok, "{first}");
+    std::fs::write(dir.join("k/inst.ck"), inst(">=")).unwrap();
+    let (ok, again) = ckc_status(&dir, &["check", "main.ck"]);
+    assert!(!ok && again.contains("E0450"), "`ordered` is proved again, and fails:\n{again}");
     let _ = std::fs::remove_dir_all(&dir);
 }

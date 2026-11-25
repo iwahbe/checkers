@@ -1652,6 +1652,26 @@ fn fresh(ns: &[Name], x: &Name) -> Name {
     cand
 }
 
+/// A match on `Bool` as the operator it shows: its precedence (`and` 3,
+/// `or` 2, `implies` 1, `if` 0) and its operands (for `if`, the condition
+/// and the `then` branch; for `or`, the `else` branch is the second).
+fn bool_op<'a>(g: &Globals, t: &'a Tm) -> Option<(u8, &'a Tm, &'a Tm)> {
+    let Tm::Case(s, c) = t else { return None };
+    let wk = &g.well_known;
+    let arm = |con: Option<ConId>| c.branches.iter().find(|b| Some(b.0) == con).map(|b| &b.2);
+    let (Some(tb), Some(fb), 2) = (arm(wk.true_con), arm(wk.false_con), c.branches.len()) else { return None };
+    let lit = |x: &Tm, v: Option<ConId>| matches!(x, Tm::Con(k) if Some(*k) == v) || matches!(x, Tm::ConApp(k, xs) if Some(*k) == v && xs.is_empty());
+    Some(if lit(fb, wk.false_con) {
+        (3, s, tb)
+    } else if lit(tb, wk.true_con) {
+        (2, s, fb)
+    } else if lit(fb, wk.true_con) {
+        (1, s, tb)
+    } else {
+        (0, s, tb)
+    })
+}
+
 fn paren(b: bool, s: String) -> String {
     if b {
         format!("({s})")
@@ -1849,16 +1869,24 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
                 }
             }
         }
-        Tm::Case(s, c) => {
-            // `if` (and `and`/`or`) are matches on `Bool`.
-            let wk = &g.well_known;
-            let arm = |con: Option<ConId>| c.branches.iter().find(|b| Some(b.0) == con).map(|b| &b.2);
-            if let (Some(t), Some(f), 2) = (arm(wk.true_con), arm(wk.false_con), c.branches.len()) {
-                let (cs, ts, fs) = (show_prec(g, ns, s, 0), show_prec(g, ns, t, 0), show_prec(g, ns, f, 0));
-                let text = match (ts.as_str(), fs.as_str()) {
-                    (_, "False") => format!("{cs} and {ts}"),
-                    ("True", _) => format!("{cs} or {fs}"),
-                    _ => format!("if {cs} then {ts} else {fs}"),
+        Tm::Case(s, _) => {
+            // `if`, `and`, `or` and `implies` are matches on `Bool`.
+            if let Some((op, a, b)) = bool_op(g, t) {
+                // An operand binding less tightly than the operator is put
+                // in parentheses: `and` over `or` over `implies`, which
+                // groups to the right.
+                let level = |x: &Tm| bool_op(g, x).map_or(4, |o| o.0);
+                let side = |ns: &mut Vec<Name>, x: &Tm, min: u8| paren(level(x) < min, show_prec(g, ns, x, 0));
+                let text = match op {
+                    3 => format!("{} and {}", side(ns, a, 3), side(ns, b, 3)),
+                    2 => format!("{} or {}", side(ns, a, 2), side(ns, b, 2)),
+                    1 => format!("{} implies {}", side(ns, a, 2), side(ns, b, 1)),
+                    _ => {
+                        let Tm::Case(_, c) = t else { unreachable!() };
+                        let f = c.branches.iter().find(|x| Some(x.0) == g.well_known.false_con).map(|x| &x.2);
+                        let fs = f.map(|f| show_prec(g, ns, f, 0)).unwrap_or_default();
+                        format!("if {} then {} else {fs}", show_prec(g, ns, a, 0), show_prec(g, ns, b, 0))
+                    }
                 };
                 return paren(p > 0, text);
             }

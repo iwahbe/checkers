@@ -4,7 +4,7 @@ error[E0450]: cannot prove lemma `wrong`
 29 |     ensures forall m : m~Int, m > 0
    |             ^^^^^^^^^^^^^^^^^^^^^^^ `forall m : m~Int, m > 0`
    = note: counterexample: m = 0
-   = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+   = help: add a `proof` block: `match` on a parameter or a call's result for case analysis, and `have` for facts it needs
 
 error[E0289]: this lemma would have to show a `forall` false, which takes a value it fails for
   --> forall_ensures.ck:33:17

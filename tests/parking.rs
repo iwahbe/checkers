@@ -68,3 +68,18 @@ fn readers_of_pipes_hold_no_thread() {
         );
     }
 }
+
+#[test]
+fn sleepers_hold_no_thread() {
+    // Four behaviours sleep for a second each on one thread; the program
+    // says how long they took together (tests/parking/sleepers.ck).
+    let child = ckc()
+        .args(["run", "--threads", "1", "tests/parking/sleepers.ck"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run ckc");
+    watchdog(child.id(), Duration::from_secs(60));
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "awake\n", "{}", String::from_utf8_lossy(&out.stderr));
+}

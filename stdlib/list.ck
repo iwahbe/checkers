@@ -18,7 +18,7 @@ export transparent fn map f xs -> ys : f~(x~a -> b, contains xs x), xs~List a, y
 
 # Whether `p` holds for every element (`True` for an empty list). `p` is
 # called only with elements of `xs`, so it may assume `contains xs x`.
-export fn all p xs -> r : p~(x~a -> Bool, contains xs x), xs~List a, r~Bool
+export transparent fn all p xs -> r : p~(x~a -> Bool, contains xs x), xs~List a, r~Bool
     match xs
         []        -> True
         x :: rest -> p x and all p rest
