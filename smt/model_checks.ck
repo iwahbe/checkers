@@ -543,3 +543,84 @@ fn forgetful -> m : m~Model
     Model N.funs N.select N.const store N.sum N.lambda N.array_in N.differ N.div_zero N.mod_zero N.nth_out N.wrong_sel N.domain N.fuel
 
 check not (model.store_law (context AB) forgetful II (id_of ZERO) (Integer 1) (Integer 5) (Integer 1))
+
+# ── One number per array ─────────────────────────────────────────────────────
+# Numbers whose bytes read back as the constant 0 array but aren't its
+# number: the base written as "-0", and 0 written with a padded seven-bit
+# group (128 then 0). Neither is an array, or one function would have
+# several numbers, which `==` tells apart.
+fn number_of_bytes bs acc -> n : bs~List Nat, acc~Nat, n~Nat
+    match bs
+        []        -> acc
+        b :: rest -> number_of_bytes rest (acc * 256 + b)
+
+let NEG_ZERO = number_of_bytes [1, 1, 1, 0, 0] 0
+let PADDED = number_of_bytes [1, 1, 0, 128, 0, 0] 0
+
+check model.decode NEG_ZERO != None
+check model.decode PADDED != None
+check not (N.array_in II NEG_ZERO)
+check not (N.array_in II PADDED)
+
+# `(not (= (store a 0 (select a 0)) a))` is unsat (Z3 5.3.3); with `a` such
+# a number, `refutes` must not accept it.
+let STORE_SELF = b"(set-logic ALL)(declare-const a (Array Int Int))(assert (not (= (store a 0 (select a 0)) a)))(assert (not false))(check-sat)"
+
+fn a_is k -> m : k~Nat, m~Model
+    model_with (\_ _ -> Some (ArrayElem k)) NO_ARRAYS (\_ _ -> Countable) 10
+
+check not (refuted STORE_SELF (a_is NEG_ZERO))
+check not (refuted STORE_SELF (a_is PADDED))
+
+# ── What the premises leave open (for the decision on `checks_sound`) ────────
+# These pass, and each shows something the laws alone don't rule out.
+
+# The laws without totality say nothing of a chain of stores: a model that
+# names both stores but reads array 2 only at 0, as 5, keeps every law at
+# these points, and the valid goal `(select (store (store a 0 1) 1 2) 0) = 1`
+# is false there.
+let CHAIN = b"(set-logic ALL)(declare-const a (Array Int Int))(assert (not (= (select (store (store a 0 1) 1 2) 0) 1)))(assert (not false))(check-sat)"
+
+fn chain_model -> m : m~Model
+    let b = model_with (\_ _ -> Some (ArrayElem 0)) NO_ARRAYS (\_ _ -> Countable) 10
+    let store = \_ k _ _ -> Some (k + 1)
+    let select = \_ k i -> if k == 2 and i == Integer 0 then Some (Integer 5) else None
+    Model b.funs select b.const store b.sum b.lambda b.array_in b.differ b.div_zero b.mod_zero b.nth_out b.wrong_sel b.domain b.fuel
+
+check model.store_law (context CHAIN) chain_model II 0 (Integer 0) (Integer 1) (Integer 0)
+check model.store_law (context CHAIN) chain_model II 1 (Integer 1) (Integer 2) (Integer 0)
+check model.holds (context CHAIN) chain_model (fact CHAIN 0)
+check not (model.gives_select (context CHAIN) chain_model II 0 (Integer 0))
+
+# With a function the model doesn't give, `lambda_law` asks nothing of a
+# body that uses it: `(lambda x. g x - g x)` named as the constant 3
+# keeps the law, and the valid goal `(select … 5) = 0` is false there.
+let LG = b"(set-logic ALL)(declare-fun g (Int) Int)(assert (not (= (select (lambda ((x Int)) (- (g x) (g x))) 5) 0)))(assert (not false))(check-sat)"
+
+fn lambda_three -> m : m~Model
+    let b = NOTHING
+    let lambda = \_ _ _ _ _ -> Some 0
+    let select = \_ _ _ -> Some (Integer 3)
+    Model b.funs select b.const b.store b.sum lambda b.array_in b.differ b.div_zero b.mod_zero b.nth_out b.wrong_sel b.domain b.fuel
+
+fn lg_body -> t : t~Term
+    let gx = App (term.Fun 0) [Var 0]
+    App (Prim term.Sub) [gx, gx]
+
+check model.lambda_law (context LG) lambda_three II [] [] Int lg_body (Integer 5)
+check model.holds (context LG) lambda_three (fact LG 0)
+
+# `refutes` rests on the termination marks: `g x = g x + 1` has no
+# solution, so a context with it has no model (SMT-LIB 2.6, §4.2.3), but
+# marked terminating and never called it is not looked at.
+let NT = b"(set-logic ALL)(define-fun-rec g ((x Int)) Int (+ (g x) 1))(declare-const y Int)(assert (= y 1))(assert (not false))(check-sat)"
+
+fn nt_refuted -> r : r~Bool
+    match query NT
+        Some q ->
+            match models.marked q.context
+                Ok c  -> model.refutes c q.goal (with_x (Integer 1))
+                Err _ -> False
+        None   -> False
+
+check nt_refuted

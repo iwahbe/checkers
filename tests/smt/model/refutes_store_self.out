@@ -1,0 +1,7 @@
+-- stdout
+z3: unsat
+fact 1: not determined: Z3 didn't print `a`
+the negated goal: holds
+refutes: no
+-- stderr
+-- exit 0

@@ -39,7 +39,9 @@
 #
 # **Terms of the context only.** `eval` and `eval_unfolding` evaluate a term
 # only if it has a sort in the context with no variables free, `holds_at`
-# an axiom only if it is one of the context's (`term.axiom_ok`), and
+# an axiom only if it is well-sorted in the context (`term.axiom_ok`: its
+# body a `Bool` with its variables bound; not that it is one of the
+# context's axioms), and
 # `refutes` a goal only if it is a closed `Bool` term of it
 # (`term.fact_ok`); anything else is `IllSorted`, or not held.
 #
@@ -545,12 +547,17 @@ enum Kind
     Unbounded
     Opaque
 
+# A listed domain is enumerated; one with more than `LISTED` elements is
+# treated as `Opaque` (only constant arrays named), so that a model with a
+# huge domain makes `refutes` slower to say less, not hang.
+let LISTED = 1024
+
 fn index_kind sig dom i -> k : sig~Sig, dom~(Nat -> List Sort -> Domain), i~Sort, k~Kind
     match i
         Bool        -> Listed [Truth False, Truth True]
         Unin u args ->
             match dom u args
-                UpTo n    -> Listed (elements_upto n)
+                UpTo n    -> if n < LISTED then Listed (elements_upto n) else Opaque
                 Countable -> Unbounded
         _           -> if unbounded sig dom i then Unbounded else Opaque
 
@@ -561,8 +568,9 @@ fn elements_upto n -> es : n~Nat, es~List Value
 fn elements_from k count -> es : k~Nat, count~Nat, es~List Value
     if count == 0 then [] else Element k :: elements_from (k + 1) (count - 1)
 
-# The number of the constant array of `v`: its normal form has no stores,
-# at every index sort.
+# The number of the constant array of `v`, at any array sort: its normal
+# form has no stores, whatever the index sort, so `s` isn't needed (it is
+# there to fit `value_of`'s `konst`).
 fn constant_number s v -> r : s~Sort, v~Value, r~Option Nat
     Some (code (Form v []))
 
@@ -805,16 +813,25 @@ fn first_difference sa sb base is -> r : sa~List (Value, Value), sb~List (Value,
         j :: rest ->
             if read_stores_at sa base j != read_stores_at sb base j then j else first_difference sa sb base rest
 
-# Whether `k` numbers a normal form of array sort `s`: canonical, with a
-# base and stores of the sorts `s` needs. An array inside it has a smaller
+# Whether `k` is the number of a normal form of array sort `s`: `code` of
+# what it decodes to (one number per form: bytes that read back the same,
+# such as a padded group or "-0", aren't its number), canonical, with a base
+# and stores of the sorts `s` needs. An array inside it has a smaller
 # number (it is written inside `k`'s bytes), which is what ends the check.
-fn normal_in sig dom s k -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), s~Sort, k~Nat, r~Bool
+export fn normal_in sig dom s k -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), s~Sort, k~Nat, r~Bool
     decreasing (k + 1, 0)
     match (s, decode k)
         (Arr i w, Some f) ->
-            canonical sig dom i f.base f.stores and normal_value sig dom w f.base k
+            code f == k and canonical sig dom i f.base f.stores and normal_value sig dom w f.base k
                 and normal_stores sig dom i w f.stores k
         _                 -> False
+
+# An array of the normal forms' model is the number of what it decodes to.
+export lemma accepted_numbers sig dom s k : sig~Sig, dom~(Nat -> List Sort -> Domain), s~Sort, k~Nat,
+                                            normal_in sig dom s k
+    ensures match decode k
+        Some f -> code f == k
+        None   -> False
 
 # Whether `v` is a value of sort `s` in the built model, where the arrays
 # in it number less than `bound`.
@@ -1266,7 +1283,8 @@ export fn values_of_sorts c m ss vs -> r : c~Context, m~Model, ss~List Sort, vs~
 # Values that aren't of the variables' sorts in `m` are not among the ones
 # `a` speaks of, so it holds at them: as a hypothesis ("`a` holds at all
 # values") this asks nothing of them, and as a conclusion it says nothing
-# about them. An axiom that isn't one of `c` (`term.axiom_ok`) holds nowhere.
+# about them. An axiom that isn't well-sorted in `c` (`term.axiom_ok`) holds
+# nowhere.
 export fn holds_at c m a vs -> r : c~Context, m~Model, a~Axiom, vs~List Value, r~Bool
     if not (term.axiom_ok c a)
         False
@@ -1428,9 +1446,10 @@ export fn const_law c m s x i -> r : c~Context, m~Model, s~Sort, x~Value, i~Valu
     if index_and_value c m s i x
         match m.const s x
             Some k ->
-                match m.select s k i
-                    Some y -> y == x
-                    None   -> True
+                m.array_in s k
+                    and match m.select s k i
+                        Some y -> y == x
+                        None   -> True
             None   -> True
     else
         True
@@ -1440,10 +1459,7 @@ export fn const_law c m s x i -> r : c~Context, m~Model, s~Sort, x~Value, i~Valu
 export fn store_law c m s k j x i -> r : c~Context, m~Model, s~Sort, k~Nat, j~Value, x~Value, i~Value, r~Bool
     if sorted_at c m s k j x and index_and_value c m s i x
         match m.store s k j x
-            Some l ->
-                match (m.select s l i, if i == j then Some x else m.select s k i)
-                    (Some p, Some q) -> p == q
-                    _                -> True
+            Some l -> m.array_in s l and same_where_given (m.select s l i) (if i == j then Some x else m.select s k i)
             None   -> True
     else
         True
@@ -1485,12 +1501,14 @@ export fn ext_law c m s a b -> r : c~Context, m~Model, s~Sort, a~Nat, b~Nat, r~B
         Arr ix _ ->
             if array_sort c s and a != b and m.array_in s a and m.array_in s b
                 let i = m.differ s a b
-                of_sort c m ix i and differ_at m s a b i
+                match (m.select s a i, m.select s b i)
+                    (Some p, Some q) -> of_sort c m ix i and p != q
+                    _                -> True
             else
                 True
         _        -> True
 
-fn differ_at m s a b i -> r : m~Model, s~Sort, a~Nat, b~Nat, i~Value, r~Bool
-    match (m.select s a i, m.select s b i)
-        (Some p, Some q) -> p != q
+fn same_where_given p q -> r : p~Option Value, q~Option Value, r~Bool
+    match (p, q)
+        (Some x, Some y) -> x == y
         _                -> True
