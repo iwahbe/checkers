@@ -6,7 +6,8 @@ use crate::obj::*;
 use crate::prog::*;
 use crate::word::*;
 use std::io::Write;
-use std::path::{Component, Path, PathBuf};
+use crate::confine::{Place, Root};
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 macro_rules! builtin {
@@ -134,39 +135,36 @@ pub(crate) fn ch(w: W) -> char {
     u32::try_from(n(w)).ok().and_then(char::from_u32).unwrap_or_else(|| bug("not a Unicode scalar value"))
 }
 
-/// The operating system's message, without Rust's " (os error N)" suffix.
+/// The operating system's message as an `IoError`.
 pub(crate) fn describe_io(e: &std::io::Error) -> W {
+    new_obj(Obj::IoErr(io_message(e)))
+}
+
+/// The operating system's message, without Rust's " (os error N)" suffix.
+pub(crate) fn io_message(e: &std::io::Error) -> String {
     let s = e.to_string();
-    let s = match s.find(" (os error") {
+    match s.find(" (os error") {
         Some(k) => s[..k].to_string(),
         None => s,
-    };
-    new_obj(Obj::IoErr(s))
+    }
 }
 
 pub(crate) fn io_err(m: &str) -> W {
     new_obj(Obj::IoErr(m.to_string()))
 }
 
-/// Resolve a path against an `Fs` capability (§13.4).
-pub(crate) fn path(fs: W, p: &str) -> Result<PathBuf, W> {
-    let root = match obj(fs) {
-        Some(Obj::Fs(d)) => Some(d.clone()),
-        _ if fs == CAP_FS => None,
-        _ => return Err(io_err("not a file system capability")),
-    };
-    match root {
-        None => Ok(PathBuf::from(p)),
-        Some(dir) => {
-            let rel = Path::new(p);
-            let escapes = rel.is_absolute()
-                || rel.components().any(|c| matches!(c, Component::ParentDir | Component::RootDir | Component::Prefix(_)));
-            if escapes {
-                Err(io_err("Permission denied (outside the directory this capability allows)"))
-            } else {
-                Ok(dir.join(rel))
-            }
-        }
+/// Where a path leads under an `Fs` capability (§13.4): a confined one's
+/// paths are resolved beneath its directory when they are opened
+/// (`crate::confine`).
+pub(crate) fn path(fs: W, p: &str) -> Result<Place, W> {
+    match obj(fs) {
+        Some(Obj::Fs(Root::Dir(d))) => match d.try_clone() {
+            Ok(d) => Ok(Place::Beneath(d, p.to_string())),
+            Err(e) => Err(describe_io(&e)),
+        },
+        Some(Obj::Fs(Root::Denied(m))) => Err(io_err(m)),
+        _ if fs == CAP_FS => Ok(Place::Path(PathBuf::from(p))),
+        _ => Err(io_err("not a file system capability")),
     }
 }
 
