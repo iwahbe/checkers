@@ -29,7 +29,7 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
         []                  -> answer_stdin sys.term
         ["-in"]             -> answer_stdin sys.term
         ["parse"]           -> parse_stdin sys.term
-        "compare" :: rest   -> compare.run rest sys.term sys.fs sys.proc
+        "compare" :: rest   -> compare.run rest sys.term sys.fs sys.proc sys.clock
         "roundtrip" :: dirs -> roundtrip dirs sys.term sys.fs
         _                   ->
             let _ = terminal.eprint_line USAGE sys.term
