@@ -13,6 +13,6 @@ error[E0450]: cannot prove lemma `sealed_in_if`
 24 |     ensures (if b then triple x else 3 * x) == 3 * x
    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(if b then triple x else 3 * x) == 3 * x`
    = note: `triple` is sealed in `sealed_lib`: here the prover knows only its postconditions and the lemmas you bring in with `have`
-   = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+   = help: add a `proof` block: `match` on a parameter or a call's result for case analysis, and `have` for facts it needs
 
 sealed_use.ck: 2 errors, 0 warnings

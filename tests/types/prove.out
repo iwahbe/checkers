@@ -53,7 +53,7 @@ error[E0450]: cannot prove lemma `false_lemma`
 74 |     ensures x > 0
    |             ^^^^^ `x > 0`
    = note: counterexample: x = 0
-   = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+   = help: add a `proof` block: `match` on a parameter or a call's result for case analysis, and `have` for facts it needs
 
 error[E0451]: cannot prove `n == length (list.map (f Int) xs)`, the postcondition of `outside`
   --> prove.ck:83:66

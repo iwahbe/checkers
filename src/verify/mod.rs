@@ -530,23 +530,26 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     // 2. Definitions uninterpreted: fast when the facts in scope suffice.
     // 3. Only the definitions the goal mentions: Z3 doesn't unfold the
     //    functions whose results the facts in scope give.
-    // 4. Every definition, without the quantified postconditions of other
+    // 4. Only the definitions the facts in scope mention: the premises
+    //    unfolded, not the goal's functions, which Z3 can unfold without end.
+    // 5. Every definition, without the quantified postconditions of other
     //    functions, which can send Z3 searching (D101).
     // Each with the small work limit, then again with a larger one where Z3
     // gave up: a query that can't prove its goal often searches until its
     // limit.
-    let weaker: Vec<[Option<&String>; 3]> = queries
+    const TIERS: usize = 4;
+    let weaker: Vec<[Option<&String>; TIERS]> = queries
         .iter()
         .zip(&answers)
         .map(|(q, a)| match (q, a) {
-            (Ok(q), None) => [q.facts_only.as_ref(), q.focused.as_ref(), q.without_axioms.as_ref()],
-            _ => [None, None, None],
+            (Ok(q), None) => [q.facts_only.as_ref(), q.focused.as_ref(), q.premised.as_ref(), q.without_axioms.as_ref()],
+            _ => [None; TIERS],
         })
         .collect();
     // Whether each weaker query gave up with the small limit.
-    let mut gave_up: Vec<[bool; 3]> = vec![[true; 3]; obs.len()];
+    let mut gave_up: Vec<[bool; TIERS]> = vec![[true; TIERS]; obs.len()];
     for limit in [FIRST_RLIMIT, QUICK_RLIMIT] {
-        for tier in 0..3 {
+        for tier in 0..TIERS {
             let ask_q: Vec<Option<String>> = weaker
                 .iter()
                 .enumerate()
@@ -569,7 +572,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
             }
         }
     }
-    // 5. Everything, with the full work limit: the query whose
+    // 6. Everything, with the full work limit: the query whose
     //    counterexample is real.
     let rest: Vec<Option<String>> = texts
         .iter()
@@ -583,7 +586,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
             answers[k] = a;
         }
     }
-    // 6. Z3 gave up on everything: a counterexample without the axioms, with
+    // 7. Z3 gave up on everything: a counterexample without the axioms, with
     //    the full work limit, is better than nothing (§7.2).
     let retry: Vec<Option<String>> = answers
         .iter()
@@ -1110,7 +1113,7 @@ fn headline(o: &Obligation) -> (String, String, String) {
         ObKind::Lemma { name } => (
             format!("cannot prove lemma `{name}`"),
             format!("`{}`", o.text),
-            "add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs".into(),
+            "add a `proof` block: `match` on a parameter or a call's result for case analysis, and `have` for facts it needs".into(),
         ),
         ObKind::ClassType { name, given } => (
             format!("cannot prove that every `{given}` satisfies `{}`, as `{name}` requires", o.text),
