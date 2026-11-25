@@ -173,7 +173,37 @@ pub(crate) fn rc_new(g: &Globals, p: &mut lower::Program) {
     tailrec::program(&mut p.funcs, from);
     unbox::program(p, from);
     for f in &mut p.funcs[from..] {
-        rc::function(f, &fields_of);
+        f.body = rc::forward_aliases(std::mem::replace(&mut f.body, lower::E::Erased));
+    }
+    rc::infer_borrowed(&p.funcs, from, &mut p.borrowed, &fields_of);
+    let rets: Vec<usize> = p.funcs.iter().map(|f| f.rets).collect();
+    let rets = |f: u32| rets[f as usize];
+    let to = p.funcs.len();
+    for (i, f) in p.funcs[from..].iter_mut().enumerate() {
+        rc::function((from + i) as u32, f, &fields_of, &p.borrowed, &rets);
+    }
+    // A closure's code takes its arguments owned: a function with borrowed
+    // parameters made a closure (as a value, or as `main`) is entered
+    // through one that drops them after the call.
+    let mut closures = Vec::new();
+    if let Some(lower::DefShape::Fn { func, .. }) = p.defs.get(&p.main) {
+        closures.push(*func);
+    }
+    let mut values = Vec::new();
+    for f in &p.funcs[from..to] {
+        rc::closures_in(&f.body, &mut values, &mut closures);
+    }
+    for d in values {
+        if let Some(lower::DefShape::Fn { func, .. }) = p.defs.get(&d) {
+            closures.push(*func);
+        }
+    }
+    for i in closures {
+        if let (Some(b), false) = (p.borrowed.get(&i), p.entries.contains_key(&i)) {
+            let e = rc::owned_entry(i, &p.funcs[i as usize], b);
+            p.entries.insert(i, p.funcs.len() as u32);
+            p.funcs.push(e);
+        }
     }
     if std::env::var_os("CHECKERS_NATIVE_DUMP").is_some() {
         for (i, f) in p.funcs.iter().enumerate().skip(from) {
@@ -414,6 +444,39 @@ mod tests {
             let arity = |name: &str| p.funcs.iter().filter(|f| f.name == name).map(|f| f.params.len()).collect::<Vec<_>>();
             assert_eq!(arity("lo"), [2, 2, 2, 2]);
             assert_eq!(arity("nothing"), [1]);
+        })
+    }
+
+    /// Whether `e` duplicates or drops `v`.
+    fn counts(e: &lower::E, v: lower::V) -> bool {
+        use lower::E;
+        match e {
+            E::Dup(x, b) | E::Drop(x, b) | E::DropReuse(x, _, _, b) => *x == v || counts(b, v),
+            E::Borrow { drops, args, .. } => drops.contains(&v) || args.iter().any(|a| counts(a, v)),
+            E::Let(_, a, b) | E::LetMulti(_, a, b) => counts(a, v) || counts(b, v),
+            E::Call { args, .. } | E::Tuple(args) | E::Par(args) | E::Multi(args) => args.iter().any(|a| counts(a, v)),
+            E::Apply { f, args, .. } => counts(f, v) || args.iter().any(|a| counts(a, v)),
+            E::Con { fields, .. } => fields.iter().any(|a| counts(a, v)),
+            E::Case { arms, lits, default, .. } => {
+                arms.iter().any(|a| counts(&a.body, v)) || lits.iter().any(|(_, b)| counts(b, v)) || default.as_ref().is_some_and(|d| counts(d, v))
+            }
+            E::At(_, b) => counts(b, v),
+            _ => false,
+        }
+    }
+
+    /// A parameter a loop only reads and passes on unchanged is borrowed
+    /// (tests/run/borrowed_params.ck): `walk`'s `n` is neither duplicated
+    /// nor dropped, and a call passing one of its values to a borrowed and
+    /// an owned parameter duplicates it once and drops it after.
+    #[test]
+    fn loops_borrow_what_they_pass_on() {
+        funcs_of("borrowed_params.ck", |p| {
+            let func = |name: &str| p.funcs.iter().position(|f| f.name == name).unwrap();
+            let walk = func("walk");
+            assert_eq!(p.borrowed.get(&(walk as u32)).map(Vec::as_slice), Some(&[true, false, false][..]));
+            assert!(!counts(&p.funcs[walk].body, p.funcs[walk].params[0]));
+            assert_eq!(p.borrowed.get(&(func("note") as u32)).map(Vec::as_slice), Some(&[true, false][..]));
         })
     }
 

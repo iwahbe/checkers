@@ -205,6 +205,11 @@ pub struct Program {
     /// Functions whose results are returned as their parts (`unbox`): the
     /// function returning them, and their layout.
     pub workers: HashMap<u32, (u32, crate::native::unbox::Shape)>,
+    /// Functions' borrowed parameters (`rc::infer_borrowed`).
+    pub borrowed: HashMap<u32, Vec<bool>>,
+    /// Where a closure of a function with borrowed parameters enters: a
+    /// function taking them owned, which calls it and drops them after.
+    pub entries: HashMap<u32, u32>,
     /// The most words a function returns (`unbox`): what the machine the
     /// code is compiled for returns in registers. This machine's, unless
     /// set before reference counting.
@@ -260,6 +265,8 @@ impl Program {
             debug: None,
             recursive: HashMap::new(),
             workers: HashMap::new(),
+            borrowed: HashMap::new(),
+            entries: HashMap::new(),
             max_parts: crate::native::host_return_words(),
         }
     }
