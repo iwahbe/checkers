@@ -1,10 +1,6 @@
 # A duration's rest in minutes or hours that no decimal writes exactly is
 # cut off where a nanosecond is still more than the last place: 11 places
-# for minutes, 13 for hours. Expected output:
-#
-#     1.66666666666m
-#     0.0002777777777h
-#     1m40s
+# for minutes, 13 for hours.
 module duration_inexact
 
 import std.system (System, ExitCode)
