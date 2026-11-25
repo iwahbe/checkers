@@ -304,9 +304,9 @@ impl Elab {
         }
         match (self.force(&pa), self.force(&pb)) {
             (Val::TyCon(t1, x1), Val::TyCon(t2, x2)) if t1 == t2 && x1.len() == x2.len() => {
-                Val::TyCon(t1, x1.iter().zip(&x2).map(|(x, y)| self.join_types(x, y)).collect())
+                Val::TyCon(t1, x1.iter().zip(x2.iter()).map(|(x, y)| self.join_types(x, y)).collect())
             }
-            (Val::TupleTy(x1), Val::TupleTy(x2)) if x1.len() == x2.len() => Val::TupleTy(x1.iter().zip(&x2).map(|(x, y)| self.join_types(x, y)).collect()),
+            (Val::TupleTy(x1), Val::TupleTy(x2)) if x1.len() == x2.len() => Val::TupleTy(x1.iter().zip(x2.iter()).map(|(x, y)| self.join_types(x, y)).collect()),
             // A number's base is `Nat` or `Int`, not their representation.
             _ if self.type_range(&pa).is_some() => self.arith_base(&pa),
             (fa, _) => fa,
