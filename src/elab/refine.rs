@@ -129,7 +129,7 @@ impl Elab {
     }
 
     /// A refinement alias's base, with all aliases unfolded at the head.
-    fn base(&self, v: &Val) -> Val {
+    pub(super) fn base(&self, v: &Val) -> Val {
         self.force(v)
     }
 
@@ -227,7 +227,7 @@ impl Elab {
     }
 
     /// The same type, structurally (without unfolding): false if unsure.
-    fn same_type(&self, a: &Val, b: &Val) -> bool {
+    pub(super) fn same_type(&self, a: &Val, b: &Val) -> bool {
         if matches!(a, Val::Neutral(Head::Meta(_), _)) || matches!(b, Val::Neutral(Head::Meta(_), _)) {
             let (a, b) = (force_meta(&self.g, a.clone()), force_meta(&self.g, b.clone()));
             if matches!(a, Val::Neutral(Head::Meta(_), _)) || matches!(b, Val::Neutral(Head::Meta(_), _)) {
@@ -261,7 +261,7 @@ impl Elab {
 
     /// Whether `gain` could find something in `v`: a refinement alias
     /// below the top (`depth > 0`), as `gain` walks it.
-    fn refined_inside(&self, v: &Val, lvl: usize, depth: usize) -> bool {
+    pub(super) fn refined_inside(&self, v: &Val, lvl: usize, depth: usize) -> bool {
         if depth > 16 {
             return false;
         }
