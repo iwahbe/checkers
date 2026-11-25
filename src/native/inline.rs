@@ -104,7 +104,7 @@ impl Inliner<'_> {
             }
             Ir::Call(..) => {
                 let call = ir.map_subterms(|x, _| self.go(x, here, depth));
-                self.inline(&call, CALL_SIZE, here, depth).unwrap_or(call)
+                self.inline(&call, std::env::var("TMP_CALL_SIZE").ok().and_then(|x| x.parse().ok()).unwrap_or(CALL_SIZE), here, depth).unwrap_or(call)
             }
             _ => ir.map_subterms(|x, _| self.go(x, here, depth)),
         }
