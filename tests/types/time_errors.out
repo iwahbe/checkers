@@ -1,0 +1,20 @@
+error[E0201]: type mismatch: expected `Clock`, found `Term`
+  --> time_errors.ck:10:9
+   |
+10 |     now t
+   |         ^ this expression has type `Term`
+
+error[E0201]: type mismatch: expected `Duration`, found a number
+  --> time_errors.ck:13:13
+   |
+13 |     sleep c 5
+   |             ^ this is a number, not a `Duration`
+
+error[E0204]: unknown name `Reading`
+  --> time_errors.ck:16:5
+   |
+16 |     Reading 5
+   |     ^^^^^^^ not found
+   = help: `std.time` declares `Reading` but doesn't export it; mark it `export` there to use it here
+
+time_errors.ck: 3 errors, 0 warnings

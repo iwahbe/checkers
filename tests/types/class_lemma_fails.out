@@ -5,7 +5,7 @@ error[E0450]: cannot prove lemma `Ord Odd.trans`
    | ^^^^^^^^^^^^^^^^ `le x z`
    = note: facts in scope: `le x y`, `le y z`
    = note: counterexample: x = Odd 3, y = Odd 2, z = Odd 3
-   = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+   = help: add a `proof` block: `match` on a parameter or a call's result for case analysis, and `have` for facts it needs
 
 error[E0450]: cannot prove lemma `Ord Odd.antisym`
   --> class_lemma_fails.ck:10:1
@@ -14,7 +14,7 @@ error[E0450]: cannot prove lemma `Ord Odd.antisym`
    | ^^^^^^^^^^^^^^^^ `x == y`
    = note: facts in scope: `le x y`, `le y x`
    = note: counterexample: x = Odd 2, y = Odd 3
-   = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+   = help: add a `proof` block: `match` on a parameter or a call's result for case analysis, and `have` for facts it needs
 
 error[E0450]: `auto` cannot prove `le x y or le y x`
   --> class_lemma_fails.ck:15:13

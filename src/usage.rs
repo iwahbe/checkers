@@ -205,12 +205,20 @@ impl U<'_> {
             )
             .with_label("the guard runs before the body, so it can't use the resource")
             .with_help(format!("test `{name}` inside the arm's body instead, with `if` or another `match`")),
-            (Mult::Zero, _, _) => Diagnostic::error(
-                "E0403",
-                format!("`{name}` is `ghost`: it may only appear in types and constraints, but `{fname}` uses it at runtime"),
-                span,
-            )
-            .with_help("remove `ghost` if the value is needed at runtime"),
+            (Mult::Zero, _, _) => {
+                // Where it is used at run time, if the elaborator saw it.
+                let used = self.e.ghost_uses.get(&(self.did, name.clone())).and_then(|v| v.first().copied());
+                let d = Diagnostic::error(
+                    "E0403",
+                    format!("`{name}` is `ghost`: it may only appear in types and constraints, but `{fname}` uses it at runtime"),
+                    used.unwrap_or(span),
+                );
+                match used {
+                    Some(_) => d.with_label("used at runtime here"),
+                    None => d,
+                }
+                .with_help("remove `ghost` if the value is needed at runtime")
+            }
             (_, true, _) => Diagnostic::error(
                 "E0402",
                 format!("`{name}` is `own`, but `{fname}` uses it on some paths and not on others"),

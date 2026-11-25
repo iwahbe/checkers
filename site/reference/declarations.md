@@ -93,7 +93,7 @@ check area (Rect 2 3) == 6
 
 A constructor's fields are named and given types in its constraint list; every field needs a type (E0352). A constructor is applied to its fields in order, like a function (`Rect 2 3`), and is a function value when partly applied. Values are taken apart with `match` ([Patterns](patterns.md)).
 
-**Type parameters** follow the name; a parameter with no constraint is a type. An enum may refer to itself in its fields (a recursive type), but only in positive places: never to the left of an `->` in its own fields (E0354).
+**Type parameters** follow the name; a parameter with no constraint is a type. An enum may refer to itself in its fields (a recursive type), but only in positive places: never to the left of an `->` in its own fields (E0354). A parameter may be a value of a refined type with conditions after it, `record Ring n : n~Nat, n > 0`: each refinement and condition must hold wherever the type is written (`Ring 0` is an error), and holds in its fields.
 
 ```checkers
 enum Tree a

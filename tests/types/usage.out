@@ -20,10 +20,10 @@ error[E0402]: `f` holds a resource (`File`), but `one_branch` uses it on some pa
    = help: a resource must be used exactly once on every path, e.g. closed in every branch
 
 error[E0403]: `src` is `ghost`: it may only appear in types and constraints, but `ghostly` uses it at runtime
-  --> usage.ck:19:12
+  --> usage.ck:20:9
    |
-19 | fn ghostly src -> n : src~ghost Bytes, n~Nat
-   |            ^^^
+20 |     len src
+   |         ^^^ used at runtime here
    = help: remove `ghost` if the value is needed at runtime
 
 usage.ck: 4 errors, 0 warnings

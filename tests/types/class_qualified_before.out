@@ -1,0 +1,38 @@
+error[E0450]: cannot prove `r == 6`, the postcondition of `qualified`
+ --> class_qualified_before.ck:7:28
+  |
+7 | fn qualified -> r : r~Int, r == 6
+  |                            ^^^^^^ promised here
+  = note: for the value returned on line 8: `Make.make 5`
+  = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+error[E0450]: cannot prove `r == 6`, the postcondition of `as_value`
+  --> class_qualified_before.ck:10:27
+   |
+10 | fn as_value -> r : r~Int, r == 6
+   |                           ^^^^^^ promised here
+   = note: for the value returned on line 12: `f 5`
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+error[E0456]: cannot prove that `Read.read (-1) Nat` is a `Nat` (`(Read.read (-1) Nat) >= 0`)
+  --> class_qualified_before.ck:15:5
+   |
+15 |     Read.read (-1) Nat
+   |     ^^^^^^^^^^^^^^^^^^ `Read` at `Nat` runs `Int`'s instance, and its `read` isn't shown to give a `Nat` here
+   = help: use `Int` here and check the result where a `Nat` is needed; or promise it in a signature of `instance Read Int`'s `read`
+
+error[E0285]: can't tell which instance of `Make` to use: the type isn't known here
+  --> class_qualified_before.ck:17:15
+   |
+17 | let UNKNOWN = Make.make 5
+   |               ^^^^^^^^^
+   = help: give the type, e.g. with a constraint `x~List Int` in the signature
+
+error[E0450]: cannot prove `y > 0`, required to call `pos`
+  --> class_qualified_before.ck:20:10
+   |
+20 |     have Make.pos x (-1)
+   |          ^^^^^^^^^^^^^^^ `pos` requires `y > 0`
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+class_qualified_before.ck: 5 errors, 0 warnings

@@ -159,6 +159,7 @@ fn size_of(w: W) -> usize {
         K_CON | K_TUPLE => HDR + 8 * n,
         K_CLO | K_PAP => HDR + 8 + 8 * n,
         K_BYTES | crate::array::K_ARRAY => crate::array::size(w),
+        K_BIG if crate::obj::big_inline(w) => HDR + 16,
         _ => HDR + 8,
     }
 }
@@ -279,6 +280,33 @@ fn new_blob(kind: u64, b: &[u8]) -> W {
     w
 }
 
+/// A bytes object of one byte in the program's data, never freed: its
+/// header, its length, `0` (not a slice), its byte.
+#[repr(C, align(8))]
+struct OneByte {
+    rc: AtomicI64,
+    words: [u64; 4],
+}
+
+/// The strings of one ASCII character, shared: making one allocates
+/// nothing, and dropping it frees nothing.
+static ASCII: [OneByte; 128] = {
+    let mut a = [const { OneByte { rc: AtomicI64::new(STATIC_RC), words: [K_BYTES, 1, 0, 0] } }; 128];
+    let mut i = 0;
+    while i < 128 {
+        a[i].words[3] = u64::from_ne_bytes([i as u8, 0, 0, 0, 0, 0, 0, 0]);
+        i += 1;
+    }
+    a
+};
+
+/// The string of the character `c`, if it is ASCII: shared, so no memory
+/// is allocated.
+#[inline]
+pub fn ascii_str(c: u32) -> Option<W> {
+    ASCII.get(c as usize).map(|o| o as *const OneByte as W)
+}
+
 /// A string: a bytes object (#170).
 pub fn new_str(s: &str) -> W {
     new_blob(K_BYTES, s.as_bytes())
@@ -341,6 +369,19 @@ pub fn unique(w: W) -> bool {
 /// top is kept apart, so freeing allocates only when an object frees two.
 #[no_mangle]
 pub extern "C" fn ck_free(w: W) {
+    // Most objects freed hold no references: bytes and strings, numbers.
+    // Their memory goes straight back.
+    let k = kind(w);
+    if k == K_BYTES && slot(w, 1) == 0 || k == K_BIG && crate::obj::big_inline(w) {
+        give_back(w);
+        return;
+    }
+    free_held(w)
+}
+
+/// Free `w` and what it holds.
+#[inline(never)]
+fn free_held(w: W) {
     let mut todo = Vec::new();
     let mut next = Some(w);
     while let Some(w) = next.take().or_else(|| todo.pop()) {
@@ -358,20 +399,26 @@ pub extern "C" fn ck_free(w: W) {
             K_CON | K_TUPLE => (0..n).for_each(|i| release(slot(w, i))),
             K_CLO => (0..n).for_each(|i| release(slot(w, i + 1))),
             K_PAP => (0..=n).for_each(|i| release(slot(w, i))),
-            K_BIG => unsafe { drop(Box::from_raw(slot(w, 0) as *mut num_bigint::BigInt)) },
+            K_BIG if !crate::obj::big_inline(w) => unsafe { drop(Box::from_raw(slot(w, 0) as *mut num_bigint::BigInt)) },
             K_RUST => unsafe { drop(Box::from_raw(slot(w, 0) as *mut crate::obj::Obj)) },
             // Bytes and packed arrays hold nothing unless they are slices.
             K_BYTES if slot(w, 1) == 0 => {}
             K_BYTES | crate::array::K_ARRAY => crate::array::held(w).for_each(&mut release),
             _ => {}
         }
-        if TRACK.load(Ordering::Relaxed) {
-            LIVE.fetch_sub(1, Ordering::Relaxed);
-        }
-        let size = size_of(w).max(HDR);
-        if !keep_block(w as *mut u8, size) {
-            unsafe { dealloc(w as *mut u8, Layout::from_size_align(size, 8).unwrap()) };
-        }
+        give_back(w);
+    }
+}
+
+/// Give back the memory of `w`, whose references are released.
+#[inline(always)]
+fn give_back(w: W) {
+    if TRACK.load(Ordering::Relaxed) {
+        LIVE.fetch_sub(1, Ordering::Relaxed);
+    }
+    let size = size_of(w).max(HDR);
+    if !keep_block(w as *mut u8, size) {
+        unsafe { dealloc(w as *mut u8, Layout::from_size_align(size, 8).unwrap()) };
     }
 }
 
