@@ -21,6 +21,8 @@ pub struct Row<'a> {
 
 enum Column {
     Tuple,
+    /// `()`: matches every value of type `()`, and only that type.
+    Unit,
     Con,
     Lit,
     /// `[]` and `x :: rest` on a sequence that isn't a list: a `match` on
@@ -383,7 +385,7 @@ impl Elab {
         let mut pats = Vec::new();
         for (occ, p) in r.pats.drain(..) {
             match p.kind {
-                PatKind::Wild | PatKind::Unit => {}
+                PatKind::Wild => {}
                 PatKind::Var(n) => r.binds.push((n, occ, p.span)),
                 _ => pats.push((occ, p)),
             }
@@ -403,6 +405,7 @@ impl Elab {
         let (occ, pat) = rows[0].pats[0].clone();
         let col = match &pat.kind {
             PatKind::Tuple(_) => Column::Tuple,
+            PatKind::Unit => Column::Unit,
             PatKind::Lit(_) | PatKind::Neg(_) => Column::Lit,
             _ => match self.seq_column(cx, &rows, occ) {
                 Some(m) => Column::Seq(m),
@@ -411,6 +414,7 @@ impl Elab {
         };
         match col {
             Column::Tuple => self.compile_tuple(cx, rows, occ, &pat, expected, tail),
+            Column::Unit => self.compile_unit(cx, rows, occ, &pat, expected, tail),
             Column::Lit => self.compile_lit(cx, rows, occ, expected, tail),
             Column::Con => self.compile_con(cx, rows, occ, &pat, expected, tail),
             Column::Seq(m) => {
@@ -568,6 +572,25 @@ impl Elab {
         }
     }
 
+    /// `()` takes nothing apart: the value has type `()`, and every row with
+    /// `()` here matches it.
+    fn compile_unit(&mut self, cx: &mut Cx, rows: Vec<Row>, occ: usize, pat: &Pattern, expected: &Val, tail: bool) -> Tm {
+        let ty = cx.ty_of(occ);
+        let unit = self.unit();
+        if !self.unify_at(cx, &ty, &unit, pat.span, "this pattern") {
+            self.pm.bad = true;
+            return Tm::Error;
+        }
+        let rows = rows
+            .into_iter()
+            .map(|mut r| {
+                r.pats.retain(|(o, p)| !(*o == occ && matches!(p.kind, PatKind::Unit)));
+                r
+            })
+            .collect();
+        self.compile(cx, rows, expected, tail)
+    }
+
     fn compile_tuple(
         &mut self,
         cx: &mut Cx,
@@ -596,6 +619,14 @@ impl Elab {
         };
         let comps_ty = match ty {
             Val::TupleTy(ts) if ts.len() == n => ts,
+            // `()` has no parts at all.
+            Val::TupleTy(ts) if ts.is_empty() => {
+                self.pat_err(
+                    Diagnostic::error("E0246", format!("this pattern has {n} parts, but `()` has none"), pat.span)
+                        .with_help("match `()` with the pattern `()`, or `_`"),
+                );
+                return Tm::Error;
+            }
             // A tuple type with fewer parts than the pattern, ending in a
             // type that isn't a tuple: the pattern has too many parts.
             Val::TupleTy(ts) if ts.len() < n && !matches!(self.force(&ts[ts.len() - 1]), Val::Neutral(..)) => {
