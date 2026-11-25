@@ -393,6 +393,30 @@ mod tests {
         }
     }
 
+    /// The functions of a test program in tests/run/, ready to compile.
+    fn funcs_of(name: &'static str, f: impl FnOnce(&lower::Program) + Send + 'static) {
+        let path = format!("{}/tests/run/{name}", env!("CARGO_MANIFEST_DIR"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        let dir = std::path::Path::new(&path).parent().unwrap().to_path_buf();
+        crate::with_big_stack(move || {
+            let (e, main, staged, report) = crate::ready_to_run(name, &text, &dir, false).map_err(|r| r.report).unwrap();
+            assert_eq!(report, "");
+            f(&prepare(&e.g, Some(&staged), main, host_return_words()));
+        })
+    }
+
+    /// A copy made for a known dictionary takes neither the dictionary nor
+    /// the type (tests/run/copy_params.ck): `lo`'s copies take `x` and `y`.
+    /// A copy that would take nothing keeps one parameter.
+    #[test]
+    fn copies_take_no_dictionaries() {
+        funcs_of("copy_params.ck", |p| {
+            let arity = |name: &str| p.funcs.iter().filter(|f| f.name == name).map(|f| f.params.len()).collect::<Vec<_>>();
+            assert_eq!(arity("lo"), [2, 2, 2, 2]);
+            assert_eq!(arity("nothing"), [1]);
+        })
+    }
+
     /// Results returned as their parts, six to eight words wide
     /// (tests/run/unboxed_wide.ck), compile for every machine: none returns
     /// more words than the machine has registers for, and each returns as

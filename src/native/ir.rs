@@ -209,9 +209,11 @@ impl<'g> Compiler<'g> {
                     _ => None,
                 };
                 let put = |k: usize| copy.as_ref().is_some_and(|c| c.put.get(k).copied().unwrap_or(false));
+                let gone = |k: usize| copy.as_ref().is_some_and(|c| c.gone.get(k).copied().unwrap_or(false));
                 let mut args: Vec<Arc<Ir>> = spine
                     .into_iter()
                     .enumerate()
+                    .filter(|(k, _)| !gone(*k))
                     .map(|(k, (a, m))| match m {
                         _ if put(k) => Arc::new(Ir::Erased),
                         Mult::Zero if described.is_some_and(|ps| ps.contains(&k)) => Arc::new(self.descriptor(a)),
@@ -246,7 +248,7 @@ impl<'g> Compiler<'g> {
                     Some(c) => {
                         // The functions' variables, after the arguments the
                         // copy is made for.
-                        let tail = args.split_off(c.at);
+                        let tail = args.split_off(c.at - c.gone.iter().filter(|g| **g).count());
                         args.extend(c.caps.iter().map(|v| Arc::new(Ir::Var(*v))));
                         args.extend(tail);
                         Ir::Call(Arc::new(Ir::Global(c.id)), args)
