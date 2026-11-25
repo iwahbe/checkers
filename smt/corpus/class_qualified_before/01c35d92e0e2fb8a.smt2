@@ -1,0 +1,7 @@
+(set-option :produce-models true)
+(set-option :rlimit 200000)
+(set-option :timeout 60000)
+(set-logic ALL)
+(define-funs-rec ((|class_qualified_before.Make Int.make| ((p0 Int)) Int)) (p0))
+(assert (not (= (|class_qualified_before.Make Int.make| 5) 6)))
+(check-sat)

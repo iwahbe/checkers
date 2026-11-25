@@ -119,6 +119,22 @@ only there.
   the model satisfies it (else `Unknown`); the comparison tool reports these
   queries as their own row. How a model is checked against one is a design
   to propose under #84.
+- A function `std` simply doesn't have (searching bytes, splitting lines) is
+  not a workaround: file the gap and write it in the package. It doesn't
+  hold a merge (#309, #307). Rules 1 and 2 are about bugs and about lemmas
+  on functions `std` does have.
+- Accepted (2026-11-25): the term representation of `smt.term` (#82); the
+  package's tests in `tests/smt/`, and `smt/` formatted (#80);
+  `CHECKERS_SMT_CORPUS` (SPEC §7.2).
+- The corpus records `ckc`'s in-process Z3 until Z3 leaves `ckc`, then the
+  `z3` executable's answers (#302).
+- Arrays in `smt.model` are elements of the model, with the array axioms a
+  stated premise of `checks_sound` (#84, option C). Done in S4.
+- That `refutes` gives a real counter-model is a theorem, with termination
+  of the definitions as its hypothesis, proved beside `checks_sound` (#84,
+  option B; #86).
+- Not decided yet: the conclusion of `checks_sound` (`holds` or
+  `not fails`, #84), and how `ckc` marks a definition terminating (#299).
 
 ## Merging into `smt`
 
