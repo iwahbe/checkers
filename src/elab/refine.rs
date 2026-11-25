@@ -194,7 +194,7 @@ impl Elab {
     }
 
     /// The same type, structurally (without unfolding): false if unsure.
-    fn same_type(&self, a: &Val, b: &Val) -> bool {
+    pub(super) fn same_type(&self, a: &Val, b: &Val) -> bool {
         if matches!(a, Val::Neutral(Head::Meta(_), _)) || matches!(b, Val::Neutral(Head::Meta(_), _)) {
             let (a, b) = (force_meta(&self.g, a.clone()), force_meta(&self.g, b.clone()));
             if matches!(a, Val::Neutral(Head::Meta(_), _)) || matches!(b, Val::Neutral(Head::Meta(_), _)) {

@@ -26,8 +26,28 @@ pub struct Range {
 impl Range {
     const ANY: Range = Range { lo: None, hi: None };
 
-    fn exact(n: i128) -> Range {
+    pub fn exact(n: i128) -> Range {
         Range { lo: Some(n), hi: Some(n) }
+    }
+
+    /// The smallest range holding both.
+    pub fn hull(self, o: Range) -> Range {
+        Range { lo: self.lo.zip(o.lo).map(|(x, y)| x.min(y)), hi: self.hi.zip(o.hi).map(|(x, y)| x.max(y)) }
+    }
+
+    /// Does `self` hold every value of `o`?
+    pub fn holds(self, o: Range) -> bool {
+        let lo = match (self.lo, o.lo) {
+            (None, _) => true,
+            (Some(a), Some(b)) => a <= b,
+            (Some(_), None) => false,
+        };
+        let hi = match (self.hi, o.hi) {
+            (None, _) => true,
+            (Some(a), Some(b)) => a >= b,
+            (Some(_), None) => false,
+        };
+        lo && hi
     }
 
     fn meet(self, o: Range) -> Range {
@@ -256,13 +276,41 @@ impl Elab {
     pub fn join_branch(&mut self, m: MetaId, r: Option<Range>) {
         let j = match (self.joins.get(&m).copied(), r) {
             (Some(Join::Empty), Some(r)) => Join::Range(r),
-            (Some(Join::Range(a)), Some(b)) => Join::Range(Range {
-                lo: a.lo.zip(b.lo).map(|(x, y)| x.min(y)),
-                hi: a.hi.zip(b.hi).map(|(x, y)| x.max(y)),
-            }),
+            (Some(Join::Range(a)), Some(b)) => Join::Range(a.hull(b)),
             _ => Join::Other,
         };
         self.joins.insert(m, j);
+    }
+
+    /// The type of values that are each an `a` or a `b`, for a type
+    /// parameter several values decide together: numbers' ranges joined
+    /// (D135), a type constructor's arguments joined one by one, and
+    /// otherwise the type without its refinement. Where `a` and `b` differ
+    /// in more than refinements, `a`'s type: the value of type `b` is then
+    /// reported where it is checked against it.
+    pub fn join_types(&mut self, a: &Val, b: &Val) -> Val {
+        let (pa, pb) = (self.peel(a), self.peel(b));
+        if matches!(pb, Val::Neutral(Head::Meta(_), _)) {
+            return a.clone();
+        }
+        if matches!(pa, Val::Neutral(Head::Meta(_), _)) {
+            return b.clone();
+        }
+        if self.same_type(&pa, &pb) {
+            return a.clone();
+        }
+        if let (Some(x), Some(y)) = (self.type_range(&pa), self.type_range(&pb)) {
+            return self.range_type(x.hull(y));
+        }
+        match (self.force(&pa), self.force(&pb)) {
+            (Val::TyCon(t1, x1), Val::TyCon(t2, x2)) if t1 == t2 && x1.len() == x2.len() => {
+                Val::TyCon(t1, x1.iter().zip(&x2).map(|(x, y)| self.join_types(x, y)).collect())
+            }
+            (Val::TupleTy(x1), Val::TupleTy(x2)) if x1.len() == x2.len() => Val::TupleTy(x1.iter().zip(&x2).map(|(x, y)| self.join_types(x, y)).collect()),
+            // A number's base is `Nat` or `Int`, not their representation.
+            _ if self.type_range(&pa).is_some() => self.arith_base(&pa),
+            (fa, _) => fa,
+        }
     }
 
     /// Is `ty` a range this rule made (D135)?
