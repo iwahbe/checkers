@@ -35,7 +35,11 @@
 //!                         `> JSON` sends a message (`$ROOT` is the repository,
 //!                         `$TEXT(file)` a file's text as a JSON string), `< N`
 //!                         waits for N more messages; NAME.out is every message
-//!                         received, in order, and the exit code.
+//!                         received, in order, and the exit code. A session
+//!                         waits for each check's diagnostics (a message per
+//!                         phase with any) before its next request: they arrive
+//!                         whenever the check gets to them, and the server
+//!                         sends nothing after answering `shutdown`.
 //! tools/, examples/, bench/, stdlib/, smt/, tests/{types,run,stage,stress}: every .ck file must be
 //!                         formatted; every .ck file in the repository must format to a
 //!                         fixed point with the same syntax tree (D93).
@@ -862,7 +866,8 @@ fn golden() {
 }
 
 /// The solver package (#72): its modules check clean; its command builds;
-/// and `main parse` gives each `tests/smt/*.smt2` case's output.
+/// `main parse` gives each `tests/smt/*.smt2` case's output; `main` answers
+/// each `tests/smt/answer/*.smt2`; `main compare` gives `tests/smt/compare/compare.out`.
 fn smt_package(pool: &Pool, root: &'static Path, update: bool) {
     let pkg = root.join("smt");
     for (i, path) in ck_files(&pkg).into_iter().enumerate() {
@@ -904,6 +909,41 @@ fn smt_package(pool: &Pool, root: &'static Path, update: bool) {
         }
         count += 1;
         datatype_scaling(&exe.0, root, &mut failures);
+        // `main` answers each `tests/smt/answer/*.smt2` as `z3 -in` would.
+        for path in files_with(&root.join("tests").join("smt").join("answer"), "smt2") {
+            count += 1;
+            let actual = shown(&run_with(&exe.0, &[], &fs::read(&path).unwrap(), root));
+            compare(root, &path.with_extension("out"), &actual, update, &mut failures);
+        }
+        // `main compare` on a small corpus, with a stand-in for `z3`.
+        count += 1;
+        let changed = Removed(std::env::temp_dir().join(format!("checkers-golden-{}-changed", std::process::id())));
+        let saved = Removed(std::env::temp_dir().join(format!("checkers-golden-{}-saved", std::process::id())));
+        let dir = "tests/smt/compare";
+        let out = run_with(
+            &exe.0,
+            &[
+                "compare",
+                "--z3",
+                &format!("{dir}/fake-z3"),
+                "--baseline",
+                &format!("{dir}/baseline"),
+                "--changed",
+                &changed.0.to_string_lossy(),
+                "--save",
+                &saved.0.to_string_lossy(),
+                &format!("{dir}/corpus"),
+            ],
+            b"",
+            root,
+        );
+        let actual = format!(
+            "{}-- changed\n{}-- saved\n{}",
+            shown(&out),
+            fs::read_to_string(&changed.0).unwrap_or_default(),
+            fs::read_to_string(&saved.0).unwrap_or_default()
+        );
+        compare(root, &root.join(dir).join("compare.out"), &actual, update, &mut failures);
         (count, failures)
     });
 }

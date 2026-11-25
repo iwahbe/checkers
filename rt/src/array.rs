@@ -7,7 +7,11 @@
 //! pointer to its first element and the array whose elements they are,
 //! which it holds a reference to: slicing takes constant time. Reading goes by the header; code that creates
 //! an array is given the layout of its element type (a type argument's
-//! word, `layout_word`).
+//! word, `layout_word`). An array (not a slice) may have room for more
+//! elements than it has: the header's field count is then its elements'
+//! memory in words (`room`), which `++` appending in place fills, and
+//! grows by doubling, so a string built a piece at a time is copied a
+//! number of times logarithmic in its length.
 
 use crate::num::Num;
 use crate::obj::*;
@@ -151,8 +155,29 @@ pub fn size(a: W) -> usize {
     if is_slice(a) {
         HDR + 24
     } else {
-        HDR + 16 + (len(a) * layout(a).width()).div_ceil(8) * 8
+        HDR + 16 + room(a)
     }
+}
+
+/// The bytes an array (not a slice) has for its elements: its room if
+/// the header records one, else what its length needs.
+#[inline]
+pub fn room(a: W) -> usize {
+    match nfields(a) {
+        0 => (len(a) * layout(a).width()).next_multiple_of(8),
+        words => 8 * words,
+    }
+}
+
+/// The most room the header records, in words; an array with more has
+/// exactly what its length needs.
+const MAX_ROOM: usize = 0xff_ffff;
+
+/// `a`'s header with room for `bytes` (a multiple of 8).
+fn set_room(a: W, bytes: usize) {
+    let words = if bytes / 8 <= MAX_ROOM { bytes / 8 } else { 0 };
+    let h = unsafe { &mut *(a as *mut Hdr) };
+    h.info = (h.info & !(0xff_ffff << 8)) | ((words as u64) << 8);
 }
 
 /// The references an array or bytes object holds, for freeing: a slice's
@@ -303,8 +328,17 @@ pub fn advance(a: W, i: usize) -> W {
     slice(a, i, n)
 }
 
-/// `a ++ b` (both borrowed): the narrowest layout holding both.
+/// `a ++ b` (both borrowed): the narrowest layout holding both, or the
+/// other side itself if one is empty.
 pub fn concat(a: W, b: W) -> W {
+    // Arrays don't change once others can see them: an empty side gives
+    // the other.
+    if len(b) == 0 {
+        return dup(a);
+    }
+    if len(a) == 0 {
+        return dup(b);
+    }
     let (la, lb) = (layout(a), layout(b));
     if la == lb && la != Words {
         let w = la.width();
@@ -325,27 +359,57 @@ pub fn concat(a: W, b: W) -> W {
 /// its storage (not a slice, not `b`) and `b` has its layout, `b`'s elements
 /// are written after `a`'s in place, its memory grown if they don't fit;
 /// otherwise a new array, and `a` dropped.
+/// `a ++ b`, `a` owned and `b` borrowed, when both are bytes (strings) and
+/// `b`'s bytes fit in the memory `a` already has and no one else holds:
+/// written after `a`'s. `None` (and nothing done) otherwise. Appending a
+/// few bytes to a string being built is the common case of `++`.
+#[inline]
+pub fn append_in_room(a: W, b: W) -> Option<W> {
+    if !(is_kind(a, K_BYTES) && is_kind(b, K_BYTES)) || a == b || is_slice(a) || !unique(a) {
+        return None;
+    }
+    let (n, m) = (len(a), len(b));
+    if n + m > room(a) {
+        return None;
+    }
+    unsafe { std::ptr::copy_nonoverlapping(data(b), data(a).add(n), m) };
+    set_slot(a, 0, (n + m) as u64);
+    Some(a)
+}
+
+#[inline]
 pub fn concat_own(a: W, b: W) -> W {
+    let (n, m) = (len(a), len(b));
+    if m == 0 {
+        return a;
+    }
+    if n == 0 {
+        drop_w(a);
+        return dup(b);
+    }
     let l = layout(a);
-    if l != layout(b) || a == b || !unique(a) || is_slice(a) {
+    if l != layout(b) || a == b || is_slice(a) || !unique(a) {
         let r = concat(a, b);
         drop_w(a);
         return r;
     }
     let w = l.width();
-    let (n, m) = (len(a), len(b));
-    let old = size(a);
-    let Some(new) = (n + m).checked_mul(w).and_then(|b| b.checked_next_multiple_of(8)).and_then(|b| b.checked_add(HDR + 16)) else {
-        crate::fatal("out of memory")
-    };
-    let a = if new > old {
-        // The old layout is the one it was allocated with: its size is
-        // computed from its length, like `size`.
-        let p = unsafe { std::alloc::realloc(a as *mut u8, std::alloc::Layout::from_size_align(old, 8).unwrap(), new) };
+    let have = room(a);
+    let Some(need) = (n + m).checked_mul(w).and_then(|b| b.checked_next_multiple_of(8)) else { crate::fatal("out of memory") };
+    let a = if need > have {
+        // Double the room, so appending a piece at a time copies the
+        // elements a logarithmic number of times; past what the header
+        // records, just what is needed.
+        let grown = need.max(have.saturating_mul(2));
+        let new = if grown / 8 <= MAX_ROOM { grown } else { need };
+        let Some(size) = new.checked_add(HDR + 16) else { crate::fatal("out of memory") };
+        let p = unsafe { std::alloc::realloc(a as *mut u8, std::alloc::Layout::from_size_align_unchecked(HDR + 16 + have, 8), size) };
         if p.is_null() {
             crate::fatal("out of memory");
         }
-        p as W
+        let a = p as W;
+        set_room(a, new);
+        a
     } else {
         a
     };

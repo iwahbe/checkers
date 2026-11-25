@@ -1,5 +1,8 @@
 # main.ck — the solver package's command line.
 #
+# `main` (or `main -in`) reads a query on standard input and answers it as
+# `z3 -in` would (`reply`). `main compare` compares our answers with Z3's
+# on a corpus of queries (`compare`).
 # `main parse` reads a query on standard input and writes it back.
 # `main roundtrip DIR…` reads each query (`*.smt2`) in each DIR, writes it
 # back, and checks that what it wrote is the same query. A query that can't be read gives
@@ -21,12 +24,17 @@ import std.list
 import smtlib (Shape, Group)
 import term
 import models
+import reply
+import compare
 
-let USAGE = "usage: main parse < QUERY\n       main roundtrip DIR...\n       main models [--z3 PROGRAM] DIR...\n       main model [--unmarked] QUERY ANSWER"
+let USAGE = "usage: main [-in] < QUERY\n       main parse < QUERY\n       main roundtrip DIR...\n       main compare [--z3 PROGRAM] [--baseline FILE] [--changed FILE] [--save FILE] DIR\n       main models [--z3 PROGRAM] DIR...\n       main model [--unmarked] QUERY ANSWER"
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     match args
+        []                            -> answer_stdin sys.term
+        ["-in"]                       -> answer_stdin sys.term
         ["parse"]                     -> parse_stdin sys.term
+        "compare" :: rest             -> compare.run rest sys.term sys.fs sys.proc
         "roundtrip" :: dirs           -> roundtrip dirs sys.term sys.fs
         "models" :: dirs              -> if models.run dirs sys.term sys.fs sys.proc then Success else Failure 1
         ["model", q, a]               -> model_one q a True sys.term sys.fs
@@ -60,6 +68,22 @@ fn parse_stdin io -> code : io~Term, code~ExitCode
                 Ok q  ->
                     let _ = terminal.write_bytes (smtlib.render q) io
                     Success
+                Err e ->
+                    let _ = terminal.write_bytes (error_line src e) io
+                    Failure 1
+
+# Our answer to the query on standard input, as Z3 writes its own; exit
+# status 1 if the output ends with an error, as Z3's does.
+fn answer_stdin io -> code : io~Term, code~ExitCode
+    match terminal.read_all io
+        Err e  ->
+            let _ = terminal.eprint_line ("error: standard input: " ++ files.describe e) io
+            Failure 2
+        Ok src ->
+            match smtlib.parse src
+                Ok q  ->
+                    let _ = terminal.write_bytes (reply.write src q (reply.answer q)) io
+                    if reply.has_error q then Failure 1 else Success
                 Err e ->
                     let _ = terminal.write_bytes (error_line src e) io
                     Failure 1

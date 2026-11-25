@@ -1,0 +1,28 @@
+error[E0372]: `x` is given two types that don't agree: `Int` and `Bool`
+ --> typed_twice_disagree.ck:5:28
+  |
+5 | fn other_base x : x~Int, x~Bool
+  |                            ^^^^ `x` already has the type `Int`
+  = help: each typing of `x` may refine its type, as `x~Int, x~Nat` does, but they must have one base type
+
+error[E0204]: unknown name `Missing`
+ --> typed_twice_disagree.ck:8:25
+  |
+8 | fn unknown x : x~Int, x~Missing
+  |                         ^^^^^^^ not found
+
+error[E0372]: `xs`'s types can't be combined: a refinement inside a type doesn't combine
+  --> typed_twice_disagree.ck:11:32
+   |
+11 | fn inside xs : xs~List Int, xs~List Nat
+   |                                ^^^^^^^^ `xs` already has the type `List Int`
+   = help: give `xs` one type with every refinement inside it
+
+error[E0372]: `a` is given two types that don't agree: `Type` and `Int`
+  --> typed_twice_disagree.ck:14:27
+   |
+14 | record Pair a : a~Type, a~Int
+   |                           ^^^ `a` already has the type `Type`
+   = help: each typing of `a` may refine its type, as `a~Int, a~Nat` does, but they must have one base type
+
+typed_twice_disagree.ck: 4 errors, 0 warnings

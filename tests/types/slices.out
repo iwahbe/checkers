@@ -5,6 +5,6 @@ error[E0450]: cannot prove lemma `beyond`
    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(bytes.slice src i j)[0] == src[j]`
    = note: facts in scope: `i < j`, `j < (len src)`
    = note: `slice` is built into `std.bytes`: here the prover knows only its postconditions and the lemmas you bring in with `have`
-   = help: add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs
+   = help: add a `proof` block: `match` on a parameter or a call's result for case analysis, and `have` for facts it needs
 
 slices.ck: 1 error, 0 warnings

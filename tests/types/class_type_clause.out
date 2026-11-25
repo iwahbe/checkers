@@ -1,1 +1,8 @@
-class_type_clause.ck: 0 errors, 0 warnings
+warning[W011]: match on `xs` itself, not on `Seq.uncons xs`
+  --> class_type_clause.ck:46:11
+   |
+46 |     match Seq.uncons xs
+   |           ^^^^^^^^^^^^^ `[]` and `x :: rest` take a sequence apart with `Seq.uncons`
+   = help: write `match xs`, with `[]` for `None` and `x :: _` for `Some (x, _)`
+
+class_type_clause.ck: 0 errors, 1 warning

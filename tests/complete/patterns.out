@@ -20,6 +20,7 @@ replaces 4:12-4:12
   string             module          
   system             module          
   terminal           module          
+  time               module          
   utf8               module          
 == line 14, column 9
 replaces 14:9-14:9
