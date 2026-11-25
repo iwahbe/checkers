@@ -550,6 +550,48 @@ fn pat_binds(p: &Pattern, out: &mut Vec<String>) {
 /// A rewrite of the free names of an expression: `Var`s, `Con`s and
 /// qualified names (`m.x`), respecting what lambdas, `match`, `let` and
 /// `forall` bind.
+/// A default's text (`text`, from `start`) at an instance: each of the
+/// class's parameters replaced by the instance's type (`heads`),
+/// parenthesized where it is applied or an argument (`List (Box b)`).
+fn default_text(text: &str, start: u32, e: &Expr, heads: &HashMap<String, String>) -> String {
+    fn walk(e: &Expr, arg: bool, heads: &HashMap<String, String>, out: &mut Vec<(Span, String)>) {
+        match &e.kind {
+            ExprKind::Var(n) => {
+                if let Some(h) = heads.get(n) {
+                    let simple = !h.contains(char::is_whitespace) || h.starts_with('(') && h.ends_with(')');
+                    out.push((e.span, if arg && !simple { format!("({h})") } else { h.clone() }));
+                }
+            }
+            ExprKind::App(f, x) => {
+                walk(f, true, heads, out);
+                walk(x, true, heads, out);
+            }
+            ExprKind::Arrow(a, b) => {
+                walk(a, true, heads, out);
+                walk(b, false, heads, out);
+            }
+            ExprKind::Tuple(xs) | ExprKind::List(xs) | ExprKind::Par(xs) => xs.iter().for_each(|x| walk(x, false, heads, out)),
+            _ => {}
+        }
+    }
+    let mut subs = Vec::new();
+    walk(e, false, heads, &mut subs);
+    subs.sort_by_key(|(s, _)| s.start);
+    let mut out = String::new();
+    let mut at = 0;
+    for (s, h) in subs {
+        let (a, b) = ((s.start - start) as usize, (s.end - start) as usize);
+        if a < at || b > text.len() {
+            continue;
+        }
+        out.push_str(&text[at..a]);
+        out.push_str(&h);
+        at = b;
+    }
+    out.push_str(&text[at..]);
+    out
+}
+
 struct Rewrite<'a> {
     var: &'a dyn Fn(&str, Span) -> Option<Expr>,
     con: &'a dyn Fn(&str, Span) -> Option<Expr>,
@@ -1039,15 +1081,8 @@ impl Elab {
                 continue;
             }
             match mem {
-                ClassMember::Type { name: t, default, constraints: tcs, .. } => {
+                ClassMember::Type { name: t, constraints: tcs, .. } => {
                     self.class_type_constraints(t, tcs, local, &frw, &mut clause_fields);
-                    let mentioned = default.as_ref().and_then(|e| params.iter().find(|p| super::decls::mentions_free(e, &p.name)).map(|p| (e, p)));
-                    if let Some((e, param)) = mentioned {
-                        self.err(
-                            Diagnostic::error("E0288", format!("the default of `{}` can't mention the class's parameter `{}`", t.name, param.name), e.span)
-                                .with_help(format!("a default is the same type at every instance; an instance that needs `{}` gives `type {} = …` itself", param.name, t.name)),
-                        );
-                    }
                     type_fields.push(ast::Field {
                         name: ident(&assoc_field_name(&t.name), t.span),
                         mult: ast::Mult::Ghost,
@@ -1767,15 +1802,30 @@ impl Elab {
             let given = given.map(|(t, _)| t);
             let t = match (given, default) {
                 (Some(t), _) => t,
-                (None, Some(dflt)) => match foreign.as_deref() {
-                    Some(m) => {
-                        let at = self.synthetic_span(header);
-                        let text = self.text_in(m, dflt.span);
+                (None, Some(dflt)) => {
+                    let module = foreign.clone().unwrap_or_else(|| self.cur.clone());
+                    let mut t = match foreign.as_deref() {
+                        Some(m) => {
+                            let at = self.synthetic_span(header);
+                            let text = self.text_in(m, dflt.span);
+                            self.text_override.insert((self.cur.clone(), at.start, at.end), text);
+                            respan(dflt, at)
+                        }
+                        None => dflt.clone(),
+                    };
+                    // The class's parameters are this instance's types,
+                    // and the default is shown with them (`List Int`).
+                    if cparams.iter().any(|p| super::decls::mentions_free(dflt, p)) {
+                        let heads: HashMap<String, String> = cparams.iter().cloned().zip(tys.iter().map(|t| self.src_text(t.span))).collect();
+                        let text = default_text(&self.text_in(&module, dflt.span), dflt.span.start, dflt, &heads);
+                        let sub = |n: &str, _s: Span| cparams.iter().position(|p| p == n).map(|k| tys[k].clone());
+                        t = Rewrite { var: &sub, con: &|_, _| None, qualified: &|_, _, _| None }.expr(&t, &[]);
+                        let at = self.synthetic_span(if foreign.is_some() { header } else { dflt.span });
                         self.text_override.insert((self.cur.clone(), at.start, at.end), text);
-                        respan(dflt, at)
+                        t.span = at;
                     }
-                    None => dflt.clone(),
-                },
+                    t
+                }
                 (None, None) => {
                     self.err(
                         Diagnostic::error("E0364", format!("`instance {text}` doesn't give `{}`", tn.name), d.span)
