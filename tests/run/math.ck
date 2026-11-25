@@ -17,5 +17,6 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     line (debug (math.max (math.pow 2 70) (math.pow 3 50))) term
     line (debug (math.pow 2 62) ++ " " ++ debug (math.pow 2 63) ++ " " ++ debug (math.pow 2 64)) term
     line (debug (math.pow (-3) 41)) term
+    line (math.min "pear" "apple" ++ " " ++ math.max "pear" "apple") term
     line (debug (math.pow 7 0) ++ " " ++ debug (math.pow 0 5)) term
     Success

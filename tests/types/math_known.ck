@@ -1,5 +1,5 @@
-# `std.math`'s `min`, `max` and `pow` are known to the prover by their
-# definitions.
+# On `Int`s, `std.math`'s `min`, `max` and `pow` are known to the prover
+# by their definitions.
 module math_known
 
 import std.math
