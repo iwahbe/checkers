@@ -15,3 +15,6 @@ export abstract enum Size
 
 export fn size n -> s : n~Nat, s~Size
     Measured n
+
+enum Shape
+    Square side : side~Nat

@@ -1,7 +1,8 @@
 # A name a module declares but doesn't export: the error says so, imported
 # by name, used unqualified or qualified (E0204, E0206, E0221). The module is
-# in this package, so the help says what to change there; for a constructor
-# of an abstract type, that is dropping `abstract`.
+# in this package, so the help says what to change there: for a constructor
+# of an abstract type, dropping `abstract`; for a constructor of a type that
+# isn't exported, exporting the type.
 module private_name
 
 import private.shapes (area, perimeter, Size)
@@ -19,3 +20,5 @@ fn measured -> z : z~Size
 
 fn measured_qualified -> z : z~Size
     s.Measured 3
+
+check s.Square 2 == s.Square 2

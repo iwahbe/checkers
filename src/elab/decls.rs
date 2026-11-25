@@ -403,16 +403,28 @@ impl Elab {
             Some(Sym::Con(c)) => Some(&self.g.tys[self.g.cons[c.0 as usize].ty.0 as usize]),
             _ => None,
         };
-        let abstract_ty = ctor_ty
-            .filter(|t| t.is_abstract && self.modules[module].exported_types.contains(&*t.name))
-            .map(|t| t.name.to_string());
+        let ty_exported = |t: &TyInfo| self.modules[module].exported_types.contains(&*t.name);
+        let abstract_ty = ctor_ty.filter(|t| t.is_abstract && ty_exported(t)).map(|t| t.name.to_string());
+        // A constructor of a type that isn't exported, named apart from it
+        // (a record's constructor shares its type's name).
+        let private_ty = ctor_ty.filter(|t| !ty_exported(t) && *t.name != *name);
         match (same_package, abstract_ty) {
             (true, Some(ty)) => d.with_help(format!(
                 "`{ty}` is `export abstract` in `{module}`, so its constructors are private; drop `abstract` there to use them here"
             )),
-            (true, None) => {
-                d.with_help(format!("`{module}` declares `{name}` but doesn't export it; mark it `export` there to use it here"))
-            }
+            (true, None) => match private_ty {
+                Some(t) if t.is_abstract => d.with_help(format!(
+                    "`{module}` declares `{}` but doesn't export it; mark it `export` without `abstract` there to use its constructor `{name}` here",
+                    t.name
+                )),
+                Some(t) => d.with_help(format!(
+                    "`{module}` declares `{}` but doesn't export it; mark it `export` there to use its constructor `{name}` here",
+                    t.name
+                )),
+                None => d.with_help(format!(
+                    "`{module}` declares `{name}` but doesn't export it; mark it `export` there to use it here"
+                )),
+            },
             (false, Some(ty)) => d.with_note(format!("`{ty}` is abstract: its values come only from `{module}`'s functions")),
             (false, None) => d.with_note(format!("`{name}` is private to `{module}`")),
         }
