@@ -117,7 +117,7 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0352` | a constructor field without a type |
 | `E0353` | a constructor's constraint gives a type to a name that isn't its field |
 | `E0354` | a type occurring negatively in its own constructors, or a recursive type as the argument of a type constructor parameter |
-| `E0355` | a constraint gives a type to a name that isn't a parameter or the result |
+| `E0355` | a constraint gives a type to a name that isn't a parameter or the result (a type's header: one of its parameters) |
 | `E0356` | `__builtin` outside the standard library |
 | `E0357` | a lemma's `let` binding more than a name |
 | `E0358` | `own` on a type that can't be a resource |
