@@ -2815,9 +2815,12 @@ impl<'a> Builder<'a> {
                 let (app, _) = self.term(&inner, &body)?;
                 if !self.in_def {
                     let has_post = self.e.specs.get(&d).is_some_and(|s| s.preds.iter().any(|p| p.is_post));
-                    if has_post && self.post_seen.insert(app.clone()) {
+                    // What the result's type says of it: a class's type's
+                    // predicates (#176), of the result or of its parts.
+                    let parts = if self.post_seen.contains(&app) { Vec::new() } else { self.part_terms(&post_env, &t, &app, &rs) };
+                    if (has_post || !parts.is_empty()) && self.post_seen.insert(app.clone()) {
                         post_env.push(Ent::Term(app.clone(), rs.clone()));
-                        self.posts.push(PostUse { def: d, env: post_env, nat: false, parts: Vec::new() });
+                        self.posts.push(PostUse { def: d, env: post_env, nat: false, parts });
                     }
                 }
                 return Ok((app, rs));
