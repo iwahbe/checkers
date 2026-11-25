@@ -1087,7 +1087,9 @@ fn first_unfit sig first ds i -> r : sig~Sig, first~Nat, ds~List Datatype, i~Nat
 export fn check_command sig c -> r : sig~Sig, c~Command, r~Result Unit Problem
     match c
         DeclareSort _       -> Ok ()
-        DeclareDatatypes ds -> check_group (extend sig c) (len sig.datatypes) ds
+        DeclareDatatypes ds ->
+            let _ = try check_datatypes (extend sig c) ds
+            check_values (extend sig c) (len sig.datatypes) ds
         DeclareFun f        ->
             match f.kind
                 Constant if f.params != [] -> Err (ConstantParams f)
@@ -1472,6 +1474,155 @@ export lemma axioms_well_sorted c : c~Context
     proof
         have axioms_checked empty_sig c.commands
         have axioms_ok_sig c (axioms c)
+
+# ── Definitions ──────────────────────────────────────────────────────────────
+
+# Whether `d` is the `n`-th function of `c`, and its body has its result
+# sort in `c` with its parameters bound.
+export fn def_ok c n d -> r : c~Context, n~Nat, d~Def, r~Bool
+    def_in_sig c.sig n d
+
+# Whether each of `ds` is a definition of `c` in that sense.
+export fn defs_ok_in c ds -> r : c~Context, ds~List (Nat, Def), r~Bool
+    match ds
+        []             -> True
+        (n, d) :: rest -> def_ok c n d and defs_ok_in c rest
+
+fn def_in_sig sig n d -> r : sig~Sig, n~Nat, d~Def, r~Bool
+    n < len sig.funs and sig.funs[n] == def_fun d and check_term sig (binder_env d.params) d.body d.result == Ok ()
+
+fn defs_in_sig sig ds -> r : sig~Sig, ds~List (Nat, Def), r~Bool
+    match ds
+        []             -> True
+        (n, d) :: rest -> def_in_sig sig n d and defs_in_sig sig rest
+
+lemma defs_in_sig_append sig xs ys : sig~Sig, xs~List (Nat, Def), ys~List (Nat, Def), defs_in_sig sig xs,
+                                     defs_in_sig sig ys
+    ensures defs_in_sig sig (xs ++ ys)
+    proof
+        match xs
+            []        -> auto
+            _ :: rest -> have defs_in_sig_append sig rest ys
+
+# A definition of `sig` stays one when a command declares more.
+lemma def_in_sig_extend sig cmd n d : sig~Sig, cmd~Command, n~Nat, d~Def, def_in_sig sig n d
+    ensures def_in_sig (extend sig cmd) n d
+    proof
+        have sort_of_extend sig cmd (binder_env d.params) d.body d.result
+
+lemma defs_in_sig_extend sig cmd ds : sig~Sig, cmd~Command, ds~List (Nat, Def), defs_in_sig sig ds
+    ensures defs_in_sig (extend sig cmd) ds
+    proof
+        match ds
+            []             -> auto
+            (n, d) :: rest ->
+                have def_in_sig_extend sig cmd n d
+                have defs_in_sig_extend sig cmd rest
+
+lemma defs_in_sig_extend_all sig cmds ds : sig~Sig, cmds~List Command, ds~List (Nat, Def), defs_in_sig sig ds
+    ensures defs_in_sig (extend_all sig cmds) ds
+    proof
+        match cmds
+            []          -> auto
+            cmd :: rest ->
+                have defs_in_sig_extend sig cmd ds
+                have defs_in_sig_extend_all (extend sig cmd) rest ds
+
+# Whether the elements of `fs` from `n` on begin with `xs`.
+fn starts_at fs n xs -> r : fs~Array FunDecl, n~Nat, xs~List FunDecl, r~Bool
+    match xs
+        []        -> True
+        x :: rest -> n < len fs and fs[n] == x and starts_at fs (n + 1) rest
+
+# Putting `x` in front moves every element up by one.
+lemma starts_at_cons x xs k ys : x~FunDecl, xs~List FunDecl, k~Nat, ys~List FunDecl, starts_at (array.from_list xs) k ys
+    ensures starts_at (array.from_list (x :: xs)) (k + 1) ys
+    proof
+        match ys
+            []        -> auto
+            _ :: rest ->
+                have array.from_list_cons x xs (k + 1)
+                have starts_at_cons x xs (k + 1) rest
+
+lemma starts_at_from_list xs : xs~List FunDecl
+    ensures starts_at (array.from_list xs) 0 xs
+    proof
+        match xs
+            []        -> auto
+            x :: rest ->
+                have array.from_list_cons x rest 0
+                have starts_at_from_list rest
+                have starts_at_cons x rest 0 rest
+
+# Elements after a prefix are those of the second array, moved up by its
+# length.
+lemma starts_at_append a b k ys : a~Array FunDecl, b~Array FunDecl, k~Nat, ys~List FunDecl, starts_at b k ys
+    ensures starts_at (a ++ b) (len a + k) ys
+    proof
+        match ys
+            []        -> auto
+            _ :: rest -> have starts_at_append a b (k + 1) rest
+
+# The definitions `ds`, numbered from `n`, whose bodies were checked in
+# `sig`, where the functions from `n` on are theirs.
+lemma numbered_in_sig sig n ds : sig~Sig, n~Nat, ds~List Def, check_bodies sig ds == Ok (),
+                                 starts_at sig.funs n (def_funs ds)
+    ensures defs_in_sig sig (numbered n ds)
+    proof
+        match ds
+            []        -> auto
+            d :: rest ->
+                have check_term sig (binder_env d.params) d.body d.result == Ok ()
+                have numbered_in_sig sig (n + 1) rest
+
+# How many functions a definition or a declaration adds.
+lemma funs_define sig single ds : sig~Sig, single~Bool, ds~List Def
+    ensures len (extend sig (DefineFuns single ds)).funs == len sig.funs + list.length ds
+    proof
+        have list.length_map def_fun ds
+        have len (array.from_list (def_funs ds)) == list.length (def_funs ds)
+
+lemma funs_declare sig f : sig~Sig, f~FunDecl
+    ensures len (extend sig (DeclareFun f)).funs == len sig.funs + 1
+    proof
+        have len (array.from_list [f]) == 1
+
+lemma defs_checked sig cmds : sig~Sig, cmds~List Command, check_all sig cmds == Ok ()
+    ensures defs_in_sig (extend_all sig cmds) (defs_in (len sig.funs) cmds)
+    proof
+        match cmds
+            []          -> auto
+            cmd :: rest ->
+                have check_command sig cmd == Ok ()
+                have defs_checked (extend sig cmd) rest
+                match cmd
+                    DefineFuns single ds ->
+                        let big = extend sig cmd
+                        have funs_define sig single ds
+                        have check_bodies big ds == Ok ()
+                        have starts_at_from_list (def_funs ds)
+                        have starts_at_append sig.funs (array.from_list (def_funs ds)) 0 (def_funs ds)
+                        have numbered_in_sig big (len sig.funs) ds
+                        have defs_in_sig_extend_all big rest (numbered (len sig.funs) ds)
+                        let later = defs_in (len sig.funs + list.length ds) rest
+                        have defs_in_sig_append (extend_all big rest) (numbered (len sig.funs) ds) later
+                    DeclareFun f         -> have funs_declare sig f
+                    _                    -> have len (extend sig cmd).funs == len sig.funs
+
+lemma defs_ok_sig c ds : c~Context, ds~List (Nat, Def), defs_in_sig c.sig ds
+    ensures defs_ok_in c ds
+    proof
+        match ds
+            []        -> auto
+            _ :: rest -> have defs_ok_sig c rest
+
+# Every definition of a context is its function's, by number, and its body
+# has its result sort in it.
+export lemma defs_well_sorted c : c~Context
+    ensures defs_ok_in c (defs c)
+    proof
+        have defs_checked empty_sig c.commands
+        have defs_ok_sig c (defs c)
 
 # ── What writing a context needs ─────────────────────────────────────────────
 # Every number in a well-formed context names a declaration, and every
@@ -1917,20 +2068,6 @@ lemma check_patterns_ok sig env ps : sig~Sig, env~List Sort, ps~List (List Term)
                         have check_patterns_ok sig env rest
                     Err _ -> auto
 
-# The datatypes `ds` of `big`, numbered from `first`: well-formed, each
-# with a value, and in no array's index in their group.
-fn check_group big first ds -> r : big~Sig, first~Nat, ds~List Datatype, r~Result Unit Problem
-    let _ = try check_datatypes big ds
-    check_values big first ds
-
-# A group that checks has datatypes that check.
-lemma group_checked big first ds : big~Sig, first~Nat, ds~List Datatype, check_group big first ds == Ok ()
-    ensures check_datatypes big ds == Ok ()
-    proof
-        match check_datatypes big ds
-            Ok _  -> auto
-            Err _ -> auto
-
 lemma checked_command_ok sig cmd : sig~Sig, cmd~Command, check_command sig cmd == Ok ()
     ensures command_ok (extend sig cmd) cmd
     proof
@@ -1943,7 +2080,6 @@ lemma checked_command_ok sig cmd : sig~Sig, cmd~Command, check_command sig cmd =
         match cmd
             DeclareSort _       -> auto
             DeclareDatatypes ds ->
-                have group_checked (extend sig cmd) (len sig.datatypes) ds
                 have check_datatypes_ok (extend sig cmd) ds
             DeclareFun f        ->
                 have check_sorts_ok sig 0 f.params
