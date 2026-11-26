@@ -160,12 +160,12 @@ fn check_peak_kb(dir: &Path, name: &str, n: usize) -> u64 {
 /// Code generation keeps memory in proportion to the function: Cranelift's
 /// SSA builder, given a variable per `let`, keeps a map per variable as long
 /// as the function's block count, n² for n additions. 4,000, 8,000 and
-/// 16,000 operators peak at 242–256 MB, 412–416 MB and 732–737 MB, and with a
-/// variable per `let` at 372–376 MB, 1,164 MB and 4,246–4,247 MB. A fixed
-/// part cancels out of the increments: linear memory adds twice as much for
-/// the second 8,000 operators as for the 4,000 before them, n² four times.
-/// The second may add at most three times the first (1.83 to 2.04 over 20
-/// runs, 3.89 to 3.91 with a variable per `let`).
+/// 16,000 operators peak at 242–256 MB, 412–416 MB and 732–737 MB, and with
+/// a variable per `let` at 372–376 MB, 1,160–1,164 MB and 4,243–4,247 MB.
+/// A fixed part cancels out of the increments: linear memory adds twice as
+/// much for the second 8,000 operators as for the 4,000 before them, n² four
+/// times. The second may add at most three times the first (1.83 to 2.04
+/// over 20 runs, 3.89 to 3.93 with a variable per `let`).
 #[cfg(target_os = "linux")]
 #[test]
 fn additions_compile_in_linear_memory() {
