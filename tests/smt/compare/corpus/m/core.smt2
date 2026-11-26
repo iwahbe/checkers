@@ -1,6 +1,6 @@
 (set-option :produce-unsat-cores true)
 (set-option :produce-models true)
-(set-option :rlimit 1000)
+(set-option :reproducible-resource-limit 1000)
 (set-logic ALL)
 (declare-const x Int)
 (assert (! (> x 0) :named |fact.0|))

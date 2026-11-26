@@ -1,6 +1,6 @@
 ; Every construct of the subset, read and written back.
 (set-option :produce-models true)
-(set-option :rlimit 6000000)
+(set-option :reproducible-resource-limit 6000000)
 (set-logic ALL)
 (declare-sort |a#0| 0)
 (declare-sort |Box| 1)

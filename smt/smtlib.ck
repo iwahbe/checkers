@@ -776,10 +776,12 @@ export fn parse src -> r : src~Bytes, r~Result Query (Error src)
 fn setup src es acc -> r : src~Bytes, es~List (SExpr src), acc~List Opt, r~Result Query (Error src)
     match es
         Node [Leaf (Symbol c False) _, Leaf (Keyword k) kp, Leaf v _] _ :: rest if c == b"set-option" ->
-            if option_ok k v
-                setup src rest (Opt k v :: acc)
-            else
+            if not (option_ok k v)
                 Err (Error kp OPTIONS)
+            else if list.contains (list.map (\o -> o.key) acc) k
+                Err (Error kp (b"`:" ++ k ++ b"` is set twice: each option once is in the subset `ckc` writes"))
+            else
+                setup src rest (Opt k v :: acc)
         Node [Leaf (Symbol c False) _, Leaf (Symbol l _) lp] _ :: rest if c == b"set-logic" ->
             if l == b"ALL"
                 body src rest (list.reverse acc) l term.empty None None
@@ -790,14 +792,14 @@ fn setup src es acc -> r : src~Bytes, es~List (SExpr src), acc~List Opt, r~Resul
         []     ->
             Err (Error (len src) b"expected `(set-logic NAME)`")
 
-let OPTIONS = b"only `:produce-models true`, `:produce-unsat-cores true`, and `:rlimit N` and `:timeout N` with `N` below 2^32, are options in the subset `ckc` writes"
+let OPTIONS = b"only `:produce-models true`, `:produce-unsat-cores true`, and `:reproducible-resource-limit N` and `:timeout N` with `N` below 2^32, are options in the subset `ckc` writes"
 
 # Whether `(set-option :k v)` is one of the options `ckc` writes.
 fn option_ok k v -> r : k~Bytes, v~Atom, r~Bool
     match v
         Symbol t False -> (k == b"produce-models" or k == b"produce-unsat-cores") and t == b"true"
-        # Z3 takes these as unsigned 32-bit numbers.
-        Numeral n      -> (k == b"rlimit" or k == b"timeout") and n < 4294967296
+        # Z3 (5.3.3) takes these as unsigned 32-bit numbers (measured).
+        Numeral n      -> (k == b"reproducible-resource-limit" or k == b"timeout") and n < 4294967296
         _              -> False
 
 # The commands up to `(check-sat)`. The last `(assert (not …))` is held

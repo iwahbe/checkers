@@ -1,7 +1,7 @@
 ; A binder may hide an outer binder, as in Z3; the largest numbers options
 ; take; patterns that apply a constructor, a selector, a tester, `select`
 ; and a declared function, together mentioning every variable.
-(set-option :rlimit 4294967295)
+(set-option :reproducible-resource-limit 4294967295)
 (set-option :timeout 4294967295)
 (set-logic ALL)
 (declare-datatypes ((D 0)) (((K (fd Int)) (L))))

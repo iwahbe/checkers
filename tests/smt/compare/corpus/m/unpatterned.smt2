@@ -1,5 +1,5 @@
 (set-option :produce-models true)
-(set-option :rlimit 1000)
+(set-option :reproducible-resource-limit 1000)
 (set-logic ALL)
 (declare-const x Int)
 (assert (forall ((y Int)) (> y x)))
