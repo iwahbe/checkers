@@ -63,6 +63,10 @@ debug = false
 # debug build's check time (11/15/2026).
 [profile.dev.package.cranelift-codegen]
 opt-level = 3
+# Cranelift's internal debug assertions are off: one of them walks each
+# block's dominators, n² for a function n blocks deep (a chain of n `+`).
+# Its IR verifier still runs, and every other crate keeps its assertions.
+debug-assertions = false
 [profile.dev.package.cranelift-frontend]
 opt-level = 3
 [profile.dev.package.cranelift-bforest]

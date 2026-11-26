@@ -3,12 +3,9 @@
 //! it returns are new.
 //!
 //! A call can return only cowns it made and cowns it can reach: there are
-//! no globals, and making a cown needs a `Sched`. So of `let x = f a…`, each
-//! cown in `x` of a type no argument can hold differs from every cown of
-//! that type in scope. A call that can reach a `Sched` may make a cown, so
-//! two such calls with the same arguments can return different ones: its
-//! local is not defined as the call for the prover, only described by the
-//! callee's postconditions and these facts.
+//! no globals, and making a cown needs a `Sched`. So each cown in the value
+//! of a call with effects (`effects.rs`), of a type no argument can hold,
+//! differs from every cown of that type in scope.
 
 use super::*;
 
@@ -39,16 +36,6 @@ pub struct PendingDistinct {
     held: Vec<HeldCown>,
 }
 
-/// A call that may make a cown, named by a `let` or a `match`.
-pub(super) struct NewCowns {
-    /// The cowns in its result of types it can't reach, with their
-    /// content types.
-    new: Vec<(Val, Val)>,
-    /// The function called and its arguments' values, for its
-    /// postconditions.
-    callee: (DefId, Vec<Val>),
-}
-
 impl Elab {
     /// Whether types `a` and `b` differ for every instantiation of the type
     /// variables and unknowns in them.
@@ -72,23 +59,24 @@ impl Elab {
 
     /// Whether a value of type `ty` can hold a value of a type `hit`
     /// accepts: as itself, a part, a field, an element or a cown's
-    /// contents. A function, a type variable or an unknown can hold any.
-    fn can_hold(&self, lvl: usize, ty: &Val, hit: &dyn Fn(&Elab, &Val) -> bool, depth: usize, seen: &mut Vec<(TyId, Vec<Tm>)>) -> bool {
+    /// contents. What a function, a type variable or an unknown can hold
+    /// is `unknown`.
+    pub(super) fn can_hold(&self, lvl: usize, ty: &Val, hit: &dyn Fn(&Elab, &Val) -> bool, unknown: bool, depth: usize, seen: &mut Vec<(TyId, Vec<Tm>)>) -> bool {
         if depth > 32 {
-            return true;
+            return unknown;
         }
         let t = self.force(ty);
         if hit(self, &t) {
             return true;
         }
         match t {
-            Val::Pi(..) | Val::Error => true,
-            Val::TupleTy(ts) => ts.iter().any(|t| self.can_hold(lvl, t, hit, depth + 1, seen)),
+            Val::Pi(..) | Val::Error => unknown,
+            Val::TupleTy(ts) => ts.iter().any(|t| self.can_hold(lvl, t, hit, unknown, depth + 1, seen)),
             Val::TyCon(id, args) => {
                 let ctors = self.g.tys[id.0 as usize].ctors.clone();
                 if ctors.is_empty() {
                     // A built-in type: what its type arguments can hold.
-                    return args.iter().any(|a| self.can_hold(lvl, a, hit, depth + 1, seen));
+                    return args.iter().any(|a| self.can_hold(lvl, a, hit, unknown, depth + 1, seen));
                 }
                 let key: Vec<Tm> = args.iter().map(|a| quote(&self.g, lvl, a)).collect();
                 if seen.iter().any(|(i, k)| *i == id && k.len() == key.len() && k.iter().zip(&key).all(|(a, b)| tm_eq(a, b))) {
@@ -104,7 +92,7 @@ impl Elab {
                         let mut env = args.to_vec();
                         env.extend(std::iter::repeat_n(Val::Error, i));
                         let fty = eval(&self.g, &Rc::new(env), &f.3);
-                        self.can_hold(lvl, &fty, hit, depth + 1, seen)
+                        self.can_hold(lvl, &fty, hit, unknown, depth + 1, seen)
                     })
                 });
                 seen.pop();
@@ -112,7 +100,7 @@ impl Elab {
             }
             // An unknown that only a number can solve (a literal's type).
             Val::Neutral(Head::Meta(m), _) if self.numeric_meta(m) => false,
-            Val::Neutral(..) => true,
+            Val::Neutral(..) => unknown,
             _ => false,
         }
     }
@@ -147,7 +135,7 @@ impl Elab {
 
     /// Whether a value of type `ty` can reach a cown holding a `u`.
     fn reaches_cown(&self, lvl: usize, ty: &Val, u: &Val) -> bool {
-        self.can_hold(lvl, ty, &|e: &Elab, t: &Val| e.is_cown(t).is_some_and(|w| !e.types_apart(&w, u)), 0, &mut Vec::new())
+        self.can_hold(lvl, ty, &|e: &Elab, t: &Val| e.is_cown(t).is_some_and(|w| !e.types_apart(&w, u)), true, 0, &mut Vec::new())
     }
 
     /// The cowns, and lists of cowns, in value `v` of type `ty`: itself, the
@@ -256,58 +244,13 @@ impl Elab {
         self.cur_fn = saved;
     }
 
-    /// Bind `name` to `t`, of type `ty` and value `v`: a `let`'s local or a
-    /// `match`'s scrutinee. Where `t` is a call that may make a cown and its
-    /// result can hold one, the local isn't the call to the prover (§7.1).
-    pub(super) fn define_value(&mut self, cx: &mut Cx, name: &str, t: &Tm, ty: Val, v: Val, mult: Mult) -> usize {
-        match self.new_cowns(cx, t, &ty) {
-            Some(nc) => {
-                let l = cx.bind(name, ty, mult);
-                self.assume_new_cowns(cx, l, nc);
-                l
-            }
-            None => cx.define(name, ty, v, mult),
-        }
-    }
-
-    /// `t` (of type `ty`), the value of a `let` or a `match`, as a call
-    /// that may make a cown (it can reach a `Sched`) whose result holds
-    /// cowns of a type it can't reach: those cowns, in the local to be
-    /// bound next. A call whose result holds no such cown is left a
-    /// function of its arguments, as every other call is.
-    fn new_cowns(&mut self, cx: &Cx, t: &Tm, ty: &Val) -> Option<NewCowns> {
-        if self.in_spec > 0 || self.in_proof > 0 || matches!(self.force(ty), Val::Pi(..)) {
-            return None;
-        }
-        if !matches!(t, Tm::App(..) | Tm::Def(_)) || !matches!(t.head(), Tm::Def(_)) {
-            return None;
-        }
+    /// The facts about `v`, the value of a call with effects of type `ty`
+    /// given values of types `given` (§7.1): each cown in it of a type no
+    /// value given can reach differs from every cown of its type in scope.
+    pub(super) fn assume_new_cowns(&mut self, cx: &mut Cx, v: &Val, ty: &Val, given: &[Val]) {
         let lvl = cx.lvl();
         let mut mine = Vec::new();
-        self.held(&Val::var(lvl), ty, false, 0, &mut mine);
-        if mine.is_empty() {
-            return None;
-        }
-        let t = crate::core::zonk_metas(&self.g, lvl, t);
-        let (h, args) = t.spine_cloned();
-        let Tm::Def(d) = h else { return None };
-        // The explicit arguments' types: implicit ones are types and
-        // instances, which hold no cowns. (A local function called may
-        // reach every cown, so its result is never new.)
-        let mut fty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[d.0 as usize].ty);
-        let mut given = Vec::new();
-        let vals: Vec<Val> = args.iter().map(|a| self.eval(cx, a)).collect();
-        for v in &vals {
-            let Val::Pi(_, _, icit, dom, clo) = self.force(&fty) else { return None };
-            if icit == Icit::Expl {
-                given.push((*dom).clone());
-            }
-            fty = apply_closure(&self.g, &clo, v.clone());
-        }
-        let sched = self.g.well_known.sched;
-        if !given.iter().any(|g| self.can_hold(lvl, g, &|_: &Elab, t: &Val| matches!(t, Val::TyCon(id, _) if Some(*id) == sched), 0, &mut Vec::new())) {
-            return None;
-        }
+        self.held(v, ty, false, 0, &mut mine);
         let new: Vec<(Val, Val)> = mine
             .into_iter()
             .filter_map(|m| match m {
@@ -315,27 +258,11 @@ impl Elab {
                 _ => None,
             })
             .collect();
-        (!new.is_empty()).then_some(NewCowns { new, callee: (*d, vals) })
-    }
-
-    /// The facts about local `l`, a call's result holding new cowns (`nc`):
-    /// the callee's postconditions, and each new cown differs from every
-    /// cown of its type in scope.
-    fn assume_new_cowns(&mut self, cx: &mut Cx, l: usize, nc: NewCowns) {
-        let (d, args) = &nc.callee;
-        if let Some(spec) = self.specs.get(d).cloned() {
-            if args.len() >= spec.n_binders {
-                let mut env: Vec<Val> = args[..spec.n_binders].to_vec();
-                env.push(Val::var(l));
-                for p in spec.preds.iter().filter(|p| p.is_post) {
-                    let f = self.inst_pred(p, env.clone());
-                    cx.assume(f);
-                }
-            }
+        if new.is_empty() {
+            return;
         }
-        let lvl = cx.lvl();
         let mut scope = Vec::new();
-        for k in 0..l {
+        for k in 0..lvl {
             if matches!(self.force(&cx.locals[k].ty), Val::Univ(_) | Val::Pi(..)) {
                 continue;
             }
@@ -343,7 +270,7 @@ impl Elab {
         }
         let contains = self.g.defs.iter().position(|d| &*d.module == "std.list" && &*d.name == "contains").map(|i| DefId(i as u32));
         let mut seen: Vec<Tm> = Vec::new();
-        for (x, u) in &nc.new {
+        for (x, u) in &new {
             for s in &scope {
                 let fact = match s {
                     Held::Cown(k, w) if self.one_cown_type(lvl, u, w) => Self::prim_val(Prim::Ne, vec![x.clone(), k.clone()]),
