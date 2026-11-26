@@ -28,4 +28,11 @@ error[E0241]: `Nil` is a constructor of `List`, but the value being matched has 
    |         ^^ expected a `Box` pattern
    = help: `[]` and `x :: rest` take apart a list, or a value of a type with a `Seq` instance; `Box` has none
 
-seq_patterns_errors.ck: 4 errors, 0 warnings
+error[E0241]: `Cons` is a constructor of `List`, but the value being matched has type `Box`
+  --> seq_patterns_errors.ck:27:9
+   |
+27 |         _ :: _ -> 1
+   |         ^^^^^^ expected a `Box` pattern
+   = help: `[]` and `x :: rest` take apart a list, or a value of a type with a `Seq` instance; `Box` has none
+
+seq_patterns_errors.ck: 5 errors, 0 warnings

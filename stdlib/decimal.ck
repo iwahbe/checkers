@@ -370,9 +370,9 @@ lemma fraction_point q r f neg post : q~Int, r~Nat, f~Nat, 0 < f, r < math.pow 1
         == exponent_part post (q * math.pow 10 f + r) (0 - f) neg
     proof
         let w = (places r f).bytes
-        have digits_places r f q 0 post
         have array.uncons_slice (b"." ++ w ++ post)
         have array.slice_append b"." (w ++ post) b""
+        have digits_places r f q 0 post
 
 # `digits` reads back what `places` writes.
 lemma digits_places r f m n post : r~Nat, f~Nat, r < math.pow 10 f, m~Int, n~Nat, post~Bytes,
