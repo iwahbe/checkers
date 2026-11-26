@@ -2341,6 +2341,13 @@ impl Elab {
                     self.cur_fn = Some(*did);
                     self.module_fns.push(*did);
                     self.assume_pres(&mut sig);
+                    // A class's type's base type at an instance (#360).
+                    if let Some(((m, c), k, x, own)) = self.class_type_bases_at.get(&name.name).cloned() {
+                        if !self.class_type_base_holds(&sig.cx, &name.name, (&m, &c), k, &x, own, ensures.span) || own {
+                            self.cur_fn = None;
+                            continue;
+                        }
+                    }
                     self.lemma_lets(&mut sig.cx, lets);
                     self.forall_ok += 1;
                     let ens = self.elab_pred(&mut sig.cx, ensures, false);
@@ -2399,9 +2406,16 @@ impl Elab {
     /// `have` may use a lemma declared later.
     fn phase_lemma_statements(&mut self, m: &ast::Module, ids: &[Option<Sym>], sigs: &mut HashMap<usize, Sig>) {
         for (k, (d, id)) in m.decls.iter().zip(ids).enumerate() {
-            let DeclKind::Lemma { lets, ensures, decreasing, proof, .. } = &d.kind else { continue };
+            let DeclKind::Lemma { name, lets, ensures, decreasing, proof, .. } = &d.kind else { continue };
             let Some(Sym::Def(did)) = id else { continue };
             let Some(sig) = sigs.get(&k) else { continue };
+            // A class's type's predicate at an instance whose type isn't its
+            // base type (#360): reported by the base's check, not stated.
+            if let Some(((m, c), j, x, _)) = self.class_type_bases_at.get(&name.name).cloned() {
+                if !self.class_type_base_holds(&sig.cx, &name.name, (&m, &c), j, &x, false, ensures.span) {
+                    continue;
+                }
+            }
             // An axiom (D56) is known as one before any proof uses it, so a
             // use before its declaration is in the ledger too (#245).
             if self.stdlib_mode && proof.as_ref().is_some_and(is_builtin) {

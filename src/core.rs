@@ -359,6 +359,9 @@ pub struct Globals {
     /// Each type's value parameters that its fields' types are computed
     /// from (#170), once worked out (`value_params_needed`).
     pub value_params: RefCell<HashMap<TyId, std::collections::BTreeSet<usize>>>,
+    /// The base types of classes' types that have one (#360), by their
+    /// field of the dictionary: closed types.
+    pub type_bases: HashMap<(ConId, usize), Tm>,
 }
 
 #[derive(Default, Clone)]
@@ -419,6 +422,7 @@ impl Globals {
             well_known: WellKnown::default(),
             postponed: RefCell::new(Vec::new()),
             value_params: RefCell::new(HashMap::new()),
+            type_bases: HashMap::new(),
         }
     }
 
@@ -1578,7 +1582,28 @@ pub fn unify(g: &Globals, l: usize, a: &Val, b: &Val) -> Result<(), UnifyError> 
     if let Some(b2) = unfold(g, &b) {
         return unify(g, l, &a, &b2);
     }
+    // A class's type with a base type, at a dictionary that is a variable
+    // (#360), is a subtype of its base: compared as it, here, up to
+    // refinement; which way a value may go is the refinements' check.
+    if let Some(a2) = class_type_base(g, &a) {
+        return unify(g, l, &a2, &b);
+    }
+    if let Some(b2) = class_type_base(g, &b) {
+        return unify(g, l, &a, &b2);
+    }
     r
+}
+
+/// The base type of a class's type read from a dictionary that is a
+/// variable (`Encoding.Unit s` in generic code, #360), if it has one.
+pub fn class_type_base(g: &Globals, v: &Val) -> Option<Val> {
+    if g.type_bases.is_empty() {
+        return None;
+    }
+    let Val::Neutral(Head::Var(_), sp) = force(g, v.clone()) else { return None };
+    let Some(Elim::Field(c, i)) = sp.last() else { return None };
+    let b = g.type_bases.get(&(*c, *i))?;
+    Some(eval(g, &Rc::new(Vec::new()), b))
 }
 
 fn unify_whnf(g: &Globals, l: usize, a: &Val, b: &Val) -> Result<(), UnifyError> {

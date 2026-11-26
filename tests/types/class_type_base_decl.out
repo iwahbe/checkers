@@ -1,0 +1,15 @@
+error[E0370]: `Unit` has one base type
+  --> class_type_base_decl.ck:11:26
+   |
+11 |     type Unit : u~Int, u~Nat
+   |                          ^^^ a second base type; the first is `Int`
+   = help: give one type, a refinement alias if the values must be narrower
+
+error[E0370]: the base type of `Unit` can't mention the class's parameter `s`
+  --> class_type_base_decl.ck:15:19
+   |
+15 |     type Unit : u~List s
+   |                   ^^^^^^ the same for every instance
+   = help: every instance's `Unit` is a refinement of the one base type: give a type such as `Int`
+
+class_type_base_decl.ck: 2 errors, 0 warnings

@@ -84,6 +84,10 @@ impl Elab {
         // A value checked against a refinement alias must satisfy it (D71),
         // unless the call it is passed to, or the function returning it,
         // already checks that alias, or its branches did.
+        // A class's type with a base type (#360): only its own values.
+        if !covered && !compound && !matches!(t, Tm::Error) {
+            self.check_based(cx, expected, inferred.as_ref(), e.span);
+        }
         if !covered && !returned && !compound && !matches!(t, Tm::Error) {
             if let Some((d, args)) = self.refined_alias(expected) {
                 let already = inferred.as_ref().and_then(|ty| self.refined_alias(ty)).is_some_and(|(d2, _)| d2 == d);
@@ -1239,6 +1243,11 @@ impl Elab {
             }
             if let Some(g) = self.refined_mismatch(cx, &a.dom, &a.own, a.span) {
                 self.report_gained(cx, &a.dom, &a.own, &g, a.span, "this expression");
+                continue;
+            }
+            // A class's type with a base type (#360): only its own values.
+            if crate::core::class_type_base(&self.g, &a.dom).is_some() {
+                self.check_based(cx, &a.dom, Some(&a.own), a.span);
                 continue;
             }
             // A refinement the value's own type doesn't already give it

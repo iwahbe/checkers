@@ -162,6 +162,33 @@ fn type_preds(constraints: &[Constraint]) -> (Option<&Ident>, Vec<&Expr>) {
     (binder, preds)
 }
 
+/// The base type of a class's type (#360): the type of its predicates'
+/// value other than the type itself (`u~Int`), if one is given that names
+/// none of the class's parameters or types.
+fn type_base<'a>(name: &str, constraints: &'a [Constraint], cparams: &[String], tnames: &[String]) -> Option<&'a Expr> {
+    constraints.iter().find_map(|c| match c {
+        Constraint::Typed { ty, .. } if !matches!(&ty.kind, ExprKind::Con(n) if n == name) => Some(ty),
+        _ => None,
+    })
+    .filter(|ty| class_name_in(ty, cparams, tnames).is_none())
+}
+
+/// The first of a class's parameters or types that `ty` mentions.
+fn class_name_in(ty: &Expr, cparams: &[String], tnames: &[String]) -> Option<String> {
+    let named = std::cell::RefCell::new(None);
+    let see = |names: &[String], n: &str| {
+        if names.iter().any(|p| p == n) {
+            named.borrow_mut().get_or_insert(n.to_string());
+        }
+        None
+    };
+    let see_var = |n: &str, _: Span| see(cparams, n);
+    let see_con = |n: &str, _: Span| see(tnames, n);
+    let nq = |_: &str, _: &str, _: Span| None;
+    Rewrite { var: &see_var, con: &see_con, qualified: &nq }.expr(ty, &[]);
+    named.into_inner()
+}
+
 /// An instance's dictionary's field holding a dictionary for one of its
 /// class's types (#176): found as an implicit argument is.
 pub const FIND_DICT: &str = "$find_dict";
@@ -1082,7 +1109,7 @@ impl Elab {
             }
             match mem {
                 ClassMember::Type { name: t, constraints: tcs, .. } => {
-                    self.class_type_constraints(t, tcs, local, &frw, &mut clause_fields);
+                    self.class_type_constraints(t, tcs, local, &frw, &mut clause_fields, (&pnames, &tnames));
                     type_fields.push(ast::Field {
                         name: ident(&assoc_field_name(&t.name), t.span),
                         mult: ast::Mult::Ghost,
@@ -1337,26 +1364,46 @@ impl Elab {
         local: &HashMap<String, (Vec<String>, Vec<ClassMember>, Span)>,
         frw: &Rewrite,
         clause_fields: &mut Vec<ast::Field>,
+        (cparams, tnames): (&[String], &[String]),
     ) {
-        let mut binders = 0;
+        let mut first: Option<&Ident> = None;
+        let mut base: Option<&Expr> = None;
         for c in cs {
             match c {
                 Constraint::Typed { name, ty, .. } => {
-                    binders += 1;
-                    let own = matches!(&ty.kind, ExprKind::Con(n) if *n == t.name);
-                    if binders > 1 {
+                    if first.is_some_and(|f| f.name != name.name) {
                         self.err(
                             Diagnostic::error("E0370", format!("the predicates on `{}` name one value of it", t.name), name.span)
                                 .with_label("a second name")
                                 .with_help(format!("each predicate is about any one value of `{}`: use the first name", t.name)),
                         );
-                    } else if !own {
-                        self.err(
-                            Diagnostic::error("E0370", format!("`{}` in the predicates on `{}` must have type `{}`", name.name, t.name, t.name), ty.span)
-                                .with_label(format!("expected `{}`", t.name))
-                                .with_help(format!("write `{}~{}`", name.name, t.name)),
-                        );
+                        continue;
                     }
+                    first = Some(name);
+                    // `u~Unit` names a value; any other type is the base type (#360).
+                    if matches!(&ty.kind, ExprKind::Con(n) if *n == t.name) {
+                        continue;
+                    }
+                    if let Some(b) = base {
+                        self.err(
+                            Diagnostic::error("E0370", format!("`{}` has one base type", t.name), ty.span)
+                                .with_label(format!("a second base type; the first is `{}`", self.src_text(b.span)))
+                                .with_help("give one type, a refinement alias if the values must be narrower"),
+                        );
+                        continue;
+                    }
+                    // A base type is one type for every instance: not the
+                    // class's parameters' (each instance's own) or its types.
+                    if let Some(n) = class_name_in(ty, cparams, tnames) {
+                        let what = if cparams.contains(&n) { "parameter" } else { "type" };
+                        self.err(
+                            Diagnostic::error("E0370", format!("the base type of `{}` can't mention the class's {what} `{n}`", t.name), ty.span)
+                                .with_label("the same for every instance")
+                                .with_help(format!("every instance's `{}` is a refinement of the one base type: give a type such as `Int`", t.name)),
+                        );
+                        continue;
+                    }
+                    base = Some(ty);
                 }
                 Constraint::Pred(e) if is_clause_shape(e) => {
                     let ExprKind::App(f, _) = &e.kind else { continue };
@@ -2078,12 +2125,35 @@ impl Elab {
             let at = &given_types.iter().find(|(n, _, _)| *n == tn.name).map(|(_, _, s)| *s).unwrap_or(header);
             let (Some(binder), preds) = type_preds(tcs) else { continue };
             let module = foreign.clone().unwrap_or_else(|| self.cur.clone());
+            // Its base type (#360): the instance's type must be it, up to
+            // refinement, with its refinement; a lemma of no statement of
+            // its own, checked first. Where it fails, the predicates aren't.
+            let tnames = type_names(&all_members);
+            let class_at = match class_tid {
+                Some(t) => (self.class_defs[&t].module.clone(), self.class_defs[&t].name.clone()),
+                None => (self.cur.clone(), class.name.clone()),
+            };
+            let key = tnames
+                .iter()
+                .position(|n| *n == tn.name)
+                .filter(|_| type_base(&tn.name, tcs, &cparams, &tnames).is_some())
+                .map(|k| (class_at, k));
+            let mut checks: Vec<(String, Expr)> = Vec::new();
+            if key.is_some() {
+                checks.push((format!("{text}.{}#base", tn.name), con("True", *at)));
+            }
             for (k, p) in preds.iter().enumerate() {
-                let lname = format!("{text}.{}#{k}", tn.name);
+                checks.push((format!("{text}.{}#{k}", tn.name), (*p).clone()));
+            }
+            for (lname, p) in checks {
+                let p = &p;
                 self.class_type_checks.insert(lname.clone(), (format!("{}.{}", class.name, tn.name), self.src_text(ty.span)));
+                if let Some((cls, k)) = &key {
+                    self.class_type_bases_at.insert(lname.clone(), (cls.clone(), *k, binder.name.clone(), lname.ends_with("#base")));
+                }
                 // The class's predicate, shown at the instance's type.
                 let s = self.synthetic_span(*at);
-                let ptext = self.expr_text_in(&module, p);
+                let ptext = if lname.ends_with("#base") { self.src_text(ty.span) } else { self.expr_text_in(&module, p) };
                 self.text_override.insert((self.cur.clone(), s.start, s.end), ptext);
                 let ens = respan(&trw.expr(&srw.expr(p, std::slice::from_ref(&binder.name)), std::slice::from_ref(&binder.name)), s);
                 let mut cs = ctx_preds.clone();
@@ -2186,6 +2256,7 @@ impl Elab {
                 .collect();
             let def = ClassDef { module: self.cur.clone(), name, params, members, tid, span, clauses };
             self.register_assoc(&def);
+            self.register_type_bases(&def);
             self.class_defs.insert(tid, def);
         }
         for (k, (o, id)) in self.decl_origin.clone().iter().zip(ids).enumerate() {
@@ -2262,13 +2333,21 @@ impl Elab {
                 };
                 cx.bind(&binder.name, ty, Mult::Many);
                 let mut out = Vec::new();
-                self.in_class_type_pred = true;
                 for p in preds {
+                    // Without a base type, an operator on its values is
+                    // E0210: both ways to say it (#360).
+                    let text = self.src_text(p.span);
+                    let via_fn = super::rename_words(&text, &[(binder.name.clone(), format!("code {} {}", c.params.join(" "), binder.name))]);
+                    self.in_class_type_pred = Some(format!(
+                        "`{t}` has no operations of its own: give it a base type, as in `type {t} : {u}~Int, {text}`, or reach its values through one of the class's functions, as in `{via_fn}`",
+                        t = member.name,
+                        u = binder.name,
+                    ));
                     let e = arw.expr(p, std::slice::from_ref(&binder.name));
                     out.push(self.elab_pred(&mut cx, &e, false));
+                    self.solve_deferred();
                 }
-                self.solve_deferred();
-                self.in_class_type_pred = false;
+                self.in_class_type_pred = None;
                 for p in &mut out {
                     p.tm = crate::core::zonk_metas(&self.g, cx.lvl(), &p.tm);
                 }
@@ -2284,6 +2363,71 @@ impl Elab {
                 self.class_type_preds.insert((con, k), out);
             }
         }
+    }
+
+    /// Its types' base types (#360), elaborated: closed, as they name none
+    /// of the class's parameters.
+    fn register_type_bases(&mut self, c: &ClassDef) {
+        let Some(&con) = self.g.tys[c.tid.0 as usize].ctors.first() else { return };
+        let tnames = c.types();
+        for (k, m) in c.members.iter().filter(|m| matches!(m, ClassMember::Type { .. })).enumerate() {
+            let ClassMember::Type { name, constraints, .. } = m else { continue };
+            let Some(base) = type_base(&name.name, constraints, &c.params, &tnames) else { continue };
+            let mut cx = Cx::default();
+            let t = self.elab_type(&mut cx, base);
+            if !matches!(t, Tm::Error) {
+                self.g.type_bases.insert((con, k), t);
+            }
+        }
+    }
+
+    /// At an instance, whether its type for a class's type with a base type
+    /// (#360) is the base, up to refinement (E0201 if not, reported by the
+    /// base's own check, `own`); there, each of the base's predicates must
+    /// hold of every value of it, `x`, a local of `cx` (E0450).
+    #[allow(clippy::too_many_arguments)]
+    pub fn class_type_base_holds(&mut self, cx: &Cx, lemma: &str, (m, c): (&str, &str), k: usize, x: &str, own: bool, span: Span) -> bool {
+        let Some(con) = self.class_defs.values().find(|d| d.module == m && d.name == c).and_then(|d| self.g.tys[d.tid.0 as usize].ctors.first().copied())
+        else {
+            return false;
+        };
+        let Some(b) = self.g.type_bases.get(&(con, k)).cloned() else { return false };
+        let Some(l) = cx.locals.iter().rposition(|loc| loc.name.as_ref() == x) else { return false };
+        let base = self.eval(&Cx::default(), &b);
+        let t = cx.locals[l].ty.clone();
+        let (name, given) = self.class_type_checks.get(lemma).cloned().unwrap_or_default();
+        let short = name.rsplit('.').next().unwrap_or(&name).to_string();
+        if unify(&self.g, cx.lvl(), &base, &t).is_err() {
+            if own {
+                let b = self.show_written(&Cx::default(), &base);
+                self.err(
+                    Diagnostic::error("E0201", format!("`{name}` must be `{b}`, or a refinement of it, but `{given}` is not"), span)
+                        .with_label(format!("`{short}` is `{given}` here"))
+                        .with_help(format!("give `{short}` the type `{b}`, or a refinement of it such as `(n~{b}, …)`")),
+                );
+            }
+            return false;
+        }
+        if !own {
+            return true;
+        }
+        // The base's own refinement (`Nat`'s `n >= 0`), at the value.
+        let peeled = self.peel(&base);
+        if let Some((alias, args)) = self.refined_alias(&peeled) {
+            let preds = self.alias_preds.get(&alias).cloned().unwrap_or_default();
+            let mut names = self.alias_param_names(cx, alias, &args);
+            if let Some(subj) = self.alias_subject.get(&alias) {
+                names.push((subj.to_string(), x.to_string()));
+            }
+            for p in &preds {
+                let mut env = args.clone();
+                env.push(Val::var(l));
+                let goal = self.inst_pred(p, env);
+                let text = super::rename_words(&p.text, &names);
+                self.oblige(cx, span, ObKind::ClassType { name: name.clone(), given: given.clone() }, text, goal, None);
+            }
+        }
+        true
     }
 
     /// A class's types (#133): for each, `C.Name`, the definition
@@ -2959,7 +3103,7 @@ impl Elab {
         let any = !self.g.postponed.borrow().is_empty();
         if any {
             self.g.postponed.borrow_mut().clear();
-            self.waiting.push((lvl, expected.clone(), actual.clone(), span, names.to_vec()));
+            self.waiting.push((lvl, expected.clone(), actual.clone(), span, names.to_vec(), true));
         }
     }
 
@@ -3014,9 +3158,9 @@ impl Elab {
         let strays: Vec<(usize, Val, Val)> = self.g.postponed.borrow_mut().drain(..).collect();
         for (l, a, b) in strays {
             let names = (0..l).map(|k| Name::from(format!("#{k}"))).collect();
-            self.waiting.push((l, a, b, self.name_span, names));
+            self.waiting.push((l, a, b, self.name_span, names, false));
         }
-        for (l, a, b, span, names) in std::mem::take(&mut self.waiting) {
+        for (l, a, b, span, names, directed) in std::mem::take(&mut self.waiting) {
             let r = unify(&self.g, l, &a, &b);
             let again = {
                 let mut p = self.g.postponed.borrow_mut();
@@ -3027,7 +3171,20 @@ impl Elab {
             match r {
                 Ok(()) if again => {
                     if !last {
-                        self.waiting.push((l, a, b, span, names));
+                        self.waiting.push((l, a, b, span, names, directed));
+                    }
+                }
+                // Expected and found: which way a value may go between a
+                // class's type with a base type and others (#360), now
+                // that its dictionary is known.
+                Ok(()) if directed && (self.based_inside(&a, l) || self.based_inside(&b, l)) => {
+                    let mut cx = Cx::default();
+                    for n in &names {
+                        cx.bind(n, Val::Error, Mult::Zero);
+                    }
+                    match self.refined_mismatch(&cx, &a, &b, span) {
+                        Some(g) => self.report_gained(&cx, &a, &b, &g, span, "this expression"),
+                        None => self.check_based(&cx, &a, Some(&b), span),
                     }
                 }
                 Ok(()) => {}
@@ -3035,7 +3192,7 @@ impl Elab {
                 // own, in its members' signatures): compared again at the
                 // end of the module.
                 Err(_) if self.on_pending_dict(&quote(&self.g, l, &a)) || self.on_pending_dict(&quote(&self.g, l, &b)) => {
-                    self.waiting_late.push((l, a, b, span, names));
+                    self.waiting_late.push((l, a, b, span, names, directed));
                 }
                 Err(_) => {
                     let e = show(&self.g, &names, &self.reduce_assoc(l, &quote(&self.g, l, &a)));
