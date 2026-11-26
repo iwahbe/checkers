@@ -20,6 +20,19 @@ pub struct Evaluator<'g> {
 
 impl<'g> Evaluator<'g> {
     pub fn new(g: &'g Globals) -> Evaluator<'g> {
+        let mut ev = Self::plain(g);
+        // The hand-written `Debug` instances (#126), for values shown here.
+        if let Some(ir) = super::lower::show_table(g) {
+            if let Ok(fs) = ev.eval_ir(&ir) {
+                checkers_rt::prog::set_debug(fs);
+            }
+        }
+        ev
+    }
+
+    /// An evaluator for values that are only read back, never shown: no
+    /// `Debug` instances compiled (values known at compile time, §8.9).
+    pub fn plain(g: &'g Globals) -> Evaluator<'g> {
         let module = super::jit_module();
         let mut gen = Gen::new(module, Program::new(g, None), g);
         gen.probe = true;
@@ -28,14 +41,7 @@ impl<'g> Evaluator<'g> {
         let invoke = gen.m.get_finalized_function(gen.invoke);
         let invoke: checkers_rt::prog::Invoke = unsafe { std::mem::transmute(invoke) };
         checkers_rt::prog::install(&super::descriptor(g, &gen.p), invoke);
-        let mut ev = Evaluator { g, gen };
-        // The hand-written `Debug` instances (#126), for values shown here.
-        if let Some(ir) = super::lower::show_table(g) {
-            if let Ok(fs) = ev.eval_ir(&ir) {
-                checkers_rt::prog::set_debug(fs);
-            }
-        }
-        ev
+        Evaluator { g, gen }
     }
 
     /// The value of a closed term: an owned word, or the runtime error.

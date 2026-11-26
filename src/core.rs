@@ -366,8 +366,9 @@ pub struct Globals {
     /// bound is a fact only then, not in a `check` or staging, which run
     /// before proving, nor with `--unverified`.
     pub bounds: HashMap<DefId, Vec<Option<crate::range::Range>>>,
-    /// Constants' values known at compile time (`known_const`), as found.
-    pub known: RefCell<HashMap<DefId, Option<Lit>>>,
+    /// Constants' values known at compile time (§8.9), for code generation:
+    /// set once the program is proved, as `bounds` is (`Elab::known_value`).
+    pub known: RefCell<HashMap<DefId, Lit>>,
 }
 
 #[derive(Default, Clone)]
@@ -954,11 +955,11 @@ pub fn field_type(g: &Globals, c: ConId, k: usize) -> FieldType {
     FieldType::FromFields(t)
 }
 
-/// The literal `v` is known to be at compile time (§8.9, known values): what
-/// the type checker's evaluation reaches, unfolding the definitions visible
-/// where it runs (a sealed function's body isn't, §6) within `DEFAULT_FUEL`
-/// steps of its own. `None` if it reaches no literal: not known, never an
-/// error.
+/// The literal the type checker's evaluation reaches from `v`, unfolding
+/// the definitions it may (not a sealed function's body, §6) within
+/// `DEFAULT_FUEL` steps of its own: the quick way to a value known at
+/// compile time (§8.9; `Elab::known_value` runs the rest). `None` if it
+/// reaches no literal.
 pub fn known_lit(g: &Globals, v: Val) -> Option<Lit> {
     let saved = g.fuel.replace(DEFAULT_FUEL);
     let r = force(g, v);
@@ -969,30 +970,10 @@ pub fn known_lit(g: &Globals, v: Val) -> Option<Lit> {
     }
 }
 
-/// The value of constant `d` (a `let`, not a function) if it is known at
-/// compile time (`known_lit`): code that uses it uses that value.
+/// The value of constant `d` (a `let`) if it is known at compile time:
+/// `Globals::known`, which code generation then uses.
 pub fn known_const(g: &Globals, d: DefId) -> Option<Lit> {
-    let info = g.defs.get(d.0 as usize)?;
-    if info.body.is_none() || info.opaque || matches!(info.ty, Tm::Pi(..)) || is_type_former(&info.ty) {
-        return None;
-    }
-    if let Some(k) = g.known.borrow().get(&d) {
-        return k.clone();
-    }
-    let k = known_lit(g, Val::Neutral(Head::Def(d), Rc::new(Vec::new())));
-    g.known.borrow_mut().insert(d, k.clone());
-    k
-}
-
-/// The literal a closed term is known to be at compile time (`known_lit`).
-pub fn known_tm(g: &Globals, t: &Tm) -> Option<Lit> {
-    if let Tm::Lit(l) = t {
-        return Some(l.clone());
-    }
-    if max_var(t).is_some() {
-        return None;
-    }
-    known_lit(g, eval(g, &Rc::new(Vec::new()), t))
+    g.known.borrow().get(&d).cloned()
 }
 
 pub fn force(g: &Globals, v: Val) -> Val {

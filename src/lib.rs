@@ -1031,6 +1031,20 @@ fn ready_to_run(
     } else {
         // Proved: the bounds signatures give are facts native code may rely on.
         e.g.bounds = std::mem::take(&mut e.bounds);
+        // And constants known at compile time are compiled as their values.
+        let consts: Vec<core::DefId> = (0..e.g.defs.len() as u32)
+            .map(core::DefId)
+            .filter(|d| {
+                let info = &e.g.defs[d.0 as usize];
+                // Numbers: what bounds and code generation use.
+                info.body.is_some() && !info.opaque && !matches!(info.ty, core::Tm::Pi(..)) && e.type_range(&core::eval(&e.g, &std::rc::Rc::new(Vec::new()), &info.ty)).is_some()
+            })
+            .collect();
+        for d in consts {
+            if let Some(l) = e.known_value(&core::Tm::Def(d)) {
+                e.g.known.borrow_mut().insert(d, l);
+            }
+        }
     }
     let exported = e.modules.get(&user).is_some_and(|m| m.exported_values.contains("main"));
     let main = e.g.defs.iter().position(|d| *d.module == user && &*d.name == "main");

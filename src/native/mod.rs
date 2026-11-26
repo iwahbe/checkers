@@ -580,8 +580,9 @@ mod tests {
 
     /// A value known at compile time compiles as the same value written as
     /// a literal (tests/run/known_bounds.ck): as a bound, `a < math.pow 2
-    /// 32` as `a < 4294967296` and `a < LIMIT` as `a < 1000`; in code,
-    /// `LIMIT` as `1000`.
+    /// 32` as `a < 4294967296`, `a < LIMIT` as `a < 1000`, and a sealed
+    /// function's value (`std.array.count`, the program's own
+    /// `limits.power_of_two`) as `256`; in code, `LIMIT` as `1000`.
     #[test]
     fn known_bounds_compile_as_literals() {
         crate::with_big_stack(|| {
@@ -590,6 +591,8 @@ mod tests {
                 assert_eq!(code_of(&code, "by_call"), code_of(&code, "by_literal"), "{triple}");
                 assert_eq!(code_of(&code, "by_name"), code_of(&code, "by_number"), "{triple}");
                 assert_eq!(code_of(&code, "with_name"), code_of(&code, "with_number"), "{triple}");
+                assert_eq!(code_of(&code, "by_std"), code_of(&code, "by_bytes"), "{triple}");
+                assert_eq!(code_of(&code, "by_own"), code_of(&code, "by_bytes"), "{triple}");
             }
         })
     }

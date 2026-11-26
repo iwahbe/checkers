@@ -653,6 +653,10 @@ pub struct Elab {
     /// Functions' bounds from their signatures, for `Globals::bounds` once
     /// the program is proved.
     pub bounds: HashMap<DefId, Vec<Option<crate::range::Range>>>,
+    /// Values known at compile time, by term (`known_value`).
+    pub known_cache: std::cell::RefCell<HashMap<String, Option<Lit>>>,
+    /// Definitions found to run at compile time (`runnable`).
+    pub runnable_defs: std::cell::RefCell<HashSet<DefId>>,
     /// The name a refinement alias binds (`n` in `type Big = n~Int, …`).
     pub alias_subject: HashMap<DefId, Name>,
     /// The result type of a function whose result type isn't written.
@@ -958,6 +962,8 @@ impl Elab {
             ty_cond_defer: None,
             alias_preds: HashMap::new(),
             bounds: HashMap::new(),
+            known_cache: std::cell::RefCell::new(HashMap::new()),
+            runnable_defs: std::cell::RefCell::new(HashSet::new()),
             alias_subject: HashMap::new(),
             result_metas: HashMap::new(),
             arg_of: None,
@@ -2055,7 +2061,7 @@ impl Elab {
                     cx.locals.iter().zip(cx.env.iter()).any(|(x, e)| {
                         crate::core::is_nat(&self.g, &x.ty) && crate::core::tm_eq(&quote(&self.g, cx.lvl(), e), &t)
                     })
-                } || crate::core::known_lit(&self.g, v.clone()).is_some_and(|l| l.is_nonneg_int())
+                } || self.known_in(cx, &v).is_some_and(|l| l.is_nonneg_int())
             }
             _ => false,
         }
