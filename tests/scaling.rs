@@ -215,6 +215,7 @@ fn lets_usage(tag: &str, ty: &str, step: &str) -> [(f64, u64); 3] {
 }
 
 /// The sizes `lets_usage` measures.
+#[cfg(target_os = "linux")]
 const LETS: [usize; 3] = [2000, 4000, 8000];
 
 /// Linear memory and time for `lets_usage`'s measurements.
