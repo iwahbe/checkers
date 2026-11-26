@@ -1,0 +1,4 @@
+-- stdout
+-- stderr
+checkers runtime: stack overflow
+-- exit 70

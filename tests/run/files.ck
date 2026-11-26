@@ -10,10 +10,13 @@ import std.string (debug)
 partial fn print_lines f term : f~File, term~Term
     let (line, f) = files.read_line f
     match line
-        None   -> files.close f
-        Some l ->
-            terminal.print_line ("> " ++ l) term
+        Ok None     -> report (files.close f) term
+        Ok (Some l) ->
+            terminal.print_line ("> " ++ debug l) term
             print_lines f term
+        Err e       ->
+            terminal.print_line ("error: " ++ files.describe e) term
+            report (files.close f) term
 
 fn report r term : r~Result Unit IoError, term~Term
     match r
@@ -26,7 +29,7 @@ export partial fn main args sys -> code : args~List String, sys~System, code~Exi
         Ok out ->
             let (_, out) = files.write_line "alpha" out
             let (_, out) = files.write_line "beta" out
-            files.close out
+            report (files.close out) term
         Err e  -> terminal.print_line (files.describe e) term
     match files.open "lines.tmp" fs
         Ok f  -> print_lines f term

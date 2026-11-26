@@ -111,10 +111,10 @@ other.ck: 1 error, 0 warnings
 
 <span class="kw">export</span> <span class="kw">fn</span> main args sys -&gt; code : args~<span class="ty">List</span> <span class="ty">String</span>, sys~<span class="ty">System</span>, code~<span class="ty">ExitCode</span>
     <span class="kw">match</span> terminal.read_line sys.term
-        <span class="ty">Some</span> l -&gt;
-            terminal.print_line l sys.term
+        <span class="ty">Ok</span> (<span class="ty">Some</span> l) -&gt;
+            terminal.write_bytes l sys.term
             <span class="ty">Success</span>
-        <span class="ty">None</span>   -&gt; <span class="ty">Failure</span> <span class="nu">1</span>
+        _           -&gt; <span class="ty">Failure</span> <span class="nu">1</span>
 </code></pre>
 <pre><code class="language-checkers"><span class="kw">fn</span> only a signature -&gt; r : r~<span class="ty">Nat</span>
 </code></pre>
@@ -211,10 +211,10 @@ import std.terminal
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     match terminal.read_line sys.term
-        Some l ->
-            terminal.print_line l sys.term
+        Ok (Some l) ->
+            terminal.write_bytes l sys.term
             Success
-        None   -> Failure 1
+        _           -> Failure 1
 ```
 
 ```checkers,ignore

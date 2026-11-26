@@ -8,7 +8,7 @@ import std.future (Future)
 
 fn done r : r~Result File IoError
     match r
-        Ok f  -> files.close f
+        Ok f  -> close f
         Err _ -> ()
 
 partial fn never fs sched : fs~Fs, sched~Sched
@@ -37,4 +37,9 @@ partial fn once fs sched : fs~Fs, sched~Sched
     done (future.join a)
     let _ = future.fork sched $ \_ ->
         1 + 1
+    ()
+
+# Close `f`, whatever closing gives.
+fn close f : f~File
+    let _ = files.close f
     ()

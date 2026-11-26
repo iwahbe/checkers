@@ -20,10 +20,10 @@ error[E0401]: `second` holds a resource (`File`), so it must be used exactly onc
    = help: close it, or pass it on
 
 error[E0201]: type mismatch: expected `File`, found `Unit`
-  --> resource_computed.ck:43:17
+  --> resource_computed.ck:43:11
    |
-43 |     files.close first
-   |                 ^^^^^ this expression has type `Unit`
+43 |     close first
+   |           ^^^^^ this expression has type `Unit`
 
 error[E0401]: `e` holds a resource (`Ends a b`), so it must be used exactly once, but `generic` never uses it
   --> resource_computed.ck:46:16

@@ -5,6 +5,7 @@ module stdin_reader
 
 import std.system (System, ExitCode)
 import std.terminal (Term)
+import std.files
 import std.cown (Cown, Sched)
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
@@ -13,8 +14,12 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let b = cown.new 0 sched
     when x = a using sched
         match terminal.read_line term
-            Some l -> terminal.print_line ("got " ++ l) term
-            None   -> terminal.print_line "end of input" term
+            Ok (Some l) ->
+                terminal.write "got " term
+                terminal.write_bytes l term
+                terminal.write "\n" term
+            Ok None     -> terminal.print_line "end of input" term
+            Err e       -> terminal.print_line ("read failed: " ++ files.describe e) term
         x
     when y = b using sched
         terminal.print_line "ping" term

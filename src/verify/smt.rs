@@ -9,6 +9,8 @@
 
 use crate::core::{eval, force, max_var, quote, CaseTm, ConId, DefId, Lit, Mult, Prim, Tm, TyId, Val};
 use crate::elab::{has_meta, Elab, ObLocal, Obligation};
+use super::Sx;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
@@ -208,6 +210,8 @@ struct PostUse {
 /// uninterpreted declaration).
 pub struct Focus {
     others: Vec<String>,
+    /// The copies of functions the group's conditions apply (`definitions`).
+    copies: String,
     group: Vec<(String, String, String, Option<String>)>,
 }
 
@@ -215,7 +219,8 @@ impl Focus {
     /// Reflect the definitions `terms` mention; leave the rest
     /// uninterpreted. `None` if that is all or none of them.
     fn mentioned_in(&self, terms: &str) -> Option<String> {
-        let (on, off): (Vec<_>, Vec<_>) = self.group.iter().partition(|(n, ..)| terms.contains(n.as_str()));
+        let named: HashSet<&str> = symbols(terms).collect();
+        let (on, off): (Vec<_>, Vec<_>) = self.group.iter().partition(|(n, ..)| named.contains(n.trim_matches('|')));
         if on.is_empty() || off.is_empty() {
             return None;
         }
@@ -230,8 +235,240 @@ impl Focus {
         }
         let heads: Vec<&str> = on.iter().map(|g| g.1.as_str()).collect();
         let bodies: Vec<&str> = on.iter().map(|g| g.2.as_str()).collect();
+        out += &self.copies;
         out += &format!("(define-funs-rec ({}) ({}))\n", heads.join(" "), bodies.join(" "));
         Some(out)
+    }
+}
+
+/// Reflected definitions, each its name, `define-funs-rec` head and body, as
+/// Z3 is to be given them: the bodies, and the `define-fun`s to put before
+/// them.
+///
+/// Z3 splits a recursive definition into cases only at an `ite` whose
+/// condition applies no function of a `define-funs-rec` (`splits`), and
+/// unfolds each case at an application only as the search reaches it. A
+/// definition without such an `ite` is one case, which Z3 unfolds wherever the
+/// function is applied, and so at the applications each unfolding makes,
+/// without end: a function recursing over a sequence pattern (a `match` on
+/// `uncons xs`, with `uncons` reflected), or over an `if` on `is_digit c`.
+/// Whether a goal near one was proved then depended on whether Z3 met a
+/// contradiction before its work limit, so on the order of the facts and how
+/// they were written. So in such a definition, a condition that applies only
+/// functions that don't recurse, through any number of calls, applies copies
+/// of them made with `define-fun` instead, which Z3 substitutes where they
+/// are used (`|uncons#cond|`); elsewhere the functions are kept, so that equal
+/// arguments give equal applications at once. A condition applying a
+/// recursive function is left as it is: Z3 can't split there.
+///
+/// `cache` keeps each body as rewritten, for the other queries of the module:
+/// a body is rewritten the same way in every group holding it (a group holds
+/// every definition its members apply).
+fn definitions(group: &[(&str, &str, &str)], cache: Option<&RefCell<Rewritten>>) -> (String, Vec<String>) {
+    let index: HashMap<&str, usize> = group.iter().enumerate().map(|(k, g)| (g.0.trim_matches('|'), k)).collect();
+    let calls: Vec<Vec<usize>> = group
+        .iter()
+        .map(|(name, _, body)| {
+            let named = |s: &[String]| -> Vec<usize> {
+                let mut c: Vec<usize> = s.iter().filter_map(|n| index.get(n.as_str()).copied()).collect();
+                c.sort();
+                c.dedup();
+                c
+            };
+            if let Some(s) = cache.and_then(|c| c.borrow().symbols.get(*name).cloned()) {
+                return named(&s);
+            }
+            let mut s: Vec<String> = symbols(body).map(str::to_string).collect();
+            s.sort();
+            s.dedup();
+            let c = named(&s);
+            if let Some(cache) = cache {
+                cache.borrow_mut().symbols.insert(name.to_string(), Rc::new(s));
+            }
+            c
+        })
+        .collect();
+    let sccs = crate::elab::order::sccs(&calls);
+    let mut recursive = vec![false; group.len()];
+    // Applies no recursive function, through any number of calls.
+    let mut clean = vec![false; group.len()];
+    // Dependencies first.
+    for scc in &sccs {
+        for &k in scc {
+            recursive[k] = scc.len() > 1 || calls[k].contains(&k);
+            clean[k] = !recursive[k] && calls[k].iter().all(|&j| clean[j]);
+        }
+    }
+    let mut used = vec![false; group.len()];
+    let bodies = group
+        .iter()
+        .enumerate()
+        .map(|(k, (name, _, body))| {
+            if !recursive[k] || !calls[k].iter().any(|&j| clean[j]) {
+                return body.to_string();
+            }
+            if let Some(b) = cache.and_then(|c| c.borrow().bodies.get(*name).cloned()) {
+                for n in &b.1 {
+                    if let Some(&j) = index.get(n.as_str()) {
+                        used[j] = true;
+                    }
+                }
+                return b.0;
+            }
+            // Only a definition Z3 would make one case.
+            let mut names = BTreeSet::new();
+            let b = match super::parse_sx(body).pop() {
+                Some(x) if !splits(&x, &index) => super::print_sx(&cond_copies(&x, &index, &clean, &mut names)),
+                _ => body.to_string(),
+            };
+            let (b, names) = (b, names.into_iter().collect::<Vec<String>>());
+            if let Some(c) = cache {
+                c.borrow_mut().bodies.insert(name.to_string(), (b.clone(), names.clone()));
+            }
+            for n in &names {
+                if let Some(&j) = index.get(n.as_str()) {
+                    used[j] = true;
+                }
+            }
+            b
+        })
+        .collect();
+    // The copies the conditions apply, and those they apply.
+    let mut need = vec![false; group.len()];
+    let mut stack: Vec<usize> = (0..group.len()).filter(|&k| used[k]).collect();
+    while let Some(k) = stack.pop() {
+        if !need[k] {
+            need[k] = true;
+            stack.extend(calls[k].iter().copied());
+        }
+    }
+    let mut copies = String::new();
+    for &k in sccs.iter().flatten().filter(|&&k| need[k]) {
+        let (name, head, body) = group[k];
+        let text = match cache.and_then(|c| c.borrow().copies.get(name).cloned()) {
+            Some(t) => t,
+            None => {
+                // `(name (params) sort)` → `(define-fun name#cond (params) sort body)`, its
+                // applications of the group's functions made the copies'.
+                let rename = |t: &str| {
+                    let mut out = String::with_capacity(t.len());
+                    for (i, part) in t.split('|').enumerate() {
+                        if i > 0 {
+                            out.push('|');
+                        }
+                        out.push_str(part);
+                        if i % 2 == 1 && index.contains_key(part) {
+                            out.push_str("#cond");
+                        }
+                    }
+                    out
+                };
+                let t = format!("(define-fun {} {})\n", rename(&head[1..head.len() - 1]), rename(body));
+                if let Some(c) = cache {
+                    c.borrow_mut().copies.insert(name.to_string(), t.clone());
+                }
+                t
+            }
+        };
+        copies += &text;
+    }
+    (copies, bodies)
+}
+
+/// Z3 splits a definition `x` into cases (as `compute_cases` in Z3's
+/// `recfun_decl_plugin.cpp` does): looking from the top, through
+/// applications, it finds an `ite` whose condition applies no function of the
+/// group, and one of whose branches does. An `ite` whose condition applies
+/// one is kept whole, and not looked into.
+fn splits(x: &Sx, index: &HashMap<&str, usize>) -> bool {
+    let Sx::List(items) = x else { return false };
+    if is_binder(items) {
+        return false;
+    }
+    if items.len() == 4 && matches!(&items[0], Sx::Atom(a) if a == "ite") {
+        let mut applied = Vec::new();
+        applies(&items[1], index, &mut applied);
+        if !applied.is_empty() {
+            return false;
+        }
+        let (mut t, mut e) = (Vec::new(), Vec::new());
+        applies(&items[2], index, &mut t);
+        applies(&items[3], index, &mut e);
+        return !t.is_empty() || !e.is_empty();
+    }
+    items.iter().any(|y| splits(y, index))
+}
+
+/// Bodies rewritten by `definitions`, and the copies of functions it made:
+/// the same in each query of a module.
+#[derive(Default)]
+pub struct Rewritten {
+    /// A function's body, rewritten, and the functions whose copies it
+    /// applies, by its name.
+    bodies: HashMap<String, (String, Vec<String>)>,
+    /// A function's copy, by its name.
+    copies: HashMap<String, String>,
+    /// The symbols a body names, by its function's name.
+    symbols: HashMap<String, Rc<Vec<String>>>,
+}
+
+/// The `|quoted|` symbols of SMT-LIB text: every definition's name is one.
+fn symbols(text: &str) -> impl Iterator<Item = &str> {
+    text.split('|').skip(1).step_by(2)
+}
+
+/// `x` with each condition of its `ite`s that applies functions of the
+/// group (outside `lambda`s and quantifiers, which Z3 doesn't look into), all
+/// `clean`, applying their copies instead. `names` gathers those functions.
+fn cond_copies(x: &Sx, index: &HashMap<&str, usize>, clean: &[bool], names: &mut BTreeSet<String>) -> Sx {
+    match x {
+        Sx::List(items) if is_binder(items) => x.clone(),
+        Sx::List(items) if items.len() == 4 && matches!(&items[0], Sx::Atom(a) if a == "ite") => {
+            let mut applied = Vec::new();
+            applies(&items[1], index, &mut applied);
+            let cond = if !applied.is_empty() && applied.iter().all(|&k| clean[k]) {
+                renamed(&items[1], index, names)
+            } else {
+                items[1].clone()
+            };
+            Sx::List(vec![
+                items[0].clone(),
+                cond,
+                cond_copies(&items[2], index, clean, names),
+                cond_copies(&items[3], index, clean, names),
+            ])
+        }
+        Sx::List(items) => Sx::List(items.iter().map(|y| cond_copies(y, index, clean, names)).collect()),
+        Sx::Atom(_) => x.clone(),
+    }
+}
+
+/// A `lambda`, `forall` or `exists`.
+fn is_binder(items: &[Sx]) -> bool {
+    matches!(items.first(), Some(Sx::Atom(a)) if a == "lambda" || a == "forall" || a == "exists")
+}
+
+/// The functions of the group `x` applies, outside `lambda`s and quantifiers.
+fn applies(x: &Sx, index: &HashMap<&str, usize>, out: &mut Vec<usize>) {
+    match x {
+        Sx::Atom(a) => out.extend(index.get(a.trim_matches('|'))),
+        Sx::List(items) if is_binder(items) => {}
+        Sx::List(items) => items.iter().for_each(|y| applies(y, index, out)),
+    }
+}
+
+/// `x` applying the copies of the group's functions, outside `lambda`s and
+/// quantifiers.
+fn renamed(x: &Sx, index: &HashMap<&str, usize>, names: &mut BTreeSet<String>) -> Sx {
+    match x {
+        Sx::Atom(a) if index.contains_key(a.trim_matches('|')) => {
+            let n = a.trim_matches('|');
+            names.insert(n.to_string());
+            Sx::Atom(format!("|{n}#cond|"))
+        }
+        Sx::Atom(_) => x.clone(),
+        Sx::List(items) if is_binder(items) => x.clone(),
+        Sx::List(items) => Sx::List(items.iter().map(|y| renamed(y, index, names)).collect()),
     }
 }
 
@@ -242,6 +479,11 @@ pub struct Query {
     /// The same query without the quantified `Nat` axioms: Z3 is complete on
     /// it, so it can find a counterexample where the full query is `unknown`.
     pub without_axioms: Option<String>,
+    /// The same query without the postconditions of calls in reflected
+    /// bodies (`body_axioms`), when it has some: weaker, so `unsat` still
+    /// proves the goal, and most goals need none of them. A model of it may
+    /// break them, so `sat` is no counterexample.
+    pub without_bodies: Option<String>,
     /// The same query with every reflected definition uninterpreted: weaker,
     /// so `unsat` still proves the goal, and often far faster when the facts
     /// in scope (`have`) already suffice. Tried first.
@@ -283,6 +525,7 @@ struct Delta {
     known: Vec<(String, Tm)>,
     dict_args: Vec<(String, Vec<Ent>)>,
     axioms: Vec<(String, String)>,
+    body_axioms: Vec<(String, String)>,
     asserts: Vec<String>,
     consts: Vec<String>,
     /// The sorts its recognizers are applied at: each query that uses the
@@ -292,7 +535,16 @@ struct Delta {
 
 /// Translated definitions, shared by the builders of one module.
 #[derive(Default)]
-pub struct Defs(std::cell::RefCell<BTreeMap<Inst, (Tx<Defn>, Delta)>>);
+pub struct Defs(RefCell<BTreeMap<Inst, (Tx<Defn>, Delta)>>, RefCell<Rewritten>, RefCell<Names>);
+
+/// What the queries of a module would each compute the same way.
+#[derive(Default)]
+pub struct Names {
+    /// Each instance's SMT name.
+    names: HashMap<Inst, String>,
+    /// Each instance's declaration, uninterpreted.
+    uninterp: HashMap<Inst, Option<String>>,
+}
 
 /// A table's translation: what it adds to a builder, and its elements' facts.
 type Table = (Delta, Vec<String>);
@@ -332,12 +584,26 @@ pub struct Builder<'a> {
     table_facts: Vec<String>,
     /// `Nat` results of functions, as pattern-guarded axioms (emitted after the definitions).
     axioms: BTreeMap<String, String>,
+    /// The postconditions of calls in reflected bodies, as pattern-guarded
+    /// axioms (`body_post_axioms`): emitted after `axioms`, and only where
+    /// the definitions are reflected.
+    body_axioms: BTreeMap<String, String>,
     posts: Vec<PostUse>,
     post_seen: HashSet<String>,
     /// Terms whose type's facts were asserted (once each).
     fact_seen: HashSet<String>,
-    /// Translating a reflected body: don't collect postconditions or facts.
+    /// Translating a reflected body: don't collect postconditions or facts
+    /// for the query.
     in_def: bool,
+    /// Translating the reflected body of `define`: its calls'
+    /// postconditions, and the calls they are of (`body_post_axioms`).
+    body_posts: Option<(Vec<PostUse>, HashSet<String>)>,
+    /// Give the postconditions of calls in reflected bodies (#343): for an
+    /// obligation's queries, not for the questions the prover asks itself
+    /// (which functions end everywhere, a measure's guess).
+    bodies: bool,
+    /// The definitions each definition's body names (`reaches`).
+    def_refs: HashMap<DefId, Vec<DefId>>,
     /// How many lambdas are being translated (names their parameters).
     lam_depth: usize,
     /// Function values given to a local function as fresh constants (`select`).
@@ -388,11 +654,15 @@ impl<'a> Builder<'a> {
             consts: Vec::new(),
             asserts: Vec::new(),
             axioms: BTreeMap::new(),
+            body_axioms: BTreeMap::new(),
             posts: Vec::new(),
             post_seen: HashSet::new(),
             fun_args: 0,
             fact_seen: HashSet::new(),
             in_def: false,
+            body_posts: None,
+            bodies: false,
+            def_refs: HashMap::new(),
             lam_depth: 0,
             ctx: Vec::new(),
             ctx_src: Vec::new(),
@@ -425,6 +695,13 @@ impl<'a> Builder<'a> {
         self
     }
 
+    /// Give the postconditions of calls in reflected bodies, where Z3
+    /// unfolds the bodies (`body_post_axioms`).
+    pub fn with_body_posts(mut self) -> Builder<'a> {
+        self.bodies = true;
+        self
+    }
+
     /// Share translated definitions with the other builders of the module.
     pub fn sharing(mut self, defs: &'a Defs) -> Builder<'a> {
         self.defs = Some(defs);
@@ -452,6 +729,7 @@ impl<'a> Builder<'a> {
                     std::mem::take(&mut self.asserts),
                     std::mem::take(&mut self.consts),
                     std::mem::take(&mut self.tested),
+                    std::mem::take(&mut self.body_axioms),
                 );
                 let known_before: HashSet<String> = self.known.keys().cloned().collect();
                 let dict_before: HashSet<String> = self.dict_args.keys().cloned().collect();
@@ -468,6 +746,7 @@ impl<'a> Builder<'a> {
                     asserts: std::mem::replace(&mut self.asserts, saved.7),
                     consts: std::mem::replace(&mut self.consts, saved.8),
                     tested: std::mem::replace(&mut self.tested, saved.9).into_iter().collect(),
+                    body_axioms: std::mem::replace(&mut self.body_axioms, saved.10).into_iter().collect(),
                 };
                 self.inst_queue = saved.5;
                 defs.0.borrow_mut().insert(inst.clone(), (r.clone(), d.clone()));
@@ -494,6 +773,9 @@ impl<'a> Builder<'a> {
         }
         for (k, v) in d.axioms {
             self.axioms.entry(k).or_insert(v);
+        }
+        for (k, v) in d.body_axioms {
+            self.body_axioms.entry(k).or_insert(v);
         }
         for a in d.asserts {
             if !self.asserts.contains(&a) {
@@ -592,7 +874,8 @@ impl<'a> Builder<'a> {
     /// The sort of a type constructor applied to the sorts of all its
     /// parameters, each of kind `Type` (M25).
     fn ty_sort_sorts(&mut self, id: TyId, sorts: Vec<Sort>) -> Tx<Sort> {
-        let wk = self.wk().clone();
+        let e = self.e;
+        let wk = &e.g.well_known;
         if Some(id) == wk.array {
             return Ok(Sort::Seq(Box::new(sorts.into_iter().next().ok_or_else(|| Outside("an array without its element type".into()))?)));
         }
@@ -624,7 +907,8 @@ impl<'a> Builder<'a> {
 
     /// The sort a type term denotes, in `env`.
     fn sort_of(&mut self, env: &[Ent], t: &Tm) -> Tx<Sort> {
-        let wk = self.wk().clone();
+        let e = self.e;
+        let wk = &e.g.well_known;
         let z = self.zonk(env.len(), t);
         let t = &z;
         // A type equal to another by a type equation in scope (#209): its
@@ -950,7 +1234,8 @@ impl<'a> Builder<'a> {
     }
 
     fn ty_sort(&mut self, env: &[Ent], id: TyId, args: &[Tm]) -> Tx<Sort> {
-        let wk = self.wk().clone();
+        let e = self.e;
+        let wk = &e.g.well_known;
         if Some(id) == wk.int {
             return Ok(Sort::Int);
         }
@@ -2101,7 +2386,8 @@ impl<'a> Builder<'a> {
     }
 
     fn con_app(&mut self, env: &[Ent], c: ConId, args: &[Tm]) -> Tx<(String, Sort)> {
-        let wk = self.wk().clone();
+        let e = self.e;
+        let wk = &e.g.well_known;
         if Some(c) == wk.true_con {
             return Ok(("true".into(), Sort::Bool));
         }
@@ -2934,15 +3220,15 @@ impl<'a> Builder<'a> {
         if self.e.class_methods.contains(&d) {
             if let Some(r) = self.member_app(env, d, args, &inner)? {
                 let (app, _) = r;
-                if !self.in_def {
+                if self.gathers_posts() {
                     // A `Nat` result where the class's preconditions hold.
                     let spec = self.e.specs.get(&d);
                     let has_pre = spec.is_some_and(|s| s.preds.iter().any(|p| !p.is_post));
                     let nat = has_pre && self.is_nat_tm(&t);
                     let has_post = spec.is_some_and(|s| s.preds.iter().any(|p| p.is_post));
-                    if (has_post || nat) && self.post_seen.insert(app.clone()) {
+                    if (has_post || nat) && !self.post_gathered(&app) {
                         post_env.push(Ent::Term(app.clone(), rs.clone()));
-                        self.posts.push(PostUse { def: d, env: post_env, nat, parts: Vec::new() });
+                        self.gather_post(&app, PostUse { def: d, env: post_env, nat, parts: Vec::new() });
                     }
                 }
                 return Ok((app, rs));
@@ -2964,14 +3250,14 @@ impl<'a> Builder<'a> {
                     }
                 }
                 let (app, _) = self.term(&inner, &body)?;
-                if !self.in_def {
+                if self.gathers_posts() {
                     let has_post = self.e.specs.get(&d).is_some_and(|s| s.preds.iter().any(|p| p.is_post));
                     // What the result's type says of it: a class's type's
                     // predicates (#176), of the result or of its parts.
-                    let parts = if self.post_seen.contains(&app) { Vec::new() } else { self.part_terms(&post_env, &t, &app, &rs) };
-                    if (has_post || !parts.is_empty()) && self.post_seen.insert(app.clone()) {
+                    let parts = if self.post_gathered(&app) { Vec::new() } else { self.part_terms(&post_env, &t, &app, &rs) };
+                    if (has_post || !parts.is_empty()) && !self.post_gathered(&app) {
                         post_env.push(Ent::Term(app.clone(), rs.clone()));
-                        self.posts.push(PostUse { def: d, env: post_env, nat: false, parts });
+                        self.gather_post(&app, PostUse { def: d, env: post_env, nat: false, parts });
                     }
                 }
                 return Ok((app, rs));
@@ -2997,7 +3283,7 @@ impl<'a> Builder<'a> {
             }
         }
         let app = if vals.is_empty() { name } else { format!("({name} {})", vals.join(" ")) };
-        if !self.in_def {
+        if self.gathers_posts() {
             // At a call on program values the result is a `Nat` where the
             // callee's precondition holds (outside it, a reflected body such
             // as `n - 1` can be negative).
@@ -3005,12 +3291,17 @@ impl<'a> Builder<'a> {
             let spec = self.e.specs.get(&d);
             let has_pre = spec.is_some_and(|s| s.preds.iter().any(|p| !p.is_post));
             let has_post = spec.is_some_and(|s| s.preds.iter().any(|p| p.is_post));
-            if nat && !has_pre {
+            // In a body, the arguments are the parameters' terms: a `Nat`
+            // result is so where they are of the callee's types, like a
+            // postcondition.
+            let in_body = self.in_def;
+            if nat && !has_pre && !in_body {
                 let a = app.clone();
                 self.nat_fact(&a);
             }
+            let nat = nat && (has_pre || in_body);
             let mut parts = Vec::new();
-            if !self.post_seen.contains(&app) {
+            if !self.post_gathered(&app) {
                 // The result's type at these arguments: a type argument
                 // may be refined too (`Pair Bool (s~Nat, s > 3)` for `Pair a b`).
                 let at = if computed { None } else { self.result_type_at(env.len(), &info_ty, args) };
@@ -3019,9 +3310,9 @@ impl<'a> Builder<'a> {
                     None => self.part_terms(&post_env, &t, &app, &rs),
                 };
             }
-            if (has_post || (nat && has_pre) || !parts.is_empty()) && self.post_seen.insert(app.clone()) {
+            if (has_post || nat || !parts.is_empty()) && !self.post_gathered(&app) {
                 post_env.push(Ent::Term(app.clone(), rs.clone()));
-                self.posts.push(PostUse { def: d, env: post_env, nat: nat && has_pre, parts });
+                self.gather_post(&app, PostUse { def: d, env: post_env, nat, parts });
             }
         }
         Ok((app, rs))
@@ -3034,7 +3325,8 @@ impl<'a> Builder<'a> {
         if self.funs.contains_key(&name) {
             return Ok(name);
         }
-        let wk = self.wk().clone();
+        let e = self.e;
+        let wk = &e.g.well_known;
         let (Some(list), Some(cons)) = (wk.list, wk.cons) else { return out("no lists") };
         if let std::collections::btree_map::Entry::Vacant(v) = self.datatypes.entry(list) {
             v.insert(1);
@@ -3126,7 +3418,8 @@ impl<'a> Builder<'a> {
 
     /// `++` and `len` on lists, as recursive functions.
     fn list_fun(&mut self, what: &str, list: &Sort, _arity: usize, _res: Sort) -> Tx<String> {
-        let wk = self.wk().clone();
+        let e = self.e;
+        let wk = &e.g.well_known;
         let (Some(cons), Some(nil)) = (wk.cons, wk.nil) else { return out("no lists") };
         let ls = list.render(self.e);
         let name = sym(&format!("list.{what}<{ls}>"));
@@ -3260,8 +3553,6 @@ impl<'a> Builder<'a> {
             }
             self.insts.insert(inst, r.ok());
         }
-        let mut heads = Vec::new();
-        let mut bodies = Vec::new();
         let mut decls = Vec::new();
         let mut opaque = Vec::new();
         let mut group = Vec::new();
@@ -3281,8 +3572,6 @@ impl<'a> Builder<'a> {
             }
             match def {
                 Some((name, head, body)) => {
-                    heads.push(head.clone());
-                    bodies.push(body.clone());
                     let d = self.uninterp_decl(inst);
                     if let Some(d) = &d {
                         opaque.push(d.clone());
@@ -3297,16 +3586,25 @@ impl<'a> Builder<'a> {
                 }
             }
         }
-        let reflected = !heads.is_empty();
+        let reflected = !group.is_empty();
+        let mut copies = String::new();
         if reflected {
-            decls.push(format!("(define-funs-rec ({}) ({}))", heads.join(" "), bodies.join(" ")));
+            let parts: Vec<(&str, &str, &str)> = group.iter().map(|g| (g.0.as_str(), g.1.as_str(), g.2.as_str())).collect();
+            let (c, bodies) = definitions(&parts, self.defs.map(|d| &d.1));
+            copies = c;
+            for (g, b) in group.iter_mut().zip(bodies) {
+                g.2 = b;
+            }
+            let heads: Vec<&str> = group.iter().map(|g| g.1.as_str()).collect();
+            let bodies: Vec<&str> = group.iter().map(|g| g.2.as_str()).collect();
+            decls.push(format!("{copies}(define-funs-rec ({}) ({}))", heads.join(" "), bodies.join(" ")));
         }
         // The uninterpreted variant shares the rest (`decls` minus the group).
         let mut only = decls.clone();
         if reflected {
             only.pop();
         }
-        let focus = Focus { others: only.clone(), group };
+        let focus = Focus { others: only.clone(), copies, group };
         if reflected {
             only.extend(opaque);
         }
@@ -3314,6 +3612,17 @@ impl<'a> Builder<'a> {
     }
 
     fn inst_name(&self, inst: &Inst) -> String {
+        if let Some(n) = self.defs.and_then(|d| d.2.borrow().names.get(inst).cloned()) {
+            return n;
+        }
+        let n = self.inst_name_of(inst);
+        if let Some(d) = self.defs {
+            d.2.borrow_mut().names.insert(inst.clone(), n.clone());
+        }
+        n
+    }
+
+    fn inst_name_of(&self, inst: &Inst) -> String {
         let info = &self.e.g.defs[inst.def.0 as usize];
         let mut q = format!("{}.{}", info.module, info.name);
         if !inst.tys.is_empty() {
@@ -3540,7 +3849,20 @@ impl<'a> Builder<'a> {
         Ok((env, params, r))
     }
 
+    /// An instance's declaration, uninterpreted. Its sorts are those of its
+    /// definition, declared already.
     fn uninterp_decl(&mut self, inst: &Inst) -> Option<String> {
+        if let Some(d) = self.defs.and_then(|d| d.2.borrow().uninterp.get(inst).cloned()) {
+            return d;
+        }
+        let d = self.uninterp_decl_of(inst);
+        if let Some(defs) = self.defs {
+            defs.2.borrow_mut().uninterp.insert(inst.clone(), d.clone());
+        }
+        d
+    }
+
+    fn uninterp_decl_of(&mut self, inst: &Inst) -> Option<String> {
         let name = self.inst_name(inst);
         let (_, params, r) = self.inst_sig(inst).ok()?;
         Some(format!(
@@ -3562,8 +3884,10 @@ impl<'a> Builder<'a> {
         }
         let saved = self.in_def;
         self.in_def = true;
+        let saved_posts = std::mem::replace(&mut self.body_posts, self.bodies.then(|| (Vec::new(), HashSet::new())));
         let r_body = self.term(&env, &body);
         let guard = self.domain(inst, &env);
+        let posts = std::mem::replace(&mut self.body_posts, saved_posts).map(|p| p.0).unwrap_or_default();
         self.in_def = saved;
         let (mut bt, _) = r_body?;
         // A definition recursing by `decreasing` ends only where its
@@ -3588,6 +3912,7 @@ impl<'a> Builder<'a> {
             params.iter().map(|(n, s)| format!("({n} {})", s.render(self.e))).collect::<Vec<_>>().join(" "),
             r.render(self.e)
         );
+        self.body_post_axioms(inst.def, &name, &params, posts);
         Ok((name, head, bt))
     }
 
@@ -3628,6 +3953,139 @@ impl<'a> Builder<'a> {
             1 => conds.pop(),
             _ => Some(format!("(and {})", conds.join(" "))),
         })
+    }
+
+    /// Calls' postconditions are gathered here: in the query's goal and
+    /// facts, or in the reflected body being translated (`body_posts`),
+    /// outside a lambda, whose variables aren't the body's parameters.
+    fn gathers_posts(&self) -> bool {
+        !self.in_def || (self.body_posts.is_some() && self.lam_depth == 0)
+    }
+
+    /// The postcondition of the call `app` is gathered already.
+    fn post_gathered(&self, app: &str) -> bool {
+        match &self.body_posts {
+            Some((_, seen)) if self.in_def => seen.contains(app),
+            _ => self.post_seen.contains(app),
+        }
+    }
+
+    /// Gather the postcondition of the call `app`.
+    fn gather_post(&mut self, app: &str, p: PostUse) {
+        match &mut self.body_posts {
+            Some((posts, seen)) if self.in_def => {
+                if seen.insert(app.to_string()) {
+                    posts.push(p);
+                }
+            }
+            _ => {
+                if self.post_seen.insert(app.to_string()) {
+                    self.posts.push(p);
+                }
+            }
+        }
+    }
+
+    /// The postconditions of the calls in the reflected body of `name`, as
+    /// axioms over its parameters, used where `name` is applied (#343): Z3
+    /// unfolds the body there. Each holds where the callee's preconditions
+    /// do, and its arguments are of its parameters' types (a `Nat` is
+    /// non-negative, a refinement's predicates hold): so for every argument
+    /// Z3 tries, whether the body reaches the call or not.
+    fn body_post_axioms(&mut self, def: DefId, name: &str, params: &[(String, Sort)], posts: Vec<PostUse>) {
+        if params.is_empty() {
+            return;
+        }
+        let binds: Vec<String> = params.iter().map(|(n, s)| format!("({n} {})", s.render(self.e))).collect();
+        let app = format!("({name} {})", params.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(" "));
+        // The callee's conditions are translated as a body's are: calls in
+        // them add nothing more.
+        let saved = std::mem::replace(&mut self.in_def, true);
+        for (k, p) in posts.into_iter().enumerate() {
+            // A call of the function itself, or of one calling it back,
+            // would make a term the axiom applies to again, without end.
+            if p.def == def || self.reaches(p.def, def) {
+                continue;
+            }
+            let spec = self.e.specs.get(&p.def).cloned().unwrap_or_default();
+            let mut pres = self.arg_domains(&p);
+            let mut ok = true;
+            for pred in spec.preds.iter().filter(|x| !x.is_post && !has_forall(&x.tm)) {
+                match self.term(&p.env, &pred.tm) {
+                    Ok((t, _)) => pres.push(t),
+                    Err(_) => ok = false,
+                }
+            }
+            if !ok {
+                continue;
+            }
+            let mut goals = Vec::new();
+            if p.nat {
+                if let Some(Ent::Term(r, _)) = p.env.last() {
+                    goals.push(format!("(>= {r} 0)"));
+                }
+            }
+            for pred in spec.preds.iter().filter(|x| x.is_post) {
+                if let Ok((t, _)) = self.term(&p.env, &pred.tm) {
+                    goals.push(t);
+                }
+            }
+            goals.extend(p.parts);
+            dedup(&mut pres);
+            dedup(&mut goals);
+            if goals.is_empty() {
+                continue;
+            }
+            let goal = if goals.len() == 1 { goals.pop().unwrap_or_default() } else { format!("(and {})", goals.join(" ")) };
+            let body = implies(&pres, goal);
+            self.body_axioms.insert(
+                format!("{}#post{k}", name.trim_matches('|')),
+                format!("(forall ({}) (! {body} :pattern ({app})))", binds.join(" ")),
+            );
+        }
+        self.in_def = saved;
+    }
+
+    /// `from`'s body applies `to`, through any number of definitions' bodies.
+    fn reaches(&mut self, from: DefId, to: DefId) -> bool {
+        let mut seen = HashSet::new();
+        let mut stack = vec![from];
+        while let Some(d) = stack.pop() {
+            if !seen.insert(d) {
+                continue;
+            }
+            let refs = self.def_refs.entry(d).or_insert_with(|| {
+                let mut out = Vec::new();
+                if let Some(b) = &self.e.g.defs[d.0 as usize].body {
+                    def_refs(b, &mut out);
+                }
+                out
+            });
+            if refs.contains(&to) {
+                return true;
+            }
+            stack.extend(refs.iter().copied());
+        }
+        false
+    }
+
+    /// What a call's arguments satisfy, being of the callee's parameters'
+    /// types: a `Nat` is non-negative, a refinement's predicates hold.
+    fn arg_domains(&mut self, p: &PostUse) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut ty = self.e.g.defs[p.def.0 as usize].ty.clone();
+        let mut k = 0;
+        while let Tm::Pi(_, m, _, dom, cod) = ty {
+            if let (Mult::One | Mult::Many, Some(Ent::Term(a, s))) = (m, p.env.get(k)) {
+                if !self.is_dict_ty(&dom) && !matches!(*dom, Tm::Pi(..)) {
+                    let (a, s) = (a.clone(), s.clone());
+                    out.extend(self.domain_terms(&p.env[..k], &dom, &a, &s));
+                }
+            }
+            ty = (*cod).clone();
+            k += 1;
+        }
+        out
     }
 
     fn assume_posts(&mut self) {
@@ -3796,6 +4254,13 @@ impl<'a> Builder<'a> {
         for a in self.axioms.values() {
             axioms += &format!("(assert {a})\n");
         }
+        // Last, so that the query with every definition uninterpreted, which
+        // has none of what the bodies say, leaves them out.
+        let mut body_axioms = String::new();
+        for a in self.body_axioms.values() {
+            body_axioms += &format!("(assert {a})\n");
+        }
+        axioms += &body_axioms;
         let split = text.len();
         text += &axioms;
         for c in &self.consts {
@@ -3836,9 +4301,11 @@ impl<'a> Builder<'a> {
         text.insert_str(sorts_end, &written);
         let (defs_at, defs_end, split) = (defs_at + written.len(), defs_end + written.len(), split + written.len());
         let without_axioms = (!axioms.is_empty()).then(|| format!("{}{}", &text[..split], &text[split + axioms.len()..]));
+        let body_at = split + axioms.len() - body_axioms.len();
+        let without_bodies = (!body_axioms.is_empty()).then(|| format!("{}{}", &text[..body_at], &text[split + axioms.len()..]));
         let facts_only = reflected.then(|| {
             let decls: String = opaque_defs.iter().map(|d| format!("{d}\n")).collect();
-            format!("{}{decls}{}", &text[..defs_at], &text[defs_end..])
+            format!("{}{decls}{}{}", &text[..defs_at], &text[defs_end..body_at], &text[split + axioms.len()..])
         });
         let with_defs = |d: String| format!("{}{d}{}{}", &text[..defs_at], &text[defs_end..split], &text[split + axioms.len()..]);
         let focused = focus.mentioned_in(&goal).map(with_defs);
@@ -3846,18 +4313,23 @@ impl<'a> Builder<'a> {
         // Tables' elements go only in the full query: the weaker ones first
         // try without them, and most proofs about a table need only its
         // length (D153).
-        let (text, no_tables, without_axioms) = match text.rfind("(assert (not ") {
+        let (text, no_tables, without_axioms, without_bodies) = match text.rfind("(assert (not ") {
             Some(k) if !self.table_facts.is_empty() => {
                 let full = format!("{}{}{}", &text[..k], self.table_facts.concat(), &text[k..]);
                 let lean = without_axioms.or_else(|| Some(text.clone()));
-                (full, Some(text), lean)
+                let without_bodies = without_bodies.map(|t| match t.rfind("(assert (not ") {
+                    Some(k) => format!("{}{}{}", &t[..k], self.table_facts.concat(), &t[k..]),
+                    None => t,
+                });
+                (full, Some(text), lean, without_bodies)
             }
-            _ => (text, None, without_axioms),
+            _ => (text, None, without_axioms, without_bodies),
         };
         Ok(Query {
             text,
             no_tables,
             without_axioms,
+            without_bodies,
             facts_only,
             focused,
             premised,
@@ -3919,6 +4391,25 @@ pub fn is_nat(e: &Elab, ty: &Val) -> bool {
 }
 
 /// `t` under the conditions `guards`.
+/// The definitions `t` names.
+fn def_refs(t: &Tm, out: &mut Vec<DefId>) {
+    if let Tm::Def(d) = t {
+        if !out.contains(d) {
+            out.push(*d);
+        }
+    }
+    t.any_sub(|x, _| {
+        def_refs(x, out);
+        false
+    });
+}
+
+/// `xs` without repeats, in order.
+fn dedup(xs: &mut Vec<String>) {
+    let mut seen = HashSet::new();
+    xs.retain(|x| seen.insert(x.clone()));
+}
+
 fn implies(guards: &[String], t: String) -> String {
     match guards {
         [] => t,

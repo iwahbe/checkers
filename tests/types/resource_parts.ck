@@ -17,64 +17,69 @@ fn plain t -> m : t~One, m~Nat
     t.lines
 
 fn one_of_two t : t~Two
-    files.close t.a
+    close t.a
 
 fn replaced t f -> r : t~One, f~File, r~One
     One f t.lines
 
 fn indexed a : a~Array File, len a > 0
-    files.close a[0]
+    close a[0]
 
 # Fine: nothing else holds a resource, and `match` takes a record apart.
 fn only t : t~One
-    files.close t.out
+    close t.out
 
 fn apart t : t~Two
     match t
         Two a b ->
-            files.close a
-            files.close b
+            close a
+            close b
 
 # Specifications read fields freely: they use nothing.
 fn counted t -> r : t~One, r~Nat, r == t.lines
     match t
         One out n ->
-            files.close out
+            close out
             n
 
 # A tuple is taken apart once, whatever its parts.
 fn pair p : p~(File, File)
     let (a, b) = p
-    files.close a
-    files.close b
+    close a
+    close b
 
 fn half p : p~(File, Nat)
     let (a, _) = p
-    files.close a
+    close a
 
 # A guard before a resource's arm: when it's false, the next arm has the
 # resource, unused.
 fn checked f n : f~File, n~Nat
     match f
-        g if n > 2 -> files.close g
-        g -> files.close g
+        g if n > 2 -> close g
+        g -> close g
 
 fn ready g -> b : g~File, b~Bool
-    files.close g
+    close g
     True
 
 fn guarded f : f~File
     match f
-        g if ready g -> files.close g
-        g -> files.close g
+        g if ready g -> close g
+        g -> close g
 
 # A closure can't capture a resource: it may run any number of times, or
 # never.
 fn captured f : f~File
-    let close_it = \u -> files.close f
+    let close_it = \u -> close f
     ()
 
 # One error for reading a field and then using the record.
 fn then_whole t -> r : t~One, r~One
     let n = t.lines
     t
+
+# Close `f`, whatever closing gives.
+fn close f : f~File
+    let _ = files.close f
+    ()
