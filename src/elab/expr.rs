@@ -441,13 +441,23 @@ impl Elab {
                 }
             }
             ExprKind::List(items) => {
-                let elem = if let Some(first) = items.first() {
-                    let (_, ty) = self.infer(cx, first);
-                    ty
-                } else {
-                    self.fresh_meta_val(cx)
+                // The elements decide the element type together: each is
+                // checked against an unknown of its own, and the element type
+                // is their join, whatever their order.
+                let elem = self.fresh_meta_val(cx);
+                let joined: Vec<MetaId> = match &elem {
+                    Val::Neutral(Head::Meta(m), _) => vec![*m],
+                    _ => Vec::new(),
                 };
-                let ts: Vec<Tm> = items.iter().map(|it| self.check(cx, it, &elem, false)).collect();
+                let mut ts = Vec::new();
+                let mut joins = Vec::new();
+                for it in items {
+                    let (own, metas) = self.own_unknowns(cx, &elem, &joined);
+                    let t = self.check(cx, it, &own, false);
+                    joins.push(JoinArg { span: it.span, dom: elem.clone(), own, tm: t.clone(), metas });
+                    ts.push(t);
+                }
+                self.join_args(cx, &joined, joins);
                 let t = self.list_tm(cx, &elem, ts);
                 (t, self.ty_val(self.g.well_known.list, vec![elem]))
             }
@@ -950,6 +960,7 @@ impl Elab {
                 self.use_ctx = Some(args.first().and_then(|a| self.part_of(cx, a)).map(|(j, c)| vec![(j, c)]).unwrap_or_default());
             }
         }
+        let meta_start = self.g.metas.borrow().len();
         let (ft, fty) = self.infer(cx, head);
         // Where an implicit argument after an explicit one (#161) is shown.
         let head_name_span = self.name_span;
@@ -1028,6 +1039,9 @@ impl Elab {
                 return (Tm::Error, Val::Error);
             }
         }
+        // Type parameters several arguments decide together.
+        let joined = self.joined_params(cx, &fty, &args, &ready, meta_start);
+        let mut joins = Vec::new();
         let mut t = ft;
         let mut ty = fty;
         let head_text = self.src_text(head.span);
@@ -1058,13 +1072,31 @@ impl Elab {
                     self.use_ctx = Some(ctx);
                 }
             }
+            // An argument deciding a type parameter with others: checked
+            // against its own unknown for it, joined with theirs below.
+            let mut join = None;
+            if !joined.is_empty() && !ready.contains_key(&k) {
+                (t, ty) = self.insert(cx, t, ty);
+                if let Val::Pi(_, _, Icit::Expl, dom, _) = self.force(&ty) {
+                    let dom = expected.clone().unwrap_or((*dom).clone());
+                    let (own, metas) = self.own_unknowns(cx, &dom, &joined);
+                    if !metas.is_empty() {
+                        expected = Some(own.clone());
+                        join = Some((dom, own, metas));
+                    }
+                }
+            }
             self.name_span = head_name_span;
             let (t2, ty2) = self.apply_one_as(cx, t, ty, a, expected, elem, ready.remove(&k));
+            if let (Some((dom, own, metas)), Tm::App(_, at, Icit::Expl, _)) = (join, &t2) {
+                joins.push(JoinArg { span: a.span, dom, own, tm: (**at).clone(), metas });
+            }
             self.use_ctx = None;
             self.map_elem_sub = None;
             t = t2;
             ty = ty2;
         }
+        self.join_args(cx, &joined, joins);
         self.arg_of = saved_arg_of;
         self.name_span = head_name_span;
         let (t, ty) = self.insert(cx, t, ty);
@@ -1083,6 +1115,140 @@ impl Elab {
             return (Tm::Error, Val::Error);
         }
         (t, ty)
+    }
+
+    /// The type parameters of this call (unknowns made since `start`) that
+    /// two or more of its arguments decide: those whose parameters' types
+    /// mention them outside a function type. One that a function type
+    /// mentions is left to be decided in order, as before.
+    fn joined_params(&self, cx: &Cx, ty: &Val, args: &[&Expr], ready: &HashMap<usize, (Tm, Val)>, start: usize) -> Vec<MetaId> {
+        let mut count: Vec<(MetaId, usize)> = Vec::new();
+        let mut in_fn: Vec<MetaId> = Vec::new();
+        let mut r = ty.clone();
+        for k in 0..args.len() {
+            let Val::Pi(_, _, Icit::Expl, dom, c) = self.force(&r) else { break };
+            let q = quote(&self.g, cx.lvl() + k, &dom);
+            let mut ms = Vec::new();
+            metas_in(&q, &mut ms);
+            ms.retain(|m| {
+                m.0 as usize >= start
+                    && self.g.meta(*m).is_none()
+                    && self.g.meta_origins.borrow().get(m).is_some_and(|o| o.is_type && o.arity == 0)
+            });
+            if has_pi(&q) {
+                in_fn.extend(ms);
+            } else if !ready.contains_key(&k) {
+                for m in ms {
+                    match count.iter_mut().find(|(x, _)| *x == m) {
+                        Some((_, n)) => *n += 1,
+                        None => count.push((m, 1)),
+                    }
+                }
+            }
+            r = apply_closure(&self.g, &c, Val::var(cx.lvl() + k));
+        }
+        count.into_iter().filter(|(m, n)| *n >= 2 && !in_fn.contains(m)).map(|(m, _)| m).collect()
+    }
+
+    /// `dom` with each of the unknowns `joined` it mentions, still unsolved,
+    /// replaced by a fresh one: the type a value deciding them with others
+    /// is checked against, and the pairs replaced.
+    pub fn own_unknowns(&mut self, cx: &Cx, dom: &Val, joined: &[MetaId]) -> (Val, Vec<(MetaId, MetaId)>) {
+        let mut q = quote(&self.g, cx.lvl(), dom);
+        let mut pairs = Vec::new();
+        for &m in joined {
+            if self.g.meta(m).is_some() || meta_app(&q, m).is_none() {
+                continue;
+            }
+            let fresh = self.g.fresh_meta();
+            let origin = self.g.meta_origins.borrow().get(&m).cloned();
+            if let Some(o) = origin {
+                self.g.meta_origins.borrow_mut().insert(fresh, o);
+            }
+            q = rename_meta(&q, m, fresh);
+            pairs.push((m, fresh));
+        }
+        if pairs.is_empty() {
+            return (dom.clone(), pairs);
+        }
+        (self.eval(cx, &q), pairs)
+    }
+
+    /// Decide the type parameters `joined` from the values checked against
+    /// their own unknowns for them (`own_unknowns`): each is the join of
+    /// what the values gave it (numbers' ranges joined, D135), so no value
+    /// decides it before the others. Each value is then checked against its
+    /// parameter's type, as it would have been against it directly.
+    pub fn join_args(&mut self, cx: &Cx, joined: &[MetaId], args: Vec<JoinArg>) {
+        if args.is_empty() {
+            return;
+        }
+        for &m in joined {
+            if self.g.meta(m).is_some() {
+                continue;
+            }
+            let mut found: Option<Val> = None;
+            let mut constants = Vec::new();
+            let mut target = None;
+            for a in &args {
+                let Some(&(_, own)) = a.metas.iter().find(|(x, _)| *x == m) else { continue };
+                let q = quote(&self.g, cx.lvl(), &a.dom);
+                let Some(app) = meta_app(&q, m) else { continue };
+                let v = self.eval(cx, &rename_meta(&app, m, own));
+                if target.is_none() {
+                    target = Some(self.eval(cx, &app));
+                }
+                let v = force_meta(&self.g, v);
+                if matches!(v, Val::Neutral(Head::Meta(_), _)) {
+                    // A number whose type isn't decided yet: its value's
+                    // range, as for a branch (D135), once another value
+                    // decides it is a number.
+                    if let Some(n) = super::interval::constant(&a.tm).filter(|_| matches!(q.head(), Tm::Meta(x) if *x == m)) {
+                        constants.push(n);
+                    }
+                    continue;
+                }
+                found = Some(match found {
+                    None => v,
+                    Some(j) => self.join_types(&j, &v),
+                });
+            }
+            if let Some(j) = &mut found {
+                for n in constants {
+                    let c = self.range_type(super::interval::Range::exact(n));
+                    *j = self.join_types(j, &c);
+                }
+            }
+            if let (Some(t), Some(j)) = (target, found) {
+                let _ = unify(&self.g, cx.lvl(), &t, &j);
+            }
+        }
+        for a in args {
+            // What the value gave its own type, before an unknown one is
+            // solved to its parameter's below.
+            let before = self.peel(&a.own);
+            if !self.unify_at(cx, &a.dom, &a.own, a.span, "this expression") {
+                continue;
+            }
+            if let Some(g) = self.refined_mismatch(cx, &a.dom, &a.own, a.span) {
+                self.report_gained(cx, &a.dom, &a.own, &g, a.span, "this expression");
+                continue;
+            }
+            // A refinement the value's own type doesn't already give it
+            // (D71): as `check` asks of a value checked against it.
+            if let Some((d, dargs)) = self.refined_alias(&a.dom) {
+                let already = self.refined_alias(&before).is_some_and(|(d2, _)| d2 == d);
+                let within = self.is_range(&a.dom)
+                    && match (self.type_range(&a.dom), self.type_range(&before)) {
+                        (Some(j), Some(r)) => j.holds(r),
+                        _ => false,
+                    };
+                if !already && !within {
+                    let v = self.eval(cx, &a.tm);
+                    self.refined_obligation(cx, d, dargs, v, a.span);
+                }
+            }
+        }
     }
 
     /// A call of a function with `comptime` parameters (D59): it must be
@@ -3096,4 +3262,55 @@ fn any_forall(e: &Expr) -> Option<Span> {
     }
     go(e, &mut found);
     found
+}
+
+/// A value deciding a type parameter together with others (`join_args`):
+/// its parameter's type `dom`, the type `own` it was checked against, with
+/// its own unknowns for the parameters (`metas`: parameter, own), and the
+/// value.
+pub struct JoinArg {
+    pub span: Span,
+    pub dom: Val,
+    pub own: Val,
+    pub tm: Tm,
+    pub metas: Vec<(MetaId, MetaId)>,
+}
+
+/// The unknowns `t` mentions.
+fn metas_in(t: &Tm, out: &mut Vec<MetaId>) {
+    if let Tm::Meta(m) = t {
+        if !out.contains(m) {
+            out.push(*m);
+        }
+    }
+    t.any_sub(|s, _| {
+        metas_in(s, out);
+        false
+    });
+}
+
+/// Does `t` mention a function type?
+fn has_pi(t: &Tm) -> bool {
+    matches!(t, Tm::Pi(..)) || t.any_sub(|s, _| has_pi(s))
+}
+
+/// The first application of the unknown `m` in `t`, with its arguments.
+fn meta_app(t: &Tm, m: MetaId) -> Option<Tm> {
+    if matches!(t.head(), Tm::Meta(x) if *x == m) {
+        return Some(t.clone());
+    }
+    let mut found = None;
+    t.any_sub(|s, _| {
+        found = meta_app(s, m);
+        found.is_some()
+    });
+    found
+}
+
+/// `t` with the unknown `from` replaced by `to`.
+fn rename_meta(t: &Tm, from: MetaId, to: MetaId) -> Tm {
+    match t {
+        Tm::Meta(x) if *x == from => Tm::Meta(to),
+        _ => t.map_sub(|s, _| rename_meta(s, from, to)),
+    }
 }
