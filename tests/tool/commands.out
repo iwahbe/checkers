@@ -101,10 +101,10 @@ examples/wc.ck:98:7  computed check render (Counts 1 2 3) "f.txt" == "1 2 3 f.tx
 examples/wc.ck:99:7  computed check ends_in_word b"ab" False
 examples/wc.ck:100:7  computed check not (ends_in_word b"ab " True)
 examples/wc.ck:101:7  computed check ends_in_word b"" True
-<std>/files.ck:43:11  builtin  std.files.close
-<std>/files.ck:31:11  builtin  std.files.describe
-<std>/files.ck:35:11  builtin  std.files.open
-<std>/files.ck:58:11  builtin  std.files.read_some
+<std>/files.ck:50:11  builtin  std.files.close
+<std>/files.ck:35:11  builtin  std.files.describe
+<std>/files.ck:39:11  builtin  std.files.open
+<std>/files.ck:66:11  builtin  std.files.read_some
 <std>/string.ck:34:11  builtin  std.string.chars
 <std>/string.ck:26:11  builtin  std.string.concat
 <std>/string.ck:174:8  builtin  std.string.debug
@@ -152,26 +152,27 @@ $ checkers trust tests/tool/axioms.ck
 <std>/array.ck:206:10  axiom    builtin axiom std.array.to_list_from_list
 <std>/array.ck  proved   92 by smt, 27 computed
 <std>/char.ck  proved   20 by smt, 22 computed
-<std>/decimal.ck:270:14  axiom    builtin axiom std.array.uncons_slice
-<std>/decimal.ck:283:14  axiom    builtin axiom std.decimal.scaled_parts
-<std>/decimal.ck:287:18  axiom    builtin axiom std.array.uncons_slice
-<std>/decimal.ck:288:18  axiom    builtin axiom std.array.slice_append
-<std>/decimal.ck:293:18  axiom    builtin axiom std.array.uncons_slice
-<std>/decimal.ck:354:18  axiom    builtin axiom std.decimal.scaled_ten
-<std>/decimal.ck:364:14  axiom    builtin axiom std.array.uncons_slice
-<std>/decimal.ck:366:18  axiom    builtin axiom std.array.slice_append
-<std>/decimal.ck:377:14  axiom    builtin axiom std.array.uncons_slice
-<std>/decimal.ck:378:14  axiom    builtin axiom std.array.slice_append
-<std>/decimal.ck:392:18  axiom    builtin axiom std.array.uncons_slice
-<std>/decimal.ck:393:18  axiom    builtin axiom std.array.slice_append
-<std>/decimal.ck:409:22  axiom    builtin axiom std.array.uncons_slice
-<std>/decimal.ck:418:18  axiom    builtin axiom std.array.uncons_slice
-<std>/decimal.ck:427:18  axiom    builtin axiom std.array.uncons_slice
-<std>/decimal.ck:436:14  axiom    builtin axiom std.array.uncons_slice
-<std>/decimal.ck:437:14  axiom    builtin axiom std.array.slice_append
-<std>/decimal.ck:438:14  axiom    builtin axiom std.array.uncons_slice
-<std>/decimal.ck  proved   205 by smt, 29 computed
+<std>/decimal.ck:266:14  axiom    builtin axiom std.array.uncons_slice
+<std>/decimal.ck:279:14  axiom    builtin axiom std.decimal.scaled_parts
+<std>/decimal.ck:283:18  axiom    builtin axiom std.array.uncons_slice
+<std>/decimal.ck:284:18  axiom    builtin axiom std.array.slice_append
+<std>/decimal.ck:289:18  axiom    builtin axiom std.array.uncons_slice
+<std>/decimal.ck:350:18  axiom    builtin axiom std.decimal.scaled_ten
+<std>/decimal.ck:360:14  axiom    builtin axiom std.array.uncons_slice
+<std>/decimal.ck:362:18  axiom    builtin axiom std.array.slice_append
+<std>/decimal.ck:374:14  axiom    builtin axiom std.array.uncons_slice
+<std>/decimal.ck:375:14  axiom    builtin axiom std.array.slice_append
+<std>/decimal.ck:388:18  axiom    builtin axiom std.array.uncons_slice
+<std>/decimal.ck:389:18  axiom    builtin axiom std.array.slice_append
+<std>/decimal.ck:405:22  axiom    builtin axiom std.array.uncons_slice
+<std>/decimal.ck:414:18  axiom    builtin axiom std.array.uncons_slice
+<std>/decimal.ck:423:18  axiom    builtin axiom std.array.uncons_slice
+<std>/decimal.ck:432:14  axiom    builtin axiom std.array.uncons_slice
+<std>/decimal.ck:433:14  axiom    builtin axiom std.array.slice_append
+<std>/decimal.ck:434:14  axiom    builtin axiom std.array.uncons_slice
+<std>/decimal.ck  proved   210 by smt, 31 computed
 <std>/list.ck  proved   141 by smt, 6 computed
+<std>/math.ck  proved   6 by smt, 10 computed
 <std>/parse.ck  proved   97 by smt, 15 computed
 <std>/prelude.ck  proved   63 by smt, 14 computed
 <std>/string.ck:70:14  axiom    builtin axiom std.string.concat_join
@@ -190,6 +191,6 @@ $ checkers trust tests/tool/axioms.ck
 <std>/utf8.ck  proved   10 by smt, 6 computed
 tests/tool/axioms.ck:9:10  computed precondition of `parse_render`: len post == 0 or not (char.is_digit post[0] or post[0] == '.' or post[0] == 'e' or post[0] == 'E')
 solver: Z3 5.3.3.0
-cache: 92 of 1019 Z3 answers reused
+cache: 89 of 1032 Z3 answers reused
 -- stderr
 -- exit 0

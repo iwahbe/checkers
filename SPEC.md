@@ -447,9 +447,9 @@ A resource is an open, stateful thing that must be released: an open `File`, a `
 Operations on a resource consume it and return a fresh one together with their result, `(result, resource)`, with the resource last. A `let` takes the pair apart and rebinds the resource's name:
 
 ```
-let (line, f) = files.read_line f
+let (line, f) = files.read_line f     # (Result (Option Bytes) IoError, File)
 let (_, f) = files.write_bytes b f
-files.close f
+let closed = files.close f            # Result Unit IoError
 ```
 
 Because each operation consumes the previous token, the prover sees the operations in sequence; this is where ordering proofs about effects (§8.8) live.
@@ -462,12 +462,12 @@ Resources are created from authorities, e.g. `files.open path fs` returns `Resul
 let input = terminal.stdin term
 let (header, input) = files.read_line input       # Content-Length: 52
 let (body, input) = files.read_exactly 52 input   # (Result Bytes IoError, File)
-files.close input
+let _ = files.close input
 
 match proc.spawn "ckc" ["check", "--json", path] (Streams Discard Pipe Inherit) p
     Ok (Spawned child () out ()) ->           # out~File: only stdout is piped
         let (text, out) = files.read_rest out # (Result Bytes IoError, File)
-        files.close out
+        let _ = files.close out
         let code = proc.wait child            # consumes the Child: Result Nat IoError
         …
     Err e                        -> …
@@ -1247,9 +1247,11 @@ A failure prints a runtime error that names the failing operation and the functi
 
 ### 13.4 `main` and the root capability
 
-`main` receives the command-line arguments after the file name, as `List String`, and the root `System` (§8.2). `term` reads standard input and writes standard output and error; `fs` is the process's file system with relative paths resolved against the current directory, and `files.within dir fs` confines it to `dir` (absolute paths and `..` are then refused). `clock` reads the monotonic clock and sleeps (`std.time`, §8.2). Operations on `net` are not implemented yet.
+`main` receives the command-line arguments after the file name, as `List String`, and the root `System` (§8.2). `term` reads standard input and writes standard output and error; `fs` is the process's file system with relative paths resolved against the current directory, and `files.within dir fs` confines it to `dir` (absolute paths and `..` are then refused). A symbolic link that stays inside `dir`, relative or absolute, may be followed; any path whose resolution leaves `dir` is refused, whether through `..`, a link or a link to a link, and for every operation (reading, writing, opening, creating, listing, creating directories, `within`). The check is the resolution itself, with nothing checked before a file is opened that could change before it is: each path is resolved beneath `dir`, held open, one component at a time, no link followed but by the runtime. An absolute link's target is walked from `/` the same way, opening nothing but directories on the way, and is followed only if it reaches `dir` itself (the same directory, whatever the path) and then stays beneath it. `within` names `dir` as a path in `fs`: it is opened, beneath `fs`, when it is there (at `within`, or at the first operation after it), and kept open from then on; until then each operation fails with the reason it can't be opened. `clock` reads the monotonic clock and sleeps (`std.time`, §8.2). Operations on `net` are not implemented yet.
 
-`IoError` values describe the operating-system error, as in `No such file or directory`. `read_line` (on `term` or a `File`) returns a line without its `\n`; bytes that are not valid UTF-8 become U+FFFD.
+`IoError` values describe the operating-system error, as in `No such file or directory`. `terminal.read_line` returns a line without its `\n`, bytes that are not valid UTF-8 becoming U+FFFD; `files.read_line` returns a line's bytes as they are, without its `\n`.
+
+No error of reading a `File`, or of finishing one open for writing, is lost. `files.read_line f` gives `(Ok (Some line), f)` for a line, `(Ok None, f)` only at the end, and `(Err e, f)` when reading fails, the file given back each time for the program to close. `files.close f` consumes the file and gives `Result Unit IoError`. For a file or pipe open for writing it writes out what is buffered, then closes the descriptor, and gives the first error of the two: an error the operating system reports only when a file is closed (as a network file system may) is reported too. Closing standard output's `File` closes the handle, not the stream: it writes out the stream's buffer and gives that error. Closing a file open for reading, standard input or standard error gives `Ok ()`.
 
 ### 13.5 Behaviours (D44; M7: D66–D70)
 
@@ -1535,6 +1537,7 @@ The standard library is these modules. Its scope is still to be settled (D106); 
 |---|---|---|---|
 | `std.prelude` | prelude + builtin | `Type`, `Nat`, `Int`, `String` (a record of its bytes, #170), `valid_utf8` (whether bytes are UTF-8, a builtin), `Array`, `Bytes`, `Bool`, `Unit`, `Option`, `Result`, `List`, `U8`…`U64`, `I8`…`I64`, `Char`, `not`; the class `Ord` (`le`, `trans`, `total`, `antisym`), `refl`, instances for `Int`, `Bool`, `String` (by `string_le`, D138), `List`, `Option`; the classes `Add`, `Sub`, `Mul`, `Neg`, `Monoid` (`zero`, `assoc`, `zero_add`, `add_zero`) with instances for `Int` (M24); the class `Functor` (`fmap`, `fmap_id`, `fmap_comp`) with instances for `List`, `Option` (M25); the class `Seq` (`Elem`, `size`, `uncons`) with instances for `List`, `Array`, `String`, which sequence patterns use (§9.8); not exported: `string_le`, `string_first` and `string_rest` (a non-empty string's first character, and the rest as a slice of its bytes, in constant time, builtins) and `array_rest` (an array but its first element, a slice) for `Seq`'s instances | exists |
 | `std.list` | Checkers | `length`, `map`, `all` (both call their function only with elements of the list, §5.3; both `transparent`), `reverse`, `join`, `keys`, `contains`, `unique`, `count`, `max_of`, `take`, `drop` (past the end, `take` gives all of `xs` and `drop` gives `[]`, in their postconditions, #107), `head`, `sorted`, `sorted_as`, `sorted_by`, `perm` (any element type, D138), `sort`, `sort_as`, `sort_by` (stable merge sorts, proved sorted, permutations, of the same length; D138, D147), lemmas (among them `perm_middle`, `map_id`, `map_comp`) (among them `keys_append`, `contains_append`, `contains_reverse`, `unique_split`, D119); lengths: `length_append` (`length (xs ++ ys) == length xs + length ys`), `length_reverse`, `length_map`, `length_keys` (#107; lemmas rather than postconditions of `reverse`, `map`, `keys`, which cost every query that mentions them, **(proposed)**) | exists; planned: `filter`, `fold`, `find`, `any`, `zip`, `concat`, `index_of` with lemmas |
+| `std.math` | Checkers | `min`, `max` (of two values of any type with `Ord`: `min x y` is `x` if `x <= y`, else `y`; `max x y` is `x` if `x >= y`, else `y`); `pow` (`pow n k`: `n` an `Int`, `k` a `Nat`, `pow n 0 == 1`, `pow n (k + 1) == n * pow n k`; it promises `n >= 0 implies r >= 0` and `n > 0 implies r > 0`, so `pow 10 k` is a `Nat` of at least 1); all three `transparent`, so at a known instance whose `le` is visible (the prelude's are `transparent`) and for `pow` the prover knows their definitions: `math.pow 2 10 == 1024` and `math.min x y <= x` on `Int`s need no proof; at a type parameter, `Ord`'s lemmas (`refl`, `total`) give their order; a fact for every `k` that `pow` doesn't promise (`math.pow n k > k` for `n >= 2`) needs a lemma by induction on `k` | exists |
 | `std.option`, `std.result` | Checkers | `map`, `and_then`, `or_else`, `with_default`, `is_some` / `is_ok` | planned |
 | `std.bag` | builtin | `Bag a`, `of`, `count`, `sum` (multisets of any element type, for permutation proofs, D47, D138) | exists |
 | `std.map`, `std.set` | Checkers | `Map k +v`, `Set k`: `empty`, `insert`, `remove`, `lookup`, `member`, `size`, `to_list` and their lemmas (`lookup_insert`, …), ordered keys (D15) | planned (§9.5) |
