@@ -188,7 +188,7 @@ export record Sig
     datatypes~Array Datatype
     funs~Array FunDecl
 
-export fn empty_sig -> s : s~Sig, len s.funs == 0
+export fn empty_sig -> s : s~Sig
     Sig (array.from_list []) (array.from_list []) (array.from_list [])
 
 # The function a definition declares.
