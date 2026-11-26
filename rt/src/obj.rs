@@ -157,12 +157,24 @@ pub fn new_cell(v: W) -> Arc<Cell> {
 /// words (tag 1); a larger one holds a `BigInt` (tag 0). Numbers past 63
 /// bits but within 127 then take one small allocation, and arithmetic on
 /// them none of `BigInt`'s.
-const BIG_I128: u64 = 1;
+pub const BIG_I128: u64 = 1;
+/// A larger number laid out when the program is compiled (static data,
+/// never freed, §14): its magnitude's 64-bit limbs, least significant
+/// first, as its fields; positive (tag 2) or negative (tag 3).
+pub const BIG_LIMBS: u64 = 2;
+pub const BIG_LIMBS_NEG: u64 = 3;
 
 /// Whether `w` (a `K_BIG` object) holds its number in its words.
 #[inline]
 pub fn big_inline(w: W) -> bool {
     tag(w) as u64 == BIG_I128
+}
+
+/// The number of a static `K_BIG` object holding its limbs.
+fn big_limbs(w: W) -> BigInt {
+    let bytes: Vec<u8> = (0..nfields(w)).flat_map(|i| slot(w, i).to_le_bytes()).collect();
+    let sign = if tag(w) as u64 == BIG_LIMBS_NEG { num_bigint::Sign::Minus } else { num_bigint::Sign::Plus };
+    BigInt::from_bytes_le(sign, &bytes)
 }
 
 /// The number of a `K_BIG` object holding a `BigInt`.
@@ -185,6 +197,8 @@ pub fn num_of(w: W) -> Num {
     } else if is_kind(w, K_BIG) {
         if big_inline(w) {
             Num::S(big_i128(w))
+        } else if tag(w) as u64 == BIG_LIMBS || tag(w) as u64 == BIG_LIMBS_NEG {
+            Num::from_big(big_limbs(w))
         } else {
             Num::from_big(big_of(w).clone())
         }

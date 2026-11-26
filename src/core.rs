@@ -148,6 +148,10 @@ pub enum Tm {
     ConApp(ConId, Vec<Tm>),
     PrimApp(Prim, Vec<Tm>),
     Case(Rc<Tm>, Rc<CaseTm>),
+    /// A value known at compile time (§8.9), of any size, as a node of a
+    /// graph (`known`): closed, and with no subterms of its own, so walks
+    /// over terms take no stack for it.
+    Known(crate::known::Value),
     /// Placeholder after an error has been reported; unifies with anything.
     Error,
 }
@@ -166,7 +170,7 @@ impl Tm {
     /// puts it under, and is not asked again once it has held.
     pub fn any_sub(&self, mut f: impl FnMut(&Tm, usize) -> bool) -> bool {
         match self {
-            Tm::Var(_) | Tm::Def(_) | Tm::TyCon(_) | Tm::Con(_) | Tm::Meta(_) | Tm::Univ(_) | Tm::Lit(_) | Tm::Error => false,
+            Tm::Var(_) | Tm::Def(_) | Tm::TyCon(_) | Tm::Con(_) | Tm::Meta(_) | Tm::Univ(_) | Tm::Lit(_) | Tm::Known(_) | Tm::Error => false,
             Tm::Pi(_, _, _, a, b) => f(a, 0) || f(b, 1),
             Tm::Lam(_, _, _, b) => f(b, 1),
             Tm::App(a, b, _, _) => f(a, 0) || f(b, 0),
@@ -199,7 +203,7 @@ impl Tm {
     /// `any_sub`); a term with no subterms is itself.
     pub fn map_sub(&self, mut f: impl FnMut(&Tm, usize) -> Tm) -> Tm {
         match self {
-            Tm::Var(_) | Tm::Def(_) | Tm::TyCon(_) | Tm::Con(_) | Tm::Meta(_) | Tm::Univ(_) | Tm::Lit(_) | Tm::Error => self.clone(),
+            Tm::Var(_) | Tm::Def(_) | Tm::TyCon(_) | Tm::Con(_) | Tm::Meta(_) | Tm::Univ(_) | Tm::Lit(_) | Tm::Known(_) | Tm::Error => self.clone(),
             Tm::Pi(x, m, i, a, b) => Tm::Pi(x.clone(), *m, *i, Rc::new(f(a, 0)), Rc::new(f(b, 1))),
             Tm::Lam(x, m, i, b) => Tm::Lam(x.clone(), *m, *i, Rc::new(f(b, 1))),
             Tm::App(a, b, i, m) => Tm::App(Rc::new(f(a, 0)), Rc::new(f(b, 0)), *i, *m),
@@ -288,6 +292,10 @@ pub enum Val {
     Lit(Lit),
     TupleTy(Rc<[Val]>),
     Tuple(Rc<[Val]>),
+    /// A constructor or tuple known at compile time (§8.9), taken apart one
+    /// level when it is looked at (`force_meta`, `known_open`); its other
+    /// nodes stay graph nodes. Literals in a graph are `Lit`s at once.
+    Known(crate::known::Value),
     Error,
 }
 
@@ -626,7 +634,35 @@ pub fn eval(g: &Globals, env: &Env, t: &Tm) -> Val {
         Tm::ConApp(c, args) => Val::Con(*c, args.iter().map(|a| eval(g, env, a)).collect()),
         Tm::PrimApp(p, args) => prim(g, p, args.iter().map(|a| eval(g, env, a)).collect()),
         Tm::Case(s, c) => case(g, eval(g, env, s), c.clone(), env.clone()),
+        Tm::Known(k) => known_val(k),
         Tm::Error => Val::Error,
+    }
+}
+
+/// The value of a known value's node: a literal at once, a constructor or
+/// tuple left as `Val::Known` until it is looked at.
+pub fn known_val(k: &crate::known::Value) -> Val {
+    use crate::known::Node;
+    match k.node() {
+        Node::Con(..) | Node::Tuple(_) => Val::Known(k.clone()),
+        Node::Unit => Val::Tuple(Rc::new([])),
+        _ => Val::Lit(k.lit().expect("a literal node")),
+    }
+}
+
+/// A known value's node taken apart one level: a constructor's fields
+/// (after placeholders for its type's parameters, which a known value
+/// doesn't keep) and a tuple's components are its parts, as `known_val`s.
+pub fn known_open(g: &Globals, k: &crate::known::Value) -> Val {
+    use crate::known::Node;
+    match k.node() {
+        Node::Con(c, xs) => {
+            let np = g.arity_ty(g.cons[c.0 as usize].ty);
+            let args: Vec<Val> = std::iter::repeat_n(Val::Univ(0), np).chain(xs.iter().map(|x| known_val(&k.at(*x)))).collect();
+            Val::Con(*c, args.into())
+        }
+        Node::Tuple(xs) => Val::Tuple(xs.iter().map(|x| known_val(&k.at(*x))).collect()),
+        _ => known_val(k),
     }
 }
 
@@ -651,6 +687,7 @@ pub fn force_meta(g: &Globals, v: Val) -> Val {
             }
             None => Val::Neutral(Head::Meta(m), sp),
         },
+        Val::Known(k) => known_open(g, &k),
         v => v,
     }
 }
@@ -1163,6 +1200,9 @@ fn num(v: &Val) -> Option<i128> {
 
 /// Structural equality of closed values; None if it can't be decided yet.
 fn val_eq(g: &Globals, a: &Val, b: &Val) -> Option<bool> {
+    if let (Val::Known(x), Val::Known(y)) = (a, b) {
+        return Some(x.same(y));
+    }
     match (force(g, a.clone()), force(g, b.clone())) {
         (Val::Lit(x), Val::Lit(y)) => Some(x == y),
         (Val::Con(c1, a1), Val::Con(c2, a2)) => {
@@ -1282,6 +1322,9 @@ fn prim_value(g: &Globals, p: &Prim, args: &[Val]) -> Option<Val> {
 // ── quoting ──────────────────────────────────────────────────────────────────
 
 pub fn quote(g: &Globals, l: usize, v: &Val) -> Tm {
+    if let Val::Known(k) = v {
+        return Tm::Known(k.clone());
+    }
     match force_meta(g, v.clone()) {
         Val::Neutral(h, sp) => {
             let mut t = match h {
@@ -1314,6 +1357,7 @@ pub fn quote(g: &Globals, l: usize, v: &Val) -> Tm {
         Val::Lit(x) => Tm::Lit(x),
         Val::TupleTy(vs) => Tm::TupleTy(vs.iter().map(|a| quote(g, l, a)).collect()),
         Val::Tuple(vs) => Tm::Tuple(vs.iter().map(|a| quote(g, l, a)).collect()),
+        Val::Known(k) => Tm::Known(k),
         Val::Error => Tm::Error,
     }
 }
@@ -1409,6 +1453,10 @@ fn rename(g: &Globals, m: MetaId, p: &PartialRenaming, v: &Val) -> Result<Tm, Un
         }
         Ok(t)
     };
+    // Closed: as it is.
+    if let Val::Known(k) = v {
+        return Ok(Tm::Known(k.clone()));
+    }
     match force_meta(g, v.clone()) {
         Val::Neutral(Head::Meta(m2), sp) => {
             if m2 == m {
@@ -1449,6 +1497,7 @@ fn rename(g: &Globals, m: MetaId, p: &PartialRenaming, v: &Val) -> Result<Tm, Un
         Val::Lit(l) => Ok(Tm::Lit(l)),
         Val::TupleTy(vs) => Ok(Tm::TupleTy(vs.iter().map(|a| rename(g, m, p, a)).collect::<Result<_, _>>()?)),
         Val::Tuple(vs) => Ok(Tm::Tuple(vs.iter().map(|a| rename(g, m, p, a)).collect::<Result<_, _>>()?)),
+        Val::Known(k) => Ok(Tm::Known(k)),
         Val::Error => Ok(Tm::Error),
     }
 }
@@ -1614,6 +1663,10 @@ fn unify_tuple(g: &Globals, l: usize, x: &[Val], y: &[Val], ty: bool) -> Result<
 }
 
 pub fn unify(g: &Globals, l: usize, a: &Val, b: &Val) -> Result<(), UnifyError> {
+    // Two known values: equal or not, compared without recursion.
+    if let (Val::Known(x), Val::Known(y)) = (a, b) {
+        return if x.same(y) { Ok(()) } else { Err(UnifyError::Mismatch) };
+    }
     let a = force_meta(g, a.clone());
     let b = force_meta(g, b.clone());
     let r = unify_whnf(g, l, &a, &b);
@@ -2068,6 +2121,7 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
             ns.pop();
             paren(p > 0, s)
         }
+        Tm::Known(k) => k.show(g, p),
         Tm::Lit(Lit::Num(n)) => n.to_string(),
         Tm::Lit(Lit::Big(n)) => n.to_string(),
         Tm::Lit(Lit::Str(s)) => format!("{s:?}"),

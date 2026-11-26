@@ -2862,6 +2862,7 @@ fn touches(t: &Tm, g: &Globals, defs: &HashSet<DefId>, tys: &HashSet<TyId>) -> b
         Tm::TyCon(ty) => tys.contains(ty),
         Tm::Con(c) => con(c),
         Tm::Var(_) | Tm::Meta(_) | Tm::Univ(_) | Tm::Lit(_) => false,
+        Tm::Known(k) => k.any_con(|c| con(&c)),
         Tm::Pi(_, _, _, a, b) | Tm::App(a, b, ..) => go(a) || go(b),
         Tm::Lam(_, _, _, b) | Tm::Proj(b, _, _) => go(b),
         Tm::Field(b, c, _) => con(c) || go(b),
