@@ -20,40 +20,40 @@ fn many f -> r : f~(Unit -> Unit), r~Unit
     f ()
 
 fn ok1 file -> r : file~File, r~Unit
-    run (\_ -> files.close file)
+    run (\_ -> close file)
 
 fn ok2 file -> r : file~File, r~Unit
-    let k = \_ -> files.close file
+    let k = \_ -> close file
     k ()
 
 fn ok3 file -> r : file~File, r~Unit
-    (\_ -> files.close file) ()
+    (\_ -> close file) ()
 
 fn ok4 file -> r : file~File, r~Unit
-    let k = \_ -> files.close file
+    let k = \_ -> close file
     run k
 
 fn bad1 file -> r : file~File, r~Unit
-    many (\_ -> files.close file)
+    many (\_ -> close file)
 
 fn bad2 file -> r : file~File, r~Unit
-    let k = \_ -> files.close file
+    let k = \_ -> close file
     k ()
     k ()
 
 fn bad3 file -> r : file~File, r~Unit
-    let k = \_ -> files.close file
+    let k = \_ -> close file
     ()
 
 fn bad4 file -> k : file~File, k~(Unit -> Unit)
-    \_ -> files.close file
+    \_ -> close file
 
 fn bad5 file -> r : file~File, r~Unit
-    let k = \_ -> files.close file
+    let k = \_ -> close file
     many k
 
 fn close_with f n -> r : f~File, n~Int, r~Unit
-    files.close f
+    close f
 
 fn partial_twice file -> r : file~File, r~Unit
     let k = close_with file
@@ -69,3 +69,8 @@ fn once file -> r : file~File, r~Unit
 
 fn direct file -> r : file~File, r~Unit
     close_with file 1
+
+# Close `f`, whatever closing gives.
+fn close f : f~File
+    let _ = files.close f
+    ()

@@ -414,6 +414,12 @@ pub struct BlockingRead<R>(pub R);
 /// The same for writing.
 pub struct BlockingWrite<W>(pub W);
 
+impl crate::obj::IntoFd for BlockingWrite<std::fs::File> {
+    fn into_fd(self) -> std::os::fd::OwnedFd {
+        self.0.into()
+    }
+}
+
 struct Raw<T>(*mut T, *mut u8, usize);
 unsafe impl<T> Send for Raw<T> {}
 

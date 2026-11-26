@@ -30,7 +30,7 @@ fn dropped e -> r : e~Ends Pipe Inherit, r~Unit
 # Fine: the file is closed, the other end is `()`.
 fn closed e -> r : e~Ends Pipe Inherit, r~Unit
     let Ends { first, second } = e
-    files.close first
+    close first
 
 # E0401, showing the computed type: `first` is a `File`.
 fn forgotten e -> r : e~Ends Pipe Inherit, r~Unit
@@ -40,7 +40,7 @@ fn forgotten e -> r : e~Ends Pipe Inherit, r~Unit
 # E0201: the second end is `Unit`, not a `File`.
 fn wrong e -> r : e~Ends Inherit Pipe, r~Unit
     let Ends { first, second } = e
-    files.close first
+    close first
 
 # E0401: which ends are files isn't known here, so `e` may hold one.
 fn generic a b e -> r : a~Stream, b~Stream, e~Ends a b, r~Unit
@@ -49,3 +49,8 @@ fn generic a b e -> r : a~Stream, b~Stream, e~Ends a b, r~Unit
 # Fine: passed on whole.
 fn passed a b e -> r : a~Stream, b~Stream, e~Ends a b, r~Ends a b
     e
+
+# Close `f`, whatever closing gives.
+fn close f : f~File
+    let _ = files.close f
+    ()

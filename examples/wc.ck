@@ -50,12 +50,12 @@ partial fn count_file f in_word acc -> r : f~File, in_word~Bool, acc~Counts, r~R
     match block
         Ok b  ->
             if len b == 0
-                files.close f
+                let _ = files.close f
                 Ok acc
             else
                 count_file f (ends_in_word b in_word) (count_from b 0 in_word acc)
         Err e ->
-            files.close f
+            let _ = files.close f
             Err e
 
 fn render c name -> s : c~Counts, name~String, s~String
