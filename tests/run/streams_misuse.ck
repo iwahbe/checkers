@@ -12,5 +12,5 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let (r, input) = files.write_bytes b"x" input
     terminal.print_line (debug r) term
     let (_, input) = files.write_line "x" input
-    files.close input
+    let _ = files.close input
     Success
