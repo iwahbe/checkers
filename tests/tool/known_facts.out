@@ -1,0 +1,28 @@
+$ checkers trust tests/tool/known_facts.ck
+-- stdout
+<std>/array.ck:152:14  axiom    builtin axiom std.array.slice_at
+<std>/array.ck:154:18  axiom    builtin axiom std.array.slice_at
+<std>/array.ck:156:18  axiom    builtin axiom std.array.slice_at
+<std>/array.ck:170:18  axiom    builtin axiom std.array.from_list_to_list
+<std>/array.ck:171:18  axiom    builtin axiom std.array.to_list_map
+<std>/array.ck:173:18  axiom    builtin axiom std.array.from_list_to_list
+<std>/array.ck:176:18  axiom    builtin axiom std.array.from_list_to_list
+<std>/array.ck:177:18  axiom    builtin axiom std.array.from_list_to_list
+<std>/array.ck:178:18  axiom    builtin axiom std.array.to_list_map
+<std>/array.ck:179:18  axiom    builtin axiom std.array.to_list_map
+<std>/array.ck:180:18  axiom    builtin axiom std.array.to_list_map
+<std>/array.ck:190:10  axiom    builtin axiom std.array.to_list_from_list
+<std>/array.ck:197:10  axiom    builtin axiom std.array.to_list_from_list
+<std>/array.ck:206:10  axiom    builtin axiom std.array.to_list_from_list
+<std>/array.ck  proved   92 by smt, 27 computed
+<std>/list.ck  proved   141 by smt, 6 computed
+<std>/prelude.ck  proved   63 by smt, 14 computed
+tests/tool/known_facts.ck:14:5  computed count 7 (repeat 256 7) is 256
+tests/tool/known_facts.ck:14:5  smt      precondition of `under_count`: a < array.count 7 (array.repeat 256 7)
+tests/tool/known_facts.ck:18:31  smt      termination of `steps`: `decreasing n` gets smaller
+tests/tool/known_facts.ck:18:37  smt      `Nat` subtraction `(n - 1)` stays at or above zero
+tests/tool/known_facts.ck:24:5  smt      precondition of `under_steps`: a < steps 30
+solver: Z3 5.3.3.0
+cache: 29 of 355 Z3 answers reused
+-- stderr
+-- exit 0

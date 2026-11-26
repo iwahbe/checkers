@@ -13,6 +13,7 @@ pub mod lint;
 pub mod literate;
 pub mod native;
 pub mod overlay;
+pub mod range;
 pub mod source;
 pub mod stage;
 pub mod syntax;
@@ -554,6 +555,7 @@ pub fn check_stdlib() -> String {
         if let Some(f) = e.sources.get(m) {
             let mut d = d.clone();
             d.span = e.real_span(m, d.span);
+            e.name_globals(m, &mut d);
             out += &d.render(f);
         }
     }
@@ -561,9 +563,10 @@ pub fn check_stdlib() -> String {
         return out;
     }
     for m in &modules {
-        let mut v = verify::verify(&e, m);
+        let mut v = verify::proofs(&e, m);
         for d in &mut v.diags {
             d.span = e.real_span(m, d.span);
+            e.name_globals(m, d);
         }
         if let Some(f) = e.sources.get(m) {
             out += &diag::render_all(f, &v.diags);
@@ -598,6 +601,7 @@ fn std_modules(e: &elab::Elab) -> Vec<String> {
 /// File a diagnostic of module `m` where it belongs.
 fn route(c: &mut Checked, e: &elab::Elab, user: &str, m: &str, mut d: Diagnostic) {
     d.span = e.real_span(m, d.span);
+    e.name_globals(m, &mut d);
     if m == user {
         c.diags.push(d);
     } else if e.sources.contains_key(m) {
@@ -708,7 +712,7 @@ fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
                 reused: 0,
             },
             None => {
-                let v = verify::verify(e, &m);
+                let v = verify::proofs(e, &m);
                 let warnings = v.diags.iter().filter(|d| d.code == "W022").cloned().collect();
                 fresh.push((m.clone(), verify::Verified { diags: warnings, ledger: v.ledger.clone(), z3_version: v.z3_version.clone(), proved: v.proved, asked: 0, reused: 0 }));
                 v
@@ -965,7 +969,7 @@ fn is_proof_failure(d: &Diagnostic) -> bool {
 /// `dir`; `threads`: threads for behaviours and `par` (1: the deterministic
 /// FIFO scheduler, D67).
 pub fn run(name: &str, text: &str, dir: &std::path::Path, args: &[String], unverified: bool, threads: usize) -> Ran {
-    let (e, main, staged, report) = match ready_to_run(name, text, dir, unverified) {
+    let (e, main, staged, report) = match ready_to_run(name, text, dir, unverified, false) {
         Ok(r) => r,
         Err(ran) => return ran,
     };
@@ -976,7 +980,7 @@ pub fn run(name: &str, text: &str, dir: &std::path::Path, args: &[String], unver
 
 /// `checkers build`: check and prove, then write an executable.
 pub fn build(name: &str, text: &str, dir: &std::path::Path, out: &std::path::Path, unverified: bool, release: bool) -> Ran {
-    let (e, main, staged, mut report) = match ready_to_run(name, text, dir, unverified) {
+    let (e, main, staged, mut report) = match ready_to_run(name, text, dir, unverified, release) {
         Ok(r) => r,
         Err(ran) => return ran,
     };
@@ -1014,6 +1018,7 @@ fn ready_to_run(
     text: &str,
     dir: &std::path::Path,
     unverified: bool,
+    release: bool,
 ) -> Result<(elab::Elab, core::DefId, stage::Staged, String), Ran> {
     let (mut c, e) = elaborate(name, text, dir);
     let Some((e, user)) = e else { return Err(Ran { report: c.report(), code: 2 }) };
@@ -1024,8 +1029,29 @@ fn ready_to_run(
     if blocking > 0 {
         return Err(Ran { report, code: 2 });
     }
+    let mut e = e;
     if c.errors() > 0 {
         report += &format!("running with {} unproven obligation(s) (--unverified)\n", c.errors());
+    } else {
+        // Proved: the bounds signatures give are facts native code may rely on.
+        e.g.bounds = std::mem::take(&mut e.bounds);
+        // And constants known at compile time are compiled as their values:
+        // in a development build, those that only code generation wants
+        // within a work limit (§8.9); the rest are known already.
+        let consts: Vec<core::DefId> = (0..e.g.defs.len() as u32)
+            .map(core::DefId)
+            .filter(|d| {
+                let info = &e.g.defs[d.0 as usize];
+                // Numbers: what bounds and code generation use.
+                info.body.is_some() && !info.opaque && !matches!(info.ty, core::Tm::Pi(..)) && e.type_range(&core::eval(&e.g, &std::rc::Rc::new(Vec::new()), &info.ty)).is_some()
+            })
+            .collect();
+        for d in consts {
+            let work = if release { u64::MAX } else { elab::CODEGEN_WORK };
+            if let Some(l) = e.known_value_within(&core::Tm::Def(d), work) {
+                e.g.known.borrow_mut().insert(d, l);
+            }
+        }
     }
     let exported = e.modules.get(&user).is_some_and(|m| m.exported_values.contains("main"));
     let main = e.g.defs.iter().position(|d| *d.module == user && &*d.name == "main");

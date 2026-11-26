@@ -115,6 +115,10 @@ pub enum Prim {
     /// variables whose body is the `Bool` (premises implying the
     /// conclusion). Only in specifications; never evaluated or compiled.
     Forall,
+    /// A call with effects (§7.1, §8.3), its one argument: the call itself
+    /// at run time; to the prover a value of its own, this one call's,
+    /// known by what the callee promises. Numbered, so two calls differ.
+    Effect(u32),
 }
 
 #[derive(Clone, Debug)]
@@ -327,6 +331,10 @@ pub struct TyInfo {
     /// Per parameter of an abstract type: marked `-`, so it occurs only
     /// negatively (D16).
     pub negative: Vec<bool>,
+    /// How many of `params`, the last ones, are the dictionaries of its
+    /// header's class clauses (#385): implicit arguments, found where the
+    /// type is written, never shown, and erased.
+    pub dicts: usize,
 }
 
 pub struct ConInfo {
@@ -361,6 +369,16 @@ pub struct Globals {
     /// Each type's value parameters that its fields' types are computed
     /// from (#170), once worked out (`value_params_needed`).
     pub value_params: RefCell<HashMap<TyId, std::collections::BTreeSet<usize>>>,
+    /// Each function's constant bounds on its binders (implicit ones too),
+    /// then on its result, where its signature gives them (`x~U8`,
+    /// `0 <= x`), which native code relies on (§14). Empty until every
+    /// obligation of the program is proved (`Elab::bounds` until then): a
+    /// bound is a fact only then, not in a `check` or staging, which run
+    /// before proving, nor with `--unverified`.
+    pub bounds: HashMap<DefId, Vec<Option<crate::range::Range>>>,
+    /// Constants' values known at compile time (§8.9), for code generation:
+    /// set once the program is proved, as `bounds` is (`Elab::known_value`).
+    pub known: RefCell<HashMap<DefId, Lit>>,
     /// The base types of classes' types that have one (#360), by their
     /// field of the dictionary: closed types.
     pub type_bases: HashMap<(ConId, usize), Vec<Tm>>,
@@ -424,6 +442,8 @@ impl Globals {
             well_known: WellKnown::default(),
             postponed: RefCell::new(Vec::new()),
             value_params: RefCell::new(HashMap::new()),
+            bounds: HashMap::new(),
+            known: RefCell::new(HashMap::new()),
             type_bases: HashMap::new(),
         }
     }
@@ -947,6 +967,27 @@ pub fn field_type(g: &Globals, c: ConId, k: usize) -> FieldType {
         }
     }
     FieldType::FromFields(t)
+}
+
+/// The literal the type checker's evaluation reaches from `v`, unfolding
+/// the definitions it may (not a sealed function's body, §6) within
+/// `DEFAULT_FUEL` steps of its own: the quick way to a value known at
+/// compile time (§8.9; `Elab::known_value` runs the rest). `None` if it
+/// reaches no literal.
+pub fn known_lit(g: &Globals, v: Val) -> Option<Lit> {
+    let saved = g.fuel.replace(DEFAULT_FUEL);
+    let r = force(g, v);
+    g.fuel.set(saved);
+    match r {
+        Val::Lit(l) => Some(l),
+        _ => None,
+    }
+}
+
+/// The value of constant `d` (a `let`) if it is known at compile time:
+/// `Globals::known`, which code generation then uses.
+pub fn known_const(g: &Globals, d: DefId) -> Option<Lit> {
+    g.known.borrow().get(&d).cloned()
 }
 
 pub fn force(g: &Globals, v: Val) -> Val {
@@ -1666,7 +1707,22 @@ fn unify_whnf(g: &Globals, l: usize, a: &Val, b: &Val) -> Result<(), UnifyError>
             unify(g, l + 1, &apply_closure(g, c1, Val::var(l)), &apply_closure(g, c2, Val::var(l)))
         }
         (Val::Univ(x), Val::Univ(y)) if x == y => Ok(()),
-        (Val::TyCon(t1, a1), Val::TyCon(t2, a2)) if t1 == t2 => unify_many(g, l, a1, a2),
+        (Val::TyCon(t1, a1), Val::TyCon(t2, a2)) if t1 == t2 => {
+            // A type's header's dictionaries (#385) are fixed by its other
+            // arguments: one instance per class and types (coherence). Two
+            // found differently (a clause's, an instance's) are the same
+            // dictionary, so they are compared only to learn an unknown.
+            let ti = &g.tys[t1.0 as usize];
+            let n = ti.params.len() - ti.dicts;
+            if ti.dicts == 0 || a1.len() != a2.len() || a1.len() <= n {
+                return unify_many(g, l, a1, a2);
+            }
+            unify_many(g, l, &a1[..n], &a2[..n])?;
+            for (x, y) in a1[n..].iter().zip(&a2[n..]) {
+                let _ = unify(g, l, x, y);
+            }
+            Ok(())
+        }
         (Val::Con(c1, a1), Val::Con(c2, a2)) if c1 == c2 => unify_many(g, l, a1, a2),
         (Val::Lit(x), Val::Lit(y)) if x == y => Ok(()),
         (Val::TupleTy(x), Val::TupleTy(y)) => unify_tuple(g, l, x, y, true),
@@ -1798,6 +1854,10 @@ pub trait Scope {
     }
     /// The name of the local at `level`, below `len`.
     fn name(&self, level: usize) -> &Name;
+    /// Where the local at `level` is bound, if known.
+    fn at(&self, _level: usize) -> Option<u32> {
+        None
+    }
 }
 
 impl Scope for [Name] {
@@ -1840,12 +1900,17 @@ impl<S: Scope + ?Sized> Scope for Under<'_, S> {
             None => self.0.name(level),
         }
     }
+    fn at(&self, level: usize) -> Option<u32> {
+        if level < self.0.len() { self.0.at(level) } else { None }
+    }
 }
 
 /// The names `show_prec` sees: the context's, then the binders it is under.
 struct Ns<'a, S: Scope + ?Sized> {
     outer: &'a S,
     inner: Vec<Name>,
+    /// Mark the context's locals whose names another has (`show_marked`).
+    mark_locals: bool,
 }
 
 impl<S: Scope + ?Sized> Ns<'_, S> {
@@ -1873,8 +1938,149 @@ impl<S: Scope + ?Sized> Ns<'_, S> {
 /// Render a core term for error messages. `names` are the local variable
 /// names, innermost last.
 pub fn show<S: Scope + ?Sized>(g: &Globals, names: &S, t: &Tm) -> String {
-    let mut ns = Ns { outer: names, inner: Vec::new() };
+    let mut ns = Ns { outer: names, inner: Vec::new(), mark_locals: false };
     show_prec(g, &mut ns, t, 0)
+}
+
+thread_local! {
+    /// Whether `show_prec` marks the globals it names (`show_marked`).
+    static MARKING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Starts a global's mark: `MARK kind id MARK_NAME name MARK_END`, where
+/// `kind` is `d` (a definition), `t` (a type) or `c` (a constructor); or
+/// a local's, `MARK v level.at.hidden MARK_NAME name MARK_END`.
+const MARK: char = '\u{1}';
+const MARK_NAME: char = '\u{2}';
+const MARK_END: char = '\u{3}';
+
+/// A global as named in a message: by `show_marked`, marked with which
+/// declaration it is, so a diagnostic can tell apart two of the same name
+/// (`unmark`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Marked {
+    Def(DefId),
+    Ty(TyId),
+    Con(ConId),
+    /// A local of the context, one of several of its name there: its
+    /// level, where it is bound, and, if a later local of its name hides
+    /// it, where that one is bound.
+    /// `avoid` has bit `k - 1` set when a local of the context is named
+    /// this name followed by `k` (`a1`): a number to show it by isn't one.
+    Var { level: u32, at: Option<u32>, hidden_by: Option<Option<u32>>, avoid: u64 },
+}
+
+fn global(m: Marked, name: &str) -> String {
+    if !MARKING.with(|c| c.get()) {
+        return name.to_string();
+    }
+    let id = match m {
+        Marked::Def(d) => format!("d{}", d.0),
+        Marked::Ty(t) => format!("t{}", t.0),
+        Marked::Con(c) => format!("c{}", c.0),
+        Marked::Var { level, at, hidden_by, avoid } => {
+            let pos = |a: Option<u32>| a.map_or("-".to_string(), |a| a.to_string());
+            match hidden_by {
+                Some(by) => format!("v{level}.{}.h{}.{avoid}", pos(at), pos(by)),
+                None => format!("v{level}.{}.s.{avoid}", pos(at)),
+            }
+        }
+    };
+    format!("{MARK}{id}{MARK_NAME}{name}{MARK_END}")
+}
+
+/// The local at `level` of the context, named `name`, as a message names
+/// it: marked when another local of the context has its name.
+fn local<S: Scope + ?Sized>(ls: &S, level: usize, name: &Name) -> String {
+    if !MARKING.with(|c| c.get()) {
+        return name.to_string();
+    }
+    let same = |l: &usize| ls.name(*l) == name;
+    if level >= ls.len() || (0..ls.len()).filter(same).nth(1).is_none() {
+        return name.to_string();
+    }
+    let hidden_by = (level + 1..ls.len()).rev().find(same).map(|l| ls.at(l));
+    let mut avoid = 0u64;
+    for l in 0..ls.len() {
+        if let Some(k) = ls.name(l).strip_prefix(&**name).and_then(|k| k.parse::<u32>().ok()).filter(|k| (1..=64).contains(k)) {
+            avoid |= 1 << (k - 1);
+        }
+    }
+    global(Marked::Var { level: level as u32, at: ls.at(level), hidden_by, avoid }, name)
+}
+
+/// `show`, with each global it names marked with its declaration: text for
+/// a diagnostic, which `unmark` turns into names. A local of the context
+/// whose name another has is marked too, with where each is bound, as far
+/// as `names` knows (`Scope::at`).
+pub fn show_marked<S: Scope + ?Sized>(g: &Globals, names: &S, t: &Tm) -> String {
+    let was = MARKING.with(|c| c.replace(true));
+    let mut ns = Ns { outer: names, inner: Vec::new(), mark_locals: true };
+    let s = show_prec(g, &mut ns, t, 0);
+    MARKING.with(|c| c.set(was));
+    s
+}
+
+/// The globals marked in `s`, with their names, in order.
+pub fn marks(s: &str) -> Vec<(Marked, String)> {
+    let mut out = Vec::new();
+    unmark(s, &mut |m, n| {
+        out.push((m, n.to_string()));
+        n.to_string()
+    });
+    out
+}
+
+/// `s` with its marks dropped: each global by its name as declared.
+pub fn plain(s: &str) -> String {
+    unmark(s, &mut |_, n| n.to_string())
+}
+
+/// `s` with each marked global replaced by `name(global, its name)`.
+pub fn unmark(s: &str, name: &mut dyn FnMut(Marked, &str) -> String) -> String {
+    if !s.contains(MARK) {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find(MARK) {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + MARK.len_utf8()..];
+        let parsed = after.find(MARK_NAME).and_then(|j| {
+            let k = after[j..].find(MARK_END)? + j;
+            let (kind, id) = after[..j].split_at(after[..j].char_indices().nth(1).map_or(j, |x| x.0));
+            let m = match kind {
+                "d" => Marked::Def(DefId(id.parse().ok()?)),
+                "t" => Marked::Ty(TyId(id.parse().ok()?)),
+                "c" => Marked::Con(ConId(id.parse().ok()?)),
+                "v" => {
+                    let mut p = id.split('.');
+                    let pos = |a: &str| if a == "-" { Some(None) } else { a.parse().ok().map(Some) };
+                    let level = p.next()?.parse().ok()?;
+                    let at = pos(p.next()?)?;
+                    let hidden_by = match p.next()? {
+                        "s" => None,
+                        h => Some(pos(h.strip_prefix('h')?)?),
+                    };
+                    let avoid = p.next()?.parse().ok()?;
+                    Marked::Var { level, at, hidden_by, avoid }
+                }
+                _ => return None,
+            };
+            Some((m, &after[j + MARK_NAME.len_utf8()..k], &after[k + MARK_END.len_utf8()..]))
+        });
+        match parsed {
+            Some((m, n, next)) => {
+                out.push_str(&name(m, n));
+                rest = next;
+            }
+            None => {
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn fresh<S: Scope + ?Sized>(ns: &Ns<S>, x: &Name) -> Name {
@@ -1920,10 +2126,19 @@ fn paren(b: bool, s: String) -> String {
 
 fn show_prec<S: Scope + ?Sized>(g: &Globals, ns: &mut Ns<S>, t: &Tm, p: u8) -> String {
     match t {
-        Tm::Var(i) => ns.get(*i).map(|n| n.to_string()).unwrap_or_else(|| format!("#{i}")),
-        Tm::Def(d) => g.defs[d.0 as usize].name.to_string(),
-        Tm::TyCon(t) => g.tys[t.0 as usize].name.to_string(),
-        Tm::Con(c) => g.cons[c.0 as usize].name.to_string(),
+        Tm::Var(i) => {
+            let level = ns.len().wrapping_sub(1 + i);
+            match ns.get(*i) {
+                // A local of the context (not one bound inside `t`).
+                Some(n) if ns.mark_locals && level < ns.outer.len() => local(ns.outer, level, n),
+                Some(n) => n.to_string(),
+                None => format!("#{i}"),
+            }
+        }
+        Tm::Def(d) if is_anon_alias(g, *d) => g.defs[d.0 as usize].name.to_string(),
+        Tm::Def(d) => global(Marked::Def(*d), &g.defs[d.0 as usize].name),
+        Tm::TyCon(t) => global(Marked::Ty(*t), &g.tys[t.0 as usize].name),
+        Tm::Con(c) => global(Marked::Con(*c), &g.cons[c.0 as usize].name),
         Tm::Meta(m) => match g.meta(*m) {
             Some(v) => show_prec(g, ns, &quote(g, ns.len(), &v), p),
             // An unknown the checker has not worked out yet: by the
@@ -2029,12 +2244,14 @@ fn show_prec<S: Scope + ?Sized>(g: &Globals, ns: &mut Ns<S>, t: &Tm, p: u8) -> S
         }
         Tm::TyConApp(ty, args) => {
             let ti = &g.tys[ty.0 as usize];
+            // Its header's dictionaries are never shown (#385).
+            let args = &args[..args.len().min(ti.params.len() - ti.dicts)];
             if args.is_empty() {
-                return ti.name.to_string();
+                return global(Marked::Ty(*ty), &ti.name);
             }
             let s = format!(
                 "{} {}",
-                ti.name,
+                global(Marked::Ty(*ty), &ti.name),
                 args.iter().map(|a| show_prec(g, ns, a, 2)).collect::<Vec<_>>().join(" ")
             );
             paren(p > 1, s)
@@ -2056,11 +2273,11 @@ fn show_prec<S: Scope + ?Sized>(g: &Globals, ns: &mut Ns<S>, t: &Tm, p: u8) -> S
                 if Some(*c) == g.well_known.nil {
                     return "[]".into();
                 }
-                return ci.name.to_string();
+                return global(Marked::Con(*c), &ci.name);
             }
             let s = format!(
                 "{} {}",
-                ci.name,
+                global(Marked::Con(*c), &ci.name),
                 explicit.iter().map(|a| show_prec(g, ns, a, 2)).collect::<Vec<_>>().join(" ")
             );
             paren(p > 1, s)
@@ -2086,6 +2303,9 @@ fn show_prec<S: Scope + ?Sized>(g: &Globals, ns: &mut Ns<S>, t: &Tm, p: u8) -> S
                     paren(p > 0, format!("{} {o} {}", show_prec(g, ns, a, 2), show_prec(g, ns, b, 2)))
                 }
                 _ => {
+                    if let (Prim::Effect(_), [a]) = (pr, args.as_slice()) {
+                        return show_prec(g, ns, a, p);
+                    }
                     if let (Prim::Neg, [a]) = (pr, args.as_slice()) {
                         return format!("-{}", show_prec(g, ns, a, 2));
                     }

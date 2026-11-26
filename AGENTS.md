@@ -37,8 +37,12 @@ src/elab/expr.rs     bidirectional checking of expressions, blocks, `try`, `when
 src/elab/pattern.rs  `match` → case trees, exhaustiveness witnesses
 src/elab/index.rs    names for tools: each use, its definition, kind and hover text (`--json`, D120); `ckc index`, a package's (D161)
 src/elab/interval.rs arithmetic keeps constant bounds: ranges as anonymous refinements, joined branches, their array layouts (D135)
+src/range.rs         constant bounds of integers and their arithmetic: the elaborator's intervals (D135), native code's bounds from signatures (§14)
 src/elab/refine.rs   refinements inside types: inline and function-type refinements, implication, variance, E0262 (D71, D82–D87)
 src/elab/tyeq.rs     type equations `A == B` (#209): wanted at uses (E0294), given in bodies and `match` arms (classes, representatives), impossible cases
+src/elab/cowns.rs    a `when`'s cowns differ (§8.5): the obligation, types that differ for every instantiation; new cowns from calls (§7.1)
+src/elab/qualify.rs  names in diagnostics: two declarations (or locals) of one name told apart, as the module refers to each (§6 rule 8)
+src/elab/effects.rs  calls with effects (§7.1): given a capability or a `Sched`, each a value of its own to the prover (`Prim::Effect`)
 src/elab/eq.rs       `==` never compares functions: in compiled code, and through type parameters (D125)
 src/elab/descr.rs    showing values by type (#170): which type parameters get descriptors, closed over calls; E0293
 src/doc.rs           `ckc doc FILE`: a module's exported declarations and descriptions as JSON lines (§15.6, D131)
@@ -85,6 +89,7 @@ tests/packages.rs    packages end to end with local git repositories (M14)
 tests/parking.rs     waiting behaviours hold no thread, at several thread counts (M16)
 tests/stdin.rs       standard input that fails to read: `terminal.read_line` gives the error
 tests/scaling.rs     checking time and memory grow with the program, not its square: long operator chains, long `let` chains
+tests/deep_values.rs a failed `check` shows a value nested a million deep (its golden output would be megabytes)
 tests/std.rs         standard library on disk: `CHECKERS_STD`, edits without rebuilding, E0223/E0361, §16.3 lists every builtin
 tests/golden.rs      golden test runner (tests/parse, check, types, stage, run, stress, fmt, tool, doc; examples; tools; repository formatting)
 ```

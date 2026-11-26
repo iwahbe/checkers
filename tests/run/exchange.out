@@ -1,0 +1,5 @@
+-- stdout
+left right
+right left
+-- stderr
+-- exit 0

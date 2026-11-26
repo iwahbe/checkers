@@ -153,7 +153,7 @@ impl U<'_> {
                     format!("`{name}` holds a resource (`{ty}`), so it must be used exactly once, but `{fname}` never uses it"),
                     span,
                 )
-                .with_help(if ty.starts_with("Future ") {
+                .with_help(if crate::core::plain(ty).starts_with("Future ") {
                     "join it: a future of a resource is one too, joined exactly once"
                 } else {
                     "close it, or pass it on"
@@ -200,7 +200,7 @@ impl U<'_> {
                         )
                         .with_note("a closure that uses a resource must be called exactly once: called where it is made, bound with `let` and called once, or passed to a parameter declared `own`")
                         .with_help(format!("pass the closure to an `own` parameter (`f~own (Unit -> a)`), or make `{name}` a parameter of the closure")),
-                        None if ty.starts_with("Future ") => {
+                        None if crate::core::plain(ty).starts_with("Future ") => {
                             d.with_help("join it once: a future of a resource is one too, joined exactly once")
                         }
                         None => d.with_help("a resource can't be copied: each operation on it gives back the one to use next, `let (x, f) = op f`"),
@@ -433,6 +433,8 @@ impl U<'_> {
             Tm::Var(_) | Tm::Lit(_) | Tm::Def(_) | Tm::Con(_) | Tm::Univ(_) | Tm::TyCon(_) | Tm::Error => {}
             Tm::Tuple(v) | Tm::ConApp(_, v) => v.iter().for_each(|x| self.carried_into(x, depth, out)),
             Tm::Proj(x, _, _) | Tm::Field(x, _, _) => self.carried_into(x, depth, out),
+            // A call with effects is the call (§7.1).
+            Tm::PrimApp(Prim::Effect(_), v) => v.iter().for_each(|x| self.carried_into(x, depth, out)),
             Tm::Let(_, _, _, v, b) => {
                 self.carried_into(v, depth, out);
                 self.carried_into(b, depth + 1, out);

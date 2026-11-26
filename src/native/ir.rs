@@ -91,7 +91,7 @@ impl Op {
             Prim::Index => Op::Index,
             Prim::Par => Op::Par,
             Prim::When => Op::When,
-            Prim::Builtin(_) | Prim::Forall => return None,
+            Prim::Builtin(_) | Prim::Forall | Prim::Effect(_) => return None,
         })
     }
 }
@@ -136,7 +136,11 @@ impl<'g> Compiler<'g> {
     fn go(&self, t: &Tm) -> Ir {
         match t {
             Tm::Var(i) => Ir::Var(*i),
-            Tm::Def(d) => Ir::Global(*d),
+            // A constant known at compile time is its value (§8.9).
+            Tm::Def(d) => match crate::core::known_const(self.g, *d) {
+                Some(l) => Ir::Lit(lit_value(&l)),
+                None => Ir::Global(*d),
+            },
             // A constructor stored as its one kept field (#170), used as a
             // function: it returns that argument.
             Tm::Con(c) => match self.g.unboxed_field(*c) {
@@ -191,7 +195,7 @@ impl<'g> Compiler<'g> {
                     // One that computes nothing is put in: a dictionary
                     // stays known. A known function is bound by the `let`
                     // (below), so that it stays known too.
-                    if m == Mult::Zero || matches!(**a, Tm::Var(_) | Tm::Lit(_)) || known_dict(self.g, a) {
+                    if m == Mult::Zero || inert(self.g, a) || known_dict(self.g, a) {
                         return self.go(&subst(&body, &[(**a).clone()], 0));
                     }
                     return self.go(&Tm::Let(x.clone(), m, Rc::new(Tm::Error), a.clone(), Rc::new(body)));
@@ -307,6 +311,10 @@ impl<'g> Compiler<'g> {
             Tm::PrimApp(p, args) => {
                 if let (Prim::Par, [Tm::Tuple(xs)]) = (p, &args[..]) {
                     return Ir::Par(xs.iter().map(|x| self.compile(x)).collect());
+                }
+                // A call with effects is the call (§7.1).
+                if let (Prim::Effect(_), [x]) = (p, &args[..]) {
+                    return self.go(x);
                 }
                 // The flag: `Nat` subtraction (checked), or indexing an
                 // `Array U8`, always a bytes object (D133).
@@ -612,7 +620,7 @@ pub fn known_instance(g: &Globals, t: &Tm) -> Option<Tm> {
     let passed_kept: Vec<usize> = passed.iter().copied().filter(|p| mults[*p] != Mult::Zero).collect();
     let mut sorted = passed_kept.clone();
     sorted.sort_unstable();
-    let inert = |p: &usize| matches!(*spine[*p].0, Tm::Var(_) | Tm::Lit(_)) || known_dict(g, &spine[*p].0);
+    let inert = |p: &usize| inert(g, &spine[*p].0) || known_dict(g, &spine[*p].0);
     let computed: Vec<usize> = passed_kept.iter().copied().filter(|p| !inert(p)).collect();
     if sorted != kept || computed.windows(2).any(|w| w[0] >= w[1]) {
         return None;
@@ -666,6 +674,16 @@ pub fn known_instance(g: &Globals, t: &Tm) -> Option<Tm> {
         out = subst(b, &[(*a).clone()], 0);
     }
     Some(args.fold(out, |f, (a, i, m)| Tm::App(Rc::new(f), a, i, m)))
+}
+
+/// A term that computes nothing: a variable, a literal, or a constant whose
+/// value is known at compile time (which is compiled as that value, §8.9).
+pub fn inert(g: &Globals, t: &Tm) -> bool {
+    match t {
+        Tm::Var(_) | Tm::Lit(_) => true,
+        Tm::Def(d) => crate::core::known_const(g, *d).is_some(),
+        _ => false,
+    }
 }
 
 /// A dictionary computed by nothing but building dictionaries: a

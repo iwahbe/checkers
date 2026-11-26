@@ -15,6 +15,7 @@
 //! the instance for `t`'s type (or a dictionary in scope).
 
 use super::*;
+use crate::syntax::token::Op;
 use crate::syntax::ast::{Block, ClassMember, Constraint, Decl, DeclKind, Export, Expr, ExprKind, Ident, InstMember, PatKind, Pattern, Stmt};
 
 /// Where a declaration of a desugared module came from.
@@ -79,8 +80,8 @@ fn shadowed_param<'m>(m: &'m ClassMember, cparams: &[String]) -> Option<&'m Iden
 
 /// The class's parameters a function or lemma takes explicitly: a
 /// parameter with the name of one, of type `ghost Type`, is that type
-/// (#161). It isn't in the dictionary; an instance's member doesn't take
-/// it, and has the instance's type by that name.
+/// (#161). The dictionary doesn't hold it: its field, and an instance's
+/// member, take it as a `ghost` parameter, the instance's type there.
 fn pinned_params(m: &ClassMember, cparams: &[String]) -> Vec<String> {
     let (params, cs) = match m {
         ClassMember::Fn { params, constraints, .. } | ClassMember::Lemma { params, constraints, .. } => (params, constraints),
@@ -372,6 +373,10 @@ pub struct InstReq {
     /// Where it is asked for, for a check of the instance found through a
     /// refinement alias (#226).
     pub cx: Option<Rc<Cx>>,
+    /// For a type's header's clause (#385): the type.
+    pub of_type: Option<TyId>,
+    /// Asked in the signature of an instance's function or dictionary.
+    pub instance_sig: Option<DefId>,
 }
 
 /// A dictionary found through a refinement alias (#226): the instance of
@@ -580,6 +585,48 @@ fn con(name: &str, span: Span) -> Expr {
 fn app(f: Expr, a: Expr) -> Expr {
     let span = f.span;
     Expr { kind: ExprKind::App(Box::new(f), Box::new(a)), span }
+}
+
+/// An instance's member's parameters, each one that is the class's
+/// (#161) with the instance's type for it: one written `_` is named, by the
+/// class's name for it unless another parameter has that name, so that its
+/// type can be given.
+fn pinned_named(iparams: &[Ident], params: &[Ident], skip: &[usize], subst_ty: &dyn Fn(&str) -> Expr) -> (Vec<Ident>, Vec<(Ident, Expr)>) {
+    let mut all = iparams.to_vec();
+    let mut pinned = Vec::new();
+    for &k in skip {
+        if all[k].name == "_" {
+            let base = params[k].name.clone();
+            let mut name = base.clone();
+            let mut n = 1;
+            while all.iter().any(|p| p.name == name) {
+                name = format!("{base}{n}");
+                n += 1;
+            }
+            all[k].name = name;
+        }
+        pinned.push((all[k].clone(), subst_ty(&params[k].name)));
+    }
+    (all, pinned)
+}
+
+impl Elab {
+    /// An instance's member's parameters that are the class's (#161):
+    /// each `name~ghost Type` and `name == T`, `T` the instance's type for
+    /// it. A use passes the instance's type there, as its own body does.
+    fn pinned_constraints(&mut self, pinned: &[(Ident, Expr)]) -> Vec<Constraint> {
+        let mut out = Vec::new();
+        for (p, ty) in pinned {
+            let n = &p.name;
+            let s = self.synthetic_span(p.span);
+            out.push(Constraint::Typed { name: ident(n, s), mult: ast::Mult::Ghost, ty: con("Type", s) });
+            let text = format!("{n} == {}", self.src_text(ty.span));
+            self.text_override.insert((self.cur.clone(), s.start, s.end), text);
+            let eq = Expr { kind: ExprKind::Binary(Op::EqEq, Box::new(var(n, s)), Box::new(respan(ty, s))), span: s };
+            out.push(Constraint::Pred(eq));
+        }
+        out
+    }
 }
 
 /// `blk` with `let name = ty` first, for each of a class's parameters an
@@ -1183,15 +1230,19 @@ impl Elab {
                             _ => None,
                         })
                     };
+                    // A class's parameter it takes explicitly (#161) is a
+                    // `ghost` parameter of the field too (`None` here): the
+                    // instance's function takes it, as the class's does.
                     let pinned = pinned_params(mem, &pnames);
                     let mut missing = Vec::new();
-                    let mut tys = Vec::new();
+                    let mut tys: Vec<Option<Expr>> = Vec::new();
                     for p in params {
                         if pinned.contains(&p.name) {
+                            tys.push(None);
                             continue;
                         }
                         match typed(&p.name) {
-                            Some(t) => tys.push(t),
+                            Some(t) => tys.push(Some(t)),
                             None => missing.push(p.name.clone()),
                         }
                     }
@@ -1214,7 +1265,6 @@ impl Elab {
                     // Each parameter's `own` or `ghost` (D156 i): the field's type takes it the same way.
                     let mults: Vec<Mult> = params
                         .iter()
-                        .filter(|p| !pinned.contains(&p.name))
                         .map(|p| {
                             let m = constraints.iter().find_map(|c| match c {
                                 Constraint::Typed { name, mult, .. } if name.name == p.name => Some(*mult),
@@ -1229,7 +1279,7 @@ impl Elab {
                     // Its own type variables make the field polymorphic: an
                     // implicit, erased parameter of type `Type` each (M25).
                     let mut own = Vec::new();
-                    let refs: Vec<&Expr> = tys.iter().chain(std::iter::once(&rty)).collect();
+                    let refs: Vec<&Expr> = tys.iter().flatten().chain(std::iter::once(&rty)).collect();
                     method_vars(&refs, &pnames, &mut own);
                     let ren: HashMap<String, String> = own.iter().map(|v| (v.clone(), format!("'{v}"))).collect();
                     let to_q = |n: &str, s: Span| ren.get(n).map(|m| var(m, s));
@@ -1237,9 +1287,28 @@ impl Elab {
                     let nq = |_: &str, _: &str, _: Span| None;
                     let qrw = Rewrite { var: &to_q, con: &none, qualified: &nq };
                     let mut fty = qrw.expr(&frw.expr(&rty, &[]), &[]);
-                    for t in tys.into_iter().rev() {
-                        let span = t.span;
-                        fty = Expr { kind: ExprKind::Arrow(Box::new(qrw.expr(&frw.expr(&t, &[]), &[])), Box::new(fty)), span };
+                    for (t, p) in tys.into_iter().zip(params).rev() {
+                        fty = match t {
+                            Some(t) => {
+                                let span = t.span;
+                                Expr { kind: ExprKind::Arrow(Box::new(qrw.expr(&frw.expr(&t, &[]), &[])), Box::new(fty)), span }
+                            }
+                            // Named apart from the class's parameter, which
+                            // the rest of the type means by its name.
+                            None => {
+                                let span = p.span;
+                                Expr {
+                                    kind: ExprKind::Refine(Box::new(ast::RefineTy {
+                                        param: Some(ident(&format!("${}", p.name), span)),
+                                        own: false,
+                                        dom: con("Type", span),
+                                        arrow: Some((None, fty)),
+                                        preds: Vec::new(),
+                                    })),
+                                    span,
+                                }
+                            }
+                        };
                     }
                     // Its own class clauses (`Seq s`): implicit parameters
                     // of the field, the dictionaries each call passes, so
@@ -1283,7 +1352,7 @@ impl Elab {
                     // header, which is then its whole text, for hover).
                     let at_end = Span { start: mspan.end, end: mspan.end };
                     let mut call = Expr { kind: ExprKind::Field(Box::new(var("$d0", at_end)), Ident { name: f.name.clone(), span: at_end }), span: at_end };
-                    for p in params.iter().filter(|p| !pinned.contains(&p.name)) {
+                    for p in params {
                         call = app(call, var(&p.name, at_end));
                     }
                     // `std.string`'s `Debug` (#126): every type has an
@@ -1983,20 +2052,25 @@ impl Elab {
                         bad = true;
                         continue;
                     }
-                    // The class's parameters it takes explicitly (#161): not
-                    // the instance's, which has their types by those names.
+                    // The class's parameters it takes explicitly (#161): the
+                    // instance's function takes them too, each the instance's
+                    // type, which its body has by that name. Its own
+                    // signature is over the rest.
                     let pinned = pinned_params(cm, &cparams);
                     let skip: Vec<usize> = (0..params.len()).filter(|k| pinned.contains(&params[*k].name)).collect();
                     let pinned_types: Vec<(String, Expr)> = skip.iter().map(|k| (iparams[*k].name.clone(), subst_ty(&params[*k].name))).collect();
+                    let (all_iparams, named) = pinned_named(iparams, params, &skip, &subst_ty);
+                    let all_iparams = &all_iparams;
+                    let pinned_cs = self.pinned_constraints(&named);
                     let (params, iparams) = (&without(params, &skip), &without(iparams, &skip));
                     let constraints = &untyped(constraints, &pinned);
                     let mut map: HashMap<String, String> = params.iter().zip(iparams.iter()).map(|(a, b)| (a.name.clone(), b.name.clone())).collect();
-                    let mut taken: Vec<String> = iparams.iter().map(|p| p.name.clone()).chain(result.iter().map(|r| r.name.clone())).collect();
+                    let mut taken: Vec<String> = all_iparams.iter().map(|p| p.name.clone()).chain(result.iter().map(|r| r.name.clone())).collect();
                     taken.extend(head_vars.iter().cloned());
                     // The class's name for the result, if the instance names
                     // a parameter so (`fn debug s` for `-> s`), is another.
                     let result = match result {
-                        Some(r) if iparams.iter().any(|p| p.name == r.name) => {
+                        Some(r) if all_iparams.iter().any(|p| p.name == r.name) => {
                             let mut k = 1;
                             let fresh = loop {
                                 let n = format!("{}{k}", r.name);
@@ -2015,7 +2089,8 @@ impl Elab {
                     let mut cs = ctx_preds.clone();
                     let theirs = at_instance(constraints, &map, &|c| trw.constraints(&srw.constraints(c, &[]), &[]));
                     cs.extend(self.shown_here(foreign.as_deref(), constraints, theirs, span));
-                    let mut bound: Vec<String> = iparams.iter().map(|p| p.name.clone()).collect();
+                    cs.extend(pinned_cs.iter().cloned());
+                    let mut bound: Vec<String> = all_iparams.iter().map(|p| p.name.clone()).collect();
                     bound.extend(result.iter().map(|r| r.name.clone()));
                     let gname = gen(&name.name);
                     member_list.push((name.name.clone(), decls.len()));
@@ -2053,6 +2128,7 @@ impl Elab {
                             let mut ics = ctx_preds.clone();
                             // The class's types are the instance's (#133).
                             ics.extend(trw.constraints(&prw.constraints(&own, &[]), &[]));
+                            ics.extend(pinned_cs.iter().cloned());
                             let text = match foreign.as_deref() {
                                 Some(m) => self.text_in(m, cm.span()),
                                 None => self.src_text(cm.span()),
@@ -2070,7 +2146,7 @@ impl Elab {
                         kind: DeclKind::Fn {
                             partial: false,
                             name: ident(&gname, own_name),
-                            params: iparams.clone(),
+                            params: all_iparams.clone(),
                             result,
                             constraints: cs,
                             decreasing: decreasing.as_ref().map(|e| rw.expr(e, &bound)),
@@ -2110,12 +2186,16 @@ impl Elab {
                         bad = true;
                         continue;
                     }
+                    // The class's parameters it takes explicitly (#161), as
+                    // for a function: taken, each the instance's type.
                     let pinned = pinned_params(cm, &cparams);
                     let skip: Vec<usize> = (0..params.len()).filter(|k| pinned.contains(&params[*k].name)).collect();
                     let pinned_types: Vec<(String, Expr)> = skip.iter().map(|k| (iparams[*k].name.clone(), subst_ty(&params[*k].name))).collect();
+                    let (all_iparams, named) = pinned_named(&iparams, params, &skip, &subst_ty);
+                    let pinned_cs = self.pinned_constraints(&named);
                     let (params, iparams) = (&without(params, &skip), without(&iparams, &skip));
                     let constraints = &untyped(constraints, &pinned);
-                    let mut taken: Vec<String> = iparams.iter().map(|p| p.name.clone()).collect();
+                    let mut taken: Vec<String> = all_iparams.iter().map(|p| p.name.clone()).collect();
                     taken.extend(head_vars.iter().cloned());
                     let hyg = hygiene(constraints, &cparams, &taken);
                     let constraints = &rename_vars(constraints, &hyg);
@@ -2130,7 +2210,8 @@ impl Elab {
                     let mut cs = ctx_preds.clone();
                     let theirs = at_instance(constraints, &map, &|c| trw.constraints(&srw.constraints(c, &[]), &[]));
                     cs.extend(self.shown_here(foreign.as_deref(), constraints, theirs, span));
-                    let mut bound: Vec<String> = iparams.iter().map(|p| p.name.clone()).collect();
+                    cs.extend(pinned_cs);
+                    let mut bound: Vec<String> = all_iparams.iter().map(|p| p.name.clone()).collect();
                     let mut ls = Vec::new();
                     for (p, e) in lets {
                         ls.push((p.clone(), brw.expr(&trw.expr(&srw.expr(&prw.expr(e, &[]), &[]), &[]), &[])));
@@ -2149,7 +2230,7 @@ impl Elab {
                         export: Export::No,
                         kind: DeclKind::Lemma {
                             name: ident(&gname, name_span),
-                            params: iparams.clone(),
+                            params: all_iparams,
                             constraints: cs,
                             decreasing: decreasing.as_ref().map(|e| rw.expr(e, &bound)),
                             lets: ls,
@@ -2790,7 +2871,12 @@ impl Elab {
     /// What is known of `ty`: its type constructor and arguments.
     fn shape(&self, lvl: usize, ty: &Val) -> Shape {
         match self.force(ty) {
-            Val::TyCon(t, args) => Shape::Known(HeadKey::Ty(t), args.to_vec()),
+            // Without its header's dictionaries (#385): an instance's head
+            // names its parameters only.
+            Val::TyCon(t, args) => {
+                let ti = &self.g.tys[t.0 as usize];
+                Shape::Known(HeadKey::Ty(t), args[..args.len().min(ti.params.len() - ti.dicts)].to_vec())
+            }
             // A type constructor not applied to its last argument (`List`
             // for `Functor`, M25): `\y -> T … y`.
             Val::Lam(_, _, _, c) => {
@@ -2909,6 +2995,10 @@ impl Elab {
         for a in &args {
             t = Tm::App(Rc::new(t), Rc::new(quote(&self.g, req.lvl, a)), Icit::Impl, Mult::Zero);
         }
+        // The dictionary's parameters so far, as values: the variables,
+        // then the context's dictionaries.
+        let lvl_env = Rc::new((0..req.lvl).map(Val::var).collect::<Vec<_>>());
+        let mut env = args.clone();
         for (c, vs) in &inst.context {
             let ctys: Vec<Val> = vs.iter().map(|v| args[*v].clone()).collect();
             let d = match self.find_dict(req, *c, &ctys, depth + 1) {
@@ -2921,6 +3011,15 @@ impl Elab {
                     return Err(e);
                 }
             };
+            env.push(eval(&self.g, &lvl_env, &d));
+            t = Tm::App(Rc::new(t), Rc::new(d), Icit::Impl, Mult::Many);
+        }
+        // Its head's types' clauses (#385), implied in its context: found
+        // the same way, at the types asked for.
+        for ty in self.inst_implied.get(&inst.def).cloned().unwrap_or_default() {
+            let Val::TyCon(c, ctys) = self.force(&eval(&self.g, &Rc::new(env.clone()), &ty)) else { return Err("none".into()) };
+            let d = self.find_dict(req, c, &ctys, depth + 1)?;
+            env.push(eval(&self.g, &lvl_env, &d));
             t = Tm::App(Rc::new(t), Rc::new(d), Icit::Impl, Mult::Many);
         }
         // Its class's types are kept in the dictionary as descriptors, built
@@ -3022,7 +3121,7 @@ impl Elab {
             .tys
             .iter()
             .map(|t| {
-                let s = show(&self.g, &r.names.to_vec(), &quote(&self.g, r.lvl, t));
+                let s = crate::core::show_marked(&self.g, &r.names.to_vec(), &quote(&self.g, r.lvl, t));
                 if s.contains(' ') {
                     format!("({s})")
                 } else {
@@ -3111,6 +3210,68 @@ impl Elab {
         }
     }
 
+    /// Whether the type `e` writes may have a type with class clauses in
+    /// its header (#385): one named, or one in an alias named.
+    pub fn names_type_with_clauses(&self, e: &Expr) -> bool {
+        let names = std::cell::RefCell::new(Vec::new());
+        let none = |_: &str, _: Span| None;
+        let con = |n: &str, _: Span| {
+            names.borrow_mut().push(self.resolve(n, true));
+            None
+        };
+        let qualified = |m: &str, n: &str, _: Span| {
+            names.borrow_mut().push(self.resolve_qualified(m, n, true));
+            None
+        };
+        Rewrite { var: &none, con: &con, qualified: &qualified }.expr(e, &[]);
+        let mut seen = HashSet::new();
+        names.into_inner().into_iter().flatten().any(|s| self.sym_has_clauses(s, &mut seen))
+    }
+
+    fn sym_has_clauses(&self, s: Sym, seen: &mut HashSet<DefId>) -> bool {
+        match s {
+            Sym::Ty(t) => self.g.tys[t.0 as usize].dicts > 0,
+            Sym::Def(d) if self.alias_subject.contains_key(&d) && seen.insert(d) => {
+                self.g.defs[d.0 as usize].body.as_ref().is_some_and(|b| self.tm_has_clauses(b, seen))
+            }
+            _ => false,
+        }
+    }
+
+    fn tm_has_clauses(&self, t: &Tm, seen: &mut HashSet<DefId>) -> bool {
+        match t {
+            Tm::TyCon(id) | Tm::TyConApp(id, _) if self.g.tys[id.0 as usize].dicts > 0 => true,
+            Tm::Def(d) => self.sym_has_clauses(Sym::Def(*d), seen),
+            _ => t.any_sub(|x, _| self.tm_has_clauses(x, seen)),
+        }
+    }
+
+    /// A type's header's dictionary asked for in a signature (#385), at level
+    /// `lvl`: its type, if it is an implied clause there, one that mentions
+    /// the signature's names (and no unknowns, nor names bound inside the
+    /// type) and that nothing finds: neither a dictionary in scope nor an
+    /// instance. Else the dictionary is wanted as anywhere.
+    pub fn implied_clause(&mut self, r: &InstReq, lvl: usize) -> Option<Tm> {
+        if !matches!(self.force(&r.meta), Val::Neutral(Head::Meta(_), _)) {
+            return None;
+        }
+        let tys: Vec<Val> = r.tys.iter().map(|t| self.force(t)).collect();
+        let ty = zonk_metas(&self.g, r.lvl, &quote(&self.g, r.lvl, &Val::TyCon(r.class, tys.into())));
+        if has_meta(&ty) {
+            return None;
+        }
+        let mut free = std::collections::BTreeSet::new();
+        free_vars(&ty, 0, &mut free);
+        let inside = r.lvl.checked_sub(lvl)?;
+        if free.is_empty() || free.iter().any(|i| *i < inside) {
+            return None;
+        }
+        match self.find_dict(r, r.class, &r.tys, 0) {
+            Err(why) if why != "unknown" => Some(rename_free(&ty, 0, &|i| i - inside)),
+            _ => None,
+        }
+    }
+
     /// Find the dictionaries asked for so far. With `last`, report those
     /// whose type still isn't known.
     pub fn solve_instances(&mut self, last: bool) {
@@ -3169,18 +3330,20 @@ impl Elab {
                             // `\y -> List y` is `List`.
                             Val::Lam(_, _, _, c) => match self.force(&apply_closure(&self.g, &c, Val::var(r.lvl))) {
                                 Val::TyCon(t, args) if args.len() == 1 => self.g.tys[t.0 as usize].name.to_string(),
-                                _ => show(&self.g, &r.names.to_vec(), &quote(&self.g, r.lvl, t)),
+                                _ => crate::core::show_marked(&self.g, &r.names.to_vec(), &quote(&self.g, r.lvl, t)),
                             },
-                            _ => show(&self.g, &r.names.to_vec(), &quote(&self.g, r.lvl, t)),
+                            _ => crate::core::show_marked(&self.g, &r.names.to_vec(), &quote(&self.g, r.lvl, t)),
                         })
                         .collect();
                     let args: Vec<String> = shown.iter().map(|s| if s.contains(' ') { format!("({s})") } else { s.clone() }).collect();
                     let clause = format!("{cname} {}", args.join(" "));
                     let several = tys.len() > 1;
                     let param = tys.iter().zip(&shown).find(|(t, _)| matches!(self.force(t), Val::Neutral(Head::Var(_), _)));
-                    let needs = match &via {
-                        Some(text) => format!("needs `{clause}`, for `instance {text}`"),
-                        None => format!("needs `{clause}`"),
+                    let needs = match (&via, r.of_type) {
+                        (Some(text), _) => format!("needs `{clause}`, for `instance {text}`"),
+                        // A type's header's (#385).
+                        (None, Some(t)) => format!("`{}` needs `{clause}`", self.g.tys[t.0 as usize].name),
+                        (None, None) => format!("needs `{clause}`"),
                     };
                     let could = if why == "unknown" { self.undecided(&r) } else { Vec::new() };
                     let d = if why == "unknown" {
@@ -3191,7 +3354,7 @@ impl Elab {
                     } else if let Some((_, p)) = param {
                         // In an instance, its members have the class's
                         // signatures: the clause goes in its context.
-                        let help = match r.owner.and_then(|o| self.instance_header(o)) {
+                        let help = match r.owner.or(r.instance_sig).and_then(|o| self.instance_header(o)) {
                             Some(h) if h.contains(" : ") => format!("add `{clause}` to the instance's context: `{h}, {clause}`"),
                             Some(h) => format!("add `{clause}` to the instance's context: `{h} : {clause}`"),
                             None => format!("add `{clause}` to the function's signature"),
@@ -3213,6 +3376,11 @@ impl Elab {
                             .with_help(format!("declare `instance {cname} …` for this type, {where_}"))
                     };
                     self.err(d);
+                    // What follows from the dictionary not being found
+                    // follows from this error (D141 c).
+                    if let Val::Neutral(Head::Meta(m), _) = force_meta(&self.g, r.meta.clone()) {
+                        self.blamed.insert(m);
+                    }
                 }
             }
         }
@@ -3320,8 +3488,8 @@ impl Elab {
                     self.waiting_late.push((l, a, b, span, names, directed));
                 }
                 Err(_) => {
-                    let e = show(&self.g, &names.to_vec(), &self.reduce_assoc(l, &quote(&self.g, l, &a)));
-                    let f = show(&self.g, &names.to_vec(), &self.reduce_assoc(l, &quote(&self.g, l, &b)));
+                    let e = crate::core::show_marked(&self.g, &names.to_vec(), &self.reduce_assoc(l, &quote(&self.g, l, &a)));
+                    let f = crate::core::show_marked(&self.g, &names.to_vec(), &self.reduce_assoc(l, &quote(&self.g, l, &b)));
                     self.err(Diagnostic::error("E0201", format!("type mismatch: expected `{e}`, found `{f}`"), span));
                 }
             }
@@ -3368,6 +3536,8 @@ impl Elab {
             assoc: None,
             fallback: self.sig_inst.clone().filter(|f| f.class == tid),
             cx: (self.in_spec == 0).then(|| Rc::new(cx.clone())),
+            of_type: None,
+            instance_sig: self.instance_sig,
         });
     }
 }

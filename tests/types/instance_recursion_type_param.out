@@ -1,0 +1,7 @@
+error[E0294]: `Count Int.count` needs `a == Int`, but here `a` is `Ones`
+  --> instance_recursion_type_param.ck:65:26
+   |
+65 |             _ :: rest -> count rest Ones
+   |                          ^^^^^^^^^^^^^^^
+
+instance_recursion_type_param.ck: 1 error, 0 warnings

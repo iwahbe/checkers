@@ -3,7 +3,7 @@ error[E0456]: cannot prove that `Make.make 5` is a `Nat` (`(Make.make 5) >= 0`)
    |
 11 |     Make.make 5
    |     ^^^^^^^^^^^ `Make` at `Nat` runs `Int`'s instance, and its `make` isn't shown to give a `Nat` here
-   = note: `Make Int.make` is sealed in `class_home.alias`: here the prover knows only its postconditions and the lemmas you bring in with `have`
+   = note: `Make Int.make` is sealed in `class_home.alias`: here the prover knows only its postconditions, the values of its calls known at compile time, and the lemmas you bring in with `have`
    = help: use `Int` here and check the result where a `Nat` is needed; or promise it in a signature of `instance Make Int`'s `make`
 
 class_alias_sealed.ck: 1 error, 0 warnings
