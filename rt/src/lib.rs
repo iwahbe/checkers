@@ -11,6 +11,7 @@ pub mod array;
 pub mod behav;
 pub mod blocking;
 pub mod builtins;
+pub mod confine;
 pub mod desc;
 pub mod entry;
 pub mod fiber;

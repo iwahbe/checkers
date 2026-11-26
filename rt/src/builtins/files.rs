@@ -29,7 +29,10 @@ pub const TABLE: &[Builtin] = &[
 
 builtin!(ckb_files_read, |a| match path(a[1], s(a[0])) {
     Err(e) => err(e),
-    Ok(p) => blocking(move || match std::fs::read(p) {
+    Ok(p) => blocking(move || match p.open().and_then(|mut f| {
+        let mut v = Vec::new();
+        f.read_to_end(&mut v).map(|_| v)
+    }) {
         Ok(bytes) => ok(new_bytes(&bytes)),
         Err(e) => err(describe_io(&e)),
     }),
@@ -39,20 +42,25 @@ builtin!(ckb_files_write, |a| match path(a[2], s(a[0])) {
     Err(e) => err(e),
     Ok(p) => {
         let contents = b(a[1]).to_vec();
-        blocking(move || match std::fs::write(p, contents) {
+        blocking(move || match p.create().and_then(|mut f| f.write_all(&contents)) {
             Ok(()) => ok(UNIT),
             Err(e) => err(describe_io(&e)),
         })
     }
 });
 
-builtin!(ckb_files_within, |a| match path(a[1], s(a[0])) {
-    Ok(dir) => new_obj(Obj::Fs(dir)),
-    // A directory outside the capability: confine to nothing usable.
-    Err(e) => {
-        drop_w(e);
-        new_obj(Obj::Fs(PathBuf::from("/nonexistent-checkers-confined")))
-    }
+// `dir` as a path in `fs`, opened beneath it now if it is there, else the
+// first time it is used and there; held open after that (`crate::confine`).
+builtin!(ckb_files_within, |a| {
+    let parent = match obj(a[1]) {
+        Some(Obj::Fs(root)) => Some(root.clone()),
+        _ if a[1] == CAP_FS => None,
+        _ => bug("expected a file system capability"),
+    };
+    let root = std::sync::Arc::new(Root::new(parent, s(a[0])));
+    let r = root.clone();
+    blocking(move || r.try_open());
+    new_obj(Obj::Fs(root))
 });
 
 builtin!(ckb_files_describe, |a| match obj(a[0]) {
@@ -62,12 +70,12 @@ builtin!(ckb_files_describe, |a| match obj(a[0]) {
 
 builtin!(ckb_files_open, |a| match path(a[1], s(a[0])) {
     Err(e) => err(e),
-    Ok(p) => blocking(move || file_result(std::fs::File::open(p), false)),
+    Ok(p) => blocking(move || file_result(p.open(), false)),
 });
 
 builtin!(ckb_files_create, |a| match path(a[1], s(a[0])) {
     Err(e) => err(e),
-    Ok(p) => blocking(move || file_result(std::fs::File::create(p), true)),
+    Ok(p) => blocking(move || file_result(p.create(), true)),
 });
 
 builtin!(ckb_files_close, |a| {
@@ -178,11 +186,7 @@ builtin!(ckb_files_flush, |a| {
 
 builtin!(ckb_files_create_dirs, |a| match path(a[1], s(a[0])) {
     Err(e) => err(e),
-    // `create_dir_all` takes a path's parent to be the path without its last
-    // component, which for `out/.` is nothing: it then asks for `out/.` in an
-    // `out` that isn't there. Without its `.` components the path names the
-    // same directory, and its parents are the ones to create.
-    Ok(p) => blocking(move || match std::fs::create_dir_all(p.components().collect::<std::path::PathBuf>()) {
+    Ok(p) => blocking(move || match p.create_dirs() {
         Ok(()) => ok(UNIT),
         Err(e) => err(describe_io(&e)),
     }),
@@ -190,19 +194,9 @@ builtin!(ckb_files_create_dirs, |a| match path(a[1], s(a[0])) {
 
 builtin!(ckb_files_list, |a| match path(a[1], s(a[0])) {
     Err(e) => err(e),
-    Ok(p) => blocking(move || match std::fs::read_dir(p) {
+    Ok(p) => blocking(move || match p.list() {
         Err(e) => err(describe_io(&e)),
-        Ok(rd) => {
-            let mut es = Vec::new();
-            for e in rd {
-                match e {
-                    Ok(e) => {
-                        let dir = e.file_type().is_ok_and(|t| t.is_dir());
-                        es.push((e.file_name().to_string_lossy().into_owned(), dir));
-                    }
-                    Err(e) => return err(describe_io(&e)),
-                }
-            }
+        Ok(mut es) => {
             es.sort();
             ok(list(es.into_iter().map(|(n, d)| entry(&n, d)).collect()))
         }

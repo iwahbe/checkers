@@ -5,7 +5,6 @@ use crate::word::*;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use std::io::{BufRead, Write};
-use std::path::PathBuf;
 use std::sync::atomic::AtomicPtr;
 use std::sync::{Arc, Mutex};
 
@@ -73,7 +72,7 @@ pub enum Obj {
     Killer(Arc<ChildCell>),
     IoErr(String),
     /// A file system capability confined to a directory (`files.within`).
-    Fs(PathBuf),
+    Fs(Arc<crate::confine::Root>),
     Cown(Arc<Cell>),
     /// `UNSET` until filled.
     Future(Arc<Cell>),
