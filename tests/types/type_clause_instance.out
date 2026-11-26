@@ -1,8 +1,1 @@
-error[E0284]: no instance of `Seq` for `s`
-  --> type_clause_instance.ck:19:17
-   |
-19 | instance Sized (Boxed s)
-   |                 ^^^^^ `s` is a type parameter
-   = help: add `Seq s` to the instance's context: `instance Sized (Boxed s) : Seq s`
-
-type_clause_instance.ck: 1 error, 0 warnings
+type_clause_instance.ck: 0 errors, 0 warnings

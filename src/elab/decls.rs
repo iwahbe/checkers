@@ -1235,10 +1235,13 @@ impl Elab {
             cx.bind(a, v, Mult::Zero);
             fields.push((Rc::from(a.as_str()), Mult::Zero, Icit::Impl, mv));
         }
+        let is_class = self.class_defs.contains_key(&tid);
         for n in names {
             let (ty, mult) = match Self::typed_constraint(cs, &n.name) {
                 Some((e, m)) => {
-                    let ty = self.elab_type(&mut cx, e);
+                    // A class's function (#385): its implied clauses are
+                    // implicit parameters of its field, as of the function.
+                    let ty = if is_class { self.member_type(&mut cx, e) } else { self.elab_type(&mut cx, e) };
                     let mult = Self::mult_of(m);
                     if mult == Mult::One {
                         self.check_own(&cx, &ty, e.span);
@@ -1895,10 +1898,47 @@ impl Elab {
     /// for each found, since one may need another (`Ord (Seq.Elem s)` after
     /// `Seq s`).
     fn bind_implied(&mut self, cx: &mut Cx, binders: &mut Vec<(Name, Mult, Icit, Tm)>, inner: &mut Vec<usize>, e: &Expr) {
-        if self.instance_sig.is_some() || !self.names_type_with_clauses(e) {
-            return;
+        for (name, ty) in self.implied_into(cx, e) {
+            inner.push(binders.len());
+            binders.push((name, Mult::Many, Icit::Impl, ty));
         }
-        let first = binders.len();
+    }
+
+    /// A class's function's field type (`'a ~ Type -> {'$c0 ~ C a} -> x~A ->
+    /// B`, as desugared): after its own type variables and clauses, the
+    /// implied clauses of the rest (#385), as implicit parameters, so the
+    /// field's type is the function's.
+    fn member_type(&mut self, cx: &mut Cx, e: &Expr) -> Tm {
+        if let ExprKind::Refine(r) = &e.kind {
+            if let (Some(p), Some((None, rest))) = (&r.param, &r.arrow) {
+                if p.name.starts_with('\'') {
+                    let a = self.elab_type(cx, &r.dom);
+                    let av = self.eval(cx, &a);
+                    let m = if self.class_clause(&r.dom).is_some() { Mult::Many } else { Mult::Zero };
+                    cx.bind(&p.name, av, m);
+                    let b = self.member_type(cx, rest);
+                    cx.pop();
+                    return Tm::Pi(Rc::from(&p.name[1..]), m, Icit::Impl, Rc::new(a), Rc::new(b));
+                }
+            }
+        }
+        let implied = self.implied_into(cx, e);
+        let mut t = self.elab_type(cx, e);
+        for (name, ty) in implied.into_iter().rev() {
+            cx.pop();
+            t = Tm::Pi(name, Mult::Many, Icit::Impl, Rc::new(ty), Rc::new(t));
+        }
+        t
+    }
+
+    /// The implied clauses of the type `e` (#385), each bound in `cx` as a
+    /// dictionary: their names and types, each over the locals before it.
+    pub fn implied_into(&mut self, cx: &mut Cx, e: &Expr) -> Vec<(Name, Tm)> {
+        let mut out: Vec<(Name, Tm)> = Vec::new();
+        if !self.names_type_with_clauses(e) {
+            return out;
+        }
+        let mut bound: Vec<Val> = Vec::new();
         loop {
             let found = self.trial(|el| {
                 let saved = el.type_dict_reqs.replace(Vec::new());
@@ -1910,22 +1950,20 @@ impl Elab {
                 let reqs = std::mem::replace(&mut el.type_dict_reqs, saved).unwrap_or_default();
                 reqs.iter().find_map(|r| el.implied_clause(r, probe.lvl()))
             });
-            let Some(ty) = found else { return };
-            let v = self.eval(cx, &ty);
+            let Some(ty) = found else { break };
             // Bound already and still not found: the dictionary in scope
             // doesn't serve it; it is wanted, and reported, as anywhere.
-            let again = (first..binders.len()).any(|b| {
-                let bv = eval(&self.g, &Rc::new(cx.env[..b].to_vec()), &binders[b].3);
-                format!("{:?}", quote(&self.g, cx.lvl(), &bv)) == format!("{:?}", ty)
-            });
-            if again {
-                return;
+            let shown = format!("{ty:?}");
+            if bound.iter().any(|b| format!("{:?}", quote(&self.g, cx.lvl(), b)) == shown) {
+                break;
             }
-            let name = format!("$i{}", binders.len());
-            cx.bind(&name, v, Mult::Many);
-            inner.push(binders.len());
-            binders.push((Rc::from(name.as_str()), Mult::Many, Icit::Impl, ty));
+            let v = self.eval(cx, &ty);
+            let name: Name = Rc::from(format!("$i{}", cx.lvl()).as_str());
+            cx.bind(&name, v.clone(), Mult::Many);
+            bound.push(v);
+            out.push((name, ty));
         }
+        out
     }
 
     /// Elaborate `fn name params -> result : constraints` into a context and Π-type.
@@ -2301,8 +2339,6 @@ impl Elab {
             let Some(Sym::Def(did)) = id else { continue };
             self.g.fuel.set(DEFAULT_FUEL);
             self.sig_inst = self.sig_inst_of(k);
-            // An instance's functions and its dictionary have the class's
-            // shapes: no implied clauses (#385); its context gives them.
             self.instance_sig = matches!(self.decl_origin.get(k), Some(super::classes::Origin::InstMember(_) | super::classes::Origin::InstDict(_))).then_some(*did);
             // An instance's function whose signature doesn't have the
             // class's shape (#225): the class's type.
@@ -2467,6 +2503,12 @@ impl Elab {
             if let DeclKind::Fn { partial: true, .. } = &d.kind {
                 self.g.defs[did.0 as usize].opaque = true;
             }
+            // An instance's dictionary's implied clauses (#385), from its
+            // head: found where it is used, after its context.
+            if matches!(self.decl_origin.get(k), Some(super::classes::Origin::InstDict(_))) && !sig.inner.is_empty() {
+                let tys = sig.inner.iter().map(|b| sig.binders[*b].3.clone()).collect();
+                self.inst_implied.insert(*did, tys);
+            }
             sigs.insert(k, sig);
         }
         self.sig_inst = None;
@@ -2612,8 +2654,6 @@ impl Elab {
             }
             self.g.fuel.set(DEFAULT_FUEL);
             self.sig_inst = self.sig_inst_of(k);
-            // An instance's functions and its dictionary have the class's
-            // shapes: no implied clauses (#385); its context gives them.
             self.instance_sig = matches!(self.decl_origin.get(k), Some(super::classes::Origin::InstMember(_) | super::classes::Origin::InstDict(_))).then_some(*did);
             let mut cx = sig.cx.clone();
             // The hypotheses are known while the conclusion is elaborated (M17).

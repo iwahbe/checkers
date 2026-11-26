@@ -859,9 +859,12 @@ pub struct Elab {
     pub class_local_calls: Vec<(MetaId, PendingPre)>,
     /// The instance whose member's signature is being elaborated (#146).
     pub sig_inst: Option<classes::SigInst>,
-    /// In the signature of an instance's function or dictionary: it. No
-    /// implied clauses there (#385).
+    /// In the signature of an instance's function or dictionary: it (for
+    /// messages: a missing clause goes in the instance's context).
     pub instance_sig: Option<DefId>,
+    /// Each instance's dictionary's implied clauses (#385), the types of
+    /// its implicit parameters after its context's: found as its context is.
+    pub inst_implied: HashMap<DefId, Vec<Tm>>,
     /// Comparisons waiting for a dictionary (#133): level, expected,
     /// actual, where, the locals' names.
     pub waiting: Vec<(usize, Val, Val, Span, Vec<Name>, bool)>,
@@ -1056,6 +1059,7 @@ impl Elab {
             class_local_calls: Vec::new(),
             sig_inst: None,
             instance_sig: None,
+            inst_implied: HashMap::new(),
             waiting: Vec::new(),
             waiting_late: Vec::new(),
             pending_classes: Vec::new(),

@@ -2995,6 +2995,10 @@ impl Elab {
         for a in &args {
             t = Tm::App(Rc::new(t), Rc::new(quote(&self.g, req.lvl, a)), Icit::Impl, Mult::Zero);
         }
+        // The dictionary's parameters so far, as values: the variables,
+        // then the context's dictionaries.
+        let lvl_env = Rc::new((0..req.lvl).map(Val::var).collect::<Vec<_>>());
+        let mut env = args.clone();
         for (c, vs) in &inst.context {
             let ctys: Vec<Val> = vs.iter().map(|v| args[*v].clone()).collect();
             let d = match self.find_dict(req, *c, &ctys, depth + 1) {
@@ -3007,6 +3011,15 @@ impl Elab {
                     return Err(e);
                 }
             };
+            env.push(eval(&self.g, &lvl_env, &d));
+            t = Tm::App(Rc::new(t), Rc::new(d), Icit::Impl, Mult::Many);
+        }
+        // Its head's types' clauses (#385), implied in its context: found
+        // the same way, at the types asked for.
+        for ty in self.inst_implied.get(&inst.def).cloned().unwrap_or_default() {
+            let Val::TyCon(c, ctys) = self.force(&eval(&self.g, &Rc::new(env.clone()), &ty)) else { return Err("none".into()) };
+            let d = self.find_dict(req, c, &ctys, depth + 1)?;
+            env.push(eval(&self.g, &lvl_env, &d));
             t = Tm::App(Rc::new(t), Rc::new(d), Icit::Impl, Mult::Many);
         }
         // Its class's types are kept in the dictionary as descriptors, built
