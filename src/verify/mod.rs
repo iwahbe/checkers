@@ -14,9 +14,9 @@ pub struct LedgerEntry {
     pub span: Span,
     pub how: &'static str,
     pub what: String,
-    pub hash: Option<u64>,
 }
 
+#[derive(Clone)]
 pub struct Verified {
     pub diags: Vec<Diagnostic>,
     pub ledger: Vec<LedgerEntry>,
@@ -144,7 +144,7 @@ pub fn modules_dir() -> Option<std::path::PathBuf> {
     cache_dir().map(|d| d.join("modules"))
 }
 
-const MODULE_HEADER: &str = "checkers module 2";
+const MODULE_HEADER: &str = "checkers module 3";
 
 /// The module verified under `key`, if it was.
 pub fn remembered(key: &str) -> Option<Remembered> {
@@ -163,7 +163,7 @@ pub fn remembered(key: &str) -> Option<Remembered> {
             warnings.push(unflatten(w)?);
             continue;
         }
-        let mut parts = l.splitn(5, ' ');
+        let mut parts = l.splitn(4, ' ');
         let start: u32 = parts.next()?.parse().ok()?;
         let end: u32 = parts.next()?.parse().ok()?;
         let how = match parts.next()? {
@@ -173,12 +173,8 @@ pub fn remembered(key: &str) -> Option<Remembered> {
             "smt" => "smt",
             _ => return None,
         };
-        let hash = match parts.next()? {
-            "-" => None,
-            h => Some(u64::from_str_radix(h, 16).ok()?),
-        };
         let what = parts.next()?.replace("\\n", "\n");
-        ledger.push(LedgerEntry { span: Span { start, end }, how, what, hash });
+        ledger.push(LedgerEntry { span: Span { start, end }, how, what });
     }
     Some(Remembered { ledger, proved, z3_version, warnings })
 }
@@ -237,8 +233,7 @@ pub fn remember(key: &str, v: &Verified) {
     }
     let mut out = format!("{MODULE_HEADER}\nproved {}\nz3 {}\n", v.proved, v.z3_version.as_deref().unwrap_or("-"));
     for x in &v.ledger {
-        let hash = x.hash.map(|h| format!("{h:x}")).unwrap_or_else(|| "-".into());
-        out += &format!("{} {} {} {hash} {}\n", x.span.start, x.span.end, x.how, x.what.replace('\n', "\\n"));
+        out += &format!("{} {} {} {}\n", x.span.start, x.span.end, x.how, x.what.replace('\n', "\\n"));
     }
     for d in v.diags.iter().filter(|d| d.code == "W022") {
         out += &format!("warning {}\n", flatten(d));
@@ -507,7 +502,7 @@ fn ask_all_out(texts: &[Option<String>]) -> Vec<Option<String>> {
     results.into_iter().map(|m| m.into_inner().unwrap_or_else(|e| e.into_inner())).collect()
 }
 
-/// FNV-1a, for the ledger's query hashes.
+/// FNV-1a, for the names of cached answers.
 fn fnv(s: &str) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in s.bytes() {
@@ -560,7 +555,34 @@ fn ends_everywhere(e: &Elab, obs: &[&Obligation]) {
 }
 
 /// Prove the obligations of module `user` (§7.2).
-pub fn verify(e: &Elab, user: &str) -> Verified {
+/// Module `user`'s proofs phase: its proofs (`proved`), after W022 for
+/// its branches that never run, which needs the program's unused code.
+pub fn proofs(e: &Elab, user: &str) -> Verified {
+    let mut v = proved(e, user);
+    let (asked0, reused0) = (ASKED.load(std::sync::atomic::Ordering::Relaxed), REUSED.load(std::sync::atomic::Ordering::Relaxed));
+    let mut diags = unreachable(e, user);
+    v.asked += ASKED.load(std::sync::atomic::Ordering::Relaxed) - asked0;
+    v.reused += REUSED.load(std::sync::atomic::Ordering::Relaxed) - reused0;
+    diags.append(&mut v.diags);
+    v.diags = diags;
+    v
+}
+
+/// Module `user`'s obligations proved: the first time, by `verify`; after
+/// that, as they were. A module is proved once per program, whether
+/// first for a value known at compile time (§8.9) or in the proofs phase.
+pub fn proved(e: &Elab, user: &str) -> Verified {
+    if let Some(v) = e.module_proofs.borrow().get(user) {
+        return v.clone();
+    }
+    e.proving.borrow_mut().insert(user.to_string());
+    let v = verify(e, user);
+    e.proving.borrow_mut().remove(user);
+    e.module_proofs.borrow_mut().insert(user.to_string(), v.clone());
+    v
+}
+
+fn verify(e: &Elab, user: &str) -> Verified {
     let obs: Vec<&Obligation> = e
         .obligations
         .iter()
@@ -570,18 +592,17 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     let mut v = Verified { diags: Vec::new(), ledger: Vec::new(), z3_version: None, proved: 0, asked: 0, reused: 0 };
     let (asked0, reused0) = (ASKED.load(std::sync::atomic::Ordering::Relaxed), REUSED.load(std::sync::atomic::Ordering::Relaxed));
     for t in e.admits.iter().filter(|t| t.module == user) {
-        v.ledger.push(LedgerEntry { span: t.span, how: "trusted", what: t.what.clone(), hash: None });
+        v.ledger.push(LedgerEntry { span: t.span, how: "trusted", what: t.what.clone() });
     }
     for t in e.builtin_axioms.iter().filter(|t| t.module == user) {
-        v.ledger.push(LedgerEntry { span: t.span, how: "axiom", what: t.what.clone(), hash: None });
+        v.ledger.push(LedgerEntry { span: t.span, how: "axiom", what: t.what.clone() });
     }
-    v.diags.extend(unreachable(e, user));
     v.diags.extend(vacuous(e, user));
     guess_measures(e, user, &mut v);
     for (m, span, _) in e.checks.iter().filter(|c| c.0 == user) {
         let _ = m;
         let text = e.sources.get(user).and_then(|f| f.text.get(span.start as usize..span.end as usize)).unwrap_or("");
-        v.ledger.push(LedgerEntry { span: *span, how: "computed", what: format!("check {}", text.trim()), hash: None });
+        v.ledger.push(LedgerEntry { span: *span, how: "computed", what: format!("check {}", text.trim()) });
     }
     if obs.is_empty() {
         return v;
@@ -592,7 +613,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     });
     for o in trivial {
         v.proved += 1;
-        v.ledger.push(LedgerEntry { span: o.span, how: "computed", what: describe(e, o), hash: None });
+        v.ledger.push(LedgerEntry { span: o.span, how: "computed", what: describe(e, o) });
     }
     if obs.is_empty() {
         return v;
@@ -631,7 +652,6 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     let bodies: Vec<bool> = queries.iter().map(|q| q.as_ref().is_ok_and(|q| q.without_bodies.is_some())).collect();
     // Left for the full query.
     let mut with_bodies = vec![false; obs.len()];
-    let first: Vec<Option<String>> = lean.iter().map(|t| t.as_ref().map(|t| with_limit(t, FIRST_RLIMIT))).collect();
     let mut answers: Vec<Option<Answer>> = firsts
         .into_iter()
         .enumerate()
@@ -646,9 +666,8 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
             _ => None,
         })
         .collect();
-    // The query that proved each obligation, as Z3 was given it.
-    let mut proof: Vec<Option<String>> =
-        answers.iter().zip(&first).map(|(a, t)| if matches!(a, Some(Answer::Unsat)) { t.clone() } else { None }).collect();
+    // The obligations a query has proved.
+    let mut proven: Vec<bool> = answers.iter().map(|a| matches!(a, Some(Answer::Unsat))).collect();
     // Z3 gave up: weaker queries, weakest first. `unsat` from a weaker query
     // is still a proof (§7.2).
     // 2. Definitions uninterpreted: fast when the facts in scope suffice.
@@ -682,7 +701,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
                     let t = w[tier]?;
                     // Asked already: proved, the same text as a weaker tier,
                     // or answered `sat` with the small limit.
-                    if proof[k].is_some() || w[..tier].contains(&Some(t)) || !gave_up[k][tier] {
+                    if proven[k] || w[..tier].contains(&Some(t)) || !gave_up[k][tier] {
                         return None;
                     }
                     Some(with_limit(t, limit))
@@ -690,7 +709,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
                 .collect();
             for (k, a) in ask_all(&ask_q).into_iter().enumerate() {
                 match a {
-                    Some(Answer::Unsat) => proof[k] = ask_q[k].clone(),
+                    Some(Answer::Unsat) => proven[k] = true,
                     Some(Answer::Sat(_)) => gave_up[k][tier] = false,
                     _ => {}
                 }
@@ -702,13 +721,13 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     let rest: Vec<Option<String>> = lean
         .iter()
         .enumerate()
-        .map(|(k, t)| if proof[k].is_some() || answers[k].is_some() || with_bodies[k] { None } else { t.clone() })
+        .map(|(k, t)| if proven[k] || answers[k].is_some() || with_bodies[k] { None } else { t.clone() })
         .collect();
     for (k, a) in ask_all(&rest).into_iter().enumerate() {
-        if proof[k].is_some() {
+        if proven[k] {
             answers[k] = Some(Answer::Unsat);
         } else if matches!(a, Some(Answer::Unsat)) {
-            proof[k] = rest[k].clone();
+            proven[k] = true;
             answers[k] = a;
         } else if bodies[k] && rest[k].is_some() {
             with_bodies[k] = true;
@@ -731,7 +750,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
             }
             match a {
                 Some(Answer::Unsat) => {
-                    proof[k] = full[k].clone();
+                    proven[k] = true;
                     answers[k] = a;
                     with_bodies[k] = false;
                 }
@@ -798,11 +817,9 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
         }
         match (q, a) {
             (Err(why), _) => v.diags.push(outside(e, &[o], &why.0)),
-            (Ok(q), Some(Answer::Unsat)) => {
+            (Ok(_), Some(Answer::Unsat)) => {
                 v.proved += 1;
-                // The query that was proved, as Z3 was given it.
-                let hash = Some(fnv(proof[k].as_ref().unwrap_or(&q.text)));
-                v.ledger.push(LedgerEntry { span: o.span, how: "smt", what: describe(e, o), hash });
+                v.ledger.push(LedgerEntry { span: o.span, how: "smt", what: describe(e, o) });
             }
             (Ok(q), Some(Answer::Sat(model))) => {
                 // A model of a query without the `forall` facts may break
@@ -982,7 +999,7 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
         let proved = |answers: &[Option<Answer>], ci: usize| {
             !obs[ci].is_empty() && answers[base[ci]..base[ci] + obs[ci].len()].iter().all(|a| matches!(a, Some(Answer::Unsat)))
         };
-        let mut chosen: Option<(usize, usize)> = None;
+        let mut chosen: Option<usize> = None;
         'tiers: for limit in [true, false] {
             for tier in [0..singles, singles..combos.len()] {
                 let ks: Vec<usize> = tier
@@ -996,7 +1013,7 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
                     answers[*k] = a;
                 }
                 if let Some(ci) = tier.clone().find(|ci| proved(&answers, *ci)) {
-                    chosen = Some((ci, base[ci]));
+                    chosen = Some(ci);
                     break 'tiers;
                 }
             }
@@ -1027,12 +1044,12 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
         }
         let first_call = gr.calls.first().map(|c| c.ob.span);
         match chosen {
-            Some((ci, at)) => {
-                for (o, t) in obs[ci].iter().zip(&texts[at..]) {
+            Some(ci) => {
+                for o in &obs[ci] {
                     v.proved += 1;
                     let mut what = describe(e, o);
                     what.push_str(" (guessed)");
-                    v.ledger.push(LedgerEntry { span: o.span, how: "smt", what, hash: t.as_ref().map(|t| fnv(t)) });
+                    v.ledger.push(LedgerEntry { span: o.span, how: "smt", what });
                 }
             }
             None => {
@@ -1691,8 +1708,7 @@ pub fn ledger_text(file: &crate::source::SourceFile, v: &Verified) -> String {
     entries.sort_by_key(|x| (x.span.start, x.how));
     for x in &entries {
         let (line, col) = file.line_col(x.span.start);
-        let hash = x.hash.map(|h| format!("  [{h:016x}]")).unwrap_or_default();
-        out += &format!("{}:{line}:{col}  {:<8} {}{hash}\n", file.name, x.how, x.what);
+        out += &format!("{}:{line}:{col}  {:<8} {}\n", file.name, x.how, x.what);
     }
     if let Some(z) = &v.z3_version {
         out += &format!("solver: {z}\n");

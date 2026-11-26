@@ -249,7 +249,7 @@ pub fn known_fn(g: &Globals, staged: Option<&crate::stage::Staged>, t: &Tm) -> b
             arity(g, staged, *d).is_some_and(|n| args.len() < n)
                 && args.iter().all(|(a, m)| {
                     *m == Mult::Zero
-                        || matches!(***a, Tm::Var(_) | Tm::Lit(_))
+                        || crate::native::ir::inert(g, a)
                         || crate::native::ir::known_dict(g, a)
                         || known_fn(g, staged, a)
                 })
