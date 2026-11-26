@@ -935,14 +935,27 @@ impl<'a> Builder<'a> {
         let z = self.zonk(env.len(), t);
         let t = &z;
         // A type equal to another by a type equation in scope (#209): its
-        // representative's sort, so both sides have one sort.
+        // representative's sort, so both sides have one sort. The equations
+        // are about the obligation's locals: an entry of `env` that is one
+        // (`@k`) is its level, any other (a callee's parameter, a body's
+        // binder) a level past them, which no equation mentions.
         if !self.reps.is_empty() && matches!(t.head(), Tm::Var(_) | Tm::Def(_) | Tm::Field(..)) {
-            let vars = Rc::new((0..env.len()).map(Val::var).collect::<Vec<_>>());
-            let v = eval(&self.e.g, &vars, t);
+            let n = self.ctx_src.len();
+            let vars: Vec<Val> = env
+                .iter()
+                .enumerate()
+                .map(|(k, e)| match e {
+                    Ent::Opaque(m) => m.strip_prefix('@').and_then(|l| l.parse().ok()).filter(|l| *l < n).map_or(Val::var(n + k), Val::var),
+                    _ => Val::var(n + k),
+                })
+                .collect();
+            let v = eval(&self.e.g, &Rc::new(vars), t);
             if let Some((_, r)) = self.reps.iter().find(|(m, _)| self.e.same_type_forced(m, &v)).cloned() {
-                let tm = quote(&self.e.g, env.len(), &r);
+                // The representative is about the obligation's locals too.
+                let tm = quote(&self.e.g, n, &r);
+                let locals: Vec<Ent> = (0..n).map(|k| Ent::Opaque(format!("@{k}"))).collect();
                 let saved = std::mem::take(&mut self.reps);
-                let s = self.sort_of(env, &tm);
+                let s = self.sort_of(&locals, &tm);
                 self.reps = saved;
                 return s;
             }
@@ -2323,7 +2336,7 @@ impl<'a> Builder<'a> {
                 }
                 let Sort::Data(id, sargs) = &xs else { return out("a field of a non-record") };
                 if *id != self.e.g.cons[c.0 as usize].ty {
-                    return Err(Outside::type_error());
+                    return Err(self.ill_sorted());
                 }
                 let fs = self.con_fields(*c, &self.sort_env(self.e.g.cons[c.0 as usize].ty, sargs))?;
                 let Some((_, s)) = fs.iter().find(|(k, _)| k == i).cloned() else {
@@ -2391,8 +2404,22 @@ impl<'a> Builder<'a> {
         if have == want || have.render(self.e) == want.render(self.e) {
             Ok(())
         } else {
-            Err(Outside::type_error())
+            Err(self.ill_sorted())
         }
+    }
+
+    /// A term whose parts' sorts don't fit its place: a type error (§7.3),
+    /// counted, since a program without type errors has none.
+    fn ill_sorted(&self) -> Outside {
+        self.e.ill_sorted.set(self.e.ill_sorted.get() + 1);
+        Outside::type_error()
+    }
+
+    /// A predicate: a term of sort `Bool`.
+    fn prop(&mut self, env: &[Ent], t: &Tm) -> Tx<String> {
+        let (t, s) = self.term(env, t)?;
+        self.expect(&s, &Sort::Bool)?;
+        Ok(t)
     }
 
     fn sort_env(&self, id: TyId, sargs: &[Sort]) -> Vec<Ent> {
@@ -3507,7 +3534,7 @@ impl<'a> Builder<'a> {
                     Ok((format!("({f} {} {})", ts[0].0, ts[1].0), s))
                 }
                 // Only strings, arrays and lists have `++`.
-                _ => Err(Outside::type_error()),
+                _ => Err(self.ill_sorted()),
             },
             Prim::Len => match &ts[0].1 {
                 Sort::Seq(_) => Ok((format!("(seq.len {})", ts[0].0), Sort::Int)),
@@ -3522,13 +3549,13 @@ impl<'a> Builder<'a> {
                     Ok((t, Sort::Int))
                 }
                 // Only strings, arrays and lists have `len`.
-                _ => Err(Outside::type_error()),
+                _ => Err(self.ill_sorted()),
             },
             Prim::Index => {
                 let elem = match &ts[0].1 {
                     Sort::Seq(e) => (**e).clone(),
                     Sort::Str => Sort::Int,
-                    _ => return Err(Outside::type_error()),
+                    _ => return Err(self.ill_sorted()),
                 };
                 let t = format!("(seq.nth {} {})", ts[0].0, ts[1].0);
                 // An element has its type's refinement (D133): a `U8` of
@@ -3600,7 +3627,7 @@ impl<'a> Builder<'a> {
                         continue;
                     }
                     if self.e.g.cons[con.0 as usize].ty != *id {
-                        return Err(Outside::type_error());
+                        return Err(self.ill_sorted());
                     }
                     let fs = self.con_fields(*con, &senv)?;
                     let mut env2 = env.to_vec();
@@ -4089,9 +4116,7 @@ impl<'a> Builder<'a> {
         penv.push(Ent::Opaque("the result".into()));
         // A `forall` (D137) is proved at each call; termination doesn't rest on it.
         for pred in spec.preds.iter().filter(|p| !p.is_post && !everywhere && !has_forall(&p.tm)) {
-            let (t, s) = self.term(&penv, &pred.tm)?;
-            self.expect(&s, &Sort::Bool)?;
-            conds.push(t);
+            conds.push(self.prop(&penv, &pred.tm)?);
         }
         Ok(match conds.len() {
             0 => None,
@@ -4155,9 +4180,9 @@ impl<'a> Builder<'a> {
             let mut pres = self.arg_domains(&p);
             let mut ok = true;
             for pred in spec.preds.iter().filter(|x| !x.is_post && !has_forall(&x.tm)) {
-                match self.term(&p.env, &pred.tm) {
-                    Ok((t, Sort::Bool)) => pres.push(t),
-                    _ => ok = false,
+                match self.prop(&p.env, &pred.tm) {
+                    Ok(t) => pres.push(t),
+                    Err(_) => ok = false,
                 }
             }
             if !ok {
@@ -4170,7 +4195,7 @@ impl<'a> Builder<'a> {
                 }
             }
             for pred in spec.preds.iter().filter(|x| x.is_post) {
-                if let Ok((t, Sort::Bool)) = self.term(&p.env, &pred.tm) {
+                if let Ok(t) = self.prop(&p.env, &pred.tm) {
                     goals.push(t);
                 }
             }
@@ -4243,9 +4268,9 @@ impl<'a> Builder<'a> {
                 // A `forall` precondition is proved at the call (D137), and
                 // Z3 can't use it in a guard without instantiating it.
                 for pred in spec.preds.iter().filter(|x| !x.is_post && !has_forall(&x.tm)) {
-                    match self.term(&p.env, &pred.tm) {
-                        Ok((t, Sort::Bool)) => pres.push(t),
-                        _ => ok = false,
+                    match self.prop(&p.env, &pred.tm) {
+                        Ok(t) => pres.push(t),
+                        Err(_) => ok = false,
                     }
                 }
                 if !ok {
@@ -4258,7 +4283,7 @@ impl<'a> Builder<'a> {
                     }
                 }
                 for pred in spec.preds.iter().filter(|x| x.is_post) {
-                    if let Ok((t, Sort::Bool)) = self.term(&p.env, &pred.tm) {
+                    if let Ok(t) = self.prop(&p.env, &pred.tm) {
                         goals.push(t);
                     }
                 }
