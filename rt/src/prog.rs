@@ -323,6 +323,11 @@ pub fn err(v: W) -> W {
     new_con(known_con(prog().known.err), &[v])
 }
 
+/// The owned word `x` in front of the owned list `l`.
+pub fn cons(x: W, l: W) -> W {
+    new_con(known_con(prog().known.cons), &[x, l])
+}
+
 /// A list of owned words.
 pub fn list(items: Vec<W>) -> W {
     list_onto(items, nullary(known_con(prog().known.nil)))
