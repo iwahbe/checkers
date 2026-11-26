@@ -380,6 +380,37 @@ pub fn concat_all(parts: &[W]) -> W {
     build(l, n, |_| items.next().unwrap())
 }
 
+/// The room, in bytes, for elements needing `need` (a multiple of 8) after
+/// an array with room `have`: as it is if they fit, else doubled, so
+/// appending a piece at a time copies the elements a logarithmic number of
+/// times; past what the header records, just what is needed.
+fn grown(need: usize, have: usize) -> usize {
+    if need <= have { have } else { doubled(need, have) }
+}
+
+/// `need` bytes or twice `have`, whichever is more, as long as the header
+/// can record it.
+fn doubled(need: usize, have: usize) -> usize {
+    let grown = need.max(have.saturating_mul(2));
+    if grown / 8 <= MAX_ROOM { grown } else { need }
+}
+
+/// `a ++ b` in a new array of layout `l` (packed, both's) with `bytes` of
+/// room (at least what they need, a multiple of 8).
+fn grown_copy(a: W, b: W, l: Layout, bytes: usize) -> W {
+    let (n, m, w) = (len(a), len(b), l.width());
+    let Some(size) = bytes.checked_add(HDR + 16) else { crate::fatal("out of memory") };
+    let r = if l == U8 { alloc_obj(info(K_BYTES, 0, 0), size) } else { alloc_obj(info(K_ARRAY, 0, l as u64), size) };
+    set_slot(r, 0, (n + m) as u64);
+    set_slot(r, 1, 0);
+    set_room(r, bytes);
+    unsafe {
+        std::ptr::copy_nonoverlapping(data(a), data(r), n * w);
+        std::ptr::copy_nonoverlapping(data(b), data(r).add(n * w), m * w);
+    }
+    r
+}
+
 /// `a ++ b`, `a` owned and `b` borrowed: when `a` is the only reference to
 /// its storage (not a slice, not `b`) and `b` has its layout, `b`'s elements
 /// are written after `a`'s in place, its memory grown if they don't fit;
@@ -413,20 +444,19 @@ pub fn concat_own(a: W, b: W) -> W {
         return dup(b);
     }
     let l = layout(a);
-    if l != layout(b) || a == b || is_slice(a) || !unique(a) {
-        let r = concat(a, b);
-        drop_w(a);
-        return r;
-    }
     let w = l.width();
     let have = room(a);
     let Some(need) = (n + m).checked_mul(w).and_then(|b| b.checked_next_multiple_of(8)) else { crate::fatal("out of memory") };
+    if l != layout(b) || a == b || is_slice(a) || !unique(a) {
+        // Others see `a`: a copy, which is a step of growth as much as
+        // `realloc` is, so it doubles the room too: a string built from a
+        // shared one (a literal, a character) grows as one of its own does.
+        let r = if l == layout(b) && l != Words { grown_copy(a, b, l, doubled(need, have)) } else { concat(a, b) };
+        drop_w(a);
+        return r;
+    }
     let a = if need > have {
-        // Double the room, so appending a piece at a time copies the
-        // elements a logarithmic number of times; past what the header
-        // records, just what is needed.
-        let grown = need.max(have.saturating_mul(2));
-        let new = if grown / 8 <= MAX_ROOM { grown } else { need };
+        let new = grown(need, have);
         let Some(size) = new.checked_add(HDR + 16) else { crate::fatal("out of memory") };
         let p = unsafe { std::alloc::realloc(a as *mut u8, std::alloc::Layout::from_size_align_unchecked(HDR + 16 + have, 8), size) };
         if p.is_null() {
@@ -528,6 +558,22 @@ mod tests {
         assert_eq!(U32.join(I32), I64);
         assert_eq!(U64.join(I8), Words);
         assert_eq!(Bool.join(U8), Words);
+    }
+
+    #[test]
+    fn shared_copy_grows() {
+        // `a ++ b` with `a` shared copies it, with room for twice `a`, so
+        // appending to the copy is in place.
+        let (a, b, c) = (new_bytes(b"q"), new_bytes(b"r"), new_bytes(b"stuvwxyz"));
+        let keep = dup(a);
+        let r = concat_own(a, b);
+        assert_eq!((len(r), room(r)), (2, 16));
+        let s = concat_own(r, c);
+        assert_eq!((s, len(s), room(s), blob(s)), (r, 10, 16, &b"qrstuvwxyz"[..]));
+        assert_eq!(blob(keep), b"q");
+        for x in [s, keep, b, c] {
+            drop_w(x);
+        }
     }
 
     #[test]
