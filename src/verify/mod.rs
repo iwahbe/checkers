@@ -285,6 +285,9 @@ fn ask_out(query: &str) -> String {
     };
     if let Some(out) = MEMO.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(query)).cloned() {
         REUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if std::env::var_os("CHECKERS_SMT_TIME").is_some() {
+            eprintln!("smt memo {:016x} {}", fnv(query), out.split_whitespace().next().unwrap_or("?"));
+        }
         return out;
     }
     let out = match cached(query) {
@@ -2004,13 +2007,22 @@ fn render_model(text: &str, shown: &[(String, String)], strings: &[String], arra
 mod platform_probe {
     #[test]
     fn probe_queries() {
+        if std::env::var_os("PROBE_CHILD").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "verify::platform_probe::probe_queries", "--nocapture", "--test-threads=1"])
+                .env("PROBE_CHILD", "1")
+                .output()
+                .unwrap();
+            println!("{}", String::from_utf8_lossy(&out.stdout));
+            println!("{}", String::from_utf8_lossy(&out.stderr));
+            panic!("probe: read the output above");
+        }
         std::env::set_var("CHECKERS_SMT_TIME", "1");
         std::env::set_var("CHECKERS_NO_CACHE", "1");
         for path in ["examples/wc.ck", "tests/tool/axioms.ck"] {
             let text = std::fs::read_to_string(path).unwrap();
             let c = crate::check(path, &text);
-            println!("== {path}\n{}", c.ledger.lines().last().unwrap_or(""));
+            eprintln!("== {path}\n{}", c.ledger.lines().last().unwrap_or(""));
         }
-        panic!("probe: read the output above");
     }
 }
