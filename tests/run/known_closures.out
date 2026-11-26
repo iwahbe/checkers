@@ -1,0 +1,7 @@
+-- stdout
+11
+("add scale ", 15)
+Some 2
+-- stderr
+checkers runtime: 0 objects live at exit
+-- exit 0

@@ -79,8 +79,10 @@ pub struct Gen<'p, M: Module> {
     slots: HashMap<u32, DataId>,
     /// String and bytes literals, by kind and content.
     lits: HashMap<(u64, Vec<u8>), DataId>,
-    /// Static values laid out so far, for naming the next.
+    /// Static data objects laid out so far, for naming the next.
     statics: usize,
+    /// Where each value laid out as static data is, by its hash.
+    placed: HashMap<u128, Placed>,
     /// Raw bytes (messages, digits).
     raw: HashMap<Vec<u8>, DataId>,
     pub invoke: FuncId,
@@ -100,6 +102,14 @@ pub struct Gen<'p, M: Module> {
     /// running out of stack happens in compiled code, where evaluation can
     /// stop safely, and not inside a runtime call.
     pub probe: bool,
+}
+
+/// Where a node of static data is.
+#[derive(Clone, Copy)]
+enum Placed {
+    Word(u64),
+    /// An object, at an offset in a data object.
+    Data(DataId, u32),
 }
 
 struct St {
@@ -385,6 +395,7 @@ impl<'p, M: Module> Gen<'p, M> {
             slots: HashMap::new(),
             lits: HashMap::new(),
             statics: 0,
+            placed: HashMap::new(),
             raw: HashMap::new(),
             invoke,
             wides: HashMap::new(),
@@ -461,47 +472,137 @@ impl<'p, M: Module> Gen<'p, M> {
         id
     }
 
-    /// Static data for a value known when the program is compiled: every
-    /// object it is made of, in one block that points into itself.
-    fn statik(&mut self, v: &Static) -> DataId {
-        let id = self.m.declare_data(&format!("ckd_{}", self.statics), Linkage::Local, true, false).expect("declare static data");
-        self.statics += 1;
-        let mut dd = DataDescription::new();
-        let me = self.m.declare_data_in_data(id, &mut dd);
-        let mut bytes = Vec::new();
-        let mut relocs = Vec::new();
-        let _root_at_0 = Self::lay_out(v, &mut bytes, &mut relocs);
-        dd.define(bytes.into_boxed_slice());
-        dd.set_align(8);
-        for (at, to) in relocs {
-            dd.write_data_addr(at as u32, me, to as i64);
+    /// Where node `id` of static data is: its word, or its object (a data
+    /// object and the offset in it). The nodes it reaches that no earlier
+    /// static data has are laid out in one new data object, parts first,
+    /// as immortal objects (§14); the rest, and literals' bytes, are the
+    /// objects already laid out, so equal values are one object in the
+    /// program. A loop over the nodes: any depth takes the same stack.
+    fn statik(&mut self, v: &Static, id: u32) -> Placed {
+        if let SNode::Word(x) = v.node(id) {
+            return Placed::Word(*x);
         }
-        self.m.define_data(id, &dd).expect("define static data");
-        id
+        if let Some(p) = self.placed.get(&v.hash_of(id)) {
+            return *p;
+        }
+        let data = self.m.declare_data(&format!("ckd_{}", self.statics), Linkage::Local, true, false).expect("declare static data");
+        self.statics += 1;
+        let mut out: Vec<u8> = Vec::new();
+        // Each word that points to an object: where, to which.
+        let mut relocs: Vec<(usize, DataId, u32)> = Vec::new();
+        let mut at: HashMap<u32, Placed> = HashMap::new();
+        for x in v.reachable(id) {
+            let h = v.hash_of(x);
+            let placed = match v.node(x) {
+                SNode::Word(w) => Placed::Word(*w),
+                _ if self.placed.contains_key(&h) => self.placed[&h],
+                SNode::Bytes(bs) if self.lits.contains_key(&(w::K_BYTES, bs.to_vec())) => Placed::Data(self.lits[&(w::K_BYTES, bs.to_vec())], 0),
+                SNode::Bytes(bs) => Placed::Data(data, Self::lay_out_bytes(w::K_BYTES, bs, &mut out) as u32),
+                SNode::Big(n) => Placed::Data(data, Self::lay_out_big(n, &mut out) as u32),
+                SNode::Global(d) => match self.p.defs.get(d).cloned() {
+                    Some(DefShape::Fn { func, .. }) => Placed::Data(self.closure(func), 0),
+                    Some(DefShape::Builtin { wrap, .. }) => Placed::Data(self.closure(wrap), 0),
+                    _ => unreachable!("a known closure of a function"),
+                },
+                SNode::ConFn(c) => {
+                    let f = self.p.con_wraps[c];
+                    Placed::Data(self.closure(f), 0)
+                }
+                SNode::Obj { kind, tag, fields } => {
+                    let off = out.len();
+                    out.extend_from_slice(&w::STATIC_RC.to_le_bytes());
+                    // A partial application's count is of its arguments, after
+                    // its function.
+                    let n = if *kind == w::K_PAP { fields.len() - 1 } else { fields.len() };
+                    out.extend_from_slice(&w::info(*kind, n as u64, *tag).to_le_bytes());
+                    for (k, f) in fields.iter().enumerate() {
+                        match at[f] {
+                            Placed::Word(word) => out.extend_from_slice(&word.to_le_bytes()),
+                            Placed::Data(d, o) => {
+                                relocs.push((off + w::HDR + 8 * k, d, o));
+                                out.extend_from_slice(&0u64.to_le_bytes());
+                            }
+                        }
+                    }
+                    Placed::Data(data, off as u32)
+                }
+                SNode::Array { layout, elems } => Placed::Data(data, self.lay_out_array(v, *layout, elems, &at, &mut out, &mut relocs) as u32),
+            };
+            if matches!(placed, Placed::Data(d, _) if d == data) {
+                self.placed.insert(h, placed);
+            }
+            at.insert(x, placed);
+        }
+        let mut dd = DataDescription::new();
+        dd.define(out.into_boxed_slice());
+        dd.set_align(8);
+        let mut gvs: HashMap<DataId, cranelift_codegen::ir::GlobalValue> = HashMap::new();
+        for (slot, d, o) in relocs {
+            let gv = *gvs.entry(d).or_insert_with(|| self.m.declare_data_in_data(d, &mut dd));
+            dd.write_data_addr(slot as u32, gv, o as i64);
+        }
+        self.m.define_data(data, &dd).expect("define static data");
+        at[&id]
     }
 
-    /// Append `v`'s objects to `out`, its own first; its word, as `Ok` (an
-    /// immediate) or `Err` (the offset of its object).
-    fn lay_out(v: &Static, out: &mut Vec<u8>, relocs: &mut Vec<(usize, usize)>) -> Result<u64, usize> {
-        let (kind, tag, fields) = match v {
-            Static::Word(x) => return Ok(*x),
-            Static::Str(s) => return Err(Self::lay_out_bytes(w::K_BYTES, s.as_bytes(), out)),
-            Static::Bytes(b) => return Err(Self::lay_out_bytes(w::K_BYTES, b, out)),
-            Static::Con(c, xs) => (w::K_CON, *c as u64, xs),
-            Static::Tuple(xs) => (w::K_TUPLE, 0, xs),
-        };
-        let at = out.len();
+    /// Append a `K_ARRAY` object to `out`: its length, `0` (not a slice),
+    /// then its elements, a word each or packed by `layout`. Its offset.
+    fn lay_out_array(&self, v: &Static, layout: u8, elems: &[u32], at: &HashMap<u32, Placed>, out: &mut Vec<u8>, relocs: &mut Vec<(usize, DataId, u32)>) -> usize {
+        use checkers_rt::array::Layout;
+        let l = Layout::of_code(layout as u64);
+        let off = out.len();
         out.extend_from_slice(&w::STATIC_RC.to_le_bytes());
-        out.extend_from_slice(&w::info(kind, fields.len() as u64, tag).to_le_bytes());
-        out.resize(at + w::HDR + 8 * fields.len(), 0);
-        for (k, f) in fields.iter().enumerate() {
-            let slot = at + w::HDR + 8 * k;
-            match Self::lay_out(f, out, relocs) {
-                Ok(word) => out[slot..slot + 8].copy_from_slice(&word.to_le_bytes()),
-                Err(obj) => relocs.push((slot, obj)),
+        out.extend_from_slice(&w::info(checkers_rt::array::K_ARRAY, 0, layout as u64).to_le_bytes());
+        out.extend_from_slice(&(elems.len() as u64).to_le_bytes());
+        out.extend_from_slice(&0u64.to_le_bytes());
+        for e in elems {
+            // A packed element's number (or truth).
+            let n = || -> i128 {
+                match v.node(*e) {
+                    SNode::Word(x) if w::is_int(*x) => w::int_of(*x) as i128,
+                    SNode::Word(x) => (*x as i64 == self.true_w) as i128,
+                    SNode::Big(b) => i128::try_from(b).expect("a packed element in its layout's range"),
+                    _ => unreachable!("a packed element is a number"),
+                }
+            };
+            match l {
+                Layout::Words => match at[e] {
+                    Placed::Word(word) => out.extend_from_slice(&word.to_le_bytes()),
+                    Placed::Data(d, o) => {
+                        relocs.push((out.len(), d, o));
+                        out.extend_from_slice(&0u64.to_le_bytes());
+                    }
+                },
+                _ => out.extend_from_slice(&n().to_le_bytes()[..l.width()]),
             }
         }
-        Err(at)
+        while !out.len().is_multiple_of(8) {
+            out.push(0);
+        }
+        off
+    }
+
+    /// Append a `K_BIG` object for `n` (past a word) to `out`: its offset.
+    fn lay_out_big(n: &num_bigint::BigInt, out: &mut Vec<u8>) -> usize {
+        let at = out.len();
+        out.extend_from_slice(&w::STATIC_RC.to_le_bytes());
+        match i128::try_from(n) {
+            Ok(s) => {
+                out.extend_from_slice(&checkers_rt::obj::INFO_I128.to_le_bytes());
+                out.extend_from_slice(&(s as u128 as u64).to_le_bytes());
+                out.extend_from_slice(&(((s as u128) >> 64) as u64).to_le_bytes());
+            }
+            Err(_) => {
+                let (sign, mut mag) = n.to_bytes_le();
+                while !mag.len().is_multiple_of(8) {
+                    mag.push(0);
+                }
+                let tag = if sign == num_bigint::Sign::Minus { checkers_rt::obj::BIG_LIMBS_NEG } else { checkers_rt::obj::BIG_LIMBS };
+                out.extend_from_slice(&w::info(w::K_BIG, (mag.len() / 8) as u64, tag).to_le_bytes());
+                out.extend_from_slice(&mag);
+            }
+        }
+        at
     }
 
     fn lay_out_bytes(kind: u64, b: &[u8], out: &mut Vec<u8>) -> usize {
@@ -819,10 +920,14 @@ impl<'p, M: Module> Gen<'p, M> {
                 let d = self.lit(w::K_BYTES, x);
                 self.addr(b, st, d)
             }
-            E::Static(v) => {
-                let d = self.statik(v);
-                self.addr(b, st, d)
-            }
+            E::Static(v, id) => match self.statik(v, *id) {
+                Placed::Word(x) => b.ins().iconst(I64, x as i64),
+                Placed::Data(d, 0) => self.addr(b, st, d),
+                Placed::Data(d, o) => {
+                    let p = self.addr(b, st, d);
+                    b.ins().iadd_imm_s(p, o as i64)
+                }
+            },
             // In the current block: a comparison's `Bool` is then the value
             // a `match` on it finds in `St::conds`, and a value known to be
             // a small integer is known to be one where it is used. So is
@@ -878,13 +983,8 @@ impl<'p, M: Module> Gen<'p, M> {
 
     fn emit(&mut self, b: &mut FunctionBuilder, st: &mut St, e: &E, mode: Mode) {
         match e {
-            E::Var(_) | E::Int(_) | E::Erased | E::Unit | E::Str(_) | E::Bytes(_) | E::Static(_) => {
+            E::Var(_) | E::Int(_) | E::Erased | E::Unit | E::Str(_) | E::Bytes(_) | E::Static(..) => {
                 let x = self.val(b, st, e);
-                Self::finish(b, &mode, x)
-            }
-            E::BigLit(s) => {
-                let (p, n) = self.message(b, st, s);
-                let x = self.call1(b, st, "ck_big_lit", &[p, n]);
                 Self::finish(b, &mode, x)
             }
             E::Global(d) => {

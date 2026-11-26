@@ -11,7 +11,7 @@ pub const TABLE: &[Builtin] = &[
 ];
 
 builtin!(ckb_matches_at, |a| {
-    let (src, i, word) = (b(a[0]), n(a[1]), b(a[2]));
+    let (src, i, word) = (b(a[0]), count(a[1]), b(a[2]));
     bool_w(i.checked_add(word.len()).is_some_and(|end| end <= src.len() && &src[i..end] == word))
 });
 

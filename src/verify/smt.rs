@@ -276,10 +276,23 @@ impl Focus {
 /// arguments give equal applications at once. A condition applying a
 /// recursive function is left as it is: Z3 can't split there.
 ///
+/// A recursive call under a condition Z3 can't split (one applying a
+/// recursive function, through any number of calls) is in the case of the
+/// conditions above it, and Z3 unfolds the call whenever that case's guard
+/// holds of the call's own arguments, by propagation alone, which its limit on
+/// unfolding depth doesn't bound. A `decreasing` definition is such a case:
+/// its only split is `D` (its `Nat` parameters non-negative, D118), true again
+/// of each recursive call. So such a condition is passed to a definition of
+/// its own, as a parameter that Z3 splits on (`lifted`): unfolding the call
+/// then waits for the search to decide the condition.
+///
+/// Each definition comes back as its head and body, followed by the heads
+/// and bodies of the definitions lifted from it, which go wherever it does.
+///
 /// `cache` keeps each body as rewritten, for the other queries of the module:
 /// a body is rewritten the same way in every group holding it (a group holds
 /// every definition its members apply).
-fn definitions(group: &[(&str, &str, &str)], cache: Option<&RefCell<Rewritten>>) -> (String, Vec<String>) {
+fn definitions(group: &[(&str, &str, &str)], cache: Option<&RefCell<Rewritten>>) -> (String, Vec<(String, String)>) {
     let index: HashMap<&str, usize> = group.iter().enumerate().map(|(k, g)| (g.0.trim_matches('|'), k)).collect();
     let calls: Vec<Vec<usize>> = group
         .iter()
@@ -304,6 +317,12 @@ fn definitions(group: &[(&str, &str, &str)], cache: Option<&RefCell<Rewritten>>)
         })
         .collect();
     let sccs = crate::elab::order::sccs(&calls);
+    let mut component = vec![0; group.len()];
+    for (c, scc) in sccs.iter().enumerate() {
+        for &k in scc {
+            component[k] = c;
+        }
+    }
     let mut recursive = vec![false; group.len()];
     // Applies no recursive function, through any number of calls.
     let mut clean = vec![false; group.len()];
@@ -318,34 +337,54 @@ fn definitions(group: &[(&str, &str, &str)], cache: Option<&RefCell<Rewritten>>)
     let bodies = group
         .iter()
         .enumerate()
-        .map(|(k, (name, _, body))| {
-            if !recursive[k] || !calls[k].iter().any(|&j| clean[j]) {
-                return body.to_string();
+        .map(|(k, (name, head, body))| {
+            if !recursive[k] {
+                return (head.to_string(), body.to_string());
             }
             if let Some(b) = cache.and_then(|c| c.borrow().bodies.get(*name).cloned()) {
-                for n in &b.1 {
+                for n in &b.2 {
                     if let Some(&j) = index.get(n.as_str()) {
                         used[j] = true;
                     }
                 }
-                return b.0;
+                return (b.0, b.1);
             }
+            let Some(mut x) = super::parse_sx(body).pop() else { return (head.to_string(), body.to_string()) };
             // Only a definition Z3 would make one case.
             let mut names = BTreeSet::new();
-            let b = match super::parse_sx(body).pop() {
-                Some(x) if !splits(&x, &index) => super::print_sx(&cond_copies(&x, &index, &clean, &mut names)),
-                _ => body.to_string(),
+            if calls[k].iter().any(|&j| clean[j]) && !splits(&x, &index) {
+                x = cond_copies(&x, &index, &clean, &mut names);
+            }
+            let own: HashSet<usize> = (0..group.len()).filter(|&j| component[j] == component[k]).collect();
+            let mut extra = Vec::new();
+            let (h, b) = match super::parse_sx(head).pop() {
+                Some(Sx::List(h)) if h.len() == 3 => {
+                    let mut lift = Lift { index: &index, own: &own, name: name.trim_matches('|'), head: &h, extra: &mut extra };
+                    let x = lift.tail(&x, &mut Vec::new());
+                    let mut heads = head.to_string();
+                    let mut bodies = super::print_sx(&x);
+                    for (hd, bd) in &extra {
+                        heads += " ";
+                        heads += &super::print_sx(hd);
+                        bodies += " ";
+                        bodies += &super::print_sx(bd);
+                    }
+                    (heads, bodies)
+                }
+                _ => (head.to_string(), super::print_sx(&x)),
             };
-            let (b, names) = (b, names.into_iter().collect::<Vec<String>>());
+            // Unchanged, the text as it was.
+            let b = if names.is_empty() && h == *head { body.to_string() } else { b };
+            let names = names.into_iter().collect::<Vec<String>>();
             if let Some(c) = cache {
-                c.borrow_mut().bodies.insert(name.to_string(), (b.clone(), names.clone()));
+                c.borrow_mut().bodies.insert(name.to_string(), (h.clone(), b.clone(), names.clone()));
             }
             for n in &names {
                 if let Some(&j) = index.get(n.as_str()) {
                     used[j] = true;
                 }
             }
-            b
+            (h, b)
         })
         .collect();
     // The copies the conditions apply, and those they apply.
@@ -418,9 +457,10 @@ fn splits(x: &Sx, index: &HashMap<&str, usize>) -> bool {
 /// the same in each query of a module.
 #[derive(Default)]
 pub struct Rewritten {
-    /// A function's body, rewritten, and the functions whose copies it
+    /// A function's head and body, rewritten, each followed by those of the
+    /// definitions lifted from it, and the functions whose copies it
     /// applies, by its name.
-    bodies: HashMap<String, (String, Vec<String>)>,
+    bodies: HashMap<String, (String, String, Vec<String>)>,
     /// A function's copy, by its name.
     copies: HashMap<String, String>,
     /// The symbols a body names, by its function's name.
@@ -484,6 +524,161 @@ fn renamed(x: &Sx, index: &HashMap<&str, usize>, names: &mut BTreeSet<String>) -
         Sx::Atom(_) => x.clone(),
         Sx::List(items) if is_binder(items) => x.clone(),
         Sx::List(items) => Sx::List(items.iter().map(|y| renamed(y, index, names)).collect()),
+    }
+}
+
+/// Lifting a recursive definition's conditions that Z3 can't split
+/// (`definitions`): the group's names, the definition's component's, the
+/// definition's name and head, and the lifted definitions made so far (head,
+/// body).
+struct Lift<'a> {
+    index: &'a HashMap<&'a str, usize>,
+    own: &'a HashSet<usize>,
+    name: &'a str,
+    head: &'a [Sx],
+    extra: &'a mut Vec<(Sx, Sx)>,
+}
+
+impl Lift<'_> {
+    fn params(&self) -> Vec<&Sx> {
+        match &self.head[1] {
+            Sx::List(ps) => ps.iter().filter_map(|p| if let Sx::List(p) = p { p.first() } else { None }).collect(),
+            Sx::Atom(_) => Vec::new(),
+        }
+    }
+
+    /// Would Z3 unfold, by propagation alone, a recursive call under `x` (an
+    /// `ite` whose condition it can't split) whenever it unfolds this case,
+    /// whose split conditions are `path`? It does where the case's guard holds
+    /// of the call's arguments as soon as of the parameters: the definition
+    /// has no split, or the call is to the definition itself and each of
+    /// `path` names only parameters the call passes unchanged.
+    fn stuck(&self, x: &[Sx], path: &[Sx]) -> bool {
+        if !(x.len() == 4 && matches!(&x[0], Sx::Atom(a) if a == "ite")) {
+            return false;
+        }
+        let mut c = Vec::new();
+        applies(&x[1], self.index, &mut c);
+        if c.is_empty() {
+            return false;
+        }
+        if path.is_empty() {
+            let mut b = Vec::new();
+            applies(&x[2], self.index, &mut b);
+            applies(&x[3], self.index, &mut b);
+            return b.iter().any(|k| self.own.contains(k));
+        }
+        let params = self.params();
+        let mut calls = Vec::new();
+        self.calls(&x[2], &mut calls);
+        self.calls(&x[3], &mut calls);
+        calls.iter().any(|args| {
+            args.len() == params.len() && path.iter().all(|c| params.iter().zip(args.iter()).all(|(p, a)| a == *p || !mentions(c, p)))
+        })
+    }
+
+    /// The arguments of each application of the definition itself in `x`,
+    /// outside binders.
+    fn calls<'x>(&self, x: &'x Sx, out: &mut Vec<&'x [Sx]>) {
+        let Sx::List(items) = x else { return };
+        if is_binder(items) {
+            return;
+        }
+        if matches!(items.first(), Some(Sx::Atom(a)) if a.trim_matches('|') == self.name) {
+            out.push(&items[1..]);
+        }
+        for y in items {
+            self.calls(y, out);
+        }
+    }
+
+    /// A new definition: the parameters and result sort of this one, then
+    /// `conds.len()` `Bool`s; its application to the parameters and `conds`.
+    fn define(&mut self, body: Sx, conds: Vec<Sx>) -> Sx {
+        let n = self.extra.len() + 1;
+        let name = Sx::Atom(format!("|{}#if{n}|", self.name));
+        let mut args = vec![name.clone()];
+        args.extend(self.params().into_iter().cloned());
+        let Sx::List(mut all) = self.head[1].clone() else { unreachable!("a head's parameters are a list") };
+        for (k, c) in conds.into_iter().enumerate() {
+            all.push(Sx::List(vec![Sx::Atom(format!("|if#{k}|")), Sx::Atom("Bool".into())]));
+            args.push(c);
+        }
+        self.extra.push((Sx::List(vec![name, Sx::List(all), self.head[2].clone()]), body));
+        Sx::List(args)
+    }
+
+    /// `x`, of the definition's result sort, under the split conditions
+    /// `path`: an `ite` whose recursive calls Z3 would unfold by propagation
+    /// (`stuck`) becomes a definition of its own, split on its condition, and
+    /// anything else holding such `ite`s (an application, whose sort may
+    /// differ) a definition with a parameter for each of their conditions.
+    fn tail(&mut self, x: &Sx, path: &mut Vec<Sx>) -> Sx {
+        let Sx::List(items) = x else { return x.clone() };
+        if is_binder(items) || matches!(items.first(), Some(Sx::Atom(a)) if a == "let") {
+            return x.clone();
+        }
+        if items.len() == 4 && matches!(&items[0], Sx::Atom(a) if a == "ite") {
+            let mut c = Vec::new();
+            applies(&items[1], self.index, &mut c);
+            let split = c.is_empty();
+            let stuck = self.stuck(items, path);
+            if split {
+                path.push(items[1].clone());
+            }
+            let (t, e) = (self.tail(&items[2], path), self.tail(&items[3], path));
+            if split {
+                path.pop();
+            }
+            if stuck {
+                let body = Sx::List(vec![items[0].clone(), Sx::Atom("|if#0|".into()), t, e]);
+                return self.define(body, vec![items[1].clone()]);
+            }
+            return Sx::List(vec![items[0].clone(), items[1].clone(), t, e]);
+        }
+        let mut conds = Vec::new();
+        let body = self.inner(x, path, &mut conds);
+        if conds.is_empty() {
+            return x.clone();
+        }
+        self.define(body, conds)
+    }
+
+    /// `x` with the condition of each `ite` `stuck` under `path`, outside
+    /// binders and conditions, replaced by a parameter, gathered in `conds`.
+    fn inner(&mut self, x: &Sx, path: &mut Vec<Sx>, conds: &mut Vec<Sx>) -> Sx {
+        let Sx::List(items) = x else { return x.clone() };
+        if is_binder(items) || matches!(items.first(), Some(Sx::Atom(a)) if a == "let") {
+            return x.clone();
+        }
+        if items.len() == 4 && matches!(&items[0], Sx::Atom(a) if a == "ite") {
+            let mut c = Vec::new();
+            applies(&items[1], self.index, &mut c);
+            let split = c.is_empty();
+            let cond = if self.stuck(items, path) {
+                conds.push(items[1].clone());
+                Sx::Atom(format!("|if#{}|", conds.len() - 1))
+            } else {
+                items[1].clone()
+            };
+            if split {
+                path.push(items[1].clone());
+            }
+            let (t, e) = (self.inner(&items[2], path, conds), self.inner(&items[3], path, conds));
+            if split {
+                path.pop();
+            }
+            return Sx::List(vec![items[0].clone(), cond, t, e]);
+        }
+        Sx::List(items.iter().map(|y| self.inner(y, path, conds)).collect())
+    }
+}
+
+/// Does `x` mention the atom `a`?
+fn mentions(x: &Sx, a: &Sx) -> bool {
+    match x {
+        Sx::Atom(_) => x == a,
+        Sx::List(items) => items.iter().any(|y| mentions(y, a)),
     }
 }
 
@@ -2265,6 +2460,9 @@ impl<'a> Builder<'a> {
             },
             Tm::Lit(Lit::Num(n)) => Ok((smt_int(*n), Sort::Int)),
             Tm::Lit(Lit::Big(n)) => Ok((smt_int((**n).clone()), Sort::Int)),
+            // A constructor or tuple known at compile time, of any size: left
+            // out (an obligation that mentions one isn't given its value).
+            Tm::Known(_) => out("a value known at compile time"),
             Tm::Lit(Lit::Str(s)) => {
                 self.literal_utf8(s.as_bytes());
                 Ok((smt_bytes(s.as_bytes()), Sort::Str))
@@ -3762,7 +3960,8 @@ impl<'a> Builder<'a> {
             let parts: Vec<(&str, &str, &str)> = group.iter().map(|g| (g.0.as_str(), g.1.as_str(), g.2.as_str())).collect();
             let (c, bodies) = definitions(&parts, self.defs.map(|d| &d.1));
             copies = c;
-            for (g, b) in group.iter_mut().zip(bodies) {
+            for (g, (h, b)) in group.iter_mut().zip(bodies) {
+                g.1 = h;
                 g.2 = b;
             }
             let heads: Vec<&str> = group.iter().map(|g| g.1.as_str()).collect();

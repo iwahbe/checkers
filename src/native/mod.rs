@@ -290,11 +290,10 @@ fn dump(e: &lower::E, d: usize) -> String {
             dump(b, d)
         ),
         E::Str(s) => format!("{ind}{s:?}"),
-        E::Static(_) => format!("{ind}static"),
+        E::Static(..) => format!("{ind}static"),
         other => format!("{ind}{}", match other {
             E::Erased => "erased".to_string(),
             E::Unit => "()".to_string(),
-            E::BigLit(s) => s.clone(),
             E::Bytes(_) => "b\"…\"".to_string(),
             E::ConFn(c) => format!("conf{c}"),
             E::Par(_) => "par".to_string(),
@@ -599,7 +598,8 @@ mod tests {
     /// a literal (tests/run/known_bounds.ck): as a bound, `a < math.pow 2
     /// 32` as `a < 4294967296`, `a < LIMIT` as `a < 1000`, and a sealed
     /// function's value (`std.array.count`, the program's own
-    /// `limits.power_of_two`) as `256`; in code, `LIMIT` as `1000`.
+    /// `limits.power_of_two`) as `256`, and so is a value computed by a
+    /// function of the same module (`own_size`); in code, `LIMIT` as `1000`.
     #[test]
     fn known_bounds_compile_as_literals() {
         crate::with_big_stack(|| {
@@ -610,6 +610,7 @@ mod tests {
                 assert_eq!(code_of(&code, "with_name"), code_of(&code, "with_number"), "{triple}");
                 assert_eq!(code_of(&code, "by_std"), code_of(&code, "by_bytes"), "{triple}");
                 assert_eq!(code_of(&code, "by_own"), code_of(&code, "by_bytes"), "{triple}");
+                assert_eq!(code_of(&code, "by_module"), code_of(&code, "by_bytes"), "{triple}");
             }
         })
     }
@@ -628,6 +629,31 @@ mod tests {
                 let far = e.g.defs.iter().position(|d| &*d.name == "FAR" && &*d.module == "known_release").unwrap();
                 let known = crate::core::known_const(&e.g, crate::core::DefId(far as u32));
                 assert_eq!(known.is_some(), release, "release: {release}");
+            }
+        })
+    }
+
+    /// Constants of every type known at compile time are static data
+    /// (§8.9): a program's code has no constant computed on first use
+    /// (`FnKind::Caf`, read through a slot checked for `UNSET`).
+    #[test]
+    fn known_constants_have_no_first_use_code() {
+        crate::with_big_stack(|| {
+            for name in ["known_baked", "known_arrays", "known_closures"] {
+                let path = format!("{}/tests/run/{name}.ck", env!("CARGO_MANIFEST_DIR"));
+                let text = std::fs::read_to_string(&path).unwrap();
+                let dir = std::path::Path::new(&path).parent().unwrap().to_path_buf();
+                let (e, main, staged, _) = crate::ready_to_run(&format!("{name}.ck"), &text, &dir, false).map_err(|r| r.report).unwrap();
+                let p = super::prepare(&e.g, Some(&staged), main, super::host_return_words());
+                // A definition's constant (not the closed code a program
+                // runs once at start, its `Debug` instances' table).
+                let cafs: Vec<&str> = p
+                    .funcs
+                    .iter()
+                    .filter(|f| matches!(f.kind, super::lower::FnKind::Caf) && (f.owner as usize) < e.g.defs.len())
+                    .map(|f| f.name.as_str())
+                    .collect();
+                assert!(cafs.is_empty(), "{name}: computed on first use: {cafs:?}");
             }
         })
     }
