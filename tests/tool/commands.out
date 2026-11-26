@@ -191,6 +191,6 @@ $ checkers trust tests/tool/axioms.ck
 <std>/utf8.ck  proved   10 by smt, 6 computed
 tests/tool/axioms.ck:9:10  computed precondition of `parse_render`: len post == 0 or not (char.is_digit post[0] or post[0] == '.' or post[0] == 'e' or post[0] == 'E')
 solver: Z3 5.3.3.0
-cache: 88 of 1032 Z3 answers reused
+cache: 88 of 1035 Z3 answers reused
 -- stderr
 -- exit 0
