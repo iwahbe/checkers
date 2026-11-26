@@ -1,5 +1,5 @@
 -- stdout
-(set-option :rlimit 4294967295)
+(set-option :reproducible-resource-limit 4294967295)
 (set-option :timeout 4294967295)
 (set-logic ALL)
 (declare-datatypes ((D 0)) (((K (fd Int)) (L))))

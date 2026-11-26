@@ -267,13 +267,13 @@ fn no_patterns xs -> r : xs~List term.Axiom, r~Bool
                 [] -> True
                 _  -> no_patterns rest
 
-# `(set-option :rlimit N)`.
+# `(set-option :reproducible-resource-limit N)`: the work limit `ckc` gives Z3.
 fn limit os -> r : os~List Opt, r~Option Nat
     match os
         []        -> None
         o :: rest ->
             match o.value
-                Numeral n if o.key == b"rlimit" -> Some n
+                Numeral n if o.key == b"reproducible-resource-limit" -> Some n
                 _ -> limit rest
 
 # What a row is: `bug`, `agreement`, `ahead` (we answer, Z3 doesn't), `gap`,
