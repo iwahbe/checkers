@@ -24,11 +24,12 @@ warning[W021]: this arm never matches
    |         ^^^^^^ the arms above already match every value it would
    = help: remove it
 
-error[E0201]: type mismatch: expected `Unit`, found `(_, _)`
+error[E0246]: this pattern has 2 parts, but `()` has none
   --> unreachable_arm_checked.ck:20:9
    |
 20 |         (a, b) -> 1
-   |         ^^^^^^ this pattern has type `(_, _)`
+   |         ^^^^^^
+   = help: match `()` with the pattern `()`, or `_`
 
 warning[W021]: this arm never matches
   --> unreachable_arm_checked.ck:20:9
@@ -37,42 +38,36 @@ warning[W021]: this arm never matches
    |         ^^^^^^ the arms above already match every value it would
    = help: remove it
 
-error[E0201]: type mismatch: expected `Unit`, found `(_, _)`
-  --> unreachable_arm_checked.ck:24:9
-   |
-24 |         (a, b) -> 1
-   |         ^^^^^^ this pattern has type `(_, _)`
-
 warning[W021]: this arm never matches
-  --> unreachable_arm_checked.ck:29:9
+  --> unreachable_arm_checked.ck:25:9
    |
-29 |         y -> "y"
+25 |         y -> "y"
    |         ^ the arms above already match every value it would
    = help: remove it
 
 error[E0201]: type mismatch: expected `Int`, found `String`
-  --> unreachable_arm_checked.ck:29:14
+  --> unreachable_arm_checked.ck:25:14
    |
-29 |         y -> "y"
+25 |         y -> "y"
    |              ^^^ this expression has type `String`
 
 warning[W021]: this arm never matches
-  --> unreachable_arm_checked.ck:34:9
+  --> unreachable_arm_checked.ck:30:9
    |
-34 |         Some (a, b) -> 1
+30 |         Some (a, b) -> 1
    |         ^^^^^^^^^^^ the arms above already match every value it would
    = help: remove it
 
 error[E0201]: type mismatch: expected `Int`, found `(_, _)`
-  --> unreachable_arm_checked.ck:34:14
+  --> unreachable_arm_checked.ck:30:14
    |
-34 |         Some (a, b) -> 1
+30 |         Some (a, b) -> 1
    |              ^^^^^^ this pattern has type `(_, _)`
 
 error[E0201]: type mismatch: expected `Int`, found `(_, _)`
-  --> unreachable_arm_checked.ck:40:21
+  --> unreachable_arm_checked.ck:36:21
    |
-40 |         None | Some (a, b) -> 1
+36 |         None | Some (a, b) -> 1
    |                     ^^^^^^ this pattern has type `(_, _)`
 
-unreachable_arm_checked.ck: 7 errors, 5 warnings
+unreachable_arm_checked.ck: 6 errors, 5 warnings
