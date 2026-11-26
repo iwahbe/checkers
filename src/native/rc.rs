@@ -671,8 +671,10 @@ pub fn closures_in(e: &E, values: &mut Vec<u32>, closures: &mut Vec<u32>) {
         // The definitions' functions static data holds, as closures.
         E::Static(v, id) => {
             for x in v.reachable(*id) {
-                if let SNode::Global(d) = v.node(x) {
-                    values.push(*d);
+                match v.node(x) {
+                    SNode::Global(d) => values.push(*d),
+                    SNode::Code(f) => closures.push(*f),
+                    _ => {}
                 }
             }
         }

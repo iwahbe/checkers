@@ -99,6 +99,9 @@ pub enum SNode {
     Global(u32),
     /// A constructor's function as a value: its wrapper's global closure.
     ConFn(u32),
+    /// A function of the program without free variables (a closed
+    /// lambda), as a value: its global closure.
+    Code(u32),
 }
 
 impl SNode {
@@ -148,6 +151,10 @@ impl Static {
                 s.write_u8(6);
                 s.write_u32(*c);
             }
+            SNode::Code(f) => {
+                s.write_u8(7);
+                s.write_u32(*f);
+            }
             SNode::Array { layout, elems } => {
                 s.write_u8(4);
                 s.write_u8(*layout);
@@ -173,10 +180,15 @@ impl Static {
         id
     }
 
-    /// The node of a word or a literal `e`, if it is one.
-    fn leaf(&mut self, e: &E) -> Option<u32> {
+    /// The node of a word or a literal `e`, if it is one; or of a function
+    /// value whose closure is static (`functions`: whether a definition's
+    /// value is its function).
+    fn leaf(&mut self, e: &E, functions: &dyn Fn(u32) -> bool) -> Option<u32> {
         use checkers_rt::word as w;
         Some(match e {
+            E::Global(d) if functions(*d) => self.add(SNode::Global(*d)),
+            E::ConFn(c) => self.add(SNode::ConFn(*c)),
+            E::MkClo { f, captured } if captured.is_empty() => self.add(SNode::Code(*f)),
             E::Int(n) => self.add(SNode::Word(w::mk_int(*n))),
             E::Str(s) => self.add(SNode::Bytes(Arc::from(s.as_bytes()))),
             E::Bytes(b) => self.add(SNode::Bytes(b.clone())),
@@ -221,12 +233,12 @@ impl Static {
     /// A constructor or tuple whose fields are all words, literals or
     /// static data, as one value: static data too. The largest field's
     /// graph is grown, so a long list written out is built in linear time.
-    pub fn fold(e: E) -> E {
+    pub fn fold(e: E, functions: &dyn Fn(u32) -> bool) -> E {
         let fields = match &e {
             E::Con { fields, reuse: None, .. } | E::Tuple(fields) if !fields.is_empty() => fields,
             _ => return e,
         };
-        if !fields.iter().all(|f| matches!(f, E::Static(..)) || Static::default().leaf(f).is_some()) {
+        if !fields.iter().all(|f| matches!(f, E::Static(..)) || Static::default().leaf(f, functions).is_some()) {
             return e;
         }
         let (con, mut fields) = match e {
@@ -252,7 +264,7 @@ impl Static {
             .map(|(k, f)| match f {
                 E::Static(_, id) if Some(k) == big => *id,
                 E::Static(g, id) => graph.import(g, *id),
-                f => graph.leaf(f).expect("a literal"),
+                f => graph.leaf(f, functions).expect("a literal"),
             })
             .collect();
         let id = match con {
@@ -786,6 +798,12 @@ impl Lowerer<'_, '_> {
         crate::native::inline::float_in(ir, &pure_call)
     }
 
+    /// Whether definition `d`'s value is its function, whose closure is
+    /// static data (a function or a builtin, not a constant).
+    fn is_function(&self, d: u32) -> bool {
+        matches!(self.p.defs.get(&d), Some(DefShape::Fn { .. } | DefShape::Builtin { .. }))
+    }
+
     fn fresh(&mut self) -> V {
         self.next += 1;
         self.next - 1
@@ -922,7 +940,8 @@ impl Lowerer<'_, '_> {
                 if xs.is_empty() {
                     return E::Unit;
                 }
-                Static::fold(E::Tuple(xs.iter().map(|x| self.expr(x, ctx, false)).collect()))
+                let e = E::Tuple(xs.iter().map(|x| self.expr(x, ctx, false)).collect());
+                Static::fold(e, &|d| self.is_function(d))
             }
             Ir::Proj(x, i, rest) => {
                 let xe = self.expr(x, ctx, false);
@@ -932,7 +951,10 @@ impl Lowerer<'_, '_> {
                 let xe = self.expr(x, ctx, false);
                 self.borrow(BOp::Field(*i), vec![xe])
             }
-            Ir::Con(c, xs) => Static::fold(E::Con { con: c.0, fields: xs.iter().map(|x| self.expr(x, ctx, false)).collect(), reuse: None }),
+            Ir::Con(c, xs) => {
+                let e = E::Con { con: c.0, fields: xs.iter().map(|x| self.expr(x, ctx, false)).collect(), reuse: None };
+                Static::fold(e, &|d| self.is_function(d))
+            }
             Ir::Prim(op, args, nat) => {
                 let es: Vec<E> = args.iter().map(|a| self.expr(a, ctx, false)).collect();
                 match op {

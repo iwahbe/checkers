@@ -99,7 +99,7 @@ pub struct Gen<'p, M: Module> {
 
 /// Where a node of static data is.
 #[derive(Clone, Copy)]
-enum Placed {
+pub enum Placed {
     Word(u64),
     /// An object, at an offset in a data object.
     Data(DataId, u32),
@@ -328,6 +328,19 @@ impl<'p, M: Module> Gen<'p, M> {
     /// as immortal objects (§14); the rest, and literals' bytes, are the
     /// objects already laid out, so equal values are one object in the
     /// program. A loop over the nodes: any depth takes the same stack.
+    /// The table of hand-written `Debug` instances (`lower::show_table`), as
+    /// the static data its code computes: definitions' and closed lambdas'
+    /// functions, laid out when the program is compiled (§8.9), so nothing
+    /// builds it when the program starts.
+    pub fn debug_table(&mut self) -> Option<Placed> {
+        let f = self.p.debug?;
+        let (v, id) = match &self.p.funcs[f as usize].body {
+            E::Static(v, id) => (v.clone(), *id),
+            body => panic!("the `Debug` table is static data, not {}", super::dump(body, 0)),
+        };
+        Some(self.statik(&v, id))
+    }
+
     fn statik(&mut self, v: &Static, id: u32) -> Placed {
         if let SNode::Word(x) = v.node(id) {
             return Placed::Word(*x);
@@ -358,6 +371,7 @@ impl<'p, M: Module> Gen<'p, M> {
                     let f = self.p.con_wraps[c];
                     Placed::Data(self.closure(f), 0)
                 }
+                SNode::Code(f) => Placed::Data(self.closure(*f), 0),
                 SNode::Obj { kind, tag, fields } => {
                     let off = out.len();
                     out.extend_from_slice(&w::STATIC_RC.to_le_bytes());
@@ -1973,10 +1987,11 @@ impl<'p, M: Module> Gen<'p, M> {
             let dl = b.ins().iconst(I64, desc.len() as i64);
             let inv = self.fref(&mut b, &mut st, self.invoke);
             let inv = b.ins().func_addr(I64, inv);
-            let debug = match self.p.debug {
-                Some(f) => {
-                    let r = self.fref(&mut b, &mut st, self.func_id(f));
-                    b.ins().func_addr(I64, r)
+            let debug = match self.debug_table() {
+                Some(Placed::Word(x)) => b.ins().iconst(I64, x as i64),
+                Some(Placed::Data(d, o)) => {
+                    let p = self.addr(&mut b, &mut st, d);
+                    b.ins().iadd_imm_s(p, o as i64)
                 }
                 None => b.ins().iconst(I64, 0),
             };

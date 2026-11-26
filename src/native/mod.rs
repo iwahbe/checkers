@@ -313,10 +313,14 @@ pub fn run(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId, args
     gen.define_new();
     let main_clo = gen.main_closure();
     let invoke = gen.invoke;
-    let debug = gen.p.debug.map(|f| gen.func_id(f));
+    let debug = gen.debug_table();
     let mut module = gen.m;
     module.finalize_definitions().expect("finish native code");
-    let debug = debug.map_or(0, |f| module.get_finalized_function(f) as u64);
+    let debug = match debug {
+        Some(codegen::Placed::Word(x)) => x,
+        Some(codegen::Placed::Data(d, o)) => module.get_finalized_data(d).0 as u64 + o as u64,
+        None => 0,
+    };
     let inv = module.get_finalized_function(invoke);
     let (clo, _) = module.get_finalized_data(main_clo);
     let invoke: checkers_rt::prog::Invoke = unsafe { std::mem::transmute(inv) };
@@ -555,6 +559,18 @@ mod tests {
         let found: Vec<&(String, String)> = code.iter().filter(|(n, _)| n == f).collect();
         assert_eq!(found.len(), 1, "functions named `{f}`");
         &found[0].1
+    }
+
+    /// The table of hand-written `Debug` instances is static data, laid out
+    /// when the program is compiled (tests/run/debug_table_static.ck): its
+    /// code is its value, so the runtime is handed the value and runs
+    /// nothing to build it.
+    #[test]
+    fn debug_table_is_static() {
+        funcs_of("debug_table_static.ck", |p| {
+            let f = p.debug.expect("a table of `Debug` instances");
+            assert!(matches!(p.funcs[f as usize].body, lower::E::Static(..)), "{}", dump(&p.funcs[f as usize].body, 0));
+        })
     }
 
     /// Known parts of code are computed when compiling (§8.9,
