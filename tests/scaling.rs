@@ -154,18 +154,29 @@ fn check_peak_kb(dir: &Path, name: &str, n: usize) -> u64 {
 }
 
 /// Code generation keeps memory in proportion to the function: Cranelift's
-/// SSA builder, given a variable per `let`, kept a map per variable as long as
-/// the function's block count, n² for a chain of n additions (2,000 took
-/// 192 MB, 8,000 took 1.45 GB). Four times the operators may take at most four
-/// times the memory, as linear memory with a fixed part does: 2,000 take about
-/// 193 MB, 8,000 about 550 MB.
+/// SSA builder, given a variable per `let`, keeps a map per variable as long
+/// as the function's block count, n² for a chain of n additions. Most of that
+/// is freed before the peak, which comes later and grows with n, so it shows
+/// only once the maps outgrow it: 4,000, 8,000 and 16,000 operators peak at
+/// 325–330 MB, 564–569 MB and 1,048–1,050 MB, and with a variable per `let`
+/// at 323–324 MB, 557–558 MB and 1,235–1,236 MB. A fixed part cancels out of the increments: linear
+/// memory adds as much for the second 8,000 operators as for the 4,000 before
+/// them, twice, n² four times. The second may add at most two and a half
+/// times the first (1.98 to 2.06 here, 2.87 to 2.89 with a variable per `let`).
 #[cfg(target_os = "linux")]
 #[test]
 fn a_chain_of_additions_compiles_in_linear_memory() {
     let dir = std::env::temp_dir().join(format!("checkers-scaling-{}-memory", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let small = check_peak_kb(&dir, "mem2000", 2000);
-    let large = check_peak_kb(&dir, "mem8000", 8000);
+    let [small, medium, large] = [4000, 8000, 16000].map(|n| check_peak_kb(&dir, &format!("mem{n}"), n));
     let _ = std::fs::remove_dir_all(&dir);
-    assert!(large < 4 * small, "2000 operators took {} MB at peak, 8000 took {} MB", small / 1024, large / 1024);
+    let (first, second) = (medium.saturating_sub(small), large.saturating_sub(medium));
+    assert!(
+        2 * second < 5 * first,
+        "4000 operators took {} MB at peak, 8000 took {} MB, 16000 took {} MB: the second 8000 added {:.2} times what the 4000 before them did",
+        small / 1024,
+        medium / 1024,
+        large / 1024,
+        second as f64 / first as f64
+    );
 }
