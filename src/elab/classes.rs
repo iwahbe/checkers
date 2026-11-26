@@ -372,6 +372,10 @@ pub struct InstReq {
     /// Where it is asked for, for a check of the instance found through a
     /// refinement alias (#226).
     pub cx: Option<Rc<Cx>>,
+    /// For a type's header's clause (#385): the type.
+    pub of_type: Option<TyId>,
+    /// Asked in the signature of an instance's function or dictionary.
+    pub instance_sig: Option<DefId>,
 }
 
 /// A dictionary found through a refinement alias (#226): the instance of
@@ -2790,7 +2794,12 @@ impl Elab {
     /// What is known of `ty`: its type constructor and arguments.
     fn shape(&self, lvl: usize, ty: &Val) -> Shape {
         match self.force(ty) {
-            Val::TyCon(t, args) => Shape::Known(HeadKey::Ty(t), args.to_vec()),
+            // Without its header's dictionaries (#385): an instance's head
+            // names its parameters only.
+            Val::TyCon(t, args) => {
+                let ti = &self.g.tys[t.0 as usize];
+                Shape::Known(HeadKey::Ty(t), args[..args.len().min(ti.params.len() - ti.dicts)].to_vec())
+            }
             // A type constructor not applied to its last argument (`List`
             // for `Functor`, M25): `\y -> T … y`.
             Val::Lam(_, _, _, c) => {
@@ -3111,6 +3120,68 @@ impl Elab {
         }
     }
 
+    /// Whether the type `e` writes may have a type with class clauses in
+    /// its header (#385): one named, or one in an alias named.
+    pub fn names_type_with_clauses(&self, e: &Expr) -> bool {
+        let names = std::cell::RefCell::new(Vec::new());
+        let none = |_: &str, _: Span| None;
+        let con = |n: &str, _: Span| {
+            names.borrow_mut().push(self.resolve(n, true));
+            None
+        };
+        let qualified = |m: &str, n: &str, _: Span| {
+            names.borrow_mut().push(self.resolve_qualified(m, n, true));
+            None
+        };
+        Rewrite { var: &none, con: &con, qualified: &qualified }.expr(e, &[]);
+        let mut seen = HashSet::new();
+        names.into_inner().into_iter().flatten().any(|s| self.sym_has_clauses(s, &mut seen))
+    }
+
+    fn sym_has_clauses(&self, s: Sym, seen: &mut HashSet<DefId>) -> bool {
+        match s {
+            Sym::Ty(t) => self.g.tys[t.0 as usize].dicts > 0,
+            Sym::Def(d) if self.alias_subject.contains_key(&d) && seen.insert(d) => {
+                self.g.defs[d.0 as usize].body.as_ref().is_some_and(|b| self.tm_has_clauses(b, seen))
+            }
+            _ => false,
+        }
+    }
+
+    fn tm_has_clauses(&self, t: &Tm, seen: &mut HashSet<DefId>) -> bool {
+        match t {
+            Tm::TyCon(id) | Tm::TyConApp(id, _) if self.g.tys[id.0 as usize].dicts > 0 => true,
+            Tm::Def(d) => self.sym_has_clauses(Sym::Def(*d), seen),
+            _ => t.any_sub(|x, _| self.tm_has_clauses(x, seen)),
+        }
+    }
+
+    /// A type's header's dictionary asked for in a signature (#385), at level
+    /// `lvl`: its type, if it is an implied clause there, one that mentions
+    /// the signature's names (and no unknowns, nor names bound inside the
+    /// type) and that nothing finds: neither a dictionary in scope nor an
+    /// instance. Else the dictionary is wanted as anywhere.
+    pub fn implied_clause(&mut self, r: &InstReq, lvl: usize) -> Option<Tm> {
+        if !matches!(self.force(&r.meta), Val::Neutral(Head::Meta(_), _)) {
+            return None;
+        }
+        let tys: Vec<Val> = r.tys.iter().map(|t| self.force(t)).collect();
+        let ty = zonk_metas(&self.g, r.lvl, &quote(&self.g, r.lvl, &Val::TyCon(r.class, tys.into())));
+        if has_meta(&ty) {
+            return None;
+        }
+        let mut free = std::collections::BTreeSet::new();
+        free_vars(&ty, 0, &mut free);
+        let inside = r.lvl.checked_sub(lvl)?;
+        if free.is_empty() || free.iter().any(|i| *i < inside) {
+            return None;
+        }
+        match self.find_dict(r, r.class, &r.tys, 0) {
+            Err(why) if why != "unknown" => Some(rename_free(&ty, 0, &|i| i - inside)),
+            _ => None,
+        }
+    }
+
     /// Find the dictionaries asked for so far. With `last`, report those
     /// whose type still isn't known.
     pub fn solve_instances(&mut self, last: bool) {
@@ -3178,9 +3249,11 @@ impl Elab {
                     let clause = format!("{cname} {}", args.join(" "));
                     let several = tys.len() > 1;
                     let param = tys.iter().zip(&shown).find(|(t, _)| matches!(self.force(t), Val::Neutral(Head::Var(_), _)));
-                    let needs = match &via {
-                        Some(text) => format!("needs `{clause}`, for `instance {text}`"),
-                        None => format!("needs `{clause}`"),
+                    let needs = match (&via, r.of_type) {
+                        (Some(text), _) => format!("needs `{clause}`, for `instance {text}`"),
+                        // A type's header's (#385).
+                        (None, Some(t)) => format!("`{}` needs `{clause}`", self.g.tys[t.0 as usize].name),
+                        (None, None) => format!("needs `{clause}`"),
                     };
                     let could = if why == "unknown" { self.undecided(&r) } else { Vec::new() };
                     let d = if why == "unknown" {
@@ -3191,7 +3264,7 @@ impl Elab {
                     } else if let Some((_, p)) = param {
                         // In an instance, its members have the class's
                         // signatures: the clause goes in its context.
-                        let help = match r.owner.and_then(|o| self.instance_header(o)) {
+                        let help = match r.owner.or(r.instance_sig).and_then(|o| self.instance_header(o)) {
                             Some(h) if h.contains(" : ") => format!("add `{clause}` to the instance's context: `{h}, {clause}`"),
                             Some(h) => format!("add `{clause}` to the instance's context: `{h} : {clause}`"),
                             None => format!("add `{clause}` to the function's signature"),
@@ -3213,6 +3286,11 @@ impl Elab {
                             .with_help(format!("declare `instance {cname} …` for this type, {where_}"))
                     };
                     self.err(d);
+                    // What follows from the dictionary not being found
+                    // follows from this error (D141 c).
+                    if let Val::Neutral(Head::Meta(m), _) = force_meta(&self.g, r.meta.clone()) {
+                        self.blamed.insert(m);
+                    }
                 }
             }
         }
@@ -3368,6 +3446,8 @@ impl Elab {
             assoc: None,
             fallback: self.sig_inst.clone().filter(|f| f.class == tid),
             cx: (self.in_spec == 0).then(|| Rc::new(cx.clone())),
+            of_type: None,
+            instance_sig: self.instance_sig,
         });
     }
 }

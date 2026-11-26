@@ -561,6 +561,11 @@ pub struct Trusted {
     pub what: String,
 }
 
+/// Where elaboration's records ended (`Elab::mark`).
+pub struct Mark {
+    lens: [usize; 21],
+}
+
 pub struct Elab {
     pub g: Globals,
     pub modules: HashMap<String, ModuleInfo>,
@@ -854,6 +859,9 @@ pub struct Elab {
     pub class_local_calls: Vec<(MetaId, PendingPre)>,
     /// The instance whose member's signature is being elaborated (#146).
     pub sig_inst: Option<classes::SigInst>,
+    /// In the signature of an instance's function or dictionary: it. No
+    /// implied clauses there (#385).
+    pub instance_sig: Option<DefId>,
     /// Comparisons waiting for a dictionary (#133): level, expected,
     /// actual, where, the locals' names.
     pub waiting: Vec<(usize, Val, Val, Span, Vec<Name>, bool)>,
@@ -897,6 +905,9 @@ pub struct Elab {
     pub instances: HashMap<(TyId, classes::HeadKey), Vec<classes::InstInfo>>,
     /// Dictionaries to find once types are known.
     pub inst_reqs: Vec<classes::InstReq>,
+    /// While a signature's implied clauses are looked for (#385): each
+    /// dictionary a type's header asks for where the type is written.
+    pub type_dict_reqs: Option<Vec<classes::InstReq>>,
     /// Inside a named precondition: `forall` is allowed (D137).
     pub forall_ok: usize,
     /// The named preconditions of the function being checked (D137).
@@ -1044,6 +1055,7 @@ impl Elab {
             class_value_uses: Vec::new(),
             class_local_calls: Vec::new(),
             sig_inst: None,
+            instance_sig: None,
             waiting: Vec::new(),
             waiting_late: Vec::new(),
             pending_classes: Vec::new(),
@@ -1065,6 +1077,7 @@ impl Elab {
             inst_member_of: HashMap::new(),
             instances: HashMap::new(),
             inst_reqs: Vec::new(),
+            type_dict_reqs: None,
             forall_ok: 0,
             cur_hyps: Vec::new(),
             name_span: Span::default(),
@@ -1144,6 +1157,87 @@ impl Elab {
     }
 
     /// A fresh meta applied to the bound locals in scope.
+    /// Where elaboration's records end now, to drop what a trial
+    /// elaboration adds (`rollback`).
+    pub fn mark(&self) -> Mark {
+        Mark {
+            lens: [
+                self.index.len(),
+                self.diags.len(),
+                self.deferred.len(),
+                self.arith_results.len(),
+                self.calls.len(),
+                self.obligations.len(),
+                self.probes.len(),
+                self.vacuities.len(),
+                self.refs.len(),
+                self.observed.len(),
+                self.wanted.len(),
+                self.insts.len(),
+                self.dict_insts.len(),
+                self.elem_conds.len(),
+                self.pending_class_pres.len(),
+                self.class_calls.len(),
+                self.alias_dicts.len(),
+                self.class_value_uses.len(),
+                self.class_local_calls.len(),
+                self.ty_cond_defer.as_ref().map_or(0, |d| d.len()),
+                self.g.postponed.borrow().len(),
+            ],
+        }
+    }
+
+    /// Drop what was recorded since `m`: a trial elaboration leaves no
+    /// diagnostics, obligations or requests behind. (The unknowns it solved
+    /// stay solved: elaborating the same text again solves them the same way.)
+    pub fn rollback(&mut self, m: &Mark) {
+        let [index, diags, deferred, arith, calls, obligations, probes, vacuities, refs, observed, wanted, insts, dict_insts, elem_conds, class_pres, class_calls, alias_dicts, value_uses, local_calls, ty_cond, postponed] = m.lens;
+        self.index.truncate(index);
+        self.diags.truncate(diags);
+        self.deferred.truncate(deferred);
+        self.arith_results.truncate(arith);
+        self.calls.truncate(calls);
+        self.obligations.truncate(obligations);
+        self.probes.truncate(probes);
+        self.vacuities.truncate(vacuities);
+        self.refs.truncate(refs);
+        self.observed.truncate(observed);
+        self.wanted.truncate(wanted);
+        self.insts.truncate(insts);
+        self.dict_insts.truncate(dict_insts);
+        self.elem_conds.truncate(elem_conds);
+        self.pending_class_pres.truncate(class_pres);
+        self.class_calls.truncate(class_calls);
+        self.alias_dicts.truncate(alias_dicts);
+        self.class_value_uses.truncate(value_uses);
+        self.class_local_calls.truncate(local_calls);
+        if let Some(d) = &mut self.ty_cond_defer {
+            d.truncate(ty_cond);
+        }
+        self.g.postponed.borrow_mut().truncate(postponed);
+    }
+
+    /// Run `f` as a trial (#385): what it records is dropped after, and the
+    /// requests waiting before it are set aside while it runs, so it neither
+    /// sees nor settles them. Its names aren't indexed.
+    pub fn trial<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        let m = self.mark();
+        let reqs = std::mem::take(&mut self.inst_reqs);
+        let waiting = std::mem::take(&mut self.waiting);
+        let waiting_late = std::mem::take(&mut self.waiting_late);
+        let index = (self.index_of.take(), self.index_all.take());
+        // Its diagnostics are dropped, so they may be reported after.
+        let seen = self.seen.clone();
+        let r = f(self);
+        self.rollback(&m);
+        self.seen = seen;
+        self.inst_reqs = reqs;
+        self.waiting = waiting;
+        self.waiting_late = waiting_late;
+        (self.index_of, self.index_all) = index;
+        r
+    }
+
     pub fn fresh_meta(&mut self, cx: &Cx) -> Tm {
         let m = self.g.fresh_meta();
         let mut t = Tm::Meta(m);
