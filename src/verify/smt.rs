@@ -1087,7 +1087,14 @@ impl<'a> Builder<'a> {
                 let mut t = t.clone();
                 while let Tm::Pi(_, m, _, a, b) = t {
                     if self.is_type(&a) {
-                        return out("a function of a type (a polymorphic function value)");
+                        // An erased type the rest doesn't mention (a class's
+                        // parameter passed explicitly to a dictionary's
+                        // field, #161) is no parameter of the value.
+                        let mut fv = std::collections::BTreeSet::new();
+                        crate::core::free_vars(&b, 0, &mut fv);
+                        if m != Mult::Zero || fv.contains(&0) {
+                            return out("a function of a type (a polymorphic function value)");
+                        }
                     }
                     // A parameter's sort names the types read from it (a
                     // class's type at a dictionary parameter).
@@ -2861,8 +2868,8 @@ impl<'a> Builder<'a> {
             ienv.extend(tyargs);
         }
         // The arguments after the dictionary, and the explicit ones before
-        // it but a class's parameter passed explicitly (#161), which the
-        // dictionary's field doesn't take. The function's own class clauses'
+        // it (a class's parameter passed explicitly, #161, among them: the
+        // dictionary's field takes it too). The function's own class clauses'
         // dictionaries come first, wherever they are: the class's follows a
         // class's parameter passed explicitly, so a clause may precede it,
         // or, when the clause mentions that parameter, follow it after the
@@ -2872,13 +2879,12 @@ impl<'a> Builder<'a> {
             let mut t = self.e.g.defs[d.0 as usize].ty.clone();
             let mut k = 0;
             let mut clauses = 0;
-            while let Tm::Pi(x, m, i, a, b) = t {
-                let class_param = self.is_type(&a) && cd.params.iter().any(|p| **p == *x);
+            while let Tm::Pi(_, m, i, a, b) = t {
                 if k != pos && m == Mult::Many && i == crate::core::Icit::Impl && self.is_dict_ty(&a) {
                     let Some(e) = inner.get(k) else { break };
                     rest.insert(clauses, e.clone());
                     clauses += 1;
-                } else if k > pos || (k < pos && i == crate::core::Icit::Expl && !class_param) {
+                } else if k > pos || (k < pos && i == crate::core::Icit::Expl) {
                     let Some(e) = inner.get(k) else { break };
                     rest.push(e.clone());
                 }
