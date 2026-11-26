@@ -1,0 +1,15 @@
+(set-option :produce-unsat-cores true)
+(set-option :produce-models true)
+(set-option :rlimit 1000)
+(set-logic ALL)
+(declare-const x Int)
+(assert (! (> x 0) :named |fact.0|))
+(assert (not (= x 1)))
+(check-sat)
+(get-unsat-core)
+(get-value (x))
+; z3 says: sat
+; z3 says: (error "line 9 column 15: unsat core is not available")
+; z3 says: ((x 2))
+; z3 says: (:rlimit-count 15
+; z3 says:  :time 0.01)

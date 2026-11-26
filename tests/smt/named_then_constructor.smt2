@@ -1,0 +1,7 @@
+(set-option :produce-unsat-cores true)
+(set-logic ALL)
+(declare-const x Int)
+(assert (! (> x 0) :named K))
+(declare-datatypes ((T 0)) (((K) (L (f Int)))))
+(assert (not (= x 1)))
+(check-sat)

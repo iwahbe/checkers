@@ -1,0 +1,5 @@
+-- stdout
+unknown
+(error "line 11 column 2: model is not available")
+-- stderr
+-- exit 1

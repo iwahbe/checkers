@@ -1,0 +1,6 @@
+(set-logic ALL)
+(declare-datatypes ((D 0)) (((||) (c))))
+(declare-fun is- (D) Bool)
+(assert (not (is- ||)))
+(assert (not false))
+(check-sat)

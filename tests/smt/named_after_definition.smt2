@@ -1,0 +1,7 @@
+(set-option :produce-unsat-cores true)
+(set-logic ALL)
+(define-fun-rec b () Int 3)
+(declare-const x Int)
+(assert (! (< x 0) :named b))
+(assert (not (= b 3)))
+(check-sat)

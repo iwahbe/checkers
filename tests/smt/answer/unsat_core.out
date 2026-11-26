@@ -1,0 +1,6 @@
+-- stdout
+unknown
+(error "line 9 column 15: unsat core is not available")
+(error "line 10 column 14: model is not available")
+-- stderr
+-- exit 1

@@ -863,7 +863,8 @@ fn golden() {
 
 /// The solver package (#72): its modules check clean; its command builds;
 /// `main parse` gives each `tests/smt/*.smt2` case's output; `main` answers
-/// each `tests/smt/answer/*.smt2`; `main compare` gives `tests/smt/compare/compare.out`.
+/// each `tests/smt/answer/*.smt2`; `main compare` gives `tests/smt/compare/compare.out`;
+/// `main reserved` lists `smt/reserved.txt`.
 fn smt_package(pool: &Pool, root: &'static Path, update: bool) {
     let pkg = root.join("smt");
     for (i, path) in ck_files(&pkg).into_iter().enumerate() {
@@ -929,6 +930,17 @@ fn smt_package(pool: &Pool, root: &'static Path, update: bool) {
             fs::read_to_string(&saved.0).unwrap_or_default()
         );
         compare(root, &root.join(dir).join("compare.out"), &actual, update, &mut failures);
+        // The reader's reserved spellings are those scripts/reserved.py
+        // measured with Z3 (smt/reserved.txt); never rewritten here.
+        count += 1;
+        let listed = run_with(&exe.0, &["reserved"], b"", root);
+        let measured = fs::read_to_string(root.join("smt").join("reserved.txt")).unwrap_or_default();
+        if !listed.status.success() || String::from_utf8_lossy(&listed.stdout) != measured {
+            failures.push(format!(
+                "── main reserved ──\nthe reader's reserved spellings differ from smt/reserved.txt; run scripts/reserved.py\n{}",
+                shown(&listed)
+            ));
+        }
         (count, failures)
     });
 }

@@ -2,7 +2,8 @@
 # (SPEC §7.3): `parse` reads a query into a `Query`, `render` writes one.
 #
 # A query is options, `(set-logic …)`, commands that build a `Context`, the
-# goal asserted negated, `(check-sat)`, and optionally `(get-value …)`.
+# goal asserted negated, `(check-sat)`, and optionally `(get-unsat-core)`
+# and `(get-value …)`, in that order.
 # Anything outside the subset is an `Error` that says where and what.
 #
 # `render (parse q)` is `q` again, except for white space and comments
@@ -21,8 +22,11 @@ import term (FunKind, Declared, Constant, Defined, FunDecl)
 import term (Op, Not, And, Or, Implies, Ite, Eq, Add, Sub, Neg, Mul, Div, Mod, Lt, Le, Gt, Ge, Select, Store, MapAdd)
 import term (SeqLen, SeqNth, SeqUnit, SeqConcat, SeqExtract)
 import term (Head, Fun, Con, Is, Sel, Num, Boolean, Prim, ConstArr, EmptySeq, Term, Var, App, Let, Lam)
-import term (Def, Axiom, Command, DeclareSort, DeclareDatatypes, DeclareFun, DefineFuns, Assume, Assert)
+import term (Def, DefKind, Recursive, Plain, Axiom, Command, DeclareSort, DeclareDatatypes, DeclareFun, DefineFuns, Assume)
+import term (Assert)
 import term (Sig, Context, Problem, BadSort, NoCtors, BadApply, Unbound, EmptyLet, ConstantParams, Expected, NoPattern)
+import term (NamedTwice, PlainInGroup)
+import reserved
 
 # ── Errors ───────────────────────────────────────────────────────────────────
 
@@ -128,7 +132,10 @@ fn expr src i -> r : src~Bytes, i~Nat, i < len src, r~Result (Parsed (SExpr src)
         Err (Error i b"unexpected `)`")
     else if b == '|'
         let j = try quoted_end src i (i + 1)
-        Ok (Parsed (Leaf (Symbol (bytes.slice src (i + 1) j) True) i) (j + 1))
+        if j == i + 1
+            Err (Error i b"the empty symbol `||` is outside the subset `ckc` writes")
+        else
+            Ok (Parsed (Leaf (Symbol (bytes.slice src (i + 1) j) True) i) (j + 1))
     else if b == ':'
         let j = symbol_end src (i + 1)
         if j == i + 1
@@ -148,6 +155,9 @@ fn expr src i -> r : src~Bytes, i~Nat, i < len src, r~Result (Parsed (SExpr src)
                     Err (Error i b"a numeral other than `0` can't start with `0`")
                 else
                     Ok (Parsed (Leaf (Numeral n) i) j)
+    else if b == '-' and i + 1 < len src and is_digit src[i + 1]
+        # Z3 reads `-` and a digit as the start of a number, never of a symbol.
+        Err (Error i b"a negative numeral is outside the subset `ckc` writes: write `(- N)`")
     else if symbol_byte b
         let j = symbol_end src (i + 1)
         Ok (Parsed (Leaf (Symbol (bytes.slice src i j) False) i) j)
@@ -199,7 +209,8 @@ export record Opt
 
 # A query: options, the logic, the context, and the goal, which the query
 # asserts negated: it asks whether the goal follows from the context.
-# `values` are the terms `(get-value …)` asks for, if it does.
+# `core` is whether `(get-unsat-core)` follows `(check-sat)`, and `values`
+# are the terms `(get-value …)` asks for after it, if it does.
 #
 # `goal_at` is how many of the context's commands came before the negated
 # goal; the assertions after it are facts of the context like any other.
@@ -212,6 +223,7 @@ export record Query
     context~Context
     goal~Term, term.fact_ok context goal
     goal_at~Nat, goal_at <= list.length (term.commands context)
+    core~Bool
     values~Option (List Term), values_ok context values
 
 export fn values_ok c vs -> r : c~Context, vs~Option (List Term), r~Bool
@@ -333,11 +345,11 @@ fn prim_op name n -> r : name~Name, n~Nat, r~Option Op
 fn outside name -> r : name~Name, r~Bool
     name == b"xor" or name == b"distinct" or name == b"exists" or name == b"abs"
         or name == b"/" or name == b"to_real" or name == b"to_int" or name == b"match"
-        or name == b"define-fun" or name == b"declare-datatype" or name == b"push" or name == b"pop"
+        or name == b"declare-datatype" or name == b"push" or name == b"pop"
         or name == b"check-sat-assuming" or name == b"get-model" or name == b"exit"
 
 # Words with a meaning of their own, which can't name anything.
-fn reserved name -> r : name~Name, r~Bool
+fn keyword name -> r : name~Name, r~Bool
     name == b"let" or name == b"lambda" or name == b"forall" or name == b"exists" or name == b"!"
         or name == b"_" or name == b"as" or name == b"par" or name == b"match" or name == b"true"
         or name == b"false" or name == b"Int" or name == b"Bool" or name == b"Seq" or name == b"Array"
@@ -345,12 +357,18 @@ fn reserved name -> r : name~Name, r~Bool
 # Whether a function-like name is taken: a built-in, a function, a
 # constructor, a tester or a selector.
 fn taken sig name -> r : sig~Sig, name~Name, r~Bool
-    reserved name or prim_op name 2 != None or outside name or find_fun sig.funs name 0 != None
+    tester_like name or keyword name or reserved.is_reserved name or prim_op name 2 != None or outside name or find_fun sig.funs name 0 != None
         or find_ctor sig.datatypes name 0 != None or tester_of sig.datatypes name != None
         or find_sel sig.datatypes name 0 != None
 
 fn sort_taken sig name -> r : sig~Sig, name~Name, r~Bool
-    reserved name or find_sort sig.sorts name 0 != None or find_datatype sig.datatypes name 0 != None
+    tester_like name or keyword name or reserved.is_reserved name or find_sort sig.sorts name 0 != None or find_datatype sig.datatypes name 0 != None
+
+# Whether `name` is spelled `is-…`, as a tester is: nothing a query
+# introduces is, so that a tester's spelling has no other meaning (Z3 reads
+# `is-` as the tester of a constructor `||`).
+fn tester_like name -> r : name~Name, r~Bool
+    len name >= 3 and bytes.matches_at name 0 b"is-"
 
 # `name`, as written in a message.
 fn shown name -> r : name~Name, r~Bytes
@@ -436,18 +454,16 @@ fn term_from src sig vars e -> r : src~Bytes, sig~Sig, vars~List (Name, Sort), e
             else if n == b"forall" or n == b"exists"
                 Err (Error hp (b"a quantifier is in the subset `ckc` writes only as a whole assertion, `(assert (forall …))`"))
             else if n == b"!"
-                Err (Error hp b"`!` is in the subset `ckc` writes only around a `forall`'s body")
+                Err (Error hp b"`!` is in the subset `ckc` writes only around a `forall`'s body, or around an assertion to name it, `(assert (! TERM :named NAME))`")
             else if n == b"as"
                 let h = try qualified_head src sig args p
                 applied src sig h [] [] p
             else if n == b"_"
                 Err (Error hp b"an indexed name is in the subset `ckc` writes only as `(_ map (+ (Int Int) Int))`")
             else
-                let h = try head_of src sig n hp (list.length args)
-                apply_to src sig vars h args hp
-        Node (Leaf (Symbol n True) hp :: args) _                    ->
-            let h = try head_of src sig n hp (list.length args)
-            apply_to src sig vars h args hp
+                named_apply src sig vars n hp args
+        Node (Leaf (Symbol n True) hp :: args) _                    -> named_apply src sig vars n hp args
+        Node [Node _ hp] _                                          -> Err (Error hp NO_ARGUMENTS)
         Node (Node (Leaf (Symbol q False) _ :: inner) hp :: args) _ ->
             if q == b"as"
                 let h = try qualified_head src sig inner hp
@@ -460,6 +476,20 @@ fn term_from src sig vars e -> r : src~Bytes, sig~Sig, vars~List (Name, Sort), e
             else
                 Err (Error hp b"expected a function's name")
         Node (_ :: _) p                                             -> Err (Error p b"expected a function's name at the start")
+
+let NO_ARGUMENTS = b"an application needs arguments: a constant is written alone, without parentheses"
+
+# The function named `n`, at `hp`, applied to the terms `args` write. A
+# bound variable can't be applied: Z3 would read `(v t)` as `(select v t)`.
+fn named_apply src sig vars n hp args -> r : src~Bytes, sig~Sig, vars~List (Name, Sort), n~Name, hp~Nat, hp < len src,
+                                             args~List (SExpr src), r~Result Sorted (Error src)
+    if var_index vars n 0 != None
+        Err (Error hp (shown n ++ b" is a bound variable here, so it can't be applied to arguments"))
+    else if args == []
+        Err (Error hp NO_ARGUMENTS)
+    else
+        let h = try head_of src sig n hp (list.length args)
+        apply_to src sig vars h args hp
 
 # Head `h` (at `hp`) applied to the terms `args` write.
 fn apply_to src sig vars h args hp -> r : src~Bytes, sig~Sig, vars~List (Name, Sort), h~Head, args~List (SExpr src),
@@ -577,12 +607,12 @@ fn zip ns ss -> r : ns~List Name, ss~List Sort, r~List (Name, Sort)
 fn bindings src sig vars es -> r : src~Bytes, sig~Sig, vars~List (Name, Sort), es~List (SExpr src),
                                    r~Result (List (Name, Term), List Sort) (Error src)
     match es
-        []                                      -> Ok ([], [])
-        Node [Leaf (Symbol n _) _, e] _ :: rest ->
+        []                                       -> Ok ([], [])
+        Node [Leaf (Symbol n _) np, e] _ :: rest ->
             let (t, s) = try term_from src sig vars e
             let (bs, ss) = try bindings src sig vars rest
-            Ok ((n, t) :: bs, s :: ss)
-        e :: _                                  -> Err (Error (at e) b"expected `(NAME TERM)`")
+            if list.contains (list.keys bs) n then Err (Error np (twice n)) else Ok ((n, t) :: bs, s :: ss)
+        e :: _                                   -> Err (Error (at e) b"expected `(NAME TERM)`")
 
 # `(lambda ((x S)) body)`, from what follows `lambda`.
 fn lambda_term src sig vars args p -> r : src~Bytes, sig~Sig, vars~List (Name, Sort), args~List (SExpr src), p~Nat,
@@ -612,24 +642,88 @@ fn at e -> p : e~SExpr src, p~Nat, p < len src
 # `((x S) …)`: variables and their sorts.
 fn sorted_vars src sig es -> r : src~Bytes, sig~Sig, es~List (SExpr src), r~Result (List (Name, Sort)) (Error src)
     match es
-        []                                      -> Ok []
-        Node [Leaf (Symbol n _) _, s] _ :: rest ->
+        []                                       -> Ok []
+        Node [Leaf (Symbol n _) np, s] _ :: rest ->
             let sort = try sort_from src sig [] s
             let vs = try sorted_vars src sig rest
-            Ok ((n, sort) :: vs)
-        e :: _                                  -> Err (Error (at e) b"expected `(NAME SORT)`")
+            if list.contains (list.keys vs) n then Err (Error np (twice n)) else Ok ((n, sort) :: vs)
+        e :: _                                   -> Err (Error (at e) b"expected `(NAME SORT)`")
+
+fn twice n -> r : n~Name, r~Bytes
+    shown n ++ b" is bound twice here"
 
 # ── Commands ─────────────────────────────────────────────────────────────────
 
 # `cmd` added to `c`, or an error at `p` saying why it can't be.
 fn add_command src c cmd p -> r : src~Bytes, c~Context, cmd~Command, p~Nat, p < len src,
                                   r~Result (d~Context, list.length (term.commands c) < list.length (term.commands d)) (Error src)
-    let added = term.add c cmd
-    match added
+    let _ = try binders_free src (term.extend (term.signature c) cmd) (term.names c) (command_binders cmd) p
+    match term.add c cmd
         Ok d   ->
             have list.length_append (term.commands c) [cmd]
             Ok d
         Err pr -> Err (Error p (problem_message (term.extend (term.signature c) cmd) pr))
+
+# ── One meaning per spelling ─────────────────────────────────────────────────
+# A variable a query binds (`let`, `forall`, `lambda`, a definition's
+# parameter, a datatype's parameter) never shares its spelling with a sort,
+# datatype, function, constructor, tester, selector or assertion name, nor
+# with a spelling Z3 gives a meaning of its own: where Z3 and this reader
+# would choose different meanings for it, there is then only one. A binder
+# may hide an outer binder, as in Z3.
+
+# An error at `p` if one of `bs` is a spelling `sig`, the assertion names
+# `names`, or Z3 gives a meaning.
+fn binders_free src sig names bs p -> r : src~Bytes, sig~Sig, names~List Name, bs~List Name, p~Nat, p < len src,
+                                          r~Result Unit (Error src)
+    match bs
+        []        -> Ok ()
+        b :: rest ->
+            if taken sig b or sort_taken sig b or list.contains names b
+                Err (Error p (shown b ++ b" is bound here and has a meaning of its own outside, as a declaration, a name or a built-in: a bound variable can't share its spelling"))
+            else
+                binders_free src sig names rest p
+
+# The spellings `cmd` binds.
+fn command_binders cmd -> r : cmd~Command, r~List Name
+    match cmd
+        DeclareDatatypes ds -> dt_params ds
+        DefineFuns _ ds     -> defs_binders ds
+        Assume a _          -> list.keys a.vars ++ term_binders a.body ++ patterns_binders a.patterns
+        Assert t _          -> term_binders t
+        _                   -> []
+
+fn dt_params ds -> r : ds~List Datatype, r~List Name
+    match ds
+        []        -> []
+        d :: rest -> d.params ++ dt_params rest
+
+fn defs_binders ds -> r : ds~List Def, r~List Name
+    match ds
+        []        -> []
+        d :: rest -> list.keys d.params ++ term_binders d.body ++ defs_binders rest
+
+fn patterns_binders ps -> r : ps~List (List Term), r~List Name
+    match ps
+        []        -> []
+        p :: rest -> terms_binders p ++ patterns_binders rest
+
+fn term_binders t -> r : t~Term, r~List Name
+    match t
+        Var _          -> []
+        App _ args     -> terms_binders args
+        Let binds body -> binds_binders binds ++ term_binders body
+        Lam n _ body   -> n :: term_binders body
+
+fn terms_binders ts -> r : ts~List Term, r~List Name
+    match ts
+        []        -> []
+        t :: rest -> term_binders t ++ terms_binders rest
+
+fn binds_binders bs -> r : bs~List (Name, Term), r~List Name
+    match bs
+        []             -> []
+        (n, t) :: rest -> n :: term_binders t ++ binds_binders rest
 
 # Each of `cmds` added to `c` in order.
 fn add_commands src c cmds -> r : src~Bytes, c~Context, cmds~List (Command, (p~Nat, p < len src)),
@@ -670,7 +764,7 @@ fn flush src c held -> r : src~Bytes, c~Context, held~Option (Held src), r~Resul
     match held
         None   -> Ok c
         Some h ->
-            let d = try add_command src c (Assert (App (Prim Not) [h.goal])) h.at
+            let d = try add_command src c (Assert (App (Prim Not) [h.goal]) None) h.at
             add_commands src d (list.reverse h.after)
 
 # Read a query.
@@ -681,14 +775,30 @@ export fn parse src -> r : src~Bytes, r~Result Query (Error src)
 # The options and the logic, then the rest.
 fn setup src es acc -> r : src~Bytes, es~List (SExpr src), acc~List Opt, r~Result Query (Error src)
     match es
-        Node [Leaf (Symbol c False) _, Leaf (Keyword k) _, Leaf v _] _ :: rest if c == b"set-option" ->
-            setup src rest (Opt k v :: acc)
-        Node [Leaf (Symbol c False) _, Leaf (Symbol l _) _] _ :: rest if c == b"set-logic" ->
-            body src rest (list.reverse acc) l term.empty None None
+        Node [Leaf (Symbol c False) _, Leaf (Keyword k) kp, Leaf v _] _ :: rest if c == b"set-option" ->
+            if option_ok k v
+                setup src rest (Opt k v :: acc)
+            else
+                Err (Error kp OPTIONS)
+        Node [Leaf (Symbol c False) _, Leaf (Symbol l _) lp] _ :: rest if c == b"set-logic" ->
+            if l == b"ALL"
+                body src rest (list.reverse acc) l term.empty None None
+            else
+                Err (Error lp b"only `(set-logic ALL)` is in the subset `ckc` writes")
         e :: _ ->
             Err (Error (at e) b"expected `(set-option :KEYWORD VALUE)` or `(set-logic NAME)`")
         []     ->
             Err (Error (len src) b"expected `(set-logic NAME)`")
+
+let OPTIONS = b"only `:produce-models true`, `:produce-unsat-cores true`, and `:rlimit N` and `:timeout N` with `N` below 2^32, are options in the subset `ckc` writes"
+
+# Whether `(set-option :k v)` is one of the options `ckc` writes.
+fn option_ok k v -> r : k~Bytes, v~Atom, r~Bool
+    match v
+        Symbol t False -> (k == b"produce-models" or k == b"produce-unsat-cores") and t == b"true"
+        # Z3 takes these as unsigned 32-bit numbers.
+        Numeral n      -> (k == b"rlimit" or k == b"timeout") and n < 4294967296
+        _              -> False
 
 # The commands up to `(check-sat)`. The last `(assert (not …))` is held
 # back with the assertions after it: if only assertions follow it up to
@@ -703,9 +813,14 @@ fn body src es opts logic c held broken -> r : src~Bytes, es~List (SExpr src), o
             match e
                 Node [Leaf (Symbol n False) _] p if n == b"check-sat" ->
                     finish src rest opts logic c held broken p
+                Node [Leaf (Symbol n False) _, Node [Leaf (Symbol bang False) _, t, Leaf (Keyword k) _, Leaf (Symbol name _) np] _] _ if n == b"assert" and bang == b"!" and k == b"named" ->
+                    let _ = try name_free src (term.signature c) name np
+                    let cmd = try named src c t name
+                    let (d, h) = try keep src c held cmd np
+                    body src rest opts logic d h broken
                 Node [Leaf (Symbol n False) _, Node (Leaf (Symbol f False) _ :: q) fp] p if n == b"assert" and f == b"forall" ->
-                    let a = try axiom_from src (term.signature c) q fp
-                    let (d, h) = try keep src c held (Assume a) p
+                    let a = try axiom_from src (term.signature c) (plain_funs (term.defs c)) q fp
+                    let (d, h) = try keep src c held (Assume a None) p
                     body src rest opts logic d h broken
                 Node [Leaf (Symbol n False) _, t] p if n == b"assert" ->
                     let tm = try term_of src (term.signature c) [] t Bool b"an assertion"
@@ -714,18 +829,20 @@ fn body src es opts logic c held broken -> r : src~Bytes, es~List (SExpr src), o
                             let d = try flush src c held
                             body src rest opts logic d (Some (Held g p [])) None
                         None   ->
-                            let (d, h) = try keep src c held (Assert tm) p
+                            let (d, h) = try keep src c held (Assert tm None) p
                             body src rest opts logic d h broken
                 Node (Leaf (Symbol n False) hp :: args) p ->
                     let d = try flush src c held
                     let cmd = try declaration src (term.signature d) n hp args p
+                    let _ = try unnamed src (term.names d) (declared cmd) p
                     let d2 = try add_command src d cmd p
                     body src rest opts logic d2 None (if held == None then broken else Some p)
                 _                                         ->
                     Err (Error (at e) b"expected a command")
 
 # `(check-sat)` at `p`: the goal held back is the goal, and the assertions
-# after it are facts; then `(get-value …)` may follow.
+# after it are facts; then `(get-unsat-core)` and `(get-value …)` may follow,
+# in that order.
 fn finish src rest opts logic c held broken p -> r : src~Bytes, rest~List (SExpr src), opts~List Opt, logic~Name,
                                                      c~Context, held~Option (Held src),
                                                      broken~Option (q~Nat, q < len src), p~Nat, p < len src,
@@ -734,27 +851,104 @@ fn finish src rest opts logic c held broken p -> r : src~Bytes, rest~List (SExpr
         Some h ->
             let k = list.length (term.commands c)
             let d = try add_commands src c (list.reverse h.after)
+            let _ = try binders_free src (term.signature d) (term.names d) (term_binders h.goal) h.at
             match term.check_fact d h.goal
                 Err pr -> Err (Error h.at (b"the goal: " ++ problem_message (term.signature d) pr))
                 Ok ()  ->
-                    match rest
-                        []     -> Ok (Query opts logic d h.goal k None)
-                        [Node [Leaf (Symbol n False) _, Node ts tp] _] if n == b"get-value" ->
+                    let (core, more) = unsat_core rest
+                    match more
+                        []     -> Ok (Query opts logic d h.goal k core None)
+                        Node [Leaf (Symbol n False) _, Node [] tp] _ :: _ if n == b"get-value" ->
+                            Err (Error tp b"`(get-value …)` needs at least one term")
+                        Node [Leaf (Symbol n False) _, Node ts tp] _ :: after if n == b"get-value" ->
                             let (vs, _) = try terms_from src (term.signature d) [] ts
-                            match term.check_terms d vs
-                                Err pr -> Err (Error tp (problem_message (term.signature d) pr))
-                                Ok ()  -> Ok (Query opts logic d h.goal k (Some vs))
-                        e :: _ ->
-                            Err (Error (at e) b"only `(get-value (TERM …))` may follow `(check-sat)`")
+                            let _ = try binders_free src (term.signature d) (term.names d) (terms_binders vs) tp
+                            match (term.check_terms d vs, after)
+                                (Err pr, _) -> Err (Error tp (problem_message (term.signature d) pr))
+                                (Ok (), []) -> Ok (Query opts logic d h.goal k core (Some vs))
+                                (_, e :: _) -> Err (Error (at e) AFTER_CHECK_SAT)
+                        e :: _ -> Err (Error (at e) AFTER_CHECK_SAT)
         None   ->
             match broken
                 Some q -> Err (Error q b"only assertions may follow the negated goal, `(assert (not GOAL))`")
                 None   -> Err (Error p b"no negated goal, `(assert (not GOAL))`, before `(check-sat)`")
 
+let AFTER_CHECK_SAT = b"only `(get-unsat-core)`, then `(get-value (TERM …))`, may follow `(check-sat)`"
+
+# Whether `es` start with `(get-unsat-core)`, and the rest after it.
+fn unsat_core es -> r : es~List (SExpr src), r~(Bool, List (SExpr src))
+    match es
+        Node [Leaf (Symbol n False) _] _ :: rest if n == b"get-unsat-core" -> (True, rest)
+        _ -> (False, es)
+
+# A name is also a `Bool` constant, to Z3, which then reads the name where
+# a term uses it. So a name and a declared function, constructor, tester or
+# selector never share a spelling, whichever comes first, nor does a name
+# and a word with a meaning of its own (`true`). Z3 accepts some of these;
+# the subset doesn't need them. The reader checks this, not `Context`: a
+# `Context` built otherwise may have a name spelled like a function.
+
+# An error at `p` if `name` is already declared in `sig`.
+fn name_free src sig name p -> r : src~Bytes, sig~Sig, name~Name, p~Nat, p < len src, r~Result Unit (Error src)
+    if keyword name or reserved.is_reserved name or prim_op name 2 != None or outside name
+        Err (Error p (shown name ++ b" has a meaning of its own, so it can't name an assertion"))
+    else if taken sig name
+        Err (Error p (shown name ++ b" is already declared, so it can't name an assertion"))
+    else
+        Ok ()
+
+# The names of the functions, constructors, testers and selectors `cmd`
+# declares.
+fn declared cmd -> r : cmd~Command, r~List Name
+    match cmd
+        DeclareFun f        -> [f.name]
+        DefineFuns _ ds     -> def_names ds
+        DeclareDatatypes ds -> group_names ds
+        _                   -> []
+
+fn def_names ds -> r : ds~List Def, r~List Name
+    match ds
+        []        -> []
+        d :: rest -> d.name :: def_names rest
+
+# An error at `p` if one of `fs` is one of the names `names`.
+fn unnamed src names fs p -> r : src~Bytes, names~List Name, fs~List Name, p~Nat, p < len src, r~Result Unit (Error src)
+    match fs
+        []        -> Ok ()
+        f :: rest ->
+            if list.contains names f
+                Err (Error p (shown f ++ b" names an assertion before, so it can't be declared"))
+            else
+                unnamed src names rest p
+
+# The numbers of the `Plain` definitions' functions.
+fn plain_funs ds -> r : ds~List (Nat, Def), r~List Nat
+    match ds
+        []             -> []
+        (n, d) :: rest ->
+            match d.kind
+                Plain     -> n :: plain_funs rest
+                Recursive -> plain_funs rest
+
+# The assertion `(assert (! e :named name))`: a fact, or an axiom if `e` is
+# a `forall`.
+fn named src c e name -> r : src~Bytes, c~Context, e~SExpr src, name~Name, r~Result Command (Error src)
+    match e
+        Node (Leaf (Symbol f False) _ :: q) fp if f == b"forall" ->
+            let a = try axiom_from src (term.signature c) (plain_funs (term.defs c)) q fp
+            Ok (Assume a (Some name))
+        _ ->
+            let t = try term_of src (term.signature c) [] e Bool b"an assertion"
+            Ok (Assert t (Some name))
+
 # `(forall ((x S) …) (! body :pattern (t …) …))`, or `(forall ((x S) …) body)`
-# without patterns, from what follows `forall`.
-fn axiom_from src sig q p -> r : src~Bytes, sig~Sig, q~List (SExpr src), p~Nat, p < len src, r~Result Axiom (Error src)
+# without patterns, from what follows `forall`. `plain` are the numbers of
+# the functions `define-fun` defines, which no pattern may apply: Z3
+# expands them where they are applied, in patterns too.
+fn axiom_from src sig plain q p -> r : src~Bytes, sig~Sig, plain~List Nat, q~List (SExpr src), p~Nat, p < len src,
+                                       r~Result Axiom (Error src)
     match q
+        [Node [] vp, _] -> Err (Error vp b"a `forall` must bind at least one variable")
         [Node vs _, Node (Leaf (Symbol bang False) bp :: b :: attrs) _] if bang == b"!" ->
             if attrs == []
                 Err (Error bp b"expected `:pattern (TERM …)` after a `forall`'s body")
@@ -762,36 +956,115 @@ fn axiom_from src sig q p -> r : src~Bytes, sig~Sig, q~List (SExpr src), p~Nat, 
                 let vars = try sorted_vars src sig vs
                 let env = list.reverse vars
                 let t = try term_of src sig env b Bool b"a `forall`'s body"
-                let ps = try patterns src sig env attrs
+                let ps = try patterns src sig plain env attrs
                 Ok (Axiom vars t ps)
-        [Node vs _, b] ->
+        [Node vs _, b]  ->
             let vars = try sorted_vars src sig vs
             let t = try term_of src sig (list.reverse vars) b Bool b"a `forall`'s body"
             Ok (Axiom vars t [])
-        _              ->
+        _               ->
             Err (Error p b"expected `(forall ((NAME SORT) …) TERM)`, with `(! TERM :pattern (TERM …))` for patterns")
 
-fn patterns src sig env attrs -> r : src~Bytes, sig~Sig, env~List (Name, Sort), attrs~List (SExpr src),
-                                     r~Result (List (List Term)) (Error src)
+fn patterns src sig plain env attrs -> r : src~Bytes, sig~Sig, plain~List Nat, env~List (Name, Sort),
+                                           attrs~List (SExpr src), r~Result (List (List Term)) (Error src)
     match attrs
         []     -> Ok []
         Leaf (Keyword k) _ :: Node [] at :: _ if k == b"pattern" ->
             Err (Error at b"a `:pattern` needs at least one term")
-        Leaf (Keyword k) _ :: Node ts _ :: rest if k == b"pattern" ->
+        Leaf (Keyword k) _ :: Node ts at :: rest if k == b"pattern" ->
             let (p, _) = try terms_from src sig env ts
-            let ps = try patterns src sig env rest
-            Ok (p :: ps)
+            if not (list.all (pattern_term plain) p)
+                Err (Error at PATTERN)
+            else if not (covers (list.length env) 0 p)
+                Err (Error at b"a `:pattern` must mention every variable its `forall` binds")
+            else
+                let ps = try patterns src sig plain env rest
+                Ok (p :: ps)
         e :: _ ->
             Err (Error (at e) b"expected `:pattern (TERM …)`; other attributes are outside the subset `ckc` writes")
+
+let PATTERN = b"a `:pattern`'s terms are in the subset `ckc` writes only as applications of `select` or of a function, constructor, tester or selector the query declares (not one `define-fun` defines: Z3 expands it), without `let` or `lambda` inside"
+
+# Whether `t` can be a term of a pattern: an application of `select` or of
+# what the query declares, other than a `define-fun` (`plain`), with no
+# binder inside. Z3 rejects variables and literals there, warns about
+# `not`, `and`, `or`, `=>` and `ite`, and expands a `define-fun`; it takes
+# other built-ins without a word, but `ckc` writes none (measured on the
+# corpus: 2,110 pattern terms apply a declared function, 229 `select`).
+fn pattern_term plain t -> r : plain~List Nat, t~Term, r~Bool
+    match t
+        App h args ->
+            let head = match h
+                Fun f       -> not (list.contains plain f)
+                Con _ _ _   -> True
+                Is _ _      -> True
+                Sel _ _ _   -> True
+                Prim Select -> True
+                _           -> False
+            head and not (applies_any plain args) and not (binds_any args)
+        _          -> False
+
+# Whether one of `ts` has a `let` or `lambda` inside.
+fn binds_any ts -> r : ts~List Term, r~Bool
+    terms_binders ts != []
+
+# Whether each variable below `n`, from `k`, occurs in one of `ts`.
+fn covers n k ts -> r : n~Nat, k~Nat, k <= n, ts~List Term, r~Bool
+    decreasing n - k
+    if k >= n then True else occurs_any k ts and covers n (k + 1) ts
+
+fn occurs k t -> r : k~Nat, t~Term, r~Bool
+    match t
+        Var i          -> i == k
+        App _ args     -> occurs_any k args
+        Let binds body -> occurs_binds k binds or occurs (k + list.length binds) body
+        Lam _ _ body   -> occurs (k + 1) body
+
+fn occurs_any k ts -> r : k~Nat, ts~List Term, r~Bool
+    match ts
+        []        -> False
+        t :: rest -> occurs k t or occurs_any k rest
+
+fn occurs_binds k bs -> r : k~Nat, bs~List (Name, Term), r~Bool
+    match bs
+        []             -> False
+        (_, t) :: rest -> occurs k t or occurs_binds k rest
+
+# Whether `t` applies one of the functions numbered `fs`.
+fn applies fs t -> r : fs~List Nat, t~Term, r~Bool
+    match t
+        Var _          -> False
+        App h args     ->
+            let here = match h
+                Fun f -> list.contains fs f
+                _     -> False
+            here or applies_any fs args
+        Let binds body -> applies_binds fs binds or applies fs body
+        Lam _ _ body   -> applies fs body
+
+fn applies_any fs ts -> r : fs~List Nat, ts~List Term, r~Bool
+    match ts
+        []        -> False
+        t :: rest -> applies fs t or applies_any fs rest
+
+fn applies_binds fs bs -> r : fs~List Nat, bs~List (Name, Term), r~Bool
+    match bs
+        []             -> False
+        (_, t) :: rest -> applies fs t or applies_binds fs rest
 
 # A command other than an assertion: `n` is its name, at `hp`.
 fn declaration src sig n hp args p -> r : src~Bytes, sig~Sig, n~Name, hp~Nat, hp < len src, args~List (SExpr src),
                                           p~Nat, p < len src, r~Result Command (Error src)
     if n == b"declare-sort"
         match args
-            [Leaf (Symbol s _) sp, Leaf (Numeral k) _] ->
-                if sort_taken sig s then Err (Error sp (shown s ++ b" is already a sort")) else Ok (DeclareSort (SortDecl s k))
-            _                                          -> Err (Error p b"expected `(declare-sort NAME NUMERAL)`")
+            [Leaf (Symbol s _) sp, Leaf (Numeral k) kp] ->
+                if sort_taken sig s
+                    Err (Error sp (clash s b" is already a sort"))
+                else if k >= 4294967296
+                    Err (Error kp TOO_MANY)
+                else
+                    Ok (DeclareSort (SortDecl s k))
+            _                                           -> Err (Error p b"expected `(declare-sort NAME NUMERAL)`")
     else if n == b"declare-fun"
         match args
             [Leaf (Symbol f _) fp, Node ps _, rs] ->
@@ -807,11 +1080,20 @@ fn declaration src sig n hp args p -> r : src~Bytes, sig~Sig, n~Name, hp~Nat, hp
                 let s = try sort_from src sig [] rs
                 Ok (DeclareFun (FunDecl f [] s Constant))
             _                          -> Err (Error p b"expected `(declare-const NAME SORT)`")
+    else if n == b"define-fun"
+        match args
+            [Leaf (Symbol f _) fp, Node ps _, rs, b] ->
+                let _ = try fresh src sig f fp
+                let d = try def_head src sig f ps rs Plain
+                # Its body is read before it is declared: it can't apply itself.
+                let defs = try def_bodies src sig [d] [b] p
+                Ok (DefineFuns True defs)
+            _                                        -> Err (Error p b"expected `(define-fun NAME ((NAME SORT) …) SORT TERM)`")
     else if n == b"define-fun-rec"
         match args
             [Leaf (Symbol f _) fp, Node ps _, rs, b] ->
                 let _ = try fresh src sig f fp
-                let d = try def_head src sig f ps rs
+                let d = try def_head src sig f ps rs Recursive
                 let defs = try def_bodies src (term.extend sig (DefineFuns True [d])) [d] [b] p
                 Ok (DefineFuns True defs)
             _                                        -> Err (Error p b"expected `(define-fun-rec NAME ((NAME SORT) …) SORT TERM)`")
@@ -831,16 +1113,28 @@ fn declaration src sig n hp args p -> r : src~Bytes, sig~Sig, n~Name, hp~Nat, hp
     else
         Err (Error hp (b"unknown command " ++ shown n))
 
+# Z3 takes a sort's number of parameters as an unsigned 32-bit number.
+let TOO_MANY = b"a sort can't have 2^32 or more parameters"
+
 # An error if `f` can't name a new function.
 fn fresh src sig f p -> r : src~Bytes, sig~Sig, f~Name, p~Nat, p < len src, r~Result Unit (Error src)
-    if taken sig f then Err (Error p (shown f ++ b" is already declared")) else Ok ()
+    if taken sig f then Err (Error p (clash f b" is already declared")) else Ok ()
+
+# Why `n` can't be declared: it `already` is, or Z3 gives it a meaning.
+fn clash n already -> r : n~Name, already~Bytes, r~Bytes
+    if tester_like n
+        shown n ++ b" is spelled as a tester is, `is-` and a constructor's name, so a query can't introduce it"
+    else if keyword n or reserved.is_reserved n or prim_op n 2 != None or outside n
+        shown n ++ b" has a meaning of its own in Z3, so a query can't declare it"
+    else
+        shown n ++ already
 
 # A definition's name, parameters and result, with a placeholder body.
-fn def_head src sig f ps rs -> r : src~Bytes, sig~Sig, f~Name, ps~List (SExpr src), rs~SExpr src,
-                                   r~Result Def (Error src)
+fn def_head src sig f ps rs kind -> r : src~Bytes, sig~Sig, f~Name, ps~List (SExpr src), rs~SExpr src, kind~DefKind,
+                                        r~Result Def (Error src)
     let params = try sorted_vars src sig ps
     let s = try sort_from src sig [] rs
-    Ok (Def f params s (App (Boolean True) []) False)
+    Ok (Def f params s (App (Boolean True) []) False kind)
 
 fn def_heads src sig hs acc -> r : src~Bytes, sig~Sig, hs~List (SExpr src), acc~List Def, r~Result (List Def) (Error src)
     match hs
@@ -850,7 +1144,7 @@ fn def_heads src sig hs acc -> r : src~Bytes, sig~Sig, hs~List (SExpr src), acc~
             if def_named acc f
                 Err (Error fp (shown f ++ b" is defined twice here"))
             else
-                let d = try def_head src sig f ps rs
+                let d = try def_head src sig f ps rs Recursive
                 def_heads src sig rest (d :: acc)
         e :: _                                               -> Err (Error (at e) b"expected `(NAME ((NAME SORT) …) SORT)`")
 
@@ -859,8 +1153,7 @@ fn def_named ds f -> r : ds~List Def, f~Name, r~Bool
         []        -> False
         d :: rest -> d.name == f or def_named rest f
 
-# The definitions `ds` with the bodies `bs`, read where the functions they
-# define are declared.
+# The definitions `ds` with the bodies `bs`, read in `sig`.
 fn def_bodies src sig ds bs p -> r : src~Bytes, sig~Sig, ds~List Def, bs~List (SExpr src), p~Nat, p < len src,
                                      r~Result (List Def) (Error src)
     match (ds, bs)
@@ -868,7 +1161,7 @@ fn def_bodies src sig ds bs p -> r : src~Bytes, sig~Sig, ds~List Def, bs~List (S
         (d :: drest, b :: brest) ->
             let t = try term_of src sig (list.reverse d.params) b d.result (b"the body of " ++ shown d.name)
             let rest = try def_bodies src sig drest brest p
-            Ok (Def d.name d.params d.result t False :: rest)
+            Ok (Def d.name d.params d.result t False d.kind :: rest)
         _                        -> Err (Error p b"as many bodies as functions are needed")
 
 # `(declare-datatypes ((N k) …) (D …))`: the heads `hs` and declarations `ds`.
@@ -882,9 +1175,73 @@ fn datatypes src sig hs ds p -> r : src~Bytes, sig~Sig, hs~List (SExpr src), ds~
     match first_repeat (group_names dts)
         Some n -> Err (Error p (shown n ++ b" names two constructors, testers or selectors here"))
         None   ->
-            match first_taken sig (group_names dts)
-                Some n -> Err (Error p (shown n ++ b" is already declared"))
-                None   -> Ok (DeclareDatatypes dts)
+            match first_taken sig (introduced_names dts)
+                Some n -> Err (Error p (clash n b" is already declared"))
+                None   ->
+                    match first_tester_taken sig (tester_names dts)
+                        Some n -> Err (Error p (clash n b" is already declared"))
+                        None   ->
+                            if covariant (len sig.datatypes) (len sig.datatypes + list.length dts) dts
+                                Ok (DeclareDatatypes dts)
+                            else
+                                Err (Error p NOT_COVARIANT)
+
+let NOT_COVARIANT = b"a field whose sort is an array may not mention a datatype of its own group in its index sort, nor in its value sort unless that is itself a datatype (Z3: not co-variant)"
+
+# The constructors' and selectors' names of a group: what it introduces.
+fn introduced_names ds -> r : ds~List Datatype, r~List Name
+    match ds
+        []        -> []
+        d :: rest -> ctor_field_names d.ctors ++ introduced_names rest
+
+fn ctor_field_names cs -> r : cs~List Ctor, r~List Name
+    match cs
+        []        -> []
+        c :: rest -> c.name :: field_names c.fields ++ ctor_field_names rest
+
+# The testers of a group.
+fn tester_names ds -> r : ds~List Datatype, r~List Name
+    match ds
+        []        -> []
+        d :: rest -> list.map (\c -> tester_name c.name) d.ctors ++ tester_names rest
+
+# The first tester already declared as something else.
+fn first_tester_taken sig ns -> r : sig~Sig, ns~List Name, r~Option Name
+    match ns
+        []        -> None
+        n :: rest ->
+            if keyword n or reserved.is_reserved n or find_fun sig.funs n 0 != None or tester_of sig.datatypes n != None
+                Some n
+            else
+                first_tester_taken sig rest
+
+# Whether no field of `ds`, the datatypes numbered from `lo` below `hi`, is
+# an array that mentions one of them in its index sort, or in its value
+# sort when that isn't itself a datatype: Z3 (5.3.3) rejects such a group
+# as not co-variant (measured).
+fn covariant lo hi ds -> r : lo~Nat, hi~Nat, ds~List Datatype, r~Bool
+    match ds
+        []        -> True
+        d :: rest -> list.all (\c -> list.all (\f -> field_covariant lo hi f.sort) c.fields) d.ctors and covariant lo hi rest
+
+fn field_covariant lo hi s -> r : lo~Nat, hi~Nat, s~Sort, r~Bool
+    match s
+        Arr i v -> not (mentions lo hi i) and value_covariant lo hi v
+        _       -> True
+
+fn value_covariant lo hi v -> r : lo~Nat, hi~Nat, v~Sort, r~Bool
+    match v
+        Data _ _ -> True
+        _        -> not (mentions lo hi v)
+
+# Whether `s` mentions a datatype numbered from `lo` below `hi`.
+fn mentions lo hi s -> r : lo~Nat, hi~Nat, s~Sort, r~Bool
+    match s
+        Seq e       -> mentions lo hi e
+        Arr i v     -> mentions lo hi i or mentions lo hi v
+        Data d args -> (lo <= d and d < hi) or not (list.all (\a -> not (mentions lo hi a)) args)
+        Unin _ args -> not (list.all (\a -> not (mentions lo hi a)) args)
+        _           -> False
 
 fn blanks k -> r : k~Nat, r~List Name
     if k == 0 then [] else b"" :: blanks (k - 1)
@@ -892,13 +1249,18 @@ fn blanks k -> r : k~Nat, r~List Name
 fn dt_heads src sig hs acc -> r : src~Bytes, sig~Sig, hs~List (SExpr src), acc~List Datatype,
                                   r~Result (List Datatype) (Error src)
     match hs
-        []                                                        -> Ok (list.reverse acc)
-        Node [Leaf (Symbol n _) np, Leaf (Numeral k) _] _ :: rest ->
+        []                                                         -> Ok (list.reverse acc)
+        Node [Leaf (Symbol n _) np, Leaf (Numeral k) kp] _ :: rest ->
             if sort_taken sig n or dt_named acc n
-                Err (Error np (shown n ++ b" is already a sort"))
+                Err (Error np (clash n b" is already a sort"))
+            else if k >= 4294967296
+                Err (Error kp TOO_MANY)
             else
-                dt_heads src sig rest (Datatype n (blanks k) [] :: acc)
-        e :: _                                                    -> Err (Error (at e) b"expected `(NAME NUMERAL)`")
+                match acc
+                    a :: _ if list.length a.params != k ->
+                        Err (Error kp b"the datatypes of one `declare-datatypes` must all have the same number of parameters in the subset `ckc` writes")
+                    _ -> dt_heads src sig rest (Datatype n (blanks k) [] :: acc)
+        e :: _                                                     -> Err (Error (at e) b"expected `(NAME NUMERAL)`")
 
 fn dt_named ds n -> r : ds~List Datatype, n~Name, r~Bool
     match ds
@@ -918,6 +1280,8 @@ fn dt_bodies src sig shells ds p -> r : src~Bytes, sig~Sig, shells~List Datatype
 # One datatype's declaration: `(par (T …) (C …))` or `(C …)`.
 fn dt_body src sig shell d -> r : src~Bytes, sig~Sig, shell~Datatype, d~SExpr src, r~Result Datatype (Error src)
     match d
+        Node [Leaf (Symbol kw False) pp, Node [] _, Node _ _] _ if kw == b"par" ->
+            Err (Error pp b"a datatype without parameters is written without `par` in the subset `ckc` writes")
         Node [Leaf (Symbol kw False) pp, Node ps _, Node cs _] _ if kw == b"par" ->
             let params = try param_names src ps
             if list.length params != list.length shell.params
@@ -936,11 +1300,11 @@ fn dt_body src sig shell d -> r : src~Bytes, sig~Sig, shell~Datatype, d~SExpr sr
 
 fn param_names src ps -> r : src~Bytes, ps~List (SExpr src), r~Result (List Name) (Error src)
     match ps
-        []                          -> Ok []
-        Leaf (Symbol n _) _ :: rest ->
+        []                           -> Ok []
+        Leaf (Symbol n _) np :: rest ->
             let ns = try param_names src rest
-            Ok (n :: ns)
-        e :: _                      -> Err (Error (at e) b"expected a parameter's name")
+            if list.contains ns n then Err (Error np (twice n)) else Ok (n :: ns)
+        e :: _                       -> Err (Error (at e) b"expected a parameter's name")
 
 fn ctors_from src sig params cs -> r : src~Bytes, sig~Sig, params~List Name, cs~List (SExpr src),
                                        r~Result (List Ctor) (Error src)
@@ -1019,6 +1383,8 @@ fn problem_message sig pr -> r : sig~Sig, pr~Problem, r~Bytes
         ConstantParams f  -> b"the constant " ++ shown f.name ++ b" has parameters"
         Expected want got -> b"expected a term of sort " ++ sort_text sig want ++ b", found one of sort " ++ sort_text sig got
         NoPattern         -> b"a `:pattern` needs at least one term"
+        NamedTwice n      -> b"an assertion before this one is already named " ++ shown n
+        PlainInGroup d    -> shown d.name ++ b" is defined without recursion, so it must be alone, in `define-fun`"
 
 # ── Writing ──────────────────────────────────────────────────────────────────
 
@@ -1028,12 +1394,20 @@ export fn numeral n -> r : n~Nat, r~Bytes
 
 # Pieces of output are collected last first, then joined (`text`).
 
+# A symbol as SMT-LIB writes it: between bars if it must be.
+export fn name_text n -> r : n~Name, r~Bytes
+    text (w_name n [])
+
 # A symbol, between bars if it isn't a simple symbol or is a reserved word.
 fn w_name n acc -> r : n~Name, acc~List Bytes, r~List Bytes
-    if simple n 0 and len n > 0 and not (is_digit n[0]) and not (reserved n)
+    if simple n 0 and len n > 0 and not (is_digit n[0]) and not (negative n) and not (keyword n)
         n :: acc
     else
         b"|" :: n :: b"|" :: acc
+
+# Whether `n` starts with `-` and a digit, as a negative number does.
+fn negative n -> r : n~Name, r~Bool
+    len n > 1 and n[0] == '-' and is_digit n[1]
 
 fn simple n i -> r : n~Name, i~Nat, i <= len n, r~Bool
     decreasing len n - i
@@ -1169,20 +1543,36 @@ fn w_command sig c acc -> r : sig~Sig, c~Command, term.command_ok sig c, acc~Lis
                     let a = b") " :: w_sort_list sig f.params (b" (" :: w_name f.name (b"(declare-fun " :: acc))
                     b")\n" :: w_sort sig [] f.result a
         DefineFuns True [d] ->
-            let a = b" " :: w_sort sig [] d.result (b" " :: w_vars sig d.params (b" " :: w_name d.name (b"(define-fun-rec " :: acc)))
+            let open = match d.kind
+                Recursive -> b"(define-fun-rec "
+                Plain     -> b"(define-fun "
+            let a = b" " :: w_sort sig [] d.result (b" " :: w_vars sig d.params (b" " :: w_name d.name (open :: acc)))
             have params_env d.params
             b")\n" :: w_term sig (list.reverse (list.keys d.params)) d.body a
         DefineFuns _ ds     ->
             let a = b") (" :: w_def_heads sig ds (b"(define-funs-rec (" :: acc)
             b"))\n" :: w_def_bodies sig ds a
-        Assume ax           ->
+        Assume ax name      ->
             let env = list.reverse (list.keys ax.vars)
             have params_env ax.vars
-            let head = b" " :: w_vars sig ax.vars (b"(assert (forall " :: acc)
-            match ax.patterns
-                [] -> b"))\n" :: w_term sig env ax.body head
-                ps -> b")))\n" :: w_patterns sig env ps (w_term sig env ax.body (b"(! " :: head))
-        Assert t            -> b")\n" :: w_term sig [] t (b"(assert " :: acc)
+            let head = b" " :: w_vars sig ax.vars (b"(forall " :: w_assert name acc)
+            let f = match ax.patterns
+                [] -> b")" :: w_term sig env ax.body head
+                ps -> b"))" :: w_patterns sig env ps (w_term sig env ax.body (b"(! " :: head))
+            w_named name f
+        Assert t name       -> w_named name (w_term sig [] t (w_assert name acc))
+
+# `(assert `, then `(! ` if the assertion has a name.
+fn w_assert name acc -> r : name~Option Name, acc~List Bytes, r~List Bytes
+    match name
+        None   -> b"(assert " :: acc
+        Some _ -> b"(assert (! " :: acc
+
+# The end of an assertion: its name, if it has one, and `)`.
+fn w_named name acc -> r : name~Option Name, acc~List Bytes, r~List Bytes
+    match name
+        None   -> b")\n" :: acc
+        Some n -> b"))\n" :: w_name n (b" :named " :: acc)
 
 # The names a binder list's body sees, one for each binder.
 lemma params_env vs : vs~List (Name, Sort)
@@ -1284,7 +1674,8 @@ export fn render q -> r : q~Query, r~Bytes
     have term.commands_well_formed q.context
     have term.fact_heads q.context q.goal
     let start = b")\n" :: w_name q.logic (b"(set-logic " :: w_options q.options [])
-    let b = b"(check-sat)\n" :: w_with_goal sig (term.commands q.context) q.goal_at q.goal start
+    let sat = b"(check-sat)\n" :: w_with_goal sig (term.commands q.context) q.goal_at q.goal start
+    let b = if q.core then b"(get-unsat-core)\n" :: sat else sat
     match q.values
         None    -> text b
         Some ts ->

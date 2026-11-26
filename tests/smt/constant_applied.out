@@ -1,0 +1,4 @@
+-- stdout
+(error "line 4 column 18: an application needs arguments: a constant is written alone, without parentheses")
+-- stderr
+-- exit 1

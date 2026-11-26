@@ -1,0 +1,6 @@
+(set-option :produce-unsat-cores true)
+(set-logic ALL)
+(declare-const x Int)
+(assert (! (> x 0) :named n))
+(assert (not (let ((n 1)) (> n x))))
+(check-sat)

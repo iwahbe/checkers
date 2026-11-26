@@ -1,0 +1,4 @@
+-- stdout
+(error "line 3 column 31: `v` is a bound variable here, so it can't be applied to arguments")
+-- stderr
+-- exit 1

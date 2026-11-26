@@ -1,0 +1,5 @@
+-- stdout
+unknown
+(error "line 7 column 17: unsat core construction is not enabled, use command (set-option :produce-unsat-cores true)")
+-- stderr
+-- exit 1

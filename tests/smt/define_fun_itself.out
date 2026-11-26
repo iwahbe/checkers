@@ -1,0 +1,4 @@
+-- stdout
+(error "line 2 column 38: unknown name `loop`")
+-- stderr
+-- exit 1

@@ -1,0 +1,4 @@
+-- stdout
+(error "line 5 column 27: `a` is already declared, so it can't name an assertion")
+-- stderr
+-- exit 1

@@ -1,0 +1,5 @@
+(set-logic ALL)
+(declare-datatypes ((D 0)) (((const) (B))))
+(declare-const d D)
+(assert (not (= d const)))
+(check-sat)

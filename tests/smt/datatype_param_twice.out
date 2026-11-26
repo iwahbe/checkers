@@ -1,0 +1,4 @@
+-- stdout
+(error "line 2 column 35: `T` is bound twice here")
+-- stderr
+-- exit 1
