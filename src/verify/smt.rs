@@ -2219,6 +2219,9 @@ impl<'a> Builder<'a> {
             },
             Tm::Lit(Lit::Num(n)) => Ok((smt_int(*n), Sort::Int)),
             Tm::Lit(Lit::Big(n)) => Ok((smt_int((**n).clone()), Sort::Int)),
+            // A constructor or tuple known at compile time, of any size: left
+            // out (an obligation that mentions one isn't given its value).
+            Tm::Known(_) => out("a value known at compile time"),
             Tm::Lit(Lit::Str(s)) => {
                 self.literal_utf8(s.as_bytes());
                 Ok((smt_bytes(s.as_bytes()), Sort::Str))

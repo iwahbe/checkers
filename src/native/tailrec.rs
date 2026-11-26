@@ -62,7 +62,7 @@ struct Scan {
 
 /// An expression that does nothing when it runs: its value is ready.
 fn atom(e: &E) -> bool {
-    matches!(e, E::Var(_) | E::Int(_) | E::BigLit(_) | E::Str(_) | E::Bytes(_) | E::Static(_) | E::Erased | E::Unit | E::ConFn(_))
+    matches!(e, E::Var(_) | E::Int(_) | E::Str(_) | E::Bytes(_) | E::Static(..) | E::Erased | E::Unit | E::ConFn(_))
 }
 
 fn is_self(e: &E, me: u32) -> bool {

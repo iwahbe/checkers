@@ -160,10 +160,9 @@ impl Rc<'_> {
             }
             E::Var(_)
             | E::Int(_)
-            | E::BigLit(_)
             | E::Str(_)
             | E::Bytes(_)
-            | E::Static(_)
+            | E::Static(..)
             | E::Erased
             | E::Unit
             | E::Global(_)

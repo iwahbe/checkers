@@ -9,6 +9,7 @@ pub mod diag;
 pub mod doc;
 pub mod elab;
 pub mod json;
+pub mod known;
 pub mod lint;
 pub mod literate;
 pub mod native;

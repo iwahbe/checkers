@@ -283,11 +283,10 @@ fn dump(e: &lower::E, d: usize) -> String {
             dump(b, d)
         ),
         E::Str(s) => format!("{ind}{s:?}"),
-        E::Static(_) => format!("{ind}static"),
+        E::Static(..) => format!("{ind}static"),
         other => format!("{ind}{}", match other {
             E::Erased => "erased".to_string(),
             E::Unit => "()".to_string(),
-            E::BigLit(s) => s.clone(),
             E::Bytes(_) => "b\"…\"".to_string(),
             E::ConFn(c) => format!("conf{c}"),
             E::Par(_) => "par".to_string(),

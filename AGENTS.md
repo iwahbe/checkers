@@ -37,6 +37,7 @@ src/elab/expr.rs     bidirectional checking of expressions, blocks, `try`, `when
 src/elab/pattern.rs  `match` → case trees, exhaustiveness witnesses
 src/elab/index.rs    names for tools: each use, its definition, kind and hover text (`--json`, D120); `ckc index`, a package's (D161)
 src/elab/interval.rs arithmetic keeps constant bounds: ranges as anonymous refinements, joined branches, their array layouts (D135)
+src/known.rs         values known at compile time as graphs: hash-consed nodes, walked by loops, never recursion (§8.9); `Tm::Known`, `Val::Known`
 src/range.rs         constant bounds of integers and their arithmetic: the elaborator's intervals (D135), native code's bounds from signatures (§14)
 src/elab/refine.rs   refinements inside types: inline and function-type refinements, implication, variance, E0262 (D71, D82–D87)
 src/elab/tyeq.rs     type equations `A == B` (#209): wanted at uses (E0294), given in bodies and `match` arms (classes, representatives), impossible cases
