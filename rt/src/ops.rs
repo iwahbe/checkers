@@ -6,6 +6,7 @@ use crate::obj::*;
 use crate::prog::*;
 use crate::word::*;
 use crate::desc::Ty;
+use std::rc::Rc;
 
 fn num2(a: W, b: W) -> (Num, Num) {
     (num_of(a), num_of(b))
@@ -73,18 +74,102 @@ pub extern "C" fn ck_cmp(a: W, b: W) -> i64 {
 }
 
 /// Structural equality (§13.2). `Err` names what can't be compared.
+///
+/// Values are compared depth first, left to right, so the first difference
+/// or the first thing that can't be compared decides. What is left to
+/// compare is a list on the heap, not the stack: comparing takes stack
+/// independent of the values' shape and size (§13.3).
 pub fn equal(a: W, b: W) -> Result<bool, &'static str> {
+    let mut todo = Vec::new();
+    let r = equal_from(a, b, &mut todo);
+    // Stopped early: the array elements still held.
+    for e in todo {
+        if let Pending::Release(x, y) = e {
+            drop_w(x);
+            drop_w(y);
+        }
+    }
+    r
+}
+
+/// What `equal` has left to do.
+enum Pending {
+    /// Compare these.
+    Pair(W, W),
+    /// Compare two arrays' elements from this index on.
+    Elems(W, W, usize),
+    /// Drop these elements (new references), compared now.
+    Release(W, W),
+}
+
+/// What one step of `equal` finds.
+enum Step {
+    Equal(bool),
+    /// Equal so far: two constructors or tuples alike with this many fields.
+    Fields(usize),
+    /// Arrays of one length stored differently: element by element.
+    Elems,
+}
+
+fn equal_from(a: W, b: W, todo: &mut Vec<Pending>) -> Result<bool, &'static str> {
+    // The next pair, kept out of `todo`: walking a list pushes nothing.
+    let mut next = Some((a, b));
+    loop {
+        let (a, b) = match next.take() {
+            Some(p) => p,
+            None => match todo.pop() {
+                None => return Ok(true),
+                Some(Pending::Pair(a, b)) => (a, b),
+                Some(Pending::Release(x, y)) => {
+                    drop_w(x);
+                    drop_w(y);
+                    continue;
+                }
+                Some(Pending::Elems(a, b, i)) => {
+                    if i == crate::array::len(a) {
+                        continue;
+                    }
+                    todo.push(Pending::Elems(a, b, i + 1));
+                    let (x, y) = (crate::array::get(a, i), crate::array::get(b, i));
+                    todo.push(Pending::Release(x, y));
+                    (x, y)
+                }
+            },
+        };
+        match equal_step(a, b)? {
+            Step::Equal(true) => {}
+            Step::Equal(false) => return Ok(false),
+            Step::Elems => todo.push(Pending::Elems(a, b, 0)),
+            Step::Fields(n) => {
+                // The first field next, the others after it in order; equal
+                // words that aren't references or capabilities can be skipped.
+                for i in (0..n).rev() {
+                    let (x, y) = (slot(a, i), slot(b, i));
+                    if x == y && !is_ptr(x) && !is_cap(x) {
+                        continue;
+                    }
+                    if let Some((p, q)) = next.replace((x, y)) {
+                        todo.push(Pending::Pair(p, q));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Compare `a` and `b` as far as they can be without their parts.
+fn equal_step(a: W, b: W) -> Result<Step, &'static str> {
     if a == ERASED || b == ERASED {
-        return Ok(true);
+        return Ok(Step::Equal(true));
     }
     if a == b && !is_ptr(a) {
         if is_cap(a) {
             return Err("capabilities");
         }
-        return Ok(true);
+        return Ok(Step::Equal(true));
     }
     if is_num(a) && is_num(b) {
-        return Ok(num_of(a) == num_of(b));
+        return Ok(Step::Equal(num_of(a) == num_of(b)));
     }
     if is_cap(a) || is_cap(b) {
         return Err("capabilities");
@@ -94,7 +179,7 @@ pub fn equal(a: W, b: W) -> Result<bool, &'static str> {
         if is_ptr(a) && is_fn(a) || is_ptr(b) && is_fn(b) {
             return Err("functions");
         }
-        return Ok(false);
+        return Ok(Step::Equal(false));
     }
     let (ka, kb) = (kind(a), kind(b));
     if matches!(ka, K_CLO | K_PAP) {
@@ -103,23 +188,18 @@ pub fn equal(a: W, b: W) -> Result<bool, &'static str> {
     // Arrays of one type may be stored differently (an `Array U8` used as
     // an `Array U32`, D133): compared element by element.
     if crate::array::is_array(a) && crate::array::is_array(b) && (ka == crate::array::K_ARRAY || kb == crate::array::K_ARRAY) {
-        return crate::array::equal(a, b, &equal);
+        return Ok(crate::array::equal_flat(a, b).map_or(Step::Elems, Step::Equal));
     }
     if ka != kb {
-        return Ok(false);
+        return Ok(Step::Equal(false));
     }
-    Ok(match ka {
+    Ok(Step::Equal(match ka {
         K_BYTES => blob(a) == blob(b),
         K_CON | K_TUPLE => {
             if ka == K_CON && tag(a) != tag(b) || nfields(a) != nfields(b) {
-                return Ok(false);
+                return Ok(Step::Equal(false));
             }
-            for i in 0..nfields(a) {
-                if !equal(slot(a, i), slot(b, i))? {
-                    return Ok(false);
-                }
-            }
-            true
+            return Ok(Step::Fields(nfields(a)));
         }
         K_RUST => match (obj(a), obj(b)) {
             (Some(Obj::Decimal(x)), Some(Obj::Decimal(y))) => x == y,
@@ -132,7 +212,7 @@ pub fn equal(a: W, b: W) -> Result<bool, &'static str> {
             _ => false,
         },
         _ => false,
-    })
+    }))
 }
 
 fn is_cap(w: W) -> bool {
@@ -255,110 +335,325 @@ pub fn show_typed_derived(w: W, ty: &Ty, p: u8) -> String {
     render_typed(w, ty, p, false)
 }
 
+fn render(w: W, p: u8, hand: bool) -> String {
+    render_typed(w, &crate::desc::UNKNOWN, p, hand)
+}
+
+/// `w` written as Checkers source, by its type where `ty` names one. What
+/// is left to write is a list on the heap, not the stack: showing takes
+/// stack independent of the value's shape and size (§13.3), except where a
+/// hand-written `debug` runs.
 fn render_typed(w: W, ty: &Ty, p: u8, hand: bool) -> String {
-    let Some(id) = ty.id() else { return render(w, p, hand) };
-    let pg = prog();
-    if id == crate::desc::TUPLE {
-        if !is_kind(w, K_TUPLE) {
-            return render(w, p, hand);
-        }
-        let parts: Vec<String> = (0..nfields(w)).map(|i| render_typed(slot(w, i), ty.arg(i), 0, hand)).collect();
-        return format!("({})", parts.join(", "));
+    let unknown = Rc::new(Ty::Unknown);
+    let root = if ty.id().is_some() { Rc::new(ty.clone()) } else { unknown.clone() };
+    let mut s = Shower { out: String::new(), todo: vec![Show::Val(w, p, root)], hand, unknown };
+    while let Some(next) = s.todo.pop() {
+        s.step(next);
     }
-    let other = crate::prog::TyInfo::default();
-    let info = pg.tys.get(id as usize).unwrap_or(&other);
-    if (hand || info.std_debug) && info.debug.is_some() {
-        if let Some((f, n)) = crate::prog::debug_fn_of_type(id) {
-            return custom(f, (0..n).map(|i| ty.arg(i).to_word()).collect(), w, p);
-        }
-    }
-    match info.kind {
-        TyKind::List if is_list(w) => {
-            let elem = ty.arg(0);
-            let items: Vec<String> = list_items(w).into_iter().map(|x| render_typed(x, elem, 0, hand)).collect();
-            return format!("[{}]", items.join(", "));
-        }
-        // A bag's values by its element type, each as many times as it is there.
-        TyKind::Bag => {
-            if let Some(Obj::Bag(b)) = obj(w) {
-                let elem = ty.arg(0);
-                let items: Vec<String> = b.iter().flat_map(|e| std::iter::repeat_n(render_typed(e.value, elem, 0, hand), e.count)).collect();
-                return format!("<Bag {{{}}}>", items.join(", "));
+    s.out
+}
+
+/// What showing a value has left to write.
+enum Show {
+    /// A value of type `ty`, in argument position if `p > 0`.
+    Val(W, u8, Rc<Ty>),
+    Text(&'static str),
+    /// A list's elements from this cell on; `first`: none written yet.
+    List(W, Rc<Ty>, bool),
+    /// An array's elements from this index on.
+    Elems(W, usize, Rc<Ty>),
+    /// A bag's values from entry `i`'s `j`th time on, by type (`None`: by
+    /// their keys); `first` as for lists.
+    Bag(W, usize, usize, Option<Rc<Ty>>, bool),
+    /// A new reference, held until what came before it is written.
+    Release(W),
+}
+
+struct Shower {
+    out: String,
+    todo: Vec<Show>,
+    /// Hand-written `debug`s are used (else the standard library's only).
+    hand: bool,
+    unknown: Rc<Ty>,
+}
+
+impl Shower {
+    fn step(&mut self, next: Show) {
+        match next {
+            Show::Text(t) => self.out.push_str(t),
+            Show::Release(w) => drop_w(w),
+            Show::Val(w, p, ty) => {
+                if !ty.id().is_some_and(|id| self.typed(w, p, &ty, id)) {
+                    self.untyped(w, p);
+                }
+            }
+            Show::List(l, elem, first) => {
+                let k = &prog().known;
+                match con_of(l) {
+                    Some(c) if Some(c) == k.cons => {
+                        if !first {
+                            self.out.push_str(", ");
+                        }
+                        self.todo.push(Show::List(field(l, 1), elem.clone(), false));
+                        self.todo.push(Show::Val(field(l, 0), 0, elem));
+                    }
+                    Some(c) if Some(c) == k.nil => {}
+                    _ => bug("expected a list"),
+                }
+            }
+            Show::Elems(a, i, elem) => {
+                if i == crate::array::len(a) {
+                    return;
+                }
+                if i > 0 {
+                    self.out.push_str(", ");
+                }
+                let x = crate::array::get(a, i);
+                self.todo.push(Show::Elems(a, i + 1, elem.clone()));
+                self.todo.push(Show::Release(x));
+                self.todo.push(Show::Val(x, 0, elem));
+            }
+            Show::Bag(w, i, j, elem, first) => {
+                let Some(Obj::Bag(b)) = obj(w) else { return };
+                let Some(e) = b.get(i) else { return };
+                if j >= e.count {
+                    self.todo.push(Show::Bag(w, i + 1, 0, elem, first));
+                    return;
+                }
+                if !first {
+                    self.out.push_str(", ");
+                }
+                match elem {
+                    None => {
+                        self.out.push_str(&e.key);
+                        self.todo.push(Show::Bag(w, i, j + 1, None, false));
+                    }
+                    Some(elem) => {
+                        self.todo.push(Show::Bag(w, i, j + 1, Some(elem.clone()), false));
+                        self.todo.push(Show::Val(e.value, 0, elem));
+                    }
+                }
             }
         }
-        TyKind::Array if crate::array::is_array(w) => {
-            let elem = ty.arg(0);
-            // An array of bytes by its element type, not by how it is stored.
-            if elem.layout() == crate::array::Layout::U8 && is_kind(w, K_BYTES) {
-                return show_bytes(blob(w));
-            }
-            let items: Vec<String> = crate::array::items(w)
-                .into_iter()
-                .map(|x| {
-                    let s = render_typed(x, elem, 0, hand);
-                    drop_w(x);
-                    s
-                })
-                .collect();
-            return format!("[{}]", items.join(", "));
-        }
-        _ => {}
     }
-    // Stored as its one kept field: the value is that field.
-    if let Some((c, k)) = info.unboxed {
+
+    /// Write `open` now and `close` after the values `items`, `sep` between them.
+    fn seq(&mut self, open: &str, items: Vec<Show>, sep: &'static str, close: &'static str) {
+        self.out.push_str(open);
+        self.todo.push(Show::Text(close));
+        for (i, it) in items.into_iter().enumerate().rev() {
+            self.todo.push(it);
+            if i > 0 {
+                self.todo.push(Show::Text(sep));
+            }
+        }
+    }
+
+    /// A constructor applied to its shown fields, each with the type and
+    /// the descriptor (a new reference, if one was computed) `ty` gives.
+    fn con(&mut self, w: W, c: u32, p: u8, mut ty: impl FnMut(usize, &[W]) -> (Rc<Ty>, Option<W>)) {
+        let ci = &prog().cons[c as usize];
+        let fields: Vec<W> = if is_nullary(w) { Vec::new() } else { (0..nfields(w)).map(|i| slot(w, i)).collect() };
+        let shown: Vec<usize> = (0..fields.len()).filter(|i| ci.shown.get(*i).copied().unwrap_or(false)).collect();
+        if shown.is_empty() {
+            self.out.push_str(&ci.name);
+            return;
+        }
+        if p > 0 {
+            self.out.push('(');
+            self.todo.push(Show::Text(")"));
+        }
+        self.out.push_str(&ci.name);
+        let mut parts = Vec::with_capacity(3 * shown.len());
+        for i in shown {
+            let (fty, held) = ty(i, &fields[..i]);
+            parts.push(Show::Text(" "));
+            parts.push(Show::Val(fields[i], 1, fty));
+            parts.extend(held.map(Show::Release));
+        }
+        self.todo.extend(parts.into_iter().rev());
+    }
+
+    /// `w` shown as a value of type `id` (with arguments in `ty`), if that
+    /// says more than the value does: `false` if not.
+    fn typed(&mut self, w: W, p: u8, ty: &Rc<Ty>, id: u32) -> bool {
+        let pg = prog();
+        let arg = |i: usize| Rc::new(ty.arg(i).clone());
+        if id == crate::desc::TUPLE {
+            if !is_kind(w, K_TUPLE) {
+                return false;
+            }
+            let items = (0..nfields(w)).map(|i| Show::Val(slot(w, i), 0, arg(i))).collect();
+            self.seq("(", items, ", ", ")");
+            return true;
+        }
+        let other = crate::prog::TyInfo::default();
+        let info = pg.tys.get(id as usize).unwrap_or(&other);
+        if (self.hand || info.std_debug) && info.debug.is_some() {
+            if let Some((f, n)) = crate::prog::debug_fn_of_type(id) {
+                let s = custom(f, (0..n).map(|i| ty.arg(i).to_word()).collect(), w, p);
+                self.out.push_str(&s);
+                return true;
+            }
+        }
+        match info.kind {
+            TyKind::List if is_list(w) => {
+                self.out.push('[');
+                self.todo.push(Show::Text("]"));
+                self.todo.push(Show::List(w, arg(0), true));
+                return true;
+            }
+            // A bag's values by its element type, each as many times as it is there.
+            TyKind::Bag if matches!(obj(w), Some(Obj::Bag(_))) => {
+                self.out.push_str("<Bag {");
+                self.todo.push(Show::Text("}>"));
+                self.todo.push(Show::Bag(w, 0, 0, Some(arg(0)), true));
+                return true;
+            }
+            TyKind::Array if crate::array::is_array(w) => {
+                let elem = arg(0);
+                // An array of bytes by its element type, not by how it is stored.
+                if elem.layout() == crate::array::Layout::U8 && is_kind(w, K_BYTES) {
+                    self.out.push_str(&show_bytes(blob(w)));
+                    return true;
+                }
+                self.out.push('[');
+                self.todo.push(Show::Text("]"));
+                self.todo.push(Show::Elems(w, 0, elem));
+                return true;
+            }
+            _ => {}
+        }
+        // Stored as its one kept field: the value is that field.
+        if let Some((c, k)) = info.unboxed {
+            let ci = &pg.cons[c as usize];
+            if !ci.shown.get(k).copied().unwrap_or(false) {
+                self.out.push_str(&ci.name);
+                return true;
+            }
+            if p > 0 {
+                self.out.push('(');
+                self.todo.push(Show::Text(")"));
+            }
+            self.out.push_str(&ci.name);
+            self.out.push(' ');
+            match ci.templates.get(k) {
+                // Computed from the type's value arguments: the fields before it
+                // aren't kept, so they are given as erased.
+                Some(crate::desc::Template::Fn(f)) => {
+                    let targs = (0..ci.np).map(|j| ty.arg(j).to_arg()).collect();
+                    let d = crate::prog::field_type(*f, targs, &vec![ERASED; k]);
+                    self.todo.push(Show::Release(d));
+                    self.todo.push(Show::Val(w, 1, Rc::new(Ty::of_word(d))));
+                }
+                t => {
+                    let fty = t.map_or(self.unknown.clone(), |t| Rc::new(t.at(ty).into_owned()));
+                    self.todo.push(Show::Val(w, 1, fty));
+                }
+            }
+            return true;
+        }
+        let Some(c) = con_of(w) else { return false };
         let ci = &pg.cons[c as usize];
-        if !ci.shown.get(k).copied().unwrap_or(false) {
-            return ci.name.clone();
+        if ci.ty != Some(id) {
+            return false;
         }
-        let inner = match ci.templates.get(k) {
-            // Computed from the type's value arguments: the fields before it
-            // aren't kept, so they are given as erased.
-            Some(crate::desc::Template::Fn(f)) => {
-                let targs = (0..ci.np).map(|j| ty.arg(j).to_arg()).collect();
-                let d = crate::prog::field_type(*f, targs, &vec![ERASED; k]);
-                let s = render_typed(w, &Ty::of_word(d), 1, hand);
-                drop_w(d);
-                s
-            }
-            t => {
-                let fty = t.map_or(std::borrow::Cow::Borrowed(&crate::desc::UNKNOWN), |t| t.at(ty));
-                render_typed(w, &fty, 1, hand)
-            }
-        };
-        return paren(p > 0, format!("{} {inner}", ci.name));
-    }
-    let Some(c) = con_of(w) else { return render(w, p, hand) };
-    let ci = &pg.cons[c as usize];
-    if ci.ty != Some(id) {
-        return render(w, p, hand);
-    }
-    let fields: Vec<W> = if is_nullary(w) { Vec::new() } else { (0..nfields(w)).map(|i| slot(w, i)).collect() };
-    let args: Vec<String> = fields
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| ci.shown.get(*i).copied().unwrap_or(false))
-        .map(|(i, v)| match ci.templates.get(i) {
+        let unknown = self.unknown.clone();
+        self.con(w, c, p, |i, before| match ci.templates.get(i) {
             // A type computed from earlier fields: computed now.
             Some(crate::desc::Template::Fn(f)) => {
                 let targs = (0..ci.np).map(|j| ty.arg(j).to_arg()).collect();
-                let d = crate::prog::field_type(*f, targs, &fields[..i]);
-                let s = render_typed(*v, &Ty::of_word(d), 1, hand);
-                drop_w(d);
-                s
+                let d = crate::prog::field_type(*f, targs, before);
+                (Rc::new(Ty::of_word(d)), Some(d))
             }
-            t => {
-                let fty = t.map_or(std::borrow::Cow::Borrowed(&crate::desc::UNKNOWN), |t| t.at(ty));
-                render_typed(*v, &fty, 1, hand)
+            t => (t.map_or(unknown.clone(), |t| Rc::new(t.at(ty).into_owned())), None),
+        });
+        true
+    }
+
+    /// `w` shown by what it is alone.
+    fn untyped(&mut self, w: W, p: u8) {
+        let pg = prog();
+        let k = &pg.known;
+        if is_num(w) {
+            let n = num_of(w);
+            let s = paren(p > 0 && n.is_negative(), n.to_string());
+            self.out.push_str(&s);
+            return;
+        }
+        if w == ERASED {
+            self.out.push('_');
+            return;
+        }
+        if w == UNIT {
+            self.out.push_str("()");
+            return;
+        }
+        if w & 7 == 4 {
+            self.out.push_str(match w {
+                CAP_TERM => "<Term>",
+                CAP_FS => "<Fs>",
+                CAP_ENV => "<Env>",
+                CAP_PROC => "<Proc>",
+                CAP_NET => "<Net>",
+                CAP_CLOCK => "<Clock>",
+                CAP_SCHED => "<Sched>",
+                _ => "<?>",
+            });
+            return;
+        }
+        if let Some(c) = con_of(w) {
+            if let Some((f, n, _)) = debug_fn(c).filter(|d| self.hand || d.2) {
+                let s = custom(f, vec![ERASED; n], w, p);
+                self.out.push_str(&s);
+                return;
             }
-        })
-        .collect();
-    if args.is_empty() {
-        ci.name.clone()
-    } else {
-        paren(p > 0, format!("{} {}", ci.name, args.join(" ")))
+            if Some(c) == k.nil || Some(c) == k.cons {
+                self.out.push('[');
+                self.todo.push(Show::Text("]"));
+                self.todo.push(Show::List(w, self.unknown.clone(), true));
+                return;
+            }
+            let unknown = self.unknown.clone();
+            self.con(w, c, p, |_, _| (unknown.clone(), None));
+            return;
+        }
+        let text: String = match kind(w) {
+            K_BYTES => show_bytes(blob(w)),
+            crate::array::K_ARRAY => {
+                self.out.push('[');
+                self.todo.push(Show::Text("]"));
+                self.todo.push(Show::Elems(w, 0, self.unknown.clone()));
+                return;
+            }
+            K_TUPLE => {
+                let items = (0..nfields(w)).map(|i| Show::Val(slot(w, i), 0, self.unknown.clone())).collect();
+                self.seq("(", items, ", ", ")");
+                return;
+            }
+            K_CLO | K_PAP => "<function>".into(),
+            K_RUST => match obj(w) {
+                Some(Obj::Decimal(d)) => d.render(),
+                Some(Obj::Bag(_)) => {
+                    self.out.push_str("<Bag {");
+                    self.todo.push(Show::Text("}>"));
+                    self.todo.push(Show::Bag(w, 0, 0, None, true));
+                    return;
+                }
+                Some(Obj::File(_)) => "<File>".into(),
+                Some(Obj::Child(_)) => "<Child>".into(),
+                Some(Obj::Killer(_)) => "<Killer>".into(),
+                Some(Obj::IoErr(m)) => format!("<IoError: {m}>"),
+                Some(Obj::Fs(_)) => "<Fs>".into(),
+                Some(Obj::Cown(_)) => "<Cown>".into(),
+                Some(Obj::Future(_)) => "<Future>".into(),
+                None => "<?>".into(),
+            },
+            _ => "<?>".into(),
+        };
+        self.out.push_str(&text);
     }
 }
-
 /// Whether `w` is a list: `[]` or a cell.
 fn is_list(w: W) -> bool {
     let k = &prog().known;
@@ -390,81 +685,6 @@ fn custom(f: W, targs: Vec<W>, w: W, p: u8) -> String {
         }
     }
     paren(spaced, s)
-}
-
-fn render(w: W, p: u8, hand: bool) -> String {
-    let show = |w: W, p: u8| render(w, p, hand);
-    let pg = prog();
-    let k = &pg.known;
-    if is_num(w) {
-        let n = num_of(w);
-        return paren(p > 0 && n.is_negative(), n.to_string());
-    }
-    if w == ERASED {
-        return "_".into();
-    }
-    if w == UNIT {
-        return "()".into();
-    }
-    if w & 7 == 4 {
-        return match w {
-            CAP_TERM => "<Term>",
-            CAP_FS => "<Fs>",
-            CAP_ENV => "<Env>",
-            CAP_PROC => "<Proc>",
-            CAP_NET => "<Net>",
-            CAP_CLOCK => "<Clock>",
-            CAP_SCHED => "<Sched>",
-            _ => "<?>",
-        }
-        .into();
-    }
-    if let Some(c) = con_of(w) {
-        if let Some((f, n, _)) = debug_fn(c).filter(|d| hand || d.2) {
-            return custom(f, vec![ERASED; n], w, p);
-        }
-        if Some(c) == k.nil || Some(c) == k.cons {
-            let items: Vec<String> = list_items(w).into_iter().map(|x| show(x, 0)).collect();
-            return format!("[{}]", items.join(", "));
-        }
-        let ci = &pg.cons[c as usize];
-        let fields: Vec<W> = if is_nullary(w) { Vec::new() } else { (0..nfields(w)).map(|i| slot(w, i)).collect() };
-        let args: Vec<String> =
-            ci.shown.iter().zip(&fields).filter(|(s, _)| **s).map(|(_, v)| show(*v, 1)).collect();
-        return if args.is_empty() { ci.name.clone() } else { paren(p > 0, format!("{} {}", ci.name, args.join(" "))) };
-    }
-    match kind(w) {
-        K_BYTES => show_bytes(blob(w)),
-        crate::array::K_ARRAY => {
-            let items: Vec<String> = crate::array::items(w)
-                .into_iter()
-                .map(|x| {
-                    let s = show(x, 0);
-                    drop_w(x);
-                    s
-                })
-                .collect();
-            format!("[{}]", items.join(", "))
-        }
-        K_TUPLE => format!("({})", (0..nfields(w)).map(|i| show(slot(w, i), 0)).collect::<Vec<_>>().join(", ")),
-        K_CLO | K_PAP => "<function>".into(),
-        K_RUST => match obj(w) {
-            Some(Obj::Decimal(d)) => d.render(),
-            Some(Obj::Bag(b)) => {
-                let items: Vec<String> = b.iter().flat_map(|e| std::iter::repeat_n(e.key.clone(), e.count)).collect();
-                format!("<Bag {{{}}}>", items.join(", "))
-            }
-            Some(Obj::File(_)) => "<File>".into(),
-            Some(Obj::Child(_)) => "<Child>".into(),
-            Some(Obj::Killer(_)) => "<Killer>".into(),
-            Some(Obj::IoErr(m)) => format!("<IoError: {m}>"),
-            Some(Obj::Fs(_)) => "<Fs>".into(),
-            Some(Obj::Cown(_)) => "<Cown>".into(),
-            Some(Obj::Future(_)) => "<Future>".into(),
-            None => "<?>".into(),
-        },
-        _ => "<?>".into(),
-    }
 }
 
 /// A `Bytes` literal: `b"hi\n"`.
