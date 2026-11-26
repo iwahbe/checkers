@@ -58,6 +58,29 @@ fn line_end text i -> j : text~Bytes, i~Nat, i <= len text, j~Nat, i <= j, j <= 
     decreasing len text - i
     if i < len text and text[i] != '\n' then line_end text (i + 1) else i
 
+# An answer's text without the line Z3 prints for `(get-unsat-core)` after
+# `sat`, `(error "line L column C: unsat core is not available")`, which a
+# query that asks for a core gets with every `sat`. Only that line: any
+# other error still fails to read.
+export fn without_core_error text -> r : text~Bytes, r~Bytes
+    keep_lines text 0
+
+fn keep_lines text i -> r : text~Bytes, i~Nat, i <= len text, r~Bytes
+    decreasing len text - i
+    if i >= len text
+        b""
+    else
+        let j = line_end text i
+        let line = bytes.slice text i j
+        let rest = if j < len text then keep_lines text (j + 1) else b""
+        let ended = if j < len text then line ++ b"\n" else line
+        if no_core line then rest else ended ++ rest
+
+fn no_core line -> r : line~Bytes, r~Bool
+    let head = b"(error \"line "
+    let tail = b": unsat core is not available\")"
+    len line >= len head + len tail and bytes.matches_at line 0 head and bytes.matches_at line (len line - len tail) tail
+
 # ── Values ───────────────────────────────────────────────────────────────────
 
 # A name Z3's `let` binds in a value (`a!1`) and what it stands for.

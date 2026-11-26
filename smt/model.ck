@@ -568,7 +568,7 @@ fn read_stores n bs -> r : n~Nat, bs~List Nat, r~Option (List (Value, Value), Li
 #
 # "No sort is empty" and "`(Seq e)` is unbounded" rest on every sort of a
 # context having a value, which `value_of` writes: the lemma that it does
-# (from `term.datatypes_hold`, by the kept witnesses) waits for #357.
+# (from `term.datatypes_hold`, by the kept witnesses) waits for #412.
 # Until then `fresh` and `normal_differ` find their index by computing it,
 # and a sort `value_of` gave none for would make them answer `Truth False`.
 

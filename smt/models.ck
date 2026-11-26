@@ -167,8 +167,9 @@ fn check_query t src z3 -> o : t~Bool, src~Bytes, z3~Bytes, o~Outcome
             match q.values
                 None    -> NoValues
                 Some ts ->
-                    match smtlib.read z3
-                        Err e -> AnswerUnread (smtlib.describe z3 e)
+                    let text = if q.core then answer.without_core_error z3 else z3
+                    match smtlib.read text
+                        Err e -> AnswerUnread (smtlib.describe text e)
                         Ok es ->
                             match answer.printed q.context ts es
                                 Err why  -> AnswerUnread why
@@ -250,7 +251,7 @@ fn ask t z3 p src -> o : t~Bool, z3~String, p~Proc, src~Bytes, o~Outcome
             match proc.run z3 ["-in"] (src ++ b"(get-model)\n") p
                 Err e   -> NowAnswers (b"can't run: " ++ string.bytes (files.describe e))
                 Ok said ->
-                    let out = said.stdout
+                    let out = if q.core then answer.without_core_error said.stdout else said.stdout
                     match answer.verdict out
                         Sat ->
                             match smtlib.read out
@@ -532,8 +533,9 @@ fn model_maker q z3 -> r : q~Query, z3~Bytes, r~Result (Bytes, (Context -> model
     if answer.verdict z3 != Sat
         Ok (b"", \c -> answer.empty_model (term.signature c) FUEL)
     else
-        match smtlib.read z3
-            Err e -> Err (smtlib.describe z3 e)
+        let text = if q.core then answer.without_core_error z3 else z3
+        match smtlib.read text
+            Err e -> Err (smtlib.describe text e)
             Ok es ->
                 match list.head (list.reverse es)
                     Some (Node items at) if is_full_model (Node items at) ->

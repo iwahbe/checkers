@@ -21,10 +21,12 @@ status=0
 for q in tests/smt/model/*.smt2; do
     a="${q%.smt2}.z3"
     if [ -f "$a" ] && head -1 "$a" | grep -q '^;; edited'; then continue; fi
+    # Z3 exits with status 1 when its output holds an error line, as it
+    # does for `(get-unsat-core)` after `sat`: the output is the answer.
     if [[ "$(basename "$q")" == full_* ]]; then
-        out=$(cat "$q" <(echo "(get-model)") | z3 -in)
+        out=$(cat "$q" <(echo "(get-model)") | z3 -in || true)
     else
-        out=$(z3 -in < "$q")
+        out=$(z3 -in < "$q" || true)
     fi
     if [ $check = 1 ]; then
         if [ "$out" != "$(cat "$a")" ]; then echo "differs: $a" >&2; status=1; fi

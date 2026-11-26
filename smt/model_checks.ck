@@ -14,6 +14,7 @@ import term (Sort, Int, Bool, Arr, Unin, Context, Term, Var, App, Prim, Num, Boo
 import model (Value, Truth, Integer, Sequence, Constructed, Element, ArrayElem, Model, Domain, UpTo, Countable, Form)
 import model (Unknown, NotGiven, LambdaNotGiven, OutOfFuel, NotTerminating, WrongSort, IllSorted)
 import models
+import answer
 
 # The query `src` reads to, or the empty one.
 fn query src -> q : src~Bytes, q~Option Query
@@ -666,3 +667,12 @@ fn nt_refuted -> r : r~Bool
         None   -> False
 
 check nt_refuted
+
+# ── An answer to a query that asks for a core ────────────────────────────────
+
+# After `sat`, Z3 answers `(get-unsat-core)` with an error line, and only
+# that line is dropped before the values are read.
+check answer.without_core_error b"sat\n(error \"line 9 column 15: unsat core is not available\")\n((x 3))"
+    == b"sat\n((x 3))"
+check answer.without_core_error b"sat\n(error \"line 9 column 15: unknown constant y\")\n((x 3))"
+    == b"sat\n(error \"line 9 column 15: unknown constant y\")\n((x 3))"
