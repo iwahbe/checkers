@@ -87,6 +87,11 @@ pub struct Gen<'p, M: Module> {
     /// is defined, with every runtime error's owner written as 0 (for tests
     /// comparing the code of two functions, which name different owners).
     pub disasm: Option<Vec<(String, String)>>,
+    /// Compile-time code (§14): each function reads the stack
+    /// `checkers_rt::overflow::PROBE` bytes below its frame on entry, so
+    /// running out of stack happens in compiled code, where evaluation can
+    /// stop safely, and not inside a runtime call.
+    pub probe: bool,
 }
 
 struct St {
@@ -237,6 +242,7 @@ impl<'p, M: Module> Gen<'p, M> {
             false_w: nul(wk.false_con),
             max_arity,
             disasm: None,
+            probe: false,
         }
     }
 
@@ -425,6 +431,11 @@ impl<'p, M: Module> Gen<'p, M> {
         let entry = b.create_block();
         b.append_block_params_for_function_params(entry);
         b.switch_to_block(entry);
+        if self.probe {
+            // A load that may trap, so it is kept though its value isn't used.
+            let sp = b.ins().get_stack_pointer(I64);
+            b.ins().load(I64, MemFlagsData::new(), sp, -(checkers_rt::overflow::PROBE as i32));
+        }
         let params: Vec<Value> = b.block_params(entry).to_vec();
         let vars = vec![None; f.nvars.max(f.params.len() as u32) as usize];
         let mut st = St { vars, imm: HashSet::new(), ints: HashSet::new(), conds: HashMap::new(), bounds: HashMap::new(), owner: f.owner, frefs: HashMap::new(), gvs: HashMap::new(), this: None };
