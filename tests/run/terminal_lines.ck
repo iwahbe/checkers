@@ -5,6 +5,7 @@ module terminal_lines
 
 import std.system (System, ExitCode)
 import std.terminal (Term)
+import std.files
 import std.string (debug)
 
 partial fn lines term : term~Term

@@ -4,6 +4,7 @@ module echo
 
 import std.system (System, ExitCode)
 import std.terminal (Term)
+import std.files
 import std.string (debug)
 
 partial fn number n term : n~Nat, term~Term

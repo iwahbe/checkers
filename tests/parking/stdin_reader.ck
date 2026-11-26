@@ -5,6 +5,7 @@ module stdin_reader
 
 import std.system (System, ExitCode)
 import std.terminal (Term)
+import std.files
 import std.cown (Cown, Sched)
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
