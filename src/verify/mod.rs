@@ -1850,7 +1850,7 @@ pub fn ledger_summary(file: &crate::source::SourceFile, v: &Verified) -> String 
 
 // ── counterexamples ─────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum Sx {
     Atom(String),
     List(Vec<Sx>),
