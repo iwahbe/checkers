@@ -563,7 +563,7 @@ pub fn check_stdlib() -> String {
         return out;
     }
     for m in &modules {
-        let mut v = verify::verify(&e, m);
+        let mut v = verify::proofs(&e, m);
         for d in &mut v.diags {
             d.span = e.real_span(m, d.span);
             e.name_globals(m, d);
@@ -712,7 +712,7 @@ fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
                 reused: 0,
             },
             None => {
-                let v = verify::verify(e, &m);
+                let v = verify::proofs(e, &m);
                 let warnings = v.diags.iter().filter(|d| d.code == "W022").cloned().collect();
                 fresh.push((m.clone(), verify::Verified { diags: warnings, ledger: v.ledger.clone(), z3_version: v.z3_version.clone(), proved: v.proved, asked: 0, reused: 0 }));
                 v
@@ -964,7 +964,7 @@ pub struct Ran {
 /// `dir`; `threads`: threads for behaviours and `par` (1: the deterministic
 /// FIFO scheduler, D67).
 pub fn run(name: &str, text: &str, dir: &std::path::Path, args: &[String], threads: usize) -> Ran {
-    let (e, main, staged, report) = match ready_to_run(name, text, dir) {
+    let (e, main, staged, report) = match ready_to_run(name, text, dir, false) {
         Ok(r) => r,
         Err(ran) => return ran,
     };
@@ -975,7 +975,7 @@ pub fn run(name: &str, text: &str, dir: &std::path::Path, args: &[String], threa
 
 /// `checkers build`: check and prove, then write an executable.
 pub fn build(name: &str, text: &str, dir: &std::path::Path, out: &std::path::Path, release: bool) -> Ran {
-    let (e, main, staged, mut report) = match ready_to_run(name, text, dir) {
+    let (e, main, staged, mut report) = match ready_to_run(name, text, dir, release) {
         Ok(r) => r,
         Err(ran) => return ran,
     };
@@ -1009,7 +1009,7 @@ pub fn build(name: &str, text: &str, dir: &std::path::Path, out: &std::path::Pat
 /// Check, prove and stage a program for running: the elaborated program,
 /// `main`, the staged code, and the report so far (warnings). A program
 /// with any error doesn't run (§7.4).
-fn ready_to_run(name: &str, text: &str, dir: &std::path::Path) -> Result<(elab::Elab, core::DefId, stage::Staged, String), Ran> {
+fn ready_to_run(name: &str, text: &str, dir: &std::path::Path, release: bool) -> Result<(elab::Elab, core::DefId, stage::Staged, String), Ran> {
     let (mut c, e) = elaborate(name, text, dir);
     let Some((mut e, user)) = e else { return Err(Ran { report: c.report(), code: 2 }) };
     run_checks(&mut c, &e, &user);
@@ -1018,12 +1018,30 @@ fn ready_to_run(name: &str, text: &str, dir: &std::path::Path) -> Result<(elab::
     if c.errors() > 0 || !c.internal.is_empty() {
         return Err(Ran { report, code: 2 });
     }
+    // Constants known at compile time are compiled as their values: in a
+    // development build, those that only code generation wants within a
+    // work limit (§8.9); the rest are known already.
+    let consts: Vec<core::DefId> = (0..e.g.defs.len() as u32)
+        .map(core::DefId)
+        .filter(|d| {
+            let info = &e.g.defs[d.0 as usize];
+            // Numbers: what bounds and code generation use.
+            info.body.is_some() && !info.opaque && !matches!(info.ty, core::Tm::Pi(..)) && e.type_range(&core::eval(&e.g, &std::rc::Rc::new(Vec::new()), &info.ty)).is_some()
+        })
+        .collect();
+    for d in consts {
+        let work = if release { u64::MAX } else { elab::CODEGEN_WORK };
+        if let Some(l) = e.known_value_within(&core::Tm::Def(d), work) {
+            e.g.known.borrow_mut().insert(d, l);
+        }
+    }
     let exported = e.modules.get(&user).is_some_and(|m| m.exported_values.contains("main"));
     let main = e.g.defs.iter().position(|d| *d.module == user && &*d.name == "main");
     let (Some(main), true) = (main, exported) else {
         return Err(Ran { report: format!("{report}error: `{}` has no exported `main` function\n", c.file.name), code: 2 });
     };
-    // Staging is compile-time evaluation: it keeps its checks (§13.3).
+    // Computing constants and staging are compile-time evaluation: they
+    // keep their checks (§13.3).
     let (staged, _) = stage::stage_program(&e.g);
     // Every obligation is proved. Unless a fact the proofs use may be an
     // `admit`'s, assumed (§13.3), native code relies on them: the bounds

@@ -13,27 +13,21 @@ class Count a t
 record Pluses
     seen~Nat
 
-fn pluses xs -> r : Seq s, Seq.Elem s == Tok, xs~s, r~Nat
-    match xs
-        []           -> 0
-        Plus :: rest -> 1 + pluses rest
-        _ :: rest    -> pluses rest
-
 instance Count Pluses Tok
     fn count xs a
-        pluses xs
+        match xs
+            []           -> 0
+            Plus :: rest -> 1 + count rest a
+            _ :: rest    -> count rest a
 
 record Ones
     seen~Nat
 
-fn ones xs -> r : Seq s, Seq.Elem s == Int, xs~s, r~Nat
-    match xs
-        []        -> 0
-        x :: rest -> (if x == 1 then 1 else 0) + ones rest
-
 instance Count Ones Int
     fn count xs a
-        ones xs
+        match xs
+            []        -> 0
+            x :: rest -> (if x == 1 then 1 else 0) + count rest a
 
 check Count.count [Plus, Digit 1, Plus] Pluses == 2
 check Count.count [1, 2, 1] Ones == 2

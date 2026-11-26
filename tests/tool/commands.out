@@ -90,6 +90,7 @@ examples/wc.ck:36:9  smt      termination of `count_from`: `decreasing len src -
 examples/wc.ck:43:43  smt      precondition of `is_space`: b < 256
 examples/wc.ck:43:53  smt      index in bounds: len src - 1 < len src
 examples/wc.ck:43:57  smt      `Nat` subtraction `len src - 1` stays at or above zero
+examples/wc.ck:56:55  computed BLOCK is 65536
 examples/wc.ck:56:55  smt      precondition of `count_from`: i <= len src
 examples/wc.ck:74:21  computed invariant of `Failure`: n < 256
 examples/wc.ck:74:21  computed invariant of `Failure`: n > 0

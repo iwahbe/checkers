@@ -24,11 +24,11 @@ instance Pos Pair
 fn by_type b -> r : b~Box, r~Nat
     pos b (-5)
 
-fn by_post p -> r : p~Pair, r~Nat
-    pos p (-5)
+fn by_post p x -> r : p~Pair, x~Int, r~Nat
+    pos p x
 
 check by_type (Box 0) == 0
-check by_post (Pair 0) == 25
+check by_post (Pair 0) (-5) == 25
 
 type Small = n~Nat, n < 10
 

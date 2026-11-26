@@ -329,6 +329,10 @@ pub struct TyInfo {
     /// Per parameter of an abstract type: marked `-`, so it occurs only
     /// negatively (D16).
     pub negative: Vec<bool>,
+    /// How many of `params`, the last ones, are the dictionaries of its
+    /// header's class clauses (#385): implicit arguments, found where the
+    /// type is written, never shown, and erased.
+    pub dicts: usize,
 }
 
 pub struct ConInfo {
@@ -368,6 +372,9 @@ pub struct Globals {
     /// `0 <= x`), which native code relies on (§14). Empty until the
     /// program is `proved` (`Elab::bounds` until then).
     pub bounds: HashMap<DefId, Vec<Option<crate::range::Range>>>,
+    /// Constants' values known at compile time (§8.9), for code generation:
+    /// set once the program is proved, as `bounds` is (`Elab::known_value`).
+    pub known: RefCell<HashMap<DefId, Lit>>,
     /// Every obligation of the program is proved, and none of its facts is
     /// assumed by an `admit` (§13.3): native code compiled from here relies
     /// on the proofs, with no run-time checks of guarded operations. False
@@ -437,6 +444,7 @@ impl Globals {
             postponed: RefCell::new(Vec::new()),
             value_params: RefCell::new(HashMap::new()),
             bounds: HashMap::new(),
+            known: RefCell::new(HashMap::new()),
             proved: false,
             type_bases: HashMap::new(),
         }
@@ -961,6 +969,27 @@ pub fn field_type(g: &Globals, c: ConId, k: usize) -> FieldType {
         }
     }
     FieldType::FromFields(t)
+}
+
+/// The literal the type checker's evaluation reaches from `v`, unfolding
+/// the definitions it may (not a sealed function's body, §6) within
+/// `DEFAULT_FUEL` steps of its own: the quick way to a value known at
+/// compile time (§8.9; `Elab::known_value` runs the rest). `None` if it
+/// reaches no literal.
+pub fn known_lit(g: &Globals, v: Val) -> Option<Lit> {
+    let saved = g.fuel.replace(DEFAULT_FUEL);
+    let r = force(g, v);
+    g.fuel.set(saved);
+    match r {
+        Val::Lit(l) => Some(l),
+        _ => None,
+    }
+}
+
+/// The value of constant `d` (a `let`) if it is known at compile time:
+/// `Globals::known`, which code generation then uses.
+pub fn known_const(g: &Globals, d: DefId) -> Option<Lit> {
+    g.known.borrow().get(&d).cloned()
 }
 
 pub fn force(g: &Globals, v: Val) -> Val {
@@ -1678,7 +1707,22 @@ fn unify_whnf(g: &Globals, l: usize, a: &Val, b: &Val) -> Result<(), UnifyError>
             unify(g, l + 1, &apply_closure(g, c1, Val::var(l)), &apply_closure(g, c2, Val::var(l)))
         }
         (Val::Univ(x), Val::Univ(y)) if x == y => Ok(()),
-        (Val::TyCon(t1, a1), Val::TyCon(t2, a2)) if t1 == t2 => unify_many(g, l, a1, a2),
+        (Val::TyCon(t1, a1), Val::TyCon(t2, a2)) if t1 == t2 => {
+            // A type's header's dictionaries (#385) are fixed by its other
+            // arguments: one instance per class and types (coherence). Two
+            // found differently (a clause's, an instance's) are the same
+            // dictionary, so they are compared only to learn an unknown.
+            let ti = &g.tys[t1.0 as usize];
+            let n = ti.params.len() - ti.dicts;
+            if ti.dicts == 0 || a1.len() != a2.len() || a1.len() <= n {
+                return unify_many(g, l, a1, a2);
+            }
+            unify_many(g, l, &a1[..n], &a2[..n])?;
+            for (x, y) in a1[n..].iter().zip(&a2[n..]) {
+                let _ = unify(g, l, x, y);
+            }
+            Ok(())
+        }
         (Val::Con(c1, a1), Val::Con(c2, a2)) if c1 == c2 => unify_many(g, l, a1, a2),
         (Val::Lit(x), Val::Lit(y)) if x == y => Ok(()),
         (Val::TupleTy(x), Val::TupleTy(y)) => unify_tuple(g, l, x, y, true),
@@ -2039,6 +2083,8 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
         }
         Tm::TyConApp(ty, args) => {
             let ti = &g.tys[ty.0 as usize];
+            // Its header's dictionaries are never shown (#385).
+            let args = &args[..args.len().min(ti.params.len() - ti.dicts)];
             if args.is_empty() {
                 return global(Marked::Ty(*ty), &ti.name);
             }
