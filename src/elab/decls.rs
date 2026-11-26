@@ -533,6 +533,7 @@ impl Elab {
             is_abstract,
             positive: params.iter().map(|p| p.polarity == Some(ast::Polarity::Pos)).collect(),
             negative: params.iter().map(|p| p.polarity == Some(ast::Polarity::Neg)).collect(),
+            dicts: 0,
         });
         TyId(self.g.tys.len() as u32 - 1)
     }
@@ -1014,6 +1015,35 @@ impl Elab {
             let mut cx = self.bind_type_params(*tid);
             let mut preds = Vec::new();
             let ptys = self.g.tys[tid.0 as usize].params.clone();
+            // Its class clauses (#385): the type's last parameters, its
+            // dictionaries, implicit; the conditions after them may use them.
+            let mut dicts = Vec::new();
+            for c in cs {
+                let Constraint::Pred(e) = c else { continue };
+                if self.class_clause(e).is_none() {
+                    continue;
+                }
+                let ty = self.elab_type(&mut cx, e);
+                let mut free = BTreeSet::new();
+                free_vars(&ty, 0, &mut free);
+                if free.is_empty() {
+                    self.err(
+                        Diagnostic::error("E0373", format!("`{}` mentions none of `{}`'s parameters", self.src_text(e.span), tname.name), e.span)
+                            .with_label("a class clause in a type's header is a condition on the type's parameters")
+                            .with_help("write the clause on the functions that need it"),
+                    );
+                    continue;
+                }
+                let v = self.eval(&cx, &ty);
+                let name = format!("$d{}", dicts.len());
+                cx.bind(&name, v, Mult::Many);
+                dicts.push((Rc::from(name.as_str()), ty));
+            }
+            if !dicts.is_empty() {
+                let ti = &mut self.g.tys[tid.0 as usize];
+                ti.dicts = dicts.len();
+                ti.params.extend(dicts);
+            }
             let mut typings: Vec<(usize, Tm, usize, Span)> = Vec::new();
             for (k, (p, (_, t))) in params.iter().zip(&ptys).enumerate() {
                 let span = Self::typed_constraint(cs, &p.name.name).map_or(p.name.span, |(e, _)| e.span);
@@ -1029,6 +1059,9 @@ impl Elab {
             }
             for c in cs {
                 if let Constraint::Pred(e) | Constraint::Named(_, e) = c {
+                    if matches!(c, Constraint::Pred(_)) && self.class_clause(e).is_some() {
+                        continue;
+                    }
                     // A type equation (#209): a condition on the type, the
                     // type checker's.
                     if let Some((a, b)) = self.teq_sides_in(cs, &self.type_params_named(*tid), e) {
@@ -1202,10 +1235,13 @@ impl Elab {
             cx.bind(a, v, Mult::Zero);
             fields.push((Rc::from(a.as_str()), Mult::Zero, Icit::Impl, mv));
         }
+        let is_class = self.class_defs.contains_key(&tid);
         for n in names {
             let (ty, mult) = match Self::typed_constraint(cs, &n.name) {
                 Some((e, m)) => {
-                    let ty = self.elab_type(&mut cx, e);
+                    // A class's function (#385): its implied clauses are
+                    // implicit parameters of its field, as of the function.
+                    let ty = if is_class { self.member_type(&mut cx, e) } else { self.elab_type(&mut cx, e) };
                     let mult = Self::mult_of(m);
                     if mult == Mult::One {
                         self.check_own(&cx, &ty, e.span);
@@ -1855,6 +1891,81 @@ impl Elab {
         binders.push((Rc::from(name.as_str()), Mult::Many, Icit::Impl, ty));
     }
 
+    /// The class clauses of the types `e` writes (#385), a parameter's or
+    /// the result's type, that nothing in scope gives: implied clauses,
+    /// each bound here as an implicit parameter, before the parameter `e`
+    /// is the type of. `e` is elaborated as a trial to find them, once more
+    /// for each found, since one may need another (`Ord (Seq.Elem s)` after
+    /// `Seq s`).
+    fn bind_implied(&mut self, cx: &mut Cx, binders: &mut Vec<(Name, Mult, Icit, Tm)>, inner: &mut Vec<usize>, e: &Expr) {
+        for (name, ty) in self.implied_into(cx, e) {
+            inner.push(binders.len());
+            binders.push((name, Mult::Many, Icit::Impl, ty));
+        }
+    }
+
+    /// A class's function's field type (`'a ~ Type -> {'$c0 ~ C a} -> x~A ->
+    /// B`, as desugared): after its own type variables and clauses, the
+    /// implied clauses of the rest (#385), as implicit parameters, so the
+    /// field's type is the function's.
+    fn member_type(&mut self, cx: &mut Cx, e: &Expr) -> Tm {
+        if let ExprKind::Refine(r) = &e.kind {
+            if let (Some(p), Some((None, rest))) = (&r.param, &r.arrow) {
+                if p.name.starts_with('\'') {
+                    let a = self.elab_type(cx, &r.dom);
+                    let av = self.eval(cx, &a);
+                    let m = if self.class_clause(&r.dom).is_some() { Mult::Many } else { Mult::Zero };
+                    cx.bind(&p.name, av, m);
+                    let b = self.member_type(cx, rest);
+                    cx.pop();
+                    return Tm::Pi(Rc::from(&p.name[1..]), m, Icit::Impl, Rc::new(a), Rc::new(b));
+                }
+            }
+        }
+        let implied = self.implied_into(cx, e);
+        let mut t = self.elab_type(cx, e);
+        for (name, ty) in implied.into_iter().rev() {
+            cx.pop();
+            t = Tm::Pi(name, Mult::Many, Icit::Impl, Rc::new(ty), Rc::new(t));
+        }
+        t
+    }
+
+    /// The implied clauses of the type `e` (#385), each bound in `cx` as a
+    /// dictionary: their names and types, each over the locals before it.
+    pub fn implied_into(&mut self, cx: &mut Cx, e: &Expr) -> Vec<(Name, Tm)> {
+        let mut out: Vec<(Name, Tm)> = Vec::new();
+        if !self.names_type_with_clauses(e) {
+            return out;
+        }
+        let mut bound: Vec<Val> = Vec::new();
+        loop {
+            let found = self.trial(|el| {
+                let saved = el.type_dict_reqs.replace(Vec::new());
+                let mut probe = cx.clone();
+                let _ = el.elab_type(&mut probe, e);
+                // Those found make the types of those that follow them
+                // known (`Seq.Elem s` once `Seq s` is).
+                el.solve_instances(false);
+                let reqs = std::mem::replace(&mut el.type_dict_reqs, saved).unwrap_or_default();
+                reqs.iter().find_map(|r| el.implied_clause(r, probe.lvl()))
+            });
+            let Some(ty) = found else { break };
+            // Bound already and still not found: the dictionary in scope
+            // doesn't serve it; it is wanted, and reported, as anywhere.
+            let shown = format!("{ty:?}");
+            if bound.iter().any(|b| format!("{:?}", quote(&self.g, cx.lvl(), b)) == shown) {
+                break;
+            }
+            let v = self.eval(cx, &ty);
+            let name: Name = Rc::from(format!("$i{}", cx.lvl()).as_str());
+            cx.bind(&name, v.clone(), Mult::Many);
+            bound.push(v);
+            out.push((name, ty));
+        }
+        out
+    }
+
     /// Elaborate `fn name params -> result : constraints` into a context and Π-type.
     // The loop over binders also visits the result slot (`k == nb`).
     #[allow(clippy::needless_range_loop)]
@@ -1937,6 +2048,9 @@ impl Elab {
         // every parameter is in scope.
         let mut late_exprs: Vec<(usize, &Expr)> = Vec::new();
         for (k, p) in params.iter().enumerate() {
+            if let Some((e, _)) = Self::typed_constraint(cs, &p.name) {
+                self.bind_implied(&mut cx, &mut binders, &mut inner, e);
+            }
             let (ty, mult, ct) = match Self::typed_constraint(cs, &p.name) {
                 Some((e, m)) if params[k + 1..].iter().any(|q| q.name != p.name && mentions_free(e, &q.name)) => {
                     late_exprs.push((binders.len(), e));
@@ -1991,6 +2105,9 @@ impl Elab {
             let deps: Vec<usize> = free.iter().map(|i| nb - 1 - i).filter(|j| *j > b).collect();
             cx.locals[b].refined = Some(self.eval(&cx, &full));
             late.push(Late { binder: b, ty: full, deps, n: nb });
+        }
+        if let Some((e, _)) = result.and_then(|r| Self::typed_constraint(cs, &r.name)) {
+            self.bind_implied(&mut cx, &mut binders, &mut inner, e);
         }
         let result_ty = match result.and_then(|r| Self::typed_constraint(cs, &r.name)) {
             Some((e, _)) => self.elab_type(&mut cx, e),
@@ -2222,6 +2339,7 @@ impl Elab {
             let Some(Sym::Def(did)) = id else { continue };
             self.g.fuel.set(DEFAULT_FUEL);
             self.sig_inst = self.sig_inst_of(k);
+            self.instance_sig = matches!(self.decl_origin.get(k), Some(super::classes::Origin::InstMember(_) | super::classes::Origin::InstDict(_))).then_some(*did);
             // An instance's function whose signature doesn't have the
             // class's shape (#225): the class's type.
             let mut class_ty = None;
@@ -2359,6 +2477,13 @@ impl Elab {
                 }
                 _ => continue,
             };
+            // A function's bounds, where its type is its signature's.
+            if matches!(d.kind, DeclKind::Fn { .. }) && class_ty.is_none() {
+                let b = self.signature_bounds(&sig.binders, &sig.result, &sig.preds);
+                if b.iter().any(Option::is_some) {
+                    self.bounds.insert(*did, b);
+                }
+            }
             let ty = class_ty.take().unwrap_or_else(|| Self::pi_of(&sig.binders, sig.result.clone()));
             self.g.defs[did.0 as usize].ty = ty;
             if !sig.comptime.is_empty() {
@@ -2385,9 +2510,16 @@ impl Elab {
             if let DeclKind::Fn { partial: true, .. } = &d.kind {
                 self.g.defs[did.0 as usize].opaque = true;
             }
+            // An instance's dictionary's implied clauses (#385), from its
+            // head: found where it is used, after its context.
+            if matches!(self.decl_origin.get(k), Some(super::classes::Origin::InstDict(_))) && !sig.inner.is_empty() {
+                let tys = sig.inner.iter().map(|b| sig.binders[*b].3.clone()).collect();
+                self.inst_implied.insert(*did, tys);
+            }
             sigs.insert(k, sig);
         }
         self.sig_inst = None;
+        self.instance_sig = None;
         sigs
     }
 
@@ -2504,6 +2636,7 @@ impl Elab {
         if checks {
             self.class_call_obligations();
             self.alias_dict_obligations();
+            self.distinct_cown_obligations();
         }
         self.resolve_insts();
     }
@@ -2529,6 +2662,7 @@ impl Elab {
             }
             self.g.fuel.set(DEFAULT_FUEL);
             self.sig_inst = self.sig_inst_of(k);
+            self.instance_sig = matches!(self.decl_origin.get(k), Some(super::classes::Origin::InstMember(_) | super::classes::Origin::InstDict(_))).then_some(*did);
             let mut cx = sig.cx.clone();
             // The hypotheses are known while the conclusion is elaborated (M17).
             // They were elaborated with a (lemma-less) result in scope.
@@ -2578,6 +2712,7 @@ impl Elab {
             self.specs.insert(*did, spec);
         }
         self.sig_inst = None;
+        self.instance_sig = None;
     }
 
     /// Elaborate a lemma's header `let`s into `cx`, returning their terms.
@@ -2667,7 +2802,11 @@ impl Elab {
         let mut cx = Cx::default();
         for (n, m, _, t) in &sig.binders {
             let v = self.eval(&cx, t);
-            if has_unsolved(&self.g, cx.lvl(), &v) {
+            // Unknown only for an error reported already (D141 c): a
+            // dictionary not found.
+            let unknowns = self.unknowns(cx.lvl(), &v);
+            let blamed = !unknowns.is_empty() && unknowns.iter().all(|m| self.blamed.contains(m));
+            if has_unsolved(&self.g, cx.lvl(), &v) && !blamed {
                 let fname = self.g.defs[did.0 as usize].name.clone();
                 self.err(
                     Diagnostic::error(

@@ -4,7 +4,7 @@ error[E0450]: cannot prove lemma `by_body`
 9 |     ensures sign m == "-"
   |             ^^^^^^^^^^^^^ `sign m == "-"`
   = note: facts in scope: `m.value < 0`
-  = note: `sign` is sealed in `sealed_instance_lib`: here the prover knows only its postconditions and the lemmas you bring in with `have`
+  = note: `sign` is sealed in `sealed_instance_lib`: here the prover knows only its postconditions, the values of its calls known at compile time, and the lemmas you bring in with `have`
   = help: add a `proof` block: `match` on a parameter or a call's result for case analysis, and `have` for facts it needs
 
 sealed_instance_use.ck: 1 error, 0 warnings

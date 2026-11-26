@@ -1,0 +1,7 @@
+error[E0210]: `<` needs numbers (`Nat` or `Int`) to compare, but this is `Box`
+  --> condition_type_error.ck:10:34
+   |
+10 | fn need x y -> r : x~Box, y~Box, x < y, r~Bool
+   |                                  ^^^^^ has type `Box`
+
+condition_type_error.ck: 1 error, 0 warnings

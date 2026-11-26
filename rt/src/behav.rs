@@ -353,10 +353,16 @@ fn cells_of(t: W, what: &str) -> Vec<Arc<Cell>> {
         .collect()
 }
 
-/// `when x = c, … using sched: f` (borrowed arguments).
+/// `when x = c, … using sched: f` (borrowed arguments). Its cowns are
+/// distinct, which the prover proves (§8.5); this check fails only where
+/// that proof rests on something assumed (§13.3).
 #[no_mangle]
-pub extern "C" fn ck_when(cowns: W, f: W) -> W {
-    schedule(Beh::When(cells_of(cowns, "cowns"), dup(f)));
+pub extern "C" fn ck_when(cowns: W, f: W, owner: u64) -> W {
+    let cells = cells_of(cowns, "cowns");
+    if cells.iter().enumerate().any(|(i, c)| cells[..i].iter().any(|d| Arc::ptr_eq(c, d))) {
+        crate::prog::error(owner as u32, "`when` names the same cown twice");
+    }
+    schedule(Beh::When(cells, dup(f)));
     UNIT
 }
 
@@ -442,6 +448,7 @@ pub unsafe extern "C" fn ck_par(thunks: *const W, n: u64) -> W {
             .map(|t| {
                 let t = Send2(*t);
                 let trap = crate::prog::current_trap();
+                let work = crate::prog::current_work();
                 let prog = crate::prog::current();
                 std::thread::Builder::new()
                     .stack_size(crate::sched::WORKER_STACK)
@@ -449,6 +456,7 @@ pub unsafe extern "C" fn ck_par(thunks: *const W, n: u64) -> W {
                         let t = t;
                         crate::overflow::thread_init();
                         crate::prog::set_trap(trap.clone());
+                        crate::prog::set_work(work);
                         // In compile-time evaluation, within its program,
                         // on a fiber whose overflow comes back as a runtime
                         // error.

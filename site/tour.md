@@ -153,18 +153,18 @@ A class lists functions and lemmas; an instance gives the functions for one type
 
 ## What a proof rests on
 
-`checkers trust FILE.ck` lists every fact a module relies on and how it was established: proven by Z3 (with the query's hash), computed at compile time, an axiom of the standard library, or an `admit` (an unproven assumption, allowed while developing; `checkers build --release` refuses a program that has one).
+`checkers trust FILE.ck` lists every fact a module relies on and how it was established: proven by Z3, computed at compile time, an axiom of the standard library, or an `admit` (an unproven assumption, allowed while developing; `checkers build --release` refuses a program that has one).
 
 ```text
 $ checkers trust bounds.ck
-bounds.ck:3:68  smt      postcondition of `skip_spaces`: i <= j (for `skip_spaces src (i + 1)`, line 5)  [051dfac6c486bedd]
-bounds.ck:3:68  smt      postcondition of `skip_spaces`: i <= j (for `i`, line 5)  [9a02b784e88ec4ab]
-bounds.ck:3:76  smt      postcondition of `skip_spaces`: j <= len src (for `skip_spaces src (i + 1)`, line 5)  [4601f37fe1e2cee6]
-bounds.ck:3:76  smt      postcondition of `skip_spaces`: j <= len src (for `i`, line 5)  [6776c8289821b1aa]
-bounds.ck:4:16  smt      `Nat` subtraction `len src - i` stays at or above zero  [57f366ca1bca7d7c]
-bounds.ck:5:24  smt      index in bounds: i < len src  [fa48a08a056d7078]
-bounds.ck:5:43  smt      precondition of `skip_spaces`: i <= len src  [8ad758cf927bb736]
-bounds.ck:5:43  smt      termination of `skip_spaces`: `decreasing len src - i` gets smaller  [2c6aafd276720832]
+bounds.ck:3:68  smt      postcondition of `skip_spaces`: i <= j (for `skip_spaces src (i + 1)`, line 5)
+bounds.ck:3:68  smt      postcondition of `skip_spaces`: i <= j (for `i`, line 5)
+bounds.ck:3:76  smt      postcondition of `skip_spaces`: j <= len src (for `skip_spaces src (i + 1)`, line 5)
+bounds.ck:3:76  smt      postcondition of `skip_spaces`: j <= len src (for `i`, line 5)
+bounds.ck:4:16  smt      `Nat` subtraction `len src - i` stays at or above zero
+bounds.ck:5:24  smt      index in bounds: i < len src
+bounds.ck:5:43  smt      precondition of `skip_spaces`: i <= len src
+bounds.ck:5:43  smt      termination of `skip_spaces`: `decreasing len src - i` gets smaller
 solver: Z3 5.3.3.0
 ```
 

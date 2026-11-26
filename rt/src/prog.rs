@@ -433,6 +433,35 @@ pub const EVAL_STACK: usize = 1 << 30;
 /// What compile-time evaluation reports when it runs out of stack.
 pub const STACK_OVERFLOW: &str = "runtime error: stack overflow";
 
+thread_local! {
+    /// How many more function entries and loop iterations compile-time
+    /// evaluation may make on this thread (`eval_limited`): `u64::MAX`, no
+    /// limit, unless the compiler set one.
+    static WORK: std::cell::Cell<u64> = const { std::cell::Cell::new(u64::MAX) };
+}
+
+/// What compile-time evaluation reports when it reaches its work limit.
+pub const WORK_LIMIT: &str = "the work limit for values known at compile time";
+
+/// Counts one function entry or loop iteration of code compiled for the
+/// compiler; at the work limit, a runtime error.
+#[no_mangle]
+pub extern "C" fn ck_tick() {
+    WORK.with(|w| match w.get() {
+        0 => error(NO_OWNER, &format!("reached {WORK_LIMIT}")),
+        n => w.set(n - 1),
+    })
+}
+
+/// This thread's remaining work, for threads it starts (`par`).
+pub fn current_work() -> u64 {
+    WORK.with(|w| w.get())
+}
+
+pub fn set_work(n: u64) {
+    WORK.with(|w| w.set(n));
+}
+
 /// Run compiled code for the compiler (a `check`, a value staging needs):
 /// on a thread of its own, on a fiber with a large stack. A runtime error
 /// doesn't exit the process: it comes back as `Err` with the message
@@ -441,11 +470,19 @@ pub const STACK_OVERFLOW: &str = "runtime error: stack overflow";
 ///
 /// It runs within this thread's program (`within`).
 pub fn eval_trapped(f: impl FnOnce() -> W + Send + 'static) -> Result<W, String> {
+    eval_limited(u64::MAX, f)
+}
+
+/// `eval_trapped`, making at most `work` function entries and loop
+/// iterations (`ck_tick`) on each thread it runs on; past that, a runtime
+/// error. A count, so the same on every run, unlike a time limit.
+pub fn eval_limited(work: u64, f: impl FnOnce() -> W + Send + 'static) -> Result<W, String> {
     let (tx, rx) = std::sync::mpsc::channel();
     let tx2 = tx.clone();
     let p = current();
     let spawned = std::thread::Builder::new().spawn(move || {
         crate::overflow::thread_init();
+        set_work(work);
         TRAP.with(|t| *t.borrow_mut() = Some(tx2.clone()));
         let run = || crate::fiber::recoverable(EVAL_STACK, f).ok_or_else(|| STACK_OVERFLOW.to_string());
         let r = match p {

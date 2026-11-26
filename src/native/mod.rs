@@ -429,7 +429,7 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         let dir = std::path::Path::new(&path).parent().unwrap().to_path_buf();
         crate::with_big_stack(move || {
-            let (e, main, staged, report) = crate::ready_to_run(name, &text, &dir, false).map_err(|r| r.report).unwrap();
+            let (e, main, staged, report) = crate::ready_to_run(name, &text, &dir, false, false).map_err(|r| r.report).unwrap();
             assert_eq!(report, "");
             f(&prepare(&e.g, Some(&staged), main, host_return_words()));
         })
@@ -509,13 +509,108 @@ mod tests {
             let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/run/unboxed_wide.ck");
             let text = std::fs::read_to_string(path).unwrap();
             let dir = std::path::Path::new(path).parent().unwrap();
-            let (e, main, staged, report) = crate::ready_to_run("unboxed_wide.ck", &text, dir, false).map_err(|r| r.report).unwrap();
+            let (e, main, staged, report) = crate::ready_to_run("unboxed_wide.ck", &text, dir, false, false).map_err(|r| r.report).unwrap();
             assert_eq!(report, "");
             for (triple, n) in MACHINES {
                 let p = prepare(&e.g, Some(&staged), main, n);
                 let widest = p.funcs.iter().map(|f| f.rets).max().unwrap();
                 assert_eq!(widest, n, "{triple}: the widest result");
                 object(&e.g, Some(&staged), main, isa(triple)).unwrap_or_else(|m| panic!("{triple}: {m}"));
+            }
+        })
+    }
+
+    /// Each function's name and machine code for `triple`, of the program
+    /// in `tests/run/<name>.ck`, every runtime error's owner written as 0:
+    /// code put into another function names where it came from.
+    fn machine_code(name: &str, triple: &str) -> Vec<(String, String)> {
+        let path = format!("{}/tests/run/{name}.ck", env!("CARGO_MANIFEST_DIR"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        let dir = std::path::Path::new(&path).parent().unwrap();
+        let (e, main, staged, report) = crate::ready_to_run(&format!("{name}.ck"), &text, dir, false, false).map_err(|r| r.report).unwrap();
+        assert_eq!(report, "");
+        let isa = isa(triple);
+        let p = prepare(&e.g, Some(&staged), main, codegen::return_words(&*isa));
+        let ob = cranelift_object::ObjectBuilder::new(isa, "test", cranelift_module::default_libcall_names()).unwrap();
+        let mut gen = codegen::Gen::new(cranelift_object::ObjectModule::new(ob), p, &e.g);
+        gen.disasm = Some(Vec::new());
+        gen.define_new();
+        gen.disasm.unwrap()
+    }
+
+    /// The code of the function named `f` (the only one).
+    fn code_of<'a>(code: &'a [(String, String)], f: &str) -> &'a str {
+        let found: Vec<&(String, String)> = code.iter().filter(|(n, _)| n == f).collect();
+        assert_eq!(found.len(), 1, "functions named `{f}`");
+        &found[0].1
+    }
+
+    /// Code put into a function from another (`at`: a small function
+    /// inlined) compiles as the same code written there: a comparison's
+    /// `Bool` is branched on, not built and dropped, and a remainder by a
+    /// small integer is known to be one (tests/run/at_compare.ck).
+    #[test]
+    fn code_from_another_function_compiles_the_same() {
+        crate::with_big_stack(|| {
+            for (triple, _) in MACHINES {
+                let code = machine_code("at_compare", triple);
+                assert_eq!(code_of(&code, "pick"), code_of(&code, "pick_int"), "{triple}");
+                assert_eq!(code_of(&code, "step"), code_of(&code, "step_int"), "{triple}");
+            }
+        })
+    }
+
+    /// Integers whose types bound them (tests/run/bounded_ints.ck) need no
+    /// runtime: no small-integer test, overflow check or zero test, so no
+    /// slow path calling the runtime and no `drop`s. A product of two `I32`s
+    /// can reach 2^62, past the small integers: it keeps its check.
+    #[test]
+    fn bounded_integers_need_no_runtime() {
+        crate::with_big_stack(|| {
+            for (triple, _) in MACHINES {
+                let code = machine_code("bounded_ints", triple);
+                for f in ["add_bytes", "spread", "halves", "take"] {
+                    let c = code_of(&code, f);
+                    assert!(!c.contains("ext_name"), "{triple}: `{f}` calls the runtime:\n{c}");
+                }
+                assert!(code_of(&code, "product").contains("ext_name"), "{triple}: `product` without its overflow path");
+            }
+        })
+    }
+
+    /// A value known at compile time compiles as the same value written as
+    /// a literal (tests/run/known_bounds.ck): as a bound, `a < math.pow 2
+    /// 32` as `a < 4294967296`, `a < LIMIT` as `a < 1000`, and a sealed
+    /// function's value (`std.array.count`, the program's own
+    /// `limits.power_of_two`) as `256`; in code, `LIMIT` as `1000`.
+    #[test]
+    fn known_bounds_compile_as_literals() {
+        crate::with_big_stack(|| {
+            for (triple, _) in MACHINES {
+                let code = machine_code("known_bounds", triple);
+                assert_eq!(code_of(&code, "by_call"), code_of(&code, "by_literal"), "{triple}");
+                assert_eq!(code_of(&code, "by_name"), code_of(&code, "by_number"), "{triple}");
+                assert_eq!(code_of(&code, "with_name"), code_of(&code, "with_number"), "{triple}");
+                assert_eq!(code_of(&code, "by_std"), code_of(&code, "by_bytes"), "{triple}");
+                assert_eq!(code_of(&code, "by_own"), code_of(&code, "by_bytes"), "{triple}");
+            }
+        })
+    }
+
+    /// A constant only code generation wants (tests/run/known_release.ck,
+    /// `FAR`, past the work limit): compiled as its value in a release
+    /// build, not in a development one, where it costs too much (§8.9).
+    #[test]
+    fn release_builds_compute_constants_to_completion() {
+        crate::with_big_stack(|| {
+            let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/run/known_release.ck");
+            let text = std::fs::read_to_string(path).unwrap();
+            let dir = std::path::Path::new(path).parent().unwrap();
+            for release in [false, true] {
+                let (e, ..) = crate::ready_to_run("known_release.ck", &text, dir, false, release).map_err(|r| r.report).unwrap();
+                let far = e.g.defs.iter().position(|d| &*d.name == "FAR" && &*d.module == "known_release").unwrap();
+                let known = crate::core::known_const(&e.g, crate::core::DefId(far as u32));
+                assert_eq!(known.is_some(), release, "release: {release}");
             }
         })
     }
@@ -529,7 +624,7 @@ mod tests {
             let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/run/small_int_edges.ck");
             let text = std::fs::read_to_string(path).unwrap();
             let dir = std::path::Path::new(path).parent().unwrap();
-            let (e, main, staged, report) = crate::ready_to_run("small_int_edges.ck", &text, dir, false).map_err(|r| r.report).unwrap();
+            let (e, main, staged, report) = crate::ready_to_run("small_int_edges.ck", &text, dir, false, false).map_err(|r| r.report).unwrap();
             assert_eq!(report, "");
             for (triple, _) in MACHINES {
                 object(&e.g, Some(&staged), main, isa(triple)).unwrap_or_else(|m| panic!("{triple}: {m}"));
