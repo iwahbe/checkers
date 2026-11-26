@@ -162,6 +162,8 @@ inductive Vec (A : Type ℓ) : Nat → Type ℓ
 
 **Cases that can't occur (D144).** A `match` need not cover a case the facts in scope rule out: each case left out is an obligation that it can't occur (§7.1), and E0240 if the prover can't show it. In a specification every case must be covered.
 
+**Arms that never match.** An arm the arms above already cover, and an alternative of a `|` pattern that the arms above cover, is checked as if it were the only arm: its pattern against the type of the value matched, its guard and body against theirs. Then the arm is W021. No value reaches it, so it never runs: what it would have to prove holds, and its calls are not recursion (§5.3).
+
 ```checkers
 fn head xs -> r : xs~List Int, xs != [], r~Int
     match xs
