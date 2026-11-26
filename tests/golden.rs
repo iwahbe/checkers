@@ -939,7 +939,7 @@ fn smt_package(pool: &Pool, root: &'static Path, update: bool) {
         );
         let actual = format!(
             "{}-- changed\n{}-- saved\n{}",
-            shown(&out),
+            our_time_masked(&shown(&out)),
             fs::read_to_string(&changed.0).unwrap_or_default(),
             fs::read_to_string(&saved.0).unwrap_or_default()
         );
@@ -1022,6 +1022,28 @@ fn datatype_scaling(exe: &Path, root: &Path, failures: &mut Vec<String>) {
         if large >= most * small.max(20.0) {
             failures.push(format!("── datatype scaling: {name} ──\n{n} took {small:.0} ms, {} took {large:.0} ms", 4 * n));
         }
+    }
+}
+
+/// `text` with the time `main compare` measured for our answers, which
+/// differs from run to run, shown as `TIME`: `Time: ours TIME (…`. Only a
+/// duration as `std.time` shows one (digits, a `.`, a unit) is masked, so
+/// a missing or malformed line still fails the test.
+fn our_time_masked(text: &str) -> String {
+    let key = "Time: ours ";
+    let Some(at) = text.find(key) else { return text.to_string() };
+    let start = at + key.len();
+    let Some(len) = text[start..].find(" (") else { return text.to_string() };
+    let shown = &text[start..start + len];
+    let number = shown.trim_end_matches(|c: char| c.is_ascii_alphabetic() || c == 'µ');
+    let unit = &shown[number.len()..];
+    let is_duration = !number.is_empty()
+        && number.chars().all(|c| c.is_ascii_digit() || c == '.')
+        && ["ns", "µs", "ms", "s", "m", "h"].contains(&unit);
+    if is_duration {
+        format!("{}TIME{}", &text[..start], &text[start + len..])
+    } else {
+        text.to_string()
     }
 }
 

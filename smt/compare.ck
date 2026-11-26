@@ -4,8 +4,9 @@
 #
 # DIR is a corpus (SPEC §7.2): `MODULE/HASH.smt2` holds a query, and
 # `MODULE/HASH.z3` the answer Z3 gave when the corpus was written, after a
-# first line `;; work N`. For each query this gives our answer (`reply`)
-# and runs PROGRAM (`z3` by default, looked up on `PATH`) as `PROGRAM -in`,
+# first line `;; work N`. For each query this gives our answer (`reply`),
+# timing what `main` does to answer it (reading it and answering it, by
+# `std.time`'s monotonic clock), and runs PROGRAM (`z3` by default, looked up on `PATH`) as `PROGRAM -in`,
 # with the query on its standard input followed by
 # `(get-info :all-statistics)`, for the work and time Z3 used. Then it
 # prints the table of rows, our answer against Z3's:
@@ -45,7 +46,9 @@ import std.terminal (Term)
 import std.files
 import std.files (Fs, Entry)
 import std.proc
-import std.system (Proc)
+import std.system (Proc, Clock)
+import std.time
+import std.time (Duration)
 import std.string
 import std.string (Display, display)
 import std.bytes
@@ -81,7 +84,7 @@ fn options args o -> r : args~List String, o~Options, r~Result Options String
         []                        -> Ok o
         _                         -> Err USAGE
 
-export fn run args io fs p -> code : args~List String, io~Term, fs~Fs, p~Proc, code~ExitCode
+export fn run args io fs p clock -> code : args~List String, io~Term, fs~Fs, p~Proc, clock~Clock, code~ExitCode
     match options args (Options "z3" None None None None)
         Err e -> stop e io
         Ok o  ->
@@ -94,7 +97,7 @@ export fn run args io fs p -> code : args~List String, io~Term, fs~Fs, p~Proc, c
                             match modules dir fs
                                 Err e -> stop ("error: " ++ dir ++ ": " ++ files.describe e) io
                                 Ok ms ->
-                                    match each_module dir ms o.z3 io fs p []
+                                    match each_module dir ms o.z3 io fs p clock []
                                         Err e -> stop e io
                                         Ok rs -> report o dir (line_of said.stdout) (corpus_z3 dir fs) (list.reverse rs) io fs
 
@@ -133,19 +136,20 @@ fn corpus_z3 dir fs -> r : dir~String, fs~Fs, r~Bytes
         Ok b  -> line_of b
         Err _ -> b"(no z3-version)"
 
-fn each_module dir ms z3 io fs p acc -> r : dir~String, ms~List String, z3~String, io~Term, fs~Fs, p~Proc,
-                                            acc~List Outcome, r~Result (List Outcome) String
+fn each_module dir ms z3 io fs p clock acc -> r : dir~String, ms~List String, z3~String, io~Term, fs~Fs, p~Proc,
+                                                  clock~Clock,
+                                                  acc~List Outcome, r~Result (List Outcome) String
     match ms
         []        -> Ok acc
         m :: rest ->
             match files.list (dir ++ "/" ++ m) fs
                 Err e -> Err ("error: " ++ dir ++ "/" ++ m ++ ": " ++ files.describe e)
                 Ok es ->
-                    let acc2 = try each_query dir m (list.sort (hashes es)) z3 io fs p acc
-                    each_module dir rest z3 io fs p acc2
+                    let acc2 = try each_query dir m (list.sort (hashes es)) z3 io fs p clock acc
+                    each_module dir rest z3 io fs p clock acc2
 
-fn each_query dir m hs z3 io fs p acc -> r : dir~String, m~String, hs~List String, z3~String, io~Term, fs~Fs,
-                                             p~Proc, acc~List Outcome, r~Result (List Outcome) String
+fn each_query dir m hs z3 io fs p clock acc -> r : dir~String, m~String, hs~List String, z3~String, io~Term,
+                                                   fs~Fs, p~Proc, clock~Clock, acc~List Outcome, r~Result (List Outcome) String
     match hs
         []        -> Ok acc
         h :: rest ->
@@ -157,8 +161,15 @@ fn each_query dir m hs z3 io fs p acc -> r : dir~String, m~String, hs~List Strin
                     match proc.run z3 ["-in"] (src ++ b"(get-info :all-statistics)\n") p
                         Err e   -> Err ("error: can't run " ++ z3 ++ ": " ++ files.describe e)
                         Ok said ->
-                            let o = outcome (m ++ "/" ++ h) src (recorded rec) (z3_said said.stdout)
-                            each_query dir m rest z3 io fs p (o :: acc)
+                            # What `main` does to answer a query: read it, then answer it.
+                            let start = time.now clock
+                            let read = smtlib.parse src
+                            let ours = match read
+                                Err _ -> Unreadable
+                                Ok q  -> Answered (reply.answer q)
+                            let took = time.since (time.now clock) start
+                            let o = outcome (m ++ "/" ++ h) read ours took (recorded rec) (z3_said said.stdout)
+                            each_query dir m rest z3 io fs p clock (o :: acc)
 
 # ── Z3's answers ─────────────────────────────────────────────────────────────
 
@@ -228,19 +239,21 @@ record Row
     z3~Bytes
     unpatterned~Bool
 
-# One query: where it is, its row, Z3's answer now and the corpus's (`was`), and
-# the query's work limit.
+# One query: where it is, its row, the time we took to read and answer it,
+# Z3's answer now and the corpus's (`was`), and the query's work limit.
 record Outcome
     path~String
     row~Row
+    took~Duration
     now~Said
     was~Said
     limit~Option Nat
 
-fn outcome path src was now -> r : path~String, src~Bytes, was~Said, now~Said, r~Outcome
-    match smtlib.parse src
-        Err _ -> Outcome path (Row Unreadable now.answer False) now was None
-        Ok q  -> Outcome path (Row (Answered (reply.answer q)) now.answer (unpatterned q)) now was (limit q.options)
+fn outcome path read ours took was now -> r : path~String, read~Result Query (smtlib.Error src), ours~Ours,
+                                              took~Duration, was~Said, now~Said, r~Outcome
+    match read
+        Err _ -> Outcome path (Row ours now.answer False) took now was None
+        Ok q  -> Outcome path (Row ours now.answer (unpatterned q)) took now was (limit q.options)
 
 # Whether the query holds a `forall` without `:pattern`.
 fn unpatterned q -> r : q~Query, r~Bool
@@ -343,8 +356,13 @@ fn work_lines os -> r : os~List Outcome, r~List String
     let (t, missing_t) = sum_time os 0 0
     ["Work: ours 0 (there is no solver yet); Z3's " ++ display w [] ++ " (`:rlimit-count`, summed"
      ++ absent missing_w ++ "). The two aren't counted in the same unit.",
-     "Time: Z3's " ++ display (decimal.scaled t (-2)) [Places 2] ++ " s (its `:time`, summed" ++ absent missing_t
-     ++ "); ours isn't measured: `std` has no way to read the clock."]
+     "Time: ours " ++ display (sum_took os (Duration 0)) [] ++ " (reading and answering each query, summed); Z3's "
+     ++ display (decimal.scaled t (-2)) [Places 2] ++ " s (its `:time`, summed" ++ absent missing_t ++ ")."]
+
+fn sum_took os acc -> r : os~List Outcome, acc~Duration, r~Duration
+    match os
+        []        -> acc
+        o :: rest -> sum_took rest (acc + o.took)
 
 fn absent n -> r : n~Nat, r~String
     if n == 0 then "" else "; not in the statistics of " ++ queries n
