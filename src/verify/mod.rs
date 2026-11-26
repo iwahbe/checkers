@@ -311,7 +311,7 @@ fn ask_out(query: &str) -> String {
                 let what = if query.starts_with("(set-option :produce-unsat-cores") { "(can the conditions hold?)".to_string() } else { query.lines().find(|l| l.starts_with("(assert (not")).unwrap_or("").chars().take(120).collect::<String>() };
                 let said = out.split_whitespace().next().unwrap_or("?");
                 let limit = query.split("(set-option :rlimit ").nth(1).and_then(|r| r.split(')').next()).unwrap_or("?");
-                eprintln!("smt {:>6} ms {:>7} bytes {said:>7} rlimit {limit:>8} used {used:>8} {what}", start.elapsed().as_millis(), query.len());
+                eprintln!("smt {:>6} ms {:>7} bytes {said:>7} rlimit {limit:>8} used {used:>8} {:016x} {what}", start.elapsed().as_millis(), query.len(), fnv(query));
                 if let Some(err) = out.lines().find(|l| l.starts_with("(error")) {
                     eprintln!("smt error {err}");
                 }
@@ -1996,4 +1996,21 @@ fn render_model(text: &str, shown: &[(String, String)], strings: &[String], arra
     }
     found.sort();
     found.into_iter().map(|x| x.1).collect::<Vec<_>>().join(", ")
+}
+
+// TEMPORARY (#391): every Z3 query's answer and work for the two
+// `trust` commands of tests/tool/commands.args, to compare platforms.
+#[cfg(test)]
+mod platform_probe {
+    #[test]
+    fn probe_queries() {
+        std::env::set_var("CHECKERS_SMT_TIME", "1");
+        std::env::set_var("CHECKERS_NO_CACHE", "1");
+        for path in ["examples/wc.ck", "tests/tool/axioms.ck"] {
+            let text = std::fs::read_to_string(path).unwrap();
+            let c = crate::check(path, &text);
+            println!("== {path}\n{}", c.ledger.lines().last().unwrap_or(""));
+        }
+        panic!("probe: read the output above");
+    }
 }
