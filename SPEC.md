@@ -327,7 +327,7 @@ Code with a type error never reaches Z3: every term is translated with its sort,
 
 **Equal arrays** (#75). Z3 doesn't conclude that two sequences are equal from their elements, so an obligation whose goal is `xs == ys` on arrays (`Bytes` too) is also proved by `len xs == len ys` and `xs[w] == ys[w]` at a fresh index `w`, where `0 <= w < len xs`. A `forall` in scope over one variable of type `Nat` or `Int` is given at `w` (as at a `forall` goal, §9.9; not one over a refinement of them, which may not hold at `w`), so a lemma whose `ensures` is `forall k : k~Nat, k < len xs, xs[k] == ys[k]`, brought in with `have`, proves `xs == ys`. Only a goal that is the equality itself: for one inside `and`, `if` or another expression, `array.ext` and `bytes.ext` state the rule as lemmas.
 
-Lemmas are not added automatically; `have` brings one in. An `@auto` attribute on an exported lemma adds it to every query in importing modules (F\*'s SMT patterns), for very common facts only.
+Lemmas are not added automatically; `have` brings one in.
 
 ### 7.4 Trust ledger (D1)
 Each module records every fact it relies on without a kernel-checked proof: obligations proven by Z3 (kind, location, Z3 version), `admit`s, `check`s proven by evaluation, and the values of calls the prover is given because they are known at compile time (§7.1, §8.9), computed as `check`s are (`computed count 7 (repeat 256 7) is 256`, at the obligation that uses it). `checkers trust FILE.ck` prints the ledger of a file: its own entries, a summary of each standard-library module it loads (D110), and the builtins it relies on, whose Rust code is trusted. This is the only place Z3 enters the trust base, and the hook for future certificate checking.
