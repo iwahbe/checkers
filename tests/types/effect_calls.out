@@ -3,7 +3,7 @@ error[E0450]: cannot prove `x == y`, required to call `need`
    |
 16 |     need a b
    |     ^^^^^^^^ `need` requires `x == y`
-   = note: `read_line` is built into `std.terminal`: here the prover knows only its postconditions and the lemmas you bring in with `have`
+   = note: `read_line` is built into `std.terminal`: here the prover knows only its postconditions, the values of its calls known at compile time, and the lemmas you bring in with `have`
    = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
 
 error[E0450]: cannot prove `x == y`, required to call `need`
@@ -11,7 +11,7 @@ error[E0450]: cannot prove `x == y`, required to call `need`
    |
 19 |     need (cown.new 0 sched) (cown.new 0 sched)
    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `need` requires `x == y`
-   = note: `new` is built into `std.cown`: here the prover knows only its postconditions and the lemmas you bring in with `have`
+   = note: `new` is built into `std.cown`: here the prover knows only its postconditions, the values of its calls known at compile time, and the lemmas you bring in with `have`
    = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
 
 error[E0450]: cannot prove `x == y`, required to call `need`
@@ -19,7 +19,7 @@ error[E0450]: cannot prove `x == y`, required to call `need`
    |
 28 |     need (g ()) (g ())
    |     ^^^^^^^^^^^^^^^^^^ `need` requires `x == y`
-   = note: `read_line` is built into `std.terminal`: here the prover knows only its postconditions and the lemmas you bring in with `have`
+   = note: `read_line` is built into `std.terminal`: here the prover knows only its postconditions, the values of its calls known at compile time, and the lemmas you bring in with `have`
    = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
 
 error[E0450]: cannot prove `x == y`, required to call `need`
