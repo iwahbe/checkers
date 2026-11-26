@@ -129,6 +129,32 @@ fn udiv_rem(b: &mut FunctionBuilder, u: Value, v: Value) -> (Value, Value) {
     let qh = b.ins().udiv(uh, vl);
     let qv = b.ins().imul(qh, vl);
     let rh = b.ins().isub(uh, qv);
+    let half = b.create_block();
+    let full = b.create_block();
+    let narrow = b.ins().icmp_imm_s(IntCC::UnsignedLessThan, vl, 1 << 32);
+    b.ins().brif(narrow, half, &[], full, &[]);
+    // A divisor below 2^32: the rest by 32-bit halves, each a division of
+    // one word (the remainder before it is below the divisor, so the
+    // remainder and the next half fit a word).
+    b.switch_to_block(half);
+    let hi_half = b.ins().ushr_imm_s(ul, 32);
+    let lo_half = b.ins().band_imm_s(ul, (1 << 32) - 1);
+    let t = b.ins().ishl_imm_s(rh, 32);
+    let t = b.ins().bor(t, hi_half);
+    let q1 = b.ins().udiv(t, vl);
+    let qv = b.ins().imul(q1, vl);
+    let r1 = b.ins().isub(t, qv);
+    let t = b.ins().ishl_imm_s(r1, 32);
+    let t = b.ins().bor(t, lo_half);
+    let q0 = b.ins().udiv(t, vl);
+    let qv = b.ins().imul(q0, vl);
+    let r0 = b.ins().isub(t, qv);
+    let ql = b.ins().ishl_imm_s(q1, 32);
+    let ql = b.ins().bor(ql, q0);
+    let qh2 = b.ins().iconcat(ql, qh);
+    let r0 = of_u64(b, r0);
+    b.ins().jump(done, &[BlockArg::Value(qh2), BlockArg::Value(r0)]);
+    b.switch_to_block(full);
     let (ql, r2) = div_two_words(b, rh, ul, vl);
     let q2 = b.ins().iconcat(ql, qh);
     let r2 = of_u64(b, r2);
