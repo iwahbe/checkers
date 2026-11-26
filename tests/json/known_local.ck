@@ -55,6 +55,17 @@ export fn by_own -> r : r~Int
     let d = c + 1
     d
 
+# A part of a value a call builds: not known, as the call isn't unfolded
+# to find it.
+fn pair k -> r : k~Int, r~(Int, Int)
+    (k, next 7)
+
+export fn by_unfold k -> r : k~Int, r~Int
+    let p = pair k
+    let (_, c) = p
+    let d = c + 1
+    d
+
 # Computed from a parameter: not known.
 export fn by_param k -> r : k~Int, r~Int
     let c = k
