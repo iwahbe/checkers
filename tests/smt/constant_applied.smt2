@@ -1,0 +1,5 @@
+(set-logic ALL)
+(define-fun f () Int 1)
+(declare-const x Int)
+(assert (not (= (f) x)))
+(check-sat)

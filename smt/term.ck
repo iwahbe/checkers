@@ -143,9 +143,9 @@ export record Def
 #
 # A `Plain` definition (`define-fun`) can't: its body is checked in the
 # signature before its command (`check_bodies`), so every function it
-# applies is numbered below its own. It needs no termination mark:
-# evaluating it unfolds only earlier definitions, so it ends whenever they
-# do.
+# applies is numbered below its own (`plain_bodies`), and it is alone in its
+# command. It needs no termination mark: evaluating it unfolds only earlier
+# definitions, so it ends whenever they do.
 export enum DefKind
     Recursive
     Plain
@@ -188,7 +188,7 @@ export record Sig
     datatypes~Array Datatype
     funs~Array FunDecl
 
-export fn empty_sig -> s : s~Sig
+export fn empty_sig -> s : s~Sig, len s.funs == 0
     Sig (array.from_list []) (array.from_list []) (array.from_list [])
 
 fn def_fun d -> f : d~Def, f~FunDecl
@@ -236,6 +236,8 @@ export enum Problem
     NoPattern
     # A name that an assertion before already has.
     NamedTwice n        : n~Name
+    # A `Plain` definition that isn't alone in its command.
+    PlainInGroup d      : d~Def
 
 # ── Well-formed sorts ────────────────────────────────────────────────────────
 
@@ -494,26 +496,42 @@ fn check_patterns sig env ps -> r : sig~Sig, env~List Sort, ps~List (List Term),
                 let _ = try sorts_of sig env p
                 check_patterns sig env rest
 
+# An error unless every `Plain` definition of `ds` is alone, in a command
+# written `define-fun`.
+fn check_alone single ds -> r : single~Bool, ds~List Def, r~Result Unit Problem
+    match ds
+        [_] if single -> Ok ()
+        _ -> no_plain ds
+
+fn no_plain ds -> r : ds~List Def, r~Result Unit Problem
+    match ds
+        []        -> Ok ()
+        d :: rest ->
+            match d.kind
+                Plain     -> Err (PlainInGroup d)
+                Recursive -> no_plain rest
+
 # Whether `c` is well-formed after the commands that gave `sig`.
 export fn check_command sig c -> r : sig~Sig, c~Command, r~Result Unit Problem
     match c
-        DeclareSort _       -> Ok ()
-        DeclareDatatypes ds -> check_datatypes (extend sig c) ds
-        DeclareFun f        ->
+        DeclareSort _        -> Ok ()
+        DeclareDatatypes ds  -> check_datatypes (extend sig c) ds
+        DeclareFun f         ->
             match f.kind
                 Constant if f.params != [] -> Err (ConstantParams f)
                 _ ->
                     let _ = try check_sorts sig 0 f.params
                     check_sort sig 0 f.result
-        DefineFuns _ ds     ->
+        DefineFuns single ds ->
+            let _ = try check_alone single ds
             let _ = try check_sigs sig ds
             check_bodies sig (extend sig c) ds
-        Assume a _          ->
+        Assume a _           ->
             let _ = try check_sorts sig 0 (var_sorts a.vars)
             let env = binder_env a.vars
             let _ = try check_term sig env a.body Bool
             check_patterns sig env a.patterns
-        Assert t _          -> check_term sig [] t Bool
+        Assert t _           -> check_term sig [] t Bool
 
 # Whether each of `cs` is well-formed after `sig` and the commands before it.
 export fn check_all sig cs -> r : sig~Sig, cs~List Command, r~Result Unit Problem
@@ -589,8 +607,22 @@ export fn commands c -> cs : c~Context, cs~List Command
     c.commands
 
 # The names of the context's assertions, in order. No two are the same.
-export fn names c -> ns : c~Context, ns~List Name
+export fn names c -> ns : c~Context, ns~List Name, list.unique ns
+    have unique_after [] c.commands
+    have list.unique_reverse (names_after [] c.commands)
     list.reverse (names_after [] c.commands)
+
+lemma unique_after seen cs : seen~List Name, cs~List Command, list.unique seen, names_fresh seen cs
+    ensures list.unique (names_after seen cs)
+    proof
+        match cs
+            []        -> auto
+            c :: rest ->
+                match command_name c
+                    Some n ->
+                        have list.unique_cons n seen
+                        have unique_after (n :: seen) rest
+                    None   -> have unique_after seen rest
 
 # What the commands declare.
 export fn signature c -> s : c~Context, s~Sig
@@ -1460,3 +1492,111 @@ export lemma terms_heads c ts : c~Context, ts~List Term, terms_ok c ts
                 have sorts_of_heads c.sig [] ts ss
                 have sorts_of_scoped c.sig [] ts ss
             Err _ -> auto
+
+# ── What a `Plain` body applies ──────────────────────────────────────────────
+
+# Whether every function `t` applies is numbered below `n`.
+export transparent fn funs_below n t -> r : n~Nat, t~Term, r~Bool
+    match t
+        Var _          -> True
+        App h args     -> head_below n h and all_funs_below n args
+        Let binds body -> binds_funs_below n binds and funs_below n body
+        Lam _ _ body   -> funs_below n body
+
+export transparent fn head_below n h -> r : n~Nat, h~Head, r~Bool
+    match h
+        Fun f -> f < n
+        _     -> True
+
+export transparent fn all_funs_below n ts -> r : n~Nat, ts~List Term, r~Bool
+    match ts
+        []        -> True
+        t :: rest -> funs_below n t and all_funs_below n rest
+
+export transparent fn binds_funs_below n bs -> r : n~Nat, bs~List (Name, Term), r~Bool
+    match bs
+        []             -> True
+        (_, t) :: rest -> funs_below n t and binds_funs_below n rest
+
+# Whether each `Plain` definition of `ds`, with its function's number,
+# applies only functions numbered below its own.
+export transparent fn plains_below ds -> r : ds~List (Nat, Def), r~Bool
+    match ds
+        []             -> True
+        (n, d) :: rest -> (d.kind == Recursive or funs_below n d.body) and plains_below rest
+
+lemma heads_below sig n t : sig~Sig, n~Nat, len sig.funs <= n, t~Term, heads_ok sig t
+    ensures funs_below n t
+    proof
+        match t
+            Var _          -> auto
+            App _ args     -> have all_heads_below sig n args
+            Let binds body ->
+                have binds_heads_below sig n binds
+                have heads_below sig n body
+            Lam _ _ body   -> have heads_below sig n body
+
+lemma all_heads_below sig n ts : sig~Sig, n~Nat, len sig.funs <= n, ts~List Term, all_heads_ok sig ts
+    ensures all_funs_below n ts
+    proof
+        match ts
+            []        -> auto
+            t :: rest ->
+                have heads_below sig n t
+                have all_heads_below sig n rest
+
+lemma binds_heads_below sig n bs : sig~Sig, n~Nat, len sig.funs <= n, bs~List (Name, Term), binds_heads_ok sig bs
+    ensures binds_funs_below n bs
+    proof
+        match bs
+            []             -> auto
+            (_, t) :: rest ->
+                have heads_below sig n t
+                have binds_heads_below sig n rest
+
+lemma plains_append xs ys : xs~List (Nat, Def), ys~List (Nat, Def), plains_below xs, plains_below ys
+    ensures plains_below (xs ++ ys)
+    proof
+        match xs
+            []        -> auto
+            _ :: rest -> have plains_append rest ys
+
+# Definitions numbered from `n`, at or after the functions of `sig`, whose
+# bodies were checked with `sig` for the `Plain` ones.
+lemma numbered_plains sig big n ds : sig~Sig, big~Sig, n~Nat, len sig.funs <= n, ds~List Def,
+                                     check_bodies sig big ds == Ok ()
+    ensures plains_below (numbered n ds)
+    proof
+        match ds
+            []        -> auto
+            d :: rest ->
+                have numbered_plains sig big (n + 1) rest
+                match d.kind
+                    Recursive -> auto
+                    Plain     ->
+                        have check_term_heads sig (binder_env d.params) d.body d.result
+                        have heads_below sig n d.body
+
+lemma checked_plains sig cmds : sig~Sig, cmds~List Command, check_all sig cmds == Ok ()
+    ensures plains_below (defs_in (len sig.funs) cmds)
+    proof
+        match cmds
+            []          -> auto
+            cmd :: rest ->
+                have check_command sig cmd == Ok ()
+                have checked_plains (extend sig cmd) rest
+                match cmd
+                    DefineFuns _ ds ->
+                        have list.length_map def_fun ds
+                        have len (extend sig cmd).funs == len sig.funs + list.length ds
+                        have numbered_plains sig (extend sig cmd) (len sig.funs) ds
+                        have plains_append (numbered (len sig.funs) ds) (defs_in (len sig.funs + list.length ds) rest)
+                    DeclareFun _    -> have len (extend sig cmd).funs == len sig.funs + 1
+                    _               -> have (extend sig cmd).funs == sig.funs
+
+# Every function a `Plain` definition's body applies is numbered below the
+# definition's own: it was declared before the definition's command.
+export lemma plain_bodies c : c~Context
+    ensures plains_below (defs c)
+    proof
+        have checked_plains empty_sig c.commands

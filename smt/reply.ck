@@ -61,9 +61,7 @@ export fn write src q a -> r : src~Bytes, q~Query, a~Answer, r~Bytes
 export fn has_error q a -> r : q~Query, a~Answer, r~Bool
     q.values != None or (q.core and not (a == Valid and cores_on q.options))
 
-# Whether the options ask for unsat cores: one sets `:produce-unsat-cores`
-# to `true`. Z3 (5.3.3) keeps them on once asked, even if a later option sets
-# it to `false`.
+# Whether the options ask for unsat cores (`:produce-unsat-cores true`).
 fn cores_on os -> r : os~List Opt, r~Bool
     match os
         []        -> False

@@ -1,0 +1,6 @@
+(set-logic ALL)
+(define-fun f ((y Int)) Int y)
+(declare-fun k (Int) Int)
+(assert (forall ((z Int)) (! (= (k z) 0) :pattern ((f z)))))
+(assert (not (= (k 1) 0)))
+(check-sat)

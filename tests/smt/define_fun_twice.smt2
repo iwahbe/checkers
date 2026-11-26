@@ -1,0 +1,5 @@
+(set-logic ALL)
+(define-fun d ((a Int) (a Int)) Int a)
+(declare-const x Int)
+(assert (not (= (d 1 2) 2)))
+(check-sat)

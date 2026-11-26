@@ -1,0 +1,8 @@
+(set-option :produce-unsat-cores true)
+(set-logic ALL)
+(declare-const x Int)
+(assert (! (> x 0) :named n))
+(declare-datatypes ((P 1)) ((par (X) ((n) (C (h X))))))
+(declare-const p (P Int))
+(assert (not (= p (as n (P Int)))))
+(check-sat)
