@@ -709,6 +709,7 @@ fn body src es opts logic c held broken -> r : src~Bytes, es~List (SExpr src), o
                 Node [Leaf (Symbol n False) _] p if n == b"check-sat" ->
                     finish src rest opts logic c held broken p
                 Node [Leaf (Symbol n False) _, Node [Leaf (Symbol bang False) _, t, Leaf (Keyword k) _, Leaf (Symbol name _) np] _] _ if n == b"assert" and bang == b"!" and k == b"named" ->
+                    let _ = try name_free src c name np
                     let cmd = try named src (term.signature c) t name
                     let (d, h) = try keep src c held cmd np
                     body src rest opts logic d h broken
@@ -728,6 +729,7 @@ fn body src es opts logic c held broken -> r : src~Bytes, es~List (SExpr src), o
                 Node (Leaf (Symbol n False) hp :: args) p ->
                     let d = try flush src c held
                     let cmd = try declaration src (term.signature d) n hp args p
+                    let _ = try constants_unnamed src (term.names d) (constants cmd) p
                     let d2 = try add_command src d cmd p
                     body src rest opts logic d2 None (if held == None then broken else Some p)
                 _                                         ->
@@ -769,6 +771,72 @@ fn unsat_core es -> r : es~List (SExpr src), r~(Bool, List (SExpr src))
     match es
         Node [Leaf (Symbol n False) _] _ :: rest if n == b"get-unsat-core" -> (True, rest)
         _ -> (False, es)
+
+# A name is also a `Bool` constant, to Z3 (5.3.3), so it rejects some
+# names, and some declarations after a name, that this reader would accept:
+# these two say no to the same queries, where Z3 does.
+
+# An error at `p` if Z3 rejects `name` as an assertion's name after the
+# declarations of `c`: `true` or `false`, a `define-fun` without
+# parameters, or another function without parameters of sort `Bool`.
+fn name_free src c name p -> r : src~Bytes, c~Context, name~Name, p~Nat, p < len src, r~Result Unit (Error src)
+    let funs = (term.signature c).funs
+    if name == b"true" or name == b"false"
+        Err (Error p (shown name ++ b" is built in, so it can't name an assertion"))
+    else if plain_constant (term.defs c) name
+        Err (Error p (shown name ++ b" is defined by `define-fun` without parameters, so it can't name an assertion"))
+    else if bool_constant funs name 0
+        Err (Error p (shown name ++ b" is already declared as a `Bool` without parameters, so it can't name an assertion"))
+    else
+        Ok ()
+
+fn plain_constant ds name -> r : ds~List (Nat, Def), name~Name, r~Bool
+    match ds
+        []             -> False
+        (_, d) :: rest -> (d.name == name and d.params == [] and d.kind == Plain) or plain_constant rest name
+
+fn bool_constant funs name i -> r : funs~Array FunDecl, name~Name, i~Nat, i <= len funs, r~Bool
+    decreasing len funs - i
+    if i >= len funs
+        False
+    else
+        (funs[i].name == name and funs[i].params == [] and funs[i].result == Bool) or bool_constant funs name (i + 1)
+
+# The functions without parameters `cmd` declares: Z3 rejects each that
+# an assertion before is named, whatever its sort. (A constructor without
+# fields of a datatype with parameters isn't one.)
+fn constants cmd -> r : cmd~Command, r~List Name
+    match cmd
+        DeclareFun f        -> if f.params == [] then [f.name] else []
+        DefineFuns _ ds     -> def_constants ds
+        DeclareDatatypes ds -> dt_constants ds
+        _                   -> []
+
+fn def_constants ds -> r : ds~List Def, r~List Name
+    match ds
+        []        -> []
+        d :: rest -> if d.params == [] then d.name :: def_constants rest else def_constants rest
+
+fn dt_constants ds -> r : ds~List Datatype, r~List Name
+    match ds
+        []        -> []
+        d :: rest -> (if d.params == [] then ctor_constants d.ctors else []) ++ dt_constants rest
+
+fn ctor_constants cs -> r : cs~List Ctor, r~List Name
+    match cs
+        []        -> []
+        c :: rest -> if c.fields == [] then c.name :: ctor_constants rest else ctor_constants rest
+
+# An error at `p` if one of `fs` names an assertion of `names`.
+fn constants_unnamed src names fs p -> r : src~Bytes, names~List Name, fs~List Name, p~Nat, p < len src,
+                                           r~Result Unit (Error src)
+    match fs
+        []        -> Ok ()
+        f :: rest ->
+            if list.contains names f
+                Err (Error p (shown f ++ b" names an assertion before, so it can't be declared without parameters"))
+            else
+                constants_unnamed src names rest p
 
 # The assertion `(assert (! e :named name))`: a fact, or an axiom if `e` is
 # a `forall`.
