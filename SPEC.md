@@ -747,7 +747,7 @@ A typing gives a type only to a name the header declares: a parameter, the resul
 | `fn f x y -> r : x~A, p x, y~B, r~R, q x y r` | `def f : (x :ω A) → (_ :0 Holds (p x)) → (y :ω B) → {r : R \| q x y r}` |
 | `enum Option a : a~Type` + `None` / `Some x : x~a` | inductive `Option (a : Type)` with two constructors |
 | `Obj fields : fields~List (String, Json), unique (keys fields)` | constructor `Obj : (fields :ω …) → (_ :0 unique (keys fields)) → Json` |
-| `record R p : p~T` + fields | single-constructor inductive + projections `r.field` |
+| `record R p : p~T` + fields | single-constructor inductive + projections `r.field`; the constructor is named `R` too, and where a type is expected (an argument for `t~ghost Type`, a type's argument), `R` and `R a` are the type, not the constructor |
 | `type Hex16 = n~Nat, n < 0x10000` | `def Hex16 := {n : Nat \| n < 0x10000}` (transparent) |
 | `lemma l xs : C` / `ensures φ` / `proof …` | `def l : (xs …) → (_ :0 Holds C) → Holds φ`, `φ : Bool`, all erased |
 | `let x = try e` (D14) | `match e` with `Ok v -> v`, `Err x -> return (Err x)` from the enclosing `fn` |
