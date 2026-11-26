@@ -20,7 +20,8 @@ use crate::syntax::ast::{Decl, DeclKind, Export, Module};
 /// The source from `start` up to the line where `body` starts (all of it
 /// without a body), without the comment lines that end it.
 fn header(text: &str, start: usize, end: usize, body: Option<usize>) -> String {
-    let stop = match body {
+    // A body where the declaration ends isn't written (a class's function).
+    let stop = match body.filter(|&b| b < end) {
         Some(b) => {
             let b = b.min(text.len());
             match text.get(start..b).and_then(|h| h.rfind('\n')) {
