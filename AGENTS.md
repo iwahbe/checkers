@@ -59,6 +59,7 @@ src/native/inline.rs small functions inlined at their calls; a `match` on one's 
 src/native/fold.rs   maximal partial evaluation (§8.9): each function's code folded after inlining; operations kept, and why; the check (`CHECKERS_RESIDUAL_CHECK=1`)
 src/native/lower.rs  closure conversion: runtime code → first-order functions (§14)
 src/native/tailrec.rs recursion made tail recursion before reference counting: `f.dps` (a constructor around the call), `f.acc` (`+`, `*` after it; `++` after it, accumulated as the type's `++` copies: a list in front, other pieces in a list appended at once); an optimization (§14)
+src/native/wide.rs   128-bit arithmetic in generated code: multiplication's overflow, Euclidean division from 64-bit divisions (§14)
 src/native/rc.rs     reference counting, Perceus style: dup/drop, borrowing, reuse (D74)
 src/native/codegen.rs first-order code → Cranelift (JIT and object files)
 src/native/eval.rs   compile-time evaluation: `check` and staging, one in-memory module per program (D80)
@@ -90,7 +91,7 @@ site/*.md            the language's site: home, tour, install, documentation (ev
 tests/packages.rs    packages end to end with local git repositories (M14)
 tests/parking.rs     waiting behaviours hold no thread, at several thread counts (M16)
 tests/stdin.rs       standard input that fails to read: `terminal.read_line` gives the error
-tests/scaling.rs     checking time grows with the program, not its square: long operator chains
+tests/scaling.rs     checking time and memory grow with the program, not its square: long operator chains, long `let` chains
 tests/tailrec_scaling.rs `++` after a recursive call (`f.acc`) runs in time linear in the result: strings, bytes, arrays, lists
 tests/deep_values.rs a failed `check` shows a value nested a million deep (its golden output would be megabytes)
 tests/std.rs         standard library on disk: `CHECKERS_STD`, edits without rebuilding, E0223/E0361, §16.3 lists every builtin
