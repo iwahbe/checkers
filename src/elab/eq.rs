@@ -96,7 +96,7 @@ impl Elab {
                 for c in self.g.tys[id.0 as usize].ctors.clone() {
                     let fields = self.g.cons[c.0 as usize].fields.clone();
                     for (i, f) in fields.iter().enumerate() {
-                        let mut env = args.clone();
+                        let mut env = args.to_vec();
                         env.extend(std::iter::repeat_n(Val::Error, i));
                         let fty = eval(&self.g, &Rc::new(env), &f.3);
                         self.comparable(&fty, depth + 1, seen, lvl, vars)?;

@@ -123,8 +123,15 @@ impl Parser {
         self.toks[self.pos].span
     }
 
+    /// The last token before this one that isn't layout: where the construct
+    /// just parsed ends. A `DEDENT` sits at the next line's first token, so a
+    /// block ending in one would otherwise take in the comments after it.
     fn prev_span(&self) -> Span {
-        self.toks[self.pos.saturating_sub(1)].span
+        let mut k = self.pos.saturating_sub(1);
+        while k > 0 && matches!(self.toks[k].tok, Tok::Newline | Tok::Indent | Tok::Dedent) {
+            k -= 1;
+        }
+        self.toks[k].span
     }
 
     fn bump(&mut self) -> Token {
@@ -561,7 +568,8 @@ impl Parser {
         let result = result_name.clone();
         // A header without a body yet (being written) is still checked.
         if !self.open_body("function body") {
-            let span = self.prev_span();
+            // At the header's end: no body is written.
+            let span = Span::empty_at(self.prev_span().end);
             let result = Box::new(Expr { kind: ExprKind::Error, span });
             let body = Block { stmts: Vec::new(), result, span };
             return Ok(DeclKind::Fn { partial, name, params, result: result_name, constraints, decreasing: None, body });
@@ -678,7 +686,7 @@ impl Parser {
         let constraints = self.opt_constraints()?;
         if !self.open_body("lemma body (`ensures …`)") {
             // A header being written: checked, with nothing to prove yet.
-            let ensures = Expr { kind: ExprKind::Error, span: self.prev_span() };
+            let ensures = Expr { kind: ExprKind::Error, span: Span::empty_at(self.prev_span().end) };
             return Ok(DeclKind::Lemma { name, params, constraints, decreasing: None, lets: Vec::new(), ensures, proof: None });
         }
         let mut lets = Vec::new();

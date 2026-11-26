@@ -1,0 +1,15 @@
+warning[W021]: this arm never matches
+  --> unreachable_arm_never_runs.ck:12:9
+   |
+12 |         y -> positive y
+   |         ^ the arms above already match every value it would
+   = help: remove it
+
+warning[W021]: this arm never matches
+  --> unreachable_arm_never_runs.ck:17:9
+   |
+17 |         m -> loop m
+   |         ^ the arms above already match every value it would
+   = help: remove it
+
+unreachable_arm_never_runs.ck: 0 errors, 2 warnings; 1 obligation proved

@@ -1,0 +1,13 @@
+error[E0201]: type mismatch: expected `Int`, found `Unit`
+ --> unit_pattern_type.ck:6:9
+  |
+6 |         () -> 0
+  |         ^^ this pattern has type `Unit`
+
+error[E0201]: type mismatch: expected `Int`, found `Unit`
+ --> unit_pattern_type.ck:9:13
+  |
+9 |     let (a, ()) = p
+  |             ^^ this pattern has type `Unit`
+
+unit_pattern_type.ck: 2 errors, 0 warnings

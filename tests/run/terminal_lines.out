@@ -1,0 +1,8 @@
+-- stdout
+b"one"
+b"bad \xff\xfe"
+b""
+b"last"
+the end
+-- stderr
+-- exit 0

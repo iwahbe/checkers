@@ -87,6 +87,69 @@ impl Elab {
         }
     }
 
+    /// Is `v` a class's type with a base type at a dictionary that is a
+    /// variable (`Encoding.Unit s` in generic code, #360)? A subtype of its
+    /// base whose values no other type's are known to be.
+    pub fn based_class_type(&self, v: &Val) -> bool {
+        crate::core::class_type_base(&self.g, v).is_some()
+    }
+
+    /// A value of type `found` (unknown: `None`) checked against `expected`
+    /// at its top: if that is a class's type with a base type (#360), the
+    /// value must already be of it (E0201), as no other type's values are
+    /// known to be its values.
+    pub fn check_based(&mut self, cx: &Cx, expected: &Val, found: Option<&Val>, span: Span) {
+        let Some(base) = crate::core::class_type_base(&self.g, expected) else { return };
+        if found.is_some_and(|f| self.same_based(expected, f) || self.class_type_pending(f)) {
+            return;
+        }
+        let e = self.show_written(cx, expected);
+        let b = self.show_val(cx, &base);
+        let f = found.map(|f| self.show_written(cx, f)).unwrap_or_else(|| b.clone());
+        self.err(
+            Diagnostic::error("E0201", format!("type mismatch: expected `{e}`, found `{f}`"), span)
+                .with_label(format!("this has type `{f}`"))
+                .with_note(format!("`{e}` is a type of its own: its values are `{b}`s, but `{f}`s aren't known to be its values"))
+                .with_help(format!("use a value of `{e}`, such as one the class's functions give")),
+        );
+    }
+
+    /// Does `v` mention a class's type with a base type (#360)?
+    pub fn based_inside(&self, v: &Val, lvl: usize) -> bool {
+        if self.g.type_bases.is_empty() {
+            return false;
+        }
+        let mut stack = vec![(quote(&self.g, lvl, v), lvl)];
+        while let Some((t, l)) = stack.pop() {
+            if self.based_class_type(&self.eval_closed_at(l, &t)) {
+                return true;
+            }
+            t.any_sub(|x, k| {
+                stack.push((x.clone(), l + k));
+                false
+            });
+        }
+        false
+    }
+
+    /// `t`, over `lvl` locals, as a value over the same locals.
+    fn eval_closed_at(&self, lvl: usize, t: &Tm) -> Val {
+        let env = Rc::new((0..lvl).map(Val::var).collect::<Vec<_>>());
+        crate::core::eval(&self.g, &env, t)
+    }
+
+    /// Is `v` a class's type at a dictionary not found yet? Compared with
+    /// others once it is (`retry_waiting`).
+    pub fn class_type_pending(&self, v: &Val) -> bool {
+        let v = self.force(v);
+        matches!(v, Val::Neutral(Head::Meta(_), _)) && self.g.reads_type_field(&v)
+    }
+
+    /// The same class's type with a base type (#360), at the same dictionary.
+    pub fn same_based(&self, a: &Val, b: &Val) -> bool {
+        (self.based_class_type(a) || self.based_class_type(b)) && self.same_type(&self.force(a), &self.force(b))
+    }
+
     /// Is `v` a refinement alias written directly (not reached through a meta)?
     pub fn is_direct_alias(&self, v: &Val) -> bool {
         matches!(v, Val::Neutral(Head::Def(d), _) if self.alias_preds.contains_key(d))
@@ -117,7 +180,7 @@ impl Elab {
     pub(super) fn peel(&self, v: &Val) -> Val {
         let mut v = force_meta(&self.g, v.clone());
         for _ in 0..32 {
-            if self.refined_alias(&v).is_some() {
+            if self.refined_alias(&v).is_some() || self.based_class_type(&v) {
                 return v;
             }
             match unfold(&self.g, &v) {
@@ -236,8 +299,8 @@ impl Elab {
             return self.same_type(&a, &b);
         }
         match (a, b) {
-            (Val::TyCon(t1, x1), Val::TyCon(t2, x2)) => t1 == t2 && x1.len() == x2.len() && x1.iter().zip(x2).all(|(x, y)| self.same_type(x, y)),
-            (Val::TupleTy(x1), Val::TupleTy(x2)) => x1.len() == x2.len() && x1.iter().zip(x2).all(|(x, y)| self.same_type(x, y)),
+            (Val::TyCon(t1, x1), Val::TyCon(t2, x2)) => t1 == t2 && x1.len() == x2.len() && x1.iter().zip(x2.iter()).all(|(x, y)| self.same_type(x, y)),
+            (Val::TupleTy(x1), Val::TupleTy(x2)) => x1.len() == x2.len() && x1.iter().zip(x2.iter()).all(|(x, y)| self.same_type(x, y)),
             (Val::Univ(u1), Val::Univ(u2)) => u1 == u2,
             (Val::Neutral(h1, s1), Val::Neutral(h2, s2)) => {
                 let heads = match (h1, h2) {
@@ -266,7 +329,7 @@ impl Elab {
             return false;
         }
         let p = self.peel(v);
-        if depth > 0 && self.refined_alias(&p).is_some() {
+        if depth > 0 && (self.refined_alias(&p).is_some() || self.based_class_type(&p)) {
             return true;
         }
         match self.base(&p) {
@@ -285,6 +348,21 @@ impl Elab {
             return None;
         }
         let (e, f) = (self.peel(exp), self.peel(found));
+        // A class's type with a base type (#360): no other type's values are
+        // known to be its values, so it is never gained, not even from a
+        // refinement (the instance may give a narrower one).
+        if depth > 0 && !self.same_based(&e, &f) {
+            let pairs: Vec<(&Val, &Val)> = match pol {
+                Variance::Co => vec![(&f, &e)],
+                Variance::Contra => vec![(&e, &f)],
+                Variance::Inv => vec![(&f, &e), (&e, &f)],
+            };
+            if pairs.iter().any(|(sub, sup)| self.based_class_type(sup) && !self.class_type_pending(sub)) {
+                let f = if self.g.reads_type_field(&f) { found.clone() } else { f.clone() };
+                let e = if self.g.reads_type_field(&e) { exp.clone() } else { e.clone() };
+                return Some(Gained { expected: e, found: f, variance: pol, via, cx: cx.clone() });
+            }
+        }
         let (ea, fa) = (self.refined_alias(&e), self.refined_alias(&f));
         if depth > 0 && (ea.is_some() || fa.is_some()) {
             let same = match (&ea, &fa) {
@@ -310,7 +388,9 @@ impl Elab {
                 for (sub, sup) in pairs {
                     // A `sub` whose alias `sup` refines further (`Nat` under
                     // `Small`) is its base, as an unrefined type is (D121).
-                    let sub_ref = self.refined_alias(sub).is_some() && !self.refines(sup, sub);
+                    // A class's type with a base type has its predicates
+                    // (#360): a refinement too.
+                    let sub_ref = (self.refined_alias(sub).is_some() || self.based_class_type(sub)) && !self.refines(sup, sub);
                     let sup_ref = self.refined_alias(sup).is_some();
                     if !sup_ref {
                         continue;
@@ -330,7 +410,7 @@ impl Elab {
         match (&e, &f) {
             (Val::TyCon(t1, a1), Val::TyCon(t2, a2)) if t1 == t2 && a1.len() == a2.len() => {
                 let vs = self.variance(*t1);
-                for (k, (x, y)) in a1.iter().zip(a2).enumerate() {
+                for (k, (x, y)) in a1.iter().zip(a2.iter()).enumerate() {
                     let v = vs.get(k).copied().unwrap_or(Variance::Inv);
                     let via = if v == Variance::Co { via } else { Via::Ty(*t1) };
                     if let Some(g) = self.gain(cx, x, y, pol.then(v), via, in_result, depth + 1, w) {
@@ -340,7 +420,7 @@ impl Elab {
                 None
             }
             (Val::TupleTy(x), Val::TupleTy(y)) if x.len() == y.len() => {
-                for (a, b) in x.iter().zip(y) {
+                for (a, b) in x.iter().zip(y.iter()) {
                     if let Some(g) = self.gain(cx, a, b, pol, via, in_result, depth + 1, w) {
                         return Some(g);
                     }
@@ -437,6 +517,18 @@ impl Elab {
         let (ge, gf) = (self.show_val(&g.cx, &g.expected), self.show_val(&g.cx, &g.found));
         let mut d = Diagnostic::error("E0262", format!("type mismatch: expected `{e}`, found `{f}`"), span);
         let ty = |t: TyId| self.g.tys[t.0 as usize].name.to_string();
+        // A class's type with a base type (#360), where the value would
+        // have to be one of its values.
+        let (sub, sup) = if g.variance == Variance::Contra { (&g.expected, &g.found) } else { (&g.found, &g.expected) };
+        if let Some(base) = crate::core::class_type_base(&self.g, sup) {
+            let (sub, sup, base) = (self.show_val(&g.cx, sub), self.show_val(&g.cx, sup), self.show_val(&g.cx, &base));
+            let d = d
+                .with_label(format!("{what} has type `{f}`"))
+                .with_note(format!("`{sup}` is a type of its own: its values are `{base}`s, but `{sub}`s aren't known to be its values"))
+                .with_help(format!("give the value the type `{e}` where it is built, from values of `{sup}`"));
+            self.err(d);
+            return;
+        }
         d = match (g.variance, g.via) {
             (Variance::Inv, Via::Ty(t)) if Some(t) == self.g.well_known.cown => d
                 .with_label(format!("{what} has type `{f}`"))
