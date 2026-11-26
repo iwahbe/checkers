@@ -1,8 +1,0 @@
-(set-option :produce-models true)
-(set-option :rlimit 200000)
-(set-option :timeout 60000)
-(set-logic ALL)
-(define-funs-rec ((|class_qualified_before.Read Int.read| ((p0 Int)) Int)) (p0))
-(assert (= (|class_qualified_before.Read Int.read| (- 1)) (- 1)))
-(assert (not (>= (|class_qualified_before.Read Int.read| (- 1)) 0)))
-(check-sat)

@@ -66,31 +66,32 @@ $ checkers trust examples/wc.ck
 <std>/parse.ck  proved   97 by smt, 15 computed
 <std>/prelude.ck  proved   63 by smt, 14 computed
 <std>/string.ck:70:14  axiom    builtin axiom std.string.concat_join
-<std>/string.ck:364:10  axiom    builtin axiom std.string.from_char_bytes
-<std>/string.ck:433:14  axiom    builtin axiom std.array.uncons_slice
-<std>/string.ck:437:18  axiom    builtin axiom std.array.slice_at
-<std>/string.ck:486:18  axiom    builtin axiom std.array.uncons_slice
-<std>/string.ck:487:18  axiom    builtin axiom std.array.slice_append
-<std>/string.ck:491:18  axiom    builtin axiom std.array.uncons_slice
-<std>/string.ck:505:14  axiom    builtin axiom std.array.slice_append
-<std>/string.ck:531:18  axiom    builtin axiom std.array.uncons_slice
-<std>/string.ck:560:14  axiom    builtin axiom std.array.uncons_slice
-<std>/string.ck:561:14  axiom    builtin axiom std.array.slice_at
-<std>/string.ck:563:14  axiom    builtin axiom std.array.slice_append
-<std>/string.ck  proved   221 by smt, 81 computed
-examples/wc.ck:23:42  smt      postcondition of `count`: c.bytes == len src (for `count_from src 0 False (Counts 0 0 0)`, line 24)  [6635dc1391bc9c1b]
-examples/wc.ck:24:5  smt      precondition of `count_from`: i <= len src  [5361bfb014f88971]
-examples/wc.ck:27:50  smt      postcondition of `count_from`: c.bytes == acc.bytes + (len src - i) (for `acc`, line 30)  [5e5b7f26419a054d]
-examples/wc.ck:27:50  smt      postcondition of `count_from`: c.bytes == acc.bytes + (len src - i) (for `count_from src (i + 1) (not space) (Coun…`, line 36)  [7bc3ca4f98b8b7fd]
-examples/wc.ck:28:16  smt      `Nat` subtraction `len src - i` stays at or above zero  [4f3a3024d5466a1e]
-examples/wc.ck:32:17  smt      index in bounds: i < len src  [11498465b3bd3bda]
-examples/wc.ck:33:21  smt      precondition of `is_space`: b < 256  [cad65cc60f05401c]
-examples/wc.ck:36:9  smt      precondition of `count_from`: i <= len src  [7638f357c8261352]
-examples/wc.ck:36:9  smt      termination of `count_from`: `decreasing len src - i` gets smaller  [c66310c169326b86]
-examples/wc.ck:43:43  smt      precondition of `is_space`: b < 256  [fa8c903b4fe42d43]
-examples/wc.ck:43:53  smt      index in bounds: len src - 1 < len src  [fa95efd32866468b]
-examples/wc.ck:43:57  smt      `Nat` subtraction `len src - 1` stays at or above zero  [1494cd0f7822e8fe]
-examples/wc.ck:56:55  smt      precondition of `count_from`: i <= len src  [ca79178e51266307]
+<std>/string.ck:368:10  axiom    builtin axiom std.string.from_char_bytes
+<std>/string.ck:437:14  axiom    builtin axiom std.array.uncons_slice
+<std>/string.ck:441:18  axiom    builtin axiom std.array.slice_at
+<std>/string.ck:490:18  axiom    builtin axiom std.array.uncons_slice
+<std>/string.ck:491:18  axiom    builtin axiom std.array.slice_append
+<std>/string.ck:495:18  axiom    builtin axiom std.array.uncons_slice
+<std>/string.ck:509:14  axiom    builtin axiom std.array.slice_append
+<std>/string.ck:535:18  axiom    builtin axiom std.array.uncons_slice
+<std>/string.ck:564:14  axiom    builtin axiom std.array.uncons_slice
+<std>/string.ck:565:14  axiom    builtin axiom std.array.slice_at
+<std>/string.ck:567:14  axiom    builtin axiom std.array.slice_append
+<std>/string.ck  proved   224 by smt, 81 computed
+examples/wc.ck:23:42  smt      postcondition of `count`: c.bytes == len src (for `count_from src 0 False (Counts 0 0 0)`, line 24)
+examples/wc.ck:24:5  smt      precondition of `count_from`: i <= len src
+examples/wc.ck:27:50  smt      postcondition of `count_from`: c.bytes == acc.bytes + (len src - i) (for `acc`, line 30)
+examples/wc.ck:27:50  smt      postcondition of `count_from`: c.bytes == acc.bytes + (len src - i) (for `count_from src (i + 1) (not space) (Coun…`, line 36)
+examples/wc.ck:28:16  smt      `Nat` subtraction `len src - i` stays at or above zero
+examples/wc.ck:32:17  smt      index in bounds: i < len src
+examples/wc.ck:33:21  smt      precondition of `is_space`: b < 256
+examples/wc.ck:36:9  smt      precondition of `count_from`: i <= len src
+examples/wc.ck:36:9  smt      termination of `count_from`: `decreasing len src - i` gets smaller
+examples/wc.ck:43:43  smt      precondition of `is_space`: b < 256
+examples/wc.ck:43:53  smt      index in bounds: len src - 1 < len src
+examples/wc.ck:43:57  smt      `Nat` subtraction `len src - 1` stays at or above zero
+examples/wc.ck:56:55  computed BLOCK is 65536
+examples/wc.ck:56:55  smt      precondition of `count_from`: i <= len src
 examples/wc.ck:74:21  computed invariant of `Failure`: n < 256
 examples/wc.ck:74:21  computed invariant of `Failure`: n > 0
 examples/wc.ck:89:33  computed invariant of `Failure`: n < 256
@@ -114,7 +115,7 @@ examples/wc.ck:101:7  computed check ends_in_word b"" True
 <std>/terminal.ck:10:11  builtin  std.terminal.print_line
 <std>/terminal.ck:37:11  builtin  std.terminal.stdin
 solver: Z3 5.3.3.0
-cache: 76 of 789 Z3 answers reused
+cache: 76 of 792 Z3 answers reused
 -- stderr
 -- exit 0
 $ checkers build --release tests/tool/admitted.ck -o tests/tool/admitted.out-never-written
@@ -129,10 +130,43 @@ error[E0455]: a release build can't rely on an `admit`
 
 error: `--release` refuses this program: it relies on 1 `admit`
 -- exit 1
-$ checkers build --release --unverified examples/wc.ck -o tests/tool/never
+$ checkers build --unverified examples/wc.ck -o tests/tool/never
 -- stdout
 -- stderr
-error: `--release` builds only proven programs, so it can't be used with `--unverified`
+error: `build` has no option `--unverified`
+
+ckc — the Checkers compiler (usually run through `checkers`, the build tool)
+
+USAGE:
+    ckc run [--threads N] [--overlay MAP] <FILE.ck> [ARG]...
+                                               check and prove, then run `main` with ARGs
+                                               (N worker threads, default: cores; 1 is deterministic)
+    ckc build [--release] <FILE.ck> -o <PROGRAM>
+                                               check and prove, then write an executable
+                                               (its threads: CHECKERS_THREADS, default: cores);
+                                               --release refuses any `admit` the program relies on
+    ckc trust <FILE.ck>                        print the trust ledger (what Z3, admits and checks vouch for)
+    ckc check [--deny-warnings] <FILE.ck>...   type-check and run `check`s; report diagnostics
+    ckc check --json [--overlay MAP] <FILE.ck> the same as JSON lines, phase by phase, for tools (§15.5);
+                                               MAP is a JSON object from paths to unsaved text
+                                               (`-`: read it from standard input)
+
+    check, run, build, trust and stage reuse Z3's answers from `.checkers/` beside the
+    file; --no-cache (before the file) or CHECKERS_NO_CACHE=1 turns that off.
+
+    Before the file, packages (`checkers` passes these from checkers.json):
+      --package NAME=DIR    a dependency, importable as `NAME.module`
+      --uses PKG=A,B        the packages PKG may import (`.` is this program's own)
+    ckc complete [--overlay MAP] <FILE.ck> LINE COL
+                                               what can be written at LINE, COL (from 0, the
+                                               column in bytes), as JSON lines (§15.5)
+    ckc index [--overlay MAP] <FILE.ck>        the names of every module of FILE's package
+                                               (the files under the directory its module
+                                               name is relative to), as JSON lines
+    ckc stage <FILE.ck>                        print the code staging generates (§8.9)
+    ckc parse <FILE.ck>                        print the syntax tree
+    ckc --version
+
 -- exit 2
 $ checkers trust tests/tool/axioms.ck
 -- stdout
@@ -176,21 +210,21 @@ $ checkers trust tests/tool/axioms.ck
 <std>/parse.ck  proved   97 by smt, 15 computed
 <std>/prelude.ck  proved   63 by smt, 14 computed
 <std>/string.ck:70:14  axiom    builtin axiom std.string.concat_join
-<std>/string.ck:364:10  axiom    builtin axiom std.string.from_char_bytes
-<std>/string.ck:433:14  axiom    builtin axiom std.array.uncons_slice
-<std>/string.ck:437:18  axiom    builtin axiom std.array.slice_at
-<std>/string.ck:486:18  axiom    builtin axiom std.array.uncons_slice
-<std>/string.ck:487:18  axiom    builtin axiom std.array.slice_append
-<std>/string.ck:491:18  axiom    builtin axiom std.array.uncons_slice
-<std>/string.ck:505:14  axiom    builtin axiom std.array.slice_append
-<std>/string.ck:531:18  axiom    builtin axiom std.array.uncons_slice
-<std>/string.ck:560:14  axiom    builtin axiom std.array.uncons_slice
-<std>/string.ck:561:14  axiom    builtin axiom std.array.slice_at
-<std>/string.ck:563:14  axiom    builtin axiom std.array.slice_append
-<std>/string.ck  proved   221 by smt, 81 computed
+<std>/string.ck:368:10  axiom    builtin axiom std.string.from_char_bytes
+<std>/string.ck:437:14  axiom    builtin axiom std.array.uncons_slice
+<std>/string.ck:441:18  axiom    builtin axiom std.array.slice_at
+<std>/string.ck:490:18  axiom    builtin axiom std.array.uncons_slice
+<std>/string.ck:491:18  axiom    builtin axiom std.array.slice_append
+<std>/string.ck:495:18  axiom    builtin axiom std.array.uncons_slice
+<std>/string.ck:509:14  axiom    builtin axiom std.array.slice_append
+<std>/string.ck:535:18  axiom    builtin axiom std.array.uncons_slice
+<std>/string.ck:564:14  axiom    builtin axiom std.array.uncons_slice
+<std>/string.ck:565:14  axiom    builtin axiom std.array.slice_at
+<std>/string.ck:567:14  axiom    builtin axiom std.array.slice_append
+<std>/string.ck  proved   224 by smt, 81 computed
 <std>/utf8.ck  proved   10 by smt, 6 computed
 tests/tool/axioms.ck:9:10  computed precondition of `parse_render`: len post == 0 or not (char.is_digit post[0] or post[0] == '.' or post[0] == 'e' or post[0] == 'E')
 solver: Z3 5.3.3.0
-cache: 88 of 1035 Z3 answers reused
+cache: 88 of 1038 Z3 answers reused
 -- stderr
 -- exit 0

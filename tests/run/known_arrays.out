@@ -1,0 +1,10 @@
+-- stdout
+[9, 2, 300] [1, 2, 300]
+[True, False, True]
+[-5, 6, -7]
+[9930000, 92233720368539930000]
+["one", "two", "one", "two"] ["one", "two"]
+b"\x01\xff"
+-- stderr
+checkers runtime: 0 objects live at exit
+-- exit 0

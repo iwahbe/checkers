@@ -115,7 +115,7 @@ fn bytes_and(r: std::io::Result<Vec<u8>>, f: W) -> W {
 }
 
 builtin!(ckb_files_read_some, |a| {
-    let want = n(a[0]);
+    let want = count(a[0]);
     bytes_and(
         reading(a[1], |r| {
             if want == 0 {
@@ -138,7 +138,7 @@ builtin!(ckb_files_read_some, |a| {
 });
 
 builtin!(ckb_files_read_exactly, |a| {
-    let want = n(a[0]);
+    let want = count(a[0]);
     bytes_and(
         reading(a[1], |r| {
             let mut v = Vec::with_capacity(want.min(1 << 20));

@@ -1,0 +1,16 @@
+-- stdout
+xxxxx
+<.ab.abab.ab
+b"abababab"
+[-1, 300, 7, 300, 7, 300, 7]
+["p", "q", "p", "q"]
+[0, 1, 2, 1, 2, 1, 2]
+100000
+150000
+200002
+200001 -1 7
+200000
+200001
+-- stderr
+checkers runtime: 0 objects live at exit
+-- exit 0

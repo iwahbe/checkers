@@ -5,7 +5,8 @@ module unboxed_results
 # is what the value built and taken apart gives: sums with nested tuples,
 # literal results, records, a tuple whose last component is a tuple, a
 # value also needed whole, a function used as a closure, functions calling
-# each other in tail position, a failure, and arguments with effects.
+# each other in tail position, a failure (a division by zero, checked
+# because it rests on an `admit`, §13.3), and arguments with effects.
 
 import std.system (System, ExitCode)
 import std.terminal (Term)
@@ -79,9 +80,19 @@ fn by_steps n -> s : n~Nat, s~String
         Ok (k, z) -> "even " ++ debug k ++ " " ++ debug z
         Err k     -> "odd " ++ debug k
 
+lemma nonzero c : c~Int
+    ensures c != 0
+    proof
+        admit
+
 fn third xs -> r : xs~List Int, r~Option (Int, Int)
     match xs
-        [a, b, c] -> if c == 0 then Some (a / c, b) else Some (a, b + c)
+        [a, b, c] ->
+            if c == 0
+                have nonzero c
+                Some (a / c, b)
+            else
+                Some (a, b + c)
         _         -> None
 
 fn by_failure xs -> s : xs~List Int, s~String

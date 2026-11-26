@@ -1,0 +1,21 @@
+error[E0201]: type mismatch: expected `T`, found `b.T`
+  --> same_name_types.ck:10:5
+   |
+10 |     t
+   |     ^ this expression has type `b.T`
+   = help: `T` here is from module `same_name.a`, imported unqualified; `b.T` is from module `same_name.b`
+
+error[E0201]: type mismatch: expected `List T`, found `List b.T`
+  --> same_name_types.ck:14:5
+   |
+14 |     ts
+   |     ^^ this expression has type `List b.T`
+   = help: `T` here is from module `same_name.a`, imported unqualified; `b.T` is from module `same_name.b`
+
+error[E0201]: type mismatch: expected `Int`, found `T`
+  --> same_name_types.ck:18:5
+   |
+18 |     t
+   |     ^ this expression has type `T`
+
+same_name_types.ck: 3 errors, 0 warnings
