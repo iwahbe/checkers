@@ -112,6 +112,20 @@ pub const SAFETY_MS: u64 = 60_000;
 static CACHE: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
 static ASKED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static REUSED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Queries Z3 rejected (a checkers bug, §7.3), in this process.
+static REJECTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many queries Z3 has rejected in this process: always 0 unless
+/// checkers has a bug (§7.3).
+pub fn rejected() -> usize {
+    REJECTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Z3's error if it rejected the query: an `(error …)` before its answer.
+/// (After it, an error only says there is no model or unsat core to give.)
+fn rejection(out: &str) -> Option<&str> {
+    out.lines().take_while(|l| !matches!(l.trim(), "sat" | "unsat" | "unknown" | "timeout")).find(|l| l.starts_with("(error"))
+}
 
 /// Cache Z3's answers in `dir` (`None`: don't).
 pub fn set_cache(dir: Option<std::path::PathBuf>) {
@@ -340,6 +354,9 @@ fn ask_out(query: &str) -> String {
             out
         }
     };
+    if rejection(&out).is_some() {
+        REJECTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     out
 }
 
@@ -394,7 +411,7 @@ fn answer(out: String) -> Answer {
     // Z3 reports a rejected command as `(error …)` and carries on without it,
     // so an answer that follows an error is not about the query we meant:
     // never trust it (an `unsat` would be unsound).
-    if let Some(err) = out.lines().take_while(|l| !matches!(l.trim(), "sat" | "unsat" | "unknown" | "timeout")).find(|l| l.starts_with("(error")) {
+    if let Some(err) = rejection(&out) {
         return Answer::Unknown(format!("Z3 rejected the query (a checkers bug): {err}"));
     }
     let mut lines = out.splitn(2, '\n');
@@ -804,7 +821,14 @@ fn verify(e: &Elab, user: &str) -> Verified {
     // A postcondition outside what the prover handles is so for each value
     // returned: one error, listing them (its diagnostic, the obligations).
     let mut outside_posts: Vec<(usize, Vec<usize>)> = Vec::new();
+    // A goal with a type error isn't asked (§7.3): the type error is its
+    // only diagnostic. Without one reported, it would be a checkers bug,
+    // shown as outside the fragment.
+    let type_errors = e.diags.iter().any(|(_, d)| d.is_error());
     for (k, ((o, q), a)) in obs.iter().zip(&queries).zip(answers).enumerate() {
+        if matches!(q, Err(why) if why.is_type_error()) && type_errors {
+            continue;
+        }
         if let (Err(why), ObKind::Post { .. }) = (q, &o.kind) {
             let same = |j: usize| {
                 let p = obs[j];
@@ -1123,10 +1147,16 @@ fn vacuous(e: &Elab, user: &str) -> Vec<Diagnostic> {
         return Vec::new();
     }
     let defs = smt::Defs::default();
+    // The conditions with a type error are left out (§7.3): each check's
+    // others, by index. Nothing is asked without one.
+    let mut conds: Vec<Vec<usize>> = Vec::new();
     let texts: Vec<Option<String>> = checks
         .iter()
         .map(|c| {
-            let q = smt::Builder::new(e, user).sharing(&defs).named_facts().query(&c.ob).ok()?;
+            let q = smt::Builder::new(e, user).sharing(&defs).named_facts().query(&c.ob);
+            let ill_typed = q.as_ref().map_or(&[][..], |q| &q.ill_typed[..]);
+            conds.push((0..c.conds.len()).filter(|k| c.conds[*k].is_some() && !ill_typed.contains(k)).collect());
+            let q = q.ok().filter(|_| !conds.last().is_some_and(|ks| ks.is_empty()))?;
             Some(with_limit(&q.facts_only.unwrap_or(q.text), VACUITY_RLIMIT))
         })
         .collect();
@@ -1139,7 +1169,7 @@ fn vacuous(e: &Elab, user: &str) -> Vec<Diagnostic> {
     let mut out: Vec<Diagnostic> = Vec::new();
     // A type whose conditions can't hold: its constructors aren't reported too.
     let mut reported: Vec<Span> = Vec::new();
-    for (c, o) in checks.iter().zip(outs) {
+    for ((c, o), ks) in checks.iter().zip(outs).zip(&conds) {
         let Some(o) = o else { continue };
         if !matches!(answer(o.clone()), Answer::Unsat) {
             continue;
@@ -1160,18 +1190,17 @@ fn vacuous(e: &Elab, user: &str) -> Vec<Diagnostic> {
             .collect();
         let core: Vec<usize> = names.iter().filter_map(|w| w.strip_prefix("fact.")?.parse().ok()).collect();
         let typed = names.iter().any(|w| w.starts_with("given."));
+        let written = |k: &usize| c.conds[*k].as_deref();
         let mut texts: Vec<&str> = Vec::new();
-        for (k, t) in c.conds.iter().enumerate() {
-            if let Some(t) = t {
-                if core.contains(&k) && !texts.contains(&t.as_str()) {
-                    texts.push(t);
-                }
+        for t in ks.iter().filter(|k| core.contains(k)).filter_map(written) {
+            if !texts.contains(&t) {
+                texts.push(t);
             }
         }
         // Only what the types say is needed (a class's type's predicates
         // are its values' type): each condition contributes to it.
         if texts.is_empty() && typed {
-            texts = c.conds.iter().flatten().map(|t| t.as_str()).collect();
+            texts = ks.iter().filter_map(written).collect();
             texts.dedup();
         }
         out.push(vacuity_diag(c, &texts, typed));
@@ -2132,6 +2161,22 @@ fn render_model(text: &str, shown: &[(String, String)], strings: &[String], arra
 
 #[cfg(test)]
 mod tests {
+    /// Programs whose conditions have type errors: no query made from them
+    /// is one Z3 rejects (§7.3), however the error is reported.
+    #[test]
+    fn type_errors_make_no_query_z3_rejects() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for name in ["tests/types/condition_type_error.ck", "tests/types/class_type_base_help.ck", "tests/types/class_type_pred_errors.ck"] {
+            let path = root.join(name);
+            let text = std::fs::read_to_string(&path).unwrap();
+            let path = path.to_string_lossy().into_owned();
+            let before = super::rejected();
+            let c = crate::with_big_stack(move || crate::check(&path, &text));
+            assert!(c.errors() > 0, "{name} has type errors");
+            assert_eq!(super::rejected() - before, 0, "Z3 rejected a query checking {name}");
+        }
+    }
+
     /// Queries solved at the same time with different work limits (two
     /// programs checked on two threads) each run with their own: the small
     /// limit always gives up, the large one always proves.

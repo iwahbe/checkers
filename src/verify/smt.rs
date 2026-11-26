@@ -19,6 +19,21 @@ use std::rc::Rc;
 #[derive(Debug, Clone)]
 pub struct Outside(pub String);
 
+/// What a term with a type error is outside the fragment for (§7.3).
+const TYPE_ERROR: &str = "code with a type error";
+
+impl Outside {
+    /// Code with a type error: an elaborated error, or a term whose parts
+    /// don't have the sorts its place needs. Never given to Z3 (§7.3).
+    pub fn type_error() -> Outside {
+        Outside(TYPE_ERROR.into())
+    }
+
+    pub fn is_type_error(&self) -> bool {
+        self.0 == TYPE_ERROR
+    }
+}
+
 type Tx<T> = Result<T, Outside>;
 
 fn out<T>(why: impl Into<String>) -> Tx<T> {
@@ -501,6 +516,8 @@ pub struct Query {
     pub premised: Option<String>,
     /// Why facts in scope could not be given to the solver.
     pub dropped: Vec<String>,
+    /// The obligation's facts left out for a type error (§7.3), by index.
+    pub ill_typed: Vec<usize>,
     /// Some facts in scope are `forall`s, not given to the solver (D137):
     /// a model may break them.
     pub foralls: bool,
@@ -1662,10 +1679,13 @@ impl<'a> Builder<'a> {
         };
         self.ctx[lvl] = Some(ent.clone());
         // A `let`-bound local equals its value.
-        if let (Some(def), Ent::Term(n, _)) = (&l.def, &ent) {
+        if let (Some(def), Ent::Term(n, s)) = (&l.def, &ent) {
             let tm = quote(&self.e.g, lvl, def);
-            if let Ok((v, _)) = self.term_ctx(lvl, &tm) {
-                self.asserts.push(format!("(= {n} {v})"));
+            if let Ok((v, vs)) = self.term_ctx(lvl, &tm) {
+                // Not a value with a type error (§7.3).
+                if self.expect(&vs, s).is_ok() {
+                    self.asserts.push(format!("(= {n} {v})"));
+                }
             }
         }
         Ok(ent)
@@ -2295,7 +2315,10 @@ impl<'a> Builder<'a> {
                 if xs == Sort::Str {
                     return Ok((xt, Sort::Seq(Box::new(Sort::Int))));
                 }
-                let Sort::Data(_, sargs) = &xs else { return out("a field of a non-record") };
+                let Sort::Data(id, sargs) = &xs else { return out("a field of a non-record") };
+                if *id != self.e.g.cons[c.0 as usize].ty {
+                    return Err(Outside::type_error());
+                }
                 let fs = self.con_fields(*c, &self.sort_env(self.e.g.cons[c.0 as usize].ty, sargs))?;
                 let Some((_, s)) = fs.iter().find(|(k, _)| k == i).cloned() else {
                     return out("a type-valued field");
@@ -2348,8 +2371,20 @@ impl<'a> Builder<'a> {
             Tm::PrimApp(p, args) => self.prim(env, p, args),
             Tm::Case(s, c) => self.case(env, s, c),
             Tm::Lam(..) => out("a lambda"),
-            Tm::Error => out("code with a type error"),
+            Tm::Error => Err(Outside::type_error()),
             _ => out("a type used as a value"),
+        }
+    }
+
+    /// A term of sort `have` where one of sort `want` is needed: a type
+    /// error the type checker reported, whose term it kept (§7.3). Sorts
+    /// are the same for Z3 if they are written the same (a string is its
+    /// bytes).
+    fn expect(&self, have: &Sort, want: &Sort) -> Tx<()> {
+        if have == want || have.render(self.e) == want.render(self.e) {
+            Ok(())
+        } else {
+            Err(Outside::type_error())
         }
     }
 
@@ -2409,7 +2444,8 @@ impl<'a> Builder<'a> {
         }
         // A string is its bytes (D58, #170).
         if Some(id) == wk.string {
-            let (t, _) = self.term(env, &args[np])?;
+            let (t, s) = self.term(env, &args[np])?;
+            self.expect(&s, &Sort::Seq(Box::new(Sort::Int)))?;
             return Ok((t, Sort::Str));
         }
         let sort = {
@@ -2434,7 +2470,11 @@ impl<'a> Builder<'a> {
         for (k, s) in &fs {
             let t = match s {
                 Sort::Fun(..) => self.fun_value(env, &args[np + k], s)?,
-                _ => self.term(env, &args[np + k])?.0,
+                _ => {
+                    let (t, ts) = self.term(env, &args[np + k])?;
+                    self.expect(&ts, s)?;
+                    t
+                }
             };
             ts.push(t);
         }
@@ -2555,7 +2595,8 @@ impl<'a> Builder<'a> {
         if !matches!(sa, Sort::Seq(_)) {
             return Ok(None);
         }
-        let (b, _) = self.term_ctx(lvl, &sides[1])?;
+        let (b, sb) = self.term_ctx(lvl, &sides[1])?;
+        self.expect(&sb, &sa)?;
         let w = "|ext.index|".to_string();
         self.consts.push(format!("(declare-const {w} Int)"));
         let inside = format!("(and (<= 0 {w}) (< {w} (seq.len {a})))");
@@ -2629,7 +2670,12 @@ impl<'a> Builder<'a> {
             let Sort::Fun(p, r) = sort else { return out("an application of a non-function") };
             // A function argument is a function value: a lambda is Z3's
             // `lambda`, inside a reflected body too (#231).
-            let at = match if matches!(*p, Sort::Fun(..)) { self.fun_value(env, a, &p) } else { self.term(env, a).map(|(t, _)| t) } {
+            let arg = if matches!(*p, Sort::Fun(..)) {
+                self.fun_value(env, a, &p)
+            } else {
+                self.term(env, a).and_then(|(t, s)| self.expect(&s, &p).map(|_| t))
+            };
+            let at = match arg {
                 Ok(at) => at,
                 // A function value the prover can't represent (a lambda, a
                 // partial application), given to a function it knows only by
@@ -3009,8 +3055,11 @@ impl<'a> Builder<'a> {
                 self.in_def = true;
                 let r = self.term(&[], &body);
                 self.in_def = saved;
-                if let Ok((t, _)) = r {
-                    self.table_facts.push(format!("(assert (= {name} {t}))\n"));
+                // Not a value with a type error (§7.3).
+                if let Ok((t, s)) = r {
+                    if self.expect(&s, rs).is_ok() {
+                        self.table_facts.push(format!("(assert (= {name} {t}))\n"));
+                    }
                 }
             }
             return Ok(Some((name, rs.clone())));
@@ -3020,11 +3069,16 @@ impl<'a> Builder<'a> {
             self.asserts.push(format!("(= (seq.len {name}) {})", elems.len()));
             let saved = self.in_def;
             self.in_def = true;
+            let elem = match rs {
+                Sort::Seq(e) => (**e).clone(),
+                _ => Sort::Int,
+            };
             for (i, x) in elems.iter().enumerate() {
-                let r = self.term(&[], x);
-                match r {
-                    Ok((t, _)) => self.table_facts.push(format!("(assert (= (seq.nth {name} {i}) {t}))\n")),
-                    Err(_) => break,
+                match self.term(&[], x) {
+                    Ok((t, s)) if self.expect(&s, &elem).is_ok() => {
+                        self.table_facts.push(format!("(assert (= (seq.nth {name} {i}) {t}))\n"))
+                    }
+                    _ => break,
                 }
             }
             self.in_def = saved;
@@ -3150,7 +3204,13 @@ impl<'a> Builder<'a> {
                     };
                     let Some(key) = known else {
                         let want = self.sort_of(&inner, &a)?;
-                        let fv = if dict { self.term(env, arg)?.0 } else { self.fun_value(env, arg, &want)? };
+                        let fv = if dict {
+                            let (t, s) = self.term(env, arg)?;
+                            self.expect(&s, &want)?;
+                            t
+                        } else {
+                            self.fun_value(env, arg, &want)?
+                        };
                         funs.push("*".into());
                         vals.push(fv.clone());
                         inner.push(Ent::Term(fv.clone(), want.clone()));
@@ -3167,7 +3227,8 @@ impl<'a> Builder<'a> {
                     continue;
                 }
                 let ps = self.sort_of(&inner, &a)?;
-                let (at, _) = self.term(env, arg)?;
+                let (at, s) = self.term(env, arg)?;
+                self.expect(&s, &ps)?;
                 vals.push(at.clone());
                 inner.push(Ent::Term(at.clone(), ps.clone()));
                 post_env.push(Ent::Term(at, ps));
@@ -3255,7 +3316,8 @@ impl<'a> Builder<'a> {
                         _ => return out("a class's function that is not a function"),
                     }
                 }
-                let (app, _) = self.term(&inner, &body)?;
+                let (app, s) = self.term(&inner, &body)?;
+                self.expect(&s, &rs)?;
                 if self.gathers_posts() {
                     let has_post = self.e.specs.get(&d).is_some_and(|s| s.preds.iter().any(|p| p.is_post));
                     // What the result's type says of it: a class's type's
@@ -3356,6 +3418,20 @@ impl<'a> Builder<'a> {
             ts.push(self.term(env, a)?);
         }
         let bin = |op: &str, ts: &[(String, Sort)], s: Sort| Ok((format!("({op} {} {})", ts[0].0, ts[1].0), s));
+        // An operator the type checker rejected (`<` on a record) keeps
+        // its operands (§7.3): their sorts say so.
+        let list = self.wk().list;
+        let is_list = |s: &Sort| matches!(s, Sort::Data(id, _) if Some(*id) == list);
+        match p {
+            Prim::Add | Prim::Sub | Prim::Mul | Prim::Div | Prim::Rem | Prim::Neg | Prim::Lt | Prim::Le | Prim::Gt | Prim::Ge => {
+                for (_, s) in &ts {
+                    self.expect(s, &Sort::Int)?;
+                }
+            }
+            Prim::Eq | Prim::Ne | Prim::Concat => self.expect(&ts[1].1, &ts[0].1)?,
+            Prim::Index => self.expect(&ts[1].1, &Sort::Int)?,
+            _ => {}
+        }
         match p {
             Prim::Add => bin("+", &ts, Sort::Int),
             Prim::Sub => bin("-", &ts, Sort::Int),
@@ -3375,17 +3451,18 @@ impl<'a> Builder<'a> {
                     let s = s.clone();
                     bin("seq.++", &ts, s)
                 }
-                s @ Sort::Data(..) => {
+                s if is_list(s) => {
                     let s = s.clone();
                     let f = self.list_fun("append", &s, 2, s.clone())?;
                     Ok((format!("({f} {} {})", ts[0].0, ts[1].0), s))
                 }
-                _ => out("`++` on this type"),
+                // Only strings, arrays and lists have `++`.
+                _ => Err(Outside::type_error()),
             },
             Prim::Len => match &ts[0].1 {
                 Sort::Seq(_) => Ok((format!("(seq.len {})", ts[0].0), Sort::Int)),
                 Sort::Str => Ok((format!("(seq.len {})", ts[0].0), Sort::Int)),
-                s @ Sort::Data(..) => {
+                s if is_list(s) => {
                     let s = s.clone();
                     let f = self.list_fun("len", &s, 1, Sort::Int)?;
                     let ls = s.render(self.e);
@@ -3394,12 +3471,14 @@ impl<'a> Builder<'a> {
                     self.nat_fact(&t);
                     Ok((t, Sort::Int))
                 }
-                _ => out("`len` on this type"),
+                // Only strings, arrays and lists have `len`.
+                _ => Err(Outside::type_error()),
             },
             Prim::Index => {
                 let elem = match &ts[0].1 {
                     Sort::Seq(e) => (**e).clone(),
-                    _ => Sort::Int,
+                    Sort::Str => Sort::Int,
+                    _ => return Err(Outside::type_error()),
                 };
                 let t = format!("(seq.nth {} {})", ts[0].0, ts[1].0);
                 // An element has its type's refinement (D133): a `U8` of
@@ -3469,6 +3548,9 @@ impl<'a> Builder<'a> {
                     if matches!(body, Tm::Error) {
                         continue;
                     }
+                    if self.e.g.cons[con.0 as usize].ty != *id {
+                        return Err(Outside::type_error());
+                    }
                     let fs = self.con_fields(*con, &senv)?;
                     let mut env2 = env.to_vec();
                     for k in 0..*n {
@@ -3509,12 +3591,13 @@ impl<'a> Builder<'a> {
             if matches!(body, Tm::Error) {
                 continue;
             }
-            let lt = match l {
-                Lit::Num(n) => smt_int(*n),
-                Lit::Big(n) => smt_int((**n).clone()),
-                Lit::Str(s) => smt_bytes(s.as_bytes()),
-                Lit::Bytes(b) => smt_bytes(b),
+            let (lt, ls) = match l {
+                Lit::Num(n) => (smt_int(*n), Sort::Int),
+                Lit::Big(n) => (smt_int((**n).clone()), Sort::Int),
+                Lit::Str(s) => (smt_bytes(s.as_bytes()), Sort::Str),
+                Lit::Bytes(b) => (smt_bytes(b), Sort::Seq(Box::new(Sort::Int))),
             };
+            self.expect(&ss, &ls)?;
             let (bt, bs) = self.term(env, body)?;
             arms.push((Some(format!("(= {x} {lt})")), bt, bs));
         }
@@ -3523,6 +3606,9 @@ impl<'a> Builder<'a> {
             arms.push((None, bt, bs));
         }
         let Some((_, last, sort)) = arms.pop() else { return out("a `match` with no reachable arm") };
+        for (_, _, s) in &arms {
+            self.expect(s, &sort)?;
+        }
         let mut acc = last;
         while let Some((cond, bt, _)) = arms.pop() {
             acc = match cond {
@@ -3895,7 +3981,8 @@ impl<'a> Builder<'a> {
         let guard = self.domain(inst, &env);
         let posts = std::mem::replace(&mut self.body_posts, saved_posts).map(|p| p.0).unwrap_or_default();
         self.in_def = saved;
-        let (mut bt, _) = r_body?;
+        let (mut bt, bs) = r_body?;
+        self.expect(&bs, &r)?;
         // A definition recursing by `decreasing` ends only where its
         // precondition holds and its `Nat`s are `Nat`s: Z3 gets the equation
         // there, and an unknown value elsewhere (M17, D118).
@@ -3951,7 +4038,8 @@ impl<'a> Builder<'a> {
         penv.push(Ent::Opaque("the result".into()));
         // A `forall` (D137) is proved at each call; termination doesn't rest on it.
         for pred in spec.preds.iter().filter(|p| !p.is_post && !everywhere && !has_forall(&p.tm)) {
-            let (t, _) = self.term(&penv, &pred.tm)?;
+            let (t, s) = self.term(&penv, &pred.tm)?;
+            self.expect(&s, &Sort::Bool)?;
             conds.push(t);
         }
         Ok(match conds.len() {
@@ -4017,8 +4105,8 @@ impl<'a> Builder<'a> {
             let mut ok = true;
             for pred in spec.preds.iter().filter(|x| !x.is_post && !has_forall(&x.tm)) {
                 match self.term(&p.env, &pred.tm) {
-                    Ok((t, _)) => pres.push(t),
-                    Err(_) => ok = false,
+                    Ok((t, Sort::Bool)) => pres.push(t),
+                    _ => ok = false,
                 }
             }
             if !ok {
@@ -4031,7 +4119,7 @@ impl<'a> Builder<'a> {
                 }
             }
             for pred in spec.preds.iter().filter(|x| x.is_post) {
-                if let Ok((t, _)) = self.term(&p.env, &pred.tm) {
+                if let Ok((t, Sort::Bool)) = self.term(&p.env, &pred.tm) {
                     goals.push(t);
                 }
             }
@@ -4105,8 +4193,8 @@ impl<'a> Builder<'a> {
                 // Z3 can't use it in a guard without instantiating it.
                 for pred in spec.preds.iter().filter(|x| !x.is_post && !has_forall(&x.tm)) {
                     match self.term(&p.env, &pred.tm) {
-                        Ok((t, _)) => pres.push(t),
-                        Err(_) => ok = false,
+                        Ok((t, Sort::Bool)) => pres.push(t),
+                        _ => ok = false,
                     }
                 }
                 if !ok {
@@ -4119,7 +4207,7 @@ impl<'a> Builder<'a> {
                     }
                 }
                 for pred in spec.preds.iter().filter(|x| x.is_post) {
-                    if let Ok((t, _)) = self.term(&p.env, &pred.tm) {
+                    if let Ok((t, Sort::Bool)) = self.term(&p.env, &pred.tm) {
                         goals.push(t);
                     }
                 }
@@ -4190,6 +4278,7 @@ impl<'a> Builder<'a> {
             return out("a goal that is not a `Bool`");
         }
         let mut dropped = Vec::new();
+        let mut ill_typed = Vec::new();
         let mut foralls = false;
         for (k, f) in ob.facts.iter().enumerate() {
             let tm = quote(&self.e.g, lvl, f);
@@ -4204,6 +4293,7 @@ impl<'a> Builder<'a> {
                 Ok((t, Sort::Bool)) if self.named => facts.push(format!("(! {t} :named |fact.{k}|)")),
                 Ok((t, Sort::Bool)) => facts.push(t),
                 Ok(_) => {}
+                Err(why) if why.is_type_error() => ill_typed.push(k),
                 Err(why) => {
                     if !dropped.contains(&why.0) {
                         dropped.push(why.0);
@@ -4334,6 +4424,7 @@ impl<'a> Builder<'a> {
             focused,
             premised,
             dropped,
+            ill_typed,
             foralls,
             shown: self.shown,
             string_vars: self.string_vars,
