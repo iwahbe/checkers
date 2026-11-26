@@ -759,14 +759,14 @@ impl Elab {
 
     /// Each part of `main`'s parameters and result that isn't D31's.
     fn main_mismatches(&mut self, cx: &Cx, params: &[(Name, Val)], result_name: &str, res: &Val) -> Vec<String> {
-        let ty = |e: &Self, m: &str, n: &str| e.g.tys.iter().position(|t| &*t.module == m && &*t.name == n).map(|i| Val::TyCon(TyId(i as u32), vec![]));
+        let ty = |e: &Self, m: &str, n: &str| e.g.tys.iter().position(|t| &*t.module == m && &*t.name == n).map(|i| Val::TyCon(TyId(i as u32), vec![].into()));
         let wk = self.g.well_known.clone();
         let (Some(system), Some(exit), Some(string), Some(list)) =
             (ty(self, "std.system", "System"), ty(self, "std.system", "ExitCode"), wk.string, wk.list)
         else {
             return Vec::new();
         };
-        let args = Val::TyCon(list, vec![Val::TyCon(string, vec![])]);
+        let args = Val::TyCon(list, vec![Val::TyCon(string, vec![].into())].into());
         let lvl = cx.lvl();
         let mut wrong: Vec<String> = Vec::new();
         if params.len() != 2 {
@@ -783,7 +783,7 @@ impl Elab {
                 }
             }
         }
-        let future = wk.future.map(|f| Val::TyCon(f, vec![exit.clone()]));
+        let future = wk.future.map(|f| Val::TyCon(f, vec![exit.clone()].into()));
         if unify(&self.g, lvl, &exit, res).is_err() && !future.is_some_and(|f| unify(&self.g, lvl, &f, res).is_ok()) {
             wrong.push(format!("`{result_name}` is `{}`, not `ExitCode`", self.show_val(cx, res)));
         }

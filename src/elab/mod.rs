@@ -1929,7 +1929,7 @@ impl Elab {
     /// `False`, as a value.
     pub fn false_val(&self) -> Val {
         match self.g.well_known.false_con {
-            Some(c) => Val::Con(c, vec![]),
+            Some(c) => Val::Con(c, vec![].into()),
             None => Val::Error,
         }
     }
@@ -2080,7 +2080,7 @@ impl Elab {
     pub fn bool_val(&self, b: bool) -> Val {
         let c = if b { self.g.well_known.true_con } else { self.g.well_known.false_con };
         match c {
-            Some(c) => Val::Con(c, Vec::new()),
+            Some(c) => Val::Con(c, Rc::new([])),
             None => Val::Error,
         }
     }
@@ -2208,7 +2208,7 @@ impl Elab {
 
     pub fn ty_val(&self, t: Option<TyId>, args: Vec<Val>) -> Val {
         match t {
-            Some(t) => Val::TyCon(t, args),
+            Some(t) => Val::TyCon(t, args.into()),
             None => Val::Error,
         }
     }
@@ -2255,7 +2255,7 @@ impl Elab {
         self.ty_val(self.g.well_known.array, vec![elem])
     }
     pub fn unit(&self) -> Val {
-        Val::TupleTy(vec![])
+        Val::TupleTy(vec![].into())
     }
 
     /// The module of an abstract type declared in another module: its

@@ -270,7 +270,7 @@ impl Elab {
                 self.list_tm(cx, &elem, ts)
             }
             (ExprKind::Tuple(items), Val::TupleTy(tys)) if items.len() == tys.len() => {
-                let ts = items.iter().zip(tys.clone()).map(|(it, t)| self.check(cx, it, &t, false)).collect();
+                let ts = items.iter().zip(tys.iter().cloned()).map(|(it, t)| self.check(cx, it, &t, false)).collect();
                 Tm::Tuple(ts)
             }
             (ExprKind::Tuple(items), Val::Univ(_)) => {
@@ -437,7 +437,7 @@ impl Elab {
                 if tys.iter().all(|t| matches!(self.force(t), Val::Univ(_))) {
                     (Tm::TupleTy(ts), Val::Univ(0))
                 } else {
-                    (Tm::Tuple(ts), Val::TupleTy(tys))
+                    (Tm::Tuple(ts), Val::TupleTy(tys.into()))
                 }
             }
             ExprKind::List(items) => {
@@ -2637,7 +2637,7 @@ impl Elab {
                 let xv = self.eval(cx, &xt);
                 // Each field's type, in the context of the parameters and the
                 // fields before it.
-                let mut env: Vec<Val> = params;
+                let mut env: Vec<Val> = params.to_vec();
                 let mut ftys = Vec::new();
                 for (j, f) in fields.iter().enumerate() {
                     ftys.push(eval(&self.g, &Rc::new(env.clone()), &f.3));
@@ -2883,9 +2883,9 @@ impl Elab {
         let it_val = self.eval(cx, &it);
         let l = cx.bind(&okv, payload_ty, Mult::Many);
         // On this path the value was `Ok x` / `Some x` (§7.1).
-        let mut ok_args: Vec<Val> = payload.clone();
+        let mut ok_args: Vec<Val> = payload.to_vec();
         ok_args.push(Val::var(l));
-        cx.assume(Self::prim_val(Prim::Eq, vec![it_val, Val::Con(ok_con, ok_args)]));
+        cx.assume(Self::prim_val(Prim::Eq, vec![it_val, Val::Con(ok_con, ok_args.into())]));
         let ok_body = match &pat.kind {
             ast::PatKind::Var(_) | ast::PatKind::Wild => {
                 let pty = cx.locals[cx.lvl() - 1].ty.clone();
@@ -2913,14 +2913,14 @@ impl Elab {
             let it_val = self.eval(cx, &it);
             if is_result {
                 let l = cx.bind("$err", payload[1].clone(), Mult::Many);
-                let mut args = payload.clone();
+                let mut args = payload.to_vec();
                 args.push(Val::var(l));
-                cx.assume(Self::prim_val(Prim::Eq, vec![it_val, Val::Con(err_con, args)]));
+                cx.assume(Self::prim_val(Prim::Eq, vec![it_val, Val::Con(err_con, args.into())]));
                 let v = self.eval(cx, &err_body);
                 self.oblige_posts_at(cx, v, span);
                 cx.pop();
             } else {
-                cx.assume(Self::prim_val(Prim::Eq, vec![it_val, Val::Con(err_con, vec![payload[0].clone()])]));
+                cx.assume(Self::prim_val(Prim::Eq, vec![it_val, Val::Con(err_con, vec![payload[0].clone()].into())]));
                 let v = self.eval(cx, &err_body);
                 self.oblige_posts_at(cx, v, span);
             }
@@ -3019,7 +3019,7 @@ impl Elab {
             self.post_target = Some(PostTarget { posts: Vec::new(), func: String::new(), binders: Vec::new(), invariants: invs });
         }
         // The body's type is in the outer context; shift by evaluating in the extended one.
-        let expected = if tys.len() == 1 { tys[0].clone() } else { Val::TupleTy(tys.clone()) };
+        let expected = if tys.len() == 1 { tys[0].clone() } else { Val::TupleTy(tys.clone().into()) };
         let body = self.check_block(cx, &w.body, &expected, true);
         self.post_target = None;
         cx.truncate(start);

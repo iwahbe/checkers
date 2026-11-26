@@ -2247,7 +2247,7 @@ impl Elab {
                     let l = cx.bind(n, kv, Mult::Zero);
                     pvals.push(Val::var(l));
                 }
-                let d = cx.bind("$d", Val::TyCon(c.tid, pvals), Mult::Many);
+                let d = cx.bind("$d", Val::TyCon(c.tid, pvals.into()), Mult::Many);
                 // `C.Name a`, as written (its field of the dictionary in scope).
                 let tname = &tnames[k];
                 let ty = match self.assoc_defs.get(&(c.tid, tname.clone())) {
@@ -2516,15 +2516,14 @@ impl Elab {
     /// What is known of `ty`: its type constructor and arguments.
     fn shape(&self, lvl: usize, ty: &Val) -> Shape {
         match self.force(ty) {
-            Val::TyCon(t, args) => Shape::Known(HeadKey::Ty(t), args),
+            Val::TyCon(t, args) => Shape::Known(HeadKey::Ty(t), args.to_vec()),
             // A type constructor not applied to its last argument (`List`
             // for `Functor`, M25): `\y -> T … y`.
             Val::Lam(_, _, _, c) => {
                 let y = Val::var(lvl + 1000);
                 match self.force(&apply_closure(&self.g, &c, y)) {
-                    Val::TyCon(t, mut args) if args.last().is_some_and(|a| matches!(a, Val::Neutral(Head::Var(v), sp) if *v == lvl + 1000 && sp.is_empty())) => {
-                        args.pop();
-                        Shape::Known(HeadKey::Ty(t), args)
+                    Val::TyCon(t, args) if args.last().is_some_and(|a| matches!(a, Val::Neutral(Head::Var(v), sp) if *v == lvl + 1000 && sp.is_empty())) => {
+                        Shape::Known(HeadKey::Ty(t), args[..args.len() - 1].to_vec())
                     }
                     _ => Shape::Other,
                 }
@@ -2535,8 +2534,8 @@ impl Elab {
                 match xs.len() {
                     0 => Shape::Known(HeadKey::Unit, Vec::new()),
                     1 => Shape::Other,
-                    2 => Shape::Known(HeadKey::Pair, xs),
-                    _ => Shape::Known(HeadKey::Pair, vec![xs[0].clone(), Val::TupleTy(xs[1..].to_vec())]),
+                    2 => Shape::Known(HeadKey::Pair, xs.to_vec()),
+                    _ => Shape::Known(HeadKey::Pair, vec![xs[0].clone(), Val::TupleTy(xs[1..].into())]),
                 }
             }
             Val::Neutral(Head::Meta(_), _) => Shape::Unknown,
@@ -2819,9 +2818,9 @@ impl Elab {
             }
             let head = match key {
                 None => args.remove(0),
-                Some(HeadKey::Ty(t)) if self.g.arity_ty(*t) == args.len() => Val::TyCon(*t, args),
-                Some(HeadKey::Unit) => Val::TupleTy(Vec::new()),
-                Some(HeadKey::Pair) if args.len() == 2 => Val::TupleTy(args),
+                Some(HeadKey::Ty(t)) if self.g.arity_ty(*t) == args.len() => Val::TyCon(*t, args.into()),
+                Some(HeadKey::Unit) => Val::TupleTy(Rc::new([])),
+                Some(HeadKey::Pair) if args.len() == 2 => Val::TupleTy(args.into()),
                 _ => return false,
             };
             if unify(&self.g, r.lvl, ty, &head).is_err() {
@@ -3061,14 +3060,14 @@ impl Elab {
         for (l, loc) in cx.locals.iter().enumerate() {
             if let Val::TyCon(c, a) = self.force(&loc.ty) {
                 if self.class_defs.contains_key(&c) && !a.is_empty() {
-                    given.push((l, c, a));
+                    given.push((l, c, a.to_vec()));
                 }
             }
         }
         self.inst_reqs.push(InstReq {
             meta: meta.clone(),
             class: tid,
-            tys,
+            tys: tys.to_vec(),
             lvl: cx.lvl(),
             names: cx.names(),
             span,
@@ -3379,13 +3378,13 @@ impl Elab {
         match (self.force(&pt), self.force(&pb)) {
             (Val::TyCon(t1, a1), Val::TyCon(t2, a2)) if t1 == t2 && a1.len() == a2.len() => {
                 let vs = self.variance(t1);
-                a1.iter().zip(&a2).enumerate().any(|(k, (x, y))| match vs.get(k) {
+                a1.iter().zip(a2.iter()).enumerate().any(|(k, (x, y))| match vs.get(k) {
                     Some(super::refine::Variance::Co) => self.alias_differs(lvl, x, y, co, depth + 1),
                     Some(super::refine::Variance::Contra) => self.alias_differs(lvl, x, y, !co, depth + 1),
                     _ => self.alias_differs(lvl, x, y, co, depth + 1) || self.alias_differs(lvl, x, y, !co, depth + 1),
                 })
             }
-            (Val::TupleTy(x), Val::TupleTy(y)) if x.len() == y.len() => x.iter().zip(&y).any(|(x, y)| self.alias_differs(lvl, x, y, co, depth + 1)),
+            (Val::TupleTy(x), Val::TupleTy(y)) if x.len() == y.len() => x.iter().zip(y.iter()).any(|(x, y)| self.alias_differs(lvl, x, y, co, depth + 1)),
             (Val::Pi(_, _, _, a1, c1), Val::Pi(_, _, _, a2, c2)) => {
                 self.alias_differs(lvl, &a1, &a2, !co, depth + 1)
                     || self.alias_differs(lvl + 1, &apply_closure(&self.g, &c1, Val::var(lvl)), &apply_closure(&self.g, &c2, Val::var(lvl)), co, depth + 1)
@@ -3466,9 +3465,9 @@ impl Elab {
                 'ctors: for c in self.g.tys[t1.0 as usize].ctors.clone() {
                     let fields = self.g.cons[c.0 as usize].fields.clone();
                     let n = fields.len();
-                    let mut et = a1.clone();
-                    let mut eb = a2.clone();
-                    let mut ei = ai.clone();
+                    let mut et = a1.to_vec();
+                    let mut eb = a2.to_vec();
+                    let mut ei = ai.as_deref().map(<[Val]>::to_vec);
                     let mut inner = env.to_vec();
                     let mut parts = Vec::new();
                     for (i, (_, _, _, fty)) in fields.iter().enumerate() {
@@ -3828,7 +3827,7 @@ impl Elab {
         match (self.force(&pt), self.force(&pb)) {
             (Val::TyCon(t1, a1), Val::TyCon(t2, a2)) if t1 == t2 && a1.len() == a2.len() => {
                 let vs = self.variance(t1);
-                for (k, (x, y)) in a1.iter().zip(&a2).enumerate() {
+                for (k, (x, y)) in a1.iter().zip(a2.iter()).enumerate() {
                     match vs.get(k) {
                         Some(super::refine::Variance::Co) => at(self, Step::Part, x, y, co, lvl, out),
                         Some(super::refine::Variance::Contra) => at(self, Step::Other, x, y, !co, lvl, out),
@@ -3840,7 +3839,7 @@ impl Elab {
                 }
             }
             (Val::TupleTy(x), Val::TupleTy(y)) if x.len() == y.len() => {
-                for (x, y) in x.iter().zip(&y) {
+                for (x, y) in x.iter().zip(y.iter()) {
                     at(self, Step::Part, x, y, co, lvl, out);
                 }
             }
