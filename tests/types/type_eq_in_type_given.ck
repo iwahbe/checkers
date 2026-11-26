@@ -1,16 +1,14 @@
 module type_eq_in_type_given
 
 # A type equation in a type's header holds wherever a parameter has the
-# type: `a == b` here.
+# type: here the elements are `U8`s, so below 256.
 
-record Same a b : a == b
-    first~a
-    second~b
+record Packed s : Seq s, Seq.Elem s == U8
+    bytes~s
 
-fn second_as_first p -> r : p~Same a b, r~a
-    p.second
+fn first_or_zero p -> r : p~Packed s, r~Nat, r < 256
+    match p.bytes
+        []     -> 0
+        x :: _ -> x
 
-fn flip p -> r : p~Same a b, r~Same b a
-    Same p.second p.first
-
-check second_as_first (Same 1 2) == 2
+check first_or_zero (Packed [7, 8]) == 7

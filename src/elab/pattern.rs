@@ -357,7 +357,7 @@ impl Elab {
                 self.lint_uncons_match(scrut, &st, &sty, &arms);
                 let v = self.eval(cx, &st);
                 let tyt = quote(&self.g, cx.lvl(), &sty);
-                let l = cx.define("$s", sty, v, Mult::Many);
+                let l = self.define_value(cx, "$s", &st, sty, v, Mult::Many);
                 (l, Some((st, tyt)))
             }
         };

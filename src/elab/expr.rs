@@ -46,7 +46,23 @@ impl Elab {
                     let mv = self.eval(cx, &mt);
                     // A dictionary (D136): found once its type is known.
                     let span = self.name_span;
+                    let asked = self.inst_reqs.len();
                     self.note_dict(cx, &mv, &dom, span);
+                    // A type's header's (#385).
+                    let of_type = match t.head() {
+                        Tm::TyCon(tid) => Some(*tid),
+                        Tm::Con(c) => Some(self.g.cons[c.0 as usize].ty),
+                        _ => None,
+                    };
+                    if let (true, Some(tid)) = (self.inst_reqs.len() > asked, of_type) {
+                        if self.g.tys[tid.0 as usize].dicts > 0 {
+                            self.inst_reqs[asked].of_type = Some(tid);
+                            let r = self.inst_reqs[asked].clone();
+                            if let Some(rs) = &mut self.type_dict_reqs {
+                                rs.push(r);
+                            }
+                        }
+                    }
                     args.push(mv.clone());
                     t = Tm::App(Rc::new(t), Rc::new(mt), Icit::Impl, m);
                     ty = apply_closure(&self.g, &c, mv);
@@ -793,9 +809,17 @@ impl Elab {
                 (Tm::Def(d), eval(&self.g, &empty, &ty))
             }
             Sym::Ty(t) => {
-                let params = self.g.tys[t.0 as usize].params.clone();
+                let ti = &self.g.tys[t.0 as usize];
+                // Its header's dictionaries (#385) are implicit, found where
+                // it is written.
+                let first_dict = ti.params.len() - ti.dicts;
+                let params = ti.params.clone();
                 let ty = Elab::pi_of(
-                    &params.iter().map(|(n, ty)| (n.clone(), Mult::Many, Icit::Expl, ty.clone())).collect::<Vec<_>>(),
+                    &params
+                        .iter()
+                        .enumerate()
+                        .map(|(k, (n, ty))| (n.clone(), Mult::Many, if k < first_dict { Icit::Expl } else { Icit::Impl }, ty.clone()))
+                        .collect::<Vec<_>>(),
                     Tm::Univ(0),
                 );
                 (Tm::TyCon(t), eval(&self.g, &empty, &ty))
@@ -2996,7 +3020,9 @@ impl Elab {
         let mult = self.named_mult(cx, name, &ty, span, declared);
         let v = self.eval(cx, &t);
         let tyt = quote(&self.g, cx.lvl(), &ty);
-        let l = cx.define(name, ty, v, mult);
+        // A call that may make a cown isn't a function of its arguments
+        // (§7.1): the prover knows its result by what the call says of it.
+        let l = if erased { cx.define(name, ty, v, mult) } else { self.define_value(cx, name, &t, ty, v, mult) };
         if name != "_" {
             self.bound_at(cx, l, span);
         }
@@ -3197,6 +3223,7 @@ impl Elab {
             cowns.push(self.check(cx, c, &cown, false));
             tys.push(inner);
         }
+        self.oblige_distinct_cowns(cx, w, &cowns, &tys);
         let start = cx.lvl();
         // The contents' refinements (a cown invariant, §8.5): facts on entry,
         // obligations on every value the body hands back.

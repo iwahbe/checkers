@@ -455,25 +455,19 @@ pub fn reverse(a: W) -> W {
     from_items(layout(a), v)
 }
 
-pub fn equal(a: W, b: W, eq: &dyn Fn(W, W) -> Result<bool, &'static str>) -> Result<bool, &'static str> {
+/// Whether arrays `a` and `b` are equal, where that needs no look at their
+/// elements one by one: of different lengths, or stored alike in bytes.
+/// `None`: compared element by element (`ops::equal`).
+pub fn equal_flat(a: W, b: W) -> Option<bool> {
     let (n, la, lb) = (len(a), layout(a), layout(b));
     if n != len(b) {
-        return Ok(false);
+        return Some(false);
     }
     if la == lb && la != Words {
         let w = la.width();
-        return Ok(unsafe { std::slice::from_raw_parts(data(a), n * w) == std::slice::from_raw_parts(data(b), n * w) });
+        return Some(unsafe { std::slice::from_raw_parts(data(a), n * w) == std::slice::from_raw_parts(data(b), n * w) });
     }
-    for i in 0..n {
-        let (x, y) = (get(a, i), get(b, i));
-        let e = eq(x, y);
-        drop_w(x);
-        drop_w(y);
-        if !e? {
-            return Ok(false);
-        }
-    }
-    Ok(true)
+    None
 }
 
 /// A type argument's word for an element type: its layout.
