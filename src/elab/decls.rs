@@ -2728,7 +2728,7 @@ impl Elab {
             match &p.kind {
                 ast::PatKind::Var(n) => {
                     let v = self.eval(cx, &t);
-                    cx.define(n, ty, v, Mult::Zero);
+                    cx.define_by(n, ty, v, Mult::Zero, t.clone());
                     out.push(t);
                 }
                 _ => {

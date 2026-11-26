@@ -3022,7 +3022,7 @@ impl Elab {
         let mult = self.named_mult(cx, name, &ty, span, declared);
         let v = self.eval(cx, &t);
         let tyt = quote(&self.g, cx.lvl(), &ty);
-        let l = cx.define(name, ty, v, mult);
+        let l = cx.define_by(name, ty, v, mult, t.clone());
         if name != "_" {
             self.bound_at(cx, l, span);
         }
@@ -3181,7 +3181,7 @@ impl Elab {
         let mult = self.named_mult(cx, &name, &ty, pat.span, Mult::Many);
         let v = self.eval(cx, &t);
         let tyt = quote(&self.g, cx.lvl(), &ty);
-        cx.define(&name, ty, v, mult);
+        cx.define_by(&name, ty, v, mult, t.clone());
         let body = match &pat.kind {
             ast::PatKind::Var(_) | ast::PatKind::Wild => self.block_from(cx, rest, result, expected, tail),
             _ => {
