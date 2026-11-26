@@ -1516,7 +1516,7 @@ impl Elab {
                     None if !self.local_names.contains_key(n) => {
                         let mut e = Diagnostic::error("E0204", format!("unknown name `{n}`"), h.span).with_label("not found");
                         if let Some(m) = self.private_in_imports(n) {
-                            e = e.with_help(Self::private_help(&m, n));
+                            e = self.private_help(e, &self.cur, &m, n);
                         }
                         self.err(e);
                         return None;

@@ -298,7 +298,7 @@ impl Elab {
                             it.span,
                         );
                         if self.declares_privately(&path, &it.name) {
-                            d = d.with_help(Self::private_help(&path, &it.name));
+                            d = self.private_help(d, name, &path, &it.name);
                         }
                         self.err(d);
                         continue;
@@ -390,9 +390,44 @@ impl Elab {
         })
     }
 
-    /// The `help:` for a name `module` declares without exporting.
-    pub fn private_help(module: &str, name: &str) -> String {
-        format!("`{module}` declares `{name}` but doesn't export it; mark it `export` there to use it here")
+    /// Explain on `d` that `module` declares `name` without exporting it,
+    /// for a use in module `from`. Within one package, a `help:` names the
+    /// change to `module` that would allow the use; another package's
+    /// private names get a `note:` instead, since the fix isn't the user's
+    /// to make (the standard library, a dependency).
+    pub fn private_help(&self, d: Diagnostic, from: &str, module: &str, name: &str) -> Diagnostic {
+        let same_package = self.package_of(from) == self.package_of(module);
+        // A constructor has no `export` of its own: it is visible exactly
+        // when its type is exported and not `abstract`.
+        let ctor_ty = match self.modules.get(module).and_then(|m| m.values.get(name)) {
+            Some(Sym::Con(c)) => Some(&self.g.tys[self.g.cons[c.0 as usize].ty.0 as usize]),
+            _ => None,
+        };
+        let ty_exported = |t: &TyInfo| self.modules[module].exported_types.contains(&*t.name);
+        let abstract_ty = ctor_ty.filter(|t| t.is_abstract && ty_exported(t)).map(|t| t.name.to_string());
+        // A constructor of a type that isn't exported, named apart from it
+        // (a record's constructor shares its type's name).
+        let private_ty = ctor_ty.filter(|t| !ty_exported(t) && *t.name != *name);
+        match (same_package, abstract_ty) {
+            (true, Some(ty)) => d.with_help(format!(
+                "`{ty}` is `export abstract` in `{module}`, so its constructors are private; drop `abstract` there to use them here"
+            )),
+            (true, None) => match private_ty {
+                Some(t) if t.is_abstract => d.with_help(format!(
+                    "`{module}` declares `{}` but doesn't export it; mark it `export` without `abstract` there to use its constructor `{name}` here",
+                    t.name
+                )),
+                Some(t) => d.with_help(format!(
+                    "`{module}` declares `{}` but doesn't export it; mark it `export` there to use its constructor `{name}` here",
+                    t.name
+                )),
+                None => d.with_help(format!(
+                    "`{module}` declares `{name}` but doesn't export it; mark it `export` there to use it here"
+                )),
+            },
+            (false, Some(ty)) => d.with_note(format!("`{ty}` is abstract: its values come only from `{module}`'s functions")),
+            (false, None) => d.with_note(format!("`{name}` is private to `{module}`")),
+        }
     }
 
     pub fn resolve_qualified(&self, module: &str, name: &str, type_pos: bool) -> Option<Sym> {
