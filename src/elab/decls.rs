@@ -2511,6 +2511,7 @@ impl Elab {
         if checks {
             self.class_call_obligations();
             self.alias_dict_obligations();
+            self.distinct_cown_obligations();
         }
         self.resolve_insts();
     }
