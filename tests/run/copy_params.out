@@ -1,0 +1,9 @@
+-- stdout
+2
+apple
+[1, 5]
+1
+3
+-- stderr
+checkers runtime: 0 objects live at exit
+-- exit 0

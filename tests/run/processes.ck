@@ -37,9 +37,9 @@ export partial fn main args sys -> code : args~List String, sys~System, code~Exi
     match proc.spawn "sh" ["-c", "read x; echo got $x; echo to stderr >&2"] (Streams Pipe Pipe Inherit) p
         Ok (Spawned child to from ()) ->
             let (_, to) = files.write_line "hello" to
-            files.close to
+            let _ = files.close to
             let (got, from) = files.read_rest from
-            files.close from
+            let _ = files.close from
             terminal.print_line (debug got ++ ", " ++ debug (proc.wait child)) term
         Err e                         -> terminal.print_line (files.describe e) term
     # Output discarded; only the exit code.

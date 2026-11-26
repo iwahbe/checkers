@@ -24,7 +24,7 @@ fn twice f -> r : f~(Unit -> Unit), r~Unit
 # `File`; at `Many` it is `Unit -> Unit`.
 fn each s -> k : s~Shape, k~(handle s -> Unit)
     match s
-        One  -> \f -> files.close f
+        One  -> \f -> close f
         Many -> \u -> u
 
 check twice (each Many) == ()
@@ -37,16 +37,21 @@ check apply 3 (\n -> n * n) == 9
 
 fn close_both f g -> r : f~File, g~File, r~Unit
     apply f $ \h ->
-        files.close h
-        files.close g
+        close h
+        close g
 
 fn close_twice f -> r : f~File, r~Unit
     apply f $ \h ->
-        files.close h
-        files.close h
+        close h
+        close h
 
 fn on_int f -> r : f~(v~own Int -> Int), r~Int
     f 1
 
 fn on_file f -> r : f~(v~own File -> Unit), r~Unit
+    ()
+
+# Close `f`, whatever closing gives.
+fn close f : f~File
+    let _ = files.close f
     ()

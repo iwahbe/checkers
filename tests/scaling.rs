@@ -1,15 +1,21 @@
 //! Checking takes time in proportion to the program: a chain of n operators
 //! (`1 + 1 + … + 1`) is a tree n deep, and work done again at each level for
-//! everything below it makes the time grow with n².
+//! everything below it makes the time grow with n². And a literal in the
+//! program doesn't make checking slower than the work its types need.
 
 use std::path::Path;
 use std::process::Command;
 
 /// The types and checks phases' time, in milliseconds, for `check <expr> == n`.
 fn check_time(dir: &Path, name: &str, term: &str, op: &str, n: usize, wrap: fn(String) -> String) -> f64 {
-    let file = dir.join(format!("{name}.ck"));
     let chain = vec![term; n].join(&format!(" {op} "));
-    std::fs::write(&file, format!("module {name}\n\ncheck {} == {n}\n", wrap(chain))).unwrap();
+    source_time(dir, name, &format!("module {name}\n\ncheck {} == {n}\n", wrap(chain)))
+}
+
+/// The types and checks phases' time, in milliseconds, for module `name`.
+fn source_time(dir: &Path, name: &str, source: &str) -> f64 {
+    let file = dir.join(format!("{name}.ck"));
+    std::fs::write(&file, source).unwrap();
     // The fastest of a few runs: the least disturbed by other tests.
     (0..3)
         .map(|_| {
@@ -54,6 +60,54 @@ fn a_chain_of_additions_checks_in_linear_time() {
 #[test]
 fn a_chain_of_concatenations_checks_in_linear_time() {
     assert_linear("concat", "\"a\"", "++", |c| format!("len ({c})"));
+}
+
+/// A recursive function building a list of `n` in an accumulator: running
+/// it takes n steps, each with the list so far.
+const BUILD: &str = "fn build n acc -> r : n~Nat, acc~List Nat, r~List Nat
+    decreasing n
+    if n == 0 then acc else build (n - 1) (0 :: acc)
+
+";
+
+/// Checking `source(name, n)` for a `large` literal may take at most `factor`
+/// times as long as for a `small` one (time below 20 ms doesn't count).
+fn assert_literal_costs(name: &str, small: usize, large: usize, factor: f64, source: fn(&str, usize) -> String) {
+    let dir = std::env::temp_dir().join(format!("checkers-scaling-{}-{name}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let time = |n: usize| source_time(&dir, &format!("{name}{n}"), &source(&format!("{name}{n}"), n));
+    let (t_small, t_large) = (time(small), time(large));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        t_large < factor * t_small.max(20.0),
+        "{name}: {small} took {t_small:.0} ms, {large} took {t_large:.0} ms"
+    );
+}
+
+/// A type that needs a call's value: checking runs the call, each step
+/// taking the same time however long the list built so far. Four times the
+/// steps may take at most eight times as long: quadratic work takes sixteen.
+#[test]
+fn running_a_call_while_checking_takes_linear_time() {
+    assert_literal_costs("by_type", 2000, 8000, 8.0, |name, n| {
+        format!(
+            "module {name}\n\n{BUILD}fn pick xs -> t : xs~List Nat, t~Type\n    match xs\n        []     -> Bool\n        _ :: _ -> Nat\n\n\
+             export fn by_type -> v : v~pick (build {n} [])\n    0\n"
+        )
+    });
+}
+
+/// A field of a call's result, where no type needs the call's value:
+/// checking doesn't run it, so the literal doesn't change the time. (Running
+/// it would stop at the unfolding limit, still many times as long.)
+#[test]
+fn reading_a_field_of_a_call_does_not_run_it() {
+    assert_literal_costs("by_field", 2000, 2_000_000, 3.0, |name, n| {
+        format!(
+            "module {name}\n\nrecord Box\n    value~Nat\n\n{BUILD}fn wrap xs -> r : xs~List Nat, r~Box\n    match xs\n        []     -> Box 0\n        _ :: _ -> Box 1\n\n\
+             export fn by_field -> v : v~Nat\n    (wrap (build {n} [])).value\n"
+        )
+    });
 }
 
 /// The peak resident memory, in KB, of `ckc check` on `check <chain> == n`:

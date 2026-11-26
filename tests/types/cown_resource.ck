@@ -25,5 +25,10 @@ fn state f s -> a : f~File, s~Sched, a~Actor (Option File)
 
 # Plain state is fine; the resource is used by its one owner.
 fn counts f s -> c : f~File, s~Sched, c~Cown Nat
-    files.close f
+    close f
     cown.new 0 s
+
+# Close `f`, whatever closing gives.
+fn close f : f~File
+    let _ = files.close f
+    ()

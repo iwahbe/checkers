@@ -1,0 +1,19 @@
+error[E0294]: `Same` needs `a == b`, but here `a` is `Int` and `b` is `Bool`
+  --> type_eq_in_type_wanted.ck:11:20
+   |
+11 | fn differ -> r : r~Same Int Bool
+   |                    ^^^^^^^^^^^^^
+
+error[E0294]: `Same` needs `a == b`, but here `a` is `Int` and `b` is `Bool`
+  --> type_eq_in_type_wanted.ck:12:5
+   |
+12 |     Same 1 True
+   |     ^^^^^^^^^^^
+
+error[E0294]: `Same` needs `a == b`, but here `a` is `Int` and `b` is `Bool`
+  --> type_eq_in_type_wanted.ck:15:5
+   |
+15 |     (Same x True).first
+   |     ^^^^^^^^^^^^^
+
+type_eq_in_type_wanted.ck: 3 errors, 0 warnings

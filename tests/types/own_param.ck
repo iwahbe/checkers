@@ -14,13 +14,13 @@ fn twice_owned x -> p : x~own a, p~(a, a)
     (x, x)
 
 fn generic_without_own f : f~File
-    files.close (keep f)
+    close (keep f)
 
 fn generic_with_own f : f~File
-    files.close (keep_owned f)
+    close (keep_owned f)
 
 fn implied f : f~own File
-    files.close f
+    close f
 
 fn pointless n -> m : n~own Nat, m~Nat
     n
@@ -30,4 +30,9 @@ fn call_once k f : k~(File -> Unit), f~File
     k f
 
 fn closer f : f~File
-    call_once files.close f
+    call_once close f
+
+# Close `f`, whatever closing gives.
+fn close f : f~File
+    let _ = files.close f
+    ()

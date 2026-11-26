@@ -1,0 +1,22 @@
+error[E0246]: this pattern has 2 parts, but `()` has none
+ --> tuple_pattern_on_unit.ck:6:9
+  |
+6 |         (_, _) -> 0
+  |         ^^^^^^
+  = help: match `()` with the pattern `()`, or `_`
+
+error[E0246]: this pattern has 3 parts, but `()` has none
+ --> tuple_pattern_on_unit.ck:9:9
+  |
+9 |     let (a, b, c) = u
+  |         ^^^^^^^^^
+  = help: match `()` with the pattern `()`, or `_`
+
+error[E0246]: this pattern has 3 parts, but `(Int, Unit)` has 2
+  --> tuple_pattern_on_unit.ck:14:9
+   |
+14 |     let (a, b, c) = p
+   |         ^^^^^^^^^
+   = help: take it apart into 2 parts, or fewer: the last part is then the rest
+
+tuple_pattern_on_unit.ck: 3 errors, 0 warnings

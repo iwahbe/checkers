@@ -1,0 +1,22 @@
+error[E0221]: module `std.list` has no export named `reverse_onto`
+ --> private_std.ck:6:18
+  |
+6 | import std.list (reverse_onto)
+  |                  ^^^^^^^^^^^^
+  = note: `reverse_onto` is private to `std.list`
+
+error[E0204]: unknown name `reverse_onto`
+ --> private_std.ck:9:7
+  |
+9 | check reverse_onto [1] [] == [1]
+  |       ^^^^^^^^^^^^ not found
+  = note: `reverse_onto` is private to `std.list`
+
+error[E0206]: module `std.list` has no export named `reverse_onto`
+  --> private_std.ck:10:12
+   |
+10 | check list.reverse_onto [1] [] == [1]
+   |            ^^^^^^^^^^^^
+   = note: `reverse_onto` is private to `std.list`
+
+private_std.ck: 3 errors, 0 warnings

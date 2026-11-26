@@ -1,0 +1,8 @@
+error[E0284]: no instance of `Count` for `Pluses` and `Nat`
+  --> type_eq_class_param.ck:42:5
+   |
+42 |     Count.count [1, 2] Pluses
+   |     ^^^^^^^^^^^ needs `Count Pluses Nat`
+   = help: declare `instance Count …` for these types, beside the class or the first type
+
+type_eq_class_param.ck: 1 error, 0 warnings

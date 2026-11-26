@@ -1,0 +1,15 @@
+warning[W022]: this arm never runs: `Truth` builds an `Expr Bool`, and this is an `Expr Int`
+  --> type_eq_gadt_cases.ck:30:9
+   |
+30 |         Truth _ -> 0
+   |         ^^^^^^^ this case can't occur
+
+error[E0240]: this `match` does not cover `If _ _ _`
+  --> type_eq_gadt_cases.ck:34:5
+   |
+34 |     match e
+   |     ^^^^^^^ not exhaustive
+   = note: counterexample: e = If (Lit 0) (Lit 0) (Lit 0)
+   = help: add an arm `If _ _ _ -> …`, or a catch-all `_ -> …`
+
+type_eq_gadt_cases.ck: 1 error, 1 warning

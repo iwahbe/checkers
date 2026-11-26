@@ -1,8 +1,12 @@
-error[E0450]: cannot prove `match r None -> True Some y -> size y < size xs`, the postcondition of `Peel Int.peel`
+error[E0450]: cannot prove `match r …`, the postcondition of `Peel Int.peel`
  --> class_post_match_fails.ck:9:23
   |
 9 |                       match r
   |                       ^^^^^^^ promised here
+  = note: `match r …` in full:
+              match r
+                  None   -> True
+                  Some y -> size y < size xs
   = note: for the value returned on line 17: `Some xs`
   = note: facts in scope: `not (xs <= 0)`
   = note: counterexample: xs = 1

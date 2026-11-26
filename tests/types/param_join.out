@@ -1,0 +1,22 @@
+error[E0450]: cannot prove `r <= 4`, the postcondition of `wider`
+  --> param_join.ck:47:17
+   |
+47 | fn wider c n -> r : c~Nat, n~Nat, r~(r~Nat, r <= 4)
+   |                 ^ promised here
+   = note: for the value returned on line 50: `s`
+   = note: counterexample: c = 0, n = 5
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+error[E0201]: type mismatch: expected `String`, found `Nat`
+  --> param_join.ck:54:5
+   |
+54 |     pick m "four"
+   |     ^^^^^^^^^^^^^ this expression has type `Nat`
+
+error[E0201]: type mismatch: expected `Nat`, found `String`
+  --> param_join.ck:54:12
+   |
+54 |     pick m "four"
+   |            ^^^^^^ this expression has type `String`
+
+param_join.ck: 3 errors, 0 warnings

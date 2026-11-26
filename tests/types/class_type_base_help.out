@@ -1,0 +1,8 @@
+error[E0210]: `<` needs numbers (`Nat` or `Int`) to compare, but this is `Encoding.Unit s`
+ --> class_type_base_help.ck:7:25
+  |
+7 |     type Unit : u~Unit, u < 256
+  |                         ^^^^^^^ has type `Encoding.Unit s`
+  = help: `Unit` has no operations of its own: give it a base type, as in `type Unit : u~Int, u < 256`, or reach its values through one of the class's functions, as in `code s u < 256`
+
+class_type_base_help.ck: 1 error, 0 warnings

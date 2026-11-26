@@ -1,0 +1,16 @@
+error[E0261]: this `check` stopped with a runtime error
+  --> stack_overflow.ck:10:7
+   |
+10 | check deep 100000000 == 0
+   |       ^^^^^^^^^^^^^^^^^^^ evaluating this failed
+   = note: runtime error: stack overflow
+
+error[E0260]: this `check` is false
+  --> stack_overflow.ck:11:7
+   |
+11 | check deep 3 == 1
+   |       ^^^^^^^^^^^ evaluates to `False`
+   = note: left side:  `0`
+   = note: right side: `1`
+
+stack_overflow.ck: 2 errors, 0 warnings

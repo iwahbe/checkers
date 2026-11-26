@@ -19,10 +19,10 @@ export partial fn main args sys -> code : args~List String, sys~System, code~Exi
                         Ok _          -> Success
                         Err (path, e) -> fail path e term
                 (Ok input, Err e)     ->
-                    files.close input                       # must close what was opened
+                    let _ = files.close input               # must close what was opened
                     fail dst e term
                 (Err e, Ok output)    ->
-                    files.close output
+                    let _ = files.close output
                     fail src e term
                 (Err e, Err _)        -> fail src e term
         _          ->
@@ -41,20 +41,22 @@ partial fn copy_blocks src input dst output -> r : src~String, input~File, dst~S
     match block
         Ok b  ->
             if len b == 0
-                files.close input
-                files.close output
-                Ok ()
+                let _ = files.close input
+                # Closing writes out the last of the copy: it can fail too.
+                match files.close output
+                    Ok _  -> Ok ()
+                    Err e -> Err (dst, e)
             else
                 let (written, output) = files.write_bytes b output
                 match written
                     Ok _  -> copy_blocks src input dst output
                     Err e ->
-                        files.close input
-                        files.close output
+                        let _ = files.close input
+                        let _ = files.close output
                         Err (dst, e)
         Err e ->
-            files.close input
-            files.close output
+            let _ = files.close input
+            let _ = files.close output
             Err (src, e)
 
 fn fail path e term -> code : path~String, e~IoError, term~Term, code~ExitCode
