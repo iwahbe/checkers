@@ -229,7 +229,10 @@ fn index xs -> r : xs~Bytes, r~Int
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { term } = sys
-    let xs = input 120000 []
+    # Unknown when compiling (`none` is 0), so the work is done when the
+    # program runs, not when it is compiled (§8.9).
+    let none = len args - len args
+    let xs = input (none + 120000) []
     let v = match args
         ["mono"]  -> mono xs
         ["index"] -> index xs

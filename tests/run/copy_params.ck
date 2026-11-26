@@ -23,9 +23,12 @@ fn pick f -> r : f~(Int -> Int), r~Int
     f 3
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
-    terminal.print_line (debug (lo 4 2)) sys.term
-    terminal.print_line (lo "pear" "apple") sys.term
-    terminal.print_line (debug (lo [2, 1] [1, 5])) sys.term
-    terminal.print_line (debug (plus_nothing 1)) sys.term
+    # Known only when the program runs (`n` is 0), or computed when compiling.
+    let n = len args
+    let (pear, apple) = if n == 0 then ("pear", "apple") else ("", "")
+    terminal.print_line (debug (lo (n + 4) (n + 2))) sys.term
+    terminal.print_line (lo pear apple) sys.term
+    terminal.print_line (debug (lo [n + 2, 1] [1, 5])) sys.term
+    terminal.print_line (debug (plus_nothing (n + 1))) sys.term
     terminal.print_line (debug (pick (lo 5))) sys.term
     Success

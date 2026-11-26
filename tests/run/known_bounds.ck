@@ -68,14 +68,18 @@ fn line n sys : n~Int, sys~System
     terminal.print_line (debug n) sys.term
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
-    line (by_call 4294967295 4294967295) sys
-    line (by_literal 4294967295 0) sys
-    line (by_name 999 999) sys
-    line (by_number 0 999) sys
-    line (call_std 255 0) sys
-    line (call_own 0 255) sys
-    line (call_module 255 1) sys
-    line (by_bytes 255 255) sys
-    line (with_name 255) sys
-    line (with_number 0) sys
+    # Known only when the program runs (`n` is 0), each within its bounds
+    # by a remainder, or the calls would be computed when compiling.
+    let n = len args
+    let (w32, w0) = ((n + 4294967295) % 4294967296, n % 4294967296)
+    line (by_call w32 w32) sys
+    line (by_literal w32 w0) sys
+    line (by_name ((n + 999) % 1000) ((n + 999) % 1000)) sys
+    line (by_number (n % 1000) ((n + 999) % 1000)) sys
+    line (call_std (n + 255) n) sys
+    line (call_own n (n + 255)) sys
+    line (call_module (n + 255) (n + 1)) sys
+    line (by_bytes ((n + 255) % 256) ((n + 255) % 256)) sys
+    line (with_name ((n + 255) % 256)) sys
+    line (with_number (n % 256)) sys
     Success

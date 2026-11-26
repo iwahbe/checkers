@@ -5,6 +5,7 @@
 
 pub mod codegen;
 pub mod eval;
+pub mod fold;
 pub mod inline;
 pub mod ir;
 pub mod lower;
@@ -299,6 +300,13 @@ fn dump(e: &lower::E, d: usize) -> String {
 /// Compile in memory and run `main` (`checkers run`): the exit code.
 pub fn run(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId, args: &[String], threads: usize) -> i32 {
     let p = prepare(g, staged, main, host_return_words());
+    // The check (§8.9): a compiler bug, and the program doesn't run.
+    if !p.residual.is_empty() {
+        for r in &p.residual {
+            eprintln!("{r}");
+        }
+        return 101;
+    }
     let desc = descriptor(g, &p);
     let module = jit_module();
     let mut gen = codegen::Gen::new(module, p, g);
@@ -335,6 +343,9 @@ pub fn object(
     isa: std::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>,
 ) -> Result<Vec<u8>, String> {
     let p = prepare(g, staged, main, codegen::return_words(&*isa));
+    if !p.residual.is_empty() {
+        return Err(p.residual.join("\n"));
+    }
     let desc = descriptor(g, &p);
     let ob = cranelift_object::ObjectBuilder::new(isa, "checkers_program", cranelift_module::default_libcall_names())
         .map_err(|e| e.to_string())?;
@@ -459,7 +470,9 @@ mod tests {
                 out.dedup();
                 out
             };
-            assert_eq!(arity("lo"), [2]);
+            // `lo`'s copies for a dictionary take its two values; the copy for
+            // `lo 5 3` in `pick`'s copy (both known, §8.9) keeps one.
+            assert_eq!(arity("lo"), [2, 1]);
             assert_eq!(arity("nothing"), [1]);
         })
     }
@@ -542,6 +555,21 @@ mod tests {
         let found: Vec<&(String, String)> = code.iter().filter(|(n, _)| n == f).collect();
         assert_eq!(found.len(), 1, "functions named `{f}`");
         &found[0].1
+    }
+
+    /// Known parts of code are computed when compiling (§8.9,
+    /// tests/run/folded.ck): `x < LIMIT * 2` compiles as `x < 2097152`, and
+    /// `scale 3 x` calls a copy of `scale` for `3` whose code is `by_hand`'s,
+    /// the general `scale` not being compiled at all.
+    #[test]
+    fn known_parts_are_computed() {
+        crate::with_big_stack(|| {
+            for (triple, _) in MACHINES {
+                let code = machine_code("folded", triple);
+                assert_eq!(code_of(&code, "under"), code_of(&code, "under_number"), "{triple}");
+                assert_eq!(code_of(&code, "scale"), code_of(&code, "by_hand"), "{triple}");
+            }
+        })
     }
 
     /// Code put into a function from another (`at`: a small function

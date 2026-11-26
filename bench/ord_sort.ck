@@ -65,7 +65,10 @@ fn isort_list xs -> r : xs~List (List Int), r~List (List Int)
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { term } = sys
-    let xs = numbers 4000 1 []
+    # Unknown when compiling (`none` is 0), so the work is done when the
+    # program runs, not when it is compiled (§8.9).
+    let none = len args - len args
+    let xs = numbers (none + 4000) 1 []
     let ls = digit_lists xs
     let (a, b) = match args
         ["mono"] -> (isort_int xs, isort_list ls)

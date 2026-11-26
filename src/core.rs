@@ -377,6 +377,11 @@ pub struct Globals {
     /// Constants' values known at compile time (§8.9), for code generation:
     /// set once the program is proved, as `bounds` is (`Elab::known_value`).
     pub known: RefCell<HashMap<DefId, Lit>>,
+    /// Whether native code's calls on static data are computed when
+    /// compiling (§8.9), and within how much work: set once the program
+    /// is proved (its calls meet their preconditions), not with
+    /// `--unverified`.
+    pub fold_work: std::cell::Cell<Option<u64>>,
     /// The base types of classes' types that have one (#360), by their
     /// field of the dictionary: closed types.
     pub type_bases: HashMap<(ConId, usize), Vec<Tm>>,
@@ -442,6 +447,7 @@ impl Globals {
             value_params: RefCell::new(HashMap::new()),
             bounds: HashMap::new(),
             known: RefCell::new(HashMap::new()),
+            fold_work: std::cell::Cell::new(None),
             type_bases: HashMap::new(),
         }
     }

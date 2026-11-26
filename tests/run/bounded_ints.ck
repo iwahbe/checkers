@@ -3,7 +3,9 @@ module bounded_ints
 # Integers whose types bound them, at the edges of those bounds: sums,
 # differences, quotients and products that fit in a word, and products of
 # `I32`s that reach 2^62, one past the largest integer a word holds inline.
-# Each function is too big to be inlined into its caller.
+# Each function is too big to be inlined into its caller, and is given
+# values known only when the program runs (`n` is 0), each within its
+# bounds by a remainder, or the calls would be computed when compiling.
 
 import std.system (System, ExitCode)
 import std.string (debug)
@@ -28,17 +30,21 @@ fn line n sys : n~Int, sys~System
     terminal.print_line (debug n) sys.term
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
-    line (add_bytes 0 0 0 0) sys
-    line (add_bytes 255 255 255 255) sys
-    line (spread 0 0) sys
-    line (spread 999 (-999)) sys
-    line (halves 65535 1) sys
-    line (halves 65535 65535) sys
-    line (halves 65534 65535) sys
-    line (halves 0 7) sys
-    line (take 65535 255) sys
-    line (take 256 0) sys
-    line (product 2147483647 2147483647) sys
-    line (product (-2147483648) (-2147483648)) sys
-    line (product (-2147483648) 2147483647) sys
+    let n = len args
+    let (b0, b255) = (n % 256, (n + 255) % 256)
+    line (add_bytes b0 b0 b0 b0) sys
+    line (add_bytes b255 b255 b255 b255) sys
+    line (spread (n % 1000) (-(n % 1000))) sys
+    line (spread ((n + 999) % 1000) (-((n + 999) % 1000))) sys
+    let (w65535, w65534, w0) = ((n + 65535) % 65536, (n + 65534) % 65536, n % 65536)
+    line (halves w65535 (1 + n % 65535)) sys
+    line (halves w65535 (1 + (n + 65534) % 65535)) sys
+    line (halves w65534 (1 + (n + 65534) % 65535)) sys
+    line (halves w0 (1 + (n + 6) % 65535)) sys
+    line (take (256 + (n + 65279) % 65280) b255) sys
+    line (take (256 + n % 65280) b0) sys
+    let (top, bottom) = ((n + 2147483647) % 2147483648, -((n + 2147483648) % 2147483649))
+    line (product top top) sys
+    line (product bottom bottom) sys
+    line (product bottom top) sys
     Success

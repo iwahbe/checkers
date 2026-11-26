@@ -35,7 +35,9 @@ fn line s term : s~String, term~Term
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let term = sys.term
-    line (debug (by_six 1)) term
-    line (debug (by_seven 1)) term
-    line (debug (by_eight 1)) term
+    # Known only when the program runs, or computed when compiling.
+    let n = len args + 1
+    line (debug (by_six n)) term
+    line (debug (by_seven n)) term
+    line (debug (by_eight n)) term
     Success

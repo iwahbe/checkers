@@ -18,6 +18,8 @@ use std::sync::Arc;
 
 pub struct Evaluator<'g> {
     g: &'g Globals,
+    /// The staged definitions it may run (`for_folding`).
+    staged: Option<&'g crate::stage::Staged>,
     gen: Gen<'g, JITModule>,
     /// This program's descriptor and `Debug` instances: its own, as other
     /// programs are evaluated at the same time on other threads. Each call
@@ -48,7 +50,42 @@ impl<'g> Evaluator<'g> {
         let invoke = gen.m.get_finalized_function(gen.invoke);
         let invoke: checkers_rt::prog::Invoke = unsafe { std::mem::transmute(invoke) };
         let prog = checkers_rt::prog::make(&super::descriptor(g, &gen.p), invoke);
-        Evaluator { g, gen, prog }
+        Evaluator { g, staged: None, gen, prog }
+    }
+
+    /// An evaluator for a program's own code as native code compiles it
+    /// (`fold`, §8.9): its staged definitions, and the copies the program
+    /// makes (`mirror`), with the same numbers; it makes none of its own.
+    pub fn for_folding(g: &'g Globals, staged: Option<&'g crate::stage::Staged>) -> Evaluator<'g> {
+        let module = super::jit_module();
+        let mut gen = Gen::new(module, Program::new(g, staged), g);
+        gen.probe = true;
+        gen.define_new();
+        gen.m.finalize_definitions().expect("finish native code");
+        let invoke = gen.m.get_finalized_function(gen.invoke);
+        let invoke: checkers_rt::prog::Invoke = unsafe { std::mem::transmute(invoke) };
+        let prog = checkers_rt::prog::make(&super::descriptor(g, &gen.p), invoke);
+        gen.p.specs.borrow_mut().frozen = true;
+        let mut ev = Evaluator { g, staged, gen, prog };
+        // The program's hand-written `Debug` instances (#126), as when it
+        // runs: a value shown when compiling is shown as it would be then.
+        if let Some(ir) = super::lower::show_table(g) {
+            if let Ok(fs) = ev.eval_ir(&ir) {
+                ev.within(|| checkers_rt::prog::set_debug(fs));
+            }
+        }
+        ev
+    }
+
+    /// Take on the copies `specs` has made since the last call.
+    pub fn mirror(&mut self, specs: &super::spec::Specs) {
+        self.gen.p.specs.borrow_mut().mirror(specs);
+    }
+
+    /// Closed code's value, stopping after `work` function entries and
+    /// loop iterations: an owned word, or the runtime error.
+    pub fn eval_ir_limited(&mut self, ir: &super::ir::Ir, work: u64) -> Result<W, String> {
+        self.run(ir, work)
     }
 
     /// `f`, calling into the runtime for this program.
@@ -75,7 +112,7 @@ impl<'g> Evaluator<'g> {
     }
 
     fn run(&mut self, ir: &super::ir::Ir, work: u64) -> Result<W, String> {
-        let f = Lowerer::new(self.g, None, &mut self.gen.p).add_closed_ir(ir);
+        let f = Lowerer::new(self.g, self.staged, &mut self.gen.p).add_closed_ir(ir);
         super::rc_new(self.g, &mut self.gen.p);
         self.gen.define_new();
         self.gen.m.finalize_definitions().map_err(|e| format!("compiling: {e}"))?;

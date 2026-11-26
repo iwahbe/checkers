@@ -385,16 +385,24 @@ pub struct Program {
     /// code is compiled for returns in registers. This machine's, unless
     /// set before reference counting.
     pub max_parts: usize,
+    /// Whether its code is folded (§8.9, `fold`): a program's, not code
+    /// compiled to run when compiling.
+    pub fold: bool,
+    /// Operations on static data alone left to run unkept, which the
+    /// check reports as compiler bugs (`CHECKERS_RESIDUAL_CHECK=1`).
+    pub residual: Vec<String>,
 }
 
 /// Code with no definition (a `check`, a value staging computes).
 pub const NO_OWNER: u32 = u32::MAX;
 
 /// Adds to a `Program`.
-pub struct Lowerer<'a, 'g> {
+pub struct Lowerer<'a, 'g: 'a> {
     g: &'g Globals,
     staged: Option<&'a crate::stage::Staged>,
     p: &'a mut Program,
+    /// Folds the program's code (`Program::fold`), made when first needed.
+    folder: Option<crate::native::fold::Folder<'a>>,
     // Per function being lowered:
     next: u32,
     owner: u32,
@@ -441,6 +449,8 @@ impl Program {
             borrowed: HashMap::new(),
             entries: HashMap::new(),
             max_parts: crate::native::host_return_words(),
+            fold: false,
+            residual: Vec::new(),
         }
     }
 }
@@ -482,6 +492,8 @@ pub fn debug_table(g: &Globals) -> Option<Tm> {
 /// The whole program reachable from `main`.
 pub fn lower(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId) -> Program {
     let mut p = Program::new(g, staged);
+    p.fold = !crate::native::fold::off();
+    p.specs.borrow_mut().for_values = true;
     Lowerer::new(g, staged, &mut p).add_defs(&[main.0]);
     p.main = main.0;
     if let Some(ir) = show_table(g) {
@@ -492,7 +504,7 @@ pub fn lower(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId) ->
 
 impl<'a, 'g> Lowerer<'a, 'g> {
     pub fn new(g: &'g Globals, staged: Option<&'a crate::stage::Staged>, p: &'a mut Program) -> Self {
-        Lowerer { g, staged, p, next: 0, owner: 0 }
+        Lowerer { g, staged, p, folder: None, next: 0, owner: 0 }
     }
 
     /// Lower `roots` and every definition they reach that isn't lowered yet.
@@ -684,7 +696,46 @@ impl Lowerer<'_, '_> {
     /// Definition `d`'s code, with small functions inlined (`inline`).
     fn inline_def(&mut self, d: u32) -> Ir {
         let ir = self.inliner(|i| i.definition(d)).expect("a definition with code");
+        let ir = self.fold(d, ir);
         self.float_in(&ir)
+    }
+
+    /// Definition `d`'s code folded (§8.9), if the program's code is; with
+    /// `CHECKERS_RESIDUAL_CHECK=1`, each operation on static data alone it
+    /// leaves to run and didn't keep reported in `Program::residual`.
+    fn fold(&mut self, d: u32, ir: Arc<Ir>) -> Arc<Ir> {
+        if !self.p.fold {
+            if crate::native::fold::checking() {
+                self.check_residual(d, &ir, &[]);
+            }
+            return ir;
+        }
+        let (g, staged) = (self.g, self.staged);
+        let folder = self.folder.get_or_insert_with(|| crate::native::fold::Folder::new(g, staged));
+        let out = folder.fold_def(&ir, &self.p.specs.borrow());
+        let kept = std::mem::take(&mut folder.kept);
+        let name = self.p.names[self.p.specs.borrow().origin(d) as usize].clone();
+        if std::env::var_os("CHECKERS_NATIVE_DUMP").is_some() {
+            for (node, why) in &kept {
+                eprintln!("kept in {name}: {}: {}", crate::native::fold::describe(g, node), why.why());
+            }
+        }
+        if crate::native::fold::checking() {
+            self.check_residual(d, &out, &kept);
+        }
+        out
+    }
+
+    fn check_residual(&mut self, d: u32, ir: &Ir, kept: &[(Arc<Ir>, crate::native::fold::Kept)]) {
+        let name = self.p.names[self.p.specs.borrow().origin(d) as usize].clone();
+        let mut found = Vec::new();
+        crate::native::fold::residuals(ir, kept, &mut found);
+        for node in found {
+            self.p.residual.push(format!(
+                "internal error: `{name}` leaves {} to run, though every value it needs is known when compiling",
+                crate::native::fold::describe(self.g, node)
+            ));
+        }
     }
 
     fn inliner<T>(&mut self, f: impl FnOnce(&mut crate::native::inline::Inliner) -> T) -> T {

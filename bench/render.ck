@@ -23,6 +23,9 @@ fn lengths k acc -> n : k~Nat, acc~Nat, n~Nat
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { term } = sys
-    let n = lengths 1000000 0
+    # Unknown when compiling (`none` is 0), so the work is done when the
+    # program runs, not when it is compiled (§8.9).
+    let none = len args - len args
+    let n = lengths (none + 1000000) 0
     terminal.print_line format"bytes {n}" term
     Success

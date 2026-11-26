@@ -1047,6 +1047,9 @@ fn ready_to_run(
                 info.body.is_some() && !info.opaque && !matches!(info.ty, core::Tm::Pi(..)) && e.type_range(&core::eval(&e.g, &std::rc::Rc::new(Vec::new()), &info.ty)).is_some()
             })
             .collect();
+        // Calls on static data in native code are computed when compiling
+        // too (§8.9), with the same limit.
+        e.g.fold_work.set(Some(if release { u64::MAX } else { elab::CODEGEN_WORK }));
         for d in consts {
             let work = if release { u64::MAX } else { elab::CODEGEN_WORK };
             if let Some(l) = e.known_value_within(&core::Tm::Def(d), work) {

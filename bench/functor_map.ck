@@ -74,8 +74,11 @@ fn bump_list xs k -> r : xs~List Int, k~Nat, r~List Int
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { term } = sys
-    let t = tree 16
-    let xs = numbers 100000 []
+    # Unknown when compiling (`none` is 0), so the work is done when the
+    # program runs, not when it is compiled (§8.9).
+    let none = len args - len args
+    let t = tree (none + 16)
+    let xs = numbers (none + 100000) []
     let (a, b) = match args
         ["mono"] -> (tree_sum (bump_tree t 40), list_sum (bump_list xs 40) 0)
         _        -> (tree_sum (bump t 40), list_sum (bump xs 40) 0)
