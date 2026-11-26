@@ -1,0 +1,5 @@
+-- stdout
+b"\x01\x02"
+b"\x04\x05"
+-- stderr
+-- exit 0

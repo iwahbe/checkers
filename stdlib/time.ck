@@ -1,6 +1,7 @@
 # time.ck — readings of a monotonic clock, and durations (SPEC §8.2).
 module std.time
 
+import std.math
 import std.system (Clock)
 import std.string (Display, display, Digits)
 
@@ -159,20 +160,15 @@ fn smallest us u -> r : us~List Unit, u~Unit, r~Bool
 # still more than the last place.
 fn decimal n m -> s : n~Nat, m~Nat, m > 0, s~String
     let k = places m
-    let scaled = n * pow10 k / m
-    let whole = scaled / pow10 k
-    let (frac, k) = trim (scaled % pow10 k) k
+    let scaled = n * math.pow 10 k / m
+    let whole = scaled / math.pow 10 k
+    let (frac, k) = trim (scaled % math.pow 10 k) k
     if k == 0 then display whole [] else display whole [] ++ "." ++ display frac [Digits k]
 
 # The fewest places `k` with `10^k >= m`.
 fn places m -> k : m~Nat, k~Nat
     decreasing m
     if m <= 1 then 0 else 1 + places ((m + 9) / 10)
-
-# `10^k`.
-fn pow10 k -> p : k~Nat, p~Nat, p >= 1
-    decreasing k
-    if k == 0 then 1 else 10 * pow10 (k - 1)
 
 # `f` with `k` places, without the zeros at its end.
 fn trim f k -> r : f~Nat, k~Nat, r~(Nat, Nat)

@@ -391,17 +391,25 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+/// The stack compile-time evaluation runs on, guard included.
+pub const EVAL_STACK: usize = 1 << 30;
+
+/// What compile-time evaluation reports when it runs out of stack.
+pub const STACK_OVERFLOW: &str = "runtime error: stack overflow";
+
 /// Run compiled code for the compiler (a `check`, a value staging needs):
-/// on a thread of its own with a large stack. A runtime error doesn't exit
-/// the process: it comes back as `Err` with the message `checkers run`
-/// would print, and that thread stays parked.
+/// on a thread of its own, on a fiber with a large stack. A runtime error
+/// doesn't exit the process: it comes back as `Err` with the message
+/// `checkers run` would print, and that thread stays parked. Running out
+/// of stack comes back as `Err` too (`fiber::recoverable`).
 pub fn eval_trapped(f: impl FnOnce() -> W + Send + 'static) -> Result<W, String> {
     let (tx, rx) = std::sync::mpsc::channel();
     let tx2 = tx.clone();
-    let spawned = std::thread::Builder::new().stack_size(1 << 30).spawn(move || {
+    let spawned = std::thread::Builder::new().spawn(move || {
+        crate::overflow::thread_init();
         TRAP.with(|t| *t.borrow_mut() = Some(tx2.clone()));
-        let w = f();
-        let _ = tx2.send(Ok(w));
+        let r = crate::fiber::recoverable(EVAL_STACK, f).ok_or_else(|| STACK_OVERFLOW.to_string());
+        let _ = tx2.send(r);
     });
     if let Err(e) = spawned {
         return Err(format!("could not start evaluation: {e}"));

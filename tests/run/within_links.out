@@ -1,0 +1,42 @@
+-- stdout
+setup: ok
+relative: Permission denied (outside the directory this capability allows)
+absolute: Permission denied (outside the directory this capability allows)
+through: Permission denied (outside the directory this capability allows)
+nested: Permission denied (outside the directory this capability allows)
+dotdot: Permission denied (outside the directory this capability allows)
+chain: Permission denied (outside the directory this capability allows)
+loop: Too many levels of symbolic links
+open relative/secret.txt: Permission denied (outside the directory this capability allows)
+create relative/made.txt: Permission denied (outside the directory this capability allows)
+create dangling: Permission denied (outside the directory this capability allows)
+write dangling: Permission denied (outside the directory this capability allows)
+list relative: Permission denied (outside the directory this capability allows)
+create_dirs relative/new: Permission denied (outside the directory this capability allows)
+create_dirs sub/nested/new: Permission denied (outside the directory this capability allows)
+within relative: Permission denied (outside the directory this capability allows)
+within ..: Permission denied (outside the directory this capability allows)
+within missing: No such file or directory
+a path with ..: Permission denied (outside the directory this capability allows)
+outside/made.txt: No such file or directory
+outside/new: No such file or directory
+to_sub: b"inside\n"
+to_file: b"inside\n"
+up: b"inside\n"
+absolute_in: b"inside\n"
+around: b"inside\n"
+within to_sub: b"inside\n"
+list to_sub: ok
+write to_new: ok
+sub/nothing.txt: b"new"
+create_dirs to_sub/a/b: ok
+list sub/a/b: ok
+open to_sub/inside.txt: ok
+create to_sub/created.txt: ok
+later, before: No such file or directory
+create_dirs later: ok
+write later/x: ok
+later, after: b"x"
+cleanup: ok
+-- stderr
+-- exit 0

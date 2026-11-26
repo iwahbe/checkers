@@ -93,12 +93,14 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0285` | which instance to use can't be decided: the type isn't known there |
 | `E0286` | an instance for a type of the wrong kind |
 | `E0287` | a class's dictionary built other than by an instance |
-| `E0288` | a class's type whose default mentions the class's parameter |
 | `E0289` | `forall` outside a named precondition or a lemma's `ensures`, or in a negative place |
 | `E0290` | `have` with the wrong number of values for a `forall`'s variables |
 | `E0291` | a class's type (`C.Name`) without the types it is for |
 | `E0292` | an instance without a type for each of its class's parameters |
 | `E0293` | a value shown by a type that isn't known when the program is compiled (it depends on a value known only when the program runs, or holds a field computed from a ghost field) |
+| `E0294` | a type equation a use doesn't meet (`first_byte` needs `Seq.Elem s == U8`, but `s` is `String`), a constructor that builds another type than expected, or a type written with arguments its header's equation doesn't hold of |
+| `E0295` | a type equation that makes a type contain itself (`t == List t`) |
+| `E0296` | a type equation that mentions the result: it can only be assumed, not promised |
 
 ## Termination
 
@@ -117,7 +119,7 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0352` | a constructor field without a type |
 | `E0353` | a constructor's constraint gives a type to a name that isn't its field |
 | `E0354` | a type occurring negatively in its own constructors, or a recursive type as the argument of a type constructor parameter |
-| `E0355` | a constraint gives a type to a name that isn't a parameter or the result |
+| `E0355` | a constraint gives a type to a name that isn't a parameter or the result (a type's header: one of its parameters) |
 | `E0356` | `__builtin` outside the standard library |
 | `E0357` | a lemma's `let` binding more than a name |
 | `E0358` | `own` on a type that can't be a resource |
@@ -158,6 +160,7 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0454` | `have` of a lemma without all its arguments |
 | `E0455` | a release build of a program that relies on an `admit` |
 | `E0456` | a class used at a refinement alias, whose instance (the type the alias stands for) isn't shown to give values of the alias: a result, or a value it passes to a function parameter |
+| `E0457` | conditions that can never all hold: a function's or lemma's preconditions, a type's conditions on its parameters, a constructor's invariants, an alias's predicates, the predicates on a class's type |
 
 ## Warnings
 

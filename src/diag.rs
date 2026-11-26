@@ -95,8 +95,10 @@ impl Diagnostic {
             out += &format!(" {label}");
         }
         out += "\n";
+        // A note's further lines (a predicate in full) line up after `note: `.
+        let more = format!("\n{pad}         ");
         for n in &self.notes {
-            out += &format!("{pad} = note: {n}\n");
+            out += &format!("{pad} = note: {}\n", n.replace('\n', &more));
         }
         if let Some(help) = &self.help {
             out += &format!("{pad} = help: {help}\n");

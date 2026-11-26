@@ -84,6 +84,10 @@ impl Elab {
         // A value checked against a refinement alias must satisfy it (D71),
         // unless the call it is passed to, or the function returning it,
         // already checks that alias, or its branches did.
+        // A class's type with a base type (#360): only its own values.
+        if !covered && !compound && !matches!(t, Tm::Error) {
+            self.check_based(cx, expected, inferred.as_ref(), e.span);
+        }
         if !covered && !returned && !compound && !matches!(t, Tm::Error) {
             if let Some((d, args)) = self.refined_alias(expected) {
                 let already = inferred.as_ref().and_then(|ty| self.refined_alias(ty)).is_some_and(|(d2, _)| d2 == d);
@@ -115,8 +119,15 @@ impl Elab {
             return mt;
         }
         // A name where a type is expected is the type, not a record's
-        // constructor of the same name (`String`, #170).
-        if matches!(exp, Val::Univ(_)) && matches!(e.kind, ExprKind::Con(_)) && !cx.type_pos {
+        // constructor of the same name (`String`, #170), applied too
+        // (`Box b`): no constructor builds a type.
+        if matches!(exp, Val::Univ(_)) && !cx.type_pos && {
+            let mut h = e;
+            while let ExprKind::App(f, _) = &h.kind {
+                h = f;
+            }
+            matches!(h.kind, ExprKind::Con(_))
+        } {
             cx.type_pos = true;
             let t = self.check_inner(cx, e, expected, tail);
             cx.type_pos = false;
@@ -270,7 +281,7 @@ impl Elab {
                 self.list_tm(cx, &elem, ts)
             }
             (ExprKind::Tuple(items), Val::TupleTy(tys)) if items.len() == tys.len() => {
-                let ts = items.iter().zip(tys.clone()).map(|(it, t)| self.check(cx, it, &t, false)).collect();
+                let ts = items.iter().zip(tys.iter().cloned()).map(|(it, t)| self.check(cx, it, &t, false)).collect();
                 Tm::Tuple(ts)
             }
             (ExprKind::Tuple(items), Val::Univ(_)) => {
@@ -412,7 +423,7 @@ impl Elab {
                 None => {
                     let mut d = Diagnostic::error("E0204", format!("unknown name `{n}`"), e.span).with_label("not found");
                     if let Some(m) = self.private_in_imports(n) {
-                        d = d.with_help(Self::private_help(&m, n));
+                        d = self.private_help(d, &self.cur, &m, n);
                     }
                     self.err(d);
                     (Tm::Error, Val::Error)
@@ -437,17 +448,27 @@ impl Elab {
                 if tys.iter().all(|t| matches!(self.force(t), Val::Univ(_))) {
                     (Tm::TupleTy(ts), Val::Univ(0))
                 } else {
-                    (Tm::Tuple(ts), Val::TupleTy(tys))
+                    (Tm::Tuple(ts), Val::TupleTy(tys.into()))
                 }
             }
             ExprKind::List(items) => {
-                let elem = if let Some(first) = items.first() {
-                    let (_, ty) = self.infer(cx, first);
-                    ty
-                } else {
-                    self.fresh_meta_val(cx)
+                // The elements decide the element type together: each is
+                // checked against an unknown of its own, and the element type
+                // is their join, whatever their order.
+                let elem = self.fresh_meta_val(cx);
+                let joined: Vec<MetaId> = match &elem {
+                    Val::Neutral(Head::Meta(m), _) => vec![*m],
+                    _ => Vec::new(),
                 };
-                let ts: Vec<Tm> = items.iter().map(|it| self.check(cx, it, &elem, false)).collect();
+                let mut ts = Vec::new();
+                let mut joins = Vec::new();
+                for it in items {
+                    let (own, metas) = self.own_unknowns(cx, &elem, &joined);
+                    let t = self.check(cx, it, &own, false);
+                    joins.push(JoinArg { span: it.span, dom: elem.clone(), own, tm: t.clone(), metas });
+                    ts.push(t);
+                }
+                self.join_args(cx, &joined, joins);
                 let t = self.list_tm(cx, &elem, ts);
                 (t, self.ty_val(self.g.well_known.list, vec![elem]))
             }
@@ -735,7 +756,7 @@ impl Elab {
                 } else {
                     let mut d = Diagnostic::error("E0204", format!("unknown name `{n}`"), span).with_label("not found");
                     if let Some(m) = self.private_in_imports(n) {
-                        d = d.with_help(Self::private_help(&m, n));
+                        d = self.private_help(d, &self.cur, &m, n);
                     } else if let Some(h) = self.std_export_help(n) {
                         d = d.with_help(h);
                     }
@@ -814,6 +835,7 @@ impl Elab {
                 let n = self.number(s);
                 let mv = self.fresh_meta_val(cx);
                 self.deferred.push(Deferred {
+                    givens: self.givens.clone(),
                     ty: mv.clone(),
                     kind: OpClass::Numeric,
                     span,
@@ -924,6 +946,7 @@ impl Elab {
                 if let Some(Sym::Len) = self.resolve(n, false) {
                     let (at, aty) = self.infer(cx, args[0]);
                     self.deferred.push(Deferred {
+                        givens: self.givens.clone(),
                         ty: aty,
                         kind: OpClass::HasLen,
                         span: args[0].span,
@@ -950,6 +973,7 @@ impl Elab {
                 self.use_ctx = Some(args.first().and_then(|a| self.part_of(cx, a)).map(|(j, c)| vec![(j, c)]).unwrap_or_default());
             }
         }
+        let meta_start = self.g.metas.borrow().len();
         let (ft, fty) = self.infer(cx, head);
         // Where an implicit argument after an explicit one (#161) is shown.
         let head_name_span = self.name_span;
@@ -1028,6 +1052,9 @@ impl Elab {
                 return (Tm::Error, Val::Error);
             }
         }
+        // Type parameters several arguments decide together.
+        let joined = self.joined_params(cx, &fty, &args, &ready, meta_start);
+        let mut joins = Vec::new();
         let mut t = ft;
         let mut ty = fty;
         let head_text = self.src_text(head.span);
@@ -1058,13 +1085,31 @@ impl Elab {
                     self.use_ctx = Some(ctx);
                 }
             }
+            // An argument deciding a type parameter with others: checked
+            // against its own unknown for it, joined with theirs below.
+            let mut join = None;
+            if !joined.is_empty() && !ready.contains_key(&k) {
+                (t, ty) = self.insert(cx, t, ty);
+                if let Val::Pi(_, _, Icit::Expl, dom, _) = self.force(&ty) {
+                    let dom = expected.clone().unwrap_or((*dom).clone());
+                    let (own, metas) = self.own_unknowns(cx, &dom, &joined);
+                    if !metas.is_empty() {
+                        expected = Some(own.clone());
+                        join = Some((dom, own, metas));
+                    }
+                }
+            }
             self.name_span = head_name_span;
             let (t2, ty2) = self.apply_one_as(cx, t, ty, a, expected, elem, ready.remove(&k));
+            if let (Some((dom, own, metas)), Tm::App(_, at, Icit::Expl, _)) = (join, &t2) {
+                joins.push(JoinArg { span: a.span, dom, own, tm: (**at).clone(), metas });
+            }
             self.use_ctx = None;
             self.map_elem_sub = None;
             t = t2;
             ty = ty2;
         }
+        self.join_args(cx, &joined, joins);
         self.arg_of = saved_arg_of;
         self.name_span = head_name_span;
         let (t, ty) = self.insert(cx, t, ty);
@@ -1083,6 +1128,145 @@ impl Elab {
             return (Tm::Error, Val::Error);
         }
         (t, ty)
+    }
+
+    /// The type parameters of this call (unknowns made since `start`) that
+    /// two or more of its arguments decide: those whose parameters' types
+    /// mention them outside a function type. One that a function type
+    /// mentions is left to be decided in order, as before.
+    fn joined_params(&self, cx: &Cx, ty: &Val, args: &[&Expr], ready: &HashMap<usize, (Tm, Val)>, start: usize) -> Vec<MetaId> {
+        let mut count: Vec<(MetaId, usize)> = Vec::new();
+        let mut in_fn: Vec<MetaId> = Vec::new();
+        let mut r = ty.clone();
+        for k in 0..args.len() {
+            let Val::Pi(_, _, Icit::Expl, dom, c) = self.force(&r) else { break };
+            let q = quote(&self.g, cx.lvl() + k, &dom);
+            let mut ms = Vec::new();
+            metas_in(&q, &mut ms);
+            ms.retain(|m| {
+                m.0 as usize >= start
+                    && self.g.meta(*m).is_none()
+                    && self.g.meta_origins.borrow().get(m).is_some_and(|o| o.is_type && o.arity == 0)
+            });
+            if has_pi(&q) {
+                in_fn.extend(ms);
+            } else if !ready.contains_key(&k) {
+                for m in ms {
+                    match count.iter_mut().find(|(x, _)| *x == m) {
+                        Some((_, n)) => *n += 1,
+                        None => count.push((m, 1)),
+                    }
+                }
+            }
+            r = apply_closure(&self.g, &c, Val::var(cx.lvl() + k));
+        }
+        count.into_iter().filter(|(m, n)| *n >= 2 && !in_fn.contains(m)).map(|(m, _)| m).collect()
+    }
+
+    /// `dom` with each of the unknowns `joined` it mentions, still unsolved,
+    /// replaced by a fresh one: the type a value deciding them with others
+    /// is checked against, and the pairs replaced.
+    pub fn own_unknowns(&mut self, cx: &Cx, dom: &Val, joined: &[MetaId]) -> (Val, Vec<(MetaId, MetaId)>) {
+        let mut q = quote(&self.g, cx.lvl(), dom);
+        let mut pairs = Vec::new();
+        for &m in joined {
+            if self.g.meta(m).is_some() || meta_app(&q, m).is_none() {
+                continue;
+            }
+            let fresh = self.g.fresh_meta();
+            let origin = self.g.meta_origins.borrow().get(&m).cloned();
+            if let Some(o) = origin {
+                self.g.meta_origins.borrow_mut().insert(fresh, o);
+            }
+            q = rename_meta(&q, m, fresh);
+            pairs.push((m, fresh));
+        }
+        if pairs.is_empty() {
+            return (dom.clone(), pairs);
+        }
+        (self.eval(cx, &q), pairs)
+    }
+
+    /// Decide the type parameters `joined` from the values checked against
+    /// their own unknowns for them (`own_unknowns`): each is the join of
+    /// what the values gave it (numbers' ranges joined, D135), so no value
+    /// decides it before the others. Each value is then checked against its
+    /// parameter's type, as it would have been against it directly.
+    pub fn join_args(&mut self, cx: &Cx, joined: &[MetaId], args: Vec<JoinArg>) {
+        if args.is_empty() {
+            return;
+        }
+        for &m in joined {
+            if self.g.meta(m).is_some() {
+                continue;
+            }
+            let mut found: Option<Val> = None;
+            let mut constants = Vec::new();
+            let mut target = None;
+            for a in &args {
+                let Some(&(_, own)) = a.metas.iter().find(|(x, _)| *x == m) else { continue };
+                let q = quote(&self.g, cx.lvl(), &a.dom);
+                let Some(app) = meta_app(&q, m) else { continue };
+                let v = self.eval(cx, &rename_meta(&app, m, own));
+                if target.is_none() {
+                    target = Some(self.eval(cx, &app));
+                }
+                let v = force_meta(&self.g, v);
+                if matches!(v, Val::Neutral(Head::Meta(_), _)) {
+                    // A number whose type isn't decided yet: its value's
+                    // range, as for a branch (D135), once another value
+                    // decides it is a number.
+                    if let Some(n) = super::interval::constant(&a.tm).filter(|_| matches!(q.head(), Tm::Meta(x) if *x == m)) {
+                        constants.push(n);
+                    }
+                    continue;
+                }
+                found = Some(match found {
+                    None => v,
+                    Some(j) => self.join_types(&j, &v),
+                });
+            }
+            if let Some(j) = &mut found {
+                for n in constants {
+                    let c = self.range_type(super::interval::Range::exact(n));
+                    *j = self.join_types(j, &c);
+                }
+            }
+            if let (Some(t), Some(j)) = (target, found) {
+                let _ = unify(&self.g, cx.lvl(), &t, &j);
+            }
+        }
+        for a in args {
+            // What the value gave its own type, before an unknown one is
+            // solved to its parameter's below.
+            let before = self.peel(&a.own);
+            if !self.unify_at(cx, &a.dom, &a.own, a.span, "this expression") {
+                continue;
+            }
+            if let Some(g) = self.refined_mismatch(cx, &a.dom, &a.own, a.span) {
+                self.report_gained(cx, &a.dom, &a.own, &g, a.span, "this expression");
+                continue;
+            }
+            // A class's type with a base type (#360): only its own values.
+            if crate::core::class_type_base(&self.g, &a.dom).is_some() {
+                self.check_based(cx, &a.dom, Some(&a.own), a.span);
+                continue;
+            }
+            // A refinement the value's own type doesn't already give it
+            // (D71): as `check` asks of a value checked against it.
+            if let Some((d, dargs)) = self.refined_alias(&a.dom) {
+                let already = self.refined_alias(&before).is_some_and(|(d2, _)| d2 == d);
+                let within = self.is_range(&a.dom)
+                    && match (self.type_range(&a.dom), self.type_range(&before)) {
+                        (Some(j), Some(r)) => j.holds(r),
+                        _ => false,
+                    };
+                if !already && !within {
+                    let v = self.eval(cx, &a.tm);
+                    self.refined_obligation(cx, d, dargs, v, a.span);
+                }
+            }
+        }
     }
 
     /// A call of a function with `comptime` parameters (D59): it must be
@@ -1153,6 +1337,8 @@ impl Elab {
                 // Only what is needed: most calls have no measure to compare
                 // and no precondition, and evaluating their arguments for
                 // nothing was much of the time this took.
+                // Its type equations (#209), at this call's types.
+                self.want_call_teqs(cx, *d, t, &args, span);
                 let Some(spec) = self.specs.get(d) else { return };
                 let (n, measured, pres) = (spec.n_binders, spec.measure.is_some(), spec.preds.iter().any(|p| !p.is_post));
                 if args.len() >= n {
@@ -1188,6 +1374,16 @@ impl Elab {
                 self.pre_obligations(cx, *d, &name, &args, t, span);
             }
             Tm::TyCon(tid) => {
+                // Its type equations (#209), outside a signature (which
+                // asks them of its result's type only).
+                if self.ty_cond_defer.is_none() && args.len() >= self.g.tys[tid.0 as usize].params.len() {
+                    if let Some(teqs) = self.ty_teqs.get(tid).cloned() {
+                        let env: Vec<Val> = args.iter().map(|a| self.eval(cx, a)).collect();
+                        for q in teqs {
+                            self.want_type_teq(cx, *tid, &env, &q, span);
+                        }
+                    }
+                }
                 // Wherever a type is applied, its conditions on its
                 // parameters must hold (#136).
                 if !self.ty_conds.contains_key(tid) || args.len() < self.g.tys[tid.0 as usize].params.len() {
@@ -1201,6 +1397,7 @@ impl Elab {
                 self.oblige_ty_conds(cx, span, *tid, env);
             }
             Tm::Con(c) => {
+                self.want_con_teqs(cx, *c, &args, span);
                 let Some(invs) = self.con_invs.get(c).cloned() else { return };
                 if args.len() < self.g.arity_con(*c) {
                     return;
@@ -2441,6 +2638,7 @@ impl Elab {
                 };
                 if let Some(kind) = class {
                     self.deferred.push(Deferred {
+                        givens: self.givens.clone(),
                         ty: lty.clone(),
                         kind,
                         span: operands,
@@ -2459,6 +2657,7 @@ impl Elab {
                 // Compiled code never compares functions (D125).
                 if matches!(op, Op::EqEq | Op::Ne) && self.in_spec == 0 && self.in_proof == 0 {
                     self.deferred.push(Deferred {
+                        givens: self.givens.clone(),
                         ty: lty.clone(),
                         kind: OpClass::Comparable,
                         span: operands,
@@ -2588,7 +2787,7 @@ impl Elab {
                                 name.span,
                             );
                             if self.declares_privately(&m, &name.name) {
-                                d = d.with_help(Self::private_help(&m, &name.name));
+                                d = self.private_help(d, &self.cur, &m, &name.name);
                             }
                             self.err(d);
                             (Tm::Error, Val::Error)
@@ -2637,7 +2836,7 @@ impl Elab {
                 let xv = self.eval(cx, &xt);
                 // Each field's type, in the context of the parameters and the
                 // fields before it.
-                let mut env: Vec<Val> = params;
+                let mut env: Vec<Val> = params.to_vec();
                 let mut ftys = Vec::new();
                 for (j, f) in fields.iter().enumerate() {
                     ftys.push(eval(&self.g, &Rc::new(env.clone()), &f.3));
@@ -2883,9 +3082,9 @@ impl Elab {
         let it_val = self.eval(cx, &it);
         let l = cx.bind(&okv, payload_ty, Mult::Many);
         // On this path the value was `Ok x` / `Some x` (§7.1).
-        let mut ok_args: Vec<Val> = payload.clone();
+        let mut ok_args: Vec<Val> = payload.to_vec();
         ok_args.push(Val::var(l));
-        cx.assume(Self::prim_val(Prim::Eq, vec![it_val, Val::Con(ok_con, ok_args)]));
+        cx.assume(Self::prim_val(Prim::Eq, vec![it_val, Val::Con(ok_con, ok_args.into())]));
         let ok_body = match &pat.kind {
             ast::PatKind::Var(_) | ast::PatKind::Wild => {
                 let pty = cx.locals[cx.lvl() - 1].ty.clone();
@@ -2913,14 +3112,14 @@ impl Elab {
             let it_val = self.eval(cx, &it);
             if is_result {
                 let l = cx.bind("$err", payload[1].clone(), Mult::Many);
-                let mut args = payload.clone();
+                let mut args = payload.to_vec();
                 args.push(Val::var(l));
-                cx.assume(Self::prim_val(Prim::Eq, vec![it_val, Val::Con(err_con, args)]));
+                cx.assume(Self::prim_val(Prim::Eq, vec![it_val, Val::Con(err_con, args.into())]));
                 let v = self.eval(cx, &err_body);
                 self.oblige_posts_at(cx, v, span);
                 cx.pop();
             } else {
-                cx.assume(Self::prim_val(Prim::Eq, vec![it_val, Val::Con(err_con, vec![payload[0].clone()])]));
+                cx.assume(Self::prim_val(Prim::Eq, vec![it_val, Val::Con(err_con, vec![payload[0].clone()].into())]));
                 let v = self.eval(cx, &err_body);
                 self.oblige_posts_at(cx, v, span);
             }
@@ -3019,7 +3218,7 @@ impl Elab {
             self.post_target = Some(PostTarget { posts: Vec::new(), func: String::new(), binders: Vec::new(), invariants: invs });
         }
         // The body's type is in the outer context; shift by evaluating in the extended one.
-        let expected = if tys.len() == 1 { tys[0].clone() } else { Val::TupleTy(tys.clone()) };
+        let expected = if tys.len() == 1 { tys[0].clone() } else { Val::TupleTy(tys.clone().into()) };
         let body = self.check_block(cx, &w.body, &expected, true);
         self.post_target = None;
         cx.truncate(start);
@@ -3096,4 +3295,55 @@ fn any_forall(e: &Expr) -> Option<Span> {
     }
     go(e, &mut found);
     found
+}
+
+/// A value deciding a type parameter together with others (`join_args`):
+/// its parameter's type `dom`, the type `own` it was checked against, with
+/// its own unknowns for the parameters (`metas`: parameter, own), and the
+/// value.
+pub struct JoinArg {
+    pub span: Span,
+    pub dom: Val,
+    pub own: Val,
+    pub tm: Tm,
+    pub metas: Vec<(MetaId, MetaId)>,
+}
+
+/// The unknowns `t` mentions.
+fn metas_in(t: &Tm, out: &mut Vec<MetaId>) {
+    if let Tm::Meta(m) = t {
+        if !out.contains(m) {
+            out.push(*m);
+        }
+    }
+    t.any_sub(|s, _| {
+        metas_in(s, out);
+        false
+    });
+}
+
+/// Does `t` mention a function type?
+fn has_pi(t: &Tm) -> bool {
+    matches!(t, Tm::Pi(..)) || t.any_sub(|s, _| has_pi(s))
+}
+
+/// The first application of the unknown `m` in `t`, with its arguments.
+fn meta_app(t: &Tm, m: MetaId) -> Option<Tm> {
+    if matches!(t.head(), Tm::Meta(x) if *x == m) {
+        return Some(t.clone());
+    }
+    let mut found = None;
+    t.any_sub(|s, _| {
+        found = meta_app(s, m);
+        found.is_some()
+    });
+    found
+}
+
+/// `t` with the unknown `from` replaced by `to`.
+fn rename_meta(t: &Tm, from: MetaId, to: MetaId) -> Tm {
+    match t {
+        Tm::Meta(x) if *x == from => Tm::Meta(to),
+        _ => t.map_sub(|s, _| rename_meta(s, from, to)),
+    }
 }

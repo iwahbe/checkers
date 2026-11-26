@@ -1,0 +1,16 @@
+error[E0450]: cannot prove that every `Int` satisfies `u >= 0`, as `Two.Unit` requires
+  --> class_type_base_decl.ck:22:5
+   |
+22 |     type Unit = Int
+   |     ^^^^^^^^^^^^^^^ `Unit` is `Int` here
+   = note: counterexample: u = -1
+   = help: give `Unit` a type whose values all satisfy it
+
+error[E0372]: the value of `Unit` is given two types that don't agree: `Int` and `Bool`
+  --> class_type_base_decl.ck:27:26
+   |
+27 |     type Unit : u~Int, u~Bool
+   |                          ^^^^ it already has the type `Int`
+   = help: each typing may refine the base type, as `u~Int, u~Nat` does, but they must have one base type
+
+class_type_base_decl.ck: 2 errors, 0 warnings

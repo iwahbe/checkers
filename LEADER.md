@@ -133,8 +133,16 @@ only there.
 - That `refutes` gives a real counter-model is a theorem, with termination
   of the definitions as its hypothesis, proved beside `checks_sound` (#84,
   option B; #86).
-- Not decided yet: the conclusion of `checks_sound` (`holds` or
-  `not fails`, #84), and how `ckc` marks a definition terminating (#299).
+- From 2026-11-26 the remaining design decisions are the leader's, by the
+  rule: correctness first, then simplicity. Each is recorded on its issue,
+  and Ian can overrule it. Decided so:
+  - `checks_sound` (#84, #86): premises at the terms the certificate uses,
+    every function of the model total, conclusion `holds`; the all-values
+    statement as a corollary; `not fails` for partial models by a proved
+    monotonicity lemma.
+  - `Invalid` (#84): `refutes` is false for a context with a `lambda`.
+  - The termination mark (#299): given by the caller, never assumed by the
+    reader; nothing changes in `ckc` until #90.
 
 ## Merging into `smt`
 

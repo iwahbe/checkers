@@ -162,6 +162,90 @@ fn type_preds(constraints: &[Constraint]) -> (Option<&Ident>, Vec<&Expr>) {
     (binder, preds)
 }
 
+/// The base types of a class's type (#360): the types of its predicates'
+/// value other than the type itself (`u~Int`, `u~Nat`), which combine as a
+/// parameter's typings do.
+fn type_bases<'a>(name: &str, constraints: &'a [Constraint]) -> Vec<&'a Expr> {
+    constraints
+        .iter()
+        .filter_map(|c| match c {
+            Constraint::Typed { ty, .. } if !matches!(&ty.kind, ExprKind::Con(n) if n == name) => Some(ty),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The names `e` mentions.
+fn vars_in(e: &Expr) -> Vec<String> {
+    let out = std::cell::RefCell::new(Vec::new());
+    let see = |n: &str, _: Span| {
+        out.borrow_mut().push(n.to_string());
+        None
+    };
+    let none = |_: &str, _: Span| None;
+    let nq = |_: &str, _: &str, _: Span| None;
+    Rewrite { var: &see, con: &none, qualified: &nq }.expr(e, &[]);
+    out.into_inner()
+}
+
+/// A class's type whose base types reach it again, through the class's
+/// other types' base types (E0370): the type, and the path.
+fn base_cycle(members: &[ClassMember], cparams: &[String]) -> Option<(String, Vec<String>, Span)> {
+    let tnames = type_names(members);
+    let edges: Vec<(String, Vec<String>, Span)> = members
+        .iter()
+        .filter_map(|m| match m {
+            ClassMember::Type { name, constraints, .. } => {
+                let bs = type_bases(&name.name, constraints);
+                let span = bs.first().map(|b| b.span)?;
+                let mut to: Vec<String> = Vec::new();
+                for b in bs {
+                    for n in vars_and_cons_in(b) {
+                        if tnames.contains(&n) && !cparams.contains(&n) && !to.contains(&n) {
+                            to.push(n);
+                        }
+                    }
+                }
+                Some((name.name.clone(), to, span))
+            }
+            _ => None,
+        })
+        .collect();
+    for (start, _, span) in &edges {
+        // Depth-first from `start`, back to it.
+        let mut stack = vec![(start.clone(), vec![start.clone()])];
+        let mut seen: Vec<String> = Vec::new();
+        while let Some((n, path)) = stack.pop() {
+            let Some((_, to, _)) = edges.iter().find(|(m, _, _)| *m == n) else { continue };
+            for t in to {
+                if t == start {
+                    return Some((start.clone(), path.clone(), *span));
+                }
+                if !seen.contains(t) {
+                    seen.push(t.clone());
+                    let mut p = path.clone();
+                    p.push(t.clone());
+                    stack.push((t.clone(), p));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The names (variables and constructors) `e` mentions.
+fn vars_and_cons_in(e: &Expr) -> Vec<String> {
+    let out = std::cell::RefCell::new(Vec::new());
+    let see = |n: &str, _: Span| {
+        out.borrow_mut().push(n.to_string());
+        None
+    };
+    let nq = |_: &str, _: &str, _: Span| None;
+    Rewrite { var: &see, con: &see, qualified: &nq }.expr(e, &[]);
+    out.into_inner()
+}
+
+
 /// An instance's dictionary's field holding a dictionary for one of its
 /// class's types (#176): found as an implicit argument is.
 pub const FIND_DICT: &str = "$find_dict";
@@ -550,6 +634,48 @@ fn pat_binds(p: &Pattern, out: &mut Vec<String>) {
 /// A rewrite of the free names of an expression: `Var`s, `Con`s and
 /// qualified names (`m.x`), respecting what lambdas, `match`, `let` and
 /// `forall` bind.
+/// A default's text (`text`, from `start`) at an instance: each of the
+/// class's parameters replaced by the instance's type (`heads`),
+/// parenthesized where it is applied or an argument (`List (Box b)`).
+fn default_text(text: &str, start: u32, e: &Expr, heads: &HashMap<String, String>) -> String {
+    fn walk(e: &Expr, arg: bool, heads: &HashMap<String, String>, out: &mut Vec<(Span, String)>) {
+        match &e.kind {
+            ExprKind::Var(n) => {
+                if let Some(h) = heads.get(n) {
+                    let simple = !h.contains(char::is_whitespace) || h.starts_with('(') && h.ends_with(')');
+                    out.push((e.span, if arg && !simple { format!("({h})") } else { h.clone() }));
+                }
+            }
+            ExprKind::App(f, x) => {
+                walk(f, true, heads, out);
+                walk(x, true, heads, out);
+            }
+            ExprKind::Arrow(a, b) => {
+                walk(a, true, heads, out);
+                walk(b, false, heads, out);
+            }
+            ExprKind::Tuple(xs) | ExprKind::List(xs) | ExprKind::Par(xs) => xs.iter().for_each(|x| walk(x, false, heads, out)),
+            _ => {}
+        }
+    }
+    let mut subs = Vec::new();
+    walk(e, false, heads, &mut subs);
+    subs.sort_by_key(|(s, _)| s.start);
+    let mut out = String::new();
+    let mut at = 0;
+    for (s, h) in subs {
+        let (a, b) = ((s.start - start) as usize, (s.end - start) as usize);
+        if a < at || b > text.len() {
+            continue;
+        }
+        out.push_str(&text[at..a]);
+        out.push_str(&h);
+        at = b;
+    }
+    out.push_str(&text[at..]);
+    out
+}
+
 struct Rewrite<'a> {
     var: &'a dyn Fn(&str, Span) -> Option<Expr>,
     con: &'a dyn Fn(&str, Span) -> Option<Expr>,
@@ -898,11 +1024,12 @@ impl Elab {
 
     /// Source text of `span` in module `m`.
     fn text_in(&self, m: &str, span: Span) -> String {
-        self.sources
-            .get(m)
-            .and_then(|f| f.text.get(span.start as usize..span.end as usize))
-            .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "))
-            .unwrap_or_default()
+        self.sources.get(m).map(|f| crate::elab::source_text(&f.text, span, false)).unwrap_or_default()
+    }
+
+    /// The text of a predicate in another module, a block keeping its lines.
+    fn expr_text_in(&self, m: &str, e: &Expr) -> String {
+        self.sources.get(m).map(|f| crate::elab::source_text(&f.text, e.span, crate::elab::has_block(e))).unwrap_or_default()
     }
 
     /// A class's constraints for an instance member in another module:
@@ -916,11 +1043,10 @@ impl Elab {
                 // A distinct span for each, within the member's.
                 let _ = k;
                 let s = self.synthetic_span(at);
-                let oe = match o {
-                    Constraint::Typed { ty, .. } => ty.span,
-                    Constraint::Pred(e) | Constraint::Named(_, e) => e.span,
+                let text = match o {
+                    Constraint::Typed { ty, .. } => self.text_in(m, ty.span),
+                    Constraint::Pred(e) | Constraint::Named(_, e) => self.expr_text_in(m, e),
                 };
-                let text = self.text_in(m, oe);
                 self.text_override.insert((self.cur.clone(), s.start, s.end), text);
                 respan_constraints(std::slice::from_ref(c), s).remove(0)
             })
@@ -1039,15 +1165,8 @@ impl Elab {
                 continue;
             }
             match mem {
-                ClassMember::Type { name: t, default, constraints: tcs, .. } => {
+                ClassMember::Type { name: t, constraints: tcs, .. } => {
                     self.class_type_constraints(t, tcs, local, &frw, &mut clause_fields);
-                    let mentioned = default.as_ref().and_then(|e| params.iter().find(|p| super::decls::mentions_free(e, &p.name)).map(|p| (e, p)));
-                    if let Some((e, param)) = mentioned {
-                        self.err(
-                            Diagnostic::error("E0288", format!("the default of `{}` can't mention the class's parameter `{}`", t.name, param.name), e.span)
-                                .with_help(format!("a default is the same type at every instance; an instance that needs `{}` gives `type {} = …` itself", param.name, t.name)),
-                        );
-                    }
                     type_fields.push(ast::Field {
                         name: ident(&assoc_field_name(&t.name), t.span),
                         mult: ast::Mult::Ghost,
@@ -1233,8 +1352,24 @@ impl Elab {
                     })
                     .collect();
                 let pinned = pinned_params(mem, &pnames);
+                // A parameter a type equation fixes from the others counts
+                // as mentioned (#209): `Seq.Elem s == t` finds `t` from `s`.
+                let mut known: Vec<String> = tys.iter().flat_map(|t| vars_in(t)).chain(pinned.iter().cloned()).collect();
+                let teqs: Vec<(&Expr, &Expr)> = cs.iter().filter_map(|c| match c {
+                    Constraint::Pred(e) => self.teq_sides(cs, e),
+                    _ => None,
+                }).collect();
+                for _ in 0..teqs.len() {
+                    for (a, b) in &teqs {
+                        for (x, y) in [(a, b), (b, a)] {
+                            if vars_in(y).iter().all(|v| known.contains(v)) {
+                                known.extend(vars_in(x));
+                            }
+                        }
+                    }
+                }
                 for p in params {
-                    if !pinned.contains(&p.name) && !tys.iter().any(|t| super::decls::mentions_free(t, &p.name)) {
+                    if !pinned.contains(&p.name) && !known.contains(&p.name) && !tys.iter().any(|t| super::decls::mentions_free(t, &p.name)) {
                         let ps: Vec<&str> = params.iter().map(|q| q.name.as_str()).collect();
                         self.err(
                             Diagnostic::error("E0368", format!("{what} `{}` doesn't mention the class's parameter `{}`", mname.name, p.name), mname.span)
@@ -1303,25 +1438,21 @@ impl Elab {
         frw: &Rewrite,
         clause_fields: &mut Vec<ast::Field>,
     ) {
-        let mut binders = 0;
+        let mut first: Option<&Ident> = None;
         for c in cs {
             match c {
-                Constraint::Typed { name, ty, .. } => {
-                    binders += 1;
-                    let own = matches!(&ty.kind, ExprKind::Con(n) if *n == t.name);
-                    if binders > 1 {
+                Constraint::Typed { name, .. } => {
+                    if first.is_some_and(|f| f.name != name.name) {
                         self.err(
                             Diagnostic::error("E0370", format!("the predicates on `{}` name one value of it", t.name), name.span)
                                 .with_label("a second name")
                                 .with_help(format!("each predicate is about any one value of `{}`: use the first name", t.name)),
                         );
-                    } else if !own {
-                        self.err(
-                            Diagnostic::error("E0370", format!("`{}` in the predicates on `{}` must have type `{}`", name.name, t.name, t.name), ty.span)
-                                .with_label(format!("expected `{}`", t.name))
-                                .with_help(format!("write `{}~{}`", name.name, t.name)),
-                        );
+                        continue;
                     }
+                    // `u~Unit` names a value; any other type is a base type
+                    // (#360), and several combine (checked once elaborated).
+                    first = Some(name);
                 }
                 Constraint::Pred(e) if is_clause_shape(e) => {
                     let ExprKind::App(f, _) = &e.kind else { continue };
@@ -1516,7 +1647,7 @@ impl Elab {
                     None if !self.local_names.contains_key(n) => {
                         let mut e = Diagnostic::error("E0204", format!("unknown name `{n}`"), h.span).with_label("not found");
                         if let Some(m) = self.private_in_imports(n) {
-                            e = e.with_help(Self::private_help(&m, n));
+                            e = self.private_help(e, &self.cur, &m, n);
                         }
                         self.err(e);
                         return None;
@@ -1767,15 +1898,30 @@ impl Elab {
             let given = given.map(|(t, _)| t);
             let t = match (given, default) {
                 (Some(t), _) => t,
-                (None, Some(dflt)) => match foreign.as_deref() {
-                    Some(m) => {
-                        let at = self.synthetic_span(header);
-                        let text = self.text_in(m, dflt.span);
+                (None, Some(dflt)) => {
+                    let module = foreign.clone().unwrap_or_else(|| self.cur.clone());
+                    let mut t = match foreign.as_deref() {
+                        Some(m) => {
+                            let at = self.synthetic_span(header);
+                            let text = self.text_in(m, dflt.span);
+                            self.text_override.insert((self.cur.clone(), at.start, at.end), text);
+                            respan(dflt, at)
+                        }
+                        None => dflt.clone(),
+                    };
+                    // The class's parameters are this instance's types,
+                    // and the default is shown with them (`List Int`).
+                    if cparams.iter().any(|p| super::decls::mentions_free(dflt, p)) {
+                        let heads: HashMap<String, String> = cparams.iter().cloned().zip(tys.iter().map(|t| self.src_text(t.span))).collect();
+                        let text = default_text(&self.text_in(&module, dflt.span), dflt.span.start, dflt, &heads);
+                        let sub = |n: &str, _s: Span| cparams.iter().position(|p| p == n).map(|k| tys[k].clone());
+                        t = Rewrite { var: &sub, con: &|_, _| None, qualified: &|_, _, _| None }.expr(&t, &[]);
+                        let at = self.synthetic_span(if foreign.is_some() { header } else { dflt.span });
                         self.text_override.insert((self.cur.clone(), at.start, at.end), text);
-                        respan(dflt, at)
+                        t.span = at;
                     }
-                    None => dflt.clone(),
-                },
+                    t
+                }
                 (None, None) => {
                     self.err(
                         Diagnostic::error("E0364", format!("`instance {text}` doesn't give `{}`", tn.name), d.span)
@@ -1993,7 +2139,7 @@ impl Elab {
                     let mut ens = brw.expr(&trw.expr(&srw.expr(&prw.expr(ensures, &[]), &[]), &[]), &[]);
                     if let Some(m) = foreign.as_deref() {
                         let at = self.synthetic_span(span);
-                        let text = self.text_in(m, ensures.span);
+                        let text = self.expr_text_in(m, ensures);
                         self.text_override.insert((self.cur.clone(), at.start, at.end), text);
                         ens = respan(&ens, at);
                     }
@@ -2028,12 +2174,28 @@ impl Elab {
             let at = &given_types.iter().find(|(n, _, _)| *n == tn.name).map(|(_, _, s)| *s).unwrap_or(header);
             let (Some(binder), preds) = type_preds(tcs) else { continue };
             let module = foreign.clone().unwrap_or_else(|| self.cur.clone());
+            // Its base type (#360): the instance's type must be it, up to
+            // refinement, with its refinement; a lemma of no statement of
+            // its own, checked first. Where it fails, the predicates aren't.
+            // At this instance: its types for the class's parameters, its
+            // types for the class's types.
+            let bases: Vec<Expr> = type_bases(&tn.name, tcs).into_iter().map(|b| respan(&trw.expr(&srw.expr(b, &[]), &[]), *at)).collect();
+            let mut checks: Vec<(String, Expr)> = Vec::new();
+            if !bases.is_empty() {
+                checks.push((format!("{text}.{}#base", tn.name), con("True", *at)));
+            }
             for (k, p) in preds.iter().enumerate() {
-                let lname = format!("{text}.{}#{k}", tn.name);
+                checks.push((format!("{text}.{}#{k}", tn.name), (*p).clone()));
+            }
+            for (lname, p) in checks {
+                let p = &p;
                 self.class_type_checks.insert(lname.clone(), (format!("{}.{}", class.name, tn.name), self.src_text(ty.span)));
+                if !bases.is_empty() {
+                    self.class_type_bases_at.insert(lname.clone(), (bases.clone(), binder.name.clone(), lname.ends_with("#base")));
+                }
                 // The class's predicate, shown at the instance's type.
                 let s = self.synthetic_span(*at);
-                let ptext = self.text_in(&module, p.span);
+                let ptext = if lname.ends_with("#base") { self.src_text(ty.span) } else { self.expr_text_in(&module, p) };
                 self.text_override.insert((self.cur.clone(), s.start, s.end), ptext);
                 let ens = respan(&trw.expr(&srw.expr(p, std::slice::from_ref(&binder.name)), std::slice::from_ref(&binder.name)), s);
                 let mut cs = ctx_preds.clone();
@@ -2183,7 +2345,7 @@ impl Elab {
             let nq = |_: &str, _: &str, _: Span| None;
             let arw = Rewrite { var: &none, con: &to_assoc, qualified: &nq };
             for (k, m) in c.members.iter().filter(|m| matches!(m, ClassMember::Type { .. })).enumerate() {
-                let ClassMember::Type { constraints, .. } = m else { continue };
+                let ClassMember::Type { name: member, constraints, .. } = m else { continue };
                 let (Some(binder), preds) = type_preds(constraints) else { continue };
                 if preds.is_empty() {
                     continue;
@@ -2197,7 +2359,7 @@ impl Elab {
                     let l = cx.bind(n, kv, Mult::Zero);
                     pvals.push(Val::var(l));
                 }
-                let d = cx.bind("$d", Val::TyCon(c.tid, pvals), Mult::Many);
+                let d = cx.bind("$d", Val::TyCon(c.tid, pvals.into()), Mult::Many);
                 // `C.Name a`, as written (its field of the dictionary in scope).
                 let tname = &tnames[k];
                 let ty = match self.assoc_defs.get(&(c.tid, tname.clone())) {
@@ -2212,19 +2374,181 @@ impl Elab {
                 };
                 cx.bind(&binder.name, ty, Mult::Many);
                 let mut out = Vec::new();
-                self.in_class_type_pred = true;
                 for p in preds {
+                    // Without a base type, an operator on its values is
+                    // E0210: both ways to say it (#360).
+                    let text = self.src_text(p.span);
+                    let via_fn = super::rename_words(&text, &[(binder.name.clone(), format!("code {} {}", c.params.join(" "), binder.name))]);
+                    self.in_class_type_pred = Some(format!(
+                        "`{t}` has no operations of its own: give it a base type, as in `type {t} : {u}~Int, {text}`, or reach its values through one of the class's functions, as in `{via_fn}`",
+                        t = member.name,
+                        u = binder.name,
+                    ));
                     let e = arw.expr(p, std::slice::from_ref(&binder.name));
                     out.push(self.elab_pred(&mut cx, &e, false));
+                    self.solve_deferred();
                 }
-                self.solve_deferred();
-                self.in_class_type_pred = false;
+                self.in_class_type_pred = None;
                 for p in &mut out {
                     p.tm = crate::core::zonk_metas(&self.g, cx.lvl(), &p.tm);
                 }
+                // Whether they can all hold (E0457).
+                let mut all = cx.clone();
+                for p in &out {
+                    let v = self.eval(&all, &p.tm);
+                    all.assume(v);
+                }
+                let conds = out.iter().map(|p| Some(p.text.clone())).collect();
+                let kind = VacuityKind::ClassType { subject: binder.name.clone() };
+                self.ask_vacuity(&all, kind, &format!("{cname}.{}", member.name), member.span, conds, None);
                 self.class_type_preds.insert((con, k), out);
             }
         }
+    }
+
+    /// Its types' base types (#360), elaborated over the class's parameters
+    /// and a dictionary (its other types are read from it). Typings of the
+    /// one value combine, as a parameter's do: they must agree (E0372). A
+    /// base type that reaches its own type is E0370.
+    /// This module's classes' types' base types, once the classes'
+    /// parameters are bound.
+    pub fn register_module_type_bases(&mut self) {
+        let mut defs: Vec<ClassDef> = self.class_defs.values().filter(|c| c.module == self.cur).cloned().collect();
+        defs.sort_by_key(|c| c.span.start);
+        for c in defs {
+            self.register_type_bases(&c);
+        }
+    }
+
+    fn register_type_bases(&mut self, c: &ClassDef) {
+        let Some(&con) = self.g.tys[c.tid.0 as usize].ctors.first() else { return };
+        if let Some((t, path, span)) = base_cycle(&c.members, &c.params) {
+            let through = if path.len() > 1 { format!(", through `{}`", path[1..].join("`, `")) } else { String::new() };
+            self.err(
+                Diagnostic::error("E0370", format!("the base type of `{t}` mentions `{t}` itself{through}"), span)
+                    .with_label("no type can be a refinement of a type built from itself")
+                    .with_help(format!("give `{t}` a base type that doesn't mention it")),
+            );
+            return;
+        }
+        let tnames = c.types();
+        let params = self.g.tys[c.tid.0 as usize].params.clone();
+        let none = |_: &str, _: Span| None;
+        let nq = |_: &str, _: &str, _: Span| None;
+        let to_field = |n: &str, s: Span| if tnames.iter().any(|t| t == n) { Some(var(&assoc_field_name(n), s)) } else { None };
+        let rw = Rewrite { var: &none, con: &to_field, qualified: &nq };
+        for (k, m) in c.members.iter().filter(|m| matches!(m, ClassMember::Type { .. })).enumerate() {
+            let ClassMember::Type { name, constraints, .. } = m else { continue };
+            let bs = type_bases(&name.name, constraints);
+            if bs.is_empty() {
+                continue;
+            }
+            // The class's parameters, a dictionary, and its types read from it.
+            let mut cx = Cx::default();
+            let mut pvals = Vec::new();
+            for (n, kind) in &params {
+                let kv = self.eval(&cx, kind);
+                let l = cx.bind(n, kv, Mult::Zero);
+                pvals.push(Val::var(l));
+            }
+            let d = cx.bind("$d", Val::TyCon(c.tid, pvals.clone().into()), Mult::Zero);
+            for tn in &tnames {
+                let Some(&acc) = self.assoc_defs.get(&(c.tid, tn.clone())) else { continue };
+                let mut v = Val::Neutral(Head::Def(acc), Rc::new(Vec::new()));
+                for p in &pvals {
+                    v = crate::core::app(&self.g, v, p.clone(), Icit::Expl);
+                }
+                v = crate::core::app(&self.g, v, Val::var(d), Icit::Impl);
+                cx.define(&assoc_field_name(tn), Val::Univ(0), v, Mult::Zero);
+            }
+            let n = params.len() + 1;
+            let mut first: Option<(Val, &Expr)> = None;
+            let mut tms = Vec::new();
+            for b in bs {
+                let t = self.elab_type(&mut cx, &rw.expr(b, &[]));
+                if matches!(t, Tm::Error) {
+                    continue;
+                }
+                let v = self.eval(&cx, &t);
+                match &first {
+                    Some((f, fe)) if unify(&self.g, cx.lvl(), f, &v).is_err() => {
+                        let u = &name.name;
+                        let (a, bt) = (self.src_text(fe.span), self.src_text(b.span));
+                        self.err(
+                            Diagnostic::error("E0372", format!("the value of `{u}` is given two types that don't agree: `{a}` and `{bt}`"), b.span)
+                                .with_label(format!("it already has the type `{a}`"))
+                                .with_help("each typing may refine the base type, as `u~Int, u~Nat` does, but they must have one base type"),
+                        );
+                        continue;
+                    }
+                    Some(_) => {}
+                    None => first = Some((v.clone(), b)),
+                }
+                tms.push(quote(&self.g, n, &v));
+            }
+            if !tms.is_empty() {
+                self.g.type_bases.insert((con, k), tms);
+            }
+        }
+    }
+
+    /// At an instance, whether its type for a class's type with a base type
+    /// (#360) is the base, up to refinement (E0201 if not, reported by the
+    /// base's own check, `own`); there, each of the base's predicates must
+    /// hold of every value of it, `x`, a local of `cx` (E0450).
+    #[allow(clippy::too_many_arguments)]
+    pub fn class_type_base_holds(&mut self, cx: &Cx, lemma: &str, bases: &[Expr], x: &str, own: bool, span: Span) -> bool {
+        let Some(l) = cx.locals.iter().rposition(|loc| loc.name.as_ref() == x) else { return false };
+        // The base types at this instance: its types for the class's
+        // parameters and for its types.
+        let mut bcx = cx.clone();
+        let n = self.diags.len();
+        let tys: Vec<Val> = bases.iter().map(|b| {
+            let t = self.elab_type(&mut bcx, b);
+            self.eval(&bcx, &t)
+        }).collect();
+        // Its errors are the class's, reported there.
+        self.diags.truncate(n);
+        let Some(base) = tys.first().cloned() else { return false };
+        let t = cx.locals[l].ty.clone();
+        let (name, given) = self.class_type_checks.get(lemma).cloned().unwrap_or_default();
+        let short = name.rsplit('.').next().unwrap_or(&name).to_string();
+        // Its values must be the base's: a refinement inside it (`List U8`)
+        // may not be dropped (`List Int`).
+        let fits = unify(&self.g, cx.lvl(), &base, &t).is_ok() && (!own || self.refined_mismatch(cx, &base, &t, span).is_none());
+        if !fits {
+            if own {
+                let b = self.show_written(cx, &base);
+                self.err(
+                    Diagnostic::error("E0201", format!("`{name}` must be `{b}`, or a refinement of it, but `{given}` is not"), span)
+                        .with_label(format!("`{short}` is `{given}` here"))
+                        .with_help(format!("give `{short}` the type `{b}`, or a refinement of it")),
+                );
+            }
+            return false;
+        }
+        if !own {
+            return true;
+        }
+        // Each base type's own refinement (`Nat`'s `n >= 0`), at the value.
+        for base in &tys {
+        let peeled = self.peel(base);
+        if let Some((alias, args)) = self.refined_alias(&peeled) {
+            let preds = self.alias_preds.get(&alias).cloned().unwrap_or_default();
+            let mut names = self.alias_param_names(cx, alias, &args);
+            if let Some(subj) = self.alias_subject.get(&alias) {
+                names.push((subj.to_string(), x.to_string()));
+            }
+            for p in &preds {
+                let mut env = args.clone();
+                env.push(Val::var(l));
+                let goal = self.inst_pred(p, env);
+                let text = super::rename_words(&p.text, &names);
+                self.oblige(cx, span, ObKind::ClassType { name: name.clone(), given: given.clone() }, text, goal, None);
+            }
+        }
+        }
+        true
     }
 
     /// A class's types (#133): for each, `C.Name`, the definition
@@ -2466,15 +2790,14 @@ impl Elab {
     /// What is known of `ty`: its type constructor and arguments.
     fn shape(&self, lvl: usize, ty: &Val) -> Shape {
         match self.force(ty) {
-            Val::TyCon(t, args) => Shape::Known(HeadKey::Ty(t), args),
+            Val::TyCon(t, args) => Shape::Known(HeadKey::Ty(t), args.to_vec()),
             // A type constructor not applied to its last argument (`List`
             // for `Functor`, M25): `\y -> T … y`.
             Val::Lam(_, _, _, c) => {
                 let y = Val::var(lvl + 1000);
                 match self.force(&apply_closure(&self.g, &c, y)) {
-                    Val::TyCon(t, mut args) if args.last().is_some_and(|a| matches!(a, Val::Neutral(Head::Var(v), sp) if *v == lvl + 1000 && sp.is_empty())) => {
-                        args.pop();
-                        Shape::Known(HeadKey::Ty(t), args)
+                    Val::TyCon(t, args) if args.last().is_some_and(|a| matches!(a, Val::Neutral(Head::Var(v), sp) if *v == lvl + 1000 && sp.is_empty())) => {
+                        Shape::Known(HeadKey::Ty(t), args[..args.len() - 1].to_vec())
                     }
                     _ => Shape::Other,
                 }
@@ -2485,8 +2808,8 @@ impl Elab {
                 match xs.len() {
                     0 => Shape::Known(HeadKey::Unit, Vec::new()),
                     1 => Shape::Other,
-                    2 => Shape::Known(HeadKey::Pair, xs),
-                    _ => Shape::Known(HeadKey::Pair, vec![xs[0].clone(), Val::TupleTy(xs[1..].to_vec())]),
+                    2 => Shape::Known(HeadKey::Pair, xs.to_vec()),
+                    _ => Shape::Known(HeadKey::Pair, vec![xs[0].clone(), Val::TupleTy(xs[1..].into())]),
                 }
             }
             Val::Neutral(Head::Meta(_), _) => Shape::Unknown,
@@ -2769,9 +3092,9 @@ impl Elab {
             }
             let head = match key {
                 None => args.remove(0),
-                Some(HeadKey::Ty(t)) if self.g.arity_ty(*t) == args.len() => Val::TyCon(*t, args),
-                Some(HeadKey::Unit) => Val::TupleTy(Vec::new()),
-                Some(HeadKey::Pair) if args.len() == 2 => Val::TupleTy(args),
+                Some(HeadKey::Ty(t)) if self.g.arity_ty(*t) == args.len() => Val::TyCon(*t, args.into()),
+                Some(HeadKey::Unit) => Val::TupleTy(Rc::new([])),
+                Some(HeadKey::Pair) if args.len() == 2 => Val::TupleTy(args.into()),
                 _ => return false,
             };
             if unify(&self.g, r.lvl, ty, &head).is_err() {
@@ -2901,7 +3224,7 @@ impl Elab {
         let any = !self.g.postponed.borrow().is_empty();
         if any {
             self.g.postponed.borrow_mut().clear();
-            self.waiting.push((lvl, expected.clone(), actual.clone(), span, names.to_vec()));
+            self.waiting.push((lvl, expected.clone(), actual.clone(), span, names.to_vec(), true));
         }
     }
 
@@ -2956,10 +3279,14 @@ impl Elab {
         let strays: Vec<(usize, Val, Val)> = self.g.postponed.borrow_mut().drain(..).collect();
         for (l, a, b) in strays {
             let names = (0..l).map(|k| Name::from(format!("#{k}"))).collect();
-            self.waiting.push((l, a, b, self.name_span, names));
+            self.waiting.push((l, a, b, self.name_span, names, false));
         }
-        for (l, a, b, span, names) in std::mem::take(&mut self.waiting) {
-            let r = unify(&self.g, l, &a, &b);
+        for (l, a, b, span, names, directed) in std::mem::take(&mut self.waiting) {
+            let mut r = unify(&self.g, l, &a, &b);
+            // Modulo the type equations in scope (#209).
+            if r.is_err() && !self.givens.is_empty() {
+                r = unify(&self.g, l, &self.rep_deep(l, &a), &self.rep_deep(l, &b));
+            }
             let again = {
                 let mut p = self.g.postponed.borrow_mut();
                 let again = !p.is_empty();
@@ -2969,7 +3296,20 @@ impl Elab {
             match r {
                 Ok(()) if again => {
                     if !last {
-                        self.waiting.push((l, a, b, span, names));
+                        self.waiting.push((l, a, b, span, names, directed));
+                    }
+                }
+                // Expected and found: which way a value may go between a
+                // class's type with a base type and others (#360), now
+                // that its dictionary is known.
+                Ok(()) if directed && (self.based_inside(&a, l) || self.based_inside(&b, l)) => {
+                    let mut cx = Cx::default();
+                    for n in &names {
+                        cx.bind(n, Val::Error, Mult::Zero);
+                    }
+                    match self.refined_mismatch(&cx, &a, &b, span) {
+                        Some(g) => self.report_gained(&cx, &a, &b, &g, span, "this expression"),
+                        None => self.check_based(&cx, &a, Some(&b), span),
                     }
                 }
                 Ok(()) => {}
@@ -2977,7 +3317,7 @@ impl Elab {
                 // own, in its members' signatures): compared again at the
                 // end of the module.
                 Err(_) if self.on_pending_dict(&quote(&self.g, l, &a)) || self.on_pending_dict(&quote(&self.g, l, &b)) => {
-                    self.waiting_late.push((l, a, b, span, names));
+                    self.waiting_late.push((l, a, b, span, names, directed));
                 }
                 Err(_) => {
                     let e = show(&self.g, &names, &self.reduce_assoc(l, &quote(&self.g, l, &a)));
@@ -3011,14 +3351,14 @@ impl Elab {
         for (l, loc) in cx.locals.iter().enumerate() {
             if let Val::TyCon(c, a) = self.force(&loc.ty) {
                 if self.class_defs.contains_key(&c) && !a.is_empty() {
-                    given.push((l, c, a));
+                    given.push((l, c, a.to_vec()));
                 }
             }
         }
         self.inst_reqs.push(InstReq {
             meta: meta.clone(),
             class: tid,
-            tys,
+            tys: tys.to_vec(),
             lvl: cx.lvl(),
             names: cx.names(),
             span,
@@ -3329,13 +3669,13 @@ impl Elab {
         match (self.force(&pt), self.force(&pb)) {
             (Val::TyCon(t1, a1), Val::TyCon(t2, a2)) if t1 == t2 && a1.len() == a2.len() => {
                 let vs = self.variance(t1);
-                a1.iter().zip(&a2).enumerate().any(|(k, (x, y))| match vs.get(k) {
+                a1.iter().zip(a2.iter()).enumerate().any(|(k, (x, y))| match vs.get(k) {
                     Some(super::refine::Variance::Co) => self.alias_differs(lvl, x, y, co, depth + 1),
                     Some(super::refine::Variance::Contra) => self.alias_differs(lvl, x, y, !co, depth + 1),
                     _ => self.alias_differs(lvl, x, y, co, depth + 1) || self.alias_differs(lvl, x, y, !co, depth + 1),
                 })
             }
-            (Val::TupleTy(x), Val::TupleTy(y)) if x.len() == y.len() => x.iter().zip(&y).any(|(x, y)| self.alias_differs(lvl, x, y, co, depth + 1)),
+            (Val::TupleTy(x), Val::TupleTy(y)) if x.len() == y.len() => x.iter().zip(y.iter()).any(|(x, y)| self.alias_differs(lvl, x, y, co, depth + 1)),
             (Val::Pi(_, _, _, a1, c1), Val::Pi(_, _, _, a2, c2)) => {
                 self.alias_differs(lvl, &a1, &a2, !co, depth + 1)
                     || self.alias_differs(lvl + 1, &apply_closure(&self.g, &c1, Val::var(lvl)), &apply_closure(&self.g, &c2, Val::var(lvl)), co, depth + 1)
@@ -3416,9 +3756,9 @@ impl Elab {
                 'ctors: for c in self.g.tys[t1.0 as usize].ctors.clone() {
                     let fields = self.g.cons[c.0 as usize].fields.clone();
                     let n = fields.len();
-                    let mut et = a1.clone();
-                    let mut eb = a2.clone();
-                    let mut ei = ai.clone();
+                    let mut et = a1.to_vec();
+                    let mut eb = a2.to_vec();
+                    let mut ei = ai.as_deref().map(<[Val]>::to_vec);
                     let mut inner = env.to_vec();
                     let mut parts = Vec::new();
                     for (i, (_, _, _, fty)) in fields.iter().enumerate() {
@@ -3778,7 +4118,7 @@ impl Elab {
         match (self.force(&pt), self.force(&pb)) {
             (Val::TyCon(t1, a1), Val::TyCon(t2, a2)) if t1 == t2 && a1.len() == a2.len() => {
                 let vs = self.variance(t1);
-                for (k, (x, y)) in a1.iter().zip(&a2).enumerate() {
+                for (k, (x, y)) in a1.iter().zip(a2.iter()).enumerate() {
                     match vs.get(k) {
                         Some(super::refine::Variance::Co) => at(self, Step::Part, x, y, co, lvl, out),
                         Some(super::refine::Variance::Contra) => at(self, Step::Other, x, y, !co, lvl, out),
@@ -3790,7 +4130,7 @@ impl Elab {
                 }
             }
             (Val::TupleTy(x), Val::TupleTy(y)) if x.len() == y.len() => {
-                for (x, y) in x.iter().zip(&y) {
+                for (x, y) in x.iter().zip(y.iter()) {
                     at(self, Step::Part, x, y, co, lvl, out);
                 }
             }
