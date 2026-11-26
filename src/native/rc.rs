@@ -668,6 +668,14 @@ pub fn closures_in(e: &E, values: &mut Vec<u32>, closures: &mut Vec<u32>) {
     match e {
         E::Global(d) => values.push(*d),
         E::MkClo { f, .. } => closures.push(*f),
+        // The definitions' functions static data holds, as closures.
+        E::Static(v, id) => {
+            for x in v.reachable(*id) {
+                if let SNode::Global(d) = v.node(x) {
+                    values.push(*d);
+                }
+            }
+        }
         _ => each_sub(e, &mut |x| closures_in(x, values, closures)),
     }
 }

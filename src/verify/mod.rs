@@ -160,6 +160,86 @@ pub fn modules_dir() -> Option<std::path::PathBuf> {
 
 const MODULE_HEADER: &str = "checkers module 3";
 
+/// Modules this process has verified, by key: a doc comment's code block
+/// imports the module it is in, and the standard library, all just verified
+/// (D148 k).
+pub(crate) static VERIFIED: std::sync::Mutex<Option<std::collections::HashMap<String, Remembered>>> = std::sync::Mutex::new(None);
+
+/// The module verified under `key` before, by this process or (beside
+/// Z3's answers) an earlier one, if it was.
+pub fn recall(key: &str) -> Option<Remembered> {
+    let memo = VERIFIED.lock().unwrap_or_else(|p| p.into_inner()).as_ref().and_then(|x| x.get(key).cloned());
+    if memo.is_some() || modules_dir().is_none() {
+        return memo;
+    }
+    remembered(key)
+}
+
+/// Each module's key (D143): its name and text, the text of every program
+/// or dependency module it depends on, directly or through others (the
+/// modules it imports and those of the instances its checking chose, #272),
+/// the standard library's text (all of it: its modules give one another, and
+/// every module, the well-known types), the Z3 release and the `ckc`
+/// executable. None for a module without its text, or depending on one.
+/// Computed once per program, and again if more modules have been loaded
+/// since (a key read while checking names the modules loaded then).
+pub fn module_keys(e: &Elab) -> std::rc::Rc<std::collections::HashMap<String, String>> {
+    if let Some((n, keys)) = &*e.module_keys.borrow() {
+        if *n == e.modules.len() {
+            return keys.clone();
+        }
+    }
+    let keys = std::rc::Rc::new(compute_module_keys(e));
+    *e.module_keys.borrow_mut() = Some((e.modules.len(), keys.clone()));
+    keys
+}
+
+fn compute_module_keys(e: &Elab) -> std::collections::HashMap<String, String> {
+    use std::collections::HashMap;
+    use std::collections::BTreeSet;
+    let exe = std::env::current_exe()
+        .and_then(std::fs::metadata)
+        .map(|m| format!("{} {:?}", m.len(), m.modified().ok()))
+        .unwrap_or_default();
+    let mut std_mods: Vec<&String> = e.modules.keys().filter(|m| m.starts_with("std.")).collect();
+    std_mods.sort();
+    let mut std_text = String::new();
+    for m in std_mods {
+        if let Some(f) = e.sources.get(m) {
+            std_text += &format!("module {m} {}\n{}\n", f.text.len(), f.text);
+        }
+    }
+    let tool = format!("ckc {} {exe} z3 {} std {}", env!("CARGO_PKG_VERSION"), z3_version().unwrap_or_default(), digest(&std_text));
+    // Each module's text, hashed once; the standard library's is in `tool`.
+    let texts: HashMap<&str, String> =
+        e.modules.keys().filter(|m| !m.starts_with("std.")).filter_map(|m| Some((m.as_str(), digest(&e.sources.get(m)?.text)))).collect();
+    let edges = |m: &str| {
+        let imports = e.module_deps.get(m).into_iter().flatten();
+        let instances = e.instance_deps.get(m).into_iter().flatten();
+        imports.chain(instances).filter(|d| !d.starts_with("std.")).cloned().collect::<Vec<String>>()
+    };
+    let mut keys = HashMap::new();
+    'modules: for m in e.modules.keys() {
+        let Some(text) = e.sources.get(m) else { continue };
+        // Everything it depends on; a cycle through instances is fine.
+        let mut seen = BTreeSet::new();
+        let mut todo = edges(m);
+        while let Some(d) = todo.pop() {
+            if d != *m && seen.insert(d.clone()) {
+                todo.extend(edges(&d));
+            }
+        }
+        let mut input = format!("{tool}\nmodule {m}\n");
+        for d in &seen {
+            let Some(k) = texts.get(d.as_str()) else { continue 'modules };
+            input += &format!("uses {d} {k}\n");
+        }
+        input += &text.text;
+        keys.insert(m.clone(), digest(&input));
+    }
+    keys
+}
+
 /// The module verified under `key`, if it was.
 pub fn remembered(key: &str) -> Option<Remembered> {
     let text = std::fs::read_to_string(modules_dir()?.join(key)).ok()?;
@@ -585,12 +665,20 @@ pub fn proofs(e: &Elab, user: &str) -> Verified {
     v
 }
 
-/// Module `user`'s obligations proved: the first time, by `verify`; after
-/// that, as they were. A module is proved once per program, whether
-/// first for a value known at compile time (§8.9) or in the proofs phase.
+/// Module `user`'s obligations proved: the first time, by `verify`, unless
+/// a check verified it before under its key (D143: its text, what it
+/// depends on, the tools), which is then what it gave; after that, as they
+/// were. A module is proved once per program, whether first for a value
+/// known at compile time (§8.9) or in the proofs phase, and a module
+/// verified before builds no queries for either.
 pub fn proved(e: &Elab, user: &str) -> Verified {
     if let Some(v) = e.module_proofs.borrow().get(user) {
         return v.clone();
+    }
+    if let Some(r) = module_keys(e).get(user).and_then(|k| recall(k)) {
+        let v = Verified { diags: r.warnings, ledger: r.ledger, z3_version: r.z3_version, proved: r.proved, asked: 0, reused: 0 };
+        e.module_proofs.borrow_mut().insert(user.to_string(), v.clone());
+        return v;
     }
     e.proving.borrow_mut().insert(user.to_string());
     let v = verify(e, user);
@@ -2226,6 +2314,27 @@ fn render_model(text: &str, shown: &[(String, String)], strings: &[String], arra
 
 #[cfg(test)]
 mod tests {
+    /// A module verified before (D143) is proved for the compile-time gate
+    /// (§8.9) by what it gave then: no query is built for it again.
+    #[test]
+    fn a_module_verified_before_builds_no_queries() {
+        crate::with_big_stack(|| {
+            let dir = std::env::temp_dir().join(format!("checkers-gate-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("lib.ck"), "module lib\n\nexport fn less a b -> r : a~Nat, b~Nat, b <= a, r~Nat\n    a - b\n").unwrap();
+            let main = "module main\n\nimport lib\n\nlet SIZE = lib.less 9 4\n\nfn sized x -> r : x~Int, r~Int\n    x + SIZE\n";
+            let first = crate::check_in("main.ck", main, &dir);
+            assert_eq!(first.errors(), 0, "{}", first.report());
+            let (_, e) = crate::elaborate("main.ck", main, &dir);
+            let (e, _) = e.unwrap();
+            let v = super::proved(&e, "lib");
+            assert!(v.proved > 0, "lib's obligation counted");
+            assert_eq!(v.asked, 0, "no query asked for a module verified before");
+            let _ = std::fs::remove_dir_all(&dir);
+        })
+    }
+
     /// Programs whose conditions have type errors: no query made from them
     /// is one Z3 rejects (§7.3), however the error is reported.
     #[test]

@@ -245,6 +245,32 @@ impl<'g> Evaluator<'g> {
         self.within(|| w::drop_w(v))
     }
 
+    /// The code of each definition's and constructor's function as a value
+    /// (a global closure's), by its address: what a known closure is.
+    fn codes(&self) -> HashMap<u64, crate::known::Code> {
+        use crate::known::Code;
+        let p = &self.gen.p;
+        let mut out = HashMap::new();
+        let mut add = |f: u32, c: Code| {
+            for f in [f, p.entries.get(&f).copied().unwrap_or(f)] {
+                if (f as usize) < p.funcs.len() {
+                    out.insert(self.gen.m.get_finalized_function(self.gen.func_id(f)) as u64, c);
+                }
+            }
+        };
+        for (d, shape) in &p.defs {
+            match shape {
+                super::lower::DefShape::Fn { func, .. } => add(*func, Code::Def(crate::core::DefId(*d))),
+                super::lower::DefShape::Builtin { wrap, .. } => add(*wrap, Code::Def(crate::core::DefId(*d))),
+                _ => {}
+            }
+        }
+        for (c, f) in &p.con_wraps {
+            add(*f, Code::Con(ConId(*c)));
+        }
+        out
+    }
+
     /// A value of type `ty` (a closed type) as a term, where it has one
     /// (staging, §8.9). The type tells what the value alone doesn't: a
     /// type stored as its one kept field (#170) is that field, a string is
@@ -262,13 +288,17 @@ impl<'g> Evaluator<'g> {
     /// depth-first walk with a stack of its own, so a value of any depth
     /// takes the same stack, and each object and type it is read at once.
     fn reify_typed(&self, v: W, ty: Option<&Tm>) -> Option<Tm> {
-        let mut r = Reifier { ev: self, b: Builder::default(), types: Vec::new(), type_ids: HashMap::new(), field_types: HashMap::new(), done: Default::default() };
+        let mut r = Reifier { ev: self, b: Builder::default(), types: Vec::new(), type_ids: HashMap::new(), field_types: HashMap::new(), done: Default::default(), held: Vec::new(), codes: None };
         let t = ty.map(|t| r.intern(t.clone()));
-        let root = r.run((v, t))?;
+        let root = r.run((v, t));
+        for x in std::mem::take(&mut r.held) {
+            self.release(x);
+        }
+        let root = root?;
         let k = Arc::new(r.b.finish());
         Some(match k.node(root) {
-            Node::Unit => Tm::Tuple(vec![]),
-            Node::Con(..) | Node::Tuple(_) => Tm::Known(crate::known::Value::new(k, root)),
+            Node::Unit | Node::Erased => Tm::Tuple(vec![]),
+            Node::Con(..) | Node::Tuple(_) | Node::Array(..) | Node::Closure(_) | Node::Pap(_) => Tm::Known(crate::known::Value::new(k, root)),
             _ => Tm::Lit(k.lit(root)?),
         })
     }
@@ -293,6 +323,9 @@ enum Make {
     /// erased.
     Kept(ConId, usize, usize),
     Tuple,
+    /// An array laid out by this layout's code.
+    Array(u8),
+    Pap,
 }
 
 struct Reifier<'a, 'g> {
@@ -305,6 +338,11 @@ struct Reifier<'a, 'g> {
     field_types: HashMap<(ConId, usize, usize), Option<usize>>,
     /// The node of each word read at each type.
     done: crate::known::FxMap<Key, u32>,
+    /// Elements read from arrays (new references), released at the end:
+    /// alive until then, so no word read stands for two values.
+    held: Vec<W>,
+    /// Whose code each code address is (`Evaluator::codes`), once needed.
+    codes: Option<HashMap<u64, crate::known::Code>>,
 }
 
 impl Reifier<'_, '_> {
@@ -374,6 +412,8 @@ impl Reifier<'_, '_> {
                 }
                 Make::Tuple if ids.is_empty() => self.b.add(Node::Unit),
                 Make::Tuple => self.b.add(Node::Tuple(ids.into())),
+                Make::Array(l) => self.b.add(Node::Array(l, ids.into())),
+                Make::Pap => self.b.add(Node::Pap(ids.into())),
             };
             self.done.insert(f.key, id);
         }
@@ -398,6 +438,10 @@ impl Reifier<'_, '_> {
                 // A string is stored as its bytes (#170).
                 Tm::TyConApp(id, _) if Some(id) == g.well_known.string && w::is_ptr(v) && w::kind(v) == w::K_BYTES => {
                     return Some(Step::Leaf(Node::Str(Box::from(w::str_of(v)))));
+                }
+                Tm::TyConApp(id, args) if Some(id) == g.well_known.array && w::is_ptr(v) && w::kind(v) == checkers_rt::array::K_ARRAY && args.len() == 1 => {
+                    let elem = self.intern(args[0].clone());
+                    return Some(self.array(v, Some(elem)));
                 }
                 Tm::TyConApp(id, _) => {
                     if let Some((c, k)) = unboxed_con(g, id) {
@@ -434,7 +478,10 @@ impl Reifier<'_, '_> {
                 _ => unreachable!("a number"),
             }));
         }
-        if v == w::ERASED || v == w::UNIT {
+        if v == w::ERASED {
+            return Some(Step::Leaf(Node::Erased));
+        }
+        if v == w::UNIT {
             return Some(Step::Leaf(Node::Unit));
         }
         if let Some(c) = w::con_of(v) {
@@ -450,8 +497,26 @@ impl Reifier<'_, '_> {
         match w::kind(v) {
             w::K_BYTES => Some(Step::Leaf(Node::Bytes(Box::from(w::blob(v))))),
             w::K_TUPLE => Some(Step::Parts(Make::Tuple, (0..w::nfields(v)).map(|i| (w::slot(v, i), None)).collect())),
+            checkers_rt::array::K_ARRAY => Some(self.array(v, None)),
+            // A definition's or a constructor's function, with no free
+            // variables: by its code. A lambda's closure isn't known.
+            w::K_CLO if w::nfields(v) == 0 => {
+                let code = w::slot(v, 0);
+                let codes = self.codes.get_or_insert_with(|| self.ev.codes());
+                codes.get(&code).map(|c| Step::Leaf(Node::Closure(*c)))
+            }
+            // Its function, then the arguments it holds.
+            w::K_PAP => Some(Step::Parts(Make::Pap, (0..=w::nfields(v)).map(|i| (w::slot(v, i), None)).collect())),
             _ => None,
         }
+    }
+
+    /// An array's elements (`K_ARRAY`), each read at type `elem`.
+    fn array(&mut self, v: W, elem: Option<usize>) -> Step {
+        let items = self.ev.within(|| checkers_rt::array::items(v));
+        let parts = items.iter().map(|x| (*x, elem)).collect();
+        self.held.extend(items);
+        Step::Parts(Make::Array(checkers_rt::array::layout(v) as u8), parts)
     }
 }
 
