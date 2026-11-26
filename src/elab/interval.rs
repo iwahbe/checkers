@@ -202,7 +202,8 @@ impl Elab {
     /// Can `t` run at compile time now? Every definition it reaches has
     /// code (a body, or a builtin of the runtime), is total (not
     /// `partial`), and belongs to a module whose checking is done, so its
-    /// termination is checked; and nothing in it waits on a cown.
+    /// termination is checked, or to the module being checked and is proved
+    /// (`settle`); and nothing in it waits on a cown.
     fn runnable(&self, t: &Tm) -> bool {
         let mut todo = Vec::new();
         crate::core::defs_in(t, &mut todo);
@@ -217,7 +218,11 @@ impl Elab {
             let Some(info) = self.g.defs.get(d.0 as usize) else { return false };
             // A `partial` function has a body and is opaque; a builtin has
             // none (its code is the runtime's).
-            if info.opaque && info.body.is_some() || self.loading.iter().any(|m| **m == *info.module) {
+            if info.opaque && info.body.is_some() {
+                return false;
+            }
+            // Of a module being checked: only once proved, on demand (§8.9).
+            if self.loading.iter().any(|m| **m == *info.module) && (*info.module != *self.cur || !self.settle(d)) {
                 return false;
             }
             match &info.body {
