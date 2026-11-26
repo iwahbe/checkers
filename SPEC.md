@@ -1292,7 +1292,7 @@ Since M3, the prover discharges every obligation before a program runs, so these
 | `a / b`, `a % b` | `b != 0` |
 | `src[i]` | `i < len src` |
 | `main` returns `Failure n` | `1 <= n <= 255` |
-| `when` naming two or more cowns (§8.5) | they are distinct: ``runtime error in `f`: `when` names the same cown twice`` |
+| `when` naming two or more cowns (§8.5) | they are distinct: ``runtime error in `f`: `when` names the same cown twice``. Compiled into every such `when` for now; to be removed where the obligation is proved, and kept under an `admit` |
 
 A failure prints a runtime error that names the failing operation and the function it occurred in, and exits with code 70. Other refinements (a computed `U8` staying below 256, a postcondition) are not checked at run time; the prover proves them.
 
