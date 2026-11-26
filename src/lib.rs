@@ -619,71 +619,13 @@ fn route(c: &mut Checked, e: &elab::Elab, user: &str, m: &str, mut d: Diagnostic
     }
 }
 
-/// Each module's key (D143): its name and text, the text of every program
-/// or dependency module it depends on, directly or through others (the
-/// modules it imports and those of the instances its checking chose, #272),
-/// the standard library's text (all of it: its modules give one another, and
-/// every module, the well-known types), the Z3 release and the `ckc`
-/// executable. None for a module without its text, or depending on one.
-fn module_keys(e: &elab::Elab) -> std::collections::HashMap<String, String> {
-    use std::collections::{BTreeSet, HashMap};
-    let exe = std::env::current_exe()
-        .and_then(std::fs::metadata)
-        .map(|m| format!("{} {:?}", m.len(), m.modified().ok()))
-        .unwrap_or_default();
-    let mut std_text = String::new();
-    for m in std_modules(e) {
-        if let Some(f) = e.sources.get(&m) {
-            std_text += &format!("module {m} {}\n{}\n", f.text.len(), f.text);
-        }
-    }
-    let tool = format!("ckc {} {exe} z3 {} std {}", env!("CARGO_PKG_VERSION"), verify::z3_version().unwrap_or_default(), verify::digest(&std_text));
-    // Each module's text, hashed once; the standard library's is in `tool`.
-    let texts: HashMap<&str, String> =
-        e.modules.keys().filter(|m| !m.starts_with("std.")).filter_map(|m| Some((m.as_str(), verify::digest(&e.sources.get(m)?.text)))).collect();
-    let edges = |m: &str| {
-        let imports = e.module_deps.get(m).into_iter().flatten();
-        let instances = e.instance_deps.get(m).into_iter().flatten();
-        imports.chain(instances).filter(|d| !d.starts_with("std.")).cloned().collect::<Vec<String>>()
-    };
-    let mut keys = HashMap::new();
-    'modules: for m in e.modules.keys() {
-        let Some(text) = e.sources.get(m) else { continue };
-        // Everything it depends on; a cycle through instances is fine.
-        let mut seen = BTreeSet::new();
-        let mut todo = edges(m);
-        while let Some(d) = todo.pop() {
-            if d != *m && seen.insert(d.clone()) {
-                todo.extend(edges(&d));
-            }
-        }
-        let mut input = format!("{tool}\nmodule {m}\n");
-        for d in &seen {
-            let Some(k) = texts.get(d.as_str()) else { continue 'modules };
-            input += &format!("uses {d} {k}\n");
-        }
-        input += &text.text;
-        keys.insert(m.clone(), verify::digest(&input));
-    }
-    keys
-}
-
-/// The program's modules verified before (D143), with their keys.
-/// Modules this process has verified, by key: a doc comment's code block
-/// imports the module it is in, and the standard library, all just verified
-/// (D148 k).
-static VERIFIED: std::sync::Mutex<Option<std::collections::HashMap<String, verify::Remembered>>> = std::sync::Mutex::new(None);
-
 fn remembered<'a>(c: &'a mut Checked, e: &elab::Elab, user: &str) -> &'a std::collections::HashMap<String, (String, verify::Remembered)> {
     if c.remembered.is_none() {
         let mut found = std::collections::HashMap::new();
-        let keys = module_keys(e);
-        let memo = VERIFIED.lock().unwrap_or_else(|p| p.into_inner());
+        let keys = verify::module_keys(e);
         for m in program_modules(e, user) {
             if let Some(k) = keys.get(&m) {
-                let r = memo.as_ref().and_then(|x| x.get(k).cloned());
-                let r = if r.is_some() || verify::modules_dir().is_none() { r } else { verify::remembered(k) };
-                if let Some(r) = r {
+                if let Some(r) = verify::recall(k) {
                     found.insert(m, (k.clone(), r));
                 }
             }
@@ -695,7 +637,7 @@ fn remembered<'a>(c: &'a mut Checked, e: &elab::Elab, user: &str) -> &'a std::co
 
 fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
     let known = remembered(c, e, user).clone();
-    let keys = module_keys(e);
+    let keys = verify::module_keys(e);
     let mut ledger = String::new();
     let (mut asked, mut reused) = (0, 0);
     let mut fresh: Vec<(String, verify::Verified)> = Vec::new();
@@ -760,7 +702,7 @@ fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
                     verify::remember(k, v);
                 }
                 let r = verify::Remembered { ledger: v.ledger.clone(), proved: v.proved, z3_version: v.z3_version.clone(), warnings: v.diags.clone() };
-                VERIFIED.lock().unwrap_or_else(|p| p.into_inner()).get_or_insert_with(Default::default).insert(k.clone(), r);
+                verify::VERIFIED.lock().unwrap_or_else(|p| p.into_inner()).get_or_insert_with(Default::default).insert(k.clone(), r);
             }
         }
     }

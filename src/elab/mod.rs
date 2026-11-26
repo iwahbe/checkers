@@ -576,6 +576,9 @@ pub struct Mark {
     lens: [usize; 21],
 }
 
+/// Each module's key (`verify::module_keys`), by module name.
+pub type ModuleKeys = std::rc::Rc<HashMap<String, String>>;
+
 pub struct Elab {
     pub g: Globals,
     pub modules: HashMap<String, ModuleInfo>,
@@ -698,6 +701,9 @@ pub struct Elab {
     /// module's functions run at compile time only once it is proved
     /// (§8.9).
     pub module_proofs: std::cell::RefCell<HashMap<String, crate::verify::Verified>>,
+    /// Modules' keys (`verify::module_keys`), with how many modules were
+    /// loaded when they were computed.
+    pub module_keys: std::cell::RefCell<Option<(usize, ModuleKeys)>>,
     /// The modules being proved now: their functions don't run yet.
     pub proving: std::cell::RefCell<HashSet<String>>,
     /// The name a refinement alias binds (`n` in `type Big = n~Int, …`).
@@ -1031,6 +1037,7 @@ impl Elab {
             runnable_defs: std::cell::RefCell::new(HashSet::new()),
             early: Default::default(),
             module_proofs: std::cell::RefCell::new(HashMap::new()),
+            module_keys: std::cell::RefCell::new(None),
             proving: std::cell::RefCell::new(HashSet::new()),
             alias_subject: HashMap::new(),
             result_metas: HashMap::new(),
