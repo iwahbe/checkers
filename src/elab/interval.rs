@@ -188,6 +188,11 @@ impl Elab {
         if let Some(k) = self.known_cache.borrow().get(&key) {
             return k.clone();
         }
+        if !self.functions_proved(t) {
+            // Not known yet, however it would be computed: a function it
+            // calls runs only once its module is proved.
+            return None;
+        }
         if let Some(l) = crate::core::known_lit(&self.g, eval(&self.g, &Rc::new(Vec::new()), t)) {
             self.known_cache.borrow_mut().insert(key, Some(l.clone()));
             return Some(l);
@@ -302,6 +307,27 @@ impl Elab {
             return false;
         }
         !crate::verify::proved(self, m).diags.iter().any(|d| d.is_error())
+    }
+
+    /// Is every function `t` reaches, through constants and functions'
+    /// bodies, in a module proved with no errors (§8.9)? Constants, and
+    /// builtins, which have no body, needn't be.
+    fn functions_proved(&self, t: &Tm) -> bool {
+        let mut todo = Vec::new();
+        crate::core::defs_in(t, &mut todo);
+        let mut seen = HashSet::new();
+        while let Some(d) = todo.pop() {
+            if self.runnable_defs.borrow().contains(&d) || !seen.insert(d) {
+                continue;
+            }
+            let Some(info) = self.g.defs.get(d.0 as usize) else { return false };
+            let Some(b) = &info.body else { continue };
+            if matches!(info.ty, Tm::Pi(..)) && !self.module_proved(&info.module) {
+                return false;
+            }
+            crate::core::defs_in(b, &mut todo);
+        }
+        true
     }
 
     /// Can `t` run at compile time now? Every definition it reaches has
