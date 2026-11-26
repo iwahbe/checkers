@@ -193,12 +193,12 @@ fn additions_compile_in_linear_memory() {
     );
 }
 
-/// A function of n `let`s, each adding one to the one before. `a{i}`'s
-/// value, `x + 1 + … + 1`, is i deep, and each `let` after it refers to it.
-/// Shared, the values take memory in proportion to n; copied for each local
-/// that holds one, they took n²/2 (2,000 took 344 MB and 2.1 s to elaborate,
-/// 8,000 took 4.6 GB and 32 s). So did the names of every local in scope,
-/// kept for each operator's message.
+/// A function of n `let`s, each joining a string to the one before. `a{i}`'s
+/// value, `x ++ "a" ++ … ++ "a"`, is i deep, and each `let` after it refers
+/// to it. Shared, the values take memory in proportion to n; copied for each
+/// local that holds one, they took n²/2 (2,000 took 350 MB and 2.8 s to
+/// elaborate, 8,000 took 4.6 GB and 44 s). So did the names of every local in
+/// scope, kept for each operator's message.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_chain_of_lets_checks_in_linear_time_and_memory() {
@@ -208,9 +208,9 @@ fn a_chain_of_lets_checks_in_linear_time_and_memory() {
     // The least of a few runs: the least disturbed by other tests.
     let [a, b, c] = sizes.map(|n| {
         let name = format!("by_let{n}");
-        let mut s = format!("module {name}\n\nexport fn f x -> r : x~Int, r~Int\n    let a0 = x\n");
+        let mut s = format!("module {name}\n\nexport fn f x -> r : x~String, r~String\n    let a0 = x\n");
         for i in 1..=n {
-            s += &format!("    let a{i} = a{} + 1\n", i - 1);
+            s += &format!("    let a{i} = a{} ++ \"a\"\n", i - 1);
         }
         s += &format!("    a{n}\n");
         (0..7).map(|_| source_usage(&dir, &name, &s)).fold((f64::INFINITY, u64::MAX), |(t, m), (t2, m2)| (t.min(t2), m.min(m2)))
@@ -220,8 +220,8 @@ fn a_chain_of_lets_checks_in_linear_time_and_memory() {
     // What each doubling adds to the peak: twice as much the second time for
     // linear memory, four times for quadratic; the fixed part (the standard
     // library) cancels out. The peak moves in the allocator's steps, so up
-    // to three times. (2,000 to 4,000 lets add about 9 MB, 4,000 to 8,000
-    // about 20 MB.)
+    // to three times. (2,000 to 4,000 lets add 11 MB to 18 MB, 4,000 to
+    // 8,000 16 MB to 26 MB; without sharing, 850 MB and 3,396 MB.)
     let (first, second) = (mb(b.1) - mb(a.1), mb(c.1) - mb(b.1));
     assert!(
         second <= 3.0 * first,
@@ -230,6 +230,7 @@ fn a_chain_of_lets_checks_in_linear_time_and_memory() {
     // Time per instruction grows with the memory a run touches, so what a
     // doubling adds to the time doesn't tell quadratic work from cache
     // misses: four times the lets may take at most four times as long, as
-    // linear work with any fixed part does (about 1.3 times).
+    // linear work with any fixed part does (1.4 to 1.8 times; without
+    // sharing, 15 times).
     assert!(c.0 <= 4.0 * a.0, "CPU time: 2000 lets took {:.0} ms, 8000 took {:.0} ms", a.0, c.0);
 }
