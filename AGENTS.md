@@ -82,6 +82,7 @@ tools/ck/format.ck   the formatter: spacing, indentation, alignment, blank lines
 site/*.md            the language's site: home, tour, install, documentation (every sample checks; deployed by .github/workflows/pages.yml)
 tests/packages.rs    packages end to end with local git repositories (M14)
 tests/parking.rs     waiting behaviours hold no thread, at several thread counts (M16)
+tests/stdin.rs       standard input that fails to read: `terminal.read_line` gives the error
 tests/scaling.rs     checking time grows with the program, not its square: long operator chains
 tests/std.rs         standard library on disk: `CHECKERS_STD`, edits without rebuilding, E0223/E0361, §16.3 lists every builtin
 tests/golden.rs      golden test runner (tests/parse, check, types, stage, run, stress, fmt, tool, doc; examples; tools; repository formatting)

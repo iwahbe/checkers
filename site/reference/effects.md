@@ -167,7 +167,7 @@ fn keep x -> r : x~own a, r~a
 | `files.flush f` | writes out what is buffered |
 | `files.close f` | consumes the file; one open for writing has what is buffered written out first, and an error doing that or closing it is the result |
 
-`files.read path fs` and `files.write path bytes fs` read or write a whole file in one call, without a resource. `terminal.print_line`, `eprint_line`, `write` and `read_line` are shorthands on `Term`.
+`files.read path fs` and `files.write path bytes fs` read or write a whole file in one call, without a resource. `terminal.print_line`, `eprint_line`, `write` and `read_line` are shorthands on `Term`, which is not threaded: `terminal.read_line term` gives `Result (Option Bytes) IoError`, the same line, end and error as `files.read_line`.
 
 ## Processes
 

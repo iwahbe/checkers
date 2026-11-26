@@ -80,10 +80,10 @@ import std.terminal
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     match terminal.read_line sys.term
-        Some l ->
-            terminal.print_line l sys.term
+        Ok (Some l) ->
+            terminal.write_bytes l sys.term
             Success
-        None   -> Failure 1
+        _           -> Failure 1
 ```
 
 ```checkers,ignore

@@ -4,6 +4,7 @@ module power
 # `if` on a compile-time value picks its branch, and recursion unrolls.
 
 import std.terminal (Term)
+import std.files (IoError)
 
 fn power n x -> y : n~comptime Nat, x~Int, y~Int
     decreasing n
@@ -25,10 +26,10 @@ fn from_let x -> y : x~Int, y~Int
 partial fn read_and_square term -> y : term~Term, y~Int
     power 2 (line_value (terminal.read_line term))
 
-fn line_value l -> n : l~Option String, n~Int
+fn line_value l -> n : l~Result (Option Bytes) IoError, n~Int
     match l
-        None   -> 0
-        Some _ -> 7
+        Ok (Some _) -> 7
+        _           -> 0
 
 check cube 2 == 8
 check square_of_sum 1 2 == 9

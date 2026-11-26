@@ -18,8 +18,9 @@ export fn eprint_line s term -> r : s~String, term~Term, r~Unit
 export fn read_all term -> r : term~Term, r~Result Bytes IoError
     __builtin
 
-# The next line of standard input, without its newline; `None` at the end.
-export fn read_line term -> r : term~Term, r~Option String
+# The next line of standard input: its bytes as they are, without the
+# newline; `None` at the end, or the error if reading fails.
+export fn read_line term -> r : term~Term, r~Result (Option Bytes) IoError
     __builtin
 
 # Write to standard output without adding a newline.
