@@ -1,0 +1,7 @@
+-- stdout
+(set-logic ALL)
+(declare-const |a�b| Int)
+(assert (not (= |a�b| 1)))
+(check-sat)
+-- stderr
+-- exit 0
