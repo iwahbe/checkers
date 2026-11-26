@@ -1,0 +1,13 @@
+error[E0201]: type mismatch: expected `T`, found `b.T`
+  --> same_name_qualified.ck:13:5
+   |
+13 |     t
+   |     ^ this expression has type `b.T`
+
+error[E0201]: type mismatch: expected `b.T`, found `a.T`
+  --> same_name_qualified.ck:16:5
+   |
+16 |     t
+   |     ^ this expression has type `a.T`
+
+same_name_qualified.ck: 2 errors, 0 warnings
