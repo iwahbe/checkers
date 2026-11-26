@@ -15,6 +15,7 @@
 //! the instance for `t`'s type (or a dictionary in scope).
 
 use super::*;
+use crate::syntax::token::Op;
 use crate::syntax::ast::{Block, ClassMember, Constraint, Decl, DeclKind, Export, Expr, ExprKind, Ident, InstMember, PatKind, Pattern, Stmt};
 
 /// Where a declaration of a desugared module came from.
@@ -79,8 +80,8 @@ fn shadowed_param<'m>(m: &'m ClassMember, cparams: &[String]) -> Option<&'m Iden
 
 /// The class's parameters a function or lemma takes explicitly: a
 /// parameter with the name of one, of type `ghost Type`, is that type
-/// (#161). It isn't in the dictionary; an instance's member doesn't take
-/// it, and has the instance's type by that name.
+/// (#161). The dictionary doesn't hold it: its field, and an instance's
+/// member, take it as a `ghost` parameter, the instance's type there.
 fn pinned_params(m: &ClassMember, cparams: &[String]) -> Vec<String> {
     let (params, cs) = match m {
         ClassMember::Fn { params, constraints, .. } | ClassMember::Lemma { params, constraints, .. } => (params, constraints),
@@ -584,6 +585,48 @@ fn con(name: &str, span: Span) -> Expr {
 fn app(f: Expr, a: Expr) -> Expr {
     let span = f.span;
     Expr { kind: ExprKind::App(Box::new(f), Box::new(a)), span }
+}
+
+/// An instance's member's parameters, each one that is the class's
+/// (#161) with the instance's type for it: one written `_` is named, by the
+/// class's name for it unless another parameter has that name, so that its
+/// type can be given.
+fn pinned_named(iparams: &[Ident], params: &[Ident], skip: &[usize], subst_ty: &dyn Fn(&str) -> Expr) -> (Vec<Ident>, Vec<(Ident, Expr)>) {
+    let mut all = iparams.to_vec();
+    let mut pinned = Vec::new();
+    for &k in skip {
+        if all[k].name == "_" {
+            let base = params[k].name.clone();
+            let mut name = base.clone();
+            let mut n = 1;
+            while all.iter().any(|p| p.name == name) {
+                name = format!("{base}{n}");
+                n += 1;
+            }
+            all[k].name = name;
+        }
+        pinned.push((all[k].clone(), subst_ty(&params[k].name)));
+    }
+    (all, pinned)
+}
+
+impl Elab {
+    /// An instance's member's parameters that are the class's (#161):
+    /// each `name~ghost Type` and `name == T`, `T` the instance's type for
+    /// it. A use passes the instance's type there, as its own body does.
+    fn pinned_constraints(&mut self, pinned: &[(Ident, Expr)]) -> Vec<Constraint> {
+        let mut out = Vec::new();
+        for (p, ty) in pinned {
+            let n = &p.name;
+            let s = self.synthetic_span(p.span);
+            out.push(Constraint::Typed { name: ident(n, s), mult: ast::Mult::Ghost, ty: con("Type", s) });
+            let text = format!("{n} == {}", self.src_text(ty.span));
+            self.text_override.insert((self.cur.clone(), s.start, s.end), text);
+            let eq = Expr { kind: ExprKind::Binary(Op::EqEq, Box::new(var(n, s)), Box::new(respan(ty, s))), span: s };
+            out.push(Constraint::Pred(eq));
+        }
+        out
+    }
 }
 
 /// `blk` with `let name = ty` first, for each of a class's parameters an
@@ -1187,15 +1230,19 @@ impl Elab {
                             _ => None,
                         })
                     };
+                    // A class's parameter it takes explicitly (#161) is a
+                    // `ghost` parameter of the field too (`None` here): the
+                    // instance's function takes it, as the class's does.
                     let pinned = pinned_params(mem, &pnames);
                     let mut missing = Vec::new();
-                    let mut tys = Vec::new();
+                    let mut tys: Vec<Option<Expr>> = Vec::new();
                     for p in params {
                         if pinned.contains(&p.name) {
+                            tys.push(None);
                             continue;
                         }
                         match typed(&p.name) {
-                            Some(t) => tys.push(t),
+                            Some(t) => tys.push(Some(t)),
                             None => missing.push(p.name.clone()),
                         }
                     }
@@ -1218,7 +1265,6 @@ impl Elab {
                     // Each parameter's `own` or `ghost` (D156 i): the field's type takes it the same way.
                     let mults: Vec<Mult> = params
                         .iter()
-                        .filter(|p| !pinned.contains(&p.name))
                         .map(|p| {
                             let m = constraints.iter().find_map(|c| match c {
                                 Constraint::Typed { name, mult, .. } if name.name == p.name => Some(*mult),
@@ -1233,7 +1279,7 @@ impl Elab {
                     // Its own type variables make the field polymorphic: an
                     // implicit, erased parameter of type `Type` each (M25).
                     let mut own = Vec::new();
-                    let refs: Vec<&Expr> = tys.iter().chain(std::iter::once(&rty)).collect();
+                    let refs: Vec<&Expr> = tys.iter().flatten().chain(std::iter::once(&rty)).collect();
                     method_vars(&refs, &pnames, &mut own);
                     let ren: HashMap<String, String> = own.iter().map(|v| (v.clone(), format!("'{v}"))).collect();
                     let to_q = |n: &str, s: Span| ren.get(n).map(|m| var(m, s));
@@ -1241,9 +1287,28 @@ impl Elab {
                     let nq = |_: &str, _: &str, _: Span| None;
                     let qrw = Rewrite { var: &to_q, con: &none, qualified: &nq };
                     let mut fty = qrw.expr(&frw.expr(&rty, &[]), &[]);
-                    for t in tys.into_iter().rev() {
-                        let span = t.span;
-                        fty = Expr { kind: ExprKind::Arrow(Box::new(qrw.expr(&frw.expr(&t, &[]), &[])), Box::new(fty)), span };
+                    for (t, p) in tys.into_iter().zip(params).rev() {
+                        fty = match t {
+                            Some(t) => {
+                                let span = t.span;
+                                Expr { kind: ExprKind::Arrow(Box::new(qrw.expr(&frw.expr(&t, &[]), &[])), Box::new(fty)), span }
+                            }
+                            // Named apart from the class's parameter, which
+                            // the rest of the type means by its name.
+                            None => {
+                                let span = p.span;
+                                Expr {
+                                    kind: ExprKind::Refine(Box::new(ast::RefineTy {
+                                        param: Some(ident(&format!("${}", p.name), span)),
+                                        own: false,
+                                        dom: con("Type", span),
+                                        arrow: Some((None, fty)),
+                                        preds: Vec::new(),
+                                    })),
+                                    span,
+                                }
+                            }
+                        };
                     }
                     // Its own class clauses (`Seq s`): implicit parameters
                     // of the field, the dictionaries each call passes, so
@@ -1287,7 +1352,7 @@ impl Elab {
                     // header, which is then its whole text, for hover).
                     let at_end = Span { start: mspan.end, end: mspan.end };
                     let mut call = Expr { kind: ExprKind::Field(Box::new(var("$d0", at_end)), Ident { name: f.name.clone(), span: at_end }), span: at_end };
-                    for p in params.iter().filter(|p| !pinned.contains(&p.name)) {
+                    for p in params {
                         call = app(call, var(&p.name, at_end));
                     }
                     // `std.string`'s `Debug` (#126): every type has an
@@ -1987,20 +2052,25 @@ impl Elab {
                         bad = true;
                         continue;
                     }
-                    // The class's parameters it takes explicitly (#161): not
-                    // the instance's, which has their types by those names.
+                    // The class's parameters it takes explicitly (#161): the
+                    // instance's function takes them too, each the instance's
+                    // type, which its body has by that name. Its own
+                    // signature is over the rest.
                     let pinned = pinned_params(cm, &cparams);
                     let skip: Vec<usize> = (0..params.len()).filter(|k| pinned.contains(&params[*k].name)).collect();
                     let pinned_types: Vec<(String, Expr)> = skip.iter().map(|k| (iparams[*k].name.clone(), subst_ty(&params[*k].name))).collect();
+                    let (all_iparams, named) = pinned_named(iparams, params, &skip, &subst_ty);
+                    let all_iparams = &all_iparams;
+                    let pinned_cs = self.pinned_constraints(&named);
                     let (params, iparams) = (&without(params, &skip), &without(iparams, &skip));
                     let constraints = &untyped(constraints, &pinned);
                     let mut map: HashMap<String, String> = params.iter().zip(iparams.iter()).map(|(a, b)| (a.name.clone(), b.name.clone())).collect();
-                    let mut taken: Vec<String> = iparams.iter().map(|p| p.name.clone()).chain(result.iter().map(|r| r.name.clone())).collect();
+                    let mut taken: Vec<String> = all_iparams.iter().map(|p| p.name.clone()).chain(result.iter().map(|r| r.name.clone())).collect();
                     taken.extend(head_vars.iter().cloned());
                     // The class's name for the result, if the instance names
                     // a parameter so (`fn debug s` for `-> s`), is another.
                     let result = match result {
-                        Some(r) if iparams.iter().any(|p| p.name == r.name) => {
+                        Some(r) if all_iparams.iter().any(|p| p.name == r.name) => {
                             let mut k = 1;
                             let fresh = loop {
                                 let n = format!("{}{k}", r.name);
@@ -2019,7 +2089,8 @@ impl Elab {
                     let mut cs = ctx_preds.clone();
                     let theirs = at_instance(constraints, &map, &|c| trw.constraints(&srw.constraints(c, &[]), &[]));
                     cs.extend(self.shown_here(foreign.as_deref(), constraints, theirs, span));
-                    let mut bound: Vec<String> = iparams.iter().map(|p| p.name.clone()).collect();
+                    cs.extend(pinned_cs.iter().cloned());
+                    let mut bound: Vec<String> = all_iparams.iter().map(|p| p.name.clone()).collect();
                     bound.extend(result.iter().map(|r| r.name.clone()));
                     let gname = gen(&name.name);
                     member_list.push((name.name.clone(), decls.len()));
@@ -2057,6 +2128,7 @@ impl Elab {
                             let mut ics = ctx_preds.clone();
                             // The class's types are the instance's (#133).
                             ics.extend(trw.constraints(&prw.constraints(&own, &[]), &[]));
+                            ics.extend(pinned_cs.iter().cloned());
                             let text = match foreign.as_deref() {
                                 Some(m) => self.text_in(m, cm.span()),
                                 None => self.src_text(cm.span()),
@@ -2074,7 +2146,7 @@ impl Elab {
                         kind: DeclKind::Fn {
                             partial: false,
                             name: ident(&gname, own_name),
-                            params: iparams.clone(),
+                            params: all_iparams.clone(),
                             result,
                             constraints: cs,
                             decreasing: decreasing.as_ref().map(|e| rw.expr(e, &bound)),
@@ -2114,12 +2186,16 @@ impl Elab {
                         bad = true;
                         continue;
                     }
+                    // The class's parameters it takes explicitly (#161), as
+                    // for a function: taken, each the instance's type.
                     let pinned = pinned_params(cm, &cparams);
                     let skip: Vec<usize> = (0..params.len()).filter(|k| pinned.contains(&params[*k].name)).collect();
                     let pinned_types: Vec<(String, Expr)> = skip.iter().map(|k| (iparams[*k].name.clone(), subst_ty(&params[*k].name))).collect();
+                    let (all_iparams, named) = pinned_named(&iparams, params, &skip, &subst_ty);
+                    let pinned_cs = self.pinned_constraints(&named);
                     let (params, iparams) = (&without(params, &skip), without(&iparams, &skip));
                     let constraints = &untyped(constraints, &pinned);
-                    let mut taken: Vec<String> = iparams.iter().map(|p| p.name.clone()).collect();
+                    let mut taken: Vec<String> = all_iparams.iter().map(|p| p.name.clone()).collect();
                     taken.extend(head_vars.iter().cloned());
                     let hyg = hygiene(constraints, &cparams, &taken);
                     let constraints = &rename_vars(constraints, &hyg);
@@ -2134,7 +2210,8 @@ impl Elab {
                     let mut cs = ctx_preds.clone();
                     let theirs = at_instance(constraints, &map, &|c| trw.constraints(&srw.constraints(c, &[]), &[]));
                     cs.extend(self.shown_here(foreign.as_deref(), constraints, theirs, span));
-                    let mut bound: Vec<String> = iparams.iter().map(|p| p.name.clone()).collect();
+                    cs.extend(pinned_cs);
+                    let mut bound: Vec<String> = all_iparams.iter().map(|p| p.name.clone()).collect();
                     let mut ls = Vec::new();
                     for (p, e) in lets {
                         ls.push((p.clone(), brw.expr(&trw.expr(&srw.expr(&prw.expr(e, &[]), &[]), &[]), &[])));
@@ -2153,7 +2230,7 @@ impl Elab {
                         export: Export::No,
                         kind: DeclKind::Lemma {
                             name: ident(&gname, name_span),
-                            params: iparams.clone(),
+                            params: all_iparams,
                             constraints: cs,
                             decreasing: decreasing.as_ref().map(|e| rw.expr(e, &bound)),
                             lets: ls,
