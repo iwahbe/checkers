@@ -13,6 +13,7 @@ pub mod lint;
 pub mod literate;
 pub mod native;
 pub mod overlay;
+pub mod range;
 pub mod source;
 pub mod stage;
 pub mod syntax;
@@ -554,6 +555,7 @@ pub fn check_stdlib() -> String {
         if let Some(f) = e.sources.get(m) {
             let mut d = d.clone();
             d.span = e.real_span(m, d.span);
+            e.name_globals(m, &mut d);
             out += &d.render(f);
         }
     }
@@ -564,6 +566,7 @@ pub fn check_stdlib() -> String {
         let mut v = verify::verify(&e, m);
         for d in &mut v.diags {
             d.span = e.real_span(m, d.span);
+            e.name_globals(m, d);
         }
         if let Some(f) = e.sources.get(m) {
             out += &diag::render_all(f, &v.diags);
@@ -598,6 +601,7 @@ fn std_modules(e: &elab::Elab) -> Vec<String> {
 /// File a diagnostic of module `m` where it belongs.
 fn route(c: &mut Checked, e: &elab::Elab, user: &str, m: &str, mut d: Diagnostic) {
     d.span = e.real_span(m, d.span);
+    e.name_globals(m, &mut d);
     if m == user {
         c.diags.push(d);
     } else if e.sources.contains_key(m) {
@@ -1024,8 +1028,12 @@ fn ready_to_run(
     if blocking > 0 {
         return Err(Ran { report, code: 2 });
     }
+    let mut e = e;
     if c.errors() > 0 {
         report += &format!("running with {} unproven obligation(s) (--unverified)\n", c.errors());
+    } else {
+        // Proved: the bounds signatures give are facts native code may rely on.
+        e.g.bounds = std::mem::take(&mut e.bounds);
     }
     let exported = e.modules.get(&user).is_some_and(|m| m.exported_values.contains("main"));
     let main = e.g.defs.iter().position(|d| *d.module == user && &*d.name == "main");

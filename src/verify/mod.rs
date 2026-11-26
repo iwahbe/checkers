@@ -3,7 +3,7 @@
 
 pub mod smt;
 
-use crate::core::{quote, show};
+use crate::core::quote;
 use crate::diag::Diagnostic;
 use crate::elab::{Elab, ObKind, Obligation, Probe, ProbeKind, Vacuity, VacuityKind, WeakenRole};
 use crate::source::Span;
@@ -78,9 +78,30 @@ fn quick(q: Option<String>) -> Option<String> {
     q.map(|t| with_limit(&t, QUICK_RLIMIT))
 }
 
+/// The option that sets a query's work limit: Z3 keeps this one in the
+/// query's own context. `:rlimit` and `:timeout` are parameters of the whole
+/// process, which every context copies when any is set: a query would run
+/// with the limit of one solved at the same time on another thread.
+const LIMIT_OPTION: &str = "(set-option :reproducible-resource-limit ";
+
+fn limit_option(limit: u64) -> String {
+    format!("{LIMIT_OPTION}{limit})")
+}
+
+/// The options every query starts with: the safety cap, the same for all,
+/// then its work limit (setting the cap copies the process's limit, none).
+pub(crate) fn options(limit: u64) -> String {
+    format!("(set-option :produce-models true)\n(set-option :timeout {SAFETY_MS})\n{}\n", limit_option(limit))
+}
+
+/// A query made with the work limit `from`, with the limit `to`.
+fn relimit(t: &str, from: u64, to: u64) -> String {
+    t.replacen(&limit_option(from), &limit_option(to), 1)
+}
+
 /// A query with another work limit.
 fn with_limit(t: &str, limit: u64) -> String {
-    t.replacen(&format!("(set-option :rlimit {RLIMIT})"), &format!("(set-option :rlimit {limit})"), 1)
+    relimit(t, RLIMIT, limit)
 }
 
 /// A wall-clock cap, in case Z3 is slow to use up its work limit. An answer
@@ -310,7 +331,7 @@ fn ask_out(query: &str) -> String {
             if timed {
                 let what = if query.starts_with("(set-option :produce-unsat-cores") { "(can the conditions hold?)".to_string() } else { query.lines().find(|l| l.starts_with("(assert (not")).unwrap_or("").chars().take(120).collect::<String>() };
                 let said = out.split_whitespace().next().unwrap_or("?");
-                let limit = query.split("(set-option :rlimit ").nth(1).and_then(|r| r.split(')').next()).unwrap_or("?");
+                let limit = query.split(LIMIT_OPTION).nth(1).and_then(|r| r.split(')').next()).unwrap_or("?");
                 eprintln!("smt {:>6} ms {:>7} bytes {said:>7} rlimit {limit:>8} used {used:>8} {what}", start.elapsed().as_millis(), query.len());
                 if let Some(err) = out.lines().find(|l| l.starts_with("(error")) {
                     eprintln!("smt error {err}");
@@ -956,7 +977,7 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
         let mut answers: Vec<Option<Answer>> = texts.iter().map(|_| None).collect();
         let singles = combos.iter().take_while(|c| c.iter().all(|m| m.0.len() == 1)).count();
         let small = |t: &Option<String>| {
-            t.as_ref().map(|t| t.replacen(&format!("(set-option :rlimit {QUICK_RLIMIT})"), &format!("(set-option :rlimit {PROBE_RLIMIT})"), 1))
+            t.as_ref().map(|t| relimit(t, QUICK_RLIMIT, PROBE_RLIMIT))
         };
         let proved = |answers: &[Option<Answer>], ci: usize| {
             !obs[ci].is_empty() && answers[base[ci]..base[ci] + obs[ci].len()].iter().all(|a| matches!(a, Some(Answer::Unsat)))
@@ -1175,7 +1196,7 @@ fn unreachable(e: &Elab, user: &str) -> Vec<Diagnostic> {
         .map(|p| {
             // Marked, so a cached answer is never taken for an obligation's.
             let q = smt::Builder::new(e, user).sharing(&defs).query(&p.ob).ok().map(|q| q.facts_only.unwrap_or(q.text));
-            q.map(|t| t.replacen(&format!("(set-option :rlimit {RLIMIT})"), &format!("(set-option :rlimit {PROBE_RLIMIT})"), 1) + ";; reachable?\n")
+            q.map(|t| with_limit(&t, PROBE_RLIMIT) + ";; reachable?\n")
         })
         .collect();
     let answers = ask_all(&texts);
@@ -1275,8 +1296,11 @@ fn facts_note(e: &Elab, o: &Obligation) -> Option<String> {
         o.ctx.iter().filter(|l| crate::core::is_nat(&e.g, &l.ty)).map(|l| format!("{} >= 0", l.name)).collect();
     let mut shown: Vec<String> = implied.clone();
     for f in &o.facts {
-        let s = show(&e.g, &names, &quote(&e.g, lvl, f));
-        let s = match (s.strip_suffix(" == True"), s.strip_suffix(" == False")) {
+        let s = crate::core::show_marked(&e.g, &names, &quote(&e.g, lvl, f));
+        // `… == True` and `… == False` by their text, the marks aside.
+        let plain = crate::core::plain(&s);
+        let lhs = s.rfind(" == ").map(|i| &s[..i]);
+        let s = match (plain.ends_with(" == True").then_some(lhs).flatten(), plain.ends_with(" == False").then_some(lhs).flatten()) {
             (Some(t), _) => t.to_string(),
             (_, Some(f)) if f.starts_with('(') => format!("not {f}"),
             (_, Some(f)) => format!("not ({f})"),
@@ -1996,4 +2020,27 @@ fn render_model(text: &str, shown: &[(String, String)], strings: &[String], arra
     }
     found.sort();
     found.into_iter().map(|x| x.1).collect::<Vec<_>>().join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    /// Queries solved at the same time with different work limits (two
+    /// programs checked on two threads) each run with their own: the small
+    /// limit always gives up, the large one always proves.
+    #[test]
+    fn each_query_runs_with_its_own_work_limit() {
+        const GOAL: &str = "(set-logic ALL)\n(declare-const x (_ BitVec 5))\n(declare-const y (_ BitVec 5))\n(declare-const z (_ BitVec 5))\n(assert (not (= (bvmul x (bvadd y z)) (bvadd (bvmul x y) (bvmul x z)))))\n(check-sat)\n";
+        let said = |limit: u64| {
+            std::thread::spawn(move || {
+                let query = super::options(limit) + GOAL;
+                let mut said: Vec<String> = (0..500).map(|_| super::run_z3(&query)).collect();
+                said.dedup();
+                said
+            })
+        };
+        let threads = [said(50), said(50_000_000), said(50), said(50_000_000)];
+        let said: Vec<Vec<String>> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+        let (gave_up, proved) = (vec!["unknown\n".to_string()], vec!["unsat\n".to_string()]);
+        assert_eq!(said, [gave_up.clone(), proved.clone(), gave_up, proved]);
+    }
 }
