@@ -350,7 +350,11 @@ impl Elab {
     /// The type an operator's other operand is checked against: a range's
     /// base, so ranges don't spread through it (D135).
     pub fn shared_operand_type(&self, ty: &Val) -> Val {
-        if self.is_range(ty) { self.arith_base(ty) } else { ty.clone() }
+        if self.is_range(ty) {
+            return self.arith_base(ty);
+        }
+        // A class's type with a base type (#360): its operators are the base's.
+        crate::core::class_type_base(&self.g, ty).unwrap_or_else(|| ty.clone())
     }
 
     /// The type of `lt op rt` (D134, D135): `ty` is the operands' shared

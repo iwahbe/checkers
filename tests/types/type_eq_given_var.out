@@ -1,0 +1,7 @@
+error[E0294]: `zero` needs `t == Int`, but here `t` is `Bool`
+  --> type_eq_given_var.ck:12:5
+   |
+12 |     zero Bool
+   |     ^^^^^^^^^
+
+type_eq_given_var.ck: 1 error, 0 warnings

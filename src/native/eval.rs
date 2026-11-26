@@ -16,6 +16,10 @@ use std::rc::Rc;
 pub struct Evaluator<'g> {
     g: &'g Globals,
     gen: Gen<'g, JITModule>,
+    /// This program's descriptor and `Debug` instances: its own, as other
+    /// programs are evaluated at the same time on other threads. Each call
+    /// into the runtime is made `within` it.
+    prog: &'static checkers_rt::prog::Prog,
 }
 
 impl<'g> Evaluator<'g> {
@@ -24,7 +28,7 @@ impl<'g> Evaluator<'g> {
         // The hand-written `Debug` instances (#126), for values shown here.
         if let Some(ir) = super::lower::show_table(g) {
             if let Ok(fs) = ev.eval_ir(&ir) {
-                checkers_rt::prog::set_debug(fs);
+                ev.within(|| checkers_rt::prog::set_debug(fs));
             }
         }
         ev
@@ -40,8 +44,13 @@ impl<'g> Evaluator<'g> {
         gen.m.finalize_definitions().expect("finish native code");
         let invoke = gen.m.get_finalized_function(gen.invoke);
         let invoke: checkers_rt::prog::Invoke = unsafe { std::mem::transmute(invoke) };
-        checkers_rt::prog::install(&super::descriptor(g, &gen.p), invoke);
-        Evaluator { g, gen }
+        let prog = checkers_rt::prog::make(&super::descriptor(g, &gen.p), invoke);
+        Evaluator { g, gen, prog }
+    }
+
+    /// `f`, calling into the runtime for this program.
+    fn within<R>(&self, f: impl FnOnce() -> R) -> R {
+        checkers_rt::prog::within(self.prog, f)
     }
 
     /// The value of a closed term: an owned word, or the runtime error.
@@ -58,8 +67,8 @@ impl<'g> Evaluator<'g> {
         self.gen.define_new();
         self.gen.m.finalize_definitions().map_err(|e| format!("compiling: {e}"))?;
         let code = self.gen.m.get_finalized_function(self.gen.func_id(f)) as u64;
-        let invoke = checkers_rt::prog::prog().invoke;
-        checkers_rt::prog::eval_trapped(move || invoke(code, w::ERASED, std::ptr::null(), 0))
+        let invoke = self.prog.invoke;
+        self.within(|| checkers_rt::prog::eval_trapped(move || invoke(code, w::ERASED, std::ptr::null(), 0)))
     }
 
     pub fn is_false(&self, v: W) -> bool {
@@ -69,14 +78,14 @@ impl<'g> Evaluator<'g> {
     /// In the derived form `debug` has (#126), whatever a type's own
     /// `Debug` says: what a failed `check` shows.
     pub fn show(&self, v: W) -> String {
-        checkers_rt::ops::show_derived(v, 0)
+        self.within(|| checkers_rt::ops::show_derived(v, 0))
     }
 
     /// `v` shown as a value of type `ty` where the type tells more than the
     /// value does: a `Char` as `c'a'`, not its code. Elsewhere as `show`.
     pub fn show_as(&self, v: W, ty: Option<&Tm>) -> String {
         match ty {
-            Some(ty) => self.show_typed(v, ty, 0),
+            Some(ty) => self.within(|| self.show_typed(v, ty, 0)),
             None => self.show(v),
         }
     }
@@ -179,7 +188,7 @@ impl<'g> Evaluator<'g> {
     }
 
     pub fn release(&self, v: W) {
-        w::drop_w(v)
+        self.within(|| w::drop_w(v))
     }
 
     /// A value of type `ty` (a closed type) as a term, where it has one
@@ -333,4 +342,52 @@ fn subst_params(g: &Globals, t: &Tm, args: &[Tm], earlier: usize) -> Option<Tm> 
     env.extend((0..earlier).map(|k| crate::core::Val::var(np + k)));
     let v = crate::core::eval(g, &Rc::new(env), t);
     Some(crate::core::quote(g, np + earlier, &v))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Barrier};
+
+    /// A thread that makes the evaluator for program `src`, reaches `made`,
+    /// then at `go` evaluates the program's own `check`s: the ones false.
+    fn checks_of(src: &'static str, made: Arc<Barrier>, go: Arc<Barrier>) -> std::thread::JoinHandle<Vec<String>> {
+        std::thread::Builder::new()
+            .stack_size(1 << 30)
+            .spawn(move || {
+                let (c, e) = crate::elaborate("prog.ck", src, std::path::Path::new(""));
+                assert_eq!(c.errors(), 0, "{}", c.report());
+                let (e, user) = e.unwrap();
+                let mut ev = super::Evaluator::new(&e.g);
+                made.wait();
+                go.wait();
+                let mut out = Vec::new();
+                for (_, span, t) in e.checks.iter().filter(|(m, _, _)| *m == user) {
+                    let v = ev.eval(t).unwrap();
+                    if ev.is_false(v) {
+                        out.push(format!("{user}: the check at {}..{} is false", span.start, span.end));
+                    }
+                    ev.release(v);
+                }
+                out
+            })
+            .unwrap()
+    }
+
+    /// Two programs checked at the same time in one process (the unit
+    /// tests, a language server): the second's evaluator is made while the
+    /// first's is in use, and each still shows values with its own
+    /// constructors and `Debug` instances.
+    #[test]
+    fn each_program_evaluates_with_its_own_descriptor() {
+        const A: &str = "module a\n\nimport std.string (debug)\n\nrecord Apple\n    n~Int\n\ncheck debug (Apple 1) == \"Apple 1\"\n\ncheck debug \"ab\" == \"\\\"ab\\\"\"\n";
+        const B: &str = "module b\n\nimport std.string (debug)\n\nrecord Berry\n    n~Int\n\nrecord Cherry\n    n~Int\n\ncheck debug (Berry 1) == \"Berry 1\" and debug (Cherry 2) == \"Cherry 2\"\n\ncheck debug \"ab\" == \"\\\"ab\\\"\"\n";
+        let (a_made, b_made, go) = (Arc::new(Barrier::new(2)), Arc::new(Barrier::new(2)), Arc::new(Barrier::new(2)));
+        // `a` makes its evaluator, then `b` its own, then both evaluate.
+        let a = checks_of(A, a_made.clone(), go.clone());
+        a_made.wait();
+        let b = checks_of(B, b_made.clone(), go);
+        b_made.wait();
+        let (a, b) = (a.join().unwrap(), b.join().unwrap());
+        assert!(a.is_empty() && b.is_empty(), "{a:?} {b:?}");
+    }
 }

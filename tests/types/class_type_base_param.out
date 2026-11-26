@@ -1,0 +1,8 @@
+error[E0201]: `Wrap.Part` must be `List Bool`, or a refinement of it, but `List Int` is not
+  --> class_type_base_param.ck:18:5
+   |
+18 |     type Part = List Int
+   |     ^^^^^^^^^^^^^^^^^^^^ `Part` is `List Int` here
+   = help: give `Part` the type `List Bool`, or a refinement of it
+
+class_type_base_param.ck: 1 error, 0 warnings
