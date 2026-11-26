@@ -262,7 +262,9 @@ pub enum Head {
     Meta(MetaId),
     /// A definition that is not unfolded (`partial`, builtin, or out of fuel).
     Def(DefId),
-    Prim(Prim, Vec<Val>),
+    /// A primitive stuck on its arguments, shared like a constructor's: a
+    /// value refers to it from every value built on it.
+    Prim(Prim, Rc<[Val]>),
 }
 
 #[derive(Clone, Debug)]
@@ -977,10 +979,12 @@ pub fn class_type_at(g: &Globals, v: &Val) -> Option<Val> {
     None
 }
 
-fn with_elim(h: Head, sp: &Rc<Vec<Elim>>, e: Elim) -> Val {
-    let mut s = (**sp).clone();
-    s.push(e);
-    Val::Neutral(h, Rc::new(s))
+/// A neutral value with one more eliminator: the spine is copied only if
+/// another value shares it, so applying a neutral to n arguments one at a
+/// time copies none of them.
+fn with_elim(h: Head, mut sp: Rc<Vec<Elim>>, e: Elim) -> Val {
+    Rc::make_mut(&mut sp).push(e);
+    Val::Neutral(h, sp)
 }
 
 pub fn elim(g: &Globals, v: Val, e: Elim) -> Val {
@@ -995,7 +999,7 @@ pub fn elim(g: &Globals, v: Val, e: Elim) -> Val {
 pub fn app(g: &Globals, f: Val, a: Val, i: Icit) -> Val {
     match force_meta(g, f) {
         Val::Lam(_, _, _, c) => apply_closure(g, &c, a),
-        Val::Neutral(h, sp) => with_elim(h, &sp, Elim::App(a, i)),
+        Val::Neutral(h, sp) => with_elim(h, sp, Elim::App(a, i)),
         _ => Val::Error,
     }
 }
@@ -1040,7 +1044,7 @@ fn proj(g: &Globals, v: Val, i: usize, rest: bool) -> Val {
                 _ => vs.get(i).cloned().unwrap_or(Val::Error),
             }
         }
-        Val::Neutral(h, sp) => with_elim(h, &sp, Elim::Proj(i, rest)),
+        Val::Neutral(h, sp) => with_elim(h, sp, Elim::Proj(i, rest)),
         _ => Val::Error,
     }
 }
@@ -1056,12 +1060,12 @@ fn field(g: &Globals, v: Val, c: ConId, i: usize) -> Val {
         v @ Val::Neutral(..) if g.is_type_field(c, i) => match force(g, v.clone()) {
             f @ (Val::Con(..) | Val::Lit(_)) => field(g, f, c, i),
             f @ Val::Neutral(..) => match stuck_base(g, v, f) {
-                Val::Neutral(h, sp) => with_elim(h, &sp, Elim::Field(c, i)),
+                Val::Neutral(h, sp) => with_elim(h, sp, Elim::Field(c, i)),
                 _ => Val::Error,
             },
             _ => Val::Error,
         },
-        Val::Neutral(h, sp) => with_elim(h, &sp, Elim::Field(c, i)),
+        Val::Neutral(h, sp) => with_elim(h, sp, Elim::Field(c, i)),
         _ => Val::Error,
     }
 }
@@ -1102,7 +1106,7 @@ fn case(g: &Globals, v: Val, c: Rc<CaseTm>, env: Env) -> Val {
             }
         }
         f @ Val::Neutral(..) => match stuck_base(g, v, f) {
-            Val::Neutral(h, sp) => with_elim(h, &sp, Elim::Case(c, env)),
+            Val::Neutral(h, sp) => with_elim(h, sp, Elim::Case(c, env)),
             _ => Val::Error,
         },
         _ => Val::Error,
@@ -1154,10 +1158,10 @@ fn val_eq(g: &Globals, a: &Val, b: &Val) -> Option<bool> {
 /// if they are not already values it stays stuck, and `unfold` evaluates
 /// it further only when conversion checking needs to.
 fn prim(g: &Globals, p: &Prim, orig: Vec<Val>) -> Val {
-    let args: Vec<Val> = orig.iter().map(|a| force_meta(g, a.clone())).collect();
+    let args: Vec<Val> = orig.into_iter().map(|a| force_meta(g, a)).collect();
     match prim_value(g, p, &args) {
         Some(v) => v,
-        None => Val::Neutral(Head::Prim(p.clone(), args), Rc::new(Vec::new())),
+        None => Val::Neutral(Head::Prim(p.clone(), args.into()), Rc::new(Vec::new())),
     }
 }
 
@@ -1701,14 +1705,179 @@ fn unify_whnf(g: &Globals, l: usize, a: &Val, b: &Val) -> Result<(), UnifyError>
 
 // ── printing ─────────────────────────────────────────────────────────────────
 
+/// The names of a context's locals, outermost first, as a persistent list:
+/// keeping them for a later message, as each deferred constraint does,
+/// takes no copy however many locals are in scope.
+#[derive(Clone, Default)]
+pub struct Names(Option<Rc<NamesCell>>);
+
+struct NamesCell {
+    name: Name,
+    len: usize,
+    outer: Names,
+}
+
+impl Names {
+    pub fn len(&self) -> usize {
+        self.0.as_ref().map_or(0, |c| c.len)
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_none()
+    }
+    pub fn push(&mut self, name: Name) {
+        let outer = std::mem::take(self);
+        *self = Names(Some(Rc::new(NamesCell { name, len: outer.len() + 1, outer })));
+    }
+    pub fn pop(&mut self) {
+        if let Some(c) = &self.0 {
+            *self = c.outer.clone();
+        }
+    }
+    pub fn truncate(&mut self, n: usize) {
+        while self.len() > n {
+            self.pop();
+        }
+    }
+    /// Innermost first.
+    pub fn iter(&self) -> impl Iterator<Item = &Name> {
+        std::iter::successors(self.0.as_deref(), |c| c.outer.0.as_deref()).map(|c| &c.name)
+    }
+    /// The name at `level`.
+    pub fn get(&self, level: usize) -> Option<&Name> {
+        self.iter().nth(self.len().checked_sub(1 + level)?)
+    }
+    /// The level of the innermost local named `x`.
+    pub fn level_of(&self, x: &str) -> Option<usize> {
+        self.iter().position(|n| n.as_ref() == x).map(|k| self.len() - 1 - k)
+    }
+    /// Outermost first, as levels count.
+    pub fn to_vec(&self) -> Vec<Name> {
+        let mut v: Vec<Name> = self.iter().cloned().collect();
+        v.reverse();
+        v
+    }
+}
+
+/// Outermost first.
+impl FromIterator<Name> for Names {
+    fn from_iter<I: IntoIterator<Item = Name>>(it: I) -> Names {
+        let mut names = Names::default();
+        for n in it {
+            names.push(n);
+        }
+        names
+    }
+}
+
+impl Drop for Names {
+    /// One cell at a time: dropping a long list recursively would use stack
+    /// in proportion to it.
+    fn drop(&mut self) {
+        let mut cur = self.0.take();
+        while let Some(c) = cur {
+            match Rc::try_unwrap(c) {
+                Ok(mut cell) => cur = cell.outer.0.take(),
+                Err(_) => break,
+            }
+        }
+    }
+}
+
+impl std::fmt::Debug for Names {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.to_vec()).finish()
+    }
+}
+
+/// The names of the locals a shown term may mention, outermost first: read
+/// where they are, so that showing a term doesn't copy its whole context.
+pub trait Scope {
+    fn len(&self) -> usize;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    /// The name of the local at `level`, below `len`.
+    fn name(&self, level: usize) -> &Name;
+}
+
+impl Scope for [Name] {
+    fn len(&self) -> usize {
+        <[Name]>::len(self)
+    }
+    fn name(&self, level: usize) -> &Name {
+        &self[level]
+    }
+}
+
+impl Scope for Vec<Name> {
+    fn len(&self) -> usize {
+        Vec::len(self)
+    }
+    fn name(&self, level: usize) -> &Name {
+        &self[level]
+    }
+}
+
+impl<const N: usize> Scope for [Name; N] {
+    fn len(&self) -> usize {
+        N
+    }
+    fn name(&self, level: usize) -> &Name {
+        &self[level]
+    }
+}
+
+/// A scope with more names inside it.
+pub struct Under<'a, S: Scope + ?Sized>(pub &'a S, pub &'a [Name]);
+
+impl<S: Scope + ?Sized> Scope for Under<'_, S> {
+    fn len(&self) -> usize {
+        self.0.len() + self.1.len()
+    }
+    fn name(&self, level: usize) -> &Name {
+        match level.checked_sub(self.0.len()) {
+            Some(k) => &self.1[k],
+            None => self.0.name(level),
+        }
+    }
+}
+
+/// The names `show_prec` sees: the context's, then the binders it is under.
+struct Ns<'a, S: Scope + ?Sized> {
+    outer: &'a S,
+    inner: Vec<Name>,
+}
+
+impl<S: Scope + ?Sized> Ns<'_, S> {
+    fn len(&self) -> usize {
+        self.outer.len() + self.inner.len()
+    }
+    /// The name of de Bruijn index `i`.
+    fn get(&self, i: usize) -> Option<&Name> {
+        match self.inner.len().checked_sub(1 + i) {
+            Some(k) => Some(&self.inner[k]),
+            None => self.outer.len().checked_sub(1 + i - self.inner.len()).map(|l| self.outer.name(l)),
+        }
+    }
+    fn contains(&self, x: &Name) -> bool {
+        self.inner.contains(x) || (0..self.outer.len()).any(|l| self.outer.name(l) == x)
+    }
+    fn push(&mut self, x: Name) {
+        self.inner.push(x);
+    }
+    fn pop(&mut self) {
+        self.inner.pop();
+    }
+}
+
 /// Render a core term for error messages. `names` are the local variable
 /// names, innermost last.
-pub fn show(g: &Globals, names: &[Name], t: &Tm) -> String {
-    let mut ns: Vec<Name> = names.to_vec();
+pub fn show<S: Scope + ?Sized>(g: &Globals, names: &S, t: &Tm) -> String {
+    let mut ns = Ns { outer: names, inner: Vec::new() };
     show_prec(g, &mut ns, t, 0)
 }
 
-fn fresh(ns: &[Name], x: &Name) -> Name {
+fn fresh<S: Scope + ?Sized>(ns: &Ns<S>, x: &Name) -> Name {
     if x.as_ref() == "_" {
         return x.clone();
     }
@@ -1749,9 +1918,9 @@ fn paren(b: bool, s: String) -> String {
     }
 }
 
-fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
+fn show_prec<S: Scope + ?Sized>(g: &Globals, ns: &mut Ns<S>, t: &Tm, p: u8) -> String {
     match t {
-        Tm::Var(i) => ns.get(ns.len().wrapping_sub(1 + i)).map(|n| n.to_string()).unwrap_or_else(|| format!("#{i}")),
+        Tm::Var(i) => ns.get(*i).map(|n| n.to_string()).unwrap_or_else(|| format!("#{i}")),
         Tm::Def(d) => g.defs[d.0 as usize].name.to_string(),
         Tm::TyCon(t) => g.tys[t.0 as usize].name.to_string(),
         Tm::Con(c) => g.cons[c.0 as usize].name.to_string(),
@@ -1945,7 +2114,7 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
                 // in parentheses: `and` over `or` over `implies`, which
                 // groups to the right.
                 let level = |x: &Tm| bool_op(g, x).map_or(4, |o| o.0);
-                let side = |ns: &mut Vec<Name>, x: &Tm, min: u8| paren(level(x) < min, show_prec(g, ns, x, 0));
+                let side = |ns: &mut Ns<S>, x: &Tm, min: u8| paren(level(x) < min, show_prec(g, ns, x, 0));
                 let text = match op {
                     3 => format!("{} and {}", side(ns, a, 3), side(ns, b, 3)),
                     2 => format!("{} or {}", side(ns, a, 2), side(ns, b, 2)),

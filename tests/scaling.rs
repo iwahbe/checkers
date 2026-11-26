@@ -125,9 +125,18 @@ fn reading_a_field_of_a_call_does_not_run_it() {
 /// 192 MB to 195 MB and 549 MB to 550 MB.
 #[cfg(target_os = "linux")]
 fn check_peak_kb(dir: &Path, name: &str, n: usize) -> u64 {
-    let file = dir.join(format!("{name}.ck"));
     let chain = vec!["1"; n].join(" + ");
-    std::fs::write(&file, format!("module {name}\n\ncheck {chain} == {n}\n")).unwrap();
+    source_usage(dir, name, &format!("module {name}\n\ncheck {chain} == {n}\n")).1
+}
+
+/// The CPU time, in milliseconds, and the peak resident memory, in KB, of
+/// `ckc check` on module `name`, as `check_peak_kb` measures them. CPU
+/// time, unlike the phases' times, doesn't count waiting for a CPU, so it
+/// varies less when other tests are running.
+#[cfg(target_os = "linux")]
+fn source_usage(dir: &Path, name: &str, source: &str) -> (f64, u64) {
+    let file = dir.join(format!("{name}.ck"));
+    std::fs::write(&file, source).unwrap();
     let child = Command::new(env!("CARGO_BIN_EXE_ckc"))
         .args(["check", "--no-cache", &format!("{name}.ck")])
         .current_dir(dir)
@@ -150,7 +159,8 @@ fn check_peak_kb(dir: &Path, name: &str, n: usize) -> u64 {
     // `child` is reaped already: dropping it neither waits nor kills.
     drop(child);
     assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0, "{name}: ckc failed");
-    usage.ru_maxrss as u64
+    let ms = |t: libc::timeval| t.tv_sec as f64 * 1000.0 + t.tv_usec as f64 / 1000.0;
+    (ms(usage.ru_utime) + ms(usage.ru_stime), usage.ru_maxrss as u64)
 }
 
 /// Code generation keeps memory in proportion to the function: Cranelift's
@@ -168,4 +178,45 @@ fn a_chain_of_additions_compiles_in_linear_memory() {
     let large = check_peak_kb(&dir, "mem8000", 8000);
     let _ = std::fs::remove_dir_all(&dir);
     assert!(large < 4 * small, "2000 operators took {} MB at peak, 8000 took {} MB", small / 1024, large / 1024);
+}
+
+/// A function of n `let`s, each adding one to the one before. `a{i}`'s
+/// value, `x + 1 + … + 1`, is i deep, and each `let` after it refers to it.
+/// Shared, the values take memory in proportion to n; copied for each local
+/// that holds one, they took n²/2 (2,000 took 344 MB and 2.1 s to elaborate,
+/// 8,000 took 4.6 GB and 32 s). So did the names of every local in scope,
+/// kept for each operator's message.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_chain_of_lets_checks_in_linear_time_and_memory() {
+    let dir = std::env::temp_dir().join(format!("checkers-scaling-{}-lets", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sizes = [2000, 4000, 8000];
+    // The least of a few runs: the least disturbed by other tests.
+    let [a, b, c] = sizes.map(|n| {
+        let name = format!("by_let{n}");
+        let mut s = format!("module {name}\n\nexport fn f x -> r : x~Int, r~Int\n    let a0 = x\n");
+        for i in 1..=n {
+            s += &format!("    let a{i} = a{} + 1\n", i - 1);
+        }
+        s += &format!("    a{n}\n");
+        (0..7).map(|_| source_usage(&dir, &name, &s)).fold((f64::INFINITY, u64::MAX), |(t, m), (t2, m2)| (t.min(t2), m.min(m2)))
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+    let mb = |kb: u64| kb as f64 / 1024.0;
+    // What each doubling adds to the peak: twice as much the second time for
+    // linear memory, four times for quadratic; the fixed part (the standard
+    // library) cancels out. The peak moves in the allocator's steps, so up
+    // to three times. (2,000 to 4,000 lets add about 9 MB, 4,000 to 8,000
+    // about 20 MB.)
+    let (first, second) = (mb(b.1) - mb(a.1), mb(c.1) - mb(b.1));
+    assert!(
+        second <= 3.0 * first,
+        "peak memory: 2000 to 4000 lets added {first:.0} MB, 4000 to 8000 added {second:.0} MB"
+    );
+    // Time per instruction grows with the memory a run touches, so what a
+    // doubling adds to the time doesn't tell quadratic work from cache
+    // misses: four times the lets may take at most four times as long, as
+    // linear work with any fixed part does (about 1.3 times).
+    assert!(c.0 <= 4.0 * a.0, "CPU time: 2000 lets took {:.0} ms, 8000 took {:.0} ms", a.0, c.0);
 }

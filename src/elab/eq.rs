@@ -140,8 +140,8 @@ impl Elab {
                 }
             }
             Err(Bad::NoEq(f)) => {
-                let shown = show(&self.g, &d.names, &quote(&self.g, d.lvl, &d.ty));
-                let why = self.why_not(&d.names, d.lvl, &d.ty, &f);
+                let shown = show(&self.g, &d.names.to_vec(), &quote(&self.g, d.lvl, &d.ty));
+                let why = self.why_not(&d.names.to_vec(), d.lvl, &d.ty, &f);
                 let mut diag = Diagnostic::error("E0263", format!("{} can't compare `{shown}`: {why}", d.what), d.span)
                     .with_label(format!("has type `{shown}`"));
                 if matches!(self.force(&f), Val::Pi(..)) {
@@ -200,7 +200,7 @@ impl Elab {
                 let Some(arg) = i.args.get(k) else { continue };
                 let bad = match self.check_comparable(arg, i.lvl, i.caller) {
                     Ok(_) => continue,
-                    Err(Bad::NoEq(f)) => self.why_not(&i.names, i.lvl, arg, &f),
+                    Err(Bad::NoEq(f)) => self.why_not(&i.names.to_vec(), i.lvl, arg, &f),
                     Err(Bad::Var(_)) => "it could be a function type".to_string(),
                 };
                 let callee = self.g.defs[i.callee.0 as usize].name.to_string();
@@ -213,7 +213,7 @@ impl Elab {
                 } else {
                     format!(" (through `{root}`, as `{}`)", why.param)
                 };
-                let shown = show(&self.g, &i.names, &quote(&self.g, i.lvl, arg));
+                let shown = show(&self.g, &i.names.to_vec(), &quote(&self.g, i.lvl, arg));
                 self.err(
                     Diagnostic::error(
                         "E0264",

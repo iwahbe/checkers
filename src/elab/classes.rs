@@ -358,7 +358,7 @@ pub struct InstReq {
     /// The types it is for, one for each of the class's parameters.
     pub tys: Vec<Val>,
     pub lvl: usize,
-    pub names: Vec<Name>,
+    pub names: Names,
     pub span: Span,
     pub owner: Option<DefId>,
     pub in_spec: bool,
@@ -3022,7 +3022,7 @@ impl Elab {
             .tys
             .iter()
             .map(|t| {
-                let s = show(&self.g, &r.names, &quote(&self.g, r.lvl, t));
+                let s = show(&self.g, &r.names.to_vec(), &quote(&self.g, r.lvl, t));
                 if s.contains(' ') {
                     format!("({s})")
                 } else {
@@ -3087,7 +3087,7 @@ impl Elab {
         for ((key, vars), ty) in f.heads.iter().zip(&r.tys) {
             let mut args = Vec::new();
             for v in vars {
-                let Some(l) = r.names.iter().rposition(|n| **n == **v) else { return false };
+                let Some(l) = r.names.level_of(v) else { return false };
                 args.push(Val::var(l));
             }
             let head = match key {
@@ -3169,9 +3169,9 @@ impl Elab {
                             // `\y -> List y` is `List`.
                             Val::Lam(_, _, _, c) => match self.force(&apply_closure(&self.g, &c, Val::var(r.lvl))) {
                                 Val::TyCon(t, args) if args.len() == 1 => self.g.tys[t.0 as usize].name.to_string(),
-                                _ => show(&self.g, &r.names, &quote(&self.g, r.lvl, t)),
+                                _ => show(&self.g, &r.names.to_vec(), &quote(&self.g, r.lvl, t)),
                             },
-                            _ => show(&self.g, &r.names, &quote(&self.g, r.lvl, t)),
+                            _ => show(&self.g, &r.names.to_vec(), &quote(&self.g, r.lvl, t)),
                         })
                         .collect();
                     let args: Vec<String> = shown.iter().map(|s| if s.contains(' ') { format!("({s})") } else { s.clone() }).collect();
@@ -3220,11 +3220,11 @@ impl Elab {
 
     /// A comparison just made waits for a dictionary (#133): remember it,
     /// to make again once the dictionary is found.
-    pub fn note_postponed(&mut self, lvl: usize, expected: &Val, actual: &Val, span: Span, names: &[Name]) {
+    pub fn note_postponed(&mut self, lvl: usize, expected: &Val, actual: &Val, span: Span, names: Names) {
         let any = !self.g.postponed.borrow().is_empty();
         if any {
             self.g.postponed.borrow_mut().clear();
-            self.waiting.push((lvl, expected.clone(), actual.clone(), span, names.to_vec(), true));
+            self.waiting.push((lvl, expected.clone(), actual.clone(), span, names, true));
         }
     }
 
@@ -3304,8 +3304,8 @@ impl Elab {
                 // that its dictionary is known.
                 Ok(()) if directed && (self.based_inside(&a, l) || self.based_inside(&b, l)) => {
                     let mut cx = Cx::default();
-                    for n in &names {
-                        cx.bind(n, Val::Error, Mult::Zero);
+                    for n in names.to_vec() {
+                        cx.bind(&n, Val::Error, Mult::Zero);
                     }
                     match self.refined_mismatch(&cx, &a, &b, span) {
                         Some(g) => self.report_gained(&cx, &a, &b, &g, span, "this expression"),
@@ -3320,8 +3320,8 @@ impl Elab {
                     self.waiting_late.push((l, a, b, span, names, directed));
                 }
                 Err(_) => {
-                    let e = show(&self.g, &names, &self.reduce_assoc(l, &quote(&self.g, l, &a)));
-                    let f = show(&self.g, &names, &self.reduce_assoc(l, &quote(&self.g, l, &b)));
+                    let e = show(&self.g, &names.to_vec(), &self.reduce_assoc(l, &quote(&self.g, l, &a)));
+                    let f = show(&self.g, &names.to_vec(), &self.reduce_assoc(l, &quote(&self.g, l, &b)));
                     self.err(Diagnostic::error("E0201", format!("type mismatch: expected `{e}`, found `{f}`"), span));
                 }
             }

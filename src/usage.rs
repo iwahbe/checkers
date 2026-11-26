@@ -5,6 +5,7 @@ use crate::core::{CaseTm, DefId, Mult, Prim, Tm};
 use crate::diag::Diagnostic;
 use crate::source::Span;
 use crate::elab::Elab;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Count {
@@ -57,17 +58,31 @@ struct U<'a> {
     captured: std::collections::BTreeSet<usize>,
 }
 
-type Counts = Vec<Count>;
+/// Each binder's uses, by level: only the binders used at all, so that a
+/// term's counts take room for the variables it mentions, not for every
+/// binder in scope.
+type Counts = BTreeMap<usize, Count>;
 
 fn add(a: &mut Counts, b: &Counts) {
-    for (x, y) in a.iter_mut().zip(b) {
+    for (l, y) in b {
+        let x = a.entry(*l).or_insert(Count::Zero);
         *x = x.add(*y);
     }
 }
 
+/// The uses of the binder at `lvl`.
+fn count(c: &Counts, lvl: usize) -> Count {
+    c.get(&lvl).copied().unwrap_or(Count::Zero)
+}
+
+/// Each use made `m` times.
+fn scaled(c: Counts, m: Mult) -> Counts {
+    c.into_iter().map(|(l, x)| (l, x.scale(m))).filter(|(_, x)| *x != Count::Zero).collect()
+}
+
 impl U<'_> {
     fn zero(&self) -> Counts {
-        vec![Count::Zero; self.binders.len()]
+        Counts::new()
     }
 
     fn report(&mut self, lvl: usize, c: Count, mixed: bool) {
@@ -263,7 +278,7 @@ impl U<'_> {
     /// Check a binder's own usage when it goes out of scope.
     fn close(&mut self, counts: &Counts) {
         let lvl = self.binders.len() - 1;
-        let c = counts[lvl];
+        let c = count(counts, lvl);
         match self.binders[lvl].mult {
             Mult::One if c != Count::One => self.report(lvl, c, false),
             Mult::Zero if c != Count::Zero => self.report(lvl, c, false),
@@ -279,7 +294,7 @@ impl U<'_> {
         self.close(&c);
         self.binders.pop();
         let mut c = c;
-        c.pop();
+        c.remove(&self.binders.len());
         c
     }
 
@@ -296,10 +311,8 @@ impl U<'_> {
     fn go(&mut self, t: &Tm) -> Counts {
         match t {
             Tm::Var(i) => {
-                let mut c = self.zero();
                 let lvl = self.binders.len() - 1 - i;
-                c[lvl] = Count::One;
-                c
+                Counts::from([(lvl, Count::One)])
             }
             // An unsolved meta (an error was reported) uses nothing.
             Tm::App(..) if head_is_meta(t) => self.zero(),
@@ -308,12 +321,12 @@ impl U<'_> {
                 let m = &if *m == Mult::One && self.e.lam_own_moot(x) { Mult::Many } else { *m };
                 // A closure may run any number of times.
                 let c = self.under(x, *m, b, true);
-                for (lvl, n) in c.iter().enumerate() {
-                    if *n != Count::Zero && self.binders[lvl].mult == Mult::One {
-                        self.captured.insert(lvl);
+                for (lvl, n) in &c {
+                    if *n != Count::Zero && self.binders[*lvl].mult == Mult::One {
+                        self.captured.insert(*lvl);
                     }
                 }
-                c.into_iter().map(|c| c.scale(Mult::Many)).collect()
+                scaled(c, Mult::Many)
             }
             Tm::Let(x, m, _, v, b) => {
                 // A tuple pattern binds each component (`$c0`, `$c1`, …) by
@@ -330,11 +343,11 @@ impl U<'_> {
                     self.close(&cb);
                     self.binders.pop();
                     let mut cb = cb;
-                    cb.pop();
+                    cb.remove(&self.binders.len());
                     add(&mut c, &cb);
                     return c;
                 }
-                let mut c: Counts = self.go(v).into_iter().map(|c| c.scale(scale)).collect();
+                let mut c = scaled(self.go(v), scale);
                 let cb = self.under(x, *m, b, false);
                 add(&mut c, &cb);
                 c
@@ -355,7 +368,7 @@ impl U<'_> {
                     std::iter::repeat_n(Mult::Zero, np).chain(ci.fields.iter().map(|f| f.1)).collect();
                 let mut c = self.zero();
                 for (x, m) in v.iter().zip(mults) {
-                    let cx: Counts = self.go(x).into_iter().map(|c| c.scale(if m == Mult::Zero { Mult::Zero } else { Mult::One })).collect();
+                    let cx = scaled(self.go(x), if m == Mult::Zero { Mult::Zero } else { Mult::One });
                     add(&mut c, &cx);
                 }
                 c
@@ -488,9 +501,9 @@ impl U<'_> {
                 let d = &self.e.g.defs[d.0 as usize];
                 (d.name.to_string(), d.module.to_string())
             }) {
-                for (lvl, c) in used.iter().enumerate() {
-                    if *c != Count::Zero && self.binders[lvl].mult == Mult::One && carried.contains(&lvl) {
-                        self.copied_by.entry(lvl).or_insert_with(|| callee.clone());
+                for (lvl, c) in &used {
+                    if *c != Count::Zero && self.binders[*lvl].mult == Mult::One && carried.contains(lvl) {
+                        self.copied_by.entry(*lvl).or_insert_with(|| callee.clone());
                     }
                 }
             }
@@ -499,18 +512,18 @@ impl U<'_> {
         // even what it only computes from (`a` in `wrap s a`).
         let ca: Counts = used
             .into_iter()
-            .enumerate()
-            .map(|(lvl, x)| if m == Mult::Zero || carried.contains(&lvl) { x.scale(m) } else { x })
+            .map(|(lvl, x)| (lvl, if m == Mult::Zero || carried.contains(&lvl) { x.scale(m) } else { x }))
+            .filter(|(_, x)| *x != Count::Zero)
             .collect();
         add(&mut c, &ca);
         // A partial application holding a resource is a closure that
         // uses it: unless this is a place that calls it once, it may
         // be called any number of times (D171).
         if !once && self.partial_use(t).is_some() {
-            for (lvl, x) in c.iter_mut().enumerate() {
-                if *x != Count::Zero && self.binders[lvl].mult == Mult::One {
+            for (lvl, x) in c.iter_mut() {
+                if *x != Count::Zero && self.binders[*lvl].mult == Mult::One {
                     *x = Count::Many;
-                    self.captured.insert(lvl);
+                    self.captured.insert(*lvl);
                 }
             }
         }
@@ -569,7 +582,7 @@ impl U<'_> {
                 self.close(&c);
                 self.binders.pop();
                 let mut c = c;
-                c.pop();
+                c.remove(&self.binders.len());
                 c
             }
             other => self.go(other),
@@ -588,8 +601,12 @@ impl U<'_> {
             // Variables whose type, refined in this arm, holds no resource
             // (D173): used any number of times here, as if exactly once.
             let moot: Vec<usize> = match scrut {
-                Some(s) => (0..start)
-                    .filter(|l| self.binders[*l].mult == Mult::One && self.e.moot_in_arm.contains(&(self.did, s, *con, *l)))
+                Some(s) => self
+                    .e
+                    .moot_in_arm
+                    .range((self.did, s, *con, 0)..(self.did, s, *con, start))
+                    .map(|k| k.3)
+                    .filter(|l| self.binders[*l].mult == Mult::One)
                     .collect(),
                 None => Vec::new(),
             };
@@ -601,7 +618,7 @@ impl U<'_> {
             }
             let mut r = self.go(body);
             self.binders.truncate(start);
-            r.truncate(start);
+            r.split_off(&start);
             for l in &moot {
                 self.binders[*l].mult = Mult::One;
             }
@@ -623,14 +640,17 @@ impl U<'_> {
         if results.is_empty() {
             return out;
         }
-        for lvl in 0..out.len() {
+        // Only a binder some arm uses, or holds no resource in, can count
+        // as other than unused.
+        let used: BTreeSet<usize> = results.iter().flat_map(|r| r.keys()).chain(moots.iter().flatten()).copied().collect();
+        for lvl in used {
             let mult = self.binders[lvl].mult;
             // An arm where it holds no resource doesn't constrain it (D173);
             // if none does, it counts as used once.
             let all: Vec<Count> =
-                results.iter().zip(&moots).filter(|(_, m)| !m.contains(&lvl)).map(|(r, _)| r[lvl]).collect();
+                results.iter().zip(&moots).filter(|(_, m)| !m.contains(&lvl)).map(|(r, _)| count(r, lvl)).collect();
             let Some(first) = all.first().copied() else {
-                out[lvl] = Count::One;
+                out.insert(lvl, Count::One);
                 continue;
             };
             if mult == Mult::One && all.iter().any(|x| *x != first) && !self.reported {
@@ -640,11 +660,14 @@ impl U<'_> {
                     self.report(lvl, Count::One, true);
                 }
             }
-            out[lvl] = all.iter().copied().fold(Count::Zero, |a, b| match (a, b) {
+            let k = all.iter().copied().fold(Count::Zero, |a, b| match (a, b) {
                 (Count::Many, _) | (_, Count::Many) => Count::Many,
                 (Count::One, _) | (_, Count::One) => Count::One,
                 _ => Count::Zero,
             });
+            if k != Count::Zero {
+                out.insert(lvl, k);
+            }
         }
         out
     }
@@ -687,7 +710,7 @@ pub fn check_fn(e: &mut Elab, did: DefId, body: &Tm) {
     let c = u.go(t);
     for lvl in (0..n).rev() {
         let mult = u.binders[lvl].mult;
-        let k = c[lvl];
+        let k = count(&c, lvl);
         let bad = match mult {
             Mult::One => k != Count::One,
             Mult::Zero => k != Count::Zero,
