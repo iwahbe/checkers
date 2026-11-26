@@ -1,0 +1,13 @@
+(set-option :produce-models true)
+(set-option :timeout 60000)
+(set-option :reproducible-resource-limit 200000)
+(set-logic ALL)
+(declare-fun |std.prelude.valid_utf8| ((Seq Int)) Bool)
+(declare-fun |ck.packages.absolute| ((Seq Int)) Bool)
+(declare-const |d#1| (Seq Int))
+(assert (|std.prelude.valid_utf8| |d#1|))
+(assert (= (|ck.packages.absolute| |d#1|) true))
+(assert (not false))
+(check-sat)
+(get-value (|d#1|))
+;; reachable?

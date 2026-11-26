@@ -1,0 +1,11 @@
+(set-option :produce-models true)
+(set-option :timeout 60000)
+(set-option :reproducible-resource-limit 200000)
+(set-logic ALL)
+(declare-fun |ck.literate.blank| ((Seq Int)) Bool)
+(declare-const |l#0| (Seq Int))
+(assert (= (|ck.literate.blank| |l#0|) false))
+(assert (not false))
+(check-sat)
+(get-value (|l#0|))
+;; reachable?

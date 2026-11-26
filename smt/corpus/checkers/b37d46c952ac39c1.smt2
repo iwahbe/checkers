@@ -1,0 +1,11 @@
+(set-option :produce-models true)
+(set-option :timeout 60000)
+(set-option :reproducible-resource-limit 200000)
+(set-logic ALL)
+(declare-datatypes ((|std.prelude.Option| 1)) ((par (T0) ((|std.prelude.None|) (|std.prelude.Some| (|std.prelude.Some.0| |T0|))))))
+(declare-const |exe#0| (|std.prelude.Option| (Seq Int)))
+(assert (= |exe#0| (as |std.prelude.None| (|std.prelude.Option| (Seq Int)))))
+(assert (not false))
+(check-sat)
+(get-value (|exe#0|))
+;; reachable?

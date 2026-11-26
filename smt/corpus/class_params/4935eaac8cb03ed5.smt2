@@ -1,0 +1,7 @@
+(set-option :produce-models true)
+(set-option :timeout 60000)
+(set-option :reproducible-resource-limit 200000)
+(set-logic ALL)
+(define-funs-rec ((|class_params.Measure Bool Int.measure| ((p0 Bool) (p1 Int)) Int)) ((ite (not p0) 0 1)))
+(assert (not (= (|class_params.Measure Bool Int.measure| true 3) 1)))
+(check-sat)

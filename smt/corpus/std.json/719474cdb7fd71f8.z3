@@ -1,3 +1,0 @@
-;; work 32963
-unsat
-(error "line 108 column 47: model is not available")

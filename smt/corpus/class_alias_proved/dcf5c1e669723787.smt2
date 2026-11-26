@@ -1,8 +1,0 @@
-(set-option :produce-models true)
-(set-option :rlimit 200000)
-(set-option :timeout 60000)
-(set-logic ALL)
-(define-funs-rec ((|class_alias_proved.Make Int.make| ((p0 Int)) Int)) ((ite (not (>= p0 0)) 0 p0)))
-(assert (>= (|class_alias_proved.Make Int.make| (- 1)) 0))
-(assert (not (>= (|class_alias_proved.Make Int.make| (- 1)) 0)))
-(check-sat)

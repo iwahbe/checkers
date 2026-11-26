@@ -1,0 +1,13 @@
+(set-option :produce-models true)
+(set-option :timeout 60000)
+(set-option :reproducible-resource-limit 200000)
+(set-logic ALL)
+(declare-const |i#2| Int)
+(declare-const |a#0| (Seq Int))
+(assert (>= |i#2| 0))
+(assert (>= |i#2| 0))
+(assert (= (>= |i#2| (seq.len |a#0|)) true))
+(assert (not false))
+(check-sat)
+(get-value (|i#2| |a#0|))
+;; reachable?
