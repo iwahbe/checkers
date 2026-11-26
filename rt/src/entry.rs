@@ -62,6 +62,7 @@ fn exit_code(r: W, owner: u32) -> i32 {
 #[allow(clippy::too_many_arguments)]
 pub fn run_main(desc: &str, invoke: Invoke, debug: u64, main: W, owner: u32, args: &[String], threads: usize) -> i32 {
     install(desc, invoke);
+    crate::overflow::thread_init();
     if debug != 0 {
         set_debug(invoke(debug, ERASED, std::ptr::null(), 0));
     }

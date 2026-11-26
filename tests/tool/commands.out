@@ -112,7 +112,7 @@ examples/wc.ck:101:7  computed check ends_in_word b"" True
 <std>/string.ck:10:11  builtin  std.string.from_chars
 <std>/terminal.ck:14:11  builtin  std.terminal.eprint_line
 <std>/terminal.ck:10:11  builtin  std.terminal.print_line
-<std>/terminal.ck:36:11  builtin  std.terminal.stdin
+<std>/terminal.ck:37:11  builtin  std.terminal.stdin
 solver: Z3 5.3.3.0
 cache: 76 of 789 Z3 answers reused
 -- stderr
