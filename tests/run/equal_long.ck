@@ -19,6 +19,8 @@ fn snoc_onto s n -> r : s~Snoc, n~Nat, r~Snoc
     if n == 0 then s else snoc_onto (Snoc s 1) (n - 1)
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
-    terminal.print_line (debug (long 4000000 == long 4000000)) sys.term
-    terminal.print_line (debug (snoc_onto Lin 4000000 == snoc_onto Lin 4000000)) sys.term
+    # Sizes known only when the program runs, so `==` runs too.
+    let n = len args + 4000000
+    terminal.print_line (debug (long n == long n)) sys.term
+    terminal.print_line (debug (snoc_onto Lin n == snoc_onto Lin n)) sys.term
     Success
