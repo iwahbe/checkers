@@ -120,9 +120,9 @@ fn reading_a_field_of_a_call_does_not_run_it() {
 /// default it waits 10 ms, and returns it only when it is next called after
 /// that: whether the `check`'s code generation, freed when it ends, is still
 /// resident when Z3 (whose own allocator can't reuse it) starts proving
-/// depends on timing. Over 20 runs each, 2,000 operators peaked at 224 MB or
-/// 292 MB and 8,000 at 585 MB or 670 MB; with the memory returned at once, at
-/// 192 MB to 195 MB and 549 MB to 550 MB.
+/// depends on timing. Over 20 runs each, 4,000 operators peaked anywhere from
+/// 350 MB to 430 MB and 8,000 from 598 MB to 677 MB; with the memory returned
+/// at once, at 329 MB to 333 MB and 561 MB to 565 MB.
 #[cfg(target_os = "linux")]
 fn check_peak_kb(dir: &Path, name: &str, n: usize) -> u64 {
     let file = dir.join(format!("{name}.ck"));
@@ -158,11 +158,11 @@ fn check_peak_kb(dir: &Path, name: &str, n: usize) -> u64 {
 /// as the function's block count, n² for a chain of n additions. Most of that
 /// is freed before the peak, which comes later and grows with n, so it shows
 /// only once the maps outgrow it: 4,000, 8,000 and 16,000 operators peak at
-/// 325–330 MB, 564–569 MB and 1,048–1,050 MB, and with a variable per `let`
-/// at 323–324 MB, 557–558 MB and 1,235–1,236 MB. A fixed part cancels out of the increments: linear
+/// 327–333 MB, 559–565 MB and 1,039–1,047 MB, and with a variable per `let`
+/// at 325–331 MB, 557–563 MB and 1,233–1,236 MB (20 runs each). A fixed part cancels out of the increments: linear
 /// memory adds as much for the second 8,000 operators as for the 4,000 before
 /// them, twice, n² four times. The second may add at most two and a half
-/// times the first (1.98 to 2.06 here, 2.87 to 2.89 with a variable per `let`).
+/// times the first (2.03 to 2.13 here, 2.84 to 2.97 with a variable per `let`).
 #[cfg(target_os = "linux")]
 #[test]
 fn a_chain_of_additions_compiles_in_linear_memory() {
