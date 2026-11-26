@@ -120,6 +120,25 @@ impl Static {
         &self.nodes[id as usize]
     }
 
+    /// The definitions whose functions the value at `id` holds, or `None`
+    /// if it holds a function of the program's first-order code.
+    pub fn globals(&self, id: u32) -> Option<Vec<u32>> {
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut todo = vec![id];
+        while let Some(n) = todo.pop() {
+            if !seen.insert(n) {
+                continue;
+            }
+            match self.node(n) {
+                SNode::Global(d) => out.push(*d),
+                SNode::Code(_) => return None,
+                node => todo.extend_from_slice(node.parts()),
+            }
+        }
+        Some(out)
+    }
+
     pub fn hash_of(&self, id: u32) -> u128 {
         self.hashes[id as usize]
     }

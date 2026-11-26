@@ -160,13 +160,23 @@ impl<'g> Folder<'g> {
                 let args: Vec<Arc<Ir>> = args.iter().map(|a| self.fold(a, specs)).collect();
                 let node = Arc::new(Ir::Call(h, args));
                 let Ir::Call(h, args) = &*node else { unreachable!() };
-                let Ir::Global(d) = &**h else { return node };
+                // The definitions the function runs: a definition's, or
+                // those a closure known when compiling holds.
+                let defs = match &**h {
+                    Ir::Global(d) => vec![d.0],
+                    Ir::Static(v, id) => match v.globals(*id) {
+                        Some(ds) => ds,
+                        None => return node,
+                    },
+                    Ir::ConFn(_) => Vec::new(),
+                    _ => return node,
+                };
                 if !args.iter().all(|a| is_static(g, a)) {
                     return node;
                 }
                 let r = match self.g.fold_work.get() {
                     None => Err(Kept::Unproved),
-                    Some(_) => match self.pure_def(DefId(specs.origin(d.0))) {
+                    Some(_) => match defs.iter().try_for_each(|d| self.pure_def(DefId(specs.origin(*d)))) {
                         Err(k) => Err(k),
                         Ok(()) => self.run(&node, specs),
                     },
@@ -546,14 +556,15 @@ pub fn from_word(v: w::W) -> Option<(Static, u32)> {
 }
 
 /// Each operation in `ir` on static data alone that `kept` doesn't keep:
-/// a primitive computed when compiling, or a call of a definition.
+/// a primitive computed when compiling, or a call of a definition or of
+/// another function known when compiling.
 pub fn residuals<'i>(g: &Globals, ir: &'i Ir, kept: &[(Arc<Ir>, Kept)], out: &mut Vec<&'i Ir>) {
     let is_kept = |x: &Ir| kept.iter().any(|(k, _)| std::ptr::eq(x, Arc::as_ptr(k)));
     let mut stack = vec![ir];
     while let Some(x) = stack.pop() {
         let operation = match x {
             Ir::Prim(op, args, _) => foldable_op(*op) && args.iter().all(|a| is_static(g, a)),
-            Ir::Call(h, args) => matches!(&**h, Ir::Global(_)) && args.iter().all(|a| is_static(g, a)),
+            Ir::Call(h, args) => matches!(&**h, Ir::Global(_) | Ir::Static(..) | Ir::ConFn(_)) && args.iter().all(|a| is_static(g, a)),
             _ => false,
         };
         if operation && !is_kept(x) {
@@ -601,10 +612,10 @@ pub fn describe(g: &Globals, ir: &Ir) -> String {
         }
         Ir::Call(h, args) => {
             let f = match &**h {
-                Ir::Global(d) => g.defs.get(d.0 as usize).map_or_else(|| format!("#{}", d.0), |i| i.name.to_string()),
-                _ => "a function".to_string(),
+                Ir::Global(d) => format!("`{}`", g.defs.get(d.0 as usize).map_or_else(|| format!("#{}", d.0), |i| i.name.to_string())),
+                _ => "a closure".to_string(),
             };
-            format!("a call of `{f}` on {}", args.iter().map(|a| arg(a)).collect::<Vec<_>>().join(", "))
+            format!("a call of {f} on {}", args.iter().map(|a| arg(a)).collect::<Vec<_>>().join(", "))
         }
         _ => "an operation".to_string(),
     }
