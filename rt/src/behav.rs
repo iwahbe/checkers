@@ -448,6 +448,7 @@ pub unsafe extern "C" fn ck_par(thunks: *const W, n: u64) -> W {
             .map(|t| {
                 let t = Send2(*t);
                 let trap = crate::prog::current_trap();
+                let work = crate::prog::current_work();
                 let prog = crate::prog::current();
                 std::thread::Builder::new()
                     .stack_size(crate::sched::WORKER_STACK)
@@ -455,6 +456,7 @@ pub unsafe extern "C" fn ck_par(thunks: *const W, n: u64) -> W {
                         let t = t;
                         crate::overflow::thread_init();
                         crate::prog::set_trap(trap.clone());
+                        crate::prog::set_work(work);
                         // In compile-time evaluation, within its program,
                         // on a fiber whose overflow comes back as a runtime
                         // error.

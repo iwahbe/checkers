@@ -16,6 +16,7 @@ pub struct LedgerEntry {
     pub what: String,
 }
 
+#[derive(Clone)]
 pub struct Verified {
     pub diags: Vec<Diagnostic>,
     pub ledger: Vec<LedgerEntry>,
@@ -554,7 +555,34 @@ fn ends_everywhere(e: &Elab, obs: &[&Obligation]) {
 }
 
 /// Prove the obligations of module `user` (§7.2).
-pub fn verify(e: &Elab, user: &str) -> Verified {
+/// Module `user`'s proofs phase: its proofs (`proved`), after W022 for
+/// its branches that never run, which needs the program's unused code.
+pub fn proofs(e: &Elab, user: &str) -> Verified {
+    let mut v = proved(e, user);
+    let (asked0, reused0) = (ASKED.load(std::sync::atomic::Ordering::Relaxed), REUSED.load(std::sync::atomic::Ordering::Relaxed));
+    let mut diags = unreachable(e, user);
+    v.asked += ASKED.load(std::sync::atomic::Ordering::Relaxed) - asked0;
+    v.reused += REUSED.load(std::sync::atomic::Ordering::Relaxed) - reused0;
+    diags.append(&mut v.diags);
+    v.diags = diags;
+    v
+}
+
+/// Module `user`'s obligations proved: the first time, by `verify`; after
+/// that, as they were. A module is proved once per program, whether
+/// first for a value known at compile time (§8.9) or in the proofs phase.
+pub fn proved(e: &Elab, user: &str) -> Verified {
+    if let Some(v) = e.module_proofs.borrow().get(user) {
+        return v.clone();
+    }
+    e.proving.borrow_mut().insert(user.to_string());
+    let v = verify(e, user);
+    e.proving.borrow_mut().remove(user);
+    e.module_proofs.borrow_mut().insert(user.to_string(), v.clone());
+    v
+}
+
+fn verify(e: &Elab, user: &str) -> Verified {
     let obs: Vec<&Obligation> = e
         .obligations
         .iter()
@@ -569,7 +597,6 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     for t in e.builtin_axioms.iter().filter(|t| t.module == user) {
         v.ledger.push(LedgerEntry { span: t.span, how: "axiom", what: t.what.clone() });
     }
-    v.diags.extend(unreachable(e, user));
     v.diags.extend(vacuous(e, user));
     guess_measures(e, user, &mut v);
     for (m, span, _) in e.checks.iter().filter(|c| c.0 == user) {
@@ -594,6 +621,23 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     // Which functions recursing by `decreasing` end whatever their
     // preconditions say: their definitions need no precondition guard (M17).
     ends_everywhere(e, &obs);
+    // The values of the calls in each obligation known at compile time, as
+    // facts (§7.1, §8.9): the calls' values, never their functions' bodies.
+    let with_values: Vec<Obligation> = obs
+        .iter()
+        .map(|o| {
+            let known = known_calls(e, o);
+            for (_, what) in &known {
+                if !v.ledger.iter().any(|x| x.how == "computed" && x.span == o.span && x.what == *what) {
+                    v.ledger.push(LedgerEntry { span: o.span, how: "computed", what: what.clone() });
+                }
+            }
+            let mut o = (*o).clone();
+            o.facts.extend(known.into_iter().map(|(f, _)| f));
+            o
+        })
+        .collect();
+    let obs: Vec<&Obligation> = with_values.iter().collect();
     // Translate on this thread (the elaborator isn't `Send`), solve in
     // parallel: each query's first ask (step 1) as soon as it is made.
     let defs = smt::Defs::default();
@@ -1278,6 +1322,51 @@ fn describe(e: &Elab, o: &Obligation) -> String {
     }
 }
 
+/// The calls in `o`'s goal and facts whose values are known at compile
+/// time (`Elab::known_value`) and are numbers: each as the fact `call == n`
+/// at `o`'s level, with how the ledger shows it. Only the calls `o` has, and
+/// only outside binders, where the call is the same term in every case.
+fn known_calls(e: &Elab, o: &Obligation) -> Vec<(crate::core::Val, String)> {
+    use crate::core::{Lit, Prim, Tm, Val};
+    fn number(e: &Elab, t: &Tm) -> bool {
+        let (h, args) = t.spine();
+        let Tm::Def(d) = h else { return false };
+        let Some(info) = e.g.defs.get(d.0 as usize) else { return false };
+        let empty = std::rc::Rc::new(Vec::new());
+        let mut ty = crate::core::eval(&e.g, &empty, &info.ty);
+        for k in 0..args.len() {
+            let Val::Pi(_, _, _, _, c) = crate::core::force(&e.g, ty) else { return false };
+            ty = crate::core::apply_closure(&e.g, &c, Val::var(usize::MAX / 2 + k));
+        }
+        e.type_range(&ty).is_some()
+    }
+    fn collect(e: &Elab, t: &Tm, depth: usize, out: &mut Vec<(Tm, i128)>) {
+        if depth == 0 && number(e, t) {
+            if let Some(Lit::Num(n)) = e.known_value(t) {
+                if !out.iter().any(|(s, _)| crate::core::tm_eq(s, t)) {
+                    out.push((t.clone(), n));
+                }
+                return;
+            }
+        }
+        t.each_sub(|x, d| collect(e, x, depth + d, out));
+    }
+    let lvl = o.ctx.len();
+    let mut found = Vec::new();
+    for v in std::iter::once(&o.goal).chain(&o.facts) {
+        collect(e, &quote(&e.g, lvl, v), 0, &mut found);
+    }
+    let env = std::rc::Rc::new((0..lvl).map(Val::var).collect::<Vec<_>>());
+    let names: Vec<crate::core::Name> = o.ctx.iter().map(|l| l.name.clone()).collect();
+    found
+        .into_iter()
+        .map(|(t, n)| {
+            let fact = Tm::PrimApp(Prim::Eq, vec![t.clone(), Tm::Lit(Lit::Num(n))]);
+            (crate::core::eval(&e.g, &env, &fact), format!("{} is {n}", crate::core::show(&e.g, &names, &t)))
+        })
+        .collect()
+}
+
 /// The facts in scope, as Checkers source, most recent last.
 fn facts_note(e: &Elab, o: &Obligation) -> Option<String> {
     let names: Vec<crate::core::Name> = o.ctx.iter().map(|l| l.name.clone()).collect();
@@ -1590,7 +1679,7 @@ fn failed(e: &Elab, o: &Obligation, model: Option<String>) -> Diagnostic {
         let info = &e.g.defs[d.0 as usize];
         // A builtin has no body for the prover to see, wherever it is used.
         let what = if info.body.is_none() { format!("is built into `{}`", info.module) } else { format!("is sealed in `{}`", info.module) };
-        format!("`{}` {what}: here the prover knows only its postconditions and the lemmas you bring in with `have`", info.name)
+        format!("`{}` {what}: here the prover knows only its postconditions, the values of its calls known at compile time, and the lemmas you bring in with `have`", info.name)
     });
     match model.filter(|m| !m.is_empty()) {
         // One cown named twice needs no counterexample.

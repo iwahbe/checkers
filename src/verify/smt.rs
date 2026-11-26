@@ -4042,11 +4042,10 @@ impl<'a> Builder<'a> {
     /// unfolds the body there. Each holds where the callee's preconditions
     /// do, and its arguments are of its parameters' types (a `Nat` is
     /// non-negative, a refinement's predicates hold): so for every argument
-    /// Z3 tries, whether the body reaches the call or not.
+    /// Z3 tries, whether the body reaches the call or not. A definition
+    /// without parameters (a constant) has one body, unfolded wherever it is
+    /// named: its calls' postconditions are facts, with no quantifier.
     fn body_post_axioms(&mut self, def: DefId, name: &str, params: &[(String, Sort)], posts: Vec<PostUse>) {
-        if params.is_empty() {
-            return;
-        }
         let binds: Vec<String> = params.iter().map(|(n, s)| format!("({n} {})", s.render(self.e))).collect();
         let app = format!("({name} {})", params.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(" "));
         // The callee's conditions are translated as a body's are: calls in
@@ -4089,10 +4088,8 @@ impl<'a> Builder<'a> {
             }
             let goal = if goals.len() == 1 { goals.pop().unwrap_or_default() } else { format!("(and {})", goals.join(" ")) };
             let body = implies(&pres, goal);
-            self.body_axioms.insert(
-                format!("{}#post{k}", name.trim_matches('|')),
-                format!("(forall ({}) (! {body} :pattern ({app})))", binds.join(" ")),
-            );
+            let axiom = if params.is_empty() { body } else { format!("(forall ({}) (! {body} :pattern ({app})))", binds.join(" ")) };
+            self.body_axioms.insert(format!("{}#post{k}", name.trim_matches('|')), axiom);
         }
         self.in_def = saved;
     }
