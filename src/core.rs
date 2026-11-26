@@ -369,6 +369,9 @@ pub struct Globals {
     /// Constants' values known at compile time (§8.9), for code generation:
     /// set once the program is proved, as `bounds` is (`Elab::known_value`).
     pub known: RefCell<HashMap<DefId, Lit>>,
+    /// The base types of classes' types that have one (#360), by their
+    /// field of the dictionary: closed types.
+    pub type_bases: HashMap<(ConId, usize), Vec<Tm>>,
 }
 
 #[derive(Default, Clone)]
@@ -431,6 +434,7 @@ impl Globals {
             value_params: RefCell::new(HashMap::new()),
             bounds: HashMap::new(),
             known: RefCell::new(HashMap::new()),
+            type_bases: HashMap::new(),
         }
     }
 
@@ -1604,14 +1608,71 @@ pub fn unify(g: &Globals, l: usize, a: &Val, b: &Val) -> Result<(), UnifyError> 
     if r.is_ok() {
         return r;
     }
+    // A class's type with a base type, at a dictionary that is a variable
+    // (#360), is a subtype of its base: compared as it, here, up to
+    // refinement; which way a value may go is the refinements' check. Its
+    // base is found before it is unfolded (`Encoding.Unit s` names `s`).
+    let (abase, bbase) = (class_type_base(g, &a), class_type_base(g, &b));
     // Retry after unfolding a definition at either head.
     if let Some(a2) = unfold(g, &a) {
-        return unify(g, l, &a2, &b);
+        let r2 = unify(g, l, &a2, &b);
+        return match (r2, abase) {
+            (Err(_), Some(base)) => unify(g, l, &base, &b),
+            (r2, _) => r2,
+        };
     }
     if let Some(b2) = unfold(g, &b) {
+        let r2 = unify(g, l, &a, &b2);
+        return match (r2, bbase) {
+            (Err(_), Some(base)) => unify(g, l, &a, &base),
+            (r2, _) => r2,
+        };
+    }
+    if let Some(a2) = abase {
+        return unify(g, l, &a2, &b);
+    }
+    if let Some(b2) = bbase {
         return unify(g, l, &a, &b2);
     }
     r
+}
+
+/// The base type of a class's type read from a dictionary that is a
+/// variable (`Encoding.Unit s` in generic code, #360), if it has one: its
+/// first base type, at the class's arguments and the dictionary. Read
+/// from the dictionary alone (`$d.$Unit`), only a base type that doesn't
+/// name the class's parameters is known.
+pub fn class_type_base(g: &Globals, v: &Val) -> Option<Val> {
+    if g.type_bases.is_empty() {
+        return None;
+    }
+    let v = force_meta(g, v.clone());
+    // `C.Name a {d}`.
+    if let Val::Neutral(Head::Def(d), sp) = &v {
+        let (c, i, n) = g.assoc_def(*d)?;
+        if sp.len() != n + 1 {
+            return None;
+        }
+        let args: Vec<Val> = sp.iter().map(|e| if let Elim::App(a, _) = e { Some(a.clone()) } else { None }).collect::<Option<_>>()?;
+        if !matches!(force(g, args[n].clone()), Val::Neutral(Head::Var(_), _)) {
+            return None;
+        }
+        let b = g.type_bases.get(&(c, i))?.first()?;
+        return Some(eval(g, &Rc::new(args), b));
+    }
+    let Val::Neutral(Head::Var(h), sp) = force(g, v) else { return None };
+    let Some(Elim::Field(c, i)) = sp.last() else { return None };
+    let b = g.type_bases.get(&(*c, *i))?.first()?;
+    let mut fv = std::collections::BTreeSet::new();
+    free_vars(b, 0, &mut fv);
+    // Over the parameters, then the dictionary (index 0).
+    if fv.iter().any(|&x| x > 0) {
+        return None;
+    }
+    let n = g.arity_ty(g.cons[c.0 as usize].ty);
+    let mut env: Vec<Val> = vec![Val::Error; n];
+    env.push(Val::Neutral(Head::Var(h), Rc::new(sp[..sp.len() - 1].to_vec())));
+    Some(eval(g, &Rc::new(env), b))
 }
 
 fn unify_whnf(g: &Globals, l: usize, a: &Val, b: &Val) -> Result<(), UnifyError> {

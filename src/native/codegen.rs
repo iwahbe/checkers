@@ -27,6 +27,7 @@ use std::collections::{HashMap, HashSet};
 /// Runtime functions: name, parameters, whether they return a word.
 const RUNTIME: &[(&str, usize, bool)] = &[
     ("ck_alloc", 2, true),
+    ("ck_tick", 0, false),
     ("ck_free", 1, false),
     ("ck_add", 2, true),
     ("ck_sub", 2, true),
@@ -449,6 +450,7 @@ impl<'p, M: Module> Gen<'p, M> {
                 let params: Vec<Value> = params.iter().map(|_| b.append_block_param(top, I64)).collect();
                 b.ins().jump(top, &args);
                 b.switch_to_block(top);
+                self.tick(b, &mut st);
                 st.this = Some((i as u32, top));
                 for (k, v) in f.params.iter().enumerate() {
                     st.vars[*v as usize] = Some(params[k + 1]);
@@ -459,6 +461,7 @@ impl<'p, M: Module> Gen<'p, M> {
                 self.emit(b, &mut st, &f.body, Mode::Tail(f.rets));
             }
             FnKind::Lambda { captured } => {
+                self.tick(b, &mut st);
                 for (k, v) in f.params.iter().enumerate() {
                     st.vars[*v as usize] = Some(params[k + 1]);
                 }
@@ -493,6 +496,15 @@ impl<'p, M: Module> Gen<'p, M> {
                 let r = self.build_con(b, &mut st, *con, &fields, None);
                 b.ins().return_(&[r]);
             }
+        }
+    }
+
+    /// In code compiled for the compiler, counts a function entry or a loop
+    /// iteration against its work limit (`checkers_rt::prog::ck_tick`):
+    /// every loop goes through one.
+    fn tick(&mut self, b: &mut FunctionBuilder, st: &mut St) {
+        if self.probe {
+            self.rt_call(b, st, "ck_tick", &[]);
         }
     }
 

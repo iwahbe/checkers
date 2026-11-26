@@ -161,8 +161,8 @@ $ checkers trust tests/tool/axioms.ck
 <std>/decimal.ck:350:18  axiom    builtin axiom std.decimal.scaled_ten
 <std>/decimal.ck:360:14  axiom    builtin axiom std.array.uncons_slice
 <std>/decimal.ck:362:18  axiom    builtin axiom std.array.slice_append
-<std>/decimal.ck:374:14  axiom    builtin axiom std.array.uncons_slice
-<std>/decimal.ck:375:14  axiom    builtin axiom std.array.slice_append
+<std>/decimal.ck:373:14  axiom    builtin axiom std.array.uncons_slice
+<std>/decimal.ck:374:14  axiom    builtin axiom std.array.slice_append
 <std>/decimal.ck:388:18  axiom    builtin axiom std.array.uncons_slice
 <std>/decimal.ck:389:18  axiom    builtin axiom std.array.slice_append
 <std>/decimal.ck:405:22  axiom    builtin axiom std.array.uncons_slice
@@ -192,6 +192,6 @@ $ checkers trust tests/tool/axioms.ck
 <std>/utf8.ck  proved   10 by smt, 6 computed
 tests/tool/axioms.ck:9:10  computed precondition of `parse_render`: len post == 0 or not (char.is_digit post[0] or post[0] == '.' or post[0] == 'e' or post[0] == 'E')
 solver: Z3 5.3.3.0
-cache: 89 of 1032 Z3 answers reused
+cache: 88 of 1035 Z3 answers reused
 -- stderr
 -- exit 0

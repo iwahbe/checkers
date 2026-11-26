@@ -1,0 +1,5 @@
+-- stdout
+0
+-- stderr
+known_release.ck: 0 errors, 0 warnings; 2 obligations proved
+-- exit 0

@@ -26,13 +26,6 @@ error[E0210]: `<` needs numbers (`Nat` or `Int`) to compare, but this is `Numeri
    |
 40 |     type Unit : u~Unit, u < 256
    |                         ^^^^^^^ has type `Numeric.Unit s`
-   = help: `Numeric.Unit s` is a type of its own, not a number: reach a number through its class's functions
+   = help: `Unit` has no operations of its own: give it a base type, as in `type Unit : u~Int, u < 256`, or reach its values through one of the class's functions, as in `code s u < 256`
 
-error[E0210]: a number literal needs numbers (`Nat` or `Int`), but this is `Numeric.Unit s`
-  --> class_type_pred_errors.ck:40:29
-   |
-40 |     type Unit : u~Unit, u < 256
-   |                             ^^^ has type `Numeric.Unit s`
-   = help: `Numeric.Unit s` is a type of its own, not a number: reach a number through its class's functions
-
-class_type_pred_errors.ck: 5 errors, 0 warnings
+class_type_pred_errors.ck: 4 errors, 0 warnings

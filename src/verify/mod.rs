@@ -17,6 +17,7 @@ pub struct LedgerEntry {
     pub hash: Option<u64>,
 }
 
+#[derive(Clone)]
 pub struct Verified {
     pub diags: Vec<Diagnostic>,
     pub ledger: Vec<LedgerEntry>,
@@ -397,6 +398,61 @@ fn ask_all(texts: &[Option<String>]) -> Vec<Option<Answer>> {
     ask_all_out(texts).into_iter().map(|o| o.map(answer)).collect()
 }
 
+/// `ask_all`, with each query handed to the workers as `produce` makes it,
+/// so they solve while the next is made (on this thread: the elaborator
+/// isn't `Send`). Answers depend only on the queries' texts, as in
+/// `ask_all_out`: a text asked again waits for the first.
+fn ask_produced(n: usize, mut produce: impl FnMut(usize) -> Option<String>) -> Vec<Option<Answer>> {
+    let workers = std::thread::available_parallelism().map_or(2, |n| n.get()).min(8);
+    let results: Vec<std::sync::Mutex<Option<String>>> = (0..n).map(|_| std::sync::Mutex::new(None)).collect();
+    // The queries made so far, and whether all are.
+    let queue: std::sync::Mutex<(std::collections::VecDeque<(usize, String)>, bool)> = std::sync::Mutex::new((Default::default(), false));
+    let ready = std::sync::Condvar::new();
+    let mut again: Vec<(usize, String)> = Vec::new();
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            // Z3 recurses deeply on large terms: give it a big stack.
+            let worker = std::thread::Builder::new().stack_size(512 << 20);
+            let spawned = worker.spawn_scoped(s, || loop {
+                let next = {
+                    let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
+                    loop {
+                        if let Some(job) = q.0.pop_front() {
+                            break Some(job);
+                        }
+                        if q.1 {
+                            break None;
+                        }
+                        q = ready.wait(q).unwrap_or_else(|e| e.into_inner());
+                    }
+                };
+                let Some((i, t)) = next else { break };
+                let a = ask_out(&t);
+                *results[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(a);
+            });
+            if spawned.is_err() {
+                break;
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..n {
+            let Some(t) = produce(i) else { continue };
+            if !seen.insert(t.clone()) {
+                again.push((i, t));
+                continue;
+            }
+            queue.lock().unwrap_or_else(|e| e.into_inner()).0.push_back((i, t));
+            ready.notify_one();
+        }
+        queue.lock().unwrap_or_else(|e| e.into_inner()).1 = true;
+        ready.notify_all();
+    });
+    for (i, t) in again {
+        *results[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(ask_out(&t));
+    }
+    results.into_iter().map(|m| m.into_inner().unwrap_or_else(|e| e.into_inner()).map(answer)).collect()
+}
+
 /// Z3's output for each query, solved on a few worker threads.
 fn ask_all_out(texts: &[Option<String>]) -> Vec<Option<String>> {
     let workers = std::thread::available_parallelism().map_or(2, |n| n.get()).min(8);
@@ -484,7 +540,34 @@ fn ends_everywhere(e: &Elab, obs: &[&Obligation]) {
 }
 
 /// Prove the obligations of module `user` (§7.2).
-pub fn verify(e: &Elab, user: &str) -> Verified {
+/// Module `user`'s proofs phase: its proofs (`proved`), after W022 for
+/// its branches that never run, which needs the program's unused code.
+pub fn proofs(e: &Elab, user: &str) -> Verified {
+    let mut v = proved(e, user);
+    let (asked0, reused0) = (ASKED.load(std::sync::atomic::Ordering::Relaxed), REUSED.load(std::sync::atomic::Ordering::Relaxed));
+    let mut diags = unreachable(e, user);
+    v.asked += ASKED.load(std::sync::atomic::Ordering::Relaxed) - asked0;
+    v.reused += REUSED.load(std::sync::atomic::Ordering::Relaxed) - reused0;
+    diags.append(&mut v.diags);
+    v.diags = diags;
+    v
+}
+
+/// Module `user`'s obligations proved: the first time, by `verify`; after
+/// that, as they were. A module is proved once per program, whether
+/// first for a value known at compile time (§8.9) or in the proofs phase.
+pub fn proved(e: &Elab, user: &str) -> Verified {
+    if let Some(v) = e.module_proofs.borrow().get(user) {
+        return v.clone();
+    }
+    e.proving.borrow_mut().insert(user.to_string());
+    let v = verify(e, user);
+    e.proving.borrow_mut().remove(user);
+    e.module_proofs.borrow_mut().insert(user.to_string(), v.clone());
+    v
+}
+
+fn verify(e: &Elab, user: &str) -> Verified {
     let obs: Vec<&Obligation> = e
         .obligations
         .iter()
@@ -499,7 +582,6 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     for t in e.builtin_axioms.iter().filter(|t| t.module == user) {
         v.ledger.push(LedgerEntry { span: t.span, how: "axiom", what: t.what.clone(), hash: None });
     }
-    v.diags.extend(unreachable(e, user));
     v.diags.extend(vacuous(e, user));
     guess_measures(e, user, &mut v);
     for (m, span, _) in e.checks.iter().filter(|c| c.0 == user) {
@@ -541,9 +623,26 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
         })
         .collect();
     let obs: Vec<&Obligation> = with_values.iter().collect();
-    // Translate on this thread (the elaborator isn't `Send`), solve in parallel.
+    // Translate on this thread (the elaborator isn't `Send`), solve in
+    // parallel: each query's first ask (step 1) as soon as it is made.
     let defs = smt::Defs::default();
-    let queries: Vec<Result<smt::Query, smt::Outside>> = obs.iter().map(|o| smt::Builder::new(e, user).sharing(&defs).query(o)).collect();
+    let mut queries: Vec<Result<smt::Query, smt::Outside>> = Vec::with_capacity(obs.len());
+    // The postconditions of calls in reflected bodies (#343) are given last:
+    // most goals need none of them, and their axioms make Z3 search more in
+    // every query. Steps 1 to 6 ask the query without them (the full query
+    // where there are none): `unsat` is a proof, as from any weaker query;
+    // where there are some, a model may break them, so `sat` is no
+    // counterexample, and the full query decides (6b).
+    let lean_of = |q: &smt::Query| q.without_bodies.clone().unwrap_or_else(|| q.text.clone());
+    // 1. Everything, with a small work limit (D154): most goals need little
+    //    work, and this query's answer is final either way: `unsat` is a
+    //    proof, `sat` a real counterexample.
+    let firsts = ask_produced(obs.len(), |k| {
+        let q = smt::Builder::new(e, user).sharing(&defs).with_body_posts().query(obs[k]);
+        let first = q.as_ref().ok().map(|q| with_limit(&lean_of(q), FIRST_RLIMIT));
+        queries.push(q);
+        first
+    });
     let texts: Vec<Option<String>> = queries.iter().map(|q| q.as_ref().ok().map(|q| q.text.clone())).collect();
     let fallbacks: Vec<Option<String>> = queries.iter().map(|q| q.as_ref().ok().and_then(|q| q.without_axioms.clone())).collect();
     if std::env::var_os("CHECKERS_SMT_DUMP").is_some() {
@@ -551,12 +650,25 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
             eprintln!(";; ── {:?} at {:?}\n{}", o.kind, o.span, t.as_deref().unwrap_or(";; outside the fragment"));
         }
     }
-    // 1. Everything, with a small work limit (D154): most goals need little
-    //    work, and this query's answer is final either way: `unsat` is a
-    //    proof, `sat` a real counterexample.
-    let first: Vec<Option<String>> = texts.iter().map(|t| t.as_ref().map(|t| with_limit(t, FIRST_RLIMIT))).collect();
-    let mut answers: Vec<Option<Answer>> =
-        ask_all(&first).into_iter().map(|a| a.filter(|a| matches!(a, Answer::Unsat | Answer::Sat(_)))).collect();
+    let lean: Vec<Option<String>> = queries.iter().map(|q| q.as_ref().ok().map(lean_of)).collect();
+    let bodies: Vec<bool> = queries.iter().map(|q| q.as_ref().is_ok_and(|q| q.without_bodies.is_some())).collect();
+    // Left for the full query.
+    let mut with_bodies = vec![false; obs.len()];
+    let first: Vec<Option<String>> = lean.iter().map(|t| t.as_ref().map(|t| with_limit(t, FIRST_RLIMIT))).collect();
+    let mut answers: Vec<Option<Answer>> = firsts
+        .into_iter()
+        .enumerate()
+        .map(|(k, a)| match a {
+            Some(Answer::Unsat) => Some(Answer::Unsat),
+            // The weaker queries would have models too.
+            Some(Answer::Sat(_)) if bodies[k] => {
+                with_bodies[k] = true;
+                None
+            }
+            Some(a @ Answer::Sat(_)) => Some(a),
+            _ => None,
+        })
+        .collect();
     // The query that proved each obligation, as Z3 was given it.
     let mut proof: Vec<Option<String>> =
         answers.iter().zip(&first).map(|(a, t)| if matches!(a, Some(Answer::Unsat)) { t.clone() } else { None }).collect();
@@ -576,8 +688,9 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     let weaker: Vec<[Option<&String>; TIERS]> = queries
         .iter()
         .zip(&answers)
-        .map(|(q, a)| match (q, a) {
-            (Ok(q), None) => [q.facts_only.as_ref(), q.focused.as_ref(), q.premised.as_ref(), q.without_axioms.as_ref()],
+        .zip(&with_bodies)
+        .map(|((q, a), w)| match (q, a) {
+            (Ok(q), None) if !w => [q.facts_only.as_ref(), q.focused.as_ref(), q.premised.as_ref(), q.without_axioms.as_ref()],
             _ => [None; TIERS],
         })
         .collect();
@@ -609,16 +722,49 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     }
     // 6. Everything, with the full work limit: the query whose
     //    counterexample is real.
-    let rest: Vec<Option<String>> = texts
+    let rest: Vec<Option<String>> = lean
         .iter()
         .enumerate()
-        .map(|(k, t)| if proof[k].is_some() || answers[k].is_some() { None } else { t.clone() })
+        .map(|(k, t)| if proof[k].is_some() || answers[k].is_some() || with_bodies[k] { None } else { t.clone() })
         .collect();
     for (k, a) in ask_all(&rest).into_iter().enumerate() {
         if proof[k].is_some() {
             answers[k] = Some(Answer::Unsat);
+        } else if matches!(a, Some(Answer::Unsat)) {
+            proof[k] = rest[k].clone();
+            answers[k] = a;
+        } else if bodies[k] && rest[k].is_some() {
+            with_bodies[k] = true;
         } else if a.is_some() {
             answers[k] = a;
+        }
+    }
+    // 6b. With the postconditions of calls in reflected bodies, where the
+    //     query has some and they could matter: with the small work limit,
+    //     then the full one.
+    for limit in [FIRST_RLIMIT, RLIMIT] {
+        let full: Vec<Option<String>> = texts
+            .iter()
+            .enumerate()
+            .map(|(k, t)| if with_bodies[k] { t.as_ref().map(|t| with_limit(t, limit)) } else { None })
+            .collect();
+        for (k, a) in ask_all(&full).into_iter().enumerate() {
+            if full[k].is_none() {
+                continue;
+            }
+            match a {
+                Some(Answer::Unsat) => {
+                    proof[k] = full[k].clone();
+                    answers[k] = a;
+                    with_bodies[k] = false;
+                }
+                Some(Answer::Sat(_)) => {
+                    answers[k] = a;
+                    with_bodies[k] = false;
+                }
+                a if limit == RLIMIT => answers[k] = a,
+                _ => {}
+            }
         }
     }
     // 7. Z3 gave up on everything: a counterexample without the axioms, with
@@ -1566,7 +1712,7 @@ fn check_foralls(e: &Elab, user: &str, o: &Obligation, defs: &smt::Defs, model: 
             if broken { "breaks" } else { "could not be checked against" }
         ))
     };
-    let Ok(q) = smt::Builder::new(e, user).sharing(defs).with_foralls().query(o) else { return (None, why(false)) };
+    let Ok(q) = smt::Builder::new(e, user).sharing(defs).with_body_posts().with_foralls().query(o) else { return (None, why(false)) };
     let text = with_limit(&q.text, QUICK_RLIMIT);
     let Some(at) = text.rfind("(check-sat)") else { return (None, why(false)) };
     let mut pins = String::new();
