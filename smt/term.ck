@@ -196,9 +196,6 @@ export record Sig
     funs~Array FunDecl
     values~Array Witness
 
-fn no_datatypes -> ds : ds~List Datatype
-    []
-
 export fn empty_sig -> s : s~Sig, len s.funs == 0
     Sig (array.from_list []) (array.from_list []) (array.from_list []) (array.from_list [])
 
@@ -1154,22 +1151,23 @@ fn mentions_all first count np ss -> r : first~Nat, count~Nat, np~Nat, ss~List S
         []        -> []
         s :: rest -> mentions first count np s ++ mentions_all first count np rest
 
-# Whether each of `ks` is founded in `known`.
-fn all_known ks known -> r : ks~List Nat, known~List Bool, r~Bool
+# Whether each of `ks` is founded in `known` (an array, so that a round
+# takes time linear in the group's fields).
+fn all_known ks known -> r : ks~List Nat, known~Array Bool, r~Bool
     match ks
         []        -> True
-        k :: rest -> list.head (list.drop k known) == Some True and all_known rest known
+        k :: rest -> k < len known and known[k] and all_known rest known
 
-fn ctor_founded first count np known c -> r : first~Nat, count~Nat, np~Nat, known~List Bool, c~Ctor, r~Bool
+fn ctor_founded first count np known c -> r : first~Nat, count~Nat, np~Nat, known~Array Bool, c~Ctor, r~Bool
     all_known (mentions_all first count np (field_sorts c.fields)) known
 
-fn some_founded first count np known cs -> r : first~Nat, count~Nat, np~Nat, known~List Bool, cs~List Ctor, r~Bool
+fn some_founded first count np known cs -> r : first~Nat, count~Nat, np~Nat, known~Array Bool, cs~List Ctor, r~Bool
     match cs
         []        -> False
         c :: rest -> ctor_founded first count np known c or some_founded first count np known rest
 
-# One round: each datatype of `ds` founded if it was or now is.
-fn found_round first count known ds -> r : first~Nat, count~Nat, known~List Bool, ds~List Datatype, r~List Bool
+# One round: each datatype of `ds` founded if it now is.
+fn found_round first count known ds -> r : first~Nat, count~Nat, known~Array Bool, ds~List Datatype, r~List Bool
     match ds
         []        -> []
         d :: rest ->
@@ -1181,7 +1179,7 @@ fn found_round first count known ds -> r : first~Nat, count~Nat, known~List Bool
 fn found_rounds first count known ds left -> r : first~Nat, count~Nat, known~List Bool, ds~List Datatype, left~Nat,
                                                  r~List Bool
     decreasing left
-    let next = found_round first count known ds
+    let next = found_round first count (array.from_list known) ds
     if left == 0 or next == known then next else found_rounds first count next ds (left - 1)
 
 fn first_false ds known -> r : ds~List Datatype, known~List Bool, r~Option Datatype
@@ -1796,12 +1794,11 @@ lemma funs_define sig single ds : sig~Sig, single~Bool, ds~List Def
     ensures len (extend sig (DefineFuns single ds)).funs == len sig.funs + list.length ds
     proof
         have list.length_map def_fun ds
-        have len (array.from_list (def_funs ds)) == list.length (def_funs ds)
 
 lemma funs_declare sig f : sig~Sig, f~FunDecl
     ensures len (extend sig (DeclareFun f)).funs == len sig.funs + 1
     proof
-        have len (array.from_list [f]) == 1
+        auto
 
 lemma defs_checked sig cmds : sig~Sig, cmds~List Command, check_all sig cmds == Ok ()
     ensures defs_in_sig (extend_all sig cmds) (defs_in (len sig.funs) cmds)
@@ -1956,7 +1953,6 @@ lemma declared_ok sig ds k : sig~Sig, ds~List Datatype, check_command sig (Decla
         have big.datatypes[first + k] == (array.from_list ds)[k]
         let n = list.length (array.from_list ds)[k].params
         have fits_later big first (first + k) n big.values[first + k] (Data (first + k) (params_of n 0))
-        have len (array.from_list ds) == list.length ds
         have big.datatypes == sig.datatypes ++ array.from_list ds
         have first + k < len big.datatypes
         have big.datatypes[first + k] == (array.from_list ds)[k]
@@ -2022,7 +2018,6 @@ lemma kept_all sig cmds e : sig~Sig, cmds~List Command, check_all sig cmds == Ok
 export lemma datatypes_hold c : c~Context
     ensures forall e : e~Nat, e < len (signature c).datatypes implies datatype_ok (signature c) e
     proof
-        have len (array.from_list no_datatypes) == 0
         have kept_all empty_sig c.commands e
 
 # Whether each `declare-datatypes` of `cmds`, after `sig`, keeps its group
