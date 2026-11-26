@@ -1,5 +1,0 @@
--- stdout
-unknown
-(error "line 9 column 15: unsat core is not available")
--- stderr
--- exit 1

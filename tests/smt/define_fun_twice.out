@@ -1,0 +1,4 @@
+-- stdout
+(error "line 2 column 17: `a` is bound twice here")
+-- stderr
+-- exit 1

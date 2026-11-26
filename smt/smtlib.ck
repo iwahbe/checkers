@@ -807,7 +807,12 @@ fn unsat_core es -> r : es~List (SExpr src), r~(Bool, List (SExpr src))
 
 # An error at `p` if `name` is already declared in `sig`.
 fn name_free src sig name p -> r : src~Bytes, sig~Sig, name~Name, p~Nat, p < len src, r~Result Unit (Error src)
-    if taken sig name then Err (Error p (shown name ++ b" is already declared, so it can't name an assertion")) else Ok ()
+    if reserved name or prim_op name 2 != None or outside name
+        Err (Error p (shown name ++ b" has a meaning of its own, so it can't name an assertion"))
+    else if taken sig name
+        Err (Error p (shown name ++ b" is already declared, so it can't name an assertion"))
+    else
+        Ok ()
 
 # The names of the functions, constructors, testers and selectors `cmd`
 # declares.

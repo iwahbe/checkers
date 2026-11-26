@@ -1,0 +1,4 @@
+-- stdout
+(error "line 3 column 45: a `:pattern`'s terms can't be variables alone")
+-- stderr
+-- exit 1

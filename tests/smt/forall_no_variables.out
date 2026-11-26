@@ -1,0 +1,4 @@
+-- stdout
+(error "line 3 column 17: a `forall` must bind at least one variable")
+-- stderr
+-- exit 1

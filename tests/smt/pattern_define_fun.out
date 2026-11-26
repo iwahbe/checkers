@@ -1,0 +1,4 @@
+-- stdout
+(error "line 4 column 51: a `:pattern` can't apply a function `define-fun` defines: Z3 expands it there")
+-- stderr
+-- exit 1
