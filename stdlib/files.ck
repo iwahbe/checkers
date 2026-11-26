@@ -49,10 +49,10 @@ export fn create path fs -> r : path~String, fs~Fs, r~Result File IoError
 export fn close f -> r : f~File, r~Result Unit IoError
     __builtin
 
-# The next line, without its `\n` (invalid UTF-8 becomes U+FFFD); `Ok None`
-# only at the end, and an error if reading fails. The file comes back either
-# way, to be closed.
-export fn read_line f -> r : f~File, r~(Result (Option String) IoError, File)
+# The next line's bytes, as they are, without its `\n`; `Ok None` only at
+# the end, and an error if reading fails. The file comes back either way, to
+# be closed.
+export fn read_line f -> r : f~File, r~(Result (Option Bytes) IoError, File)
     __builtin
 
 # Write `s` and a newline. Write errors other than misuse are ignored;

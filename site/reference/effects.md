@@ -104,7 +104,7 @@ import std.files (File, IoError)
 import std.files
 
 # The first line of a file and the file closed.
-fn first_line f -> r : f~File, r~Result (Option String) IoError
+fn first_line f -> r : f~File, r~Result (Option Bytes) IoError
     let (line, f) = files.read_line f
     let _ = files.close f
     line
@@ -159,7 +159,7 @@ fn keep x -> r : x~own a, r~a
 
 | Operation | Gives |
 |---|---|
-| `files.read_line f` | the next line without its `\n` (bytes that aren't UTF-8 become U+FFFD): `Ok None` only at the end, and an error if reading fails |
+| `files.read_line f` | the next line's bytes without its `\n`: `Ok None` only at the end, and an error if reading fails |
 | `files.read_some n f` | at most `n` bytes, at least one unless at the end |
 | `files.read_exactly n f` | `n` bytes, fewer only at the end |
 | `files.read_rest f` | everything to the end |

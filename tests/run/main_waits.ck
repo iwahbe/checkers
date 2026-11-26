@@ -9,6 +9,7 @@ import std.system (System, ExitCode)
 import std.terminal
 import std.files
 import std.files (File)
+import std.string (debug)
 import std.proc (Streams, Spawned, Pipe, Discard)
 
 # Write a line to the file and close it.
@@ -31,7 +32,7 @@ export partial fn main args sys -> code : args~List String, sys~System, code~Exi
             let _ = proc.wait child
             match line
                 Ok (Some l) ->
-                    terminal.print_line ("main read: " ++ l) term
+                    terminal.print_line ("main read: " ++ debug l) term
                     Success
                 _           ->
                     terminal.print_line "main read nothing" term

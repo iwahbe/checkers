@@ -90,8 +90,8 @@ fn trimmed_end b -> r : b~Bytes, r~Bytes
         b
 
 # The `Content-Length` of a header line, if it is that header.
-fn content_length line -> r : line~String, r~Option Nat
-    let b = trimmed_end (string.bytes line)
+fn content_length line -> r : line~Bytes, r~Option Nat
+    let b = trimmed_end line
     let name = b"Content-Length:"
     if starts_with b name
         whole (skip_spaces (bytes.slice b (len name) (len b)))
@@ -118,7 +118,7 @@ partial fn headers found f -> r : found~Option Nat, f~File, r~(Option (Option Na
         Err _       -> (None, f)
         Ok None     -> (None, f)
         Ok (Some l) ->
-            let b = trimmed_end (string.bytes l)
+            let b = trimmed_end l
             if len b == 0
                 (Some found, f)
             else

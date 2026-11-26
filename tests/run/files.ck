@@ -12,7 +12,7 @@ partial fn print_lines f term : f~File, term~Term
     match line
         Ok None     -> report (files.close f) term
         Ok (Some l) ->
-            terminal.print_line ("> " ++ l) term
+            terminal.print_line ("> " ++ debug l) term
             print_lines f term
         Err e       ->
             terminal.print_line ("error: " ++ files.describe e) term

@@ -209,7 +209,7 @@ partial fn pump out acc g docs c -> r : out~File, acc~Acc, g~Nat, docs~List Doc,
         Err _       -> (acc, out)
         Ok None     -> (acc, out)
         Ok (Some l) ->
-            match json.parse (string.bytes l)
+            match json.parse l
                 Err _ -> pump out acc g docs c
                 Ok j  ->
                     let kind = str_or "kind" j
@@ -696,7 +696,7 @@ partial fn read_entries out acc -> r : out~File, acc~List Entry, r~(List Entry, 
         Err _       -> (acc, out)
         Ok None     -> (acc, out)
         Ok (Some l) ->
-            match json.parse (string.bytes l)
+            match json.parse l
                 Ok j if str_or "kind" j == "name" ->
                     match entry_of j
                         Some e -> read_entries out (e :: acc)
@@ -791,7 +791,7 @@ partial fn read_items out text c range acc n -> r : out~File, text~Bytes, c~Caps
         Err _       -> (list.reverse acc, out)
         Ok None     -> (list.reverse acc, out)
         Ok (Some l) ->
-            match json.parse (string.bytes l)
+            match json.parse l
                 Err _ -> read_items out text c range acc n
                 Ok j  ->
                     let kind = str_or "kind" j

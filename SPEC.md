@@ -441,7 +441,7 @@ A resource is an open, stateful thing that must be released: an open `File`, a `
 Operations on a resource consume it and return a fresh one together with their result, `(result, resource)`, with the resource last. A `let` takes the pair apart and rebinds the resource's name:
 
 ```
-let (line, f) = files.read_line f     # (Result (Option String) IoError, File)
+let (line, f) = files.read_line f     # (Result (Option Bytes) IoError, File)
 let (_, f) = files.write_bytes b f
 let closed = files.close f            # Result Unit IoError
 ```
@@ -1241,7 +1241,7 @@ A failure prints a runtime error that names the failing operation and the functi
 
 `main` receives the command-line arguments after the file name, as `List String`, and the root `System` (§8.2). `term` reads standard input and writes standard output and error; `fs` is the process's file system with relative paths resolved against the current directory, and `files.within dir fs` confines it to `dir` (absolute paths and `..` are then refused). A symbolic link that stays inside `dir` may be followed; any path whose resolution leaves `dir` is refused, whether through `..`, an absolute link or a link to a link, and for every operation (reading, writing, opening, creating, listing, creating directories, `within`). The check is the resolution itself, with nothing checked before a file is opened that could change before it is: `within` opens `dir` and keeps it open, and each path is resolved beneath it one component at a time, no link followed but by the runtime. `within` of a directory that can't be opened, or that lies outside `fs`, gives an `Fs` that reaches nothing: each of its operations fails with the reason. `clock` reads the monotonic clock and sleeps (`std.time`, §8.2). Operations on `net` are not implemented yet.
 
-`IoError` values describe the operating-system error, as in `No such file or directory`. `read_line` (on `term` or a `File`) returns a line without its `\n`; bytes that are not valid UTF-8 become U+FFFD.
+`IoError` values describe the operating-system error, as in `No such file or directory`. `terminal.read_line` returns a line without its `\n`, bytes that are not valid UTF-8 becoming U+FFFD; `files.read_line` returns a line's bytes as they are, without its `\n`.
 
 No error of reading a `File`, or of finishing one open for writing, is lost. `files.read_line f` gives `(Ok (Some line), f)` for a line, `(Ok None, f)` only at the end, and `(Err e, f)` when reading fails, the file given back each time for the program to close. `files.close f` consumes the file and gives `Result Unit IoError`. For a file or pipe open for writing it writes out what is buffered, then closes the descriptor, and gives the first error of the two: an error the operating system reports only when a file is closed (as a network file system may) is reported too. Closing standard output's `File` closes the handle, not the stream: it writes out the stream's buffer and gives that error. Closing a file open for reading, standard input or standard error gives `Ok ()`.
 
