@@ -1,0 +1,4 @@
+-- stdout
+(error "line 5 column 12: `(get-value …)` needs at least one term")
+-- stderr
+-- exit 1

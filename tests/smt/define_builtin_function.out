@@ -1,0 +1,4 @@
+-- stdout
+(error "line 2 column 13: `const` has a meaning of its own in Z3, so a query can't declare it")
+-- stderr
+-- exit 1

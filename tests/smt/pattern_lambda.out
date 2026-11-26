@@ -1,0 +1,4 @@
+-- stdout
+(error "line 3 column 64: a `:pattern`'s terms are in the subset `ckc` writes only as applications of `select` or of a function, constructor, tester or selector the query declares (not one `define-fun` defines: Z3 expands it), without `let` or `lambda` inside")
+-- stderr
+-- exit 1
