@@ -446,8 +446,20 @@ pub unsafe extern "C" fn ck_par(thunks: *const W, n: u64) -> W {
                     .stack_size(crate::sched::WORKER_STACK)
                     .spawn_scoped(sc, move || {
                         let t = t;
-                        crate::prog::set_trap(trap);
-                        Send2(apply(t.0, vec![UNIT]))
+                        crate::overflow::thread_init();
+                        crate::prog::set_trap(trap.clone());
+                        // In compile-time evaluation, on a fiber whose
+                        // overflow comes back as a runtime error.
+                        let Some(tx) = trap else { return Send2(apply(t.0, vec![UNIT])) };
+                        match crate::fiber::recoverable(crate::fiber::STACK, move || apply(t.0, vec![UNIT])) {
+                            Some(w) => Send2(w),
+                            None => {
+                                let _ = tx.send(Err(crate::prog::STACK_OVERFLOW.to_string()));
+                                loop {
+                                    std::thread::park();
+                                }
+                            }
+                        }
                     })
                     .expect("spawn a `par` thread")
             })

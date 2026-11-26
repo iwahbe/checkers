@@ -214,6 +214,8 @@ fn acc(funcs: &mut Vec<Func>, i: usize, helper: u32, mode: Mode) {
             E::Call { f: helper, args, tail: true }
         }
         Site::Value(e @ E::Fail(_)) => e,
+        // `acc * 1`, `acc + 0`, `acc ++ ""`: `acc`.
+        Site::Value(e) if identity(mode.op, &e) => E::Var(acc),
         Site::Value(e) => {
             let r = fresh.var();
             E::Let(r, Box::new(untail(e)), Box::new(E::Borrow { op: mode.op, args: combine(E::Var(acc), E::Var(r)), drops: Vec::new() }))
@@ -232,6 +234,16 @@ fn acc(funcs: &mut Vec<Func>, i: usize, helper: u32, mode: Mode) {
         Site::Value(e) => e,
     }, &mut fresh);
     funcs[i].nvars = fresh.0;
+}
+
+/// Is `e` the identity of `op`, so that `acc ⊕ e` is `acc`?
+fn identity(op: BOp, e: &E) -> bool {
+    match (op, e) {
+        (BOp::Prim(Op::Add, _), E::Int(0)) | (BOp::Prim(Op::Mul, _), E::Int(1)) => true,
+        (BOp::Prim(Op::Concat, _), E::Str(s)) => s.is_empty(),
+        (BOp::Prim(Op::Concat, _), E::Bytes(x)) => x.is_empty(),
+        _ => false,
+    }
 }
 
 /// A tail position, for the operator rewrite.

@@ -1,6 +1,8 @@
 -- stdout
-> alpha
-> beta
+ok
+> b"alpha"
+> b"beta"
+ok
 ok
 b"bytes!"
 b"one\n"
