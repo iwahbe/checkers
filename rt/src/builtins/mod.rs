@@ -151,6 +151,16 @@ pub(crate) fn io_message(e: &std::io::Error) -> String {
     }
 }
 
+/// A line read from a stream (`crate::io::read_line_bytes`), as
+/// `Result (Option Bytes) IoError`.
+pub(crate) fn line_result(r: std::io::Result<Option<Vec<u8>>>) -> W {
+    match r {
+        Ok(Some(l)) => ok(some(new_bytes(&l))),
+        Ok(None) => ok(none()),
+        Err(e) => err(describe_io(&e)),
+    }
+}
+
 pub(crate) fn io_err(m: &str) -> W {
     new_obj(Obj::IoErr(m.to_string()))
 }

@@ -64,10 +64,15 @@ fn handle s -> t : s~Shape, t~Type
 
 fn finish s h -> r : s~Shape, h~handle s, r~Unit
     match s
-        One  -> files.close h
+        One  -> close h
         Many -> ()
 
 fn forget s h -> r : s~Shape, h~handle s, r~Unit
     match s
         One  -> ()
         Many -> ()
+
+# Close `f`, whatever closing gives.
+fn close f : f~File
+    let _ = files.close f
+    ()

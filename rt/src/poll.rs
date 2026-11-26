@@ -272,6 +272,12 @@ impl PollFd {
     }
 }
 
+impl crate::obj::IntoFd for PollFd {
+    fn into_fd(self) -> OwnedFd {
+        self.0
+    }
+}
+
 fn would_block(e: &std::io::Error) -> bool {
     e.kind() == std::io::ErrorKind::WouldBlock
 }

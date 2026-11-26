@@ -1,0 +1,73 @@
+error[E0201]: type mismatch: expected `Int`, found `(_, _)`
+  --> unreachable_arm_checked.ck:10:9
+   |
+10 |         (a, b) -> 1
+   |         ^^^^^^ this pattern has type `(_, _)`
+
+warning[W021]: this arm never matches
+  --> unreachable_arm_checked.ck:10:9
+   |
+10 |         (a, b) -> 1
+   |         ^^^^^^ the arms above already match every value it would
+   = help: remove it
+
+error[E0201]: type mismatch: expected `Int`, found `(_, _)`
+  --> unreachable_arm_checked.ck:15:9
+   |
+15 |         (a, b) -> 1
+   |         ^^^^^^ this pattern has type `(_, _)`
+
+warning[W021]: this arm never matches
+  --> unreachable_arm_checked.ck:15:9
+   |
+15 |         (a, b) -> 1
+   |         ^^^^^^ the arms above already match every value it would
+   = help: remove it
+
+error[E0246]: this pattern has 2 parts, but `()` has none
+  --> unreachable_arm_checked.ck:20:9
+   |
+20 |         (a, b) -> 1
+   |         ^^^^^^
+   = help: match `()` with the pattern `()`, or `_`
+
+warning[W021]: this arm never matches
+  --> unreachable_arm_checked.ck:20:9
+   |
+20 |         (a, b) -> 1
+   |         ^^^^^^ the arms above already match every value it would
+   = help: remove it
+
+warning[W021]: this arm never matches
+  --> unreachable_arm_checked.ck:25:9
+   |
+25 |         y -> "y"
+   |         ^ the arms above already match every value it would
+   = help: remove it
+
+error[E0201]: type mismatch: expected `Int`, found `String`
+  --> unreachable_arm_checked.ck:25:14
+   |
+25 |         y -> "y"
+   |              ^^^ this expression has type `String`
+
+warning[W021]: this arm never matches
+  --> unreachable_arm_checked.ck:30:9
+   |
+30 |         Some (a, b) -> 1
+   |         ^^^^^^^^^^^ the arms above already match every value it would
+   = help: remove it
+
+error[E0201]: type mismatch: expected `Int`, found `(_, _)`
+  --> unreachable_arm_checked.ck:30:14
+   |
+30 |         Some (a, b) -> 1
+   |              ^^^^^^ this pattern has type `(_, _)`
+
+error[E0201]: type mismatch: expected `Int`, found `(_, _)`
+  --> unreachable_arm_checked.ck:36:21
+   |
+36 |         None | Some (a, b) -> 1
+   |                     ^^^^^^ this pattern has type `(_, _)`
+
+unreachable_arm_checked.ck: 6 errors, 5 warnings

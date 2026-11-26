@@ -29,8 +29,8 @@ partial fn cleanup ks : ks~List Kid
     match ks
         []                -> ()
         Kid i o c :: rest ->
-            files.close i
-            files.close o
+            let _ = files.close i
+            let _ = files.close o
             let _ = proc.wait c
             cleanup rest
 
@@ -42,7 +42,7 @@ enum Slot
 # Read the child's output to its end, then wait for it.
 partial fn read out child -> s : out~File, child~Child, s~Slot
     let (text, out) = files.read_rest out
-    files.close out
+    let _ = files.close out
     let code = match proc.wait child
         Ok n  -> n
         Err _ -> 99
@@ -56,7 +56,7 @@ partial fn feed ins n : ins~List File, n~Nat
         []        -> ()
         w :: rest ->
             let (_, w) = files.write_line ("line " ++ debug n) w
-            files.close w
+            let _ = files.close w
             feed rest (n + 1)
 
 # What a slot holds, as text.

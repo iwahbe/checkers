@@ -22,6 +22,7 @@ impl<'g> Evaluator<'g> {
     pub fn new(g: &'g Globals) -> Evaluator<'g> {
         let module = super::jit_module();
         let mut gen = Gen::new(module, Program::new(g, None), g);
+        gen.probe = true;
         gen.define_new();
         gen.m.finalize_definitions().expect("finish native code");
         let invoke = gen.m.get_finalized_function(gen.invoke);

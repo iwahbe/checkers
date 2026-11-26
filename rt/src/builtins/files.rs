@@ -80,30 +80,22 @@ builtin!(ckb_files_create, |a| match path(a[1], s(a[0])) {
 
 builtin!(ckb_files_close, |a| {
     let st = file(a[0]).lock().unwrap_or_else(|e| e.into_inner()).take();
-    match st {
-        Some(FileState::Write(mut w)) => {
-            let _ = w.flush();
-        }
+    let r = match st {
+        Some(FileState::Write(w)) => w.finish(),
         // The stream stays open; what this handle wrote goes out now.
-        Some(FileState::Stdout) => crate::io::flush(),
-        _ => {}
+        Some(FileState::Stdout) => crate::io::stdout().flush(),
+        Some(FileState::Read(_) | FileState::Stdin | FileState::Stderr) => Ok(()),
+        None => Err(misuse("this file is closed")),
+    };
+    match r {
+        Ok(()) => ok(UNIT),
+        Err(e) => err(describe_io(&e)),
     }
-    UNIT
 });
 
 builtin!(ckb_files_read_line, |a| {
-    let line = match reading(a[0], crate::io::read_line_from) {
-        Ok(l) => l,
-        Err(e) => {
-            fail_on("files.read_line", &e);
-            None
-        }
-    };
-    let opt = match line {
-        Some(l) => some(new_str(&l)),
-        None => none(),
-    };
-    new_tuple(&[opt, dup(a[0])])
+    let r = line_result(reading(a[0], crate::io::read_line_bytes));
+    new_tuple(&[r, dup(a[0])])
 });
 
 builtin!(ckb_files_write_line, |a| {

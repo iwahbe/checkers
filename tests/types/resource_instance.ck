@@ -9,7 +9,7 @@ class Sink a
 
 instance Sink File
     fn sink f
-        files.close f
+        close f
 
 # Generic code takes a resource only as `own` (D39): so does a class's
 # function that generic code passes it to.
@@ -26,7 +26,7 @@ class Named a
 
 instance Named File
     fn name f
-        files.close f
+        close f
         "file"
 
 class Pair a
@@ -43,3 +43,8 @@ class Forget a
 instance Forget File
     fn forget f
         ()
+
+# Close `f`, whatever closing gives.
+fn close f : f~File
+    let _ = files.close f
+    ()
