@@ -233,6 +233,10 @@ impl<'p, M: Module> Gen<'p, M> {
 
     /// The global closure of function `f` (no free variables).
     fn closure(&mut self, f: u32) -> DataId {
+        // A function with borrowed parameters is entered through code
+        // taking them owned, as a closure's arguments are.
+        let f = self.p.entries.get(&f).copied().unwrap_or(f);
+        assert!(!self.p.borrowed.contains_key(&f), "a closure of `{}`, which borrows parameters", self.p.funcs[f as usize].name);
         if let Some(d) = self.closures.get(&f) {
             return *d;
         }
@@ -691,6 +695,8 @@ impl<'p, M: Module> Gen<'p, M> {
             }
             E::MkClo { f, captured } => {
                 let n = captured.len();
+                let f = &self.p.entries.get(f).copied().unwrap_or(*f);
+                assert!(!self.p.borrowed.contains_key(f), "a closure of `{}`, which borrows parameters", self.p.funcs[*f as usize].name);
                 let arity = arity_of(&self.p.funcs[*f as usize]) as u64;
                 let x = self.alloc(b, st, w::info(w::K_CLO, n as u64, arity), w::HDR + 8 + 8 * n);
                 let r = self.fref(b, st, self.funcs[*f as usize]);

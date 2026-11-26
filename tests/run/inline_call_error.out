@@ -1,0 +1,15 @@
+-- stdout
+7
+-- stderr
+error[E0450]: cannot prove that this `Nat` subtraction stays at or above zero
+  --> inline_call_error.ck:11:5
+   |
+11 |     10 - n
+   |     ^^^^^^ `-` on `Nat` needs the left side to be at least the right
+   = note: counterexample: n = 11
+   = help: check it first (`if a >= b then a - b else …`), or write `a + (-b)` for a signed result
+
+inline_call_error.ck: 1 error, 0 warnings
+running with 1 unproven obligation(s) (--unverified)
+runtime error in `less`: `-` on `Nat` would go below zero (10 - 12)
+-- exit 70

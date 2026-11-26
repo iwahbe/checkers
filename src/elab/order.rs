@@ -318,7 +318,7 @@ fn tarjan(nodes: &[Node], edges: &HashMap<Node, HashSet<Node>>) -> Vec<Vec<Node>
 
 /// Strongly connected components (Tarjan's algorithm), dependencies first:
 /// `edges[v]` are the nodes `v` depends on.
-pub(super) fn sccs(edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
+pub(crate) fn sccs(edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
     struct St<'a> {
         edges: &'a [Vec<usize>],
         index: Vec<Option<usize>>,

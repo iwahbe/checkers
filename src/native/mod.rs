@@ -173,7 +173,37 @@ pub(crate) fn rc_new(g: &Globals, p: &mut lower::Program) {
     tailrec::program(&mut p.funcs, from);
     unbox::program(p, from);
     for f in &mut p.funcs[from..] {
-        rc::function(f, &fields_of);
+        f.body = rc::forward_aliases(std::mem::replace(&mut f.body, lower::E::Erased));
+    }
+    rc::infer_borrowed(&p.funcs, from, &mut p.borrowed, &fields_of);
+    let rets: Vec<usize> = p.funcs.iter().map(|f| f.rets).collect();
+    let rets = |f: u32| rets[f as usize];
+    let to = p.funcs.len();
+    for (i, f) in p.funcs[from..].iter_mut().enumerate() {
+        rc::function((from + i) as u32, f, &fields_of, &p.borrowed, &rets);
+    }
+    // A closure's code takes its arguments owned: a function with borrowed
+    // parameters made a closure (as a value, or as `main`) is entered
+    // through one that drops them after the call.
+    let mut closures = Vec::new();
+    if let Some(lower::DefShape::Fn { func, .. }) = p.defs.get(&p.main) {
+        closures.push(*func);
+    }
+    let mut values = Vec::new();
+    for f in &p.funcs[from..to] {
+        rc::closures_in(&f.body, &mut values, &mut closures);
+    }
+    for d in values {
+        if let Some(lower::DefShape::Fn { func, .. }) = p.defs.get(&d) {
+            closures.push(*func);
+        }
+    }
+    for i in closures {
+        if let (Some(b), false) = (p.borrowed.get(&i), p.entries.contains_key(&i)) {
+            let e = rc::owned_entry(i, &p.funcs[i as usize], b);
+            p.entries.insert(i, p.funcs.len() as u32);
+            p.funcs.push(e);
+        }
     }
     if std::env::var_os("CHECKERS_NATIVE_DUMP").is_some() {
         for (i, f) in p.funcs.iter().enumerate().skip(from) {
@@ -391,6 +421,82 @@ mod tests {
         for (triple, n) in MACHINES {
             assert_eq!(codegen::return_words(&*isa(triple)), n, "{triple}");
         }
+    }
+
+    /// The functions of a test program in tests/run/, ready to compile.
+    fn funcs_of(name: &'static str, f: impl FnOnce(&lower::Program) + Send + 'static) {
+        let path = format!("{}/tests/run/{name}", env!("CARGO_MANIFEST_DIR"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        let dir = std::path::Path::new(&path).parent().unwrap().to_path_buf();
+        crate::with_big_stack(move || {
+            let (e, main, staged, report) = crate::ready_to_run(name, &text, &dir, false).map_err(|r| r.report).unwrap();
+            assert_eq!(report, "");
+            f(&prepare(&e.g, Some(&staged), main, host_return_words()));
+        })
+    }
+
+    /// A copy made for a known dictionary takes neither the dictionary nor
+    /// the type (tests/run/copy_params.ck): `lo`'s copies take `x` and `y`.
+    /// A copy that would take nothing keeps one parameter. The copies are
+    /// read as `spec` makes them, before small functions are inlined.
+    #[test]
+    fn copies_take_no_dictionaries() {
+        funcs_of("copy_params.ck", |p| {
+            let specs = p.specs.borrow();
+            let arity = |name: &str| {
+                let mut out: Vec<usize> = specs
+                    .copies
+                    .iter()
+                    .filter(|c| p.names[c.of.0 as usize] == name)
+                    .map(|c| {
+                        let (mut n, mut b) = (0, &c.body);
+                        while let crate::core::Tm::Lam(_, _, _, x) = b {
+                            n += 1;
+                            b = x;
+                        }
+                        n
+                    })
+                    .collect();
+                out.dedup();
+                out
+            };
+            assert_eq!(arity("lo"), [2]);
+            assert_eq!(arity("nothing"), [1]);
+        })
+    }
+
+    /// Whether `e` duplicates or drops `v`.
+    fn counts(e: &lower::E, v: lower::V) -> bool {
+        use lower::E;
+        match e {
+            E::Dup(x, b) | E::Drop(x, b) | E::DropReuse(x, _, _, b) => *x == v || counts(b, v),
+            E::Borrow { drops, args, .. } => drops.contains(&v) || args.iter().any(|a| counts(a, v)),
+            E::Let(_, a, b) | E::LetMulti(_, a, b) => counts(a, v) || counts(b, v),
+            E::Call { args, .. } | E::Tuple(args) | E::Par(args) | E::Multi(args) => args.iter().any(|a| counts(a, v)),
+            E::Apply { f, args, .. } => counts(f, v) || args.iter().any(|a| counts(a, v)),
+            E::Con { fields, .. } => fields.iter().any(|a| counts(a, v)),
+            E::Case { arms, lits, default, .. } => {
+                arms.iter().any(|a| counts(&a.body, v)) || lits.iter().any(|(_, b)| counts(b, v)) || default.as_ref().is_some_and(|d| counts(d, v))
+            }
+            E::At(_, b) => counts(b, v),
+            _ => false,
+        }
+    }
+
+    /// A parameter a loop only reads and passes on unchanged is borrowed
+    /// (tests/run/borrowed_params.ck): `walk`'s `n` is neither duplicated
+    /// nor dropped; `longer` borrows the string it compares with and owns
+    /// the list whose cells it reuses. Both are recursive, so neither is
+    /// inlined.
+    #[test]
+    fn loops_borrow_what_they_pass_on() {
+        funcs_of("borrowed_params.ck", |p| {
+            let func = |name: &str| p.funcs.iter().position(|f| f.name == name).unwrap();
+            let walk = func("walk");
+            assert_eq!(p.borrowed.get(&(walk as u32)).map(Vec::as_slice), Some(&[true, false, false][..]));
+            assert!(!counts(&p.funcs[walk].body, p.funcs[walk].params[0]));
+            assert_eq!(p.borrowed.get(&(func("longer") as u32)).map(Vec::as_slice), Some(&[true, false][..]));
+        })
     }
 
     /// Results returned as their parts, six to eight words wide

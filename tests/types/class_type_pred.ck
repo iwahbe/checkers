@@ -22,7 +22,7 @@ instance Encoding Ascii
     fn units a
         array.to_list a.text.bytes
 
-# A default is checked once, in the class.
+# A default is checked at each instance that takes it.
 class Small s
     type Digit = U8 : d~Digit, value s d < 1000
     fn value s d -> n : s~ghost Type, d~Digit, n~Nat

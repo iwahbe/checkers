@@ -1,0 +1,7 @@
+error[E0201]: type mismatch: expected `String`, found `Int`
+  --> field_of_call.ck:20:5
+   |
+20 |     (make n).value
+   |     ^^^^^^^^^^^^^^ this expression has type `Int`
+
+field_of_call.ck: 1 error, 0 warnings
