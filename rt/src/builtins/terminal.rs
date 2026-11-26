@@ -31,10 +31,7 @@ builtin!(ckb_read_all, |_a| match crate::io::read_all() {
     Err(e) => err(describe_io(&e)),
 });
 
-builtin!(ckb_read_line, |_a| match crate::io::read_line() {
-    Some(l) => some(new_str(&l)),
-    None => none(),
-});
+builtin!(ckb_read_line, |_a| line_result(crate::io::with_stdin(crate::io::read_line_bytes)));
 
 builtin!(ckb_write, |a| {
     crate::io::write(s(a[0]).as_bytes());

@@ -94,11 +94,7 @@ builtin!(ckb_files_close, |a| {
 });
 
 builtin!(ckb_files_read_line, |a| {
-    let r = match reading(a[0], crate::io::read_line_bytes) {
-        Ok(Some(l)) => ok(some(new_bytes(&l))),
-        Ok(None) => ok(none()),
-        Err(e) => err(describe_io(&e)),
-    };
+    let r = line_result(reading(a[0], crate::io::read_line_bytes));
     new_tuple(&[r, dup(a[0])])
 });
 

@@ -59,7 +59,6 @@ pub fn read_all() -> std::io::Result<Vec<u8>> {
     })
 }
 
-/// Read one line, without its `\n`; invalid UTF-8 becomes U+FFFD (§13.4).
 /// The next line's bytes, without its `\n`; `None` at the end.
 pub fn read_line_bytes(r: &mut dyn BufRead) -> std::io::Result<Option<Vec<u8>>> {
     let mut buf = Vec::new();
@@ -70,13 +69,4 @@ pub fn read_line_bytes(r: &mut dyn BufRead) -> std::io::Result<Option<Vec<u8>>> 
         buf.pop();
     }
     Ok(Some(buf))
-}
-
-/// The next line as text, invalid UTF-8 becoming U+FFFD.
-pub fn read_line_from(r: &mut dyn BufRead) -> std::io::Result<Option<String>> {
-    Ok(read_line_bytes(r)?.map(|b| String::from_utf8_lossy(&b).into_owned()))
-}
-
-pub fn read_line() -> Option<String> {
-    with_stdin(|r| read_line_from(r).ok().flatten())
 }
