@@ -3,6 +3,7 @@ module std.decimal
 
 import std.array
 import std.char
+import std.math
 import std.parse (Parsable, Token, suffix, suffix_size, suffix_trans, token)
 import std.string (Display, display)
 import std.utf8
@@ -80,11 +81,11 @@ export fn render d -> s : d~Decimal, s~String
 # `a × 10^e` as `render` writes it, without a sign.
 fn magnitude a e -> s : a~Nat, e~Int, s~String, len s.bytes > 0, char.is_digit s.bytes[0]
     if e >= 0 and e <= 21
-        display (a * pow10 e) []
+        display (a * math.pow 10 e) []
     else
         let ds = display a []
         if e < 0 and 0 - e <= len ds.bytes + 6
-            let p = pow10 (0 - e)
+            let p = math.pow 10 (0 - e)
             have quotient_nat a p
             let w = display (a / p) []
             have len w.bytes > 0 and char.is_digit w.bytes[0]
@@ -98,18 +99,13 @@ lemma quotient_nat a p : a~Nat, p~Nat, p >= 1
     proof
         auto
 
-# `10^k`.
-fn pow10 k -> p : k~Nat, p~Nat, p >= 1
-    decreasing k
-    if k == 0 then 1 else 10 * pow10 (k - 1)
-
 # The `f` digits of `r`, zeros first if it has fewer: `places 5 3` is `005`.
-fn places r f -> s : r~Nat, f~Nat, r < pow10 f, s~String, len s.bytes == f
+fn places r f -> s : r~Nat, f~Nat, r < math.pow 10 f, s~String, len s.bytes == f
     decreasing f
     if f == 0
         ""
     else
-        let p = pow10 (f - 1)
+        let p = math.pow 10 (f - 1)
         digit (r / p) ++ places (r % p) (f - 1)
 
 # The digit `d`, as a string of one byte.
@@ -316,18 +312,18 @@ lemma unsigned_magnitude a e neg post : a~Nat, e~Int, neg~Bool, post~Bytes,
     ensures unsigned ((magnitude a e).bytes ++ post) neg == Ok (scaled (if neg then 0 - a else a) e, post)
     proof
         if e >= 0 and e <= 21
-            let v = a * pow10 e
+            let v = a * math.pow 10 e
             have (magnitude a e).bytes == (display v []).bytes
             have integer_part v post neg
             have fraction_other post v neg
             have exponent_end post v 0 neg
-            have scaled ((if neg then 0 - a else a) * pow10 e) 0 == scaled (if neg then 0 - v else v) 0
+            have scaled ((if neg then 0 - a else a) * math.pow 10 e) 0 == scaled (if neg then 0 - v else v) 0
             have scaled_pow (if neg then 0 - a else a) 0 e
         else
             let ds = (display a []).bytes
             if e < 0 and 0 - e <= len ds + 6
                 let f = 0 - e
-                let p = pow10 f
+                let p = math.pow 10 f
                 let q = a / p
                 let r = a % p
                 let rest = b"." ++ (places r f).bytes ++ post
@@ -347,11 +343,11 @@ lemma unsigned_magnitude a e neg post : a~Nat, e~Int, neg~Bool, post~Bytes,
 
 # `scaled (m × 10^k) e` is `scaled m (e + k)`.
 lemma scaled_pow m e k : m~Int, e~Int, k~Nat
-    ensures scaled (m * pow10 k) e == scaled m (e + k)
+    ensures scaled (m * math.pow 10 k) e == scaled m (e + k)
     proof
         decreasing k
         if k > 0
-            have scaled_ten (m * pow10 (k - 1)) e
+            have scaled_ten (m * math.pow 10 (k - 1)) e
             have scaled_pow m (e + 1) (k - 1)
         else
             auto
@@ -368,24 +364,24 @@ lemma integer_part v rest neg : v~Nat, rest~Bytes, neg~Bool, len rest == 0 or no
             have string.parse_display v rest
 
 # `fraction` at a point followed by `f` places writing `r`.
-lemma fraction_point q r f neg post : q~Int, r~Nat, f~Nat, 0 < f, r < pow10 f, neg~Bool, post~Bytes,
+lemma fraction_point q r f neg post : q~Int, r~Nat, f~Nat, 0 < f, r < math.pow 10 f, neg~Bool, post~Bytes,
                                       len post == 0 or not (char.is_digit post[0])
     ensures fraction (b"." ++ (places r f).bytes ++ post) q neg
-        == exponent_part post (q * pow10 f + r) (0 - f) neg
+        == exponent_part post (q * math.pow 10 f + r) (0 - f) neg
     proof
         let w = (places r f).bytes
+        have digits_places r f q 0 post
         have array.uncons_slice (b"." ++ w ++ post)
         have array.slice_append b"." (w ++ post) b""
-        have digits_places r f q 0 post
 
 # `digits` reads back what `places` writes.
-lemma digits_places r f m n post : r~Nat, f~Nat, r < pow10 f, m~Int, n~Nat, post~Bytes,
+lemma digits_places r f m n post : r~Nat, f~Nat, r < math.pow 10 f, m~Int, n~Nat, post~Bytes,
                                    len post == 0 or not (char.is_digit post[0])
-    ensures digits ((places r f).bytes ++ post) m n == Digits (m * pow10 f + r) (n + f) post
+    ensures digits ((places r f).bytes ++ post) m n == Digits (m * math.pow 10 f + r) (n + f) post
     proof
         decreasing f
         if f > 0
-            let p = pow10 (f - 1)
+            let p = math.pow 10 (f - 1)
             let c = (digit (r / p)).bytes
             let w = (places (r % p) (f - 1)).bytes
             have (places r f).bytes ++ post == c ++ w ++ post
@@ -398,13 +394,13 @@ lemma digits_places r f m n post : r~Nat, f~Nat, r < pow10 f, m~Int, n~Nat, post
             have digits (c ++ w ++ post) m n == digits (w ++ post) k (n + 1)
             have digits ((places r f).bytes ++ post) m n == digits (w ++ post) k (n + 1)
             have digits_places (r % p) (f - 1) k (n + 1) post
-            have pow10 f == 10 * p
+            have math.pow 10 f == 10 * p
             have (r / p) * p + r % p == r
-            have k * p + r % p == m * pow10 f + r
-            have digits (w ++ post) k (n + 1) == Digits (m * pow10 f + r) (n + f) post
+            have k * p + r % p == m * math.pow 10 f + r
+            have digits (w ++ post) k (n + 1) == Digits (m * math.pow 10 f + r) (n + f) post
         else
             have (places r f).bytes ++ post == post
-            have m * pow10 f + r == m
+            have m * math.pow 10 f + r == m
             if len post > 0
                 have array.uncons_slice post
             else
