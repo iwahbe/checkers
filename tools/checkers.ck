@@ -86,12 +86,14 @@ partial fn names_file args -> r : args~List String, r~Bool
         []        -> False
         a :: rest -> ends_with a ".ck" or names_file rest
 
-# `main.ck` after the options the compiler takes before a file.
+# `main.ck` after the options before a file, the compiler's: one it
+# doesn't take is its usage error.
 partial fn with_main args -> r : args~List String, r~List String
     match args
         "--threads" :: n :: rest -> "--threads" :: n :: with_main rest
         a :: rest                ->
-            if a == "--unverified" or a == "--release" or a == "--deny-warnings" or a == "--no-cache"
+            let b = string.bytes a
+            if len b > 1 and b[0] == '-' and b[1] == '-'
                 a :: with_main rest
             else
                 "main.ck" :: args

@@ -53,7 +53,7 @@ Behaviours that share no cown may run at the same time, in either order.
 
 A behaviour takes each cown's value and hands back a new one for each, so it must name different cowns: with one cown named twice there would be no right value to keep. Naming two or more cowns is an obligation that they differ, `x != y` for each pair. Cowns of types that can never be equal need no proof: a `Cown Nat` is never a `Cown String`. Naming the same cown twice, `when a = c, b = c`, is an error.
 
-A function holding cowns it is given requires them to differ, as a precondition, and its callers prove it. A call tells the prover which cowns it returns are new: it can return only cowns it made and cowns it was given, so a cown made by `cown.new` differs from every cown in scope, and so does one returned by a function that wasn't given a cown of its type. Name such a call with `let`.
+A function holding cowns it is given requires them to differ, as a precondition, and its callers prove it. A call tells the prover which cowns it returns are new: it can return only cowns it made and cowns it was given, so a cown made by `cown.new` differs from every cown in scope, and so does one returned by a function that wasn't given a cown of its type.
 
 ```checkers
 import std.cown (Cown, Sched)
