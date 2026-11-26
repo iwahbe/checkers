@@ -365,7 +365,7 @@ impl Elab {
             }
             // The spine's arguments, first to last; the result isn't
             // mentioned by a precondition.
-            let mut env: Vec<Val> = args.iter().rev().take(spec.n_binders).map(|a| eval(&self.g, &empty, a)).collect();
+            let mut env: Vec<Val> = args.iter().take(spec.n_binders).map(|a| eval(&self.g, &empty, a)).collect();
             env.push(Val::Error);
             for p in spec.preds.iter().filter(|p| !p.is_post) {
                 let goal = quote(&self.g, 0, &self.inst_pred(p, env.clone()));
