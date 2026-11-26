@@ -429,7 +429,7 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         let dir = std::path::Path::new(&path).parent().unwrap().to_path_buf();
         crate::with_big_stack(move || {
-            let (e, main, staged, report) = crate::ready_to_run(name, &text, &dir, false).map_err(|r| r.report).unwrap();
+            let (e, main, staged, report) = crate::ready_to_run(name, &text, &dir, false, false).map_err(|r| r.report).unwrap();
             assert_eq!(report, "");
             f(&prepare(&e.g, Some(&staged), main, host_return_words()));
         })
@@ -509,7 +509,7 @@ mod tests {
             let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/run/unboxed_wide.ck");
             let text = std::fs::read_to_string(path).unwrap();
             let dir = std::path::Path::new(path).parent().unwrap();
-            let (e, main, staged, report) = crate::ready_to_run("unboxed_wide.ck", &text, dir, false).map_err(|r| r.report).unwrap();
+            let (e, main, staged, report) = crate::ready_to_run("unboxed_wide.ck", &text, dir, false, false).map_err(|r| r.report).unwrap();
             assert_eq!(report, "");
             for (triple, n) in MACHINES {
                 let p = prepare(&e.g, Some(&staged), main, n);
@@ -527,7 +527,7 @@ mod tests {
         let path = format!("{}/tests/run/{name}.ck", env!("CARGO_MANIFEST_DIR"));
         let text = std::fs::read_to_string(&path).unwrap();
         let dir = std::path::Path::new(&path).parent().unwrap();
-        let (e, main, staged, report) = crate::ready_to_run(&format!("{name}.ck"), &text, dir, false).map_err(|r| r.report).unwrap();
+        let (e, main, staged, report) = crate::ready_to_run(&format!("{name}.ck"), &text, dir, false, false).map_err(|r| r.report).unwrap();
         assert_eq!(report, "");
         let isa = isa(triple);
         let p = prepare(&e.g, Some(&staged), main, codegen::return_words(&*isa));
@@ -599,6 +599,24 @@ mod tests {
         })
     }
 
+    /// A constant only code generation wants (tests/run/known_release.ck,
+    /// `FAR`, past the work limit): compiled as its value in a release
+    /// build, not in a development one, where it costs too much (§8.9).
+    #[test]
+    fn release_builds_compute_constants_to_completion() {
+        crate::with_big_stack(|| {
+            let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/run/known_release.ck");
+            let text = std::fs::read_to_string(path).unwrap();
+            let dir = std::path::Path::new(path).parent().unwrap();
+            for release in [false, true] {
+                let (e, ..) = crate::ready_to_run("known_release.ck", &text, dir, false, release).map_err(|r| r.report).unwrap();
+                let far = e.g.defs.iter().position(|d| &*d.name == "FAR" && &*d.module == "known_release").unwrap();
+                let known = crate::core::known_const(&e.g, crate::core::DefId(far as u32));
+                assert_eq!(known.is_some(), release, "release: {release}");
+            }
+        })
+    }
+
     /// Small integers' inline paths (tests/run/small_int_edges.ck: overflow
     /// checks, constants, comparisons branched on) compile for every
     /// machine, whose overflow-checking instructions differ.
@@ -608,7 +626,7 @@ mod tests {
             let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/run/small_int_edges.ck");
             let text = std::fs::read_to_string(path).unwrap();
             let dir = std::path::Path::new(path).parent().unwrap();
-            let (e, main, staged, report) = crate::ready_to_run("small_int_edges.ck", &text, dir, false).map_err(|r| r.report).unwrap();
+            let (e, main, staged, report) = crate::ready_to_run("small_int_edges.ck", &text, dir, false, false).map_err(|r| r.report).unwrap();
             assert_eq!(report, "");
             for (triple, _) in MACHINES {
                 object(&e.g, Some(&staged), main, isa(triple)).unwrap_or_else(|m| panic!("{triple}: {m}"));

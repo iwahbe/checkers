@@ -1,0 +1,33 @@
+error[E0201]: type mismatch: expected `Encoding.Unit s`, found a number
+  --> class_type_base_one_way.ck:12:5
+   |
+12 |     3
+   |     ^ this is a number
+   = note: `Encoding.Unit s` is a type of its own: its values are `Int`s, but numbers aren't known to be its values
+   = help: use a value of `Encoding.Unit s`, such as one the class's functions give
+
+error[E0201]: type mismatch: expected `Encoding.Unit s`, found `Int`
+  --> class_type_base_one_way.ck:15:5
+   |
+15 |     n
+   |     ^ this has type `Int`
+   = note: `Encoding.Unit s` is a type of its own: its values are `Int`s, but `Int`s aren't known to be its values
+   = help: use a value of `Encoding.Unit s`, such as one the class's functions give
+
+error[E0262]: type mismatch: expected `List (Encoding.Unit s)`, found `List Int`
+  --> class_type_base_one_way.ck:18:5
+   |
+18 |     ns
+   |     ^^ this expression has type `List Int`
+   = note: `Encoding.Unit s` is a type of its own: its values are `Int`s, but `Int`s aren't known to be its values
+   = help: give the value the type `List (Encoding.Unit s)` where it is built, from values of `Encoding.Unit s`
+
+error[E0201]: type mismatch: expected `Encoding.Unit s`, found `Encoding.Unit t`
+  --> class_type_base_one_way.ck:21:5
+   |
+21 |     one y
+   |     ^^^^^ this has type `Encoding.Unit t`
+   = note: `Encoding.Unit s` is a type of its own: its values are `Int`s, but `Encoding.Unit t`s aren't known to be its values
+   = help: use a value of `Encoding.Unit s`, such as one the class's functions give
+
+class_type_base_one_way.ck: 4 errors, 0 warnings

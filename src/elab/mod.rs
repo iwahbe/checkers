@@ -12,6 +12,7 @@ mod expr;
 mod descr;
 mod eq;
 mod interval;
+pub use interval::CODEGEN_WORK;
 pub mod index;
 pub(crate) mod order;
 mod pattern;
@@ -19,6 +20,7 @@ pub use pattern::BINDING_HELP;
 mod refine;
 pub mod settle;
 mod template;
+mod tyeq;
 pub mod stdlib;
 pub mod termination;
 pub mod unused;
@@ -242,6 +244,8 @@ pub struct Deferred {
     pub names: Vec<Name>,
     /// The function whose body this is in.
     pub owner: Option<DefId>,
+    /// The type equations that hold there (#209).
+    pub givens: Vec<tyeq::Given>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -442,6 +446,9 @@ pub struct Obligation {
     /// Only an obligation if this type turns out to be `Nat` (subtraction).
     pub only_if_nat: Option<Val>,
     pub owner: Option<DefId>,
+    /// The type equations in scope (#209): each type with a representative,
+    /// and it. The prover sees every such type as its representative.
+    pub reps: Vec<(Val, Val)>,
 }
 
 /// A predicate from a header, constructor or alias, as a term over its binders.
@@ -493,6 +500,9 @@ pub struct Spec {
     pub elems: Vec<ElemPromise>,
     /// Implicit binders among the explicit ones (#161): see `Sig`.
     pub inner: Vec<usize>,
+    /// Its type equations (#209), over the binders, and the binders' names.
+    pub teqs: Vec<tyeq::TyEq>,
+    pub binder_names: Vec<Name>,
 }
 
 /// A parameter whose type's refinements mention later parameters (#102).
@@ -640,9 +650,19 @@ pub struct Elab {
     pub transparent: HashSet<DefId>,
     /// Constructor invariants, over the type's parameters then the fields.
     pub con_invs: HashMap<ConId, Vec<Pred>>,
+    /// Constructors' type equations (#209), over the type's parameters then
+    /// the fields.
+    pub con_teqs: HashMap<ConId, Vec<tyeq::TyEq>>,
+    /// The type equations that hold where elaboration is (#209).
+    pub givens: Vec<tyeq::Given>,
+    /// Type equations uses must meet, waiting for their types (#209).
+    pub wanted: Vec<tyeq::Wanted>,
     /// A type's conditions on its parameters, over the parameters (#136):
     /// obligations where the type is applied, facts in its fields.
     pub ty_conds: HashMap<TyId, Vec<Pred>>,
+    /// Types' type equations on their parameters (#209), over them: a
+    /// condition on the type.
+    pub ty_teqs: HashMap<TyId, Vec<tyeq::TyEq>>,
     /// A type's parameters' typings after the first (`n~Int, n~Nat`), with
     /// the span of each, until their refinements join its conditions.
     pub ty_param_typings: HashMap<TyId, Vec<(usize, Tm, usize, Span)>>,
@@ -661,6 +681,12 @@ pub struct Elab {
     /// What was proved before the proofs phase, so that a module's own
     /// functions can run (§8.9, `settle`).
     pub early: std::cell::RefCell<settle::Early>,
+    /// Each module's proofs once made (`verify::proved`): an imported
+    /// module's functions run at compile time only once it is proved
+    /// (§8.9).
+    pub module_proofs: std::cell::RefCell<HashMap<String, crate::verify::Verified>>,
+    /// The modules being proved now: their functions don't run yet.
+    pub proving: std::cell::RefCell<HashSet<String>>,
     /// The name a refinement alias binds (`n` in `type Big = n~Int, …`).
     pub alias_subject: HashMap<DefId, Name>,
     /// The result type of a function whose result type isn't written.
@@ -811,9 +837,15 @@ pub struct Elab {
     /// at the class's default (#176), by name: the class's type as written
     /// (`Encoding.Unit`) and the type given (`Nat`).
     pub class_type_checks: HashMap<String, (String, String)>,
+    /// Those of a class's type with base types (#360), by lemma: the base
+    /// types at the instance, the value's name, and whether it is the base
+    /// types' own check.
+    pub class_type_bases_at: HashMap<String, (Vec<ast::Expr>, String, bool)>,
     /// While a class's type's predicates are elaborated (#176): an operator
     /// on its values there needs a class function, not a clause.
-    pub in_class_type_pred: bool,
+    /// Elaborating a predicate on a class's type (#176): the `help:` for
+    /// an operator on its values, which needs a base type (#360).
+    pub in_class_type_pred: Option<String>,
     /// Each instance member of the module being desugared, by its index:
     /// its class's name and its instance's types (#146, #145).
     pub member_heads: HashMap<usize, (String, Vec<ast::Expr>)>,
@@ -842,9 +874,9 @@ pub struct Elab {
     pub sig_inst: Option<classes::SigInst>,
     /// Comparisons waiting for a dictionary (#133): level, expected,
     /// actual, where, the locals' names.
-    pub waiting: Vec<(usize, Val, Val, Span, Vec<Name>)>,
+    pub waiting: Vec<(usize, Val, Val, Span, Vec<Name>, bool)>,
     /// Those waiting for an instance's dictionary to be elaborated (#146).
-    pub waiting_late: Vec<(usize, Val, Val, Span, Vec<Name>)>,
+    pub waiting_late: Vec<(usize, Val, Val, Span, Vec<Name>, bool)>,
     /// This module's classes, until their types are registered.
     pub pending_classes: Vec<(String, Vec<String>, Vec<ast::ClassMember>, Span)>,
     /// A class function's parameters' multiplicities, by `module.Class.function`,
@@ -961,14 +993,20 @@ impl Elab {
             specs: HashMap::new(),
             transparent: HashSet::new(),
             con_invs: HashMap::new(),
+            con_teqs: HashMap::new(),
+            givens: Vec::new(),
+            wanted: Vec::new(),
             ty_conds: HashMap::new(),
             ty_param_typings: HashMap::new(),
             ty_cond_defer: None,
+            ty_teqs: HashMap::new(),
             alias_preds: HashMap::new(),
             bounds: HashMap::new(),
             known_cache: std::cell::RefCell::new(HashMap::new()),
             runnable_defs: std::cell::RefCell::new(HashSet::new()),
             early: Default::default(),
+            module_proofs: std::cell::RefCell::new(HashMap::new()),
+            proving: std::cell::RefCell::new(HashSet::new()),
             alias_subject: HashMap::new(),
             result_metas: HashMap::new(),
             arg_of: None,
@@ -1035,7 +1073,8 @@ impl Elab {
             pending_classes: Vec::new(),
             class_type_preds: HashMap::new(),
             class_type_checks: HashMap::new(),
-            in_class_type_pred: false,
+            class_type_bases_at: HashMap::new(),
+            in_class_type_pred: None,
             class_mults: HashMap::new(),
             inst_heads: HashSet::new(),
             part_reported: HashSet::new(),
@@ -1089,7 +1128,13 @@ impl Elab {
     }
 
     pub fn force(&self, v: &Val) -> Val {
-        force(&self.g, v.clone())
+        let f = force(&self.g, v.clone());
+        // A type with a representative in the type equations in scope
+        // (#209) is seen as it.
+        match self.rep_of(&f) {
+            Some(r) => force(&self.g, r),
+            None => f,
+        }
     }
 
     /// A type with type functions at its head computed (`values (Last ?a)`
@@ -1277,6 +1322,11 @@ impl Elab {
     /// Unify, reporting a type mismatch on failure. Returns false on failure.
     pub fn unify_at(&mut self, cx: &Cx, expected: &Val, actual: &Val, span: Span, what: &str) -> bool {
         let mut r = unify(&self.g, cx.lvl(), expected, actual);
+        // Modulo the type equations in scope (#209).
+        if r.is_err() && !self.givens.is_empty() {
+            let (e, a) = (self.rep_deep(cx.lvl(), expected), self.rep_deep(cx.lvl(), actual));
+            r = unify(&self.g, cx.lvl(), &e, &a);
+        }
         if r.is_err() {
             if let Some((e, a)) = self.moot_own(cx, expected, actual) {
                 r = unify(&self.g, cx.lvl(), &e, &a);
@@ -1919,13 +1969,16 @@ impl Elab {
         let ctx = (0..cx.lvl())
             .map(|l| ObLocal {
                 name: cx.locals[l].name.clone(),
-                ty: cx.locals[l].ty.clone(),
-                refined: cx.locals[l].refined.clone(),
-                def: if cx.locals[l].bound { None } else { Some(cx.env[l].clone()) },
+                // With the type equations' representatives (#209): the
+                // prover never sees an equation.
+                ty: self.rep_deep(l, &cx.locals[l].ty),
+                refined: cx.locals[l].refined.as_ref().map(|r| self.rep_deep(cx.lvl(), r)),
+                def: if cx.locals[l].bound { None } else { Some(self.rep_deep(l, &cx.env[l])) },
             })
             .collect();
-        let facts = cx.facts.iter().map(|(_, v)| v.clone()).collect();
-        Obligation { module: self.cur.clone(), span, kind, text, ctx, facts, goal, only_if_nat, owner: self.cur_fn }
+        let facts = cx.facts.iter().map(|(_, v)| self.rep_deep(cx.lvl(), v)).collect();
+        let goal = self.rep_deep(cx.lvl(), &goal);
+        Obligation { module: self.cur.clone(), span, kind, text, ctx, facts, goal, only_if_nat, owner: self.cur_fn, reps: self.rep_pairs() }
     }
 
     /// Whether branches here are asked about (D144 d): the program's own
@@ -2419,8 +2472,11 @@ impl Elab {
     }
 
     pub fn solve_deferred(&mut self) {
+        self.solve_wanted(false);
         self.solve_instances(false);
         self.retry_waiting(false);
+        self.solve_wanted(false);
+        self.solve_instances(false);
         let ds = std::mem::take(&mut self.deferred);
         for d in &ds {
             if let Val::Neutral(Head::Meta(_), _) = self.force(&d.ty) {
@@ -2435,12 +2491,17 @@ impl Elab {
         }
         self.solve_instances(true);
         self.retry_waiting(true);
+        self.solve_wanted(true);
+        let mut failed: Vec<(Span, String, Diagnostic)> = Vec::new();
         for d in ds {
             if d.kind == OpClass::Comparable {
                 self.solve_comparable(&d);
                 continue;
             }
+            // Seen through the type equations where the operator is (#209).
+            let saved = std::mem::replace(&mut self.givens, d.givens.clone());
             let t = self.force(&d.ty);
+            self.givens = saved;
             let wk = &self.g.well_known;
             let ok = match (&t, d.kind) {
                 (Val::Error, _) => true,
@@ -2470,12 +2531,26 @@ impl Elab {
                     OpClass::HasLen => "a `String`, `List` or `Array`",
                     OpClass::Comparable => unreachable!(),
                 };
+                // A number where a class's type with a base type is expected
+                // (#360): its values are numbers, but not every number.
+                if let (Some(base), true) = (crate::core::class_type_base(&self.g, &t), d.what == "a number literal") {
+                    let b = show(&self.g, &d.names, &quote(&self.g, d.lvl, &base));
+                    failed.push((
+                        d.span,
+                        shown.clone(),
+                        Diagnostic::error("E0201", format!("type mismatch: expected `{shown}`, found a number"), d.span)
+                            .with_label("this is a number")
+                            .with_note(format!("`{shown}` is a type of its own: its values are `{b}`s, but numbers aren't known to be its values"))
+                            .with_help(format!("use a value of `{shown}`, such as one the class's functions give")),
+                    ));
+                    continue;
+                }
                 let mut diag = Diagnostic::error("E0210", format!("{} needs {need}, but this is `{shown}`", d.what), d.span)
                     .with_label(format!("has type `{shown}`"));
                 // A class's type (#176): an operator needs its class as a clause.
                 if matches!(d.kind, OpClass::Numeric | OpClass::Ordered) && self.g.reads_type_field(&t) {
                     let class = match d.what.as_str() {
-                        _ if self.in_class_type_pred => None,
+                        _ if self.in_class_type_pred.is_some() => None,
                         "`+`" => Some("Add"),
                         "`-`" => Some("Sub"),
                         "`*`" => Some("Mul"),
@@ -2483,18 +2558,29 @@ impl Elab {
                         _ => None,
                     };
                     let arg = if shown.contains(' ') { format!("({shown})") } else { shown.clone() };
-                    diag = diag.with_help(match class {
-                        Some(c) => format!(
+                    diag = diag.with_help(match (class, &self.in_class_type_pred) {
+                        (_, Some(help)) => help.clone(),
+                        (Some(c), None) => format!(
                             "`{shown}` is a type of its own, not a number: {} on it needs the clause `{c} {arg}`, in the signature or on the class's type",
                             d.what
                         ),
-                        None => format!("`{shown}` is a type of its own, not a number: reach a number through its class's functions"),
+                        (None, None) => format!("`{shown}` is a type of its own, not a number: reach a number through its class's functions"),
                     });
                 }
                 if d.what == "`+`" && matches!(&t, Val::TyCon(id, _) if Some(*id) == wk.string || Some(*id) == wk.array || Some(*id) == wk.list) {
                     diag = diag.with_help("to join strings, lists or arrays, use `++`");
                 }
-                self.err(diag);
+                failed.push((d.span, shown, diag));
+            }
+        }
+        // An operand of an operator that failed on the same type fails for
+        // the same reason (`256` of `u < 256`): reported once, at the operator.
+        for (k, (span, shown, diag)) in failed.iter().enumerate() {
+            let within = failed.iter().enumerate().any(|(j, (s2, sh2, _))| {
+                j != k && sh2 == shown && s2.start <= span.start && span.end <= s2.end && (s2.start, s2.end) != (span.start, span.end)
+            });
+            if !within {
+                self.err(diag.clone());
             }
         }
     }

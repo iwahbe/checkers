@@ -1,0 +1,9 @@
+error[E0450]: cannot prove that every `Int` satisfies `i >= 0`, as `Count.Item` requires
+  --> class_type_base_alias.ck:16:5
+   |
+16 |     type Item = Int
+   |     ^^^^^^^^^^^^^^^ `Item` is `Int` here
+   = note: counterexample: i = -1
+   = help: give `Item` a type whose values all satisfy it
+
+class_type_base_alias.ck: 1 error, 0 warnings

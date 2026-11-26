@@ -17,6 +17,9 @@ pub struct Early {
     /// Those found not to be (an error, an obligation not proved, or
     /// something not checked yet that can't be now): they don't run.
     pub unsettled: HashSet<DefId>,
+    /// Those being proved now: they don't run yet (a call of one in its own
+    /// obligations, whose value would be a fact, isn't known).
+    pub proving: HashSet<DefId>,
     /// Obligations proved, by their index in `Elab::obligations`.
     pub obs: HashSet<usize>,
     /// Measure obligations proved, which termination checking adds to
@@ -26,6 +29,8 @@ pub struct Early {
     pub guesses: HashSet<Vec<DefId>>,
     /// The ledger's entries for all of these, by module.
     pub ledger: Vec<(String, LedgerEntry)>,
+    /// How many obligations each module had proved so.
+    pub counts: HashMap<String, usize>,
 }
 
 impl Early {
@@ -45,7 +50,7 @@ impl Elab {
             if early.settled.contains(&d) {
                 return true;
             }
-            if early.unsettled.contains(&d) {
+            if early.unsettled.contains(&d) || early.proving.contains(&d) {
                 return false;
             }
         }
@@ -77,8 +82,15 @@ impl Elab {
             if members.iter().all(|m| self.early.borrow().settled.contains(m)) {
                 continue;
             }
+            if members.iter().any(|m| self.early.borrow().proving.contains(m)) {
+                return false;
+            }
+            self.early.borrow_mut().proving.extend(members.iter().copied());
             let ok = members.iter().all(|m| !self.early.borrow().unsettled.contains(m)) && self.settle_group(&members);
             let mut early = self.early.borrow_mut();
+            for m in &members {
+                early.proving.remove(m);
+            }
             if ok {
                 early.settled.extend(members);
             } else {
@@ -155,12 +167,13 @@ impl Elab {
         let n = obs.len();
         obs.extend(measures.iter().copied());
         let gs: Vec<&termination::GuessGroup> = guesses.iter().collect();
-        let Some(ledger) = crate::verify::prove_now(self, &self.cur, &obs, &gs) else { return false };
+        let Some((ledger, proved)) = crate::verify::prove_now(self, &self.cur, &obs, &gs) else { return false };
         let mut early = self.early.borrow_mut();
         early.obs.extend(ks);
         early.measures.extend(obs[n..].iter().map(|o| (o.span, o.kind.clone())));
         early.guesses.extend(guesses.into_iter().map(|g| g.members));
         early.ledger.extend(ledger.into_iter().map(|l| (self.cur.clone(), l)));
+        *early.counts.entry(self.cur.clone()).or_default() += proved;
         true
     }
 

@@ -73,6 +73,12 @@ fn subject_range(t: &Tm, subject: usize, constant: &dyn Fn(&Tm) -> Option<i128>)
     }
 }
 
+/// The most function entries and loop iterations native code may make in a
+/// development build computing a constant that only code generation wants
+/// (§8.9, `checkers_rt::prog::ck_tick`): a cost bound, which changes only
+/// the code generated. Types and proofs compute their values to completion.
+pub const CODEGEN_WORK: u64 = 10_000_000;
+
 impl Elab {
     /// The constant bounds of a number type, if it is one: its aliases'
     /// predicates, down to `Int`.
@@ -162,10 +168,18 @@ impl Elab {
     /// values, sealed or not. The type checker's evaluation computes it
     /// where it can, within its steps; else it runs as native code, as
     /// staging runs compile-time code, once every function it reaches is
-    /// total and its module checked (its termination too). A computation
-    /// that fails, or that can't run yet, isn't known: never an error.
-    /// Results are kept per term (per function and arguments).
+    /// total and its module proved, and the preconditions of the calls in
+    /// `t` hold: then it ends (§8.9). A computation that fails, or that
+    /// can't run yet, isn't known: never an error. Results are kept per
+    /// term (per function and arguments).
     pub fn known_value(&self, t: &Tm) -> Option<Lit> {
+        self.known_value_within(t, u64::MAX)
+    }
+
+    /// `known_value`, giving up after `work` function entries and loop
+    /// iterations of native code (`CODEGEN_WORK`); a value given up on
+    /// isn't kept, so it is computed again if asked for without a limit.
+    pub fn known_value_within(&self, t: &Tm, work: u64) -> Option<Lit> {
         if let Tm::Lit(l) = t {
             return Some(l.clone());
         }
@@ -173,6 +187,11 @@ impl Elab {
         let key = format!("{t:?}");
         if let Some(k) = self.known_cache.borrow().get(&key) {
             return k.clone();
+        }
+        if !self.functions_proved(t) {
+            // Not known yet, however it would be computed: a function it
+            // calls runs only once its module is proved.
+            return None;
         }
         if let Some(l) = crate::core::known_lit(&self.g, eval(&self.g, &Rc::new(Vec::new()), t)) {
             self.known_cache.borrow_mut().insert(key, Some(l.clone()));
@@ -182,8 +201,15 @@ impl Elab {
             // Not known yet: a function it needs may be checked later.
             return None;
         }
+        if !self.preconditions_hold(t, 0, work) {
+            // A total function ends where its preconditions hold: outside
+            // them its value isn't known, and the call's precondition is
+            // reported where it is proved.
+            self.known_cache.borrow_mut().insert(key, None);
+            return None;
+        }
         let mut ev = crate::native::eval::Evaluator::plain(&self.g);
-        let k = match ev.eval(t) {
+        let k = match ev.eval_limited(t, work) {
             Ok(v) => {
                 let r = ev.reify(v);
                 ev.release(v);
@@ -192,6 +218,7 @@ impl Elab {
                     _ => None,
                 }
             }
+            Err(e) if e.contains(checkers_rt::prog::WORK_LIMIT) => return None,
             // A runtime error: not known.
             Err(_) => None,
         };
@@ -199,11 +226,126 @@ impl Elab {
         k
     }
 
+    /// Do the preconditions of every call in closed term `t` (outside
+    /// lambdas: those calls' preconditions are their caller's to prove)
+    /// hold for its arguments, as values known at compile time? `depth`
+    /// counts preconditions of preconditions; `work`, as `known_value_within`.
+    fn preconditions_hold(&self, t: &Tm, depth: usize, work: u64) -> bool {
+        fn calls(t: &Tm, out: &mut Vec<Tm>) {
+            match t {
+                Tm::App(..) => {
+                    let (h, args) = t.spine();
+                    if let Tm::Def(_) = h {
+                        out.push(t.clone());
+                    }
+                    for a in args {
+                        calls(a, out);
+                    }
+                }
+                Tm::Lam(..) => {}
+                _ => t.each_sub(|x, n| {
+                    if n == 0 {
+                        calls(x, out)
+                    }
+                }),
+            }
+        }
+        let mut found = Vec::new();
+        calls(t, &mut found);
+        let empty = Rc::new(Vec::new());
+        for c in &found {
+            let (h, args) = c.spine();
+            let Tm::Def(d) = h else { continue };
+            let Some(spec) = self.specs.get(d) else { continue };
+            if args.len() < spec.n_binders {
+                continue;
+            }
+            // The spine's arguments, first to last; the result isn't
+            // mentioned by a precondition.
+            let mut env: Vec<Val> = args.iter().rev().take(spec.n_binders).map(|a| eval(&self.g, &empty, a)).collect();
+            env.push(Val::Error);
+            for p in spec.preds.iter().filter(|p| !p.is_post) {
+                let goal = quote(&self.g, 0, &self.inst_pred(p, env.clone()));
+                if self.known_bool(&goal, depth, work) != Some(true) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// The truth of closed `t` at compile time, computed as `known_value`
+    /// computes a number.
+    fn known_bool(&self, t: &Tm, depth: usize, work: u64) -> Option<bool> {
+        let wk = &self.g.well_known;
+        let saved = self.g.fuel.replace(crate::core::DEFAULT_FUEL);
+        let forced = crate::core::force(&self.g, eval(&self.g, &Rc::new(Vec::new()), t));
+        self.g.fuel.set(saved);
+        match forced {
+            Val::Con(c, _) if Some(c) == wk.true_con => return Some(true),
+            Val::Con(c, _) if Some(c) == wk.false_con => return Some(false),
+            _ => {}
+        }
+        let t = &runtime_closed(&self.g, t)?;
+        if depth > 8 || !self.runnable(t) || !self.preconditions_hold(t, depth + 1, work) {
+            return None;
+        }
+        let mut ev = crate::native::eval::Evaluator::plain(&self.g);
+        let v = ev.eval_limited(t, work).ok()?;
+        let b = !ev.is_false(v);
+        ev.release(v);
+        Some(b)
+    }
+
+    /// Is module `m` proved, with no errors (§8.9)? An imported module is
+    /// proved the first time one of its functions would run; the module
+    /// being checked, or being proved, isn't yet.
+    pub fn module_proved(&self, m: &str) -> bool {
+        // A module with errors isn't proved: its broken declarations'
+        // obligations are set aside only once the program is checked.
+        if self.loading.iter().any(|l| l == m) || self.proving.borrow().contains(m) || self.diags.iter().any(|(at, d)| at == m && d.is_error()) {
+            return false;
+        }
+        !crate::verify::proved(self, m).diags.iter().any(|d| d.is_error())
+    }
+
+    /// Is definition `d` proved (§8.9)? One of an imported module, once that
+    /// module is proved with no errors (`module_proved`); one of the module
+    /// being checked, once it and everything it reaches are, on demand
+    /// (`settle`).
+    pub fn def_proved(&self, d: DefId) -> bool {
+        let m = &self.g.defs[d.0 as usize].module;
+        if **m == *self.cur && self.loading.iter().any(|l| *l == **m) {
+            return self.settle(d);
+        }
+        self.module_proved(m)
+    }
+
+    /// Is every function `t` reaches, through constants and functions'
+    /// bodies, proved (`def_proved`, §8.9)? Constants, and
+    /// builtins, which have no body, needn't be.
+    fn functions_proved(&self, t: &Tm) -> bool {
+        let mut todo = Vec::new();
+        crate::core::defs_in(t, &mut todo);
+        let mut seen = HashSet::new();
+        while let Some(d) = todo.pop() {
+            if self.runnable_defs.borrow().contains(&d) || !seen.insert(d) {
+                continue;
+            }
+            let Some(info) = self.g.defs.get(d.0 as usize) else { return false };
+            let Some(b) = &info.body else { continue };
+            if matches!(info.ty, Tm::Pi(..)) && !self.def_proved(d) {
+                return false;
+            }
+            crate::core::defs_in(b, &mut todo);
+        }
+        true
+    }
+
     /// Can `t` run at compile time now? Every definition it reaches has
     /// code (a body, or a builtin of the runtime), is total (not
-    /// `partial`), and belongs to a module whose checking is done, so its
-    /// termination is checked, or to the module being checked and is proved
-    /// (`settle`); and nothing in it waits on a cown.
+    /// `partial`), and is proved (`def_proved`), so it ends and calls only
+    /// what its callees accept; and nothing in it waits on a cown.
     fn runnable(&self, t: &Tm) -> bool {
         let mut todo = Vec::new();
         crate::core::defs_in(t, &mut todo);
@@ -218,11 +360,7 @@ impl Elab {
             let Some(info) = self.g.defs.get(d.0 as usize) else { return false };
             // A `partial` function has a body and is opaque; a builtin has
             // none (its code is the runtime's).
-            if info.opaque && info.body.is_some() {
-                return false;
-            }
-            // Of a module being checked: only once proved, on demand (§8.9).
-            if self.loading.iter().any(|m| **m == *info.module) && (*info.module != *self.cur || !self.settle(d)) {
+            if info.opaque && info.body.is_some() || !self.def_proved(d) {
                 return false;
             }
             match &info.body {
@@ -240,7 +378,7 @@ impl Elab {
                 }
             }
         }
-        // Each definition reached is in a finished module: it stays runnable.
+        // Each definition reached is in a proved module: it stays runnable.
         self.runnable_defs.borrow_mut().extend(seen);
         true
     }
@@ -355,7 +493,11 @@ impl Elab {
     /// The type an operator's other operand is checked against: a range's
     /// base, so ranges don't spread through it (D135).
     pub fn shared_operand_type(&self, ty: &Val) -> Val {
-        if self.is_range(ty) { self.arith_base(ty) } else { ty.clone() }
+        if self.is_range(ty) {
+            return self.arith_base(ty);
+        }
+        // A class's type with a base type (#360): its operators are the base's.
+        crate::core::class_type_base(&self.g, ty).unwrap_or_else(|| ty.clone())
     }
 
     /// The type of `lt op rt` (D134, D135): `ty` is the operands' shared

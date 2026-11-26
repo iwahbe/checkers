@@ -562,7 +562,7 @@ pub fn check_stdlib() -> String {
         return out;
     }
     for m in &modules {
-        let mut v = verify::verify(&e, m);
+        let mut v = verify::proofs(&e, m);
         for d in &mut v.diags {
             d.span = e.real_span(m, d.span);
         }
@@ -709,7 +709,7 @@ fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
                 reused: 0,
             },
             None => {
-                let v = verify::verify(e, &m);
+                let v = verify::proofs(e, &m);
                 let warnings = v.diags.iter().filter(|d| d.code == "W022").cloned().collect();
                 fresh.push((m.clone(), verify::Verified { diags: warnings, ledger: v.ledger.clone(), z3_version: v.z3_version.clone(), proved: v.proved, asked: 0, reused: 0 }));
                 v
@@ -966,7 +966,7 @@ fn is_proof_failure(d: &Diagnostic) -> bool {
 /// `dir`; `threads`: threads for behaviours and `par` (1: the deterministic
 /// FIFO scheduler, D67).
 pub fn run(name: &str, text: &str, dir: &std::path::Path, args: &[String], unverified: bool, threads: usize) -> Ran {
-    let (e, main, staged, report) = match ready_to_run(name, text, dir, unverified) {
+    let (e, main, staged, report) = match ready_to_run(name, text, dir, unverified, false) {
         Ok(r) => r,
         Err(ran) => return ran,
     };
@@ -977,7 +977,7 @@ pub fn run(name: &str, text: &str, dir: &std::path::Path, args: &[String], unver
 
 /// `checkers build`: check and prove, then write an executable.
 pub fn build(name: &str, text: &str, dir: &std::path::Path, out: &std::path::Path, unverified: bool, release: bool) -> Ran {
-    let (e, main, staged, mut report) = match ready_to_run(name, text, dir, unverified) {
+    let (e, main, staged, mut report) = match ready_to_run(name, text, dir, unverified, release) {
         Ok(r) => r,
         Err(ran) => return ran,
     };
@@ -1015,6 +1015,7 @@ fn ready_to_run(
     text: &str,
     dir: &std::path::Path,
     unverified: bool,
+    release: bool,
 ) -> Result<(elab::Elab, core::DefId, stage::Staged, String), Ran> {
     let (mut c, e) = elaborate(name, text, dir);
     let Some((e, user)) = e else { return Err(Ran { report: c.report(), code: 2 }) };
@@ -1031,7 +1032,9 @@ fn ready_to_run(
     } else {
         // Proved: the bounds signatures give are facts native code may rely on.
         e.g.bounds = std::mem::take(&mut e.bounds);
-        // And constants known at compile time are compiled as their values.
+        // And constants known at compile time are compiled as their values:
+        // in a development build, those that only code generation wants
+        // within a work limit (§8.9); the rest are known already.
         let consts: Vec<core::DefId> = (0..e.g.defs.len() as u32)
             .map(core::DefId)
             .filter(|d| {
@@ -1041,7 +1044,8 @@ fn ready_to_run(
             })
             .collect();
         for d in consts {
-            if let Some(l) = e.known_value(&core::Tm::Def(d)) {
+            let work = if release { u64::MAX } else { elab::CODEGEN_WORK };
+            if let Some(l) = e.known_value_within(&core::Tm::Def(d), work) {
                 e.g.known.borrow_mut().insert(d, l);
             }
         }
