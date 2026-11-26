@@ -24,29 +24,26 @@
 //!   - `+` and `*` (on `Int` and `Nat`, which have no fixed size;
 //!     commutative, so the call may be on either side): `f.acc xs acc`
 //!     computes `acc ⊕ f xs`, passing `acc ⊕ n` on in tail position.
-//!   - `++` with the call on the left (`f xs ++ s`): `f.acc xs ps` computes
-//!     `f xs ++ p1 ++ … ++ pk` for the list `ps` of `[p1, …, pk]`, passing
-//!     `s :: ps` on, and at the base case appends the pieces to its value at
-//!     once (`BOp::ConcatAll`), copying each element once. Neither order of
-//!     accumulating with `++` itself is linear for every type: `s ++ acc`
-//!     copies the growing string, bytes or array at each step, and
-//!     `acc ++ s` the growing list (and needs the base case first). With the
-//!     call on the right the pieces would come in the result's order, but
-//!     that is not rewritten.
+//!   - `++` with the call on the left (`f xs ++ s`): `f.acc xs acc`
+//!     computes `f xs ++` what `acc` holds, passing `s` put in front of
+//!     `acc` on (`BOp::ConcatPush`), and at the base case appends `acc` to
+//!     its value (`BOp::ConcatAll`). How depends on what `++` copies, which
+//!     the value's representation, and so its type, decides (code generic
+//!     in the type has the same representations): a list's `++` copies only
+//!     its left side, so `acc` is the list, `s ++ acc` copying just `s`; a
+//!     string's, bytes' or array's copies both, so `s ++ acc` would copy the
+//!     growing value at each step, and `acc` is a list of the pieces instead,
+//!     appended at the end in one new value, each element copied once. With
+//!     the call on the right the pieces would come in the result's order,
+//!     but that is not rewritten.
 
 use super::lower::*;
 use crate::native::ir::Op;
 
-/// The list constructors, which `f.acc` keeps the pieces of `++` in.
-#[derive(Clone, Copy)]
-pub struct Lists {
-    pub nil: u32,
-    pub cons: u32,
-}
-
 /// Rewrite the definitions' functions in `funcs[from..]`, adding helpers.
-/// Without `lists`, `++` isn't rewritten.
-pub fn program(funcs: &mut Vec<Func>, from: usize, lists: Option<Lists>) {
+/// `nil` is the empty list's constructor, which `f.acc` for `++` starts
+/// with; without it, `++` isn't rewritten.
+pub fn program(funcs: &mut Vec<Func>, from: usize, nil: Option<u32>) {
     let end = funcs.len();
     for i in from..end {
         if !matches!(funcs[i].kind, FnKind::Global) || funcs[i].params.is_empty() || funcs[i].params.len() + 2 > MAX_ARITY {
@@ -61,7 +58,7 @@ pub fn program(funcs: &mut Vec<Func>, from: usize, lists: Option<Lists>) {
         let helper = funcs.len() as u32;
         if s.cons > 0 {
             dps(funcs, i, helper);
-        } else if let Some(mode) = acc_mode(&s.acc, lists) {
+        } else if let Some(mode) = acc_mode(&s.acc, nil) {
             acc(funcs, i, helper, mode);
         }
     }
@@ -137,11 +134,11 @@ fn scan(e: &E, me: u32, s: &mut Scan) {
 enum Mode {
     /// `acc ⊕ f xs`, for a commutative `⊕`.
     Op(BOp),
-    /// `f xs ++ p1 ++ … ++ pk`, the pieces a list.
-    Pieces(Lists),
+    /// `f xs ++` what the accumulator holds, starting from the empty list.
+    Pieces { nil: u32 },
 }
 
-fn acc_mode(paths: &[(BOp, bool)], lists: Option<Lists>) -> Option<Mode> {
+fn acc_mode(paths: &[(BOp, bool)], nil: Option<u32>) -> Option<Mode> {
     let (op, _) = paths[0];
     let BOp::Prim(p, _) = op else { return None };
     if !paths.iter().all(|(o, _)| matches!(o, BOp::Prim(q, _) if *q == p)) {
@@ -151,7 +148,7 @@ fn acc_mode(paths: &[(BOp, bool)], lists: Option<Lists>) -> Option<Mode> {
         // Commutative: `acc + f xs` whichever side the call is on.
         Op::Add | Op::Mul => Some(Mode::Op(op)),
         // `f xs ++ s` only.
-        Op::Concat if paths.iter().all(|(_, call_left)| *call_left) => lists.map(Mode::Pieces),
+        Op::Concat if paths.iter().all(|(_, call_left)| *call_left) => nil.map(|nil| Mode::Pieces { nil }),
         _ => None,
     }
 }
@@ -212,16 +209,16 @@ fn acc(funcs: &mut Vec<Func>, i: usize, helper: u32, mode: Mode) {
     // `x` added to the accumulator: `acc ⊕ x`, or the piece `x` in front.
     let add = |x: E| match mode {
         Mode::Op(op) => E::Borrow { op, args: vec![E::Var(acc), x], drops: Vec::new() },
-        Mode::Pieces(l) => E::Con { con: l.cons, fields: vec![x, E::Var(acc)], reuse: None },
+        Mode::Pieces { .. } => E::Borrow { op: BOp::ConcatPush, args: vec![x, E::Var(acc)], drops: Vec::new() },
     };
-    // `f.acc xs acc`: each value `v` becomes `acc ⊕ v`, or `v ++ p1 ++ … ++ pk`.
+    // `f.acc xs acc`: each value `v` becomes `acc ⊕ v`, or `v ++` what `acc` holds.
     let finish = |v: E| match mode {
         Mode::Op(op) => E::Borrow { op, args: vec![E::Var(acc), v], drops: Vec::new() },
-        Mode::Pieces(_) => E::Borrow { op: BOp::ConcatAll, args: vec![v, E::Var(acc)], drops: Vec::new() },
+        Mode::Pieces { .. } => E::Borrow { op: BOp::ConcatAll, args: vec![v, E::Var(acc)], drops: Vec::new() },
     };
     let helper_body = map_acc(body, me, &mut |e, fresh: &mut Fresh| match e {
-        // `x ⊕ f args` (or `f args ++ x`): `f.acc args (acc ⊕ x)` (or
-        // `f.acc args (x :: acc)`), the arguments first.
+        // `x ⊕ f args` (or `f args ++ x`): `f.acc args (acc ⊕ x)` (or with
+        // `x` in front of `acc`), the arguments first.
         Site::Op(args, x) => {
             let mut binds = Vec::new();
             let mut vs = Vec::new();
@@ -250,8 +247,8 @@ fn acc(funcs: &mut Vec<Func>, i: usize, helper: u32, mode: Mode) {
         }
     }, &mut fresh);
     new_helper(funcs, i, "acc", &[acc], helper_body, fresh.0);
-    // `f` itself: `x ⊕ f args` is `f.acc args x`; `f args ++ x` is
-    // `f.acc args [x]`.
+    // `f` itself: `x ⊕ f args` is `f.acc args x`; `f args ++ x` is `f.acc`
+    // with `x` in front of an empty accumulator.
     let body = std::mem::replace(&mut funcs[i].body, E::Erased);
     let mut fresh = Fresh(funcs[i].nvars);
     funcs[i].body = map_acc(body, me, &mut |e, fresh: &mut Fresh| match e {
@@ -260,12 +257,12 @@ fn acc(funcs: &mut Vec<Func>, i: usize, helper: u32, mode: Mode) {
                 args.push(x);
                 E::Call { f: helper, args, tail: true }
             }
-            Mode::Pieces(l) => {
-                let (nil, ps) = (fresh.var(), fresh.var());
+            Mode::Pieces { nil } => {
+                let (empty, ps) = (fresh.var(), fresh.var());
                 args.push(E::Var(ps));
                 let call = E::Call { f: helper, args, tail: true };
-                let one = E::Con { con: l.cons, fields: vec![x, E::Var(nil)], reuse: None };
-                E::Let(nil, Box::new(E::Con { con: l.nil, fields: Vec::new(), reuse: None }), Box::new(E::Let(ps, Box::new(one), Box::new(call))))
+                let one = E::Borrow { op: BOp::ConcatPush, args: vec![x, E::Var(empty)], drops: Vec::new() };
+                E::Let(empty, Box::new(E::Con { con: nil, fields: Vec::new(), reuse: None }), Box::new(E::Let(ps, Box::new(one), Box::new(call))))
             }
         },
         Site::Call(args) => E::Call { f: me, args, tail: true },

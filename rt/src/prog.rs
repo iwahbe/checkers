@@ -323,6 +323,11 @@ pub fn err(v: W) -> W {
     new_con(known_con(prog().known.err), &[v])
 }
 
+/// The owned word `x` in front of the owned list `l`.
+pub fn cons(x: W, l: W) -> W {
+    new_con(known_con(prog().known.cons), &[x, l])
+}
+
 /// A list of owned words.
 pub fn list(items: Vec<W>) -> W {
     list_onto(items, nullary(known_con(prog().known.nil)))
@@ -332,19 +337,6 @@ pub fn list(items: Vec<W>) -> W {
 pub fn list_onto(items: Vec<W>, tail: W) -> W {
     let cons = known_con(prog().known.cons);
     items.into_iter().rev().fold(tail, |l, v| new_con(cons, &[v, l]))
-}
-
-/// A copy of the list `l` (borrowed) in front of the owned list `tail`;
-/// `buf` holds `l`'s items meanwhile, and is left empty.
-pub fn copy_onto(l: W, tail: W, buf: &mut Vec<W>) -> W {
-    let k = &prog().known;
-    let mut w = l;
-    while con_of(w) == k.cons {
-        buf.push(field(w, 0));
-        w = field(w, 1);
-    }
-    let cons = known_con(k.cons);
-    buf.drain(..).rev().fold(tail, |t, x| new_con(cons, &[dup(x), t]))
 }
 
 /// The items of a list (borrowed).

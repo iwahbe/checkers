@@ -130,9 +130,13 @@ pub enum BOp {
     /// integer word) of a new constructor cell whose field `i` is empty;
     /// `()`. Only the code `tailrec` writes fills a cell this way.
     SetField,
-    /// `[x, pieces]`: `x ++ p1 ++ … ++ pk` for the list `pieces` of
-    /// `[p1, …, pk]`, each element copied once (`ck_concat_all`). Only the
-    /// code `tailrec` writes appends this way.
+    /// `[s, acc]`: the accumulator of `f.acc` for `f xs ++ s` (§14) with
+    /// the piece `s` in front (`ck_concat_push`): for a list, `s ++ acc`;
+    /// for a string, bytes or array, a list of the pieces, `s :: acc`. Only
+    /// the code `tailrec` writes accumulates this way.
+    ConcatPush,
+    /// `[x, acc]`: `x ++` what `ConcatPush` accumulated in `acc`
+    /// (`ck_concat_all`), each element copied once.
     ConcatAll,
 }
 
