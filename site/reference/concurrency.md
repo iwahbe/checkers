@@ -45,8 +45,31 @@ A behaviour's body may use authority capabilities from around it (`term` above),
 1. **No data races.** A cown's value is reachable only inside a behaviour holding that cown.
 2. **No deadlocks.** A behaviour acquires all its cowns at once, so there is no order of locks to get wrong.
 3. **Causal order.** Two behaviours that name a common cown run in the order they were scheduled.
+4. **Each cown once.** A behaviour's cowns are different cowns, which the prover proves ([below](#distinct-cowns)).
 
 Behaviours that share no cown may run at the same time, in either order.
+
+### Distinct cowns
+
+A behaviour takes each cown's value and hands back a new one for each, so it must name different cowns: with one cown named twice there would be no right value to keep. Naming two or more cowns is an obligation that they differ, `x != y` for each pair. Cowns of types that can never be equal need no proof: a `Cown Nat` is never a `Cown String`. Naming the same cown twice, `when a = c, b = c`, is an error.
+
+A function holding cowns it is given requires them to differ, as a precondition, and its callers prove it. A call tells the prover which cowns it returns are new: it can return only cowns it made and cowns it was given, so a cown made by `cown.new` differs from every cown in scope, and so does one returned by a function that wasn't given a cown of its type. Name such a call with `let`.
+
+```checkers
+import std.cown (Cown, Sched)
+
+fn exchange x y sched -> u : x~Cown Nat, y~Cown Nat, x != y, sched~Sched, u~Unit
+    when a = x, b = y using sched
+        (b, a)
+    ()
+
+fn swap_new sched -> u : sched~Sched, u~Unit
+    let c = cown.new 1 sched
+    let d = cown.new 2 sched
+    exchange c d sched
+```
+
+Cowns in a list are different where the list says so: `unique cs` (from `std.list`) in a precondition.
 
 ### Invariants
 

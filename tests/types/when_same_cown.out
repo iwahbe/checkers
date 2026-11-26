@@ -1,0 +1,8 @@
+error[E0450]: cannot prove `c != c`, required for a `when` to hold its cowns
+ --> when_same_cown.ck:8:21
+  |
+8 |     when a = c, b = c using sched
+  |                     ^ `c` is already held here as `a`
+  = help: a `when` holds each cown once: name `c` once
+
+when_same_cown.ck: 1 error, 0 warnings

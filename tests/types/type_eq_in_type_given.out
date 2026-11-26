@@ -1,1 +1,1 @@
-type_eq_in_type_given.ck: 0 errors, 0 warnings
+type_eq_in_type_given.ck: 0 errors, 0 warnings; 3 obligations proved

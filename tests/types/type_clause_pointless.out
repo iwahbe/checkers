@@ -1,0 +1,8 @@
+error[E0373]: `Ord Int` mentions none of `Boxed`'s parameters
+ --> type_clause_pointless.ck:5:18
+  |
+5 | record Boxed a : Ord Int
+  |                  ^^^^^^^ a class clause in a type's header is a condition on the type's parameters
+  = help: write the clause on the functions that need it
+
+type_clause_pointless.ck: 1 error, 0 warnings

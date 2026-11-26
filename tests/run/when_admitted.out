@@ -1,0 +1,4 @@
+-- stdout
+-- stderr
+runtime error in `twice`: `when` names the same cown twice
+-- exit 70

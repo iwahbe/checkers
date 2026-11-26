@@ -1,0 +1,6 @@
+-- stdout
+Some 7
+Some 9
+None
+-- stderr
+-- exit 0
