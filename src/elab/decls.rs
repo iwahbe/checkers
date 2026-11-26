@@ -999,8 +999,8 @@ impl Elab {
     /// `lo~Nat`, every typing's): they are conditions as the predicates are.
     fn phase_type_conds(&mut self, m: &ast::Module, ids: &[Option<Sym>]) {
         for (d, id) in m.decls.iter().zip(ids) {
-            let (params, cs) = match &d.kind {
-                DeclKind::Enum { params, constraints, .. } | DeclKind::Record { params, constraints, .. } => (params, constraints),
+            let (tname, params, cs) = match &d.kind {
+                DeclKind::Enum { name, params, constraints, .. } | DeclKind::Record { name, params, constraints, .. } => (name, params, constraints),
                 _ => continue,
             };
             let Some(Sym::Ty(tid)) = id else { continue };
@@ -1030,6 +1030,8 @@ impl Elab {
                 }
             }
             self.solve_deferred();
+            let conds = preds.iter().map(|p| Some(p.text.clone())).collect();
+            self.ask_vacuity(&cx, VacuityKind::TypeParams, &tname.name, tname.span, conds, None);
             if !preds.is_empty() {
                 self.ty_conds.insert(*tid, preds);
             }
@@ -1048,7 +1050,7 @@ impl Elab {
 
     fn phase_aliases(&mut self, m: &ast::Module, ids: &[Option<Sym>]) {
         for (d, id) in m.decls.iter().zip(ids) {
-            let DeclKind::Alias { params, constraints, .. } = &d.kind else { continue };
+            let DeclKind::Alias { name: alias_name, params, constraints } = &d.kind else { continue };
             let Some(Sym::Def(did)) = id else { continue };
             self.g.fuel.set(DEFAULT_FUEL);
             let mut cx = Cx::default();
@@ -1086,6 +1088,20 @@ impl Elab {
                 }
             }
             self.solve_deferred();
+            // Whether its predicates can all hold, with its type's (E0457).
+            let mut all = cx.clone();
+            let mut conds = Vec::new();
+            for (fact, text, _) in self.alias_facts(&cx, l, &t, Val::var(l)) {
+                all.assume(fact);
+                conds.push(Some(text));
+            }
+            for p in self.alias_preds.get(did).cloned().unwrap_or_default() {
+                let v = self.eval(&all, &p.tm);
+                all.assume(v);
+                conds.push(Some(p.text));
+            }
+            let kind = VacuityKind::Alias { subject: name.name.clone() };
+            self.ask_vacuity(&all, kind, &alias_name.name, alias_name.span, conds, None);
             let mut pty_terms = Vec::new();
             for (i, pt) in ptys.iter().enumerate() {
                 let z = crate::core::zonk_metas(&self.g, i, pt);
@@ -1114,13 +1130,13 @@ impl Elab {
             let Some(Sym::Ty(tid)) = id else { continue };
             let ctors = self.g.tys[tid.0 as usize].ctors.clone();
             match &d.kind {
-                DeclKind::Enum { ctors: cs, .. } => {
+                DeclKind::Enum { name: tname, ctors: cs, .. } => {
                     for (c, cid) in cs.iter().zip(ctors) {
                         let names: Vec<&Ident> = c.params.iter().collect();
-                        self.elab_fields(*tid, cid, &names, &c.constraints, &[]);
+                        self.elab_fields(*tid, cid, (&c.name, tname.span), &names, &c.constraints, &[]);
                     }
                 }
-                DeclKind::Record { fields, .. } => {
+                DeclKind::Record { name: tname, fields, .. } => {
                     let names: Vec<&Ident> = fields.iter().map(|f| &f.name).collect();
                     let cs: Vec<Constraint> = fields
                         .iter()
@@ -1131,20 +1147,24 @@ impl Elab {
                         })
                         .collect();
                     let preds: Vec<&Expr> = fields.iter().flat_map(|f| f.preds.iter()).collect();
-                    self.elab_fields(*tid, ctors[0], &names, &cs, &preds);
+                    self.elab_fields(*tid, ctors[0], (tname, tname.span), &names, &cs, &preds);
                 }
                 _ => {}
             }
         }
     }
 
-    fn elab_fields(&mut self, tid: TyId, cid: ConId, names: &[&Ident], cs: &[Constraint], extra_preds: &[&Expr]) {
+    /// `con`: the constructor's name, and where its type's is written.
+    fn elab_fields(&mut self, tid: TyId, cid: ConId, con: (&Ident, Span), names: &[&Ident], cs: &[Constraint], extra_preds: &[&Expr]) {
         self.g.fuel.set(DEFAULT_FUEL);
         let mut cx = self.bind_type_params(tid);
+        // Each fact assumed, as written, to ask whether they can all hold.
+        let mut conds = Vec::new();
         // The type's conditions on its parameters hold in its fields (#136).
         for p in self.ty_conds.get(&tid).cloned().unwrap_or_default() {
             let v = self.eval(&cx, &p.tm);
             cx.assume(v);
+            conds.push(Some(p.text));
         }
         let mut fields: Vec<(Name, Mult, Icit, Tm)> = Vec::new();
         let mut invs: Vec<FieldInv> = Vec::new();
@@ -1245,6 +1265,19 @@ impl Elab {
                 Pred { tm: quote(&self.g, total, &v), text, span, is_post: false, alias }
             })
             .collect();
+        // Whether the invariants can all hold, with the type's conditions
+        // (E0457).
+        let mut all = cx.clone();
+        all.facts.truncate(conds.len());
+        for p in &preds {
+            let v = self.eval(&all, &p.tm);
+            all.assume(v);
+            conds.push(Some(p.text.clone()));
+        }
+        if preds.is_empty() {
+            conds.clear();
+        }
+        self.ask_vacuity(&all, VacuityKind::Fields, &con.0.name, con.0.span, conds, Some(con.1));
         if !preds.is_empty() {
             self.con_invs.insert(cid, preds);
         }
@@ -1785,6 +1818,7 @@ impl Elab {
     // The loop over binders also visits the result slot (`k == nb`).
     #[allow(clippy::needless_range_loop)]
     pub fn signature(&mut self, params: &[Ident], result: Option<&Ident>, cs: &[Constraint]) -> Sig {
+        let vacuity = self.sig_vacuity.take();
         // A type written here is checked against its conditions with every
         // precondition known, wherever it is written (#136).
         let saved_defer = self.ty_cond_defer.replace(Vec::new());
@@ -2021,6 +2055,12 @@ impl Elab {
             let v = self.eval(&cx, &p.tm);
             cx.assume(v);
         }
+        // Whether the preconditions can all hold (E0457).
+        if let Some((kind, name, at)) = vacuity {
+            let mut conds = vec![None; facts_before];
+            conds.extend(preds.iter().filter(|p| !p.is_post).map(|p| Some(p.text.clone())));
+            self.ask_vacuity(&cx, kind, &name, at, conds, None);
+        }
         self.in_spec += 1;
         for (span, tid, env) in deferred {
             self.oblige_ty_conds(&cx, span, tid, env);
@@ -2091,6 +2131,12 @@ impl Elab {
             let sig = match &d.kind {
                 DeclKind::Fn { name, params, result, constraints, partial, decreasing, body } => {
                     let diags_before = self.diags.len();
+                    // An instance's function without a signature of its own
+                    // has the class's, asked about where the class declares it.
+                    if !self.member_heads.contains_key(&k) || self.inst_refines.contains_key(&k) {
+                        let explicit = params.iter().map(|p| p.name.clone()).collect();
+                        self.sig_vacuity = Some((VacuityKind::Pre { params: explicit, lemma: false }, name.name.clone(), name.span));
+                    }
                     let mut sig = self.signature(params, result.as_ref(), constraints);
                     let sig_failed = self.diags.len() > diags_before;
                     if name.name == "main" && d.export != Export::No && self.root.as_deref() == Some(self.cur.as_str()) {
@@ -2181,6 +2227,11 @@ impl Elab {
                     sig
                 }
                 DeclKind::Lemma { name, params, constraints, decreasing, .. } => {
+                    // An instance's lemma has the class's statement.
+                    if !self.member_heads.contains_key(&k) {
+                        let explicit = params.iter().map(|p| p.name.clone()).collect();
+                        self.sig_vacuity = Some((VacuityKind::Pre { params: explicit, lemma: true }, name.name.clone(), name.span));
+                    }
                     let sig = self.signature(params, None, constraints);
                     self.fn_meta.insert(
                         *did,
