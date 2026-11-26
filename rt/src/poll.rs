@@ -3,6 +3,8 @@
 //! the behaviour and registers the descriptor with one poller thread
 //! (`epoll` on Linux, `kqueue` on macOS, D126), which wakes it when the
 //! descriptor is ready. Off a fiber, the thread waits in `poll` instead.
+//! Sleeping (`std.time.sleep`) is a timer in the same poller: a `timerfd`
+//! on Linux, an `EVFILT_TIMER` event on macOS.
 
 use crate::fiber::{self, Waker};
 use std::collections::HashMap;
@@ -84,6 +86,21 @@ mod sys {
     /// A one-shot `kqueue` event removes itself.
     pub fn remove(_kq: RawFd, _fd: RawFd) {}
 
+    /// Wake `token` once `ns` nanoseconds have passed, counting while the
+    /// machine sleeps (`NOTE_MACH_CONTINUOUS_TIME`, as `CLOCK_MONOTONIC_RAW`
+    /// counts); false if the timer can't be added.
+    pub fn add_timer(kq: RawFd, ns: u64, token: u64) -> bool {
+        let ch = libc::kevent {
+            ident: token as libc::uintptr_t,
+            filter: libc::EVFILT_TIMER,
+            flags: libc::EV_ADD | libc::EV_ONESHOT,
+            fflags: libc::NOTE_NSECONDS | libc::NOTE_MACH_CONTINUOUS_TIME,
+            data: ns.min(i64::MAX as u64) as libc::intptr_t,
+            udata: token as *mut libc::c_void,
+        };
+        unsafe { libc::kevent(kq, &ch, 1, std::ptr::null_mut(), 0, std::ptr::null()) == 0 }
+    }
+
     /// Wait for events: their tokens, or `None` on an error other than an interruption.
     pub fn wait(kq: RawFd, out: &mut Vec<u64>) -> Option<()> {
         let mut events: [libc::kevent; 64] = unsafe { std::mem::zeroed() };
@@ -157,6 +174,90 @@ fn wait(fd: RawFd, write: bool) {
     }));
 }
 
+/// The monotonic clock in nanoseconds: `CLOCK_BOOTTIME` on Linux and
+/// `CLOCK_MONOTONIC_RAW` (`mach_continuous_time`) on macOS, both of which
+/// count while the machine is suspended.
+pub fn now() -> u64 {
+    #[cfg(target_os = "linux")]
+    const CLOCK: libc::clockid_t = libc::CLOCK_BOOTTIME;
+    #[cfg(target_vendor = "apple")]
+    const CLOCK: libc::clockid_t = libc::CLOCK_MONOTONIC_RAW;
+    let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    if unsafe { libc::clock_gettime(CLOCK, &mut t) } != 0 {
+        crate::prog::fatal("could not read the clock");
+    }
+    (t.tv_sec as u64).saturating_mul(1_000_000_000).saturating_add(t.tv_nsec as u64)
+}
+
+/// Wait for `ns` nanoseconds at least, by `now`'s clock: on a fiber the
+/// behaviour parks and a timer in the poller wakes it.
+pub fn sleep(ns: u64) {
+    let end = now().saturating_add(ns);
+    loop {
+        let t = now();
+        if t >= end {
+            return;
+        }
+        sleep_once(end - t);
+    }
+}
+
+/// Wait for about `ns` nanoseconds (more than zero): `sleep` checks the clock after.
+#[cfg(target_os = "linux")]
+fn sleep_once(ns: u64) {
+    let fd = unsafe { libc::timerfd_create(libc::CLOCK_BOOTTIME, libc::TFD_NONBLOCK | libc::TFD_CLOEXEC) };
+    if fd < 0 {
+        crate::prog::fatal("could not create a timer");
+    }
+    let fd = unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+    let secs = (ns / 1_000_000_000).min(i64::MAX as u64);
+    let spec = libc::itimerspec {
+        it_interval: libc::timespec { tv_sec: 0, tv_nsec: 0 },
+        it_value: libc::timespec { tv_sec: secs as libc::time_t, tv_nsec: (ns % 1_000_000_000) as libc::c_long },
+    };
+    if unsafe { libc::timerfd_settime(fd.as_raw_fd(), 0, &spec, std::ptr::null_mut()) } != 0 {
+        crate::prog::fatal("could not set a timer");
+    }
+    let mut expirations = [0u8; 8];
+    loop {
+        let n = unsafe { libc::read(fd.as_raw_fd(), expirations.as_mut_ptr() as *mut libc::c_void, 8) };
+        if n == 8 {
+            return;
+        }
+        let e = std::io::Error::last_os_error();
+        if would_block(&e) {
+            wait(fd.as_raw_fd(), false);
+        } else if e.kind() != std::io::ErrorKind::Interrupted {
+            crate::prog::fatal("could not wait for a timer");
+        }
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+fn sleep_once(ns: u64) {
+    if !fiber::on_fiber() {
+        std::thread::sleep(std::time::Duration::from_nanos(ns));
+        return;
+    }
+    fiber::park(Box::new(move |wake: Waker| {
+        let p = poller();
+        let token = {
+            let mut w = p.waits.lock().unwrap_or_else(|e| e.into_inner());
+            w.0 += 1;
+            let t = w.0;
+            w.1.insert(t, (-1, wake));
+            t
+        };
+        if !sys::add_timer(p.epfd, ns, token) {
+            // `sleep` finds the time not yet passed and tries again.
+            let w = p.waits.lock().unwrap_or_else(|e| e.into_inner()).1.remove(&token);
+            if let Some((_, wake)) = w {
+                wake();
+            }
+        }
+    }));
+}
+
 /// One end of a pipe, non-blocking.
 pub struct PollFd(OwnedFd);
 
@@ -168,6 +269,12 @@ impl PollFd {
             libc::fcntl(raw, libc::F_SETFL, flags | libc::O_NONBLOCK);
         }
         PollFd(fd)
+    }
+}
+
+impl crate::obj::IntoFd for PollFd {
+    fn into_fd(self) -> OwnedFd {
+        self.0
     }
 }
 

@@ -1,0 +1,10 @@
+-- stdout
+110680464442257309684
+21
+["abcd", "x"]
+["long!"]
+[True, False]
+[73786976294838206457, 73786976294838206458]
+-- stderr
+checkers runtime: 0 objects live at exit
+-- exit 0

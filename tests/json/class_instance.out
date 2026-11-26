@@ -21,7 +21,7 @@
 {"kind":"token","path":"$ROOT/tests/json/class_instance.ck","start":[10,21],"end":[10,22],"class":"number"}
 {"kind":"done","phase":"index"}
 {"kind":"done","phase":"checks"}
-{"kind":"diagnostic","phase":"proofs","path":"$ROOT/tests/json/class_instance.ck","start":[8,0],"end":[8,16],"severity":"error","code":"E0450","message":"cannot prove lemma `Ord Odd.trans`","label":"`le x z`","notes":["facts in scope: `le x y`, `le y z`","counterexample: x = Odd 2, y = Odd 1, z = Odd 0"],"help":"add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs"}
-{"kind":"diagnostic","phase":"proofs","path":"$ROOT/tests/json/class_instance.ck","start":[8,0],"end":[8,16],"severity":"error","code":"E0450","message":"cannot prove lemma `Ord Odd.antisym`","label":"`x == y`","notes":["facts in scope: `le x y`, `le y x`","counterexample: x = Odd 1, y = Odd 0"],"help":"add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs"}
+{"kind":"diagnostic","phase":"proofs","path":"$ROOT/tests/json/class_instance.ck","start":[8,0],"end":[8,16],"severity":"error","code":"E0450","message":"cannot prove lemma `Ord Odd.trans`","label":"`le x z`","notes":["facts in scope: `le x y`, `le y z`","counterexample: x = Odd 2, y = Odd 1, z = Odd 0"],"help":"add a `proof` block: `match` on a parameter or a call's result for case analysis, and `have` for facts it needs"}
+{"kind":"diagnostic","phase":"proofs","path":"$ROOT/tests/json/class_instance.ck","start":[8,0],"end":[8,16],"severity":"error","code":"E0450","message":"cannot prove lemma `Ord Odd.antisym`","label":"`x == y`","notes":["facts in scope: `le x y`, `le y x`","counterexample: x = Odd 1, y = Odd 0"],"help":"add a `proof` block: `match` on a parameter or a call's result for case analysis, and `have` for facts it needs"}
 {"kind":"done","phase":"proofs"}
 -- exit 1

@@ -136,11 +136,34 @@ fn field_template(g: &Globals, c: crate::core::ConId, k: usize, fns: &[(crate::c
     go(&crate::core::desc_of(g, &v), np)
 }
 
-/// Closure-convert and reference-count the program.
-fn prepare(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId) -> lower::Program {
+/// Closure-convert and reference-count the program, for a machine whose
+/// functions return at most `max_parts` words (`codegen::return_words`).
+fn prepare(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId, max_parts: usize) -> lower::Program {
     let mut p = lower::lower(g, staged, main);
+    p.max_parts = max_parts;
     rc_new(g, &mut p);
     p
+}
+
+/// Code generation for this machine, as `ckc build` writes it.
+fn host_isa() -> Result<std::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>, String> {
+    cranelift_native::builder()?.finish(flags()?).map_err(|e| e.to_string())
+}
+
+/// The settings for compiled programs: optimized, position independent.
+fn flags() -> Result<settings::Flags, String> {
+    let mut fb = settings::builder();
+    fb.set("opt_level", "speed").map_err(|e| e.to_string())?;
+    fb.set("is_pic", "true").map_err(|e| e.to_string())?;
+    // Cranelift's tail calls rely on frame pointers.
+    fb.set("preserve_frame_pointers", "true").map_err(|e| e.to_string())?;
+    Ok(settings::Flags::new(fb))
+}
+
+/// The most words a function returns in registers on this machine.
+pub fn host_return_words() -> usize {
+    static WORDS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *WORDS.get_or_init(|| host_isa().map_or(1, |isa| codegen::return_words(&*isa)))
 }
 
 /// Reference counting for the functions added since the last call.
@@ -150,7 +173,37 @@ pub(crate) fn rc_new(g: &Globals, p: &mut lower::Program) {
     tailrec::program(&mut p.funcs, from);
     unbox::program(p, from);
     for f in &mut p.funcs[from..] {
-        rc::function(f, &fields_of);
+        f.body = rc::forward_aliases(std::mem::replace(&mut f.body, lower::E::Erased));
+    }
+    rc::infer_borrowed(&p.funcs, from, &mut p.borrowed, &fields_of);
+    let rets: Vec<usize> = p.funcs.iter().map(|f| f.rets).collect();
+    let rets = |f: u32| rets[f as usize];
+    let to = p.funcs.len();
+    for (i, f) in p.funcs[from..].iter_mut().enumerate() {
+        rc::function((from + i) as u32, f, &fields_of, &p.borrowed, &rets);
+    }
+    // A closure's code takes its arguments owned: a function with borrowed
+    // parameters made a closure (as a value, or as `main`) is entered
+    // through one that drops them after the call.
+    let mut closures = Vec::new();
+    if let Some(lower::DefShape::Fn { func, .. }) = p.defs.get(&p.main) {
+        closures.push(*func);
+    }
+    let mut values = Vec::new();
+    for f in &p.funcs[from..to] {
+        rc::closures_in(&f.body, &mut values, &mut closures);
+    }
+    for d in values {
+        if let Some(lower::DefShape::Fn { func, .. }) = p.defs.get(&d) {
+            closures.push(*func);
+        }
+    }
+    for i in closures {
+        if let (Some(b), false) = (p.borrowed.get(&i), p.entries.contains_key(&i)) {
+            let e = rc::owned_entry(i, &p.funcs[i as usize], b);
+            p.entries.insert(i, p.funcs.len() as u32);
+            p.funcs.push(e);
+        }
     }
     if std::env::var_os("CHECKERS_NATIVE_DUMP").is_some() {
         for (i, f) in p.funcs.iter().enumerate().skip(from) {
@@ -246,7 +299,7 @@ fn dump(e: &lower::E, d: usize) -> String {
 
 /// Compile in memory and run `main` (`checkers run`): the exit code.
 pub fn run(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId, args: &[String], threads: usize) -> i32 {
-    let p = prepare(g, staged, main);
+    let p = prepare(g, staged, main, host_return_words());
     let desc = descriptor(g, &p);
     let module = jit_module();
     let mut gen = codegen::Gen::new(module, p, g);
@@ -275,27 +328,27 @@ pub fn run(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId, args
     code
 }
 
-/// Write an executable (`checkers build`).
-pub fn build(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId, out: &std::path::Path) -> Result<(), String> {
-    let p = prepare(g, staged, main);
+/// The program as an object file for `isa`, with a C `main`.
+pub fn object(
+    g: &Globals,
+    staged: Option<&crate::stage::Staged>,
+    main: DefId,
+    isa: std::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>,
+) -> Result<Vec<u8>, String> {
+    let p = prepare(g, staged, main, codegen::return_words(&*isa));
     let desc = descriptor(g, &p);
-    let mut fb = settings::builder();
-    fb.set("opt_level", "speed").map_err(|e| e.to_string())?;
-    fb.set("is_pic", "true").map_err(|e| e.to_string())?;
-    // Cranelift's tail calls rely on frame pointers.
-    fb.set("preserve_frame_pointers", "true").map_err(|e| e.to_string())?;
-    let isa = cranelift_native::builder()
-        .map_err(|e| e.to_string())?
-        .finish(settings::Flags::new(fb))
-        .map_err(|e| e.to_string())?;
     let ob = cranelift_object::ObjectBuilder::new(isa, "checkers_program", cranelift_module::default_libcall_names())
         .map_err(|e| e.to_string())?;
     let module = cranelift_object::ObjectModule::new(ob);
     let mut gen = codegen::Gen::new(module, p, g);
     gen.define_new();
     gen.define_c_main(&desc);
-    let product = gen.m.finish();
-    let bytes = product.emit().map_err(|e| e.to_string())?;
+    gen.m.finish().emit().map_err(|e| e.to_string())
+}
+
+/// Write an executable (`checkers build`).
+pub fn build(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId, out: &std::path::Path) -> Result<(), String> {
+    let bytes = object(g, staged, main, host_isa()?)?;
     let dir = std::env::temp_dir().join(format!("checkers-build-{}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let obj = dir.join("program.o");
@@ -348,4 +401,139 @@ fn runtime_library() -> Option<std::path::PathBuf> {
         }
     }
     best.map(|(_, p)| p)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MACHINES: [(&str, usize); 4] =
+        [("x86_64-unknown-linux-gnu", 8), ("x86_64-apple-darwin", 8), ("aarch64-unknown-linux-gnu", 6), ("aarch64-apple-darwin", 6)];
+
+    fn isa(triple: &str) -> std::sync::Arc<dyn cranelift_codegen::isa::TargetIsa> {
+        cranelift_codegen::isa::lookup_by_name(triple).expect(triple).finish(flags().unwrap()).expect(triple)
+    }
+
+    /// Each machine returns as many words in registers as its `tail`
+    /// calling convention has registers for, and no more.
+    #[test]
+    fn return_words_by_machine() {
+        for (triple, n) in MACHINES {
+            assert_eq!(codegen::return_words(&*isa(triple)), n, "{triple}");
+        }
+    }
+
+    /// The functions of a test program in tests/run/, ready to compile.
+    fn funcs_of(name: &'static str, f: impl FnOnce(&lower::Program) + Send + 'static) {
+        let path = format!("{}/tests/run/{name}", env!("CARGO_MANIFEST_DIR"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        let dir = std::path::Path::new(&path).parent().unwrap().to_path_buf();
+        crate::with_big_stack(move || {
+            let (e, main, staged, report) = crate::ready_to_run(name, &text, &dir, false).map_err(|r| r.report).unwrap();
+            assert_eq!(report, "");
+            f(&prepare(&e.g, Some(&staged), main, host_return_words()));
+        })
+    }
+
+    /// A copy made for a known dictionary takes neither the dictionary nor
+    /// the type (tests/run/copy_params.ck): `lo`'s copies take `x` and `y`.
+    /// A copy that would take nothing keeps one parameter. The copies are
+    /// read as `spec` makes them, before small functions are inlined.
+    #[test]
+    fn copies_take_no_dictionaries() {
+        funcs_of("copy_params.ck", |p| {
+            let specs = p.specs.borrow();
+            let arity = |name: &str| {
+                let mut out: Vec<usize> = specs
+                    .copies
+                    .iter()
+                    .filter(|c| p.names[c.of.0 as usize] == name)
+                    .map(|c| {
+                        let (mut n, mut b) = (0, &c.body);
+                        while let crate::core::Tm::Lam(_, _, _, x) = b {
+                            n += 1;
+                            b = x;
+                        }
+                        n
+                    })
+                    .collect();
+                out.dedup();
+                out
+            };
+            assert_eq!(arity("lo"), [2]);
+            assert_eq!(arity("nothing"), [1]);
+        })
+    }
+
+    /// Whether `e` duplicates or drops `v`.
+    fn counts(e: &lower::E, v: lower::V) -> bool {
+        use lower::E;
+        match e {
+            E::Dup(x, b) | E::Drop(x, b) | E::DropReuse(x, _, _, b) => *x == v || counts(b, v),
+            E::Borrow { drops, args, .. } => drops.contains(&v) || args.iter().any(|a| counts(a, v)),
+            E::Let(_, a, b) | E::LetMulti(_, a, b) => counts(a, v) || counts(b, v),
+            E::Call { args, .. } | E::Tuple(args) | E::Par(args) | E::Multi(args) => args.iter().any(|a| counts(a, v)),
+            E::Apply { f, args, .. } => counts(f, v) || args.iter().any(|a| counts(a, v)),
+            E::Con { fields, .. } => fields.iter().any(|a| counts(a, v)),
+            E::Case { arms, lits, default, .. } => {
+                arms.iter().any(|a| counts(&a.body, v)) || lits.iter().any(|(_, b)| counts(b, v)) || default.as_ref().is_some_and(|d| counts(d, v))
+            }
+            E::At(_, b) => counts(b, v),
+            _ => false,
+        }
+    }
+
+    /// A parameter a loop only reads and passes on unchanged is borrowed
+    /// (tests/run/borrowed_params.ck): `walk`'s `n` is neither duplicated
+    /// nor dropped; `longer` borrows the string it compares with and owns
+    /// the list whose cells it reuses. Both are recursive, so neither is
+    /// inlined.
+    #[test]
+    fn loops_borrow_what_they_pass_on() {
+        funcs_of("borrowed_params.ck", |p| {
+            let func = |name: &str| p.funcs.iter().position(|f| f.name == name).unwrap();
+            let walk = func("walk");
+            assert_eq!(p.borrowed.get(&(walk as u32)).map(Vec::as_slice), Some(&[true, false, false][..]));
+            assert!(!counts(&p.funcs[walk].body, p.funcs[walk].params[0]));
+            assert_eq!(p.borrowed.get(&(func("longer") as u32)).map(Vec::as_slice), Some(&[true, false][..]));
+        })
+    }
+
+    /// Results returned as their parts, six to eight words wide
+    /// (tests/run/unboxed_wide.ck), compile for every machine: none returns
+    /// more words than the machine has registers for, and each returns as
+    /// many as it can.
+    #[test]
+    fn wide_results_compile_for_every_machine() {
+        crate::with_big_stack(|| {
+            let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/run/unboxed_wide.ck");
+            let text = std::fs::read_to_string(path).unwrap();
+            let dir = std::path::Path::new(path).parent().unwrap();
+            let (e, main, staged, report) = crate::ready_to_run("unboxed_wide.ck", &text, dir, false).map_err(|r| r.report).unwrap();
+            assert_eq!(report, "");
+            for (triple, n) in MACHINES {
+                let p = prepare(&e.g, Some(&staged), main, n);
+                let widest = p.funcs.iter().map(|f| f.rets).max().unwrap();
+                assert_eq!(widest, n, "{triple}: the widest result");
+                object(&e.g, Some(&staged), main, isa(triple)).unwrap_or_else(|m| panic!("{triple}: {m}"));
+            }
+        })
+    }
+
+    /// Small integers' inline paths (tests/run/small_int_edges.ck: overflow
+    /// checks, constants, comparisons branched on) compile for every
+    /// machine, whose overflow-checking instructions differ.
+    #[test]
+    fn integer_paths_compile_for_every_machine() {
+        crate::with_big_stack(|| {
+            let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/run/small_int_edges.ck");
+            let text = std::fs::read_to_string(path).unwrap();
+            let dir = std::path::Path::new(path).parent().unwrap();
+            let (e, main, staged, report) = crate::ready_to_run("small_int_edges.ck", &text, dir, false).map_err(|r| r.report).unwrap();
+            assert_eq!(report, "");
+            for (triple, _) in MACHINES {
+                object(&e.g, Some(&staged), main, isa(triple)).unwrap_or_else(|m| panic!("{triple}: {m}"));
+            }
+        })
+    }
 }

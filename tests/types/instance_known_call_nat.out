@@ -1,0 +1,27 @@
+error[E0450]: cannot prove `r >= 0`, the postcondition of `returned`
+  --> instance_known_call_nat.ck:16:18
+   |
+16 | fn returned b -> r : b~Box, r~Nat
+   |                  ^ promised here
+   = note: for the value returned on line 17: `pos b (-5)`
+   = note: counterexample: b = Box 2
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+error[E0450]: cannot prove `n >= 0`, required to call `need`
+  --> instance_known_call_nat.ck:23:5
+   |
+23 |     need (pos b (-5))
+   |     ^^^^^^^^^^^^^^^^^ `need` requires `n >= 0`
+   = note: counterexample: b = Box 2
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+error[E0450]: cannot prove that `pos w (-5)` is a `Nat` (`(pos w (-5)) >= 0`)
+  --> instance_known_call_nat.ck:33:19
+   |
+33 |     let g = \w -> pos w (-5)
+   |                   ^^^^^^^^^^ the class promises a `Nat` only where `-5 > 0`
+   = note: this calls `instance Pos Box`'s `pos`, whose signature requires less than the class's and doesn't promise it here
+   = note: counterexample: w = Box 2
+   = help: make the call meet the class's precondition, or have `instance Pos Box`'s `pos` promise a `Nat` at these arguments too
+
+instance_known_call_nat.ck: 3 errors, 0 warnings

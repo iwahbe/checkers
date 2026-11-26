@@ -1,0 +1,48 @@
+error[E0371]: `get`'s result `r` doesn't promise what class `Get`'s does
+  --> instance_refines_inside.ck:13:30
+   |
+13 |     fn get w -> r : w~Box, r~Option Int
+   |                              ^^^^^^^^^^ `Option Int` here, `Option Nat` in the class
+   = note: class `Get` declares `fn get w -> r : w~a, r~Option Nat`
+   = note: its `Int` values aren't known to be `Nat`, as class `Get` promises: a refinement inside a type is never gained from an existing value
+   = help: give `r` the class's type `Option Nat`, or a type implying it
+
+error[E0371]: `first` requires more of `xs` than class `First` does
+  --> instance_refines_inside.ck:20:36
+   |
+20 |     fn first w xs -> r : w~Box, xs~List Nat, r~Nat
+   |                                    ^^^^^^^^ `List Nat` here, `List Int` in the class
+   = note: class `First` declares `fn first w xs -> r : w~a, xs~List Int, r~Nat`
+   = note: a call through class `First` may pass any `List Int`, whose `Int` values aren't known to be `Nat`: a refinement inside a type is never gained from an existing value
+   = help: give `xs` the class's type `List Int`, or a type it implies, and check its values in the body
+
+error[E0371]: `call` requires more of `f` than class `Call` does
+  --> instance_refines_inside.ck:29:33
+   |
+29 |     fn call w f -> r : w~Box, f~(Int -> Nat), r~Nat
+   |                                 ^^^^^^^^^^^^ `Int -> Nat` here, `Nat -> Nat` in the class
+   = note: class `Call` declares `fn call w f -> r : w~a, f~(Nat -> Nat), r~Nat`
+   = note: it needs `n >= 0`
+   = note: counterexample: n = -1
+   = help: a call through class `Call` may pass any `Nat -> Nat`: give `f` that type, or a type it implies
+
+error[E0371]: `gives` requires more of `f` than class `Gives` does
+  --> instance_refines_inside.ck:36:34
+   |
+36 |     fn gives w f -> r : w~Box, f~(Nat -> Nat), r~Int
+   |                                  ^^^^^^^^^^^^ `Nat -> Nat` here, `Nat -> Int` in the class
+   = note: class `Gives` declares `fn gives w f -> r : w~a, f~(Nat -> Int), r~Int`
+   = note: a call through class `Gives` may pass any `Nat -> Int`, whose `Int` values aren't known to be `Nat`: a refinement inside a type is never gained from an existing value
+   = help: give `f` the class's type `Nat -> Int`, or a type it implies, and check its values in the body
+
+error[E0371]: `pairs`'s result `r` doesn't promise what class `Pairs`'s does
+  --> instance_refines_inside.ck:43:32
+   |
+43 |     fn pairs w -> r : w~Box, r~(Int, (n~Int, n > 1))
+   |                                ^^^^^^^^^^^^^^^^^^^^^ `(Int, (n~Int, n > 1))` here, `(Int, (n~Int, n > 2))` in the class
+   = note: class `Pairs` declares `fn pairs w -> r : w~a, r~(Int, (n~Int, n > 2))`
+   = note: it needs `n > 2`
+   = note: counterexample: n = 2
+   = help: give `r` the class's type `(Int, (n~Int, n > 2))`, or a type implying it
+
+instance_refines_inside.ck: 5 errors, 0 warnings

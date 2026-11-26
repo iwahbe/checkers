@@ -5,7 +5,6 @@ use crate::word::*;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use std::io::{BufRead, Write};
-use std::path::PathBuf;
 use std::sync::atomic::AtomicPtr;
 use std::sync::{Arc, Mutex};
 
@@ -14,10 +13,56 @@ use std::sync::{Arc, Mutex};
 /// with `std.terminal`.
 pub enum FileState {
     Read(Box<dyn BufRead + Send>),
-    Write(Box<dyn Write + Send>),
+    Write(Box<dyn Sink>),
     Stdin,
     Stdout,
     Stderr,
+}
+
+/// A `File` open for writing: a buffer before a descriptor.
+pub trait Sink: Write + Send {
+    /// Write out what is buffered, then close the descriptor: the first
+    /// error of the two (`files.close`, §13.4).
+    fn finish(self: Box<Self>) -> std::io::Result<()>;
+}
+
+/// What writes to a descriptor of its own, and gives it up to be closed.
+pub trait IntoFd {
+    fn into_fd(self) -> std::os::fd::OwnedFd;
+}
+
+impl<T: Write + Send + IntoFd> Sink for std::io::BufWriter<T> {
+    fn finish(self: Box<Self>) -> std::io::Result<()> {
+        match (*self).into_inner() {
+            Ok(inner) => close_fd(inner.into_fd()),
+            Err(e) => {
+                // Taken apart, the writer is dropped without trying again;
+                // the descriptor is closed with it.
+                let (e, w) = e.into_parts();
+                drop(w.into_parts());
+                Err(e)
+            }
+        }
+    }
+}
+
+/// Close a descriptor, reporting the error `close` gives. After `EINTR` the
+/// descriptor is closed (Linux, macOS) and nothing is lost: not an error.
+pub fn close_fd(fd: std::os::fd::OwnedFd) -> std::io::Result<()> {
+    use std::os::fd::IntoRawFd;
+    let raw = fd.into_raw_fd();
+    // Closing can wait on a network file system: not on a behaviour's thread.
+    crate::fiber::blocking(move || {
+        if unsafe { libc::close(raw) } == 0 {
+            return Ok(());
+        }
+        let e = std::io::Error::last_os_error();
+        if e.kind() == std::io::ErrorKind::Interrupted {
+            Ok(())
+        } else {
+            Err(e)
+        }
+    })
 }
 
 /// A resource for the scheduler (D66): a cown or a future.
@@ -73,7 +118,7 @@ pub enum Obj {
     Killer(Arc<ChildCell>),
     IoErr(String),
     /// A file system capability confined to a directory (`files.within`).
-    Fs(PathBuf),
+    Fs(Arc<crate::confine::Root>),
     Cown(Arc<Cell>),
     /// `UNSET` until filled.
     Future(Arc<Cell>),
@@ -108,8 +153,26 @@ pub fn new_cell(v: W) -> Arc<Cell> {
 
 // ── numbers ─────────────────────────────────────────────────────────────────
 
+/// A `K_BIG` object whose number fits in an `i128` holds it in its two
+/// words (tag 1); a larger one holds a `BigInt` (tag 0). Numbers past 63
+/// bits but within 127 then take one small allocation, and arithmetic on
+/// them none of `BigInt`'s.
+const BIG_I128: u64 = 1;
+
+/// Whether `w` (a `K_BIG` object) holds its number in its words.
+#[inline]
+pub fn big_inline(w: W) -> bool {
+    tag(w) as u64 == BIG_I128
+}
+
+/// The number of a `K_BIG` object holding a `BigInt`.
 pub fn big_of<'a>(w: W) -> &'a BigInt {
     unsafe { &*(slot(w, 0) as *const BigInt) }
+}
+
+#[inline]
+fn big_i128(w: W) -> i128 {
+    ((slot(w, 1) as u128) << 64 | slot(w, 0) as u128) as i128
 }
 
 pub fn is_num(w: W) -> bool {
@@ -120,7 +183,11 @@ pub fn num_of(w: W) -> Num {
     if is_int(w) {
         Num::S(int_of(w) as i128)
     } else if is_kind(w, K_BIG) {
-        Num::from_big(big_of(w).clone())
+        if big_inline(w) {
+            Num::S(big_i128(w))
+        } else {
+            Num::from_big(big_of(w).clone())
+        }
     } else {
         crate::bug("expected a number")
     }
@@ -129,12 +196,20 @@ pub fn num_of(w: W) -> Num {
 pub fn of_num(n: Num) -> W {
     match n {
         Num::S(s) if fits(s) => mk_int(s as i64),
-        Num::S(s) => of_big(BigInt::from(s)),
-        Num::B(b) => match b.to_i64() {
-            Some(s) if fits(s as i128) => mk_int(s),
-            _ => of_big((*b).clone()),
+        Num::S(s) => of_i128(s),
+        Num::B(b) => match b.to_i128() {
+            Some(s) if fits(s) => mk_int(s as i64),
+            Some(s) => of_i128(s),
+            None => of_big(std::sync::Arc::try_unwrap(b).unwrap_or_else(|b| (*b).clone())),
         },
     }
+}
+
+fn of_i128(s: i128) -> W {
+    let w = alloc_obj(info(K_BIG, 0, BIG_I128), HDR + 16);
+    set_slot(w, 0, s as u128 as u64);
+    set_slot(w, 1, ((s as u128) >> 64) as u64);
+    w
 }
 
 fn of_big(b: BigInt) -> W {
@@ -153,5 +228,47 @@ pub fn to_usize(w: W) -> Option<usize> {
         usize::try_from(int_of(w)).ok()
     } else {
         num_of(w).to_usize()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::fd::{FromRawFd, OwnedFd};
+
+    fn sink(w: impl Write + Send + IntoFd + 'static) -> Box<dyn Sink> {
+        Box::new(std::io::BufWriter::new(w))
+    }
+
+    #[test]
+    fn finish_writes_out_and_closes() {
+        let p = std::env::temp_dir().join(format!("checkers-finish-{}", std::process::id()));
+        let mut s = sink(crate::fiber::BlockingWrite(std::fs::File::create(&p).unwrap()));
+        s.write_all(b"kept").unwrap();
+        s.finish().unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), b"kept");
+        std::fs::remove_file(&p).unwrap();
+    }
+
+    /// What is buffered for a pipe nobody reads any more can't be written:
+    /// `finish` says so.
+    #[test]
+    fn finish_reports_a_broken_pipe() {
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let (r, w) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        drop(r);
+        let mut s = sink(crate::poll::PollFd::new(w));
+        s.write_all(b"lost").unwrap();
+        assert_eq!(s.finish().unwrap_err().kind(), std::io::ErrorKind::BrokenPipe);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn finish_reports_a_full_device() {
+        let f = std::fs::OpenOptions::new().write(true).open("/dev/full").unwrap();
+        let mut s = sink(crate::fiber::BlockingWrite(f));
+        s.write_all(b"lost").unwrap();
+        assert_eq!(s.finish().unwrap_err().raw_os_error(), Some(libc::ENOSPC));
     }
 }

@@ -14,12 +14,14 @@ replaces 4:12-4:12
   json               module          
   list               module          
   markdown           module          
+  math               module          
   parse              module          
   prelude            module          
   proc               module          
   string             module          
   system             module          
   terminal           module          
+  time               module          
   utf8               module          
 == line 14, column 9
 replaces 14:9-14:9

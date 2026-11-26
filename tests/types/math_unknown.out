@@ -1,0 +1,20 @@
+error[E0450]: cannot prove `r < x`, the postcondition of `min_left`
+ --> math_unknown.ck:7:45
+  |
+7 | fn min_left x y -> r : x~Int, y~Int, r~Int, r < x
+  |                                             ^^^^^ promised here
+  = note: for the value returned on line 8: `math.min x y`
+  = note: counterexample: x = 0, y = 0
+  = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+error[E0450]: cannot prove `r > k`, the postcondition of `grows`
+  --> math_unknown.ck:10:50
+   |
+10 | fn grows n k -> r : n~Int, n >= 2, k~Nat, r~Int, r > k
+   |                                                  ^^^^^ promised here
+   = note: for the value returned on line 11: `math.pow n k`
+   = note: facts in scope: `n >= 2`
+   = note: Z3 gave up (unknown)
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+math_unknown.ck: 2 errors, 0 warnings

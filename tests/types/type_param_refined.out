@@ -1,0 +1,30 @@
+error[E0450]: cannot prove `n >= 0`, required to write the type `ByAlias (-1)`
+  --> type_param_refined.ck:16:28
+   |
+16 | fn alias_negative -> r : r~ByAlias (-1)
+   |                            ^^^^^^^^^^^^ `ByAlias` requires `n >= 0`
+   = help: give arguments for which it holds, or require it where the type is written: in the function's preconditions, or in a condition on the enclosing type's parameters
+
+error[E0450]: cannot prove `n > 0`, required to write the type `ByInline 0`
+  --> type_param_refined.ck:22:25
+   |
+22 | fn inline_zero -> r : r~ByInline 0
+   |                         ^^^^^^^^^^ `ByInline` requires `n > 0`
+   = help: give arguments for which it holds, or require it where the type is written: in the function's preconditions, or in a condition on the enclosing type's parameters
+
+error[E0450]: cannot prove `n >= 0`, required to write the type `Combined (-1)`
+  --> type_param_refined.ck:25:31
+   |
+25 | fn combined_negative -> r : r~Combined (-1)
+   |                               ^^^^^^^^^^^^^ `Combined` requires `n >= 0`
+   = help: give arguments for which it holds, or require it where the type is written: in the function's preconditions, or in a condition on the enclosing type's parameters
+
+error[E0450]: cannot prove `n >= 0`, required to write the type `ByAlias k`
+  --> type_param_refined.ck:31:38
+   |
+31 | fn no_precondition k -> r : k~Int, r~ByAlias k
+   |                                      ^^^^^^^^^ `ByAlias` requires `n >= 0`
+   = note: counterexample: k = -1
+   = help: give arguments for which it holds, or require it where the type is written: in the function's preconditions, or in a condition on the enclosing type's parameters
+
+type_param_refined.ck: 4 errors, 0 warnings

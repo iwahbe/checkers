@@ -212,7 +212,7 @@ fn manifest_problems_have_a_position() {
     app(&w);
     let cases = [
         ("\"toolchain\"", "\"toolchian\"", "checkers: checkers.json:4:3: unknown field `toolchian`: the fields are `name`, `version`, `toolchain` and `dependencies`\n"),
-        ("\"version\": \"0.1.0\"", "\"version\": \"0.1\"", "checkers: checkers.json:3:3: `version` must be MAJOR.MINOR.PATCH, like 1.2.0\n"),
+        ("\"version\": \"0.1.0\"", "\"version\": \"0.1\"", "checkers: checkers.json:3:14: `version` must be MAJOR.MINOR.PATCH, like 1.2.0\n"),
         ("\"name\": \"app\",", "\"name\": \"app\"", "checkers: checkers.json:3:3: unexpected `\"`\n"),
         ("\"name\": \"app\"", "\"name\": \"App\"", "checkers: checkers.json:2:3: `App` isn't a package name: lower-case letters, digits and `_`, starting with a letter; not `std`\n"),
         ("{ \"path\": \"../shared\" }", "{ \"path\": \"../shared\", \"version\": \"1.0.0\" }", "checkers: checkers.json:6:38: a path dependency has no `version`: it is used as it is\n"),
@@ -227,6 +227,18 @@ fn manifest_problems_have_a_position() {
         assert_eq!(out.status.code(), Some(1), "{to}");
         assert_eq!(errors(&out), expected, "{to}");
     }
+}
+
+#[test]
+fn lock_file_versions_have_no_leading_zeros() {
+    let w = World::new("lockzeros");
+    app(&w);
+    w.write("app/checkers.lock", "{\n  \"util\": { \"git\": \"../util\", \"version\": \"1.01.0\", \"commit\": \"0\" }\n}\n");
+    let out = w.checkers("app", &["check"]);
+    assert_eq!(
+        (out.status.code(), errors(&out)),
+        (Some(1), "checkers: checkers.lock:2:42: `version` can't have leading zeros\nhelp: write \"1.1.0\"\n".to_string())
+    );
 }
 
 #[test]
@@ -264,6 +276,32 @@ fn ckc_package_flags_and_messages() {
     assert_eq!((bad.status.code(), text(&bad.stderr)), (Some(2), "error: `--package lib=../nowhere`: no directory `../nowhere`\n".to_string()));
     let bad = ckc(&w, "prog", &["check", "--package", "lib=../lib", "--uses", ".=lib,other", "p.ck"]);
     assert_eq!((bad.status.code(), text(&bad.stderr)), (Some(2), "error: `--uses .=…` names `other`, which no `--package` gives\n".to_string()));
+}
+
+/// A name another package declares without exporting gets a `note:`, not
+/// advice to change that package; within the dependency itself, the `help:`
+/// to export it is still given (SPEC §6).
+#[test]
+fn another_packages_private_names_get_a_note() {
+    let w = World::new("private");
+    w.write(
+        "lib/shape.ck",
+        "module shape\n\nexport abstract enum Size\n    Measured n : n~Nat\n\nexport fn size n -> s : n~Nat, s~Size\n    Measured (secret n)\n\nfn secret n -> m : n~Nat, m~Nat\n    n\n",
+    );
+    w.write("lib/twice.ck", "module twice\n\nimport shape\n\nexport fn twice n -> m : n~Nat, m~Nat\n    shape.secret (n + n)\n");
+    w.write(
+        "prog/p.ck",
+        "module p\n\nimport lib.shape (Size)\nimport lib.shape\nimport lib.twice\n\nfn made_up -> s : s~Size\n    Measured 3\n\ncheck shape.secret 1 == 1\n",
+    );
+    let out = ckc(&w, "prog", &["check", "--package", "lib=../lib", "--uses", ".=lib", "p.ck"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        text(&out.stderr),
+        "error[E0206]: module `lib.shape` has no export named `secret`\n --> <lib>/twice.ck:6:11\n  |\n6 |     shape.secret (n + n)\n  |           ^^^^^^\n  = help: `lib.shape` declares `secret` but doesn't export it; mark it `export` there to use it here\n\n\
+         error[E0204]: unknown name `Measured`\n --> p.ck:8:5\n  |\n8 |     Measured 3\n  |     ^^^^^^^^ not found\n  = note: `Size` is abstract: its values come only from `lib.shape`'s functions\n\n\
+         error[E0206]: module `lib.shape` has no export named `secret`\n  --> p.ck:10:13\n   |\n10 | check shape.secret 1 == 1\n   |             ^^^^^^\n   = note: `secret` is private to `lib.shape`\n\n\
+         p.ck: 3 errors, 0 warnings\n"
+    );
 }
 
 /// An instance of a class of several types goes in the package of the class

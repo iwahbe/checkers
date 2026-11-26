@@ -47,6 +47,7 @@ import std.bytes
 import std.char
 import std.html
 import std.list
+import std.math
 import std.string
 import std.utf8
 
@@ -135,12 +136,6 @@ fn part b i j -> r : b~Bytes, i~Nat, j~Nat, r~Bytes
 
 fn sub a b -> r : a~Nat, b~Nat, r~Nat
     if a >= b then a - b else 0
-
-fn min a b -> r : a~Nat, b~Nat, r~Nat
-    if a <= b then a else b
-
-fn max a b -> r : a~Nat, b~Nat, r~Nat
-    if a >= b then a else b
 
 fn text_of b -> r : b~Bytes, r~String
     match string.from_utf8 b
@@ -732,7 +727,7 @@ fn advance src ln count columns -> r : src~Bytes, ln~Ln, count~Nat, columns~Bool
             let to_tab = 4 - ln.column % 4
             if columns
                 let in_tab = to_tab > count
-                let step = min to_tab count
+                let step = math.min to_tab count
                 let off = if in_tab then ln.offset else ln.offset + 1
                 advance src (with_offset ln off (ln.column + step) in_tab) (count - step) columns
             else
@@ -1023,7 +1018,7 @@ fn atx src s nn -> r : src~Bytes, s~S, nn~Nat, at src nn == 35, r~Start s.ln
     let e = skip_byte 35 src nn
     let level = sub e nn
     if level <= 6 and (e >= ln.stop or is_space_or_tab (pk src ln e))
-        let content_start = min (skip is_space_or_tab src e) ln.stop
+        let content_start = math.min (skip is_space_or_tab src e) ln.stop
         let s2 = close_unmatched (with_ln s (to_end ln))
         let s3 = add_child s2 (KHeading level) nn
         let text = atx_content (clean (part src content_start ln.stop))
@@ -1046,7 +1041,7 @@ fn atx_content b -> r : b~Bytes, r~Bytes
 # An opening code fence at `i` of `c`s: how many (none if a backtick fence's
 # info string has a backtick).
 fn fence src ln i c -> r : src~Bytes, ln~Ln, i~Nat, c~Nat, r~Nat
-    let e = min (skip_byte c src i) ln.stop
+    let e = math.min (skip_byte c src i) ln.stop
     if c == 96 and find (part src e ln.stop) b"`" 0 != None then 0 else sub e i
 
 # A setext heading's underline at `i`: its level, or 0.
@@ -1145,7 +1140,7 @@ fn same_list a b : a~ListData, b~ListData
 fn list_marker src ln k nn indent -> r : src~Bytes, ln~Ln, k~Kind, nn~Nat, nn == (advance_nonspace src ln).offset,
                                          indent~Nat, r~Option (ListData, (l~Ln, l.stop == ln.stop, ln.offset < l.offset))
     let c = pk src ln nn
-    let digits = sub (min (skip char.is_digit src nn) ln.stop) nn
+    let digits = sub (math.min (skip char.is_digit src nn) ln.stop) nn
     let delim = pk src ln (nn + digits)
     let bullet = c == 45 or c == 43 or c == 42
     let number = number src nn (nn + digits) 10 0

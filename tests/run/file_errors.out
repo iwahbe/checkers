@@ -1,0 +1,14 @@
+-- stdout
+file: b"one"
+file: b"bad \xff"
+file: b"last"
+file: the end
+file: closed
+directory: read failed: Is a directory
+directory: closed
+pipe: close failed: Broken pipe
+through stdout
+stdout: closed
+errors.tmp: closed
+-- stderr
+-- exit 0

@@ -30,7 +30,9 @@ pub struct Plan {
 
 /// `dicts`: the declarations building instances' dictionaries (D136), which
 /// every function and lemma may need, since instances aren't named.
-pub fn plan(m: &ast::Module, dicts: &[usize]) -> Plan {
+/// `classes`: this module's classes and their functions' and lemmas' names,
+/// so that `C.f` needs `f` as `f` does.
+pub fn plan(m: &ast::Module, dicts: &[usize], classes: &[(String, Vec<String>)]) -> Plan {
     // Module-level names → declaration index (constructors → their type).
     let mut names: HashMap<&str, usize> = HashMap::new();
     for (k, d) in m.decls.iter().enumerate() {
@@ -53,6 +55,16 @@ pub fn plan(m: &ast::Module, dicts: &[usize]) -> Plan {
             DeclKind::Check { .. } | DeclKind::Class { .. } | DeclKind::Instance { .. } => {}
         }
     }
+    // `C.f`: a class's function or lemma, by its class's name (#268).
+    let mut qualified: Vec<(String, usize)> = Vec::new();
+    for (c, fs) in classes {
+        for f in fs {
+            if let Some(&k) = names.get(f.as_str()) {
+                qualified.push((format!("{c}.{f}"), k));
+            }
+        }
+    }
+    names.extend(qualified.iter().map(|(n, k)| (n.as_str(), *k)));
     // A function whose result type isn't written: its type is known only
     // once its body is checked.
     let inferred = |k: usize| match &m.decls[k].kind {
@@ -306,7 +318,7 @@ fn tarjan(nodes: &[Node], edges: &HashMap<Node, HashSet<Node>>) -> Vec<Vec<Node>
 
 /// Strongly connected components (Tarjan's algorithm), dependencies first:
 /// `edges[v]` are the nodes `v` depends on.
-pub(super) fn sccs(edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
+pub(crate) fn sccs(edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
     struct St<'a> {
         edges: &'a [Vec<usize>],
         index: Vec<Option<usize>>,
@@ -384,6 +396,10 @@ impl Refs {
                 Stmt::Have(e) | Stmt::Expr(e) => self.expr(e, &bound, false),
                 // `x` is a local: only the type refers to declarations.
                 Stmt::HaveType(_, t) => self.expr(t, &bound, false),
+                Stmt::GhostLet(x, e) => {
+                    self.expr(e, &bound, false);
+                    bound.push(x.name.clone());
+                }
             }
         }
         self.expr(&b.result, &bound, false);
@@ -424,8 +440,12 @@ impl Refs {
                     self.expr(p, &b, false);
                 }
             }
-            // `m.f` names another module's `f`; `x.field` a field.
-            ExprKind::Field(a, _) => {
+            // `m.f` names another module's `f`; `x.field` a field; `C.f`
+            // a class's function or lemma (and needs `C` too).
+            ExprKind::Field(a, f) => {
+                if let ExprKind::Con(c) = &a.kind {
+                    self.0.push((format!("{c}.{}", f.name), in_type));
+                }
                 if !matches!(&a.kind, ExprKind::Var(n) if !bound.iter().any(|b| b == n)) {
                     go(self, a);
                 }
