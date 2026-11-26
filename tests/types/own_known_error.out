@@ -4,7 +4,7 @@ error[E0450]: cannot prove `r != 4`, the postcondition of `wrong`
 10 | fn wrong k -> r : k~Nat, r~Int, r != 4
    |                                 ^^^^^^ promised here
    = note: for the value returned on line 11: `array.count 7 (array.repeat k 7) - 2`
-   = note: `count` is sealed in `std.array`: here the prover knows only its postconditions and the lemmas you bring in with `have`
+   = note: `count` is sealed in `std.array`: here the prover knows only its postconditions, the values of its calls known at compile time, and the lemmas you bring in with `have`
    = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
 
 error[E0450]: cannot prove `r >= 0`, the postcondition of `by_constant`

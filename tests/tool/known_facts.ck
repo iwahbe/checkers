@@ -1,9 +1,9 @@
 module known_facts
 
 # The value of a call known at compile time, given to the prover, is in the
-# trust ledger as computed. The values of this module's own functions'
-# calls aren't known while it is checked, so none is given (`steps 30` is
-# proved by unfolding `steps`).
+# trust ledger as computed: a call of an imported function, and one of this
+# module's own (`steps 30`), whose function is proved first, on demand, so
+# that it can run while the module is checked.
 
 import std.array
 
