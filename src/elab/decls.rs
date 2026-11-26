@@ -834,12 +834,8 @@ impl Elab {
             if later.is_empty() {
                 continue;
             }
-            let Some((l, base)) = local(cx, &name.name) else {
-                for e in later {
-                    let _ = self.elab_type(cx, e);
-                }
-                continue;
-            };
+            // A name that isn't the declaration's: `stray_typings`.
+            let Some((l, base)) = local(cx, &name.name) else { continue };
             let at = cx.lvl();
             let mut inside = self.refined_below_top(&base, at);
             let mut same = true;
@@ -881,6 +877,20 @@ impl Elab {
     fn refined_below_top(&self, v: &Val, lvl: usize) -> bool {
         let p = self.peel(v);
         self.refined_inside(&p, lvl, 0) || self.refined_alias(&p).is_some() && matches!(self.base(&p), Val::Pi(..))
+    }
+
+    /// Typings of names that aren't the declaration's (`y~Int` in `fn f x`):
+    /// each is reported with `report`, and its type is still elaborated in
+    /// `cx`, so that a name in it that doesn't exist is reported too.
+    pub(super) fn stray_typings(&mut self, cx: &mut Cx, cs: &[Constraint], declared: &dyn Fn(&str) -> bool, report: &dyn Fn(&Ident) -> Diagnostic) {
+        for c in cs {
+            if let Constraint::Typed { name, ty, .. } = c {
+                if !declared(&name.name) {
+                    self.err(report(name));
+                    let _ = self.elab_type(cx, ty);
+                }
+            }
+        }
     }
 
     fn typed_constraint<'a>(cs: &'a [Constraint], name: &str) -> Option<(&'a Expr, ast::Mult)> {
@@ -943,9 +953,9 @@ impl Elab {
 
     fn phase_type_params(&mut self, m: &ast::Module, ids: &[Option<Sym>]) {
         for (d, id) in m.decls.iter().zip(ids) {
-            let (params, cs) = match &d.kind {
-                DeclKind::Enum { params, constraints, .. } | DeclKind::Record { params, constraints, .. } => {
-                    (params, constraints)
+            let (tname, params, cs) = match &d.kind {
+                DeclKind::Enum { name, params, constraints, .. } | DeclKind::Record { name, params, constraints, .. } => {
+                    (name, params, constraints)
                 }
                 _ => continue,
             };
@@ -962,6 +972,11 @@ impl Elab {
                 cx.bind(&p.name.name, v, Mult::Zero);
                 out.push((Rc::from(p.name.name.as_str()), ty));
             }
+            let declared = |n: &str| params.iter().any(|p| p.name.name == n);
+            self.stray_typings(&mut cx, cs, &declared, &|name| {
+                Diagnostic::error("E0355", format!("`{}` is not a parameter of `{}`", name.name, tname.name), name.span)
+                    .with_help("constraints can only give types to names in the header")
+            });
             // The later typings' refinements are conditions on the type,
             // as the first's are (`phase_type_conds`).
             let names: Vec<&str> = params.iter().map(|p| p.name.name.as_str()).collect();
@@ -1198,6 +1213,9 @@ impl Elab {
                 invs.push((tm, text, span, cx.lvl(), None));
             }
         }
+        self.stray_typings(&mut cx, cs, &|n| declared.contains(n), &|name| {
+            Diagnostic::error("E0353", format!("`{}` is not a field of this constructor", name.name), name.span)
+        });
         // Each condition may rely on those before it, as a signature's do
         // (fields' types are facts already through their locals).
         for c in cs {
@@ -1208,14 +1226,7 @@ impl Elab {
                     cx.assume(v);
                     invs.push((p.tm, p.text, p.span, cx.lvl(), None));
                 }
-                Constraint::Typed { name, .. } if !declared.contains(&name.name) => {
-                    self.err(Diagnostic::error(
-                        "E0353",
-                        format!("`{}` is not a field of this constructor", name.name),
-                        name.span,
-                    ));
-                }
-                _ => {}
+                Constraint::Typed { .. } => {}
             }
         }
         for e in extra_preds {
@@ -1904,20 +1915,11 @@ impl Elab {
             // type parameters but not the values (`fib (x - 1) + fib (x - 2)`).
             None => self.fresh_meta_over_types(&cx),
         };
-        for c in cs {
-            if let Constraint::Typed { name, .. } = c {
-                if !declared.contains(&name.name) {
-                    self.err(
-                        Diagnostic::error(
-                            "E0355",
-                            format!("`{}` is not a parameter or the result", name.name),
-                            name.span,
-                        )
-                        .with_help("constraints can only give types to names in the header"),
-                    );
-                }
-            }
-        }
+        let what = if result.is_some() { "a parameter or the result" } else { "a parameter" };
+        self.stray_typings(&mut cx, cs, &|n| declared.contains(n), &|name| {
+            Diagnostic::error("E0355", format!("`{}` is not {what}", name.name), name.span)
+                .with_help("constraints can only give types to names in the header")
+        });
         // A parameter's or the result's typings after the first: their
         // refinements are preconditions and postconditions.
         let result_base = self.eval(&cx, &result_ty);

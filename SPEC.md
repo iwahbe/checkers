@@ -722,6 +722,8 @@ apat        ::= '_' | lname | literal | Uname
 
 A constraint is only required where inference fails; `fn is_ws b : b~U8` infers its `Bool` result.
 
+A typing gives a type only to a name the header declares: a parameter, the result, a constructor's field. Any other name (`record Box : missing~Int`) is an error (E0355; E0353 in a constructor), and its type's names are still resolved.
+
 **Several typings of one name combine.** `x~Int, x~Nat` means `x` is an `Int` that is also a `Nat`, as `x~Int, x >= 0` does with a predicate, for a parameter, the result, a field or a type's parameter. Each typing's refinement is a condition on the name, as the first's is (a precondition, a postcondition, an invariant, a condition on the type), in any order. The typings must have one base type: `x~Int, x~Bool` is E0372, at the second. A refinement inside a type (`xs~List Int, xs~List Nat`) doesn't combine: typings of a name one of which has one must be the same type (E0372). Every typing's names are resolved.
 
 **Refinements may mention later parameters (#102).** A predicate in a parameter's type, at any depth (a function-typed parameter's precondition, an element type's refinement), may mention any parameter of the function, earlier or later: `fn all p xs -> r : p~(x~a -> Bool, list.contains xs x), xs~List a, r~Bool`. Only the predicates may: the rest of the type may mention only earlier parameters (a later one is E0204). The parameter's type without those predicates is its type in the function's core type (§3); with them, it is its type in the body and at a call:
