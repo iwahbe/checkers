@@ -1,7 +1,10 @@
 module class_type_base_decl
 
 # A base type is one type: not two, and not one naming the class's
-# parameter. Naming the type itself as well says the same.
+# parameter (proposed, #360). Naming the type itself as well says the same.
+# Expected: E0370 at `u~Nat`, "`Unit` has one base type"; E0370 at
+# `u~List s`, "the base type of `Unit` can't mention the class's parameter
+# `s`"; `Both` and `small` check.
 
 class Both s
     type Unit : u~Unit, u~Int, u < 256
