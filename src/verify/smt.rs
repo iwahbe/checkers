@@ -844,9 +844,16 @@ impl<'a> Builder<'a> {
     /// `Display.Options a`.
     fn assoc_sort(&mut self, c: ConId, i: usize, args: Vec<Sort>) -> Sort {
         // A class's type with a base type (#360): its values are the base's.
-        if let Some(b) = self.e.g.type_bases.get(&(c, i)).cloned() {
-            if let Ok(s) = self.sort_of(&[], &b) {
-                return s;
+        if let Some(b) = self.e.g.type_bases.get(&(c, i)).and_then(|bs| bs.first()).cloned() {
+            // Over the class's parameters (of sorts `args`) and a
+            // dictionary, whose types are their own sorts.
+            let ty = self.e.g.cons[c.0 as usize].ty;
+            let mut env: Vec<Ent> = args.iter().map(|a| Ent::Ty(a.clone())).collect();
+            env.push(Ent::Term(String::new(), Sort::Data(ty, args.clone())));
+            if env.len() == self.e.g.arity_ty(ty) + 1 {
+                if let Ok(s) = self.sort_of(&env, &b) {
+                    return s;
+                }
             }
         }
         let ci = &self.e.g.cons[c.0 as usize];
@@ -1591,10 +1598,21 @@ impl<'a> Builder<'a> {
         let Val::Neutral(h, sp) = &v else { return Vec::new() };
         let Some(crate::core::Elim::Field(c, i)) = sp.last() else { return Vec::new() };
         // Its base type's refinement (#360): `Nat`'s, for `i~Nat`.
-        let mut out = match self.e.g.type_bases.get(&(*c, *i)).cloned() {
-            Some(b) => self.alias_terms(&[], &b, x, xs),
-            None => Vec::new(),
-        };
+        let mut out = Vec::new();
+        let bases = self.e.g.type_bases.get(&(*c, *i)).cloned().unwrap_or_default();
+        if !bases.is_empty() {
+            // At the class's arguments and the dictionary in scope.
+            let base = Val::Neutral(h.clone(), Rc::new(sp[..sp.len() - 1].to_vec()));
+            let dict = quote(&self.e.g, n, &base);
+            if let Ok((dt, ds @ Sort::Data(_, _))) = self.term(env, &dict) {
+                let Sort::Data(_, sargs) = &ds else { unreachable!() };
+                let mut inner: Vec<Ent> = sargs.iter().map(|s| Ent::Ty(s.clone())).collect();
+                inner.push(Ent::Term(dt, ds.clone()));
+                for b in &bases {
+                    out.extend(self.alias_terms(&inner, b, x, xs));
+                }
+            }
+        }
         let Some(preds) = self.e.class_type_preds.get(&(*c, *i)).cloned() else { return out };
         let base = Val::Neutral(h.clone(), Rc::new(sp[..sp.len() - 1].to_vec()));
         let dict = quote(&self.e.g, n, &base);

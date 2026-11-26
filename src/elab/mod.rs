@@ -800,10 +800,10 @@ pub struct Elab {
     /// at the class's default (#176), by name: the class's type as written
     /// (`Encoding.Unit`) and the type given (`Nat`).
     pub class_type_checks: HashMap<String, (String, String)>,
-    /// Those of a class's type with a base type (#360), by lemma: the
-    /// class (its module and name), the type's place among its types, the
-    /// value's name, and whether it is the base type's own check.
-    pub class_type_bases_at: HashMap<String, ((String, String), usize, String, bool)>,
+    /// Those of a class's type with base types (#360), by lemma: the base
+    /// types at the instance, the value's name, and whether it is the base
+    /// types' own check.
+    pub class_type_bases_at: HashMap<String, (Vec<ast::Expr>, String, bool)>,
     /// While a class's type's predicates are elaborated (#176): an operator
     /// on its values there needs a class function, not a clause.
     /// Elaborating a predicate on a class's type (#176): the `help:` for
