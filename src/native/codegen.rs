@@ -81,6 +81,10 @@ pub struct Gen<'p, M: Module> {
     true_w: i64,
     false_w: i64,
     max_arity: usize,
+    /// With `Some`: each function's name and machine code as text, as it
+    /// is defined, with every runtime error's owner written as 0 (for tests
+    /// comparing the code of two functions, which name different owners).
+    pub disasm: Option<Vec<(String, String)>>,
     /// Compile-time code (§14): each function reads the stack
     /// `checkers_rt::overflow::PROBE` bytes below its frame on entry, so
     /// running out of stack happens in compiled code, where evaluation can
@@ -231,6 +235,7 @@ impl<'p, M: Module> Gen<'p, M> {
             true_w: nul(wk.true_con),
             false_w: nul(wk.false_con),
             max_arity,
+            disasm: None,
             probe: false,
         }
     }
@@ -392,8 +397,13 @@ impl<'p, M: Module> Gen<'p, M> {
                 b.seal_all_blocks();
                 b.finalize(self.m.isa().frontend_config());
             }
+            ctx.set_disasm(self.disasm.is_some());
             if let Err(e) = self.m.define_function(self.funcs[i], &mut ctx) {
                 panic!("native code for `{}`: {e:?}", self.p.funcs[i].name);
+            }
+            if let Some(d) = &mut self.disasm {
+                let code = ctx.compiled_code().and_then(|c| c.vcode.clone()).unwrap_or_default();
+                d.push((self.p.funcs[i].name.clone(), code));
             }
             self.m.clear_context(&mut ctx);
         }
@@ -525,7 +535,8 @@ impl<'p, M: Module> Gen<'p, M> {
     }
 
     fn owner(&self, b: &mut FunctionBuilder, st: &St) -> Value {
-        b.ins().iconst(I64, st.owner as i64)
+        let o = if self.disasm.is_some() { 0 } else { st.owner };
+        b.ins().iconst(I64, o as i64)
     }
 
     fn message(&mut self, b: &mut FunctionBuilder, st: &mut St, m: &str) -> (Value, Value) {
@@ -636,8 +647,39 @@ impl<'p, M: Module> Gen<'p, M> {
                 self.addr(b, st, d)
             }
             // In the current block: a comparison's `Bool` is then the value
-            // a `match` on it finds in `St::conds`.
+            // a `match` on it finds in `St::conds`, and a value known to be
+            // a small integer is known to be one where it is used. So is
+            // the value of code that doesn't branch around one: `let`s,
+            // `dup`s and `drop`s before it, and `at`.
             E::Borrow { op, args, drops } => self.borrow_e(b, st, *op, args, drops),
+            E::Let(x, a, body) => {
+                self.bind(b, st, *x, a);
+                self.val(b, st, body)
+            }
+            // Code of another definition: the same code, whose runtime
+            // errors name that definition.
+            E::At(o, x) => {
+                let saved = std::mem::replace(&mut st.owner, *o);
+                let v = self.val(b, st, x);
+                st.owner = saved;
+                v
+            }
+            E::Dup(v, body) => {
+                let x = self.var(b, st, *v);
+                self.dup(b, st, x);
+                self.val(b, st, body)
+            }
+            E::Drop(v, body) => {
+                let x = self.var(b, st, *v);
+                self.drop_v(b, st, x);
+                self.val(b, st, body)
+            }
+            E::DropReuse(v, tok, n, body) => {
+                let x = self.var(b, st, *v);
+                let t = self.drop_reuse(b, st, x, *n);
+                st.vars[*tok as usize] = Some(t);
+                self.val(b, st, body)
+            }
             _ => {
                 let k = b.create_block();
                 let r = b.append_block_param(k, I64);
@@ -646,6 +688,15 @@ impl<'p, M: Module> Gen<'p, M> {
                 r
             }
         }
+    }
+
+    /// `x` bound to the value of `a`.
+    fn bind(&mut self, b: &mut FunctionBuilder, st: &mut St, x: V, a: &E) {
+        let v = self.val(b, st, a);
+        if Self::immediate(a) {
+            st.imm.insert(v);
+        }
+        st.vars[x as usize] = Some(v);
     }
 
     fn emit(&mut self, b: &mut FunctionBuilder, st: &mut St, e: &E, mode: Mode) {
@@ -670,11 +721,7 @@ impl<'p, M: Module> Gen<'p, M> {
                 Self::finish(b, &mode, x)
             }
             E::Let(x, a, body) => {
-                let v = self.val(b, st, a);
-                if Self::immediate(a) {
-                    st.imm.insert(v);
-                }
-                st.vars[*x as usize] = Some(v);
+                self.bind(b, st, *x, a);
                 self.emit(b, st, body, mode)
             }
             E::Call { f, args, .. } => {
@@ -1011,7 +1058,10 @@ impl<'p, M: Module> Gen<'p, M> {
     /// Is `e`'s value never a pointer? A comparison gives `True` or `False`,
     /// constructors without fields.
     fn immediate(e: &E) -> bool {
-        matches!(e, E::Borrow { op: BOp::Prim(Op::Eq | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge, _), .. })
+        match e {
+            E::Let(_, _, x) | E::At(_, x) | E::Dup(_, x) | E::Drop(_, x) | E::DropReuse(_, _, _, x) => Self::immediate(x),
+            _ => matches!(e, E::Borrow { op: BOp::Prim(Op::Eq | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge, _), .. }),
+        }
     }
 
     // ── small integers ──────────────────────────────────────────────────────
