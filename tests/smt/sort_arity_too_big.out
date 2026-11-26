@@ -1,0 +1,4 @@
+-- stdout
+(error "line 2 column 17: a sort can't have 2^32 or more parameters")
+-- stderr
+-- exit 1

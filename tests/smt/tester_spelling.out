@@ -1,0 +1,4 @@
+-- stdout
+(error "line 2 column 14: `is-x` is spelled as a tester is, `is-` and a constructor's name, so a query can't introduce it")
+-- stderr
+-- exit 1

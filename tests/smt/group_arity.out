@@ -1,0 +1,4 @@
+-- stdout
+(error "line 2 column 30: the datatypes of one `declare-datatypes` must all have the same number of parameters in the subset `ckc` writes")
+-- stderr
+-- exit 1

@@ -1,0 +1,4 @@
+-- stdout
+(error "line 2 column 30: a datatype without parameters is written without `par` in the subset `ckc` writes")
+-- stderr
+-- exit 1
