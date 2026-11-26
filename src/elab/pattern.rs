@@ -21,6 +21,8 @@ pub struct Row<'a> {
 
 enum Column {
     Tuple,
+    /// `()`: matches every value of type `()`, and only that type.
+    Unit,
     Con,
     Lit,
     /// `[]` and `x :: rest` on a sequence that isn't a list: a `match` on
@@ -383,7 +385,7 @@ impl Elab {
         let mut pats = Vec::new();
         for (occ, p) in r.pats.drain(..) {
             match p.kind {
-                PatKind::Wild | PatKind::Unit => {}
+                PatKind::Wild => {}
                 PatKind::Var(n) => r.binds.push((n, occ, p.span)),
                 _ => pats.push((occ, p)),
             }
@@ -403,6 +405,7 @@ impl Elab {
         let (occ, pat) = rows[0].pats[0].clone();
         let col = match &pat.kind {
             PatKind::Tuple(_) => Column::Tuple,
+            PatKind::Unit => Column::Unit,
             PatKind::Lit(_) | PatKind::Neg(_) => Column::Lit,
             _ => match self.seq_column(cx, &rows, occ) {
                 Some(m) => Column::Seq(m),
@@ -411,6 +414,7 @@ impl Elab {
         };
         match col {
             Column::Tuple => self.compile_tuple(cx, rows, occ, &pat, expected, tail),
+            Column::Unit => self.compile_unit(cx, rows, occ, &pat, expected, tail),
             Column::Lit => self.compile_lit(cx, rows, occ, expected, tail),
             Column::Con => self.compile_con(cx, rows, occ, &pat, expected, tail),
             Column::Seq(m) => {
@@ -568,6 +572,25 @@ impl Elab {
         }
     }
 
+    /// `()` takes nothing apart: the value has type `()`, and every row with
+    /// `()` here matches it.
+    fn compile_unit(&mut self, cx: &mut Cx, rows: Vec<Row>, occ: usize, pat: &Pattern, expected: &Val, tail: bool) -> Tm {
+        let ty = cx.ty_of(occ);
+        let unit = self.unit();
+        if !self.unify_at(cx, &ty, &unit, pat.span, "this pattern") {
+            self.pm.bad = true;
+            return Tm::Error;
+        }
+        let rows = rows
+            .into_iter()
+            .map(|mut r| {
+                r.pats.retain(|(o, p)| !(*o == occ && matches!(p.kind, PatKind::Unit)));
+                r
+            })
+            .collect();
+        self.compile(cx, rows, expected, tail)
+    }
+
     fn compile_tuple(
         &mut self,
         cx: &mut Cx,
@@ -591,11 +614,19 @@ impl Elab {
             .min()
             .unwrap_or(ps.len());
         let ty = match self.force(&cx.ty_of(occ)) {
-            Val::TupleTy(ts) => Val::TupleTy(crate::core::flat_parts(&self.g, &ts, true)),
+            Val::TupleTy(ts) => Val::TupleTy(crate::core::flat_parts(&self.g, &ts, true).into()),
             t => t,
         };
         let comps_ty = match ty {
             Val::TupleTy(ts) if ts.len() == n => ts,
+            // `()` has no parts at all.
+            Val::TupleTy(ts) if ts.is_empty() => {
+                self.pat_err(
+                    Diagnostic::error("E0246", format!("this pattern has {n} parts, but `()` has none"), pat.span)
+                        .with_help("match `()` with the pattern `()`, or `_`"),
+                );
+                return Tm::Error;
+            }
             // A tuple type with fewer parts than the pattern, ending in a
             // type that isn't a tuple: the pattern has too many parts.
             Val::TupleTy(ts) if ts.len() < n && !matches!(self.force(&ts[ts.len() - 1]), Val::Neutral(..)) => {
@@ -611,7 +642,7 @@ impl Elab {
                 // The occurrence's type can't depend on the occurrence itself.
                 let mut outer = cx.clone();
                 outer.truncate(occ);
-                let metas: Vec<Val> = (0..n).map(|_| self.fresh_meta_val(&outer)).collect();
+                let metas: Rc<[Val]> = (0..n).map(|_| self.fresh_meta_val(&outer)).collect();
                 let want = Val::TupleTy(metas.clone());
                 if !self.unify_at(cx, &other, &want, pat.span, "this pattern") {
                     self.authority_hint(cx, ps, occ);
@@ -849,7 +880,7 @@ impl Elab {
                 let n = self.g.arity_ty(tid);
                 let mut outer = cx.clone();
                 outer.truncate(occ);
-                let metas: Vec<Val> = (0..n).map(|_| self.fresh_meta_val(&outer)).collect();
+                let metas: Rc<[Val]> = (0..n).map(|_| self.fresh_meta_val(&outer)).collect();
                 let want = Val::TyCon(tid, metas.clone());
                 if unify(&self.g, cx.lvl(), &other, &want).is_err() {
                     let shown = self.show_val(cx, &other);
@@ -879,7 +910,7 @@ impl Elab {
         for c in ctors {
             let start = cx.lvl();
             let fields = self.g.cons[c.0 as usize].fields.clone();
-            let mut env: Vec<Val> = params.clone();
+            let mut env: Vec<Val> = params.to_vec();
             let mut lvls = Vec::new();
             let sub = cx.locals[occ].sub.or(cx.locals[occ].param);
             let sub_cond = if cx.locals[occ].sub.is_some() { cx.locals[occ].sub_cond } else { None };
@@ -974,12 +1005,11 @@ impl Elab {
             // In this arm the value is this constructor, and its invariants hold (§7.1).
             let saved = cx.facts.len();
             let fvals: Vec<Val> = lvls.iter().map(|l| Val::var(*l)).collect();
-            let mut all: Vec<Val> = params.clone();
-            all.extend(fvals);
+            let all: Rc<[Val]> = params.iter().cloned().chain(fvals).collect();
             let occ_val = cx.env[occ].clone();
             cx.assume(Self::prim_val(Prim::Eq, vec![occ_val, Val::Con(c, all.clone())]));
             for inv in self.con_invs.get(&c).cloned().unwrap_or_default() {
-                let f = self.inst_pred(&inv, all.clone());
+                let f = self.inst_pred(&inv, all.to_vec());
                 cx.assume(f);
             }
             // Dependent matching: where the matched value is a variable, the

@@ -199,12 +199,21 @@ pub struct Program {
     pub debug: Option<u32>,
     /// Which definitions are recursive, for `inline`.
     pub recursive: HashMap<u32, bool>,
+    /// Each definition's code after `inline`, as far as computed.
+    pub inlined: HashMap<u32, Arc<Ir>>,
+    /// Definitions given a function and not lowered yet.
+    pub wanted: Vec<u32>,
     /// Functions' copies specialized to known instances' dictionaries
     /// (`spec`), numbered after the definitions.
     pub specs: std::cell::RefCell<crate::native::spec::Specs>,
     /// Functions whose results are returned as their parts (`unbox`): the
     /// function returning them, and their layout.
     pub workers: HashMap<u32, (u32, crate::native::unbox::Shape)>,
+    /// Functions' borrowed parameters (`rc::infer_borrowed`).
+    pub borrowed: HashMap<u32, Vec<bool>>,
+    /// Where a closure of a function with borrowed parameters enters: a
+    /// function taking them owned, which calls it and drops them after.
+    pub entries: HashMap<u32, u32>,
     /// The most words a function returns (`unbox`): what the machine the
     /// code is compiled for returns in registers. This machine's, unless
     /// set before reference counting.
@@ -259,7 +268,11 @@ impl Program {
             main: NO_OWNER,
             debug: None,
             recursive: HashMap::new(),
+            inlined: HashMap::new(),
+            wanted: Vec::new(),
             workers: HashMap::new(),
+            borrowed: HashMap::new(),
+            entries: HashMap::new(),
             max_parts: crate::native::host_return_words(),
         }
     }
@@ -321,7 +334,6 @@ impl<'a, 'g> Lowerer<'a, 'g> {
         let staged = self.staged;
         let ndefs = g.defs.len() + staged.map_or(0, |s| s.extra.len());
         // Compile every new reachable definition.
-        let mut new: Vec<u32> = Vec::new();
         let mut referenced = BTreeSet::new();
         let mut todo: Vec<u32> = roots.to_vec();
         while let Some(d) = todo.pop() {
@@ -346,24 +358,6 @@ impl<'a, 'g> Lowerer<'a, 'g> {
             globals_in(&c, &mut gs);
             todo.extend(gs.iter().map(|x| x.0));
             self.p.code.insert(d, c);
-            new.push(d);
-        }
-        new.sort_unstable();
-        // Shapes first, so calls can be direct.
-        for d in &new {
-            let (n, _) = lams(&self.p.code[d]);
-            let func = self.p.funcs.len() as u32;
-            let owner = self.p.specs.borrow().origin(*d);
-            self.p.funcs.push(Func {
-                name: self.p.names[owner as usize].clone(),
-                owner,
-                kind: if n > 0 { FnKind::Global } else { FnKind::Caf },
-                params: Vec::new(),
-                body: E::Erased,
-                nvars: 0,
-                rets: 1,
-            });
-            self.p.defs.insert(*d, if n > 0 { DefShape::Fn { func, arity: n } } else { DefShape::Caf { func } });
         }
         // Builtins (and anything else without a body).
         for d in referenced {
@@ -393,11 +387,47 @@ impl<'a, 'g> Lowerer<'a, 'g> {
             };
             self.p.defs.insert(d, shape);
         }
-        for d in &new {
-            let origin = self.p.specs.borrow().origin(*d);
-            let ir = self.inline(&self.p.code[d].clone(), Some(DefId(origin)));
-            let (DefShape::Fn { func, .. } | DefShape::Caf { func }) = self.p.defs[d].clone() else { continue };
-            self.owner = self.p.specs.borrow().origin(*d);
+        // A function is made for each root, and for each definition the
+        // code made so far refers to once small functions are inlined:
+        // one inlined at every call needs none of its own.
+        for d in roots {
+            self.shape(*d);
+        }
+        self.lower_wanted();
+    }
+
+    /// The shape of definition `d`. One with code gets its function here,
+    /// the first time something refers to it, and is lowered by
+    /// `lower_wanted`.
+    fn shape(&mut self, d: u32) -> Option<DefShape> {
+        if let Some(s) = self.p.defs.get(&d) {
+            return Some(s.clone());
+        }
+        let (n, _) = lams(self.p.code.get(&d)?);
+        let func = self.p.funcs.len() as u32;
+        let owner = self.p.specs.borrow().origin(d);
+        self.p.funcs.push(Func {
+            name: self.p.names[owner as usize].clone(),
+            owner,
+            kind: if n > 0 { FnKind::Global } else { FnKind::Caf },
+            params: Vec::new(),
+            body: E::Erased,
+            nvars: 0,
+            rets: 1,
+        });
+        let shape = if n > 0 { DefShape::Fn { func, arity: n } } else { DefShape::Caf { func } };
+        self.p.defs.insert(d, shape.clone());
+        self.p.wanted.push(d);
+        Some(shape)
+    }
+
+    /// Lower each definition given a function by `shape` and not lowered
+    /// yet, and those they refer to.
+    fn lower_wanted(&mut self) {
+        while let Some(d) = self.p.wanted.pop() {
+            let ir = self.inline_def(d);
+            let (DefShape::Fn { func, .. } | DefShape::Caf { func }) = self.p.defs[&d].clone() else { continue };
+            self.owner = self.p.specs.borrow().origin(d);
             self.next = 0;
             let (n, body) = lams(&ir);
             let params: Vec<V> = (0..n).map(|_| self.fresh()).collect();
@@ -434,6 +464,7 @@ impl<'a, 'g> Lowerer<'a, 'g> {
         let f = &mut self.p.funcs[func as usize];
         f.body = body;
         f.nvars = self.next;
+        self.lower_wanted();
         func
     }
 }
@@ -459,18 +490,31 @@ pub fn show_table(g: &Globals) -> Option<Ir> {
 }
 
 impl Lowerer<'_, '_> {
-    /// `ir`, the code of `owner`, with `match`es on small functions' results
-    /// resolved (`inline`).
+    /// `ir`, the code of `owner`, with small functions inlined (`inline`).
     fn inline(&mut self, ir: &Ir, owner: Option<DefId>) -> Ir {
+        let ir = self.inliner(|i| i.program(ir, owner));
+        self.float_in(&ir)
+    }
+
+    /// Definition `d`'s code, with small functions inlined (`inline`).
+    fn inline_def(&mut self, d: u32) -> Ir {
+        let ir = self.inliner(|i| i.definition(d)).expect("a definition with code");
+        self.float_in(&ir)
+    }
+
+    fn inliner<T>(&mut self, f: impl FnOnce(&mut crate::native::inline::Inliner) -> T) -> T {
         let p = &mut *self.p;
         let specs = p.specs.borrow();
         let origin = |d: u32| specs.origin(d);
-        let ir = crate::native::inline::Inliner { code: &p.code, recursive: &mut p.recursive, origin: &origin }.program(ir, owner);
-        let defs = &p.defs;
+        f(&mut crate::native::inline::Inliner { code: &p.code, recursive: &mut p.recursive, done: &mut p.inlined, origin: &origin })
+    }
+
+    fn float_in(&self, ir: &Ir) -> Ir {
+        let defs = &self.p.defs;
         let pure_call = |d: DefId, n: usize| {
             matches!(defs.get(&d.0), Some(DefShape::Builtin { sym, keep, .. }) if keep.len() == n && checkers_rt::builtins::PURE.contains(sym))
         };
-        crate::native::inline::float_in(&ir, &pure_call)
+        crate::native::inline::float_in(ir, &pure_call)
     }
 
     fn fresh(&mut self) -> V {
@@ -545,7 +589,10 @@ impl Lowerer<'_, '_> {
     fn expr(&mut self, ir: &Ir, ctx: &mut Vec<V>, tail: bool) -> E {
         match ir {
             Ir::Var(i) => E::Var(ctx[ctx.len() - 1 - i]),
-            Ir::Global(d) => E::Global(d.0),
+            Ir::Global(d) => {
+                self.shape(d.0);
+                E::Global(d.0)
+            }
             Ir::Erased => E::Erased,
             Ir::Lit(v) => Self::lit(v),
             Ir::Fail(m) => E::Fail(m),
@@ -685,7 +732,7 @@ impl Lowerer<'_, '_> {
 
     fn call(&mut self, h: &Ir, args: &[Arc<Ir>], ctx: &mut Vec<V>, tail: bool) -> E {
         if let Ir::Global(d) = h {
-            match self.p.defs.get(&d.0).cloned() {
+            match self.shape(d.0) {
                 Some(DefShape::Fn { func, arity }) if args.len() >= arity => {
                     let es: Vec<E> = args[..arity].iter().map(|a| self.expr(a, ctx, false)).collect();
                     let rest: Vec<E> = args[arity..].iter().map(|a| self.expr(a, ctx, false)).collect();

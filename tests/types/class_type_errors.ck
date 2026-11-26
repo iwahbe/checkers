@@ -26,10 +26,9 @@ instance Display Int
     fn display x os
         debug x
 
-# A type with no default, and a default mentioning the class's parameter.
+# A type with no default.
 class Sized a
     type Unit
-    type Wrapped = List a
     fn size x -> n : x~a, n~Int
 
 instance Sized Int

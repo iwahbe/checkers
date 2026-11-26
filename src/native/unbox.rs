@@ -21,7 +21,10 @@
 //!   `f.parts`, which returns the parts. Functions calling each other in
 //!   tail position share one layout. `f` itself calls `f.parts` and builds
 //!   the value from them, for the callers that need it as a value
-//!   (closures, other functions' tail calls).
+//!   (closures, other functions' tail calls). A caller's `let` taking
+//!   apart both values it builds and such functions' results (`match`
+//!   on an inlined function that tail-calls one) gives those functions a
+//!   layout with room for the values built there.
 //! - **Callers**: `let x = e` where every value `e` can give is built there
 //!   or returned as parts by a call, and the code after it only takes `x`
 //!   apart (`match x`, a field, a tuple's components), binds the parts to
@@ -602,14 +605,57 @@ pub fn program(p: &mut Program, from: usize) {
             }
         }
     }
-    let mut shapes: HashMap<usize, Shape> = HashMap::new();
-    for k in 0..n {
-        if let (true, Ends::Built(s, _)) = (can[k], &info[k]) {
-            let r = find(&mut up, k);
+    let class_shapes = |up: &mut [usize], extra: &[(usize, Shape)]| {
+        let mut shapes: HashMap<usize, Shape> = HashMap::new();
+        let built = (0..n).filter_map(|k| match (can[k], &info[k]) {
+            (true, Ends::Built(s, _)) => Some((k, s)),
+            _ => None,
+        });
+        for (k, s) in built.chain(extra.iter().map(|(k, s)| (*k, s))) {
+            let r = find(up, k);
             let old = shapes.remove(&r).unwrap_or(Shape::Bottom);
             shapes.insert(r, old.join(s.clone()));
         }
+        shapes
+    };
+    // A caller's `let` taking apart what such functions return and values
+    // it builds itself: those functions share a layout that has room for
+    // the values built there.
+    let mut extra: Vec<(usize, Shape)> = Vec::new();
+    {
+        let shapes = class_shapes(&mut up, &[]);
+        let mut joins: Vec<(Vec<usize>, Shape)> = Vec::new();
+        for f in &p.funcs[from..end] {
+            lets(&f.body, &mut |x, a, b| {
+                let (mut ks, mut built, mut ok) = (Vec::new(), Shape::Bottom, true);
+                leaves(a, &mut |l| match l {
+                    E::Call { f, .. } if local(*f) && can[*f as usize - from] => ks.push(*f as usize - from),
+                    E::Fail(_) => {}
+                    E::Con { .. } | E::Tuple(_) | E::Static(_) => built = std::mem::replace(&mut built, Shape::Bottom).join(value_shape(l)),
+                    _ => ok = false,
+                });
+                if !ok || ks.is_empty() || built == Shape::Bottom {
+                    return;
+                }
+                let mut s = built.clone();
+                for k in &ks {
+                    let mut u = up.clone();
+                    s = s.join(shapes.get(&find(&mut u, *k)).cloned().unwrap_or(Shape::Bottom));
+                }
+                if s.fit(max).is_some_and(|s| taken_apart(x, &s, b)) {
+                    joins.push((ks, built));
+                }
+            });
+        }
+        for (ks, built) in joins {
+            for k in &ks[1..] {
+                let (a, b) = (find(&mut up, *k), find(&mut up, ks[0]));
+                up[a] = b;
+            }
+            extra.push((ks[0], built));
+        }
     }
+    let shapes = class_shapes(&mut up, &extra);
     let shapes: HashMap<usize, Shape> = shapes.into_iter().filter_map(|(r, s)| s.fit(max).map(|s| (r, s))).collect();
     // The candidates, as if each returned parts; those some caller takes
     // apart are kept.
@@ -669,6 +715,14 @@ pub fn program(p: &mut Program, from: usize) {
         let call = E::Call { f: w, args: f.params.iter().map(|v| E::Var(*v)).collect(), tail: false };
         f.body = E::LetMulti(vs.clone(), Box::new(call), Box::new(rebox(&s, &vs)));
     }
+}
+
+/// Each `let x = a in b` in `e`.
+fn lets(e: &E, f: &mut dyn FnMut(V, &E, &E)) {
+    if let E::Let(x, a, b) = e {
+        f(*x, a, b);
+    }
+    visit_children(e, &mut |c| lets(c, f));
 }
 
 /// Calls of candidates whose values `e`'s `let`s take apart.

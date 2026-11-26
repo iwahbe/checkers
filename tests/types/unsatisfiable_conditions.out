@@ -1,0 +1,92 @@
+error[E0457]: no `x` meets `by_bounds`'s preconditions
+ --> unsatisfiable_conditions.ck:8:4
+  |
+8 | fn by_bounds x : x~Int, x < 3, x > 5
+  |    ^^^^^^^^^ `x < 3` and `x > 5` can't both hold
+  = help: a call of `by_bounds` could never be made; remove or correct one of them
+
+error[E0457]: no `x` meets `by_false`'s preconditions
+  --> unsatisfiable_conditions.ck:11:4
+   |
+11 | fn by_false x : x~Int, False
+   |    ^^^^^^^^ `False` can never hold
+   = help: a call of `by_false` could never be made; remove or correct it
+
+error[E0457]: no arguments meet `by_order`'s preconditions
+  --> unsatisfiable_conditions.ck:14:4
+   |
+14 | fn by_order x y : x~Int, y~Int, x < y, y < x
+   |    ^^^^^^^^ `x < y` and `y < x` can't both hold
+   = help: a call of `by_order` could never be made; remove or correct one of them
+
+error[E0457]: no `x` meets `by_type`'s preconditions
+  --> unsatisfiable_conditions.ck:17:4
+   |
+17 | fn by_type x : x~Nat, x < 0
+   |    ^^^^^^^ `x < 0` can't hold for values of these types
+   = help: a call of `by_type` could never be made; remove or correct it
+
+error[E0457]: no `x` meets `by_alias`'s preconditions
+  --> unsatisfiable_conditions.ck:22:4
+   |
+22 | fn by_alias x : x~Pos, x < 0
+   |    ^^^^^^^^ `x < 0` can't hold for values of these types
+   = help: a call of `by_alias` could never be made; remove or correct it
+
+error[E0457]: no `x` meets `by_lemma`'s preconditions
+  --> unsatisfiable_conditions.ck:25:7
+   |
+25 | lemma by_lemma x : x~Int, x > 0, x < 0
+   |       ^^^^^^^^ `x > 0` and `x < 0` can't both hold
+   = help: `by_lemma` could never be used; remove or correct one of them
+
+error[E0457]: no arguments meet the conditions on `ByParams`'s parameters
+  --> unsatisfiable_conditions.ck:28:8
+   |
+28 | record ByParams lo hi : lo~Int, hi~Int, lo > hi, hi > lo
+   |        ^^^^^^^^ `lo > hi` and `hi > lo` can't both hold
+   = help: `ByParams` could never be applied; remove or correct one of them
+
+error[E0457]: no fields meet `ByFields`'s invariants
+  --> unsatisfiable_conditions.ck:31:8
+   |
+31 | record ByFields
+   |        ^^^^^^^^ `value < 0` and `value > 0` can't both hold
+   = help: `ByFields` could never be built; remove or correct one of them
+
+error[E0457]: no fields meet `Never`'s invariants
+  --> unsatisfiable_conditions.ck:35:5
+   |
+35 |     Never x : x~Int, x > 1, x < 1
+   |     ^^^^^ `x > 1` and `x < 1` can't both hold
+   = help: `Never` could never be built; remove or correct one of them
+
+error[E0457]: no `n` meets `ByAlias`'s predicates
+  --> unsatisfiable_conditions.ck:38:6
+   |
+38 | type ByAlias = n~Int, n < 0, n > 0
+   |      ^^^^^^^ `n < 0` and `n > 0` can't both hold
+   = help: `ByAlias` has no values; remove or correct one of them
+
+error[E0457]: no `x` meets `by_member`'s preconditions
+  --> unsatisfiable_conditions.ck:41:8
+   |
+41 |     fn by_member x -> r : x~a, 1 > 2, r~Bool
+   |        ^^^^^^^^^ `1 > 2` can never hold
+   = help: a call of `by_member` could never be made; remove or correct it
+
+error[E0457]: no `u` meets the predicates on `ByClassType.Unit`
+  --> unsatisfiable_conditions.ck:44:10
+   |
+44 |     type Unit : u~Unit, code s u < 0
+   |          ^^^^ `code s u < 0` can't hold for values of these types
+   = help: no instance could give `ByClassType.Unit` a type; remove or correct it
+
+error[E0457]: no arguments meet the conditions on `ByBoth`'s parameters
+  --> unsatisfiable_conditions.ck:52:8
+   |
+52 | record ByBoth lo : lo~Int, lo < 0, lo > 0
+   |        ^^^^^^ `lo < 0` and `lo > 0` can't both hold
+   = help: `ByBoth` could never be applied; remove or correct one of them
+
+unsatisfiable_conditions.ck: 13 errors, 0 warnings

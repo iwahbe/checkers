@@ -727,7 +727,7 @@ fn advance src ln count columns -> r : src~Bytes, ln~Ln, count~Nat, columns~Bool
             let to_tab = 4 - ln.column % 4
             if columns
                 let in_tab = to_tab > count
-                let step = math.min count to_tab
+                let step = math.min to_tab count
                 let off = if in_tab then ln.offset else ln.offset + 1
                 advance src (with_offset ln off (ln.column + step) in_tab) (count - step) columns
             else
