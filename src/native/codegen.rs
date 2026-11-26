@@ -41,6 +41,7 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("ck_ne", 3, true),
     ("ck_concat", 2, true),
     ("ck_concat_own", 2, true),
+    ("ck_concat_all", 2, true),
     ("ck_len", 1, true),
     ("ck_index", 3, true),
     ("ck_big_lit", 2, true),
@@ -1401,6 +1402,7 @@ impl<'p, M: Module> Gen<'p, M> {
                 b.ins().iconst(I64, w::UNIT as i64)
             }
             BOp::Builtin(sym) => self.call_array(b, st, sym, a),
+            BOp::ConcatAll => self.call1(b, st, "ck_concat_all", &[a[0], a[1]]),
             BOp::Prim(p, nat) => self.prim(b, st, p, nat, a, &[]),
         }
     }

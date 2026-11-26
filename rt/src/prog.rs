@@ -334,6 +334,19 @@ pub fn list_onto(items: Vec<W>, tail: W) -> W {
     items.into_iter().rev().fold(tail, |l, v| new_con(cons, &[v, l]))
 }
 
+/// A copy of the list `l` (borrowed) in front of the owned list `tail`;
+/// `buf` holds `l`'s items meanwhile, and is left empty.
+pub fn copy_onto(l: W, tail: W, buf: &mut Vec<W>) -> W {
+    let k = &prog().known;
+    let mut w = l;
+    while con_of(w) == k.cons {
+        buf.push(field(w, 0));
+        w = field(w, 1);
+    }
+    let cons = known_con(k.cons);
+    buf.drain(..).rev().fold(tail, |t, x| new_con(cons, &[dup(x), t]))
+}
+
 /// The items of a list (borrowed).
 pub fn list_items(mut w: W) -> Vec<W> {
     let k = &prog().known;

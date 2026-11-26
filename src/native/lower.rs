@@ -130,6 +130,10 @@ pub enum BOp {
     /// integer word) of a new constructor cell whose field `i` is empty;
     /// `()`. Only the code `tailrec` writes fills a cell this way.
     SetField,
+    /// `[x, pieces]`: `x ++ p1 ++ … ++ pk` for the list `pieces` of
+    /// `[p1, …, pk]`, each element copied once (`ck_concat_all`). Only the
+    /// code `tailrec` writes appends this way.
+    ConcatAll,
 }
 
 #[derive(Clone)]

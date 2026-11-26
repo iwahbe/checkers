@@ -295,6 +295,23 @@ pub extern "C" fn ck_concat_own(a: W, b: W) -> W {
     concat_own(a, b)
 }
 
+/// `base ++ p1 ++ … ++ pk` for the list `pieces` = `[p1, …, pk]`, all
+/// borrowed, in time proportional to the result: a string, bytes or array
+/// is one new value, each element copied once; a list is built from the
+/// right, each piece copied once but the last, which is shared. This is how
+/// recursion made tail recursion appends (`f.acc`, §14).
+#[no_mangle]
+pub extern "C" fn ck_concat_all(base: W, pieces: W) -> W {
+    let mut parts = vec![base];
+    parts.extend(list_items(pieces));
+    if crate::array::is_array(base) {
+        return crate::array::concat_all(&parts);
+    }
+    let mut buf = Vec::new();
+    let last = dup(parts.pop().unwrap());
+    parts.iter().rev().fold(last, |tail, p| copy_onto(*p, tail, &mut buf))
+}
+
 #[inline(never)]
 fn concat_own(a: W, b: W) -> W {
     if crate::array::is_array(a) {

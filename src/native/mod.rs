@@ -170,7 +170,8 @@ pub fn host_return_words() -> usize {
 pub(crate) fn rc_new(g: &Globals, p: &mut lower::Program) {
     let fields_of = |c: u32| g.cons[c as usize].fields.len();
     let from = p.rc_done;
-    tailrec::program(&mut p.funcs, from);
+    let lists = g.well_known.nil.zip(g.well_known.cons).map(|(nil, cons)| tailrec::Lists { nil: nil.0, cons: cons.0 });
+    tailrec::program(&mut p.funcs, from, lists);
     unbox::program(p, from);
     for f in &mut p.funcs[from..] {
         f.body = rc::forward_aliases(std::mem::replace(&mut f.body, lower::E::Erased));

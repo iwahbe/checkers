@@ -355,6 +355,31 @@ pub fn concat(a: W, b: W) -> W {
     from_items(la.join(lb), v)
 }
 
+/// `parts[0] ++ parts[1] ++ …` (each borrowed): one new array, each element
+/// copied once, laid out to hold them all. An empty part adds nothing; with
+/// one part not empty, the result is that part.
+pub fn concat_all(parts: &[W]) -> W {
+    let full: Vec<W> = parts.iter().copied().filter(|p| len(*p) > 0).collect();
+    match full[..] {
+        [] => return dup(parts[0]),
+        [p] => return dup(p),
+        _ => {}
+    }
+    let l = full.iter().map(|p| layout(*p)).reduce(Layout::join).unwrap();
+    let n = full.iter().map(|p| len(*p)).sum();
+    if l != Words && full.iter().all(|p| layout(*p) == l) {
+        let (w, r) = (l.width(), alloc_array(l, n));
+        let mut at = 0;
+        for &p in &full {
+            unsafe { std::ptr::copy_nonoverlapping(data(p), data(r).add(at * w), len(p) * w) };
+            at += len(p);
+        }
+        return r;
+    }
+    let mut items = full.iter().flat_map(|p| (0..len(*p)).map(move |i| get(*p, i)));
+    build(l, n, |_| items.next().unwrap())
+}
+
 /// `a ++ b`, `a` owned and `b` borrowed: when `a` is the only reference to
 /// its storage (not a slice, not `b`) and `b` has its layout, `b`'s elements
 /// are written after `a`'s in place, its memory grown if they don't fit;
