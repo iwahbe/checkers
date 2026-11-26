@@ -39,12 +39,15 @@ fn closure c sched -> r : c~Cown Nat, sched~Sched, r~Unit
 
 # What a postcondition promises is known.
 fn other c sched -> r : c~Cown Nat, sched~Sched, r~Cown Nat, r != c
-    let d = cown.new 0 sched
-    d
+    cown.new 0 sched
 
 fn promised c sched -> r : c~Cown Nat, sched~Sched, r~Unit
     let d = other c sched
     exchange c d sched
+
+# A call written anywhere, not only named by `let`.
+fn nested c sched -> r : c~Cown Nat, sched~Sched, r~Unit
+    exchange c (make sched) sched
 
 # Cowns inside a call's result are new too.
 fn make_two sched -> r : sched~Sched, r~(Cown Nat, Cown Nat)
