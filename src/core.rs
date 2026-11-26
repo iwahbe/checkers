@@ -1734,7 +1734,9 @@ pub enum Marked {
     /// A local of the context, one of several of its name there: its
     /// level, where it is bound, and, if a later local of its name hides
     /// it, where that one is bound.
-    Var { level: u32, at: Option<u32>, hidden_by: Option<Option<u32>> },
+    /// `avoid` has bit `k - 1` set when a local of the context is named
+    /// this name followed by `k` (`a1`): a number to show it by isn't one.
+    Var { level: u32, at: Option<u32>, hidden_by: Option<Option<u32>>, avoid: u64 },
 }
 
 fn global(m: Marked, name: &str) -> String {
@@ -1745,11 +1747,11 @@ fn global(m: Marked, name: &str) -> String {
         Marked::Def(d) => format!("d{}", d.0),
         Marked::Ty(t) => format!("t{}", t.0),
         Marked::Con(c) => format!("c{}", c.0),
-        Marked::Var { level, at, hidden_by } => {
+        Marked::Var { level, at, hidden_by, avoid } => {
             let pos = |a: Option<u32>| a.map_or("-".to_string(), |a| a.to_string());
             match hidden_by {
-                Some(by) => format!("v{level}.{}.h{}", pos(at), pos(by)),
-                None => format!("v{level}.{}.s", pos(at)),
+                Some(by) => format!("v{level}.{}.h{}.{avoid}", pos(at), pos(by)),
+                None => format!("v{level}.{}.s.{avoid}", pos(at)),
             }
         }
     };
@@ -1769,7 +1771,13 @@ fn local(level: usize, name: &Name) -> String {
             return name.to_string();
         }
         let hidden_by = ls[level + 1..].iter().rev().find(|l| same(l)).map(|l| l.1);
-        global(Marked::Var { level: level as u32, at: ls[level].1, hidden_by }, name)
+        let mut avoid = 0u64;
+        for l in ls.iter() {
+            if let Some(k) = l.0.strip_prefix(&**name).and_then(|k| k.parse::<u32>().ok()).filter(|k| (1..=64).contains(k)) {
+                avoid |= 1 << (k - 1);
+            }
+        }
+        global(Marked::Var { level: level as u32, at: ls[level].1, hidden_by, avoid }, name)
     })
 }
 
@@ -1833,7 +1841,8 @@ pub fn unmark(s: &str, name: &mut dyn FnMut(Marked, &str) -> String) -> String {
                         "s" => None,
                         h => Some(pos(h.strip_prefix('h')?)?),
                     };
-                    Marked::Var { level, at, hidden_by }
+                    let avoid = p.next()?.parse().ok()?;
+                    Marked::Var { level, at, hidden_by, avoid }
                 }
                 _ => return None,
             };

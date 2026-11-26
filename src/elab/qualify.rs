@@ -149,12 +149,13 @@ impl Elab {
         for (name, levels) in vars {
             // Innermost first: the lowest number for the nearest.
             for m in levels.values().rev() {
-                let Marked::Var { at, hidden_by: Some(by), .. } = *m else {
+                let Marked::Var { at, hidden_by: Some(by), avoid, .. } = *m else {
                     shown.insert(*m, name.clone());
                     continue;
                 };
+                // Not a name in the texts, nor a local in scope there.
                 let mut k = 1;
-                while taken.contains(&format!("{name}{k}")) {
+                while taken.contains(&format!("{name}{k}")) || (k <= 64 && avoid & (1 << (k - 1)) != 0) {
                     k += 1;
                 }
                 let renamed = format!("{name}{k}");
