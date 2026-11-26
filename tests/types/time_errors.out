@@ -15,6 +15,6 @@ error[E0204]: unknown name `Reading`
    |
 16 |     Reading 5
    |     ^^^^^^^ not found
-   = help: `std.time` declares `Reading` but doesn't export it; mark it `export` there to use it here
+   = note: `Instant` is abstract: its values come only from `std.time`'s functions
 
 time_errors.ck: 3 errors, 0 warnings

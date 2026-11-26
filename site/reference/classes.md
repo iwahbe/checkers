@@ -187,7 +187,7 @@ check doubled (Some 5) == Some 10
 
 ## A class's types
 
-A class may let each instance choose a type. `type Name` declares one; inside the class, its members use it by its bare name, anywhere a type may appear, a precondition included. `type Name = T` gives it a default, used by every instance that doesn't give its own; a default can't mention the class's parameter (E0288), so it is the same type wherever it applies. A class's type takes no parameters of its own (E0124).
+A class may let each instance choose a type. `type Name` declares one; inside the class, its members use it by its bare name, anywhere a type may appear, a precondition included. `type Name = T` gives it a default, used by every instance that doesn't give its own. A default may use the class's parameter, which is then each instance's type: with `type Items = List a`, an instance for `Int` that doesn't give `Items` has `List Int`. Generic code doesn't see a default, since an instance may give another type. A class's type takes no parameters of its own (E0124).
 
 ```checkers
 import std.string (debug)

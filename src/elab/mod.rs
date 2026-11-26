@@ -13,7 +13,7 @@ mod descr;
 mod eq;
 mod interval;
 pub mod index;
-mod order;
+pub(crate) mod order;
 mod pattern;
 pub use pattern::BINDING_HELP;
 mod refine;
@@ -353,6 +353,36 @@ pub enum ObKind {
     Uncovered { case: String, binding: bool },
 }
 
+/// Conditions asked whether they can all hold (E0457): a declaration's
+/// preconditions, a type's conditions on its parameters, a constructor's
+/// invariants, an alias's predicates. `ob` proves `false` from them, an
+/// error when it is proved.
+#[derive(Clone)]
+pub struct Vacuity {
+    pub ob: Obligation,
+    pub kind: VacuityKind,
+    /// The declaration's name, and where it is written.
+    pub name: String,
+    pub at: Span,
+    /// Each fact of `ob` that is one of the conditions, as written.
+    pub conds: Vec<Option<String>>,
+    /// A constructor's type, by its name's span: not reported when the
+    /// type's conditions are.
+    pub within: Option<Span>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum VacuityKind {
+    /// A function's or lemma's preconditions; its explicit parameters.
+    Pre { params: Vec<String>, lemma: bool },
+    TypeParams,
+    Fields,
+    /// A type alias's predicates on the name it binds.
+    Alias { subject: String },
+    /// The predicates on a class's type (`type Unit : u~Unit, u < 256`).
+    ClassType { subject: String },
+}
+
 /// Where a branch was entered, asked whether it can be reached (D144 d).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProbeKind {
@@ -581,6 +611,10 @@ pub struct Elab {
     pub obligations: Vec<Obligation>,
     /// Branches to ask about (D144 d).
     pub probes: Vec<Probe>,
+    pub vacuities: Vec<Vacuity>,
+    /// The declaration the next `signature` is for, to ask whether its
+    /// preconditions can hold (E0457).
+    pub sig_vacuity: Option<(VacuityKind, String, Span)>,
     /// The module checked, whose exported `main` is the program's (D31).
     pub root: Option<String>,
     /// References between declarations, for unused code (D144).
@@ -889,6 +923,8 @@ impl Elab {
             module_fns: Vec::new(),
             obligations: Vec::new(),
             probes: Vec::new(),
+            vacuities: Vec::new(),
+            sig_vacuity: None,
             root: None,
             refs: Vec::new(),
             observed: Vec::new(),
@@ -1883,6 +1919,18 @@ impl Elab {
         self.in_spec == 0 && !self.stdlib_mode && self.completing.is_none() && span.start < SYNTHETIC && span.end > span.start
     }
 
+    /// Ask, in the proofs phase, whether the conditions in `cx`'s facts can
+    /// all hold (E0457). `conds`: the text of each fact that is one of the
+    /// declaration's conditions, by its index; nothing is asked without one.
+    pub fn ask_vacuity(&mut self, cx: &Cx, kind: VacuityKind, name: &str, at: Span, conds: Vec<Option<String>>, within: Option<Span>) {
+        if conds.iter().all(|c| c.is_none()) || self.completing.is_some() {
+            return;
+        }
+        let f = self.false_val();
+        let ob = self.obligation(cx, at, ObKind::Have, String::new(), f, None);
+        self.vacuities.push(Vacuity { ob, kind, name: name.to_string(), at, conds, within });
+    }
+
     /// Ask, in the proofs phase, whether the branch entered here can run.
     pub fn probe(&mut self, cx: &Cx, span: Span, kind: ProbeKind, region: Span, before: usize) {
         if !self.probing(span) || cx.facts.is_empty() || !self.may_contradict(cx, before) {
@@ -1929,7 +1977,7 @@ impl Elab {
     /// `False`, as a value.
     pub fn false_val(&self) -> Val {
         match self.g.well_known.false_con {
-            Some(c) => Val::Con(c, vec![]),
+            Some(c) => Val::Con(c, vec![].into()),
             None => Val::Error,
         }
     }
@@ -2080,7 +2128,7 @@ impl Elab {
     pub fn bool_val(&self, b: bool) -> Val {
         let c = if b { self.g.well_known.true_con } else { self.g.well_known.false_con };
         match c {
-            Some(c) => Val::Con(c, Vec::new()),
+            Some(c) => Val::Con(c, Rc::new([])),
             None => Val::Error,
         }
     }
@@ -2208,7 +2256,7 @@ impl Elab {
 
     pub fn ty_val(&self, t: Option<TyId>, args: Vec<Val>) -> Val {
         match t {
-            Some(t) => Val::TyCon(t, args),
+            Some(t) => Val::TyCon(t, args.into()),
             None => Val::Error,
         }
     }
@@ -2255,7 +2303,7 @@ impl Elab {
         self.ty_val(self.g.well_known.array, vec![elem])
     }
     pub fn unit(&self) -> Val {
-        Val::TupleTy(vec![])
+        Val::TupleTy(vec![].into())
     }
 
     /// The module of an abstract type declared in another module: its

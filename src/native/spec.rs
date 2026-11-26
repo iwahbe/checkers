@@ -10,8 +10,9 @@
 //! proofs) are put into the copy too, so that a dictionary built from them
 //! inside it has no variables either.
 //!
-//! The copy keeps every parameter, so a call passes the same arguments in
-//! the same order; those put into the copy are passed as nothing. Building
+//! The copy doesn't take the parameters put into it (unless it uses one as
+//! a value, `keeps`, or that would leave it none), and a call doesn't pass
+//! them: a type or a dictionary put in costs nothing at run time. Building
 //! a dictionary computes nothing but the dictionary, so the copy gives
 //! exactly the results, failures and effects of the call it replaces. A
 //! runtime error in it names the function it copies.
@@ -135,11 +136,13 @@ fn closed_dict(g: &Globals, t: &Tm) -> bool {
 }
 
 /// A call's copy: the copy, which arguments it has put in (passed as
-/// nothing), and the variables of the functions put in, passed to it as
-/// parameters of their own after the first `at` arguments.
+/// nothing), which of those it doesn't take (not passed), and the
+/// variables of the functions put in, passed to it as parameters of their
+/// own after the first `at` arguments.
 pub struct Spec {
     pub id: DefId,
     pub put: Vec<bool>,
+    pub gone: Vec<bool>,
     pub at: usize,
     pub caps: Vec<usize>,
 }
@@ -335,6 +338,14 @@ pub fn specialize(g: &Globals, cx: SpecCx, owner: Option<DefId>, f: DefId, args:
     for p in pick.iter_mut().flatten() {
         *p = crate::core::rename_free(p, 0, &|v| m - 1 - caps.iter().position(|c| *c == v).unwrap_or(0));
     }
+    // The copy doesn't take the parameters put into it (not kept), and the
+    // call doesn't pass them; unless that would leave it no parameters,
+    // which would make it a constant.
+    let put: Vec<bool> = pick.iter().zip(&kept).map(|(p, kept)| p.is_some() && !kept).collect();
+    let mut gone = put.clone();
+    if m == 0 && n == k && gone.iter().all(|p| *p) {
+        gone[k - 1] = false;
+    }
     let key = format!("{}|{}|{:?}", f.0, m, pick);
     let mut t = cx.table.borrow_mut();
     let id = match t.memo.get(&key) {
@@ -345,12 +356,12 @@ pub fn specialize(g: &Globals, cx: SpecCx, owner: Option<DefId>, f: DefId, args:
             }
             let id = t.base + t.copies.len() as u32;
             let picked: Vec<Option<&Tm>> = pick.iter().map(Option::as_ref).collect();
-            t.copies.push(Copy { of: f, body: put_in(&body, &picked, &kept, m, 0), depth: cx.depth + 1 });
+            t.copies.push(Copy { of: f, body: put_in(&body, &picked, &kept, &gone, m), depth: cx.depth + 1 });
             t.memo.insert(key, id);
             id
         }
     };
-    Some(Spec { id: DefId(id), put: pick.iter().zip(&kept).map(|(p, kept)| p.is_some() && !kept).collect(), at: k, caps })
+    Some(Spec { id: DefId(id), put, gone, at: k, caps })
 }
 
 /// Whether parameter `j` of `f`, given a known function, is used as a
@@ -470,26 +481,45 @@ fn used_as_value(g: &Globals, staged: Option<&crate::stage::Staged>, t: &Tm, v: 
     }
 }
 
-/// `t`, a function's body from its `i`th parameter on, with the picked
-/// parameters replaced by their arguments, and `m` parameters for those
-/// arguments' variables after them. The parameters stay.
-fn put_in(t: &Tm, pick: &[Option<&Tm>], kept: &[bool], m: usize, i: usize) -> Tm {
-    match t {
-        Tm::Lam(x, mu, ic, b) if i < pick.len() => Tm::Lam(x.clone(), *mu, *ic, Rc::new(put_in(b, pick, kept, m, i + 1))),
-        _ => (0..m).fold(replace(t, pick, kept, m, 0), |b, _| Tm::Lam("cap".into(), Mult::Many, crate::core::Icit::Expl, Rc::new(b))),
+/// `t`, a function's body, with its first `pick.len()` parameters' lambdas
+/// left out where `put`, the picked parameters replaced by their
+/// arguments, and `m` parameters for those arguments' variables after the
+/// first parameters.
+fn put_in(t: &Tm, pick: &[Option<&Tm>], kept: &[bool], put: &[bool], m: usize) -> Tm {
+    let mut lams = Vec::new();
+    let mut b = t;
+    for _ in 0..pick.len() {
+        let Tm::Lam(x, mu, ic, x_b) = b else { unreachable!("a copy is made for parameters the function takes") };
+        lams.push((x.clone(), *mu, *ic));
+        b = x_b;
     }
+    // Where each of the first parameters is among those the copy takes.
+    let mut at = Vec::new();
+    let mut r = 0;
+    for p in put {
+        at.push((!p).then_some(r));
+        r += usize::from(!p);
+    }
+    let body = (0..m).fold(replace(b, pick, kept, &at, r, m, 0), |b, _| Tm::Lam("cap".into(), Mult::Many, crate::core::Icit::Expl, Rc::new(b)));
+    lams.into_iter().zip(put).rev().fold(body, |b, ((x, mu, ic), p)| if *p { b } else { Tm::Lam(x, mu, ic, Rc::new(b)) })
 }
 
 /// A kept parameter stays, marked as bound to its function (`known`).
-fn replace(t: &Tm, pick: &[Option<&Tm>], kept: &[bool], m: usize, depth: usize) -> Tm {
+/// Parameter `j` the copy takes is its `at[j]`th of `r`, before the `m`
+/// parameters for the variables.
+fn replace(t: &Tm, pick: &[Option<&Tm>], kept: &[bool], at: &[Option<usize>], r: usize, m: usize, depth: usize) -> Tm {
     let k = pick.len();
     match t {
-        Tm::Var(v) if *v >= depth && v - depth < k => match pick[k - 1 - (v - depth)] {
-            Some(c) if kept[k - 1 - (v - depth)] => known(Tm::Var(v + m), crate::core::rename_free(c, 0, &|x| x + depth)),
-            Some(c) => crate::core::rename_free(c, 0, &|x| x + depth),
-            None => Tm::Var(v + m),
-        },
-        Tm::Var(v) if *v >= depth => Tm::Var(v + m),
-        _ => t.map_sub(|x, n| replace(x, pick, kept, m, depth + n)),
+        Tm::Var(v) if *v >= depth && v - depth < k => {
+            let j = k - 1 - (v - depth);
+            let var = || Tm::Var(depth + m + r - 1 - at[j].expect("a parameter the copy uses is one it takes"));
+            match pick[j] {
+                Some(c) if kept[j] => known(var(), crate::core::rename_free(c, 0, &|x| x + depth)),
+                Some(c) => crate::core::rename_free(c, 0, &|x| x + depth),
+                None => var(),
+            }
+        }
+        Tm::Var(v) if *v >= depth => Tm::Var(v - k + r + m),
+        _ => t.map_sub(|x, n| replace(x, pick, kept, at, r, m, depth + n)),
     }
 }

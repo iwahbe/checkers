@@ -1,0 +1,65 @@
+error[E0355]: `missing` is not a parameter of `Box`
+ --> stray_typing.ck:6:14
+  |
+6 | record Box : missing~UnknownA
+  |              ^^^^^^^
+  = help: constraints can only give types to names in the header
+
+error[E0204]: unknown name `UnknownA`
+ --> stray_typing.ck:6:22
+  |
+6 | record Box : missing~UnknownA
+  |                      ^^^^^^^^ not found
+
+error[E0355]: `missing` is not a parameter of `Choice`
+ --> stray_typing.ck:9:15
+  |
+9 | enum Choice : missing~UnknownB
+  |               ^^^^^^^
+  = help: constraints can only give types to names in the header
+
+error[E0204]: unknown name `UnknownB`
+ --> stray_typing.ck:9:23
+  |
+9 | enum Choice : missing~UnknownB
+  |                       ^^^^^^^^ not found
+
+error[E0355]: `missing` is not a parameter or the result
+  --> stray_typing.ck:12:25
+   |
+12 | fn walk x -> r : x~Int, missing~UnknownC, r~Int
+   |                         ^^^^^^^
+   = help: constraints can only give types to names in the header
+
+error[E0204]: unknown name `UnknownC`
+  --> stray_typing.ck:12:33
+   |
+12 | fn walk x -> r : x~Int, missing~UnknownC, r~Int
+   |                                 ^^^^^^^^ not found
+
+error[E0355]: `missing` is not a parameter
+  --> stray_typing.ck:15:26
+   |
+15 | lemma by_refl x : x~Int, missing~UnknownD
+   |                          ^^^^^^^
+   = help: constraints can only give types to names in the header
+
+error[E0204]: unknown name `UnknownD`
+  --> stray_typing.ck:15:34
+   |
+15 | lemma by_refl x : x~Int, missing~UnknownD
+   |                                  ^^^^^^^^ not found
+
+error[E0353]: `missing` is not a field of this constructor
+  --> stray_typing.ck:19:21
+   |
+19 |     Pair a : a~Int, missing~UnknownE
+   |                     ^^^^^^^
+
+error[E0204]: unknown name `UnknownE`
+  --> stray_typing.ck:19:29
+   |
+19 |     Pair a : a~Int, missing~UnknownE
+   |                             ^^^^^^^^ not found
+
+stray_typing.ck: 10 errors, 0 warnings
