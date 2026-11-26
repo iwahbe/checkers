@@ -135,7 +135,7 @@ impl Elab {
             Tm::PrimApp(Prim::Neg, a) => self.known_int(cx, a.first()?).and_then(|n| n.checked_neg()),
             Tm::PrimApp(..) | Tm::Lit(_) => None,
             // A `let` bound to a known value stands for it.
-            _ => match &*self.known_term(cx, cx.lvl(), t)? {
+            _ => match &*self.known_partly(cx, cx.lvl(), t)? {
                 Tm::Lit(Lit::Num(n)) => Some(*n),
                 _ => None,
             },
@@ -170,7 +170,7 @@ impl Elab {
         for m in undecided {
             let local = &cx.locals[m];
             let known = match &local.def {
-                Some(t) => self.known_term(cx, m, t),
+                Some(t) => self.known_partly(cx, m, t),
                 // A parameter, or a variable a `match` binds.
                 None if local.bound => None,
                 // Defined by a value alone.
@@ -186,7 +186,7 @@ impl Elab {
     /// it mentions replaced by what that is known to be, evaluated with the
     /// rest as variables. A value that depends on a runtime value is never
     /// looked into.
-    fn known_term(&self, cx: &Cx, depth: usize, t: &Tm) -> Option<Rc<Tm>> {
+    fn known_partly(&self, cx: &Cx, depth: usize, t: &Tm) -> Option<Rc<Tm>> {
         fn subst(t: &Tm, n: usize, f: &dyn Fn(usize, usize) -> Tm) -> Tm {
             match t {
                 Tm::Var(i) if *i >= n => f(i - n, n),

@@ -45,6 +45,16 @@ export fn by_lambda -> r : r~Int
     let d = c + 1
     d
 
+# A function of this module: known once it is proved, which it is on
+# demand.
+fn twice x -> r : x~Int, r~Int
+    x * 2
+
+export fn by_own -> r : r~Int
+    let c = twice 4
+    let d = c + 1
+    d
+
 # Computed from a parameter: not known.
 export fn by_param k -> r : k~Int, r~Int
     let c = k
