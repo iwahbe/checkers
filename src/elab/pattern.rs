@@ -17,6 +17,8 @@ pub struct Row<'a> {
     binds: Vec<(String, usize, Span)>,
     guard: Option<&'a Expr>,
     body: ArmBody<'a>,
+    /// The alternatives of the arm's `|` patterns this row takes.
+    alts: Vec<Span>,
 }
 
 enum Column {
@@ -59,6 +61,14 @@ pub struct PatState {
     uncovered: Vec<Obligation>,
     /// The arms some value reaches (the others are W021).
     reached: Vec<Span>,
+    /// Each row that reached its arm's body: the arm, and the alternatives
+    /// of its `|` patterns taken, in order of their spans.
+    reached_rows: Vec<(Span, Vec<Span>)>,
+    /// Checking rows no value reaches (`check_unreached`): there is no
+    /// case left out, and the body of an arm already checked is skipped.
+    unreached: bool,
+    /// Arms whose bodies have been checked.
+    bodies: Vec<Span>,
     /// The facts in scope before the `match`.
     facts_before: usize,
 }
@@ -125,6 +135,9 @@ impl Elab {
     /// A case the arms leave out (D144 e): an obligation that it can't
     /// occur here, or in a specification (no obligations) an error.
     fn uncovered(&mut self, cx: &Cx, item: String) {
+        if self.pm.unreached {
+            return;
+        }
         if self.in_spec > 0 || self.completing.is_some() {
             self.note_missing(item);
             return;
@@ -235,7 +248,7 @@ impl Elab {
                 _ => false,
             });
             if let (Some(locals), true) = (locals, all_tuple_pats) {
-                let rows = arms
+                let rows: Vec<Row> = arms
                     .into_iter()
                     .map(|(p, guard, body)| {
                         let p_span = p.span;
@@ -243,11 +256,13 @@ impl Elab {
                             PatKind::Tuple(ps) => locals.iter().copied().zip(ps).collect(),
                             _ => vec![],
                         };
-                        Row { pats, span: p_span, binds: vec![], guard, body }
+                        Row { pats, span: p_span, binds: vec![], guard, body, alts: vec![] }
                     })
                     .collect();
                 self.pm.roots = locals;
+                let arms: Vec<Row> = rows.clone();
                 let t = self.compile(cx, rows, &expected, tail);
+                self.check_unreached(cx, arms, &expected, tail);
                 return (t, expected);
             }
         }
@@ -266,18 +281,135 @@ impl Elab {
             let ty = cx.ty_of(occ);
             self.note_scrutinee(cx, &ty);
         }
-        let rows = arms
+        let rows: Vec<Row> = arms
             .into_iter()
-            .map(|(p, guard, body)| Row { span: p.span, pats: vec![(occ, p)], binds: vec![], guard, body })
+            .map(|(p, guard, body)| Row { span: p.span, pats: vec![(occ, p)], binds: vec![], guard, body, alts: vec![] })
             .collect();
         self.pm.roots = vec![occ];
+        let arms: Vec<Row> = rows.clone();
         let t = self.compile(cx, rows, &expected, tail);
+        self.check_unreached(cx, arms, &expected, tail);
         cx.truncate(start);
         let t = match wrap {
             Some((st, tyt)) => Tm::Let(Rc::from("$s"), Mult::Many, Rc::new(tyt), Rc::new(st), Rc::new(t)),
             None => t,
         };
         (t, expected)
+    }
+
+    /// Check the rows of `arms` that no value reached when the `match` was
+    /// compiled (an arm the arms above cover, an alternative of a `|`
+    /// pattern the others cover), each alone: its pattern against the type
+    /// of the value matched, its guard and body against theirs, as if it
+    /// were the only arm. No value reaches them, so the facts there are
+    /// `False`: what they would have to prove holds.
+    fn check_unreached<'a>(&mut self, cx: &mut Cx, arms: Vec<Row<'a>>, expected: &Val, tail: bool) {
+        let rows: Vec<Row<'a>> = arms
+            .into_iter()
+            .flat_map(Self::expand_all)
+            .filter(|r| {
+                let mut alts = r.alts.clone();
+                alts.sort_by_key(|a| a.start);
+                !self.pm.reached_rows.iter().any(|(s, a)| *s == r.span && *a == alts)
+            })
+            .collect();
+        if rows.is_empty() {
+            return;
+        }
+        let bad = self.pm.bad;
+        let facts = cx.facts.len();
+        // Code no value reaches never runs: termination doesn't see its
+        // calls or its uses of parameters (§5.3).
+        let (calls, measure_obs, rec_calls) = (self.calls.len(), self.measure_obs.len(), self.rec_calls.len());
+        let param_uses = self.param_uses.clone();
+        let f = self.false_val();
+        cx.assume(f);
+        self.pm.unreached = true;
+        for r in rows {
+            self.compile(cx, vec![r], expected, tail);
+        }
+        self.pm.unreached = false;
+        cx.facts.truncate(facts);
+        self.calls.truncate(calls);
+        self.measure_obs.truncate(measure_obs);
+        self.rec_calls.truncate(rec_calls);
+        self.param_uses = param_uses;
+        // Whether the arms cover every case was decided by the `match`.
+        self.pm.bad = bad;
+    }
+
+    /// Every row a row's `|` patterns make, at every depth.
+    fn expand_all<'a>(row: Row<'a>) -> Vec<Row<'a>> {
+        let pats: Vec<Pattern> = row.pats.iter().map(|(_, p)| p.clone()).collect();
+        Self::expand_seq(&pats)
+            .into_iter()
+            .map(|(ps, alts)| {
+                let mut r = row.clone();
+                r.pats = r.pats.iter().map(|(o, _)| *o).zip(ps).collect();
+                r.alts.extend(alts);
+                r
+            })
+            .collect()
+    }
+
+    /// Each choice of alternatives in `ps`: the patterns without `|`, and
+    /// the alternatives taken.
+    fn expand_seq(ps: &[Pattern]) -> Vec<(Vec<Pattern>, Vec<Span>)> {
+        let mut out: Vec<(Vec<Pattern>, Vec<Span>)> = vec![(vec![], vec![])];
+        for p in ps {
+            let mut next = Vec::new();
+            for (qs, alts) in &out {
+                for (q, more) in Self::expand_pat(p) {
+                    let mut qs = qs.clone();
+                    qs.push(q);
+                    let mut alts = alts.clone();
+                    alts.extend(more);
+                    next.push((qs, alts));
+                }
+            }
+            out = next;
+        }
+        out
+    }
+
+    fn expand_pat(p: &Pattern) -> Vec<(Pattern, Vec<Span>)> {
+        let span = p.span;
+        let with = |kind: PatKind| Pattern { kind, span };
+        match &p.kind {
+            PatKind::Or(alts) => alts
+                .iter()
+                .flat_map(|a| {
+                    Self::expand_pat(a).into_iter().map(move |(q, mut more)| {
+                        more.insert(0, a.span);
+                        (q, more)
+                    })
+                })
+                .collect(),
+            PatKind::Con(n, ps) => {
+                Self::expand_seq(ps).into_iter().map(|(qs, a)| (with(PatKind::Con(n.clone(), qs)), a)).collect()
+            }
+            PatKind::Tuple(ps) => Self::expand_seq(ps).into_iter().map(|(qs, a)| (with(PatKind::Tuple(qs)), a)).collect(),
+            PatKind::List(ps) => Self::expand_seq(ps).into_iter().map(|(qs, a)| (with(PatKind::List(qs)), a)).collect(),
+            PatKind::Cons(h, t) => Self::expand_seq(&[(**h).clone(), (**t).clone()])
+                .into_iter()
+                .map(|(mut qs, a)| {
+                    let t = qs.pop().unwrap();
+                    let h = qs.pop().unwrap();
+                    (with(PatKind::Cons(Box::new(h), Box::new(t))), a)
+                })
+                .collect(),
+            PatKind::Record(n, fs) => {
+                let ps: Vec<Pattern> = fs.iter().map(|(_, p)| p.clone()).collect();
+                Self::expand_seq(&ps)
+                    .into_iter()
+                    .map(|(qs, a)| {
+                        let fs = fs.iter().map(|(f, _)| f.clone()).zip(qs).collect();
+                        (with(PatKind::Record(n.clone(), fs)), a)
+                    })
+                    .collect()
+            }
+            _ => vec![(p.clone(), vec![])],
+        }
     }
 
     fn expand_or<'a>(row: Row<'a>) -> Vec<Row<'a>> {
@@ -287,6 +419,7 @@ impl Elab {
                 for a in alts {
                     let mut r = row.clone();
                     r.pats[i] = (*occ, a.clone());
+                    r.alts.push(a.span);
                     out.extend(Self::expand_or(r));
                 }
                 return out;
@@ -341,16 +474,30 @@ impl Elab {
 
     fn leaf(&mut self, cx: &mut Cx, rows: Vec<Row>, expected: &Val, tail: bool) -> Tm {
         let row = rows[0].clone();
-        if !self.pm.reached.contains(&row.span) {
-            self.pm.reached.push(row.span);
+        if self.pm.unreached {
+            // A row no value reaches: its pattern is checked; its guard and
+            // body once for the arm.
+            if self.pm.bodies.contains(&row.span) {
+                return Tm::Error;
+            }
+        } else {
+            if !self.pm.reached.contains(&row.span) {
+                self.pm.reached.push(row.span);
+            }
+            let mut alts = row.alts.clone();
+            alts.sort_by_key(|a| a.start);
+            self.pm.reached_rows.push((row.span, alts));
+            let region = match row.body {
+                ArmBody::Expr(e) => e.span,
+                ArmBody::Rest(_, r) => r.span,
+            };
+            let before = self.pm.facts_before;
+            self.probe(cx, row.span, ProbeKind::Arm, row.span.to(region), before);
+            self.check_dropped(cx, &row);
         }
-        let region = match row.body {
-            ArmBody::Expr(e) => e.span,
-            ArmBody::Rest(_, r) => r.span,
-        };
-        let before = self.pm.facts_before;
-        self.probe(cx, row.span, ProbeKind::Arm, row.span.to(region), before);
-        self.check_dropped(cx, &row);
+        if !self.pm.bodies.contains(&row.span) {
+            self.pm.bodies.push(row.span);
+        }
         let start = cx.lvl();
         let mut lets = Vec::new();
         for (name, occ, at) in &row.binds {
@@ -466,7 +613,7 @@ impl Elab {
 
     /// `let (x, fs) = op fs` where `fs` holds no resource: an operation on
     /// an authority (`Fs`, `Term`, …) returns only its result (D171).
-    fn authority_hint(&mut self, cx: &Cx, ps: &[Pattern], occ: usize) {
+    fn authority_hint(&mut self, cx: &Cx, pat: &Pattern, ps: &[Pattern], occ: usize) {
         let Some(PatKind::Var(name)) = ps.last().map(|p| &p.kind) else { return };
         let Some(l) = cx.lookup(name) else { return };
         if l >= occ || self.val_linear(&cx.locals[l].ty.clone()) {
@@ -477,7 +624,7 @@ impl Elab {
             _ => "x".into(),
         };
         if let Some((_, d)) = self.diags.last_mut() {
-            if d.code == "E0201" && d.help.is_none() {
+            if d.code == "E0201" && d.span == pat.span && d.help.is_none() {
                 d.help = Some(format!(
                     "`{name}` is not a resource, so an operation on it returns only its result: `let {first} = …`"
                 ));
@@ -515,7 +662,7 @@ impl Elab {
             Val::TupleTy(ts) if ts.len() == n => ts,
             // A tuple type with fewer parts than the pattern, ending in a
             // type that isn't a tuple: the pattern has too many parts.
-            Val::TupleTy(ts) if ts.len() < n && !matches!(self.force(&ts[ts.len() - 1]), Val::Neutral(..)) => {
+            Val::TupleTy(ts) if ts.len() < n && ts.last().is_some_and(|t| !matches!(self.force(t), Val::Neutral(..))) => {
                 let shown = self.show_val(cx, &Val::TupleTy(ts.clone()));
                 self.pat_err(
                     Diagnostic::error("E0246", format!("this pattern has {n} parts, but `{shown}` has {}", ts.len()), pat.span)
@@ -531,7 +678,7 @@ impl Elab {
                 let metas: Vec<Val> = (0..n).map(|_| self.fresh_meta_val(&outer)).collect();
                 let want = Val::TupleTy(metas.clone());
                 if !self.unify_at(cx, &other, &want, pat.span, "this pattern") {
-                    self.authority_hint(cx, ps, occ);
+                    self.authority_hint(cx, pat, ps, occ);
                     self.pm.bad = true;
                     return Tm::Error;
                 }

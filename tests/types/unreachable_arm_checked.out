@@ -1,0 +1,78 @@
+error[E0201]: type mismatch: expected `Int`, found `(_, _)`
+  --> unreachable_arm_checked.ck:10:9
+   |
+10 |         (a, b) -> 1
+   |         ^^^^^^ this pattern has type `(_, _)`
+
+warning[W021]: this arm never matches
+  --> unreachable_arm_checked.ck:10:9
+   |
+10 |         (a, b) -> 1
+   |         ^^^^^^ the arms above already match every value it would
+   = help: remove it
+
+error[E0201]: type mismatch: expected `Int`, found `(_, _)`
+  --> unreachable_arm_checked.ck:15:9
+   |
+15 |         (a, b) -> 1
+   |         ^^^^^^ this pattern has type `(_, _)`
+
+warning[W021]: this arm never matches
+  --> unreachable_arm_checked.ck:15:9
+   |
+15 |         (a, b) -> 1
+   |         ^^^^^^ the arms above already match every value it would
+   = help: remove it
+
+error[E0201]: type mismatch: expected `Unit`, found `(_, _)`
+  --> unreachable_arm_checked.ck:20:9
+   |
+20 |         (a, b) -> 1
+   |         ^^^^^^ this pattern has type `(_, _)`
+
+warning[W021]: this arm never matches
+  --> unreachable_arm_checked.ck:20:9
+   |
+20 |         (a, b) -> 1
+   |         ^^^^^^ the arms above already match every value it would
+   = help: remove it
+
+error[E0201]: type mismatch: expected `Unit`, found `(_, _)`
+  --> unreachable_arm_checked.ck:24:9
+   |
+24 |         (a, b) -> 1
+   |         ^^^^^^ this pattern has type `(_, _)`
+
+warning[W021]: this arm never matches
+  --> unreachable_arm_checked.ck:29:9
+   |
+29 |         y -> "y"
+   |         ^ the arms above already match every value it would
+   = help: remove it
+
+error[E0201]: type mismatch: expected `Int`, found `String`
+  --> unreachable_arm_checked.ck:29:14
+   |
+29 |         y -> "y"
+   |              ^^^ this expression has type `String`
+
+warning[W021]: this arm never matches
+  --> unreachable_arm_checked.ck:34:9
+   |
+34 |         Some (a, b) -> 1
+   |         ^^^^^^^^^^^ the arms above already match every value it would
+   = help: remove it
+
+error[E0201]: type mismatch: expected `Int`, found `(_, _)`
+  --> unreachable_arm_checked.ck:34:14
+   |
+34 |         Some (a, b) -> 1
+   |              ^^^^^^ this pattern has type `(_, _)`
+
+error[E0201]: type mismatch: expected `Int`, found `(_, _)`
+  --> unreachable_arm_checked.ck:40:21
+   |
+40 |         None | Some (a, b) -> 1
+   |                     ^^^^^^ this pattern has type `(_, _)`
+
+unreachable_arm_checked.ck: 7 errors, 5 warnings
