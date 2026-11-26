@@ -189,8 +189,9 @@ impl<'g> Folder<'g> {
 
     /// The value of closed `node`, computed by running it.
     fn run(&mut self, node: &Ir, specs: &crate::native::spec::Specs) -> Result<Arc<Ir>, Kept> {
+        // Code with a part a key can't name exactly isn't remembered.
         let key = key(node);
-        if let Some(r) = self.memo.get(&key) {
+        if let Some(r) = key.as_ref().and_then(|k| self.memo.get(k)) {
             return r.clone();
         }
         let work = self.g.fold_work.get().unwrap_or(crate::elab::CODEGEN_WORK);
@@ -202,15 +203,15 @@ impl<'g> Folder<'g> {
         });
         let r = match ev.eval_ir_limited(node, work) {
             Ok(v) => {
-                // As a term (a literal, or a known value of any kind), then
-                // as code: static data laid out as the runtime has it.
-                let out = ev.reify(v).map(|t| crate::native::ir::Compiler { g, owner: None, spec: None }.compile(&t)).ok_or(Kept::NoForm);
+                let out = from_word(v).map(|(s, id)| Arc::new(Static::ir(&Arc::new(s), id))).ok_or(Kept::NoForm);
                 ev.release(v);
                 out
             }
             Err(e) => Err(Kept::Fails(e)),
         };
-        self.memo.insert(key, r.clone());
+        if let Some(key) = key {
+            self.memo.insert(key, r.clone());
+        }
         r
     }
 
@@ -406,14 +407,14 @@ fn subst0(b: &Ir, v: &Arc<Ir>) -> Ir {
     go(b, v, 0)
 }
 
-/// A key for closed code: equal keys, equal code.
-fn key(ir: &Ir) -> String {
+/// A key for closed code: equal keys, equal code. `None` for code with a
+/// part it doesn't name exactly.
+fn key(ir: &Ir) -> Option<String> {
     let mut out = String::new();
-    write_key(ir, &mut out);
-    out
+    write_key(ir, &mut out).then_some(out)
 }
 
-fn write_key(ir: &Ir, out: &mut String) {
+fn write_key(ir: &Ir, out: &mut String) -> bool {
     use std::fmt::Write;
     match ir {
         Ir::Lit(Lit::Num(n)) => write!(out, "{n}").unwrap(),
@@ -426,7 +427,9 @@ fn write_key(ir: &Ir, out: &mut String) {
         Ir::Con(c, xs) => {
             write!(out, "c{}(", c.0).unwrap();
             for x in xs {
-                write_key(x, out);
+                if !write_key(x, out) {
+                    return false;
+                }
                 out.push(',');
             }
             out.push(')');
@@ -434,32 +437,104 @@ fn write_key(ir: &Ir, out: &mut String) {
         Ir::Tuple(xs) => {
             out.push('(');
             for x in xs {
-                write_key(x, out);
+                if !write_key(x, out) {
+                    return false;
+                }
                 out.push(',');
             }
             out.push(')');
         }
-        Ir::At(_, x) => write_key(x, out),
+        Ir::At(_, x) => return write_key(x, out),
         Ir::Prim(op, xs, nat) => {
             write!(out, "{op:?}{nat}(").unwrap();
             for x in xs {
-                write_key(x, out);
+                if !write_key(x, out) {
+                    return false;
+                }
                 out.push(',');
             }
             out.push(')');
         }
         Ir::Call(h, xs) => {
-            write_key(h, out);
+            if !write_key(h, out) {
+                return false;
+            }
             out.push('(');
             for x in xs {
-                write_key(x, out);
+                if !write_key(x, out) {
+                    return false;
+                }
                 out.push(',');
             }
             out.push(')');
         }
-        // Only closed code of the forms above is run.
-        _ => out.push('?'),
+        Ir::ConFn(c) => write!(out, "f{}", c.0).unwrap(),
+        // Only closed code of the forms above is remembered.
+        _ => return false,
     }
+    true
+}
+
+/// A runtime value as static data, where it has a static form: numbers,
+/// bytes, arrays, constructors and tuples of such. Walked with a stack of its own,
+/// so a value of any depth takes the same stack.
+pub fn from_word(v: w::W) -> Option<(Static, u32)> {
+    let mut s = Static::default();
+    let mut done: HashMap<w::W, u32> = HashMap::new();
+    let mut stack: Vec<(w::W, bool)> = vec![(v, false)];
+    while let Some((x, ready)) = stack.pop() {
+        if done.contains_key(&x) {
+            continue;
+        }
+        if !w::is_ptr(x) {
+            done.insert(x, s.add(SNode::Word(x)));
+            continue;
+        }
+        let k = w::kind(x);
+        let id = match k {
+            w::K_BYTES => s.add(SNode::Bytes(Arc::from(w::blob(x)))),
+            w::K_BIG => {
+                let n = checkers_rt::obj::num_of(x);
+                let big: num_bigint::BigInt = n.to_string().parse().ok()?;
+                s.add(SNode::Big(big))
+            }
+            w::K_CON | w::K_TUPLE => {
+                let n = w::nfields(x);
+                let part = |i: usize| if k == w::K_CON { w::field(x, i) } else { w::slot(x, i) };
+                if !ready {
+                    stack.push((x, true));
+                    stack.extend((0..n).map(part).filter(|p| !done.contains_key(p)).map(|p| (p, false)));
+                    continue;
+                }
+                let fields: Box<[u32]> = (0..n).map(|i| done[&part(i)]).collect();
+                let tag = if k == w::K_CON { w::con_of(x)? as u64 } else { 0 };
+                s.add(SNode::Obj { kind: k, tag, fields })
+            }
+            checkers_rt::array::K_ARRAY => {
+                use checkers_rt::array as a;
+                let (layout, n) = (a::layout(x), a::len(x));
+                let words = layout == a::Layout::Words;
+                // An array of words that is a slice of another: no static form.
+                if words && a::is_slice(x) {
+                    return None;
+                }
+                // Each element: a word held (not a new reference), or a
+                // packed element's word.
+                let part = |i: usize| if words { w::slot(x, i + 2) } else { a::get(x, i) };
+                if !ready {
+                    stack.push((x, true));
+                    stack.extend((0..n).map(part).filter(|p| !done.contains_key(p)).map(|p| (p, false)));
+                    continue;
+                }
+                let elems: Box<[u32]> = (0..n).map(|i| done[&part(i)]).collect();
+                s.add(SNode::Array { layout: layout as u8, elems })
+            }
+            _ => return None,
+        };
+        done.insert(x, id);
+    }
+    let root = done[&v];
+    Some((s, root))
 }
 
 /// Each operation in `ir` on static data alone that `kept` doesn't keep:
