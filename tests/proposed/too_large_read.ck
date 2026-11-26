@@ -1,4 +1,4 @@
-# A byte count that doesn't fit a machine word (D185, proposed) reads what there
+# A byte count that doesn't fit a machine word (D185) reads what there
 # is: `read_exactly` gives fewer bytes only at the end, `read_some` at most
 # that many.
 module too_large_read
