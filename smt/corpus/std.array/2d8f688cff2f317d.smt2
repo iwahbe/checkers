@@ -1,0 +1,8 @@
+(set-option :produce-unsat-cores true)
+(set-option :produce-models true)
+(set-option :rlimit 20000)
+(set-option :timeout 60000)
+(set-logic ALL)
+(assert (not false))
+(check-sat)
+(get-unsat-core)

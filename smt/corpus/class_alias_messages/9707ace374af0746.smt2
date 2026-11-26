@@ -1,0 +1,8 @@
+(set-option :produce-models true)
+(set-option :rlimit 200000)
+(set-option :timeout 60000)
+(set-logic ALL)
+(declare-datatypes ((|Tuple2| 2)) ((par (T0 T1) ((|tuple2| (|tuple2.0| T0) (|tuple2.1| T1))))))
+(define-funs-rec ((|class_alias_messages.Two Int.two| ((p0 Int)) (|Tuple2| Int Int))) (((as |tuple2| (|Tuple2| Int Int)) p0 (- p0 1))))
+(assert (not (>= (|tuple2.0| (|class_alias_messages.Two Int.two| 0)) 0)))
+(check-sat)
