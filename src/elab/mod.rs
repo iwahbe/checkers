@@ -6,6 +6,7 @@
 //! recorded for the prover (M3).
 
 mod classes;
+mod cowns;
 pub mod complete;
 mod decls;
 mod expr;
@@ -314,6 +315,12 @@ pub enum ObKind {
     /// A refinement replaced by another in a type (D83, D85): for any value
     /// of `sub`, the predicates of `sup` hold.
     Weaken { role: WeakenRole, value: String, sub: String, sup: String, callee: Option<String> },
+    /// A `when`'s cowns differ (§8.5): two of them as written. `held`: the
+    /// first's binder, where both are written the same. `caller`: the
+    /// function, where both are its parameters. `unlike`: their types, as
+    /// shown, where they differ here but may be equal (`Cown a`, `Cown
+    /// Nat`): `!=` can't compare them.
+    DistinctCowns { first: String, second: String, held: Option<String>, caller: Option<String>, unlike: Option<(String, String)> },
     NatSub,
     /// A recursive call must make the caller's `decreasing` measure smaller.
     Measure { func: String, measure: String },
@@ -841,6 +848,9 @@ pub struct Elab {
     /// Calls of classes' functions with preconditions, to check once their
     /// dictionaries are found (#225).
     pub pending_class_pres: Vec<PendingPre>,
+    /// `when`s naming two or more cowns, obliged once the module's bodies
+    /// are checked (§8.5).
+    pub pending_distinct: Vec<cowns::PendingDistinct>,
     /// Calls of classes' functions, and dictionaries found through a
     /// refinement alias, to check at the end of the module (#226).
     pub class_calls: Vec<PendingPre>,
@@ -1039,6 +1049,7 @@ impl Elab {
             transparent_members: HashSet::new(),
             refined_inst_fns: HashSet::new(),
             pending_class_pres: Vec::new(),
+            pending_distinct: Vec::new(),
             class_calls: Vec::new(),
             alias_dicts: Vec::new(),
             class_value_uses: Vec::new(),

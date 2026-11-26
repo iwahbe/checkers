@@ -1249,6 +1249,7 @@ fn describe(e: &Elab, o: &Obligation) -> String {
         ObKind::CownInvariant { alias } => format!("cown contents stay `{alias}`: {}", o.text),
         ObKind::Refined { alias, value } => format!("`{value}` is a `{alias}`: {}", o.text),
         ObKind::Weaken { sub, sup, .. } => format!("every `{sub}` is a `{sup}`: {}", o.text),
+        ObKind::DistinctCowns { .. } => format!("a `when`'s cowns differ: {}", o.text),
         ObKind::NatSub => format!("`Nat` subtraction `{}` stays at or above zero", o.text),
         ObKind::Measure { func, measure } => format!("termination of `{func}`: `decreasing {measure}` gets smaller"),
         ObKind::Div => format!("divisor of `{}` is not zero", o.text),
@@ -1351,6 +1352,23 @@ fn headline(o: &Obligation) -> (String, String, String) {
             format!("cannot prove that `{func}` terminates: `{measure}` may not get smaller in this call"),
             format!("`decreasing {measure}` must be smaller here than on entry to `{func}`"),
             "make sure the recursive call's arguments make the measure smaller, e.g. by checking a bound first".into(),
+        ),
+        ObKind::DistinctCowns { first, second, held, caller, unlike } => (
+            format!("cannot prove `{}`, required for a `when` to hold its cowns", o.text),
+            match (held, unlike) {
+                (Some(n), _) => format!("`{second}` is already held here as `{n}`"),
+                (None, Some((a, b))) => format!("this `when` holds `{first}`, a `{a}`, and `{second}`, a `{b}`"),
+                (None, None) => format!("this `when` holds `{first}` and `{second}`"),
+            },
+            match (held, caller) {
+                (Some(_), _) => format!("a `when` holds each cown once: name `{second}` once"),
+                (None, _) if unlike.is_some() => {
+                    let (a, b) = unlike.as_ref().unwrap();
+                    format!("a `{a}` may be a `{b}`, and `!=` can't compare them: hold cowns whose types differ whatever their type variables are")
+                }
+                (None, Some(f)) => format!("require it of the caller: add `{}` to `{f}`'s signature", o.text),
+                (None, None) => format!("show that they differ where they come from: a precondition such as `{}`, or a cown made here with `cown.new`, which differs from every cown in scope", o.text),
+            },
         ),
         ObKind::NatSub => (
             "cannot prove that this `Nat` subtraction stays at or above zero".into(),
@@ -1561,6 +1579,8 @@ fn failed(e: &Elab, o: &Obligation, model: Option<String>) -> Diagnostic {
         format!("`{}` {what}: here the prover knows only its postconditions and the lemmas you bring in with `have`", info.name)
     });
     match model.filter(|m| !m.is_empty()) {
+        // One cown named twice needs no counterexample.
+        Some(_) if matches!(&o.kind, ObKind::DistinctCowns { held, unlike, .. } if held.is_some() || unlike.is_some()) => {}
         Some(m) if sealed_note.is_none() => d = d.with_note(format!("counterexample: {m}")),
         _ => {}
     }
@@ -1965,6 +1985,7 @@ fn render_model(text: &str, shown: &[(String, String)], strings: &[String], arra
     let sx = parse_sx(text);
     let Some(Sx::List(pairs)) = sx.first() else { return String::new() };
     let mut found: Vec<(usize, String)> = Vec::new();
+    let mut cowns: Vec<(String, usize, Vec<String>)> = Vec::new();
     for p in pairs {
         if let Sx::List(kv) = p {
             if let (Some(Sx::Atom(k)), Some(v)) = (kv.first(), kv.get(1)) {
@@ -1985,15 +2006,24 @@ fn render_model(text: &str, shown: &[(String, String)], strings: &[String], arra
                         Some(b) => checkers_rt::ops::show_bytes(&b),
                         None => pretty(&v),
                     };
-                    // Values of abstract types (capabilities, type variables) say nothing useful.
-                    if !s.contains('!') && !s.contains('?') {
-                        let lvl: usize = k.trim_matches('|').rsplit('#').next().and_then(|n| n.parse().ok()).unwrap_or(pos);
+                    let lvl: usize = k.trim_matches('|').rsplit('#').next().and_then(|n| n.parse().ok()).unwrap_or(pos);
+                    // Values of abstract types (capabilities, type variables)
+                    // say nothing useful, but which cowns are the same one
+                    // does (§8.5): `x = y`.
+                    let raw = print_sx(&v);
+                    if raw.contains("std.cown.Cown") && raw.contains("!val!") {
+                        match cowns.iter_mut().find(|(r, _, _)| *r == raw) {
+                            Some((_, _, names)) => names.push(shown[pos].1.clone()),
+                            None => cowns.push((raw, lvl, vec![shown[pos].1.clone()])),
+                        }
+                    } else if !s.contains('!') && !s.contains('?') {
                         found.push((lvl, format!("{} = {s}", shown[pos].1)));
                     }
                 }
             }
         }
     }
+    found.extend(cowns.into_iter().filter(|c| c.2.len() > 1).map(|(_, lvl, names)| (lvl, names.join(" = "))));
     found.sort();
     found.into_iter().map(|x| x.1).collect::<Vec<_>>().join(", ")
 }

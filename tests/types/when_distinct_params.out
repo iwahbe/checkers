@@ -1,0 +1,25 @@
+error[E0450]: cannot prove `x != y`, required for a `when` to hold its cowns
+ --> when_distinct_params.ck:9:5
+  |
+9 |     when a = x, b = y using sched
+  |     ^^^^^^^^^^^^^^^^^ this `when` holds `x` and `y`
+  = note: counterexample: x = y
+  = help: require it of the caller: add `x != y` to `exchange`'s signature
+
+error[E0450]: cannot prove `x != y`, required for a `when` to hold its cowns
+  --> when_distinct_params.ck:31:5
+   |
+31 |     when a = x, b = y using sched
+   |     ^^^^^^^^^^^^^^^^^ this `when` holds `x`, a `Cown a`, and `y`, a `Cown Nat`
+   = help: a `Cown a` may be a `Cown Nat`, and `!=` can't compare them: hold cowns whose types differ whatever their type variables are
+
+error[E0450]: cannot prove `x != z`, required for a `when` to hold its cowns
+  --> when_distinct_params.ck:36:5
+   |
+36 |     when a = x, b = y, c = z using sched
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^ this `when` holds `x` and `z`
+   = note: facts in scope: `x != y`, `y != z`
+   = note: counterexample: x = z
+   = help: require it of the caller: add `x != z` to `three`'s signature
+
+when_distinct_params.ck: 3 errors, 0 warnings

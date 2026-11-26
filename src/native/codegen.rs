@@ -46,7 +46,7 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("ck_nomatch", 2, true),
     ("ck_caf", 2, true),
     ("ck_apply", 3, true),
-    ("ck_when", 2, true),
+    ("ck_when", 3, true),
     ("ck_par", 2, true),
     ("ck_tuple_flat", 1, true),
     ("ck_tuple_rest", 2, true),
@@ -1460,7 +1460,7 @@ impl<'p, M: Module> Gen<'p, M> {
                 b.switch_to_block(done);
                 r
             }
-            Op::When => self.call1(b, st, "ck_when", &[a[1], a[2]]),
+            Op::When => self.call1(b, st, "ck_when", &[a[1], a[2], o]),
             Op::Par => a[0],
             _ => unreachable!("an integer primitive"),
         }
