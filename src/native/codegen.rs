@@ -41,6 +41,8 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("ck_ne", 3, true),
     ("ck_concat", 2, true),
     ("ck_concat_own", 2, true),
+    ("ck_concat_all", 2, true),
+    ("ck_concat_push", 2, true),
     ("ck_len", 1, true),
     ("ck_index", 3, true),
     ("ck_big_lit", 2, true),
@@ -49,7 +51,7 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("ck_nomatch", 2, true),
     ("ck_caf", 2, true),
     ("ck_apply", 3, true),
-    ("ck_when", 3, true),
+    ("ck_when", 4, true),
     ("ck_par", 2, true),
     ("ck_tuple_flat", 1, true),
     ("ck_tuple_rest", 2, true),
@@ -1336,7 +1338,8 @@ impl<'p, M: Module> Gen<'p, M> {
     #[allow(clippy::too_many_arguments)]
     fn divide(&mut self, b: &mut FunctionBuilder, st: &mut St, rem: bool, x: Value, y: Value, owner: Value, drops: &[Value], fits: bool) -> Value {
         let ry = Self::range(b, st, y);
-        let nonzero = ry.lo.is_some_and(|l| l > 0) || ry.hi.is_some_and(|h| h < 0);
+        // A proved program's divisor isn't zero (§13.3).
+        let nonzero = self.g.proved || ry.lo.is_some_and(|l| l > 0) || ry.hi.is_some_and(|h| h < 0);
         if Self::small(b, st, x) && Self::small(b, st, y) && nonzero && (rem || fits) {
             return Self::divide_small(b, rem, x, y, None);
         }
@@ -1515,6 +1518,8 @@ impl<'p, M: Module> Gen<'p, M> {
                 b.ins().iconst(I64, w::UNIT as i64)
             }
             BOp::Builtin(sym) => self.call_array(b, st, sym, a),
+            BOp::ConcatPush => self.call1(b, st, "ck_concat_push", &[a[0], a[1]]),
+            BOp::ConcatAll => self.call1(b, st, "ck_concat_all", &[a[0], a[1]]),
             BOp::Prim(p, nat) => self.prim(b, st, p, nat, a, &[]),
         }
     }
@@ -1563,7 +1568,6 @@ impl<'p, M: Module> Gen<'p, M> {
                 b.ins().isub(a[0], y1)
             }
             Op::Sub if nat => {
-                // Words compare as their integers do.
                 let check = b.create_block();
                 let fast = b.create_block();
                 let slow = b.create_block();
@@ -1572,15 +1576,21 @@ impl<'p, M: Module> Gen<'p, M> {
                 let r = b.append_block_param(done, I64);
                 Self::if_small(b, st, &[a[0], a[1]], check, slow);
                 b.switch_to_block(check);
-                let not_below = b.ins().icmp(IntCC::SignedGreaterThanOrEqual, a[0], a[1]);
-                b.ins().brif(not_below, fast, &[], slow, &[]);
+                // `x >= y` is checked only where it isn't proved (§13.3).
+                if self.g.proved {
+                    b.ins().jump(fast, &[]);
+                } else {
+                    // Words compare as their integers do.
+                    let not_below = b.ins().icmp(IntCC::SignedGreaterThanOrEqual, a[0], a[1]);
+                    b.ins().brif(not_below, fast, &[], slow, &[]);
+                }
                 b.switch_to_block(fast);
                 // Both `Nat`s, the first no less: `x - y` fits.
                 let y1 = b.ins().iadd_imm_s(a[1], -1);
                 let v = b.ins().isub(a[0], y1);
                 b.ins().jump(done, &[BlockArg::Value(v)]);
                 b.switch_to_block(slow);
-                let s = self.call1(b, st, "ck_natsub", &[a[0], a[1], o]);
+                let s = if self.g.proved { self.call1(b, st, "ck_sub", &[a[0], a[1]]) } else { self.call1(b, st, "ck_natsub", &[a[0], a[1], o]) };
                 for d in drops {
                     self.drop_v(b, st, *d);
                 }
@@ -1720,9 +1730,14 @@ impl<'p, M: Module> Gen<'p, M> {
                 }
                 b.switch_to_block(check);
                 let i = b.ins().sshr_imm_s(a[1], 1);
-                let len = b.ins().load(I64, flags(), a[0], w::HDR as i32);
-                let inb = b.ins().icmp(IntCC::UnsignedLessThan, i, len);
-                b.ins().brif(inb, fast, &[], slow, &[]);
+                if self.g.proved {
+                    // The index is in bounds: proved (§13.3).
+                    b.ins().jump(fast, &[]);
+                } else {
+                    let len = b.ins().load(I64, flags(), a[0], w::HDR as i32);
+                    let inb = b.ins().icmp(IntCC::UnsignedLessThan, i, len);
+                    b.ins().brif(inb, fast, &[], slow, &[]);
+                }
                 b.switch_to_block(fast);
                 // The bytes follow the header, or a slice points at them (#169).
                 let ptr = b.ins().load(I64, flags(), a[0], (w::HDR + 8) as i32);
@@ -1740,7 +1755,11 @@ impl<'p, M: Module> Gen<'p, M> {
                 b.switch_to_block(done);
                 r
             }
-            Op::When => self.call1(b, st, "ck_when", &[a[1], a[2], o]),
+            Op::When => {
+                // The cowns' distinctness is checked only where it isn't proved (§13.3).
+                let check = b.ins().iconst(I64, i64::from(!self.g.proved));
+                self.call1(b, st, "ck_when", &[a[1], a[2], o, check])
+            }
             Op::Par => a[0],
             _ => unreachable!("an integer primitive"),
         }

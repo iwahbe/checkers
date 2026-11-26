@@ -1,0 +1,5 @@
+-- stdout
+36893488147419103224
+-- stderr
+runtime error in `halves`: `/` by zero (7 / 0)
+-- exit 70

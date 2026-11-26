@@ -115,6 +115,10 @@ pub enum Prim {
     /// variables whose body is the `Bool` (premises implying the
     /// conclusion). Only in specifications; never evaluated or compiled.
     Forall,
+    /// A call with effects (§7.1, §8.3), its one argument: the call itself
+    /// at run time; to the prover a value of its own, this one call's,
+    /// known by what the callee promises. Numbered, so two calls differ.
+    Effect(u32),
 }
 
 #[derive(Clone, Debug)]
@@ -373,19 +377,21 @@ pub struct Globals {
     pub value_params: RefCell<HashMap<TyId, std::collections::BTreeSet<usize>>>,
     /// Each function's constant bounds on its binders (implicit ones too),
     /// then on its result, where its signature gives them (`x~U8`,
-    /// `0 <= x`), which native code relies on (§14). Empty until every
-    /// obligation of the program is proved (`Elab::bounds` until then): a
-    /// bound is a fact only then, not in a `check` or staging, which run
-    /// before proving, nor with `--unverified`.
+    /// `0 <= x`), which native code relies on (§14). Empty until the
+    /// program is `proved` (`Elab::bounds` until then).
     pub bounds: HashMap<DefId, Vec<Option<crate::range::Range>>>,
     /// Constants' values known at compile time (§8.9), for code generation:
     /// set once the program is proved, as `bounds` is (`Elab::known_value`).
     /// Each is a literal, `()` or a `Tm::Known`, compiled as static data.
     pub known: RefCell<HashMap<DefId, Tm>>,
+    /// Every obligation of the program is proved, and none of its facts is
+    /// assumed by an `admit` (§13.3): native code compiled from here relies
+    /// on the proofs, with no run-time checks of guarded operations. False
+    /// in a `check` or staging, which run before proving.
+    pub proved: bool,
     /// Whether native code's calls on static data are computed when
-    /// compiling (§8.9), and within how much work: set once the program
-    /// is proved (its calls meet their preconditions), not with
-    /// `--unverified`.
+    /// compiling (§8.9), and within how much work: set where `proved` is,
+    /// since then its calls meet their preconditions.
     pub fold_work: std::cell::Cell<Option<u64>>,
     /// The base types of classes' types that have one (#360), by their
     /// field of the dictionary: closed types.
@@ -452,6 +458,7 @@ impl Globals {
             value_params: RefCell::new(HashMap::new()),
             bounds: HashMap::new(),
             known: RefCell::new(HashMap::new()),
+            proved: false,
             fold_work: std::cell::Cell::new(None),
             type_bases: HashMap::new(),
         }
@@ -2197,6 +2204,9 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
                     paren(p > 0, format!("{} {o} {}", show_prec(g, ns, a, 2), show_prec(g, ns, b, 2)))
                 }
                 _ => {
+                    if let (Prim::Effect(_), [a]) = (pr, args.as_slice()) {
+                        return show_prec(g, ns, a, p);
+                    }
                     if let (Prim::Neg, [a]) = (pr, args.as_slice()) {
                         return format!("-{}", show_prec(g, ns, a, 2));
                     }

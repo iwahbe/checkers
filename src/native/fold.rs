@@ -11,7 +11,7 @@
 //! An operation that can't be computed is *kept*, with the reason: it
 //! fails (its runtime error stays the program's, at the same point), its
 //! value has no static form yet, its function is `partial` or reaches an
-//! effect, or the program isn't proved (`--unverified`), so its calls
+//! effect, or the program relies on an `admit`, so its calls
 //! might be outside their preconditions. `check` verifies that every
 //! operation on static data alone that is left was kept so
 //! (`CHECKERS_RESIDUAL_CHECK=1`); `CHECKERS_NATIVE_DUMP=1` lists those kept.
@@ -39,7 +39,7 @@ pub enum Kept {
     Partial,
     /// It reaches an effect (§8.9).
     Effects,
-    /// The program isn't proved (`--unverified`): a call might be outside
+    /// The program relies on an `admit`: a call might be outside
     /// its function's preconditions.
     Unproved,
 }
@@ -51,7 +51,7 @@ impl Kept {
             Kept::NoForm => "its value has no static form yet".into(),
             Kept::Partial => "it calls a `partial` function".into(),
             Kept::Effects => "it has effects".into(),
-            Kept::Unproved => "the program isn't proved".into(),
+            Kept::Unproved => "the program relies on an `admit`".into(),
         }
     }
 }

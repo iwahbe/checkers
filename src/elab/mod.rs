@@ -7,6 +7,7 @@
 
 mod classes;
 mod cowns;
+mod effects;
 pub mod complete;
 mod decls;
 mod expr;
@@ -706,6 +707,10 @@ pub struct Elab {
     pub module_keys: std::cell::RefCell<Option<(usize, ModuleKeys)>>,
     /// The modules being proved now: their functions don't run yet.
     pub proving: std::cell::RefCell<HashSet<String>>,
+    /// Terms the prover's translator left out because their parts' sorts
+    /// don't fit their places (§7.3): each is a type error reported, so a
+    /// program without one has none.
+    pub ill_sorted: std::cell::Cell<usize>,
     /// The name a refinement alias binds (`n` in `type Big = n~Int, …`).
     pub alias_subject: HashMap<DefId, Name>,
     /// The result type of a function whose result type isn't written.
@@ -881,6 +886,8 @@ pub struct Elab {
     /// `when`s naming two or more cowns, obliged once the module's bodies
     /// are checked (§8.5).
     pub pending_distinct: Vec<cowns::PendingDistinct>,
+    /// Calls with effects numbered so far (`Prim::Effect`, §7.1).
+    pub effect_count: u32,
     /// Calls of classes' functions, and dictionaries found through a
     /// refinement alias, to check at the end of the module (#226).
     pub class_calls: Vec<PendingPre>,
@@ -1038,6 +1045,7 @@ impl Elab {
             early: Default::default(),
             module_proofs: std::cell::RefCell::new(HashMap::new()),
             module_keys: std::cell::RefCell::new(None),
+            ill_sorted: std::cell::Cell::new(0),
             proving: std::cell::RefCell::new(HashSet::new()),
             alias_subject: HashMap::new(),
             result_metas: HashMap::new(),
@@ -1096,6 +1104,7 @@ impl Elab {
             refined_inst_fns: HashSet::new(),
             pending_class_pres: Vec::new(),
             pending_distinct: Vec::new(),
+            effect_count: 0,
             class_calls: Vec::new(),
             alias_dicts: Vec::new(),
             class_value_uses: Vec::new(),

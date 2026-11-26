@@ -9,10 +9,10 @@ const USAGE: &str = "\
 ckc — the Checkers compiler (usually run through `checkers`, the build tool)
 
 USAGE:
-    ckc run [--unverified] [--threads N] [--overlay MAP] <FILE.ck> [ARG]...
+    ckc run [--threads N] [--overlay MAP] <FILE.ck> [ARG]...
                                                check and prove, then run `main` with ARGs
                                                (N worker threads, default: cores; 1 is deterministic)
-    ckc build [--unverified | --release] <FILE.ck> -o <PROGRAM>
+    ckc build [--release] <FILE.ck> -o <PROGRAM>
                                                check and prove, then write an executable
                                                (its threads: CHECKERS_THREADS, default: cores);
                                                --release refuses any `admit` the program relies on
@@ -178,15 +178,10 @@ fn checked(command: &str, args: &[String], shown: impl Fn(&checkers::Checked) ->
 }
 
 fn run(args: &[String]) -> u8 {
-    let mut unverified = false;
     let mut threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
     let mut args = args;
     loop {
         match args.first().map(String::as_str) {
-            Some("--unverified") => {
-                unverified = true;
-                args = &args[1..];
-            }
             // Before the file only: what follows it is the program's.
             Some("--overlay") => {
                 if take_overlay(&args[..args.len().min(2)]).is_err() {
@@ -204,6 +199,10 @@ fn run(args: &[String]) -> u8 {
                 }
                 args = &args[2..];
             }
+            Some(o) if o.starts_with("--") => {
+                eprintln!("error: `run` has no option `{o}`\n\n{USAGE}");
+                return 2;
+            }
             _ => break,
         }
     }
@@ -216,24 +215,26 @@ fn run(args: &[String]) -> u8 {
         Err(_) => return 2,
     };
     use_cache(path);
-    let ran = checkers::run(path, &text, &checkers::dir_of(path), &args[1..], unverified, threads);
+    let ran = checkers::run(path, &text, &checkers::dir_of(path), &args[1..], threads);
     eprint!("{}", ran.report);
     ran.code
 }
 
 fn build(args: &[String]) -> u8 {
-    let mut unverified = false;
     let mut release = false;
     let mut out: Option<String> = None;
     let mut file: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--unverified" => unverified = true,
             "--release" => release = true,
             "-o" => {
                 i += 1;
                 out = args.get(i).cloned();
+            }
+            o if o.starts_with("--") => {
+                eprintln!("error: `build` has no option `{o}`\n\n{USAGE}");
+                return 2;
             }
             f => file = Some(f.to_string()),
         }
@@ -243,16 +244,12 @@ fn build(args: &[String]) -> u8 {
         eprintln!("error: `build` needs a file and `-o PROGRAM`\n\n{USAGE}");
         return 2;
     };
-    if release && unverified {
-        eprintln!("error: `--release` builds only proven programs, so it can't be used with `--unverified`");
-        return 2;
-    }
     let text = match read(&path) {
         Ok(t) => t,
         Err(_) => return 2,
     };
     use_cache(&path);
-    let ran = checkers::build(&path, &text, &checkers::dir_of(&path), std::path::Path::new(&out), unverified, release);
+    let ran = checkers::build(&path, &text, &checkers::dir_of(&path), std::path::Path::new(&out), release);
     eprint!("{}", ran.report);
     ran.code
 }

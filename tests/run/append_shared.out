@@ -1,0 +1,12 @@
+-- stdout
+abababababababababab ababababababababababx ababababababababababé
+<0123456789abcdef0123456789abcdef0123456789abcdef 49 52
+<0123456789abcdefg0123456789abcdefg0123456789abcdefg
+150 True
+b"<worldworldworldworld" b"hello world"
+b"xyzxyzxyzxyzxyz" b"xyz!"
+k1 k2 k3
+ababab ababab!!!!!!!!!!!!
+abababababab ababab
+-- stderr
+-- exit 0

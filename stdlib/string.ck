@@ -193,13 +193,17 @@ instance Display Int
                            implies len s.bytes > 0 and char.is_digit s.bytes[0]
                            and (s.bytes[0] == '0' implies s.bytes == b"0" and n == 0),
                            n < 0 implies len s.bytes > 0 and s.bytes[0] == '-'
-        let (base, plus, least) = int_options os 10 False 0
-        let ds = digits (if n < 0 then -n else n) base
-        have parse_shown n b""
-        have digits_first (if n < 0 then -n else n)
-        let sign = if n < 0 then "-" else if plus then "+" else ""
-        let pad = if len ds < least then zeros (least - len ds) else ""
-        sign ++ base_prefix base ++ pad ++ ds
+        match os
+            []     ->
+                have parse_shown n b""
+                have digits_first (if n < 0 then -n else n)
+                shown n
+            _ :: _ ->
+                let (base, plus, least) = int_options os 10 False 0
+                let ds = digits (if n < 0 then -n else n) base
+                let sign = if n < 0 then "-" else if plus then "+" else ""
+                let pad = if len ds < least then zeros (least - len ds) else ""
+                sign ++ base_prefix base ++ pad ++ ds
 
 # The base, whether to write `+`, and the fewest digits the options ask for.
 fn int_options os base plus least -> r : os~List IntOption, base~Nat, 2 <= base, base <= 36, plus~Bool,

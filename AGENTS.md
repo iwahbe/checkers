@@ -1,12 +1,11 @@
 # Working on Checkers
 
-- **SPEC.md is the source of truth.** Change the spec before the code whenever behavior changes. Record every language decision as a GitHub issue (SPEC §0). `DECISIONS.md` holds D0–D186 and takes no new rows. Ian decides; Claude's recommendations stay marked **(proposed)** until he accepts them.
+- **SPEC.md is the source of truth.** Change the spec before the code whenever behavior changes. Record every language decision as a GitHub issue (SPEC §0). `DECISIONS.md` holds D0–D186 and takes no new rows. Ian decides, and merging a pull request accepts what it decides: no `(proposed)` markers in a pull request (SPEC, docs, tests); list its open choices in its description for Ian to review.
 - **`Part of #N` is only for a pull request that doesn't finish the issue** (SPEC §0). Don't write it to keep CI green: a pull request that finishes a proposal says `Closes #N` or `Fixes #N` even before Ian accepts it, and its red `accepted proposals` check is intended.
 - **Ian does not read the implementation.** He reviews the spec, examples, and compiler output. Error messages are part of the product: precise span, plain message, a `help:` line when there is an obvious fix. Nothing a Checkers user reads cites a decision (`Dn` or `#N`): compiler messages, the standard library, examples, `README.md` and `site/`.
 - **Issue workflow (SPEC §12):** a report is "found X, expected Y" with a `.ck` snippet. First add it as a golden test showing the expected output (`tests/parse/`, `tests/check/`, `tests/types/` for type errors, `tests/stage/` for staged code, `tests/run/` for program behaviour, §13.6; `tests/stress/` for results every multi-threaded schedule must give, §13.5), then fix, then `cargo test`. `ckc check --json` cases in `tests/json/`, `ckc complete` cases in `tests/complete/` (`‸` marks the cursor), language server sessions in `tests/lsp/` (§15.5). Tools written in Checkers (`tools/`, D95): formatter cases in `tests/fmt/`, `checkers` commands in `tests/tool/`, `ckc doc`/`checkers doc`/`checkers site` in `tests/doc/` (a package directory, or a site with `index.md`).
 - **Issue labels.** An agent that files a bug adds the `bug` label (a language decision takes `proposal`, SPEC §0). An agent that begins work on an issue first checks it isn't already `claimed`, then adds the `claimed` label and comments `Claimed by <its Claude Code session URL>`; if it stops without finishing, it removes the label. A daily scheduled task removes `claimed` from issues whose claiming session is archived and adds missing `bug` labels.
 - A golden test is the smallest program that shows the behaviour, fully abstracted from the report it came from: names say what is being tested (`walk`, `by_let`), not what the original program did (`digits`), and anything the behaviour doesn't need (types, helpers, library calls) is gone. Check that it still fails without the fix.
-- A test for a **(proposed)** decision goes in `tests/proposed/` (not run) until Ian decides; then it moves to its test directory.
 - `UPDATE_GOLDEN=1 cargo test --test golden` rewrites `.out` files. Read every changed `.out` before committing; never accept output you haven't checked.
 - `examples/*.ck` must check with zero diagnostics (enforced by the golden test). `tools/checkers.ck` too.
 - `bench/*.ck` must check with zero diagnostics too (enforced by the golden test), so the benchmarks keep up with the language.
@@ -43,6 +42,7 @@ src/elab/refine.rs   refinements inside types: inline and function-type refineme
 src/elab/tyeq.rs     type equations `A == B` (#209): wanted at uses (E0294), given in bodies and `match` arms (classes, representatives), impossible cases
 src/elab/cowns.rs    a `when`'s cowns differ (§8.5): the obligation, types that differ for every instantiation; new cowns from calls (§7.1)
 src/elab/qualify.rs  names in diagnostics: two declarations (or locals) of one name told apart, as the module refers to each (§6 rule 8)
+src/elab/effects.rs  calls with effects (§7.1): given a capability or a `Sched`, each a value of its own to the prover (`Prim::Effect`)
 src/elab/eq.rs       `==` never compares functions: in compiled code, and through type parameters (D125)
 src/elab/descr.rs    showing values by type (#170): which type parameters get descriptors, closed over calls; E0293
 src/doc.rs           `ckc doc FILE`: a module's exported declarations and descriptions as JSON lines (§15.6, D131)
@@ -58,7 +58,7 @@ src/native/ir.rs     erasure: core terms → runtime code (§13.1); a one-field 
 src/native/inline.rs small functions inlined at their calls; a `match` on one's result pushed into branches, resolved at constructors; `Ir::At` names the code's definition; an optimization (§14)
 src/native/fold.rs   maximal partial evaluation (§8.9): each function's code folded after inlining; operations kept, and why; the check (`CHECKERS_RESIDUAL_CHECK=1`)
 src/native/lower.rs  closure conversion: runtime code → first-order functions (§14)
-src/native/tailrec.rs recursion made tail recursion before reference counting: `f.dps` (a constructor around the call), `f.acc` (`+`, `*`, `++` after it); an optimization (§14)
+src/native/tailrec.rs recursion made tail recursion before reference counting: `f.dps` (a constructor around the call), `f.acc` (`+`, `*` after it; `++` after it, accumulated as the type's `++` copies: a list in front, other pieces in a list appended at once); an optimization (§14)
 src/native/rc.rs     reference counting, Perceus style: dup/drop, borrowing, reuse (D74)
 src/native/codegen.rs first-order code → Cranelift (JIT and object files)
 src/native/eval.rs   compile-time evaluation: `check` and staging, one in-memory module per program (D80)
@@ -91,6 +91,7 @@ tests/packages.rs    packages end to end with local git repositories (M14)
 tests/parking.rs     waiting behaviours hold no thread, at several thread counts (M16)
 tests/stdin.rs       standard input that fails to read: `terminal.read_line` gives the error
 tests/scaling.rs     checking time grows with the program, not its square: long operator chains
+tests/tailrec_scaling.rs `++` after a recursive call (`f.acc`) runs in time linear in the result: strings, bytes, arrays, lists
 tests/deep_values.rs a failed `check` shows a value nested a million deep (its golden output would be megabytes)
 tests/std.rs         standard library on disk: `CHECKERS_STD`, edits without rebuilding, E0223/E0361, §16.3 lists every builtin
 tests/golden.rs      golden test runner (tests/parse, check, types, stage, run, stress, fmt, tool, doc; examples; tools; repository formatting)
