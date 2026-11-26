@@ -73,6 +73,11 @@ fn subject_range(t: &Tm, subject: usize, constant: &dyn Fn(&Tm) -> Option<i128>)
     }
 }
 
+/// The most function entries and loop iterations native code may make
+/// computing a value known at compile time (§8.9): a call outside its
+/// preconditions may not end (`checkers_rt::prog::ck_tick`).
+pub const KNOWN_WORK: u64 = 10_000_000;
+
 impl Elab {
     /// The constant bounds of a number type, if it is one: its aliases'
     /// predicates, down to `Int`.
@@ -163,8 +168,9 @@ impl Elab {
     /// where it can, within its steps; else it runs as native code, as
     /// staging runs compile-time code, once every function it reaches is
     /// total and its module checked (its termination too). A computation
-    /// that fails, or that can't run yet, isn't known: never an error.
-    /// Results are kept per term (per function and arguments).
+    /// that fails, that can't run yet, or that doesn't finish within
+    /// `KNOWN_WORK`, isn't known: never an error. Results are kept per term
+    /// (per function and arguments).
     pub fn known_value(&self, t: &Tm) -> Option<Lit> {
         if let Tm::Lit(l) = t {
             return Some(l.clone());
@@ -182,8 +188,15 @@ impl Elab {
             // Not known yet: a function it needs may be checked later.
             return None;
         }
+        if !self.preconditions_hold(t, 0) {
+            // A total function ends where its preconditions hold: outside
+            // them its value isn't known, and the call's precondition is
+            // reported where it is proved.
+            self.known_cache.borrow_mut().insert(key, None);
+            return None;
+        }
         let mut ev = crate::native::eval::Evaluator::plain(&self.g);
-        let k = match ev.eval(t) {
+        let k = match ev.eval_limited(t, KNOWN_WORK) {
             Ok(v) => {
                 let r = ev.reify(v);
                 ev.release(v);
@@ -197,6 +210,77 @@ impl Elab {
         };
         self.known_cache.borrow_mut().insert(key, k.clone());
         k
+    }
+
+    /// Do the preconditions of every call in closed term `t` (outside
+    /// lambdas: those calls' preconditions are their caller's to prove)
+    /// hold for its arguments, as values known at compile time? `depth`
+    /// counts preconditions of preconditions.
+    fn preconditions_hold(&self, t: &Tm, depth: usize) -> bool {
+        fn calls(t: &Tm, out: &mut Vec<Tm>) {
+            match t {
+                Tm::App(..) => {
+                    let (h, args) = t.spine();
+                    if let Tm::Def(_) = h {
+                        out.push(t.clone());
+                    }
+                    for a in args {
+                        calls(a, out);
+                    }
+                }
+                Tm::Lam(..) => {}
+                _ => t.each_sub(|x, n| {
+                    if n == 0 {
+                        calls(x, out)
+                    }
+                }),
+            }
+        }
+        let mut found = Vec::new();
+        calls(t, &mut found);
+        let empty = Rc::new(Vec::new());
+        for c in &found {
+            let (h, args) = c.spine();
+            let Tm::Def(d) = h else { continue };
+            let Some(spec) = self.specs.get(d) else { continue };
+            if args.len() < spec.n_binders {
+                continue;
+            }
+            // The spine's arguments, first to last; the result isn't
+            // mentioned by a precondition.
+            let mut env: Vec<Val> = args.iter().rev().take(spec.n_binders).map(|a| eval(&self.g, &empty, a)).collect();
+            env.push(Val::Error);
+            for p in spec.preds.iter().filter(|p| !p.is_post) {
+                let goal = quote(&self.g, 0, &self.inst_pred(p, env.clone()));
+                if self.known_bool(&goal, depth) != Some(true) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// The truth of closed `t` at compile time, computed as `known_value`
+    /// computes a number.
+    fn known_bool(&self, t: &Tm, depth: usize) -> Option<bool> {
+        let wk = &self.g.well_known;
+        let saved = self.g.fuel.replace(crate::core::DEFAULT_FUEL);
+        let forced = crate::core::force(&self.g, eval(&self.g, &Rc::new(Vec::new()), t));
+        self.g.fuel.set(saved);
+        match forced {
+            Val::Con(c, _) if Some(c) == wk.true_con => return Some(true),
+            Val::Con(c, _) if Some(c) == wk.false_con => return Some(false),
+            _ => {}
+        }
+        let t = &runtime_closed(&self.g, t)?;
+        if depth > 8 || !self.runnable(t) || !self.preconditions_hold(t, depth + 1) {
+            return None;
+        }
+        let mut ev = crate::native::eval::Evaluator::plain(&self.g);
+        let v = ev.eval_limited(t, KNOWN_WORK).ok()?;
+        let b = !ev.is_false(v);
+        ev.release(v);
+        Some(b)
     }
 
     /// Can `t` run at compile time now? Every definition it reaches has
