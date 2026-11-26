@@ -1,0 +1,32 @@
+error[E0450]: cannot prove `x == y`, required to call `need`
+  --> effect_calls.ck:16:5
+   |
+16 |     need a b
+   |     ^^^^^^^^ `need` requires `x == y`
+   = note: `read_line` is built into `std.terminal`: here the prover knows only its postconditions and the lemmas you bring in with `have`
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+error[E0450]: cannot prove `x == y`, required to call `need`
+  --> effect_calls.ck:19:5
+   |
+19 |     need (cown.new 0 sched) (cown.new 0 sched)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `need` requires `x == y`
+   = note: `new` is built into `std.cown`: here the prover knows only its postconditions and the lemmas you bring in with `have`
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+error[E0450]: cannot prove `x == y`, required to call `need`
+  --> effect_calls.ck:28:5
+   |
+28 |     need (g ()) (g ())
+   |     ^^^^^^^^^^^^^^^^^^ `need` requires `x == y`
+   = note: `read_line` is built into `std.terminal`: here the prover knows only its postconditions and the lemmas you bring in with `have`
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+error[E0450]: cannot prove `x == y`, required to call `need`
+  --> effect_calls.ck:40:5
+   |
+40 |     need (read caps) (read caps)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `need` requires `x == y`
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+effect_calls.ck: 4 errors, 0 warnings

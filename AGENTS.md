@@ -40,6 +40,7 @@ src/elab/interval.rs arithmetic keeps constant bounds: ranges as anonymous refin
 src/elab/refine.rs   refinements inside types: inline and function-type refinements, implication, variance, E0262 (D71, D82–D87)
 src/elab/tyeq.rs     type equations `A == B` (#209): wanted at uses (E0294), given in bodies and `match` arms (classes, representatives), impossible cases
 src/elab/cowns.rs    a `when`'s cowns differ (§8.5): the obligation, types that differ for every instantiation; new cowns from calls (§7.1)
+src/elab/effects.rs  calls with effects (§7.1): given a capability or a `Sched`, each a value of its own to the prover (`Prim::Effect`)
 src/elab/eq.rs       `==` never compares functions: in compiled code, and through type parameters (D125)
 src/elab/descr.rs    showing values by type (#170): which type parameters get descriptors, closed over calls; E0293
 src/doc.rs           `ckc doc FILE`: a module's exported declarations and descriptions as JSON lines (§15.6, D131)

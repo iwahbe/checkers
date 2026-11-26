@@ -54,6 +54,8 @@ fn max_of xs -> m : xs~List Int, xs != [], m~Int
 
 **Functions of other modules** are sealed ([Modules](modules.md#sealing)): Z3 knows only their postconditions. A library therefore exports, as postconditions and lemmas, the facts its users need. A function exported `transparent` is known by its definition everywhere.
 
+**Calls with effects** are known only by their postconditions. A call given a capability or a `Sched` (as an argument, or inside one), or calling a function that captured one, can return a different value each time: two lines read from the terminal, two new cowns. So each such call is a value of its own, and two of them are never known to be equal, wherever they are written.
+
 **Constants** are known by their value. A constant array's length and elements are known as facts.
 
 **Values.** Numbers are Z3's integers; `String`s are their UTF-8 bytes, so `len`, `++` and encoding are exact; `Array`s and `Bytes` are sequences; enums, records, lists and tuples are datatypes; function values are functions Z3 can apply, and a lambda is known by its body.
