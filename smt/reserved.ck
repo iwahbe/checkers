@@ -15,9 +15,10 @@ import std.string
 #
 # Z3 reads `bv` and digits as a bit-vector literal (`(_ bv5 8)`) whatever
 # the digits: measured at `bv0` to `bv9` and `bv1234567890`, so every such
-# spelling counts.
+# spelling counts. Likewise `#f`, digits, `m` and digits is a finite-field
+# literal to Z3, also written between bars.
 export fn is_reserved name -> r : name~Bytes, r~Bool
-    if bv_literal name
+    if bv_literal name or ff_literal name
         True
     else
         match string.from_utf8 name
@@ -26,6 +27,18 @@ export fn is_reserved name -> r : name~Bytes, r~Bool
 
 fn bv_literal name -> r : name~Bytes, r~Bool
     len name > 2 and name[0] == 'b' and name[1] == 'v' and digits name 2
+
+fn ff_literal name -> r : name~Bytes, r~Bool
+    len name > 2 and name[0] == '#' and name[1] == 'f' and ff_value name 2
+
+# Digits from `i`, then `m` and digits to the end.
+fn ff_value name i -> r : name~Bytes, i~Nat, i <= len name, r~Bool
+    let j = digits_end name i
+    j > i and j < len name and name[j] == 'm' and j + 1 < len name and digits name (j + 1)
+
+fn digits_end name i -> j : name~Bytes, i~Nat, i <= len name, j~Nat, i <= j, j <= len name
+    decreasing len name - i
+    if i < len name and '0' <= name[i] and name[i] <= '9' then digits_end name (i + 1) else i
 
 fn digits name i -> r : name~Bytes, i~Nat, i <= len name, r~Bool
     decreasing len name - i

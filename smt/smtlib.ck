@@ -132,7 +132,10 @@ fn expr src i -> r : src~Bytes, i~Nat, i < len src, r~Result (Parsed (SExpr src)
         Err (Error i b"unexpected `)`")
     else if b == '|'
         let j = try quoted_end src i (i + 1)
-        Ok (Parsed (Leaf (Symbol (bytes.slice src (i + 1) j) True) i) (j + 1))
+        if j == i + 1
+            Err (Error i b"the empty symbol `||` is outside the subset `ckc` writes")
+        else
+            Ok (Parsed (Leaf (Symbol (bytes.slice src (i + 1) j) True) i) (j + 1))
     else if b == ':'
         let j = symbol_end src (i + 1)
         if j == i + 1
@@ -354,12 +357,18 @@ fn keyword name -> r : name~Name, r~Bool
 # Whether a function-like name is taken: a built-in, a function, a
 # constructor, a tester or a selector.
 fn taken sig name -> r : sig~Sig, name~Name, r~Bool
-    keyword name or reserved.is_reserved name or prim_op name 2 != None or outside name or find_fun sig.funs name 0 != None
+    tester_like name or keyword name or reserved.is_reserved name or prim_op name 2 != None or outside name or find_fun sig.funs name 0 != None
         or find_ctor sig.datatypes name 0 != None or tester_of sig.datatypes name != None
         or find_sel sig.datatypes name 0 != None
 
 fn sort_taken sig name -> r : sig~Sig, name~Name, r~Bool
-    keyword name or reserved.is_reserved name or find_sort sig.sorts name 0 != None or find_datatype sig.datatypes name 0 != None
+    tester_like name or keyword name or reserved.is_reserved name or find_sort sig.sorts name 0 != None or find_datatype sig.datatypes name 0 != None
+
+# Whether `name` is spelled `is-…`, as a tester is: nothing a query
+# introduces is, so that a tester's spelling has no other meaning (Z3 reads
+# `is-` as the tester of a constructor `||`).
+fn tester_like name -> r : name~Name, r~Bool
+    len name >= 3 and bytes.matches_at name 0 b"is-"
 
 # `name`, as written in a message.
 fn shown name -> r : name~Name, r~Bytes
@@ -649,8 +658,7 @@ fn twice n -> r : n~Name, r~Bytes
 fn add_command src c cmd p -> r : src~Bytes, c~Context, cmd~Command, p~Nat, p < len src,
                                   r~Result (d~Context, list.length (term.commands c) < list.length (term.commands d)) (Error src)
     let _ = try binders_free src (term.extend (term.signature c) cmd) (term.names c) (command_binders cmd) p
-    let added = term.add c cmd
-    match added
+    match term.add c cmd
         Ok d   ->
             have list.length_append (term.commands c) [cmd]
             Ok d
@@ -1049,9 +1057,14 @@ fn declaration src sig n hp args p -> r : src~Bytes, sig~Sig, n~Name, hp~Nat, hp
                                           p~Nat, p < len src, r~Result Command (Error src)
     if n == b"declare-sort"
         match args
-            [Leaf (Symbol s _) sp, Leaf (Numeral k) _] ->
-                if sort_taken sig s then Err (Error sp (clash s b" is already a sort")) else Ok (DeclareSort (SortDecl s k))
-            _                                          -> Err (Error p b"expected `(declare-sort NAME NUMERAL)`")
+            [Leaf (Symbol s _) sp, Leaf (Numeral k) kp] ->
+                if sort_taken sig s
+                    Err (Error sp (clash s b" is already a sort"))
+                else if k >= 4294967296
+                    Err (Error kp TOO_MANY)
+                else
+                    Ok (DeclareSort (SortDecl s k))
+            _                                           -> Err (Error p b"expected `(declare-sort NAME NUMERAL)`")
     else if n == b"declare-fun"
         match args
             [Leaf (Symbol f _) fp, Node ps _, rs] ->
@@ -1100,13 +1113,18 @@ fn declaration src sig n hp args p -> r : src~Bytes, sig~Sig, n~Name, hp~Nat, hp
     else
         Err (Error hp (b"unknown command " ++ shown n))
 
+# Z3 takes a sort's number of parameters as an unsigned 32-bit number.
+let TOO_MANY = b"a sort can't have 2^32 or more parameters"
+
 # An error if `f` can't name a new function.
 fn fresh src sig f p -> r : src~Bytes, sig~Sig, f~Name, p~Nat, p < len src, r~Result Unit (Error src)
     if taken sig f then Err (Error p (clash f b" is already declared")) else Ok ()
 
 # Why `n` can't be declared: it `already` is, or Z3 gives it a meaning.
 fn clash n already -> r : n~Name, already~Bytes, r~Bytes
-    if keyword n or reserved.is_reserved n or prim_op n 2 != None or outside n
+    if tester_like n
+        shown n ++ b" is spelled as a tester is, `is-` and a constructor's name, so a query can't introduce it"
+    else if keyword n or reserved.is_reserved n or prim_op n 2 != None or outside n
         shown n ++ b" has a meaning of its own in Z3, so a query can't declare it"
     else
         shown n ++ already
@@ -1157,9 +1175,73 @@ fn datatypes src sig hs ds p -> r : src~Bytes, sig~Sig, hs~List (SExpr src), ds~
     match first_repeat (group_names dts)
         Some n -> Err (Error p (shown n ++ b" names two constructors, testers or selectors here"))
         None   ->
-            match first_taken sig (group_names dts)
+            match first_taken sig (introduced_names dts)
                 Some n -> Err (Error p (clash n b" is already declared"))
-                None   -> Ok (DeclareDatatypes dts)
+                None   ->
+                    match first_tester_taken sig (tester_names dts)
+                        Some n -> Err (Error p (clash n b" is already declared"))
+                        None   ->
+                            if covariant (len sig.datatypes) (len sig.datatypes + list.length dts) dts
+                                Ok (DeclareDatatypes dts)
+                            else
+                                Err (Error p NOT_COVARIANT)
+
+let NOT_COVARIANT = b"a field whose sort is an array may not mention a datatype of its own group in its index sort, nor in its value sort unless that is itself a datatype (Z3: not co-variant)"
+
+# The constructors' and selectors' names of a group: what it introduces.
+fn introduced_names ds -> r : ds~List Datatype, r~List Name
+    match ds
+        []        -> []
+        d :: rest -> ctor_field_names d.ctors ++ introduced_names rest
+
+fn ctor_field_names cs -> r : cs~List Ctor, r~List Name
+    match cs
+        []        -> []
+        c :: rest -> c.name :: field_names c.fields ++ ctor_field_names rest
+
+# The testers of a group.
+fn tester_names ds -> r : ds~List Datatype, r~List Name
+    match ds
+        []        -> []
+        d :: rest -> list.map (\c -> tester_name c.name) d.ctors ++ tester_names rest
+
+# The first tester already declared as something else.
+fn first_tester_taken sig ns -> r : sig~Sig, ns~List Name, r~Option Name
+    match ns
+        []        -> None
+        n :: rest ->
+            if keyword n or reserved.is_reserved n or find_fun sig.funs n 0 != None or tester_of sig.datatypes n != None
+                Some n
+            else
+                first_tester_taken sig rest
+
+# Whether no field of `ds`, the datatypes numbered from `lo` below `hi`, is
+# an array that mentions one of them in its index sort, or in its value
+# sort when that isn't itself a datatype: Z3 (5.3.3) rejects such a group
+# as not co-variant (measured).
+fn covariant lo hi ds -> r : lo~Nat, hi~Nat, ds~List Datatype, r~Bool
+    match ds
+        []        -> True
+        d :: rest -> list.all (\c -> list.all (\f -> field_covariant lo hi f.sort) c.fields) d.ctors and covariant lo hi rest
+
+fn field_covariant lo hi s -> r : lo~Nat, hi~Nat, s~Sort, r~Bool
+    match s
+        Arr i v -> not (mentions lo hi i) and value_covariant lo hi v
+        _       -> True
+
+fn value_covariant lo hi v -> r : lo~Nat, hi~Nat, v~Sort, r~Bool
+    match v
+        Data _ _ -> True
+        _        -> not (mentions lo hi v)
+
+# Whether `s` mentions a datatype numbered from `lo` below `hi`.
+fn mentions lo hi s -> r : lo~Nat, hi~Nat, s~Sort, r~Bool
+    match s
+        Seq e       -> mentions lo hi e
+        Arr i v     -> mentions lo hi i or mentions lo hi v
+        Data d args -> (lo <= d and d < hi) or not (list.all (\a -> not (mentions lo hi a)) args)
+        Unin _ args -> not (list.all (\a -> not (mentions lo hi a)) args)
+        _           -> False
 
 fn blanks k -> r : k~Nat, r~List Name
     if k == 0 then [] else b"" :: blanks (k - 1)
@@ -1167,13 +1249,18 @@ fn blanks k -> r : k~Nat, r~List Name
 fn dt_heads src sig hs acc -> r : src~Bytes, sig~Sig, hs~List (SExpr src), acc~List Datatype,
                                   r~Result (List Datatype) (Error src)
     match hs
-        []                                                        -> Ok (list.reverse acc)
-        Node [Leaf (Symbol n _) np, Leaf (Numeral k) _] _ :: rest ->
+        []                                                         -> Ok (list.reverse acc)
+        Node [Leaf (Symbol n _) np, Leaf (Numeral k) kp] _ :: rest ->
             if sort_taken sig n or dt_named acc n
                 Err (Error np (clash n b" is already a sort"))
+            else if k >= 4294967296
+                Err (Error kp TOO_MANY)
             else
-                dt_heads src sig rest (Datatype n (blanks k) [] :: acc)
-        e :: _                                                    -> Err (Error (at e) b"expected `(NAME NUMERAL)`")
+                match acc
+                    a :: _ if list.length a.params != k ->
+                        Err (Error kp b"the datatypes of one `declare-datatypes` must all have the same number of parameters in the subset `ckc` writes")
+                    _ -> dt_heads src sig rest (Datatype n (blanks k) [] :: acc)
+        e :: _                                                     -> Err (Error (at e) b"expected `(NAME NUMERAL)`")
 
 fn dt_named ds n -> r : ds~List Datatype, n~Name, r~Bool
     match ds
@@ -1193,6 +1280,8 @@ fn dt_bodies src sig shells ds p -> r : src~Bytes, sig~Sig, shells~List Datatype
 # One datatype's declaration: `(par (T …) (C …))` or `(C …)`.
 fn dt_body src sig shell d -> r : src~Bytes, sig~Sig, shell~Datatype, d~SExpr src, r~Result Datatype (Error src)
     match d
+        Node [Leaf (Symbol kw False) pp, Node [] _, Node _ _] _ if kw == b"par" ->
+            Err (Error pp b"a datatype without parameters is written without `par` in the subset `ckc` writes")
         Node [Leaf (Symbol kw False) pp, Node ps _, Node cs _] _ if kw == b"par" ->
             let params = try param_names src ps
             if list.length params != list.length shell.params

@@ -39,9 +39,11 @@ export fn answer q -> a : q~Query, a~Answer
 
 # Our answer to the query `src` reads as, written as Z3 writes its own.
 #
-# Z3 has no model to show after `unsat` or `unknown`, so a `(get-value …)`
-# gets `(error "line L column C: model is not available")`, where L and C
-# are those of the command's closing `)`, its column counted from 0.
+# `main` has no model to show after its `unsat` or `unknown`, so a
+# `(get-value …)` gets Z3's error for that case, `(error "line L column C:
+# model is not available")`, where L and C are as Z3 gives those of the
+# command's closing `)` (`z3_column`). (Z3 itself may show a model after
+# `unknown`; `main` has none.)
 #
 # A `(get-unsat-core)` gets, as from Z3, an error at its closing `)` unless
 # the query sets `(set-option :produce-unsat-cores true)` and the answer is
@@ -105,11 +107,40 @@ fn names ns -> r : ns~List term.Name, r~Bytes
         [n]       -> smtlib.name_text n
         n :: rest -> smtlib.name_text n ++ b" " ++ names rest
 
-# Z3's error for the command at `at`: at its closing `)`, the column counted
-# from 0.
+# Z3's error for the command at `at`: at its closing `)`.
 fn error_at src at message -> r : src~Bytes, at~Nat, at < len src, message~Bytes, r~Bytes
     match smtlib.end_of src at
         Err _ -> b""
         Ok j  ->
-            let (line, col) = smtlib.position src (j - 1)
-            b"(error \"line " ++ smtlib.numeral line ++ b" column " ++ smtlib.numeral (col - 1) ++ b": " ++ message ++ b"\")\n"
+            let (line, _) = smtlib.position src (j - 1)
+            let col = z3_column src (j - 1)
+            b"(error \"line " ++ smtlib.numeral line ++ b" column " ++ smtlib.numeral col ++ b": " ++ message ++ b"\")\n"
+
+# The column Z3 (5.3.3) gives byte `pos`: its offset in its line, counted
+# from 0, and one more on the first line and on a line that starts inside a
+# quoted symbol (measured; a line starting inside a comment doesn't).
+fn z3_column src pos -> r : src~Bytes, pos~Nat, pos <= len src, r~Nat
+    let (start, extra) = line_start src 0 pos False False 0 1
+    pos - start + extra
+
+# Where the line holding `pos` starts, and whether it is one more, reading
+# from `i`: `bar` and `comment` say whether `i` is inside a quoted symbol or
+# a comment, `start` and `extra` are so far.
+fn line_start src i pos bar comment start extra -> r : src~Bytes, i~Nat, pos~Nat, i <= pos, pos <= len src, bar~Bool,
+                                                       comment~Bool, start~Nat, start <= i, extra~Nat,
+                                                       r~((s~Nat, s <= pos), Nat)
+    decreasing pos - i
+    if i >= pos
+        (start, extra)
+    else
+        let b = src[i]
+        if b == '\n'
+            line_start src (i + 1) pos bar False (i + 1) (if bar then 1 else 0)
+        else if comment
+            line_start src (i + 1) pos bar True start extra
+        else if b == '|'
+            line_start src (i + 1) pos (not bar) False start extra
+        else if b == ';' and not bar
+            line_start src (i + 1) pos bar True start extra
+        else
+            line_start src (i + 1) pos bar False start extra

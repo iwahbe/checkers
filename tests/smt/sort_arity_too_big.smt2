@@ -1,0 +1,5 @@
+(set-logic ALL)
+(declare-sort S 4294967296)
+(declare-const x Int)
+(assert (not (= x 1)))
+(check-sat)
