@@ -1,8 +1,8 @@
 module within_links
 
 # An `Fs` confined by `files.within` follows a symbolic link that stays
-# inside its directory and refuses one whose resolution leaves it, for every
-# operation on paths.
+# inside its directory, relative or absolute, and refuses one whose
+# resolution leaves it, for every operation on paths.
 
 import std.system (System, ExitCode)
 import std.terminal (Term)
@@ -40,6 +40,7 @@ fn setup -> s : s~String
         ++ " && echo inside > links.tmp/root/sub/inside.txt"
         ++ " && ln -s ../outside links.tmp/root/relative"
         ++ " && ln -s \"$PWD/links.tmp/outside\" links.tmp/root/absolute"
+        ++ " && ln -s \"$PWD/links.tmp/root/../outside\" links.tmp/root/through"
         ++ " && ln -s ../../outside links.tmp/root/sub/nested"
         ++ " && ln -s sub/../../outside links.tmp/root/dotdot"
         ++ " && ln -s relative links.tmp/root/chain"
@@ -49,6 +50,9 @@ fn setup -> s : s~String
         ++ " && ln -s sub/inside.txt links.tmp/root/to_file"
         ++ " && ln -s ../sub/./inside.txt links.tmp/root/sub/up"
         ++ " && ln -s sub/nothing.txt links.tmp/root/to_new"
+        ++ " && ln -s \"$PWD/links.tmp/root/sub\" links.tmp/root/absolute_in"
+        ++ " && ln -s root links.tmp/alias"
+        ++ " && ln -s \"$PWD/links.tmp/alias/sub/inside.txt\" links.tmp/root/around"
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { term, fs, proc = p } = sys
@@ -57,6 +61,7 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     # Leaving the directory: refused.
     read "relative" "relative/secret.txt" root term
     read "absolute" "absolute/secret.txt" root term
+    read "through" "through/secret.txt" root term
     read "nested" "sub/nested/secret.txt" root term
     read "dotdot" "dotdot/secret.txt" root term
     read "chain" "chain/secret.txt" root term
@@ -79,6 +84,8 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     read "to_sub" "to_sub/inside.txt" root term
     read "to_file" "to_file" root term
     read "up" "sub/up" root term
+    read "absolute_in" "absolute_in/inside.txt" root term
+    read "around" "around" root term
     read "within to_sub" "inside.txt" (files.within "to_sub" root) term
     report "list to_sub" (files.list "to_sub" root) term
     report "write to_new" (files.write "to_new" b"new" root) term
@@ -87,5 +94,11 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     report "list sub/a/b" (files.list "sub/a/b" root) term
     open "to_sub/inside.txt" root term
     create "to_sub/created.txt" root term
+    # A directory made after `within`: reached once it is there.
+    let later = files.within "later" root
+    read "later, before" "x" later term
+    report "create_dirs later" (files.create_dirs "later" root) term
+    report "write later/x" (files.write "later/x" b"x" root) term
+    read "later, after" "x" later term
     report "cleanup" (proc.exec "rm" ["-rf", "links.tmp"] p) term
     Success

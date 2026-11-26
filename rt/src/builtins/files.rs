@@ -49,25 +49,17 @@ builtin!(ckb_files_write, |a| match path(a[2], s(a[0])) {
     }
 });
 
-// The directory is opened now and held: the `Fs` reaches what is beneath
-// it, whatever later becomes of its path. One that can't be opened, or lies
-// outside `fs`, gives an `Fs` that reaches nothing: its every operation fails
-// with the reason.
+// `dir` as a path in `fs`, opened beneath it now if it is there, else the
+// first time it is used and there; held open after that (`crate::confine`).
 builtin!(ckb_files_within, |a| {
-    let root = match path(a[1], s(a[0])) {
-        Err(e) => {
-            let m = match obj(e) {
-                Some(Obj::IoErr(m)) => m.clone(),
-                _ => bug("expected an IoError"),
-            };
-            drop_w(e);
-            Root::Denied(m)
-        }
-        Ok(p) => match blocking(move || p.dir()) {
-            Ok(d) => Root::Dir(d),
-            Err(e) => Root::Denied(io_message(&e)),
-        },
+    let parent = match obj(a[1]) {
+        Some(Obj::Fs(root)) => Some(root.clone()),
+        _ if a[1] == CAP_FS => None,
+        _ => bug("expected a file system capability"),
     };
+    let root = std::sync::Arc::new(Root::new(parent, s(a[0])));
+    let r = root.clone();
+    blocking(move || r.try_open());
     new_obj(Obj::Fs(root))
 });
 

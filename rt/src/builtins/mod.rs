@@ -160,11 +160,7 @@ pub(crate) fn io_err(m: &str) -> W {
 /// (`crate::confine`).
 pub(crate) fn path(fs: W, p: &str) -> Result<Place, W> {
     match obj(fs) {
-        Some(Obj::Fs(Root::Dir(d))) => match d.try_clone() {
-            Ok(d) => Ok(Place::Beneath(d, p.to_string())),
-            Err(e) => Err(describe_io(&e)),
-        },
-        Some(Obj::Fs(Root::Denied(m))) => Err(io_err(m)),
+        Some(Obj::Fs(root)) => Ok(Place::Beneath(root.clone(), p.to_string())),
         _ if fs == CAP_FS => Ok(Place::Path(PathBuf::from(p))),
         _ => Err(io_err("not a file system capability")),
     }

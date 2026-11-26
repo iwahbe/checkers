@@ -1,13 +1,17 @@
 //! Paths under an `Fs` (`std.files`, §13.4). The root `Fs` takes paths as
-//! the operating system does. One that `files.within` confines holds its
-//! directory open and resolves each path from it one component at a time:
-//! every component is opened with `O_NOFOLLOW` relative to the directory
-//! before it, so the kernel never follows a link itself. A link is read and
-//! its target resolved here, from the link's directory; a `..` in it goes
-//! back to a directory already opened, and one above the root is refused, as
-//! is an absolute target. A path given may not be absolute or contain `..`.
-//! Nothing is checked before it is opened, so a link changed meanwhile can't
-//! lead out of the directory.
+//! the operating system does. One that `files.within` confines is a
+//! directory named by a path in the `Fs` it was made from: it is opened,
+//! beneath that `Fs`, the first time it is there, and held open after that.
+//! Each path is resolved from it one component at a time: every component
+//! is opened with `O_NOFOLLOW` relative to the directory before it, so the
+//! kernel never follows a link itself. A link is read and its target
+//! resolved here, from the link's directory; a `..` in it goes back to a
+//! directory already opened, and one above the root is refused. An absolute
+//! target is walked from `/` the same way, opening only directories, until
+//! it reaches the root, known by its device and inode; one that doesn't is
+//! refused. A path given may not be absolute or contain `..`. Nothing is
+//! checked before it is opened, so a link changed meanwhile can't lead out
+//! of the directory.
 
 use std::ffi::{CString, OsStr};
 use std::fs::File;
@@ -16,23 +20,69 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
 
 /// A confined `Fs` (`Obj::Fs`).
-pub enum Root {
-    /// The directory, held open.
-    Dir(OwnedFd),
-    /// `within` couldn't open it, or it lies outside the `Fs` it was made
-    /// from: every operation fails with this message.
-    Denied(String),
+pub struct Root {
+    /// The `Fs` `path` is in: `None` for the root `Fs`.
+    parent: Option<Arc<Root>>,
+    path: String,
+    /// The directory, once it has been opened.
+    dir: OnceLock<Dir>,
+}
+
+/// An open directory and what identifies it.
+struct Dir {
+    fd: OwnedFd,
+    id: (u64, u64),
+}
+
+impl Root {
+    pub fn new(parent: Option<Arc<Root>>, path: &str) -> Root {
+        Root { parent, path: path.to_string(), dir: OnceLock::new() }
+    }
+
+    /// The directory, opened now if it hasn't been: it may not have been
+    /// there before. Two threads may both open it; one keeps it.
+    fn dir(&self) -> io::Result<&Dir> {
+        if let Some(d) = self.dir.get() {
+            return Ok(d);
+        }
+        let fd = match &self.parent {
+            None => std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY)
+                .open(&self.path)
+                .map(OwnedFd::from)?,
+            Some(p) => resolve(p.dir()?, &self.path, Last::Dir)?,
+        };
+        let d = Dir { id: id(&fd)?, fd };
+        let _ = self.dir.set(d);
+        Ok(self.dir.get().expect("set"))
+    }
+
+    /// Open the directory now if it is there (`within`).
+    pub fn try_open(&self) {
+        let _ = self.dir();
+    }
+}
+
+/// A directory's device and inode.
+fn id(fd: &OwnedFd) -> io::Result<(u64, u64)> {
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(fd.as_raw_fd(), &mut st) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    #[allow(clippy::unnecessary_cast)]
+    Ok((st.st_dev as u64, st.st_ino as u64))
 }
 
 /// Where a path leads, before it is opened.
 pub enum Place {
     /// Under the root `Fs`: the path as given.
     Path(PathBuf),
-    /// Under a confined one: its directory (a copy of the descriptor) and
-    /// the path relative to it.
-    Beneath(OwnedFd, String),
+    /// Under a confined one: the path relative to its directory.
+    Beneath(Arc<Root>, String),
 }
 
 /// What is opened at the end of a path.
@@ -56,11 +106,15 @@ pub fn outside() -> io::Error {
 }
 
 impl Place {
+    fn beneath(root: &Root, p: &str, last: Last) -> io::Result<OwnedFd> {
+        resolve(root.dir()?, p, last)
+    }
+
     /// The file at the path, for reading.
     pub fn open(self) -> io::Result<File> {
         match self {
             Place::Path(p) => File::open(p),
-            Place::Beneath(root, p) => resolve(&root, &p, Last::Read).map(File::from),
+            Place::Beneath(root, p) => Place::beneath(&root, &p, Last::Read).map(File::from),
         }
     }
 
@@ -68,17 +122,7 @@ impl Place {
     pub fn create(self) -> io::Result<File> {
         match self {
             Place::Path(p) => File::create(p),
-            Place::Beneath(root, p) => resolve(&root, &p, Last::Create).map(File::from),
-        }
-    }
-
-    /// The directory at the path, held open (`within`).
-    pub fn dir(self) -> io::Result<OwnedFd> {
-        match self {
-            Place::Path(p) => {
-                std::fs::OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY).open(p).map(OwnedFd::from)
-            }
-            Place::Beneath(root, p) => resolve(&root, &p, Last::Dir),
+            Place::Beneath(root, p) => Place::beneath(&root, &p, Last::Create).map(File::from),
         }
     }
 
@@ -91,7 +135,7 @@ impl Place {
             // components the path names the same directory, and its parents
             // are the ones to create.
             Place::Path(p) => std::fs::create_dir_all(p.components().collect::<PathBuf>()),
-            Place::Beneath(root, p) => resolve(&root, &p, Last::MakeDirs).map(drop),
+            Place::Beneath(root, p) => Place::beneath(&root, &p, Last::MakeDirs).map(drop),
         }
     }
 
@@ -108,7 +152,7 @@ impl Place {
                 }
                 Ok(es)
             }
-            Place::Beneath(root, p) => entries(resolve(&root, &p, Last::Dir)?),
+            Place::Beneath(root, p) => entries(Place::beneath(&root, &p, Last::Dir)?),
         }
     }
 }
@@ -155,27 +199,81 @@ fn components(p: &[u8]) -> Vec<Vec<u8>> {
     p.split(|&c| c == b'/').filter(|c| !c.is_empty() && *c != b".").rev().map(|c| c.to_vec()).collect()
 }
 
+/// `/`, to walk an absolute link's target from: the directories opened,
+/// or `None` if `/` is `root` itself.
+fn from_slash(root: &Dir) -> io::Result<Option<Vec<OwnedFd>>> {
+    let fd = unsafe { libc::open(c"/".as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(outside());
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    Ok(if id(&fd).map_err(|_| outside())? == root.id { None } else { Some(vec![fd]) })
+}
+
+/// Put a link's target in place of the link, in what is left to resolve:
+/// whether it is absolute.
+fn expand(links: &mut usize, target: &[u8], todo: &mut Vec<Vec<u8>>) -> io::Result<bool> {
+    *links += 1;
+    if *links > MAX_LINKS {
+        return Err(io::Error::from_raw_os_error(libc::ELOOP));
+    }
+    if target.is_empty() {
+        return Err(io::Error::from_raw_os_error(libc::ENOENT));
+    }
+    todo.extend(components(target));
+    Ok(target[0] == b'/')
+}
+
 /// Open what `path` names beneath `root`, following links that stay
 /// beneath it and refusing any resolution that leaves it.
-fn resolve(root: &OwnedFd, path: &str, last: Last) -> io::Result<OwnedFd> {
+fn resolve(root: &Dir, path: &str, last: Last) -> io::Result<OwnedFd> {
     // A path given may not be absolute or go up (§13.4); a link's target
-    // may go up, as long as it stays beneath `root`.
+    // may, as long as it ends beneath `root`.
     if path.starts_with('/') || path.split('/').any(|c| c == "..") {
         return Err(outside());
     }
     // The directories opened so far below `root`, innermost last.
     let mut dirs: Vec<OwnedFd> = Vec::new();
+    // While an absolute target is walked from `/` to `root`: the
+    // directories opened from `/`, innermost last. Nothing above `root` is
+    // opened but directories, and any failure there is a refusal: what
+    // isn't beneath `root` isn't reached, nor told about.
+    let mut above: Option<Vec<OwnedFd>> = None;
     // What is left to resolve, next last.
     let mut todo = components(path.as_bytes());
     let mut links = 0;
     while let Some(c) = todo.pop() {
+        if let Some(up) = &mut above {
+            if c == b".." {
+                // `/..` is `/`.
+                if up.len() > 1 {
+                    up.pop();
+                }
+                continue;
+            }
+            let dir = up.last().expect("`/` is opened first");
+            let name = cstr(&c)?;
+            match open_at(dir, &name, libc::O_RDONLY | libc::O_DIRECTORY) {
+                Ok(fd) if id(&fd).map_err(|_| outside())? == root.id => above = None,
+                Ok(fd) => up.push(fd),
+                Err(_) => match read_link_at(dir, &name) {
+                    Some(target) => {
+                        if expand(&mut links, &target, &mut todo)? {
+                            above = from_slash(root)?;
+                        }
+                    }
+                    None => return Err(outside()),
+                },
+            }
+            continue;
+        }
         if c == b".." {
             if dirs.pop().is_none() {
                 return Err(outside());
             }
             continue;
         }
-        let dir = dirs.last().unwrap_or(root);
+        let dir = dirs.last().unwrap_or(&root.fd);
         let name = cstr(&c)?;
         let at_end = todo.is_empty();
         let made = if last == Last::MakeDirs {
@@ -195,19 +293,13 @@ fn resolve(root: &OwnedFd, path: &str, last: Last) -> io::Result<OwnedFd> {
             Ok(fd) if at_end => return Ok(fd),
             Ok(fd) => dirs.push(fd),
             Err(e) => match read_link_at(dir, &name) {
-                // A link: its target takes its place, resolved from `dir`.
+                // A link: its target takes its place, resolved from `dir`,
+                // or from `/` if it is absolute.
                 Some(target) => {
-                    links += 1;
-                    if links > MAX_LINKS {
-                        return Err(io::Error::from_raw_os_error(libc::ELOOP));
+                    if expand(&mut links, &target, &mut todo)? {
+                        dirs.clear();
+                        above = from_slash(root)?;
                     }
-                    if target.first() == Some(&b'/') {
-                        return Err(outside());
-                    }
-                    if target.is_empty() {
-                        return Err(io::Error::from_raw_os_error(libc::ENOENT));
-                    }
-                    todo.extend(components(&target));
                 }
                 // Creating the directory failed for a reason other than its
                 // being there: that is why it can't be opened.
@@ -218,6 +310,10 @@ fn resolve(root: &OwnedFd, path: &str, last: Last) -> io::Result<OwnedFd> {
             },
         }
     }
+    // An absolute target that never reached `root`.
+    if above.is_some() {
+        return Err(outside());
+    }
     // The path names a directory already opened (it is empty, or ends in
     // `..` or a link to a directory).
     if last == Last::Create {
@@ -225,7 +321,7 @@ fn resolve(root: &OwnedFd, path: &str, last: Last) -> io::Result<OwnedFd> {
     }
     match dirs.pop() {
         Some(d) => Ok(d),
-        None => root.try_clone(),
+        None => root.fd.try_clone(),
     }
 }
 
@@ -294,8 +390,7 @@ mod tests {
     }
 
     fn at(t: &Path, p: &str) -> Place {
-        let root = Place::Path(t.join("root")).dir().unwrap();
-        Place::Beneath(root, p.to_string())
+        Place::Beneath(Arc::new(Root::new(None, t.join("root").to_str().unwrap())), p.to_string())
     }
 
     fn read(t: &Path, p: &str) -> io::Result<String> {
@@ -328,7 +423,9 @@ mod tests {
         assert!(refused(at(&t, "relative/new/dir").create_dirs()));
         assert!(!t.join("outside/new").exists());
         assert!(refused(at(&t, "relative").list()));
-        assert!(refused(at(&t, "relative").dir()));
+        // An absolute target that passes through the root and back out.
+        symlink(t.join("root/../outside"), t.join("root/through")).unwrap();
+        assert!(refused(read(&t, "through/secret.txt")));
         std::fs::remove_dir_all(&t).unwrap();
     }
 
@@ -354,6 +451,43 @@ mod tests {
         assert_eq!(names, ["a/", "inside.txt", "new.txt", "up"]);
         assert_eq!(read(&t, "loop").unwrap_err().raw_os_error(), Some(libc::ELOOP));
         assert_eq!(at(&t, "").create().unwrap_err().raw_os_error(), Some(libc::EISDIR));
+        // Absolute targets that lead into the root, directly and through a
+        // link above it (the temporary directory's own path may hold one).
+        symlink(t.join("root/sub"), t.join("root/absolute")).unwrap();
+        symlink("root", t.join("alias")).unwrap();
+        symlink(t.join("alias/sub/inside.txt"), t.join("root/around")).unwrap();
+        symlink(t.join("root"), t.join("root/itself")).unwrap();
+        assert_eq!(read(&t, "absolute/inside.txt").unwrap(), "inside");
+        assert_eq!(read(&t, "around").unwrap(), "inside");
+        assert_eq!(read(&t, "itself/itself/sub/inside.txt").unwrap(), "inside");
+        assert!(refused(read(&t, "itself/../outside/secret.txt")));
+        std::fs::remove_dir_all(&t).unwrap();
+    }
+
+    /// A confined directory that isn't there yet is opened once it is.
+    #[test]
+    fn within_before_the_directory_is_there() {
+        let t = fixture("later");
+        let root = Arc::new(Root::new(None, t.join("root").to_str().unwrap()));
+        let later = Arc::new(Root::new(Some(root.clone()), "later"));
+        let read_x = || {
+            let mut s = String::new();
+            Place::Beneath(later.clone(), "x".into()).open()?.read_to_string(&mut s)?;
+            Ok::<_, io::Error>(s)
+        };
+        assert_eq!(read_x().unwrap_err().kind(), io::ErrorKind::NotFound);
+        std::fs::create_dir(t.join("root/later")).unwrap();
+        std::fs::write(t.join("root/later/x"), "x").unwrap();
+        assert_eq!(read_x().unwrap(), "x");
+        // Once open, it stays the directory it was.
+        std::fs::rename(t.join("root/later"), t.join("root/moved")).unwrap();
+        symlink("../outside", t.join("root/later")).unwrap();
+        assert_eq!(read_x().unwrap(), "x");
+        // One that leads out is refused each time.
+        let out = Arc::new(Root::new(Some(root.clone()), "out"));
+        assert_eq!(Place::Beneath(out.clone(), "secret.txt".into()).open().unwrap_err().kind(), io::ErrorKind::NotFound);
+        symlink("../outside", t.join("root/out")).unwrap();
+        assert!(refused(Place::Beneath(out, "secret.txt".into()).open()));
         std::fs::remove_dir_all(&t).unwrap();
     }
 }

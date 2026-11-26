@@ -25,8 +25,9 @@ export fn write path contents fs -> r : path~String, contents~Bytes, fs~Fs, r~Re
 # An `Fs` that reaches only `dir` and what is inside it: its paths are
 # relative to `dir`, and an absolute path or one with `..` fails. It follows
 # a symbolic link that stays inside `dir`, and refuses a path whose
-# resolution leaves it. `dir` is opened now: if it can't be, or is outside
-# `fs`, every operation of the result fails, saying why.
+# resolution leaves it. `dir` is opened when it is there, now or at the first
+# operation after, and stays that directory; until then every operation
+# fails, saying why.
 export fn within dir fs -> r : dir~String, fs~Fs, r~Fs
     __builtin
 

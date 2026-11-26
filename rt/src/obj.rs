@@ -72,7 +72,7 @@ pub enum Obj {
     Killer(Arc<ChildCell>),
     IoErr(String),
     /// A file system capability confined to a directory (`files.within`).
-    Fs(crate::confine::Root),
+    Fs(Arc<crate::confine::Root>),
     Cown(Arc<Cell>),
     /// `UNSET` until filled.
     Future(Arc<Cell>),
