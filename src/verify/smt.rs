@@ -219,7 +219,8 @@ impl Focus {
     /// Reflect the definitions `terms` mention; leave the rest
     /// uninterpreted. `None` if that is all or none of them.
     fn mentioned_in(&self, terms: &str) -> Option<String> {
-        let (on, off): (Vec<_>, Vec<_>) = self.group.iter().partition(|(n, ..)| terms.contains(n.as_str()));
+        let named: HashSet<&str> = symbols(terms).collect();
+        let (on, off): (Vec<_>, Vec<_>) = self.group.iter().partition(|(n, ..)| named.contains(n.trim_matches('|')));
         if on.is_empty() || off.is_empty() {
             return None;
         }
@@ -267,10 +268,23 @@ fn definitions(group: &[(&str, &str, &str)], cache: Option<&RefCell<Rewritten>>)
     let index: HashMap<&str, usize> = group.iter().enumerate().map(|(k, g)| (g.0.trim_matches('|'), k)).collect();
     let calls: Vec<Vec<usize>> = group
         .iter()
-        .map(|(_, _, body)| {
-            let mut c: Vec<usize> = symbols(body).filter_map(|n| index.get(n).copied()).collect();
-            c.sort();
-            c.dedup();
+        .map(|(name, _, body)| {
+            let named = |s: &[String]| -> Vec<usize> {
+                let mut c: Vec<usize> = s.iter().filter_map(|n| index.get(n.as_str()).copied()).collect();
+                c.sort();
+                c.dedup();
+                c
+            };
+            if let Some(s) = cache.and_then(|c| c.borrow().symbols.get(*name).cloned()) {
+                return named(&s);
+            }
+            let mut s: Vec<String> = symbols(body).map(str::to_string).collect();
+            s.sort();
+            s.dedup();
+            let c = named(&s);
+            if let Some(cache) = cache {
+                cache.borrow_mut().symbols.insert(name.to_string(), Rc::new(s));
+            }
             c
         })
         .collect();
@@ -289,11 +303,11 @@ fn definitions(group: &[(&str, &str, &str)], cache: Option<&RefCell<Rewritten>>)
     let bodies = group
         .iter()
         .enumerate()
-        .map(|(k, (_, _, body))| {
+        .map(|(k, (name, _, body))| {
             if !recursive[k] || !calls[k].iter().any(|&j| clean[j]) {
                 return body.to_string();
             }
-            if let Some(b) = cache.and_then(|c| c.borrow().bodies.get(*body).cloned()) {
+            if let Some(b) = cache.and_then(|c| c.borrow().bodies.get(*name).cloned()) {
                 for n in &b.1 {
                     if let Some(&j) = index.get(n.as_str()) {
                         used[j] = true;
@@ -309,7 +323,7 @@ fn definitions(group: &[(&str, &str, &str)], cache: Option<&RefCell<Rewritten>>)
             };
             let (b, names) = (b, names.into_iter().collect::<Vec<String>>());
             if let Some(c) = cache {
-                c.borrow_mut().bodies.insert(body.to_string(), (b.clone(), names.clone()));
+                c.borrow_mut().bodies.insert(name.to_string(), (b.clone(), names.clone()));
             }
             for n in &names {
                 if let Some(&j) = index.get(n.as_str()) {
@@ -389,10 +403,13 @@ fn splits(x: &Sx, index: &HashMap<&str, usize>) -> bool {
 /// the same in each query of a module.
 #[derive(Default)]
 pub struct Rewritten {
-    /// A body, rewritten, and the functions whose copies it applies.
+    /// A function's body, rewritten, and the functions whose copies it
+    /// applies, by its name.
     bodies: HashMap<String, (String, Vec<String>)>,
     /// A function's copy, by its name.
     copies: HashMap<String, String>,
+    /// The symbols a body names, by its function's name.
+    symbols: HashMap<String, Rc<Vec<String>>>,
 }
 
 /// The `|quoted|` symbols of SMT-LIB text: every definition's name is one.
@@ -518,7 +535,16 @@ struct Delta {
 
 /// Translated definitions, shared by the builders of one module.
 #[derive(Default)]
-pub struct Defs(RefCell<BTreeMap<Inst, (Tx<Defn>, Delta)>>, RefCell<Rewritten>);
+pub struct Defs(RefCell<BTreeMap<Inst, (Tx<Defn>, Delta)>>, RefCell<Rewritten>, RefCell<Names>);
+
+/// What the queries of a module would each compute the same way.
+#[derive(Default)]
+pub struct Names {
+    /// Each instance's SMT name.
+    names: HashMap<Inst, String>,
+    /// Each instance's declaration, uninterpreted.
+    uninterp: HashMap<Inst, Option<String>>,
+}
 
 /// A table's translation: what it adds to a builder, and its elements' facts.
 type Table = (Delta, Vec<String>);
@@ -840,7 +866,8 @@ impl<'a> Builder<'a> {
     /// The sort of a type constructor applied to the sorts of all its
     /// parameters, each of kind `Type` (M25).
     fn ty_sort_sorts(&mut self, id: TyId, sorts: Vec<Sort>) -> Tx<Sort> {
-        let wk = self.wk().clone();
+        let e = self.e;
+        let wk = &e.g.well_known;
         if Some(id) == wk.array {
             return Ok(Sort::Seq(Box::new(sorts.into_iter().next().ok_or_else(|| Outside("an array without its element type".into()))?)));
         }
@@ -871,7 +898,8 @@ impl<'a> Builder<'a> {
 
     /// The sort a type term denotes, in `env`.
     fn sort_of(&mut self, env: &[Ent], t: &Tm) -> Tx<Sort> {
-        let wk = self.wk().clone();
+        let e = self.e;
+        let wk = &e.g.well_known;
         let z = self.zonk(env.len(), t);
         let t = &z;
         match t {
@@ -1122,7 +1150,8 @@ impl<'a> Builder<'a> {
     }
 
     fn ty_sort(&mut self, env: &[Ent], id: TyId, args: &[Tm]) -> Tx<Sort> {
-        let wk = self.wk().clone();
+        let e = self.e;
+        let wk = &e.g.well_known;
         if Some(id) == wk.int {
             return Ok(Sort::Int);
         }
@@ -2217,7 +2246,8 @@ impl<'a> Builder<'a> {
     }
 
     fn con_app(&mut self, env: &[Ent], c: ConId, args: &[Tm]) -> Tx<(String, Sort)> {
-        let wk = self.wk().clone();
+        let e = self.e;
+        let wk = &e.g.well_known;
         if Some(c) == wk.true_con {
             return Ok(("true".into(), Sort::Bool));
         }
@@ -3155,7 +3185,8 @@ impl<'a> Builder<'a> {
         if self.funs.contains_key(&name) {
             return Ok(name);
         }
-        let wk = self.wk().clone();
+        let e = self.e;
+        let wk = &e.g.well_known;
         let (Some(list), Some(cons)) = (wk.list, wk.cons) else { return out("no lists") };
         if let std::collections::btree_map::Entry::Vacant(v) = self.datatypes.entry(list) {
             v.insert(1);
@@ -3247,7 +3278,8 @@ impl<'a> Builder<'a> {
 
     /// `++` and `len` on lists, as recursive functions.
     fn list_fun(&mut self, what: &str, list: &Sort, _arity: usize, _res: Sort) -> Tx<String> {
-        let wk = self.wk().clone();
+        let e = self.e;
+        let wk = &e.g.well_known;
         let (Some(cons), Some(nil)) = (wk.cons, wk.nil) else { return out("no lists") };
         let ls = list.render(self.e);
         let name = sym(&format!("list.{what}<{ls}>"));
@@ -3440,6 +3472,17 @@ impl<'a> Builder<'a> {
     }
 
     fn inst_name(&self, inst: &Inst) -> String {
+        if let Some(n) = self.defs.and_then(|d| d.2.borrow().names.get(inst).cloned()) {
+            return n;
+        }
+        let n = self.inst_name_of(inst);
+        if let Some(d) = self.defs {
+            d.2.borrow_mut().names.insert(inst.clone(), n.clone());
+        }
+        n
+    }
+
+    fn inst_name_of(&self, inst: &Inst) -> String {
         let info = &self.e.g.defs[inst.def.0 as usize];
         let mut q = format!("{}.{}", info.module, info.name);
         if !inst.tys.is_empty() {
@@ -3666,7 +3709,20 @@ impl<'a> Builder<'a> {
         Ok((env, params, r))
     }
 
+    /// An instance's declaration, uninterpreted. Its sorts are those of its
+    /// definition, declared already.
     fn uninterp_decl(&mut self, inst: &Inst) -> Option<String> {
+        if let Some(d) = self.defs.and_then(|d| d.2.borrow().uninterp.get(inst).cloned()) {
+            return d;
+        }
+        let d = self.uninterp_decl_of(inst);
+        if let Some(defs) = self.defs {
+            defs.2.borrow_mut().uninterp.insert(inst.clone(), d.clone());
+        }
+        d
+    }
+
+    fn uninterp_decl_of(&mut self, inst: &Inst) -> Option<String> {
         let name = self.inst_name(inst);
         let (_, params, r) = self.inst_sig(inst).ok()?;
         Some(format!(

@@ -397,6 +397,61 @@ fn ask_all(texts: &[Option<String>]) -> Vec<Option<Answer>> {
     ask_all_out(texts).into_iter().map(|o| o.map(answer)).collect()
 }
 
+/// `ask_all`, with each query handed to the workers as `produce` makes it,
+/// so they solve while the next is made (on this thread: the elaborator
+/// isn't `Send`). Answers depend only on the queries' texts, as in
+/// `ask_all_out`: a text asked again waits for the first.
+fn ask_produced(n: usize, mut produce: impl FnMut(usize) -> Option<String>) -> Vec<Option<Answer>> {
+    let workers = std::thread::available_parallelism().map_or(2, |n| n.get()).min(8);
+    let results: Vec<std::sync::Mutex<Option<String>>> = (0..n).map(|_| std::sync::Mutex::new(None)).collect();
+    // The queries made so far, and whether all are.
+    let queue: std::sync::Mutex<(std::collections::VecDeque<(usize, String)>, bool)> = std::sync::Mutex::new((Default::default(), false));
+    let ready = std::sync::Condvar::new();
+    let mut again: Vec<(usize, String)> = Vec::new();
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            // Z3 recurses deeply on large terms: give it a big stack.
+            let worker = std::thread::Builder::new().stack_size(512 << 20);
+            let spawned = worker.spawn_scoped(s, || loop {
+                let next = {
+                    let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
+                    loop {
+                        if let Some(job) = q.0.pop_front() {
+                            break Some(job);
+                        }
+                        if q.1 {
+                            break None;
+                        }
+                        q = ready.wait(q).unwrap_or_else(|e| e.into_inner());
+                    }
+                };
+                let Some((i, t)) = next else { break };
+                let a = ask_out(&t);
+                *results[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(a);
+            });
+            if spawned.is_err() {
+                break;
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..n {
+            let Some(t) = produce(i) else { continue };
+            if !seen.insert(t.clone()) {
+                again.push((i, t));
+                continue;
+            }
+            queue.lock().unwrap_or_else(|e| e.into_inner()).0.push_back((i, t));
+            ready.notify_one();
+        }
+        queue.lock().unwrap_or_else(|e| e.into_inner()).1 = true;
+        ready.notify_all();
+    });
+    for (i, t) in again {
+        *results[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(ask_out(&t));
+    }
+    results.into_iter().map(|m| m.into_inner().unwrap_or_else(|e| e.into_inner()).map(answer)).collect()
+}
+
 /// Z3's output for each query, solved on a few worker threads.
 fn ask_all_out(texts: &[Option<String>]) -> Vec<Option<String>> {
     let workers = std::thread::available_parallelism().map_or(2, |n| n.get()).min(8);
@@ -524,10 +579,26 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     // Which functions recursing by `decreasing` end whatever their
     // preconditions say: their definitions need no precondition guard (M17).
     ends_everywhere(e, &obs);
-    // Translate on this thread (the elaborator isn't `Send`), solve in parallel.
+    // Translate on this thread (the elaborator isn't `Send`), solve in
+    // parallel: each query's first ask (step 1) as soon as it is made.
     let defs = smt::Defs::default();
-    let queries: Vec<Result<smt::Query, smt::Outside>> =
-        obs.iter().map(|o| smt::Builder::new(e, user).sharing(&defs).with_body_posts().query(o)).collect();
+    let mut queries: Vec<Result<smt::Query, smt::Outside>> = Vec::with_capacity(obs.len());
+    // The postconditions of calls in reflected bodies (#343) are given last:
+    // most goals need none of them, and their axioms make Z3 search more in
+    // every query. Steps 1 to 6 ask the query without them (the full query
+    // where there are none): `unsat` is a proof, as from any weaker query;
+    // where there are some, a model may break them, so `sat` is no
+    // counterexample, and the full query decides (6b).
+    let lean_of = |q: &smt::Query| q.without_bodies.clone().unwrap_or_else(|| q.text.clone());
+    // 1. Everything, with a small work limit (D154): most goals need little
+    //    work, and this query's answer is final either way: `unsat` is a
+    //    proof, `sat` a real counterexample.
+    let firsts = ask_produced(obs.len(), |k| {
+        let q = smt::Builder::new(e, user).sharing(&defs).with_body_posts().query(obs[k]);
+        let first = q.as_ref().ok().map(|q| with_limit(&lean_of(q), FIRST_RLIMIT));
+        queries.push(q);
+        first
+    });
     let texts: Vec<Option<String>> = queries.iter().map(|q| q.as_ref().ok().map(|q| q.text.clone())).collect();
     let fallbacks: Vec<Option<String>> = queries.iter().map(|q| q.as_ref().ok().and_then(|q| q.without_axioms.clone())).collect();
     if std::env::var_os("CHECKERS_SMT_DUMP").is_some() {
@@ -535,22 +606,12 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
             eprintln!(";; ── {:?} at {:?}\n{}", o.kind, o.span, t.as_deref().unwrap_or(";; outside the fragment"));
         }
     }
-    // The postconditions of calls in reflected bodies (#343) are given last:
-    // most goals need none of them, and their axioms make Z3 search more in
-    // every query. Steps 1 to 6 ask the query without them (the full query
-    // where there are none): `unsat` is a proof, as from any weaker query;
-    // where there are some, a model may break them, so `sat` is no
-    // counterexample, and the full query decides (6b).
-    let lean: Vec<Option<String>> =
-        queries.iter().map(|q| q.as_ref().ok().map(|q| q.without_bodies.clone().unwrap_or_else(|| q.text.clone()))).collect();
+    let lean: Vec<Option<String>> = queries.iter().map(|q| q.as_ref().ok().map(lean_of)).collect();
     let bodies: Vec<bool> = queries.iter().map(|q| q.as_ref().is_ok_and(|q| q.without_bodies.is_some())).collect();
     // Left for the full query.
     let mut with_bodies = vec![false; obs.len()];
-    // 1. Everything, with a small work limit (D154): most goals need little
-    //    work, and this query's answer is final either way: `unsat` is a
-    //    proof, `sat` a real counterexample.
     let first: Vec<Option<String>> = lean.iter().map(|t| t.as_ref().map(|t| with_limit(t, FIRST_RLIMIT))).collect();
-    let mut answers: Vec<Option<Answer>> = ask_all(&first)
+    let mut answers: Vec<Option<Answer>> = firsts
         .into_iter()
         .enumerate()
         .map(|(k, a)| match a {
