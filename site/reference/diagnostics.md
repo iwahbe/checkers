@@ -98,6 +98,9 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0291` | a class's type (`C.Name`) without the types it is for |
 | `E0292` | an instance without a type for each of its class's parameters |
 | `E0293` | a value shown by a type that isn't known when the program is compiled (it depends on a value known only when the program runs, or holds a field computed from a ghost field) |
+| `E0294` | a type equation a use doesn't meet (`first_byte` needs `Seq.Elem s == U8`, but `s` is `String`), or a constructor that builds another type than expected |
+| `E0295` | a type equation that makes a type contain itself (`t == List t`) |
+| `E0296` | a type equation where it can only be promised: one that mentions the result, or outside a function's, lemma's or constructor's constraints |
 
 ## Termination
 

@@ -1,0 +1,13 @@
+error[E0294]: `IsZero` builds an `Expr Bool`, but an `Expr Int` is expected here
+  --> type_eq_gadt_build.ck:22:5
+   |
+22 |     IsZero (Lit 0)
+   |     ^^^^^^^^^^^^^^
+
+error[E0294]: `Truth` builds an `Expr Bool`, but `IsZero` takes an `Expr Int`
+  --> type_eq_gadt_build.ck:25:12
+   |
+25 |     IsZero (Truth True)
+   |            ^^^^^^^^^^^^
+
+type_eq_gadt_build.ck: 2 errors, 0 warnings

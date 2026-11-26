@@ -173,6 +173,19 @@ fn type_base<'a>(name: &str, constraints: &'a [Constraint], cparams: &[String], 
     .filter(|ty| class_name_in(ty, cparams, tnames).is_none())
 }
 
+/// The names `e` mentions.
+fn vars_in(e: &Expr) -> Vec<String> {
+    let out = std::cell::RefCell::new(Vec::new());
+    let see = |n: &str, _: Span| {
+        out.borrow_mut().push(n.to_string());
+        None
+    };
+    let none = |_: &str, _: Span| None;
+    let nq = |_: &str, _: &str, _: Span| None;
+    Rewrite { var: &see, con: &none, qualified: &nq }.expr(e, &[]);
+    out.into_inner()
+}
+
 /// The first of a class's parameters or types that `ty` mentions.
 fn class_name_in(ty: &Expr, cparams: &[String], tnames: &[String]) -> Option<String> {
     let named = std::cell::RefCell::new(None);
@@ -1295,8 +1308,24 @@ impl Elab {
                     })
                     .collect();
                 let pinned = pinned_params(mem, &pnames);
+                // A parameter a type equation fixes from the others counts
+                // as mentioned (#209): `Seq.Elem s == t` finds `t` from `s`.
+                let mut known: Vec<String> = tys.iter().flat_map(|t| vars_in(t)).chain(pinned.iter().cloned()).collect();
+                let teqs: Vec<(&Expr, &Expr)> = cs.iter().filter_map(|c| match c {
+                    Constraint::Pred(e) => self.teq_sides(cs, e),
+                    _ => None,
+                }).collect();
+                for _ in 0..teqs.len() {
+                    for (a, b) in &teqs {
+                        for (x, y) in [(a, b), (b, a)] {
+                            if vars_in(y).iter().all(|v| known.contains(v)) {
+                                known.extend(vars_in(x));
+                            }
+                        }
+                    }
+                }
                 for p in params {
-                    if !pinned.contains(&p.name) && !tys.iter().any(|t| super::decls::mentions_free(t, &p.name)) {
+                    if !pinned.contains(&p.name) && !known.contains(&p.name) && !tys.iter().any(|t| super::decls::mentions_free(t, &p.name)) {
                         let ps: Vec<&str> = params.iter().map(|q| q.name.as_str()).collect();
                         self.err(
                             Diagnostic::error("E0368", format!("{what} `{}` doesn't mention the class's parameter `{}`", mname.name, p.name), mname.span)
@@ -3161,7 +3190,11 @@ impl Elab {
             self.waiting.push((l, a, b, self.name_span, names, false));
         }
         for (l, a, b, span, names, directed) in std::mem::take(&mut self.waiting) {
-            let r = unify(&self.g, l, &a, &b);
+            let mut r = unify(&self.g, l, &a, &b);
+            // Modulo the type equations in scope (#209).
+            if r.is_err() && !self.givens.is_empty() {
+                r = unify(&self.g, l, &self.rep_deep(l, &a), &self.rep_deep(l, &b));
+            }
             let again = {
                 let mut p = self.g.postponed.borrow_mut();
                 let again = !p.is_empty();

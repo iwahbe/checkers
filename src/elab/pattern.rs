@@ -927,6 +927,8 @@ impl Elab {
             let explicit: Vec<usize> =
                 fields.iter().zip(&lvls).filter(|(f, _)| f.2 == Icit::Expl).map(|(_, l)| *l).collect();
             let mut rs = Vec::new();
+            // Where a row names this constructor.
+            let mut named: Vec<Span> = Vec::new();
             for r in &rows {
                 let mut r = r.clone();
                 let Some(i) = r.pats.iter().position(|(o, _)| *o == occ) else {
@@ -948,6 +950,7 @@ impl Elab {
                 if pc != c {
                     continue;
                 }
+                named.push(p.span);
                 r.pats.remove(i);
                 let mut sub_pats: Vec<(usize, Pattern)> = match (args, &p.kind) {
                     (Some(args), _) => {
@@ -1012,6 +1015,37 @@ impl Elab {
                 let f = self.inst_pred(&inv, all.to_vec());
                 cx.assume(f);
             }
+            // Its type equations (#209), at this value's type: they hold in
+            // the arm, unless the type contradicts them, and then the case
+            // can't occur.
+            let givens_before = self.givens.len();
+            let mut never = false;
+            if let Some(teqs) = self.con_teqs.get(&c).cloned() {
+                let env = Rc::new(all.to_vec());
+                let eqs = teqs.iter().map(|q| (eval(&self.g, &env, &q.lhs), eval(&self.g, &env, &q.rhs), q.text.clone())).collect();
+                self.assume_teqs(eqs);
+                if self.contradiction().is_some() {
+                    self.givens.truncate(givens_before);
+                    never = true;
+                    for at in &named {
+                        let built = self.built_type(cx, c, &teqs, &all);
+                        let here = self.show_val(cx, &Val::TyCon(tid, params.clone()));
+                        let cname = self.g.cons[c.0 as usize].name.to_string();
+                        self.err(
+                            Diagnostic::warning(
+                                "W022",
+                                format!(
+                                    "this arm never runs: `{cname}` builds {} `{built}`, and this is {} `{here}`",
+                                    super::tyeq::article(&built),
+                                    super::tyeq::article(&here)
+                                ),
+                                *at,
+                            )
+                            .with_label("this case can't occur"),
+                        );
+                    }
+                }
+            }
             // Dependent matching: where the matched value is a variable, the
             // expected type sees it as this constructor (`f~format_type ps`
             // becomes `f~format_type []` in the `[]` arm).
@@ -1066,12 +1100,16 @@ impl Elab {
                 }
             }
             let body = if rs.is_empty() {
-                let w = self.render_path();
-                self.uncovered(cx, format!("`{w}`"));
+                // A case its type equations rule out needn't be covered (#209).
+                if !never {
+                    let w = self.render_path();
+                    self.uncovered(cx, format!("`{w}`"));
+                }
                 Tm::Error
             } else {
                 self.compile(cx, rs, &refined, tail)
             };
+            self.givens.truncate(givens_before);
             for (l, ty, refined) in retyped {
                 cx.locals[l].ty = ty;
                 cx.locals[l].refined = refined;

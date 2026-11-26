@@ -835,6 +835,7 @@ impl Elab {
                 let n = self.number(s);
                 let mv = self.fresh_meta_val(cx);
                 self.deferred.push(Deferred {
+                    givens: self.givens.clone(),
                     ty: mv.clone(),
                     kind: OpClass::Numeric,
                     span,
@@ -945,6 +946,7 @@ impl Elab {
                 if let Some(Sym::Len) = self.resolve(n, false) {
                     let (at, aty) = self.infer(cx, args[0]);
                     self.deferred.push(Deferred {
+                        givens: self.givens.clone(),
                         ty: aty,
                         kind: OpClass::HasLen,
                         span: args[0].span,
@@ -1335,6 +1337,8 @@ impl Elab {
                 // Only what is needed: most calls have no measure to compare
                 // and no precondition, and evaluating their arguments for
                 // nothing was much of the time this took.
+                // Its type equations (#209), at this call's types.
+                self.want_call_teqs(cx, *d, t, &args, span);
                 let Some(spec) = self.specs.get(d) else { return };
                 let (n, measured, pres) = (spec.n_binders, spec.measure.is_some(), spec.preds.iter().any(|p| !p.is_post));
                 if args.len() >= n {
@@ -1383,6 +1387,7 @@ impl Elab {
                 self.oblige_ty_conds(cx, span, *tid, env);
             }
             Tm::Con(c) => {
+                self.want_con_teqs(cx, *c, &args, span);
                 let Some(invs) = self.con_invs.get(c).cloned() else { return };
                 if args.len() < self.g.arity_con(*c) {
                     return;
@@ -2623,6 +2628,7 @@ impl Elab {
                 };
                 if let Some(kind) = class {
                     self.deferred.push(Deferred {
+                        givens: self.givens.clone(),
                         ty: lty.clone(),
                         kind,
                         span: operands,
@@ -2641,6 +2647,7 @@ impl Elab {
                 // Compiled code never compares functions (D125).
                 if matches!(op, Op::EqEq | Op::Ne) && self.in_spec == 0 && self.in_proof == 0 {
                     self.deferred.push(Deferred {
+                        givens: self.givens.clone(),
                         ty: lty.clone(),
                         kind: OpClass::Comparable,
                         span: operands,
