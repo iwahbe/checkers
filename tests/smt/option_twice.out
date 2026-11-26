@@ -1,0 +1,4 @@
+-- stdout
+(error "line 2 column 13: `:reproducible-resource-limit` is set twice: each option once is in the subset `ckc` writes")
+-- stderr
+-- exit 1
