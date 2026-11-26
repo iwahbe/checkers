@@ -33,10 +33,14 @@ fn line n term : n~Int, term~Term
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { term, sched } = sys
-    line (nat_less 10 3) term
-    line (nonzero 17 (-5)) term
-    line (positive 17 5) term
-    line (byte_at b"abc" 1) term
+    # Known only when the program runs (`n` is 0), each within what its
+    # function requires by a remainder, or the calls would be computed when
+    # compiling.
+    let n = len args
+    line (nat_less (n + 10) ((n + 3) % 4)) term
+    line (nonzero (n + 17) (-(1 + (n + 4) % 5))) term
+    line (positive (n + 17) (1 + (n + 4) % 5)) term
+    line (byte_at b"abc" ((n + 1) % 3)) term
     let c = cown.new 1 sched
     let d = cown.new 2 sched
     swap c d sched

@@ -203,7 +203,7 @@ impl<'g> Folder<'g> {
         });
         let r = match ev.eval_ir_limited(node, work) {
             Ok(v) => {
-                let out = from_word(v).map(|(s, id)| Arc::new(Static::ir(&Arc::new(s), id))).ok_or(Kept::NoForm);
+                let out = ev.within_program(|| from_word(v)).map(|(s, id)| Arc::new(Static::ir(&Arc::new(s), id))).ok_or(Kept::NoForm);
                 ev.release(v);
                 out
             }
@@ -481,6 +481,8 @@ fn write_key(ir: &Ir, out: &mut String) -> bool {
 pub fn from_word(v: w::W) -> Option<(Static, u32)> {
     let mut s = Static::default();
     let mut done: HashMap<w::W, u32> = HashMap::new();
+    // Each object's parts, as first read.
+    let mut parts: HashMap<w::W, Vec<w::W>> = HashMap::new();
     let mut stack: Vec<(w::W, bool)> = vec![(v, false)];
     while let Some((x, ready)) = stack.pop() {
         if done.contains_key(&x) {
@@ -502,11 +504,13 @@ pub fn from_word(v: w::W) -> Option<(Static, u32)> {
                 let n = w::nfields(x);
                 let part = |i: usize| if k == w::K_CON { w::field(x, i) } else { w::slot(x, i) };
                 if !ready {
+                    let ps: Vec<w::W> = (0..n).map(part).collect();
                     stack.push((x, true));
-                    stack.extend((0..n).map(part).filter(|p| !done.contains_key(p)).map(|p| (p, false)));
+                    stack.extend(ps.iter().copied().filter(|p| !done.contains_key(p)).map(|p| (p, false)));
+                    parts.insert(x, ps);
                     continue;
                 }
-                let fields: Box<[u32]> = (0..n).map(|i| done[&part(i)]).collect();
+                let fields: Box<[u32]> = parts[&x].iter().map(|p| done[p]).collect();
                 let tag = if k == w::K_CON { w::con_of(x)? as u64 } else { 0 };
                 s.add(SNode::Obj { kind: k, tag, fields })
             }
@@ -520,13 +524,17 @@ pub fn from_word(v: w::W) -> Option<(Static, u32)> {
                 }
                 // Each element: a word held (not a new reference), or a
                 // packed element's word.
+                // (Read once: a packed element past a word is a new object
+                // each time it is read.)
                 let part = |i: usize| if words { w::slot(x, i + 2) } else { a::get(x, i) };
                 if !ready {
+                    let ps: Vec<w::W> = (0..n).map(part).collect();
                     stack.push((x, true));
-                    stack.extend((0..n).map(part).filter(|p| !done.contains_key(p)).map(|p| (p, false)));
+                    stack.extend(ps.iter().copied().filter(|p| !done.contains_key(p)).map(|p| (p, false)));
+                    parts.insert(x, ps);
                     continue;
                 }
-                let elems: Box<[u32]> = (0..n).map(|i| done[&part(i)]).collect();
+                let elems: Box<[u32]> = parts[&x].iter().map(|p| done[p]).collect();
                 s.add(SNode::Array { layout: layout as u8, elems })
             }
             _ => return None,

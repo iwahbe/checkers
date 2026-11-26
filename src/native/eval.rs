@@ -77,6 +77,11 @@ impl<'g> Evaluator<'g> {
         ev
     }
 
+    /// `f`, with this program's runtime: for reading its values.
+    pub fn within_program<R>(&self, f: impl FnOnce() -> R) -> R {
+        self.within(f)
+    }
+
     /// Take on the copies `specs` has made since the last call.
     pub fn mirror(&mut self, specs: &super::spec::Specs) {
         self.gen.p.specs.borrow_mut().mirror(specs);
