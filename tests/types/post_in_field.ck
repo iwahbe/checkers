@@ -42,7 +42,7 @@ fn full -> s : s~Shape
 fn by_match -> n : n~Nat, n == 1
     match full
         Full xs -> len xs
-        Hollow -> 1
+        Hollow  -> 1
 
 fn by_let -> n : n~Nat, n == 0
     let b = empty
