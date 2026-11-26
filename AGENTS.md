@@ -49,7 +49,7 @@ src/elab/stdlib.rs   finding and loading the standard library from disk (D104), 
 src/usage.rs         `own`/`ghost` usage (QTT multiplicities)
 src/stage.rs         staging (§8.9): expands compile-time functions before erasure; `checkers stage`
 src/native/ir.rs     erasure: core terms → runtime code (§13.1); a one-field type is its field, type arguments' layouts or descriptors (#170)
-src/native/inline.rs a `match` on a small function's result: inlined, pushed into branches, resolved at constructors; `Ir::At` names the code's definition; an optimization (§14)
+src/native/inline.rs small functions inlined at their calls; a `match` on one's result pushed into branches, resolved at constructors; `Ir::At` names the code's definition; an optimization (§14)
 src/native/lower.rs  closure conversion: runtime code → first-order functions (§14)
 src/native/tailrec.rs recursion made tail recursion before reference counting: `f.dps` (a constructor around the call), `f.acc` (`+`, `*`, `++` after it); an optimization (§14)
 src/native/rc.rs     reference counting, Perceus style: dup/drop, borrowing, reuse (D74)
