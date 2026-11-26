@@ -1,0 +1,13 @@
+warning[W022]: this body never runs: `t == Int` and `t == Bool` contradict each other
+ --> type_eq_inconsistent.ck:7:5
+  |
+7 |     0
+  |     ^ no call can meet these type equations
+
+error[E0294]: `never` needs `t == Bool`, but here `t` is `Int`
+ --> type_eq_inconsistent.ck:9:7
+  |
+9 | check never Int == 0
+  |       ^^^^^^^^^
+
+type_eq_inconsistent.ck: 1 error, 1 warning

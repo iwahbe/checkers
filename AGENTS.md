@@ -38,6 +38,7 @@ src/elab/pattern.rs  `match` → case trees, exhaustiveness witnesses
 src/elab/index.rs    names for tools: each use, its definition, kind and hover text (`--json`, D120); `ckc index`, a package's (D161)
 src/elab/interval.rs arithmetic keeps constant bounds: ranges as anonymous refinements, joined branches, their array layouts (D135)
 src/elab/refine.rs   refinements inside types: inline and function-type refinements, implication, variance, E0262 (D71, D82–D87)
+src/elab/tyeq.rs     type equations `A == B` (#209): wanted at uses (E0294), given in bodies and `match` arms (classes, representatives), impossible cases
 src/elab/eq.rs       `==` never compares functions: in compiled code, and through type parameters (D125)
 src/elab/descr.rs    showing values by type (#170): which type parameters get descriptors, closed over calls; E0293
 src/doc.rs           `ckc doc FILE`: a module's exported declarations and descriptions as JSON lines (§15.6, D131)

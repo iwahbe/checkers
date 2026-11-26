@@ -610,6 +610,11 @@ pub struct Builder<'a> {
     fun_args: usize,
     ctx: Vec<Option<Ent>>,
     ctx_src: Vec<ObLocal>,
+    /// The type equations' representatives in scope (#209).
+    reps: Vec<(Val, Val)>,
+    in_assoc_rep: bool,
+    /// Classes' types whose base types' sorts are being worked out (#360).
+    in_base: Vec<(ConId, usize)>,
     pub shown: Vec<(String, String)>,
     string_vars: Vec<String>,
     array_vars: Vec<String>,
@@ -661,6 +666,9 @@ impl<'a> Builder<'a> {
             lam_depth: 0,
             ctx: Vec::new(),
             ctx_src: Vec::new(),
+            reps: Vec::new(),
+            in_assoc_rep: false,
+            in_base: Vec::new(),
             shown: Vec::new(),
             tested: BTreeSet::new(),
             string_vars: Vec::new(),
@@ -884,6 +892,7 @@ impl<'a> Builder<'a> {
             self.sorts.insert(name.clone(), sorts.len());
             return Ok(Sort::Unin(name, sorts));
         }
+        let sorts = self.with_dict_types(id, sorts);
         if let std::collections::btree_map::Entry::Vacant(e) = self.datatypes.entry(id) {
             e.insert(sorts.len());
             self.datatype_decl(id)?;
@@ -902,6 +911,19 @@ impl<'a> Builder<'a> {
         let wk = &e.g.well_known;
         let z = self.zonk(env.len(), t);
         let t = &z;
+        // A type equal to another by a type equation in scope (#209): its
+        // representative's sort, so both sides have one sort.
+        if !self.reps.is_empty() && matches!(t.head(), Tm::Var(_) | Tm::Def(_) | Tm::Field(..)) {
+            let vars = Rc::new((0..env.len()).map(Val::var).collect::<Vec<_>>());
+            let v = eval(&self.e.g, &vars, t);
+            if let Some((_, r)) = self.reps.iter().find(|(m, _)| self.e.same_type_forced(m, &v)).cloned() {
+                let tm = quote(&self.e.g, env.len(), &r);
+                let saved = std::mem::take(&mut self.reps);
+                let s = self.sort_of(env, &tm);
+                self.reps = saved;
+                return s;
+            }
+        }
         match t {
             Tm::Var(i) => match self.resolve(env, *i)? {
                 Ent::Ty(s) => Ok(s),
@@ -995,7 +1017,7 @@ impl<'a> Builder<'a> {
                                 let crate::core::Elim::Field(c, i) = sp[0] else { return out("a class's type at a dictionary it can't name") };
                                 // The sort of the type the dictionary is for.
                                 match self.resolve(env, n - 1 - l)? {
-                                    Ent::Term(_, Sort::Data(_, sargs)) if !sargs.is_empty() => Ok(self.assoc_sort(c, i, sargs)),
+                                    Ent::Term(_, Sort::Data(_, sargs)) if !sargs.is_empty() => Ok(self.dict_field_sort(c, i, &sargs)),
                                     // A dictionary Z3 can't see into (a class
                                     // over a type constructor): named by the
                                     // class's arguments, a type constructor
@@ -1089,7 +1111,7 @@ impl<'a> Builder<'a> {
             // its functions' fields have it): the sort of `C.Name t`.
             Tm::Field(x, c, i) if self.e.g.is_type_field(*c, *i) => match &**x {
                 Tm::Var(l) => match self.resolve(env, *l)? {
-                    Ent::Term(_, Sort::Data(_, sargs)) if !sargs.is_empty() => Ok(self.assoc_sort(*c, *i, sargs)),
+                    Ent::Term(_, Sort::Data(_, sargs)) if !sargs.is_empty() => Ok(self.dict_field_sort(*c, *i, &sargs)),
                     _ => out("a class's type at a dictionary it can't name"),
                 },
                 _ => out("a class's type at a dictionary it can't name"),
@@ -1127,17 +1149,29 @@ impl<'a> Builder<'a> {
     /// class's parameters, #145): a sort constructor of its own,
     /// `Display.Options a`.
     fn assoc_sort(&mut self, c: ConId, i: usize, args: Vec<Sort>) -> Sort {
+        // In its dictionary's datatype declaration, at the sort variables
+        // `T0 …`: the datatype's parameter for it (#209).
+        let decl = !args.is_empty() && args.iter().enumerate().all(|(k, a)| *a == Sort::Unin(format!("T{k}"), vec![]));
+        if decl && i < self.dict_types(c) {
+            return Sort::Unin(format!("T{}", args.len() + i), vec![]);
+        }
+        // A type equation in scope makes it another type (#209).
+        if let Some(s) = self.assoc_rep(c, i, &args) {
+            return s;
+        }
         // A class's type with a base type (#360): its values are the base's.
-        if let Some(b) = self.e.g.type_bases.get(&(c, i)).and_then(|bs| bs.first()).cloned() {
+        if let Some(b) = self.e.g.type_bases.get(&(c, i)).and_then(|bs| bs.first()).cloned().filter(|_| !self.in_base.contains(&(c, i))) {
+            self.in_base.push((c, i));
             // Over the class's parameters (of sorts `args`) and a
             // dictionary, whose types are their own sorts.
             let ty = self.e.g.cons[c.0 as usize].ty;
             let mut env: Vec<Ent> = args.iter().map(|a| Ent::Ty(a.clone())).collect();
-            env.push(Ent::Term(String::new(), Sort::Data(ty, args.clone())));
-            if env.len() == self.e.g.arity_ty(ty) + 1 {
-                if let Ok(s) = self.sort_of(&env, &b) {
-                    return s;
-                }
+            let dict = self.with_dict_types(ty, args.clone());
+            env.push(Ent::Term(String::new(), Sort::Data(ty, dict)));
+            let s = if env.len() == self.e.g.arity_ty(ty) + 1 { self.sort_of(&env, &b).ok() } else { None };
+            self.in_base.retain(|k| *k != (c, i));
+            if let Some(s) = s {
+                return s;
             }
         }
         let ci = &self.e.g.cons[c.0 as usize];
@@ -1145,6 +1179,43 @@ impl<'a> Builder<'a> {
         let name = format!("{}.{}.{}", ti.module, ti.name, ci.fields[i].0.trim_start_matches('$'));
         self.sorts.insert(name.clone(), args.len());
         Sort::Unin(name, args)
+    }
+
+    /// The sort of the representative of a class's type `c`.`i` at
+    /// arguments of sorts `args`, if a type equation in scope gives it one.
+    fn assoc_rep(&mut self, c: ConId, i: usize, args: &[Sort]) -> Option<Sort> {
+        if self.reps.is_empty() || self.in_assoc_rep {
+            return None;
+        }
+        self.in_assoc_rep = true;
+        let mut found = None;
+        for (m, r) in self.reps.clone() {
+            let Val::Neutral(crate::core::Head::Var(l), sp) = force(&self.e.g, m.clone()) else { continue };
+            if sp.len() != 1 || !matches!(sp[0], crate::core::Elim::Field(c2, i2) if c2 == c && i2 == i) || l >= self.ctx_src.len() {
+                continue;
+            }
+            // The dictionary's class's arguments' sorts, as written for it.
+            let Val::TyCon(_, targs) = force(&self.e.g, self.ctx_src[l].ty.clone()) else { continue };
+            let env: Vec<Ent> = (0..l).map(|k| Ent::Opaque(format!("@{k}"))).collect();
+            let mut ps = Vec::new();
+            for a in targs.iter() {
+                let tm = quote(&self.e.g, l, a);
+                if self.is_type(&tm) || matches!(force(&self.e.g, a.clone()), Val::Neutral(..) | Val::TyCon(..) | Val::TupleTy(_)) {
+                    if let Ok(s) = self.sort_of(&env, &tm) {
+                        ps.push(s);
+                    }
+                }
+            }
+            if ps == args {
+                let n = self.ctx_src.len();
+                let tm = quote(&self.e.g, n, &r);
+                let env: Vec<Ent> = (0..n).map(|k| Ent::Opaque(format!("@{k}"))).collect();
+                found = self.sort_of(&env, &tm).ok();
+                break;
+            }
+        }
+        self.in_assoc_rep = false;
+        found
     }
 
     /// A type-valued field's sort, in a datatype's declaration: a class's
@@ -1200,6 +1271,7 @@ impl<'a> Builder<'a> {
             self.sorts.insert(name.clone(), sargs.len());
             return Ok(Sort::Unin(name, sargs));
         }
+        let sargs = self.with_dict_types(id, sargs);
         let n = sargs.len();
         if let std::collections::btree_map::Entry::Vacant(e) = self.datatypes.entry(id) {
             e.insert(n);
@@ -1207,6 +1279,46 @@ impl<'a> Builder<'a> {
             self.datatype_decl(id)?;
         }
         Ok(Sort::Data(id, sargs))
+    }
+
+    /// A class's dictionary's datatype takes its class's types' sorts as
+    /// parameters after its type parameters' (#209): `(Seq s E)`, where `E`
+    /// is `Seq.Elem s`'s sort, so where a type equation makes `Seq.Elem s`
+    /// a `U8` its functions' fields have `Int` elements.
+    fn with_dict_types(&mut self, id: TyId, mut sargs: Vec<Sort>) -> Vec<Sort> {
+        let Some(&c) = self.e.g.tys[id.0 as usize].ctors.first() else { return sargs };
+        let m = self.dict_types(c);
+        let ps = sargs.clone();
+        for i in 0..m {
+            let s = self.assoc_sort(c, i, ps.clone());
+            sargs.push(s);
+        }
+        sargs
+    }
+
+    /// How many of a class's types its dictionary's constructor `c` keeps
+    /// (its first fields); 0 for any other constructor.
+    fn dict_types(&self, c: ConId) -> usize {
+        let n = self.e.g.cons[c.0 as usize].fields.len();
+        (0..n).take_while(|&k| self.e.g.is_dict_type_field(c, k)).count()
+    }
+
+    /// How many type parameters the class of dictionary constructor `c`
+    /// has: its dictionary's sort's first arguments (its types' follow).
+    fn class_params(&self, c: ConId) -> usize {
+        let ty = self.e.g.cons[c.0 as usize].ty;
+        self.e.g.tys[ty.0 as usize].params.iter().filter(|(_, t)| self.is_type(t)).count()
+    }
+
+    /// The sort of a class's type, field `i` of a dictionary of sort
+    /// `Data(_, sargs)`: its parameter there.
+    fn dict_field_sort(&mut self, c: ConId, i: usize, sargs: &[Sort]) -> Sort {
+        let ty = self.e.g.cons[c.0 as usize].ty;
+        let n = self.e.g.tys[ty.0 as usize].params.iter().filter(|(_, t)| self.is_type(t)).count();
+        match sargs.get(n + i) {
+            Some(s) if self.dict_types(c) > i => s.clone(),
+            _ => self.assoc_sort(c, i, sargs[..n.min(sargs.len())].to_vec()),
+        }
     }
 
     /// Does a constructor of `id` have a field whose type can't be a sort?
@@ -1891,7 +2003,7 @@ impl<'a> Builder<'a> {
             let dict = quote(&self.e.g, n, &base);
             if let Ok((dt, ds @ Sort::Data(_, _))) = self.term(env, &dict) {
                 let Sort::Data(_, sargs) = &ds else { unreachable!() };
-                let mut inner: Vec<Ent> = sargs.iter().map(|s| Ent::Ty(s.clone())).collect();
+                let mut inner: Vec<Ent> = sargs.iter().take(self.class_params(*c)).map(|s| Ent::Ty(s.clone())).collect();
                 inner.push(Ent::Term(dt, ds.clone()));
                 for b in &bases {
                     out.extend(self.alias_terms(&inner, b, x, xs));
@@ -1904,7 +2016,7 @@ impl<'a> Builder<'a> {
         let Ok((dt, ds)) = self.term(env, &dict) else { return Vec::new() };
         let Sort::Data(_, sargs) = &ds else { return Vec::new() };
         // The class's parameters, its dictionary, the value.
-        let mut inner: Vec<Ent> = sargs.iter().map(|s| Ent::Ty(s.clone())).collect();
+        let mut inner: Vec<Ent> = sargs.iter().take(self.class_params(*c)).map(|s| Ent::Ty(s.clone())).collect();
         inner.push(Ent::Term(dt, ds.clone()));
         inner.push(Ent::Term(x.to_string(), xs.clone()));
         for p in preds {
@@ -4020,6 +4132,7 @@ impl<'a> Builder<'a> {
     pub fn query(mut self, ob: &Obligation) -> Tx<Query> {
         self.ctx = vec![None; ob.ctx.len()];
         self.ctx_src = ob.ctx.clone();
+        self.reps = ob.reps.clone();
         let lvl = ob.ctx.len();
         let goal_tm = quote(&self.e.g, lvl, &ob.goal);
         let mut facts = Vec::new();

@@ -1,0 +1,14 @@
+error[E0295]: `t == List t` can't hold: `t` would contain itself
+ --> type_eq_rejected.ck:6:33
+  |
+6 | fn loops t -> r : t~ghost Type, t == List t, r~Nat
+  |                                 ^^^^^^^^^^^ no type is equal to a type it is part of
+
+error[E0296]: a type equation can only be assumed, not promised
+ --> type_eq_rejected.ck:9:43
+  |
+9 | fn promises x -> r : x~Int, r~ghost Type, r == Int
+  |                                           ^^^^^^^^
+  = help: state it as a constraint on a parameter
+
+type_eq_rejected.ck: 2 errors, 0 warnings

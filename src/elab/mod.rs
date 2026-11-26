@@ -18,6 +18,7 @@ mod pattern;
 pub use pattern::BINDING_HELP;
 mod refine;
 mod template;
+mod tyeq;
 pub mod stdlib;
 pub mod termination;
 pub mod unused;
@@ -241,6 +242,8 @@ pub struct Deferred {
     pub names: Vec<Name>,
     /// The function whose body this is in.
     pub owner: Option<DefId>,
+    /// The type equations that hold there (#209).
+    pub givens: Vec<tyeq::Given>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -441,6 +444,9 @@ pub struct Obligation {
     /// Only an obligation if this type turns out to be `Nat` (subtraction).
     pub only_if_nat: Option<Val>,
     pub owner: Option<DefId>,
+    /// The type equations in scope (#209): each type with a representative,
+    /// and it. The prover sees every such type as its representative.
+    pub reps: Vec<(Val, Val)>,
 }
 
 /// A predicate from a header, constructor or alias, as a term over its binders.
@@ -492,6 +498,9 @@ pub struct Spec {
     pub elems: Vec<ElemPromise>,
     /// Implicit binders among the explicit ones (#161): see `Sig`.
     pub inner: Vec<usize>,
+    /// Its type equations (#209), over the binders, and the binders' names.
+    pub teqs: Vec<tyeq::TyEq>,
+    pub binder_names: Vec<Name>,
 }
 
 /// A parameter whose type's refinements mention later parameters (#102).
@@ -639,9 +648,19 @@ pub struct Elab {
     pub transparent: HashSet<DefId>,
     /// Constructor invariants, over the type's parameters then the fields.
     pub con_invs: HashMap<ConId, Vec<Pred>>,
+    /// Constructors' type equations (#209), over the type's parameters then
+    /// the fields.
+    pub con_teqs: HashMap<ConId, Vec<tyeq::TyEq>>,
+    /// The type equations that hold where elaboration is (#209).
+    pub givens: Vec<tyeq::Given>,
+    /// Type equations uses must meet, waiting for their types (#209).
+    pub wanted: Vec<tyeq::Wanted>,
     /// A type's conditions on its parameters, over the parameters (#136):
     /// obligations where the type is applied, facts in its fields.
     pub ty_conds: HashMap<TyId, Vec<Pred>>,
+    /// Types' type equations on their parameters (#209), over them: a
+    /// condition on the type.
+    pub ty_teqs: HashMap<TyId, Vec<tyeq::TyEq>>,
     /// A type's parameters' typings after the first (`n~Int, n~Nat`), with
     /// the span of each, until their refinements join its conditions.
     pub ty_param_typings: HashMap<TyId, Vec<(usize, Tm, usize, Span)>>,
@@ -956,9 +975,13 @@ impl Elab {
             specs: HashMap::new(),
             transparent: HashSet::new(),
             con_invs: HashMap::new(),
+            con_teqs: HashMap::new(),
+            givens: Vec::new(),
+            wanted: Vec::new(),
             ty_conds: HashMap::new(),
             ty_param_typings: HashMap::new(),
             ty_cond_defer: None,
+            ty_teqs: HashMap::new(),
             alias_preds: HashMap::new(),
             alias_subject: HashMap::new(),
             result_metas: HashMap::new(),
@@ -1081,7 +1104,13 @@ impl Elab {
     }
 
     pub fn force(&self, v: &Val) -> Val {
-        force(&self.g, v.clone())
+        let f = force(&self.g, v.clone());
+        // A type with a representative in the type equations in scope
+        // (#209) is seen as it.
+        match self.rep_of(&f) {
+            Some(r) => force(&self.g, r),
+            None => f,
+        }
     }
 
     /// A type with type functions at its head computed (`values (Last ?a)`
@@ -1269,6 +1298,11 @@ impl Elab {
     /// Unify, reporting a type mismatch on failure. Returns false on failure.
     pub fn unify_at(&mut self, cx: &Cx, expected: &Val, actual: &Val, span: Span, what: &str) -> bool {
         let mut r = unify(&self.g, cx.lvl(), expected, actual);
+        // Modulo the type equations in scope (#209).
+        if r.is_err() && !self.givens.is_empty() {
+            let (e, a) = (self.rep_deep(cx.lvl(), expected), self.rep_deep(cx.lvl(), actual));
+            r = unify(&self.g, cx.lvl(), &e, &a);
+        }
         if r.is_err() {
             if let Some((e, a)) = self.moot_own(cx, expected, actual) {
                 r = unify(&self.g, cx.lvl(), &e, &a);
@@ -1911,13 +1945,16 @@ impl Elab {
         let ctx = (0..cx.lvl())
             .map(|l| ObLocal {
                 name: cx.locals[l].name.clone(),
-                ty: cx.locals[l].ty.clone(),
-                refined: cx.locals[l].refined.clone(),
-                def: if cx.locals[l].bound { None } else { Some(cx.env[l].clone()) },
+                // With the type equations' representatives (#209): the
+                // prover never sees an equation.
+                ty: self.rep_deep(l, &cx.locals[l].ty),
+                refined: cx.locals[l].refined.as_ref().map(|r| self.rep_deep(cx.lvl(), r)),
+                def: if cx.locals[l].bound { None } else { Some(self.rep_deep(l, &cx.env[l])) },
             })
             .collect();
-        let facts = cx.facts.iter().map(|(_, v)| v.clone()).collect();
-        Obligation { module: self.cur.clone(), span, kind, text, ctx, facts, goal, only_if_nat, owner: self.cur_fn }
+        let facts = cx.facts.iter().map(|(_, v)| self.rep_deep(cx.lvl(), v)).collect();
+        let goal = self.rep_deep(cx.lvl(), &goal);
+        Obligation { module: self.cur.clone(), span, kind, text, ctx, facts, goal, only_if_nat, owner: self.cur_fn, reps: self.rep_pairs() }
     }
 
     /// Whether branches here are asked about (D144 d): the program's own
@@ -2410,8 +2447,11 @@ impl Elab {
     }
 
     pub fn solve_deferred(&mut self) {
+        self.solve_wanted(false);
         self.solve_instances(false);
         self.retry_waiting(false);
+        self.solve_wanted(false);
+        self.solve_instances(false);
         let ds = std::mem::take(&mut self.deferred);
         for d in &ds {
             if let Val::Neutral(Head::Meta(_), _) = self.force(&d.ty) {
@@ -2426,13 +2466,17 @@ impl Elab {
         }
         self.solve_instances(true);
         self.retry_waiting(true);
+        self.solve_wanted(true);
         let mut failed: Vec<(Span, String, Diagnostic)> = Vec::new();
         for d in ds {
             if d.kind == OpClass::Comparable {
                 self.solve_comparable(&d);
                 continue;
             }
+            // Seen through the type equations where the operator is (#209).
+            let saved = std::mem::replace(&mut self.givens, d.givens.clone());
             let t = self.force(&d.ty);
+            self.givens = saved;
             let wk = &self.g.well_known;
             let ok = match (&t, d.kind) {
                 (Val::Error, _) => true,
