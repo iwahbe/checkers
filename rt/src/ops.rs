@@ -80,10 +80,10 @@ pub extern "C" fn ck_cmp(a: W, b: W) -> i64 {
 /// compare is a list on the heap, not the stack: comparing takes stack
 /// independent of the values' shape and size (§13.3).
 pub fn equal(a: W, b: W) -> Result<bool, &'static str> {
-    let mut todo = Vec::new();
+    let mut todo = Todo { near: [Pending::Pair(0, 0); NEAR], n: 0, far: Vec::new() };
     let r = equal_from(a, b, &mut todo);
     // Stopped early: the array elements still held.
-    for e in todo {
+    while let Some(e) = todo.pop() {
         if let Pending::Release(x, y) = e {
             drop_w(x);
             drop_w(y);
@@ -92,7 +92,43 @@ pub fn equal(a: W, b: W) -> Result<bool, &'static str> {
     r
 }
 
+/// How much of `equal`'s work list is kept on the stack: comparing a small
+/// value allocates nothing.
+const NEAR: usize = 8;
+
+/// `equal`'s work list: its first `NEAR` entries in `near`, the rest in `far`.
+struct Todo {
+    near: [Pending; NEAR],
+    n: usize,
+    far: Vec<Pending>,
+}
+
+impl Todo {
+    #[inline]
+    fn push(&mut self, p: Pending) {
+        if self.n < NEAR {
+            self.near[self.n] = p;
+            self.n += 1;
+        } else {
+            self.far.push(p);
+        }
+    }
+
+    #[inline]
+    fn pop(&mut self) -> Option<Pending> {
+        if let Some(p) = self.far.pop() {
+            return Some(p);
+        }
+        if self.n == 0 {
+            return None;
+        }
+        self.n -= 1;
+        Some(self.near[self.n])
+    }
+}
+
 /// What `equal` has left to do.
+#[derive(Clone, Copy)]
 enum Pending {
     /// Compare these.
     Pair(W, W),
@@ -111,7 +147,7 @@ enum Step {
     Elems,
 }
 
-fn equal_from(a: W, b: W, todo: &mut Vec<Pending>) -> Result<bool, &'static str> {
+fn equal_from(a: W, b: W, todo: &mut Todo) -> Result<bool, &'static str> {
     // The next pair, kept out of `todo`: walking a list pushes nothing.
     let mut next = Some((a, b));
     loop {
@@ -344,41 +380,95 @@ fn render(w: W, p: u8, hand: bool) -> String {
 /// stack independent of the value's shape and size (§13.3), except where a
 /// hand-written `debug` runs.
 fn render_typed(w: W, ty: &Ty, p: u8, hand: bool) -> String {
-    let unknown = Rc::new(Ty::Unknown);
-    let root = if ty.id().is_some() { Rc::new(ty.clone()) } else { unknown.clone() };
-    let mut s = Shower { out: String::new(), todo: vec![Show::Val(w, p, root)], hand, unknown };
+    let mut s = Shower { out: String::new(), todo: vec![Show::Val(w, p, TyRef::Borrowed(ty))], hand };
     while let Some(next) = s.todo.pop() {
         s.step(next);
     }
     s.out
 }
 
+/// A type while showing a value: most are borrowed from the type asked
+/// for, or have no arguments; only one built from a field's template with
+/// arguments is held.
+#[derive(Clone)]
+enum TyRef<'a> {
+    Borrowed(&'a Ty),
+    /// A type without arguments: its tag.
+    Tag(u64),
+    Held(Rc<Ty>),
+}
+
+impl<'a> TyRef<'a> {
+    fn of(t: Ty) -> TyRef<'a> {
+        match t {
+            Ty::Unknown => TyRef::Borrowed(&crate::desc::UNKNOWN),
+            Ty::Con { tag, args } if args.is_empty() => TyRef::Tag(tag),
+            t => TyRef::Held(Rc::new(t)),
+        }
+    }
+
+    /// `f` of the type this is.
+    fn with<R>(&self, f: impl FnOnce(&Ty) -> R) -> R {
+        match self {
+            TyRef::Borrowed(t) => f(t),
+            TyRef::Tag(tag) => f(&Ty::Con { tag: *tag, args: Vec::new() }),
+            TyRef::Held(t) => f(t),
+        }
+    }
+
+    fn id(&self) -> Option<u32> {
+        match self {
+            TyRef::Tag(tag) => crate::desc::tag_id(*tag),
+            t => t.with(Ty::id),
+        }
+    }
+
+    /// Argument `i`.
+    fn arg(&self, i: usize) -> TyRef<'a> {
+        match self {
+            TyRef::Borrowed(t) => TyRef::Borrowed(t.arg(i)),
+            TyRef::Tag(_) => TyRef::Borrowed(&crate::desc::UNKNOWN),
+            TyRef::Held(t) => TyRef::of(t.arg(i).clone()),
+        }
+    }
+
+    /// A field's type, by its template.
+    fn at(&self, t: &crate::desc::Template) -> TyRef<'a> {
+        use crate::desc::Template;
+        match t {
+            Template::Unknown | Template::Fn(_) => TyRef::Borrowed(&crate::desc::UNKNOWN),
+            Template::Param(i) => self.arg(*i),
+            Template::Con(tag, xs) if xs.is_empty() => TyRef::Tag(*tag),
+            t => self.with(|ty| TyRef::of(t.at(ty).into_owned())),
+        }
+    }
+}
+
 /// What showing a value has left to write.
-enum Show {
+enum Show<'a> {
     /// A value of type `ty`, in argument position if `p > 0`.
-    Val(W, u8, Rc<Ty>),
+    Val(W, u8, TyRef<'a>),
     Text(&'static str),
     /// A list's elements from this cell on; `first`: none written yet.
-    List(W, Rc<Ty>, bool),
+    List(W, TyRef<'a>, bool),
     /// An array's elements from this index on.
-    Elems(W, usize, Rc<Ty>),
+    Elems(W, usize, TyRef<'a>),
     /// A bag's values from entry `i`'s `j`th time on, by type (`None`: by
     /// their keys); `first` as for lists.
-    Bag(W, usize, usize, Option<Rc<Ty>>, bool),
+    Bag(W, usize, usize, Option<TyRef<'a>>, bool),
     /// A new reference, held until what came before it is written.
     Release(W),
 }
 
-struct Shower {
+struct Shower<'a> {
     out: String,
-    todo: Vec<Show>,
+    todo: Vec<Show<'a>>,
     /// Hand-written `debug`s are used (else the standard library's only).
     hand: bool,
-    unknown: Rc<Ty>,
 }
 
-impl Shower {
-    fn step(&mut self, next: Show) {
+impl<'a> Shower<'a> {
+    fn step(&mut self, next: Show<'a>) {
         match next {
             Show::Text(t) => self.out.push_str(t),
             Show::Release(w) => drop_w(w),
@@ -437,25 +527,25 @@ impl Shower {
         }
     }
 
-    /// Write `open` now and `close` after the values `items`, `sep` between them.
-    fn seq(&mut self, open: &str, items: Vec<Show>, sep: &'static str, close: &'static str) {
-        self.out.push_str(open);
-        self.todo.push(Show::Text(close));
-        for (i, it) in items.into_iter().enumerate().rev() {
-            self.todo.push(it);
+    /// `(a, b, c)`: a tuple's components, the type of each by `ty`.
+    fn tuple(&mut self, w: W, ty: impl Fn(usize) -> TyRef<'a>) {
+        self.out.push('(');
+        self.todo.push(Show::Text(")"));
+        for i in (0..nfields(w)).rev() {
+            self.todo.push(Show::Val(slot(w, i), 0, ty(i)));
             if i > 0 {
-                self.todo.push(Show::Text(sep));
+                self.todo.push(Show::Text(", "));
             }
         }
     }
 
     /// A constructor applied to its shown fields, each with the type and
     /// the descriptor (a new reference, if one was computed) `ty` gives.
-    fn con(&mut self, w: W, c: u32, p: u8, mut ty: impl FnMut(usize, &[W]) -> (Rc<Ty>, Option<W>)) {
+    fn con(&mut self, w: W, c: u32, p: u8, mut ty: impl FnMut(usize) -> (TyRef<'a>, Option<W>)) {
         let ci = &prog().cons[c as usize];
-        let fields: Vec<W> = if is_nullary(w) { Vec::new() } else { (0..nfields(w)).map(|i| slot(w, i)).collect() };
-        let shown: Vec<usize> = (0..fields.len()).filter(|i| ci.shown.get(*i).copied().unwrap_or(false)).collect();
-        if shown.is_empty() {
+        let n = if is_nullary(w) { 0 } else { nfields(w) };
+        let shown = |i: usize| ci.shown.get(i).copied().unwrap_or(false);
+        if !(0..n).any(shown) {
             self.out.push_str(&ci.name);
             return;
         }
@@ -464,34 +554,31 @@ impl Shower {
             self.todo.push(Show::Text(")"));
         }
         self.out.push_str(&ci.name);
-        let mut parts = Vec::with_capacity(3 * shown.len());
-        for i in shown {
-            let (fty, held) = ty(i, &fields[..i]);
-            parts.push(Show::Text(" "));
-            parts.push(Show::Val(fields[i], 1, fty));
-            parts.extend(held.map(Show::Release));
+        for i in (0..n).filter(|i| shown(*i)).rev() {
+            let (fty, held) = ty(i);
+            self.todo.extend(held.map(Show::Release));
+            self.todo.push(Show::Val(slot(w, i), 1, fty));
+            self.todo.push(Show::Text(" "));
         }
-        self.todo.extend(parts.into_iter().rev());
     }
 
     /// `w` shown as a value of type `id` (with arguments in `ty`), if that
     /// says more than the value does: `false` if not.
-    fn typed(&mut self, w: W, p: u8, ty: &Rc<Ty>, id: u32) -> bool {
+    fn typed(&mut self, w: W, p: u8, ty: &TyRef<'a>, id: u32) -> bool {
         let pg = prog();
-        let arg = |i: usize| Rc::new(ty.arg(i).clone());
         if id == crate::desc::TUPLE {
             if !is_kind(w, K_TUPLE) {
                 return false;
             }
-            let items = (0..nfields(w)).map(|i| Show::Val(slot(w, i), 0, arg(i))).collect();
-            self.seq("(", items, ", ", ")");
+            self.tuple(w, |i| ty.arg(i));
             return true;
         }
         let other = crate::prog::TyInfo::default();
         let info = pg.tys.get(id as usize).unwrap_or(&other);
         if (self.hand || info.std_debug) && info.debug.is_some() {
             if let Some((f, n)) = crate::prog::debug_fn_of_type(id) {
-                let s = custom(f, (0..n).map(|i| ty.arg(i).to_word()).collect(), w, p);
+                let targs = ty.with(|t| (0..n).map(|i| t.arg(i).to_word()).collect());
+                let s = custom(f, targs, w, p);
                 self.out.push_str(&s);
                 return true;
             }
@@ -500,20 +587,20 @@ impl Shower {
             TyKind::List if is_list(w) => {
                 self.out.push('[');
                 self.todo.push(Show::Text("]"));
-                self.todo.push(Show::List(w, arg(0), true));
+                self.todo.push(Show::List(w, ty.arg(0), true));
                 return true;
             }
             // A bag's values by its element type, each as many times as it is there.
             TyKind::Bag if matches!(obj(w), Some(Obj::Bag(_))) => {
                 self.out.push_str("<Bag {");
                 self.todo.push(Show::Text("}>"));
-                self.todo.push(Show::Bag(w, 0, 0, Some(arg(0)), true));
+                self.todo.push(Show::Bag(w, 0, 0, Some(ty.arg(0)), true));
                 return true;
             }
             TyKind::Array if crate::array::is_array(w) => {
-                let elem = arg(0);
+                let elem = ty.arg(0);
                 // An array of bytes by its element type, not by how it is stored.
-                if elem.layout() == crate::array::Layout::U8 && is_kind(w, K_BYTES) {
+                if elem.with(Ty::layout) == crate::array::Layout::U8 && is_kind(w, K_BYTES) {
                     self.out.push_str(&show_bytes(blob(w)));
                     return true;
                 }
@@ -541,13 +628,13 @@ impl Shower {
                 // Computed from the type's value arguments: the fields before it
                 // aren't kept, so they are given as erased.
                 Some(crate::desc::Template::Fn(f)) => {
-                    let targs = (0..ci.np).map(|j| ty.arg(j).to_arg()).collect();
+                    let targs = ty.with(|t| (0..ci.np).map(|j| t.arg(j).to_arg()).collect());
                     let d = crate::prog::field_type(*f, targs, &vec![ERASED; k]);
                     self.todo.push(Show::Release(d));
-                    self.todo.push(Show::Val(w, 1, Rc::new(Ty::of_word(d))));
+                    self.todo.push(Show::Val(w, 1, TyRef::of(Ty::of_word(d))));
                 }
                 t => {
-                    let fty = t.map_or(self.unknown.clone(), |t| Rc::new(t.at(ty).into_owned()));
+                    let fty = t.map_or(TyRef::Borrowed(&crate::desc::UNKNOWN), |t| ty.at(t));
                     self.todo.push(Show::Val(w, 1, fty));
                 }
             }
@@ -558,15 +645,15 @@ impl Shower {
         if ci.ty != Some(id) {
             return false;
         }
-        let unknown = self.unknown.clone();
-        self.con(w, c, p, |i, before| match ci.templates.get(i) {
+        self.con(w, c, p, |i| match ci.templates.get(i) {
             // A type computed from earlier fields: computed now.
             Some(crate::desc::Template::Fn(f)) => {
-                let targs = (0..ci.np).map(|j| ty.arg(j).to_arg()).collect();
-                let d = crate::prog::field_type(*f, targs, before);
-                (Rc::new(Ty::of_word(d)), Some(d))
+                let targs = ty.with(|t| (0..ci.np).map(|j| t.arg(j).to_arg()).collect());
+                let before: Vec<W> = (0..i).map(|j| slot(w, j)).collect();
+                let d = crate::prog::field_type(*f, targs, &before);
+                (TyRef::of(Ty::of_word(d)), Some(d))
             }
-            t => (t.map_or(unknown.clone(), |t| Rc::new(t.at(ty).into_owned())), None),
+            t => (t.map_or(TyRef::Borrowed(&crate::desc::UNKNOWN), |t| ty.at(t)), None),
         });
         true
     }
@@ -611,11 +698,10 @@ impl Shower {
             if Some(c) == k.nil || Some(c) == k.cons {
                 self.out.push('[');
                 self.todo.push(Show::Text("]"));
-                self.todo.push(Show::List(w, self.unknown.clone(), true));
+                self.todo.push(Show::List(w, TyRef::Borrowed(&crate::desc::UNKNOWN), true));
                 return;
             }
-            let unknown = self.unknown.clone();
-            self.con(w, c, p, |_, _| (unknown.clone(), None));
+            self.con(w, c, p, |_| (TyRef::Borrowed(&crate::desc::UNKNOWN), None));
             return;
         }
         let text: String = match kind(w) {
@@ -623,12 +709,11 @@ impl Shower {
             crate::array::K_ARRAY => {
                 self.out.push('[');
                 self.todo.push(Show::Text("]"));
-                self.todo.push(Show::Elems(w, 0, self.unknown.clone()));
+                self.todo.push(Show::Elems(w, 0, TyRef::Borrowed(&crate::desc::UNKNOWN)));
                 return;
             }
             K_TUPLE => {
-                let items = (0..nfields(w)).map(|i| Show::Val(slot(w, i), 0, self.unknown.clone())).collect();
-                self.seq("(", items, ", ", ")");
+                self.tuple(w, |_| TyRef::Borrowed(&crate::desc::UNKNOWN));
                 return;
             }
             K_CLO | K_PAP => "<function>".into(),
@@ -654,6 +739,7 @@ impl Shower {
         self.out.push_str(&text);
     }
 }
+
 /// Whether `w` is a list: `[]` or a cell.
 fn is_list(w: W) -> bool {
     let k = &prog().known;
