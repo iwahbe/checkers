@@ -73,10 +73,11 @@ fn subject_range(t: &Tm, subject: usize, constant: &dyn Fn(&Tm) -> Option<i128>)
     }
 }
 
-/// The most function entries and loop iterations native code may make
-/// computing a value known at compile time (§8.9): a call outside its
-/// preconditions may not end (`checkers_rt::prog::ck_tick`).
-pub const KNOWN_WORK: u64 = 10_000_000;
+/// The most function entries and loop iterations native code may make in a
+/// development build computing a constant that only code generation wants
+/// (§8.9, `checkers_rt::prog::ck_tick`): a cost bound, which changes only
+/// the code generated. Types and proofs compute their values to completion.
+pub const CODEGEN_WORK: u64 = 10_000_000;
 
 impl Elab {
     /// The constant bounds of a number type, if it is one: its aliases'
@@ -167,11 +168,18 @@ impl Elab {
     /// values, sealed or not. The type checker's evaluation computes it
     /// where it can, within its steps; else it runs as native code, as
     /// staging runs compile-time code, once every function it reaches is
-    /// total and its module checked (its termination too). A computation
-    /// that fails, that can't run yet, or that doesn't finish within
-    /// `KNOWN_WORK`, isn't known: never an error. Results are kept per term
-    /// (per function and arguments).
+    /// total and its module proved, and the preconditions of the calls in
+    /// `t` hold: then it ends (§8.9). A computation that fails, or that
+    /// can't run yet, isn't known: never an error. Results are kept per
+    /// term (per function and arguments).
     pub fn known_value(&self, t: &Tm) -> Option<Lit> {
+        self.known_value_within(t, u64::MAX)
+    }
+
+    /// `known_value`, giving up after `work` function entries and loop
+    /// iterations of native code (`CODEGEN_WORK`); a value given up on
+    /// isn't kept, so it is computed again if asked for without a limit.
+    pub fn known_value_within(&self, t: &Tm, work: u64) -> Option<Lit> {
         if let Tm::Lit(l) = t {
             return Some(l.clone());
         }
@@ -188,7 +196,7 @@ impl Elab {
             // Not known yet: a function it needs may be checked later.
             return None;
         }
-        if !self.preconditions_hold(t, 0) {
+        if !self.preconditions_hold(t, 0, work) {
             // A total function ends where its preconditions hold: outside
             // them its value isn't known, and the call's precondition is
             // reported where it is proved.
@@ -196,7 +204,7 @@ impl Elab {
             return None;
         }
         let mut ev = crate::native::eval::Evaluator::plain(&self.g);
-        let k = match ev.eval_limited(t, KNOWN_WORK) {
+        let k = match ev.eval_limited(t, work) {
             Ok(v) => {
                 let r = ev.reify(v);
                 ev.release(v);
@@ -205,6 +213,7 @@ impl Elab {
                     _ => None,
                 }
             }
+            Err(e) if e.contains(checkers_rt::prog::WORK_LIMIT) => return None,
             // A runtime error: not known.
             Err(_) => None,
         };
@@ -215,8 +224,8 @@ impl Elab {
     /// Do the preconditions of every call in closed term `t` (outside
     /// lambdas: those calls' preconditions are their caller's to prove)
     /// hold for its arguments, as values known at compile time? `depth`
-    /// counts preconditions of preconditions.
-    fn preconditions_hold(&self, t: &Tm, depth: usize) -> bool {
+    /// counts preconditions of preconditions; `work`, as `known_value_within`.
+    fn preconditions_hold(&self, t: &Tm, depth: usize, work: u64) -> bool {
         fn calls(t: &Tm, out: &mut Vec<Tm>) {
             match t {
                 Tm::App(..) => {
@@ -252,7 +261,7 @@ impl Elab {
             env.push(Val::Error);
             for p in spec.preds.iter().filter(|p| !p.is_post) {
                 let goal = quote(&self.g, 0, &self.inst_pred(p, env.clone()));
-                if self.known_bool(&goal, depth) != Some(true) {
+                if self.known_bool(&goal, depth, work) != Some(true) {
                     return false;
                 }
             }
@@ -262,7 +271,7 @@ impl Elab {
 
     /// The truth of closed `t` at compile time, computed as `known_value`
     /// computes a number.
-    fn known_bool(&self, t: &Tm, depth: usize) -> Option<bool> {
+    fn known_bool(&self, t: &Tm, depth: usize, work: u64) -> Option<bool> {
         let wk = &self.g.well_known;
         let saved = self.g.fuel.replace(crate::core::DEFAULT_FUEL);
         let forced = crate::core::force(&self.g, eval(&self.g, &Rc::new(Vec::new()), t));
@@ -273,20 +282,33 @@ impl Elab {
             _ => {}
         }
         let t = &runtime_closed(&self.g, t)?;
-        if depth > 8 || !self.runnable(t) || !self.preconditions_hold(t, depth + 1) {
+        if depth > 8 || !self.runnable(t) || !self.preconditions_hold(t, depth + 1, work) {
             return None;
         }
         let mut ev = crate::native::eval::Evaluator::plain(&self.g);
-        let v = ev.eval_limited(t, KNOWN_WORK).ok()?;
+        let v = ev.eval_limited(t, work).ok()?;
         let b = !ev.is_false(v);
         ev.release(v);
         Some(b)
     }
 
+    /// Is module `m` proved, with no errors (§8.9)? An imported module is
+    /// proved the first time one of its functions would run; the module
+    /// being checked, or being proved, isn't yet.
+    pub fn module_proved(&self, m: &str) -> bool {
+        // A module with errors isn't proved: its broken declarations'
+        // obligations are set aside only once the program is checked.
+        if self.loading.iter().any(|l| l == m) || self.proving.borrow().contains(m) || self.diags.iter().any(|(at, d)| at == m && d.is_error()) {
+            return false;
+        }
+        !crate::verify::proved(self, m).diags.iter().any(|d| d.is_error())
+    }
+
     /// Can `t` run at compile time now? Every definition it reaches has
     /// code (a body, or a builtin of the runtime), is total (not
-    /// `partial`), and belongs to a module whose checking is done, so its
-    /// termination is checked; and nothing in it waits on a cown.
+    /// `partial`), and belongs to a module proved with no errors
+    /// (`module_proved`), so it ends and calls only what its callees accept;
+    /// and nothing in it waits on a cown.
     fn runnable(&self, t: &Tm) -> bool {
         let mut todo = Vec::new();
         crate::core::defs_in(t, &mut todo);
@@ -301,7 +323,7 @@ impl Elab {
             let Some(info) = self.g.defs.get(d.0 as usize) else { return false };
             // A `partial` function has a body and is opaque; a builtin has
             // none (its code is the runtime's).
-            if info.opaque && info.body.is_some() || self.loading.iter().any(|m| **m == *info.module) {
+            if info.opaque && info.body.is_some() || !self.module_proved(&info.module) {
                 return false;
             }
             match &info.body {
@@ -319,7 +341,7 @@ impl Elab {
                 }
             }
         }
-        // Each definition reached is in a finished module: it stays runnable.
+        // Each definition reached is in a proved module: it stays runnable.
         self.runnable_defs.borrow_mut().extend(seen);
         true
     }

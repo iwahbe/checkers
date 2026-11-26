@@ -1,17 +1,25 @@
-error[E0450]: cannot prove `r >= 0`, the postcondition of `outside`
- --> known_precondition.ck:9:15
+error[E0450]: cannot prove `x >= 1`, required to call `half`
+ --> known_precondition.ck:9:5
   |
-9 | fn outside -> r : r~Nat
-  |               ^ promised here
-  = note: for the value returned on line 10: `next 0`
-  = note: `next` is sealed in `known.domain`: here the prover knows only its postconditions and the lemmas you bring in with `have`
-  = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+9 |     half 0 + n
+  |     ^^^^^^ `half` requires `x >= 1`
+  = note: counterexample: n = 0
+  = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+error[E0450]: cannot prove `r >= 0`, the postcondition of `outside`
+  --> known_precondition.ck:11:15
+   |
+11 | fn outside -> r : r~Nat
+   |               ^ promised here
+   = note: for the value returned on line 12: `next 0`
+   = note: `next` is sealed in `known.domain`: here the prover knows only its postconditions and the lemmas you bring in with `have`
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
 
 error[E0450]: cannot prove `x >= 1`, required to call `next`
-  --> known_precondition.ck:10:5
+  --> known_precondition.ck:12:5
    |
-10 |     next 0
+12 |     next 0
    |     ^^^^^^ `next` requires `x >= 1`
    = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
 
-known_precondition.ck: 2 errors, 0 warnings
+known_precondition.ck: 3 errors, 0 warnings

@@ -12,6 +12,7 @@ mod expr;
 mod descr;
 mod eq;
 mod interval;
+pub use interval::CODEGEN_WORK;
 pub mod index;
 pub(crate) mod order;
 mod pattern;
@@ -676,6 +677,12 @@ pub struct Elab {
     pub known_cache: std::cell::RefCell<HashMap<String, Option<Lit>>>,
     /// Definitions found to run at compile time (`runnable`).
     pub runnable_defs: std::cell::RefCell<HashSet<DefId>>,
+    /// Each module's proofs once made (`verify::proved`): an imported
+    /// module's functions run at compile time only once it is proved
+    /// (§8.9).
+    pub module_proofs: std::cell::RefCell<HashMap<String, crate::verify::Verified>>,
+    /// The modules being proved now: their functions don't run yet.
+    pub proving: std::cell::RefCell<HashSet<String>>,
     /// The name a refinement alias binds (`n` in `type Big = n~Int, …`).
     pub alias_subject: HashMap<DefId, Name>,
     /// The result type of a function whose result type isn't written.
@@ -993,6 +1000,8 @@ impl Elab {
             bounds: HashMap::new(),
             known_cache: std::cell::RefCell::new(HashMap::new()),
             runnable_defs: std::cell::RefCell::new(HashSet::new()),
+            module_proofs: std::cell::RefCell::new(HashMap::new()),
+            proving: std::cell::RefCell::new(HashSet::new()),
             alias_subject: HashMap::new(),
             result_metas: HashMap::new(),
             arg_of: None,

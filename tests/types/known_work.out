@@ -1,10 +1,1 @@
-error[E0450]: cannot prove `r >= 0`, the postcondition of `beyond`
-  --> known_work.ck:12:14
-   |
-12 | fn beyond -> r : r~Nat
-   |              ^ promised here
-   = note: for the value returned on line 13: `spin 20000000`
-   = note: `spin` is sealed in `known.domain`: here the prover knows only its postconditions and the lemmas you bring in with `have`
-   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
-
-known_work.ck: 1 error, 0 warnings
+known_work.ck: 0 errors, 0 warnings; 5 obligations proved

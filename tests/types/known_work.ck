@@ -1,7 +1,6 @@
-# A value known at compile time is computed within a work limit: `spin`
-# ends, but `spin 20000000` takes more than the limit, so its value isn't
-# known and the result's obligation is reported. `spin 1000` is known: 0,
-# a `Nat`.
+# Types and proofs compute a value known at compile time to completion,
+# however long it takes: `spin 20000000` is 0, so a `Nat` by its value, as
+# `spin 1000` is.
 module known_work
 
 import known.domain (spin)
