@@ -13,7 +13,7 @@ mod descr;
 mod eq;
 mod interval;
 pub mod index;
-mod order;
+pub(crate) mod order;
 mod pattern;
 pub use pattern::BINDING_HELP;
 mod refine;
