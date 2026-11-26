@@ -101,10 +101,10 @@ examples/wc.ck:98:7  computed check render (Counts 1 2 3) "f.txt" == "1 2 3 f.tx
 examples/wc.ck:99:7  computed check ends_in_word b"ab" False
 examples/wc.ck:100:7  computed check not (ends_in_word b"ab " True)
 examples/wc.ck:101:7  computed check ends_in_word b"" True
-<std>/files.ck:47:11  builtin  std.files.close
+<std>/files.ck:50:11  builtin  std.files.close
 <std>/files.ck:35:11  builtin  std.files.describe
 <std>/files.ck:39:11  builtin  std.files.open
-<std>/files.ck:62:11  builtin  std.files.read_some
+<std>/files.ck:66:11  builtin  std.files.read_some
 <std>/string.ck:34:11  builtin  std.string.chars
 <std>/string.ck:26:11  builtin  std.string.concat
 <std>/string.ck:174:8  builtin  std.string.debug
@@ -112,7 +112,7 @@ examples/wc.ck:101:7  computed check ends_in_word b"" True
 <std>/string.ck:10:11  builtin  std.string.from_chars
 <std>/terminal.ck:14:11  builtin  std.terminal.eprint_line
 <std>/terminal.ck:10:11  builtin  std.terminal.print_line
-<std>/terminal.ck:36:11  builtin  std.terminal.stdin
+<std>/terminal.ck:37:11  builtin  std.terminal.stdin
 solver: Z3 5.3.3.0
 cache: 76 of 789 Z3 answers reused
 -- stderr

@@ -10,7 +10,7 @@ import std.terminal (Term)
 import std.string (debug)
 
 fn size f -> n : f~File, n~Nat
-    files.close f
+    close f
     0
 
 fn twice g -> r : g~(Unit -> Nat), r~Nat
@@ -20,7 +20,7 @@ fn keep f -> r : f~File, r~File
     f
 
 fn both f n -> r : f~File, n~Nat, r~Nat
-    files.close f
+    close f
     n
 
 fn twice_on g -> r : g~(Nat -> Nat), r~Nat
@@ -48,3 +48,8 @@ fn returned f -> r : f~File, r~File
 # E0401: `both f` is a function holding the file.
 fn partial_app f -> r : f~File, r~Nat
     twice_on (both f)
+
+# Close `f`, whatever closing gives.
+fn close f : f~File
+    let _ = files.close f
+    ()
