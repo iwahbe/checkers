@@ -1,12 +1,19 @@
 module underflow
 
-# Until the prover exists, `-` on `Nat` is checked at run time (§13.3).
+# A `Nat` subtraction proved only from an `admit` is checked at run time
+# (§13.3): going below zero stops the program.
 
 import std.system (System, ExitCode)
 import std.terminal
 import std.string (debug)
 
+lemma at_least n : n~Nat
+    ensures n >= 3
+    proof
+        admit
+
 fn steps n -> m : n~Nat, m~Nat
+    have at_least n
     n - 3
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
