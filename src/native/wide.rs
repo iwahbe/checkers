@@ -6,7 +6,7 @@
 //! operations.
 
 use cranelift_codegen::ir::condcodes::IntCC;
-use cranelift_codegen::ir::types::{I128, I64, I8};
+use cranelift_codegen::ir::types::{I128, I64};
 use cranelift_codegen::ir::{BlockArg, InstBuilder, Value};
 use cranelift_frontend::FunctionBuilder;
 
@@ -250,13 +250,8 @@ pub fn small_word(b: &mut FunctionBuilder, x: Value) -> (Value, Value) {
     (fits, b.ins().bor_imm_s(twice, 1))
 }
 
-/// A 128-bit zero, for paths that have no value to give.
+/// A 128-bit zero.
 pub fn zero(b: &mut FunctionBuilder) -> Value {
     let z = b.ins().iconst(I64, 0);
     of_u64(b, z)
-}
-
-/// An `I8` that is 0, for the same.
-pub fn no(b: &mut FunctionBuilder) -> Value {
-    b.ins().iconst(I8, 0)
 }

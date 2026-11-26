@@ -695,8 +695,8 @@ mod tests {
 
     /// Numbers within 128 bits (tests/run/wide_int_inline.ck: small
     /// integers whose operations overflow a word, and two-word numbers)
-    /// are computed in compiled code: running the program calls none of
-    /// the runtime's arithmetic.
+    /// are computed in compiled code (the program's 128-bit functions):
+    /// running the program calls none of the runtime's arithmetic.
     #[test]
     fn numbers_within_128_bits_need_no_runtime() {
         crate::with_big_stack(|| {
