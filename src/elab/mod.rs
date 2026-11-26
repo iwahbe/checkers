@@ -697,6 +697,10 @@ pub struct Elab {
     pub module_proofs: std::cell::RefCell<HashMap<String, crate::verify::Verified>>,
     /// The modules being proved now: their functions don't run yet.
     pub proving: std::cell::RefCell<HashSet<String>>,
+    /// Terms the prover's translator left out because their parts' sorts
+    /// don't fit their places (§7.3): each is a type error reported, so a
+    /// program without one has none.
+    pub ill_sorted: std::cell::Cell<usize>,
     /// The name a refinement alias binds (`n` in `type Big = n~Int, …`).
     pub alias_subject: HashMap<DefId, Name>,
     /// The result type of a function whose result type isn't written.
@@ -1029,6 +1033,7 @@ impl Elab {
             known_cache: std::cell::RefCell::new(HashMap::new()),
             runnable_defs: std::cell::RefCell::new(HashSet::new()),
             module_proofs: std::cell::RefCell::new(HashMap::new()),
+            ill_sorted: std::cell::Cell::new(0),
             proving: std::cell::RefCell::new(HashSet::new()),
             alias_subject: HashMap::new(),
             result_metas: HashMap::new(),

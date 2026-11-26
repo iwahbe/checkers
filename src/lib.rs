@@ -39,6 +39,9 @@ pub struct Checked {
     pub ledger: String,
     /// Staged definitions (§8.9), for `checkers stage`.
     pub staged: String,
+    /// Terms the prover left out for a type error it found in their sorts
+    /// (§7.3): 0 in a program without type errors, or checkers has a bug.
+    pub ill_sorted: usize,
     /// The modules verified before, by name (D143), once looked up.
     remembered: Option<std::collections::HashMap<String, (String, verify::Remembered)>>,
 }
@@ -94,7 +97,7 @@ pub fn parse_only(name: &str, text: &str) -> Checked {
     let file = SourceFile::new(name, text);
     let (module, mut diags) = syntax::parse_module(text);
     diags.extend(lint::naming(&module));
-    Checked { file, module, diags, internal: Vec::new(), others: Vec::new(), obligations: 0, proved: 0, ledger: String::new(), staged: String::new(), remembered: None }
+    Checked { file, module, diags, internal: Vec::new(), others: Vec::new(), obligations: 0, proved: 0, ledger: String::new(), staged: String::new(), ill_sorted: 0, remembered: None }
 }
 
 /// The directory `import a.b` looks in for `a/b.ck` (D53): the program's own.
@@ -124,6 +127,7 @@ pub fn check_in(name: &str, text: &str, dir: &std::path::Path) -> Checked {
         prove(&mut c, e, user);
         phase_time(name, "proofs", t);
         stage_module(&mut c, e, user);
+        c.ill_sorted = e.ill_sorted.get();
     }
     c
 }
