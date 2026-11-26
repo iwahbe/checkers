@@ -41,27 +41,32 @@ pub fn layout_for(r: Range) -> u8 {
     l as u8
 }
 
-/// A constant term: a literal, or a negated one.
-pub fn constant(t: &Tm) -> Option<i128> {
+/// A closed term's value as a constant: an integer known at compile time
+/// (§8.9), a literal or not (`math.pow 2 32`, a named constant).
+pub fn constant(g: &Globals, t: &Tm) -> Option<i128> {
     match t {
         Tm::Lit(Lit::Num(n)) => Some(*n),
-        Tm::PrimApp(Prim::Neg, a) => constant(a.first()?).and_then(|n| n.checked_neg()),
-        _ => None,
+        Tm::PrimApp(Prim::Neg, a) => constant(g, a.first()?).and_then(|n| n.checked_neg()),
+        _ => match crate::core::known_tm(g, t)? {
+            Lit::Num(n) => Some(n),
+            _ => None,
+        },
     }
 }
 
 /// What a predicate about the subject (`Var(0)`) says of its bounds.
-fn pred_range(t: &Tm) -> Range {
-    subject_range(t, 0)
+fn pred_range(g: &Globals, t: &Tm) -> Range {
+    subject_range(g, t, 0)
 }
 
 /// What a predicate says of the bounds of `Var(subject)`: a comparison of
 /// it with a constant.
-fn subject_range(t: &Tm, subject: usize) -> Range {
+fn subject_range(g: &Globals, t: &Tm, subject: usize) -> Range {
     let Tm::PrimApp(p, args) = t else { return Range::ANY };
     let (Some(a), Some(b)) = (args.first(), args.get(1)) else { return Range::ANY };
     let subject = |x: &Tm| matches!(x, Tm::Var(v) if *v == subject);
     // Put it as `n op c`.
+    let constant = |x: &Tm| if subject(x) { None } else { constant(g, x) };
     let (op, c) = match (subject(a), subject(b), constant(a), constant(b)) {
         (true, _, _, Some(c)) => (p.clone(), c),
         (_, true, Some(c), _) => (
@@ -97,7 +102,7 @@ impl Elab {
                 if sp.is_empty() {
                     if let Some(preds) = self.alias_preds.get(d) {
                         for p in preds {
-                            r = r.meet(pred_range(&p.tm));
+                            r = r.meet(pred_range(&self.g, &p.tm));
                         }
                     }
                 }
@@ -125,11 +130,27 @@ impl Elab {
                 let env = Rc::new((0..k).map(Val::var).collect::<Vec<_>>());
                 let mut r = self.type_range(&eval(&self.g, &env, ty))?;
                 for p in preds.iter().filter(|p| p.is_post == (k == nb)) {
-                    r = r.meet(subject_range(&p.tm, nb - k));
+                    r = r.meet(subject_range(&self.g, &p.tm, nb - k));
                 }
                 (r != Range::ANY).then_some(r)
             })
             .collect()
+    }
+
+    /// An operand's value as a constant, in context `cx`: an integer known
+    /// at compile time (§8.9). An operation's range is its type's (D135):
+    /// it isn't evaluated again, which would walk every operator chained
+    /// below it.
+    pub fn known_int(&self, cx: &Cx, t: &Tm) -> Option<i128> {
+        match t {
+            Tm::Lit(Lit::Num(n)) => Some(*n),
+            Tm::PrimApp(Prim::Neg, a) => self.known_int(cx, a.first()?).and_then(|n| n.checked_neg()),
+            Tm::PrimApp(..) | Tm::Lit(_) => None,
+            _ => match crate::core::known_lit(&self.g, self.eval(cx, t))? {
+                Lit::Num(n) => Some(n),
+                _ => None,
+            },
+        }
     }
 
     /// An operand's bounds: a constant's own, else its type's.

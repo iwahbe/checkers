@@ -1988,8 +1988,9 @@ impl Elab {
 
     /// The postconditions hold of `v`, a value the function returns at `at`.
     /// D121 (c): `v` is a `Nat` by construction, with no obligation: a
-    /// non-negative literal, a `Nat` local, `len`, `+`, `*`, `/` or `%` of
-    /// such values, or a `Nat` subtraction (which has its own obligation).
+    /// non-negative integer known at compile time (§8.9: a literal, a named
+    /// constant, `math.pow 2 3`), a `Nat` local, `len`, `+`, `*`, `/` or `%`
+    /// of such values, or a `Nat` subtraction (which has its own obligation).
     pub fn nat_by_closure(&self, cx: &Cx, v: &Val) -> bool {
         match crate::core::force_meta(&self.g, v.clone()) {
             Val::Lit(l @ (Lit::Num(_) | Lit::Big(_))) => l.is_nonneg_int(),
@@ -2048,13 +2049,13 @@ impl Elab {
                     _ => false,
                 };
                 // Or what a `Nat` local stands for (`j` in `Some (n, j)`, a
-                // `let` of a `match`).
+                // `let` of a `match`), or a value known at compile time.
                 call || {
                     let t = quote(&self.g, cx.lvl(), &v);
                     cx.locals.iter().zip(cx.env.iter()).any(|(x, e)| {
                         crate::core::is_nat(&self.g, &x.ty) && crate::core::tm_eq(&quote(&self.g, cx.lvl(), e), &t)
                     })
-                }
+                } || crate::core::known_lit(&self.g, v.clone()).is_some_and(|l| l.is_nonneg_int())
             }
             _ => false,
         }
@@ -2383,7 +2384,7 @@ impl Elab {
     /// isn't known yet, once it is (D134, D135).
     #[allow(clippy::too_many_arguments)]
     pub fn arith_result(&mut self, cx: &Cx, op: Prim, lt: &Tm, rt: &Tm, ty: &Val, lty: &Val, rty: &Val) -> Val {
-        let (lc, rc) = (interval::constant(lt), interval::constant(rt));
+        let (lc, rc) = (self.known_int(cx, lt), self.known_int(cx, rt));
         if let Val::Neutral(Head::Meta(_), _) = self.force(ty) {
             let r = self.fresh_meta_val(cx);
             self.arith_results.push(ArithResult {
