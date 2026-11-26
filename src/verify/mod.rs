@@ -16,6 +16,7 @@ pub struct LedgerEntry {
     pub what: String,
 }
 
+#[derive(Clone)]
 pub struct Verified {
     pub diags: Vec<Diagnostic>,
     pub ledger: Vec<LedgerEntry>,
@@ -554,7 +555,34 @@ fn ends_everywhere(e: &Elab, obs: &[&Obligation]) {
 }
 
 /// Prove the obligations of module `user` (§7.2).
-pub fn verify(e: &Elab, user: &str) -> Verified {
+/// Module `user`'s proofs phase: its proofs (`proved`), after W022 for
+/// its branches that never run, which needs the program's unused code.
+pub fn proofs(e: &Elab, user: &str) -> Verified {
+    let mut v = proved(e, user);
+    let (asked0, reused0) = (ASKED.load(std::sync::atomic::Ordering::Relaxed), REUSED.load(std::sync::atomic::Ordering::Relaxed));
+    let mut diags = unreachable(e, user);
+    v.asked += ASKED.load(std::sync::atomic::Ordering::Relaxed) - asked0;
+    v.reused += REUSED.load(std::sync::atomic::Ordering::Relaxed) - reused0;
+    diags.append(&mut v.diags);
+    v.diags = diags;
+    v
+}
+
+/// Module `user`'s obligations proved: the first time, by `verify`; after
+/// that, as they were. A module is proved once per program, whether
+/// first for a value known at compile time (§8.9) or in the proofs phase.
+pub fn proved(e: &Elab, user: &str) -> Verified {
+    if let Some(v) = e.module_proofs.borrow().get(user) {
+        return v.clone();
+    }
+    e.proving.borrow_mut().insert(user.to_string());
+    let v = verify(e, user);
+    e.proving.borrow_mut().remove(user);
+    e.module_proofs.borrow_mut().insert(user.to_string(), v.clone());
+    v
+}
+
+fn verify(e: &Elab, user: &str) -> Verified {
     let obs: Vec<&Obligation> = e
         .obligations
         .iter()
@@ -569,7 +597,6 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     for t in e.builtin_axioms.iter().filter(|t| t.module == user) {
         v.ledger.push(LedgerEntry { span: t.span, how: "axiom", what: t.what.clone() });
     }
-    v.diags.extend(unreachable(e, user));
     v.diags.extend(vacuous(e, user));
     guess_measures(e, user, &mut v);
     for (m, span, _) in e.checks.iter().filter(|c| c.0 == user) {

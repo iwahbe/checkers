@@ -24,15 +24,7 @@ pub struct Evaluator<'g> {
 
 impl<'g> Evaluator<'g> {
     pub fn new(g: &'g Globals) -> Evaluator<'g> {
-        let module = super::jit_module();
-        let mut gen = Gen::new(module, Program::new(g, None), g);
-        gen.probe = true;
-        gen.define_new();
-        gen.m.finalize_definitions().expect("finish native code");
-        let invoke = gen.m.get_finalized_function(gen.invoke);
-        let invoke: checkers_rt::prog::Invoke = unsafe { std::mem::transmute(invoke) };
-        let prog = checkers_rt::prog::make(&super::descriptor(g, &gen.p), invoke);
-        let mut ev = Evaluator { g, gen, prog };
+        let mut ev = Self::plain(g);
         // The hand-written `Debug` instances (#126), for values shown here.
         if let Some(ir) = super::lower::show_table(g) {
             if let Ok(fs) = ev.eval_ir(&ir) {
@@ -42,6 +34,20 @@ impl<'g> Evaluator<'g> {
         ev
     }
 
+    /// An evaluator for values that are only read back, never shown: no
+    /// `Debug` instances compiled (values known at compile time, §8.9).
+    pub fn plain(g: &'g Globals) -> Evaluator<'g> {
+        let module = super::jit_module();
+        let mut gen = Gen::new(module, Program::new(g, None), g);
+        gen.probe = true;
+        gen.define_new();
+        gen.m.finalize_definitions().expect("finish native code");
+        let invoke = gen.m.get_finalized_function(gen.invoke);
+        let invoke: checkers_rt::prog::Invoke = unsafe { std::mem::transmute(invoke) };
+        let prog = checkers_rt::prog::make(&super::descriptor(g, &gen.p), invoke);
+        Evaluator { g, gen, prog }
+    }
+
     /// `f`, calling into the runtime for this program.
     fn within<R>(&self, f: impl FnOnce() -> R) -> R {
         checkers_rt::prog::within(self.prog, f)
@@ -49,20 +55,30 @@ impl<'g> Evaluator<'g> {
 
     /// The value of a closed term: an owned word, or the runtime error.
     pub fn eval(&mut self, t: &Tm) -> Result<W, String> {
+        self.eval_limited(t, u64::MAX)
+    }
+
+    /// `eval`, stopping with a runtime error after `work` function entries
+    /// and loop iterations (`checkers_rt::prog::eval_limited`).
+    pub fn eval_limited(&mut self, t: &Tm, work: u64) -> Result<W, String> {
         let spec = super::spec::SpecCx { table: &self.gen.p.specs, staged: None, depth: 0 };
         let ir = super::ir::Compiler { g: self.g, owner: None, spec: Some(spec) }.compile(t);
-        self.eval_ir(&ir)
+        self.run(&ir, work)
     }
 
     /// The value of closed code: an owned word, or the runtime error.
     pub fn eval_ir(&mut self, ir: &super::ir::Ir) -> Result<W, String> {
+        self.run(ir, u64::MAX)
+    }
+
+    fn run(&mut self, ir: &super::ir::Ir, work: u64) -> Result<W, String> {
         let f = Lowerer::new(self.g, None, &mut self.gen.p).add_closed_ir(ir);
         super::rc_new(self.g, &mut self.gen.p);
         self.gen.define_new();
         self.gen.m.finalize_definitions().map_err(|e| format!("compiling: {e}"))?;
         let code = self.gen.m.get_finalized_function(self.gen.func_id(f)) as u64;
         let invoke = self.prog.invoke;
-        self.within(|| checkers_rt::prog::eval_trapped(move || invoke(code, w::ERASED, std::ptr::null(), 0)))
+        self.within(|| checkers_rt::prog::eval_limited(work, move || invoke(code, w::ERASED, std::ptr::null(), 0)))
     }
 
     pub fn is_false(&self, v: W) -> bool {

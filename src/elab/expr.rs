@@ -1216,7 +1216,7 @@ impl Elab {
                     // A number whose type isn't decided yet: its value's
                     // range, as for a branch (D135), once another value
                     // decides it is a number.
-                    if let Some(n) = super::interval::constant(&a.tm).filter(|_| matches!(q.head(), Tm::Meta(x) if *x == m)) {
+                    if let Some(n) = self.known_int(cx, &a.tm).filter(|_| matches!(q.head(), Tm::Meta(x) if *x == m)) {
                         constants.push(n);
                     }
                     continue;

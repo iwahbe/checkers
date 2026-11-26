@@ -12,6 +12,7 @@ mod expr;
 mod descr;
 mod eq;
 mod interval;
+pub use interval::CODEGEN_WORK;
 pub mod index;
 pub(crate) mod order;
 mod pattern;
@@ -673,6 +674,16 @@ pub struct Elab {
     /// Functions' bounds from their signatures, for `Globals::bounds` once
     /// the program is proved.
     pub bounds: HashMap<DefId, Vec<Option<crate::range::Range>>>,
+    /// Values known at compile time, by term (`known_value`).
+    pub known_cache: std::cell::RefCell<HashMap<String, Option<Lit>>>,
+    /// Definitions found to run at compile time (`runnable`).
+    pub runnable_defs: std::cell::RefCell<HashSet<DefId>>,
+    /// Each module's proofs once made (`verify::proved`): an imported
+    /// module's functions run at compile time only once it is proved
+    /// (§8.9).
+    pub module_proofs: std::cell::RefCell<HashMap<String, crate::verify::Verified>>,
+    /// The modules being proved now: their functions don't run yet.
+    pub proving: std::cell::RefCell<HashSet<String>>,
     /// The name a refinement alias binds (`n` in `type Big = n~Int, …`).
     pub alias_subject: HashMap<DefId, Name>,
     /// The result type of a function whose result type isn't written.
@@ -988,6 +999,10 @@ impl Elab {
             ty_teqs: HashMap::new(),
             alias_preds: HashMap::new(),
             bounds: HashMap::new(),
+            known_cache: std::cell::RefCell::new(HashMap::new()),
+            runnable_defs: std::cell::RefCell::new(HashSet::new()),
+            module_proofs: std::cell::RefCell::new(HashMap::new()),
+            proving: std::cell::RefCell::new(HashSet::new()),
             alias_subject: HashMap::new(),
             result_metas: HashMap::new(),
             arg_of: None,
@@ -2036,8 +2051,9 @@ impl Elab {
 
     /// The postconditions hold of `v`, a value the function returns at `at`.
     /// D121 (c): `v` is a `Nat` by construction, with no obligation: a
-    /// non-negative literal, a `Nat` local, `len`, `+`, `*`, `/` or `%` of
-    /// such values, or a `Nat` subtraction (which has its own obligation).
+    /// non-negative integer known at compile time (§8.9: a literal, a named
+    /// constant, `math.pow 2 3`), a `Nat` local, `len`, `+`, `*`, `/` or `%`
+    /// of such values, or a `Nat` subtraction (which has its own obligation).
     pub fn nat_by_closure(&self, cx: &Cx, v: &Val) -> bool {
         match crate::core::force_meta(&self.g, v.clone()) {
             Val::Lit(l @ (Lit::Num(_) | Lit::Big(_))) => l.is_nonneg_int(),
@@ -2096,13 +2112,13 @@ impl Elab {
                     _ => false,
                 };
                 // Or what a `Nat` local stands for (`j` in `Some (n, j)`, a
-                // `let` of a `match`).
+                // `let` of a `match`), or a value known at compile time.
                 call || {
                     let t = quote(&self.g, cx.lvl(), &v);
                     cx.locals.iter().zip(cx.env.iter()).any(|(x, e)| {
                         crate::core::is_nat(&self.g, &x.ty) && crate::core::tm_eq(&quote(&self.g, cx.lvl(), e), &t)
                     })
-                }
+                } || self.known_in(cx, &v).is_some_and(|l| l.is_nonneg_int())
             }
             _ => false,
         }
@@ -2431,7 +2447,7 @@ impl Elab {
     /// isn't known yet, once it is (D134, D135).
     #[allow(clippy::too_many_arguments)]
     pub fn arith_result(&mut self, cx: &Cx, op: Prim, lt: &Tm, rt: &Tm, ty: &Val, lty: &Val, rty: &Val) -> Val {
-        let (lc, rc) = (interval::constant(lt), interval::constant(rt));
+        let (lc, rc) = (self.known_int(cx, lt), self.known_int(cx, rt));
         if let Val::Neutral(Head::Meta(_), _) = self.force(ty) {
             let r = self.fresh_meta_val(cx);
             self.arith_results.push(ArithResult {
