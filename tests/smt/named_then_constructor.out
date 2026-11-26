@@ -1,0 +1,4 @@
+-- stdout
+(error "line 5 column 1: `K` names an assertion before, so it can't be declared without parameters")
+-- stderr
+-- exit 1

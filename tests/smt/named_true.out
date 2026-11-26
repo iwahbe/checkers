@@ -1,0 +1,4 @@
+-- stdout
+(error "line 4 column 27: `true` is built in, so it can't name an assertion")
+-- stderr
+-- exit 1
