@@ -1,4 +1,4 @@
 -- stdout
-main read: ping
+main read: b"ping"
 -- stderr
 -- exit 0
