@@ -1,0 +1,7 @@
+error[E0201]: type mismatch: expected `b.T`, found `same_name.a.T`
+ --> same_name_unimported.ck:9:5
+  |
+9 |     c.make
+  |     ^^^^^^ this expression has type `same_name.a.T`
+
+same_name_unimported.ck: 1 error, 0 warnings

@@ -57,13 +57,13 @@ impl Elab {
             if name.is_empty() || name.starts_with('$') || name == "_" || locals.iter().any(|x| x.name == name) {
                 continue;
             }
-            let ty = self.show_val(cx, &l.ty);
+            let ty = self.named_in(&self.cur, &self.show_val(cx, &l.ty));
             // An auto-bound type parameter's kind may not be known yet.
             let unknown = matches!(self.force(&l.ty), Val::Neutral(crate::core::Head::Meta(_), _));
             let is_type = self.is_type_like(&l.ty) || (unknown && l.mult == Mult::Zero);
             locals.push(CompLocal { name, ty, param: l.param.is_some(), is_type, span: l.span });
         }
-        let expected = expected.map(|e| self.show_written(cx, e)).filter(|s| !s.contains('_') && !s.contains('?'));
+        let expected = expected.map(|e| self.named_in(&self.cur, &self.show_written(cx, e))).filter(|s| !s.contains('_') && !s.contains('?'));
         let info = self.completion.get_or_insert_with(CompInfo::default);
         info.locals = locals;
         if info.expected.is_none() {
