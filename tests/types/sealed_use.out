@@ -4,7 +4,7 @@ error[E0450]: cannot prove `y == 3 * x`, the postcondition of `sealed_body`
 18 | fn sealed_body x -> y : x~Int, y~Int, y == 3 * x
    |                                       ^^^^^^^^^^ promised here
    = note: for the value returned on line 19: `triple x`
-   = note: `triple` is sealed in `sealed_lib`: here the prover knows only its postconditions and the lemmas you bring in with `have`
+   = note: `triple` is sealed in `sealed_lib`: here the prover knows only its postconditions, the values of its calls known at compile time, and the lemmas you bring in with `have`
    = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
 
 error[E0450]: cannot prove lemma `sealed_in_if`
@@ -12,7 +12,7 @@ error[E0450]: cannot prove lemma `sealed_in_if`
    |
 24 |     ensures (if b then triple x else 3 * x) == 3 * x
    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(if b then triple x else 3 * x) == 3 * x`
-   = note: `triple` is sealed in `sealed_lib`: here the prover knows only its postconditions and the lemmas you bring in with `have`
+   = note: `triple` is sealed in `sealed_lib`: here the prover knows only its postconditions, the values of its calls known at compile time, and the lemmas you bring in with `have`
    = help: add a `proof` block: `match` on a parameter or a call's result for case analysis, and `have` for facts it needs
 
 sealed_use.ck: 2 errors, 0 warnings

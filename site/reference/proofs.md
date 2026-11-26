@@ -52,7 +52,7 @@ fn max_of xs -> m : xs~List Int, xs != [], m~Int
 
 **Functions of the same module** are known by their definitions: Z3 unfolds a function's body where a proof needs it, so a postcondition can be proved by computing. A recursive definition is unfolded only where its recursion is known to end.
 
-**Functions of other modules** are sealed ([Modules](modules.md#sealing)): Z3 knows only their postconditions. A library therefore exports, as postconditions and lemmas, the facts its users need. A function exported `transparent` is known by its definition everywhere.
+**Functions of other modules** are sealed ([Modules](modules.md#sealing)): Z3 knows only their postconditions. A library therefore exports, as postconditions and lemmas, the facts its users need. A function exported `transparent` is known by its definition everywhere. A call of another module's function whose value is known at compile time (`array.count 7 (array.repeat 256 7)`) is known by that value, as a fact the trust ledger records as computed: the call's value, never the function's body.
 
 **Constants** are known by their value. A constant array's length and elements are known as facts.
 

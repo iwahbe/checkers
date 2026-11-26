@@ -12,7 +12,7 @@ error[E0450]: cannot prove `r >= 0`, the postcondition of `outside`
 11 | fn outside -> r : r~Nat
    |               ^ promised here
    = note: for the value returned on line 12: `next 0`
-   = note: `next` is sealed in `known.domain`: here the prover knows only its postconditions and the lemmas you bring in with `have`
+   = note: `next` is sealed in `known.domain`: here the prover knows only its postconditions, the values of its calls known at compile time, and the lemmas you bring in with `have`
    = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
 
 error[E0450]: cannot prove `x >= 1`, required to call `next`

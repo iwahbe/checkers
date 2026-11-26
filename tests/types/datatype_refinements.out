@@ -22,7 +22,7 @@ error[E0450]: cannot prove `r < 4`, the postcondition of `sealed_box`
 88 | fn sealed_box -> r : r~Int, r < 4
    |                             ^^^^^ promised here
    = note: for the value returned on line 89: `boxed.item`
-   = note: `boxed` is sealed in `sealed.boxes`: here the prover knows only its postconditions and the lemmas you bring in with `have`
+   = note: `boxed` is sealed in `sealed.boxes`: here the prover knows only its postconditions, the values of its calls known at compile time, and the lemmas you bring in with `have`
    = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
 
 datatype_refinements.ck: 3 errors, 0 warnings

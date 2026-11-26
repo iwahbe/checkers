@@ -4,7 +4,7 @@ error[E0450]: cannot prove `r`, the postcondition of `by_body`
 8 | fn by_body b -> r : b~Box, r~Bool, r
   |                                    ^ promised here
   = note: for the value returned on line 9: `Size.size b == 1`
-  = note: `Size Box.size` is sealed in `class_home.sealed`: here the prover knows only its postconditions and the lemmas you bring in with `have`
+  = note: `Size Box.size` is sealed in `class_home.sealed`: here the prover knows only its postconditions, the values of its calls known at compile time, and the lemmas you bring in with `have`
   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
 
 instance_sealed.ck: 1 error, 0 warnings
