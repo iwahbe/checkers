@@ -1,0 +1,5 @@
+(set-logic ALL)
+(declare-datatypes ((D 0)) (((b) (c (s (Array Int (Seq D)))))))
+(declare-const x Int)
+(assert (not (= x 1)))
+(check-sat)

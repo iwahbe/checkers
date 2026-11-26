@@ -1,7 +1,0 @@
-(set-option :produce-models true)
-(set-option :rlimit 200000)
-(set-option :timeout 60000)
-(set-logic ALL)
-(define-funs-rec ((|big_literals.value| () Int)) (170141183460469231731687303715884105728))
-(assert (not (not (= |big_literals.value| 0))))
-(check-sat)

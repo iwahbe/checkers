@@ -53,18 +53,21 @@
 # no body, so it needs no fuel: it goes by the structure of the term.
 #
 # `refutes`, which `Answer.Invalid` uses, evaluates instead with each
-# definition marked terminating (`Def.terminates`) run as its own body
-# (design 3). Only the caller marks a definition: `smtlib.parse` marks
-# none, and the package's commands mark every one only when given
-# `--terminating`, and then say so. It runs within `Model.fuel` levels (past them, `OutOfFuel`): a
-# terminating definition's equation then holds by construction wherever
-# evaluation finishes, because it has exactly one solution. `refutes`
-# requires every definition of the context to be marked: one that isn't may
-# have no solution at all (`g x = g x + 1`), and then no model satisfies the
-# context, whether or not an assertion calls it (SMT-LIB 2.6, §4.2.3, note
-# 4). Z3 5.3.3 answers `sat` to such a context; this module does not follow
-# it there. Unfolding a definition not marked terminating is
-# `NotTerminating`. In the meaning, a model satisfies definition `d` when it
+# definition run as its own body (design 3), within `Model.fuel` levels
+# (past them, `OutOfFuel`): a `define-fun` (`Plain`) always, and a
+# recursive one (`define-fun-rec`, `define-funs-rec`) when marked
+# terminating (`Def.terminates`). Only the caller marks a definition:
+# `smtlib.parse` marks none, and the package's commands mark every one only
+# when given `--terminating`, and then say so. A definition run this way has
+# exactly one solution, so its equation holds by construction wherever
+# evaluation finishes: a `Plain` one's body applies only functions declared
+# before it (`term.plain_bodies`), so it is a function of those; a recursive
+# one's, by the mark. `refutes` requires every recursive definition of the
+# context to be marked: one that isn't may have no solution at all
+# (`g x = g x + 1`), and then no model satisfies the context, whether or not
+# an assertion calls it (SMT-LIB 2.6, §4.2.3, note 4). Z3 5.3.3 answers
+# `sat` to such a context; this module does not follow it there. Unfolding
+# a recursive definition not marked terminating is `NotTerminating`. In the meaning, a model satisfies definition `d` when it
 # satisfies `definition_axiom n d` at all values (`holds_at`).
 #
 # **`refutes` builds its arrays.** It can't take `arrays_ok` on trust, so it
@@ -100,11 +103,14 @@
 # - Monotonicity: a definite answer in a model is the answer in every model
 #   that agrees with it wherever it answers. For a partial model, `not
 #   fails` of the goal follows from `holds` by it.
-# - The `Invalid` theorem: if `refutes c goal m`, and every definition
-#   marked terminating terminates (a named hypothesis: the mark is the
-#   caller's word), the interpretation `m` describes, with each definition
-#   its unique solution and arrays as `normal_arrays` has them, satisfies
-#   every assertion of `c` and `not goal`.
+# - The `Invalid` theorem: if `refutes c goal m`, and every recursive
+#   definition marked terminating terminates (a named hypothesis: the mark
+#   is the caller's word), the interpretation `m` describes, with each
+#   definition its unique solution and arrays as `normal_arrays` has them,
+#   satisfies every assertion of `c` and `not goal`. A `define-fun` needs
+#   no hypothesis: by `term.plain_bodies` its body applies only functions
+#   numbered below its own, so by induction on that number it terminates
+#   and has one solution once they do.
 #
 # Together: a query is never both `Valid` and `Invalid`.
 #
@@ -1092,7 +1098,7 @@ fn call low mode c m senv t f rs -> r : low~Lower, mode~Mode, c~Context, m~Model
                                         rs~List (Result Value Unknown), r~Result Value Unknown
     match (mode, definition (term.defs c) f)
         (Unfolding, Some d) ->
-            if d.terminates then low.value (list.reverse rs) (term.binder_env d.params) d.body else Err NotTerminating
+            if unfolds d then low.value (list.reverse rs) (term.binder_env d.params) d.body else Err NotTerminating
         _                   ->
             let vs = try all_known rs
             let s = try sort_here c senv t
@@ -1332,19 +1338,27 @@ export fn definition_axiom n d -> a : n~Nat, d~Def, a~Axiom
 fn params_from k -> ts : k~Nat, ts~List Term
     if k == 0 then [] else Var (k - 1) :: params_from (k - 1)
 
-# The value of `t` with each definition marked terminating run as its own
-# body, if `t` is a term of `c` without free variables (else `IllSorted`).
+# The value of `t` with each definition `refutes` may run (`unfolds`) run
+# as its own body, if `t` is a term of `c` without free variables (else `IllSorted`).
 export fn eval_unfolding c m t -> r : c~Context, m~Model, t~Term, r~Result Value Unknown
     if closed c t
         value (level Unfolding c m m.fuel) Unfolding c m [] [] t
     else
         Err IllSorted
 
-# Whether every definition of `ds` is marked terminating.
+# Whether `refutes` runs `d` as its own body: a `define-fun` (`Plain`)
+# always, since its body applies only functions declared before it
+# (`term.plain_bodies`); a recursive one only when marked terminating.
+fn unfolds d -> r : d~Def, r~Bool
+    match d.kind
+        Plain     -> True
+        Recursive -> d.terminates
+
+# Whether every recursive definition of `ds` is marked terminating.
 fn all_marked ds -> r : ds~List (Nat, Def), r~Bool
     match ds
         []             -> True
-        (_, d) :: rest -> d.terminates and all_marked rest
+        (_, d) :: rest -> unfolds d and all_marked rest
 
 # Whether `t` has no `lambda` in it.
 export fn lambda_free t -> r : t~Term, r~Bool
@@ -1376,14 +1390,15 @@ export fn without_lambda c goal -> r : c~Context, goal~Term, r~Bool
 # Whether `m` is a counterexample to `goal` in `c`. It asks that:
 #
 # - `goal` is a fact of `c`, and `c` has no axioms;
-# - every definition is marked terminating (`Def.terminates`, which only
-#   the caller sets: `models --terminating` does, on its user's word);
+# - every recursive definition is marked terminating (`Def.terminates`,
+#   which only the caller sets: `models --terminating` does, on its user's
+#   word); a `define-fun` needs no mark (`unfolds`);
 # - no fact, definition or the goal has a `lambda` in it;
 # - each fact holds and the goal fails, in `normal_arrays m`, with each
 #   definition run as its own body.
 #
 # What S6 proves of it (the `Invalid` theorem, in the header): when every
-# definition marked terminating does terminate, the interpretation `m` describes, with each
+# recursive definition marked terminating does terminate, the interpretation `m` describes, with each
 # definition its unique solution, satisfies every assertion of `c` and
 # `not goal`. Its arrays are `normal_arrays`', normal forms that are the
 # same element exactly when they are the same function, so it satisfies

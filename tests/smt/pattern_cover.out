@@ -1,0 +1,4 @@
+-- stdout
+(error "line 4 column 55: a `:pattern` must mention every variable its `forall` binds")
+-- stderr
+-- exit 1

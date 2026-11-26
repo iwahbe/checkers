@@ -1,0 +1,5 @@
+(set-logic ALL)
+(declare-datatypes ((D 1) (E 0)) ((par (T) ((d (f T)))) ((e (g (D Int))))))
+(declare-const x Int)
+(assert (not (= x 1)))
+(check-sat)

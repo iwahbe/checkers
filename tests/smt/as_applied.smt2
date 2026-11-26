@@ -1,0 +1,5 @@
+(set-logic ALL)
+(declare-datatypes ((T 0)) (((K) (L (f Int)))))
+(declare-const t T)
+(assert (not (= t ((as K T)))))
+(check-sat)

@@ -1,0 +1,4 @@
+-- stdout
+(error "line 3 column 10: `!` is in the subset `ckc` writes only around a `forall`'s body, or around an assertion to name it, `(assert (! TERM :named NAME))`")
+-- stderr
+-- exit 1

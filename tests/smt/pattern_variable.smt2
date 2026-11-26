@@ -1,0 +1,5 @@
+(set-logic ALL)
+(declare-fun q (Int) Bool)
+(assert (forall ((y Int)) (! (q y) :pattern (y))))
+(assert (not (q 1)))
+(check-sat)

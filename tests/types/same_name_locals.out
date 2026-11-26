@@ -1,0 +1,29 @@
+error[E0201]: type mismatch: expected `a`, found `a1`
+ --> same_name_locals.ck:7:14
+  |
+7 |         have x~a
+  |              ^ this expression has type `a1`
+  = note: `a1` is the `a` bound on line 5, hidden here by the `a` bound on line 6
+
+error[E0201]: type mismatch: expected `Int`, found `a1`
+  --> same_name_locals.ck:13:14
+   |
+13 |         have x~Int
+   |              ^ this expression has type `a1`
+   = note: `a1` is the `a` bound on line 11, hidden here by the `a` bound on line 12
+
+error[E0201]: type mismatch: expected `Int`, found `a2`
+  --> same_name_locals.ck:21:14
+   |
+21 |         have x~Int
+   |              ^ this expression has type `a2`
+   = note: `a2` is the `a` bound on line 19, hidden here by the `a` bound on line 20
+
+error[E0201]: type mismatch: expected `a1`, found `a2`
+  --> same_name_locals.ck:27:14
+   |
+27 |         have x~a1
+   |              ^ this expression has type `a2`
+   = note: `a2` is the `a` bound on line 25, hidden here by the `a` bound on line 26
+
+same_name_locals.ck: 4 errors, 0 warnings

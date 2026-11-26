@@ -1,0 +1,7 @@
+(set-logic ALL)
+(declare-const x Int)
+(declare-fun g (Int) Int)
+(define-fun h ((g (Array Int Int))) Int (g 1))
+(assert (forall ((i Int)) (! (= (g i) 0) :pattern ((g i)))))
+(assert (not (= (h ((as const (Array Int Int)) 5)) 0)))
+(check-sat)

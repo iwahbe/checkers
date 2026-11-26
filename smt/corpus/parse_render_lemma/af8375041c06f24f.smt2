@@ -1,7 +1,0 @@
-(set-option :produce-models true)
-(set-option :rlimit 200000)
-(set-option :timeout 60000)
-(set-logic ALL)
-(define-funs-rec ((|std.prelude.not| ((p0 Bool)) Bool)) ((ite (not p0) true false)))
-(assert (not (|std.prelude.not| true)))
-(check-sat)

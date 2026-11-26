@@ -1,0 +1,22 @@
+error[E0284]: no instance of `Seq` for `Int`
+  --> type_clause_wanted.ck:10:28
+   |
+10 | fn at_signature p -> r : p~Packed Int, r~Int
+   |                            ^^^^^^ `Packed` needs `Seq Int`
+   = help: declare `instance Seq …` for this type, beside the type
+
+error[E0284]: no instance of `Seq` for `Int`
+  --> type_clause_wanted.ck:14:11
+   |
+14 |     inner~Packed Int
+   |           ^^^^^^ `Packed` needs `Seq Int`
+   = help: declare `instance Seq …` for this type, beside the type
+
+error[E0284]: no instance of `Seq` for `Int`
+  --> type_clause_wanted.ck:17:6
+   |
+17 |     (Packed x).items
+   |      ^^^^^^ `Packed` needs `Seq Int`
+   = help: declare `instance Seq …` for this type, beside the type
+
+type_clause_wanted.ck: 3 errors, 0 warnings

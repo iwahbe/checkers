@@ -1,0 +1,5 @@
+(set-logic ALL)
+(declare-sort Real 0)
+(declare-const x Real)
+(assert (not (= x x)))
+(check-sat)

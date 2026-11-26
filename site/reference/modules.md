@@ -90,11 +90,11 @@ An exported function's body is **sealed**: outside its module, the function is k
 ```checkers
 module counting
 
-export fn three -> n : n~Nat, n == 3
-    3
+export fn triple x -> y : x~Int, y~Int, y == 3 * x
+    3 * x
 
-export fn four -> n : n~Nat
-    4
+export fn quadruple x -> y : x~Int, y~Int
+    4 * x
 ```
 
 ```checkers,compile_fail,E0450
@@ -102,14 +102,16 @@ module uses_counting
 
 import counting
 
-# `three`'s postcondition says what it returns; `four`'s says nothing, so
-# the second lemma can't be proved here.
-lemma three_is_three
-    ensures counting.three == 3
+# `triple`'s postcondition says what it returns; `quadruple`'s says nothing,
+# so the second lemma can't be proved here.
+lemma triple_is_three_times x : x~Int
+    ensures counting.triple x == 3 * x
 
-lemma four_is_four
-    ensures counting.four == 4
+lemma quadruple_is_four_times x : x~Int
+    ensures counting.quadruple x == 4 * x
 ```
+
+A call whose value is known at compile time ([Staging](staging.md)), `counting.quadruple 2` say, is the exception: the prover is given its value, `counting.quadruple 2 == 8`, though still not the function's body, and the trust ledger records each such value as computed.
 
 `export transparent` unseals a function: its body is visible to type checking and to the prover everywhere, and so is every private function it calls. Its body becomes part of the module's interface. It is meant for small definitions that specifications are written in terms of, and for functions that compute types ([Staging](staging.md)).
 

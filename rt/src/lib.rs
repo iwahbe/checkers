@@ -31,6 +31,7 @@ pub use prog::{bug, fatal};
 pub fn symbols() -> Vec<(&'static str, *const u8)> {
     let mut v: Vec<(&'static str, *const u8)> = vec![
         ("ck_alloc", word::ck_alloc as *const u8),
+        ("ck_tick", prog::ck_tick as *const u8),
         ("ck_free", word::ck_free as *const u8),
         ("ck_dup", word::ck_dup as *const u8),
         ("ck_drop", word::ck_drop as *const u8),
@@ -46,6 +47,8 @@ pub fn symbols() -> Vec<(&'static str, *const u8)> {
         ("ck_ne", ops::ck_ne as *const u8),
         ("ck_concat", ops::ck_concat as *const u8),
         ("ck_concat_own", ops::ck_concat_own as *const u8),
+        ("ck_concat_all", ops::ck_concat_all as *const u8),
+        ("ck_concat_push", ops::ck_concat_push as *const u8),
         ("ck_len", ops::ck_len as *const u8),
         ("ck_index", ops::ck_index as *const u8),
         ("ck_big_lit", ops::ck_big_lit as *const u8),

@@ -1,0 +1,13 @@
+(set-option :produce-models true)
+(set-option :timeout 60000)
+(set-option :reproducible-resource-limit 200000)
+(set-logic ALL)
+(declare-datatypes ((|std.prelude.List| 1)) ((par (T0) ((|std.prelude.Nil|) (|std.prelude.Cons| (|std.prelude.Cons.0| |T0|) (|std.prelude.Cons.1| (|std.prelude.List| |T0|)))))))
+(declare-datatypes ((|ck.literate.Warning| 0)) (((|ck.literate.Warning| (|ck.literate.Warning.0| (Seq Int)) (|ck.literate.Warning.1| (Seq Int)) (|ck.literate.Warning.2| Int) (|ck.literate.Warning.3| (Seq Int))))))
+(declare-const |ws#0| (|std.prelude.List| |ck.literate.Warning|))
+(assert (=> (|is-std.prelude.Cons| |ws#0|) (>= (|ck.literate.Warning.2| (|std.prelude.Cons.0| |ws#0|)) 0)))
+(assert (= |ws#0| (as |std.prelude.Nil| (|std.prelude.List| |ck.literate.Warning|))))
+(assert (not false))
+(check-sat)
+(get-value (|ws#0|))
+;; reachable?

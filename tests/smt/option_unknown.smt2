@@ -1,0 +1,8 @@
+(set-option :unsat_core true)
+(set-logic ALL)
+(declare-const x Int)
+(assert (! (> x 0) :named a))
+(assert (! (< x 0) :named b))
+(assert (not false))
+(check-sat)
+(get-unsat-core)

@@ -1,0 +1,4 @@
+-- stdout
+(error "line 5 column 27: an assertion before this one is already named `fact.0`")
+-- stderr
+-- exit 1

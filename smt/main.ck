@@ -4,8 +4,11 @@
 # `z3 -in` would (`reply`). `main compare` compares our answers with Z3's
 # on a corpus of queries (`compare`).
 # `main parse` reads a query on standard input and writes it back.
+# `main reserved` lists the spellings Z3 gives a meaning of its own, which
+# no query may introduce (`reserved`; smt/reserved.txt).
 # `main roundtrip DIR…` reads each query (`*.smt2`) in each DIR, writes it
-# back, and checks that what it wrote is the same query. A query that can't be read gives
+# back, and checks that what it wrote is the same query: the same text but
+# for spacing and spelling, and read again, the same `Query`. A query that can't be read gives
 # `(error "line L column C: message")`, as Z3 reports one, and exit status 1.
 # `main models [--terminating] [--z3 PROGRAM] DIR…` checks Z3's models in the corpus with
 # `smt.model` (recorded, or asked of PROGRAM now), and
@@ -26,8 +29,9 @@ import term
 import models
 import reply
 import compare
+import reserved
 
-let USAGE = "usage: main [-in] < QUERY\n       main parse < QUERY\n       main roundtrip DIR...\n       main compare [--z3 PROGRAM] [--baseline FILE] [--changed FILE] [--save FILE] DIR\n       main models [--terminating] [--z3 PROGRAM] DIR...\n       main model [--terminating] QUERY ANSWER"
+let USAGE = "usage: main [-in] < QUERY\n       main parse < QUERY\n       main roundtrip DIR...\n       main reserved\n       main compare [--z3 PROGRAM] [--baseline FILE] [--changed FILE] [--save FILE] DIR\n       main models [--terminating] [--z3 PROGRAM] DIR...\n       main model [--terminating] QUERY ANSWER"
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     match args
@@ -36,6 +40,9 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
         ["parse"]                        -> parse_stdin sys.term
         "compare" :: rest                -> compare.run rest sys.term sys.fs sys.proc sys.clock
         "roundtrip" :: dirs              -> roundtrip dirs sys.term sys.fs
+        ["reserved"]                     ->
+            let _ = terminal.write_bytes (string.bytes reserved.listing) sys.term
+            Success
         "models" :: dirs                 -> if models.run dirs sys.term sys.fs sys.proc then Success else Failure 1
         ["model", q, a]                  -> model_one q a False sys.term sys.fs
         ["model", "--terminating", q, a] -> model_one q a True sys.term sys.fs
@@ -82,8 +89,9 @@ fn answer_stdin io -> code : io~Term, code~ExitCode
         Ok src ->
             match smtlib.parse src
                 Ok q  ->
-                    let _ = terminal.write_bytes (reply.write src q (reply.answer q)) io
-                    if reply.has_error q then Failure 1 else Success
+                    let a = reply.answer q
+                    let _ = terminal.write_bytes (reply.write src q a) io
+                    if reply.has_error q a then Failure 1 else Success
                 Err e ->
                     let _ = terminal.write_bytes (error_line src e) io
                     Failure 1
@@ -145,13 +153,27 @@ fn one path io fs -> ok : path~String, io~Term, fs~Fs, ok~Bool
                         (Ok a, Ok b) ->
                             let sig = term.signature q.context
                             match first_difference sig (smtlib.shapes a) (smtlib.shapes b) 1
-                                None           -> True
+                                None           ->
+                                    # What was written must read back as the same query.
+                                    match smtlib.parse out
+                                        Err e -> report path (b"what was written doesn't read: " ++ smtlib.describe out e) io
+                                        Ok q2 ->
+                                            if same_query q q2
+                                                True
+                                            else
+                                                report path b"what was written reads as a different query" io
                                 Some (n, x, y) ->
                                     let what = b"command " ++ smtlib.numeral n ++ b" differs\n  read:    " ++ shown x
                                                ++ b"\n  written: " ++ shown y
                                     report path what io
                         (_, Err e)   -> report path (b"what was written doesn't read: " ++ smtlib.describe out e) io
                         (Err e, _)   -> report path (smtlib.describe src e) io
+
+# Whether two queries are the same: options, logic, commands, goal and its
+# place, and what follows `(check-sat)`.
+fn same_query q r -> b : q~smtlib.Query, r~smtlib.Query, b~Bool
+    q.options == r.options and q.logic == r.logic and term.commands q.context == term.commands r.context
+        and q.goal == r.goal and q.goal_at == r.goal_at and q.core == r.core and q.values == r.values
 
 fn shown s -> r : s~Option Shape, r~Bytes
     match s

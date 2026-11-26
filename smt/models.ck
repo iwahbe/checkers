@@ -91,7 +91,7 @@ export fn marked c -> r : c~Context, r~Result Context Bytes
 
 fn mark cmd -> r : cmd~Command, r~Command
     match cmd
-        DefineFuns s ds -> DefineFuns s (list.map (\d -> Def d.name d.params d.result d.body True) ds)
+        DefineFuns s ds -> DefineFuns s (list.map (\d -> Def d.name d.params d.result d.body True d.kind) ds)
         other           -> other
 
 fn unpatterned xs -> r : xs~List Axiom, r~Bool

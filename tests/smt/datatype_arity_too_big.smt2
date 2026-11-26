@@ -1,0 +1,5 @@
+(set-logic ALL)
+(declare-datatypes ((D 4294967296)) ((par (T) ((d)))))
+(declare-const x Int)
+(assert (not (= x 1)))
+(check-sat)

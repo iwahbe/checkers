@@ -1,0 +1,6 @@
+fn by_match x =
+    1 + x
+
+fn run_on x =
+    999999 + x
+

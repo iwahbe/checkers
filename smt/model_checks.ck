@@ -10,7 +10,7 @@ module model_checks
 
 import std.list
 import smtlib (Query)
-import term (Sort, Int, Bool, Arr, Unin, Context, Term, Var, App, Prim, Num, Boolean, And, Axiom, Def, ConstArr, Select)
+import term (Sort, Int, Bool, Arr, Unin, Context, Term, Var, App, Prim, Num, Boolean, And, Axiom, Def, Recursive, ConstArr, Select)
 import model (Value, Truth, Integer, Sequence, Constructed, Element, ArrayElem, Model, Domain, UpTo, Countable, Form)
 import model (Unknown, NotGiven, LambdaNotGiven, OutOfFuel, NotTerminating, WrongSort, IllSorted)
 import models
@@ -102,10 +102,20 @@ check model.eval_unfolding marked_f (with_x (Integer 7)) (fact F 0) == Ok (Truth
 # Not marked: not run.
 check model.eval_unfolding (context F) (with_x (Integer 7)) (fact F 0) == Err NotTerminating
 
+# A `define-fun` is run as its own body with no mark: its body applies only
+# functions declared before it. Unmarked, `refutes` takes a model for it,
+# and not for the same function written `define-fun-rec`.
+let PLAIN = b"(set-logic ALL)(define-fun p ((n Int)) Int (+ n 1))(assert (= (p 1) 2))(assert (not false))(check-sat)"
+let REC = b"(set-logic ALL)(define-fun-rec p ((n Int)) Int (+ n 1))(assert (= (p 1) 2))(assert (not false))(check-sat)"
+
+check model.eval_unfolding (context PLAIN) NOTHING (fact PLAIN 0) == Ok (Truth True)
+check model.refutes (context PLAIN) (goal PLAIN) NOTHING
+check not (model.refutes (context REC) (goal REC) NOTHING)
+
 fn def_f -> d : d~(Nat, Def)
     match term.defs (context F)
         d :: _ -> d
-        []     -> (0, Def b"" [] Int (App (Num 0) []) False)
+        []     -> (0, Def b"" [] Int (App (Num 0) []) False Recursive)
 
 fn f_axiom -> a : a~Axiom
     let (n, d) = def_f
@@ -210,7 +220,7 @@ check model.eval_unfolding (marked G) (fuel 2) (fact G 1) == Ok (Truth True)
 fn def_at src k -> d : src~Bytes, k~Nat, d~(Nat, Def)
     match list.head (list.drop k (term.defs (context src)))
         Some x -> x
-        None   -> (0, Def b"" [] Int (App (Num 0) []) False)
+        None   -> (0, Def b"" [] Int (App (Num 0) []) False Recursive)
 
 fn axiom_of src k -> a : src~Bytes, k~Nat, a~Axiom
     let (n, d) = def_at src k

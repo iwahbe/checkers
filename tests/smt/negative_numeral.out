@@ -1,0 +1,4 @@
+-- stdout
+(error "line 4 column 17: a negative numeral is outside the subset `ckc` writes: write `(- N)`")
+-- stderr
+-- exit 1

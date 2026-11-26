@@ -1,0 +1,4 @@
+-- stdout
+(error "line 3 column 13: only `:produce-models true`, `:produce-unsat-cores true`, and `:rlimit N` and `:timeout N` with `N` below 2^32, are options in the subset `ckc` writes")
+-- stderr
+-- exit 1

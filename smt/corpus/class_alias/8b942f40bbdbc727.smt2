@@ -1,0 +1,13 @@
+(set-option :produce-models true)
+(set-option :timeout 60000)
+(set-option :reproducible-resource-limit 200000)
+(set-logic ALL)
+(declare-datatypes ((|std.prelude.Option| 1)) ((par (T0) ((|std.prelude.None|) (|std.prelude.Some| (|std.prelude.Some.0| |T0|))))))
+(declare-fun |class_alias.Read Int.read<Int>| (Int) (|std.prelude.Option| Int))
+(declare-const |$x#7| Int)
+(assert (>= |$x#7| 0))
+(assert (ite (|is-std.prelude.None| (|class_alias.Read Int.read<Int>| 3)) true (= (|std.prelude.Some.0| (|class_alias.Read Int.read<Int>| 3)) (* 3 2))))
+(assert (= (|class_alias.Read Int.read<Int>| 3) ((as |std.prelude.Some| (|std.prelude.Option| Int)) |$x#7|)))
+(assert (not false))
+(check-sat)
+;; reachable?

@@ -1,0 +1,7 @@
+(set-option :produce-models true)
+(set-option :timeout 60000)
+(set-option :reproducible-resource-limit 200000)
+(set-logic ALL)
+(define-funs-rec ((|class_alias_own_clause.Make Int.pair<Bool,Bool>[class_alias_own_clause.Tag Bool,class_alias_own_clause.Tag Bool]| ((p4 Bool) (p5 Bool)) Int)) ((- 1)))
+(assert (not (>= (|class_alias_own_clause.Make Int.pair<Bool,Bool>[class_alias_own_clause.Tag Bool,class_alias_own_clause.Tag Bool]| true false) 0)))
+(check-sat)

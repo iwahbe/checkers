@@ -84,11 +84,7 @@ fn ck_files(dir: &Path) -> Vec<PathBuf> {
 fn run_native(args_path: &Path, threads: usize) -> String {
     let spec = fs::read_to_string(args_path).unwrap();
     let mut lines = spec.lines();
-    let first = lines.next().unwrap_or_default();
-    let (flags, program): (Vec<&str>, &str) = match first.strip_prefix("--unverified ") {
-        Some(p) => (vec!["--unverified"], p),
-        None => (vec![], first),
-    };
+    let program = lines.next().unwrap_or_default();
     let stdin = fs::read(args_path.with_extension("in")).unwrap_or_default();
     // `NAME.env`: a variable to set on each line, `NAME=VALUE`.
     let vars = fs::read_to_string(args_path.with_extension("env")).unwrap_or_default();
@@ -98,7 +94,6 @@ fn run_native(args_path: &Path, threads: usize) -> String {
         .envs(vars)
         .arg("run")
         .args(["--threads", &threads.to_string()])
-        .args(flags)
         .arg(program)
         .args(lines)
         .current_dir(args_path.parent().unwrap())
@@ -477,16 +472,6 @@ fn sorted_stdout(out: &str) -> String {
     s + "-- stderr\n" + rest
 }
 
-/// Held while checking in this process: evaluating `check`s installs the
-/// runtime's program descriptor, one per process, so two checks evaluated
-/// at once would read each other's. Subprocesses don't need it.
-static IN_PROCESS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-fn in_process<T>(f: impl FnOnce() -> T) -> T {
-    let _held = IN_PROCESS.lock().unwrap_or_else(|e| e.into_inner());
-    f()
-}
-
 fn run(path: &Path, mode: &str) -> String {
     let text = fs::read_to_string(path).unwrap();
     let name = path.file_name().unwrap().to_string_lossy().to_string();
@@ -494,10 +479,15 @@ fn run(path: &Path, mode: &str) -> String {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let dir = path.parent().unwrap().strip_prefix(root).unwrap_or(Path::new("")).to_path_buf();
     let c = if mode == "types" || mode == "stage" {
-        in_process(|| checkers::check_in(&name, &text, &dir))
+        checkers::check_in(&name, &text, &dir)
     } else {
         checkers::parse_only(&name, &text)
     };
+    // A program without type errors loses no term to one (§7.3): the
+    // prover found its sorts don't fit, so checkers has a bug.
+    if c.errors() == 0 && c.ill_sorted > 0 {
+        return format!("{}\n-- checkers bug: {} terms left out of proofs for a type error, with none reported\n", c.report(), c.ill_sorted);
+    }
     match mode {
         "parse" => {
             let mut out = checkers::syntax::print::module(&c.module);
@@ -526,10 +516,8 @@ type Task = Box<dyn FnOnce(&Pool) -> Outcome + Send>;
 type Key = (usize, usize);
 
 /// The cases as jobs, run by several threads. A job can add jobs: the cases
-/// that need `checkers` wait for its build. Jobs that check in this process
-/// run one at a time (`in_process`), and take no worker while they wait.
-/// Failures are reported in the order of their keys, whatever order the
-/// jobs finish in.
+/// that need `checkers` wait for its build. Failures are reported in the
+/// order of their keys, whatever order the jobs finish in.
 #[derive(Default)]
 struct Pool {
     state: std::sync::Mutex<PoolState>,
@@ -539,9 +527,6 @@ struct Pool {
 #[derive(Default)]
 struct PoolState {
     queue: std::collections::VecDeque<(Key, String, Task)>,
-    /// Jobs that check in this process; `local_busy` while one runs.
-    local: std::collections::VecDeque<(Key, String, Task)>,
-    local_busy: bool,
     running: usize,
     outcomes: Vec<(Key, Outcome)>,
 }
@@ -554,12 +539,6 @@ impl Pool {
     /// Add a job after those waiting.
     fn add(&self, key: Key, name: String, task: impl FnOnce(&Pool) -> Outcome + Send + 'static) {
         self.lock().queue.push_back((key, name, Box::new(task)));
-        self.ready.notify_one();
-    }
-
-    /// Add a job that checks in this process.
-    fn add_local(&self, key: Key, name: String, task: impl FnOnce(&Pool) -> Outcome + Send + 'static) {
-        self.lock().local.push_back((key, name, Box::new(task)));
         self.ready.notify_one();
     }
 
@@ -589,17 +568,10 @@ impl Pool {
     fn work(&self) {
         loop {
             let mut st = self.lock();
-            let (local, (key, name, task)) = loop {
-                if !st.local_busy {
-                    if let Some(job) = st.local.pop_front() {
-                        st.local_busy = true;
-                        st.running += 1;
-                        break (true, job);
-                    }
-                }
+            let (key, name, task) = loop {
                 if let Some(job) = st.queue.pop_front() {
                     st.running += 1;
-                    break (false, job);
+                    break job;
                 }
                 if st.running == 0 {
                     return;
@@ -614,10 +586,7 @@ impl Pool {
             let mut st = self.lock();
             st.running -= 1;
             st.outcomes.push((key, outcome));
-            if local {
-                st.local_busy = false;
-            }
-            if local || (st.running == 0 && st.queue.is_empty()) {
+            if st.running == 0 && st.queue.is_empty() {
                 self.ready.notify_all();
             }
         }
@@ -670,15 +639,19 @@ fn golden() {
     }
 
     // The standard library's own lemmas and postconditions are proven too.
-    pool.add_local((11, 0), "the standard library".into(), |_| {
-        let stdlib = in_process(checkers::check_stdlib);
+    pool.add((11, 0), "the standard library".into(), |_| {
+        let stdlib = checkers::check_stdlib();
         (1, if stdlib.is_empty() { vec![] } else { vec![format!("── the standard library must verify ──\n{stdlib}")] })
     });
 
-    pool.add_local((9, 0), "check tools/checkers.ck".into(), move |_| {
+    pool.add((9, 0), "check tools/checkers.ck".into(), move |_| {
         let tools = root.join("tools");
-        let c = in_process(|| checkers::check_in("checkers.ck", &fs::read_to_string(tools.join("checkers.ck")).unwrap(), &tools));
-        (1, if c.diags.is_empty() { vec![] } else { vec![format!("── tools/checkers.ck must be clean ──\n{}", c.report())] })
+        let c = checkers::check_in("checkers.ck", &fs::read_to_string(tools.join("checkers.ck")).unwrap(), &tools);
+        let mut failures = if c.diags.is_empty() { vec![] } else { vec![format!("── tools/checkers.ck must be clean ──\n{}", c.report())] };
+        if c.errors() == 0 && c.ill_sorted > 0 {
+            failures.push(format!("── tools/checkers.ck: {} terms left out of proofs for a type error, with none reported (a checkers bug) ──", c.ill_sorted));
+        }
+        (1, failures)
     });
 
     for (m, mode) in ["parse", "check", "types", "stage"].into_iter().enumerate() {
@@ -689,11 +662,7 @@ fn golden() {
                 compare_as(root, &path, &path.with_extension("out"), &run(&path, mode), update, &mut failures);
                 (1, failures)
             };
-            if mode == "types" || mode == "stage" {
-                pool.add_local((m, i), name, job);
-            } else {
-                pool.add((m, i), name, job);
-            }
+            pool.add((m, i), name, job);
         }
     }
 
@@ -839,11 +808,16 @@ fn golden() {
     let mut i = 0;
     for dir in ["examples", "bench"] {
         for path in ck_files(&root.join(dir)) {
-            pool.add_local((10, i), rel(&path), move |_| {
+            pool.add((10, i), rel(&path), move |_| {
                 let file = path.file_name().unwrap().to_string_lossy().to_string();
                 let text = fs::read_to_string(&path).unwrap();
-                let c = in_process(|| checkers::check_in(&file, &text, &root.join(dir)));
-                (1, if c.diags.is_empty() { vec![] } else { vec![format!("── {dir}/{file} must be clean ──\n{}", c.report())] })
+                let c = checkers::check_in(&file, &text, &root.join(dir));
+                let mut failures = if c.diags.is_empty() { vec![] } else { vec![format!("── {dir}/{file} must be clean ──\n{}", c.report())] };
+                // No term is left out of its proofs for a type error (§7.3).
+                if c.errors() == 0 && c.ill_sorted > 0 {
+                    failures.push(format!("── {dir}/{file}: {} terms left out of proofs for a type error, with none reported (a checkers bug) ──", c.ill_sorted));
+                }
+                (1, failures)
             });
             i += 1;
         }
@@ -867,15 +841,16 @@ fn golden() {
 
 /// The solver package (#72): its modules check clean; its command builds;
 /// `main parse` gives each `tests/smt/*.smt2` case's output; `main` answers
-/// each `tests/smt/answer/*.smt2`; `main compare` gives `tests/smt/compare/compare.out`.
+/// each `tests/smt/answer/*.smt2`; `main compare` gives `tests/smt/compare/compare.out`;
+/// `main reserved` lists `smt/reserved.txt`.
 fn smt_package(pool: &Pool, root: &'static Path, update: bool) {
     let pkg = root.join("smt");
     for (i, path) in ck_files(&pkg).into_iter().enumerate() {
         let pkg = pkg.clone();
         let name = path.strip_prefix(root).unwrap().display().to_string();
-        pool.add_local((13, i), name.clone(), move |_| {
+        pool.add((13, i), name.clone(), move |_| {
             let file = path.file_name().unwrap().to_string_lossy().to_string();
-            let c = in_process(|| checkers::check_in(&file, &fs::read_to_string(&path).unwrap(), &pkg));
+            let c = checkers::check_in(&file, &fs::read_to_string(&path).unwrap(), &pkg);
             (1, if c.diags.is_empty() { vec![] } else { vec![format!("── {name} must be clean ──\n{}", c.report())] })
         });
     }
@@ -944,6 +919,17 @@ fn smt_package(pool: &Pool, root: &'static Path, update: bool) {
             fs::read_to_string(&saved.0).unwrap_or_default()
         );
         compare(root, &root.join(dir).join("compare.out"), &actual, update, &mut failures);
+        // The reader's reserved spellings are those scripts/reserved.py
+        // measured with Z3 (smt/reserved.txt); never rewritten here.
+        count += 1;
+        let listed = run_with(&exe.0, &["reserved"], b"", root);
+        let measured = fs::read_to_string(root.join("smt").join("reserved.txt")).unwrap_or_default();
+        if !listed.status.success() || String::from_utf8_lossy(&listed.stdout) != measured {
+            failures.push(format!(
+                "── main reserved ──\nthe reader's reserved spellings differ from smt/reserved.txt; run scripts/reserved.py\n{}",
+                shown(&listed)
+            ));
+        }
         (count, failures)
     });
 }
