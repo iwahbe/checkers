@@ -309,8 +309,20 @@ impl Elab {
         !crate::verify::proved(self, m).diags.iter().any(|d| d.is_error())
     }
 
+    /// Is definition `d` proved (§8.9)? One of an imported module, once that
+    /// module is proved with no errors (`module_proved`); one of the module
+    /// being checked, once it and everything it reaches are, on demand
+    /// (`settle`).
+    pub fn def_proved(&self, d: DefId) -> bool {
+        let m = &self.g.defs[d.0 as usize].module;
+        if **m == *self.cur && self.loading.iter().any(|l| *l == **m) {
+            return self.settle(d);
+        }
+        self.module_proved(m)
+    }
+
     /// Is every function `t` reaches, through constants and functions'
-    /// bodies, in a module proved with no errors (§8.9)? Constants, and
+    /// bodies, proved (`def_proved`, §8.9)? Constants, and
     /// builtins, which have no body, needn't be.
     fn functions_proved(&self, t: &Tm) -> bool {
         let mut todo = Vec::new();
@@ -322,7 +334,7 @@ impl Elab {
             }
             let Some(info) = self.g.defs.get(d.0 as usize) else { return false };
             let Some(b) = &info.body else { continue };
-            if matches!(info.ty, Tm::Pi(..)) && !self.module_proved(&info.module) {
+            if matches!(info.ty, Tm::Pi(..)) && !self.def_proved(d) {
                 return false;
             }
             crate::core::defs_in(b, &mut todo);
@@ -332,9 +344,8 @@ impl Elab {
 
     /// Can `t` run at compile time now? Every definition it reaches has
     /// code (a body, or a builtin of the runtime), is total (not
-    /// `partial`), and belongs to a module proved with no errors
-    /// (`module_proved`), so it ends and calls only what its callees accept;
-    /// and nothing in it waits on a cown.
+    /// `partial`), and is proved (`def_proved`), so it ends and calls only
+    /// what its callees accept; and nothing in it waits on a cown.
     fn runnable(&self, t: &Tm) -> bool {
         let mut todo = Vec::new();
         crate::core::defs_in(t, &mut todo);
@@ -349,7 +360,7 @@ impl Elab {
             let Some(info) = self.g.defs.get(d.0 as usize) else { return false };
             // A `partial` function has a body and is opaque; a builtin has
             // none (its code is the runtime's).
-            if info.opaque && info.body.is_some() || !self.module_proved(&info.module) {
+            if info.opaque && info.body.is_some() || !self.def_proved(d) {
                 return false;
             }
             match &info.body {

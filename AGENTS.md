@@ -46,6 +46,7 @@ src/elab/eq.rs       `==` never compares functions: in compiled code, and throug
 src/elab/descr.rs    showing values by type (#170): which type parameters get descriptors, closed over calls; E0293
 src/doc.rs           `ckc doc FILE`: a module's exported declarations and descriptions as JSON lines (§15.6, D131)
 src/elab/termination.rs  structural recursion over call-graph SCCs (§5.3)
+src/elab/settle.rs   a module's own functions proved on demand, so their values are known in it (§8.9); the proofs phase reuses those proofs
 src/literate.rs      doc comments' links and code blocks: W030–W033, their index and completion (D148 e, f)
 src/elab/unused.rs   unused declarations, constructors and fields: references marked from the roots (D144)
 src/elab/order.rs   declaration order by dependencies, cycles (D65); strongly connected components (`sccs`, termination's too)

@@ -600,13 +600,21 @@ pub fn proved(e: &Elab, user: &str) -> Verified {
 }
 
 fn verify(e: &Elab, user: &str) -> Verified {
+    // Those proved already, so that the module's own functions could run
+    // while it was checked (§8.9): taken as proved.
+    let early = e.early.borrow();
     let obs: Vec<&Obligation> = e
         .obligations
         .iter()
-        .filter(|o| o.module == user)
+        .enumerate()
+        .filter(|(k, o)| o.module == user && !early.proved(*k, o))
+        .map(|(_, o)| o)
         .filter(|o| o.only_if_nat.as_ref().is_none_or(|t| smt::is_nat(e, t)))
         .collect();
     let mut v = Verified { diags: Vec::new(), ledger: Vec::new(), z3_version: None, proved: 0, asked: 0, reused: 0 };
+    v.proved += early.counts.get(user).copied().unwrap_or(0);
+    v.ledger.extend(early.ledger.iter().filter(|(m, _)| m == user).map(|(_, l)| l.clone()));
+    drop(early);
     let (asked0, reused0) = (ASKED.load(std::sync::atomic::Ordering::Relaxed), REUSED.load(std::sync::atomic::Ordering::Relaxed));
     for t in e.admits.iter().filter(|t| t.module == user) {
         v.ledger.push(LedgerEntry { span: t.span, how: "trusted", what: t.what.clone() });
@@ -635,26 +643,176 @@ fn verify(e: &Elab, user: &str) -> Verified {
     if obs.is_empty() {
         return v;
     }
-    // Which functions recursing by `decreasing` end whatever their
-    // preconditions say: their definitions need no precondition guard (M17).
-    ends_everywhere(e, &obs);
-    // The values of the calls in each obligation known at compile time, as
-    // facts (§7.1, §8.9): the calls' values, never their functions' bodies.
-    let with_values: Vec<Obligation> = obs
-        .iter()
+    let with_values = with_known_values(e, &obs, &mut v.ledger);
+    let obs: Vec<&Obligation> = with_values.iter().collect();
+    let (defs, queries, answers, _) = solve(e, user, &obs);
+    // Cases one `match` leaves out that may occur: one error (E0240).
+    let mut uncovered: Vec<(Span, Vec<String>, usize)> = Vec::new();
+    // A call whose result isn't shown to be of its type (E0456, or at a
+    // known instance requiring less): a postcondition failing for the
+    // same value returned is the same error, reported once.
+    let mut bad_calls: Vec<Span> = Vec::new();
+    let mut post_fails: Vec<(usize, Span)> = Vec::new();
+    // A postcondition outside what the prover handles is so for each value
+    // returned: one error, listing them (its diagnostic, the obligations).
+    let mut outside_posts: Vec<(usize, Vec<usize>)> = Vec::new();
+    // A goal with a type error isn't asked (§7.3): the type error is its
+    // only diagnostic. Without one reported, it would be a checkers bug,
+    // shown as outside the fragment.
+    let type_errors = e.diags.iter().any(|(_, d)| d.is_error());
+    for (k, ((o, q), a)) in obs.iter().zip(&queries).zip(answers).enumerate() {
+        if matches!(q, Err(why) if why.is_type_error()) && type_errors {
+            continue;
+        }
+        if let (Err(why), ObKind::Post { .. }) = (q, &o.kind) {
+            let same = |j: usize| {
+                let p = obs[j];
+                p.span == o.span && p.module == o.module && p.text == o.text && matches!(&queries[j], Err(w) if w.0 == why.0)
+            };
+            if let Some(g) = outside_posts.iter_mut().find(|g| same(g.1[0])) {
+                g.1.push(k);
+                continue;
+            }
+            outside_posts.push((v.diags.len(), vec![k]));
+        }
+        if !matches!((q, &a), (Ok(_), Some(Answer::Unsat)) | (Ok(_), None)) {
+            match &o.kind {
+                ObKind::AtAlias { call: Some(_), .. } | ObKind::KnownResult { .. } => bad_calls.push(o.span),
+                ObKind::Post { at, .. } => post_fails.push((v.diags.len(), *at)),
+                _ => {}
+            }
+        }
+        if let (ObKind::Uncovered { case, .. }, false) = (&o.kind, matches!((q, &a), (Ok(_), Some(Answer::Unsat)))) {
+            if let Some(u) = uncovered.iter_mut().find(|u| u.0 == o.span) {
+                if !u.1.contains(case) {
+                    u.1.push(case.clone());
+                }
+                continue;
+            }
+            uncovered.push((o.span, vec![case.clone()], v.diags.len()));
+        }
+        match (q, a) {
+            (Err(why), _) => v.diags.push(outside(e, &[o], &why.0)),
+            (Ok(_), Some(Answer::Unsat)) => {
+                v.proved += 1;
+                v.ledger.push(LedgerEntry { span: o.span, how: "smt", what: describe(e, o) });
+            }
+            (Ok(q), Some(Answer::Sat(model))) => {
+                // A model of a query without the `forall` facts may break
+                // them: shown only once checked against them.
+                let (shown, broken) = if q.foralls { check_foralls(e, user, o, &defs, &model) } else { (Some(model.clone()), None) };
+                let shown = shown.map(|m| render_model(&m, &q.shown, &q.string_vars, &q.array_vars));
+                let any = shown.is_some();
+                let mut d = failed(e, o, shown);
+                if let Some(n) = broken {
+                    d = d.with_note(n);
+                }
+                if any && !q.dropped.is_empty() {
+                    d = d.with_note(format!(
+                        "some facts could not be given to the prover, so the counterexample may be impossible: they involve {}",
+                        q.dropped.join("; ")
+                    ));
+                }
+                v.diags.push(d);
+            }
+            (Ok(_), Some(Answer::Unknown(why))) => {
+                let mut d = failed(e, o, None);
+                d = d.with_note(format!("Z3 gave up ({why})"));
+                v.diags.push(d);
+            }
+            (Ok(_), None) => {}
+        }
+    }
+    // Without the values returned whose call is already reported.
+    for (at, ks) in outside_posts.iter().filter(|g| g.1.len() > 1) {
+        let os: Vec<&Obligation> = ks
+            .iter()
+            .map(|&k| obs[k])
+            .filter(|o| !matches!(o.kind, ObKind::Post { at, .. } if bad_calls.contains(&at)))
+            .collect();
+        if let (false, Err(why)) = (os.is_empty(), &queries[ks[0]]) {
+            v.diags[*at] = outside(e, &os, &why.0);
+            post_fails.retain(|p| p.0 != *at);
+        }
+    }
+        for (_, cases, at) in &uncovered {
+        let d = v.diags[*at].clone();
+        v.diags[*at] = merge_uncovered(d, cases);
+    }
+    for (k, at) in post_fails.into_iter().rev() {
+        if bad_calls.contains(&at) && k < v.diags.len() {
+            v.diags.remove(k);
+        }
+    }
+    v.z3_version = z3_version();
+    v.asked = ASKED.load(std::sync::atomic::Ordering::Relaxed) - asked0;
+    v.reused = REUSED.load(std::sync::atomic::Ordering::Relaxed) - reused0;
+    v
+}
+
+/// `obs` with, as facts, the values of the calls in each that are known at
+/// compile time (§7.1, §8.9): the calls' values, never their functions'
+/// bodies, each in `ledger` as computed. First, which functions recursing
+/// by `decreasing` end whatever their preconditions say: their definitions
+/// need no precondition guard (M17).
+fn with_known_values(e: &Elab, obs: &[&Obligation], ledger: &mut Vec<LedgerEntry>) -> Vec<Obligation> {
+    ends_everywhere(e, obs);
+    obs.iter()
         .map(|o| {
             let known = known_calls(e, o);
             for (_, what) in &known {
-                if !v.ledger.iter().any(|x| x.how == "computed" && x.span == o.span && x.what == *what) {
-                    v.ledger.push(LedgerEntry { span: o.span, how: "computed", what: what.clone() });
+                if !ledger.iter().any(|x| x.how == "computed" && x.span == o.span && x.what == *what) {
+                    ledger.push(LedgerEntry { span: o.span, how: "computed", what: what.clone() });
                 }
             }
             let mut o = (*o).clone();
             o.facts.extend(known.into_iter().map(|(f, _)| f));
             o
         })
-        .collect();
+        .collect()
+}
+
+/// Prove `obs` and the measures of `guesses`, of module `user`, now,
+/// before the proofs phase, so that its functions can run while it is
+/// checked (§8.9): the ledger's entries for them, and how many were
+/// proved, if every one is; else None (the proofs phase then asks again, and reports what fails).
+pub fn prove_now(e: &Elab, user: &str, obs: &[&Obligation], guesses: &[&crate::elab::termination::GuessGroup]) -> Option<(Vec<LedgerEntry>, usize)> {
+    let mut v = Verified { diags: Vec::new(), ledger: Vec::new(), z3_version: None, proved: 0, asked: 0, reused: 0 };
+    for g in guesses {
+        if !guess_group(e, user, g, &mut v) {
+            return None;
+        }
+    }
+    let obs: Vec<&Obligation> = obs.iter().copied().filter(|o| o.only_if_nat.as_ref().is_none_or(|t| smt::is_nat(e, t))).collect();
+    let (trivial, obs): (Vec<&Obligation>, Vec<&Obligation>) = obs.into_iter().partition(|o| {
+        matches!(crate::core::force(&e.g, o.goal.clone()), crate::core::Val::Con(c, _) if Some(c) == e.g.well_known.true_con)
+    });
+    for o in trivial {
+        v.proved += 1;
+        v.ledger.push(LedgerEntry { span: o.span, how: "computed", what: describe(e, o) });
+    }
+    if obs.is_empty() {
+        return Some((v.ledger, v.proved));
+    }
+    let with_values = with_known_values(e, &obs, &mut v.ledger);
     let obs: Vec<&Obligation> = with_values.iter().collect();
+    let (_, queries, answers, _) = solve(e, user, &obs);
+    for (o, (q, a)) in obs.iter().zip(queries.iter().zip(answers)) {
+        let (Ok(_), Some(Answer::Unsat)) = (q, a) else { return None };
+        v.proved += 1;
+        v.ledger.push(LedgerEntry { span: o.span, how: "smt", what: describe(e, o) });
+    }
+    Some((v.ledger, v.proved))
+}
+
+/// Ask Z3 about `obs`, of module `user`: each one's query (or why it has
+/// none), its answer, and whether a query proved it.
+#[allow(clippy::type_complexity)]
+fn solve(
+    e: &Elab,
+    user: &str,
+    obs: &[&Obligation],
+) -> (smt::Defs, Vec<Result<smt::Query, smt::Outside>>, Vec<Option<Answer>>, Vec<bool>) {
     // Translate on this thread (the elaborator isn't `Send`), solve in
     // parallel: each query's first ask (step 1) as soon as it is made.
     let defs = smt::Defs::default();
@@ -811,108 +969,7 @@ fn verify(e: &Elab, user: &str) -> Verified {
             }
         }
     }
-    // Cases one `match` leaves out that may occur: one error (E0240).
-    let mut uncovered: Vec<(Span, Vec<String>, usize)> = Vec::new();
-    // A call whose result isn't shown to be of its type (E0456, or at a
-    // known instance requiring less): a postcondition failing for the
-    // same value returned is the same error, reported once.
-    let mut bad_calls: Vec<Span> = Vec::new();
-    let mut post_fails: Vec<(usize, Span)> = Vec::new();
-    // A postcondition outside what the prover handles is so for each value
-    // returned: one error, listing them (its diagnostic, the obligations).
-    let mut outside_posts: Vec<(usize, Vec<usize>)> = Vec::new();
-    // A goal with a type error isn't asked (§7.3): the type error is its
-    // only diagnostic. Without one reported, it would be a checkers bug,
-    // shown as outside the fragment.
-    let type_errors = e.diags.iter().any(|(_, d)| d.is_error());
-    for (k, ((o, q), a)) in obs.iter().zip(&queries).zip(answers).enumerate() {
-        if matches!(q, Err(why) if why.is_type_error()) && type_errors {
-            continue;
-        }
-        if let (Err(why), ObKind::Post { .. }) = (q, &o.kind) {
-            let same = |j: usize| {
-                let p = obs[j];
-                p.span == o.span && p.module == o.module && p.text == o.text && matches!(&queries[j], Err(w) if w.0 == why.0)
-            };
-            if let Some(g) = outside_posts.iter_mut().find(|g| same(g.1[0])) {
-                g.1.push(k);
-                continue;
-            }
-            outside_posts.push((v.diags.len(), vec![k]));
-        }
-        if !matches!((q, &a), (Ok(_), Some(Answer::Unsat)) | (Ok(_), None)) {
-            match &o.kind {
-                ObKind::AtAlias { call: Some(_), .. } | ObKind::KnownResult { .. } => bad_calls.push(o.span),
-                ObKind::Post { at, .. } => post_fails.push((v.diags.len(), *at)),
-                _ => {}
-            }
-        }
-        if let (ObKind::Uncovered { case, .. }, false) = (&o.kind, matches!((q, &a), (Ok(_), Some(Answer::Unsat)))) {
-            if let Some(u) = uncovered.iter_mut().find(|u| u.0 == o.span) {
-                if !u.1.contains(case) {
-                    u.1.push(case.clone());
-                }
-                continue;
-            }
-            uncovered.push((o.span, vec![case.clone()], v.diags.len()));
-        }
-        match (q, a) {
-            (Err(why), _) => v.diags.push(outside(e, &[o], &why.0)),
-            (Ok(_), Some(Answer::Unsat)) => {
-                v.proved += 1;
-                v.ledger.push(LedgerEntry { span: o.span, how: "smt", what: describe(e, o) });
-            }
-            (Ok(q), Some(Answer::Sat(model))) => {
-                // A model of a query without the `forall` facts may break
-                // them: shown only once checked against them.
-                let (shown, broken) = if q.foralls { check_foralls(e, user, o, &defs, &model) } else { (Some(model.clone()), None) };
-                let shown = shown.map(|m| render_model(&m, &q.shown, &q.string_vars, &q.array_vars));
-                let any = shown.is_some();
-                let mut d = failed(e, o, shown);
-                if let Some(n) = broken {
-                    d = d.with_note(n);
-                }
-                if any && !q.dropped.is_empty() {
-                    d = d.with_note(format!(
-                        "some facts could not be given to the prover, so the counterexample may be impossible: they involve {}",
-                        q.dropped.join("; ")
-                    ));
-                }
-                v.diags.push(d);
-            }
-            (Ok(_), Some(Answer::Unknown(why))) => {
-                let mut d = failed(e, o, None);
-                d = d.with_note(format!("Z3 gave up ({why})"));
-                v.diags.push(d);
-            }
-            (Ok(_), None) => {}
-        }
-    }
-    // Without the values returned whose call is already reported.
-    for (at, ks) in outside_posts.iter().filter(|g| g.1.len() > 1) {
-        let os: Vec<&Obligation> = ks
-            .iter()
-            .map(|&k| obs[k])
-            .filter(|o| !matches!(o.kind, ObKind::Post { at, .. } if bad_calls.contains(&at)))
-            .collect();
-        if let (false, Err(why)) = (os.is_empty(), &queries[ks[0]]) {
-            v.diags[*at] = outside(e, &os, &why.0);
-            post_fails.retain(|p| p.0 != *at);
-        }
-    }
-        for (_, cases, at) in &uncovered {
-        let d = v.diags[*at].clone();
-        v.diags[*at] = merge_uncovered(d, cases);
-    }
-    for (k, at) in post_fails.into_iter().rev() {
-        if bad_calls.contains(&at) && k < v.diags.len() {
-            v.diags.remove(k);
-        }
-    }
-    v.z3_version = z3_version();
-    v.asked = ASKED.load(std::sync::atomic::Ordering::Relaxed) - asked0;
-    v.reused = REUSED.load(std::sync::atomic::Ordering::Relaxed) - reused0;
-    v
+    (defs, queries, answers, proven)
 }
 
 /// Guess each recursive group's measure (D150): the first candidate, alone
@@ -920,222 +977,230 @@ fn verify(e: &Elab, user: &str) -> Verified {
 /// recursive call makes smaller while staying a natural number. E0301 if
 /// none is.
 fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
+    let early = e.early.borrow();
+    for gr in e.guess_groups.iter().filter(|g| g.module == user && !early.guesses.contains(&g.members)) {
+        guess_group(e, user, gr, v);
+    }
+}
+
+/// Guess group `gr`'s measure (D150), as `guess_measures`: whether one is
+/// proved.
+fn guess_group(e: &Elab, user: &str, gr: &crate::elab::termination::GuessGroup, v: &mut Verified) -> bool {
     use crate::core::{eval, quote, Lit, Prim, Tm, Val};
     use crate::elab::termination::Measure;
-    for gr in e.guess_groups.iter().filter(|g| g.module == user) {
-        // Combinations to try: one measure per member.
-        let mut combos: Vec<Vec<Measure>> = Vec::new();
-        if gr.members.len() == 1 {
-            let cs = &gr.candidates[0];
-            combos.extend(cs.iter().map(|c| vec![c.clone()]));
-            let firsts = &cs[..cs.len().min(6)];
-            for a in firsts {
-                for b in firsts {
-                    if a.1 != b.1 {
-                        let mut comps = a.0.clone();
-                        comps.extend(b.0.iter().cloned());
-                        combos.push(vec![(comps, format!("({}, {})", a.1, b.1))]);
-                    }
-                }
-            }
-        } else {
-            // One candidate per member, as long as the product is small.
-            let mut acc: Vec<Vec<Measure>> = vec![Vec::new()];
-            for cs in &gr.candidates {
-                let mut next = Vec::new();
-                for a in &acc {
-                    for c in cs {
-                        let mut x = a.clone();
-                        x.push(c.clone());
-                        next.push(x);
-                    }
-                }
-                next.truncate(64);
-                acc = next;
-            }
-            combos = acc;
-        }
-        let idx = |d| gr.members.iter().position(|m| *m == d).unwrap_or(0);
-        let wk = &e.g.well_known;
-        let (Some(tc), Some(fc)) = (wk.true_con, wk.false_con) else { return };
-        let and = |a: Tm, b: Tm| {
-            Tm::Case(
-                std::rc::Rc::new(a),
-                std::rc::Rc::new(crate::core::CaseTm { branches: vec![(fc, 0, Tm::ConApp(fc, vec![])), (tc, 0, b)], lits: vec![], default: None }),
-            )
-        };
-        let or = |a: Tm, b: Tm| {
-            Tm::Case(
-                std::rc::Rc::new(a),
-                std::rc::Rc::new(crate::core::CaseTm { branches: vec![(fc, 0, b), (tc, 0, Tm::ConApp(tc, vec![]))], lits: vec![], default: None }),
-            )
-        };
-        // The obligation at each call, for each combination.
-        let mut obs: Vec<Vec<Obligation>> = Vec::new();
-        // A combination whose measure is the same expression at a call as in
-        // the caller (`len src` passed `src`) can't be smaller there: not asked.
-        let mut doomed: Vec<Option<Span>> = Vec::new();
-        for combo in &combos {
-            let mut v = Vec::new();
-            let mut same_at = None;
-            for c in &gr.calls {
-                let (mine, theirs) = (&combo[idx(c.caller)], &combo[idx(c.callee)]);
-                if mine.0.len() != theirs.0.len() {
-                    continue;
-                }
-                let lvl = c.ob.ctx.len();
-                let n_caller = e.specs.get(&c.caller).map_or(0, |s| s.n_binders);
-                let here: crate::core::Env = std::rc::Rc::new((0..n_caller).map(Val::var).collect());
-                let there: crate::core::Env = std::rc::Rc::new(c.args.clone());
-                let a: Vec<Tm> = theirs.0.iter().map(|t| quote(&e.g, lvl, &eval(&e.g, &there, t))).collect();
-                let b: Vec<Tm> = mine.0.iter().map(|t| quote(&e.g, lvl, &eval(&e.g, &here, t))).collect();
-                if same_at.is_none() && c.caller == c.callee && a.iter().zip(&b).all(|(x, y)| format!("{x:?}") == format!("{y:?}")) {
-                    same_at = Some(c.ob.span);
-                }
-                // Each part a natural number here, and the callee's below.
-                let k = a.len();
-                let mut lt = Tm::PrimApp(Prim::Lt, vec![a[k - 1].clone(), b[k - 1].clone()]);
-                for j in (0..k - 1).rev() {
-                    let less = Tm::PrimApp(Prim::Lt, vec![a[j].clone(), b[j].clone()]);
-                    let same = Tm::PrimApp(Prim::Eq, vec![a[j].clone(), b[j].clone()]);
-                    lt = or(less, and(same, lt));
-                }
-                let mut goal = lt;
-                for bj in b.iter().rev() {
-                    goal = and(Tm::PrimApp(Prim::Le, vec![Tm::Lit(Lit::Num(0)), bj.clone()]), goal);
-                }
-                let env: crate::core::Env = std::rc::Rc::new(
-                    c.ob.ctx.iter().enumerate().map(|(l, x)| x.def.clone().unwrap_or_else(|| Val::var(l))).collect(),
-                );
-                let mut o = c.ob.clone();
-                o.goal = eval(&e.g, &env, &goal);
-                let func = e.g.defs[c.caller.0 as usize].name.to_string();
-                o.kind = ObKind::Measure { func, measure: mine.1.clone() };
-                o.text = mine.1.clone();
-                v.push(o);
-            }
-            obs.push(v);
-            doomed.push(same_at);
-        }
-        // Ask about the single measures, then the pairs, each first with a
-        // small work limit (a measure that holds is usually quick to show,
-        // and one that doesn't is slow to give up on), then the rest with
-        // the quick one; take the first proved.
-        let defs = smt::Defs::default();
-        let base: Vec<usize> = obs.iter().scan(0, |k, os| {
-            let at = *k;
-            *k += os.len();
-            Some(at)
-        }).collect();
-        let texts: Vec<Option<String>> = obs
-            .iter()
-            .flatten()
-            .map(|o| quick(smt::Builder::new(e, user).sharing(&defs).query(o).ok().map(|q| q.no_tables.unwrap_or(q.text))))
-            .collect();
-        let mut answers: Vec<Option<Answer>> = texts.iter().map(|_| None).collect();
-        let singles = combos.iter().take_while(|c| c.iter().all(|m| m.0.len() == 1)).count();
-        let small = |t: &Option<String>| {
-            t.as_ref().map(|t| relimit(t, QUICK_RLIMIT, PROBE_RLIMIT))
-        };
-        let proved = |answers: &[Option<Answer>], ci: usize| {
-            !obs[ci].is_empty() && answers[base[ci]..base[ci] + obs[ci].len()].iter().all(|a| matches!(a, Some(Answer::Unsat)))
-        };
-        let mut chosen: Option<usize> = None;
-        'tiers: for limit in [true, false] {
-            for tier in [0..singles, singles..combos.len()] {
-                let ks: Vec<usize> = tier
-                    .clone()
-                    .filter(|ci| doomed[*ci].is_none())
-                    .flat_map(|ci| base[ci]..base[ci] + obs[ci].len())
-                    .filter(|k| !matches!(answers[*k], Some(Answer::Unsat)))
-                    .collect();
-                let asked: Vec<Option<String>> = ks.iter().map(|k| if limit { small(&texts[*k]) } else { texts[*k].clone() }).collect();
-                for (k, a) in ks.iter().zip(ask_all(&asked)) {
-                    answers[*k] = a;
-                }
-                if let Some(ci) = tier.clone().find(|ci| proved(&answers, *ci)) {
-                    chosen = Some(ci);
-                    break 'tiers;
+    // Combinations to try: one measure per member.
+    let mut combos: Vec<Vec<Measure>> = Vec::new();
+    if gr.members.len() == 1 {
+        let cs = &gr.candidates[0];
+        combos.extend(cs.iter().map(|c| vec![c.clone()]));
+        let firsts = &cs[..cs.len().min(6)];
+        for a in firsts {
+            for b in firsts {
+                if a.1 != b.1 {
+                    let mut comps = a.0.clone();
+                    comps.extend(b.0.iter().cloned());
+                    combos.push(vec![(comps, format!("({}, {})", a.1, b.1))]);
                 }
             }
         }
-        // Each measure's calls it wasn't shown smaller at, and of those the
-        // one to name: first in the group's preference (#124), the call
-        // losing the parameter recursed on.
-        let inside = |a: Span, b: Span| a == b || b.start <= a.start && a.end <= b.end;
-        let unproved: Vec<Vec<Span>> = obs
-            .iter()
-            .enumerate()
-            .map(|(ci, os)| {
-                let ans = &answers[base[ci]..base[ci] + os.len()];
-                os.iter().zip(ans).filter(|(_, a)| !matches!(a, Some(Answer::Unsat))).map(|(o, _)| o.span).collect()
-            })
-            .collect();
-        let pick = |fails: &[Span]| {
-            gr.prefer
-                .iter()
-                .find_map(|p| fails.iter().find(|f| inside(**f, *p) || inside(*p, **f)))
-                .or(fails.first())
-                .copied()
-        };
-        let mut tried: Vec<(String, Option<Span>)> = Vec::new();
-        for (ci, fails) in unproved.iter().enumerate() {
-            let failed = doomed[ci].or_else(|| pick(fails));
-            tried.push((combos[ci].iter().map(|m| format!("`{}`", m.1)).collect::<Vec<_>>().join(" and "), failed));
-        }
-        let first_call = gr.calls.first().map(|c| c.ob.span);
-        match chosen {
-            Some(ci) => {
-                for o in &obs[ci] {
-                    v.proved += 1;
-                    let mut what = describe(e, o);
-                    what.push_str(" (guessed)");
-                    v.ledger.push(LedgerEntry { span: o.span, how: "smt", what });
+    } else {
+        // One candidate per member, as long as the product is small.
+        let mut acc: Vec<Vec<Measure>> = vec![Vec::new()];
+        for cs in &gr.candidates {
+            let mut next = Vec::new();
+            for a in &acc {
+                for c in cs {
+                    let mut x = a.clone();
+                    x.push(c.clone());
+                    next.push(x);
                 }
             }
-            None => {
-                // At a call no measure was shown smaller at: for the measures
-                // that leave the fewest calls unproved, the one `pick` names.
-                let fewest = (0..obs.len())
-                    .filter(|ci| doomed[*ci].is_none() && !obs[*ci].is_empty())
-                    .min_by_key(|ci| unproved[*ci].len());
-                let Some(at) = fewest.and_then(|ci| pick(&unproved[ci])).or_else(|| gr.prefer.first().and_then(|p| {
-                    gr.calls.iter().map(|c| c.ob.span).find(|s| inside(*s, *p) || inside(*p, *s))
-                })).or(first_call)
-                else {
-                    continue;
-                };
-                let names: Vec<String> = gr.members.iter().map(|d| format!("`{}`", e.g.defs[d.0 as usize].name)).collect();
-                let src = e.sources.get(user);
-                let line = |sp: Span| src.map(|f| f.line_col(sp.start).0).unwrap_or(0);
-                let shown: Vec<String> = tried
-                    .iter()
-                    .take(8)
-                    .map(|(m, f)| match f {
-                        Some(sp) if *sp != at => format!("{m} (not shown smaller at line {})", line(*sp)),
-                        _ => m.clone(),
-                    })
-                    .collect();
-                let note = format!("measures tried, none shown smaller here: {}", shown.join(", "));
-                // A lemma using itself: an induction (#76).
-                let lemma = gr.members.len() == 1 && e.fn_meta.get(&gr.members[0]).is_some_and(|m| !m.is_fn);
-                if lemma {
-                    let name = &names[0];
-                    let d = Diagnostic::error("E0301", format!("{name} uses itself, but no measure found that each use makes smaller, so this is not an induction"), at)
-                        .with_label("the induction hypothesis")
-                        .with_note(note)
-                        .with_help(format!("use {name} only on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of its proof"));
-                    v.diags.push(d);
-                    continue;
-                }
-                let who = if names.len() == 1 { format!("{} terminates", names[0]) } else { format!("{} terminate", names.join(", ")) };
-                let mut d = Diagnostic::error("E0301", format!("cannot show that {who}: no measure found that every recursive call makes smaller"), at)
-                    .with_label("recursive call");
-                d = d.with_note(note);
-                v.diags.push(d.with_help("add `decreasing <measure>` as the first line of the function, or mark it `partial`"));
+            next.truncate(64);
+            acc = next;
+        }
+        combos = acc;
+    }
+    let idx = |d| gr.members.iter().position(|m| *m == d).unwrap_or(0);
+    let wk = &e.g.well_known;
+    let (Some(tc), Some(fc)) = (wk.true_con, wk.false_con) else { return false };
+    let and = |a: Tm, b: Tm| {
+        Tm::Case(
+            std::rc::Rc::new(a),
+            std::rc::Rc::new(crate::core::CaseTm { branches: vec![(fc, 0, Tm::ConApp(fc, vec![])), (tc, 0, b)], lits: vec![], default: None }),
+        )
+    };
+    let or = |a: Tm, b: Tm| {
+        Tm::Case(
+            std::rc::Rc::new(a),
+            std::rc::Rc::new(crate::core::CaseTm { branches: vec![(fc, 0, b), (tc, 0, Tm::ConApp(tc, vec![]))], lits: vec![], default: None }),
+        )
+    };
+    // The obligation at each call, for each combination.
+    let mut obs: Vec<Vec<Obligation>> = Vec::new();
+    // A combination whose measure is the same expression at a call as in
+    // the caller (`len src` passed `src`) can't be smaller there: not asked.
+    let mut doomed: Vec<Option<Span>> = Vec::new();
+    for combo in &combos {
+        let mut v = Vec::new();
+        let mut same_at = None;
+        for c in &gr.calls {
+            let (mine, theirs) = (&combo[idx(c.caller)], &combo[idx(c.callee)]);
+            if mine.0.len() != theirs.0.len() {
+                continue;
+            }
+            let lvl = c.ob.ctx.len();
+            let n_caller = e.specs.get(&c.caller).map_or(0, |s| s.n_binders);
+            let here: crate::core::Env = std::rc::Rc::new((0..n_caller).map(Val::var).collect());
+            let there: crate::core::Env = std::rc::Rc::new(c.args.clone());
+            let a: Vec<Tm> = theirs.0.iter().map(|t| quote(&e.g, lvl, &eval(&e.g, &there, t))).collect();
+            let b: Vec<Tm> = mine.0.iter().map(|t| quote(&e.g, lvl, &eval(&e.g, &here, t))).collect();
+            if same_at.is_none() && c.caller == c.callee && a.iter().zip(&b).all(|(x, y)| format!("{x:?}") == format!("{y:?}")) {
+                same_at = Some(c.ob.span);
+            }
+            // Each part a natural number here, and the callee's below.
+            let k = a.len();
+            let mut lt = Tm::PrimApp(Prim::Lt, vec![a[k - 1].clone(), b[k - 1].clone()]);
+            for j in (0..k - 1).rev() {
+                let less = Tm::PrimApp(Prim::Lt, vec![a[j].clone(), b[j].clone()]);
+                let same = Tm::PrimApp(Prim::Eq, vec![a[j].clone(), b[j].clone()]);
+                lt = or(less, and(same, lt));
+            }
+            let mut goal = lt;
+            for bj in b.iter().rev() {
+                goal = and(Tm::PrimApp(Prim::Le, vec![Tm::Lit(Lit::Num(0)), bj.clone()]), goal);
+            }
+            let env: crate::core::Env = std::rc::Rc::new(
+                c.ob.ctx.iter().enumerate().map(|(l, x)| x.def.clone().unwrap_or_else(|| Val::var(l))).collect(),
+            );
+            let mut o = c.ob.clone();
+            o.goal = eval(&e.g, &env, &goal);
+            let func = e.g.defs[c.caller.0 as usize].name.to_string();
+            o.kind = ObKind::Measure { func, measure: mine.1.clone() };
+            o.text = mine.1.clone();
+            v.push(o);
+        }
+        obs.push(v);
+        doomed.push(same_at);
+    }
+    // Ask about the single measures, then the pairs, each first with a
+    // small work limit (a measure that holds is usually quick to show,
+    // and one that doesn't is slow to give up on), then the rest with
+    // the quick one; take the first proved.
+    let defs = smt::Defs::default();
+    let base: Vec<usize> = obs.iter().scan(0, |k, os| {
+        let at = *k;
+        *k += os.len();
+        Some(at)
+    }).collect();
+    let texts: Vec<Option<String>> = obs
+        .iter()
+        .flatten()
+        .map(|o| quick(smt::Builder::new(e, user).sharing(&defs).query(o).ok().map(|q| q.no_tables.unwrap_or(q.text))))
+        .collect();
+    let mut answers: Vec<Option<Answer>> = texts.iter().map(|_| None).collect();
+    let singles = combos.iter().take_while(|c| c.iter().all(|m| m.0.len() == 1)).count();
+    let small = |t: &Option<String>| {
+        t.as_ref().map(|t| relimit(t, QUICK_RLIMIT, PROBE_RLIMIT))
+    };
+    let proved = |answers: &[Option<Answer>], ci: usize| {
+        !obs[ci].is_empty() && answers[base[ci]..base[ci] + obs[ci].len()].iter().all(|a| matches!(a, Some(Answer::Unsat)))
+    };
+    let mut chosen: Option<usize> = None;
+    'tiers: for limit in [true, false] {
+        for tier in [0..singles, singles..combos.len()] {
+            let ks: Vec<usize> = tier
+                .clone()
+                .filter(|ci| doomed[*ci].is_none())
+                .flat_map(|ci| base[ci]..base[ci] + obs[ci].len())
+                .filter(|k| !matches!(answers[*k], Some(Answer::Unsat)))
+                .collect();
+            let asked: Vec<Option<String>> = ks.iter().map(|k| if limit { small(&texts[*k]) } else { texts[*k].clone() }).collect();
+            for (k, a) in ks.iter().zip(ask_all(&asked)) {
+                answers[*k] = a;
+            }
+            if let Some(ci) = tier.clone().find(|ci| proved(&answers, *ci)) {
+                chosen = Some(ci);
+                break 'tiers;
             }
         }
     }
+    // Each measure's calls it wasn't shown smaller at, and of those the
+    // one to name: first in the group's preference (#124), the call
+    // losing the parameter recursed on.
+    let inside = |a: Span, b: Span| a == b || b.start <= a.start && a.end <= b.end;
+    let unproved: Vec<Vec<Span>> = obs
+        .iter()
+        .enumerate()
+        .map(|(ci, os)| {
+            let ans = &answers[base[ci]..base[ci] + os.len()];
+            os.iter().zip(ans).filter(|(_, a)| !matches!(a, Some(Answer::Unsat))).map(|(o, _)| o.span).collect()
+        })
+        .collect();
+    let pick = |fails: &[Span]| {
+        gr.prefer
+            .iter()
+            .find_map(|p| fails.iter().find(|f| inside(**f, *p) || inside(*p, **f)))
+            .or(fails.first())
+            .copied()
+    };
+    let mut tried: Vec<(String, Option<Span>)> = Vec::new();
+    for (ci, fails) in unproved.iter().enumerate() {
+        let failed = doomed[ci].or_else(|| pick(fails));
+        tried.push((combos[ci].iter().map(|m| format!("`{}`", m.1)).collect::<Vec<_>>().join(" and "), failed));
+    }
+    let first_call = gr.calls.first().map(|c| c.ob.span);
+    match chosen {
+        Some(ci) => {
+            for o in &obs[ci] {
+                v.proved += 1;
+                let mut what = describe(e, o);
+                what.push_str(" (guessed)");
+                v.ledger.push(LedgerEntry { span: o.span, how: "smt", what });
+            }
+        }
+        None => {
+            // At a call no measure was shown smaller at: for the measures
+            // that leave the fewest calls unproved, the one `pick` names.
+            let fewest = (0..obs.len())
+                .filter(|ci| doomed[*ci].is_none() && !obs[*ci].is_empty())
+                .min_by_key(|ci| unproved[*ci].len());
+            let Some(at) = fewest.and_then(|ci| pick(&unproved[ci])).or_else(|| gr.prefer.first().and_then(|p| {
+                gr.calls.iter().map(|c| c.ob.span).find(|s| inside(*s, *p) || inside(*p, *s))
+            })).or(first_call)
+            else {
+                return false;
+            };
+            let names: Vec<String> = gr.members.iter().map(|d| format!("`{}`", e.g.defs[d.0 as usize].name)).collect();
+            let src = e.sources.get(user);
+            let line = |sp: Span| src.map(|f| f.line_col(sp.start).0).unwrap_or(0);
+            let shown: Vec<String> = tried
+                .iter()
+                .take(8)
+                .map(|(m, f)| match f {
+                    Some(sp) if *sp != at => format!("{m} (not shown smaller at line {})", line(*sp)),
+                    _ => m.clone(),
+                })
+                .collect();
+            let note = format!("measures tried, none shown smaller here: {}", shown.join(", "));
+            // A lemma using itself: an induction (#76).
+            let lemma = gr.members.len() == 1 && e.fn_meta.get(&gr.members[0]).is_some_and(|m| !m.is_fn);
+            if lemma {
+                let name = &names[0];
+                let d = Diagnostic::error("E0301", format!("{name} uses itself, but no measure found that each use makes smaller, so this is not an induction"), at)
+                    .with_label("the induction hypothesis")
+                    .with_note(note)
+                    .with_help(format!("use {name} only on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of its proof"));
+                v.diags.push(d);
+                return false;
+            }
+            let who = if names.len() == 1 { format!("{} terminates", names[0]) } else { format!("{} terminate", names.join(", ")) };
+            let mut d = Diagnostic::error("E0301", format!("cannot show that {who}: no measure found that every recursive call makes smaller"), at)
+                .with_label("recursive call");
+            d = d.with_note(note);
+            v.diags.push(d.with_help("add `decreasing <measure>` as the first line of the function, or mark it `partial`"));
+        }
+    }
+    chosen.is_some()
 }
 
 /// E0457: declarations whose conditions can never all hold, found by

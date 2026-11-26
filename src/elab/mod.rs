@@ -21,6 +21,7 @@ mod pattern;
 mod qualify;
 pub use pattern::BINDING_HELP;
 mod refine;
+pub mod settle;
 mod template;
 mod tyeq;
 pub mod stdlib;
@@ -691,6 +692,9 @@ pub struct Elab {
     pub known_cache: std::cell::RefCell<HashMap<String, Option<Lit>>>,
     /// Definitions found to run at compile time (`runnable`).
     pub runnable_defs: std::cell::RefCell<HashSet<DefId>>,
+    /// What was proved before the proofs phase, so that a module's own
+    /// functions can run (§8.9, `settle`).
+    pub early: std::cell::RefCell<settle::Early>,
     /// Each module's proofs once made (`verify::proved`): an imported
     /// module's functions run at compile time only once it is proved
     /// (§8.9).
@@ -828,7 +832,7 @@ pub struct Elab {
     /// `(pred, c, s)`: whether `pred` is a membership, true only where its
     /// explicit argument `s` equals a strict part of argument `c` (#102);
     /// for the module being checked.
-    pub memberships: HashMap<(DefId, usize, usize), bool>,
+    pub memberships: std::cell::RefCell<HashMap<(DefId, usize, usize), bool>>,
     /// Span of the `match` being compiled (for exhaustiveness errors).
     pub match_span: Span,
     /// The `match` being checked is a binding's one pattern (a `let`, a
@@ -1032,6 +1036,7 @@ impl Elab {
             bounds: HashMap::new(),
             known_cache: std::cell::RefCell::new(HashMap::new()),
             runnable_defs: std::cell::RefCell::new(HashSet::new()),
+            early: Default::default(),
             module_proofs: std::cell::RefCell::new(HashMap::new()),
             ill_sorted: std::cell::Cell::new(0),
             proving: std::cell::RefCell::new(HashSet::new()),
@@ -1079,7 +1084,7 @@ impl Elab {
             elem_conds: Vec::new(),
             elem_cond_at: HashMap::new(),
             body_elems: HashMap::new(),
-            memberships: HashMap::new(),
+            memberships: Default::default(),
             match_span: Span::default(),
             match_binding: false,
             pm: Default::default(),
