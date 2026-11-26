@@ -25,11 +25,11 @@ pub struct Fx(u64);
 
 impl Hasher for Fx {
     fn write(&mut self, bytes: &[u8]) {
-        let mut chunks = bytes.chunks_exact(8);
-        for c in &mut chunks {
-            self.write_u64(u64::from_le_bytes(c.try_into().expect("8 bytes")));
+        let (words, rest) = bytes.as_chunks::<8>();
+        for c in words {
+            self.write_u64(u64::from_le_bytes(*c));
         }
-        for b in chunks.remainder() {
+        for b in rest {
             self.write_u64(*b as u64);
         }
     }
