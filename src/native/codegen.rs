@@ -1296,6 +1296,21 @@ impl<'p, M: Module> Gen<'p, M> {
         r
     }
 
+    /// Start the cold blocks of a path of their own at `start` (a 128-bit
+    /// path: small integers' code is the common one, and lays out without
+    /// it); `cold_since` ends them.
+    fn cold_from(b: &mut FunctionBuilder, start: ir::Block) -> usize {
+        b.set_cold_block(start);
+        b.func.dfg.num_blocks()
+    }
+
+    fn cold_since(b: &mut FunctionBuilder, from: usize) {
+        use cranelift_codegen::entity::EntityRef;
+        for k in from..b.func.dfg.num_blocks() {
+            b.set_cold_block(ir::Block::new(k));
+        }
+    }
+
     /// The number `x` (128 bits): a small integer if it fits in a word,
     /// else a new two-word object, as the runtime keeps numbers.
     fn box_wide(&mut self, b: &mut FunctionBuilder, st: &mut St, x: Value) -> Value {
@@ -1360,6 +1375,7 @@ impl<'p, M: Module> Gen<'p, M> {
         let v = if tag { b.ins().iadd_imm_s(v, 1) } else { v };
         b.ins().jump(done, &[BlockArg::Value(v)]);
         b.switch_to_block(wide_b);
+        let from = Self::cold_from(b, wide_b);
         let ns: Vec<Value> = xs.iter().map(|x| Self::wide_of(b, st, *x, false, slow_b)).collect();
         let (n, over) = wide(b, &ns);
         let boxed = b.create_block();
@@ -1370,6 +1386,7 @@ impl<'p, M: Module> Gen<'p, M> {
             self.drop_v(b, st, *d);
         }
         b.ins().jump(done, &[BlockArg::Value(n)]);
+        Self::cold_since(b, from);
         b.switch_to_block(slow_b);
         let mut args = xs.to_vec();
         args.extend(extra);
@@ -1497,6 +1514,7 @@ impl<'p, M: Module> Gen<'p, M> {
         // Within 128 bits: one division gives both results. A quotient
         // past them (`-2^127 / -1`) is the runtime's.
         b.switch_to_block(wide_b);
+        let from = Self::cold_from(b, wide_b);
         let n = Self::wide_of(b, st, x, false, slow);
         let d = Self::wide_of(b, st, y, false, slow);
         let zero = wide::zero(b);
@@ -1519,6 +1537,7 @@ impl<'p, M: Module> Gen<'p, M> {
             self.drop_v(b, st, *dr);
         }
         jump_done(b, v, have, o);
+        Self::cold_since(b, from);
         b.switch_to_block(slow);
         let s = self.call1(b, st, if rem { "ck_rem" } else { "ck_div" }, &[x, y, owner]);
         for d in drops {
@@ -1620,6 +1639,7 @@ impl<'p, M: Module> Gen<'p, M> {
         // Numbers within 128 bits compare as their values. `==` may be on
         // any values: the others are the runtime's.
         b.switch_to_block(wide_b);
+        let from = Self::cold_from(b, wide_b);
         let nx = Self::wide_of(b, st, x, eq, slow);
         let ny = Self::wide_of(b, st, y, eq, slow);
         let c = b.ins().icmp(cc, nx, ny);
@@ -1627,6 +1647,7 @@ impl<'p, M: Module> Gen<'p, M> {
             self.drop_v(b, st, *d);
         }
         b.ins().jump(done, &[BlockArg::Value(c)]);
+        Self::cold_since(b, from);
         b.switch_to_block(slow);
         let c2 = if eq {
             let name = if p == Op::Eq { "ck_eq" } else { "ck_ne" };
@@ -1758,6 +1779,7 @@ impl<'p, M: Module> Gen<'p, M> {
                 // Within 128 bits, `Nat`s' difference doesn't overflow;
                 // below zero, the runtime reports it.
                 b.switch_to_block(wide_b);
+                let from = Self::cold_from(b, wide_b);
                 let x = Self::wide_of(b, st, a[0], false, slow);
                 let y = Self::wide_of(b, st, a[1], false, slow);
                 let below = b.ins().icmp(IntCC::SignedLessThan, x, y);
@@ -1770,6 +1792,7 @@ impl<'p, M: Module> Gen<'p, M> {
                     self.drop_v(b, st, *d);
                 }
                 b.ins().jump(done, &[BlockArg::Value(n)]);
+                Self::cold_since(b, from);
                 b.switch_to_block(slow);
                 let s = self.call1(b, st, "ck_natsub", &[a[0], a[1], o]);
                 for d in drops {
