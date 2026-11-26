@@ -1,4 +1,4 @@
-# An arm no value reaches never runs (proposed): what it would have to
+# An arm no value reaches never runs: what it would have to
 # prove holds, and its calls are not recursion. Each arm below gets only
 # W021, no proof error and no E0301.
 module unreachable_arm_never_runs
