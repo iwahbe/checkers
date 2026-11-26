@@ -3,6 +3,6 @@ error[E0201]: `Encoding.Unit` must be `Int`, or a refinement of it, but `String`
    |
 13 |     type Unit = String
    |     ^^^^^^^^^^^^^^^^^^ `Unit` is `String` here
-   = help: give `Unit` the type `Int`, or a refinement of it such as `(n~Int, …)`
+   = help: give `Unit` the type `Int`, or a refinement of it
 
 class_type_base_not_base.ck: 1 error, 0 warnings

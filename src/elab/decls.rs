@@ -66,6 +66,7 @@ impl Elab {
         self.decl_spans.insert(name.to_string(), m.decls.iter().zip(&ids).map(|(d, id)| (d.span, *id)).collect());
         self.note_decls(name, m, &ids);
         self.phase_type_params(m, &ids);
+        self.register_module_type_bases();
         // Declarations in the order of what they use, not of the file (D65).
         let dicts: Vec<usize> =
             self.decl_origin.iter().enumerate().filter(|(_, o)| matches!(o, super::classes::Origin::InstDict(_))).map(|(k, _)| k).collect();
@@ -2400,8 +2401,8 @@ impl Elab {
                     self.module_fns.push(*did);
                     self.assume_pres(&mut sig);
                     // A class's type's base type at an instance (#360).
-                    if let Some(((m, c), k, x, own)) = self.class_type_bases_at.get(&name.name).cloned() {
-                        if !self.class_type_base_holds(&sig.cx, &name.name, (&m, &c), k, &x, own, ensures.span) || own {
+                    if let Some((bases, x, own)) = self.class_type_bases_at.get(&name.name).cloned() {
+                        if !self.class_type_base_holds(&sig.cx, &name.name, &bases, &x, own, ensures.span) || own {
                             self.cur_fn = None;
                             continue;
                         }
@@ -2469,8 +2470,8 @@ impl Elab {
             let Some(sig) = sigs.get(&k) else { continue };
             // A class's type's predicate at an instance whose type isn't its
             // base type (#360): reported by the base's check, not stated.
-            if let Some(((m, c), j, x, _)) = self.class_type_bases_at.get(&name.name).cloned() {
-                if !self.class_type_base_holds(&sig.cx, &name.name, (&m, &c), j, &x, false, ensures.span) {
+            if let Some((bases, x, _)) = self.class_type_bases_at.get(&name.name).cloned() {
+                if !self.class_type_base_holds(&sig.cx, &name.name, &bases, &x, false, ensures.span) {
                     continue;
                 }
             }

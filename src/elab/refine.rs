@@ -147,7 +147,7 @@ impl Elab {
 
     /// The same class's type with a base type (#360), at the same dictionary.
     pub fn same_based(&self, a: &Val, b: &Val) -> bool {
-        self.based_class_type(a) && self.based_class_type(b) && self.same_type(&self.force(a), &self.force(b))
+        (self.based_class_type(a) || self.based_class_type(b)) && self.same_type(&self.force(a), &self.force(b))
     }
 
     /// Is `v` a refinement alias written directly (not reached through a meta)?

@@ -347,6 +347,8 @@ pub struct Builder<'a> {
     /// The type equations' representatives in scope (#209).
     reps: Vec<(Val, Val)>,
     in_assoc_rep: bool,
+    /// Classes' types whose base types' sorts are being worked out (#360).
+    in_base: Vec<(ConId, usize)>,
     pub shown: Vec<(String, String)>,
     string_vars: Vec<String>,
     array_vars: Vec<String>,
@@ -396,6 +398,7 @@ impl<'a> Builder<'a> {
             ctx_src: Vec::new(),
             reps: Vec::new(),
             in_assoc_rep: false,
+            in_base: Vec::new(),
             shown: Vec::new(),
             tested: BTreeSet::new(),
             string_vars: Vec::new(),
@@ -873,8 +876,17 @@ impl<'a> Builder<'a> {
             return s;
         }
         // A class's type with a base type (#360): its values are the base's.
-        if let Some(b) = self.e.g.type_bases.get(&(c, i)).cloned() {
-            if let Ok(s) = self.sort_of(&[], &b) {
+        if let Some(b) = self.e.g.type_bases.get(&(c, i)).and_then(|bs| bs.first()).cloned().filter(|_| !self.in_base.contains(&(c, i))) {
+            self.in_base.push((c, i));
+            // Over the class's parameters (of sorts `args`) and a
+            // dictionary, whose types are their own sorts.
+            let ty = self.e.g.cons[c.0 as usize].ty;
+            let mut env: Vec<Ent> = args.iter().map(|a| Ent::Ty(a.clone())).collect();
+            let dict = self.with_dict_types(ty, args.clone());
+            env.push(Ent::Term(String::new(), Sort::Data(ty, dict)));
+            let s = if env.len() == self.e.g.arity_ty(ty) + 1 { self.sort_of(&env, &b).ok() } else { None };
+            self.in_base.retain(|k| *k != (c, i));
+            if let Some(s) = s {
                 return s;
             }
         }
@@ -1004,6 +1016,13 @@ impl<'a> Builder<'a> {
     fn dict_types(&self, c: ConId) -> usize {
         let n = self.e.g.cons[c.0 as usize].fields.len();
         (0..n).take_while(|&k| self.e.g.is_dict_type_field(c, k)).count()
+    }
+
+    /// How many type parameters the class of dictionary constructor `c`
+    /// has: its dictionary's sort's first arguments (its types' follow).
+    fn class_params(&self, c: ConId) -> usize {
+        let ty = self.e.g.cons[c.0 as usize].ty;
+        self.e.g.tys[ty.0 as usize].params.iter().filter(|(_, t)| self.is_type(t)).count()
     }
 
     /// The sort of a class's type, field `i` of a dictionary of sort
@@ -1691,17 +1710,28 @@ impl<'a> Builder<'a> {
         let Val::Neutral(h, sp) = &v else { return Vec::new() };
         let Some(crate::core::Elim::Field(c, i)) = sp.last() else { return Vec::new() };
         // Its base type's refinement (#360): `Nat`'s, for `i~Nat`.
-        let mut out = match self.e.g.type_bases.get(&(*c, *i)).cloned() {
-            Some(b) => self.alias_terms(&[], &b, x, xs),
-            None => Vec::new(),
-        };
+        let mut out = Vec::new();
+        let bases = self.e.g.type_bases.get(&(*c, *i)).cloned().unwrap_or_default();
+        if !bases.is_empty() {
+            // At the class's arguments and the dictionary in scope.
+            let base = Val::Neutral(h.clone(), Rc::new(sp[..sp.len() - 1].to_vec()));
+            let dict = quote(&self.e.g, n, &base);
+            if let Ok((dt, ds @ Sort::Data(_, _))) = self.term(env, &dict) {
+                let Sort::Data(_, sargs) = &ds else { unreachable!() };
+                let mut inner: Vec<Ent> = sargs.iter().take(self.class_params(*c)).map(|s| Ent::Ty(s.clone())).collect();
+                inner.push(Ent::Term(dt, ds.clone()));
+                for b in &bases {
+                    out.extend(self.alias_terms(&inner, b, x, xs));
+                }
+            }
+        }
         let Some(preds) = self.e.class_type_preds.get(&(*c, *i)).cloned() else { return out };
         let base = Val::Neutral(h.clone(), Rc::new(sp[..sp.len() - 1].to_vec()));
         let dict = quote(&self.e.g, n, &base);
         let Ok((dt, ds)) = self.term(env, &dict) else { return Vec::new() };
         let Sort::Data(_, sargs) = &ds else { return Vec::new() };
         // The class's parameters, its dictionary, the value.
-        let mut inner: Vec<Ent> = sargs.iter().map(|s| Ent::Ty(s.clone())).collect();
+        let mut inner: Vec<Ent> = sargs.iter().take(self.class_params(*c)).map(|s| Ent::Ty(s.clone())).collect();
         inner.push(Ent::Term(dt, ds.clone()));
         inner.push(Ent::Term(x.to_string(), xs.clone()));
         for p in preds {
