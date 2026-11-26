@@ -115,8 +115,15 @@ impl Elab {
             return mt;
         }
         // A name where a type is expected is the type, not a record's
-        // constructor of the same name (`String`, #170).
-        if matches!(exp, Val::Univ(_)) && matches!(e.kind, ExprKind::Con(_)) && !cx.type_pos {
+        // constructor of the same name (`String`, #170), applied too
+        // (`Box b`): no constructor builds a type.
+        if matches!(exp, Val::Univ(_)) && !cx.type_pos && {
+            let mut h = e;
+            while let ExprKind::App(f, _) = &h.kind {
+                h = f;
+            }
+            matches!(h.kind, ExprKind::Con(_))
+        } {
             cx.type_pos = true;
             let t = self.check_inner(cx, e, expected, tail);
             cx.type_pos = false;
