@@ -55,7 +55,7 @@ src/stage.rs         staging (§8.9): expands compile-time functions before eras
 src/native/ir.rs     erasure: core terms → runtime code (§13.1); a one-field type is its field, type arguments' layouts or descriptors (#170)
 src/native/inline.rs small functions inlined at their calls; a `match` on one's result pushed into branches, resolved at constructors; `Ir::At` names the code's definition; an optimization (§14)
 src/native/lower.rs  closure conversion: runtime code → first-order functions (§14)
-src/native/tailrec.rs recursion made tail recursion before reference counting: `f.dps` (a constructor around the call), `f.acc` (`+`, `*`, `++` after it); an optimization (§14)
+src/native/tailrec.rs recursion made tail recursion before reference counting: `f.dps` (a constructor around the call), `f.acc` (`+`, `*` after it; `++` after it, accumulated as the type's `++` copies: a list in front, other pieces in a list appended at once); an optimization (§14)
 src/native/rc.rs     reference counting, Perceus style: dup/drop, borrowing, reuse (D74)
 src/native/codegen.rs first-order code → Cranelift (JIT and object files)
 src/native/eval.rs   compile-time evaluation: `check` and staging, one in-memory module per program (D80)
@@ -88,6 +88,7 @@ tests/packages.rs    packages end to end with local git repositories (M14)
 tests/parking.rs     waiting behaviours hold no thread, at several thread counts (M16)
 tests/stdin.rs       standard input that fails to read: `terminal.read_line` gives the error
 tests/scaling.rs     checking time grows with the program, not its square: long operator chains
+tests/tailrec_scaling.rs `++` after a recursive call (`f.acc`) runs in time linear in the result: strings, bytes, arrays, lists
 tests/deep_values.rs a failed `check` shows a value nested a million deep (its golden output would be megabytes)
 tests/std.rs         standard library on disk: `CHECKERS_STD`, edits without rebuilding, E0223/E0361, §16.3 lists every builtin
 tests/golden.rs      golden test runner (tests/parse, check, types, stage, run, stress, fmt, tool, doc; examples; tools; repository formatting)
