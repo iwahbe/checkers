@@ -782,7 +782,7 @@ impl Elab {
             for ((name, have), (want, shown)) in params.iter().zip([(args, "List String"), (system, "System")]) {
                 if unify(&self.g, lvl, &want, have).is_err() {
                     let is = self.show_val(cx, have);
-                    let why = if is == "Bool" { " (a name alone among the constraints is a condition, so a `Bool`)" } else { "" };
+                    let why = if crate::core::plain(&is) == "Bool" { " (a name alone among the constraints is a condition, so a `Bool`)" } else { "" };
                     wrong.push(format!("`{name}` is `{is}`, not `{shown}`{why}"));
                 } else if self.has_precondition(have) {
                     wrong.push(format!("`{name}` has a precondition, which the runtime can't prove"));
