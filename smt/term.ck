@@ -127,14 +127,28 @@ export enum Term
 
 # ── Definitions and axioms ───────────────────────────────────────────────────
 
-# A recursive definition: `define-fun-rec`. `terminates` is the caller's
-# promise that evaluating it terminates (trusted only for counterexamples).
+# A definition: `define-fun-rec`, a group of `define-funs-rec`, or
+# `define-fun` (`kind`). `terminates` is the caller's promise that
+# evaluating it terminates (trusted only for counterexamples).
 export record Def
     name~Name
     params~List (Name, Sort)
     result~Sort
     body~Term
     terminates~Bool
+    kind~DefKind
+
+# Whether a definition's body may apply the functions its own command
+# defines.
+#
+# A `Plain` definition (`define-fun`) can't: its body is checked in the
+# signature before its command (`check_bodies`), so every function it
+# applies is numbered below its own. It needs no termination mark:
+# evaluating it unfolds only earlier definitions, so it ends whenever they
+# do.
+export enum DefKind
+    Recursive
+    Plain
 
 # A universal formula: `forall vars, body`. Each of `patterns` is a list of
 # terms that must all match for E-matching to make an instance.
@@ -151,15 +165,20 @@ export record Axiom
     patterns~List (List Term)
 
 # One step of building a problem, as SMT-LIB writes it.
+#
+# An assertion may have a name (`(assert (! t :named n))`), for the unsat
+# core: the names of assertions that contradict each other. A name is only a
+# label: the assertion is a fact or axiom like any other, and no two
+# assertions of a context have the same name (`names_fresh`).
 export enum Command
     DeclareSort decl       : decl~SortDecl
     DeclareDatatypes ds    : ds~List Datatype
     DeclareFun f           : f~FunDecl
-    # `define-fun-rec` (`single`) or `define-funs-rec`: definitions that may
-    # use each other.
+    # `define-fun-rec` or `define-fun` (`single`), or `define-funs-rec`:
+    # definitions that may use each other, if they are `Recursive`.
     DefineFuns single defs : single~Bool, defs~List Def
-    Assume a               : a~Axiom
-    Assert t               : t~Term
+    Assume a name          : a~Axiom, name~Option Name
+    Assert t name          : t~Term, name~Option Name
 
 # ── Signatures ───────────────────────────────────────────────────────────────
 
@@ -185,8 +204,8 @@ export fn extend sig c -> r : sig~Sig, c~Command, r~Sig
         DeclareDatatypes ds -> Sig sig.sorts (sig.datatypes ++ array.from_list ds) sig.funs
         DeclareFun f        -> Sig sig.sorts sig.datatypes (sig.funs ++ array.from_list [f])
         DefineFuns _ ds     -> Sig sig.sorts sig.datatypes (sig.funs ++ array.from_list (def_funs ds))
-        Assume _            -> sig
-        Assert _            -> sig
+        Assume _ _          -> sig
+        Assert _ _          -> sig
 
 # The signature after all of `cs`.
 export fn extend_all sig cs -> r : sig~Sig, cs~List Command, r~Sig
@@ -215,6 +234,8 @@ export enum Problem
     Expected want found : want~Sort, found~Sort
     # A pattern without terms.
     NoPattern
+    # A name that an assertion before already has.
+    NamedTwice n        : n~Name
 
 # ── Well-formed sorts ────────────────────────────────────────────────────────
 
@@ -448,12 +469,20 @@ fn check_sigs sig ds -> r : sig~Sig, ds~List Def, r~Result Unit Problem
             let _ = try check_sort sig 0 d.result
             check_sigs sig rest
 
-fn check_bodies sig ds -> r : sig~Sig, ds~List Def, r~Result Unit Problem
+# Each body checked where it may be: in `big`, which declares the
+# definitions too, or in `sig`, which doesn't, for a `Plain` one.
+fn check_bodies sig big ds -> r : sig~Sig, big~Sig, ds~List Def, r~Result Unit Problem
     match ds
         []        -> Ok ()
         d :: rest ->
-            let _ = try check_term sig (binder_env d.params) d.body d.result
-            check_bodies sig rest
+            let _ = try check_term (body_sig sig big d) (binder_env d.params) d.body d.result
+            check_bodies sig big rest
+
+# Where `d`'s body is checked: `big`, or `sig` if it is `Plain`.
+fn body_sig sig big d -> r : sig~Sig, big~Sig, d~Def, r~Sig
+    match d.kind
+        Recursive -> big
+        Plain     -> sig
 
 fn check_patterns sig env ps -> r : sig~Sig, env~List Sort, ps~List (List Term), r~Result Unit Problem
     match ps
@@ -478,13 +507,13 @@ export fn check_command sig c -> r : sig~Sig, c~Command, r~Result Unit Problem
                     check_sort sig 0 f.result
         DefineFuns _ ds     ->
             let _ = try check_sigs sig ds
-            check_bodies (extend sig c) ds
-        Assume a            ->
+            check_bodies sig (extend sig c) ds
+        Assume a _          ->
             let _ = try check_sorts sig 0 (var_sorts a.vars)
             let env = binder_env a.vars
             let _ = try check_term sig env a.body Bool
             check_patterns sig env a.patterns
-        Assert t            -> check_term sig [] t Bool
+        Assert t _          -> check_term sig [] t Bool
 
 # Whether each of `cs` is well-formed after `sig` and the commands before it.
 export fn check_all sig cs -> r : sig~Sig, cs~List Command, r~Result Unit Problem
@@ -494,13 +523,62 @@ export fn check_all sig cs -> r : sig~Sig, cs~List Command, r~Result Unit Proble
             let _ = try check_command sig c
             check_all (extend sig c) rest
 
+# ── Names of assertions ──────────────────────────────────────────────────────
+
+# The name `cmd` gives an assertion, if it is an assertion with a name.
+export transparent fn command_name cmd -> r : cmd~Command, r~Option Name
+    match cmd
+        Assume _ n -> n
+        Assert _ n -> n
+        _          -> None
+
+# Whether `cmd`'s name, if it has one, isn't one of `seen`.
+export transparent fn name_fresh seen cmd -> r : seen~List Name, cmd~Command, r~Bool
+    match command_name cmd
+        Some n -> not (list.contains seen n)
+        None   -> True
+
+# `seen` with `cmd`'s name, if it has one, in front.
+export transparent fn with_name seen cmd -> r : seen~List Name, cmd~Command, r~List Name
+    match command_name cmd
+        Some n -> n :: seen
+        None   -> seen
+
+# Whether each name `cs` gives is new: not one of `seen`, nor given before
+# it in `cs`.
+export transparent fn names_fresh seen cs -> r : seen~List Name, cs~List Command, r~Bool
+    match cs
+        []        -> True
+        c :: rest -> name_fresh seen c and names_fresh (with_name seen c) rest
+
+# `seen` with the names `cs` gives in front, the last first.
+export transparent fn names_after seen cs -> r : seen~List Name, cs~List Command, r~List Name
+    match cs
+        []        -> seen
+        c :: rest -> names_after (with_name seen c) rest
+
+# Whether `cmd`'s name is new after the names `seen`, and if not, why.
+fn check_name seen cmd -> r : seen~List Name, cmd~Command, r~Result Unit Problem, (r == Ok ()) == name_fresh seen cmd
+    match command_name cmd
+        Some n -> if list.contains seen n then Err (NamedTwice n) else Ok ()
+        None   -> Ok ()
+
+# Names given one command after another are new if they are new in the
+# first ones, then in the rest after them.
+lemma fresh_append seen xs ys : seen~List Name, xs~List Command, ys~List Command
+    ensures names_fresh seen (xs ++ ys) == (names_fresh seen xs and names_fresh (names_after seen xs) ys)
+    proof
+        match xs
+            []        -> auto
+            x :: rest -> have fresh_append (with_name seen x) rest ys
+
 # ── Contexts ─────────────────────────────────────────────────────────────────
 
 # A well-formed problem without its goal: its commands in order, and the
-# signature they declare.
+# signature they declare. No two of its assertions have the same name.
 export abstract record Context
     commands~List Command
-    sig~Sig, check_all empty_sig commands == Ok (), sig == extend_all empty_sig commands
+    sig~Sig, check_all empty_sig commands == Ok (), sig == extend_all empty_sig commands, names_fresh [] commands
 
 # The context with nothing in it.
 export fn empty -> c : c~Context
@@ -509,6 +587,10 @@ export fn empty -> c : c~Context
 # The commands, in order.
 export fn commands c -> cs : c~Context, cs~List Command
     c.commands
+
+# The names of the context's assertions, in order. No two are the same.
+export fn names c -> ns : c~Context, ns~List Name
+    list.reverse (names_after [] c.commands)
 
 # What the commands declare.
 export fn signature c -> s : c~Context, s~Sig
@@ -532,13 +614,16 @@ lemma extend_append sig xs ys : sig~Sig, xs~List Command, ys~List Command
             []        -> auto
             x :: rest -> have extend_append (extend sig x) rest ys
 
-# `c` with `cmd` after its commands, if `cmd` is well-formed there.
+# `c` with `cmd` after its commands, if `cmd` is well-formed there and
+# its name, if it has one, is new.
 # Appending copies the commands, so `context` of n commands takes time
 # quadratic in n; `prepare` (#86) will want better.
 export fn add c cmd -> r : c~Context, cmd~Command, r~Result Context Problem, added c cmd r
     let _ = try check_command c.sig cmd
+    let _ = try check_name (names_after [] c.commands) cmd
     have check_append empty_sig c.commands [cmd]
     have extend_append empty_sig c.commands [cmd]
+    have fresh_append [] c.commands [cmd]
     Ok (Context (c.commands ++ [cmd]) (extend c.sig cmd))
 
 # Whether `r` is `c` with `cmd` after its commands, if it is a context.
@@ -590,7 +675,7 @@ export fn check_terms c ts -> r : c~Context, ts~List Term, r~Result Unit Problem
 fn asserts ts -> cs : ts~List Term, cs~List Command
     match ts
         []        -> []
-        t :: rest -> Assert t :: asserts rest
+        t :: rest -> Assert t None :: asserts rest
 
 lemma asserts_ok c ts : c~Context, ts~List Term, facts_ok c ts
     ensures check_all c.sig (asserts ts) == Ok () and extend_all c.sig (asserts ts) == c.sig
@@ -599,11 +684,20 @@ lemma asserts_ok c ts : c~Context, ts~List Term, facts_ok c ts
             []        -> auto
             _ :: rest -> have asserts_ok c rest
 
-# `c` with the facts `ts` added after its commands.
+lemma asserts_fresh seen ts : seen~List Name, ts~List Term
+    ensures names_fresh seen (asserts ts)
+    proof
+        match ts
+            []        -> auto
+            _ :: rest -> have asserts_fresh seen rest
+
+# `c` with the facts `ts` added after its commands, without names.
 export fn with_facts c ts -> r : c~Context, ts~List Term, facts_ok c ts, r~Context
     have asserts_ok c ts
     have check_append empty_sig c.commands (asserts ts)
     have extend_append empty_sig c.commands (asserts ts)
+    have fresh_append [] c.commands (asserts ts)
+    have asserts_fresh (names_after [] c.commands) ts
     Context (c.commands ++ asserts ts) c.sig
 
 # The ground facts, in order.
@@ -612,9 +706,9 @@ export fn facts c -> ts : c~Context, ts~List Term
 
 fn facts_in cs -> ts : cs~List Command, ts~List Term
     match cs
-        []               -> []
-        Assert t :: rest -> t :: facts_in rest
-        _ :: rest        -> facts_in rest
+        []                 -> []
+        Assert t _ :: rest -> t :: facts_in rest
+        _ :: rest          -> facts_in rest
 
 # The axioms, in order.
 export fn axioms c -> r : c~Context, r~List Axiom
@@ -622,9 +716,9 @@ export fn axioms c -> r : c~Context, r~List Axiom
 
 fn axioms_in cs -> r : cs~List Command, r~List Axiom
     match cs
-        []               -> []
-        Assume a :: rest -> a :: axioms_in rest
-        _ :: rest        -> axioms_in rest
+        []                 -> []
+        Assume a _ :: rest -> a :: axioms_in rest
+        _ :: rest          -> axioms_in rest
 
 # The recursive definitions, in order, each with its function's number.
 export fn defs c -> r : c~Context, r~List (Nat, Def)
@@ -792,8 +886,8 @@ lemma facts_checked sig cmds : sig~Sig, cmds~List Command, check_all sig cmds ==
                 have check_command sig cmd == Ok ()
                 have facts_checked (extend sig cmd) rest
                 match cmd
-                    Assert t -> have sort_of_extend_all sig rest [] t Bool
-                    _        -> auto
+                    Assert t _ -> have sort_of_extend_all sig rest [] t Bool
+                    _          -> auto
 
 lemma facts_ok_sig c ts : c~Context, ts~List Term, facts_in_sig c.sig ts
     ensures facts_ok c ts
@@ -833,11 +927,11 @@ lemma axioms_checked sig cmds : sig~Sig, cmds~List Command, check_all sig cmds =
                 have check_command sig cmd == Ok ()
                 have axioms_checked (extend sig cmd) rest
                 match cmd
-                    Assume a ->
+                    Assume a _ ->
                         have check_sorts sig 0 (var_sorts a.vars) == Ok ()
                         have check_term sig (binder_env a.vars) a.body Bool == Ok ()
                         have sort_of_extend_all sig rest (binder_env a.vars) a.body Bool
-                    _        -> auto
+                    _          -> auto
 
 lemma axioms_ok_sig c xs : c~Context, xs~List Axiom, axioms_in_sig c.sig xs
     ensures axioms_ok c xs
@@ -943,10 +1037,10 @@ export transparent fn command_ok sig cmd -> r : sig~Sig, cmd~Command, r~Bool
         DeclareDatatypes ds -> datatypes_ok sig ds
         DeclareFun f        -> sorts_ok sig 0 f.params and sort_ok sig 0 f.result
         DefineFuns _ ds     -> defs_ok sig ds
-        Assume a            ->
+        Assume a _          ->
             sorts_ok sig 0 (var_sorts a.vars) and heads_ok sig a.body and patterns_heads_ok sig a.patterns
                 and scoped (list.length a.vars) a.body and patterns_scoped (list.length a.vars) a.patterns
-        Assert t            -> heads_ok sig t and scoped 0 t
+        Assert t _          -> heads_ok sig t and scoped 0 t
 
 export transparent fn commands_ok sig cmds -> r : sig~Sig, cmds~List Command, r~Bool
     match cmds
@@ -1193,11 +1287,11 @@ lemma command_grow sig a b c cmd : sig~Sig, a~Array SortDecl, b~Array Datatype, 
                 have sorts_ok_grow sig a b c 0 f.params
                 have sort_ok_grow sig a b c 0 f.result
             DefineFuns _ ds     -> have defs_grow sig a b c ds
-            Assume x            ->
+            Assume x _          ->
                 have sorts_ok_grow sig a b c 0 (var_sorts x.vars)
                 have heads_grow sig a b c x.body
                 have patterns_heads_grow sig a b c x.patterns
-            Assert t            -> have heads_grow sig a b c t
+            Assert t _          -> have heads_grow sig a b c t
 
 lemma command_extend sig cmd x : sig~Sig, cmd~Command, x~Command, command_ok sig x
     ensures command_ok (extend sig cmd) x
@@ -1268,7 +1362,7 @@ lemma check_datatypes_ok sig ds : sig~Sig, ds~List Datatype, check_datatypes sig
 # bodies in `big`, which `sig` grows into.
 lemma check_defs_ok sig big a b c ds : sig~Sig, big~Sig, a~Array SortDecl, b~Array Datatype, c~Array FunDecl,
                                        big == grow sig a b c, ds~List Def,
-                                       check_sigs sig ds == Ok (), check_bodies big ds == Ok ()
+                                       check_sigs sig ds == Ok (), check_bodies sig big ds == Ok ()
     ensures defs_ok big ds
     proof
         match ds
@@ -1278,10 +1372,14 @@ lemma check_defs_ok sig big a b c ds : sig~Sig, big~Sig, a~Array SortDecl, b~Arr
                 have sorts_ok_grow sig a b c 0 (var_sorts d.params)
                 have check_sort sig 0 d.result == Ok ()
                 have sort_ok_grow sig a b c 0 d.result
-                have check_term_heads big (binder_env d.params) d.body d.result
-                have check_term_scoped big (binder_env d.params) d.body d.result
+                let at = body_sig sig big d
+                have check_term_heads at (binder_env d.params) d.body d.result
+                have check_term_scoped at (binder_env d.params) d.body d.result
                 have binder_env_length d.params
                 have check_defs_ok sig big a b c rest
+                match d.kind
+                    Recursive -> auto
+                    Plain     -> have heads_grow sig a b c d.body
 
 lemma check_patterns_ok sig env ps : sig~Sig, env~List Sort, ps~List (List Term), check_patterns sig env ps == Ok ()
     ensures patterns_heads_ok sig ps
@@ -1317,14 +1415,14 @@ lemma checked_command_ok sig cmd : sig~Sig, cmd~Command, check_command sig cmd =
             DefineFuns _ ds     ->
                 have extend sig cmd == grow sig no_sorts no_dts (array.from_list (def_funs ds))
                 have check_defs_ok sig (extend sig cmd) no_sorts no_dts (array.from_list (def_funs ds)) ds
-            Assume x            ->
+            Assume x _          ->
                 have check_sorts_ok sig 0 (var_sorts x.vars)
                 have check_term_heads sig (binder_env x.vars) x.body Bool
                 have check_patterns_ok sig (binder_env x.vars) x.patterns
                 have check_term_scoped sig (binder_env x.vars) x.body Bool
                 have check_patterns_scoped sig (binder_env x.vars) x.patterns
                 have binder_env_length x.vars
-            Assert t            ->
+            Assert t _          ->
                 have check_term_heads sig [] t Bool
                 have check_term_scoped sig [] t Bool
 

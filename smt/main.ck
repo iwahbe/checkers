@@ -62,8 +62,9 @@ fn answer_stdin io -> code : io~Term, code~ExitCode
         Ok src ->
             match smtlib.parse src
                 Ok q  ->
-                    let _ = terminal.write_bytes (reply.write src q (reply.answer q)) io
-                    if reply.has_error q then Failure 1 else Success
+                    let a = reply.answer q
+                    let _ = terminal.write_bytes (reply.write src q a) io
+                    if reply.has_error q a then Failure 1 else Success
                 Err e ->
                     let _ = terminal.write_bytes (error_line src e) io
                     Failure 1

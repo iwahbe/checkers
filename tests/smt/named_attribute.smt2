@@ -1,0 +1,5 @@
+(set-logic ALL)
+(declare-const x Int)
+(assert (! (> x 0) :weight 3))
+(assert (not (= x 1)))
+(check-sat)

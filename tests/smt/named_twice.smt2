@@ -1,0 +1,7 @@
+(set-option :produce-unsat-cores true)
+(set-logic ALL)
+(declare-const x Int)
+(assert (! (> x 0) :named |fact.0|))
+(assert (! (< x 9) :named fact.0))
+(assert (not (= x 1)))
+(check-sat)

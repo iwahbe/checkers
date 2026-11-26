@@ -1,0 +1,5 @@
+(set-logic ALL)
+(define-fun pos ((n Int)) Bool (+ n 1))
+(declare-const x Int)
+(assert (not (pos x)))
+(check-sat)

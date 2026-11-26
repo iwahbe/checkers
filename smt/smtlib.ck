@@ -2,7 +2,8 @@
 # (SPEC §7.3): `parse` reads a query into a `Query`, `render` writes one.
 #
 # A query is options, `(set-logic …)`, commands that build a `Context`, the
-# goal asserted negated, `(check-sat)`, and optionally `(get-value …)`.
+# goal asserted negated, `(check-sat)`, and optionally `(get-unsat-core)`
+# and `(get-value …)`, in that order.
 # Anything outside the subset is an `Error` that says where and what.
 #
 # `render (parse q)` is `q` again, except for white space and comments
@@ -21,8 +22,10 @@ import term (FunKind, Declared, Constant, Defined, FunDecl)
 import term (Op, Not, And, Or, Implies, Ite, Eq, Add, Sub, Neg, Mul, Div, Mod, Lt, Le, Gt, Ge, Select, Store, MapAdd)
 import term (SeqLen, SeqNth, SeqUnit, SeqConcat, SeqExtract)
 import term (Head, Fun, Con, Is, Sel, Num, Boolean, Prim, ConstArr, EmptySeq, Term, Var, App, Let, Lam)
-import term (Def, Axiom, Command, DeclareSort, DeclareDatatypes, DeclareFun, DefineFuns, Assume, Assert)
+import term (Def, DefKind, Recursive, Plain, Axiom, Command, DeclareSort, DeclareDatatypes, DeclareFun, DefineFuns, Assume)
+import term (Assert)
 import term (Sig, Context, Problem, BadSort, NoCtors, BadApply, Unbound, EmptyLet, ConstantParams, Expected, NoPattern)
+import term (NamedTwice)
 
 # ── Errors ───────────────────────────────────────────────────────────────────
 
@@ -199,7 +202,8 @@ export record Opt
 
 # A query: options, the logic, the context, and the goal, which the query
 # asserts negated: it asks whether the goal follows from the context.
-# `values` are the terms `(get-value …)` asks for, if it does.
+# `core` is whether `(get-unsat-core)` follows `(check-sat)`, and `values`
+# are the terms `(get-value …)` asks for after it, if it does.
 #
 # `goal_at` is how many of the context's commands came before the negated
 # goal; the assertions after it are facts of the context like any other.
@@ -212,6 +216,7 @@ export record Query
     context~Context
     goal~Term, term.fact_ok context goal
     goal_at~Nat, goal_at <= list.length (term.commands context)
+    core~Bool
     values~Option (List Term), values_ok context values
 
 export fn values_ok c vs -> r : c~Context, vs~Option (List Term), r~Bool
@@ -333,7 +338,7 @@ fn prim_op name n -> r : name~Name, n~Nat, r~Option Op
 fn outside name -> r : name~Name, r~Bool
     name == b"xor" or name == b"distinct" or name == b"exists" or name == b"abs"
         or name == b"/" or name == b"to_real" or name == b"to_int" or name == b"match"
-        or name == b"define-fun" or name == b"declare-datatype" or name == b"push" or name == b"pop"
+        or name == b"declare-datatype" or name == b"push" or name == b"pop"
         or name == b"check-sat-assuming" or name == b"get-model" or name == b"exit"
 
 # Words with a meaning of their own, which can't name anything.
@@ -436,7 +441,7 @@ fn term_from src sig vars e -> r : src~Bytes, sig~Sig, vars~List (Name, Sort), e
             else if n == b"forall" or n == b"exists"
                 Err (Error hp (b"a quantifier is in the subset `ckc` writes only as a whole assertion, `(assert (forall …))`"))
             else if n == b"!"
-                Err (Error hp b"`!` is in the subset `ckc` writes only around a `forall`'s body")
+                Err (Error hp b"`!` is in the subset `ckc` writes only around a `forall`'s body, or around an assertion to name it, `(assert (! TERM :named NAME))`")
             else if n == b"as"
                 let h = try qualified_head src sig args p
                 applied src sig h [] [] p
@@ -670,7 +675,7 @@ fn flush src c held -> r : src~Bytes, c~Context, held~Option (Held src), r~Resul
     match held
         None   -> Ok c
         Some h ->
-            let d = try add_command src c (Assert (App (Prim Not) [h.goal])) h.at
+            let d = try add_command src c (Assert (App (Prim Not) [h.goal]) None) h.at
             add_commands src d (list.reverse h.after)
 
 # Read a query.
@@ -703,9 +708,13 @@ fn body src es opts logic c held broken -> r : src~Bytes, es~List (SExpr src), o
             match e
                 Node [Leaf (Symbol n False) _] p if n == b"check-sat" ->
                     finish src rest opts logic c held broken p
+                Node [Leaf (Symbol n False) _, Node [Leaf (Symbol bang False) _, t, Leaf (Keyword k) _, Leaf (Symbol name _) np] _] _ if n == b"assert" and bang == b"!" and k == b"named" ->
+                    let cmd = try named src (term.signature c) t name
+                    let (d, h) = try keep src c held cmd np
+                    body src rest opts logic d h broken
                 Node [Leaf (Symbol n False) _, Node (Leaf (Symbol f False) _ :: q) fp] p if n == b"assert" and f == b"forall" ->
                     let a = try axiom_from src (term.signature c) q fp
-                    let (d, h) = try keep src c held (Assume a) p
+                    let (d, h) = try keep src c held (Assume a None) p
                     body src rest opts logic d h broken
                 Node [Leaf (Symbol n False) _, t] p if n == b"assert" ->
                     let tm = try term_of src (term.signature c) [] t Bool b"an assertion"
@@ -714,7 +723,7 @@ fn body src es opts logic c held broken -> r : src~Bytes, es~List (SExpr src), o
                             let d = try flush src c held
                             body src rest opts logic d (Some (Held g p [])) None
                         None   ->
-                            let (d, h) = try keep src c held (Assert tm) p
+                            let (d, h) = try keep src c held (Assert tm None) p
                             body src rest opts logic d h broken
                 Node (Leaf (Symbol n False) hp :: args) p ->
                     let d = try flush src c held
@@ -725,7 +734,8 @@ fn body src es opts logic c held broken -> r : src~Bytes, es~List (SExpr src), o
                     Err (Error (at e) b"expected a command")
 
 # `(check-sat)` at `p`: the goal held back is the goal, and the assertions
-# after it are facts; then `(get-value …)` may follow.
+# after it are facts; then `(get-unsat-core)` and `(get-value …)` may follow,
+# in that order.
 fn finish src rest opts logic c held broken p -> r : src~Bytes, rest~List (SExpr src), opts~List Opt, logic~Name,
                                                      c~Context, held~Option (Held src),
                                                      broken~Option (q~Nat, q < len src), p~Nat, p < len src,
@@ -737,19 +747,39 @@ fn finish src rest opts logic c held broken p -> r : src~Bytes, rest~List (SExpr
             match term.check_fact d h.goal
                 Err pr -> Err (Error h.at (b"the goal: " ++ problem_message (term.signature d) pr))
                 Ok ()  ->
-                    match rest
-                        []     -> Ok (Query opts logic d h.goal k None)
-                        [Node [Leaf (Symbol n False) _, Node ts tp] _] if n == b"get-value" ->
+                    let (core, more) = unsat_core rest
+                    match more
+                        []     -> Ok (Query opts logic d h.goal k core None)
+                        Node [Leaf (Symbol n False) _, Node ts tp] _ :: after if n == b"get-value" ->
                             let (vs, _) = try terms_from src (term.signature d) [] ts
-                            match term.check_terms d vs
-                                Err pr -> Err (Error tp (problem_message (term.signature d) pr))
-                                Ok ()  -> Ok (Query opts logic d h.goal k (Some vs))
-                        e :: _ ->
-                            Err (Error (at e) b"only `(get-value (TERM …))` may follow `(check-sat)`")
+                            match (term.check_terms d vs, after)
+                                (Err pr, _) -> Err (Error tp (problem_message (term.signature d) pr))
+                                (Ok (), []) -> Ok (Query opts logic d h.goal k core (Some vs))
+                                (_, e :: _) -> Err (Error (at e) AFTER_CHECK_SAT)
+                        e :: _ -> Err (Error (at e) AFTER_CHECK_SAT)
         None   ->
             match broken
                 Some q -> Err (Error q b"only assertions may follow the negated goal, `(assert (not GOAL))`")
                 None   -> Err (Error p b"no negated goal, `(assert (not GOAL))`, before `(check-sat)`")
+
+let AFTER_CHECK_SAT = b"only `(get-unsat-core)`, then `(get-value (TERM …))`, may follow `(check-sat)`"
+
+# Whether `es` start with `(get-unsat-core)`, and the rest after it.
+fn unsat_core es -> r : es~List (SExpr src), r~(Bool, List (SExpr src))
+    match es
+        Node [Leaf (Symbol n False) _] _ :: rest if n == b"get-unsat-core" -> (True, rest)
+        _ -> (False, es)
+
+# The assertion `(assert (! e :named name))`: a fact, or an axiom if `e` is
+# a `forall`.
+fn named src sig e name -> r : src~Bytes, sig~Sig, e~SExpr src, name~Name, r~Result Command (Error src)
+    match e
+        Node (Leaf (Symbol f False) _ :: q) fp if f == b"forall" ->
+            let a = try axiom_from src sig q fp
+            Ok (Assume a (Some name))
+        _ ->
+            let t = try term_of src sig [] e Bool b"an assertion"
+            Ok (Assert t (Some name))
 
 # `(forall ((x S) …) (! body :pattern (t …) …))`, or `(forall ((x S) …) body)`
 # without patterns, from what follows `forall`.
@@ -807,11 +837,20 @@ fn declaration src sig n hp args p -> r : src~Bytes, sig~Sig, n~Name, hp~Nat, hp
                 let s = try sort_from src sig [] rs
                 Ok (DeclareFun (FunDecl f [] s Constant))
             _                          -> Err (Error p b"expected `(declare-const NAME SORT)`")
+    else if n == b"define-fun"
+        match args
+            [Leaf (Symbol f _) fp, Node ps _, rs, b] ->
+                let _ = try fresh src sig f fp
+                let d = try def_head src sig f ps rs Plain
+                # Its body is read before it is declared: it can't apply itself.
+                let defs = try def_bodies src sig [d] [b] p
+                Ok (DefineFuns True defs)
+            _                                        -> Err (Error p b"expected `(define-fun NAME ((NAME SORT) …) SORT TERM)`")
     else if n == b"define-fun-rec"
         match args
             [Leaf (Symbol f _) fp, Node ps _, rs, b] ->
                 let _ = try fresh src sig f fp
-                let d = try def_head src sig f ps rs
+                let d = try def_head src sig f ps rs Recursive
                 let defs = try def_bodies src (term.extend sig (DefineFuns True [d])) [d] [b] p
                 Ok (DefineFuns True defs)
             _                                        -> Err (Error p b"expected `(define-fun-rec NAME ((NAME SORT) …) SORT TERM)`")
@@ -836,11 +875,11 @@ fn fresh src sig f p -> r : src~Bytes, sig~Sig, f~Name, p~Nat, p < len src, r~Re
     if taken sig f then Err (Error p (shown f ++ b" is already declared")) else Ok ()
 
 # A definition's name, parameters and result, with a placeholder body.
-fn def_head src sig f ps rs -> r : src~Bytes, sig~Sig, f~Name, ps~List (SExpr src), rs~SExpr src,
-                                   r~Result Def (Error src)
+fn def_head src sig f ps rs kind -> r : src~Bytes, sig~Sig, f~Name, ps~List (SExpr src), rs~SExpr src, kind~DefKind,
+                                        r~Result Def (Error src)
     let params = try sorted_vars src sig ps
     let s = try sort_from src sig [] rs
-    Ok (Def f params s (App (Boolean True) []) False)
+    Ok (Def f params s (App (Boolean True) []) False kind)
 
 fn def_heads src sig hs acc -> r : src~Bytes, sig~Sig, hs~List (SExpr src), acc~List Def, r~Result (List Def) (Error src)
     match hs
@@ -850,7 +889,7 @@ fn def_heads src sig hs acc -> r : src~Bytes, sig~Sig, hs~List (SExpr src), acc~
             if def_named acc f
                 Err (Error fp (shown f ++ b" is defined twice here"))
             else
-                let d = try def_head src sig f ps rs
+                let d = try def_head src sig f ps rs Recursive
                 def_heads src sig rest (d :: acc)
         e :: _                                               -> Err (Error (at e) b"expected `(NAME ((NAME SORT) …) SORT)`")
 
@@ -859,8 +898,7 @@ fn def_named ds f -> r : ds~List Def, f~Name, r~Bool
         []        -> False
         d :: rest -> d.name == f or def_named rest f
 
-# The definitions `ds` with the bodies `bs`, read where the functions they
-# define are declared.
+# The definitions `ds` with the bodies `bs`, read in `sig`.
 fn def_bodies src sig ds bs p -> r : src~Bytes, sig~Sig, ds~List Def, bs~List (SExpr src), p~Nat, p < len src,
                                      r~Result (List Def) (Error src)
     match (ds, bs)
@@ -868,7 +906,7 @@ fn def_bodies src sig ds bs p -> r : src~Bytes, sig~Sig, ds~List Def, bs~List (S
         (d :: drest, b :: brest) ->
             let t = try term_of src sig (list.reverse d.params) b d.result (b"the body of " ++ shown d.name)
             let rest = try def_bodies src sig drest brest p
-            Ok (Def d.name d.params d.result t False :: rest)
+            Ok (Def d.name d.params d.result t False d.kind :: rest)
         _                        -> Err (Error p b"as many bodies as functions are needed")
 
 # `(declare-datatypes ((N k) …) (D …))`: the heads `hs` and declarations `ds`.
@@ -1019,6 +1057,7 @@ fn problem_message sig pr -> r : sig~Sig, pr~Problem, r~Bytes
         ConstantParams f  -> b"the constant " ++ shown f.name ++ b" has parameters"
         Expected want got -> b"expected a term of sort " ++ sort_text sig want ++ b", found one of sort " ++ sort_text sig got
         NoPattern         -> b"a `:pattern` needs at least one term"
+        NamedTwice n      -> b"an assertion before this one is already named " ++ shown n
 
 # ── Writing ──────────────────────────────────────────────────────────────────
 
@@ -1027,6 +1066,10 @@ export fn numeral n -> r : n~Nat, r~Bytes
     (string.display n []).bytes
 
 # Pieces of output are collected last first, then joined (`text`).
+
+# A symbol as SMT-LIB writes it: between bars if it must be.
+export fn name_text n -> r : n~Name, r~Bytes
+    text (w_name n [])
 
 # A symbol, between bars if it isn't a simple symbol or is a reserved word.
 fn w_name n acc -> r : n~Name, acc~List Bytes, r~List Bytes
@@ -1169,20 +1212,36 @@ fn w_command sig c acc -> r : sig~Sig, c~Command, term.command_ok sig c, acc~Lis
                     let a = b") " :: w_sort_list sig f.params (b" (" :: w_name f.name (b"(declare-fun " :: acc))
                     b")\n" :: w_sort sig [] f.result a
         DefineFuns True [d] ->
-            let a = b" " :: w_sort sig [] d.result (b" " :: w_vars sig d.params (b" " :: w_name d.name (b"(define-fun-rec " :: acc)))
+            let open = match d.kind
+                Recursive -> b"(define-fun-rec "
+                Plain     -> b"(define-fun "
+            let a = b" " :: w_sort sig [] d.result (b" " :: w_vars sig d.params (b" " :: w_name d.name (open :: acc)))
             have params_env d.params
             b")\n" :: w_term sig (list.reverse (list.keys d.params)) d.body a
         DefineFuns _ ds     ->
             let a = b") (" :: w_def_heads sig ds (b"(define-funs-rec (" :: acc)
             b"))\n" :: w_def_bodies sig ds a
-        Assume ax           ->
+        Assume ax name      ->
             let env = list.reverse (list.keys ax.vars)
             have params_env ax.vars
-            let head = b" " :: w_vars sig ax.vars (b"(assert (forall " :: acc)
-            match ax.patterns
-                [] -> b"))\n" :: w_term sig env ax.body head
-                ps -> b")))\n" :: w_patterns sig env ps (w_term sig env ax.body (b"(! " :: head))
-        Assert t            -> b")\n" :: w_term sig [] t (b"(assert " :: acc)
+            let head = b" " :: w_vars sig ax.vars (b"(forall " :: w_assert name acc)
+            let f = match ax.patterns
+                [] -> b")" :: w_term sig env ax.body head
+                ps -> b"))" :: w_patterns sig env ps (w_term sig env ax.body (b"(! " :: head))
+            w_named name f
+        Assert t name       -> w_named name (w_term sig [] t (w_assert name acc))
+
+# `(assert `, then `(! ` if the assertion has a name.
+fn w_assert name acc -> r : name~Option Name, acc~List Bytes, r~List Bytes
+    match name
+        None   -> b"(assert " :: acc
+        Some _ -> b"(assert (! " :: acc
+
+# The end of an assertion: its name, if it has one, and `)`.
+fn w_named name acc -> r : name~Option Name, acc~List Bytes, r~List Bytes
+    match name
+        None   -> b")\n" :: acc
+        Some n -> b"))\n" :: w_name n (b" :named " :: acc)
 
 # The names a binder list's body sees, one for each binder.
 lemma params_env vs : vs~List (Name, Sort)
@@ -1284,7 +1343,8 @@ export fn render q -> r : q~Query, r~Bytes
     have term.commands_well_formed q.context
     have term.fact_heads q.context q.goal
     let start = b")\n" :: w_name q.logic (b"(set-logic " :: w_options q.options [])
-    let b = b"(check-sat)\n" :: w_with_goal sig (term.commands q.context) q.goal_at q.goal start
+    let sat = b"(check-sat)\n" :: w_with_goal sig (term.commands q.context) q.goal_at q.goal start
+    let b = if q.core then b"(get-unsat-core)\n" :: sat else sat
     match q.values
         None    -> text b
         Some ts ->

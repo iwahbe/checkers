@@ -1,0 +1,9 @@
+; `define-fun`: a definition that can't apply itself, read before it is
+; declared; written back as it was read.
+(set-logic ALL)
+(define-fun |pos#cond| ((n Int)) Bool (> n 0))
+(define-fun |both#cond| ((a Int) (b Int)) Bool (and (|pos#cond| a) (|pos#cond| b)))
+(define-fun-rec |sum| ((n Int)) Int (ite (|both#cond| n 1) (+ n (|sum| (- n 1))) 0))
+(declare-const x Int)
+(assert (not (>= (|sum| x) 0)))
+(check-sat)

@@ -1,0 +1,5 @@
+(set-logic ALL)
+(define-fun loop ((n Int)) Int (+ 1 (loop n)))
+(declare-const x Int)
+(assert (not (= (loop x) x)))
+(check-sat)
