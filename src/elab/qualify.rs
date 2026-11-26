@@ -153,9 +153,11 @@ impl Elab {
                     shown.insert(*m, name.clone());
                     continue;
                 };
-                // Not a name in the texts, nor a local in scope there.
+                // Not a name in the texts, nor one in scope there: a local,
+                // or one the module declares or imports.
+                let declared = |n: &str| self.modules.get(module).is_some_and(|mi| in_scope(mi, n, false).is_some());
                 let mut k = 1;
-                while taken.contains(&format!("{name}{k}")) || (k <= 64 && avoid & (1 << (k - 1)) != 0) {
+                while taken.contains(&format!("{name}{k}")) || (k <= 64 && avoid & (1 << (k - 1)) != 0) || declared(&format!("{name}{k}")) {
                     k += 1;
                 }
                 let renamed = format!("{name}{k}");
