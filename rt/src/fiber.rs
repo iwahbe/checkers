@@ -4,7 +4,8 @@
 //!
 //! A stack is reserved address space (256 MiB, the depth D75 allows a
 //! worker), committed by the kernel only as pages are touched, with a guard
-//! page below. Stacks are reused through a pool. Switching saves the
+//! region below, whose fault is a stack overflow (`overflow`). Stacks are
+//! reused through a pool. Switching saves the
 //! callee-saved registers and the floating-point control state (on x86-64
 //! the System V ABI's, with the SSE and x87 control words; on ARM64 the
 //! AAPCS64's, x19–x30 and d8–d15, with FPCR), then swaps stack pointers.
@@ -18,46 +19,63 @@ use std::sync::Mutex;
 
 /// Address space reserved for each fiber's stack.
 pub const STACK: usize = 256 << 20;
-const GUARD: usize = 4096;
+/// The protected region below each stack: larger than any one frame, so
+/// a call that goes past the stack's end touches it rather than skipping
+/// over it (§13.3, "Stack overflow"). Address space only.
+pub const GUARD: usize = 64 << 10;
 
-/// Free stacks, for reuse: their lowest addresses.
-static FREE: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+/// Free stacks, for reuse.
+static FREE: Mutex<Vec<Stack>> = Mutex::new(Vec::new());
 
-/// A reserved stack: `base` is its lowest address (the guard page).
+/// A reserved stack: `base` is its lowest address (the guard region),
+/// `size` its whole extent, guard included. Stacks are never unmapped, so
+/// `guard`, registered once, stays theirs.
 struct Stack {
     base: usize,
+    size: usize,
+    guard: &'static crate::overflow::Guard,
 }
 
 impl Stack {
-    fn get() -> Stack {
-        if let Some(base) = FREE.lock().unwrap_or_else(|e| e.into_inner()).pop() {
-            return Stack { base };
+    fn get(size: usize) -> Stack {
+        {
+            let mut free = FREE.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(i) = free.iter().position(|s| s.size == size) {
+                return free.swap_remove(i);
+            }
         }
         #[cfg(target_os = "linux")]
         let flags = libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE | libc::MAP_STACK;
         #[cfg(not(target_os = "linux"))]
         let flags = libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_NORESERVE;
         unsafe {
-            let p = libc::mmap(std::ptr::null_mut(), STACK, libc::PROT_READ | libc::PROT_WRITE, flags, -1, 0);
+            let p = libc::mmap(std::ptr::null_mut(), size, libc::PROT_READ | libc::PROT_WRITE, flags, -1, 0);
             if p == libc::MAP_FAILED {
                 crate::prog::fatal("could not reserve a stack for a behaviour");
             }
             if libc::mprotect(p, GUARD, libc::PROT_NONE) != 0 {
                 crate::prog::fatal("could not protect a behaviour's stack");
             }
-            Stack { base: p as usize }
+            let base = p as usize;
+            Stack { base, size, guard: crate::overflow::Guard::new(base, base + GUARD) }
         }
     }
 
     fn top(&self) -> usize {
-        self.base + STACK
+        self.base + self.size
+    }
+
+    /// Give the pages the stack has touched back to the system.
+    fn release_pages(&self) {
+        unsafe {
+            libc::madvise((self.base + GUARD) as *mut libc::c_void, self.size - GUARD, libc::MADV_DONTNEED);
+        }
     }
 }
 
-impl Drop for Stack {
-    fn drop(&mut self) {
-        FREE.lock().unwrap_or_else(|e| e.into_inner()).push(self.base);
-    }
+/// A stack is returned to the pool when its fiber is dropped.
+fn recycle(s: Stack) {
+    FREE.lock().unwrap_or_else(|e| e.into_inner()).push(s);
 }
 
 /// How a fiber left the thread that ran it.
@@ -77,7 +95,7 @@ pub type Waker = Box<dyn FnOnce() + Send>;
 type Body = (fn(*mut ()), *mut ());
 
 pub struct Fiber {
-    stack: Stack,
+    stack: Option<Stack>,
     /// The fiber's saved stack pointer while it isn't running.
     sp: usize,
     /// The resuming thread's saved stack pointer while the fiber runs.
@@ -85,6 +103,17 @@ pub struct Fiber {
     /// What to run next.
     body: Option<Body>,
     left: Option<Left>,
+    /// Set by the fault handler when the fiber ran past its stack and was
+    /// abandoned (`recoverable`).
+    overflowed: std::sync::atomic::AtomicBool,
+}
+
+impl Drop for Fiber {
+    fn drop(&mut self) {
+        if let Some(s) = self.stack.take() {
+            recycle(s);
+        }
+    }
 }
 
 // A fiber runs on one thread at a time; its body's words are owned by it.
@@ -151,6 +180,10 @@ std::arch::global_asm!(
     "fnstcw [rsp + 4]",
     "mov [rdi], rsp",
     "mov rsp, rsi",
+    // Where a fiber abandoned by the fault handler continues its resumer,
+    // with the resumer's saved stack pointer in rsp (`recoverable`).
+    ".global ck_fiber_back",
+    "ck_fiber_back:",
     "ldmxcsr [rsp]",
     "fldcw [rsp + 4]",
     "add rsp, 16",
@@ -178,7 +211,7 @@ std::arch::global_asm!(
 // FPCR, padding. Mach-O symbols carry a leading underscore.
 #[cfg(target_arch = "aarch64")]
 macro_rules! fiber_asm {
-    ($switch:literal, $start:literal, $main:literal) => {
+    ($switch:literal, $back:literal, $start:literal, $main:literal) => {
         std::arch::global_asm!(
             ".text",
             ".p2align 2",
@@ -202,6 +235,10 @@ macro_rules! fiber_asm {
             "mov x9, sp",
             "str x9, [x0]",
             "mov sp, x1",
+            // Where a fiber abandoned by the fault handler continues its
+            // resumer, with the resumer's saved stack pointer in sp.
+            concat!(".global ", $back),
+            concat!($back, ":"),
             "ldr x9, [sp, #160]",
             "msr fpcr, x9",
             "ldp d14, d15, [sp, #144]",
@@ -226,15 +263,16 @@ macro_rules! fiber_asm {
     };
 }
 #[cfg(all(target_arch = "aarch64", target_vendor = "apple"))]
-fiber_asm!("_ck_fiber_switch", "_ck_fiber_start", "_ck_fiber_main");
+fiber_asm!("_ck_fiber_switch", "_ck_fiber_back", "_ck_fiber_start", "_ck_fiber_main");
 #[cfg(all(target_arch = "aarch64", not(target_vendor = "apple")))]
-fiber_asm!("ck_fiber_switch", "ck_fiber_start", "ck_fiber_main");
+fiber_asm!("ck_fiber_switch", "ck_fiber_back", "ck_fiber_start", "ck_fiber_main");
 #[cfg(not(any(all(target_arch = "x86_64", target_os = "linux"), target_arch = "aarch64")))]
 compile_error!("fibers are implemented for Linux on x86-64 and for ARM64");
 
 extern "C" {
     fn ck_fiber_switch(save: *mut usize, to: usize);
     fn ck_fiber_start();
+    fn ck_fiber_back();
 }
 
 /// The bottom of every fiber: run each body it is given, leaving after each.
@@ -268,11 +306,16 @@ impl Fiber {
     }
 
     fn new() -> Box<Fiber> {
-        let stack = Stack::get();
-        let mut f = Box::new(Fiber { stack, sp: 0, back: 0, body: None, left: None });
+        Fiber::sized(STACK)
+    }
+
+    /// A new fiber on a stack of `size` bytes, guard included.
+    fn sized(size: usize) -> Box<Fiber> {
+        let stack = Stack::get(size);
+        let top = stack.top() - 64;
+        let mut f = Box::new(Fiber { stack: Some(stack), sp: 0, back: 0, body: None, left: None, overflowed: Default::default() });
         let me = &mut *f as *mut Fiber as usize;
         let start = ck_fiber_start as *const () as usize;
-        let top = f.stack.top() - 64;
         // The first switch to it pops this frame, then returns to the start
         // with the fiber in a callee-saved register.
         #[cfg(target_arch = "x86_64")]
@@ -329,6 +372,65 @@ pub fn park(register: Box<dyn FnOnce(Waker) + Send>) {
     unsafe {
         (*f).left = Some(Left::Parked(register));
         ck_fiber_switch(&mut (*f).sp, (*f).back);
+    }
+}
+
+/// Run `job` on a fiber of a stack of `size` bytes, on this thread, and
+/// return its result; `None` if it ran past the end of the stack in
+/// compiled code that probes ahead (compile-time evaluation, §14). Then the
+/// fiber is abandoned where it stopped: nothing on it is unwound or freed,
+/// as after a runtime error in compile-time evaluation, and its stack's
+/// pages go back to the system. The fiber isn't this thread's current one,
+/// so code on it never parks: it waits as on any thread.
+pub fn recoverable<R>(size: usize, job: impl FnOnce() -> R) -> Option<R> {
+    fn run<F: FnMut()>(p: *mut ()) {
+        unsafe { (*(p as *mut F))() }
+    }
+    fn runner<F: FnMut()>(_: &F) -> fn(*mut ()) {
+        run::<F>
+    }
+    let mut job = Some(job);
+    let mut out = None;
+    let mut call = || {
+        if let Some(job) = job.take() {
+            out = Some(std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)));
+        }
+    };
+    let mut f = Fiber::sized(size);
+    f.body = Some((runner(&call), &mut call as *mut _ as *mut ()));
+    let guard = f.stack.as_ref().map(|s| s.guard);
+    let me = &mut *f as *mut Fiber;
+    if let Some(g) = guard {
+        g.recover_to(me);
+    }
+    unsafe {
+        ck_fiber_switch(&mut (*me).back, (*me).sp);
+    }
+    if let Some(g) = guard {
+        g.recover_to(std::ptr::null_mut());
+    }
+    if f.overflowed.load(std::sync::atomic::Ordering::Acquire) {
+        if let Some(s) = &f.stack {
+            s.release_pages();
+        }
+        return None;
+    }
+    drop(f);
+    match out {
+        Some(Ok(r)) => Some(r),
+        Some(Err(panic)) => std::panic::resume_unwind(panic),
+        None => crate::prog::bug("a fiber finished without running its job"),
+    }
+}
+
+/// The fault handler's half of `recoverable`: `f` overflowed its stack.
+/// Marks it, and gives the stack pointer and address to continue at, which
+/// return from `recoverable`'s switch as if the fiber had left. Only a
+/// store and loads: async-signal-safe.
+pub(crate) unsafe fn abandon(f: *mut Fiber) -> (usize, usize) {
+    unsafe {
+        (*f).overflowed.store(true, std::sync::atomic::Ordering::Release);
+        ((*f).back, ck_fiber_back as *const () as usize)
     }
 }
 
@@ -413,6 +515,12 @@ pub struct BlockingRead<R>(pub R);
 
 /// The same for writing.
 pub struct BlockingWrite<W>(pub W);
+
+impl crate::obj::IntoFd for BlockingWrite<std::fs::File> {
+    fn into_fd(self) -> std::os::fd::OwnedFd {
+        self.0.into()
+    }
+}
 
 struct Raw<T>(*mut T, *mut u8, usize);
 unsafe impl<T> Send for Raw<T> {}

@@ -72,17 +72,17 @@ export transparent fn max_of xs -> m : xs~List Nat, m~Nat
             if x > m then x else m
 
 # The first `n` elements, or all of `xs` if it is shorter.
-export fn take n xs -> ys : n~Nat, xs~List a, ys~List a,
-                            length ys <= length xs, n <= length xs implies length ys == n,
-                            length xs <= n implies ys == xs
+export transparent fn take n xs -> ys : n~Nat, xs~List a, ys~List a,
+                                        length ys <= length xs, n <= length xs implies length ys == n,
+                                        length xs <= n implies ys == xs
     match xs
         []        -> []
         x :: rest -> if n == 0 then [] else x :: take (n - 1) rest
 
 # All but the first `n` elements; empty if `xs` is shorter.
-export fn drop n xs -> ys : n~Nat, xs~List a, ys~List a,
-                            length ys <= length xs, n <= length xs implies length ys + n == length xs,
-                            length xs <= n implies ys == []
+export transparent fn drop n xs -> ys : n~Nat, xs~List a, ys~List a,
+                                        length ys <= length xs, n <= length xs implies length ys + n == length xs,
+                                        length xs <= n implies ys == []
     match xs
         []        -> []
         _ :: rest -> if n == 0 then xs else drop (n - 1) rest
