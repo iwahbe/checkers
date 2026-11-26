@@ -12,6 +12,7 @@ pub mod rc;
 pub mod spec;
 pub mod tailrec;
 pub mod unbox;
+pub mod wide;
 
 use crate::core::{DefId, Globals};
 use cranelift_codegen::settings::{self, Configurable};
@@ -216,6 +217,11 @@ pub(crate) fn rc_new(g: &Globals, p: &mut lower::Program) {
 
 /// An in-memory module for this machine, with the runtime's symbols.
 pub(crate) fn jit_module() -> cranelift_jit::JITModule {
+    jit_module_with(&[])
+}
+
+/// `jit_module`, with some of the runtime's symbols at other addresses.
+fn jit_module_with(instead: &[(&'static str, *const u8)]) -> cranelift_jit::JITModule {
     // Cranelift's tail calls rely on frame pointers.
     let mut jb = cranelift_jit::JITBuilder::with_flags(
         &[("opt_level", "speed"), ("preserve_frame_pointers", "true")],
@@ -223,6 +229,7 @@ pub(crate) fn jit_module() -> cranelift_jit::JITModule {
     )
     .expect("a JIT for this machine");
     for (name, ptr) in checkers_rt::symbols() {
+        let ptr = instead.iter().find(|(n, _)| *n == name).map_or(ptr, |(_, p)| *p);
         jb.symbol(name, ptr);
     }
     cranelift_jit::JITModule::new(jb)
@@ -298,9 +305,12 @@ fn dump(e: &lower::E, d: usize) -> String {
 
 /// Compile in memory and run `main` (`checkers run`): the exit code.
 pub fn run(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId, args: &[String], threads: usize) -> i32 {
+    run_in(jit_module(), g, staged, main, args, threads)
+}
+
+fn run_in(module: cranelift_jit::JITModule, g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId, args: &[String], threads: usize) -> i32 {
     let p = prepare(g, staged, main, host_return_words());
     let desc = descriptor(g, &p);
-    let module = jit_module();
     let mut gen = codegen::Gen::new(module, p, g);
     gen.define_new();
     let main_clo = gen.main_closure();
@@ -668,20 +678,101 @@ mod tests {
         })
     }
 
-    /// Small integers' inline paths (tests/run/small_int_edges.ck: overflow
-    /// checks, constants, comparisons branched on) compile for every
-    /// machine, whose overflow-checking instructions differ.
+    /// Integers' inline paths (tests/run/small_int_edges.ck: overflow
+    /// checks, constants, comparisons branched on; wide_int_edges.ck: on
+    /// 128 bits) compile for every machine, whose overflow-checking and
+    /// 128-bit instructions differ.
     #[test]
     fn integer_paths_compile_for_every_machine() {
         crate::with_big_stack(|| {
-            let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/run/small_int_edges.ck");
+            for name in ["small_int_edges.ck", "wide_int_edges.ck"] {
+                let path = format!("{}/tests/run/{name}", env!("CARGO_MANIFEST_DIR"));
+                let text = std::fs::read_to_string(&path).unwrap();
+                let dir = std::path::Path::new(&path).parent().unwrap();
+                let (e, main, staged, report) = crate::ready_to_run(name, &text, dir, false).map_err(|r| r.report).unwrap();
+                assert_eq!(report, "");
+                for (triple, _) in MACHINES {
+                    object(&e.g, Some(&staged), main, isa(triple)).unwrap_or_else(|m| panic!("{name}, {triple}: {m}"));
+                }
+            }
+        })
+    }
+
+    /// Calls of the runtime's arithmetic, counted.
+    static ARITHMETIC: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn counted() {
+        ARITHMETIC.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    extern "C" fn add(a: u64, b: u64) -> u64 {
+        counted();
+        checkers_rt::ops::ck_add(a, b)
+    }
+    extern "C" fn sub(a: u64, b: u64) -> u64 {
+        counted();
+        checkers_rt::ops::ck_sub(a, b)
+    }
+    extern "C" fn natsub(a: u64, b: u64, o: u64) -> u64 {
+        counted();
+        checkers_rt::ops::ck_natsub(a, b, o)
+    }
+    extern "C" fn mul(a: u64, b: u64) -> u64 {
+        counted();
+        checkers_rt::ops::ck_mul(a, b)
+    }
+    extern "C" fn div(a: u64, b: u64, o: u64) -> u64 {
+        counted();
+        checkers_rt::ops::ck_div(a, b, o)
+    }
+    extern "C" fn rem(a: u64, b: u64, o: u64) -> u64 {
+        counted();
+        checkers_rt::ops::ck_rem(a, b, o)
+    }
+    extern "C" fn neg(a: u64) -> u64 {
+        counted();
+        checkers_rt::ops::ck_neg(a)
+    }
+    extern "C" fn cmp(a: u64, b: u64) -> i64 {
+        counted();
+        checkers_rt::ops::ck_cmp(a, b)
+    }
+    extern "C" fn eq(a: u64, b: u64, o: u64) -> u64 {
+        counted();
+        checkers_rt::ops::ck_eq(a, b, o)
+    }
+    extern "C" fn ne(a: u64, b: u64, o: u64) -> u64 {
+        counted();
+        checkers_rt::ops::ck_ne(a, b, o)
+    }
+
+    /// Numbers within 128 bits (tests/run/wide_int_inline.ck: small
+    /// integers whose operations overflow a word, and two-word numbers)
+    /// are computed in compiled code (the program's 128-bit functions):
+    /// running the program calls none of the runtime's arithmetic.
+    #[test]
+    fn numbers_within_128_bits_need_no_runtime() {
+        crate::with_big_stack(|| {
+            let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/run/wide_int_inline.ck");
             let text = std::fs::read_to_string(path).unwrap();
             let dir = std::path::Path::new(path).parent().unwrap();
-            let (e, main, staged, report) = crate::ready_to_run("small_int_edges.ck", &text, dir, false).map_err(|r| r.report).unwrap();
+            let (e, main, staged, report) = crate::ready_to_run("wide_int_inline.ck", &text, dir, false).map_err(|r| r.report).unwrap();
             assert_eq!(report, "");
-            for (triple, _) in MACHINES {
-                object(&e.g, Some(&staged), main, isa(triple)).unwrap_or_else(|m| panic!("{triple}: {m}"));
-            }
+            let counting: [(&'static str, *const u8); 10] = [
+                ("ck_add", add as *const u8),
+                ("ck_sub", sub as *const u8),
+                ("ck_natsub", natsub as *const u8),
+                ("ck_mul", mul as *const u8),
+                ("ck_div", div as *const u8),
+                ("ck_rem", rem as *const u8),
+                ("ck_neg", neg as *const u8),
+                ("ck_cmp", cmp as *const u8),
+                ("ck_eq", eq as *const u8),
+                ("ck_ne", ne as *const u8),
+            ];
+            let code = run_in(jit_module_with(&counting), &e.g, Some(&staged), main, &[], 1);
+            assert_eq!(code, 0);
+            assert_eq!(ARITHMETIC.load(std::sync::atomic::Ordering::Relaxed), 0, "calls of the runtime's arithmetic");
         })
     }
 }

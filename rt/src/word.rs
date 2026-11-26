@@ -102,7 +102,7 @@ pub fn is_nullary(w: W) -> bool {
 }
 
 #[inline]
-pub fn info(kind: u64, n: u64, tag: u64) -> u64 {
+pub const fn info(kind: u64, n: u64, tag: u64) -> u64 {
     kind | (n << 8) | (tag << 32)
 }
 
