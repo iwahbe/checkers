@@ -607,7 +607,21 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     // same value returned is the same error, reported once.
     let mut bad_calls: Vec<Span> = Vec::new();
     let mut post_fails: Vec<(usize, Span)> = Vec::new();
+    // A postcondition outside what the prover handles is so for each value
+    // returned: one error, listing them (its diagnostic, the obligations).
+    let mut outside_posts: Vec<(usize, Vec<usize>)> = Vec::new();
     for (k, ((o, q), a)) in obs.iter().zip(&queries).zip(answers).enumerate() {
+        if let (Err(why), ObKind::Post { .. }) = (q, &o.kind) {
+            let same = |j: usize| {
+                let p = obs[j];
+                p.span == o.span && p.module == o.module && p.text == o.text && matches!(&queries[j], Err(w) if w.0 == why.0)
+            };
+            if let Some(g) = outside_posts.iter_mut().find(|g| same(g.1[0])) {
+                g.1.push(k);
+                continue;
+            }
+            outside_posts.push((v.diags.len(), vec![k]));
+        }
         if !matches!((q, &a), (Ok(_), Some(Answer::Unsat)) | (Ok(_), None)) {
             match &o.kind {
                 ObKind::AtAlias { call: Some(_), .. } | ObKind::KnownResult { .. } => bad_calls.push(o.span),
@@ -625,7 +639,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
             uncovered.push((o.span, vec![case.clone()], v.diags.len()));
         }
         match (q, a) {
-            (Err(why), _) => v.diags.push(outside(e, o, &why.0)),
+            (Err(why), _) => v.diags.push(outside(e, &[o], &why.0)),
             (Ok(q), Some(Answer::Unsat)) => {
                 v.proved += 1;
                 // The query that was proved, as Z3 was given it.
@@ -656,6 +670,18 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
                 v.diags.push(d);
             }
             (Ok(_), None) => {}
+        }
+    }
+    // Without the values returned whose call is already reported.
+    for (at, ks) in outside_posts.iter().filter(|g| g.1.len() > 1) {
+        let os: Vec<&Obligation> = ks
+            .iter()
+            .map(|&k| obs[k])
+            .filter(|o| !matches!(o.kind, ObKind::Post { at, .. } if bad_calls.contains(&at)))
+            .collect();
+        if let (false, Err(why)) = (os.is_empty(), &queries[ks[0]]) {
+            v.diags[*at] = outside(e, &os, &why.0);
+            post_fails.retain(|p| p.0 != *at);
         }
     }
         for (_, cases, at) in &uncovered {
@@ -970,6 +996,7 @@ fn unreachable(e: &Elab, user: &str) -> Vec<Diagnostic> {
 }
 
 fn describe(e: &Elab, o: &Obligation) -> String {
+    let o = &Obligation { text: crate::elab::first_line(&o.text), ..o.clone() };
     match &o.kind {
         ObKind::Pre { callee } => format!("precondition of `{callee}`: {}", o.text),
         ObKind::Post { func, at } => {
@@ -1036,6 +1063,8 @@ fn facts_note(e: &Elab, o: &Obligation) -> Option<String> {
 }
 
 fn headline(o: &Obligation) -> (String, String, String) {
+    // A block's first line: the rest is in a note (`in_full`).
+    let o = &Obligation { text: crate::elab::first_line(&o.text), ..o.clone() };
     match &o.kind {
         ObKind::Pre { callee } => (
             format!("cannot prove `{}`, required to call `{callee}`", o.text),
@@ -1268,25 +1297,21 @@ fn failed(e: &Elab, o: &Obligation, model: Option<String>) -> Diagnostic {
         ObKind::AtAlias { .. } => "E0456",
         _ => "E0450",
     };
-    let mut d = Diagnostic::error(code, msg, o.span).with_label(label);
+    let mut d = Diagnostic::error(code, msg, o.span).with_label(label).with_notes(in_full(o));
     if let ObKind::Refines { class, declared, at, .. } = &o.kind {
         d = d.with_note(format!("class `{class}` declares `{declared}`"));
         if at.is_some() {
-            d = d.with_note(format!("it needs `{}`", o.text));
+            d = d.with_note(format!("it needs `{}`", crate::elab::first_line(&o.text)));
         }
     }
     if let ObKind::Weaken { .. } = &o.kind {
-        d = d.with_note(format!("it needs `{}`", o.text));
+        d = d.with_note(format!("it needs `{}`", crate::elab::first_line(&o.text)));
     }
     if let ObKind::KnownResult { inst, member, .. } = &o.kind {
         d = d.with_note(format!("this calls `instance {inst}`'s `{member}`, whose signature requires less than the class's and doesn't promise it here"));
     }
-    if let ObKind::Post { at, .. } = &o.kind {
-        if let Some(f) = e.sources.get(&o.module) {
-            let (line, _) = f.line_col(at.start);
-            let text: String = f.text.get(at.start as usize..at.end as usize).unwrap_or("").split_whitespace().collect::<Vec<_>>().join(" ");
-            d = d.with_note(format!("for the value returned on line {line}: `{text}`"));
-        }
+    if let Some(n) = returned(e, o) {
+        d = d.with_note(n);
     }
     // A case left out: the facts are the case itself.
     if let Some(n) = facts_note(e, o).filter(|_| !matches!(o.kind, ObKind::Uncovered { .. })) {
@@ -1312,16 +1337,46 @@ fn failed(e: &Elab, o: &Obligation, model: Option<String>) -> Diagnostic {
     d.with_help(help)
 }
 
-fn outside(e: &Elab, o: &Obligation, why: &str) -> Diagnostic {
+/// One obligation outside what the prover handles, or the same one for
+/// several values returned, each with its facts.
+fn outside(e: &Elab, os: &[&Obligation], why: &str) -> Diagnostic {
+    let o = os[0];
     let (msg, label, _) = headline(o);
     let code = if matches!(o.kind, ObKind::Uncovered { .. }) { "E0240" } else { "E0451" };
     let mut d = Diagnostic::error(code, msg, o.span)
         .with_label(label)
+        .with_notes(in_full(o))
         .with_note(format!("this obligation is outside what the prover handles: it involves {why}"));
-    if let Some(n) = facts_note(e, o) {
-        d = d.with_note(n);
+    if let [o] = os {
+        d = d.with_notes(returned(e, o)).with_notes(facts_note(e, o));
+    } else {
+        for o in os {
+            let r = returned(e, o).unwrap_or_default();
+            d = d.with_note(match facts_note(e, o) {
+                Some(f) => format!("{r}; {f}"),
+                None => r,
+            });
+        }
     }
     d.with_help("state the fact you need as a lemma and bring it in with `have`")
+}
+
+/// A predicate written on several lines (a `match`), shown in full: the
+/// message has only its first line.
+fn in_full(o: &Obligation) -> Option<String> {
+    o.text.contains('\n').then(|| {
+        let body: Vec<String> = o.text.lines().map(|l| format!("    {l}")).collect();
+        format!("`{}` in full:\n{}", crate::elab::first_line(&o.text), body.join("\n"))
+    })
+}
+
+/// Which returned value a postcondition is about: its line and text.
+fn returned(e: &Elab, o: &Obligation) -> Option<String> {
+    let ObKind::Post { at, .. } = &o.kind else { return None };
+    let f = e.sources.get(&o.module)?;
+    let (line, _) = f.line_col(at.start);
+    let text: String = f.text.get(at.start as usize..at.end as usize).unwrap_or("").split_whitespace().collect::<Vec<_>>().join(" ");
+    Some(format!("for the value returned on line {line}: `{text}`"))
 }
 
 /// Check Z3's counterexample against the `forall` facts in scope, which its
