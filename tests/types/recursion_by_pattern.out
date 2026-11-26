@@ -4,7 +4,7 @@ error[E0450]: cannot prove lemma `same`
 43 |     ensures ys == xs
    |             ^^^^^^^^ `ys == xs`
    = note: facts in scope: `suffix ys xs`
-   = note: counterexample: ys = b"", xs = b"\x05"
+   = note: counterexample: ys = b"", xs = b"\x06"
    = help: add a `proof` block: `match` on a parameter or a call's result for case analysis, and `have` for facts it needs
 
 recursion_by_pattern.ck: 1 error, 0 warnings
