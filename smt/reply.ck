@@ -48,7 +48,8 @@ export fn answer q -> a : q~Query, a~Answer
 # `Valid`; then it gets the names of the query's assertions, all of them in
 # the order written. That is a core, if not the smallest: the assertions
 # contradict each other. (The names of the facts a certificate uses will
-# be a smaller one, #86.)
+# be a smaller one, #86.) It needn't be Z3's text once `Valid` is reached:
+# the comparison must then compare a core as a core, not as text.
 export fn write src q a -> r : src~Bytes, q~Query, a~Answer, r~Bytes
     let verdict = match a
         Valid     -> b"unsat\n"

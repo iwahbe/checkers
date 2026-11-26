@@ -143,8 +143,8 @@ export record Def
 #
 # A `Plain` definition (`define-fun`) can't: its body is checked in the
 # signature before its command (`check_bodies`), so every function it
-# applies is numbered below its own (`plain_bodies`), and it is alone in its
-# command. It needs no termination mark: evaluating it unfolds only earlier
+# applies is numbered below its own (`plain_bodies`), and `check_command`
+# rejects one that isn't alone in its command (`PlainInGroup`). It needs no termination mark: evaluating it unfolds only earlier
 # definitions, so it ends whenever they do.
 export enum DefKind
     Recursive
@@ -191,7 +191,8 @@ export record Sig
 export fn empty_sig -> s : s~Sig, len s.funs == 0
     Sig (array.from_list []) (array.from_list []) (array.from_list [])
 
-fn def_fun d -> f : d~Def, f~FunDecl
+# The function a definition declares.
+export fn def_fun d -> f : d~Def, f~FunDecl
     FunDecl d.name (list.map (\(_, s) -> s) d.params) d.result Defined
 
 fn def_funs ds -> fs : ds~List Def, fs~List FunDecl
@@ -752,7 +753,9 @@ fn axioms_in cs -> r : cs~List Command, r~List Axiom
         Assume a _ :: rest -> a :: axioms_in rest
         _ :: rest          -> axioms_in rest
 
-# The recursive definitions, in order, each with its function's number.
+# The definitions (`define-fun-rec`, `define-funs-rec` and `define-fun`),
+# in order, each with its function's number: its place in
+# `(signature c).funs` (`defs_in_signature`).
 export fn defs c -> r : c~Context, r~List (Nat, Def)
     defs_in 0 c.commands
 
@@ -1600,3 +1603,112 @@ export lemma plain_bodies c : c~Context
     ensures plains_below (defs c)
     proof
         have checked_plains empty_sig c.commands
+
+# ── Where a definition is in the signature ───────────────────────────────────
+
+# Whether each definition of `ds`, with its number, is declared as that
+# function of `funs`.
+export transparent fn defs_declared funs ds -> r : funs~Array FunDecl, ds~List (Nat, Def), r~Bool
+    match ds
+        []             -> True
+        (n, d) :: rest -> n < len funs and funs[n] == def_fun d and defs_declared funs rest
+
+# Whether `funs` from `base` holds `xs` from `i` on.
+export transparent fn agrees funs base xs i -> r : funs~Array FunDecl, base~Nat, xs~Array FunDecl, i~Nat, i <= len xs, r~Bool
+    decreasing len xs - i
+    if i >= len xs then True else base + i < len funs and funs[base + i] == xs[i] and agrees funs base xs (i + 1)
+
+lemma agrees_append pre xs i : pre~Array FunDecl, xs~Array FunDecl, i~Nat, i <= len xs
+    ensures agrees (pre ++ xs) (len pre) xs i
+    proof
+        decreasing len xs - i
+        if i < len xs
+            have (pre ++ xs)[len pre + i] == xs[i]
+            have agrees_append pre xs (i + 1)
+        else
+            auto
+
+lemma agrees_tail funs base x xs i : funs~Array FunDecl, base~Nat, x~FunDecl, xs~List FunDecl, i~Nat,
+                                     i <= list.length xs, agrees funs base (array.from_list (x :: xs)) (i + 1)
+    ensures agrees funs (base + 1) (array.from_list xs) i
+    proof
+        decreasing list.length xs - i
+        if i < list.length xs
+            have array.from_list_cons x xs (i + 1)
+            have agrees funs base (array.from_list (x :: xs)) (i + 2)
+            have agrees_tail funs base x xs (i + 1)
+        else
+            auto
+
+lemma numbered_declared funs base ds : funs~Array FunDecl, base~Nat, ds~List Def,
+                                       agrees funs base (array.from_list (def_funs ds)) 0
+    ensures defs_declared funs (numbered base ds)
+    proof
+        match ds
+            []        -> auto
+            d :: rest ->
+                have def_funs ds == def_fun d :: def_funs rest
+                have array.from_list_cons (def_fun d) (def_funs rest) 0
+                have agrees_tail funs base (def_fun d) (def_funs rest) 0
+                have numbered_declared funs (base + 1) rest
+
+lemma declared_append funs xs ys : funs~Array FunDecl, xs~List (Nat, Def), ys~List (Nat, Def), defs_declared funs xs,
+                                   defs_declared funs ys
+    ensures defs_declared funs (xs ++ ys)
+    proof
+        match xs
+            []        -> auto
+            _ :: rest -> have declared_append funs rest ys
+
+lemma declared_grow funs more ds : funs~Array FunDecl, more~Array FunDecl, ds~List (Nat, Def), defs_declared funs ds
+    ensures defs_declared (funs ++ more) ds
+    proof
+        match ds
+            []             -> auto
+            (n, _) :: rest ->
+                have (funs ++ more)[n] == funs[n]
+                have declared_grow funs more rest
+
+lemma declared_extend sig cmd ds : sig~Sig, cmd~Command, ds~List (Nat, Def), defs_declared sig.funs ds
+    ensures defs_declared (extend sig cmd).funs ds
+    proof
+        match cmd
+            DeclareFun f    -> have declared_grow sig.funs (array.from_list [f]) ds
+            DefineFuns _ fs -> have declared_grow sig.funs (array.from_list (def_funs fs)) ds
+            _               -> have (extend sig cmd).funs == sig.funs
+
+lemma declared_extend_all sig cmds ds : sig~Sig, cmds~List Command, ds~List (Nat, Def), defs_declared sig.funs ds
+    ensures defs_declared (extend_all sig cmds).funs ds
+    proof
+        match cmds
+            []          -> auto
+            cmd :: rest ->
+                have declared_extend sig cmd ds
+                have declared_extend_all (extend sig cmd) rest ds
+
+lemma defs_in_declared sig cmds : sig~Sig, cmds~List Command
+    ensures defs_declared (extend_all sig cmds).funs (defs_in (len sig.funs) cmds)
+    proof
+        match cmds
+            []          -> auto
+            cmd :: rest ->
+                have defs_in_declared (extend sig cmd) rest
+                match cmd
+                    DefineFuns _ ds ->
+                        let more = array.from_list (def_funs ds)
+                        have (extend sig cmd).funs == sig.funs ++ more
+                        have list.length_map def_fun ds
+                        have agrees_append sig.funs more 0
+                        have numbered_declared (extend sig cmd).funs (len sig.funs) ds
+                        have declared_extend_all (extend sig cmd) rest (numbered (len sig.funs) ds)
+                        let all = (extend_all (extend sig cmd) rest).funs
+                        have declared_append all (numbered (len sig.funs) ds) (defs_in (len sig.funs + list.length ds) rest)
+                    DeclareFun _    -> have len (extend sig cmd).funs == len sig.funs + 1
+                    _               -> have (extend sig cmd).funs == sig.funs
+
+# The definitions' numbers are their functions' in the signature: the
+# `n`-th function of `signature c` is the one `(n, d)` of `defs c` defines.
+export lemma defs_in_signature c : c~Context
+    ensures defs_declared (signature c).funs (defs c)
+    proof
+        have defs_in_declared empty_sig c.commands

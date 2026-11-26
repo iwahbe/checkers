@@ -1,0 +1,5 @@
+(set-logic ALL)
+(declare-fun g ((Array Int Int)) Bool)
+(assert (forall ((y Int)) (! (g (lambda ((i Int)) y)) :pattern ((g (lambda ((i Int)) y))))))
+(assert (not (g ((as const (Array Int Int)) 1))))
+(check-sat)

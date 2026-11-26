@@ -1,0 +1,4 @@
+(set-logic ALL)
+(declare-const |-1| Int)
+(assert (not (= |-1| 1)))
+(check-sat)

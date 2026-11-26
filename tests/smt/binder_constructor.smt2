@@ -1,0 +1,5 @@
+(set-logic ALL)
+(declare-datatypes ((D 0)) (((A) (B) (C (x Int)))))
+(define-fun f ((A D)) Bool (= (as A D) B))
+(assert (not (f B)))
+(check-sat)

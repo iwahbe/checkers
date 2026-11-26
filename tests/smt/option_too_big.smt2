@@ -1,0 +1,5 @@
+(set-option :rlimit 4294967296)
+(set-logic ALL)
+(declare-const x Int)
+(assert (not (= x 1)))
+(check-sat)

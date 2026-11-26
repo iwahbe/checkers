@@ -1,17 +1,13 @@
-; What a name may share its spelling with: a sort, declared before or after
-; it, and variables bound in later assertions, which hide it there as in Z3.
+; A name may share its spelling with a sort, declared before or after it.
 (set-option :produce-unsat-cores true)
 (set-option :produce-models true)
 (set-option :rlimit 1000)
 (set-option :timeout 2000)
 (set-logic ALL)
 (declare-sort S 0)
-(declare-fun q (Int) Bool)
 (declare-const x Int)
 (assert (! (> x 0) :named S))
 (assert (! (> x 1) :named T))
 (declare-sort T 0)
-(assert (forall ((S Int)) (! (q S) :pattern ((q S)))))
-(assert (let ((T 2)) (> x T)))
-(assert (not (q x)))
+(assert (not (= x 1)))
 (check-sat)
