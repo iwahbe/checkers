@@ -272,7 +272,7 @@ impl Elab {
                 } else {
                     format!(" (through `{root}`, as `{}`)", why.param)
                 };
-                let shown = show(&self.g, &i.names, &quote(&self.g, i.lvl, arg));
+                let shown = crate::core::show_marked(&self.g, &i.names, &quote(&self.g, i.lvl, arg));
                 let label = match why_not {
                     Why::Var(l) => {
                         let var = i.names.get(l).map(|n| n.to_string()).unwrap_or_else(|| "_".into());

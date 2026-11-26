@@ -632,7 +632,8 @@ pub fn owned_entry(i: u32, f: &Func, b: &[bool]) -> Func {
     let result = if f.rets == 1 { E::Var(rs[0]) } else { E::Multi(rs.iter().map(|r| E::Var(*r)).collect()) };
     let drops = params.iter().zip(b).filter(|(_, b)| **b).rev().fold(result, |acc, (v, _)| E::Drop(*v, Box::new(acc)));
     let body = if f.rets == 1 { E::Let(rs[0], Box::new(call), Box::new(drops)) } else { E::LetMulti(rs.clone(), Box::new(call), Box::new(drops)) };
-    Func { name: f.name.clone(), owner: f.owner, kind: FnKind::Global, params, body, nvars: n + f.rets as u32, rets: f.rets }
+    let bounds = f.params.iter().zip(&params).filter_map(|(v, w)| Some((*w, *f.bounds.get(v)?))).collect();
+    Func { name: f.name.clone(), owner: f.owner, kind: FnKind::Global, params, body, nvars: n + f.rets as u32, rets: f.rets, bounds }
 }
 
 /// `e` with each variable bound to another variable (`let x = y`, as
