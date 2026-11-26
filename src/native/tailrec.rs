@@ -180,7 +180,9 @@ fn new_helper(funcs: &mut Vec<Func>, i: usize, suffix: &str, extra: &[V], body: 
     params.extend_from_slice(extra);
     let name = format!("{}.{suffix}", f.name);
     let owner = f.owner;
-    funcs.push(Func { name, owner, kind: FnKind::Global, params, body, nvars, rets: 1 });
+    // Its calls pass what calls of the function would.
+    let bounds = f.bounds.clone();
+    funcs.push(Func { name, owner, kind: FnKind::Global, params, body, nvars, rets: 1, bounds });
 }
 
 // ── an operator after the call ──────────────────────────────────────────────

@@ -560,6 +560,24 @@ mod tests {
         })
     }
 
+    /// Integers whose types bound them (tests/run/bounded_ints.ck) need no
+    /// runtime: no small-integer test, overflow check or zero test, so no
+    /// slow path calling the runtime and no `drop`s. A product of two `I32`s
+    /// can reach 2^62, past the small integers: it keeps its check.
+    #[test]
+    fn bounded_integers_need_no_runtime() {
+        crate::with_big_stack(|| {
+            for (triple, _) in MACHINES {
+                let code = machine_code("bounded_ints", triple);
+                for f in ["add_bytes", "spread", "halves", "take"] {
+                    let c = code_of(&code, f);
+                    assert!(!c.contains("ext_name"), "{triple}: `{f}` calls the runtime:\n{c}");
+                }
+                assert!(code_of(&code, "product").contains("ext_name"), "{triple}: `product` without its overflow path");
+            }
+        })
+    }
+
     /// Small integers' inline paths (tests/run/small_int_edges.ck: overflow
     /// checks, constants, comparisons branched on) compile for every
     /// machine, whose overflow-checking instructions differ.

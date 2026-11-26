@@ -650,6 +650,9 @@ pub struct Elab {
     pub ty_cond_defer: Option<Vec<(Span, TyId, Vec<Val>)>>,
     /// Refinement aliases' predicates, over the alias's parameters then its binder.
     pub alias_preds: HashMap<DefId, Vec<Pred>>,
+    /// Functions' bounds from their signatures, for `Globals::bounds` once
+    /// the program is proved.
+    pub bounds: HashMap<DefId, Vec<Option<crate::range::Range>>>,
     /// The name a refinement alias binds (`n` in `type Big = n~Int, …`).
     pub alias_subject: HashMap<DefId, Name>,
     /// The result type of a function whose result type isn't written.
@@ -954,6 +957,7 @@ impl Elab {
             ty_param_typings: HashMap::new(),
             ty_cond_defer: None,
             alias_preds: HashMap::new(),
+            bounds: HashMap::new(),
             alias_subject: HashMap::new(),
             result_metas: HashMap::new(),
             arg_of: None,
