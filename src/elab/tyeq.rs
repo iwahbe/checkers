@@ -514,7 +514,7 @@ impl Elab {
 
     fn show_at(&self, w: &Wanted, v: &Val) -> String {
         let t = crate::core::zonk_metas(&self.g, w.lvl, &quote(&self.g, w.lvl, v));
-        show(&self.g, &w.names, &t)
+        crate::core::show_marked(&self.g, &w.names, &t)
     }
 
     fn report_wanted(&mut self, w: &Wanted, only_refinements: bool) {

@@ -68,7 +68,7 @@ impl Elab {
         } else if tm_eq(&quote(&self.g, lvl, ty), &quote(&self.g, lvl, bad)) {
             format!("it is {}", what(bad))
         } else {
-            format!("it contains {}, `{}`", what(bad), show(&self.g, names, &quote(&self.g, lvl, bad)))
+            format!("it contains {}, `{}`", what(bad), crate::core::show_marked(&self.g, names, &quote(&self.g, lvl, bad)))
         }
     }
 
@@ -140,7 +140,7 @@ impl Elab {
                 }
             }
             Err(Bad::NoEq(f)) => {
-                let shown = show(&self.g, &d.names, &quote(&self.g, d.lvl, &d.ty));
+                let shown = crate::core::show_marked(&self.g, &d.names, &quote(&self.g, d.lvl, &d.ty));
                 let why = self.why_not(&d.names, d.lvl, &d.ty, &f);
                 let mut diag = Diagnostic::error("E0263", format!("{} can't compare `{shown}`: {why}", d.what), d.span)
                     .with_label(format!("has type `{shown}`"));
@@ -213,7 +213,7 @@ impl Elab {
                 } else {
                     format!(" (through `{root}`, as `{}`)", why.param)
                 };
-                let shown = show(&self.g, &i.names, &quote(&self.g, i.lvl, arg));
+                let shown = crate::core::show_marked(&self.g, &i.names, &quote(&self.g, i.lvl, arg));
                 self.err(
                     Diagnostic::error(
                         "E0264",

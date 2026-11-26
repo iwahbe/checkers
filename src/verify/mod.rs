@@ -3,7 +3,7 @@
 
 pub mod smt;
 
-use crate::core::{quote, show};
+use crate::core::quote;
 use crate::diag::Diagnostic;
 use crate::elab::{Elab, ObKind, Obligation, Probe, ProbeKind, Vacuity, VacuityKind, WeakenRole};
 use crate::source::Span;
@@ -1275,7 +1275,7 @@ fn facts_note(e: &Elab, o: &Obligation) -> Option<String> {
         o.ctx.iter().filter(|l| crate::core::is_nat(&e.g, &l.ty)).map(|l| format!("{} >= 0", l.name)).collect();
     let mut shown: Vec<String> = implied.clone();
     for f in &o.facts {
-        let s = show(&e.g, &names, &quote(&e.g, lvl, f));
+        let s = crate::core::show_marked(&e.g, &names, &quote(&e.g, lvl, f));
         let s = match (s.strip_suffix(" == True"), s.strip_suffix(" == False")) {
             (Some(t), _) => t.to_string(),
             (_, Some(f)) if f.starts_with('(') => format!("not {f}"),

@@ -3022,7 +3022,7 @@ impl Elab {
             .tys
             .iter()
             .map(|t| {
-                let s = show(&self.g, &r.names, &quote(&self.g, r.lvl, t));
+                let s = crate::core::show_marked(&self.g, &r.names, &quote(&self.g, r.lvl, t));
                 if s.contains(' ') {
                     format!("({s})")
                 } else {
@@ -3169,9 +3169,9 @@ impl Elab {
                             // `\y -> List y` is `List`.
                             Val::Lam(_, _, _, c) => match self.force(&apply_closure(&self.g, &c, Val::var(r.lvl))) {
                                 Val::TyCon(t, args) if args.len() == 1 => self.g.tys[t.0 as usize].name.to_string(),
-                                _ => show(&self.g, &r.names, &quote(&self.g, r.lvl, t)),
+                                _ => crate::core::show_marked(&self.g, &r.names, &quote(&self.g, r.lvl, t)),
                             },
-                            _ => show(&self.g, &r.names, &quote(&self.g, r.lvl, t)),
+                            _ => crate::core::show_marked(&self.g, &r.names, &quote(&self.g, r.lvl, t)),
                         })
                         .collect();
                     let args: Vec<String> = shown.iter().map(|s| if s.contains(' ') { format!("({s})") } else { s.clone() }).collect();
@@ -3320,8 +3320,8 @@ impl Elab {
                     self.waiting_late.push((l, a, b, span, names, directed));
                 }
                 Err(_) => {
-                    let e = show(&self.g, &names, &self.reduce_assoc(l, &quote(&self.g, l, &a)));
-                    let f = show(&self.g, &names, &self.reduce_assoc(l, &quote(&self.g, l, &b)));
+                    let e = crate::core::show_marked(&self.g, &names, &self.reduce_assoc(l, &quote(&self.g, l, &a)));
+                    let f = crate::core::show_marked(&self.g, &names, &self.reduce_assoc(l, &quote(&self.g, l, &b)));
                     self.err(Diagnostic::error("E0201", format!("type mismatch: expected `{e}`, found `{f}`"), span));
                 }
             }
