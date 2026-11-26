@@ -607,6 +607,10 @@ pub struct Builder<'a> {
     body_axioms: BTreeMap<String, String>,
     posts: Vec<PostUse>,
     post_seen: HashSet<String>,
+    /// The constant a call with effects being translated is (`effect`).
+    effect: Option<String>,
+    /// The sort of each call with effects' constant made.
+    effect_sorts: HashMap<String, Sort>,
     /// Terms whose type's facts were asserted (once each).
     fact_seen: HashSet<String>,
     /// Translating a reflected body: don't collect postconditions or facts
@@ -674,6 +678,8 @@ impl<'a> Builder<'a> {
             body_axioms: BTreeMap::new(),
             posts: Vec::new(),
             post_seen: HashSet::new(),
+            effect: None,
+            effect_sorts: HashMap::new(),
             fun_args: 0,
             fact_seen: HashSet::new(),
             in_def: false,
@@ -2207,7 +2213,7 @@ impl<'a> Builder<'a> {
             Tm::Lit(l @ (Lit::Num(_) | Lit::Big(_))) => l.is_nonneg_int(),
             Tm::PrimApp(Prim::Add | Prim::Mul, xs) => xs.iter().all(|x| self.nonneg(x, stack)),
             Tm::PrimApp(Prim::Len, _) => true,
-            Tm::PrimApp(Prim::Par, xs) => xs.iter().all(|x| self.nonneg(x, stack)),
+            Tm::PrimApp(Prim::Par | Prim::Effect(_), xs) => xs.iter().all(|x| self.nonneg(x, stack)),
             Tm::Let(_, _, _, _, b) => self.nonneg(b, stack),
             Tm::Case(_, c) => {
                 c.branches.iter().all(|(_, _, b)| matches!(b, Tm::Error) || self.nonneg(b, stack))
@@ -2368,6 +2374,7 @@ impl<'a> Builder<'a> {
                 self.con_app(env, *c, &args)
             }
             Tm::PrimApp(Prim::Forall, args) if args.len() == 1 => self.forall(env, &args[0]),
+            Tm::PrimApp(Prim::Effect(id), args) if args.len() == 1 => self.effect(env, *id, &args[0]),
             Tm::PrimApp(p, args) => self.prim(env, p, args),
             Tm::Case(s, c) => self.case(env, s, c),
             Tm::Lam(..) => out("a lambda"),
@@ -3094,7 +3101,43 @@ impl<'a> Builder<'a> {
         !matches!(info.ty, Tm::Pi(..)) && info.body.as_ref().is_some_and(|b| tm_size(b, LARGE_CONSTANT) >= LARGE_CONSTANT)
     }
 
+    /// A call with effects (§7.1): outside a reflected body, a constant of
+    /// its own, `id`'s, with the callee's postconditions where `def_app`
+    /// can give them (`effect`); otherwise, the call itself, as the body
+    /// says (the body's callers' calls are values of their own).
+    fn effect(&mut self, env: &[Ent], id: u32, x: &Tm) -> Tx<(String, Sort)> {
+        let mut x = x;
+        while let Tm::PrimApp(Prim::Effect(_), a) = x {
+            match &a[..] {
+                [y] => x = y,
+                _ => break,
+            }
+        }
+        if self.in_def {
+            return self.term(env, x);
+        }
+        let name = format!("|effect#{id}|");
+        if let Some(s) = self.effect_sorts.get(&name) {
+            return Ok((name, s.clone()));
+        }
+        // Only a call of a named function, which `def_app` translates
+        // first, takes the constant: not a call inside a local function's
+        // arguments.
+        let flag = matches!(x.head(), Tm::Def(_)).then(|| name.clone());
+        let saved = std::mem::replace(&mut self.effect, flag);
+        let r = self.term(env, x);
+        self.effect = saved;
+        let (_, s) = r?;
+        if !self.funs.contains_key(&name) {
+            self.funs.insert(name.clone(), format!("(declare-fun {name} () {})", s.render(self.e)));
+        }
+        self.effect_sorts.insert(name.clone(), s.clone());
+        Ok((name, s))
+    }
+
     fn def_app(&mut self, env: &[Ent], d: DefId, args: &[(Tm, Mult)]) -> Tx<(String, Sort)> {
+        // A call with effects whose value is a constant of its own: this one.
+        let effect = self.effect.take();
         let info = &self.e.g.defs[d.0 as usize];
         let qualified = format!("{}.{}", info.module, info.name);
         let ty = info.ty.clone();
@@ -3333,7 +3376,7 @@ impl<'a> Builder<'a> {
         }
         let inst = Inst { def: d, tys: tys.clone(), funs: funs.clone() };
         let name = self.inst_name(&inst);
-        if !self.insts.contains_key(&inst) && !self.funs.contains_key(&name) {
+        if effect.is_none() && !self.insts.contains_key(&inst) && !self.funs.contains_key(&name) {
             if self.reflected(d) && !opaque_dict {
                 self.insts.insert(inst.clone(), None);
                 self.inst_queue.push(inst);
@@ -3350,7 +3393,14 @@ impl<'a> Builder<'a> {
                 }
             }
         }
-        let app = if vals.is_empty() { name } else { format!("({name} {})", vals.join(" ")) };
+        let app = match effect {
+            Some(c) => {
+                self.funs.entry(c.clone()).or_insert_with(|| format!("(declare-fun {c} () {})", rs.render(self.e)));
+                c
+            }
+            None if vals.is_empty() => name,
+            None => format!("({name} {})", vals.join(" ")),
+        };
         if self.gathers_posts() {
             // At a call on program values the result is a `Nat` where the
             // callee's precondition holds (outside it, a reflected body such
@@ -3498,6 +3548,7 @@ impl<'a> Builder<'a> {
             Prim::When => out("a `when`"),
             Prim::Builtin(n) => out(format!("the builtin `{n}`")),
             Prim::Forall => out("a `forall`"),
+            Prim::Effect(_) => out("a call with effects"),
         }
     }
 

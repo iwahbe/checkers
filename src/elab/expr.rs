@@ -1151,6 +1151,8 @@ impl Elab {
         if !self.check_comptime_call(cx, &t, &args, e.span) {
             return (Tm::Error, Val::Error);
         }
+        // A call with effects is a value of its own (§7.1).
+        let t = self.mark_effects(cx, t, &ty);
         (t, ty)
     }
 
@@ -3020,9 +3022,7 @@ impl Elab {
         let mult = self.named_mult(cx, name, &ty, span, declared);
         let v = self.eval(cx, &t);
         let tyt = quote(&self.g, cx.lvl(), &ty);
-        // A call that may make a cown isn't a function of its arguments
-        // (§7.1): the prover knows its result by what the call says of it.
-        let l = if erased { cx.define(name, ty, v, mult) } else { self.define_value(cx, name, &t, ty, v, mult) };
+        let l = cx.define(name, ty, v, mult);
         if name != "_" {
             self.bound_at(cx, l, span);
         }

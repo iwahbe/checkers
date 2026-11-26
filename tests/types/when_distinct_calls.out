@@ -10,7 +10,7 @@ error[E0450]: cannot prove `x != y`, required to call `exchange`
    |
 32 |     exchange c e sched
    |     ^^^^^^^^^^^^^^^^^^ `exchange` requires `x != y`
-   = note: facts in scope: `d != c`
+   = note: facts in scope: `(make sched) != c`
    = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
 
 error[E0450]: cannot prove `x != y`, required to call `exchange`
@@ -21,10 +21,11 @@ error[E0450]: cannot prove `x != y`, required to call `exchange`
    = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
 
 error[E0450]: cannot prove `x != y`, required to call `exchange`
-  --> when_distinct_calls.ck:56:5
+  --> when_distinct_calls.ck:59:5
    |
-56 |     exchange d e sched              # `make_two` may return one cown twice
+59 |     exchange d e sched              # `make_two` may return one cown twice
    |     ^^^^^^^^^^^^^^^^^^ `exchange` requires `x != y`
+   = note: facts in scope: `(make_two sched).0 != c`, `(make_two sched).1 != c`
    = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
 
 when_distinct_calls.ck: 4 errors, 0 warnings

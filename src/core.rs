@@ -115,6 +115,10 @@ pub enum Prim {
     /// variables whose body is the `Bool` (premises implying the
     /// conclusion). Only in specifications; never evaluated or compiled.
     Forall,
+    /// A call with effects (§7.1, §8.3), its one argument: the call itself
+    /// at run time; to the prover a value of its own, this one call's,
+    /// known by what the callee promises. Numbered, so two calls differ.
+    Effect(u32),
 }
 
 #[derive(Clone, Debug)]
@@ -2134,6 +2138,9 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
                     paren(p > 0, format!("{} {o} {}", show_prec(g, ns, a, 2), show_prec(g, ns, b, 2)))
                 }
                 _ => {
+                    if let (Prim::Effect(_), [a]) = (pr, args.as_slice()) {
+                        return show_prec(g, ns, a, p);
+                    }
                     if let (Prim::Neg, [a]) = (pr, args.as_slice()) {
                         return format!("-{}", show_prec(g, ns, a, 2));
                     }
