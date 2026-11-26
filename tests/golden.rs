@@ -844,9 +844,9 @@ fn smt_package(pool: &Pool, root: &'static Path, update: bool) {
     for (i, path) in ck_files(&pkg).into_iter().enumerate() {
         let pkg = pkg.clone();
         let name = path.strip_prefix(root).unwrap().display().to_string();
-        pool.add_local((13, i), name.clone(), move |_| {
+        pool.add((13, i), name.clone(), move |_| {
             let file = path.file_name().unwrap().to_string_lossy().to_string();
-            let c = in_process(|| checkers::check_in(&file, &fs::read_to_string(&path).unwrap(), &pkg));
+            let c = checkers::check_in(&file, &fs::read_to_string(&path).unwrap(), &pkg);
             (1, if c.diags.is_empty() { vec![] } else { vec![format!("── {name} must be clean ──\n{}", c.report())] })
         });
     }
