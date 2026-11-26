@@ -170,7 +170,7 @@ pub fn host_return_words() -> usize {
 pub(crate) fn rc_new(g: &Globals, p: &mut lower::Program) {
     let fields_of = |c: u32| g.cons[c as usize].fields.len();
     let from = p.rc_done;
-    tailrec::program(&mut p.funcs, from);
+    tailrec::program(&mut p.funcs, from, g.well_known.nil.map(|c| c.0));
     unbox::program(p, from);
     for f in &mut p.funcs[from..] {
         f.body = rc::forward_aliases(std::mem::replace(&mut f.body, lower::E::Erased));
@@ -283,11 +283,10 @@ fn dump(e: &lower::E, d: usize) -> String {
             dump(b, d)
         ),
         E::Str(s) => format!("{ind}{s:?}"),
-        E::Static(_) => format!("{ind}static"),
+        E::Static(..) => format!("{ind}static"),
         other => format!("{ind}{}", match other {
             E::Erased => "erased".to_string(),
             E::Unit => "()".to_string(),
-            E::BigLit(s) => s.clone(),
             E::Bytes(_) => "b\"…\"".to_string(),
             E::ConFn(c) => format!("conf{c}"),
             E::Par(_) => "par".to_string(),
@@ -429,7 +428,7 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         let dir = std::path::Path::new(&path).parent().unwrap().to_path_buf();
         crate::with_big_stack(move || {
-            let (e, main, staged, report) = crate::ready_to_run(name, &text, &dir, false, false).map_err(|r| r.report).unwrap();
+            let (e, main, staged, report) = crate::ready_to_run(name, &text, &dir, false).map_err(|r| r.report).unwrap();
             assert_eq!(report, "");
             f(&prepare(&e.g, Some(&staged), main, host_return_words()));
         })
@@ -509,7 +508,7 @@ mod tests {
             let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/run/unboxed_wide.ck");
             let text = std::fs::read_to_string(path).unwrap();
             let dir = std::path::Path::new(path).parent().unwrap();
-            let (e, main, staged, report) = crate::ready_to_run("unboxed_wide.ck", &text, dir, false, false).map_err(|r| r.report).unwrap();
+            let (e, main, staged, report) = crate::ready_to_run("unboxed_wide.ck", &text, dir, false).map_err(|r| r.report).unwrap();
             assert_eq!(report, "");
             for (triple, n) in MACHINES {
                 let p = prepare(&e.g, Some(&staged), main, n);
@@ -524,11 +523,18 @@ mod tests {
     /// in `tests/run/<name>.ck`, every runtime error's owner written as 0:
     /// code put into another function names where it came from.
     fn machine_code(name: &str, triple: &str) -> Vec<(String, String)> {
+        machine_code_as(name, triple, true)
+    }
+
+    /// `machine_code`, as if the program were `proved` or not (§13.3).
+    fn machine_code_as(name: &str, triple: &str, proved: bool) -> Vec<(String, String)> {
         let path = format!("{}/tests/run/{name}.ck", env!("CARGO_MANIFEST_DIR"));
         let text = std::fs::read_to_string(&path).unwrap();
         let dir = std::path::Path::new(&path).parent().unwrap();
-        let (e, main, staged, report) = crate::ready_to_run(&format!("{name}.ck"), &text, dir, false, false).map_err(|r| r.report).unwrap();
+        let (mut e, main, staged, report) = crate::ready_to_run(&format!("{name}.ck"), &text, dir, false).map_err(|r| r.report).unwrap();
         assert_eq!(report, "");
+        assert!(e.g.proved, "`{name}` relies on an `admit`");
+        e.g.proved = proved;
         let isa = isa(triple);
         let p = prepare(&e.g, Some(&staged), main, codegen::return_words(&*isa));
         let ob = cranelift_object::ObjectBuilder::new(isa, "test", cranelift_module::default_libcall_names()).unwrap();
@@ -582,7 +588,8 @@ mod tests {
     /// a literal (tests/run/known_bounds.ck): as a bound, `a < math.pow 2
     /// 32` as `a < 4294967296`, `a < LIMIT` as `a < 1000`, and a sealed
     /// function's value (`std.array.count`, the program's own
-    /// `limits.power_of_two`) as `256`; in code, `LIMIT` as `1000`.
+    /// `limits.power_of_two`) as `256`, and so is a value computed by a
+    /// function of the same module (`own_size`); in code, `LIMIT` as `1000`.
     #[test]
     fn known_bounds_compile_as_literals() {
         crate::with_big_stack(|| {
@@ -593,6 +600,7 @@ mod tests {
                 assert_eq!(code_of(&code, "with_name"), code_of(&code, "with_number"), "{triple}");
                 assert_eq!(code_of(&code, "by_std"), code_of(&code, "by_bytes"), "{triple}");
                 assert_eq!(code_of(&code, "by_own"), code_of(&code, "by_bytes"), "{triple}");
+                assert_eq!(code_of(&code, "by_module"), code_of(&code, "by_bytes"), "{triple}");
             }
         })
     }
@@ -607,10 +615,55 @@ mod tests {
             let text = std::fs::read_to_string(path).unwrap();
             let dir = std::path::Path::new(path).parent().unwrap();
             for release in [false, true] {
-                let (e, ..) = crate::ready_to_run("known_release.ck", &text, dir, false, release).map_err(|r| r.report).unwrap();
+                let (e, ..) = crate::ready_to_run("known_release.ck", &text, dir, release).map_err(|r| r.report).unwrap();
                 let far = e.g.defs.iter().position(|d| &*d.name == "FAR" && &*d.module == "known_release").unwrap();
                 let known = crate::core::known_const(&e.g, crate::core::DefId(far as u32));
                 assert_eq!(known.is_some(), release, "release: {release}");
+            }
+        })
+    }
+
+    /// Constants of every type known at compile time are static data
+    /// (§8.9): a program's code has no constant computed on first use
+    /// (`FnKind::Caf`, read through a slot checked for `UNSET`).
+    #[test]
+    fn known_constants_have_no_first_use_code() {
+        crate::with_big_stack(|| {
+            for name in ["known_baked", "known_arrays", "known_closures"] {
+                let path = format!("{}/tests/run/{name}.ck", env!("CARGO_MANIFEST_DIR"));
+                let text = std::fs::read_to_string(&path).unwrap();
+                let dir = std::path::Path::new(&path).parent().unwrap().to_path_buf();
+                let (e, main, staged, _) = crate::ready_to_run(&format!("{name}.ck"), &text, &dir, false).map_err(|r| r.report).unwrap();
+                let p = super::prepare(&e.g, Some(&staged), main, super::host_return_words());
+                // A definition's constant (not the closed code a program
+                // runs once at start, its `Debug` instances' table).
+                let cafs: Vec<&str> = p
+                    .funcs
+                    .iter()
+                    .filter(|f| matches!(f.kind, super::lower::FnKind::Caf) && (f.owner as usize) < e.g.defs.len())
+                    .map(|f| f.name.as_str())
+                    .collect();
+                assert!(cafs.is_empty(), "{name}: computed on first use: {cafs:?}");
+            }
+        })
+    }
+
+    /// A guarded operation whose obligation is proved has no run-time check
+    /// (§13.3, tests/run/proved_guards.ck): a division by a divisor proved
+    /// not zero is one whose bounds show it, and a `Nat` subtraction, a
+    /// division and an index are shorter than where their checks are kept.
+    /// (A `when`'s check is the runtime's, told whether to make it.)
+    #[test]
+    fn proved_operations_have_no_checks() {
+        crate::with_big_stack(|| {
+            for (triple, _) in MACHINES {
+                let code = machine_code("proved_guards", triple);
+                assert_eq!(code_of(&code, "nonzero"), code_of(&code, "positive"), "{triple}");
+                let checked = machine_code_as("proved_guards", triple, false);
+                for f in ["nat_less", "nonzero", "byte_at"] {
+                    let (proved, kept) = (code_of(&code, f), code_of(&checked, f));
+                    assert!(proved.lines().count() < kept.lines().count(), "{triple}: `{f}` keeps its check:\n{proved}");
+                }
             }
         })
     }
@@ -624,7 +677,7 @@ mod tests {
             let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/run/small_int_edges.ck");
             let text = std::fs::read_to_string(path).unwrap();
             let dir = std::path::Path::new(path).parent().unwrap();
-            let (e, main, staged, report) = crate::ready_to_run("small_int_edges.ck", &text, dir, false, false).map_err(|r| r.report).unwrap();
+            let (e, main, staged, report) = crate::ready_to_run("small_int_edges.ck", &text, dir, false).map_err(|r| r.report).unwrap();
             assert_eq!(report, "");
             for (triple, _) in MACHINES {
                 object(&e.g, Some(&staged), main, isa(triple)).unwrap_or_else(|m| panic!("{triple}: {m}"));

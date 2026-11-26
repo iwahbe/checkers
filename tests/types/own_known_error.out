@@ -1,0 +1,20 @@
+error[E0450]: cannot prove `r != 4`, the postcondition of `wrong`
+  --> own_known_error.ck:10:33
+   |
+10 | fn wrong k -> r : k~Nat, r~Int, r != 4
+   |                                 ^^^^^^ promised here
+   = note: for the value returned on line 11: `array.count 7 (array.repeat k 7) - 2`
+   = note: `count` is sealed in `std.array`: here the prover knows only its postconditions, the values of its calls known at compile time, and the lemmas you bring in with `have`
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+error[E0450]: cannot prove `r >= 0`, the postcondition of `by_constant`
+  --> own_known_error.ck:15:21
+   |
+15 | fn by_constant k -> r : k~Int, r~Nat
+   |                     ^ promised here
+   = note: for the value returned on line 16: `WRONG`
+   = note: facts in scope: `(k < 0)`
+   = note: counterexample: k = -1
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+own_known_error.ck: 2 errors, 0 warnings

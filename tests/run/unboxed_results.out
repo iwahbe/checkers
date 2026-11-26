@@ -18,15 +18,5 @@ a
 b
 2 1
 -- stderr
-error[E0450]: cannot prove that the divisor is not zero
-  --> unboxed_results.ck:84:43
-   |
-84 |         [a, b, c] -> if c == 0 then Some (a / c, b) else Some (a, b + c)
-   |                                           ^^^^^ `/` and `%` need a non-zero right side
-   = note: counterexample: xs = [0, 0, 0]
-   = help: check the divisor first, e.g. `if d != 0 then n / d else …`
-
-unboxed_results.ck: 1 error, 0 warnings
-running with 1 unproven obligation(s) (--unverified)
 runtime error in `third`: `/` by zero (1 / 0)
 -- exit 70

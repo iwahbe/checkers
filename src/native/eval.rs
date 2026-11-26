@@ -9,9 +9,12 @@
 use super::codegen::Gen;
 use super::lower::{Lowerer, Program};
 use crate::core::{ConId, Globals, Lit, Tm};
+use crate::known::{Builder, Node};
 use checkers_rt::word::{self as w, W};
 use cranelift_jit::JITModule;
+use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 pub struct Evaluator<'g> {
     g: &'g Globals,
@@ -242,91 +245,278 @@ impl<'g> Evaluator<'g> {
         self.within(|| w::drop_w(v))
     }
 
+    /// The code of each definition's and constructor's function as a value
+    /// (a global closure's), by its address: what a known closure is.
+    fn codes(&self) -> HashMap<u64, crate::known::Code> {
+        use crate::known::Code;
+        let p = &self.gen.p;
+        let mut out = HashMap::new();
+        let mut add = |f: u32, c: Code| {
+            for f in [f, p.entries.get(&f).copied().unwrap_or(f)] {
+                if (f as usize) < p.funcs.len() {
+                    out.insert(self.gen.m.get_finalized_function(self.gen.func_id(f)) as u64, c);
+                }
+            }
+        };
+        for (d, shape) in &p.defs {
+            match shape {
+                super::lower::DefShape::Fn { func, .. } => add(*func, Code::Def(crate::core::DefId(*d))),
+                super::lower::DefShape::Builtin { wrap, .. } => add(*wrap, Code::Def(crate::core::DefId(*d))),
+                _ => {}
+            }
+        }
+        for (c, f) in &p.con_wraps {
+            add(*f, Code::Con(ConId(*c)));
+        }
+        out
+    }
+
     /// A value of type `ty` (a closed type) as a term, where it has one
     /// (staging, §8.9). The type tells what the value alone doesn't: a
-    /// type stored as its one kept field (#170) is that field.
+    /// type stored as its one kept field (#170) is that field, a string is
+    /// its bytes.
     pub fn reify_as(&self, v: W, ty: &Tm) -> Option<Tm> {
-        let g = self.g;
-        match ty {
-            Tm::Def(_) => match unfolded(g, ty) {
-                Some(t) => self.reify_as(v, &t),
-                None => self.reify(v),
-            },
-            Tm::TupleTy(ts) if w::is_ptr(v) && w::kind(v) == w::K_TUPLE && w::nfields(v) == ts.len() => {
-                (0..ts.len()).map(|i| self.reify_as(w::slot(v, i), &ts[i])).collect::<Option<Vec<_>>>().map(Tm::Tuple)
-            }
-            // A string is stored as its bytes (#170).
-            Tm::TyConApp(id, _) if Some(*id) == g.well_known.string && w::is_ptr(v) && w::kind(v) == w::K_BYTES => {
-                Some(Tm::Lit(Lit::Str(Rc::from(w::str_of(v)))))
-            }
-            Tm::TyConApp(id, args) => {
-                let np = g.arity_ty(*id);
-                if let Some((c, k)) = unboxed_con(g, *id) {
-                    let ci = &g.cons[c.0 as usize];
-                    let mut out: Vec<Tm> = (0..np).map(|_| Tm::Univ(0)).collect();
-                    for j in 0..ci.fields.len() {
-                        out.push(if j != k {
-                            Tm::Tuple(vec![])
-                        } else if g.is_dict_type_field(c, k) {
-                            return None;
-                        } else {
-                            match subst_params(g, &ci.fields[k].3, args, k) {
-                                Some(t) => self.reify_as(v, &t)?,
-                                None => self.reify(v)?,
-                            }
-                        });
-                    }
-                    return Some(Tm::ConApp(c, out));
-                }
-                let Some(c) = w::con_of(v) else { return self.reify(v) };
-                let ci = &g.cons[c as usize];
-                if ci.ty != *id || (!w::is_nullary(v) && w::nfields(v) != ci.fields.len()) {
-                    return self.reify(v);
-                }
-                let mut out: Vec<Tm> = (0..np).map(|_| Tm::Univ(0)).collect();
-                if !w::is_nullary(v) {
-                    for (i, f) in ci.fields.iter().enumerate() {
-                        let fv = w::field(v, i);
-                        out.push(match subst_params(g, &f.3, args, i) {
-                            Some(t) => self.reify_as(fv, &t)?,
-                            None => self.reify(fv)?,
-                        });
-                    }
-                }
-                Some(Tm::ConApp(ConId(c), out))
-            }
-            _ => self.reify(v),
-        }
+        self.reify_typed(v, Some(ty))
     }
 
     /// A value as a term, where it has one (staging, §8.9).
     pub fn reify(&self, v: W) -> Option<Tm> {
-        let g = self.g;
+        self.reify_typed(v, None)
+    }
+
+    /// A literal, `()`, or a known value (`Tm::Known`): a graph built by a
+    /// depth-first walk with a stack of its own, so a value of any depth
+    /// takes the same stack, and each object and type it is read at once.
+    fn reify_typed(&self, v: W, ty: Option<&Tm>) -> Option<Tm> {
+        let mut r = Reifier { ev: self, b: Builder::default(), types: Vec::new(), type_ids: HashMap::new(), field_types: HashMap::new(), done: Default::default(), held: Vec::new(), codes: None };
+        let t = ty.map(|t| r.intern(t.clone()));
+        let root = r.run((v, t));
+        for x in std::mem::take(&mut r.held) {
+            self.release(x);
+        }
+        let root = root?;
+        let k = Arc::new(r.b.finish());
+        Some(match k.node(root) {
+            Node::Unit | Node::Erased => Tm::Tuple(vec![]),
+            Node::Con(..) | Node::Tuple(_) | Node::Array(..) | Node::Closure(_) | Node::Pap(_) => Tm::Known(crate::known::Value::new(k, root)),
+            _ => Tm::Lit(k.lit(root)?),
+        })
+    }
+}
+
+/// A word, and the type it is read at (an index into `Reifier::types`), if
+/// one is known.
+type Key = (W, Option<usize>);
+
+/// What a word read at a type is made of: a node at once, or parts to read
+/// first and how to make its node from theirs.
+enum Step {
+    Leaf(Node),
+    Parts(Make, Vec<Key>),
+}
+
+enum Make {
+    /// The same value at another type (an alias, unfolded).
+    Same,
+    Con(ConId),
+    /// A type stored as its field `k` of `n`: its constructor, the others
+    /// erased.
+    Kept(ConId, usize, usize),
+    Tuple,
+    /// An array laid out by this layout's code.
+    Array(u8),
+    Pap,
+}
+
+struct Reifier<'a, 'g> {
+    ev: &'a Evaluator<'g>,
+    b: Builder,
+    /// Types met, by index; `type_ids` finds one by its `Debug` form.
+    types: Vec<Tm>,
+    type_ids: HashMap<String, usize>,
+    /// A field's type at a type: by constructor, the type's index, field.
+    field_types: HashMap<(ConId, usize, usize), Option<usize>>,
+    /// The node of each word read at each type.
+    done: crate::known::FxMap<Key, u32>,
+    /// Elements read from arrays (new references), released at the end:
+    /// alive until then, so no word read stands for two values.
+    held: Vec<W>,
+    /// Whose code each code address is (`Evaluator::codes`), once needed.
+    codes: Option<HashMap<u64, crate::known::Code>>,
+}
+
+impl Reifier<'_, '_> {
+    fn intern(&mut self, t: Tm) -> usize {
+        let key = format!("{t:?}");
+        if let Some(&i) = self.type_ids.get(&key) {
+            return i;
+        }
+        self.types.push(t);
+        self.type_ids.insert(key, self.types.len() - 1);
+        self.types.len() - 1
+    }
+
+    /// Field `k` of constructor `c`'s type at type `t`, if it is closed.
+    fn field_type(&mut self, c: ConId, t: usize, k: usize) -> Option<usize> {
+        if let Some(r) = self.field_types.get(&(c, t, k)) {
+            return *r;
+        }
+        let g = self.ev.g;
+        let r = match &self.types[t] {
+            Tm::TyConApp(_, args) => subst_params(g, &g.cons[c.0 as usize].fields[k].3, args, k).map(|ft| self.intern(ft)),
+            _ => None,
+        };
+        self.field_types.insert((c, t, k), r);
+        r
+    }
+
+    /// The graph's node of `root`: a depth-first walk, its stack a vector.
+    fn run(&mut self, root: Key) -> Option<u32> {
+        struct Frame {
+            key: Key,
+            make: Make,
+            parts: Vec<Key>,
+            next: usize,
+        }
+        let mut stack: Vec<Frame> = Vec::new();
+        let visit = |me: &mut Self, key: Key, stack: &mut Vec<Frame>| -> Option<()> {
+            if me.done.contains_key(&key) {
+                return Some(());
+            }
+            match me.step(key)? {
+                Step::Leaf(n) => {
+                    let id = me.b.add(n);
+                    me.done.insert(key, id);
+                }
+                Step::Parts(make, parts) => stack.push(Frame { key, make, parts, next: 0 }),
+            }
+            Some(())
+        };
+        visit(self, root, &mut stack)?;
+        while let Some(top) = stack.last_mut() {
+            if top.next < top.parts.len() {
+                let key = top.parts[top.next];
+                top.next += 1;
+                visit(self, key, &mut stack)?;
+                continue;
+            }
+            let f = stack.pop().expect("a frame");
+            let ids: Vec<u32> = f.parts.iter().map(|k| self.done[k]).collect();
+            let id = match f.make {
+                Make::Same => ids[0],
+                Make::Con(c) => self.b.add(Node::Con(c, ids.into())),
+                Make::Kept(c, k, n) => {
+                    let unit = self.b.add(Node::Unit);
+                    let fields: Vec<u32> = (0..n).map(|j| if j == k { ids[0] } else { unit }).collect();
+                    self.b.add(Node::Con(c, fields.into()))
+                }
+                Make::Tuple if ids.is_empty() => self.b.add(Node::Unit),
+                Make::Tuple => self.b.add(Node::Tuple(ids.into())),
+                Make::Array(l) => self.b.add(Node::Array(l, ids.into())),
+                Make::Pap => self.b.add(Node::Pap(ids.into())),
+            };
+            self.done.insert(f.key, id);
+        }
+        self.done.get(&root).copied()
+    }
+
+    /// What `v` read at type `t` is made of; `None` if it has no term.
+    fn step(&mut self, (v, t): Key) -> Option<Step> {
+        let g = self.ev.g;
+        if let Some(t) = t {
+            match self.types[t].clone() {
+                Tm::Def(_) => {
+                    return Some(match unfolded(g, &self.types[t]) {
+                        Some(u) => Step::Parts(Make::Same, vec![(v, Some(self.intern(u)))]),
+                        None => Step::Parts(Make::Same, vec![(v, None)]),
+                    });
+                }
+                Tm::TupleTy(ts) if w::is_ptr(v) && w::kind(v) == w::K_TUPLE && w::nfields(v) == ts.len() => {
+                    let parts = ts.into_iter().enumerate().map(|(i, ft)| (w::slot(v, i), Some(self.intern(ft)))).collect();
+                    return Some(Step::Parts(Make::Tuple, parts));
+                }
+                // A string is stored as its bytes (#170).
+                Tm::TyConApp(id, _) if Some(id) == g.well_known.string && w::is_ptr(v) && w::kind(v) == w::K_BYTES => {
+                    return Some(Step::Leaf(Node::Str(Box::from(w::str_of(v)))));
+                }
+                Tm::TyConApp(id, args) if Some(id) == g.well_known.array && w::is_ptr(v) && w::kind(v) == checkers_rt::array::K_ARRAY && args.len() == 1 => {
+                    let elem = self.intern(args[0].clone());
+                    return Some(self.array(v, Some(elem)));
+                }
+                Tm::TyConApp(id, _) => {
+                    if let Some((c, k)) = unboxed_con(g, id) {
+                        if g.is_dict_type_field(c, k) {
+                            return None;
+                        }
+                        let n = g.cons[c.0 as usize].fields.len();
+                        let ft = self.field_type(c, t, k);
+                        return Some(Step::Parts(Make::Kept(c, k, n), vec![(v, ft)]));
+                    }
+                    if let Some(c) = w::con_of(v) {
+                        let ci = &g.cons[c as usize];
+                        if ci.ty == id && (w::is_nullary(v) || w::nfields(v) == ci.fields.len()) {
+                            let c = ConId(c);
+                            if w::is_nullary(v) {
+                                return Some(Step::Leaf(Node::Con(c, Box::new([]))));
+                            }
+                            let parts = (0..w::nfields(v)).map(|i| (w::field(v, i), self.field_type(c, t, i))).collect();
+                            return Some(Step::Parts(Make::Con(c), parts));
+                        }
+                    }
+                }
+                _ => {}
+            }
+            // What the type doesn't tell: by the value.
+            return Some(Step::Parts(Make::Same, vec![(v, None)]));
+        }
         if checkers_rt::obj::is_num(v) {
             let n = checkers_rt::obj::num_of(v);
-            return Some(Tm::Lit(Lit::int(n.to_string().parse().ok()?)));
+            let lit = Lit::int(n.to_string().parse().ok()?);
+            return Some(Step::Leaf(match lit {
+                Lit::Num(n) => Node::Int(n),
+                Lit::Big(n) => Node::Big((*n).clone()),
+                _ => unreachable!("a number"),
+            }));
         }
-        if v == w::ERASED || v == w::UNIT {
-            return Some(Tm::Tuple(vec![]));
+        if v == w::ERASED {
+            return Some(Step::Leaf(Node::Erased));
+        }
+        if v == w::UNIT {
+            return Some(Step::Leaf(Node::Unit));
         }
         if let Some(c) = w::con_of(v) {
-            let np = g.arity_ty(g.cons[c as usize].ty);
-            let mut args: Vec<Tm> = (0..np).map(|_| Tm::Univ(0)).collect();
-            if !w::is_nullary(v) {
-                for i in 0..w::nfields(v) {
-                    args.push(self.reify(w::field(v, i))?);
-                }
+            let c = ConId(c);
+            if w::is_nullary(v) {
+                return Some(Step::Leaf(Node::Con(c, Box::new([]))));
             }
-            return Some(Tm::ConApp(ConId(c), args));
+            return Some(Step::Parts(Make::Con(c), (0..w::nfields(v)).map(|i| (w::field(v, i), None)).collect()));
         }
         if !w::is_ptr(v) {
             return None;
         }
         match w::kind(v) {
-            w::K_BYTES => Some(Tm::Lit(Lit::Bytes(Rc::from(w::blob(v))))),
-            w::K_TUPLE => (0..w::nfields(v)).map(|i| self.reify(w::slot(v, i))).collect::<Option<Vec<_>>>().map(Tm::Tuple),
+            w::K_BYTES => Some(Step::Leaf(Node::Bytes(Box::from(w::blob(v))))),
+            w::K_TUPLE => Some(Step::Parts(Make::Tuple, (0..w::nfields(v)).map(|i| (w::slot(v, i), None)).collect())),
+            checkers_rt::array::K_ARRAY => Some(self.array(v, None)),
+            // A definition's or a constructor's function, with no free
+            // variables: by its code. A lambda's closure isn't known.
+            w::K_CLO if w::nfields(v) == 0 => {
+                let code = w::slot(v, 0);
+                let codes = self.codes.get_or_insert_with(|| self.ev.codes());
+                codes.get(&code).map(|c| Step::Leaf(Node::Closure(*c)))
+            }
+            // Its function, then the arguments it holds.
+            w::K_PAP => Some(Step::Parts(Make::Pap, (0..=w::nfields(v)).map(|i| (w::slot(v, i), None)).collect())),
             _ => None,
         }
+    }
+
+    /// An array's elements (`K_ARRAY`), each read at type `elem`.
+    fn array(&mut self, v: W, elem: Option<usize>) -> Step {
+        let items = self.ev.within(|| checkers_rt::array::items(v));
+        let parts = items.iter().map(|x| (*x, elem)).collect();
+        self.held.extend(items);
+        Step::Parts(Make::Array(checkers_rt::array::layout(v) as u8), parts)
     }
 }
 

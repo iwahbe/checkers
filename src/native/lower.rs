@@ -17,13 +17,12 @@ pub type V = u32;
 pub enum E {
     Var(V),
     Int(i64),
-    /// A number too big for a word: its decimal digits.
-    BigLit(String),
     Str(Arc<str>),
     Bytes(Arc<[u8]>),
     /// A value made only of literals, constructors and tuples: static data,
-    /// built when the program is compiled rather than each time it runs.
-    Static(Arc<Static>),
+    /// laid out when the program is compiled rather than built each time it
+    /// runs. A node of the graph.
+    Static(Arc<Static>, u32),
     Erased,
     Unit,
     /// The value of a definition: its global closure, or a constant.
@@ -66,54 +65,251 @@ pub enum E {
     LetMulti(Vec<V>, Box<E>, Box<E>),
 }
 
-/// A value known when the program is compiled (`E::Static`).
-pub enum Static {
-    /// An integer, a constructor without fields, `()` or an erased value.
+/// Static data (`E::Static`, `Ir::Static`): values known when the program
+/// is compiled, as a graph of the words and objects they are at run time,
+/// each node's parts before it and equal nodes one (§8.9, §14). Code
+/// generation lays a value out as immortal objects; every walk over one is
+/// a loop over the table or an explicit stack, never recursion, so a value
+/// of any depth takes the same stack.
+#[derive(Clone, Default)]
+pub struct Static {
+    nodes: Vec<SNode>,
+    /// Each node's hash, of its value: equal values in different graphs
+    /// hash alike (code generation lays out each value once).
+    hashes: Vec<u128>,
+    ids: crate::known::FxMap<SNode, u32>,
+}
+
+/// A node of static data.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub enum SNode {
+    /// An immediate: a small integer, a constructor without fields, `()`
+    /// or an erased value.
     Word(u64),
-    Str(Arc<str>),
+    /// An integer past a word's 63 bits (a `K_BIG` object).
+    Big(num_bigint::BigInt),
+    /// Bytes, or a string's bytes (a `K_BYTES` object).
     Bytes(Arc<[u8]>),
-    Con(u32, Vec<Arc<Static>>),
-    Tuple(Vec<Arc<Static>>),
+    /// A constructor (`K_CON`, its tag) or a tuple (`K_TUPLE`): its fields.
+    Obj { kind: u64, tag: u64, fields: Box<[u32]> },
+    /// An array (`K_ARRAY`) laid out by `layout`, a word per element or
+    /// packed (each element then a number or `Bool`'s word).
+    Array { layout: u8, elems: Box<[u32]> },
+    /// A definition's function as a value: its global closure.
+    Global(u32),
+    /// A constructor's function as a value: its wrapper's global closure.
+    ConFn(u32),
+}
+
+impl SNode {
+    /// The nodes it points to (or packs).
+    pub fn parts(&self) -> &[u32] {
+        match self {
+            SNode::Obj { fields, .. } => fields,
+            SNode::Array { elems, .. } => elems,
+            _ => &[],
+        }
+    }
 }
 
 impl Static {
-    /// `e` as static data, if it is a literal or built from them.
-    fn of(e: &E) -> Option<Arc<Static>> {
-        use checkers_rt::word as w;
-        Some(Arc::new(match e {
-            E::Int(n) => Static::Word(w::mk_int(*n)),
-            E::Str(s) => Static::Str(s.clone()),
-            E::Bytes(b) => Static::Bytes(b.clone()),
-            E::Erased => Static::Word(w::ERASED),
-            E::Unit => Static::Word(w::UNIT),
-            E::Con { con, fields, reuse: None } if fields.is_empty() => Static::Word(w::nullary(*con)),
-            E::Static(x) => return Some(x.clone()),
-            _ => return None,
-        }))
+    pub fn node(&self, id: u32) -> &SNode {
+        &self.nodes[id as usize]
     }
 
-    /// A constructor or tuple whose fields are all static, as one value.
-    fn fold(e: E) -> E {
+    pub fn hash_of(&self, id: u32) -> u128 {
+        self.hashes[id as usize]
+    }
+
+    /// Add a node whose fields are nodes already here; an equal node
+    /// already here is that one.
+    pub fn add(&mut self, n: SNode) -> u32 {
+        if let Some(&id) = self.ids.get(&n) {
+            return id;
+        }
+        let hash = crate::known::hash128(|s: &mut dyn std::hash::Hasher| match &n {
+            SNode::Obj { kind, tag, fields } => {
+                s.write_u8(0);
+                s.write_u64(*kind);
+                s.write_u64(*tag);
+                for f in fields.iter() {
+                    s.write(&self.hashes[*f as usize].to_le_bytes());
+                }
+            }
+            SNode::Word(x) => {
+                s.write_u8(1);
+                s.write_u64(*x);
+            }
+            SNode::Global(d) => {
+                s.write_u8(5);
+                s.write_u32(*d);
+            }
+            SNode::ConFn(c) => {
+                s.write_u8(6);
+                s.write_u32(*c);
+            }
+            SNode::Array { layout, elems } => {
+                s.write_u8(4);
+                s.write_u8(*layout);
+                s.write_usize(elems.len());
+                for f in elems.iter() {
+                    s.write(&self.hashes[*f as usize].to_le_bytes());
+                }
+            }
+            SNode::Big(b) => {
+                s.write_u8(2);
+                s.write(&b.to_signed_bytes_le());
+            }
+            SNode::Bytes(b) => {
+                s.write_u8(3);
+                s.write_usize(b.len());
+                s.write(b);
+            }
+        });
+        let id = self.nodes.len() as u32;
+        self.nodes.push(n.clone());
+        self.hashes.push(hash);
+        self.ids.insert(n, id);
+        id
+    }
+
+    /// The node of a word or a literal `e`, if it is one.
+    fn leaf(&mut self, e: &E) -> Option<u32> {
+        use checkers_rt::word as w;
+        Some(match e {
+            E::Int(n) => self.add(SNode::Word(w::mk_int(*n))),
+            E::Str(s) => self.add(SNode::Bytes(Arc::from(s.as_bytes()))),
+            E::Bytes(b) => self.add(SNode::Bytes(b.clone())),
+            E::Erased => self.add(SNode::Word(w::ERASED)),
+            E::Unit => self.add(SNode::Word(w::UNIT)),
+            E::Con { con, fields, reuse: None } if fields.is_empty() => self.add(SNode::Word(w::nullary(*con))),
+            _ => return None,
+        })
+    }
+
+    /// Copy node `id` of `from`, and the nodes it reaches, here: its id here.
+    pub fn import(&mut self, from: &Static, id: u32) -> u32 {
+        let mut map: crate::known::FxMap<u32, u32> = Default::default();
+        for x in from.reachable(id) {
+            let n = match from.node(x) {
+                SNode::Obj { kind, tag, fields } => SNode::Obj { kind: *kind, tag: *tag, fields: fields.iter().map(|f| map[f]).collect() },
+                SNode::Array { layout, elems } => SNode::Array { layout: *layout, elems: elems.iter().map(|f| map[f]).collect() },
+                n => n.clone(),
+            };
+            map.insert(x, self.add(n));
+        }
+        map[&id]
+    }
+
+    /// The nodes `id` reaches, itself included, parts first (in the
+    /// table's order).
+    pub fn reachable(&self, id: u32) -> Vec<u32> {
+        let mut seen = vec![false; id as usize + 1];
+        let mut todo = vec![id];
+        seen[id as usize] = true;
+        while let Some(x) = todo.pop() {
+            for &f in self.node(x).parts() {
+                if !seen[f as usize] {
+                    seen[f as usize] = true;
+                    todo.push(f);
+                }
+            }
+        }
+        (0..=id).filter(|x| seen[*x as usize]).collect()
+    }
+
+    /// A constructor or tuple whose fields are all words, literals or
+    /// static data, as one value: static data too. The largest field's
+    /// graph is grown, so a long list written out is built in linear time.
+    pub fn fold(e: E) -> E {
         let fields = match &e {
             E::Con { fields, reuse: None, .. } | E::Tuple(fields) if !fields.is_empty() => fields,
             _ => return e,
         };
-        let Some(xs) = fields.iter().map(Static::of).collect::<Option<Vec<_>>>() else { return e };
-        E::Static(Arc::new(match e {
-            E::Con { con, .. } => Static::Con(con, xs),
-            _ => {
-                // `(a, (b, c))` is `(a, b, c)` (D174).
-                let mut xs = xs;
-                if let Some(Static::Tuple(ys)) = xs.last().map(|l| &**l) {
-                    if ys.len() >= 2 {
-                        let ys = ys.clone();
-                        xs.pop();
-                        xs.extend(ys);
-                    }
+        if !fields.iter().all(|f| matches!(f, E::Static(..)) || Static::default().leaf(f).is_some()) {
+            return e;
+        }
+        let (con, mut fields) = match e {
+            E::Con { con, fields, .. } => (Some(con), fields),
+            E::Tuple(xs) => (None, xs),
+            _ => unreachable!(),
+        };
+        // The graph to grow: the largest field's.
+        let big = fields.iter().enumerate().filter_map(|(k, f)| if let E::Static(g, _) = f { Some((g.nodes.len(), k)) } else { None }).max().map(|(_, k)| k);
+        let mut graph = match big {
+            Some(k) => match std::mem::replace(&mut fields[k], E::Unit) {
+                E::Static(g, id) => {
+                    fields[k] = E::Static(Arc::new(Static::default()), id);
+                    Arc::try_unwrap(g).unwrap_or_else(|g| (*g).clone())
                 }
-                Static::Tuple(xs)
+                _ => unreachable!(),
+            },
+            None => Static::default(),
+        };
+        let ids: Vec<u32> = fields
+            .iter()
+            .enumerate()
+            .map(|(k, f)| match f {
+                E::Static(_, id) if Some(k) == big => *id,
+                E::Static(g, id) => graph.import(g, *id),
+                f => graph.leaf(f).expect("a literal"),
+            })
+            .collect();
+        let id = match con {
+            Some(c) => graph.add(SNode::Obj { kind: checkers_rt::word::K_CON, tag: c as u64, fields: ids.into() }),
+            None => graph.tuple(ids),
+        };
+        E::Static(Arc::new(graph), id)
+    }
+
+    /// A tuple of nodes: `(a, (b, c))` is `(a, b, c)` (D174).
+    pub fn tuple(&mut self, mut ids: Vec<u32>) -> u32 {
+        use checkers_rt::word as w;
+        if let Some(&last) = ids.last() {
+            if let SNode::Obj { kind, fields, .. } = self.node(last) {
+                if *kind == w::K_TUPLE && fields.len() >= 2 {
+                    let rest = fields.clone();
+                    ids.pop();
+                    ids.extend(rest.iter().copied());
+                }
             }
-        }))
+        }
+        self.add(SNode::Obj { kind: w::K_TUPLE, tag: 0, fields: ids.into() })
+    }
+
+    /// Node `id` as erased code (`Ir`): its word, or the static data.
+    pub fn ir(this: &Arc<Static>, id: u32) -> Ir {
+        use checkers_rt::word as w;
+        match this.node(id) {
+            SNode::Word(x) if *x == w::ERASED => Ir::Erased,
+            SNode::Word(x) if *x == w::UNIT => Ir::Tuple(Vec::new()),
+            SNode::Word(x) if w::is_int(*x) => Ir::Lit(RtLit::Num(w::int_of(*x) as i128)),
+            SNode::Word(x) if *x & 7 == 2 => Ir::Con(ConId((*x >> 3) as u32), Vec::new()),
+            _ => Ir::Static(this.clone(), id),
+        }
+    }
+
+    /// A static constructor taken apart one level: its constructor and its
+    /// fields as code.
+    pub fn open_con(this: &Arc<Static>, id: u32) -> Option<(ConId, Vec<Arc<Ir>>)> {
+        match this.node(id) {
+            SNode::Obj { kind, tag, fields } if *kind == checkers_rt::word::K_CON => {
+                Some((ConId(*tag as u32), fields.iter().map(|f| Arc::new(Static::ir(this, *f))).collect()))
+            }
+            _ => None,
+        }
+    }
+
+    /// Node `id` as code: its word, or the static data.
+    pub fn expr(this: &Arc<Static>, id: u32) -> E {
+        use checkers_rt::word as w;
+        match this.node(id) {
+            SNode::Word(x) if *x == w::ERASED => E::Erased,
+            SNode::Word(x) if *x == w::UNIT => E::Unit,
+            SNode::Word(x) if w::is_int(*x) => E::Int(w::int_of(*x)),
+            SNode::Word(x) if *x & 7 == 2 => E::Con { con: (*x >> 3) as u32, fields: Vec::new(), reuse: None },
+            _ => E::Static(this.clone(), id),
+        }
     }
 }
 
@@ -130,6 +326,14 @@ pub enum BOp {
     /// integer word) of a new constructor cell whose field `i` is empty;
     /// `()`. Only the code `tailrec` writes fills a cell this way.
     SetField,
+    /// `[s, acc]`: the accumulator of `f.acc` for `f xs ++ s` (§14) with
+    /// the piece `s` in front (`ck_concat_push`): for a list, `s ++ acc`;
+    /// for a string, bytes or array, a list of the pieces, `s :: acc`. Only
+    /// the code `tailrec` writes accumulates this way.
+    ConcatPush,
+    /// `[x, acc]`: `x ++` what `ConcatPush` accumulated in `acc`
+    /// (`ck_concat_all`), each element copied once.
+    ConcatAll,
 }
 
 #[derive(Clone)]
@@ -579,7 +783,7 @@ impl Lowerer<'_, '_> {
     /// bound to a variable first (`binds`, outermost first).
     fn atom(&mut self, e: E, binds: &mut Vec<(V, E)>) -> E {
         match e {
-            E::Var(_) | E::Int(_) | E::Str(_) | E::Bytes(_) | E::Static(_) | E::Erased | E::Unit => e,
+            E::Var(_) | E::Int(_) | E::Str(_) | E::Bytes(_) | E::Static(..) | E::Erased | E::Unit => e,
             other => {
                 let v = self.fresh();
                 binds.push((v, other));
@@ -598,11 +802,18 @@ impl Lowerer<'_, '_> {
         Self::wrap(binds, E::Borrow { op, args, drops: Vec::new() })
     }
 
+    fn big(n: num_bigint::BigInt) -> E {
+        let mut g = Static::default();
+        let id = g.add(SNode::Big(n));
+        E::Static(Arc::new(g), id)
+    }
+
     fn lit(v: &RtLit) -> E {
         match v {
             RtLit::Num(n) if checkers_rt::word::fits(*n) => E::Int(*n as i64),
-            RtLit::Num(n) => E::BigLit(n.to_string()),
-            RtLit::Big(n) => E::BigLit(n.to_string()),
+            // Past a word: a static `K_BIG` object (§14).
+            RtLit::Num(n) => Self::big(num_bigint::BigInt::from(*n)),
+            RtLit::Big(n) => Self::big(n.parse().expect("a number's digits")),
             RtLit::Str(s) => E::Str(s.clone()),
             RtLit::Bytes(b) => E::Bytes(b.clone()),
         }
@@ -617,6 +828,21 @@ impl Lowerer<'_, '_> {
             }
             Ir::Erased => E::Erased,
             Ir::Lit(v) => Self::lit(v),
+            Ir::Static(v, id) => {
+                // The functions it holds are compiled.
+                for x in v.reachable(*id) {
+                    match v.node(x) {
+                        SNode::Global(d) => {
+                            self.shape(*d);
+                        }
+                        SNode::ConFn(c) => {
+                            self.con_wrap(*c);
+                        }
+                        _ => {}
+                    }
+                }
+                Static::expr(v, *id)
+            }
             Ir::Fail(m) => E::Fail(m),
             Ir::At(o, x) => {
                 let o = o.map_or(NO_OWNER, |d| d.0);
