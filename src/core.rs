@@ -359,6 +359,13 @@ pub struct Globals {
     /// Each type's value parameters that its fields' types are computed
     /// from (#170), once worked out (`value_params_needed`).
     pub value_params: RefCell<HashMap<TyId, std::collections::BTreeSet<usize>>>,
+    /// Each function's constant bounds on its binders (implicit ones too),
+    /// then on its result, where its signature gives them (`x~U8`,
+    /// `0 <= x`), which native code relies on (§14). Empty until every
+    /// obligation of the program is proved (`Elab::bounds` until then): a
+    /// bound is a fact only then, not in a `check` or staging, which run
+    /// before proving, nor with `--unverified`.
+    pub bounds: HashMap<DefId, Vec<Option<crate::range::Range>>>,
     /// The base types of classes' types that have one (#360), by their
     /// field of the dictionary: closed types.
     pub type_bases: HashMap<(ConId, usize), Vec<Tm>>,
@@ -422,6 +429,7 @@ impl Globals {
             well_known: WellKnown::default(),
             postponed: RefCell::new(Vec::new()),
             value_params: RefCell::new(HashMap::new()),
+            bounds: HashMap::new(),
             type_bases: HashMap::new(),
         }
     }

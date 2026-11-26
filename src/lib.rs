@@ -13,6 +13,7 @@ pub mod lint;
 pub mod literate;
 pub mod native;
 pub mod overlay;
+pub mod range;
 pub mod source;
 pub mod stage;
 pub mod syntax;
@@ -1027,8 +1028,12 @@ fn ready_to_run(
     if blocking > 0 {
         return Err(Ran { report, code: 2 });
     }
+    let mut e = e;
     if c.errors() > 0 {
         report += &format!("running with {} unproven obligation(s) (--unverified)\n", c.errors());
+    } else {
+        // Proved: the bounds signatures give are facts native code may rely on.
+        e.g.bounds = std::mem::take(&mut e.bounds);
     }
     let exported = e.modules.get(&user).is_some_and(|m| m.exported_values.contains("main"));
     let main = e.g.defs.iter().position(|d| *d.module == user && &*d.name == "main");

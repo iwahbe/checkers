@@ -2359,6 +2359,13 @@ impl Elab {
                 }
                 _ => continue,
             };
+            // A function's bounds, where its type is its signature's.
+            if matches!(d.kind, DeclKind::Fn { .. }) && class_ty.is_none() {
+                let b = self.signature_bounds(&sig.binders, &sig.result, &sig.preds);
+                if b.iter().any(Option::is_some) {
+                    self.bounds.insert(*did, b);
+                }
+            }
             let ty = class_ty.take().unwrap_or_else(|| Self::pi_of(&sig.binders, sig.result.clone()));
             self.g.defs[did.0 as usize].ty = ty;
             if !sig.comptime.is_empty() {

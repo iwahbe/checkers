@@ -7,6 +7,7 @@
 
 use crate::core::{ConId, DefId, Globals, Mult, Tm};
 use crate::native::ir::{Compiler, Ir, Lit as RtLit, Op};
+use crate::range::Range;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
@@ -166,6 +167,9 @@ pub struct Func {
     pub nvars: u32,
     /// How many words it returns: 1, or a value's parts (`unbox`).
     pub rets: usize,
+    /// Constant bounds of variables, true wherever they are bound: its
+    /// parameters' from its signature (`Globals::bounds`).
+    pub bounds: HashMap<V, Range>,
 }
 
 /// How a definition is called.
@@ -414,6 +418,7 @@ impl<'a, 'g> Lowerer<'a, 'g> {
             body: E::Erased,
             nvars: 0,
             rets: 1,
+            bounds: HashMap::new(),
         });
         let shape = if n > 0 { DefShape::Fn { func, arity: n } } else { DefShape::Caf { func } };
         self.p.defs.insert(d, shape.clone());
@@ -431,13 +436,30 @@ impl<'a, 'g> Lowerer<'a, 'g> {
             self.next = 0;
             let (n, body) = lams(&ir);
             let params: Vec<V> = (0..n).map(|_| self.fresh()).collect();
+            let bounds = self.param_bounds(d, &params);
             let mut ctx: Vec<V> = params.clone();
             let body = self.expr(body, &mut ctx, true);
             let f = &mut self.p.funcs[func as usize];
             f.params = params;
             f.body = body;
             f.nvars = self.next;
+            f.bounds = bounds;
         }
+    }
+
+    /// The bounds of the parameters of definition `d`'s code (or of the
+    /// function a copy copies, at the parameters the copy takes) that its
+    /// signature gives.
+    fn param_bounds(&self, d: u32, params: &[V]) -> HashMap<V, Range> {
+        let specs = self.p.specs.borrow();
+        let (of, binders): (u32, Vec<Option<usize>>) = match specs.copy(d) {
+            Some(c) => (c.of.0, c.binders.clone()),
+            None => (d, (0..params.len()).map(Some).collect()),
+        };
+        let Some(b) = self.g.bounds.get(&DefId(of)) else { return HashMap::new() };
+        // The last of `b` is the result's.
+        let b = &b[..b.len() - 1];
+        params.iter().zip(binders).filter_map(|(v, j)| Some((*v, (*b.get(j?)?)?))).collect()
     }
 
     /// A closed term as a function of no arguments (a `Caf` computed
@@ -455,7 +477,7 @@ impl<'a, 'g> Lowerer<'a, 'g> {
         let roots: Vec<u32> = gs.iter().map(|x| x.0).collect();
         self.add_defs(&roots);
         let func = self.p.funcs.len() as u32;
-        self.p.funcs.push(Func { name: "check".into(), owner: NO_OWNER, kind: FnKind::Caf, params: Vec::new(), body: E::Erased, nvars: 0, rets: 1 });
+        self.p.funcs.push(Func { name: "check".into(), owner: NO_OWNER, kind: FnKind::Caf, params: Vec::new(), body: E::Erased, nvars: 0, rets: 1, bounds: HashMap::new() });
         self.owner = NO_OWNER;
         self.next = 0;
         let mut ctx = Vec::new();
@@ -525,7 +547,7 @@ impl Lowerer<'_, '_> {
     /// A wrapper function (builtin or constructor) of `arity` parameters.
     fn wrapper(&mut self, name: &str, owner: u32, kind: FnKind, arity: usize) -> u32 {
         let params: Vec<V> = (0..arity as u32).collect();
-        self.p.funcs.push(Func { name: name.to_string(), owner, kind, params, body: E::Erased, nvars: arity as u32, rets: 1 });
+        self.p.funcs.push(Func { name: name.to_string(), owner, kind, params, body: E::Erased, nvars: arity as u32, rets: 1, bounds: HashMap::new() });
         (self.p.funcs.len() - 1) as u32
     }
 
@@ -720,6 +742,7 @@ impl Lowerer<'_, '_> {
             body: b,
             nvars,
             rets: 1,
+            bounds: HashMap::new(),
         });
         E::MkClo { f, captured: captured_outer }
     }
