@@ -1,0 +1,14 @@
+error[E0294]: `first_byte` needs `Seq.Elem s == U8`, but here `s` is `String`, whose `Seq.Elem` is `Char`
+  --> type_eq_wanted.ck:18:5
+   |
+18 |     first_byte s
+   |     ^^^^^^^^^^^^
+
+error[E0294]: `first_byte` needs `Seq.Elem s == U8`, but here `s` is `List Int`, whose `Seq.Elem` is `Int`
+  --> type_eq_wanted.ck:21:5
+   |
+21 |     first_byte xs
+   |     ^^^^^^^^^^^^^
+   = help: `U8` and `Int` are different types: an `Int` needn't satisfy `n < 256`
+
+type_eq_wanted.ck: 2 errors, 0 warnings

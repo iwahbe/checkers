@@ -36,6 +36,11 @@ pub struct Sig {
     /// later): the dictionaries of clauses naming a parameter, each right
     /// after the last one it names (`t~ghost Type, Parse t`, #161).
     pub inner: Vec<usize>,
+    /// Its type equations (#209), over the binders.
+    pub teqs: Vec<super::tyeq::TyEq>,
+    /// Its parameters' types' equations (#209), over the binders: they
+    /// hold in the body, and aren't asked of a caller.
+    pub given_teqs: Vec<super::tyeq::TyEq>,
 }
 
 impl Elab {
@@ -64,6 +69,7 @@ impl Elab {
         self.decl_spans.insert(name.to_string(), m.decls.iter().zip(&ids).map(|(d, id)| (d.span, *id)).collect());
         self.note_decls(name, m, &ids);
         self.phase_type_params(m, &ids);
+        self.register_module_type_bases();
         // Declarations in the order of what they use, not of the file (D65).
         let dicts: Vec<usize> =
             self.decl_origin.iter().enumerate().filter(|(_, o)| matches!(o, super::classes::Origin::InstDict(_))).map(|(k, _)| k).collect();
@@ -1023,6 +1029,15 @@ impl Elab {
             }
             for c in cs {
                 if let Constraint::Pred(e) | Constraint::Named(_, e) = c {
+                    // A type equation (#209): a condition on the type, the
+                    // type checker's.
+                    if let Some((a, b)) = self.teq_sides_in(cs, &self.type_params_named(*tid), e) {
+                        if let Some((l, r)) = self.elab_teq(&mut cx, e, a, b) {
+                            let q = super::tyeq::TyEq { lhs: l, rhs: r, text: self.src_text(e.span), span: e.span };
+                            self.ty_teqs.entry(*tid).or_default().push(q);
+                        }
+                        continue;
+                    }
                     let p = self.elab_pred(&mut cx, e, false);
                     let v = self.eval(&cx, &p.tm);
                     cx.assume(v);
@@ -1158,6 +1173,11 @@ impl Elab {
     fn elab_fields(&mut self, tid: TyId, cid: ConId, con: (&Ident, Span), names: &[&Ident], cs: &[Constraint], extra_preds: &[&Expr]) {
         self.g.fuel.set(DEFAULT_FUEL);
         let mut cx = self.bind_type_params(tid);
+        // Its type equations hold in its fields (#209).
+        let env = Rc::new(cx.env.to_vec());
+        let eqs = self.ty_teqs.get(&tid).cloned().unwrap_or_default().iter().map(|q| (eval(&self.g, &env, &q.lhs), eval(&self.g, &env, &q.rhs), q.text.clone())).collect();
+        self.givens.clear();
+        self.assume_teqs(eqs);
         // Each fact assumed, as written, to ask whether they can all hold.
         let mut conds = Vec::new();
         // The type's conditions on its parameters hold in its fields (#136).
@@ -1238,8 +1258,18 @@ impl Elab {
         });
         // Each condition may rely on those before it, as a signature's do
         // (fields' types are facts already through their locals).
+        let mut teqs = Vec::new();
+        let tparams = self.type_params_named(tid);
         for c in cs {
             match c {
+                // A type equation (#209): it fixes the type this constructor
+                // builds; the type checker's, never the prover's.
+                Constraint::Pred(e) if self.teq_sides_in(cs, &tparams, e).is_some() => {
+                    let (a, b) = self.teq_sides_in(cs, &tparams, e).unwrap();
+                    if let Some((l, r)) = self.elab_teq(&mut cx, e, a, b) {
+                        teqs.push(super::tyeq::TyEq { lhs: l, rhs: r, text: self.src_text(e.span), span: e.span });
+                    }
+                }
                 Constraint::Pred(e) | Constraint::Named(_, e) => {
                     let p = self.elab_pred(&mut cx, e, false);
                     let v = self.eval(&cx, &p.tm);
@@ -1249,7 +1279,17 @@ impl Elab {
                 Constraint::Typed { .. } => {}
             }
         }
+        if !teqs.is_empty() {
+            self.con_teqs.insert(cid, teqs);
+        }
         for e in extra_preds {
+            if let Some((a, b)) = self.teq_sides_in(cs, &tparams, e) {
+                if let Some((l, r)) = self.elab_teq(&mut cx, e, a, b) {
+                    let q = super::tyeq::TyEq { lhs: l, rhs: r, text: self.src_text(e.span), span: e.span };
+                    self.con_teqs.entry(cid).or_default().push(q);
+                }
+                continue;
+            }
             let p = self.elab_pred(&mut cx, e, false);
             let v = self.eval(&cx, &p.tm);
             cx.assume(v);
@@ -1300,6 +1340,7 @@ impl Elab {
             out.push((n.clone(), *m, *ic, quote(&self.g, np + i, &v)));
         }
         self.g.cons[cid.0 as usize].fields = out;
+        self.givens.clear();
     }
 
     /// Free lower-case names in a type expression that are not declared,
@@ -1845,6 +1886,14 @@ impl Elab {
         for e in &class_clauses {
             self.collect_free(&cx, e, &declared, &mut autos);
         }
+        // A type equation's names are types too (#209).
+        for c in cs {
+            if let Constraint::Pred(e) = c {
+                if self.teq_sides(cs, e).is_some() {
+                    self.collect_free(&cx, e, &declared, &mut autos);
+                }
+            }
+        }
         // A clause naming a parameter (`t~ghost Type, Parse t`, #161): its
         // dictionary comes right after the last parameter it names, so
         // the call's argument for that parameter decides it.
@@ -1968,6 +2017,16 @@ impl Elab {
             Some((l, cx.locals[l].ty.clone()))
         });
         let deferred = std::mem::replace(&mut self.ty_cond_defer, saved_defer).unwrap_or_default();
+        // Types' equations on their parameters (#209): where a parameter's
+        // type has one, at any depth, it holds (a value of it exists).
+        let mut ty_givens = Vec::new();
+        for (k, b) in binders.iter().enumerate() {
+            let v = eval(&self.g, &Rc::new(cx.env[..k].to_vec()), &b.3);
+            for (_, args, q) in self.ty_teqs_in(k, &v) {
+                let env = Rc::new(args);
+                ty_givens.push((eval(&self.g, &env, &q.lhs), eval(&self.g, &env, &q.rhs), q.text));
+            }
+        }
         // Predicates may mention the result, so check them with it in scope.
         let rv = self.eval(&cx, &result_ty);
         let rname = result.map(|r| r.name.clone()).unwrap_or_else(|| "_result".to_string());
@@ -2014,12 +2073,27 @@ impl Elab {
             cx.assume(v);
         }
         let mut hyps = Vec::new();
+        let mut teqs = Vec::new();
         for c in cs {
             if let Constraint::Pred(e) | Constraint::Named(_, e) = c {
                 if class_clauses.iter().any(|x| std::ptr::eq(*x, e)) {
                     continue;
                 }
                 let is_post = result.is_some_and(|r| mentions(e, &r.name));
+                // A type equation (#209): the type checker's, never the prover's.
+                if let (Constraint::Pred(_), Some((a, b))) = (c, self.teq_sides(cs, e)) {
+                    if is_post {
+                        self.teq_promised(e, "a type equation can only be assumed, not promised");
+                        continue;
+                    }
+                    if let Some((l, r)) = self.elab_teq(&mut cx, e, a, b) {
+                        // Over the binders and the result, as the predicates are.
+                        let (lv, rv) = (self.eval(&cx, &l), self.eval(&cx, &r));
+                        let (lhs, rhs) = (quote(&self.g, cx.lvl(), &lv), quote(&self.g, cx.lvl(), &rv));
+                        teqs.push(super::tyeq::TyEq { lhs, rhs, text: self.src_text(e.span), span: e.span });
+                    }
+                    continue;
+                }
                 let named = matches!(c, Constraint::Named(..));
                 if let Constraint::Named(n, _) = c {
                     if is_post {
@@ -2068,7 +2142,30 @@ impl Elab {
         self.in_spec -= 1;
         cx.facts.truncate(facts_before);
         cx.pop();
-        Sig { cx, binders, result: result_ty, n_implicit, preds, result_name: rname, comptime, hyps, late, inner }
+        // Where the result's type has one, it is wanted: with the
+        // signature's equations and its parameters' types' assumed.
+        let nb = binders.len();
+        let saved_givens = std::mem::take(&mut self.givens);
+        let env = Rc::new(cx.env.to_vec());
+        let mut eqs: Vec<(Val, Val, String)> = teqs.iter().map(|q| {
+            let mut e = env.to_vec();
+            e.push(Val::var(nb));
+            let e = Rc::new(e);
+            (eval(&self.g, &e, &q.lhs), eval(&self.g, &e, &q.rhs), q.text.clone())
+        }).collect();
+        eqs.extend(ty_givens.iter().cloned());
+        self.assume_teqs(eqs);
+        let rv = self.eval(&cx, &result_ty);
+        for (tid, args, q) in self.ty_teqs_in(nb, &rv) {
+            let at = result.map_or(Span::default(), |r| Self::typed_constraint(cs, &r.name).map_or(r.span, |(e, _)| e.span));
+            self.want_type_teq(&cx, tid, &args, &q, at);
+        }
+        self.givens = saved_givens;
+        let given_teqs = ty_givens
+            .into_iter()
+            .map(|(l, r, text)| super::tyeq::TyEq { lhs: quote(&self.g, nb + 1, &l), rhs: quote(&self.g, nb + 1, &r), text, span: Span::default() })
+            .collect();
+        Sig { cx, binders, result: result_ty, n_implicit, preds, result_name: rname, comptime, hyps, late, inner, teqs, given_teqs }
     }
 
     /// The preconditions of a signature's function parameters that relate
@@ -2217,6 +2314,8 @@ impl Elab {
                             late: sig.late.clone(),
                             elems: self.elem_promises(&sig),
                             inner: sig.inner.clone(),
+                            teqs: sig.teqs.clone(),
+                            binder_names: sig.binders.iter().map(|b| b.0.clone()).collect(),
                             ..Default::default()
                         },
                     );
@@ -2295,6 +2394,8 @@ impl Elab {
     fn phase_bodies(&mut self, m: &ast::Module, ids: &[Option<Sym>], mut sigs: HashMap<usize, Sig>, checks: bool) {
         for (k, (d, id)) in m.decls.iter().zip(ids).enumerate() {
             self.g.fuel.set(DEFAULT_FUEL);
+            // A body's type equations hold in it alone (#209).
+            self.givens.clear();
             // Completing (D142): only the body the cursor is in.
             if let Some((module, at)) = &self.completing {
                 let here = *module == self.cur && d.span.start <= *at && *at <= d.span.end;
@@ -2318,6 +2419,11 @@ impl Elab {
                     self.body_fns.push(*did);
                     let rty = self.eval(&sig.cx, &sig.result);
                     self.assume_pres(&mut sig);
+                    // Type equations that can't all hold (#209): the body never runs.
+                    if let Some((a, b)) = self.contradiction() {
+                        let why = if a == b { format!("`{a}` can't hold") } else { format!("`{a}` and `{b}` contradict each other") };
+                        self.err(Diagnostic::warning("W022", format!("this body never runs: {why}"), body.span).with_label("no call can meet these type equations"));
+                    }
                     let posts: Vec<Pred> = sig.preds.iter().filter(|p| p.is_post).cloned().collect();
                     let fname = self.g.defs[did.0 as usize].name.to_string();
                     // A class's function: each instance proves its postconditions (D136).
@@ -2341,6 +2447,13 @@ impl Elab {
                     self.cur_fn = Some(*did);
                     self.module_fns.push(*did);
                     self.assume_pres(&mut sig);
+                    // A class's type's base type at an instance (#360).
+                    if let Some((bases, x, own)) = self.class_type_bases_at.get(&name.name).cloned() {
+                        if !self.class_type_base_holds(&sig.cx, &name.name, &bases, &x, own, ensures.span) || own {
+                            self.cur_fn = None;
+                            continue;
+                        }
+                    }
                     self.lemma_lets(&mut sig.cx, lets);
                     self.forall_ok += 1;
                     let ens = self.elab_pred(&mut sig.cx, ensures, false);
@@ -2399,9 +2512,16 @@ impl Elab {
     /// `have` may use a lemma declared later.
     fn phase_lemma_statements(&mut self, m: &ast::Module, ids: &[Option<Sym>], sigs: &mut HashMap<usize, Sig>) {
         for (k, (d, id)) in m.decls.iter().zip(ids).enumerate() {
-            let DeclKind::Lemma { lets, ensures, decreasing, proof, .. } = &d.kind else { continue };
+            let DeclKind::Lemma { name, lets, ensures, decreasing, proof, .. } = &d.kind else { continue };
             let Some(Sym::Def(did)) = id else { continue };
             let Some(sig) = sigs.get(&k) else { continue };
+            // A class's type's predicate at an instance whose type isn't its
+            // base type (#360): reported by the base's check, not stated.
+            if let Some((bases, x, _)) = self.class_type_bases_at.get(&name.name).cloned() {
+                if !self.class_type_base_holds(&sig.cx, &name.name, &bases, &x, false, ensures.span) {
+                    continue;
+                }
+            }
             // An axiom (D56) is known as one before any proof uses it, so a
             // use before its declaration is in the ledger too (#245).
             if self.stdlib_mode && proof.as_ref().is_some_and(is_builtin) {
@@ -2452,6 +2572,8 @@ impl Elab {
                 late: sig.late.clone(),
                 elems: Vec::new(),
                 inner: sig.inner.clone(),
+                teqs: sig.teqs.clone(),
+                binder_names: sig.binders.iter().map(|b| b.0.clone()).collect(),
             };
             self.specs.insert(*did, spec);
         }
@@ -2485,6 +2607,10 @@ impl Elab {
         env.push(Val::var(sig.cx.lvl())); // the result slot; preconditions don't mention it
         let env = Rc::new(env);
         self.cur_hyps.clear();
+        // Its type equations hold in the body (#209).
+        self.givens.clear();
+        let eqs = sig.teqs.iter().chain(&sig.given_teqs).map(|q| (eval(&self.g, &env, &q.lhs), eval(&self.g, &env, &q.rhs), q.text.clone())).collect();
+        self.assume_teqs(eqs);
         for (k, p) in sig.preds.iter().enumerate().filter(|(_, p)| !p.is_post) {
             let v = eval(&self.g, &env, &p.tm);
             if let Some((n, _)) = sig.hyps.iter().find(|(_, i)| *i == k) {
@@ -2513,6 +2639,8 @@ impl Elab {
                 hyps: sig.hyps.clone(),
                 late: sig.late.clone(),
                 inner: sig.inner.clone(),
+                teqs: sig.teqs.clone(),
+                given_teqs: sig.given_teqs.clone(),
             };
             self.cur_fn = Some(*did);
             self.assume_pres(&mut sig);

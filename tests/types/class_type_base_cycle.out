@@ -1,0 +1,8 @@
+error[E0370]: the base type of `A` mentions `A` itself, through `B`
+ --> class_type_base_cycle.ck:6:16
+  |
+6 |     type A : a~List B
+  |                ^^^^^^ no type can be a refinement of a type built from itself
+  = help: give `A` a base type that doesn't mention it
+
+class_type_base_cycle.ck: 1 error, 0 warnings
