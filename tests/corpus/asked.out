@@ -10,43 +10,43 @@ error[E0450]: cannot prove `r > x`, the postcondition of `refuted`
 tests/corpus/asked.ck: 1 error, 0 warnings
 -- exit 1
 -- written: asked, std.files, std.prelude, std.system, z3-version
-== asked/86a009be5d556814.smt2
+== asked/092e1bed20514643.smt2
 (set-option :produce-models true)
-(set-option :rlimit 200000)
 (set-option :timeout 60000)
-(set-logic ALL)
-(declare-const |x#0| Int)
-(assert (not (> |x#0| |x#0|)))
-(check-sat)
-(get-value (|x#0|))
-== asked/86a009be5d556814.z3
-;; work 21
-sat
-((|x#0| 0))
-== asked/cd1984d00068b717.smt2
-(set-option :produce-models true)
-(set-option :rlimit 200000)
-(set-option :timeout 60000)
-(set-logic ALL)
-(declare-const |x#0| Int)
-(assert (not (> (+ |x#0| 1) |x#0|)))
-(check-sat)
-(get-value (|x#0|))
-== asked/cd1984d00068b717.z3
-;; work 23
-unsat
-(error "line 8 column 18: model is not available")
-== asked/f0ddd035faed8df1.smt2
-(set-option :produce-models true)
-(set-option :rlimit 200000)
-(set-option :timeout 60000)
+(set-option :reproducible-resource-limit 200000)
 (set-logic ALL)
 (declare-const |x#0| Int)
 (assert (= (> |x#0| 0) true))
 (assert (not (>= |x#0| 0)))
 (check-sat)
 (get-value (|x#0|))
-== asked/f0ddd035faed8df1.z3
+== asked/092e1bed20514643.z3
 ;; work 191
 unsat
 (error "line 9 column 18: model is not available")
+== asked/31a67e72c0946eca.smt2
+(set-option :produce-models true)
+(set-option :timeout 60000)
+(set-option :reproducible-resource-limit 200000)
+(set-logic ALL)
+(declare-const |x#0| Int)
+(assert (not (> |x#0| |x#0|)))
+(check-sat)
+(get-value (|x#0|))
+== asked/31a67e72c0946eca.z3
+;; work 21
+sat
+((|x#0| 0))
+== asked/a43f255f339254c1.smt2
+(set-option :produce-models true)
+(set-option :timeout 60000)
+(set-option :reproducible-resource-limit 200000)
+(set-logic ALL)
+(declare-const |x#0| Int)
+(assert (not (> (+ |x#0| 1) |x#0|)))
+(check-sat)
+(get-value (|x#0|))
+== asked/a43f255f339254c1.z3
+;; work 23
+unsat
+(error "line 8 column 18: model is not available")
