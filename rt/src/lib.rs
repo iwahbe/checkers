@@ -19,6 +19,7 @@ pub mod io;
 pub mod num;
 pub mod obj;
 pub mod ops;
+pub mod overflow;
 pub mod poll;
 pub mod prog;
 pub mod sched;

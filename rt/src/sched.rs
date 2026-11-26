@@ -133,6 +133,7 @@ impl<P: Send + 'static, E: Send + 'static> Pool<P, E> {
             let h = std::thread::Builder::new()
                 .stack_size(WORKER_STACK)
                 .spawn(move || {
+                    crate::overflow::thread_init();
                     let mut s = make();
                     p.work(&mut s, false);
                 })
