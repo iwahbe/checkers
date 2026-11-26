@@ -25,7 +25,7 @@ import term (Head, Fun, Con, Is, Sel, Num, Boolean, Prim, ConstArr, EmptySeq, Te
 import term (Def, DefKind, Recursive, Plain, Axiom, Command, DeclareSort, DeclareDatatypes, DeclareFun, DefineFuns, Assume)
 import term (Assert)
 import term (Sig, Context, Problem, BadSort, NoCtors, BadApply, Unbound, EmptyLet, ConstantParams, Expected, NoPattern)
-import term (NotWellFounded, NotCovariant)
+import term (NotWellFounded, NoBaseCase, NotCovariant)
 import term (NamedTwice, PlainInGroup)
 import reserved
 
@@ -1385,6 +1385,9 @@ fn problem_message sig pr -> r : sig~Sig, pr~Problem, r~Bytes
         Expected want got -> b"expected a term of sort " ++ sort_text sig want ++ b", found one of sort " ++ sort_text sig got
         NoPattern         -> b"a `:pattern` needs at least one term"
         NotWellFounded d  -> b"the datatype " ++ shown d.name ++ b" has no values: each constructor needs a value of a sort that has none"
+        NoBaseCase d      ->
+            b"the datatype " ++ shown d.name
+                ++ b" is not well-founded: every constructor has a field that holds a datatype of its group (also inside an array, a sequence or a declared sort) not yet shown to have a value"
         NotCovariant d    -> b"the datatype " ++ shown d.name ++ b" is in the index sort of an array in its own fields, which is not allowed"
         NamedTwice n      -> b"an assertion before this one is already named " ++ shown n
         PlainInGroup d    -> shown d.name ++ b" is defined without recursion, so it must be alone, in `define-fun`"

@@ -1,8 +1,4 @@
 -- stdout
-(set-logic ALL)
-(declare-sort U 1)
-(declare-datatypes ((T 0)) (((mk (x (Array (U T) Int))))))
-(assert (not false))
-(check-sat)
+(error "line 6 column 1: a field whose sort is an array may not mention a datatype of its own group in its index sort, nor in its value sort unless that is itself a datatype (Z3: not co-variant)")
 -- stderr
--- exit 0
+-- exit 1

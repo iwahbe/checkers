@@ -1,0 +1,9 @@
+-- stdout
+(set-logic ALL)
+(declare-datatypes ((D 1)) ((par (A) ((K (f (Seq (D Int))))))))
+(declare-const x (D Bool))
+(assert (= x ((as K (D Bool)) (as seq.empty (Seq (D Int))))))
+(assert (not false))
+(check-sat)
+-- stderr
+-- exit 0

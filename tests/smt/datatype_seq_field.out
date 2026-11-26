@@ -1,8 +1,4 @@
 -- stdout
-(set-logic ALL)
-(declare-datatypes ((T 0)) (((mk (x (Seq T))))))
-(declare-const c T)
-(assert (not false))
-(check-sat)
+(error "line 4 column 1: the datatype `T` is not well-founded: every constructor has a field that holds a datatype of its group (also inside an array, a sequence or a declared sort) not yet shown to have a value")
 -- stderr
--- exit 0
+-- exit 1

@@ -249,6 +249,9 @@ export enum Problem
     # A datatype with no values: every constructor needs a value of a sort
     # that has none, such as the datatype itself.
     NotWellFounded d    : d~Datatype
+    # A datatype Z3 refuses as not well-founded, though it may have values:
+    # each constructor holds a datatype of its group not yet shown founded.
+    NoBaseCase d        : d~Datatype
     # A datatype in the index of an array in its own fields: there is no
     # such set.
     NotCovariant d      : d~Datatype
@@ -550,15 +553,17 @@ fn check_patterns sig env ps -> r : sig~Sig, env~List Sort, ps~List (List Term),
 #    constructor (its interpretation may ignore it), nor at a parameter its
 #    datatype never uses (`P A = p` holds no `A`), for the same reason.
 #
-#    Z3 (5.3.3) differs both ways, as it looks only at what is written in a
-#    group's own fields: it refuses `T` written in an index even where it
-#    isn't used (`Array (P T) Int`, `Array (U T) Int`), and accepts `T`
-#    reached through an earlier datatype's parameter (`W Int T` where `W`
-#    puts its second parameter in an index), which has no set of values.
+#    Z3 (5.3.3) looks only at what is written in a group's own fields: it
+#    refuses `T` written in an index even where it isn't used
+#    (`Array (P T) Int`, `Array (U T) Int`), which the reader refuses too
+#    (`smtlib`, co-variance), and accepts `T` reached through an earlier
+#    datatype's parameter (`W Int T` where `W` puts its second parameter in
+#    an index), which has no set of values and which this check refuses.
 #
-# Z3 is less exact about values: it rejects `T = mk (Seq T)`, which has
-# `(mk [])`, and accepts `(U T)` through `(Box (U T))` in one group, which
-# has none.
+# The reader also refuses what Z3 refuses as not well-founded (`unfounded`,
+# below), such as `T = mk (Seq T)`, which has `(mk [])`. Z3 accepts
+# `D = K (B D)` for `B A = b A`, which has no values; this check refuses
+# it.
 
 # A value of a sort in which parameters may stand: `true`, `0`, the empty
 # sequence, an uninterpreted sort's first element, the constant array of a
@@ -1107,7 +1112,10 @@ fn check_values sig first ds -> r : sig~Sig, first~Nat, ds~List Datatype, r~Resu
         None   ->
             match first_unfit sig first ds 0
                 Some d -> Err (NotWellFounded d)
-                None   -> Ok ()
+                None   ->
+                    match unfounded first ds
+                        Some d -> Err (NoBaseCase d)
+                        None   -> Ok ()
 
 fn first_unfit sig first ds i -> r : sig~Sig, first~Nat, ds~List Datatype, i~Nat, r~Option Datatype
     match ds
@@ -1117,6 +1125,76 @@ fn first_unfit sig first ds i -> r : sig~Sig, first~Nat, ds~List Datatype, i~Nat
             let e = first + i
             let ok = e < len sig.values and fits sig first n sig.values[e] (Data e (params_of n 0))
             if ok then first_unfit sig first rest (i + 1) else Some d
+
+# ── Well-founded as Z3 reads it ──────────────────────────────────────────────
+# Z3 5.3.3 also refuses a group with a datatype it can't show founded, by a
+# rule on what is written, measured with `z3 -in`: a datatype is founded
+# when one of its constructors has fields that mention only the group's
+# datatypes already founded, where a field mentions a datatype of the group
+# applied to the group's own parameters wherever it is written in the
+# field's sort, inside arrays, sequences and declared sorts too, but not
+# inside another datatype's application (`(B D)` for an earlier `B`, or
+# `(D Int)`). So `D = K (Seq D)` is refused, though `(K [])` is a value,
+# and `D = K (B D)` with `B A = b A` is accepted, though it has none (which
+# `first_unfit` refuses).
+
+# The group's datatypes (numbered from `first`, each with `np`
+# parameters) that `s` mentions, as Z3 counts them.
+fn mentions first count np s -> r : first~Nat, count~Nat, np~Nat, s~Sort, r~List Nat
+    match s
+        Seq e       -> mentions first count np e
+        Arr i v     -> mentions first count np i ++ mentions first count np v
+        Unin _ args -> mentions_all first count np args
+        Data d args ->
+            if first <= d and d < first + count and args == params_of np 0 then [d - first] else []
+        _           -> []
+
+fn mentions_all first count np ss -> r : first~Nat, count~Nat, np~Nat, ss~List Sort, r~List Nat
+    match ss
+        []        -> []
+        s :: rest -> mentions first count np s ++ mentions_all first count np rest
+
+# Whether each of `ks` is founded in `known`.
+fn all_known ks known -> r : ks~List Nat, known~List Bool, r~Bool
+    match ks
+        []        -> True
+        k :: rest -> list.head (list.drop k known) == Some True and all_known rest known
+
+fn ctor_founded first count np known c -> r : first~Nat, count~Nat, np~Nat, known~List Bool, c~Ctor, r~Bool
+    all_known (mentions_all first count np (field_sorts c.fields)) known
+
+fn some_founded first count np known cs -> r : first~Nat, count~Nat, np~Nat, known~List Bool, cs~List Ctor, r~Bool
+    match cs
+        []        -> False
+        c :: rest -> ctor_founded first count np known c or some_founded first count np known rest
+
+# One round: each datatype of `ds` founded if it was or now is.
+fn found_round first count known ds -> r : first~Nat, count~Nat, known~List Bool, ds~List Datatype, r~List Bool
+    match ds
+        []        -> []
+        d :: rest ->
+            let np = list.length d.params
+            some_founded first count np known d.ctors :: found_round first count known rest
+
+# Rounds until nothing changes; at most one per datatype, as each round
+# that changes something founds one more.
+fn found_rounds first count known ds left -> r : first~Nat, count~Nat, known~List Bool, ds~List Datatype, left~Nat,
+                                                 r~List Bool
+    decreasing left
+    let next = found_round first count known ds
+    if left == 0 or next == known then next else found_rounds first count next ds (left - 1)
+
+fn first_false ds known -> r : ds~List Datatype, known~List Bool, r~Option Datatype
+    match (ds, known)
+        (d :: rest, b :: more) -> if b then first_false rest more else Some d
+        _                      -> None
+
+# The first datatype of `ds`, numbered from `first`, that Z3 refuses as not
+# well-founded.
+fn unfounded first ds -> r : first~Nat, ds~List Datatype, r~Option Datatype
+    let count = list.length ds
+    let none = list.map (\_ -> False) ds
+    first_false ds (found_rounds first count none ds count)
 
 # An error unless every `Plain` definition of `ds` is alone, in a command
 # written `define-fun`.
