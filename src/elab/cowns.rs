@@ -227,8 +227,7 @@ impl Elab {
                     let unlike = unify(&self.g, lvl, &a.ty, &b.ty).is_err();
                     let goal = if unlike { self.false_val() } else { Self::prim_val(Prim::Ne, vec![a.val.clone(), b.val.clone()]) };
                     let same = a.text == b.text;
-                    let names = cx.names();
-                    let cown = |q: &Tm| show(&self.g, &names, &Tm::TyConApp(self.g.well_known.cown.unwrap(), vec![q.clone()]));
+                    let cown = |q: &Tm| show(&self.g, &cx, &Tm::TyConApp(self.g.well_known.cown.unwrap(), vec![q.clone()]));
                     let kind = ObKind::DistinctCowns {
                         first: a.text.clone(),
                         second: b.text.clone(),

@@ -90,7 +90,7 @@ site/*.md            the language's site: home, tour, install, documentation (ev
 tests/packages.rs    packages end to end with local git repositories (M14)
 tests/parking.rs     waiting behaviours hold no thread, at several thread counts (M16)
 tests/stdin.rs       standard input that fails to read: `terminal.read_line` gives the error
-tests/scaling.rs     checking time grows with the program, not its square: long operator chains
+tests/scaling.rs     checking time and memory grow with the program, not its square: long operator chains, long `let` chains
 tests/tailrec_scaling.rs `++` after a recursive call (`f.acc`) runs in time linear in the result: strings, bytes, arrays, lists
 tests/deep_values.rs a failed `check` shows a value nested a million deep (its golden output would be megabytes)
 tests/std.rs         standard library on disk: `CHECKERS_STD`, edits without rebuilding, E0223/E0361, §16.3 lists every builtin

@@ -270,7 +270,9 @@ pub enum Head {
     Meta(MetaId),
     /// A definition that is not unfolded (`partial`, builtin, or out of fuel).
     Def(DefId),
-    Prim(Prim, Vec<Val>),
+    /// A primitive stuck on its arguments, shared like a constructor's: a
+    /// value refers to it from every value built on it.
+    Prim(Prim, Rc<[Val]>),
 }
 
 #[derive(Clone, Debug)]
@@ -1062,10 +1064,12 @@ pub fn class_type_at(g: &Globals, v: &Val) -> Option<Val> {
     None
 }
 
-fn with_elim(h: Head, sp: &Rc<Vec<Elim>>, e: Elim) -> Val {
-    let mut s = (**sp).clone();
-    s.push(e);
-    Val::Neutral(h, Rc::new(s))
+/// A neutral value with one more eliminator: the spine is copied only if
+/// another value shares it, so applying a neutral to n arguments one at a
+/// time copies none of them.
+fn with_elim(h: Head, mut sp: Rc<Vec<Elim>>, e: Elim) -> Val {
+    Rc::make_mut(&mut sp).push(e);
+    Val::Neutral(h, sp)
 }
 
 pub fn elim(g: &Globals, v: Val, e: Elim) -> Val {
@@ -1080,7 +1084,7 @@ pub fn elim(g: &Globals, v: Val, e: Elim) -> Val {
 pub fn app(g: &Globals, f: Val, a: Val, i: Icit) -> Val {
     match force_meta(g, f) {
         Val::Lam(_, _, _, c) => apply_closure(g, &c, a),
-        Val::Neutral(h, sp) => with_elim(h, &sp, Elim::App(a, i)),
+        Val::Neutral(h, sp) => with_elim(h, sp, Elim::App(a, i)),
         _ => Val::Error,
     }
 }
@@ -1125,7 +1129,7 @@ fn proj(g: &Globals, v: Val, i: usize, rest: bool) -> Val {
                 _ => vs.get(i).cloned().unwrap_or(Val::Error),
             }
         }
-        Val::Neutral(h, sp) => with_elim(h, &sp, Elim::Proj(i, rest)),
+        Val::Neutral(h, sp) => with_elim(h, sp, Elim::Proj(i, rest)),
         _ => Val::Error,
     }
 }
@@ -1141,12 +1145,12 @@ fn field(g: &Globals, v: Val, c: ConId, i: usize) -> Val {
         v @ Val::Neutral(..) if g.is_type_field(c, i) => match force(g, v.clone()) {
             f @ (Val::Con(..) | Val::Lit(_)) => field(g, f, c, i),
             f @ Val::Neutral(..) => match stuck_base(g, v, f) {
-                Val::Neutral(h, sp) => with_elim(h, &sp, Elim::Field(c, i)),
+                Val::Neutral(h, sp) => with_elim(h, sp, Elim::Field(c, i)),
                 _ => Val::Error,
             },
             _ => Val::Error,
         },
-        Val::Neutral(h, sp) => with_elim(h, &sp, Elim::Field(c, i)),
+        Val::Neutral(h, sp) => with_elim(h, sp, Elim::Field(c, i)),
         _ => Val::Error,
     }
 }
@@ -1187,7 +1191,7 @@ fn case(g: &Globals, v: Val, c: Rc<CaseTm>, env: Env) -> Val {
             }
         }
         f @ Val::Neutral(..) => match stuck_base(g, v, f) {
-            Val::Neutral(h, sp) => with_elim(h, &sp, Elim::Case(c, env)),
+            Val::Neutral(h, sp) => with_elim(h, sp, Elim::Case(c, env)),
             _ => Val::Error,
         },
         _ => Val::Error,
@@ -1242,10 +1246,10 @@ fn val_eq(g: &Globals, a: &Val, b: &Val) -> Option<bool> {
 /// if they are not already values it stays stuck, and `unfold` evaluates
 /// it further only when conversion checking needs to.
 fn prim(g: &Globals, p: &Prim, orig: Vec<Val>) -> Val {
-    let args: Vec<Val> = orig.iter().map(|a| force_meta(g, a.clone())).collect();
+    let args: Vec<Val> = orig.into_iter().map(|a| force_meta(g, a)).collect();
     match prim_value(g, p, &args) {
         Some(v) => v,
-        None => Val::Neutral(Head::Prim(p.clone(), args), Rc::new(Vec::new())),
+        None => Val::Neutral(Head::Prim(p.clone(), args.into()), Rc::new(Vec::new())),
     }
 }
 
@@ -1817,19 +1821,190 @@ fn unify_whnf(g: &Globals, l: usize, a: &Val, b: &Val) -> Result<(), UnifyError>
 
 // ── printing ─────────────────────────────────────────────────────────────────
 
+/// The names of a context's locals, outermost first, as a persistent list:
+/// keeping them for a later message, as each deferred constraint does,
+/// takes no copy however many locals are in scope.
+#[derive(Clone, Default)]
+pub struct Names(Option<Rc<NamesCell>>);
+
+struct NamesCell {
+    name: Name,
+    len: usize,
+    outer: Names,
+}
+
+impl Names {
+    pub fn len(&self) -> usize {
+        self.0.as_ref().map_or(0, |c| c.len)
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_none()
+    }
+    pub fn push(&mut self, name: Name) {
+        let outer = std::mem::take(self);
+        *self = Names(Some(Rc::new(NamesCell { name, len: outer.len() + 1, outer })));
+    }
+    pub fn pop(&mut self) {
+        if let Some(c) = &self.0 {
+            *self = c.outer.clone();
+        }
+    }
+    pub fn truncate(&mut self, n: usize) {
+        while self.len() > n {
+            self.pop();
+        }
+    }
+    /// Innermost first.
+    pub fn iter(&self) -> impl Iterator<Item = &Name> {
+        std::iter::successors(self.0.as_deref(), |c| c.outer.0.as_deref()).map(|c| &c.name)
+    }
+    /// The name at `level`.
+    pub fn get(&self, level: usize) -> Option<&Name> {
+        self.iter().nth(self.len().checked_sub(1 + level)?)
+    }
+    /// The level of the innermost local named `x`.
+    pub fn level_of(&self, x: &str) -> Option<usize> {
+        self.iter().position(|n| n.as_ref() == x).map(|k| self.len() - 1 - k)
+    }
+    /// Outermost first, as levels count.
+    pub fn to_vec(&self) -> Vec<Name> {
+        let mut v: Vec<Name> = self.iter().cloned().collect();
+        v.reverse();
+        v
+    }
+}
+
+/// Outermost first.
+impl FromIterator<Name> for Names {
+    fn from_iter<I: IntoIterator<Item = Name>>(it: I) -> Names {
+        let mut names = Names::default();
+        for n in it {
+            names.push(n);
+        }
+        names
+    }
+}
+
+impl Drop for Names {
+    /// One cell at a time: dropping a long list recursively would use stack
+    /// in proportion to it.
+    fn drop(&mut self) {
+        let mut cur = self.0.take();
+        while let Some(c) = cur {
+            match Rc::try_unwrap(c) {
+                Ok(mut cell) => cur = cell.outer.0.take(),
+                Err(_) => break,
+            }
+        }
+    }
+}
+
+impl std::fmt::Debug for Names {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.to_vec()).finish()
+    }
+}
+
+/// The names of the locals a shown term may mention, outermost first: read
+/// where they are, so that showing a term doesn't copy its whole context.
+pub trait Scope {
+    fn len(&self) -> usize;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    /// The name of the local at `level`, below `len`.
+    fn name(&self, level: usize) -> &Name;
+    /// Where the local at `level` is bound, if known.
+    fn at(&self, _level: usize) -> Option<u32> {
+        None
+    }
+}
+
+impl Scope for [Name] {
+    fn len(&self) -> usize {
+        <[Name]>::len(self)
+    }
+    fn name(&self, level: usize) -> &Name {
+        &self[level]
+    }
+}
+
+impl Scope for Vec<Name> {
+    fn len(&self) -> usize {
+        Vec::len(self)
+    }
+    fn name(&self, level: usize) -> &Name {
+        &self[level]
+    }
+}
+
+impl<const N: usize> Scope for [Name; N] {
+    fn len(&self) -> usize {
+        N
+    }
+    fn name(&self, level: usize) -> &Name {
+        &self[level]
+    }
+}
+
+/// A scope with more names inside it.
+pub struct Under<'a, S: Scope + ?Sized>(pub &'a S, pub &'a [Name]);
+
+impl<S: Scope + ?Sized> Scope for Under<'_, S> {
+    fn len(&self) -> usize {
+        self.0.len() + self.1.len()
+    }
+    fn name(&self, level: usize) -> &Name {
+        match level.checked_sub(self.0.len()) {
+            Some(k) => &self.1[k],
+            None => self.0.name(level),
+        }
+    }
+    fn at(&self, level: usize) -> Option<u32> {
+        if level < self.0.len() { self.0.at(level) } else { None }
+    }
+}
+
+/// The names `show_prec` sees: the context's, then the binders it is under.
+struct Ns<'a, S: Scope + ?Sized> {
+    outer: &'a S,
+    inner: Vec<Name>,
+    /// Mark the context's locals whose names another has (`show_marked`).
+    mark_locals: bool,
+}
+
+impl<S: Scope + ?Sized> Ns<'_, S> {
+    fn len(&self) -> usize {
+        self.outer.len() + self.inner.len()
+    }
+    /// The name of de Bruijn index `i`.
+    fn get(&self, i: usize) -> Option<&Name> {
+        match self.inner.len().checked_sub(1 + i) {
+            Some(k) => Some(&self.inner[k]),
+            None => self.outer.len().checked_sub(1 + i - self.inner.len()).map(|l| self.outer.name(l)),
+        }
+    }
+    fn contains(&self, x: &Name) -> bool {
+        self.inner.contains(x) || (0..self.outer.len()).any(|l| self.outer.name(l) == x)
+    }
+    fn push(&mut self, x: Name) {
+        self.inner.push(x);
+    }
+    fn pop(&mut self) {
+        self.inner.pop();
+    }
+}
+
 /// Render a core term for error messages. `names` are the local variable
 /// names, innermost last.
-pub fn show(g: &Globals, names: &[Name], t: &Tm) -> String {
-    let mut ns: Vec<Name> = names.to_vec();
+pub fn show<S: Scope + ?Sized>(g: &Globals, names: &S, t: &Tm) -> String {
+    let mut ns = Ns { outer: names, inner: Vec::new(), mark_locals: false };
     show_prec(g, &mut ns, t, 0)
 }
 
 thread_local! {
     /// Whether `show_prec` marks the globals it names (`show_marked`).
     static MARKING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// The context's locals, by level, while marking: their names and
-    /// where each is bound (`show_marked_in`).
-    static MARK_LOCALS: std::cell::RefCell<Vec<(Name, Option<u32>)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Starts a global's mark: `MARK kind id MARK_NAME name MARK_END`, where
@@ -1876,42 +2051,32 @@ fn global(m: Marked, name: &str) -> String {
 
 /// The local at `level` of the context, named `name`, as a message names
 /// it: marked when another local of the context has its name.
-fn local(level: usize, name: &Name) -> String {
+fn local<S: Scope + ?Sized>(ls: &S, level: usize, name: &Name) -> String {
     if !MARKING.with(|c| c.get()) {
         return name.to_string();
     }
-    MARK_LOCALS.with(|ls| {
-        let ls = ls.borrow();
-        let same = |l: &(Name, Option<u32>)| l.0 == *name;
-        if level >= ls.len() || ls.iter().filter(|l| same(l)).count() < 2 {
-            return name.to_string();
+    let same = |l: &usize| ls.name(*l) == name;
+    if level >= ls.len() || (0..ls.len()).filter(same).nth(1).is_none() {
+        return name.to_string();
+    }
+    let hidden_by = (level + 1..ls.len()).rev().find(same).map(|l| ls.at(l));
+    let mut avoid = 0u64;
+    for l in 0..ls.len() {
+        if let Some(k) = ls.name(l).strip_prefix(&**name).and_then(|k| k.parse::<u32>().ok()).filter(|k| (1..=64).contains(k)) {
+            avoid |= 1 << (k - 1);
         }
-        let hidden_by = ls[level + 1..].iter().rev().find(|l| same(l)).map(|l| l.1);
-        let mut avoid = 0u64;
-        for l in ls.iter() {
-            if let Some(k) = l.0.strip_prefix(&**name).and_then(|k| k.parse::<u32>().ok()).filter(|k| (1..=64).contains(k)) {
-                avoid |= 1 << (k - 1);
-            }
-        }
-        global(Marked::Var { level: level as u32, at: ls[level].1, hidden_by, avoid }, name)
-    })
+    }
+    global(Marked::Var { level: level as u32, at: ls.at(level), hidden_by, avoid }, name)
 }
 
 /// `show`, with each global it names marked with its declaration: text for
-/// a diagnostic, which `unmark` turns into names.
-pub fn show_marked(g: &Globals, names: &[Name], t: &Tm) -> String {
-    show_marked_in(g, names, &[], t)
-}
-
-/// `show_marked`, given where each local of the context is bound (by
-/// level; none for those not known): a local of a name two of them have
-/// is marked too.
-pub fn show_marked_in(g: &Globals, names: &[Name], at: &[Option<u32>], t: &Tm) -> String {
+/// a diagnostic, which `unmark` turns into names. A local of the context
+/// whose name another has is marked too, with where each is bound, as far
+/// as `names` knows (`Scope::at`).
+pub fn show_marked<S: Scope + ?Sized>(g: &Globals, names: &S, t: &Tm) -> String {
     let was = MARKING.with(|c| c.replace(true));
-    let locals: Vec<(Name, Option<u32>)> = names.iter().enumerate().map(|(i, n)| (n.clone(), at.get(i).copied().flatten())).collect();
-    let outer = MARK_LOCALS.with(|l| l.replace(locals));
-    let s = show(g, names, t);
-    MARK_LOCALS.with(|l| l.replace(outer));
+    let mut ns = Ns { outer: names, inner: Vec::new(), mark_locals: true };
+    let s = show_prec(g, &mut ns, t, 0);
     MARKING.with(|c| c.set(was));
     s
 }
@@ -1978,7 +2143,7 @@ pub fn unmark(s: &str, name: &mut dyn FnMut(Marked, &str) -> String) -> String {
     out
 }
 
-fn fresh(ns: &[Name], x: &Name) -> Name {
+fn fresh<S: Scope + ?Sized>(ns: &Ns<S>, x: &Name) -> Name {
     if x.as_ref() == "_" {
         return x.clone();
     }
@@ -2019,13 +2184,13 @@ fn paren(b: bool, s: String) -> String {
     }
 }
 
-fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
+fn show_prec<S: Scope + ?Sized>(g: &Globals, ns: &mut Ns<S>, t: &Tm, p: u8) -> String {
     match t {
         Tm::Var(i) => {
             let level = ns.len().wrapping_sub(1 + i);
-            match ns.get(level) {
+            match ns.get(*i) {
                 // A local of the context (not one bound inside `t`).
-                Some(n) if MARK_LOCALS.with(|l| level < l.borrow().len()) => local(level, n),
+                Some(n) if ns.mark_locals && level < ns.outer.len() => local(ns.outer, level, n),
                 Some(n) => n.to_string(),
                 None => format!("#{i}"),
             }
@@ -2230,7 +2395,7 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
                 // in parentheses: `and` over `or` over `implies`, which
                 // groups to the right.
                 let level = |x: &Tm| bool_op(g, x).map_or(4, |o| o.0);
-                let side = |ns: &mut Vec<Name>, x: &Tm, min: u8| paren(level(x) < min, show_prec(g, ns, x, 0));
+                let side = |ns: &mut Ns<S>, x: &Tm, min: u8| paren(level(x) < min, show_prec(g, ns, x, 0));
                 let text = match op {
                     3 => format!("{} and {}", side(ns, a, 3), side(ns, b, 3)),
                     2 => format!("{} or {}", side(ns, a, 2), side(ns, b, 2)),
