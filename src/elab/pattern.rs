@@ -950,6 +950,22 @@ impl Elab {
         Tm::Case(Rc::new(cx.var(occ)), Rc::new(CaseTm { branches: vec![], lits: branches, default: Some(default) }))
     }
 
+    /// The constructor a pattern's name means: one of the type of the value
+    /// matched (`hint`), whether or not it is imported; else one in scope.
+    /// An abstract type of another module shows no constructors (D155).
+    fn pattern_con(&self, name: &str, hint: Option<TyId>) -> Option<ConId> {
+        if let Some(t) = hint.filter(|t| self.sealed_from(*t).is_none()) {
+            let ti = &self.g.tys[t.0 as usize];
+            if let Some(c) = ti.ctors.iter().find(|c| *self.g.cons[c.0 as usize].name == *name) {
+                return Some(*c);
+            }
+        }
+        match self.resolve(name, false) {
+            Some(Sym::Con(c)) => Some(c),
+            _ => None,
+        }
+    }
+
     /// The constructor a pattern names, and its sub-patterns (None for record patterns).
     fn pat_ctor(&mut self, p: &Pattern, hint: Option<TyId>) -> Option<(ConId, Option<Vec<Pattern>>)> {
         let wk = self.g.well_known.clone();
@@ -976,8 +992,8 @@ impl Elab {
         match &p.kind {
             PatKind::Con(name, args) if name.name == SEQ_NONE => Some((wk.none?, Some(args.clone()))),
             PatKind::Con(name, args) if name.name == SEQ_SOME => Some((wk.some?, Some(args.clone()))),
-            PatKind::Con(name, args) => match self.resolve(&name.name, false) {
-                Some(Sym::Con(c)) => {
+            PatKind::Con(name, args) => match self.pattern_con(&name.name, hint) {
+                Some(c) => {
                     self.index_pattern(name.span, index::Target::Con(c));
                     Some((c, Some(args.clone())))
                 }
@@ -986,8 +1002,8 @@ impl Elab {
                     None
                 }
             },
-            PatKind::Record(name, _) => match self.resolve(&name.name, false) {
-                Some(Sym::Con(c)) => {
+            PatKind::Record(name, _) => match self.pattern_con(&name.name, hint) {
+                Some(c) => {
                     self.index_pattern(name.span, index::Target::Con(c));
                     Some((c, None))
                 }
