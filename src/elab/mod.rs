@@ -6,17 +6,22 @@
 //! recorded for the prover (M3).
 
 mod classes;
+mod cowns;
+mod effects;
 pub mod complete;
 mod decls;
 mod expr;
 mod descr;
 mod eq;
 mod interval;
+pub use interval::CODEGEN_WORK;
 pub mod index;
 pub(crate) mod order;
 mod pattern;
+mod qualify;
 pub use pattern::BINDING_HELP;
 mod refine;
+pub mod settle;
 mod template;
 mod tyeq;
 pub mod stdlib;
@@ -314,6 +319,12 @@ pub enum ObKind {
     /// A refinement replaced by another in a type (D83, D85): for any value
     /// of `sub`, the predicates of `sup` hold.
     Weaken { role: WeakenRole, value: String, sub: String, sup: String, callee: Option<String> },
+    /// A `when`'s cowns differ (§8.5): two of them as written. `held`: the
+    /// first's binder, where both are written the same. `caller`: the
+    /// function, where both are its parameters. `unlike`: their types, as
+    /// shown, where they differ here but may be equal (`Cown a`, `Cown
+    /// Nat`): `!=` can't compare them.
+    DistinctCowns { first: String, second: String, held: Option<String>, caller: Option<String>, unlike: Option<(String, String)> },
     NatSub,
     /// A recursive call must make the caller's `decreasing` measure smaller.
     Measure { func: String, measure: String },
@@ -561,6 +572,14 @@ pub struct Trusted {
     pub what: String,
 }
 
+/// Where elaboration's records ended (`Elab::mark`).
+pub struct Mark {
+    lens: [usize; 21],
+}
+
+/// Each module's key (`verify::module_keys`), by module name.
+pub type ModuleKeys = std::rc::Rc<HashMap<String, String>>;
+
 pub struct Elab {
     pub g: Globals,
     pub modules: HashMap<String, ModuleInfo>,
@@ -669,6 +688,29 @@ pub struct Elab {
     pub ty_cond_defer: Option<Vec<(Span, TyId, Vec<Val>)>>,
     /// Refinement aliases' predicates, over the alias's parameters then its binder.
     pub alias_preds: HashMap<DefId, Vec<Pred>>,
+    /// Functions' bounds from their signatures, for `Globals::bounds` once
+    /// the program is proved.
+    pub bounds: HashMap<DefId, Vec<Option<crate::range::Range>>>,
+    /// Values known at compile time, by term (`known_value`).
+    pub known_cache: std::cell::RefCell<HashMap<String, Option<Tm>>>,
+    /// Definitions found to run at compile time (`runnable`).
+    pub runnable_defs: std::cell::RefCell<HashSet<DefId>>,
+    /// What was proved before the proofs phase, so that a module's own
+    /// functions can run (§8.9, `settle`).
+    pub early: std::cell::RefCell<settle::Early>,
+    /// Each module's proofs once made (`verify::proved`): an imported
+    /// module's functions run at compile time only once it is proved
+    /// (§8.9).
+    pub module_proofs: std::cell::RefCell<HashMap<String, crate::verify::Verified>>,
+    /// Modules' keys (`verify::module_keys`), with how many modules were
+    /// loaded when they were computed.
+    pub module_keys: std::cell::RefCell<Option<(usize, ModuleKeys)>>,
+    /// The modules being proved now: their functions don't run yet.
+    pub proving: std::cell::RefCell<HashSet<String>>,
+    /// Terms the prover's translator left out because their parts' sorts
+    /// don't fit their places (§7.3): each is a type error reported, so a
+    /// program without one has none.
+    pub ill_sorted: std::cell::Cell<usize>,
     /// The name a refinement alias binds (`n` in `type Big = n~Int, …`).
     pub alias_subject: HashMap<DefId, Name>,
     /// The result type of a function whose result type isn't written.
@@ -796,7 +838,7 @@ pub struct Elab {
     /// `(pred, c, s)`: whether `pred` is a membership, true only where its
     /// explicit argument `s` equals a strict part of argument `c` (#102);
     /// for the module being checked.
-    pub memberships: HashMap<(DefId, usize, usize), bool>,
+    pub memberships: std::cell::RefCell<HashMap<(DefId, usize, usize), bool>>,
     /// Span of the `match` being compiled (for exhaustiveness errors).
     pub match_span: Span,
     /// The `match` being checked is a binding's one pattern (a `let`, a
@@ -841,6 +883,11 @@ pub struct Elab {
     /// Calls of classes' functions with preconditions, to check once their
     /// dictionaries are found (#225).
     pub pending_class_pres: Vec<PendingPre>,
+    /// `when`s naming two or more cowns, obliged once the module's bodies
+    /// are checked (§8.5).
+    pub pending_distinct: Vec<cowns::PendingDistinct>,
+    /// Calls with effects numbered so far (`Prim::Effect`, §7.1).
+    pub effect_count: u32,
     /// Calls of classes' functions, and dictionaries found through a
     /// refinement alias, to check at the end of the module (#226).
     pub class_calls: Vec<PendingPre>,
@@ -854,6 +901,12 @@ pub struct Elab {
     pub class_local_calls: Vec<(MetaId, PendingPre)>,
     /// The instance whose member's signature is being elaborated (#146).
     pub sig_inst: Option<classes::SigInst>,
+    /// In the signature of an instance's function or dictionary: it (for
+    /// messages: a missing clause goes in the instance's context).
+    pub instance_sig: Option<DefId>,
+    /// Each instance's dictionary's implied clauses (#385), the types of
+    /// its implicit parameters after its context's: found as its context is.
+    pub inst_implied: HashMap<DefId, Vec<Tm>>,
     /// Comparisons waiting for a dictionary (#133): level, expected,
     /// actual, where, the locals' names.
     pub waiting: Vec<(usize, Val, Val, Span, Vec<Name>, bool)>,
@@ -897,6 +950,9 @@ pub struct Elab {
     pub instances: HashMap<(TyId, classes::HeadKey), Vec<classes::InstInfo>>,
     /// Dictionaries to find once types are known.
     pub inst_reqs: Vec<classes::InstReq>,
+    /// While a signature's implied clauses are looked for (#385): each
+    /// dictionary a type's header asks for where the type is written.
+    pub type_dict_reqs: Option<Vec<classes::InstReq>>,
     /// Inside a named precondition: `forall` is allowed (D137).
     pub forall_ok: usize,
     /// The named preconditions of the function being checked (D137).
@@ -983,6 +1039,14 @@ impl Elab {
             ty_cond_defer: None,
             ty_teqs: HashMap::new(),
             alias_preds: HashMap::new(),
+            bounds: HashMap::new(),
+            known_cache: std::cell::RefCell::new(HashMap::new()),
+            runnable_defs: std::cell::RefCell::new(HashSet::new()),
+            early: Default::default(),
+            module_proofs: std::cell::RefCell::new(HashMap::new()),
+            module_keys: std::cell::RefCell::new(None),
+            ill_sorted: std::cell::Cell::new(0),
+            proving: std::cell::RefCell::new(HashSet::new()),
             alias_subject: HashMap::new(),
             result_metas: HashMap::new(),
             arg_of: None,
@@ -1027,7 +1091,7 @@ impl Elab {
             elem_conds: Vec::new(),
             elem_cond_at: HashMap::new(),
             body_elems: HashMap::new(),
-            memberships: HashMap::new(),
+            memberships: Default::default(),
             match_span: Span::default(),
             match_binding: false,
             pm: Default::default(),
@@ -1039,11 +1103,15 @@ impl Elab {
             transparent_members: HashSet::new(),
             refined_inst_fns: HashSet::new(),
             pending_class_pres: Vec::new(),
+            pending_distinct: Vec::new(),
+            effect_count: 0,
             class_calls: Vec::new(),
             alias_dicts: Vec::new(),
             class_value_uses: Vec::new(),
             class_local_calls: Vec::new(),
             sig_inst: None,
+            instance_sig: None,
+            inst_implied: HashMap::new(),
             waiting: Vec::new(),
             waiting_late: Vec::new(),
             pending_classes: Vec::new(),
@@ -1065,6 +1133,7 @@ impl Elab {
             inst_member_of: HashMap::new(),
             instances: HashMap::new(),
             inst_reqs: Vec::new(),
+            type_dict_reqs: None,
             forall_ok: 0,
             cur_hyps: Vec::new(),
             name_span: Span::default(),
@@ -1094,9 +1163,12 @@ impl Elab {
         }
     }
 
+    /// A value for a diagnostic: its globals marked, to be shown as the
+    /// module refers to them when the diagnostic is filed (`qualify`).
     pub fn show_val(&self, cx: &Cx, v: &Val) -> String {
         let t = quote(&self.g, cx.lvl(), v);
-        show(&self.g, &cx.names(), &t)
+        let at: Vec<Option<u32>> = cx.locals.iter().map(|l| l.span.map(|s| s.start)).collect();
+        show_marked_in(&self.g, &cx.names(), &at, &t)
     }
 
     pub fn eval(&self, cx: &Cx, t: &Tm) -> Val {
@@ -1144,6 +1216,87 @@ impl Elab {
     }
 
     /// A fresh meta applied to the bound locals in scope.
+    /// Where elaboration's records end now, to drop what a trial
+    /// elaboration adds (`rollback`).
+    pub fn mark(&self) -> Mark {
+        Mark {
+            lens: [
+                self.index.len(),
+                self.diags.len(),
+                self.deferred.len(),
+                self.arith_results.len(),
+                self.calls.len(),
+                self.obligations.len(),
+                self.probes.len(),
+                self.vacuities.len(),
+                self.refs.len(),
+                self.observed.len(),
+                self.wanted.len(),
+                self.insts.len(),
+                self.dict_insts.len(),
+                self.elem_conds.len(),
+                self.pending_class_pres.len(),
+                self.class_calls.len(),
+                self.alias_dicts.len(),
+                self.class_value_uses.len(),
+                self.class_local_calls.len(),
+                self.ty_cond_defer.as_ref().map_or(0, |d| d.len()),
+                self.g.postponed.borrow().len(),
+            ],
+        }
+    }
+
+    /// Drop what was recorded since `m`: a trial elaboration leaves no
+    /// diagnostics, obligations or requests behind. (The unknowns it solved
+    /// stay solved: elaborating the same text again solves them the same way.)
+    pub fn rollback(&mut self, m: &Mark) {
+        let [index, diags, deferred, arith, calls, obligations, probes, vacuities, refs, observed, wanted, insts, dict_insts, elem_conds, class_pres, class_calls, alias_dicts, value_uses, local_calls, ty_cond, postponed] = m.lens;
+        self.index.truncate(index);
+        self.diags.truncate(diags);
+        self.deferred.truncate(deferred);
+        self.arith_results.truncate(arith);
+        self.calls.truncate(calls);
+        self.obligations.truncate(obligations);
+        self.probes.truncate(probes);
+        self.vacuities.truncate(vacuities);
+        self.refs.truncate(refs);
+        self.observed.truncate(observed);
+        self.wanted.truncate(wanted);
+        self.insts.truncate(insts);
+        self.dict_insts.truncate(dict_insts);
+        self.elem_conds.truncate(elem_conds);
+        self.pending_class_pres.truncate(class_pres);
+        self.class_calls.truncate(class_calls);
+        self.alias_dicts.truncate(alias_dicts);
+        self.class_value_uses.truncate(value_uses);
+        self.class_local_calls.truncate(local_calls);
+        if let Some(d) = &mut self.ty_cond_defer {
+            d.truncate(ty_cond);
+        }
+        self.g.postponed.borrow_mut().truncate(postponed);
+    }
+
+    /// Run `f` as a trial (#385): what it records is dropped after, and the
+    /// requests waiting before it are set aside while it runs, so it neither
+    /// sees nor settles them. Its names aren't indexed.
+    pub fn trial<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        let m = self.mark();
+        let reqs = std::mem::take(&mut self.inst_reqs);
+        let waiting = std::mem::take(&mut self.waiting);
+        let waiting_late = std::mem::take(&mut self.waiting_late);
+        let index = (self.index_of.take(), self.index_all.take());
+        // Its diagnostics are dropped, so they may be reported after.
+        let seen = self.seen.clone();
+        let r = f(self);
+        self.rollback(&m);
+        self.seen = seen;
+        self.inst_reqs = reqs;
+        self.waiting = waiting;
+        self.waiting_late = waiting_late;
+        (self.index_of, self.index_all) = index;
+        r
+    }
+
     pub fn fresh_meta(&mut self, cx: &Cx) -> Tm {
         let m = self.g.fresh_meta();
         let mut t = Tm::Meta(m);
@@ -1912,7 +2065,7 @@ impl Elab {
         self.err(
             Diagnostic::error("E0404", format!("this drops a resource of type `{shown}`"), span)
                 .with_label("a resource must be used exactly once")
-                .with_help(if shown.starts_with("Future ") {
+                .with_help(if crate::core::plain(&shown).starts_with("Future ") {
                     "bind it to a name, then join it: a future of a resource is one too"
                 } else {
                     "bind it to a name, then close it or pass it on"
@@ -2028,8 +2181,9 @@ impl Elab {
 
     /// The postconditions hold of `v`, a value the function returns at `at`.
     /// D121 (c): `v` is a `Nat` by construction, with no obligation: a
-    /// non-negative literal, a `Nat` local, `len`, `+`, `*`, `/` or `%` of
-    /// such values, or a `Nat` subtraction (which has its own obligation).
+    /// non-negative integer known at compile time (§8.9: a literal, a named
+    /// constant, `math.pow 2 3`), a `Nat` local, `len`, `+`, `*`, `/` or `%`
+    /// of such values, or a `Nat` subtraction (which has its own obligation).
     pub fn nat_by_closure(&self, cx: &Cx, v: &Val) -> bool {
         match crate::core::force_meta(&self.g, v.clone()) {
             Val::Lit(l @ (Lit::Num(_) | Lit::Big(_))) => l.is_nonneg_int(),
@@ -2088,13 +2242,13 @@ impl Elab {
                     _ => false,
                 };
                 // Or what a `Nat` local stands for (`j` in `Some (n, j)`, a
-                // `let` of a `match`).
+                // `let` of a `match`), or a value known at compile time.
                 call || {
                     let t = quote(&self.g, cx.lvl(), &v);
                     cx.locals.iter().zip(cx.env.iter()).any(|(x, e)| {
                         crate::core::is_nat(&self.g, &x.ty) && crate::core::tm_eq(&quote(&self.g, cx.lvl(), e), &t)
                     })
-                }
+                } || self.known_in(cx, &v).is_some_and(|l| l.is_nonneg_int())
             }
             _ => false,
         }
@@ -2423,7 +2577,7 @@ impl Elab {
     /// isn't known yet, once it is (D134, D135).
     #[allow(clippy::too_many_arguments)]
     pub fn arith_result(&mut self, cx: &Cx, op: Prim, lt: &Tm, rt: &Tm, ty: &Val, lty: &Val, rty: &Val) -> Val {
-        let (lc, rc) = (interval::constant(lt), interval::constant(rt));
+        let (lc, rc) = (self.known_int(cx, lt), self.known_int(cx, rt));
         if let Val::Neutral(Head::Meta(_), _) = self.force(ty) {
             let r = self.fresh_meta_val(cx);
             self.arith_results.push(ArithResult {
@@ -2498,7 +2652,7 @@ impl Elab {
                     _ if self.g.reads_type_field(&t) => declared,
                     _ => quote(&self.g, d.lvl, &t),
                 };
-                let shown = show(&self.g, &d.names, &shown_tm);
+                let shown = crate::core::show_marked(&self.g, &d.names, &shown_tm);
                 let need = match d.kind {
                     OpClass::Numeric => "numbers (`Nat` or `Int`)",
                     OpClass::Ordered => "numbers (`Nat` or `Int`) to compare",
@@ -2509,7 +2663,7 @@ impl Elab {
                 // A number where a class's type with a base type is expected
                 // (#360): its values are numbers, but not every number.
                 if let (Some(base), true) = (crate::core::class_type_base(&self.g, &t), d.what == "a number literal") {
-                    let b = show(&self.g, &d.names, &quote(&self.g, d.lvl, &base));
+                    let b = crate::core::show_marked(&self.g, &d.names, &quote(&self.g, d.lvl, &base));
                     failed.push((
                         d.span,
                         shown.clone(),
@@ -2715,6 +2869,7 @@ fn touches(t: &Tm, g: &Globals, defs: &HashSet<DefId>, tys: &HashSet<TyId>) -> b
         Tm::TyCon(ty) => tys.contains(ty),
         Tm::Con(c) => con(c),
         Tm::Var(_) | Tm::Meta(_) | Tm::Univ(_) | Tm::Lit(_) => false,
+        Tm::Known(k) => k.any_con(|c| con(&c)),
         Tm::Pi(_, _, _, a, b) | Tm::App(a, b, ..) => go(a) || go(b),
         Tm::Lam(_, _, _, b) | Tm::Proj(b, _, _) => go(b),
         Tm::Field(b, c, _) => con(c) || go(b),

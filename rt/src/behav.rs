@@ -353,10 +353,17 @@ fn cells_of(t: W, what: &str) -> Vec<Arc<Cell>> {
         .collect()
 }
 
-/// `when x = c, … using sched: f` (borrowed arguments).
+/// `when x = c, … using sched: f` (borrowed arguments). Its cowns are
+/// distinct, which the prover proves (§8.5); `check` (not 0) where that
+/// proof may rest on something assumed, an `admit` (§13.3), and there
+/// naming one twice stops the program.
 #[no_mangle]
-pub extern "C" fn ck_when(cowns: W, f: W) -> W {
-    schedule(Beh::When(cells_of(cowns, "cowns"), dup(f)));
+pub extern "C" fn ck_when(cowns: W, f: W, owner: u64, check: u64) -> W {
+    let cells = cells_of(cowns, "cowns");
+    if check != 0 && cells.iter().enumerate().any(|(i, c)| cells[..i].iter().any(|d| Arc::ptr_eq(c, d))) {
+        crate::prog::error(owner as u32, "`when` names the same cown twice");
+    }
+    schedule(Beh::When(cells, dup(f)));
     UNIT
 }
 
@@ -442,16 +449,25 @@ pub unsafe extern "C" fn ck_par(thunks: *const W, n: u64) -> W {
             .map(|t| {
                 let t = Send2(*t);
                 let trap = crate::prog::current_trap();
+                let work = crate::prog::current_work();
+                let prog = crate::prog::current();
                 std::thread::Builder::new()
                     .stack_size(crate::sched::WORKER_STACK)
                     .spawn_scoped(sc, move || {
                         let t = t;
                         crate::overflow::thread_init();
                         crate::prog::set_trap(trap.clone());
-                        // In compile-time evaluation, on a fiber whose
-                        // overflow comes back as a runtime error.
+                        crate::prog::set_work(work);
+                        // In compile-time evaluation, within its program,
+                        // on a fiber whose overflow comes back as a runtime
+                        // error.
                         let Some(tx) = trap else { return Send2(apply(t.0, vec![UNIT])) };
-                        match crate::fiber::recoverable(crate::fiber::STACK, move || apply(t.0, vec![UNIT])) {
+                        let run = move || crate::fiber::recoverable(crate::fiber::STACK, move || apply(t.0, vec![UNIT]));
+                        let r = match prog {
+                            Some(p) => crate::prog::within(p, run),
+                            None => run(),
+                        };
+                        match r {
                             Some(w) => Send2(w),
                             None => {
                                 let _ = tx.send(Err(crate::prog::STACK_OVERFLOW.to_string()));

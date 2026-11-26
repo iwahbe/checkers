@@ -203,6 +203,7 @@ fn is_con(x: &Ir) -> bool {
     match x {
         Ir::At(_, x) => is_con(x),
         Ir::Con(..) => true,
+        Ir::Static(v, id) => super::lower::Static::open_con(v, *id).is_some(),
         _ => false,
     }
 }
@@ -212,6 +213,7 @@ fn pushable(s: &Ir) -> bool {
     match s {
         Ir::At(_, x) => pushable(x),
         Ir::Let(..) | Ir::Case(..) | Ir::Con(..) => true,
+        Ir::Static(v, id) => super::lower::Static::open_con(v, *id).is_some(),
         _ => false,
     }
 }
@@ -258,6 +260,11 @@ fn push(s: &Ir, src: Owner, c: &IrCase, here: Owner, cases: bool, ctx: Owner) ->
             });
             (at_in(ctx, src, Ir::Case(s2.clone(), Arc::new(IrCase { branches, lits, default }))), uses)
         }
+        // Static data: the constructor it is, one level.
+        Ir::Static(v, id) => match super::lower::Static::open_con(v, *id) {
+            Some((con, fields)) => push(&Ir::Con(con, fields), src, c, here, cases, ctx),
+            None => residual(s, src, c, here, ctx),
+        },
         Ir::Con(con, fields) => {
             let (k, arm) = match c.branches.iter().position(|(b, _, _)| b == con) {
                 Some(k) if c.branches[k].1 == fields.len() => (k, c.branches[k].2.clone()),

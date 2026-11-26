@@ -9,7 +9,9 @@
 
 use super::lower::*;
 use crate::core::Globals;
+use crate::core::Prim;
 use crate::native::ir::Op;
+use crate::range::Range;
 use checkers_rt::word as w;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::types::{I32, I64, I8};
@@ -25,6 +27,7 @@ use std::collections::{HashMap, HashSet};
 /// Runtime functions: name, parameters, whether they return a word.
 const RUNTIME: &[(&str, usize, bool)] = &[
     ("ck_alloc", 2, true),
+    ("ck_tick", 0, false),
     ("ck_free", 1, false),
     ("ck_add", 2, true),
     ("ck_sub", 2, true),
@@ -38,6 +41,8 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("ck_ne", 3, true),
     ("ck_concat", 2, true),
     ("ck_concat_own", 2, true),
+    ("ck_concat_all", 2, true),
+    ("ck_concat_push", 2, true),
     ("ck_len", 1, true),
     ("ck_index", 3, true),
     ("ck_big_lit", 2, true),
@@ -46,7 +51,7 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("ck_nomatch", 2, true),
     ("ck_caf", 2, true),
     ("ck_apply", 3, true),
-    ("ck_when", 2, true),
+    ("ck_when", 4, true),
     ("ck_par", 2, true),
     ("ck_tuple_flat", 1, true),
     ("ck_tuple_rest", 2, true),
@@ -73,19 +78,33 @@ pub struct Gen<'p, M: Module> {
     slots: HashMap<u32, DataId>,
     /// String and bytes literals, by kind and content.
     lits: HashMap<(u64, Vec<u8>), DataId>,
-    /// Static values laid out so far, for naming the next.
+    /// Static data objects laid out so far, for naming the next.
     statics: usize,
+    /// Where each value laid out as static data is, by its hash.
+    placed: HashMap<u128, Placed>,
     /// Raw bytes (messages, digits).
     raw: HashMap<Vec<u8>, DataId>,
     pub invoke: FuncId,
     true_w: i64,
     false_w: i64,
     max_arity: usize,
+    /// With `Some`: each function's name and machine code as text, as it
+    /// is defined, with every runtime error's owner written as 0 (for tests
+    /// comparing the code of two functions, which name different owners).
+    pub disasm: Option<Vec<(String, String)>>,
     /// Compile-time code (§14): each function reads the stack
     /// `checkers_rt::overflow::PROBE` bytes below its frame on entry, so
     /// running out of stack happens in compiled code, where evaluation can
     /// stop safely, and not inside a runtime call.
     pub probe: bool,
+}
+
+/// Where a node of static data is.
+#[derive(Clone, Copy)]
+enum Placed {
+    Word(u64),
+    /// An object, at an offset in a data object.
+    Data(DataId, u32),
 }
 
 struct St {
@@ -108,6 +127,10 @@ struct St {
     /// A comparison's `Bool` word: the condition it was made from, so a
     /// `match` on it branches on the comparison itself.
     conds: HashMap<Value, Cond>,
+    /// Constant bounds of integers, true wherever the value is: a
+    /// parameter's from its type (`Func::bounds`), an operation's from its
+    /// operands'. One within the small integers is one.
+    bounds: HashMap<Value, Range>,
     owner: u32,
     frefs: HashMap<FuncId, FuncRef>,
     gvs: HashMap<DataId, GlobalValue>,
@@ -226,11 +249,13 @@ impl<'p, M: Module> Gen<'p, M> {
             slots: HashMap::new(),
             lits: HashMap::new(),
             statics: 0,
+            placed: HashMap::new(),
             raw: HashMap::new(),
             invoke,
             true_w: nul(wk.true_con),
             false_w: nul(wk.false_con),
             max_arity,
+            disasm: None,
             probe: false,
         }
     }
@@ -299,47 +324,137 @@ impl<'p, M: Module> Gen<'p, M> {
         id
     }
 
-    /// Static data for a value known when the program is compiled: every
-    /// object it is made of, in one block that points into itself.
-    fn statik(&mut self, v: &Static) -> DataId {
-        let id = self.m.declare_data(&format!("ckd_{}", self.statics), Linkage::Local, true, false).expect("declare static data");
-        self.statics += 1;
-        let mut dd = DataDescription::new();
-        let me = self.m.declare_data_in_data(id, &mut dd);
-        let mut bytes = Vec::new();
-        let mut relocs = Vec::new();
-        let _root_at_0 = Self::lay_out(v, &mut bytes, &mut relocs);
-        dd.define(bytes.into_boxed_slice());
-        dd.set_align(8);
-        for (at, to) in relocs {
-            dd.write_data_addr(at as u32, me, to as i64);
+    /// Where node `id` of static data is: its word, or its object (a data
+    /// object and the offset in it). The nodes it reaches that no earlier
+    /// static data has are laid out in one new data object, parts first,
+    /// as immortal objects (§14); the rest, and literals' bytes, are the
+    /// objects already laid out, so equal values are one object in the
+    /// program. A loop over the nodes: any depth takes the same stack.
+    fn statik(&mut self, v: &Static, id: u32) -> Placed {
+        if let SNode::Word(x) = v.node(id) {
+            return Placed::Word(*x);
         }
-        self.m.define_data(id, &dd).expect("define static data");
-        id
+        if let Some(p) = self.placed.get(&v.hash_of(id)) {
+            return *p;
+        }
+        let data = self.m.declare_data(&format!("ckd_{}", self.statics), Linkage::Local, true, false).expect("declare static data");
+        self.statics += 1;
+        let mut out: Vec<u8> = Vec::new();
+        // Each word that points to an object: where, to which.
+        let mut relocs: Vec<(usize, DataId, u32)> = Vec::new();
+        let mut at: HashMap<u32, Placed> = HashMap::new();
+        for x in v.reachable(id) {
+            let h = v.hash_of(x);
+            let placed = match v.node(x) {
+                SNode::Word(w) => Placed::Word(*w),
+                _ if self.placed.contains_key(&h) => self.placed[&h],
+                SNode::Bytes(bs) if self.lits.contains_key(&(w::K_BYTES, bs.to_vec())) => Placed::Data(self.lits[&(w::K_BYTES, bs.to_vec())], 0),
+                SNode::Bytes(bs) => Placed::Data(data, Self::lay_out_bytes(w::K_BYTES, bs, &mut out) as u32),
+                SNode::Big(n) => Placed::Data(data, Self::lay_out_big(n, &mut out) as u32),
+                SNode::Global(d) => match self.p.defs.get(d).cloned() {
+                    Some(DefShape::Fn { func, .. }) => Placed::Data(self.closure(func), 0),
+                    Some(DefShape::Builtin { wrap, .. }) => Placed::Data(self.closure(wrap), 0),
+                    _ => unreachable!("a known closure of a function"),
+                },
+                SNode::ConFn(c) => {
+                    let f = self.p.con_wraps[c];
+                    Placed::Data(self.closure(f), 0)
+                }
+                SNode::Obj { kind, tag, fields } => {
+                    let off = out.len();
+                    out.extend_from_slice(&w::STATIC_RC.to_le_bytes());
+                    // A partial application's count is of its arguments, after
+                    // its function.
+                    let n = if *kind == w::K_PAP { fields.len() - 1 } else { fields.len() };
+                    out.extend_from_slice(&w::info(*kind, n as u64, *tag).to_le_bytes());
+                    for (k, f) in fields.iter().enumerate() {
+                        match at[f] {
+                            Placed::Word(word) => out.extend_from_slice(&word.to_le_bytes()),
+                            Placed::Data(d, o) => {
+                                relocs.push((off + w::HDR + 8 * k, d, o));
+                                out.extend_from_slice(&0u64.to_le_bytes());
+                            }
+                        }
+                    }
+                    Placed::Data(data, off as u32)
+                }
+                SNode::Array { layout, elems } => Placed::Data(data, self.lay_out_array(v, *layout, elems, &at, &mut out, &mut relocs) as u32),
+            };
+            if matches!(placed, Placed::Data(d, _) if d == data) {
+                self.placed.insert(h, placed);
+            }
+            at.insert(x, placed);
+        }
+        let mut dd = DataDescription::new();
+        dd.define(out.into_boxed_slice());
+        dd.set_align(8);
+        let mut gvs: HashMap<DataId, cranelift_codegen::ir::GlobalValue> = HashMap::new();
+        for (slot, d, o) in relocs {
+            let gv = *gvs.entry(d).or_insert_with(|| self.m.declare_data_in_data(d, &mut dd));
+            dd.write_data_addr(slot as u32, gv, o as i64);
+        }
+        self.m.define_data(data, &dd).expect("define static data");
+        at[&id]
     }
 
-    /// Append `v`'s objects to `out`, its own first; its word, as `Ok` (an
-    /// immediate) or `Err` (the offset of its object).
-    fn lay_out(v: &Static, out: &mut Vec<u8>, relocs: &mut Vec<(usize, usize)>) -> Result<u64, usize> {
-        let (kind, tag, fields) = match v {
-            Static::Word(x) => return Ok(*x),
-            Static::Str(s) => return Err(Self::lay_out_bytes(w::K_BYTES, s.as_bytes(), out)),
-            Static::Bytes(b) => return Err(Self::lay_out_bytes(w::K_BYTES, b, out)),
-            Static::Con(c, xs) => (w::K_CON, *c as u64, xs),
-            Static::Tuple(xs) => (w::K_TUPLE, 0, xs),
-        };
-        let at = out.len();
+    /// Append a `K_ARRAY` object to `out`: its length, `0` (not a slice),
+    /// then its elements, a word each or packed by `layout`. Its offset.
+    fn lay_out_array(&self, v: &Static, layout: u8, elems: &[u32], at: &HashMap<u32, Placed>, out: &mut Vec<u8>, relocs: &mut Vec<(usize, DataId, u32)>) -> usize {
+        use checkers_rt::array::Layout;
+        let l = Layout::of_code(layout as u64);
+        let off = out.len();
         out.extend_from_slice(&w::STATIC_RC.to_le_bytes());
-        out.extend_from_slice(&w::info(kind, fields.len() as u64, tag).to_le_bytes());
-        out.resize(at + w::HDR + 8 * fields.len(), 0);
-        for (k, f) in fields.iter().enumerate() {
-            let slot = at + w::HDR + 8 * k;
-            match Self::lay_out(f, out, relocs) {
-                Ok(word) => out[slot..slot + 8].copy_from_slice(&word.to_le_bytes()),
-                Err(obj) => relocs.push((slot, obj)),
+        out.extend_from_slice(&w::info(checkers_rt::array::K_ARRAY, 0, layout as u64).to_le_bytes());
+        out.extend_from_slice(&(elems.len() as u64).to_le_bytes());
+        out.extend_from_slice(&0u64.to_le_bytes());
+        for e in elems {
+            // A packed element's number (or truth).
+            let n = || -> i128 {
+                match v.node(*e) {
+                    SNode::Word(x) if w::is_int(*x) => w::int_of(*x) as i128,
+                    SNode::Word(x) => (*x as i64 == self.true_w) as i128,
+                    SNode::Big(b) => i128::try_from(b).expect("a packed element in its layout's range"),
+                    _ => unreachable!("a packed element is a number"),
+                }
+            };
+            match l {
+                Layout::Words => match at[e] {
+                    Placed::Word(word) => out.extend_from_slice(&word.to_le_bytes()),
+                    Placed::Data(d, o) => {
+                        relocs.push((out.len(), d, o));
+                        out.extend_from_slice(&0u64.to_le_bytes());
+                    }
+                },
+                _ => out.extend_from_slice(&n().to_le_bytes()[..l.width()]),
             }
         }
-        Err(at)
+        while !out.len().is_multiple_of(8) {
+            out.push(0);
+        }
+        off
+    }
+
+    /// Append a `K_BIG` object for `n` (past a word) to `out`: its offset.
+    fn lay_out_big(n: &num_bigint::BigInt, out: &mut Vec<u8>) -> usize {
+        let at = out.len();
+        out.extend_from_slice(&w::STATIC_RC.to_le_bytes());
+        match i128::try_from(n) {
+            Ok(s) => {
+                out.extend_from_slice(&w::info(w::K_BIG, 0, checkers_rt::obj::BIG_I128).to_le_bytes());
+                out.extend_from_slice(&(s as u128 as u64).to_le_bytes());
+                out.extend_from_slice(&(((s as u128) >> 64) as u64).to_le_bytes());
+            }
+            Err(_) => {
+                let (sign, mut mag) = n.to_bytes_le();
+                while !mag.len().is_multiple_of(8) {
+                    mag.push(0);
+                }
+                let tag = if sign == num_bigint::Sign::Minus { checkers_rt::obj::BIG_LIMBS_NEG } else { checkers_rt::obj::BIG_LIMBS };
+                out.extend_from_slice(&w::info(w::K_BIG, (mag.len() / 8) as u64, tag).to_le_bytes());
+                out.extend_from_slice(&mag);
+            }
+        }
+        at
     }
 
     fn lay_out_bytes(kind: u64, b: &[u8], out: &mut Vec<u8>) -> usize {
@@ -392,8 +507,13 @@ impl<'p, M: Module> Gen<'p, M> {
                 b.seal_all_blocks();
                 b.finalize(self.m.isa().frontend_config());
             }
+            ctx.set_disasm(self.disasm.is_some());
             if let Err(e) = self.m.define_function(self.funcs[i], &mut ctx) {
                 panic!("native code for `{}`: {e:?}", self.p.funcs[i].name);
+            }
+            if let Some(d) = &mut self.disasm {
+                let code = ctx.compiled_code().and_then(|c| c.vcode.clone()).unwrap_or_default();
+                d.push((self.p.funcs[i].name.clone(), code));
             }
             self.m.clear_context(&mut ctx);
         }
@@ -422,7 +542,7 @@ impl<'p, M: Module> Gen<'p, M> {
         }
         let params: Vec<Value> = b.block_params(entry).to_vec();
         let vars = vec![None; f.nvars.max(f.params.len() as u32) as usize];
-        let mut st = St { vars, imm: HashSet::new(), ints: HashSet::new(), conds: HashMap::new(), owner: f.owner, frefs: HashMap::new(), gvs: HashMap::new(), this: None };
+        let mut st = St { vars, imm: HashSet::new(), ints: HashSet::new(), conds: HashMap::new(), bounds: HashMap::new(), owner: f.owner, frefs: HashMap::new(), gvs: HashMap::new(), this: None };
         let env = params[0];
         match &f.kind {
             FnKind::Global | FnKind::Caf => {
@@ -433,13 +553,18 @@ impl<'p, M: Module> Gen<'p, M> {
                 let params: Vec<Value> = params.iter().map(|_| b.append_block_param(top, I64)).collect();
                 b.ins().jump(top, &args);
                 b.switch_to_block(top);
+                self.tick(b, &mut st);
                 st.this = Some((i as u32, top));
                 for (k, v) in f.params.iter().enumerate() {
                     st.vars[*v as usize] = Some(params[k + 1]);
+                    if let Some(r) = f.bounds.get(v) {
+                        st.bounds.insert(params[k + 1], *r);
+                    }
                 }
                 self.emit(b, &mut st, &f.body, Mode::Tail(f.rets));
             }
             FnKind::Lambda { captured } => {
+                self.tick(b, &mut st);
                 for (k, v) in f.params.iter().enumerate() {
                     st.vars[*v as usize] = Some(params[k + 1]);
                 }
@@ -474,6 +599,15 @@ impl<'p, M: Module> Gen<'p, M> {
                 let r = self.build_con(b, &mut st, *con, &fields, None);
                 b.ins().return_(&[r]);
             }
+        }
+    }
+
+    /// In code compiled for the compiler, counts a function entry or a loop
+    /// iteration against its work limit (`checkers_rt::prog::ck_tick`):
+    /// every loop goes through one.
+    fn tick(&mut self, b: &mut FunctionBuilder, st: &mut St) {
+        if self.probe {
+            self.rt_call(b, st, "ck_tick", &[]);
         }
     }
 
@@ -525,7 +659,8 @@ impl<'p, M: Module> Gen<'p, M> {
     }
 
     fn owner(&self, b: &mut FunctionBuilder, st: &St) -> Value {
-        b.ins().iconst(I64, st.owner as i64)
+        let o = if self.disasm.is_some() { 0 } else { st.owner };
+        b.ins().iconst(I64, o as i64)
     }
 
     fn message(&mut self, b: &mut FunctionBuilder, st: &mut St, m: &str) -> (Value, Value) {
@@ -631,13 +766,48 @@ impl<'p, M: Module> Gen<'p, M> {
                 let d = self.lit(w::K_BYTES, x);
                 self.addr(b, st, d)
             }
-            E::Static(v) => {
-                let d = self.statik(v);
-                self.addr(b, st, d)
-            }
+            E::Static(v, id) => match self.statik(v, *id) {
+                Placed::Word(x) => b.ins().iconst(I64, x as i64),
+                Placed::Data(d, 0) => self.addr(b, st, d),
+                Placed::Data(d, o) => {
+                    let p = self.addr(b, st, d);
+                    b.ins().iadd_imm_s(p, o as i64)
+                }
+            },
             // In the current block: a comparison's `Bool` is then the value
-            // a `match` on it finds in `St::conds`.
+            // a `match` on it finds in `St::conds`, and a value known to be
+            // a small integer is known to be one where it is used. So is
+            // the value of code that doesn't branch around one: `let`s,
+            // `dup`s and `drop`s before it, and `at`.
             E::Borrow { op, args, drops } => self.borrow_e(b, st, *op, args, drops),
+            E::Let(x, a, body) => {
+                self.bind(b, st, *x, a);
+                self.val(b, st, body)
+            }
+            // Code of another definition: the same code, whose runtime
+            // errors name that definition.
+            E::At(o, x) => {
+                let saved = std::mem::replace(&mut st.owner, *o);
+                let v = self.val(b, st, x);
+                st.owner = saved;
+                v
+            }
+            E::Dup(v, body) => {
+                let x = self.var(b, st, *v);
+                self.dup(b, st, x);
+                self.val(b, st, body)
+            }
+            E::Drop(v, body) => {
+                let x = self.var(b, st, *v);
+                self.drop_v(b, st, x);
+                self.val(b, st, body)
+            }
+            E::DropReuse(v, tok, n, body) => {
+                let x = self.var(b, st, *v);
+                let t = self.drop_reuse(b, st, x, *n);
+                st.vars[*tok as usize] = Some(t);
+                self.val(b, st, body)
+            }
             _ => {
                 let k = b.create_block();
                 let r = b.append_block_param(k, I64);
@@ -648,15 +818,19 @@ impl<'p, M: Module> Gen<'p, M> {
         }
     }
 
+    /// `x` bound to the value of `a`.
+    fn bind(&mut self, b: &mut FunctionBuilder, st: &mut St, x: V, a: &E) {
+        let v = self.val(b, st, a);
+        if Self::immediate(a) {
+            st.imm.insert(v);
+        }
+        st.vars[x as usize] = Some(v);
+    }
+
     fn emit(&mut self, b: &mut FunctionBuilder, st: &mut St, e: &E, mode: Mode) {
         match e {
-            E::Var(_) | E::Int(_) | E::Erased | E::Unit | E::Str(_) | E::Bytes(_) | E::Static(_) => {
+            E::Var(_) | E::Int(_) | E::Erased | E::Unit | E::Str(_) | E::Bytes(_) | E::Static(..) => {
                 let x = self.val(b, st, e);
-                Self::finish(b, &mode, x)
-            }
-            E::BigLit(s) => {
-                let (p, n) = self.message(b, st, s);
-                let x = self.call1(b, st, "ck_big_lit", &[p, n]);
                 Self::finish(b, &mode, x)
             }
             E::Global(d) => {
@@ -670,11 +844,7 @@ impl<'p, M: Module> Gen<'p, M> {
                 Self::finish(b, &mode, x)
             }
             E::Let(x, a, body) => {
-                let v = self.val(b, st, a);
-                if Self::immediate(a) {
-                    st.imm.insert(v);
-                }
-                st.vars[*x as usize] = Some(v);
+                self.bind(b, st, *x, a);
                 self.emit(b, st, body, mode)
             }
             E::Call { f, args, .. } => {
@@ -1011,7 +1181,10 @@ impl<'p, M: Module> Gen<'p, M> {
     /// Is `e`'s value never a pointer? A comparison gives `True` or `False`,
     /// constructors without fields.
     fn immediate(e: &E) -> bool {
-        matches!(e, E::Borrow { op: BOp::Prim(Op::Eq | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge, _), .. })
+        match e {
+            E::Let(_, _, x) | E::At(_, x) | E::Dup(_, x) | E::Drop(_, x) | E::DropReuse(_, _, _, x) => Self::immediate(x),
+            _ => matches!(e, E::Borrow { op: BOp::Prim(Op::Eq | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge, _), .. }),
+        }
     }
 
     // ── small integers ──────────────────────────────────────────────────────
@@ -1028,7 +1201,36 @@ impl<'p, M: Module> Gen<'p, M> {
     /// Is `x` known to be a small integer where code is being emitted: a
     /// constant one (only integers' words are odd), or a fact in `St::ints`?
     fn small(b: &FunctionBuilder, st: &St, x: Value) -> bool {
-        st.ints.contains(&x) || Self::const_word(b, x).is_some_and(|w| w & 1 == 1)
+        st.ints.contains(&x) || Self::const_word(b, x).is_some_and(|w| w & 1 == 1) || SMALL.holds(Self::range(b, st, x))
+    }
+
+    /// The constant bounds known of integer `x`: a constant's own, else
+    /// `St::bounds`.
+    fn range(b: &FunctionBuilder, st: &St, x: Value) -> Range {
+        match Self::const_word(b, x) {
+            Some(w) if w & 1 == 1 => Range::exact((w >> 1) as i128),
+            _ => st.bounds.get(&x).copied().unwrap_or(Range::ANY),
+        }
+    }
+
+    /// The bounds of `p` on `a`, if it is an integer operation.
+    fn op_range(b: &FunctionBuilder, st: &St, p: Op, nat: bool, a: &[Value]) -> Option<Range> {
+        let r = |k: usize| Self::range(b, st, a[k]);
+        let prim = match p {
+            Op::Add => Prim::Add,
+            Op::Sub => Prim::Sub,
+            Op::Mul => Prim::Mul,
+            Op::Div => Prim::Div,
+            Op::Rem => Prim::Rem,
+            Op::Neg => {
+                let x = r(0);
+                return Some(Range { lo: x.hi.and_then(i128::checked_neg), hi: x.lo.and_then(i128::checked_neg) });
+            }
+            // An `Array U8`'s element: a byte.
+            Op::Index if nat => return Some(Range { lo: Some(0), hi: Some(255) }),
+            _ => return None,
+        };
+        Some(crate::range::combine(prim, r(0), r(1), nat && p == Op::Sub))
     }
 
     /// Take `xs` to be small integers; those that weren't known, to `forget`
@@ -1065,19 +1267,26 @@ impl<'p, M: Module> Gen<'p, M> {
     /// with `+ 1` if `tag`, and whether it overflowed) if they are small
     /// integers and it doesn't overflow, else the runtime's `slow` on `xs`
     /// and `extra`. The operands' `drops` are dropped on the slow path only:
-    /// on the fast path they are small integers.
+    /// on the fast path they are small integers. Where the operands' bounds
+    /// show that they are small integers and the result one too (`fits`),
+    /// only `fast` without its overflow check (`fast(b, false)`).
     #[allow(clippy::too_many_arguments)]
     fn arith(
         &mut self,
         b: &mut FunctionBuilder,
         st: &mut St,
         xs: &[Value],
-        fast: impl FnOnce(&mut FunctionBuilder) -> (Value, Value),
+        fits: bool,
+        fast: impl FnOnce(&mut FunctionBuilder, bool) -> (Value, Option<Value>),
         tag: bool,
         slow: &str,
         extra: Option<Value>,
         drops: &[Value],
     ) -> Value {
+        if fits {
+            let (v, _) = fast(b, false);
+            return if tag { b.ins().iadd_imm_s(v, 1) } else { v };
+        }
         let try_fast = b.create_block();
         let ok = b.create_block();
         let slow_b = b.create_block();
@@ -1086,7 +1295,8 @@ impl<'p, M: Module> Gen<'p, M> {
         let r = b.append_block_param(done, I64);
         Self::if_small(b, st, xs, try_fast, slow_b);
         b.switch_to_block(try_fast);
-        let (v, overflow) = fast(b);
+        let (v, overflow) = fast(b, true);
+        let overflow = overflow.expect("a checked operation's overflow");
         b.ins().brif(overflow, slow_b, &[], ok, &[]);
         // The value's other uses are in a block of their own: on x86-64,
         // the one instruction setting the overflow flag (`imul`) then gives
@@ -1108,28 +1318,54 @@ impl<'p, M: Module> Gen<'p, M> {
 
     /// Euclidean `/` or `%` (the remainder never negative), inline when both
     /// are small integers and the divisor isn't zero; otherwise the runtime,
-    /// which also reports division by zero.
+    /// which also reports division by zero. With bounds showing that both
+    /// are small integers, the divisor not zero and (for `/`) the result a
+    /// small integer (`fits`), there is no runtime path.
     #[allow(clippy::too_many_arguments)]
-    fn divide(&mut self, b: &mut FunctionBuilder, st: &mut St, rem: bool, x: Value, y: Value, owner: Value, drops: &[Value]) -> Value {
-        let check = b.create_block();
-        let fast = b.create_block();
+    fn divide(&mut self, b: &mut FunctionBuilder, st: &mut St, rem: bool, x: Value, y: Value, owner: Value, drops: &[Value], fits: bool) -> Value {
+        let ry = Self::range(b, st, y);
+        // A proved program's divisor isn't zero (§13.3).
+        let nonzero = self.g.proved || ry.lo.is_some_and(|l| l > 0) || ry.hi.is_some_and(|h| h < 0);
+        if Self::small(b, st, x) && Self::small(b, st, y) && nonzero && (rem || fits) {
+            return Self::divide_small(b, rem, x, y, None);
+        }
         let slow = b.create_block();
         b.set_cold_block(slow);
         let done = b.create_block();
         let r = b.append_block_param(done, I64);
+        let check = b.create_block();
+        let fast = b.create_block();
         Self::if_small(b, st, &[x, y], check, slow);
         b.switch_to_block(check);
-        // The word for 0 is 1.
-        match Self::const_word(b, y) {
-            Some(w) if w != 1 => {
-                b.ins().jump(fast, &[]);
-            }
-            _ => {
-                let nonzero = b.ins().icmp_imm_s(IntCC::NotEqual, y, 1);
-                b.ins().brif(nonzero, fast, &[], slow, &[]);
-            }
+        if nonzero {
+            b.ins().jump(fast, &[]);
+        } else {
+            // The word for 0 is 1.
+            let nonzero = b.ins().icmp_imm_s(IntCC::NotEqual, y, 1);
+            b.ins().brif(nonzero, fast, &[], slow, &[]);
         }
         b.switch_to_block(fast);
+        let v = Self::divide_small(b, rem, x, y, (!fits).then_some(slow));
+        b.ins().jump(done, &[BlockArg::Value(v)]);
+        b.switch_to_block(slow);
+        let s = self.call1(b, st, if rem { "ck_rem" } else { "ck_div" }, &[x, y, owner]);
+        for d in drops {
+            self.drop_v(b, st, *d);
+        }
+        b.ins().jump(done, &[BlockArg::Value(s)]);
+        b.switch_to_block(done);
+        // A remainder is smaller than its divisor, and an integer that
+        // fits in a word is always a small one.
+        if rem && Self::small(b, st, y) {
+            st.ints.insert(r);
+        }
+        r
+    }
+
+    /// `x / y` or `x % y` of small integers, `y` not zero; a quotient that
+    /// leaves the small integers goes to `overflow`, if given (else it is
+    /// known not to).
+    fn divide_small(b: &mut FunctionBuilder, rem: bool, x: Value, y: Value, overflow: Option<ir::Block>) -> Value {
         // Small integers have 63 bits, so neither division overflows i64.
         let n = b.ins().sshr_imm_s(x, 1);
         let d = b.ins().sshr_imm_s(y, 1);
@@ -1146,8 +1382,7 @@ impl<'p, M: Module> Gen<'p, M> {
             let m = b.ins().select(neg, m1, m);
             // |m| < |d|: it fits.
             let m2 = b.ins().iadd(m, m);
-            let v = b.ins().iadd_imm_s(m2, 1);
-            b.ins().jump(done, &[BlockArg::Value(v)]);
+            b.ins().iadd_imm_s(m2, 1)
         } else {
             let dpos = b.ins().icmp_imm_s(IntCC::SignedGreaterThan, d, 0);
             let one = b.ins().iconst(I64, 1);
@@ -1156,27 +1391,19 @@ impl<'p, M: Module> Gen<'p, M> {
             let zero = b.ins().iconst(I64, 0);
             let step = b.ins().select(neg, step, zero);
             let q = b.ins().iadd(q, step);
-            // Only -2^62 / -1 leaves the small integers.
-            let (q2, ov) = b.ins().sadd_overflow(q, q);
-            let ok = b.create_block();
-            b.ins().brif(ov, slow, &[], ok, &[]);
-            b.switch_to_block(ok);
-            let v = b.ins().iadd_imm_s(q2, 1);
-            b.ins().jump(done, &[BlockArg::Value(v)]);
+            let q2 = match overflow {
+                // Only -2^62 / -1 leaves the small integers.
+                Some(slow) => {
+                    let (q2, ov) = b.ins().sadd_overflow(q, q);
+                    let ok = b.create_block();
+                    b.ins().brif(ov, slow, &[], ok, &[]);
+                    b.switch_to_block(ok);
+                    q2
+                }
+                None => b.ins().iadd(q, q),
+            };
+            b.ins().iadd_imm_s(q2, 1)
         }
-        b.switch_to_block(slow);
-        let s = self.call1(b, st, if rem { "ck_rem" } else { "ck_div" }, &[x, y, owner]);
-        for d in drops {
-            self.drop_v(b, st, *d);
-        }
-        b.ins().jump(done, &[BlockArg::Value(s)]);
-        b.switch_to_block(done);
-        // A remainder is smaller than its divisor, and an integer that
-        // fits in a word is always a small one.
-        if rem && Self::small(b, st, y) {
-            st.ints.insert(r);
-        }
-        r
     }
 
     /// `==`, `!=`, `<`, `<=`, `>` or `>=`: a `Bool`, remembered with its
@@ -1277,12 +1504,27 @@ impl<'p, M: Module> Gen<'p, M> {
                 b.ins().iconst(I64, w::UNIT as i64)
             }
             BOp::Builtin(sym) => self.call_array(b, st, sym, a),
+            BOp::ConcatPush => self.call1(b, st, "ck_concat_push", &[a[0], a[1]]),
+            BOp::ConcatAll => self.call1(b, st, "ck_concat_all", &[a[0], a[1]]),
             BOp::Prim(p, nat) => self.prim(b, st, p, nat, a, &[]),
         }
     }
 
     /// A primitive on `a`; `drops`, among `a`, are dropped after it.
     fn prim(&mut self, b: &mut FunctionBuilder, st: &mut St, p: Op, nat: bool, a: &[Value], drops: &[Value]) -> Value {
+        let range = Self::op_range(b, st, p, nat, a);
+        let fits = range.is_some_and(|r| SMALL.holds(r)) && a.iter().all(|x| Self::small(b, st, *x));
+        let v = self.prim_on(b, st, p, nat, a, drops, fits);
+        if let Some(r) = range.filter(|r| *r != Range::ANY) {
+            st.bounds.insert(v, r);
+        }
+        v
+    }
+
+    /// `prim`, `fits` if the operands and the result are known to be small
+    /// integers.
+    #[allow(clippy::too_many_arguments)]
+    fn prim_on(&mut self, b: &mut FunctionBuilder, st: &mut St, p: Op, nat: bool, a: &[Value], drops: &[Value], fits: bool) -> Value {
         let o = self.owner(b, st);
         match p {
             // Words `2x + 1` and `2y + 1`: `2x + 1 + 2y` is `2(x + y) + 1`,
@@ -1291,17 +1533,27 @@ impl<'p, M: Module> Gen<'p, M> {
                 b,
                 st,
                 &[a[0], a[1]],
-                |b| {
+                fits,
+                |b, checked| {
                     let y1 = b.ins().iadd_imm_s(a[1], -1);
-                    b.ins().sadd_overflow(a[0], y1)
+                    if checked {
+                        let (v, o) = b.ins().sadd_overflow(a[0], y1);
+                        (v, Some(o))
+                    } else {
+                        (b.ins().iadd(a[0], y1), None)
+                    }
                 },
                 false,
                 "ck_add",
                 None,
                 drops,
             ),
+            // Bounds showing `x >= y`: the obligation holds, and `x - y` fits.
+            Op::Sub if nat && fits && Self::range(b, st, a[0]).lo.zip(Self::range(b, st, a[1]).hi).is_some_and(|(x, y)| x >= y) => {
+                let y1 = b.ins().iadd_imm_s(a[1], -1);
+                b.ins().isub(a[0], y1)
+            }
             Op::Sub if nat => {
-                // Words compare as their integers do.
                 let check = b.create_block();
                 let fast = b.create_block();
                 let slow = b.create_block();
@@ -1310,15 +1562,21 @@ impl<'p, M: Module> Gen<'p, M> {
                 let r = b.append_block_param(done, I64);
                 Self::if_small(b, st, &[a[0], a[1]], check, slow);
                 b.switch_to_block(check);
-                let not_below = b.ins().icmp(IntCC::SignedGreaterThanOrEqual, a[0], a[1]);
-                b.ins().brif(not_below, fast, &[], slow, &[]);
+                // `x >= y` is checked only where it isn't proved (§13.3).
+                if self.g.proved {
+                    b.ins().jump(fast, &[]);
+                } else {
+                    // Words compare as their integers do.
+                    let not_below = b.ins().icmp(IntCC::SignedGreaterThanOrEqual, a[0], a[1]);
+                    b.ins().brif(not_below, fast, &[], slow, &[]);
+                }
                 b.switch_to_block(fast);
                 // Both `Nat`s, the first no less: `x - y` fits.
                 let y1 = b.ins().iadd_imm_s(a[1], -1);
                 let v = b.ins().isub(a[0], y1);
                 b.ins().jump(done, &[BlockArg::Value(v)]);
                 b.switch_to_block(slow);
-                let s = self.call1(b, st, "ck_natsub", &[a[0], a[1], o]);
+                let s = if self.g.proved { self.call1(b, st, "ck_sub", &[a[0], a[1]]) } else { self.call1(b, st, "ck_natsub", &[a[0], a[1], o]) };
                 for d in drops {
                     self.drop_v(b, st, *d);
                 }
@@ -1331,9 +1589,15 @@ impl<'p, M: Module> Gen<'p, M> {
                 b,
                 st,
                 &[a[0], a[1]],
-                |b| {
+                fits,
+                |b, checked| {
                     let y1 = b.ins().iadd_imm_s(a[1], -1);
-                    b.ins().ssub_overflow(a[0], y1)
+                    if checked {
+                        let (v, o) = b.ins().ssub_overflow(a[0], y1);
+                        (v, Some(o))
+                    } else {
+                        (b.ins().isub(a[0], y1), None)
+                    }
                 },
                 false,
                 "ck_sub",
@@ -1346,25 +1610,37 @@ impl<'p, M: Module> Gen<'p, M> {
                 b,
                 st,
                 &[a[0], a[1]],
-                |b| {
+                fits,
+                |b, checked| {
                     let x = b.ins().sshr_imm_s(a[0], 1);
                     let y1 = b.ins().iadd_imm_s(a[1], -1);
-                    b.ins().smul_overflow(x, y1)
+                    if checked {
+                        let (v, o) = b.ins().smul_overflow(x, y1);
+                        (v, Some(o))
+                    } else {
+                        (b.ins().imul(x, y1), None)
+                    }
                 },
                 true,
                 "ck_mul",
                 None,
                 drops,
             ),
-            Op::Div | Op::Rem => self.divide(b, st, p == Op::Rem, a[0], a[1], o, drops),
+            Op::Div | Op::Rem => self.divide(b, st, p == Op::Rem, a[0], a[1], o, drops, fits),
             // `2 - (2x + 1)` is `2(-x) + 1`; it overflows only for `x = -2^62`.
             Op::Neg => self.arith(
                 b,
                 st,
                 &[a[0]],
-                |b| {
+                fits,
+                |b, checked| {
                     let two = b.ins().iconst(I64, 2);
-                    b.ins().ssub_overflow(two, a[0])
+                    if checked {
+                        let (v, o) = b.ins().ssub_overflow(two, a[0]);
+                        (v, Some(o))
+                    } else {
+                        (b.ins().isub(two, a[0]), None)
+                    }
                 },
                 false,
                 "ck_neg",
@@ -1440,9 +1716,14 @@ impl<'p, M: Module> Gen<'p, M> {
                 }
                 b.switch_to_block(check);
                 let i = b.ins().sshr_imm_s(a[1], 1);
-                let len = b.ins().load(I64, flags(), a[0], w::HDR as i32);
-                let inb = b.ins().icmp(IntCC::UnsignedLessThan, i, len);
-                b.ins().brif(inb, fast, &[], slow, &[]);
+                if self.g.proved {
+                    // The index is in bounds: proved (§13.3).
+                    b.ins().jump(fast, &[]);
+                } else {
+                    let len = b.ins().load(I64, flags(), a[0], w::HDR as i32);
+                    let inb = b.ins().icmp(IntCC::UnsignedLessThan, i, len);
+                    b.ins().brif(inb, fast, &[], slow, &[]);
+                }
                 b.switch_to_block(fast);
                 // The bytes follow the header, or a slice points at them (#169).
                 let ptr = b.ins().load(I64, flags(), a[0], (w::HDR + 8) as i32);
@@ -1460,7 +1741,11 @@ impl<'p, M: Module> Gen<'p, M> {
                 b.switch_to_block(done);
                 r
             }
-            Op::When => self.call1(b, st, "ck_when", &[a[1], a[2]]),
+            Op::When => {
+                // The cowns' distinctness is checked only where it isn't proved (§13.3).
+                let check = b.ins().iconst(I64, i64::from(!self.g.proved));
+                self.call1(b, st, "ck_when", &[a[1], a[2], o, check])
+            }
             Op::Par => a[0],
             _ => unreachable!("an integer primitive"),
         }
@@ -1698,7 +1983,7 @@ impl<'p, M: Module> Gen<'p, M> {
         ctx.func.signature = s;
         {
             let mut b = FunctionBuilder::new(&mut ctx.func, &mut fctx);
-            let mut st = St { vars: Vec::new(), imm: HashSet::new(), ints: HashSet::new(), conds: HashMap::new(), owner: self.p.main, frefs: HashMap::new(), gvs: HashMap::new(), this: None };
+            let mut st = St { vars: Vec::new(), imm: HashSet::new(), ints: HashSet::new(), conds: HashMap::new(), bounds: HashMap::new(), owner: self.p.main, frefs: HashMap::new(), gvs: HashMap::new(), this: None };
             let entry = b.create_block();
             b.append_block_params_for_function_params(entry);
             b.switch_to_block(entry);
@@ -1735,3 +2020,6 @@ impl Mode {
         }
     }
 }
+
+/// The integers a word holds inline: 63 bits.
+const SMALL: Range = Range { lo: Some(-(1 << 62)), hi: Some((1 << 62) - 1) };

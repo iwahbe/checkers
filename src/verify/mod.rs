@@ -3,7 +3,7 @@
 
 pub mod smt;
 
-use crate::core::{quote, show};
+use crate::core::quote;
 use crate::diag::Diagnostic;
 use crate::elab::{Elab, ObKind, Obligation, Probe, ProbeKind, Vacuity, VacuityKind, WeakenRole};
 use crate::source::Span;
@@ -14,9 +14,9 @@ pub struct LedgerEntry {
     pub span: Span,
     pub how: &'static str,
     pub what: String,
-    pub hash: Option<u64>,
 }
 
+#[derive(Clone)]
 pub struct Verified {
     pub diags: Vec<Diagnostic>,
     pub ledger: Vec<LedgerEntry>,
@@ -78,9 +78,30 @@ fn quick(q: Option<String>) -> Option<String> {
     q.map(|t| with_limit(&t, QUICK_RLIMIT))
 }
 
+/// The option that sets a query's work limit: Z3 keeps this one in the
+/// query's own context. `:rlimit` and `:timeout` are parameters of the whole
+/// process, which every context copies when any is set: a query would run
+/// with the limit of one solved at the same time on another thread.
+const LIMIT_OPTION: &str = "(set-option :reproducible-resource-limit ";
+
+fn limit_option(limit: u64) -> String {
+    format!("{LIMIT_OPTION}{limit})")
+}
+
+/// The options every query starts with: the safety cap, the same for all,
+/// then its work limit (setting the cap copies the process's limit, none).
+pub(crate) fn options(limit: u64) -> String {
+    format!("(set-option :produce-models true)\n(set-option :timeout {SAFETY_MS})\n{}\n", limit_option(limit))
+}
+
+/// A query made with the work limit `from`, with the limit `to`.
+fn relimit(t: &str, from: u64, to: u64) -> String {
+    t.replacen(&limit_option(from), &limit_option(to), 1)
+}
+
 /// A query with another work limit.
 fn with_limit(t: &str, limit: u64) -> String {
-    t.replacen(&format!("(set-option :rlimit {RLIMIT})"), &format!("(set-option :rlimit {limit})"), 1)
+    relimit(t, RLIMIT, limit)
 }
 
 /// A wall-clock cap, in case Z3 is slow to use up its work limit. An answer
@@ -91,6 +112,20 @@ pub const SAFETY_MS: u64 = 60_000;
 static CACHE: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
 static ASKED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static REUSED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Queries Z3 rejected (a checkers bug, §7.3), in this process.
+static REJECTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many queries Z3 has rejected in this process: always 0 unless
+/// checkers has a bug (§7.3).
+pub fn rejected() -> usize {
+    REJECTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Z3's error if it rejected the query: an `(error …)` before its answer.
+/// (After it, an error only says there is no model or unsat core to give.)
+fn rejection(out: &str) -> Option<&str> {
+    out.lines().take_while(|l| !matches!(l.trim(), "sat" | "unsat" | "unknown" | "timeout")).find(|l| l.starts_with("(error"))
+}
 
 /// Cache Z3's answers in `dir` (`None`: don't).
 pub fn set_cache(dir: Option<std::path::PathBuf>) {
@@ -123,7 +158,87 @@ pub fn modules_dir() -> Option<std::path::PathBuf> {
     cache_dir().map(|d| d.join("modules"))
 }
 
-const MODULE_HEADER: &str = "checkers module 2";
+const MODULE_HEADER: &str = "checkers module 3";
+
+/// Modules this process has verified, by key: a doc comment's code block
+/// imports the module it is in, and the standard library, all just verified
+/// (D148 k).
+pub(crate) static VERIFIED: std::sync::Mutex<Option<std::collections::HashMap<String, Remembered>>> = std::sync::Mutex::new(None);
+
+/// The module verified under `key` before, by this process or (beside
+/// Z3's answers) an earlier one, if it was.
+pub fn recall(key: &str) -> Option<Remembered> {
+    let memo = VERIFIED.lock().unwrap_or_else(|p| p.into_inner()).as_ref().and_then(|x| x.get(key).cloned());
+    if memo.is_some() || modules_dir().is_none() {
+        return memo;
+    }
+    remembered(key)
+}
+
+/// Each module's key (D143): its name and text, the text of every program
+/// or dependency module it depends on, directly or through others (the
+/// modules it imports and those of the instances its checking chose, #272),
+/// the standard library's text (all of it: its modules give one another, and
+/// every module, the well-known types), the Z3 release and the `ckc`
+/// executable. None for a module without its text, or depending on one.
+/// Computed once per program, and again if more modules have been loaded
+/// since (a key read while checking names the modules loaded then).
+pub fn module_keys(e: &Elab) -> std::rc::Rc<std::collections::HashMap<String, String>> {
+    if let Some((n, keys)) = &*e.module_keys.borrow() {
+        if *n == e.modules.len() {
+            return keys.clone();
+        }
+    }
+    let keys = std::rc::Rc::new(compute_module_keys(e));
+    *e.module_keys.borrow_mut() = Some((e.modules.len(), keys.clone()));
+    keys
+}
+
+fn compute_module_keys(e: &Elab) -> std::collections::HashMap<String, String> {
+    use std::collections::HashMap;
+    use std::collections::BTreeSet;
+    let exe = std::env::current_exe()
+        .and_then(std::fs::metadata)
+        .map(|m| format!("{} {:?}", m.len(), m.modified().ok()))
+        .unwrap_or_default();
+    let mut std_mods: Vec<&String> = e.modules.keys().filter(|m| m.starts_with("std.")).collect();
+    std_mods.sort();
+    let mut std_text = String::new();
+    for m in std_mods {
+        if let Some(f) = e.sources.get(m) {
+            std_text += &format!("module {m} {}\n{}\n", f.text.len(), f.text);
+        }
+    }
+    let tool = format!("ckc {} {exe} z3 {} std {}", env!("CARGO_PKG_VERSION"), z3_version().unwrap_or_default(), digest(&std_text));
+    // Each module's text, hashed once; the standard library's is in `tool`.
+    let texts: HashMap<&str, String> =
+        e.modules.keys().filter(|m| !m.starts_with("std.")).filter_map(|m| Some((m.as_str(), digest(&e.sources.get(m)?.text)))).collect();
+    let edges = |m: &str| {
+        let imports = e.module_deps.get(m).into_iter().flatten();
+        let instances = e.instance_deps.get(m).into_iter().flatten();
+        imports.chain(instances).filter(|d| !d.starts_with("std.")).cloned().collect::<Vec<String>>()
+    };
+    let mut keys = HashMap::new();
+    'modules: for m in e.modules.keys() {
+        let Some(text) = e.sources.get(m) else { continue };
+        // Everything it depends on; a cycle through instances is fine.
+        let mut seen = BTreeSet::new();
+        let mut todo = edges(m);
+        while let Some(d) = todo.pop() {
+            if d != *m && seen.insert(d.clone()) {
+                todo.extend(edges(&d));
+            }
+        }
+        let mut input = format!("{tool}\nmodule {m}\n");
+        for d in &seen {
+            let Some(k) = texts.get(d.as_str()) else { continue 'modules };
+            input += &format!("uses {d} {k}\n");
+        }
+        input += &text.text;
+        keys.insert(m.clone(), digest(&input));
+    }
+    keys
+}
 
 /// The module verified under `key`, if it was.
 pub fn remembered(key: &str) -> Option<Remembered> {
@@ -142,7 +257,7 @@ pub fn remembered(key: &str) -> Option<Remembered> {
             warnings.push(unflatten(w)?);
             continue;
         }
-        let mut parts = l.splitn(5, ' ');
+        let mut parts = l.splitn(4, ' ');
         let start: u32 = parts.next()?.parse().ok()?;
         let end: u32 = parts.next()?.parse().ok()?;
         let how = match parts.next()? {
@@ -152,12 +267,8 @@ pub fn remembered(key: &str) -> Option<Remembered> {
             "smt" => "smt",
             _ => return None,
         };
-        let hash = match parts.next()? {
-            "-" => None,
-            h => Some(u64::from_str_radix(h, 16).ok()?),
-        };
         let what = parts.next()?.replace("\\n", "\n");
-        ledger.push(LedgerEntry { span: Span { start, end }, how, what, hash });
+        ledger.push(LedgerEntry { span: Span { start, end }, how, what });
     }
     Some(Remembered { ledger, proved, z3_version, warnings })
 }
@@ -216,8 +327,7 @@ pub fn remember(key: &str, v: &Verified) {
     }
     let mut out = format!("{MODULE_HEADER}\nproved {}\nz3 {}\n", v.proved, v.z3_version.as_deref().unwrap_or("-"));
     for x in &v.ledger {
-        let hash = x.hash.map(|h| format!("{h:x}")).unwrap_or_else(|| "-".into());
-        out += &format!("{} {} {} {hash} {}\n", x.span.start, x.span.end, x.how, x.what.replace('\n', "\\n"));
+        out += &format!("{} {} {} {}\n", x.span.start, x.span.end, x.how, x.what.replace('\n', "\\n"));
     }
     for d in v.diags.iter().filter(|d| d.code == "W022") {
         out += &format!("warning {}\n", flatten(d));
@@ -354,7 +464,7 @@ fn ask_out(module: &str, query: &str) -> String {
             if timed {
                 let what = if query.starts_with("(set-option :produce-unsat-cores") { "(can the conditions hold?)".to_string() } else { query.lines().find(|l| l.starts_with("(assert (not")).unwrap_or("").chars().take(120).collect::<String>() };
                 let said = out.split_whitespace().next().unwrap_or("?");
-                let limit = query.split("(set-option :rlimit ").nth(1).and_then(|r| r.split(')').next()).unwrap_or("?");
+                let limit = query.split(LIMIT_OPTION).nth(1).and_then(|r| r.split(')').next()).unwrap_or("?");
                 eprintln!("smt {:>6} ms {:>7} bytes {said:>7} rlimit {limit:>8} used {used:>8} {what}", start.elapsed().as_millis(), query.len());
                 if let Some(err) = out.lines().find(|l| l.starts_with("(error")) {
                     eprintln!("smt error {err}");
@@ -373,6 +483,9 @@ fn ask_out(module: &str, query: &str) -> String {
             out
         }
     };
+    if rejection(&out).is_some() {
+        REJECTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     out
 }
 
@@ -427,7 +540,7 @@ fn answer(out: String) -> Answer {
     // Z3 reports a rejected command as `(error …)` and carries on without it,
     // so an answer that follows an error is not about the query we meant:
     // never trust it (an `unsat` would be unsound).
-    if let Some(err) = out.lines().take_while(|l| !matches!(l.trim(), "sat" | "unsat" | "unknown" | "timeout")).find(|l| l.starts_with("(error")) {
+    if let Some(err) = rejection(&out) {
         return Answer::Unknown(format!("Z3 rejected the query (a checkers bug): {err}"));
     }
     let mut lines = out.splitn(2, '\n');
@@ -535,7 +648,7 @@ fn ask_all_out(module: &str, texts: &[Option<String>]) -> Vec<Option<String>> {
     results.into_iter().map(|m| m.into_inner().unwrap_or_else(|e| e.into_inner())).collect()
 }
 
-/// FNV-1a, for the ledger's query hashes.
+/// FNV-1a, for the names of cached answers.
 fn fnv(s: &str) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in s.bytes() {
@@ -588,28 +701,70 @@ fn ends_everywhere(e: &Elab, obs: &[&Obligation]) {
 }
 
 /// Prove the obligations of module `user` (§7.2).
-pub fn verify(e: &Elab, user: &str) -> Verified {
+/// Module `user`'s proofs phase: its proofs (`proved`), after W022 for
+/// its branches that never run, which needs the program's unused code.
+pub fn proofs(e: &Elab, user: &str) -> Verified {
+    let mut v = proved(e, user);
+    let (asked0, reused0) = (ASKED.load(std::sync::atomic::Ordering::Relaxed), REUSED.load(std::sync::atomic::Ordering::Relaxed));
+    let mut diags = unreachable(e, user);
+    v.asked += ASKED.load(std::sync::atomic::Ordering::Relaxed) - asked0;
+    v.reused += REUSED.load(std::sync::atomic::Ordering::Relaxed) - reused0;
+    diags.append(&mut v.diags);
+    v.diags = diags;
+    v
+}
+
+/// Module `user`'s obligations proved: the first time, by `verify`, unless
+/// a check verified it before under its key (D143: its text, what it
+/// depends on, the tools), which is then what it gave; after that, as they
+/// were. A module is proved once per program, whether first for a value
+/// known at compile time (§8.9) or in the proofs phase, and a module
+/// verified before builds no queries for either.
+pub fn proved(e: &Elab, user: &str) -> Verified {
+    if let Some(v) = e.module_proofs.borrow().get(user) {
+        return v.clone();
+    }
+    if let Some(r) = module_keys(e).get(user).and_then(|k| recall(k)) {
+        let v = Verified { diags: r.warnings, ledger: r.ledger, z3_version: r.z3_version, proved: r.proved, asked: 0, reused: 0 };
+        e.module_proofs.borrow_mut().insert(user.to_string(), v.clone());
+        return v;
+    }
+    e.proving.borrow_mut().insert(user.to_string());
+    let v = verify(e, user);
+    e.proving.borrow_mut().remove(user);
+    e.module_proofs.borrow_mut().insert(user.to_string(), v.clone());
+    v
+}
+
+fn verify(e: &Elab, user: &str) -> Verified {
+    // Those proved already, so that the module's own functions could run
+    // while it was checked (§8.9): taken as proved.
+    let early = e.early.borrow();
     let obs: Vec<&Obligation> = e
         .obligations
         .iter()
-        .filter(|o| o.module == user)
+        .enumerate()
+        .filter(|(k, o)| o.module == user && !early.proved(*k, o))
+        .map(|(_, o)| o)
         .filter(|o| o.only_if_nat.as_ref().is_none_or(|t| smt::is_nat(e, t)))
         .collect();
     let mut v = Verified { diags: Vec::new(), ledger: Vec::new(), z3_version: None, proved: 0, asked: 0, reused: 0 };
+    v.proved += early.counts.get(user).copied().unwrap_or(0);
+    v.ledger.extend(early.ledger.iter().filter(|(m, _)| m == user).map(|(_, l)| l.clone()));
+    drop(early);
     let (asked0, reused0) = (ASKED.load(std::sync::atomic::Ordering::Relaxed), REUSED.load(std::sync::atomic::Ordering::Relaxed));
     for t in e.admits.iter().filter(|t| t.module == user) {
-        v.ledger.push(LedgerEntry { span: t.span, how: "trusted", what: t.what.clone(), hash: None });
+        v.ledger.push(LedgerEntry { span: t.span, how: "trusted", what: t.what.clone() });
     }
     for t in e.builtin_axioms.iter().filter(|t| t.module == user) {
-        v.ledger.push(LedgerEntry { span: t.span, how: "axiom", what: t.what.clone(), hash: None });
+        v.ledger.push(LedgerEntry { span: t.span, how: "axiom", what: t.what.clone() });
     }
-    v.diags.extend(unreachable(e, user));
     v.diags.extend(vacuous(e, user));
     guess_measures(e, user, &mut v);
     for (m, span, _) in e.checks.iter().filter(|c| c.0 == user) {
         let _ = m;
         let text = e.sources.get(user).and_then(|f| f.text.get(span.start as usize..span.end as usize)).unwrap_or("");
-        v.ledger.push(LedgerEntry { span: *span, how: "computed", what: format!("check {}", text.trim()), hash: None });
+        v.ledger.push(LedgerEntry { span: *span, how: "computed", what: format!("check {}", text.trim()) });
     }
     if obs.is_empty() {
         return v;
@@ -620,172 +775,14 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     });
     for o in trivial {
         v.proved += 1;
-        v.ledger.push(LedgerEntry { span: o.span, how: "computed", what: describe(e, o), hash: None });
+        v.ledger.push(LedgerEntry { span: o.span, how: "computed", what: describe(e, o) });
     }
     if obs.is_empty() {
         return v;
     }
-    // Which functions recursing by `decreasing` end whatever their
-    // preconditions say: their definitions need no precondition guard (M17).
-    ends_everywhere(e, &obs);
-    // Translate on this thread (the elaborator isn't `Send`), solve in
-    // parallel: each query's first ask (step 1) as soon as it is made.
-    let defs = smt::Defs::default();
-    let mut queries: Vec<Result<smt::Query, smt::Outside>> = Vec::with_capacity(obs.len());
-    // The postconditions of calls in reflected bodies (#343) are given last:
-    // most goals need none of them, and their axioms make Z3 search more in
-    // every query. Steps 1 to 6 ask the query without them (the full query
-    // where there are none): `unsat` is a proof, as from any weaker query;
-    // where there are some, a model may break them, so `sat` is no
-    // counterexample, and the full query decides (6b).
-    let lean_of = |q: &smt::Query| q.without_bodies.clone().unwrap_or_else(|| q.text.clone());
-    // 1. Everything, with a small work limit (D154): most goals need little
-    //    work, and this query's answer is final either way: `unsat` is a
-    //    proof, `sat` a real counterexample.
-    let firsts = ask_produced(user, obs.len(), |k| {
-        let q = smt::Builder::new(e, user).sharing(&defs).with_body_posts().query(obs[k]);
-        let first = q.as_ref().ok().map(|q| with_limit(&lean_of(q), FIRST_RLIMIT));
-        queries.push(q);
-        first
-    });
-    let texts: Vec<Option<String>> = queries.iter().map(|q| q.as_ref().ok().map(|q| q.text.clone())).collect();
-    let fallbacks: Vec<Option<String>> = queries.iter().map(|q| q.as_ref().ok().and_then(|q| q.without_axioms.clone())).collect();
-    if std::env::var_os("CHECKERS_SMT_DUMP").is_some() {
-        for (o, t) in obs.iter().zip(&texts) {
-            eprintln!(";; ── {:?} at {:?}\n{}", o.kind, o.span, t.as_deref().unwrap_or(";; outside the fragment"));
-        }
-    }
-    let lean: Vec<Option<String>> = queries.iter().map(|q| q.as_ref().ok().map(lean_of)).collect();
-    let bodies: Vec<bool> = queries.iter().map(|q| q.as_ref().is_ok_and(|q| q.without_bodies.is_some())).collect();
-    // Left for the full query.
-    let mut with_bodies = vec![false; obs.len()];
-    let first: Vec<Option<String>> = lean.iter().map(|t| t.as_ref().map(|t| with_limit(t, FIRST_RLIMIT))).collect();
-    let mut answers: Vec<Option<Answer>> = firsts
-        .into_iter()
-        .enumerate()
-        .map(|(k, a)| match a {
-            Some(Answer::Unsat) => Some(Answer::Unsat),
-            // The weaker queries would have models too.
-            Some(Answer::Sat(_)) if bodies[k] => {
-                with_bodies[k] = true;
-                None
-            }
-            Some(a @ Answer::Sat(_)) => Some(a),
-            _ => None,
-        })
-        .collect();
-    // The query that proved each obligation, as Z3 was given it.
-    let mut proof: Vec<Option<String>> =
-        answers.iter().zip(&first).map(|(a, t)| if matches!(a, Some(Answer::Unsat)) { t.clone() } else { None }).collect();
-    // Z3 gave up: weaker queries, weakest first. `unsat` from a weaker query
-    // is still a proof (§7.2).
-    // 2. Definitions uninterpreted: fast when the facts in scope suffice.
-    // 3. Only the definitions the goal mentions: Z3 doesn't unfold the
-    //    functions whose results the facts in scope give.
-    // 4. Only the definitions the facts in scope mention: the premises
-    //    unfolded, not the goal's functions, which Z3 can unfold without end.
-    // 5. Every definition, without the quantified postconditions of other
-    //    functions, which can send Z3 searching (D101).
-    // Each with the small work limit, then again with a larger one where Z3
-    // gave up: a query that can't prove its goal often searches until its
-    // limit.
-    const TIERS: usize = 4;
-    let weaker: Vec<[Option<&String>; TIERS]> = queries
-        .iter()
-        .zip(&answers)
-        .zip(&with_bodies)
-        .map(|((q, a), w)| match (q, a) {
-            (Ok(q), None) if !w => [q.facts_only.as_ref(), q.focused.as_ref(), q.premised.as_ref(), q.without_axioms.as_ref()],
-            _ => [None; TIERS],
-        })
-        .collect();
-    // Whether each weaker query gave up with the small limit.
-    let mut gave_up: Vec<[bool; TIERS]> = vec![[true; TIERS]; obs.len()];
-    for limit in [FIRST_RLIMIT, QUICK_RLIMIT] {
-        for tier in 0..TIERS {
-            let ask_q: Vec<Option<String>> = weaker
-                .iter()
-                .enumerate()
-                .map(|(k, w)| {
-                    let t = w[tier]?;
-                    // Asked already: proved, the same text as a weaker tier,
-                    // or answered `sat` with the small limit.
-                    if proof[k].is_some() || w[..tier].contains(&Some(t)) || !gave_up[k][tier] {
-                        return None;
-                    }
-                    Some(with_limit(t, limit))
-                })
-                .collect();
-            for (k, a) in ask_all(user, &ask_q).into_iter().enumerate() {
-                match a {
-                    Some(Answer::Unsat) => proof[k] = ask_q[k].clone(),
-                    Some(Answer::Sat(_)) => gave_up[k][tier] = false,
-                    _ => {}
-                }
-            }
-        }
-    }
-    // 6. Everything, with the full work limit: the query whose
-    //    counterexample is real.
-    let rest: Vec<Option<String>> = lean
-        .iter()
-        .enumerate()
-        .map(|(k, t)| if proof[k].is_some() || answers[k].is_some() || with_bodies[k] { None } else { t.clone() })
-        .collect();
-    for (k, a) in ask_all(user, &rest).into_iter().enumerate() {
-        if proof[k].is_some() {
-            answers[k] = Some(Answer::Unsat);
-        } else if matches!(a, Some(Answer::Unsat)) {
-            proof[k] = rest[k].clone();
-            answers[k] = a;
-        } else if bodies[k] && rest[k].is_some() {
-            with_bodies[k] = true;
-        } else if a.is_some() {
-            answers[k] = a;
-        }
-    }
-    // 6b. With the postconditions of calls in reflected bodies, where the
-    //     query has some and they could matter: with the small work limit,
-    //     then the full one.
-    for limit in [FIRST_RLIMIT, RLIMIT] {
-        let full: Vec<Option<String>> = texts
-            .iter()
-            .enumerate()
-            .map(|(k, t)| if with_bodies[k] { t.as_ref().map(|t| with_limit(t, limit)) } else { None })
-            .collect();
-        for (k, a) in ask_all(user, &full).into_iter().enumerate() {
-            if full[k].is_none() {
-                continue;
-            }
-            match a {
-                Some(Answer::Unsat) => {
-                    proof[k] = full[k].clone();
-                    answers[k] = a;
-                    with_bodies[k] = false;
-                }
-                Some(Answer::Sat(_)) => {
-                    answers[k] = a;
-                    with_bodies[k] = false;
-                }
-                a if limit == RLIMIT => answers[k] = a,
-                _ => {}
-            }
-        }
-    }
-    // 7. Z3 gave up on everything: a counterexample without the axioms, with
-    //    the full work limit, is better than nothing (§7.2).
-    let retry: Vec<Option<String>> = answers
-        .iter()
-        .zip(&fallbacks)
-        .map(|(a, f)| if matches!(a, Some(Answer::Unknown(_))) { f.clone() } else { None })
-        .collect();
-    if retry.iter().any(|r| r.is_some()) {
-        for (a, r) in answers.iter_mut().zip(ask_all(user, &retry)) {
-            if let Some(r @ Answer::Sat(_)) = r {
-                *a = Some(r);
-            }
-        }
-    }
+    let with_values = with_known_values(e, &obs, &mut v.ledger);
+    let obs: Vec<&Obligation> = with_values.iter().collect();
+    let (defs, queries, answers, _) = solve(e, user, &obs);
     // Cases one `match` leaves out that may occur: one error (E0240).
     let mut uncovered: Vec<(Span, Vec<String>, usize)> = Vec::new();
     // A call whose result isn't shown to be of its type (E0456, or at a
@@ -796,7 +793,14 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     // A postcondition outside what the prover handles is so for each value
     // returned: one error, listing them (its diagnostic, the obligations).
     let mut outside_posts: Vec<(usize, Vec<usize>)> = Vec::new();
+    // A goal with a type error isn't asked (§7.3): the type error is its
+    // only diagnostic. Without one reported, it would be a checkers bug,
+    // shown as outside the fragment.
+    let type_errors = e.diags.iter().any(|(_, d)| d.is_error());
     for (k, ((o, q), a)) in obs.iter().zip(&queries).zip(answers).enumerate() {
+        if matches!(q, Err(why) if why.is_type_error()) && type_errors {
+            continue;
+        }
         if let (Err(why), ObKind::Post { .. }) = (q, &o.kind) {
             let same = |j: usize| {
                 let p = obs[j];
@@ -826,11 +830,9 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
         }
         match (q, a) {
             (Err(why), _) => v.diags.push(outside(e, &[o], &why.0)),
-            (Ok(q), Some(Answer::Unsat)) => {
+            (Ok(_), Some(Answer::Unsat)) => {
                 v.proved += 1;
-                // The query that was proved, as Z3 was given it.
-                let hash = Some(fnv(proof[k].as_ref().unwrap_or(&q.text)));
-                v.ledger.push(LedgerEntry { span: o.span, how: "smt", what: describe(e, o), hash });
+                v.ledger.push(LedgerEntry { span: o.span, how: "smt", what: describe(e, o) });
             }
             (Ok(q), Some(Answer::Sat(model))) => {
                 // A model of a query without the `forall` facts may break
@@ -885,227 +887,457 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     v
 }
 
+/// `obs` with, as facts, the values of the calls in each that are known at
+/// compile time (§7.1, §8.9): the calls' values, never their functions'
+/// bodies, each in `ledger` as computed. First, which functions recursing
+/// by `decreasing` end whatever their preconditions say: their definitions
+/// need no precondition guard (M17).
+fn with_known_values(e: &Elab, obs: &[&Obligation], ledger: &mut Vec<LedgerEntry>) -> Vec<Obligation> {
+    ends_everywhere(e, obs);
+    obs.iter()
+        .map(|o| {
+            let known = known_calls(e, o);
+            for (_, what) in &known {
+                if !ledger.iter().any(|x| x.how == "computed" && x.span == o.span && x.what == *what) {
+                    ledger.push(LedgerEntry { span: o.span, how: "computed", what: what.clone() });
+                }
+            }
+            let mut o = (*o).clone();
+            o.facts.extend(known.into_iter().map(|(f, _)| f));
+            o
+        })
+        .collect()
+}
+
+/// Prove `obs` and the measures of `guesses`, of module `user`, now,
+/// before the proofs phase, so that its functions can run while it is
+/// checked (§8.9): the ledger's entries for them, and how many were
+/// proved, if every one is; else None (the proofs phase then asks again, and reports what fails).
+pub fn prove_now(e: &Elab, user: &str, obs: &[&Obligation], guesses: &[&crate::elab::termination::GuessGroup]) -> Option<(Vec<LedgerEntry>, usize)> {
+    let mut v = Verified { diags: Vec::new(), ledger: Vec::new(), z3_version: None, proved: 0, asked: 0, reused: 0 };
+    for g in guesses {
+        if !guess_group(e, user, g, &mut v) {
+            return None;
+        }
+    }
+    let obs: Vec<&Obligation> = obs.iter().copied().filter(|o| o.only_if_nat.as_ref().is_none_or(|t| smt::is_nat(e, t))).collect();
+    let (trivial, obs): (Vec<&Obligation>, Vec<&Obligation>) = obs.into_iter().partition(|o| {
+        matches!(crate::core::force(&e.g, o.goal.clone()), crate::core::Val::Con(c, _) if Some(c) == e.g.well_known.true_con)
+    });
+    for o in trivial {
+        v.proved += 1;
+        v.ledger.push(LedgerEntry { span: o.span, how: "computed", what: describe(e, o) });
+    }
+    if obs.is_empty() {
+        return Some((v.ledger, v.proved));
+    }
+    let with_values = with_known_values(e, &obs, &mut v.ledger);
+    let obs: Vec<&Obligation> = with_values.iter().collect();
+    let (_, queries, answers, _) = solve(e, user, &obs);
+    for (o, (q, a)) in obs.iter().zip(queries.iter().zip(answers)) {
+        let (Ok(_), Some(Answer::Unsat)) = (q, a) else { return None };
+        v.proved += 1;
+        v.ledger.push(LedgerEntry { span: o.span, how: "smt", what: describe(e, o) });
+    }
+    Some((v.ledger, v.proved))
+}
+
+/// Ask Z3 about `obs`, of module `user`: each one's query (or why it has
+/// none), its answer, and whether a query proved it.
+#[allow(clippy::type_complexity)]
+fn solve(
+    e: &Elab,
+    user: &str,
+    obs: &[&Obligation],
+) -> (smt::Defs, Vec<Result<smt::Query, smt::Outside>>, Vec<Option<Answer>>, Vec<bool>) {
+    // Translate on this thread (the elaborator isn't `Send`), solve in
+    // parallel: each query's first ask (step 1) as soon as it is made.
+    let defs = smt::Defs::default();
+    let mut queries: Vec<Result<smt::Query, smt::Outside>> = Vec::with_capacity(obs.len());
+    // The postconditions of calls in reflected bodies (#343) are given last:
+    // most goals need none of them, and their axioms make Z3 search more in
+    // every query. Steps 1 to 6 ask the query without them (the full query
+    // where there are none): `unsat` is a proof, as from any weaker query;
+    // where there are some, a model may break them, so `sat` is no
+    // counterexample, and the full query decides (6b).
+    let lean_of = |q: &smt::Query| q.without_bodies.clone().unwrap_or_else(|| q.text.clone());
+    // 1. Everything, with a small work limit (D154): most goals need little
+    //    work, and this query's answer is final either way: `unsat` is a
+    //    proof, `sat` a real counterexample.
+    let firsts = ask_produced(user, obs.len(), |k| {
+        let q = smt::Builder::new(e, user).sharing(&defs).with_body_posts().query(obs[k]);
+        let first = q.as_ref().ok().map(|q| with_limit(&lean_of(q), FIRST_RLIMIT));
+        queries.push(q);
+        first
+    });
+    let texts: Vec<Option<String>> = queries.iter().map(|q| q.as_ref().ok().map(|q| q.text.clone())).collect();
+    let fallbacks: Vec<Option<String>> = queries.iter().map(|q| q.as_ref().ok().and_then(|q| q.without_axioms.clone())).collect();
+    if std::env::var_os("CHECKERS_SMT_DUMP").is_some() {
+        for (o, t) in obs.iter().zip(&texts) {
+            eprintln!(";; ── {:?} at {:?}\n{}", o.kind, o.span, t.as_deref().unwrap_or(";; outside the fragment"));
+        }
+    }
+    let lean: Vec<Option<String>> = queries.iter().map(|q| q.as_ref().ok().map(lean_of)).collect();
+    let bodies: Vec<bool> = queries.iter().map(|q| q.as_ref().is_ok_and(|q| q.without_bodies.is_some())).collect();
+    // Left for the full query.
+    let mut with_bodies = vec![false; obs.len()];
+    let mut answers: Vec<Option<Answer>> = firsts
+        .into_iter()
+        .enumerate()
+        .map(|(k, a)| match a {
+            Some(Answer::Unsat) => Some(Answer::Unsat),
+            // The weaker queries would have models too.
+            Some(Answer::Sat(_)) if bodies[k] => {
+                with_bodies[k] = true;
+                None
+            }
+            Some(a @ Answer::Sat(_)) => Some(a),
+            _ => None,
+        })
+        .collect();
+    // The obligations a query has proved.
+    let mut proven: Vec<bool> = answers.iter().map(|a| matches!(a, Some(Answer::Unsat))).collect();
+    // Z3 gave up: weaker queries, weakest first. `unsat` from a weaker query
+    // is still a proof (§7.2).
+    // 2. Definitions uninterpreted: fast when the facts in scope suffice.
+    // 3. Only the definitions the goal mentions: Z3 doesn't unfold the
+    //    functions whose results the facts in scope give.
+    // 4. Only the definitions the facts in scope mention: the premises
+    //    unfolded, not the goal's functions, which Z3 can unfold without end.
+    // 5. Every definition, without the quantified postconditions of other
+    //    functions, which can send Z3 searching (D101).
+    // Each with the small work limit, then again with a larger one where Z3
+    // gave up: a query that can't prove its goal often searches until its
+    // limit.
+    const TIERS: usize = 4;
+    let weaker: Vec<[Option<&String>; TIERS]> = queries
+        .iter()
+        .zip(&answers)
+        .zip(&with_bodies)
+        .map(|((q, a), w)| match (q, a) {
+            (Ok(q), None) if !w => [q.facts_only.as_ref(), q.focused.as_ref(), q.premised.as_ref(), q.without_axioms.as_ref()],
+            _ => [None; TIERS],
+        })
+        .collect();
+    // Whether each weaker query gave up with the small limit.
+    let mut gave_up: Vec<[bool; TIERS]> = vec![[true; TIERS]; obs.len()];
+    for limit in [FIRST_RLIMIT, QUICK_RLIMIT] {
+        for tier in 0..TIERS {
+            let ask_q: Vec<Option<String>> = weaker
+                .iter()
+                .enumerate()
+                .map(|(k, w)| {
+                    let t = w[tier]?;
+                    // Asked already: proved, the same text as a weaker tier,
+                    // or answered `sat` with the small limit.
+                    if proven[k] || w[..tier].contains(&Some(t)) || !gave_up[k][tier] {
+                        return None;
+                    }
+                    Some(with_limit(t, limit))
+                })
+                .collect();
+            for (k, a) in ask_all(user, &ask_q).into_iter().enumerate() {
+                match a {
+                    Some(Answer::Unsat) => proven[k] = true,
+                    Some(Answer::Sat(_)) => gave_up[k][tier] = false,
+                    _ => {}
+                }
+            }
+        }
+    }
+    // 6. Everything, with the full work limit: the query whose
+    //    counterexample is real.
+    let rest: Vec<Option<String>> = lean
+        .iter()
+        .enumerate()
+        .map(|(k, t)| if proven[k] || answers[k].is_some() || with_bodies[k] { None } else { t.clone() })
+        .collect();
+    for (k, a) in ask_all(user, &rest).into_iter().enumerate() {
+        if proven[k] {
+            answers[k] = Some(Answer::Unsat);
+        } else if matches!(a, Some(Answer::Unsat)) {
+            proven[k] = true;
+            answers[k] = a;
+        } else if bodies[k] && rest[k].is_some() {
+            with_bodies[k] = true;
+        } else if a.is_some() {
+            answers[k] = a;
+        }
+    }
+    // 6b. With the postconditions of calls in reflected bodies, where the
+    //     query has some and they could matter: with the small work limit,
+    //     then the full one.
+    for limit in [FIRST_RLIMIT, RLIMIT] {
+        let full: Vec<Option<String>> = texts
+            .iter()
+            .enumerate()
+            .map(|(k, t)| if with_bodies[k] { t.as_ref().map(|t| with_limit(t, limit)) } else { None })
+            .collect();
+        for (k, a) in ask_all(user, &full).into_iter().enumerate() {
+            if full[k].is_none() {
+                continue;
+            }
+            match a {
+                Some(Answer::Unsat) => {
+                    proven[k] = true;
+                    answers[k] = a;
+                    with_bodies[k] = false;
+                }
+                Some(Answer::Sat(_)) => {
+                    answers[k] = a;
+                    with_bodies[k] = false;
+                }
+                a if limit == RLIMIT => answers[k] = a,
+                _ => {}
+            }
+        }
+    }
+    // 7. Z3 gave up on everything: a counterexample without the axioms, with
+    //    the full work limit, is better than nothing (§7.2).
+    let retry: Vec<Option<String>> = answers
+        .iter()
+        .zip(&fallbacks)
+        .map(|(a, f)| if matches!(a, Some(Answer::Unknown(_))) { f.clone() } else { None })
+        .collect();
+    if retry.iter().any(|r| r.is_some()) {
+        for (a, r) in answers.iter_mut().zip(ask_all(user, &retry)) {
+            if let Some(r @ Answer::Sat(_)) = r {
+                *a = Some(r);
+            }
+        }
+    }
+    (defs, queries, answers, proven)
+}
+
 /// Guess each recursive group's measure (D150): the first candidate, alone
 /// and then in pairs compared lexicographically, that the prover shows every
 /// recursive call makes smaller while staying a natural number. E0301 if
 /// none is.
 fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
+    let early = e.early.borrow();
+    for gr in e.guess_groups.iter().filter(|g| g.module == user && !early.guesses.contains(&g.members)) {
+        guess_group(e, user, gr, v);
+    }
+}
+
+/// Guess group `gr`'s measure (D150), as `guess_measures`: whether one is
+/// proved.
+fn guess_group(e: &Elab, user: &str, gr: &crate::elab::termination::GuessGroup, v: &mut Verified) -> bool {
     use crate::core::{eval, quote, Lit, Prim, Tm, Val};
     use crate::elab::termination::Measure;
-    for gr in e.guess_groups.iter().filter(|g| g.module == user) {
-        // Combinations to try: one measure per member.
-        let mut combos: Vec<Vec<Measure>> = Vec::new();
-        if gr.members.len() == 1 {
-            let cs = &gr.candidates[0];
-            combos.extend(cs.iter().map(|c| vec![c.clone()]));
-            let firsts = &cs[..cs.len().min(6)];
-            for a in firsts {
-                for b in firsts {
-                    if a.1 != b.1 {
-                        let mut comps = a.0.clone();
-                        comps.extend(b.0.iter().cloned());
-                        combos.push(vec![(comps, format!("({}, {})", a.1, b.1))]);
-                    }
-                }
-            }
-        } else {
-            // One candidate per member, as long as the product is small.
-            let mut acc: Vec<Vec<Measure>> = vec![Vec::new()];
-            for cs in &gr.candidates {
-                let mut next = Vec::new();
-                for a in &acc {
-                    for c in cs {
-                        let mut x = a.clone();
-                        x.push(c.clone());
-                        next.push(x);
-                    }
-                }
-                next.truncate(64);
-                acc = next;
-            }
-            combos = acc;
-        }
-        let idx = |d| gr.members.iter().position(|m| *m == d).unwrap_or(0);
-        let wk = &e.g.well_known;
-        let (Some(tc), Some(fc)) = (wk.true_con, wk.false_con) else { return };
-        let and = |a: Tm, b: Tm| {
-            Tm::Case(
-                std::rc::Rc::new(a),
-                std::rc::Rc::new(crate::core::CaseTm { branches: vec![(fc, 0, Tm::ConApp(fc, vec![])), (tc, 0, b)], lits: vec![], default: None }),
-            )
-        };
-        let or = |a: Tm, b: Tm| {
-            Tm::Case(
-                std::rc::Rc::new(a),
-                std::rc::Rc::new(crate::core::CaseTm { branches: vec![(fc, 0, b), (tc, 0, Tm::ConApp(tc, vec![]))], lits: vec![], default: None }),
-            )
-        };
-        // The obligation at each call, for each combination.
-        let mut obs: Vec<Vec<Obligation>> = Vec::new();
-        // A combination whose measure is the same expression at a call as in
-        // the caller (`len src` passed `src`) can't be smaller there: not asked.
-        let mut doomed: Vec<Option<Span>> = Vec::new();
-        for combo in &combos {
-            let mut v = Vec::new();
-            let mut same_at = None;
-            for c in &gr.calls {
-                let (mine, theirs) = (&combo[idx(c.caller)], &combo[idx(c.callee)]);
-                if mine.0.len() != theirs.0.len() {
-                    continue;
-                }
-                let lvl = c.ob.ctx.len();
-                let n_caller = e.specs.get(&c.caller).map_or(0, |s| s.n_binders);
-                let here: crate::core::Env = std::rc::Rc::new((0..n_caller).map(Val::var).collect());
-                let there: crate::core::Env = std::rc::Rc::new(c.args.clone());
-                let a: Vec<Tm> = theirs.0.iter().map(|t| quote(&e.g, lvl, &eval(&e.g, &there, t))).collect();
-                let b: Vec<Tm> = mine.0.iter().map(|t| quote(&e.g, lvl, &eval(&e.g, &here, t))).collect();
-                if same_at.is_none() && c.caller == c.callee && a.iter().zip(&b).all(|(x, y)| format!("{x:?}") == format!("{y:?}")) {
-                    same_at = Some(c.ob.span);
-                }
-                // Each part a natural number here, and the callee's below.
-                let k = a.len();
-                let mut lt = Tm::PrimApp(Prim::Lt, vec![a[k - 1].clone(), b[k - 1].clone()]);
-                for j in (0..k - 1).rev() {
-                    let less = Tm::PrimApp(Prim::Lt, vec![a[j].clone(), b[j].clone()]);
-                    let same = Tm::PrimApp(Prim::Eq, vec![a[j].clone(), b[j].clone()]);
-                    lt = or(less, and(same, lt));
-                }
-                let mut goal = lt;
-                for bj in b.iter().rev() {
-                    goal = and(Tm::PrimApp(Prim::Le, vec![Tm::Lit(Lit::Num(0)), bj.clone()]), goal);
-                }
-                let env: crate::core::Env = std::rc::Rc::new(
-                    c.ob.ctx.iter().enumerate().map(|(l, x)| x.def.clone().unwrap_or_else(|| Val::var(l))).collect(),
-                );
-                let mut o = c.ob.clone();
-                o.goal = eval(&e.g, &env, &goal);
-                let func = e.g.defs[c.caller.0 as usize].name.to_string();
-                o.kind = ObKind::Measure { func, measure: mine.1.clone() };
-                o.text = mine.1.clone();
-                v.push(o);
-            }
-            obs.push(v);
-            doomed.push(same_at);
-        }
-        // Ask about the single measures, then the pairs, each first with a
-        // small work limit (a measure that holds is usually quick to show,
-        // and one that doesn't is slow to give up on), then the rest with
-        // the quick one; take the first proved.
-        let defs = smt::Defs::default();
-        let base: Vec<usize> = obs.iter().scan(0, |k, os| {
-            let at = *k;
-            *k += os.len();
-            Some(at)
-        }).collect();
-        let texts: Vec<Option<String>> = obs
-            .iter()
-            .flatten()
-            .map(|o| quick(smt::Builder::new(e, user).sharing(&defs).query(o).ok().map(|q| q.no_tables.unwrap_or(q.text))))
-            .collect();
-        let mut answers: Vec<Option<Answer>> = texts.iter().map(|_| None).collect();
-        let singles = combos.iter().take_while(|c| c.iter().all(|m| m.0.len() == 1)).count();
-        let small = |t: &Option<String>| {
-            t.as_ref().map(|t| t.replacen(&format!("(set-option :rlimit {QUICK_RLIMIT})"), &format!("(set-option :rlimit {PROBE_RLIMIT})"), 1))
-        };
-        let proved = |answers: &[Option<Answer>], ci: usize| {
-            !obs[ci].is_empty() && answers[base[ci]..base[ci] + obs[ci].len()].iter().all(|a| matches!(a, Some(Answer::Unsat)))
-        };
-        let mut chosen: Option<(usize, usize)> = None;
-        'tiers: for limit in [true, false] {
-            for tier in [0..singles, singles..combos.len()] {
-                let ks: Vec<usize> = tier
-                    .clone()
-                    .filter(|ci| doomed[*ci].is_none())
-                    .flat_map(|ci| base[ci]..base[ci] + obs[ci].len())
-                    .filter(|k| !matches!(answers[*k], Some(Answer::Unsat)))
-                    .collect();
-                let asked: Vec<Option<String>> = ks.iter().map(|k| if limit { small(&texts[*k]) } else { texts[*k].clone() }).collect();
-                for (k, a) in ks.iter().zip(ask_all(user, &asked)) {
-                    answers[*k] = a;
-                }
-                if let Some(ci) = tier.clone().find(|ci| proved(&answers, *ci)) {
-                    chosen = Some((ci, base[ci]));
-                    break 'tiers;
+    // Combinations to try: one measure per member.
+    let mut combos: Vec<Vec<Measure>> = Vec::new();
+    if gr.members.len() == 1 {
+        let cs = &gr.candidates[0];
+        combos.extend(cs.iter().map(|c| vec![c.clone()]));
+        let firsts = &cs[..cs.len().min(6)];
+        for a in firsts {
+            for b in firsts {
+                if a.1 != b.1 {
+                    let mut comps = a.0.clone();
+                    comps.extend(b.0.iter().cloned());
+                    combos.push(vec![(comps, format!("({}, {})", a.1, b.1))]);
                 }
             }
         }
-        // Each measure's calls it wasn't shown smaller at, and of those the
-        // one to name: first in the group's preference (#124), the call
-        // losing the parameter recursed on.
-        let inside = |a: Span, b: Span| a == b || b.start <= a.start && a.end <= b.end;
-        let unproved: Vec<Vec<Span>> = obs
-            .iter()
-            .enumerate()
-            .map(|(ci, os)| {
-                let ans = &answers[base[ci]..base[ci] + os.len()];
-                os.iter().zip(ans).filter(|(_, a)| !matches!(a, Some(Answer::Unsat))).map(|(o, _)| o.span).collect()
-            })
-            .collect();
-        let pick = |fails: &[Span]| {
-            gr.prefer
-                .iter()
-                .find_map(|p| fails.iter().find(|f| inside(**f, *p) || inside(*p, **f)))
-                .or(fails.first())
-                .copied()
-        };
-        let mut tried: Vec<(String, Option<Span>)> = Vec::new();
-        for (ci, fails) in unproved.iter().enumerate() {
-            let failed = doomed[ci].or_else(|| pick(fails));
-            tried.push((combos[ci].iter().map(|m| format!("`{}`", m.1)).collect::<Vec<_>>().join(" and "), failed));
-        }
-        let first_call = gr.calls.first().map(|c| c.ob.span);
-        match chosen {
-            Some((ci, at)) => {
-                for (o, t) in obs[ci].iter().zip(&texts[at..]) {
-                    v.proved += 1;
-                    let mut what = describe(e, o);
-                    what.push_str(" (guessed)");
-                    v.ledger.push(LedgerEntry { span: o.span, how: "smt", what, hash: t.as_ref().map(|t| fnv(t)) });
+    } else {
+        // One candidate per member, as long as the product is small.
+        let mut acc: Vec<Vec<Measure>> = vec![Vec::new()];
+        for cs in &gr.candidates {
+            let mut next = Vec::new();
+            for a in &acc {
+                for c in cs {
+                    let mut x = a.clone();
+                    x.push(c.clone());
+                    next.push(x);
                 }
             }
-            None => {
-                // At a call no measure was shown smaller at: for the measures
-                // that leave the fewest calls unproved, the one `pick` names.
-                let fewest = (0..obs.len())
-                    .filter(|ci| doomed[*ci].is_none() && !obs[*ci].is_empty())
-                    .min_by_key(|ci| unproved[*ci].len());
-                let Some(at) = fewest.and_then(|ci| pick(&unproved[ci])).or_else(|| gr.prefer.first().and_then(|p| {
-                    gr.calls.iter().map(|c| c.ob.span).find(|s| inside(*s, *p) || inside(*p, *s))
-                })).or(first_call)
-                else {
-                    continue;
-                };
-                let names: Vec<String> = gr.members.iter().map(|d| format!("`{}`", e.g.defs[d.0 as usize].name)).collect();
-                let src = e.sources.get(user);
-                let line = |sp: Span| src.map(|f| f.line_col(sp.start).0).unwrap_or(0);
-                let shown: Vec<String> = tried
-                    .iter()
-                    .take(8)
-                    .map(|(m, f)| match f {
-                        Some(sp) if *sp != at => format!("{m} (not shown smaller at line {})", line(*sp)),
-                        _ => m.clone(),
-                    })
-                    .collect();
-                let note = format!("measures tried, none shown smaller here: {}", shown.join(", "));
-                // A lemma using itself: an induction (#76).
-                let lemma = gr.members.len() == 1 && e.fn_meta.get(&gr.members[0]).is_some_and(|m| !m.is_fn);
-                if lemma {
-                    let name = &names[0];
-                    let d = Diagnostic::error("E0301", format!("{name} uses itself, but no measure found that each use makes smaller, so this is not an induction"), at)
-                        .with_label("the induction hypothesis")
-                        .with_note(note)
-                        .with_help(format!("use {name} only on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of its proof"));
-                    v.diags.push(d);
-                    continue;
-                }
-                let who = if names.len() == 1 { format!("{} terminates", names[0]) } else { format!("{} terminate", names.join(", ")) };
-                let mut d = Diagnostic::error("E0301", format!("cannot show that {who}: no measure found that every recursive call makes smaller"), at)
-                    .with_label("recursive call");
-                d = d.with_note(note);
-                v.diags.push(d.with_help("add `decreasing <measure>` as the first line of the function, or mark it `partial`"));
+            next.truncate(64);
+            acc = next;
+        }
+        combos = acc;
+    }
+    let idx = |d| gr.members.iter().position(|m| *m == d).unwrap_or(0);
+    let wk = &e.g.well_known;
+    let (Some(tc), Some(fc)) = (wk.true_con, wk.false_con) else { return false };
+    let and = |a: Tm, b: Tm| {
+        Tm::Case(
+            std::rc::Rc::new(a),
+            std::rc::Rc::new(crate::core::CaseTm { branches: vec![(fc, 0, Tm::ConApp(fc, vec![])), (tc, 0, b)], lits: vec![], default: None }),
+        )
+    };
+    let or = |a: Tm, b: Tm| {
+        Tm::Case(
+            std::rc::Rc::new(a),
+            std::rc::Rc::new(crate::core::CaseTm { branches: vec![(fc, 0, b), (tc, 0, Tm::ConApp(tc, vec![]))], lits: vec![], default: None }),
+        )
+    };
+    // The obligation at each call, for each combination.
+    let mut obs: Vec<Vec<Obligation>> = Vec::new();
+    // A combination whose measure is the same expression at a call as in
+    // the caller (`len src` passed `src`) can't be smaller there: not asked.
+    let mut doomed: Vec<Option<Span>> = Vec::new();
+    for combo in &combos {
+        let mut v = Vec::new();
+        let mut same_at = None;
+        for c in &gr.calls {
+            let (mine, theirs) = (&combo[idx(c.caller)], &combo[idx(c.callee)]);
+            if mine.0.len() != theirs.0.len() {
+                continue;
+            }
+            let lvl = c.ob.ctx.len();
+            let n_caller = e.specs.get(&c.caller).map_or(0, |s| s.n_binders);
+            let here: crate::core::Env = std::rc::Rc::new((0..n_caller).map(Val::var).collect());
+            let there: crate::core::Env = std::rc::Rc::new(c.args.clone());
+            let a: Vec<Tm> = theirs.0.iter().map(|t| quote(&e.g, lvl, &eval(&e.g, &there, t))).collect();
+            let b: Vec<Tm> = mine.0.iter().map(|t| quote(&e.g, lvl, &eval(&e.g, &here, t))).collect();
+            if same_at.is_none() && c.caller == c.callee && a.iter().zip(&b).all(|(x, y)| format!("{x:?}") == format!("{y:?}")) {
+                same_at = Some(c.ob.span);
+            }
+            // Each part a natural number here, and the callee's below.
+            let k = a.len();
+            let mut lt = Tm::PrimApp(Prim::Lt, vec![a[k - 1].clone(), b[k - 1].clone()]);
+            for j in (0..k - 1).rev() {
+                let less = Tm::PrimApp(Prim::Lt, vec![a[j].clone(), b[j].clone()]);
+                let same = Tm::PrimApp(Prim::Eq, vec![a[j].clone(), b[j].clone()]);
+                lt = or(less, and(same, lt));
+            }
+            let mut goal = lt;
+            for bj in b.iter().rev() {
+                goal = and(Tm::PrimApp(Prim::Le, vec![Tm::Lit(Lit::Num(0)), bj.clone()]), goal);
+            }
+            let env: crate::core::Env = std::rc::Rc::new(
+                c.ob.ctx.iter().enumerate().map(|(l, x)| x.def.clone().unwrap_or_else(|| Val::var(l))).collect(),
+            );
+            let mut o = c.ob.clone();
+            o.goal = eval(&e.g, &env, &goal);
+            let func = e.g.defs[c.caller.0 as usize].name.to_string();
+            o.kind = ObKind::Measure { func, measure: mine.1.clone() };
+            o.text = mine.1.clone();
+            v.push(o);
+        }
+        obs.push(v);
+        doomed.push(same_at);
+    }
+    // Ask about the single measures, then the pairs, each first with a
+    // small work limit (a measure that holds is usually quick to show,
+    // and one that doesn't is slow to give up on), then the rest with
+    // the quick one; take the first proved.
+    let defs = smt::Defs::default();
+    let base: Vec<usize> = obs.iter().scan(0, |k, os| {
+        let at = *k;
+        *k += os.len();
+        Some(at)
+    }).collect();
+    let texts: Vec<Option<String>> = obs
+        .iter()
+        .flatten()
+        .map(|o| quick(smt::Builder::new(e, user).sharing(&defs).query(o).ok().map(|q| q.no_tables.unwrap_or(q.text))))
+        .collect();
+    let mut answers: Vec<Option<Answer>> = texts.iter().map(|_| None).collect();
+    let singles = combos.iter().take_while(|c| c.iter().all(|m| m.0.len() == 1)).count();
+    let small = |t: &Option<String>| {
+        t.as_ref().map(|t| relimit(t, QUICK_RLIMIT, PROBE_RLIMIT))
+    };
+    let proved = |answers: &[Option<Answer>], ci: usize| {
+        !obs[ci].is_empty() && answers[base[ci]..base[ci] + obs[ci].len()].iter().all(|a| matches!(a, Some(Answer::Unsat)))
+    };
+    let mut chosen: Option<usize> = None;
+    'tiers: for limit in [true, false] {
+        for tier in [0..singles, singles..combos.len()] {
+            let ks: Vec<usize> = tier
+                .clone()
+                .filter(|ci| doomed[*ci].is_none())
+                .flat_map(|ci| base[ci]..base[ci] + obs[ci].len())
+                .filter(|k| !matches!(answers[*k], Some(Answer::Unsat)))
+                .collect();
+            let asked: Vec<Option<String>> = ks.iter().map(|k| if limit { small(&texts[*k]) } else { texts[*k].clone() }).collect();
+            for (k, a) in ks.iter().zip(ask_all(user, &asked)) {
+                answers[*k] = a;
+            }
+            if let Some(ci) = tier.clone().find(|ci| proved(&answers, *ci)) {
+                chosen = Some(ci);
+                break 'tiers;
             }
         }
     }
+    // Each measure's calls it wasn't shown smaller at, and of those the
+    // one to name: first in the group's preference (#124), the call
+    // losing the parameter recursed on.
+    let inside = |a: Span, b: Span| a == b || b.start <= a.start && a.end <= b.end;
+    let unproved: Vec<Vec<Span>> = obs
+        .iter()
+        .enumerate()
+        .map(|(ci, os)| {
+            let ans = &answers[base[ci]..base[ci] + os.len()];
+            os.iter().zip(ans).filter(|(_, a)| !matches!(a, Some(Answer::Unsat))).map(|(o, _)| o.span).collect()
+        })
+        .collect();
+    let pick = |fails: &[Span]| {
+        gr.prefer
+            .iter()
+            .find_map(|p| fails.iter().find(|f| inside(**f, *p) || inside(*p, **f)))
+            .or(fails.first())
+            .copied()
+    };
+    let mut tried: Vec<(String, Option<Span>)> = Vec::new();
+    for (ci, fails) in unproved.iter().enumerate() {
+        let failed = doomed[ci].or_else(|| pick(fails));
+        tried.push((combos[ci].iter().map(|m| format!("`{}`", m.1)).collect::<Vec<_>>().join(" and "), failed));
+    }
+    let first_call = gr.calls.first().map(|c| c.ob.span);
+    match chosen {
+        Some(ci) => {
+            for o in &obs[ci] {
+                v.proved += 1;
+                let mut what = describe(e, o);
+                what.push_str(" (guessed)");
+                v.ledger.push(LedgerEntry { span: o.span, how: "smt", what });
+            }
+        }
+        None => {
+            // At a call no measure was shown smaller at: for the measures
+            // that leave the fewest calls unproved, the one `pick` names.
+            let fewest = (0..obs.len())
+                .filter(|ci| doomed[*ci].is_none() && !obs[*ci].is_empty())
+                .min_by_key(|ci| unproved[*ci].len());
+            let Some(at) = fewest.and_then(|ci| pick(&unproved[ci])).or_else(|| gr.prefer.first().and_then(|p| {
+                gr.calls.iter().map(|c| c.ob.span).find(|s| inside(*s, *p) || inside(*p, *s))
+            })).or(first_call)
+            else {
+                return false;
+            };
+            let names: Vec<String> = gr.members.iter().map(|d| format!("`{}`", e.g.defs[d.0 as usize].name)).collect();
+            let src = e.sources.get(user);
+            let line = |sp: Span| src.map(|f| f.line_col(sp.start).0).unwrap_or(0);
+            let shown: Vec<String> = tried
+                .iter()
+                .take(8)
+                .map(|(m, f)| match f {
+                    Some(sp) if *sp != at => format!("{m} (not shown smaller at line {})", line(*sp)),
+                    _ => m.clone(),
+                })
+                .collect();
+            let note = format!("measures tried, none shown smaller here: {}", shown.join(", "));
+            // A lemma using itself: an induction (#76).
+            let lemma = gr.members.len() == 1 && e.fn_meta.get(&gr.members[0]).is_some_and(|m| !m.is_fn);
+            if lemma {
+                let name = &names[0];
+                let d = Diagnostic::error("E0301", format!("{name} uses itself, but no measure found that each use makes smaller, so this is not an induction"), at)
+                    .with_label("the induction hypothesis")
+                    .with_note(note)
+                    .with_help(format!("use {name} only on a part of a parameter you matched on, or add `decreasing <measure>` as the first line of its proof"));
+                v.diags.push(d);
+                return false;
+            }
+            let who = if names.len() == 1 { format!("{} terminates", names[0]) } else { format!("{} terminate", names.join(", ")) };
+            let mut d = Diagnostic::error("E0301", format!("cannot show that {who}: no measure found that every recursive call makes smaller"), at)
+                .with_label("recursive call");
+            d = d.with_note(note);
+            v.diags.push(d.with_help("add `decreasing <measure>` as the first line of the function, or mark it `partial`"));
+        }
+    }
+    chosen.is_some()
 }
 
 /// E0457: declarations whose conditions can never all hold, found by
@@ -1117,10 +1349,16 @@ fn vacuous(e: &Elab, user: &str) -> Vec<Diagnostic> {
         return Vec::new();
     }
     let defs = smt::Defs::default();
+    // The conditions with a type error are left out (§7.3): each check's
+    // others, by index. Nothing is asked without one.
+    let mut conds: Vec<Vec<usize>> = Vec::new();
     let texts: Vec<Option<String>> = checks
         .iter()
         .map(|c| {
-            let q = smt::Builder::new(e, user).sharing(&defs).named_facts().query(&c.ob).ok()?;
+            let q = smt::Builder::new(e, user).sharing(&defs).named_facts().query(&c.ob);
+            let ill_typed = q.as_ref().map_or(&[][..], |q| &q.ill_typed[..]);
+            conds.push((0..c.conds.len()).filter(|k| c.conds[*k].is_some() && !ill_typed.contains(k)).collect());
+            let q = q.ok().filter(|_| !conds.last().is_some_and(|ks| ks.is_empty()))?;
             Some(with_limit(&q.facts_only.unwrap_or(q.text), VACUITY_RLIMIT))
         })
         .collect();
@@ -1133,7 +1371,7 @@ fn vacuous(e: &Elab, user: &str) -> Vec<Diagnostic> {
     let mut out: Vec<Diagnostic> = Vec::new();
     // A type whose conditions can't hold: its constructors aren't reported too.
     let mut reported: Vec<Span> = Vec::new();
-    for (c, o) in checks.iter().zip(outs) {
+    for ((c, o), ks) in checks.iter().zip(outs).zip(&conds) {
         let Some(o) = o else { continue };
         if !matches!(answer(o.clone()), Answer::Unsat) {
             continue;
@@ -1154,18 +1392,17 @@ fn vacuous(e: &Elab, user: &str) -> Vec<Diagnostic> {
             .collect();
         let core: Vec<usize> = names.iter().filter_map(|w| w.strip_prefix("fact.")?.parse().ok()).collect();
         let typed = names.iter().any(|w| w.starts_with("given."));
+        let written = |k: &usize| c.conds[*k].as_deref();
         let mut texts: Vec<&str> = Vec::new();
-        for (k, t) in c.conds.iter().enumerate() {
-            if let Some(t) = t {
-                if core.contains(&k) && !texts.contains(&t.as_str()) {
-                    texts.push(t);
-                }
+        for t in ks.iter().filter(|k| core.contains(k)).filter_map(written) {
+            if !texts.contains(&t) {
+                texts.push(t);
             }
         }
         // Only what the types say is needed (a class's type's predicates
         // are its values' type): each condition contributes to it.
         if texts.is_empty() && typed {
-            texts = c.conds.iter().flatten().map(|t| t.as_str()).collect();
+            texts = ks.iter().filter_map(written).collect();
             texts.dedup();
         }
         out.push(vacuity_diag(c, &texts, typed));
@@ -1224,7 +1461,7 @@ fn unreachable(e: &Elab, user: &str) -> Vec<Diagnostic> {
         .map(|p| {
             // Marked, so a cached answer is never taken for an obligation's.
             let q = smt::Builder::new(e, user).sharing(&defs).query(&p.ob).ok().map(|q| q.facts_only.unwrap_or(q.text));
-            q.map(|t| t.replacen(&format!("(set-option :rlimit {RLIMIT})"), &format!("(set-option :rlimit {PROBE_RLIMIT})"), 1) + ";; reachable?\n")
+            q.map(|t| with_limit(&t, PROBE_RLIMIT) + ";; reachable?\n")
         })
         .collect();
     let answers = ask_all(user, &texts);
@@ -1298,6 +1535,7 @@ fn describe(e: &Elab, o: &Obligation) -> String {
         ObKind::CownInvariant { alias } => format!("cown contents stay `{alias}`: {}", o.text),
         ObKind::Refined { alias, value } => format!("`{value}` is a `{alias}`: {}", o.text),
         ObKind::Weaken { sub, sup, .. } => format!("every `{sub}` is a `{sup}`: {}", o.text),
+        ObKind::DistinctCowns { .. } => format!("a `when`'s cowns differ: {}", o.text),
         ObKind::NatSub => format!("`Nat` subtraction `{}` stays at or above zero", o.text),
         ObKind::Measure { func, measure } => format!("termination of `{func}`: `decreasing {measure}` gets smaller"),
         ObKind::Div => format!("divisor of `{}` is not zero", o.text),
@@ -1315,6 +1553,51 @@ fn describe(e: &Elab, o: &Obligation) -> String {
     }
 }
 
+/// The calls in `o`'s goal and facts whose values are known at compile
+/// time (`Elab::known_value`) and are numbers: each as the fact `call == n`
+/// at `o`'s level, with how the ledger shows it. Only the calls `o` has, and
+/// only outside binders, where the call is the same term in every case.
+fn known_calls(e: &Elab, o: &Obligation) -> Vec<(crate::core::Val, String)> {
+    use crate::core::{Lit, Prim, Tm, Val};
+    fn number(e: &Elab, t: &Tm) -> bool {
+        let (h, args) = t.spine();
+        let Tm::Def(d) = h else { return false };
+        let Some(info) = e.g.defs.get(d.0 as usize) else { return false };
+        let empty = std::rc::Rc::new(Vec::new());
+        let mut ty = crate::core::eval(&e.g, &empty, &info.ty);
+        for k in 0..args.len() {
+            let Val::Pi(_, _, _, _, c) = crate::core::force(&e.g, ty) else { return false };
+            ty = crate::core::apply_closure(&e.g, &c, Val::var(usize::MAX / 2 + k));
+        }
+        e.type_range(&ty).is_some()
+    }
+    fn collect(e: &Elab, t: &Tm, depth: usize, out: &mut Vec<(Tm, i128)>) {
+        if depth == 0 && number(e, t) {
+            if let Some(Lit::Num(n)) = e.known_value(t) {
+                if !out.iter().any(|(s, _)| crate::core::tm_eq(s, t)) {
+                    out.push((t.clone(), n));
+                }
+                return;
+            }
+        }
+        t.each_sub(|x, d| collect(e, x, depth + d, out));
+    }
+    let lvl = o.ctx.len();
+    let mut found = Vec::new();
+    for v in std::iter::once(&o.goal).chain(&o.facts) {
+        collect(e, &quote(&e.g, lvl, v), 0, &mut found);
+    }
+    let env = std::rc::Rc::new((0..lvl).map(Val::var).collect::<Vec<_>>());
+    let names: Vec<crate::core::Name> = o.ctx.iter().map(|l| l.name.clone()).collect();
+    found
+        .into_iter()
+        .map(|(t, n)| {
+            let fact = Tm::PrimApp(Prim::Eq, vec![t.clone(), Tm::Lit(Lit::Num(n))]);
+            (crate::core::eval(&e.g, &env, &fact), format!("{} is {n}", crate::core::show(&e.g, &names, &t)))
+        })
+        .collect()
+}
+
 /// The facts in scope, as Checkers source, most recent last.
 fn facts_note(e: &Elab, o: &Obligation) -> Option<String> {
     let names: Vec<crate::core::Name> = o.ctx.iter().map(|l| l.name.clone()).collect();
@@ -1324,8 +1607,11 @@ fn facts_note(e: &Elab, o: &Obligation) -> Option<String> {
         o.ctx.iter().filter(|l| crate::core::is_nat(&e.g, &l.ty)).map(|l| format!("{} >= 0", l.name)).collect();
     let mut shown: Vec<String> = implied.clone();
     for f in &o.facts {
-        let s = show(&e.g, &names, &quote(&e.g, lvl, f));
-        let s = match (s.strip_suffix(" == True"), s.strip_suffix(" == False")) {
+        let s = crate::core::show_marked(&e.g, &names, &quote(&e.g, lvl, f));
+        // `… == True` and `… == False` by their text, the marks aside.
+        let plain = crate::core::plain(&s);
+        let lhs = s.rfind(" == ").map(|i| &s[..i]);
+        let s = match (plain.ends_with(" == True").then_some(lhs).flatten(), plain.ends_with(" == False").then_some(lhs).flatten()) {
             (Some(t), _) => t.to_string(),
             (_, Some(f)) if f.starts_with('(') => format!("not {f}"),
             (_, Some(f)) => format!("not ({f})"),
@@ -1400,6 +1686,23 @@ fn headline(o: &Obligation) -> (String, String, String) {
             format!("cannot prove that `{func}` terminates: `{measure}` may not get smaller in this call"),
             format!("`decreasing {measure}` must be smaller here than on entry to `{func}`"),
             "make sure the recursive call's arguments make the measure smaller, e.g. by checking a bound first".into(),
+        ),
+        ObKind::DistinctCowns { first, second, held, caller, unlike } => (
+            format!("cannot prove `{}`, required for a `when` to hold its cowns", o.text),
+            match (held, unlike) {
+                (Some(n), _) => format!("`{second}` is already held here as `{n}`"),
+                (None, Some((a, b))) => format!("this `when` holds `{first}`, a `{a}`, and `{second}`, a `{b}`"),
+                (None, None) => format!("this `when` holds `{first}` and `{second}`"),
+            },
+            match (held, caller) {
+                (Some(_), _) => format!("a `when` holds each cown once: name `{second}` once"),
+                (None, _) if unlike.is_some() => {
+                    let (a, b) = unlike.as_ref().unwrap();
+                    format!("a `{a}` may be a `{b}`, and `!=` can't compare them: hold cowns whose types differ whatever their type variables are")
+                }
+                (None, Some(f)) => format!("require it of the caller: add `{}` to `{f}`'s signature", o.text),
+                (None, None) => format!("show that they differ where they come from: a precondition such as `{}`, or a cown made here with `cown.new`, which differs from every cown in scope", o.text),
+            },
         ),
         ObKind::NatSub => (
             "cannot prove that this `Nat` subtraction stays at or above zero".into(),
@@ -1607,9 +1910,11 @@ fn failed(e: &Elab, o: &Obligation, model: Option<String>) -> Diagnostic {
         let info = &e.g.defs[d.0 as usize];
         // A builtin has no body for the prover to see, wherever it is used.
         let what = if info.body.is_none() { format!("is built into `{}`", info.module) } else { format!("is sealed in `{}`", info.module) };
-        format!("`{}` {what}: here the prover knows only its postconditions and the lemmas you bring in with `have`", info.name)
+        format!("`{}` {what}: here the prover knows only its postconditions, the values of its calls known at compile time, and the lemmas you bring in with `have`", info.name)
     });
     match model.filter(|m| !m.is_empty()) {
+        // One cown named twice needs no counterexample.
+        Some(_) if matches!(&o.kind, ObKind::DistinctCowns { held, unlike, .. } if held.is_some() || unlike.is_some()) => {}
         Some(m) if sealed_note.is_none() => d = d.with_note(format!("counterexample: {m}")),
         _ => {}
     }
@@ -1716,8 +2021,7 @@ pub fn ledger_text(file: &crate::source::SourceFile, v: &Verified) -> String {
     entries.sort_by_key(|x| (x.span.start, x.how));
     for x in &entries {
         let (line, col) = file.line_col(x.span.start);
-        let hash = x.hash.map(|h| format!("  [{h:016x}]")).unwrap_or_default();
-        out += &format!("{}:{line}:{col}  {:<8} {}{hash}\n", file.name, x.how, x.what);
+        out += &format!("{}:{line}:{col}  {:<8} {}\n", file.name, x.how, x.what);
     }
     if let Some(z) = &v.z3_version {
         out += &format!("solver: {z}\n");
@@ -1748,7 +2052,7 @@ pub fn ledger_summary(file: &crate::source::SourceFile, v: &Verified) -> String 
 
 // ── counterexamples ─────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum Sx {
     Atom(String),
     List(Vec<Sx>),
@@ -2014,6 +2318,7 @@ fn render_model(text: &str, shown: &[(String, String)], strings: &[String], arra
     let sx = parse_sx(text);
     let Some(Sx::List(pairs)) = sx.first() else { return String::new() };
     let mut found: Vec<(usize, String)> = Vec::new();
+    let mut cowns: Vec<(String, usize, Vec<String>)> = Vec::new();
     for p in pairs {
         if let Sx::List(kv) = p {
             if let (Some(Sx::Atom(k)), Some(v)) = (kv.first(), kv.get(1)) {
@@ -2034,15 +2339,84 @@ fn render_model(text: &str, shown: &[(String, String)], strings: &[String], arra
                         Some(b) => checkers_rt::ops::show_bytes(&b),
                         None => pretty(&v),
                     };
-                    // Values of abstract types (capabilities, type variables) say nothing useful.
-                    if !s.contains('!') && !s.contains('?') {
-                        let lvl: usize = k.trim_matches('|').rsplit('#').next().and_then(|n| n.parse().ok()).unwrap_or(pos);
+                    let lvl: usize = k.trim_matches('|').rsplit('#').next().and_then(|n| n.parse().ok()).unwrap_or(pos);
+                    // Values of abstract types (capabilities, type variables)
+                    // say nothing useful, but which cowns are the same one
+                    // does (§8.5): `x = y`.
+                    let raw = print_sx(&v);
+                    if raw.contains("std.cown.Cown") && raw.contains("!val!") {
+                        match cowns.iter_mut().find(|(r, _, _)| *r == raw) {
+                            Some((_, _, names)) => names.push(shown[pos].1.clone()),
+                            None => cowns.push((raw, lvl, vec![shown[pos].1.clone()])),
+                        }
+                    } else if !s.contains('!') && !s.contains('?') {
                         found.push((lvl, format!("{} = {s}", shown[pos].1)));
                     }
                 }
             }
         }
     }
+    found.extend(cowns.into_iter().filter(|c| c.2.len() > 1).map(|(_, lvl, names)| (lvl, names.join(" = "))));
     found.sort();
     found.into_iter().map(|x| x.1).collect::<Vec<_>>().join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    /// A module verified before (D143) is proved for the compile-time gate
+    /// (§8.9) by what it gave then: no query is built for it again.
+    #[test]
+    fn a_module_verified_before_builds_no_queries() {
+        crate::with_big_stack(|| {
+            let dir = std::env::temp_dir().join(format!("checkers-gate-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("lib.ck"), "module lib\n\nexport fn less a b -> r : a~Nat, b~Nat, b <= a, r~Nat\n    a - b\n").unwrap();
+            let main = "module main\n\nimport lib\n\nlet SIZE = lib.less 9 4\n\nfn sized x -> r : x~Int, r~Int\n    x + SIZE\n";
+            let first = crate::check_in("main.ck", main, &dir);
+            assert_eq!(first.errors(), 0, "{}", first.report());
+            let (_, e) = crate::elaborate("main.ck", main, &dir);
+            let (e, _) = e.unwrap();
+            let v = super::proved(&e, "lib");
+            assert!(v.proved > 0, "lib's obligation counted");
+            assert_eq!(v.asked, 0, "no query asked for a module verified before");
+            let _ = std::fs::remove_dir_all(&dir);
+        })
+    }
+
+    /// Programs whose conditions have type errors: no query made from them
+    /// is one Z3 rejects (§7.3), however the error is reported.
+    #[test]
+    fn type_errors_make_no_query_z3_rejects() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for name in ["tests/types/condition_type_error.ck", "tests/types/class_type_base_help.ck", "tests/types/class_type_pred_errors.ck"] {
+            let path = root.join(name);
+            let text = std::fs::read_to_string(&path).unwrap();
+            let path = path.to_string_lossy().into_owned();
+            let before = super::rejected();
+            let c = crate::with_big_stack(move || crate::check(&path, &text));
+            assert!(c.errors() > 0, "{name} has type errors");
+            assert_eq!(super::rejected() - before, 0, "Z3 rejected a query checking {name}");
+        }
+    }
+
+    /// Queries solved at the same time with different work limits (two
+    /// programs checked on two threads) each run with their own: the small
+    /// limit always gives up, the large one always proves.
+    #[test]
+    fn each_query_runs_with_its_own_work_limit() {
+        const GOAL: &str = "(set-logic ALL)\n(declare-const x (_ BitVec 5))\n(declare-const y (_ BitVec 5))\n(declare-const z (_ BitVec 5))\n(assert (not (= (bvmul x (bvadd y z)) (bvadd (bvmul x y) (bvmul x z)))))\n(check-sat)\n";
+        let said = |limit: u64| {
+            std::thread::spawn(move || {
+                let query = super::options(limit) + GOAL;
+                let mut said: Vec<String> = (0..500).map(|_| super::run_z3(&query)).collect();
+                said.dedup();
+                said
+            })
+        };
+        let threads = [said(50), said(50_000_000), said(50), said(50_000_000)];
+        let said: Vec<Vec<String>> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+        let (gave_up, proved) = (vec!["unknown\n".to_string()], vec!["unsat\n".to_string()]);
+        assert_eq!(said, [gave_up.clone(), proved.clone(), gave_up, proved]);
+    }
 }

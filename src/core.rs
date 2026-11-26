@@ -115,6 +115,10 @@ pub enum Prim {
     /// variables whose body is the `Bool` (premises implying the
     /// conclusion). Only in specifications; never evaluated or compiled.
     Forall,
+    /// A call with effects (§7.1, §8.3), its one argument: the call itself
+    /// at run time; to the prover a value of its own, this one call's,
+    /// known by what the callee promises. Numbered, so two calls differ.
+    Effect(u32),
 }
 
 #[derive(Clone, Debug)]
@@ -144,6 +148,10 @@ pub enum Tm {
     ConApp(ConId, Vec<Tm>),
     PrimApp(Prim, Vec<Tm>),
     Case(Rc<Tm>, Rc<CaseTm>),
+    /// A value known at compile time (§8.9), of any size, as a node of a
+    /// graph (`known`): closed, and with no subterms of its own, so walks
+    /// over terms take no stack for it.
+    Known(crate::known::Value),
     /// Placeholder after an error has been reported; unifies with anything.
     Error,
 }
@@ -162,7 +170,7 @@ impl Tm {
     /// puts it under, and is not asked again once it has held.
     pub fn any_sub(&self, mut f: impl FnMut(&Tm, usize) -> bool) -> bool {
         match self {
-            Tm::Var(_) | Tm::Def(_) | Tm::TyCon(_) | Tm::Con(_) | Tm::Meta(_) | Tm::Univ(_) | Tm::Lit(_) | Tm::Error => false,
+            Tm::Var(_) | Tm::Def(_) | Tm::TyCon(_) | Tm::Con(_) | Tm::Meta(_) | Tm::Univ(_) | Tm::Lit(_) | Tm::Known(_) | Tm::Error => false,
             Tm::Pi(_, _, _, a, b) => f(a, 0) || f(b, 1),
             Tm::Lam(_, _, _, b) => f(b, 1),
             Tm::App(a, b, _, _) => f(a, 0) || f(b, 0),
@@ -195,7 +203,7 @@ impl Tm {
     /// `any_sub`); a term with no subterms is itself.
     pub fn map_sub(&self, mut f: impl FnMut(&Tm, usize) -> Tm) -> Tm {
         match self {
-            Tm::Var(_) | Tm::Def(_) | Tm::TyCon(_) | Tm::Con(_) | Tm::Meta(_) | Tm::Univ(_) | Tm::Lit(_) | Tm::Error => self.clone(),
+            Tm::Var(_) | Tm::Def(_) | Tm::TyCon(_) | Tm::Con(_) | Tm::Meta(_) | Tm::Univ(_) | Tm::Lit(_) | Tm::Known(_) | Tm::Error => self.clone(),
             Tm::Pi(x, m, i, a, b) => Tm::Pi(x.clone(), *m, *i, Rc::new(f(a, 0)), Rc::new(f(b, 1))),
             Tm::Lam(x, m, i, b) => Tm::Lam(x.clone(), *m, *i, Rc::new(f(b, 1))),
             Tm::App(a, b, i, m) => Tm::App(Rc::new(f(a, 0)), Rc::new(f(b, 0)), *i, *m),
@@ -284,6 +292,10 @@ pub enum Val {
     Lit(Lit),
     TupleTy(Rc<[Val]>),
     Tuple(Rc<[Val]>),
+    /// A constructor or tuple known at compile time (§8.9), taken apart one
+    /// level when it is looked at (`force_meta`, `known_open`); its other
+    /// nodes stay graph nodes. Literals in a graph are `Lit`s at once.
+    Known(crate::known::Value),
     Error,
 }
 
@@ -325,6 +337,10 @@ pub struct TyInfo {
     /// Per parameter of an abstract type: marked `-`, so it occurs only
     /// negatively (D16).
     pub negative: Vec<bool>,
+    /// How many of `params`, the last ones, are the dictionaries of its
+    /// header's class clauses (#385): implicit arguments, found where the
+    /// type is written, never shown, and erased.
+    pub dicts: usize,
 }
 
 pub struct ConInfo {
@@ -359,6 +375,20 @@ pub struct Globals {
     /// Each type's value parameters that its fields' types are computed
     /// from (#170), once worked out (`value_params_needed`).
     pub value_params: RefCell<HashMap<TyId, std::collections::BTreeSet<usize>>>,
+    /// Each function's constant bounds on its binders (implicit ones too),
+    /// then on its result, where its signature gives them (`x~U8`,
+    /// `0 <= x`), which native code relies on (§14). Empty until the
+    /// program is `proved` (`Elab::bounds` until then).
+    pub bounds: HashMap<DefId, Vec<Option<crate::range::Range>>>,
+    /// Constants' values known at compile time (§8.9), for code generation:
+    /// set once the program is proved, as `bounds` is (`Elab::known_value`).
+    /// Each is a literal, `()` or a `Tm::Known`, compiled as static data.
+    pub known: RefCell<HashMap<DefId, Tm>>,
+    /// Every obligation of the program is proved, and none of its facts is
+    /// assumed by an `admit` (§13.3): native code compiled from here relies
+    /// on the proofs, with no run-time checks of guarded operations. False
+    /// in a `check` or staging, which run before proving.
+    pub proved: bool,
     /// The base types of classes' types that have one (#360), by their
     /// field of the dictionary: closed types.
     pub type_bases: HashMap<(ConId, usize), Vec<Tm>>,
@@ -422,6 +452,9 @@ impl Globals {
             well_known: WellKnown::default(),
             postponed: RefCell::new(Vec::new()),
             value_params: RefCell::new(HashMap::new()),
+            bounds: HashMap::new(),
+            known: RefCell::new(HashMap::new()),
+            proved: false,
             type_bases: HashMap::new(),
         }
     }
@@ -602,7 +635,37 @@ pub fn eval(g: &Globals, env: &Env, t: &Tm) -> Val {
         Tm::ConApp(c, args) => Val::Con(*c, args.iter().map(|a| eval(g, env, a)).collect()),
         Tm::PrimApp(p, args) => prim(g, p, args.iter().map(|a| eval(g, env, a)).collect()),
         Tm::Case(s, c) => case(g, eval(g, env, s), c.clone(), env.clone()),
+        Tm::Known(k) => known_val(k),
         Tm::Error => Val::Error,
+    }
+}
+
+/// The value of a known value's node: a literal at once, a constructor or
+/// tuple left as `Val::Known` until it is looked at.
+pub fn known_val(k: &crate::known::Value) -> Val {
+    use crate::known::Node;
+    match k.node() {
+        Node::Con(..) | Node::Tuple(_) | Node::Array(..) | Node::Closure(_) | Node::Pap(_) => Val::Known(k.clone()),
+        Node::Unit | Node::Erased => Val::Tuple(Rc::new([])),
+        _ => Val::Lit(k.lit().expect("a literal node")),
+    }
+}
+
+/// A known value's node taken apart one level: a constructor's fields
+/// (after placeholders for its type's parameters, which a known value
+/// doesn't keep) and a tuple's components are its parts, as `known_val`s.
+pub fn known_open(g: &Globals, k: &crate::known::Value) -> Val {
+    use crate::known::Node;
+    match k.node() {
+        Node::Con(c, xs) => {
+            let np = g.arity_ty(g.cons[c.0 as usize].ty);
+            let args: Vec<Val> = std::iter::repeat_n(Val::Univ(0), np).chain(xs.iter().map(|x| known_val(&k.at(*x)))).collect();
+            Val::Con(*c, args.into())
+        }
+        Node::Tuple(xs) => Val::Tuple(xs.iter().map(|x| known_val(&k.at(*x))).collect()),
+        // An array or a function has no form the type checker takes apart:
+        // as it is.
+        _ => known_val(k),
     }
 }
 
@@ -627,6 +690,7 @@ pub fn force_meta(g: &Globals, v: Val) -> Val {
             }
             None => Val::Neutral(Head::Meta(m), sp),
         },
+        Val::Known(k) => known_open(g, &k),
         v => v,
     }
 }
@@ -947,6 +1011,27 @@ pub fn field_type(g: &Globals, c: ConId, k: usize) -> FieldType {
     FieldType::FromFields(t)
 }
 
+/// The literal the type checker's evaluation reaches from `v`, unfolding
+/// the definitions it may (not a sealed function's body, §6) within
+/// `DEFAULT_FUEL` steps of its own: the quick way to a value known at
+/// compile time (§8.9; `Elab::known_value` runs the rest). `None` if it
+/// reaches no literal.
+pub fn known_lit(g: &Globals, v: Val) -> Option<Lit> {
+    let saved = g.fuel.replace(DEFAULT_FUEL);
+    let r = force(g, v);
+    g.fuel.set(saved);
+    match r {
+        Val::Lit(l) => Some(l),
+        _ => None,
+    }
+}
+
+/// The value of constant `d` (a `let`) if it is known at compile time:
+/// `Globals::known`, which code generation then uses.
+pub fn known_const(g: &Globals, d: DefId) -> Option<Tm> {
+    g.known.borrow().get(&d).cloned()
+}
+
 pub fn force(g: &Globals, v: Val) -> Val {
     let mut v = force_meta(g, v);
     while let Some(u) = unfold(g, &v) {
@@ -1118,6 +1203,9 @@ fn num(v: &Val) -> Option<i128> {
 
 /// Structural equality of closed values; None if it can't be decided yet.
 fn val_eq(g: &Globals, a: &Val, b: &Val) -> Option<bool> {
+    if let (Val::Known(x), Val::Known(y)) = (a, b) {
+        return Some(x.same(y));
+    }
     match (force(g, a.clone()), force(g, b.clone())) {
         (Val::Lit(x), Val::Lit(y)) => Some(x == y),
         (Val::Con(c1, a1), Val::Con(c2, a2)) => {
@@ -1237,6 +1325,9 @@ fn prim_value(g: &Globals, p: &Prim, args: &[Val]) -> Option<Val> {
 // ── quoting ──────────────────────────────────────────────────────────────────
 
 pub fn quote(g: &Globals, l: usize, v: &Val) -> Tm {
+    if let Val::Known(k) = v {
+        return Tm::Known(k.clone());
+    }
     match force_meta(g, v.clone()) {
         Val::Neutral(h, sp) => {
             let mut t = match h {
@@ -1269,6 +1360,7 @@ pub fn quote(g: &Globals, l: usize, v: &Val) -> Tm {
         Val::Lit(x) => Tm::Lit(x),
         Val::TupleTy(vs) => Tm::TupleTy(vs.iter().map(|a| quote(g, l, a)).collect()),
         Val::Tuple(vs) => Tm::Tuple(vs.iter().map(|a| quote(g, l, a)).collect()),
+        Val::Known(k) => Tm::Known(k),
         Val::Error => Tm::Error,
     }
 }
@@ -1364,6 +1456,10 @@ fn rename(g: &Globals, m: MetaId, p: &PartialRenaming, v: &Val) -> Result<Tm, Un
         }
         Ok(t)
     };
+    // Closed: as it is.
+    if let Val::Known(k) = v {
+        return Ok(Tm::Known(k.clone()));
+    }
     match force_meta(g, v.clone()) {
         Val::Neutral(Head::Meta(m2), sp) => {
             if m2 == m {
@@ -1404,6 +1500,7 @@ fn rename(g: &Globals, m: MetaId, p: &PartialRenaming, v: &Val) -> Result<Tm, Un
         Val::Lit(l) => Ok(Tm::Lit(l)),
         Val::TupleTy(vs) => Ok(Tm::TupleTy(vs.iter().map(|a| rename(g, m, p, a)).collect::<Result<_, _>>()?)),
         Val::Tuple(vs) => Ok(Tm::Tuple(vs.iter().map(|a| rename(g, m, p, a)).collect::<Result<_, _>>()?)),
+        Val::Known(k) => Ok(Tm::Known(k)),
         Val::Error => Ok(Tm::Error),
     }
 }
@@ -1569,6 +1666,10 @@ fn unify_tuple(g: &Globals, l: usize, x: &[Val], y: &[Val], ty: bool) -> Result<
 }
 
 pub fn unify(g: &Globals, l: usize, a: &Val, b: &Val) -> Result<(), UnifyError> {
+    // Two known values: equal or not, compared without recursion.
+    if let (Val::Known(x), Val::Known(y)) = (a, b) {
+        return if x.same(y) { Ok(()) } else { Err(UnifyError::Mismatch) };
+    }
     let a = force_meta(g, a.clone());
     let b = force_meta(g, b.clone());
     let r = unify_whnf(g, l, &a, &b);
@@ -1662,7 +1763,22 @@ fn unify_whnf(g: &Globals, l: usize, a: &Val, b: &Val) -> Result<(), UnifyError>
             unify(g, l + 1, &apply_closure(g, c1, Val::var(l)), &apply_closure(g, c2, Val::var(l)))
         }
         (Val::Univ(x), Val::Univ(y)) if x == y => Ok(()),
-        (Val::TyCon(t1, a1), Val::TyCon(t2, a2)) if t1 == t2 => unify_many(g, l, a1, a2),
+        (Val::TyCon(t1, a1), Val::TyCon(t2, a2)) if t1 == t2 => {
+            // A type's header's dictionaries (#385) are fixed by its other
+            // arguments: one instance per class and types (coherence). Two
+            // found differently (a clause's, an instance's) are the same
+            // dictionary, so they are compared only to learn an unknown.
+            let ti = &g.tys[t1.0 as usize];
+            let n = ti.params.len() - ti.dicts;
+            if ti.dicts == 0 || a1.len() != a2.len() || a1.len() <= n {
+                return unify_many(g, l, a1, a2);
+            }
+            unify_many(g, l, &a1[..n], &a2[..n])?;
+            for (x, y) in a1[n..].iter().zip(&a2[n..]) {
+                let _ = unify(g, l, x, y);
+            }
+            Ok(())
+        }
         (Val::Con(c1, a1), Val::Con(c2, a2)) if c1 == c2 => unify_many(g, l, a1, a2),
         (Val::Lit(x), Val::Lit(y)) if x == y => Ok(()),
         (Val::TupleTy(x), Val::TupleTy(y)) => unify_tuple(g, l, x, y, true),
@@ -1708,6 +1824,160 @@ pub fn show(g: &Globals, names: &[Name], t: &Tm) -> String {
     show_prec(g, &mut ns, t, 0)
 }
 
+thread_local! {
+    /// Whether `show_prec` marks the globals it names (`show_marked`).
+    static MARKING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The context's locals, by level, while marking: their names and
+    /// where each is bound (`show_marked_in`).
+    static MARK_LOCALS: std::cell::RefCell<Vec<(Name, Option<u32>)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Starts a global's mark: `MARK kind id MARK_NAME name MARK_END`, where
+/// `kind` is `d` (a definition), `t` (a type) or `c` (a constructor); or
+/// a local's, `MARK v level.at.hidden MARK_NAME name MARK_END`.
+const MARK: char = '\u{1}';
+const MARK_NAME: char = '\u{2}';
+const MARK_END: char = '\u{3}';
+
+/// A global as named in a message: by `show_marked`, marked with which
+/// declaration it is, so a diagnostic can tell apart two of the same name
+/// (`unmark`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Marked {
+    Def(DefId),
+    Ty(TyId),
+    Con(ConId),
+    /// A local of the context, one of several of its name there: its
+    /// level, where it is bound, and, if a later local of its name hides
+    /// it, where that one is bound.
+    /// `avoid` has bit `k - 1` set when a local of the context is named
+    /// this name followed by `k` (`a1`): a number to show it by isn't one.
+    Var { level: u32, at: Option<u32>, hidden_by: Option<Option<u32>>, avoid: u64 },
+}
+
+fn global(m: Marked, name: &str) -> String {
+    if !MARKING.with(|c| c.get()) {
+        return name.to_string();
+    }
+    let id = match m {
+        Marked::Def(d) => format!("d{}", d.0),
+        Marked::Ty(t) => format!("t{}", t.0),
+        Marked::Con(c) => format!("c{}", c.0),
+        Marked::Var { level, at, hidden_by, avoid } => {
+            let pos = |a: Option<u32>| a.map_or("-".to_string(), |a| a.to_string());
+            match hidden_by {
+                Some(by) => format!("v{level}.{}.h{}.{avoid}", pos(at), pos(by)),
+                None => format!("v{level}.{}.s.{avoid}", pos(at)),
+            }
+        }
+    };
+    format!("{MARK}{id}{MARK_NAME}{name}{MARK_END}")
+}
+
+/// The local at `level` of the context, named `name`, as a message names
+/// it: marked when another local of the context has its name.
+fn local(level: usize, name: &Name) -> String {
+    if !MARKING.with(|c| c.get()) {
+        return name.to_string();
+    }
+    MARK_LOCALS.with(|ls| {
+        let ls = ls.borrow();
+        let same = |l: &(Name, Option<u32>)| l.0 == *name;
+        if level >= ls.len() || ls.iter().filter(|l| same(l)).count() < 2 {
+            return name.to_string();
+        }
+        let hidden_by = ls[level + 1..].iter().rev().find(|l| same(l)).map(|l| l.1);
+        let mut avoid = 0u64;
+        for l in ls.iter() {
+            if let Some(k) = l.0.strip_prefix(&**name).and_then(|k| k.parse::<u32>().ok()).filter(|k| (1..=64).contains(k)) {
+                avoid |= 1 << (k - 1);
+            }
+        }
+        global(Marked::Var { level: level as u32, at: ls[level].1, hidden_by, avoid }, name)
+    })
+}
+
+/// `show`, with each global it names marked with its declaration: text for
+/// a diagnostic, which `unmark` turns into names.
+pub fn show_marked(g: &Globals, names: &[Name], t: &Tm) -> String {
+    show_marked_in(g, names, &[], t)
+}
+
+/// `show_marked`, given where each local of the context is bound (by
+/// level; none for those not known): a local of a name two of them have
+/// is marked too.
+pub fn show_marked_in(g: &Globals, names: &[Name], at: &[Option<u32>], t: &Tm) -> String {
+    let was = MARKING.with(|c| c.replace(true));
+    let locals: Vec<(Name, Option<u32>)> = names.iter().enumerate().map(|(i, n)| (n.clone(), at.get(i).copied().flatten())).collect();
+    let outer = MARK_LOCALS.with(|l| l.replace(locals));
+    let s = show(g, names, t);
+    MARK_LOCALS.with(|l| l.replace(outer));
+    MARKING.with(|c| c.set(was));
+    s
+}
+
+/// The globals marked in `s`, with their names, in order.
+pub fn marks(s: &str) -> Vec<(Marked, String)> {
+    let mut out = Vec::new();
+    unmark(s, &mut |m, n| {
+        out.push((m, n.to_string()));
+        n.to_string()
+    });
+    out
+}
+
+/// `s` with its marks dropped: each global by its name as declared.
+pub fn plain(s: &str) -> String {
+    unmark(s, &mut |_, n| n.to_string())
+}
+
+/// `s` with each marked global replaced by `name(global, its name)`.
+pub fn unmark(s: &str, name: &mut dyn FnMut(Marked, &str) -> String) -> String {
+    if !s.contains(MARK) {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find(MARK) {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + MARK.len_utf8()..];
+        let parsed = after.find(MARK_NAME).and_then(|j| {
+            let k = after[j..].find(MARK_END)? + j;
+            let (kind, id) = after[..j].split_at(after[..j].char_indices().nth(1).map_or(j, |x| x.0));
+            let m = match kind {
+                "d" => Marked::Def(DefId(id.parse().ok()?)),
+                "t" => Marked::Ty(TyId(id.parse().ok()?)),
+                "c" => Marked::Con(ConId(id.parse().ok()?)),
+                "v" => {
+                    let mut p = id.split('.');
+                    let pos = |a: &str| if a == "-" { Some(None) } else { a.parse().ok().map(Some) };
+                    let level = p.next()?.parse().ok()?;
+                    let at = pos(p.next()?)?;
+                    let hidden_by = match p.next()? {
+                        "s" => None,
+                        h => Some(pos(h.strip_prefix('h')?)?),
+                    };
+                    let avoid = p.next()?.parse().ok()?;
+                    Marked::Var { level, at, hidden_by, avoid }
+                }
+                _ => return None,
+            };
+            Some((m, &after[j + MARK_NAME.len_utf8()..k], &after[k + MARK_END.len_utf8()..]))
+        });
+        match parsed {
+            Some((m, n, next)) => {
+                out.push_str(&name(m, n));
+                rest = next;
+            }
+            None => {
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 fn fresh(ns: &[Name], x: &Name) -> Name {
     if x.as_ref() == "_" {
         return x.clone();
@@ -1751,10 +2021,19 @@ fn paren(b: bool, s: String) -> String {
 
 fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
     match t {
-        Tm::Var(i) => ns.get(ns.len().wrapping_sub(1 + i)).map(|n| n.to_string()).unwrap_or_else(|| format!("#{i}")),
-        Tm::Def(d) => g.defs[d.0 as usize].name.to_string(),
-        Tm::TyCon(t) => g.tys[t.0 as usize].name.to_string(),
-        Tm::Con(c) => g.cons[c.0 as usize].name.to_string(),
+        Tm::Var(i) => {
+            let level = ns.len().wrapping_sub(1 + i);
+            match ns.get(level) {
+                // A local of the context (not one bound inside `t`).
+                Some(n) if MARK_LOCALS.with(|l| level < l.borrow().len()) => local(level, n),
+                Some(n) => n.to_string(),
+                None => format!("#{i}"),
+            }
+        }
+        Tm::Def(d) if is_anon_alias(g, *d) => g.defs[d.0 as usize].name.to_string(),
+        Tm::Def(d) => global(Marked::Def(*d), &g.defs[d.0 as usize].name),
+        Tm::TyCon(t) => global(Marked::Ty(*t), &g.tys[t.0 as usize].name),
+        Tm::Con(c) => global(Marked::Con(*c), &g.cons[c.0 as usize].name),
         Tm::Meta(m) => match g.meta(*m) {
             Some(v) => show_prec(g, ns, &quote(g, ns.len(), &v), p),
             // An unknown the checker has not worked out yet: by the
@@ -1845,6 +2124,7 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
             ns.pop();
             paren(p > 0, s)
         }
+        Tm::Known(k) => k.show(g, p),
         Tm::Lit(Lit::Num(n)) => n.to_string(),
         Tm::Lit(Lit::Big(n)) => n.to_string(),
         Tm::Lit(Lit::Str(s)) => format!("{s:?}"),
@@ -1860,12 +2140,14 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
         }
         Tm::TyConApp(ty, args) => {
             let ti = &g.tys[ty.0 as usize];
+            // Its header's dictionaries are never shown (#385).
+            let args = &args[..args.len().min(ti.params.len() - ti.dicts)];
             if args.is_empty() {
-                return ti.name.to_string();
+                return global(Marked::Ty(*ty), &ti.name);
             }
             let s = format!(
                 "{} {}",
-                ti.name,
+                global(Marked::Ty(*ty), &ti.name),
                 args.iter().map(|a| show_prec(g, ns, a, 2)).collect::<Vec<_>>().join(" ")
             );
             paren(p > 1, s)
@@ -1887,11 +2169,11 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
                 if Some(*c) == g.well_known.nil {
                     return "[]".into();
                 }
-                return ci.name.to_string();
+                return global(Marked::Con(*c), &ci.name);
             }
             let s = format!(
                 "{} {}",
-                ci.name,
+                global(Marked::Con(*c), &ci.name),
                 explicit.iter().map(|a| show_prec(g, ns, a, 2)).collect::<Vec<_>>().join(" ")
             );
             paren(p > 1, s)
@@ -1917,6 +2199,9 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
                     paren(p > 0, format!("{} {o} {}", show_prec(g, ns, a, 2), show_prec(g, ns, b, 2)))
                 }
                 _ => {
+                    if let (Prim::Effect(_), [a]) = (pr, args.as_slice()) {
+                        return show_prec(g, ns, a, p);
+                    }
                     if let (Prim::Neg, [a]) = (pr, args.as_slice()) {
                         return format!("-{}", show_prec(g, ns, a, 2));
                     }

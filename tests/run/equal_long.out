@@ -1,4 +1,5 @@
 -- stdout
-Ok b"abc" Ok b""
+True
+True
 -- stderr
 -- exit 0

@@ -1,0 +1,11 @@
+error[E0450]: cannot prove `r >= 0`, the postcondition of `by_constant`
+  --> own_known_cycle.ck:19:21
+   |
+19 | fn by_constant k -> r : k~Int, r~Nat
+   |                     ^ promised here
+   = note: for the value returned on line 20: `LIMIT`
+   = note: facts in scope: `(k < 0)`
+   = note: counterexample: k = -1
+   = help: make the body establish it in every branch; facts about other functions come from their postconditions, or from a lemma brought in with `have`
+
+own_known_cycle.ck: 1 error, 0 warnings

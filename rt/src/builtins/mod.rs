@@ -123,12 +123,15 @@ pub(crate) fn b(w: W) -> &'static [u8] {
     blob(w)
 }
 
+/// A number a precondition bounds by a length, so it fits in a word.
 pub(crate) fn n(w: W) -> usize {
     to_usize(w).unwrap_or_else(|| bug("a number out of range"))
 }
 
-/// How many elements to make. A count no machine word holds becomes the
-/// largest one: allocating that many is out of memory (D184).
+/// A count or position that no precondition bounds. One no machine word
+/// holds becomes the largest one: making that many elements is out of memory
+/// (D184), reading that many bytes reads what there is, and no byte string
+/// has that position (D185).
 pub(crate) fn count(w: W) -> usize {
     to_usize(w).unwrap_or(usize::MAX)
 }

@@ -98,22 +98,45 @@ impl Prog {
     }
 }
 
-/// The current program. `checkers check` installs one per file it
-/// evaluates `check`s in; the old ones are kept (never freed), since values
-/// computed under them may still be read.
+/// The program a process runs (`checkers run`, a built program): set once
+/// by `run_main`, read on every thread, behaviours' workers included.
 static PROG: AtomicPtr<Prog> = AtomicPtr::new(std::ptr::null_mut());
 
+thread_local! {
+    /// The program this thread evaluates for the compiler (`within`), which
+    /// takes the place of `PROG` here. The compiler makes one program per
+    /// file it evaluates `check`s or staged values in, several at once on
+    /// different threads, so each must be this thread's own.
+    static CURRENT: std::cell::Cell<*const Prog> = const { std::cell::Cell::new(std::ptr::null()) };
+}
+
 pub fn prog() -> &'static Prog {
-    let p = PROG.load(Ordering::Acquire);
-    if p.is_null() {
-        fatal("the program was not set up");
-    }
-    unsafe { &*p }
+    prog_opt().unwrap_or_else(|| fatal("the program was not set up"))
 }
 
 fn prog_opt() -> Option<&'static Prog> {
-    let p = PROG.load(Ordering::Acquire);
+    let p = CURRENT.with(|c| c.get());
+    let p = if p.is_null() { PROG.load(Ordering::Acquire) as *const Prog } else { p };
     (!p.is_null()).then(|| unsafe { &*p })
+}
+
+/// The program this thread evaluates for, if any (for threads it starts).
+pub fn current() -> Option<&'static Prog> {
+    let p = CURRENT.with(|c| c.get());
+    (!p.is_null()).then(|| unsafe { &*p })
+}
+
+/// Run `f` with `p` as this thread's program, then restore the one before
+/// (even if `f` unwinds).
+pub fn within<R>(p: &'static Prog, f: impl FnOnce() -> R) -> R {
+    struct Restore(*const Prog);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            CURRENT.with(|c| c.set(self.0));
+        }
+    }
+    let _restore = Restore(CURRENT.with(|c| c.replace(p)));
+    f()
 }
 
 /// The descriptor (one item per line):
@@ -123,7 +146,20 @@ fn prog_opt() -> Option<&'static Prog> {
 /// `-`; UNBOXED: `CON:FIELD` or `-`), `def NAME`, `known KEY ID`, `system
 /// FIELD`, `debug TY INDEX NTYPES FROM` (after the types; FROM: `std` for
 /// the standard library's).
+///
+/// `install` sets the program the process runs; the compiler uses `make`.
 pub fn install(desc: &str, invoke: Invoke) {
+    PROG.store(Box::into_raw(Box::new(parse(desc, invoke))), Ordering::Release);
+}
+
+/// A program for the compiler to evaluate in (`within`), apart from every
+/// other: several are made at once on different threads. It is kept (never
+/// freed), since values computed under it may still be read.
+pub fn make(desc: &str, invoke: Invoke) -> &'static Prog {
+    Box::leak(Box::new(parse(desc, invoke)))
+}
+
+fn parse(desc: &str, invoke: Invoke) -> Prog {
     let mut p = Prog {
         cons: Vec::new(),
         names: Vec::new(),
@@ -205,7 +241,7 @@ pub fn install(desc: &str, invoke: Invoke) {
             _ => {}
         }
     }
-    PROG.store(Box::into_raw(Box::new(p)), Ordering::Release);
+    p
 }
 
 /// What the printer calls (owned): a pair of the hand-written `Debug`
@@ -285,6 +321,11 @@ pub fn ok(v: W) -> W {
 
 pub fn err(v: W) -> W {
     new_con(known_con(prog().known.err), &[v])
+}
+
+/// The owned word `x` in front of the owned list `l`.
+pub fn cons(x: W, l: W) -> W {
+    new_con(known_con(prog().known.cons), &[x, l])
 }
 
 /// A list of owned words.
@@ -397,18 +438,62 @@ pub const EVAL_STACK: usize = 1 << 30;
 /// What compile-time evaluation reports when it runs out of stack.
 pub const STACK_OVERFLOW: &str = "runtime error: stack overflow";
 
+thread_local! {
+    /// How many more function entries and loop iterations compile-time
+    /// evaluation may make on this thread (`eval_limited`): `u64::MAX`, no
+    /// limit, unless the compiler set one.
+    static WORK: std::cell::Cell<u64> = const { std::cell::Cell::new(u64::MAX) };
+}
+
+/// What compile-time evaluation reports when it reaches its work limit.
+pub const WORK_LIMIT: &str = "the work limit for values known at compile time";
+
+/// Counts one function entry or loop iteration of code compiled for the
+/// compiler; at the work limit, a runtime error.
+#[no_mangle]
+pub extern "C" fn ck_tick() {
+    WORK.with(|w| match w.get() {
+        0 => error(NO_OWNER, &format!("reached {WORK_LIMIT}")),
+        n => w.set(n - 1),
+    })
+}
+
+/// This thread's remaining work, for threads it starts (`par`).
+pub fn current_work() -> u64 {
+    WORK.with(|w| w.get())
+}
+
+pub fn set_work(n: u64) {
+    WORK.with(|w| w.set(n));
+}
+
 /// Run compiled code for the compiler (a `check`, a value staging needs):
 /// on a thread of its own, on a fiber with a large stack. A runtime error
 /// doesn't exit the process: it comes back as `Err` with the message
 /// `checkers run` would print, and that thread stays parked. Running out
 /// of stack comes back as `Err` too (`fiber::recoverable`).
+///
+/// It runs within this thread's program (`within`).
 pub fn eval_trapped(f: impl FnOnce() -> W + Send + 'static) -> Result<W, String> {
+    eval_limited(u64::MAX, f)
+}
+
+/// `eval_trapped`, making at most `work` function entries and loop
+/// iterations (`ck_tick`) on each thread it runs on; past that, a runtime
+/// error. A count, so the same on every run, unlike a time limit.
+pub fn eval_limited(work: u64, f: impl FnOnce() -> W + Send + 'static) -> Result<W, String> {
     let (tx, rx) = std::sync::mpsc::channel();
     let tx2 = tx.clone();
+    let p = current();
     let spawned = std::thread::Builder::new().spawn(move || {
         crate::overflow::thread_init();
+        set_work(work);
         TRAP.with(|t| *t.borrow_mut() = Some(tx2.clone()));
-        let r = crate::fiber::recoverable(EVAL_STACK, f).ok_or_else(|| STACK_OVERFLOW.to_string());
+        let run = || crate::fiber::recoverable(EVAL_STACK, f).ok_or_else(|| STACK_OVERFLOW.to_string());
+        let r = match p {
+            Some(p) => within(p, run),
+            None => run(),
+        };
         let _ = tx2.send(r);
     });
     if let Err(e) = spawned {
