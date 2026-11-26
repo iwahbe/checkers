@@ -73,11 +73,7 @@ fn ck_files(dir: &Path) -> Vec<PathBuf> {
 fn run_native(args_path: &Path, threads: usize) -> String {
     let spec = fs::read_to_string(args_path).unwrap();
     let mut lines = spec.lines();
-    let first = lines.next().unwrap_or_default();
-    let (flags, program): (Vec<&str>, &str) = match first.strip_prefix("--unverified ") {
-        Some(p) => (vec!["--unverified"], p),
-        None => (vec![], first),
-    };
+    let program = lines.next().unwrap_or_default();
     let stdin = fs::read(args_path.with_extension("in")).unwrap_or_default();
     // `NAME.env`: a variable to set on each line, `NAME=VALUE`.
     let vars = fs::read_to_string(args_path.with_extension("env")).unwrap_or_default();
@@ -87,7 +83,6 @@ fn run_native(args_path: &Path, threads: usize) -> String {
         .envs(vars)
         .arg("run")
         .args(["--threads", &threads.to_string()])
-        .args(flags)
         .arg(program)
         .args(lines)
         .current_dir(args_path.parent().unwrap())
@@ -477,6 +472,11 @@ fn run(path: &Path, mode: &str) -> String {
     } else {
         checkers::parse_only(&name, &text)
     };
+    // A program without type errors loses no term to one (§7.3): the
+    // prover found its sorts don't fit, so checkers has a bug.
+    if c.errors() == 0 && c.ill_sorted > 0 {
+        return format!("{}\n-- checkers bug: {} terms left out of proofs for a type error, with none reported\n", c.report(), c.ill_sorted);
+    }
     match mode {
         "parse" => {
             let mut out = checkers::syntax::print::module(&c.module);
@@ -636,7 +636,11 @@ fn golden() {
     pool.add((9, 0), "check tools/checkers.ck".into(), move |_| {
         let tools = root.join("tools");
         let c = checkers::check_in("checkers.ck", &fs::read_to_string(tools.join("checkers.ck")).unwrap(), &tools);
-        (1, if c.diags.is_empty() { vec![] } else { vec![format!("── tools/checkers.ck must be clean ──\n{}", c.report())] })
+        let mut failures = if c.diags.is_empty() { vec![] } else { vec![format!("── tools/checkers.ck must be clean ──\n{}", c.report())] };
+        if c.errors() == 0 && c.ill_sorted > 0 {
+            failures.push(format!("── tools/checkers.ck: {} terms left out of proofs for a type error, with none reported (a checkers bug) ──", c.ill_sorted));
+        }
+        (1, failures)
     });
 
     for (m, mode) in ["parse", "check", "types", "stage"].into_iter().enumerate() {
@@ -766,7 +770,12 @@ fn golden() {
                 let file = path.file_name().unwrap().to_string_lossy().to_string();
                 let text = fs::read_to_string(&path).unwrap();
                 let c = checkers::check_in(&file, &text, &root.join(dir));
-                (1, if c.diags.is_empty() { vec![] } else { vec![format!("── {dir}/{file} must be clean ──\n{}", c.report())] })
+                let mut failures = if c.diags.is_empty() { vec![] } else { vec![format!("── {dir}/{file} must be clean ──\n{}", c.report())] };
+                // No term is left out of its proofs for a type error (§7.3).
+                if c.errors() == 0 && c.ill_sorted > 0 {
+                    failures.push(format!("── {dir}/{file}: {} terms left out of proofs for a type error, with none reported (a checkers bug) ──", c.ill_sorted));
+                }
+                (1, failures)
             });
             i += 1;
         }

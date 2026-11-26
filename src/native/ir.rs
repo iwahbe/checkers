@@ -94,7 +94,7 @@ impl Op {
             Prim::Index => Op::Index,
             Prim::Par => Op::Par,
             Prim::When => Op::When,
-            Prim::Builtin(_) | Prim::Forall => return None,
+            Prim::Builtin(_) | Prim::Forall | Prim::Effect(_) => return None,
         })
     }
 }
@@ -316,6 +316,10 @@ impl<'g> Compiler<'g> {
                 if let (Prim::Par, [Tm::Tuple(xs)]) = (p, &args[..]) {
                     return Ir::Par(xs.iter().map(|x| self.compile(x)).collect());
                 }
+                // A call with effects is the call (§7.1).
+                if let (Prim::Effect(_), [x]) = (p, &args[..]) {
+                    return self.go(x);
+                }
                 // The flag: `Nat` subtraction (checked), or indexing an
                 // `Array U8`, always a bytes object (D133).
                 let nat = match p {
@@ -345,7 +349,7 @@ impl<'g> Compiler<'g> {
                 }
                 _ => Ir::Case(self.compile(s), Arc::new(self.case(c))),
             },
-            Tm::Error => Ir::Fail("no arm of a `match` matches this value (`--unverified`)"),
+            Tm::Error => Ir::Fail("no arm of a `match` matches this value"),
         }
     }
 
