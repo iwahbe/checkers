@@ -180,11 +180,29 @@ impl Elab {
     /// iterations of native code (`CODEGEN_WORK`); a value given up on
     /// isn't kept, so it is computed again if asked for without a limit.
     pub fn known_value_within(&self, t: &Tm, work: u64) -> Option<Lit> {
-        if let Tm::Lit(l) = t {
-            return Some(l.clone());
+        match self.known_term_within(t, None, work)? {
+            Tm::Lit(l) => Some(l),
+            _ => None,
+        }
+    }
+
+    /// The value closed term `t` is known to be at compile time, of any
+    /// type that has a term (§8.9): a literal, `()`, or a known value
+    /// (`Tm::Known`). `ty`, the closed type it has where it is known, tells
+    /// how to read it back (a type stored as its one field, a string). As
+    /// `known_value` computes it; `work` as `known_value_within`.
+    pub fn known_term_within(&self, t: &Tm, ty: Option<&Tm>, work: u64) -> Option<Tm> {
+        self.known_term_in(t, ty, work, &mut None)
+    }
+
+    /// `known_term_within`, running native code in `ev` (made on first
+    /// use): many values computed together share its compiled code.
+    pub fn known_term_in<'g>(&'g self, t: &Tm, ty: Option<&Tm>, work: u64, ev: &mut Option<crate::native::eval::Evaluator<'g>>) -> Option<Tm> {
+        if let Tm::Lit(_) | Tm::Known(_) = t {
+            return Some(t.clone());
         }
         let t = &runtime_closed(&self.g, t)?;
-        let key = format!("{t:?}");
+        let key = format!("{t:?}|{ty:?}");
         if let Some(k) = self.known_cache.borrow().get(&key) {
             return k.clone();
         }
@@ -194,8 +212,8 @@ impl Elab {
             return None;
         }
         if let Some(l) = crate::core::known_lit(&self.g, eval(&self.g, &Rc::new(Vec::new()), t)) {
-            self.known_cache.borrow_mut().insert(key, Some(l.clone()));
-            return Some(l);
+            self.known_cache.borrow_mut().insert(key, Some(Tm::Lit(l.clone())));
+            return Some(Tm::Lit(l));
         }
         if !self.runnable(t) {
             // Not known yet: a function it needs may be checked later.
@@ -208,15 +226,15 @@ impl Elab {
             self.known_cache.borrow_mut().insert(key, None);
             return None;
         }
-        let mut ev = crate::native::eval::Evaluator::plain(&self.g);
+        let ev = ev.get_or_insert_with(|| crate::native::eval::Evaluator::plain(&self.g));
         let k = match ev.eval_limited(t, work) {
             Ok(v) => {
-                let r = ev.reify(v);
+                let r = match ty {
+                    Some(ty) => ev.reify_as(v, ty),
+                    None => ev.reify(v),
+                };
                 ev.release(v);
-                match r {
-                    Some(Tm::Lit(l)) => Some(l),
-                    _ => None,
-                }
+                r
             }
             Err(e) if e.contains(checkers_rt::prog::WORK_LIMIT) => return None,
             // A runtime error: not known.

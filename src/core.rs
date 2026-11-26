@@ -376,7 +376,8 @@ pub struct Globals {
     pub bounds: HashMap<DefId, Vec<Option<crate::range::Range>>>,
     /// Constants' values known at compile time (§8.9), for code generation:
     /// set once the program is proved, as `bounds` is (`Elab::known_value`).
-    pub known: RefCell<HashMap<DefId, Lit>>,
+    /// Each is a literal, `()` or a `Tm::Known`, compiled as static data.
+    pub known: RefCell<HashMap<DefId, Tm>>,
     /// The base types of classes' types that have one (#360), by their
     /// field of the dictionary: closed types.
     pub type_bases: HashMap<(ConId, usize), Vec<Tm>>,
@@ -632,8 +633,8 @@ pub fn eval(g: &Globals, env: &Env, t: &Tm) -> Val {
 pub fn known_val(k: &crate::known::Value) -> Val {
     use crate::known::Node;
     match k.node() {
-        Node::Con(..) | Node::Tuple(_) => Val::Known(k.clone()),
-        Node::Unit => Val::Tuple(Rc::new([])),
+        Node::Con(..) | Node::Tuple(_) | Node::Array(..) | Node::Closure(_) | Node::Pap(_) => Val::Known(k.clone()),
+        Node::Unit | Node::Erased => Val::Tuple(Rc::new([])),
         _ => Val::Lit(k.lit().expect("a literal node")),
     }
 }
@@ -650,6 +651,8 @@ pub fn known_open(g: &Globals, k: &crate::known::Value) -> Val {
             Val::Con(*c, args.into())
         }
         Node::Tuple(xs) => Val::Tuple(xs.iter().map(|x| known_val(&k.at(*x))).collect()),
+        // An array or a function has no form the type checker takes apart:
+        // as it is.
         _ => known_val(k),
     }
 }
@@ -1013,7 +1016,7 @@ pub fn known_lit(g: &Globals, v: Val) -> Option<Lit> {
 
 /// The value of constant `d` (a `let`) if it is known at compile time:
 /// `Globals::known`, which code generation then uses.
-pub fn known_const(g: &Globals, d: DefId) -> Option<Lit> {
+pub fn known_const(g: &Globals, d: DefId) -> Option<Tm> {
     g.known.borrow().get(&d).cloned()
 }
 

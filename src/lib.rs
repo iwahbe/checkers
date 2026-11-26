@@ -1036,23 +1036,43 @@ fn ready_to_run(
     } else {
         // Proved: the bounds signatures give are facts native code may rely on.
         e.g.bounds = std::mem::take(&mut e.bounds);
-        // And constants known at compile time are compiled as their values:
-        // in a development build, those that only code generation wants
-        // within a work limit (§8.9); the rest are known already.
-        let consts: Vec<core::DefId> = (0..e.g.defs.len() as u32)
-            .map(core::DefId)
-            .filter(|d| {
-                let info = &e.g.defs[d.0 as usize];
-                // Numbers: what bounds and code generation use.
-                info.body.is_some() && !info.opaque && !matches!(info.ty, core::Tm::Pi(..)) && e.type_range(&core::eval(&e.g, &std::rc::Rc::new(Vec::new()), &info.ty)).is_some()
-            })
-            .collect();
-        for d in consts {
-            let work = if release { u64::MAX } else { elab::CODEGEN_WORK };
-            if let Some(l) = e.known_value_within(&core::Tm::Def(d), work) {
-                e.g.known.borrow_mut().insert(d, l);
+        // And constants known at compile time, of every type, are compiled
+        // as their values, static data (§8.9): those the program reaches
+        // from `main`, in a development build within a work limit when
+        // only code generation wants them.
+        let main = e.g.defs.iter().position(|d| *d.module == user && &*d.name == "main");
+        let mut seen: std::collections::HashSet<core::DefId> = main.map(|m| core::DefId(m as u32)).into_iter().collect();
+        let mut todo: Vec<core::DefId> = seen.iter().copied().collect();
+        while let Some(d) = todo.pop() {
+            let Some(body) = &e.g.defs[d.0 as usize].body else { continue };
+            let mut ds = Vec::new();
+            core::defs_in(body, &mut ds);
+            for x in ds {
+                if (x.0 as usize) < e.g.defs.len() && seen.insert(x) {
+                    todo.push(x);
+                }
             }
         }
+        let mut consts: Vec<core::DefId> = seen
+            .into_iter()
+            .filter(|d| {
+                let info = &e.g.defs[d.0 as usize];
+                // A value, not a function's code (a lambda, a closure that is
+                // static data already) nor a type; a function too if computed
+                // (`add 1`).
+                matches!(&info.body, Some(b) if !matches!(b, core::Tm::Lam(..))) && !info.opaque && info.comptime.is_empty() && !core::is_type_former(&info.ty)
+            })
+            .collect();
+        consts.sort();
+        let work = if release { u64::MAX } else { elab::CODEGEN_WORK };
+        let mut ev = None;
+        for d in consts {
+            let ty = e.g.defs[d.0 as usize].ty.clone();
+            if let Some(v) = e.known_term_in(&core::Tm::Def(d), Some(&ty), work, &mut ev) {
+                e.g.known.borrow_mut().insert(d, v);
+            }
+        }
+        drop(ev);
     }
     let exported = e.modules.get(&user).is_some_and(|m| m.exported_values.contains("main"));
     let main = e.g.defs.iter().position(|d| *d.module == user && &*d.name == "main");
