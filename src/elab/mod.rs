@@ -172,6 +172,13 @@ pub struct Local {
     /// type with them, which a use of it has. `ty` is the type without
     /// them, over the locals before it, as every local's type is.
     pub refined: Option<Val>,
+    /// The term that defined it, over the locals before it: a `let`'s, or
+    /// the part of a value a pattern takes. None for a bound local and for
+    /// one defined by a value alone.
+    pub def: Option<Rc<Tm>>,
+    /// What it is known to be at compile time, once asked
+    /// (`Elab::known_local`).
+    pub known: std::cell::OnceCell<Option<Rc<Tm>>>,
 }
 
 #[derive(Clone, Default)]
@@ -221,14 +228,20 @@ impl Cx {
         let l = self.lvl();
         Rc::make_mut(&mut self.env).push(Val::var(l));
         self.names.push(Rc::from(name));
-        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: true, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None });
+        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: true, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default() });
         l
     }
     pub fn define(&mut self, name: &str, ty: Val, val: Val, mult: Mult) -> usize {
         let l = self.lvl();
         Rc::make_mut(&mut self.env).push(val);
         self.names.push(Rc::from(name));
-        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: false, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None });
+        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: false, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default() });
+        l
+    }
+    /// `define`, by term `def` (over the locals before it) whose value is `val`.
+    pub fn define_by(&mut self, name: &str, ty: Val, val: Val, mult: Mult, def: Tm) -> usize {
+        let l = self.define(name, ty, val, mult);
+        self.locals[l].def = Some(Rc::new(def));
         l
     }
     pub fn pop(&mut self) {

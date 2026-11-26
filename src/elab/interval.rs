@@ -135,10 +135,95 @@ impl Elab {
             Tm::PrimApp(Prim::Neg, a) => self.known_int(cx, a.first()?).and_then(|n| n.checked_neg()),
             Tm::PrimApp(..) | Tm::Lit(_) => None,
             // A `let` bound to a known value stands for it.
-            _ => match self.known_in(cx, &self.eval(cx, t))? {
-                Lit::Num(n) => Some(n),
+            _ => match &*self.known_term(cx, cx.lvl(), t)? {
+                Tm::Lit(Lit::Num(n)) => Some(*n),
                 _ => None,
             },
+        }
+    }
+
+    /// What local `l` is known to be at compile time (§8.9), as a term over
+    /// the locals before it: a literal, a closed term, or a tuple,
+    /// constructor or function whose parts are known as far as they are;
+    /// `None` if it depends on a runtime value some other way. Decided once,
+    /// from the term that defined it (`Local::def`), and kept
+    /// (`Local::known`): what a local is known to be takes work in
+    /// proportion to its term, not to its value, which may hold every
+    /// value computed before it.
+    pub fn known_local(&self, cx: &Cx, l: usize) -> Option<Rc<Tm>> {
+        // Each local undecided that `l`'s term reaches, lowest first: one's
+        // term mentions only locals before it, decided by then. A loop, not
+        // recursion, however long the chain of locals.
+        let mut todo = vec![l];
+        let mut undecided = std::collections::BTreeSet::new();
+        while let Some(m) = todo.pop() {
+            let local = &cx.locals[m];
+            if local.known.get().is_some() || !undecided.insert(m) {
+                continue;
+            }
+            if let Some(t) = &local.def {
+                let mut free = std::collections::BTreeSet::new();
+                crate::core::free_vars(t, 0, &mut free);
+                todo.extend(free.into_iter().filter_map(|i| m.checked_sub(1 + i)));
+            }
+        }
+        for m in undecided {
+            let local = &cx.locals[m];
+            let known = match &local.def {
+                Some(t) => self.known_term(cx, m, t),
+                // A parameter, or a variable a `match` binds.
+                None if local.bound => None,
+                // Defined by a value alone.
+                None => self.known_in(cx, &cx.env[m]).map(|l| Rc::new(Tm::Lit(l))),
+            };
+            let _ = local.known.set(known);
+        }
+        cx.locals[l].known.get().cloned().flatten()
+    }
+
+    /// What `t`, a term over the first `depth` locals, is known to be at
+    /// compile time, as `known_local` says of a local: `t` with each local
+    /// it mentions replaced by what that is known to be, evaluated with the
+    /// rest as variables. A value that depends on a runtime value is never
+    /// looked into.
+    fn known_term(&self, cx: &Cx, depth: usize, t: &Tm) -> Option<Rc<Tm>> {
+        fn subst(t: &Tm, n: usize, f: &dyn Fn(usize, usize) -> Tm) -> Tm {
+            match t {
+                Tm::Var(i) if *i >= n => f(i - n, n),
+                _ => t.map_sub(|x, k| subst(x, n + k, f)),
+            }
+        }
+        // A known local's term is over the locals before it: under `n`
+        // binders of `t`, its variables move out past `i + 1` locals.
+        let t = subst(t, 0, &|i, n| match depth.checked_sub(1 + i).and_then(|m| self.known_local(cx, m)) {
+            Some(k) => crate::core::rename_free(&k, 0, &|x| x + i + 1 + n),
+            None => Tm::Var(i + n),
+        });
+        // The variables left, renumbered `0..k`: evaluating needs `k`
+        // values, not one for every local in scope.
+        let mut free = std::collections::BTreeSet::new();
+        crate::core::free_vars(&t, 0, &mut free);
+        let levels: Vec<usize> = free.iter().rev().map(|i| depth - 1 - i).collect();
+        let k = levels.len();
+        let dense = |i: usize| k - 1 - levels.binary_search(&(depth - 1 - i)).unwrap();
+        let env = Rc::new((0..k).map(Val::var).collect::<Vec<_>>());
+        let v = eval(&self.g, &env, &crate::core::rename_free(&t, 0, &dense));
+        if let Some(l) = crate::core::known_lit(&self.g, v.clone()) {
+            return Some(Rc::new(Tm::Lit(l)));
+        }
+        let t = quote(&self.g, k, &v);
+        if let Some(l) = self.known_value(&t) {
+            return Some(Rc::new(Tm::Lit(l)));
+        }
+        if let Some(c) = runtime_closed(&self.g, &t) {
+            return Some(Rc::new(c));
+        }
+        // Open, but a structure: a part of it may be known.
+        match t.head() {
+            Tm::Tuple(_) | Tm::ConApp(..) | Tm::Con(_) | Tm::Lam(..) => {
+                Some(Rc::new(crate::core::rename_free(&t, 0, &|j| depth - 1 - levels[k - 1 - j])))
+            }
+            _ => None,
         }
     }
 
