@@ -8,13 +8,14 @@
 //! static data.
 
 use super::lower::*;
+use super::wide;
 use crate::core::Globals;
 use crate::core::Prim;
 use crate::native::ir::Op;
 use crate::range::Range;
 use checkers_rt::word as w;
 use cranelift_codegen::ir::condcodes::IntCC;
-use cranelift_codegen::ir::types::{I32, I64, I8};
+use cranelift_codegen::ir::types::{I128, I32, I64, I8};
 use cranelift_codegen::ir::{
     self, AbiParam, AtomicRmwOp, BlockArg, FuncRef, GlobalValue, InstBuilder, InstructionData, MemFlagsData, Opcode, Signature,
     StackSlotData, StackSlotKind, Value, ValueDef,
@@ -85,6 +86,10 @@ pub struct Gen<'p, M: Module> {
     /// Raw bytes (messages, digits).
     raw: HashMap<Vec<u8>, DataId>,
     pub invoke: FuncId,
+    /// The functions for numbers within 128 bits (`Wide`) declared so far,
+    /// and those of them defined.
+    wides: HashMap<Wide, FuncId>,
+    wides_defined: HashSet<Wide>,
     true_w: i64,
     false_w: i64,
     max_arity: usize,
@@ -138,6 +143,147 @@ struct St {
     /// call to itself in tail position jumps there, a loop rather than a
     /// call (no frame torn down and set up again).
     this: Option<(u32, ir::Block)>,
+    /// The operands of the function's `/`s that a `%` has too: the first
+    /// of the two emitted gives the other's result (`Quot`).
+    pairs: HashSet<Pair>,
+    /// The other result of a `/` or `%` emitted where code is being
+    /// emitted now, by its operands. A `match`'s arms each start from what
+    /// was known before it.
+    quots: HashMap<Pair, Quot>,
+}
+
+impl St {
+    fn new(vars: Vec<Option<Value>>, owner: u32, pairs: HashSet<Pair>) -> St {
+        St {
+            vars,
+            imm: HashSet::new(),
+            ints: HashSet::new(),
+            conds: HashMap::new(),
+            bounds: HashMap::new(),
+            owner,
+            frefs: HashMap::new(),
+            gvs: HashMap::new(),
+            this: None,
+            pairs,
+            quots: HashMap::new(),
+        }
+    }
+}
+
+/// A division's operands: variables or integer constants.
+type Pair = (Atom, Atom);
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Atom {
+    Var(V),
+    Int(i64),
+}
+
+impl Atom {
+    fn of(e: &E) -> Option<Atom> {
+        match e {
+            E::Var(v) => Some(Atom::Var(*v)),
+            E::Int(n) => Some(Atom::Int(*n)),
+            _ => None,
+        }
+    }
+}
+
+/// What a `/` or `%` gives the other of its pair: the remainder (`rem`)
+/// or the quotient as a small integer's word, or 0 where it isn't one or
+/// the runtime divided. One word, so that keeping it costs little: a
+/// remainder by a small integer is always one.
+#[derive(Clone, Copy)]
+struct Quot {
+    rem: bool,
+    word: Value,
+}
+
+/// An operation on numbers within 128 bits, for which each program has a
+/// function of its own (`Gen::define_wide`), called where the operation's
+/// operands aren't small integers or its result isn't one; past 128 bits
+/// it goes on to the runtime. Called, not inline: the code of small
+/// integers' operations, which is most code, keeps the registers it would
+/// have without it (measured: inline, the 128-bit paths cost loops on small
+/// integers up to 2% more instructions in spills).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum Wide {
+    Add,
+    Sub,
+    Mul,
+    Neg,
+    NatSub,
+    Cmp,
+    Eq,
+    Div,
+    Rem,
+}
+
+impl Wide {
+    fn name(self) -> &'static str {
+        match self {
+            Wide::Add => "ckw_add",
+            Wide::Sub => "ckw_sub",
+            Wide::Mul => "ckw_mul",
+            Wide::Neg => "ckw_neg",
+            Wide::NatSub => "ckw_natsub",
+            Wide::Cmp => "ckw_cmp",
+            Wide::Eq => "ckw_eq",
+            Wide::Div => "ckw_div",
+            Wide::Rem => "ckw_rem",
+        }
+    }
+
+    fn sig(self) -> Signature {
+        let mut s = Signature::new(CallConv::Tail);
+        let (params, rets) = match self {
+            Wide::Neg => (1, 1),
+            Wide::Add | Wide::Sub | Wide::Mul | Wide::Cmp => (2, 1),
+            Wide::NatSub | Wide::Eq => (3, 1),
+            Wide::Div | Wide::Rem => (3, 2),
+        };
+        s.params.extend((0..params).map(|_| AbiParam::new(I64)));
+        s.returns.extend((0..rets).map(|_| AbiParam::new(I64)));
+        s
+    }
+}
+
+/// The operands of each `/` that a `%` has too, in `e`.
+fn div_pairs(e: &E) -> HashSet<Pair> {
+    fn walk(e: &E, divs: &mut HashSet<Pair>, rems: &mut HashSet<Pair>) {
+        match e {
+            E::Borrow { op: BOp::Prim(p @ (Op::Div | Op::Rem), _), args, .. } => {
+                if let [Some(x), Some(y)] = [Atom::of(&args[0]), Atom::of(&args[1])] {
+                    if *p == Op::Div { divs } else { rems }.insert((x, y));
+                }
+            }
+            E::Borrow { args, .. } | E::Call { args, .. } | E::Tuple(args) | E::Par(args) | E::Multi(args) => {
+                args.iter().for_each(|a| walk(a, divs, rems))
+            }
+            E::Apply { f, args, .. } => {
+                walk(f, divs, rems);
+                args.iter().for_each(|a| walk(a, divs, rems))
+            }
+            E::Con { fields, .. } => fields.iter().for_each(|a| walk(a, divs, rems)),
+            E::Let(_, a, b) | E::LetMulti(_, a, b) => {
+                walk(a, divs, rems);
+                walk(b, divs, rems)
+            }
+            E::Dup(_, b) | E::Drop(_, b) | E::DropReuse(_, _, _, b) | E::At(_, b) => walk(b, divs, rems),
+            E::Case { arms, lits, default, .. } => {
+                arms.iter().for_each(|a| walk(&a.body, divs, rems));
+                lits.iter().for_each(|(_, b)| walk(b, divs, rems));
+                if let Some(d) = default {
+                    walk(d, divs, rems)
+                }
+            }
+            _ => {}
+        }
+    }
+    let (mut divs, mut rems) = (HashSet::new(), HashSet::new());
+    walk(e, &mut divs, &mut rems);
+    divs.retain(|p| rems.contains(p));
+    divs
 }
 
 /// A comparison's condition (`I8`), and what holds when it is true or false.
@@ -252,6 +398,8 @@ impl<'p, M: Module> Gen<'p, M> {
             placed: HashMap::new(),
             raw: HashMap::new(),
             invoke,
+            wides: HashMap::new(),
+            wides_defined: HashSet::new(),
             true_w: nul(wk.true_con),
             false_w: nul(wk.false_con),
             max_arity,
@@ -440,7 +588,7 @@ impl<'p, M: Module> Gen<'p, M> {
         out.extend_from_slice(&w::STATIC_RC.to_le_bytes());
         match i128::try_from(n) {
             Ok(s) => {
-                out.extend_from_slice(&w::info(w::K_BIG, 0, checkers_rt::obj::BIG_I128).to_le_bytes());
+                out.extend_from_slice(&checkers_rt::obj::INFO_I128.to_le_bytes());
                 out.extend_from_slice(&(s as u128 as u64).to_le_bytes());
                 out.extend_from_slice(&(((s as u128) >> 64) as u64).to_le_bytes());
             }
@@ -518,6 +666,12 @@ impl<'p, M: Module> Gen<'p, M> {
             self.m.clear_context(&mut ctx);
         }
         self.defined = self.p.funcs.len();
+        let mut wides: Vec<Wide> = self.wides.keys().filter(|w| !self.wides_defined.contains(w)).copied().collect();
+        wides.sort_by_key(|w| *w as u8);
+        for w in wides {
+            self.define_wide(&mut fctx, &mut ctx, w);
+            self.wides_defined.insert(w);
+        }
         if !self.invoke_defined {
             self.define_invoke(&mut fctx, &mut ctx);
             self.invoke_defined = true;
@@ -542,7 +696,7 @@ impl<'p, M: Module> Gen<'p, M> {
         }
         let params: Vec<Value> = b.block_params(entry).to_vec();
         let vars = vec![None; f.nvars.max(f.params.len() as u32) as usize];
-        let mut st = St { vars, imm: HashSet::new(), ints: HashSet::new(), conds: HashMap::new(), bounds: HashMap::new(), owner: f.owner, frefs: HashMap::new(), gvs: HashMap::new(), this: None };
+        let mut st = St::new(vars, f.owner, div_pairs(&f.body));
         let env = params[0];
         match &f.kind {
             FnKind::Global | FnKind::Caf => {
@@ -977,7 +1131,11 @@ impl<'p, M: Module> Gen<'p, M> {
             // fast path they are small integers, so there is nothing to do.
             BOp::Prim(p, nat) => {
                 let mine = Self::take_args(&vs, &mut ds);
-                self.prim(b, st, p, nat, &vs, &mine)
+                let key = match args {
+                    [x, y] => Atom::of(x).zip(Atom::of(y)),
+                    _ => None,
+                };
+                self.prim(b, st, p, nat, &vs, &mine, key)
             }
             op => self.borrow(b, st, op, &vs),
         };
@@ -1263,13 +1421,216 @@ impl<'p, M: Module> Gen<'p, M> {
         b.ins().brif(t, yes, &[], no, &[]);
     }
 
+    /// The 128-bit value of number `x`, if it is a small integer or a
+    /// two-word object; else on to `no`. With `any`, `x` may be any value,
+    /// not only a number.
+    fn wide_of(b: &mut FunctionBuilder, st: &St, x: Value, any: bool, no: ir::Block) -> Value {
+        if Self::small(b, st, x) {
+            let n = b.ins().sshr_imm_s(x, 1);
+            return wide::of_i64(b, n);
+        }
+        let int = b.create_block();
+        let obj = b.create_block();
+        let load = b.create_block();
+        let done = b.create_block();
+        let r = b.append_block_param(done, I128);
+        let t = b.ins().band_imm_s(x, 1);
+        b.ins().brif(t, int, &[], obj, &[]);
+        b.switch_to_block(int);
+        let n = b.ins().sshr_imm_s(x, 1);
+        let n = wide::of_i64(b, n);
+        b.ins().jump(done, &[BlockArg::Value(n)]);
+        b.switch_to_block(obj);
+        if any {
+            let header = b.create_block();
+            let ptr = Self::is_ptr(b, x);
+            b.ins().brif(ptr, header, &[], no, &[]);
+            b.switch_to_block(header);
+        }
+        let info = b.ins().load(I64, flags(), x, 8);
+        let two_words = b.ins().icmp_imm_s(IntCC::Equal, info, checkers_rt::obj::INFO_I128 as i64);
+        b.ins().brif(two_words, load, &[], no, &[]);
+        b.switch_to_block(load);
+        let lo = b.ins().load(I64, flags(), x, w::HDR as i32);
+        let hi = b.ins().load(I64, flags(), x, w::HDR as i32 + 8);
+        let n = b.ins().iconcat(lo, hi);
+        b.ins().jump(done, &[BlockArg::Value(n)]);
+        b.switch_to_block(done);
+        r
+    }
+
+    /// A call of `w`'s function on `xs`: its results.
+    fn call_wide(&mut self, b: &mut FunctionBuilder, st: &mut St, w: Wide, xs: &[Value]) -> Vec<Value> {
+        let id = match self.wides.get(&w) {
+            Some(id) => *id,
+            None => {
+                let id = self.m.declare_function(w.name(), Linkage::Local, &w.sig()).expect("declare a 128-bit function");
+                self.wides.insert(w, id);
+                id
+            }
+        };
+        let r = self.fref(b, st, id);
+        let inst = b.ins().call(r, xs);
+        b.inst_results(inst).to_vec()
+    }
+
+    /// `w`'s function: the operation on two numbers (one for `Neg`)
+    /// borrowed, and the owner of its runtime errors where it has them; on
+    /// 128 bits, or by the runtime where they or the result aren't within
+    /// them. `Cmp` gives -1, 0 or 1, and `Eq` 1 for equal, else 0.
+    fn define_wide(&mut self, fctx: &mut FunctionBuilderContext, ctx: &mut cranelift_codegen::Context, w: Wide) {
+        ctx.func.signature = w.sig();
+        ctx.func.name = ir::UserFuncName::user(1, w as u32);
+        {
+            let mut builder = FunctionBuilder::new(&mut ctx.func, fctx);
+            let b = &mut builder;
+            let mut st = St::new(Vec::new(), 0, HashSet::new());
+            let st = &mut st;
+            let entry = b.create_block();
+            b.append_block_params_for_function_params(entry);
+            b.switch_to_block(entry);
+            let xs = b.block_params(entry).to_vec();
+            let no = b.create_block();
+            b.set_cold_block(no);
+            let operands = if w == Wide::Neg { 1 } else { 2 };
+            let ns: Vec<Value> = xs[..operands].iter().map(|x| Self::wide_of(b, st, *x, w == Wide::Eq, no)).collect();
+            // The value, unless `over`.
+            let mut finish = |me: &mut Self, b: &mut FunctionBuilder, v: Value, over: Value| {
+                let fine = b.create_block();
+                b.ins().brif(over, no, &[], fine, &[]);
+                b.switch_to_block(fine);
+                let v = me.box_wide(b, st, v);
+                b.ins().return_(&[v]);
+            };
+            match w {
+                Wide::Add => {
+                    let (v, o) = b.ins().sadd_overflow(ns[0], ns[1]);
+                    finish(self, b, v, o)
+                }
+                Wide::Sub => {
+                    let (v, o) = b.ins().ssub_overflow(ns[0], ns[1]);
+                    finish(self, b, v, o)
+                }
+                Wide::Mul => {
+                    let (v, o) = wide::mul(b, ns[0], ns[1]);
+                    finish(self, b, v, o)
+                }
+                Wide::Neg => {
+                    let zero = wide::zero(b);
+                    let (v, o) = b.ins().ssub_overflow(zero, ns[0]);
+                    finish(self, b, v, o)
+                }
+                // `Nat`s: below zero is the runtime's to report.
+                Wide::NatSub => {
+                    let below = b.ins().icmp(IntCC::SignedLessThan, ns[0], ns[1]);
+                    let v = b.ins().isub(ns[0], ns[1]);
+                    finish(self, b, v, below)
+                }
+                Wide::Cmp => {
+                    let gt = b.ins().icmp(IntCC::SignedGreaterThan, ns[0], ns[1]);
+                    let lt = b.ins().icmp(IntCC::SignedLessThan, ns[0], ns[1]);
+                    let gt = b.ins().uextend(I64, gt);
+                    let lt = b.ins().uextend(I64, lt);
+                    let order = b.ins().isub(gt, lt);
+                    b.ins().return_(&[order]);
+                }
+                Wide::Eq => {
+                    let e = b.ins().icmp(IntCC::Equal, ns[0], ns[1]);
+                    let e = b.ins().uextend(I64, e);
+                    b.ins().return_(&[e]);
+                }
+                // The result, and the other as a small integer's word, or 0
+                // (past a word, or a quotient past 128 bits, `-2^127 / -1`).
+                // Division by zero is the runtime's to report.
+                Wide::Div | Wide::Rem => {
+                    let zero = wide::zero(b);
+                    let by_zero = b.ins().icmp(IntCC::Equal, ns[1], zero);
+                    let divide = b.create_block();
+                    b.ins().brif(by_zero, no, &[], divide, &[]);
+                    b.switch_to_block(divide);
+                    let (q, m, over) = wide::div_rem(b, ns[0], ns[1]);
+                    let (v, o, fits) = if w == Wide::Rem {
+                        let (fits, word) = wide::small_word(b, q);
+                        let over = b.ins().bxor_imm_s(over, 1);
+                        (m, word, b.ins().band(fits, over))
+                    } else {
+                        let fine = b.create_block();
+                        b.ins().brif(over, no, &[], fine, &[]);
+                        b.switch_to_block(fine);
+                        let (fits, word) = wide::small_word(b, m);
+                        (q, word, fits)
+                    };
+                    let zero = b.ins().iconst(I64, 0);
+                    let o = b.ins().select(fits, o, zero);
+                    let v = self.box_wide(b, st, v);
+                    b.ins().return_(&[v, o]);
+                }
+            }
+            b.switch_to_block(no);
+            let rt = match w {
+                Wide::Add => "ck_add",
+                Wide::Sub => "ck_sub",
+                Wide::Mul => "ck_mul",
+                Wide::Neg => "ck_neg",
+                Wide::NatSub => "ck_natsub",
+                Wide::Cmp => "ck_cmp",
+                Wide::Eq => "ck_eq",
+                Wide::Div => "ck_div",
+                Wide::Rem => "ck_rem",
+            };
+            let r = self.call1(b, st, rt, &xs);
+            let r = if w == Wide::Eq {
+                let e = b.ins().icmp_imm_s(IntCC::Equal, r, self.true_w);
+                b.ins().uextend(I64, e)
+            } else {
+                r
+            };
+            // Past 128 bits, the other result of a division isn't given.
+            let mut rets = vec![r];
+            if matches!(w, Wide::Div | Wide::Rem) {
+                rets.push(b.ins().iconst(I64, 0));
+            }
+            b.ins().return_(&rets);
+            builder.seal_all_blocks();
+            builder.finalize(self.m.isa().frontend_config());
+        }
+        ctx.set_disasm(self.disasm.is_some());
+        if let Err(e) = self.m.define_function(self.wides[&w], ctx) {
+            panic!("native code for `{}`: {e:?}", w.name());
+        }
+        if let Some(d) = &mut self.disasm {
+            let code = ctx.compiled_code().and_then(|c| c.vcode.clone()).unwrap_or_default();
+            d.push((w.name().to_string(), code));
+        }
+        self.m.clear_context(ctx);
+    }
+
+    /// The number `x` (128 bits): a small integer if it fits in a word,
+    /// else a new two-word object, as the runtime keeps numbers.
+    fn box_wide(&mut self, b: &mut FunctionBuilder, st: &mut St, x: Value) -> Value {
+        let (fits, word) = wide::small_word(b, x);
+        let obj = b.create_block();
+        let done = b.create_block();
+        let r = b.append_block_param(done, I64);
+        b.ins().brif(fits, done, &[BlockArg::Value(word)], obj, &[]);
+        b.switch_to_block(obj);
+        let o = self.alloc(b, st, checkers_rt::obj::INFO_I128, w::HDR + 16);
+        let (lo, hi) = b.ins().isplit(x);
+        b.ins().store(flags(), lo, o, w::HDR as i32);
+        b.ins().store(flags(), hi, o, w::HDR as i32 + 8);
+        b.ins().jump(done, &[BlockArg::Value(o)]);
+        b.switch_to_block(done);
+        r
+    }
+
     /// An integer operation on `xs`: `fast` (its value, still to be tagged
     /// with `+ 1` if `tag`, and whether it overflowed) if they are small
-    /// integers and it doesn't overflow, else the runtime's `slow` on `xs`
-    /// and `extra`. The operands' `drops` are dropped on the slow path only:
-    /// on the fast path they are small integers. Where the operands' bounds
-    /// show that they are small integers and the result one too (`fits`),
-    /// only `fast` without its overflow check (`fast(b, false)`).
+    /// integers and it doesn't overflow, else `wide`'s function (128 bits,
+    /// or the runtime past them) on `xs`. The operands' `drops` are dropped
+    /// off the fast path only: on it they are small integers. Where the
+    /// operands' bounds show that they are small integers and the result
+    /// one too (`fits`), only `fast` without its overflow check
+    /// (`fast(b, false)`).
     #[allow(clippy::too_many_arguments)]
     fn arith(
         &mut self,
@@ -1279,8 +1640,7 @@ impl<'p, M: Module> Gen<'p, M> {
         fits: bool,
         fast: impl FnOnce(&mut FunctionBuilder, bool) -> (Value, Option<Value>),
         tag: bool,
-        slow: &str,
-        extra: Option<Value>,
+        wide: Wide,
         drops: &[Value],
     ) -> Value {
         if fits {
@@ -1305,9 +1665,7 @@ impl<'p, M: Module> Gen<'p, M> {
         let v = if tag { b.ins().iadd_imm_s(v, 1) } else { v };
         b.ins().jump(done, &[BlockArg::Value(v)]);
         b.switch_to_block(slow_b);
-        let mut args = xs.to_vec();
-        args.extend(extra);
-        let s = self.call1(b, st, slow, &args);
+        let s = self.call_wide(b, st, wide, xs)[0];
         for d in drops {
             self.drop_v(b, st, *d);
         }
@@ -1316,23 +1674,78 @@ impl<'p, M: Module> Gen<'p, M> {
         r
     }
 
-    /// Euclidean `/` or `%` (the remainder never negative), inline when both
-    /// are small integers and the divisor isn't zero; otherwise the runtime,
-    /// which also reports division by zero. With bounds showing that both
-    /// are small integers, the divisor not zero and (for `/`) the result a
-    /// small integer (`fits`), there is no runtime path.
+    /// Euclidean `/` or `%` (the remainder never negative) of `x` and `y`
+    /// (`key`, if they are variables or constants). Where the other of the
+    /// pair was emitted before, on its operands, it gave this one's result
+    /// if that is a small integer; where the other comes after (`St::pairs`),
+    /// this one gives it its result (`St::quots`).
     #[allow(clippy::too_many_arguments)]
-    fn divide(&mut self, b: &mut FunctionBuilder, st: &mut St, rem: bool, x: Value, y: Value, owner: Value, drops: &[Value], fits: bool) -> Value {
+    fn divide(&mut self, b: &mut FunctionBuilder, st: &mut St, rem: bool, x: Value, y: Value, owner: Value, drops: &[Value], fits: bool, key: Option<Pair>) -> Value {
+        if let Some(q) = key.and_then(|k| st.quots.get(&k)).copied().filter(|q| q.rem == rem) {
+            let have = b.create_block();
+            let divide = b.create_block();
+            let done = b.create_block();
+            let r = b.append_block_param(done, I64);
+            b.ins().brif(q.word, have, &[], divide, &[]);
+            b.switch_to_block(have);
+            for d in drops {
+                self.drop_v(b, st, *d);
+            }
+            b.ins().jump(done, &[BlockArg::Value(q.word)]);
+            b.switch_to_block(divide);
+            let (v, _) = self.divide_now(b, st, rem, x, y, owner, drops, fits, false);
+            b.ins().jump(done, &[BlockArg::Value(v)]);
+            b.switch_to_block(done);
+            if rem && Self::small(b, st, y) || fits {
+                st.ints.insert(r);
+            }
+            return r;
+        }
+        let pair = key.filter(|k| st.pairs.contains(k));
+        let (r, other) = self.divide_now(b, st, rem, x, y, owner, drops, fits, pair.is_some());
+        if let (Some(k), Some(word)) = (pair, other) {
+            st.quots.insert(k, Quot { rem: !rem, word });
+        }
+        r
+    }
+
+    /// `x / y` or `x % y`: inline when both are small integers and the
+    /// divisor isn't zero; otherwise its 128-bit function (`Wide`), which
+    /// goes to the runtime past 128 bits and for division by zero. With
+    /// bounds showing that both are small integers, the divisor not zero
+    /// and (for `/`) the result a small integer (`fits`), there is no other
+    /// path. With `other`, also the other result as a small integer's word,
+    /// or 0 (`Quot`).
+    #[allow(clippy::too_many_arguments)]
+    fn divide_now(
+        &mut self,
+        b: &mut FunctionBuilder,
+        st: &mut St,
+        rem: bool,
+        x: Value,
+        y: Value,
+        owner: Value,
+        drops: &[Value],
+        fits: bool,
+        other: bool,
+    ) -> (Value, Option<Value>) {
         let ry = Self::range(b, st, y);
         // A proved program's divisor isn't zero (§13.3).
         let nonzero = self.g.proved || ry.lo.is_some_and(|l| l > 0) || ry.hi.is_some_and(|h| h < 0);
         if Self::small(b, st, x) && Self::small(b, st, y) && nonzero && (rem || fits) {
-            return Self::divide_small(b, rem, x, y, None);
+            let (v, o) = Self::divide_small(b, rem, x, y, None, other);
+            return (v, o);
         }
         let slow = b.create_block();
         b.set_cold_block(slow);
         let done = b.create_block();
         let r = b.append_block_param(done, I64);
+        let other_param = other.then(|| b.append_block_param(done, I64));
+        let jump_done = |b: &mut FunctionBuilder, v: Value, o: Option<Value>| {
+            let mut args = vec![BlockArg::Value(v)];
+            args.extend(o.map(BlockArg::Value));
+            b.ins().jump(done, &args);
+        };
         let check = b.create_block();
         let fast = b.create_block();
         Self::if_small(b, st, &[x, y], check, slow);
@@ -1345,27 +1758,29 @@ impl<'p, M: Module> Gen<'p, M> {
             b.ins().brif(nonzero, fast, &[], slow, &[]);
         }
         b.switch_to_block(fast);
-        let v = Self::divide_small(b, rem, x, y, (!fits).then_some(slow));
-        b.ins().jump(done, &[BlockArg::Value(v)]);
+        let (v, o) = Self::divide_small(b, rem, x, y, (!fits).then_some(slow), other);
+        jump_done(b, v, o);
+        // Within 128 bits, one division gives both results.
         b.switch_to_block(slow);
-        let s = self.call1(b, st, if rem { "ck_rem" } else { "ck_div" }, &[x, y, owner]);
+        let rs = self.call_wide(b, st, if rem { Wide::Rem } else { Wide::Div }, &[x, y, owner]);
         for d in drops {
             self.drop_v(b, st, *d);
         }
-        b.ins().jump(done, &[BlockArg::Value(s)]);
+        jump_done(b, rs[0], other.then_some(rs[1]));
         b.switch_to_block(done);
         // A remainder is smaller than its divisor, and an integer that
         // fits in a word is always a small one.
         if rem && Self::small(b, st, y) {
             st.ints.insert(r);
         }
-        r
+        (r, other_param)
     }
 
-    /// `x / y` or `x % y` of small integers, `y` not zero; a quotient that
-    /// leaves the small integers goes to `overflow`, if given (else it is
-    /// known not to).
-    fn divide_small(b: &mut FunctionBuilder, rem: bool, x: Value, y: Value, overflow: Option<ir::Block>) -> Value {
+    /// `x / y` or `x % y` of small integers, `y` not zero, and with
+    /// `other` the other result as a small integer's word, or 0 (`Quot`); a
+    /// quotient that leaves the small integers goes to `overflow`, if given
+    /// (else it is known not to).
+    fn divide_small(b: &mut FunctionBuilder, rem: bool, x: Value, y: Value, overflow: Option<ir::Block>, other: bool) -> (Value, Option<Value>) {
         // Small integers have 63 bits, so neither division overflows i64.
         let n = b.ins().sshr_imm_s(x, 1);
         let d = b.ins().sshr_imm_s(y, 1);
@@ -1376,23 +1791,41 @@ impl<'p, M: Module> Gen<'p, M> {
         // A negative remainder: one more `|d|` makes it Euclidean, and the
         // quotient moves one step away from `d`'s sign.
         let neg = b.ins().icmp_imm_s(IntCC::SignedLessThan, m, 0);
-        if rem {
+        let m = if rem || other {
             let ad = b.ins().iabs(d);
             let m1 = b.ins().iadd(m, ad);
-            let m = b.ins().select(neg, m1, m);
-            // |m| < |d|: it fits.
-            let m2 = b.ins().iadd(m, m);
-            b.ins().iadd_imm_s(m2, 1)
+            b.ins().select(neg, m1, m)
         } else {
+            m
+        };
+        let q = if !rem || other {
             let dpos = b.ins().icmp_imm_s(IntCC::SignedGreaterThan, d, 0);
             let one = b.ins().iconst(I64, 1);
             let minus = b.ins().iconst(I64, -1);
             let step = b.ins().select(dpos, minus, one);
             let zero = b.ins().iconst(I64, 0);
             let step = b.ins().select(neg, step, zero);
-            let q = b.ins().iadd(q, step);
+            b.ins().iadd(q, step)
+        } else {
+            q
+        };
+        // |m| < |d|: it fits.
+        let m_word = |b: &mut FunctionBuilder| {
+            let m2 = b.ins().iadd(m, m);
+            b.ins().iadd_imm_s(m2, 1)
+        };
+        if rem {
+            let v = m_word(b);
+            // Only -2^62 / -1 leaves the small integers.
+            let o = other.then(|| {
+                let (q2, ov) = b.ins().sadd_overflow(q, q);
+                let q1 = b.ins().iadd_imm_s(q2, 1);
+                let zero = b.ins().iconst(I64, 0);
+                b.ins().select(ov, zero, q1)
+            });
+            (v, o)
+        } else {
             let q2 = match overflow {
-                // Only -2^62 / -1 leaves the small integers.
                 Some(slow) => {
                     let (q2, ov) = b.ins().sadd_overflow(q, q);
                     let ok = b.create_block();
@@ -1402,7 +1835,8 @@ impl<'p, M: Module> Gen<'p, M> {
                 }
                 None => b.ins().iadd(q, q),
             };
-            b.ins().iadd_imm_s(q2, 1)
+            let v = b.ins().iadd_imm_s(q2, 1);
+            (v, other.then(|| m_word(b)))
         }
     }
 
@@ -1443,13 +1877,13 @@ impl<'p, M: Module> Gen<'p, M> {
         b.switch_to_block(fast);
         let c = b.ins().icmp(cc, x, y);
         b.ins().jump(done, &[BlockArg::Value(c)]);
+        // `Wide::Eq` gives 1 for equal, `Wide::Cmp` the order's sign.
         b.switch_to_block(slow);
         let c2 = if eq {
-            let name = if p == Op::Eq { "ck_eq" } else { "ck_ne" };
-            let e = self.call1(b, st, name, &[x, y, owner]);
-            b.ins().icmp_imm_s(IntCC::Equal, e, self.true_w)
+            let e = self.call_wide(b, st, Wide::Eq, &[x, y, owner])[0];
+            b.ins().icmp_imm_s(if p == Op::Eq { IntCC::NotEqual } else { IntCC::Equal }, e, 0)
         } else {
-            let s = self.call1(b, st, "ck_cmp", &[x, y]);
+            let s = self.call_wide(b, st, Wide::Cmp, &[x, y])[0];
             b.ins().icmp_imm_s(cc, s, 0)
         };
         for d in drops {
@@ -1506,15 +1940,16 @@ impl<'p, M: Module> Gen<'p, M> {
             BOp::Builtin(sym) => self.call_array(b, st, sym, a),
             BOp::ConcatPush => self.call1(b, st, "ck_concat_push", &[a[0], a[1]]),
             BOp::ConcatAll => self.call1(b, st, "ck_concat_all", &[a[0], a[1]]),
-            BOp::Prim(p, nat) => self.prim(b, st, p, nat, a, &[]),
+            BOp::Prim(p, nat) => self.prim(b, st, p, nat, a, &[], None),
         }
     }
 
     /// A primitive on `a`; `drops`, among `a`, are dropped after it.
-    fn prim(&mut self, b: &mut FunctionBuilder, st: &mut St, p: Op, nat: bool, a: &[Value], drops: &[Value]) -> Value {
+    #[allow(clippy::too_many_arguments)]
+    fn prim(&mut self, b: &mut FunctionBuilder, st: &mut St, p: Op, nat: bool, a: &[Value], drops: &[Value], key: Option<Pair>) -> Value {
         let range = Self::op_range(b, st, p, nat, a);
         let fits = range.is_some_and(|r| SMALL.holds(r)) && a.iter().all(|x| Self::small(b, st, *x));
-        let v = self.prim_on(b, st, p, nat, a, drops, fits);
+        let v = self.prim_on(b, st, p, nat, a, drops, fits, key);
         if let Some(r) = range.filter(|r| *r != Range::ANY) {
             st.bounds.insert(v, r);
         }
@@ -1522,9 +1957,9 @@ impl<'p, M: Module> Gen<'p, M> {
     }
 
     /// `prim`, `fits` if the operands and the result are known to be small
-    /// integers.
+    /// integers; `key`, a division's operands as written.
     #[allow(clippy::too_many_arguments)]
-    fn prim_on(&mut self, b: &mut FunctionBuilder, st: &mut St, p: Op, nat: bool, a: &[Value], drops: &[Value], fits: bool) -> Value {
+    fn prim_on(&mut self, b: &mut FunctionBuilder, st: &mut St, p: Op, nat: bool, a: &[Value], drops: &[Value], fits: bool, key: Option<Pair>) -> Value {
         let o = self.owner(b, st);
         match p {
             // Words `2x + 1` and `2y + 1`: `2x + 1 + 2y` is `2(x + y) + 1`,
@@ -1544,8 +1979,7 @@ impl<'p, M: Module> Gen<'p, M> {
                     }
                 },
                 false,
-                "ck_add",
-                None,
+                Wide::Add,
                 drops,
             ),
             // Bounds showing `x >= y`: the obligation holds, and `x - y` fits.
@@ -1576,7 +2010,7 @@ impl<'p, M: Module> Gen<'p, M> {
                 let v = b.ins().isub(a[0], y1);
                 b.ins().jump(done, &[BlockArg::Value(v)]);
                 b.switch_to_block(slow);
-                let s = if self.g.proved { self.call1(b, st, "ck_sub", &[a[0], a[1]]) } else { self.call1(b, st, "ck_natsub", &[a[0], a[1], o]) };
+                let s = if self.g.proved { self.call_wide(b, st, Wide::Sub, &[a[0], a[1]])[0] } else { self.call_wide(b, st, Wide::NatSub, &[a[0], a[1], o])[0] };
                 for d in drops {
                     self.drop_v(b, st, *d);
                 }
@@ -1600,8 +2034,7 @@ impl<'p, M: Module> Gen<'p, M> {
                     }
                 },
                 false,
-                "ck_sub",
-                None,
+                Wide::Sub,
                 drops,
             ),
             // `x · 2y` is `2xy`, which overflows i64 exactly when `xy` has
@@ -1622,11 +2055,10 @@ impl<'p, M: Module> Gen<'p, M> {
                     }
                 },
                 true,
-                "ck_mul",
-                None,
+                Wide::Mul,
                 drops,
             ),
-            Op::Div | Op::Rem => self.divide(b, st, p == Op::Rem, a[0], a[1], o, drops, fits),
+            Op::Div | Op::Rem => self.divide(b, st, p == Op::Rem, a[0], a[1], o, drops, fits, key),
             // `2 - (2x + 1)` is `2(-x) + 1`; it overflows only for `x = -2^62`.
             Op::Neg => self.arith(
                 b,
@@ -1643,8 +2075,7 @@ impl<'p, M: Module> Gen<'p, M> {
                     }
                 },
                 false,
-                "ck_neg",
-                None,
+                Wide::Neg,
                 drops,
             ),
             Op::Eq | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge => self.compare(b, st, p, a[0], a[1], o, drops),
@@ -1754,6 +2185,8 @@ impl<'p, M: Module> Gen<'p, M> {
     #[allow(clippy::too_many_arguments)]
     fn case(&mut self, b: &mut FunctionBuilder, st: &mut St, scrut: V, arms: &[Arm], lits: &[(E, E)], default: Option<&E>, mode: Mode) {
         let x = self.var(b, st, scrut);
+        // Each arm is emitted after the one before, but doesn't follow it.
+        let before = st.quots.clone();
         if let Some(cond) = st.conds.get(&x).cloned() {
             if lits.is_empty() && self.on_cond(b, st, &cond, arms, default, &mode) {
                 return;
@@ -1812,6 +2245,7 @@ impl<'p, M: Module> Gen<'p, M> {
             }
             for (a, blk) in arms.iter().zip(targets) {
                 b.switch_to_block(blk);
+                st.quots.clone_from(&before);
                 for (k, f) in a.fields.iter().enumerate() {
                     if let Some(v) = f {
                         let fv = b.ins().load(I64, flags(), x, (w::HDR + 8 * k) as i32);
@@ -1841,6 +2275,7 @@ impl<'p, M: Module> Gen<'p, M> {
             b.ins().jump(fallback, &[]);
             for ((l, body), blk) in lits.iter().zip(targets) {
                 b.switch_to_block(blk);
+                st.quots.clone_from(&before);
                 // `x` is this integer.
                 let added = if matches!(l, E::Int(_)) { Self::assume_small(st, &[x]) } else { Vec::new() };
                 self.emit(b, st, body, mode.again());
@@ -1850,6 +2285,7 @@ impl<'p, M: Module> Gen<'p, M> {
             b.ins().jump(fallback, &[]);
         }
         b.switch_to_block(fallback);
+        st.quots.clone_from(&before);
         match default {
             Some(d) => self.emit(b, st, d, mode),
             None => {
@@ -1858,6 +2294,7 @@ impl<'p, M: Module> Gen<'p, M> {
                 Self::finish(b, &mode, v);
             }
         }
+        st.quots = before;
     }
 
     /// A `match` on a comparison's `Bool`, as a branch on the comparison
@@ -1888,8 +2325,10 @@ impl<'p, M: Module> Gen<'p, M> {
         }
         let blocks = [b.create_block(), b.create_block()];
         b.ins().brif(cond.c, blocks[0], &[], blocks[1], &[]);
+        let before = st.quots.clone();
         for k in 0..2 {
             b.switch_to_block(blocks[k]);
+            st.quots.clone_from(&before);
             let added = Self::assume_small(st, &cond.small_if[k]);
             match bodies[k].or(default) {
                 Some(e) => self.emit(b, st, e, mode.again()),
@@ -1902,6 +2341,7 @@ impl<'p, M: Module> Gen<'p, M> {
             }
             Self::forget(st, added);
         }
+        st.quots = before;
         true
     }
 
@@ -1983,7 +2423,7 @@ impl<'p, M: Module> Gen<'p, M> {
         ctx.func.signature = s;
         {
             let mut b = FunctionBuilder::new(&mut ctx.func, &mut fctx);
-            let mut st = St { vars: Vec::new(), imm: HashSet::new(), ints: HashSet::new(), conds: HashMap::new(), bounds: HashMap::new(), owner: self.p.main, frefs: HashMap::new(), gvs: HashMap::new(), this: None };
+            let mut st = St::new(Vec::new(), self.p.main, HashSet::new());
             let entry = b.create_block();
             b.append_block_params_for_function_params(entry);
             b.switch_to_block(entry);

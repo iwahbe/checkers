@@ -58,6 +58,7 @@ src/native/ir.rs     erasure: core terms → runtime code (§13.1); a one-field 
 src/native/inline.rs small functions inlined at their calls; a `match` on one's result pushed into branches, resolved at constructors; `Ir::At` names the code's definition; an optimization (§14)
 src/native/lower.rs  closure conversion: runtime code → first-order functions (§14)
 src/native/tailrec.rs recursion made tail recursion before reference counting: `f.dps` (a constructor around the call), `f.acc` (`+`, `*` after it; `++` after it, accumulated as the type's `++` copies: a list in front, other pieces in a list appended at once); an optimization (§14)
+src/native/wide.rs   128-bit arithmetic in generated code: multiplication's overflow, Euclidean division from 64-bit divisions (§14)
 src/native/rc.rs     reference counting, Perceus style: dup/drop, borrowing, reuse (D74)
 src/native/codegen.rs first-order code → Cranelift (JIT and object files)
 src/native/eval.rs   compile-time evaluation: `check` and staging, one in-memory module per program (D80)
