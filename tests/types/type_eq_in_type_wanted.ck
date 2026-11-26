@@ -4,12 +4,11 @@ module type_eq_in_type_wanted
 # the type is written with arguments, or a value of it is built, it must
 # hold.
 
-record Same a b : a == b
-    first~a
-    second~b
+record Packed s : Seq s, Seq.Elem s == U8
+    bytes~s
 
-fn differ -> r : r~Same Int Bool
-    Same 1 True
+fn chars -> r : r~Packed String
+    Packed "ab"
 
-fn built x -> r : x~Int, r~Int
-    (Same x True).first
+fn built x -> r : x~String, r~String
+    (Packed x).bytes

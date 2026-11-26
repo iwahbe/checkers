@@ -333,6 +333,10 @@ pub struct TyInfo {
     /// Per parameter of an abstract type: marked `-`, so it occurs only
     /// negatively (D16).
     pub negative: Vec<bool>,
+    /// How many of `params`, the last ones, are the dictionaries of its
+    /// header's class clauses (#385): implicit arguments, found where the
+    /// type is written, never shown, and erased.
+    pub dicts: usize,
 }
 
 pub struct ConInfo {
@@ -376,7 +380,8 @@ pub struct Globals {
     pub bounds: HashMap<DefId, Vec<Option<crate::range::Range>>>,
     /// Constants' values known at compile time (§8.9), for code generation:
     /// set once the program is proved, as `bounds` is (`Elab::known_value`).
-    pub known: RefCell<HashMap<DefId, Lit>>,
+    /// Each is a literal, `()` or a `Tm::Known`, compiled as static data.
+    pub known: RefCell<HashMap<DefId, Tm>>,
     /// Whether native code's calls on static data are computed when
     /// compiling (§8.9), and within how much work: set once the program
     /// is proved (its calls meet their preconditions), not with
@@ -638,8 +643,8 @@ pub fn eval(g: &Globals, env: &Env, t: &Tm) -> Val {
 pub fn known_val(k: &crate::known::Value) -> Val {
     use crate::known::Node;
     match k.node() {
-        Node::Con(..) | Node::Tuple(_) => Val::Known(k.clone()),
-        Node::Unit => Val::Tuple(Rc::new([])),
+        Node::Con(..) | Node::Tuple(_) | Node::Array(..) | Node::Closure(_) | Node::Pap(_) => Val::Known(k.clone()),
+        Node::Unit | Node::Erased => Val::Tuple(Rc::new([])),
         _ => Val::Lit(k.lit().expect("a literal node")),
     }
 }
@@ -656,6 +661,8 @@ pub fn known_open(g: &Globals, k: &crate::known::Value) -> Val {
             Val::Con(*c, args.into())
         }
         Node::Tuple(xs) => Val::Tuple(xs.iter().map(|x| known_val(&k.at(*x))).collect()),
+        // An array or a function has no form the type checker takes apart:
+        // as it is.
         _ => known_val(k),
     }
 }
@@ -1019,7 +1026,7 @@ pub fn known_lit(g: &Globals, v: Val) -> Option<Lit> {
 
 /// The value of constant `d` (a `let`) if it is known at compile time:
 /// `Globals::known`, which code generation then uses.
-pub fn known_const(g: &Globals, d: DefId) -> Option<Lit> {
+pub fn known_const(g: &Globals, d: DefId) -> Option<Tm> {
     g.known.borrow().get(&d).cloned()
 }
 
@@ -1754,7 +1761,22 @@ fn unify_whnf(g: &Globals, l: usize, a: &Val, b: &Val) -> Result<(), UnifyError>
             unify(g, l + 1, &apply_closure(g, c1, Val::var(l)), &apply_closure(g, c2, Val::var(l)))
         }
         (Val::Univ(x), Val::Univ(y)) if x == y => Ok(()),
-        (Val::TyCon(t1, a1), Val::TyCon(t2, a2)) if t1 == t2 => unify_many(g, l, a1, a2),
+        (Val::TyCon(t1, a1), Val::TyCon(t2, a2)) if t1 == t2 => {
+            // A type's header's dictionaries (#385) are fixed by its other
+            // arguments: one instance per class and types (coherence). Two
+            // found differently (a clause's, an instance's) are the same
+            // dictionary, so they are compared only to learn an unknown.
+            let ti = &g.tys[t1.0 as usize];
+            let n = ti.params.len() - ti.dicts;
+            if ti.dicts == 0 || a1.len() != a2.len() || a1.len() <= n {
+                return unify_many(g, l, a1, a2);
+            }
+            unify_many(g, l, &a1[..n], &a2[..n])?;
+            for (x, y) in a1[n..].iter().zip(&a2[n..]) {
+                let _ = unify(g, l, x, y);
+            }
+            Ok(())
+        }
         (Val::Con(c1, a1), Val::Con(c2, a2)) if c1 == c2 => unify_many(g, l, a1, a2),
         (Val::Lit(x), Val::Lit(y)) if x == y => Ok(()),
         (Val::TupleTy(x), Val::TupleTy(y)) => unify_tuple(g, l, x, y, true),
@@ -2116,6 +2138,8 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
         }
         Tm::TyConApp(ty, args) => {
             let ti = &g.tys[ty.0 as usize];
+            // Its header's dictionaries are never shown (#385).
+            let args = &args[..args.len().min(ti.params.len() - ti.dicts)];
             if args.is_empty() {
                 return global(Marked::Ty(*ty), &ti.name);
             }

@@ -141,7 +141,7 @@ impl<'g> Compiler<'g> {
             Tm::Var(i) => Ir::Var(*i),
             // A constant known at compile time is its value (§8.9).
             Tm::Def(d) => match crate::core::known_const(self.g, *d) {
-                Some(l) => Ir::Lit(lit_value(&l)),
+                Some(v) => self.go(&v),
                 None => Ir::Global(*d),
             },
             // A constructor stored as its one kept field (#170), used as a
@@ -393,8 +393,13 @@ impl<'g> Compiler<'g> {
                 Node::Str(s) => out.add(SNode::Bytes(Arc::from(s.as_bytes()))),
                 Node::Bytes(b) => out.add(SNode::Bytes(Arc::from(&**b))),
                 Node::Unit => out.add(SNode::Word(w::UNIT)),
+                Node::Erased => out.add(SNode::Word(w::ERASED)),
+                Node::Closure(crate::known::Code::Def(d)) => out.add(SNode::Global(d.0)),
+                Node::Closure(crate::known::Code::Con(c)) => out.add(SNode::ConFn(c.0)),
+                Node::Pap(xs) => out.add(SNode::Obj { kind: w::K_PAP, tag: 0, fields: xs.iter().map(|p| at[p]).collect() }),
                 Node::Tuple(xs) if xs.is_empty() => out.add(SNode::Word(w::UNIT)),
                 Node::Tuple(xs) => out.tuple(xs.iter().map(|p| at[p]).collect()),
+                Node::Array(l, xs) => out.add(SNode::Array { layout: *l, elems: xs.iter().map(|p| at[p]).collect() }),
                 Node::Con(c, xs) => {
                     let ci = &self.g.cons[c.0 as usize];
                     match self.g.unboxed_field(*c) {
@@ -847,6 +852,14 @@ pub fn globals_in(ir: &Ir, out: &mut Vec<DefId>) {
         }
         Ir::Tuple(xs) | Ir::Con(_, xs) | Ir::Prim(_, xs, _) | Ir::Par(xs) => xs.iter().for_each(|x| globals_in(x, out)),
         Ir::Proj(x, _, _) | Ir::Field(x, _) | Ir::At(_, x) => globals_in(x, out),
+        // The functions static data holds.
+        Ir::Static(v, id) => {
+            for x in v.reachable(*id) {
+                if let super::lower::SNode::Global(d) = v.node(x) {
+                    out.push(DefId(*d));
+                }
+            }
+        }
         Ir::Case(s, c) => {
             globals_in(s, out);
             c.branches.iter().for_each(|(_, _, b)| globals_in(b, out));

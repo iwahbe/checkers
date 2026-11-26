@@ -137,6 +137,7 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0370` | a constraint on a class's type that isn't a clause of the type itself (`Ord Item`) or a predicate on one named value of it (`u~Unit, …`) |
 | `E0371` | an instance function's own signature that doesn't refine the class's: a precondition the class's don't imply, or a postcondition of the class's it doesn't promise |
 | `E0372` | typings of one name that don't combine: their base types differ (`x~Int, x~Bool`), or one has a refinement inside it and they aren't the same type (`xs~List Int, xs~List Nat`) |
+| `E0373` | a class clause in a type's header whose types mention none of the type's parameters (`record Box a : Ord Int`) |
 
 ## Usage: resources and `ghost`
 

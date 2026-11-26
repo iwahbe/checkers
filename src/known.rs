@@ -25,11 +25,11 @@ pub struct Fx(u64);
 
 impl Hasher for Fx {
     fn write(&mut self, bytes: &[u8]) {
-        let mut chunks = bytes.chunks_exact(8);
-        for c in &mut chunks {
-            self.write_u64(u64::from_le_bytes(c.try_into().expect("8 bytes")));
+        let (words, rest) = bytes.as_chunks::<8>();
+        for c in words {
+            self.write_u64(u64::from_le_bytes(*c));
         }
-        for b in chunks.remainder() {
+        for b in rest {
             self.write_u64(*b as u64);
         }
     }
@@ -87,13 +87,32 @@ pub enum Node {
     /// A constructor applied to its fields (not its type's parameters).
     Con(ConId, Box<[u32]>),
     Tuple(Box<[u32]>),
+    /// An array (not of `U8`s: those are `Bytes`), its elements stored by
+    /// `layout` (`checkers_rt::array::Layout`'s code).
+    Array(u8, Box<[u32]>),
+    /// A definition's function, or a constructor's, as a value (with no
+    /// arguments yet).
+    Closure(Code),
+    /// A function given some of its arguments: the function's node, then
+    /// the arguments'.
+    Pap(Box<[u32]>),
+    /// An erased value where no type says so (an argument a partial
+    /// application holds): the word 0, not `()`'s.
+    Erased,
+}
+
+/// The code a known closure runs: what names it in every program.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Code {
+    Def(crate::core::DefId),
+    Con(ConId),
 }
 
 impl Node {
     /// The node's parts.
     pub fn parts(&self) -> &[u32] {
         match self {
-            Node::Con(_, xs) | Node::Tuple(xs) => xs,
+            Node::Con(_, xs) | Node::Tuple(xs) | Node::Array(_, xs) | Node::Pap(xs) => xs,
             _ => &[],
         }
     }
@@ -172,7 +191,9 @@ impl Known {
             match (m, n) {
                 (Node::Con(c, xs), Node::Con(d, ys)) if c == d && xs.len() == ys.len() => todo.extend(xs.iter().copied().zip(ys.iter().copied())),
                 (Node::Tuple(xs), Node::Tuple(ys)) if xs.len() == ys.len() => todo.extend(xs.iter().copied().zip(ys.iter().copied())),
-                (Node::Con(..), _) | (Node::Tuple(_), _) => return false,
+                (Node::Array(l, xs), Node::Array(k, ys)) if l == k && xs.len() == ys.len() => todo.extend(xs.iter().copied().zip(ys.iter().copied())),
+                (Node::Pap(xs), Node::Pap(ys)) if xs.len() == ys.len() => todo.extend(xs.iter().copied().zip(ys.iter().copied())),
+                (Node::Con(..), _) | (Node::Tuple(_), _) | (Node::Array(..), _) | (Node::Pap(_), _) => return false,
                 _ if m != n => return false,
                 _ => {}
             }
@@ -218,7 +239,36 @@ impl Known {
                 Node::Big(n) => out.push_str(&n.to_string()),
                 Node::Str(s) => out.push_str(&format!("{s:?}")),
                 Node::Bytes(b) => out.push_str(&format!("b{:?}", String::from_utf8_lossy(b))),
-                Node::Unit => out.push_str("()"),
+                Node::Unit | Node::Erased => out.push_str("()"),
+                Node::Closure(Code::Def(d)) => out.push_str(&g.defs[d.0 as usize].name),
+                Node::Closure(Code::Con(c)) => out.push_str(&g.cons[c.0 as usize].name),
+                Node::Pap(xs) => {
+                    let mut parts = Vec::new();
+                    if p > 1 {
+                        parts.push(Task::Text("("));
+                    }
+                    for (k, x) in xs.iter().enumerate() {
+                        if k > 0 {
+                            parts.push(Task::Text(" "));
+                        }
+                        parts.push(Task::Node(*x, 2));
+                    }
+                    if p > 1 {
+                        parts.push(Task::Text(")"));
+                    }
+                    todo.extend(parts.into_iter().rev());
+                }
+                Node::Array(_, xs) => {
+                    let mut parts = vec![Task::Text("[")];
+                    for (k, x) in xs.iter().enumerate() {
+                        if k > 0 {
+                            parts.push(Task::Text(", "));
+                        }
+                        parts.push(Task::Node(*x, 0));
+                    }
+                    parts.push(Task::Text("]"));
+                    todo.extend(parts.into_iter().rev());
+                }
                 Node::Tuple(xs) => {
                     // Pushed last first.
                     let mut parts = vec![Task::Text("(")];
@@ -404,6 +454,30 @@ impl Builder {
                     s.write(b);
                 }
                 Node::Unit => s.write_u8(6),
+                Node::Erased => s.write_u8(8),
+                Node::Closure(Code::Def(d)) => {
+                    s.write_u8(9);
+                    s.write_u32(d.0);
+                }
+                Node::Closure(Code::Con(c)) => {
+                    s.write_u8(10);
+                    s.write_u32(c.0);
+                }
+                Node::Pap(xs) => {
+                    s.write_u8(11);
+                    s.write_usize(xs.len());
+                    for x in xs.iter() {
+                        s.write(&hashes[*x as usize].to_le_bytes());
+                    }
+                }
+                Node::Array(l, xs) => {
+                    s.write_u8(7);
+                    s.write_u8(*l);
+                    s.write_usize(xs.len());
+                    for x in xs.iter() {
+                        s.write(&hashes[*x as usize].to_le_bytes());
+                    }
+                }
             });
             hashes.push(v);
         }

@@ -1,0 +1,7 @@
+-- stdout
+9000001
+9000001
+Link 1 (Link 1 End)
+Snoc (Snoc Lin 1) 1
+-- stderr
+-- exit 0

@@ -3,13 +3,15 @@ module type_eq_in_type_nested
 # A type equation in a type's header holds wherever a parameter's type has
 # the type, at any depth.
 
-record Same a b : a == b
-    first~a
-    second~b
+record Packed s : Seq s, Seq.Elem s == U8
+    bytes~s
 
-fn seconds ps -> r : ps~List (Same a b), r~List a
+fn firsts ps -> r : ps~List (Packed s), r~List U8
     match ps
         []        -> []
-        p :: rest -> p.second :: seconds rest
+        p :: rest ->
+            match p.bytes
+                []     -> firsts rest
+                x :: _ -> x :: firsts rest
 
-check seconds [Same 1 2, Same 3 4] == [2, 4]
+check firsts [Packed [1, 2], Packed [], Packed [3]] == [1, 3]

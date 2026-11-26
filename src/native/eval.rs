@@ -140,33 +140,67 @@ impl<'g> Evaluator<'g> {
         }
     }
 
+    /// What is left to write is a list on the heap, not the stack: a long
+    /// value takes no more stack than a short one (§13.3).
     fn show_typed(&self, v: W, ty: &Tm, p: u8) -> String {
+        let mut out = String::new();
+        let mut todo = vec![Shown::Val(v, p, Rc::new(ty.clone()))];
+        while let Some(next) = todo.pop() {
+            match next {
+                Shown::Text(t) => out.push_str(t),
+                Shown::Derived(v) => out.push_str(&checkers_rt::ops::show_derived(v, 1)),
+                Shown::List(l, elem, first) => {
+                    if w::con_of(l) == self.g.well_known.cons.map(|c| c.0) && !w::is_nullary(l) {
+                        if !first {
+                            out.push_str(", ");
+                        }
+                        todo.push(Shown::List(w::field(l, 1), elem.clone(), false));
+                        todo.push(Shown::Val(w::field(l, 0), 0, elem));
+                    }
+                }
+                Shown::Val(v, p, ty) => self.show_step(v, &ty, p, &mut out, &mut todo),
+            }
+        }
+        out
+    }
+
+    /// Write `v`, a value of type `ty`, onto `out`, leaving its parts in `todo`.
+    fn show_step(&self, v: W, ty: &Tm, p: u8, out: &mut String, todo: &mut Vec<Shown>) {
         let g = self.g;
         // What this function doesn't handle itself: by the type's descriptor.
-        let rt = || self.show_by_descriptor(v, ty, p);
+        let rt = |out: &mut String| out.push_str(&self.show_by_descriptor(v, ty, p));
         match ty {
             Tm::Def(d) => {
                 let info = &g.defs[d.0 as usize];
                 if info.module.as_ref() == "std.prelude" && info.name.as_ref() == "Char" && checkers_rt::obj::is_num(v) {
                     let n = checkers_rt::obj::num_of(v);
-                    let c = n.to_string().parse::<u32>().ok().and_then(char::from_u32);
-                    return c.map(char_literal).unwrap_or_else(rt);
+                    match n.to_string().parse::<u32>().ok().and_then(char::from_u32) {
+                        Some(c) => out.push_str(&char_literal(c)),
+                        None => rt(out),
+                    }
+                    return;
                 }
                 // An alias: the type it names.
                 match unfolded(g, ty) {
-                    Some(t) => self.show_typed(v, &t, p),
-                    None => rt(),
+                    Some(t) => todo.push(Shown::Val(v, p, Rc::new(t))),
+                    None => rt(out),
                 }
             }
             Tm::TupleTy(ts) if w::is_ptr(v) && w::kind(v) == w::K_TUPLE && w::nfields(v) == ts.len() => {
-                let items: Vec<String> = ts.iter().enumerate().map(|(i, t)| self.show_typed(w::slot(v, i), t, 0)).collect();
-                format!("({})", items.join(", "))
+                out.push('(');
+                todo.push(Shown::Text(")"));
+                for (i, t) in ts.iter().enumerate().rev() {
+                    todo.push(Shown::Val(w::slot(v, i), 0, Rc::new(t.clone())));
+                    if i > 0 {
+                        todo.push(Shown::Text(", "));
+                    }
+                }
             }
             // A string as a string literal, as a `Char` is written `c'a'`:
             // a failed `check` may be in a module that doesn't load
             // `std.string`, whose `Debug String` writes it the same way.
             Tm::TyConApp(id, _) if Some(*id) == g.well_known.string && w::is_ptr(v) && w::kind(v) == w::K_BYTES => {
-                string_literal(w::str_of(v))
+                out.push_str(&string_literal(w::str_of(v)))
             }
             Tm::TyConApp(id, args) => {
                 // Stored as its one kept field (#170): the value is that field.
@@ -174,53 +208,60 @@ impl<'g> Evaluator<'g> {
                     let ci = &g.cons[c.0 as usize];
                     let (_, m, icit, fty) = &ci.fields[k];
                     if *icit != crate::core::Icit::Expl || *m == crate::core::Mult::Zero {
-                        return ci.name.to_string();
+                        out.push_str(&ci.name);
+                        return;
                     }
-                    let shown = match subst_params(g, fty, args, k) {
-                        Some(t) => self.show_typed(v, &t, 1),
-                        None => checkers_rt::ops::show_derived(v, 1),
-                    };
-                    return if p > 0 { format!("({} {shown})", ci.name) } else { format!("{} {shown}", ci.name) };
+                    if p > 0 {
+                        out.push('(');
+                        todo.push(Shown::Text(")"));
+                    }
+                    out.push_str(&ci.name);
+                    out.push(' ');
+                    match subst_params(g, fty, args, k) {
+                        Some(t) => todo.push(Shown::Val(v, 1, Rc::new(t))),
+                        None => out.push_str(&checkers_rt::ops::show_derived(v, 1)),
+                    }
+                    return;
                 }
-                let Some(c) = w::con_of(v) else { return rt() };
+                let Some(c) = w::con_of(v) else { return rt(out) };
                 let wk = &g.well_known;
                 if Some(*id) == wk.list && (Some(ConId(c)) == wk.nil || Some(ConId(c)) == wk.cons) {
-                    let Some(elem) = args.first() else { return rt() };
-                    let mut items = Vec::new();
-                    let mut l = v;
-                    while w::con_of(l) == wk.cons.map(|c| c.0) && !w::is_nullary(l) {
-                        items.push(self.show_typed(w::field(l, 0), elem, 0));
-                        l = w::field(l, 1);
-                    }
-                    return format!("[{}]", items.join(", "));
+                    let Some(elem) = args.first() else { return rt(out) };
+                    out.push('[');
+                    todo.push(Shown::Text("]"));
+                    todo.push(Shown::List(v, Rc::new(elem.clone()), true));
+                    return;
                 }
                 let ci = &g.cons[c as usize];
                 if ci.ty != *id || (!w::is_nullary(v) && w::nfields(v) != ci.fields.len()) {
-                    return rt();
+                    return rt(out);
                 }
                 // A field's type is in the context of the type's parameters
                 // and the earlier fields; only closed ones are used.
-                let mut shown = Vec::new();
+                let mut parts = Vec::new();
                 for (i, (_, m, icit, fty)) in ci.fields.iter().enumerate() {
                     if *icit != crate::core::Icit::Expl || *m == crate::core::Mult::Zero {
                         continue;
                     }
                     let fv = w::field(v, i);
-                    let fty = subst_params(g, fty, args, i);
-                    shown.push(match fty {
-                        Some(t) => self.show_typed(fv, &t, 1),
-                        None => checkers_rt::ops::show_derived(fv, 1),
+                    parts.push(Shown::Text(" "));
+                    parts.push(match subst_params(g, fty, args, i) {
+                        Some(t) => Shown::Val(fv, 1, Rc::new(t)),
+                        None => Shown::Derived(fv),
                     });
                 }
-                if shown.is_empty() {
-                    ci.name.to_string()
-                } else if p > 0 {
-                    format!("({} {})", ci.name, shown.join(" "))
-                } else {
-                    format!("{} {}", ci.name, shown.join(" "))
+                if parts.is_empty() {
+                    out.push_str(&ci.name);
+                    return;
                 }
+                if p > 0 {
+                    out.push('(');
+                    todo.push(Shown::Text(")"));
+                }
+                out.push_str(&ci.name);
+                todo.extend(parts.into_iter().rev());
             }
-            _ => rt(),
+            _ => rt(out),
         }
     }
 
@@ -241,6 +282,32 @@ impl<'g> Evaluator<'g> {
         self.within(|| w::drop_w(v))
     }
 
+    /// The code of each definition's and constructor's function as a value
+    /// (a global closure's), by its address: what a known closure is.
+    fn codes(&self) -> HashMap<u64, crate::known::Code> {
+        use crate::known::Code;
+        let p = &self.gen.p;
+        let mut out = HashMap::new();
+        let mut add = |f: u32, c: Code| {
+            for f in [f, p.entries.get(&f).copied().unwrap_or(f)] {
+                if (f as usize) < p.funcs.len() {
+                    out.insert(self.gen.m.get_finalized_function(self.gen.func_id(f)) as u64, c);
+                }
+            }
+        };
+        for (d, shape) in &p.defs {
+            match shape {
+                super::lower::DefShape::Fn { func, .. } => add(*func, Code::Def(crate::core::DefId(*d))),
+                super::lower::DefShape::Builtin { wrap, .. } => add(*wrap, Code::Def(crate::core::DefId(*d))),
+                _ => {}
+            }
+        }
+        for (c, f) in &p.con_wraps {
+            add(*f, Code::Con(ConId(*c)));
+        }
+        out
+    }
+
     /// A value of type `ty` (a closed type) as a term, where it has one
     /// (staging, §8.9). The type tells what the value alone doesn't: a
     /// type stored as its one kept field (#170) is that field, a string is
@@ -258,13 +325,17 @@ impl<'g> Evaluator<'g> {
     /// depth-first walk with a stack of its own, so a value of any depth
     /// takes the same stack, and each object and type it is read at once.
     fn reify_typed(&self, v: W, ty: Option<&Tm>) -> Option<Tm> {
-        let mut r = Reifier { ev: self, b: Builder::default(), types: Vec::new(), type_ids: HashMap::new(), field_types: HashMap::new(), done: Default::default() };
+        let mut r = Reifier { ev: self, b: Builder::default(), types: Vec::new(), type_ids: HashMap::new(), field_types: HashMap::new(), done: Default::default(), held: Vec::new(), codes: None };
         let t = ty.map(|t| r.intern(t.clone()));
-        let root = r.run((v, t))?;
+        let root = r.run((v, t));
+        for x in std::mem::take(&mut r.held) {
+            self.release(x);
+        }
+        let root = root?;
         let k = Arc::new(r.b.finish());
         Some(match k.node(root) {
-            Node::Unit => Tm::Tuple(vec![]),
-            Node::Con(..) | Node::Tuple(_) => Tm::Known(crate::known::Value::new(k, root)),
+            Node::Unit | Node::Erased => Tm::Tuple(vec![]),
+            Node::Con(..) | Node::Tuple(_) | Node::Array(..) | Node::Closure(_) | Node::Pap(_) => Tm::Known(crate::known::Value::new(k, root)),
             _ => Tm::Lit(k.lit(root)?),
         })
     }
@@ -289,6 +360,9 @@ enum Make {
     /// erased.
     Kept(ConId, usize, usize),
     Tuple,
+    /// An array laid out by this layout's code.
+    Array(u8),
+    Pap,
 }
 
 struct Reifier<'a, 'g> {
@@ -301,6 +375,11 @@ struct Reifier<'a, 'g> {
     field_types: HashMap<(ConId, usize, usize), Option<usize>>,
     /// The node of each word read at each type.
     done: crate::known::FxMap<Key, u32>,
+    /// Elements read from arrays (new references), released at the end:
+    /// alive until then, so no word read stands for two values.
+    held: Vec<W>,
+    /// Whose code each code address is (`Evaluator::codes`), once needed.
+    codes: Option<HashMap<u64, crate::known::Code>>,
 }
 
 impl Reifier<'_, '_> {
@@ -370,6 +449,8 @@ impl Reifier<'_, '_> {
                 }
                 Make::Tuple if ids.is_empty() => self.b.add(Node::Unit),
                 Make::Tuple => self.b.add(Node::Tuple(ids.into())),
+                Make::Array(l) => self.b.add(Node::Array(l, ids.into())),
+                Make::Pap => self.b.add(Node::Pap(ids.into())),
             };
             self.done.insert(f.key, id);
         }
@@ -394,6 +475,10 @@ impl Reifier<'_, '_> {
                 // A string is stored as its bytes (#170).
                 Tm::TyConApp(id, _) if Some(id) == g.well_known.string && w::is_ptr(v) && w::kind(v) == w::K_BYTES => {
                     return Some(Step::Leaf(Node::Str(Box::from(w::str_of(v)))));
+                }
+                Tm::TyConApp(id, args) if Some(id) == g.well_known.array && w::is_ptr(v) && w::kind(v) == checkers_rt::array::K_ARRAY && args.len() == 1 => {
+                    let elem = self.intern(args[0].clone());
+                    return Some(self.array(v, Some(elem)));
                 }
                 Tm::TyConApp(id, _) => {
                     if let Some((c, k)) = unboxed_con(g, id) {
@@ -430,7 +515,10 @@ impl Reifier<'_, '_> {
                 _ => unreachable!("a number"),
             }));
         }
-        if v == w::ERASED || v == w::UNIT {
+        if v == w::ERASED {
+            return Some(Step::Leaf(Node::Erased));
+        }
+        if v == w::UNIT {
             return Some(Step::Leaf(Node::Unit));
         }
         if let Some(c) = w::con_of(v) {
@@ -446,9 +534,38 @@ impl Reifier<'_, '_> {
         match w::kind(v) {
             w::K_BYTES => Some(Step::Leaf(Node::Bytes(Box::from(w::blob(v))))),
             w::K_TUPLE => Some(Step::Parts(Make::Tuple, (0..w::nfields(v)).map(|i| (w::slot(v, i), None)).collect())),
+            checkers_rt::array::K_ARRAY => Some(self.array(v, None)),
+            // A definition's or a constructor's function, with no free
+            // variables: by its code. A lambda's closure isn't known.
+            w::K_CLO if w::nfields(v) == 0 => {
+                let code = w::slot(v, 0);
+                let codes = self.codes.get_or_insert_with(|| self.ev.codes());
+                codes.get(&code).map(|c| Step::Leaf(Node::Closure(*c)))
+            }
+            // Its function, then the arguments it holds.
+            w::K_PAP => Some(Step::Parts(Make::Pap, (0..=w::nfields(v)).map(|i| (w::slot(v, i), None)).collect())),
             _ => None,
         }
     }
+
+    /// An array's elements (`K_ARRAY`), each read at type `elem`.
+    fn array(&mut self, v: W, elem: Option<usize>) -> Step {
+        let items = self.ev.within(|| checkers_rt::array::items(v));
+        let parts = items.iter().map(|x| (*x, elem)).collect();
+        self.held.extend(items);
+        Step::Parts(Make::Array(checkers_rt::array::layout(v) as u8), parts)
+    }
+}
+
+/// What showing a value (`Evaluator::show_typed`) has left to write.
+enum Shown {
+    /// A value of the type, in argument position if the number is not 0.
+    Val(W, u8, Rc<Tm>),
+    /// A value shown by the runtime, in argument position.
+    Derived(W),
+    Text(&'static str),
+    /// A list's elements from this cell on; `first`: none written yet.
+    List(W, Rc<Tm>, bool),
 }
 
 /// The constructor of type `id` and its one kept field, if the type is

@@ -49,7 +49,7 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("ck_nomatch", 2, true),
     ("ck_caf", 2, true),
     ("ck_apply", 3, true),
-    ("ck_when", 2, true),
+    ("ck_when", 3, true),
     ("ck_par", 2, true),
     ("ck_tuple_flat", 1, true),
     ("ck_tuple_rest", 2, true),
@@ -349,10 +349,22 @@ impl<'p, M: Module> Gen<'p, M> {
                 SNode::Bytes(bs) if self.lits.contains_key(&(w::K_BYTES, bs.to_vec())) => Placed::Data(self.lits[&(w::K_BYTES, bs.to_vec())], 0),
                 SNode::Bytes(bs) => Placed::Data(data, Self::lay_out_bytes(w::K_BYTES, bs, &mut out) as u32),
                 SNode::Big(n) => Placed::Data(data, Self::lay_out_big(n, &mut out) as u32),
+                SNode::Global(d) => match self.p.defs.get(d).cloned() {
+                    Some(DefShape::Fn { func, .. }) => Placed::Data(self.closure(func), 0),
+                    Some(DefShape::Builtin { wrap, .. }) => Placed::Data(self.closure(wrap), 0),
+                    _ => unreachable!("a known closure of a function"),
+                },
+                SNode::ConFn(c) => {
+                    let f = self.p.con_wraps[c];
+                    Placed::Data(self.closure(f), 0)
+                }
                 SNode::Obj { kind, tag, fields } => {
                     let off = out.len();
                     out.extend_from_slice(&w::STATIC_RC.to_le_bytes());
-                    out.extend_from_slice(&w::info(*kind, fields.len() as u64, *tag).to_le_bytes());
+                    // A partial application's count is of its arguments, after
+                    // its function.
+                    let n = if *kind == w::K_PAP { fields.len() - 1 } else { fields.len() };
+                    out.extend_from_slice(&w::info(*kind, n as u64, *tag).to_le_bytes());
                     for (k, f) in fields.iter().enumerate() {
                         match at[f] {
                             Placed::Word(word) => out.extend_from_slice(&word.to_le_bytes()),
@@ -364,6 +376,7 @@ impl<'p, M: Module> Gen<'p, M> {
                     }
                     Placed::Data(data, off as u32)
                 }
+                SNode::Array { layout, elems } => Placed::Data(data, self.lay_out_array(v, *layout, elems, &at, &mut out, &mut relocs) as u32),
             };
             if matches!(placed, Placed::Data(d, _) if d == data) {
                 self.placed.insert(h, placed);
@@ -380,6 +393,43 @@ impl<'p, M: Module> Gen<'p, M> {
         }
         self.m.define_data(data, &dd).expect("define static data");
         at[&id]
+    }
+
+    /// Append a `K_ARRAY` object to `out`: its length, `0` (not a slice),
+    /// then its elements, a word each or packed by `layout`. Its offset.
+    fn lay_out_array(&self, v: &Static, layout: u8, elems: &[u32], at: &HashMap<u32, Placed>, out: &mut Vec<u8>, relocs: &mut Vec<(usize, DataId, u32)>) -> usize {
+        use checkers_rt::array::Layout;
+        let l = Layout::of_code(layout as u64);
+        let off = out.len();
+        out.extend_from_slice(&w::STATIC_RC.to_le_bytes());
+        out.extend_from_slice(&w::info(checkers_rt::array::K_ARRAY, 0, layout as u64).to_le_bytes());
+        out.extend_from_slice(&(elems.len() as u64).to_le_bytes());
+        out.extend_from_slice(&0u64.to_le_bytes());
+        for e in elems {
+            // A packed element's number (or truth).
+            let n = || -> i128 {
+                match v.node(*e) {
+                    SNode::Word(x) if w::is_int(*x) => w::int_of(*x) as i128,
+                    SNode::Word(x) => (*x as i64 == self.true_w) as i128,
+                    SNode::Big(b) => i128::try_from(b).expect("a packed element in its layout's range"),
+                    _ => unreachable!("a packed element is a number"),
+                }
+            };
+            match l {
+                Layout::Words => match at[e] {
+                    Placed::Word(word) => out.extend_from_slice(&word.to_le_bytes()),
+                    Placed::Data(d, o) => {
+                        relocs.push((out.len(), d, o));
+                        out.extend_from_slice(&0u64.to_le_bytes());
+                    }
+                },
+                _ => out.extend_from_slice(&n().to_le_bytes()[..l.width()]),
+            }
+        }
+        while !out.len().is_multiple_of(8) {
+            out.push(0);
+        }
+        off
     }
 
     /// Append a `K_BIG` object for `n` (past a word) to `out`: its offset.
@@ -1676,7 +1726,7 @@ impl<'p, M: Module> Gen<'p, M> {
                 b.switch_to_block(done);
                 r
             }
-            Op::When => self.call1(b, st, "ck_when", &[a[1], a[2]]),
+            Op::When => self.call1(b, st, "ck_when", &[a[1], a[2], o]),
             Op::Par => a[0],
             _ => unreachable!("an integer primitive"),
         }

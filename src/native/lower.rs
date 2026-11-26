@@ -92,6 +92,24 @@ pub enum SNode {
     Bytes(Arc<[u8]>),
     /// A constructor (`K_CON`, its tag) or a tuple (`K_TUPLE`): its fields.
     Obj { kind: u64, tag: u64, fields: Box<[u32]> },
+    /// An array (`K_ARRAY`) laid out by `layout`, a word per element or
+    /// packed (each element then a number or `Bool`'s word).
+    Array { layout: u8, elems: Box<[u32]> },
+    /// A definition's function as a value: its global closure.
+    Global(u32),
+    /// A constructor's function as a value: its wrapper's global closure.
+    ConFn(u32),
+}
+
+impl SNode {
+    /// The nodes it points to (or packs).
+    pub fn parts(&self) -> &[u32] {
+        match self {
+            SNode::Obj { fields, .. } => fields,
+            SNode::Array { elems, .. } => elems,
+            _ => &[],
+        }
+    }
 }
 
 impl Static {
@@ -121,6 +139,22 @@ impl Static {
             SNode::Word(x) => {
                 s.write_u8(1);
                 s.write_u64(*x);
+            }
+            SNode::Global(d) => {
+                s.write_u8(5);
+                s.write_u32(*d);
+            }
+            SNode::ConFn(c) => {
+                s.write_u8(6);
+                s.write_u32(*c);
+            }
+            SNode::Array { layout, elems } => {
+                s.write_u8(4);
+                s.write_u8(*layout);
+                s.write_usize(elems.len());
+                for f in elems.iter() {
+                    s.write(&self.hashes[*f as usize].to_le_bytes());
+                }
             }
             SNode::Big(b) => {
                 s.write_u8(2);
@@ -159,6 +193,7 @@ impl Static {
         for x in from.reachable(id) {
             let n = match from.node(x) {
                 SNode::Obj { kind, tag, fields } => SNode::Obj { kind: *kind, tag: *tag, fields: fields.iter().map(|f| map[f]).collect() },
+                SNode::Array { layout, elems } => SNode::Array { layout: *layout, elems: elems.iter().map(|f| map[f]).collect() },
                 n => n.clone(),
             };
             map.insert(x, self.add(n));
@@ -173,12 +208,10 @@ impl Static {
         let mut todo = vec![id];
         seen[id as usize] = true;
         while let Some(x) = todo.pop() {
-            if let SNode::Obj { fields, .. } = self.node(x) {
-                for &f in fields.iter() {
-                    if !seen[f as usize] {
-                        seen[f as usize] = true;
-                        todo.push(f);
-                    }
+            for &f in self.node(x).parts() {
+                if !seen[f as usize] {
+                    seen[f as usize] = true;
+                    todo.push(f);
                 }
             }
         }
@@ -729,7 +762,7 @@ impl Lowerer<'_, '_> {
     fn check_residual(&mut self, d: u32, ir: &Ir, kept: &[(Arc<Ir>, crate::native::fold::Kept)]) {
         let name = self.p.names[self.p.specs.borrow().origin(d) as usize].clone();
         let mut found = Vec::new();
-        crate::native::fold::residuals(ir, kept, &mut found);
+        crate::native::fold::residuals(self.g, ir, kept, &mut found);
         for node in found {
             self.p.residual.push(format!(
                 "internal error: `{name}` leaves {} to run, though every value it needs is known when compiling",
@@ -838,7 +871,21 @@ impl Lowerer<'_, '_> {
             }
             Ir::Erased => E::Erased,
             Ir::Lit(v) => Self::lit(v),
-            Ir::Static(v, id) => Static::expr(v, *id),
+            Ir::Static(v, id) => {
+                // The functions it holds are compiled.
+                for x in v.reachable(*id) {
+                    match v.node(x) {
+                        SNode::Global(d) => {
+                            self.shape(*d);
+                        }
+                        SNode::ConFn(c) => {
+                            self.con_wrap(*c);
+                        }
+                        _ => {}
+                    }
+                }
+                Static::expr(v, *id)
+            }
             Ir::Fail(m) => E::Fail(m),
             Ir::At(o, x) => {
                 let o = o.map_or(NO_OWNER, |d| d.0);

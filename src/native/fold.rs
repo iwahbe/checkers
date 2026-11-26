@@ -96,20 +96,21 @@ impl<'g> Folder<'g> {
     }
 
     fn fold(&mut self, ir: &Arc<Ir>, specs: &crate::native::spec::Specs) -> Arc<Ir> {
+        let g = self.g;
         match &**ir {
             Ir::Var(_) | Ir::Global(_) | Ir::Erased | Ir::Lit(_) | Ir::ConFn(_) | Ir::Fail(_) | Ir::Static(..) => ir.clone(),
             Ir::Lam(o, b) => Arc::new(Ir::Lam(*o, self.fold(b, specs))),
             Ir::At(o, x) => {
                 let x = self.fold(x, specs);
                 // Static data can't fail: it has no error to name.
-                if is_static(&x) {
+                if is_static(g, &x) {
                     return x;
                 }
                 Arc::new(Ir::At(*o, x))
             }
             Ir::Let(v, b) => {
                 let v = self.fold(v, specs);
-                if is_static(&v) {
+                if is_static(g, &v) {
                     return self.fold(&Arc::new(subst0(b, &v)), specs);
                 }
                 Arc::new(Ir::Let(v, self.fold(b, specs)))
@@ -119,21 +120,21 @@ impl<'g> Folder<'g> {
             Ir::Par(xs) => Arc::new(Ir::Par(xs.iter().map(|x| self.fold(x, specs)).collect())),
             Ir::Proj(e, i, rest) => {
                 let e = self.fold(e, specs);
-                match components(&e) {
+                match components(g, &e) {
                     Some(xs) if !*rest && *i < xs.len() => xs[*i].clone(),
                     _ => Arc::new(Ir::Proj(e, *i, *rest)),
                 }
             }
             Ir::Field(e, i) => {
                 let e = self.fold(e, specs);
-                match con_fields(&e) {
+                match con_fields(g, &e) {
                     Some((_, xs)) if *i < xs.len() => xs[*i].clone(),
                     _ => Arc::new(Ir::Field(e, *i)),
                 }
             }
             Ir::Case(s, c) => {
                 let s = self.fold(s, specs);
-                if let Some(arm) = choose(&s, c) {
+                if let Some(arm) = choose(g, &s, c) {
                     return self.fold(&Arc::new(arm), specs);
                 }
                 let branches = c.branches.iter().map(|(con, n, b)| (*con, *n, self.fold(b, specs))).collect();
@@ -145,7 +146,7 @@ impl<'g> Folder<'g> {
                 let args: Vec<Arc<Ir>> = args.iter().map(|a| self.fold(a, specs)).collect();
                 let node = Arc::new(Ir::Prim(*op, args, *nat));
                 let Ir::Prim(_, args, _) = &*node else { unreachable!() };
-                if !foldable_op(*op) || !args.iter().all(|a| is_static(a)) {
+                if !foldable_op(*op) || !args.iter().all(|a| is_static(g, a)) {
                     return node;
                 }
                 let r = match arith(self.g, *op, args, *nat) {
@@ -160,7 +161,7 @@ impl<'g> Folder<'g> {
                 let node = Arc::new(Ir::Call(h, args));
                 let Ir::Call(h, args) = &*node else { unreachable!() };
                 let Ir::Global(d) = &**h else { return node };
-                if !args.iter().all(|a| is_static(a)) {
+                if !args.iter().all(|a| is_static(g, a)) {
                     return node;
                 }
                 let r = match self.g.fold_work.get() {
@@ -273,13 +274,15 @@ fn foldable_op(op: Op) -> bool {
     !matches!(op, Op::Par | Op::When | Op::TypeApply)
 }
 
-/// Data known when compiling: a literal, static data, an erased value, or
-/// a constructor or tuple of such.
-pub fn is_static(ir: &Ir) -> bool {
+/// Data known when compiling: a literal, static data, an erased value, a
+/// definition's or constructor's function (whose closure is static data),
+/// or a constructor or tuple of such.
+pub fn is_static(g: &Globals, ir: &Ir) -> bool {
     match ir {
-        Ir::Lit(_) | Ir::Static(..) | Ir::Erased => true,
-        Ir::Con(_, xs) | Ir::Tuple(xs) => xs.iter().all(|x| is_static(x)),
-        Ir::At(_, x) => is_static(x),
+        Ir::Lit(_) | Ir::Static(..) | Ir::Erased | Ir::ConFn(_) => true,
+        Ir::Global(d) => g.defs.get(d.0 as usize).is_some_and(|i| matches!(i.ty, Tm::Pi(..)) && i.body.as_ref().is_none_or(|b| matches!(b, Tm::Lam(..)))),
+        Ir::Con(_, xs) | Ir::Tuple(xs) => xs.iter().all(|x| is_static(g, x)),
+        Ir::At(_, x) => is_static(g, x),
         _ => false,
     }
 }
@@ -287,9 +290,9 @@ pub fn is_static(ir: &Ir) -> bool {
 /// A static tuple's slots as it is laid out at run time, which a
 /// projection's index counts: a last component that is a tuple is laid
 /// out in place (`(a, (b, c))` is `(a, b, c)`).
-fn components(e: &Arc<Ir>) -> Option<Vec<Arc<Ir>>> {
+fn components(g: &Globals, e: &Arc<Ir>) -> Option<Vec<Arc<Ir>>> {
     match &**e {
-        Ir::Tuple(xs) if xs.iter().all(|x| is_static(x)) => {
+        Ir::Tuple(xs) if xs.iter().all(|x| is_static(g, x)) => {
             let mut out = xs.clone();
             // A static tuple of two or more as the last: its own slots.
             while let Some(more) = out.last().and_then(|l| match &**l {
@@ -316,17 +319,17 @@ fn components(e: &Arc<Ir>) -> Option<Vec<Arc<Ir>>> {
 }
 
 /// A static constructor's constructor and fields.
-fn con_fields(e: &Arc<Ir>) -> Option<(crate::core::ConId, Vec<Arc<Ir>>)> {
+fn con_fields(g: &Globals, e: &Arc<Ir>) -> Option<(crate::core::ConId, Vec<Arc<Ir>>)> {
     match &**e {
-        Ir::Con(c, xs) if xs.iter().all(|x| is_static(x)) => Some((*c, xs.clone())),
+        Ir::Con(c, xs) if xs.iter().all(|x| is_static(g, x)) => Some((*c, xs.clone())),
         Ir::Static(v, id) => Static::open_con(v, *id),
         _ => None,
     }
 }
 
 /// The arm of `match s` that static `s` takes, its fields bound in order.
-fn choose(s: &Arc<Ir>, c: &IrCase) -> Option<Ir> {
-    if let Some((con, fields)) = con_fields(s) {
+fn choose(g: &Globals, s: &Arc<Ir>, c: &IrCase) -> Option<Ir> {
+    if let Some((con, fields)) = con_fields(g, s) {
         return Some(match c.branches.iter().find(|(b, _, _)| *b == con) {
             Some((_, n, arm)) if *n == fields.len() => {
                 let mut out = shift(arm, 0, 0);
@@ -458,7 +461,7 @@ fn write_key(ir: &Ir, out: &mut String) {
 }
 
 /// A runtime value as static data, where it has a static form: numbers,
-/// bytes, constructors and tuples of such. Walked with a stack of its own,
+/// bytes, arrays, constructors and tuples of such. Walked with a stack of its own,
 /// so a value of any depth takes the same stack.
 pub fn from_word(v: w::W) -> Option<(Static, u32)> {
     let mut s = Static::default();
@@ -492,6 +495,25 @@ pub fn from_word(v: w::W) -> Option<(Static, u32)> {
                 let tag = if k == w::K_CON { w::con_of(x)? as u64 } else { 0 };
                 s.add(SNode::Obj { kind: k, tag, fields })
             }
+            checkers_rt::array::K_ARRAY => {
+                use checkers_rt::array as a;
+                let (layout, n) = (a::layout(x), a::len(x));
+                let words = layout == a::Layout::Words;
+                // An array of words that is a slice of another: no static form.
+                if words && a::is_slice(x) {
+                    return None;
+                }
+                // Each element: a word held (not a new reference), or a
+                // packed element's word.
+                let part = |i: usize| if words { w::slot(x, i + 2) } else { a::get(x, i) };
+                if !ready {
+                    stack.push((x, true));
+                    stack.extend((0..n).map(part).filter(|p| !done.contains_key(p)).map(|p| (p, false)));
+                    continue;
+                }
+                let elems: Box<[u32]> = (0..n).map(|i| done[&part(i)]).collect();
+                s.add(SNode::Array { layout: layout as u8, elems })
+            }
             _ => return None,
         };
         done.insert(x, id);
@@ -502,13 +524,13 @@ pub fn from_word(v: w::W) -> Option<(Static, u32)> {
 
 /// Each operation in `ir` on static data alone that `kept` doesn't keep:
 /// a primitive computed when compiling, or a call of a definition.
-pub fn residuals<'i>(ir: &'i Ir, kept: &[(Arc<Ir>, Kept)], out: &mut Vec<&'i Ir>) {
+pub fn residuals<'i>(g: &Globals, ir: &'i Ir, kept: &[(Arc<Ir>, Kept)], out: &mut Vec<&'i Ir>) {
     let is_kept = |x: &Ir| kept.iter().any(|(k, _)| std::ptr::eq(x, Arc::as_ptr(k)));
     let mut stack = vec![ir];
     while let Some(x) = stack.pop() {
         let operation = match x {
-            Ir::Prim(op, args, _) => foldable_op(*op) && args.iter().all(|a| is_static(a)),
-            Ir::Call(h, args) => matches!(&**h, Ir::Global(_)) && args.iter().all(|a| is_static(a)),
+            Ir::Prim(op, args, _) => foldable_op(*op) && args.iter().all(|a| is_static(g, a)),
+            Ir::Call(h, args) => matches!(&**h, Ir::Global(_)) && args.iter().all(|a| is_static(g, a)),
             _ => false,
         };
         if operation && !is_kept(x) {

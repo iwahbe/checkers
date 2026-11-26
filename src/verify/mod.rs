@@ -112,6 +112,20 @@ pub const SAFETY_MS: u64 = 60_000;
 static CACHE: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
 static ASKED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static REUSED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Queries Z3 rejected (a checkers bug, §7.3), in this process.
+static REJECTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many queries Z3 has rejected in this process: always 0 unless
+/// checkers has a bug (§7.3).
+pub fn rejected() -> usize {
+    REJECTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Z3's error if it rejected the query: an `(error …)` before its answer.
+/// (After it, an error only says there is no model or unsat core to give.)
+fn rejection(out: &str) -> Option<&str> {
+    out.lines().take_while(|l| !matches!(l.trim(), "sat" | "unsat" | "unknown" | "timeout")).find(|l| l.starts_with("(error"))
+}
 
 /// Cache Z3's answers in `dir` (`None`: don't).
 pub fn set_cache(dir: Option<std::path::PathBuf>) {
@@ -145,6 +159,86 @@ pub fn modules_dir() -> Option<std::path::PathBuf> {
 }
 
 const MODULE_HEADER: &str = "checkers module 3";
+
+/// Modules this process has verified, by key: a doc comment's code block
+/// imports the module it is in, and the standard library, all just verified
+/// (D148 k).
+pub(crate) static VERIFIED: std::sync::Mutex<Option<std::collections::HashMap<String, Remembered>>> = std::sync::Mutex::new(None);
+
+/// The module verified under `key` before, by this process or (beside
+/// Z3's answers) an earlier one, if it was.
+pub fn recall(key: &str) -> Option<Remembered> {
+    let memo = VERIFIED.lock().unwrap_or_else(|p| p.into_inner()).as_ref().and_then(|x| x.get(key).cloned());
+    if memo.is_some() || modules_dir().is_none() {
+        return memo;
+    }
+    remembered(key)
+}
+
+/// Each module's key (D143): its name and text, the text of every program
+/// or dependency module it depends on, directly or through others (the
+/// modules it imports and those of the instances its checking chose, #272),
+/// the standard library's text (all of it: its modules give one another, and
+/// every module, the well-known types), the Z3 release and the `ckc`
+/// executable. None for a module without its text, or depending on one.
+/// Computed once per program, and again if more modules have been loaded
+/// since (a key read while checking names the modules loaded then).
+pub fn module_keys(e: &Elab) -> std::rc::Rc<std::collections::HashMap<String, String>> {
+    if let Some((n, keys)) = &*e.module_keys.borrow() {
+        if *n == e.modules.len() {
+            return keys.clone();
+        }
+    }
+    let keys = std::rc::Rc::new(compute_module_keys(e));
+    *e.module_keys.borrow_mut() = Some((e.modules.len(), keys.clone()));
+    keys
+}
+
+fn compute_module_keys(e: &Elab) -> std::collections::HashMap<String, String> {
+    use std::collections::HashMap;
+    use std::collections::BTreeSet;
+    let exe = std::env::current_exe()
+        .and_then(std::fs::metadata)
+        .map(|m| format!("{} {:?}", m.len(), m.modified().ok()))
+        .unwrap_or_default();
+    let mut std_mods: Vec<&String> = e.modules.keys().filter(|m| m.starts_with("std.")).collect();
+    std_mods.sort();
+    let mut std_text = String::new();
+    for m in std_mods {
+        if let Some(f) = e.sources.get(m) {
+            std_text += &format!("module {m} {}\n{}\n", f.text.len(), f.text);
+        }
+    }
+    let tool = format!("ckc {} {exe} z3 {} std {}", env!("CARGO_PKG_VERSION"), z3_version().unwrap_or_default(), digest(&std_text));
+    // Each module's text, hashed once; the standard library's is in `tool`.
+    let texts: HashMap<&str, String> =
+        e.modules.keys().filter(|m| !m.starts_with("std.")).filter_map(|m| Some((m.as_str(), digest(&e.sources.get(m)?.text)))).collect();
+    let edges = |m: &str| {
+        let imports = e.module_deps.get(m).into_iter().flatten();
+        let instances = e.instance_deps.get(m).into_iter().flatten();
+        imports.chain(instances).filter(|d| !d.starts_with("std.")).cloned().collect::<Vec<String>>()
+    };
+    let mut keys = HashMap::new();
+    'modules: for m in e.modules.keys() {
+        let Some(text) = e.sources.get(m) else { continue };
+        // Everything it depends on; a cycle through instances is fine.
+        let mut seen = BTreeSet::new();
+        let mut todo = edges(m);
+        while let Some(d) = todo.pop() {
+            if d != *m && seen.insert(d.clone()) {
+                todo.extend(edges(&d));
+            }
+        }
+        let mut input = format!("{tool}\nmodule {m}\n");
+        for d in &seen {
+            let Some(k) = texts.get(d.as_str()) else { continue 'modules };
+            input += &format!("uses {d} {k}\n");
+        }
+        input += &text.text;
+        keys.insert(m.clone(), digest(&input));
+    }
+    keys
+}
 
 /// The module verified under `key`, if it was.
 pub fn remembered(key: &str) -> Option<Remembered> {
@@ -340,6 +434,9 @@ fn ask_out(query: &str) -> String {
             out
         }
     };
+    if rejection(&out).is_some() {
+        REJECTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     out
 }
 
@@ -394,7 +491,7 @@ fn answer(out: String) -> Answer {
     // Z3 reports a rejected command as `(error …)` and carries on without it,
     // so an answer that follows an error is not about the query we meant:
     // never trust it (an `unsat` would be unsound).
-    if let Some(err) = out.lines().take_while(|l| !matches!(l.trim(), "sat" | "unsat" | "unknown" | "timeout")).find(|l| l.starts_with("(error")) {
+    if let Some(err) = rejection(&out) {
         return Answer::Unknown(format!("Z3 rejected the query (a checkers bug): {err}"));
     }
     let mut lines = out.splitn(2, '\n');
@@ -568,12 +665,20 @@ pub fn proofs(e: &Elab, user: &str) -> Verified {
     v
 }
 
-/// Module `user`'s obligations proved: the first time, by `verify`; after
-/// that, as they were. A module is proved once per program, whether
-/// first for a value known at compile time (§8.9) or in the proofs phase.
+/// Module `user`'s obligations proved: the first time, by `verify`, unless
+/// a check verified it before under its key (D143: its text, what it
+/// depends on, the tools), which is then what it gave; after that, as they
+/// were. A module is proved once per program, whether first for a value
+/// known at compile time (§8.9) or in the proofs phase, and a module
+/// verified before builds no queries for either.
 pub fn proved(e: &Elab, user: &str) -> Verified {
     if let Some(v) = e.module_proofs.borrow().get(user) {
         return v.clone();
+    }
+    if let Some(r) = module_keys(e).get(user).and_then(|k| recall(k)) {
+        let v = Verified { diags: r.warnings, ledger: r.ledger, z3_version: r.z3_version, proved: r.proved, asked: 0, reused: 0 };
+        e.module_proofs.borrow_mut().insert(user.to_string(), v.clone());
+        return v;
     }
     e.proving.borrow_mut().insert(user.to_string());
     let v = verify(e, user);
@@ -639,7 +744,14 @@ fn verify(e: &Elab, user: &str) -> Verified {
     // A postcondition outside what the prover handles is so for each value
     // returned: one error, listing them (its diagnostic, the obligations).
     let mut outside_posts: Vec<(usize, Vec<usize>)> = Vec::new();
+    // A goal with a type error isn't asked (§7.3): the type error is its
+    // only diagnostic. Without one reported, it would be a checkers bug,
+    // shown as outside the fragment.
+    let type_errors = e.diags.iter().any(|(_, d)| d.is_error());
     for (k, ((o, q), a)) in obs.iter().zip(&queries).zip(answers).enumerate() {
+        if matches!(q, Err(why) if why.is_type_error()) && type_errors {
+            continue;
+        }
         if let (Err(why), ObKind::Post { .. }) = (q, &o.kind) {
             let same = |j: usize| {
                 let p = obs[j];
@@ -1188,10 +1300,16 @@ fn vacuous(e: &Elab, user: &str) -> Vec<Diagnostic> {
         return Vec::new();
     }
     let defs = smt::Defs::default();
+    // The conditions with a type error are left out (§7.3): each check's
+    // others, by index. Nothing is asked without one.
+    let mut conds: Vec<Vec<usize>> = Vec::new();
     let texts: Vec<Option<String>> = checks
         .iter()
         .map(|c| {
-            let q = smt::Builder::new(e, user).sharing(&defs).named_facts().query(&c.ob).ok()?;
+            let q = smt::Builder::new(e, user).sharing(&defs).named_facts().query(&c.ob);
+            let ill_typed = q.as_ref().map_or(&[][..], |q| &q.ill_typed[..]);
+            conds.push((0..c.conds.len()).filter(|k| c.conds[*k].is_some() && !ill_typed.contains(k)).collect());
+            let q = q.ok().filter(|_| !conds.last().is_some_and(|ks| ks.is_empty()))?;
             Some(with_limit(&q.facts_only.unwrap_or(q.text), VACUITY_RLIMIT))
         })
         .collect();
@@ -1204,7 +1322,7 @@ fn vacuous(e: &Elab, user: &str) -> Vec<Diagnostic> {
     let mut out: Vec<Diagnostic> = Vec::new();
     // A type whose conditions can't hold: its constructors aren't reported too.
     let mut reported: Vec<Span> = Vec::new();
-    for (c, o) in checks.iter().zip(outs) {
+    for ((c, o), ks) in checks.iter().zip(outs).zip(&conds) {
         let Some(o) = o else { continue };
         if !matches!(answer(o.clone()), Answer::Unsat) {
             continue;
@@ -1225,18 +1343,17 @@ fn vacuous(e: &Elab, user: &str) -> Vec<Diagnostic> {
             .collect();
         let core: Vec<usize> = names.iter().filter_map(|w| w.strip_prefix("fact.")?.parse().ok()).collect();
         let typed = names.iter().any(|w| w.starts_with("given."));
+        let written = |k: &usize| c.conds[*k].as_deref();
         let mut texts: Vec<&str> = Vec::new();
-        for (k, t) in c.conds.iter().enumerate() {
-            if let Some(t) = t {
-                if core.contains(&k) && !texts.contains(&t.as_str()) {
-                    texts.push(t);
-                }
+        for t in ks.iter().filter(|k| core.contains(k)).filter_map(written) {
+            if !texts.contains(&t) {
+                texts.push(t);
             }
         }
         // Only what the types say is needed (a class's type's predicates
         // are its values' type): each condition contributes to it.
         if texts.is_empty() && typed {
-            texts = c.conds.iter().flatten().map(|t| t.as_str()).collect();
+            texts = ks.iter().filter_map(written).collect();
             texts.dedup();
         }
         out.push(vacuity_diag(c, &texts, typed));
@@ -1369,6 +1486,7 @@ fn describe(e: &Elab, o: &Obligation) -> String {
         ObKind::CownInvariant { alias } => format!("cown contents stay `{alias}`: {}", o.text),
         ObKind::Refined { alias, value } => format!("`{value}` is a `{alias}`: {}", o.text),
         ObKind::Weaken { sub, sup, .. } => format!("every `{sub}` is a `{sup}`: {}", o.text),
+        ObKind::DistinctCowns { .. } => format!("a `when`'s cowns differ: {}", o.text),
         ObKind::NatSub => format!("`Nat` subtraction `{}` stays at or above zero", o.text),
         ObKind::Measure { func, measure } => format!("termination of `{func}`: `decreasing {measure}` gets smaller"),
         ObKind::Div => format!("divisor of `{}` is not zero", o.text),
@@ -1519,6 +1637,23 @@ fn headline(o: &Obligation) -> (String, String, String) {
             format!("cannot prove that `{func}` terminates: `{measure}` may not get smaller in this call"),
             format!("`decreasing {measure}` must be smaller here than on entry to `{func}`"),
             "make sure the recursive call's arguments make the measure smaller, e.g. by checking a bound first".into(),
+        ),
+        ObKind::DistinctCowns { first, second, held, caller, unlike } => (
+            format!("cannot prove `{}`, required for a `when` to hold its cowns", o.text),
+            match (held, unlike) {
+                (Some(n), _) => format!("`{second}` is already held here as `{n}`"),
+                (None, Some((a, b))) => format!("this `when` holds `{first}`, a `{a}`, and `{second}`, a `{b}`"),
+                (None, None) => format!("this `when` holds `{first}` and `{second}`"),
+            },
+            match (held, caller) {
+                (Some(_), _) => format!("a `when` holds each cown once: name `{second}` once"),
+                (None, _) if unlike.is_some() => {
+                    let (a, b) = unlike.as_ref().unwrap();
+                    format!("a `{a}` may be a `{b}`, and `!=` can't compare them: hold cowns whose types differ whatever their type variables are")
+                }
+                (None, Some(f)) => format!("require it of the caller: add `{}` to `{f}`'s signature", o.text),
+                (None, None) => format!("show that they differ where they come from: a precondition such as `{}`, or a cown made here with `cown.new`, which differs from every cown in scope", o.text),
+            },
         ),
         ObKind::NatSub => (
             "cannot prove that this `Nat` subtraction stays at or above zero".into(),
@@ -1729,6 +1864,8 @@ fn failed(e: &Elab, o: &Obligation, model: Option<String>) -> Diagnostic {
         format!("`{}` {what}: here the prover knows only its postconditions, the values of its calls known at compile time, and the lemmas you bring in with `have`", info.name)
     });
     match model.filter(|m| !m.is_empty()) {
+        // One cown named twice needs no counterexample.
+        Some(_) if matches!(&o.kind, ObKind::DistinctCowns { held, unlike, .. } if held.is_some() || unlike.is_some()) => {}
         Some(m) if sealed_note.is_none() => d = d.with_note(format!("counterexample: {m}")),
         _ => {}
     }
@@ -2132,6 +2269,7 @@ fn render_model(text: &str, shown: &[(String, String)], strings: &[String], arra
     let sx = parse_sx(text);
     let Some(Sx::List(pairs)) = sx.first() else { return String::new() };
     let mut found: Vec<(usize, String)> = Vec::new();
+    let mut cowns: Vec<(String, usize, Vec<String>)> = Vec::new();
     for p in pairs {
         if let Sx::List(kv) = p {
             if let (Some(Sx::Atom(k)), Some(v)) = (kv.first(), kv.get(1)) {
@@ -2152,21 +2290,67 @@ fn render_model(text: &str, shown: &[(String, String)], strings: &[String], arra
                         Some(b) => checkers_rt::ops::show_bytes(&b),
                         None => pretty(&v),
                     };
-                    // Values of abstract types (capabilities, type variables) say nothing useful.
-                    if !s.contains('!') && !s.contains('?') {
-                        let lvl: usize = k.trim_matches('|').rsplit('#').next().and_then(|n| n.parse().ok()).unwrap_or(pos);
+                    let lvl: usize = k.trim_matches('|').rsplit('#').next().and_then(|n| n.parse().ok()).unwrap_or(pos);
+                    // Values of abstract types (capabilities, type variables)
+                    // say nothing useful, but which cowns are the same one
+                    // does (§8.5): `x = y`.
+                    let raw = print_sx(&v);
+                    if raw.contains("std.cown.Cown") && raw.contains("!val!") {
+                        match cowns.iter_mut().find(|(r, _, _)| *r == raw) {
+                            Some((_, _, names)) => names.push(shown[pos].1.clone()),
+                            None => cowns.push((raw, lvl, vec![shown[pos].1.clone()])),
+                        }
+                    } else if !s.contains('!') && !s.contains('?') {
                         found.push((lvl, format!("{} = {s}", shown[pos].1)));
                     }
                 }
             }
         }
     }
+    found.extend(cowns.into_iter().filter(|c| c.2.len() > 1).map(|(_, lvl, names)| (lvl, names.join(" = "))));
     found.sort();
     found.into_iter().map(|x| x.1).collect::<Vec<_>>().join(", ")
 }
 
 #[cfg(test)]
 mod tests {
+    /// A module verified before (D143) is proved for the compile-time gate
+    /// (§8.9) by what it gave then: no query is built for it again.
+    #[test]
+    fn a_module_verified_before_builds_no_queries() {
+        crate::with_big_stack(|| {
+            let dir = std::env::temp_dir().join(format!("checkers-gate-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("lib.ck"), "module lib\n\nexport fn less a b -> r : a~Nat, b~Nat, b <= a, r~Nat\n    a - b\n").unwrap();
+            let main = "module main\n\nimport lib\n\nlet SIZE = lib.less 9 4\n\nfn sized x -> r : x~Int, r~Int\n    x + SIZE\n";
+            let first = crate::check_in("main.ck", main, &dir);
+            assert_eq!(first.errors(), 0, "{}", first.report());
+            let (_, e) = crate::elaborate("main.ck", main, &dir);
+            let (e, _) = e.unwrap();
+            let v = super::proved(&e, "lib");
+            assert!(v.proved > 0, "lib's obligation counted");
+            assert_eq!(v.asked, 0, "no query asked for a module verified before");
+            let _ = std::fs::remove_dir_all(&dir);
+        })
+    }
+
+    /// Programs whose conditions have type errors: no query made from them
+    /// is one Z3 rejects (§7.3), however the error is reported.
+    #[test]
+    fn type_errors_make_no_query_z3_rejects() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for name in ["tests/types/condition_type_error.ck", "tests/types/class_type_base_help.ck", "tests/types/class_type_pred_errors.ck"] {
+            let path = root.join(name);
+            let text = std::fs::read_to_string(&path).unwrap();
+            let path = path.to_string_lossy().into_owned();
+            let before = super::rejected();
+            let c = crate::with_big_stack(move || crate::check(&path, &text));
+            assert!(c.errors() > 0, "{name} has type errors");
+            assert_eq!(super::rejected() - before, 0, "Z3 rejected a query checking {name}");
+        }
+    }
+
     /// Queries solved at the same time with different work limits (two
     /// programs checked on two threads) each run with their own: the small
     /// limit always gives up, the large one always proves.

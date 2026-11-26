@@ -644,6 +644,31 @@ mod tests {
         })
     }
 
+    /// Constants of every type known at compile time are static data
+    /// (§8.9): a program's code has no constant computed on first use
+    /// (`FnKind::Caf`, read through a slot checked for `UNSET`).
+    #[test]
+    fn known_constants_have_no_first_use_code() {
+        crate::with_big_stack(|| {
+            for name in ["known_baked", "known_arrays", "known_closures"] {
+                let path = format!("{}/tests/run/{name}.ck", env!("CARGO_MANIFEST_DIR"));
+                let text = std::fs::read_to_string(&path).unwrap();
+                let dir = std::path::Path::new(&path).parent().unwrap().to_path_buf();
+                let (e, main, staged, _) = crate::ready_to_run(&format!("{name}.ck"), &text, &dir, false, false).map_err(|r| r.report).unwrap();
+                let p = super::prepare(&e.g, Some(&staged), main, super::host_return_words());
+                // A definition's constant (not the closed code a program
+                // runs once at start, its `Debug` instances' table).
+                let cafs: Vec<&str> = p
+                    .funcs
+                    .iter()
+                    .filter(|f| matches!(f.kind, super::lower::FnKind::Caf) && (f.owner as usize) < e.g.defs.len())
+                    .map(|f| f.name.as_str())
+                    .collect();
+                assert!(cafs.is_empty(), "{name}: computed on first use: {cafs:?}");
+            }
+        })
+    }
+
     /// Small integers' inline paths (tests/run/small_int_edges.ck: overflow
     /// checks, constants, comparisons branched on) compile for every
     /// machine, whose overflow-checking instructions differ.

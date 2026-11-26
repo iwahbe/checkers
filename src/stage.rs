@@ -294,6 +294,8 @@ impl<'g> Stager<'g> {
     fn whnf(&mut self, s: &Tm) -> Option<Tm> {
         match s {
             Tm::Lit(_) | Tm::ConApp(..) | Tm::Tuple(_) => Some(s.clone()),
+            // An array or a function has no constructor form.
+            Tm::Known(k) if matches!(k.node(), crate::known::Node::Array(..) | crate::known::Node::Closure(_) | crate::known::Node::Pap(_)) => None,
             Tm::Known(k) => Some(crate::core::quote(self.g, 0, &crate::core::known_open(self.g, k))),
             _ => self.compute(s),
         }
