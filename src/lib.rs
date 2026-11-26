@@ -39,6 +39,9 @@ pub struct Checked {
     pub ledger: String,
     /// Staged definitions (§8.9), for `checkers stage`.
     pub staged: String,
+    /// Terms the prover left out for a type error it found in their sorts
+    /// (§7.3): 0 in a program without type errors, or checkers has a bug.
+    pub ill_sorted: usize,
     /// The modules verified before, by name (D143), once looked up.
     remembered: Option<std::collections::HashMap<String, (String, verify::Remembered)>>,
 }
@@ -94,7 +97,7 @@ pub fn parse_only(name: &str, text: &str) -> Checked {
     let file = SourceFile::new(name, text);
     let (module, mut diags) = syntax::parse_module(text);
     diags.extend(lint::naming(&module));
-    Checked { file, module, diags, internal: Vec::new(), others: Vec::new(), obligations: 0, proved: 0, ledger: String::new(), staged: String::new(), remembered: None }
+    Checked { file, module, diags, internal: Vec::new(), others: Vec::new(), obligations: 0, proved: 0, ledger: String::new(), staged: String::new(), ill_sorted: 0, remembered: None }
 }
 
 /// The directory `import a.b` looks in for `a/b.ck` (D53): the program's own.
@@ -124,6 +127,7 @@ pub fn check_in(name: &str, text: &str, dir: &std::path::Path) -> Checked {
         prove(&mut c, e, user);
         phase_time(name, "proofs", t);
         stage_module(&mut c, e, user);
+        c.ill_sorted = e.ill_sorted.get();
     }
     c
 }
@@ -957,19 +961,14 @@ pub struct Ran {
     pub code: u8,
 }
 
-/// Proof failures (D48): the only errors `run --unverified` tolerates.
-fn is_proof_failure(d: &Diagnostic) -> bool {
-    matches!(d.code, "E0450" | "E0451" | "E0240")
-}
-
 /// Check and prove `text`, then call its exported `main` with `args` (D43,
 /// §13.4), as native code (§14). The program writes to this process's
 /// standard streams, so the report is printed to standard error before it
 /// runs; the returned report is empty. Imported modules are looked up in
 /// `dir`; `threads`: threads for behaviours and `par` (1: the deterministic
 /// FIFO scheduler, D67).
-pub fn run(name: &str, text: &str, dir: &std::path::Path, args: &[String], unverified: bool, threads: usize) -> Ran {
-    let (e, main, staged, report) = match ready_to_run(name, text, dir, unverified, false) {
+pub fn run(name: &str, text: &str, dir: &std::path::Path, args: &[String], threads: usize) -> Ran {
+    let (e, main, staged, report) = match ready_to_run(name, text, dir, false) {
         Ok(r) => r,
         Err(ran) => return ran,
     };
@@ -979,8 +978,8 @@ pub fn run(name: &str, text: &str, dir: &std::path::Path, args: &[String], unver
 }
 
 /// `checkers build`: check and prove, then write an executable.
-pub fn build(name: &str, text: &str, dir: &std::path::Path, out: &std::path::Path, unverified: bool, release: bool) -> Ran {
-    let (e, main, staged, mut report) = match ready_to_run(name, text, dir, unverified, release) {
+pub fn build(name: &str, text: &str, dir: &std::path::Path, out: &std::path::Path, release: bool) -> Ran {
+    let (e, main, staged, mut report) = match ready_to_run(name, text, dir, release) {
         Ok(r) => r,
         Err(ran) => return ran,
     };
@@ -1012,45 +1011,32 @@ pub fn build(name: &str, text: &str, dir: &std::path::Path, out: &std::path::Pat
 }
 
 /// Check, prove and stage a program for running: the elaborated program,
-/// `main`, the staged code, and the report so far.
-fn ready_to_run(
-    name: &str,
-    text: &str,
-    dir: &std::path::Path,
-    unverified: bool,
-    release: bool,
-) -> Result<(elab::Elab, core::DefId, stage::Staged, String), Ran> {
+/// `main`, the staged code, and the report so far (warnings). A program
+/// with any error doesn't run (§7.4).
+fn ready_to_run(name: &str, text: &str, dir: &std::path::Path, release: bool) -> Result<(elab::Elab, core::DefId, stage::Staged, String), Ran> {
     let (mut c, e) = elaborate(name, text, dir);
-    let Some((e, user)) = e else { return Err(Ran { report: c.report(), code: 2 }) };
+    let Some((mut e, user)) = e else { return Err(Ran { report: c.report(), code: 2 }) };
     run_checks(&mut c, &e, &user);
     prove(&mut c, &e, &user);
-    let mut report = if c.all_diags().next().is_none() && c.internal.is_empty() { String::new() } else { c.report() };
-    let blocking = c.internal.len() + c.all_diags().filter(|d| d.is_error() && !(unverified && is_proof_failure(d))).count();
-    if blocking > 0 {
+    let report = if c.all_diags().next().is_none() && c.internal.is_empty() { String::new() } else { c.report() };
+    if c.errors() > 0 || !c.internal.is_empty() {
         return Err(Ran { report, code: 2 });
     }
-    let mut e = e;
-    if c.errors() > 0 {
-        report += &format!("running with {} unproven obligation(s) (--unverified)\n", c.errors());
-    } else {
-        // Proved: the bounds signatures give are facts native code may rely on.
-        e.g.bounds = std::mem::take(&mut e.bounds);
-        // And constants known at compile time are compiled as their values:
-        // in a development build, those that only code generation wants
-        // within a work limit (§8.9); the rest are known already.
-        let consts: Vec<core::DefId> = (0..e.g.defs.len() as u32)
-            .map(core::DefId)
-            .filter(|d| {
-                let info = &e.g.defs[d.0 as usize];
-                // Numbers: what bounds and code generation use.
-                info.body.is_some() && !info.opaque && !matches!(info.ty, core::Tm::Pi(..)) && e.type_range(&core::eval(&e.g, &std::rc::Rc::new(Vec::new()), &info.ty)).is_some()
-            })
-            .collect();
-        for d in consts {
-            let work = if release { u64::MAX } else { elab::CODEGEN_WORK };
-            if let Some(l) = e.known_value_within(&core::Tm::Def(d), work) {
-                e.g.known.borrow_mut().insert(d, l);
-            }
+    // Constants known at compile time are compiled as their values: in a
+    // development build, those that only code generation wants within a
+    // work limit (§8.9); the rest are known already.
+    let consts: Vec<core::DefId> = (0..e.g.defs.len() as u32)
+        .map(core::DefId)
+        .filter(|d| {
+            let info = &e.g.defs[d.0 as usize];
+            // Numbers: what bounds and code generation use.
+            info.body.is_some() && !info.opaque && !matches!(info.ty, core::Tm::Pi(..)) && e.type_range(&core::eval(&e.g, &std::rc::Rc::new(Vec::new()), &info.ty)).is_some()
+        })
+        .collect();
+    for d in consts {
+        let work = if release { u64::MAX } else { elab::CODEGEN_WORK };
+        if let Some(l) = e.known_value_within(&core::Tm::Def(d), work) {
+            e.g.known.borrow_mut().insert(d, l);
         }
     }
     let exported = e.modules.get(&user).is_some_and(|m| m.exported_values.contains("main"));
@@ -1058,7 +1044,16 @@ fn ready_to_run(
     let (Some(main), true) = (main, exported) else {
         return Err(Ran { report: format!("{report}error: `{}` has no exported `main` function\n", c.file.name), code: 2 });
     };
+    // Computing constants and staging are compile-time evaluation: they
+    // keep their checks (§13.3).
     let (staged, _) = stage::stage_program(&e.g);
+    // Every obligation is proved. Unless a fact the proofs use may be an
+    // `admit`'s, assumed (§13.3), native code relies on them: the bounds
+    // signatures give, and no checks of guarded operations.
+    if e.admits.is_empty() {
+        e.g.bounds = std::mem::take(&mut e.bounds);
+        e.g.proved = true;
+    }
     Ok((e, core::DefId(main as u32), staged, report))
 }
 
