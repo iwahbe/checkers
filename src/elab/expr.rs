@@ -1374,6 +1374,16 @@ impl Elab {
                 self.pre_obligations(cx, *d, &name, &args, t, span);
             }
             Tm::TyCon(tid) => {
+                // Its type equations (#209), outside a signature (which
+                // asks them of its result's type only).
+                if self.ty_cond_defer.is_none() && args.len() >= self.g.tys[tid.0 as usize].params.len() {
+                    if let Some(teqs) = self.ty_teqs.get(tid).cloned() {
+                        let env: Vec<Val> = args.iter().map(|a| self.eval(cx, a)).collect();
+                        for q in teqs {
+                            self.want_type_teq(cx, *tid, &env, &q, span);
+                        }
+                    }
+                }
                 // Wherever a type is applied, its conditions on its
                 // parameters must hold (#136).
                 if !self.ty_conds.contains_key(tid) || args.len() < self.g.tys[tid.0 as usize].params.len() {

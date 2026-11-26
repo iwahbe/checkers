@@ -69,8 +69,20 @@ impl Elab {
     /// a type by its head (a type's name, a class's type `C.Name`) or a
     /// name the constraints `cs` give the type `Type`.
     pub fn teq_sides<'a>(&self, cs: &[Constraint], e: &'a Expr) -> Option<(&'a Expr, &'a Expr)> {
+        self.teq_sides_in(cs, &[], e)
+    }
+
+    /// As `teq_sides`, where `types` are names of types in scope too (a
+    /// type's parameters of kind `Type`).
+    pub fn teq_sides_in<'a>(&self, cs: &[Constraint], types: &[String], e: &'a Expr) -> Option<(&'a Expr, &'a Expr)> {
         let ExprKind::Binary(Op::EqEq, a, b) = &e.kind else { return None };
-        (self.type_like(cs, a) || self.type_like(cs, b)).then_some((&**a, &**b))
+        let named = |x: &Expr| matches!(&x.kind, ExprKind::Var(n) if types.contains(n));
+        (self.type_like(cs, a) || self.type_like(cs, b) || named(a) || named(b)).then_some((&**a, &**b))
+    }
+
+    /// A type's parameters of kind `Type`, by name.
+    pub fn type_params_named(&self, tid: TyId) -> Vec<String> {
+        self.g.tys[tid.0 as usize].params.iter().filter(|(_, k)| matches!(k, Tm::Univ(_))).map(|(n, _)| n.to_string()).collect()
     }
 
     fn type_like(&self, cs: &[Constraint], e: &Expr) -> bool {
@@ -314,7 +326,11 @@ impl Elab {
     }
 
     pub fn want_con_teqs(&mut self, cx: &Cx, c: ConId, args: &[Rc<Tm>], span: Span) {
-        let Some(teqs) = self.con_teqs.get(&c).cloned() else { return };
+        let tid0 = self.g.cons[c.0 as usize].ty;
+        if !self.con_teqs.contains_key(&c) && !self.ty_teqs.contains_key(&tid0) {
+            return;
+        }
+        let teqs = self.con_teqs.get(&c).cloned().unwrap_or_default();
         if args.len() < self.g.arity_con(c) {
             return;
         }
@@ -323,6 +339,10 @@ impl Elab {
         let env: Vec<Val> = args.iter().map(|a| self.eval(cx, a)).collect();
         let con = self.g.cons[c.0 as usize].name.to_string();
         let taken_by = self.arg_of.clone();
+        // The type's own equations on its parameters, at the value built.
+        for q in self.ty_teqs.get(&tid).cloned().unwrap_or_default() {
+            self.want_type_teq(cx, tid, &env[..np], &q, span);
+        }
         for q in teqs {
             let param = |t: &Tm| match t {
                 Tm::Var(i) if *i >= env.len() - np => Some(env.len() - 1 - i),
@@ -360,6 +380,74 @@ impl Elab {
             }
         }
         self.show_val(cx, &Val::TyCon(tid, args.into()))
+    }
+
+    /// The equation `l == r` of type `tid`'s header (as written, `text`),
+    /// at a place it is written with arguments: wanted.
+    pub fn want_type_teq(&mut self, cx: &Cx, tid: TyId, args: &[Val], q: &TyEq, span: Span) {
+        let ty = self.g.tys[tid.0 as usize].name.to_string();
+        let env = Rc::new(args.to_vec());
+        let (lhs, rhs) = (eval(&self.g, &env, &q.lhs), eval(&self.g, &env, &q.rhs));
+        // The type's parameters the equation names, at this use.
+        let params = self.g.tys[tid.0 as usize]
+            .params
+            .iter()
+            .zip(args)
+            .filter(|((n, _), _)| super::rename_words(&q.text, &[(n.to_string(), "\u{0}".into())]).contains('\u{0}'))
+            .map(|((n, _), a)| (n.to_string(), a.clone()))
+            .collect();
+        self.wanted.push(Wanted {
+            lvl: cx.lvl(),
+            names: cx.names(),
+            lhs,
+            rhs,
+            span,
+            text: q.text.clone(),
+            kind: WantedKind::Call { callee: ty, params },
+            owner: self.cur_fn,
+            givens: self.givens.clone(),
+        });
+    }
+
+    /// The equations of the types applied in `v` (over `lvl` locals), at
+    /// any depth outside a binder: each at its arguments, with its text and
+    /// its type.
+    pub fn ty_teqs_in(&self, lvl: usize, v: &Val) -> Vec<(TyId, Vec<Val>, TyEq)> {
+        let mut out = Vec::new();
+        if self.ty_teqs.is_empty() {
+            return out;
+        }
+        let t = crate::core::zonk_metas(&self.g, lvl, &quote(&self.g, lvl, v));
+        self.ty_teqs_tm(lvl, &t, &mut out);
+        out
+    }
+
+    fn ty_teqs_tm(&self, lvl: usize, t: &Tm, out: &mut Vec<(TyId, Vec<Val>, TyEq)>) {
+        let env = Rc::new((0..lvl).map(Val::var).collect::<Vec<_>>());
+        let (head, args): (Option<TyId>, Vec<Tm>) = match t {
+            Tm::TyConApp(tid, xs) => (Some(*tid), xs.clone()),
+            _ => match t.spine() {
+                (Tm::TyCon(tid), xs) => (Some(*tid), xs.into_iter().map(|x| (**x).clone()).collect()),
+                _ => (None, Vec::new()),
+            },
+        };
+        if let (Some(tid), Some(teqs)) = (head, head.and_then(|h| self.ty_teqs.get(&h))) {
+            if args.len() >= self.g.tys[tid.0 as usize].params.len() {
+                let avals: Vec<Val> = args.iter().map(|a| eval(&self.g, &env, a)).collect();
+                for q in teqs {
+                    out.push((tid, avals.clone(), q.clone()));
+                }
+            }
+        }
+        // Outside binders only: the arguments' types.
+        if !matches!(t, Tm::Pi(..) | Tm::Lam(..)) {
+            t.any_sub(|x, k| {
+                if k == 0 {
+                    self.ty_teqs_tm(lvl, x, out);
+                }
+                false
+            });
+        }
     }
 
     fn inst_tm(&self, t: &Tm, env: &[Val]) -> Val {

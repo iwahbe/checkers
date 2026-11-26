@@ -658,6 +658,9 @@ pub struct Elab {
     /// A type's conditions on its parameters, over the parameters (#136):
     /// obligations where the type is applied, facts in its fields.
     pub ty_conds: HashMap<TyId, Vec<Pred>>,
+    /// Types' type equations on their parameters (#209), over them: a
+    /// condition on the type.
+    pub ty_teqs: HashMap<TyId, Vec<tyeq::TyEq>>,
     /// A type's parameters' typings after the first (`n~Int, n~Nat`), with
     /// the span of each, until their refinements join its conditions.
     pub ty_param_typings: HashMap<TyId, Vec<(usize, Tm, usize, Span)>>,
@@ -978,6 +981,7 @@ impl Elab {
             ty_conds: HashMap::new(),
             ty_param_typings: HashMap::new(),
             ty_cond_defer: None,
+            ty_teqs: HashMap::new(),
             alias_preds: HashMap::new(),
             alias_subject: HashMap::new(),
             result_metas: HashMap::new(),
