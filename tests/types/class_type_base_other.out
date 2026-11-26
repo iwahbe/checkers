@@ -1,0 +1,8 @@
+error[E0201]: `Units.Run` must be `List U8`, or a refinement of it, but `List Int` is not
+  --> class_type_base_other.ck:19:5
+   |
+19 |     type Run = List Int
+   |     ^^^^^^^^^^^^^^^^^^^ `Run` is `List Int` here
+   = help: give `Run` the type `List U8`, or a refinement of it
+
+class_type_base_other.ck: 1 error, 0 warnings

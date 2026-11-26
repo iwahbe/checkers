@@ -84,6 +84,10 @@ impl Elab {
         // A value checked against a refinement alias must satisfy it (D71),
         // unless the call it is passed to, or the function returning it,
         // already checks that alias, or its branches did.
+        // A class's type with a base type (#360): only its own values.
+        if !covered && !compound && !matches!(t, Tm::Error) {
+            self.check_based(cx, expected, inferred.as_ref(), e.span);
+        }
         if !covered && !returned && !compound && !matches!(t, Tm::Error) {
             if let Some((d, args)) = self.refined_alias(expected) {
                 let already = inferred.as_ref().and_then(|ty| self.refined_alias(ty)).is_some_and(|(d2, _)| d2 == d);
@@ -115,8 +119,15 @@ impl Elab {
             return mt;
         }
         // A name where a type is expected is the type, not a record's
-        // constructor of the same name (`String`, #170).
-        if matches!(exp, Val::Univ(_)) && matches!(e.kind, ExprKind::Con(_)) && !cx.type_pos {
+        // constructor of the same name (`String`, #170), applied too
+        // (`Box b`): no constructor builds a type.
+        if matches!(exp, Val::Univ(_)) && !cx.type_pos && {
+            let mut h = e;
+            while let ExprKind::App(f, _) = &h.kind {
+                h = f;
+            }
+            matches!(h.kind, ExprKind::Con(_))
+        } {
             cx.type_pos = true;
             let t = self.check_inner(cx, e, expected, tail);
             cx.type_pos = false;
@@ -824,6 +835,7 @@ impl Elab {
                 let n = self.number(s);
                 let mv = self.fresh_meta_val(cx);
                 self.deferred.push(Deferred {
+                    givens: self.givens.clone(),
                     ty: mv.clone(),
                     kind: OpClass::Numeric,
                     span,
@@ -934,6 +946,7 @@ impl Elab {
                 if let Some(Sym::Len) = self.resolve(n, false) {
                     let (at, aty) = self.infer(cx, args[0]);
                     self.deferred.push(Deferred {
+                        givens: self.givens.clone(),
                         ty: aty,
                         kind: OpClass::HasLen,
                         span: args[0].span,
@@ -1234,6 +1247,11 @@ impl Elab {
                 self.report_gained(cx, &a.dom, &a.own, &g, a.span, "this expression");
                 continue;
             }
+            // A class's type with a base type (#360): only its own values.
+            if crate::core::class_type_base(&self.g, &a.dom).is_some() {
+                self.check_based(cx, &a.dom, Some(&a.own), a.span);
+                continue;
+            }
             // A refinement the value's own type doesn't already give it
             // (D71): as `check` asks of a value checked against it.
             if let Some((d, dargs)) = self.refined_alias(&a.dom) {
@@ -1319,6 +1337,8 @@ impl Elab {
                 // Only what is needed: most calls have no measure to compare
                 // and no precondition, and evaluating their arguments for
                 // nothing was much of the time this took.
+                // Its type equations (#209), at this call's types.
+                self.want_call_teqs(cx, *d, t, &args, span);
                 let Some(spec) = self.specs.get(d) else { return };
                 let (n, measured, pres) = (spec.n_binders, spec.measure.is_some(), spec.preds.iter().any(|p| !p.is_post));
                 if args.len() >= n {
@@ -1354,6 +1374,16 @@ impl Elab {
                 self.pre_obligations(cx, *d, &name, &args, t, span);
             }
             Tm::TyCon(tid) => {
+                // Its type equations (#209), outside a signature (which
+                // asks them of its result's type only).
+                if self.ty_cond_defer.is_none() && args.len() >= self.g.tys[tid.0 as usize].params.len() {
+                    if let Some(teqs) = self.ty_teqs.get(tid).cloned() {
+                        let env: Vec<Val> = args.iter().map(|a| self.eval(cx, a)).collect();
+                        for q in teqs {
+                            self.want_type_teq(cx, *tid, &env, &q, span);
+                        }
+                    }
+                }
                 // Wherever a type is applied, its conditions on its
                 // parameters must hold (#136).
                 if !self.ty_conds.contains_key(tid) || args.len() < self.g.tys[tid.0 as usize].params.len() {
@@ -1367,6 +1397,7 @@ impl Elab {
                 self.oblige_ty_conds(cx, span, *tid, env);
             }
             Tm::Con(c) => {
+                self.want_con_teqs(cx, *c, &args, span);
                 let Some(invs) = self.con_invs.get(c).cloned() else { return };
                 if args.len() < self.g.arity_con(*c) {
                     return;
@@ -2607,6 +2638,7 @@ impl Elab {
                 };
                 if let Some(kind) = class {
                     self.deferred.push(Deferred {
+                        givens: self.givens.clone(),
                         ty: lty.clone(),
                         kind,
                         span: operands,
@@ -2625,6 +2657,7 @@ impl Elab {
                 // Compiled code never compares functions (D125).
                 if matches!(op, Op::EqEq | Op::Ne) && self.in_spec == 0 && self.in_proof == 0 {
                     self.deferred.push(Deferred {
+                        givens: self.givens.clone(),
                         ty: lty.clone(),
                         kind: OpClass::Comparable,
                         span: operands,
