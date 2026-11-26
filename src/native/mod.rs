@@ -429,7 +429,7 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         let dir = std::path::Path::new(&path).parent().unwrap().to_path_buf();
         crate::with_big_stack(move || {
-            let (e, main, staged, report) = crate::ready_to_run(name, &text, &dir, false).map_err(|r| r.report).unwrap();
+            let (e, main, staged, report) = crate::ready_to_run(name, &text, &dir).map_err(|r| r.report).unwrap();
             assert_eq!(report, "");
             f(&prepare(&e.g, Some(&staged), main, host_return_words()));
         })
@@ -509,7 +509,7 @@ mod tests {
             let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/run/unboxed_wide.ck");
             let text = std::fs::read_to_string(path).unwrap();
             let dir = std::path::Path::new(path).parent().unwrap();
-            let (e, main, staged, report) = crate::ready_to_run("unboxed_wide.ck", &text, dir, false).map_err(|r| r.report).unwrap();
+            let (e, main, staged, report) = crate::ready_to_run("unboxed_wide.ck", &text, dir).map_err(|r| r.report).unwrap();
             assert_eq!(report, "");
             for (triple, n) in MACHINES {
                 let p = prepare(&e.g, Some(&staged), main, n);
@@ -524,11 +524,18 @@ mod tests {
     /// in `tests/run/<name>.ck`, every runtime error's owner written as 0:
     /// code put into another function names where it came from.
     fn machine_code(name: &str, triple: &str) -> Vec<(String, String)> {
+        machine_code_as(name, triple, true)
+    }
+
+    /// `machine_code`, as if the program were `proved` or not (§13.3).
+    fn machine_code_as(name: &str, triple: &str, proved: bool) -> Vec<(String, String)> {
         let path = format!("{}/tests/run/{name}.ck", env!("CARGO_MANIFEST_DIR"));
         let text = std::fs::read_to_string(&path).unwrap();
         let dir = std::path::Path::new(&path).parent().unwrap();
-        let (e, main, staged, report) = crate::ready_to_run(&format!("{name}.ck"), &text, dir, false).map_err(|r| r.report).unwrap();
+        let (mut e, main, staged, report) = crate::ready_to_run(&format!("{name}.ck"), &text, dir).map_err(|r| r.report).unwrap();
         assert_eq!(report, "");
+        assert!(e.g.proved, "`{name}` relies on an `admit`");
+        e.g.proved = proved;
         let isa = isa(triple);
         let p = prepare(&e.g, Some(&staged), main, codegen::return_words(&*isa));
         let ob = cranelift_object::ObjectBuilder::new(isa, "test", cranelift_module::default_libcall_names()).unwrap();
@@ -578,6 +585,26 @@ mod tests {
         })
     }
 
+    /// A guarded operation whose obligation is proved has no run-time check
+    /// (§13.3, tests/run/proved_guards.ck): a division by a divisor proved
+    /// not zero is one whose bounds show it, and a `Nat` subtraction, a
+    /// division and an index are shorter than where their checks are kept.
+    /// (A `when`'s check is the runtime's, told whether to make it.)
+    #[test]
+    fn proved_operations_have_no_checks() {
+        crate::with_big_stack(|| {
+            for (triple, _) in MACHINES {
+                let code = machine_code("proved_guards", triple);
+                assert_eq!(code_of(&code, "nonzero"), code_of(&code, "positive"), "{triple}");
+                let checked = machine_code_as("proved_guards", triple, false);
+                for f in ["nat_less", "nonzero", "byte_at"] {
+                    let (proved, kept) = (code_of(&code, f), code_of(&checked, f));
+                    assert!(proved.lines().count() < kept.lines().count(), "{triple}: `{f}` keeps its check:\n{proved}");
+                }
+            }
+        })
+    }
+
     /// Small integers' inline paths (tests/run/small_int_edges.ck: overflow
     /// checks, constants, comparisons branched on) compile for every
     /// machine, whose overflow-checking instructions differ.
@@ -587,7 +614,7 @@ mod tests {
             let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/run/small_int_edges.ck");
             let text = std::fs::read_to_string(path).unwrap();
             let dir = std::path::Path::new(path).parent().unwrap();
-            let (e, main, staged, report) = crate::ready_to_run("small_int_edges.ck", &text, dir, false).map_err(|r| r.report).unwrap();
+            let (e, main, staged, report) = crate::ready_to_run("small_int_edges.ck", &text, dir).map_err(|r| r.report).unwrap();
             assert_eq!(report, "");
             for (triple, _) in MACHINES {
                 object(&e.g, Some(&staged), main, isa(triple)).unwrap_or_else(|m| panic!("{triple}: {m}"));

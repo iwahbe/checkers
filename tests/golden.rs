@@ -73,11 +73,7 @@ fn ck_files(dir: &Path) -> Vec<PathBuf> {
 fn run_native(args_path: &Path, threads: usize) -> String {
     let spec = fs::read_to_string(args_path).unwrap();
     let mut lines = spec.lines();
-    let first = lines.next().unwrap_or_default();
-    let (flags, program): (Vec<&str>, &str) = match first.strip_prefix("--unverified ") {
-        Some(p) => (vec!["--unverified"], p),
-        None => (vec![], first),
-    };
+    let program = lines.next().unwrap_or_default();
     let stdin = fs::read(args_path.with_extension("in")).unwrap_or_default();
     // `NAME.env`: a variable to set on each line, `NAME=VALUE`.
     let vars = fs::read_to_string(args_path.with_extension("env")).unwrap_or_default();
@@ -87,7 +83,6 @@ fn run_native(args_path: &Path, threads: usize) -> String {
         .envs(vars)
         .arg("run")
         .args(["--threads", &threads.to_string()])
-        .args(flags)
         .arg(program)
         .args(lines)
         .current_dir(args_path.parent().unwrap())

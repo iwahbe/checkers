@@ -957,19 +957,14 @@ pub struct Ran {
     pub code: u8,
 }
 
-/// Proof failures (D48): the only errors `run --unverified` tolerates.
-fn is_proof_failure(d: &Diagnostic) -> bool {
-    matches!(d.code, "E0450" | "E0451" | "E0240")
-}
-
 /// Check and prove `text`, then call its exported `main` with `args` (D43,
 /// §13.4), as native code (§14). The program writes to this process's
 /// standard streams, so the report is printed to standard error before it
 /// runs; the returned report is empty. Imported modules are looked up in
 /// `dir`; `threads`: threads for behaviours and `par` (1: the deterministic
 /// FIFO scheduler, D67).
-pub fn run(name: &str, text: &str, dir: &std::path::Path, args: &[String], unverified: bool, threads: usize) -> Ran {
-    let (e, main, staged, report) = match ready_to_run(name, text, dir, unverified) {
+pub fn run(name: &str, text: &str, dir: &std::path::Path, args: &[String], threads: usize) -> Ran {
+    let (e, main, staged, report) = match ready_to_run(name, text, dir) {
         Ok(r) => r,
         Err(ran) => return ran,
     };
@@ -979,8 +974,8 @@ pub fn run(name: &str, text: &str, dir: &std::path::Path, args: &[String], unver
 }
 
 /// `checkers build`: check and prove, then write an executable.
-pub fn build(name: &str, text: &str, dir: &std::path::Path, out: &std::path::Path, unverified: bool, release: bool) -> Ran {
-    let (e, main, staged, mut report) = match ready_to_run(name, text, dir, unverified) {
+pub fn build(name: &str, text: &str, dir: &std::path::Path, out: &std::path::Path, release: bool) -> Ran {
+    let (e, main, staged, mut report) = match ready_to_run(name, text, dir) {
         Ok(r) => r,
         Err(ran) => return ran,
     };
@@ -1012,35 +1007,31 @@ pub fn build(name: &str, text: &str, dir: &std::path::Path, out: &std::path::Pat
 }
 
 /// Check, prove and stage a program for running: the elaborated program,
-/// `main`, the staged code, and the report so far.
-fn ready_to_run(
-    name: &str,
-    text: &str,
-    dir: &std::path::Path,
-    unverified: bool,
-) -> Result<(elab::Elab, core::DefId, stage::Staged, String), Ran> {
+/// `main`, the staged code, and the report so far (warnings). A program
+/// with any error doesn't run (§7.4).
+fn ready_to_run(name: &str, text: &str, dir: &std::path::Path) -> Result<(elab::Elab, core::DefId, stage::Staged, String), Ran> {
     let (mut c, e) = elaborate(name, text, dir);
-    let Some((e, user)) = e else { return Err(Ran { report: c.report(), code: 2 }) };
+    let Some((mut e, user)) = e else { return Err(Ran { report: c.report(), code: 2 }) };
     run_checks(&mut c, &e, &user);
     prove(&mut c, &e, &user);
-    let mut report = if c.all_diags().next().is_none() && c.internal.is_empty() { String::new() } else { c.report() };
-    let blocking = c.internal.len() + c.all_diags().filter(|d| d.is_error() && !(unverified && is_proof_failure(d))).count();
-    if blocking > 0 {
+    let report = if c.all_diags().next().is_none() && c.internal.is_empty() { String::new() } else { c.report() };
+    if c.errors() > 0 || !c.internal.is_empty() {
         return Err(Ran { report, code: 2 });
-    }
-    let mut e = e;
-    if c.errors() > 0 {
-        report += &format!("running with {} unproven obligation(s) (--unverified)\n", c.errors());
-    } else {
-        // Proved: the bounds signatures give are facts native code may rely on.
-        e.g.bounds = std::mem::take(&mut e.bounds);
     }
     let exported = e.modules.get(&user).is_some_and(|m| m.exported_values.contains("main"));
     let main = e.g.defs.iter().position(|d| *d.module == user && &*d.name == "main");
     let (Some(main), true) = (main, exported) else {
         return Err(Ran { report: format!("{report}error: `{}` has no exported `main` function\n", c.file.name), code: 2 });
     };
+    // Staging is compile-time evaluation: it keeps its checks (§13.3).
     let (staged, _) = stage::stage_program(&e.g);
+    // Every obligation is proved. Unless a fact the proofs use may be an
+    // `admit`'s, assumed (§13.3), native code relies on them: the bounds
+    // signatures give, and no checks of guarded operations.
+    if e.admits.is_empty() {
+        e.g.bounds = std::mem::take(&mut e.bounds);
+        e.g.proved = true;
+    }
     Ok((e, core::DefId(main as u32), staged, report))
 }
 

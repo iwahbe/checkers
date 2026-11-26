@@ -365,11 +365,14 @@ pub struct Globals {
     pub value_params: RefCell<HashMap<TyId, std::collections::BTreeSet<usize>>>,
     /// Each function's constant bounds on its binders (implicit ones too),
     /// then on its result, where its signature gives them (`x~U8`,
-    /// `0 <= x`), which native code relies on (§14). Empty until every
-    /// obligation of the program is proved (`Elab::bounds` until then): a
-    /// bound is a fact only then, not in a `check` or staging, which run
-    /// before proving, nor with `--unverified`.
+    /// `0 <= x`), which native code relies on (§14). Empty until the
+    /// program is `proved` (`Elab::bounds` until then).
     pub bounds: HashMap<DefId, Vec<Option<crate::range::Range>>>,
+    /// Every obligation of the program is proved, and none of its facts is
+    /// assumed by an `admit` (§13.3): native code compiled from here relies
+    /// on the proofs, with no run-time checks of guarded operations. False
+    /// in a `check` or staging, which run before proving.
+    pub proved: bool,
     /// The base types of classes' types that have one (#360), by their
     /// field of the dictionary: closed types.
     pub type_bases: HashMap<(ConId, usize), Vec<Tm>>,
@@ -434,6 +437,7 @@ impl Globals {
             postponed: RefCell::new(Vec::new()),
             value_params: RefCell::new(HashMap::new()),
             bounds: HashMap::new(),
+            proved: false,
             type_bases: HashMap::new(),
         }
     }

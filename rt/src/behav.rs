@@ -354,12 +354,13 @@ fn cells_of(t: W, what: &str) -> Vec<Arc<Cell>> {
 }
 
 /// `when x = c, … using sched: f` (borrowed arguments). Its cowns are
-/// distinct, which the prover proves (§8.5); this check fails only where
-/// that proof rests on something assumed (§13.3).
+/// distinct, which the prover proves (§8.5); `check` (not 0) where that
+/// proof may rest on something assumed, an `admit` (§13.3), and there
+/// naming one twice stops the program.
 #[no_mangle]
-pub extern "C" fn ck_when(cowns: W, f: W, owner: u64) -> W {
+pub extern "C" fn ck_when(cowns: W, f: W, owner: u64, check: u64) -> W {
     let cells = cells_of(cowns, "cowns");
-    if cells.iter().enumerate().any(|(i, c)| cells[..i].iter().any(|d| Arc::ptr_eq(c, d))) {
+    if check != 0 && cells.iter().enumerate().any(|(i, c)| cells[..i].iter().any(|d| Arc::ptr_eq(c, d))) {
         crate::prog::error(owner as u32, "`when` names the same cown twice");
     }
     schedule(Beh::When(cells, dup(f)));

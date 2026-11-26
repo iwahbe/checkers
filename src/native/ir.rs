@@ -341,7 +341,7 @@ impl<'g> Compiler<'g> {
                 }
                 _ => Ir::Case(self.compile(s), Arc::new(self.case(c))),
             },
-            Tm::Error => Ir::Fail("no arm of a `match` matches this value (`--unverified`)"),
+            Tm::Error => Ir::Fail("no arm of a `match` matches this value"),
         }
     }
 
