@@ -9,6 +9,8 @@
 
 use crate::core::{eval, force, max_var, quote, CaseTm, ConId, DefId, Lit, Mult, Prim, Tm, TyId, Val};
 use crate::elab::{has_meta, Elab, ObLocal, Obligation};
+use super::Sx;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
@@ -208,6 +210,8 @@ struct PostUse {
 /// uninterpreted declaration).
 pub struct Focus {
     others: Vec<String>,
+    /// The copies of functions the group's conditions apply (`definitions`).
+    copies: String,
     group: Vec<(String, String, String, Option<String>)>,
 }
 
@@ -230,8 +234,224 @@ impl Focus {
         }
         let heads: Vec<&str> = on.iter().map(|g| g.1.as_str()).collect();
         let bodies: Vec<&str> = on.iter().map(|g| g.2.as_str()).collect();
+        out += &self.copies;
         out += &format!("(define-funs-rec ({}) ({}))\n", heads.join(" "), bodies.join(" "));
         Some(out)
+    }
+}
+
+/// Reflected definitions, each its name, `define-funs-rec` head and body, as
+/// Z3 is to be given them: the bodies, and the `define-fun`s to put before
+/// them.
+///
+/// Z3 splits a recursive definition into cases only at an `ite` whose
+/// condition applies no function of a `define-funs-rec` (`splits`), and
+/// unfolds each case at an application only as the search reaches it. A
+/// definition without such an `ite` is one case, which Z3 unfolds wherever the
+/// function is applied, and so at the applications each unfolding makes,
+/// without end: a function recursing over a sequence pattern (a `match` on
+/// `uncons xs`, with `uncons` reflected), or over an `if` on `is_digit c`.
+/// Whether a goal near one was proved then depended on whether Z3 met a
+/// contradiction before its work limit, so on the order of the facts and how
+/// they were written. So in such a definition, a condition that applies only
+/// functions that don't recurse, through any number of calls, applies copies
+/// of them made with `define-fun` instead, which Z3 substitutes where they
+/// are used (`|uncons#cond|`); elsewhere the functions are kept, so that equal
+/// arguments give equal applications at once. A condition applying a
+/// recursive function is left as it is: Z3 can't split there.
+///
+/// `cache` keeps each body as rewritten, for the other queries of the module:
+/// a body is rewritten the same way in every group holding it (a group holds
+/// every definition its members apply).
+fn definitions(group: &[(&str, &str, &str)], cache: Option<&RefCell<Rewritten>>) -> (String, Vec<String>) {
+    let index: HashMap<&str, usize> = group.iter().enumerate().map(|(k, g)| (g.0.trim_matches('|'), k)).collect();
+    let calls: Vec<Vec<usize>> = group
+        .iter()
+        .map(|(_, _, body)| {
+            let mut c: Vec<usize> = symbols(body).filter_map(|n| index.get(n).copied()).collect();
+            c.sort();
+            c.dedup();
+            c
+        })
+        .collect();
+    let sccs = crate::elab::order::sccs(&calls);
+    let mut recursive = vec![false; group.len()];
+    // Applies no recursive function, through any number of calls.
+    let mut clean = vec![false; group.len()];
+    // Dependencies first.
+    for scc in &sccs {
+        for &k in scc {
+            recursive[k] = scc.len() > 1 || calls[k].contains(&k);
+            clean[k] = !recursive[k] && calls[k].iter().all(|&j| clean[j]);
+        }
+    }
+    let mut used = vec![false; group.len()];
+    let bodies = group
+        .iter()
+        .enumerate()
+        .map(|(k, (_, _, body))| {
+            if !recursive[k] || !calls[k].iter().any(|&j| clean[j]) {
+                return body.to_string();
+            }
+            if let Some(b) = cache.and_then(|c| c.borrow().bodies.get(*body).cloned()) {
+                for n in &b.1 {
+                    if let Some(&j) = index.get(n.as_str()) {
+                        used[j] = true;
+                    }
+                }
+                return b.0;
+            }
+            // Only a definition Z3 would make one case.
+            let mut names = BTreeSet::new();
+            let b = match super::parse_sx(body).pop() {
+                Some(x) if !splits(&x, &index) => super::print_sx(&cond_copies(&x, &index, &clean, &mut names)),
+                _ => body.to_string(),
+            };
+            let (b, names) = (b, names.into_iter().collect::<Vec<String>>());
+            if let Some(c) = cache {
+                c.borrow_mut().bodies.insert(body.to_string(), (b.clone(), names.clone()));
+            }
+            for n in &names {
+                if let Some(&j) = index.get(n.as_str()) {
+                    used[j] = true;
+                }
+            }
+            b
+        })
+        .collect();
+    // The copies the conditions apply, and those they apply.
+    let mut need = vec![false; group.len()];
+    let mut stack: Vec<usize> = (0..group.len()).filter(|&k| used[k]).collect();
+    while let Some(k) = stack.pop() {
+        if !need[k] {
+            need[k] = true;
+            stack.extend(calls[k].iter().copied());
+        }
+    }
+    let mut copies = String::new();
+    for &k in sccs.iter().flatten().filter(|&&k| need[k]) {
+        let (name, head, body) = group[k];
+        let text = match cache.and_then(|c| c.borrow().copies.get(name).cloned()) {
+            Some(t) => t,
+            None => {
+                // `(name (params) sort)` → `(define-fun name#cond (params) sort body)`, its
+                // applications of the group's functions made the copies'.
+                let rename = |t: &str| {
+                    let mut out = String::with_capacity(t.len());
+                    for (i, part) in t.split('|').enumerate() {
+                        if i > 0 {
+                            out.push('|');
+                        }
+                        out.push_str(part);
+                        if i % 2 == 1 && index.contains_key(part) {
+                            out.push_str("#cond");
+                        }
+                    }
+                    out
+                };
+                let t = format!("(define-fun {} {})\n", rename(&head[1..head.len() - 1]), rename(body));
+                if let Some(c) = cache {
+                    c.borrow_mut().copies.insert(name.to_string(), t.clone());
+                }
+                t
+            }
+        };
+        copies += &text;
+    }
+    (copies, bodies)
+}
+
+/// Z3 splits a definition `x` into cases (as `compute_cases` in Z3's
+/// `recfun_decl_plugin.cpp` does): looking from the top, through
+/// applications, it finds an `ite` whose condition applies no function of the
+/// group, and one of whose branches does. An `ite` whose condition applies
+/// one is kept whole, and not looked into.
+fn splits(x: &Sx, index: &HashMap<&str, usize>) -> bool {
+    let Sx::List(items) = x else { return false };
+    if is_binder(items) {
+        return false;
+    }
+    if items.len() == 4 && matches!(&items[0], Sx::Atom(a) if a == "ite") {
+        let mut applied = Vec::new();
+        applies(&items[1], index, &mut applied);
+        if !applied.is_empty() {
+            return false;
+        }
+        let (mut t, mut e) = (Vec::new(), Vec::new());
+        applies(&items[2], index, &mut t);
+        applies(&items[3], index, &mut e);
+        return !t.is_empty() || !e.is_empty();
+    }
+    items.iter().any(|y| splits(y, index))
+}
+
+/// Bodies rewritten by `definitions`, and the copies of functions it made:
+/// the same in each query of a module.
+#[derive(Default)]
+pub struct Rewritten {
+    /// A body, rewritten, and the functions whose copies it applies.
+    bodies: HashMap<String, (String, Vec<String>)>,
+    /// A function's copy, by its name.
+    copies: HashMap<String, String>,
+}
+
+/// The `|quoted|` symbols of SMT-LIB text: every definition's name is one.
+fn symbols(text: &str) -> impl Iterator<Item = &str> {
+    text.split('|').skip(1).step_by(2)
+}
+
+/// `x` with each condition of its `ite`s that applies functions of the
+/// group (outside `lambda`s and quantifiers, which Z3 doesn't look into), all
+/// `clean`, applying their copies instead. `names` gathers those functions.
+fn cond_copies(x: &Sx, index: &HashMap<&str, usize>, clean: &[bool], names: &mut BTreeSet<String>) -> Sx {
+    match x {
+        Sx::List(items) if is_binder(items) => x.clone(),
+        Sx::List(items) if items.len() == 4 && matches!(&items[0], Sx::Atom(a) if a == "ite") => {
+            let mut applied = Vec::new();
+            applies(&items[1], index, &mut applied);
+            let cond = if !applied.is_empty() && applied.iter().all(|&k| clean[k]) {
+                renamed(&items[1], index, names)
+            } else {
+                items[1].clone()
+            };
+            Sx::List(vec![
+                items[0].clone(),
+                cond,
+                cond_copies(&items[2], index, clean, names),
+                cond_copies(&items[3], index, clean, names),
+            ])
+        }
+        Sx::List(items) => Sx::List(items.iter().map(|y| cond_copies(y, index, clean, names)).collect()),
+        Sx::Atom(_) => x.clone(),
+    }
+}
+
+/// A `lambda`, `forall` or `exists`.
+fn is_binder(items: &[Sx]) -> bool {
+    matches!(items.first(), Some(Sx::Atom(a)) if a == "lambda" || a == "forall" || a == "exists")
+}
+
+/// The functions of the group `x` applies, outside `lambda`s and quantifiers.
+fn applies(x: &Sx, index: &HashMap<&str, usize>, out: &mut Vec<usize>) {
+    match x {
+        Sx::Atom(a) => out.extend(index.get(a.trim_matches('|'))),
+        Sx::List(items) if is_binder(items) => {}
+        Sx::List(items) => items.iter().for_each(|y| applies(y, index, out)),
+    }
+}
+
+/// `x` applying the copies of the group's functions, outside `lambda`s and
+/// quantifiers.
+fn renamed(x: &Sx, index: &HashMap<&str, usize>, names: &mut BTreeSet<String>) -> Sx {
+    match x {
+        Sx::Atom(a) if index.contains_key(a.trim_matches('|')) => {
+            let n = a.trim_matches('|');
+            names.insert(n.to_string());
+            Sx::Atom(format!("|{n}#cond|"))
+        }
+        Sx::Atom(_) => x.clone(),
+        Sx::List(items) if is_binder(items) => x.clone(),
+        Sx::List(items) => Sx::List(items.iter().map(|y| renamed(y, index, names)).collect()),
     }
 }
 
@@ -292,7 +512,7 @@ struct Delta {
 
 /// Translated definitions, shared by the builders of one module.
 #[derive(Default)]
-pub struct Defs(std::cell::RefCell<BTreeMap<Inst, (Tx<Defn>, Delta)>>);
+pub struct Defs(RefCell<BTreeMap<Inst, (Tx<Defn>, Delta)>>, RefCell<Rewritten>);
 
 /// A table's translation: what it adds to a builder, and its elements' facts.
 type Table = (Delta, Vec<String>);
@@ -3120,8 +3340,6 @@ impl<'a> Builder<'a> {
             }
             self.insts.insert(inst, r.ok());
         }
-        let mut heads = Vec::new();
-        let mut bodies = Vec::new();
         let mut decls = Vec::new();
         let mut opaque = Vec::new();
         let mut group = Vec::new();
@@ -3141,8 +3359,6 @@ impl<'a> Builder<'a> {
             }
             match def {
                 Some((name, head, body)) => {
-                    heads.push(head.clone());
-                    bodies.push(body.clone());
                     let d = self.uninterp_decl(inst);
                     if let Some(d) = &d {
                         opaque.push(d.clone());
@@ -3157,16 +3373,25 @@ impl<'a> Builder<'a> {
                 }
             }
         }
-        let reflected = !heads.is_empty();
+        let reflected = !group.is_empty();
+        let mut copies = String::new();
         if reflected {
-            decls.push(format!("(define-funs-rec ({}) ({}))", heads.join(" "), bodies.join(" ")));
+            let parts: Vec<(&str, &str, &str)> = group.iter().map(|g| (g.0.as_str(), g.1.as_str(), g.2.as_str())).collect();
+            let (c, bodies) = definitions(&parts, self.defs.map(|d| &d.1));
+            copies = c;
+            for (g, b) in group.iter_mut().zip(bodies) {
+                g.2 = b;
+            }
+            let heads: Vec<&str> = group.iter().map(|g| g.1.as_str()).collect();
+            let bodies: Vec<&str> = group.iter().map(|g| g.2.as_str()).collect();
+            decls.push(format!("{copies}(define-funs-rec ({}) ({}))", heads.join(" "), bodies.join(" ")));
         }
         // The uninterpreted variant shares the rest (`decls` minus the group).
         let mut only = decls.clone();
         if reflected {
             only.pop();
         }
-        let focus = Focus { others: only.clone(), group };
+        let focus = Focus { others: only.clone(), copies, group };
         if reflected {
             only.extend(opaque);
         }
