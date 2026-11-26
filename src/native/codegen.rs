@@ -862,7 +862,7 @@ impl<'p, M: Module> Gen<'p, M> {
         if let (BOp::Prim(Op::Concat, _), Some(given)) = (op, Self::gives_left(args, drops)) {
             // The last use of the left side: `++` takes it, so a string
             // or array no one else holds is appended to in place.
-            let x = self.call1(b, st, "ck_concat_own", &[vs[0], vs[1]]);
+            let x = self.concat_own(b, st, vs[0], vs[1]);
             for d in drops.iter().filter(|d| **d != given) {
                 let dv = self.var(b, st, *d);
                 self.drop_v(b, st, dv);
@@ -883,6 +883,114 @@ impl<'p, M: Module> Gen<'p, M> {
             self.drop_v(b, st, d);
         }
         x
+    }
+
+    /// `a ++ c`, `a` owned and `c` borrowed. Inline when both are bytes
+    /// (strings are) and either side is empty (the result is the other), or
+    /// `a` is the only reference to its own memory (not a slice, not `c`)
+    /// and `c`'s few bytes fit in the room `a` has: they are copied after
+    /// `a`'s and its length bumped, as the runtime's `array::append_in_room`
+    /// does. Anything else calls the runtime.
+    fn concat_own(&mut self, b: &mut FunctionBuilder, st: &mut St, a: Value, c: Value) -> Value {
+        // Past this many bytes, the runtime's `memcpy` is quicker than a
+        // loop here.
+        const MAX_INLINE: i64 = 16;
+        let off_len = w::HDR as i32;
+        let off_ptr = (w::HDR + 8) as i32;
+        let kinds = b.create_block();
+        let lens = b.create_block();
+        let left_empty = b.create_block();
+        let right = b.create_block();
+        let owned = b.create_block();
+        let copy = b.create_block();
+        let byte = b.create_block();
+        let step = b.create_block();
+        let fin = b.create_block();
+        let slow = b.create_block();
+        let done = b.create_block();
+        let r = b.append_block_param(done, I64);
+        // Both pointers.
+        let pa = Self::is_ptr(b, a);
+        let pc = Self::is_ptr(b, c);
+        let both = b.ins().band(pa, pc);
+        b.ins().brif(both, kinds, &[], slow, &[]);
+        // Both bytes.
+        b.switch_to_block(kinds);
+        let ia = b.ins().load(I64, flags(), a, 8);
+        let ic = b.ins().load(I64, flags(), c, 8);
+        let ka = b.ins().band_imm_s(ia, 0xff);
+        let kc = b.ins().band_imm_s(ic, 0xff);
+        let ya = b.ins().icmp_imm_s(IntCC::Equal, ka, w::K_BYTES as i64);
+        let yc = b.ins().icmp_imm_s(IntCC::Equal, kc, w::K_BYTES as i64);
+        let y = b.ins().band(ya, yc);
+        b.ins().brif(y, lens, &[], slow, &[]);
+        // An empty side gives the other (`c` shared, `a` dropped).
+        b.switch_to_block(lens);
+        let n = b.ins().load(I64, flags(), a, off_len);
+        let m = b.ins().load(I64, flags(), c, off_len);
+        let n0 = b.ins().icmp_imm_s(IntCC::Equal, n, 0);
+        b.ins().brif(n0, left_empty, &[], right, &[]);
+        b.switch_to_block(left_empty);
+        self.dup(b, st, c);
+        self.drop_v(b, st, a);
+        b.ins().jump(done, &[BlockArg::Value(c)]);
+        b.switch_to_block(right);
+        let m0 = b.ins().icmp_imm_s(IntCC::Equal, m, 0);
+        b.ins().brif(m0, done, &[BlockArg::Value(a)], owned, &[]);
+        // `a` is the only reference (and not `c`), its bytes are its own, and
+        // `c` is short and fits in `a`'s room: the words its header records
+        // (bits 8–31 of its info), or else its length rounded up to 8.
+        b.switch_to_block(owned);
+        let rc = b.ins().atomic_load(I64, flags(), a);
+        let one = b.ins().icmp_imm_s(IntCC::Equal, rc, 1);
+        let sl = b.ins().load(I64, flags(), a, off_ptr);
+        let own = b.ins().icmp_imm_s(IntCC::Equal, sl, 0);
+        let ne = b.ins().icmp(IntCC::NotEqual, a, c);
+        let mine = b.ins().band(one, own);
+        let mine = b.ins().band(mine, ne);
+        let nm = b.ins().iadd(n, m);
+        let words = b.ins().ushr_imm_s(ia, 8);
+        let words = b.ins().band_imm_s(words, 0xff_ffff);
+        let recorded = b.ins().ishl_imm_s(words, 3);
+        let up = b.ins().iadd_imm_s(n, 7);
+        let exact = b.ins().band_imm_s(up, -8);
+        let none = b.ins().icmp_imm_s(IntCC::Equal, words, 0);
+        let room = b.ins().select(none, exact, recorded);
+        let fits = b.ins().icmp(IntCC::UnsignedLessThanOrEqual, nm, room);
+        let short = b.ins().icmp_imm_s(IntCC::UnsignedLessThanOrEqual, m, MAX_INLINE);
+        let small = b.ins().band(fits, short);
+        let go = b.ins().band(mine, small);
+        b.ins().brif(go, copy, &[], slow, &[]);
+        // Copy `c`'s bytes (after its header, or where a slice points) to
+        // after `a`'s, one at a time.
+        b.switch_to_block(copy);
+        let cp = b.ins().load(I64, flags(), c, off_ptr);
+        let inline = b.ins().iadd_imm_s(c, (w::HDR + 16) as i64);
+        let sliced = b.ins().icmp_imm_s(IntCC::NotEqual, cp, 0);
+        let src = b.ins().select(sliced, cp, inline);
+        let base = b.ins().iadd_imm_s(a, (w::HDR + 16) as i64);
+        let dst = b.ins().iadd(base, n);
+        let zero = b.ins().iconst(I64, 0);
+        b.ins().jump(byte, &[BlockArg::Value(zero)]);
+        b.switch_to_block(byte);
+        let i = b.append_block_param(byte, I64);
+        let more = b.ins().icmp(IntCC::UnsignedLessThan, i, m);
+        b.ins().brif(more, step, &[], fin, &[]);
+        b.switch_to_block(step);
+        let s = b.ins().iadd(src, i);
+        let v = b.ins().load(I8, flags(), s, 0);
+        let d = b.ins().iadd(dst, i);
+        b.ins().store(flags(), v, d, 0);
+        let i1 = b.ins().iadd_imm_s(i, 1);
+        b.ins().jump(byte, &[BlockArg::Value(i1)]);
+        b.switch_to_block(fin);
+        b.ins().store(flags(), nm, a, off_len);
+        b.ins().jump(done, &[BlockArg::Value(a)]);
+        b.switch_to_block(slow);
+        let x = self.call1(b, st, "ck_concat_own", &[a, c]);
+        b.ins().jump(done, &[BlockArg::Value(x)]);
+        b.switch_to_block(done);
+        r
     }
 
     /// The values of `drops` that are among `args`, taken out of `drops`.
