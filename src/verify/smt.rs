@@ -1127,6 +1127,19 @@ impl<'a> Builder<'a> {
     /// class's parameters, #145): a sort constructor of its own,
     /// `Display.Options a`.
     fn assoc_sort(&mut self, c: ConId, i: usize, args: Vec<Sort>) -> Sort {
+        // A class's type with a base type (#360): its values are the base's.
+        if let Some(b) = self.e.g.type_bases.get(&(c, i)).and_then(|bs| bs.first()).cloned() {
+            // Over the class's parameters (of sorts `args`) and a
+            // dictionary, whose types are their own sorts.
+            let ty = self.e.g.cons[c.0 as usize].ty;
+            let mut env: Vec<Ent> = args.iter().map(|a| Ent::Ty(a.clone())).collect();
+            env.push(Ent::Term(String::new(), Sort::Data(ty, args.clone())));
+            if env.len() == self.e.g.arity_ty(ty) + 1 {
+                if let Ok(s) = self.sort_of(&env, &b) {
+                    return s;
+                }
+            }
+        }
         let ci = &self.e.g.cons[c.0 as usize];
         let ti = &self.e.g.tys[ci.ty.0 as usize];
         let name = format!("{}.{}.{}", ti.module, ti.name, ci.fields[i].0.trim_start_matches('$'));
@@ -1861,7 +1874,7 @@ impl<'a> Builder<'a> {
     /// The predicates declared on a class's type (#176), of `x` of type
     /// `ty`, when `ty` is that type read from a dictionary in scope.
     fn class_type_terms(&mut self, env: &[Ent], ty: &Tm, x: &str, xs: &Sort) -> Vec<String> {
-        if self.e.class_type_preds.is_empty() {
+        if self.e.class_type_preds.is_empty() && self.e.g.type_bases.is_empty() {
             return Vec::new();
         }
         let n = env.len();
@@ -1869,7 +1882,23 @@ impl<'a> Builder<'a> {
         let v = force(&self.e.g, eval(&self.e.g, &vars, ty));
         let Val::Neutral(h, sp) = &v else { return Vec::new() };
         let Some(crate::core::Elim::Field(c, i)) = sp.last() else { return Vec::new() };
-        let Some(preds) = self.e.class_type_preds.get(&(*c, *i)).cloned() else { return Vec::new() };
+        // Its base type's refinement (#360): `Nat`'s, for `i~Nat`.
+        let mut out = Vec::new();
+        let bases = self.e.g.type_bases.get(&(*c, *i)).cloned().unwrap_or_default();
+        if !bases.is_empty() {
+            // At the class's arguments and the dictionary in scope.
+            let base = Val::Neutral(h.clone(), Rc::new(sp[..sp.len() - 1].to_vec()));
+            let dict = quote(&self.e.g, n, &base);
+            if let Ok((dt, ds @ Sort::Data(_, _))) = self.term(env, &dict) {
+                let Sort::Data(_, sargs) = &ds else { unreachable!() };
+                let mut inner: Vec<Ent> = sargs.iter().map(|s| Ent::Ty(s.clone())).collect();
+                inner.push(Ent::Term(dt, ds.clone()));
+                for b in &bases {
+                    out.extend(self.alias_terms(&inner, b, x, xs));
+                }
+            }
+        }
+        let Some(preds) = self.e.class_type_preds.get(&(*c, *i)).cloned() else { return out };
         let base = Val::Neutral(h.clone(), Rc::new(sp[..sp.len() - 1].to_vec()));
         let dict = quote(&self.e.g, n, &base);
         let Ok((dt, ds)) = self.term(env, &dict) else { return Vec::new() };
@@ -1878,7 +1907,6 @@ impl<'a> Builder<'a> {
         let mut inner: Vec<Ent> = sargs.iter().map(|s| Ent::Ty(s.clone())).collect();
         inner.push(Ent::Term(dt, ds.clone()));
         inner.push(Ent::Term(x.to_string(), xs.clone()));
-        let mut out = Vec::new();
         for p in preds {
             if let Ok((t, Sort::Bool)) = self.term(&inner, &p.tm) {
                 out.push(t);

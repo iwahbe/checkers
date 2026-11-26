@@ -26,20 +26,6 @@ error[E0370]: a clause on `Item` is a class of `Item` itself
    |                 ^^^^^ this is not a class of `Item` alone
    = help: write e.g. `Ord Item`; a clause about the class's parameter goes on its functions
 
-error[E0370]: `x` in the predicates on `Other` must have type `Other`
-  --> class_type_clause_errors.ck:39:20
-   |
-39 |     type Other : x~s
-   |                    ^ expected `Other`
-   = help: write `x~Other`
-
-error[E0370]: `x` in the predicates on `Third` must have type `Third`
-  --> class_type_clause_errors.ck:40:20
-   |
-40 |     type Third : x~Item, y~Item
-   |                    ^^^^ expected `Third`
-   = help: write `x~Third`
-
 error[E0370]: the predicates on `Third` name one value of it
   --> class_type_clause_errors.ck:40:26
    |
@@ -47,4 +33,4 @@ error[E0370]: the predicates on `Third` name one value of it
    |                          ^ a second name
    = help: each predicate is about any one value of `Third`: use the first name
 
-class_type_clause_errors.ck: 7 errors, 0 warnings
+class_type_clause_errors.ck: 5 errors, 0 warnings

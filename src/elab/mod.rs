@@ -800,9 +800,15 @@ pub struct Elab {
     /// at the class's default (#176), by name: the class's type as written
     /// (`Encoding.Unit`) and the type given (`Nat`).
     pub class_type_checks: HashMap<String, (String, String)>,
+    /// Those of a class's type with base types (#360), by lemma: the base
+    /// types at the instance, the value's name, and whether it is the base
+    /// types' own check.
+    pub class_type_bases_at: HashMap<String, (Vec<ast::Expr>, String, bool)>,
     /// While a class's type's predicates are elaborated (#176): an operator
     /// on its values there needs a class function, not a clause.
-    pub in_class_type_pred: bool,
+    /// Elaborating a predicate on a class's type (#176): the `help:` for
+    /// an operator on its values, which needs a base type (#360).
+    pub in_class_type_pred: Option<String>,
     /// Each instance member of the module being desugared, by its index:
     /// its class's name and its instance's types (#146, #145).
     pub member_heads: HashMap<usize, (String, Vec<ast::Expr>)>,
@@ -831,9 +837,9 @@ pub struct Elab {
     pub sig_inst: Option<classes::SigInst>,
     /// Comparisons waiting for a dictionary (#133): level, expected,
     /// actual, where, the locals' names.
-    pub waiting: Vec<(usize, Val, Val, Span, Vec<Name>)>,
+    pub waiting: Vec<(usize, Val, Val, Span, Vec<Name>, bool)>,
     /// Those waiting for an instance's dictionary to be elaborated (#146).
-    pub waiting_late: Vec<(usize, Val, Val, Span, Vec<Name>)>,
+    pub waiting_late: Vec<(usize, Val, Val, Span, Vec<Name>, bool)>,
     /// This module's classes, until their types are registered.
     pub pending_classes: Vec<(String, Vec<String>, Vec<ast::ClassMember>, Span)>,
     /// A class function's parameters' multiplicities, by `module.Class.function`,
@@ -1020,7 +1026,8 @@ impl Elab {
             pending_classes: Vec::new(),
             class_type_preds: HashMap::new(),
             class_type_checks: HashMap::new(),
-            in_class_type_pred: false,
+            class_type_bases_at: HashMap::new(),
+            in_class_type_pred: None,
             class_mults: HashMap::new(),
             inst_heads: HashSet::new(),
             part_reported: HashSet::new(),
@@ -2419,6 +2426,7 @@ impl Elab {
         }
         self.solve_instances(true);
         self.retry_waiting(true);
+        let mut failed: Vec<(Span, String, Diagnostic)> = Vec::new();
         for d in ds {
             if d.kind == OpClass::Comparable {
                 self.solve_comparable(&d);
@@ -2454,12 +2462,26 @@ impl Elab {
                     OpClass::HasLen => "a `String`, `List` or `Array`",
                     OpClass::Comparable => unreachable!(),
                 };
+                // A number where a class's type with a base type is expected
+                // (#360): its values are numbers, but not every number.
+                if let (Some(base), true) = (crate::core::class_type_base(&self.g, &t), d.what == "a number literal") {
+                    let b = show(&self.g, &d.names, &quote(&self.g, d.lvl, &base));
+                    failed.push((
+                        d.span,
+                        shown.clone(),
+                        Diagnostic::error("E0201", format!("type mismatch: expected `{shown}`, found a number"), d.span)
+                            .with_label("this is a number")
+                            .with_note(format!("`{shown}` is a type of its own: its values are `{b}`s, but numbers aren't known to be its values"))
+                            .with_help(format!("use a value of `{shown}`, such as one the class's functions give")),
+                    ));
+                    continue;
+                }
                 let mut diag = Diagnostic::error("E0210", format!("{} needs {need}, but this is `{shown}`", d.what), d.span)
                     .with_label(format!("has type `{shown}`"));
                 // A class's type (#176): an operator needs its class as a clause.
                 if matches!(d.kind, OpClass::Numeric | OpClass::Ordered) && self.g.reads_type_field(&t) {
                     let class = match d.what.as_str() {
-                        _ if self.in_class_type_pred => None,
+                        _ if self.in_class_type_pred.is_some() => None,
                         "`+`" => Some("Add"),
                         "`-`" => Some("Sub"),
                         "`*`" => Some("Mul"),
@@ -2467,18 +2489,29 @@ impl Elab {
                         _ => None,
                     };
                     let arg = if shown.contains(' ') { format!("({shown})") } else { shown.clone() };
-                    diag = diag.with_help(match class {
-                        Some(c) => format!(
+                    diag = diag.with_help(match (class, &self.in_class_type_pred) {
+                        (_, Some(help)) => help.clone(),
+                        (Some(c), None) => format!(
                             "`{shown}` is a type of its own, not a number: {} on it needs the clause `{c} {arg}`, in the signature or on the class's type",
                             d.what
                         ),
-                        None => format!("`{shown}` is a type of its own, not a number: reach a number through its class's functions"),
+                        (None, None) => format!("`{shown}` is a type of its own, not a number: reach a number through its class's functions"),
                     });
                 }
                 if d.what == "`+`" && matches!(&t, Val::TyCon(id, _) if Some(*id) == wk.string || Some(*id) == wk.array || Some(*id) == wk.list) {
                     diag = diag.with_help("to join strings, lists or arrays, use `++`");
                 }
-                self.err(diag);
+                failed.push((d.span, shown, diag));
+            }
+        }
+        // An operand of an operator that failed on the same type fails for
+        // the same reason (`256` of `u < 256`): reported once, at the operator.
+        for (k, (span, shown, diag)) in failed.iter().enumerate() {
+            let within = failed.iter().enumerate().any(|(j, (s2, sh2, _))| {
+                j != k && sh2 == shown && s2.start <= span.start && span.end <= s2.end && (s2.start, s2.end) != (span.start, span.end)
+            });
+            if !within {
+                self.err(diag.clone());
             }
         }
     }
