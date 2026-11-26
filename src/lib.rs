@@ -555,6 +555,7 @@ pub fn check_stdlib() -> String {
         if let Some(f) = e.sources.get(m) {
             let mut d = d.clone();
             d.span = e.real_span(m, d.span);
+            e.name_globals(m, &mut d);
             out += &d.render(f);
         }
     }
@@ -565,6 +566,7 @@ pub fn check_stdlib() -> String {
         let mut v = verify::proofs(&e, m);
         for d in &mut v.diags {
             d.span = e.real_span(m, d.span);
+            e.name_globals(m, d);
         }
         if let Some(f) = e.sources.get(m) {
             out += &diag::render_all(f, &v.diags);
@@ -599,6 +601,7 @@ fn std_modules(e: &elab::Elab) -> Vec<String> {
 /// File a diagnostic of module `m` where it belongs.
 fn route(c: &mut Checked, e: &elab::Elab, user: &str, m: &str, mut d: Diagnostic) {
     d.span = e.real_span(m, d.span);
+    e.name_globals(m, &mut d);
     if m == user {
         c.diags.push(d);
     } else if e.sources.contains_key(m) {

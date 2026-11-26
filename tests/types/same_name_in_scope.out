@@ -1,0 +1,8 @@
+error[E0201]: type mismatch: expected `Int`, found `a3`
+  --> same_name_in_scope.ck:12:14
+   |
+12 |         have x~Int
+   |              ^ this expression has type `a3`
+   = note: `a3` is the `a` bound on line 10, hidden here by the `a` bound on line 11
+
+same_name_in_scope.ck: 1 error, 0 warnings
