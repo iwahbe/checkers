@@ -1,5 +1,5 @@
 (set-option :produce-unsat-cores true)
-(set-option :rlimit 1)
+(set-option :reproducible-resource-limit 1)
 (set-option :produce-unsat-cores false)
 (set-logic ALL)
 (declare-const x Int)

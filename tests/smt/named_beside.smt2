@@ -1,7 +1,7 @@
 ; A name may share its spelling with a sort, declared before or after it.
 (set-option :produce-unsat-cores true)
 (set-option :produce-models true)
-(set-option :rlimit 1000)
+(set-option :reproducible-resource-limit 1000)
 (set-option :timeout 2000)
 (set-logic ALL)
 (declare-sort S 0)
