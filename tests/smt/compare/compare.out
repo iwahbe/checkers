@@ -1,10 +1,10 @@
 -- stdout
-Compared 6 queries in tests/smt/compare/corpus with `tests/smt/compare/fake-z3 -in` (fake Z3; the corpus was written with Z3 5.3.3.0).
+Compared 7 queries in tests/smt/compare/corpus with `tests/smt/compare/fake-z3 -in` (fake Z3; the corpus was written with Z3 5.3.3.0).
 
 | Ours | Z3's | Verdict | Queries |
 |---|---|---|---|
 | `Unknown` (no solver yet) | `rejected` | no answer from Z3 | 1 |
-| `Unknown` (no solver yet) | `sat` | gap | 1 |
+| `Unknown` (no solver yet) | `sat` | gap | 2 |
 | `Unknown` (no solver yet), a `forall` without `:pattern` | `sat` | gap | 1 |
 | `Unknown` (no solver yet) | `unknown` | gap | 1 |
 | `Unknown` (no solver yet) | `unsat` | gap | 1 |
@@ -12,18 +12,19 @@ Compared 6 queries in tests/smt/compare/corpus with `tests/smt/compare/fake-z3 -
 
 Bug rows: 0 queries.
 
-Work: ours 0 (there is no solver yet); Z3's 1064 (`:rlimit-count`, summed; not in the statistics of 1 query). The two aren't counted in the same unit.
-Time: ours TIME (reading and answering each query, summed); Z3's 0.03 s (its `:time`, summed; not in the statistics of 4 queries).
+Work: ours 0 (there is no solver yet); Z3's 1079 (`:rlimit-count`, summed; not in the statistics of 1 query). The two aren't counted in the same unit.
+Time: ours TIME (reading and answering each query, summed); Z3's 0.04 s (its `:time`, summed; not in the statistics of 4 queries).
 
-Z3 now against what the corpus records: 5 of 6 queries get the same answer, 4 the same output (a model may differ), 3 the same work.
+Z3 now against what the corpus records: 6 of 7 queries get the same answer, 5 the same output (a model may differ), 4 the same work.
 
 Answers that differ:
 - m/differs: the corpus records `unsat` (work 900), Z3 now answers `unknown` (work 1004, time not known); the work limit is 1000
 
-Rows changed since tests/smt/compare/baseline: 5.
+Rows changed since tests/smt/compare/baseline: 6.
 -- stderr
 -- exit 0
 -- changed
+m/core	-	unknown(no-solver)/sat
 m/differs	-	unknown(no-solver)/unknown
 m/gone	unknown(no-solver)/sat	-
 m/model	valid/sat	unknown(no-solver)/sat
@@ -31,6 +32,7 @@ m/rejected	-	unknown(no-solver)/rejected
 m/unreadable	-	unreadable/sat
 -- saved
 m/agree	unknown(no-solver)/unsat
+m/core	unknown(no-solver)/sat
 m/differs	unknown(no-solver)/unknown
 m/model	unknown(no-solver)/sat
 m/rejected	unknown(no-solver)/rejected
