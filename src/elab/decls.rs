@@ -782,7 +782,7 @@ impl Elab {
             for ((name, have), (want, shown)) in params.iter().zip([(args, "List String"), (system, "System")]) {
                 if unify(&self.g, lvl, &want, have).is_err() {
                     let is = self.show_val(cx, have);
-                    let why = if is == "Bool" { " (a name alone among the constraints is a condition, so a `Bool`)" } else { "" };
+                    let why = if crate::core::plain(&is) == "Bool" { " (a name alone among the constraints is a condition, so a `Bool`)" } else { "" };
                     wrong.push(format!("`{name}` is `{is}`, not `{shown}`{why}"));
                 } else if self.has_precondition(have) {
                     wrong.push(format!("`{name}` has a precondition, which the runtime can't prove"));
@@ -2359,6 +2359,13 @@ impl Elab {
                 }
                 _ => continue,
             };
+            // A function's bounds, where its type is its signature's.
+            if matches!(d.kind, DeclKind::Fn { .. }) && class_ty.is_none() {
+                let b = self.signature_bounds(&sig.binders, &sig.result, &sig.preds);
+                if b.iter().any(Option::is_some) {
+                    self.bounds.insert(*did, b);
+                }
+            }
             let ty = class_ty.take().unwrap_or_else(|| Self::pi_of(&sig.binders, sig.result.clone()));
             self.g.defs[did.0 as usize].ty = ty;
             if !sig.comptime.is_empty() {

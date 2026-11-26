@@ -4273,11 +4273,8 @@ impl<'a> Builder<'a> {
         if self.named {
             text += "(set-option :produce-unsat-cores true)\n";
         }
-        text += &format!(
-            "(set-option :produce-models true)\n(set-option :rlimit {})\n(set-option :timeout {})\n(set-logic ALL)\n",
-            super::RLIMIT,
-            super::SAFETY_MS
-        );
+        text += &super::options(super::RLIMIT);
+        text += "(set-logic ALL)\n";
         for s in sorts {
             text += &s;
             text += "\n";

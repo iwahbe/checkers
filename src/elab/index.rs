@@ -103,7 +103,7 @@ impl Elab {
         if local.name.starts_with('$') || local.name.as_ref() == "_" {
             return;
         }
-        let ty = self.show_val(cx, &local.ty);
+        let ty = self.named_in(&self.cur, &self.show_val(cx, &local.ty));
         let ty_head = match self.force(&local.ty) {
             Val::TyCon(t, _) => Some(t),
             _ => None,

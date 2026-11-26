@@ -78,19 +78,19 @@ $ checkers trust examples/wc.ck
 <std>/string.ck:561:14  axiom    builtin axiom std.array.slice_at
 <std>/string.ck:563:14  axiom    builtin axiom std.array.slice_append
 <std>/string.ck  proved   221 by smt, 81 computed
-examples/wc.ck:23:42  smt      postcondition of `count`: c.bytes == len src (for `count_from src 0 False (Counts 0 0 0)`, line 24)  [6635dc1391bc9c1b]
-examples/wc.ck:24:5  smt      precondition of `count_from`: i <= len src  [5361bfb014f88971]
-examples/wc.ck:27:50  smt      postcondition of `count_from`: c.bytes == acc.bytes + (len src - i) (for `acc`, line 30)  [5e5b7f26419a054d]
-examples/wc.ck:27:50  smt      postcondition of `count_from`: c.bytes == acc.bytes + (len src - i) (for `count_from src (i + 1) (not space) (Coun…`, line 36)  [7bc3ca4f98b8b7fd]
-examples/wc.ck:28:16  smt      `Nat` subtraction `len src - i` stays at or above zero  [4f3a3024d5466a1e]
-examples/wc.ck:32:17  smt      index in bounds: i < len src  [11498465b3bd3bda]
-examples/wc.ck:33:21  smt      precondition of `is_space`: b < 256  [cad65cc60f05401c]
-examples/wc.ck:36:9  smt      precondition of `count_from`: i <= len src  [7638f357c8261352]
-examples/wc.ck:36:9  smt      termination of `count_from`: `decreasing len src - i` gets smaller  [c66310c169326b86]
-examples/wc.ck:43:43  smt      precondition of `is_space`: b < 256  [fa8c903b4fe42d43]
-examples/wc.ck:43:53  smt      index in bounds: len src - 1 < len src  [fa95efd32866468b]
-examples/wc.ck:43:57  smt      `Nat` subtraction `len src - 1` stays at or above zero  [1494cd0f7822e8fe]
-examples/wc.ck:56:55  smt      precondition of `count_from`: i <= len src  [182a3db968f263ab]
+examples/wc.ck:23:42  smt      postcondition of `count`: c.bytes == len src (for `count_from src 0 False (Counts 0 0 0)`, line 24)
+examples/wc.ck:24:5  smt      precondition of `count_from`: i <= len src
+examples/wc.ck:27:50  smt      postcondition of `count_from`: c.bytes == acc.bytes + (len src - i) (for `acc`, line 30)
+examples/wc.ck:27:50  smt      postcondition of `count_from`: c.bytes == acc.bytes + (len src - i) (for `count_from src (i + 1) (not space) (Coun…`, line 36)
+examples/wc.ck:28:16  smt      `Nat` subtraction `len src - i` stays at or above zero
+examples/wc.ck:32:17  smt      index in bounds: i < len src
+examples/wc.ck:33:21  smt      precondition of `is_space`: b < 256
+examples/wc.ck:36:9  smt      precondition of `count_from`: i <= len src
+examples/wc.ck:36:9  smt      termination of `count_from`: `decreasing len src - i` gets smaller
+examples/wc.ck:43:43  smt      precondition of `is_space`: b < 256
+examples/wc.ck:43:53  smt      index in bounds: len src - 1 < len src
+examples/wc.ck:43:57  smt      `Nat` subtraction `len src - 1` stays at or above zero
+examples/wc.ck:56:55  smt      precondition of `count_from`: i <= len src
 examples/wc.ck:74:21  computed invariant of `Failure`: n < 256
 examples/wc.ck:74:21  computed invariant of `Failure`: n > 0
 examples/wc.ck:89:33  computed invariant of `Failure`: n < 256

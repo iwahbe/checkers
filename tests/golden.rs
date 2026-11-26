@@ -466,16 +466,6 @@ fn sorted_stdout(out: &str) -> String {
     s + "-- stderr\n" + rest
 }
 
-/// Held while checking in this process: evaluating `check`s installs the
-/// runtime's program descriptor, one per process, so two checks evaluated
-/// at once would read each other's. Subprocesses don't need it.
-static IN_PROCESS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-fn in_process<T>(f: impl FnOnce() -> T) -> T {
-    let _held = IN_PROCESS.lock().unwrap_or_else(|e| e.into_inner());
-    f()
-}
-
 fn run(path: &Path, mode: &str) -> String {
     let text = fs::read_to_string(path).unwrap();
     let name = path.file_name().unwrap().to_string_lossy().to_string();
@@ -483,7 +473,7 @@ fn run(path: &Path, mode: &str) -> String {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let dir = path.parent().unwrap().strip_prefix(root).unwrap_or(Path::new("")).to_path_buf();
     let c = if mode == "types" || mode == "stage" {
-        in_process(|| checkers::check_in(&name, &text, &dir))
+        checkers::check_in(&name, &text, &dir)
     } else {
         checkers::parse_only(&name, &text)
     };
@@ -515,10 +505,8 @@ type Task = Box<dyn FnOnce(&Pool) -> Outcome + Send>;
 type Key = (usize, usize);
 
 /// The cases as jobs, run by several threads. A job can add jobs: the cases
-/// that need `checkers` wait for its build. Jobs that check in this process
-/// run one at a time (`in_process`), and take no worker while they wait.
-/// Failures are reported in the order of their keys, whatever order the
-/// jobs finish in.
+/// that need `checkers` wait for its build. Failures are reported in the
+/// order of their keys, whatever order the jobs finish in.
 #[derive(Default)]
 struct Pool {
     state: std::sync::Mutex<PoolState>,
@@ -528,9 +516,6 @@ struct Pool {
 #[derive(Default)]
 struct PoolState {
     queue: std::collections::VecDeque<(Key, String, Task)>,
-    /// Jobs that check in this process; `local_busy` while one runs.
-    local: std::collections::VecDeque<(Key, String, Task)>,
-    local_busy: bool,
     running: usize,
     outcomes: Vec<(Key, Outcome)>,
 }
@@ -543,12 +528,6 @@ impl Pool {
     /// Add a job after those waiting.
     fn add(&self, key: Key, name: String, task: impl FnOnce(&Pool) -> Outcome + Send + 'static) {
         self.lock().queue.push_back((key, name, Box::new(task)));
-        self.ready.notify_one();
-    }
-
-    /// Add a job that checks in this process.
-    fn add_local(&self, key: Key, name: String, task: impl FnOnce(&Pool) -> Outcome + Send + 'static) {
-        self.lock().local.push_back((key, name, Box::new(task)));
         self.ready.notify_one();
     }
 
@@ -578,17 +557,10 @@ impl Pool {
     fn work(&self) {
         loop {
             let mut st = self.lock();
-            let (local, (key, name, task)) = loop {
-                if !st.local_busy {
-                    if let Some(job) = st.local.pop_front() {
-                        st.local_busy = true;
-                        st.running += 1;
-                        break (true, job);
-                    }
-                }
+            let (key, name, task) = loop {
                 if let Some(job) = st.queue.pop_front() {
                     st.running += 1;
-                    break (false, job);
+                    break job;
                 }
                 if st.running == 0 {
                     return;
@@ -603,10 +575,7 @@ impl Pool {
             let mut st = self.lock();
             st.running -= 1;
             st.outcomes.push((key, outcome));
-            if local {
-                st.local_busy = false;
-            }
-            if local || (st.running == 0 && st.queue.is_empty()) {
+            if st.running == 0 && st.queue.is_empty() {
                 self.ready.notify_all();
             }
         }
@@ -659,14 +628,14 @@ fn golden() {
     }
 
     // The standard library's own lemmas and postconditions are proven too.
-    pool.add_local((11, 0), "the standard library".into(), |_| {
-        let stdlib = in_process(checkers::check_stdlib);
+    pool.add((11, 0), "the standard library".into(), |_| {
+        let stdlib = checkers::check_stdlib();
         (1, if stdlib.is_empty() { vec![] } else { vec![format!("── the standard library must verify ──\n{stdlib}")] })
     });
 
-    pool.add_local((9, 0), "check tools/checkers.ck".into(), move |_| {
+    pool.add((9, 0), "check tools/checkers.ck".into(), move |_| {
         let tools = root.join("tools");
-        let c = in_process(|| checkers::check_in("checkers.ck", &fs::read_to_string(tools.join("checkers.ck")).unwrap(), &tools));
+        let c = checkers::check_in("checkers.ck", &fs::read_to_string(tools.join("checkers.ck")).unwrap(), &tools);
         (1, if c.diags.is_empty() { vec![] } else { vec![format!("── tools/checkers.ck must be clean ──\n{}", c.report())] })
     });
 
@@ -678,11 +647,7 @@ fn golden() {
                 compare_as(root, &path, &path.with_extension("out"), &run(&path, mode), update, &mut failures);
                 (1, failures)
             };
-            if mode == "types" || mode == "stage" {
-                pool.add_local((m, i), name, job);
-            } else {
-                pool.add((m, i), name, job);
-            }
+            pool.add((m, i), name, job);
         }
     }
 
@@ -797,10 +762,10 @@ fn golden() {
     let mut i = 0;
     for dir in ["examples", "bench"] {
         for path in ck_files(&root.join(dir)) {
-            pool.add_local((10, i), rel(&path), move |_| {
+            pool.add((10, i), rel(&path), move |_| {
                 let file = path.file_name().unwrap().to_string_lossy().to_string();
                 let text = fs::read_to_string(&path).unwrap();
-                let c = in_process(|| checkers::check_in(&file, &text, &root.join(dir)));
+                let c = checkers::check_in(&file, &text, &root.join(dir));
                 (1, if c.diags.is_empty() { vec![] } else { vec![format!("── {dir}/{file} must be clean ──\n{}", c.report())] })
             });
             i += 1;

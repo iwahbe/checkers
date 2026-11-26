@@ -3,7 +3,7 @@
 
 pub mod smt;
 
-use crate::core::{quote, show};
+use crate::core::quote;
 use crate::diag::Diagnostic;
 use crate::elab::{Elab, ObKind, Obligation, Probe, ProbeKind, Vacuity, VacuityKind, WeakenRole};
 use crate::source::Span;
@@ -14,7 +14,6 @@ pub struct LedgerEntry {
     pub span: Span,
     pub how: &'static str,
     pub what: String,
-    pub hash: Option<u64>,
 }
 
 pub struct Verified {
@@ -78,9 +77,30 @@ fn quick(q: Option<String>) -> Option<String> {
     q.map(|t| with_limit(&t, QUICK_RLIMIT))
 }
 
+/// The option that sets a query's work limit: Z3 keeps this one in the
+/// query's own context. `:rlimit` and `:timeout` are parameters of the whole
+/// process, which every context copies when any is set: a query would run
+/// with the limit of one solved at the same time on another thread.
+const LIMIT_OPTION: &str = "(set-option :reproducible-resource-limit ";
+
+fn limit_option(limit: u64) -> String {
+    format!("{LIMIT_OPTION}{limit})")
+}
+
+/// The options every query starts with: the safety cap, the same for all,
+/// then its work limit (setting the cap copies the process's limit, none).
+pub(crate) fn options(limit: u64) -> String {
+    format!("(set-option :produce-models true)\n(set-option :timeout {SAFETY_MS})\n{}\n", limit_option(limit))
+}
+
+/// A query made with the work limit `from`, with the limit `to`.
+fn relimit(t: &str, from: u64, to: u64) -> String {
+    t.replacen(&limit_option(from), &limit_option(to), 1)
+}
+
 /// A query with another work limit.
 fn with_limit(t: &str, limit: u64) -> String {
-    t.replacen(&format!("(set-option :rlimit {RLIMIT})"), &format!("(set-option :rlimit {limit})"), 1)
+    relimit(t, RLIMIT, limit)
 }
 
 /// A wall-clock cap, in case Z3 is slow to use up its work limit. An answer
@@ -123,7 +143,7 @@ pub fn modules_dir() -> Option<std::path::PathBuf> {
     cache_dir().map(|d| d.join("modules"))
 }
 
-const MODULE_HEADER: &str = "checkers module 2";
+const MODULE_HEADER: &str = "checkers module 3";
 
 /// The module verified under `key`, if it was.
 pub fn remembered(key: &str) -> Option<Remembered> {
@@ -142,7 +162,7 @@ pub fn remembered(key: &str) -> Option<Remembered> {
             warnings.push(unflatten(w)?);
             continue;
         }
-        let mut parts = l.splitn(5, ' ');
+        let mut parts = l.splitn(4, ' ');
         let start: u32 = parts.next()?.parse().ok()?;
         let end: u32 = parts.next()?.parse().ok()?;
         let how = match parts.next()? {
@@ -152,12 +172,8 @@ pub fn remembered(key: &str) -> Option<Remembered> {
             "smt" => "smt",
             _ => return None,
         };
-        let hash = match parts.next()? {
-            "-" => None,
-            h => Some(u64::from_str_radix(h, 16).ok()?),
-        };
         let what = parts.next()?.replace("\\n", "\n");
-        ledger.push(LedgerEntry { span: Span { start, end }, how, what, hash });
+        ledger.push(LedgerEntry { span: Span { start, end }, how, what });
     }
     Some(Remembered { ledger, proved, z3_version, warnings })
 }
@@ -216,8 +232,7 @@ pub fn remember(key: &str, v: &Verified) {
     }
     let mut out = format!("{MODULE_HEADER}\nproved {}\nz3 {}\n", v.proved, v.z3_version.as_deref().unwrap_or("-"));
     for x in &v.ledger {
-        let hash = x.hash.map(|h| format!("{h:x}")).unwrap_or_else(|| "-".into());
-        out += &format!("{} {} {} {hash} {}\n", x.span.start, x.span.end, x.how, x.what.replace('\n', "\\n"));
+        out += &format!("{} {} {} {}\n", x.span.start, x.span.end, x.how, x.what.replace('\n', "\\n"));
     }
     for d in v.diags.iter().filter(|d| d.code == "W022") {
         out += &format!("warning {}\n", flatten(d));
@@ -310,7 +325,7 @@ fn ask_out(query: &str) -> String {
             if timed {
                 let what = if query.starts_with("(set-option :produce-unsat-cores") { "(can the conditions hold?)".to_string() } else { query.lines().find(|l| l.starts_with("(assert (not")).unwrap_or("").chars().take(120).collect::<String>() };
                 let said = out.split_whitespace().next().unwrap_or("?");
-                let limit = query.split("(set-option :rlimit ").nth(1).and_then(|r| r.split(')').next()).unwrap_or("?");
+                let limit = query.split(LIMIT_OPTION).nth(1).and_then(|r| r.split(')').next()).unwrap_or("?");
                 eprintln!("smt {:>6} ms {:>7} bytes {said:>7} rlimit {limit:>8} used {used:>8} {what}", start.elapsed().as_millis(), query.len());
                 if let Some(err) = out.lines().find(|l| l.starts_with("(error")) {
                     eprintln!("smt error {err}");
@@ -486,7 +501,7 @@ fn ask_all_out(texts: &[Option<String>]) -> Vec<Option<String>> {
     results.into_iter().map(|m| m.into_inner().unwrap_or_else(|e| e.into_inner())).collect()
 }
 
-/// FNV-1a, for the ledger's query hashes.
+/// FNV-1a, for the names of cached answers.
 fn fnv(s: &str) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in s.bytes() {
@@ -549,10 +564,10 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     let mut v = Verified { diags: Vec::new(), ledger: Vec::new(), z3_version: None, proved: 0, asked: 0, reused: 0 };
     let (asked0, reused0) = (ASKED.load(std::sync::atomic::Ordering::Relaxed), REUSED.load(std::sync::atomic::Ordering::Relaxed));
     for t in e.admits.iter().filter(|t| t.module == user) {
-        v.ledger.push(LedgerEntry { span: t.span, how: "trusted", what: t.what.clone(), hash: None });
+        v.ledger.push(LedgerEntry { span: t.span, how: "trusted", what: t.what.clone() });
     }
     for t in e.builtin_axioms.iter().filter(|t| t.module == user) {
-        v.ledger.push(LedgerEntry { span: t.span, how: "axiom", what: t.what.clone(), hash: None });
+        v.ledger.push(LedgerEntry { span: t.span, how: "axiom", what: t.what.clone() });
     }
     v.diags.extend(unreachable(e, user));
     v.diags.extend(vacuous(e, user));
@@ -560,7 +575,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     for (m, span, _) in e.checks.iter().filter(|c| c.0 == user) {
         let _ = m;
         let text = e.sources.get(user).and_then(|f| f.text.get(span.start as usize..span.end as usize)).unwrap_or("");
-        v.ledger.push(LedgerEntry { span: *span, how: "computed", what: format!("check {}", text.trim()), hash: None });
+        v.ledger.push(LedgerEntry { span: *span, how: "computed", what: format!("check {}", text.trim()) });
     }
     if obs.is_empty() {
         return v;
@@ -571,7 +586,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     });
     for o in trivial {
         v.proved += 1;
-        v.ledger.push(LedgerEntry { span: o.span, how: "computed", what: describe(e, o), hash: None });
+        v.ledger.push(LedgerEntry { span: o.span, how: "computed", what: describe(e, o) });
     }
     if obs.is_empty() {
         return v;
@@ -610,7 +625,6 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     let bodies: Vec<bool> = queries.iter().map(|q| q.as_ref().is_ok_and(|q| q.without_bodies.is_some())).collect();
     // Left for the full query.
     let mut with_bodies = vec![false; obs.len()];
-    let first: Vec<Option<String>> = lean.iter().map(|t| t.as_ref().map(|t| with_limit(t, FIRST_RLIMIT))).collect();
     let mut answers: Vec<Option<Answer>> = firsts
         .into_iter()
         .enumerate()
@@ -625,9 +639,8 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
             _ => None,
         })
         .collect();
-    // The query that proved each obligation, as Z3 was given it.
-    let mut proof: Vec<Option<String>> =
-        answers.iter().zip(&first).map(|(a, t)| if matches!(a, Some(Answer::Unsat)) { t.clone() } else { None }).collect();
+    // The obligations a query has proved.
+    let mut proven: Vec<bool> = answers.iter().map(|a| matches!(a, Some(Answer::Unsat))).collect();
     // Z3 gave up: weaker queries, weakest first. `unsat` from a weaker query
     // is still a proof (§7.2).
     // 2. Definitions uninterpreted: fast when the facts in scope suffice.
@@ -661,7 +674,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
                     let t = w[tier]?;
                     // Asked already: proved, the same text as a weaker tier,
                     // or answered `sat` with the small limit.
-                    if proof[k].is_some() || w[..tier].contains(&Some(t)) || !gave_up[k][tier] {
+                    if proven[k] || w[..tier].contains(&Some(t)) || !gave_up[k][tier] {
                         return None;
                     }
                     Some(with_limit(t, limit))
@@ -669,7 +682,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
                 .collect();
             for (k, a) in ask_all(&ask_q).into_iter().enumerate() {
                 match a {
-                    Some(Answer::Unsat) => proof[k] = ask_q[k].clone(),
+                    Some(Answer::Unsat) => proven[k] = true,
                     Some(Answer::Sat(_)) => gave_up[k][tier] = false,
                     _ => {}
                 }
@@ -681,13 +694,13 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     let rest: Vec<Option<String>> = lean
         .iter()
         .enumerate()
-        .map(|(k, t)| if proof[k].is_some() || answers[k].is_some() || with_bodies[k] { None } else { t.clone() })
+        .map(|(k, t)| if proven[k] || answers[k].is_some() || with_bodies[k] { None } else { t.clone() })
         .collect();
     for (k, a) in ask_all(&rest).into_iter().enumerate() {
-        if proof[k].is_some() {
+        if proven[k] {
             answers[k] = Some(Answer::Unsat);
         } else if matches!(a, Some(Answer::Unsat)) {
-            proof[k] = rest[k].clone();
+            proven[k] = true;
             answers[k] = a;
         } else if bodies[k] && rest[k].is_some() {
             with_bodies[k] = true;
@@ -710,7 +723,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
             }
             match a {
                 Some(Answer::Unsat) => {
-                    proof[k] = full[k].clone();
+                    proven[k] = true;
                     answers[k] = a;
                     with_bodies[k] = false;
                 }
@@ -777,11 +790,9 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
         }
         match (q, a) {
             (Err(why), _) => v.diags.push(outside(e, &[o], &why.0)),
-            (Ok(q), Some(Answer::Unsat)) => {
+            (Ok(_), Some(Answer::Unsat)) => {
                 v.proved += 1;
-                // The query that was proved, as Z3 was given it.
-                let hash = Some(fnv(proof[k].as_ref().unwrap_or(&q.text)));
-                v.ledger.push(LedgerEntry { span: o.span, how: "smt", what: describe(e, o), hash });
+                v.ledger.push(LedgerEntry { span: o.span, how: "smt", what: describe(e, o) });
             }
             (Ok(q), Some(Answer::Sat(model))) => {
                 // A model of a query without the `forall` facts may break
@@ -956,12 +967,12 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
         let mut answers: Vec<Option<Answer>> = texts.iter().map(|_| None).collect();
         let singles = combos.iter().take_while(|c| c.iter().all(|m| m.0.len() == 1)).count();
         let small = |t: &Option<String>| {
-            t.as_ref().map(|t| t.replacen(&format!("(set-option :rlimit {QUICK_RLIMIT})"), &format!("(set-option :rlimit {PROBE_RLIMIT})"), 1))
+            t.as_ref().map(|t| relimit(t, QUICK_RLIMIT, PROBE_RLIMIT))
         };
         let proved = |answers: &[Option<Answer>], ci: usize| {
             !obs[ci].is_empty() && answers[base[ci]..base[ci] + obs[ci].len()].iter().all(|a| matches!(a, Some(Answer::Unsat)))
         };
-        let mut chosen: Option<(usize, usize)> = None;
+        let mut chosen: Option<usize> = None;
         'tiers: for limit in [true, false] {
             for tier in [0..singles, singles..combos.len()] {
                 let ks: Vec<usize> = tier
@@ -975,7 +986,7 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
                     answers[*k] = a;
                 }
                 if let Some(ci) = tier.clone().find(|ci| proved(&answers, *ci)) {
-                    chosen = Some((ci, base[ci]));
+                    chosen = Some(ci);
                     break 'tiers;
                 }
             }
@@ -1006,12 +1017,12 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
         }
         let first_call = gr.calls.first().map(|c| c.ob.span);
         match chosen {
-            Some((ci, at)) => {
-                for (o, t) in obs[ci].iter().zip(&texts[at..]) {
+            Some(ci) => {
+                for o in &obs[ci] {
                     v.proved += 1;
                     let mut what = describe(e, o);
                     what.push_str(" (guessed)");
-                    v.ledger.push(LedgerEntry { span: o.span, how: "smt", what, hash: t.as_ref().map(|t| fnv(t)) });
+                    v.ledger.push(LedgerEntry { span: o.span, how: "smt", what });
                 }
             }
             None => {
@@ -1175,7 +1186,7 @@ fn unreachable(e: &Elab, user: &str) -> Vec<Diagnostic> {
         .map(|p| {
             // Marked, so a cached answer is never taken for an obligation's.
             let q = smt::Builder::new(e, user).sharing(&defs).query(&p.ob).ok().map(|q| q.facts_only.unwrap_or(q.text));
-            q.map(|t| t.replacen(&format!("(set-option :rlimit {RLIMIT})"), &format!("(set-option :rlimit {PROBE_RLIMIT})"), 1) + ";; reachable?\n")
+            q.map(|t| with_limit(&t, PROBE_RLIMIT) + ";; reachable?\n")
         })
         .collect();
     let answers = ask_all(&texts);
@@ -1276,8 +1287,11 @@ fn facts_note(e: &Elab, o: &Obligation) -> Option<String> {
         o.ctx.iter().filter(|l| crate::core::is_nat(&e.g, &l.ty)).map(|l| format!("{} >= 0", l.name)).collect();
     let mut shown: Vec<String> = implied.clone();
     for f in &o.facts {
-        let s = show(&e.g, &names, &quote(&e.g, lvl, f));
-        let s = match (s.strip_suffix(" == True"), s.strip_suffix(" == False")) {
+        let s = crate::core::show_marked(&e.g, &names, &quote(&e.g, lvl, f));
+        // `… == True` and `… == False` by their text, the marks aside.
+        let plain = crate::core::plain(&s);
+        let lhs = s.rfind(" == ").map(|i| &s[..i]);
+        let s = match (plain.ends_with(" == True").then_some(lhs).flatten(), plain.ends_with(" == False").then_some(lhs).flatten()) {
             (Some(t), _) => t.to_string(),
             (_, Some(f)) if f.starts_with('(') => format!("not {f}"),
             (_, Some(f)) => format!("not ({f})"),
@@ -1687,8 +1701,7 @@ pub fn ledger_text(file: &crate::source::SourceFile, v: &Verified) -> String {
     entries.sort_by_key(|x| (x.span.start, x.how));
     for x in &entries {
         let (line, col) = file.line_col(x.span.start);
-        let hash = x.hash.map(|h| format!("  [{h:016x}]")).unwrap_or_default();
-        out += &format!("{}:{line}:{col}  {:<8} {}{hash}\n", file.name, x.how, x.what);
+        out += &format!("{}:{line}:{col}  {:<8} {}\n", file.name, x.how, x.what);
     }
     if let Some(z) = &v.z3_version {
         out += &format!("solver: {z}\n");
@@ -2026,4 +2039,27 @@ fn render_model(text: &str, shown: &[(String, String)], strings: &[String], arra
     found.extend(cowns.into_iter().filter(|c| c.2.len() > 1).map(|(_, lvl, names)| (lvl, names.join(" = "))));
     found.sort();
     found.into_iter().map(|x| x.1).collect::<Vec<_>>().join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    /// Queries solved at the same time with different work limits (two
+    /// programs checked on two threads) each run with their own: the small
+    /// limit always gives up, the large one always proves.
+    #[test]
+    fn each_query_runs_with_its_own_work_limit() {
+        const GOAL: &str = "(set-logic ALL)\n(declare-const x (_ BitVec 5))\n(declare-const y (_ BitVec 5))\n(declare-const z (_ BitVec 5))\n(assert (not (= (bvmul x (bvadd y z)) (bvadd (bvmul x y) (bvmul x z)))))\n(check-sat)\n";
+        let said = |limit: u64| {
+            std::thread::spawn(move || {
+                let query = super::options(limit) + GOAL;
+                let mut said: Vec<String> = (0..500).map(|_| super::run_z3(&query)).collect();
+                said.dedup();
+                said
+            })
+        };
+        let threads = [said(50), said(50_000_000), said(50), said(50_000_000)];
+        let said: Vec<Vec<String>> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+        let (gave_up, proved) = (vec!["unknown\n".to_string()], vec!["unsat\n".to_string()]);
+        assert_eq!(said, [gave_up.clone(), proved.clone(), gave_up, proved]);
+    }
 }
