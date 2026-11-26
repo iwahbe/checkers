@@ -19,10 +19,6 @@ fn after_unit u -> r : u~Unit, r~Int
         ()     -> 0
         (a, b) -> 1
 
-fn first_on_unit u -> r : u~Unit, r~Int
-    match u
-        (a, b) -> 1
-
 fn body x -> r : x~Int, r~Int
     match x
         _ -> 0

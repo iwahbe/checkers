@@ -776,7 +776,7 @@ impl Elab {
             }
             // A tuple type with fewer parts than the pattern, ending in a
             // type that isn't a tuple: the pattern has too many parts.
-            Val::TupleTy(ts) if ts.len() < n && ts.last().is_some_and(|t| !matches!(self.force(t), Val::Neutral(..))) => {
+            Val::TupleTy(ts) if ts.len() < n && !matches!(self.force(&ts[ts.len() - 1]), Val::Neutral(..)) => {
                 let shown = self.show_val(cx, &Val::TupleTy(ts.clone()));
                 self.pat_err(
                     Diagnostic::error("E0246", format!("this pattern has {n} parts, but `{shown}` has {}", ts.len()), pat.span)
