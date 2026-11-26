@@ -15,6 +15,7 @@ mod interval;
 pub mod index;
 pub(crate) mod order;
 mod pattern;
+mod qualify;
 pub use pattern::BINDING_HELP;
 mod refine;
 mod template;
@@ -669,6 +670,9 @@ pub struct Elab {
     pub ty_cond_defer: Option<Vec<(Span, TyId, Vec<Val>)>>,
     /// Refinement aliases' predicates, over the alias's parameters then its binder.
     pub alias_preds: HashMap<DefId, Vec<Pred>>,
+    /// Functions' bounds from their signatures, for `Globals::bounds` once
+    /// the program is proved.
+    pub bounds: HashMap<DefId, Vec<Option<crate::range::Range>>>,
     /// The name a refinement alias binds (`n` in `type Big = n~Int, …`).
     pub alias_subject: HashMap<DefId, Name>,
     /// The result type of a function whose result type isn't written.
@@ -983,6 +987,7 @@ impl Elab {
             ty_cond_defer: None,
             ty_teqs: HashMap::new(),
             alias_preds: HashMap::new(),
+            bounds: HashMap::new(),
             alias_subject: HashMap::new(),
             result_metas: HashMap::new(),
             arg_of: None,
@@ -1094,9 +1099,12 @@ impl Elab {
         }
     }
 
+    /// A value for a diagnostic: its globals marked, to be shown as the
+    /// module refers to them when the diagnostic is filed (`qualify`).
     pub fn show_val(&self, cx: &Cx, v: &Val) -> String {
         let t = quote(&self.g, cx.lvl(), v);
-        show(&self.g, &cx.names(), &t)
+        let at: Vec<Option<u32>> = cx.locals.iter().map(|l| l.span.map(|s| s.start)).collect();
+        show_marked_in(&self.g, &cx.names(), &at, &t)
     }
 
     pub fn eval(&self, cx: &Cx, t: &Tm) -> Val {
@@ -1912,7 +1920,7 @@ impl Elab {
         self.err(
             Diagnostic::error("E0404", format!("this drops a resource of type `{shown}`"), span)
                 .with_label("a resource must be used exactly once")
-                .with_help(if shown.starts_with("Future ") {
+                .with_help(if crate::core::plain(&shown).starts_with("Future ") {
                     "bind it to a name, then join it: a future of a resource is one too"
                 } else {
                     "bind it to a name, then close it or pass it on"
@@ -2498,7 +2506,7 @@ impl Elab {
                     _ if self.g.reads_type_field(&t) => declared,
                     _ => quote(&self.g, d.lvl, &t),
                 };
-                let shown = show(&self.g, &d.names, &shown_tm);
+                let shown = crate::core::show_marked(&self.g, &d.names, &shown_tm);
                 let need = match d.kind {
                     OpClass::Numeric => "numbers (`Nat` or `Int`)",
                     OpClass::Ordered => "numbers (`Nat` or `Int`) to compare",
@@ -2509,7 +2517,7 @@ impl Elab {
                 // A number where a class's type with a base type is expected
                 // (#360): its values are numbers, but not every number.
                 if let (Some(base), true) = (crate::core::class_type_base(&self.g, &t), d.what == "a number literal") {
-                    let b = show(&self.g, &d.names, &quote(&self.g, d.lvl, &base));
+                    let b = crate::core::show_marked(&self.g, &d.names, &quote(&self.g, d.lvl, &base));
                     failed.push((
                         d.span,
                         shown.clone(),

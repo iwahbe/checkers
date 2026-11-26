@@ -64,6 +64,9 @@ pub struct Copy {
     pub of: DefId,
     pub body: Tm,
     pub depth: usize,
+    /// For each parameter of the copy, the binder of `of` it is (`None`:
+    /// one for a variable of a function put in).
+    pub binders: Vec<Option<usize>>,
 }
 
 /// The copies made so far; copy `i` is definition `base + i`.
@@ -356,7 +359,10 @@ pub fn specialize(g: &Globals, cx: SpecCx, owner: Option<DefId>, f: DefId, args:
             }
             let id = t.base + t.copies.len() as u32;
             let picked: Vec<Option<&Tm>> = pick.iter().map(Option::as_ref).collect();
-            t.copies.push(Copy { of: f, body: put_in(&body, &picked, &kept, &gone, m), depth: cx.depth + 1 });
+            // The parameters not put in, the variables' (`caps`), then those
+            // after the first `k`.
+            let binders = (0..k).filter(|j| !gone[*j]).map(Some).chain((0..m).map(|_| None)).chain((k..n).map(Some)).collect();
+            t.copies.push(Copy { of: f, body: put_in(&body, &picked, &kept, &gone, m), depth: cx.depth + 1, binders });
             t.memo.insert(key, id);
             id
         }

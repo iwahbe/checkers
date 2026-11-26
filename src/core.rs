@@ -359,6 +359,13 @@ pub struct Globals {
     /// Each type's value parameters that its fields' types are computed
     /// from (#170), once worked out (`value_params_needed`).
     pub value_params: RefCell<HashMap<TyId, std::collections::BTreeSet<usize>>>,
+    /// Each function's constant bounds on its binders (implicit ones too),
+    /// then on its result, where its signature gives them (`x~U8`,
+    /// `0 <= x`), which native code relies on (§14). Empty until every
+    /// obligation of the program is proved (`Elab::bounds` until then): a
+    /// bound is a fact only then, not in a `check` or staging, which run
+    /// before proving, nor with `--unverified`.
+    pub bounds: HashMap<DefId, Vec<Option<crate::range::Range>>>,
     /// The base types of classes' types that have one (#360), by their
     /// field of the dictionary: closed types.
     pub type_bases: HashMap<(ConId, usize), Vec<Tm>>,
@@ -422,6 +429,7 @@ impl Globals {
             well_known: WellKnown::default(),
             postponed: RefCell::new(Vec::new()),
             value_params: RefCell::new(HashMap::new()),
+            bounds: HashMap::new(),
             type_bases: HashMap::new(),
         }
     }
@@ -1708,6 +1716,160 @@ pub fn show(g: &Globals, names: &[Name], t: &Tm) -> String {
     show_prec(g, &mut ns, t, 0)
 }
 
+thread_local! {
+    /// Whether `show_prec` marks the globals it names (`show_marked`).
+    static MARKING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The context's locals, by level, while marking: their names and
+    /// where each is bound (`show_marked_in`).
+    static MARK_LOCALS: std::cell::RefCell<Vec<(Name, Option<u32>)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Starts a global's mark: `MARK kind id MARK_NAME name MARK_END`, where
+/// `kind` is `d` (a definition), `t` (a type) or `c` (a constructor); or
+/// a local's, `MARK v level.at.hidden MARK_NAME name MARK_END`.
+const MARK: char = '\u{1}';
+const MARK_NAME: char = '\u{2}';
+const MARK_END: char = '\u{3}';
+
+/// A global as named in a message: by `show_marked`, marked with which
+/// declaration it is, so a diagnostic can tell apart two of the same name
+/// (`unmark`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Marked {
+    Def(DefId),
+    Ty(TyId),
+    Con(ConId),
+    /// A local of the context, one of several of its name there: its
+    /// level, where it is bound, and, if a later local of its name hides
+    /// it, where that one is bound.
+    /// `avoid` has bit `k - 1` set when a local of the context is named
+    /// this name followed by `k` (`a1`): a number to show it by isn't one.
+    Var { level: u32, at: Option<u32>, hidden_by: Option<Option<u32>>, avoid: u64 },
+}
+
+fn global(m: Marked, name: &str) -> String {
+    if !MARKING.with(|c| c.get()) {
+        return name.to_string();
+    }
+    let id = match m {
+        Marked::Def(d) => format!("d{}", d.0),
+        Marked::Ty(t) => format!("t{}", t.0),
+        Marked::Con(c) => format!("c{}", c.0),
+        Marked::Var { level, at, hidden_by, avoid } => {
+            let pos = |a: Option<u32>| a.map_or("-".to_string(), |a| a.to_string());
+            match hidden_by {
+                Some(by) => format!("v{level}.{}.h{}.{avoid}", pos(at), pos(by)),
+                None => format!("v{level}.{}.s.{avoid}", pos(at)),
+            }
+        }
+    };
+    format!("{MARK}{id}{MARK_NAME}{name}{MARK_END}")
+}
+
+/// The local at `level` of the context, named `name`, as a message names
+/// it: marked when another local of the context has its name.
+fn local(level: usize, name: &Name) -> String {
+    if !MARKING.with(|c| c.get()) {
+        return name.to_string();
+    }
+    MARK_LOCALS.with(|ls| {
+        let ls = ls.borrow();
+        let same = |l: &(Name, Option<u32>)| l.0 == *name;
+        if level >= ls.len() || ls.iter().filter(|l| same(l)).count() < 2 {
+            return name.to_string();
+        }
+        let hidden_by = ls[level + 1..].iter().rev().find(|l| same(l)).map(|l| l.1);
+        let mut avoid = 0u64;
+        for l in ls.iter() {
+            if let Some(k) = l.0.strip_prefix(&**name).and_then(|k| k.parse::<u32>().ok()).filter(|k| (1..=64).contains(k)) {
+                avoid |= 1 << (k - 1);
+            }
+        }
+        global(Marked::Var { level: level as u32, at: ls[level].1, hidden_by, avoid }, name)
+    })
+}
+
+/// `show`, with each global it names marked with its declaration: text for
+/// a diagnostic, which `unmark` turns into names.
+pub fn show_marked(g: &Globals, names: &[Name], t: &Tm) -> String {
+    show_marked_in(g, names, &[], t)
+}
+
+/// `show_marked`, given where each local of the context is bound (by
+/// level; none for those not known): a local of a name two of them have
+/// is marked too.
+pub fn show_marked_in(g: &Globals, names: &[Name], at: &[Option<u32>], t: &Tm) -> String {
+    let was = MARKING.with(|c| c.replace(true));
+    let locals: Vec<(Name, Option<u32>)> = names.iter().enumerate().map(|(i, n)| (n.clone(), at.get(i).copied().flatten())).collect();
+    let outer = MARK_LOCALS.with(|l| l.replace(locals));
+    let s = show(g, names, t);
+    MARK_LOCALS.with(|l| l.replace(outer));
+    MARKING.with(|c| c.set(was));
+    s
+}
+
+/// The globals marked in `s`, with their names, in order.
+pub fn marks(s: &str) -> Vec<(Marked, String)> {
+    let mut out = Vec::new();
+    unmark(s, &mut |m, n| {
+        out.push((m, n.to_string()));
+        n.to_string()
+    });
+    out
+}
+
+/// `s` with its marks dropped: each global by its name as declared.
+pub fn plain(s: &str) -> String {
+    unmark(s, &mut |_, n| n.to_string())
+}
+
+/// `s` with each marked global replaced by `name(global, its name)`.
+pub fn unmark(s: &str, name: &mut dyn FnMut(Marked, &str) -> String) -> String {
+    if !s.contains(MARK) {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find(MARK) {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + MARK.len_utf8()..];
+        let parsed = after.find(MARK_NAME).and_then(|j| {
+            let k = after[j..].find(MARK_END)? + j;
+            let (kind, id) = after[..j].split_at(after[..j].char_indices().nth(1).map_or(j, |x| x.0));
+            let m = match kind {
+                "d" => Marked::Def(DefId(id.parse().ok()?)),
+                "t" => Marked::Ty(TyId(id.parse().ok()?)),
+                "c" => Marked::Con(ConId(id.parse().ok()?)),
+                "v" => {
+                    let mut p = id.split('.');
+                    let pos = |a: &str| if a == "-" { Some(None) } else { a.parse().ok().map(Some) };
+                    let level = p.next()?.parse().ok()?;
+                    let at = pos(p.next()?)?;
+                    let hidden_by = match p.next()? {
+                        "s" => None,
+                        h => Some(pos(h.strip_prefix('h')?)?),
+                    };
+                    let avoid = p.next()?.parse().ok()?;
+                    Marked::Var { level, at, hidden_by, avoid }
+                }
+                _ => return None,
+            };
+            Some((m, &after[j + MARK_NAME.len_utf8()..k], &after[k + MARK_END.len_utf8()..]))
+        });
+        match parsed {
+            Some((m, n, next)) => {
+                out.push_str(&name(m, n));
+                rest = next;
+            }
+            None => {
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 fn fresh(ns: &[Name], x: &Name) -> Name {
     if x.as_ref() == "_" {
         return x.clone();
@@ -1751,10 +1913,19 @@ fn paren(b: bool, s: String) -> String {
 
 fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
     match t {
-        Tm::Var(i) => ns.get(ns.len().wrapping_sub(1 + i)).map(|n| n.to_string()).unwrap_or_else(|| format!("#{i}")),
-        Tm::Def(d) => g.defs[d.0 as usize].name.to_string(),
-        Tm::TyCon(t) => g.tys[t.0 as usize].name.to_string(),
-        Tm::Con(c) => g.cons[c.0 as usize].name.to_string(),
+        Tm::Var(i) => {
+            let level = ns.len().wrapping_sub(1 + i);
+            match ns.get(level) {
+                // A local of the context (not one bound inside `t`).
+                Some(n) if MARK_LOCALS.with(|l| level < l.borrow().len()) => local(level, n),
+                Some(n) => n.to_string(),
+                None => format!("#{i}"),
+            }
+        }
+        Tm::Def(d) if is_anon_alias(g, *d) => g.defs[d.0 as usize].name.to_string(),
+        Tm::Def(d) => global(Marked::Def(*d), &g.defs[d.0 as usize].name),
+        Tm::TyCon(t) => global(Marked::Ty(*t), &g.tys[t.0 as usize].name),
+        Tm::Con(c) => global(Marked::Con(*c), &g.cons[c.0 as usize].name),
         Tm::Meta(m) => match g.meta(*m) {
             Some(v) => show_prec(g, ns, &quote(g, ns.len(), &v), p),
             // An unknown the checker has not worked out yet: by the
@@ -1861,11 +2032,11 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
         Tm::TyConApp(ty, args) => {
             let ti = &g.tys[ty.0 as usize];
             if args.is_empty() {
-                return ti.name.to_string();
+                return global(Marked::Ty(*ty), &ti.name);
             }
             let s = format!(
                 "{} {}",
-                ti.name,
+                global(Marked::Ty(*ty), &ti.name),
                 args.iter().map(|a| show_prec(g, ns, a, 2)).collect::<Vec<_>>().join(" ")
             );
             paren(p > 1, s)
@@ -1887,11 +2058,11 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
                 if Some(*c) == g.well_known.nil {
                     return "[]".into();
                 }
-                return ci.name.to_string();
+                return global(Marked::Con(*c), &ci.name);
             }
             let s = format!(
                 "{} {}",
-                ci.name,
+                global(Marked::Con(*c), &ci.name),
                 explicit.iter().map(|a| show_prec(g, ns, a, 2)).collect::<Vec<_>>().join(" ")
             );
             paren(p > 1, s)
