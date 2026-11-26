@@ -9,7 +9,7 @@ error[E0450]: cannot prove `r > x`, the postcondition of `refuted`
 
 tests/corpus/asked.ck: 1 error, 0 warnings
 -- exit 1
--- written: asked, std.prelude, z3-version
+-- written: asked, std.files, std.prelude, std.system, z3-version
 == asked/86a009be5d556814.smt2
 (set-option :produce-models true)
 (set-option :rlimit 200000)
