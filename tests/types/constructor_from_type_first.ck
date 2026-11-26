@@ -1,6 +1,6 @@
 # A name that is a constructor of the type of the value matched means that
-# constructor (proposed), even where a constructor of another type by that
-# name is in scope. It imports `tests/types/ctor_home/kinds.ck`.
+# constructor, even where a constructor of another type by that
+# name is in scope.
 module constructor_from_type_first
 
 import ctor_home.kinds (Inner, B)
