@@ -1,6 +1,6 @@
 -- stdout
 z3: sat
-definitions: each taken as terminating (`--unmarked`: none)
+definitions: each taken as terminating, on the word of whoever ran this (`--terminating`)
 the negated goal: holds
 refutes: yes
 -- stderr

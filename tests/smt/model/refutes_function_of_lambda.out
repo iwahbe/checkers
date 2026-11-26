@@ -2,6 +2,6 @@
 z3: unsat
 fact 1: not determined: a `lambda`, which has no normal form
 the negated goal: holds
-refutes: no
+refutes: no (a `lambda`)
 -- stderr
 -- exit 0

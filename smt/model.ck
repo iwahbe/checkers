@@ -34,8 +34,8 @@
 # only the branch it chooses. So a definite answer depends only on the
 # parts it evaluated: an argument it didn't need may be unknown, or even a
 # value of the wrong sort from the model, and the answer stands, because
-# it is the same for every value that argument could have. That
-# monotonicity is the argument here; it is not yet a lemma.
+# it is the same for every value that argument could have. That is the
+# monotonicity lemma S6 proves (below).
 #
 # **Terms of the context only.** `eval` and `eval_unfolding` evaluate a term
 # only if it has a sort in the context with no variables free, `holds_at`
@@ -54,7 +54,9 @@
 #
 # `refutes`, which `Answer.Invalid` uses, evaluates instead with each
 # definition marked terminating (`Def.terminates`) run as its own body
-# (design 3), within `Model.fuel` levels (past them, `OutOfFuel`): a
+# (design 3). Only the caller marks a definition: `smtlib.parse` marks
+# none, and the package's commands mark every one only when given
+# `--terminating`, and then say so. It runs within `Model.fuel` levels (past them, `OutOfFuel`): a
 # terminating definition's equation then holds by construction wherever
 # evaluation finishes, because it has exactly one solution. `refutes`
 # requires every definition of the context to be marked: one that isn't may
@@ -75,13 +77,36 @@
 # domain the model lists, and at sorts this module can show unbounded
 # (`Int`, sequences, a countable domain, arrays of those), not at a
 # datatype, which may be finite. A `lambda` has none (`LambdaNotGiven`),
-# and nor has an array Z3 prints as a function over a range.
+# and nor has an array Z3 prints as a function over a range; `refutes` is
+# false for a context or goal with a `lambda` anywhere in it, reached or
+# not.
 #
 # **Quantified axioms.** `holds_at c m a vs` evaluates the body of axiom `a`
 # at the values `vs`. A `forall` over an infinite sort can't be evaluated, so
 # `refutes` is false for a context with any axiom, patterned or not (an
 # `Axiom` with `patterns = []` is a fact like the others, #82): a model is
 # never shown to satisfy one, so a query with one is never `Invalid`.
+#
+# **What S6 proves of this module** (#86; the statements are decided in
+# #84, their exact text is S6's, with the certificate format):
+#
+# - `checks_sound`, in two statements. The first asks the premises (the
+#   facts; the axioms and definitions' equations, `holds_at`; `arrays_ok`
+#   with `arrays_total`; every function of the model total) only at the
+#   values of the finite set of terms the certificate uses: every
+#   satisfiable context has such a model, so it is never vacuous. The
+#   second, a corollary in one step, asks them at all values. Either way the
+#   conclusion is that the goal `holds`.
+# - Monotonicity: a definite answer in a model is the answer in every model
+#   that agrees with it wherever it answers. For a partial model, `not
+#   fails` of the goal follows from `holds` by it.
+# - The `Invalid` theorem: if `refutes c goal m`, and every definition
+#   marked terminating terminates (a named hypothesis: the mark is the
+#   caller's word), the interpretation `m` describes, with each definition
+#   its unique solution and arrays as `normal_arrays` has them, satisfies
+#   every assertion of `c` and `not goal`.
+#
+# Together: a query is never both `Valid` and `Invalid`.
 #
 # **What a `Model` can't represent** (for #85, model limits). A `Model` is a
 # Checkers value, so its functions are computable, and its domains are
@@ -1321,21 +1346,53 @@ fn all_marked ds -> r : ds~List (Nat, Def), r~Bool
         []             -> True
         (_, d) :: rest -> d.terminates and all_marked rest
 
-# Whether `m` is a counterexample to `goal` in `c`: `goal` is a fact of `c`,
-# `c` has no axioms and every definition is marked terminating, and each
-# fact holds and the goal fails with each definition run as its own body,
-# in `normal_arrays m`. Then the interpretation that model describes, with
-# each definition its unique solution, satisfies every assertion of `c` and
-# `not goal`.
+# Whether `t` has no `lambda` in it.
+export fn lambda_free t -> r : t~Term, r~Bool
+    match t
+        Var _          -> True
+        App _ args     -> all_lambda_free args
+        Let binds body -> binds_lambda_free binds and lambda_free body
+        Lam _ _ _      -> False
+
+fn all_lambda_free ts -> r : ts~List Term, r~Bool
+    match ts
+        []        -> True
+        t :: rest -> lambda_free t and all_lambda_free rest
+
+fn binds_lambda_free bs -> r : bs~List (Name, Term), r~Bool
+    match bs
+        []             -> True
+        (_, t) :: rest -> lambda_free t and binds_lambda_free rest
+
+fn defs_lambda_free ds -> r : ds~List (Nat, Def), r~Bool
+    match ds
+        []             -> True
+        (_, d) :: rest -> lambda_free d.body and defs_lambda_free rest
+
+# Whether no fact or definition of `c`, nor `goal`, has a `lambda` in it.
+export fn without_lambda c goal -> r : c~Context, goal~Term, r~Bool
+    lambda_free goal and all_lambda_free (term.facts c) and defs_lambda_free (term.defs c)
+
+# Whether `m` is a counterexample to `goal` in `c`. It asks that:
 #
-# For arrays this rests on `normal_arrays`: its only arrays are normal
-# forms, which are the same element exactly when they are the same
-# function, so it satisfies `arrays_ok` (a lemma for #86, `check`ed at
-# points in `model_checks`).
+# - `goal` is a fact of `c`, and `c` has no axioms;
+# - every definition is marked terminating (`Def.terminates`, which only
+#   the caller sets: `models --terminating` does, on its user's word);
+# - no fact, definition or the goal has a `lambda` in it;
+# - each fact holds and the goal fails, in `normal_arrays m`, with each
+#   definition run as its own body.
+#
+# What S6 proves of it (the `Invalid` theorem, in the header): when every
+# definition marked terminating does terminate, the interpretation `m` describes, with each
+# definition its unique solution, satisfies every assertion of `c` and
+# `not goal`. Its arrays are `normal_arrays`', normal forms that are the
+# same element exactly when they are the same function, so it satisfies
+# `arrays_ok` (`check`ed at points in `model_checks`). A `lambda` is
+# refused because `normal_arrays` does not name one's array.
 export fn refutes c goal m -> r : c~Context, goal~Term, m~Model, r~Bool
     let n = normal_arrays (term.signature c) m
-    term.fact_ok c goal and term.axioms c == [] and all_marked (term.defs c) and facts_hold_unfolding c n (term.facts c)
-        and eval_unfolding c n goal == Ok (Truth False)
+    term.fact_ok c goal and term.axioms c == [] and all_marked (term.defs c) and without_lambda c goal
+        and facts_hold_unfolding c n (term.facts c) and eval_unfolding c n goal == Ok (Truth False)
 
 fn facts_hold_unfolding c m ts -> r : c~Context, m~Model, ts~List Term, r~Bool
     match ts

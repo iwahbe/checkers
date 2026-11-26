@@ -7,9 +7,9 @@
 # `main roundtrip DIR…` reads each query (`*.smt2`) in each DIR, writes it
 # back, and checks that what it wrote is the same query. A query that can't be read gives
 # `(error "line L column C: message")`, as Z3 reports one, and exit status 1.
-# `main models [--z3 PROGRAM] DIR…` checks Z3's models in the corpus with
+# `main models [--terminating] [--z3 PROGRAM] DIR…` checks Z3's models in the corpus with
 # `smt.model` (recorded, or asked of PROGRAM now), and
-# `main model [--unmarked] QUERY ANSWER` one query's assertions in one answer's model
+# `main model [--terminating] QUERY ANSWER` one query's assertions in one answer's model
 # (`models.ck` says how).
 
 module main
@@ -27,26 +27,26 @@ import models
 import reply
 import compare
 
-let USAGE = "usage: main [-in] < QUERY\n       main parse < QUERY\n       main roundtrip DIR...\n       main compare [--z3 PROGRAM] [--baseline FILE] [--changed FILE] [--save FILE] DIR\n       main models [--z3 PROGRAM] DIR...\n       main model [--unmarked] QUERY ANSWER"
+let USAGE = "usage: main [-in] < QUERY\n       main parse < QUERY\n       main roundtrip DIR...\n       main compare [--z3 PROGRAM] [--baseline FILE] [--changed FILE] [--save FILE] DIR\n       main models [--terminating] [--z3 PROGRAM] DIR...\n       main model [--terminating] QUERY ANSWER"
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     match args
-        []                            -> answer_stdin sys.term
-        ["-in"]                       -> answer_stdin sys.term
-        ["parse"]                     -> parse_stdin sys.term
-        "compare" :: rest             -> compare.run rest sys.term sys.fs sys.proc
-        "roundtrip" :: dirs           -> roundtrip dirs sys.term sys.fs
-        "models" :: dirs              -> if models.run dirs sys.term sys.fs sys.proc then Success else Failure 1
-        ["model", q, a]               -> model_one q a True sys.term sys.fs
-        ["model", "--unmarked", q, a] -> model_one q a False sys.term sys.fs
-        _                             ->
+        []                               -> answer_stdin sys.term
+        ["-in"]                          -> answer_stdin sys.term
+        ["parse"]                        -> parse_stdin sys.term
+        "compare" :: rest                -> compare.run rest sys.term sys.fs sys.proc
+        "roundtrip" :: dirs              -> roundtrip dirs sys.term sys.fs
+        "models" :: dirs                 -> if models.run dirs sys.term sys.fs sys.proc then Success else Failure 1
+        ["model", q, a]                  -> model_one q a False sys.term sys.fs
+        ["model", "--terminating", q, a] -> model_one q a True sys.term sys.fs
+        _                                ->
             let _ = terminal.eprint_line USAGE sys.term
             Failure 2
 
-fn model_one query ans mark io fs -> code : query~String, ans~String, mark~Bool, io~Term, fs~Fs, code~ExitCode
+fn model_one query ans terminating io fs -> code : query~String, ans~String, terminating~Bool, io~Term, fs~Fs, code~ExitCode
     match (files.read query fs, files.read ans fs)
         (Ok src, Ok z3) ->
-            let _ = terminal.write_bytes (models.one src z3 mark) io
+            let _ = terminal.write_bytes (models.one src z3 terminating) io
             Success
         (Err e, _)      ->
             let _ = terminal.eprint_line ("error: " ++ query ++ ": " ++ files.describe e) io

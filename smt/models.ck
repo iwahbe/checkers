@@ -15,11 +15,15 @@
 # constructor's value, which `get-model` doesn't print. It needs a `z3`
 # executable (Z3 5.3.3), so `cargo test` doesn't run it.
 #
-# Definitions are run as their own bodies (`model.eval_unfolding`), each
-# taken as terminating: `ckc` gives Z3 a definition only in a form whose
-# recursion ends on every input (D118), and SMT-LIB can't say so in the
-# query yet (#299). The summary says how many of the queries that hold have
-# definitions.
+# Definitions are run as their own bodies (`model.eval_unfolding`) only
+# when taken as terminating, and nothing here takes one so by itself: SMT-LIB
+# can't say a definition terminates, so the caller says it, with
+# `--terminating`, for every definition, and the output says it was
+# given. (`ckc` gives Z3 a definition only in a form whose recursion ends on
+# every input, so the corpus scripts and golden tests pass it.) Without it a
+# call of a definition is not determined. The summary says how many of the
+# queries that hold have definitions, and how many a `lambda`, which
+# `model.refutes` refuses.
 #
 # Each query is counted once, in the first of these that applies:
 #
@@ -34,11 +38,11 @@
 #   print, or something `smt.model` doesn't decide; counted by the first
 #   such reason. These are never counted as holding.
 #
-# `main model [--unmarked] QUERY ANSWER` evaluates one query's assertions
-# in the model of one answer (with `--unmarked`, the definitions as `parse`
-# gives them, none marked terminating) (what `(get-model)` printed, if the answer ends with it;
-# else the `(get-value …)` values), and says for each whether it holds,
-# fails, or why it isn't determined.
+# `main model [--terminating] QUERY ANSWER` evaluates one query's
+# assertions in the model of one answer (what `(get-model)` printed, if the
+# answer ends with it; else the `(get-value …)` values), and says for each
+# whether it holds, fails, or why it isn't determined, and whether
+# `model.refutes` takes the model.
 
 module models
 
@@ -68,7 +72,7 @@ enum Outcome
     Unpatterned
     Patterned
     Fails what            : what~Bytes
-    Holds defs            : defs~Bool
+    Holds defs lambda     : defs~Bool, lambda~Bool
     Undetermined kind why : kind~Bytes, why~Bytes
     # `--z3`: Z3 run now doesn't answer `sat` (it answered `v`).
     NowAnswers v          : v~Bytes
@@ -120,7 +124,7 @@ fn reason c u kind -> r : c~Context, u~Unknown, kind~Bool, r~Bytes
         NotGiven _             -> b"something Z3 didn't print"
         LambdaNotGiven         -> b"a `lambda`, which has no normal form"
         OutOfFuel              -> b"evaluation needed more levels than it may go down"
-        NotTerminating         -> b"a definition not marked terminating"
+        NotTerminating         -> b"a definition, not taken as terminating (`--terminating` takes it so)"
         WrongSort              -> b"a value Z3 printed isn't of its term's sort"
         IllSorted              -> b"a term that isn't well-sorted"
 
@@ -156,7 +160,7 @@ fn first_open rs -> r : rs~List (Nat, Came), r~Option Unknown
         _ :: rest        -> first_open rest
 
 # Check the query `src` against Z3's answer `z3`.
-fn check_query src z3 -> o : src~Bytes, z3~Bytes, o~Outcome
+fn check_query t src z3 -> o : t~Bool, src~Bytes, z3~Bytes, o~Outcome
     match smtlib.parse src
         Err e -> QueryUnread (smtlib.describe src e)
         Ok q  ->
@@ -168,29 +172,30 @@ fn check_query src z3 -> o : src~Bytes, z3~Bytes, o~Outcome
                         Ok es ->
                             match answer.printed q.context ts es
                                 Err why  -> AnswerUnread why
-                                Ok pairs -> check_in q pairs
+                                Ok pairs -> check_in t q pairs
 
-fn check_in q pairs -> o : q~Query, pairs~List (term.Term, Value), o~Outcome
-    check_with q (\c -> answer.model_of c pairs FUEL) (\c u -> (reason c u True, reason c u False))
+fn check_in t q pairs -> o : t~Bool, q~Query, pairs~List (term.Term, Value), o~Outcome
+    check_with t q (\c -> answer.model_of c pairs FUEL) (\c u -> (reason c u True, reason c u False))
 
-# Check `q`'s assertions in the model `make` gives for the context with its
-# definitions marked; `why` says why a term isn't determined (a kind to
-# count by, and the details).
-fn check_with q make why -> o : q~Query, make~(Context -> model.Model), why~(Context -> Unknown -> (Bytes, Bytes)),
-                                o~Outcome
+# Check `q`'s assertions in the model `make` gives for its context, with
+# its definitions marked terminating if `terminating`; `why` says why a
+# term isn't determined (a kind to count by, and the details).
+fn check_with terminating q make why -> o : terminating~Bool, q~Query, make~(Context -> model.Model),
+                                            why~(Context -> Unknown -> (Bytes, Bytes)), o~Outcome
     let axioms = term.axioms q.context
     if unpatterned axioms
         Unpatterned
     else if axioms != []
         Patterned
     else
-        match marked q.context
+        match (if terminating then marked q.context else Ok q.context)
             Err w -> QueryUnread w
             Ok c  ->
                 let m = make c
                 let facts = each_fact c m (term.facts c) 1
                 let goal = came (model.eval_unfolding c m q.goal) False
                 let all = facts ++ [(0, goal)]
+                let lambda = not (model.without_lambda c q.goal)
                 let verdict =
                     match first_wrong all
                         Some 0 -> Fails b"the goal is true"
@@ -200,12 +205,14 @@ fn check_with q make why -> o : q~Query, make~(Context -> model.Model), why~(Con
                                 Some u ->
                                     let (kind, detail) = why c u
                                     Undetermined kind detail
-                                None   -> Holds (term.defs c != [])
-                let held =
+                                None   -> Holds (term.defs c != []) lambda
+                # `refutes` takes a model where every assertion holds, unless
+                # there is a `lambda` or an unmarked definition.
+                let refutable =
                     match verdict
-                        Holds _ -> True
-                        _       -> False
-                if held != model.refutes c q.goal m then Disagrees else verdict
+                        Holds _ False -> terminating or term.defs c == []
+                        _             -> False
+                if refutable != model.refutes c q.goal m then Disagrees else verdict
 
 # ── Asking Z3 ────────────────────────────────────────────────────────────────
 
@@ -236,7 +243,7 @@ fn z3_reason full c u -> r : full~z3model.Full src, c~Context, u~Unknown, r~(Byt
 
 # Ask `z3` (`z3 -in`, as `main compare` runs it) the query `src` with
 # `(get-model)` after it, and check the query's assertions in that model.
-fn ask z3 p src -> o : z3~String, p~Proc, src~Bytes, o~Outcome
+fn ask t z3 p src -> o : t~Bool, z3~String, p~Proc, src~Bytes, o~Outcome
     match smtlib.parse src
         Err e -> QueryUnread (smtlib.describe src e)
         Ok q  ->
@@ -255,7 +262,7 @@ fn ask z3 p src -> o : z3~String, p~Proc, src~Bytes, o~Outcome
                                                 Err w    -> ModelUnread w
                                                 Ok whole ->
                                                     let make = \c -> z3model.model_of c whole FUEL
-                                                    check_with q make (\c u -> z3_reason whole c u)
+                                                    check_with t q make (\c u -> z3_reason whole c u)
                                         _                   -> ModelUnread b"no `(get-model)` output"
                         v   -> NowAnswers (verdict_text v)
 
@@ -389,13 +396,18 @@ fn is_fails o -> r : o~Outcome, r~Bool
 
 fn is_holds o -> r : o~Outcome, r~Bool
     match o
-        Holds _ -> True
-        _       -> False
+        Holds _ _ -> True
+        _         -> False
 
 fn is_holds_defs o -> r : o~Outcome, r~Bool
     match o
-        Holds True -> True
-        _          -> False
+        Holds True _ -> True
+        _            -> False
+
+fn is_holds_lambda o -> r : o~Outcome, r~Bool
+    match o
+        Holds _ True -> True
+        _            -> False
 
 fn is_open o -> r : o~Outcome, r~Bool
     match o
@@ -407,10 +419,20 @@ fn is_disagrees o -> r : o~Outcome, r~Bool
         Disagrees -> True
         _         -> False
 
+# What the output says of definitions.
+fn terms_line terminating -> r : terminating~Bool, r~Bytes
+    if terminating
+        b"definitions: each taken as terminating, on the word of whoever ran this (`--terminating`)\n"
+    else
+        b"definitions: none taken as terminating (`--terminating` takes each so)\n"
+
+fn defs_how terminating -> r : terminating~Bool, r~Bytes
+    if terminating then b"taken as terminating" else b"none called"
+
 # The report on `xs`: the queries listed, then the counts.
-export fn report xs -> r : xs~List (Bytes, Outcome), r~Bytes
+export fn report terminating xs -> r : terminating~Bool, xs~List (Bytes, Outcome), r~Bytes
     let n = \p -> count p xs
-    listed xs ++ smtlib.numeral (list.length xs) ++ b" `sat` answers\n"
+    listed xs ++ terms_line terminating ++ smtlib.numeral (list.length xs) ++ b" `sat` answers\n"
         ++ line (n is_now_answers) b"where Z3 run now doesn't answer `sat` (with `--z3`; listed above)"
         ++ line (n is_no_values) b"without `(get-value …)`: no values printed"
         ++ line (n is_unread) b"whose query, answer or model doesn't read (listed above)"
@@ -418,26 +440,33 @@ export fn report xs -> r : xs~List (Bytes, Outcome), r~Bytes
         ++ line (n is_patterned) b"with only `forall`s with `:pattern`: not checked"
         ++ line (n is_fails) b"with an assertion false in Z3's model (listed above)"
         ++ line (n is_holds) b"where every assertion holds"
-        ++ b"      (" ++ smtlib.numeral (n is_holds_defs) ++ b" of them with definitions, taken as terminating)\n"
+        ++ b"      (" ++ smtlib.numeral (n is_holds_defs) ++ b" of them with definitions, " ++ defs_how terminating ++ b")\n"
+        ++ b"      (" ++ smtlib.numeral (n is_holds_lambda) ++ b" of them with a `lambda`, which `refutes` refuses)\n"
         ++ line (n is_open) b"not determined by what Z3 printed, by the first reason:"
         ++ reason_lines (reasons xs [])
         ++ line (n is_disagrees) b"where `refutes` disagrees (listed above)"
 
-# `main models [--z3 PROGRAM] DIR…`: with `--z3`, the models are asked of
-# PROGRAM run now; without, they are the values recorded in the corpus.
+# `main models [--terminating] [--z3 PROGRAM] DIR…`: with `--z3`, the
+# models are asked of PROGRAM run now; without, they are the values
+# recorded in the corpus. With `--terminating`, every definition is taken
+# as terminating.
 export fn run args io fs p -> ok : args~List String, io~Term, fs~Fs, p~Proc, ok~Bool
+    let (t, rest) =
+        match args
+            "--terminating" :: more -> (True, more)
+            _                       -> (False, args)
     let how =
-        match args
-            "--z3" :: prog :: _ -> \src _ -> ask prog p src
-            _                   -> \src z3 -> check_query src z3
+        match rest
+            "--z3" :: prog :: _ -> \src _ -> ask t prog p src
+            _                   -> \src z3 -> check_query t src z3
     let dirs =
-        match args
-            "--z3" :: _ :: rest -> rest
-            _                   -> args
+        match rest
+            "--z3" :: _ :: more -> more
+            _                   -> rest
     match in_dirs how dirs io fs
         None    -> False
         Some xs ->
-            let _ = terminal.write_bytes (report xs) io
+            let _ = terminal.write_bytes (report t xs) io
             count is_unread xs == 0 and count is_fails xs == 0 and count is_disagrees xs == 0
 
 # ── One query ────────────────────────────────────────────────────────────────
@@ -453,9 +482,9 @@ fn fact_lines c rs -> r : c~Context, rs~List (Nat, Came), r~Bytes
         []             -> b""
         (n, k) :: rest -> b"fact " ++ smtlib.numeral n ++ b": " ++ came_text c k ++ b"\n" ++ fact_lines c rest
 
-# `main model QUERY ANSWER`: each assertion of the query in the model of
+# `main model [--terminating] QUERY ANSWER`: each assertion of the query in the model of
 # the answer (the model that knows nothing, if Z3 printed no values).
-export fn one src z3 mark -> r : src~Bytes, z3~Bytes, mark~Bool, r~Bytes
+export fn one src z3 terminating -> r : src~Bytes, z3~Bytes, terminating~Bool, r~Bytes
     let head = b"z3: " ++ verdict_text (answer.verdict z3) ++ b"\n"
     match smtlib.parse src
         Err e -> head ++ b"the query doesn't read: " ++ smtlib.describe src e ++ b"\n"
@@ -463,21 +492,31 @@ export fn one src z3 mark -> r : src~Bytes, z3~Bytes, mark~Bool, r~Bytes
             match model_maker q z3
                 Err why         -> head ++ b"the answer doesn't read: " ++ why ++ b"\n"
                 Ok (kind, make) ->
-                    match (if mark then marked q.context else Ok q.context)
+                    match (if terminating then marked q.context else Ok q.context)
                         Err why -> head ++ why ++ b"\n"
                         Ok c    ->
                             let m = make c
                             let goal = came (model.eval_unfolding c m q.goal) False
                             let axioms = term.axioms c
                             let note = if axioms == [] then b"" else b"a `forall`: not evaluated\n"
-                            let defs =
-                                if mark and term.defs c != []
-                                    b"definitions: each taken as terminating (`--unmarked`: none)\n"
-                                else
-                                    b""
+                            let defs = if term.defs c != [] then terms_line terminating else b""
                             head ++ kind ++ defs ++ note ++ fact_lines c (each_fact c m (term.facts c) 1) ++ b"the negated goal: "
-                                ++ came_text c goal ++ b"\n" ++ b"refutes: " ++ (if model.refutes c q.goal m then b"yes" else b"no")
+                                ++ came_text c goal ++ b"\n" ++ b"refutes: " ++ refutes_text c q.goal m terminating
                                 ++ b"\n"
+
+# Whether `refutes` takes `m`, and if it doesn't for a reason other than an
+# assertion, which.
+fn refutes_text c goal m terminating -> r : c~Context, goal~term.Term, m~model.Model, terminating~Bool, r~Bytes
+    if model.refutes c goal m
+        b"yes"
+    else if term.axioms c != []
+        b"no (a `forall`)"
+    else if not (model.without_lambda c goal)
+        b"no (a `lambda`)"
+    else if not terminating and term.defs c != []
+        b"no (definitions not taken as terminating)"
+    else
+        b"no"
 
 # Whether `e` is what `(get-model)` prints: a list of `define-fun`s and
 # `declare-fun`s.

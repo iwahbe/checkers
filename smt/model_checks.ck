@@ -29,6 +29,12 @@ fn context src -> c : src~Bytes, c~Context
 fn facts src -> ts : src~Bytes, ts~List Term
     term.facts (context src)
 
+# The goal of `src` (`false` if it doesn't read).
+fn goal src -> t : src~Bytes, t~Term
+    match query src
+        Some q -> q.goal
+        None   -> App (Boolean False) []
+
 fn fact src k -> t : src~Bytes, k~Nat, t~Term
     match list.head (list.drop k (facts src))
         Some x -> x
@@ -303,6 +309,32 @@ fn noax_refuted -> r : r~Bool
         None   -> False
 
 check noax_refuted
+
+# ── `refutes` with a `lambda` ────────────────────────────────────────────────
+
+# A `lambda` evaluation never reaches, in the goal, in a fact, in a
+# definition (marked terminating) never called: `refutes` refuses each, as
+# it names no `lambda`'s array. Without the `lambda`, the same query is
+# refuted.
+let LAM_GOAL = b"(set-logic ALL)(assert (not (ite true false (= (select (lambda ((x Int)) x) 0) 0))))(check-sat)"
+let LAM_FACT = b"(set-logic ALL)(assert (ite true true (= (select (lambda ((x Int)) x) 0) 0)))(assert (not false))(check-sat)"
+let LAM_DEF = b"(set-logic ALL)(define-fun-rec g ((y Int)) Int (select (lambda ((x Int)) x) y))(assert (not false))(check-sat)"
+let NO_LAM = b"(set-logic ALL)(assert (not (ite true false (= 0 0))))(check-sat)"
+
+fn refuted_marked src -> r : src~Bytes, r~Bool
+    match query src
+        Some q ->
+            match models.marked q.context
+                Ok c  -> model.refutes c q.goal NOTHING
+                Err _ -> False
+        None   -> False
+
+check model.eval_unfolding (context LAM_GOAL) NOTHING (goal LAM_GOAL) == Ok (Truth False)
+check model.holds (context LAM_FACT) NOTHING (fact LAM_FACT 0)
+check not (refuted_marked LAM_GOAL)
+check not (refuted_marked LAM_FACT)
+check not (refuted_marked LAM_DEF)
+check refuted_marked NO_LAM
 
 # Constant arrays over an uninterpreted index: named by their constants,
 # as at every index sort, so different constants are different arrays (no

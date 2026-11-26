@@ -3,6 +3,6 @@ z3: sat
 model: (get-value …)
 a `forall`: not evaluated
 the negated goal: holds
-refutes: no
+refutes: no (a `forall`)
 -- stderr
 -- exit 0

@@ -5,6 +5,6 @@ fact 1: not determined: Z3 didn't print `a`
 fact 2: not determined: Z3 didn't print `a`
 fact 3: not determined: Z3 didn't print `a`
 the negated goal: holds
-refutes: no
+refutes: no (a `lambda`)
 -- stderr
 -- exit 0
