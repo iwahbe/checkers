@@ -25,9 +25,6 @@ use checkers_rt::word as w;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// The modules whose builtins have effects (§8.9): never run when compiling.
-const EFFECTS: &[&str] = &["std.cown", "std.env", "std.files", "std.future", "std.proc", "std.terminal", "std.time"];
-
 /// Why an operation on static data alone is left to run.
 #[derive(Clone, Debug)]
 pub enum Kept {
@@ -259,7 +256,7 @@ impl<'g> Folder<'g> {
                 r = Err(Kept::Partial);
                 break;
             }
-            if info.body.is_none() && EFFECTS.contains(&&*info.module) {
+            if g.effects.borrow().contains(&x) {
                 r = Err(Kept::Effects);
                 break;
             }

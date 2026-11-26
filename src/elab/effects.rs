@@ -50,6 +50,23 @@ impl Elab {
         self.can_hold(lvl, ty, &|e: &Elab, t: &Val| matches!(t, Val::TyCon(id, _) if e.is_effect_ty(*id)), false, 0, &mut Vec::new())
     }
 
+    /// Whether function `d`'s signature gives it a value that holds an
+    /// effect: an explicit run-time parameter of such a type (a function
+    /// parameter is called by the code it runs, not given an effect). The
+    /// rule of `call_effects`, for every call of `d`.
+    pub(super) fn signature_effects(&self, d: DefId) -> bool {
+        let mut fty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[d.0 as usize].ty);
+        let mut lvl = 0;
+        while let Val::Pi(_, m, icit, dom, clo) = self.force(&fty) {
+            if icit == Icit::Expl && m != Mult::Zero && !matches!(self.force(&dom), Val::Pi(..)) && self.holds_effect(lvl, &dom) {
+                return true;
+            }
+            fty = apply_closure(&self.g, &clo, Val::var(lvl));
+            lvl += 1;
+        }
+        false
+    }
+
     /// Whether function value `v` captured a value that holds an effect.
     fn captures_effect(&self, cx: &Cx, v: &Val) -> bool {
         let lvl = cx.lvl();

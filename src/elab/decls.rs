@@ -2383,6 +2383,9 @@ impl Elab {
                         self.resource_vars.insert((*did, name), (span, shown));
                     }
                     let builtin = is_builtin(body);
+                    if builtin && self.signature_effects(*did) {
+                        self.g.effects.borrow_mut().insert(*did);
+                    }
                     if builtin && !self.stdlib_mode {
                         self.err(Diagnostic::error(
                             "E0356",

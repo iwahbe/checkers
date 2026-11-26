@@ -386,6 +386,10 @@ pub struct Globals {
     /// set once the program is proved, as `bounds` is (`Elab::known_value`).
     /// Each is a literal, `()` or a `Tm::Known`, compiled as static data.
     pub known: RefCell<HashMap<DefId, Tm>>,
+    /// The builtins with effects (§7.1): those given a capability, a
+    /// `Sched`, a file or a process handle, by their signatures. Native
+    /// code never computes a call of one when compiling (§8.9).
+    pub effects: RefCell<std::collections::HashSet<DefId>>,
     /// Every obligation of the program is proved, and none of its facts is
     /// assumed by an `admit` (§13.3): native code compiled from here relies
     /// on the proofs, with no run-time checks of guarded operations. False
@@ -460,6 +464,7 @@ impl Globals {
             value_params: RefCell::new(HashMap::new()),
             bounds: HashMap::new(),
             known: RefCell::new(HashMap::new()),
+            effects: RefCell::new(std::collections::HashSet::new()),
             proved: false,
             fold_work: std::cell::Cell::new(None),
             type_bases: HashMap::new(),
