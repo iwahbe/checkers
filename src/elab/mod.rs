@@ -13,7 +13,7 @@ mod descr;
 mod eq;
 mod interval;
 pub mod index;
-mod order;
+pub(crate) mod order;
 mod pattern;
 pub use pattern::BINDING_HELP;
 mod refine;
@@ -274,6 +274,26 @@ pub struct EqReq {
     pub param: Name,
 }
 
+/// A function parameter of a class's function, at a refinement alias,
+/// that the instance may give values of the class's type to (#226), with
+/// where it gives them, as a message says it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AliasParam {
+    pub name: String,
+    /// What the instance may give it, at its first place where it isn't of
+    /// the alias: `a value that isn't a `Nat``, `a function whose results
+    /// aren't `Nat`s`.
+    pub gives: String,
+    /// What it must be given instead: `` `Nat`s ``, `functions whose
+    /// results are `Nat`s`.
+    pub only: String,
+    /// The type of the values it is given at the base (`Int`, `Int ->
+    /// Int`), and, where those aren't the alias itself, its type at the
+    /// alias, a signature for it that would do.
+    pub accepts: String,
+    pub example: Option<String>,
+}
+
 /// Predicates recorded for the prover (M3).
 /// What an obligation is for; decides how a failure is reported (§7.1).
 #[derive(Clone, Debug, PartialEq)]
@@ -304,22 +324,63 @@ pub enum ObKind {
     /// An instance's function with a signature of its own (#225): a
     /// precondition of it that the class's don't imply (`pre`), or a
     /// postcondition of the class's that the instance's don't imply. The
-    /// class's declaration of the function, as written.
-    Refines { class: String, member: String, pre: bool, declared: String },
+    /// class's declaration of the function, as written. `at`: a refinement
+    /// inside a parameter's (`pre`) or the result's type: its name, its
+    /// type in the instance, and in the class.
+    Refines { class: String, member: String, pre: bool, declared: String, at: Option<(String, String, String)> },
     /// A class used at a refinement alias runs the instance of the type the
     /// alias stands for (#226): a value of the class's type that instance
     /// gives must be of the alias. The class, the alias and its type, the
     /// class's function; where the use is a call, its text, else the
-    /// function's parameter that the instance may call with values of the
-    /// type (`param`), or neither: a result, at any arguments. `inside`: a
+    /// function's parameter the instance may give values of the type to
+    /// (`param`), or neither: a result, at any arguments. `inside`: a
     /// value inside the result (`Some`'s), not the result itself.
-    AtAlias { class: String, alias: String, base: String, member: String, call: Option<String>, param: Option<String>, inside: bool },
+    /// `whole`: a part of the result checked as one (under a recursive
+    /// type, or a function): its type at the alias and at the base.
+    /// `inst`: the instance that runs, at its types (`Conv Bool Int`).
+    AtAlias { class: String, inst: String, alias: String, base: String, member: String, call: Option<String>, param: Option<AliasParam>, inside: bool, whole: Option<(String, String)> },
+    /// A call of a class's function at a known instance whose function
+    /// requires less than the class's: a refinement of the class's result
+    /// type (the alias, the result itself or a value `inside` it), which
+    /// the class promises only where its preconditions (`pres`, as
+    /// written) hold. The call, the instance (`Pos Box`), the function.
+    KnownResult { call: String, alias: String, inside: bool, pres: String, inst: String, member: String },
     Auto,
     Have,
     /// A case a `match` leaves out can't occur there (D144 e): its pattern.
     /// `binding`: the pattern of a `let`, a lambda's parameter or `<-`,
     /// not a `match`.
     Uncovered { case: String, binding: bool },
+}
+
+/// Conditions asked whether they can all hold (E0457): a declaration's
+/// preconditions, a type's conditions on its parameters, a constructor's
+/// invariants, an alias's predicates. `ob` proves `false` from them, an
+/// error when it is proved.
+#[derive(Clone)]
+pub struct Vacuity {
+    pub ob: Obligation,
+    pub kind: VacuityKind,
+    /// The declaration's name, and where it is written.
+    pub name: String,
+    pub at: Span,
+    /// Each fact of `ob` that is one of the conditions, as written.
+    pub conds: Vec<Option<String>>,
+    /// A constructor's type, by its name's span: not reported when the
+    /// type's conditions are.
+    pub within: Option<Span>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum VacuityKind {
+    /// A function's or lemma's preconditions; its explicit parameters.
+    Pre { params: Vec<String>, lemma: bool },
+    TypeParams,
+    Fields,
+    /// A type alias's predicates on the name it binds.
+    Alias { subject: String },
+    /// The predicates on a class's type (`type Unit : u~Unit, u < 256`).
+    ClassType { subject: String },
 }
 
 /// Where a branch was entered, asked whether it can be reached (D144 d).
@@ -448,12 +509,15 @@ pub struct Late {
 
 /// A call of a class's function with preconditions, whose dictionary may
 /// not be found yet (#225): the context, the call, and where it is.
+/// `typed`: its type is its known instance's result type already
+/// (`instance_call_type`).
 pub struct PendingPre {
     pub cx: Cx,
     pub call: Tm,
     pub span: Span,
     pub owner: Option<DefId>,
     pub in_spec: usize,
+    pub typed: bool,
 }
 
 /// The postconditions to check at each value the current function returns.
@@ -520,6 +584,10 @@ pub struct Elab {
     pub user_modules: Vec<String>,
     /// Each module's imports, by name (for D143's keys).
     pub module_deps: HashMap<String, Vec<String>>,
+    /// The modules of the instances each module's checking chose, other
+    /// than its own (D143's keys, #272): an instance is found wherever its
+    /// module is loaded, so it may be in a module not imported.
+    pub instance_deps: HashMap<String, std::collections::BTreeSet<String>>,
     /// The package of each module of a dependency (D111); others are the
     /// program's own package, or `std`.
     pub module_pkg: HashMap<String, String>,
@@ -543,6 +611,10 @@ pub struct Elab {
     pub obligations: Vec<Obligation>,
     /// Branches to ask about (D144 d).
     pub probes: Vec<Probe>,
+    pub vacuities: Vec<Vacuity>,
+    /// The declaration the next `signature` is for, to ask whether its
+    /// preconditions can hold (E0457).
+    pub sig_vacuity: Option<(VacuityKind, String, Span)>,
     /// The module checked, whose exported `main` is the program's (D31).
     pub root: Option<String>,
     /// References between declarations, for unused code (D144).
@@ -570,6 +642,9 @@ pub struct Elab {
     /// A type's conditions on its parameters, over the parameters (#136):
     /// obligations where the type is applied, facts in its fields.
     pub ty_conds: HashMap<TyId, Vec<Pred>>,
+    /// A type's parameters' typings after the first (`n~Int, n~Nat`), with
+    /// the span of each, until their refinements join its conditions.
+    pub ty_param_typings: HashMap<TyId, Vec<(usize, Tm, usize, Span)>>,
     /// While a signature's types are elaborated, the type applications whose
     /// conditions are checked once all its preconditions are known (#136).
     pub ty_cond_defer: Option<Vec<(Span, TyId, Vec<Val>)>>,
@@ -585,6 +660,13 @@ pub struct Elab {
     pub in_spec: usize,
     /// Inside a lemma's proof, which is never compiled (D125).
     pub in_proof: usize,
+    /// Inside an argument to a `ghost` parameter, or a type bound `ghost`:
+    /// erased, so a `ghost` variable used there isn't used at run time.
+    pub in_erased: usize,
+    /// Where each `ghost` local of a function is used outside a type, a
+    /// specification, a proof or an erased argument, in order: the use a
+    /// usage error (E0403) points at.
+    pub ghost_uses: HashMap<(DefId, String), Vec<Span>>,
     /// Type parameters compared with `==` in compiled code, by function and
     /// binder position (D125 b).
     pub eq_reqs: HashMap<DefId, BTreeMap<usize, EqReq>>,
@@ -738,6 +820,13 @@ pub struct Elab {
     /// refinement alias, to check at the end of the module (#226).
     pub class_calls: Vec<PendingPre>,
     pub alias_dicts: Vec<classes::AliasDict>,
+    /// Uses of classes' functions as values (#252), by their dictionary's
+    /// unknown: where, and whether compared there with the function type
+    /// expected, at a known instance (through a refinement alias, that
+    /// comparison is their check). A local defined as one: each call of
+    /// it, a call of the class's function with that dictionary.
+    pub class_value_uses: Vec<(MetaId, DefId, Span, bool)>,
+    pub class_local_calls: Vec<(MetaId, PendingPre)>,
     /// The instance whose member's signature is being elaborated (#146).
     pub sig_inst: Option<classes::SigInst>,
     /// Comparisons waiting for a dictionary (#133): level, expected,
@@ -834,6 +923,8 @@ impl Elab {
             module_fns: Vec::new(),
             obligations: Vec::new(),
             probes: Vec::new(),
+            vacuities: Vec::new(),
+            sig_vacuity: None,
             root: None,
             refs: Vec::new(),
             observed: Vec::new(),
@@ -860,6 +951,7 @@ impl Elab {
             transparent: HashSet::new(),
             con_invs: HashMap::new(),
             ty_conds: HashMap::new(),
+            ty_param_typings: HashMap::new(),
             ty_cond_defer: None,
             alias_preds: HashMap::new(),
             alias_subject: HashMap::new(),
@@ -867,6 +959,8 @@ impl Elab {
             arg_of: None,
             in_spec: 0,
             in_proof: 0,
+            in_erased: 0,
+            ghost_uses: HashMap::new(),
             eq_reqs: HashMap::new(),
             desc_reqs: HashMap::new(),
             insts: Vec::new(),
@@ -918,6 +1012,8 @@ impl Elab {
             pending_class_pres: Vec::new(),
             class_calls: Vec::new(),
             alias_dicts: Vec::new(),
+            class_value_uses: Vec::new(),
+            class_local_calls: Vec::new(),
             sig_inst: None,
             waiting: Vec::new(),
             waiting_late: Vec::new(),
@@ -948,6 +1044,7 @@ impl Elab {
             completion: None,
             completing: None,
             module_deps: HashMap::new(),
+            instance_deps: HashMap::new(),
         }
     }
 
@@ -1788,12 +1885,13 @@ impl Elab {
     pub fn oblige(&mut self, cx: &Cx, span: Span, kind: ObKind, text: String, goal: Val, only_if_nat: Option<Val>) {
         // In a specification only a callee's precondition is checked: a spec
         // mustn't speak of a call that can't be made (M17, D118). A
-        // specification elaborated twice (a lemma's `ensures`) obliges once.
+        // specification elaborated twice (a lemma's `ensures`) obliges once;
+        // each of several conditions at one place is its own obligation.
         if self.in_spec > 0 {
             if !matches!(kind, ObKind::Pre { .. } | ObKind::TypeParams { .. }) {
                 return;
             }
-            if self.obligations.iter().any(|o| o.span == span && o.module == self.cur && o.kind == kind) {
+            if self.obligations.iter().any(|o| o.span == span && o.module == self.cur && o.kind == kind && o.text == text) {
                 return;
             }
         }
@@ -1819,6 +1917,18 @@ impl Elab {
     /// code, outside specifications, written by its author.
     pub fn probing(&self, span: Span) -> bool {
         self.in_spec == 0 && !self.stdlib_mode && self.completing.is_none() && span.start < SYNTHETIC && span.end > span.start
+    }
+
+    /// Ask, in the proofs phase, whether the conditions in `cx`'s facts can
+    /// all hold (E0457). `conds`: the text of each fact that is one of the
+    /// declaration's conditions, by its index; nothing is asked without one.
+    pub fn ask_vacuity(&mut self, cx: &Cx, kind: VacuityKind, name: &str, at: Span, conds: Vec<Option<String>>, within: Option<Span>) {
+        if conds.iter().all(|c| c.is_none()) || self.completing.is_some() {
+            return;
+        }
+        let f = self.false_val();
+        let ob = self.obligation(cx, at, ObKind::Have, String::new(), f, None);
+        self.vacuities.push(Vacuity { ob, kind, name: name.to_string(), at, conds, within });
     }
 
     /// Ask, in the proofs phase, whether the branch entered here can run.
@@ -1867,7 +1977,7 @@ impl Elab {
     /// `False`, as a value.
     pub fn false_val(&self) -> Val {
         match self.g.well_known.false_con {
-            Some(c) => Val::Con(c, vec![]),
+            Some(c) => Val::Con(c, vec![].into()),
             None => Val::Error,
         }
     }
@@ -1921,6 +2031,11 @@ impl Elab {
                 }
                 // A call of a function (global or local) whose result type is `Nat`.
                 let call = match &v {
+                    // Not a class's function with preconditions: at a known
+                    // instance whose function requires less, the call meets
+                    // only that function's, and the class promises a `Nat`
+                    // only where its own hold (the prover knows so much).
+                    Val::Neutral(Head::Def(d), _) if self.class_methods.contains(d) && self.specs.get(d).is_some_and(|s| s.preds.iter().any(|p| !p.is_post)) => false,
                     Val::Neutral(Head::Def(d), sp) => {
                         let ty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[d.0 as usize].ty);
                         self.returns_nat(&ty, sp)
@@ -2013,7 +2128,7 @@ impl Elab {
     pub fn bool_val(&self, b: bool) -> Val {
         let c = if b { self.g.well_known.true_con } else { self.g.well_known.false_con };
         match c {
-            Some(c) => Val::Con(c, Vec::new()),
+            Some(c) => Val::Con(c, Rc::new([])),
             None => Val::Error,
         }
     }
@@ -2028,11 +2143,16 @@ impl Elab {
         if let Some(t) = self.text_override.get(&(self.cur.clone(), span.start, span.end)) {
             return t.clone();
         }
-        self.sources
-            .get(&self.cur)
-            .and_then(|f| f.text.get(span.start as usize..span.end as usize))
-            .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "))
-            .unwrap_or_default()
+        self.sources.get(&self.cur).map(|f| source_text(&f.text, span, false)).unwrap_or_default()
+    }
+
+    /// An expression's text, as `src_text`, keeping a block's lines (a
+    /// `match` across several): what is shown of a predicate.
+    pub fn expr_text(&self, e: &crate::syntax::ast::Expr) -> String {
+        if let Some(t) = self.text_override.get(&(self.cur.clone(), e.span.start, e.span.end)) {
+            return t.clone();
+        }
+        self.sources.get(&self.cur).map(|f| source_text(&f.text, e.span, has_block(e))).unwrap_or_default()
     }
 
     /// If `ty`, a type term over the first `at` locals of `cx`, is a refinement
@@ -2136,7 +2256,7 @@ impl Elab {
 
     pub fn ty_val(&self, t: Option<TyId>, args: Vec<Val>) -> Val {
         match t {
-            Some(t) => Val::TyCon(t, args),
+            Some(t) => Val::TyCon(t, args.into()),
             None => Val::Error,
         }
     }
@@ -2183,7 +2303,7 @@ impl Elab {
         self.ty_val(self.g.well_known.array, vec![elem])
     }
     pub fn unit(&self) -> Val {
-        Val::TupleTy(vec![])
+        Val::TupleTy(vec![].into())
     }
 
     /// The module of an abstract type declared in another module: its
@@ -2593,6 +2713,48 @@ fn free_levels(t: &Tm, lvl: usize, depth: usize, out: &mut Vec<usize>) {
 
 /// `text` with each whole word that `names` maps replaced: identifiers,
 /// not parts of them, and nothing inside a string literal.
+/// The source text at `span`: one line with its whitespace collapsed, or,
+/// with `lines`, its lines as written (less the first's indentation), when
+/// it has several.
+pub fn source_text(src: &str, span: Span, lines: bool) -> String {
+    let Some(t) = src.get(span.start as usize..span.end as usize) else { return String::new() };
+    if !lines || !t.contains('\n') {
+        return t.split_whitespace().collect::<Vec<_>>().join(" ");
+    }
+    let line_start = src[..span.start as usize].rfind('\n').map_or(0, |i| i + 1);
+    let col = src[line_start..span.start as usize].chars().count();
+    let mut out: Vec<&str> = Vec::new();
+    for (k, l) in t.lines().enumerate() {
+        let l = l.trim_end();
+        if l.trim().is_empty() {
+            continue;
+        }
+        let lead = l.len() - l.trim_start().len();
+        out.push(if k == 0 { l } else { &l[lead.min(col)..] });
+    }
+    out.join("\n")
+}
+
+/// Is `e` a layout block, or one of its branches: written on several lines
+/// whose breaks are part of it?
+pub fn has_block(e: &crate::syntax::ast::Expr) -> bool {
+    use crate::syntax::ast::ExprKind;
+    match &e.kind {
+        ExprKind::Match(..) | ExprKind::Block(_) | ExprKind::When(_) => true,
+        ExprKind::If(_, t, f) => has_block(t) || has_block(f),
+        _ => false,
+    }
+}
+
+/// A predicate's text for a one-line message: its first line, with `…` for
+/// the rest of a block.
+pub fn first_line(text: &str) -> String {
+    match text.split_once('\n') {
+        Some((first, _)) => format!("{first} …"),
+        None => text.to_string(),
+    }
+}
+
 pub fn rename_words(text: &str, names: &[(String, String)]) -> String {
     let mut out = String::new();
     let mut word = String::new();

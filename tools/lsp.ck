@@ -64,11 +64,13 @@ record Diag
 
 # What the checks share: each root's latest check and diagnostics (a check's
 # proof diagnostics stay until its root's next check gets that far, so they
-# don't flicker), the index of each file, and the requests waiting for one.
+# don't flicker), the index of each file, the requests waiting for one, and
+# whether `shutdown` has been answered (then checks publish nothing).
 record Shared
     roots~List Root
     index~List Entry
     pending~List Pending
+    shutdown~Bool
 
 # One checked file (a root): its latest check (only its results are shown),
 # whether the index has the file as that check saw it, the diagnostics
@@ -203,9 +205,11 @@ record Acc
 partial fn pump out acc g docs c -> r : out~File, acc~Acc, g~Nat, docs~List Doc, c~Caps, r~(Acc, File)
     let (line, out) = files.read_line out
     match line
-        None   -> (acc, out)
-        Some l ->
-            match json.parse (string.bytes l)
+        # The compiler's output can't be read any further: as at its end.
+        Err _       -> (acc, out)
+        Ok None     -> (acc, out)
+        Ok (Some l) ->
+            match json.parse l
                 Err _ -> pump out acc g docs c
                 Ok j  ->
                     let kind = str_or "kind" j
@@ -254,14 +258,14 @@ partial fn of_path path ds -> r : path~String, ds~List Diag, r~List Diag
         []        -> []
         d :: rest -> if d.at.path == path then d :: of_path path rest else of_path path rest
 
-# After a phase of check `g` of `root`, if it is still the root's latest:
-# publish the diagnostics, or take the index and answer the requests
-# waiting for it.
+# After a phase of check `g` of `root`, if it is still the root's latest and
+# `shutdown` hasn't been answered: publish the diagnostics, or take the index
+# and answer the requests waiting for it.
 partial fn publish phase acc g root docs c : phase~String, acc~Acc, g~Nat, root~String, docs~List Doc, c~Caps
     let sched = c.sched
     when sh = c.shared, turn = c.out using sched
         let before = root_in root sh.roots
-        if before.gen != g
+        if sh.shutdown or before.gen != g
             (sh, turn)
         else if phase == "index"
             # It covers the root's file only.
@@ -269,8 +273,8 @@ partial fn publish phase acc g root docs c : phase~String, acc~Acc, g~Nat, root~
             let roots = Root root g True before.showing before.proofs :: other_roots root sh.roots
             let o = terminal.stdout c.term
             let (_, o) = answer_all (of_root root sh.pending) index o
-            files.close o
-            (Shared roots index (not_of_root root sh.pending), turn)
+            let _ = files.close o
+            (Shared roots index (not_of_root root sh.pending) sh.shutdown, turn)
         else
             # Until this check's proofs are known, its root's last ones stay.
             let proofs = if phase == "proofs" then of_phase "proofs" acc.diags else before.proofs
@@ -279,24 +283,25 @@ partial fn publish phase acc g root docs c : phase~String, acc~Acc, g~Nat, root~
             let touched = paths_of showing (paths_of before.showing [])
             let o = terminal.stdout c.term
             let (_, o) = send_all touched (all_showing roots) docs c o
-            files.close o
-            (Shared roots sh.index sh.pending, turn)
+            let _ = files.close o
+            (Shared roots sh.index sh.pending sh.shutdown, turn)
     ()
 
 # A check `g` of `root` ended without its index (the compiler failed): if it
-# is the root's latest, answer the requests waiting for it with what there is.
+# is the root's latest and `shutdown` hasn't been answered, answer the
+# requests waiting for it with what there is.
 partial fn settle g root c : g~Nat, root~String, c~Caps
     let sched = c.sched
     when sh = c.shared, turn = c.out using sched
         let before = root_in root sh.roots
-        if before.gen != g or before.indexed
+        if sh.shutdown or before.gen != g or before.indexed
             (sh, turn)
         else
             let roots = Root root g True before.showing before.proofs :: other_roots root sh.roots
             let o = terminal.stdout c.term
             let (_, o) = answer_all (of_root root sh.pending) sh.index o
-            files.close o
-            (Shared roots sh.index (not_of_root root sh.pending), turn)
+            let _ = files.close o
+            (Shared roots sh.index (not_of_root root sh.pending) sh.shutdown, turn)
     ()
 
 partial fn answer_all ps index o -> r : ps~List Pending, index~List Entry, o~File, r~((), File)
@@ -379,7 +384,8 @@ partial fn overlay docs -> j : docs~List Doc, j~Json
 
 partial fn feed input o -> r : input~Bytes, o~File, r~()
     let (_, o) = files.write_bytes input o
-    files.close o
+    let _ = files.close o
+    ()
 
 # Start a check of `doc`, killing its check in progress (D127 e).
 partial fn start doc st c -> r : doc~Doc, st~Server, c~Caps, r~Server
@@ -393,7 +399,7 @@ partial fn start doc st c -> r : doc~Doc, st~Server, c~Caps, r~Server
     when sh = c.shared using sched
         let before = root_in path sh.roots
         let roots = Root path g False before.showing before.proofs :: other_roots path sh.roots
-        Shared roots sh.index sh.pending
+        Shared roots sh.index sh.pending sh.shutdown
     let args = c.flags ++ ["check", "--json", "--overlay", "-", doc.path]
     let docs = st.docs
     match proc.spawn c.ckc args (Streams Pipe Pipe Discard) c.proc
@@ -436,7 +442,7 @@ partial fn step o ch acc g root docs c : o~File, ch~Child, acc~Acc, g~Nat, root~
             publish (phase_name acc2.phases) acc2 g root docs c
             step o2 ch acc2 g root docs c
         else
-            files.close o2
+            let _ = files.close o2
             let code = proc.wait ch
             # 137: killed by a newer check.
             match code
@@ -589,16 +595,45 @@ partial fn answer_or id path f c : id~Json, path~String, f~(List Entry -> Result
         if (root_in path sh.roots).indexed
             let o = terminal.stdout c.term
             let (_, o) = rpc.write (respond id (f sh.index)) o
-            files.close o
+            let _ = files.close o
             (sh, turn)
         else
-            (Shared sh.roots sh.index (Pending id path f :: sh.pending), turn)
+            (Shared sh.roots sh.index (Pending id path f :: sh.pending) sh.shutdown, turn)
     ()
 
-# Tell the user something went wrong (`window/showMessage`).
+# Tell the user something went wrong (`window/showMessage`), unless
+# `shutdown` has been answered.
 partial fn show_error message c : message~String, c~Caps
     let params = rpc.obj [("type", rpc.num 1), ("message", Str ("checkers: " ++ message))]
-    reply (rpc.notification "window/showMessage" params) c
+    let sched = c.sched
+    when sh = c.shared, turn = c.out using sched
+        if sh.shutdown
+            (sh, turn)
+        else
+            let o = terminal.stdout c.term
+            let (_, o) = rpc.write (rpc.notification "window/showMessage" params) o
+            let _ = files.close o
+            (sh, turn)
+    ()
+
+# Answer `shutdown` (request `id`): first the requests still waiting for an
+# index, with what there is; after it, the server sends nothing but replies
+# to the requests before it (the checks are killed, and any phase already
+# read publishes nothing), so the client hears nothing after the answer.
+partial fn shut_down id c : id~Option Json, c~Caps
+    let sched = c.sched
+    when sh = c.shared, turn = c.out using sched
+        let o = terminal.stdout c.term
+        let (_, o) = answer_all (list.reverse sh.pending) sh.index o
+        let o =
+            match id
+                Some i ->
+                    let (_, o) = rpc.write (rpc.response i Null) o
+                    o
+                None   -> o
+        let _ = files.close o
+        (Shared sh.roots sh.index [] True, turn)
+    ()
 
 # The uses of the name under the cursor in the open files' indexes, and its
 # definition if `declaration` (D127 f).
@@ -628,7 +663,7 @@ partial fn reply msg c : msg~Json, c~Caps
     when turn = c.out using sched
         let o = terminal.stdout c.term
         let (_, o) = rpc.write msg o
-        files.close o
+        let _ = files.close o
         turn
     ()
 
@@ -648,7 +683,7 @@ partial fn with_package id w docs c f : id~Json, w~Where, docs~List Doc, c~Caps,
             let sched = c.sched
             let _ = future.fork sched $ \_ ->
                 let (es, o2) = read_entries out []
-                files.close o2
+                let _ = files.close o2
                 let _ = proc.wait child
                 reply (respond id (f es)) c
             ()
@@ -657,9 +692,11 @@ partial fn with_package id w docs c f : id~Json, w~Where, docs~List Doc, c~Caps,
 partial fn read_entries out acc -> r : out~File, acc~List Entry, r~(List Entry, File)
     let (line, out) = files.read_line out
     match line
-        None   -> (acc, out)
-        Some l ->
-            match json.parse (string.bytes l)
+        # The compiler's output can't be read any further: as at its end.
+        Err _       -> (acc, out)
+        Ok None     -> (acc, out)
+        Ok (Some l) ->
+            match json.parse l
                 Ok j if str_or "kind" j == "name" ->
                     match entry_of j
                         Some e -> read_entries out (e :: acc)
@@ -739,7 +776,7 @@ partial fn complete id w docs c : id~Json, w~Where, docs~List Doc, c~Caps
             let text = w.doc.text
             let _ = future.fork sched $ \_ ->
                 let (items, o2) = read_items out text c None [] 0
-                files.close o2
+                let _ = files.close o2
                 let _ = proc.wait child
                 let list = rpc.obj [("isIncomplete", Bool False), ("items", Arr items)]
                 reply (rpc.response id list) c
@@ -750,9 +787,11 @@ partial fn read_items out text c range acc n -> r : out~File, text~Bytes, c~Caps
                                                     n~Nat, r~(List Json, File)
     let (line, out) = files.read_line out
     match line
-        None   -> (list.reverse acc, out)
-        Some l ->
-            match json.parse (string.bytes l)
+        # The compiler's output can't be read any further: as at its end.
+        Err _       -> (list.reverse acc, out)
+        Ok None     -> (list.reverse acc, out)
+        Ok (Some l) ->
+            match json.parse l
                 Err _ -> read_items out text c range acc n
                 Ok j  ->
                     let kind = str_or "kind" j
@@ -1051,11 +1090,15 @@ partial fn handle m st c -> r : m~Json, st~Server, c~Caps, r~(Server, Option Exi
     let keep = (st, None)
     if method == "exit"
         (st, Some (if st.shutdown then Success else Failure 1))
+    else if st.shutdown
+        # After `shutdown`, a request is an error and a notification is ignored.
+        match id
+            Some i -> reply (rpc.error_response i (0 - 32600) "the server is shutting down") c
+            None   -> ()
+        keep
     else if method == "shutdown"
         kill_all st.killers
-        match id
-            Some i -> reply (rpc.response i Null) c
-            None   -> ()
+        shut_down id c
         (Server st.docs st.gen [] True, None)
     else if method == "textDocument/didOpen" or method == "textDocument/didChange"
         let d = if method == "textDocument/didOpen" then opened params else changed params
@@ -1171,8 +1214,8 @@ partial fn begin input c -> r : input~File, c~Caps, r~(ExitCode, File)
 export partial fn run ckc flags term fs p sched -> code : ckc~String, flags~List String, term~Term, fs~Fs, p~Proc,
                                                           sched~Sched, code~ExitCode
     let out = cown.new () sched
-    let shared = cown.new (Shared [] [] []) sched
+    let shared = cown.new (Shared [] [] [] False) sched
     let c = Caps fs p sched term out shared ckc flags False
     let (code, rest) = begin (terminal.stdin term) c
-    files.close rest
+    let _ = files.close rest
     code

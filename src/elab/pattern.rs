@@ -23,6 +23,8 @@ pub struct Row<'a> {
 
 enum Column {
     Tuple,
+    /// `()`: matches every value of type `()`, and only that type.
+    Unit,
     Con,
     Lit,
     /// `[]` and `x :: rest` on a sequence that isn't a list: a `match` on
@@ -219,6 +221,88 @@ impl Elab {
         r
     }
 
+    /// W011: a `match` on `Seq.uncons e` whose arms sequence patterns on
+    /// `e` can write (§9.8): `None` is `[]` and `Some (p, q)` is `p :: q`.
+    /// Not for a `let`'s or a lambda's pattern, nor where the sequence's
+    /// type isn't known yet (there `[]` and `::` would be a list's).
+    fn lint_uncons_match(&mut self, scrut: &Expr, st: &Tm, sty: &Val, arms: &[(Pattern, Option<&Expr>, ArmBody<'_>)]) {
+        if self.match_binding || self.stdlib_mode || self.package_of(&self.cur) != "." || scrut.span.start >= SYNTHETIC {
+            return;
+        }
+        let ExprKind::App(_, arg) = &scrut.kind else { return };
+        let Some(Sym::Def(uncons)) = self.modules.get("std.prelude").and_then(|m| m.values.get("uncons").copied()) else { return };
+        if !matches!(st.head(), Tm::Def(d) if *d == uncons) {
+            return;
+        }
+        // `Option (Elem, s)`: `s` must be known.
+        let known = match self.force(sty) {
+            Val::TyCon(_, args) => match args.first().map(|a| self.force(a)) {
+                Some(Val::TupleTy(xs)) if xs.len() == 2 => !matches!(self.force(&xs[1]), Val::Neutral(Head::Meta(_), _) | Val::Error),
+                _ => false,
+            },
+            _ => false,
+        };
+        if !known {
+            return;
+        }
+        let Some(pats) = arms.iter().map(|(p, _, _)| self.seq_pattern_text(p)).collect::<Option<Vec<String>>>() else { return };
+        // An argument's span has its parentheses, which `match` doesn't need.
+        let written = self.src_text(arg.span);
+        let seq = match written.strip_prefix('(').and_then(|t| t.strip_suffix(')')) {
+            Some(t) if !matches!(arg.kind, ExprKind::Tuple(_) | ExprKind::Unit) => t.to_string(),
+            _ => written.clone(),
+        };
+        let rewrites: Vec<String> = arms
+            .iter()
+            .zip(&pats)
+            .filter_map(|((p, _, _), q)| {
+                let was = self.src_text(p.span);
+                (was != *q).then(|| format!("`{q}` for `{was}`"))
+            })
+            .collect();
+        let help = if rewrites.is_empty() {
+            format!("write `match {seq}`")
+        } else {
+            format!("write `match {seq}`, with {}", and_list(&rewrites))
+        };
+        self.err(
+            Diagnostic::warning("W011", format!("match on `{seq}` itself, not on `Seq.uncons {written}`"), scrut.span)
+                .with_label("`[]` and `x :: rest` take a sequence apart with `Seq.uncons`")
+                .with_help(help),
+        );
+    }
+
+    /// A pattern on `Seq.uncons`'s result written as a sequence pattern, if
+    /// it can be: `None` is `[]`, `Some (p, q)` is `p :: q`.
+    fn seq_pattern_text(&self, p: &Pattern) -> Option<String> {
+        let wk = &self.g.well_known;
+        let con = |n: &ast::Ident| match self.resolve(&n.name, false) {
+            Some(Sym::Con(c)) => Some(c),
+            _ => None,
+        };
+        match &p.kind {
+            PatKind::Wild => Some("_".to_string()),
+            PatKind::Con(n, args) if args.is_empty() && con(n).is_some() && con(n) == wk.none => Some("[]".to_string()),
+            PatKind::Con(n, args) if args.len() == 1 && con(n).is_some() && con(n) == wk.some => match &args[0].kind {
+                PatKind::Wild => Some("_ :: _".to_string()),
+                PatKind::Tuple(xs) if xs.len() == 2 => {
+                    let side = |q: &Pattern, left: bool| {
+                        let t = self.src_text(q.span);
+                        if matches!(q.kind, PatKind::Or(_)) || (left && matches!(q.kind, PatKind::Cons(..))) {
+                            format!("({t})")
+                        } else {
+                            t
+                        }
+                    };
+                    Some(format!("{} :: {}", side(&xs[0], true), side(&xs[1], false)))
+                }
+                _ => None,
+            },
+            PatKind::Or(alts) => alts.iter().map(|a| self.seq_pattern_text(a)).collect::<Option<Vec<_>>>().map(|v| v.join(" | ")),
+            _ => None,
+        }
+    }
+
     fn elab_match_inner<'a>(
         &mut self,
         cx: &mut Cx,
@@ -270,6 +354,7 @@ impl Elab {
             ExprKind::Var(n) if cx.lookup(n).is_some() => (cx.lookup(n).unwrap(), None),
             _ => {
                 let (st, sty) = self.infer(cx, scrut);
+                self.lint_uncons_match(scrut, &st, &sty, &arms);
                 let v = self.eval(cx, &st);
                 let tyt = quote(&self.g, cx.lvl(), &sty);
                 let l = cx.define("$s", sty, v, Mult::Many);
@@ -433,7 +518,7 @@ impl Elab {
         let mut pats = Vec::new();
         for (occ, p) in r.pats.drain(..) {
             match p.kind {
-                PatKind::Wild | PatKind::Unit => {}
+                PatKind::Wild => {}
                 PatKind::Var(n) => r.binds.push((n, occ, p.span)),
                 _ => pats.push((occ, p)),
             }
@@ -453,6 +538,7 @@ impl Elab {
         let (occ, pat) = rows[0].pats[0].clone();
         let col = match &pat.kind {
             PatKind::Tuple(_) => Column::Tuple,
+            PatKind::Unit => Column::Unit,
             PatKind::Lit(_) | PatKind::Neg(_) => Column::Lit,
             _ => match self.seq_column(cx, &rows, occ) {
                 Some(m) => Column::Seq(m),
@@ -461,6 +547,7 @@ impl Elab {
         };
         match col {
             Column::Tuple => self.compile_tuple(cx, rows, occ, &pat, expected, tail),
+            Column::Unit => self.compile_unit(cx, rows, occ, &pat, expected, tail),
             Column::Lit => self.compile_lit(cx, rows, occ, expected, tail),
             Column::Con => self.compile_con(cx, rows, occ, &pat, expected, tail),
             Column::Seq(m) => {
@@ -632,6 +719,25 @@ impl Elab {
         }
     }
 
+    /// `()` takes nothing apart: the value has type `()`, and every row with
+    /// `()` here matches it.
+    fn compile_unit(&mut self, cx: &mut Cx, rows: Vec<Row>, occ: usize, pat: &Pattern, expected: &Val, tail: bool) -> Tm {
+        let ty = cx.ty_of(occ);
+        let unit = self.unit();
+        if !self.unify_at(cx, &ty, &unit, pat.span, "this pattern") {
+            self.pm.bad = true;
+            return Tm::Error;
+        }
+        let rows = rows
+            .into_iter()
+            .map(|mut r| {
+                r.pats.retain(|(o, p)| !(*o == occ && matches!(p.kind, PatKind::Unit)));
+                r
+            })
+            .collect();
+        self.compile(cx, rows, expected, tail)
+    }
+
     fn compile_tuple(
         &mut self,
         cx: &mut Cx,
@@ -655,14 +761,22 @@ impl Elab {
             .min()
             .unwrap_or(ps.len());
         let ty = match self.force(&cx.ty_of(occ)) {
-            Val::TupleTy(ts) => Val::TupleTy(crate::core::flat_parts(&self.g, &ts, true)),
+            Val::TupleTy(ts) => Val::TupleTy(crate::core::flat_parts(&self.g, &ts, true).into()),
             t => t,
         };
         let comps_ty = match ty {
             Val::TupleTy(ts) if ts.len() == n => ts,
+            // `()` has no parts at all.
+            Val::TupleTy(ts) if ts.is_empty() => {
+                self.pat_err(
+                    Diagnostic::error("E0246", format!("this pattern has {n} parts, but `()` has none"), pat.span)
+                        .with_help("match `()` with the pattern `()`, or `_`"),
+                );
+                return Tm::Error;
+            }
             // A tuple type with fewer parts than the pattern, ending in a
             // type that isn't a tuple: the pattern has too many parts.
-            Val::TupleTy(ts) if ts.len() < n && ts.last().is_some_and(|t| !matches!(self.force(t), Val::Neutral(..))) => {
+            Val::TupleTy(ts) if ts.len() < n && !matches!(self.force(&ts[ts.len() - 1]), Val::Neutral(..)) => {
                 let shown = self.show_val(cx, &Val::TupleTy(ts.clone()));
                 self.pat_err(
                     Diagnostic::error("E0246", format!("this pattern has {n} parts, but `{shown}` has {}", ts.len()), pat.span)
@@ -675,7 +789,7 @@ impl Elab {
                 // The occurrence's type can't depend on the occurrence itself.
                 let mut outer = cx.clone();
                 outer.truncate(occ);
-                let metas: Vec<Val> = (0..n).map(|_| self.fresh_meta_val(&outer)).collect();
+                let metas: Rc<[Val]> = (0..n).map(|_| self.fresh_meta_val(&outer)).collect();
                 let want = Val::TupleTy(metas.clone());
                 if !self.unify_at(cx, &other, &want, pat.span, "this pattern") {
                     self.authority_hint(cx, pat, ps, occ);
@@ -929,7 +1043,7 @@ impl Elab {
                 let n = self.g.arity_ty(tid);
                 let mut outer = cx.clone();
                 outer.truncate(occ);
-                let metas: Vec<Val> = (0..n).map(|_| self.fresh_meta_val(&outer)).collect();
+                let metas: Rc<[Val]> = (0..n).map(|_| self.fresh_meta_val(&outer)).collect();
                 let want = Val::TyCon(tid, metas.clone());
                 if unify(&self.g, cx.lvl(), &other, &want).is_err() {
                     let shown = self.show_val(cx, &other);
@@ -959,7 +1073,7 @@ impl Elab {
         for c in ctors {
             let start = cx.lvl();
             let fields = self.g.cons[c.0 as usize].fields.clone();
-            let mut env: Vec<Val> = params.clone();
+            let mut env: Vec<Val> = params.to_vec();
             let mut lvls = Vec::new();
             let sub = cx.locals[occ].sub.or(cx.locals[occ].param);
             let sub_cond = if cx.locals[occ].sub.is_some() { cx.locals[occ].sub_cond } else { None };
@@ -1054,12 +1168,11 @@ impl Elab {
             // In this arm the value is this constructor, and its invariants hold (§7.1).
             let saved = cx.facts.len();
             let fvals: Vec<Val> = lvls.iter().map(|l| Val::var(*l)).collect();
-            let mut all: Vec<Val> = params.clone();
-            all.extend(fvals);
+            let all: Rc<[Val]> = params.iter().cloned().chain(fvals).collect();
             let occ_val = cx.env[occ].clone();
             cx.assume(Self::prim_val(Prim::Eq, vec![occ_val, Val::Con(c, all.clone())]));
             for inv in self.con_invs.get(&c).cloned().unwrap_or_default() {
-                let f = self.inst_pred(&inv, all.clone());
+                let f = self.inst_pred(&inv, all.to_vec());
                 cx.assume(f);
             }
             // Dependent matching: where the matched value is a variable, the

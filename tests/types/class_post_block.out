@@ -1,0 +1,15 @@
+error[E0451]: cannot prove `match r …`, the postcondition of `Seq (Wrap s).uncons`
+  --> class_post_block.ck:12:5
+   |
+12 |     fn uncons w
+   |     ^^^^^^^^^^^ promised here
+   = note: `match r …` in full:
+               match r
+                   None           -> size xs == 0
+                   Some (_, rest) -> size rest < size xs
+   = note: this obligation is outside what the prover handles: it involves a dictionary whose functions use its class's types
+   = note: for the value returned on line 14: `None`; facts in scope: `(uncons w.inner) == None`
+   = note: for the value returned on line 15: `Some (x, Wrap rest)`
+   = help: state the fact you need as a lemma and bring it in with `have`
+
+class_post_block.ck: 1 error, 0 warnings

@@ -1,0 +1,22 @@
+error[E0201]: type mismatch: expected `List a`, found `Wrapped.Items a`
+  --> class_type_default_param_errors.ck:15:5
+   |
+15 |     wrap x
+   |     ^^^^^^
+
+error[E0284]: no instance of `Ord` for `Opaque`
+  --> class_type_default_param_errors.ck:29:1
+   |
+29 | instance Sorted Opaque
+   | ^^^^^^^^^^^^^^^^^^^^^^ needs `Ord Opaque`, for `instance Ord (List a)`
+   = help: declare `instance Ord …` for this type, beside the type
+
+error[E0450]: cannot prove that every `List Raw` satisfies `size s r < 3`, as `Short.Run` requires
+  --> class_type_default_param_errors.ck:48:1
+   |
+48 | instance Short Raw
+   | ^^^^^^^^^^^^^^^^^^ `Run` is `List Raw` here
+   = note: counterexample: r = [Raw 0, Raw 7, Raw 9]
+   = help: give `Run` a type whose values all satisfy it
+
+class_type_default_param_errors.ck: 3 errors, 0 warnings

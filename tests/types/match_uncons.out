@@ -1,0 +1,36 @@
+warning[W011]: match on `xs` itself, not on `Seq.uncons xs`
+ --> match_uncons.ck:7:11
+  |
+7 |     match Seq.uncons xs
+  |           ^^^^^^^^^^^^^ `[]` and `x :: rest` take a sequence apart with `Seq.uncons`
+  = help: write `match xs`, with `_ :: rest` for `Some (_, rest)` and `[]` for `None`
+
+warning[W011]: match on `xs` itself, not on `Seq.uncons xs`
+  --> match_uncons.ck:13:11
+   |
+13 |     match Seq.uncons xs
+   |           ^^^^^^^^^^^^^ `[]` and `x :: rest` take a sequence apart with `Seq.uncons`
+   = help: write `match xs`, with `_ :: _` for `Some _`
+
+warning[W011]: match on `xs` itself, not on `Seq.uncons xs`
+  --> match_uncons.ck:18:11
+   |
+18 |     match Seq.uncons xs
+   |           ^^^^^^^^^^^^^ `[]` and `x :: rest` take a sequence apart with `Seq.uncons`
+   = help: write `match xs`, with `[] | 0 :: _` for `None | Some (0, _)` and `_ :: _` for `Some _`
+
+warning[W011]: match on `xs` itself, not on `Seq.uncons xs`
+  --> match_uncons.ck:23:11
+   |
+23 |     match Seq.uncons xs
+   |           ^^^^^^^^^^^^^ `[]` and `x :: rest` take a sequence apart with `Seq.uncons`
+   = help: write `match xs`, with `(x :: _) :: _` for `Some (x :: _, _)`
+
+warning[W011]: match on `0 :: xs` itself, not on `Seq.uncons (0 :: xs)`
+  --> match_uncons.ck:29:11
+   |
+29 |     match Seq.uncons (0 :: xs)
+   |           ^^^^^^^^^^^^^^^^^^^^ `[]` and `x :: rest` take a sequence apart with `Seq.uncons`
+   = help: write `match 0 :: xs`, with `_ :: _` for `Some _` and `[]` for `None`
+
+match_uncons.ck: 0 errors, 5 warnings; 1 obligation proved

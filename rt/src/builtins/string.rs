@@ -22,7 +22,14 @@ builtin!(ckb_from_chars, |a| {
     new_str(&st)
 });
 
-builtin!(ckb_from_char, |a| new_str(ch(a[0]).encode_utf8(&mut [0; 4])));
+builtin!(ckb_from_char, |a| {
+    if is_int(a[0]) {
+        if let Some(s) = u32::try_from(int_of(a[0])).ok().and_then(ascii_str) {
+            return s;
+        }
+    }
+    new_str(ch(a[0]).encode_utf8(&mut [0; 4]))
+});
 
 // A string is stored as its bytes (#170): the same object.
 builtin!(ckb_string_bytes, |a| dup(s_obj(a[0])));

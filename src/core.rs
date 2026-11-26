@@ -279,11 +279,11 @@ pub enum Val {
     Lam(Name, Mult, Icit, Closure),
     Pi(Name, Mult, Icit, Rc<Val>, Closure),
     Univ(u32),
-    TyCon(TyId, Vec<Val>),
-    Con(ConId, Vec<Val>),
+    TyCon(TyId, Rc<[Val]>),
+    Con(ConId, Rc<[Val]>),
     Lit(Lit),
-    TupleTy(Vec<Val>),
-    Tuple(Vec<Val>),
+    TupleTy(Rc<[Val]>),
+    Tuple(Rc<[Val]>),
     Error,
 }
 
@@ -438,7 +438,7 @@ impl Globals {
     pub fn bool_val(&self, b: bool) -> Val {
         let c = if b { self.well_known.true_con } else { self.well_known.false_con };
         match c {
-            Some(c) => Val::Con(c, Vec::new()),
+            Some(c) => Val::Con(c, Rc::new([])),
             None => Val::Error,
         }
     }
@@ -555,7 +555,7 @@ pub fn eval(g: &Globals, env: &Env, t: &Tm) -> Val {
         Tm::TyCon(t) => {
             let n = g.arity_ty(*t);
             if n == 0 {
-                Val::TyCon(*t, Vec::new())
+                Val::TyCon(*t, Rc::new([]))
             } else {
                 let tid = *t;
                 eval(g, &Rc::new(Vec::new()), &eta(n, &[], |args| Tm::TyConApp(tid, args)))
@@ -564,7 +564,7 @@ pub fn eval(g: &Globals, env: &Env, t: &Tm) -> Val {
         Tm::Con(c) => {
             let n = g.arity_con(*c);
             if n == 0 {
-                Val::Con(*c, Vec::new())
+                Val::Con(*c, Rc::new([]))
             } else {
                 let cid = *c;
                 let icits = con_icits(g, cid);
@@ -811,9 +811,8 @@ fn desc_at(g: &Globals, v: &Val, depth: usize) -> Desc {
         Val::Lam(_, _, _, c) => {
             const PROBE: usize = usize::MAX / 2;
             match force(g, apply_closure(g, &c, Val::var(PROBE))) {
-                Val::TyCon(id, mut args) if matches!(args.last(), Some(Val::Neutral(Head::Var(PROBE), sp)) if sp.is_empty()) => {
-                    args.pop();
-                    match desc_at(g, &Val::TyCon(id, args), depth + 1) {
+                Val::TyCon(id, args) if matches!(args.last(), Some(Val::Neutral(Head::Var(PROBE), sp)) if sp.is_empty()) => {
+                    match desc_at(g, &Val::TyCon(id, args[..args.len() - 1].into()), depth + 1) {
                         Desc::Known(tag, ds) => Desc::Known(tag, ds),
                         d => d,
                     }
@@ -1013,7 +1012,7 @@ pub fn flat_parts(g: &Globals, vs: &[Val], ty: bool) -> Vec<Val> {
         match (ty, force(g, vs[vs.len() - 1].clone())) {
             (true, Val::TupleTy(ws)) | (false, Val::Tuple(ws)) if ws.len() >= 2 => {
                 vs.pop();
-                vs.extend(ws);
+                vs.extend(ws.iter().cloned());
             }
             _ => break,
         }
@@ -1021,35 +1020,44 @@ pub fn flat_parts(g: &Globals, vs: &[Val], ty: bool) -> Vec<Val> {
     vs
 }
 
+// A projection or a field read doesn't unfold what it reads: a call's
+// result stays a call until something needs its value (`force`, which
+// unfolds the head and reads the field then). Reading a field of
+// `wrap (build 4000 [])` must not run `build` while checking. A field that
+// holds a type is read at once: it is a type checking needs (a class's type
+// from its instance's dictionary, `Seq.Elem String` is `Char`).
+
 fn proj(g: &Globals, v: Val, i: usize, rest: bool) -> Val {
-    match force(g, v.clone()) {
+    match force_meta(g, v) {
         Val::Tuple(vs) => {
             let vs = flat_parts(g, &vs, false);
             match vs.len() {
-                n if rest && n > i + 1 => Val::Tuple(vs[i..].to_vec()),
+                n if rest && n > i + 1 => Val::Tuple(vs[i..].into()),
                 _ => vs.get(i).cloned().unwrap_or(Val::Error),
             }
         }
-        f @ Val::Neutral(..) => match stuck_base(g, v, f) {
-            Val::Neutral(h, sp) => with_elim(h, &sp, Elim::Proj(i, rest)),
-            _ => Val::Error,
-        },
+        Val::Neutral(h, sp) => with_elim(h, &sp, Elim::Proj(i, rest)),
         _ => Val::Error,
     }
 }
 
 fn field(g: &Globals, v: Val, c: ConId, i: usize) -> Val {
-    match force(g, v.clone()) {
+    match force_meta(g, v) {
         // A string literal's bytes (#170).
         Val::Lit(Lit::Str(s)) if Some(g.cons[c.0 as usize].ty) == g.well_known.string => Val::Lit(Lit::Bytes(Rc::from(s.as_bytes()))),
         Val::Con(_, args) => {
             let np = g.arity_ty(g.cons[c.0 as usize].ty);
             args.get(np + i).cloned().unwrap_or(Val::Error)
         }
-        f @ Val::Neutral(..) => match stuck_base(g, v, f) {
-            Val::Neutral(h, sp) => with_elim(h, &sp, Elim::Field(c, i)),
+        v @ Val::Neutral(..) if g.is_type_field(c, i) => match force(g, v.clone()) {
+            f @ (Val::Con(..) | Val::Lit(_)) => field(g, f, c, i),
+            f @ Val::Neutral(..) => match stuck_base(g, v, f) {
+                Val::Neutral(h, sp) => with_elim(h, &sp, Elim::Field(c, i)),
+                _ => Val::Error,
+            },
             _ => Val::Error,
         },
+        Val::Neutral(h, sp) => with_elim(h, &sp, Elim::Field(c, i)),
         _ => Val::Error,
     }
 }
@@ -1550,7 +1558,7 @@ fn unify_tuple(g: &Globals, l: usize, x: &[Val], y: &[Val], ty: bool) -> Result<
         return Err(UnifyError::Mismatch);
     }
     let k = short.len() - 1;
-    let rest = if ty { Val::TupleTy(long[k..].to_vec()) } else { Val::Tuple(long[k..].to_vec()) };
+    let rest = if ty { Val::TupleTy(long[k..].into()) } else { Val::Tuple(long[k..].into()) };
     let mut long2 = long[..k].to_vec();
     long2.push(rest);
     if flip { unify_many(g, l, &long2, short) } else { unify_many(g, l, short, &long2) }
@@ -1650,6 +1658,26 @@ fn fresh(ns: &[Name], x: &Name) -> Name {
         k += 1;
     }
     cand
+}
+
+/// A match on `Bool` as the operator it shows: its precedence (`and` 3,
+/// `or` 2, `implies` 1, `if` 0) and its operands (for `if`, the condition
+/// and the `then` branch; for `or`, the `else` branch is the second).
+fn bool_op<'a>(g: &Globals, t: &'a Tm) -> Option<(u8, &'a Tm, &'a Tm)> {
+    let Tm::Case(s, c) = t else { return None };
+    let wk = &g.well_known;
+    let arm = |con: Option<ConId>| c.branches.iter().find(|b| Some(b.0) == con).map(|b| &b.2);
+    let (Some(tb), Some(fb), 2) = (arm(wk.true_con), arm(wk.false_con), c.branches.len()) else { return None };
+    let lit = |x: &Tm, v: Option<ConId>| matches!(x, Tm::Con(k) if Some(*k) == v) || matches!(x, Tm::ConApp(k, xs) if Some(*k) == v && xs.is_empty());
+    Some(if lit(fb, wk.false_con) {
+        (3, s, tb)
+    } else if lit(tb, wk.true_con) {
+        (2, s, fb)
+    } else if lit(fb, wk.true_con) {
+        (1, s, tb)
+    } else {
+        (0, s, tb)
+    })
 }
 
 fn paren(b: bool, s: String) -> String {
@@ -1849,16 +1877,24 @@ fn show_prec(g: &Globals, ns: &mut Vec<Name>, t: &Tm, p: u8) -> String {
                 }
             }
         }
-        Tm::Case(s, c) => {
-            // `if` (and `and`/`or`) are matches on `Bool`.
-            let wk = &g.well_known;
-            let arm = |con: Option<ConId>| c.branches.iter().find(|b| Some(b.0) == con).map(|b| &b.2);
-            if let (Some(t), Some(f), 2) = (arm(wk.true_con), arm(wk.false_con), c.branches.len()) {
-                let (cs, ts, fs) = (show_prec(g, ns, s, 0), show_prec(g, ns, t, 0), show_prec(g, ns, f, 0));
-                let text = match (ts.as_str(), fs.as_str()) {
-                    (_, "False") => format!("{cs} and {ts}"),
-                    ("True", _) => format!("{cs} or {fs}"),
-                    _ => format!("if {cs} then {ts} else {fs}"),
+        Tm::Case(s, _) => {
+            // `if`, `and`, `or` and `implies` are matches on `Bool`.
+            if let Some((op, a, b)) = bool_op(g, t) {
+                // An operand binding less tightly than the operator is put
+                // in parentheses: `and` over `or` over `implies`, which
+                // groups to the right.
+                let level = |x: &Tm| bool_op(g, x).map_or(4, |o| o.0);
+                let side = |ns: &mut Vec<Name>, x: &Tm, min: u8| paren(level(x) < min, show_prec(g, ns, x, 0));
+                let text = match op {
+                    3 => format!("{} and {}", side(ns, a, 3), side(ns, b, 3)),
+                    2 => format!("{} or {}", side(ns, a, 2), side(ns, b, 2)),
+                    1 => format!("{} implies {}", side(ns, a, 2), side(ns, b, 1)),
+                    _ => {
+                        let Tm::Case(_, c) = t else { unreachable!() };
+                        let f = c.branches.iter().find(|x| Some(x.0) == g.well_known.false_con).map(|x| &x.2);
+                        let fs = f.map(|f| show_prec(g, ns, f, 0)).unwrap_or_default();
+                        format!("if {} then {} else {fs}", show_prec(g, ns, a, 0), show_prec(g, ns, b, 0))
+                    }
                 };
                 return paren(p > 0, text);
             }
@@ -2068,7 +2104,7 @@ fn invert_case(g: &Globals, l: usize, m: MetaId, sp: &[Elim], other: &Val) -> Op
     let info = &g.cons[con.0 as usize];
     let n = g.tys[info.ty.0 as usize].params.len() + info.fields.len();
     // Fresh unknowns in the same context as `m`: applied to the same arguments.
-    let fresh: Vec<Val> = (0..n).map(|_| Val::Neutral(Head::Meta(g.fresh_meta()), Rc::new(args.to_vec()))).collect();
+    let fresh: Rc<[Val]> = (0..n).map(|_| Val::Neutral(Head::Meta(g.fresh_meta()), Rc::new(args.to_vec()))).collect();
     if solve(g, l, m, args, &Val::Con(con, fresh)).is_err() {
         return None;
     }

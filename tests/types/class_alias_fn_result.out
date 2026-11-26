@@ -1,0 +1,8 @@
+error[E0456]: cannot prove that the `Int -> Int` inside `plain 1` has type `Int -> Nat`
+  --> class_alias_fn_result.ck:36:5
+   |
+36 |     plain 1
+   |     ^^^^^^^ `Plain` at `Nat` runs `Int`'s instance, and its `plain` isn't shown to give a `Nat` here
+   = help: use `Int` here and check the result where a `Nat` is needed; or promise it in a signature of `instance Plain Int`'s `plain`: `Int -> Nat` in its result
+
+class_alias_fn_result.ck: 1 error, 0 warnings

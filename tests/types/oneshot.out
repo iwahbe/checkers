@@ -16,14 +16,14 @@ error[E0401]: `file` holds a resource (`File`), and a closure that uses it may b
 error[E0401]: `k` uses `file`, a resource, so it must be called exactly once, but `bad2` may call it more than once
   --> oneshot.ck:40:9
    |
-40 |     let k = \_ -> files.close file
+40 |     let k = \_ -> close file
    |         ^
    = help: a closure that uses a resource is used up by its call
 
 error[E0401]: `k` uses `file`, a resource, so it must be called exactly once, but `bad3` never calls it
   --> oneshot.ck:45:9
    |
-45 |     let k = \_ -> files.close file
+45 |     let k = \_ -> close file
    |         ^
    = help: call `k`, or pass it on to a parameter declared `own`
 
@@ -38,7 +38,7 @@ error[E0401]: `file` holds a resource (`File`), and a closure that uses it may b
 error[E0401]: `k` uses `file`, a resource, so it must be called exactly once, but `bad5` may call it more than once
   --> oneshot.ck:52:9
    |
-52 |     let k = \_ -> files.close file
+52 |     let k = \_ -> close file
    |         ^
    = note: `k` is passed to `many`, whose parameter is not `own`, so `many` may call it any number of times
    = help: mark that parameter of `many` with `own` (as in `f~own (Unit -> a)`)

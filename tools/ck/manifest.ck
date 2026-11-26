@@ -44,27 +44,40 @@ export record Problem
 
 # ── Versions ─────────────────────────────────────────────────────────────────
 
+# A version's number at the front of `b`, and the bytes after it. If
+# `strict`, it is `0` or doesn't start with `0` (Semantic Versioning, §2);
+# else leading zeros are read, to say what is wrong.
+fn number b strict -> r : b~Bytes, strict~Bool, r~Option (Nat, Bytes)
+    if strict and len b > 1 and b[0] == '0' and char.is_digit b[1] then None else text.natural b
+
 # A number and a `.` at the front of `b`: the number and what follows the
 # dot.
-fn part b -> r : b~Bytes, r~Option (Nat, Bytes)
-    match text.natural b
+fn part b strict -> r : b~Bytes, strict~Bool, r~Option (Nat, Bytes)
+    match number b strict
         Some (n, rest) ->
             match rest
                 c :: after -> if c == '.' then Some (n, after) else None
                 []         -> None
         None           -> None
 
-# `MAJOR.MINOR.PATCH`.
-export fn parse_version s -> r : s~String, r~Option Version
-    match part (string.bytes s)
+fn read_version b strict -> r : b~Bytes, strict~Bool, r~Option Version
+    match part b strict
         None        -> None
-        Some (x, b) ->
-            match part b
+        Some (x, c) ->
+            match part c strict
                 None        -> None
-                Some (y, c) ->
-                    match text.natural c
+                Some (y, d) ->
+                    match number d strict
                         Some (z, rest) -> if len rest == 0 then Some (Version x y z) else None
                         None           -> None
+
+# `MAJOR.MINOR.PATCH`, three numbers without leading zeros.
+export fn parse_version s -> r : s~String, r~Option Version
+    read_version (string.bytes s) True
+
+check parse_version "1.2.3" == Some (Version 1 2 3) and parse_version "0.10.0" == Some (Version 0 10 0)
+check parse_version "01.2.3" == None and parse_version "1.01.0" == None and parse_version "1.2.03" == None
+check parse_version "00.0.0" == None and parse_version "1.2" == None and parse_version "1.2.3.4" == None
 
 export fn show v -> s : v~Version, s~String
     string.format"{v.major}.{v.minor}.{v.patch}"
@@ -124,18 +137,24 @@ partial fn members b i key -> r : b~Bytes, i~Nat, key~Bytes, r~Option (Nat, Nat)
     else
         None
 
-partial fn find b i path last -> r : b~Bytes, i~Nat, path~List String, last~Nat, r~Nat
+partial fn find b i path last value -> r : b~Bytes, i~Nat, path~List String, last~Nat, value~Bool,
+                                           r~Nat
     match path
         []        -> last
         k :: rest ->
             match member b i (string.bytes k)
-                Some (at, v) -> find b v rest at
+                Some (at, v) -> find b v rest (if value and rest == [] then v else at) value
                 None         -> last
 
 # Where the member at `path` is written in `src`: its key (the start of the
 # file for `[]`, the nearest enclosing member if there is none).
 export partial fn locate src path -> pos : src~Bytes, path~List String, pos~Nat
-    find src (space src 0) path (space src 0)
+    find src (space src 0) path (space src 0) False
+
+# Where the value of the member at `path` starts in `src` (where `locate`
+# points if there is no such member).
+partial fn locate_value src path -> pos : src~Bytes, path~List String, pos~Nat
+    find src (space src 0) path (space src 0) True
 
 # Line and column (from 1) of byte `pos`.
 fn lines src pos i line col -> r : src~Bytes, pos~Nat, i~Nat, i <= len src, line~Nat, col~Nat,
@@ -219,7 +238,11 @@ partial fn version_field src fields path k -> r : src~Bytes, fields~List (String
         Ok s  ->
             match parse_version s
                 Some v -> Ok v
-                None   -> Err (at src (path ++ [k]) ("`" ++ k ++ "` must be MAJOR.MINOR.PATCH, like 1.2.0"))
+                None   ->
+                    let pos = locate_value src (path ++ [k])
+                    match read_version (string.bytes s) False
+                        Some v -> Err (Problem pos ("`" ++ k ++ "` can't have leading zeros\nhelp: write \"" ++ show v ++ "\""))
+                        None   -> Err (Problem pos ("`" ++ k ++ "` must be MAJOR.MINOR.PATCH, like 1.2.0"))
 
 partial fn not_a_name src path name -> r : src~Bytes, path~List String, name~String, r~Problem
     at src path ("`" ++ name ++ "` isn't a package name: lower-case letters, digits and `_`, starting with a letter; not `std`")

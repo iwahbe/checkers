@@ -212,10 +212,10 @@ pub struct Focus {
 }
 
 impl Focus {
-    /// Reflect the definitions `goal` mentions; leave the rest
+    /// Reflect the definitions `terms` mention; leave the rest
     /// uninterpreted. `None` if that is all or none of them.
-    fn for_goal(&self, goal: &str) -> Option<String> {
-        let (on, off): (Vec<_>, Vec<_>) = self.group.iter().partition(|(n, ..)| goal.contains(n.as_str()));
+    fn mentioned_in(&self, terms: &str) -> Option<String> {
+        let (on, off): (Vec<_>, Vec<_>) = self.group.iter().partition(|(n, ..)| terms.contains(n.as_str()));
         if on.is_empty() || off.is_empty() {
             return None;
         }
@@ -250,6 +250,13 @@ pub struct Query {
     /// quantified axioms: weaker again, and Z3 doesn't unfold functions
     /// whose results the facts in scope already give (M12).
     pub focused: Option<String>,
+    /// Only the definitions the facts in scope mention reflected, without
+    /// the quantified axioms: the premises unfolded, the goal's functions
+    /// not. Z3 unfolds a recursive function without end when the negated
+    /// goal rules out its base case's result: each unfolding is forced by
+    /// propagation alone, which Z3's limit on unfolding depth doesn't bound,
+    /// so it never gets to the case split a premise's body needs.
+    pub premised: Option<String>,
     /// Why facts in scope could not be given to the solver.
     pub dropped: Vec<String>,
     /// Some facts in scope are `forall`s, not given to the solver (D137):
@@ -350,6 +357,9 @@ pub struct Builder<'a> {
     /// Give `forall` facts to Z3, quantified: only to check a counterexample
     /// against them, never to prove (D137).
     foralls: bool,
+    /// Name each fact of the obligation, `|fact.k|` for its `k`th, and ask
+    /// for the unsat core: which of them contradict each other.
+    named: bool,
 }
 
 impl<'a> Builder<'a> {
@@ -388,7 +398,15 @@ impl<'a> Builder<'a> {
             real_values: Vec::new(),
             based: BTreeSet::new(),
             foralls: false,
+            named: false,
         }
+    }
+
+    /// Name the obligation's facts and ask Z3 which of them an `unsat`
+    /// answer needed (`(get-unsat-core)`, after `(check-sat)`).
+    pub fn named_facts(mut self) -> Builder<'a> {
+        self.named = true;
+        self
     }
 
     /// Give the `forall` facts in scope to Z3 as quantified formulas, so a
@@ -2777,10 +2795,14 @@ impl<'a> Builder<'a> {
             if let Some(r) = self.member_app(env, d, args, &inner)? {
                 let (app, _) = r;
                 if !self.in_def {
-                    let has_post = self.e.specs.get(&d).is_some_and(|s| s.preds.iter().any(|p| p.is_post));
-                    if has_post && self.post_seen.insert(app.clone()) {
+                    // A `Nat` result where the class's preconditions hold.
+                    let spec = self.e.specs.get(&d);
+                    let has_pre = spec.is_some_and(|s| s.preds.iter().any(|p| !p.is_post));
+                    let nat = has_pre && self.is_nat_tm(&t);
+                    let has_post = spec.is_some_and(|s| s.preds.iter().any(|p| p.is_post));
+                    if (has_post || nat) && self.post_seen.insert(app.clone()) {
                         post_env.push(Ent::Term(app.clone(), rs.clone()));
-                        self.posts.push(PostUse { def: d, env: post_env, nat: false, parts: Vec::new() });
+                        self.posts.push(PostUse { def: d, env: post_env, nat, parts: Vec::new() });
                     }
                 }
                 return Ok((app, rs));
@@ -2804,9 +2826,12 @@ impl<'a> Builder<'a> {
                 let (app, _) = self.term(&inner, &body)?;
                 if !self.in_def {
                     let has_post = self.e.specs.get(&d).is_some_and(|s| s.preds.iter().any(|p| p.is_post));
-                    if has_post && self.post_seen.insert(app.clone()) {
+                    // What the result's type says of it: a class's type's
+                    // predicates (#176), of the result or of its parts.
+                    let parts = if self.post_seen.contains(&app) { Vec::new() } else { self.part_terms(&post_env, &t, &app, &rs) };
+                    if (has_post || !parts.is_empty()) && self.post_seen.insert(app.clone()) {
                         post_env.push(Ent::Term(app.clone(), rs.clone()));
-                        self.posts.push(PostUse { def: d, env: post_env, nat: false, parts: Vec::new() });
+                        self.posts.push(PostUse { def: d, env: post_env, nat: false, parts });
                     }
                 }
                 return Ok((app, rs));
@@ -3564,7 +3589,7 @@ impl<'a> Builder<'a> {
         }
         let mut dropped = Vec::new();
         let mut foralls = false;
-        for f in &ob.facts {
+        for (k, f) in ob.facts.iter().enumerate() {
             let tm = quote(&self.e.g, lvl, f);
             // A `forall` is used only by name, with `have` (D137), except
             // to check a counterexample.
@@ -3574,6 +3599,7 @@ impl<'a> Builder<'a> {
             }
             // A fact the solver can't see is simply not assumed.
             match self.term_ctx(lvl, &tm) {
+                Ok((t, Sort::Bool)) if self.named => facts.push(format!("(! {t} :named |fact.{k}|)")),
                 Ok((t, Sort::Bool)) => facts.push(t),
                 Ok(_) => {}
                 Err(why) => {
@@ -3594,6 +3620,9 @@ impl<'a> Builder<'a> {
             }
         }
         let mut text = String::new();
+        if self.named {
+            text += "(set-option :produce-unsat-cores true)\n";
+        }
         text += &format!(
             "(set-option :produce-models true)\n(set-option :rlimit {})\n(set-option :timeout {})\n(set-logic ALL)\n",
             super::RLIMIT,
@@ -3632,10 +3661,16 @@ impl<'a> Builder<'a> {
             text += c;
             text += "\n";
         }
-        for a in self.asserts.iter().chain(facts.iter()) {
+        for (k, a) in self.asserts.iter().enumerate() {
+            text += &if self.named { format!("(assert (! {a} :named |given.{k}|))\n") } else { format!("(assert {a})\n") };
+        }
+        for a in &facts {
             text += &format!("(assert {a})\n");
         }
         text += &format!("(assert (not {goal}))\n(check-sat)\n");
+        if self.named {
+            text += "(get-unsat-core)\n";
+        }
         if !self.shown.is_empty() {
             text += &format!("(get-value ({}))\n", self.shown.iter().map(|s| s.0.clone()).collect::<Vec<_>>().join(" "));
         }
@@ -3664,9 +3699,9 @@ impl<'a> Builder<'a> {
             let decls: String = opaque_defs.iter().map(|d| format!("{d}\n")).collect();
             format!("{}{decls}{}", &text[..defs_at], &text[defs_end..])
         });
-        let focused = focus
-            .for_goal(&goal)
-            .map(|d| format!("{}{d}{}{}", &text[..defs_at], &text[defs_end..split], &text[split + axioms.len()..]));
+        let with_defs = |d: String| format!("{}{d}{}{}", &text[..defs_at], &text[defs_end..split], &text[split + axioms.len()..]);
+        let focused = focus.mentioned_in(&goal).map(with_defs);
+        let premised = focus.mentioned_in(&facts.join("\n")).map(with_defs);
         // Tables' elements go only in the full query: the weaker ones first
         // try without them, and most proofs about a table need only its
         // length (D153).
@@ -3684,6 +3719,7 @@ impl<'a> Builder<'a> {
             without_axioms,
             facts_only,
             focused,
+            premised,
             dropped,
             foralls,
             shown: self.shown,

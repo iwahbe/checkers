@@ -5,7 +5,7 @@ pub mod smt;
 
 use crate::core::{quote, show};
 use crate::diag::Diagnostic;
-use crate::elab::{Elab, ObKind, Obligation, Probe, ProbeKind, WeakenRole};
+use crate::elab::{Elab, ObKind, Obligation, Probe, ProbeKind, Vacuity, VacuityKind, WeakenRole};
 use crate::source::Span;
 
 /// One entry of the trust ledger (§7.4).
@@ -59,6 +59,13 @@ pub const QUICK_RLIMIT: u64 = 1_000_000;
 /// For asking whether a branch can run (D144 d): a contradiction among the
 /// facts is found quickly or not at all, and there is one query per branch.
 pub const PROBE_RLIMIT: u64 = 200_000;
+
+/// For asking whether a declaration's conditions can all hold (E0457): 2.8
+/// times the most any answer needs in the repository (7 180, a `sat`, of
+/// 3 528 queries, 25/11/2026); a contradiction among a few conditions
+/// needs far less (under 200). One query per declaration, so a query Z3
+/// gives up on (77 of them, reported as nothing) mustn't cost much.
+pub const VACUITY_RLIMIT: u64 = 20_000;
 
 /// The work limit each query is tried with first (D154): nearly every
 /// answer in the repository needs far less (all but 0.2%), and a query that
@@ -264,6 +271,11 @@ fn store(query: &str, out: &str) {
 
 /// Z3's answer to one SMT-LIB script, from the cache or a fresh Z3 context.
 fn ask(query: &str) -> Answer {
+    answer(ask_out(query))
+}
+
+/// Z3's output for one SMT-LIB script, from the cache or a fresh Z3 context.
+fn ask_out(query: &str) -> String {
     ASKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     // The same query asked twice in this process: Z3's answer depends only
     // on the text, so it is reused (D154).
@@ -273,7 +285,7 @@ fn ask(query: &str) -> Answer {
     };
     if let Some(out) = MEMO.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(query)).cloned() {
         REUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        return answer(out);
+        return out;
     }
     let out = match cached(query) {
         Some(out) => {
@@ -296,7 +308,7 @@ fn ask(query: &str) -> Answer {
             // `CHECKERS_SMT_TIME=1`: each query Z3 answered, its time, size,
             // answer, work limit and the work it used.
             if timed {
-                let what = query.lines().find(|l| l.starts_with("(assert (not")).unwrap_or("").chars().take(120).collect::<String>();
+                let what = if query.starts_with("(set-option :produce-unsat-cores") { "(can the conditions hold?)".to_string() } else { query.lines().find(|l| l.starts_with("(assert (not")).unwrap_or("").chars().take(120).collect::<String>() };
                 let said = out.split_whitespace().next().unwrap_or("?");
                 let limit = query.split("(set-option :rlimit ").nth(1).and_then(|r| r.split(')').next()).unwrap_or("?");
                 eprintln!("smt {:>6} ms {:>7} bytes {said:>7} rlimit {limit:>8} used {used:>8} {what}", start.elapsed().as_millis(), query.len());
@@ -312,7 +324,7 @@ fn ask(query: &str) -> Answer {
             out
         }
     };
-    answer(out)
+    out
 }
 
 /// The Z3 release Checkers pins (crate `z3-src`, D46). Another release, as a
@@ -382,9 +394,14 @@ fn answer(out: String) -> Answer {
 
 /// Solve the queries on a few worker threads (each Z3 context is heavy).
 fn ask_all(texts: &[Option<String>]) -> Vec<Option<Answer>> {
+    ask_all_out(texts).into_iter().map(|o| o.map(answer)).collect()
+}
+
+/// Z3's output for each query, solved on a few worker threads.
+fn ask_all_out(texts: &[Option<String>]) -> Vec<Option<String>> {
     let workers = std::thread::available_parallelism().map_or(2, |n| n.get()).min(8);
     let next = std::sync::atomic::AtomicUsize::new(0);
-    let results: Vec<std::sync::Mutex<Option<Answer>>> = texts.iter().map(|_| std::sync::Mutex::new(None)).collect();
+    let results: Vec<std::sync::Mutex<Option<String>>> = texts.iter().map(|_| std::sync::Mutex::new(None)).collect();
     // A query asked again in the same batch waits for the first: in
     // parallel, whether its answer were reused would depend on timing.
     let mut seen = std::collections::HashSet::new();
@@ -397,7 +414,7 @@ fn ask_all(texts: &[Option<String>]) -> Vec<Option<Answer>> {
                 let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let Some(t) = texts.get(i) else { break };
                 if let (Some(t), false) = (t, again[i]) {
-                    let a = ask(t);
+                    let a = ask_out(t);
                     *results[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(a);
                 }
             });
@@ -408,7 +425,7 @@ fn ask_all(texts: &[Option<String>]) -> Vec<Option<Answer>> {
     });
     for (i, t) in texts.iter().enumerate() {
         if let (Some(t), true) = (t, again[i]) {
-            *results[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(ask(t));
+            *results[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(ask_out(t));
         }
     }
     results.into_iter().map(|m| m.into_inner().unwrap_or_else(|e| e.into_inner())).collect()
@@ -483,6 +500,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
         v.ledger.push(LedgerEntry { span: t.span, how: "axiom", what: t.what.clone(), hash: None });
     }
     v.diags.extend(unreachable(e, user));
+    v.diags.extend(vacuous(e, user));
     guess_measures(e, user, &mut v);
     for (m, span, _) in e.checks.iter().filter(|c| c.0 == user) {
         let _ = m;
@@ -530,23 +548,26 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     // 2. Definitions uninterpreted: fast when the facts in scope suffice.
     // 3. Only the definitions the goal mentions: Z3 doesn't unfold the
     //    functions whose results the facts in scope give.
-    // 4. Every definition, without the quantified postconditions of other
+    // 4. Only the definitions the facts in scope mention: the premises
+    //    unfolded, not the goal's functions, which Z3 can unfold without end.
+    // 5. Every definition, without the quantified postconditions of other
     //    functions, which can send Z3 searching (D101).
     // Each with the small work limit, then again with a larger one where Z3
     // gave up: a query that can't prove its goal often searches until its
     // limit.
-    let weaker: Vec<[Option<&String>; 3]> = queries
+    const TIERS: usize = 4;
+    let weaker: Vec<[Option<&String>; TIERS]> = queries
         .iter()
         .zip(&answers)
         .map(|(q, a)| match (q, a) {
-            (Ok(q), None) => [q.facts_only.as_ref(), q.focused.as_ref(), q.without_axioms.as_ref()],
-            _ => [None, None, None],
+            (Ok(q), None) => [q.facts_only.as_ref(), q.focused.as_ref(), q.premised.as_ref(), q.without_axioms.as_ref()],
+            _ => [None; TIERS],
         })
         .collect();
     // Whether each weaker query gave up with the small limit.
-    let mut gave_up: Vec<[bool; 3]> = vec![[true; 3]; obs.len()];
+    let mut gave_up: Vec<[bool; TIERS]> = vec![[true; TIERS]; obs.len()];
     for limit in [FIRST_RLIMIT, QUICK_RLIMIT] {
-        for tier in 0..3 {
+        for tier in 0..TIERS {
             let ask_q: Vec<Option<String>> = weaker
                 .iter()
                 .enumerate()
@@ -569,7 +590,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
             }
         }
     }
-    // 5. Everything, with the full work limit: the query whose
+    // 6. Everything, with the full work limit: the query whose
     //    counterexample is real.
     let rest: Vec<Option<String>> = texts
         .iter()
@@ -583,7 +604,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
             answers[k] = a;
         }
     }
-    // 6. Z3 gave up on everything: a counterexample without the axioms, with
+    // 7. Z3 gave up on everything: a counterexample without the axioms, with
     //    the full work limit, is better than nothing (§7.2).
     let retry: Vec<Option<String>> = answers
         .iter()
@@ -599,7 +620,33 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
     }
     // Cases one `match` leaves out that may occur: one error (E0240).
     let mut uncovered: Vec<(Span, Vec<String>, usize)> = Vec::new();
+    // A call whose result isn't shown to be of its type (E0456, or at a
+    // known instance requiring less): a postcondition failing for the
+    // same value returned is the same error, reported once.
+    let mut bad_calls: Vec<Span> = Vec::new();
+    let mut post_fails: Vec<(usize, Span)> = Vec::new();
+    // A postcondition outside what the prover handles is so for each value
+    // returned: one error, listing them (its diagnostic, the obligations).
+    let mut outside_posts: Vec<(usize, Vec<usize>)> = Vec::new();
     for (k, ((o, q), a)) in obs.iter().zip(&queries).zip(answers).enumerate() {
+        if let (Err(why), ObKind::Post { .. }) = (q, &o.kind) {
+            let same = |j: usize| {
+                let p = obs[j];
+                p.span == o.span && p.module == o.module && p.text == o.text && matches!(&queries[j], Err(w) if w.0 == why.0)
+            };
+            if let Some(g) = outside_posts.iter_mut().find(|g| same(g.1[0])) {
+                g.1.push(k);
+                continue;
+            }
+            outside_posts.push((v.diags.len(), vec![k]));
+        }
+        if !matches!((q, &a), (Ok(_), Some(Answer::Unsat)) | (Ok(_), None)) {
+            match &o.kind {
+                ObKind::AtAlias { call: Some(_), .. } | ObKind::KnownResult { .. } => bad_calls.push(o.span),
+                ObKind::Post { at, .. } => post_fails.push((v.diags.len(), *at)),
+                _ => {}
+            }
+        }
         if let (ObKind::Uncovered { case, .. }, false) = (&o.kind, matches!((q, &a), (Ok(_), Some(Answer::Unsat)))) {
             if let Some(u) = uncovered.iter_mut().find(|u| u.0 == o.span) {
                 if !u.1.contains(case) {
@@ -610,7 +657,7 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
             uncovered.push((o.span, vec![case.clone()], v.diags.len()));
         }
         match (q, a) {
-            (Err(why), _) => v.diags.push(outside(e, o, &why.0)),
+            (Err(why), _) => v.diags.push(outside(e, &[o], &why.0)),
             (Ok(q), Some(Answer::Unsat)) => {
                 v.proved += 1;
                 // The query that was proved, as Z3 was given it.
@@ -643,9 +690,26 @@ pub fn verify(e: &Elab, user: &str) -> Verified {
             (Ok(_), None) => {}
         }
     }
+    // Without the values returned whose call is already reported.
+    for (at, ks) in outside_posts.iter().filter(|g| g.1.len() > 1) {
+        let os: Vec<&Obligation> = ks
+            .iter()
+            .map(|&k| obs[k])
+            .filter(|o| !matches!(o.kind, ObKind::Post { at, .. } if bad_calls.contains(&at)))
+            .collect();
+        if let (false, Err(why)) = (os.is_empty(), &queries[ks[0]]) {
+            v.diags[*at] = outside(e, &os, &why.0);
+            post_fails.retain(|p| p.0 != *at);
+        }
+    }
         for (_, cases, at) in &uncovered {
         let d = v.diags[*at].clone();
         v.diags[*at] = merge_uncovered(d, cases);
+    }
+    for (k, at) in post_fails.into_iter().rev() {
+        if bad_calls.contains(&at) && k < v.diags.len() {
+            v.diags.remove(k);
+        }
     }
     v.z3_version = z3_version();
     v.asked = ASKED.load(std::sync::atomic::Ordering::Relaxed) - asked0;
@@ -876,6 +940,102 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
     }
 }
 
+/// E0457: declarations whose conditions can never all hold, found by
+/// proving `false` from them alone. Labelled by the conditions Z3's unsat
+/// core names; a query Z3 gives up on reports nothing.
+fn vacuous(e: &Elab, user: &str) -> Vec<Diagnostic> {
+    let checks: Vec<&Vacuity> = e.vacuities.iter().filter(|c| c.ob.module == user).collect();
+    if checks.is_empty() {
+        return Vec::new();
+    }
+    let defs = smt::Defs::default();
+    let texts: Vec<Option<String>> = checks
+        .iter()
+        .map(|c| {
+            let q = smt::Builder::new(e, user).sharing(&defs).named_facts().query(&c.ob).ok()?;
+            Some(with_limit(&q.facts_only.unwrap_or(q.text), VACUITY_RLIMIT))
+        })
+        .collect();
+    if std::env::var_os("CHECKERS_SMT_DUMP").is_some() {
+        for (c, t) in checks.iter().zip(&texts) {
+            eprintln!(";; ── can `{}`'s conditions hold, at {:?}\n{}", c.name, c.at, t.as_deref().unwrap_or(";; outside the fragment"));
+        }
+    }
+    let outs = ask_all_out(&texts);
+    let mut out: Vec<Diagnostic> = Vec::new();
+    // A type whose conditions can't hold: its constructors aren't reported too.
+    let mut reported: Vec<Span> = Vec::new();
+    for (c, o) in checks.iter().zip(outs) {
+        let Some(o) = o else { continue };
+        if !matches!(answer(o.clone()), Answer::Unsat) {
+            continue;
+        }
+        let core = o.split_once('\n').map_or("", |r| r.1);
+        if reported.contains(&c.at) || c.within.is_some_and(|t| reported.contains(&t)) {
+            continue;
+        }
+        reported.push(c.at);
+        // The core's facts, in the order written, and whether it needs
+        // what the types say too.
+        let names: Vec<&str> = core
+            .lines()
+            .next()
+            .unwrap_or("")
+            .split(|ch: char| ch.is_whitespace() || ch == '(' || ch == ')')
+            .map(|w| w.trim_matches('|'))
+            .collect();
+        let core: Vec<usize> = names.iter().filter_map(|w| w.strip_prefix("fact.")?.parse().ok()).collect();
+        let typed = names.iter().any(|w| w.starts_with("given."));
+        let mut texts: Vec<&str> = Vec::new();
+        for (k, t) in c.conds.iter().enumerate() {
+            if let Some(t) = t {
+                if core.contains(&k) && !texts.contains(&t.as_str()) {
+                    texts.push(t);
+                }
+            }
+        }
+        // Only what the types say is needed (a class's type's predicates
+        // are its values' type): each condition contributes to it.
+        if texts.is_empty() && typed {
+            texts = c.conds.iter().flatten().map(|t| t.as_str()).collect();
+            texts.dedup();
+        }
+        out.push(vacuity_diag(c, &texts, typed));
+    }
+    out
+}
+
+/// The error for conditions of `c` that can't all hold; `texts`: those
+/// the prover needed, as written; `typed`: and what the types say.
+fn vacuity_diag(c: &Vacuity, texts: &[&str], typed: bool) -> Diagnostic {
+    let n = &c.name;
+    let (message, never) = match &c.kind {
+        VacuityKind::Pre { params, lemma } => {
+            let who = match params.as_slice() {
+                [] => format!("`{n}`'s preconditions can never hold"),
+                [p] => format!("no `{p}` meets `{n}`'s preconditions"),
+                _ => format!("no arguments meet `{n}`'s preconditions"),
+            };
+            let never = if *lemma { format!("`{n}` could never be used") } else { format!("a call of `{n}` could never be made") };
+            (who, never)
+        }
+        VacuityKind::TypeParams => (format!("no arguments meet the conditions on `{n}`'s parameters"), format!("`{n}` could never be applied")),
+        VacuityKind::Fields => (format!("no fields meet `{n}`'s invariants"), format!("`{n}` could never be built")),
+        VacuityKind::Alias { subject } => (format!("no `{subject}` meets `{n}`'s predicates"), format!("`{n}` has no values")),
+        VacuityKind::ClassType { subject } => (format!("no `{subject}` meets the predicates on `{n}`"), format!("no instance could give `{n}` a type")),
+    };
+    let quoted: Vec<String> = texts.iter().map(|t| format!("`{t}`")).collect();
+    let types = if typed { " for values of these types" } else { "" };
+    let (label, fix) = match quoted.as_slice() {
+        [] => ("these conditions can't all hold".to_string(), "remove or correct one of them"),
+        [one] if typed => (format!("{one} can't hold{types}"), "remove or correct it"),
+        [one] => (format!("{one} can never hold"), "remove or correct it"),
+        [a, b] => (format!("{a} and {b} can't both hold{types}"), "remove or correct one of them"),
+        [init @ .., last] => (format!("{} and {last} can't all hold{types}", init.join(", ")), "remove or correct one of them"),
+    };
+    Diagnostic::error("E0457", message, c.at).with_label(label).with_help(format!("{never}; {fix}"))
+}
+
 /// W022 (D144 d): the branches of the program's own used code whose facts
 /// contradict each other, by the facts alone.
 fn unreachable(e: &Elab, user: &str) -> Vec<Diagnostic> {
@@ -950,6 +1110,7 @@ fn unreachable(e: &Elab, user: &str) -> Vec<Diagnostic> {
 }
 
 fn describe(e: &Elab, o: &Obligation) -> String {
+    let o = &Obligation { text: crate::elab::first_line(&o.text), ..o.clone() };
     match &o.kind {
         ObKind::Pre { callee } => format!("precondition of `{callee}`: {}", o.text),
         ObKind::Post { func, at } => {
@@ -978,6 +1139,7 @@ fn describe(e: &Elab, o: &Obligation) -> String {
         ObKind::Refines { class, member, pre: true, .. } => format!("`{member}` requires no more than class `{class}`: {}", o.text),
         ObKind::Refines { class, member, pre: false, .. } => format!("`{member}` promises what class `{class}` does: {}", o.text),
         ObKind::AtAlias { class, alias, member, .. } => format!("`{class}` at `{alias}`: `{member}` gives `{alias}`s: {}", o.text),
+        ObKind::KnownResult { call, alias, .. } => format!("`{call}` is a `{alias}`: {}", o.text),
         ObKind::Auto => format!("auto: {}", o.text),
         ObKind::Have => format!("have {}", o.text),
         ObKind::Uncovered { case, binding: false } => format!("`match` needs no arm for {case}: it can't occur"),
@@ -1015,6 +1177,8 @@ fn facts_note(e: &Elab, o: &Obligation) -> Option<String> {
 }
 
 fn headline(o: &Obligation) -> (String, String, String) {
+    // A block's first line: the rest is in a note (`in_full`).
+    let o = &Obligation { text: crate::elab::first_line(&o.text), ..o.clone() };
     match &o.kind {
         ObKind::Pre { callee } => (
             format!("cannot prove `{}`, required to call `{callee}`", o.text),
@@ -1092,12 +1256,22 @@ fn headline(o: &Obligation) -> (String, String, String) {
         ObKind::Lemma { name } => (
             format!("cannot prove lemma `{name}`"),
             format!("`{}`", o.text),
-            "add a `proof` block: `match` on a parameter for case analysis, and `have` for facts it needs".into(),
+            "add a `proof` block: `match` on a parameter or a call's result for case analysis, and `have` for facts it needs".into(),
         ),
         ObKind::ClassType { name, given } => (
             format!("cannot prove that every `{given}` satisfies `{}`, as `{name}` requires", o.text),
             format!("`{}` is `{given}` here", name.rsplit('.').next().unwrap_or(name)),
             format!("give `{}` a type whose values all satisfy it", name.rsplit('.').next().unwrap_or(name)),
+        ),
+        ObKind::Refines { class, member, pre: true, at: Some((x, mine, theirs)), .. } => (
+            format!("`{member}` requires more of `{x}` than class `{class}` does"),
+            format!("`{mine}` here, `{theirs}` in the class"),
+            format!("a call through class `{class}` may pass any `{theirs}`: give `{x}` that type, or a type it implies"),
+        ),
+        ObKind::Refines { class, member, pre: false, at: Some((x, mine, theirs)), .. } => (
+            format!("`{member}`'s result `{x}` doesn't promise what class `{class}`'s does"),
+            format!("`{mine}` here, `{theirs}` in the class"),
+            format!("give `{x}` the class's type `{theirs}`, or a type implying it"),
         ),
         ObKind::Refines { class, member, pre: true, .. } => (
             format!("`{member}` requires `{}`, which class `{class}` doesn't", o.text),
@@ -1109,24 +1283,76 @@ fn headline(o: &Obligation) -> (String, String, String) {
             format!("`{}` doesn't follow from this signature", o.text),
             format!("promise at least what class `{class}` does: add `{}` to this signature, or a condition implying it", o.text),
         ),
-        ObKind::AtAlias { class, alias, base, member, param: Some(x), .. } => (
-            format!("`{class}` at `{alias}` runs `{base}`'s instance, whose `{member}` may give `{x}` a value that isn't a `{alias}`"),
+        ObKind::AtAlias { class, inst, alias, base, member, param: Some(p), .. } => (
+            format!("`{class}` at `{alias}` runs `{base}`'s instance, whose `{member}` may give `{}` {}", p.name, p.gives),
             format!("`{class}` is used at `{alias}` here"),
-            format!("use `{base}` here, with a function that accepts every `{base}`; or give `instance {class} {base}`'s `{member}` a signature in which `{x}` is given only `{alias}`s"),
+            format!(
+                "use `{base}` here, with a function that accepts every `{}`; or give `instance {inst}`'s `{member}` a signature in which `{}` is given only {}{}",
+                p.accepts,
+                p.name,
+                p.only,
+                p.example.as_ref().map_or(String::new(), |e| format!(", such as `{}~{e}`", p.name))
+            ),
         ),
-        ObKind::AtAlias { class, alias, base, member, call: Some(c), param: None, inside } => (
-            if *inside {
-                format!("cannot prove `{}` of the `{alias}`s inside `{c}`", o.text)
-            } else {
-                format!("cannot prove that `{c}` is a `{alias}` (`{}`)", o.text)
+        ObKind::AtAlias { class, inst, alias, base, member, call, param: None, inside, whole: Some((wt, wb)) } => {
+            // A part checked as one: the instance's signature can promise
+            // it by its type, or for a list with `list.all`.
+            let formula = (!o.text.is_empty()).then(|| o.text.clone());
+            let promise = match &formula {
+                Some(f) => format!("`{wt}` in its result, or `{f}` of it"),
+                None => format!("`{wt}` in its result"),
+            };
+            match call {
+                Some(c) => (
+                    match (inside, &formula) {
+                        (false, Some(f)) => format!("cannot prove that `{c}` has type `{wt}` (`{f} {}`)", if c.contains(' ') { format!("({c})") } else { c.clone() }),
+                        (false, None) => format!("cannot prove that `{c}` has type `{wt}`"),
+                        (true, _) => format!("cannot prove that the `{wb}` inside `{c}` has type `{wt}`"),
+                    },
+                    format!("`{class}` at `{alias}` runs `{base}`'s instance, and its `{member}` isn't shown to give a `{alias}` here"),
+                    format!("use `{base}` here and check the result where a `{alias}` is needed; or promise it in a signature of `instance {inst}`'s `{member}`: {promise}"),
+                ),
+                None => (
+                    if *inside {
+                        format!("`{class}` at `{alias}` runs `{base}`'s instance, whose `{member}` isn't shown to give a value of type `{wt}` inside its result")
+                    } else {
+                        format!("`{class}` at `{alias}` runs `{base}`'s instance, whose `{member}` isn't shown to return a value of type `{wt}`")
+                    },
+                    format!("`{class}` is used at `{alias}` here, by code that may call `{member}` with any arguments"),
+                    format!("use `{base}` here instead of `{alias}`; or promise it, for every argument, in a signature of `instance {inst}`'s `{member}`: {promise}"),
+                ),
+            }
+        }
+        ObKind::AtAlias { class, inst, alias, base, member, call: Some(c), param: None, inside, whole: None } => (
+            match (inside, o.text.is_empty()) {
+                (_, true) => format!("cannot prove that the `{alias}`s inside `{c}` are `{alias}`s"),
+                (true, false) => format!("cannot prove `{}` of the `{alias}`s inside `{c}`", o.text),
+                (false, false) => format!("cannot prove that `{c}` is a `{alias}` (`{}`)", o.text),
             },
             format!("`{class}` at `{alias}` runs `{base}`'s instance, and its `{member}` isn't shown to give a `{alias}` here"),
-            format!("use `{base}` here and check the result where a `{alias}` is needed; or promise it in a signature of `instance {class} {base}`'s `{member}`"),
+            format!("use `{base}` here and check the result where a `{alias}` is needed; or promise it in a signature of `instance {inst}`'s `{member}`"),
         ),
-        ObKind::AtAlias { class, alias, base, member, call: None, param: None, .. } => (
-            format!("`{class}` at `{alias}` runs `{base}`'s instance, whose `{member}` isn't shown to return a `{alias}` (`{}`)", o.text),
+        ObKind::AtAlias { class, inst, alias, base, member, call: None, param: None, whole: None, .. } => (
+            if o.text.is_empty() {
+                format!("`{class}` at `{alias}` runs `{base}`'s instance, whose `{member}` isn't shown to return `{alias}`s")
+            } else {
+                format!("`{class}` at `{alias}` runs `{base}`'s instance, whose `{member}` isn't shown to return a `{alias}` (`{}`)", o.text)
+            },
             format!("`{class}` is used at `{alias}` here, by code that may call `{member}` with any arguments"),
-            format!("use `{base}` here instead of `{alias}`; or promise it, for every argument, in a signature of `instance {class} {base}`'s `{member}`"),
+            format!("use `{base}` here instead of `{alias}`; or promise it, for every argument, in a signature of `instance {inst}`'s `{member}`"),
+        ),
+        ObKind::KnownResult { call, alias, inside, pres, inst, member } => (
+            if *inside {
+                format!("cannot prove `{}` of the `{alias}`s inside `{call}`", o.text)
+            } else {
+                format!("cannot prove that `{call}` is a `{alias}` (`{}`)", o.text)
+            },
+            if *inside { format!("the class promises `{alias}`s in the result only where {pres}") } else { format!("the class promises a `{alias}` only where {pres}") },
+            if *inside {
+                format!("make the call meet the class's precondition, or have `instance {inst}`'s `{member}` promise `{alias}`s in its result at these arguments too")
+            } else {
+                format!("make the call meet the class's precondition, or have `instance {inst}`'s `{member}` promise a `{alias}` at these arguments too")
+            },
         ),
         ObKind::Auto => (
             format!("`auto` cannot prove `{}`", o.text),
@@ -1185,19 +1411,21 @@ fn failed(e: &Elab, o: &Obligation, model: Option<String>) -> Diagnostic {
         ObKind::AtAlias { .. } => "E0456",
         _ => "E0450",
     };
-    let mut d = Diagnostic::error(code, msg, o.span).with_label(label);
-    if let ObKind::Refines { class, declared, .. } = &o.kind {
+    let mut d = Diagnostic::error(code, msg, o.span).with_label(label).with_notes(in_full(o));
+    if let ObKind::Refines { class, declared, at, .. } = &o.kind {
         d = d.with_note(format!("class `{class}` declares `{declared}`"));
+        if at.is_some() {
+            d = d.with_note(format!("it needs `{}`", crate::elab::first_line(&o.text)));
+        }
     }
     if let ObKind::Weaken { .. } = &o.kind {
-        d = d.with_note(format!("it needs `{}`", o.text));
+        d = d.with_note(format!("it needs `{}`", crate::elab::first_line(&o.text)));
     }
-    if let ObKind::Post { at, .. } = &o.kind {
-        if let Some(f) = e.sources.get(&o.module) {
-            let (line, _) = f.line_col(at.start);
-            let text: String = f.text.get(at.start as usize..at.end as usize).unwrap_or("").split_whitespace().collect::<Vec<_>>().join(" ");
-            d = d.with_note(format!("for the value returned on line {line}: `{text}`"));
-        }
+    if let ObKind::KnownResult { inst, member, .. } = &o.kind {
+        d = d.with_note(format!("this calls `instance {inst}`'s `{member}`, whose signature requires less than the class's and doesn't promise it here"));
+    }
+    if let Some(n) = returned(e, o) {
+        d = d.with_note(n);
     }
     // A case left out: the facts are the case itself.
     if let Some(n) = facts_note(e, o).filter(|_| !matches!(o.kind, ObKind::Uncovered { .. })) {
@@ -1223,16 +1451,46 @@ fn failed(e: &Elab, o: &Obligation, model: Option<String>) -> Diagnostic {
     d.with_help(help)
 }
 
-fn outside(e: &Elab, o: &Obligation, why: &str) -> Diagnostic {
+/// One obligation outside what the prover handles, or the same one for
+/// several values returned, each with its facts.
+fn outside(e: &Elab, os: &[&Obligation], why: &str) -> Diagnostic {
+    let o = os[0];
     let (msg, label, _) = headline(o);
     let code = if matches!(o.kind, ObKind::Uncovered { .. }) { "E0240" } else { "E0451" };
     let mut d = Diagnostic::error(code, msg, o.span)
         .with_label(label)
+        .with_notes(in_full(o))
         .with_note(format!("this obligation is outside what the prover handles: it involves {why}"));
-    if let Some(n) = facts_note(e, o) {
-        d = d.with_note(n);
+    if let [o] = os {
+        d = d.with_notes(returned(e, o)).with_notes(facts_note(e, o));
+    } else {
+        for o in os {
+            let r = returned(e, o).unwrap_or_default();
+            d = d.with_note(match facts_note(e, o) {
+                Some(f) => format!("{r}; {f}"),
+                None => r,
+            });
+        }
     }
     d.with_help("state the fact you need as a lemma and bring it in with `have`")
+}
+
+/// A predicate written on several lines (a `match`), shown in full: the
+/// message has only its first line.
+fn in_full(o: &Obligation) -> Option<String> {
+    o.text.contains('\n').then(|| {
+        let body: Vec<String> = o.text.lines().map(|l| format!("    {l}")).collect();
+        format!("`{}` in full:\n{}", crate::elab::first_line(&o.text), body.join("\n"))
+    })
+}
+
+/// Which returned value a postcondition is about: its line and text.
+fn returned(e: &Elab, o: &Obligation) -> Option<String> {
+    let ObKind::Post { at, .. } = &o.kind else { return None };
+    let f = e.sources.get(&o.module)?;
+    let (line, _) = f.line_col(at.start);
+    let text: String = f.text.get(at.start as usize..at.end as usize).unwrap_or("").split_whitespace().collect::<Vec<_>>().join(" ");
+    Some(format!("for the value returned on line {line}: `{text}`"))
 }
 
 /// Check Z3's counterexample against the `forall` facts in scope, which its

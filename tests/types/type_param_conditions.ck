@@ -49,3 +49,10 @@ record Holder lo hi : lo~Nat, hi~Nat, lo <= hi
 
 enum Wrapper lo hi : lo~Nat, hi~Nat, lo <= hi
     Wrapper inner : inner~Ordered lo hi
+
+# Every condition is checked, not only the first.
+record Bounded lo hi : lo~Nat, hi~Nat, lo <= hi, hi <= 10
+    value~Nat
+
+fn second_condition -> r : r~Bounded 0 11
+    Bounded 0

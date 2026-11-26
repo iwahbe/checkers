@@ -16,16 +16,16 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let (some, input) = files.read_some 3 input
     let (rest, input) = files.read_rest input
     let (tail, input) = files.read_rest input
-    files.close input
+    let _ = files.close input
     terminal.print_line (debug header) term
     terminal.print_line (debug body ++ " " ++ debug some ++ " " ++ debug rest ++ " " ++ debug tail) term
     let out = terminal.stdout term
     let (w, out) = files.write_bytes b"one, " out
     terminal.print_line "two" term
     let (_, out) = files.write_line "three" out
-    files.close out
+    let _ = files.close out
     let err = terminal.stderr term
     let (e, err) = files.write_bytes b"to stderr\n" err
-    files.close err
+    let _ = files.close err
     terminal.print_line (debug w ++ " " ++ debug e) term
     Success

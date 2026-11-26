@@ -23,7 +23,11 @@ export fn write path contents fs -> r : path~String, contents~Bytes, fs~Fs, r~Re
     __builtin
 
 # An `Fs` that reaches only `dir` and what is inside it: its paths are
-# relative to `dir`, and an absolute path or one with `..` fails.
+# relative to `dir`, and an absolute path or one with `..` fails. It follows
+# a symbolic link that stays inside `dir`, and refuses a path whose
+# resolution leaves it. `dir` is opened when it is there, now or at the first
+# operation after, and stays that directory; until then every operation
+# fails, saying why.
 export fn within dir fs -> r : dir~String, fs~Fs, r~Fs
     __builtin
 
@@ -39,13 +43,17 @@ export fn open path fs -> r : path~String, fs~Fs, r~Result File IoError
 export fn create path fs -> r : path~String, fs~Fs, r~Result File IoError
     __builtin
 
-# Close the file, writing out what is buffered.
-export fn close f -> r : f~File, r~Unit
+# Close the file. One open for writing has what is buffered written out
+# first; an error doing that, or closing it, is the result. Closing standard
+# output's `File` writes out the stream's buffer and leaves the stream open.
+# Closing a file open for reading gives `Ok ()`.
+export fn close f -> r : f~File, r~Result Unit IoError
     __builtin
 
-# The next line, without its `\n` (invalid UTF-8 becomes U+FFFD); `None` at
-# the end.
-export fn read_line f -> r : f~File, r~(Option String, File)
+# The next line's bytes, as they are, without its `\n`; `Ok None` only at
+# the end, and an error if reading fails. The file comes back either way, to
+# be closed.
+export fn read_line f -> r : f~File, r~(Result (Option Bytes) IoError, File)
     __builtin
 
 # Write `s` and a newline. Write errors other than misuse are ignored;
