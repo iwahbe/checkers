@@ -430,7 +430,7 @@ impl U<'_> {
                     out.insert(l);
                 }
             }
-            Tm::Var(_) | Tm::Lit(_) | Tm::Def(_) | Tm::Con(_) | Tm::Univ(_) | Tm::TyCon(_) | Tm::Error => {}
+            Tm::Var(_) | Tm::Lit(_) | Tm::Known(_) | Tm::Def(_) | Tm::Con(_) | Tm::Univ(_) | Tm::TyCon(_) | Tm::Error => {}
             Tm::Tuple(v) | Tm::ConApp(_, v) => v.iter().for_each(|x| self.carried_into(x, depth, out)),
             Tm::Proj(x, _, _) | Tm::Field(x, _, _) => self.carried_into(x, depth, out),
             // A call with effects is the call (§7.1).

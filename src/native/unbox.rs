@@ -40,13 +40,15 @@
 
 use super::lower::*;
 use std::collections::HashMap;
-use std::sync::Arc;
 
 /// At most this many words returned, on any machine. A program returns at
 /// most `Program::max_parts`: what the `tail` calling convention returns in
 /// registers on the machine it is compiled for (`codegen::return_words`:
 /// 8 on x86-64, 6 on ARM64).
 pub const MAX_PARTS: usize = 8;
+
+/// A layout is at most this many levels deep (`Shape::fit`).
+const MAX_DEPTH: usize = 4;
 
 /// What is known of every value an expression can give.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -113,7 +115,7 @@ impl Shape {
         if !matches!(self, Shape::Con(_) | Shape::Tuple(_)) {
             return None;
         }
-        let s = (1..=4).rev().map(|d| self.prune(d)).find(|s| s.size() <= max.min(MAX_PARTS))?;
+        let s = (1..=MAX_DEPTH).rev().map(|d| self.prune(d)).find(|s| s.size() <= max.min(MAX_PARTS))?;
         (s.size() >= 2).then_some(s)
     }
 
@@ -145,11 +147,18 @@ fn nullary_con(w: u64) -> Option<u32> {
     (w & 7 == 2).then_some((w >> 3) as u32)
 }
 
-fn static_shape(s: &Static) -> Shape {
-    match s {
-        Static::Word(w) => nullary_con(*w).map_or(Shape::Boxed, |c| Shape::Con(vec![(c, Vec::new())])),
-        Static::Con(c, xs) => Shape::Con(vec![(*c, xs.iter().map(|x| static_shape(x)).collect())]),
-        Static::Tuple(xs) => tuple_shape(xs.iter().map(|x| static_shape(x)).collect()),
+/// The layout of node `id` of static data, `depth` levels from the value
+/// a function returns: no deeper than a layout is ever kept (`fit`), so a
+/// value of any depth takes the same stack.
+fn static_shape(s: &Static, id: u32, depth: usize) -> Shape {
+    use checkers_rt::word as w;
+    match s.node(id) {
+        _ if depth > MAX_DEPTH => Shape::Boxed,
+        SNode::Word(x) => nullary_con(*x).map_or(Shape::Boxed, |c| Shape::Con(vec![(c, Vec::new())])),
+        SNode::Obj { kind, tag, fields } if *kind == w::K_CON => {
+            Shape::Con(vec![(*tag as u32, fields.iter().map(|x| static_shape(s, *x, depth + 1)).collect())])
+        }
+        SNode::Obj { fields, .. } => tuple_shape(fields.iter().map(|x| static_shape(s, *x, depth + 1)).collect()),
         _ => Shape::Boxed,
     }
 }
@@ -168,7 +177,7 @@ fn value_shape(e: &E) -> Shape {
     match e {
         E::Con { con, fields, reuse: None } => Shape::Con(vec![(*con, fields.iter().map(value_shape).collect())]),
         E::Tuple(xs) if xs.len() >= 2 => tuple_shape(xs.iter().map(value_shape).collect()),
-        E::Static(s) => static_shape(s),
+        E::Static(s, id) => static_shape(s, *id, 1),
         _ => Shape::Boxed,
     }
 }
@@ -192,29 +201,6 @@ fn leaves<'a>(e: &'a E, f: &mut dyn FnMut(&'a E)) {
     }
 }
 
-/// A word as an expression.
-fn word_expr(w: u64) -> E {
-    use checkers_rt::word as rw;
-    if w == rw::ERASED {
-        E::Erased
-    } else if w == rw::UNIT {
-        E::Unit
-    } else if rw::is_int(w) {
-        E::Int(rw::int_of(w))
-    } else if let Some(c) = nullary_con(w) {
-        E::Con { con: c, fields: Vec::new(), reuse: None }
-    } else {
-        E::Static(Arc::new(Static::Word(w)))
-    }
-}
-
-fn static_expr(s: &Arc<Static>) -> E {
-    match &**s {
-        Static::Word(w) => word_expr(*w),
-        _ => E::Static(s.clone()),
-    }
-}
-
 /// The parts of `e`, a value laid out as `s`, in order.
 fn flatten(e: E, s: &Shape, out: &mut Vec<E>) {
     match s {
@@ -224,9 +210,9 @@ fn flatten(e: E, s: &Shape, out: &mut Vec<E>) {
             let start = out.len();
             let (con, fields): (u32, Vec<E>) = match e {
                 E::Con { con, fields, reuse: None } => (con, fields),
-                E::Static(st) => match &*st {
-                    Static::Con(c, xs) => (*c, xs.iter().map(static_expr).collect()),
-                    Static::Word(w) => (nullary_con(*w).expect("a constructor's word"), Vec::new()),
+                E::Static(st, id) => match st.node(id) {
+                    SNode::Obj { tag, fields, .. } => (*tag as u32, fields.iter().map(|x| Static::expr(&st, *x)).collect()),
+                    SNode::Word(w) => (nullary_con(*w).expect("a constructor's word"), Vec::new()),
                     _ => unreachable!("a static constructor"),
                 },
                 _ => unreachable!("a constructor laid out"),
@@ -241,8 +227,8 @@ fn flatten(e: E, s: &Shape, out: &mut Vec<E>) {
         Shape::Tuple(ss) => {
             let xs: Vec<E> = match e {
                 E::Tuple(xs) => xs,
-                E::Static(st) => match &*st {
-                    Static::Tuple(xs) => xs.iter().map(static_expr).collect(),
+                E::Static(st, id) => match st.node(id) {
+                    SNode::Obj { fields, .. } => fields.iter().map(|x| Static::expr(&st, *x)).collect(),
                     _ => unreachable!("a static tuple"),
                 },
                 _ => unreachable!("a tuple laid out"),
@@ -323,7 +309,7 @@ fn taken_apart(x: V, s: &Shape, e: &E) -> bool {
         E::At(_, b) => ok(b),
         E::Dup(v, b) | E::Drop(v, b) => *v != x && ok(b),
         E::DropReuse(v, t, _, b) => *v != x && *t != x && ok(b),
-        E::Int(_) | E::BigLit(_) | E::Str(_) | E::Bytes(_) | E::Static(_) | E::Erased | E::Unit | E::Global(_) | E::ConFn(_) | E::Fail(_) => true,
+        E::Int(_) | E::Str(_) | E::Bytes(_) | E::Static(..) | E::Erased | E::Unit | E::Global(_) | E::ConFn(_) | E::Fail(_) => true,
     }
 }
 
@@ -355,7 +341,7 @@ impl Rw<'_> {
                 None => bad = true,
             },
             E::Fail(_) => {}
-            E::Con { .. } | E::Tuple(_) | E::Static(_) => {
+            E::Con { .. } | E::Tuple(_) | E::Static(..) => {
                 built = true;
                 j = std::mem::replace(&mut j, Shape::Bottom).join(value_shape(l));
             }
@@ -547,7 +533,7 @@ fn ends(f: &Func) -> Ends {
     leaves(&f.body, &mut |l| match l {
         E::Call { f, .. } => calls.push(*f),
         E::Fail(_) => {}
-        E::Con { .. } | E::Tuple(_) | E::Static(_) => s = std::mem::replace(&mut s, Shape::Bottom).join(value_shape(l)),
+        E::Con { .. } | E::Tuple(_) | E::Static(..) => s = std::mem::replace(&mut s, Shape::Bottom).join(value_shape(l)),
         _ => other = true,
     });
     if other {
@@ -631,7 +617,7 @@ pub fn program(p: &mut Program, from: usize) {
                 leaves(a, &mut |l| match l {
                     E::Call { f, .. } if local(*f) && can[*f as usize - from] => ks.push(*f as usize - from),
                     E::Fail(_) => {}
-                    E::Con { .. } | E::Tuple(_) | E::Static(_) => built = std::mem::replace(&mut built, Shape::Bottom).join(value_shape(l)),
+                    E::Con { .. } | E::Tuple(_) | E::Static(..) => built = std::mem::replace(&mut built, Shape::Bottom).join(value_shape(l)),
                     _ => ok = false,
                 });
                 if !ok || ks.is_empty() || built == Shape::Bottom {

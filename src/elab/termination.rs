@@ -18,6 +18,18 @@ pub struct RecCall {
 /// A measure: its components over a function's binders, and its text.
 pub type Measure = (Vec<Tm>, String);
 
+/// What checking the termination of a module's functions finds
+/// (`termination_verdict`), before it is applied.
+#[derive(Default)]
+pub struct Verdict {
+    pub errors: Vec<Diagnostic>,
+    /// The total members of each group recursing by `decreasing` measures,
+    /// whose calls' measure obligations are to be proved.
+    pub measured: Vec<Vec<DefId>>,
+    /// The groups whose measure is guessed (D150).
+    pub guesses: Vec<GuessGroup>,
+}
+
 /// A recursive group whose measure is guessed in the proofs phase (D150).
 #[derive(Clone)]
 pub struct GuessGroup {
@@ -58,8 +70,26 @@ impl Elab {
     fn body_promises(&mut self) -> HashSet<ElemAlt> {
         let fns: Vec<DefId> = std::mem::take(&mut self.body_fns);
         let uses = std::mem::take(&mut self.param_uses);
-        let mut held: HashSet<ElemAlt> = HashSet::new();
+        let held = self.promises(&fns, &uses);
         for f in &fns {
+            let mut ps: Vec<(usize, usize)> = held.iter().filter(|x| x.0 == *f).map(|x| (x.1, x.2)).collect();
+            ps.sort();
+            self.body_elems.insert(*f, ps);
+        }
+        held
+    }
+
+    /// The promises that hold of the bodies checked so far, which the
+    /// module's end decides for all its bodies (`body_promises`).
+    pub(super) fn promises_so_far(&self) -> HashSet<ElemAlt> {
+        self.promises(&self.body_fns, &self.param_uses)
+    }
+
+    /// The promises of `fns`' bodies that hold (`body_promises`), from the
+    /// uses of their parameters.
+    fn promises(&self, fns: &[DefId], uses: &HashMap<(DefId, usize), Vec<ParamUse>>) -> HashSet<ElemAlt> {
+        let mut held: HashSet<ElemAlt> = HashSet::new();
+        for f in fns {
             let n = self.fn_meta.get(f).map_or(0, |m| m.params.len());
             for k in 0..n {
                 for j in (0..n).filter(|j| *j != k) {
@@ -84,11 +114,6 @@ impl Elab {
                 held.remove(&x);
             }
         }
-        for f in &fns {
-            let mut ps: Vec<(usize, usize)> = held.iter().filter(|x| x.0 == *f).map(|x| (x.1, x.2)).collect();
-            ps.sort();
-            self.body_elems.insert(*f, ps);
-        }
         held
     }
 
@@ -100,7 +125,7 @@ impl Elab {
         let Some(c) = c else { return true };
         self.elem_conds[c as usize].iter().any(|&(d, k, j)| {
             self.specs.get(&d).is_some_and(|s| {
-                s.elems.iter().any(|e| e.k == k && e.j == j && self.memberships.get(&(e.pred, e.c, e.s)) == Some(&true))
+                s.elems.iter().any(|e| e.k == k && e.j == j && self.memberships.borrow().get(&(e.pred, e.c, e.s)) == Some(&true))
             }) || held.contains(&(d, k, j))
                 || (*self.g.defs[d.0 as usize].module != *self.cur
                     && self.transparent.contains(&d)
@@ -141,9 +166,9 @@ impl Elab {
 
     /// Decide, for each signature promise a condition names, whether its
     /// predicate is a membership (#102).
-    fn decide_memberships(&mut self) {
+    pub(super) fn decide_memberships(&self) {
         // Whether a body is visible depends on the module checked.
-        self.memberships.clear();
+        self.memberships.borrow_mut().clear();
         let mut todo = Vec::new();
         for alts in &self.elem_conds {
             for &(d, k, j) in alts {
@@ -155,10 +180,10 @@ impl Elab {
             }
         }
         for key in todo {
-            if !self.memberships.contains_key(&key) {
+            if !self.memberships.borrow().contains_key(&key) {
                 let mut visiting = HashSet::new();
                 let m = self.is_membership(key, &mut visiting);
-                self.memberships.insert(key, m);
+                self.memberships.borrow_mut().insert(key, m);
             }
         }
     }
@@ -169,9 +194,9 @@ impl Elab {
     /// visible, as for proofs. A recursive use of a predicate being decided
     /// is assumed to be one: it is total, so this is an induction on its
     /// recursion.
-    fn is_membership(&mut self, key: (DefId, usize, usize), visiting: &mut HashSet<(DefId, usize, usize)>) -> bool {
-        if let Some(m) = self.memberships.get(&key) {
-            return *m;
+    fn is_membership(&self, key: (DefId, usize, usize), visiting: &mut HashSet<(DefId, usize, usize)>) -> bool {
+        if let Some(m) = self.memberships.borrow().get(&key).copied() {
+            return m;
         }
         if !visiting.insert(key) {
             return true;
@@ -207,7 +232,7 @@ impl Elab {
 
     /// Whether `t`, a `Bool`, is `True` only where the subject equals a
     /// strict part of the container (#102).
-    fn only_if_member(&mut self, t: &Tm, ctx: &mut Vec<Kind>, visiting: &mut HashSet<(DefId, usize, usize)>) -> bool {
+    fn only_if_member(&self, t: &Tm, ctx: &mut Vec<Kind>, visiting: &mut HashSet<(DefId, usize, usize)>) -> bool {
         let wk = &self.g.well_known;
         let (tc, fc) = (wk.true_con, wk.false_con);
         match t {
@@ -276,12 +301,43 @@ impl Elab {
         self.decide_memberships();
         let held = self.body_promises();
         let fns: Vec<DefId> = std::mem::take(&mut self.module_fns);
-        let mut calls: Vec<CallRec> = std::mem::take(&mut self.calls);
+        let calls: Vec<CallRec> = std::mem::take(&mut self.calls);
+        let rec_calls: Vec<RecCall> = std::mem::take(&mut self.rec_calls);
+        let v = self.termination_verdict(&fns, calls, &held, &rec_calls);
+        self.elem_conds.clear();
+        self.elem_cond_at.clear();
+        for d in v.errors {
+            self.err(d);
+        }
+        // `decreasing` measures are proof obligations at each call in the group (§5.3).
+        for total in &v.measured {
+            for (caller, callee, ob) in std::mem::take(&mut self.measure_obs) {
+                if total.contains(&caller) && total.contains(&callee) {
+                    self.obligations.push(ob);
+                } else {
+                    self.measure_obs.push((caller, callee, ob));
+                }
+            }
+        }
+        // No measure written: one is guessed, and proved, later (D150).
+        for g in v.guesses {
+            self.guessed.extend(g.members.iter().copied());
+            self.guess_groups.push(g);
+        }
+    }
+
+    /// The termination of `fns` (§5.3), whose calls are `calls`, with the
+    /// promises `held` their bodies make (#102): what checking it reports
+    /// and needs proved, without applying it, so it can also be asked of a
+    /// module's functions before the module is checked (§8.9: they are
+    /// proved on demand).
+    pub fn termination_verdict(&self, fns: &[DefId], mut calls: Vec<CallRec>, held: &HashSet<ElemAlt>, rec_calls: &[RecCall]) -> Verdict {
+        let mut v = Verdict::default();
         // Parts that hold only if a promise does (#102).
         let mut unkept: HashMap<Span, String> = HashMap::new();
         for c in &mut calls {
             for &(i, cond) in &c.conds {
-                if !self.cond_holds(Some(cond), &held) {
+                if !self.cond_holds(Some(cond), held) {
                     c.args[i] = None;
                     if let Some(help) = self.unkept_help(cond, c.callee) {
                         unkept.entry(c.span).or_insert(help);
@@ -289,9 +345,6 @@ impl Elab {
                 }
             }
         }
-        self.elem_conds.clear();
-        self.elem_cond_at.clear();
-        let rec_calls: Vec<RecCall> = std::mem::take(&mut self.rec_calls);
         let idx: HashMap<DefId, usize> = fns.iter().enumerate().map(|(i, d)| (*d, i)).collect();
         let n = fns.len();
         let mut edges: Vec<Vec<usize>> = vec![Vec::new(); n];
@@ -306,7 +359,7 @@ impl Elab {
             let caller = self.fn_meta.get(&c.caller).cloned().unwrap_or_default();
             let callee = self.fn_meta.get(&c.callee).cloned().unwrap_or_default();
             if !caller.partial && callee.partial {
-                self.err(
+                v.errors.push(
                     Diagnostic::error(
                         "E0302",
                         format!("`{}` is `partial` (it may not terminate), so `{}` cannot call it", callee.name, caller.name),
@@ -327,18 +380,12 @@ impl Elab {
             if metas.iter().all(|m| m.partial || m.decreasing) {
                 // `decreasing` measures are proof obligations at each call in the group (§5.3).
                 let total: Vec<DefId> = members.iter().zip(&metas).filter(|(_, m)| !m.partial).map(|(d, _)| *d).collect();
-                for (caller, callee, ob) in std::mem::take(&mut self.measure_obs) {
-                    if total.contains(&caller) && total.contains(&callee) {
-                        self.obligations.push(ob);
-                    } else {
-                        self.measure_obs.push((caller, callee, ob));
-                    }
-                }
+                v.measured.push(total.clone());
                 // A recursive use that isn't a full call can't have its measure checked.
                 for c in calls.iter().filter(|c| total.contains(&c.caller) && members.contains(&c.callee)) {
                     if !self.saturated_heads.contains(&c.span) {
                         let name = self.fn_meta.get(&c.callee).map(|m| m.name.clone()).unwrap_or_default();
-                        self.err(
+                        v.errors.push(
                             Diagnostic::error(
                                 "E0303",
                                 format!("`{name}` is used here as a value, so its `decreasing` measure can't be checked"),
@@ -365,7 +412,7 @@ impl Elab {
                 let inst = self.g.defs[c.callee.0 as usize].name.to_string();
                 let caller = self.fn_meta.get(&c.caller).map(|m| m.name.clone()).unwrap_or_default();
                 let own = caller.rsplit('.').next().unwrap_or("").to_string();
-                self.err(
+                v.errors.push(
                     Diagnostic::error("E0301", format!("`{caller}` uses `instance {inst}` itself, so it can't be shown to terminate"), c.span)
                         .with_label("the class's function at this instance's own type")
                         .with_help(format!("inside the instance, call its own `{own}` (on a smaller part of a parameter), which is checked like any recursion")),
@@ -403,7 +450,8 @@ impl Elab {
             }
             // No measure written: one is guessed, and proved, later (D150).
             let spans: Vec<Span> = prefer.iter().map(|c| c.span).collect();
-            if self.guess_measure(&members, &metas, &inner, &rec_calls, spans) {
+            if let Some(g) = self.guess_measure(&members, &metas, &inner, rec_calls, spans) {
+                v.guesses.push(g);
                 continue;
             }
             let bad = prefer.first().copied();
@@ -465,9 +513,10 @@ impl Elab {
                 if let Some(note) = note {
                     d = d.with_note(note);
                 }
-                self.err(d.with_help(help));
+                v.errors.push(d.with_help(help));
             }
         }
+        v
     }
 }
 
@@ -475,28 +524,26 @@ impl Elab {
     /// Set up guessing a measure for a recursive group with none written
     /// (D150): every member a total function, every recursive call a full
     /// call, and candidates for each. False if it can't be.
-    fn guess_measure(&mut self, members: &[DefId], metas: &[FnMeta], inner: &[&CallRec], rec_calls: &[RecCall], prefer: Vec<Span>) -> bool {
+    fn guess_measure(&self, members: &[DefId], metas: &[FnMeta], inner: &[&CallRec], rec_calls: &[RecCall], prefer: Vec<Span>) -> Option<GuessGroup> {
         if metas.iter().any(|m| m.partial || m.decreasing) {
-            return false;
+            return None;
         }
         let calls: Vec<RecCall> =
             rec_calls.iter().filter(|c| members.contains(&c.caller) && members.contains(&c.callee)).cloned().collect();
         // Each recursive call must be one we can compare measures at.
         if inner.iter().any(|c| !calls.iter().any(|r| r.ob.span == c.span || r.ob.span.start <= c.span.start && c.span.end <= r.ob.span.end)) {
-            return false;
+            return None;
         }
         let mut candidates = Vec::new();
         for d in members {
             let own: Vec<&RecCall> = calls.iter().filter(|c| c.caller == *d).collect();
             let cs = self.measure_candidates(*d, &own);
             if cs.is_empty() {
-                return false;
+                return None;
             }
             candidates.push(cs);
         }
-        self.guessed.extend(members.iter().copied());
-        self.guess_groups.push(GuessGroup { module: self.cur.clone(), members: members.to_vec(), candidates, calls, prefer });
-        true
+        Some(GuessGroup { module: self.cur.clone(), members: members.to_vec(), candidates, calls, prefer })
     }
 
     /// The measures to try for `d` (D150 a): its parameters' sizes, the

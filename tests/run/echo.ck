@@ -21,4 +21,4 @@ export partial fn main args sys -> code : args~List String, sys~System, code~Exi
     number 1 sys.term
     match args
         [] -> Success
-        _  -> Failure (len args + 10)
+        _  -> if len args < 245 then Failure (len args + 10) else Failure 255

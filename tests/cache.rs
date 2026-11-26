@@ -219,3 +219,25 @@ fn editing_an_unimported_operator_instance_forgets_its_user() {
     assert!(!ok && again.contains("E0450"), "`ordered` is proved again, and fails:\n{again}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A module's own function proved while the module is checked, so that its
+/// value is known there (§8.9), isn't proved again by the proofs phase: Z3
+/// is asked about its obligation once, and the ledger has it once. The
+/// check succeeds only if `SIZE`'s value is known.
+#[test]
+fn proved_on_demand_once() {
+    let dir = scratch("early");
+    std::fs::write(
+        dir.join("early.ck"),
+        "module early\n\nimport std.array\n\nfn size k -> r : k~Nat, r~Int\n    let n = array.count 7 (array.repeat k 7)\n    if n >= 1 then array.count 7 (array.repeat (n - 1) 7) - 3 else 0\n\nlet SIZE = size 9\n\nfn by_constant k -> r : k~Int, r~Nat\n    if k < 0 then SIZE else 0\n",
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_ckc")).args(["check", "--no-cache", "early.ck"]).env("CHECKERS_SMT_DUMP", "1").current_dir(&dir).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    let dump = String::from_utf8_lossy(&out.stderr);
+    // `(n - 1)`, at bytes 154 to 161.
+    assert_eq!(dump.lines().filter(|l| l.starts_with(";; ── NatSub at Span { start: 154,")).count(), 1, "asked once:\n{dump}");
+    let ledger = ckc(&dir, &["trust", "early.ck"]);
+    assert_eq!(ledger.lines().filter(|l| l.starts_with("early.ck:7:")).count(), 1, "the subtraction once:\n{ledger}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

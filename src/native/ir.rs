@@ -44,6 +44,9 @@ pub enum Ir {
     At(Option<DefId>, Arc<Ir>),
     /// Code the type checker reported an error for; never reached in a checked program.
     Fail(&'static str),
+    /// A value known when the program is compiled (§8.9), laid out as it is
+    /// at run time: a node of static data.
+    Static(Arc<super::lower::Static>, u32),
 }
 
 /// A primitive operation at run time (`Prim` without the type checker's
@@ -138,7 +141,7 @@ impl<'g> Compiler<'g> {
             Tm::Var(i) => Ir::Var(*i),
             // A constant known at compile time is its value (§8.9).
             Tm::Def(d) => match crate::core::known_const(self.g, *d) {
-                Some(l) => Ir::Lit(lit_value(&l)),
+                Some(v) => self.go(&v),
                 None => Ir::Global(*d),
             },
             // A constructor stored as its one kept field (#170), used as a
@@ -283,6 +286,7 @@ impl<'g> Compiler<'g> {
                 Ir::Let(v, self.compile(b))
             }
             Tm::Lit(l) => Ir::Lit(lit_value(l)),
+            Tm::Known(k) => self.known(k),
             Tm::Tuple(xs) => Ir::Tuple(xs.iter().map(|x| self.compile(x)).collect()),
             Tm::Proj(x, i, rest) => Ir::Proj(self.compile(x), *i, *rest),
             Tm::Field(x, c, i) => match self.g.unboxed_field(*c) {
@@ -345,7 +349,7 @@ impl<'g> Compiler<'g> {
                 }
                 _ => Ir::Case(self.compile(s), Arc::new(self.case(c))),
             },
-            Tm::Error => Ir::Fail("no arm of a `match` matches this value (`--unverified`)"),
+            Tm::Error => Ir::Fail("no arm of a `match` matches this value"),
         }
     }
 
@@ -371,6 +375,60 @@ impl<'g> Compiler<'g> {
 
     /// A class's type in its dictionary (#133): a field the dictionary
     /// keeps the type's layout word in, for generic code's arrays of it.
+    /// A known value as code: a literal, or static data laid out as the
+    /// value is at run time, erased as `Tm::ConApp` is above (a type
+    /// stored as its one kept field is that field; an erased field is
+    /// nothing, but a dictionary's type descriptor, which the value holds
+    /// as it was at run time). A loop over the value's nodes.
+    fn known(&self, k: &crate::known::Value) -> Ir {
+        use super::lower::{SNode, Static};
+        use crate::known::Node;
+        use checkers_rt::word as w;
+        if let Some(l) = k.lit() {
+            return Ir::Lit(lit_value(&l));
+        }
+        let mut out = Static::default();
+        let mut at: crate::known::FxMap<u32, u32> = Default::default();
+        for x in k.graph.reachable(k.id) {
+            let id = match k.graph.node(x) {
+                Node::Int(n) if w::fits(*n) => out.add(SNode::Word(w::mk_int(*n as i64))),
+                Node::Int(n) => out.add(SNode::Big(num_bigint::BigInt::from(*n))),
+                Node::Big(n) => out.add(SNode::Big(n.clone())),
+                Node::Str(s) => out.add(SNode::Bytes(Arc::from(s.as_bytes()))),
+                Node::Bytes(b) => out.add(SNode::Bytes(Arc::from(&**b))),
+                Node::Unit => out.add(SNode::Word(w::UNIT)),
+                Node::Erased => out.add(SNode::Word(w::ERASED)),
+                Node::Closure(crate::known::Code::Def(d)) => out.add(SNode::Global(d.0)),
+                Node::Closure(crate::known::Code::Con(c)) => out.add(SNode::ConFn(c.0)),
+                Node::Pap(xs) => out.add(SNode::Obj { kind: w::K_PAP, tag: 0, fields: xs.iter().map(|p| at[p]).collect() }),
+                Node::Tuple(xs) if xs.is_empty() => out.add(SNode::Word(w::UNIT)),
+                Node::Tuple(xs) => out.tuple(xs.iter().map(|p| at[p]).collect()),
+                Node::Array(l, xs) => out.add(SNode::Array { layout: *l, elems: xs.iter().map(|p| at[p]).collect() }),
+                Node::Con(c, xs) => {
+                    let ci = &self.g.cons[c.0 as usize];
+                    match self.g.unboxed_field(*c) {
+                        Some(f) => at[&xs[f]],
+                        None if ci.fields.is_empty() => out.add(SNode::Word(w::nullary(c.0))),
+                        None => {
+                            let fields = xs
+                                .iter()
+                                .zip(&ci.fields)
+                                .enumerate()
+                                .map(|(f, (p, fi))| match fi.1 {
+                                    Mult::Zero if !self.dict_type_field(*c, f) => out.add(SNode::Word(w::ERASED)),
+                                    _ => at[p],
+                                })
+                                .collect();
+                            out.add(SNode::Obj { kind: w::K_CON, tag: c.0 as u64, fields })
+                        }
+                    }
+                }
+            };
+            at.insert(x, id);
+        }
+        Ir::Static(Arc::new(out), at[&k.id])
+    }
+
     fn dict_type_field(&self, c: crate::core::ConId, k: usize) -> bool {
         self.g.is_dict_type_field(c, k)
     }
@@ -555,6 +613,7 @@ pub fn shift(ir: &Ir, k: usize, cutoff: usize) -> Ir {
             ),
             Ir::At(o, x) => Ir::At(*o, a(x, depth)),
             Ir::Fail(m) => Ir::Fail(m),
+            Ir::Static(v, id) => Ir::Static(v.clone(), *id),
         }
     }
     go(ir, k, cutoff)
@@ -712,7 +771,7 @@ impl Ir {
     /// that `self` binds.
     pub fn subterms(&self) -> Vec<(&Ir, usize)> {
         match self {
-            Ir::Var(_) | Ir::Global(_) | Ir::Erased | Ir::Lit(_) | Ir::ConFn(_) | Ir::Fail(_) => Vec::new(),
+            Ir::Var(_) | Ir::Global(_) | Ir::Erased | Ir::Lit(_) | Ir::ConFn(_) | Ir::Fail(_) | Ir::Static(..) => Vec::new(),
             Ir::Lam(_, b) => vec![(&**b, 1)],
             Ir::Call(h, xs) => std::iter::once(&**h).chain(xs.iter().map(|x| &**x)).map(|x| (x, 0)).collect(),
             Ir::Let(v, b) => vec![(&**v, 0), (&**b, 1)],
@@ -739,6 +798,7 @@ impl Ir {
             Ir::Lit(v) => Ir::Lit(v.clone()),
             Ir::ConFn(c) => Ir::ConFn(*c),
             Ir::Fail(m) => Ir::Fail(m),
+            Ir::Static(v, id) => Ir::Static(v.clone(), *id),
             Ir::Lam(o, b) => Ir::Lam(*o, a(b, 1)),
             Ir::Call(h, xs) => {
                 let h = a(h, 0);
@@ -796,6 +856,14 @@ pub fn globals_in(ir: &Ir, out: &mut Vec<DefId>) {
         }
         Ir::Tuple(xs) | Ir::Con(_, xs) | Ir::Prim(_, xs, _) | Ir::Par(xs) => xs.iter().for_each(|x| globals_in(x, out)),
         Ir::Proj(x, _, _) | Ir::Field(x, _) | Ir::At(_, x) => globals_in(x, out),
+        // The functions static data holds.
+        Ir::Static(v, id) => {
+            for x in v.reachable(*id) {
+                if let super::lower::SNode::Global(d) = v.node(x) {
+                    out.push(DefId(*d));
+                }
+            }
+        }
         Ir::Case(s, c) => {
             globals_in(s, out);
             c.branches.iter().for_each(|(_, _, b)| globals_in(b, out));

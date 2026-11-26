@@ -1,6 +1,6 @@
 # Running programs
 
-`checkers run FILE.ck ARGS…` checks a program, compiles it to native code in memory, and runs its `main` with the arguments after the file name. `checkers build FILE.ck -o PROGRAM` writes an executable instead. A program with any error is neither run nor built (exit status 2), unless the only errors are unproven obligations and it is run with `--unverified` (below).
+`checkers run FILE.ck ARGS…` checks a program, compiles it to native code in memory, and runs its `main` with the arguments after the file name. `checkers build FILE.ck -o PROGRAM` writes an executable instead. A program with any error, an obligation the prover couldn't prove among them, is neither run nor built (exit status 2): every program is proved before it runs.
 
 ## Erasure
 
@@ -69,7 +69,7 @@ Values are shown as their type says at every level: in generic code, through a c
 
 ## Run-time checks
 
-Every obligation is proved before a program runs, so in a program that checks without errors no operation can fail. `checkers run --unverified` runs a program whose only errors are unproven obligations (E0450, E0451, E0240), for trying out code whose proofs aren't finished. Then the operations that guard against a bad value are checked as the program runs:
+Every obligation is proved before a program runs, so in a program that checks without errors no operation can fail, and the compiled program checks nothing: `a - b` on `Nat`s is a subtraction, and `a[i]` reads the element. An `admit`, though, is a fact assumed without a proof ([Proofs](proofs.md#the-trust-ledger)), and it could be false. A program that relies on an `admit`, anywhere in what it loads, keeps a check on every operation that guards against a bad value, and so do `check`s and staging ([Staging](staging.md)), which run before the proofs:
 
 | Operation | Checked |
 |---|---|
@@ -78,6 +78,7 @@ Every obligation is proved before a program runs, so in a program that checks wi
 | `a[i]` | `i < len a` |
 | a `match` reaching a case its arms leave out | always fails |
 | `main` returning `Failure n` | `1 <= n <= 255` |
+| `when` naming two or more cowns | they are different cowns |
 
 A failed check stops the program with a message naming the operation and the function, and exit status 70:
 
@@ -100,4 +101,4 @@ If `main` returns a `Future ExitCode`, the status is the future's value, once ev
 
 ## Release builds
 
-`checkers build --release` refuses a program that relies, anywhere in what it loads, on an `admit` (E0455): an assumption no one proved ([Proofs](proofs.md#the-trust-ledger)). It can't be combined with `--unverified`.
+`checkers build --release` refuses a program that relies, anywhere in what it loads, on an `admit` (E0455): an assumption no one proved ([Proofs](proofs.md#the-trust-ledger)).

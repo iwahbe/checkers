@@ -6,8 +6,10 @@
 //! *body*. A head needs the heads of the names it mentions; where it
 //! mentions a function inside a type (`f~format_type ps`) or in a constant's
 //! value, it needs that function's body too, since the type or value may
-//! have to be computed. A body needs the heads of what it mentions. Bodies
-//! never wait for bodies, so recursion is free. A head that needs itself
+//! have to be computed. A body needs the heads of what it mentions, and
+//! comes after the bodies of the functions it calls where recursion allows
+//! (a soft edge), so their values can be known in it. Bodies never wait
+//! for bodies otherwise, so recursion is free. A head that needs itself
 //! (through any chain) is an error, except among types, which may be
 //! mutually recursive.
 
@@ -65,21 +67,14 @@ pub fn plan(m: &ast::Module, dicts: &[usize], classes: &[(String, Vec<String>)])
         }
     }
     names.extend(qualified.iter().map(|(n, k)| (n.as_str(), *k)));
-    // A function whose result type isn't written: its type is known only
-    // once its body is checked.
-    let inferred = |k: usize| match &m.decls[k].kind {
-        DeclKind::Fn { result, constraints, .. } => match result {
-            None => true,
-            Some(r) => !constraints.iter().any(|c| matches!(c, Constraint::Typed { name, .. } if name.name == r.name)),
-        },
-        _ => false,
-    };
     let is_type = |k: usize| matches!(m.decls[k].kind, DeclKind::Enum { .. } | DeclKind::Record { .. } | DeclKind::Alias { .. });
     let has_body = |k: usize| matches!(m.decls[k].kind, DeclKind::Fn { .. } | DeclKind::Lemma { .. });
 
     let mut edges: HashMap<Node, HashSet<Node>> = HashMap::new();
-    // Soft edges only order checking: a body that uses a function with an
-    // inferred result comes after that function's body, where possible.
+    // Soft edges only order checking: a body that uses a function comes
+    // after that function's body, where possible: its result's type may be
+    // inferred there, and its values can be known in the body (§8.9: a
+    // module's functions are proved in dependency order, on demand).
     let mut soft: HashMap<Node, HashSet<Node>> = HashMap::new();
     let mut need = |from: Node, refs: &Refs, computed: bool| {
         let e = edges.entry(from).or_default();
@@ -88,7 +83,7 @@ pub fn plan(m: &ast::Module, dicts: &[usize], classes: &[(String, Vec<String>)])
             e.insert(Node::Head(k));
             if (computed || *in_type) && has_body(k) {
                 e.insert(Node::Body(k));
-            } else if matches!(from, Node::Body(u) if u != k) && inferred(k) {
+            } else if matches!(from, Node::Body(u) if u != k) && has_body(k) {
                 soft.entry(from).or_default().insert(Node::Body(k));
             }
         }

@@ -120,7 +120,7 @@ impl<'g> Stager<'g> {
                 Ent::Dyn(l) => R::D(Tm::Var(lvl - 1 - l)),
                 Ent::Ty(s, at) => R::D(shift(s, lvl - at, 0)),
             },
-            Tm::Lit(_) | Tm::Def(_) | Tm::Con(_) => R::S(t.clone()),
+            Tm::Lit(_) | Tm::Known(_) | Tm::Def(_) | Tm::Con(_) => R::S(t.clone()),
             Tm::TyCon(_) | Tm::Univ(_) | Tm::Pi(..) | Tm::TupleTy(_) | Tm::TyConApp(..) | Tm::Meta(_) => {
                 R::D(resid(t, env, lvl, 0))
             }
@@ -288,10 +288,15 @@ impl<'g> Stager<'g> {
         Tm::ConApp(c, args)
     }
 
-    /// A known value in constructor or literal form, if it has one.
+    /// A known value in constructor or literal form, if it has one. A
+    /// known value's node is taken apart one level: its parts stay nodes,
+    /// so a `match` on it takes the same stack at any depth.
     fn whnf(&mut self, s: &Tm) -> Option<Tm> {
         match s {
             Tm::Lit(_) | Tm::ConApp(..) | Tm::Tuple(_) => Some(s.clone()),
+            // An array or a function has no constructor form.
+            Tm::Known(k) if matches!(k.node(), crate::known::Node::Array(..) | crate::known::Node::Closure(_) | crate::known::Node::Pap(_)) => None,
+            Tm::Known(k) => Some(crate::core::quote(self.g, 0, &crate::core::known_open(self.g, k))),
             _ => self.compute(s),
         }
     }
@@ -424,16 +429,20 @@ impl<'g> Stager<'g> {
         }
         let names: Vec<crate::core::Name> = binders.iter().map(|b| b.0.clone()).collect();
         let (ents, lets, l) = self.bind_args(spine, env, lvl, &comptime, &name, &names)?;
-        // The expansion's identity: the function and its compile-time arguments.
-        let shown: Vec<String> = comptime
-            .iter()
-            .map(|&k| match &ents[k] {
-                Ent::Stat(s) => crate::core::show(self.g, &[], s),
-                _ => "?".into(),
-            })
-            .collect();
+        // The expansion's identity: the function and its compile-time
+        // arguments (a known value by its hash).
         let key = format!("{}|{}", d.0, comptime.iter().map(|&k| format!("{:?}", stat_of(&ents[k]))).collect::<Vec<_>>().join("|"));
-        let spec_name = format!("{name}[{}]", shown.join(", "));
+        // The name of the function it becomes, if it becomes one.
+        let spec_name = |g: &Globals| {
+            let shown: Vec<String> = comptime
+                .iter()
+                .map(|&k| match &ents[k] {
+                    Ent::Stat(s) => crate::core::show(g, &[], s),
+                    _ => "?".into(),
+                })
+                .collect();
+            format!("{name}[{}]", shown.join(", "))
+        };
         // Runtime arguments, in order: what a generated function takes.
         let runtime: Vec<usize> = (0..ar).filter(|k| !comptime.contains(k) && binders[*k].1 != Mult::Zero).collect();
         let call = |me: &mut Self, idx: usize| {
@@ -453,7 +462,10 @@ impl<'g> Stager<'g> {
             // The same expansion again, inside itself (recursion on runtime
             // values): call the function it becomes (D64).
             self.wanted.insert(key.clone());
-            let idx = self.spec_id(&key, &spec_name);
+            let idx = {
+                let g = self.g;
+                self.spec_id(&key, || spec_name(g))
+            };
             R::D(call(self, idx))
         } else {
             self.active.push(key.clone());
@@ -461,7 +473,10 @@ impl<'g> Stager<'g> {
             let r = if self.wanted.contains(&key) {
                 // It recursed: generate one runtime function for these
                 // compile-time arguments, with the runtime ones as parameters.
-                let idx = self.spec_id(&key, &spec_name);
+                let idx = {
+                let g = self.g;
+                self.spec_id(&key, || spec_name(g))
+            };
                 if self.specs[idx].1.is_none() {
                     let mut benv = Vec::new();
                     let mut j = 0;
@@ -512,11 +527,11 @@ impl<'g> Stager<'g> {
         self.pe(&out, &ident, l)
     }
 
-    fn spec_id(&mut self, key: &str, name: &str) -> usize {
+    fn spec_id(&mut self, key: &str, name: impl FnOnce() -> String) -> usize {
         if let Some(i) = self.spec_ids.get(key) {
             return *i;
         }
-        self.specs.push((name.to_string(), None));
+        self.specs.push((name(), None));
         self.spec_ids.insert(key.to_string(), self.specs.len() - 1);
         self.specs.len() - 1
     }
