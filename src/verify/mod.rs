@@ -1276,7 +1276,10 @@ fn facts_note(e: &Elab, o: &Obligation) -> Option<String> {
     let mut shown: Vec<String> = implied.clone();
     for f in &o.facts {
         let s = crate::core::show_marked(&e.g, &names, &quote(&e.g, lvl, f));
-        let s = match (s.strip_suffix(" == True"), s.strip_suffix(" == False")) {
+        // `… == True` and `… == False` by their text, the marks aside.
+        let plain = crate::core::plain(&s);
+        let lhs = s.rfind(" == ").map(|i| &s[..i]);
+        let s = match (plain.ends_with(" == True").then_some(lhs).flatten(), plain.ends_with(" == False").then_some(lhs).flatten()) {
             (Some(t), _) => t.to_string(),
             (_, Some(f)) if f.starts_with('(') => format!("not {f}"),
             (_, Some(f)) => format!("not ({f})"),

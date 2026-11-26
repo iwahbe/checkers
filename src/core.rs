@@ -1802,6 +1802,11 @@ pub fn marks(s: &str) -> Vec<(Marked, String)> {
     out
 }
 
+/// `s` with its marks dropped: each global by its name as declared.
+pub fn plain(s: &str) -> String {
+    unmark(s, &mut |_, n| n.to_string())
+}
+
 /// `s` with each marked global replaced by `name(global, its name)`.
 pub fn unmark(s: &str, name: &mut dyn FnMut(Marked, &str) -> String) -> String {
     if !s.contains(MARK) {

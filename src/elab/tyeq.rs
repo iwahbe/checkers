@@ -590,7 +590,7 @@ impl Elab {
 
 /// `a` or `an`, for a word shown after it.
 pub fn article(word: &str) -> &'static str {
-    match word.trim_start_matches('(').chars().next() {
+    match crate::core::plain(word).trim_start_matches('(').chars().next() {
         Some(c) if "AEIOUaeiou".contains(c) => "an",
         _ => "a",
     }
