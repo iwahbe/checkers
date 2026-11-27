@@ -2909,3 +2909,256 @@ export lemma apply_prim sig op found : sig~Sig, op~Op, found~List Sort
         == match prim_sort op found
             Some s -> Ok s
             None   -> Err (BadApply (Prim op) found)
+
+# ── Every sort a term has is a sort of the context ───────────────────────────
+
+# Whether the `f`-th function of `sig`, if there is one, has parameters and
+# a result that are sorts of `sig`.
+export transparent fn fun_ok sig f -> r : sig~Sig, f~Nat, r~Bool
+    if f < len sig.funs then sorts_ok sig 0 sig.funs[f].params and sort_ok sig 0 sig.funs[f].result else True
+
+lemma param_sorts ps : ps~List (Name, Sort)
+    ensures list.map (\(_, s) -> s) ps == var_sorts ps
+    proof
+        match ps
+            []        -> auto
+            _ :: rest -> have param_sorts rest
+
+# The functions `starts_at` places from `n` are those of definitions whose
+# sorts are sorts of `sig`.
+lemma defined_ok sig fs n ds f : sig~Sig, fs~Array FunDecl, n~Nat, ds~List Def, f~Nat, defs_ok sig ds,
+                                 starts_at fs n (def_funs ds), n <= f, f < n + list.length ds
+    ensures sorts_ok sig 0 fs[f].params and sort_ok sig 0 fs[f].result
+    proof
+        match ds
+            []        -> auto
+            d :: rest ->
+                have param_sorts d.params
+                if f == n then auto else have defined_ok sig fs (n + 1) rest f
+
+lemma fun_ok_extend sig cmd f : sig~Sig, cmd~Command, f~Nat, check_command sig cmd == Ok (),
+                                before: forall g : g~Nat, fun_ok sig g
+    ensures fun_ok (extend sig cmd) f
+    proof
+        have before f
+        let none_s = array.from_list []
+        let none_d = array.from_list []
+        let none_f = array.from_list []
+        let none_w = array.from_list []
+        have sig.sorts ++ none_s == sig.sorts
+        have sig.datatypes ++ none_d == sig.datatypes
+        have sig.funs ++ none_f == sig.funs
+        have sig.values ++ none_w == sig.values
+        if f < len sig.funs
+            match cmd
+                DeclareSort d       ->
+                    have extend sig cmd == grow sig (array.from_list [d]) none_d none_f none_w
+                    have sorts_ok_grow sig (array.from_list [d]) none_d none_f none_w 0 sig.funs[f].params
+                    have sort_ok_grow sig (array.from_list [d]) none_d none_f none_w 0 sig.funs[f].result
+                DeclareDatatypes ds ->
+                    let b = array.from_list ds
+                    let w = array.from_list (group_values sig ds)
+                    have extend sig cmd == grow sig none_s b none_f w
+                    have sorts_ok_grow sig none_s b none_f w 0 sig.funs[f].params
+                    have sort_ok_grow sig none_s b none_f w 0 sig.funs[f].result
+                DeclareFun d        ->
+                    let fs = array.from_list [d]
+                    have extend sig cmd == grow sig none_s none_d fs none_w
+                    have (sig.funs ++ fs)[f] == sig.funs[f]
+                    have sorts_ok_grow sig none_s none_d fs none_w 0 sig.funs[f].params
+                    have sort_ok_grow sig none_s none_d fs none_w 0 sig.funs[f].result
+                DefineFuns _ ds     ->
+                    let fs = array.from_list (def_funs ds)
+                    have extend sig cmd == grow sig none_s none_d fs none_w
+                    have (sig.funs ++ fs)[f] == sig.funs[f]
+                    have sorts_ok_grow sig none_s none_d fs none_w 0 sig.funs[f].params
+                    have sort_ok_grow sig none_s none_d fs none_w 0 sig.funs[f].result
+                _                   -> auto
+        else
+            have checked_command_ok sig cmd
+            match cmd
+                DeclareFun d    ->
+                    have funs_declare sig d
+                    have array.from_list_cons d [] 0
+                    have (sig.funs ++ array.from_list [d])[len sig.funs] == (array.from_list [d])[0]
+                DefineFuns s ds ->
+                    let fs = array.from_list (def_funs ds)
+                    have funs_define sig s ds
+                    have list.length_map def_fun ds
+                    have starts_at_from_list (def_funs ds)
+                    have starts_at_append sig.funs fs 0 (def_funs ds)
+                    if f < len (extend sig cmd).funs then have defined_ok (extend sig cmd) (extend sig cmd).funs (len sig.funs) ds f else auto
+                _               -> auto
+
+lemma funs_ok_extend sig cmd : sig~Sig, cmd~Command, check_command sig cmd == Ok (),
+                               before: forall g : g~Nat, fun_ok sig g
+    ensures forall f : f~Nat, fun_ok (extend sig cmd) f
+    proof
+        have fun_ok_extend sig cmd f
+
+lemma funs_ok_after sig cmds f : sig~Sig, cmds~List Command, check_all sig cmds == Ok (),
+                                 before: forall g : g~Nat, fun_ok sig g, f~Nat
+    ensures fun_ok (extend_all sig cmds) f
+    proof
+        match cmds
+            []          -> have before f
+            cmd :: rest ->
+                have check_command sig cmd == Ok ()
+                have funs_ok_extend sig cmd
+                have funs_ok_after (extend sig cmd) rest f
+
+# Every function of a context has parameters and a result that are sorts
+# of it.
+export lemma funs_well_sorted c : c~Context
+    ensures forall f : f~Nat, fun_ok (signature c) f
+    proof
+        have funs_ok_after empty_sig c.commands f
+
+lemma sorts_ok_nth sig np ss i : sig~Sig, np~Nat, ss~List Sort, i~Nat, sorts_ok sig np ss
+    ensures match list.head (list.drop i ss)
+        Some s -> sort_ok sig np s
+        None   -> True
+    proof
+        match ss
+            []        -> auto
+            _ :: rest ->
+                match i
+                    0 -> auto
+                    _ -> have sorts_ok_nth sig np rest (i - 1)
+
+# A sort whose parameters are below `np` is a sort without parameters once
+# they are `np` sorts.
+export lemma instantiate_ok sig np args s : sig~Sig, np~Nat, args~List Sort, s~Sort, sort_ok sig np s,
+                                            list.length args == np, sorts_ok sig 0 args
+    ensures sort_ok sig 0 (instantiate args s)
+    proof
+        match s
+            Seq e     -> have instantiate_ok sig np args e
+            Arr i v   ->
+                have instantiate_ok sig np args i
+                have instantiate_ok sig np args v
+            Data _ ss ->
+                have instantiates_ok sig np args ss
+                have list.length_map (instantiate args) ss
+            Unin _ ss ->
+                have instantiates_ok sig np args ss
+                have list.length_map (instantiate args) ss
+            Param k   -> have sorts_ok_nth sig 0 args k
+            _         -> auto
+
+lemma instantiates_ok sig np args ss : sig~Sig, np~Nat, args~List Sort, ss~List Sort, sorts_ok sig np ss,
+                                       list.length args == np, sorts_ok sig 0 args
+    ensures sorts_ok sig 0 (list.map (instantiate args) ss)
+    proof
+        match ss
+            []        -> auto
+            s :: rest ->
+                have instantiate_ok sig np args s
+                have instantiates_ok sig np args rest
+
+lemma ctors_ok_nth sig np cs k : sig~Sig, np~Nat, cs~List Ctor, k~Nat, ctors_ok sig np cs
+    ensures match list.head (list.drop k cs)
+        Some c -> sorts_ok sig np (field_sorts c.fields)
+        None   -> True
+    proof
+        match cs
+            []        -> auto
+            _ :: rest ->
+                match k
+                    0 -> auto
+                    _ -> have ctors_ok_nth sig np rest (k - 1)
+
+lemma fields_ok_nth sig np fs j : sig~Sig, np~Nat, fs~List Field, j~Nat, sorts_ok sig np (field_sorts fs)
+    ensures match list.head (list.drop j fs)
+        Some f -> sort_ok sig np f.sort
+        None   -> True
+    proof
+        match fs
+            []        -> auto
+            _ :: rest ->
+                match j
+                    0 -> auto
+                    _ -> have fields_ok_nth sig np rest (j - 1)
+
+export lemma sorts_ok_reverse_append sig ss env : sig~Sig, ss~List Sort, env~List Sort, sorts_ok sig 0 ss, sorts_ok sig 0 env
+    ensures sorts_ok sig 0 (list.reverse ss ++ env)
+    proof
+        match ss
+            []        -> have list.length_reverse ss
+            s :: rest ->
+                have list.reverse_cons_append rest s env
+                have sorts_ok_reverse_append sig rest (s :: env)
+
+# The sort `apply_sort` gives from argument sorts of the context is one of
+# its sorts.
+lemma apply_ok c h found s : c~Context, h~Head, found~List Sort, s~Sort, sorts_ok (signature c) 0 found,
+                             apply_sort (signature c) h found == Ok s
+    ensures sort_ok (signature c) 0 s
+    proof
+        let sig = signature c
+        match h
+            Fun f     -> have funs_well_sorted c f
+            Sel d k j ->
+                match (ctor sig d k, found)
+                    (Some kc, [Data _ args]) ->
+                        have datatypes_hold c d
+                        have ctors_ok_nth sig (list.length sig.datatypes[d].params) sig.datatypes[d].ctors k
+                        have fields_ok_nth sig (list.length sig.datatypes[d].params) kc.fields j
+                        match list.head (list.drop j kc.fields)
+                            Some fd -> have instantiate_ok sig (list.length sig.datatypes[d].params) args fd.sort
+                            None    -> auto
+                    _                        -> auto
+            _         -> auto
+
+# Every sort a term of the context has, where its variables' sorts are the
+# context's, is a sort of the context.
+export lemma sort_of_ok c env t s : c~Context, env~List Sort, t~Term, s~Sort, sorts_ok (signature c) 0 env,
+                                    sort_of (signature c) env t == Ok s
+    ensures sort_ok (signature c) 0 s
+    proof
+        let sig = signature c
+        match t
+            Var i          -> have sorts_ok_nth sig 0 env i
+            App h args     ->
+                match sorts_of sig env args
+                    Ok found ->
+                        have sorts_of_ok c env args found
+                        have apply_ok c h found s
+                    Err _    -> auto
+            Let binds body ->
+                match bound_sorts sig env binds
+                    Ok ss ->
+                        have bound_sorts_ok c env binds ss
+                        have sorts_ok_reverse_append sig ss env
+                        have sort_of_ok c (list.reverse ss ++ env) body s
+                    Err _ -> auto
+            Lam _ v body   ->
+                match sort_of sig (v :: env) body
+                    Ok b  -> have sort_of_ok c (v :: env) body b
+                    Err _ -> auto
+
+export lemma sorts_of_ok c env ts ss : c~Context, env~List Sort, ts~List Term, ss~List Sort, sorts_ok (signature c) 0 env,
+                                       sorts_of (signature c) env ts == Ok ss
+    ensures sorts_ok (signature c) 0 ss
+    proof
+        match ts
+            []        -> auto
+            t :: rest ->
+                match (sort_of (signature c) env t, sorts_of (signature c) env rest)
+                    (Ok s, Ok more) ->
+                        have sort_of_ok c env t s
+                        have sorts_of_ok c env rest more
+                    _               -> auto
+
+lemma bound_sorts_ok c env bs ss : c~Context, env~List Sort, bs~List (Name, Term), ss~List Sort,
+                                   sorts_ok (signature c) 0 env, bound_sorts (signature c) env bs == Ok ss
+    ensures sorts_ok (signature c) 0 ss
+    proof
+        match bs
+            []             -> auto
+            (_, t) :: rest ->
+                match (sort_of (signature c) env t, bound_sorts (signature c) env rest)
+                    (Ok s, Ok more) ->
+                        have sort_of_ok c env t s
+                        have bound_sorts_ok c env rest more
+                    _               -> auto

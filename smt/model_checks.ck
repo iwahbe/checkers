@@ -376,6 +376,36 @@ lemma premises_refuel c m n r s a b i j x env senv xs body : c~Context, m~Model,
         have model.arrays_total_at_fuel c m n s a b i j x env senv xs body
         have model.has_value_fuel c m n body
 
+# ── A total model is an interpretation, from another module ────────────────
+# As a theorem would use it: a closed term has a value; a `Bool` one holds
+# or fails; its sort is one of the context's.
+
+lemma defined c m t s : c~Context, m~Model, t~Term, s~Sort, term.sort_of (term.signature c) [] t == Ok s,
+                        total: forall r : r~model.Read, model.gives c m r,
+                        arrays_total: forall s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2 : s2~Sort, a2~Nat, b2~Nat, i2~Value, j2~Value,
+                        x2~Value, vs2~List Value, ss2~List Sort,
+                        xs2~Sort, body2~Term,
+                        model.arrays_total_at c m s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2
+    ensures model.has_value c m t
+    proof
+        have model.total_has_value c m t s
+
+lemma decided c m t : c~Context, m~Model, t~Term, term.sort_of (term.signature c) [] t == Ok Bool,
+                      total: forall r : r~model.Read, model.gives c m r,
+                      arrays_total: forall s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2 : s2~Sort, a2~Nat, b2~Nat, i2~Value, j2~Value,
+                      x2~Value, vs2~List Value, ss2~List Sort,
+                      xs2~Sort, body2~Term,
+                      model.arrays_total_at c m s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2
+    ensures model.holds c m t or model.fails c m t
+    proof
+        have model.total_has_value c m t Bool
+        have model.has_value_bool c m t
+
+lemma well_sorted c t s : c~Context, t~Term, s~Sort, term.sort_of (term.signature c) [] t == Ok s
+    ensures term.sort_ok (term.signature c) 0 s
+    proof
+        have term.sort_of_ok c [] t s
+
 # ── `refutes` with an axiom ──────────────────────────────────────────────────
 
 # `x = 1` satisfies the axiom and the fact, and the goal `false` fails;
