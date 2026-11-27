@@ -114,6 +114,16 @@ impl Elab {
         );
     }
 
+    /// Is `a` the refinement `b` is: the same refinement alias at the same
+    /// arguments? Its predicates are then the same, with the arguments put
+    /// in; at others they are not (`Above 0` is not `Above 10`).
+    pub fn same_refinement(&self, lvl: usize, a: &Val, b: &Val) -> bool {
+        match (self.refined_alias(a), self.refined_alias(b)) {
+            (Some((d1, a1)), Some((d2, a2))) => d1 == d2 && a1.len() == a2.len() && a1.iter().zip(&a2).all(|(x, y)| unify(&self.g, lvl, x, y).is_ok()),
+            _ => false,
+        }
+    }
+
     /// Does `v` mention a class's type with a base type (#360)?
     pub fn based_inside(&self, v: &Val, lvl: usize) -> bool {
         if self.g.type_bases.is_empty() {
@@ -223,15 +233,17 @@ impl Elab {
     /// weakest and gives an obligation too.
     /// Is `sup` a refinement of `sub`'s alias, through the aliases it is
     /// defined with (`Small = n~Nat, …` refines `Nat`)?
-    pub fn refines(&self, sup: &Val, sub: &Val) -> bool {
-        let Some((d, _)) = self.refined_alias(sub) else { return false };
+    pub fn refines(&self, lvl: usize, sup: &Val, sub: &Val) -> bool {
+        if self.refined_alias(sub).is_none() {
+            return false;
+        }
         let mut v = force_meta(&self.g, sup.clone());
         for _ in 0..64 {
             match crate::core::unfold(&self.g, &v) {
                 Some(u) => v = force_meta(&self.g, u),
                 None => return false,
             }
-            if self.refined_alias(&v).is_some_and(|(e, _)| e == d) {
+            if self.same_refinement(lvl, &v, sub) {
                 return true;
             }
         }
@@ -363,15 +375,8 @@ impl Elab {
                 return Some(Gained { expected: e, found: f, variance: pol, via, cx: cx.clone() });
             }
         }
-        let (ea, fa) = (self.refined_alias(&e), self.refined_alias(&f));
-        if depth > 0 && (ea.is_some() || fa.is_some()) {
-            let same = match (&ea, &fa) {
-                (Some((d1, a1)), Some((d2, a2))) => {
-                    d1 == d2 && a1.len() == a2.len() && a1.iter().zip(a2).all(|(x, y)| unify(&self.g, cx.lvl(), x, y).is_ok())
-                }
-                _ => false,
-            };
-            if !same {
+        if depth > 0 && (self.refined_alias(&e).is_some() || self.refined_alias(&f).is_some()) {
+            if !self.same_refinement(cx.lvl(), &e, &f) {
                 let role = if pol == Variance::Contra && matches!(via, Via::Fn) {
                     WeakenRole::Param
                 } else if in_result {
@@ -390,7 +395,7 @@ impl Elab {
                     // `Small`) is its base, as an unrefined type is (#609).
                     // A class's type with a base type has its predicates
                     // (#360): a refinement too.
-                    let sub_ref = (self.refined_alias(sub).is_some() || self.based_class_type(sub)) && !self.refines(sup, sub);
+                    let sub_ref = (self.refined_alias(sub).is_some() || self.based_class_type(sub)) && !self.refines(cx.lvl(), sup, sub);
                     let sup_ref = self.refined_alias(sup).is_some();
                     if !sup_ref {
                         continue;
