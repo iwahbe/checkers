@@ -1,66 +1,79 @@
 error[E0401]: `h` uses `file`, a resource, so it must be called exactly once, but `by_some` may call it more than once
-  --> oneshot_holder.ck:14:14
+  --> oneshot_holder.ck:16:14
    |
-14 |         Some h ->
+16 |         Some h ->
    |              ^
    = help: a closure that uses a resource is used up by its call
 
 error[E0401]: `h` uses `file`, a resource, so it must be called exactly once, but `by_tuple` may call it more than once
-  --> oneshot_holder.ck:21:10
+  --> oneshot_holder.ck:23:10
    |
-21 |     let (h, _) = (k, 1)
+23 |     let (h, _) = (k, 1)
    |          ^
    = help: a closure that uses a resource is used up by its call
 
 error[E0401]: `h` uses `file`, a resource, so it must be called exactly once, but `by_list` may call it more than once
-  --> oneshot_holder.ck:28:10
+  --> oneshot_holder.ck:30:10
    |
-28 |         [h] ->
+30 |         [h] ->
    |          ^
    = help: a closure that uses a resource is used up by its call
 
 error[E0401]: `h` uses `file`, a resource, so it must be called exactly once, but `by_id` may call it more than once
-  --> oneshot_holder.ck:35:9
+  --> oneshot_holder.ck:37:9
    |
-35 |     let h = id k
+37 |     let h = id k
    |         ^
    = help: a closure that uses a resource is used up by its call
 
 error[E0401]: `p` holds a closure that uses `file`, a resource, so it must be used exactly once, but `holder_twice` may use it more than once
-  --> oneshot_holder.ck:41:9
+  --> oneshot_holder.ck:43:9
    |
-41 |     let p = Some k
+43 |     let p = Some k
    |         ^
    = help: a value holding a closure that must be called once is used up by its use, as the closure is
 
 error[E0401]: `k` uses `file`, a resource, so it must be called exactly once, but a pattern in `discarded` discards it
-  --> oneshot_holder.ck:46:9
+  --> oneshot_holder.ck:48:9
    |
-46 |     let k = \_ -> close file
+48 |     let k = \_ -> close file
    |         ^
    = help: bind it to a name in the pattern, and call it
 
-error[E0401]: `k` uses `file`, a resource, so it must be called exactly once, but `returned` returns it
-  --> oneshot_holder.ck:52:9
+error[E0401]: `k` uses `file`, a resource, so it must be called exactly once, but `caller_twice` may call it more than once
+  --> oneshot_holder.ck:54:9
    |
-52 |     let k = \_ -> close file
+54 |     let k = returned file
    |         ^
-   = note: the caller of `returned` may call it any number of times, or never
-   = help: call `k` in `returned`, or make `file` a parameter of the closure
+   = help: a closure that uses a resource is used up by its call
 
-error[E0401]: `k` uses `file`, a resource, so it must be called exactly once, but `returned_some` returns it
-  --> oneshot_holder.ck:56:9
+error[E0401]: `k` is the result of `opened`, declared `own`, so it must be called exactly once, but `opened_twice` may call it more than once
+  --> oneshot_holder.ck:59:9
    |
-56 |     let k = \_ -> close file
+59 |     let k = opened path fs
    |         ^
-   = note: the caller of `returned_some` may call it any number of times, or never
-   = help: call `k` in `returned_some`, or make `file` a parameter of the closure
+   = help: the result of `opened` is used up by its call, as a resource is by its use
+
+error[E0401]: this drops the result of `opened`, declared `own`
+  --> oneshot_holder.ck:64:9
+   |
+64 |     let _ = opened path fs
+   |         ^ it must be used exactly once
+   = help: bind it to a name, then use it
+
+error[E0401]: the result of `opened` is declared `own`, so it must be used exactly once, but `opened_passed` passes it to `many`
+  --> oneshot_holder.ck:67:4
+   |
+67 | fn opened_passed path fs -> r : path~String, fs~Fs, r~Unit
+   |    ^^^^^^^^^^^^^
+   = note: the parameter of `many` is not `own`, so `many` may use it any number of times, or never
+   = help: mark that parameter of `many` with `own` (as in `f~own (Unit -> a)`)
 
 error[E0401]: `p` holds `x`, which is `own`, so it must be used exactly once, but `own_twice` may use it more than once
-  --> oneshot_holder.ck:60:9
+  --> oneshot_holder.ck:71:9
    |
-60 |     let p = Some x
+71 |     let p = Some x
    |         ^
    = help: a value holding `x` is used up by its use, as `x` is
 
-oneshot_holder.ck: 9 errors, 0 warnings
+oneshot_holder.ck: 11 errors, 0 warnings

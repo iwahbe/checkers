@@ -98,6 +98,9 @@ pub struct FnMeta {
     pub builtin: bool,
     /// The result's name, if it has one (`-> y`).
     pub result: Option<String>,
+    /// The result is declared `own` (`-> k : k~own (Unit -> Unit)`): the
+    /// caller uses it exactly once (§8.4).
+    pub result_own: bool,
 }
 
 impl FnMeta {
