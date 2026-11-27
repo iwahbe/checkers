@@ -159,6 +159,13 @@ fn size(t: &Tm, limit: usize) -> usize {
     n
 }
 
+/// A closed type whose arrays are packed (`Bytes`'s `U8`): code indexing
+/// an array of it reads the element in place at that layout, rather than
+/// asking the array's header, so a function given it gets a copy.
+fn packed_type(g: &Globals, t: &Tm) -> bool {
+    crate::core::layout_of(g, &crate::core::eval(g, &Default::default(), t)).is_ok_and(|l| l != checkers_rt::array::Layout::Words as u8)
+}
+
 /// A dictionary built by instances' functions from types and other such
 /// dictionaries, with no variables: a known instance's.
 fn closed_dict(g: &Globals, t: &Tm) -> bool {
@@ -369,7 +376,17 @@ pub fn specialize(g: &Globals, cx: SpecCx, owner: Option<DefId>, f: DefId, args:
         return None;
     }
     let fun = |a: &Tm| small_fn(g, cx.staged, a);
-    if !args.iter().any(|(a, m)| *m != Mult::Zero && (closed_dict(g, a) || fun(a))) {
+    // Which parameters are types (the rest of the erased ones are proofs,
+    // never evaluated here).
+    let mut types = Vec::new();
+    let mut ty = g.defs.get(f.0 as usize).map(|i| &i.ty);
+    while let Some(Tm::Pi(_, _, _, dom, cod)) = ty {
+        let env = (0..types.len()).map(crate::core::Val::var).collect();
+        types.push(matches!(crate::core::force_meta(g, crate::core::eval(g, &env, dom)), crate::core::Val::Univ(_)));
+        ty = Some(cod);
+    }
+    let packed = |j: usize, a: &Tm| types.get(j) == Some(&true) && max_var(a).is_none() && size(a, MAX_ARG) <= MAX_ARG && packed_type(g, a);
+    if !args.iter().enumerate().any(|(j, (a, m))| if *m == Mult::Zero { packed(j, a) } else { closed_dict(g, a) || fun(a) }) {
         return None;
     }
     let body = crate::native::ir::body_of(g, cx.staged, f)?;
@@ -401,7 +418,7 @@ pub fn specialize(g: &Globals, cx: SpecCx, owner: Option<DefId>, f: DefId, args:
             _ => None,
         })
         .collect();
-    if !pick.iter().zip(args).any(|(p, (_, m))| p.is_some() && *m != Mult::Zero) {
+    if !pick.iter().zip(args).enumerate().any(|(j, (p, (a, m)))| p.is_some() && (*m != Mult::Zero || packed(j, a))) {
         return None;
     }
     // Cap `j` is variable `m - 1 - j` under the copy's `m` parameters for them.
