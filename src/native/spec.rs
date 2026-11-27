@@ -142,9 +142,13 @@ impl Specs {
     }
 
     /// The definition a runtime error in `d`'s code names (`None`: no
-    /// definition's, as in a `check`).
+    /// definition's, as in a `check`, or a constant no runtime error names,
+    /// which `report` doesn't copy).
     pub fn owner(&self, d: u32) -> Option<DefId> {
-        self.copy(d).map_or(Some(DefId(d)), |c| c.owner)
+        match self.copy(d) {
+            Some(c) => c.owner,
+            None => (!self.hidden(DefId(d))).then_some(DefId(d)),
+        }
     }
 
     /// Whether `d` is private to another package than the program's, so
@@ -179,6 +183,11 @@ pub fn report(g: &Globals, cx: SpecCx, owner: Option<DefId>, f: DefId) -> DefId 
     while let Tm::Lam(_, _, _, x) = b {
         n += 1;
         b = x;
+    }
+    // A constant is computed once, so it isn't copied: no runtime error
+    // in its code names a function (`Specs::owner`).
+    if n == 0 {
+        return f;
     }
     let id = t.base + t.copies.len() as u32;
     t.copies.push(Copy { of: f, body: Body::Term(body), depth: cx.depth, binders: (0..n).map(Some).collect(), owner });
@@ -310,14 +319,11 @@ pub fn small(t: &Tm) -> bool {
 }
 
 /// A known function with each lambda's body (under all its parameters)
-/// marked as code of `owner`, unless it is marked already; and each
-/// function no runtime error names (`hidden`, `report`), so that the copy
-/// calls its copy for `owner`, as the call would have.
-fn mark(t: &Tm, owner: Option<DefId>, hidden: &dyn Fn(DefId) -> bool) -> Tm {
+/// marked as code of `owner`, unless it is marked already.
+fn mark(t: &Tm, owner: Option<DefId>) -> Tm {
     match t {
         Tm::Lam(..) => mark_body(t, owner),
-        Tm::Def(d) if hidden(*d) => mark_body(t, owner),
-        Tm::App(f, a, i, m) => Tm::App(Rc::new(mark(f, owner, hidden)), Rc::new(mark(a, owner, hidden)), *i, *m),
+        Tm::App(f, a, i, m) => Tm::App(Rc::new(mark(f, owner)), Rc::new(mark(a, owner)), *i, *m),
         _ => t.clone(),
     }
 }
@@ -363,8 +369,6 @@ pub fn known_fn(g: &Globals, staged: Option<&crate::stage::Staged>, t: &Tm) -> b
         args.push((a, *m));
         h = f;
     }
-    // A function marked as code of the definition it was passed from (`mark`).
-    let h = marked(h).map_or(h, |(_, x)| x);
     match h {
         Tm::Lam(..) => args.is_empty(),
         Tm::Def(d) if !g.well_known.dict_fns.contains(d) => {
@@ -451,7 +455,7 @@ pub fn specialize(g: &Globals, cx: SpecCx, owner: Option<DefId>, f: DefId, args:
                 let a = &a;
                 free_in_order(a, 0, &mut caps);
                 kept[j] = keeps(g, cx, f, j);
-                Some(mark(a, owner, &|d| cx.table.borrow().hidden(d)))
+                Some(mark(a, owner))
             }
             _ => None,
         })
