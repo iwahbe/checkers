@@ -1,4 +1,4 @@
-# A behaviour waiting for standard input doesn't hold its thread (D113): the
+# A behaviour waiting for standard input doesn't hold its thread (#607): the
 # reader is scheduled first, yet `ping` is printed while it waits, and the
 # input it waits for is only written once `ping` has been seen.
 module stdin_reader

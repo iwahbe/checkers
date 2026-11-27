@@ -1,9 +1,9 @@
 //! The Checkers runtime (M8, SPEC §14).
 //!
-//! Native code represents every value as one 64-bit word (D73) and calls
+//! Native code represents every value as one 64-bit word (#573) and calls
 //! this library for everything it doesn't do inline: allocation and freeing
-//! (D74), big integers, builtins, `format`, behaviours and the scheduler,
-//! and runtime errors with the interpreter's messages (D76). `num` and the
+//! (#567), big integers, builtins, `format`, behaviours and the scheduler,
+//! and runtime errors with the interpreter's messages (#568). `num` and the
 //! scheduler are also used by the interpreter.
 
 pub mod apply;

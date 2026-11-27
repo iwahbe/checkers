@@ -1,4 +1,4 @@
-//! `match`: compile nested patterns to case trees and check exhaustiveness (D4).
+//! `match`: compile nested patterns to case trees and check exhaustiveness (#498).
 //!
 //! A classic clause-matrix compiler. Each row is a list of (occurrence, pattern)
 //! pairs; occurrences are locals. Arm bodies are elaborated at the leaves (a
@@ -59,7 +59,7 @@ pub struct PatState {
     bad: bool,
     /// Arms already reported for dropping a resource (each arm once).
     dropped: Vec<Span>,
-    /// Cases left out, each an obligation that it can't occur (D144 e).
+    /// Cases left out, each an obligation that it can't occur (#633 e).
     uncovered: Vec<Obligation>,
     /// The arms some value reaches (the others are W021).
     reached: Vec<Span>,
@@ -134,7 +134,7 @@ impl Elab {
         }
     }
 
-    /// A case the arms leave out (D144 e): an obligation that it can't
+    /// A case the arms leave out (#633 e): an obligation that it can't
     /// occur here, or in a specification (no obligations) an error.
     fn uncovered(&mut self, cx: &Cx, item: String) {
         if self.pm.unreached {
@@ -157,7 +157,7 @@ impl Elab {
         let uncovered = std::mem::take(&mut self.pm.uncovered);
         if !self.pm.bad {
             self.obligations.extend(uncovered);
-            // The standard library and dependencies aren't reported (D144).
+            // The standard library and dependencies aren't reported (#633).
             let own = !self.stdlib_mode && self.package_of(&self.cur) == ".";
             for a in arms.iter().filter(|_| own) {
                 if !self.pm.reached.contains(a) && a.start < SYNTHETIC {
@@ -361,7 +361,7 @@ impl Elab {
                 (l, Some((st, tyt)))
             }
         };
-        // Completing a pattern (D142): the type matched.
+        // Completing a pattern (#626): the type matched.
         if arms.iter().any(|(p, _, _)| matches!(&p.kind, PatKind::Var(n) if Self::is_cursor(n))) {
             let ty = cx.ty_of(occ);
             self.note_scrutinee(cx, &ty);
@@ -699,7 +699,7 @@ impl Elab {
     }
 
     /// `let (x, fs) = op fs` where `fs` holds no resource: an operation on
-    /// an authority (`Fs`, `Term`, …) returns only its result (D171).
+    /// an authority (`Fs`, `Term`, …) returns only its result (#658).
     fn authority_hint(&mut self, cx: &Cx, pat: &Pattern, ps: &[Pattern], occ: usize) {
         let Some(PatKind::Var(name)) = ps.last().map(|p| &p.kind) else { return };
         let Some(l) = cx.lookup(name) else { return };
@@ -750,7 +750,7 @@ impl Elab {
         let PatKind::Tuple(ps) = &pat.kind else { unreachable!() };
         // Rows may take the tuple apart into different numbers of parts:
         // split at the fewest, the longer patterns' tails as one (`(x, y, z)`
-        // is `(x, (y, z))`, D174).
+        // is `(x, (y, z))`, #673).
         let n = rows
             .iter()
             .flat_map(|r| r.pats.iter())
@@ -952,7 +952,7 @@ impl Elab {
 
     /// The constructor a pattern's name means: one of the type of the value
     /// matched (`hint`), whether or not it is imported; else one in scope.
-    /// An abstract type of another module shows no constructors (D155).
+    /// An abstract type of another module shows no constructors (#637).
     fn pattern_con(&self, name: &str, hint: Option<TyId>) -> Option<ConId> {
         if let Some(t) = hint.filter(|t| self.sealed_from(*t).is_none()) {
             let ti = &self.g.tys[t.0 as usize];
@@ -970,7 +970,7 @@ impl Elab {
     fn pat_ctor(&mut self, p: &Pattern, hint: Option<TyId>) -> Option<(ConId, Option<Vec<Pattern>>)> {
         let wk = self.g.well_known.clone();
         let unknown = |this: &mut Self, name: &ast::Ident| {
-            // A constructor of an abstract type of another module (D155).
+            // A constructor of an abstract type of another module (#637).
             if let Some(t) = hint.filter(|t| this.sealed_from(*t).is_some()) {
                 let ti = &this.g.tys[t.0 as usize];
                 let d = if ti.ctors.iter().any(|c| *this.g.cons[c.0 as usize].name == *name.name) {
@@ -1226,7 +1226,7 @@ impl Elab {
             } else {
                 expected.clone()
             };
-            // So do the types of the variables in scope (D173): `x~futures s a`
+            // So do the types of the variables in scope (#664): `x~futures s a`
             // is a `Future a` in the `One` arm of `match s`, as in Agda and
             // Idris. Only the type changes; the variable is the same.
             // A type that still mentions the fields (`p~(x~a -> Bool,

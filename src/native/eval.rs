@@ -1,5 +1,5 @@
-//! Compile-time evaluation as native code (D80, §14): `check` declarations
-//! (D40) and the values staging computes (§8.9).
+//! Compile-time evaluation as native code (#555, §14): `check` declarations
+//! (#532) and the values staging computes (§8.9).
 //!
 //! One in-memory module per program: each closed term becomes a function
 //! of no arguments added to it, together with the definitions it needs

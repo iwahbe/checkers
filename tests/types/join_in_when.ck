@@ -1,4 +1,4 @@
-# D176 (c): a `when` body may join. It is parked, keeping its
+# #662 (c): a `when` body may join. It is parked, keeping its
 # cown, until the future is filled; whatever fills a future never waits for
 # a cown, so this can't deadlock.
 module join_in_when

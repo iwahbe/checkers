@@ -1,4 +1,4 @@
-//! Unsaved files (§15.5, D120): `ckc check --overlay FILE` gives text that
+//! Unsaved files (§15.5, #601): `ckc check --overlay FILE` gives text that
 //! stands in for files on disk. Every source file the compiler reads goes
 //! through `read`, so module resolution is the same with or without it.
 

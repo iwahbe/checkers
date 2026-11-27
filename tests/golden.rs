@@ -12,9 +12,9 @@
 //! tests/stress/NAME.args → as a run test, but with 8 threads, several times
 //!                         (CHECKERS_STRESS_RUNS, default 10); stdout lines are
 //!                         compared sorted, since behaviours that share no cown
-//!                         may print in any order (SPEC §13.5, D67, D68).
+//!                         may print in any order (SPEC §13.5, #566, #559).
 //! tests/complete/NAME.ck → each `‸` in it is a cursor: NAME.out is what
-//!                         `ckc complete` offers there (§15.5, D142), readably.
+//!                         `ckc complete` offers there (§15.5, #626), readably.
 //! tests/json/NAME.ck   → NAME.out is `ckc check --json` on it (§15.5), with
 //!                         NAME.overlay (a JSON object, paths relative to the
 //!                         repository) as `--overlay` if there is one; the
@@ -40,13 +40,13 @@
 //!                         sends nothing after answering `shutdown`.
 //! tools/, examples/, bench/, stdlib/, tests/{types,run,stage,stress}: every .ck file must be
 //!                         formatted; every .ck file in the repository must format to a
-//!                         fixed point with the same syntax tree (D93).
+//!                         fixed point with the same syntax tree (#588).
 //! examples/*.ck, bench/*.ck → must check with no errors and no warnings; those
 //!                         with a `main` are compiled with CHECKERS_RESIDUAL_CHECK=1, as
 //!                         are tools/checkers.ck and every run and stress case (§8.9).
 //! site/*.md, README.md, the standard library's documentation → `checkers site`
 //!                         and `checkers doc` give no warnings: links resolve, code
-//!                         blocks compile and run (D148).
+//!                         blocks compile and run (#642).
 //!
 //! The cases run in parallel, on CHECKERS_GOLDEN_THREADS threads (default: one
 //! per core); failures are reported in the order above.
@@ -237,7 +237,7 @@ fn tree(name: &str, text: &str) -> Option<String> {
     c.diags.is_empty().then(|| checkers::syntax::print::module(&c.module))
 }
 
-/// The build tool (M11, D95): it builds; `checkers fmt` and `checkers`
+/// The build tool (M11, #586): it builds; `checkers fmt` and `checkers`
 /// commands give their golden output; the repository is formatted. The
 /// cases that run `checkers` are added as jobs once it is built.
 fn build_tool(pool: &Pool, root: &'static Path, update: bool) -> Outcome {
@@ -330,7 +330,7 @@ fn build_tool(pool: &Pool, root: &'static Path, update: bool) -> Outcome {
     }
 
     // The site, the README and the standard library's documentation: their
-    // links resolve and their code compiles (and runs) with no warnings (D148 e).
+    // links resolve and their code compiles (and runs) with no warnings (#642 e).
     for (i, what) in ["site/", "README.md", "the standard library's documentation"].into_iter().enumerate() {
         let exe = exe.clone();
         first.push((what.to_string(), Box::new(move |_: &Pool| literate_clean(&exe.0, root, i, what))));
@@ -436,7 +436,7 @@ fn formatted(exe: &Path, root: &Path, path: &Path) -> Outcome {
 }
 
 /// The site (0), the README (1) or the standard library's documentation (2):
-/// no warnings (D148 e).
+/// no warnings (#642 e).
 fn literate_clean(exe: &Path, root: &Path, which: usize, what: &str) -> Outcome {
     let tmp = std::env::temp_dir().join(format!("checkers-golden-{}-literate-{which}", std::process::id()));
     let _ = fs::remove_dir_all(&tmp);
@@ -455,7 +455,7 @@ fn literate_clean(exe: &Path, root: &Path, which: usize, what: &str) -> Outcome 
     let o = run_with(exe, &args, b"", root);
     let _ = fs::remove_dir_all(&tmp);
     if !o.status.success() || !o.stderr.is_empty() {
-        return (1, vec![format!("── {what} must have no warnings (D148) ──\n{}", String::from_utf8_lossy(&o.stderr))]);
+        return (1, vec![format!("── {what} must have no warnings (#642) ──\n{}", String::from_utf8_lossy(&o.stderr))]);
     }
     (1, Vec::new())
 }
@@ -667,7 +667,7 @@ fn golden() {
         }
     }
 
-    // `ckc complete` (§15.5, D142): each `‸` in the file is a cursor.
+    // `ckc complete` (§15.5, #626): each `‸` in the file is a cursor.
     for (i, path) in ck_files(&root.join("tests").join("complete")).into_iter().enumerate() {
         pool.add((4, i), rel(&path), move |_| {
             let mut failures = Vec::new();

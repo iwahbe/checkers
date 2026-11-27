@@ -1,4 +1,4 @@
-//! The order declarations are checked in (D65): by what they use, not by
+//! The order declarations are checked in (#557): by what they use, not by
 //! where they are in the file.
 //!
 //! Each declaration has a *head* (a type's constructors, a constant's value,
@@ -30,7 +30,7 @@ pub struct Plan {
     pub cycles: Vec<Vec<usize>>,
 }
 
-/// `dicts`: the declarations building instances' dictionaries (D136), which
+/// `dicts`: the declarations building instances' dictionaries (#615), which
 /// every function and lemma may need, since instances aren't named.
 /// `classes`: this module's classes and their functions' and lemmas' names,
 /// so that `C.f` needs `f` as `f` does.
@@ -155,7 +155,7 @@ pub fn plan(m: &ast::Module, dicts: &[usize], classes: &[(String, Vec<String>)])
             DeclKind::Check { .. } | DeclKind::Class { .. } | DeclKind::Instance { .. } => {}
         }
     }
-    // Any function or lemma may use an instance (D136), except a builtin,
+    // Any function or lemma may use an instance (#615), except a builtin,
     // whose body is in the runtime: the prelude's `valid_utf8`, which
     // `String`'s field uses, comes before `String`'s own instances (#170).
     let builtin = |k: usize| matches!(&m.decls[k].kind, DeclKind::Fn { body, .. } if super::decls::is_builtin(body));

@@ -1,5 +1,5 @@
 //! The standard library's `__builtin` functions for native code, one file
-//! per module. Runtime errors are reported as D76 describes.
+//! per module. Runtime errors are reported as #568 describes.
 
 use crate::num::Decimal;
 use crate::obj::*;
@@ -64,13 +64,13 @@ pub const MODULES: &[&[Builtin]] = &[
 ];
 
 /// Builtins that get their type parameters' words: `std.array`'s, as
-/// element layouts (D133); `debug`, as its type's descriptor (#170).
+/// element layouts (#624); `debug`, as its type's descriptor (#170).
 pub fn keeps_types(name: &str) -> bool {
     name.starts_with("std.array.") || name == "std.string.debug"
 }
 
 /// Builtins called through their wrapper function, which owns its
-/// arguments, so they can update an unshared argument in place (D133):
+/// arguments, so they can update an unshared argument in place (#624):
 /// setting an element, and moving a slice forward (`Seq`'s `uncons`).
 pub const OWNING: &[&str] = &["ckb_array_set", "ckb_array_rest", "ckb_string_rest"];
 
@@ -132,8 +132,8 @@ pub(crate) fn n(w: W) -> usize {
 
 /// A count or position that no precondition bounds. One no machine word
 /// holds becomes the largest one: making that many elements is out of memory
-/// (D184), reading that many bytes reads what there is, and no byte string
-/// has that position (D185).
+/// (#667), reading that many bytes reads what there is, and no byte string
+/// has that position (#661).
 pub(crate) fn count(w: W) -> usize {
     to_usize(w).unwrap_or(usize::MAX)
 }
@@ -184,7 +184,7 @@ pub(crate) fn path(fs: W, p: &str) -> Result<Place, W> {
 pub(crate) fn file_result(r: std::io::Result<std::fs::File>, write: bool) -> W {
     match r {
         Ok(f) => {
-            // Their system calls don't hold a behaviour's thread (D113).
+            // Their system calls don't hold a behaviour's thread (#607).
             let st = if write {
                 FileState::Write(Box::new(std::io::BufWriter::with_capacity(1 << 16, crate::fiber::BlockingWrite(f))))
             } else {

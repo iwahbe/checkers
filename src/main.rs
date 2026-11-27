@@ -1,4 +1,4 @@
-//! `ckc`, the compiler's command-line driver (D96).
+//! `ckc`, the compiler's command-line driver (#587).
 
 use std::process::ExitCode;
 
@@ -50,7 +50,7 @@ fn main() -> ExitCode {
 
 static NO_CACHE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Cache Z3's answers beside `path`'s module root (D100), unless
+/// Cache Z3's answers beside `path`'s module root (#591), unless
 /// `--no-cache` or `CHECKERS_NO_CACHE` says not to.
 fn use_cache(path: &str) {
     let off = NO_CACHE.load(std::sync::atomic::Ordering::Relaxed) || std::env::var_os("CHECKERS_NO_CACHE").is_some();
@@ -59,7 +59,7 @@ fn use_cache(path: &str) {
 
 fn cli(args: &[String]) -> u8 {
     // Options before the file (after it, arguments are the program's):
-    // `--no-cache`, and the packages of this build (D111).
+    // `--no-cache`, and the packages of this build (#608).
     let first_file = args.iter().position(|a| a.ends_with(".ck")).unwrap_or(args.len());
     let mut kept: Vec<String> = Vec::new();
     let mut pkgs = checkers::elab::stdlib::Packages::default();
@@ -289,7 +289,7 @@ fn take_overlay(args: &[String]) -> Result<Vec<&String>, ExitCode> {
     Ok(rest)
 }
 
-/// `ckc complete [--overlay MAP] FILE LINE COL` (D142).
+/// `ckc complete [--overlay MAP] FILE LINE COL` (#626).
 fn complete(args: &[String]) -> ExitCode {
     let rest = match take_overlay(args) {
         Ok(r) => r,
@@ -317,7 +317,7 @@ fn complete(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `ckc index [--overlay MAP] FILE` (D161).
+/// `ckc index [--overlay MAP] FILE` (#648).
 fn index(args: &[String]) -> ExitCode {
     let rest = match take_overlay(args) {
         Ok(r) => r,
@@ -423,7 +423,7 @@ fn doc(args: &[String]) -> ExitCode {
 }
 
 /// `ckc doc --std`: every standard-library module's documentation, one
-/// after another (for links to it from pages outside it, D148 c).
+/// after another (for links to it from pages outside it, #642 c).
 fn doc_std() -> ExitCode {
     let dir = match checkers::elab::stdlib::dir() {
         Ok(d) => d,

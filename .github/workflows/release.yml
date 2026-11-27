@@ -1,4 +1,4 @@
-# Releases (D129). Pushing a tag `vX.Y.Z` builds, tests and packages Checkers
+# Releases (#621). Pushing a tag `vX.Y.Z` builds, tests and packages Checkers
 # on each platform, attests the archives' provenance, and publishes them as a
 # release: created as a draft, the archives attached, then published. With
 # the repository's immutable releases setting on, publishing locks the tag

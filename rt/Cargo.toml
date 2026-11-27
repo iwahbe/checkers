@@ -8,11 +8,11 @@ publish = false
 
 [lib]
 # rlib: linked into `checkers` (the interpreter and the JIT). staticlib:
-# linked into executables written by `checkers build` (D72).
+# linked into executables written by `checkers build` (#569).
 crate-type = ["rlib", "staticlib"]
 
 [dependencies]
-# mmap and mprotect for behaviours' stacks, epoll and fcntl for the poller (M16, D113).
+# mmap and mprotect for behaviours' stacks, epoll and fcntl for the poller (M16, #607).
 libc = "0.2"
 num-bigint = "0.4"
 num-traits = "0.2"

@@ -1,4 +1,4 @@
-# Standard input, output and error as files (D112): read a line, exactly n
+# Standard input, output and error as files (#611): read a line, exactly n
 # bytes, some bytes and the rest; handles share the streams' buffers with
 # `print_line`, so output stays in order.
 module streams

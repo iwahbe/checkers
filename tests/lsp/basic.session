@@ -4,7 +4,7 @@
 < 1
 > {"jsonrpc":"2.0","method":"initialized","params":{}}
 # A type error: published after the types phase and the `check`s phase;
-# the proofs phase adds `sum`'s proof failure, found past the type error (D122).
+# the proofs phase adds `sum`'s proof failure, found past the type error (#599).
 > {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file://$ROOT/tests/lsp/demo.ck","languageId":"checkers","version":1,"text":$TEXT(demo.ck)}}}
 < 3
 # Fixed: the type error goes after the types phase; the last proof failure

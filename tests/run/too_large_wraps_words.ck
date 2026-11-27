@@ -1,4 +1,4 @@
-# An array too large to allocate (D184, #25): the byte size of 2^61 strings
+# An array too large to allocate (#667, #25): the byte size of 2^61 strings
 # wraps around a machine word to 0.
 module too_large_wraps_words
 

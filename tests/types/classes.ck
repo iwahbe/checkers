@@ -1,6 +1,6 @@
 module classes
 
-# Classes and instances (D136): a class lists the functions and lemmas each
+# Classes and instances (#615): a class lists the functions and lemmas each
 # instance gives; generic code uses them through a clause `C a`.
 
 class Size a

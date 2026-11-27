@@ -32,7 +32,7 @@ impl Elab {
     /// Insert implicit applications until the type is not an implicit Π.
     pub fn insert(&mut self, cx: &Cx, mut t: Tm, mut ty: Val) -> (Tm, Val) {
         // A use of a definition in compiled code: its implicit arguments
-        // are checked against D125 (b) once the module's bodies are done.
+        // are checked against #614 (b) once the module's bodies are done.
         let inst = match (self.pending_inst.take(), &t) {
             (Some((d, span)), Tm::Def(d2)) if d == *d2 && self.in_spec == 0 && self.in_proof == 0 => Some((d, span)),
             _ => None,
@@ -44,7 +44,7 @@ impl Elab {
                     let mt = self.fresh_meta(cx);
                     self.name_meta(cx, &mt, &x, &dom, &t);
                     let mv = self.eval(cx, &mt);
-                    // A dictionary (D136): found once its type is known.
+                    // A dictionary (#615): found once its type is known.
                     let span = self.name_span;
                     let asked = self.inst_reqs.len();
                     self.note_dict(cx, &mv, &dom, span);
@@ -87,7 +87,7 @@ impl Elab {
             && !matches!(e.kind, ExprKind::If(..) | ExprKind::Match(..) | ExprKind::Block(..) | ExprKind::Try(_));
         // An `if`, `match` or block passes the expected type to each branch,
         // which meets any refinement in it; where refinements are not imposed
-        // (an operator's operand, D71), the branches get the type without them.
+        // (an operator's operand, #554), the branches get the type without them.
         let compound = matches!(e.kind, ExprKind::If(..) | ExprKind::Match(..) | ExprKind::Block(..));
         let t = if covered && compound {
             let bare = self.force(expected);
@@ -97,7 +97,7 @@ impl Elab {
         };
         let inferred = self.last_inferred.take();
         self.last_checked = inferred.clone();
-        // A value checked against a refinement alias must satisfy it (D71),
+        // A value checked against a refinement alias must satisfy it (#554),
         // unless the call it is passed to, or the function returning it,
         // already checks that alias, or its branches did.
         // A class's type with a base type (#360): only its own values.
@@ -170,7 +170,7 @@ impl Elab {
                 let v = Val::var(cx.lvl());
                 let nm = self.binder_name(&name, p.span);
                 // Whether `own` here means anything is decided once the
-                // parameter's type is known, by the usage check (D172 b).
+                // parameter's type is known, by the usage check (#672 b).
                 if *m == Mult::One {
                     self.lam_domains.insert(Rc::as_ptr(&nm) as *const u8 as usize, ((**a).clone(), cx.lvl()));
                 }
@@ -281,7 +281,7 @@ impl Elab {
                 self.finish_arith(cx, *op, lt, rt, expected.clone(), l.span.to(r.span), e.span).0
             }
             (ExprKind::Binary(Op::Cons, l, r), Val::TyCon(id, args)) if Some(*id) == self.g.well_known.list => {
-                // Checked, so that the element type is the expected one (D71).
+                // Checked, so that the element type is the expected one (#554).
                 let elem = args[0].clone();
                 let lt = self.check(cx, l, &elem, false);
                 let rt = self.check(cx, r, &exp, false);
@@ -306,7 +306,7 @@ impl Elab {
             (ExprKind::Unit, Val::Univ(_)) => Tm::TupleTy(vec![]),
             (ExprKind::Template(..), _) => self.elab_template(cx, e, Some(expected)).0,
             _ => {
-                // A dictionary (D136): its class's type constructor (M25) comes
+                // A dictionary (#615): its class's type constructor (M25) comes
                 // from the instance's head before its functions are checked.
                 let dict = {
                     let mut h = e;
@@ -333,7 +333,7 @@ impl Elab {
                 let (t, ty) = self.infer(cx, e);
                 self.app_expected = None;
                 // A branch of an `if` or `match` whose type is inferred
-                // (D135): its range joins the others'; the branches share
+                // (#616): its range joins the others'; the branches share
                 // only their base type.
                 let shared = match self.join_of(expected) {
                     Some(m) => {
@@ -349,7 +349,7 @@ impl Elab {
                 if !self.unify_at(cx, expected, &shared, e.span, "this expression") {
                     return Tm::Error;
                 }
-                // A refinement inside a type argument is never gained (D71).
+                // A refinement inside a type argument is never gained (#554).
                 // An instance's function with a signature of its own, in its
                 // dictionary, is checked to refine the class's by the prover
                 // (#225, E0371).
@@ -414,7 +414,7 @@ impl Elab {
                 if let (Tm::Var(_), Some((m, f, _, false))) = (&t, self.class_use(cx, &t)) {
                     self.class_value_uses.push((m, f, e.span, false));
                 }
-                // A function with a specification, as a value (D85).
+                // A function with a specification, as a value (#579).
                 let ty = self.refined_fn_type(cx, &t, ty);
                 (t, ty)
             }
@@ -484,7 +484,7 @@ impl Elab {
             ExprKind::Arrow(a, b) => {
                 let at = self.elab_type(cx, a);
                 let av = self.eval(cx, &at);
-                // A function taking a resource takes it exactly once (D39).
+                // A function taking a resource takes it exactly once (#533).
                 let m = if self.type_linear(&at) { Mult::One } else { Mult::Many };
                 cx.bind("_", av, m);
                 let bt = self.elab_type(cx, b);
@@ -509,7 +509,7 @@ impl Elab {
                 if !self.unify_at(cx, &int, &xty, x.span, "this expression") {
                     return (Tm::Error, int);
                 }
-                // The operand's bounds, negated (D135).
+                // The operand's bounds, negated (#616).
                 let ty = match self.type_range(&xty) {
                     Some(r) if r.lo.is_some() || r.hi.is_some() => {
                         let neg = |b: Option<i128>| b.and_then(|b| b.checked_neg());
@@ -543,14 +543,14 @@ impl Elab {
             }
             ExprKind::Field(x, name) => self.elab_field(cx, x, name, e.span),
             ExprKind::Index(a, i) => {
-                // An element of an array (D133): of its element type, which
+                // An element of an array (#624): of its element type, which
                 // the prover is also given (its refinement holds of it).
                 let elem = self.fresh_meta_val(cx);
                 let arr = self.array_of(elem.clone());
                 let nat = self.nat();
                 let at = self.check(cx, a, &arr, false);
                 // Indexing uses the whole array: at runtime, it may not drop
-                // the other elements when they are resources (D156, E0407).
+                // the other elements when they are resources (#643, E0407).
                 if self.in_spec == 0 && self.in_proof == 0 && self.val_linear(&elem) {
                     self.part_reported_at(cx, &at);
                     let shown = self.show_val(cx, &elem);
@@ -625,7 +625,7 @@ impl Elab {
             }
             ExprKind::If(..) | ExprKind::Match(..) | ExprKind::Block(..) | ExprKind::Try(..) => {
                 let mv = self.fresh_meta_val(cx);
-                // Numbers from the branches: the hull of their ranges (D135).
+                // Numbers from the branches: the hull of their ranges (#616).
                 let m = match &mv {
                     Val::Neutral(Head::Meta(m), _) => Some(*m),
                     _ => None,
@@ -648,7 +648,7 @@ impl Elab {
                 (Tm::PrimApp(Prim::Par, vec![t]), ty)
             }
             ExprKind::Auto | ExprKind::Admit => match self.proof_goal.clone() {
-                // In a proof: `auto` proves the goal from the facts in scope; `admit` assumes it (D49).
+                // In a proof: `auto` proves the goal from the facts in scope; `admit` assumes it (#547).
                 Some((goal, text)) => {
                     if matches!(e.kind, ExprKind::Auto) {
                         let name = self.cur_fn.map(|d| self.g.defs[d.0 as usize].name.to_string()).unwrap_or_default();
@@ -698,13 +698,13 @@ impl Elab {
             return (cx.var(l), ty);
         }
         if n == "__class_lemma" {
-            // A class's lemma: assumed, each instance proving it (D136).
+            // A class's lemma: assumed, each instance proving it (#615).
             if self.proof_goal.is_some() && self.cur_fn.is_some_and(|d| self.class_lemmas.contains(&d)) {
                 return (Tm::Tuple(vec![]), self.unit());
             }
         }
         if n == "__builtin" {
-            // In a standard-library proof: an axiom about a primitive (D56).
+            // In a standard-library proof: an axiom about a primitive (#552).
             if self.stdlib_mode && self.proof_goal.is_some() {
                 return (Tm::Tuple(vec![]), self.unit());
             }
@@ -776,7 +776,7 @@ impl Elab {
             Sym::Def(d) => {
                 let ty = self.g.defs[d.0 as usize].ty.clone();
                 if matches!(ty, Tm::Error) && self.g.defs[d.0 as usize].body.is_none() {
-                    // Only in a cycle, which E0225 reports (D65).
+                    // Only in a cycle, which E0225 reports (#557).
                     return (Tm::Error, Val::Error);
                 }
                 self.pending_inst = Some((d, span));
@@ -936,7 +936,7 @@ impl Elab {
             }
         }
 
-        // Overloaded built-ins (D38).
+        // Overloaded built-ins (#528).
         if let ExprKind::Var(n) = &head.kind {
             if cx.lookup(n).is_none() {
                 if let Some(Sym::Len) = self.resolve(n, false) {
@@ -1036,7 +1036,7 @@ impl Elab {
         let (ft, fty) = self.look_ahead(cx, ft, fty, &args, head_name_span, &mut ready);
         self.arg_of = saved_arg_of;
         // `Tx a`, where `Tx` names an abstract type of another module whose
-        // constructor shares its name (D155).
+        // constructor shares its name (#637).
         if let Tm::TyCon(tid) = &ft {
             let tid = *tid;
             // Where a `Type` is expected (a type function's result), it is the type.
@@ -1116,7 +1116,7 @@ impl Elab {
             None => (ty, false),
         };
         self.call_obligations(cx, &t, e.span, head.span, typed);
-        // A partial application (D86).
+        // A partial application (#578).
         let ty = self.refined_fn_type(cx, &t, ty);
         // A compile-time argument that isn't known: its type may not compute
         // either, so don't also report a mismatch.
@@ -1187,7 +1187,7 @@ impl Elab {
 
     /// Decide the type parameters `joined` from the values checked against
     /// their own unknowns for them (`own_unknowns`): each is the join of
-    /// what the values gave it (numbers' ranges joined, D135), so no value
+    /// what the values gave it (numbers' ranges joined, #616), so no value
     /// decides it before the others. Each value is then checked against its
     /// parameter's type, as it would have been against it directly.
     pub fn join_args(&mut self, cx: &Cx, joined: &[MetaId], args: Vec<JoinArg>) {
@@ -1212,7 +1212,7 @@ impl Elab {
                 let v = force_meta(&self.g, v);
                 if matches!(v, Val::Neutral(Head::Meta(_), _)) {
                     // A number whose type isn't decided yet: its value's
-                    // range, as for a branch (D135), once another value
+                    // range, as for a branch (#616), once another value
                     // decides it is a number.
                     if let Some(n) = self.known_int(cx, &a.tm).filter(|_| matches!(q.head(), Tm::Meta(x) if *x == m)) {
                         constants.push(n);
@@ -1251,7 +1251,7 @@ impl Elab {
                 continue;
             }
             // A refinement the value's own type doesn't already give it
-            // (D71): as `check` asks of a value checked against it.
+            // (#554): as `check` asks of a value checked against it.
             if let Some((d, dargs)) = self.refined_alias(&a.dom) {
                 let already = self.refined_alias(&before).is_some_and(|(d2, _)| d2 == d);
                 let within = self.is_range(&a.dom)
@@ -1267,7 +1267,7 @@ impl Elab {
         }
     }
 
-    /// A call of a function with `comptime` parameters (D59): it must be
+    /// A call of a function with `comptime` parameters (#541): it must be
     /// complete, and each such argument known at compile time.
     fn check_comptime_call(&mut self, cx: &Cx, t: &Tm, args: &[&Expr], span: Span) -> bool {
         let (h, spine) = t.spine();
@@ -1428,7 +1428,7 @@ impl Elab {
         }
     }
 
-    /// The preconditions of `d` partially applied to `args` (D86) that are
+    /// The preconditions of `d` partially applied to `args` (#578) that are
     /// about those arguments alone; the others are in its type
     /// (`refined_fn_type`).
     fn partial_pre_obligations(&mut self, cx: &Cx, d: DefId, name: &str, args: &[Rc<Tm>], span: Span) {
@@ -1720,7 +1720,7 @@ impl Elab {
         }
     }
 
-    /// `forall x y : …` (D137), allowed only in a named precondition: a Π
+    /// `forall x y : …` (#632), allowed only in a named precondition: a Π
     /// over its variables whose body is its premises implying its conclusion.
     pub fn elab_forall(&mut self, cx: &mut Cx, e: &Expr) -> (Tm, Val) {
         let ExprKind::Forall(vs, cs) = &e.kind else { return (Tm::Error, Val::Error) };
@@ -1787,7 +1787,7 @@ impl Elab {
         (Tm::PrimApp(Prim::Forall, vec![body]), b)
     }
 
-    /// `have h a b …` for a named precondition `h` (D137): its `forall`s'
+    /// `have h a b …` for a named precondition `h` (#632): its `forall`s'
     /// variables filled in, left to right, the rest a fact.
     fn have_hyp(&mut self, cx: &mut Cx, e: &Expr, name: &str, fact: Val, args: &[&Expr]) {
         let mut args = args.to_vec();
@@ -1860,7 +1860,7 @@ impl Elab {
 
     /// A lemma's conclusion `t` (its value `v`), if a `forall`, with its
     /// variables bound in `cx` and its premises assumed: what remains to
-    /// prove (D146).
+    /// prove (#635).
     pub fn intro_forall(&mut self, cx: &mut Cx, t: &Tm, v: Val) -> Val {
         let Tm::PrimApp(Prim::Forall, xs) = t else { return v };
         let [pi] = xs.as_slice() else { return v };
@@ -1895,9 +1895,9 @@ impl Elab {
         self.eval(cx, &body)
     }
 
-    /// `have e` (D49): a lemma's conclusion, or a proven `Bool`, becomes a fact.
+    /// `have e` (#547): a lemma's conclusion, or a proven `Bool`, becomes a fact.
     pub fn have(&mut self, cx: &mut Cx, e: &Expr) {
-        // A named precondition (D137).
+        // A named precondition (#632).
         {
             let mut args = Vec::new();
             let mut h = e;
@@ -1915,7 +1915,7 @@ impl Elab {
                 }
             }
         }
-        // `have l a b x y` (D146): the lemma's arguments, then values for
+        // `have l a b x y` (#635): the lemma's arguments, then values for
         // its conclusion's `forall`.
         let (inner, extra) = self.forall_lemma_args(cx, e);
         let e = inner;
@@ -1959,7 +1959,7 @@ impl Elab {
         cx.assume(v);
     }
 
-    /// `have x~T` (D170): `x`'s type is `T`. Checking `x` against `T` settles
+    /// `have x~T` (#660): `x`'s type is `T`. Checking `x` against `T` settles
     /// what is still unknown of its type (a literal's, before it would
     /// become a `Nat`), and a refinement `T` adds is an obligation, then
     /// facts.
@@ -1980,7 +1980,7 @@ impl Elab {
     }
 
     /// `l a b x y` for a lemma `l` of two parameters that concludes a
-    /// `forall`: `l a b`, and `[x, y]` (D146). Otherwise `e` and none.
+    /// `forall`: `l a b`, and `[x, y]` (#635). Otherwise `e` and none.
     fn forall_lemma_args<'e>(&self, cx: &Cx, e: &'e Expr) -> (&'e Expr, Vec<&'e Expr>) {
         let mut spine = Vec::new();
         let mut h = e;
@@ -2036,7 +2036,7 @@ impl Elab {
     /// Unify the result type of applying `t` to `n` explicit arguments with
     /// the expected type before the arguments are checked, when it doesn't
     /// depend on them: `n :: xs` against `List Small` makes the element type
-    /// `Small`, so `n` is checked against it (D71).
+    /// `Small`, so `n` is checked against it (#554).
     fn presolve_result(&mut self, cx: &Cx, t: Tm, ty: Val, n: usize, want: &Val) -> (Tm, Val) {
         let (t, ty) = self.insert(cx, t, ty);
         let mut r = ty.clone();
@@ -2058,7 +2058,7 @@ impl Elab {
 
     /// A function argument followed by a local variable (`map (\x -> …) xs`,
     /// `map sub5 xs`): take the variable's type first, so the function is
-    /// checked against the most precise type (`Small`, not `Nat`; D71, D87).
+    /// checked against the most precise type (`Small`, not `Nat`; #554, #583).
     /// Looking up a local has no effects, so nothing is elaborated twice.
     /// A later argument that is a call whose type can't be read that way
     /// (its result type mentions its arguments: `find b i`) is checked here,
@@ -2143,9 +2143,9 @@ impl Elab {
 
     /// An operand of an arithmetic or comparison operator: it takes the
     /// other operand's type, but not its refinement (`x < 10` with `x~Small`
-    /// doesn't need `10` to be a `Small`; D71).
+    /// doesn't need `10` to be a `Small`; #554).
     /// An operand checked against `ty`, and its own type if it was
-    /// inferred (an operand needn't have `ty`'s refinements, D71).
+    /// inferred (an operand needn't have `ty`'s refinements, #554).
     fn check_operand(&mut self, cx: &mut Cx, e: &Expr, ty: &Val) -> (Tm, Option<Val>) {
         self.alias_covered = true;
         self.last_checked = None;
@@ -2244,7 +2244,7 @@ impl Elab {
                     return (Tm::App(Rc::new(t), Rc::new(at), Icit::Expl, m), apply_closure(&self.g, &c, av));
                 }
                 let dom = expected.unwrap_or((*dom).clone());
-                // A refined function type's precondition (D84): required to
+                // A refined function type's precondition (#580): required to
                 // call the function.
                 // A type's parameter's refinement is a condition on the type,
                 // checked where it is applied to all its parameters (#136).
@@ -2309,7 +2309,7 @@ impl Elab {
                     a.span,
                 )
                 .with_label("extra argument");
-                // `x -1`: a `-` glued to what follows is a sign (D169).
+                // `x -1`: a `-` glued to what follows is a sign (#657).
                 if let (ExprKind::Neg(n), true) = (&a.kind, self.src_text(a.span).starts_with('-')) {
                     let operand = self.src_text(n.span);
                     d = d.with_help(format!(
@@ -2440,10 +2440,10 @@ impl Elab {
             _ => {
                 // Take the operand type from the side that is not a bare number
                 // literal, so `1 + "a"` blames `"a"`.
-                // A range (D135) isn't imposed on the other operand: they
+                // A range (#616) isn't imposed on the other operand: they
                 // share its base type. Each operand's range is its own.
                 let left_literal = matches!(l.kind, ExprKind::Lit(ast::Lit::Int(_)));
-                // An operator on a type with an instance of its class (D136,
+                // An operator on a type with an instance of its class (#615,
                 // M24): `+` is `Add.add`, `<=` is `Ord.le`. Numbers keep
                 // their built-in operators.
                 let early = if !left_literal && Self::class_op(op).is_some() {
@@ -2608,7 +2608,7 @@ impl Elab {
         }
     }
 
-    /// Build a built-in operator application (D38) on operands of type `lty`.
+    /// Build a built-in operator application (#528) on operands of type `lty`.
     #[allow(clippy::too_many_arguments)]
     fn finish_arith(&mut self, cx: &Cx, op: Op, lt: Tm, rt: Tm, lty: Val, operands: Span, span: Span) -> (Tm, Val) {
         {
@@ -2646,7 +2646,7 @@ impl Elab {
                 if matches!(op, Op::EqEq | Op::Ne) {
                     self.observe(operands, lty.clone());
                 }
-                // Compiled code never compares functions (D125).
+                // Compiled code never compares functions (#614).
                 if matches!(op, Op::EqEq | Op::Ne) && self.in_spec == 0 && self.in_proof == 0 {
                     self.deferred.push(Deferred {
                         givens: self.givens.clone(),
@@ -2686,7 +2686,7 @@ impl Elab {
                 let result = match (result, class) {
                     (Some(r), _) => r,
                     // Arithmetic gives the operands' range, or their base
-                    // number type (D134, D135).
+                    // number type (#616).
                     (None, Some(OpClass::Numeric)) => {
                         let (a, b) = self.operand_types.take().unwrap_or_else(|| (lty.clone(), lty.clone()));
                         self.arith_result(cx, prim.clone(), &args[0], &args[1], &lty, &a, &b)
@@ -2726,7 +2726,7 @@ impl Elab {
         if Self::is_cursor(&name.name) {
             return self.note_member(cx, x);
         }
-        // `Ord.le`: a class's function or lemma (D136); `m.Ord.le` through
+        // `Ord.le`: a class's function or lemma (#615); `m.Ord.le` through
         // its module's qualifier.
         if let Some(cd) = self.class_named(x, Some(cx)).and_then(|t| self.class_defs.get(&t).cloned()) {
             let tid = cd.tid;
@@ -2840,7 +2840,7 @@ impl Elab {
                     ));
                 }
                 // Reading a field uses the whole record: at runtime, it may
-                // not drop another field holding a resource (D156, E0406).
+                // not drop another field holding a resource (#643, E0406).
                 if self.in_spec == 0 && self.in_proof == 0 && self.val_linear(&xty) {
                     let others: Vec<String> = fields
                         .iter()
@@ -2964,7 +2964,7 @@ impl Elab {
 
     /// `let name = rhs` and the rest of the block. `declared`: `Many`, or
     /// `Zero` for a type bound `ghost` (`Stmt::GhostLet`); a value whose
-    /// type is a resource makes a `Many` one `own` (D39).
+    /// type is a resource makes a `Many` one `own` (#533).
     #[allow(clippy::too_many_arguments)]
     fn let_var(
         &mut self,
@@ -3238,7 +3238,7 @@ fn mentions_level_from(t: &Tm, total: usize, from: usize, depth: usize) -> bool 
 }
 
 /// The first `forall` in `e` that isn't positive (under `and`, `or`, after
-/// `implies`, or in another `forall`'s conclusion), if any (D137).
+/// `implies`, or in another `forall`'s conclusion), if any (#632).
 pub fn negative_forall(e: &Expr, positive: bool) -> Option<Span> {
     match &e.kind {
         ExprKind::Forall(_, cs) => {

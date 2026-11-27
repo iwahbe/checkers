@@ -13,7 +13,7 @@ fn power n x -> y : n~comptime Nat, x~Int, y~Int
 fn cube x -> y : x~Int, y~Int
     power 3 x
 
-# A runtime argument is computed once, before the expansion (D41).
+# A runtime argument is computed once, before the expansion (#536).
 fn square_of_sum a b -> y : a~Int, b~Int, y~Int
     power 2 (a + b)
 

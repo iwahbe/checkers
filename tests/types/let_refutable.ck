@@ -3,7 +3,7 @@ module let_refutable
 import std.list
 
 # A `let`'s pattern, like a `match`, covers the values that can occur
-# (D144): cases the facts in scope rule out needn't be handled. One that
+# (#633): cases the facts in scope rule out needn't be handled. One that
 # can occur is E0240, about the pattern.
 
 fn first l -> x : l~List a, len l > 0, x~a

@@ -1,10 +1,10 @@
 //! Termination (§5.3): structural recursion, `decreasing` measures, `partial`,
-//! and measures guessed for recursion that is none of these (D150).
+//! and measures guessed for recursion that is none of these (#641).
 
 use super::*;
 
 /// A call between two functions of the module, neither with a measure: what
-/// a guessed measure must make smaller (D150).
+/// a guessed measure must make smaller (#641).
 #[derive(Clone)]
 pub struct RecCall {
     pub caller: DefId,
@@ -26,11 +26,11 @@ pub struct Verdict {
     /// The total members of each group recursing by `decreasing` measures,
     /// whose calls' measure obligations are to be proved.
     pub measured: Vec<Vec<DefId>>,
-    /// The groups whose measure is guessed (D150).
+    /// The groups whose measure is guessed (#641).
     pub guesses: Vec<GuessGroup>,
 }
 
-/// A recursive group whose measure is guessed in the proofs phase (D150).
+/// A recursive group whose measure is guessed in the proofs phase (#641).
 #[derive(Clone)]
 pub struct GuessGroup {
     pub module: String,
@@ -45,7 +45,7 @@ pub struct GuessGroup {
 }
 
 impl Elab {
-    /// A call that may be recursion with no measure written (D150).
+    /// A call that may be recursion with no measure written (#641).
     pub fn note_rec_call(&mut self, cx: &Cx, callee: DefId, args: &[Rc<Tm>], span: Span) {
         let Some(caller) = self.cur_fn else { return };
         if self.in_spec > 0 {
@@ -319,7 +319,7 @@ impl Elab {
                 }
             }
         }
-        // No measure written: one is guessed, and proved, later (D150).
+        // No measure written: one is guessed, and proved, later (#641).
         for g in v.guesses {
             self.guessed.extend(g.members.iter().copied());
             self.guess_groups.push(g);
@@ -406,7 +406,7 @@ impl Elab {
                 Ok(()) => continue,
                 Err(cycle) => cycle,
             };
-            // Recursion through an instance's dictionary (D136): a use of
+            // Recursion through an instance's dictionary (#615): a use of
             // the class's function at the instance's own type.
             if let Some(c) = inner.iter().find(|c| self.dict_defs.contains(&c.callee) && !self.dict_defs.contains(&c.caller)) {
                 let inst = self.g.defs[c.callee.0 as usize].name.to_string();
@@ -448,7 +448,7 @@ impl Elab {
                     prefer.push(c);
                 }
             }
-            // No measure written: one is guessed, and proved, later (D150).
+            // No measure written: one is guessed, and proved, later (#641).
             let spans: Vec<Span> = prefer.iter().map(|c| c.span).collect();
             if let Some(g) = self.guess_measure(&members, &metas, &inner, rec_calls, spans) {
                 v.guesses.push(g);
@@ -522,7 +522,7 @@ impl Elab {
 
 impl Elab {
     /// Set up guessing a measure for a recursive group with none written
-    /// (D150): every member a total function, every recursive call a full
+    /// (#641): every member a total function, every recursive call a full
     /// call, and candidates for each. False if it can't be.
     fn guess_measure(&self, members: &[DefId], metas: &[FnMeta], inner: &[&CallRec], rec_calls: &[RecCall], prefer: Vec<Span>) -> Option<GuessGroup> {
         if metas.iter().any(|m| m.partial || m.decreasing) {
@@ -546,7 +546,7 @@ impl Elab {
         Some(GuessGroup { module: self.cur.clone(), members: members.to_vec(), candidates, calls, prefer })
     }
 
-    /// The measures to try for `d` (D150 a): its parameters' sizes, the
+    /// The measures to try for `d` (#641 a): its parameters' sizes, the
     /// distances the comparisons guarding its recursive calls bound, and
     /// sums of two sizes; each over `d`'s binders.
     fn measure_candidates(&self, d: DefId, calls: &[&RecCall]) -> Vec<Measure> {

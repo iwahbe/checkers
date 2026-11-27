@@ -1,6 +1,6 @@
 module uncovered
 
-# A `match` without the cases that can't occur (D144) runs as any other.
+# A `match` without the cases that can't occur (#633) runs as any other.
 
 import std.system (System, ExitCode)
 import std.terminal

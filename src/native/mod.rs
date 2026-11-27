@@ -1,4 +1,4 @@
-//! Native code (M8, D80, SPEC §14): erasure (`ir`), closure conversion
+//! Native code (M8, #555, SPEC §14): erasure (`ir`), closure conversion
 //! (`lower`), reference counting (`rc`), Cranelift (`codegen`), run in
 //! memory (`run`; compile-time evaluation, `eval`) or written as an
 //! executable (`build`). The runtime is the `checkers_rt` crate.

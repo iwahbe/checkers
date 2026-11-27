@@ -16,7 +16,7 @@ pub const TABLE: &[Builtin] = &[
 builtin!(ckb_valid_utf8, |a| bool_w(std::str::from_utf8(b(a[0])).is_ok()));
 
 // Strings are ordered by their bytes, which for UTF-8 is the order of their
-// characters' scalar values (D138).
+// characters' scalar values (#625).
 builtin!(ckb_string_le, |a| bool_w(s(a[0]).as_bytes() <= s(a[1]).as_bytes()));
 
 // All but the first element of a non-empty array: a slice sharing its

@@ -1,4 +1,4 @@
-//! Naming-convention warnings (§9.7, D21).
+//! Naming-convention warnings (§9.7, #514).
 //!
 //! W001  UpperCamelCase      enum / record / type names, constructors
 //! W002  lower_snake_case    functions, lemmas, parameters, variables, fields, modules, aliases
@@ -217,7 +217,7 @@ impl Linter {
                 }
             }
             DeclKind::Const { name, value } => {
-                // An exported `main` is the program's entry (D181).
+                // An exported `main` is the program's entry (#668).
                 if name.name != "main" || d.export == Export::No {
                     self.screaming(name);
                 }

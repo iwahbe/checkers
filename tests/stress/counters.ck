@@ -2,7 +2,7 @@ module counters
 
 # 4 counters, each bumped 200 times by separate behaviours; the final
 # `when` holds all four, so it runs after every bump scheduled before it
-# (causal order, D66). Every schedule prints the same total.
+# (causal order, #561). Every schedule prints the same total.
 
 import std.system (System, ExitCode)
 import std.cown (Cown, Sched)

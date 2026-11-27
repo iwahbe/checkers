@@ -1,4 +1,4 @@
-//! Values as 64-bit words (D73, SPEC §14).
+//! Values as 64-bit words (#573, SPEC §14).
 //!
 //! | word                 | value                                        |
 //! |----------------------|----------------------------------------------|
@@ -16,7 +16,7 @@
 use std::alloc::{alloc, dealloc, Layout};
 use std::sync::atomic::{fence, AtomicBool, AtomicI64, Ordering};
 
-/// `CHECKERS_RC_CHECK=1`: count live objects, to find leaks (D74).
+/// `CHECKERS_RC_CHECK=1`: count live objects, to find leaks (#567).
 pub static TRACK: AtomicBool = AtomicBool::new(false);
 pub static LIVE: AtomicI64 = AtomicI64::new(0);
 
@@ -225,9 +225,9 @@ fn keep_block(p: *mut u8, size: usize) -> bool {
 }
 
 /// A new object with reference count 1; its words are uninitialised. If
-/// it can't be allocated, the program ends: `out of memory` (§13.3, D184).
+/// it can't be allocated, the program ends: `out of memory` (§13.3, #667).
 pub fn alloc_obj(info_word: u64, size: usize) -> W {
-    // A size above what an allocation can be has no layout (D184).
+    // A size above what an allocation can be has no layout (#667).
     let Ok(layout) = Layout::from_size_align(size.max(HDR), 8) else { crate::fatal("out of memory") };
     let p = take_block(layout.size());
     let p = if p.is_null() { unsafe { alloc(layout) } } else { p };
@@ -331,7 +331,7 @@ pub fn is_kind(w: W, k: u64) -> bool {
     is_ptr(w) && kind(w) == k
 }
 
-// ── reference counts (D74) ──────────────────────────────────────────────────
+// ── reference counts (#567) ──────────────────────────────────────────────────
 
 #[inline]
 pub fn dup(w: W) -> W {

@@ -3,8 +3,8 @@ module partial_pre
 import std.string
 import std.list
 
-# A function with a precondition can be partially applied (D86): `mid 0`
-# has the type `(b~Nat -> m~Nat, 0 <= b)`, checked where it is passed (D85).
+# A function with a precondition can be partially applied (#578): `mid 0`
+# has the type `(b~Nat -> m~Nat, 0 <= b)`, checked where it is passed (#579).
 fn mid a b -> m : a~Nat, b~Nat, a <= b, m~Nat
     a + (b - a) / 2
 

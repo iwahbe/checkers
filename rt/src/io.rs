@@ -1,6 +1,6 @@
 //! Standard streams for native programs. Each terminal call holds the
-//! output lock for its whole write, so calls are atomic (D68). Writes block
-//! their thread; reading standard input doesn't (D113): its system calls run
+//! output lock for its whole write, so calls are atomic (#559). Writes block
+//! their thread; reading standard input doesn't (#607): its system calls run
 //! on the blocking pool, under a lock that parks a waiting fiber.
 
 use crate::fiber::{BlockingRead, FiberLock};

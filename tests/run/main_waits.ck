@@ -1,4 +1,4 @@
-# `main` is a behaviour like any other (D123): when it waits, its thread runs
+# `main` is a behaviour like any other (#610): when it waits, its thread runs
 # the others. Here, on one thread, `main` waits for `cat` to echo what a
 # behaviour scheduled before the wait writes to it. If `main` held its
 # thread while waiting, that behaviour would never run.

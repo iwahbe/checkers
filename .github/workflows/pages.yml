@@ -1,4 +1,4 @@
-# The site (D131, SPEC §15.6), on GitHub Pages: the pages in `site/`, and
+# The site (#623, SPEC §15.6), on GitHub Pages: the pages in `site/`, and
 # the standard library's documentation by version:
 #   /docs/dev/std/      `main`
 #   /docs/vX.Y.Z/std/   each release, from the archive it attached (built by
