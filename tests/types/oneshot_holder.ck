@@ -97,7 +97,7 @@ fn returned file -> k : file~File, k~own (Unit -> Unit)
     let k = \_ -> close file
     k
 
-fn returned_some file -> r : file~File, r~own Option (Unit -> Unit)
+fn returned_some file -> r : file~File, r~Option (own (Unit -> Unit))
     let k = \_ -> close file
     Some k
 
@@ -119,7 +119,7 @@ fn opened path fs -> k : path~String, fs~Fs, k~own (Unit -> Unit)
 fn many f -> r : f~(Unit -> Unit), r~Unit
     f ()
 
-fn call o -> r : o~own Option (Unit -> Unit), r~Unit
+fn call o -> r : o~Option (own (Unit -> Unit)), r~Unit
     match o
         Some h -> h ()
         None   -> ()

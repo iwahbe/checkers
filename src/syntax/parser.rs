@@ -1395,6 +1395,13 @@ impl Parser {
     }
 
     fn unary(&mut self) -> PResult<Expr> {
+        // `own (a -> b)`: a function used exactly once (§8.4).
+        if self.at_kw(Kw::Own) {
+            let start = self.bump().span;
+            let e = self.app()?;
+            let span = start.to(e.span);
+            return Ok(Expr { kind: ExprKind::Own(Box::new(e)), span });
+        }
         if self.at(&Tok::Op(Op::Sub)) || self.at(&Tok::Neg) {
             let start = self.bump().span;
             let e = self.app()?;
@@ -1909,7 +1916,7 @@ fn expr_mentions(e: &Expr, names: &[String]) -> bool {
         ExprKind::Var(n) => names.contains(n),
         ExprKind::Tuple(xs) | ExprKind::List(xs) | ExprKind::Par(xs) => xs.iter().any(go),
         ExprKind::App(a, b) | ExprKind::Binary(_, a, b) | ExprKind::Arrow(a, b) | ExprKind::Index(a, b) => go(a) || go(b),
-        ExprKind::Neg(a) | ExprKind::SectionL(_, a) | ExprKind::SectionR(_, a) | ExprKind::Field(a, _) | ExprKind::Try(a) => go(a),
+        ExprKind::Neg(a) | ExprKind::Own(a) | ExprKind::SectionL(_, a) | ExprKind::SectionR(_, a) | ExprKind::Field(a, _) | ExprKind::Try(a) => go(a),
         ExprKind::If(a, b, c) => go(a) || go(b) || go(c),
         ExprKind::Match(a, arms) => go(a) || arms.iter().any(|arm| go(&arm.body) || arm.guard.as_ref().is_some_and(go)),
         ExprKind::Lambda(_, b) => go(b),

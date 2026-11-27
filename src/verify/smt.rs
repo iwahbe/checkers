@@ -1077,7 +1077,7 @@ impl<'a> Builder<'a> {
         let n = max_var(t).map_or(0, |m| m + 1);
         let mut t = if has_meta(t) { self.zonk(n, t) } else { t.clone() };
         let mut any = false;
-        while let Tm::Pi(_, _, _, a, b) = t {
+        while let Tm::Pi(_, _, _, a, b, _) = t {
             if !matches!(*a, Tm::Univ(_)) {
                 return false;
             }
@@ -1350,7 +1350,7 @@ impl<'a> Builder<'a> {
                 let mut ps = Vec::new();
                 let mut inner = env.to_vec();
                 let mut t = t.clone();
-                while let Tm::Pi(_, m, _, a, b) = t {
+                while let Tm::Pi(_, m, _, a, b, _) = t {
                     if self.is_type(&a) {
                         // An erased type the rest doesn't mention (a class's
                         // parameter passed explicitly to a dictionary's
@@ -1982,7 +1982,7 @@ impl<'a> Builder<'a> {
         let mut t = ty;
         let mut ats = ats.iter();
         for (_, m) in args {
-            let Tm::Pi(_, _, _, dom, cod) = t else { return };
+            let Tm::Pi(_, _, _, dom, cod, _) = t else { return };
             if *m == Mult::Zero {
                 inner.push(Ent::Opaque("type argument".into()));
             } else {
@@ -2022,7 +2022,7 @@ impl<'a> Builder<'a> {
         let mut pres = Vec::new();
         let mut vars = Vec::new();
         let mut t = ty;
-        while let Tm::Pi(_, m, _, dom, cod) = t {
+        while let Tm::Pi(_, m, _, dom, cod, _) = t {
             if m == Mult::Zero {
                 inner.push(Ent::Opaque("type argument".into()));
             } else {
@@ -2252,7 +2252,7 @@ impl<'a> Builder<'a> {
         let mut v = eval(&self.e.g, &crate::core::Env::new(), ty);
         for (a, _) in args {
             match force(&self.e.g, v) {
-                Val::Pi(_, _, _, _, c) => v = crate::core::apply_closure(&self.e.g, &c, eval(&self.e.g, &vars, a)),
+                Val::Pi(_, _, _, _, c, _) => v = crate::core::apply_closure(&self.e.g, &c, eval(&self.e.g, &vars, a)),
                 _ => return None,
             }
         }
@@ -2424,7 +2424,7 @@ impl<'a> Builder<'a> {
     /// forever on values the program can't build, so it gets no axiom.)
     fn nonneg_fn(&self, d: DefId, stack: &mut Vec<DefId>) -> bool {
         let mut ty = self.e.g.defs[d.0 as usize].ty.clone();
-        while let Tm::Pi(_, _, _, _, b) = ty {
+        while let Tm::Pi(_, _, _, _, b, _) = ty {
             ty = (*b).clone();
         }
         if !self.is_nat_tm(&ty) {
@@ -2824,7 +2824,7 @@ impl<'a> Builder<'a> {
         let mut inner: Vec<Ent> = (0..lvl).map(|k| Ent::Opaque(format!("@{k}"))).collect();
         let mut out_ = Vec::new();
         let mut t = pi.clone();
-        while let Tm::Pi(_, _, _, a, b) = t {
+        while let Tm::Pi(_, _, _, a, b, _) = t {
             let s = self.sort_of(&inner, &a)?;
             inner.push(Ent::Term(String::new(), s.clone()));
             out_.push(s);
@@ -2843,7 +2843,7 @@ impl<'a> Builder<'a> {
         let mut guards = Vec::new();
         let mut t = pi.clone();
         let mut k = 0;
-        while let Tm::Pi(_, _, _, a, b) = t {
+        while let Tm::Pi(_, _, _, a, b, _) = t {
             let s = self.sort_of(&inner, &a)?;
             if sorts.get(k) != Some(&s) {
                 return Ok(None);
@@ -2893,7 +2893,7 @@ impl<'a> Builder<'a> {
         for f in facts {
             let Tm::PrimApp(Prim::Forall, fa) = quote(&self.e.g, lvl, f) else { continue };
             let [pi] = fa.as_slice() else { continue };
-            let Tm::Pi(_, _, _, dom, body) = pi else { continue };
+            let Tm::Pi(_, _, _, dom, body, _) = pi else { continue };
             // One variable, whose every value in range is an index: a
             // refinement of `Int` would hold of fewer.
             let index = match self.zonk(lvl, dom) {
@@ -2923,7 +2923,7 @@ impl<'a> Builder<'a> {
         let mut guards = Vec::new();
         let mut t = pi.clone();
         let mut k = 0;
-        while let Tm::Pi(_, _, _, a, b) = t {
+        while let Tm::Pi(_, _, _, a, b, _) = t {
             let s = self.sort_of(&inner, &a)?;
             let n = format!("|all{d}.{k}|");
             binds.push(format!("({n} {})", s.render(self.e)));
@@ -3103,7 +3103,7 @@ impl<'a> Builder<'a> {
         // Without a body: the first dictionary binder.
         let mut t = self.e.g.defs[d.0 as usize].ty.clone();
         let mut k = 0;
-        while let Tm::Pi(_, m, i, a, b) = t {
+        while let Tm::Pi(_, m, i, a, b, _) = t {
             if m == Mult::Many && i == crate::core::Icit::Impl && self.is_dict_ty(&a) {
                 return Some(k);
             }
@@ -3156,7 +3156,7 @@ impl<'a> Builder<'a> {
         let mut dty = self.e.g.defs[dd.0 as usize].ty.clone();
         let stored = self.dict_args.get(key).cloned();
         for (j, a) in dargs.iter().enumerate() {
-            let Tm::Pi(_, _, _, dom, cod) = dty else { return Ok(None) };
+            let Tm::Pi(_, _, _, dom, cod, _) = dty else { return Ok(None) };
             let e = if let Some(e) = stored.as_ref().and_then(|s| s.get(j)) {
                 e.clone()
             } else if self.is_kind(&dom) {
@@ -3178,7 +3178,7 @@ impl<'a> Builder<'a> {
         {
             let mut t = self.e.g.defs[d.0 as usize].ty.clone();
             let mut k = 0;
-            while let Tm::Pi(x, _, _, a, b) = t {
+            while let Tm::Pi(x, _, _, a, b, _) = t {
                 if k >= pos {
                     break;
                 }
@@ -3220,7 +3220,7 @@ impl<'a> Builder<'a> {
             let mut t = self.e.g.defs[d.0 as usize].ty.clone();
             let mut k = 0;
             let mut clauses = 0;
-            while let Tm::Pi(_, m, i, a, b) = t {
+            while let Tm::Pi(_, m, i, a, b, _) = t {
                 if k != pos && m == Mult::Many && i == crate::core::Icit::Impl && self.is_dict_ty(&a) {
                     let Some(e) = inner.get(k) else { break };
                     rest.insert(clauses, e.clone());
@@ -3443,7 +3443,7 @@ impl<'a> Builder<'a> {
         let mut computed = false;
         let mut t = ty;
         let mut k = 0;
-        while let Tm::Pi(_, _, _, a, b) = t.clone() {
+        while let Tm::Pi(_, _, _, a, b, _) = t.clone() {
             let Some((arg, _)) = args.get(k) else {
                 return out(match self.e.hidden_home(&self.user, &qualified) {
                     Some(home) => format!("a partial application of a private function of `{home}`"),
@@ -3979,7 +3979,7 @@ impl<'a> Builder<'a> {
             let r = self.define_shared(&inst);
             // A `Nat` result is non-negative, for every argument.
             let mut ty = self.e.g.defs[inst.def.0 as usize].ty.clone();
-            while let Tm::Pi(_, _, _, _, b) = ty {
+            while let Tm::Pi(_, _, _, _, b, _) = ty {
                 ty = (*b).clone();
             }
             // Z3 applies the definition to values no program can build
@@ -4093,7 +4093,7 @@ impl<'a> Builder<'a> {
         let mut ents = Vec::new();
         let mut parts = Vec::new();
         for a in &dargs {
-            let Tm::Pi(_, _, _, dom, cod) = dty else { return Ok(None) };
+            let Tm::Pi(_, _, _, dom, cod, _) = dty else { return Ok(None) };
             if self.is_kind(&dom) {
                 let Some(e) = self.ty_fun(env, a) else { return Ok(None) };
                 parts.push(match &e {
@@ -4258,7 +4258,7 @@ impl<'a> Builder<'a> {
         let mut tk = 0;
         let mut fk = 0;
         let mut k = 0;
-        while let Tm::Pi(_, _, _, a, b) = t.clone() {
+        while let Tm::Pi(_, _, _, a, b, _) = t.clone() {
             if self.is_kind(&a) {
                 let e = match inst.tys.get(tk) {
                     Some(Sort::Unin(key, _)) => self.ty_funs.get(key).cloned(),
@@ -4376,7 +4376,7 @@ impl<'a> Builder<'a> {
         // Nat parameters.
         let mut ty = self.e.g.defs[inst.def.0 as usize].ty.clone();
         let mut k = 0;
-        while let Tm::Pi(_, _, _, a, b) = ty {
+        while let Tm::Pi(_, _, _, a, b, _) = ty {
             if self.is_nat_tm(&a) {
                 if let Some(Ent::Term(n, _)) = env.get(k) {
                     conds.push(format!("(>= {n} 0)"));
@@ -4516,7 +4516,7 @@ impl<'a> Builder<'a> {
         let mut out = Vec::new();
         let mut ty = self.e.g.defs[p.def.0 as usize].ty.clone();
         let mut k = 0;
-        while let Tm::Pi(_, m, _, dom, cod) = ty {
+        while let Tm::Pi(_, m, _, dom, cod, _) = ty {
             if let (Mult::One | Mult::Many, Some(Ent::Term(a, s))) = (m, p.env.get(k)) {
                 if !self.is_dict_ty(&dom) && !matches!(*dom, Tm::Pi(..)) {
                     let (a, s) = (a.clone(), s.clone());
@@ -4586,7 +4586,7 @@ impl<'a> Builder<'a> {
                 let names: Vec<String> = (0..sorts.len()).map(|k| format!("|forall.{k}|")).collect();
                 let mut shown_names = Vec::new();
                 let mut pt = &a[0];
-                while let Tm::Pi(x, _, _, _, b) = pt {
+                while let Tm::Pi(x, _, _, _, b, _) = pt {
                     shown_names.push(x.to_string());
                     pt = b;
                 }
@@ -4907,7 +4907,7 @@ fn tm_size(t: &Tm, cap: usize) -> usize {
             return n;
         }
         match t {
-            Tm::App(a, b, ..) | Tm::Pi(_, _, _, a, b) => {
+            Tm::App(a, b, ..) | Tm::Pi(_, _, _, a, b, _) => {
                 stack.push(a);
                 stack.push(b);
             }

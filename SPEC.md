@@ -476,7 +476,7 @@ The kernel still checks exact linearity, and no two calls share a token. When a 
 1. *No proven ordering between uses of one authority.* At runtime, calls run in program order. The prover, however, treats two uses of `fs` as independent, so "a read after a write returns what was written" is not provable through `Fs`. Orderings that need proofs go through resources (§8.4).
 2. *Concurrent branches can race on the operating system* (two forks writing one file), as in any language.
 
-**Closures.** An authority, and a closure that captured one (a lambda, or a function applied to some of its arguments), may be used any number of times: capabilities put no limit on how often they are used. `let g = \u -> files.read p fs` may be called twice, passed to `list.map`, returned or stored, and the enclosing code keeps using `fs`. Each call of `g` is still a call with effects (§7.1): a value of its own to the prover, never known to equal another. Only a closure that holds a resource must be called exactly once (§8.4).
+**Closures.** An authority, and a closure that captured one (a lambda, or a function applied to some of its arguments), may be used any number of times: capabilities put no limit on how often they are used. `let g = \u -> files.read p fs` may be called twice, passed to `list.map`, returned or stored, and the enclosing code keeps using `fs`. Each call of `g` is still a call with effects (§7.1): a value of its own to the prover, never known to equal another. Only a closure that holds a resource must be called exactly once: its type is `own (a -> b)` (§8.4).
 
 **Effect statements.** An expression whose result is `Unit` may stand alone as a statement line in a block, e.g. `terminal.print_line "done" term`. Only expressions returning `Unit` may: discarding any other value needs `let _ = …`.
 
@@ -496,12 +496,13 @@ Because each operation consumes the previous token, the prover sees the operatio
 
 Resources are created from authorities, e.g. `files.open path fs` returns `Result File IoError`.
 
-**One-shot closures (#658, #471).** A closure that uses a resource or an `own` value (a lambda, or a function applied to some of its arguments) is a resource, and follows the rules for resources: it is used, by being called, exactly once, and so is any value that holds one. It may be called where it is made, bound with `let` and called once, passed to a parameter declared `own`, or returned. Its type (`Unit -> Unit`) doesn't say it is a resource, so the checker follows the value, and the signatures it passes through say so with `own`:
+**Closures that hold a resource (#658, #471, #720).** A closure that uses a resource or an `own` value (a lambda, or a function applied to some of its arguments) is a resource. Its type says so: `own (a -> b)`, a function to call exactly once. The checker infers it (`let k = \_ -> close file` gives `k` the type `own (Unit -> Unit)`, and `close_with file`, for `fn close_with f n`, is an `own (Int -> Unit)`), and everything the rules for resources say holds of it, by its type:
 
-- A value built from one that must be used exactly once (a resource, an `own` value, a one-shot closure, or a value holding one) must itself be used exactly once, if its type can hold that part: a function, a type variable, a resource, or a type with one of those in a field or type argument. Constructors, tuples, records, lists, arrays and calls of generic functions all build such values (`Some k`, `(k, 1)`, `[k]`, `id k`). A part whose type can't hold it is free (`n~Nat` in `(k, n)`).
-- What a `match` or `let` takes out of such a value inherits the rule: in `match Some k` with `Some h -> …`, `h` is a one-shot closure, called exactly once in that arm. A pattern that discards it (`Some _`), or `let _ =`, drops it, as it would a resource: E0401.
-- A generic `own` value is held the same way: `let p = Some x`, for `x~own a`, is used exactly once, since `a` may be a resource.
-- `own` may be written on a parameter or a result of any type that can hold a function. A parameter declared `own` (`o~own Option (Unit -> a)`) takes such a value; the function uses it, and what it takes out, exactly once. A result declared `own` (`k~own (Unit -> Unit)`) may be such a value, as `files.open` returns a `File`; the caller uses it exactly once, wherever the resource came from (an argument, or a file the function opened itself). Returning one from a function whose result isn't declared `own` is E0401: its type wouldn't tell the caller.
+- It is used, by being called, exactly once: called where it is made, bound with `let` and called once, passed on, or returned. A value that holds one is a resource too (`Some k` is an `Option (own (Unit -> Unit))`, `(k, 1)` a `(own (Unit -> Unit), Int)`), and so is what a `match` or `let` takes out of it. A pattern or `let _ =` that discards one is E0404; reading another field of a record that holds one is E0406. A generic function takes one through an `own` parameter, like any resource (`id k`, for `x~own a`, is an `own (Unit -> Unit)`).
+- `own (a -> b -> c)` is a function of two parameters, called once: given its first argument, it is an `own (b -> c)`. `own` written on a type that isn't a function type (`own Int`, `own a`) is E0358.
+- A function that may be called any number of times may be given where an `own (a -> b)` is expected. A function to call exactly once can't be given where a function type without `own` is (`a -> b`): as an argument, a function's result, a constructor's field or a value of a declared type, it is E0401, reported at it, with help to declare that parameter, result or field `own (a -> b)`.
+- On a parameter, a result or a field whose type is a function type, `own` is that type: `f~own (Unit -> a)` is a parameter of type `own (Unit -> a)`, which takes a closure that uses a resource and calls it exactly once; a result `k~own (Unit -> Unit)` may be one, and its caller calls it exactly once; a field `run~own (Unit -> Unit)` holds one, which makes its record a resource.
+- In a function's body, a type variable that an `own` parameter's type mentions (`a` of `x~own a`) may be a resource, so a value whose type mentions it is used exactly once there: `let p = Some x` is.
 
 **Streams (#611).** Every byte stream is a `File`: an open file, the standard streams (`terminal.stdin term`), and the pipes of a child process. The same operations read and write all of them:
 
@@ -777,7 +778,7 @@ apat        ::= '_' | lname | literal | Uname
 |---|---|---|
 | `x~T` | `x` has type `T` | `(x :ω T)` |
 | `x~ghost T` | exists only for types/proofs | `(x :0 T)` |
-| `x~own T` | used exactly once; implied for resources (#533), written on generic parameters that may receive one (#545), and on parameters and results that may hold a one-shot closure (§8.4) | `(x :1 T)` |
+| `x~own T` | used exactly once; implied for resources (#533), written on generic parameters that may receive one (#545); on a function type, the type `own (a -> b)` of a function to call exactly once (§8.4) | `(x :1 T)` |
 | predicate over inputs only | precondition | refinement on the inputs |
 | predicate mentioning the result name | postcondition | return type `{r : R \| P}` |
 | predicate in a constructor/field list | invariant (#505) | `Holds` field, erased |

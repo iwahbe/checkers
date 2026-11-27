@@ -99,9 +99,6 @@ pub struct FnMeta {
     pub builtin: bool,
     /// The result's name, if it has one (`-> y`).
     pub result: Option<String>,
-    /// The result is declared `own` (`-> k : k~own (Unit -> Unit)`): the
-    /// caller uses it exactly once (§8.4).
-    pub result_own: bool,
 }
 
 impl FnMeta {
@@ -1001,6 +998,21 @@ pub struct Elab {
     /// Variables a field read or index of was reported for dropping part of
     /// them (E0406, E0407): the usage check says nothing more about them.
     pub part_reported: HashSet<(DefId, String)>,
+    /// The argument being checked: its span, the function it is passed to
+    /// and the parameter's name, if it has one.
+    pub arg_dest: Option<(Span, String, Option<String>, bool)>,
+    /// In a function's body, the type variables (by level) of its `own`
+    /// parameters: each may be a resource there (§8.4).
+    pub own_tyvars: Vec<usize>,
+    /// Checking a function's body, outside the lambdas and behaviours in
+    /// it: an expression in a tail position there is its result.
+    pub fn_result: bool,
+    /// Resources named in the body being checked whose types are shown
+    /// once it is (`own (_ -> Unit)` is `own (Unit -> Unit)` by then).
+    pub resources_to_show: Vec<(DefId, String, Span, Cx, Val)>,
+    /// Locals that may hold a resource only through the type of an `own`
+    /// parameter (`p~Option a` for `x~own a`).
+    pub own_generic: HashSet<(DefId, String)>,
     /// This module's instances, until their dictionary functions are registered.
     pub pending_insts: Vec<classes::PendingInst>,
     /// This module's types and their numbers of parameters, for instances' kinds (M25).
@@ -1195,6 +1207,11 @@ impl Elab {
             class_mults: HashMap::new(),
             inst_heads: HashSet::new(),
             part_reported: HashSet::new(),
+            arg_dest: None,
+            own_tyvars: Vec::new(),
+            fn_result: false,
+            resources_to_show: Vec::new(),
+            own_generic: HashSet::new(),
             pending_insts: Vec::new(),
             local_ty_params: HashMap::new(),
             local_names: HashMap::new(),
@@ -1395,7 +1412,7 @@ impl Elab {
     fn is_type_level(&self, ty: &Val) -> bool {
         match self.force(ty) {
             Val::Univ(_) => true,
-            Val::Pi(_, _, _, _, clo) => {
+            Val::Pi(_, _, _, _, clo, _) => {
                 let body = crate::core::apply_closure(&self.g, &clo, Val::Error);
                 self.is_type_level(&body)
             }
@@ -1430,7 +1447,7 @@ impl Elab {
         let is_type = loop {
             match d {
                 Val::Univ(_) => break true,
-                Val::Pi(_, _, _, a, c) if matches!(self.force(&a), Val::Univ(_)) => {
+                Val::Pi(_, _, _, a, c, _) if matches!(self.force(&a), Val::Univ(_)) => {
                     arity += 1;
                     d = self.force(&apply_closure(&self.g, &c, Val::var(cx.lvl())));
                 }
@@ -1466,10 +1483,10 @@ impl Elab {
     fn own_as_many(&self, cx: &Cx, expected: &Val, actual: &Val) -> Option<Val> {
         fn relax(e: &Tm, a: &Tm) -> Option<Tm> {
             match (e, a) {
-                (Tm::Pi(_, me, ie, _, eb), Tm::Pi(x, ma, ia, da, ab)) if ie == ia => {
+                (Tm::Pi(_, me, ie, _, eb, _), Tm::Pi(x, ma, ia, da, ab, o)) if ie == ia => {
                     let m = if *ma == Mult::One && *me == Mult::Many { Mult::Many } else { *ma };
                     let b = relax(eb, ab).unwrap_or_else(|| (**ab).clone());
-                    Some(Tm::Pi(x.clone(), m, *ia, da.clone(), Rc::new(b)))
+                    Some(Tm::Pi(x.clone(), m, *ia, da.clone(), Rc::new(b), *o))
                 }
                 _ => None,
             }
@@ -1488,7 +1505,7 @@ impl Elab {
     fn moot_own(&self, cx: &Cx, expected: &Val, actual: &Val) -> Option<(Val, Val)> {
         fn go(e: &Elab, t: &Tm, changed: &mut bool) -> Tm {
             match t {
-                Tm::Pi(x, m, i, a, b) => {
+                Tm::Pi(x, m, i, a, b, o) => {
                     let a2 = go(e, a, changed);
                     let b2 = go(e, b, changed);
                     let m2 = if *m == Mult::One && e.never_linear(&a2) {
@@ -1497,7 +1514,7 @@ impl Elab {
                     } else {
                         *m
                     };
-                    Tm::Pi(x.clone(), m2, *i, Rc::new(a2), Rc::new(b2))
+                    Tm::Pi(x.clone(), m2, *i, Rc::new(a2), Rc::new(b2), *o)
                 }
                 _ => t.clone(),
             }
@@ -1647,7 +1664,7 @@ impl Elab {
                     go(g, f, lvl, out);
                     go(g, a, lvl, out);
                 }
-                Tm::Pi(_, _, _, a, b) => {
+                Tm::Pi(_, _, _, a, b, _) => {
                     go(g, a, lvl, out);
                     go(g, b, lvl + 1, out);
                 }
@@ -1846,6 +1863,8 @@ impl Elab {
                 Some(v) => Lin::of(self.val_linear(&v)),
                 None => Lin::No,
             },
+            // A function used exactly once (§8.4).
+            Tm::Pi(.., true) => Lin::Yes,
             // A type variable: a generic container (#545), decided by its argument.
             Tm::Var(_) | Tm::Pi(..) | Tm::Univ(_) | Tm::Lit(_) | Tm::Error => Lin::No,
             // A proposition (a refinement field) or a value: never a resource.
@@ -1909,7 +1928,8 @@ impl Elab {
                 Some(v) => self.val_linear(&v),
                 None => false,
             },
-            Tm::Var(_) | Tm::Pi(..) | Tm::Univ(_) | Tm::Lit(_) | Tm::Error => false,
+            Tm::Pi(.., once) => *once,
+            Tm::Var(_) | Tm::Univ(_) | Tm::Lit(_) | Tm::Error => false,
             _ if !self.computes_type(t) => false,
             _ => self.closed_linear(t),
         }
@@ -1979,6 +1999,11 @@ impl Elab {
                     }
                 }
                 Val::TupleTy(ts) => work.extend(ts.iter().map(|a| (a.clone(), path.clone()))),
+                // A function used exactly once (§8.4).
+                Val::Pi(.., true) => return true,
+                // A type variable of an `own` parameter, in its function's
+                // body: it may be a resource (§8.4).
+                Val::Neutral(Head::Var(l), sp) if sp.is_empty() && self.own_tyvars.contains(&l) => return true,
                 // A type variable is generic (#545); a stuck computation of a type may be a resource.
                 Val::Neutral(Head::Def(d), _) => {
                     if self.def_gives_type(d) {
@@ -2028,7 +2053,7 @@ impl Elab {
             Some((_, t)) => t,
             None => return true,
         };
-        while let Tm::Pi(_, _, _, _, b) = t {
+        while let Tm::Pi(_, _, _, _, b, _) = t {
             t = b;
         }
         matches!(t, Tm::Univ(_))
@@ -2054,17 +2079,23 @@ impl Elab {
     /// Is `d`'s result (after all its parameters) a universe?
     fn def_gives_type(&self, d: DefId) -> bool {
         let mut t = &self.g.defs[d.0 as usize].ty;
-        while let Tm::Pi(_, _, _, _, b) = t {
+        while let Tm::Pi(_, _, _, _, b, _) = t {
             t = b;
         }
         matches!(t, Tm::Univ(_))
     }
 
-    /// Could a value of this type hold a value that must be used exactly
-    /// once: a resource, or a closure, which may be one that uses a resource
-    /// (§8.4)? A type variable or a type not yet computed could.
-    pub fn may_hold_once(&self, v: &Val) -> bool {
-        self.val_linear(v) || self.val_holds_fn(v)
+    /// A local that `t`, a closure under `depth` binders of its own, holds
+    /// and that must be used exactly once (a resource, an `own` value, a
+    /// closure that holds one): then the closure is a resource, called
+    /// exactly once (§8.4).
+    pub fn holds_once(&self, cx: &Cx, t: &Tm, depth: usize) -> Option<Name> {
+        let mut fv = std::collections::BTreeSet::new();
+        crate::core::free_vars(t, depth, &mut fv);
+        fv.into_iter()
+            .filter_map(|i| cx.lvl().checked_sub(1 + i))
+            .find(|l| cx.locals[*l].mult == Mult::One)
+            .map(|l| cx.locals[l].name.clone())
     }
 
     /// A type written with free variables, evaluated with each unknown.
@@ -2076,71 +2107,30 @@ impl Elab {
         eval(&self.g, &crate::core::Env::from(env), t)
     }
 
-    /// Could a value of this type hold a function? However deep: a
-    /// worklist over the type's arguments.
-    fn val_holds_fn(&self, v: &Val) -> bool {
+    /// Could a value of this type hold a value that must be used exactly
+    /// once? A resource could, and so could a type whose parts are decided
+    /// by type variables or types not computed yet: a generic call's result
+    /// may hold its argument.
+    pub fn may_hold_linear(&self, v: &Val) -> bool {
+        if self.val_linear(v) {
+            return true;
+        }
         let mut work = vec![v.clone()];
         while let Some(v) = work.pop() {
             match self.force(&v) {
-                Val::Pi(..) => return true,
                 Val::TyCon(id, args) => {
-                    if self.is_owner(id) {
-                        continue;
+                    if !self.is_owner(id) {
+                        work.extend(args.iter().enumerate().filter(|(k, _)| self.type_param(id, *k)).map(|(_, a)| a.clone()));
                     }
-                    if self.ty_holds_fn(id, &mut Vec::new()) {
-                        return true;
-                    }
-                    work.extend(args.iter().enumerate().filter(|(k, _)| self.type_param(id, *k)).map(|(_, a)| a.clone()));
                 }
                 Val::TupleTy(ts) => work.extend(ts.iter().cloned()),
-                // A type variable, or a type not computed yet.
                 Val::Neutral(Head::Var(_) | Head::Meta(_), _) => return true,
-                Val::Neutral(Head::Def(d), _) => {
-                    if self.def_gives_type(d) {
-                        return true;
-                    }
-                }
+                Val::Neutral(Head::Def(d), _) if self.def_gives_type(d) => return true,
                 Val::Neutral(_, sp) if sp.iter().any(|e| matches!(e, Elim::Case(..))) => return true,
                 _ => {}
             }
         }
         false
-    }
-
-    /// Does a field of `id`, whatever its arguments, hold a function?
-    fn ty_holds_fn(&self, id: TyId, visiting: &mut Vec<TyId>) -> bool {
-        if self.is_owner(id) || visiting.contains(&id) {
-            return false;
-        }
-        visiting.push(id);
-        let r = self.g.tys[id.0 as usize]
-            .ctors
-            .iter()
-            .flat_map(|c| self.g.cons[c.0 as usize].fields.iter())
-            .any(|f| f.1 != Mult::Zero && self.field_holds_fn(&f.3, visiting));
-        visiting.pop();
-        r
-    }
-
-    /// A field's type, in the context of the parameters and earlier fields:
-    /// a parameter is decided by its argument.
-    fn field_holds_fn(&self, t: &Tm, visiting: &mut Vec<TyId>) -> bool {
-        if let Some((id, args)) = tycon_app(t) {
-            return !self.is_owner(id) && (self.ty_holds_fn(id, visiting) || args.iter().any(|a| self.field_holds_fn(a, visiting)));
-        }
-        match t {
-            Tm::Pi(..) => true,
-            Tm::TupleTy(ts) => ts.iter().any(|a| self.field_holds_fn(a, visiting)),
-            Tm::Meta(m) => self.g.meta(*m).is_none_or(|v| self.val_holds_fn(&v)),
-            Tm::Var(_) | Tm::Univ(_) | Tm::Lit(_) | Tm::Error => false,
-            _ if !self.computes_type(t) => false,
-            // Computed: known if closed, else it may be anything.
-            _ => {
-                let mut fv = std::collections::BTreeSet::new();
-                crate::core::free_vars(t, 0, &mut fv);
-                !fv.is_empty() || self.val_holds_fn(&eval(&self.g, &crate::core::Env::new(), t))
-            }
-        }
     }
 
     /// The types of a constructor's fields, given the arguments of its type
@@ -2199,6 +2189,12 @@ impl Elab {
         if let Some(f) = self.cur_fn {
             let shown = self.show_resource(cx, ty);
             self.resource_vars.insert((f, name.to_string()), (span, shown));
+            self.resources_to_show.push((f, name.to_string(), span, cx.clone(), ty.clone()));
+            let tyvars = std::mem::take(&mut self.own_tyvars);
+            if !self.val_linear(ty) {
+                self.own_generic.insert((f, name.to_string()));
+            }
+            self.own_tyvars = tyvars;
         }
         Mult::One
     }
@@ -2215,6 +2211,32 @@ impl Elab {
                 self.show_val(cx, ty)
             }
             _ => self.show_val(cx, ty),
+        }
+    }
+
+    /// `own` written on a parameter, a result or a field of type `ty`. On a
+    /// function type it makes a function used exactly once (`f~own (Unit ->
+    /// a)` has the type `own (Unit -> a)`, §8.4); elsewhere `check_own`.
+    pub fn own_type(&mut self, cx: &Cx, ty: Tm, span: Span) -> Tm {
+        match self.fn_type(cx, &ty) {
+            Some(f) => f,
+            None => {
+                self.check_own(cx, &ty, span);
+                ty
+            }
+        }
+    }
+
+    /// `ty`, a function type (written, or named by an alias), used exactly
+    /// once; `None` if it isn't a function type.
+    pub fn fn_type(&self, cx: &Cx, ty: &Tm) -> Option<Tm> {
+        match ty {
+            Tm::Pi(_, _, Icit::Expl, ..) => Some(once_fn(ty)),
+            Tm::Pi(..) => None,
+            _ => match self.force(&self.eval(cx, ty)) {
+                v @ Val::Pi(_, _, Icit::Expl, ..) => Some(once_fn(&quote(&self.g, cx.lvl(), &v))),
+                _ => None,
+            },
         }
     }
 
@@ -2238,10 +2260,7 @@ impl Elab {
                     .with_label("this `own` can go")
                     .with_help("remove `own`; a resource is used exactly once anyway"),
             );
-        } else if !matches!(ty, Tm::Pi(..)) && !self.mentions_type_var(cx, ty, 0) && !self.may_hold_once(&self.eval(cx, ty)) {
-            // A function may be a closure that uses a resource, which is
-            // called exactly once (#658): `f~own (Unit -> a)` takes one, and
-            // `o~own Option (Unit -> a)` one in a value (§8.4).
+        } else if !matches!(ty, Tm::Pi(..)) && !self.mentions_type_var(cx, ty, 0) {
             let tyv = self.eval(cx, ty);
             let shown = self.show_val(cx, &tyv);
             self.err(
@@ -2275,9 +2294,63 @@ impl Elab {
             }
             Tm::App(f, a, ..) => self.mentions_type_var(cx, f, under) || self.mentions_type_var(cx, a, under),
             Tm::TyConApp(_, v) | Tm::TupleTy(v) => v.iter().any(|a| self.mentions_type_var(cx, a, under)),
-            Tm::Pi(_, _, _, a, b) => self.mentions_type_var(cx, a, under) || self.mentions_type_var(cx, b, under + 1),
+            Tm::Pi(_, _, _, a, b, _) => self.mentions_type_var(cx, a, under) || self.mentions_type_var(cx, b, under + 1),
             Tm::Meta(m) => self.g.meta(*m).is_none(),
             _ => false,
+        }
+    }
+
+    /// A function used exactly once (§8.4) given at `span` where
+    /// `expected`, a function type that may be called any number of times,
+    /// is: E0401. `held`: what the closure holds, if it is one made here.
+    /// `tail`: it is the function's result.
+    pub fn once_into_many(&mut self, cx: &Cx, expected: &Val, held: Option<&str>, t: &Tm, span: Span, tail: bool) {
+        let shown = self.show_val(cx, expected);
+        let once = {
+            let q = once_fn(&quote(&self.g, cx.lvl(), &self.force(expected)));
+            let v = self.eval(cx, &q);
+            self.show_val(cx, &v)
+        };
+        let what = match held {
+            Some(x) => format!("this closure uses `{x}`, so it must be called exactly once"),
+            None => format!("this is `{once}`: a function to call exactly once"),
+        };
+        let dest = self.arg_dest.clone().filter(|(s, ..)| *s == span);
+        let fname = self.cur_fn.and_then(|f| self.fn_meta.get(&f)).map(|m| (m.name.clone(), m.result.clone()));
+        let (place, help) = match (dest, tail && self.fn_result, fname) {
+            (Some((_, callee, param, field)), _, _) => {
+                let p = param.unwrap_or_else(|| "f".into());
+                if field {
+                    (
+                        format!("`{callee}`'s field `{p}` is `{shown}`, which may be called any number of times"),
+                        format!("declare the field `{p}~{once}`; then a `{callee}` holds a resource, used exactly once"),
+                    )
+                } else {
+                    (
+                        format!("`{callee}` takes `{shown}`, which it may call any number of times"),
+                        format!("if `{callee}` calls it at most once, declare that parameter `{p}~{once}`"),
+                    )
+                }
+            }
+            (None, true, Some((f, r))) => {
+                let r = r.unwrap_or_else(|| "r".into());
+                (
+                    format!("`{f}` returns `{shown}`, which its caller may call any number of times"),
+                    format!("declare the result `{r}~{once}`, so that the caller calls it exactly once"),
+                )
+            }
+            _ => (format!("a `{shown}` is expected here, which may be called any number of times"), format!("give it the type `{once}`")),
+        };
+        self.err(Diagnostic::error("E0401", format!("{what}, but {place}"), span).with_label("it must be called exactly once").with_help(help));
+        // What was given is reported here, not again by the usage check.
+        if let Some(f) = self.cur_fn {
+            let mut fv = std::collections::BTreeSet::new();
+            crate::core::free_vars(t, 0, &mut fv);
+            for l in fv.into_iter().filter_map(|i| cx.lvl().checked_sub(i + 1)) {
+                if cx.locals[l].mult == Mult::One {
+                    self.part_reported.insert((f, cx.locals[l].name.to_string()));
+                }
+            }
         }
     }
 
@@ -2298,6 +2371,8 @@ impl Elab {
                 .with_label("a resource must be used exactly once")
                 .with_help(if crate::core::plain(&shown).starts_with("Future ") {
                     "bind it to a name, then join it: a future of a resource is one too"
+                } else if crate::core::plain(&shown).starts_with("own (") {
+                    "bind it to a name, then call it or pass it on"
                 } else {
                     "bind it to a name, then close it or pass it on"
                 }),
@@ -2581,7 +2656,7 @@ impl Elab {
         for e in sp {
             let Elim::App(a, _) = e else { return false };
             match crate::core::force(&self.g, t) {
-                Val::Pi(_, _, _, _, c) => t = apply_closure(&self.g, &c, a.clone()),
+                Val::Pi(_, _, _, _, c, _) => t = apply_closure(&self.g, &c, a.clone()),
                 _ => return false,
             }
         }
@@ -2751,7 +2826,7 @@ impl Elab {
                 !(info.opaque && info.body.is_some()) && !self.g.run_time_only.borrow().contains(d)
             }
             Tm::PrimApp(Prim::When, _) => false,
-            Tm::Pi(_, _, _, a, b) => go(a, depth) && go(b, depth + 1),
+            Tm::Pi(_, _, _, a, b, _) => go(a, depth) && go(b, depth + 1),
             Tm::Lam(_, _, _, b) => go(b, depth + 1),
             Tm::App(f, a, _, m) => go(f, depth) && (*m == Mult::Zero || go(a, depth)),
             Tm::Let(_, _, _, v, b) => go(v, depth) && go(b, depth + 1),
@@ -3191,7 +3266,7 @@ fn touches(t: &Tm, g: &Globals, defs: &HashSet<DefId>, tys: &HashSet<TyId>) -> b
         Tm::Con(c) => con(c),
         Tm::Var(_) | Tm::Meta(_) | Tm::Univ(_) | Tm::Lit(_) => false,
         Tm::Known(k) => k.any_con(|c| con(&c)),
-        Tm::Pi(_, _, _, a, b) | Tm::App(a, b, ..) => go(a) || go(b),
+        Tm::Pi(_, _, _, a, b, _) | Tm::App(a, b, ..) => go(a) || go(b),
         Tm::Lam(_, _, _, b) | Tm::Proj(b, _, _) => go(b),
         Tm::Field(b, c, _) => con(c) || go(b),
         Tm::Let(_, _, a, b, c) => go(a) || go(b) || go(c),
@@ -3362,4 +3437,13 @@ pub fn rename_words(text: &str, names: &[(String, String)]) -> String {
 /// Does a term mention a metavariable?
 pub(crate) fn has_meta(t: &Tm) -> bool {
     matches!(t, Tm::Meta(_)) || t.any_sub(|x, _| has_meta(x))
+}
+
+/// A function type used exactly once (`own (a -> b)`, §8.4), with each
+/// arrow after the first that is written with it: `own (a -> b -> c)`.
+pub fn once_fn(t: &Tm) -> Tm {
+    match t {
+        Tm::Pi(x, m, Icit::Expl, a, b, _) => Tm::Pi(x.clone(), *m, Icit::Expl, a.clone(), Rc::new(once_fn(b)), true),
+        other => other.clone(),
+    }
 }

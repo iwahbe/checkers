@@ -423,6 +423,7 @@ fn respan(e: &Expr, s: Span) -> Expr {
         ExprKind::Arrow(a, b) => ExprKind::Arrow(go(a), go(b)),
         ExprKind::Index(a, b) => ExprKind::Index(go(a), go(b)),
         ExprKind::Neg(a) => ExprKind::Neg(go(a)),
+        ExprKind::Own(a) => ExprKind::Own(go(a)),
         ExprKind::Try(a) => ExprKind::Try(go(a)),
         ExprKind::SectionL(op, a) => ExprKind::SectionL(*op, go(a)),
         ExprKind::SectionR(op, a) => ExprKind::SectionR(*op, go(a)),
@@ -759,6 +760,7 @@ impl Rewrite<'_> {
             ExprKind::Arrow(a, b) => ExprKind::Arrow(go(a), go(b)),
             ExprKind::Index(a, b) => ExprKind::Index(go(a), go(b)),
             ExprKind::Neg(a) => ExprKind::Neg(go(a)),
+            ExprKind::Own(a) => ExprKind::Own(go(a)),
             ExprKind::SectionL(op, a) => ExprKind::SectionL(*op, go(a)),
             ExprKind::SectionR(op, a) => ExprKind::SectionR(*op, go(a)),
             ExprKind::Try(a) => ExprKind::Try(go(a)),
@@ -2742,7 +2744,7 @@ impl Elab {
                 .unwrap_or(0);
             let mut kind = Tm::Univ(0);
             for _ in 0..arity {
-                kind = Tm::Pi(Rc::from("_"), Mult::Many, Icit::Expl, Rc::new(Tm::Univ(0)), Rc::new(kind));
+                kind = Tm::Pi(Rc::from("_"), Mult::Many, Icit::Expl, Rc::new(Tm::Univ(0)), Rc::new(kind), false);
             }
             kind
         };
@@ -2753,10 +2755,10 @@ impl Elab {
             let d = self.new_def(&format!("{}.{t}", c.name));
             // Under the parameters, parameter `i` is `Var(n - 1 - i)`.
             let dict = Tm::TyConApp(c.tid, (0..n).map(|i| Tm::Var(n - 1 - i)).collect());
-            let mut ty = Tm::Pi(Rc::from("$d"), Mult::Many, Icit::Impl, Rc::new(dict), Rc::new(Tm::Univ(0)));
+            let mut ty = Tm::Pi(Rc::from("$d"), Mult::Many, Icit::Impl, Rc::new(dict), Rc::new(Tm::Univ(0)), false);
             let mut body = Tm::Lam(Rc::from("$d"), Mult::Many, Icit::Impl, Rc::new(Tm::Field(Rc::new(Tm::Var(0)), con, k)));
             for (p, kind) in c.params.iter().zip(&kinds).rev() {
-                ty = Tm::Pi(Rc::from(p.as_str()), Mult::Zero, Icit::Expl, Rc::new(kind.clone()), Rc::new(ty));
+                ty = Tm::Pi(Rc::from(p.as_str()), Mult::Zero, Icit::Expl, Rc::new(kind.clone()), Rc::new(ty), false);
                 body = Tm::Lam(Rc::from(p.as_str()), Mult::Zero, Icit::Expl, Rc::new(body));
             }
             let info = &mut self.g.defs[d.0 as usize];
@@ -3731,7 +3733,7 @@ impl Elab {
         loop {
             let (a, b) = (force_meta(&self.g, mine.clone()), force_meta(&self.g, theirs.clone()));
             match (&a, &b) {
-                (Val::Pi(x, m1, i1, d1, c1), Val::Pi(_, m2, i2, d2, c2)) => {
+                (Val::Pi(x, m1, i1, d1, c1, _), Val::Pi(_, m2, i2, d2, c2, _)) => {
                     let explicit = *i1 == Icit::Expl;
                     if m1 != m2 || i1 != i2 || unify(&self.g, lvl, d1, d2).is_err() {
                         let (span, what) = if explicit {
@@ -3897,7 +3899,7 @@ impl Elab {
         let mut pos = Vec::new();
         let mut dict = None;
         let mut i = 0;
-        while let Val::Pi(_, _, _, d, c) = self.force(&ty) {
+        while let Val::Pi(_, _, _, d, c, _) = self.force(&ty) {
             pos.push(None);
             if dict.is_none() && i == own {
                 if let Val::TyCon(class, tys) = self.force(&d) {
@@ -3978,7 +3980,7 @@ impl Elab {
                     }
                 }
                 (Val::TupleTy(x), Val::TupleTy(y)) if x.len() == y.len() => work.extend(x.iter().zip(y.iter()).map(|(x, y)| (lvl, x.clone(), y.clone(), co))),
-                (Val::Pi(_, _, _, a1, c1), Val::Pi(_, _, _, a2, c2)) => {
+                (Val::Pi(_, _, _, a1, c1, _), Val::Pi(_, _, _, a2, c2, _)) => {
                     work.push((lvl + 1, apply_closure(&self.g, &c1, Val::var(lvl)), apply_closure(&self.g, &c2, Val::var(lvl)), co));
                     work.push((lvl, (*a1).clone(), (*a2).clone(), !co));
                 }
@@ -4206,7 +4208,7 @@ impl Elab {
         let mut ty = eval(&self.g, &crate::core::Env::new(), &self.g.defs[all.0 as usize].ty);
         let mut call = Tm::Def(all);
         let mut expl = vec![Tm::Lam(x, Mult::Many, Icit::Expl, Rc::new(body)), v.clone()].into_iter();
-        while let Val::Pi(_, m, icit, _, c) = self.force(&ty) {
+        while let Val::Pi(_, m, icit, _, c, _) = self.force(&ty) {
             let (a, va) = match icit {
                 Icit::Impl => (quote(&self.g, lvl, &a2[0]), a2[0].clone()),
                 Icit::Expl => (expl.next()?, Val::var(usize::MAX / 2)),
@@ -4258,7 +4260,7 @@ impl Elab {
         let mut args_t: Vec<(Val, Icit, Mult)> = Vec::new();
         let mut params: Vec<(usize, String, Val, Val)> = Vec::new();
         for i in 0..lay.arity {
-            let (Val::Pi(x, m, icit, dt, ct), Val::Pi(_, _, _, db, cb)) = (self.force(&ty_t), self.force(&ty_b)) else { return };
+            let (Val::Pi(x, m, icit, dt, ct, _), Val::Pi(_, _, _, db, cb, _)) = (self.force(&ty_t), self.force(&ty_b)) else { return };
             let (vt, vb) = match (&call_args, lay.pos[i]) {
                 (Some(a), _) => {
                     let Some((v, _, _)) = a.get(i) else { return };
@@ -4443,7 +4445,7 @@ impl Elab {
                         next.push(at(Step::Part, x, y, co, lvl));
                     }
                 }
-                (Val::Pi(_, _, _, a1, c1), Val::Pi(_, _, _, a2, c2)) => {
+                (Val::Pi(_, _, _, a1, c1, _), Val::Pi(_, _, _, a2, c2, _)) => {
                     next.push(at(Step::Arg, &a1, &a2, !co, lvl));
                     let (r1, r2) = (apply_closure(&self.g, &c1, Val::var(lvl)), apply_closure(&self.g, &c2, Val::var(lvl)));
                     next.push(at(Step::Res, &r1, &r2, co, lvl + 1));
@@ -4490,7 +4492,7 @@ impl Elab {
         let direct = paths.iter().all(|p| p.as_slice() == [Step::Arg]);
         let (bt, tt) = (self.peel(b), self.peel(t));
         let accepts = match self.force(&bt) {
-            Val::Pi(_, _, _, d, _) => self.show_val(cx, &d),
+            Val::Pi(_, _, _, d, _, _) => self.show_val(cx, &d),
             _ => self.show_val(cx, &bt),
         };
         let example = (!direct).then(|| {
@@ -4511,7 +4513,7 @@ impl Elab {
         let mut ty = eval(&self.g, &crate::core::Env::new(), &self.g.defs[g.0 as usize].ty);
         let (mut j, mut k) = (0, 0);
         let mut found = Vec::new();
-        while let Val::Pi(_, _, icit, d, c) = self.force(&ty) {
+        while let Val::Pi(_, _, icit, d, c, _) = self.force(&ty) {
             // Its own implicit binders (an instance's type variables) are
             // placeholders no context binds.
             let v = match icit {

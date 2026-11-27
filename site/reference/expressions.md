@@ -140,7 +140,7 @@ check list.map (\(k, v) -> k + v) [(1, 2), (3, 4)] == [3, 7]
 
 A lambda may use the locals around it. Its body extends as far right as possible, and an argument must be an atom (a name, a literal, something in brackets), so a lambda passed to a function is parenthesized, `f (\x -> e)`, or follows `$`, `f $ \x -> e`. A lambda whose body is an indented block is written outside brackets, after `$` or `=`: `let f = \x ->` or `future.fork sched $ \_ ->`, followed by the block.
 
-A lambda that uses a resource is a **one-shot closure**: it must be called exactly once ([Capabilities](effects.md#one-shot-closures)).
+A lambda that uses a resource is a **one-shot closure**, of type `own (a -> b)`: it must be called exactly once ([Capabilities](effects.md#one-shot-closures)).
 
 ## `try`
 

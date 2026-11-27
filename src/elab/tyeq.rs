@@ -292,7 +292,7 @@ impl Elab {
                     }
                     work.extend(x1.iter().zip(x2.iter()).map(|(x, y)| (lvl, x.clone(), y.clone())));
                 }
-                (Val::Pi(_, _, _, a1, c1), Val::Pi(_, _, _, a2, c2)) => {
+                (Val::Pi(_, _, _, a1, c1, _), Val::Pi(_, _, _, a2, c2, _)) => {
                     work.push((lvl + 1, apply_closure(&self.g, &c1, Val::var(lvl)), apply_closure(&self.g, &c2, Val::var(lvl))));
                     work.push((lvl, (*a1).clone(), (*a2).clone()));
                 }

@@ -1456,7 +1456,7 @@ fn known_calls(e: &Elab, o: &Obligation) -> Vec<crate::core::Val> {
         let empty = crate::core::Env::new();
         let mut ty = crate::core::eval(&e.g, &empty, &info.ty);
         for k in 0..args.len() {
-            let Val::Pi(_, _, _, _, c) = crate::core::force(&e.g, ty) else { return false };
+            let Val::Pi(_, _, _, _, c, _) = crate::core::force(&e.g, ty) else { return false };
             ty = crate::core::apply_closure(&e.g, &c, Val::var(usize::MAX / 2 + k));
         }
         e.type_range(&ty).is_some()

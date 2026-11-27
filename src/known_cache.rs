@@ -852,8 +852,9 @@ impl KnownCache {
             }
             Tm::Meta(_) => return None,
             Tm::Univ(u) => tok(out, &format!("u{u}")),
-            Tm::Pi(x, m, i, a, b) => {
-                for s in ["P", &escape(x), mult(*m), icit(*i)] {
+            Tm::Pi(x, m, i, a, b, once) => {
+                // `O`: a function used exactly once (`own (a -> b)`).
+                for s in [if *once { "O" } else { "P" }, &escape(x), mult(*m), icit(*i)] {
                     tok(out, s);
                 }
                 self.write_tm(g, a, out)?;
@@ -971,11 +972,11 @@ impl KnownCache {
             "d" => Tm::Def(def(self, toks.next()?)?),
             "T" => Tm::TyCon(ty(self, toks.next()?)?),
             "C" => Tm::Con(con(self, toks.next()?)?),
-            "P" | "L" => {
+            "P" | "O" | "L" => {
                 let (x, m, i) = (unescape(toks.next()?), mult(toks.next()?)?, icit(toks.next()?)?);
-                if t == "P" {
+                if t != "L" {
                     let a = self.read_tm(g, toks)?;
-                    Tm::Pi(x.into(), m, i, Rc::new(a), Rc::new(self.read_tm(g, toks)?))
+                    Tm::Pi(x.into(), m, i, Rc::new(a), Rc::new(self.read_tm(g, toks)?), t == "O")
                 } else {
                     Tm::Lam(x.into(), m, i, Rc::new(self.read_tm(g, toks)?))
                 }
@@ -1222,9 +1223,9 @@ fn closed(g: &Globals, v: &Val) -> bool {
                     }
                 }
             }
-            Val::Lam(_, _, _, c) | Val::Pi(_, _, _, _, c) if !body_closed(&c.body) => return false,
+            Val::Lam(_, _, _, c) | Val::Pi(_, _, _, _, c, _) if !body_closed(&c.body) => return false,
             Val::Lam(_, _, _, c) => env(&mut todo, &c.env),
-            Val::Pi(_, _, _, a, c) => {
+            Val::Pi(_, _, _, a, c, _) => {
                 todo.push((*a).clone());
                 env(&mut todo, &c.env);
             }

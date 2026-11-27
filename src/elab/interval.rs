@@ -585,6 +585,11 @@ impl Elab {
             return b.clone();
         }
         if self.same_type(&pa, &pb) {
+            // Equal but for `own` on a function type: one that may hold a
+            // function to call exactly once holds one (§8.4).
+            if self.val_linear(&pb) && !self.val_linear(&pa) {
+                return b.clone();
+            }
             return a.clone();
         }
         if let (Some(x), Some(y)) = (self.type_range(&pa), self.type_range(&pb)) {
@@ -595,6 +600,9 @@ impl Elab {
                 Val::TyCon(t1, x1.iter().zip(x2.iter()).map(|(x, y)| self.join_types(x, y)).collect())
             }
             (Val::TupleTy(x1), Val::TupleTy(x2)) if x1.len() == x2.len() => Val::TupleTy(x1.iter().zip(x2.iter()).map(|(x, y)| self.join_types(x, y)).collect()),
+            // A function to call exactly once, joined with one that may be
+            // called any number of times (§8.4).
+            (Val::Pi(.., false), fb @ Val::Pi(.., true)) => fb,
             // A number's base is `Nat` or `Int`, not their representation.
             _ if self.type_range(&pa).is_some() => self.arith_base(&pa),
             (fa, _) => fa,
@@ -662,7 +670,7 @@ fn runtime_closed(g: &Globals, t: &Tm) -> Option<Tm> {
         let mut out = erase(g, h, depth);
         for (a, i, m) in args {
             let m = match &ty {
-                Some(Tm::Pi(_, pm, _, _, b)) => {
+                Some(Tm::Pi(_, pm, _, _, b, _)) => {
                     let pm = *pm;
                     ty = Some((**b).clone());
                     pm

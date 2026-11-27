@@ -558,7 +558,7 @@ impl Elab {
         let mut sizes: Vec<Measure> = Vec::new();
         let mut ty = self.g.defs[d.0 as usize].ty.clone();
         let mut k = 0;
-        while let Tm::Pi(x, _, icit, dom, body) = ty.clone() {
+        while let Tm::Pi(x, _, icit, dom, body, _) = ty.clone() {
             if k >= n {
                 break;
             }

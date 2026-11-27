@@ -359,7 +359,7 @@ fn ty_cons(t: &Tm, out: &mut Vec<TyId>) {
             out.push(*id);
             v.iter().for_each(|x| ty_cons(x, out));
         }
-        Tm::App(a, b, ..) | Tm::Pi(_, _, _, a, b) => {
+        Tm::App(a, b, ..) | Tm::Pi(_, _, _, a, b, _) => {
             ty_cons(a, out);
             ty_cons(b, out);
         }

@@ -295,6 +295,8 @@ pub enum ExprKind {
     /// `(x~Int -> y~Int, x >= 5, y > x)` written inside a type (#576).
     Refine(Box<RefineTy>),
     Neg(Box<Expr>),
+    /// `own (a -> b)`: a function used exactly once (§8.4).
+    Own(Box<Expr>),
     /// `(+)`
     OpRef(Op),
     /// `(x +)`

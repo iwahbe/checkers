@@ -61,7 +61,7 @@ impl Elab {
     pub(super) fn signature_effects(&self, d: DefId) -> bool {
         let mut fty = eval(&self.g, &crate::core::Env::new(), &self.g.defs[d.0 as usize].ty);
         let mut lvl = 0;
-        while let Val::Pi(_, m, icit, dom, clo) = self.force(&fty) {
+        while let Val::Pi(_, m, icit, dom, clo, _) = self.force(&fty) {
             if icit == Icit::Expl && m != Mult::Zero && !matches!(self.force(&dom), Val::Pi(..)) && self.holds_effect(lvl, &dom) {
                 return true;
             }
@@ -185,7 +185,7 @@ impl Elab {
         let mut effects = local.is_some_and(|l| self.any_holds_effect(cx, &self.local_refers(cx, l)));
         let mut given = Vec::new();
         for a in &args {
-            let Val::Pi(_, m, icit, dom, clo) = self.force(&fty) else { return None };
+            let Val::Pi(_, m, icit, dom, clo, _) = self.force(&fty) else { return None };
             let v = self.eval(cx, a);
             if icit == Icit::Expl && m != Mult::Zero {
                 effects = effects

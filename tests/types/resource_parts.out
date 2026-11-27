@@ -33,12 +33,12 @@ error[E0408]: this guard uses `g`, a resource, which the arm's body needs
    |              ^^^^^^^ the guard runs before the body, so it can't use the resource
    = help: test `g` inside the arm's body instead, with `if` or another `match`
 
-error[E0401]: `close_it` uses `f`, a resource, so it must be called exactly once, but `captured` never calls it
+error[E0401]: `close_it` is `own (_ -> Unit)`, a function to call exactly once, but `captured` never calls it
   --> resource_parts.ck:74:9
    |
 74 |     let close_it = \u -> close f
    |         ^^^^^^^^
-   = help: call `close_it`, or pass it on to a parameter declared `own`
+   = help: call it, or pass it on
 
 error[E0406]: reading `lines` would drop the rest of this `One`, and `out` holds a resource
   --> resource_parts.ck:79:15

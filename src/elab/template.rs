@@ -101,7 +101,7 @@ impl Elab {
         let Some(Sym::Ty(class)) = self.modules.get("std.string").and_then(|m| m.types.get("Template")).copied() else { return };
         let mut ty = self.force(ft);
         let mut lvl = 0;
-        while let Val::Pi(_, _, _, _, c) = ty {
+        while let Val::Pi(_, _, _, _, c, _) = ty {
             ty = self.force(&apply_closure(&self.g, &c, Val::var(lvl)));
             lvl += 1;
         }

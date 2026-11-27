@@ -260,7 +260,7 @@ impl<'g> Stager<'g> {
         let empty = crate::core::Env::new();
         let mut ty = crate::core::eval(g, &empty, &g.defs.get(d.0 as usize)?.ty);
         for a in args {
-            let crate::core::Val::Pi(_, _, _, _, c) = crate::core::force(g, ty) else { return None };
+            let crate::core::Val::Pi(_, _, _, _, c, _) = crate::core::force(g, ty) else { return None };
             ty = crate::core::apply_closure(g, &c, crate::core::eval(g, &empty, a));
         }
         Some(crate::core::quote(g, 0, &ty))
@@ -415,7 +415,7 @@ impl<'g> Stager<'g> {
         }
         let mut binders = Vec::new();
         let mut ty = &info.ty;
-        while let Tm::Pi(x, m, _, _, b) = ty {
+        while let Tm::Pi(x, m, _, _, b, _) = ty {
             binders.push((x.clone(), *m));
             ty = b;
         }
@@ -640,7 +640,7 @@ fn lit_eq(a: &Lit, b: &Lit) -> bool {
 fn arity(ty: &Tm) -> usize {
     let mut n = 0;
     let mut t = ty;
-    while let Tm::Pi(_, _, _, _, b) = t {
+    while let Tm::Pi(_, _, _, _, b, _) = t {
         n += 1;
         t = b;
     }

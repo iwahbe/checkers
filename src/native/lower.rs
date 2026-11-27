@@ -629,7 +629,7 @@ impl Program {
 pub fn type_params(g: &Globals, d: DefId) -> usize {
     let mut n = 0;
     let mut ty = &g.defs[d.0 as usize].ty;
-    while let Tm::Pi(_, Mult::Zero, crate::core::Icit::Impl, _, b) = ty {
+    while let Tm::Pi(_, Mult::Zero, crate::core::Icit::Impl, _, b, _) = ty {
         n += 1;
         ty = b;
     }
@@ -745,7 +745,7 @@ impl<'a, 'g> Lowerer<'a, 'g> {
                     let mut keep = Vec::new();
                     let mut v = crate::core::eval(g, &crate::core::Env::new(), &info.ty);
                     let mut k = 0;
-                    while let crate::core::Val::Pi(_, m, _, dom, c) = crate::core::force(g, v.clone()) {
+                    while let crate::core::Val::Pi(_, m, _, dom, c, _) = crate::core::force(g, v.clone()) {
                         let is_type = matches!(crate::core::force(g, (*dom).clone()), crate::core::Val::Univ(_));
                         keep.push(m != Mult::Zero || types && is_type);
                         v = crate::core::apply_closure(g, &c, crate::core::Val::var(k));

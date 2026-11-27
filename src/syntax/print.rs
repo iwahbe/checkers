@@ -301,6 +301,7 @@ pub fn expr(e: &Expr, depth: usize) -> String {
             s + ")"
         }
         ExprKind::Neg(x) => format!("(neg {})", expr(x, depth)),
+        ExprKind::Own(x) => format!("(own {})", expr(x, depth)),
         ExprKind::OpRef(op) => format!("({})", op.as_str()),
         ExprKind::SectionL(op, x) => format!("(section {} {} _)", op.as_str(), expr(x, depth)),
         ExprKind::SectionR(op, x) => format!("(section {} _ {})", op.as_str(), expr(x, depth)),
