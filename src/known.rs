@@ -255,7 +255,9 @@ impl Known {
                 Node::Unit | Node::Erased => out.push_str("()"),
                 Node::Closure(Code::Def(d)) => out.push_str(&g.defs[d.0 as usize].name),
                 Node::Closure(Code::Con(c)) => out.push_str(&g.cons[c.0 as usize].name),
-                Node::Closure(Code::Lam(_)) => out.push_str("(\\…)"),
+                // As `debug` shows a function value: a lambda has no name.
+                Node::Closure(Code::Lam(_)) => out.push_str("<function>"),
+                Node::Pap(xs) if matches!(self.node(xs[0]), Node::Closure(Code::Lam(_))) => out.push_str("<function>"),
                 Node::Pap(xs) => {
                     let mut parts = Vec::new();
                     if p > 1 {
