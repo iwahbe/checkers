@@ -181,6 +181,9 @@ pub struct Local {
     /// What it is known to be at compile time, once asked
     /// (`Elab::known_local`).
     pub known: std::cell::OnceCell<Option<Rc<Tm>>>,
+    /// The bound locals its value refers to, by level, outermost first,
+    /// once asked (`Elab::local_refers`).
+    pub refers: std::cell::OnceCell<Rc<[usize]>>,
 }
 
 #[derive(Clone, Default)]
@@ -245,7 +248,7 @@ impl Cx {
         self.bound.push(l);
         self.name_more(name);
         self.names.push(Rc::from(name));
-        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: true, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default() });
+        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: true, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default(), refers: Default::default() });
         l
     }
     pub fn define(&mut self, name: &str, ty: Val, val: Val, mult: Mult) -> usize {
@@ -253,7 +256,7 @@ impl Cx {
         self.env.push(val);
         self.name_more(name);
         self.names.push(Rc::from(name));
-        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: false, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default() });
+        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: false, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default(), refers: Default::default() });
         l
     }
     /// `define`, by term `def` (over the locals before it) whose value is `val`.
