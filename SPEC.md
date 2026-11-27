@@ -470,8 +470,9 @@ The kernel still checks exact linearity, and no two calls share a token. When a 
 
 **What it costs.**
 1. *No proven ordering between uses of one authority.* At runtime, calls run in program order. The prover, however, treats two uses of `fs` as independent, so "a read after a write returns what was written" is not provable through `Fs`. Orderings that need proofs go through resources (§8.4).
-2. *Closures that capture an authority are single-use.* `let g = \u -> files.read p fs` captures one token, so `g` may be called once; the compiler rejects a second call and suggests passing `fs` as a parameter. Behaviour bodies (`fork`, `join`, `when`) run once, so they may capture authorities freely; the enclosing code keeps using them.
-3. *Concurrent branches can race on the operating system* (two forks writing one file), as in any language.
+2. *Concurrent branches can race on the operating system* (two forks writing one file), as in any language.
+
+**Closures.** An authority, and a closure that captured one (a lambda, or a function applied to some of its arguments), may be used any number of times: capabilities put no limit on how often they are used. `let g = \u -> files.read p fs` may be called twice, passed to `list.map`, returned or stored, and the enclosing code keeps using `fs`. Each call of `g` is still a call with effects (§7.1): a value of its own to the prover, never known to equal another. Only a closure that holds a resource must be called exactly once (§8.4).
 
 **Effect statements.** An expression whose result is `Unit` may stand alone as a statement line in a block, e.g. `terminal.print_line "done" term`. Only expressions returning `Unit` may: discarding any other value needs `let _ = …`.
 
