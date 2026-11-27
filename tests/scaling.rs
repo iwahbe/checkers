@@ -120,13 +120,12 @@ fn check_peak_heap(dir: &Path, name: &str, n: usize) -> u64 {
     source_usage(dir, name, &format!("module {name}\n\nfn f x -> r : x~Int, r~Int\n    {chain}\n\ncheck f 1 == {n}\n")).1
 }
 
-/// The CPU time, in milliseconds, and the peak heap, in bytes, of `ckc
-/// check` on module `name`.
+/// The types and checks phases' time, in milliseconds, and the peak heap,
+/// in bytes, of `ckc check` on module `name`.
 ///
-/// CPU time, unlike the phases' times, doesn't count waiting for a CPU, so
-/// it varies less when other tests are running. It is the child's, which
-/// the kernel reports when it is reaped; `wait4` reaps this child alone, so
-/// other tests' children, running at the same time, don't count.
+/// The phases' time is the module's own: not the standard library's
+/// checking and proofs, about 0.8 s of CPU time on Z3's threads, which
+/// varies by 0.15 s from run to run and would hide what the module adds.
 ///
 /// The peak heap is the most memory `ckc` held allocated at once
 /// (`CHECKERS_PEAK_HEAP=1`): exact, and the same in every run. The peak
@@ -140,36 +139,28 @@ fn check_peak_heap(dir: &Path, name: &str, n: usize) -> u64 {
 fn source_usage(dir: &Path, name: &str, source: &str) -> (f64, u64) {
     let file = dir.join(format!("{name}.ck"));
     std::fs::write(&file, source).unwrap();
-    let err_path = dir.join(format!("{name}.err"));
-    let child = Command::new(env!("CARGO_BIN_EXE_ckc"))
+    let out = Command::new(env!("CARGO_BIN_EXE_ckc"))
         .args(["check", "--no-cache", &format!("{name}.ck")])
         .current_dir(dir)
+        .env("CHECKERS_PHASE_TIME", "1")
         .env("CHECKERS_PEAK_HEAP", "1")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::fs::File::create(&err_path).unwrap())
-        .spawn()
+        .output()
         .expect("run ckc");
-    let pid = child.id() as libc::pid_t;
-    let mut status = 0;
-    // SAFETY: `rusage` is plain data; `wait4` writes `status` and `usage`.
-    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
-    let reaped = loop {
-        let r = unsafe { libc::wait4(pid, &mut status, 0, &mut usage) };
-        if r != -1 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
-            break r;
-        }
-    };
-    assert_eq!(reaped, pid, "{name}: wait4: {}", std::io::Error::last_os_error());
-    // `child` is reaped already: dropping it neither waits nor kills.
-    drop(child);
-    let err = std::fs::read_to_string(&err_path).unwrap();
-    assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0, "{name}: ckc failed:\n{err}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{name}: ckc failed:\n{err}{}", String::from_utf8_lossy(&out.stdout));
+    let prefix = format!("{name}.ck: ");
+    let times: Vec<f64> = err
+        .lines()
+        .filter_map(|l| l.strip_prefix(&prefix))
+        .filter(|l| l.starts_with("types ") || l.starts_with("checks "))
+        .map(|l| l.split(' ').nth(1).unwrap().parse::<f64>().unwrap())
+        .collect();
+    assert_eq!(times.len(), 2, "{name}: no phase times in\n{err}");
     let heap = err
         .lines()
         .find_map(|l| l.strip_prefix("peak heap: ")?.strip_suffix(" bytes")?.parse().ok())
         .unwrap_or_else(|| panic!("{name}: no peak heap in\n{err}"));
-    let ms = |t: libc::timeval| t.tv_sec as f64 * 1000.0 + t.tv_usec as f64 / 1000.0;
-    (ms(usage.ru_utime) + ms(usage.ru_stime), heap)
+    (times.iter().sum(), heap)
 }
 
 /// Code generation keeps memory in proportion to the function: Cranelift's
@@ -201,7 +192,7 @@ fn additions_compile_in_linear_memory() {
     );
 }
 
-/// The least CPU time of a few runs of `ckc check`, and its peak heap, on a
+/// The least phases' time of a few runs of `ckc check`, and its peak heap, on a
 /// function of 4,000, 8,000 and 16,000 `let`s, `let a{i} = {step(a{i-1})}`,
 /// over values of type `ty`, with no `check`: only elaboration is measured.
 /// The least of a few runs is the least disturbed by other tests.
@@ -223,7 +214,7 @@ fn lets_usage_by(tag: &str, ty: &str, line: &dyn Fn(usize) -> String) -> [(f64, 
 fn lets_usage_in(tag: &str, imports: &str, sig: &str, line: &dyn Fn(usize) -> String) -> [(f64, u64); 3] {
     let dir = std::env::temp_dir().join(format!("checkers-scaling-{}-{tag}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let usage = LETS.map(|n| {
+    let usage = |n: usize| {
         let name = format!("{tag}{n}");
         let mut s = format!("module {name}\n\n{imports}export fn f {sig}\n    let a0 = x\n");
         for i in 1..=n {
@@ -231,9 +222,10 @@ fn lets_usage_in(tag: &str, imports: &str, sig: &str, line: &dyn Fn(usize) -> St
         }
         s += &format!("    a{n}\n");
         (0..7).map(|_| source_usage(&dir, &name, &s)).fold((f64::INFINITY, u64::MAX), |(t, m), (t2, m2)| (t.min(t2), m.min(m2)))
-    });
+    };
+    let at = LETS.map(usage);
     let _ = std::fs::remove_dir_all(&dir);
-    usage
+    at
 }
 
 /// The sizes `lets_usage` measures. The peak heap is the larger of the
@@ -250,10 +242,10 @@ const LETS: [usize; 3] = [4000, 8000, 16000];
 /// (the standard library) cancels out. The second may add up to three times
 /// the first.
 ///
-/// Time per instruction grows with the memory a run touches, so what a
-/// doubling adds to the time doesn't tell quadratic work from cache misses:
-/// four times the lets may take at most four times as long, as linear work
-/// with any fixed part does.
+/// Time: the module's own phases (`source_usage`), about 40 ms with one
+/// `let`. Four times the lets may take at most eight times as long: linear
+/// work takes four times (2.5 to 3.7 measured, as time per instruction
+/// grows with the memory a run touches), quadratic sixteen.
 #[cfg(target_os = "linux")]
 fn assert_lets_linear(tag: &str, [a, b, c]: [(f64, u64); 3]) {
     let mb = |bytes: u64| bytes as f64 / (1 << 20) as f64;
@@ -263,7 +255,7 @@ fn assert_lets_linear(tag: &str, [a, b, c]: [(f64, u64); 3]) {
         second <= 3.0 * first,
         "{tag}: peak heap: {n0} to {n1} lets added {first:.1} MB, {n1} to {n2} added {second:.1} MB"
     );
-    assert!(c.0 <= 4.0 * a.0, "{tag}: CPU time: {n0} lets took {:.0} ms, {n2} took {:.0} ms", a.0, c.0);
+    assert!(c.0 <= 8.0 * a.0, "{tag}: types and checks: {n0} lets took {:.0} ms, {n2} took {:.0} ms", a.0, c.0);
 }
 
 /// A function of n `let`s, each joining a string to the one before. `a{i}`'s
@@ -272,7 +264,7 @@ fn assert_lets_linear(tag: &str, [a, b, c]: [(f64, u64); 3]) {
 /// local that holds one, they took n²/2 (2,000 took 350 MB and 2.8 s to
 /// elaborate, 8,000 took 4.6 GB and 44 s). So did the names of every local in
 /// scope, kept for each operator's message. (Now 4,000 to 8,000 lets add
-/// 10 MB to the peak heap, 8,000 to 16,000 21 MB, and 16,000 take 1.4 times
+/// 11 MB to the peak heap, 8,000 to 16,000 21 MB, and 16,000 take 2.5 times
 /// the time of 4,000. Without sharing, 2,000 to 4,000 lets added 850 MB to
 /// the peak resident memory, 4,000 to 8,000 3,396 MB, and 8,000 took 15
 /// times the time of 2,000.)
@@ -293,7 +285,7 @@ fn a_chain_of_lets_checks_in_linear_time_and_memory() {
 /// through it for a use of the closure; and the inliner, putting each
 /// erased `let` into all the code after it. 2,000 lets took 4.5 s and
 /// 2.4 GB, 8,000 ran out of memory. (Now 4,000 to 8,000 lets add 32 MB to
-/// the peak heap, 8,000 to 16,000 64 MB, and 16,000 take 2.1 times the time
+/// the peak heap, 8,000 to 16,000 65 MB, and 16,000 take 3.7 times the time
 /// of 4,000.)
 #[cfg(target_os = "linux")]
 #[test]
@@ -308,7 +300,7 @@ fn a_chain_of_lets_of_closures_checks_in_linear_time_and_memory() {
 /// `x + 1 + … + 1`, is i deep. 8,000 lets took 9.3 times as long as 2,000
 /// (7.35 s and 0.79 s, release). Which bound locals a local refers to is
 /// decided once, from the term that defined it: 1.6 times as long (0.75 s
-/// and 0.46 s), as without the capability. (16,000 take 2.2 times the time
+/// and 0.46 s), as without the capability. (16,000 take 3.7 times the time
 /// of 4,000.)
 #[cfg(target_os = "linux")]
 #[test]
@@ -327,7 +319,7 @@ fn a_chain_of_lets_of_closures_given_an_effect_checks_in_linear_time_and_memory(
 /// 1`, each `+` walked every one before it: 8,000 lets took 16 times as
 /// long as 2,000 (91 s and 5.6 s). What a local is known to be is decided
 /// once, from the term that defined it: 1.4 to 1.8 times as long. (16,000
-/// take 1.5 times the time of 4,000.)
+/// take 2.6 times the time of 4,000.)
 #[cfg(target_os = "linux")]
 #[test]
 fn a_chain_of_additions_in_lets_checks_in_linear_time_and_memory() {
@@ -344,13 +336,25 @@ fn a_chain_of_additions_in_lets_checks_in_linear_time_and_memory() {
 /// an environment of them all to evaluate its dictionary: 8,000 took 7.3
 /// times as long as 2,000 with these, 2.8 times without. And each call
 /// looked its function's name up among the locals, a walk over all of them
-/// when the name isn't a local's: 16,000 took 6.7 times as long as 4,000
-/// (4.8 s and 0.72 s, release), and 32,000 took 34 s. Looked up in a map of
-/// the locals' names, 16,000 take 2.2 times as long as 4,000 (1.05 s and
-/// 0.47 s), and 32,000 1.7 s; 4,000 to 8,000 lets add 54 MB to the peak
-/// heap, 8,000 to 16,000 108 MB.
+/// when the name isn't a local's: 16,000 took 14 times as long as 4,000
+/// (5.0 s and 0.36 s to elaborate, release), and 32,000 took 33 s. Looked
+/// up in a map of the locals' names, 3.5 times, and 32,000 take 1.7 s;
+/// 4,000 to 8,000 lets add 55 MB to the peak heap, 8,000 to 16,000 110 MB.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_chain_of_class_calls_in_lets_checks_in_linear_time_and_memory() {
     assert_lets_linear("by_class", lets_usage("by_class", "Int", |a| format!("add {a} 1")));
+}
+
+/// A function of n `let`s, each using a global function, `not`, eight
+/// times. A name is looked up among the locals first: compared with each
+/// local in scope, each use took time in proportion to the locals before
+/// it, and 8,000 lets took 6.7 times as long as 2,000 (6.6 s and 1.0 s).
+/// Looked up in a map from each name to the levels of the locals of that
+/// name, 1.8 times as long (16,000 take 3.0 times the time of 4,000).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_chain_of_lets_using_a_global_name_checks_in_linear_time_and_memory() {
+    let uses = format!("{}x == 0{}", "not (".repeat(8), ")".repeat(8));
+    assert_lets_linear("by_global", lets_usage_by("by_global", "Int", &|i| format!("    let a{i} = if {uses} then a{} else a{}\n", i - 1, i - 1)));
 }

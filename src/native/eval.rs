@@ -25,6 +25,8 @@ pub struct Evaluator<'g> {
     /// programs are evaluated at the same time on other threads. Each call
     /// into the runtime is made `within` it.
     prog: &'static checkers_rt::prog::Prog,
+    /// Each lambda function's code, closed (`lam_code`), once asked for.
+    lam_codes: std::cell::RefCell<HashMap<u32, Option<Arc<super::lower::LamCode>>>>,
 }
 
 impl<'g> Evaluator<'g> {
@@ -45,9 +47,10 @@ impl<'g> Evaluator<'g> {
         let module = super::jit_module();
         let mut gen = Gen::importing_invoke(module, Program::new(g, None), g);
         gen.probe = true;
+        gen.p.keep_lambdas = true;
         let invoke = super::shared_invoke();
         let prog = checkers_rt::prog::make(&super::descriptor(g, &gen.p), invoke);
-        Evaluator { g, staged: None, gen, prog }
+        Evaluator { g, staged: None, gen, prog, lam_codes: Default::default() }
     }
 
     /// An evaluator for a program's own code as native code compiles it
@@ -60,7 +63,7 @@ impl<'g> Evaluator<'g> {
         let invoke = super::shared_invoke();
         let prog = checkers_rt::prog::make(&super::descriptor(g, &gen.p), invoke);
         gen.p.specs.borrow_mut().frozen = true;
-        let mut ev = Evaluator { g, staged, gen, prog };
+        let mut ev = Evaluator { g, staged, gen, prog, lam_codes: Default::default() };
         // The program's hand-written `Debug` instances (#126), as when it
         // runs: a value shown when compiling is shown as it would be then.
         if let Some(ir) = super::lower::show_table(g) {
@@ -282,29 +285,88 @@ impl<'g> Evaluator<'g> {
     }
 
     /// The code of each definition's and constructor's function as a value
-    /// (a global closure's), by its address: what a known closure is.
-    fn codes(&self) -> HashMap<u64, crate::known::Code> {
+    /// (a global closure's), and of each lambda's function, by its address:
+    /// what a known closure is.
+    fn codes(&self) -> HashMap<u64, Whose> {
         use crate::known::Code;
         let p = &self.gen.p;
         let mut out = HashMap::new();
-        let mut add = |f: u32, c: Code| {
+        let mut add = |f: u32, c: Whose| {
             for f in [f, p.entries.get(&f).copied().unwrap_or(f)] {
                 if (f as usize) < p.funcs.len() {
-                    out.insert(self.gen.m.get_finalized_function(self.gen.func_id(f)) as u64, c);
+                    out.insert(self.gen.m.get_finalized_function(self.gen.func_id(f)) as u64, c.clone());
                 }
             }
         };
         for (d, shape) in &p.defs {
             match shape {
-                super::lower::DefShape::Fn { func, .. } => add(*func, Code::Def(crate::core::DefId(*d))),
-                super::lower::DefShape::Builtin { wrap, .. } => add(*wrap, Code::Def(crate::core::DefId(*d))),
+                super::lower::DefShape::Fn { func, .. } => add(*func, Whose::Known(Code::Def(crate::core::DefId(*d)))),
+                super::lower::DefShape::Builtin { wrap, .. } => add(*wrap, Whose::Known(Code::Def(crate::core::DefId(*d)))),
                 _ => {}
             }
         }
         for (c, f) in &p.con_wraps {
-            add(*f, Code::Con(ConId(*c)));
+            add(*f, Whose::Known(Code::Con(ConId(*c))));
+        }
+        for f in p.lambdas.keys() {
+            add(*f, Whose::Lambda(*f));
         }
         out
+    }
+
+    /// The code of lambda function `f`, closed (`LamCode`), if it has a
+    /// form every program can compile: each variable it uses is one its
+    /// closure holds, and it refers to definitions only (a copy, `spec`,
+    /// is this program's: its code, compiled from its body, is put in its
+    /// place).
+    fn lam_code(&self, f: u32) -> Option<Arc<super::lower::LamCode>> {
+        use super::ir::Ir;
+        if let Some(c) = self.lam_codes.borrow().get(&f) {
+            return c.clone();
+        }
+        let p = &self.gen.p;
+        let r = (|| {
+            let src = p.lambdas.get(&f)?;
+            let Ir::Lam(o, _) = &*src.ir else { return None };
+            let mut free = std::collections::BTreeSet::new();
+            super::ir::free_vars(&src.ir, &mut free);
+            if !free.iter().all(|x| src.captured.contains(x)) {
+                return None;
+            }
+            let m = src.captured.len();
+            let body = super::ir::rename(&src.ir, &|x| m - 1 - src.captured.iter().position(|c| *c == x).expect("a captured variable"));
+            let ir = (0..m).fold(body, |b, _| Ir::Lam(*o, Arc::new(b)));
+            let specs = p.specs.borrow();
+            let mut gs = Vec::new();
+            super::ir::globals_in(&ir, &mut gs);
+            if gs.iter().any(|d| specs.copy(d.0).is_none() && d.0 as usize >= self.g.defs.len()) {
+                return None;
+            }
+            // A copy made where a call was folded is erased code already;
+            // one calling other copies isn't put in.
+            let is_copy = |d: &crate::core::DefId| specs.copy(d.0).is_some();
+            for d in &gs {
+                if let Some(super::spec::Copy { body: super::spec::Body::Folded { code, .. }, .. }) = specs.copy(d.0) {
+                    let mut inner = Vec::new();
+                    super::ir::globals_in(code, &mut inner);
+                    if inner.iter().any(is_copy) {
+                        return None;
+                    }
+                }
+            }
+            let ir = super::ir::map_globals(&ir, &|d| {
+                specs.copy(d.0).map(|c| match &c.body {
+                    super::spec::Body::Term(t) => super::ir::Compiler::new(self.g, Some(c.of)).go_pub(t),
+                    super::spec::Body::Folded { code, .. } => super::ir::shift(code, 0, 0),
+                })
+            });
+            if !first_order_free(&ir) {
+                return None;
+            }
+            Some(Arc::new(super::lower::LamCode::new(Arc::new(ir), m)))
+        })();
+        self.lam_codes.borrow_mut().insert(f, r.clone());
+        r
     }
 
     /// A value of type `ty` (a closed type) as a term, where it has one
@@ -362,6 +424,25 @@ enum Make {
     /// An array laid out by this layout's code.
     Array(u8),
     Pap,
+    /// A lambda's closure: its code given the values it captured.
+    Lam(Arc<super::lower::LamCode>),
+}
+
+/// Whose code a function's address is: a definition's or a constructor's
+/// (a known closure's code), or lambda function `f`'s.
+#[derive(Clone)]
+enum Whose {
+    Known(crate::known::Code),
+    Lambda(u32),
+}
+
+/// Whether code's static data holds no function of a program's
+/// first-order code (`SNode::Code`), which another program can't name.
+fn first_order_free(ir: &super::ir::Ir) -> bool {
+    match ir {
+        super::ir::Ir::Static(v, id) => v.reachable(*id).iter().all(|x| !matches!(v.node(*x), super::lower::SNode::Code(_))),
+        _ => ir.subterms().iter().all(|(x, _)| first_order_free(x)),
+    }
 }
 
 struct Reifier<'a, 'g> {
@@ -378,7 +459,7 @@ struct Reifier<'a, 'g> {
     /// alive until then, so no word read stands for two values.
     held: Vec<W>,
     /// Whose code each code address is (`Evaluator::codes`), once needed.
-    codes: Option<HashMap<u64, crate::known::Code>>,
+    codes: Option<HashMap<u64, Whose>>,
 }
 
 impl Reifier<'_, '_> {
@@ -450,6 +531,11 @@ impl Reifier<'_, '_> {
                 Make::Tuple => self.b.add(Node::Tuple(ids.into())),
                 Make::Array(l) => self.b.add(Node::Array(l, ids.into())),
                 Make::Pap => self.b.add(Node::Pap(ids.into())),
+                Make::Lam(code) => {
+                    let clo = self.b.add(Node::Closure(crate::known::Code::Lam(code)));
+                    let parts: Vec<u32> = std::iter::once(clo).chain(ids).collect();
+                    self.b.add(Node::Pap(parts.into()))
+                }
             };
             self.done.insert(f.key, id);
         }
@@ -535,11 +621,25 @@ impl Reifier<'_, '_> {
             w::K_TUPLE => Some(Step::Parts(Make::Tuple, (0..w::nfields(v)).map(|i| (w::slot(v, i), None)).collect())),
             checkers_rt::array::K_ARRAY => Some(self.array(v, None)),
             // A definition's or a constructor's function, with no free
-            // variables: by its code. A lambda's closure isn't known.
-            w::K_CLO if w::nfields(v) == 0 => {
+            // variables, by its code; a lambda's closure, by its code and
+            // the values it captured.
+            w::K_CLO => {
                 let code = w::slot(v, 0);
                 let codes = self.codes.get_or_insert_with(|| self.ev.codes());
-                codes.get(&code).map(|c| Step::Leaf(Node::Closure(*c)))
+                match codes.get(&code)? {
+                    Whose::Known(c) if w::nfields(v) == 0 => Some(Step::Leaf(Node::Closure(c.clone()))),
+                    Whose::Known(_) => None,
+                    Whose::Lambda(f) => {
+                        let lam = self.ev.lam_code(*f)?;
+                        if lam.captured != w::nfields(v) {
+                            return None;
+                        }
+                        if lam.captured == 0 {
+                            return Some(Step::Leaf(Node::Closure(crate::known::Code::Lam(lam))));
+                        }
+                        Some(Step::Parts(Make::Lam(lam), (0..w::nfields(v)).map(|i| (w::slot(v, i + 1), None)).collect()))
+                    }
+                }
             }
             // Its function, then the arguments it holds.
             w::K_PAP => Some(Step::Parts(Make::Pap, (0..=w::nfields(v)).map(|i| (w::slot(v, i), None)).collect())),

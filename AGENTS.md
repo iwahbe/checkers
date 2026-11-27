@@ -39,7 +39,7 @@ src/elab/pattern.rs  `match` → case trees, exhaustiveness witnesses
 src/elab/index.rs    names for tools: each use, its definition, kind and hover text (`--json`, #601); `ckc index`, a package's (#648)
 src/elab/interval.rs arithmetic keeps constant bounds: ranges as anonymous refinements, joined branches, their array layouts (#616)
 src/known.rs         values known at compile time as graphs: hash-consed nodes, walked by loops, never recursion (§8.9); `Tm::Known`, `Val::Known`
-src/known_cache.rs   known values kept across builds in `.checkers/known/`, the type checker's and folding's: keys over every definition and type a computation can reach (a specialized copy by its source and the arguments put in), values written with names (§8.9)
+src/known_cache.rs   known values kept across builds in `.checkers/known/`, the type checker's (its own evaluation's, `force_kept`, and native code's for it) and folding's: keys over every definition and type a computation can reach (a specialized copy by its source and the arguments put in), values written with names (§8.9)
 src/range.rs         constant bounds of integers and their arithmetic: the elaborator's intervals (#616), native code's bounds from signatures (§14)
 src/elab/refine.rs   refinements inside types: inline and function-type refinements, implication, variance, E0262 (#554, #576, #575, #580, #579, #578, #583)
 src/elab/tyeq.rs     type equations `A == B` (#209): wanted at uses (E0294), given in bodies and `match` arms (classes, representatives), impossible cases

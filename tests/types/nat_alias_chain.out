@@ -1,0 +1,8 @@
+error[E0450]: cannot prove that this `Nat` subtraction stays at or above zero
+  --> nat_alias_chain.ck:79:5
+   |
+79 |     0 - 1
+   |     ^^^^^ `-` on `Nat` needs the left side to be at least the right
+   = help: check it first (`if a >= b then a - b else …`), or write `a + (-b)` for a signed result
+
+nat_alias_chain.ck: 1 error, 0 warnings

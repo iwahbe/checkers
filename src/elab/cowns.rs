@@ -16,6 +16,42 @@ enum Held {
     List(Val, Val),
 }
 
+/// The walk for `can_hold`.
+struct CanHold<'a> {
+    hit: &'a dyn Fn(&Elab, &Val) -> bool,
+    unknown: bool,
+    by_head: bool,
+}
+
+impl super::reach::Holds for CanHold<'_> {
+    fn look(&self, e: &Elab, t: &Val) -> super::reach::Look {
+        use super::reach::Look;
+        let maybe = if self.unknown { Look::Hit } else { Look::Leaf };
+        if (self.hit)(e, t) {
+            return Look::Hit;
+        }
+        match t {
+            Val::Pi(..) | Val::Error => maybe,
+            Val::TupleTy(ts) => Look::Parts(ts.to_vec()),
+            // A built-in type: what its type arguments can hold.
+            Val::TyCon(id, args) if e.g.tys[id.0 as usize].ctors.is_empty() => Look::Parts(args.to_vec()),
+            Val::TyCon(id, args) => Look::Fields(*id, args.to_vec()),
+            // An unknown that only a number can solve (a literal's type).
+            Val::Neutral(Head::Meta(m), _) if e.numeric_meta(*m) => Look::Leaf,
+            Val::Neutral(..) => maybe,
+            _ => Look::Leaf,
+        }
+    }
+
+    fn field(&self, e: &Elab, c: ConId, k: usize) -> bool {
+        e.g.cons[c.0 as usize].fields[k].1 != Mult::Zero
+    }
+
+    fn by_head(&self) -> bool {
+        self.by_head
+    }
+}
+
 /// A cown a `when` names: its binder, the cown as written, whether it is a
 /// parameter of the function, its value and its content type.
 pub(super) struct HeldCown {
@@ -60,48 +96,14 @@ impl Elab {
     /// Whether a value of type `ty` can hold a value of a type `hit`
     /// accepts: as itself, a part, a field, an element or a cown's
     /// contents. What a function, a type variable or an unknown can hold
-    /// is `unknown`.
-    pub(super) fn can_hold(&self, lvl: usize, ty: &Val, hit: &dyn Fn(&Elab, &Val) -> bool, unknown: bool, depth: usize, seen: &mut Vec<(TyId, Vec<Tm>)>) -> bool {
-        if depth > 32 {
-            return unknown;
-        }
-        let t = self.force(ty);
-        if hit(self, &t) {
-            return true;
-        }
-        match t {
-            Val::Pi(..) | Val::Error => unknown,
-            Val::TupleTy(ts) => ts.iter().any(|t| self.can_hold(lvl, t, hit, unknown, depth + 1, seen)),
-            Val::TyCon(id, args) => {
-                let ctors = self.g.tys[id.0 as usize].ctors.clone();
-                if ctors.is_empty() {
-                    // A built-in type: what its type arguments can hold.
-                    return args.iter().any(|a| self.can_hold(lvl, a, hit, unknown, depth + 1, seen));
-                }
-                let key: Vec<Tm> = args.iter().map(|a| quote(&self.g, lvl, a)).collect();
-                if seen.iter().any(|(i, k)| *i == id && k.len() == key.len() && k.iter().zip(&key).all(|(a, b)| tm_eq(a, b))) {
-                    return false;
-                }
-                seen.push((id, key));
-                let found = ctors.iter().any(|c| {
-                    let fields = self.g.cons[c.0 as usize].fields.clone();
-                    fields.iter().enumerate().any(|(i, f)| {
-                        if f.1 == Mult::Zero {
-                            return false;
-                        }
-                        let mut env = args.to_vec();
-                        env.extend(std::iter::repeat_n(Val::Error, i));
-                        let fty = eval(&self.g, &crate::core::Env::from(env), &f.3);
-                        self.can_hold(lvl, &fty, hit, unknown, depth + 1, seen)
-                    })
-                });
-                seen.pop();
-                found
-            }
-            // An unknown that only a number can solve (a literal's type).
-            Val::Neutral(Head::Meta(m), _) if self.numeric_meta(m) => false,
-            Val::Neutral(..) => unknown,
-            _ => false,
+    /// is `unknown`, and so is what a type holding types without end,
+    /// computed from its arguments, can (`reach`). `by_head`: whether
+    /// `hit` looks only at a type's head.
+    pub(super) fn can_hold(&self, lvl: usize, ty: &Val, hit: &dyn Fn(&Elab, &Val) -> bool, unknown: bool, by_head: bool) -> bool {
+        match self.reach(&CanHold { hit, unknown, by_head }, lvl, ty).0 {
+            super::reach::Found::Nothing => false,
+            super::reach::Found::Hit(_) => true,
+            super::reach::Found::Unsure(_) => unknown,
         }
     }
 
@@ -135,50 +137,59 @@ impl Elab {
 
     /// Whether a value of type `ty` can reach a cown holding a `u`.
     fn reaches_cown(&self, lvl: usize, ty: &Val, u: &Val) -> bool {
-        self.can_hold(lvl, ty, &|e: &Elab, t: &Val| e.is_cown(t).is_some_and(|w| !e.types_apart(&w, u)), true, 0, &mut Vec::new())
+        self.can_hold(lvl, ty, &|e: &Elab, t: &Val| e.is_cown(t).is_some_and(|w| !e.types_apart(&w, u)), true, false)
     }
 
     /// The cowns, and lists of cowns, in value `v` of type `ty`: itself, the
     /// parts of a tuple, the fields of a record. `lists`: lists of cowns too.
-    fn held(&self, v: &Val, ty: &Val, lists: bool, depth: usize, out: &mut Vec<Held>) {
-        if depth > 3 {
-            return;
-        }
-        let t = self.force(ty);
-        if let Some(u) = self.is_cown(&t) {
-            out.push(Held::Cown(v.clone(), u));
-            return;
-        }
-        match t {
-            Val::TyCon(id, args) if lists && Some(id) == self.g.well_known.list => {
-                if let Some(u) = args.first().and_then(|a| self.is_cown(&self.force(a))) {
-                    out.push(Held::List(v.clone(), u));
-                }
+    ///
+    /// However deep: a worklist. A record that holds itself through
+    /// records and tuples alone has no values, so it is not looked into
+    /// again.
+    fn held(&self, v: &Val, ty: &Val, lists: bool, out: &mut Vec<Held>) {
+        let mut work: Vec<(Val, Val, Rc<Vec<TyId>>)> = vec![(v.clone(), ty.clone(), Rc::new(Vec::new()))];
+        while let Some((v, ty, inside)) = work.pop() {
+            let t = self.force(&ty);
+            if let Some(u) = self.is_cown(&t) {
+                out.push(Held::Cown(v, u));
+                continue;
             }
-            Val::TupleTy(ts) => {
-                for (i, t) in ts.iter().enumerate() {
-                    let p = crate::core::elim(&self.g, v.clone(), Elim::Proj(i, false));
-                    self.held(&p, t, lists, depth + 1, out);
-                }
-            }
-            Val::TyCon(id, args) => {
-                let ti = &self.g.tys[id.0 as usize];
-                let [c] = ti.ctors[..] else { return };
-                if !ti.is_record {
-                    return;
-                }
-                let fields = self.g.cons[c.0 as usize].fields.clone();
-                let mut env = args.to_vec();
-                for (i, f) in fields.iter().enumerate() {
-                    let x = crate::core::elim(&self.g, v.clone(), Elim::Field(c, i));
-                    if f.1 != Mult::Zero {
-                        let fty = eval(&self.g, &crate::core::Env::from(env.clone()), &f.3);
-                        self.held(&x, &fty, lists, depth + 1, out);
+            match t {
+                Val::TyCon(id, args) if lists && Some(id) == self.g.well_known.list => {
+                    if let Some(u) = args.first().and_then(|a| self.is_cown(&self.force(a))) {
+                        out.push(Held::List(v, u));
                     }
-                    env.push(x);
                 }
+                Val::TupleTy(ts) => {
+                    for (i, t) in ts.iter().enumerate().rev() {
+                        let p = crate::core::elim(&self.g, v.clone(), Elim::Proj(i, false));
+                        work.push((p, t.clone(), inside.clone()));
+                    }
+                }
+                Val::TyCon(id, args) => {
+                    let ti = &self.g.tys[id.0 as usize];
+                    let [c] = ti.ctors[..] else { continue };
+                    if !ti.is_record || inside.contains(&id) {
+                        continue;
+                    }
+                    let mut within = (*inside).clone();
+                    within.push(id);
+                    let within = Rc::new(within);
+                    let fields = self.g.cons[c.0 as usize].fields.clone();
+                    let mut env = args.to_vec();
+                    let mut parts = Vec::new();
+                    for (i, f) in fields.iter().enumerate() {
+                        let x = crate::core::elim(&self.g, v.clone(), Elim::Field(c, i));
+                        if f.1 != Mult::Zero {
+                            let fty = eval(&self.g, &crate::core::Env::from(env.clone()), &f.3);
+                            parts.push((x.clone(), fty, within.clone()));
+                        }
+                        env.push(x);
+                    }
+                    work.extend(parts.into_iter().rev());
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
 
@@ -249,7 +260,7 @@ impl Elab {
     pub(super) fn assume_new_cowns(&mut self, cx: &mut Cx, v: &Val, ty: &Val, given: &[Val]) {
         let lvl = cx.lvl();
         let mut mine = Vec::new();
-        self.held(v, ty, false, 0, &mut mine);
+        self.held(v, ty, false, &mut mine);
         let new: Vec<(Val, Val)> = mine
             .into_iter()
             .filter_map(|m| match m {
@@ -265,7 +276,7 @@ impl Elab {
             if matches!(self.force(&cx.locals[k].ty), Val::Univ(_) | Val::Pi(..)) {
                 continue;
             }
-            self.held(&cx.env[k].clone(), &cx.ty_of(k), true, 0, &mut scope);
+            self.held(&cx.env[k].clone(), &cx.ty_of(k), true, &mut scope);
         }
         let contains = self.g.defs.iter().position(|d| &*d.module == "std.list" && &*d.name == "contains").map(|i| DefId(i as u32));
         let mut seen: Vec<Tm> = Vec::new();

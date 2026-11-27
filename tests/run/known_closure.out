@@ -1,0 +1,5 @@
+-- stdout
+7
+-- stderr
+checkers runtime: 0 objects live at exit
+-- exit 0

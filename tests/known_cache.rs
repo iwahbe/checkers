@@ -139,3 +139,66 @@ fn folded_values_are_kept_across_builds() {
     assert_eq!(folded(&computed).len(), computed.len(), "an edit of `build` computes no other value: {computed:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A type the type checker's own evaluation computes from a `comptime`
+/// argument, long enough to be kept (more than a thousand unfoldings),
+/// and a function it never runs.
+fn computed_type(base: &str, other: &str) -> String {
+    let text = "a".repeat(1500);
+    format!(
+        "module p
+
+import std.system (System, ExitCode)
+import std.terminal
+import std.string
+
+fn walk src i -> t : src~Bytes, i~Nat, i <= len src, t~Type
+    decreasing len src - i
+    if i == len src
+        {base}
+    else if src[i] == '{{'
+        String
+    else
+        walk src (i + 1)
+
+fn pick s x -> y : s~comptime String, x~walk (string.bytes s) 0, y~walk (string.bytes s) 0
+    x
+
+fn other x -> r : x~Nat, r~Nat
+    {other}
+
+export fn main args sys -> code : args~List String, sys~System, code~ExitCode
+    terminal.print_line (pick \"{text}{{\" \"kept\") sys.term
+    terminal.print_line (string.debug (other (len args))) sys.term
+    Success
+"
+    )
+}
+
+#[test]
+fn computed_types_are_kept_across_builds() {
+    let dir = scratch("types");
+    let walk = |computed: &[String]| computed.iter().filter(|c| c.starts_with("walk ")).cloned().collect::<Vec<_>>();
+    std::fs::write(dir.join("p.ck"), computed_type("Int", "x + 1")).unwrap();
+    let (out, computed) = run(&dir);
+    assert_eq!(out, "kept\n1\n");
+    let first = walk(&computed);
+    assert!(!first.is_empty(), "the first build computes the type: {computed:?}");
+
+    let (out, computed) = run(&dir);
+    assert_eq!(out, "kept\n1\n");
+    assert!(computed.is_empty(), "the next build reuses every value, but computed {computed:?}");
+
+    // A function the type doesn't run: still reused.
+    std::fs::write(dir.join("p.ck"), computed_type("Int", "x + 2")).unwrap();
+    let (out, computed) = run(&dir);
+    assert_eq!(out, "kept\n2\n");
+    assert!(computed.is_empty(), "an edit elsewhere keeps it, but computed {computed:?}");
+
+    // The function that computes it: computed again, and nothing else is.
+    std::fs::write(dir.join("p.ck"), computed_type("Nat", "x + 2")).unwrap();
+    let (out, computed) = run(&dir);
+    assert_eq!(out, "kept\n2\n");
+    assert_eq!(computed, first, "an edit of `walk` computes the type again, and only it");
+    let _ = std::fs::remove_dir_all(&dir);
+}

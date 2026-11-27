@@ -786,7 +786,7 @@ fn doc_comments(c: &mut Checked, e: &elab::Elab, user: &str, dir: &std::path::Pa
     // A sample is a module of the program its module is in (#642 d).
     let root = e.base_dir.clone().unwrap_or_else(|| dir.to_path_buf());
     for s in &samples {
-        c.diags.extend(literate::sample_diagnostics(s, &root));
+        c.diags.extend(literate::sample_diagnostics(s, &root, user));
     }
 }
 

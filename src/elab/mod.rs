@@ -20,6 +20,7 @@ pub(crate) mod order;
 mod pattern;
 mod qualify;
 pub use pattern::BINDING_HELP;
+mod reach;
 mod refine;
 pub mod settle;
 mod template;
@@ -98,6 +99,9 @@ pub struct FnMeta {
     pub builtin: bool,
     /// The result's name, if it has one (`-> y`).
     pub result: Option<String>,
+    /// The result is declared `own` (`-> k : k~own (Unit -> Unit)`): the
+    /// caller uses it exactly once (§8.4).
+    pub result_own: bool,
 }
 
 impl FnMeta {
@@ -184,9 +188,6 @@ pub struct Local {
     /// The bound locals its value refers to, by level, outermost first,
     /// once asked (`Elab::local_refers`).
     pub refers: std::cell::OnceCell<Rc<[usize]>>,
-    /// The level of the local of the same name that this one hides, if
-    /// any: the innermost of that name once this one is gone.
-    hides: Option<usize>,
 }
 
 #[derive(Clone, Default)]
@@ -209,17 +210,10 @@ pub struct Cx {
     /// Facts in scope (§7.1): `Bool` values known to be true, tagged with the
     /// context length when they were added, in order.
     pub facts: PVec<(usize, Val)>,
-    /// For each name, how many locals have it and the level of the
-    /// innermost: a name is looked up in scope (`lookup`, `Scope::count`)
-    /// without a walk over every local.
-    named: crate::pmap::PMap<Name, Named>,
-}
-
-/// The locals of one name in a context (`Cx::named`).
-#[derive(Clone, Copy)]
-struct Named {
-    count: usize,
-    innermost: usize,
+    /// The levels of the locals of each name, outermost first, so that a
+    /// name is looked up in scope (`lookup`, `Scope::count`) in time
+    /// logarithmic in the number of names, not linear in the locals.
+    named: crate::pmap::PMap<Name, PVec<usize>>,
 }
 
 impl Scope for Cx {
@@ -233,7 +227,7 @@ impl Scope for Cx {
         self.locals[level].span.map(|s| s.start)
     }
     fn count(&self, x: &str) -> usize {
-        self.named.get(x).map_or(0, |n| n.count)
+        self.named.get(x).map_or(0, |ls| ls.len())
     }
 }
 
@@ -257,17 +251,17 @@ impl Cx {
         let l = self.lvl();
         self.env.push(Val::var(l));
         self.bound.push(l);
-        let hides = self.name_more(name, l);
+        self.name_more(name, l);
         self.names.push(Rc::from(name));
-        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: true, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default(), refers: Default::default(), hides });
+        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: true, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default(), refers: Default::default() });
         l
     }
     pub fn define(&mut self, name: &str, ty: Val, val: Val, mult: Mult) -> usize {
         let l = self.lvl();
         self.env.push(val);
-        let hides = self.name_more(name, l);
+        self.name_more(name, l);
         self.names.push(Rc::from(name));
-        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: false, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default(), refers: Default::default(), hides });
+        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: false, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default(), refers: Default::default() });
         l
     }
     /// `define`, by term `def` (over the locals before it) whose value is `val`.
@@ -280,20 +274,21 @@ impl Cx {
         let n = self.lvl().saturating_sub(1);
         self.truncate(n);
     }
-    /// One more local named `name`, at level `l`: the level of the one it
-    /// hides, if any.
-    fn name_more(&mut self, name: &str, l: usize) -> Option<usize> {
-        let before = self.named.get(name).copied();
-        self.named.insert(Rc::from(name), Named { count: before.map_or(0, |n| n.count) + 1, innermost: l });
-        before.map(|n| n.innermost)
+    /// The local at `level` is named `name`.
+    fn name_more(&mut self, name: &str, level: usize) {
+        let mut ls = self.named.get(name).cloned().unwrap_or_default();
+        ls.push(level);
+        self.named.insert(Rc::from(name), ls);
     }
     pub fn truncate(&mut self, n: usize) {
-        // Innermost first: each restores the one it hid.
-        for l in (n..self.lvl()).rev() {
-            let local = &self.locals[l];
-            match (local.hides, self.named.get(&*local.name).copied()) {
-                (Some(hidden), Some(k)) => self.named.insert(local.name.clone(), Named { count: k.count - 1, innermost: hidden }),
-                _ => self.named.remove(&*local.name),
+        for l in n..self.lvl() {
+            let name = self.locals[l].name.clone();
+            let mut ls = self.named.get(&*name).cloned().unwrap_or_default();
+            ls.pop();
+            if ls.is_empty() {
+                self.named.remove(&*name);
+            } else {
+                self.named.insert(name, ls);
             }
         }
         self.env.truncate(n);
@@ -312,7 +307,7 @@ impl Cx {
     }
     /// The level of the innermost local named `name`.
     pub fn lookup(&self, name: &str) -> Option<usize> {
-        self.named.get(name).map(|n| n.innermost)
+        self.named.get(name).and_then(|ls| ls.last().copied())
     }
     pub fn var(&self, lvl: usize) -> Tm {
         Tm::Var(self.lvl() - lvl - 1)
@@ -780,8 +775,6 @@ pub struct Elab {
     pub bounds: HashMap<DefId, Vec<Option<crate::range::Range>>>,
     /// Values known at compile time, by term (`known_value`).
     pub known_cache: std::cell::RefCell<HashMap<String, Option<Tm>>>,
-    /// Known values kept across builds (§8.9): their keys and storage.
-    pub known_disk: std::cell::RefCell<crate::known_cache::KnownCache>,
     /// Definitions found to run at compile time (`runnable`).
     pub runnable_defs: std::cell::RefCell<HashSet<DefId>>,
     /// What was proved before the proofs phase, so that a module's own
@@ -895,9 +888,6 @@ pub struct Elab {
     /// Ordered, so that an arm's variables are found without going through
     /// every variable in scope.
     pub moot_in_arm: BTreeSet<(DefId, usize, ConId, usize)>,
-    /// The stuck `match`es whose arms `case_linear` is looking at: met again,
-    /// a recursive type function adds no resource (#659).
-    pub lin_visiting: std::cell::RefCell<Vec<usize>>,
     /// A `match` arm's resource names, bound as ghosts for its guard: the
     /// guard's span, for E0408.
     pub guard_vars: HashMap<(DefId, String), Span>,
@@ -1127,7 +1117,6 @@ impl Elab {
             alias_preds: HashMap::new(),
             bounds: HashMap::new(),
             known_cache: std::cell::RefCell::new(HashMap::new()),
-            known_disk: std::cell::RefCell::new(Default::default()),
             runnable_defs: std::cell::RefCell::new(HashSet::new()),
             early: Default::default(),
             module_proofs: std::cell::RefCell::new(HashMap::new()),
@@ -1166,7 +1155,6 @@ impl Elab {
             binder_spans: HashMap::new(),
             lam_domains: HashMap::new(),
             moot_in_arm: BTreeSet::new(),
-            lin_visiting: std::cell::RefCell::new(Vec::new()),
             guard_vars: HashMap::new(),
             stdlib_mode: false,
             map_elem_sub: None,
@@ -1274,8 +1262,8 @@ impl Elab {
     /// for the types of variables a pattern or `let` binds (#662).
     pub fn reduce_type(&self, v: &Val) -> Val {
         let mut v = crate::core::force_meta(&self.g, v.clone());
-        for _ in 0..64 {
-            let Val::Neutral(Head::Def(d), _) = &v else { break };
+        // However many: unfolding ends (see `core::unfold`).
+        while let Val::Neutral(Head::Def(d), _) = &v {
             if self.alias_preds.contains_key(d) {
                 break;
             }
@@ -1768,6 +1756,32 @@ impl Lin {
     }
 }
 
+/// What `val_linear` is inside: a type whose field's type is computed, or
+/// a stuck `match` (by its address), innermost first.
+#[derive(Clone, Copy, PartialEq)]
+enum LinStep {
+    Ty(TyId),
+    Case(usize),
+}
+
+struct LinPath {
+    step: LinStep,
+    up: Option<Rc<LinPath>>,
+}
+
+impl LinPath {
+    fn has(p: &Option<Rc<LinPath>>, step: LinStep) -> bool {
+        let mut p = p.as_deref();
+        while let Some(q) = p {
+            if q.step == step {
+                return true;
+            }
+            p = q.up.as_deref();
+        }
+        false
+    }
+}
+
 impl Elab {
     /// A primitive resource (#533): implemented by the runtime as an open, stateful thing.
     fn is_primitive_resource(&self, t: TyId) -> bool {
@@ -1909,37 +1923,96 @@ impl Elab {
         self.val_linear(&eval(&self.g, &crate::core::Env::from(env), t))
     }
 
-    /// Is a value of this type linear (#533)?
+    /// Is a value of this type linear (#533)? However deep the type: a
+    /// worklist. A type holding itself at the same arguments is seen once;
+    /// one whose field's type is computed (`Lin::Depends`) and that holds
+    /// itself at other arguments holds types without end, and is taken as
+    /// a resource.
     pub fn val_linear(&self, v: &Val) -> bool {
-        self.val_linear_at(v, 0)
-    }
-
-    fn val_linear_at(&self, v: &Val, depth: usize) -> bool {
-        if depth > 32 {
-            return true;
-        }
-        match self.force(v) {
-            Val::TyCon(id, args) => {
-                if self.is_owner(id) {
-                    return false;
+        // Types are compared quoted at a level above every variable in
+        // them, the fresh ones included.
+        const KEY: usize = usize::MAX - (1 << 24);
+        let fresh = std::cell::Cell::new(usize::MAX / 2);
+        let fresh = || {
+            let l = fresh.get();
+            fresh.set(l + 1);
+            Val::var(l)
+        };
+        let mut seen: Vec<(TyId, Vec<Tm>)> = Vec::new();
+        let mut work: Vec<(Val, Option<Rc<LinPath>>)> = vec![(v.clone(), None)];
+        while let Some((v, path)) = work.pop() {
+            match self.force(&v) {
+                Val::TyCon(id, args) => {
+                    if self.is_owner(id) {
+                        continue;
+                    }
+                    match self.ty_lin(id, &mut Vec::new()) {
+                        Lin::Yes => return true,
+                        Lin::No => work.extend(args.iter().enumerate().filter(|(k, _)| self.type_param(id, *k)).map(|(_, a)| (a.clone(), path.clone()))),
+                        Lin::Depends => {
+                            let key: Vec<Tm> = args.iter().map(|a| quote(&self.g, KEY, a)).collect();
+                            if seen.iter().any(|(i, k)| *i == id && k.len() == key.len() && k.iter().zip(&key).all(|(a, b)| tm_eq(a, b))) {
+                                continue;
+                            }
+                            if LinPath::has(&path, LinStep::Ty(id)) {
+                                return true;
+                            }
+                            seen.push((id, key));
+                            let inner = Some(Rc::new(LinPath { step: LinStep::Ty(id), up: path }));
+                            // The fields of `id` at these arguments.
+                            for c in &self.g.tys[id.0 as usize].ctors {
+                                let mut env: Vec<Val> = args.to_vec();
+                                for f in self.g.cons[c.0 as usize].fields.iter() {
+                                    if f.1 != Mult::Zero && self.field_lin(&f.3, &mut Vec::new()) != Lin::No {
+                                        work.push((eval(&self.g, &crate::core::Env::from(env.clone()), &f.3), inner.clone()));
+                                    }
+                                    // Earlier fields are unknown here: fresh variables far above any context.
+                                    env.push(fresh());
+                                }
+                            }
+                        }
+                    }
                 }
-                match self.ty_lin(id, &mut Vec::new()) {
-                    Lin::Yes => true,
-                    Lin::No => args.iter().enumerate().any(|(k, a)| self.type_param(id, k) && self.val_linear_at(a, depth + 1)),
-                    Lin::Depends => self.fields_linear(id, &args, depth),
+                Val::TupleTy(ts) => work.extend(ts.iter().map(|a| (a.clone(), path.clone()))),
+                // A type variable is generic (#545); a stuck computation of a type may be a resource.
+                Val::Neutral(Head::Def(d), _) => {
+                    if self.def_gives_type(d) {
+                        return true;
+                    }
                 }
+                // A `match` stuck on an unknown: a resource if an arm may be one (#672 e).
+                Val::Neutral(_, sp) if sp.iter().any(|e| matches!(e, Elim::Case(..))) => match sp.last() {
+                    Some(Elim::Case(c, env)) => {
+                        // A recursive type function meets its own `match`
+                        // again: what it gives there is the same type, a
+                        // resource only if a base arm is (`futures ts`
+                        // recurses through `futures rest`).
+                        let key = &**c as *const CaseTm as usize;
+                        if LinPath::has(&path, LinStep::Case(key)) {
+                            continue;
+                        }
+                        let inner = Some(Rc::new(LinPath { step: LinStep::Case(key), up: path }));
+                        let mut arm = |n: usize, body: &Tm| {
+                            let mut e = env.clone();
+                            e.extend((0..n).map(|_| fresh()));
+                            work.push((eval(&self.g, &e, body), inner.clone()));
+                        };
+                        for (_, n, b) in c.branches.iter() {
+                            arm(*n, b);
+                        }
+                        for (_, b) in c.lits.iter() {
+                            arm(0, b);
+                        }
+                        if let Some(b) = c.default.as_ref() {
+                            arm(0, b);
+                        }
+                    }
+                    _ => return true,
+                },
+                _ => {}
             }
-            Val::TupleTy(ts) => ts.iter().any(|a| self.val_linear_at(a, depth + 1)),
-            // A type variable is generic (#545); a stuck computation of a type may be a resource.
-            Val::Neutral(Head::Def(d), _) => self.def_gives_type(d),
-            // A `match` stuck on an unknown: a resource if an arm may be one (#672 e).
-            Val::Neutral(_, sp) if sp.iter().any(|e| matches!(e, Elim::Case(..))) => match sp.last() {
-                Some(Elim::Case(c, env)) => self.case_linear(c, env, depth),
-                _ => true,
-            },
-            Val::Neutral(..) => false,
-            _ => false,
         }
+        false
     }
 
     /// Is parameter `k` of this type a type (`a~Type`, `f~Type -> Type`),
@@ -1957,31 +2030,6 @@ impl Elab {
     }
 
     /// Might an arm of this stuck `match` be a resource type?
-    fn case_linear(&self, c: &CaseTm, env: &Env, depth: usize) -> bool {
-        // A recursive type function meets its own `match` again: what it
-        // gives there is the same type, a resource only if a base arm is
-        // (`futures ts` recurses through `futures rest`).
-        let key = c as *const CaseTm as usize;
-        if self.lin_visiting.borrow().contains(&key) {
-            return false;
-        }
-        self.lin_visiting.borrow_mut().push(key);
-        let r = self.case_arms_linear(c, env, depth);
-        self.lin_visiting.borrow_mut().pop();
-        r
-    }
-
-    fn case_arms_linear(&self, c: &CaseTm, env: &Env, depth: usize) -> bool {
-        let arm = |n: usize, body: &Tm| {
-            let mut e = env.clone();
-            e.extend((0..n).map(|k| Val::var(usize::MAX / 2 + depth * 64 + k)));
-            self.val_linear_at(&eval(&self.g, &e, body), depth + 1)
-        };
-        c.branches.iter().any(|(_, n, b)| arm(*n, b))
-            || c.lits.iter().any(|(_, b)| arm(0, b))
-            || c.default.as_ref().is_some_and(|b| arm(0, b))
-    }
-
     pub fn type_linear(&self, t: &Tm) -> bool {
         self.tm_linear(t, &mut Vec::new())
     }
@@ -2007,21 +2055,104 @@ impl Elab {
         matches!(t, Tm::Univ(_))
     }
 
-    /// The fields of `id` at these arguments: is any a resource?
-    fn fields_linear(&self, id: TyId, args: &[Val], depth: usize) -> bool {
-        let ti = &self.g.tys[id.0 as usize];
-        for c in &ti.ctors {
-            let mut env: Vec<Val> = args.to_vec();
-            for (k, f) in self.g.cons[c.0 as usize].fields.iter().enumerate() {
-                let ty = eval(&self.g, &crate::core::Env::from(env.clone()), &f.3);
-                if f.1 != Mult::Zero && self.field_lin(&f.3, &mut Vec::new()) != Lin::No && self.val_linear_at(&ty, depth + 1) {
-                    return true;
+    /// Could a value of this type hold a value that must be used exactly
+    /// once: a resource, or a closure, which may be one that uses a resource
+    /// (§8.4)? A type variable or a type not yet computed could.
+    pub fn may_hold_once(&self, v: &Val) -> bool {
+        self.val_linear(v) || self.val_holds_fn(v)
+    }
+
+    /// A type written with free variables, evaluated with each unknown.
+    pub fn eval_open(&self, t: &Tm) -> Val {
+        let mut fv = std::collections::BTreeSet::new();
+        crate::core::free_vars(t, 0, &mut fv);
+        let n = fv.iter().next_back().map_or(0, |m| m + 1);
+        let env: Vec<Val> = (0..n).map(|k| Val::var(usize::MAX / 4 + k)).collect();
+        eval(&self.g, &crate::core::Env::from(env), t)
+    }
+
+    /// Could a value of this type hold a function? However deep: a
+    /// worklist over the type's arguments.
+    fn val_holds_fn(&self, v: &Val) -> bool {
+        let mut work = vec![v.clone()];
+        while let Some(v) = work.pop() {
+            match self.force(&v) {
+                Val::Pi(..) => return true,
+                Val::TyCon(id, args) => {
+                    if self.is_owner(id) {
+                        continue;
+                    }
+                    if self.ty_holds_fn(id, &mut Vec::new()) {
+                        return true;
+                    }
+                    work.extend(args.iter().enumerate().filter(|(k, _)| self.type_param(id, *k)).map(|(_, a)| a.clone()));
                 }
-                // Earlier fields are unknown here: fresh variables far above any context.
-                env.push(Val::var(usize::MAX / 2 + k));
+                Val::TupleTy(ts) => work.extend(ts.iter().cloned()),
+                // A type variable, or a type not computed yet.
+                Val::Neutral(Head::Var(_) | Head::Meta(_), _) => return true,
+                Val::Neutral(Head::Def(d), _) => {
+                    if self.def_gives_type(d) {
+                        return true;
+                    }
+                }
+                Val::Neutral(_, sp) if sp.iter().any(|e| matches!(e, Elim::Case(..))) => return true,
+                _ => {}
             }
         }
         false
+    }
+
+    /// Does a field of `id`, whatever its arguments, hold a function?
+    fn ty_holds_fn(&self, id: TyId, visiting: &mut Vec<TyId>) -> bool {
+        if self.is_owner(id) || visiting.contains(&id) {
+            return false;
+        }
+        visiting.push(id);
+        let r = self.g.tys[id.0 as usize]
+            .ctors
+            .iter()
+            .flat_map(|c| self.g.cons[c.0 as usize].fields.iter())
+            .any(|f| f.1 != Mult::Zero && self.field_holds_fn(&f.3, visiting));
+        visiting.pop();
+        r
+    }
+
+    /// A field's type, in the context of the parameters and earlier fields:
+    /// a parameter is decided by its argument.
+    fn field_holds_fn(&self, t: &Tm, visiting: &mut Vec<TyId>) -> bool {
+        if let Some((id, args)) = tycon_app(t) {
+            return !self.is_owner(id) && (self.ty_holds_fn(id, visiting) || args.iter().any(|a| self.field_holds_fn(a, visiting)));
+        }
+        match t {
+            Tm::Pi(..) => true,
+            Tm::TupleTy(ts) => ts.iter().any(|a| self.field_holds_fn(a, visiting)),
+            Tm::Meta(m) => self.g.meta(*m).is_none_or(|v| self.val_holds_fn(&v)),
+            Tm::Var(_) | Tm::Univ(_) | Tm::Lit(_) | Tm::Error => false,
+            _ if !self.computes_type(t) => false,
+            // Computed: known if closed, else it may be anything.
+            _ => {
+                let mut fv = std::collections::BTreeSet::new();
+                crate::core::free_vars(t, 0, &mut fv);
+                !fv.is_empty() || self.val_holds_fn(&eval(&self.g, &crate::core::Env::new(), t))
+            }
+        }
+    }
+
+    /// The types of a constructor's fields, given the arguments of its type
+    /// (unknown where `args` is `None`): earlier fields are unknown.
+    pub fn con_field_types(&self, cid: ConId, args: Option<&[Val]>) -> Vec<(Mult, Val)> {
+        let ci = &self.g.cons[cid.0 as usize];
+        let np = self.g.arity_ty(ci.ty);
+        let mut env: Vec<Val> = match args {
+            Some(a) => a.to_vec(),
+            None => (0..np).map(|k| Val::var(usize::MAX / 4 + k)).collect(),
+        };
+        let mut out = Vec::new();
+        for (k, f) in ci.fields.iter().enumerate() {
+            out.push((f.1, eval(&self.g, &crate::core::Env::from(env.clone()), &f.3)));
+            env.push(Val::var(usize::MAX / 2 + k));
+        }
+        out
     }
 
     /// A binder's name, recorded with where it is bound (#672 d).
@@ -2102,9 +2233,10 @@ impl Elab {
                     .with_label("this `own` can go")
                     .with_help("remove `own`; a resource is used exactly once anyway"),
             );
-        } else if !matches!(ty, Tm::Pi(..)) && !self.mentions_type_var(cx, ty, 0) {
+        } else if !matches!(ty, Tm::Pi(..)) && !self.mentions_type_var(cx, ty, 0) && !self.may_hold_once(&self.eval(cx, ty)) {
             // A function may be a closure that uses a resource, which is
-            // called exactly once (#658): `f~own (Unit -> a)` takes one.
+            // called exactly once (#658): `f~own (Unit -> a)` takes one, and
+            // `o~own Option (Unit -> a)` one in a value (§8.4).
             let tyv = self.eval(cx, ty);
             let shown = self.show_val(cx, &tyv);
             self.err(
@@ -2185,6 +2317,96 @@ impl Elab {
         }
         let o = self.obligation(cx, span, kind, text, goal, only_if_nat);
         self.obligations.push(o);
+    }
+
+    /// A call in a typing (`r~Box (grow 1 k)`) may rely on every condition
+    /// of the declaration, wherever it is written, except one that depends
+    /// on it (§7.1). Types are elaborated before conditions, so the
+    /// obligations made since `from` get those facts here. `typings`: each
+    /// typing's type, and how many locals were in scope where it was
+    /// elaborated (`None` for a name that isn't the declaration's); `conds`:
+    /// each condition's span, its term over `cx`, and the typing it is a
+    /// refinement of, if any (else it is written on its own, and relies on
+    /// the conditions before it in `conds`).
+    ///
+    /// The conditions whose calls need facts form a graph: a typing's calls
+    /// rely on every other condition, a written condition's on those before
+    /// it. A condition with calls depends on what its calls rely on, so a
+    /// typing's calls may not rely on a condition with calls that reaches
+    /// the typing back, directly or through other conditions.
+    pub fn rely_on_conditions(&mut self, from: usize, typings: &[(Span, Option<usize>)], conds: &[(Span, Tm, Option<usize>)], cx: &Cx) {
+        let total = cx.lvl();
+        let nt = typings.len();
+        let within = |span: Span, at: Span| at.start <= span.start && span.end <= at.end;
+        // Regions: the typings, then the written conditions.
+        let region = |c: usize| conds[c].2.unwrap_or(nt + c);
+        let mut obligations: Vec<Vec<usize>> = vec![Vec::new(); nt + conds.len()];
+        for i in from..self.obligations.len() {
+            let o = &self.obligations[i];
+            if o.module != self.cur {
+                continue;
+            }
+            let at = typings.iter().position(|(ty, _)| within(o.span, *ty)).or_else(|| {
+                (0..conds.len()).find(|&c| conds[c].2.is_none() && within(o.span, conds[c].0)).map(|c| nt + c)
+            });
+            if let Some(r) = at {
+                obligations[r].push(i);
+            }
+        }
+        // The conditions each region's calls rely on.
+        let uses = |r: usize| -> Vec<usize> {
+            if r < nt {
+                (0..conds.len()).filter(|&c| region(c) != r).collect()
+            } else {
+                (0..r - nt).collect()
+            }
+        };
+        let edges: Vec<Vec<usize>> = (0..nt + conds.len())
+            .map(|r| {
+                if obligations[r].is_empty() {
+                    return Vec::new();
+                }
+                let mut out: Vec<usize> = uses(r).into_iter().map(region).filter(|&q| !obligations[q].is_empty()).collect();
+                out.sort_unstable();
+                out.dedup();
+                out
+            })
+            .collect();
+        let reaches = |from: usize, to: usize| {
+            let mut seen = vec![false; edges.len()];
+            let mut stack = vec![from];
+            while let Some(r) = stack.pop() {
+                if r == to {
+                    return true;
+                }
+                if !std::mem::replace(&mut seen[r], true) {
+                    stack.extend(edges[r].iter().copied());
+                }
+            }
+            false
+        };
+        let conds: Vec<(Val, usize, usize)> = conds
+            .iter()
+            .enumerate()
+            .map(|(c, (_, tm, _))| {
+                let mut used = Vec::new();
+                free_levels(tm, total, 0, &mut used);
+                (self.eval(cx, tm), used.iter().max().map_or(0, |l| l + 1), region(c))
+            })
+            .collect();
+        for (t, (_, base)) in typings.iter().enumerate() {
+            let Some(base) = *base else { continue };
+            let facts: Vec<(Val, usize)> = conds
+                .iter()
+                .filter(|(_, needs, r)| *r != t && *needs <= base && (obligations[*r].is_empty() || !reaches(*r, t)))
+                .map(|(v, needs, _)| (self.rep_deep(total, v), *needs))
+                .collect();
+            for &i in &obligations[t] {
+                // Over the locals in scope where the typing was elaborated.
+                let n = self.obligations[i].ctx.len();
+                self.obligations[i].facts.extend(facts.iter().filter(|(_, needs)| *needs <= n).map(|(v, _)| v.clone()));
+            }
+        }
     }
 
     /// `facts in cx ⊢ goal`, not yet recorded.

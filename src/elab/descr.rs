@@ -38,48 +38,49 @@ impl Elab {
     /// The type variables a descriptor of `ty` is built from (`vars`), and
     /// the variables it depends on that aren't types (`values`): what it
     /// is can only be known when the program runs.
-    fn desc_vars(&self, ty: &Val, depth: usize, lvl: usize, vars: &mut BTreeSet<usize>, values: &mut BTreeSet<usize>) {
-        if depth > 32 {
-            return;
-        }
-        match self.force(ty) {
-            Val::TyCon(id, args) => {
-                let params = self.g.tys[id.0 as usize].params.clone();
-                let needed = crate::core::value_params_needed(&self.g, id);
-                for (k, a) in args.iter().enumerate() {
-                    if params.get(k).is_some_and(|(_, t)| crate::core::is_type_former(t)) {
-                        self.desc_vars(a, depth + 1, lvl, vars, values);
-                    } else if needed.contains(&k) {
-                        // A value the type's fields' types are computed
-                        // from: in the descriptor, so known when compiled.
-                        let mut free = BTreeSet::new();
-                        crate::core::free_vars(&quote(&self.g, lvl, a), 0, &mut free);
-                        values.extend(free.into_iter().map(|i| lvl - 1 - i));
-                    }
-                }
-            }
-            Val::TupleTy(ts) => ts.iter().for_each(|t| self.desc_vars(t, depth + 1, lvl, vars, values)),
-            Val::Neutral(Head::Var(l), sp) => match sp.as_slice() {
-                [] => {
-                    vars.insert(l);
-                }
-                // A class's type kept in a dictionary (#133).
-                [Elim::Field(c, i)] if self.g.is_dict_type_field(*c, *i) => {}
-                // A type constructor parameter applied (M25), or a type
-                // computed from a value (`if b then U8 else Int`): which
-                // of the two the variable is decides.
-                _ => {
-                    vars.insert(l);
-                    for e in sp.iter() {
-                        if let Elim::App(a, _) = e {
-                            self.desc_vars(a, depth + 1, lvl, vars, values);
-                        } else {
-                            values.insert(l);
+    /// However deep the type: a worklist.
+    fn desc_vars(&self, ty: &Val, lvl: usize, vars: &mut BTreeSet<usize>, values: &mut BTreeSet<usize>) {
+        let mut work = vec![ty.clone()];
+        while let Some(ty) = work.pop() {
+            match self.force(&ty) {
+                Val::TyCon(id, args) => {
+                    let params = self.g.tys[id.0 as usize].params.clone();
+                    let needed = crate::core::value_params_needed(&self.g, id);
+                    for (k, a) in args.iter().enumerate() {
+                        if params.get(k).is_some_and(|(_, t)| crate::core::is_type_former(t)) {
+                            work.push(a.clone());
+                        } else if needed.contains(&k) {
+                            // A value the type's fields' types are computed
+                            // from: in the descriptor, so known when compiled.
+                            let mut free = BTreeSet::new();
+                            crate::core::free_vars(&quote(&self.g, lvl, a), 0, &mut free);
+                            values.extend(free.into_iter().map(|i| lvl - 1 - i));
                         }
                     }
                 }
-            },
-            _ => {}
+                Val::TupleTy(ts) => work.extend(ts.iter().cloned()),
+                Val::Neutral(Head::Var(l), sp) => match sp.as_slice() {
+                    [] => {
+                        vars.insert(l);
+                    }
+                    // A class's type kept in a dictionary (#133).
+                    [Elim::Field(c, i)] if self.g.is_dict_type_field(*c, *i) => {}
+                    // A type constructor parameter applied (M25), or a type
+                    // computed from a value (`if b then U8 else Int`): which
+                    // of the two the variable is decides.
+                    _ => {
+                        vars.insert(l);
+                        for e in sp.iter() {
+                            if let Elim::App(a, _) = e {
+                                work.push(a.clone());
+                            } else {
+                                values.insert(l);
+                            }
+                        }
+                    }
+                },
+                _ => {}
+            }
         }
     }
 
@@ -103,7 +104,7 @@ impl Elab {
                 }
                 let env = (0..np + k).map(Val::var).collect::<crate::core::Env>();
                 let mut found = None;
-                self.each_tycon(&eval(&self.g, &env, &ci.fields[k].3), 0, &mut |t| {
+                self.each_tycon(&eval(&self.g, &env, &ci.fields[k].3), &mut |t| {
                     if found.is_none() {
                         found = self.not_kept(t, seen);
                     }
@@ -116,18 +117,19 @@ impl Elab {
         None
     }
 
-    /// `f` on each type constructor `ty` applies.
-    fn each_tycon(&self, ty: &Val, depth: usize, f: &mut dyn FnMut(TyId)) {
-        if depth > 32 {
-            return;
-        }
-        match self.force(ty) {
-            Val::TyCon(id, args) => {
-                f(id);
-                args.iter().for_each(|a| self.each_tycon(a, depth + 1, f));
+    /// `f` on each type constructor `ty` applies, however deep: a
+    /// worklist.
+    fn each_tycon(&self, ty: &Val, f: &mut dyn FnMut(TyId)) {
+        let mut work = vec![ty.clone()];
+        while let Some(ty) = work.pop() {
+            match self.force(&ty) {
+                Val::TyCon(id, args) => {
+                    f(id);
+                    work.extend(args.iter().rev().cloned());
+                }
+                Val::TupleTy(ts) => work.extend(ts.iter().rev().cloned()),
+                _ => {}
             }
-            Val::TupleTy(ts) => ts.iter().for_each(|t| self.each_tycon(t, depth + 1, f)),
-            _ => {}
         }
     }
 
@@ -135,14 +137,14 @@ impl Elab {
     /// described, or why it can't be described.
     fn check_described(&self, ty: &Val, lvl: usize, owner: Option<DefId>) -> Result<Vec<usize>, Why> {
         let (mut vars, mut values) = (BTreeSet::new(), BTreeSet::new());
-        self.desc_vars(ty, 0, lvl, &mut vars, &mut values);
+        self.desc_vars(ty, lvl, &mut vars, &mut values);
         let params = owner.map(|d| self.type_formers(d)).unwrap_or_default();
         if let Some(l) = values.iter().next() {
             return Err(Why::Var(*l));
         }
         let mut seen = BTreeSet::new();
         let mut found = None;
-        self.each_tycon(ty, 0, &mut |t| {
+        self.each_tycon(ty, &mut |t| {
             if found.is_none() {
                 found = self.not_kept(t, &mut seen);
             }

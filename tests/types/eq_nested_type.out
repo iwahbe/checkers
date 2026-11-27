@@ -1,0 +1,21 @@
+error[E0263]: `==` can't compare `Nest (Int -> Int)`: it contains a function, `Int -> Int`
+  --> eq_nested_type.ck:15:5
+   |
+15 |     a == b
+   |     ^^^^^^ has type `Nest (Int -> Int)`
+   = help: compare what the functions return instead, such as `f x == g x`
+
+error[E0263]: `==` can't compare `Grow Int`: it contains a function, `Int -> Int`
+  --> eq_nested_type.ck:23:5
+   |
+23 |     a == b
+   |     ^^^^^^ has type `Grow Int`
+   = help: compare what the functions return instead, such as `f x == g x`
+
+error[E0263]: `==` can't compare `Count 0`: it holds `Count 1`, whose parts' types are computed from its arguments at every depth, so whether one is a function can't be known
+  --> eq_nested_type.ck:35:5
+   |
+35 |     a == b
+   |     ^^^^^^ has type `Count 0`
+
+eq_nested_type.ck: 3 errors, 0 warnings

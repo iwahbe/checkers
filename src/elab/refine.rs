@@ -61,6 +61,25 @@ pub struct Walk {
     kind: Option<ObKind>,
 }
 
+/// A pair of types `gain` compares, and where: the variance and what made
+/// it so, whether in a function's result, and whether at the top.
+struct Pair {
+    exp: Val,
+    found: Val,
+    pol: Variance,
+    via: Via,
+    in_result: bool,
+    top: bool,
+}
+
+/// `gain`'s work, done last pushed first: a pair to compare, or a function's
+/// parameter to bind for its result and to unbind after.
+enum Step {
+    Compare(Pair),
+    Bind(String, Val),
+    Pop,
+}
+
 #[derive(Clone, Copy)]
 pub enum Via {
     Nothing,
@@ -166,30 +185,34 @@ impl Elab {
     }
 
     /// Does `v` mention a refinement alias anywhere a value could be checked
-    /// against it?
-    pub fn has_refined(&self, cx: &Cx, v: &Val, depth: usize) -> bool {
-        if depth > 8 {
-            return false;
-        }
-        if self.refined_alias(v).is_some() {
-            return true;
-        }
-        match self.peel(v) {
-            Val::TyCon(_, args) => args.iter().any(|a| self.has_refined(cx, a, depth + 1)),
-            Val::TupleTy(ts) => ts.iter().any(|a| self.has_refined(cx, a, depth + 1)),
-            Val::Pi(_, _, _, a, c) => {
-                self.has_refined(cx, &a, depth + 1)
-                    || self.has_refined(cx, &apply_closure(&self.g, &c, Val::var(cx.lvl() + depth)), depth + 1)
+    /// against it? Every part is looked at, however deep: a worklist, not
+    /// recursion.
+    pub fn has_refined(&self, cx: &Cx, v: &Val) -> bool {
+        let mut work = vec![(v.clone(), cx.lvl())];
+        while let Some((v, lvl)) = work.pop() {
+            if self.refined_alias(&v).is_some() {
+                return true;
             }
-            _ => false,
+            match self.peel(&v) {
+                Val::TyCon(_, args) => work.extend(args.iter().rev().map(|a| (a.clone(), lvl))),
+                Val::TupleTy(ts) => work.extend(ts.iter().rev().map(|a| (a.clone(), lvl))),
+                Val::Pi(_, _, _, a, c) => {
+                    work.push((apply_closure(&self.g, &c, Val::var(lvl)), lvl + 1));
+                    work.push(((*a).clone(), lvl));
+                }
+                _ => {}
+            }
         }
+        false
     }
 
     /// Solve metas and unfold plain (unrefined) aliases, keeping refinement
-    /// aliases.
+    /// aliases. However many aliases there are: one can't recurse (a cycle
+    /// is an error) and a function unfolds only while fuel lasts, so this
+    /// ends, and stopping sooner would lose a refinement behind them.
     pub(super) fn peel(&self, v: &Val) -> Val {
         let mut v = force_meta(&self.g, v.clone());
-        for _ in 0..32 {
+        loop {
             if self.refined_alias(&v).is_some() || self.based_class_type(&v) {
                 return v;
             }
@@ -198,7 +221,6 @@ impl Elab {
                 None => return v,
             }
         }
-        v
     }
 
     /// A refinement alias's base, with all aliases unfolded at the head.
@@ -237,8 +259,9 @@ impl Elab {
         if self.refined_alias(sub).is_none() {
             return false;
         }
+        // However many aliases: unfolding them ends (see `peel`).
         let mut v = force_meta(&self.g, sup.clone());
-        for _ in 0..64 {
+        loop {
             match crate::core::unfold(&self.g, &v) {
                 Some(u) => v = force_meta(&self.g, u),
                 None => return false,
@@ -247,7 +270,6 @@ impl Elab {
                 return true;
             }
         }
-        false
     }
 
     pub fn refined_mismatch(&mut self, cx: &Cx, expected: &Val, found: &Val, span: Span) -> Option<Gained> {
@@ -257,7 +279,7 @@ impl Elab {
         if self.same_type(expected, found) {
             return None;
         }
-        if !self.refined_inside(expected, cx.lvl(), 0) && !self.refined_inside(found, cx.lvl(), 0) {
+        if !self.refined_inside(expected, cx.lvl()) && !self.refined_inside(found, cx.lvl()) {
             return None;
         }
         let mut cx2 = cx.clone();
@@ -267,7 +289,7 @@ impl Elab {
             _ => text,
         };
         let w = Walk { span, value, callee: self.arg_of.clone(), kind: None };
-        self.gain(&mut cx2, expected, found, Variance::Co, Via::Nothing, false, 0, &w)
+        self.gain(&mut cx2, expected, found, true, &w)
     }
 
     /// Whether every `found` is an `expected`, two types that unify, as
@@ -283,8 +305,8 @@ impl Elab {
         }
         let mut cx2 = cx.clone();
         let w = Walk { span, value: String::new(), callee: None, kind: Some(kind) };
-        // From depth 1: a refinement at the top is compared too.
-        self.gain(&mut cx2, expected, found, Variance::Co, Via::Nothing, false, 1, &w).is_none()
+        // Not as the top: a refinement at the top is compared too.
+        self.gain(&mut cx2, expected, found, false, &w).is_none()
     }
 
     /// Whether every `found` is an `expected` below their tops (a
@@ -293,12 +315,12 @@ impl Elab {
     /// for each refinement to imply, and the place where one would be
     /// gained, if any.
     pub fn refined_implies_inside(&mut self, cx: &Cx, expected: &Val, found: &Val, span: Span, kind: ObKind) -> Option<Gained> {
-        if self.same_type(expected, found) || (!self.refined_inside(expected, cx.lvl(), 0) && !self.refined_inside(found, cx.lvl(), 0)) {
+        if self.same_type(expected, found) || (!self.refined_inside(expected, cx.lvl()) && !self.refined_inside(found, cx.lvl())) {
             return None;
         }
         let mut cx2 = cx.clone();
         let w = Walk { span, value: String::new(), callee: None, kind: Some(kind) };
-        self.gain(&mut cx2, expected, found, Variance::Co, Via::Nothing, false, 0, &w)
+        self.gain(&mut cx2, expected, found, true, &w)
     }
 
     /// The same type, structurally (without unfolding): false if unsure.
@@ -335,35 +357,63 @@ impl Elab {
     }
 
     /// Whether `gain` could find something in `v`: a refinement alias
-    /// below the top (`depth > 0`), as `gain` walks it.
-    pub(super) fn refined_inside(&self, v: &Val, lvl: usize, depth: usize) -> bool {
-        if depth > 16 {
-            return false;
-        }
-        let p = self.peel(v);
-        if depth > 0 && (self.refined_alias(&p).is_some() || self.based_class_type(&p)) {
-            return true;
-        }
-        match self.base(&p) {
-            Val::TyCon(_, args) => args.iter().any(|a| self.refined_inside(a, lvl, depth + 1)),
-            Val::TupleTy(xs) => xs.iter().any(|a| self.refined_inside(a, lvl, depth + 1)),
-            Val::Pi(_, _, _, a, c) => {
-                self.refined_inside(&a, lvl, depth + 1) || self.refined_inside(&apply_closure(&self.g, &c, Val::var(lvl)), lvl + 1, depth + 1)
+    /// below the top, as `gain` walks it, however deep.
+    pub(super) fn refined_inside(&self, v: &Val, lvl: usize) -> bool {
+        let mut work = vec![(v.clone(), lvl, true)];
+        while let Some((v, lvl, top)) = work.pop() {
+            let p = self.peel(&v);
+            if !top && (self.refined_alias(&p).is_some() || self.based_class_type(&p)) {
+                return true;
             }
-            _ => false,
+            match self.base(&p) {
+                Val::TyCon(_, args) => work.extend(args.iter().rev().map(|a| (a.clone(), lvl, false))),
+                Val::TupleTy(xs) => work.extend(xs.iter().rev().map(|a| (a.clone(), lvl, false))),
+                Val::Pi(_, _, _, a, c) => {
+                    work.push((apply_closure(&self.g, &c, Val::var(lvl)), lvl + 1, false));
+                    work.push(((*a).clone(), lvl, false));
+                }
+                _ => {}
+            }
         }
+        false
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn gain(&mut self, cx: &mut Cx, exp: &Val, found: &Val, pol: Variance, via: Via, in_result: bool, depth: usize, w: &Walk) -> Option<Gained> {
-        if depth > 16 {
-            return None;
+    /// The first place, left to right, where `found` would gain a
+    /// refinement `exp` has, with an obligation for each refinement it must
+    /// imply on the way (`weaken_obligation`). With `top`, a refinement of
+    /// the whole types is the caller's to compare; without, it is compared
+    /// too.
+    /// Every part is compared, however deep: an explicit stack, not
+    /// recursion, so no depth is ever skipped.
+    fn gain(&mut self, cx: &mut Cx, exp: &Val, found: &Val, top: bool, w: &Walk) -> Option<Gained> {
+        let first = Pair { exp: exp.clone(), found: found.clone(), pol: Variance::Co, via: Via::Nothing, in_result: false, top };
+        let mut work = vec![Step::Compare(first)];
+        while let Some(step) = work.pop() {
+            match step {
+                Step::Compare(p) => {
+                    if let Some(g) = self.gain_at(cx, p, w, &mut work) {
+                        return Some(g);
+                    }
+                }
+                Step::Bind(name, dom) => {
+                    cx.bind(&name, dom, Mult::Zero);
+                }
+                Step::Pop => cx.pop(),
+            }
         }
+        None
+    }
+
+    /// One pair of `gain`'s walk: what it gains here, or its parts pushed
+    /// on `work`, last first, to compare next.
+    fn gain_at(&mut self, cx: &mut Cx, p: Pair, w: &Walk, work: &mut Vec<Step>) -> Option<Gained> {
+        let Pair { exp, found, pol, via, in_result, top } = p;
+        let (exp, found) = (&exp, &found);
         let (e, f) = (self.peel(exp), self.peel(found));
         // A class's type with a base type (#360): no other type's values are
         // known to be its values, so it is never gained, not even from a
         // refinement (the instance may give a narrower one).
-        if depth > 0 && !self.same_based(&e, &f) {
+        if !top && !self.same_based(&e, &f) {
             let pairs: Vec<(&Val, &Val)> = match pol {
                 Variance::Co => vec![(&f, &e)],
                 Variance::Contra => vec![(&e, &f)],
@@ -375,7 +425,7 @@ impl Elab {
                 return Some(Gained { expected: e, found: f, variance: pol, via, cx: cx.clone() });
             }
         }
-        if depth > 0 && (self.refined_alias(&e).is_some() || self.refined_alias(&f).is_some()) && !self.same_refinement(cx.lvl(), &e, &f) {
+        if !top && (self.refined_alias(&e).is_some() || self.refined_alias(&f).is_some()) && !self.same_refinement(cx.lvl(), &e, &f) {
             let role = if pol == Variance::Contra && matches!(via, Via::Fn) {
                 WeakenRole::Param
             } else if in_result {
@@ -410,30 +460,28 @@ impl Elab {
             }
         }
         let (e, f) = (self.base(&e), self.base(&f));
+        let pair = |exp: &Val, found: &Val, pol, via, in_result| Step::Compare(Pair { exp: exp.clone(), found: found.clone(), pol, via, in_result, top: false });
         match (&e, &f) {
             (Val::TyCon(t1, a1), Val::TyCon(t2, a2)) if t1 == t2 && a1.len() == a2.len() => {
                 let vs = self.variance(*t1);
-                for (k, (x, y)) in a1.iter().zip(a2.iter()).enumerate() {
+                for (k, (x, y)) in a1.iter().zip(a2.iter()).enumerate().rev() {
                     let v = vs.get(k).copied().unwrap_or(Variance::Inv);
                     let via = if v == Variance::Co { via } else { Via::Ty(*t1) };
-                    if let Some(g) = self.gain(cx, x, y, pol.then(v), via, in_result, depth + 1, w) {
-                        return Some(g);
-                    }
+                    work.push(pair(x, y, pol.then(v), via, in_result));
                 }
-                None
             }
-            (Val::TupleTy(x), Val::TupleTy(y)) if x.len() == y.len() => {
-                for (a, b) in x.iter().zip(y.iter()) {
-                    if let Some(g) = self.gain(cx, a, b, pol, via, in_result, depth + 1, w) {
-                        return Some(g);
-                    }
-                }
-                None
+            (Val::TupleTy(x), Val::TupleTy(y)) => {
+                // Paired as unification pairs them, `(a, (b, c))` being
+                // `(a, b, c)`: each part keeps its refinement. A last part
+                // that is a refinement of a tuple stays whole.
+                let parts = |v: &Val| match self.peel(v) {
+                    Val::TupleTy(ws) => Some(ws),
+                    _ => None,
+                };
+                let (x, y) = crate::core::pair_parts(crate::core::flat_parts_by(x, parts), crate::core::flat_parts_by(y, parts), true)?;
+                work.extend(x.iter().zip(y.iter()).rev().map(|(a, b)| pair(a, b, pol, via, in_result)));
             }
             (Val::Pi(x1, _, _, a1, c1), Val::Pi(x2, _, _, a2, c2)) => {
-                if let Some(g) = self.gain(cx, a1, a2, pol.then(Variance::Contra), Via::Fn, false, depth + 1, w) {
-                    return Some(g);
-                }
                 // The result is compared for arguments the caller may pass:
                 // those of the side that must be implied (#579).
                 let (x, other, dom) = match pol {
@@ -447,16 +495,20 @@ impl Elab {
                     let taken = cx.names();
                     (0..).map(|k| if k == 0 { "x".to_string() } else { format!("x{k}") }).find(|n| !taken.iter().any(|t| t.as_ref() == n)).unwrap()
                 });
-                let name = name.as_str();
+                // The parameters first, then the result with the parameter
+                // bound: everything pushed after the parameters' pairs is
+                // popped (bound and unbound) once they are done, so the
+                // context is then as it is now.
                 let l = cx.lvl();
-                cx.bind(name, (**dom).clone(), Mult::Zero);
                 let (b1, b2) = (apply_closure(&self.g, c1, Val::var(l)), apply_closure(&self.g, c2, Val::var(l)));
-                let r = self.gain(cx, &b1, &b2, pol, via, true, depth + 1, w);
-                cx.pop();
-                r
+                work.push(Step::Pop);
+                work.push(pair(&b1, &b2, pol, via, true));
+                work.push(Step::Bind(name, (**dom).clone()));
+                work.push(pair(a1, a2, pol.then(Variance::Contra), Via::Fn, false));
             }
-            _ => None,
+            _ => {}
         }
+        None
     }
 
     /// A type as shown in a message: an inline refinement with its

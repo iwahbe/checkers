@@ -3,8 +3,9 @@ module oneshot
 # A closure that uses a resource, made with a lambda or by partly applying
 # a function to one, must be called exactly once (#658): called where it is
 # made, bound with `let` and called once, or passed to a parameter declared
-# `own`. Anywhere else (passed to a parameter that isn't `own`, returned,
-# called twice or never) is E0401.
+# `own`, or returned as a result declared `own`. Anywhere else (passed to
+# a parameter that isn't `own`, returned as a result that isn't `own`, called
+# twice or never) is E0401.
 
 import std.files (File)
 import std.files
