@@ -20,7 +20,8 @@ import model (Model)
 import cert (Refutation, Step, Fact, NotGoal, Structure, Resolve, Lit)
 
 # How much work `solve` may do, in its own units (#72, design 5): here, one
-# unit per clause looked at.
+# unit per term looked at, per clause made, and per clause looked at in
+# propagation.
 export record Limits
     work~Nat
 

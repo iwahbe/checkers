@@ -39,7 +39,7 @@ export fn key why -> r : why~Reason, r~String
         Unsupported _ -> "unsupported"
         Incomplete    -> "incomplete"
 
-# The work `solve` may do on one query (clauses looked at).
+# The work `solve` may do on one query (`solve.Limits`' units).
 let LIMITS = Limits 1000000
 
 # Our answer to `q`, and the work it took.

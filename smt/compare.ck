@@ -356,7 +356,7 @@ fn report o dir z3 corpus os io fs -> code : o~Options, dir~String, z3~Bytes, co
 fn work_lines os -> r : os~List Outcome, r~List String
     let (w, missing_w) = sum_work os 0 0
     let (t, missing_t) = sum_time os 0 0
-    ["Work: ours " ++ display (sum_ours os 0) [] ++ " (clauses looked at, summed); Z3's " ++ display w [] ++ " (`:rlimit-count`, summed"
+    ["Work: ours " ++ display (sum_ours os 0) [] ++ " (`solve`'s units: terms and clauses, summed); Z3's " ++ display w [] ++ " (`:rlimit-count`, summed"
      ++ absent missing_w ++ "). The two aren't counted in the same unit.",
      "Time: ours " ++ display (sum_took os (Duration 0)) [] ++ " (reading and answering each query, summed); Z3's "
      ++ display (decimal.scaled t (-2)) [Places 2] ++ " s (its `:time`, summed" ++ absent missing_t ++ ")."]
