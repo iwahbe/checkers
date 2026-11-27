@@ -491,6 +491,31 @@ mod tests {
         })
     }
 
+    /// A standard library function called from a program with a value known
+    /// when compiling is specialized on it (§14), as the program's own are
+    /// (tests/run/std_specialized.ck): `take 2 args` calls a copy of `take`
+    /// that takes only the list.
+    #[test]
+    fn std_calls_are_specialized_on_known_values() {
+        funcs_of("std_specialized.ck", |p| {
+            let specs = p.specs.borrow();
+            let arities: Vec<usize> = specs
+                .copies
+                .iter()
+                .filter(|c| p.names[c.of.0 as usize] == "take")
+                .map(|c| {
+                    let (mut n, mut b) = (0, &c.body);
+                    while let crate::core::Tm::Lam(_, _, _, x) = b {
+                        n += 1;
+                        b = x;
+                    }
+                    n
+                })
+                .collect();
+            assert!(arities.contains(&1), "take's copies take {arities:?} parameters");
+        })
+    }
+
     /// Whether `e` duplicates or drops `v`.
     fn counts(e: &lower::E, v: lower::V) -> bool {
         use lower::E;
