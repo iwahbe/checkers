@@ -297,6 +297,59 @@ fn element_in n d -> m : n~Nat, d~Domain, m~Model
 check model.holds (context EL) (element_in 0 (UpTo 0)) (fact EL 0)
 check model.eval (context EL) (element_in 5 (UpTo 0)) (fact EL 0) == Err model.WrongSort
 
+# ── Every function of the model answers: `gives` ────────────────────────────
+
+# `x`, the 0th function, answers with an `Int`; asked nothing at arguments
+# that aren't its parameters' (it has none), nor past the functions.
+check model.gives (context X) (with_x (Integer 3)) (model.FunAt 0 [])
+check not (model.gives (context X) NOTHING (model.FunAt 0 []))
+check not (model.gives (context X) (with_x (Truth True)) (model.FunAt 0 []))
+check model.gives (context X) NOTHING (model.FunAt 0 [Integer 1])
+check model.gives (context X) NOTHING (model.FunAt 1 [])
+# Division by zero: only whether the model says.
+check not (model.gives (context X) NOTHING (model.DivZeroAt 4))
+check model.gives (context X) (model.without_arrays (\_ _ -> None) (\n -> Some n) (\_ -> None) (\_ _ _ -> None) (\_ _ _ _ _ -> None) (\_ _ -> Countable) 10) (model.DivZeroAt 4)
+# `seq.nth` outside the sequence, with an element of its sort; inside it,
+# nothing is asked.
+check model.gives (context NTH) (nth_giving (Integer 0)) (model.NthOutAt Int [] 0)
+check not (model.gives (context NTH) (nth_giving (Truth False)) (model.NthOutAt Int [] 0))
+check not (model.gives (context NTH) NOTHING (model.NthOutAt Int [Integer 5] 1))
+check model.gives (context NTH) NOTHING (model.NthOutAt Int [Integer 5] 0)
+# `hd` of `nil`, with an `Int`; of a `cons`, nothing is asked.
+let NIL = Constructed 0 []
+
+check model.gives (context SEL) (sel_giving (Integer 0)) (model.WrongSelAt 0 1 0 [] NIL)
+check not (model.gives (context SEL) (sel_giving (Truth False)) (model.WrongSelAt 0 1 0 [] NIL))
+check not (model.gives (context SEL) NOTHING (model.WrongSelAt 0 1 0 [] NIL))
+check model.gives (context SEL) NOTHING (model.WrongSelAt 0 1 0 [] (Constructed 1 [Integer 1, NIL]))
+
+check not (model.gives (context X) NOTHING (model.ModZeroAt 4))
+check model.gives (context X) (model.without_arrays (\_ _ -> None) (\_ -> None) (\n -> Some n) (\_ _ _ -> None) (\_ _ _ _ _ -> None) (\_ _ -> Countable) 10) (model.ModZeroAt 4)
+# A selector out of range, or of a constructor the datatype hasn't, isn't
+# a read: nothing is asked.
+check model.gives (context SEL) NOTHING (model.WrongSelAt 0 1 5 [] NIL)
+check model.gives (context SEL) NOTHING (model.WrongSelAt 0 7 0 [] NIL)
+# `seq.nth` at an element sort that isn't one of the context's: nothing is
+# asked.
+check model.gives (context NTH) NOTHING (model.NthOutAt (term.Data 5 []) [] 0)
+# A parametric datatype: the field's sort is the parameter's argument.
+let PAR = b"(set-logic ALL)(declare-datatypes ((P 1)) ((par (T) ((mk (fst T)) (none)))))(declare-const p (P Int))(assert (= (fst p) 0))(assert (not false))(check-sat)"
+let NONE = Constructed 1 []
+
+check model.gives (context PAR) (sel_giving (Integer 0)) (model.WrongSelAt 0 0 0 [Int] NONE)
+check not (model.gives (context PAR) (sel_giving (Truth False)) (model.WrongSelAt 0 0 0 [Int] NONE))
+check model.gives (context PAR) (sel_giving (Truth False)) (model.WrongSelAt 0 0 0 [Bool] NONE)
+check not (model.gives (context PAR) (sel_giving (Integer 0)) (model.WrongSelAt 0 0 0 [Bool] NONE))
+
+# `has_value`: a term with a value of its sort; not one the model doesn't
+# give, nor a term that isn't the context's.
+let XT = App (term.Fun 0) []
+
+check model.has_value (context X) (with_x (Integer 3)) XT
+check not (model.has_value (context X) NOTHING XT)
+check not (model.has_value (context X) (with_x (Truth True)) XT)
+check not (model.has_value (context X) (with_x (Integer 3)) ILL)
+
 # ── `refutes` with an axiom ──────────────────────────────────────────────────
 
 # `x = 1` satisfies the axiom and the fact, and the goal `false` fails;
@@ -586,6 +639,28 @@ fn forgetful -> m : m~Model
     Model N.funs N.select N.const store N.sum N.lambda N.array_in N.differ N.div_zero N.mod_zero N.nth_out N.wrong_sel N.domain N.fuel
 
 check not (model.store_law (context AB) forgetful II (id_of ZERO) (Integer 1) (Integer 5) (Integer 1))
+
+# ── Extensionality asks for an index ─────────────────────────────────────────
+
+# Two arrays of `(Array Int U)`, `U` with one element, that read alike
+# everywhere, yet are different elements: a model whose `differ` gives a
+# value that isn't an `Int` (here `false`, `without_arrays`' default).
+let EXT = b"(set-logic ALL)(declare-sort U 0)(declare-const a (Array Int U))(declare-const b (Array Int U))(assert (not (= a b)))(assert (= (select a 7) (select b 7)))(assert (not false))(check-sat)"
+let IU = Arr Int (Unin 0 [])
+
+fn alike -> m : m~Model
+    let funs = \f _ -> if f == 0 then Some (ArrayElem 0) else if f == 1 then Some (ArrayElem 1) else None
+    let select = \_ _ i ->
+        match i
+            Integer _ -> Some (Element 0)
+            _         -> None
+    model_with funs select (\_ _ -> UpTo 0) 10
+
+check model.holds_all (context EXT) alike (facts EXT)
+check model.gives_select (context EXT) alike IU 0 (Integer 3)
+# `ext_law` refuses it, and so does `arrays_ok_at`.
+check not (model.ext_law (context EXT) alike IU 0 1)
+check not (model.arrays_ok_at (context EXT) alike IU 0 1 (Integer 7) (Integer 7) (Element 0) [] [] Int (Var 0))
 
 # ── One number per array ─────────────────────────────────────────────────────
 # Numbers whose bytes read back as the constant 0 array but aren't its

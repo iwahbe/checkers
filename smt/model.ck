@@ -13,10 +13,14 @@
 # every operation that makes an array gives (`const`, `store`, `map +` as
 # `sum`, `lambda`) and what `select` reads. Two arrays are equal exactly
 # when they are the same element, so equality is decided for every pair of
-# values, and a model's function may take arrays. What makes these
-# SMT-LIB's arrays (read over write, extensionality and the rest) is not
-# computed here: `arrays_ok` below states it, for a theorem to take as its
-# premise.
+# values, and a model's function may take arrays. What makes these arrays
+# (read over write, extensionality and the rest) is not computed here:
+# `arrays_ok` below states it, for a theorem to take as its premise. They
+# are `ArraysEx`'s arrays and more: `arrays_total` asks the model to name an
+# array for every `lambda` of the context's signature, so every function a
+# term defines is an array. `ArraysEx` doesn't ask that (its arrays are any
+# set with the laws); `ckc`'s queries do, since a Checkers function value is
+# a function and SPEC §7.3 writes it as an array (decided on #85).
 #
 # **Three answers.** Evaluating a term gives its value, or `Unknown` with a
 # reason: the model doesn't say (a partial model, such as the values Z3
@@ -122,12 +126,64 @@
 # satisfies `arrays_ok`); and the lemma that every sort of a context has a
 # value (`value_of`, from the kept witnesses), which waits for #412.
 #
-# **What a `Model` can't represent** (for #85, model limits). A `Model` is a
-# Checkers value, so its functions are computable, and its domains are
-# countable (`Element n`, `ArrayElem k`). Every first-order structure has a
-# countable elementary substructure, which covers arrays too, since
-# `ArraysEx` with extensionality is first-order; computability is the limit
-# this module adds.
+# **Every interpretation is a `Model`** (#85). `checks_sound` says "for
+# every `Model` …"; that means "in every interpretation of the context"
+# because each interpretation 𝔄 that satisfies the context, among the
+# structures whose arrays include every `lambda`'s (above), gives a `Model`
+# that satisfies the premises and evaluates the goal as 𝔄 does. 𝔄 is a
+# mathematical object, not a Checkers value, so this is an argument, not a
+# lemma; each step below is mathematics outside Checkers. What a `Model`
+# holds, against SMT-LIB 2.6 (§5.3, Definitions 6 and 8, pp. 76–77):
+#
+# - `Bool`, `Int` and sequences are exact: `Truth`, `Integer` (any `Int`;
+#   the theory `Ints` makes `Int` "the set of all integer numbers"),
+#   `Sequence` (finite lists: SMT-LIB 2.6 has no sequences, and `ckc`
+#   writes a Checkers array, finite, as one, SPEC §7.3).
+# - A datatype's values are `Constructed` trees, finite, with fields of
+#   their sorts (`of_sort`): the absolutely free algebra Definition 8 asks
+#   for. A selector at another constructor's value is `wrong_sel`, of
+#   which Definition 8 asks nothing but that it is of the field's sort
+#   (Remark 11, p. 78).
+# - An uninterpreted sort's elements are `Element 0 … Element n` (`UpTo n`)
+#   or every `Element n` (`Countable`): any non-empty countable set, up to
+#   numbering. An array sort's elements are the numbers `array_in` names:
+#   any countable set.
+# - A function, a definition and each unspecified result (`div_zero`,
+#   `mod_zero`, `nth_out`, `wrong_sel`) is a function of exactly what SMT-LIB
+#   or Z3 makes it a function of. A recursive definition is its declaration
+#   and its equation (`definition_axiom`), as §4.2.3 (pp. 62–63) defines
+#   `define-funs-rec`, so every solution is a `Model`'s.
+#
+# **At the certificate's terms** (the first statement of `checks_sound`),
+# that is all: restrict 𝔄 to the values of the finitely many terms the
+# certificate uses, with the reads the premises ask there (`differ`'s
+# index, `select` at it). That is finitely many elements, numbered
+# `Element n` or `ArrayElem k`, and finitely many answers: a finite table,
+# which is a `Model` value. It meets the premises there because 𝔄 meets
+# them everywhere, and the goal, whose subterms are among those terms, has
+# 𝔄's value because evaluation is compositional. Neither countability nor
+# computability enters.
+#
+# **At all values** (the corollary), 𝔄 may be uncountable, and a `Model`'s
+# domains are countable. Downward Löwenheim–Skolem gives a countable
+# elementary substructure 𝔅 of 𝔄 for a countable signature
+# (https://en.wikipedia.org/wiki/L%C3%B6wenheim%E2%80%93Skolem_theorem;
+# many sorts reduce to one by relativization, Enderton, *A Mathematical
+# Introduction to Logic*, §4.3). The signature is the context's symbols with
+# a function symbol `F_t(ȳ)` for each `lambda` body `t` of the signature,
+# whose `∀`-axiom is `select (F_t ȳ) i = t[i, ȳ]`: countably many. 𝔅 is still
+# an SMT-LIB structure, by closure: `Int` holds every numeral and `-`, so it
+# is ℤ; a sequence sort is closed under `seq.empty`, `seq.unit`, `seq.++`
+# and `seq.nth`,
+# so it is the finite sequences over 𝔅's element sort; a datatype sort is
+# closed under constructors and selectors, so it is the free algebra over
+# 𝔅's other sorts; the array laws are `∀` and `∀∃` sentences, which an
+# elementary substructure keeps. Numbering 𝔅's elements makes it a `Model`.
+# That `Model`'s functions need not be computable. A lemma proved "for every
+# `m~Model`" covers it if a variable of function type ranges over every
+# function, as §7.3's encoding into Z3's arrays reasons; SPEC does not say
+# which reading it means: every function, or only those a program can
+# write. #486 proposes every function.
 
 module model
 
@@ -184,10 +240,8 @@ export enum Unknown
 # `Element n`; `Unsized` is a sort whose size the model doesn't say (Z3's
 # `(get-value …)` values give elements but no universe): every `Element n`
 # may be one, and whatever depends on how many there are isn't
-# determined (no array over it is made by a store). Countable domains are all that is needed (Löwenheim–Skolem,
-# see the module's comment). Every `Model` here is a Checkers value, so its
-# functions are computable: "every model" in this module means every such
-# one.
+# determined (no array over it is made by a store). Countable domains are
+# all that is needed (Löwenheim–Skolem, see the module's comment).
 export enum Domain
     UpTo n : n~Nat
     Countable
@@ -1603,15 +1657,19 @@ export fn lambda_law c m s env senv xs body i -> r : c~Context, m~Model, s~Sort,
         True
 
 # Extensionality: two different arrays of `s` differ at the index `differ`
-# gives.
+# gives. That index is of the index sort whatever `select` says there:
+# `differ` always answers, so this asks no read the model may leave out,
+# and were it allowed to give something else, no `select` would be asked
+# and two arrays that read alike everywhere could be different.
 export fn ext_law c m s a b -> r : c~Context, m~Model, s~Sort, a~Nat, b~Nat, r~Bool
     match s
         Arr ix _ ->
             if array_sort c s and a != b and m.array_in s a and m.array_in s b
                 let i = m.differ s a b
-                match (m.select s a i, m.select s b i)
-                    (Some p, Some q) -> of_sort c m ix i and p != q
-                    _                -> True
+                of_sort c m ix i
+                    and match (m.select s a i, m.select s b i)
+                        (Some p, Some q) -> p != q
+                        _                -> True
             else
                 True
         _        -> True
@@ -1620,3 +1678,102 @@ fn same_where_given p q -> r : p~Option Value, q~Option Value, r~Bool
     match (p, q)
         (Some x, Some y) -> x == y
         _                -> True
+
+# ── Every function of the model answers: `total` ─────────────────────────────
+# A model is total when it answers every question an interpretation answers:
+# what its functions give, and what SMT-LIB leaves unspecified. A question
+# is a `Read`, and `gives c m r` says that `m` answers `r` with a value of
+# the sort needed. A theorem asks it as a named `forall` premise (SPEC
+# §9.9), at every read:
+#
+#     total: forall r : r~Read, model.gives c m r
+#
+# A narrower shape asks it only at the reads of a finite set of terms
+# (`rs`, a `List Read`):
+#
+#     total: forall r : r~Read, list.contains rs r, model.gives c m r
+#
+# No theorem uses that shape yet. `rs` would depend on the model as well
+# as the terms: a `FunAt f vs` carries the values of `f`'s arguments in
+# `m`, so for a theorem about every `m` it is a function of `m` and the
+# terms, not a list fixed beforehand.
+#
+# The arrays' reads (`select`, `const`, `store`, `map +`, `lambda`) are not
+# here: `arrays_total_at` says the model answers them, with the laws.
+#
+# Each is what an SMT-LIB structure gives (2.6, §5.3), or for `seq.nth`
+# what Z3 gives, and asks nothing of arguments outside their sorts, where
+# it is true:
+#
+# - `FunAt f vs`: the `f`-th function is total on its parameters' sorts,
+#   with a value of its result sort (Definition 6);
+# - `DivZeroAt n`, `ModZeroAt n`: `div` and `mod` are total on `Int`, and
+#   at divisor 0 a function of `n` (the theory `Ints`);
+# - `NthOutAt e xs i`: Z3's `seq.nth` is total, outside the sequence a
+#   function of `xs` and `i` of sort `e`;
+# - `WrongSelAt d k j args v`: a selector is a total function on its
+#   datatype (Definition 6), at a value another constructor built
+#   constrained only to be of the field's sort (Remark 11, p. 78).
+
+# A question a model answers: see the section's comment.
+export enum Read
+    FunAt f vs              : f~Nat, vs~List Value
+    DivZeroAt n             : n~Int
+    ModZeroAt n             : n~Int
+    NthOutAt e xs i         : e~Sort, xs~List Value, i~Int
+    WrongSelAt d k j args v : d~Nat, k~Nat, j~Nat, args~List Sort, v~Value
+
+# Whether `m` answers `r`, with a value of the sort needed, where its
+# arguments are of their sorts in `c`.
+export fn gives c m r -> b : c~Context, m~Model, r~Read, b~Bool
+    match r
+        FunAt f vs              -> gives_fun c m f vs
+        DivZeroAt n             -> m.div_zero n != None
+        ModZeroAt n             -> m.mod_zero n != None
+        NthOutAt e xs i         -> gives_nth_out c m e xs i
+        WrongSelAt d k j args v -> gives_wrong_sel c m d k j args v
+
+# The `f`-th function answers at values `vs` of its parameters' sorts.
+fn gives_fun c m f vs -> r : c~Context, m~Model, f~Nat, vs~List Value, r~Bool
+    let sig = term.signature c
+    if f < len sig.funs and values_of_sorts c m sig.funs[f].params vs
+        answers_with c m sig.funs[f].result (m.funs f vs)
+    else
+        True
+
+# `(seq.nth xs i)` for `xs` of elements of sort `e` and `i` outside it.
+fn gives_nth_out c m e xs i -> r : c~Context, m~Model, e~Sort, xs~List Value, i~Int, r~Bool
+    if term.sort_ok (term.signature c) 0 e and all_of_sort c m e xs and not (0 <= i and i < list.length xs)
+        answers_with c m e (m.nth_out e xs i)
+    else
+        True
+
+# Selector `j` of constructor `k` of `(d args)` at a value `v` of that
+# sort built by another constructor.
+fn gives_wrong_sel c m d k j args v -> r : c~Context, m~Model, d~Nat, k~Nat, j~Nat, args~List Sort, v~Value, r~Bool
+    let sig = term.signature c
+    if term.sort_ok sig 0 (Data d args) and of_sort c m (Data d args) v and not (built_by k v)
+        match term.ctor sig d k
+            Some kc ->
+                match list.head (list.drop j kc.fields)
+                    Some fd -> answers_with c m (term.instantiate args fd.sort) (m.wrong_sel d k j args v)
+                    None    -> True
+            None    -> True
+    else
+        True
+
+fn built_by k v -> r : k~Nat, v~Value, r~Bool
+    match v
+        Constructed l _ -> l == k
+        _               -> False
+
+fn answers_with c m s got -> r : c~Context, m~Model, s~Sort, got~Option Value, r~Bool
+    match got
+        Some v -> of_sort c m s v
+        None   -> False
+
+# Whether `t` has a value of its sort in `m`.
+export fn has_value c m t -> r : c~Context, m~Model, t~Term, r~Bool
+    match (term.sort_of (term.signature c) [] t, eval c m t)
+        (Ok s, Ok v) -> of_sort c m s v
+        _            -> False
