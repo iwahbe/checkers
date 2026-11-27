@@ -1220,13 +1220,11 @@ impl Lowerer<'_, '_> {
     }
 
     /// The function to call for `d` in the code being lowered
-    /// (`spec::report`), erased if it is a copy made here.
+    /// (`spec::report`), erased if it isn't yet.
     fn report(&mut self, d: DefId) -> DefId {
         let spec = crate::native::spec::SpecCx { table: &self.p.specs, staged: self.staged, depth: 0 };
         let r = crate::native::spec::report(self.g, spec, self.owner_def(), d);
-        if r != d {
-            self.erase(&[r.0]);
-        }
+        self.erase(&[r.0]);
         r
     }
 

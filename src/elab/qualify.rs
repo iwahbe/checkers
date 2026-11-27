@@ -39,6 +39,12 @@ impl Elab {
         if self.package_of(home) == self.package_of(module) {
             return false;
         }
+        // An instance's function, or the function building its dictionary.
+        if let Sym::Def(d) = sym {
+            if self.inst_fns.contains(&d) || self.dict_defs.contains(&d) {
+                return false;
+            }
+        }
         // Declared by its module under its name (not an instance's
         // function, nor one the compiler made), and not exported.
         self.modules.get(home).is_some_and(|mi| {
