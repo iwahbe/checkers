@@ -2649,16 +2649,16 @@ export lemma arrays_total_at_fuel c m n s a b i j x env senv xs body : c~Context
 # What a model is asked, beside whether a number is an array of a sort and
 # the elements of a sort: each function of `Model` at its arguments.
 export enum Asked
-    FunsAt f vs                   : f~Nat, vs~List Value
-    SelectAt s k i                : s~Sort, k~Nat, i~Value
-    ConstAt s v                   : s~Sort, v~Value
-    StoreAt s k i v               : s~Sort, k~Nat, i~Value, v~Value
-    SumAt s a b                   : s~Sort, a~Nat, b~Nat
-    LambdaAt s env senv x body    : s~Sort, env~List Value, senv~List Sort, x~Sort, body~Term
-    DivAt n                       : n~Int
-    ModAt n                       : n~Int
-    NthAt s xs i                  : s~Sort, xs~List Value, i~Int
-    SelAt d k j args v            : d~Nat, k~Nat, j~Nat, args~List Sort, v~Value
+    FunsAt f vs                : f~Nat, vs~List Value
+    SelectAt s k i             : s~Sort, k~Nat, i~Value
+    ConstAt s v                : s~Sort, v~Value
+    StoreAt s k i v            : s~Sort, k~Nat, i~Value, v~Value
+    SumAt s a b                : s~Sort, a~Nat, b~Nat
+    LambdaAt s env senv x body : s~Sort, env~List Value, senv~List Sort, x~Sort, body~Term
+    DivAt n                    : n~Int
+    ModAt n                    : n~Int
+    NthAt s xs i               : s~Sort, xs~List Value, i~Int
+    SelAt d k j args v         : d~Nat, k~Nat, j~Nat, args~List Sort, v~Value
 
 # What `m` says to `q`, as a value (an array's number as `ArrayElem`, an
 # integer as `Integer`); `None` where it doesn't say.
@@ -2759,7 +2759,7 @@ fn bools_refine p q -> b : p~Result Bool Unknown, q~Result Bool Unknown, b~Bool
         Err _ -> True
 
 lemma said_refines c m n q : c~Context, m~Model, n~Model, q~Asked,
-                            said: (forall q2 x : q2~Asked, x~Value, said m q2 == Some x, said n q2 == Some x)
+                             said: (forall q2 x : q2~Asked, x~Value, said m q2 == Some x, said n q2 == Some x)
     ensures opts_refine (said m q) (said n q)
     proof
         match said m q
@@ -2801,9 +2801,9 @@ lemma reverse_mono a b e1 e2 : a~List (Result Value Unknown), b~List (Result Val
 
 lemma given_mono c m n s h x y : c~Context, m~Model, n~Model, s~Sort, h~Head, x~Option Value, y~Option Value,
                                  opts_refine x y,
-                               arrays: (forall t k : t~Sort, k~Nat, m.array_in t k, n.array_in t k),
-                               domains: (forall u args k : u~Nat, args~List Sort, k~Nat,
-                                         of_sort c m (Unin u args) (Element k), of_sort c n (Unin u args) (Element k))
+                                 arrays: (forall t k : t~Sort, k~Nat, m.array_in t k, n.array_in t k),
+                                 domains: (forall u args k : u~Nat, args~List Sort, k~Nat,
+                                           of_sort c m (Unin u args) (Element k), of_sort c n (Unin u args) (Element k))
     ensures refines (given c m s h x) (given c n s h y)
     proof
         match x
@@ -2958,24 +2958,24 @@ lemma prim_mono lm ln c m n e1 e2 senv t op args : lm~Lower, ln~Lower, c~Context
     ensures refines (prim lm AsGiven c m e1 senv t op args) (prim ln AsGiven c n e2 senv t op args)
     proof
         match (op, args)
-            (And, _)                -> have conj_mono lm ln c m n e1 e2 senv args
-            (Or, _)                 -> have disj_mono lm ln c m n e1 e2 senv args
-            (SeqConcat, _)          ->
+            (And, _)           -> have conj_mono lm ln c m n e1 e2 senv args
+            (Or, _)            -> have disj_mono lm ln c m n e1 e2 senv args
+            (SeqConcat, _)     ->
                 have values_mono lm ln c m n e1 e2 senv args
                 have concat_mono (values lm AsGiven c m e1 senv args) (values ln AsGiven c n e2 senv args)
-            (Div, [a, b])           ->
+            (Div, [a, b])      ->
                 have value_mono lm ln c m n e1 e2 senv a
                 have value_mono lm ln c m n e1 e2 senv b
                 match (value lm AsGiven c m e1 senv a, value lm AsGiven c m e1 senv b)
                     (Ok (Integer x), Ok (Integer 0)) -> have said_refines c m n (DivAt x)
                     _                                -> auto
-            (Mod, [a, b])           ->
+            (Mod, [a, b])      ->
                 have value_mono lm ln c m n e1 e2 senv a
                 have value_mono lm ln c m n e1 e2 senv b
                 match (value lm AsGiven c m e1 senv a, value lm AsGiven c m e1 senv b)
                     (Ok (Integer x), Ok (Integer 0)) -> have said_refines c m n (ModAt x)
                     _                                -> auto
-            (Select, [a, i])        ->
+            (Select, [a, i])   ->
                 have value_mono lm ln c m n e1 e2 senv a
                 have value_mono lm ln c m n e1 e2 senv i
                 match (value lm AsGiven c m e1 senv a, value lm AsGiven c m e1 senv i, sort_here c senv a, sort_here c senv t)
@@ -2983,7 +2983,7 @@ lemma prim_mono lm ln c m n e1 e2 senv t op args : lm~Lower, ln~Lower, c~Context
                         have said_refines c m n (SelectAt s k j)
                         have given_mono c m n w (Prim Select) (m.select s k j) (n.select s k j)
                     _                                    -> auto
-            (Store, [a, i, v])      ->
+            (Store, [a, i, v]) ->
                 have value_mono lm ln c m n e1 e2 senv a
                 have value_mono lm ln c m n e1 e2 senv i
                 have value_mono lm ln c m n e1 e2 senv v
@@ -2995,7 +2995,7 @@ lemma prim_mono lm ln c m n e1 e2 senv t op args : lm~Lower, ln~Lower, c~Context
                                 if m.array_in s l then have arrays s l else auto
                             None   -> auto
                     _                                    -> auto
-            (MapAdd, [a, b])        ->
+            (MapAdd, [a, b])   ->
                 have value_mono lm ln c m n e1 e2 senv a
                 have value_mono lm ln c m n e1 e2 senv b
                 match (value lm AsGiven c m e1 senv a, value lm AsGiven c m e1 senv b, sort_here c senv t)
@@ -3006,7 +3006,7 @@ lemma prim_mono lm ln c m n e1 e2 senv t op args : lm~Lower, ln~Lower, c~Context
                                 if m.array_in s l then have arrays s l else auto
                             None   -> auto
                     _                                          -> auto
-            (SeqNth, [a, i])        ->
+            (SeqNth, [a, i])   ->
                 have value_mono lm ln c m n e1 e2 senv a
                 have value_mono lm ln c m n e1 e2 senv i
                 match (value lm AsGiven c m e1 senv a, value lm AsGiven c m e1 senv i, sort_here c senv t)
@@ -3014,15 +3014,15 @@ lemma prim_mono lm ln c m n e1 e2 senv t op args : lm~Lower, ln~Lower, c~Context
                         have said_refines c m n (NthAt s xs k)
                         have given_mono c m n s (Prim SeqNth) (m.nth_out s xs k) (n.nth_out s xs k)
                     _                                        -> auto
-            (_, [a])                -> have value_mono lm ln c m n e1 e2 senv a
-            (_, [a, b])             ->
+            (_, [a])           -> have value_mono lm ln c m n e1 e2 senv a
+            (_, [a, b])        ->
                 have value_mono lm ln c m n e1 e2 senv a
                 have value_mono lm ln c m n e1 e2 senv b
-            (_, [a, b, d])          ->
+            (_, [a, b, d])     ->
                 have value_mono lm ln c m n e1 e2 senv a
                 have value_mono lm ln c m n e1 e2 senv b
                 have value_mono lm ln c m n e1 e2 senv d
-            _                       -> auto
+            _                  -> auto
 
 lemma refines_ok r1 r2 v : r1~Result Value Unknown, r2~Result Value Unknown, v~Value, refines r1 r2, r1 == Ok v
     ensures r2 == Ok v
@@ -3043,10 +3043,7 @@ export lemma monotone c m n t v : c~Context, m~Model, n~Model, t~Term, v~Value, 
     proof
         have eval_is c m t
         have eval_is c n t
-        if closed c t
-            let r1 = value (level AsGiven c m m.fuel) AsGiven c m [] [] t
-            let r2 = value (level AsGiven c n n.fuel) AsGiven c n [] [] t
-            have value_mono (level AsGiven c m m.fuel) (level AsGiven c n n.fuel) c m n [] [] [] t
-            have refines_ok r1 r2 v
-        else
-            auto
+        let r1 = value (level AsGiven c m m.fuel) AsGiven c m [] [] t
+        let r2 = value (level AsGiven c n n.fuel) AsGiven c n [] [] t
+        have value_mono (level AsGiven c m m.fuel) (level AsGiven c n n.fuel) c m n [] [] [] t
+        have refines_ok r1 r2 v

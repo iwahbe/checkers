@@ -675,3 +675,43 @@ export lemma axiom_premises_ok c a : c~Context, a~Axiom, list.contains (term.axi
     proof
         have term.axioms_well_sorted c
         have term.axiom_listed c (term.axioms c) a
+
+# `not fails` for a partial model: if `checks` accepts `refutation`, the
+# goal isn't false in any model `m` that a model `n` meeting
+# `checks_sound`'s premises extends (`model.monotone`: `n` says what `m`
+# says wherever `m` says something, names `m`'s arrays, and has `m`'s
+# elements). Every definite answer of `m` is `n`'s, and in `n` the goal
+# holds.
+export lemma not_refuted c goal refutation m n : c~Context, goal~Term, refutation~Refutation, checks c goal refutation,
+                                                 m~Model, n~Model,
+                                                 facts: model.holds_all c n (term.facts c),
+                                                 defined: (forall t : t~Term, list.contains (terms c goal refutation) t,
+                                                           model.has_value c n t),
+                                                 axioms: (forall a vs : a~Axiom, vs~List Value, list.contains (term.axioms c) a,
+                                                          values_among c n (terms c goal refutation) vs, model.holds_at c n a vs),
+                                                 definitions: (forall d_n d vs : d_n~Nat, d~Def, vs~List Value,
+                                                               list.contains (term.defs c) (d_n, d),
+                                                               values_among c n (terms c goal refutation) vs,
+                                                               model.holds_at c n (model.definition_axiom d_n d) vs),
+                                                 arrays: (forall s a b i j x env senv xs body : s~Sort, a~Nat, b~Nat, i~Value,
+                                                          j~Value, x~Value, env~List Value, senv~List Sort, xs~Sort, body~Term,
+                                                          values_among c n (terms c goal refutation)
+                                                          (ArrayElem a :: ArrayElem b :: i :: j :: x :: env),
+                                                          model.arrays_ok_at c n s a b i j x env senv xs body
+                                                          and model.arrays_total_at c n s a b i j x env senv xs body),
+                                                 said: (forall q v : q~model.Asked, v~Value, model.said m q == Some v,
+                                                        model.said n q == Some v),
+                                                 named: (forall s k : s~Sort, k~Nat, m.array_in s k, n.array_in s k),
+                                                 domains: (forall u args k : u~Nat, args~List Sort, k~Nat,
+                                                           model.of_sort c m (term.Unin u args) (model.Element k),
+                                                           model.of_sort c n (term.Unin u args) (model.Element k))
+    ensures not (model.fails c m goal)
+    proof
+        have checks_sound c goal refutation n
+        have model.holds_is c m goal
+        have model.holds_is c n goal
+        have model.not_both c n goal
+        if model.fails c m goal
+            have model.monotone c m n goal (model.Truth False)
+        else
+            auto
