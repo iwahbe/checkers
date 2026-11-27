@@ -1805,7 +1805,6 @@ impl Elab {
         Some((head_ty, Some(name)))
     }
 
-    #[allow(clippy::too_many_arguments)]
     /// An instance's class as written (`C`, or `m.C` through its module's
     /// qualifier): the name it is resolved by, and its name as declared,
     /// for messages. `m.C` is resolved once, as in any other use.
@@ -1866,6 +1865,7 @@ impl Elab {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn desugar_instance(
         &mut self,
         d: &Decl,
