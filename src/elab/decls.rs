@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::syntax::ast::{Constraint, DeclKind, Export, Expr, ExprKind, Ident};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A type at its arguments, each reduced to whether it has a value (#666).
 type TypeInstance = (TyId, Vec<bool>);
@@ -386,6 +386,50 @@ impl Elab {
         imported.sort();
         imported.dedup();
         imported.into_iter().find(|m| self.declares_privately(m, name)).cloned()
+    }
+
+    /// A `help:` for `name`, a function of a class in scope that isn't in
+    /// scope bare (§9.8): the shortest spelling that names it here, `C.f`,
+    /// `q.f` or `q.C.f` (the first shortest in order of the text where
+    /// several classes have it), with its class as the module names it.
+    pub fn class_fn_help(&self, name: &str) -> Option<String> {
+        let m = self.module();
+        // Each class in scope, with the spellings that name it here.
+        let mut classes: BTreeMap<TyId, Vec<String>> = BTreeMap::new();
+        for (c, s) in m.types.iter().chain(&m.import_types) {
+            if let Sym::Ty(t) = s {
+                classes.entry(*t).or_default().push(c.clone());
+            }
+        }
+        for (q, module) in &m.qualifiers {
+            let Some(mi) = self.modules.get(module) else { continue };
+            for c in &mi.exported_types {
+                if let Some(Sym::Ty(t)) = mi.types.get(c) {
+                    classes.entry(*t).or_default().push(format!("{q}.{c}"));
+                }
+            }
+        }
+        let shortest = |xs: Vec<String>| xs.into_iter().min_by(|a, b| (a.len(), a).cmp(&(b.len(), b)));
+        let mut best: Option<(String, String)> = None;
+        for (t, spellings) in classes {
+            let Some(c) = self.class_defs.get(&t) else { continue };
+            if !c.members.iter().any(|mb| matches!(mb, ast::ClassMember::Fn { name: f, .. } if f.name == name)) {
+                continue;
+            }
+            // `q.f` through a qualifier of the class's module, which
+            // exports its functions as it exports the class.
+            let through_module = m
+                .qualifiers
+                .iter()
+                .filter(|(_, module)| **module == c.module && self.modules.get(*module).is_some_and(|mi| mi.exported_values.contains(name)))
+                .map(|(q, _)| format!("{q}.{name}"));
+            let Some(f) = shortest(spellings.iter().map(|s| format!("{s}.{name}")).chain(through_module).collect()) else { continue };
+            if best.as_ref().is_none_or(|(b, _)| (f.len(), &f) < (b.len(), b)) {
+                best = Some((f, shortest(spellings).unwrap_or_default()));
+            }
+        }
+        let (f, class) = best?;
+        Some(format!("`{name}` is a function of the class `{class}`: write `{f}`"))
     }
 
     /// `module` declares `name` and doesn't export it.
