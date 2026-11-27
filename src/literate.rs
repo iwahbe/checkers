@@ -631,7 +631,9 @@ pub fn links_and_samples(text: &str, module: &Module, e: &Elab, user: &str) -> (
 }
 
 /// What checking a sample says, as W032 or W033 at its place in the file.
-pub fn sample_diagnostics(s: &Sample, dir: &std::path::Path) -> Vec<Diagnostic> {
+/// `user` is the module the sample documents: its own diagnostics, which
+/// the sample's imports reach, are reported at their places already.
+pub fn sample_diagnostics(s: &Sample, dir: &std::path::Path, user: &str) -> Vec<Diagnostic> {
     let c = crate::check_in(&format!("{}.ck", s.name), &s.text, dir);
     let fence = s.starts.first().copied().unwrap_or(0);
     let here = Span::new(fence, fence);
@@ -664,7 +666,7 @@ pub fn sample_diagnostics(s: &Sample, dir: &std::path::Path) -> Vec<Diagnostic> 
             w
         })
         .collect();
-    for (name, _, ds) in &c.others {
+    for (name, _, ds) in c.others.iter().filter(|(name, _, _)| name != user) {
         for d in ds {
             out.push(Diagnostic::warning("W032", format!("this example's import `{name}` has {}[{}]: {}", kind(d), d.code, d.message), here));
         }
