@@ -1,7 +1,9 @@
 # reply.ck — our answer to a query, and how Z3 would write it.
 #
-# Until the solver exists, the answer to every query that reads is
-# `Unknown`. `write` gives the answer in Z3's output format, so `main`
+# Our answer is `smt.solve`'s: `Valid` only with a refutation
+# `cert.checks` accepted, otherwise `Unknown` with why. (`solve` never
+# answers `Invalid` yet, #86; writing a model for `sat` comes with it.)
+# `write` gives the answer in Z3's output format, so `main`
 # can stand in for `z3 -in`: `unsat` or `unknown`, then what Z3 writes for
 # each command after `(check-sat)`: for `(get-unsat-core)`, the core or the
 # error Z3 gives when it has none; for `(get-value …)`, the error Z3 gives
@@ -11,31 +13,49 @@ module reply
 
 import smtlib (Query, Opt, Atom, SExpr, Node, Leaf, Symbol)
 import term
+import std.string
+import solve (Limits, OutOfWork, Unsupported, Incomplete, Proved, Refuted, GaveUp)
 
-# Why we give up on a query.
-export enum GiveUp
-    # There is no solver yet: every query is answered `Unknown`.
-    NoSolver
+# Why we give up on a query: `smt.solve`'s reason.
+export type Reason = g~solve.GiveUp
 
 # Our answer to a query: `Valid` if the goal follows from the context (Z3
 # says `unsat`), `Unknown` if we can't tell.
 export enum Answer
     Valid
-    Unknown why : why~GiveUp
+    Unknown why : why~Reason
 
 # What `why` is, in words.
-export fn reason why -> r : why~GiveUp, r~Bytes
+export fn reason why -> r : why~Reason, r~Bytes
     match why
-        NoSolver -> b"no solver yet"
+        OutOfWork        -> b"out of work"
+        Unsupported what -> b"unsupported: " ++ string.bytes what
+        Incomplete       -> b"no refutation by unit propagation"
 
 # `why` as one word, for files that list rows.
-export fn key why -> r : why~GiveUp, r~String
+export fn key why -> r : why~Reason, r~String
     match why
-        NoSolver -> "no-solver"
+        OutOfWork     -> "out-of-work"
+        Unsupported _ -> "unsupported"
+        Incomplete    -> "incomplete"
+
+# The work `solve` may do on one query (clauses looked at).
+let LIMITS = Limits 1000000
+
+# Our answer to `q`, and the work it took.
+export fn solved q -> r : q~Query, r~(Answer, Nat)
+    let out = solve.solve (solve.prepare q.context) q.goal LIMITS
+    match solve.verdict out.answer
+        Proved     -> (Valid, out.work)
+        # Not yet: `solve` gives no counterexamples (#86). `sat` will need
+        # the model written for `(get-value …)`.
+        Refuted    -> (Unknown (Unsupported "writing a counterexample"), out.work)
+        GaveUp why -> (Unknown why, out.work)
 
 # Our answer to `q`.
 export fn answer q -> a : q~Query, a~Answer
-    Unknown NoSolver
+    let (a, _) = solved q
+    a
 
 # Our answer to the query `src` reads as, written as Z3 writes its own.
 #

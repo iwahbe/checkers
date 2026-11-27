@@ -166,7 +166,9 @@ fn each_query dir m hs z3 io fs p clock acc -> r : dir~String, m~String, hs~List
                             let read = smtlib.parse src
                             let ours = match read
                                 Err _ -> Unreadable
-                                Ok q  -> Answered (reply.answer q)
+                                Ok q  ->
+                                    let (a, w) = reply.solved q
+                                    Answered a w
                             let took = time.since (time.now clock) start
                             let o = outcome (m ++ "/" ++ h) read ours took (recorded rec) (z3_said said.stdout)
                             each_query dir m rest z3 io fs p clock (o :: acc)
@@ -229,7 +231,7 @@ fn power10 n -> r : n~Nat, r~Nat
 
 # What we said about a query.
 enum Ours
-    Answered a : a~Answer
+    Answered a work : a~Answer, work~Nat
     Unreadable
 
 # A query's row: our answer, Z3's, and whether the query holds a `forall`
@@ -283,25 +285,25 @@ fn verdict row -> r : row~Row, r~String
         "no answer from Z3"
     else
         match row.ours
-            Unreadable           -> "gap"
-            Answered (Unknown _) -> "gap"
-            Answered Valid       ->
+            Unreadable             -> "gap"
+            Answered (Unknown _) _ -> "gap"
+            Answered Valid _       ->
                 if row.z3 == b"sat" then "bug" else if row.z3 == b"unsat" then "agreement" else "ahead"
 
 # A row's name in the files `--save` and `--changed` write: no spaces.
 fn key row -> r : row~Row, r~String
     let ours = match row.ours
-        Unreadable           -> "unreadable"
-        Answered Valid       -> "valid"
-        Answered (Unknown w) -> "unknown(" ++ reply.key w ++ ")"
+        Unreadable             -> "unreadable"
+        Answered Valid _       -> "valid"
+        Answered (Unknown w) _ -> "unknown(" ++ reply.key w ++ ")"
     ours ++ "/" ++ text row.z3 ++ (if row.unpatterned then "/unpatterned" else "")
 
 # A row as the table shows it.
 fn ours_text row -> r : row~Row, r~String
     let ours = match row.ours
-        Unreadable           -> "doesn't read"
-        Answered Valid       -> "`Valid`"
-        Answered (Unknown w) -> "`Unknown` (" ++ text (reply.reason w) ++ ")"
+        Unreadable             -> "doesn't read"
+        Answered Valid _       -> "`Valid`"
+        Answered (Unknown w) _ -> "`Unknown` (" ++ text (reply.reason w) ++ ")"
     if row.unpatterned then ours ++ ", a `forall` without `:pattern`" else ours
 
 # ── The report ───────────────────────────────────────────────────────────────
@@ -354,7 +356,7 @@ fn report o dir z3 corpus os io fs -> code : o~Options, dir~String, z3~Bytes, co
 fn work_lines os -> r : os~List Outcome, r~List String
     let (w, missing_w) = sum_work os 0 0
     let (t, missing_t) = sum_time os 0 0
-    ["Work: ours 0 (there is no solver yet); Z3's " ++ display w [] ++ " (`:rlimit-count`, summed"
+    ["Work: ours " ++ display (sum_ours os 0) [] ++ " (clauses looked at, summed); Z3's " ++ display w [] ++ " (`:rlimit-count`, summed"
      ++ absent missing_w ++ "). The two aren't counted in the same unit.",
      "Time: ours " ++ display (sum_took os (Duration 0)) [] ++ " (reading and answering each query, summed); Z3's "
      ++ display (decimal.scaled t (-2)) [Places 2] ++ " s (its `:time`, summed" ++ absent missing_t ++ ")."]
@@ -366,6 +368,14 @@ fn sum_took os acc -> r : os~List Outcome, acc~Duration, r~Duration
 
 fn absent n -> r : n~Nat, r~String
     if n == 0 then "" else "; not in the statistics of " ++ queries n
+
+fn sum_ours os acc -> r : os~List Outcome, acc~Nat, r~Nat
+    match os
+        []        -> acc
+        o :: rest ->
+            match o.row.ours
+                Answered _ w -> sum_ours rest (acc + w)
+                Unreadable   -> sum_ours rest acc
 
 fn sum_work os acc missing -> r : os~List Outcome, acc~Nat, missing~Nat, r~(Nat, Nat)
     match os

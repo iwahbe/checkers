@@ -116,6 +116,11 @@
 #
 # Together: a query is never both `Valid` and `Invalid`.
 #
+# Proved so far: the first statement (`cert.checks_sound`), resting on the
+# lemmas at the end of this module about what each connective means
+# (`two_valued`, `and_meaning` and the rest). The second statement,
+# monotonicity and the `Invalid` theorem are still owed.
+#
 # S6 also owes these, which this module is written to and states only in
 # comments: `before` is a strict total order on values; two normal forms
 # are equal exactly when they are the same function (so `normal_arrays`
@@ -1629,14 +1634,14 @@ fn same_where_given p q -> r : p~Option Value, q~Option Value, r~Bool
 # The connective `s` of `t`, as a term (`t` itself for an atom).
 fn connective_term t s -> r : t~Term, s~Connective, r~Term
     match s
-        Atom            -> t
-        ConstOf b       -> App (Boolean b) []
-        NotOf a         -> App (Prim Not) [a]
-        AndOf ps        -> App (Prim And) ps
-        OrOf ps         -> App (Prim Or) ps
-        ImpliesOf a b   -> App (Prim Implies) [a, b]
-        IteOf p a b     -> App (Prim Ite) [p, a, b]
-        IffOf a b       -> App (Prim Eq) [a, b]
+        Atom          -> t
+        ConstOf b     -> App (Boolean b) []
+        NotOf a       -> App (Prim Not) [a]
+        AndOf ps      -> App (Prim And) ps
+        OrOf ps       -> App (Prim Or) ps
+        ImpliesOf a b -> App (Prim Implies) [a, b]
+        IteOf p a b   -> App (Prim Ite) [p, a, b]
+        IffOf a b     -> App (Prim Eq) [a, b]
 
 # Whether `Let binds` evaluates its body here: it binds something, and
 # what it binds has sorts.
@@ -1736,30 +1741,30 @@ lemma structure_value low mode c m env senv t : low~Lower, mode~Mode, c~Context,
                 have let_value low mode c m env senv binds body
                 have structure_value low mode c m inner sorts body
                 match term.structure body
-                    AndOf ps        ->
+                    AndOf ps      ->
                         have parts_nonempty body ps
                         if binds_ok c senv binds
                             have conj_under low mode c m env senv binds ps
                         else
                             have conj_not_ok low mode c m env senv binds ps
-                    OrOf ps         ->
+                    OrOf ps       ->
                         have parts_nonempty body ps
                         if binds_ok c senv binds
                             have disj_under low mode c m env senv binds ps
                         else
                             have disj_not_ok low mode c m env senv binds ps
-                    NotOf a         -> have let_value low mode c m env senv binds a
-                    ImpliesOf a b   ->
+                    NotOf a       -> have let_value low mode c m env senv binds a
+                    ImpliesOf a b ->
                         have let_value low mode c m env senv binds a
                         have let_value low mode c m env senv binds b
-                    IteOf p a b     ->
+                    IteOf p a b   ->
                         have let_value low mode c m env senv binds p
                         have let_value low mode c m env senv binds a
                         have let_value low mode c m env senv binds b
-                    IffOf a b       ->
+                    IffOf a b     ->
                         have let_value low mode c m env senv binds a
                         have let_value low mode c m env senv binds b
-                    _               -> auto
+                    _             -> auto
             _              -> auto
 
 # ── What a connective means, for closed terms ────────────────────────────────

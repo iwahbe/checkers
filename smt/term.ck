@@ -2803,31 +2803,31 @@ export enum Connective
     # Not a connective (or one this doesn't look into).
     Atom
     # `true` or `false`.
-    ConstOf b    : b~Bool
+    ConstOf b     : b~Bool
     # `(not a)`.
-    NotOf a      : a~Term
+    NotOf a       : a~Term
     # `(and p …)`, at least one part.
-    AndOf ps     : ps~List Term
+    AndOf ps      : ps~List Term
     # `(or p …)`, at least one part.
-    OrOf ps      : ps~List Term
+    OrOf ps       : ps~List Term
     # `(=> a b)`.
     ImpliesOf a b : a~Term, b~Term
     # `(ite p a b)`.
-    IteOf p a b  : p~Term, a~Term, b~Term
+    IteOf p a b   : p~Term, a~Term, b~Term
     # `(= a b)`; a connective only where `a` and `b` are `Bool`s.
-    IffOf a b    : a~Term, b~Term
+    IffOf a b     : a~Term, b~Term
 
 export transparent fn structure t -> s : t~Term, s~Connective
     match t
-        App (Boolean b) []           -> ConstOf b
-        App (Prim Not) [a]           -> NotOf a
-        App (Prim And) (p :: ps)     -> AndOf (p :: ps)
-        App (Prim Or) (p :: ps)      -> OrOf (p :: ps)
-        App (Prim Implies) [a, b]    -> ImpliesOf a b
-        App (Prim Ite) [p, a, b]     -> IteOf p a b
-        App (Prim Eq) [a, b]         -> IffOf a b
-        Let binds body               -> under binds (structure body)
-        _                            -> Atom
+        App (Boolean b) []        -> ConstOf b
+        App (Prim Not) [a]        -> NotOf a
+        App (Prim And) (p :: ps)  -> AndOf (p :: ps)
+        App (Prim Or) (p :: ps)   -> OrOf (p :: ps)
+        App (Prim Implies) [a, b] -> ImpliesOf a b
+        App (Prim Ite) [p, a, b]  -> IteOf p a b
+        App (Prim Eq) [a, b]      -> IffOf a b
+        Let binds body            -> under binds (structure body)
+        _                         -> Atom
 
 # A shape's parts, each under the `let` binding `binds`. A constant under a
 # `let` is left an atom.

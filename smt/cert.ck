@@ -38,18 +38,23 @@ export record Lit
     atom~Term
 
 # One step of a refutation; each adds one clause.
+#
+# A known limit of this frame, for the theory steps to come: a step can
+# only name terms, and `Term` has no head for the index `model.differ`
+# gives two different arrays, so an extensionality step needs one first
+# (S6c, S6e).
 export enum Step
     # The `k`-th fact of the context (`term.facts`, from 0): `[fact]`.
-    Fact k                : k~Nat
+    Fact k               : k~Nat
     # The goal, false: `[not goal]`.
     NotGoal
     # Clause `which` of those the Boolean structure of `t` gives
     # (`structure_clause`).
-    Structure t which     : t~Term, which~Nat
+    Structure t which    : t~Term, which~Nat
     # `clause`, because unit propagation on the clauses numbered `hints`, in
     # that order, starting from the negation of `clause`, ends in a clause
     # with every literal false.
-    Resolve clause hints  : clause~List Lit, hints~List Nat
+    Resolve clause hints : clause~List Lit, hints~List Nat
 
 # The steps; the last one adds the empty clause.
 export record Refutation
@@ -96,23 +101,23 @@ export transparent fn all_yes ts -> r : ts~List Term, r~List Lit
 # | `(= a b)`         | 0: `[not t, not a, b]`; 1: `[not t, a, not b]`; 2: `[t, a, b]`; 3: `[t, not a, not b]` |
 export transparent fn structure_clause t which -> r : t~Term, which~Nat, r~Option (List Lit)
     match term.structure t
-        ConstOf b       -> if which == 0 then Some [Lit b t] else None
-        NotOf a         -> if which == 0 then Some [no t, no a] else if which == 1 then Some [yes t, yes a] else None
-        AndOf ps        ->
+        ConstOf b     -> if which == 0 then Some [Lit b t] else None
+        NotOf a       -> if which == 0 then Some [no t, no a] else if which == 1 then Some [yes t, yes a] else None
+        AndOf ps      ->
             if which == 0
                 Some (yes t :: all_no ps)
             else
                 match list.head (list.drop (which - 1) ps)
                     Some p -> Some [no t, yes p]
                     None   -> None
-        OrOf ps         ->
+        OrOf ps       ->
             if which == 0
                 Some (no t :: all_yes ps)
             else
                 match list.head (list.drop (which - 1) ps)
                     Some p -> Some [yes t, no p]
                     None   -> None
-        ImpliesOf a b   ->
+        ImpliesOf a b ->
             if which == 0
                 Some [no t, no a, yes b]
             else if which == 1
@@ -121,7 +126,7 @@ export transparent fn structure_clause t which -> r : t~Term, which~Nat, r~Optio
                 Some [yes t, no b]
             else
                 None
-        IteOf p a b     ->
+        IteOf p a b   ->
             if which == 0
                 Some [no t, no p, yes a]
             else if which == 1
@@ -132,7 +137,7 @@ export transparent fn structure_clause t which -> r : t~Term, which~Nat, r~Optio
                 Some [yes t, yes p, no b]
             else
                 None
-        IffOf a b       ->
+        IffOf a b     ->
             if which == 0
                 Some [no t, no a, yes b]
             else if which == 1
@@ -143,18 +148,18 @@ export transparent fn structure_clause t which -> r : t~Term, which~Nat, r~Optio
                 Some [yes t, no a, no b]
             else
                 None
-        _               -> None
+        _             -> None
 
 # The parts of a connective.
 export transparent fn parts s -> ts : s~Connective, ts~List Term
     match s
-        NotOf a         -> [a]
-        AndOf ps        -> ps
-        OrOf ps         -> ps
-        ImpliesOf a b   -> [a, b]
-        IteOf p a b     -> [p, a, b]
-        IffOf a b       -> [a, b]
-        _               -> []
+        NotOf a       -> [a]
+        AndOf ps      -> ps
+        OrOf ps       -> ps
+        ImpliesOf a b -> [a, b]
+        IteOf p a b   -> [p, a, b]
+        IffOf a b     -> [a, b]
+        _             -> []
 
 # The clause step `s` adds, if it names one.
 export transparent fn step_clause c goal s -> r : c~Context, goal~Term, s~Step, r~Option (List Lit)
@@ -176,9 +181,10 @@ export transparent fn terms_of c goal steps -> ts : c~Context, goal~Term, steps~
                 Some cl -> atoms cl ++ terms_of c goal rest
                 None    -> terms_of c goal rest
 
-# The terms `refutation` uses.
+# The terms `refutation` uses: the goal, and the atoms of the clauses its
+# steps add (each fact a `Fact` step cites among them).
 export transparent fn terms c goal refutation -> ts : c~Context, goal~Term, refutation~Refutation, ts~List Term
-    terms_of c goal refutation.steps
+    goal :: terms_of c goal refutation.steps
 
 # ── Checking ─────────────────────────────────────────────────────────────────
 
@@ -217,9 +223,9 @@ export transparent fn negate_all cl -> r : cl~List Lit, r~List Lit
 # Whether step `s`, adding `cl` after `db`, is right.
 export transparent fn step_ok c db s cl -> r : c~Context, db~List (List Lit), s~Step, cl~List Lit, r~Bool
     match s
-        Structure t _    -> model.boolean c t and model.booleans c (parts (term.structure t))
-        Resolve _ hints  -> propagate db (negate_all cl) hints
-        _                -> True
+        Structure t _   -> model.boolean c t and model.booleans c (parts (term.structure t))
+        Resolve _ hints -> propagate db (negate_all cl) hints
+        _               -> True
 
 # The clauses after the steps, the last first, if every step is right and
 # every atom is a closed `Bool` term of `c`.
@@ -549,7 +555,7 @@ lemma run_sound c goal m db steps out : c~Context, goal~Term, m~Model, db~List (
                                         out~List (List Lit), run c goal db steps == Some out, db_holds c m db,
                                         model.holds_all c m (term.facts c), not (model.holds c m goal),
                                         defined: (forall t : t~Term, list.contains (terms_of c goal steps) t,
-                                            model.has_value c m t)
+                                                  model.has_value c m t)
     ensures db_holds c m out
     proof
         match steps
@@ -588,26 +594,30 @@ export transparent fn values_among c m ts vs -> r : c~Context, m~Model, ts~List 
 #   (`model.arrays_ok_at`, `model.arrays_total_at`).
 #
 # Only the values of the terms the refutation uses matter, so every model
-# of `c`, restricted to them, is such an `m`.
+# of `c`, restricted to them, is such an `m`. Today's steps use only
+# `facts` and `defined`; `axioms`, `definitions` and `arrays` are there for
+# the theory steps to come (S6b–S6e), so that adding them doesn't change
+# this statement.
 export lemma checks_sound c goal refutation m : c~Context, goal~Term, refutation~Refutation, checks c goal refutation, m~Model,
-                                           facts: model.holds_all c m (term.facts c),
-                                           defined: (forall t : t~Term, list.contains (terms c goal refutation) t,
-                                               model.has_value c m t),
-                                           axioms: (forall a vs : a~Axiom, vs~List Value, list.contains (term.axioms c) a,
-                                               values_among c m (terms c goal refutation) vs, model.holds_at c m a vs),
-                                           definitions: (forall n d vs : n~Nat, d~Def, vs~List Value,
-                                               list.contains (term.defs c) (n, d), values_among c m (terms c goal refutation) vs,
-                                               model.holds_at c m (model.definition_axiom n d) vs),
-                                           arrays: (forall s a b i j x env senv xs body : s~Sort, a~Nat, b~Nat, i~Value, j~Value,
-                                               x~Value, env~List Value, senv~List Sort, xs~Sort, body~Term,
-                                               values_among c m (terms c goal refutation) (ArrayElem a :: ArrayElem b :: i :: j :: x :: env),
-                                               model.arrays_ok_at c m s a b i j x env senv xs body
-                                                   and model.arrays_total_at c m s a b i j x env senv xs body)
+                                                facts: model.holds_all c m (term.facts c),
+                                                defined: (forall t : t~Term, list.contains (terms c goal refutation) t,
+                                                          model.has_value c m t),
+                                                axioms: (forall a vs : a~Axiom, vs~List Value, list.contains (term.axioms c) a,
+                                                         values_among c m (terms c goal refutation) vs, model.holds_at c m a vs),
+                                                definitions: (forall n d vs : n~Nat, d~Def, vs~List Value,
+                                                              list.contains (term.defs c) (n, d), values_among c m (terms c goal refutation) vs,
+                                                              model.holds_at c m (model.definition_axiom n d) vs),
+                                                arrays: (forall s a b i j x env senv xs body : s~Sort, a~Nat, b~Nat, i~Value, j~Value,
+                                                         x~Value, env~List Value, senv~List Sort, xs~Sort, body~Term,
+                                                         values_among c m (terms c goal refutation) (ArrayElem a :: ArrayElem b :: i :: j :: x :: env),
+                                                         model.arrays_ok_at c m s a b i j x env senv xs body
+                                                         and model.arrays_total_at c m s a b i j x env senv xs body)
     ensures model.holds c m goal
     proof
         if model.holds c m goal
             auto
         else
+            have defined_back c m [goal] (terms_of c goal refutation.steps)
             match run c goal [] refutation.steps
                 Some out ->
                     have run_sound c goal m [] refutation.steps out
@@ -615,3 +625,32 @@ export lemma checks_sound c goal refutation m : c~Context, goal~Term, refutation
                         last :: _ -> auto
                         []        -> auto
                 None     -> auto
+
+# What `checks` asks, as lemmas: a refutation has steps, and the last adds
+# the empty clause.
+export lemma checks_has_steps c goal refutation : c~Context, goal~Term, refutation~Refutation, checks c goal refutation
+    ensures refutation.steps != []
+    proof
+        match refutation.steps
+            []     -> auto
+            _ :: _ -> auto
+
+# The goal is among the terms a refutation uses, and so is every fact a
+# `Fact` step cites: `defined` covers them.
+export lemma goal_used c goal refutation : c~Context, goal~Term, refutation~Refutation
+    ensures list.contains (terms c goal refutation) goal
+
+export lemma fact_used c goal steps k f : c~Context, goal~Term, steps~List Step, k~Nat, f~Term, list.contains steps (Fact k),
+                                          list.head (list.drop k (term.facts c)) == Some f
+    ensures list.contains (terms_of c goal steps) f
+    proof
+        match steps
+            []        -> auto
+            s :: rest ->
+                if s == Fact k
+                    auto
+                else
+                    have fact_used c goal rest k f
+                    match step_clause c goal s
+                        Some cl -> have list.contains_append (atoms cl) (terms_of c goal rest) f
+                        None    -> auto
