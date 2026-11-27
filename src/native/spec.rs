@@ -502,7 +502,7 @@ fn settle(g: &Globals, cx: SpecCx, t: &Tm) -> Tm {
                     _ if known_var(a).is_some() => (***a).clone(),
                     _ => settle(g, cx, a),
                 };
-                Tm::App(Rc::new(c), Rc::new(a), *i, *m, crate::source::Span::default())
+                Tm::App(Rc::new(c), Rc::new(a), *i, *m, crate::core::Pos::NONE)
             })
         }
         _ if known_var(t).is_some() => t.clone(),

@@ -1373,7 +1373,7 @@ impl Elab {
         let m = self.g.fresh_meta();
         let mut t = Tm::Meta(m);
         for lvl in cx.bound() {
-            t = Tm::App(Rc::new(t), Rc::new(cx.var(lvl)), Icit::Expl, Mult::Many, Span::default());
+            t = Tm::App(Rc::new(t), Rc::new(cx.var(lvl)), Icit::Expl, Mult::Many, crate::core::Pos::NONE);
         }
         t
     }
@@ -1385,7 +1385,7 @@ impl Elab {
         let mut t = Tm::Meta(m);
         for lvl in cx.bound() {
             if self.is_type_level(&cx.locals[lvl].ty) {
-                t = Tm::App(Rc::new(t), Rc::new(cx.var(lvl)), Icit::Expl, Mult::Many, Span::default());
+                t = Tm::App(Rc::new(t), Rc::new(cx.var(lvl)), Icit::Expl, Mult::Many, crate::core::Pos::NONE);
             }
         }
         t

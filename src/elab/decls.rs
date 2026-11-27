@@ -792,7 +792,7 @@ impl Elab {
             self.report_main(wrong, at, None);
             return value;
         }
-        let arg = |t: Tm, k: usize| Tm::App(Rc::new(t), Rc::new(Tm::Var(1 - k)), Icit::Expl, mults[k], Span::default());
+        let arg = |t: Tm, k: usize| Tm::App(Rc::new(t), Rc::new(Tm::Var(1 - k)), Icit::Expl, mults[k], crate::core::Pos::NONE);
         let body = arg(arg(value, 0), 1);
         params.iter().zip(&mults).rev().fold(body, |b, ((x, _), m)| Tm::Lam(x.clone(), *m, Icit::Expl, Rc::new(b)))
     }

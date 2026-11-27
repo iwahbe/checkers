@@ -12,6 +12,45 @@ use std::rc::Rc;
 
 use crate::source::Span;
 
+/// Where in the source a call or field read came from, for diagnostics
+/// after type checking. It never takes part in comparing, hashing, showing
+/// (`Debug`) or caching terms: two terms that differ only in positions are
+/// the same term, and a cache key never changes when code moves.
+#[derive(Clone, Copy, Default)]
+pub struct Pos(Span);
+
+impl Pos {
+    /// A term the compiler made, with no source of its own.
+    pub const NONE: Pos = Pos(Span { start: 0, end: 0 });
+
+    pub fn new(span: Span) -> Pos {
+        Pos(span)
+    }
+
+    /// The source span, if the term came from the source.
+    pub fn span(self) -> Option<Span> {
+        (self.0 != Span::default()).then_some(self.0)
+    }
+}
+
+impl PartialEq for Pos {
+    fn eq(&self, _: &Pos) -> bool {
+        true
+    }
+}
+
+impl Eq for Pos {}
+
+impl std::hash::Hash for Pos {
+    fn hash<H: std::hash::Hasher>(&self, _: &mut H) {}
+}
+
+impl std::fmt::Debug for Pos {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("_")
+    }
+}
+
 pub type Name = Rc<str>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -134,10 +173,9 @@ pub enum Tm {
     Pi(Name, Mult, Icit, Rc<Tm>, Rc<Tm>),
     Lam(Name, Mult, Icit, Rc<Tm>),
     /// The `Mult` is the multiplicity of the function's parameter (for usage checking).
-    /// The `Span` is the source expression the call came from, for
-    /// diagnostics after type checking; empty for a call the compiler made.
-    /// It never takes part in comparing, unifying, hashing or caching terms.
-    App(Rc<Tm>, Rc<Tm>, Icit, Mult, Span),
+    /// The `Pos` is the source expression the call came from, for
+    /// diagnostics after type checking; none for a call the compiler made.
+    App(Rc<Tm>, Rc<Tm>, Icit, Mult, Pos),
     Let(Name, Mult, Rc<Tm>, Rc<Tm>, Rc<Tm>),
     Lit(Lit),
     TupleTy(Vec<Tm>),
@@ -147,8 +185,8 @@ pub enum Tm {
     /// `(x, r)` binds `r` to `(b, c)` (#673).
     Proj(Rc<Tm>, usize, bool),
     /// Record projection: field `index` (counting fields only, not type parameters).
-    /// The `Span` is the source expression, as `App`'s.
-    Field(Rc<Tm>, ConId, usize, Span),
+    /// The `Pos` is the source expression, as `App`'s.
+    Field(Rc<Tm>, ConId, usize, Pos),
     TyConApp(TyId, Vec<Tm>),
     /// Saturated constructor: type parameters, then fields.
     ConApp(ConId, Vec<Tm>),
@@ -1440,9 +1478,9 @@ pub fn quote(g: &Globals, l: usize, v: &Val) -> Tm {
             };
             for e in sp.iter() {
                 t = match e {
-                    Elim::App(a, i) => Tm::App(Rc::new(t), Rc::new(quote(g, l, a)), *i, Mult::Many, Span::default()),
+                    Elim::App(a, i) => Tm::App(Rc::new(t), Rc::new(quote(g, l, a)), *i, Mult::Many, Pos::NONE),
                     Elim::Proj(i, r) => Tm::Proj(Rc::new(t), *i, *r),
-                    Elim::Field(c, i) => Tm::Field(Rc::new(t), *c, *i, Span::default()),
+                    Elim::Field(c, i) => Tm::Field(Rc::new(t), *c, *i, Pos::NONE),
                     Elim::Case(c, env) => Tm::Case(Rc::new(t), quote_case(g, l, c, env)),
                 };
             }
@@ -1550,9 +1588,9 @@ fn rename(g: &Globals, m: MetaId, p: &PartialRenaming, v: &Val) -> Result<Tm, Un
         let mut t = t;
         for e in sp.iter() {
             t = match e {
-                Elim::App(a, i) => Tm::App(Rc::new(t), Rc::new(rename(g, m, p, a)?), *i, Mult::Many, Span::default()),
+                Elim::App(a, i) => Tm::App(Rc::new(t), Rc::new(rename(g, m, p, a)?), *i, Mult::Many, Pos::NONE),
                 Elim::Proj(i, r) => Tm::Proj(Rc::new(t), *i, *r),
-                Elim::Field(c, i) => Tm::Field(Rc::new(t), *c, *i, Span::default()),
+                Elim::Field(c, i) => Tm::Field(Rc::new(t), *c, *i, Pos::NONE),
                 Elim::Case(c, env) => Tm::Case(Rc::new(t), rename_case(g, m, p, c, env)?),
             };
         }
@@ -1636,7 +1674,7 @@ fn prune(g: &Globals, m2: MetaId, sp: &[Elim], p: &PartialRenaming) -> Option<(M
     let mut t = Tm::Meta(m3);
     for (k, (kept, i, _)) in keep.iter().enumerate() {
         if *kept {
-            t = Tm::App(Rc::new(t), Rc::new(Tm::Var(n - 1 - k)), *i, Mult::Many, Span::default());
+            t = Tm::App(Rc::new(t), Rc::new(Tm::Var(n - 1 - k)), *i, Mult::Many, Pos::NONE);
         }
     }
     for (k, (_, i, _)) in keep.iter().enumerate().rev() {
@@ -2666,7 +2704,7 @@ fn fix_mults(g: &Globals, t: &Tm) -> Tm {
             }
             _ => Mult::Many,
         };
-        out = Tm::App(Rc::new(out), Rc::new(a), i, m, Span::default());
+        out = Tm::App(Rc::new(out), Rc::new(a), i, m, Pos::NONE);
     }
     out
 }

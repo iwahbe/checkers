@@ -75,7 +75,7 @@ struct Carried {
     lvls: BTreeSet<usize>,
     /// A call of a function whose result is declared `own`: the function,
     /// and the call's span (empty for a call the compiler made).
-    call: Option<(String, Span)>,
+    call: Option<(String, crate::core::Pos)>,
 }
 
 #[derive(Clone)]
@@ -92,7 +92,7 @@ struct U<'a> {
     /// Binder level → a function it was passed to whose parameter isn't `own` (#545).
     /// The function each `own` binder is passed to as a parameter that isn't
     /// `own`, with its module and the call's span.
-    copied_by: std::collections::HashMap<usize, (String, String, Span)>,
+    copied_by: std::collections::HashMap<usize, (String, String, Option<Span>)>,
     /// The `own` binders a closure captures.
     captured: std::collections::BTreeSet<usize>,
     /// The term being checked is the function's result.
@@ -407,11 +407,8 @@ impl U<'_> {
 
     /// `at`, a call's span, or the function's name for a call the compiler
     /// made.
-    fn at_or_fn(&self, at: Span) -> Span {
-        if at != Span::default() {
-            return at;
-        }
-        self.e.fn_meta.get(&self.did).map(|m| m.span).unwrap_or_default()
+    fn at_or_fn(&self, at: crate::core::Pos) -> Span {
+        at.span().or_else(|| self.e.fn_meta.get(&self.did).map(|m| m.span)).unwrap_or_default()
     }
 
     /// Where a binder is bound, for a message.
@@ -500,7 +497,7 @@ impl U<'_> {
     /// The call that passes a binder to a parameter that isn't `own`, if
     /// it came from the source.
     fn copied_at(&self, lvl: usize) -> Option<Span> {
-        self.copied_by.get(&lvl).map(|c| c.2).filter(|at| *at != Span::default())
+        self.copied_by.get(&lvl).and_then(|c| c.2)
     }
 
     /// What a binder passed to `cown.new` or `actor.new` would be put in: a
@@ -741,12 +738,12 @@ impl U<'_> {
         let Tm::App(f, a, _, m, at) = t else { return self.go(t) };
         // The whole call, for a message about passing `a` (`cown.new f s`,
         // not `cown.new f`).
-        let call = whole.unwrap_or(*at);
+        let call = whole.or(at.span());
         // A lambda called where it is made runs once (#658).
         let mut c = match &**f {
             Tm::Lam(..) => self.lam_once(f),
             // The rest of this call: what it partly applies is decided at the top.
-            Tm::App(..) => self.app(f, true, Some(call)),
+            Tm::App(..) => self.app(f, true, call),
             _ => self.go(f),
         };
         // A constructor stores its argument: one use, like a saturated `ConApp`.

@@ -647,14 +647,14 @@ pub fn debug_table(g: &Globals) -> Option<Tm> {
     if insts.is_empty() {
         return None;
     }
-    let erased = |f: Tm| Tm::App(Rc::new(f), Rc::new(Tm::Univ(0)), Icit::Impl, Mult::Zero, crate::source::Span::default());
+    let erased = |f: Tm| Tm::App(Rc::new(f), Rc::new(Tm::Univ(0)), Icit::Impl, Mult::Zero, crate::core::Pos::NONE);
     let mut list = erased(Tm::Con(nil));
     for (_, d) in insts.iter().rev() {
         // Its type parameters come from the runtime, which knows them from
         // the value's type's descriptor (#170).
         let f = Tm::Def(*d);
         let c = erased(Tm::Con(cons));
-        list = Tm::App(Rc::new(Tm::App(Rc::new(c), Rc::new(f), Icit::Expl, Mult::Many, crate::source::Span::default())), Rc::new(list), Icit::Expl, Mult::Many, crate::source::Span::default());
+        list = Tm::App(Rc::new(Tm::App(Rc::new(c), Rc::new(f), Icit::Expl, Mult::Many, crate::core::Pos::NONE)), Rc::new(list), Icit::Expl, Mult::Many, crate::core::Pos::NONE);
     }
     Some(list)
 }

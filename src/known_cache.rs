@@ -983,7 +983,7 @@ impl KnownCache {
             "A" => {
                 let (i, m) = (icit(toks.next()?)?, mult(toks.next()?)?);
                 let f = self.read_tm(g, toks)?;
-                Tm::App(Rc::new(f), Rc::new(self.read_tm(g, toks)?), i, m, crate::source::Span::default())
+                Tm::App(Rc::new(f), Rc::new(self.read_tm(g, toks)?), i, m, crate::core::Pos::NONE)
             }
             "E" => {
                 let (x, m) = (unescape(toks.next()?), mult(toks.next()?)?);
@@ -1011,7 +1011,7 @@ impl KnownCache {
                     }
                     "F" => {
                         let c = con(self, toks.next()?)?;
-                        Tm::Field(Rc::new(self.read_tm(g, toks)?), c, count(rest)?, crate::source::Span::default())
+                        Tm::Field(Rc::new(self.read_tm(g, toks)?), c, count(rest)?, crate::core::Pos::NONE)
                     }
                     "TA" => {
                         let x = ty(self, toks.next()?)?;

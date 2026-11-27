@@ -220,7 +220,7 @@ impl<'g> Compiler<'g> {
                 // A variable bound to a known function, called: the
                 // function, called directly.
                 if let Some((_, f)) = super::spec::known_var(h) {
-                    let call = spine.iter().fold((*f).clone(), |c, (a, m)| Tm::App(Rc::new(c), (*a).clone(), Icit::Expl, *m, crate::source::Span::default()));
+                    let call = spine.iter().fold((*f).clone(), |c, (a, m)| Tm::App(Rc::new(c), (*a).clone(), Icit::Expl, *m, crate::core::Pos::NONE));
                     return self.go(&call);
                 }
                 // Code of another definition applied (a lambda's body put
@@ -240,7 +240,7 @@ impl<'g> Compiler<'g> {
                 if let Tm::Lam(x, m, _, b) = h {
                     let mut body = (**b).clone();
                     for (a, am) in &spine[1..] {
-                        body = Tm::App(Rc::new(body), Rc::new(crate::core::rename_free(a, 0, &|v| v + 1)), Icit::Expl, *am, crate::source::Span::default());
+                        body = Tm::App(Rc::new(body), Rc::new(crate::core::rename_free(a, 0, &|v| v + 1)), Icit::Expl, *am, crate::core::Pos::NONE);
                     }
                     let (a, am) = spine[0];
                     let m = if *m == Mult::Zero || am == Mult::Zero { Mult::Zero } else { *m };
@@ -777,7 +777,7 @@ pub fn known_instance(g: &Globals, t: &Tm) -> Option<Tm> {
         let (a, _, _) = args.next()?;
         out = subst(b, &[(*a).clone()], 0);
     }
-    Some(args.fold(out, |f, (a, i, m)| Tm::App(Rc::new(f), a, i, m, crate::source::Span::default())))
+    Some(args.fold(out, |f, (a, i, m)| Tm::App(Rc::new(f), a, i, m, crate::core::Pos::NONE)))
 }
 
 /// A term that computes nothing: a variable, a literal, or a constant whose

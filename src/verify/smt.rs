@@ -1945,7 +1945,7 @@ impl<'a> Builder<'a> {
         let g = &self.e.g;
         let d = g.defs.iter().position(|d| &*d.module == "std.prelude" && &*d.name == "valid_utf8")?;
         let env = vec![Ent::Term(t.to_string(), Sort::Seq(Box::new(Sort::Int)))];
-        let tm = Tm::App(Rc::new(Tm::Def(DefId(d as u32))), Rc::new(Tm::Var(0)), crate::core::Icit::Expl, Mult::Many, crate::source::Span::default());
+        let tm = Tm::App(Rc::new(Tm::Def(DefId(d as u32))), Rc::new(Tm::Var(0)), crate::core::Icit::Expl, Mult::Many, crate::core::Pos::NONE);
         match self.term(&env, &tm) {
             Ok((ft, Sort::Bool)) => Some(ft),
             _ => None,
@@ -2800,7 +2800,7 @@ impl<'a> Builder<'a> {
                 let mut app = self.built_field(x, *c, *i).unwrap();
                 for (a, m) in args {
                     let icit = if m == Mult::Zero { crate::core::Icit::Impl } else { crate::core::Icit::Expl };
-                    app = Tm::App(Rc::new(app), Rc::new(a), icit, m, crate::source::Span::default());
+                    app = Tm::App(Rc::new(app), Rc::new(a), icit, m, crate::core::Pos::NONE);
                 }
                 self.term(env, &app)
             }
@@ -3040,7 +3040,7 @@ impl<'a> Builder<'a> {
             let mut app = crate::stage::shift(&body, rest, 0);
             for k in 0..rest {
                 inner.push(Ent::Term(names[used + k].clone(), ps[used + k].clone()));
-                app = Tm::App(Rc::new(app), Rc::new(Tm::Var(rest - 1 - k)), crate::core::Icit::Expl, Mult::Many, crate::source::Span::default());
+                app = Tm::App(Rc::new(app), Rc::new(Tm::Var(rest - 1 - k)), crate::core::Icit::Expl, Mult::Many, crate::core::Pos::NONE);
             }
             body = app;
         } else if matches!(body, Tm::Lam(..)) {
@@ -3249,7 +3249,7 @@ impl<'a> Builder<'a> {
         ienv.extend(rest);
         let mut app = crate::stage::shift(&field, n, 0);
         for j in 0..n {
-            app = Tm::App(Rc::new(app), Rc::new(Tm::Var(n - 1 - j)), crate::core::Icit::Expl, Mult::Many, crate::source::Span::default());
+            app = Tm::App(Rc::new(app), Rc::new(Tm::Var(n - 1 - j)), crate::core::Icit::Expl, Mult::Many, crate::core::Pos::NONE);
         }
         let _ = args;
         self.term(&ienv, &app).map(Some)
@@ -4218,7 +4218,7 @@ impl<'a> Builder<'a> {
                 let mut body = crate::stage::shift(body, n - taken, 0);
                 for (j, (_, m)) in args.iter().enumerate().skip(taken) {
                     let i = if *m == Mult::Zero { crate::core::Icit::Impl } else { crate::core::Icit::Expl };
-                    body = Tm::App(Rc::new(body), Rc::new(Tm::Var(n - 1 - j)), i, *m, crate::source::Span::default());
+                    body = Tm::App(Rc::new(body), Rc::new(Tm::Var(n - 1 - j)), i, *m, crate::core::Pos::NONE);
                 }
                 self.term(&inner, &body)
             }
@@ -4243,7 +4243,7 @@ impl<'a> Builder<'a> {
                 }
                 let mut app = f.clone();
                 for (t, m) in tms {
-                    app = Tm::App(Rc::new(app), Rc::new(t), crate::core::Icit::Expl, m, crate::source::Span::default());
+                    app = Tm::App(Rc::new(app), Rc::new(t), crate::core::Icit::Expl, m, crate::core::Pos::NONE);
                 }
                 self.term(&inner, &app)
             }
@@ -4800,7 +4800,7 @@ fn dict_over_vars(t: &Tm) -> Option<(Tm, usize)> {
     let n = apps.len();
     let mut out_ = h.clone();
     for (j, (i, m)) in apps.into_iter().enumerate() {
-        out_ = Tm::App(Rc::new(out_), Rc::new(Tm::Var(n - 1 - j)), i, m, crate::source::Span::default());
+        out_ = Tm::App(Rc::new(out_), Rc::new(Tm::Var(n - 1 - j)), i, m, crate::core::Pos::NONE);
     }
     Some((out_, n))
 }

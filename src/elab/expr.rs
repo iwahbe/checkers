@@ -64,7 +64,7 @@ impl Elab {
                         }
                     }
                     args.push(mv.clone());
-                    t = Tm::App(Rc::new(t), Rc::new(mt), Icit::Impl, m, span);
+                    t = Tm::App(Rc::new(t), Rc::new(mt), Icit::Impl, m, crate::core::Pos::new(span));
                     ty = apply_closure(&self.g, &c, mv);
                 }
                 _ => {
@@ -892,7 +892,7 @@ impl Elab {
             self.in_spec -= 1;
             cx.type_pos = saved;
             let av = self.eval(cx, &at);
-            t = Tm::App(Rc::new(t), Rc::new(at), Icit::Expl, m, span.to(arg.span));
+            t = Tm::App(Rc::new(t), Rc::new(at), Icit::Expl, m, crate::core::Pos::new(span.to(arg.span)));
             ty = apply_closure(&self.g, &c, av);
         }
         self.name_span = span;
@@ -2243,7 +2243,7 @@ impl Elab {
         match self.force(&ty) {
             Val::Pi(_, m, Icit::Expl, dom, c) => {
                 if let Some((at, av)) = ready {
-                    return (Tm::App(Rc::new(t), Rc::new(at), Icit::Expl, m, from.to(a.span)), apply_closure(&self.g, &c, av));
+                    return (Tm::App(Rc::new(t), Rc::new(at), Icit::Expl, m, crate::core::Pos::new(from.to(a.span))), apply_closure(&self.g, &c, av));
                 }
                 let dom = expected.unwrap_or((*dom).clone());
                 // A refined function type's precondition (#580): required to
@@ -2273,7 +2273,7 @@ impl Elab {
                         self.oblige(cx, a.span, ObKind::Pre { callee: callee.clone() }, p.text.clone(), goal, None);
                     }
                 }
-                (Tm::App(Rc::new(t), Rc::new(at), Icit::Expl, m, from.to(a.span)), apply_closure(&self.g, &c, av))
+                (Tm::App(Rc::new(t), Rc::new(at), Icit::Expl, m, crate::core::Pos::new(from.to(a.span))), apply_closure(&self.g, &c, av))
             }
             Val::Neutral(Head::Meta(_), _) if self.default_if_numeric(&ty) => self.apply_one(cx, t, ty, from, a),
             Val::Neutral(Head::Meta(_), sp) => {
@@ -2292,9 +2292,9 @@ impl Elab {
                 let mut cod = Tm::Meta(c);
                 for v in &args {
                     let vt = quote(&self.g, cx.lvl() + 1, v);
-                    cod = Tm::App(Rc::new(cod), Rc::new(vt), Icit::Expl, Mult::Many, Span::default());
+                    cod = Tm::App(Rc::new(cod), Rc::new(vt), Icit::Expl, Mult::Many, crate::core::Pos::NONE);
                 }
-                cod = Tm::App(Rc::new(cod), Rc::new(Tm::Var(0)), Icit::Expl, Mult::Many, Span::default());
+                cod = Tm::App(Rc::new(cod), Rc::new(Tm::Var(0)), Icit::Expl, Mult::Many, crate::core::Pos::NONE);
                 let pi = Val::Pi(Rc::from("x"), Mult::Many, Icit::Expl, Rc::new(dom.clone()), Closure { env: cx.env(), body: Rc::new(cod) });
                 self.unify_at(cx, &pi, &ty, a.span, "the function");
                 self.apply_one(cx, t, pi, from, a)
@@ -2614,7 +2614,7 @@ impl Elab {
                 self.unify_at(cx, &dom, aty, span, "this operand");
                 let av = self.eval(cx, &a);
                 let ty = apply_closure(&self.g, &c, av);
-                (Tm::App(Rc::new(f), Rc::new(a), i, m, span), ty)
+                (Tm::App(Rc::new(f), Rc::new(a), i, m, crate::core::Pos::new(span)), ty)
             }
             _ => (Tm::Error, Val::Error),
         }
@@ -2848,7 +2848,7 @@ impl Elab {
                     env.push(crate::core::eval(
                         &self.g,
                         &crate::core::Env::from(vec![xv.clone()]),
-                        &Tm::Field(Rc::new(Tm::Var(0)), cid, j, Span::default()),
+                        &Tm::Field(Rc::new(Tm::Var(0)), cid, j, crate::core::Pos::NONE),
                     ));
                 }
                 // Reading a field uses the whole record: at runtime, it may
@@ -2884,7 +2884,7 @@ impl Elab {
                     }
                 }
                 let fty = ftys[idx].clone();
-                (Tm::Field(Rc::new(xt), cid, idx, span), fty)
+                (Tm::Field(Rc::new(xt), cid, idx, crate::core::Pos::new(span)), fty)
             }
             Val::Error => (Tm::Error, Val::Error),
             // Unknown because of an error already reported.

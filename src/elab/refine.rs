@@ -723,7 +723,7 @@ impl Elab {
         self.alias_subject.insert(did, Rc::from(subject));
         let mut t = Tm::Def(did);
         for lv in &levels {
-            t = Tm::App(Rc::new(t), Rc::new(Tm::Var(l - 1 - lv)), Icit::Expl, Mult::Zero, Span::default());
+            t = Tm::App(Rc::new(t), Rc::new(Tm::Var(l - 1 - lv)), Icit::Expl, Mult::Zero, crate::core::Pos::NONE);
         }
         t
     }
@@ -842,7 +842,7 @@ impl Elab {
         let rest = binders.len() - given;
         let mut call = crate::core::rename_free(&t, 0, &|i| i + rest);
         for (j, (i, m)) in binders[given..].iter().enumerate() {
-            call = Tm::App(Rc::new(call), Rc::new(Tm::Var(rest - 1 - j)), *i, *m, Span::default());
+            call = Tm::App(Rc::new(call), Rc::new(Tm::Var(rest - 1 - j)), *i, *m, crate::core::Pos::NONE);
         }
         let direct = crate::native::ir::known_instance(&self.g, &call)?;
         let mut spine = Vec::new();

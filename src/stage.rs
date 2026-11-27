@@ -315,9 +315,7 @@ impl<'g> Stager<'g> {
         let own = self.depth == 0;
         let r = self.app_spine(t, env, lvl);
         if let (true, Err(_), None, Tm::App(.., at)) = (own, &r, self.failed_at, t) {
-            if *at != Span::default() {
-                self.failed_at = Some(*at);
-            }
+            self.failed_at = at.span();
         }
         r
     }
@@ -353,7 +351,7 @@ impl<'g> Stager<'g> {
             }
             let mut out = (**b).clone();
             for (a, i, am) in args {
-                out = Tm::App(Rc::new(out), Rc::new(a), i, am, Span::default());
+                out = Tm::App(Rc::new(out), Rc::new(a), i, am, crate::core::Pos::NONE);
             }
             let ident: Vec<Ent> = (0..=lvl).map(Ent::Dyn).collect();
             let inner = self.pe(&out, &ident, lvl + 1)?.tm();
@@ -373,7 +371,7 @@ impl<'g> Stager<'g> {
         let partial = matches!(h, Tm::Def(d) if { let i = &self.g.defs[d.0 as usize]; i.opaque && i.body.is_some() });
         let mut out = head.tm();
         for (a, i, m) in args {
-            out = Tm::App(Rc::new(out), Rc::new(a), i, m, Span::default());
+            out = Tm::App(Rc::new(out), Rc::new(a), i, m, crate::core::Pos::NONE);
         }
         // Everything known, and the callee ends (not `partial`): compute it.
         if all && !partial && closed(&out, 0) {
@@ -474,7 +472,7 @@ impl<'g> Stager<'g> {
                     Ent::Dyn(j) => Tm::Var(l - 1 - j),
                     Ent::Ty(s, at) => shift(s, l - at, 0),
                 };
-                t = Tm::App(Rc::new(t), Rc::new(a), crate::core::Icit::Expl, binders[k].1, Span::default());
+                t = Tm::App(Rc::new(t), Rc::new(a), crate::core::Icit::Expl, binders[k].1, crate::core::Pos::NONE);
             }
             t
         };
@@ -542,7 +540,7 @@ impl<'g> Stager<'g> {
                 Ent::Dyn(k) => Tm::Var(l - 1 - k),
                 Ent::Ty(s, at) => shift(s, l - at, 0),
             };
-            out = Tm::App(Rc::new(out), Rc::new(a), *i, *m, Span::default());
+            out = Tm::App(Rc::new(out), Rc::new(a), *i, *m, crate::core::Pos::NONE);
         }
         let ident: Vec<Ent> = (0..l).map(Ent::Dyn).collect();
         self.pe(&out, &ident, l)
