@@ -25,7 +25,7 @@ impl Elab {
         let mut out = Vec::new();
         let mut v = eval(&self.g, &crate::core::Env::new(), &self.g.defs[d.0 as usize].ty);
         let mut k = 0;
-        while let Val::Pi(x, _, _, dom, c) = self.force(&v) {
+        while let Val::Pi(x, _, _, dom, c, _) = self.force(&v) {
             if crate::core::is_type_former(&quote(&self.g, k, &dom)) {
                 out.push((k, x.clone()));
             }

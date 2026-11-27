@@ -89,7 +89,7 @@ The rules, each with its error:
 | used exactly once: not zero times, not twice | E0401 |
 | used on every path, or on none (an `if` that closes a file in one branch only) | E0402 |
 | never dropped by `_`, or by a field left out of a record pattern | E0404 |
-| used by a closure only if the closure is called exactly once ([One-shot closures](#one-shot-closures)) | E0401 |
+| used by a closure only if the closure is called exactly once: the closure is a resource too ([One-shot closures](#one-shot-closures)) | E0401 |
 | not put in a cown | E0405 |
 | a field of a value holding a resource isn't read with `.f` if another field holds one: that would drop it (take it apart with `match`) | E0406 |
 | an array of resources isn't indexed: that would drop the other elements (use a `List`, taken apart with `match`) | E0407 |
@@ -116,13 +116,14 @@ The new `f` hides the one used up by the call, so the old one can't be used agai
 
 ### One-shot closures
 
-A closure (a lambda, or a function applied to some of its arguments) that uses a resource holds it, so it must be called exactly once, or the resource would be used twice or never. Such a closure may be:
+A closure (a lambda, or a function applied to some of its arguments) that uses a resource holds it, so it is a resource itself: it must be called exactly once, or the resource would be used twice or never. Its type says so, `own (a -> b)`: `let k = \_ -> files.close f` gives `k` the type `own (Unit -> Result Unit IoError)`. Everything above holds of it, and of a value that holds one (`Some k`, a record with a field of type `own (Unit -> Unit)`). Such a closure may be:
 
 - called where it is made: `(\_ -> files.close f) ()`;
-- bound with `let` and called once: the variable is then used exactly once, like a resource;
-- passed to a parameter declared `own` on a function type, `k~own (Unit -> a)`, which promises a single call ([Types](types.md#own)).
+- bound with `let` and called once;
+- passed to a parameter of type `own (Unit -> a)`, written `k~own (Unit -> a)`, which promises a single call ([Types](types.md#own)), or to a generic parameter declared `own`;
+- returned from a function whose result is `own (Unit -> a)`, so that its caller calls it once.
 
-Anywhere else (passed to a parameter that isn't `own`, returned, called twice or never) is E0401. The function given to `future.fork` is one-shot, so work scheduled with it can take a resource along ([Concurrency](concurrency.md#futures)).
+Where a function type without `own` is expected (a parameter `k~(Unit -> a)`, a result, a field), it is E0401, reported at the closure: that function might call it any number of times. The function given to `future.fork` is one-shot, so work scheduled with it can take a resource along ([Concurrency](concurrency.md#futures)).
 
 ```checkers
 import std.files (File, IoError)

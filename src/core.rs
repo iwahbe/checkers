@@ -129,7 +129,9 @@ pub enum Tm {
     Con(ConId),
     Meta(MetaId),
     Univ(u32),
-    Pi(Name, Mult, Icit, Rc<Tm>, Rc<Tm>),
+    /// A function type. The `bool` says the function is used exactly once
+    /// (`own (a -> b)`): a closure that holds a resource (§8.4).
+    Pi(Name, Mult, Icit, Rc<Tm>, Rc<Tm>, bool),
     Lam(Name, Mult, Icit, Rc<Tm>),
     /// The `Mult` is the multiplicity of the function's parameter (for usage checking).
     App(Rc<Tm>, Rc<Tm>, Icit, Mult),
@@ -171,7 +173,7 @@ impl Tm {
     pub fn any_sub(&self, mut f: impl FnMut(&Tm, usize) -> bool) -> bool {
         match self {
             Tm::Var(_) | Tm::Def(_) | Tm::TyCon(_) | Tm::Con(_) | Tm::Meta(_) | Tm::Univ(_) | Tm::Lit(_) | Tm::Known(_) | Tm::Error => false,
-            Tm::Pi(_, _, _, a, b) => f(a, 0) || f(b, 1),
+            Tm::Pi(_, _, _, a, b, _) => f(a, 0) || f(b, 1),
             Tm::Lam(_, _, _, b) => f(b, 1),
             Tm::App(a, b, _, _) => f(a, 0) || f(b, 0),
             Tm::Let(_, _, a, b, c) => f(a, 0) || f(b, 0) || f(c, 1),
@@ -204,7 +206,7 @@ impl Tm {
     pub fn map_sub(&self, mut f: impl FnMut(&Tm, usize) -> Tm) -> Tm {
         match self {
             Tm::Var(_) | Tm::Def(_) | Tm::TyCon(_) | Tm::Con(_) | Tm::Meta(_) | Tm::Univ(_) | Tm::Lit(_) | Tm::Known(_) | Tm::Error => self.clone(),
-            Tm::Pi(x, m, i, a, b) => Tm::Pi(x.clone(), *m, *i, Rc::new(f(a, 0)), Rc::new(f(b, 1))),
+            Tm::Pi(x, m, i, a, b, o) => Tm::Pi(x.clone(), *m, *i, Rc::new(f(a, 0)), Rc::new(f(b, 1)), *o),
             Tm::Lam(x, m, i, b) => Tm::Lam(x.clone(), *m, *i, Rc::new(f(b, 1))),
             Tm::App(a, b, i, m) => Tm::App(Rc::new(f(a, 0)), Rc::new(f(b, 0)), *i, *m),
             Tm::Let(x, m, a, b, c) => Tm::Let(x.clone(), *m, Rc::new(f(a, 0)), Rc::new(f(b, 0)), Rc::new(f(c, 1))),
@@ -290,7 +292,8 @@ pub enum Elim {
 pub enum Val {
     Neutral(Head, Rc<Vec<Elim>>),
     Lam(Name, Mult, Icit, Closure),
-    Pi(Name, Mult, Icit, Rc<Val>, Closure),
+    /// A function type; the `bool`: used exactly once (`Tm::Pi`).
+    Pi(Name, Mult, Icit, Rc<Val>, Closure, bool),
     Univ(u32),
     TyCon(TyId, Rc<[Val]>),
     Con(ConId, Rc<[Val]>),
@@ -663,8 +666,8 @@ pub fn eval(g: &Globals, env: &Env, t: &Tm) -> Val {
             None => Val::Neutral(Head::Meta(*m), Rc::new(Vec::new())),
         },
         Tm::Univ(u) => Val::Univ(*u),
-        Tm::Pi(x, m, i, a, b) => {
-            Val::Pi(x.clone(), *m, *i, Rc::new(eval(g, env, a)), Closure { env: env.clone(), body: b.clone() })
+        Tm::Pi(x, m, i, a, b, o) => {
+            Val::Pi(x.clone(), *m, *i, Rc::new(eval(g, env, a)), Closure { env: env.clone(), body: b.clone() }, *o)
         }
         Tm::Lam(x, m, i, b) => Val::Lam(x.clone(), *m, *i, Closure { env: env.clone(), body: b.clone() }),
         Tm::App(f, a, i, _) => {
@@ -789,7 +792,7 @@ pub fn unfold(g: &Globals, v: &Val) -> Option<Val> {
 /// type alias?
 pub fn is_type_former(ty: &Tm) -> bool {
     let mut t = ty;
-    while let Tm::Pi(_, _, _, _, b) = t {
+    while let Tm::Pi(_, _, _, _, b, _) = t {
         t = b;
     }
     matches!(t, Tm::Univ(_))
@@ -1443,12 +1446,13 @@ pub fn quote(g: &Globals, l: usize, v: &Val) -> Tm {
             t
         }
         Val::Lam(x, m, i, c) => Tm::Lam(x, m, i, Rc::new(quote(g, l + 1, &apply_closure(g, &c, Val::var(l))))),
-        Val::Pi(x, m, i, a, c) => Tm::Pi(
+        Val::Pi(x, m, i, a, c, o) => Tm::Pi(
             x,
             m,
             i,
             Rc::new(quote(g, l, &a)),
             Rc::new(quote(g, l + 1, &apply_closure(g, &c, Val::var(l)))),
+            o,
         ),
         Val::Univ(u) => Tm::Univ(u),
         Val::TyCon(t, args) => Tm::TyConApp(t, args.iter().map(|a| quote(g, l, a)).collect()),
@@ -1581,12 +1585,13 @@ fn rename(g: &Globals, m: MetaId, p: &PartialRenaming, v: &Val) -> Result<Tm, Un
             i,
             Rc::new(rename(g, m, &lift(p), &apply_closure(g, &c, Val::var(p.cod)))?),
         )),
-        Val::Pi(x, mu, i, a, c) => Ok(Tm::Pi(
+        Val::Pi(x, mu, i, a, c, o) => Ok(Tm::Pi(
             x,
             mu,
             i,
             Rc::new(rename(g, m, p, &a)?),
             Rc::new(rename(g, m, &lift(p), &apply_closure(g, &c, Val::var(p.cod)))?),
+            o,
         )),
         Val::Univ(u) => Ok(Tm::Univ(u)),
         Val::TyCon(t, args) => {
@@ -1691,6 +1696,13 @@ fn rename_case(g: &Globals, m: MetaId, p: &PartialRenaming, c: &Rc<CaseTm>, env:
         lits: c.lits.iter().map(|(lit, b)| Ok((lit.clone(), rb(0, b)?))).collect::<Result<_, _>>()?,
         default: c.default.as_ref().map(|b| rb(0, b)).transpose()?,
     }))
+}
+
+/// Solve `m`, applied to `sp`, again, as `rhs`: a type the branches of an
+/// `if` or `match` share, made a function used exactly once by a later
+/// branch (§8.4). Nothing has used the earlier solution but those branches.
+pub fn resolve_meta(g: &Globals, gamma: usize, m: MetaId, sp: &[Elim], rhs: &Val) -> bool {
+    solve(g, gamma, m, sp, rhs).is_ok()
 }
 
 fn solve(g: &Globals, gamma: usize, m: MetaId, sp: &[Elim], rhs: &Val) -> Result<(), UnifyError> {
@@ -1858,7 +1870,7 @@ fn unify_whnf(g: &Globals, l: usize, a: &Val, b: &Val) -> Result<(), UnifyError>
             let rhs = app(g, other.clone(), x, *i);
             unify(g, l + 1, &lhs, &rhs)
         }
-        (Val::Pi(_, m1, i1, a1, c1), Val::Pi(_, m2, i2, a2, c2)) => {
+        (Val::Pi(_, m1, i1, a1, c1, _), Val::Pi(_, m2, i2, a2, c2, _)) => {
             if i1 != i2 || m1 != m2 {
                 return Err(UnifyError::Mismatch);
             }
@@ -2282,6 +2294,36 @@ fn bool_op<'a>(g: &Globals, t: &'a Tm) -> Option<(u8, &'a Tm, &'a Tm)> {
     })
 }
 
+/// A function type without its `own`: `a -> b`. In a function used
+/// exactly once, the arrows after the first that are too are written in
+/// the same `own (a -> b -> c)`; one that isn't is in parentheses.
+fn show_arrow<S: Scope + ?Sized>(g: &Globals, ns: &mut Ns<S>, t: &Tm) -> String {
+    let Tm::Pi(x, m, i, a, b, once) = t else { return show_prec(g, ns, t, 0) };
+    let dom = show_prec(g, ns, a, 1);
+    let x2 = fresh(ns, x);
+    ns.push(x2.clone());
+    let cod = match &**b {
+        Tm::Pi(.., true) if *once => show_arrow(g, ns, b),
+        Tm::Pi(..) if *once => format!("({})", show_prec(g, ns, b, 0)),
+        _ => show_prec(g, ns, b, 0),
+    };
+    ns.pop();
+    let mul = match m {
+        Mult::Zero => "ghost ",
+        Mult::One => "own ",
+        Mult::Many => "",
+    };
+    let anon_dom = matches!(head_def(a), Some(d) if is_anon_alias(g, d));
+    match i {
+        Icit::Expl if anon_dom && *m != Mult::Zero => format!("{mul}{dom} -> {cod}"),
+        // A dictionary (`$d0`, #615): its class clause alone.
+        Icit::Impl if x.starts_with("$d") => format!("{{{dom}}} -> {cod}"),
+        Icit::Impl => format!("{{{x2}~{mul}{dom}}} -> {cod}"),
+        Icit::Expl if x.as_ref() == "_" && *m == Mult::Many => format!("{dom} -> {cod}"),
+        Icit::Expl => format!("({x2}~{mul}{dom}) -> {cod}"),
+    }
+}
+
 fn paren(b: bool, s: String) -> String {
     if b {
         format!("({s})")
@@ -2316,27 +2358,10 @@ fn show_prec<S: Scope + ?Sized>(g: &Globals, ns: &mut Ns<S>, t: &Tm, p: u8) -> S
         },
         Tm::Univ(0) => "Type".into(),
         Tm::Univ(u) => format!("Type {u}"),
-        Tm::Pi(x, m, i, a, b) => {
-            let dom = show_prec(g, ns, a, 1);
-            let x2 = fresh(ns, x);
-            ns.push(x2.clone());
-            let cod = show_prec(g, ns, b, 0);
-            ns.pop();
-            let mul = match m {
-                Mult::Zero => "ghost ",
-                Mult::One => "own ",
-                Mult::Many => "",
-            };
-            let anon_dom = matches!(head_def(a), Some(d) if is_anon_alias(g, d));
-            let s = match i {
-                Icit::Expl if anon_dom && *m != Mult::Zero => format!("{mul}{dom} -> {cod}"),
-                // A dictionary (`$d0`, #615): its class clause alone.
-                Icit::Impl if x.starts_with("$d") => format!("{{{dom}}} -> {cod}"),
-                Icit::Impl => format!("{{{x2}~{mul}{dom}}} -> {cod}"),
-                Icit::Expl if x.as_ref() == "_" && *m == Mult::Many => format!("{dom} -> {cod}"),
-                Icit::Expl => format!("({x2}~{mul}{dom}) -> {cod}"),
-            };
-            paren(p > 0, s)
+        Tm::Pi(_, _, _, _, _, once) => {
+            let s = show_arrow(g, ns, t);
+            // A function used exactly once (§8.4), with its arrows after the first.
+            if *once { paren(p > 1, format!("own ({s})")) } else { paren(p > 0, s) }
         }
         Tm::Lam(x, _, _, b) => {
             let x2 = fresh(ns, x);
@@ -2599,9 +2624,9 @@ pub fn zonk_metas(g: &Globals, l: usize, t: &Tm) -> Tm {
                 let (nf, na) = (rc(f, 0), rc(a, 0));
                 (nf.is_some() || na.is_some()).then(|| Tm::App(keep(nf, f), keep(na, a), *i, *m))
             }
-            Tm::Pi(x, m, i, a, b) => {
+            Tm::Pi(x, m, i, a, b, o) => {
                 let (na, nb) = (rc(a, 0), rc(b, 1));
-                (na.is_some() || nb.is_some()).then(|| Tm::Pi(x.clone(), *m, *i, keep(na, a), keep(nb, b)))
+                (na.is_some() || nb.is_some()).then(|| Tm::Pi(x.clone(), *m, *i, keep(na, a), keep(nb, b), *o))
             }
             Tm::Lam(x, m, i, b) => rc(b, 1).map(|nb| Tm::Lam(x.clone(), *m, *i, nb)),
             Tm::Let(x, m, a, b, c) => {
@@ -2653,7 +2678,7 @@ fn fix_mults(g: &Globals, t: &Tm) -> Tm {
     let mut out = h.clone();
     for (a, i) in args {
         let m = match &ty {
-            Tm::Pi(_, m, _, _, b) => {
+            Tm::Pi(_, m, _, _, b, _) => {
                 let m = *m;
                 ty = (**b).clone();
                 m

@@ -1,0 +1,8 @@
+error[E0358]: `own` here makes a function used exactly once, but `Int` is not a function type
+ --> own_type.ck:7:32
+  |
+7 | fn not_a_function x : x~Option (own Int)
+  |                                ^^^^^^^^^ `own` has no use here
+  = help: remove `own`; a parameter that may receive a resource is written `x~own a`
+
+own_type.ck: 1 error, 0 warnings

@@ -1,79 +1,85 @@
-error[E0401]: `h` uses `file`, a resource, so it must be called exactly once, but `by_some` may call it more than once
+error[E0401]: `h` is `own (Unit -> Unit)`, a function to call exactly once, but `by_some` may call it more than once
   --> oneshot_holder.ck:16:14
    |
 16 |         Some h ->
    |              ^
-   = help: a closure that uses a resource is used up by its call
+   = help: a function of type `own (…)` is used up by its call
 
-error[E0401]: `h` uses `file`, a resource, so it must be called exactly once, but `by_tuple` may call it more than once
+error[E0401]: `h` is `own (Unit -> Unit)`, a function to call exactly once, but `by_tuple` may call it more than once
   --> oneshot_holder.ck:23:10
    |
 23 |     let (h, _) = (k, 1)
    |          ^
-   = help: a closure that uses a resource is used up by its call
+   = help: a function of type `own (…)` is used up by its call
 
-error[E0401]: `h` uses `file`, a resource, so it must be called exactly once, but `by_list` may call it more than once
+error[E0401]: `h` is `own (Unit -> Unit)`, a function to call exactly once, but `by_list` may call it more than once
   --> oneshot_holder.ck:30:10
    |
 30 |         [h] ->
    |          ^
-   = help: a closure that uses a resource is used up by its call
+   = help: a function of type `own (…)` is used up by its call
 
-error[E0401]: `h` uses `file`, a resource, so it must be called exactly once, but `by_id` may call it more than once
+error[E0404]: this drops a resource of type `own (Unit -> Unit)`
+  --> oneshot_holder.ck:33:9
+   |
+33 |         _   -> ()
+   |         ^ a resource must be used exactly once
+   = help: bind it to a name, then call it or pass it on
+
+error[E0401]: `h` is `own (Unit -> Unit)`, a function to call exactly once, but `by_id` may call it more than once
   --> oneshot_holder.ck:37:9
    |
 37 |     let h = id k
    |         ^
-   = help: a closure that uses a resource is used up by its call
+   = help: a function of type `own (…)` is used up by its call
 
-error[E0401]: `p` holds a closure that uses `file`, a resource, so it must be used exactly once, but `holder_twice` may use it more than once
+error[E0401]: `p` holds a resource (`Option (own (Unit -> Unit))`), so it must be used exactly once, but `holder_twice` may use it more than once
   --> oneshot_holder.ck:43:9
    |
 43 |     let p = Some k
    |         ^
-   = help: a value holding a closure that must be called once is used up by its use, as the closure is
+   = help: a value holding a function of type `own (…)` is used up by its use, as the function is by its call
 
-error[E0401]: `k` uses `file`, a resource, so it must be called exactly once, but a pattern in `discarded` discards it
-  --> oneshot_holder.ck:48:9
+error[E0404]: this drops a resource of type `own (_ -> Unit)`
+  --> oneshot_holder.ck:50:9
    |
-48 |     let k = \_ -> close file
-   |         ^
-   = help: bind it to a name in the pattern, and call it
+50 |         Some _ -> ()
+   |         ^^^^^^ a resource must be used exactly once
+   = help: bind it to a name, then call it or pass it on
 
-error[E0401]: `k` uses `file`, a resource, so it must be called exactly once, but `caller_twice` may call it more than once
+error[E0401]: `k` is `own (Unit -> Unit)`, a function to call exactly once, but `caller_twice` may call it more than once
   --> oneshot_holder.ck:54:9
    |
 54 |     let k = returned file
    |         ^
-   = help: a closure that uses a resource is used up by its call
+   = help: a function of type `own (…)` is used up by its call
 
-error[E0401]: `k` is the result of `opened`, declared `own`, so it must be called exactly once, but `opened_twice` may call it more than once
+error[E0401]: `k` is `own (Unit -> Unit)`, a function to call exactly once, but `opened_twice` may call it more than once
   --> oneshot_holder.ck:59:9
    |
 59 |     let k = opened path fs
    |         ^
-   = help: the result of `opened` is used up by its call, as a resource is by its use
+   = help: a function of type `own (…)` is used up by its call
 
-error[E0401]: this drops the result of `opened`, declared `own`
+error[E0404]: this drops a resource of type `own (Unit -> Unit)`
   --> oneshot_holder.ck:64:9
    |
 64 |     let _ = opened path fs
-   |         ^ it must be used exactly once
-   = help: bind it to a name, then use it
+   |         ^ a resource must be used exactly once
+   = help: bind it to a name, then call it or pass it on
 
-error[E0401]: the result of `opened` is declared `own`, so it must be used exactly once, but `opened_passed` passes it to `many`
-  --> oneshot_holder.ck:67:4
+error[E0401]: this is `own (Unit -> Unit)`: a function to call exactly once, but `many` takes `Unit -> Unit`, which it may call any number of times
+  --> oneshot_holder.ck:68:10
    |
-67 | fn opened_passed path fs -> r : path~String, fs~Fs, r~Unit
-   |    ^^^^^^^^^^^^^
-   = note: the parameter of `many` is not `own`, so `many` may use it any number of times, or never
-   = help: mark that parameter of `many` with `own` (as in `f~own (Unit -> a)`)
+68 |     many (opened path fs)
+   |          ^^^^^^^^^^^^^^^^ it must be called exactly once
+   = help: if `many` calls it at most once, declare that parameter `f~own (Unit -> Unit)`
 
-error[E0401]: `p` holds `x`, which is `own`, so it must be used exactly once, but `own_twice` may use it more than once
+error[E0401]: `p` (`Option a`) may hold a resource, since an `own` parameter's type may be one, so it must be used exactly once, but `own_twice` may use it more than once
   --> oneshot_holder.ck:71:9
    |
 71 |     let p = Some x
    |         ^
-   = help: a value holding `x` is used up by its use, as `x` is
+   = help: a value built from an `own` value is used up by its use, as the `own` value is
 
-oneshot_holder.ck: 11 errors, 0 warnings
+oneshot_holder.ck: 12 errors, 0 warnings

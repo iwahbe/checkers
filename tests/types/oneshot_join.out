@@ -1,0 +1,15 @@
+error[E0401]: `ks` holds a resource (`List (own (_ -> Unit))`), so it must be used exactly once, but `later_dropped` never uses it
+  --> oneshot_join.ck:11:9
+   |
+11 |     let ks = [\_ -> (), \_ -> close file]
+   |         ^^
+   = help: call the function it holds, or pass it on
+
+error[E0401]: `j` is `own (Unit -> Unit)`, a function to call exactly once, but `branch_later_twice` may call it more than once
+  --> oneshot_join.ck:33:9
+   |
+33 |     let j = if c then done file else \_ -> close file
+   |         ^
+   = help: a function of type `own (…)` is used up by its call
+
+oneshot_join.ck: 2 errors, 0 warnings

@@ -77,7 +77,7 @@ impl Elab {
         loop {
             match t {
                 Val::Univ(_) => return true,
-                Val::Pi(_, _, _, _, c) => t = self.force(&apply_closure(&self.g, &c, Val::Error)),
+                Val::Pi(_, _, _, _, c, _) => t = self.force(&apply_closure(&self.g, &c, Val::Error)),
                 _ => return false,
             }
         }
@@ -400,7 +400,7 @@ impl Elab {
     fn result_shown(&self, ty: &Tm) -> Option<String> {
         let mut names: Vec<Name> = Vec::new();
         let mut t = ty;
-        while let Tm::Pi(x, _, _, _, b) = t {
+        while let Tm::Pi(x, _, _, _, b, _) = t {
             names.push(x.clone());
             t = b;
         }

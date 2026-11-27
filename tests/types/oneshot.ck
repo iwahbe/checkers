@@ -1,11 +1,11 @@
 module oneshot
 
 # A closure that uses a resource, made with a lambda or by partly applying
-# a function to one, must be called exactly once (#658): called where it is
-# made, bound with `let` and called once, or passed to a parameter declared
-# `own`, or returned as a result declared `own`. Anywhere else (passed to
-# a parameter that isn't `own`, returned as a result that isn't `own`, called
-# twice or never) is E0401.
+# a function to one, is a resource of type `own (a -> b)`: it must be called
+# exactly once. It may be called where it is made, bound with `let` and
+# called once, passed to a parameter of type `own (a -> b)`, or returned as
+# one. Where a function type without `own` is expected (a parameter, a
+# result), or called twice or never, it is E0401.
 
 import std.files (File)
 import std.files

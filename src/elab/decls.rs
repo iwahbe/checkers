@@ -773,7 +773,7 @@ impl Elab {
                 return value;
             }
         }
-        while let Val::Pi(x, m, _, dom, c) = self.force(&cur) {
+        while let Val::Pi(x, m, _, dom, c, _) = self.force(&cur) {
             let l = cx.lvl();
             cx.bind(&x, (*dom).clone(), m);
             params.push((x, (*dom).clone()));
@@ -1212,7 +1212,7 @@ impl Elab {
             let mut ty = Tm::Univ(0);
             for (p, pt) in params.iter().zip(pty_terms).rev() {
                 body = Tm::Lam(Rc::from(p.name.as_str()), Mult::Zero, Icit::Expl, Rc::new(body));
-                ty = Tm::Pi(Rc::from(p.name.as_str()), Mult::Zero, Icit::Expl, Rc::new(pt), Rc::new(ty));
+                ty = Tm::Pi(Rc::from(p.name.as_str()), Mult::Zero, Icit::Expl, Rc::new(pt), Rc::new(ty), false);
             }
             let info = &mut self.g.defs[did.0 as usize];
             info.body = Some(body);
@@ -1335,9 +1335,7 @@ impl Elab {
                     // implicit parameters of its field, as of the function.
                     let ty = if is_class { self.member_type(&mut cx, e) } else { self.elab_type(&mut cx, e) };
                     let mult = Self::mult_of(m);
-                    if mult == Mult::One {
-                        self.check_own(&cx, &ty, e.span);
-                    }
+                    let ty = if mult == Mult::One { self.own_type(&cx, ty, e.span) } else { ty };
                     (ty, mult)
                 }
                 None => {
@@ -1496,7 +1494,7 @@ impl Elab {
                 self.collect_free(cx, b, declared, out);
             }
             ExprKind::Tuple(v) | ExprKind::List(v) => v.iter().for_each(|x| self.collect_free(cx, x, declared, out)),
-            ExprKind::Neg(x) => self.collect_free(cx, x, declared, out),
+            ExprKind::Neg(x) | ExprKind::Own(x) => self.collect_free(cx, x, declared, out),
             // A refinement binds its own names; its predicates name no types.
             ExprKind::Refine(r) => {
                 let mut inner = declared.clone();
@@ -1621,7 +1619,7 @@ impl Elab {
         match t.spine().0 {
             Tm::Var(i) if matches!(t, Tm::Var(_)) => env.len().checked_sub(1 + i).and_then(|l| env.get(l)).copied().unwrap_or(true),
             Tm::TupleTy(ts) => ts.iter().all(|a| self.type_has_values(a, env, known, seen)),
-            Tm::Pi(_, _, _, a, b) => {
+            Tm::Pi(_, _, _, a, b, _) => {
                 let mut inner = env.to_vec();
                 inner.push(true);
                 self.is_empty_enum(a) || self.type_has_values(b, &inner, known, seen)
@@ -1811,7 +1809,7 @@ impl Elab {
     fn var_positive(&self, t: &Tm, idx: usize, pos: bool) -> bool {
         match t {
             Tm::Var(i) => pos || *i != idx,
-            Tm::Pi(_, _, _, a, b) => !occurs_var(a, idx) && self.var_positive(b, idx + 1, pos),
+            Tm::Pi(_, _, _, a, b, _) => !occurs_var(a, idx) && self.var_positive(b, idx + 1, pos),
             Tm::TyConApp(t2, args) => {
                 let positive = self.g.tys[t2.0 as usize].positive.clone();
                 args.iter().enumerate().all(|(k, a)| {
@@ -1841,7 +1839,7 @@ impl Elab {
     fn var_negative(&self, t: &Tm, idx: usize, pos: bool) -> bool {
         match t {
             Tm::Var(i) => !pos || *i != idx,
-            Tm::Pi(_, _, _, a, b) => self.var_negative(a, idx, !pos) && self.var_negative(b, idx + 1, pos),
+            Tm::Pi(_, _, _, a, b, _) => self.var_negative(a, idx, !pos) && self.var_negative(b, idx + 1, pos),
             Tm::TyConApp(t2, args) => {
                 let ti = &self.g.tys[t2.0 as usize];
                 let (positive, negative) = (ti.positive.clone(), ti.negative.clone());
@@ -1882,7 +1880,7 @@ impl Elab {
                     }
                     args.iter().find_map(|a| go(a, me, depth, params, extra))
                 }
-                Tm::Pi(_, _, _, a, b) => go(a, me, depth, params, extra).or_else(|| go(b, me, depth + 1, params, extra)),
+                Tm::Pi(_, _, _, a, b, _) => go(a, me, depth, params, extra).or_else(|| go(b, me, depth + 1, params, extra)),
                 Tm::TyConApp(_, args) => args.iter().find_map(|a| go(a, me, depth, params, extra)),
                 Tm::TupleTy(ts) => ts.iter().find_map(|a| go(a, me, depth, params, extra)),
                 _ => None,
@@ -1923,7 +1921,7 @@ impl Elab {
                     }
                 })
             }
-            Tm::Pi(_, _, _, a, b) if !occurs_ty(a, me) => self.unmarked_holder(b, me),
+            Tm::Pi(_, _, _, a, b, _) if !occurs_ty(a, me) => self.unmarked_holder(b, me),
             Tm::TupleTy(ts) => ts.iter().find_map(|a| self.unmarked_holder(a, me)),
             _ => None,
         }
@@ -1935,7 +1933,7 @@ impl Elab {
     fn ty_positive(&self, t: &Tm, me: TyId) -> bool {
         match t {
             Tm::TyConApp(t2, args) if *t2 == me => args.iter().all(|a| !occurs_ty(a, me)),
-            Tm::Pi(_, _, _, a, b) => !occurs_ty(a, me) && self.ty_positive(b, me),
+            Tm::Pi(_, _, _, a, b, _) => !occurs_ty(a, me) && self.ty_positive(b, me),
             Tm::TyConApp(t2, args) => {
                 let positive = self.g.tys[t2.0 as usize].positive.clone();
                 args.iter().enumerate().all(|(k, a)| {
@@ -2014,7 +2012,7 @@ impl Elab {
                     cx.bind(&p.name, av, m);
                     let b = self.member_type(cx, rest);
                     cx.pop();
-                    return Tm::Pi(Rc::from(&p.name[1..]), m, Icit::Impl, Rc::new(a), Rc::new(b));
+                    return Tm::Pi(Rc::from(&p.name[1..]), m, Icit::Impl, Rc::new(a), Rc::new(b), false);
                 }
             }
         }
@@ -2022,7 +2020,7 @@ impl Elab {
         let mut t = self.elab_type(cx, e);
         for (name, ty) in implied.into_iter().rev() {
             cx.pop();
-            t = Tm::Pi(name, Mult::Many, Icit::Impl, Rc::new(ty), Rc::new(t));
+            t = Tm::Pi(name, Mult::Many, Icit::Impl, Rc::new(ty), Rc::new(t), false);
         }
         t
     }
@@ -2156,17 +2154,13 @@ impl Elab {
                     let ty = self.elab_type(&mut cx, &strip_refinements(e));
                     (self.index_of, self.index_all) = saved;
                     let mult = Self::mult_of(m);
-                    if mult == Mult::One {
-                        self.check_own(&cx, &ty, e.span);
-                    }
+                    let ty = if mult == Mult::One { self.own_type(&cx, ty, e.span) } else { ty };
                     (ty, mult, m == ast::Mult::Comptime)
                 }
                 Some((e, m)) => {
                     let ty = self.elab_type(&mut cx, e);
                     let mult = Self::mult_of(m);
-                    if mult == Mult::One {
-                        self.check_own(&cx, &ty, e.span);
-                    }
+                    let ty = if mult == Mult::One { self.own_type(&cx, ty, e.span) } else { ty };
                     (ty, mult, m == ast::Mult::Comptime)
                 }
                 None => (self.fresh_meta(&cx), Mult::Many, false),
@@ -2209,12 +2203,9 @@ impl Elab {
         let result_ty = match result.and_then(|r| Self::typed_constraint(cs, &r.name)) {
             Some((e, m)) => {
                 let ty = self.elab_type(&mut cx, e);
-                // A result declared `own` is used exactly once by the caller
-                // (§8.4): a one-shot closure, or a value holding one.
-                if Self::mult_of(m) == Mult::One {
-                    self.check_own(&cx, &ty, e.span);
-                }
-                ty
+                // A result declared `own`: a function the caller uses
+                // exactly once (§8.4).
+                if Self::mult_of(m) == Mult::One { self.own_type(&cx, ty, e.span) } else { ty }
             }
             // Not written: the same type at every call, so it may mention the
             // type parameters but not the values (`fib (x - 1) + fib (x - 2)`).
@@ -2408,7 +2399,7 @@ impl Elab {
                 Some(l) => (&l.ty, nb),
                 None => (&sig.binders[b].3, b),
             };
-            let Tm::Pi(_, _, Icit::Expl, dom, _) = ty else { continue };
+            let Tm::Pi(_, _, Icit::Expl, dom, _, _) = ty else { continue };
             let (Tm::Def(alias), captured) = dom.spine() else { continue };
             let Some(preds) = self.alias_preds.get(alias) else { continue };
             for p in preds {
@@ -2427,10 +2418,33 @@ impl Elab {
         out
     }
 
+    /// The type variables (by level) of a signature's `own` parameters
+    /// (`x~own a`, `xs~own List a`): in its body, each may be a resource,
+    /// so a value of a type that mentions one is used exactly once (§8.4).
+    fn own_tyvars(&self, sig: &Sig) -> Vec<usize> {
+        if sig.cx.lvl() != sig.binders.len() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for (k, (_, m, i, ty)) in sig.binders.iter().enumerate() {
+            if *m != Mult::One || *i != Icit::Expl {
+                continue;
+            }
+            let mut fv = std::collections::BTreeSet::new();
+            free_vars(ty, 0, &mut fv);
+            for j in fv.into_iter().filter_map(|i| k.checked_sub(1 + i)) {
+                if matches!(self.force(&sig.cx.locals[j].ty), Val::Univ(_)) && !out.contains(&j) {
+                    out.push(j);
+                }
+            }
+        }
+        out
+    }
+
     pub fn pi_of(binders: &[(Name, Mult, Icit, Tm)], result: Tm) -> Tm {
         let mut t = result;
         for (n, m, i, ty) in binders.iter().rev() {
-            t = Tm::Pi(n.clone(), *m, *i, Rc::new(ty.clone()), Rc::new(t));
+            t = Tm::Pi(n.clone(), *m, *i, Rc::new(ty.clone()), Rc::new(t), false);
         }
         t
     }
@@ -2535,10 +2549,6 @@ impl Elab {
                             inner: sig.inner.clone(),
                             builtin,
                             result: result.as_ref().map(|r| r.name.clone()),
-                            result_own: result
-                                .as_ref()
-                                .and_then(|r| Self::typed_constraint(constraints, &r.name))
-                                .is_some_and(|(_, m)| m == ast::Mult::Own),
                         },
                     );
                     self.specs.insert(
@@ -2681,9 +2691,17 @@ impl Elab {
                     self.post_target =
                         checked.then(|| PostTarget { posts, func: fname, binders: sig.cx.env.to_vec(), invariants: Vec::new() });
                     let _ = decreasing;
+                    self.own_tyvars = self.own_tyvars(&sig);
+                    self.fn_result = true;
                     let bt = self.check_block(&mut sig.cx, body, &rty, true);
+                    self.fn_result = false;
                     self.post_target = None;
                     self.solve_deferred();
+                    self.own_tyvars.clear();
+                    for (f, name, span, cx, ty) in std::mem::take(&mut self.resources_to_show) {
+                        let shown = self.show_resource(&cx, &ty);
+                        self.resource_vars.insert((f, name), (span, shown));
+                    }
                     self.report_unsolved_sig(*did, &sig, d.span);
                     // Dictionaries found after the body was checked (#615).
                     let full = crate::core::zonk_metas(&self.g, 0, &Self::lam_of(&sig.binders, bt));
@@ -3046,10 +3064,10 @@ fn case_arms(c: &CaseTm) -> impl Iterator<Item = (usize, &Tm)> {
 /// marked: the explicit parameters after its implicit type parameters, in order.
 fn mult_params(t: &Tm, mults: &[Mult]) -> Tm {
     match t {
-        Tm::Pi(x, m, Icit::Impl, a, b) => Tm::Pi(x.clone(), *m, Icit::Impl, a.clone(), Rc::new(mult_params(b, mults))),
-        Tm::Pi(x, m, i, a, b) if !mults.is_empty() => {
+        Tm::Pi(x, m, Icit::Impl, a, b, o) => Tm::Pi(x.clone(), *m, Icit::Impl, a.clone(), Rc::new(mult_params(b, mults)), *o),
+        Tm::Pi(x, m, i, a, b, o) if !mults.is_empty() => {
             let m = if mults[0] == Mult::Many { *m } else { mults[0] };
-            Tm::Pi(x.clone(), m, *i, a.clone(), Rc::new(mult_params(b, &mults[1..])))
+            Tm::Pi(x.clone(), m, *i, a.clone(), Rc::new(mult_params(b, &mults[1..])), *o)
         }
         _ => t.clone(),
     }

@@ -40,7 +40,7 @@ impl Elab {
         let mut args = Vec::new();
         loop {
             match self.force(&ty) {
-                Val::Pi(x, m, Icit::Impl, dom, c) => {
+                Val::Pi(x, m, Icit::Impl, dom, c, _) => {
                     let mt = self.fresh_meta(cx);
                     self.name_meta(cx, &mt, &x, &dom, &t);
                     let mv = self.eval(cx, &mt);
@@ -150,7 +150,7 @@ impl Elab {
             return t;
         }
         // An implicit Π expected and a non-lambda given: insert an implicit lambda.
-        if let Val::Pi(x, m, Icit::Impl, a, c) = &exp {
+        if let Val::Pi(x, m, Icit::Impl, a, c, _) = &exp {
             let v = Val::var(cx.lvl());
             cx.bind(x, (**a).clone(), *m);
             let body_ty = apply_closure(&self.g, c, v);
@@ -159,7 +159,7 @@ impl Elab {
             return Tm::Lam(x.clone(), *m, Icit::Impl, Rc::new(t));
         }
         match (&e.kind, &exp) {
-            (ExprKind::Lambda(pats, body), Val::Pi(_, m, Icit::Expl, a, c)) => {
+            (ExprKind::Lambda(pats, body), Val::Pi(_, m, Icit::Expl, a, c, once)) => {
                 let map_sub = self.map_elem_sub.take();
                 let p = &pats[0];
                 let (name, simple) = match &p.kind {
@@ -207,6 +207,7 @@ impl Elab {
                 };
                 // A lambda's results are not the function's.
                 let saved_post = self.post_target.take();
+                let saved_result = std::mem::replace(&mut self.fn_result, false);
                 let t = if simple {
                     self.check(cx, &rest, &body_ty, true)
                 } else {
@@ -215,8 +216,25 @@ impl Elab {
                     self.elab_match(cx, &scrut, arm, Some(&body_ty), true, p.span).0
                 };
                 self.post_target = saved_post;
+                self.fn_result = saved_result;
                 cx.pop();
-                Tm::Lam(nm, *m, Icit::Expl, Rc::new(t))
+                let lam = Tm::Lam(nm, *m, Icit::Expl, Rc::new(t));
+                // A closure that holds what must be used exactly once, where
+                // a function that may be called any number of times is
+                // expected (§8.4).
+                if !*once {
+                    if let Some(x) = self.holds_once(cx, &lam, 0) {
+                        let q = quote(&self.g, cx.lvl(), &exp);
+                        let ty = match q {
+                            Tm::Pi(x, m, i, a, b, _) => self.eval(cx, &Tm::Pi(x, m, i, a, b, true)),
+                            _ => exp.clone(),
+                        };
+                        if !self.join_once(cx, expected, &ty) {
+                            self.once_into_many(cx, &exp, Some(&x), &lam, e.span, tail);
+                        }
+                    }
+                }
+                lam
             }
             (ExprKind::If(c, t, f), _) => {
                 let b = self.bool_ty();
@@ -322,8 +340,8 @@ impl Elab {
                 // doesn't take on the precondition; the refinements are
                 // compared below.
                 let unrefined = match self.force(expected) {
-                    Val::Pi(x, m, i, dom, c) if self.is_direct_alias(&dom) && self.refined_alias(&dom).is_some_and(|(d, _)| is_anon_alias(&self.g, d)) => {
-                        unfold(&self.g, &dom).map(|base| Val::Pi(x, m, i, Rc::new(base), c))
+                    Val::Pi(x, m, i, dom, c, o) if self.is_direct_alias(&dom) && self.refined_alias(&dom).is_some_and(|(d, _)| is_anon_alias(&self.g, d)) => {
+                        unfold(&self.g, &dom).map(|base| Val::Pi(x, m, i, Rc::new(base), c, o))
                     }
                     _ => None,
                 };
@@ -348,6 +366,13 @@ impl Elab {
                 }
                 if !self.unify_at(cx, expected, &shared, e.span, "this expression") {
                     return Tm::Error;
+                }
+                // A function used exactly once, where one that may be called
+                // any number of times is expected (§8.4).
+                if let (Val::Pi(.., true), Val::Pi(.., false)) = (self.force(&ty), self.force(expected)) {
+                    if !self.join_once(cx, expected, &ty) {
+                        self.once_into_many(cx, expected, None, &t, e.span, tail);
+                    }
                 }
                 // A refinement inside a type argument is never gained (#554).
                 // An instance's function with a signature of its own, in its
@@ -481,6 +506,25 @@ impl Elab {
             ExprKind::App(..) => self.elab_app(cx, e),
             ExprKind::Binary(op, l, r) => self.elab_binary(cx, *op, l, r, e.span),
             ExprKind::Refine(r) => (self.elab_refine(cx, r), Val::Univ(0)),
+            // `own (a -> b)`: a function used exactly once (§8.4).
+            ExprKind::Own(x) => {
+                let t = self.elab_type(cx, x);
+                match self.fn_type(cx, &t) {
+                    Some(f) => (f, Val::Univ(0)),
+                    None => {
+                        if !matches!(t, Tm::Error) {
+                            let v = self.eval(cx, &t);
+                            let shown = self.show_val(cx, &v);
+                            self.err(
+                                Diagnostic::error("E0358", format!("`own` here makes a function used exactly once, but `{shown}` is not a function type"), e.span)
+                                    .with_label("`own` has no use here")
+                                    .with_help("remove `own`; a parameter that may receive a resource is written `x~own a`"),
+                            );
+                        }
+                        (t, Val::Univ(0))
+                    }
+                }
+            }
             ExprKind::Arrow(a, b) => {
                 let at = self.elab_type(cx, a);
                 let av = self.eval(cx, &at);
@@ -489,7 +533,7 @@ impl Elab {
                 cx.bind("_", av, m);
                 let bt = self.elab_type(cx, b);
                 cx.pop();
-                (Tm::Pi(Rc::from("_"), m, Icit::Expl, Rc::new(at), Rc::new(bt)), Val::Univ(0))
+                (Tm::Pi(Rc::from("_"), m, Icit::Expl, Rc::new(at), Rc::new(bt), false), Val::Univ(0))
             }
             ExprKind::Neg(x) => {
                 let int = self.int();
@@ -609,16 +653,27 @@ impl Elab {
                 }
                 // A lambda's results are not the function's.
                 let saved_post = self.post_target.take();
+                let saved_result = std::mem::replace(&mut self.fn_result, false);
                 let (bt, bty) = self.infer(cx, &body);
                 let bty = crate::core::strengthen(&self.g, &bty, start);
                 self.post_target = saved_post;
+                self.fn_result = saved_result;
                 let bty_t = quote(&self.g, cx.lvl(), &bty);
                 cx.truncate(start);
                 let mut t = bt;
                 let mut ty = bty_t;
-                for (n, a) in binders.into_iter().rev() {
-                    t = Tm::Lam(n.clone(), Mult::Many, Icit::Expl, Rc::new(t));
-                    ty = Tm::Pi(n, Mult::Many, Icit::Expl, Rc::new(a), Rc::new(ty));
+                for (k, (x, a)) in binders.into_iter().enumerate().rev() {
+                    t = Tm::Lam(x.clone(), Mult::Many, Icit::Expl, Rc::new(t));
+                    // A closure that holds what must be used exactly once is
+                    // used exactly once itself (§8.4): its parameters before
+                    // this one are outside it, but bind nothing that must be.
+                    let once = self.holds_once(cx, &t, k).is_some();
+                    // Its parameter's name is shown only where its result
+                    // type mentions it: `own (Unit -> Unit)`.
+                    let mut fv = std::collections::BTreeSet::new();
+                    crate::core::free_vars(&ty, 0, &mut fv);
+                    let x = if once && !fv.contains(&0) { Rc::from("_") } else { x };
+                    ty = Tm::Pi(x, Mult::Many, Icit::Expl, Rc::new(a), Rc::new(ty), once);
                 }
                 let tyv = self.eval(cx, &ty);
                 (t, tyv)
@@ -884,7 +939,7 @@ impl Elab {
         self.note_reference(acc, span);
         let (mut t, mut ty) = self.sym_term(cx, Sym::Def(acc), span);
         for arg in args {
-            let Val::Pi(_, m, _, dom, c) = self.force(&ty) else { return (Tm::Error, Val::Error) };
+            let Val::Pi(_, m, _, dom, c, _) = self.force(&ty) else { return (Tm::Error, Val::Error) };
             let saved = cx.type_pos;
             cx.type_pos = true;
             self.in_spec += 1;
@@ -980,7 +1035,7 @@ impl Elab {
         // `debug x` shows each of `x`'s fields: they are read (#126).
         if let (ExprKind::Var(n), Some(d)) = (&head.kind, self.std_def("debug")) {
             if cx.lookup(n).is_none() && self.resolve(n, false) == Some(Sym::Def(d)) {
-                if let Val::Pi(_, _, _, dom, _) = self.force(&fty) {
+                if let Val::Pi(_, _, _, dom, _, _) = self.force(&fty) {
                     self.observe(args[0].span, (*dom).clone());
                 }
             }
@@ -1017,6 +1072,10 @@ impl Elab {
         // A generic function's name comes with its implicit arguments.
         let callee_spec = crate::core::head_def(&ft).and_then(|d| self.specs.get(&d));
         let callee_def = crate::core::head_def(&ft);
+        let callee_con = match ft.head() {
+            Tm::Con(c) => Some(*c),
+            _ => None,
+        };
         let late = callee_spec.map(|s| s.late.clone()).unwrap_or_default();
         let late: Vec<Late> = late.into_iter().map(|l| Late { deps: self.late_deps(&l), ..l }).collect();
         let n_implicit = callee_spec.map_or(0, |s| s.n_implicit);
@@ -1052,6 +1111,7 @@ impl Elab {
         // Type parameters several arguments decide together.
         let joined = self.joined_params(cx, &fty, &args, &ready, meta_start);
         let mut joins = Vec::new();
+        let applied = (ft.spine().1.len(), fty.clone());
         let mut t = ft;
         let mut ty = fty;
         let head_text = self.src_text(head.span);
@@ -1087,7 +1147,7 @@ impl Elab {
             let mut join = None;
             if !joined.is_empty() && !ready.contains_key(&k) {
                 (t, ty) = self.insert(cx, t, ty);
-                if let Val::Pi(_, _, Icit::Expl, dom, _) = self.force(&ty) {
+                if let Val::Pi(_, _, Icit::Expl, dom, _, _) = self.force(&ty) {
                     let dom = expected.clone().unwrap_or((*dom).clone());
                     let (own, metas) = self.own_unknowns(cx, &dom, &joined);
                     if !metas.is_empty() {
@@ -1097,7 +1157,13 @@ impl Elab {
                 }
             }
             self.name_span = head_name_span;
+            let param = match callee_con {
+                Some(c) => self.g.cons[c.0 as usize].fields.iter().filter(|f| f.2 == Icit::Expl).nth(k).map(|f| f.0.to_string()),
+                None => callee_def.and_then(|d| self.fn_meta.get(&d)).and_then(|m| m.params.get(k)).map(|p| p.0.clone()),
+            };
+            let saved_dest = self.arg_dest.replace((a.span, self.src_text(head.span), param, callee_con.is_some()));
             let (t2, ty2) = self.apply_one_as(cx, t, ty, a, expected, elem, ready.remove(&k));
+            self.arg_dest = saved_dest;
             if let (Some((dom, own, metas)), Tm::App(_, at, Icit::Expl, _)) = (join, &t2) {
                 joins.push(JoinArg { span: a.span, dom, own, tm: (**at).clone(), metas });
             }
@@ -1126,7 +1192,56 @@ impl Elab {
         }
         // A call with effects is a value of its own (§7.1).
         let t = self.mark_effects(cx, t, &ty);
+        let ty = self.partial_once(cx, &t, applied, ty);
         (t, ty)
+    }
+
+    /// A branch of an `if` or `match` whose type is inferred (`expected`,
+    /// an unknown the branches share, #616) is `ty`, a function used exactly
+    /// once, where an earlier branch made it one that may be called any
+    /// number of times: the branches share `ty` (§8.4).
+    fn join_once(&mut self, cx: &Cx, expected: &Val, ty: &Val) -> bool {
+        match expected {
+            Val::Neutral(Head::Meta(m), sp) if self.join_of(expected).is_some() => crate::core::resolve_meta(&self.g, cx.lvl(), *m, sp, ty),
+            _ => false,
+        }
+    }
+
+    /// The type of `t`, a function applied to some of its arguments: a
+    /// closure holding them. If one must be used exactly once (its type is
+    /// a resource, or it is a local that must be), so must the closure
+    /// (§8.4). `applied`: how many arguments the function had before this
+    /// call, and its type.
+    fn partial_once(&mut self, cx: &Cx, t: &Tm, applied: (usize, Val), ty: Val) -> Val {
+        let Val::Pi(.., false) = self.force(&ty) else { return ty };
+        let (n, mut cur) = applied;
+        let args = t.spine().1;
+        let mut once = false;
+        for a in args.iter().skip(n) {
+            let Val::Pi(_, m, i, dom, c, _) = self.force(&cur) else { return ty };
+            if i == Icit::Expl && m != Mult::Zero && (self.val_linear(&dom) || self.holds_once(cx, a, 0).is_some()) {
+                once = true;
+            }
+            cur = apply_closure(&self.g, &c, self.eval(cx, a));
+        }
+        if !once {
+            return ty;
+        }
+        // Its parameters' names (`n` of `close_with f n`) are the
+        // function's: shown only where its result type mentions them.
+        fn unnamed(t: &Tm) -> Tm {
+            match t {
+                Tm::Pi(x, m, i, a, b, o) => {
+                    let mut fv = std::collections::BTreeSet::new();
+                    crate::core::free_vars(b, 0, &mut fv);
+                    let x = if fv.contains(&0) || *m != Mult::Many { x.clone() } else { Rc::from("_") };
+                    Tm::Pi(x, *m, *i, a.clone(), Rc::new(unnamed(b)), *o)
+                }
+                other => other.clone(),
+            }
+        }
+        let q = super::once_fn(&unnamed(&quote(&self.g, cx.lvl(), &self.force(&ty))));
+        self.eval(cx, &q)
     }
 
     /// The type parameters of this call (unknowns made since `start`) that
@@ -1138,7 +1253,7 @@ impl Elab {
         let mut in_fn: Vec<MetaId> = Vec::new();
         let mut r = ty.clone();
         for k in 0..args.len() {
-            let Val::Pi(_, _, Icit::Expl, dom, c) = self.force(&r) else { break };
+            let Val::Pi(_, _, Icit::Expl, dom, c, _) = self.force(&r) else { break };
             let q = quote(&self.g, cx.lvl() + k, &dom);
             let mut ms = Vec::new();
             metas_in(&q, &mut ms);
@@ -1282,7 +1397,7 @@ impl Elab {
         let (n_implicit, inner) = self.fn_meta.get(d).map(|m| (m.n_implicit, m.inner.clone())).unwrap_or_default();
         let mut arity = 0;
         let mut ty = self.g.defs[d.0 as usize].ty.clone();
-        while let Tm::Pi(_, _, _, _, b) = ty {
+        while let Tm::Pi(_, _, _, _, b, _) = ty {
             arity += 1;
             ty = (*b).clone();
         }
@@ -1523,7 +1638,7 @@ impl Elab {
         }
         let mut ty = eval(&self.g, &crate::core::Env::new(), &self.g.defs[f.0 as usize].ty);
         for a in iargs {
-            let Val::Pi(_, _, _, _, c) = self.force(&ty) else { return None };
+            let Val::Pi(_, _, _, _, c, _) = self.force(&ty) else { return None };
             ty = apply_closure(&self.g, &c, self.eval(cx, a));
         }
         (!matches!(self.force(&ty), Val::Pi(..))).then_some(ty)
@@ -1617,7 +1732,7 @@ impl Elab {
             let mut ty = eval(&e.g, &crate::core::Env::new(), &e.g.defs[def.0 as usize].ty);
             let mut doms = Vec::new();
             for a in args {
-                let Val::Pi(x, _, _, dom, c) = e.force(&ty) else { return None };
+                let Val::Pi(x, _, _, dom, c, _) = e.force(&ty) else { return None };
                 doms.push((x.clone(), (*dom).clone()));
                 ty = apply_closure(&e.g, &c, e.eval(cx, a));
             }
@@ -1783,7 +1898,7 @@ impl Elab {
             body = self.if_tm(p, body, self.bool_lit(true));
         }
         for (n, ty) in tys.into_iter().rev() {
-            body = Tm::Pi(n, Mult::Many, Icit::Expl, Rc::new(ty), Rc::new(body));
+            body = Tm::Pi(n, Mult::Many, Icit::Expl, Rc::new(ty), Rc::new(body), false);
         }
         (Tm::PrimApp(Prim::Forall, vec![body]), b)
     }
@@ -1820,7 +1935,7 @@ impl Elab {
                 let mut v = self.eval(cx, &xs[0]);
                 loop {
                     match self.force(&v) {
-                        Val::Pi(_, _, _, dom, clo) => {
+                        Val::Pi(_, _, _, dom, clo, _) => {
                             let Some(a) = args.pop() else {
                                 *unfilled = true;
                                 return t.clone();
@@ -1866,7 +1981,7 @@ impl Elab {
         let Tm::PrimApp(Prim::Forall, xs) = t else { return v };
         let [pi] = xs.as_slice() else { return v };
         let mut body = pi.clone();
-        while let Tm::Pi(name, _, _, dom, b) = &body {
+        while let Tm::Pi(name, _, _, dom, b, _) = &body {
             let dv = self.eval(cx, dom);
             cx.bind(name, dv, Mult::Many);
             body = (**b).clone();
@@ -2043,11 +2158,11 @@ impl Elab {
         let mut r = ty.clone();
         for k in 0..n {
             match self.force(&r) {
-                Val::Pi(_, _, Icit::Expl, _, c) => r = apply_closure(&self.g, &c, Val::var(cx.lvl() + k)),
+                Val::Pi(_, _, Icit::Expl, _, c, _) => r = apply_closure(&self.g, &c, Val::var(cx.lvl() + k)),
                 _ => return (t, ty),
             }
         }
-        if matches!(self.force(&r), Val::Pi(_, _, Icit::Impl, _, _)) {
+        if matches!(self.force(&r), Val::Pi(_, _, Icit::Impl, _, _, _)) {
             return (t, ty);
         }
         let q = quote(&self.g, cx.lvl() + n, &r);
@@ -2077,7 +2192,7 @@ impl Elab {
         let mut r = ty.clone();
         let mut first_fn = None;
         for (k, a) in args.iter().enumerate() {
-            let Val::Pi(_, _, Icit::Expl, dom, c) = self.force(&r) else { break };
+            let Val::Pi(_, _, Icit::Expl, dom, c, _) = self.force(&r) else { break };
             if first_fn.is_none() && (matches!(a.kind, ExprKind::Lambda(..)) || matches!(self.force(&dom), Val::Pi(..))) {
                 first_fn = Some(k);
             }
@@ -2130,7 +2245,7 @@ impl Elab {
         let mut ty = &self.g.defs[d.0 as usize].ty;
         for _ in 0..n {
             match ty {
-                Tm::Pi(_, _, Icit::Expl, _, b) => ty = b,
+                Tm::Pi(_, _, Icit::Expl, _, b, _) => ty = b,
                 _ => return None,
             }
         }
@@ -2176,7 +2291,7 @@ impl Elab {
         ready: &mut HashMap<usize, (Tm, Val)>,
     ) -> (Tm, Val, Option<Val>) {
         let (t, ty) = self.insert(cx, t, ty);
-        let Val::Pi(_, _, Icit::Expl, _, c) = self.force(&ty) else { return (t, ty, None) };
+        let Val::Pi(_, _, Icit::Expl, _, c, _) = self.force(&ty) else { return (t, ty, None) };
         let (_, spine) = t.spine();
         let mut env: Vec<Val> = spine.iter().map(|a| self.eval(cx, a)).collect();
         if env.len() != late.binder {
@@ -2193,7 +2308,7 @@ impl Elab {
         let last = late.deps.iter().max().copied().unwrap_or(late.binder);
         for b in late.binder + 1..=last {
             let j = k + b - late.binder;
-            let Val::Pi(_, _, Icit::Expl, dom, c) = self.force(&r) else { return (t, ty, None) };
+            let Val::Pi(_, _, Icit::Expl, dom, c, _) = self.force(&r) else { return (t, ty, None) };
             let Some(arg) = args.get(j) else { return (t, ty, None) };
             if !late.deps.contains(&b) && !ready.contains_key(&j) && lates.iter().any(|o| o.binder == b) {
                 env.push(Val::Error);
@@ -2240,7 +2355,7 @@ impl Elab {
     ) -> (Tm, Val) {
         let (t, ty) = self.insert(cx, t, ty);
         match self.force(&ty) {
-            Val::Pi(_, m, Icit::Expl, dom, c) => {
+            Val::Pi(_, m, Icit::Expl, dom, c, _) => {
                 if let Some((at, av)) = ready {
                     return (Tm::App(Rc::new(t), Rc::new(at), Icit::Expl, m), apply_closure(&self.g, &c, av));
                 }
@@ -2294,7 +2409,7 @@ impl Elab {
                     cod = Tm::App(Rc::new(cod), Rc::new(vt), Icit::Expl, Mult::Many);
                 }
                 cod = Tm::App(Rc::new(cod), Rc::new(Tm::Var(0)), Icit::Expl, Mult::Many);
-                let pi = Val::Pi(Rc::from("x"), Mult::Many, Icit::Expl, Rc::new(dom.clone()), Closure { env: cx.env(), body: Rc::new(cod) });
+                let pi = Val::Pi(Rc::from("x"), Mult::Many, Icit::Expl, Rc::new(dom.clone()), Closure { env: cx.env(), body: Rc::new(cod) }, false);
                 self.unify_at(cx, &pi, &ty, a.span, "the function");
                 self.apply_one(cx, t, pi, a)
             }
@@ -2609,7 +2724,7 @@ impl Elab {
     /// Apply `f : fty` to an elaborated argument `a : aty`.
     pub(super) fn apply_tm(&mut self, cx: &Cx, f: Tm, fty: Val, a: Tm, aty: &Val, span: Span) -> (Tm, Val) {
         match self.force(&fty) {
-            Val::Pi(_, m, i, dom, c) => {
+            Val::Pi(_, m, i, dom, c, _) => {
                 self.unify_at(cx, &dom, aty, span, "this operand");
                 let av = self.eval(cx, &a);
                 let ty = apply_closure(&self.g, &c, av);
@@ -3189,8 +3304,10 @@ impl Elab {
 
     fn elab_when(&mut self, cx: &mut Cx, w: &ast::When) -> Tm {
         let saved = self.post_target.take();
+        let saved_result = std::mem::replace(&mut self.fn_result, false);
         let t = self.elab_when_inner(cx, w);
         self.post_target = saved;
+        self.fn_result = saved_result;
         t
     }
 
@@ -3284,7 +3401,7 @@ fn any_forall(e: &Expr) -> Option<Span> {
                 go(a, found);
                 go(b, found);
             }
-            ExprKind::Neg(a) | ExprKind::Field(a, _) | ExprKind::Try(a) | ExprKind::Lambda(_, a) => go(a, found),
+            ExprKind::Neg(a) | ExprKind::Own(a) | ExprKind::Field(a, _) | ExprKind::Try(a) | ExprKind::Lambda(_, a) => go(a, found),
             ExprKind::If(a, b, c) => {
                 go(a, found);
                 go(b, found);

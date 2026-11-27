@@ -196,7 +196,7 @@ impl Elab {
             match self.peel(&v) {
                 Val::TyCon(_, args) => work.extend(args.iter().rev().map(|a| (a.clone(), lvl))),
                 Val::TupleTy(ts) => work.extend(ts.iter().rev().map(|a| (a.clone(), lvl))),
-                Val::Pi(_, _, _, a, c) => {
+                Val::Pi(_, _, _, a, c, _) => {
                     work.push((apply_closure(&self.g, &c, Val::var(lvl)), lvl + 1));
                     work.push(((*a).clone(), lvl));
                 }
@@ -368,7 +368,7 @@ impl Elab {
             match self.base(&p) {
                 Val::TyCon(_, args) => work.extend(args.iter().rev().map(|a| (a.clone(), lvl, false))),
                 Val::TupleTy(xs) => work.extend(xs.iter().rev().map(|a| (a.clone(), lvl, false))),
-                Val::Pi(_, _, _, a, c) => {
+                Val::Pi(_, _, _, a, c, _) => {
                     work.push((apply_closure(&self.g, &c, Val::var(lvl)), lvl + 1, false));
                     work.push(((*a).clone(), lvl, false));
                 }
@@ -481,7 +481,7 @@ impl Elab {
                 let (x, y) = crate::core::pair_parts(crate::core::flat_parts_by(x, parts), crate::core::flat_parts_by(y, parts), true)?;
                 work.extend(x.iter().zip(y.iter()).rev().map(|(a, b)| pair(a, b, pol, via, in_result)));
             }
-            (Val::Pi(x1, _, _, a1, c1), Val::Pi(x2, _, _, a2, c2)) => {
+            (Val::Pi(x1, _, _, a1, c1, _), Val::Pi(x2, _, _, a2, c2, _)) => {
                 // The result is compared for arguments the caller may pass:
                 // those of the side that must be implied (#579).
                 let (x, other, dom) = match pol {
@@ -630,7 +630,7 @@ impl Elab {
                 cx.bind(&p.name, av, m);
                 let b = self.elab_type(cx, b_expr);
                 cx.pop();
-                return Tm::Pi(Rc::from(&p.name[1..]), m, Icit::Impl, Rc::new(a), Rc::new(b));
+                return Tm::Pi(Rc::from(&p.name[1..]), m, Icit::Impl, Rc::new(a), Rc::new(b), false);
             }
         }
         let Some((res, b_expr)) = &r.arrow else {
@@ -639,9 +639,13 @@ impl Elab {
             cx.pop();
             return self.anon_alias(cx, &x, &a_text, a, preds);
         };
-        if r.own {
-            self.check_own(cx, &a, r.dom.span);
-        }
+        let (a, av) = if r.own {
+            let a = self.own_type(cx, a, r.dom.span);
+            let av = self.eval(cx, &a);
+            (a, av)
+        } else {
+            (a, av)
+        };
         let m = if r.own || self.type_linear(&a) { Mult::One } else { Mult::Many };
         cx.bind(&x, av, Mult::Zero);
         let b = self.elab_type(cx, b_expr);
@@ -678,7 +682,7 @@ impl Elab {
             .map(|p| Pred { tm: rename_free(&p.tm, 0, &|i| i - 1), ..p })
             .collect();
         let dom = self.anon_alias(cx, &x, &a_text, a, pres);
-        Tm::Pi(Rc::from(x.as_str()), m, Icit::Expl, Rc::new(dom), Rc::new(cod))
+        Tm::Pi(Rc::from(x.as_str()), m, Icit::Expl, Rc::new(dom), Rc::new(cod), false)
     }
 
     /// The alias `subject~base, preds` (preds over the locals of `cx` and the
@@ -713,7 +717,7 @@ impl Elab {
         for lv in levels.iter().rev() {
             let n = cx.locals[*lv].name.clone();
             body = Tm::Lam(n.clone(), Mult::Zero, Icit::Expl, Rc::new(body));
-            ty = Tm::Pi(n, Mult::Zero, Icit::Expl, Rc::new(Tm::Univ(0)), Rc::new(ty));
+            ty = Tm::Pi(n, Mult::Zero, Icit::Expl, Rc::new(Tm::Univ(0)), Rc::new(ty), false);
         }
         let info = &mut self.g.defs[did.0 as usize];
         info.body = Some(body);
@@ -829,7 +833,7 @@ impl Elab {
         let mut binders = Vec::new();
         let mut body = self.g.defs[f.0 as usize].body.as_ref()?;
         while let Tm::Lam(_, _, _, b) = body {
-            let Val::Pi(_, m, i, _, c) = self.force(&ty) else { return None };
+            let Val::Pi(_, m, i, _, c, _) = self.force(&ty) else { return None };
             binders.push((i, m));
             ty = apply_closure(&self.g, &c, Val::var(usize::MAX / 4 + binders.len()));
             body = b;
@@ -871,7 +875,7 @@ impl Elab {
                 return None;
             }
             let a = crate::core::rename_free(a, 0, &|v| v - rest);
-            let Val::Pi(_, _, _, _, c) = self.force(&gty) else { return None };
+            let Val::Pi(_, _, _, _, c, _) = self.force(&gty) else { return None };
             gty = apply_closure(&self.g, &c, self.eval(cx, &a));
             out = Tm::App(Rc::new(out), Rc::new(a), *i, *m);
         }
@@ -902,9 +906,9 @@ impl Elab {
         let mut env: Vec<Val> = args.iter().map(|a| self.eval(cx, a)).collect();
         let mut cur = ty;
         // (name, mult, icit, domain) of each remaining binder, over `cx2`.
-        let mut binders: Vec<(Name, Mult, Icit, Tm)> = Vec::new();
+        let mut binders: Vec<(Name, Mult, Icit, Tm, bool)> = Vec::new();
         for k in given..n {
-            let Val::Pi(x, m, i, dom, c) = self.force(&cur) else { return cur };
+            let Val::Pi(x, m, i, dom, c, o) = self.force(&cur) else { return cur };
             let l = cx2.lvl();
             let dom_tm = quote(&self.g, l, &dom);
             let mut preds = Vec::new();
@@ -918,7 +922,7 @@ impl Elab {
             }
             let text = self.show_val(&cx2, &dom);
             let alias = self.anon_alias(&cx2, &x, &text, dom_tm, preds);
-            binders.push((x.clone(), m, i, alias));
+            binders.push((x.clone(), m, i, alias, o));
             cx2.bind(&x, (*dom).clone(), Mult::Zero);
             env.push(Val::var(l));
             cur = apply_closure(&self.g, &c, Val::var(l));
@@ -934,8 +938,8 @@ impl Elab {
         }
         let text = self.show_val(&cx2, &cur);
         let mut out = self.anon_alias(&cx2, &res, &text, cod, posts);
-        for (x, m, i, dom) in binders.into_iter().rev() {
-            out = Tm::Pi(x, m, i, Rc::new(dom), Rc::new(out));
+        for (x, m, i, dom, o) in binders.into_iter().rev() {
+            out = Tm::Pi(x, m, i, Rc::new(dom), Rc::new(out), o);
         }
         self.eval(cx, &out)
     }

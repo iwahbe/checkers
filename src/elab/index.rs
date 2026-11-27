@@ -184,7 +184,7 @@ impl Elab {
     pub fn type_def_of(&self, u: &Use) -> Option<(String, Span)> {
         fn head(t: &Tm) -> Option<TyId> {
             match t {
-                Tm::Pi(_, _, _, _, b) => head(b),
+                Tm::Pi(_, _, _, _, b, _) => head(b),
                 Tm::TyCon(t) | Tm::TyConApp(t, _) => Some(*t),
                 _ => None,
             }

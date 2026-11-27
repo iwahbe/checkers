@@ -492,7 +492,7 @@ impl Refs {
                 go(self, a);
                 go(self, b);
             }
-            ExprKind::Neg(a) | ExprKind::SectionL(_, a) | ExprKind::SectionR(_, a) | ExprKind::Try(a) => go(self, a),
+            ExprKind::Neg(a) | ExprKind::Own(a) | ExprKind::SectionL(_, a) | ExprKind::SectionR(_, a) | ExprKind::Try(a) => go(self, a),
             ExprKind::Refine(r) => {
                 for x in r.binders() {
                     self.1.push(x);

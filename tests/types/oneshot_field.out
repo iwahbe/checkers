@@ -1,0 +1,15 @@
+error[E0401]: this closure uses `file`, so it must be called exactly once, but `Job`'s field `run` is `Unit -> Unit`, which may be called any number of times
+  --> oneshot_field.ck:16:19
+   |
+16 |     let job = Job (\_ -> close file) 3
+   |                   ^^^^^^^^^^^^^^^^^^ it must be called exactly once
+   = help: declare the field `run~own (Unit -> Unit)`; then a `Job` holds a resource, used exactly once
+
+error[E0406]: reading `n` would drop the rest of this `Once`, and `run` holds a resource
+  --> oneshot_field.ck:25:9
+   |
+25 |     job.n
+   |         ^ reading a field uses the whole record
+   = help: take it apart with `match` (`Once run n -> …`) and use `run` too
+
+oneshot_field.ck: 2 errors, 0 warnings
