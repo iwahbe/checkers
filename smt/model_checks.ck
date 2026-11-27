@@ -341,6 +341,15 @@ check not (model.gives (context PAR) (sel_giving (Truth False)) (model.WrongSelA
 check model.gives (context PAR) (sel_giving (Truth False)) (model.WrongSelAt 0 0 0 [Bool] NONE)
 check not (model.gives (context PAR) (sel_giving (Integer 0)) (model.WrongSelAt 0 0 0 [Bool] NONE))
 
+# `has_value`: a term with a value of its sort; not one the model doesn't
+# give, nor a term that isn't the context's.
+let XT = App (term.Fun 0) []
+
+check model.has_value (context X) (with_x (Integer 3)) XT
+check not (model.has_value (context X) NOTHING XT)
+check not (model.has_value (context X) (with_x (Truth True)) XT)
+check not (model.has_value (context X) (with_x (Integer 3)) ILL)
+
 # ── `refutes` with an axiom ──────────────────────────────────────────────────
 
 # `x = 1` satisfies the axiom and the fact, and the goal `false` fails;

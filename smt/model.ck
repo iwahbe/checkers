@@ -1688,13 +1688,15 @@ fn same_where_given p q -> r : p~Option Value, q~Option Value, r~Bool
 #
 #     total: forall r : r~Read, model.gives c m r
 #
-# or, at the reads of a finite set of terms only (`rs`, a `List Read`):
+# A narrower shape asks it only at the reads of a finite set of terms
+# (`rs`, a `List Read`):
 #
 #     total: forall r : r~Read, list.contains rs r, model.gives c m r
 #
-# `rs` depends on the model as well as the terms: a `FunAt f vs` carries
-# the values of `f`'s arguments in `m`. So for a theorem about every `m` it
-# is a function of `m` and the terms, not a list fixed beforehand.
+# No theorem uses that shape yet. `rs` would depend on the model as well
+# as the terms: a `FunAt f vs` carries the values of `f`'s arguments in
+# `m`, so for a theorem about every `m` it is a function of `m` and the
+# terms, not a list fixed beforehand.
 #
 # The arrays' reads (`select`, `const`, `store`, `map +`, `lambda`) are not
 # here: `arrays_total_at` says the model answers them, with the laws.
@@ -1769,3 +1771,9 @@ fn answers_with c m s got -> r : c~Context, m~Model, s~Sort, got~Option Value, r
     match got
         Some v -> of_sort c m s v
         None   -> False
+
+# Whether `t` has a value of its sort in `m`.
+export fn has_value c m t -> r : c~Context, m~Model, t~Term, r~Bool
+    match (term.sort_of (term.signature c) [] t, eval c m t)
+        (Ok s, Ok v) -> of_sort c m s v
+        _            -> False
