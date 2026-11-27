@@ -43,6 +43,14 @@ export lemma any_all p xs : p~(x~a -> Bool, contains xs x), xs~List a
             []        -> auto
             _ :: rest -> have any_all p rest
 
+# `p` holds for every element exactly when it fails for none.
+export lemma all_any p xs : p~(x~a -> Bool, contains xs x), xs~List a
+    ensures all p xs == not (any (\x -> not (p x)) xs)
+    proof
+        match xs
+            []        -> auto
+            _ :: rest -> have all_any p rest
+
 # The elements in reverse order.
 export transparent fn reverse xs -> ys : xs~List a, ys~List a
     reverse_onto xs []

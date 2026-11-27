@@ -1,5 +1,5 @@
 # `list.any` calls its predicate only with elements of the list, and is
-# `list.all` negated.
+# `list.all` negated, and the other way round.
 module list_any
 
 import std.list
@@ -14,6 +14,11 @@ lemma not_all_below n xs : n~Int, xs~List Int, not (list.all (\x -> not (x > n))
     ensures list.any (\x -> x > n) xs
     proof
         have list.any_all (\x -> x > n) xs
+
+lemma none_above n xs : n~Int, xs~List Int, not (list.any (\x -> not (x <= n)) xs)
+    ensures list.all (\x -> x <= n) xs
+    proof
+        have list.all_any (\x -> x <= n) xs
 
 check some_past 2 [1, 2, 3]
 check not (some_past 3 [1, 2, 3])
