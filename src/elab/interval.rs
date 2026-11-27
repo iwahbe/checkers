@@ -426,11 +426,11 @@ impl Elab {
 
     /// Is definition `d` proved (§8.9)? One of an imported module, once that
     /// module is proved with no errors (`module_proved`); one of the module
-    /// being checked, once it and everything it reaches are, on demand
-    /// (`settle`).
+    /// being checked, while it is checked or proved, once it and everything
+    /// it reaches are, on demand (`settle`).
     pub fn def_proved(&self, d: DefId) -> bool {
         let m = &self.g.defs[d.0 as usize].module;
-        if **m == *self.cur && self.loading.iter().any(|l| *l == **m) {
+        if **m == *self.cur && (self.loading.iter().any(|l| *l == **m) || self.proving.borrow().contains(&**m)) {
             return self.settle(d);
         }
         self.module_proved(m)

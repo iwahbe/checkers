@@ -190,8 +190,10 @@ pub enum DeclKind {
     },
     /// `instance Ord (List a) : Ord a` (D136); a type for each of the
     /// class's parameters (`instance Hole Format a : Display a`, #145).
+    /// The class is `Con` (`Ord`), or `Field` of a `Var` through its
+    /// module's qualifier (`order.Ord`).
     Instance {
-        class: Ident,
+        class: Expr,
         tys: Vec<Expr>,
         context: Vec<Expr>,
         members: Vec<InstMember>,
