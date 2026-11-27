@@ -9,7 +9,7 @@ error[E0213]: `parse` is a module, not a value
    |
 19 |     walk parse
    |          ^^^^^
-   = help: use one of its exports, e.g. `parse.name`
+   = help: `parse` is a function of the class `Parsable`: write `Parsable.parse`
 
 error[E0204]: unknown name `missing_a`
   --> error_argument_class.ck:23:11

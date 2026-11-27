@@ -388,6 +388,50 @@ impl Elab {
         imported.into_iter().find(|m| self.declares_privately(m, name)).cloned()
     }
 
+    /// How this module can name `name`, a function of a class in scope,
+    /// where a bare `name` isn't (§9.8): `C.name` for a class `C` in
+    /// scope unqualified, else `q.C.name` for one its module exports
+    /// through the qualifier `q`. Sorted, for a stable `help:`.
+    pub fn class_fn_names(&self, name: &str) -> Vec<String> {
+        let has_fn = |s: Option<&Sym>| match s {
+            Some(Sym::Ty(t)) => self.class_defs.get(t).is_some_and(|c| {
+                c.members.iter().any(|m| matches!(m, ast::ClassMember::Fn { name: f, .. } if f.name == name))
+            }),
+            _ => false,
+        };
+        let m = self.module();
+        let mut out: Vec<String> =
+            m.types.iter().chain(&m.import_types).filter(|(_, s)| has_fn(Some(s))).map(|(c, _)| format!("{c}.{name}")).collect();
+        if out.is_empty() {
+            for (q, module) in &m.qualifiers {
+                let Some(mi) = self.modules.get(module) else { continue };
+                out.extend(mi.exported_types.iter().filter(|c| has_fn(mi.types.get(*c))).map(|c| format!("{q}.{c}.{name}")));
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// A `help:` naming what to write for `name`, a function of a class
+    /// in scope that isn't in scope bare (see `class_fn_names`).
+    pub fn class_fn_help(&self, name: &str) -> Option<String> {
+        let names = self.class_fn_names(name);
+        let quoted = |n: &String| format!("`{n}`");
+        match names.as_slice() {
+            [] => None,
+            [one] => {
+                let class = &one[..one.len() - name.len() - 1];
+                Some(format!("`{name}` is a function of the class `{class}`: write `{one}`"))
+            }
+            [rest @ .., last] => Some(format!(
+                "`{name}` is a function of several classes: write {} or {}",
+                rest.iter().map(quoted).collect::<Vec<_>>().join(", "),
+                quoted(last)
+            )),
+        }
+    }
+
     /// `module` declares `name` and doesn't export it.
     pub fn declares_privately(&self, module: &str, name: &str) -> bool {
         self.modules.get(module).is_some_and(|m| {

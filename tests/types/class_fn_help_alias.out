@@ -1,0 +1,8 @@
+error[E0204]: unknown name `pick`
+ --> class_fn_help_alias.ck:7:5
+  |
+7 |     pick n
+  |     ^^^^ not found
+  = help: `pick` is a function of the class `m.Make`: write `m.Make.pick`
+
+class_fn_help_alias.ck: 1 error, 0 warnings
