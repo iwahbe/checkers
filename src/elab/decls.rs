@@ -2371,7 +2371,8 @@ impl Elab {
                         }
                         let name = b.0.to_string();
                         let span = params.iter().find(|p| p.name == name).map(|p| p.span).unwrap_or(d.span);
-                        let shown = match sig.cx.locals.iter().position(|l| *l.name == name) {
+                        let pos = sig.cx.locals.iter().position(|l| *l.name == name);
+                        let shown = match pos {
                             Some(pos) => {
                                 sig.cx.locals[pos].mult = Mult::One;
                                 let ty = sig.cx.locals[pos].ty.clone();

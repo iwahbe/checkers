@@ -372,7 +372,7 @@ pub struct InstReq {
     pub fallback: Option<SigInst>,
     /// Where it is asked for, for a check of the instance found through a
     /// refinement alias (#226).
-    pub cx: Option<Rc<Cx>>,
+    pub cx: Option<KeptCx>,
     /// For a type's header's clause (#385): the type.
     pub of_type: Option<TyId>,
     /// Asked in the signature of an instance's function or dictionary.
@@ -387,7 +387,7 @@ pub struct AliasDict {
     /// The unknown it was found for, if asked for by a use (not by an
     /// instance's context).
     pub meta: Option<MetaId>,
-    pub cx: Rc<Cx>,
+    pub cx: KeptCx,
     pub span: Span,
     pub owner: Option<DefId>,
     pub class: TyId,
@@ -2997,7 +2997,7 @@ impl Elab {
         }
         // The dictionary's parameters so far, as values: the variables,
         // then the context's dictionaries.
-        let lvl_env = Rc::new((0..req.lvl).map(Val::var).collect::<Vec<_>>());
+        let lvl_env = self.g.id_env(req.lvl);
         let mut env = args.clone();
         for (c, vs) in &inst.context {
             let ctys: Vec<Val> = vs.iter().map(|v| args[*v].clone()).collect();
@@ -3202,8 +3202,7 @@ impl Elab {
         }
         match self.find_dict(r, r.class, &r.tys, 0) {
             Ok(t) => {
-                let env = Rc::new((0..r.lvl).map(Val::var).collect::<Vec<_>>());
-                let v = eval(&self.g, &env, &t);
+                let v = eval(&self.g, &self.g.id_env(r.lvl), &t);
                 unify(&self.g, r.lvl, &r.meta, &v).is_ok()
             }
             Err(_) => false,
@@ -3304,8 +3303,7 @@ impl Elab {
                     if self.assoc_cycle(&r, &t) {
                         continue;
                     }
-                    let env = Rc::new((0..r.lvl).map(Val::var).collect::<Vec<_>>());
-                    let v = eval(&self.g, &env, &t);
+                    let v = eval(&self.g, &self.g.id_env(r.lvl), &t);
                     let _ = unify(&self.g, r.lvl, &r.meta, &v);
                 }
                 Err(why) if why == "unknown" && !last => self.inst_reqs.push(r),
@@ -3515,9 +3513,11 @@ impl Elab {
         if !self.class_defs.contains_key(&tid) || tys.is_empty() {
             return;
         }
+        // A dictionary is a clause's parameter, λ-bound: only instances
+        // build dictionaries, so no `let` or pattern defines one.
         let mut given = Vec::new();
-        for (l, loc) in cx.locals.iter().enumerate() {
-            if let Val::TyCon(c, a) = self.force(&loc.ty) {
+        for l in cx.bound() {
+            if let Val::TyCon(c, a) = self.force(&cx.locals[l].ty) {
                 if self.class_defs.contains_key(&c) && !a.is_empty() {
                     given.push((l, c, a.to_vec()));
                 }
@@ -3535,7 +3535,7 @@ impl Elab {
             given,
             assoc: None,
             fallback: self.sig_inst.clone().filter(|f| f.class == tid),
-            cx: (self.in_spec == 0).then(|| Rc::new(cx.clone())),
+            cx: (self.in_spec == 0).then(|| cx.keep()),
             of_type: None,
             instance_sig: self.instance_sig,
         });
@@ -4100,7 +4100,7 @@ impl Elab {
         let base_ty = self.alias_base(alias_ty);
         let mut cx = match call {
             Some((cx, _, _)) => cx.clone(),
-            None => (*ad.cx).clone(),
+            None => ad.cx.cx(),
         };
         let alias_s = self.show_val(&cx, alias_ty);
         let base_s = self.show_val(&cx, &base_ty);
@@ -4448,7 +4448,7 @@ impl Elab {
             let used = ad.meta.is_some_and(|m| uses.iter().any(|u| u.0 == m));
             if cs.is_some() || used {
                 for (f, c) in cs.into_iter().flatten() {
-                    let (f, cx) = (*f, c.cx.clone());
+                    let (f, cx) = (*f, c.cx.cx());
                     let call = crate::core::zonk_metas(&self.g, cx.lvl(), &c.call);
                     self.alias_method_obligations(&ad, f, Some((&cx, &call, c.span)));
                 }

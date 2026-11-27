@@ -34,6 +34,7 @@ use crate::source::{SourceFile, Span};
 use crate::syntax::ast;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
+use crate::pvec::PVec;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sym {
@@ -186,15 +187,55 @@ pub struct Local {
 pub struct Cx {
     /// Shared, so that evaluating under the context doesn't copy it.
     pub env: Rc<Vec<Val>>,
-    pub locals: Vec<Local>,
+    /// `env`'s values again, persistent, for a context kept for later
+    /// (`keep`): a kept `env` would be copied by the next local bound here.
+    vals: PVec<Val>,
+    /// Persistent, as `facts` are: a copy of the context shares them.
+    pub locals: PVec<Local>,
+    /// The levels of the λ-bound locals (`Local::bound`), in order: what an
+    /// unknown abstracts over, and where a dictionary in scope is, without
+    /// a walk over every local.
+    bound: PVec<usize>,
     /// The locals' names, kept apart so that a constraint left for later
     /// keeps them without a copy (`names`).
     names: Names,
     /// Elaborating a type position (after `~`): `Uname`s prefer the type namespace (D26).
     pub type_pos: bool,
     /// Facts in scope (§7.1): `Bool` values known to be true, tagged with the
-    /// context length when they were added.
-    pub facts: Vec<(usize, Val)>,
+    /// context length when they were added, in order.
+    pub facts: PVec<(usize, Val)>,
+}
+
+/// A context kept for later, as a constraint left until the module's
+/// bodies are checked keeps the one it was made in: shared with the
+/// context it was kept from, so keeping it takes no copy however many
+/// locals are in scope. `cx` makes it a context again.
+#[derive(Clone)]
+pub struct KeptCx {
+    vals: PVec<Val>,
+    locals: PVec<Local>,
+    bound: PVec<usize>,
+    names: Names,
+    type_pos: bool,
+    facts: PVec<(usize, Val)>,
+}
+
+impl KeptCx {
+    pub fn lvl(&self) -> usize {
+        self.locals.len()
+    }
+    /// The context again: its environment built anew.
+    pub fn cx(&self) -> Cx {
+        Cx {
+            env: Rc::new(self.vals.iter().cloned().collect()),
+            vals: self.vals.clone(),
+            locals: self.locals.clone(),
+            bound: self.bound.clone(),
+            names: self.names.clone(),
+            type_pos: self.type_pos,
+            facts: self.facts.clone(),
+        }
+    }
 }
 
 impl Scope for Cx {
@@ -225,16 +266,23 @@ impl Cx {
     pub fn names(&self) -> Names {
         self.names.clone()
     }
+    /// This context, kept for later.
+    pub fn keep(&self) -> KeptCx {
+        KeptCx { vals: self.vals.clone(), locals: self.locals.clone(), bound: self.bound.clone(), names: self.names.clone(), type_pos: self.type_pos, facts: self.facts.clone() }
+    }
     pub fn bind(&mut self, name: &str, ty: Val, mult: Mult) -> usize {
         let l = self.lvl();
         Rc::make_mut(&mut self.env).push(Val::var(l));
+        self.vals.push(Val::var(l));
+        self.bound.push(l);
         self.names.push(Rc::from(name));
         self.locals.push(Local { name: Rc::from(name), ty, mult, bound: true, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default() });
         l
     }
     pub fn define(&mut self, name: &str, ty: Val, val: Val, mult: Mult) -> usize {
         let l = self.lvl();
-        Rc::make_mut(&mut self.env).push(val);
+        Rc::make_mut(&mut self.env).push(val.clone());
+        self.vals.push(val);
         self.names.push(Rc::from(name));
         self.locals.push(Local { name: Rc::from(name), ty, mult, bound: false, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default() });
         l
@@ -246,26 +294,34 @@ impl Cx {
         l
     }
     pub fn pop(&mut self) {
-        Rc::make_mut(&mut self.env).pop();
-        self.names.pop();
-        self.locals.pop();
-        let n = self.locals.len();
-        self.facts.retain(|(l, _)| *l <= n);
+        let n = self.lvl().saturating_sub(1);
+        self.truncate(n);
     }
     pub fn truncate(&mut self, n: usize) {
         Rc::make_mut(&mut self.env).truncate(n);
+        self.vals.truncate(n);
         self.names.truncate(n);
         self.locals.truncate(n);
-        self.facts.retain(|(l, _)| *l <= n);
+        while self.bound.last().is_some_and(|l| *l >= n) {
+            self.bound.pop();
+        }
+        // In order of the levels they were added at.
+        while self.facts.last().is_some_and(|(l, _)| *l > n) {
+            self.facts.pop();
+        }
     }
     pub fn assume(&mut self, fact: Val) {
         self.facts.push((self.locals.len(), fact));
     }
     pub fn lookup(&self, name: &str) -> Option<usize> {
-        self.locals.iter().rposition(|l| l.name.as_ref() == name)
+        self.names.level_of(name)
     }
     pub fn var(&self, lvl: usize) -> Tm {
         Tm::Var(self.lvl() - lvl - 1)
+    }
+    /// The levels of the λ-bound locals, outermost first.
+    pub fn bound(&self) -> impl DoubleEndedIterator<Item = usize> + '_ {
+        self.bound.iter().copied()
     }
 }
 
@@ -565,7 +621,7 @@ pub struct Late {
 /// `typed`: its type is its known instance's result type already
 /// (`instance_call_type`).
 pub struct PendingPre {
-    pub cx: Cx,
+    pub cx: KeptCx,
     pub call: Tm,
     pub span: Span,
     pub owner: Option<DefId>,
@@ -1337,10 +1393,8 @@ impl Elab {
     pub fn fresh_meta(&mut self, cx: &Cx) -> Tm {
         let m = self.g.fresh_meta();
         let mut t = Tm::Meta(m);
-        for (lvl, l) in cx.locals.iter().enumerate() {
-            if l.bound {
-                t = Tm::App(Rc::new(t), Rc::new(cx.var(lvl)), Icit::Expl, Mult::Many);
-            }
+        for lvl in cx.bound() {
+            t = Tm::App(Rc::new(t), Rc::new(cx.var(lvl)), Icit::Expl, Mult::Many);
         }
         t
     }
@@ -1350,8 +1404,8 @@ impl Elab {
     pub fn fresh_meta_over_types(&mut self, cx: &Cx) -> Tm {
         let m = self.g.fresh_meta();
         let mut t = Tm::Meta(m);
-        for (lvl, l) in cx.locals.iter().enumerate() {
-            if l.bound && self.is_type_level(&l.ty) {
+        for lvl in cx.bound() {
+            if self.is_type_level(&cx.locals[lvl].ty) {
                 t = Tm::App(Rc::new(t), Rc::new(cx.var(lvl)), Icit::Expl, Mult::Many);
             }
         }
@@ -2187,8 +2241,8 @@ impl Elab {
             free_levels(&quote(&self.g, lvl, v), lvl, 0, &mut out);
             out
         };
-        let earlier: HashSet<usize> = cx.facts[..before.min(cx.facts.len())].iter().flat_map(|(_, v)| levels(v)).collect();
-        let own: Vec<usize> = cx.facts[before.min(cx.facts.len())..].iter().flat_map(|(_, v)| levels(v)).collect();
+        let earlier: HashSet<usize> = cx.facts.iter().take(before).flat_map(|(_, v)| levels(v)).collect();
+        let own: Vec<usize> = cx.facts.iter().skip(before).flat_map(|(_, v)| levels(v)).collect();
         own.iter().any(|l| earlier.contains(l) || cx.locals.get(*l).is_some_and(|x| !x.bound || self.refined_ty(&x.ty)))
     }
 

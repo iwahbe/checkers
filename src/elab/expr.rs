@@ -1358,7 +1358,7 @@ impl Elab {
                 // A class's function: its dictionary may be found through a
                 // refinement alias (#226).
                 if self.class_methods.contains(d) && self.in_spec == 0 && self.in_proof == 0 {
-                    self.class_calls.push(PendingPre { cx: cx.clone(), call: t.clone(), span, owner: self.cur_fn, in_spec: 0, typed: false });
+                    self.class_calls.push(PendingPre { cx: cx.keep(), call: t.clone(), span, owner: self.cur_fn, in_spec: 0, typed: false });
                 }
                 // Only what is needed: most calls have no measure to compare
                 // and no precondition, and evaluating their arguments for
@@ -1390,7 +1390,7 @@ impl Elab {
                 // known once the dictionaries are found, at the end of the
                 // module.
                 if self.class_methods.contains(d) {
-                    self.pending_class_pres.push(PendingPre { cx: cx.clone(), call: t.clone(), span, owner: self.cur_fn, in_spec: self.in_spec, typed });
+                    self.pending_class_pres.push(PendingPre { cx: cx.keep(), call: t.clone(), span, owner: self.cur_fn, in_spec: self.in_spec, typed });
                     return;
                 }
                 if args.len() < spec.n_binders {
@@ -1446,7 +1446,7 @@ impl Elab {
                 // use of it as a value.
                 if let Some((m, f, call, saturated)) = self.class_use(cx, t) {
                     if saturated {
-                        self.class_local_calls.push((m, PendingPre { cx: cx.clone(), call, span, owner: self.cur_fn, in_spec: 0, typed: false }));
+                        self.class_local_calls.push((m, PendingPre { cx: cx.keep(), call, span, owner: self.cur_fn, in_spec: 0, typed: false }));
                     } else {
                         self.class_value_uses.push((m, f, span, false));
                     }
@@ -1582,6 +1582,7 @@ impl Elab {
         let saved = (self.cur_fn, self.in_spec);
         for PendingPre { cx, call, span, owner, in_spec, typed } in pending {
             (self.cur_fn, self.in_spec) = (owner, in_spec);
+            let cx = cx.cx();
             let call = crate::core::zonk_metas(&self.g, cx.lvl(), &call);
             let (h, args) = call.spine();
             let Tm::Def(d) = h else { continue };
@@ -3028,7 +3029,8 @@ impl Elab {
         }
         // `let x = y` keeps y's structural information.
         if let ExprKind::Var(src) = &rhs.kind {
-            if let Some(sl) = cx.locals[..l].iter().rposition(|x| x.name.as_ref() == src.as_str()) {
+            let found = cx.locals.iter().take(l).rposition(|x| x.name.as_ref() == src.as_str());
+            if let Some(sl) = found {
                 cx.locals[l].sub = cx.locals[sl].sub;
                 cx.locals[l].sub_cond = cx.locals[sl].sub_cond;
             }

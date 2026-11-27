@@ -404,6 +404,8 @@ pub struct Globals {
     /// The base types of classes' types that have one (#360), by their
     /// field of the dictionary: closed types.
     pub type_bases: HashMap<(ConId, usize), Vec<Tm>>,
+    /// The last identity environment `id_env` gave.
+    ids: RefCell<Env>,
 }
 
 #[derive(Default, Clone)]
@@ -453,6 +455,23 @@ pub struct WellKnown {
 pub const DEFAULT_FUEL: u64 = 200_000;
 
 impl Globals {
+    /// The environment of `l` locals in which each is its own variable,
+    /// for evaluating a term under them. The last one is kept and grown or
+    /// shrunk to the length asked, rather than built anew: asked at nearby
+    /// lengths, as the calls of one body and a walk under binders ask it,
+    /// each costs what the length changed by, not `l`.
+    pub fn id_env(&self, l: usize) -> Env {
+        let mut ids = self.ids.borrow_mut();
+        if ids.len() != l {
+            let v = Rc::make_mut(&mut ids);
+            v.truncate(l);
+            while v.len() < l {
+                v.push(Val::var(v.len()));
+            }
+        }
+        ids.clone()
+    }
+
     pub fn new() -> Globals {
         Globals {
             defs: Vec::new(),
@@ -467,6 +486,7 @@ impl Globals {
             bounds: HashMap::new(),
             known: RefCell::new(HashMap::new()),
             run_time_only: RefCell::new(std::collections::HashSet::new()),
+            ids: RefCell::new(Rc::new(Vec::new())),
             proved: false,
             fold_work: std::cell::Cell::new(None),
             type_bases: HashMap::new(),
@@ -2488,8 +2508,7 @@ pub fn zonk_metas(g: &Globals, l: usize, t: &Tm) -> Tm {
         let h = t.head();
         if let Tm::Meta(m) = h {
             if g.meta(*m).is_some() {
-                let env = Rc::new((0..l).map(Val::var).collect::<Vec<_>>());
-                return Some(fix_mults(g, &quote(g, l, &eval(g, &env, t))));
+                return Some(fix_mults(g, &quote(g, l, &eval(g, &g.id_env(l), t))));
             }
         }
         let rc = |x: &Rc<Tm>, k: usize| go(g, l + k, x).map(Rc::new);
