@@ -1,7 +1,7 @@
 //! Usage checking (QTT, §2 and §4): `own` values are used exactly once on
 //! every path; `ghost` values never at runtime.
 
-use crate::core::{CaseTm, DefId, Mult, Prim, Tm};
+use crate::core::{CaseTm, DefId, Mult, Prim, Tm, Val};
 use crate::diag::Diagnostic;
 use crate::source::Span;
 use crate::elab::Elab;
@@ -40,9 +40,31 @@ struct Binder {
     lambda: bool,
     /// A lambda parameter's resource type, when known (`File`).
     resource: Option<String>,
-    /// Bound to a closure that uses this resource (or `own` value): the
-    /// closure must be called exactly once (#658).
-    oneshot: Option<String>,
+    /// Bound to a closure that uses a resource (or an `own` value), or to a
+    /// value that holds one or an `own` value: it must be used exactly once
+    /// (#658, §8.4).
+    oneshot: Option<Once>,
+    /// Its type, where known: what a `match` on it takes out.
+    ty: Option<BTy>,
+}
+
+/// Why a binder must be used exactly once though its type doesn't say so.
+#[derive(Clone)]
+struct Once {
+    /// The resource (or `own` value) a closure uses; or, when not
+    /// `closure`, the `own` value held.
+    used: String,
+    /// It is, or holds, a closure that uses `used`.
+    closure: bool,
+    /// The named binder it was taken from, for a binder the program
+    /// doesn't name (`$field0`, `$s`).
+    origin: Option<usize>,
+}
+
+#[derive(Clone)]
+enum BTy {
+    Tm(std::rc::Rc<Tm>),
+    Val(Val),
 }
 
 struct U<'a> {
@@ -56,6 +78,13 @@ struct U<'a> {
     copied_by: std::collections::HashMap<usize, (String, String)>,
     /// The `own` binders a closure captures.
     captured: std::collections::BTreeSet<usize>,
+    /// The term being checked is the function's result.
+    tail: bool,
+    /// The function's result type, where known.
+    ret: Option<Val>,
+    /// Whether a definition's result may hold a value that must be used
+    /// once, by definition: asked at each call `carried` looks through.
+    result_holds: std::cell::RefCell<std::collections::HashMap<DefId, bool>>,
 }
 
 /// Each binder's uses, by level: only the binders used at all, so that a
@@ -109,35 +138,8 @@ impl U<'_> {
         };
         let fname = meta.name.clone();
         let name = b.name.clone();
-        if let Some(used) = b.oneshot.clone() {
-            let d = match (mixed, c) {
-                (true, _) => Diagnostic::error(
-                    "E0402",
-                    format!("`{name}` uses `{used}`, a resource, so it must be called exactly once, but `{fname}` calls it on some paths and not on others"),
-                    span,
-                ),
-                (false, Count::Zero) => Diagnostic::error(
-                    "E0401",
-                    format!("`{name}` uses `{used}`, a resource, so it must be called exactly once, but `{fname}` never calls it"),
-                    span,
-                )
-                .with_help(format!("call `{name}`, or pass it on to a parameter declared `own`")),
-                _ => {
-                    let d = Diagnostic::error(
-                        "E0401",
-                        format!("`{name}` uses `{used}`, a resource, so it must be called exactly once, but `{fname}` may call it more than once"),
-                        span,
-                    );
-                    match self.copied_by.get(&lvl) {
-                        Some((callee, _)) => d
-                            .with_note(format!("`{name}` is passed to `{callee}`, whose parameter is not `own`, so `{callee}` may call it any number of times"))
-                            .with_help(format!("mark that parameter of `{callee}` with `own` (as in `f~own (Unit -> a)`)")),
-                        None => d.with_help("a closure that uses a resource is used up by its call"),
-                    }
-                }
-            };
-            self.e.err(d);
-            self.reported = true;
+        if let Some(once) = b.oneshot.clone() {
+            self.report_once(lvl, &once, c, mixed, span);
             return;
         }
         if let (Some((_, ty)), Mult::One) = (&resource, b.mult) {
@@ -275,6 +277,96 @@ impl U<'_> {
         self.reported = true;
     }
 
+    /// Whether a binder's value is a function.
+    fn is_fn(&self, lvl: usize) -> bool {
+        let ty = match &self.binders[lvl].ty {
+            Some(BTy::Tm(t)) => self.e.eval_open(t),
+            Some(BTy::Val(v)) => v.clone(),
+            None => return false,
+        };
+        matches!(self.e.force(&ty), Val::Pi(..))
+    }
+
+    /// The name, span and kind (a closure, or a value holding one) of a
+    /// binder that must be used once, as the program names it: one it
+    /// doesn't name (`$field0`) is told by the binder it came from.
+    fn once_subject(&self, lvl: usize, once: &Once, span: Span) -> (String, Span, bool, bool) {
+        let b = &self.binders[lvl];
+        match once.origin.filter(|_| b.name.starts_with('$')) {
+            Some(o) => {
+                let ob = &self.binders[o];
+                let span = ob.span.or_else(|| self.e.local_spans.get(&(self.did, ob.name.clone())).copied()).unwrap_or(span);
+                let func = (once.closure && ob.oneshot.as_ref().is_some_and(|x| x.origin.is_none())) || self.is_fn(o);
+                (ob.name.clone(), span, func, true)
+            }
+            None => (b.name.clone(), span, (once.closure && once.origin.is_none()) || self.is_fn(lvl), false),
+        }
+    }
+
+    /// What a binder that must be used once is, for a message: `` `k` uses
+    /// `file`, a resource, so it must be called exactly once ``.
+    fn once_what(name: &str, once: &Once, func: bool) -> (String, &'static str) {
+        let used = &once.used;
+        match (once.closure, func) {
+            (true, true) => (format!("`{name}` uses `{used}`, a resource, so it must be called exactly once"), "call"),
+            (true, false) => (format!("`{name}` holds a closure that uses `{used}`, a resource, so it must be used exactly once"), "use"),
+            (false, true) => (format!("`{name}` comes from `{used}`, which is `own`, so it must be called exactly once"), "call"),
+            (false, false) => (format!("`{name}` holds `{used}`, which is `own`, so it must be used exactly once"), "use"),
+        }
+    }
+
+    fn report_once(&mut self, lvl: usize, once: &Once, c: Count, mixed: bool, span: Span) {
+        let fname = self.e.fn_meta.get(&self.did).map(|m| m.name.clone()).unwrap_or_default();
+        let (name, span, func, unnamed) = self.once_subject(lvl, once, span);
+        let (what, verb) = Self::once_what(&name, once, func);
+        let d = match (mixed, c) {
+            (true, _) => Diagnostic::error("E0402", format!("{what}, but `{fname}` {verb}s it on some paths and not on others"), span),
+            (false, Count::Zero) if unnamed => Diagnostic::error("E0401", format!("{what}, but a pattern in `{fname}` discards it"), span)
+                .with_help(format!("bind it to a name in the pattern, and {verb} it")),
+            (false, Count::Zero) => Diagnostic::error("E0401", format!("{what}, but `{fname}` never {verb}s it"), span)
+                .with_help(format!("{verb} `{name}`, or pass it on to a parameter declared `own`")),
+            _ => {
+                let d = Diagnostic::error("E0401", format!("{what}, but `{fname}` may {verb} it more than once"), span);
+                match self.copied_by.get(&lvl) {
+                    Some((callee, _)) => d
+                        .with_note(format!("`{name}` is passed to `{callee}`, whose parameter is not `own`, so `{callee}` may {verb} it any number of times"))
+                        .with_help(format!("mark that parameter of `{callee}` with `own` (as in `f~own (Unit -> a)`)")),
+                    None if func && once.closure => d.with_help("a closure that uses a resource is used up by its call"),
+                    None if func => d.with_help("a function taken from an `own` value is used up by its call"),
+                    None if once.closure => d.with_help("a value holding a closure that must be called once is used up by its use, as the closure is"),
+                    None => d.with_help(format!("a value holding `{}` is used up by its use, as `{}` is", once.used, once.used)),
+                }
+            }
+        };
+        self.e.err(d);
+        self.reported = true;
+    }
+
+    /// `t` is the function's result: a closure that must be called once
+    /// can't leave it, since its caller may call it any number of times.
+    fn escape(&mut self, t: &Tm) {
+        if matches!(t, Tm::Lam(..)) || self.partial_use(t).is_some() || !self.ret.as_ref().is_none_or(|r| self.e.may_hold_once(r)) {
+            return;
+        }
+        let Some(lvl) = self.carried(t).into_iter().find(|l| self.binders[*l].oneshot.as_ref().is_some_and(|o| o.closure)) else {
+            return;
+        };
+        let Some(once) = self.binders[lvl].oneshot.clone() else { return };
+        let fname = self.e.fn_meta.get(&self.did).map(|m| m.name.clone()).unwrap_or_default();
+        let span = self.binders[lvl].span.unwrap_or_else(|| self.e.fn_meta.get(&self.did).map(|m| m.span).unwrap_or_default());
+        let (name, span, func, _) = self.once_subject(lvl, &once, span);
+        let (what, verb) = Self::once_what(&name, &once, func);
+        self.e.err(
+            Diagnostic::error("E0401", format!("{what}, but `{fname}` returns it"), span)
+                .with_note(format!("the caller of `{fname}` may {verb} it any number of times, or never"))
+                .with_help(format!("{verb} `{name}` in `{fname}`, or make `{}` a parameter of the closure", once.used)),
+        );
+        self.reported = true;
+        // Reported once.
+        self.binders[lvl].oneshot = None;
+        self.binders[lvl].mult = Mult::Many;
+    }
+
     /// Check a binder's own usage when it goes out of scope.
     fn close(&mut self, counts: &Counts) {
         let lvl = self.binders.len() - 1;
@@ -286,10 +378,10 @@ impl U<'_> {
         }
     }
 
-    fn under(&mut self, name: &crate::core::Name, mult: Mult, body: &Tm, lambda: bool) -> Counts {
+    fn under(&mut self, name: &crate::core::Name, mult: Mult, body: &Tm, lambda: bool, ty: Option<BTy>, oneshot: Option<Once>) -> Counts {
         let span = self.e.binder_span(name);
         let resource = if lambda { self.e.lam_resource(name) } else { None };
-        self.binders.push(Binder { name: name.to_string(), mult, span, lambda, resource, oneshot: None });
+        self.binders.push(Binder { name: name.to_string(), mult, span, lambda, resource, oneshot, ty });
         let c = self.go(body);
         self.close(&c);
         self.binders.pop();
@@ -309,6 +401,11 @@ impl U<'_> {
     }
 
     fn go(&mut self, t: &Tm) -> Counts {
+        // Only a `let`'s body and a `match`'s arms are in its place.
+        let tail = std::mem::take(&mut self.tail);
+        if tail && !matches!(t, Tm::Let(..) | Tm::Case(..)) {
+            self.escape(t);
+        }
         match t {
             Tm::Var(i) => {
                 let lvl = self.binders.len() - 1 - i;
@@ -320,7 +417,7 @@ impl U<'_> {
             Tm::Lam(x, m, _, b) => {
                 let m = &if *m == Mult::One && self.e.lam_own_moot(x) { Mult::Many } else { *m };
                 // A closure may run any number of times.
-                let c = self.under(x, *m, b, true);
+                let c = self.under(x, *m, b, true, None, None);
                 for (lvl, n) in &c {
                     if *n != Count::Zero && self.binders[*lvl].mult == Mult::One {
                         self.captured.insert(*lvl);
@@ -328,7 +425,7 @@ impl U<'_> {
                 }
                 scaled(c, Mult::Many)
             }
-            Tm::Let(x, m, _, v, b) => {
+            Tm::Let(x, m, ty, v, b) => {
                 // A tuple pattern binds each component (`$c0`, `$c1`, …) by
                 // projecting the tuple: together they use it once, counted
                 // at the first.
@@ -338,17 +435,25 @@ impl U<'_> {
                 // variable is used once instead (#658).
                 if let (Some(used), false) = (self.oneshot_use(v), *m == Mult::Zero) {
                     let mut c = self.go_once(v);
-                    self.binders.push(Binder { name: x.to_string(), mult: Mult::One, span: self.e.binder_span(x), lambda: false, resource: None, oneshot: Some(used) });
-                    let cb = self.go(b);
-                    self.close(&cb);
-                    self.binders.pop();
-                    let mut cb = cb;
-                    cb.remove(&self.binders.len());
+                    let once = Once { used, closure: true, origin: None };
+                    self.tail = tail;
+                    let cb = self.under(x, Mult::One, b, false, Some(BTy::Tm(ty.clone())), Some(once));
                     add(&mut c, &cb);
                     return c;
                 }
+                // A value built from one that must be used exactly once must
+                // be too, if its type can hold that part (§8.4).
+                let once = match *m {
+                    Mult::Many => self.holder(v).filter(|_| {
+                        let tv = self.e.eval_open(ty);
+                        self.e.may_hold_once(&tv) && !self.e.val_linear(&tv)
+                    }),
+                    _ => None,
+                };
+                let mult = if once.is_some() { Mult::One } else { *m };
                 let mut c = scaled(self.go(v), scale);
-                let cb = self.under(x, *m, b, false);
+                self.tail = tail;
+                let cb = self.under(x, mult, b, false, Some(BTy::Tm(ty.clone())), once);
                 add(&mut c, &cb);
                 c
             }
@@ -394,7 +499,14 @@ impl U<'_> {
                     Tm::Var(i) => Some(self.binders.len() - 1 - i),
                     _ => None,
                 };
-                let cb = self.case(c, scrut);
+                // What the arms take out of a value that must be used once
+                // must be used once too.
+                let holder = self.holder(s);
+                let sty = scrut.and_then(|l| self.binders[l].ty.clone()).map(|t| match t {
+                    BTy::Tm(t) => self.e.eval_open(&t),
+                    BTy::Val(v) => v,
+                });
+                let cb = self.case(c, scrut, holder, sty, tail);
                 add(&mut cs, &cb);
                 cs
             }
@@ -440,20 +552,34 @@ impl U<'_> {
                 self.carried_into(b, depth + 1, out);
             }
             Tm::App(..) => {
-                let (head, args) = t.spine();
-                let n = args.len();
+                // Erased arguments (types, `ghost` values) carry nothing.
+                let mut head = t;
+                let mut args = Vec::new();
+                let mut n = 0;
+                while let Tm::App(f, a, _, m) = head {
+                    if *m != Mult::Zero {
+                        args.push(&**a);
+                    }
+                    n += 1;
+                    head = f;
+                }
                 match head {
                     // A constructor stores its arguments.
                     Tm::Con(_) => args.into_iter().for_each(|x| self.carried_into(x, depth, out)),
-                    // A saturated call carries its arguments only if its result may hold a resource.
+                    // A saturated call carries its arguments only if its
+                    // result may hold one of them (§8.4).
                     Tm::Def(d) => {
                         let ty = &self.e.g.defs[d.0 as usize].ty;
                         let (arity, result) = pi_arity(ty);
-                        if n < arity || self.e.type_linear(result) {
-                            all(t, depth, out);
+                        let holds = || *self.result_holds.borrow_mut().entry(*d).or_insert_with(|| self.e.may_hold_once(&self.e.eval_open(result)));
+                        if n < arity || holds() {
+                            args.into_iter().for_each(|x| all(x, depth, out));
                         }
                     }
-                    _ => all(t, depth, out),
+                    _ => {
+                        all(head, depth, out);
+                        args.into_iter().for_each(|x| all(x, depth, out));
+                    }
                 }
             }
             // Numbers, truth values, strings: nothing is carried.
@@ -575,11 +701,30 @@ impl U<'_> {
             .map(|l| self.binders[l].name.clone())
     }
 
+    /// If the value of `t` may be built from a value that must be used
+    /// exactly once (a resource, an `own` value, a closure that uses one, or
+    /// a value holding one), why that one must be.
+    fn holder(&self, t: &Tm) -> Option<Once> {
+        // A closure that must be called once, if one: it says most.
+        let carried = self.carried(t);
+        let lvl = carried
+            .iter()
+            .find(|l| self.binders[**l].oneshot.as_ref().is_some_and(|o| o.closure))
+            .or_else(|| carried.iter().find(|l| self.binders[**l].mult == Mult::One))
+            .copied()?;
+        let b = &self.binders[lvl];
+        let named = (!b.name.starts_with('$')).then_some(lvl);
+        Some(match &b.oneshot {
+            Some(o) => Once { used: o.used.clone(), closure: o.closure, origin: named.or(o.origin) },
+            None => Once { used: b.name.clone(), closure: false, origin: named },
+        })
+    }
+
     fn lam_once(&mut self, t: &Tm) -> Counts {
         match t {
             Tm::Lam(x, m, _, b) => {
                 let m = &if *m == Mult::One && self.e.lam_own_moot(x) { Mult::Many } else { *m };
-                self.binders.push(Binder { name: x.to_string(), mult: *m, span: self.e.binder_span(x), lambda: true, resource: self.e.lam_resource(x), oneshot: None });
+                self.binders.push(Binder { name: x.to_string(), mult: *m, span: self.e.binder_span(x), lambda: true, resource: self.e.lam_resource(x), oneshot: None, ty: None });
                 let c = self.lam_once(b);
                 self.close(&c);
                 self.binders.pop();
@@ -591,7 +736,11 @@ impl U<'_> {
         }
     }
 
-    fn case(&mut self, c: &CaseTm, scrut: Option<usize>) -> Counts {
+    fn case(&mut self, c: &CaseTm, scrut: Option<usize>, holder: Option<Once>, sty: Option<Val>, tail: bool) -> Counts {
+        let args = sty.map(|t| self.e.force(&t)).and_then(|t| match t {
+            Val::TyCon(_, args) => Some(args),
+            _ => None,
+        });
         let mut results: Vec<Counts> = Vec::new();
         // Per result, the variables that hold no resource in that arm.
         let mut moots: Vec<Vec<usize>> = Vec::new();
@@ -615,10 +764,24 @@ impl U<'_> {
             for l in &moot {
                 self.binders[*l].mult = Mult::Many;
             }
+            let fields = self.e.con_field_types(*con, args.as_deref().filter(|a| a.len() == self.e.g.arity_ty(self.e.g.cons[con.0 as usize].ty)));
             for k in 0..*n {
-                self.binders.push(Binder { name: format!("$field{k}"), mult: Mult::Many, span: None, lambda: false, resource: None, oneshot: None });
+                let ty = fields.get(k).map(|f| f.1.clone());
+                // A field that can hold what made the scrutinee single-use.
+                let once = holder.clone().filter(|_| {
+                    fields.get(k).is_none_or(|(m, t)| *m != Mult::Zero && self.e.may_hold_once(t) && !self.e.val_linear(t))
+                });
+                let mult = if once.is_some() { Mult::One } else { Mult::Many };
+                self.binders.push(Binder { name: format!("$field{k}"), mult, span: None, lambda: false, resource: None, oneshot: once, ty: ty.map(BTy::Val) });
             }
+            self.tail = tail;
             let mut r = self.go(body);
+            for lvl in (start..start + n).rev() {
+                let k = count(&r, lvl);
+                if self.binders[lvl].mult == Mult::One && k != Count::One && !self.reported {
+                    self.report(lvl, k, false);
+                }
+            }
             self.binders.truncate(start);
             r.split_off(&start);
             for l in &moot {
@@ -629,11 +792,13 @@ impl U<'_> {
         }
         for (_, body) in &c.lits {
             if !matches!(body, Tm::Error) {
+                self.tail = tail;
                 results.push(self.go(body));
                 moots.push(Vec::new());
             }
         }
         if let Some(d) = c.default.as_ref().filter(|d| !matches!(d, Tm::Error)) {
+            self.tail = tail;
             results.push(self.go(d));
             moots.push(Vec::new());
         }
@@ -698,17 +863,25 @@ fn head_is_con(t: &Tm) -> bool {
 
 /// Check the body (a λ over the function's parameters) of `did`.
 pub fn check_fn(e: &mut Elab, did: DefId, body: &Tm) {
-    let mut u = U { e, did, binders: Vec::new(), reported: false, copied_by: Default::default(), captured: Default::default() };
+    let mut u = U { e, did, binders: Vec::new(), reported: false, copied_by: Default::default(), captured: Default::default(), tail: true, ret: None, result_holds: Default::default() };
     // The function's own parameters; a lambda after them is a closure it
     // returns, which may be called any number of times (#658).
     let limit = u.e.fn_meta.get(&did).map_or(usize::MAX, |m| m.n_binders());
+    let fty = u.e.g.defs[did.0 as usize].ty.clone();
+    let mut pi = Some(&fty);
     let mut t = body;
     let mut n = 0;
     while let (Tm::Lam(x, m, _, b), true) = (t, n < limit) {
-        u.binders.push(Binder { name: x.to_string(), mult: *m, span: u.e.binder_span(x), lambda: false, resource: None, oneshot: None });
+        let (ty, rest) = match pi {
+            Some(Tm::Pi(_, _, _, a, r)) => (Some(BTy::Tm(a.clone())), Some(&**r)),
+            _ => (None, None),
+        };
+        pi = rest;
+        u.binders.push(Binder { name: x.to_string(), mult: *m, span: u.e.binder_span(x), lambda: false, resource: None, oneshot: None, ty });
         t = b;
         n += 1;
     }
+    u.ret = pi.map(|r| u.e.eval_open(r));
     let c = u.go(t);
     for lvl in (0..n).rev() {
         let mult = u.binders[lvl].mult;
