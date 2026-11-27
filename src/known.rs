@@ -100,8 +100,9 @@ pub enum Node {
     /// An array (not of `U8`s: those are `Bytes`), its elements stored by
     /// `layout` (`checkers_rt::array::Layout`'s code).
     Array(u8, Box<[u32]>),
-    /// A definition's function, or a constructor's, as a value (with no
-    /// arguments yet).
+    /// A definition's function, a constructor's, or a lambda's code, as a
+    /// value (with no arguments yet). A lambda's closure holding captured
+    /// values is its code given them (`Pap`).
     Closure(Code),
     /// A function given some of its arguments: the function's node, then
     /// the arguments'.
@@ -112,10 +113,12 @@ pub enum Node {
 }
 
 /// The code a known closure runs: what names it in every program.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Code {
     Def(crate::core::DefId),
     Con(ConId),
+    /// A lambda's, closed: the values it captured are its first parameters.
+    Lam(Arc<crate::native::lower::LamCode>),
 }
 
 impl Node {
@@ -252,6 +255,18 @@ impl Known {
                 Node::Unit | Node::Erased => out.push_str("()"),
                 Node::Closure(Code::Def(d)) => out.push_str(&g.defs[d.0 as usize].name),
                 Node::Closure(Code::Con(c)) => out.push_str(&g.cons[c.0 as usize].name),
+                // A lambda: its code, the values it captured put in.
+                Node::Closure(Code::Lam(code)) => out.push_str(&crate::native::ir::show_code(g, &code.ir, &mut Vec::new(), p)),
+                Node::Pap(xs) if matches!(self.node(xs[0]), Node::Closure(Code::Lam(c)) if xs.len() - 1 <= c.captured) => {
+                    let Node::Closure(Code::Lam(code)) = self.node(xs[0]) else { unreachable!() };
+                    let mut names: Vec<String> = xs[1..].iter().map(|x| self.show(g, *x, 2)).collect();
+                    let mut body: &crate::native::ir::Ir = &code.ir;
+                    for _ in 1..xs.len() {
+                        let crate::native::ir::Ir::Lam(_, b) = body else { unreachable!("a lambda per captured value") };
+                        body = b;
+                    }
+                    out.push_str(&crate::native::ir::show_code(g, body, &mut names, p));
+                }
                 Node::Pap(xs) => {
                     let mut parts = Vec::new();
                     if p > 1 {
@@ -472,6 +487,10 @@ impl Builder {
                 Node::Closure(Code::Con(c)) => {
                     s.write_u8(10);
                     s.write_u32(c.0);
+                }
+                Node::Closure(Code::Lam(code)) => {
+                    s.write_u8(12);
+                    s.write(&code.hash().to_le_bytes());
                 }
                 Node::Pap(xs) => {
                     s.write_u8(11);

@@ -413,6 +413,15 @@ pub struct Globals {
     pub type_bases: HashMap<(ConId, usize), Vec<Tm>>,
     /// The longest identity environment `id_env` gave.
     ids: RefCell<Env>,
+    /// Known values kept across builds (§8.9): their keys and storage.
+    pub known_disk: RefCell<crate::known_cache::KnownCache>,
+    /// Whether `force` keeps what it computes across builds (§8.9): the
+    /// cache is on, and no kept computation is running (one kept value's
+    /// parts aren't kept on their own).
+    pub keeping: Cell<bool>,
+    /// How many more definitions evaluation may unfold before it stops:
+    /// `force_kept`'s first attempt counts its unfoldings with it.
+    pub unfolds_left: Cell<u64>,
 }
 
 #[derive(Default, Clone)]
@@ -494,6 +503,9 @@ impl Globals {
             proved: false,
             fold_work: std::cell::Cell::new(None),
             type_bases: HashMap::new(),
+            known_disk: RefCell::new(Default::default()),
+            keeping: Cell::new(crate::verify::cache_dir().is_some()),
+            unfolds_left: Cell::new(u64::MAX),
         }
     }
 
@@ -762,6 +774,10 @@ pub fn unfold(g: &Globals, v: &Val) -> Option<Val> {
         }
         g.fuel.set(g.fuel.get() - 1);
     }
+    match g.unfolds_left.get() {
+        0 => return None,
+        n => g.unfolds_left.set(n - 1),
+    }
     let mut r = eval(g, &crate::core::Env::new(), body);
     for e in sp.iter() {
         r = elim(g, r, e.clone());
@@ -793,7 +809,6 @@ fn builtin_value(g: &Globals, info: &DefInfo, sp: &[Elim]) -> Option<Val> {
     }
 }
 
-/// Weak-head normal form: resolve metas and unfold definitions at the head.
 /// Is `v` the type `Nat`, or a refinement of it (`U8`, `Char`)? Aliases are
 /// unfolded one at a time until `Nat` is met (#609): forcing would go past it
 /// to `Int`.
@@ -1070,8 +1085,21 @@ pub fn known_const(g: &Globals, d: DefId) -> Option<Tm> {
     g.known.borrow().get(&d).cloned()
 }
 
+/// Weak-head normal form: resolve metas and unfold definitions at the
+/// head. A closed call that takes `KEEP_STEPS` unfoldings or more is
+/// kept across builds (§8.9, `known_cache::force_kept`).
 pub fn force(g: &Globals, v: Val) -> Val {
-    let mut v = force_meta(g, v);
+    let v = force_meta(g, v);
+    if matches!(v, Val::Neutral(Head::Def(_), _)) && g.keeping.get() {
+        return crate::known_cache::force_kept(g, v);
+    }
+    unfold_all(g, v)
+}
+
+/// `force` of `v`, whose metas at the head are resolved: computed here,
+/// not kept.
+#[inline]
+pub fn unfold_all(g: &Globals, mut v: Val) -> Val {
     while let Some(u) = unfold(g, &v) {
         v = force_meta(g, u);
     }
@@ -1136,10 +1164,19 @@ fn stuck_base(g: &Globals, orig: Val, forced: Val) -> Val {
 /// A tuple's components, flattened: a last component that is itself a tuple
 /// (of two or more) is its components (#673). `ty`: of a tuple type.
 pub fn flat_parts(g: &Globals, vs: &[Val], ty: bool) -> Vec<Val> {
+    flat_parts_by(vs, |v| match (ty, force(g, v.clone())) {
+        (true, Val::TupleTy(ws)) | (false, Val::Tuple(ws)) => Some(ws),
+        _ => None,
+    })
+}
+
+/// `flat_parts`, with `parts` saying which last component is a tuple, and
+/// its components.
+pub fn flat_parts_by(vs: &[Val], parts: impl Fn(&Val) -> Option<Rc<[Val]>>) -> Vec<Val> {
     let mut vs = vs.to_vec();
     while vs.len() >= 2 {
-        match (ty, force(g, vs[vs.len() - 1].clone())) {
-            (true, Val::TupleTy(ws)) | (false, Val::Tuple(ws)) if ws.len() >= 2 => {
+        match parts(&vs[vs.len() - 1]) {
+            Some(ws) if ws.len() >= 2 => {
                 vs.pop();
                 vs.extend(ws.iter().cloned());
             }
@@ -1147,6 +1184,25 @@ pub fn flat_parts(g: &Globals, vs: &[Val], ty: bool) -> Vec<Val> {
         }
     }
     vs
+}
+
+/// Two flattened tuples' (or tuple types') components, paired: of
+/// different lengths, the shorter's last component is the rest of the
+/// longer, `(a, t)` and `(A, B, C)` giving `a`, `A` and `t`, `(B, C)`.
+/// `None` if no pairing makes them alike: the shorter has fewer than two.
+pub fn pair_parts(x: Vec<Val>, y: Vec<Val>, ty: bool) -> Option<(Vec<Val>, Vec<Val>)> {
+    if x.len() == y.len() {
+        return Some((x, y));
+    }
+    let (short, long, flip) = if x.len() < y.len() { (x, y, false) } else { (y, x, true) };
+    if short.len() < 2 {
+        return None;
+    }
+    let k = short.len() - 1;
+    let rest = if ty { Val::TupleTy(long[k..].into()) } else { Val::Tuple(long[k..].into()) };
+    let mut long2 = long[..k].to_vec();
+    long2.push(rest);
+    Some(if flip { (long2, short) } else { (short, long2) })
 }
 
 // A projection or a field read doesn't unfold what it reads: a call's
@@ -1690,19 +1746,8 @@ fn unify_many(g: &Globals, l: usize, a: &[Val], b: &[Val]) -> Result<(), UnifyEr
 /// shorter's last component is the rest of the longer: `(a, t)` and
 /// `(A, B, C)` give `a = A`, `t = (B, C)`.
 fn unify_tuple(g: &Globals, l: usize, x: &[Val], y: &[Val], ty: bool) -> Result<(), UnifyError> {
-    let (x, y) = (flat_parts(g, x, ty), flat_parts(g, y, ty));
-    let (short, long, flip) = if x.len() <= y.len() { (&x, &y, false) } else { (&y, &x, true) };
-    if short.len() == long.len() {
-        return unify_many(g, l, &x, &y);
-    }
-    if short.len() < 2 {
-        return Err(UnifyError::Mismatch);
-    }
-    let k = short.len() - 1;
-    let rest = if ty { Val::TupleTy(long[k..].into()) } else { Val::Tuple(long[k..].into()) };
-    let mut long2 = long[..k].to_vec();
-    long2.push(rest);
-    if flip { unify_many(g, l, &long2, short) } else { unify_many(g, l, short, &long2) }
+    let (x, y) = pair_parts(flat_parts(g, x, ty), flat_parts(g, y, ty), ty).ok_or(UnifyError::Mismatch)?;
+    unify_many(g, l, &x, &y)
 }
 
 pub fn unify(g: &Globals, l: usize, a: &Val, b: &Val) -> Result<(), UnifyError> {

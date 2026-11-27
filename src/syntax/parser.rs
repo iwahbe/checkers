@@ -25,6 +25,7 @@ pub fn parse_with_place(tokens: Vec<Token>) -> (Module, Vec<Diagnostic>, Option<
         in_type: 0,
         keyword_params: Vec::new(),
         templates: false,
+        brackets: 0,
     };
     let m = p.module();
     (m, p.diags, p.place)
@@ -101,6 +102,9 @@ struct Parser {
     keyword_params: Vec<String>,
     /// A template was parsed (#132).
     templates: bool,
+    /// How many brackets the parser is inside: lines continue there
+    /// (§9.1), so no block can start.
+    brackets: usize,
 }
 
 impl Parser {
@@ -1121,10 +1125,43 @@ impl Parser {
         Ok(Expr { kind: ExprKind::Block(b), span })
     }
 
+    /// Parse with `f` inside one more bracket.
+    fn bracketed<T>(&mut self, f: impl FnOnce(&mut Self) -> PResult<T>) -> PResult<T> {
+        self.brackets += 1;
+        let r = f(self);
+        self.brackets -= 1;
+        r
+    }
+
+    /// A block form (`what`, at `span`) inside brackets: lines continue
+    /// there (§9.1), so its block can't start. E0125.
+    fn block_in_brackets(&mut self, what: &str, span: Span, help: &str) -> Failed {
+        self.diags.push(
+            Diagnostic::error("E0125", format!("{what} can't be inside brackets"), span)
+                .with_label("inside brackets lines continue, so no block can start here")
+                .with_help(help),
+        );
+        Failed
+    }
+
     // ── expressions ─────────────────────────────────────────────────────────
 
     pub fn expr(&mut self) -> PResult<Expr> {
         let start = self.span();
+        if self.brackets > 0 {
+            let help = match self.peek() {
+                Tok::Kw(Kw::Match) => Some(("a `match`", "bind it on a line before this one, `let x = match …`, and use `x` here")),
+                Tok::Kw(Kw::When) => Some(("a `when`", "write the `when` on a line of its own")),
+                Tok::Kw(Kw::Let) => Some((
+                    "a `let`",
+                    "bind what needs it on a line before this one: a lambda as `let f = \\x ->` and its block, then use `f` here",
+                )),
+                _ => None,
+            };
+            if let Some((what, help)) = help {
+                return Err(self.block_in_brackets(what, start, help));
+            }
+        }
         match self.peek() {
             Tok::Kw(Kw::When) => {
                 let w = self.when_expr()?;
@@ -1249,6 +1286,13 @@ impl Parser {
             let e = self.expr()?;
             let span = start.to(e.span);
             return Ok(Expr { kind: ExprKind::If(Box::new(cond), Box::new(t), Box::new(e)), span });
+        }
+        if self.brackets > 0 {
+            return Err(self.block_in_brackets(
+                "a multi-line `if`",
+                start,
+                "write `if … then … else …`, or bind it on a line before this one, `let x = if …`, and use `x` here",
+            ));
         }
         let t = self.block_expr("`if` branch (or write `then` on the same line)")?;
         self.mark(PlaceKind::Else);
@@ -1428,7 +1472,7 @@ impl Parser {
                 e = Expr { kind: ExprKind::Template(Box::new(e), pieces), span };
             } else if glued && self.at(&Tok::LBracket) {
                 self.bump();
-                let i = self.expr()?;
+                let i = self.bracketed(Self::expr)?;
                 let end = self.expect(Tok::RBracket, "`]`")?.span;
                 let span = e.span.to(end);
                 e = Expr { kind: ExprKind::Index(Box::new(e), Box::new(i)), span };
@@ -1502,6 +1546,8 @@ impl Parser {
             in_type: 0,
             keyword_params: Vec::new(),
             templates: false,
+            // A hole is inside its `{…}`.
+            brackets: 1,
         };
         let r = f(&mut p).ok().filter(|_| {
             if p.pos == last {
@@ -1573,12 +1619,12 @@ impl Parser {
                     }
                 };
             }
-            Tok::LParen => return self.paren(),
+            Tok::LParen => return self.bracketed(Self::paren),
             Tok::LBracket => {
                 self.bump();
                 let mut items = Vec::new();
                 if !self.at(&Tok::RBracket) {
-                    self.commas(&mut items, Self::expr)?;
+                    self.bracketed(|p| p.commas(&mut items, Self::expr))?;
                 }
                 let end = self.expect(Tok::RBracket, "`,` or `]`")?.span;
                 return Ok(Expr { kind: ExprKind::List(items), span: start.to(end) });

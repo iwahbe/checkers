@@ -106,7 +106,7 @@ impl Elab {
         }
         if !covered && !returned && !compound && !matches!(t, Tm::Error) {
             if let Some((d, args)) = self.refined_alias(expected) {
-                let already = inferred.as_ref().and_then(|ty| self.refined_alias(ty)).is_some_and(|(d2, _)| d2 == d);
+                let already = inferred.as_ref().is_some_and(|ty| self.same_refinement(cx.lvl(), ty, expected));
                 if !already {
                     let v = self.eval(cx, &t);
                     self.refined_obligation(cx, d, args, v, e.span);
@@ -327,7 +327,7 @@ impl Elab {
                     }
                     _ => None,
                 };
-                if matches!(e.kind, ExprKind::App(..)) && (dict || self.has_refined(cx, expected, 0) || matches!(self.force(expected), Val::Univ(_))) {
+                if matches!(e.kind, ExprKind::App(..)) && (dict || self.has_refined(cx, expected) || matches!(self.force(expected), Val::Univ(_))) {
                     self.app_expected = Some(unrefined.clone().unwrap_or_else(|| expected.clone()));
                 }
                 let (t, ty) = self.infer(cx, e);
@@ -733,11 +733,12 @@ impl Elab {
                 self.insert(cx, t, ty)
             }
             None => {
+                let class_help = self.class_fn_help(n);
                 if self.qualifier(n).is_some() {
-                    self.err(
-                        Diagnostic::error("E0213", format!("`{n}` is a module, not a value"), span)
-                            .with_help(format!("use one of its exports, e.g. `{n}.name`")),
-                    );
+                    let help = class_help.unwrap_or_else(|| format!("use one of its exports, e.g. `{n}.name`"));
+                    self.err(Diagnostic::error("E0213", format!("`{n}` is a module, not a value"), span).with_help(help));
+                } else if let Some(h) = class_help {
+                    self.err(Diagnostic::error("E0204", format!("unknown name `{n}`"), span).with_label("not found").with_help(h));
                 } else if crate::elab::stdlib::source(&format!("std.{n}")).is_some() {
                     self.err(
                         Diagnostic::error("E0204", format!("unknown name `{n}`"), span)
@@ -1253,7 +1254,7 @@ impl Elab {
             // A refinement the value's own type doesn't already give it
             // (#554): as `check` asks of a value checked against it.
             if let Some((d, dargs)) = self.refined_alias(&a.dom) {
-                let already = self.refined_alias(&before).is_some_and(|(d2, _)| d2 == d);
+                let already = self.same_refinement(cx.lvl(), &before, &a.dom);
                 let within = self.is_range(&a.dom)
                     && match (self.type_range(&a.dom), self.type_range(&before)) {
                         (Some(j), Some(r)) => j.holds(r),

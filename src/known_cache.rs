@@ -1,11 +1,13 @@
 //! Known values kept across builds (§8.9), in `.checkers/known/` beside the
-//! checked file, as Z3's answers are (#591): those native code computes for
-//! the type checker, and those folding computes in native code.
+//! checked file, as Z3's answers are (#591): those the type checker's own
+//! evaluation gives (`force_kept`), those native code computes for the type
+//! checker, and those folding computes in native code.
 //!
 //! A value is stored under a key: a digest of the term computed, its type,
 //! the `ckc` executable, and every definition and type the computation can
 //! reach, transitively. A definition counts by its type and body (sealed
-//! bodies too), a type by its parameters and constructors. So editing a
+//! bodies too) and whether it is sealed, a type by its parameters and
+//! constructors. So editing a
 //! function computes again exactly the values that can run it, and nothing
 //! else. In a key and in a stored value, definitions, types and
 //! constructors are named by module and name, never by their numbers,
@@ -22,13 +24,17 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::core::{Globals, Lit, Tm};
+use crate::core::{eval, unfold_all, force_meta, quote, CaseTm, ConId, DefId, Elim, Env, Globals, Head, Icit, Lit, Mult, Prim, Tm, TyId, Val};
 use crate::known::{Builder, Code, Known, Node, Value};
 use crate::native::ir::{Ir, Lit as IrLit};
 use crate::native::lower::{SNode, Static};
 use checkers_rt::word as w;
 
 const HEADER: &str = "checkers known 1";
+
+/// Keys made for terms holding a value no name can say (a lambda's code),
+/// each unlike any other: such a term's value is never reused.
+static UNNAMED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// What a key covers besides the term: a definition or a type (with its
 /// constructors).
@@ -44,6 +50,7 @@ struct ByName {
     defs_len: usize,
     tys_len: usize,
     defs: HashMap<String, u32>,
+    tys: HashMap<String, u32>,
     cons: HashMap<String, u32>,
 }
 
@@ -99,6 +106,11 @@ pub struct KnownCache {
     /// From names back to numbers, for reading a stored value: built when
     /// first needed, again if more have been declared since.
     by_name: Option<ByName>,
+    /// Values of the type checker's evaluation read or computed in this
+    /// build, by key: the fuel each took, and its term.
+    whnfs: HashMap<String, (u64, Tm)>,
+    /// Whether the last term `render` wrote holds a value no name can say.
+    unnamed: bool,
 }
 
 /// Where known values are kept, if anywhere.
@@ -107,6 +119,17 @@ fn dir() -> Option<std::path::PathBuf> {
 }
 
 /// A name written in one token.
+/// A text no other call, in this process or another, gives.
+fn unique() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u64(n);
+    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    format!("{}-{n}-{t}-{:x}", std::process::id(), h.finish())
+}
+
 fn escape(s: &str) -> String {
     s.replace('%', "%25").replace(' ', "%20").replace('\n', "%0A")
 }
@@ -171,8 +194,9 @@ impl KnownCache {
     }
 
     /// Value `v` written with names: each node a line, parts first, the
-    /// value last. The items it names are added to `items`.
-    fn encode(&mut self, p: &Program, k: &Known, root: u32, items: &mut Vec<Item>) -> String {
+    /// value last. The items it names are added to `items`. `None` if it
+    /// holds a lambda's code, which isn't written.
+    fn encode(&mut self, p: &Program, k: &Known, root: u32, items: &mut Vec<Item>) -> Option<String> {
         let g = p.g;
         let nodes = k.reachable(root);
         let at: HashMap<u32, usize> = nodes.iter().enumerate().map(|(i, n)| (*n, i)).collect();
@@ -200,12 +224,13 @@ impl KnownCache {
                     items.push(Item::Ty(g.cons[c.0 as usize].ty.0));
                     format!("fc {}", self.con_name(g, c.0))
                 }
+                Node::Closure(Code::Lam(_)) => return None,
                 Node::Pap(xs) => format!("p {}", ids(xs)),
             };
             out += line.trim_end();
             out.push('\n');
         }
-        out
+        Some(out)
     }
 
     /// Static data `s` at `root` written with names, compactly: the names
@@ -299,7 +324,7 @@ impl KnownCache {
                     body.push(10);
                     varint(&mut body, c as u64);
                 }
-                SNode::Global(_) | SNode::Code(_) => return None,
+                SNode::Global(_) | SNode::Code(_) | SNode::Lam(_) => return None,
             }
         }
         let mut out = STATIC_HEADER.to_vec();
@@ -319,10 +344,14 @@ impl KnownCache {
     fn render(&mut self, p: &Program, t: &Tm, items: &mut Vec<Item>) -> String {
         fn strip(c: &mut KnownCache, p: &Program, t: &Tm, items: &mut Vec<Item>) -> Tm {
             match t {
-                Tm::Known(v) => {
-                    let text = c.encode(p, &v.graph, v.id, items);
-                    Tm::Lit(Lit::Str(Rc::from(format!("\0known {}", crate::verify::digest(&text)))))
-                }
+                Tm::Known(v) => match c.encode(p, &v.graph, v.id, items) {
+                    Some(text) => Tm::Lit(Lit::Str(Rc::from(format!("\0known {}", crate::verify::digest(&text))))),
+                    // A value no name can say: a key no other build has.
+                    None => {
+                        c.unnamed = true;
+                        Tm::Lit(Lit::Str(Rc::from(format!("\0unnamed {}", UNNAMED.fetch_add(1, std::sync::atomic::Ordering::Relaxed)))))
+                    }
+                },
                 _ => t.map_sub(|x, _| strip(c, p, x, items)),
             }
         }
@@ -335,7 +364,16 @@ impl KnownCache {
         let mut out = String::with_capacity(s.len());
         let mut rest = s;
         loop {
-            let next = ["DefId(", "TyId(", "ConId("].iter().filter_map(|p| rest.find(p).map(|i| (i, *p))).min();
+            // The next `DefId(`, `TyId(` or `ConId(`: one pass over the text.
+            let mut from = 0;
+            let next = loop {
+                let Some(j) = rest[from..].find("Id(") else { break None };
+                let j = from + j;
+                if let Some(pre) = ["DefId(", "TyId(", "ConId("].into_iter().find(|p| rest[..j + 3].ends_with(p)) {
+                    break Some((j + 3 - pre.len(), pre));
+                }
+                from = j + 3;
+            };
             let Some((i, pre)) = next else {
                 out += rest;
                 return out;
@@ -440,14 +478,16 @@ impl KnownCache {
                 let ty = info.ty.clone();
                 // Native code runs the body staging gave it, if any.
                 let body = p.staged.and_then(|s| s.bodies.get(&crate::core::DefId(d))).cloned().or_else(|| info.body.clone());
-                let (opaque, sealed, comptime) = (info.opaque, info.sealed, format!("{:?}", info.comptime));
+                // Whether it is sealed changes once its module is checked:
+                // `closure` adds it.
+                let (opaque, comptime) = (info.opaque, format!("{:?}", info.comptime));
                 let ty = self.render(p, &ty, &mut deps);
                 let body = match &body {
                     Some(b) => self.render(p, b, &mut deps),
                     // A builtin: the runtime's code, which the executable covers.
                     None => "builtin".into(),
                 };
-                format!("def {}\nty {ty}\nbody {body}\nopaque {opaque} sealed {sealed} comptime {comptime}", self.def_name(p, d))
+                format!("def {}\nty {ty}\nbody {body}\nopaque {opaque} comptime {comptime}", self.def_name(p, d))
             }
             Item::Def(d) => {
                 if let Some((_, (_, body))) = p.extra(d) {
@@ -456,7 +496,29 @@ impl KnownCache {
                     // Its name is this text's digest: the definition it
                     // copies, and its body, which holds the arguments put in.
                     deps.push(Item::Def(c.of.0));
-                    let body = self.render(p, &c.body, &mut deps);
+                    let body = match &c.body {
+                        crate::native::spec::Body::Term(t) => self.render(p, t, &mut deps),
+                        // Made where a call is folded: the code it copies,
+                        // and the static data put in.
+                        crate::native::spec::Body::Folded { from, put, .. } => {
+                            deps.push(Item::Def(*from));
+                            let mut text = format!("folded {}", self.def_name(p, *from));
+                            for x in put {
+                                text.push(' ');
+                                match x {
+                                    Some(x) => {
+                                        if self.ir_text(p, x, &mut text, &mut deps).is_none() {
+                                            // A value no name says: a name
+                                            // no other build gives.
+                                            text += &format!("<unnamed {}>", unique());
+                                        }
+                                    }
+                                    None => text.push('-'),
+                                }
+                            }
+                            text
+                        }
+                    };
                     format!("copy of {}\ndepth {} binders {:?}\nbody {body}", self.def_name(p, c.of.0), c.depth, c.binders)
                 } else {
                     format!("unknown {d}")
@@ -485,25 +547,40 @@ impl KnownCache {
         deps.sort();
         deps.dedup();
         let r = (crate::verify::digest(&text), deps);
-        self.items.insert(it, r.clone());
+        // A definition not checked yet gets its body later: not remembered.
+        if !unchecked(g, it) {
+            self.items.insert(it, r.clone());
+        }
         r
     }
 
-    /// A digest of `it` and every item it reaches, each by name and digest.
-    fn closure(&mut self, p: &Program, it: Item) -> String {
+    /// A module has sealed its functions (§6): the digests of everything
+    /// that reaches them change.
+    pub fn sealed(&mut self) {
+        self.closures.clear();
+    }
+
+    /// A digest of `it` and every item it reaches, each by name and digest,
+    /// and whether every definition among them is checked (`unchecked`).
+    fn closure(&mut self, p: &Program, it: Item) -> (String, bool) {
         if let Some(c) = self.closures.get(&it) {
-            return c.clone();
+            return (c.clone(), true);
         }
         let mut todo = vec![it];
         let mut seen = HashSet::new();
         let mut parts = Vec::new();
+        let mut checked = true;
         while let Some(x) = todo.pop() {
             if !seen.insert(x) {
                 continue;
             }
+            checked &= !unchecked(p.g, x);
             let (d, deps) = self.item(p, x);
             let name = match x {
-                Item::Def(d) => format!("def {}", self.def_name(p, d)),
+                Item::Def(d) => {
+                    let sealed = p.g.defs.get(d as usize).is_some_and(|i| i.sealed);
+                    format!("def {}{}", self.def_name(p, d), if sealed { " sealed" } else { "" })
+                }
                 Item::Ty(t) => format!("ty {}", self.ty_name(p.g, t)),
             };
             parts.push(format!("{name} {d}"));
@@ -511,18 +588,29 @@ impl KnownCache {
         }
         parts.sort();
         let c = crate::verify::digest(&parts.join("\n"));
-        self.closures.insert(it, c.clone());
-        c
+        if checked {
+            self.closures.insert(it, c.clone());
+        }
+        (c, checked)
     }
 
-    /// A key over `text` and everything `items` reach.
-    fn key_of(&mut self, p: &Program, text: &str, mut items: Vec<Item>) -> String {
+    /// A key over `text` and everything `items` reach, and whether every
+    /// definition they reach is checked.
+    fn key_of(&mut self, p: &Program, text: &str, mut items: Vec<Item>) -> (String, bool) {
         items.sort();
         items.dedup();
-        let mut parts: Vec<String> = items.into_iter().map(|it| self.closure(p, it)).collect();
+        let mut checked = true;
+        let mut parts: Vec<String> = items
+            .into_iter()
+            .map(|it| {
+                let (c, ok) = self.closure(p, it);
+                checked &= ok;
+                c
+            })
+            .collect();
         parts.sort();
         let content = format!("{HEADER}\n{}\n{text}\n{}", crate::verify::tool_identity(), parts.join("\n"));
-        crate::verify::digest(&content)
+        (crate::verify::digest(&content), checked)
     }
 
     /// The key of `t` at type `ty`: what the module comment says.
@@ -531,7 +619,24 @@ impl KnownCache {
         let mut items = Vec::new();
         let term = self.render(&p, t, &mut items);
         let ty = ty.map(|ty| self.render(&p, ty, &mut items)).unwrap_or_default();
-        self.key_of(&p, &format!("{term}\n{ty}"), items)
+        self.key_of(&p, &format!("{term}\n{ty}"), items).0
+    }
+
+    /// The key of the weak-head normal form the type checker's evaluation
+    /// gives closed term `t` (`force_kept`): `None` if `t` reaches a
+    /// definition not checked yet, whose body is still to come, or holds a
+    /// lambda's code.
+    fn whnf_key(&mut self, g: &Globals, t: &Tm) -> Option<String> {
+        let p = Program::of(g);
+        let mut items = Vec::new();
+        self.unnamed = false;
+        let term = self.render(&p, t, &mut items);
+        // A value no name can say (a lambda's code) is never reused.
+        if self.unnamed {
+            return None;
+        }
+        let (key, checked) = self.key_of(&p, &format!("whnf {term}"), items);
+        checked.then_some(key)
     }
 
     /// The key of closed code `ir` that folding computes, in program `p`:
@@ -540,7 +645,7 @@ impl KnownCache {
         let mut items = Vec::new();
         let mut text = String::from("folded ");
         self.ir_text(p, ir, &mut text, &mut items)?;
-        Some(self.key_of(p, &text, items))
+        Some(self.key_of(p, &text, items).0)
     }
 
     /// Constructors by name, for reading a stored value.
@@ -548,8 +653,9 @@ impl KnownCache {
         if self.by_name.as_ref().is_none_or(|b| b.defs_len != g.defs.len() || b.tys_len != g.tys.len()) {
             let p = Program::of(g);
             let defs = (0..g.defs.len() as u32).map(|d| (self.def_name(&p, d), d)).collect();
+            let tys = (0..g.tys.len() as u32).map(|t| (self.ty_name(g, t), t)).collect();
             let cons = (0..g.cons.len() as u32).map(|c| (self.con_name(g, c), c)).collect();
-            self.by_name = Some(ByName { defs_len: g.defs.len(), tys_len: g.tys.len(), defs, cons });
+            self.by_name = Some(ByName { defs_len: g.defs.len(), tys_len: g.tys.len(), defs, tys, cons });
         }
         self.by_name.as_ref().unwrap()
     }
@@ -569,6 +675,12 @@ impl KnownCache {
     /// The value stored under `key`, read into this build's numbering.
     pub fn recall(&mut self, g: &Globals, key: &str) -> Option<Tm> {
         let text = Self::read(key)?;
+        let (k, root) = self.read_known(g, &text)?;
+        term_of(k, root)
+    }
+
+    /// A value written by `encode`, read into this build's numbering.
+    fn read_known(&mut self, g: &Globals, text: &str) -> Option<(Arc<Known>, u32)> {
         let ByName { defs, cons, .. } = self.by_name(g);
         let mut b = Builder::default();
         let mut ids: Vec<u32> = Vec::new();
@@ -599,7 +711,7 @@ impl KnownCache {
             ids.push(b.add(node));
         }
         let root = *ids.last()?;
-        term_of(Arc::new(b.finish()), root)
+        Some((Arc::new(b.finish()), root))
     }
 
     /// Keep `value` under `key`, if it is a value that can be kept.
@@ -617,8 +729,9 @@ impl KnownCache {
             }
             _ => return,
         };
-        let text = self.encode(&Program::of(g), &k, root, &mut Vec::new());
-        Self::write(key, &text);
+        if let Some(text) = self.encode(&Program::of(g), &k, root, &mut Vec::new()) {
+            Self::write(key, &text);
+        }
     }
 
     /// The static data stored under `key` (folding's), read into this
@@ -707,6 +820,419 @@ impl KnownCache {
             self.remember_static(s, root, &bytes, items);
         }
     }
+
+    /// Term `t` written with names, as tokens each followed by a space
+    /// (`read_tm` reads them back): `None` if it holds an unknown, which
+    /// names nothing another build has.
+    fn write_tm(&mut self, g: &Globals, t: &Tm, out: &mut String) -> Option<()> {
+        let p = Program::of(g);
+        let tok = |out: &mut String, s: &str| {
+            out.push_str(s);
+            out.push(' ');
+        };
+        let mult = |m: Mult| match m {
+            Mult::Zero => "0",
+            Mult::One => "1",
+            Mult::Many => "w",
+        };
+        let icit = |i: Icit| if i == Icit::Expl { "e" } else { "i" };
+        match t {
+            Tm::Var(i) => tok(out, &format!("v{i}")),
+            Tm::Def(d) => {
+                tok(out, "d");
+                tok(out, &self.def_name(&p, d.0));
+            }
+            Tm::TyCon(x) => {
+                tok(out, "T");
+                tok(out, &self.ty_name(g, x.0));
+            }
+            Tm::Con(c) => {
+                tok(out, "C");
+                tok(out, &self.con_name(g, c.0));
+            }
+            Tm::Meta(_) => return None,
+            Tm::Univ(u) => tok(out, &format!("u{u}")),
+            Tm::Pi(x, m, i, a, b) => {
+                for s in ["P", &escape(x), mult(*m), icit(*i)] {
+                    tok(out, s);
+                }
+                self.write_tm(g, a, out)?;
+                self.write_tm(g, b, out)?;
+            }
+            Tm::Lam(x, m, i, b) => {
+                for s in ["L", &escape(x), mult(*m), icit(*i)] {
+                    tok(out, s);
+                }
+                self.write_tm(g, b, out)?;
+            }
+            Tm::App(f, a, i, m) => {
+                for s in ["A", icit(*i), mult(*m)] {
+                    tok(out, s);
+                }
+                self.write_tm(g, f, out)?;
+                self.write_tm(g, a, out)?;
+            }
+            Tm::Let(x, m, ty, v, b) => {
+                for s in ["E", &escape(x), mult(*m)] {
+                    tok(out, s);
+                }
+                for t in [ty, v, b] {
+                    self.write_tm(g, t, out)?;
+                }
+            }
+            Tm::Lit(l) => tok(out, &lit_token(l)),
+            Tm::TupleTy(ts) | Tm::Tuple(ts) => {
+                tok(out, &format!("{}{}", if matches!(t, Tm::Tuple(_)) { "U" } else { "Y" }, ts.len()));
+                for t in ts {
+                    self.write_tm(g, t, out)?;
+                }
+            }
+            Tm::Proj(x, i, rest) => {
+                tok(out, &format!("J{i}{}", if *rest { "r" } else { "" }));
+                self.write_tm(g, x, out)?;
+            }
+            Tm::Field(x, c, i) => {
+                tok(out, &format!("F{i}"));
+                tok(out, &self.con_name(g, c.0));
+                self.write_tm(g, x, out)?;
+            }
+            Tm::TyConApp(x, ts) => {
+                tok(out, &format!("TA{}", ts.len()));
+                tok(out, &self.ty_name(g, x.0));
+                for t in ts {
+                    self.write_tm(g, t, out)?;
+                }
+            }
+            Tm::ConApp(c, ts) => {
+                tok(out, &format!("CA{}", ts.len()));
+                tok(out, &self.con_name(g, c.0));
+                for t in ts {
+                    self.write_tm(g, t, out)?;
+                }
+            }
+            Tm::PrimApp(op, ts) => {
+                let name = match op {
+                    Prim::Builtin(n) => format!("B{}", escape(n)),
+                    Prim::Effect(n) => format!("X{n}"),
+                    op => format!("{op:?}"),
+                };
+                tok(out, &format!("R{}", ts.len()));
+                tok(out, &name);
+                for t in ts {
+                    self.write_tm(g, t, out)?;
+                }
+            }
+            Tm::Case(x, c) => {
+                tok(out, &format!("S{} {} {}", c.branches.len(), c.lits.len(), u8::from(c.default.is_some())));
+                self.write_tm(g, x, out)?;
+                for (con, n, b) in &c.branches {
+                    tok(out, &self.con_name(g, con.0));
+                    tok(out, &n.to_string());
+                    self.write_tm(g, b, out)?;
+                }
+                for (l, b) in &c.lits {
+                    tok(out, &lit_token(l));
+                    self.write_tm(g, b, out)?;
+                }
+                if let Some(b) = &c.default {
+                    self.write_tm(g, b, out)?;
+                }
+            }
+            Tm::Known(v) => {
+                let text = self.encode(&p, &v.graph, v.id, &mut Vec::new())?;
+                tok(out, "K");
+                tok(out, &escape(&text));
+            }
+            Tm::Error => tok(out, "!"),
+        }
+        Some(())
+    }
+
+    /// A term `write_tm` wrote, read into this build's numbering: `None`
+    /// if it names what this build doesn't have.
+    fn read_tm<'t>(&mut self, g: &Globals, toks: &mut dyn Iterator<Item = &'t str>) -> Option<Tm> {
+        let t = toks.next()?;
+        let mult = |s: &str| match s {
+            "0" => Some(Mult::Zero),
+            "1" => Some(Mult::One),
+            "w" => Some(Mult::Many),
+            _ => None,
+        };
+        let icit = |s: &str| match s {
+            "e" => Some(Icit::Expl),
+            "i" => Some(Icit::Impl),
+            _ => None,
+        };
+        let def = |this: &mut Self, n: &str| this.by_name(g).defs.get(n).copied().map(DefId);
+        let ty = |this: &mut Self, n: &str| this.by_name(g).tys.get(n).copied().map(TyId);
+        let con = |this: &mut Self, n: &str| this.by_name(g).cons.get(n).copied().map(ConId);
+        let count = |s: &str| s.parse::<usize>().ok();
+        Some(match t {
+            "d" => Tm::Def(def(self, toks.next()?)?),
+            "T" => Tm::TyCon(ty(self, toks.next()?)?),
+            "C" => Tm::Con(con(self, toks.next()?)?),
+            "P" | "L" => {
+                let (x, m, i) = (unescape(toks.next()?), mult(toks.next()?)?, icit(toks.next()?)?);
+                if t == "P" {
+                    let a = self.read_tm(g, toks)?;
+                    Tm::Pi(x.into(), m, i, Rc::new(a), Rc::new(self.read_tm(g, toks)?))
+                } else {
+                    Tm::Lam(x.into(), m, i, Rc::new(self.read_tm(g, toks)?))
+                }
+            }
+            "A" => {
+                let (i, m) = (icit(toks.next()?)?, mult(toks.next()?)?);
+                let f = self.read_tm(g, toks)?;
+                Tm::App(Rc::new(f), Rc::new(self.read_tm(g, toks)?), i, m)
+            }
+            "E" => {
+                let (x, m) = (unescape(toks.next()?), mult(toks.next()?)?);
+                let ty = self.read_tm(g, toks)?;
+                let v = self.read_tm(g, toks)?;
+                Tm::Let(x.into(), m, Rc::new(ty), Rc::new(v), Rc::new(self.read_tm(g, toks)?))
+            }
+            "K" => {
+                let (k, root) = self.read_known(g, &unescape(toks.next()?))?;
+                Tm::Known(Value::new(k, root))
+            }
+            "!" => Tm::Error,
+            _ => {
+                let (tag, rest) = t.split_at(t.find(|c: char| c.is_ascii_digit() || c == '-').unwrap_or(t.len()));
+                let many = |this: &mut Self, n: usize, toks: &mut dyn Iterator<Item = &'t str>| -> Option<Vec<Tm>> { (0..n).map(|_| this.read_tm(g, toks)).collect() };
+                match tag {
+                    "v" => Tm::Var(count(rest)?),
+                    "u" => Tm::Univ(rest.parse().ok()?),
+                    "n" | "N" | "s" | "y" => Tm::Lit(read_lit(t)?),
+                    "U" => Tm::Tuple(many(self, count(rest)?, toks)?),
+                    "Y" => Tm::TupleTy(many(self, count(rest)?, toks)?),
+                    "J" => {
+                        let (i, r) = rest.strip_suffix('r').map_or((rest, false), |i| (i, true));
+                        Tm::Proj(Rc::new(self.read_tm(g, toks)?), count(i)?, r)
+                    }
+                    "F" => {
+                        let c = con(self, toks.next()?)?;
+                        Tm::Field(Rc::new(self.read_tm(g, toks)?), c, count(rest)?)
+                    }
+                    "TA" => {
+                        let x = ty(self, toks.next()?)?;
+                        Tm::TyConApp(x, many(self, count(rest)?, toks)?)
+                    }
+                    "CA" => {
+                        let c = con(self, toks.next()?)?;
+                        Tm::ConApp(c, many(self, count(rest)?, toks)?)
+                    }
+                    "R" => {
+                        let name = toks.next()?;
+                        let op = if let Some(n) = name.strip_prefix('B') {
+                            Prim::Builtin(unescape(n).into())
+                        } else if let Some(n) = name.strip_prefix('X') {
+                            Prim::Effect(n.parse().ok()?)
+                        } else {
+                            prim_named(name)?
+                        };
+                        Tm::PrimApp(op, many(self, count(rest)?, toks)?)
+                    }
+                    "S" => {
+                        let (nb, nl, nd) = (count(rest)?, count(toks.next()?)?, toks.next()? == "1");
+                        let x = self.read_tm(g, toks)?;
+                        let mut c = CaseTm { branches: Vec::new(), lits: Vec::new(), default: None };
+                        for _ in 0..nb {
+                            let k = con(self, toks.next()?)?;
+                            let n = count(toks.next()?)?;
+                            c.branches.push((k, n, self.read_tm(g, toks)?));
+                        }
+                        for _ in 0..nl {
+                            let l = read_lit(toks.next()?)?;
+                            c.lits.push((l, self.read_tm(g, toks)?));
+                        }
+                        if nd {
+                            c.default = Some(self.read_tm(g, toks)?);
+                        }
+                        Tm::Case(Rc::new(x), Rc::new(c))
+                    }
+                    _ => return None,
+                }
+            }
+        })
+    }
+
+    /// The weak-head normal form kept under `key` (`force_kept`): the fuel
+    /// computing it took, and its term.
+    fn recall_whnf(&mut self, g: &Globals, key: &str) -> Option<(u64, Tm)> {
+        if let Some(r) = self.whnfs.get(key) {
+            return Some(r.clone());
+        }
+        let text = Self::read(key)?;
+        let (steps, rest) = text.strip_prefix("whnf ")?.split_once('\n')?;
+        let steps = steps.parse().ok()?;
+        let mut toks = rest.split(' ').filter(|t| !t.is_empty());
+        let t = self.read_tm(g, &mut toks)?;
+        toks.next().is_none().then_some(())?;
+        self.whnfs.insert(key.to_string(), (steps, t.clone()));
+        Some((steps, t))
+    }
+
+    /// Keep weak-head normal form `t` under `key`, which took `steps` of
+    /// fuel, if it can be kept.
+    fn store_whnf(&mut self, g: &Globals, key: &str, steps: u64, t: &Tm) {
+        let mut text = format!("whnf {steps}\n");
+        if self.write_tm(g, t, &mut text).is_some() {
+            Self::write(key, &text);
+            self.whnfs.insert(key.to_string(), (steps, t.clone()));
+        }
+    }
+}
+
+/// Is `it` a definition not checked yet, whose body is still to come (a
+/// builtin's is none, once its module is checked)?
+fn unchecked(g: &Globals, it: Item) -> bool {
+    matches!(it, Item::Def(d) if g.defs.get(d as usize).is_some_and(|i| i.body.is_none() && !i.opaque))
+}
+
+fn unescape(s: &str) -> String {
+    s.replace("%20", " ").replace("%0A", "\n").replace("%25", "%")
+}
+
+fn lit_token(l: &Lit) -> String {
+    match l {
+        Lit::Num(n) => format!("n{n}"),
+        Lit::Big(b) => format!("N{b}"),
+        Lit::Str(s) => format!("s{}", hex(s.as_bytes())),
+        Lit::Bytes(b) => format!("y{}", hex(b)),
+    }
+}
+
+fn read_lit(t: &str) -> Option<Lit> {
+    let (tag, rest) = t.split_at(1);
+    Some(match tag {
+        "n" => Lit::Num(rest.parse().ok()?),
+        "N" => Lit::Big(Rc::new(rest.parse().ok()?)),
+        "s" => Lit::Str(String::from_utf8(unhex(rest)?).ok()?.into()),
+        "y" => Lit::Bytes(unhex(rest)?.into()),
+        _ => return None,
+    })
+}
+
+/// The primitive written as its name (`Debug`), other than those that carry
+/// a value.
+fn prim_named(s: &str) -> Option<Prim> {
+    use Prim::*;
+    [Add, Sub, Mul, Div, Rem, Neg, Eq, Ne, Lt, Le, Gt, Ge, Concat, Len, Index, Par, When, Forall].into_iter().find(|p| format!("{p:?}") == s)
+}
+
+/// How many unfoldings a value of the type checker's own evaluation takes
+/// before it is kept across builds (§8.9): one that takes fewer is computed
+/// again, which is quicker than looking it up.
+pub const KEEP_STEPS: u64 = 1000;
+
+/// `force` of a call, keeping its weak-head normal form across builds when
+/// it is closed and takes `KEEP_STEPS` unfoldings or more (§8.9). It is
+/// first computed within `KEEP_STEPS`; one that needs more is looked up,
+/// and computed again from the start if it isn't kept. The value read back
+/// takes from the fuel what computing it took, so whether a program checks
+/// never depends on what is kept.
+#[inline(never)]
+pub fn force_kept(g: &Globals, v: Val) -> Val {
+    let fuel = g.fuel.get();
+    g.keeping.set(false);
+    let outer = g.unfolds_left.replace(KEEP_STEPS);
+    let r = unfold_all(g, v.clone());
+    let left = g.unfolds_left.replace(outer);
+    let r = if left > 0 {
+        r
+    } else {
+        g.fuel.set(fuel);
+        force_long(g, v, fuel)
+    };
+    g.keeping.set(true);
+    r
+}
+
+/// `force_kept` of a value that takes `KEEP_STEPS` unfoldings or more,
+/// with `fuel` left.
+fn force_long(g: &Globals, v: Val, fuel: u64) -> Val {
+    let input = closed(g, &v).then(|| quietly(g, || quote(g, 0, &v)));
+    let key = input.as_ref().and_then(|t| g.known_disk.borrow_mut().whnf_key(g, t));
+    if let Some(key) = &key {
+        let kept = g.known_disk.borrow_mut().recall_whnf(g, key);
+        if let Some((spent, t)) = kept.filter(|(spent, _)| *spent < fuel) {
+            let r = quietly(g, || eval(g, &Env::new(), &t));
+            g.fuel.set(fuel - spent);
+            return r;
+        }
+        if std::env::var_os("CHECKERS_KNOWN_TRACE").is_some() {
+            eprintln!("known value computed: {}", crate::core::show(g, &[], input.as_ref().unwrap()));
+        }
+    }
+    let r = unfold_all(g, v);
+    let left = g.fuel.get();
+    // A computation that ran out of fuel isn't finished: not kept.
+    if let (Some(key), true) = (&key, left > 0) {
+        let t = quietly(g, || quote(g, 0, &r));
+        g.known_disk.borrow_mut().store_whnf(g, key, fuel - left, &t);
+    }
+    r
+}
+
+/// `f` run with no fuel, so it unfolds nothing (quoting a value, or
+/// evaluating a term read back): it takes none.
+fn quietly<T>(g: &Globals, f: impl FnOnce() -> T) -> T {
+    let saved = g.fuel.replace(0);
+    let r = f();
+    g.fuel.set(saved);
+    r
+}
+
+/// Is `v` closed: no variables, and no unknowns (whose solutions would
+/// change it)? Within a bound on the values looked at, since closures'
+/// environments may share them; beyond it, taken as not closed.
+fn closed(g: &Globals, v: &Val) -> bool {
+    fn body_closed(t: &Tm) -> bool {
+        !matches!(t, Tm::Meta(_)) && t.all_sub(|x, _| body_closed(x))
+    }
+    let mut todo = vec![v.clone()];
+    let mut budget = 10_000;
+    let env = |todo: &mut Vec<Val>, e: &Env| todo.extend(e.iter().cloned());
+    while let Some(v) = todo.pop() {
+        budget -= 1;
+        if budget == 0 {
+            return false;
+        }
+        if let Val::Known(_) = v {
+            continue;
+        }
+        match force_meta(g, v) {
+            Val::Neutral(h, sp) => {
+                match h {
+                    Head::Var(_) | Head::Meta(_) => return false,
+                    Head::Def(_) => {}
+                    Head::Prim(_, args) => todo.extend(args.iter().cloned()),
+                }
+                for e in sp.iter() {
+                    match e {
+                        Elim::App(a, _) => todo.push(a.clone()),
+                        Elim::Proj(..) | Elim::Field(..) => {}
+                        Elim::Case(c, e) => {
+                            let bodies = c.branches.iter().map(|b| &b.2).chain(c.lits.iter().map(|b| &b.1)).chain(c.default.iter());
+                            if !bodies.into_iter().all(body_closed) {
+                                return false;
+                            }
+                            env(&mut todo, e);
+                        }
+                    }
+                }
+            }
+            Val::Lam(_, _, _, c) | Val::Pi(_, _, _, _, c) if !body_closed(&c.body) => return false,
+            Val::Lam(_, _, _, c) => env(&mut todo, &c.env),
+            Val::Pi(_, _, _, a, c) => {
+                todo.push((*a).clone());
+                env(&mut todo, &c.env);
+            }
+            Val::TyCon(_, xs) | Val::Con(_, xs) | Val::TupleTy(xs) | Val::Tuple(xs) => todo.extend(xs.iter().cloned()),
+            Val::Univ(_) | Val::Lit(_) | Val::Known(_) | Val::Error => {}
+        }
+    }
+    true
 }
 
 /// Keep `bytes` under `key`: whole or not at all, written elsewhere, then
