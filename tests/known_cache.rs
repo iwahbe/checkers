@@ -202,3 +202,57 @@ fn computed_types_are_kept_across_builds() {
     assert_eq!(computed, first, "an edit of `walk` computes the type again, and only it");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A constant whose value is a lambda's closure: its code (a lambda in
+/// `adder`'s body) and the value it captured. And a function it never runs.
+fn closure(body: &str, other: &str) -> String {
+    format!(
+        "module p
+
+import std.system (System, ExitCode)
+import std.terminal
+import std.string (debug)
+import std.hint (blackbox)
+
+fn adder n -> f : n~Int, f~(Int -> Int)
+    let m = n * n
+    \\x -> {body}
+
+fn other x -> r : x~Nat, r~Nat
+    {other}
+
+let BY_TWO = adder 2
+
+export fn main args sys -> code : args~List String, sys~System, code~ExitCode
+    terminal.print_line (debug (BY_TWO (blackbox 3))) sys.term
+    terminal.print_line (debug (other (len args))) sys.term
+    Success
+"
+    )
+}
+
+#[test]
+fn closures_are_kept_across_builds() {
+    let dir = scratch("closure");
+    std::fs::write(dir.join("p.ck"), closure("x + m", "x + 1")).unwrap();
+    let (out, computed) = run(&dir);
+    assert_eq!(out, "7\n1\n");
+    assert!(computed.iter().any(|c| c == "BY_TWO"), "the first build computes `BY_TWO`: {computed:?}");
+
+    let (out, computed) = run(&dir);
+    assert_eq!(out, "7\n1\n");
+    assert!(computed.is_empty(), "the next build reuses every value, but computed {computed:?}");
+
+    // A function the closure doesn't run: still reused.
+    std::fs::write(dir.join("p.ck"), closure("x + m", "x + 2")).unwrap();
+    let (out, computed) = run(&dir);
+    assert_eq!(out, "7\n2\n");
+    assert!(computed.is_empty(), "an edit elsewhere keeps it, but computed {computed:?}");
+
+    // The function whose lambda it is: computed again, with its new code.
+    std::fs::write(dir.join("p.ck"), closure("x * m", "x + 2")).unwrap();
+    let (out, computed) = run(&dir);
+    assert_eq!(out, "12\n2\n");
+    assert_eq!(computed, ["BY_TWO"], "an edit of `adder` computes `BY_TWO` again, and only it");
+    let _ = std::fs::remove_dir_all(&dir);
+}
