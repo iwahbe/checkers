@@ -57,6 +57,9 @@ export enum Term
     Neg a           : a~Term
     Compare op a b  : op~Compare, a~Term, b~Term
     Len a           : a~Term
+    Extract a i n   : a~Term, i~Term, n~Term
+    # `((_ map (+ (Int Int) Int)) a b)`, at the arrays' sort.
+    Sum s a b       : s~Sort, a~Term, b~Term
     # `seq.nth`; out of range, the model's `seq.nth_u` for its sort, if it
     # printed one (`u`).
     Nth a i u       : a~Term, i~Term, u~Option Nat
@@ -104,6 +107,8 @@ export fn size t -> n : t~Term, n~Nat
         Neg a          -> 1 + size a
         Compare _ a b  -> 1 + size a + size b
         Len a          -> 1 + size a
+        Extract a i n  -> 1 + size a + size i + size n
+        Sum _ a b      -> 1 + size a + size b
         Nth a i _      -> 1 + size a + size i
         Select a i     -> 1 + size a + size i
         Div a b _      -> 1 + size a + size b
@@ -141,6 +146,8 @@ export fn uses t k -> r : t~Term, k~Nat, r~Bool
         Neg a           -> uses a k
         Compare _ a b   -> uses a k or uses b k
         Len a           -> uses a k
+        Extract a i n   -> uses a k or uses i k or uses n k
+        Sum _ a b       -> uses a k or uses b k
         Nth a i _       -> uses a k or uses i k
         Select a i      -> uses a k or uses i k
         Div a b _       -> uses a k or uses b k
@@ -178,6 +185,8 @@ export fn refs t -> r : t~Term, r~List Nat
         Neg a          -> refs a
         Compare _ a b  -> refs a ++ refs b
         Len a          -> refs a
+        Extract a i n  -> refs a ++ refs i ++ refs n
+        Sum _ a b      -> refs a ++ refs b
         Nth a i u      -> option_ref u ++ refs a ++ refs i
         Select a i     -> refs a ++ refs i
         Div a b z      -> option_ref z ++ refs a ++ refs b
@@ -426,6 +435,13 @@ export fn checked names scope s e -> r : names~Names, scope~List (Name, Sort), s
         Node (Node [Leaf (Symbol a False) _, Leaf (Symbol n q) _, t] _ :: args) _ if a == b"as" ->
             let written = try sort_from names.sig t
             if written != s then Err b"an `as` whose sort isn't the one expected" else as_applied names scope s n q args
+        Node [m, a, b] _ if is_map_add m ->
+            match s
+                Arr _ Int ->
+                    let x = try checked names scope s a
+                    let y = try checked names scope s b
+                    Ok (Sum s x y)
+                _         -> Err b"`map +` where the sort isn't an array of Ints"
         Node [Leaf (Symbol l False) _, Node [Node [Leaf (Symbol x _) _, t] _] _, body] _ if l == b"lambda" ->
             match s
                 Arr i w ->
@@ -514,6 +530,8 @@ fn as_applied names scope s n q args -> r : names~Names, scope~List (Name, Sort)
                                             args~List (SExpr src), r~Result Term Bytes
     if bound scope n 0 != None
         Err (b"`as` of a bound name: " ++ n)
+    else if args == []
+        Err (b"an application with no arguments: " ++ n)
     else if not q and n == b"const"
         match (s, args)
             (Arr _ w, [x]) ->
@@ -545,6 +563,13 @@ export fn inferred names scope e -> r : names~Names, scope~List (Name, Sort), e~
             let s = try sort_from names.sig t
             let x = try as_applied names scope s n q args
             Ok (x, s)
+        Node [m, a, b] _ if is_map_add m ->
+            let (x, t) = try inferred names scope a
+            match t
+                Arr _ Int ->
+                    let y = try checked names scope t b
+                    Ok (Sum t x y, t)
+                _         -> Err b"`map +` of what isn't an array of Ints"
         Node [Leaf (Symbol l False) _, Node [Node [Leaf (Symbol x _) _, t] _] _, body] _ if l == b"lambda" ->
             let i = try sort_from names.sig t
             let (b, w) = try inferred names ((x, i) :: scope) body
@@ -658,11 +683,35 @@ fn tester_app names scope d k n args -> r : names~Names, scope~List (Name, Sort)
                                             args~List (SExpr src), r~Result Term Bytes
     match args
         [a] ->
-            let (x, t) = try inferred names scope a
-            match t
-                Data e _ -> if e == d then Ok (Is k x) else Err (b"a tester of another datatype's value: " ++ n)
-                _        -> Err (b"a tester of what isn't a datatype's value: " ++ n)
+            match inferred names scope a
+                Ok (x, Data e _) -> if e == d then Ok (Is k x) else Err (b"a tester of another datatype's value: " ++ n)
+                Ok _             -> Err (b"a tester of what isn't a datatype's value: " ++ n)
+                Err why          ->
+                    # A constructor without fields of a datatype with
+                    # parameters, alone (Z3 prints `(is-C none)`): the
+                    # tester's value is the same at every instance.
+                    match bare_ctor_of names.sig d a
+                        Some j -> if bound scope (sym_text a) 0 == None then Ok (Is k (Con j [])) else Err why
+                        None   -> Err why
         _   -> Err (b"a tester with other than one argument: " ++ n)
+
+# The number of the constructor without fields of the `d`-th datatype
+# that `e` names alone.
+fn bare_ctor_of sig d e -> r : sig~Sig, d~Nat, e~SExpr src, r~Option Nat
+    match e
+        Leaf (Symbol n _) _ ->
+            if d < len sig.datatypes
+                match ctor_named sig.datatypes[d].ctors n 0
+                    Some (j, c) -> if c.fields == [] then Some j else None
+                    None        -> None
+            else
+                None
+        _                   -> None
+
+fn sym_text e -> r : e~SExpr src, r~Name
+    match e
+        Leaf (Symbol n _) _ -> n
+        _                   -> b""
 
 # `(sel a)`, the `j`-th selector of the `k`-th constructor of the `d`-th
 # datatype, with its sort.
@@ -779,6 +828,14 @@ fn symbol names s n q -> r : names~Names, s~Sort, n~Name, q~Bool, r~Result Term 
                             _        -> Err (b"a name this reader can't read here: " ++ n)
             _        -> Err (b"a name the model defines twice: " ++ n)
 
+# Whether `e` is `(_ map (+ (Int Int) Int))`, the one map the query's
+# terms use.
+fn is_map_add e -> r : e~SExpr src, r~Bool
+    match e
+        Node [Leaf (Symbol u False) _, Leaf (Symbol m False) _, Node [Leaf (Symbol p False) _, Node [Leaf (Symbol i1 False) _, Leaf (Symbol i2 False) _] _, Leaf (Symbol i3 False) _] _] _ ->
+            u == b"_" and m == b"map" and p == b"+" and i1 == b"Int" and i2 == b"Int" and i3 == b"Int"
+        _                                                                                                                                                                                  -> False
+
 # The words that bind names: only a `lambda` of one variable and a `let`
 # are read.
 fn binder k -> r : k~Name, r~Bool
@@ -797,6 +854,7 @@ fn builtin n -> r : n~Name, r~Bool
     n == b"ite" or n == b"not" or n == b"and" or n == b"or" or n == b"=>" or n == b"=" or n == b"+" or n == b"-"
         or n == b"*" or n == b"<" or n == b"<=" or n == b">" or n == b">=" or n == b"seq.unit" or n == b"seq.++"
         or n == b"store" or n == b"seq.len" or n == b"seq.nth" or n == b"select" or n == b"div" or n == b"mod"
+        or n == b"seq.extract"
 
 fn builtin_sort names scope n args -> r : names~Names, scope~List (Name, Sort), n~Name, args~List (SExpr src),
                                           r~Option Sort
@@ -814,6 +872,7 @@ fn builtin_sort names scope n args -> r : names~Names, scope~List (Name, Sort), 
                     Err _     -> None
             (_, a :: _) if n == b"seq.++" -> sort_only (inferred names scope a)
             (_, [a, _, _]) if n == b"store" -> sort_only (inferred names scope a)
+            (_, [a, _, _]) if n == b"seq.extract" -> sort_only (inferred names scope a)
             (_, [a, _]) if n == b"seq.nth" ->
                 match inferred names scope a
                     Ok (_, Seq e) -> Some e
@@ -893,6 +952,14 @@ fn apply names scope s n args -> r : names~Names, scope~List (Name, Sort), s~Sor
             match t
                 Seq _ -> want Int (Ok (Len x))
                 _     -> Err b"seq.len of what isn't a sequence"
+        [a, i, k] if n == b"seq.extract" ->
+            match s
+                Seq _ ->
+                    let x = try checked names scope s a
+                    let j = try checked names scope Int i
+                    let l = try checked names scope Int k
+                    Ok (Extract x j l)
+                _     -> Err b"seq.extract where the sort isn't a sequence"
         [a, i] if n == b"seq.nth" ->
             let x = try checked names scope (Seq s) a
             let j = try checked names scope Int i
@@ -1163,7 +1230,7 @@ export record Defs
 
 export let NO_NORMAL_FORM = b"an array with no normal form: a store at an index sort `smt.model` can't show finite and listed, or unbounded"
 
-let INDEX_USED = b"an array whose value at an index uses the index: no normal form"
+export let INDEX_USED = b"an array whose value at an index uses the index: no normal form"
 
 fn body_at bs f -> r : bs~List (Nat, Term), f~Nat, r~Option (Nat, Term)
     list.head (list.drop f bs)
@@ -1257,6 +1324,23 @@ export fn eval defs rank env t -> r : defs~Defs, rank~Nat, env~List Value, t~Ter
             match x
                 Sequence xs -> Ok (Integer (list.length xs))
                 _           -> Err b"not a sequence"
+        Extract a i n  ->
+            let x = try eval defs rank env a
+            let j = try eval defs rank env i
+            let k = try eval defs rank env n
+            match (x, j, k)
+                (Sequence xs, Integer from, Integer count) ->
+                    if 0 <= from and from < list.length xs and 0 < count
+                        Ok (Sequence (list.take count (list.drop from xs)))
+                    else
+                        Ok (Sequence [])
+                _                                          -> Err b"not a sequence and two Ints"
+        Sum s a b      ->
+            let x = try eval defs rank env a
+            let y = try eval defs rank env b
+            match model.sum_array defs.sig defs.dom s x y
+                Some v -> Ok v
+                None   -> Err NO_NORMAL_FORM
         Nth a i u      ->
             let x = try eval defs rank env a
             let j = try eval defs rank env i

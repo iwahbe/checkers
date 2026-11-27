@@ -925,6 +925,15 @@ fn smt_package(pool: &Pool, root: &'static Path, update: bool) {
         count += 1;
         let out = run_with(&exe.0, &["models", "--terminating", "tests/smt/models/corpus"], b"", root);
         compare(root, &root.join("tests/smt/models/models.out"), &shown(&out), update, &mut failures);
+        // `--z3` with a stand-in for `z3` that now answers `unsat`, a
+        // program that can't be run, and no directory: each fails the run.
+        count += 1;
+        let z3 = "tests/smt/compare/fake-z3";
+        let asked = run_with(&exe.0, &["models", "--terminating", "--z3", z3, "tests/smt/models/z3"], b"", root);
+        let unrun = run_with(&exe.0, &["models", "--z3", "tests/smt/models/no-such-program", "tests/smt/models/z3"], b"", root);
+        let none = run_with(&exe.0, &["models"], b"", root);
+        let actual = format!("-- asked again\n{}-- can't run\n{}-- no directory\n{}", shown(&asked), shown(&unrun), shown(&none));
+        compare(root, &root.join("tests/smt/models/z3.out"), &actual, update, &mut failures);
         // The reader's reserved spellings are those scripts/reserved.py
         // measured with Z3 (smt/reserved.txt); never rewritten here.
         count += 1;

@@ -670,9 +670,15 @@ check nt_refuted
 
 # ── An answer to a query that asks for a core ────────────────────────────────
 
-# After `sat`, Z3 answers `(get-unsat-core)` with an error line, and only
-# that line is dropped before the values are read.
-check answer.without_core_error b"sat\n(error \"line 9 column 15: unsat core is not available\")\n((x 3))"
+# After `sat`, Z3 answers `(get-unsat-core)` with an error line saying
+# where the command ends, and only that line is dropped before the values
+# are read.
+let CORE_QUERY = b"(set-option :produce-unsat-cores true)\n(check-sat)\n(get-unsat-core)\n(get-value (x))\n"
+
+check answer.core_error CORE_QUERY == Some b"(error \"line 3 column 15: unsat core is not available\")"
+check answer.without_core_error b"sat\n(error \"line 3 column 15: unsat core is not available\")\n((x 3))" CORE_QUERY
     == b"sat\n((x 3))"
-check answer.without_core_error b"sat\n(error \"line 9 column 15: unknown constant y\")\n((x 3))"
-    == b"sat\n(error \"line 9 column 15: unknown constant y\")\n((x 3))"
+check answer.without_core_error b"sat\n(error \"line 9 column 15: unsat core is not available\")\n((x 3))" CORE_QUERY
+    == b"sat\n(error \"line 9 column 15: unsat core is not available\")\n((x 3))"
+check answer.without_core_error b"sat\n(error \"line 3 column 15: unknown constant y\")\n((x 3))" CORE_QUERY
+    == b"sat\n(error \"line 3 column 15: unknown constant y\")\n((x 3))"

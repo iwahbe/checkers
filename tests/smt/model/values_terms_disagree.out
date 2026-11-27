@@ -1,5 +1,5 @@
 -- stdout
 z3: sat
-the answer doesn't read: values printed that contradict each other
+the answer doesn't read: values printed that contradict each other, or the query's definitions
 -- stderr
 -- exit 0

@@ -966,6 +966,15 @@ export fn store_array sig dom s a j x -> r : sig~Sig, dom~(Nat -> List Sort -> D
                 None   -> None
         _           -> None
 
+# The array Z3's `((_ map (+ (Int Int) Int)) a b)` is there.
+export fn sum_array sig dom s a b -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), s~Sort, a~Value, b~Value, r~Option Value
+    match (a, b)
+        (ArrayElem k, ArrayElem l) ->
+            match normal_sum sig dom s k l
+                Some n -> Some (ArrayElem n)
+                None   -> None
+        _                          -> None
+
 # The element at `j` of the array `a` is there.
 export fn select_array a j -> r : a~Value, j~Value, r~Option Value
     match a

@@ -11,30 +11,35 @@
 # - `seq.nth_u` (a sequence and an `Int`, an element), one for each sort of
 #   sequence: `seq.nth` out of range;
 # - `k!N`: a function an array is made of, as `(_ as-array k!N)`;
-# - a `Bool` constant for each named assertion (the query's names);
-# - each constant the query defines (a `define-funs-rec` of no parameters),
-#   with its value.
+# - a `Bool` constant for each named assertion (the query's names), and
+#   each constant the query defines (a `define-funs-rec` of no
+#   parameters): each printed as a body, often the query's own term for it
+#   (`(= (seq.len k) 2)`), sometimes a value.
 #
 # For an uninterpreted sort with a universe, it prints a
 # `(declare-fun S!val!N () S)` for each element and a cardinality
-# constraint, `(forall ((x S)) (or (= x S!val!0) …))` (an instance of a
-# sort with parameters has a universe of its own, its elements spelled by
-# the sort's name); a sort it prints no universe for has a size the model
-# doesn't say. It doesn't print the query's definitions with parameters
-# (`smt.model` runs them as their bodies), nor selectors applied to another
-# constructor's value: those exist in Z3's model, but `get-model` leaves
-# them out.
+# constraint, `(forall ((x S)) (= x S!val!0))` for one element and
+# `(forall ((x S)) (or (= x S!val!0) …))` for more, its variable a name
+# of Z3's own (`x`). An instance of a sort with parameters has a universe
+# of its own, its elements spelled by the sort's name. A sort it prints no
+# universe for has a size the model doesn't say. It doesn't print the
+# query's definitions with parameters (`smt.model` runs them as their
+# bodies), nor selectors applied to another constructor's value: those
+# exist in Z3's model, but `get-model` leaves them out.
 #
-# A body uses the operations `printed` reads (`printed.checked`): those of
-# the query's terms, `seq.len`, `seq.nth`, `select`, `div`, `mod`, testers
-# and selectors, calls of the model's definitions, and calls of the
-# query's own functions (read, and not evaluated).
+# A body uses the operations `printed` reads (`printed.checked`): every
+# operation of the query's terms (`seq.extract` and `map +` among them),
+# testers and selectors (a tester of a constructor without fields written
+# alone, as Z3 prints `(is-none none)`), calls of the model's definitions,
+# and calls of the query's own functions (read, and not evaluated).
 #
 # `full` reads the whole model first, and reads it only if all of it is
 # as above: every name is one the model may define, once (`seq.nth_u` once
 # for each sort), with distinct parameters and the sorts the query gives
 # it; each universe's `declare-fun`s and its cardinality constraint name
-# exactly the same elements, `S!val!0` to `S!val!(n-1)`; every body checks
+# exactly the same elements, `S!val!0` to `S!val!(n-1)`, and its variable
+# is spelled like no element and no name of the query or the model (else
+# `(= x x)` could pass for a constraint); every body checks
 # whole (`printed.checked`); no definition refers to itself, through
 # others or not. A query that introduces a name with `!` (Z3's own names
 # have one) gets no model read. Then `model_of` evaluates (`printed.eval`)
@@ -82,6 +87,8 @@ record Items src : src~Bytes
     defs~List (Written src)
     elements~List (Sort, Nat)
     constraints~List (Sort, List Nat)
+    # The cardinality constraints' variables.
+    vars~List Name
 
 fn params_from sig es -> r : sig~Sig, es~List (SExpr src), r~Result (List (Name, Sort)) Bytes
     match es
@@ -101,23 +108,23 @@ fn element_in sig s n -> r : sig~Sig, s~Sort, n~Name, r~Option Nat
 
 fn items_of sig items -> r : sig~Sig, items~List (SExpr src), r~Result (Items src) Bytes
     match items
-        []        -> Ok (Items [] [] [])
+        []        -> Ok (Items [] [] [] [])
         e :: rest ->
             let f = try items_of sig rest
             match e
                 Node [Leaf (Symbol k False) _, Leaf (Symbol n _) _, Node ps _, s, body] _ if k == b"define-fun" ->
                     let params = try params_from sig ps
                     let result = try printed.sort_from sig s
-                    Ok (Items (Written n params result body :: f.defs) f.elements f.constraints)
+                    Ok (Items (Written n params result body :: f.defs) f.elements f.constraints f.vars)
                 Node [Leaf (Symbol k False) _, Leaf (Symbol n _) _, Node [] _, s] _ if k == b"declare-fun" ->
                     let sort = try printed.sort_from sig s
                     match element_in sig sort n
-                        Some x -> Ok (Items f.defs ((sort, x) :: f.elements) f.constraints)
+                        Some x -> Ok (Items f.defs ((sort, x) :: f.elements) f.constraints f.vars)
                         None   -> Err (b"a `declare-fun` that isn't an element of an uninterpreted sort: " ++ n)
                 Node [Leaf (Symbol k False) _, Node [Node [Leaf (Symbol x _) _, t] _] _, body] _ if k == b"forall" ->
                     let sort = try printed.sort_from sig t
                     let named = try cardinality sig sort x body
-                    Ok (Items f.defs f.elements ((sort, named) :: f.constraints))
+                    Ok (Items f.defs f.elements ((sort, named) :: f.constraints) (x :: f.vars))
                 _ -> Err b"an item of the model that isn't `define-fun`, `declare-fun` or a cardinality constraint"
 
 # The elements a cardinality constraint over variable `x` of sort `s`
@@ -145,6 +152,30 @@ fn of_sort es s -> r : es~List (Sort, Nat), s~Sort, r~List Nat
     match es
         []             -> []
         (t, k) :: rest -> if t == s then k :: of_sort rest s else of_sort rest s
+
+# The first cardinality constraint variable spelled like a name: an
+# element of any sort, a name the query introduces, or one the model
+# defines. Such a variable would make the constraint say something else
+# (`(= x x)`), so the model is not read.
+fn named_var c items -> r : c~Context, items~Items src, r~Option Name
+    let taken = query_names c ++ list.map (\d -> d.name) items.defs
+    first_taken (term.signature c) taken items.vars
+
+fn first_taken sig taken vs -> r : sig~Sig, taken~List Name, vs~List Name, r~Option Name
+    match vs
+        []        -> None
+        v :: rest -> if list.contains taken v or element_spelling sig v 0 then Some v else first_taken sig taken rest
+
+fn vars_free c items -> r : c~Context, items~Items src, r~Result Nat Bytes
+    match named_var c items
+        Some v -> Err (b"a cardinality constraint whose variable is spelled like a name: " ++ v)
+        None   -> Ok 0
+
+# Whether `n` is spelled like an element of an uninterpreted sort of
+# `sig`, from the `u`-th on.
+fn element_spelling sig n u -> r : sig~Sig, n~Name, u~Nat, u <= len sig.sorts, r~Bool
+    decreasing len sig.sorts - u
+    if u >= len sig.sorts then False else printed.element_number sig.sorts[u].name n != None or element_spelling sig n (u + 1)
 
 # Whether `ks` and `ls` hold the same numbers, each once, and they are `0`
 # to `n - 1`.
@@ -272,6 +303,7 @@ export fn full c items -> r : c~Context, items~List (SExpr src), r~Result Full B
     else
         let its = try items_of sig items
         let us = try universes its.elements its.constraints
+        let _ = try vars_free c its
         match first_not_allowed c its.defs
             Some n -> Err (b"a definition of a name the model may not define, or at sorts other than the query's: " ++ n)
             None   ->
@@ -299,7 +331,10 @@ fn with_ranks ds bs rs -> r : ds~List (Written src), bs~List printed.Term, rs~Li
 # Each definition's rank: one more than the highest rank of those it
 # refers to (0 if none). Each round ranks every definition whose
 # references all have ranks; with `n` definitions, `n` rounds rank them
-# all, unless some refer to themselves.
+# all, unless some refer to themselves. Rounds give what an order by
+# dependencies would, and end by a count the checker sees (`left`); with
+# the few definitions a model has (measured: at most a few dozen), the
+# `n` rounds cost nothing that matters.
 fn ranked bodies -> r : bodies~List printed.Term, r~Result (List Nat) Bytes
     let refs = list.map printed.refs bodies
     let n = list.length bodies
@@ -389,14 +424,17 @@ export fn model_of c full fuel -> m : c~Context, full~Full, fuel~Nat, m~Model
     let domain = \u args -> domain_of full u args
     model.normal_arrays (term.signature c) (model.without_arrays funs div_zero mod_zero nth none5 domain fuel)
 
-# The values the model printed for the query's own constants (those it
-# defines, with no parameters), each with its term: what the definition
-# gives must be the same. A printed value is used nowhere else: the query's
+# What the model printed for the query's own constants (those it
+# defines, with no parameters) and for its named assertions: each one's
+# name, the query's term for it (the constant, or the assertion), and the
+# printed value, if this reader can evaluate it. Where both have values,
+# they must be the same. A printed value is used nowhere else: the query's
 # definitions are run as their bodies.
-export fn own_values c full -> r : c~Context, full~Full, r~List (term.Term, Value)
-    own_from c (term.signature c) full 0
+export fn own_values c full -> r : c~Context, full~Full, r~List (Name, term.Term, Option Value)
+    own_from c (term.signature c) full 0 ++ named_from c full (term.commands c)
 
-fn own_from c sig full f -> r : c~Context, sig~Sig, full~Full, f~Nat, f <= len sig.funs, r~List (term.Term, Value)
+fn own_from c sig full f -> r : c~Context, sig~Sig, full~Full, f~Nat, f <= len sig.funs,
+                                r~List (Name, term.Term, Option Value)
     decreasing len sig.funs - f
     if f >= len sig.funs
         []
@@ -404,13 +442,19 @@ fn own_from c sig full f -> r : c~Context, sig~Sig, full~Full, f~Nat, f <= len s
         let more = own_from c sig full (f + 1)
         if sig.funs[f].kind == Defined and sig.funs[f].params == []
             match find full sig.funs[f].name [] sig.funs[f].result
-                Some p ->
-                    match apply c full p []
-                        Some v -> (term.App (term.Fun f) [], v) :: more
-                        None   -> more
+                Some p -> (sig.funs[f].name, term.App (term.Fun f) [], apply c full p []) :: more
                 None   -> more
         else
             more
+
+fn named_from c full cs -> r : c~Context, full~Full, cs~List Command, r~List (Name, term.Term, Option Value)
+    match cs
+        []                        -> []
+        Assert t (Some n) :: rest ->
+            match find full n [] Bool
+                Some p -> (n, t, apply c full p []) :: named_from c full rest
+                None   -> named_from c full rest
+        _ :: rest                 -> named_from c full rest
 
 # Whether Z3 printed an interpretation of the `f`-th function.
 export fn printed_fun sig full f -> r : sig~Sig, full~Full, f~Nat, r~Bool

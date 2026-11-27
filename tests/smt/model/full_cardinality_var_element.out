@@ -1,0 +1,5 @@
+-- stdout
+z3: sat
+the answer doesn't read: a cardinality constraint whose variable is spelled like a name: S!val!0
+-- stderr
+-- exit 0

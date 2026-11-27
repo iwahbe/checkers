@@ -47,8 +47,11 @@
 #   such reason. These are never counted as holding.
 #
 # With `--z3`, a query that asks `(get-value …)` gets that list and then
-# the model; both are read, and each value must be what the model gives
-# its term.
+# the model. Both are read: the list with the model's universes, and each
+# value must be what the model gives its term wherever the model
+# determines it (a value through `(div x 0)` the model doesn't print is
+# not compared). The values Z3 prints for the query's own constants and
+# named assertions must be what the query gives them, or the run fails.
 #
 # `main model [--terminating] QUERY ANSWER` evaluates one query's
 # assertions in the model of one answer (what `(get-model)` printed, if the
@@ -67,7 +70,7 @@ import std.string
 import std.bytes
 import std.list
 import smtlib (Query, SExpr, Leaf, Node, Symbol)
-import term (Context, Command, DefineFuns, Def, Axiom, Head, Fun, Prim, Sel, ConstArr, Div, Mod, SeqNth, Select, Store, MapAdd, Recursive, Plain, App)
+import term (Name, Context, Command, DefineFuns, Def, Axiom, Head, Fun, Prim, Sel, ConstArr, Div, Mod, SeqNth, Select, Store, MapAdd, Recursive, Plain, App)
 import model (Value, Truth, Unknown, NotGiven, LambdaNotGiven, OutOfFuel, NotTerminating, WrongSort, IllSorted)
 import answer (Verdict, Sat, Unsat, GaveUp, Other)
 import z3model
@@ -75,7 +78,7 @@ import printed
 
 # How many levels evaluation may go down: definitions' recursion and
 # `lambda`s (`smt.model`).
-let FUEL = 2000
+let FUEL = answer.FUEL
 
 # What checking one query found.
 enum Outcome
@@ -84,6 +87,9 @@ enum Outcome
     Answered v            : v~Bytes
     # A file that is neither a query nor an answer, in a directory given.
     Stray what            : what~Bytes
+    # The query introduces a name with `!`, as Z3's own names are: its
+    # answer is not read.
+    BangUnread
     QueryUnread why       : why~Bytes
     AnswerUnread why      : why~Bytes
     Unpatterned
@@ -93,6 +99,8 @@ enum Outcome
     Undetermined kind why : kind~Bytes, why~Bytes
     # `--z3`: Z3 run now doesn't answer `sat` (it answered `v`).
     NowAnswers v          : v~Bytes
+    # `--z3`: the program can't be run (`why`).
+    NotRun why            : why~Bytes
     # `--z3`: Z3's `(get-model)` output doesn't read, or holds a form this
     # reader doesn't know.
     ModelUnread why       : why~Bytes
@@ -183,20 +191,44 @@ fn check_query t src z3 -> o : t~Bool, src~Bytes, z3~Bytes, o~Outcome
             match q.values
                 None    -> NoValues
                 Some ts ->
-                    let text = if q.core then answer.without_core_error z3 else z3
-                    match (smtlib.read text, smtlib.read src)
-                        (Err e, _)      -> AnswerUnread (smtlib.describe text e)
-                        (_, Err e)      -> QueryUnread (smtlib.describe src e)
-                        (Ok es, Ok qes) ->
+                    let text = if q.core then answer.without_core_error z3 src else z3
+                    match (smtlib.read text, smtlib.read src, context_for t q)
+                        (Err e, _, _)         -> AnswerUnread (smtlib.describe text e)
+                        (_, Err e, _)         -> QueryUnread (smtlib.describe src e)
+                        (_, _, Err w)         -> QueryUnread w
+                        (Ok es, Ok qes, Ok c) ->
                             if z3model.bang q.context
-                                Undetermined BANG_KIND z3model.BANG
+                                BangUnread
                             else
-                                match answer.printed q.context ts (answer.asked qes) es
+                                match answer.printed c ts (answer.asked qes) es
                                     Err why  -> AnswerUnread why
                                     Ok pairs -> check_in t q pairs
 
+# `q`'s context, with every definition marked terminating if `t`.
+fn context_for t q -> r : t~Bool, q~Query, r~Result Context Bytes
+    if t then marked q.context else Ok q.context
+
 fn check_in t q pairs -> o : t~Bool, q~Query, pairs~List (term.Term, Value), o~Outcome
-    check_with t q (\c -> answer.model_of c pairs FUEL) [] (\c u -> (reason c u True, reason c u False))
+    let asked = asked_terms q
+    check_with t q (\c -> answer.model_of c [] pairs FUEL) [] (\c u -> (values_reason c asked pairs u True, values_reason c asked pairs u False))
+
+fn asked_terms q -> r : q~Query, r~List term.Term
+    match q.values
+        Some ts -> ts
+        None    -> []
+
+# Why a term isn't determined by the values printed for `asked` (`pairs`):
+# a constant asked for whose printed value has no normal form is printed,
+# not left out.
+fn values_reason c asked pairs u kind -> r : c~Context, asked~List term.Term, pairs~List (term.Term, Value), u~Unknown,
+                                             kind~Bool, r~Bytes
+    match u
+        NotGiven (Fun f) ->
+            if list.contains asked (App (Fun f) []) and not (list.contains (list.map (\(t, _) -> t) pairs) (App (Fun f) []))
+                if kind then printed.NO_NORMAL_FORM else b"Z3 printed `" ++ name_of (term.signature c) f ++ b"`: " ++ printed.NO_NORMAL_FORM
+            else
+                reason c u kind
+        _                -> reason c u kind
 
 # Check `q`'s assertions in the model `make` gives for its context, with
 # its definitions marked terminating if `terminating`, and that each of
@@ -204,7 +236,7 @@ fn check_in t q pairs -> o : t~Bool, q~Query, pairs~List (term.Term, Value), o~O
 # value there when determined; `why` says why a term isn't determined (a
 # kind to count by, and the details).
 fn check_with terminating q make printed_own why -> o : terminating~Bool, q~Query, make~(Context -> model.Model),
-                                                        printed_own~List (term.Term, Value), why~(Context -> Unknown -> (Bytes, Bytes)),
+                                                        printed_own~List (Name, term.Term, Option Value), why~(Context -> Unknown -> (Bytes, Bytes)),
                                                         o~Outcome
     match (if terminating then marked q.context else Ok q.context)
         Err w -> QueryUnread w
@@ -217,7 +249,7 @@ fn check_with terminating q make printed_own why -> o : terminating~Bool, q~Quer
             match (first_wrong all, first_other c m printed_own)
                 (Some 0, _)    -> Fails b"the goal is true"
                 (Some n, _)    -> Fails (b"fact " ++ smtlib.numeral n ++ b" is false")
-                (None, Some t) -> Fails (b"Z3 printed a value for `" ++ term_name c t ++ b"` that its definition doesn't give")
+                (None, Some n) -> Fails (b"Z3 printed a value for `" ++ n ++ b"` that the query doesn't give it")
                 (None, None)   ->
                     if unpatterned axioms
                         Unpatterned
@@ -239,19 +271,16 @@ fn check_with terminating q make printed_own why -> o : terminating~Bool, q~Quer
                                 _             -> False
                         if refutable != model.refutes c q.goal m then Disagrees else verdict
 
-# The first of `own` whose term evaluates in `m` to another value.
-fn first_other c m printed_own -> r : c~Context, m~model.Model, printed_own~List (term.Term, Value), r~Option term.Term
+# The first of the printed values of the query's own constants and named
+# assertions whose term evaluates in `m` to another value.
+fn first_other c m printed_own -> r : c~Context, m~model.Model, printed_own~List (Name, term.Term, Option Value), r~Option Name
     match printed_own
-        []             -> None
-        (t, v) :: rest ->
+        []                     -> None
+        (n, t, Some v) :: rest ->
             match model.eval_unfolding c m t
-                Ok w  -> if w != v then Some t else first_other c m rest
+                Ok w  -> if w != v then Some n else first_other c m rest
                 Err _ -> first_other c m rest
-
-fn term_name c t -> r : c~Context, t~term.Term, r~Bytes
-    match t
-        App (Fun f) _ -> name_of (term.signature c) f
-        _             -> b"?"
+        (_, _, None) :: rest   -> first_other c m rest
 
 # ── Asking Z3 ────────────────────────────────────────────────────────────────
 
@@ -287,21 +316,21 @@ fn ask t z3 p src -> o : t~Bool, z3~String, p~Proc, src~Bytes, o~Outcome
         Err e -> QueryUnread (smtlib.describe src e)
         Ok q  ->
             match proc.run z3 ["-in"] (src ++ b"(get-model)\n") p
-                Err e   -> NowAnswers (b"can't run: " ++ string.bytes (files.describe e))
+                Err e   -> NotRun (string.bytes z3 ++ b": " ++ string.bytes (files.describe e))
                 Ok said ->
-                    let out = if q.core then answer.without_core_error said.stdout else said.stdout
+                    let out = if q.core then answer.without_core_error said.stdout src else said.stdout
                     match answer.verdict out
                         Sat ->
                             match smtlib.read out
                                 Err e -> ModelUnread (smtlib.describe out e)
                                 Ok es ->
                                     if z3model.bang q.context
-                                        Undetermined BANG_KIND z3model.BANG
+                                        BangUnread
                                     else
                                         match smtlib.read src
                                             Err e  -> QueryUnread (smtlib.describe src e)
                                             Ok qes ->
-                                                match whole_model q qes es
+                                                match whole_model t q qes es
                                                     Err w    -> ModelUnread w
                                                     Ok whole ->
                                                         let make = \c -> z3model.model_of c whole FUEL
@@ -413,9 +442,11 @@ fn listed xs -> r : xs~List (Bytes, Outcome), r~Bytes
                     AnswerUnread w -> p ++ b".z3: doesn't read: " ++ w ++ b"\n"
                     ModelUnread w  -> p ++ b": Z3's model doesn't read: " ++ w ++ b"\n"
                     NowAnswers w   -> p ++ b": Z3 now answers " ++ w ++ b"\n"
+                    NotRun w       -> p ++ b": can't run " ++ w ++ b"\n"
                     Fails w        -> p ++ b": Z3's model is not a model: " ++ w ++ b"\n"
                     Disagrees      -> p ++ b": `refutes` disagrees with the assertions one by one\n"
                     Stray w        -> p ++ b": " ++ w ++ b"\n"
+                    BangUnread     -> p ++ b": not read: " ++ z3model.BANG ++ b"\n"
                     _              -> b""
             here ++ listed rest
 
@@ -439,6 +470,11 @@ fn is_stray o -> r : o~Outcome, r~Bool
         Stray _ -> True
         _       -> False
 
+fn is_bang o -> r : o~Outcome, r~Bool
+    match o
+        BangUnread -> True
+        _          -> False
+
 fn is_unread o -> r : o~Outcome, r~Bool
     match o
         QueryUnread _  -> True
@@ -449,6 +485,7 @@ fn is_unread o -> r : o~Outcome, r~Bool
 fn is_now_answers o -> r : o~Outcome, r~Bool
     match o
         NowAnswers _ -> True
+        NotRun _     -> True
         _            -> False
 
 fn is_unpatterned o -> r : o~Outcome, r~Bool
@@ -506,10 +543,11 @@ export fn report terminating xs -> r : terminating~Bool, xs~List (Bytes, Outcome
     let n = \p -> count p xs
     listed xs ++ terms_line terminating ++ smtlib.numeral (list.length xs) ++ b" queries and other files\n"
         ++ line (n is_stray) b"neither a query nor an answer (listed above)"
-        ++ line (n (is_answered b"unsat")) b"answered `unsat`: no model to check"
-        ++ line (n (is_answered b"unknown")) b"answered `unknown`: no model to check"
-        ++ line (n is_now_answers) b"where Z3 run now doesn't answer `sat` (with `--z3`; listed above)"
-        ++ line (n is_no_values) b"without `(get-value …)`: no values printed"
+        ++ line (n (is_answered b"unsat")) b"answered `unsat`: no model to check (nothing after `unsat` is read)"
+        ++ line (n (is_answered b"unknown")) b"answered `unknown`: no model to check (nothing after `unknown` is read)"
+        ++ line (n is_now_answers) b"where Z3 run now doesn't answer `sat`, or can't be run (with `--z3`; listed above, and fail the run)"
+        ++ line (n is_no_values) b"without `(get-value …)`: no values printed (nothing after `sat` is read)"
+        ++ line (n is_bang) b"with a name with `!`, as Z3's own names: not read, and fail the run (listed above)"
         ++ line (n is_unread) b"whose query, answer or model doesn't read (listed above)"
         ++ line (n is_unpatterned) b"with a `forall` without `:pattern`: not checked"
         ++ line (n is_patterned) b"with only `forall`s with `:pattern`: not checked"
@@ -538,11 +576,16 @@ export fn run args io fs p -> ok : args~List String, io~Term, fs~Fs, p~Proc, ok~
         match rest
             "--z3" :: _ :: more -> more
             _                   -> rest
-    match in_dirs how dirs io fs
-        None    -> False
-        Some xs ->
-            let _ = terminal.write_bytes (report t xs) io
-            count is_unread xs == 0 and count is_stray xs == 0 and count is_fails xs == 0 and count is_disagrees xs == 0
+    if dirs == []
+        let _ = terminal.eprint_line "error: `models` takes at least one directory: main models [--terminating] [--z3 PROGRAM] DIR…" io
+        False
+    else
+        match in_dirs how dirs io fs
+            None    -> False
+            Some xs ->
+                let _ = terminal.write_bytes (report t xs) io
+                count is_unread xs == 0 and count is_stray xs == 0 and count is_fails xs == 0 and count is_disagrees xs == 0
+                    and count is_now_answers xs == 0 and count is_bang xs == 0
 
 # ── One query ────────────────────────────────────────────────────────────────
 
@@ -564,7 +607,7 @@ export fn one src z3 terminating -> r : src~Bytes, z3~Bytes, terminating~Bool, r
     match smtlib.parse src
         Err e -> head ++ b"the query doesn't read: " ++ smtlib.describe src e ++ b"\n"
         Ok q  ->
-            match model_maker q src z3
+            match model_maker terminating q src z3
                 Err why                           -> head ++ why ++ b"\n"
                 Ok (kind, make, printed_own, why) ->
                     match (if terminating then marked q.context else Ok q.context)
@@ -575,22 +618,31 @@ export fn one src z3 terminating -> r : src~Bytes, z3~Bytes, terminating~Bool, r
                             let axioms = term.axioms c
                             let note = if axioms == [] then b"" else b"a `forall`: not evaluated\n"
                             let defs = if has_recursive (term.defs c) then terms_line terminating else b""
-                            let last = if answer.verdict z3 == Sat then b"refutes: " ++ refutes_text c q.goal m ++ b"\n" else b""
+                            let last =
+                                if answer.verdict z3 != Sat
+                                    b""
+                                else if first_other c m printed_own != None
+                                    b"no model: a value Z3 printed isn't what the query gives its term\n"
+                                else
+                                    b"refutes: " ++ refutes_text c q.goal m ++ b"\n"
                             head ++ kind ++ defs ++ note ++ own_lines c m printed_own why ++ fact_lines c (each_fact c m (term.facts c) 1) why
                                 ++ b"the negated goal: " ++ came_text c goal why ++ b"\n" ++ last
 
-# For each constant the query defines and Z3 printed, whether its printed
-# value is what its definition gives.
-fn own_lines c m printed_own why -> r : c~Context, m~model.Model, printed_own~List (term.Term, Value), why~(Context -> Unknown -> Bytes),
+# For each constant the query defines and each named assertion, whose
+# value Z3 printed, whether it is what the query gives its term.
+fn own_lines c m printed_own why -> r : c~Context, m~model.Model, printed_own~List (Name, term.Term, Option Value), why~(Context -> Unknown -> Bytes),
                                         r~Bytes
     match printed_own
-        []             -> b""
-        (t, v) :: rest ->
+        []                 -> b""
+        (n, t, ov) :: rest ->
             let said =
-                match model.eval_unfolding c m t
-                    Ok w  -> if w == v then b"as its definition gives" else b"not what its definition gives"
-                    Err u -> b"not determined: " ++ why c u
-            b"Z3's value of `" ++ term_name c t ++ b"`: " ++ said ++ b"\n" ++ own_lines c m rest why
+                match ov
+                    None   -> b"printed, but this reader can't evaluate what it printed"
+                    Some v ->
+                        match model.eval_unfolding c m t
+                            Ok w  -> if w == v then b"as the query gives it" else b"not what the query gives it"
+                            Err u -> b"not determined: " ++ why c u
+            b"Z3's value of `" ++ n ++ b"`: " ++ said ++ b"\n" ++ own_lines c m rest why
 
 # The `f`-th function's name.
 fn name_of sig f -> r : sig~term.Sig, f~Nat, r~Bytes
@@ -636,8 +688,6 @@ let UNREAD = b"the answer doesn't read: "
 
 let AFTER_SAT = b"after `sat`, not exactly what the query asks for: its `(get-value …)` list, if it has one, then the model"
 
-let BANG_KIND = b"a name with `!` in the query, as Z3's own names in its model"
-
 let NOT_GIVEN_BY = b"a value printed for `(get-value …)` isn't what the model printed gives its term"
 
 # What an answer to `q` with `(get-model)` after it holds after `sat`: the
@@ -663,17 +713,20 @@ fn model_items q es -> r : q~Query, es~List (SExpr src), r~Option (Option (SExpr
 
 # The model `(get-model)` printed in the answer `es` to `q` (whose
 # S-expressions are `qes`), read whole; and the `(get-value …)` list before
-# it, if `q` asks one, read too: each value must be what that model gives
-# its term.
-fn whole_model q qes es -> r : q~Query, qes~List (SExpr qsrc), es~List (SExpr src), r~Result z3model.Full Bytes
+# it, if `q` asks one, read too, with the model's universes: each value
+# must be what that model gives its term, wherever the model determines
+# it, the query's definitions run as their bodies (marked terminating if
+# `t`).
+fn whole_model t q qes es -> r : t~Bool, q~Query, qes~List (SExpr qsrc), es~List (SExpr src), r~Result z3model.Full Bytes
     match model_items q es
         None               -> Err AFTER_SAT
         Some (vals, items) ->
             let whole = try z3model.full q.context items
             match (q.values, vals)
                 (Some ts, Some v) ->
-                    let ps = try answer.values_list q.context ts (answer.asked qes) v
-                    if answer.given_by q.context ps (z3model.model_of q.context whole FUEL) then Ok whole else Err NOT_GIVEN_BY
+                    let c = try context_for t q
+                    let ps = try answer.values_list c ts (answer.asked qes) v whole.universes False
+                    if answer.given_by c ps (z3model.model_of c whole FUEL) then Ok whole else Err NOT_GIVEN_BY
                 _                 -> Ok whole
 
 # The model an answer gives, a line saying which kind it is, and why a
@@ -682,8 +735,8 @@ fn whole_model q qes es -> r : q~Query, qes~List (SExpr qsrc), es~List (SExpr sr
 # nothing asked, the model that knows nothing. After `unsat` or `unknown`
 # there is no model: the assertions are evaluated with nothing given (a
 # closed term still has its value), and `refutes` isn't asked.
-fn model_maker q src z3 -> r : q~Query, src~Bytes, z3~Bytes,
-                               r~Result (Bytes, (Context -> model.Model), List (term.Term, Value), (Context -> Unknown -> Bytes)) Bytes
+fn model_maker t q src z3 -> r : t~Bool, q~Query, src~Bytes, z3~Bytes,
+                                 r~Result (Bytes, (Context -> model.Model), List (Name, term.Term, Option Value), (Context -> Unknown -> Bytes)) Bytes
     let plain = \c u -> reason c u False
     let v = answer.verdict z3
     if v != Sat
@@ -692,14 +745,14 @@ fn model_maker q src z3 -> r : q~Query, src~Bytes, z3~Bytes,
     else if z3model.bang q.context
         Err (b"no model read: " ++ z3model.BANG)
     else
-        let text = if q.core then answer.without_core_error z3 else z3
+        let text = if q.core then answer.without_core_error z3 src else z3
         match (smtlib.read text, smtlib.read src)
             (Err e, _)      -> Err (UNREAD ++ smtlib.describe text e)
             (_, Err e)      -> Err (b"the query doesn't read: " ++ smtlib.describe src e)
             (Ok es, Ok qes) ->
                 match (model_items q es, q.values, es)
                     (Some _, _, _)                          ->
-                        match whole_model q qes es
+                        match whole_model t q qes es
                             Err why  -> Err (UNREAD ++ why)
                             Ok whole ->
                                 let why = \c u ->
@@ -707,9 +760,10 @@ fn model_maker q src z3 -> r : q~Query, src~Bytes, z3~Bytes,
                                     detail
                                 Ok (b"model: (get-model)\n", \c -> z3model.model_of c whole FUEL, z3model.own_values q.context whole, why)
                     (None, Some ts, _)                      ->
-                        match answer.printed q.context ts (answer.asked qes) es
+                        let c = try context_for t q
+                        match answer.printed c ts (answer.asked qes) es
                             Err why -> Err (UNREAD ++ why)
-                            Ok ps   -> Ok (b"model: (get-value …)\n", \c -> answer.model_of c ps FUEL, [], plain)
+                            Ok ps   -> Ok (b"model: (get-value …)\n", \c -> answer.model_of c [] ps FUEL, [], \c u -> values_reason c ts ps u False)
                     (None, None, [Leaf (Symbol w False) _]) ->
                         if w == b"sat" then Ok (b"", \c -> answer.empty_model (term.signature c) FUEL, [], plain) else Err (UNREAD ++ AFTER_SAT)
                     _                                       -> Err (UNREAD ++ AFTER_SAT)
