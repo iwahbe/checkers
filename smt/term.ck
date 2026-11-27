@@ -2693,7 +2693,7 @@ export transparent fn defs_declared funs ds -> r : funs~Array FunDecl, ds~List (
         (n, d) :: rest -> n < len funs and funs[n] == def_fun d and defs_declared funs rest
 
 # Whether `funs` from `base` holds `xs` from `i` on.
-export transparent fn agrees funs base xs i -> r : funs~Array FunDecl, base~Nat, xs~Array FunDecl, i~Nat, i <= len xs, r~Bool
+fn agrees funs base xs i -> r : funs~Array FunDecl, base~Nat, xs~Array FunDecl, i~Nat, i <= len xs, r~Bool
     decreasing len xs - i
     if i >= len xs then True else base + i < len funs and funs[base + i] == xs[i] and agrees funs base xs (i + 1)
 
