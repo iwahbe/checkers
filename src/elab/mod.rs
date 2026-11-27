@@ -3068,48 +3068,50 @@ fn touches(t: &Tm, g: &Globals, defs: &HashSet<DefId>, tys: &HashSet<TyId>) -> b
 
 /// A function sealed by another module (#537) that a term depends on, and
 /// what the term calls to reach it (§6 rule 9): the function itself
-/// (`None`), or the outermost call whose body it is in, a `transparent`
-/// function of another module or a class's function at a known instance.
+/// (`None`), or the outermost class's function at a known instance whose
+/// `transparent` instance function's body it is in.
 pub struct Sealed {
     pub def: DefId,
     pub via: Option<Tm>,
 }
 
 /// The functions sealed by another module (#537) that `t` depends on: in
-/// `t`, and in the bodies of the `transparent` functions of other modules
-/// it calls, a class's function at a known instance included, each once.
+/// `t`, and in the bodies of the `transparent` instance functions of other
+/// modules it calls (a class's function at a known instance), each once.
 pub fn collect_sealed(t: &Tm, g: &Globals, cur: &str, out: &mut Vec<Sealed>) {
     sealed_in(t, g, cur, None, out, &mut Vec::new());
 }
 
-/// `collect_sealed` under `via`, with the transparent functions whose
-/// bodies were looked into.
+/// `collect_sealed` under `via`, with the transparent instance functions
+/// whose bodies were looked into.
 fn sealed_in(t: &Tm, g: &Globals, cur: &str, via: Option<&Tm>, out: &mut Vec<Sealed>, seen: &mut Vec<DefId>) {
-    let found = |f: DefId, at: &Tm, out: &mut Vec<Sealed>, seen: &mut Vec<DefId>| {
-        let info = &g.defs[f.0 as usize];
-        if *info.module == *cur {
-            return;
-        }
-        if info.sealed {
-            if !out.iter().any(|s| s.def == f) {
-                out.push(Sealed { def: f, via: via.cloned() });
-            }
-        } else if let (Some(b), false) = (&info.body, seen.contains(&f)) {
-            // A `transparent` one's body: what it calls of its module may
-            // be sealed (#246).
-            seen.push(f);
-            sealed_in(b, g, cur, Some(via.unwrap_or(at)), out, seen);
+    let push = |d: DefId, out: &mut Vec<Sealed>| {
+        if !out.iter().any(|s| s.def == d) {
+            out.push(Sealed { def: d, via: via.cloned() });
         }
     };
     if let Tm::Def(d) = t {
-        found(*d, t, out, seen);
+        let info = &g.defs[d.0 as usize];
+        if info.sealed && *info.module != *cur {
+            push(*d, out);
+        }
     }
     // A class's function at a known instance is that instance's function,
     // which may be sealed (#249).
     if matches!(t, Tm::App(..)) {
         if let Some(direct) = crate::native::ir::known_instance(g, t) {
             if let (Tm::Def(f), _) = direct.spine() {
-                found(*f, t, out, seen);
+                let info = &g.defs[f.0 as usize];
+                if info.sealed && *info.module != *cur {
+                    push(*f, out);
+                } else if !info.sealed && *info.module != *cur {
+                    // A `transparent` one's body: what it calls of its
+                    // module may be sealed (#246), reached through this call.
+                    if let (Some(b), false) = (&info.body, seen.contains(f)) {
+                        seen.push(*f);
+                        sealed_in(b, g, cur, Some(via.unwrap_or(t)), out, seen);
+                    }
+                }
             }
         }
     }
