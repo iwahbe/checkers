@@ -1,0 +1,9 @@
+error[E0262]: type mismatch: expected `Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option Positive))))))))))))))))`, found `Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option Int))))))))))))))))`
+ --> refined_deep_container.ck:9:5
+  |
+9 |     x
+  |     ^ this expression has type `Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option Int))))))))))))))))`, so its `Int` values aren't known to be `Positive`
+  = note: a refinement inside a type is never gained from an existing value: that would need a proof about every element
+  = help: give the value the type `Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option (Option Positive))))))))))))))))` where it is built, so that each part is checked there
+
+refined_deep_container.ck: 1 error, 0 warnings

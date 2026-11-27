@@ -327,7 +327,7 @@ impl Elab {
                     }
                     _ => None,
                 };
-                if matches!(e.kind, ExprKind::App(..)) && (dict || self.has_refined(cx, expected, 0) || matches!(self.force(expected), Val::Univ(_))) {
+                if matches!(e.kind, ExprKind::App(..)) && (dict || self.has_refined(cx, expected) || matches!(self.force(expected), Val::Univ(_))) {
                     self.app_expected = Some(unrefined.clone().unwrap_or_else(|| expected.clone()));
                 }
                 let (t, ty) = self.infer(cx, e);
