@@ -350,6 +350,32 @@ check not (model.has_value (context X) NOTHING XT)
 check not (model.has_value (context X) (with_x (Truth True)) XT)
 check not (model.has_value (context X) (with_x (Integer 3)) ILL)
 
+# ── The meaning doesn't use fuel, from another module ────────────────────────
+# A consumer's model written out field by field, with another fuel, is
+# `with_fuel` of it (`with_fuel` is transparent), so the lemmas apply.
+
+fn refuel m n -> r : m~Model, n~Nat, r~Model
+    Model m.funs m.select m.const m.store m.sum m.lambda m.array_in m.differ m.div_zero m.mod_zero m.nth_out m.wrong_sel m.domain n
+
+lemma eval_refuel c m n t : c~Context, m~Model, n~Nat, t~Term
+    ensures model.eval c m t == model.eval c (refuel m n) t
+    proof
+        have model.eval_fuel c m n t
+
+lemma premises_refuel c m n r s a b i j x env senv xs body : c~Context, m~Model, n~Nat, r~model.Read, s~Sort, a~Nat, b~Nat,
+                                                             i~Value, j~Value, x~Value, env~List Value, senv~List Sort,
+                                                             xs~Sort, body~Term
+    ensures model.gives c m r == model.gives c (refuel m n) r
+        and model.arrays_ok_at c m s a b i j x env senv xs body == model.arrays_ok_at c (refuel m n) s a b i j x env senv xs body
+        and model.arrays_total_at c m s a b i j x env senv xs body
+            == model.arrays_total_at c (refuel m n) s a b i j x env senv xs body
+        and model.has_value c m body == model.has_value c (refuel m n) body
+    proof
+        have model.gives_fuel c m n r
+        have model.arrays_ok_at_fuel c m n s a b i j x env senv xs body
+        have model.arrays_total_at_fuel c m n s a b i j x env senv xs body
+        have model.has_value_fuel c m n body
+
 # ── `refutes` with an axiom ──────────────────────────────────────────────────
 
 # `x = 1` satisfies the axiom and the fact, and the goal `false` fails;
