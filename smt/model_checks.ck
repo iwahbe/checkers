@@ -832,3 +832,41 @@ check answer.without_core_error b"sat\n(error \"line 9 column 15: unsat core is 
     == b"sat\n(error \"line 9 column 15: unsat core is not available\")\n((x 3))"
 check answer.without_core_error b"sat\n(error \"line 3 column 15: unknown constant y\")\n((x 3))" CORE_QUERY
     == b"sat\n(error \"line 3 column 15: unknown constant y\")\n((x 3))"
+
+# ── A value of every sort ────────────────────────────────────────────────────
+
+# Every closed term of a context has a sort with a value, in every model
+# whose arrays include the constant arrays `konst` names.
+lemma term_sort_has_value c m konst t s : c~Context, m~Model, konst~(Sort -> Value -> Option Nat), t~Term, s~Sort,
+                                          term.sort_of (term.signature c) [] t == Ok s,
+                                          constants: forall i w v : i~Sort, w~Sort, v~Value,
+                                          model.of_sort c m w v implies model.konst_in m (Arr i w) (konst (Arr i w) v)
+    ensures model.sort_value c m s (model.value_of (term.signature c) konst s)
+    proof
+        have term.sort_of_ok c [] t s
+        have model.value_of_sort c m konst s
+
+# A datatype with a parameter, an array of it and an uninterpreted sort in
+# its one constructor: its kept witness at `Int` is `box 0 ((as const …) 0)
+# U!val!0`, a value of `(Box Int)` in the normal forms' model, whose `konst`
+# is `model.const_array`.
+let BOX = b"(set-logic ALL)\n(declare-sort U 0)\n(declare-datatypes ((Box 1)) ((par (T) ((box (item T) (cells (Array Int T)) (tag U))))))\n(declare-const b (Box Int))\n(assert (not false))\n(check-sat)\n"
+
+fn box_konst s v -> r : s~Sort, v~Value, r~Option Nat
+    match model.const_array (term.signature (context BOX)) (\_ _ -> Countable) s v
+        Some (ArrayElem k) -> Some k
+        _                  -> None
+
+let BOX_MODEL = model.normal_arrays (term.signature (context BOX)) NOTHING
+
+let BOX_SORT = term.Data 0 [Int]
+
+# Whether `r` is `box 0 a (Element 0)` for an array `a`.
+fn box_shaped r -> b : r~Option Value, b~Bool
+    match r
+        Some (Constructed 0 [Integer 0, ArrayElem _, Element 0]) -> True
+        _                                                        -> False
+
+check term.sort_ok (term.signature (context BOX)) 0 BOX_SORT
+check box_shaped (model.value_of (term.signature (context BOX)) box_konst BOX_SORT)
+check model.sort_value (context BOX) BOX_MODEL BOX_SORT (model.value_of (term.signature (context BOX)) box_konst BOX_SORT)
