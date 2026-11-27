@@ -297,6 +297,32 @@ fn element_in n d -> m : n~Nat, d~Domain, m~Model
 check model.holds (context EL) (element_in 0 (UpTo 0)) (fact EL 0)
 check model.eval (context EL) (element_in 5 (UpTo 0)) (fact EL 0) == Err model.WrongSort
 
+# ── Every function of the model answers: `gives` ────────────────────────────
+
+# `x`, the 0th function, answers with an `Int`; asked nothing at arguments
+# that aren't its parameters' (it has none), nor past the functions.
+check model.gives (context X) (with_x (Integer 3)) (model.FunAt 0 [])
+check not (model.gives (context X) NOTHING (model.FunAt 0 []))
+check not (model.gives (context X) (with_x (Truth True)) (model.FunAt 0 []))
+check model.gives (context X) NOTHING (model.FunAt 0 [Integer 1])
+check model.gives (context X) NOTHING (model.FunAt 1 [])
+# Division by zero: only whether the model says.
+check not (model.gives (context X) NOTHING (model.DivZeroAt 4))
+check model.gives (context X) (model.without_arrays (\_ _ -> None) (\n -> Some n) (\_ -> None) (\_ _ _ -> None) (\_ _ _ _ _ -> None) (\_ _ -> Countable) 10) (model.DivZeroAt 4)
+# `seq.nth` outside the sequence, with an element of its sort; inside it,
+# nothing is asked.
+check model.gives (context NTH) (nth_giving (Integer 0)) (model.NthOutAt Int [] 0)
+check not (model.gives (context NTH) (nth_giving (Truth False)) (model.NthOutAt Int [] 0))
+check not (model.gives (context NTH) NOTHING (model.NthOutAt Int [Integer 5] 1))
+check model.gives (context NTH) NOTHING (model.NthOutAt Int [Integer 5] 0)
+# `hd` of `nil`, with an `Int`; of a `cons`, nothing is asked.
+let NIL = Constructed 0 []
+
+check model.gives (context SEL) (sel_giving (Integer 0)) (model.WrongSelAt 0 1 0 [] NIL)
+check not (model.gives (context SEL) (sel_giving (Truth False)) (model.WrongSelAt 0 1 0 [] NIL))
+check not (model.gives (context SEL) NOTHING (model.WrongSelAt 0 1 0 [] NIL))
+check model.gives (context SEL) NOTHING (model.WrongSelAt 0 1 0 [] (Constructed 1 [Integer 1, NIL]))
+
 # ── `refutes` with an axiom ──────────────────────────────────────────────────
 
 # `x = 1` satisfies the axiom and the fact, and the goal `false` fails;
