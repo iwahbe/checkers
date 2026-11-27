@@ -197,7 +197,7 @@ def main():
         known |= ask(z3, cands[i : i + CHUNK])
     reserved = sorted(known)
     TXT.write_text("".join(s + "\n" for s in reserved))
-    body = ",\n".join(f'    "{s}"' for s in reserved)
+    body = ",\n".join(f'    b"{s}"' for s in reserved)
     table = f"{BEGIN} from smt/reserved.txt ──\n\nlet RESERVED = array.from_list [\n{body}]\n\n{END} ──\n"
     src = CK.read_text()
     start, end = src.index(BEGIN), src.index(END)

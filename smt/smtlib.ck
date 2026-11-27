@@ -1236,13 +1236,20 @@ fn value_covariant lo hi v -> r : lo~Nat, hi~Nat, v~Sort, r~Bool
         Data _ _ -> True
         _        -> not (mentions lo hi v)
 
+# Whether `p` holds of one of `xs`. (`std.list` has no `any`, #458; this is
+# its stand-in until it does.)
+fn any p xs -> r : p~(x~a -> Bool, list.contains xs x), xs~List a, r~Bool
+    match xs
+        []        -> False
+        x :: rest -> p x or any (\y -> p y) rest
+
 # Whether `s` mentions a datatype numbered from `lo` below `hi`.
 fn mentions lo hi s -> r : lo~Nat, hi~Nat, s~Sort, r~Bool
     match s
         Seq e       -> mentions lo hi e
         Arr i v     -> mentions lo hi i or mentions lo hi v
-        Data d args -> (lo <= d and d < hi) or not (list.all (\a -> not (mentions lo hi a)) args)
-        Unin _ args -> not (list.all (\a -> not (mentions lo hi a)) args)
+        Data d args -> (lo <= d and d < hi) or any (mentions lo hi) args
+        Unin _ args -> any (mentions lo hi) args
         _           -> False
 
 fn blanks k -> r : k~Nat, r~List Name

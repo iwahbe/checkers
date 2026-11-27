@@ -36,7 +36,7 @@ export fn main args sys -> code : args~List String, sys~System, code~ExitCode
         "compare" :: rest   -> compare.run rest sys.term sys.fs sys.proc sys.clock
         "roundtrip" :: dirs -> roundtrip dirs sys.term sys.fs
         ["reserved"]        ->
-            let _ = terminal.write_bytes (string.bytes reserved.listing) sys.term
+            let _ = terminal.write_bytes reserved.listing sys.term
             Success
         _                   ->
             let _ = terminal.eprint_line USAGE sys.term
