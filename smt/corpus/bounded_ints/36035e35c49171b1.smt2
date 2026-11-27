@@ -1,0 +1,8 @@
+(set-option :produce-models true)
+(set-option :timeout 60000)
+(set-option :reproducible-resource-limit 200000)
+(set-logic ALL)
+(declare-fun |#std.hint.blackbox<Int>| (Int) Int)
+(assert (= (|#std.hint.blackbox<Int>| (- 999)) (- 999)))
+(assert (not (< (- 1000) (|#std.hint.blackbox<Int>| (- 999)))))
+(check-sat)

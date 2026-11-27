@@ -85,12 +85,9 @@ impl Elab {
 
     /// At the cursor after `x.`: what `x` is.
     pub fn note_member(&mut self, cx: &mut Cx, x: &Expr) -> (Tm, Val) {
-        let member = match &x.kind {
-            ExprKind::Con(c) => match self.resolve(c, true) {
-                Some(Sym::Ty(t)) if self.class_defs.contains_key(&t) => Some(Member::Class(t)),
-                _ => None,
-            },
-            ExprKind::Var(q) if cx.lookup(q).is_none() => self.qualifier(q).map(Member::Module),
+        let member = match (&x.kind, self.class_named(x, Some(cx))) {
+            (_, Some(t)) => Some(Member::Class(t)),
+            (ExprKind::Var(q), None) if cx.lookup(q).is_none() => self.qualifier(q).map(Member::Module),
             _ => None,
         };
         let member = match member {

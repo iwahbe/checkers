@@ -1,0 +1,13 @@
+(set-option :produce-models true)
+(set-option :timeout 60000)
+(set-option :reproducible-resource-limit 200000)
+(set-logic ALL)
+(declare-fun |#std.char.is_digit| (Int) Bool)
+(declare-const |#b#0| (Seq Int))
+(assert (>= (seq.nth |#b#0| 0) 0))
+(assert (< (seq.nth |#b#0| 0) 256))
+(assert (= (ite (not (> (seq.len |#b#0|) 0)) false (|#std.char.is_digit| (seq.nth |#b#0| 0))) false))
+(assert (not false))
+(check-sat)
+(get-value (|#b#0|))
+;; reachable?

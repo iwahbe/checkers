@@ -29,7 +29,7 @@ pub struct TyEq {
 /// An equation a use must meet, once its types are known.
 pub struct Wanted {
     pub lvl: usize,
-    pub names: Vec<Name>,
+    pub names: Names,
     pub lhs: Val,
     pub rhs: Val,
     pub span: Span,
@@ -97,8 +97,7 @@ impl Elab {
                 _ => false,
             },
             // `C.Name`: a class's type.
-            ExprKind::Field(q, name) => matches!(&q.kind, ExprKind::Con(n)
-                if matches!(self.resolve(n, true), Some(Sym::Ty(t)) if self.class_defs.get(&t).is_some_and(|c| c.types().contains(&name.name)))),
+            ExprKind::Field(q, name) => self.class_named(q, None).is_some_and(|t| self.class_defs[&t].types().contains(&name.name)),
             ExprKind::Var(n) => cs.iter().any(|c| match c {
                 Constraint::Typed { name, ty, .. } => name.name == *n && matches!(&ty.kind, ExprKind::Con(t) if t == "Type"),
                 _ => false,
@@ -514,7 +513,7 @@ impl Elab {
 
     fn show_at(&self, w: &Wanted, v: &Val) -> String {
         let t = crate::core::zonk_metas(&self.g, w.lvl, &quote(&self.g, w.lvl, v));
-        crate::core::show_marked(&self.g, &w.names, &t)
+        crate::core::show_marked(&self.g, &w.names.to_vec(), &t)
     }
 
     fn report_wanted(&mut self, w: &Wanted, only_refinements: bool) {

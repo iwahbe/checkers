@@ -12,6 +12,7 @@ import std.terminal (Term)
 import std.math
 import std.array
 import known.limits
+import std.hint (blackbox)
 
 let LIMIT = 1000
 
@@ -68,14 +69,15 @@ fn line n sys : n~Int, sys~System
     terminal.print_line (debug n) sys.term
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
-    line (by_call 4294967295 4294967295) sys
-    line (by_literal 4294967295 0) sys
-    line (by_name 999 999) sys
-    line (by_number 0 999) sys
-    line (call_std 255 0) sys
-    line (call_own 0 255) sys
-    line (call_module 255 1) sys
-    line (by_bytes 255 255) sys
-    line (with_name 255) sys
-    line (with_number 0) sys
+    # Given through `blackbox`, or the calls would be computed when compiling.
+    line (by_call (blackbox 4294967295) (blackbox 4294967295)) sys
+    line (by_literal (blackbox 4294967295) (blackbox 0)) sys
+    line (by_name (blackbox 999) (blackbox 999)) sys
+    line (by_number (blackbox 0) (blackbox 999)) sys
+    line (call_std (blackbox 255) (blackbox 0)) sys
+    line (call_own (blackbox 0) (blackbox 255)) sys
+    line (call_module (blackbox 255) (blackbox 1)) sys
+    line (by_bytes (blackbox 255) (blackbox 255)) sys
+    line (with_name (blackbox 255)) sys
+    line (with_number (blackbox 0)) sys
     Success

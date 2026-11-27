@@ -1,0 +1,3 @@
+;; work 2577
+unsat
+(error "line 36 column 26: model is not available")

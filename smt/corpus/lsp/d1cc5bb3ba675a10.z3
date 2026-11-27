@@ -1,0 +1,16 @@
+;; work 5961
+sat
+((|#role#0| (seq.++ (seq.unit 116)
+        (seq.unit 121)
+        (seq.unit 112)
+        (seq.unit 101)
+        (seq.unit 32)
+        (seq.unit 112)
+        (seq.unit 97)
+        (seq.unit 114)
+        (seq.unit 97)
+        (seq.unit 109)
+        (seq.unit 101)
+        (seq.unit 116)
+        (seq.unit 101)
+        (seq.unit 114))))

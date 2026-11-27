@@ -1958,12 +1958,11 @@ lemma declared_ok sig ds k : sig~Sig, ds~List Datatype, check_command sig (Decla
         have check_datatypes_ok big ds
         have datatypes_ok_at big ds k
         have first_unfit_at big first ds 0 k
-        have big.datatypes[first + k] == (array.from_list ds)[k]
-        let n = list.length (array.from_list ds)[k].params
-        have fits_later big first (first + k) n big.values[first + k] (Data (first + k) (params_of n 0))
         have big.datatypes == sig.datatypes ++ array.from_list ds
         have first + k < len big.datatypes
         have big.datatypes[first + k] == (array.from_list ds)[k]
+        let n = list.length (array.from_list ds)[k].params
+        have fits_later big first (first + k) n big.values[first + k] (Data (first + k) (params_of n 0))
         have kept_fits big (first + k) n (first + k)
         have list.length big.datatypes[first + k].params == n
         have ctors_ok big n big.datatypes[first + k].ctors
