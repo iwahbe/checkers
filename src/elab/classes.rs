@@ -4401,50 +4401,58 @@ impl Elab {
     /// The places in `t` where it has a refinement alias that `b`, the same
     /// type at the alias's base, doesn't, at which a value is produced
     /// (`co`), as `alias_differs` finds them: each as the steps reaching it.
-    fn alias_paths(&self, lvl: usize, t: &Val, b: &Val, co: bool, path: &mut Vec<Step>, out: &mut Vec<Vec<Step>>) {
-        if path.len() > 16 || out.len() > 4 {
-            return;
-        }
-        let (pt, pb) = (self.peel(t), self.peel(b));
-        if co {
-            if let Some((d, _)) = self.refined_alias(&pt) {
-                if self.refined_alias(&pb).is_none_or(|(e, _)| e != d) {
-                    out.push(path.clone());
-                    return;
-                }
+    /// However deep (a worklist), in order; a message names at most five.
+    fn alias_paths(&self, lvl: usize, t: &Val, b: &Val, co: bool) -> Vec<Vec<Step>> {
+        let mut out = Vec::new();
+        let mut work = vec![(lvl, t.clone(), b.clone(), co, Vec::new())];
+        while let Some((lvl, t, b, co, path)) = work.pop() {
+            if out.len() > 4 {
+                break;
             }
-        }
-        let mut at = |s: &Elab, step: Step, x: &Val, y: &Val, co: bool, lvl: usize, out: &mut Vec<Vec<Step>>| {
-            path.push(step);
-            s.alias_paths(lvl, x, y, co, path, out);
-            path.pop();
-        };
-        match (self.force(&pt), self.force(&pb)) {
-            (Val::TyCon(t1, a1), Val::TyCon(t2, a2)) if t1 == t2 && a1.len() == a2.len() => {
-                let vs = self.variance(t1);
-                for (k, (x, y)) in a1.iter().zip(a2.iter()).enumerate() {
-                    match vs.get(k) {
-                        Some(super::refine::Variance::Co) => at(self, Step::Part, x, y, co, lvl, out),
-                        Some(super::refine::Variance::Contra) => at(self, Step::Other, x, y, !co, lvl, out),
-                        _ => {
-                            at(self, Step::Other, x, y, co, lvl, out);
-                            at(self, Step::Other, x, y, !co, lvl, out);
-                        }
+            let (pt, pb) = (self.peel(&t), self.peel(&b));
+            if co {
+                if let Some((d, _)) = self.refined_alias(&pt) {
+                    if self.refined_alias(&pb).is_none_or(|(e, _)| e != d) {
+                        out.push(path);
+                        continue;
                     }
                 }
             }
-            (Val::TupleTy(x), Val::TupleTy(y)) if x.len() == y.len() => {
-                for (x, y) in x.iter().zip(y.iter()) {
-                    at(self, Step::Part, x, y, co, lvl, out);
+            let at = |step: Step, x: &Val, y: &Val, co: bool, lvl: usize| {
+                let mut p = path.clone();
+                p.push(step);
+                (lvl, x.clone(), y.clone(), co, p)
+            };
+            let mut next = Vec::new();
+            match (self.force(&pt), self.force(&pb)) {
+                (Val::TyCon(t1, a1), Val::TyCon(t2, a2)) if t1 == t2 && a1.len() == a2.len() => {
+                    let vs = self.variance(t1);
+                    for (k, (x, y)) in a1.iter().zip(a2.iter()).enumerate() {
+                        match vs.get(k) {
+                            Some(super::refine::Variance::Co) => next.push(at(Step::Part, x, y, co, lvl)),
+                            Some(super::refine::Variance::Contra) => next.push(at(Step::Other, x, y, !co, lvl)),
+                            _ => {
+                                next.push(at(Step::Other, x, y, co, lvl));
+                                next.push(at(Step::Other, x, y, !co, lvl));
+                            }
+                        }
+                    }
                 }
+                (Val::TupleTy(x), Val::TupleTy(y)) if x.len() == y.len() => {
+                    for (x, y) in x.iter().zip(y.iter()) {
+                        next.push(at(Step::Part, x, y, co, lvl));
+                    }
+                }
+                (Val::Pi(_, _, _, a1, c1), Val::Pi(_, _, _, a2, c2)) => {
+                    next.push(at(Step::Arg, &a1, &a2, !co, lvl));
+                    let (r1, r2) = (apply_closure(&self.g, &c1, Val::var(lvl)), apply_closure(&self.g, &c2, Val::var(lvl)));
+                    next.push(at(Step::Res, &r1, &r2, co, lvl + 1));
+                }
+                _ => {}
             }
-            (Val::Pi(_, _, _, a1, c1), Val::Pi(_, _, _, a2, c2)) => {
-                at(self, Step::Arg, &a1, &a2, !co, lvl, out);
-                let (r1, r2) = (apply_closure(&self.g, &c1, Val::var(lvl)), apply_closure(&self.g, &c2, Val::var(lvl)));
-                at(self, Step::Res, &r1, &r2, co, lvl + 1, out);
-            }
-            _ => {}
+            work.extend(next.into_iter().rev());
         }
+        out
     }
 
     /// Function parameter `x` of type `t` at the alias (`b` at its base),
@@ -4453,8 +4461,7 @@ impl Elab {
     /// results, …), from the places `t` has the alias.
     fn alias_param(&self, cx: &Cx, x: &str, t: &Val, b: &Val, alias: &str) -> super::AliasParam {
         let lvl = cx.lvl();
-        let mut paths = Vec::new();
-        self.alias_paths(lvl, t, b, false, &mut Vec::new(), &mut paths);
+        let paths = self.alias_paths(lvl, t, b, false);
         let a = format!("`{alias}`");
         let mut gives: Vec<String> = Vec::new();
         let mut only: Vec<String> = Vec::new();
