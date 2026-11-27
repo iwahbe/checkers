@@ -122,6 +122,11 @@
 #
 # Together: a query is never both `Valid` and `Invalid`.
 #
+# Proved so far: the first statement (`cert.checks_sound`), resting on the
+# lemmas at the end of this module about what each connective means
+# (`two_valued`, `and_meaning` and the rest). The second statement,
+# monotonicity and the `Invalid` theorem are still owed.
+#
 # S6 also owes these, which this module is written to and states only in
 # comments: `before` is a strict total order on values; two normal forms
 # are equal exactly when they are the same function (so `normal_arrays`
@@ -195,6 +200,7 @@ import term (Witness, WTrue, WZero, WEmpty, WElement, WConst, WParam, WCon, WOf)
 import term (Op, Not, And, Or, Implies, Ite, Eq, Add, Sub, Neg, Mul, Div, Mod, Lt, Le, Gt, Ge, Select, Store, MapAdd)
 import term (SeqLen, SeqNth, SeqUnit, SeqConcat, SeqExtract)
 import term (Head, Fun, Con, Is, Sel, Num, Boolean, Prim, ConstArr, EmptySeq, Term, Var, App, Let, Lam)
+import term (Connective, Atom, ConstOf, NotOf, AndOf, OrOf, ImpliesOf, IteOf, IffOf)
 
 # ── Values ───────────────────────────────────────────────────────────────────
 
@@ -1676,6 +1682,158 @@ fn same_where_given p q -> r : p~Option Value, q~Option Value, r~Bool
         (Some x, Some y) -> x == y
         _                -> True
 
+# ── The meaning of a connective ──────────────────────────────────────────────
+# What the certificate checker (`smt.cert`) relies on: a term's value is
+# that of the connective `term.structure` sees in it, through `let`.
+
+# The connective `s` of `t`, as a term (`t` itself for an atom).
+fn connective_term t s -> r : t~Term, s~Connective, r~Term
+    match s
+        Atom          -> t
+        ConstOf b     -> App (Boolean b) []
+        NotOf a       -> App (Prim Not) [a]
+        AndOf ps      -> App (Prim And) ps
+        OrOf ps       -> App (Prim Or) ps
+        ImpliesOf a b -> App (Prim Implies) [a, b]
+        IteOf p a b   -> App (Prim Ite) [p, a, b]
+        IffOf a b     -> App (Prim Eq) [a, b]
+
+# Whether `Let binds` evaluates its body here: it binds something, and
+# what it binds has sorts.
+fn binds_ok c senv binds -> r : c~Context, senv~List Sort, binds~List (Name, Term), r~Bool
+    if binds == []
+        False
+    else
+        match term.sorts_of (term.signature c) senv (term.bind_terms binds)
+            Ok _  -> True
+            Err _ -> False
+
+# The environment the body of `Let binds` is evaluated in, and its sorts.
+fn inner_env low mode c m env senv binds -> e : low~Lower, mode~Mode, c~Context, m~Model, env~List (Result Value Unknown),
+                                                senv~List Sort, binds~List (Name, Term), e~List (Result Value Unknown)
+    list.reverse (bound low mode c m env senv binds) ++ env
+
+fn inner_sorts c senv binds -> e : c~Context, senv~List Sort, binds~List (Name, Term), e~List Sort
+    match term.sorts_of (term.signature c) senv (term.bind_terms binds)
+        Ok ss -> list.reverse ss ++ senv
+        Err _ -> senv
+
+lemma let_value low mode c m env senv binds t : low~Lower, mode~Mode, c~Context, m~Model, env~List (Result Value Unknown),
+                                                senv~List Sort, binds~List (Name, Term), t~Term
+    ensures value low mode c m env senv (Let binds t)
+        == (if binds_ok c senv binds then value low mode c m (inner_env low mode c m env senv binds) (inner_sorts c senv binds) t else Err IllSorted)
+    proof
+        auto
+
+lemma conj_under low mode c m env senv binds ps : low~Lower, mode~Mode, c~Context, m~Model, env~List (Result Value Unknown),
+                                                  senv~List Sort, binds~List (Name, Term), ps~List Term, binds_ok c senv binds
+    ensures conj low mode c m env senv (list.map (\p -> Let binds p) ps)
+        == conj low mode c m (inner_env low mode c m env senv binds) (inner_sorts c senv binds) ps
+    proof
+        match ps
+            []        -> auto
+            p :: rest ->
+                have let_value low mode c m env senv binds p
+                have conj_under low mode c m env senv binds rest
+
+lemma conj_not_ok low mode c m env senv binds ps : low~Lower, mode~Mode, c~Context, m~Model, env~List (Result Value Unknown),
+                                                   senv~List Sort, binds~List (Name, Term), ps~List Term, ps != [],
+                                                   not (binds_ok c senv binds)
+    ensures conj low mode c m env senv (list.map (\p -> Let binds p) ps) == Err IllSorted
+    proof
+        match ps
+            p :: rest ->
+                have let_value low mode c m env senv binds p
+                if rest != []
+                    have conj_not_ok low mode c m env senv binds rest
+                else
+                    auto
+
+lemma disj_under low mode c m env senv binds ps : low~Lower, mode~Mode, c~Context, m~Model, env~List (Result Value Unknown),
+                                                  senv~List Sort, binds~List (Name, Term), ps~List Term, binds_ok c senv binds
+    ensures disj low mode c m env senv (list.map (\p -> Let binds p) ps)
+        == disj low mode c m (inner_env low mode c m env senv binds) (inner_sorts c senv binds) ps
+    proof
+        match ps
+            []        -> auto
+            p :: rest ->
+                have let_value low mode c m env senv binds p
+                have disj_under low mode c m env senv binds rest
+
+lemma disj_not_ok low mode c m env senv binds ps : low~Lower, mode~Mode, c~Context, m~Model, env~List (Result Value Unknown),
+                                                   senv~List Sort, binds~List (Name, Term), ps~List Term, ps != [],
+                                                   not (binds_ok c senv binds)
+    ensures disj low mode c m env senv (list.map (\p -> Let binds p) ps) == Err IllSorted
+    proof
+        match ps
+            p :: rest ->
+                have let_value low mode c m env senv binds p
+                if rest != []
+                    have disj_not_ok low mode c m env senv binds rest
+                else
+                    auto
+
+# A conjunction or disjunction `term.structure` sees has parts.
+lemma parts_nonempty t ps : t~Term, ps~List Term
+    ensures (term.structure t == AndOf ps or term.structure t == OrOf ps) implies ps != []
+    proof
+        match t
+            Let binds body ->
+                match term.structure body
+                    AndOf qs -> have parts_nonempty body qs
+                    OrOf qs  -> have parts_nonempty body qs
+                    _        -> auto
+            _              -> auto
+
+lemma structure_value low mode c m env senv t : low~Lower, mode~Mode, c~Context, m~Model, env~List (Result Value Unknown),
+                                                senv~List Sort, t~Term
+    ensures value low mode c m env senv t == value low mode c m env senv (connective_term t (term.structure t))
+    proof
+        match t
+            Let binds body ->
+                let inner = inner_env low mode c m env senv binds
+                let sorts = inner_sorts c senv binds
+                have let_value low mode c m env senv binds body
+                have structure_value low mode c m inner sorts body
+                match term.structure body
+                    AndOf ps      ->
+                        have parts_nonempty body ps
+                        if binds_ok c senv binds
+                            have conj_under low mode c m env senv binds ps
+                        else
+                            have conj_not_ok low mode c m env senv binds ps
+                    OrOf ps       ->
+                        have parts_nonempty body ps
+                        if binds_ok c senv binds
+                            have disj_under low mode c m env senv binds ps
+                        else
+                            have disj_not_ok low mode c m env senv binds ps
+                    NotOf a       -> have let_value low mode c m env senv binds a
+                    ImpliesOf a b ->
+                        have let_value low mode c m env senv binds a
+                        have let_value low mode c m env senv binds b
+                    IteOf p a b   ->
+                        have let_value low mode c m env senv binds p
+                        have let_value low mode c m env senv binds a
+                        have let_value low mode c m env senv binds b
+                    IffOf a b     ->
+                        have let_value low mode c m env senv binds a
+                        have let_value low mode c m env senv binds b
+                    _             -> auto
+            _              -> auto
+
+# ── What a connective means, for closed terms ────────────────────────────────
+
+# Whether `t` is a closed `Bool` term of `c`.
+export fn boolean c t -> r : c~Context, t~Term, r~Bool
+    term.sort_of (term.signature c) [] t == Ok Bool
+
+# Whether each of `ts` is (`boolean`).
+export transparent fn booleans c ts -> r : c~Context, ts~List Term, r~Bool
+    match ts
+        []        -> True
+        t :: rest -> boolean c t and booleans c rest
+
 # ── Every function of the model answers: `total` ─────────────────────────────
 # A model is total when it answers every question an interpretation answers:
 # what its functions give, and what SMT-LIB leaves unspecified. A question
@@ -1774,6 +1932,352 @@ export fn has_value c m t -> r : c~Context, m~Model, t~Term, r~Bool
     match (term.sort_of (term.signature c) [] t, eval c m t)
         (Ok s, Ok v) -> of_sort c m s v
         _            -> False
+
+# Whether some of `ts` is true in `m`.
+export transparent fn holds_one c m ts -> r : c~Context, m~Model, ts~List Term, r~Bool
+    match ts
+        []        -> False
+        t :: rest -> holds c m t or holds_one c m rest
+
+# Whether each of `ts` is false in `m`.
+export transparent fn fails_all c m ts -> r : c~Context, m~Model, ts~List Term, r~Bool
+    match ts
+        []        -> True
+        t :: rest -> fails c m t and fails_all c m rest
+
+# Whether some of `ts` is false in `m`.
+export transparent fn fails_one c m ts -> r : c~Context, m~Model, ts~List Term, r~Bool
+    match ts
+        []        -> False
+        t :: rest -> fails c m t or fails_one c m rest
+
+export lemma holds_all_nil c m : c~Context, m~Model
+    ensures holds_all c m []
+
+export lemma holds_all_cons c m t ts : c~Context, m~Model, t~Term, ts~List Term
+    ensures holds_all c m (t :: ts) == (holds c m t and holds_all c m ts)
+
+# A term is never both true and false.
+export lemma not_both c m t : c~Context, m~Model, t~Term
+    ensures not (holds c m t and fails c m t)
+
+# A closed `Bool` term with a value is true or false.
+export lemma two_valued c m t : c~Context, m~Model, t~Term, boolean c t, has_value c m t
+    ensures holds c m t or fails c m t
+    proof
+        have holds_is c m t
+        match eval c m t
+            Ok v  ->
+                have of_sort c m Bool v
+                match v
+                    Truth _ -> auto
+                    _       -> auto
+            Err _ -> auto
+
+# `ite`'s value: `x` if `r` is true, `y` if false.
+fn choose r x y -> v : r~Result Bool Unknown, x~Result Value Unknown, y~Result Value Unknown, v~Result Value Unknown
+    match r
+        Ok True  -> x
+        Ok False -> y
+        Err e    -> Err e
+
+# `=`'s value.
+fn equal x y -> v : x~Result Value Unknown, y~Result Value Unknown, v~Result Value Unknown
+    match (x, y)
+        (Ok a, Ok b) -> Ok (Truth (a == b))
+        (Err e, _)   -> Err e
+        (_, Err e)   -> Err e
+
+# One step of evaluation, for any `low`.
+lemma app_value low mode c m env senv h args : low~Lower, mode~Mode, c~Context, m~Model, env~List (Result Value Unknown),
+                                               senv~List Sort, h~Head, args~List Term
+    ensures value low mode c m env senv (App h args) == apply low mode c m env senv (App h args) h args
+
+lemma not_value low mode c m env senv a : low~Lower, mode~Mode, c~Context, m~Model, env~List (Result Value Unknown),
+                                          senv~List Sort, a~Term
+    ensures value low mode c m env senv (App (Prim Not) [a]) == truth (negate (as_bool (value low mode c m env senv a)))
+    proof
+        have app_value low mode c m env senv (Prim Not) [a]
+
+lemma and_value low mode c m env senv ps : low~Lower, mode~Mode, c~Context, m~Model, env~List (Result Value Unknown),
+                                           senv~List Sort, ps~List Term
+    ensures value low mode c m env senv (App (Prim And) ps) == truth (conj low mode c m env senv ps)
+    proof
+        have app_value low mode c m env senv (Prim And) ps
+
+lemma or_value low mode c m env senv ps : low~Lower, mode~Mode, c~Context, m~Model, env~List (Result Value Unknown),
+                                          senv~List Sort, ps~List Term
+    ensures value low mode c m env senv (App (Prim Or) ps) == truth (disj low mode c m env senv ps)
+    proof
+        have app_value low mode c m env senv (Prim Or) ps
+
+lemma implies_value low mode c m env senv a b : low~Lower, mode~Mode, c~Context, m~Model, env~List (Result Value Unknown),
+                                                senv~List Sort, a~Term, b~Term
+    ensures value low mode c m env senv (App (Prim Implies) [a, b])
+        == (if as_bool (value low mode c m env senv a) == Ok False then Ok (Truth True) else truth (either (negate (as_bool (value low mode c m env senv a))) (as_bool (value low mode c m env senv b))))
+    proof
+        have app_value low mode c m env senv (Prim Implies) [a, b]
+
+lemma ite_value low mode c m env senv p a b : low~Lower, mode~Mode, c~Context, m~Model, env~List (Result Value Unknown),
+                                              senv~List Sort, p~Term, a~Term, b~Term
+    ensures value low mode c m env senv (App (Prim Ite) [p, a, b])
+        == choose (as_bool (value low mode c m env senv p)) (value low mode c m env senv a) (value low mode c m env senv b)
+    proof
+        have app_value low mode c m env senv (Prim Ite) [p, a, b]
+
+lemma eq_value low mode c m env senv a b : low~Lower, mode~Mode, c~Context, m~Model, env~List (Result Value Unknown),
+                                           senv~List Sort, a~Term, b~Term
+    ensures value low mode c m env senv (App (Prim Eq) [a, b])
+        == equal (value low mode c m env senv a) (value low mode c m env senv b)
+    proof
+        have app_value low mode c m env senv (Prim Eq) [a, b]
+
+lemma conj_cons low mode c m env senv p ps : low~Lower, mode~Mode, c~Context, m~Model, env~List (Result Value Unknown),
+                                             senv~List Sort, p~Term, ps~List Term
+    ensures conj low mode c m env senv (p :: ps)
+        == (if as_bool (value low mode c m env senv p) == Ok False then Ok False else both (as_bool (value low mode c m env senv p)) (conj low mode c m env senv ps))
+
+lemma disj_cons low mode c m env senv p ps : low~Lower, mode~Mode, c~Context, m~Model, env~List (Result Value Unknown),
+                                             senv~List Sort, p~Term, ps~List Term
+    ensures disj low mode c m env senv (p :: ps)
+        == (if as_bool (value low mode c m env senv p) == Ok True then Ok True else either (as_bool (value low mode c m env senv p)) (disj low mode c m env senv ps))
+
+# Each connective's value, for any `low`: what `structure_value` and one
+# step of evaluation give.
+lemma const_structure low mode c m env senv t b : low~Lower, mode~Mode, c~Context, m~Model,
+                                                  env~List (Result Value Unknown), senv~List Sort, t~Term, b~Bool,
+                                                  term.structure t == ConstOf b
+    ensures value low mode c m env senv t == Ok (Truth b)
+    proof
+        have structure_value low mode c m env senv t
+        have app_value low mode c m env senv (Boolean b) []
+
+lemma not_structure low mode c m env senv t a : low~Lower, mode~Mode, c~Context, m~Model,
+                                                env~List (Result Value Unknown), senv~List Sort, t~Term, a~Term,
+                                                term.structure t == NotOf a
+    ensures value low mode c m env senv t == truth (negate (as_bool (value low mode c m env senv a)))
+    proof
+        have structure_value low mode c m env senv t
+        have not_value low mode c m env senv a
+
+lemma and_structure low mode c m env senv t ps : low~Lower, mode~Mode, c~Context, m~Model,
+                                                 env~List (Result Value Unknown), senv~List Sort, t~Term, ps~List Term,
+                                                 term.structure t == AndOf ps
+    ensures value low mode c m env senv t == truth (conj low mode c m env senv ps)
+    proof
+        have structure_value low mode c m env senv t
+        have and_value low mode c m env senv ps
+
+lemma or_structure low mode c m env senv t ps : low~Lower, mode~Mode, c~Context, m~Model,
+                                                env~List (Result Value Unknown), senv~List Sort, t~Term, ps~List Term,
+                                                term.structure t == OrOf ps
+    ensures value low mode c m env senv t == truth (disj low mode c m env senv ps)
+    proof
+        have structure_value low mode c m env senv t
+        have or_value low mode c m env senv ps
+
+lemma implies_structure low mode c m env senv t a b : low~Lower, mode~Mode, c~Context, m~Model,
+                                                      env~List (Result Value Unknown), senv~List Sort, t~Term, a~Term,
+                                                      b~Term, term.structure t == ImpliesOf a b
+    ensures value low mode c m env senv t
+        == (if as_bool (value low mode c m env senv a) == Ok False then Ok (Truth True) else truth (either (negate (as_bool (value low mode c m env senv a))) (as_bool (value low mode c m env senv b))))
+    proof
+        have structure_value low mode c m env senv t
+        have implies_value low mode c m env senv a b
+
+lemma ite_structure low mode c m env senv t p a b : low~Lower, mode~Mode, c~Context, m~Model,
+                                                    env~List (Result Value Unknown), senv~List Sort, t~Term, p~Term, a~Term,
+                                                    b~Term, term.structure t == IteOf p a b
+    ensures value low mode c m env senv t
+        == choose (as_bool (value low mode c m env senv p)) (value low mode c m env senv a) (value low mode c m env senv b)
+    proof
+        have structure_value low mode c m env senv t
+        have ite_value low mode c m env senv p a b
+
+lemma iff_structure low mode c m env senv t a b : low~Lower, mode~Mode, c~Context, m~Model,
+                                                  env~List (Result Value Unknown), senv~List Sort, t~Term, a~Term, b~Term,
+                                                  term.structure t == IffOf a b
+    ensures value low mode c m env senv t == equal (value low mode c m env senv a) (value low mode c m env senv b)
+    proof
+        have structure_value low mode c m env senv t
+        have eq_value low mode c m env senv a b
+
+# Kleene's `and` of a list, one part at a time, for any `low`.
+lemma conj_step low mode c m env senv p ps : low~Lower, mode~Mode, c~Context, m~Model, env~List (Result Value Unknown),
+                                             senv~List Sort, p~Term, ps~List Term
+    ensures (conj low mode c m env senv (p :: ps) == Ok True)
+            == (value low mode c m env senv p == Ok (Truth True) and conj low mode c m env senv ps == Ok True)
+        and (value low mode c m env senv p == Ok (Truth False) implies conj low mode c m env senv (p :: ps) == Ok False)
+        and (conj low mode c m env senv ps == Ok False implies conj low mode c m env senv (p :: ps) == Ok False)
+    proof
+        have conj_cons low mode c m env senv p ps
+
+lemma disj_step low mode c m env senv p ps : low~Lower, mode~Mode, c~Context, m~Model, env~List (Result Value Unknown),
+                                             senv~List Sort, p~Term, ps~List Term
+    ensures (disj low mode c m env senv (p :: ps) == Ok False)
+            == (value low mode c m env senv p == Ok (Truth False) and disj low mode c m env senv ps == Ok False)
+        and (value low mode c m env senv p == Ok (Truth True) implies disj low mode c m env senv (p :: ps) == Ok True)
+        and (disj low mode c m env senv ps == Ok True implies disj low mode c m env senv (p :: ps) == Ok True)
+    proof
+        have disj_cons low mode c m env senv p ps
+
+lemma conj_nil low mode c m env senv : low~Lower, mode~Mode, c~Context, m~Model, env~List (Result Value Unknown),
+                                       senv~List Sort
+    ensures conj low mode c m env senv [] == Ok True
+
+lemma disj_nil low mode c m env senv : low~Lower, mode~Mode, c~Context, m~Model, env~List (Result Value Unknown),
+                                       senv~List Sort
+    ensures disj low mode c m env senv [] == Ok False
+
+# `eval` of a closed term: its value at the top level, with no variables.
+lemma eval_closed c m t : c~Context, m~Model, t~Term, boolean c t
+    ensures eval c m t == value (level AsGiven c m m.fuel) AsGiven c m [] [] t
+
+export lemma holds_is c m t : c~Context, m~Model, t~Term
+    ensures holds c m t == (eval c m t == Ok (Truth True)) and fails c m t == (eval c m t == Ok (Truth False))
+
+# What `truth`, `negate`, `as_bool`, `either`, `choose` and `equal` give
+# at Booleans.
+lemma truth_of r : r~Result Bool Unknown
+    ensures (truth r == Ok (Truth True)) == (r == Ok True) and (truth r == Ok (Truth False)) == (r == Ok False)
+
+lemma bool_of r : r~Result Value Unknown
+    ensures (as_bool r == Ok True) == (r == Ok (Truth True)) and (as_bool r == Ok False) == (r == Ok (Truth False))
+        and (negate (as_bool r) == Ok True) == (r == Ok (Truth False))
+        and (negate (as_bool r) == Ok False) == (r == Ok (Truth True))
+
+lemma either_of p q : p~Result Bool Unknown, q~Result Bool Unknown
+    ensures (p == Ok True implies either p q == Ok True) and (q == Ok True implies either p q == Ok True)
+        and (p == Ok False and q == Ok False implies either p q == Ok False)
+
+lemma choose_of r x y : r~Result Bool Unknown, x~Result Value Unknown, y~Result Value Unknown
+    ensures (r == Ok True implies choose r x y == x) and (r == Ok False implies choose r x y == y)
+
+lemma equal_of x y : x~Result Value Unknown, y~Result Value Unknown
+    ensures (x == Ok (Truth True) and y == Ok (Truth True) implies equal x y == Ok (Truth True))
+        and (x == Ok (Truth False) and y == Ok (Truth False) implies equal x y == Ok (Truth True))
+        and (x == Ok (Truth True) and y == Ok (Truth False) implies equal x y == Ok (Truth False))
+        and (x == Ok (Truth False) and y == Ok (Truth True) implies equal x y == Ok (Truth False))
+
+export lemma const_meaning c m t b : c~Context, m~Model, t~Term, b~Bool, boolean c t, term.structure t == ConstOf b
+    ensures eval c m t == Ok (Truth b)
+    proof
+        have eval_closed c m t
+        have const_structure (level AsGiven c m m.fuel) AsGiven c m [] [] t b
+
+export lemma not_meaning c m t a : c~Context, m~Model, t~Term, a~Term, boolean c t, boolean c a, term.structure t == NotOf a
+    ensures holds c m t == fails c m a and fails c m t == holds c m a
+    proof
+        let low = level AsGiven c m m.fuel
+        have eval_closed c m t
+        have eval_closed c m a
+        have holds_is c m t
+        have holds_is c m a
+        have not_structure low AsGiven c m [] [] t a
+        have truth_of (negate (as_bool (value low AsGiven c m [] [] a)))
+        have bool_of (value low AsGiven c m [] [] a)
+
+lemma conj_closed c m ps : c~Context, m~Model, ps~List Term, booleans c ps
+    ensures (conj (level AsGiven c m m.fuel) AsGiven c m [] [] ps == Ok True) == holds_all c m ps
+        and (fails_one c m ps implies conj (level AsGiven c m m.fuel) AsGiven c m [] [] ps == Ok False)
+    proof
+        let low = level AsGiven c m m.fuel
+        match ps
+            []        ->
+                have conj_nil low AsGiven c m [] []
+                have holds_all_nil c m
+            p :: rest ->
+                have eval_closed c m p
+                have holds_is c m p
+                have holds_all_cons c m p rest
+                have fails_one c m ps == (fails c m p or fails_one c m rest)
+                have conj_step low AsGiven c m [] [] p rest
+                have conj_closed c m rest
+
+lemma disj_closed c m ps : c~Context, m~Model, ps~List Term, booleans c ps
+    ensures (disj (level AsGiven c m m.fuel) AsGiven c m [] [] ps == Ok False) == fails_all c m ps
+        and (holds_one c m ps implies disj (level AsGiven c m m.fuel) AsGiven c m [] [] ps == Ok True)
+    proof
+        let low = level AsGiven c m m.fuel
+        match ps
+            []        -> have disj_nil low AsGiven c m [] []
+            p :: rest ->
+                have eval_closed c m p
+                have holds_is c m p
+                have disj_step low AsGiven c m [] [] p rest
+                have disj_closed c m rest
+
+export lemma and_meaning c m t ps : c~Context, m~Model, t~Term, ps~List Term, boolean c t, booleans c ps,
+                                    term.structure t == AndOf ps
+    ensures holds c m t == holds_all c m ps and (fails_one c m ps implies fails c m t)
+    proof
+        let low = level AsGiven c m m.fuel
+        have eval_closed c m t
+        have holds_is c m t
+        have and_structure low AsGiven c m [] [] t ps
+        have truth_of (conj low AsGiven c m [] [] ps)
+        have conj_closed c m ps
+
+export lemma or_meaning c m t ps : c~Context, m~Model, t~Term, ps~List Term, boolean c t, booleans c ps,
+                                   term.structure t == OrOf ps
+    ensures fails c m t == fails_all c m ps and (holds_one c m ps implies holds c m t)
+    proof
+        let low = level AsGiven c m m.fuel
+        have eval_closed c m t
+        have holds_is c m t
+        have or_structure low AsGiven c m [] [] t ps
+        have truth_of (disj low AsGiven c m [] [] ps)
+        have disj_closed c m ps
+
+export lemma implies_meaning c m t a b : c~Context, m~Model, t~Term, a~Term, b~Term, boolean c t, boolean c a, boolean c b,
+                                         term.structure t == ImpliesOf a b
+    ensures (fails c m a implies holds c m t) and (holds c m b implies holds c m t)
+        and (holds c m a and fails c m b implies fails c m t)
+    proof
+        let low = level AsGiven c m m.fuel
+        let va = value low AsGiven c m [] [] a
+        let vb = value low AsGiven c m [] [] b
+        have eval_closed c m t
+        have eval_closed c m a
+        have eval_closed c m b
+        have holds_is c m t
+        have holds_is c m a
+        have holds_is c m b
+        have implies_structure low AsGiven c m [] [] t a b
+        have bool_of va
+        have bool_of vb
+        have either_of (negate (as_bool va)) (as_bool vb)
+        have truth_of (either (negate (as_bool va)) (as_bool vb))
+
+export lemma ite_meaning c m t p a b : c~Context, m~Model, t~Term, p~Term, a~Term, b~Term, boolean c t, boolean c p,
+                                       boolean c a, boolean c b, term.structure t == IteOf p a b
+    ensures (holds c m p implies eval c m t == eval c m a) and (fails c m p implies eval c m t == eval c m b)
+    proof
+        let low = level AsGiven c m m.fuel
+        let vp = value low AsGiven c m [] [] p
+        have eval_closed c m t
+        have eval_closed c m p
+        have eval_closed c m a
+        have eval_closed c m b
+        have holds_is c m p
+        have ite_structure low AsGiven c m [] [] t p a b
+        have bool_of vp
+        have choose_of (as_bool vp) (value low AsGiven c m [] [] a) (value low AsGiven c m [] [] b)
+
+export lemma iff_meaning c m t a b : c~Context, m~Model, t~Term, a~Term, b~Term, boolean c t, boolean c a, boolean c b,
+                                     term.structure t == IffOf a b
+    ensures (holds c m a and holds c m b implies holds c m t) and (fails c m a and fails c m b implies holds c m t)
+        and (holds c m a and fails c m b implies fails c m t) and (fails c m a and holds c m b implies fails c m t)
+    proof
+        let low = level AsGiven c m m.fuel
+        have eval_closed c m t
+        have eval_closed c m a
+        have eval_closed c m b
+        have holds_is c m t
+        have holds_is c m a
+        have holds_is c m b
+        have iff_structure low AsGiven c m [] [] t a b
+        have equal_of (value low AsGiven c m [] [] a) (value low AsGiven c m [] [] b)
 
 # ── The meaning doesn't use fuel ─────────────────────────────────────────────
 # `Model.fuel` bounds how deep `refutes` unfolds definitions. The meaning
