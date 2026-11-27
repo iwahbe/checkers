@@ -582,7 +582,7 @@ pub const MAX_ARITY: usize = 64;
 /// The arity of code: how many lambdas it starts with, up to `MAX_ARITY`.
 /// Further lambdas stay in the body, so a wider function is curried: it
 /// returns a closure that takes the next parameters.
-fn lams(ir: &Ir) -> (usize, &Ir) {
+pub(crate) fn lams(ir: &Ir) -> (usize, &Ir) {
     let mut n = 0;
     let mut b = ir;
     while let (true, Ir::Lam(_, x)) = (n < MAX_ARITY, b) {
@@ -679,6 +679,20 @@ impl<'a, 'g> Lowerer<'a, 'g> {
 
     /// Lower `roots` and every definition they reach that isn't lowered yet.
     pub fn add_defs(&mut self, roots: &[u32]) {
+        self.erase(roots);
+        // A function is made for each root, and for each definition the
+        // code made so far refers to once small functions are inlined:
+        // one inlined at every call needs none of its own.
+        for d in roots {
+            self.shape(*d);
+        }
+        self.lower_wanted();
+    }
+
+    /// Erase `roots` (definitions or copies) and every definition they
+    /// reach that isn't erased yet; their functions are made when code
+    /// refers to them.
+    fn erase(&mut self, roots: &[u32]) {
         let g = self.g;
         let staged = self.staged;
         let ndefs = g.defs.len() + staged.map_or(0, |s| s.extra.len());
@@ -693,7 +707,15 @@ impl<'a, 'g> Lowerer<'a, 'g> {
             // the function it copies.
             let copy = self.p.specs.borrow().copy(d).map(|c| (c.of, c.body.clone(), c.depth));
             let (owner, body, depth) = match copy {
-                Some(c) => (c.0, Some(c.1), c.2),
+                // One made where a call is folded: erased code already.
+                Some((_, crate::native::spec::Body::Folded { code, .. }, _)) => {
+                    let mut gs = Vec::new();
+                    globals_in(&code, &mut gs);
+                    todo.extend(gs.iter().map(|x| x.0));
+                    self.p.code.insert(d, code);
+                    continue;
+                }
+                Some((of, crate::native::spec::Body::Term(body), depth)) => (of, Some(body), depth),
                 None if (d as usize) < ndefs => (DefId(d), crate::native::ir::body_of(g, staged, DefId(d)), 0),
                 None => continue,
             };
@@ -736,13 +758,6 @@ impl<'a, 'g> Lowerer<'a, 'g> {
             };
             self.p.defs.insert(d, shape);
         }
-        // A function is made for each root, and for each definition the
-        // code made so far refers to once small functions are inlined:
-        // one inlined at every call needs none of its own.
-        for d in roots {
-            self.shape(*d);
-        }
-        self.lower_wanted();
     }
 
     /// The shape of definition `d`. One with code gets its function here,
@@ -882,7 +897,27 @@ impl Lowerer<'_, '_> {
         }
         let (g, staged) = (self.g, self.staged);
         let folder = self.folder.get_or_insert_with(|| crate::native::fold::Folder::new(g, staged));
-        let out = folder.fold_def(&ir, &self.p.specs.borrow());
+        // A call passing static data that folding found gets its copy
+        // (`spec::specialize_folded`), whose code is added here and folded
+        // when it is lowered in turn.
+        let (here, depth) = {
+            let specs = self.p.specs.borrow();
+            (specs.origin(d), specs.copy(d).map_or(0, |c| c.depth))
+        };
+        let mut made = Vec::new();
+        let out = {
+            let (code, specs) = (&self.p.code, &self.p.specs);
+            let mut copy = |h: u32, args: &[Arc<Ir>]| {
+                let r = crate::native::spec::specialize_folded(g, specs, code, here, depth, h, args, &|a| crate::native::fold::is_static(g, a), &crate::native::fold::key);
+                made.extend(r.as_ref().map(|(c, _)| c.0));
+                r
+            };
+            folder.fold_def(&ir, specs, &mut copy)
+        };
+        if !made.is_empty() {
+            self.erase(&made);
+        }
+        let folder = self.folder.as_mut().expect("made above");
         let kept = std::mem::take(&mut folder.kept);
         let name = self.p.names[self.p.specs.borrow().origin(d) as usize].clone();
         if std::env::var_os("CHECKERS_NATIVE_DUMP").is_some() {

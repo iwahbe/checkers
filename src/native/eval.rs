@@ -342,7 +342,24 @@ impl<'g> Evaluator<'g> {
             if gs.iter().any(|d| specs.copy(d.0).is_none() && d.0 as usize >= self.g.defs.len()) {
                 return None;
             }
-            let ir = super::ir::map_globals(&ir, &|d| specs.copy(d.0).map(|c| super::ir::Compiler::new(self.g, Some(c.of)).go_pub(&c.body)));
+            // A copy made where a call was folded is erased code already;
+            // one calling other copies isn't put in.
+            let is_copy = |d: &crate::core::DefId| specs.copy(d.0).is_some();
+            for d in &gs {
+                if let Some(super::spec::Copy { body: super::spec::Body::Folded { code, .. }, .. }) = specs.copy(d.0) {
+                    let mut inner = Vec::new();
+                    super::ir::globals_in(code, &mut inner);
+                    if inner.iter().any(is_copy) {
+                        return None;
+                    }
+                }
+            }
+            let ir = super::ir::map_globals(&ir, &|d| {
+                specs.copy(d.0).map(|c| match &c.body {
+                    super::spec::Body::Term(t) => super::ir::Compiler::new(self.g, Some(c.of)).go_pub(t),
+                    super::spec::Body::Folded { code, .. } => super::ir::shift(code, 0, 0),
+                })
+            });
             if !first_order_free(&ir) {
                 return None;
             }

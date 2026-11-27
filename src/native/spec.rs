@@ -38,9 +38,18 @@
 //! (`settle`), so the caller isn't made to build its closure.
 //!
 //! A literal or a value known at compile time (§8.9) passed to a function
-//! is put into a copy too (`known_data`), so the code using it is computed
-//! when compiling (`fold`); a recursive call passing a value computed from
-//! it is not a literal here, so it calls the general function.
+//! is put into a copy too, so the code using it is computed when compiling
+//! (`fold`). That is done where the call is folded (`specialize_folded`),
+//! so an argument that becomes static data only once the code around it
+//! is folded (`list.length [1, 2, 3]`) is put in as a literal is, into
+//! the same copy. The copy is the callee's erased code with the static
+//! arguments put in (`Body::Folded`), inlined and folded in turn like any
+//! other definition's, so a call in it passing such a value on gets its
+//! copy as well: specialization and folding reach a fixed point, within
+//! the bounds below. A copy's call of the function it copies passing a
+//! value computed from the one put in (`n - 1`) calls the general function
+//! (or a copy made already for that value), so recursion on a known value
+//! makes one copy, not one per step.
 //!
 //! Code growth is bounded: one copy per function and arguments put into
 //! it (memoized, so recursion and mutual recursion reuse the copy), each
@@ -50,8 +59,10 @@
 //! `CHECKERS_NO_SPEC=1` turns specialization off, to measure it.
 
 use crate::core::{max_var, DefId, Globals, Mult, Tm};
+use crate::native::ir::Ir;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// The largest argument put into a copy: nodes of its term. A dictionary
 /// growing at each call (polymorphic recursion) stops being specialized.
@@ -68,11 +79,23 @@ pub const MAX_COPIES: usize = 4096;
 #[derive(Clone)]
 pub struct Copy {
     pub of: DefId,
-    pub body: Tm,
+    pub body: Body,
     pub depth: usize,
     /// For each parameter of the copy, the binder of `of` it is (`None`:
     /// one for a variable of a function put in).
     pub binders: Vec<Option<usize>>,
+}
+
+/// A copy's code.
+#[derive(Clone)]
+pub enum Body {
+    /// A core term, compiled as the function's body is: made where a call
+    /// is erased.
+    Term(Tm),
+    /// Erased code: that of definition `from` (a copy itself, maybe) with
+    /// the static data `put` (one per parameter, `None` for those the copy
+    /// takes) in place of its parameters, made where a call is folded.
+    Folded { from: u32, put: Vec<Option<Arc<Ir>>>, code: Arc<Ir> },
 }
 
 /// The copies made so far; copy `i` is definition `base + i`.
@@ -333,13 +356,8 @@ fn free_in_order(t: &Tm, depth: usize, out: &mut Vec<usize>) {
 
 /// The copy of `f` to call with `args` (each with its multiplicity), if
 /// one passes a known instance's dictionary or a known function, in code
-/// of `owner`.
-/// A value known at compile time written into the code: a literal, or a
-/// known value (§8.9). A copy made for it computes with it there (`fold`).
-fn known_data(t: &Tm) -> bool {
-    matches!(t, Tm::Lit(_) | Tm::Known(_))
-}
-
+/// of `owner`. A literal or a known value is put in where the call is
+/// folded (`specialize_folded`), with the values folding finds.
 pub fn specialize(g: &Globals, cx: SpecCx, owner: Option<DefId>, f: DefId, args: &[(&Rc<Tm>, Mult)]) -> Option<Spec> {
     if off() || cx.table.borrow().frozen {
         return None;
@@ -351,9 +369,7 @@ pub fn specialize(g: &Globals, cx: SpecCx, owner: Option<DefId>, f: DefId, args:
         return None;
     }
     let fun = |a: &Tm| small_fn(g, cx.staged, a);
-    let values = cx.table.borrow().for_values;
-    let known_data = |a: &Tm| values && known_data(a);
-    if !args.iter().any(|(a, m)| *m != Mult::Zero && (closed_dict(g, a) || fun(a) || known_data(a))) {
+    if !args.iter().any(|(a, m)| *m != Mult::Zero && (closed_dict(g, a) || fun(a))) {
         return None;
     }
     let body = crate::native::ir::body_of(g, cx.staged, f)?;
@@ -374,7 +390,7 @@ pub fn specialize(g: &Globals, cx: SpecCx, owner: Option<DefId>, f: DefId, args:
         .enumerate()
         .map(|(j, (a, m))| match m {
             Mult::Zero => (max_var(a).is_none() && size(a, MAX_ARG) <= MAX_ARG).then(|| (***a).clone()),
-            _ if closed_dict(g, a) || known_data(a) => Some((***a).clone()),
+            _ if closed_dict(g, a) => Some((***a).clone()),
             _ if fun(a) => {
                 let a = settle(g, cx, known_var(a).map_or(&***a, |(_, f)| f));
                 let a = &a;
@@ -414,7 +430,7 @@ pub fn specialize(g: &Globals, cx: SpecCx, owner: Option<DefId>, f: DefId, args:
             // The parameters not put in, the variables' (`caps`), then those
             // after the first `k`.
             let binders = (0..k).filter(|j| !gone[*j]).map(Some).chain((0..m).map(|_| None)).chain((k..n).map(Some)).collect();
-            t.copies.push(Copy { of: f, body: put_in(&body, &picked, &kept, &gone, m), depth: cx.depth + 1, binders });
+            t.copies.push(Copy { of: f, body: Body::Term(put_in(&body, &picked, &kept, &gone, m)), depth: cx.depth + 1, binders });
             t.memo.insert(key, id);
             id
         }
@@ -580,4 +596,132 @@ fn replace(t: &Tm, pick: &[Option<&Tm>], kept: &[bool], at: &[Option<usize>], r:
         Tm::Var(v) if *v >= depth => Tm::Var(v - k + r + m),
         _ => t.map_sub(|x, n| replace(x, pick, kept, at, r, m, depth + n)),
     }
+}
+
+/// Nodes of erased code, counting up to `limit + 1`; static data counts as
+/// one (a known value, §14).
+fn ir_size(ir: &Ir, limit: usize) -> usize {
+    let mut n = 1;
+    for (x, _) in ir.subterms() {
+        if n > limit {
+            break;
+        }
+        n += ir_size(x, limit - n.min(limit));
+    }
+    n
+}
+
+/// A call folded (§8.9): of definition `h`, whose erased code is
+/// `code[h]`, with `args`, some of them static data (`static_data`) and
+/// some not, in code of definition `here` (`depth` deep in copies of
+/// functions, 0 for its own code). The copy of `h` with that data put in,
+/// and the arguments the call then passes; `None` where none is made (as
+/// for `specialize`, and for a copy's call of the function it copies,
+/// which passes values computed from those put in: it calls the general
+/// function unless a copy for those values exists already).
+#[allow(clippy::too_many_arguments)]
+pub fn specialize_folded(
+    g: &Globals,
+    table: &std::cell::RefCell<Specs>,
+    code: &HashMap<u32, Arc<Ir>>,
+    here: u32,
+    depth: usize,
+    h: u32,
+    args: &[Arc<Ir>],
+    static_data: &dyn Fn(&Ir) -> bool,
+    key: &dyn Fn(&Ir) -> Option<String>,
+) -> Option<(DefId, Vec<Arc<Ir>>)> {
+    let mut t = table.borrow_mut();
+    if off() || t.frozen || !t.for_values {
+        return None;
+    }
+    let of = t.origin(h);
+    let wk = &g.well_known;
+    if wk.class_fns.contains(&DefId(of)) || wk.dict_fns.contains(&DefId(of)) {
+        return None;
+    }
+    let body = code.get(&h)?;
+    let mut n = 0;
+    let mut b = &**body;
+    while let Ir::Lam(_, x) = b {
+        n += 1;
+        b = x;
+    }
+    let k = n.min(args.len());
+    // What is put in: static data small enough, which a key names.
+    let mut put: Vec<Option<(Arc<Ir>, String)>> = args[..k]
+        .iter()
+        .map(|a| (static_data(a) && ir_size(a, MAX_ARG) <= MAX_ARG).then(|| key(a).map(|s| (a.clone(), s))).flatten())
+        .chain((k..n).map(|_| None))
+        .collect();
+    if !put.iter().flatten().any(|(a, _)| !matches!(**a, Ir::Erased)) {
+        return None;
+    }
+    // A copy that would take no parameters keeps the last, so that it stays
+    // a function and isn't made a constant.
+    if put.iter().all(Option::is_some) {
+        put[n - 1] = None;
+    }
+    let key = format!("folded|{h}|{}", put.iter().map(|p| p.as_ref().map_or("-", |(_, s)| s)).collect::<Vec<_>>().join("|"));
+    let id = match t.memo.get(&key) {
+        Some(id) => *id,
+        None => {
+            // In a copy of `h`'s function (`depth > 0`), a value put in is
+            // one computed from those put into it (`n - 1`).
+            if (of == here && depth > 0) || t.copies.len() >= MAX_COPIES || depth >= MAX_DEPTH {
+                return None;
+            }
+            let id = t.base + t.copies.len() as u32;
+            let put: Vec<Option<Arc<Ir>>> = put.iter().map(|p| p.as_ref().map(|(a, _)| a.clone())).collect();
+            let from: Vec<Option<usize>> = match t.copy(h) {
+                Some(c) => c.binders.clone(),
+                None => (0..n).map(Some).collect(),
+            };
+            let binders = (0..n).filter(|j| put[*j].is_none()).map(|j| from.get(j).copied().flatten()).collect();
+            let code = Arc::new(put_in_code(body, &put));
+            t.copies.push(Copy { of: DefId(of), body: Body::Folded { from: h, put, code }, depth: depth + 1, binders });
+            t.memo.insert(key, id);
+            id
+        }
+    };
+    let rest = args.iter().enumerate().filter(|(j, _)| *j >= k || put[*j].is_none()).map(|(_, a)| a.clone()).collect();
+    Some((DefId(id), rest))
+}
+
+/// Erased code of a function of `put.len()` parameters, with the static
+/// data `put` (closed) in place of the parameters it gives, and lambdas
+/// for the others, in order.
+fn put_in_code(code: &Ir, put: &[Option<Arc<Ir>>]) -> Ir {
+    let n = put.len();
+    let mut lams = Vec::new();
+    let mut b = code;
+    for _ in 0..n {
+        let Ir::Lam(o, x) = b else { unreachable!("a copy is made for parameters the function takes") };
+        lams.push(*o);
+        b = x;
+    }
+    // Where each parameter is among the `r` the copy takes.
+    let mut at = Vec::new();
+    let mut r = 0;
+    for p in put {
+        at.push(p.is_none().then_some(r));
+        r += usize::from(p.is_none());
+    }
+    fn go(ir: &Ir, put: &[Option<Arc<Ir>>], at: &[Option<usize>], r: usize, depth: usize) -> Ir {
+        let n = put.len();
+        match ir {
+            Ir::Var(v) if *v >= depth && v - depth < n => {
+                let j = n - 1 - (v - depth);
+                match (&put[j], at[j]) {
+                    (Some(c), _) => crate::native::ir::shift(c, 0, 0),
+                    (None, Some(i)) => Ir::Var(depth + r - 1 - i),
+                    (None, None) => unreachable!("a parameter not put in is taken"),
+                }
+            }
+            Ir::Var(v) if *v >= depth => Ir::Var(v - n + r),
+            _ => ir.map_subterms(|x, k| go(x, put, at, r, depth + k)),
+        }
+    }
+    let body = go(b, put, &at, r, 0);
+    lams.into_iter().zip(put).rev().fold(body, |b, (o, p)| if p.is_some() { b } else { Ir::Lam(o, Arc::new(b)) })
 }

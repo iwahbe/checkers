@@ -1,0 +1,41 @@
+error[E0262]: type mismatch: expected `List (Int, Nat, Int)`, found `List (Int, (Int, Int))`
+ --> tuple_regroup_refined.ck:7:5
+  |
+7 |     xs                                          # error E0262
+  |     ^^ this expression has type `List (Int, (Int, Int))`, so its `Int` values aren't known to be `Nat`
+  = note: a refinement inside a type is never gained from an existing value: that would need a proof about every element
+  = help: give the value the type `List (Int, Nat, Int)` where it is built, so that each part is checked there
+
+error[E0262]: type mismatch: expected `List (Int, Nat, Int)`, found `List (Int, Int, Int)`
+  --> tuple_regroup_refined.ck:10:5
+   |
+10 |     xs                                          # error E0262
+   |     ^^ this expression has type `List (Int, Int, Int)`, so its `Int` values aren't known to be `Nat`
+   = note: a refinement inside a type is never gained from an existing value: that would need a proof about every element
+   = help: give the value the type `List (Int, Nat, Int)` where it is built, so that each part is checked there
+
+error[E0262]: type mismatch: expected `List (Int, (Nat, Int))`, found `List (Int, Int, Int)`
+  --> tuple_regroup_refined.ck:13:5
+   |
+13 |     xs                                          # error E0262
+   |     ^^ this expression has type `List (Int, Int, Int)`, so its `Int` values aren't known to be `Nat`
+   = note: a refinement inside a type is never gained from an existing value: that would need a proof about every element
+   = help: give the value the type `List (Int, (Nat, Int))` where it is built, so that each part is checked there
+
+error[E0262]: type mismatch: expected `List (Int, Int, Nat)`, found `List (Int, (Int, Int))`
+  --> tuple_regroup_refined.ck:16:5
+   |
+16 |     xs                                          # error E0262
+   |     ^^ this expression has type `List (Int, (Int, Int))`, so its `Int` values aren't known to be `Nat`
+   = note: a refinement inside a type is never gained from an existing value: that would need a proof about every element
+   = help: give the value the type `List (Int, Int, Nat)` where it is built, so that each part is checked there
+
+error[E0262]: type mismatch: expected `List (Int, Ordered)`, found `List (Int, Int, Int)`
+  --> tuple_regroup_refined.ck:38:5
+   |
+38 |     xs                                          # error E0262
+   |     ^^ this expression has type `List (Int, Int, Int)`, so its `(Int, Int)` values aren't known to be `Ordered`
+   = note: a refinement inside a type is never gained from an existing value: that would need a proof about every element
+   = help: give the value the type `List (Int, Ordered)` where it is built, so that each part is checked there
+
+tuple_regroup_refined.ck: 5 errors, 0 warnings
