@@ -206,11 +206,18 @@ fn lets_usage(tag: &str, ty: &str, step: fn(&str) -> String) -> [(f64, u64); 3] 
 /// `lets_usage`, with `line(i)` the lines defining `a{i}` from `a{i-1}`.
 #[cfg(target_os = "linux")]
 fn lets_usage_by(tag: &str, ty: &str, line: &dyn Fn(usize) -> String) -> [(f64, u64); 3] {
+    lets_usage_in(tag, "", &format!("x -> r : x~{ty}, r~{ty}"), line)
+}
+
+/// `lets_usage_by`, with `f`'s parameters and signature `sig` (`x` among
+/// them), after the lines `imports`.
+#[cfg(target_os = "linux")]
+fn lets_usage_in(tag: &str, imports: &str, sig: &str, line: &dyn Fn(usize) -> String) -> [(f64, u64); 3] {
     let dir = std::env::temp_dir().join(format!("checkers-scaling-{}-{tag}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let usage = LETS.map(|n| {
         let name = format!("{tag}{n}");
-        let mut s = format!("module {name}\n\nexport fn f x -> r : x~{ty}, r~{ty}\n    let a0 = x\n");
+        let mut s = format!("module {name}\n\n{imports}export fn f {sig}\n    let a0 = x\n");
         for i in 1..=n {
             s += &line(i);
         }
@@ -278,6 +285,25 @@ fn a_chain_of_lets_checks_in_linear_time_and_memory() {
 #[test]
 fn a_chain_of_lets_of_closures_checks_in_linear_time_and_memory() {
     assert_lets_linear("by_closure", lets_usage_by("by_closure", "Int", &|i| format!("    let g{i} = \\y -> y + a{}\n    let a{i} = g{i} 1\n", i - 1)));
+}
+
+/// `a_chain_of_lets_of_closures_checks_in_linear_time_and_memory`, in a
+/// function given a capability. Each call of a closure asks whether it
+/// captured one, and with one in scope, the answer was looked for in the
+/// closure's value written out: `g{i}`'s refers to `a{i-1}`, whose value,
+/// `x + 1 + … + 1`, is i deep. 8,000 lets took 9.3 times as long as 2,000
+/// (7.35 s and 0.79 s, release). Which bound locals a local refers to is
+/// decided once, from the term that defined it: 1.6 times as long (0.75 s
+/// and 0.46 s), as without the capability.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_chain_of_lets_of_closures_given_an_effect_checks_in_linear_time_and_memory() {
+    assert_lets_linear(
+        "by_closure_fx",
+        lets_usage_in("by_closure_fx", "import std.terminal (Term)\n\n", "x term -> r : x~Int, term~Term, r~Int", &|i| {
+            format!("    let g{i} = \\y -> y + a{}\n    let a{i} = g{i} 1\n", i - 1)
+        }),
+    );
 }
 
 /// A function of n `let`s, each adding one to the one before. Each `+` asks
