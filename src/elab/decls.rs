@@ -1203,6 +1203,49 @@ impl Elab {
     }
 
     /// `con`: the constructor's name, and where its type's is written.
+    /// The obligations made since `from` in `cs`'s typings get the facts
+    /// of the conditions `preds` (over `cx`) that don't depend on them
+    /// (`rely_on_conditions`). `base`: over how many locals a typing of a
+    /// name was elaborated, given whether it is the name's first (`None`
+    /// for a name that isn't the declaration's). `named`: the name a
+    /// refinement alias's binder has.
+    fn rely_on_typings(
+        &mut self,
+        from: usize,
+        cs: &[Constraint],
+        cx: &Cx,
+        preds: &[Pred],
+        base: &dyn Fn(&str, bool) -> Option<usize>,
+        named: &dyn Fn(usize) -> Option<String>,
+    ) {
+        let typed: Vec<(&Ident, &Expr)> = cs
+            .iter()
+            .filter_map(|c| match c {
+                Constraint::Typed { name, ty, .. } => Some((name, ty)),
+                _ => None,
+            })
+            .collect();
+        let typings: Vec<(Span, Option<usize>)> = typed
+            .iter()
+            .enumerate()
+            .map(|(i, (name, ty))| {
+                (ty.span, base(&name.name, !typed[..i].iter().any(|(n, _)| n.name == name.name)))
+            })
+            .collect();
+        let conds: Vec<(Span, Tm, Option<usize>)> = preds
+            .iter()
+            .map(|p| {
+                let typing = match p.alias {
+                    // A refinement alias's: its name's first typing.
+                    Some((k, _)) => named(k).and_then(|n| typed.iter().position(|(m, _)| m.name == n)),
+                    None => typed.iter().position(|(_, ty)| ty.span.start <= p.span.start && p.span.end <= ty.span.end),
+                };
+                (p.span, p.tm.clone(), typing)
+            })
+            .collect();
+        self.rely_on_conditions(from, &typings, &conds, cx);
+    }
+
     fn elab_fields(&mut self, tid: TyId, cid: ConId, con: (&Ident, Span), names: &[&Ident], cs: &[Constraint], extra_preds: &[&Expr]) {
         self.g.fuel.set(DEFAULT_FUEL);
         let obligations_from = self.obligations.len();
@@ -1342,9 +1385,10 @@ impl Elab {
                 Pred { tm: quote(&self.g, total, &v), text, span, is_post: false, alias }
             })
             .collect();
-        // The fields' types' calls, from the invariants written before them.
-        let earlier: Vec<(Span, Tm)> = preds.iter().map(|p| (p.span, p.tm.clone())).collect();
-        self.rely_on_earlier(obligations_from, cs, &earlier, &cx);
+        // The fields' types' calls, from the invariants (§7.1).
+        let base = |n: &str, first: bool| cx.lookup(n).filter(|_| declared.contains(n)).map(|l| if first { l } else { total });
+        let named = |k: usize| Some(cx.locals[k].name.to_string());
+        self.rely_on_typings(obligations_from, cs, &cx, &preds, &base, &named);
         // Whether the invariants can all hold, with the type's conditions
         // (E0457).
         let mut all = cx.clone();
@@ -2245,9 +2289,13 @@ impl Elab {
                 preds.push(p);
             }
         }
-        // The typings' calls, from the conditions written before them.
-        let earlier: Vec<(Span, Tm)> = preds.iter().map(|p| (p.span, p.tm.clone())).collect();
-        self.rely_on_earlier(obligations_from, cs, &earlier, &cx);
+        // The typings' calls, from the conditions (§7.1).
+        let late_at: Vec<usize> = late.iter().map(|l| l.binder).collect();
+        // A first typing at its name's level, unless it names a later
+        // parameter; the others with every parameter in scope.
+        let base = |n: &str, first: bool| cx.lookup(n).map(|l| if !first || late_at.contains(&l) { nb } else { l });
+        let named = |k: usize| if k < nb { Some(binders[k].0.to_string()) } else { result.map(|r| r.name.clone()) };
+        self.rely_on_typings(obligations_from, cs, &cx, &preds, &base, &named);
         // The types' conditions, from the preconditions only.
         cx.facts.truncate(facts_before);
         for p in preds.iter().filter(|p| !p.is_post) {

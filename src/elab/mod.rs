@@ -2169,38 +2169,93 @@ impl Elab {
         self.obligations.push(o);
     }
 
-    /// Each condition may rely on those written before it (§7.1): the
-    /// obligations made since `from` in a typing (`r~Box (grow 1 k)`),
-    /// whose types are elaborated before the conditions are, get as facts
-    /// the conditions `conds` (each its span and its term over `cx`)
-    /// written before that typing, over the names bound before its name.
-    pub fn rely_on_earlier(&mut self, from: usize, cs: &[ast::Constraint], conds: &[(Span, Tm)], cx: &Cx) {
+    /// A call in a typing (`r~Box (grow 1 k)`) may rely on every condition
+    /// of the declaration, wherever it is written, except one that depends
+    /// on it (§7.1). Types are elaborated before conditions, so the
+    /// obligations made since `from` get those facts here. `typings`: each
+    /// typing's type, and how many locals were in scope where it was
+    /// elaborated (`None` for a name that isn't the declaration's); `conds`:
+    /// each condition's span, its term over `cx`, and the typing it is a
+    /// refinement of, if any (else it is written on its own, and relies on
+    /// the conditions before it in `conds`).
+    ///
+    /// The conditions whose calls need facts form a graph: a typing's calls
+    /// rely on every other condition, a written condition's on those before
+    /// it. A condition with calls depends on what its calls rely on, so a
+    /// typing's calls may not rely on a condition with calls that reaches
+    /// the typing back, directly or through other conditions.
+    pub fn rely_on_conditions(&mut self, from: usize, typings: &[(Span, Option<usize>)], conds: &[(Span, Tm, Option<usize>)], cx: &Cx) {
         let total = cx.lvl();
-        let conds: Vec<(Span, Val, usize)> = conds
-            .iter()
-            .map(|(span, tm)| {
-                let mut used = Vec::new();
-                free_levels(tm, total, 0, &mut used);
-                (*span, self.eval(cx, tm), used.iter().max().map_or(0, |l| l + 1))
-            })
-            .collect();
+        let nt = typings.len();
+        let within = |span: Span, at: Span| at.start <= span.start && span.end <= at.end;
+        // Regions: the typings, then the written conditions.
+        let region = |c: usize| conds[c].2.unwrap_or(nt + c);
+        let mut obligations: Vec<Vec<usize>> = vec![Vec::new(); nt + conds.len()];
         for i in from..self.obligations.len() {
             let o = &self.obligations[i];
             if o.module != self.cur {
                 continue;
             }
-            // The typing the obligation is in, and the level of its name.
-            let Some((start, lvl)) = cs.iter().find_map(|c| match c {
-                ast::Constraint::Typed { name, ty, .. } if ty.span.start <= o.span.start && o.span.end <= ty.span.end => {
-                    Some((name.span.start, cx.lookup(&name.name)?))
+            let at = typings.iter().position(|(ty, _)| within(o.span, *ty)).or_else(|| {
+                (0..conds.len()).find(|&c| conds[c].2.is_none() && within(o.span, conds[c].0)).map(|c| nt + c)
+            });
+            if let Some(r) = at {
+                obligations[r].push(i);
+            }
+        }
+        // The conditions each region's calls rely on.
+        let uses = |r: usize| -> Vec<usize> {
+            if r < nt {
+                (0..conds.len()).filter(|&c| region(c) != r).collect()
+            } else {
+                (0..r - nt).collect()
+            }
+        };
+        let edges: Vec<Vec<usize>> = (0..nt + conds.len())
+            .map(|r| {
+                if obligations[r].is_empty() {
+                    return Vec::new();
                 }
-                _ => None,
-            }) else {
-                continue;
-            };
-            let facts: Vec<Val> =
-                conds.iter().filter(|(span, _, needs)| span.end <= start && *needs <= lvl).map(|(_, v, _)| self.rep_deep(total, v)).collect();
-            self.obligations[i].facts.extend(facts);
+                let mut out: Vec<usize> = uses(r).into_iter().map(region).filter(|&q| !obligations[q].is_empty()).collect();
+                out.sort_unstable();
+                out.dedup();
+                out
+            })
+            .collect();
+        let reaches = |from: usize, to: usize| {
+            let mut seen = vec![false; edges.len()];
+            let mut stack = vec![from];
+            while let Some(r) = stack.pop() {
+                if r == to {
+                    return true;
+                }
+                if !std::mem::replace(&mut seen[r], true) {
+                    stack.extend(edges[r].iter().copied());
+                }
+            }
+            false
+        };
+        let conds: Vec<(Val, usize, usize)> = conds
+            .iter()
+            .enumerate()
+            .map(|(c, (_, tm, _))| {
+                let mut used = Vec::new();
+                free_levels(tm, total, 0, &mut used);
+                (self.eval(cx, tm), used.iter().max().map_or(0, |l| l + 1), region(c))
+            })
+            .collect();
+        for (t, (_, base)) in typings.iter().enumerate() {
+            let Some(base) = *base else { continue };
+            let facts: Vec<(Val, usize)> = conds
+                .iter()
+                .filter(|(_, needs, r)| *r != t && *needs <= base && (obligations[*r].is_empty() || !reaches(*r, t)))
+                .map(|(v, needs, _)| (self.rep_deep(total, v), *needs))
+                .collect();
+            for &i in &obligations[t] {
+                // Over the locals in scope where the typing was elaborated.
+                let n = self.obligations[i].ctx.len();
+                self.obligations[i].facts.extend(facts.iter().filter(|(_, needs)| *needs <= n).map(|(v, _)| v.clone()));
+            }
         }
     }
 
