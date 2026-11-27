@@ -350,6 +350,62 @@ check not (model.has_value (context X) NOTHING XT)
 check not (model.has_value (context X) (with_x (Truth True)) XT)
 check not (model.has_value (context X) (with_x (Integer 3)) ILL)
 
+# ── The meaning doesn't use fuel, from another module ────────────────────────
+# A consumer's model written out field by field, with another fuel, is
+# `with_fuel` of it (`with_fuel` is transparent), so the lemmas apply.
+
+fn refuel m n -> r : m~Model, n~Nat, r~Model
+    Model m.funs m.select m.const m.store m.sum m.lambda m.array_in m.differ m.div_zero m.mod_zero m.nth_out m.wrong_sel m.domain n
+
+lemma eval_refuel c m n t : c~Context, m~Model, n~Nat, t~Term
+    ensures model.eval c m t == model.eval c (refuel m n) t
+    proof
+        have model.eval_fuel c m n t
+
+lemma premises_refuel c m n r s a b i j x env senv xs body : c~Context, m~Model, n~Nat, r~model.Read, s~Sort, a~Nat, b~Nat,
+                                                             i~Value, j~Value, x~Value, env~List Value, senv~List Sort,
+                                                             xs~Sort, body~Term
+    ensures model.gives c m r == model.gives c (refuel m n) r
+        and model.arrays_ok_at c m s a b i j x env senv xs body == model.arrays_ok_at c (refuel m n) s a b i j x env senv xs body
+        and model.arrays_total_at c m s a b i j x env senv xs body
+            == model.arrays_total_at c (refuel m n) s a b i j x env senv xs body
+        and model.has_value c m body == model.has_value c (refuel m n) body
+    proof
+        have model.gives_fuel c m n r
+        have model.arrays_ok_at_fuel c m n s a b i j x env senv xs body
+        have model.arrays_total_at_fuel c m n s a b i j x env senv xs body
+        have model.has_value_fuel c m n body
+
+# ── A total model is an interpretation, from another module ────────────────
+# As a theorem would use it: a closed term has a value; a `Bool` one holds
+# or fails; its sort is one of the context's.
+
+lemma defined c m t s : c~Context, m~Model, t~Term, s~Sort, term.sort_of (term.signature c) [] t == Ok s,
+                        total: forall r : r~model.Read, model.gives c m r,
+                        arrays_total: forall s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2 : s2~Sort, a2~Nat, b2~Nat, i2~Value, j2~Value,
+                        x2~Value, vs2~List Value, ss2~List Sort,
+                        xs2~Sort, body2~Term,
+                        model.arrays_total_at c m s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2
+    ensures model.has_value c m t
+    proof
+        have model.total_has_value c m t s
+
+lemma decided c m t : c~Context, m~Model, t~Term, term.sort_of (term.signature c) [] t == Ok Bool,
+                      total: forall r : r~model.Read, model.gives c m r,
+                      arrays_total: forall s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2 : s2~Sort, a2~Nat, b2~Nat, i2~Value, j2~Value,
+                      x2~Value, vs2~List Value, ss2~List Sort,
+                      xs2~Sort, body2~Term,
+                      model.arrays_total_at c m s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2
+    ensures model.holds c m t or model.fails c m t
+    proof
+        have model.total_has_value c m t Bool
+        have model.has_value_bool c m t
+
+lemma well_sorted c t s : c~Context, t~Term, s~Sort, term.sort_of (term.signature c) [] t == Ok s
+    ensures term.sort_ok (term.signature c) 0 s
+    proof
+        have term.sort_of_ok c [] t s
+
 # ── `refutes` with an axiom ──────────────────────────────────────────────────
 
 # `x = 1` satisfies the axiom and the fact, and the goal `false` fails;

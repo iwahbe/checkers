@@ -56,7 +56,8 @@
 # is a fact like any other (SMT-LIB defines `define-fun-rec` as a declared
 # function and its universally quantified equation). The meaning evaluates
 # no body, so it needs no fuel: it goes by the structure of the term, and its
-# answers are the same whatever `Model.fuel` is (`eval_fuel`, `holds_at_fuel`).
+# answers are the same whatever `Model.fuel` is (`eval_fuel` and the lemmas
+# beside it).
 #
 # `refutes`, which `Answer.Invalid` uses, evaluates instead with each
 # definition run as its own body (design 3), within `Model.fuel` levels
@@ -1085,7 +1086,7 @@ fn value low mode c m env senv t -> r : low~Lower, mode~Mode, c~Context, m~Model
             if binds == []
                 Err IllSorted
             else
-                match term.sorts_of (term.signature c) senv (bound_terms binds)
+                match term.sorts_of (term.signature c) senv (term.bind_terms binds)
                     Ok ss -> value low mode c m (list.reverse (bound low mode c m env senv binds) ++ env) (list.reverse ss ++ senv) body
                     Err _ -> Err IllSorted
         # The array the model names for this `lambda` and the values of
@@ -1094,11 +1095,6 @@ fn value low mode c m env senv t -> r : low~Lower, mode~Mode, c~Context, m~Model
             let s = try sort_here c senv t
             let vs = try all_known env
             given_array c m s LambdaNotGiven (m.lambda s vs senv x body)
-
-fn bound_terms binds -> ts : binds~List (Name, Term), ts~List Term
-    match binds
-        []             -> []
-        (_, t) :: rest -> t :: bound_terms rest
 
 fn bound low mode c m env senv binds -> rs : low~Lower, mode~Mode, c~Context, m~Model, env~List (Result Value Unknown),
                                              senv~List Sort, binds~List (Name, Term), rs~List (Result Value Unknown)
@@ -1777,13 +1773,23 @@ fn answers_with c m s got -> r : c~Context, m~Model, s~Sort, got~Option Value, r
         Some v -> of_sort c m s v
         None   -> False
 
+# Whether `t` has a value of its sort in `m`.
+export fn has_value c m t -> r : c~Context, m~Model, t~Term, r~Bool
+    match (term.sort_of (term.signature c) [] t, eval c m t)
+        (Ok s, Ok v) -> of_sort c m s v
+        _            -> False
+
 # ── The meaning doesn't use fuel ─────────────────────────────────────────────
 # `Model.fuel` bounds how deep `refutes` unfolds definitions. The meaning
-# (`eval`, `holds`, `fails`, `holds_at`) unfolds none, so its answers are
-# the same whatever the fuel: `eval_fuel` and `holds_at_fuel`.
+# (`eval`, `holds`, `fails`, `holds_all`, `holds_at`) unfolds none, so its
+# answers are the same whatever the fuel: `eval_fuel`, `holds_fuel`,
+# `fails_fuel`, `holds_all_fuel`, `holds_at_fuel`, `has_value_fuel`; and so
+# are the premises a theorem takes of a model: `gives_fuel`,
+# `arrays_ok_at_fuel`, `arrays_total_at_fuel`. `with_fuel` is transparent,
+# so a model written out field by field is one of these.
 
 # `m` with `n` levels of fuel.
-export fn with_fuel m n -> r : m~Model, n~Nat, r~Model
+export transparent fn with_fuel m n -> r : m~Model, n~Nat, r~Model
     Model m.funs m.select m.const m.store m.sum m.lambda m.array_in m.differ m.div_zero m.mod_zero m.nth_out m.wrong_sel m.domain n
 
 lemma of_sort_fuel c m n s v : c~Context, m~Model, n~Nat, s~Sort, v~Value
@@ -1842,7 +1848,7 @@ lemma value_fuel low low2 c m n env senv t : low~Lower, low2~Lower, c~Context, m
         match t
             App h args     -> have apply_fuel low low2 c m n env senv t h args
             Let binds body ->
-                match term.sorts_of (term.signature c) senv (bound_terms binds)
+                match term.sorts_of (term.signature c) senv (term.bind_terms binds)
                     Ok ss ->
                         have bound_fuel low low2 c m n env senv binds
                         let inner = list.reverse (bound low AsGiven c m env senv binds) ++ env
@@ -1902,14 +1908,6 @@ lemma prim_fuel low low2 c m n env senv t op args : low~Lower, low2~Lower, c~Con
                 let x = value low AsGiven c m env senv a
                 let y = value low AsGiven c m env senv b
                 match op
-                    Div    ->
-                        match (as_int x, as_int y)
-                            (Ok p, Ok q) -> auto
-                            _            -> auto
-                    Mod    ->
-                        match (as_int x, as_int y)
-                            (Ok p, Ok q) -> auto
-                            _            -> auto
                     Select ->
                         match (x, y, sort_here c senv a, sort_here c senv t)
                             (Ok (ArrayElem k), Ok j, Ok sa, Ok w) ->
@@ -1981,6 +1979,168 @@ export lemma holds_at_fuel c m n a vs : c~Context, m~Model, n~Nat, a~Axiom, vs~L
         have values_of_sorts c m (term.var_sorts a.vars) vs == values_of_sorts c (with_fuel m n) (term.var_sorts a.vars) vs
         let env = list.reverse (list.map (\v -> Ok v) vs)
         have value_fuel (level AsGiven c m m.fuel) (level AsGiven c (with_fuel m n) n) c m n env (term.binder_env a.vars) a.body
+
+# So are `holds`, `fails` and `holds_all`.
+export lemma holds_fuel c m n t : c~Context, m~Model, n~Nat, t~Term
+    ensures holds c m t == holds c (with_fuel m n) t
+    proof
+        have eval_fuel c m n t
+
+export lemma fails_fuel c m n t : c~Context, m~Model, n~Nat, t~Term
+    ensures fails c m t == fails c (with_fuel m n) t
+    proof
+        have eval_fuel c m n t
+
+export lemma holds_all_fuel c m n ts : c~Context, m~Model, n~Nat, ts~List Term
+    ensures holds_all c m ts == holds_all c (with_fuel m n) ts
+    proof
+        match ts
+            []        -> auto
+            t :: rest ->
+                have holds_fuel c m n t
+                have holds_all_fuel c m n rest
+
+# So is whether a term has a value of its sort.
+export lemma has_value_fuel c m n t : c~Context, m~Model, n~Nat, t~Term
+    ensures has_value c m t == has_value c (with_fuel m n) t
+    proof
+        have eval_fuel c m n t
+        match (term.sort_of (term.signature c) [] t, eval c m t)
+            (Ok s, Ok v) -> have of_sort_fuel c m n s v
+            _            -> auto
+
+# So is whether the model answers a read.
+export lemma gives_fuel c m n r : c~Context, m~Model, n~Nat, r~Read
+    ensures gives c m r == gives c (with_fuel m n) r
+    proof
+        match r
+            FunAt f vs              -> have gives_fun_fuel c m n f vs
+            NthOutAt e xs i         -> have gives_nth_out_fuel c m n e xs i
+            WrongSelAt d k j args v -> have gives_wrong_sel_fuel c m n d k j args v
+            _                       -> auto
+
+lemma answers_with_fuel c m n s got : c~Context, m~Model, n~Nat, s~Sort, got~Option Value
+    ensures answers_with c m s got == answers_with c (with_fuel m n) s got
+    proof
+        match got
+            Some v -> have of_sort_fuel c m n s v
+            None   -> auto
+
+lemma gives_fun_fuel c m n f vs : c~Context, m~Model, n~Nat, f~Nat, vs~List Value
+    ensures gives_fun c m f vs == gives_fun c (with_fuel m n) f vs
+    proof
+        let sig = term.signature c
+        if f < len sig.funs
+            have fields_of_sort_fuel c m n sig.funs[f].params vs
+            have answers_with_fuel c m n sig.funs[f].result (m.funs f vs)
+        else
+            auto
+
+lemma gives_nth_out_fuel c m n e xs i : c~Context, m~Model, n~Nat, e~Sort, xs~List Value, i~Int
+    ensures gives_nth_out c m e xs i == gives_nth_out c (with_fuel m n) e xs i
+    proof
+        have all_of_sort_fuel c m n e xs
+        have answers_with_fuel c m n e (m.nth_out e xs i)
+
+lemma gives_wrong_sel_fuel c m n d k j args v : c~Context, m~Model, n~Nat, d~Nat, k~Nat, j~Nat, args~List Sort, v~Value
+    ensures gives_wrong_sel c m d k j args v == gives_wrong_sel c (with_fuel m n) d k j args v
+    proof
+        have of_sort_fuel c m n (Data d args) v
+        match term.ctor (term.signature c) d k
+            Some kc ->
+                match list.head (list.drop j kc.fields)
+                    Some fd -> have answers_with_fuel c m n (term.instantiate args fd.sort) (m.wrong_sel d k j args v)
+                    None    -> auto
+            None    -> auto
+
+# So are the array laws, and whether the model answers the arrays' reads.
+lemma sorted_at_fuel c m n s k i x : c~Context, m~Model, n~Nat, s~Sort, k~Nat, i~Value, x~Value
+    ensures sorted_at c m s k i x == sorted_at c (with_fuel m n) s k i x
+        and index_and_value c m s i x == index_and_value c (with_fuel m n) s i x
+    proof
+        match s
+            Arr ix w ->
+                have of_sort_fuel c m n ix i
+                have of_sort_fuel c m n w x
+            _        -> auto
+
+lemma lambda_sorted_fuel c m n s env senv xs body : c~Context, m~Model, n~Nat, s~Sort, env~List Value, senv~List Sort,
+                                                    xs~Sort, body~Term
+    ensures lambda_sorted c m s env senv xs body == lambda_sorted c (with_fuel m n) s env senv xs body
+    proof
+        have fields_of_sort_fuel c m n (list.reverse senv) (list.reverse env)
+
+lemma const_law_fuel c m n s x i : c~Context, m~Model, n~Nat, s~Sort, x~Value, i~Value
+    ensures const_law c m s x i == const_law c (with_fuel m n) s x i
+    proof
+        have sorted_at_fuel c m n s 0 i x
+
+lemma store_law_fuel c m n s k j x i : c~Context, m~Model, n~Nat, s~Sort, k~Nat, j~Value, x~Value, i~Value
+    ensures store_law c m s k j x i == store_law c (with_fuel m n) s k j x i
+    proof
+        have sorted_at_fuel c m n s k j x
+        have sorted_at_fuel c m n s k i x
+
+lemma sum_law_fuel c m n s a b i : c~Context, m~Model, n~Nat, s~Sort, a~Nat, b~Nat, i~Value
+    ensures sum_law c m s a b i == sum_law c (with_fuel m n) s a b i
+    proof
+        have sorted_at_fuel c m n s a i (Integer 0)
+
+lemma ext_law_fuel c m n s a b : c~Context, m~Model, n~Nat, s~Sort, a~Nat, b~Nat
+    ensures ext_law c m s a b == ext_law c (with_fuel m n) s a b
+    proof
+        match s
+            Arr ix _ -> have of_sort_fuel c m n ix (m.differ s a b)
+            _        -> auto
+
+lemma lambda_law_fuel c m n s env senv xs body i : c~Context, m~Model, n~Nat, s~Sort, env~List Value, senv~List Sort,
+                                                   xs~Sort, body~Term, i~Value
+    ensures lambda_law c m s env senv xs body i == lambda_law c (with_fuel m n) s env senv xs body i
+    proof
+        have lambda_sorted_fuel c m n s env senv xs body
+        have of_sort_fuel c m n xs i
+        let at = Ok i :: list.map (\v -> Ok v) env
+        have value_fuel (level AsGiven c m m.fuel) (level AsGiven c (with_fuel m n) n) c m n at (xs :: senv) body
+
+export lemma arrays_ok_at_fuel c m n s a b i j x env senv xs body : c~Context, m~Model, n~Nat, s~Sort, a~Nat, b~Nat,
+                                                                    i~Value, j~Value, x~Value, env~List Value,
+                                                                    senv~List Sort, xs~Sort, body~Term
+    ensures arrays_ok_at c m s a b i j x env senv xs body == arrays_ok_at c (with_fuel m n) s a b i j x env senv xs body
+    proof
+        have const_law_fuel c m n s x i
+        have store_law_fuel c m n s a j x i
+        have sum_law_fuel c m n s a b i
+        have lambda_law_fuel c m n s env senv xs body i
+        have ext_law_fuel c m n s a b
+
+lemma gives_select_fuel c m n s k i : c~Context, m~Model, n~Nat, s~Sort, k~Nat, i~Value
+    ensures gives_select c m s k i == gives_select c (with_fuel m n) s k i
+    proof
+        match s
+            Arr ix w ->
+                have of_sort_fuel c m n ix i
+                match m.select s k i
+                    Some v -> have of_sort_fuel c m n w v
+                    None   -> auto
+            _        -> auto
+
+lemma gives_const_fuel c m n s x : c~Context, m~Model, n~Nat, s~Sort, x~Value
+    ensures gives_const c m s x == gives_const c (with_fuel m n) s x
+    proof
+        match s
+            Arr _ w -> have of_sort_fuel c m n w x
+            _       -> auto
+
+export lemma arrays_total_at_fuel c m n s a b i j x env senv xs body : c~Context, m~Model, n~Nat, s~Sort, a~Nat, b~Nat,
+                                                                       i~Value, j~Value, x~Value, env~List Value,
+                                                                       senv~List Sort, xs~Sort, body~Term
+    ensures arrays_total_at c m s a b i j x env senv xs body
+        == arrays_total_at c (with_fuel m n) s a b i j x env senv xs body
+    proof
+        have gives_select_fuel c m n s a i
+        have gives_const_fuel c m n s x
+        have sorted_at_fuel c m n s a j x
+        have lambda_sorted_fuel c m n s env senv xs body
 
 # ── A total model is an interpretation ───────────────────────────────────────
 
@@ -2092,13 +2252,6 @@ lemma fields_reverse c m ss vs acc_s acc_v : c~Context, m~Model, ss~List Sort, v
                 have list.length_reverse ss
                 have list.length_reverse vs
 
-lemma bound_terms_eq binds : binds~List (Name, Term)
-    ensures bound_terms binds == term.bind_terms binds
-    proof
-        match binds
-            []             -> auto
-            (_, _) :: rest -> have bound_terms_eq rest
-
 lemma fields_nth c m ss vs j : c~Context, m~Model, ss~List Sort, vs~List Value, j~Nat, fields_of_sort c m ss vs
     ensures match list.head (list.drop j ss)
         Some s ->
@@ -2181,7 +2334,6 @@ lemma value_total low c m env senv t s : low~Lower, c~Context, m~Model, env~List
                     Ok found -> have apply_total low c m env senv t h args s found
             Let binds body ->
                 have term.sort_of_let sig senv binds body
-                have bound_terms_eq binds
                 match term.sorts_of sig senv (term.bind_terms binds)
                     Ok ss ->
                         have sorts_of_each sig senv (term.bind_terms binds) ss
@@ -2398,8 +2550,19 @@ export lemma total_has_value c m t s : c~Context, m~Model, t~Term, s~Sort, term.
         have value_total (level AsGiven c m m.fuel) c m [] [] t s
         have eval c m t == value (level AsGiven c m m.fuel) AsGiven c m [] [] t
 
-# Whether `t` has a value of its sort in `m`.
-export fn has_value c m t -> r : c~Context, m~Model, t~Term, r~Bool
-    match (term.sort_of (term.signature c) [] t, eval c m t)
-        (Ok s, Ok v) -> of_sort c m s v
-        _            -> False
+# What `has_value` is, for other modules (its body is sealed there).
+export lemma has_value_def c m t : c~Context, m~Model, t~Term
+    ensures has_value c m t
+        == match (term.sort_of (term.signature c) [] t, eval c m t)
+            (Ok s, Ok v) -> of_sort c m s v
+            _            -> False
+
+# A `Bool` term with a value holds or fails.
+export lemma has_value_bool c m t : c~Context, m~Model, t~Term, term.sort_of (term.signature c) [] t == Ok Bool,
+                                    has_value c m t
+    ensures holds c m t or fails c m t
+    proof
+        match eval c m t
+            Ok (Truth _) -> auto
+            Ok v         -> have not (of_sort c m Bool v)
+            Err _        -> auto
