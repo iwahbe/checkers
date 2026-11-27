@@ -132,7 +132,7 @@ pub fn set_cache(dir: Option<std::path::PathBuf>) {
     *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = dir;
 }
 
-fn cache_dir() -> Option<std::path::PathBuf> {
+pub(crate) fn cache_dir() -> Option<std::path::PathBuf> {
     CACHE.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
@@ -197,10 +197,6 @@ pub fn module_keys(e: &Elab) -> std::rc::Rc<std::collections::HashMap<String, St
 fn compute_module_keys(e: &Elab) -> std::collections::HashMap<String, String> {
     use std::collections::HashMap;
     use std::collections::BTreeSet;
-    let exe = std::env::current_exe()
-        .and_then(std::fs::metadata)
-        .map(|m| format!("{} {:?}", m.len(), m.modified().ok()))
-        .unwrap_or_default();
     let mut std_mods: Vec<&String> = e.modules.keys().filter(|m| m.starts_with("std.")).collect();
     std_mods.sort();
     let mut std_text = String::new();
@@ -209,7 +205,7 @@ fn compute_module_keys(e: &Elab) -> std::collections::HashMap<String, String> {
             std_text += &format!("module {m} {}\n{}\n", f.text.len(), f.text);
         }
     }
-    let tool = format!("ckc {} {exe} z3 {} std {}", env!("CARGO_PKG_VERSION"), z3_version().unwrap_or_default(), digest(&std_text));
+    let tool = format!("{} z3 {} std {}", tool_identity(), z3_version().unwrap_or_default(), digest(&std_text));
     // Each module's text, hashed once; the standard library's is in `tool`.
     let texts: HashMap<&str, String> =
         e.modules.keys().filter(|m| !m.starts_with("std.")).filter_map(|m| Some((m.as_str(), digest(&e.sources.get(m)?.text)))).collect();
@@ -337,6 +333,16 @@ pub fn remember(key: &str, v: &Verified) {
     if std::fs::write(&tmp, out).is_ok() {
         let _ = std::fs::rename(&tmp, dir.join(key));
     }
+}
+
+/// The `ckc` that computes: its version and executable (its size and
+/// time), which a cached result depends on.
+pub fn tool_identity() -> String {
+    let exe = std::env::current_exe()
+        .and_then(std::fs::metadata)
+        .map(|m| format!("{} {:?}", m.len(), m.modified().ok()))
+        .unwrap_or_default();
+    format!("ckc {} {exe}", env!("CARGO_PKG_VERSION"))
 }
 
 /// A 128-bit digest, as hex: two different 64-bit hashes of `s`.
