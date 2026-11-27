@@ -7,6 +7,7 @@
 pub mod core;
 pub mod diag;
 pub mod doc;
+pub mod env;
 pub mod elab;
 pub mod json;
 pub mod known;

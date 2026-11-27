@@ -797,7 +797,7 @@ impl Elab {
     }
 
     pub fn sym_term(&mut self, _cx: &Cx, s: Sym, span: Span) -> (Tm, Val) {
-        let empty = Rc::new(Vec::new());
+        let empty = crate::core::Env::new();
         match s {
             Sym::Def(d) => {
                 let ty = self.g.defs[d.0 as usize].ty.clone();
@@ -1548,7 +1548,7 @@ impl Elab {
         if !self.refined_inst_fns.contains(f) {
             return None;
         }
-        let mut ty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[f.0 as usize].ty);
+        let mut ty = eval(&self.g, &crate::core::Env::new(), &self.g.defs[f.0 as usize].ty);
         for a in iargs {
             let Val::Pi(_, _, _, _, c) = self.force(&ty) else { return None };
             ty = apply_closure(&self.g, &c, self.eval(cx, a));
@@ -1641,7 +1641,7 @@ impl Elab {
         }
         // The result's type at these arguments: the class's, the instance's.
         let at = |e: &Self, def: DefId, args: &[Rc<Tm>]| -> Option<(Val, Vec<(Name, Val)>)> {
-            let mut ty = eval(&e.g, &Rc::new(Vec::new()), &e.g.defs[def.0 as usize].ty);
+            let mut ty = eval(&e.g, &crate::core::Env::new(), &e.g.defs[def.0 as usize].ty);
             let mut doms = Vec::new();
             for a in args {
                 let Val::Pi(x, _, _, dom, c) = e.force(&ty) else { return None };
@@ -1725,8 +1725,8 @@ impl Elab {
         if mine.len() != theirs.len() || self.in_spec > 0 {
             return;
         }
-        let here_env = Rc::new((0..cs.n_binders).map(Val::var).collect::<Vec<_>>());
-        let there_env = Rc::new(args.to_vec());
+        let here_env = (0..cs.n_binders).map(Val::var).collect::<crate::core::Env>();
+        let there_env = crate::core::Env::from(args.to_vec());
         let lvl = cx.lvl();
         let a: Vec<Tm> = theirs.iter().map(|t| quote(&self.g, lvl, &eval(&self.g, &there_env, t))).collect();
         let b: Vec<Tm> = mine.iter().map(|t| quote(&self.g, lvl, &eval(&self.g, &here_env, t))).collect();
@@ -1963,7 +1963,7 @@ impl Elab {
                     }
                     let mut env: Vec<Val> = args[..spec.n_binders].iter().map(|a| self.eval(cx, a)).collect();
                     for l in &spec.lets {
-                        let v = eval(&self.g, &Rc::new(env.clone()), l);
+                        let v = eval(&self.g, &crate::core::Env::from(env.clone()), l);
                         env.push(v);
                     }
                     let fact = self.inst_pred(ens, env);
@@ -2172,7 +2172,7 @@ impl Elab {
         if !free.is_empty() || matches!(ty, Tm::Error) {
             return None;
         }
-        Some(eval(&self.g, &Rc::new(Vec::new()), ty))
+        Some(eval(&self.g, &crate::core::Env::new(), ty))
     }
 
     /// An operand of an arithmetic or comparison operator: it takes the
@@ -2252,7 +2252,7 @@ impl Elab {
             r = apply_closure(&self.g, &c, av);
         }
         env.resize(late.n, Val::Error);
-        let expected = eval(&self.g, &Rc::new(env), &late.ty);
+        let expected = eval(&self.g, &crate::core::Env::from(env), &late.ty);
         (t, ty, Some(expected))
     }
 
@@ -2865,10 +2865,10 @@ impl Elab {
                 let mut env: Vec<Val> = params.to_vec();
                 let mut ftys = Vec::new();
                 for (j, f) in fields.iter().enumerate() {
-                    ftys.push(eval(&self.g, &Rc::new(env.clone()), &f.3));
+                    ftys.push(eval(&self.g, &crate::core::Env::from(env.clone()), &f.3));
                     env.push(crate::core::eval(
                         &self.g,
-                        &Rc::new(vec![xv.clone()]),
+                        &crate::core::Env::from(vec![xv.clone()]),
                         &Tm::Field(Rc::new(Tm::Var(0)), cid, j),
                     ));
                 }

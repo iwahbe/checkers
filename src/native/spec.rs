@@ -202,13 +202,38 @@ pub fn known_var(t: &Tm) -> Option<(&Tm, &Tm)> {
     }
 }
 
-/// `t` with the variable `depth` binds marked as bound to `f` (`f` is
-/// outside that binder): `known`.
-pub fn know(t: &Tm, f: &Tm, depth: usize) -> Tm {
+/// The functions known to be bound to the variables of code being
+/// compiled (`ir`): one entry per binder, innermost first. Extending it
+/// shares what is there, so code of n nested `let`s is compiled in time
+/// and memory in proportion to n.
+pub type Fns = crate::env::List<Option<Rc<Bound>>>;
+
+/// A variable bound to a known function.
+pub struct Bound {
+    /// The function, over the variables outside the variable's binder.
+    pub f: Tm,
+    /// Whether the code compiled so far uses the variable itself, so its
+    /// closure is built.
+    pub used: std::cell::Cell<bool>,
+}
+
+/// `t`, under `depth` binders of code where `fns` is known, with each
+/// variable bound to a known function marked as bound to it (`known`).
+pub fn know(t: &Tm, fns: &Fns, depth: usize) -> Tm {
     match t {
-        Tm::Var(v) if *v == depth => known(Tm::Var(*v), crate::core::rename_free(f, 0, &|x| x + depth + 1)),
-        _ => t.map_sub(|x, n| know(x, f, depth + n)),
+        Tm::Var(v) if *v >= depth => match fns.nth(v - depth) {
+            Some(Some(b)) => known(Tm::Var(*v), crate::core::rename_free(&b.f, 0, &|x| x + v + 1)),
+            _ => t.clone(),
+        },
+        _ if known_var(t).is_some() => t.clone(),
+        _ => t.map_sub(|x, n| know(x, fns, depth + n)),
     }
+}
+
+/// Whether `t` is small enough to be put into a copy or a `let`'s body,
+/// whatever its variables are bound to (`know` only makes it larger).
+pub fn small(t: &Tm) -> bool {
+    size(t, MAX_ARG) <= MAX_ARG
 }
 
 /// A known function with each lambda's body (under all its parameters)

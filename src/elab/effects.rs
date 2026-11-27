@@ -59,7 +59,7 @@ impl Elab {
     /// parameter is called by the code it runs, not given an effect). The
     /// rule of `call_effects`, for every call of `d`.
     pub(super) fn signature_effects(&self, d: DefId) -> bool {
-        let mut fty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[d.0 as usize].ty);
+        let mut fty = eval(&self.g, &crate::core::Env::new(), &self.g.defs[d.0 as usize].ty);
         let mut lvl = 0;
         while let Val::Pi(_, m, icit, dom, clo) = self.force(&fty) {
             if icit == Icit::Expl && m != Mult::Zero && !matches!(self.force(&dom), Val::Pi(..)) && self.holds_effect(lvl, &dom) {
@@ -78,8 +78,15 @@ impl Elab {
     }
 
     /// Whether function value `v` captured a value that holds an effect.
+    /// Only a bound local can be one (a value refers to no other local), so
+    /// `v` is looked into only if a bound local in scope holds an effect:
+    /// quoting it writes out the values of the locals it refers to, which
+    /// in a chain of `let`s of closures grow with the chain.
     fn captures_effect(&self, cx: &Cx, v: &Val) -> bool {
         let lvl = cx.lvl();
+        if !cx.bound().iter().any(|l| self.holds_effect(lvl, &cx.ty_of(*l))) {
+            return false;
+        }
         let t = quote(&self.g, lvl, v);
         let mut free = std::collections::BTreeSet::new();
         free_vars(&t, 0, &mut free);
@@ -97,7 +104,7 @@ impl Elab {
         }
         let lvl = cx.lvl();
         let (mut fty, local) = match h {
-            Tm::Def(d) => (eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[d.0 as usize].ty), false),
+            Tm::Def(d) => (eval(&self.g, &crate::core::Env::new(), &self.g.defs[d.0 as usize].ty), false),
             Tm::Var(i) => {
                 let l = lvl.checked_sub(i + 1)?;
                 (cx.ty_of(l), true)

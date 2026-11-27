@@ -29,6 +29,7 @@ src/syntax/parser.rs recursive descent for §9.2
 src/syntax/ast.rs    surface AST
 src/syntax/print.rs  S-expression dump used by `checkers parse` and golden tests
 src/lint.rs          naming warnings (D21)
+src/env.rs           environments: the values of the locals in scope as a persistent list (extended without a copy, looked up in O(log n)); native code's compiler's known functions too
 src/core.rs          core terms and values (their traversals: `any_sub`, `map_sub`, `head`, `spine`), evaluation (NbE), lazy unfolding, unification, printing
 src/elab/mod.rs      elaborator state, metas, deferred operator constraints (D38)
 src/elab/decls.rs    imports, declarations, positivity, signatures (auto-binding, D10)

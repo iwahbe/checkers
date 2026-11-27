@@ -126,7 +126,7 @@ fn field_template(g: &Globals, c: crate::core::ConId, k: usize, fns: &[(crate::c
     }
     let ci = &g.cons[c.0 as usize];
     let np = g.arity_ty(ci.ty);
-    let env = std::rc::Rc::new((0..np + k).map(crate::core::Val::var).collect::<Vec<_>>());
+    let env = (0..np + k).map(crate::core::Val::var).collect::<crate::core::Env>();
     let v = crate::core::eval(g, &env, &ci.fields[k].3);
     fn go(d: &Desc, np: usize) -> Template {
         match d {

@@ -199,13 +199,19 @@ fn additions_compile_in_linear_memory() {
 /// The least of a few runs is the least disturbed by other tests.
 #[cfg(target_os = "linux")]
 fn lets_usage(tag: &str, ty: &str, step: &str) -> [(f64, u64); 3] {
+    lets_usage_by(tag, ty, &|i| format!("    let a{i} = a{}{step}\n", i - 1))
+}
+
+/// `lets_usage`, with `line(i)` the lines defining `a{i}` from `a{i-1}`.
+#[cfg(target_os = "linux")]
+fn lets_usage_by(tag: &str, ty: &str, line: &dyn Fn(usize) -> String) -> [(f64, u64); 3] {
     let dir = std::env::temp_dir().join(format!("checkers-scaling-{}-{tag}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let usage = LETS.map(|n| {
         let name = format!("{tag}{n}");
         let mut s = format!("module {name}\n\nexport fn f x -> r : x~{ty}, r~{ty}\n    let a0 = x\n");
         for i in 1..=n {
-            s += &format!("    let a{i} = a{}{step}\n", i - 1);
+            s += &line(i);
         }
         s += &format!("    a{n}\n");
         (0..7).map(|_| source_usage(&dir, &name, &s)).fold((f64::INFINITY, u64::MAX), |(t, m), (t2, m2)| (t.min(t2), m.min(m2)))
@@ -253,6 +259,24 @@ fn assert_lets_linear(tag: &str, [a, b, c]: [(f64, u64); 3]) {
 #[test]
 fn a_chain_of_lets_checks_in_linear_time_and_memory() {
     assert_lets_linear("by_let", lets_usage("by_let", "String", " ++ \"a\""));
+}
+
+/// A function of n `let`s, each binding a closure over the one before, and
+/// the next calling it. Each of these walked or copied every local before
+/// it: a closure's environment, copied for each call of it and each local
+/// after it; each call's question whether the closure captured an effect,
+/// asked by writing out the values of the locals it refers to; the name
+/// chosen for its type's parameter in the index's hover text, compared with
+/// every local's; native code's compiler, rewriting all the code after each
+/// closure's `let` (and keeping each copy until the end), then looking
+/// through it for a use of the closure; and the inliner, putting each
+/// erased `let` into all the code after it. 2,000 lets took 4.5 s and
+/// 2.4 GB, 8,000 ran out of memory. (Now 2,000 to 4,000 lets add 14 MB,
+/// 4,000 to 8,000 24 MB, and 8,000 take 1.4 times the time of 2,000.)
+#[cfg(target_os = "linux")]
+#[test]
+fn a_chain_of_lets_of_closures_checks_in_linear_time_and_memory() {
+    assert_lets_linear("by_closure", lets_usage_by("by_closure", "Int", &|i| format!("    let g{i} = \\y -> y + a{}\n    let a{i} = g{i} 1\n", i - 1)));
 }
 
 /// A function of n `let`s, each adding one to the one before. Each `+` asks

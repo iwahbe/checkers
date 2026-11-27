@@ -257,7 +257,7 @@ impl<'g> Stager<'g> {
             return (args.len() >= np).then(|| Tm::TyConApp(ty, args[..np].iter().map(|a| (***a).clone()).collect()));
         }
         let Tm::Def(d) = h else { return None };
-        let empty = Rc::new(Vec::new());
+        let empty = crate::core::Env::new();
         let mut ty = crate::core::eval(g, &empty, &g.defs.get(d.0 as usize)?.ty);
         for a in args {
             let crate::core::Val::Pi(_, _, _, _, c) = crate::core::force(g, ty) else { return None };

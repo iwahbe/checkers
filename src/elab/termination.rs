@@ -562,7 +562,7 @@ impl Elab {
             if k >= n {
                 break;
             }
-            let env: Env = Rc::new((0..k).map(Val::var).collect());
+            let env: Env = (0..k).map(Val::var).collect();
             let dv = self.force(&crate::core::eval(&self.g, &env, &dom));
             let var = Tm::Var(n - 1 - k);
             if icit == Icit::Expl {
