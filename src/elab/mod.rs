@@ -1260,8 +1260,7 @@ impl Elab {
     pub fn reduce_type(&self, v: &Val) -> Val {
         let mut v = crate::core::force_meta(&self.g, v.clone());
         // However many: unfolding ends (see `core::unfold`).
-        loop {
-            let Val::Neutral(Head::Def(d), _) = &v else { break };
+        while let Val::Neutral(Head::Def(d), _) = &v {
             if self.alias_preds.contains_key(d) {
                 break;
             }
