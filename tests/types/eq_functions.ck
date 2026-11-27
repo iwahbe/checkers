@@ -8,7 +8,7 @@ import std.decimal (Decimal)
 import std.bag (Bag)
 
 # `==` never compares functions, nor capabilities, cowns, futures, files or
-# process handles (D125).
+# process handles (#614).
 
 fn inc x -> r : x~Nat, r~Nat
     x + 1

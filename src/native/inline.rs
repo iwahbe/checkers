@@ -423,7 +423,7 @@ fn is_atom(v: &Ir) -> bool {
 
 /// Whether every use of variable `x` in `b` is a projection that a tuple of
 /// `m` components gives as one of them: component `i` before the last, or
-/// the rest from the last (D174: the last may be a tuple laid out flat).
+/// the rest from the last (#673: the last may be a tuple laid out flat).
 fn projections_only(b: &Ir, x: usize, m: usize) -> bool {
     match b {
         Ir::Var(i) => *i != x,

@@ -1,4 +1,4 @@
-//! The standard library is read from disk (D104): `CHECKERS_STD` picks the
+//! The standard library is read from disk (#603): `CHECKERS_STD` picks the
 //! directory, an edit to it takes effect without rebuilding `ckc`, and a
 //! broken or missing standard library is reported, not hidden.
 
@@ -29,7 +29,7 @@ fn scratch(name: &str) -> (PathBuf, PathBuf) {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib");
     for e in std::fs::read_dir(src).unwrap() {
         let e = e.unwrap();
-        // Not `.checkers/`, the cache a check of a file here leaves (D100).
+        // Not `.checkers/`, the cache a check of a file here leaves (#591).
         if e.path().is_file() {
             std::fs::copy(e.path(), std_dir.join(e.file_name())).unwrap();
         }
@@ -114,7 +114,7 @@ fn every_builtin_is_in_the_spec() {
 }
 
 /// A standard-library file checked by itself (as an editor does) is checked
-/// as the standard library: `__builtin` is allowed (D145).
+/// as the standard library: `__builtin` is allowed (#629).
 #[test]
 fn checking_a_standard_library_file() {
     let (std_dir, prog) = scratch("itself");
@@ -130,7 +130,7 @@ fn checking_a_standard_library_file() {
     assert!(text(&out.stderr).contains("E0356"), "{}", text(&out.stderr));
 }
 
-/// Its proofs and `check`s run once (D145).
+/// Its proofs and `check`s run once (#629).
 #[test]
 fn a_standard_library_file_reports_once() {
     let (std_dir, prog) = scratch("once");

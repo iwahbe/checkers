@@ -1,21 +1,21 @@
 # Working on Checkers
 
-- **SPEC.md is the source of truth.** Change the spec before the code whenever behavior changes. Record every language decision as a GitHub issue (SPEC §0). `DECISIONS.md` holds D0–D186 and takes no new rows. Ian decides, and merging a pull request accepts what it decides: no `(proposed)` markers in a pull request (SPEC, docs, tests); list its open choices in its description for Ian to review.
+- **SPEC.md is the source of truth.** Change the spec before the code whenever behavior changes. Record every language decision as a GitHub issue (SPEC §0). Ian decides, and merging a pull request accepts what it decides: no `(proposed)` markers in a pull request (SPEC, docs, tests); list its open choices in its description for Ian to review.
 - **`Part of #N` is only for a pull request that doesn't finish the issue** (SPEC §0). Don't write it to keep CI green: a pull request that finishes a proposal says `Closes #N` or `Fixes #N` even before Ian accepts it, and its red `accepted proposals` check is intended.
-- **Ian does not read the implementation.** He reviews the spec, examples, and compiler output. Error messages are part of the product: precise span, plain message, a `help:` line when there is an obvious fix. Nothing a Checkers user reads cites a decision (`Dn` or `#N`): compiler messages, the standard library, examples, `README.md` and `site/`.
-- **Issue workflow (SPEC §12):** a report is "found X, expected Y" with a `.ck` snippet. First add it as a golden test showing the expected output (`tests/parse/`, `tests/check/`, `tests/types/` for type errors, `tests/stage/` for staged code, `tests/run/` for program behaviour, §13.6; `tests/stress/` for results every multi-threaded schedule must give, §13.5), then fix, then `cargo test`. `ckc check --json` cases in `tests/json/`, `ckc complete` cases in `tests/complete/` (`‸` marks the cursor), language server sessions in `tests/lsp/` (§15.5). Tools written in Checkers (`tools/`, D95): formatter cases in `tests/fmt/`, `checkers` commands in `tests/tool/`, `ckc doc`/`checkers doc`/`checkers site` in `tests/doc/` (a package directory, or a site with `index.md`).
+- **Ian does not read the implementation.** He reviews the spec, examples, and compiler output. Error messages are part of the product: precise span, plain message, a `help:` line when there is an obvious fix. Nothing a Checkers user reads cites a decision (`#N`): compiler messages, the standard library, examples, `README.md` and `site/`.
+- **Issue workflow (SPEC §12):** a report is "found X, expected Y" with a `.ck` snippet. First add it as a golden test showing the expected output (`tests/parse/`, `tests/check/`, `tests/types/` for type errors, `tests/stage/` for staged code, `tests/run/` for program behaviour, §13.6; `tests/stress/` for results every multi-threaded schedule must give, §13.5), then fix, then `cargo test`. `ckc check --json` cases in `tests/json/`, `ckc complete` cases in `tests/complete/` (`‸` marks the cursor), language server sessions in `tests/lsp/` (§15.5). Tools written in Checkers (`tools/`, #586): formatter cases in `tests/fmt/`, `checkers` commands in `tests/tool/`, `ckc doc`/`checkers doc`/`checkers site` in `tests/doc/` (a package directory, or a site with `index.md`).
 - **Issue labels.** An agent that files a bug adds the `bug` label (a language decision takes `proposal`, SPEC §0). An agent that begins work on an issue first checks it isn't already `claimed`, then adds the `claimed` label and comments `Claimed by <its Claude Code session URL>`; if it stops without finishing, it removes the label. A daily scheduled task removes `claimed` from issues whose claiming session is archived and adds missing `bug` labels.
 - A golden test is the smallest program that shows the behaviour, fully abstracted from the report it came from: names say what is being tested (`walk`, `by_let`), not what the original program did (`digits`), and anything the behaviour doesn't need (types, helpers, library calls) is gone. Check that it still fails without the fix.
 - `UPDATE_GOLDEN=1 cargo test --test golden` rewrites `.out` files. Read every changed `.out` before committing; never accept output you haven't checked.
 - `examples/*.ck` must check with zero diagnostics (enforced by the golden test). `tools/checkers.ck` too.
 - `bench/*.ck` must check with zero diagnostics too (enforced by the golden test), so the benchmarks keep up with the language.
-- Two programs (D95, D96): `ckc`, the compiler (Rust, this crate's binary), and `checkers`, the build tool (Checkers, `tools/checkers.ck`, built with `ckc build tools/checkers.ck -o checkers`). The golden tests build `checkers` themselves. `.ck` files in `tools/`, `examples/`, `bench/`, `stdlib/` and `tests/{types,run,stage,stress}` must be formatted (`checkers fmt`); after reformatting, regenerate and read the `.out` files whose spans moved.
+- Two programs (#586, #587): `ckc`, the compiler (Rust, this crate's binary), and `checkers`, the build tool (Checkers, `tools/checkers.ck`, built with `ckc build tools/checkers.ck -o checkers`). The golden tests build `checkers` themselves. `.ck` files in `tools/`, `examples/`, `bench/`, `stdlib/` and `tests/{types,run,stage,stress}` must be formatted (`checkers fmt`); after reformatting, regenerate and read the `.out` files whose spans moved.
 - Keep `cargo clippy` clean. No new dependencies without a reason in the commit message.
-- All evaluation is native code (D80, SPEC §14): `ckc run`, `check` declarations, and compile-time values in staging. There is no interpreter. Builtins are implemented in `rt/src/builtins/<module>.rs`; each file's `TABLE` names them, and SPEC §16.3 must list every one (`tests/std.rs` checks).
-- `CHECKERS_NATIVE_DUMP=1 ckc run …` prints native code's first-order form with its reference counting, and each operation on known values kept to run, and why; `CHECKERS_RESIDUAL_CHECK=1` reports any other such operation as a compiler bug (the golden tests set it; `CHECKERS_NO_FOLD=1` turns folding off); `CHECKERS_RC_CHECK=1` reports objects still live at exit (only constants' values should be). `CHECKERS_KNOWN_TRACE=1` prints each known value native code computes for the type checker, or folding computes (`…, folded`), rather than reuses from `.checkers/known/`. `CHECKERS_PHASE_TIME=1` prints each phase's time (types, doc comments, checks, proofs) for each file checked, a doc comment's example too. `CHECKERS_ELAB_TIME=1` prints each module's elaboration time (to find what makes the types phase slow; `valgrind --tool=callgrind` on `ckc check --json` for where). `CHECKERS_SMT_DUMP=1 ckc check …` prints every SMT query; `CHECKERS_SMT_TIME=1` prints each query Z3 answered with its time, size, answer, work limit and the work it used (to find a slow proof; D154 measured with it). Z3's answers are cached in `.checkers/` beside the checked file (D100; gitignored); `--no-cache` or `CHECKERS_NO_CACHE=1` turns that off (the golden tests do). Z3 runs with a work limit, not a timeout (D101: `RLIMIT`, `QUICK_RLIMIT`, and `FIRST_RLIMIT` tried first, D154, in src/verify/mod.rs): if a new proof needs more, measure before raising it.
-- Z3 is linked in (crate `z3-sys`, feature `vendored`, D46): a clean build compiles Z3 from source (needs CMake and a C++ compiler; slow, once). For quicker development builds against an installed libz3: `Z3_LIBRARY_PATH_OVERRIDE=<dir> LD_LIBRARY_PATH=<dir> CARGO_TARGET_DIR=target-dyn cargo test --no-default-features` (the `z3-solver` pip package, version 5.3.3, ships a matching `libz3.so`). On macOS use `DYLD_LIBRARY_PATH` instead of `LD_LIBRARY_PATH`, and set `Z3_NO_PKG_CONFIG=1` so a Homebrew Z3 isn't found first; `ckc` warns when the Z3 it runs with isn't the pinned release.
-- Diagnostic codes: `E0001`–`E0099` lexer/layout, `E0100`–`E0199` parser, `E0200`–`E0299` names and types, `E0300`–`E0349` termination, `E0350`–`E0399` declarations (positivity, signatures), `E0400`–`E0449` usage (`own`/`ghost`), `E0450`–`E0499` proofs, `W001`–`W003` naming (§9.7), `W010`–`W019` usage (`W010`: redundant `own`; `W011`: a `match` on `Seq.uncons`), `W020`–`W029` unused code and unreachable branches (D144), `W030`–`W039` documentation (D148). Never reuse a code for a different meaning (E0107, E0111, E0113, E0114, E0116, E0117, E0211, E0224, E0233, E0234, E0288 and E0453 are retired).
-- The standard library is the package `std` (D104): `stdlib/x.ck` is module `std.x`, read from disk at each check, so editing it needs no rebuild. `ckc` looks in `CHECKERS_STD`, else `<ckc's dir>/../lib/checkers/std`, else this tree's `stdlib/`. Its proofs and `check`s run with every program that loads it (D109). A function body consisting of `__builtin` (allowed only in `std`) is a primitive implemented in Rust; E0361 if the runtime lacks it.
+- All evaluation is native code (#555, SPEC §14): `ckc run`, `check` declarations, and compile-time values in staging. There is no interpreter. Builtins are implemented in `rt/src/builtins/<module>.rs`; each file's `TABLE` names them, and SPEC §16.3 must list every one (`tests/std.rs` checks).
+- `CHECKERS_NATIVE_DUMP=1 ckc run …` prints native code's first-order form with its reference counting, and each operation on known values kept to run, and why; `CHECKERS_RESIDUAL_CHECK=1` reports any other such operation as a compiler bug (the golden tests set it; `CHECKERS_NO_FOLD=1` turns folding off); `CHECKERS_RC_CHECK=1` reports objects still live at exit (only constants' values should be). `CHECKERS_KNOWN_TRACE=1` prints each known value native code computes for the type checker, or folding computes (`…, folded`), rather than reuses from `.checkers/known/`. `CHECKERS_PHASE_TIME=1` prints each phase's time (types, doc comments, checks, proofs) for each file checked, a doc comment's example too. `CHECKERS_ELAB_TIME=1` prints each module's elaboration time (to find what makes the types phase slow; `valgrind --tool=callgrind` on `ckc check --json` for where). `CHECKERS_SMT_DUMP=1 ckc check …` prints every SMT query; `CHECKERS_SMT_TIME=1` prints each query Z3 answered with its time, size, answer, work limit and the work it used (to find a slow proof; #639 measured with it). Z3's answers are cached in `.checkers/` beside the checked file (#591; gitignored); `--no-cache` or `CHECKERS_NO_CACHE=1` turns that off (the golden tests do); `CHECKERS_CACHE_STATS=1` prints, on standard error, how many answers came from the cache and how many modules were verified before (`tests/cache.rs` reads it). Z3 runs with a work limit, not a timeout (#602: `RLIMIT`, `QUICK_RLIMIT`, and `FIRST_RLIMIT` tried first, #639, in src/verify/mod.rs): if a new proof needs more, measure before raising it.
+- Z3 is linked in (crate `z3-sys`, feature `vendored`, #542): a clean build compiles Z3 from source (needs CMake and a C++ compiler; slow, once). For quicker development builds against an installed libz3: `Z3_LIBRARY_PATH_OVERRIDE=<dir> LD_LIBRARY_PATH=<dir> CARGO_TARGET_DIR=target-dyn cargo test --no-default-features` (the `z3-solver` pip package, version 5.3.3, ships a matching `libz3.so`). On macOS use `DYLD_LIBRARY_PATH` instead of `LD_LIBRARY_PATH`, and set `Z3_NO_PKG_CONFIG=1` so a Homebrew Z3 isn't found first; `ckc` warns when the Z3 it runs with isn't the pinned release.
+- Diagnostic codes: `E0001`–`E0099` lexer/layout, `E0100`–`E0199` parser, `E0200`–`E0299` names and types, `E0300`–`E0349` termination, `E0350`–`E0399` declarations (positivity, signatures), `E0400`–`E0449` usage (`own`/`ghost`), `E0450`–`E0499` proofs, `W001`–`W003` naming (§9.7), `W010`–`W019` usage (`W010`: redundant `own`; `W011`: a `match` on `Seq.uncons`), `W020`–`W029` unused code and unreachable branches (#633), `W030`–`W039` documentation (#642). Never reuse a code for a different meaning (E0107, E0111, E0113, E0114, E0116, E0117, E0211, E0224, E0233, E0234, E0288 and E0453 are retired).
+- The standard library is the package `std` (#603): `stdlib/x.ck` is module `std.x`, read from disk at each check, so editing it needs no rebuild. `ckc` looks in `CHECKERS_STD`, else `<ckc's dir>/../lib/checkers/std`, else this tree's `stdlib/`. Its proofs and `check`s run with every program that loads it (#594). A function body consisting of `__builtin` (allowed only in `std`) is a primitive implemented in Rust; E0361 if the runtime lacks it.
 
 ## Layout
 
@@ -25,36 +25,36 @@ src/diag.rs          diagnostics and rendering
 src/json.rs          JSON strings out, the overlay map in (§15.5)
 src/pvec.rs          persistent vectors: a copy shares the elements, so a closure's environment (`Env`) and a context kept for later (`Cx`) cost nothing to keep
 src/pmap.rs          persistent maps (a treap): a copy shares the entries; how many locals of `Cx` have each name
-src/overlay.rs       unsaved files: every source read goes through `overlay::read` (`--overlay`, D120)
+src/overlay.rs       unsaved files: every source read goes through `overlay::read` (`--overlay`, #601)
 src/syntax/lexer.rs  characters → tokens → logical lines (INDENT/DEDENT), §9.1
 src/syntax/parser.rs recursive descent for §9.2
 src/syntax/ast.rs    surface AST
 src/syntax/print.rs  S-expression dump used by `checkers parse` and golden tests
-src/lint.rs          naming warnings (D21)
+src/lint.rs          naming warnings (#514)
 src/core.rs          core terms and values (their traversals: `any_sub`, `map_sub`, `head`, `spine`), evaluation (NbE), lazy unfolding, unification, printing
-src/elab/mod.rs      elaborator state, metas, deferred operator constraints (D38)
-src/elab/decls.rs    imports, declarations, positivity, signatures (auto-binding, D10)
+src/elab/mod.rs      elaborator state, metas, deferred operator constraints (#528)
+src/elab/decls.rs    imports, declarations, positivity, signatures (auto-binding, #504)
 src/elab/expr.rs     bidirectional checking of expressions, blocks, `try`, `when`
 src/elab/pattern.rs  `match` → case trees, exhaustiveness witnesses
-src/elab/index.rs    names for tools: each use, its definition, kind and hover text (`--json`, D120); `ckc index`, a package's (D161)
-src/elab/interval.rs arithmetic keeps constant bounds: ranges as anonymous refinements, joined branches, their array layouts (D135)
+src/elab/index.rs    names for tools: each use, its definition, kind and hover text (`--json`, #601); `ckc index`, a package's (#648)
+src/elab/interval.rs arithmetic keeps constant bounds: ranges as anonymous refinements, joined branches, their array layouts (#616)
 src/known.rs         values known at compile time as graphs: hash-consed nodes, walked by loops, never recursion (§8.9); `Tm::Known`, `Val::Known`
 src/known_cache.rs   known values kept across builds in `.checkers/known/`, the type checker's and folding's: keys over every definition and type a computation can reach (a specialized copy by its source and the arguments put in), values written with names (§8.9)
-src/range.rs         constant bounds of integers and their arithmetic: the elaborator's intervals (D135), native code's bounds from signatures (§14)
-src/elab/refine.rs   refinements inside types: inline and function-type refinements, implication, variance, E0262 (D71, D82–D87)
+src/range.rs         constant bounds of integers and their arithmetic: the elaborator's intervals (#616), native code's bounds from signatures (§14)
+src/elab/refine.rs   refinements inside types: inline and function-type refinements, implication, variance, E0262 (#554, #576, #575, #580, #579, #578, #583)
 src/elab/tyeq.rs     type equations `A == B` (#209): wanted at uses (E0294), given in bodies and `match` arms (classes, representatives), impossible cases
 src/elab/cowns.rs    a `when`'s cowns differ (§8.5): the obligation, types that differ for every instantiation; new cowns from calls (§7.1)
 src/elab/qualify.rs  names in diagnostics: two declarations (or locals) of one name told apart, as the module refers to each (§6 rule 8)
 src/elab/effects.rs  calls with effects (§7.1): given a capability or a `Sched`, each a value of its own to the prover (`Prim::Effect`); builtins never run when compiling (those with effects, `std.hint.blackbox`)
-src/elab/eq.rs       `==` never compares functions: in compiled code, and through type parameters (D125)
+src/elab/eq.rs       `==` never compares functions: in compiled code, and through type parameters (#614)
 src/elab/descr.rs    showing values by type (#170): which type parameters get descriptors, closed over calls; E0293
-src/doc.rs           `ckc doc FILE`: a module's exported declarations and descriptions as JSON lines (§15.6, D131)
+src/doc.rs           `ckc doc FILE`: a module's exported declarations and descriptions as JSON lines (§15.6, #623)
 src/elab/termination.rs  structural recursion over call-graph SCCs (§5.3)
 src/elab/settle.rs   a module's own functions proved on demand, so their values are known in it (§8.9); the proofs phase reuses those proofs
-src/literate.rs      doc comments' links and code blocks: W030–W033, their index and completion (D148 e, f)
-src/elab/unused.rs   unused declarations, constructors and fields: references marked from the roots (D144)
-src/elab/order.rs   declaration order by dependencies, cycles (D65); strongly connected components (`sccs`, termination's too)
-src/elab/stdlib.rs   finding and loading the standard library from disk (D104), program modules from `a/b.ck` (D53), packages' modules (D111)
+src/literate.rs      doc comments' links and code blocks: W030–W033, their index and completion (#642 e, f)
+src/elab/unused.rs   unused declarations, constructors and fields: references marked from the roots (#633)
+src/elab/order.rs   declaration order by dependencies, cycles (#557); strongly connected components (`sccs`, termination's too)
+src/elab/stdlib.rs   finding and loading the standard library from disk (#603), program modules from `a/b.ck` (#548), packages' modules (#608)
 src/usage.rs         `own`/`ghost` usage (QTT multiplicities)
 src/stage.rs         staging (§8.9): expands compile-time functions before erasure; `checkers stage`
 src/native/ir.rs     erasure: core terms → runtime code (§13.1); a one-field type is its field, type arguments' layouts or descriptors (#170)
@@ -63,33 +63,33 @@ src/native/fold.rs   maximal partial evaluation (§8.9): each function's code fo
 src/native/lower.rs  closure conversion: runtime code → first-order functions (§14)
 src/native/tailrec.rs recursion made tail recursion before reference counting: `f.dps` (a constructor around the call), `f.acc` (`+`, `*` after it; `++` after it, accumulated as the type's `++` copies: a list in front, other pieces in a list appended at once); an optimization (§14)
 src/native/wide.rs   128-bit arithmetic in generated code: multiplication's overflow, Euclidean division from 64-bit divisions (§14)
-src/native/rc.rs     reference counting, Perceus style: dup/drop, borrowing, reuse (D74)
+src/native/rc.rs     reference counting, Perceus style: dup/drop, borrowing, reuse (#567)
 src/native/codegen.rs first-order code → Cranelift (JIT and object files)
-src/native/eval.rs   compile-time evaluation: `check` and staging, one in-memory module per program (D80)
+src/native/eval.rs   compile-time evaluation: `check` and staging, one in-memory module per program (#555)
 src/native/mod.rs    `ckc run` (in memory), `ckc build` (link with libcheckers_rt.a)
-rt/src/              runtime crate checkers_rt: words and objects, format, I/O, lock-free scheduler (D77), entry
+rt/src/              runtime crate checkers_rt: words and objects, format, I/O, lock-free scheduler (#563), entry
 rt/src/builtins/     the standard library's builtins, one file per module (§16.1)
-rt/src/array.rs      arrays (D133): `K_ARRAY` objects laid out by element (words, or packed 1/2/4/8 bytes); an `Array U8` is a bytes object
+rt/src/array.rs      arrays (#624): `K_ARRAY` objects laid out by element (words, or packed 1/2/4/8 bytes); an `Array U8` is a bytes object
 rt/src/desc.rs       type descriptors (#170): what a type argument's word says, field types from the program descriptor
-rt/src/fiber.rs      a stack per behaviour, the switch, parking, `blocking` (M16, D113, D117; x86-64 Linux, ARM64, D126)
+rt/src/fiber.rs      a stack per behaviour, the switch, parking, `blocking` (M16, #607; x86-64 Linux, ARM64, #619)
 rt/src/poll.rs       epoll (Linux) or kqueue (macOS): our ends of child pipes wait without a thread
 rt/src/blocking.rs   threads for calls that can't be polled
-src/verify/mod.rs    prover driver: in-process Z3, diagnostics, counterexamples, trust ledger (§7)
+src/verify/mod.rs    prover driver: in-process Z3, diagnostics, counterexamples (§7)
 src/verify/smt.rs    obligations → SMT-LIB: sorts, datatypes, reflected functions, postconditions
 stdlib/*.ck          standard library, the package `std` (`stdlib/json.ck` is `std.json`)
-stdlib/markdown.ck   CommonMark 0.31.2 → syntax tree (with spans) and HTML, a port of commonmark.js (D151); `tests/commonmark/` runs the spec's 652 examples
-scripts/tables.py    writes the Unicode and HTML entity tables into stdlib/char.ck, string.ck, html.ck (D151)
-tools/checkers.ck    `checkers`, the build tool, in Checkers (D95): passes compiler commands to `ckc`; `fmt`
+stdlib/markdown.ck   CommonMark 0.31.2 → syntax tree (with spans) and HTML, a port of commonmark.js (#640); `tests/commonmark/` runs the spec's 652 examples
+scripts/tables.py    writes the Unicode and HTML entity tables into stdlib/char.ck, string.ck, html.ck (#640)
+tools/checkers.ck    `checkers`, the build tool, in Checkers (#586): passes compiler commands to `ckc`; `fmt`
 tools/fmt.ck         `checkers fmt`: files, --check, standard input (§15.4)
-tools/lsp.ck         `checkers lsp`, the language server (§15.5, D120): checks as child processes, phases, hover, definition, references, tokens; answers wait for the index of the text asked about (D127)
-tools/doc.ck         `checkers doc` (a package's documentation) and `checkers site` (the site in `site/`, llms.txt), as Markdown and HTML (§15.6, D131)
-tools/ck/literate.ck those pages: std.markdown, `[name]` links, code blocks compiled and run by `ckc`, highlighting, tables (D148)
+tools/lsp.ck         `checkers lsp`, the language server (§15.5, #601): checks as child processes, phases, hover, definition, references, tokens; answers wait for the index of the text asked about (#622)
+tools/doc.ck         `checkers doc` (a package's documentation) and `checkers site` (the site in `site/`, llms.txt), as Markdown and HTML (§15.6, #623)
+tools/ck/literate.ck those pages: std.markdown, `[name]` links, code blocks compiled and run by `ckc`, highlighting, tables (#642)
 tools/ck/jsonrpc.ck  LSP messages: framing, JSON helpers
 tools/ck/text.ck     lines, byte and UTF-16 columns, `file:` URIs; the tools' string and path helpers
 tools/ck/manifest.ck reading checkers.json and checkers.lock (§16.4)
-tools/ck/packages.ck dependencies: path and git, minimal version selection, lock, `--package`/`--uses` (D111)
-tools/ck/syntax.ck   the formatter's lexer and layout pass: lines, logical lines, blocks (D93, D99)
-tools/ck/format.ck   the formatter: spacing, indentation, alignment, blank lines, comments (D91, D92)
+tools/ck/packages.ck dependencies: path and git, minimal version selection, lock, `--package`/`--uses` (#608)
+tools/ck/syntax.ck   the formatter's lexer and layout pass: lines, logical lines, blocks (#588, #590)
+tools/ck/format.ck   the formatter: spacing, indentation, alignment, blank lines, comments (#584, #585)
 site/*.md            the language's site: home, tour, install, documentation (every sample checks; deployed by .github/workflows/pages.yml)
 tests/packages.rs    packages end to end with local git repositories (M14)
 tests/parking.rs     waiting behaviours hold no thread, at several thread counts (M16)

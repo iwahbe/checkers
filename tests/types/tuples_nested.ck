@@ -1,4 +1,4 @@
-# D174: `(a, b, c)` is `(a, (b, c))`, and a pattern may take a tuple apart
+# #673: `(a, b, c)` is `(a, (b, c))`, and a pattern may take a tuple apart
 # into fewer parts, its last the rest.
 module tuples_nested
 

@@ -1,4 +1,4 @@
-# CI (D129). One job per platform, so the checks a branch rule requires have
+# CI (#621). One job per platform, so the checks a branch rule requires have
 # the same names for pull requests and the merge queue:
 # - every pull request: clippy and the unit tests;
 # - the merge queue, and `main` after a merge: everything, integration tests

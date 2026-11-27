@@ -1,4 +1,4 @@
-# Classes over type constructors (M25, D136): `Functor`'s lemmas proved
+# Classes over type constructors (M25, #615): `Functor`'s lemmas proved
 # for each instance, used at a type parameter, and the errors.
 module functor
 

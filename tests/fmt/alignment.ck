@@ -1,4 +1,4 @@
-# Alignment of arms and constructors (D92).
+# Alignment of arms and constructors (#585).
 module alignment
 
 enum Shape

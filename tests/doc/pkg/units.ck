@@ -7,7 +7,7 @@ module pkg.units
 #     #! import pkg.units (UNIT)
 #     check UNIT == 1
 #
-# It needn't: a module's blocks import it (D164).
+# It needn't: a module's blocks import it (#650).
 #
 #     check UNIT + UNIT == 2
 #

@@ -1,4 +1,4 @@
-//! The index of names (§15.5, D120): each name in the program's own modules,
+//! The index of names (§15.5, #601): each name in the program's own modules,
 //! what it refers to, its kind and its type, for hover, go to definition and
 //! highlighting in the language server. Recorded while elaborating; the
 //! standard library's modules are not indexed.
@@ -13,7 +13,7 @@ pub enum Target {
     Con(ConId),
     /// Field `k` of a constructor (a record's fields, an enum constructor's).
     Field(ConId, usize),
-    /// `Type`, declared in the prelude (D132).
+    /// `Type`, declared in the prelude (#620).
     Univ,
 }
 
@@ -53,14 +53,14 @@ impl Elab {
         self.index_name(span, t);
     }
 
-    /// A constructor matched in a pattern: used, but not built (D144).
+    /// A constructor matched in a pattern: used, but not built (#633).
     pub fn index_pattern(&mut self, span: Span, t: Target) {
         self.reference(span, t, super::unused::RefKind::Match);
         self.index_name(span, t);
     }
 
     /// A name in an import's list: an occurrence of what it imports, for
-    /// references and rename (D161), not a use (D144).
+    /// references and rename (#648), not a use (#633).
     pub fn index_import(&mut self, span: Span, s: Sym) {
         match s {
             Sym::Def(d) => self.index_name(span, Target::Def(d)),
@@ -71,7 +71,7 @@ impl Elab {
     }
 
     fn index_name(&mut self, span: Span, t: Target) {
-        // Code shown from another module (D136) isn't in this file.
+        // Code shown from another module (#615) isn't in this file.
         if self.indexing() && span.start < super::SYNTHETIC {
             self.index.push(NameUse { module: self.cur.clone(), span, what: Use::Global(t) });
         }
@@ -122,7 +122,7 @@ impl Elab {
     /// Bind-site bookkeeping: the local at `l` was bound by the name at `span`.
     pub fn bound_at(&mut self, cx: &mut Cx, l: usize, span: Span) {
         cx.locals[l].span = Some(span);
-        // For usage messages about a local that holds no resource (D171).
+        // For usage messages about a local that holds no resource (#658).
         if let Some(f) = self.cur_fn {
             self.local_spans.entry((f, cx.locals[l].name.to_string())).or_insert(span);
         }
@@ -178,7 +178,7 @@ impl Elab {
         }
     }
 
-    /// Where go to type definition goes (D160): the declaration of the
+    /// Where go to type definition goes (#653): the declaration of the
     /// type of a local, a constant, a field or a constructor's value, or of
     /// a function's result.
     pub fn type_def_of(&self, u: &Use) -> Option<(String, Span)> {
@@ -202,7 +202,7 @@ impl Elab {
 
     /// Whether every use of the name is in the modules indexed (`user`):
     /// a local, or a declaration of one of them; one it exports only when
-    /// every module of its package is indexed (D160, D161). Renaming it
+    /// every module of its package is indexed (#653, #648). Renaming it
     /// there renames it everywhere.
     pub fn renamable(&self, u: &Use, user: &dyn Fn(&str) -> bool) -> bool {
         let (m, name, is_type) = match u {

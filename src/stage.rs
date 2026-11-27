@@ -1,4 +1,4 @@
-//! Staging (§8.9, D59–D62): evaluate the compile-time stage away.
+//! Staging (§8.9, #541, #549, #558, #560): evaluate the compile-time stage away.
 //!
 //! A partial evaluator over core terms. A function with `comptime`
 //! parameters is a compile-time function: each call is expanded with those
@@ -6,7 +6,7 @@
 //! known computations run at compile time (in the interpreter). What is left
 //! is runtime code with no compile-time calls in it. Runtime arguments of an
 //! expanded call are `let`-bound first, so they are evaluated exactly once,
-//! in order (D41).
+//! in order (#536).
 
 use crate::core::{defs_in, CaseTm, ConId, DefId, Globals, Lit, Mult, Prim, Tm};
 use crate::native::eval::Evaluator;
@@ -53,7 +53,7 @@ pub fn needs_staging(g: &Globals, t: &Tm) -> bool {
 }
 
 /// A staged program: new bodies for the functions that call compile-time
-/// functions, and the functions staging generated (D64), numbered after the
+/// functions, and the functions staging generated (#570), numbered after the
 /// program's own definitions.
 #[derive(Default)]
 pub struct Staged {
@@ -96,7 +96,7 @@ pub fn stage_program(g: &Globals) -> (Staged, Vec<(DefId, String)>) {
 
 struct Stager<'g> {
     g: &'g Globals,
-    /// Runs compile-time computations as native code (D80); made on first use.
+    /// Runs compile-time computations as native code (#555); made on first use.
     ev: Option<Evaluator<'g>>,
     /// Nesting of compile-time expansions, against runaway recursion.
     depth: usize,
@@ -460,7 +460,7 @@ impl<'g> Stager<'g> {
         let done = self.spec_ids.get(&key).is_some_and(|i| self.specs[*i].1.is_some());
         let r = if done || self.active.contains(&key) {
             // The same expansion again, inside itself (recursion on runtime
-            // values): call the function it becomes (D64).
+            // values): call the function it becomes (#570).
             self.wanted.insert(key.clone());
             let idx = {
                 let g = self.g;
@@ -812,7 +812,7 @@ fn defs_to_vars(t: &Tm, base: usize, n: usize, depth: usize) -> Tm {
 }
 
 /// A static tuple's components, flattened: a last component that is a tuple
-/// of two or more is its components (D174).
+/// of two or more is its components (#673).
 fn flat_tuple(mut xs: Vec<Tm>) -> Vec<Tm> {
     while xs.len() >= 2 {
         match xs.last() {

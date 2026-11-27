@@ -1,4 +1,4 @@
-# An array too large to allocate (D184, #25): a count that doesn't fit a
+# An array too large to allocate (#667, #25): a count that doesn't fit a
 # machine word.
 module too_large_count
 

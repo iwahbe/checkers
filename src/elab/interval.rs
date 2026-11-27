@@ -1,7 +1,7 @@
-//! Arithmetic keeps constant bounds (D135): the result of `+ - * / %` on
+//! Arithmetic keeps constant bounds (#616): the result of `+ - * / %` on
 //! operands whose bounds are constants is that range, an anonymous
 //! refinement `(n~Nat, 1 <= n, n <= 256)`, laid out in arrays by the
-//! narrowest layout that holds it (D133 e).
+//! narrowest layout that holds it (#624 e).
 
 use super::*;
 pub use crate::range::{combine, Range};
@@ -17,7 +17,7 @@ pub enum Join {
     Other,
 }
 
-/// The narrowest array layout holding `r` (D135 d), as `Layout`'s code.
+/// The narrowest array layout holding `r` (#616 d), as `Layout`'s code.
 pub fn layout_for(r: Range) -> u8 {
     let (Some(lo), Some(hi)) = (r.lo, r.hi) else { return Layout::Words as u8 };
     let fits = |a: i128, b: i128| a <= lo && hi <= b;
@@ -126,7 +126,7 @@ impl Elab {
     }
 
     /// An operand's value as a constant, in context `cx`: an integer known
-    /// at compile time (§8.9). An operation's range is its type's (D135):
+    /// at compile time (§8.9). An operation's range is its type's (#616):
     /// it isn't evaluated again, which would walk every operator chained
     /// below it.
     pub fn known_int(&self, cx: &Cx, t: &Tm) -> Option<i128> {
@@ -506,7 +506,7 @@ impl Elab {
         }
     }
 
-    /// The type of a range (D135 c): `Nat`, `Int`, or an anonymous
+    /// The type of a range (#616 c): `Nat`, `Int`, or an anonymous
     /// refinement of one, made once per range.
     pub fn range_type(&mut self, r: Range) -> Val {
         let nat = r.lo.is_some_and(|l| l >= 0);
@@ -571,7 +571,7 @@ impl Elab {
 
     /// The type of values that are each an `a` or a `b`, for a type
     /// parameter several values decide together: numbers' ranges joined
-    /// (D135), a type constructor's arguments joined one by one, and
+    /// (#616), a type constructor's arguments joined one by one, and
     /// otherwise the type without its refinement. Where `a` and `b` differ
     /// in more than refinements, `a`'s type: the value of type `b` is then
     /// reported where it is checked against it.
@@ -600,13 +600,13 @@ impl Elab {
         }
     }
 
-    /// Is `ty` a range this rule made (D135)?
+    /// Is `ty` a range this rule made (#616)?
     pub fn is_range(&self, ty: &Val) -> bool {
         matches!(crate::core::force_meta(&self.g, ty.clone()), Val::Neutral(Head::Def(d), _) if self.ranges.values().any(|r| *r == d))
     }
 
     /// The type an operator's other operand is checked against: a range's
-    /// base, so ranges don't spread through it (D135).
+    /// base, so ranges don't spread through it (#616).
     pub fn shared_operand_type(&self, ty: &Val) -> Val {
         if self.is_range(ty) {
             return self.arith_base(ty);
@@ -615,14 +615,14 @@ impl Elab {
         crate::core::class_type_base(&self.g, ty).unwrap_or_else(|| ty.clone())
     }
 
-    /// The type of `lt op rt` (D134, D135): `ty` is the operands' shared
+    /// The type of `lt op rt` (#616): `ty` is the operands' shared
     /// type, `lty` and `rty` their own.
     pub fn arith_type(&mut self, op: Prim, lc: Option<i128>, rc: Option<i128>, ty: &Val, lty: &Val, rty: &Val) -> Val {
         let nat_sub = op == Prim::Sub && crate::core::is_nat(&self.g, ty);
         match (self.operand_range(lc, lty), self.operand_range(rc, rty)) {
             (Some(a), Some(b)) => {
                 let r = combine(op, a, b, nat_sub);
-                // Never wider than D134's base: `Nat` stays `Nat`.
+                // Never wider than the base number type: `Nat` stays `Nat`.
                 let base_nat = crate::core::is_nat(&self.g, ty);
                 let r = if base_nat { r.meet(Range { lo: Some(0), hi: None }) } else { r };
                 self.range_type(r)

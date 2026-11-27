@@ -1,4 +1,4 @@
-//! What the checker knows at the cursor, for completion (D142 b): recorded
+//! What the checker knows at the cursor, for completion (#626 b): recorded
 //! where it meets the cursor's name (`syntax::lexer::CURSOR`), as Lean's
 //! elaborator records a `CompletionInfo`.
 
@@ -85,12 +85,9 @@ impl Elab {
 
     /// At the cursor after `x.`: what `x` is.
     pub fn note_member(&mut self, cx: &mut Cx, x: &Expr) -> (Tm, Val) {
-        let member = match &x.kind {
-            ExprKind::Con(c) => match self.resolve(c, true) {
-                Some(Sym::Ty(t)) if self.class_defs.contains_key(&t) => Some(Member::Class(t)),
-                _ => None,
-            },
-            ExprKind::Var(q) if cx.lookup(q).is_none() => self.qualifier(q).map(Member::Module),
+        let member = match (&x.kind, self.class_named(x, Some(cx))) {
+            (_, Some(t)) => Some(Member::Class(t)),
+            (ExprKind::Var(q), None) if cx.lookup(q).is_none() => self.qualifier(q).map(Member::Module),
             _ => None,
         };
         let member = match member {
@@ -139,7 +136,7 @@ pub struct Candidate {
     pub fits: bool,
 }
 
-/// The keywords that can stand at a place (D142 c), from the grammar (§9.2).
+/// The keywords that can stand at a place (#626 c), from the grammar (§9.2).
 pub fn keywords(p: &Place) -> Vec<&'static str> {
     const DECLS: [&str; 10] = ["fn", "partial", "enum", "record", "type", "lemma", "let", "class", "instance", "check"];
     let mut k: Vec<&'static str> = Vec::new();
@@ -186,7 +183,7 @@ pub fn keywords(p: &Place) -> Vec<&'static str> {
 use crate::syntax::parser::{Place, PlaceKind};
 
 impl Elab {
-    /// The candidates at `place` in module `module` (D142 a): keywords, then
+    /// The candidates at `place` in module `module` (#626 a): keywords, then
     /// names, in the order they are offered.
     pub fn candidates(&self, place: &Place, module: &str) -> Vec<Candidate> {
         let info = self.completion.clone().unwrap_or_default();
@@ -411,7 +408,7 @@ impl Elab {
         (!s.contains('#')).then_some(s)
     }
 
-    /// The description of what a name refers to (D128).
+    /// The description of what a name refers to (#617).
     fn doc_of(&self, u: &index::Use) -> Option<String> {
         let (m, span) = self.def_of(u)?;
         let f = self.sources.get(&m)?;

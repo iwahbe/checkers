@@ -106,12 +106,12 @@ pub enum Prim {
     Concat,
     Len,
     Index,
-    /// `par t` — identity to the type checker and prover (D34).
+    /// `par t` — identity to the type checker and prover (#522).
     Par,
     When,
     /// A stdlib function implemented in Rust (`__builtin`), by qualified name.
     Builtin(Rc<str>),
-    /// `forall x y : …, p` (D137): its one argument is a Π over the
+    /// `forall x y : …, p` (#632): its one argument is a Π over the
     /// variables whose body is the `Bool` (premises implying the
     /// conclusion). Only in specifications; never evaluated or compiled.
     Forall,
@@ -139,7 +139,7 @@ pub enum Tm {
     Tuple(Vec<Tm>),
     /// Component `i` of a tuple. With `rest` (the last component a pattern
     /// names), the components from `i` on: `(a, b, c)` is `(a, (b, c))`, so
-    /// `(x, r)` binds `r` to `(b, c)` (D174).
+    /// `(x, r)` binds `r` to `(b, c)` (#673).
     Proj(Rc<Tm>, usize, bool),
     /// Record projection: field `index` (counting fields only, not type parameters).
     Field(Rc<Tm>, ConId, usize),
@@ -320,9 +320,9 @@ pub struct DefInfo {
     pub body: Option<Tm>,
     /// Do not unfold during evaluation (`partial`).
     pub opaque: bool,
-    /// Sealed by its module (D54): does not unfold outside it.
+    /// Sealed by its module (#537): does not unfold outside it.
     pub sealed: bool,
-    /// Binder positions (over the whole Π-type) that are `comptime` (D59).
+    /// Binder positions (over the whole Π-type) that are `comptime` (#541).
     /// A function with any is a compile-time function: staging inlines it.
     pub comptime: Vec<usize>,
 }
@@ -337,10 +337,10 @@ pub struct TyInfo {
     /// Abstract to importers (or a built-in type such as `Nat`).
     pub is_abstract: bool,
     /// Per parameter: occurs only strictly positively in constructor fields
-    /// (for an abstract type: marked `+`, D16).
+    /// (for an abstract type: marked `+`, #511).
     pub positive: Vec<bool>,
     /// Per parameter of an abstract type: marked `-`, so it occurs only
-    /// negatively (D16).
+    /// negatively (#511).
     pub negative: Vec<bool>,
     /// How many of `params`, the last ones, are the dictionaries of its
     /// header's class clauses (#385): implicit arguments, found where the
@@ -367,7 +367,7 @@ pub struct Globals {
     pub tys: Vec<TyInfo>,
     pub cons: Vec<ConInfo>,
     pub metas: RefCell<Vec<MetaEntry>>,
-    /// The implicit parameters unknowns stand for, for messages (D141).
+    /// The implicit parameters unknowns stand for, for messages (#627).
     pub meta_origins: RefCell<HashMap<MetaId, MetaOrigin>>,
     /// Remaining δ-unfoldings before evaluation stops unfolding (guards against
     /// non-terminating definitions whose termination isn't checked yet).
@@ -416,15 +416,15 @@ pub struct WellKnown {
     pub bool_ty: Option<TyId>,
     pub true_con: Option<ConId>,
     pub false_con: Option<ConId>,
-    /// The prelude's `Nat`, a refinement alias of `Int` (D121).
+    /// The prelude's `Nat`, a refinement alias of `Int` (#609).
     pub nat: Option<DefId>,
     pub int: Option<TyId>,
     pub string: Option<TyId>,
-    /// `Bytes`, the prelude's alias of `Array U8` (D133).
+    /// `Bytes`, the prelude's alias of `Array U8` (#624).
     pub bytes: Option<DefId>,
     pub array: Option<TyId>,
     /// The prelude's fixed-width aliases and `Char`, with the layout of an
-    /// array of them (`checkers_rt::array::Layout`, D133).
+    /// array of them (`checkers_rt::array::Layout`, #624).
     pub layouts: Vec<(DefId, u8)>,
     pub list: Option<TyId>,
     pub nil: Option<ConId>,
@@ -448,7 +448,7 @@ pub struct WellKnown {
     /// passed their type's descriptor, not only its layout (#170).
     pub desc_params: HashMap<DefId, std::collections::BTreeSet<usize>>,
     /// Classes' functions, each reading a field of its dictionary, and the
-    /// functions building instances' dictionaries (D136): a class's
+    /// functions building instances' dictionaries (#615): a class's
     /// function at a known instance's dictionary is compiled as a direct
     /// call of that instance's function (§14).
     pub class_fns: std::collections::HashSet<DefId>,
@@ -749,7 +749,7 @@ pub fn unfold(g: &Globals, v: &Val) -> Option<Val> {
         return None;
     }
     // Fuel bounds unfolding of functions. A type alias can't recurse
-    // (cycles are errors, D65), so unfolding it always terminates and costs
+    // (cycles are errors, #557), so unfolding it always terminates and costs
     // none: running out of fuel must not stop `U8` from being `Nat`.
     if !is_type_former(&info.ty) {
         if g.fuel.get() == 0 {
@@ -790,7 +790,7 @@ fn builtin_value(g: &Globals, info: &DefInfo, sp: &[Elim]) -> Option<Val> {
 
 /// Weak-head normal form: resolve metas and unfold definitions at the head.
 /// Is `v` the type `Nat`, or a refinement of it (`U8`, `Char`)? Aliases are
-/// unfolded one at a time until `Nat` is met (D121): forcing would go past it
+/// unfolded one at a time until `Nat` is met (#609): forcing would go past it
 /// to `Int`.
 pub fn is_nat(g: &Globals, v: &Val) -> bool {
     let Some(nat) = g.well_known.nat else { return false };
@@ -809,7 +809,7 @@ pub fn is_nat(g: &Globals, v: &Val) -> bool {
     false
 }
 
-/// The layout of an array of `v`, a type (D133): a fixed-width alias's or
+/// The layout of an array of `v`, a type (#624): a fixed-width alias's or
 /// `Bool`'s (`Ok(code)`, `checkers_rt::array::Layout`), a type variable at
 /// level `Err(level)` (its layout is the variable's word at run time), or
 /// one word per element (`Ok(0)`).
@@ -1129,7 +1129,7 @@ fn stuck_base(g: &Globals, orig: Val, forced: Val) -> Val {
 }
 
 /// A tuple's components, flattened: a last component that is itself a tuple
-/// (of two or more) is its components (D174). `ty`: of a tuple type.
+/// (of two or more) is its components (#673). `ty`: of a tuple type.
 pub fn flat_parts(g: &Globals, vs: &[Val], ty: bool) -> Vec<Val> {
     let mut vs = vs.to_vec();
     while vs.len() >= 2 {
@@ -1422,11 +1422,11 @@ fn quote_case(g: &Globals, l: usize, c: &Rc<CaseTm>, env: &Env) -> Rc<CaseTm> {
 pub enum UnifyError {
     Mismatch,
     /// `?f x` against a type that isn't a type constructor applied to a
-    /// type (`Int`), D141.
+    /// type (`Int`), #627.
     NotApplied(MetaId),
 }
 
-/// What an unknown stands for (D141): the implicit parameter `name` of
+/// What an unknown stands for (#627): the implicit parameter `name` of
 /// `owner`, a meta applied to `spine` locals first.
 #[derive(Debug, Clone)]
 pub struct MetaOrigin {
@@ -1601,7 +1601,7 @@ pub fn strengthen(g: &Globals, v: &Val, outer: usize) -> Val {
 /// variable at level `x` solved by one that isn't, when its spine is all
 /// variables: what `t` says can then no longer depend on `x` through an
 /// unknown that nothing determined (an implicit argument a function type's
-/// predicate left open must not make it look like a postcondition, D82).
+/// predicate left open must not make it look like a postcondition, #576).
 pub fn forget_var(g: &Globals, l: usize, t: &Tm, x: usize) {
     if let Tm::Meta(m) = t.head() {
         if g.meta(*m).is_none() {
@@ -1681,7 +1681,7 @@ fn unify_many(g: &Globals, l: usize, a: &[Val], b: &[Val]) -> Result<(), UnifyEr
     Ok(())
 }
 
-/// Two tuples (or tuple types), flattened (D174). Of different lengths, the
+/// Two tuples (or tuple types), flattened (#673). Of different lengths, the
 /// shorter's last component is the rest of the longer: `(a, t)` and
 /// `(A, B, C)` give `a = A`, `t = (B, C)`.
 fn unify_tuple(g: &Globals, l: usize, x: &[Val], y: &[Val], ty: bool) -> Result<(), UnifyError> {
@@ -2240,7 +2240,7 @@ fn show_prec<S: Scope + ?Sized>(g: &Globals, ns: &mut Ns<S>, t: &Tm, p: u8) -> S
         Tm::Meta(m) => match g.meta(*m) {
             Some(v) => show_prec(g, ns, &quote(g, ns.len(), &v), p),
             // An unknown the checker has not worked out yet: by the
-            // parameter it stands for (D141), else `_`.
+            // parameter it stands for (#627), else `_`.
             None => match g.meta_origins.borrow().get(m) {
                 Some(o) => format!("?{}", o.name),
                 None => "_".into(),
@@ -2262,7 +2262,7 @@ fn show_prec<S: Scope + ?Sized>(g: &Globals, ns: &mut Ns<S>, t: &Tm, p: u8) -> S
             let anon_dom = matches!(head_def(a), Some(d) if is_anon_alias(g, d));
             let s = match i {
                 Icit::Expl if anon_dom && *m != Mult::Zero => format!("{mul}{dom} -> {cod}"),
-                // A dictionary (`$d0`, D136): its class clause alone.
+                // A dictionary (`$d0`, #615): its class clause alone.
                 Icit::Impl if x.starts_with("$d") => format!("{{{dom}}} -> {cod}"),
                 Icit::Impl => format!("{{{x2}~{mul}{dom}}} -> {cod}"),
                 Icit::Expl if x.as_ref() == "_" && *m == Mult::Many => format!("{dom} -> {cod}"),
@@ -2287,7 +2287,7 @@ fn show_prec<S: Scope + ?Sized>(g: &Globals, ns: &mut Ns<S>, t: &Tm, p: u8) -> S
                 h = f;
             }
             args.reverse();
-            // An inline refinement (D82) prints as written.
+            // An inline refinement (#576) prints as written.
             if let Tm::Def(d) = h {
                 if is_anon_alias(g, *d) {
                     return g.defs[d.0 as usize].name.to_string();
@@ -2489,7 +2489,7 @@ pub fn defs_in(t: &Tm, out: &mut Vec<DefId>) {
     }
 }
 
-/// An inline refinement `(n~Int, n >= 5)` (D82): an alias with no name of
+/// An inline refinement `(n~Int, n >= 5)` (#576): an alias with no name of
 /// its own, named by its text.
 pub fn is_anon_alias(g: &Globals, d: DefId) -> bool {
     g.defs[d.0 as usize].name.starts_with('(')
@@ -2601,7 +2601,7 @@ fn fix_mults(g: &Globals, t: &Tm) -> Tm {
 /// that isn't a bound variable, M25): solve the heads and the arguments
 /// apart, as Haskell does for type constructors. `t a` is a variable or a
 /// type constructor applied to arguments.
-/// The head of a value, for inverting a function by it (D175).
+/// The head of a value, for inverting a function by it (#659).
 #[derive(PartialEq)]
 enum RigidHead {
     TyCon(TyId),
@@ -2622,7 +2622,7 @@ fn rigid_head(v: &Val) -> Option<RigidHead> {
     })
 }
 
-/// D175: a `match` stuck on an unknown (`futures ?ts`, unfolded) must equal a
+/// #659: a `match` stuck on an unknown (`futures ?ts`, unfolded) must equal a
 /// value with a rigid head (`(Future Nat, Future String)`). If every arm of
 /// the `match` gives a different rigid head ("constructor-headed", as in
 /// Agda), the arm with the value's head is the only one that can: the

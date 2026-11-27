@@ -1,4 +1,4 @@
-# One function for a future or a list of futures (D173): `s` says which, and
+# One function for a future or a list of futures (#664): `s` says which, and
 # in each arm of `match s` the types of `x` and the result are refined to
 # that case.
 module join_shape

@@ -1,4 +1,4 @@
-# ck/format.ck — the formatter (D91, D92, SPEC §15.4): one style, no
+# ck/format.ck — the formatter (#584, #585, SPEC §15.4): one style, no
 # options. It keeps the author's line breaks, comments and literals, and
 # normalizes indentation, spacing, alignment and blank lines.
 
@@ -16,7 +16,7 @@ export let INDENT = 4
 # ── Spacing ──────────────────────────────────────────────────────────────────
 
 # A token that ends an operand: after it, `-` is subtraction, and a glued
-# `.` or `[` is field access or indexing (D22).
+# `.` or `[` is field access or indexing (#526).
 fn operand_end t : t~Tok
     match t.kind
         Name    -> not (syntax.is_keyword t)
@@ -47,7 +47,7 @@ fn is_unary prev t next pattern : prev~After, t~Tok, next~Option Tok, pattern~Bo
     syntax.is_punct t b"-" and (unary_after prev next pattern or sign_by_spacing prev t next)
 
 # A `-` written as a sign (`f -1`): after white space or an opening
-# bracket, glued to what follows (D169). It stays glued.
+# bracket, glued to what follows (#657). It stays glued.
 fn sign_by_spacing prev t next : prev~After, t~Tok, next~Option Tok
     let open_before = match prev
         Token p -> t.spaced or syntax.is_open p or syntax.is_punct p b","
@@ -97,12 +97,12 @@ fn gap prev t in_sig -> n : prev~After, t~Tok, in_sig~Bool, n~Nat
             else if glued_postfix p t or template p t
                 0
             else if in_sig and syntax.is_punct t b":" and not t.spaced and is_name p
-                # A named precondition, `total: forall …` (D137).
+                # A named precondition, `total: forall …` (#632).
                 0
             else
                 1
 
-# A glued `.` or `[` after an operand: field access or indexing (D22).
+# A glued `.` or `[` after an operand: field access or indexing (#526).
 fn glued_postfix p t : p~Tok, t~Tok
     (syntax.is_punct t b"." or syntax.is_punct t b"[") and not t.spaced and operand_end p
 
@@ -128,7 +128,7 @@ record Cursor
     sig~Option Nat             # where a signature's constraints start
     sig_wait~Bool              # a signature's `:` was the last token
     pattern~Bool               # before a match arm's `->`
-    header~Bool                # a type's parameters, where `+v` and `-v` are polarities (D16)
+    header~Bool                # a type's parameters, where `+v` and `-v` are polarities (#511)
 
 fn spaces n -> b : n~Nat, b~Bytes
     decreasing n
@@ -195,7 +195,7 @@ fn emit toks cur target what base lead acc -> r : toks~List Tok, cur~Cursor, tar
             let c2 = Cursor (col + t.wide) prev brackets2 sig sig_wait pattern header
             emit rest c2 target2 what base False (t.text :: spaces n :: acc)
 
-# Where a continuation line starts (D92).
+# Where a continuation line starts (#585).
 # `origin`: the column the logical line started at in the input.
 fn cont_col cur first indent origin -> c : cur~Cursor, first~Option Tok, indent~Nat, origin~Nat, c~Nat
     match cur.brackets
@@ -215,7 +215,7 @@ fn cont_col cur first indent origin -> c : cur~Cursor, first~Option Tok, indent~
                 None   -> indent + kept_offset first origin
 
 # Outside brackets, a continuation line keeps the indentation its author
-# gave it, relative to the line it continues, and at least one level (D99).
+# gave it, relative to the line it continues, and at least one level (#590).
 fn kept_offset first origin -> n : first~Option Tok, origin~Nat, n~Nat
     match first
         Some t -> if t.col >= origin + INDENT then t.col - origin else INDENT
@@ -226,7 +226,7 @@ fn first_col toks -> c : toks~List Tok, c~Nat
         t :: _ -> t.col
         []     -> 0
 
-# ── Alignment (D92) ──────────────────────────────────────────────────────────
+# ── Alignment (#585) ──────────────────────────────────────────────────────────
 
 # What a block's lines align: the `->` of match arms, the `:` of enum
 # constructors, or nothing.
@@ -277,7 +277,7 @@ fn before toks what d acc -> r : toks~List Tok, what~Bytes, d~Nat, acc~List Tok,
             else
                 before rest what (syntax.depth_after [t] d) (t :: acc)
 
-# An arm with a guard (`Some x if x > 0`) isn't aligned (D99).
+# An arm with a guard (`Some x if x > 0`) isn't aligned (#590).
 fn guarded toks d : toks~List Tok, d~Nat
     match toks
         []        -> False

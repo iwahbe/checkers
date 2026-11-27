@@ -1,6 +1,6 @@
 module comptime_params
 
-# Compile-time parameters (SPEC §8.9, D59–D61): what is rejected.
+# Compile-time parameters (SPEC §8.9, #541, #549, #558): what is rejected.
 
 import std.list (map)
 

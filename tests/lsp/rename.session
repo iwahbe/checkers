@@ -1,4 +1,4 @@
-# Highlighting, go to type definition and rename (D160), on rename.ck.
+# Highlighting, go to type definition and rename (#653), on rename.ck.
 > {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"capabilities":{"general":{"positionEncodings":["utf-8"]}}}}
 < 1
 > {"jsonrpc":"2.0","method":"initialized","params":{}}

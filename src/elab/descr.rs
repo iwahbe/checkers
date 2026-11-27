@@ -2,7 +2,7 @@
 //! a type parameter (`debug`), itself or through a function it calls with
 //! it, is passed that type's descriptor rather than only its layout, so
 //! the runtime shows them as their type says. The requirement is closed
-//! over each module's uses of generic functions, as D125 (b)'s is for
+//! over each module's uses of generic functions, as #614 (b)'s is for
 //! `==`; each type argument it reaches must be known when the program is
 //! compiled: one that depends on a value known only at run time is E0293.
 

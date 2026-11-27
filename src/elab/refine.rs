@@ -1,4 +1,4 @@
-//! Refinements inside types (D71, D82–D87, §7.1, §7.5).
+//! Refinements inside types (#554, #576, #575, #580, #579, #578, #583, §7.1, §7.5).
 //!
 //! A refinement alias (`type Small = n~Nat, n < 10`) is the same type as its
 //! base for unification, so on its own `List Nat` would pass for
@@ -12,10 +12,10 @@
 //!   declared type is the alias).
 //! - After unification, the expected and found types are compared by
 //!   variance (`refined_mismatch`): where both have a refinement, one must
-//!   imply the other, an obligation for any value (D83, D85); a refinement
+//!   imply the other, an obligation for any value (#575, #579); a refinement
 //!   may be forgotten (`List Small` as `List Nat`) but never gained (E0262).
 //! - A function with a specification, used as a value or partially applied,
-//!   gets a refined function type (`refined_fn_type`, D85, D86).
+//!   gets a refined function type (`refined_fn_type`, #579, #578).
 
 use super::*;
 
@@ -197,7 +197,7 @@ impl Elab {
     }
 
     /// The variance of each parameter of a type constructor: from its
-    /// marks for an abstract type (D16), otherwise covariant where the
+    /// marks for an abstract type (#511), otherwise covariant where the
     /// parameter is strictly positive and invariant elsewhere.
     pub fn variance(&self, t: TyId) -> Vec<Variance> {
         let ti = &self.g.tys[t.0 as usize];
@@ -214,7 +214,7 @@ impl Elab {
             .collect()
     }
 
-    /// Compare an expected and a found type that unify (D71, D83, D85).
+    /// Compare an expected and a found type that unify (#554, #575, #579).
     /// Where both have a refinement in the same place, the found one must
     /// imply the expected one (flipped in a contravariant place): an
     /// obligation for any value. Where only the one that must imply has
@@ -387,7 +387,7 @@ impl Elab {
                 };
                 for (sub, sup) in pairs {
                     // A `sub` whose alias `sup` refines further (`Nat` under
-                    // `Small`) is its base, as an unrefined type is (D121).
+                    // `Small`) is its base, as an unrefined type is (#609).
                     // A class's type with a base type has its predicates
                     // (#360): a refinement too.
                     let sub_ref = (self.refined_alias(sub).is_some() || self.based_class_type(sub)) && !self.refines(sup, sub);
@@ -432,7 +432,7 @@ impl Elab {
                     return Some(g);
                 }
                 // The result is compared for arguments the caller may pass:
-                // those of the side that must be implied (D85).
+                // those of the side that must be implied (#579).
                 let (x, other, dom) = match pol {
                     Variance::Contra => (x2, x1, a2),
                     _ => (x1, x2, a1),
@@ -468,7 +468,7 @@ impl Elab {
         }
     }
 
-    /// For any value of `sub`, the predicates of `sup` (D83, D85).
+    /// For any value of `sub`, the predicates of `sup` (#575, #579).
     fn weaken_obligation(&mut self, cx: &mut Cx, sub: &Val, sup: &Val, role: WeakenRole, w: &Walk) {
         let Some((alias, args)) = self.refined_alias(sup) else { return };
         let Some(preds) = self.alias_preds.get(&alias).cloned() else { return };
@@ -488,10 +488,10 @@ impl Elab {
     }
 
     /// The obligations for a value `v` checked against refinement alias
-    /// `alias` applied to `args` (D71).
+    /// `alias` applied to `args` (#554).
     pub fn refined_obligation(&mut self, cx: &Cx, alias: DefId, args: Vec<Val>, v: Val, span: Span) {
         if Some(alias) == self.g.well_known.nat && self.nat_by_closure(cx, &v) {
-            return; // D121 (c)
+            return; // #609 (c)
         }
         let Some(preds) = self.alias_preds.get(&alias).cloned() else { return };
         let name = self.g.defs[alias.0 as usize].name.to_string();
@@ -559,7 +559,7 @@ impl Elab {
     }
 
     /// An inline refinement `(n~Int, n >= 5)` or a refined function type
-    /// `(x~A -> y~B, preds)` (D82): anonymous aliases, applied to the locals
+    /// `(x~A -> y~B, preds)` (#576): anonymous aliases, applied to the locals
     /// they mention.
     pub fn elab_refine(&mut self, cx: &mut Cx, r: &ast::RefineTy) -> Tm {
         let name = |i: &Option<ast::Ident>| i.as_ref().map_or("_".to_string(), |i| i.name.clone());
@@ -609,7 +609,7 @@ impl Elab {
             })
             .collect();
         cx.pop();
-        // A predicate that mentions the result is a postcondition (D82).
+        // A predicate that mentions the result is a postcondition (#576).
         let (posts, pres): (Vec<Pred>, Vec<Pred>) = preds.into_iter().partition(|p| {
             let mut fv = std::collections::BTreeSet::new();
             free_vars(&p.tm, 0, &mut fv);
@@ -733,7 +733,7 @@ impl Elab {
 
     /// The type of `t`, a function with a specification applied to fewer
     /// arguments than it has binders (none, for a bare name), as a refined
-    /// function type (D85, D86): each remaining parameter carries the
+    /// function type (#579, #578): each remaining parameter carries the
     /// preconditions whose last binder it is, the result the
     /// postconditions, with the given arguments put in. Preconditions about
     /// given arguments alone are checked at the call (`call_obligations`).
@@ -752,7 +752,7 @@ impl Elab {
         }
         // An instance's function is used only in its dictionary, and called
         // only through the class's function, whose preconditions are its own
-        // (D136): its field's type needs none of them.
+        // (#615): its field's type needs none of them.
         if self.inst_fns.contains(d) {
             return ty;
         }

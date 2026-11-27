@@ -1,4 +1,4 @@
-//! Closure conversion (D72, §14): erased code (`native::ir::Ir`,
+//! Closure conversion (#569, §14): erased code (`native::ir::Ir`,
 //! curried and de Bruijn-indexed) becomes first-order functions over
 //! numbered variables. Every lambda becomes a function taking its closure
 //! (the environment) and its arguments; saturated calls of known functions
@@ -35,7 +35,7 @@ pub enum E {
     /// Apply a function value.
     Apply { f: Box<E>, args: Vec<E>, tail: bool },
     MkClo { f: u32, captured: Vec<V> },
-    /// `reuse`: memory of a value being dropped, to build in place (D74).
+    /// `reuse`: memory of a value being dropped, to build in place (#567).
     Con { con: u32, fields: Vec<E>, reuse: Option<V> },
     Tuple(Vec<E>),
     /// An operation that borrows its (atomic) arguments; `drops` are
@@ -293,7 +293,7 @@ impl Static {
         E::Static(Arc::new(graph), id)
     }
 
-    /// A tuple of nodes: `(a, (b, c))` is `(a, b, c)` (D174).
+    /// A tuple of nodes: `(a, (b, c))` is `(a, b, c)` (#673).
     pub fn tuple(&mut self, mut ids: Vec<u32>) -> u32 {
         use checkers_rt::word as w;
         if let Some(&last) = ids.last() {
@@ -351,7 +351,7 @@ pub enum BOp {
     Builtin(&'static str),
     Field(usize),
     Proj(usize),
-    /// A tuple's component `i` and the rest after it (D174).
+    /// A tuple's component `i` and the rest after it (#673).
     ProjRest(usize),
     /// `[cell, i, x]`: store `x` (one more reference) in field `i` (an
     /// integer word) of a new constructor cell whose field `i` is empty;
@@ -620,7 +620,7 @@ impl<'a, 'g> Lowerer<'a, 'g> {
             let shape = match checkers_rt::builtins::symbol(&full) {
                 Some(sym) => {
                     // Kept: what isn't erased, and for `std.array`'s builtins,
-                    // the type parameters, as layouts (D133).
+                    // the type parameters, as layouts (#624).
                     let types = checkers_rt::builtins::keeps_types(&full);
                     let mut keep = Vec::new();
                     let mut v = crate::core::eval(g, &crate::core::Env::new(), &info.ty);
@@ -1082,7 +1082,7 @@ impl Lowerer<'_, '_> {
                     return E::Apply { f: Box::new(inner), args: rest, tail };
                 }
                 // A builtin that may update an argument in place is called
-                // through its wrapper, which owns its arguments (D133).
+                // through its wrapper, which owns its arguments (#624).
                 Some(DefShape::Builtin { sym, keep, wrap }) if args.len() >= keep.len() && checkers_rt::builtins::OWNING.contains(&sym) => {
                     let es: Vec<E> = args.iter().map(|a| self.expr(a, ctx, false)).collect();
                     let (now, rest) = es.split_at(keep.len());

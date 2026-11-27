@@ -1,4 +1,4 @@
-# Child processes (D112): `run` gives a child input and collects its output;
+# Child processes (#611): `run` gives a child input and collects its output;
 # `spawn` gives back a `File` for each stream asked for as a `Pipe`, and the
 # checker makes the program close each and wait for the child.
 module processes

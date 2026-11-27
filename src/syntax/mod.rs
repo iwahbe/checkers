@@ -9,7 +9,7 @@ pub mod token;
 use crate::diag::Diagnostic;
 
 /// Lex and parse a whole file. Always returns a (possibly partial) module.
-/// `parse_module` with the cursor at byte `at` (D142): also the kind of
+/// `parse_module` with the cursor at byte `at` (#626): also the kind of
 /// place it is in, and the span of the text it replaces. None if completion
 /// doesn't apply there (in a comment or a literal).
 pub fn parse_at_cursor(text: &str, at: usize) -> Option<(ast::Module, Option<parser::Place>, crate::source::Span)> {

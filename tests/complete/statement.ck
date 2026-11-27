@@ -1,6 +1,6 @@
 module statement
 
-# Names and keywords in a function's body (D142).
+# Names and keywords in a function's body (#626).
 import std.char
 
 # A point in the plane.

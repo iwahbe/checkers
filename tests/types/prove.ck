@@ -31,7 +31,7 @@ fn byte_at src i -> b : src~Bytes, i~Nat, b~Nat
 fn small n -> b : n~U8, b~Bool
     n < 300
 
-# Induction: the recursive `have` is the induction hypothesis (D49).
+# Induction: the recursive `have` is the induction hypothesis (#547).
 lemma length_append xs ys : xs~List Int, ys~List Int
     ensures length (xs ++ ys) == length xs + length ys
     proof
@@ -79,6 +79,6 @@ lemma trusted_lemma x : x~Int
         admit
 
 # A function of a type, passed as a value, is outside the fragment (a
-# function of values is a function value, D139, see fn_values.ck).
+# function of values is a function value, #630, see fn_values.ck).
 fn outside f xs -> n : f~(t~Type -> t -> t), xs~List Int, n~Nat, n == length (list.map (f Int) xs)
     length xs

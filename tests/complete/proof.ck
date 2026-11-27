@@ -1,6 +1,6 @@
 module proof
 
-# In a proof (D142): `auto`, `admit` and lemmas.
+# In a proof (#626): `auto`, `admit` and lemmas.
 import std.list
 
 lemma length_nonneg xs : xs~List Int

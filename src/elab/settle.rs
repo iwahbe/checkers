@@ -6,7 +6,6 @@
 //! asking again.
 
 use super::*;
-use crate::verify::LedgerEntry;
 
 /// What was proved before the proofs phase (§8.9), which that phase then
 /// takes as proved.
@@ -25,10 +24,8 @@ pub struct Early {
     /// Measure obligations proved, which termination checking adds to
     /// `Elab::obligations` only at the module's end: by where and what.
     pub measures: Vec<(Span, ObKind)>,
-    /// Recursive groups whose guessed measure was proved (D150).
+    /// Recursive groups whose guessed measure was proved (#641).
     pub guesses: HashSet<Vec<DefId>>,
-    /// The ledger's entries for all of these, by module.
-    pub ledger: Vec<(String, LedgerEntry)>,
     /// How many obligations each module had proved so.
     pub counts: HashMap<String, usize>,
 }
@@ -167,12 +164,11 @@ impl Elab {
         let n = obs.len();
         obs.extend(measures.iter().copied());
         let gs: Vec<&termination::GuessGroup> = guesses.iter().collect();
-        let Some((ledger, proved)) = crate::verify::prove_now(self, &self.cur, &obs, &gs) else { return false };
+        let Some(proved) = crate::verify::prove_now(self, &self.cur, &obs, &gs) else { return false };
         let mut early = self.early.borrow_mut();
         early.obs.extend(ks);
         early.measures.extend(obs[n..].iter().map(|o| (o.span, o.kind.clone())));
         early.guesses.extend(guesses.into_iter().map(|g| g.members));
-        early.ledger.extend(ledger.into_iter().map(|l| (self.cur.clone(), l)));
         *early.counts.entry(self.cur.clone()).or_default() += proved;
         true
     }

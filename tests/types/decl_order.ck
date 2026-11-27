@@ -1,7 +1,7 @@
 module decl_order
 
 # Declarations are checked in the order of what they use, not of the file
-# (D65): each may use any declaration that doesn't depend on it.
+# (#557): each may use any declaration that doesn't depend on it.
 
 # A constant computed by a function declared later, used in a signature.
 let LIMIT = double 50

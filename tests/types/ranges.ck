@@ -1,4 +1,4 @@
-# Arithmetic keeps constant bounds (D135): the result's type is the range
+# Arithmetic keeps constant bounds (#616): the result's type is the range
 # the operands' bounds give, so what flows through inferred types keeps it.
 module ranges
 

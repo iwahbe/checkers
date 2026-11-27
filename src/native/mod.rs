@@ -1,4 +1,4 @@
-//! Native code (M8, D80, SPEC §14): erasure (`ir`), closure conversion
+//! Native code (M8, #555, SPEC §14): erasure (`ir`), closure conversion
 //! (`lower`), reference counting (`rc`), Cranelift (`codegen`), run in
 //! memory (`run`; compile-time evaluation, `eval`) or written as an
 //! executable (`build`). The runtime is the `checkers_rt` crate.
@@ -223,17 +223,42 @@ pub(crate) fn jit_module() -> cranelift_jit::JITModule {
 
 /// `jit_module`, with some of the runtime's symbols at other addresses.
 fn jit_module_with(instead: &[(&'static str, *const u8)]) -> cranelift_jit::JITModule {
-    // Cranelift's tail calls rely on frame pointers.
-    let mut jb = cranelift_jit::JITBuilder::with_flags(
-        &[("opt_level", "speed"), ("preserve_frame_pointers", "true")],
-        cranelift_module::default_libcall_names(),
-    )
-    .expect("a JIT for this machine");
+    let mut jb = jit_builder();
+    jb.symbol("ck_invoke", shared_invoke() as *const u8);
     for (name, ptr) in checkers_rt::symbols() {
         let ptr = instead.iter().find(|(n, _)| *n == name).map_or(ptr, |(_, p)| *p);
         jb.symbol(name, ptr);
     }
     cranelift_jit::JITModule::new(jb)
+}
+
+fn jit_builder() -> cranelift_jit::JITBuilder {
+    // Cranelift's tail calls rely on frame pointers.
+    cranelift_jit::JITBuilder::with_flags(
+        &[("opt_level", "speed"), ("preserve_frame_pointers", "true")],
+        cranelift_module::default_libcall_names(),
+    )
+    .expect("a JIT for this machine")
+}
+
+/// The Rust-to-native dispatcher depends only on the host's calling
+/// conventions, not on a program. Compile it once for all JIT modules,
+/// including the evaluators created while checking types and staging.
+fn shared_invoke() -> checkers_rt::prog::Invoke {
+    static INVOKE: std::sync::OnceLock<checkers_rt::prog::Invoke> = std::sync::OnceLock::new();
+    *INVOKE.get_or_init(|| {
+        let g = Globals::default();
+        let module = cranelift_jit::JITModule::new(jit_builder());
+        let mut gen = codegen::Gen::new(module, lower::Program::new(&g, None), &g);
+        gen.define_new();
+        gen.m.finalize_definitions().expect("finish the native dispatcher");
+        let code = gen.m.get_finalized_function(gen.invoke);
+        // The dispatcher has the runtime's Invoke signature. Its code
+        // must outlive every program and every thread using it.
+        let invoke = unsafe { std::mem::transmute::<*const u8, checkers_rt::prog::Invoke>(code) };
+        std::mem::forget(gen.m);
+        invoke
+    })
 }
 
 fn dump(e: &lower::E, d: usize) -> String {
@@ -319,10 +344,9 @@ fn run_in(module: cranelift_jit::JITModule, g: &Globals, staged: Option<&crate::
         return 101;
     }
     let desc = descriptor(g, &p);
-    let mut gen = codegen::Gen::new(module, p, g);
+    let mut gen = codegen::Gen::importing_invoke(module, p, g);
     gen.define_new();
     let main_clo = gen.main_closure();
-    let invoke = gen.invoke;
     let debug = gen.debug_table();
     let mut module = gen.m;
     module.finalize_definitions().expect("finish native code");
@@ -331,9 +355,8 @@ fn run_in(module: cranelift_jit::JITModule, g: &Globals, staged: Option<&crate::
         Some(codegen::Placed::Data(d, o)) => module.get_finalized_data(d).0 as u64 + o as u64,
         None => 0,
     };
-    let inv = module.get_finalized_function(invoke);
     let (clo, _) = module.get_finalized_data(main_clo);
-    let invoke: checkers_rt::prog::Invoke = unsafe { std::mem::transmute(inv) };
+    let invoke = shared_invoke();
     let main_w = clo as u64;
     let owner = main.0;
     let args = args.to_vec();
@@ -444,6 +467,41 @@ mod tests {
     fn return_words_by_machine() {
         for (triple, n) in MACHINES {
             assert_eq!(codegen::return_words(&*isa(triple)), n, "{triple}");
+        }
+    }
+
+    /// The shared dispatcher calls code in independent modules at every
+    /// supported arity, including arguments passed on the stack.
+    #[test]
+    fn shared_dispatcher_calls_every_arity() {
+        use checkers_rt::word as w;
+        for offset in [10, 100] {
+            let g = Globals::default();
+            let mut p = lower::Program::new(&g, None);
+            for n in 0..=lower::MAX_ARITY {
+                p.funcs.push(lower::Func {
+                    name: format!("arity_{n}"),
+                    owner: lower::NO_OWNER,
+                    kind: lower::FnKind::Global,
+                    params: (0..n as u32).collect(),
+                    body: if n == 0 { lower::E::Int(offset) } else { lower::E::Var(n as u32 - 1) },
+                    nvars: n as u32,
+                    rets: 1,
+                    bounds: Default::default(),
+                });
+            }
+            let mut gen = codegen::Gen::importing_invoke(jit_module(), p, &g);
+            gen.define_new();
+            gen.m.finalize_definitions().unwrap();
+            let invoke = shared_invoke();
+            for n in 0..=lower::MAX_ARITY {
+                let args: Vec<_> = (0..n).map(|i| w::mk_int(offset + i as i64)).collect();
+                let code = gen.m.get_finalized_function(gen.func_id(n as u32)) as u64;
+                let result = invoke(code, w::ERASED, args.as_ptr(), n as u64);
+                assert_eq!(result, w::mk_int(offset + n.saturating_sub(1) as i64), "arity {n}");
+            }
+            // No values or threads retain this module's code.
+            unsafe { gen.m.free_memory() };
         }
     }
 

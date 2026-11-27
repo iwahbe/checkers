@@ -1,6 +1,6 @@
 module refined_fn_gain
 
-# D71c, unchanged by M10: no refinement at all can't gain one.
+# #554 (c), unchanged by M10: no refinement at all can't gain one.
 
 type Big = n~Int, n >= 5
 
