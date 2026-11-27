@@ -129,7 +129,8 @@
 #
 # **Every interpretation is a `Model`** (#85). `checks_sound` says "for
 # every `Model` …"; that means "in every interpretation of the context"
-# because each interpretation 𝔄 that satisfies the context gives a `Model`
+# because each interpretation 𝔄 that satisfies the context, among the
+# structures whose arrays include every `lambda`'s (above), gives a `Model`
 # that satisfies the premises and evaluates the goal as 𝔄 does. 𝔄 is a
 # mathematical object, not a Checkers value, so this is an argument, not a
 # lemma; each step below is mathematics outside Checkers. What a `Model`
@@ -137,11 +138,13 @@
 #
 # - `Bool`, `Int` and sequences are exact: `Truth`, `Integer` (any `Int`;
 #   the theory `Ints` makes `Int` "the set of all integer numbers"),
-#   `Sequence` (finite lists; Z3's sequences are finite).
+#   `Sequence` (finite lists: SMT-LIB 2.6 has no sequences, and `ckc`
+#   writes a Checkers array, finite, as one, SPEC §7.3).
 # - A datatype's values are `Constructed` trees, finite, with fields of
 #   their sorts (`of_sort`): the absolutely free algebra Definition 8 asks
-#   for. A selector at another constructor's value is `wrong_sel`, which
-#   Definition 8 leaves free.
+#   for. A selector at another constructor's value is `wrong_sel`, of
+#   which Definition 8 asks nothing but that it is of the field's sort
+#   (Remark 11, p. 78).
 # - An uninterpreted sort's elements are `Element 0 … Element n` (`UpTo n`)
 #   or every `Element n` (`Countable`): any non-empty countable set, up to
 #   numbering. An array sort's elements are the numbers `array_in` names:
@@ -175,7 +178,8 @@
 # a function symbol `F_t(ȳ)` for each `lambda` body `t` of the signature,
 # whose `∀`-axiom is `select (F_t ȳ) i = t[i, ȳ]`: countably many. 𝔅 is still
 # an SMT-LIB structure, by closure: `Int` holds every numeral and `-`, so it
-# is ℤ; a sequence sort is closed under `seq.unit`, `seq.++` and `seq.nth`,
+# is ℤ; a sequence sort is closed under `seq.empty`, `seq.unit`, `seq.++`
+# and `seq.nth`,
 # so it is the finite sequences over 𝔅's element sort; a datatype sort is
 # closed under constructors and selectors, so it is the free algebra over
 # 𝔅's other sorts; the array laws are `∀` and `∀∃` sentences, which an
@@ -183,7 +187,8 @@
 # That `Model`'s functions need not be computable. A lemma proved "for every
 # `m~Model`" covers it if a variable of function type ranges over every
 # function, as §7.3's encoding into Z3's arrays reasons; SPEC does not say
-# which reading it means; #486 proposes the first.
+# which reading it means: every function, or only those a program can
+# write. #486 proposes every function.
 
 module model
 
@@ -1657,15 +1662,19 @@ export fn lambda_law c m s env senv xs body i -> r : c~Context, m~Model, s~Sort,
         True
 
 # Extensionality: two different arrays of `s` differ at the index `differ`
-# gives.
+# gives. That index is of the index sort whatever `select` says there:
+# `differ` always answers, so this asks no read the model may leave out,
+# and were it allowed to give something else, no `select` would be asked
+# and two arrays that read alike everywhere could be different.
 export fn ext_law c m s a b -> r : c~Context, m~Model, s~Sort, a~Nat, b~Nat, r~Bool
     match s
         Arr ix _ ->
             if array_sort c s and a != b and m.array_in s a and m.array_in s b
                 let i = m.differ s a b
-                match (m.select s a i, m.select s b i)
-                    (Some p, Some q) -> of_sort c m ix i and p != q
-                    _                -> True
+                of_sort c m ix i
+                    and match (m.select s a i, m.select s b i)
+                        (Some p, Some q) -> p != q
+                        _                -> True
             else
                 True
         _        -> True
@@ -1684,15 +1693,22 @@ fn same_where_given p q -> r : p~Option Value, q~Option Value, r~Bool
 #
 #     total: forall r : r~Read, model.gives c m r
 #
-# or, at the reads of a finite set of terms only (`rs`, a `List Read`):
+# A narrower shape asks it only at the reads of a finite set of terms
+# (`rs`, a `List Read`):
 #
 #     total: forall r : r~Read, list.contains rs r, model.gives c m r
+#
+# No theorem uses that shape yet. `rs` would depend on the model as well
+# as the terms: a `FunAt f vs` carries the values of `f`'s arguments in
+# `m`, so for a theorem about every `m` it is a function of `m` and the
+# terms, not a list fixed beforehand.
 #
 # The arrays' reads (`select`, `const`, `store`, `map +`, `lambda`) are not
 # here: `arrays_total_at` says the model answers them, with the laws.
 #
-# Each is what an SMT-LIB structure gives (2.6, Definitions 6 and 8, §5.3),
-# and asks nothing of arguments outside their sorts, where it is true:
+# Each is what an SMT-LIB structure gives (2.6, §5.3), or for `seq.nth`
+# what Z3 gives, and asks nothing of arguments outside their sorts, where
+# it is true:
 #
 # - `FunAt f vs`: the `f`-th function is total on its parameters' sorts,
 #   with a value of its result sort (Definition 6);
@@ -1700,9 +1716,9 @@ fn same_where_given p q -> r : p~Option Value, q~Option Value, r~Bool
 #   at divisor 0 a function of `n` (the theory `Ints`);
 # - `NthOutAt e xs i`: Z3's `seq.nth` is total, outside the sequence a
 #   function of `xs` and `i` of sort `e`;
-# - `WrongSelAt d k j args v`: a selector is total on its datatype
-#   (Definition 8), at a value another constructor built a function of it
-#   of the field's sort.
+# - `WrongSelAt d k j args v`: a selector is a total function on its
+#   datatype (Definition 6), at a value another constructor built
+#   constrained only to be of the field's sort (Remark 11, p. 78).
 
 # A question a model answers: see the section's comment.
 export enum Read
@@ -2032,7 +2048,7 @@ lemma results_reverse c m rs ss env senv : c~Context, m~Model, rs~List (Result V
             _                  -> auto
 
 # Whether `r` is a value of sort `s`.
-fn has_value c m s r -> b : c~Context, m~Model, s~Sort, r~Result Value Unknown, b~Bool
+fn result_of_sort c m s r -> b : c~Context, m~Model, s~Sort, r~Result Value Unknown, b~Bool
     match r
         Ok v  -> of_sort c m s v
         Err _ -> False
@@ -2042,7 +2058,7 @@ lemma results_nth c m rs ss i : c~Context, m~Model, rs~List (Result Value Unknow
     ensures match list.head (list.drop i ss)
         Some s ->
             match list.head (list.drop i rs)
-                Some r -> has_value c m s r
+                Some r -> result_of_sort c m s r
                 None   -> False
         None   -> True
     proof
@@ -2152,7 +2168,7 @@ lemma value_total low c m env senv t s : low~Lower, c~Context, m~Model, env~List
                                          arrays_total: forall s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2 : s2~Sort, a2~Nat, b2~Nat, i2~Value, j2~Value, x2~Value,
                                          vs2~List Value, ss2~List Sort, xs2~Sort, body2~Term,
                                          arrays_total_at c m s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2
-    ensures has_value c m s (value low AsGiven c m env senv t)
+    ensures result_of_sort c m s (value low AsGiven c m env senv t)
     proof
         let sig = term.signature c
         match t
@@ -2198,7 +2214,7 @@ lemma apply_total low c m env senv t h args s found : low~Lower, c~Context, m~Mo
                                                       arrays_total: forall s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2 : s2~Sort, a2~Nat, b2~Nat, i2~Value, j2~Value, x2~Value,
                                                       vs2~List Value, ss2~List Sort, xs2~Sort, body2~Term,
                                                       arrays_total_at c m s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2
-    ensures has_value c m s (apply low AsGiven c m env senv t h args)
+    ensures result_of_sort c m s (apply low AsGiven c m env senv t h args)
     proof
         let sig = term.signature c
         have sorts_of_each sig senv args found
@@ -2250,7 +2266,7 @@ lemma prim_total low c m env senv t op args s found : low~Lower, c~Context, m~Mo
                                                       arrays_total: forall s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2 : s2~Sort, a2~Nat, b2~Nat, i2~Value, j2~Value, x2~Value,
                                                       vs2~List Value, ss2~List Sort, xs2~Sort, body2~Term,
                                                       arrays_total_at c m s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2
-    ensures has_value c m s (prim low AsGiven c m env senv t op args)
+    ensures result_of_sort c m s (prim low AsGiven c m env senv t op args)
     proof
         let sig = term.signature c
         have term.apply_prim sig op found
@@ -2377,9 +2393,13 @@ export lemma total_has_value c m t s : c~Context, m~Model, t~Term, s~Sort, term.
                                        arrays_total: forall s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2 : s2~Sort, a2~Nat, b2~Nat, i2~Value, j2~Value, x2~Value,
                                        vs2~List Value, ss2~List Sort, xs2~Sort, body2~Term,
                                        arrays_total_at c m s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2
-    ensures match eval c m t
-        Ok v  -> of_sort c m s v
-        Err _ -> False
+    ensures has_value c m t
     proof
         have value_total (level AsGiven c m m.fuel) c m [] [] t s
         have eval c m t == value (level AsGiven c m m.fuel) AsGiven c m [] [] t
+
+# Whether `t` has a value of its sort in `m`.
+export fn has_value c m t -> r : c~Context, m~Model, t~Term, r~Bool
+    match (term.sort_of (term.signature c) [] t, eval c m t)
+        (Ok s, Ok v) -> of_sort c m s v
+        _            -> False
