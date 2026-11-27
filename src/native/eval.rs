@@ -60,6 +60,8 @@ impl<'g> Evaluator<'g> {
         let module = super::jit_module();
         let mut gen = Gen::importing_invoke(module, Program::new(g, staged), g);
         gen.probe = true;
+        // A folded operation's value may be a lambda's closure.
+        gen.p.keep_lambdas = true;
         let invoke = super::shared_invoke();
         let prog = checkers_rt::prog::make(&super::descriptor(g, &gen.p), invoke);
         gen.p.specs.borrow_mut().frozen = true;
@@ -312,6 +314,32 @@ impl<'g> Evaluator<'g> {
             add(*f, Whose::Lambda(*f));
         }
         out
+    }
+
+    /// The code closure `v` (a `K_CLO`) runs, where a value can name it:
+    /// a definition's or a constructor's, capturing nothing, or a lambda's
+    /// (`lam_code`), the closure holding the values it captured after its
+    /// code's address. `codes` is `codes()`, made since the closure was.
+    fn closure_code(&self, codes: &HashMap<u64, Whose>, v: W) -> Option<crate::known::Code> {
+        match codes.get(&w::slot(v, 0))? {
+            Whose::Known(c) if w::nfields(v) == 0 => Some(c.clone()),
+            Whose::Known(_) => None,
+            Whose::Lambda(f) => {
+                let lam = self.lam_code(*f)?;
+                (lam.captured == w::nfields(v)).then_some(crate::known::Code::Lam(lam))
+            }
+        }
+    }
+
+    /// Reads closures' code (`closure_code`) for values this evaluator
+    /// made: the code of each function compiled so far, gathered when the
+    /// first closure is read.
+    pub fn closure_reader(&self) -> impl FnMut(W) -> Option<crate::known::Code> + '_ {
+        let mut codes = None;
+        move |v| {
+            let codes = codes.get_or_insert_with(|| self.codes());
+            self.closure_code(codes, v)
+        }
     }
 
     /// The code of lambda function `f`, closed (`LamCode`), if it has a
@@ -624,21 +652,12 @@ impl Reifier<'_, '_> {
             // variables, by its code; a lambda's closure, by its code and
             // the values it captured.
             w::K_CLO => {
-                let code = w::slot(v, 0);
                 let codes = self.codes.get_or_insert_with(|| self.ev.codes());
-                match codes.get(&code)? {
-                    Whose::Known(c) if w::nfields(v) == 0 => Some(Step::Leaf(Node::Closure(c.clone()))),
-                    Whose::Known(_) => None,
-                    Whose::Lambda(f) => {
-                        let lam = self.ev.lam_code(*f)?;
-                        if lam.captured != w::nfields(v) {
-                            return None;
-                        }
-                        if lam.captured == 0 {
-                            return Some(Step::Leaf(Node::Closure(crate::known::Code::Lam(lam))));
-                        }
+                match self.ev.closure_code(codes, v)? {
+                    crate::known::Code::Lam(lam) if lam.captured > 0 => {
                         Some(Step::Parts(Make::Lam(lam), (0..w::nfields(v)).map(|i| (w::slot(v, i + 1), None)).collect()))
                     }
+                    c => Some(Step::Leaf(Node::Closure(c))),
                 }
             }
             // Its function, then the arguments it holds.

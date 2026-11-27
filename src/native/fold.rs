@@ -252,7 +252,7 @@ impl<'g> Folder<'g> {
         });
         let r = match ev.eval_ir_limited(node, work) {
             Ok(v) => {
-                let out = ev.within_program(|| from_word(v));
+                let out = ev.within_program(|| from_word(v, &mut ev.closure_reader()));
                 ev.release(v);
                 match out {
                     Some((s, id)) => {
@@ -534,9 +534,13 @@ fn write_key(ir: &Ir, out: &mut String) -> bool {
 }
 
 /// A runtime value as static data, where it has a static form: numbers,
-/// bytes, arrays, constructors and tuples of such. Walked with a stack of its own,
-/// so a value of any depth takes the same stack.
-pub fn from_word(v: w::W) -> Option<(Static, u32)> {
+/// bytes, arrays, constructors and tuples of such, and functions: a
+/// closure whose code `code` names (a definition's, a constructor's, or a
+/// lambda's with the values it captured), or one given some of its
+/// arguments. Walked with a stack of its own, so a value of any depth
+/// takes the same stack.
+pub fn from_word(v: w::W, code: &mut dyn FnMut(w::W) -> Option<crate::known::Code>) -> Option<(Static, u32)> {
+    use crate::known::Code;
     let mut s = Static::default();
     let mut done: HashMap<w::W, u32> = HashMap::new();
     // Each object's parts, as first read.
@@ -594,6 +598,37 @@ pub fn from_word(v: w::W) -> Option<(Static, u32)> {
                 }
                 let elems: Box<[u32]> = parts[&x].iter().map(|p| done[p]).collect();
                 s.add(SNode::Array { layout: layout as u8, elems })
+            }
+            // A lambda's closure capturing values is its code given them,
+            // as a partial application's is its function given arguments.
+            w::K_CLO => match code(x)? {
+                Code::Def(d) => s.add(SNode::Global(d.0)),
+                Code::Con(c) => s.add(SNode::ConFn(c.0)),
+                Code::Lam(lam) if lam.captured == 0 => s.add(SNode::Lam(lam)),
+                Code::Lam(lam) => {
+                    if !ready {
+                        let ps: Vec<w::W> = (1..=lam.captured).map(|i| w::slot(x, i)).collect();
+                        stack.push((x, true));
+                        stack.extend(ps.iter().copied().filter(|p| !done.contains_key(p)).map(|p| (p, false)));
+                        parts.insert(x, ps);
+                        continue;
+                    }
+                    let f = s.add(SNode::Lam(lam));
+                    let fields: Box<[u32]> = std::iter::once(f).chain(parts[&x].iter().map(|p| done[p])).collect();
+                    s.add(SNode::Obj { kind: w::K_PAP, tag: 0, fields })
+                }
+            },
+            // Its function, then the arguments it holds.
+            w::K_PAP => {
+                if !ready {
+                    let ps: Vec<w::W> = (0..=w::nfields(x)).map(|i| w::slot(x, i)).collect();
+                    stack.push((x, true));
+                    stack.extend(ps.iter().copied().filter(|p| !done.contains_key(p)).map(|p| (p, false)));
+                    parts.insert(x, ps);
+                    continue;
+                }
+                let fields: Box<[u32]> = parts[&x].iter().map(|p| done[p]).collect();
+                s.add(SNode::Obj { kind: w::K_PAP, tag: 0, fields })
             }
             _ => return None,
         };
