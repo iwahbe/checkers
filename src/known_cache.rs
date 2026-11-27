@@ -30,6 +30,10 @@ use checkers_rt::word as w;
 
 const HEADER: &str = "checkers known 1";
 
+/// Keys made for terms holding a value no name can say (a lambda's code),
+/// each unlike any other: such a term's value is never reused.
+static UNNAMED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// What a key covers besides the term: a definition or a type (with its
 /// constructors).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -182,8 +186,9 @@ impl KnownCache {
     }
 
     /// Value `v` written with names: each node a line, parts first, the
-    /// value last. The items it names are added to `items`.
-    fn encode(&mut self, p: &Program, k: &Known, root: u32, items: &mut Vec<Item>) -> String {
+    /// value last. The items it names are added to `items`. `None` if it
+    /// holds a lambda's code, which isn't written.
+    fn encode(&mut self, p: &Program, k: &Known, root: u32, items: &mut Vec<Item>) -> Option<String> {
         let g = p.g;
         let nodes = k.reachable(root);
         let at: HashMap<u32, usize> = nodes.iter().enumerate().map(|(i, n)| (*n, i)).collect();
@@ -211,12 +216,13 @@ impl KnownCache {
                     items.push(Item::Ty(g.cons[c.0 as usize].ty.0));
                     format!("fc {}", self.con_name(g, c.0))
                 }
+                Node::Closure(Code::Lam(_)) => return None,
                 Node::Pap(xs) => format!("p {}", ids(xs)),
             };
             out += line.trim_end();
             out.push('\n');
         }
-        out
+        Some(out)
     }
 
     /// Static data `s` at `root` written with names, compactly: the names
@@ -310,7 +316,7 @@ impl KnownCache {
                     body.push(10);
                     varint(&mut body, c as u64);
                 }
-                SNode::Global(_) | SNode::Code(_) => return None,
+                SNode::Global(_) | SNode::Code(_) | SNode::Lam(_) => return None,
             }
         }
         let mut out = STATIC_HEADER.to_vec();
@@ -330,10 +336,11 @@ impl KnownCache {
     fn render(&mut self, p: &Program, t: &Tm, items: &mut Vec<Item>) -> String {
         fn strip(c: &mut KnownCache, p: &Program, t: &Tm, items: &mut Vec<Item>) -> Tm {
             match t {
-                Tm::Known(v) => {
-                    let text = c.encode(p, &v.graph, v.id, items);
-                    Tm::Lit(Lit::Str(Rc::from(format!("\0known {}", crate::verify::digest(&text)))))
-                }
+                Tm::Known(v) => match c.encode(p, &v.graph, v.id, items) {
+                    Some(text) => Tm::Lit(Lit::Str(Rc::from(format!("\0known {}", crate::verify::digest(&text))))),
+                    // A value no name can say: a key no other build has.
+                    None => Tm::Lit(Lit::Str(Rc::from(format!("\0unnamed {}", UNNAMED.fetch_add(1, std::sync::atomic::Ordering::Relaxed))))),
+                },
                 _ => t.map_sub(|x, _| strip(c, p, x, items)),
             }
         }
@@ -650,8 +657,9 @@ impl KnownCache {
             }
             _ => return,
         };
-        let text = self.encode(&Program::of(g), &k, root, &mut Vec::new());
-        Self::write(key, &text);
+        if let Some(text) = self.encode(&Program::of(g), &k, root, &mut Vec::new()) {
+            Self::write(key, &text);
+        }
     }
 
     /// The static data stored under `key` (folding's), read into this

@@ -65,6 +65,69 @@ pub enum E {
     LetMulti(Vec<V>, Box<E>, Box<E>),
 }
 
+/// A lambda's code as a known closure holds it (§8.9): closed, the values
+/// it captured its first parameters, then its own. Its closure is this
+/// code given the captured values (`known::Node::Pap`), or the code alone
+/// if it captured none.
+pub struct LamCode {
+    /// `\c1 … cm x1 … xn -> body`.
+    pub ir: Arc<Ir>,
+    /// How many of its parameters are captured values (`m`).
+    pub captured: usize,
+    /// The code written exactly: equal texts, equal code.
+    text: String,
+    hash: u128,
+}
+
+impl LamCode {
+    /// `ir` refers to definitions only, never to a program's copies.
+    pub fn new(ir: Arc<Ir>, captured: usize) -> LamCode {
+        use crate::native::ir::Named;
+        use std::fmt::Write;
+        let mut text = format!("{captured} ");
+        crate::native::ir::write_text(
+            &ir,
+            &mut |n, out| {
+                match n {
+                    Named::Def(d) => write!(out, "g{}", d.0).unwrap(),
+                    Named::Con(c) => write!(out, "{}", c.0).unwrap(),
+                    Named::Static(v, id) => write!(out, "#{:x}", v.hash_of(id)).unwrap(),
+                    Named::Owner(o) => write!(out, "{:?}", o.map(|d| d.0)).unwrap(),
+                }
+                Some(())
+            },
+            &mut text,
+        )
+        .expect("every part named");
+        let hash = crate::known::hash128(|s: &mut dyn std::hash::Hasher| s.write(text.as_bytes()));
+        LamCode { ir, captured, text, hash }
+    }
+
+    pub fn hash(&self) -> u128 {
+        self.hash
+    }
+}
+
+impl PartialEq for LamCode {
+    fn eq(&self, other: &LamCode) -> bool {
+        self.hash == other.hash && self.text == other.text
+    }
+}
+
+impl Eq for LamCode {}
+
+impl std::hash::Hash for LamCode {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_u128(self.hash)
+    }
+}
+
+impl std::fmt::Debug for LamCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LamCode#{:032x}", self.hash)
+    }
+}
+
 /// Static data (`E::Static`, `Ir::Static`): values known when the program
 /// is compiled, as a graph of the words and objects they are at run time,
 /// each node's parts before it and equal nodes one (§8.9, §14). Code
@@ -102,6 +165,10 @@ pub enum SNode {
     /// A function of the program without free variables (a closed
     /// lambda), as a value: its global closure.
     Code(u32),
+    /// A lambda's code known when compiling (`LamCode`), as a value: in
+    /// erased code only, until closure conversion makes it a function
+    /// (`Code`).
+    Lam(Arc<LamCode>),
 }
 
 impl SNode {
@@ -120,8 +187,9 @@ impl Static {
         &self.nodes[id as usize]
     }
 
-    /// The definitions whose functions the value at `id` holds, or `None`
-    /// if it holds a function of the program's first-order code.
+    /// The definitions whose functions the value at `id` holds, or whose
+    /// code a lambda's it holds refers to; `None` if it holds a function
+    /// of the program's first-order code.
     pub fn globals(&self, id: u32) -> Option<Vec<u32>> {
         let mut out = Vec::new();
         let mut seen = std::collections::HashSet::new();
@@ -132,6 +200,11 @@ impl Static {
             }
             match self.node(n) {
                 SNode::Global(d) => out.push(*d),
+                SNode::Lam(code) => {
+                    let mut gs = Vec::new();
+                    crate::native::ir::globals_in(&code.ir, &mut gs);
+                    out.extend(gs.iter().map(|d| d.0));
+                }
                 SNode::Code(_) => return None,
                 node => todo.extend_from_slice(node.parts()),
             }
@@ -173,6 +246,10 @@ impl Static {
             SNode::Code(f) => {
                 s.write_u8(7);
                 s.write_u32(*f);
+            }
+            SNode::Lam(code) => {
+                s.write_u8(8);
+                s.write(&code.hash().to_le_bytes());
             }
             SNode::Array { layout, elems } => {
                 s.write_u8(4);
@@ -463,6 +540,24 @@ pub struct Program {
     /// Operations on static data alone left to run unkept, which the
     /// check reports as compiler bugs (`CHECKERS_RESIDUAL_CHECK=1`).
     pub residual: Vec<String>,
+    /// Whether each lambda's function keeps its source (`lambdas`): for
+    /// code whose values are read back (compile-time evaluation, §8.9).
+    pub keep_lambdas: bool,
+    /// Each lambda's function and its source, where kept.
+    pub lambdas: HashMap<u32, LamSource>,
+    /// The function made for each lambda's code known when compiling,
+    /// with the values it captured put in (`SNode::Lam`): by the hash of
+    /// its static data.
+    pub lam_fns: HashMap<u128, u32>,
+}
+
+/// Where a lambda's function came from (`Program::lambdas`): its code, and
+/// the variables around it it captures, in the order its closure holds
+/// them (as indices outside it).
+#[derive(Clone)]
+pub struct LamSource {
+    pub ir: Arc<Ir>,
+    pub captured: Vec<usize>,
 }
 
 /// Code with no definition (a `check`, a value staging computes).
@@ -523,6 +618,9 @@ impl Program {
             max_parts: crate::native::host_return_words(),
             fold: false,
             residual: Vec::new(),
+            keep_lambdas: false,
+            lambdas: HashMap::new(),
+            lam_fns: HashMap::new(),
         }
     }
 }
@@ -950,6 +1048,7 @@ impl Lowerer<'_, '_> {
             Ir::Erased => E::Erased,
             Ir::Lit(v) => Self::lit(v),
             Ir::Static(v, id) => {
+                let (v, id) = &self.lambdas_of(v, *id);
                 // The functions it holds are compiled.
                 for x in v.reachable(*id) {
                     match v.node(x) {
@@ -1083,6 +1182,12 @@ impl Lowerer<'_, '_> {
         // The same outer variable may appear twice in the context (never in
         // practice): keep the first.
         let f = self.p.funcs.len() as u32;
+        if self.p.keep_lambdas {
+            if let Ir::Lam(o, b) = ir {
+                let ks = inner_outer.iter().enumerate().filter(|(_, iv)| captured_inner.contains(iv)).map(|(k, _)| outer.len() - 1 - k).collect();
+                self.p.lambdas.insert(f, LamSource { ir: Arc::new(Ir::Lam(*o, b.clone())), captured: ks });
+            }
+        }
         let owner = self.owner;
         let name = format!("lambda{f}");
         self.p.funcs.push(Func {
@@ -1096,6 +1201,71 @@ impl Lowerer<'_, '_> {
             bounds: HashMap::new(),
         });
         E::MkClo { f, captured: captured_outer }
+    }
+
+    /// Static data with the lambdas' code it holds (`SNode::Lam`) made
+    /// functions (`SNode::Code`): a lambda's code given exactly the values
+    /// it captured is a function with them put in, which takes no
+    /// environment, so its closure is static data too.
+    fn lambdas_of(&mut self, v: &Arc<Static>, id: u32) -> (Arc<Static>, u32) {
+        let nodes = v.reachable(id);
+        if !nodes.iter().any(|x| matches!(v.node(*x), SNode::Lam(_))) {
+            return (v.clone(), id);
+        }
+        let mut out = Static::default();
+        let mut at: crate::known::FxMap<u32, u32> = Default::default();
+        // A lambda's code alone, only where something holds it so.
+        let get = |me: &mut Self, out: &mut Static, at: &mut crate::known::FxMap<u32, u32>, x: u32| -> u32 {
+            if let Some(y) = at.get(&x) {
+                return *y;
+            }
+            let SNode::Lam(code) = v.node(x) else { unreachable!("a node made before its holders") };
+            let f = me.lam_fn(v.hash_of(x), code, &[]);
+            let y = out.add(SNode::Code(f));
+            at.insert(x, y);
+            y
+        };
+        for &x in &nodes {
+            let n = match v.node(x) {
+                SNode::Lam(_) => continue,
+                SNode::Obj { kind, fields, .. } if *kind == checkers_rt::word::K_PAP => match v.node(fields[0]) {
+                    SNode::Lam(code) if code.captured > 0 && fields.len() - 1 == code.captured => {
+                        let caps: Vec<Arc<Ir>> = fields[1..].iter().map(|c| Arc::new(Static::ir(v, *c))).collect();
+                        SNode::Code(self.lam_fn(v.hash_of(x), code, &caps))
+                    }
+                    _ => SNode::Obj { kind: *kind, tag: 0, fields: fields.iter().map(|f| get(self, &mut out, &mut at, *f)).collect() },
+                },
+                SNode::Obj { kind, tag, fields } => SNode::Obj { kind: *kind, tag: *tag, fields: fields.iter().map(|f| get(self, &mut out, &mut at, *f)).collect() },
+                SNode::Array { layout, elems } => SNode::Array { layout: *layout, elems: elems.iter().map(|f| get(self, &mut out, &mut at, *f)).collect() },
+                n => n.clone(),
+            };
+            let y = out.add(n);
+            at.insert(x, y);
+        }
+        let root = get(self, &mut out, &mut at, id);
+        (Arc::new(out), root)
+    }
+
+    /// The function of a lambda's code known when compiling, with the
+    /// values it captured (`caps`, closed code) put in: closed, so its
+    /// closure is static. One per program for each such value (`key`, its
+    /// static data's hash).
+    fn lam_fn(&mut self, key: u128, code: &LamCode, caps: &[Arc<Ir>]) -> u32 {
+        if let Some(f) = self.p.lam_fns.get(&key) {
+            return *f;
+        }
+        let ir = crate::native::ir::apply_closed(&code.ir, caps);
+        let o = match &ir {
+            Ir::Lam(o, _) => o.map_or(NO_OWNER, |d| d.0),
+            _ => self.owner,
+        };
+        let saved = std::mem::replace(&mut self.owner, o);
+        let e = self.lambda(&ir, &[]);
+        self.owner = saved;
+        let E::MkClo { f, captured } = e else { unreachable!("a lambda's closure") };
+        debug_assert!(captured.is_empty(), "closed code captures nothing");
+        self.p.lam_fns.insert(key, f);
+        f
     }
 
     /// A `par` component: a closure taking `()`.

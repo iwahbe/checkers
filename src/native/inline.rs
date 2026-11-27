@@ -28,7 +28,7 @@
 //! a runtime error there names that definition, as it did when it was
 //! called.
 
-use super::ir::{shift, Ir, IrCase, Lit};
+use super::ir::{rename, shift, Ir, IrCase, Lit};
 use crate::core::DefId;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -627,17 +627,6 @@ fn sink(v: &Ir, b: &Ir, fuel: usize) -> Option<Ir> {
         }
         _ => None,
     }
-}
-
-/// `ir` with each free variable `i` renamed to `f(i)`.
-fn rename(ir: &Ir, f: &dyn Fn(usize) -> usize) -> Ir {
-    fn go(ir: &Ir, f: &dyn Fn(usize) -> usize, depth: usize) -> Ir {
-        match ir {
-            Ir::Var(i) if *i >= depth => Ir::Var(f(i - depth) + depth),
-            _ => ir.map_subterms(|x, n| go(x, f, depth + n)),
-        }
-    }
-    go(ir, f, 0)
 }
 
 #[cfg(test)]
