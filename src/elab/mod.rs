@@ -20,6 +20,7 @@ pub(crate) mod order;
 mod pattern;
 mod qualify;
 pub use pattern::BINDING_HELP;
+mod reach;
 mod refine;
 pub mod settle;
 mod template;
@@ -877,9 +878,6 @@ pub struct Elab {
     /// Ordered, so that an arm's variables are found without going through
     /// every variable in scope.
     pub moot_in_arm: BTreeSet<(DefId, usize, ConId, usize)>,
-    /// The stuck `match`es whose arms `case_linear` is looking at: met again,
-    /// a recursive type function adds no resource (#659).
-    pub lin_visiting: std::cell::RefCell<Vec<usize>>,
     /// A `match` arm's resource names, bound as ghosts for its guard: the
     /// guard's span, for E0408.
     pub guard_vars: HashMap<(DefId, String), Span>,
@@ -1148,7 +1146,6 @@ impl Elab {
             binder_spans: HashMap::new(),
             lam_domains: HashMap::new(),
             moot_in_arm: BTreeSet::new(),
-            lin_visiting: std::cell::RefCell::new(Vec::new()),
             guard_vars: HashMap::new(),
             stdlib_mode: false,
             map_elem_sub: None,
@@ -1256,7 +1253,8 @@ impl Elab {
     /// for the types of variables a pattern or `let` binds (#662).
     pub fn reduce_type(&self, v: &Val) -> Val {
         let mut v = crate::core::force_meta(&self.g, v.clone());
-        for _ in 0..64 {
+        // However many: unfolding ends (see `core::unfold`).
+        loop {
             let Val::Neutral(Head::Def(d), _) = &v else { break };
             if self.alias_preds.contains_key(d) {
                 break;
@@ -1750,6 +1748,32 @@ impl Lin {
     }
 }
 
+/// What `val_linear` is inside: a type whose field's type is computed, or
+/// a stuck `match` (by its address), innermost first.
+#[derive(Clone, Copy, PartialEq)]
+enum LinStep {
+    Ty(TyId),
+    Case(usize),
+}
+
+struct LinPath {
+    step: LinStep,
+    up: Option<Rc<LinPath>>,
+}
+
+impl LinPath {
+    fn has(p: &Option<Rc<LinPath>>, step: LinStep) -> bool {
+        let mut p = p.as_deref();
+        while let Some(q) = p {
+            if q.step == step {
+                return true;
+            }
+            p = q.up.as_deref();
+        }
+        false
+    }
+}
+
 impl Elab {
     /// A primitive resource (#533): implemented by the runtime as an open, stateful thing.
     fn is_primitive_resource(&self, t: TyId) -> bool {
@@ -1891,37 +1915,96 @@ impl Elab {
         self.val_linear(&eval(&self.g, &crate::core::Env::from(env), t))
     }
 
-    /// Is a value of this type linear (#533)?
+    /// Is a value of this type linear (#533)? However deep the type: a
+    /// worklist. A type holding itself at the same arguments is seen once;
+    /// one whose field's type is computed (`Lin::Depends`) and that holds
+    /// itself at other arguments holds types without end, and is taken as
+    /// a resource.
     pub fn val_linear(&self, v: &Val) -> bool {
-        self.val_linear_at(v, 0)
-    }
-
-    fn val_linear_at(&self, v: &Val, depth: usize) -> bool {
-        if depth > 32 {
-            return true;
-        }
-        match self.force(v) {
-            Val::TyCon(id, args) => {
-                if self.is_owner(id) {
-                    return false;
+        // Types are compared quoted at a level above every variable in
+        // them, the fresh ones included.
+        const KEY: usize = usize::MAX - (1 << 24);
+        let fresh = std::cell::Cell::new(usize::MAX / 2);
+        let fresh = || {
+            let l = fresh.get();
+            fresh.set(l + 1);
+            Val::var(l)
+        };
+        let mut seen: Vec<(TyId, Vec<Tm>)> = Vec::new();
+        let mut work: Vec<(Val, Option<Rc<LinPath>>)> = vec![(v.clone(), None)];
+        while let Some((v, path)) = work.pop() {
+            match self.force(&v) {
+                Val::TyCon(id, args) => {
+                    if self.is_owner(id) {
+                        continue;
+                    }
+                    match self.ty_lin(id, &mut Vec::new()) {
+                        Lin::Yes => return true,
+                        Lin::No => work.extend(args.iter().enumerate().filter(|(k, _)| self.type_param(id, *k)).map(|(_, a)| (a.clone(), path.clone()))),
+                        Lin::Depends => {
+                            let key: Vec<Tm> = args.iter().map(|a| quote(&self.g, KEY, a)).collect();
+                            if seen.iter().any(|(i, k)| *i == id && k.len() == key.len() && k.iter().zip(&key).all(|(a, b)| tm_eq(a, b))) {
+                                continue;
+                            }
+                            if LinPath::has(&path, LinStep::Ty(id)) {
+                                return true;
+                            }
+                            seen.push((id, key));
+                            let inner = Some(Rc::new(LinPath { step: LinStep::Ty(id), up: path }));
+                            // The fields of `id` at these arguments.
+                            for c in &self.g.tys[id.0 as usize].ctors {
+                                let mut env: Vec<Val> = args.to_vec();
+                                for f in self.g.cons[c.0 as usize].fields.iter() {
+                                    if f.1 != Mult::Zero && self.field_lin(&f.3, &mut Vec::new()) != Lin::No {
+                                        work.push((eval(&self.g, &crate::core::Env::from(env.clone()), &f.3), inner.clone()));
+                                    }
+                                    // Earlier fields are unknown here: fresh variables far above any context.
+                                    env.push(fresh());
+                                }
+                            }
+                        }
+                    }
                 }
-                match self.ty_lin(id, &mut Vec::new()) {
-                    Lin::Yes => true,
-                    Lin::No => args.iter().enumerate().any(|(k, a)| self.type_param(id, k) && self.val_linear_at(a, depth + 1)),
-                    Lin::Depends => self.fields_linear(id, &args, depth),
+                Val::TupleTy(ts) => work.extend(ts.iter().map(|a| (a.clone(), path.clone()))),
+                // A type variable is generic (#545); a stuck computation of a type may be a resource.
+                Val::Neutral(Head::Def(d), _) => {
+                    if self.def_gives_type(d) {
+                        return true;
+                    }
                 }
+                // A `match` stuck on an unknown: a resource if an arm may be one (#672 e).
+                Val::Neutral(_, sp) if sp.iter().any(|e| matches!(e, Elim::Case(..))) => match sp.last() {
+                    Some(Elim::Case(c, env)) => {
+                        // A recursive type function meets its own `match`
+                        // again: what it gives there is the same type, a
+                        // resource only if a base arm is (`futures ts`
+                        // recurses through `futures rest`).
+                        let key = &**c as *const CaseTm as usize;
+                        if LinPath::has(&path, LinStep::Case(key)) {
+                            continue;
+                        }
+                        let inner = Some(Rc::new(LinPath { step: LinStep::Case(key), up: path }));
+                        let mut arm = |n: usize, body: &Tm| {
+                            let mut e = env.clone();
+                            e.extend((0..n).map(|_| fresh()));
+                            work.push((eval(&self.g, &e, body), inner.clone()));
+                        };
+                        for (_, n, b) in c.branches.iter() {
+                            arm(*n, b);
+                        }
+                        for (_, b) in c.lits.iter() {
+                            arm(0, b);
+                        }
+                        if let Some(b) = c.default.as_ref() {
+                            arm(0, b);
+                        }
+                    }
+                    _ => return true,
+                },
+                _ => {}
             }
-            Val::TupleTy(ts) => ts.iter().any(|a| self.val_linear_at(a, depth + 1)),
-            // A type variable is generic (#545); a stuck computation of a type may be a resource.
-            Val::Neutral(Head::Def(d), _) => self.def_gives_type(d),
-            // A `match` stuck on an unknown: a resource if an arm may be one (#672 e).
-            Val::Neutral(_, sp) if sp.iter().any(|e| matches!(e, Elim::Case(..))) => match sp.last() {
-                Some(Elim::Case(c, env)) => self.case_linear(c, env, depth),
-                _ => true,
-            },
-            Val::Neutral(..) => false,
-            _ => false,
         }
+        false
     }
 
     /// Is parameter `k` of this type a type (`a~Type`, `f~Type -> Type`),
@@ -1939,31 +2022,6 @@ impl Elab {
     }
 
     /// Might an arm of this stuck `match` be a resource type?
-    fn case_linear(&self, c: &CaseTm, env: &Env, depth: usize) -> bool {
-        // A recursive type function meets its own `match` again: what it
-        // gives there is the same type, a resource only if a base arm is
-        // (`futures ts` recurses through `futures rest`).
-        let key = c as *const CaseTm as usize;
-        if self.lin_visiting.borrow().contains(&key) {
-            return false;
-        }
-        self.lin_visiting.borrow_mut().push(key);
-        let r = self.case_arms_linear(c, env, depth);
-        self.lin_visiting.borrow_mut().pop();
-        r
-    }
-
-    fn case_arms_linear(&self, c: &CaseTm, env: &Env, depth: usize) -> bool {
-        let arm = |n: usize, body: &Tm| {
-            let mut e = env.clone();
-            e.extend((0..n).map(|k| Val::var(usize::MAX / 2 + depth * 64 + k)));
-            self.val_linear_at(&eval(&self.g, &e, body), depth + 1)
-        };
-        c.branches.iter().any(|(_, n, b)| arm(*n, b))
-            || c.lits.iter().any(|(_, b)| arm(0, b))
-            || c.default.as_ref().is_some_and(|b| arm(0, b))
-    }
-
     pub fn type_linear(&self, t: &Tm) -> bool {
         self.tm_linear(t, &mut Vec::new())
     }
@@ -1987,23 +2045,6 @@ impl Elab {
             t = b;
         }
         matches!(t, Tm::Univ(_))
-    }
-
-    /// The fields of `id` at these arguments: is any a resource?
-    fn fields_linear(&self, id: TyId, args: &[Val], depth: usize) -> bool {
-        let ti = &self.g.tys[id.0 as usize];
-        for c in &ti.ctors {
-            let mut env: Vec<Val> = args.to_vec();
-            for (k, f) in self.g.cons[c.0 as usize].fields.iter().enumerate() {
-                let ty = eval(&self.g, &crate::core::Env::from(env.clone()), &f.3);
-                if f.1 != Mult::Zero && self.field_lin(&f.3, &mut Vec::new()) != Lin::No && self.val_linear_at(&ty, depth + 1) {
-                    return true;
-                }
-                // Earlier fields are unknown here: fresh variables far above any context.
-                env.push(Val::var(usize::MAX / 2 + k));
-            }
-        }
-        false
     }
 
     /// A binder's name, recorded with where it is bound (#672 d).

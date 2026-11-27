@@ -51,7 +51,7 @@ impl Elab {
     /// through a function type or a type variable (see the module's
     /// comment).
     pub(super) fn holds_effect(&self, lvl: usize, ty: &Val) -> bool {
-        self.can_hold(lvl, ty, &|e: &Elab, t: &Val| matches!(t, Val::TyCon(id, _) if e.is_effect_ty(*id)), false, 0, &mut Vec::new())
+        self.can_hold(lvl, ty, &|e: &Elab, t: &Val| matches!(t, Val::TyCon(id, _) if e.is_effect_ty(*id)), false, true)
     }
 
     /// Whether function `d`'s signature gives it a value that holds an

@@ -264,30 +264,42 @@ impl Elab {
         if unify(&self.g, lvl, a, b).is_err() {
             return false;
         }
-        self.exact_inner(lvl, a, b, 0)
-    }
-
-    fn exact_inner(&self, lvl: usize, a: &Val, b: &Val, depth: usize) -> bool {
-        if depth > 32 {
-            return true;
-        }
-        let (pa, pb) = (self.peel(a), self.peel(b));
-        match (self.refined_alias(&pa), self.refined_alias(&pb)) {
-            (Some((d1, x1)), Some((d2, x2))) => {
-                return d1 == d2 && x1.len() == x2.len() && x1.iter().zip(&x2).all(|(x, y)| self.exact_inner(lvl, x, y, depth + 1));
+        // Every part, however deep: a worklist.
+        let mut work = vec![(lvl, a.clone(), b.clone())];
+        while let Some((lvl, a, b)) = work.pop() {
+            let (pa, pb) = (self.peel(&a), self.peel(&b));
+            match (self.refined_alias(&pa), self.refined_alias(&pb)) {
+                (Some((d1, x1)), Some((d2, x2))) => {
+                    if d1 != d2 || x1.len() != x2.len() {
+                        return false;
+                    }
+                    work.extend(x1.iter().zip(&x2).map(|(x, y)| (lvl, x.clone(), y.clone())));
+                    continue;
+                }
+                (Some(_), None) | (None, Some(_)) => return false,
+                _ => {}
             }
-            (Some(_), None) | (None, Some(_)) => return false,
-            _ => {}
-        }
-        match (force(&self.g, pa), force(&self.g, pb)) {
-            (Val::TyCon(t1, x1), Val::TyCon(t2, x2)) => t1 == t2 && x1.iter().zip(x2.iter()).all(|(x, y)| self.exact_inner(lvl, x, y, depth + 1)),
-            (Val::TupleTy(x1), Val::TupleTy(x2)) => x1.len() == x2.len() && x1.iter().zip(x2.iter()).all(|(x, y)| self.exact_inner(lvl, x, y, depth + 1)),
-            (Val::Pi(_, _, _, a1, c1), Val::Pi(_, _, _, a2, c2)) => {
-                self.exact_inner(lvl, &a1, &a2, depth + 1)
-                    && self.exact_inner(lvl + 1, &apply_closure(&self.g, &c1, Val::var(lvl)), &apply_closure(&self.g, &c2, Val::var(lvl)), depth + 1)
+            match (force(&self.g, pa), force(&self.g, pb)) {
+                (Val::TyCon(t1, x1), Val::TyCon(t2, x2)) => {
+                    if t1 != t2 {
+                        return false;
+                    }
+                    work.extend(x1.iter().zip(x2.iter()).map(|(x, y)| (lvl, x.clone(), y.clone())));
+                }
+                (Val::TupleTy(x1), Val::TupleTy(x2)) => {
+                    if x1.len() != x2.len() {
+                        return false;
+                    }
+                    work.extend(x1.iter().zip(x2.iter()).map(|(x, y)| (lvl, x.clone(), y.clone())));
+                }
+                (Val::Pi(_, _, _, a1, c1), Val::Pi(_, _, _, a2, c2)) => {
+                    work.push((lvl + 1, apply_closure(&self.g, &c1, Val::var(lvl)), apply_closure(&self.g, &c2, Val::var(lvl))));
+                    work.push((lvl, (*a1).clone(), (*a2).clone()));
+                }
+                _ => {}
             }
-            _ => true,
         }
+        true
     }
 
     /// The equations of `d` (a function) or `c` (a constructor) at a use:
