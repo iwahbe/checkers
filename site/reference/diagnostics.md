@@ -40,6 +40,7 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0122` | a keyword where a name belongs |
 | `E0123` | `ghost`, `comptime`, or `own` other than on a function type's parameter, written inside a type |
 | `E0124` | a class's type with parameters (`type Elem b`) |
+| `E0125` | a block (`match`, `when`, a multi-line `if`, `let`) inside brackets, where lines continue |
 
 ## Names and types
 

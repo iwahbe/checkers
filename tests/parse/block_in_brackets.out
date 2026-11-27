@@ -1,0 +1,63 @@
+(module block_in_brackets)
+(fn by_match (a b)
+  <error>)
+(fn in_list (b)
+  <error>)
+(fn by_if (a b)
+  <error>)
+(fn one_line_if (a b)
+  (and a (if b
+      False
+      True)))
+(fn by_let (xs)
+  <error>)
+(fn by_when (j sched)
+  <error>)
+(fn in_index (xs b)
+  <error>)
+(fn after ()
+  1)
+
+error[E0125]: a `match` can't be inside brackets
+ --> block_in_brackets.ck:7:14
+  |
+7 |         and (match b
+  |              ^^^^^ inside brackets lines continue, so no block can start here
+  = help: bind it on a line before this one, `let x = match …`, and use `x` here
+
+error[E0125]: a `match` can't be inside brackets
+  --> block_in_brackets.ck:12:6
+   |
+12 |     [match b
+   |      ^^^^^ inside brackets lines continue, so no block can start here
+   = help: bind it on a line before this one, `let x = match …`, and use `x` here
+
+error[E0125]: a multi-line `if` can't be inside brackets
+  --> block_in_brackets.ck:18:14
+   |
+18 |         and (if b
+   |              ^^ inside brackets lines continue, so no block can start here
+   = help: write `if … then … else …`, or bind it on a line before this one, `let x = if …`, and use `x` here
+
+error[E0125]: a `let` can't be inside brackets
+  --> block_in_brackets.ck:28:13
+   |
+28 |             let y = x + 1
+   |             ^^^ inside brackets lines continue, so no block can start here
+   = help: bind what needs it on a line before this one: a lambda as `let f = \x ->` and its block, then use `f` here
+
+error[E0125]: a `when` can't be inside brackets
+  --> block_in_brackets.ck:32:8
+   |
+32 |     f (when x = j using sched
+   |        ^^^^ inside brackets lines continue, so no block can start here
+   = help: write the `when` on a line of its own
+
+error[E0125]: a `match` can't be inside brackets
+  --> block_in_brackets.ck:36:8
+   |
+36 |     xs[match b
+   |        ^^^^^ inside brackets lines continue, so no block can start here
+   = help: bind it on a line before this one, `let x = match …`, and use `x` here
+
+block_in_brackets.ck: 6 errors, 0 warnings
