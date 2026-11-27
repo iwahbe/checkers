@@ -314,6 +314,12 @@ impl KnownCache {
                     body.push(7);
                     ids(&mut body, fields);
                 }
+                // A function given some arguments, or a lambda's code its
+                // captured values: the function, then them.
+                SNode::Obj { kind, fields, .. } if *kind == w::K_PAP => {
+                    body.push(12);
+                    ids(&mut body, fields);
+                }
                 SNode::Obj { .. } => return None,
                 SNode::Array { layout, elems } => {
                     body.push(8);
@@ -1242,6 +1248,7 @@ fn read_static(g: &Globals, names: &ByName, bytes: &[u8], items: &mut Vec<Item>)
             },
             10 => SNode::ConFn(con(&mut r)?),
             11 => SNode::Lam(read_lam(g, names, std::str::from_utf8(r.blob()?).ok()?, items)?),
+            12 => SNode::Obj { kind: w::K_PAP, tag: 0, fields: parts(&mut r, &ids)? },
             _ => return None,
         };
         ids.push(s.add(node));
