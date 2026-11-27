@@ -3313,8 +3313,17 @@ impl Elab {
                 // its arguments don't tell is the instance's own (#146).
                 Err(why) if why == "unknown" && self.use_fallback(&r) => {}
                 Err(why) => {
-                    // An unknown type in a reported mismatch: that error's (D141 c).
-                    if why == "unknown" && r.tys.iter().any(|t| self.unknowns(r.lvl, t).iter().any(|m| self.blamed.contains(m))) {
+                    // An unknown type in a reported mismatch, or compared with
+                    // an error, or a type with an error in it: that error's
+                    // (D141 c).
+                    let follows = r.tys.iter().any(|t| {
+                        (why == "unknown" && self.unknowns(r.lvl, t).iter().any(|m| self.follows_error(m)))
+                            || (self.reported_error() && has_error(&zonk_metas(&self.g, r.lvl, &quote(&self.g, r.lvl, t))))
+                    });
+                    if follows {
+                        if let Val::Neutral(Head::Meta(m), _) = force_meta(&self.g, r.meta.clone()) {
+                            self.blamed.insert(m);
+                        }
                         continue;
                     }
                     // An instance chosen whose context isn't there: that is
@@ -4557,4 +4566,9 @@ fn given_pred(path: &[Step], a: &str, neg: bool) -> Option<String> {
         [Step::Part, rest @ ..] => Some(format!("have parts that {}", given_pred(rest, a, neg)?)),
         _ => Some(format!("are {}", given_all(path, a, neg)?)),
     }
+}
+
+/// A term with an error in it: one already reported.
+fn has_error(t: &Tm) -> bool {
+    matches!(t, Tm::Error) || t.any_sub(|x, _| has_error(x))
 }

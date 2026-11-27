@@ -1551,7 +1551,7 @@ impl Elab {
                     }
                     v
                 };
-                if unknowns.iter().any(|m| self.blamed.contains(m)) {
+                if unknowns.iter().any(|m| self.follows_error(m)) {
                     return false;
                 }
                 self.blamed.extend(unknowns.iter().copied());
@@ -1582,6 +1582,18 @@ impl Elab {
 
 impl Elab {
     /// The unknowns in `v` the checker hasn't worked out, in order.
+    /// An unknown that is unknown because of an error already reported: one
+    /// in a reported mismatch, a dictionary not found (D141 c), or one
+    /// compared with an error (an argument that failed to check).
+    pub fn follows_error(&self, m: &MetaId) -> bool {
+        self.blamed.contains(m) || (self.g.errored.borrow().contains(m) && self.reported_error())
+    }
+
+    /// An error has been reported: an error in a term is one of its.
+    pub fn reported_error(&self) -> bool {
+        self.diags.iter().any(|(_, d)| d.severity == crate::diag::Severity::Error)
+    }
+
     pub fn unknowns(&self, lvl: usize, v: &Val) -> Vec<MetaId> {
         fn go(g: &Globals, t: &Tm, lvl: usize, out: &mut Vec<MetaId>) {
             match t {
