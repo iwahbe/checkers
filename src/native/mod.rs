@@ -471,15 +471,16 @@ mod tests {
     }
 
     /// The shared dispatcher calls code in independent modules at every
-    /// supported arity, including arguments passed on the stack.
+    /// supported arity, including arguments passed on the stack. Defining
+    /// them a batch at a time or one at a time gives the same results.
     #[test]
     fn shared_dispatcher_calls_every_arity() {
         use checkers_rt::word as w;
-        for offset in [10, 100] {
+        for (offset, incremental) in [(10, false), (100, true)] {
             let g = Globals::default();
-            let mut p = lower::Program::new(&g, None);
+            let mut gen = codegen::Gen::importing_invoke(jit_module(), lower::Program::new(&g, None), &g);
             for n in 0..=lower::MAX_ARITY {
-                p.funcs.push(lower::Func {
+                gen.p.funcs.push(lower::Func {
                     name: format!("arity_{n}"),
                     owner: lower::NO_OWNER,
                     kind: lower::FnKind::Global,
@@ -489,8 +490,11 @@ mod tests {
                     rets: 1,
                     bounds: Default::default(),
                 });
+                if incremental {
+                    gen.define_new();
+                    gen.m.finalize_definitions().unwrap();
+                }
             }
-            let mut gen = codegen::Gen::importing_invoke(jit_module(), p, &g);
             gen.define_new();
             gen.m.finalize_definitions().unwrap();
             let invoke = shared_invoke();

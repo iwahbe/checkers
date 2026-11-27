@@ -71,6 +71,9 @@ pub struct Gen<'p, M: Module> {
     /// Functions of `p` declared and defined so far.
     defined: usize,
     invoke_defined: bool,
+    /// Cleared after each function, kept across batches so compile-time
+    /// evaluation reuses Cranelift's buffers and register allocator.
+    contexts: Option<(FunctionBuilderContext, cranelift_codegen::Context)>,
     funcs: Vec<FuncId>,
     rt: HashMap<&'static str, FuncId>,
     /// Global closure of a function (definitions, wrappers).
@@ -398,6 +401,7 @@ impl<'p, M: Module> Gen<'p, M> {
             g,
             defined: 0,
             invoke_defined: linkage == Linkage::Import,
+            contexts: None,
             funcs,
             rt,
             closures: HashMap::new(),
@@ -660,8 +664,7 @@ impl<'p, M: Module> Gen<'p, M> {
     /// Declare and define the functions added to the program since the last
     /// call (and, the first time, `ck_invoke`).
     pub fn define_new(&mut self) {
-        let mut fctx = FunctionBuilderContext::new();
-        let mut ctx = self.m.make_context();
+        let (mut fctx, mut ctx) = self.contexts.take().unwrap_or_else(|| (FunctionBuilderContext::new(), self.m.make_context()));
         for i in self.funcs.len()..self.p.funcs.len() {
             let n = arity_of(&self.p.funcs[i]);
             assert!(n <= MAX_ARITY, "`{}` takes {n} arguments: lowering curries past {MAX_ARITY}", self.p.funcs[i].name);
@@ -699,6 +702,7 @@ impl<'p, M: Module> Gen<'p, M> {
             self.define_invoke(&mut fctx, &mut ctx);
             self.invoke_defined = true;
         }
+        self.contexts = Some((fctx, ctx));
     }
 
     /// The finished function of index `f` (after `define_new`).
