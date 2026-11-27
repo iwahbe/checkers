@@ -694,8 +694,11 @@ pub fn proved(e: &Elab, user: &str) -> Verified {
 }
 
 fn verify(e: &Elab, user: &str) -> Verified {
+    // The module's own functions whose calls' values the obligations need
+    // are proved first, on demand (§8.9), so that those values are facts.
+    settle_known(e, user);
     // Those proved already, so that the module's own functions could run
-    // while it was checked (§8.9): taken as proved.
+    // while it was checked or for the values above: taken as proved.
     let early = e.early.borrow();
     let obs: Vec<&Obligation> = e
         .obligations
@@ -842,6 +845,22 @@ fn verify(e: &Elab, user: &str) -> Verified {
     v.asked = ASKED.load(std::sync::atomic::Ordering::Relaxed) - asked0;
     v.reused = REUSED.load(std::sync::atomic::Ordering::Relaxed) - reused0;
     v
+}
+
+/// Prove, on demand (`Elab::settle`), the functions of module `user`
+/// whose calls in its obligations not yet proved are known at compile time
+/// once they are (`known_calls`): before the proofs phase chooses what it
+/// proves, so that each obligation is proved once.
+fn settle_known(e: &Elab, user: &str) {
+    if *e.cur != *user {
+        return;
+    }
+    let early = e.early.borrow();
+    let obs: Vec<&Obligation> = e.obligations.iter().enumerate().filter(|(k, o)| o.module == user && !early.proved(*k, o)).map(|(_, o)| o).collect();
+    drop(early);
+    for o in obs {
+        known_calls(e, o);
+    }
 }
 
 /// `obs` with, as facts, the values of the calls in each that are known at
