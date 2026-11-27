@@ -718,7 +718,7 @@ impl Elab {
         let info = &mut self.g.defs[did.0 as usize];
         info.body = Some(body);
         info.ty = ty;
-        info.alias = true;
+        info.free = true;
         let preds = preds.into_iter().map(|p| Pred { tm: rename_free(&p.tm, 1, &pos), ..p }).collect();
         self.alias_preds.insert(did, preds);
         self.alias_subject.insert(did, Rc::from(subject));

@@ -121,6 +121,10 @@ impl Elab {
                 super::order::Node::Body(k) => {
                     let one: HashMap<usize, Sig> = sigs.remove(&k).map(|s| (k, s)).into_iter().collect();
                     self.phase_bodies(m, &mask, one, false);
+                    // A type function, proved, computes types to completion.
+                    if let Some(Sym::Def(d)) = ids[k] {
+                        self.settle_type_fn(d);
+                    }
                 }
             }
         }
@@ -128,6 +132,10 @@ impl Elab {
         self.phase_positivity(m, &ids);
         self.phase_bodies(m, &ids, HashMap::new(), true);
         self.retry_late();
+        // Those that couldn't be proved before the module's end.
+        for d in self.module_fns.clone() {
+            self.settle_type_fn(d);
+        }
         self.check_termination();
         // A transparent function's private helpers are visible to the prover
         // too, or its body would say nothing (#537): close the set over calls.
@@ -562,7 +570,7 @@ impl Elab {
             body: None,
             opaque: false,
             sealed: false,
-            alias: false,
+            free: false,
             comptime: Vec::new(),
         });
         DefId(self.g.defs.len() as u32 - 1)
@@ -1215,7 +1223,7 @@ impl Elab {
             let info = &mut self.g.defs[did.0 as usize];
             info.body = Some(body);
             info.ty = ty;
-            info.alias = true;
+            info.free = true;
             self.solve_deferred();
         }
     }
@@ -1974,7 +1982,7 @@ impl Elab {
             let info = &mut self.g.defs[did.0 as usize];
             // A constant can't need its own value (#557): a type one
             // unfolds as an alias does.
-            info.alias = crate::core::is_type_former(&tyt);
+            info.free = crate::core::is_type_former(&tyt);
             info.ty = tyt;
             info.body = Some(t);
         }

@@ -322,11 +322,14 @@ pub struct DefInfo {
     pub opaque: bool,
     /// Sealed by its module (#537): does not unfold outside it.
     pub sealed: bool,
-    /// Unfolds without spending fuel: a type that can't recurse (an alias,
-    /// whose cycles are errors, #557, or one the compiler makes), so
-    /// unfolding it always ends. A function, which may recurse, never is,
-    /// whatever its result type (#711).
-    pub alias: bool,
+    /// Unfolds without spending fuel, so a type it computes is computed to
+    /// completion (§8.9): it can't recurse (an alias, whose cycles are
+    /// errors, #557; a constant; one the compiler makes), or it is a
+    /// function returning a type that is proved, its termination too
+    /// (`Elab::settle_type_fn`). Any other function may recurse without end
+    /// (#711), so it takes fuel, as the type checker's evaluation of a
+    /// function not proved does.
+    pub free: bool,
     /// Binder positions (over the whole Π-type) that are `comptime` (#541).
     /// A function with any is a compile-time function: staging inlines it.
     pub comptime: Vec<usize>,
@@ -770,11 +773,11 @@ pub fn unfold(g: &Globals, v: &Val) -> Option<Val> {
     if info.opaque || info.sealed {
         return None;
     }
-    // Fuel bounds unfolding of functions, type functions too: one may
-    // recurse without end until its termination check rejects it (#711). An
-    // alias can't recurse, so unfolding it always ends and costs none:
-    // running out of fuel must not stop `U8` from being `Nat`.
-    if !info.alias {
+    // Fuel bounds unfolding of functions. A definition that can't recurse,
+    // or a type function proved to end, costs none: running out of fuel
+    // must not stop `U8` from being `Nat`, nor a type from computing. A type
+    // function not proved may never end (#711): it takes fuel.
+    if !info.free {
         if g.fuel.get() == 0 {
             return None;
         }
