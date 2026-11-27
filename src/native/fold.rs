@@ -212,7 +212,7 @@ impl<'g> Folder<'g> {
         let program = crate::known_cache::Program { g, staged, specs: Some(specs) };
         let disk = crate::verify::cache_dir().and_then(|_| self.disk.code_key(&program, node));
         if let Some((s, id)) = disk.as_ref().and_then(|d| self.disk.recall_static(g, d)) {
-            let r = Ok(Arc::new(Static::ir(&Arc::new(s), id)));
+            let r = Ok(Arc::new(Static::ir(&s, id)));
             if let Some(key) = key {
                 self.memo.insert(key, r.clone());
             }
@@ -232,10 +232,11 @@ impl<'g> Folder<'g> {
                 ev.release(v);
                 match out {
                     Some((s, id)) => {
+                        let s = Arc::new(s);
                         if let Some(d) = &disk {
                             self.disk.store_static(&program, d, &s, id);
                         }
-                        Ok(Arc::new(Static::ir(&Arc::new(s), id)))
+                        Ok(Arc::new(Static::ir(&s, id)))
                     }
                     None => Err(Kept::NoForm),
                 }

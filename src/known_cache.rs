@@ -79,6 +79,10 @@ impl<'a> Program<'a> {
     }
 }
 
+/// Static data written already: the graph (kept, so its address isn't
+/// reused), its digest, and the items it names.
+type Written = (Arc<Static>, String, Vec<Item>);
+
 /// Names and digests, worked out once per program: a cache reads one
 /// program's code.
 #[derive(Default)]
@@ -89,6 +93,9 @@ pub struct KnownCache {
     items: HashMap<Item, (String, Vec<Item>)>,
     /// A digest of each item and every item it reaches.
     closures: HashMap<Item, String>,
+    /// Static data written already, by graph and node: its digest and the
+    /// items it names (the graph kept, so its address isn't reused).
+    statics: HashMap<(usize, u32), Written>,
     /// From names back to numbers, for reading a stored value: built when
     /// first needed, again if more have been declared since.
     by_name: Option<ByName>,
@@ -201,43 +208,107 @@ impl KnownCache {
         out
     }
 
-    /// Static data `s` at `root` written with names, as `encode` writes a
-    /// known value: `None` if it holds what a name can't say (a function
-    /// of the program's first-order code, an immediate of no such kind).
-    fn encode_static(&mut self, p: &Program, s: &Static, root: u32, items: &mut Vec<Item>) -> Option<String> {
+    /// Static data `s` at `root` written with names, compactly: the names
+    /// it holds, then each node, parts first, the value last. `None` if it
+    /// holds what a name can't say (a function of the program's first-order
+    /// code, an immediate of no such kind). The types it names are added to
+    /// `items`, and the definitions it holds as functions.
+    fn encode_static(&mut self, p: &Program, s: &Static, root: u32, items: &mut Vec<Item>) -> Option<Vec<u8>> {
         let g = p.g;
         let nodes = s.reachable(root);
-        let at: HashMap<u32, usize> = nodes.iter().enumerate().map(|(i, n)| (*n, i)).collect();
-        let ids = |xs: &[u32]| xs.iter().map(|x| at[x].to_string()).collect::<Vec<_>>().join(" ");
-        let con = |n: u64, items: &mut Vec<Item>, this: &mut KnownCache| -> Option<String> {
-            let c = u32::try_from(n).ok().filter(|c| (*c as usize) < g.cons.len())?;
-            items.push(Item::Ty(g.cons[c as usize].ty.0));
-            Some(this.con_name(g, c))
-        };
-        let mut out = String::new();
-        for &n in &nodes {
-            let line = match s.node(n) {
-                SNode::Word(x) if w::is_int(*x) => format!("i {}", w::int_of(*x)),
-                SNode::Word(x) if w::is_nullary(*x) => format!("n {}", con(*x >> 3, items, self)?),
-                SNode::Word(x) if *x == w::UNIT => "u".into(),
-                SNode::Word(x) if *x == w::ERASED => "e".into(),
-                SNode::Word(_) => return None,
-                SNode::Big(b) => format!("b {b}"),
-                SNode::Bytes(b) => format!("y {}", hex(b)),
-                SNode::Obj { kind, tag, fields } if *kind == w::K_CON => format!("c {} {}", con(*tag, items, self)?, ids(fields)),
-                SNode::Obj { kind, fields, .. } if *kind == w::K_TUPLE => format!("t {}", ids(fields)),
-                SNode::Obj { .. } => return None,
-                SNode::Array { layout, elems } => format!("a {layout} {}", ids(elems)),
-                SNode::Global(d) if p.has_def(*d) => {
-                    items.push(Item::Def(*d));
-                    format!("g {}", self.def_name(p, *d))
-                }
-                SNode::ConFn(c) => format!("f {}", con(*c as u64, items, self)?),
-                SNode::Global(_) | SNode::Code(_) => return None,
-            };
-            out += line.trim_end();
-            out.push('\n');
+        // Each node's place among those written (nodes are numbered densely).
+        let mut at = vec![0u32; root as usize + 1];
+        for (i, n) in nodes.iter().enumerate() {
+            at[*n as usize] = i as u32;
         }
+        // Names by first use, each written once.
+        let mut names: Vec<String> = Vec::new();
+        let mut name_at: HashMap<(u8, u32), usize> = HashMap::new();
+        let mut name = |this: &mut KnownCache, kind: u8, n: u32, items: &mut Vec<Item>| -> Option<usize> {
+            if let Some(i) = name_at.get(&(kind, n)) {
+                return Some(*i);
+            }
+            let text = match kind {
+                b'c' => {
+                    let con = g.cons.get(n as usize)?;
+                    items.push(Item::Ty(con.ty.0));
+                    this.con_name(g, n)
+                }
+                _ => {
+                    items.push(Item::Def(n));
+                    format!("def {}", this.def_name(p, n))
+                }
+            };
+            names.push(text);
+            name_at.insert((kind, n), names.len() - 1);
+            Some(names.len() - 1)
+        };
+        let mut body = Vec::new();
+        let ids = |out: &mut Vec<u8>, xs: &[u32]| {
+            varint(out, xs.len() as u64);
+            for x in xs {
+                varint(out, at[*x as usize] as u64);
+            }
+        };
+        for &n in &nodes {
+            match s.node(n) {
+                SNode::Word(x) if w::is_int(*x) => {
+                    body.push(0);
+                    let i = w::int_of(*x);
+                    varint(&mut body, ((i << 1) ^ (i >> 63)) as u64);
+                }
+                SNode::Word(x) if w::is_nullary(*x) => {
+                    let c = name(self, b'c', u32::try_from(*x >> 3).ok()?, items)?;
+                    body.push(1);
+                    varint(&mut body, c as u64);
+                }
+                SNode::Word(x) if *x == w::UNIT => body.push(2),
+                SNode::Word(x) if *x == w::ERASED => body.push(3),
+                SNode::Word(_) => return None,
+                SNode::Big(b) => {
+                    body.push(4);
+                    blob(&mut body, b.to_string().as_bytes());
+                }
+                SNode::Bytes(b) => {
+                    body.push(5);
+                    blob(&mut body, b);
+                }
+                SNode::Obj { kind, tag, fields } if *kind == w::K_CON => {
+                    let c = name(self, b'c', u32::try_from(*tag).ok()?, items)?;
+                    body.push(6);
+                    varint(&mut body, c as u64);
+                    ids(&mut body, fields);
+                }
+                SNode::Obj { kind, fields, .. } if *kind == w::K_TUPLE => {
+                    body.push(7);
+                    ids(&mut body, fields);
+                }
+                SNode::Obj { .. } => return None,
+                SNode::Array { layout, elems } => {
+                    body.push(8);
+                    body.push(*layout);
+                    ids(&mut body, elems);
+                }
+                SNode::Global(d) if p.has_def(*d) => {
+                    let d = name(self, b'd', *d, items)?;
+                    body.push(9);
+                    varint(&mut body, d as u64);
+                }
+                SNode::ConFn(c) => {
+                    let c = name(self, b'c', *c, items)?;
+                    body.push(10);
+                    varint(&mut body, c as u64);
+                }
+                SNode::Global(_) | SNode::Code(_) => return None,
+            }
+        }
+        let mut out = STATIC_HEADER.to_vec();
+        varint(&mut out, names.len() as u64);
+        for n in &names {
+            blob(&mut out, n.as_bytes());
+        }
+        varint(&mut out, nodes.len() as u64);
+        out.extend_from_slice(&body);
         Some(out)
     }
 
@@ -327,8 +398,9 @@ impl KnownCache {
             Ir::Lit(IrLit::Str(s)) => write!(out, "{s:?}").unwrap(),
             Ir::Lit(IrLit::Bytes(b)) => write!(out, "b{b:?}").unwrap(),
             Ir::Static(v, id) => {
-                let text = self.encode_static(p, v, *id, items)?;
-                write!(out, "#{}", crate::verify::digest(&text)).unwrap();
+                let (digest, named) = self.static_digest(p, v, *id)?;
+                items.extend(named);
+                write!(out, "#{digest}").unwrap();
             }
             Ir::Erased => out.push('_'),
             Ir::Global(d) if p.has_def(d.0) => {
@@ -491,15 +563,7 @@ impl KnownCache {
 
     /// Keep `text` under `key`.
     fn write(key: &str, text: &str) {
-        let Some(dir) = dir() else { return };
-        if std::fs::create_dir_all(&dir).is_err() {
-            return;
-        }
-        // Whole or not at all: written elsewhere, then renamed.
-        let tmp = dir.join(format!("{key}.{}", std::process::id()));
-        if std::fs::write(&tmp, format!("{HEADER}\n{text}")).is_ok() {
-            let _ = std::fs::rename(&tmp, dir.join(key));
-        }
+        write_file(key, format!("{HEADER}\n{text}").as_bytes());
     }
 
     /// The value stored under `key`, read into this build's numbering.
@@ -559,46 +623,150 @@ impl KnownCache {
 
     /// The static data stored under `key` (folding's), read into this
     /// build's numbering: the graph and its root.
-    pub fn recall_static(&mut self, g: &Globals, key: &str) -> Option<(Static, u32)> {
-        let text = Self::read(key)?;
-        let cons = &self.by_name(g).cons;
+    pub fn recall_static(&mut self, g: &Globals, key: &str) -> Option<(Arc<Static>, u32)> {
+        let bytes = std::fs::read(dir()?.join(key)).ok()?;
+        let (s, root, cons) = self.read_static(g, &bytes)?;
+        let s = Arc::new(s);
+        // Code that uses the value has its key without writing it again:
+        // these bytes are how it is written.
+        let items = cons.iter().map(|c| Item::Ty(g.cons[*c as usize].ty.0)).collect();
+        self.remember_static(&s, root, &bytes, items);
+        Some((s, root))
+    }
+
+    /// Static data written by `encode_static`, and the constructors it names.
+    fn read_static(&mut self, g: &Globals, bytes: &[u8]) -> Option<(Static, u32, Vec<u32>)> {
+        let mut r = Reader { b: bytes.strip_prefix(STATIC_HEADER)?, at: 0 };
+        let by_name = &self.by_name(g).cons;
+        let cons: Vec<Option<u32>> = (0..r.varint()?).map(|_| Some(std::str::from_utf8(r.blob()?).ok().and_then(|n| by_name.get(n).copied()))).collect::<Option<_>>()?;
+        let con = |r: &mut Reader| cons.get(r.varint()? as usize).copied().flatten();
         let mut s = Static::default();
-        let mut ids: Vec<u32> = Vec::new();
-        for l in text.lines() {
-            let (tag, rest) = l.split_once(' ').unwrap_or((l, ""));
-            let parts = |r: &str| -> Option<Box<[u32]>> { r.split_whitespace().map(|x| ids.get(x.parse::<usize>().ok()?).copied()).collect() };
-            let node = match tag {
-                "i" => SNode::Word(w::mk_int(rest.parse().ok().filter(|n| w::fits(*n as i128))?)),
-                "n" => SNode::Word(w::nullary(*cons.get(rest)?)),
-                "u" => SNode::Word(w::UNIT),
-                "e" => SNode::Word(w::ERASED),
-                "b" => SNode::Big(rest.parse().ok()?),
-                "y" => SNode::Bytes(unhex(rest)?.into()),
-                "c" => {
-                    let (name, xs) = rest.split_once(' ').unwrap_or((rest, ""));
-                    SNode::Obj { kind: w::K_CON, tag: *cons.get(name)? as u64, fields: parts(xs)? }
+        let n = r.varint()? as usize;
+        let mut ids: Vec<u32> = Vec::with_capacity(n.min(bytes.len()));
+        for _ in 0..n {
+            let parts = |r: &mut Reader, ids: &[u32]| -> Option<Box<[u32]>> { (0..r.varint()?).map(|_| ids.get(r.varint()? as usize).copied()).collect() };
+            let node = match r.byte()? {
+                0 => {
+                    let z = r.varint()?;
+                    let i = ((z >> 1) as i64) ^ -((z & 1) as i64);
+                    SNode::Word(w::mk_int(Some(i).filter(|i| w::fits(*i as i128))?))
                 }
-                "t" => SNode::Obj { kind: w::K_TUPLE, tag: 0, fields: parts(rest)? },
-                "a" => {
-                    let (l, xs) = rest.split_once(' ').unwrap_or((rest, ""));
-                    SNode::Array { layout: l.parse().ok()?, elems: parts(xs)? }
+                1 => SNode::Word(w::nullary(con(&mut r)?)),
+                2 => SNode::Word(w::UNIT),
+                3 => SNode::Word(w::ERASED),
+                4 => SNode::Big(std::str::from_utf8(r.blob()?).ok()?.parse().ok()?),
+                5 => SNode::Bytes(r.blob()?.into()),
+                6 => {
+                    let c = con(&mut r)?;
+                    SNode::Obj { kind: w::K_CON, tag: c as u64, fields: parts(&mut r, &ids)? }
+                }
+                7 => SNode::Obj { kind: w::K_TUPLE, tag: 0, fields: parts(&mut r, &ids)? },
+                8 => {
+                    let layout = r.byte()?;
+                    SNode::Array { layout, elems: parts(&mut r, &ids)? }
                 }
                 // Functions aren't kept: folding's values have none.
                 _ => return None,
             };
             ids.push(s.add(node));
         }
+        (r.at == r.b.len()).then_some(())?;
         let root = *ids.last()?;
-        Some((s, root))
+        Some((s, root, cons.into_iter().flatten().collect()))
+    }
+
+    /// Static data `s` at `root` written with names (`encode_static`),
+    /// remembered by graph and node: its digest and the items it names.
+    fn static_digest(&mut self, p: &Program, s: &Arc<Static>, root: u32) -> Option<(String, Vec<Item>)> {
+        let at = (Arc::as_ptr(s) as usize, root);
+        if let Some((_, d, items)) = self.statics.get(&at) {
+            return Some((d.clone(), items.clone()));
+        }
+        let mut items = Vec::new();
+        let bytes = self.encode_static(p, s, root, &mut items)?;
+        Some(self.remember_static(s, root, &bytes, items))
+    }
+
+    fn remember_static(&mut self, s: &Arc<Static>, root: u32, bytes: &[u8], mut items: Vec<Item>) -> (String, Vec<Item>) {
+        items.sort();
+        items.dedup();
+        let d = crate::verify::digest_bytes(bytes);
+        self.statics.insert((Arc::as_ptr(s) as usize, root), (s.clone(), d.clone(), items.clone()));
+        (d, items)
     }
 
     /// Keep static data `s` at `root` under `key`, if it can be kept.
-    pub fn store_static(&mut self, p: &Program, key: &str, s: &Static, root: u32) {
+    pub fn store_static(&mut self, p: &Program, key: &str, s: &Arc<Static>, root: u32) {
         if dir().is_none() {
             return;
         }
-        if let Some(text) = self.encode_static(p, s, root, &mut Vec::new()) {
-            Self::write(key, &text);
+        let mut items = Vec::new();
+        if let Some(bytes) = self.encode_static(p, s, root, &mut items) {
+            write_file(key, &bytes);
+            // Code that uses the value has its key without writing it again.
+            self.remember_static(s, root, &bytes, items);
         }
+    }
+}
+
+/// Keep `bytes` under `key`: whole or not at all, written elsewhere, then
+/// renamed.
+fn write_file(key: &str, bytes: &[u8]) {
+    let Some(dir) = dir() else { return };
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let tmp = dir.join(format!("{key}.{}", std::process::id()));
+    if std::fs::write(&tmp, bytes).is_ok() {
+        let _ = std::fs::rename(&tmp, dir.join(key));
+    }
+}
+
+/// The start of a file of static data.
+const STATIC_HEADER: &[u8] = b"checkers static 1\n";
+
+fn varint(out: &mut Vec<u8>, mut x: u64) {
+    while x >= 0x80 {
+        out.push(x as u8 | 0x80);
+        x >>= 7;
+    }
+    out.push(x as u8);
+}
+
+fn blob(out: &mut Vec<u8>, b: &[u8]) {
+    varint(out, b.len() as u64);
+    out.extend_from_slice(b);
+}
+
+/// Reads what `varint` and `blob` write.
+struct Reader<'a> {
+    b: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Reader<'a> {
+    fn byte(&mut self) -> Option<u8> {
+        let x = *self.b.get(self.at)?;
+        self.at += 1;
+        Some(x)
+    }
+
+    fn varint(&mut self) -> Option<u64> {
+        let mut x = 0u64;
+        for shift in (0..64).step_by(7) {
+            let b = self.byte()?;
+            x |= ((b & 0x7f) as u64) << shift;
+            if b < 0x80 {
+                return Some(x);
+            }
+        }
+        None
+    }
+
+    fn blob(&mut self) -> Option<&'a [u8]> {
+        let n = self.varint()? as usize;
+        let b = self.b.get(self.at..self.at.checked_add(n)?)?;
+        self.at += n;
+        Some(b)
     }
 }

@@ -353,6 +353,19 @@ pub fn digest(s: &str) -> String {
     format!("{:016x}{:016x}", fnv(s), h.finish())
 }
 
+/// `digest` of bytes.
+pub fn digest_bytes(b: &[u8]) -> String {
+    use std::hash::Hasher;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    h.write(b);
+    let mut f: u64 = 0xcbf29ce484222325;
+    for x in b {
+        f ^= *x as u64;
+        f = f.wrapping_mul(0x100000001b3);
+    }
+    format!("{f:016x}{:016x}", h.finish())
+}
+
 /// A cache entry: a header with Z3's version and the query's length, the
 /// query in full (compared on a hit, so a hash collision can't reuse a wrong
 /// answer), then Z3's output.
