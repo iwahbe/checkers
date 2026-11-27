@@ -169,6 +169,7 @@ impl Elab {
                 }
             }
         }
+        self.g.known_disk.borrow_mut().sealed();
         self.loading.pop();
         if std::env::var_os("CHECKERS_ELAB_TIME").is_some() {
             eprintln!("{name}: {:.1} ms", started.elapsed().as_secs_f64() * 1000.0);
