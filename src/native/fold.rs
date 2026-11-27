@@ -562,7 +562,15 @@ pub fn residuals<'i>(g: &Globals, ir: &'i Ir, kept: &[(Arc<Ir>, Kept)], out: &mu
     while let Some(x) = stack.pop() {
         let operation = match x {
             Ir::Prim(op, args, _) => foldable_op(*op) && args.iter().all(|a| is_static(g, a)),
-            Ir::Call(h, args) => matches!(&**h, Ir::Global(_) | Ir::Static(..) | Ir::ConFn(_)) && args.iter().all(|a| is_static(g, a)),
+            // A builtin that runs only when the program does is never computed.
+            Ir::Call(h, args) => {
+                let computed = match &**h {
+                    Ir::Global(d) => !g.run_time_only.borrow().contains(d),
+                    Ir::Static(..) | Ir::ConFn(_) => true,
+                    _ => false,
+                };
+                computed && args.iter().all(|a| is_static(g, a))
+            }
             _ => false,
         };
         if operation && !is_kept(x) {
