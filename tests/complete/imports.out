@@ -11,6 +11,9 @@ replaces 4:20-4:22
 == line 5, column 24
 replaces 5:24-5:24
   all                function        export transparent fn all p xs -> r : p~(x~a -> Bool, contains xs x), xs~List a, r~Bool  (documented)
+  all_any            lemma           export lemma all_any p xs : p~(x~a -> Bool, contains xs x), xs~List a  (documented)
+  any                function        export transparent fn any p xs -> r : p~(x~a -> Bool, contains xs x), xs~List a, r~Bool  (documented)
+  any_all            lemma           export lemma any_all p xs : p~(x~a -> Bool, contains xs x), xs~List a  (documented)
   append_assoc       lemma           export lemma append_assoc xs ys zs : xs~List a, ys~List a, zs~List a  (documented)
   append_nil         lemma           export lemma append_nil xs : xs~List a  (documented)
   bag_append         lemma           export lemma bag_append xs ys : xs~List a, ys~List a  (documented)

@@ -199,7 +199,7 @@ fn small i -> r : i~Int, i < 3, r~Int
 check under small 3 == 0
 ```
 
-Here `under` may call `f` only below `n`, and so `small`, which needs an argument below 3, may be passed with `n` = 3. Applied to `f` alone, `under small` asks more: without `n`, `f` must accept every `Int`. `list.map` and `list.all` promise this way that they call their function only with elements of the list: `f~(x~a -> b, contains xs x)`.
+Here `under` may call `f` only below `n`, and so `small`, which needs an argument below 3, may be passed with `n` = 3. Applied to `f` alone, `under small` asks more: without `n`, `f` must accept every `Int`. `list.map`, `list.all` and `list.any` promise this way that they call their function only with elements of the list: `f~(x~a -> b, contains xs x)`.
 
 **Partial application.** Applying a function to some of its arguments gives a function of the rest, whose preconditions and postconditions are the original's with the given arguments filled in. So `at_least 5`, for `fn at_least k x : x >= k, …`, can be passed wherever a function on numbers of at least 5 is expected.
 
