@@ -6,7 +6,7 @@ use crate::core::quote;
 use crate::diag::Diagnostic;
 use crate::elab::{Elab, ObKind, Obligation, Probe, ProbeKind, Vacuity, VacuityKind, WeakenRole};
 use crate::source::Span;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone)]
 pub struct Verified {
@@ -763,8 +763,10 @@ fn verify(e: &Elab, user: &str) -> Verified {
             (Ok(_), Some(Answer::Unsat)) => v.proved += 1,
             (Ok(q), Some(Answer::Sat(model))) => {
                 // A model of a query without the `forall` facts may break
-                // them: shown only once checked against them.
-                let (shown, broken) = if q.foralls { check_foralls(e, user, o, &defs, &model) } else { (Some(model.clone()), None) };
+                // them, and one without every array's elements refined may
+                // hold elements no program can build (#692): shown only once
+                // checked against them.
+                let (shown, broken) = if q.foralls || q.elements { check_model(e, user, o, q, &defs, &model) } else { (Some(model.clone()), None) };
                 let shown = shown.map(|m| render_model(&m, &q.shown, &q.string_vars, &q.array_vars, &private_cons(e, user)));
                 let any = shown.is_some();
                 let mut d = failed(e, o, shown);
@@ -1857,45 +1859,95 @@ fn returned(e: &Elab, o: &Obligation) -> Option<String> {
     Some(format!("for the value returned on line {line}: `{text}`"))
 }
 
-/// Check Z3's counterexample against the `forall` facts in scope, which its
-/// query left out (#632): the same query with them given to Z3, quantified,
-/// first with the model's values fixed, then free. A model of that query is
-/// a counterexample; without one, the note saying why none is shown.
-fn check_foralls(e: &Elab, user: &str, o: &Obligation, defs: &smt::Defs, model: &str) -> (Option<String>, Option<String>) {
+/// Check Z3's counterexample against the facts its query `asked` left out:
+/// the `forall` facts in scope (#632), and each array's elements' refinement
+/// at every index (#692). The same query with them given to Z3, quantified,
+/// first with the model's values fixed. Then, for elements, each array of
+/// the model as long as it is there, its elements' facts given at each index
+/// without a quantifier, and without the postconditions of calls in bodies,
+/// which Z3 searches slowly: a model of that, unless with its values fixed
+/// it breaks them (as where Z3 gives up on the full query, §7.2). Then the
+/// quantified query, free. The first model is the counterexample; without
+/// one, where a `forall` was left out, the note saying why none is shown.
+fn check_model(e: &Elab, user: &str, o: &Obligation, asked: &smt::Query, defs: &smt::Defs, model: &str) -> (Option<String>, Option<String>) {
     let why = |broken: bool| {
-        Some(format!(
-            "no counterexample: the one Z3 found {} a `forall` in scope, which the prover uses only by name, with `have`",
-            if broken { "breaks" } else { "could not be checked against" }
-        ))
+        asked.foralls.then(|| {
+            format!(
+                "no counterexample: the one Z3 found {} a `forall` in scope, which the prover uses only by name, with `have`",
+                if broken { "breaks" } else { "could not be checked against" }
+            )
+        })
     };
-    let Ok(q) = smt::Builder::new(e, user).sharing(defs).with_body_posts().with_foralls().query(o) else { return (None, why(false)) };
+    let builder = || {
+        let b = smt::Builder::new(e, user).sharing(defs).with_body_posts();
+        if asked.foralls {
+            b.with_foralls()
+        } else {
+            b
+        }
+    };
+    let b = if asked.elements { builder().with_elements() } else { builder() };
+    let Ok(q) = b.query(o) else { return (None, why(false)) };
     let text = with_limit(&q.text, QUICK_RLIMIT);
-    let Some(at) = text.rfind("(check-sat)") else { return (None, why(false)) };
-    let mut pins = String::new();
-    if let Some(Sx::List(pairs)) = parse_sx(model).first() {
-        for p in pairs {
-            if let Sx::List(kv) = p {
-                if let (Some(Sx::Atom(k)), Some(v)) = (kv.first(), kv.get(1)) {
-                    let v = print_sx(v);
-                    // Values of abstract sorts (`a#0!val!0`) and Z3's own
-                    // functions (`k!0`) can't be written in a query.
-                    if !v.contains('!') {
-                        pins += &format!("(assert (= {k} {v}))\n");
-                    }
+    let broken = match ask(&pinned(&text, model)) {
+        Answer::Sat(m) => return (Some(m), None),
+        // Broken by a `forall`, unless its elements could be what broke.
+        Answer::Unsat => !asked.elements,
+        Answer::Unknown(_) => false,
+    };
+    let lengths: HashMap<String, usize> = model_values(model).filter_map(|(k, v)| Some((k, seq_items(&unlet(&v, &[]))?.len()))).collect();
+    if asked.elements && !lengths.is_empty() {
+        if let Ok(shaped) = builder().with_lengths(lengths).query(o) {
+            let full = with_limit(&shaped.text, QUICK_RLIMIT);
+            let lean = shaped.without_bodies.as_deref().map(|t| with_limit(t, QUICK_RLIMIT));
+            if let Answer::Sat(m) = ask(lean.as_deref().unwrap_or(&full)) {
+                if lean.is_none() {
+                    return (Some(m), None);
+                }
+                // As where Z3 gives up on the full query (§7.2): shown
+                // unless it breaks those postconditions.
+                match ask(&pinned(&full, &m)) {
+                    Answer::Sat(m) => return (Some(m), None),
+                    Answer::Unknown(_) => return (Some(m), None),
+                    Answer::Unsat => {}
                 }
             }
         }
     }
-    let pinned = format!("{}{pins}{}", &text[..at], &text[at..]);
-    let broken = match ask(&pinned) {
-        Answer::Sat(m) => return (Some(m), None),
-        Answer::Unsat => true,
-        Answer::Unknown(_) => false,
-    };
     match ask(&text) {
         Answer::Sat(m) => (Some(m), None),
         _ => (None, why(broken)),
     }
+}
+
+/// The (name, value) pairs of a model.
+fn model_values(model: &str) -> impl Iterator<Item = (String, Sx)> {
+    let pairs = match parse_sx(model).into_iter().next() {
+        Some(Sx::List(pairs)) => pairs,
+        _ => Vec::new(),
+    };
+    pairs.into_iter().filter_map(|p| match p {
+        Sx::List(kv) => match (kv.first(), kv.get(1)) {
+            (Some(Sx::Atom(k)), Some(v)) => Some((k.clone(), v.clone())),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+/// Query `text` with the values of `model` fixed.
+fn pinned(text: &str, model: &str) -> String {
+    let Some(at) = text.rfind("(check-sat)") else { return text.to_string() };
+    let mut pins = String::new();
+    for (k, v) in model_values(model) {
+        let v = print_sx(&v);
+        // Values of abstract sorts (`a#0!val!0`) and Z3's own functions
+        // (`k!0`) can't be written in a query.
+        if !v.contains('!') {
+            pins += &format!("(assert (= {k} {v}))\n");
+        }
+    }
+    format!("{}{pins}{}", &text[..at], &text[at..])
 }
 
 fn print_sx(x: &Sx) -> String {

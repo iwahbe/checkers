@@ -743,6 +743,10 @@ pub struct Query {
     /// Some facts in scope are `forall`s, not given to the solver (#632):
     /// a model may break them.
     pub foralls: bool,
+    /// Some array's elements are refined at every index, not given to the
+    /// solver (`with_elements`): a model's elements may not be values of
+    /// their type.
+    pub elements: bool,
     /// (SMT name, display name) of the locals, for a counterexample.
     pub shown: Vec<(String, String)>,
     /// The SMT names of `String` locals (shown as text, not bytes).
@@ -876,6 +880,15 @@ pub struct Builder<'a> {
     /// Give `forall` facts to Z3, quantified: only to check a counterexample
     /// against them, never to prove (#632).
     foralls: bool,
+    /// Give each array's elements their type's refinement at every index,
+    /// quantified: only to make a counterexample's elements values of their
+    /// type, never to prove (#692): quantifiers make Z3 search more.
+    elements: bool,
+    /// Some array's elements had such a fact, left out.
+    elements_left: bool,
+    /// Arrays (locals, by SMT name) given a length, whose elements' facts
+    /// are then given at each index, without a quantifier (`with_lengths`).
+    lengths: HashMap<String, usize>,
     /// Name each fact of the obligation, `|fact.k|` for its `k`th, and ask
     /// for the unsat core: which of them contradict each other.
     named: bool,
@@ -928,6 +941,9 @@ impl<'a> Builder<'a> {
             real_values: Vec::new(),
             based: BTreeSet::new(),
             foralls: false,
+            elements: false,
+            elements_left: false,
+            lengths: HashMap::new(),
             named: false,
         }
     }
@@ -944,6 +960,24 @@ impl<'a> Builder<'a> {
     /// against (#632 keeps them out of proofs).
     pub fn with_foralls(mut self) -> Builder<'a> {
         self.foralls = true;
+        self
+    }
+
+    /// Give each array's elements their type's refinement at every index
+    /// (`type_terms`), so a model's elements are values of their type: a
+    /// counterexample (#692).
+    pub fn with_elements(mut self) -> Builder<'a> {
+        self.elements = true;
+        self
+    }
+
+    /// `with_elements`, but the arrays in `lengths` have those lengths and
+    /// their elements' facts are given at each index: no quantifier, so Z3
+    /// finds a counterexample of that shape where the quantified facts are
+    /// too much for it.
+    pub fn with_lengths(mut self, lengths: HashMap<String, usize>) -> Builder<'a> {
+        self.elements = true;
+        self.lengths = lengths;
         self
     }
 
@@ -2160,6 +2194,39 @@ impl<'a> Builder<'a> {
                         let ts = self.field_terms(env, &shape, x, *id, sargs, inside);
                         inside.pop();
                         add(&mut out, ts);
+                    }
+                }
+            }
+            // An array's elements have the element type's refinement at
+            // every index (§7.3), not only where the goal indexes it: an
+            // element a reflected body reaches (`xs[i]` in generic code at
+            // `U8`) is one too. A quantified fact, instantiated where Z3 has
+            // an element, given only for a counterexample (`with_elements`).
+            // Not as a guard (`domain_terms`), where it would be an
+            // existential, nor in a definition's axiom, whose terms are its
+            // bound variables.
+            (Tm::TyConApp(id, targs), Sort::Seq(es))
+                if Some(*id) == self.e.g.well_known.array && inside.is_some() && !self.in_def && pattern_term(x) =>
+            {
+                if let (Some(ety), Some(&n)) = (targs.first(), self.lengths.get(x)) {
+                    out.push(format!("(= (seq.len {x}) {n})"));
+                    let mut inside = inside;
+                    for k in 0..n {
+                        let ts = self.type_terms(env, ety, &format!("(seq.nth {x} {k})"), es, inside.as_deref_mut(), true);
+                        add(&mut out, ts);
+                    }
+                } else if let Some(ety) = targs.first() {
+                    // Its own index, for an array of arrays.
+                    let k = format!("|@k{}|", x.matches("|@k").count());
+                    let at = format!("(seq.nth {x} {k})");
+                    let ts = self.type_terms(env, ety, &at, es, inside, true);
+                    if !ts.is_empty() {
+                        if self.elements {
+                            let body = if ts.len() == 1 { ts[0].clone() } else { format!("(and {})", ts.join(" ")) };
+                            out.push(format!("(forall (({k} Int)) (! (=> (and (<= 0 {k}) (< {k} (seq.len {x}))) {body}) :pattern ({at})))"));
+                        } else {
+                            self.elements_left = true;
+                        }
                     }
                 }
             }
@@ -4776,6 +4843,7 @@ impl<'a> Builder<'a> {
             dropped,
             ill_typed,
             foralls,
+            elements: self.elements_left,
             shown: self.shown,
             string_vars: self.string_vars,
             array_vars: self.array_vars,
@@ -4812,6 +4880,28 @@ fn closed(t: &Tm, depth: usize) -> bool {
         Tm::Meta(_) | Tm::Error => false,
         _ => t.all_sub(|x, n| closed(x, depth + n)),
     }
+}
+
+/// Whether `t` can be a quantifier's pattern: applications of the program's
+/// own symbols (`|…|`: functions, constructors, selectors, locals) and
+/// `select` only. Z3 refuses interpreted operators there (`not`, `ite`,
+/// arithmetic), as a call's result over `a - b` would have.
+fn pattern_term(t: &str) -> bool {
+    let mut quoted = false;
+    let b = t.as_bytes();
+    for (i, &c) in b.iter().enumerate() {
+        match c {
+            b'|' => quoted = !quoted,
+            b'(' if !quoted => {
+                let rest = &t[i + 1..];
+                if !(rest.starts_with('|') || rest.starts_with("select ")) {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    true
 }
 
 fn smt_bytes(b: &[u8]) -> String {
