@@ -1,0 +1,9 @@
+error[E0450]: cannot prove `k > 0`, required to call `pos`
+  --> call_in_type_before_condition.ck:11:35
+   |
+11 | fn in_result k -> r : k~Int, r~At (pos k), k > 0
+   |                                   ^^^^^^^ `pos` requires `k > 0`
+   = note: counterexample: k = 0
+   = help: make it true before the call, e.g. with an `if` or a `match`, or strengthen this function's precondition
+
+call_in_type_before_condition.ck: 1 error, 0 warnings

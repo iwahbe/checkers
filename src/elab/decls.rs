@@ -1205,6 +1205,7 @@ impl Elab {
     /// `con`: the constructor's name, and where its type's is written.
     fn elab_fields(&mut self, tid: TyId, cid: ConId, con: (&Ident, Span), names: &[&Ident], cs: &[Constraint], extra_preds: &[&Expr]) {
         self.g.fuel.set(DEFAULT_FUEL);
+        let obligations_from = self.obligations.len();
         let mut cx = self.bind_type_params(tid);
         // Its type equations hold in its fields (#209).
         let env = cx.env.clone();
@@ -1341,6 +1342,9 @@ impl Elab {
                 Pred { tm: quote(&self.g, total, &v), text, span, is_post: false, alias }
             })
             .collect();
+        // The fields' types' calls, from the invariants written before them.
+        let earlier: Vec<(Span, Tm)> = preds.iter().map(|p| (p.span, p.tm.clone())).collect();
+        self.rely_on_earlier(obligations_from, cs, &earlier, &cx);
         // Whether the invariants can all hold, with the type's conditions
         // (E0457).
         let mut all = cx.clone();
@@ -1974,6 +1978,7 @@ impl Elab {
         // A type written here is checked against its conditions with every
         // precondition known, wherever it is written (#136).
         let saved_defer = self.ty_cond_defer.replace(Vec::new());
+        let obligations_from = self.obligations.len();
         let mut cx = Cx::default();
         let mut binders = Vec::new();
         let mut declared: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
@@ -2240,6 +2245,9 @@ impl Elab {
                 preds.push(p);
             }
         }
+        // The typings' calls, from the conditions written before them.
+        let earlier: Vec<(Span, Tm)> = preds.iter().map(|p| (p.span, p.tm.clone())).collect();
+        self.rely_on_earlier(obligations_from, cs, &earlier, &cx);
         // The types' conditions, from the preconditions only.
         cx.facts.truncate(facts_before);
         for p in preds.iter().filter(|p| !p.is_post) {

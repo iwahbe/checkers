@@ -2169,6 +2169,41 @@ impl Elab {
         self.obligations.push(o);
     }
 
+    /// Each condition may rely on those written before it (§7.1): the
+    /// obligations made since `from` in a typing (`r~Box (grow 1 k)`),
+    /// whose types are elaborated before the conditions are, get as facts
+    /// the conditions `conds` (each its span and its term over `cx`)
+    /// written before that typing, over the names bound before its name.
+    pub fn rely_on_earlier(&mut self, from: usize, cs: &[ast::Constraint], conds: &[(Span, Tm)], cx: &Cx) {
+        let total = cx.lvl();
+        let conds: Vec<(Span, Val, usize)> = conds
+            .iter()
+            .map(|(span, tm)| {
+                let mut used = Vec::new();
+                free_levels(tm, total, 0, &mut used);
+                (*span, self.eval(cx, tm), used.iter().max().map_or(0, |l| l + 1))
+            })
+            .collect();
+        for i in from..self.obligations.len() {
+            let o = &self.obligations[i];
+            if o.module != self.cur {
+                continue;
+            }
+            // The typing the obligation is in, and the level of its name.
+            let Some((start, lvl)) = cs.iter().find_map(|c| match c {
+                ast::Constraint::Typed { name, ty, .. } if ty.span.start <= o.span.start && o.span.end <= ty.span.end => {
+                    Some((name.span.start, cx.lookup(&name.name)?))
+                }
+                _ => None,
+            }) else {
+                continue;
+            };
+            let facts: Vec<Val> =
+                conds.iter().filter(|(span, _, needs)| span.end <= start && *needs <= lvl).map(|(_, v, _)| self.rep_deep(total, v)).collect();
+            self.obligations[i].facts.extend(facts);
+        }
+    }
+
     /// `facts in cx ⊢ goal`, not yet recorded.
     pub fn obligation(&self, cx: &Cx, span: Span, kind: ObKind, text: String, goal: Val, only_if_nat: Option<Val>) -> Obligation {
         let ctx = (0..cx.lvl())
