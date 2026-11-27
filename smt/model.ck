@@ -2641,3 +2641,412 @@ export lemma arrays_total_at_fuel c m n s a b i j x env senv xs body : c~Context
         have gives_const_fuel c m n s x
         have sorted_at_fuel c m n s a j x
         have lambda_sorted_fuel c m n s env senv xs body
+
+# ── Monotonicity ─────────────────────────────────────────────────────────────
+# A definite answer in a model is the answer in every model that agrees
+# with it wherever it answers (#86): `monotone`.
+
+# What a model is asked, beside whether a number is an array of a sort and
+# the elements of a sort: each function of `Model` at its arguments.
+export enum Asked
+    FunsAt f vs                   : f~Nat, vs~List Value
+    SelectAt s k i                : s~Sort, k~Nat, i~Value
+    ConstAt s v                   : s~Sort, v~Value
+    StoreAt s k i v               : s~Sort, k~Nat, i~Value, v~Value
+    SumAt s a b                   : s~Sort, a~Nat, b~Nat
+    LambdaAt s env senv x body    : s~Sort, env~List Value, senv~List Sort, x~Sort, body~Term
+    DivAt n                       : n~Int
+    ModAt n                       : n~Int
+    NthAt s xs i                  : s~Sort, xs~List Value, i~Int
+    SelAt d k j args v            : d~Nat, k~Nat, j~Nat, args~List Sort, v~Value
+
+# What `m` says to `q`, as a value (an array's number as `ArrayElem`, an
+# integer as `Integer`); `None` where it doesn't say.
+export transparent fn said m q -> r : m~Model, q~Asked, r~Option Value
+    match q
+        FunsAt f vs                -> m.funs f vs
+        SelectAt s k i             -> m.select s k i
+        ConstAt s v                -> number_said (m.const s v)
+        StoreAt s k i v            -> number_said (m.store s k i v)
+        SumAt s a b                -> number_said (m.sum s a b)
+        LambdaAt s env senv x body -> number_said (m.lambda s env senv x body)
+        DivAt n                    -> integer_said (m.div_zero n)
+        ModAt n                    -> integer_said (m.mod_zero n)
+        NthAt s xs i               -> m.nth_out s xs i
+        SelAt d k j args v         -> m.wrong_sel d k j args v
+
+export transparent fn number_said r -> v : r~Option Nat, v~Option Value
+    match r
+        Some k -> Some (ArrayElem k)
+        None   -> None
+
+export transparent fn integer_said r -> v : r~Option Int, v~Option Value
+    match r
+        Some n -> Some (Integer n)
+        None   -> None
+
+# Whether `r2` is `r1` wherever `r1` is a value.
+fn refines r1 r2 -> b : r1~Result Value Unknown, r2~Result Value Unknown, b~Bool
+    match r1
+        Ok v  -> r2 == Ok v
+        Err _ -> True
+
+# Whether each of `e2` refines the one in the same place of `e1`.
+fn envs_refine e1 e2 -> b : e1~List (Result Value Unknown), e2~List (Result Value Unknown), b~Bool
+    match (e1, e2)
+        ([], [])           -> True
+        (x :: xr, y :: yr) -> refines x y and envs_refine xr yr
+        _                  -> False
+
+lemma of_sort_mono c m n s v : c~Context, m~Model, n~Model, s~Sort, v~Value, of_sort c m s v,
+                               arrays: (forall t k : t~Sort, k~Nat, m.array_in t k, n.array_in t k),
+                               domains: (forall u args k : u~Nat, args~List Sort, k~Nat,
+                                         of_sort c m (Unin u args) (Element k), of_sort c n (Unin u args) (Element k))
+    ensures of_sort c n s v
+    proof
+        match (s, v)
+            (Seq e, Sequence xs)            -> have all_of_sort_mono c m n e xs
+            (Arr _ _, ArrayElem k)          -> have arrays s k
+            (Data d args, Constructed k fs) ->
+                match term.ctor (term.signature c) d k
+                    Some kc -> have fields_of_sort_mono c m n (list.map (term.instantiate args) (term.field_sorts kc.fields)) fs
+                    None    -> auto
+            (Unin u args, Element k)        -> have domains u args k
+            _                               -> auto
+
+lemma all_of_sort_mono c m n s vs : c~Context, m~Model, n~Model, s~Sort, vs~List Value, all_of_sort c m s vs,
+                                    arrays: (forall t k : t~Sort, k~Nat, m.array_in t k, n.array_in t k),
+                                    domains: (forall u args k : u~Nat, args~List Sort, k~Nat,
+                                              of_sort c m (Unin u args) (Element k), of_sort c n (Unin u args) (Element k))
+    ensures all_of_sort c n s vs
+    proof
+        match vs
+            []        -> auto
+            v :: rest ->
+                have of_sort_mono c m n s v
+                have all_of_sort_mono c m n s rest
+
+lemma fields_of_sort_mono c m n ss vs : c~Context, m~Model, n~Model, ss~List Sort, vs~List Value, fields_of_sort c m ss vs,
+                                        arrays: (forall t k : t~Sort, k~Nat, m.array_in t k, n.array_in t k),
+                                        domains: (forall u args k : u~Nat, args~List Sort, k~Nat,
+                                                  of_sort c m (Unin u args) (Element k), of_sort c n (Unin u args) (Element k))
+    ensures fields_of_sort c n ss vs
+    proof
+        match (ss, vs)
+            (s :: sr, v :: vr) ->
+                have of_sort_mono c m n s v
+                have fields_of_sort_mono c m n sr vr
+            _                  -> auto
+
+fn at e i -> r : e~List (Result Value Unknown), i~Nat, r~Result Value Unknown
+    match list.head (list.drop i e)
+        Some v -> v
+        None   -> Err IllSorted
+
+fn lists_refine p q -> b : p~Result (List Value) Unknown, q~Result (List Value) Unknown, b~Bool
+    match p
+        Ok x  -> q == Ok x
+        Err _ -> True
+
+fn opts_refine p q -> b : p~Option Value, q~Option Value, b~Bool
+    match p
+        Some x -> q == Some x
+        None   -> True
+
+fn bools_refine p q -> b : p~Result Bool Unknown, q~Result Bool Unknown, b~Bool
+    match p
+        Ok x  -> q == Ok x
+        Err _ -> True
+
+lemma said_refines c m n q : c~Context, m~Model, n~Model, q~Asked,
+                            said: (forall q2 x : q2~Asked, x~Value, said m q2 == Some x, said n q2 == Some x)
+    ensures opts_refine (said m q) (said n q)
+    proof
+        match said m q
+            Some x -> have said q x
+            None   -> auto
+
+lemma at_mono e1 e2 i : e1~List (Result Value Unknown), e2~List (Result Value Unknown), i~Nat, envs_refine e1 e2
+    ensures refines (at e1 i) (at e2 i)
+    proof
+        match (e1, e2)
+            (_ :: xr, _ :: yr) -> if i == 0 then auto else have at_mono xr yr (i - 1)
+            _                  -> auto
+
+lemma known_mono e1 e2 : e1~List (Result Value Unknown), e2~List (Result Value Unknown), envs_refine e1 e2
+    ensures lists_refine (all_known e1) (all_known e2)
+    proof
+        match (e1, e2)
+            (_ :: xr, _ :: yr) -> have known_mono xr yr
+            _                  -> auto
+
+lemma append_mono a b e1 e2 : a~List (Result Value Unknown), b~List (Result Value Unknown), e1~List (Result Value Unknown),
+                              e2~List (Result Value Unknown), envs_refine a b, envs_refine e1 e2
+    ensures envs_refine (a ++ e1) (b ++ e2)
+    proof
+        match (a, b)
+            (_ :: ar, _ :: br) -> have append_mono ar br e1 e2
+            _                  -> auto
+
+lemma reverse_mono a b e1 e2 : a~List (Result Value Unknown), b~List (Result Value Unknown), e1~List (Result Value Unknown),
+                               e2~List (Result Value Unknown), envs_refine a b, envs_refine e1 e2
+    ensures envs_refine (list.reverse a ++ e1) (list.reverse b ++ e2)
+    proof
+        match (a, b)
+            (x :: ar, y :: br) ->
+                have list.reverse_cons_append ar x e1
+                have list.reverse_cons_append br y e2
+                have reverse_mono ar br (x :: e1) (y :: e2)
+            _                  -> auto
+
+lemma given_mono c m n s h x y : c~Context, m~Model, n~Model, s~Sort, h~Head, x~Option Value, y~Option Value,
+                                 opts_refine x y,
+                               arrays: (forall t k : t~Sort, k~Nat, m.array_in t k, n.array_in t k),
+                               domains: (forall u args k : u~Nat, args~List Sort, k~Nat,
+                                         of_sort c m (Unin u args) (Element k), of_sort c n (Unin u args) (Element k))
+    ensures refines (given c m s h x) (given c n s h y)
+    proof
+        match x
+            Some v -> if of_sort c m s v then have of_sort_mono c m n s v else auto
+            None   -> auto
+
+lemma value_mono lm ln c m n e1 e2 senv t : lm~Lower, ln~Lower, c~Context, m~Model, n~Model, e1~List (Result Value Unknown),
+                                            e2~List (Result Value Unknown), senv~List Sort, t~Term, envs_refine e1 e2,
+                                            said: (forall q x : q~Asked, x~Value, said m q == Some x, said n q == Some x),
+                                            arrays: (forall t k : t~Sort, k~Nat, m.array_in t k, n.array_in t k),
+                                            domains: (forall u args k : u~Nat, args~List Sort, k~Nat, of_sort c m (Unin u args) (Element k),
+                                                      of_sort c n (Unin u args) (Element k))
+    ensures refines (value lm AsGiven c m e1 senv t) (value ln AsGiven c n e2 senv t)
+    proof
+        match t
+            Var i          -> have at_mono e1 e2 i
+            App h args     -> have apply_mono lm ln c m n e1 e2 senv t h args
+            Let binds body ->
+                have bound_mono lm ln c m n e1 e2 senv binds
+                have reverse_mono (bound lm AsGiven c m e1 senv binds) (bound ln AsGiven c n e2 senv binds) e1 e2
+                match term.sorts_of (term.signature c) senv (term.bind_terms binds)
+                    Ok ss ->
+                        let f1 = list.reverse (bound lm AsGiven c m e1 senv binds) ++ e1
+                        let f2 = list.reverse (bound ln AsGiven c n e2 senv binds) ++ e2
+                        have value_mono lm ln c m n f1 f2 (list.reverse ss ++ senv) body
+                    Err _ -> auto
+            Lam _ x body   ->
+                have known_mono e1 e2
+                match (sort_here c senv t, all_known e1)
+                    (Ok s, Ok vs) ->
+                        match m.lambda s vs senv x body
+                            Some k ->
+                                have said_refines c m n (LambdaAt s vs senv x body)
+                                if m.array_in s k then have arrays s k else auto
+                            None   -> auto
+                    _             -> auto
+
+lemma values_mono lm ln c m n e1 e2 senv ts : lm~Lower, ln~Lower, c~Context, m~Model, n~Model, e1~List (Result Value Unknown),
+                                              e2~List (Result Value Unknown), senv~List Sort, ts~List Term, envs_refine e1 e2,
+                                              said: (forall q x : q~Asked, x~Value, said m q == Some x, said n q == Some x),
+                                              arrays: (forall t k : t~Sort, k~Nat, m.array_in t k, n.array_in t k),
+                                              domains: (forall u args k : u~Nat, args~List Sort, k~Nat, of_sort c m (Unin u args) (Element k),
+                                                        of_sort c n (Unin u args) (Element k))
+    ensures envs_refine (values lm AsGiven c m e1 senv ts) (values ln AsGiven c n e2 senv ts)
+    proof
+        match ts
+            []        -> auto
+            t :: rest ->
+                have value_mono lm ln c m n e1 e2 senv t
+                have values_mono lm ln c m n e1 e2 senv rest
+
+lemma bound_mono lm ln c m n e1 e2 senv bs : lm~Lower, ln~Lower, c~Context, m~Model, n~Model, e1~List (Result Value Unknown),
+                                             e2~List (Result Value Unknown), senv~List Sort, bs~List (term.Name, Term), envs_refine e1 e2,
+                                             said: (forall q x : q~Asked, x~Value, said m q == Some x, said n q == Some x),
+                                             arrays: (forall t k : t~Sort, k~Nat, m.array_in t k, n.array_in t k),
+                                             domains: (forall u args k : u~Nat, args~List Sort, k~Nat, of_sort c m (Unin u args) (Element k),
+                                                       of_sort c n (Unin u args) (Element k))
+    ensures envs_refine (bound lm AsGiven c m e1 senv bs) (bound ln AsGiven c n e2 senv bs)
+    proof
+        match bs
+            []             -> auto
+            (_, t) :: rest ->
+                have value_mono lm ln c m n e1 e2 senv t
+                have bound_mono lm ln c m n e1 e2 senv rest
+
+lemma conj_mono lm ln c m n e1 e2 senv ts : lm~Lower, ln~Lower, c~Context, m~Model, n~Model, e1~List (Result Value Unknown),
+                                            e2~List (Result Value Unknown), senv~List Sort, ts~List Term, envs_refine e1 e2,
+                                            said: (forall q x : q~Asked, x~Value, said m q == Some x, said n q == Some x),
+                                            arrays: (forall t k : t~Sort, k~Nat, m.array_in t k, n.array_in t k),
+                                            domains: (forall u args k : u~Nat, args~List Sort, k~Nat, of_sort c m (Unin u args) (Element k),
+                                                      of_sort c n (Unin u args) (Element k))
+    ensures bools_refine (conj lm AsGiven c m e1 senv ts) (conj ln AsGiven c n e2 senv ts)
+    proof
+        match ts
+            []        -> auto
+            t :: rest ->
+                have value_mono lm ln c m n e1 e2 senv t
+                have conj_mono lm ln c m n e1 e2 senv rest
+
+lemma disj_mono lm ln c m n e1 e2 senv ts : lm~Lower, ln~Lower, c~Context, m~Model, n~Model, e1~List (Result Value Unknown),
+                                            e2~List (Result Value Unknown), senv~List Sort, ts~List Term, envs_refine e1 e2,
+                                            said: (forall q x : q~Asked, x~Value, said m q == Some x, said n q == Some x),
+                                            arrays: (forall t k : t~Sort, k~Nat, m.array_in t k, n.array_in t k),
+                                            domains: (forall u args k : u~Nat, args~List Sort, k~Nat, of_sort c m (Unin u args) (Element k),
+                                                      of_sort c n (Unin u args) (Element k))
+    ensures bools_refine (disj lm AsGiven c m e1 senv ts) (disj ln AsGiven c n e2 senv ts)
+    proof
+        match ts
+            []        -> auto
+            t :: rest ->
+                have value_mono lm ln c m n e1 e2 senv t
+                have disj_mono lm ln c m n e1 e2 senv rest
+
+lemma apply_mono lm ln c m n e1 e2 senv t h args : lm~Lower, ln~Lower, c~Context, m~Model, n~Model, e1~List (Result Value Unknown),
+                                                   e2~List (Result Value Unknown), senv~List Sort, t~Term, h~Head, args~List Term, envs_refine e1 e2,
+                                                   said: (forall q x : q~Asked, x~Value, said m q == Some x, said n q == Some x),
+                                                   arrays: (forall t k : t~Sort, k~Nat, m.array_in t k, n.array_in t k),
+                                                   domains: (forall u args k : u~Nat, args~List Sort, k~Nat, of_sort c m (Unin u args) (Element k),
+                                                             of_sort c n (Unin u args) (Element k))
+    ensures refines (apply lm AsGiven c m e1 senv t h args) (apply ln AsGiven c n e2 senv t h args)
+    proof
+        have values_mono lm ln c m n e1 e2 senv args
+        match h
+            Prim op    -> have prim_mono lm ln c m n e1 e2 senv t op args
+            ConstArr s ->
+                match values lm AsGiven c m e1 senv args
+                    [Ok x] ->
+                        match m.const s x
+                            Some k ->
+                                have said_refines c m n (ConstAt s x)
+                                if m.array_in s k then have arrays s k else auto
+                            None   -> auto
+                    _      -> auto
+            Con _ _ _  -> have known_mono (values lm AsGiven c m e1 senv args) (values ln AsGiven c n e2 senv args)
+            Sel d k j  ->
+                match (args, values lm AsGiven c m e1 senv args)
+                    ([a], [Ok (Constructed l fs)]) ->
+                        if k == l
+                            auto
+                        else
+                            match (sort_here c senv a, sort_here c senv t)
+                                (Ok (Data _ sargs), Ok fs_sort) ->
+                                    let got = m.wrong_sel d k j sargs (Constructed l fs)
+                                    have said_refines c m n (SelAt d k j sargs (Constructed l fs))
+                                    have given_mono c m n fs_sort h got (n.wrong_sel d k j sargs (Constructed l fs))
+                                _                               -> auto
+                    _                              -> auto
+            Fun f      ->
+                let r1 = values lm AsGiven c m e1 senv args
+                let r2 = values ln AsGiven c n e2 senv args
+                have known_mono r1 r2
+                match (definition (term.defs c) f, all_known r1, sort_here c senv t)
+                    (_, Ok vs, Ok s) ->
+                        have said_refines c m n (FunsAt f vs)
+                        have given_mono c m n s (Fun f) (m.funs f vs) (n.funs f vs)
+                    _                -> auto
+            _          -> auto
+
+lemma concat_mono r1 r2 : r1~List (Result Value Unknown), r2~List (Result Value Unknown), envs_refine r1 r2
+    ensures lists_refine (concat_all r1) (concat_all r2)
+    proof
+        match (r1, r2)
+            (_ :: xr, _ :: yr) -> have concat_mono xr yr
+            _                  -> auto
+
+lemma prim_mono lm ln c m n e1 e2 senv t op args : lm~Lower, ln~Lower, c~Context, m~Model, n~Model, e1~List (Result Value Unknown),
+                                                   e2~List (Result Value Unknown), senv~List Sort, t~Term, op~Op, args~List Term, envs_refine e1 e2,
+                                                   said: (forall q x : q~Asked, x~Value, said m q == Some x, said n q == Some x),
+                                                   arrays: (forall t k : t~Sort, k~Nat, m.array_in t k, n.array_in t k),
+                                                   domains: (forall u args k : u~Nat, args~List Sort, k~Nat, of_sort c m (Unin u args) (Element k),
+                                                             of_sort c n (Unin u args) (Element k))
+    ensures refines (prim lm AsGiven c m e1 senv t op args) (prim ln AsGiven c n e2 senv t op args)
+    proof
+        match (op, args)
+            (And, _)                -> have conj_mono lm ln c m n e1 e2 senv args
+            (Or, _)                 -> have disj_mono lm ln c m n e1 e2 senv args
+            (SeqConcat, _)          ->
+                have values_mono lm ln c m n e1 e2 senv args
+                have concat_mono (values lm AsGiven c m e1 senv args) (values ln AsGiven c n e2 senv args)
+            (Div, [a, b])           ->
+                have value_mono lm ln c m n e1 e2 senv a
+                have value_mono lm ln c m n e1 e2 senv b
+                match (value lm AsGiven c m e1 senv a, value lm AsGiven c m e1 senv b)
+                    (Ok (Integer x), Ok (Integer 0)) -> have said_refines c m n (DivAt x)
+                    _                                -> auto
+            (Mod, [a, b])           ->
+                have value_mono lm ln c m n e1 e2 senv a
+                have value_mono lm ln c m n e1 e2 senv b
+                match (value lm AsGiven c m e1 senv a, value lm AsGiven c m e1 senv b)
+                    (Ok (Integer x), Ok (Integer 0)) -> have said_refines c m n (ModAt x)
+                    _                                -> auto
+            (Select, [a, i])        ->
+                have value_mono lm ln c m n e1 e2 senv a
+                have value_mono lm ln c m n e1 e2 senv i
+                match (value lm AsGiven c m e1 senv a, value lm AsGiven c m e1 senv i, sort_here c senv a, sort_here c senv t)
+                    (Ok (ArrayElem k), Ok j, Ok s, Ok w) ->
+                        have said_refines c m n (SelectAt s k j)
+                        have given_mono c m n w (Prim Select) (m.select s k j) (n.select s k j)
+                    _                                    -> auto
+            (Store, [a, i, v])      ->
+                have value_mono lm ln c m n e1 e2 senv a
+                have value_mono lm ln c m n e1 e2 senv i
+                have value_mono lm ln c m n e1 e2 senv v
+                match (value lm AsGiven c m e1 senv a, value lm AsGiven c m e1 senv i, value lm AsGiven c m e1 senv v, sort_here c senv t)
+                    (Ok (ArrayElem k), Ok j, Ok y, Ok s) ->
+                        match m.store s k j y
+                            Some l ->
+                                have said_refines c m n (StoreAt s k j y)
+                                if m.array_in s l then have arrays s l else auto
+                            None   -> auto
+                    _                                    -> auto
+            (MapAdd, [a, b])        ->
+                have value_mono lm ln c m n e1 e2 senv a
+                have value_mono lm ln c m n e1 e2 senv b
+                match (value lm AsGiven c m e1 senv a, value lm AsGiven c m e1 senv b, sort_here c senv t)
+                    (Ok (ArrayElem p), Ok (ArrayElem q), Ok s) ->
+                        match m.sum s p q
+                            Some l ->
+                                have said_refines c m n (SumAt s p q)
+                                if m.array_in s l then have arrays s l else auto
+                            None   -> auto
+                    _                                          -> auto
+            (SeqNth, [a, i])        ->
+                have value_mono lm ln c m n e1 e2 senv a
+                have value_mono lm ln c m n e1 e2 senv i
+                match (value lm AsGiven c m e1 senv a, value lm AsGiven c m e1 senv i, sort_here c senv t)
+                    (Ok (Sequence xs), Ok (Integer k), Ok s) ->
+                        have said_refines c m n (NthAt s xs k)
+                        have given_mono c m n s (Prim SeqNth) (m.nth_out s xs k) (n.nth_out s xs k)
+                    _                                        -> auto
+            (_, [a])                -> have value_mono lm ln c m n e1 e2 senv a
+            (_, [a, b])             ->
+                have value_mono lm ln c m n e1 e2 senv a
+                have value_mono lm ln c m n e1 e2 senv b
+            (_, [a, b, d])          ->
+                have value_mono lm ln c m n e1 e2 senv a
+                have value_mono lm ln c m n e1 e2 senv b
+                have value_mono lm ln c m n e1 e2 senv d
+            _                       -> auto
+
+lemma refines_ok r1 r2 v : r1~Result Value Unknown, r2~Result Value Unknown, v~Value, refines r1 r2, r1 == Ok v
+    ensures r2 == Ok v
+
+lemma eval_is c m t : c~Context, m~Model, t~Term
+    ensures eval c m t == (if closed c t then value (level AsGiven c m m.fuel) AsGiven c m [] [] t else Err IllSorted)
+
+# Monotonicity: a definite answer of `eval` in `m` is the answer in every
+# model `n` that says what `m` says wherever `m` says something (`said`),
+# names as arrays at least the arrays `m` names, and has at least `m`'s
+# elements of each uninterpreted sort.
+export lemma monotone c m n t v : c~Context, m~Model, n~Model, t~Term, v~Value, eval c m t == Ok v,
+                                  said: (forall q x : q~Asked, x~Value, said m q == Some x, said n q == Some x),
+                                  arrays: (forall s k : s~Sort, k~Nat, m.array_in s k, n.array_in s k),
+                                  domains: (forall u args k : u~Nat, args~List Sort, k~Nat, of_sort c m (Unin u args) (Element k),
+                                            of_sort c n (Unin u args) (Element k))
+    ensures eval c n t == Ok v
+    proof
+        have eval_is c m t
+        have eval_is c n t
+        if closed c t
+            let r1 = value (level AsGiven c m m.fuel) AsGiven c m [] [] t
+            let r2 = value (level AsGiven c n n.fuel) AsGiven c n [] [] t
+            have value_mono (level AsGiven c m m.fuel) (level AsGiven c n n.fuel) c m n [] [] [] t
+            have refines_ok r1 r2 v
+        else
+            auto
