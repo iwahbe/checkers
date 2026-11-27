@@ -2403,3 +2403,208 @@ export fn has_value c m t -> r : c~Context, m~Model, t~Term, r~Bool
     match (term.sort_of (term.signature c) [] t, eval c m t)
         (Ok s, Ok v) -> of_sort c m s v
         _            -> False
+
+# ── The meaning doesn't use fuel ─────────────────────────────────────────────
+# `Model.fuel` bounds how deep `refutes` unfolds definitions. The meaning
+# (`eval`, `holds`, `fails`, `holds_at`) unfolds none, so its answers are
+# the same whatever the fuel: `eval_fuel` and `holds_at_fuel`.
+
+# `m` with `n` levels of fuel.
+export fn with_fuel m n -> r : m~Model, n~Nat, r~Model
+    Model m.funs m.select m.const m.store m.sum m.lambda m.array_in m.differ m.div_zero m.mod_zero m.nth_out m.wrong_sel m.domain n
+
+lemma of_sort_fuel c m n s v : c~Context, m~Model, n~Nat, s~Sort, v~Value
+    ensures of_sort c m s v == of_sort c (with_fuel m n) s v
+    proof
+        match (s, v)
+            (Seq e, Sequence xs)            -> have all_of_sort_fuel c m n e xs
+            (Data d args, Constructed k fs) ->
+                match term.ctor (term.signature c) d k
+                    Some kc -> have fields_of_sort_fuel c m n (list.map (term.instantiate args) (term.field_sorts kc.fields)) fs
+                    None    -> auto
+            _                               -> auto
+
+lemma all_of_sort_fuel c m n s vs : c~Context, m~Model, n~Nat, s~Sort, vs~List Value
+    ensures all_of_sort c m s vs == all_of_sort c (with_fuel m n) s vs
+    proof
+        match vs
+            []        -> auto
+            v :: rest ->
+                have of_sort_fuel c m n s v
+                have all_of_sort_fuel c m n s rest
+
+lemma fields_of_sort_fuel c m n ss vs : c~Context, m~Model, n~Nat, ss~List Sort, vs~List Value
+    ensures fields_of_sort c m ss vs == fields_of_sort c (with_fuel m n) ss vs
+    proof
+        match (ss, vs)
+            (s :: sr, v :: vr) ->
+                have of_sort_fuel c m n s v
+                have fields_of_sort_fuel c m n sr vr
+            _                  -> auto
+
+lemma sorts_fuel c m n : c~Context, m~Model, n~Nat
+    ensures forall s v : s~Sort, v~Value, of_sort c m s v == of_sort c (with_fuel m n) s v
+    proof
+        have of_sort_fuel c m n s v
+
+lemma given_at c m n s h got : c~Context, m~Model, n~Nat, s~Sort, h~Head, got~Option Value
+    ensures given c m s h got == given c (with_fuel m n) s h got
+    proof
+        match got
+            Some v -> have of_sort_fuel c m n s v
+            None   -> auto
+
+lemma given_fuel c m n : c~Context, m~Model, n~Nat
+    ensures forall s h got : s~Sort, h~Head, got~Option Value, given c m s h got == given c (with_fuel m n) s h got
+    proof
+        match got
+            Some v -> have of_sort_fuel c m n s v
+            None   -> auto
+
+lemma value_fuel low low2 c m n env senv t : low~Lower, low2~Lower, c~Context, m~Model, n~Nat,
+                                             env~List (Result Value Unknown), senv~List Sort, t~Term
+    ensures value low AsGiven c m env senv t == value low2 AsGiven c (with_fuel m n) env senv t
+    proof
+        have sorts_fuel c m n
+        match t
+            App h args     -> have apply_fuel low low2 c m n env senv t h args
+            Let binds body ->
+                match term.sorts_of (term.signature c) senv (bound_terms binds)
+                    Ok ss ->
+                        have bound_fuel low low2 c m n env senv binds
+                        let inner = list.reverse (bound low AsGiven c m env senv binds) ++ env
+                        have value_fuel low low2 c m n inner (list.reverse ss ++ senv) body
+                    Err _ -> auto
+            _              -> auto
+
+lemma apply_fuel low low2 c m n env senv t h args : low~Lower, low2~Lower, c~Context, m~Model, n~Nat,
+                                                    env~List (Result Value Unknown), senv~List Sort, t~Term, h~Head,
+                                                    args~List Term
+    ensures apply low AsGiven c m env senv t h args == apply low2 AsGiven c (with_fuel m n) env senv t h args
+    proof
+        have given_fuel c m n
+        have values_fuel low low2 c m n env senv args
+        match h
+            Prim op    -> have prim_fuel low low2 c m n env senv t op args
+            Num _      -> auto
+            Boolean _  -> auto
+            EmptySeq _ -> auto
+            ConstArr _ -> auto
+            Con _ _ _  -> auto
+            Is _ _     -> auto
+            Sel d k j  ->
+                match (args, values low AsGiven c m env senv args)
+                    ([a], [Ok (Constructed l fs)]) ->
+                        match (sort_here c senv a, sort_here c senv t)
+                            (Ok (Data _ sargs), Ok fs_sort) ->
+                                let got = m.wrong_sel d k j sargs (Constructed l fs)
+                                have given_at c m n fs_sort h got
+                            _                               -> auto
+                    _                              -> auto
+            Fun f      -> have call_fuel low low2 c m n senv t f (values low AsGiven c m env senv args)
+
+lemma call_fuel low low2 c m n senv t f rs : low~Lower, low2~Lower, c~Context, m~Model, n~Nat, senv~List Sort, t~Term,
+                                             f~Nat, rs~List (Result Value Unknown)
+    ensures call low AsGiven c m senv t f rs == call low2 AsGiven c (with_fuel m n) senv t f rs
+    proof
+        match (all_known rs, sort_here c senv t)
+            (Ok vs, Ok s) ->
+                have given_at c m n s (Fun f) (m.funs f vs)
+            _             -> auto
+
+lemma prim_fuel low low2 c m n env senv t op args : low~Lower, low2~Lower, c~Context, m~Model, n~Nat,
+                                                    env~List (Result Value Unknown), senv~List Sort, t~Term, op~Op,
+                                                    args~List Term
+    ensures prim low AsGiven c m env senv t op args == prim low2 AsGiven c (with_fuel m n) env senv t op args
+    proof
+        have given_fuel c m n
+        have values_fuel low low2 c m n env senv args
+        have conj_fuel low low2 c m n env senv args
+        have disj_fuel low low2 c m n env senv args
+        match args
+            [a]       -> have value_fuel low low2 c m n env senv a
+            [a, b]    ->
+                have value_fuel low low2 c m n env senv a
+                have value_fuel low low2 c m n env senv b
+                let x = value low AsGiven c m env senv a
+                let y = value low AsGiven c m env senv b
+                match op
+                    Div    ->
+                        match (as_int x, as_int y)
+                            (Ok p, Ok q) -> auto
+                            _            -> auto
+                    Mod    ->
+                        match (as_int x, as_int y)
+                            (Ok p, Ok q) -> auto
+                            _            -> auto
+                    Select ->
+                        match (x, y, sort_here c senv a, sort_here c senv t)
+                            (Ok (ArrayElem k), Ok j, Ok sa, Ok w) ->
+                                have given_at c m n w (Prim Select) (m.select sa k j)
+                            _                                     -> auto
+                    SeqNth ->
+                        match (items x, as_int y, sort_here c senv t)
+                            (Ok xs, Ok i, Ok e) ->
+                                have given_at c m n e (Prim SeqNth) (m.nth_out e xs i)
+                            _                   -> auto
+                    _      -> auto
+            [a, b, d] ->
+                have value_fuel low low2 c m n env senv a
+                have value_fuel low low2 c m n env senv b
+                have value_fuel low low2 c m n env senv d
+            _         -> auto
+
+lemma values_fuel low low2 c m n env senv ts : low~Lower, low2~Lower, c~Context, m~Model, n~Nat,
+                                               env~List (Result Value Unknown), senv~List Sort, ts~List Term
+    ensures values low AsGiven c m env senv ts == values low2 AsGiven c (with_fuel m n) env senv ts
+    proof
+        match ts
+            []        -> auto
+            t :: rest ->
+                have value_fuel low low2 c m n env senv t
+                have values_fuel low low2 c m n env senv rest
+
+lemma bound_fuel low low2 c m n env senv bs : low~Lower, low2~Lower, c~Context, m~Model, n~Nat,
+                                              env~List (Result Value Unknown), senv~List Sort, bs~List (Name, Term)
+    ensures bound low AsGiven c m env senv bs == bound low2 AsGiven c (with_fuel m n) env senv bs
+    proof
+        match bs
+            []             -> auto
+            (_, t) :: rest ->
+                have value_fuel low low2 c m n env senv t
+                have bound_fuel low low2 c m n env senv rest
+
+lemma conj_fuel low low2 c m n env senv ts : low~Lower, low2~Lower, c~Context, m~Model, n~Nat,
+                                             env~List (Result Value Unknown), senv~List Sort, ts~List Term
+    ensures conj low AsGiven c m env senv ts == conj low2 AsGiven c (with_fuel m n) env senv ts
+    proof
+        match ts
+            []        -> auto
+            t :: rest ->
+                have value_fuel low low2 c m n env senv t
+                have conj_fuel low low2 c m n env senv rest
+
+lemma disj_fuel low low2 c m n env senv ts : low~Lower, low2~Lower, c~Context, m~Model, n~Nat,
+                                             env~List (Result Value Unknown), senv~List Sort, ts~List Term
+    ensures disj low AsGiven c m env senv ts == disj low2 AsGiven c (with_fuel m n) env senv ts
+    proof
+        match ts
+            []        -> auto
+            t :: rest ->
+                have value_fuel low low2 c m n env senv t
+                have disj_fuel low low2 c m n env senv rest
+
+# The meaning of a term is the same whatever the fuel.
+export lemma eval_fuel c m n t : c~Context, m~Model, n~Nat, t~Term
+    ensures eval c m t == eval c (with_fuel m n) t
+    proof
+        have value_fuel (level AsGiven c m m.fuel) (level AsGiven c (with_fuel m n) n) c m n [] [] t
+
+# So is whether an axiom holds at values.
+export lemma holds_at_fuel c m n a vs : c~Context, m~Model, n~Nat, a~Axiom, vs~List Value
+    ensures holds_at c m a vs == holds_at c (with_fuel m n) a vs
+    proof
+        have fields_of_sort_fuel c m n (term.var_sorts a.vars) vs
+        have values_of_sorts c m (term.var_sorts a.vars) vs == values_of_sorts c (with_fuel m n) (term.var_sorts a.vars) vs
+        let env = list.reverse (list.map (\v -> Ok v) vs)
+        have value_fuel (level AsGiven c m m.fuel) (level AsGiven c (with_fuel m n) n) c m n env (term.binder_env a.vars) a.body
