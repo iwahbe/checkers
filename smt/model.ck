@@ -1873,7 +1873,6 @@ lemma apply_fuel low low2 c m n env senv t h args : low~Lower, low2~Lower, c~Con
                         match (sort_here c senv a, sort_here c senv t)
                             (Ok (Data _ sargs), Ok fs_sort) ->
                                 let got = m.wrong_sel d k j sargs (Constructed l fs)
-                                have (with_fuel m n).wrong_sel d k j sargs (Constructed l fs) == got
                                 have given_at c m n fs_sort h got
                             _                               -> auto
                     _                              -> auto
@@ -1885,7 +1884,6 @@ lemma call_fuel low low2 c m n senv t f rs : low~Lower, low2~Lower, c~Context, m
     proof
         match (all_known rs, sort_here c senv t)
             (Ok vs, Ok s) ->
-                have (with_fuel m n).funs f vs == m.funs f vs
                 have given_at c m n s (Fun f) (m.funs f vs)
             _             -> auto
 
@@ -1917,13 +1915,11 @@ lemma prim_fuel low low2 c m n env senv t op args : low~Lower, low2~Lower, c~Con
                     Select ->
                         match (x, y, sort_here c senv a, sort_here c senv t)
                             (Ok (ArrayElem k), Ok j, Ok sa, Ok w) ->
-                                have (with_fuel m n).select sa k j == m.select sa k j
                                 have given_at c m n w (Prim Select) (m.select sa k j)
                             _                                     -> auto
                     SeqNth ->
                         match (items x, as_int y, sort_here c senv t)
                             (Ok xs, Ok i, Ok e) ->
-                                have (with_fuel m n).nth_out e xs i == m.nth_out e xs i
                                 have given_at c m n e (Prim SeqNth) (m.nth_out e xs i)
                             _                   -> auto
                     _      -> auto
