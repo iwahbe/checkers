@@ -87,7 +87,7 @@ record Root
 record Pending
     id~Json
     path~String
-    f~(List Entry -> Caps -> Result Json String)
+    f~(List Entry -> Result Json String)
 
 # The main loop's state: the open documents, the last check's number, and
 # a way to end each document's check in progress.
@@ -150,12 +150,6 @@ partial fn range_of text s utf8 -> j : text~Bytes, s~Span, utf8~Bool, j~Json
 partial fn location s docs fs utf8 -> j : s~Span, docs~List Doc, fs~Fs, utf8~Bool, j~Json
     let t = if utf8 then b"" else text_of s.path docs fs
     rpc.obj [("uri", Str (tx.uri_of s.path)), ("range", range_of t s utf8)]
-
-# Each span's `location`.
-partial fn locations ss docs fs utf8 -> js : ss~List Span, docs~List Doc, fs~Fs, utf8~Bool, js~List Json
-    match ss
-        []        -> []
-        s :: rest -> location s docs fs utf8 :: locations rest docs fs utf8
 
 # The byte column of a request's position.
 partial fn byte_col text line ch utf8 -> c : text~Bytes, line~Nat, ch~Nat, utf8~Bool, c~Nat
@@ -278,7 +272,7 @@ partial fn publish phase acc g root docs c : phase~String, acc~Acc, g~Nat, root~
             let index = acc.index ++ not_in root sh.index
             let roots = Root root g True before.showing before.proofs :: other_roots root sh.roots
             let o = terminal.stdout c.term
-            let (_, o) = answer_all (of_root root sh.pending) index c o
+            let (_, o) = answer_all (of_root root sh.pending) index o
             let _ = files.close o
             (Shared roots index (not_of_root root sh.pending) sh.shutdown, turn)
         else
@@ -305,17 +299,17 @@ partial fn settle g root c : g~Nat, root~String, c~Caps
         else
             let roots = Root root g True before.showing before.proofs :: other_roots root sh.roots
             let o = terminal.stdout c.term
-            let (_, o) = answer_all (of_root root sh.pending) sh.index c o
+            let (_, o) = answer_all (of_root root sh.pending) sh.index o
             let _ = files.close o
             (Shared roots sh.index (not_of_root root sh.pending) sh.shutdown, turn)
     ()
 
-partial fn answer_all ps index c o -> r : ps~List Pending, index~List Entry, c~Caps, o~File, r~((), File)
+partial fn answer_all ps index o -> r : ps~List Pending, index~List Entry, o~File, r~((), File)
     match ps
         []        -> ((), o)
         p :: rest ->
-            let (_, o) = rpc.write (respond p.id (p.f index c)) o
-            answer_all rest index c o
+            let (_, o) = rpc.write (respond p.id (p.f index)) o
+            answer_all rest index o
 
 # The requests about `path`, oldest first.
 partial fn of_root path ps -> r : path~String, ps~List Pending, r~List Pending
@@ -372,8 +366,7 @@ partial fn send_all paths ds docs c o -> r : paths~List String, ds~List Diag, do
         []        -> ((), o)
         p :: rest ->
             let t = if c.utf8 then b"" else text_of p docs c.fs
-            let utf8 = c.utf8
-            let items = list.map (\d -> with_range t d utf8) (of_path p ds)
+            let items = list.map (\d -> with_range t d c.utf8) (of_path p ds)
             let params = rpc.obj [("uri", Str (tx.uri_of p)), ("diagnostics", Arr items)]
             let (_, o) = rpc.write (rpc.notification "textDocument/publishDiagnostics" params) o
             send_all rest ds docs c o
@@ -532,9 +525,7 @@ partial fn occurrences w es -> r : w~Where, es~List Entry, r~List Span
 partial fn highlights w es c -> j : w~Where, es~List Entry, c~Caps, j~Json
     match occurrences w es
         []  -> Null
-        all ->
-            let utf8 = c.utf8
-            Arr (list.map (\s -> rpc.obj [("range", range_of w.doc.text s utf8)]) all)
+        all -> Arr (list.map (\s -> rpc.obj [("range", range_of w.doc.text s c.utf8)]) all)
 
 # Whether renaming the name at the position can rename every use (D160):
 # its range, to edit in place, or why not.
@@ -587,8 +578,8 @@ partial fn word_bytes b i : b~Bytes, i~Nat
 # from a behaviour on the shared cown (which holds the index) and the
 # output: at once if the index has the file's latest check, else when it
 # does (D127 c).
-partial fn answer id path f c : id~Json, path~String, f~(List Entry -> Caps -> Json), c~Caps
-    answer_or id path (\es caps -> Ok (f es caps)) c
+partial fn answer id path f c : id~Json, path~String, f~(List Entry -> Json), c~Caps
+    answer_or id path (\es -> Ok (f es)) c
 
 # The reply to request `id`: its result, or an error with a message the
 # editor shows (`RequestFailed`).
@@ -598,12 +589,12 @@ fn respond id r -> j : id~Json, r~Result Json String, j~Json
         Err msg -> rpc.error_response id (0 - 32803) msg
 
 # As `answer`, where `f` may fail with a message.
-partial fn answer_or id path f c : id~Json, path~String, f~(List Entry -> Caps -> Result Json String), c~Caps
+partial fn answer_or id path f c : id~Json, path~String, f~(List Entry -> Result Json String), c~Caps
     let sched = c.sched
     when sh = c.shared, turn = c.out using sched
         if (root_in path sh.roots).indexed
             let o = terminal.stdout c.term
-            let (_, o) = rpc.write (respond id (f sh.index c)) o
+            let (_, o) = rpc.write (respond id (f sh.index)) o
             let _ = files.close o
             (sh, turn)
         else
@@ -633,7 +624,7 @@ partial fn shut_down id c : id~Option Json, c~Caps
     let sched = c.sched
     when sh = c.shared, turn = c.out using sched
         let o = terminal.stdout c.term
-        let (_, o) = answer_all (list.reverse sh.pending) sh.index c o
+        let (_, o) = answer_all (list.reverse sh.pending) sh.index o
         let o =
             match id
                 Some i ->
@@ -654,7 +645,7 @@ partial fn references w es declaration docs c -> j : w~Where, es~List Entry, dec
                 Some d ->
                     let uses = uses_of d (sort es) []
                     let all = if declaration then d :: uses else uses
-                    Arr (locations all docs c.fs c.utf8)
+                    Arr (list.map (\s -> location s docs c.fs c.utf8) all)
                 None   -> Arr []
         None   -> Null
 
@@ -681,8 +672,7 @@ partial fn reply msg c : msg~Json, c~Caps
 # Reply to request `id` with `f` of the index of every module of `w`'s
 # package (`ckc index`, with the open documents as an overlay), read in a
 # behaviour of its own.
-partial fn with_package id w docs c f : id~Json, w~Where, docs~List Doc, c~Caps,
-                                        f~(List Entry -> Caps -> Result Json String)
+partial fn with_package id w docs c f : id~Json, w~Where, docs~List Doc, c~Caps, f~(List Entry -> Result Json String)
     let args = c.flags ++ ["index", "--overlay", "-", w.doc.path]
     match proc.spawn c.ckc args (Streams Pipe Pipe Discard) c.proc
         Err e                           ->
@@ -695,7 +685,7 @@ partial fn with_package id w docs c f : id~Json, w~Where, docs~List Doc, c~Caps,
                 let (es, o2) = read_entries out []
                 let _ = files.close o2
                 let _ = proc.wait child
-                reply (respond id (f es c)) c
+                reply (respond id (f es)) c
             ()
 
 # The names `ckc index` writes.
@@ -766,8 +756,7 @@ partial fn edits_by paths places new docs c -> r : paths~List String, places~Lis
         []        -> []
         p :: rest ->
             let text = if c.utf8 then b"" else text_of p docs c.fs
-            let utf8 = c.utf8
-            let edits = list.map (\s -> rpc.obj [("range", range_of text s utf8), ("newText", Str new)]) (spans_in p places)
+            let edits = list.map (\s -> rpc.obj [("range", range_of text s c.utf8), ("newText", Str new)]) (spans_in p places)
             (tx.uri_of p, Arr edits) :: edits_by rest places new docs c
 
 # ── Completion (D142) ────────────────────────────────────────────────────────
@@ -1135,23 +1124,23 @@ partial fn handle m st c -> r : m~Json, st~Server, c~Caps, r~(Server, Option Exi
                         Some w ->
                             let path = w.doc.path
                             if method == "textDocument/hover"
-                                answer i path (\es caps -> hover w es caps) c
+                                answer i path (\es -> hover w es c) c
                             else if method == "textDocument/definition"
-                                answer i path (\es caps -> definition w es docs caps) c
+                                answer i path (\es -> definition w es docs c) c
                             else if method == "textDocument/typeDefinition"
-                                answer i path (\es caps -> type_definition w es docs caps) c
+                                answer i path (\es -> type_definition w es docs c) c
                             else if method == "textDocument/documentHighlight"
-                                answer i path (\es caps -> highlights w es caps) c
+                                answer i path (\es -> highlights w es c) c
                             else if method == "textDocument/prepareRename"
-                                with_package i w docs c (\es caps -> prepare_rename w es caps)
+                                with_package i w docs c (\es -> prepare_rename w es c)
                             else if method == "textDocument/rename"
                                 let new = match rpc.str_at ["newName"] params
                                     Some n -> n
                                     None   -> ""
-                                with_package i w docs c (\es caps -> rename w es new docs caps)
+                                with_package i w docs c (\es -> rename w es new docs c)
                             else
                                 let decl = rpc.at ["context", "includeDeclaration"] params == Some (Bool True)
-                                with_package i w docs c (\es caps -> Ok (references w es decl docs caps))
+                                with_package i w docs c (\es -> Ok (references w es decl docs c))
                         None   -> reply (rpc.response i Null) c
                     keep
                 else if method == "textDocument/completion"
@@ -1174,9 +1163,9 @@ partial fn handle m st c -> r : m~Json, st~Server, c~Caps, r~(Server, Option Exi
                             match doc_of uri docs
                                 Some doc ->
                                     if method == "textDocument/semanticTokens/full"
-                                        answer i doc.path (\es caps -> semantic_tokens doc es caps) c
+                                        answer i doc.path (\es -> semantic_tokens doc es c) c
                                     else if method == "textDocument/documentSymbol"
-                                        answer i doc.path (\es caps -> symbols doc es caps) c
+                                        answer i doc.path (\es -> symbols doc es c) c
                                     else
                                         reply (rpc.response i (formatting doc c)) c
                                 None     -> reply (rpc.response i Null) c

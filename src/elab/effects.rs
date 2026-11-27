@@ -41,7 +41,7 @@ pub(super) struct Effects {
 
 impl Elab {
     /// Whether `id` is a type whose values carry an effect.
-    pub(crate) fn is_effect_ty(&self, id: TyId) -> bool {
+    fn is_effect_ty(&self, id: TyId) -> bool {
         let ti = &self.g.tys[id.0 as usize];
         EFFECT_TYPES.iter().any(|(m, n)| *ti.module == **m && *ti.name == **n)
     }
@@ -50,7 +50,7 @@ impl Elab {
     /// or a process handle: as itself, a part, a field or an element. Not
     /// through a function type or a type variable (see the module's
     /// comment).
-    pub(crate) fn holds_effect(&self, lvl: usize, ty: &Val) -> bool {
+    pub(super) fn holds_effect(&self, lvl: usize, ty: &Val) -> bool {
         self.can_hold(lvl, ty, &|e: &Elab, t: &Val| matches!(t, Val::TyCon(id, _) if e.is_effect_ty(*id)), false, 0, &mut Vec::new())
     }
 

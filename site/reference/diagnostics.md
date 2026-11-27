@@ -151,7 +151,6 @@ Codes are never reused: a code whose rule is withdrawn is retired, not given a n
 | `E0406` | reading a field would drop a resource in another field |
 | `E0407` | indexing an array of resources |
 | `E0408` | a `match` guard that uses a resource |
-| `E0409` | a closure that captured an authority, where it may be called more than once |
 
 ## Proofs
 

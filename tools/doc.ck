@@ -808,21 +808,12 @@ partial fn section_side src rel fs -> r : src~String, rel~String, fs~Fs, r~Bytes
                 let title = match lit.title index
                     Some t -> esc (as_string (plain_title t))
                     None   -> esc dir
+                let line = \name -> string.concat [
+                    "<li", if name == here then " class=\"here\"" else "", "><a href=\"", name, ".html\">",
+                    esc (page_title (join_path src (join_path dir (name ++ ".md"))) name fs), "</a></li>\n"]
                 string.bytes (string.concat (["<div class=\"crumb\"><a href=\"index.html\">", title, "</a></div>\n",
                                               "<ul class=\"pages\">\n"]
-                                             ++ page_lines (linked_pages index 0 []) here src dir fs
-                                             ++ ["</ul>\n"]))
-
-# A list item linking to each page in `names`, in `dir` under `src`; `here` is marked.
-partial fn page_lines names here src dir fs -> r : names~List String, here~String, src~String, dir~String, fs~Fs,
-                                                   r~List String
-    match names
-        []           -> []
-        name :: rest ->
-            let line = string.concat [
-                "<li", if name == here then " class=\"here\"" else "", "><a href=\"", name, ".html\">",
-                esc (page_title (join_path src (join_path dir (name ++ ".md"))) name fs), "</a></li>\n"]
-            line :: page_lines rest here src dir fs
+                                             ++ list.map line (linked_pages index 0 []) ++ ["</ul>\n"]))
 
 # A path's last part without `.md`: `reference/types.md` is `types`.
 partial fn page_of rel -> r : rel~String, r~String
@@ -882,12 +873,6 @@ partial fn first_paragraph ls seen acc -> r : ls~List Bytes, seen~Bool, acc~List
             else
                 first_paragraph rest seen ((if acc == [] then l else bytes.concat [b"\n", l]) :: acc)
 
-# Each page's `link_line`.
-partial fn link_lines out rels fs -> r : out~String, rels~List String, fs~Fs, r~List String
-    match rels
-        []          -> []
-        rel :: rest -> link_line out rel fs :: link_lines out rest fs
-
 partial fn link_line out rel fs -> r : out~String, rel~String, fs~Fs, r~String
     let title = match files.read (join_path out rel) fs
         Ok text ->
@@ -915,8 +900,8 @@ partial fn llms out pages index fs -> r : out~String, pages~List String, index~B
     let head = string.concat [
         "# ", title, "\n\n> ", summary index, "\n\n",
         "Every page of this site is also Markdown: replace `.html` with `.md`.\n\n## Pages\n\n"]
-    let listed = link_lines out pages fs
-    let documented = if docs == [] then [] else "\n## Packages\n\n" :: link_lines out docs fs
+    let listed = list.map (\r -> link_line out r fs) pages
+    let documented = if docs == [] then [] else "\n## Packages\n\n" :: list.map (\r -> link_line out r fs) docs
     string.concat (head :: listed ++ documented)
 
 # `checkers site SRC -o OUT`.

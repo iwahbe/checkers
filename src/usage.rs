@@ -1,13 +1,11 @@
 //! Usage checking (QTT, §2 and §4): `own` values are used exactly once on
 //! every path; `ghost` values never at runtime.
 
-use crate::core::{eval, CaseTm, DefId, Mult, Prim, Tm, Val};
+use crate::core::{CaseTm, DefId, Mult, Prim, Tm};
 use crate::diag::Diagnostic;
 use crate::source::Span;
 use crate::elab::Elab;
-use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::rc::Rc;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Count {
@@ -45,50 +43,6 @@ struct Binder {
     /// Bound to a closure that uses this resource (or `own` value): the
     /// closure must be called exactly once (D171).
     oneshot: Option<String>,
-    /// Bound to a closure that captured this authority (§8.3): the closure
-    /// holds one use of it, so it may be called at most once.
-    single: Option<Captured>,
-    /// Its type, where known, to tell whether it holds an authority.
-    ty: BinderTy,
-    /// Whether its value holds an authority: a capability or a `Sched`, as
-    /// itself (`Some(true)`), a part, a field or an element. Found when
-    /// first asked.
-    authority: OnceCell<Option<bool>>,
-}
-
-/// An authority a closure captured: the variable, and whether it is one
-/// itself (`term`) or holds one (`caps`, a record with a `Term` field).
-#[derive(Clone)]
-struct Captured {
-    name: String,
-    itself: bool,
-}
-
-impl Captured {
-    /// "`term`, an authority" or "`caps`, which holds an authority".
-    fn shown(&self) -> String {
-        if self.itself {
-            format!("`{}`, an authority", self.name)
-        } else {
-            format!("`{}`, which holds an authority", self.name)
-        }
-    }
-}
-
-/// Where a binder's type is found.
-enum BinderTy {
-    None,
-    /// A type in the scope of the binders before it (a `let`'s, a
-    /// function's parameter's).
-    Tm(Rc<Tm>),
-    /// A lambda's parameter: its type, and the level it was bound at.
-    Lam(crate::core::Name),
-}
-
-impl Binder {
-    fn new(name: String, mult: Mult, span: Option<Span>, ty: BinderTy) -> Binder {
-        Binder { name, mult, span, lambda: false, resource: None, oneshot: None, single: None, ty, authority: OnceCell::new() }
-    }
 }
 
 struct U<'a> {
@@ -102,12 +56,6 @@ struct U<'a> {
     copied_by: std::collections::HashMap<usize, (String, String)>,
     /// The `own` binders a closure captures.
     captured: std::collections::BTreeSet<usize>,
-    /// Closures (by address) already reported as capturing an authority
-    /// where they may be called more than once.
-    noted: std::collections::HashSet<usize>,
-    /// The closures bound with `let` passed on inside another closure, not
-    /// themselves: `copied_by`'s callee was given a closure that uses them.
-    via_closure: std::collections::HashSet<usize>,
 }
 
 /// Each binder's uses, by level: only the binders used at all, so that a
@@ -334,143 +282,14 @@ impl U<'_> {
         match self.binders[lvl].mult {
             Mult::One if c != Count::One => self.report(lvl, c, false),
             Mult::Zero if c != Count::Zero => self.report(lvl, c, false),
-            Mult::Many if c == Count::Many && self.binders[lvl].single.is_some() => self.report_single(lvl),
             _ => {}
         }
     }
 
-    /// Whether the binder at `lvl` holds an authority (a capability, a
-    /// `Sched`): a closure that captures it holds one use of it (§8.3).
-    fn authority(&self, lvl: usize) -> bool {
-        self.holds_authority(lvl).is_some()
-    }
-
-    /// The authority the binder at `lvl` holds, if it does.
-    fn holds_authority(&self, lvl: usize) -> Option<Captured> {
-        let b = &self.binders[lvl];
-        if b.mult != Mult::Many {
-            return None;
-        }
-        let itself = (*b.authority.get_or_init(|| {
-            let (ty, l) = match &b.ty {
-                BinderTy::None => return None,
-                BinderTy::Tm(t) => {
-                    let env: Vec<Val> = (0..lvl).map(Val::var).collect();
-                    (eval(&self.e.g, &Rc::new(env), t), lvl)
-                }
-                BinderTy::Lam(x) => self.e.lam_domains.get(&(Rc::as_ptr(x) as *const u8 as usize)).cloned()?,
-            };
-            self.e
-                .holds_effect(l, &ty)
-                .then(|| matches!(self.e.force(&ty), Val::TyCon(id, _) if self.e.is_effect_ty(id)))
-        }))?;
-        Some(Captured { name: b.name.clone(), itself })
-    }
-
-    /// If the binder at `lvl` is an authority, or a closure that captured
-    /// one, the authority's name: a closure that captures it may be called
-    /// at most once.
-    fn single_use(&self, lvl: usize) -> Option<Captured> {
-        self.binders[lvl].single.clone().or_else(|| self.holds_authority(lvl))
-    }
-
-    /// The binder's span, for a message about it.
-    fn span_of(&self, lvl: usize) -> Span {
-        let b = &self.binders[lvl];
-        let meta = self.e.fn_meta.get(&self.did).cloned().unwrap_or_default();
-        b.span
-            .or_else(|| meta.params.iter().find(|p| p.0 == b.name).map(|p| p.2))
-            .or_else(|| self.e.local_spans.get(&(self.did, b.name.to_string())).copied())
-            .unwrap_or(meta.span)
-    }
-
-    /// `g`, bound to a closure that captured an authority, may be called
-    /// more than once.
-    fn report_single(&mut self, lvl: usize) {
-        let b = &self.binders[lvl];
-        let Some(cap) = b.single.clone() else { return };
-        let (name, used, shown) = (b.name.clone(), cap.name.clone(), cap.shown());
-        let fname = self.e.fn_meta.get(&self.did).map(|m| m.name.clone()).unwrap_or_default();
-        let d = Diagnostic::error(
-            "E0409",
-            format!("`{name}` captured {shown}, so it may be called only once, but `{fname}` may call it more than once"),
-            self.span_of(lvl),
-        );
-        let by = if self.via_closure.contains(&lvl) { format!("a closure that uses `{name}`") } else { format!("`{name}`") };
-        let d = match self.copied_by.get(&lvl) {
-            Some((callee, _)) => d
-                .with_note(format!("{by} is passed to `{callee}`, whose parameter is not `own`, so `{callee}` may call it any number of times"))
-                .with_help(format!("pass `{used}` to the closure as a parameter, or mark that parameter of `{callee}` with `own` (as in `f~own (Unit -> a)`)")),
-            None => d.with_help(format!("pass `{used}` to the closure as a parameter, so that each call is given it")),
-        };
-        self.e.err(d);
-    }
-
-    /// `t`, a closure that captured an authority (the binder at `lvl`), is
-    /// where it may be called more than once: passed to `callee`'s parameter
-    /// that isn't `own`, or (`None`) returned, stored or captured.
-    fn report_captured(&mut self, t: &Tm, lvl: usize, callee: Option<String>) {
-        if !self.noted.insert(t as *const Tm as usize) {
-            return;
-        }
-        let Some(cap) = self.holds_authority(lvl) else { return };
-        let (used, shown) = (cap.name.clone(), cap.shown());
-        let d = Diagnostic::error(
-            "E0409",
-            format!("a closure that captured {shown}, may be called only once, but here it may be called more than once"),
-            self.span_of(lvl),
-        );
-        let d = match callee {
-            Some(callee) => d
-                .with_note(format!("a closure that captured `{used}` is passed to `{callee}`, whose parameter is not `own`, so `{callee}` may call it any number of times"))
-                .with_help(format!("pass `{used}` to the closure as a parameter, or mark that parameter of `{callee}` with `own` (as in `f~own (Unit -> a)`)")),
-            None => d
-                .with_note("a closure that captured an authority holds one use of it: it may be called where it is made, bound with `let` and called once, or passed to a parameter declared `own`")
-                .with_help(format!("make `{used}` a parameter of the closure")),
-        };
-        self.e.err(d);
-    }
-
-    /// If `t` is a closure (a lambda, or a function applied to some of its
-    /// arguments) that captured an authority itself, not through another
-    /// closure, the authority's level.
-    fn captured_authority(&self, t: &Tm) -> Option<usize> {
-        match t {
-            Tm::Lam(..) => {
-                let mut fv = std::collections::BTreeSet::new();
-                crate::core::free_vars(t, 0, &mut fv);
-                fv.into_iter().filter_map(|i| self.binders.len().checked_sub(1 + i)).find(|l| self.authority(*l))
-            }
-            Tm::App(..) if self.is_partial(t) => t.spine().1.into_iter().flat_map(|a| self.carried(a)).find(|l| self.authority(*l)),
-            _ => None,
-        }
-    }
-
-    /// If `t` is a closure that captured an authority, itself or through a
-    /// closure it captured, the authority's name: such a closure, bound
-    /// with `let`, may be called at most once (§8.3).
-    fn single_capture(&self, t: &Tm) -> Option<Captured> {
-        let levels: Vec<usize> = match t {
-            Tm::Lam(..) => {
-                let mut fv = std::collections::BTreeSet::new();
-                crate::core::free_vars(t, 0, &mut fv);
-                fv.into_iter().filter_map(|i| self.binders.len().checked_sub(1 + i)).collect()
-            }
-            Tm::App(..) if self.is_partial(t) => t.spine().1.into_iter().flat_map(|a| self.carried(a)).collect(),
-            _ => return None,
-        };
-        levels.into_iter().find_map(|l| self.single_use(l))
-    }
-
-    /// Whether `t` applies a function to fewer arguments than it takes.
-    fn is_partial(&self, t: &Tm) -> bool {
-        head_def(t).and_then(|d| self.e.fn_meta.get(&d)).is_some_and(|m| t.spine().1.len() < m.n_binders())
-    }
-
-    fn under(&mut self, name: &crate::core::Name, mult: Mult, body: &Tm, lambda: bool, ty: BinderTy) -> Counts {
+    fn under(&mut self, name: &crate::core::Name, mult: Mult, body: &Tm, lambda: bool) -> Counts {
         let span = self.e.binder_span(name);
         let resource = if lambda { self.e.lam_resource(name) } else { None };
-        self.binders.push(Binder { lambda, resource, ..Binder::new(name.to_string(), mult, span, ty) });
+        self.binders.push(Binder { name: name.to_string(), mult, span, lambda, resource, oneshot: None });
         let c = self.go(body);
         self.close(&c);
         self.binders.pop();
@@ -500,12 +319,8 @@ impl U<'_> {
             Tm::App(..) => self.app(t, false),
             Tm::Lam(x, m, _, b) => {
                 let m = &if *m == Mult::One && self.e.lam_own_moot(x) { Mult::Many } else { *m };
-                // A closure may run any number of times: one that captured
-                // an authority may be called only once (§8.3).
-                if let Some(l) = self.captured_authority(t) {
-                    self.report_captured(t, l, None);
-                }
-                let c = self.under(x, *m, b, true, BinderTy::Lam(x.clone()));
+                // A closure may run any number of times.
+                let c = self.under(x, *m, b, true);
                 for (lvl, n) in &c {
                     if *n != Count::Zero && self.binders[*lvl].mult == Mult::One {
                         self.captured.insert(*lvl);
@@ -513,7 +328,7 @@ impl U<'_> {
                 }
                 scaled(c, Mult::Many)
             }
-            Tm::Let(x, m, ty, v, b) => {
+            Tm::Let(x, m, _, v, b) => {
                 // A tuple pattern binds each component (`$c0`, `$c1`, …) by
                 // projecting the tuple: together they use it once, counted
                 // at the first.
@@ -523,20 +338,7 @@ impl U<'_> {
                 // variable is used once instead (D171).
                 if let (Some(used), false) = (self.oneshot_use(v), *m == Mult::Zero) {
                     let mut c = self.go_once(v);
-                    self.binders.push(Binder { oneshot: Some(used), ..Binder::new(x.to_string(), Mult::One, self.e.binder_span(x), BinderTy::None) });
-                    let cb = self.go(b);
-                    self.close(&cb);
-                    self.binders.pop();
-                    let mut cb = cb;
-                    cb.remove(&self.binders.len());
-                    add(&mut c, &cb);
-                    return c;
-                }
-                // A closure that captured an authority, bound by `let`: the
-                // variable may be used at most once (§8.3).
-                if let (Some(used), false) = (self.single_capture(v), *m == Mult::Zero) {
-                    let mut c = self.go_once(v);
-                    self.binders.push(Binder { single: Some(used), ..Binder::new(x.to_string(), Mult::Many, self.e.binder_span(x), BinderTy::None) });
+                    self.binders.push(Binder { name: x.to_string(), mult: Mult::One, span: self.e.binder_span(x), lambda: false, resource: None, oneshot: Some(used) });
                     let cb = self.go(b);
                     self.close(&cb);
                     self.binders.pop();
@@ -546,7 +348,7 @@ impl U<'_> {
                     return c;
                 }
                 let mut c = scaled(self.go(v), scale);
-                let cb = self.under(x, *m, b, false, BinderTy::Tm(ty.clone()));
+                let cb = self.under(x, *m, b, false);
                 add(&mut c, &cb);
                 c
             }
@@ -651,12 +453,6 @@ impl U<'_> {
                             all(t, depth, out);
                         }
                     }
-                    // A call of a closure that captured an authority uses it
-                    // up: its result is a value of its own, which doesn't
-                    // hold the closure (§8.3).
-                    Tm::Var(i) if *i >= depth && self.binders.len().checked_sub(1 + (i - depth)).is_some_and(|l| self.binders[l].single.is_some()) => {
-                        args.into_iter().for_each(|x| all(x, depth, out))
-                    }
                     _ => all(t, depth, out),
                 }
             }
@@ -696,17 +492,6 @@ impl U<'_> {
         };
         // A constructor stores its argument: one use, like a saturated `ConApp`.
         let m = if *m != Mult::Zero && head_is_con(f) { Mult::One } else { *m };
-        let callee = head_def(f).map(|d| {
-            let d = &self.e.g.defs[d.0 as usize];
-            (d.name.to_string(), d.module.to_string())
-        });
-        // A closure that captured an authority, passed to a parameter that
-        // isn't `own`, may be called more than once (§8.3).
-        if m == Mult::Many {
-            if let Some(l) = self.captured_authority(a) {
-                self.report_captured(a, l, callee.as_ref().map(|c| c.0.clone()));
-            }
-        }
         // A lambda passed to an `own` parameter is called once (D171).
         let used = if m == Mult::One { self.go_once(a) } else { self.go(a) };
         // Arguments are evaluated once, before the call: only what can be
@@ -714,13 +499,12 @@ impl U<'_> {
         // allows; a use inside it (`f` in `g (close f)`) happens once.
         let carried = self.carried(a);
         if m == Mult::Many {
-            if let Some(callee) = callee {
+            if let Some(callee) = head_def(f).map(|d| {
+                let d = &self.e.g.defs[d.0 as usize];
+                (d.name.to_string(), d.module.to_string())
+            }) {
                 for (lvl, c) in &used {
-                    let b = &self.binders[*lvl];
-                    if *c != Count::Zero && (b.mult == Mult::One || b.single.is_some()) && carried.contains(lvl) {
-                        if !self.copied_by.contains_key(lvl) && b.single.is_some() && !matches!(&**a, Tm::Var(i) if self.binders.len() - 1 - i == *lvl) {
-                            self.via_closure.insert(*lvl);
-                        }
+                    if *c != Count::Zero && self.binders[*lvl].mult == Mult::One && carried.contains(lvl) {
                         self.copied_by.entry(*lvl).or_insert_with(|| callee.clone());
                     }
                 }
@@ -742,18 +526,6 @@ impl U<'_> {
                 if *x != Count::Zero && self.binders[*lvl].mult == Mult::One {
                     *x = Count::Many;
                     self.captured.insert(*lvl);
-                }
-            }
-        }
-        // So may one that captured an authority (§8.3), or a closure that did.
-        if !once && self.is_partial(t) {
-            if let Some(l) = self.captured_authority(t) {
-                self.report_captured(t, l, None);
-            }
-            let carried: BTreeSet<usize> = t.spine().1.into_iter().flat_map(|a| self.carried(a)).collect();
-            for (lvl, x) in c.iter_mut() {
-                if *x != Count::Zero && self.binders[*lvl].single.is_some() && carried.contains(lvl) {
-                    *x = Count::Many;
                 }
             }
         }
@@ -807,7 +579,7 @@ impl U<'_> {
         match t {
             Tm::Lam(x, m, _, b) => {
                 let m = &if *m == Mult::One && self.e.lam_own_moot(x) { Mult::Many } else { *m };
-                self.binders.push(Binder { lambda: true, resource: self.e.lam_resource(x), ..Binder::new(x.to_string(), *m, self.e.binder_span(x), BinderTy::Lam(x.clone())) });
+                self.binders.push(Binder { name: x.to_string(), mult: *m, span: self.e.binder_span(x), lambda: true, resource: self.e.lam_resource(x), oneshot: None });
                 let c = self.lam_once(b);
                 self.close(&c);
                 self.binders.pop();
@@ -844,7 +616,7 @@ impl U<'_> {
                 self.binders[*l].mult = Mult::Many;
             }
             for k in 0..*n {
-                self.binders.push(Binder::new(format!("$field{k}"), Mult::Many, None, BinderTy::None));
+                self.binders.push(Binder { name: format!("$field{k}"), mult: Mult::Many, span: None, lambda: false, resource: None, oneshot: None });
             }
             let mut r = self.go(body);
             self.binders.truncate(start);
@@ -926,24 +698,14 @@ fn head_is_con(t: &Tm) -> bool {
 
 /// Check the body (a λ over the function's parameters) of `did`.
 pub fn check_fn(e: &mut Elab, did: DefId, body: &Tm) {
-    let mut u = U { e, did, binders: Vec::new(), reported: false, copied_by: Default::default(), captured: Default::default(), noted: Default::default(), via_closure: Default::default() };
+    let mut u = U { e, did, binders: Vec::new(), reported: false, copied_by: Default::default(), captured: Default::default() };
     // The function's own parameters; a lambda after them is a closure it
     // returns, which may be called any number of times (D171).
     let limit = u.e.fn_meta.get(&did).map_or(usize::MAX, |m| m.n_binders());
     let mut t = body;
     let mut n = 0;
-    // Each parameter's type, in the scope of those before it.
-    let mut fty = Rc::new(u.e.g.defs[did.0 as usize].ty.clone());
     while let (Tm::Lam(x, m, _, b), true) = (t, n < limit) {
-        let ty = match &*fty {
-            Tm::Pi(_, _, _, dom, cod) => {
-                let dom = dom.clone();
-                fty = cod.clone();
-                BinderTy::Tm(dom)
-            }
-            _ => BinderTy::None,
-        };
-        u.binders.push(Binder::new(x.to_string(), *m, u.e.binder_span(x), ty));
+        u.binders.push(Binder { name: x.to_string(), mult: *m, span: u.e.binder_span(x), lambda: false, resource: None, oneshot: None });
         t = b;
         n += 1;
     }
