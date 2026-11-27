@@ -161,9 +161,11 @@
 #   and its equation (`definition_axiom`), as §4.2.3 (pp. 62–63) defines
 #   `define-funs-rec`, so every solution is a `Model`'s.
 #
-# The converse is a lemma: a `Model` that answers every question
-# (`gives`, `arrays_total_at`) is an interpretation, in which every closed
-# term of the context has a value of its sort (`total_has_value`).
+# Toward the converse, a lemma: in a `Model` that answers every question
+# (`gives`, `arrays_total_at`), every closed term of the context has a value
+# of its sort (`total_has_value`). That alone doesn't make the model an
+# interpretation: the array laws (`arrays_ok_at`) and the definitions'
+# equations (`definition_axiom`) are premises of their own.
 #
 # **At the certificate's terms** (the first statement of `checks_sound`),
 # that is all: restrict 𝔄 to the values of the finitely many terms the
@@ -2646,7 +2648,7 @@ export lemma arrays_total_at_fuel c m n s a b i j x env senv xs body : c~Context
         have sorted_at_fuel c m n s a j x
         have lambda_sorted_fuel c m n s env senv xs body
 
-# ── A total model is an interpretation ───────────────────────────────────────
+# ── In a total model every term has a value ──────────────────────────────────
 
 # Whether each of `rs` is a value of the sort in the same place of `ss`.
 fn results_of_sorts c m rs ss -> r : c~Context, m~Model, rs~List (Result Value Unknown), ss~List Sort, r~Bool
@@ -3041,9 +3043,10 @@ lemma disj_total low c m env senv ts ss : low~Lower, c~Context, m~Model, env~Lis
                 have disj_total low c m env senv tr sr
             _                  -> auto
 
-# A total model is an interpretation: in a model that answers every read
-# (`gives`) and every array question (`arrays_total_at`), every closed term
-# of the context has a value, of its sort.
+# In a model that answers every read (`gives`) and every array question
+# (`arrays_total_at`), every closed term of the context has a value, of its
+# sort. The array laws and the definitions' equations are not assumed or
+# concluded: this is about values existing, not about what they are.
 export lemma total_has_value c m t s : c~Context, m~Model, t~Term, s~Sort, term.sort_of (term.signature c) [] t == Ok s,
                                        total: forall r : r~Read, gives c m r,
                                        arrays_total: forall s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2 : s2~Sort, a2~Nat, b2~Nat, i2~Value, j2~Value, x2~Value,
