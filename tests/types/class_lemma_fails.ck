@@ -2,7 +2,7 @@ module class_lemma_fails
 
 # An instance whose function doesn't satisfy the class's lemmas: each is
 # reported at the instance, with the class's statement and a counterexample
-# (D136).
+# (#615).
 
 record Odd
     n~Int

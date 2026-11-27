@@ -1,6 +1,6 @@
 module refined_args
 
-# D71: refinements inside type arguments are checked.
+# #554: refinements inside type arguments are checked.
 # Expected: an error on each line marked `error`, none elsewhere.
 
 import std.list
@@ -40,7 +40,7 @@ fn halve xs -> ys : xs~List Small, ys~List Small
     list.map (\x -> x / 2) xs
 
 # A function that needs a `Small` can't stand in for one that takes any `Nat`
-# (contravariance): an obligation for any `Nat` (D85).
+# (contravariance): an obligation for any `Nat` (#579).
 fn apply_nat f -> r : f~(Nat -> Nat), r~Nat
     f 20
 

@@ -1,7 +1,7 @@
 module refine_mult
 
 # Only `own`, and only on a function type's parameter, may be written inside
-# a type (E0123, D172 b).
+# a type (E0123, #672 b).
 
 fn ghost_param f -> r : f~(v~ghost a -> b), r~Unit
     ()

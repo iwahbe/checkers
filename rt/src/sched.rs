@@ -1,4 +1,4 @@
-//! The lock-free behaviour scheduler (D66, D77), shared by the interpreter
+//! The lock-free behaviour scheduler (#561, #563), shared by the interpreter
 //! and native code.
 //!
 //! Verona's algorithm (Cheeseman et al., OOPSLA 2023): every resource (a
@@ -66,7 +66,7 @@ pub trait Worker<P>: Send + 'static {
     fn run(&mut self, p: &mut P) -> Result<Ran, Self::Error>;
 }
 
-/// How a behaviour's turn on a thread ended (D113).
+/// How a behaviour's turn on a thread ended (#607).
 pub enum Ran {
     Done,
     /// It is waiting, and keeps its resources: `register` is called with
@@ -88,7 +88,7 @@ pub struct Pool<P, E> {
     stop: AtomicBool,
     error: Mutex<Option<E>>,
     workers: Mutex<Vec<std::thread::JoinHandle<()>>>,
-    /// Threads `par` may still start (D69).
+    /// Threads `par` may still start (#562).
     pub par_budget: AtomicUsize,
     /// The pool itself, for wakers of parked behaviours.
     me: std::sync::OnceLock<std::sync::Weak<Self>>,
@@ -143,7 +143,7 @@ impl<P: Send + 'static, E: Send + 'static> Pool<P, E> {
         pool
     }
 
-    /// Schedule `payload` on `resources` (D66).
+    /// Schedule `payload` on `resources` (#561).
     pub fn submit(&self, resources: &[&Resource], payload: P) {
         let mut rs: Vec<*const Resource> = resources.iter().map(|r| *r as *const Resource).collect();
         rs.sort_unstable();
@@ -286,7 +286,7 @@ impl<P: Send + 'static, E: Send + 'static> Pool<P, E> {
                 self.idle.fetch_sub(1, Ordering::AcqRel);
                 return Some(b);
             }
-            // Going to sleep: what was written goes out first (D113), so a
+            // Going to sleep: what was written goes out first (#607), so a
             // program waiting for input has shown what it has to show.
             drop(q);
             crate::io::flush();
@@ -354,7 +354,7 @@ impl<P: Send + 'static, E: Send + 'static> Pool<P, E> {
     }
 
     /// After `main` returns, the calling thread works too until no
-    /// behaviour is queued or running; then the workers stop (D31).
+    /// behaviour is queued or running; then the workers stop (#517).
     pub fn finish<S: Worker<P, Error = E>>(&self, s: &mut S) -> Result<(), E> {
         self.work(s, true);
         self.stop.store(true, Ordering::Release);
@@ -371,7 +371,7 @@ impl<P: Send + 'static, E: Send + 'static> Pool<P, E> {
         }
     }
 
-    /// Take up to `n` threads for `par` (D69).
+    /// Take up to `n` threads for `par` (#562).
     pub fn take_par(&self, n: usize) -> usize {
         let mut got = 0;
         while got < n {

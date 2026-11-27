@@ -1,6 +1,6 @@
 module sealed_use
 
-# Sealing (D54): outside `sealed_lib`, only signatures, postconditions and
+# Sealing (#537): outside `sealed_lib`, only signatures, postconditions and
 # exported lemmas are visible, unless a function is `transparent`.
 
 import sealed_lib (double, triple, quad)
@@ -19,6 +19,6 @@ fn sealed_body x -> y : x~Int, y~Int, y == 3 * x
     triple x
 
 # The note is given wherever the sealed function is in what is to be proved:
-# inside an `if` too (D178), where a counterexample would say nothing true.
+# inside an `if` too (#665), where a counterexample would say nothing true.
 lemma sealed_in_if x b : x~Int, b~Bool
     ensures (if b then triple x else 3 * x) == 3 * x

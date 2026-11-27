@@ -33,7 +33,7 @@ impl Count {
 struct Binder {
     name: String,
     mult: Mult,
-    /// Where it is bound, if the elaborator recorded it (D172 d).
+    /// Where it is bound, if the elaborator recorded it (#672 d).
     span: Option<Span>,
     /// A lambda's parameter: `own` comes from the function type it is
     /// checked against, not from anything written.
@@ -41,7 +41,7 @@ struct Binder {
     /// A lambda parameter's resource type, when known (`File`).
     resource: Option<String>,
     /// Bound to a closure that uses this resource (or `own` value): the
-    /// closure must be called exactly once (D171).
+    /// closure must be called exactly once (#658).
     oneshot: Option<String>,
 }
 
@@ -50,7 +50,7 @@ struct U<'a> {
     did: DefId,
     binders: Vec<Binder>,
     reported: bool,
-    /// Binder level → a function it was passed to whose parameter isn't `own` (D45).
+    /// Binder level → a function it was passed to whose parameter isn't `own` (#545).
     /// The function each `own` binder is passed to as a parameter that isn't
     /// `own`, with its module.
     copied_by: std::collections::HashMap<usize, (String, String)>,
@@ -166,7 +166,7 @@ impl U<'_> {
                     );
                     let closure = self.captured.contains(&lvl) && self.cown_target(lvl).is_none();
                     match self.copied_by.get(&lvl).filter(|_| !closure) {
-                        // A cown can't hold a resource (D156 k).
+                        // A cown can't hold a resource (#643 k).
                         Some((_, module)) if self.cown_target(lvl).is_some() => {
                             let what = self.cown_target(lvl).unwrap_or_default();
                             let short = module.trim_start_matches("std.");
@@ -299,7 +299,7 @@ impl U<'_> {
     }
 
     /// What a binder passed to `cown.new` or `actor.new` would be put in: a
-    /// cown can't hold a resource (D156 k).
+    /// cown can't hold a resource (#643 k).
     fn cown_target(&self, lvl: usize) -> Option<String> {
         match self.copied_by.get(&lvl).map(|(c, m)| (c.as_str(), m.as_str())) {
             Some(("new", "std.cown")) => Some("a cown".into()),
@@ -335,7 +335,7 @@ impl U<'_> {
                 let rest_of_tuple = x.starts_with("$c") && matches!(&**v, Tm::Proj(t, i, _) if *i > 0 && matches!(**t, Tm::Var(_)));
                 let scale = if *m == Mult::Zero || rest_of_tuple { Mult::Zero } else { Mult::One };
                 // A closure that uses a resource, bound by `let`: the
-                // variable is used once instead (D171).
+                // variable is used once instead (#658).
                 if let (Some(used), false) = (self.oneshot_use(v), *m == Mult::Zero) {
                     let mut c = self.go_once(v);
                     self.binders.push(Binder { name: x.to_string(), mult: Mult::One, span: self.e.binder_span(x), lambda: false, resource: None, oneshot: Some(used) });
@@ -483,7 +483,7 @@ impl U<'_> {
     /// makes, if it is a partial application, exactly once.
     fn app(&mut self, t: &Tm, once: bool) -> Counts {
         let Tm::App(f, a, _, m) = t else { return self.go(t) };
-        // A lambda called where it is made runs once (D171).
+        // A lambda called where it is made runs once (#658).
         let mut c = match &**f {
             Tm::Lam(..) => self.lam_once(f),
             // The rest of this call: what it partly applies is decided at the top.
@@ -492,7 +492,7 @@ impl U<'_> {
         };
         // A constructor stores its argument: one use, like a saturated `ConApp`.
         let m = if *m != Mult::Zero && head_is_con(f) { Mult::One } else { *m };
-        // A lambda passed to an `own` parameter is called once (D171).
+        // A lambda passed to an `own` parameter is called once (#658).
         let used = if m == Mult::One { self.go_once(a) } else { self.go(a) };
         // Arguments are evaluated once, before the call: only what can be
         // part of the argument's value is used as often as the parameter
@@ -520,7 +520,7 @@ impl U<'_> {
         add(&mut c, &ca);
         // A partial application holding a resource is a closure that
         // uses it: unless this is a place that calls it once, it may
-        // be called any number of times (D171).
+        // be called any number of times (#658).
         if !once && self.partial_use(t).is_some() {
             for (lvl, x) in c.iter_mut() {
                 if *x != Count::Zero && self.binders[*lvl].mult == Mult::One {
@@ -533,7 +533,7 @@ impl U<'_> {
     }
 
     /// `t` where what it makes is called exactly once: a lambda, or a
-    /// partial application, holding a resource (D171).
+    /// partial application, holding a resource (#658).
     fn go_once(&mut self, t: &Tm) -> Counts {
         match t {
             Tm::Lam(..) => self.lam_once(t),
@@ -559,7 +559,7 @@ impl U<'_> {
     }
 
     /// If `t` is a closure that uses a resource or an `own` value, the
-    /// name of one it uses: such a closure must be called exactly once (D171).
+    /// name of one it uses: such a closure must be called exactly once (#658).
     fn oneshot_use(&self, t: &Tm) -> Option<String> {
         if matches!(t, Tm::App(..)) {
             return self.partial_use(t);
@@ -601,7 +601,7 @@ impl U<'_> {
             }
             let start = self.binders.len();
             // Variables whose type, refined in this arm, holds no resource
-            // (D173): used any number of times here, as if exactly once.
+            // (#664): used any number of times here, as if exactly once.
             let moot: Vec<usize> = match scrut {
                 Some(s) => self
                     .e
@@ -647,7 +647,7 @@ impl U<'_> {
         let used: BTreeSet<usize> = results.iter().flat_map(|r| r.keys()).chain(moots.iter().flatten()).copied().collect();
         for lvl in used {
             let mult = self.binders[lvl].mult;
-            // An arm where it holds no resource doesn't constrain it (D173);
+            // An arm where it holds no resource doesn't constrain it (#664);
             // if none does, it counts as used once.
             let all: Vec<Count> =
                 results.iter().zip(&moots).filter(|(_, m)| !m.contains(&lvl)).map(|(r, _)| count(r, lvl)).collect();
@@ -700,7 +700,7 @@ fn head_is_con(t: &Tm) -> bool {
 pub fn check_fn(e: &mut Elab, did: DefId, body: &Tm) {
     let mut u = U { e, did, binders: Vec::new(), reported: false, copied_by: Default::default(), captured: Default::default() };
     // The function's own parameters; a lambda after them is a closure it
-    // returns, which may be called any number of times (D171).
+    // returns, which may be called any number of times (#658).
     let limit = u.e.fn_meta.get(&did).map_or(usize::MAX, |m| m.n_binders());
     let mut t = body;
     let mut n = 0;

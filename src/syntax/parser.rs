@@ -10,7 +10,7 @@ pub fn parse(tokens: Vec<Token>) -> (Module, Vec<Diagnostic>) {
     (m, diags)
 }
 
-/// `parse`, and the kind of place the cursor token (D142) is in, if any.
+/// `parse`, and the kind of place the cursor token (#626) is in, if any.
 pub fn parse_with_place(tokens: Vec<Token>) -> (Module, Vec<Diagnostic>, Option<Place>) {
     let mut p = Parser {
         toks: tokens,
@@ -30,7 +30,7 @@ pub fn parse_with_place(tokens: Vec<Token>) -> (Module, Vec<Diagnostic>, Option<
     (m, p.diags, p.place)
 }
 
-/// The kind of place the cursor is in (D142 c): what can be written there.
+/// The kind of place the cursor is in (#626 c): what can be written there.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlaceKind {
     /// The start of a declaration; `first`: none before it (so `import` too).
@@ -88,7 +88,7 @@ struct Parser {
     indent: usize,
     /// Parsing a match guard: `->` ends the guard instead of forming a function type.
     no_arrow: bool,
-    /// Where the cursor token is (D142), once the parser has met it.
+    /// Where the cursor token is (#626), once the parser has met it.
     place: Option<Place>,
     /// Inside `proof` blocks.
     in_proof: usize,
@@ -152,7 +152,7 @@ impl Parser {
         self.peek() == t
     }
 
-    /// At the cursor token (D142): note the kind of place, the first time.
+    /// At the cursor token (#626): note the kind of place, the first time.
     /// Parsing then goes on as for a name.
     fn mark(&mut self, kind: PlaceKind) {
         if self.place.is_none() && matches!(self.peek(), Tok::LName(n) if n == super::lexer::CURSOR) {
@@ -368,7 +368,7 @@ impl Parser {
 
     fn import(&mut self) -> PResult<Import> {
         let start = self.bump().span; // import
-        // The path, noting the parts before the cursor (D142).
+        // The path, noting the parts before the cursor (#626).
         self.mark(PlaceKind::Import(Vec::new()));
         let first = self.ident("a module name")?;
         let mut span = first.span;
@@ -574,7 +574,7 @@ impl Parser {
             let body = Block { stmts: Vec::new(), result, span };
             return Ok(DeclKind::Fn { partial, name, params, result: result_name, constraints, decreasing: None, body });
         }
-        // A body that fails to parse keeps the header (D122): uses of the
+        // A body that fails to parse keeps the header (#599): uses of the
         // function still see its signature.
         let start = self.span();
         self.body_start = true;
@@ -944,7 +944,7 @@ impl Parser {
 
     /// The rest of a block, after its INDENT. A statement that fails to
     /// parse becomes a hole (`ExprKind::Error`, bound if it was a `let`) and
-    /// parsing goes on at the block's next statement (D142 e): the rest of
+    /// parsing goes on at the block's next statement (#626 e): the rest of
     /// the body is still checked.
     fn block_rest(&mut self) -> PResult<Block> {
         let start = self.span();
@@ -958,7 +958,7 @@ impl Parser {
                 Err(Failed) => {
                     let at = self.span();
                     let hole = Span { start: at.start, end: at.start };
-                    // The cursor (D142) was in the statement that failed: the
+                    // The cursor (#626) was in the statement that failed: the
                     // hole is the cursor's name, so the checker still sees
                     // what is in scope there.
                     let mut cursor = (!had_place && self.place.is_some())
@@ -1047,7 +1047,7 @@ impl Parser {
                 let hspan = self.bump().span;
                 self.mark(PlaceKind::Have);
                 if self.at_ident() && *self.peek_at(1) == Tok::Tilde {
-                    // `have x~T` (D170).
+                    // `have x~T` (#660).
                     let name = self.ident("a name")?;
                     self.bump(); // ~
                     self.mark(PlaceKind::Type { start: true, field: false });
@@ -1062,7 +1062,7 @@ impl Parser {
                 let e = self.expr()?;
                 self.end_line()?;
                 stmts.push(Stmt::Have(e));
-                // A proof block may end with `have`: the goal is then closed by an implicit `auto` (D13).
+                // A proof block may end with `have`: the goal is then closed by an implicit `auto` (#507).
                 if self.at(&Tok::Dedent) {
                     self.bump();
                     let span = start.to(self.prev_span());
@@ -1073,7 +1073,7 @@ impl Parser {
             let e = self.expr()?;
             self.end_line()?;
             if !self.at(&Tok::Dedent) {
-                // A `Unit` statement (D35); the type checker rejects other types.
+                // A `Unit` statement (#527); the type checker rejects other types.
                 stmts.push(Stmt::Expr(e));
                 return Ok(None);
             }
@@ -1083,7 +1083,7 @@ impl Parser {
         }
     }
 
-    /// `when x = c, … using sched` NL INDENT block DEDENT (D30)
+    /// `when x = c, … using sched` NL INDENT block DEDENT (#529)
     fn when_expr(&mut self) -> PResult<When> {
         let start = self.bump().span; // when
         let mut binds = Vec::new();
@@ -1176,7 +1176,7 @@ impl Parser {
         }
     }
 
-    /// `forall x y : c, …` (D137): its clauses are those that follow and
+    /// `forall x y : c, …` (#632): its clauses are those that follow and
     /// mention one of its variables (parenthesize to end it sooner).
     fn forall(&mut self) -> PResult<Expr> {
         let start = self.bump().span; // forall
@@ -1402,7 +1402,7 @@ impl Parser {
     }
 
     fn postfix(&mut self) -> PResult<Expr> {
-        // A sign glued to an argument negates it: `f -x` is `f (-x)` (D169).
+        // A sign glued to an argument negates it: `f -x` is `f (-x)` (#657).
         if self.at(&Tok::Neg) {
             let start = self.bump().span;
             let e = self.postfix()?;
@@ -1590,7 +1590,7 @@ impl Parser {
 
     fn paren(&mut self) -> PResult<Expr> {
         let start = self.bump().span; // (
-        // `(x~T, …)` or `(x~A -> …)`: a refinement written in a type (D82).
+        // `(x~T, …)` or `(x~A -> …)`: a refinement written in a type (#576).
         if self.at_ident() && *self.peek_at(1) == Tok::Tilde {
             let param = self.ident("a name")?;
             self.bump(); // ~
@@ -1601,7 +1601,7 @@ impl Parser {
             self.no_arrow = saved;
             let dom = dom?;
             let arrow = if self.eat(&Tok::Arrow) { Some(self.refine_result()?) } else { None };
-            // Only a function's parameter may be `own` (D172 b).
+            // Only a function's parameter may be `own` (#672 b).
             if mult != Mult::Many && !(mult == Mult::Own && arrow.is_some()) {
                 self.refine_mult_error(mult, mult_span, arrow.is_some());
             }
@@ -1680,7 +1680,7 @@ impl Parser {
 
     /// E0123: `ghost`, `own` or `comptime` where a type can't carry it: on
     /// a refinement, a function type's result, or (`ghost`, `comptime`) its
-    /// parameter. They were ignored before (D172 b).
+    /// parameter. They were ignored before (#672 b).
     fn refine_mult_error(&mut self, mult: Mult, span: Span, is_param: bool) {
         let word = match mult {
             Mult::Ghost => "ghost",

@@ -1,4 +1,4 @@
-//! Packages (M14, SPEC §16.4, D107–D111): `checkers` in a directory with
+//! Packages (M14, SPEC §16.4, #597, #598, #594, #595, #608): `checkers` in a directory with
 //! `checkers.json` resolves path and git dependencies (minimal version
 //! selection), keeps `checkers.lock`, and passes the packages to `ckc`.
 //! Git dependencies are local repositories, so this runs offline.

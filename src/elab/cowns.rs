@@ -121,7 +121,7 @@ impl Elab {
         !has_meta(&qa) && !has_meta(&qb) && unify(&self.g, lvl, a, b).is_ok()
     }
 
-    /// Whether the unknown `m` is the type of a number (D38).
+    /// Whether the unknown `m` is the type of a number (#528).
     fn numeric_meta(&self, m: MetaId) -> bool {
         self.deferred.iter().any(|d| d.kind == OpClass::Numeric && matches!(self.force(&d.ty), Val::Neutral(Head::Meta(m2), _) if m2 == m))
     }

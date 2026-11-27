@@ -1,6 +1,6 @@
 module own_param
 
-# `own` marks generic parameters that may receive a resource (D45).
+# `own` marks generic parameters that may receive a resource (#545).
 
 import std.files (Fs, File)
 

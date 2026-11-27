@@ -1,6 +1,6 @@
 module sealed_lib
 
-# A library for `sealed_use.ck` (SPEC §6, D54).
+# A library for `sealed_use.ck` (SPEC §6, #537).
 
 export fn double x -> y : x~Int, y~Int, y == x + x
     x + x

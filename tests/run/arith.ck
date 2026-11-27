@@ -1,6 +1,6 @@
 module arith
 
-# Arbitrary-precision numbers (D6) and Euclidean division (§13.2).
+# Arbitrary-precision numbers (#500) and Euclidean division (§13.2).
 
 import std.system (System, ExitCode)
 import std.terminal (Term)

@@ -1,7 +1,7 @@
 module nested_field_refinement
 
 # A record's field refinements hold where the record is itself a field
-# (D11): `o.inner.v` is a `Small`, as `i.v` is.
+# (#505): `o.inner.v` is a `Small`, as `i.v` is.
 
 type Small = n~Nat, n < 10
 

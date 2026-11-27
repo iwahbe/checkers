@@ -1,6 +1,6 @@
 module have_type
 
-# `have x~T` (D170): `x`'s type is `T`. It settles what is still unknown of
+# `have x~T` (#660): `x`'s type is `T`. It settles what is still unknown of
 # `x`'s type (a literal's, before it would become a `Nat`), and a refinement
 # it adds is an obligation, then a fact.
 

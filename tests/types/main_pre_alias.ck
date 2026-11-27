@@ -1,4 +1,4 @@
-# A parameter of `fn main` whose type is a refinement (E0366, D181).
+# A parameter of `fn main` whose type is a refinement (E0366, #668).
 module main_pre_alias
 
 import std.system (System, ExitCode)

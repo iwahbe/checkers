@@ -4,7 +4,7 @@ use super::*;
 use crate::syntax::ast::{Constraint, DeclKind, Export, Expr, ExprKind, Ident};
 use std::collections::BTreeSet;
 
-/// A type at its arguments, each reduced to whether it has a value (D183).
+/// A type at its arguments, each reduced to whether it has a value (#666).
 type TypeInstance = (TyId, Vec<bool>);
 
 /// A constructor invariant while its fields are elaborated: the predicate,
@@ -24,9 +24,9 @@ pub struct Sig {
     /// Header predicates, over the binders then the result (§7.1).
     pub preds: Vec<Pred>,
     pub result_name: String,
-    /// Binder positions marked `comptime` (D59).
+    /// Binder positions marked `comptime` (#541).
     pub comptime: Vec<usize>,
-    /// Named preconditions (D137): name and index in `preds`.
+    /// Named preconditions (#632): name and index in `preds`.
     pub hyps: Vec<(String, usize)>,
     /// Parameters whose refinements mention later parameters (#102): the
     /// binder, and its refined type over all the binders. The binder's own
@@ -59,7 +59,7 @@ impl Elab {
         let started = std::time::Instant::now();
         self.cur = name.to_string();
         self.stdlib_mode = is_stdlib;
-        // Classes and instances become records, functions and lemmas (D136).
+        // Classes and instances become records, functions and lemmas (#615).
         self.pending_insts.clear();
         let (desugared, origins) = self.desugar_classes(m);
         self.decl_origin = origins;
@@ -70,7 +70,7 @@ impl Elab {
         self.note_decls(name, m, &ids);
         self.phase_type_params(m, &ids);
         self.register_module_type_bases();
-        // Declarations in the order of what they use, not of the file (D65).
+        // Declarations in the order of what they use, not of the file (#557).
         let dicts: Vec<usize> =
             self.decl_origin.iter().enumerate().filter(|(_, o)| matches!(o, super::classes::Origin::InstDict(_))).map(|(k, _)| k).collect();
         let classes: Vec<(String, Vec<String>)> = self
@@ -130,7 +130,7 @@ impl Elab {
         self.retry_late();
         self.check_termination();
         // A transparent function's private helpers are visible to the prover
-        // too, or its body would say nothing (D54): close the set over calls.
+        // too, or its body would say nothing (#537): close the set over calls.
         // An exported function it calls is not a helper: its signature is its
         // interface, so it stays sealed (#244).
         let exported: HashSet<DefId> = m
@@ -160,7 +160,7 @@ impl Elab {
                 }
             }
         }
-        // Seal the module's functions (D54): importers see signatures only.
+        // Seal the module's functions (#537): importers see signatures only.
         for (d, id) in m.decls.iter().zip(&ids) {
             if let (DeclKind::Fn { .. }, Some(Sym::Def(did))) = (&d.kind, id) {
                 // A transparent function's private helpers stay unsealed too.
@@ -198,8 +198,8 @@ impl Elab {
         for imp in &m.imports {
             let path = imp.path.dotted();
             self.cur = name.to_string();
-            // The first component says where a module comes from (D105): `std`,
-            // a dependency (D111), or else this package's own files.
+            // The first component says where a module comes from (#613): `std`,
+            // a dependency (#608), or else this package's own files.
             let from_std = path.starts_with("std.");
             let here = self.package_of(name);
             let first = path.split('.').next().unwrap_or("").to_string();
@@ -279,7 +279,7 @@ impl Elab {
                 self.err(Diagnostic::error("E0222", format!("module `{path}` imports itself (import cycle)"), imp.path.span));
                 continue;
             }
-            // Referred to by its last component, unless renamed (D105).
+            // Referred to by its last component, unless renamed (#613).
             let last = path.rsplit('.').next().unwrap_or(&path).to_string();
             let qual = imp.alias.as_ref().map(|a| a.name.clone()).unwrap_or(last);
             let taken = self.modules[name].qualifiers.get(&qual).filter(|p| **p != path).cloned();
@@ -309,7 +309,7 @@ impl Elab {
                         self.err(d);
                         continue;
                     }
-                    // D36: importing a type imports its constructors.
+                    // #530: importing a type imports its constructors.
                     let mut ctor_imports = Vec::new();
                     if let Some(Sym::Ty(tid)) = t {
                         let ti = &self.g.tys[tid.0 as usize];
@@ -345,7 +345,7 @@ impl Elab {
     }
 
     /// The package module `m` belongs to: a dependency's name, `std`, or
-    /// `.` for the program's own (D111).
+    /// `.` for the program's own (#608).
     pub fn package_of(&self, m: &str) -> String {
         if m.starts_with("std.") {
             return "std".to_string();
@@ -471,7 +471,7 @@ impl Elab {
     /// Index a declaration: its name, and its header as written (for hover):
     /// up to the line its body starts on.
     fn index_header(&mut self, t: index::Target, name: Span, d: &ast::Decl) {
-        // A declaration made by desugaring, with no name of its own (D136).
+        // A declaration made by desugaring, with no name of its own (#615).
         if name.start == name.end {
             return;
         }
@@ -499,7 +499,7 @@ impl Elab {
             None => (d.span.end as usize).min(text.len()),
         };
         // Without the comment lines between the header and the body (a
-        // field's description, D128).
+        // field's description, #617).
         let mut lines: Vec<&str> = text.get(start..end).unwrap_or("").lines().collect();
         while lines.len() > 1 && lines.last().is_some_and(|l| l.trim().is_empty() || l.trim_start().starts_with('#')) {
             lines.pop();
@@ -544,7 +544,7 @@ impl Elab {
         for (k_decl, d) in m.decls.iter().enumerate() {
             let exported = d.export != Export::No;
             let id = match &d.kind {
-                // The prelude's `Type` is the universe itself (D132): its
+                // The prelude's `Type` is the universe itself (#620): its
                 // declaration gives it a place and a description.
                 DeclKind::Enum { name, ctors, .. }
                     if self.cur == "std.prelude" && name.name == "Type" && ctors.is_empty() && d.export == Export::Abstract =>
@@ -580,7 +580,7 @@ impl Elab {
                     let cid = ConId(self.g.cons.len() as u32);
                     self.g.cons.push(ConInfo { name: Rc::from(name.name.as_str()), ty: tid, tag: 0, fields: Vec::new() });
                     self.g.tys[tid.0 as usize].ctors.push(cid);
-                    // A class's dictionary is built only by instances (D136).
+                    // A class's dictionary is built only by instances (#615).
                     let is_class = matches!(self.decl_origin.get(k_decl), Some(super::classes::Origin::ClassRecord));
                     if !is_class {
                         self.declare(name, false, Sym::Con(cid), exported && !abstract_);
@@ -692,7 +692,7 @@ impl Elab {
     }
 
     /// `main` is `fn main args sys -> code : args~List String, sys~System,
-    /// code~ExitCode` (D31; `code` may be a `Future ExitCode`): what isn't
+    /// code~ExitCode` (#517; `code` may be a `Future ExitCode`): what isn't
     /// written is that, what is must agree (E0366).
     fn check_main(&mut self, sig: &Sig, at: Span) {
         let params: Vec<(Name, Val)> =
@@ -707,7 +707,7 @@ impl Elab {
         self.report_main(wrong, at, None);
     }
 
-    /// An exported `let main` (D181): its value's type must be D31's. The
+    /// An exported `let main` (#668): its value's type must be #517's. The
     /// result is the value as a function of the two parameters the runtime
     /// passes, whatever computes it.
     fn check_main_const(&mut self, value: Tm, ty: &Val, at: Span) -> Tm {
@@ -764,7 +764,7 @@ impl Elab {
         }
     }
 
-    /// Each part of `main`'s parameters and result that isn't D31's.
+    /// Each part of `main`'s parameters and result that isn't #517's.
     fn main_mismatches(&mut self, cx: &Cx, params: &[(Name, Val)], result_name: &str, res: &Val) -> Vec<String> {
         let ty = |e: &Self, m: &str, n: &str| e.g.tys.iter().position(|t| &*t.module == m && &*t.name == n).map(|i| Val::TyCon(TyId(i as u32), vec![].into()));
         let wk = self.g.well_known.clone();
@@ -1221,7 +1221,7 @@ impl Elab {
         }
         let mut fields: Vec<(Name, Mult, Icit, Tm)> = Vec::new();
         let mut invs: Vec<FieldInv> = Vec::new();
-        // Auto-bound implicit fields (D10), e.g. `m` in `xs~Vec a m`.
+        // Auto-bound implicit fields (#504), e.g. `m` in `xs~Vec a m`.
         let declared: HashSet<String> = names.iter().map(|n| n.name.clone()).collect();
         let mut autos = Vec::new();
         for c in cs {
@@ -1256,7 +1256,7 @@ impl Elab {
                     (Tm::Error, Mult::Many)
                 }
             };
-            // A class function's `own` and `ghost` parameters (D156 i).
+            // A class function's `own` and `ghost` parameters (#643 i).
             let key = {
                 let ti = &self.g.tys[tid.0 as usize];
                 format!("{}.{}.{}", ti.module, ti.name, n.name)
@@ -1380,7 +1380,7 @@ impl Elab {
     }
 
     /// Free lower-case names in a type expression that are not declared,
-    /// not in scope, and not globals: candidates for auto-binding (D10).
+    /// not in scope, and not globals: candidates for auto-binding (#504).
     pub fn collect_free(&self, cx: &Cx, e: &Expr, declared: &HashSet<String>, out: &mut Vec<String>) {
         match &e.kind {
             ExprKind::Var(n) => {
@@ -1430,7 +1430,7 @@ impl Elab {
         self.check_recursive_types_have_values(m, ids, &rejected);
     }
 
-    /// E0367 (D183). A type already rejected by E0354 gets no second error.
+    /// E0367 (#666). A type already rejected by E0354 gets no second error.
     fn check_recursive_types_have_values(&mut self, m: &ast::Module, ids: &[Option<Sym>], rejected: &BTreeSet<TyId>) {
         let tys: Vec<TyId> = ids.iter().flatten().filter_map(|s| if let Sym::Ty(t) = s { Some(*t) } else { None }).collect();
         for (d, id) in m.decls.iter().zip(ids) {
@@ -1520,7 +1520,7 @@ impl Elab {
     }
 
     /// `env` says, for each variable in scope, whether it has a value. A form
-    /// that isn't a known type former counts as having one (D183 c).
+    /// that isn't a known type former counts as having one (#666 c).
     fn type_has_values(&self, t: &Tm, env: &[bool], known: &mut BTreeSet<TypeInstance>, seen: &mut BTreeSet<TypeInstance>) -> bool {
         match t.spine().0 {
             Tm::Var(i) if matches!(t, Tm::Var(_)) => env.len().checked_sub(1 + i).and_then(|l| env.get(l)).copied().unwrap_or(true),
@@ -1548,7 +1548,7 @@ impl Elab {
         })
     }
 
-    /// D16: marks only on abstract types, each one true of the constructors;
+    /// #511: marks only on abstract types, each one true of the constructors;
     /// importers then see only the marks.
     fn check_polarity_marks(&mut self, m: &ast::Module, ids: &[Option<Sym>]) {
         for (d, id) in m.decls.iter().zip(ids) {
@@ -1609,7 +1609,7 @@ impl Elab {
     /// together, as soon as their constructors are: the bodies checked
     /// before `phase_positivity` compare refinements inside them by it, so
     /// `Pair Nat (j~Nat, i < j)` is a `Pair Nat (j~Nat, i <= j)` as `(Nat,
-    /// (j~Nat, i < j))` is a `(Nat, (j~Nat, i <= j))` (D71). An abstract
+    /// (j~Nat, i < j))` is a `(Nat, (j~Nat, i <= j))` (#554). An abstract
     /// type's marks are what the rest of the module sees.
     fn group_polarity(&mut self, ids: &[Option<Sym>]) {
         let tys: Vec<TyId> = ids
@@ -1740,7 +1740,7 @@ impl Elab {
         }
     }
 
-    /// Does variable `idx` occur in `t` only negatively (D16 `-`)? `pos` is
+    /// Does variable `idx` occur in `t` only negatively (#511 `-`)? `pos` is
     /// the polarity of the current position.
     fn var_negative(&self, t: &Tm, idx: usize, pos: bool) -> bool {
         match t {
@@ -1835,7 +1835,7 @@ impl Elab {
 
     /// Does the type `me` occur in `t`, a field of one of its constructors,
     /// only strictly positively: never to the left of an `->`, however many
-    /// (SPEC §3, D182)? The rule `var_positive` holds a parameter to.
+    /// (SPEC §3, #670)? The rule `var_positive` holds a parameter to.
     fn ty_positive(&self, t: &Tm, me: TyId) -> bool {
         match t {
             Tm::TyConApp(t2, args) if *t2 == me => args.iter().all(|a| !occurs_ty(a, me)),
@@ -1882,7 +1882,7 @@ impl Elab {
         }
     }
 
-    /// Bind clause `k`'s dictionary (`Ord a`, D136), an implicit parameter.
+    /// Bind clause `k`'s dictionary (`Ord a`, #615), an implicit parameter.
     fn bind_dict(&mut self, cx: &mut Cx, binders: &mut Vec<(Name, Mult, Icit, Tm)>, k: usize, e: &Expr) {
         let ty = self.elab_type(cx, e);
         let v = self.eval(cx, &ty);
@@ -1981,7 +1981,7 @@ impl Elab {
             declared.insert(r.name.clone());
         }
         let mut autos = Vec::new();
-        // Class clauses (`Ord a`, D136): implicit parameters, the dictionaries.
+        // Class clauses (`Ord a`, #615): implicit parameters, the dictionaries.
         let class_clauses: Vec<&Expr> = cs
             .iter()
             .filter_map(|c| match c {
@@ -2363,7 +2363,7 @@ impl Elab {
                     if d.export == Export::Transparent {
                         self.transparent.insert(*did);
                     }
-                    // Parameters of a resource type are `own` whether or not it is written (D39).
+                    // Parameters of a resource type are `own` whether or not it is written (#533).
                     for k in (sig.n_implicit..sig.binders.len()).filter(|k| !sig.inner.contains(k)) {
                         let b = &sig.binders[k];
                         if b.1 == Mult::Zero || !self.type_linear(&b.3) {
@@ -2531,7 +2531,7 @@ impl Elab {
             self.g.fuel.set(DEFAULT_FUEL);
             // A body's type equations hold in it alone (#209).
             self.givens.clear();
-            // Completing (D142): only the body the cursor is in.
+            // Completing (#626): only the body the cursor is in.
             if let Some((module, at)) = &self.completing {
                 let here = *module == self.cur && d.span.start <= *at && *at <= d.span.end;
                 if !here && matches!(d.kind, DeclKind::Fn { .. } | DeclKind::Lemma { .. }) {
@@ -2561,7 +2561,7 @@ impl Elab {
                     }
                     let posts: Vec<Pred> = sig.preds.iter().filter(|p| p.is_post).cloned().collect();
                     let fname = self.g.defs[did.0 as usize].name.to_string();
-                    // A class's function: each instance proves its postconditions (D136).
+                    // A class's function: each instance proves its postconditions (#615).
                     let checked = !posts.is_empty() && !self.class_methods.contains(did);
                     self.post_target =
                         checked.then(|| PostTarget { posts, func: fname, binders: sig.cx.env.to_vec(), invariants: Vec::new() });
@@ -2570,7 +2570,7 @@ impl Elab {
                     self.post_target = None;
                     self.solve_deferred();
                     self.report_unsolved_sig(*did, &sig, d.span);
-                    // Dictionaries found after the body was checked (D136).
+                    // Dictionaries found after the body was checked (#615).
                     let full = crate::core::zonk_metas(&self.g, 0, &Self::lam_of(&sig.binders, bt));
                     crate::usage::check_fn(self, *did, &full);
                     self.g.defs[did.0 as usize].body = Some(full);
@@ -2604,7 +2604,7 @@ impl Elab {
                             self.oblige(&sig.cx, ensures.span, kind, ens.text.clone(), goal, None);
                         }
                         Some(block) => {
-                            // Concluding a `forall` (D146): its variables are
+                            // Concluding a `forall` (#635): its variables are
                             // in scope in the proof, its premises facts.
                             let goal = self.intro_forall(&mut sig.cx, &ens.tm, goal);
                             let saved = self.proof_goal.replace((goal, ens.text.clone()));
@@ -2682,7 +2682,7 @@ impl Elab {
                 let comps = comps.iter().map(|t| quote(&self.g, n, &self.eval(&cx, t))).collect();
                 (comps, self.src_text(e.span))
             });
-            // A lemma may conclude a `forall` (D146), positively.
+            // A lemma may conclude a `forall` (#635), positively.
             if let Some(bad) = super::expr::negative_forall(ensures, true) {
                 self.err(
                     Diagnostic::error("E0289", "this lemma would have to show a `forall` false, which takes a value it fails for", bad)
@@ -2800,7 +2800,7 @@ impl Elab {
         let mut cx = Cx::default();
         for (n, m, _, t) in &sig.binders {
             let v = self.eval(&cx, t);
-            // Unknown only for an error reported already (D141 c): a
+            // Unknown only for an error reported already (#627 c): a
             // dictionary not found.
             let unknowns = self.unknowns(cx.lvl(), &v);
             let blamed = !unknowns.is_empty() && unknowns.iter().all(|m| self.follows_error(m));

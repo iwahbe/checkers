@@ -1,6 +1,6 @@
 module patterns
 
-# Patterns and imports (D142).
+# Patterns and imports (#626).
 import std.‸
 
 enum Shape

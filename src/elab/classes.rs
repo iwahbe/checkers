@@ -1,4 +1,4 @@
-//! Classes and instances (D136). A class is desugared, before its module is
+//! Classes and instances (#615). A class is desugared, before its module is
 //! checked, into declarations the rest of the checker already knows:
 //!
 //! - a record of its functions (the *dictionary*), which only instances may
@@ -978,7 +978,7 @@ impl Elab {
         }
     }
 
-    /// The symbol a generated name stands for: `$sym#D12` (a definition),
+    /// The symbol a generated name stands for: `$sym##506` (a definition),
     /// `$sym#T3` (a type), `$sym#C4` (a constructor), or `$mk#mod.Name`
     /// (the constructor of class `Name`'s dictionary).
     pub fn generated_sym(&self, name: &str) -> Option<Sym> {
@@ -1082,7 +1082,7 @@ impl Elab {
             .collect()
     }
 
-    /// A span of its own, for a text override, shown at `at` (D136): past
+    /// A span of its own, for a text override, shown at `at` (#615): past
     /// the end of the file, so it never collides with real code.
     fn synthetic_span(&mut self, at: Span) -> Span {
         let start = SYNTHETIC + self.synthetic.len() as u32;
@@ -1129,7 +1129,7 @@ impl Elab {
             .collect()
     }
 
-    /// Desugar the module's classes and instances (D136). Returns the new
+    /// Desugar the module's classes and instances (#615). Returns the new
     /// module and where each of its declarations came from.
     pub fn desugar_classes(&mut self, m: &ast::Module) -> (ast::Module, Vec<Origin>) {
         // What another module's instances left is about its declarations.
@@ -1291,7 +1291,7 @@ impl Elab {
                         continue;
                     }
                     let rty = rty.unwrap();
-                    // Each parameter's `own` or `ghost` (D156 i): the field's type takes it the same way.
+                    // Each parameter's `own` or `ghost` (#643 i): the field's type takes it the same way.
                     let mults: Vec<Mult> = params
                         .iter()
                         .map(|p| {
@@ -2823,7 +2823,7 @@ impl Elab {
             pats.push(InstPat::Head(key, vs));
         }
         let Some(InstPat::Head(key, _)) = pats.first().cloned() else { return };
-        // Rust's orphan rule (D136 b, RFC 2451), by package: the class is
+        // Rust's orphan rule (#615 b, RFC 2451), by package: the class is
         // this package's, or one of the types is, with no bare variable
         // before it (#145).
         let pkg = self.package_of(&self.cur);
@@ -2935,7 +2935,7 @@ impl Elab {
             .collect();
         for d in members.values() {
             self.inst_member_of.insert(*d, def);
-            // Using the dictionary may rely on the lemmas (termination, D136).
+            // Using the dictionary may rely on the lemmas (termination, #615).
             if self.def_class.get(d) == Some(&"lemma") {
                 self.calls.push(CallRec { caller: def, callee: *d, args: Vec::new(), same: Vec::new(), span: p.span, conds: Vec::new() });
             }
@@ -3140,7 +3140,7 @@ impl Elab {
                 }
             }
         }
-        // Using an instance of this module: a call, for termination (D136).
+        // Using an instance of this module: a call, for termination (#615).
         if inst.module == self.cur && !req.in_spec {
             if let Some(caller) = req.owner {
                 self.calls.push(CallRec { caller, callee: inst.def, args: Vec::new(), same: Vec::new(), span: req.span, conds: Vec::new() });
@@ -3403,7 +3403,7 @@ impl Elab {
                 Err(why) => {
                     // An unknown type in a reported mismatch, or compared with
                     // an error, or a type with an error in it: that error's
-                    // (D141 c).
+                    // (#627 c).
                     let follows = r.tys.iter().any(|t| {
                         (why == "unknown" && self.unknowns(r.lvl, t).iter().any(|m| self.follows_error(m)))
                             || (self.reported_error() && has_error(&zonk_metas(&self.g, r.lvl, &quote(&self.g, r.lvl, t))))
@@ -3474,7 +3474,7 @@ impl Elab {
                     };
                     self.err(d);
                     // What follows from the dictionary not being found
-                    // follows from this error (D141 c).
+                    // follows from this error (#627 c).
                     if let Val::Neutral(Head::Meta(m), _) = force_meta(&self.g, r.meta.clone()) {
                         self.blamed.insert(m);
                     }
@@ -3593,7 +3593,7 @@ impl Elab {
         }
     }
 
-    /// A class's dictionary is built only by its instances (D136).
+    /// A class's dictionary is built only by its instances (#615).
     pub fn check_dict_con(&mut self, c: ConId, span: Span) {
         let tid = self.g.cons[c.0 as usize].ty;
         if self.class_defs.contains_key(&tid) && !self.cur_fn.is_some_and(|d| self.dict_defs.contains(&d)) {
@@ -4339,7 +4339,7 @@ impl Elab {
                 AliasGoal::Part { t, b, inst, each, inside } => {
                     let whole = t.as_ref().zip(b.as_ref()).map(|(t, b)| (self.show_val(&cx, t), self.show_val(&cx, b)));
                     // The instance's signature gives it a type that implies
-                    // the class's at the alias (D85): `List Nat`, `Tree Small`,
+                    // the class's at the alias (#579): `List Nat`, `Tree Small`,
                     // `(x~Int -> y~Int, y >= 0)` for `Int -> Nat`.
                     if let (Some(t), Some(i)) = (&t, &inst) {
                         let n = self.obligations.len();
@@ -4366,7 +4366,7 @@ impl Elab {
         // gives, and hands them functions giving such values. The class's
         // type for each at the alias must imply the instance's own (its
         // signature's, #225, else the class's at the base), as a refined
-        // function type does (D85): at any depth, refinements written as
+        // function type does (#579): at any depth, refinements written as
         // aliases or inline.
         for (i, x, dt, db) in params {
             if !self.alias_differs(lvl, &dt, &db, false, 0) {

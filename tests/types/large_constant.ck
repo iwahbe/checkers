@@ -1,4 +1,4 @@
-# A large constant is known to the prover (D153): a table's length and its
+# A large constant is known to the prover (#638): a table's length and its
 # elements are facts, the elements only in the full query, so proofs about
 # lookups, which need only its length, stay small.
 module large_constant

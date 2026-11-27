@@ -1,4 +1,4 @@
-# On-type formatting (D158) after a continuation line that opens a block: the
+# On-type formatting (#644) after a continuation line that opens a block: the
 # arms of a `match` among a signature's constraints go one level in from it.
 > {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"capabilities":{}}}
 < 1

@@ -11,7 +11,7 @@ use crate::source::Span;
 pub struct Verified {
     pub diags: Vec<Diagnostic>,
     pub proved: usize,
-    /// Z3 answers asked for, and how many came from the cache (D100).
+    /// Z3 answers asked for, and how many came from the cache (#591).
     pub asked: usize,
     pub reused: usize,
 }
@@ -26,7 +26,7 @@ enum Answer {
 /// the process. SMT-LIB errors come back in the output text instead.
 unsafe extern "C" fn ignore_error(_: z3_sys::Z3_context, _: z3_sys::Z3_error_code) {}
 
-/// The linked-in Z3's version (D46): the release, the same for every build
+/// The linked-in Z3's version (#542): the release, the same for every build
 /// of it (some builds' full version names a commit too).
 pub fn z3_version() -> Option<String> {
     let (mut major, mut minor, mut build, mut rev) = (0, 0, 0, 0);
@@ -35,7 +35,7 @@ pub fn z3_version() -> Option<String> {
     Some(format!("Z3 {major}.{minor}.{build}.{rev}"))
 }
 
-/// Z3's work limit per query (D101): unlike a timeout, it gives the same
+/// Z3's work limit per query (#602): unlike a timeout, it gives the same
 /// answer on every machine and at any load. Twice the work the hardest
 /// answer in the repository needs (a counterexample in `tests/run/echo.ck`,
 /// 3 050 000, 11/10/2026); the hardest proof needs 154 000.
@@ -45,7 +45,7 @@ pub const RLIMIT: u64 = 6_000_000;
 /// so giving up on one only costs this much before the next. 1.5 times the
 /// hardest proof they give in the repository (660 000; the next is 255 000).
 pub const QUICK_RLIMIT: u64 = 1_000_000;
-/// For asking whether a branch can run (D144 d): a contradiction among the
+/// For asking whether a branch can run (#633 d): a contradiction among the
 /// facts is found quickly or not at all, and there is one query per branch.
 pub const PROBE_RLIMIT: u64 = 200_000;
 
@@ -56,7 +56,7 @@ pub const PROBE_RLIMIT: u64 = 200_000;
 /// gives up on (77 of them, reported as nothing) mustn't cost much.
 pub const VACUITY_RLIMIT: u64 = 20_000;
 
-/// The work limit each query is tried with first (D154): nearly every
+/// The work limit each query is tried with first (#639): nearly every
 /// answer in the repository needs far less (all but 0.2%), and a query that
 /// can't prove its goal often searches until its limit, so giving up costs
 /// this before the next query.
@@ -97,7 +97,7 @@ fn with_limit(t: &str, limit: u64) -> String {
 /// it cuts off depends on the machine, so it isn't cached.
 pub const SAFETY_MS: u64 = 60_000;
 
-/// Where Z3's answers are cached (D100), if anywhere.
+/// Where Z3's answers are cached (#591), if anywhere.
 static CACHE: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
 static ASKED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static REUSED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -125,14 +125,14 @@ pub(crate) fn cache_dir() -> Option<std::path::PathBuf> {
     CACHE.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-// ── Verified modules (D143) ─────────────────────────────────────────────────
+// ── Verified modules (#628) ─────────────────────────────────────────────────
 
 /// What a module verified before contributes: how many obligations it
 /// proved, and its warnings.
 #[derive(Clone)]
 pub struct Remembered {
     pub proved: usize,
-    /// Its proofs phase's warnings (W022, D144).
+    /// Its proofs phase's warnings (W022, #633).
     pub warnings: Vec<Diagnostic>,
 }
 
@@ -149,7 +149,7 @@ const MODULE_HEADER: &str = "checkers module 4";
 
 /// Modules this process has verified, by key: a doc comment's code block
 /// imports the module it is in, and the standard library, all just verified
-/// (D148 k).
+/// (#642 k).
 pub(crate) static VERIFIED: std::sync::Mutex<Option<std::collections::HashMap<String, Remembered>>> = std::sync::Mutex::new(None);
 
 /// The module verified under `key` before, by this process or (beside
@@ -162,7 +162,7 @@ pub fn recall(key: &str) -> Option<Remembered> {
     remembered(key)
 }
 
-/// Each module's key (D143): its name and text, the text of every program
+/// Each module's key (#628): its name and text, the text of every program
 /// or dependency module it depends on, directly or through others (the
 /// modules it imports and those of the instances its checking chose, #272),
 /// the standard library's text (all of it: its modules give one another, and
@@ -370,7 +370,7 @@ fn ask(query: &str) -> Answer {
 fn ask_out(query: &str) -> String {
     ASKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     // The same query asked twice in this process: Z3's answer depends only
-    // on the text, so it is reused (D154).
+    // on the text, so it is reused (#639).
     static MEMO: std::sync::Mutex<Option<std::collections::HashMap<String, String>>> = std::sync::Mutex::new(None);
     let memo = |out: &str| {
         MEMO.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).insert(query.to_string(), out.to_string());
@@ -422,7 +422,7 @@ fn ask_out(query: &str) -> String {
     out
 }
 
-/// The Z3 release Checkers pins (crate `z3-src`, D46). Another release, as a
+/// The Z3 release Checkers pins (crate `z3-src`, #542). Another release, as a
 /// development build may link (`--no-default-features`), can prove less or
 /// take far longer within the same work limit.
 const Z3_PINNED: (u32, u32) = (5, 3);
@@ -601,7 +601,7 @@ fn fnv(s: &str) -> u64 {
 
 /// Functions recursing by `decreasing` whose recursion ends without their
 /// preconditions: every termination obligation in their bodies holds with
-/// the preconditions left out (D118). Recorded on the elaborator, so a
+/// the preconditions left out. Recorded on the elaborator, so a
 /// standard-library function decided once stays decided for its users.
 fn ends_everywhere(e: &Elab, obs: &[&Obligation]) {
     use crate::elab::ObKind;
@@ -656,7 +656,7 @@ pub fn proofs(e: &Elab, user: &str) -> Verified {
 }
 
 /// Module `user`'s obligations proved: the first time, by `verify`, unless
-/// a check verified it before under its key (D143: its text, what it
+/// a check verified it before under its key (#628: its text, what it
 /// depends on, the tools), which is then what it gave; after that, as they
 /// were. A module is proved once per program, whether first for a value
 /// known at compile time (§8.9) or in the proofs phase, and a module
@@ -894,7 +894,7 @@ fn solve(
     fn lean_of(q: &smt::Query) -> &str {
         q.without_bodies.as_deref().unwrap_or(&q.text)
     }
-    // 1. Everything, with a small work limit (D154): most goals need little
+    // 1. Everything, with a small work limit (#639): most goals need little
     //    work, and this query's answer is final either way: `unsat` is a
     //    proof, `sat` a real counterexample.
     let firsts = ask_produced(obs.len(), |k| {
@@ -943,7 +943,7 @@ fn solve(
     // 4. Only the definitions the facts in scope mention: the premises
     //    unfolded, not the goal's functions, which Z3 can unfold without end.
     // 5. Every definition, without the quantified postconditions of other
-    //    functions, which can send Z3 searching (D101).
+    //    functions, which can send Z3 searching (#602).
     // Each with the small work limit, then again with a larger one where Z3
     // gave up: a query that can't prove its goal often searches until its
     // limit.
@@ -1047,7 +1047,7 @@ fn solve(
     (defs, queries, answers, proven)
 }
 
-/// Guess each recursive group's measure (D150): the first candidate, alone
+/// Guess each recursive group's measure (#641): the first candidate, alone
 /// and then in pairs compared lexicographically, that the prover shows every
 /// recursive call makes smaller while staying a natural number. E0301 if
 /// none is.
@@ -1058,7 +1058,7 @@ fn guess_measures(e: &Elab, user: &str, v: &mut Verified) {
     }
 }
 
-/// Guess group `gr`'s measure (D150), as `guess_measures`: whether one is
+/// Guess group `gr`'s measure (#641), as `guess_measures`: whether one is
 /// proved.
 fn guess_group(e: &Elab, user: &str, gr: &crate::elab::termination::GuessGroup, v: &mut Verified) -> bool {
     use crate::core::{eval, quote, Lit, Prim, Tm, Val};
@@ -1374,7 +1374,7 @@ fn vacuity_diag(c: &Vacuity, texts: &[&str], typed: bool) -> Diagnostic {
     Diagnostic::error("E0457", message, c.at).with_label(label).with_help(format!("{never}; {fix}"))
 }
 
-/// W022 (D144 d): the branches of the program's own used code whose facts
+/// W022 (#633 d): the branches of the program's own used code whose facts
 /// contradict each other, by the facts alone.
 fn unreachable(e: &Elab, user: &str) -> Vec<Diagnostic> {
     if e.package_of(user) != "." {
@@ -1489,7 +1489,7 @@ fn known_calls(e: &Elab, o: &Obligation) -> Vec<crate::core::Val> {
 fn facts_note(e: &Elab, o: &Obligation) -> Option<String> {
     let names: Vec<crate::core::Name> = o.ctx.iter().map(|l| l.name.clone()).collect();
     let lvl = o.ctx.len();
-    // `x >= 0` for a `Nat` local restates its type (D121): not shown.
+    // `x >= 0` for a `Nat` local restates its type (#609): not shown.
     let implied: Vec<String> =
         o.ctx.iter().filter(|l| crate::core::is_nat(&e.g, &l.ty)).map(|l| format!("{} >= 0", l.name)).collect();
     let mut shown: Vec<String> = implied.clone();
@@ -1789,7 +1789,7 @@ fn failed(e: &Elab, o: &Obligation, model: Option<String>) -> Diagnostic {
     if let Some(n) = facts_note(e, o).filter(|_| !matches!(o.kind, ObKind::Uncovered { .. })) {
         d = d.with_note(n);
     }
-    // Sealed functions from other modules (D54) are only known by their contracts.
+    // Sealed functions from other modules (#537) are only known by their contracts.
     let mut sealed = Vec::new();
     let lvl = o.ctx.len();
     crate::elab::collect_sealed(&quote(&e.g, lvl, &o.goal), &e.g, &o.module, &mut sealed);
@@ -1854,7 +1854,7 @@ fn returned(e: &Elab, o: &Obligation) -> Option<String> {
 }
 
 /// Check Z3's counterexample against the `forall` facts in scope, which its
-/// query left out (D137): the same query with them given to Z3, quantified,
+/// query left out (#632): the same query with them given to Z3, quantified,
 /// first with the model's values fixed, then free. A model of that query is
 /// a counterexample; without one, the note saying why none is shown.
 fn check_foralls(e: &Elab, user: &str, o: &Obligation, defs: &smt::Defs, model: &str) -> (Option<String>, Option<String>) {
@@ -2177,7 +2177,7 @@ fn render_model(text: &str, shown: &[(String, String)], strings: &[String], arra
                     let v = unlet(v, &[]);
                     let items = if arrays.contains(k) { seq_items(&v) } else { None };
                     let s = match seq_bytes(&v) {
-                        // An array of anything but `U8` (D133).
+                        // An array of anything but `U8` (#624).
                         _ if items.is_some() => {
                             let shown: Vec<String> = items.unwrap_or_default().iter().map(pretty).collect();
                             format!("array.from_list [{}]", shown.join(", "))
@@ -2225,7 +2225,7 @@ mod tests {
         assert_eq!(results, [None, Some("unsat\n".into()), None, Some("unsat\n".into())]);
     }
 
-    /// A module verified before (D143) is proved for the compile-time gate
+    /// A module verified before (#628) is proved for the compile-time gate
     /// (§8.9) by what it gave then: no query is built for it again.
     #[test]
     fn a_module_verified_before_builds_no_queries() {

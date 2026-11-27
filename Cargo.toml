@@ -22,7 +22,7 @@ path = "tests/golden.rs"
 harness = false
 
 [features]
-# Z3 is built from source and linked statically (D46). Turn it off to link a
+# Z3 is built from source and linked statically (#542). Turn it off to link a
 # libz3 that is already installed instead: faster to build, for development.
 default = ["static-z3"]
 static-z3 = ["z3-sys/vendored"]

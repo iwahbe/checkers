@@ -221,7 +221,7 @@ pub enum Tok {
     Kw(Kw),
     Op(Op),
     /// A `-` that is a sign: after white space or an opening bracket, and
-    /// glued to what follows (`-1`, `f -x`, D169). Every other `-` is
+    /// glued to what follows (`-1`, `f -x`, #657). Every other `-` is
     /// `Op::Sub`.
     Neg,
     LParen,
@@ -298,6 +298,6 @@ pub struct Token {
     pub span: Span,
     /// Whitespace (or a line start) directly precedes this token. Glued `.`
     /// and `[` are field access / indexing; spaced ones are composition / a
-    /// list literal (D22).
+    /// list literal (#526).
     pub space_before: bool,
 }

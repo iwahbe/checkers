@@ -1,4 +1,4 @@
-# basics.ck — formatter input (D91, D92). The expected output is basics.out.
+# basics.ck — formatter input (#584, #585). The expected output is basics.out.
 module basics
 import std.list   (map)
 

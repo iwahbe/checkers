@@ -1,6 +1,6 @@
 module tools_stdlib
 
-# The standard library additions for the build tool and formatter (D90).
+# The standard library additions for the build tool and formatter (#582).
 
 import std.system (System, ExitCode)
 import std.terminal (Term)

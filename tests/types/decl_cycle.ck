@@ -1,6 +1,6 @@
 module decl_cycle
 
-# What depends on itself is an error (D65).
+# What depends on itself is an error (#557).
 
 let A = B + 1
 let B = A * 2
