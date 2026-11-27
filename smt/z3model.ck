@@ -16,20 +16,26 @@
 # applied to another constructor's value: their values exist in Z3's model
 # but `get-model` leaves them out.
 #
+# Named assertions are printed too, as `Bool` constants; they are the
+# query's names, and `smt.model` doesn't use them.
+#
 # A body is evaluated here, at the arguments `smt.model` asks for, by
-# `interp`, which knows the forms Z3 prints and nothing else. This reader is
-# not trusted: whatever it gives is checked against its sort by
-# `smt.model`, and a mistake here can only make an assertion look false or
-# undetermined, never make a false model look like a model. `unread` lists
-# the forms a model holds that `interp` doesn't know.
+# `interp`, which knows the forms Z3 prints and nothing else. It reads
+# exactly the model printed, or doesn't read it (as `answer` does): a name
+# is the innermost binding of it (`answer.Bind`: a parameter, a `let`, a
+# `lambda`'s variable) before it is a definition of the model; a model
+# whose names could be read two ways is not read at all (`full`); a form it
+# doesn't know, or an `as` of another sort, is not evaluated.
 
 module z3model
 
 import std.list
 import std.bytes
 import answer
+import answer (Bind, Known, Later, Index)
 import smtlib (Atom, Symbol, Keyword, Numeral, SExpr, Leaf, Node)
 import term (Name, Sort, Bool, Int, Seq, Arr, Data, Unin, Param, Ctor, Datatype, Sig, Context)
+import term (Command, DeclareSort, DeclareDatatypes, DeclareFun, DefineFuns, Assume, Assert)
 import model (Value, Truth, Integer, Sequence, Constructed, Element, ArrayElem)
 import model (Model, Domain, UpTo, Countable)
 
@@ -44,63 +50,7 @@ record Printed src : src~Bytes
 # each uninterpreted sort has.
 export record Full src : src~Bytes
     defs~List (Printed src)
-    universes~List (Sort, Nat)
-
-# ── Sorts ────────────────────────────────────────────────────────────────────
-
-fn find_sort_named sig n i -> r : sig~Sig, n~Name, i~Nat, i <= len sig.sorts, r~Option Nat
-    decreasing len sig.sorts - i
-    if i >= len sig.sorts then None else if sig.sorts[i].name == n then Some i else find_sort_named sig n (i + 1)
-
-fn find_data_named sig n i -> r : sig~Sig, n~Name, i~Nat, i <= len sig.datatypes, r~Option Nat
-    decreasing len sig.datatypes - i
-    if i >= len sig.datatypes
-        None
-    else if sig.datatypes[i].name == n
-        Some i
-    else
-        find_data_named sig n (i + 1)
-
-# The sort `e` writes.
-fn sort_from sig e -> r : sig~Sig, e~SExpr src, r~Result Sort Bytes
-    match e
-        Leaf (Symbol n _) _                  -> named sig n []
-        Node (Leaf (Symbol n _) _ :: args) _ ->
-            let ss = try sorts_from sig args
-            if n == b"Seq"
-                match ss
-                    [x] -> Ok (Seq x)
-                    _   -> Err b"`Seq` with other than one sort"
-            else if n == b"Array"
-                match ss
-                    [i, v] -> Ok (Arr i v)
-                    _      -> Err b"`Array` with other than two sorts"
-            else
-                named sig n ss
-        _                                    -> Err b"a sort this reader doesn't know"
-
-fn sorts_from sig es -> r : sig~Sig, es~List (SExpr src), r~Result (List Sort) Bytes
-    match es
-        []        -> Ok []
-        e :: rest ->
-            let s = try sort_from sig e
-            let ss = try sorts_from sig rest
-            Ok (s :: ss)
-
-fn named sig n args -> r : sig~Sig, n~Name, args~List Sort, r~Result Sort Bytes
-    if n == b"Int" and args == []
-        Ok Int
-    else if n == b"Bool" and args == []
-        Ok Bool
-    else
-        match find_data_named sig n 0
-            Some d -> Ok (Data d args)
-            None   ->
-                match find_sort_named sig n 0
-                    Some u -> Ok (Unin u args)
-                    None   -> Err (b"an unknown sort: " ++ n)
-
-let NO_NORMAL_FORM = b"an array with no normal form (a store at an index sort `smt.model` can't show finite and listed, or unbounded)"
+    universes~List (Sort, List Nat)
 
 # ── Reading the model ────────────────────────────────────────────────────────
 
@@ -108,32 +58,122 @@ fn params_from sig es -> r : sig~Sig, es~List (SExpr src), r~Result (List (Name,
     match es
         []                                      -> Ok []
         Node [Leaf (Symbol n _) _, s] _ :: rest ->
-            let sort = try sort_from sig s
+            let sort = try answer.sort_from sig s
             let more = try params_from sig rest
             Ok ((n, sort) :: more)
         _                                       -> Err b"a parameter that isn't `(NAME SORT)`"
 
-fn bump us n -> r : us~List (Sort, Nat), n~Sort, r~List (Sort, Nat)
+# `us` with element `k` of sort `s` added.
+fn bump us s k -> r : us~List (Sort, List Nat), s~Sort, k~Nat, r~List (Sort, List Nat)
     match us
-        []             -> [(n, 1)]
-        (m, k) :: rest -> if m == n then (m, k + 1) :: rest else (m, k) :: bump rest n
+        []              -> [(s, [k])]
+        (t, ks) :: rest -> if t == s then (t, k :: ks) :: rest else (t, ks) :: bump rest s k
 
-# The model in the items of a `(get-model)` list.
-export fn full sig items -> r : sig~Sig, items~List (SExpr src), r~Result (Full src) Bytes
+# The model in the items of a `(get-model)` list, for context `c`. It is
+# not read when a name in it could be read two ways: the query introduces
+# a name with `!` (Z3's own names have one: `k!1`, `S!val!0`, `x!0`), it
+# defines one name twice, or it defines a name that is neither the
+# query's nor one Z3 is measured to print (`div0`, `mod0`, `seq.nth_u`,
+# `k!N`).
+export fn full c items -> r : c~Context, items~List (SExpr src), r~Result (Full src) Bytes
+    let sig = term.signature c
+    let names = query_names c
+    if bang c
+        Err BANG
+    else
+        let f = try read_items sig items
+        match first_unknown names f.defs
+            Some n -> Err (b"a definition of a name that is neither the query's nor Z3's: " ++ n)
+            None   ->
+                if twice f.defs
+                    Err b"two definitions of one name"
+                else if not (list.all (\(_, ks) -> numbered_from ks) f.universes)
+                    Err b"a universe whose elements aren't numbered 0 to its size"
+                else
+                    Ok f
+
+# Whether the query introduces a name with `!`, as Z3's own names in a
+# model have: such a query gets no model read.
+export fn bang c -> r : c~Context, r~Bool
+    not (list.all (\n -> not (has_bang n 0)) (query_names c))
+
+export let BANG = b"the query introduces a name with `!`, as Z3's own names in a model are"
+
+fn read_items sig items -> r : sig~Sig, items~List (SExpr src), r~Result (Full src) Bytes
     match items
         []        -> Ok (Full [] [])
         e :: rest ->
-            let f = try full sig rest
+            let f = try read_items sig rest
             match e
                 Node [Leaf (Symbol k False) _, Leaf (Symbol n _) _, Node ps _, s, body] _ if k == b"define-fun" ->
                     let params = try params_from sig ps
-                    let result = try sort_from sig s
+                    let result = try answer.sort_from sig s
                     Ok (Full (Printed n params result body :: f.defs) f.universes)
-                Node [Leaf (Symbol k False) _, Leaf (Symbol _ _) _, Node [] _, s] _ if k == b"declare-fun" ->
-                    let sort = try sort_from sig s
-                    Ok (Full f.defs (bump f.universes sort))
+                Node [Leaf (Symbol k False) _, Leaf (Symbol n _) _, Node [] _, s] _ if k == b"declare-fun" ->
+                    let sort = try answer.sort_from sig s
+                    match element_of sig sort n
+                        Some e -> Ok (Full f.defs (bump f.universes sort e))
+                        None   -> Err (b"a `declare-fun` that isn't an element of an uninterpreted sort: " ++ n)
                 Node (Leaf (Symbol k False) _ :: _) _ if k == b"forall" -> Ok f
                 _ -> Err b"an item of the model that isn't `define-fun`, `declare-fun` or a cardinality constraint"
+
+# Whether `ks` are `0`, …, `n - 1` for `n` its length, each once.
+fn numbered_from ks -> r : ks~List Nat, r~Bool
+    list.unique ks and list.all (\k -> k < list.length ks) ks
+
+fn has_bang n i -> r : n~Name, i~Nat, i <= len n, r~Bool
+    decreasing len n - i
+    if i >= len n then False else n[i] == '!' or has_bang n (i + 1)
+
+# Every name the query introduces: sorts, datatypes, constructors,
+# selectors, functions, assertion names.
+fn query_names c -> r : c~Context, r~List Name
+    names_in (term.commands c)
+
+fn names_in cs -> r : cs~List Command, r~List Name
+    match cs
+        []          -> []
+        cmd :: rest -> command_names cmd ++ names_in rest
+
+fn command_names cmd -> r : cmd~Command, r~List Name
+    match cmd
+        DeclareSort d       -> [d.name]
+        DeclareDatatypes ds -> all_names (list.map datatype_names ds)
+        DeclareFun f        -> [f.name]
+        DefineFuns _ ds     -> list.map (\d -> d.name) ds
+        Assume _ n          -> option_name n
+        Assert _ n          -> option_name n
+
+fn option_name n -> r : n~Option Name, r~List Name
+    match n
+        Some x -> [x]
+        None   -> []
+
+fn datatype_names d -> r : d~Datatype, r~List Name
+    d.name :: all_names (list.map ctor_names d.ctors)
+
+fn ctor_names c -> r : c~Ctor, r~List Name
+    c.name :: list.map (\f -> f.name) c.fields
+
+fn all_names xss -> r : xss~List (List Name), r~List Name
+    match xss
+        []         -> []
+        xs :: rest -> xs ++ all_names rest
+
+# Whether `n` is a name Z3 is measured to define in a model of its own.
+fn z3_name n -> r : n~Name, r~Bool
+    n == b"div0" or n == b"mod0" or n == b"seq.nth_u"
+        or (len n > 2 and bytes.matches_at n 0 b"k!" and answer.digits_value (bytes.slice n 2 (len n)) != None)
+
+fn first_unknown names ds -> r : names~List Name, ds~List (Printed src), r~Option Name
+    match ds
+        []        -> None
+        d :: rest -> if z3_name d.name or list.contains names d.name then first_unknown names rest else Some d.name
+
+fn twice ds -> r : ds~List (Printed src), r~Bool
+    match ds
+        []        -> False
+        d :: rest -> has_name rest d.name or twice rest
 
 fn find_def ds n arity -> r : ds~List (Printed src), n~Name, arity~Nat, r~Option (Printed src)
     match ds
@@ -147,34 +187,16 @@ let TOO_DEEP = b"Z3's model nests too deep"
 # How deep evaluation of the model's bodies may go.
 let DEPTH = 100000
 
-type Env = env~List (Name, Value)
-
-fn lookup env n -> r : env~Env, n~Name, r~Option Value
-    match env
-        []             -> None
-        (m, v) :: rest -> if m == n then Some v else lookup rest n
-
-fn ctor_named cs n k -> r : cs~List Ctor, n~Name, k~Nat, r~Option (Nat, Ctor)
-    match cs
-        []        -> None
-        c :: rest -> if c.name == n then Some (k, c) else ctor_named rest n (k + 1)
+type Scope src = sc~List (Bind src)
 
 fn element_of sig s n -> r : sig~Sig, s~Sort, n~Name, r~Option Nat
     match s
-        Unin u _ ->
-            if u < len sig.sorts
-                let prefix = sig.sorts[u].name ++ b"!val!"
-                if len n > len prefix and bytes.matches_at n 0 prefix
-                    answer.digits_value (bytes.slice n (len prefix) (len n))
-                else
-                    None
-            else
-                None
+        Unin u _ -> if u < len sig.sorts then answer.element_number sig.sorts[u].name n else None
         _        -> None
 
 # The sort `e` has, where it can be told without an expected sort.
-fn sort_of_expr sig full env e depth -> r : sig~Sig, full~Full src, env~List (Name, Sort), e~SExpr src, depth~Nat,
-                                            r~Option Sort
+fn sort_of_expr sig full scope e depth -> r : sig~Sig, full~Full src, scope~Scope src, e~SExpr src, depth~Nat,
+                                              r~Option Sort
     decreasing depth
     if depth == 0
         None
@@ -182,19 +204,25 @@ fn sort_of_expr sig full env e depth -> r : sig~Sig, full~Full src, env~List (Na
         match e
             Leaf (Numeral _) _                       -> Some Int
             Leaf (Symbol n _) _                      ->
-                if n == b"true" or n == b"false"
-                    Some Bool
-                else
-                    match var_sort env n
-                        Some s -> Some s
-                        None   ->
+                match answer.bound scope n
+                    Some (Known _ _ s)  -> Some s
+                    Some (Index _ s)    -> Some s
+                    Some (Later _ x sc) -> sort_of_expr sig full sc x (depth - 1)
+                    None                ->
+                        if n == b"true" or n == b"false"
+                            Some Bool
+                        else
                             match find_def full.defs n 0
                                 Some d -> Some d.result
                                 None   -> ctor_sort sig n 0
             Node [Leaf (Symbol a False) _, _, s] _ if a == b"as" ->
-                match sort_from sig s
+                match answer.sort_from sig s
                     Ok x  -> Some x
                     Err _ -> None
+            Node [Leaf (Symbol l False) _, Node binds _, body] _ if l == b"let" ->
+                match answer.let_binds binds scope
+                    Ok more -> sort_of_expr sig full (more ++ scope) body (depth - 1)
+                    Err _   -> None
             Node (Leaf (Symbol n False) _ :: args) _ ->
                 if n == b"+" or n == b"-" or n == b"*" or n == b"div" or n == b"mod" or n == b"seq.len"
                     Some Int
@@ -204,25 +232,25 @@ fn sort_of_expr sig full env e depth -> r : sig~Sig, full~Full src, env~List (Na
                 else if n == b"ite"
                     match args
                         [_, a, b] ->
-                            match sort_of_expr sig full env a (depth - 1)
+                            match sort_of_expr sig full scope a (depth - 1)
                                 Some s -> Some s
-                                None   -> sort_of_expr sig full env b (depth - 1)
+                                None   -> sort_of_expr sig full scope b (depth - 1)
                         _         -> None
                 else if n == b"seq.unit"
                     match args
                         [a] ->
-                            match sort_of_expr sig full env a (depth - 1)
+                            match sort_of_expr sig full scope a (depth - 1)
                                 Some s -> Some (Seq s)
                                 None   -> None
                         _   -> None
                 else if n == b"seq.++" or n == b"store"
                     match args
-                        a :: _ -> sort_of_expr sig full env a (depth - 1)
+                        a :: _ -> sort_of_expr sig full scope a (depth - 1)
                         []     -> None
                 else if n == b"select"
                     match args
                         [a, _] ->
-                            match sort_of_expr sig full env a (depth - 1)
+                            match sort_of_expr sig full scope a (depth - 1)
                                 Some (Arr _ v) -> Some v
                                 _              -> None
                         _      -> None
@@ -231,7 +259,7 @@ fn sort_of_expr sig full env e depth -> r : sig~Sig, full~Full src, env~List (Na
                         Some d -> Some d.result
                         None   -> ctor_sort sig n 0
             Node (Node [Leaf (Symbol a False) _, _, s] _ :: _) _ if a == b"as" ->
-                match sort_from sig s
+                match answer.sort_from sig s
                     Ok x  -> Some x
                     Err _ -> None
             _                                        -> None
@@ -241,25 +269,10 @@ fn ctor_sort sig n d -> r : sig~Sig, n~Name, d~Nat, d <= len sig.datatypes, r~Op
     decreasing len sig.datatypes - d
     if d >= len sig.datatypes
         None
-    else if sig.datatypes[d].params == [] and ctor_named sig.datatypes[d].ctors n 0 != None
+    else if sig.datatypes[d].params == [] and answer.ctor_named sig.datatypes[d].ctors n 0 != None
         Some (Data d [])
     else
         ctor_sort sig n (d + 1)
-
-fn var_sort env n -> r : env~List (Name, Sort), n~Name, r~Option Sort
-    match env
-        []             -> None
-        (m, s) :: rest -> if m == n then Some s else var_sort rest n
-
-fn sort_env env -> r : env~List (Name, Value, Sort), r~List (Name, Sort)
-    match env
-        []                -> []
-        (n, _, s) :: rest -> (n, s) :: sort_env rest
-
-fn value_env env -> r : env~List (Name, Value, Sort), r~Env
-    match env
-        []                -> []
-        (n, v, _) :: rest -> (n, v) :: value_env rest
 
 fn as_bool r -> b : r~Result Value Bytes, b~Result Bool Bytes
     match r
@@ -273,10 +286,9 @@ fn as_int r -> n : r~Result Value Bytes, n~Result Int Bytes
         Ok _           -> Err b"not an Int"
         Err e          -> Err e
 
-# The value of `e`, of sort `s`, where `env` gives the parameters' values
-# and sorts.
-fn interp sig full env lets s e depth -> r : sig~Sig, full~Full src, env~List (Name, Value, Sort), lets~List (Name, SExpr src), s~Sort, e~SExpr src,
-                                             depth~Nat, r~Result Value Bytes
+# The value of `e`, of sort `s`, with the names `scope` binds.
+fn interp sig full scope s e depth -> r : sig~Sig, full~Full src, scope~Scope src, s~Sort, e~SExpr src, depth~Nat,
+                                          r~Result Value Bytes
     decreasing depth
     if depth == 0
         Err TOO_DEEP
@@ -284,77 +296,74 @@ fn interp sig full env lets s e depth -> r : sig~Sig, full~Full src, env~List (N
         let d = depth - 1
         match e
             Leaf (Symbol n _) _                      ->
-                match (find_let lets n, lookup (value_env env) n)
-                    (Some b, _)    -> interp sig full env lets s b d
-                    (None, Some v) -> Ok v
-                    (None, None)   ->
+                match answer.bound scope n
+                    Some (Known _ v t)  -> if t == s then Ok v else Err b"a name of another sort"
+                    Some (Later _ x sc) -> interp sig full sc s x d
+                    Some (Index _ _)    -> Err answer.INDEX_USED
+                    None                ->
                         match find_def full.defs n 0
-                            Some p -> interp sig full [] [] p.result p.body d
+                            Some p -> if p.result == s then interp sig full [] p.result p.body d else Err b"a constant of another sort"
                             None   ->
                                 match element_of sig s n
                                     Some k -> Ok (Element k)
                                     None   -> answer.value_from sig s e [] d
             Leaf _ _                                 -> answer.value_from sig s e [] d
-            Node [Leaf (Symbol l False) _, _, _] _ if l == b"lambda" -> array_from sig full s e d
+            Node [Leaf (Symbol l False) _, _, _] _ if l == b"lambda" -> array_from sig full scope s e d
             Node [Leaf (Symbol u False) _, Leaf (Symbol a False) _, _] _ if u == b"_" and a == b"as-array" ->
-                array_from sig full s e d
-            Node [Leaf (Symbol m False) _, Leaf (Numeral n) _] _ if m == b"-" -> Ok (Integer (0 - n))
+                array_from sig full scope s e d
+            Node [Leaf (Symbol m False) _, Leaf (Numeral n) _] _ if m == b"-" ->
+                match s
+                    Int -> Ok (Integer (0 - n))
+                    _   -> Err b"a negative numeral where the sort isn't Int"
             Node [Leaf (Symbol a False) _, _, _] _ if a == b"as" -> answer.value_from sig s e [] d
             Node [Leaf (Symbol l False) _, Node binds _, body] _ if l == b"let" ->
-                let more = try let_binds binds
-                interp sig full env (list.reverse more ++ lets) s body d
-            Node (Leaf (Symbol n False) _ :: args) _ -> call sig full env lets s n args d
-            Node (Node [Leaf (Symbol a False) _, Leaf (Symbol c _) _, _] _ :: args) _ if a == b"as" ->
+                let more = try answer.let_binds binds scope
+                interp sig full (more ++ scope) s body d
+            Node (Leaf (Symbol n False) _ :: args) _ -> call sig full scope s n args d
+            Node (Node [Leaf (Symbol a False) _, Leaf (Symbol c _) _, t] _ :: args) _ if a == b"as" ->
+                let _ = try answer.as_sort sig t s
                 if c == b"const"
                     match (s, args)
-                        (Arr i v, [x]) ->
-                            let w = try interp sig full env lets v x d
+                        (Arr _ v, [x]) ->
+                            let w = try interp sig full scope v x d
                             match model.const_array sig (\u args -> domain_of full u args) s w
                                 Some a -> Ok a
-                                None   -> Err NO_NORMAL_FORM
+                                None   -> Err answer.NO_NORMAL_FORM
                         _              -> Err b"a constant array where the sort isn't an array"
                 else
-                    construct sig full env lets s c args d
+                    construct sig full scope s c args d
             _                                        -> answer.value_from sig s e [] d
-
-fn find_let lets n -> r : lets~List (Name, SExpr src), n~Name, r~Option (SExpr src)
-    match lets
-        []             -> None
-        (m, e) :: rest -> if m == n then Some e else find_let rest n
-
-fn let_binds es -> r : es~List (SExpr src), r~Result (List (Name, SExpr src)) Bytes
-    match es
-        []                                      -> Ok []
-        Node [Leaf (Symbol n _) _, e] _ :: rest ->
-            let more = try let_binds rest
-            Ok ((n, e) :: more)
-        _                                       -> Err b"a `let` binding that isn't `(NAME VALUE)`"
 
 # An array Z3 printed as a function of its index, a `lambda` or
 # `(_ as-array f)`, as a normal form: when the function is a chain of
 # `(ite (= x c) v …)` ending in a value that doesn't use `x`. Any other
-# function (a range, `(<= 2 x)`) has no normal form, and isn't read.
-fn array_from sig full s e depth -> r : sig~Sig, full~Full src, s~Sort, e~SExpr src, depth~Nat, r~Result Value Bytes
+# function (a range, `(<= 2 x)`) has no normal form, and isn't read. The
+# index `x` shadows any name of the model; `c`, `v` and the value it ends
+# in may not use it.
+fn array_from sig full scope s e depth -> r : sig~Sig, full~Full src, scope~Scope src, s~Sort, e~SExpr src, depth~Nat,
+                                              r~Result Value Bytes
     decreasing depth
     if depth == 0
         Err TOO_DEEP
     else
         match (s, e)
-            (Arr i w, Node [_, Node [Node [Leaf (Symbol x _) _, _] _] _, body] _) -> chain sig full s i w x body (depth - 1)
+            (Arr i w, Node [_, Node [Node [Leaf (Symbol x _) _, t] _] _, body] _) ->
+                let _ = try answer.as_sort sig t i
+                chain sig full (Index x i :: scope) s i w x body (depth - 1)
             (Arr i w, Node [_, _, Leaf (Symbol f _) _] _)                         ->
                 match find_def full.defs f 1
                     Some p ->
                         match p.params
-                            [(x, _)] -> chain sig full s i w x p.body (depth - 1)
-                            _        -> Err NO_NORMAL_FORM
+                            [(x, t)] -> if t == i then chain sig full [Index x i] s i w x p.body (depth - 1) else Err b"an array whose function's parameter is of another sort"
+                            _        -> Err answer.NO_NORMAL_FORM
                     None   -> Err b"an array whose function Z3 didn't print"
-            _                                                                     -> Err NO_NORMAL_FORM
+            _                                                                     -> Err answer.NO_NORMAL_FORM
 
 # The array whose index `x` is mapped by `body`: stores for each
 # `(ite (= x c) v rest)`, outermost hiding the rest, over the constant
 # `rest` ends in.
-fn chain sig full s i w x body depth -> r : sig~Sig, full~Full src, s~Sort, i~Sort, w~Sort, x~Name, body~SExpr src,
-                                            depth~Nat, r~Result Value Bytes
+fn chain sig full scope s i w x body depth -> r : sig~Sig, full~Full src, scope~Scope src, s~Sort, i~Sort, w~Sort, x~Name,
+                                                  body~SExpr src, depth~Nat, r~Result Value Bytes
     decreasing depth
     if depth == 0
         Err TOO_DEEP
@@ -363,17 +372,17 @@ fn chain sig full s i w x body depth -> r : sig~Sig, full~Full src, s~Sort, i~So
         let dom = \u args -> domain_of full u args
         match body
             Node [Leaf (Symbol ite False) _, Node [Leaf (Symbol eq False) _, l, r] _, v, rest] _ if ite == b"ite" and eq == b"=" ->
-                let c = try (if is_var l x then interp sig full [] [] i r d else if is_var r x then interp sig full [] [] i l d else Err NO_NORMAL_FORM)
-                let at = try interp sig full [] [] w v d
-                let under = try chain sig full s i w x rest d
+                let c = try (if is_var l x then interp sig full scope i r d else if is_var r x then interp sig full scope i l d else Err answer.NO_NORMAL_FORM)
+                let at = try interp sig full scope w v d
+                let under = try chain sig full scope s i w x rest d
                 match model.store_array sig dom s under c at
                     Some a -> Ok a
-                    None   -> Err NO_NORMAL_FORM
+                    None   -> Err answer.NO_NORMAL_FORM
             _ ->
-                let base = try interp sig full [] [] w body d
+                let base = try interp sig full scope w body d
                 match model.const_array sig dom s base
                     Some a -> Ok a
-                    None   -> Err NO_NORMAL_FORM
+                    None   -> Err answer.NO_NORMAL_FORM
 
 fn is_var e x -> r : e~SExpr src, x~Name, r~Bool
     match e
@@ -381,38 +390,37 @@ fn is_var e x -> r : e~SExpr src, x~Name, r~Bool
         _                   -> False
 
 # `n` applied to `args`.
-fn call sig full env lets s n args depth -> r : sig~Sig, full~Full src, env~List (Name, Value, Sort), lets~List (Name, SExpr src), s~Sort, n~Name,
-                                                args~List (SExpr src), depth~Nat, r~Result Value Bytes
+fn call sig full scope s n args depth -> r : sig~Sig, full~Full src, scope~Scope src, s~Sort, n~Name, args~List (SExpr src),
+                                             depth~Nat, r~Result Value Bytes
     decreasing depth
     if depth == 0
         Err TOO_DEEP
     else
         let d = depth - 1
-        let senv = sort_env env
-        let bool = \x -> as_bool (interp sig full env lets Bool x d)
-        let int = \x -> as_int (interp sig full env lets Int x d)
+        let bool = \x -> as_bool (interp sig full scope Bool x d)
+        let int = \x -> as_int (interp sig full scope Int x d)
         match (n, args)
             (_, [c, a, b]) if n == b"ite" ->
                 let cv = try bool c
-                if cv then interp sig full env lets s a d else interp sig full env lets s b d
+                if cv then interp sig full scope s a d else interp sig full scope s b d
             (_, [a]) if n == b"not" ->
                 let x = try bool a
                 Ok (Truth (not x))
-            (_, _) if n == b"and" -> conj sig full env lets args d
-            (_, _) if n == b"or" -> disj sig full env lets args d
+            (_, _) if n == b"and" -> conj sig full scope args d
+            (_, _) if n == b"or" -> disj sig full scope args d
             (_, [a, b]) if n == b"=>" ->
                 let x = try bool a
                 let y = try bool b
                 Ok (Truth (not x or y))
             (_, [a, b]) if n == b"=" ->
                 let sort =
-                    match sort_of_expr sig full senv a d
+                    match sort_of_expr sig full scope a d
                         Some x -> Some x
-                        None   -> sort_of_expr sig full senv b d
+                        None   -> sort_of_expr sig full scope b d
                 match sort
                     Some t ->
-                        let x = try interp sig full env lets t a d
-                        let y = try interp sig full env lets t b d
+                        let x = try interp sig full scope t a d
+                        let y = try interp sig full scope t b d
                         Ok (Truth (x == y))
                     None   -> Err b"`=` of terms whose sort this reader can't tell"
             (_, [a, b]) if n == b"+" -> arith (int a) (int b) (\x y -> Ok (Integer (x + y)))
@@ -428,30 +436,36 @@ fn call sig full env lets s n args depth -> r : sig~Sig, full~Full src, env~List
             (_, [a]) if n == b"seq.unit" ->
                 match s
                     Seq el ->
-                        let x = try interp sig full env lets el a d
+                        let x = try interp sig full scope el a d
                         Ok (Sequence [x])
                     _      -> Err b"seq.unit where the sort isn't a sequence"
-            (_, _) if n == b"seq.++" -> concat sig full env lets s args d
+            (_, _) if n == b"seq.++" -> concat sig full scope s args d
             (_, [a, i, v]) if n == b"store" ->
                 match s
                     Arr is vs ->
-                        let x = try interp sig full env lets s a d
-                        let j = try interp sig full env lets is i d
-                        let w = try interp sig full env lets vs v d
+                        let x = try interp sig full scope s a d
+                        let j = try interp sig full scope is i d
+                        let w = try interp sig full scope vs v d
                         match model.store_array sig (\u args -> domain_of full u args) s x j w
                             Some a -> Ok a
-                            None   -> Err NO_NORMAL_FORM
+                            None   -> Err answer.NO_NORMAL_FORM
                     _         -> Err b"store where the sort isn't an array"
             _ ->
-                match find_def full.defs n (list.length args)
-                    Some p ->
-                        let vs = try interp_all sig full env lets (list.map (\(_, t) -> t) p.params) args d
-                        interp sig full (bind p.params vs) [] p.result p.body d
-                    None   -> construct sig full env lets s n args d
+                match answer.bound scope n
+                    Some _ -> Err (b"a bound name applied to arguments: " ++ n)
+                    None   ->
+                        match find_def full.defs n (list.length args)
+                            Some p ->
+                                if p.result == s
+                                    let vs = try interp_all sig full scope (list.map (\(_, t) -> t) p.params) args d
+                                    interp sig full (bind p.params vs) p.result p.body d
+                                else
+                                    Err b"a function of another sort"
+                            None   -> construct sig full scope s n args d
 
-fn bind ps vs -> r : ps~List (Name, Sort), vs~List Value, r~List (Name, Value, Sort)
+fn bind ps vs -> r : ps~List (Name, Sort), vs~List Value, r~Scope src
     match (ps, vs)
-        ((n, s) :: pr, v :: vr) -> (n, v, s) :: bind pr vr
+        ((n, s) :: pr, v :: vr) -> Known n v s :: bind pr vr
         _                       -> []
 
 fn arith rx ry f -> r : rx~Result Int Bytes, ry~Result Int Bytes, f~(Int -> Int -> Result Value Bytes),
@@ -460,8 +474,8 @@ fn arith rx ry f -> r : rx~Result Int Bytes, ry~Result Int Bytes, f~(Int -> Int 
     let y = try ry
     f x y
 
-fn conj sig full env lets args depth -> r : sig~Sig, full~Full src, env~List (Name, Value, Sort), lets~List (Name, SExpr src), args~List (SExpr src),
-                                            depth~Nat, r~Result Value Bytes
+fn conj sig full scope args depth -> r : sig~Sig, full~Full src, scope~Scope src, args~List (SExpr src), depth~Nat,
+                                         r~Result Value Bytes
     decreasing depth
     if depth == 0
         Err TOO_DEEP
@@ -469,14 +483,14 @@ fn conj sig full env lets args depth -> r : sig~Sig, full~Full src, env~List (Na
         match args
             []        -> Ok (Truth True)
             a :: rest ->
-                match interp sig full env lets Bool a (depth - 1)
+                match interp sig full scope Bool a (depth - 1)
                     Ok (Truth False) -> Ok (Truth False)
-                    Ok (Truth True)  -> conj sig full env lets rest (depth - 1)
+                    Ok (Truth True)  -> conj sig full scope rest (depth - 1)
                     Ok _             -> Err b"not a Bool"
                     Err e            -> Err e
 
-fn disj sig full env lets args depth -> r : sig~Sig, full~Full src, env~List (Name, Value, Sort), lets~List (Name, SExpr src), args~List (SExpr src),
-                                            depth~Nat, r~Result Value Bytes
+fn disj sig full scope args depth -> r : sig~Sig, full~Full src, scope~Scope src, args~List (SExpr src), depth~Nat,
+                                         r~Result Value Bytes
     decreasing depth
     if depth == 0
         Err TOO_DEEP
@@ -484,14 +498,14 @@ fn disj sig full env lets args depth -> r : sig~Sig, full~Full src, env~List (Na
         match args
             []        -> Ok (Truth False)
             a :: rest ->
-                match interp sig full env lets Bool a (depth - 1)
+                match interp sig full scope Bool a (depth - 1)
                     Ok (Truth True)  -> Ok (Truth True)
-                    Ok (Truth False) -> disj sig full env lets rest (depth - 1)
+                    Ok (Truth False) -> disj sig full scope rest (depth - 1)
                     Ok _             -> Err b"not a Bool"
                     Err e            -> Err e
 
-fn concat sig full env lets s args depth -> r : sig~Sig, full~Full src, env~List (Name, Value, Sort), lets~List (Name, SExpr src), s~Sort,
-                                                args~List (SExpr src), depth~Nat, r~Result Value Bytes
+fn concat sig full scope s args depth -> r : sig~Sig, full~Full src, scope~Scope src, s~Sort, args~List (SExpr src),
+                                             depth~Nat, r~Result Value Bytes
     decreasing depth
     if depth == 0
         Err TOO_DEEP
@@ -499,14 +513,14 @@ fn concat sig full env lets s args depth -> r : sig~Sig, full~Full src, env~List
         match args
             []        -> Ok (Sequence [])
             a :: rest ->
-                let x = try interp sig full env lets s a (depth - 1)
-                let y = try concat sig full env lets s rest (depth - 1)
+                let x = try interp sig full scope s a (depth - 1)
+                let y = try concat sig full scope s rest (depth - 1)
                 match (x, y)
                     (Sequence xs, Sequence ys) -> Ok (Sequence (xs ++ ys))
                     _                          -> Err b"seq.++ of something that isn't a sequence"
 
-fn interp_all sig full env lets ss es depth -> r : sig~Sig, full~Full src, env~List (Name, Value, Sort), lets~List (Name, SExpr src), ss~List Sort,
-                                                   es~List (SExpr src), depth~Nat, r~Result (List Value) Bytes
+fn interp_all sig full scope ss es depth -> r : sig~Sig, full~Full src, scope~Scope src, ss~List Sort, es~List (SExpr src),
+                                                depth~Nat, r~Result (List Value) Bytes
     decreasing depth
     if depth == 0
         Err TOO_DEEP
@@ -514,14 +528,14 @@ fn interp_all sig full env lets ss es depth -> r : sig~Sig, full~Full src, env~L
         match (ss, es)
             ([], [])           -> Ok []
             (s :: sr, e :: er) ->
-                let v = try interp sig full env lets s e (depth - 1)
-                let vs = try interp_all sig full env lets sr er (depth - 1)
+                let v = try interp sig full scope s e (depth - 1)
+                let vs = try interp_all sig full scope sr er (depth - 1)
                 Ok (v :: vs)
             _                  -> Err b"a call with the wrong number of arguments"
 
 # Constructor `n` of `s` applied to `args`.
-fn construct sig full env lets s n args depth -> r : sig~Sig, full~Full src, env~List (Name, Value, Sort), lets~List (Name, SExpr src), s~Sort,
-                                                     n~Name, args~List (SExpr src), depth~Nat, r~Result Value Bytes
+fn construct sig full scope s n args depth -> r : sig~Sig, full~Full src, scope~Scope src, s~Sort, n~Name,
+                                                  args~List (SExpr src), depth~Nat, r~Result Value Bytes
     decreasing depth
     if depth == 0
         Err TOO_DEEP
@@ -529,10 +543,10 @@ fn construct sig full env lets s n args depth -> r : sig~Sig, full~Full src, env
         match s
             Data d sargs ->
                 if d < len sig.datatypes
-                    match ctor_named sig.datatypes[d].ctors n 0
+                    match answer.ctor_named sig.datatypes[d].ctors n 0
                         Some (k, c) ->
                             let ss = list.map (term.instantiate sargs) (term.field_sorts c.fields)
-                            let fs = try interp_all sig full env lets ss args (depth - 1)
+                            let fs = try interp_all sig full scope ss args (depth - 1)
                             Ok (Constructed k fs)
                         None        -> Err (b"a form this reader doesn't know: `" ++ n ++ b"`")
                 else
@@ -546,7 +560,7 @@ fn apply_def sig full d vs -> r : sig~Sig, full~Full src, d~Printed src, vs~List
     if list.length vs != list.length d.params
         None
     else
-        match interp sig full (bind d.params vs) [] d.result d.body DEPTH
+        match interp sig full (bind d.params vs) d.result d.body DEPTH
             Ok v  -> Some v
             Err _ -> None
 
@@ -556,7 +570,7 @@ fn nth_def ds e -> r : ds~List (Printed src), e~Sort, r~Option (Printed src)
         []        -> None
         d :: rest ->
             match d.params
-                [(_, Seq x), (_, Int)] if d.name == b"seq.nth_u" and x == e -> Some d
+                [(_, Seq x), (_, Int)] if d.name == b"seq.nth_u" and x == e and d.result == e -> Some d
                 _ -> nth_def rest e
 
 # The elements Z3 printed for `Unin u args`; a sort it printed none for
@@ -566,15 +580,21 @@ fn domain_of full u args -> r : full~Full src, u~Nat, args~List Sort, r~Domain
         Some n -> if n > 0 then UpTo (n - 1) else Countable
         None   -> Countable
 
-fn universe us s -> r : us~List (Sort, Nat), s~Sort, r~Option Nat
+fn universe us s -> r : us~List (Sort, List Nat), s~Sort, r~Option Nat
     match us
-        []             -> None
-        (t, k) :: rest -> if t == s then Some k else universe rest s
+        []              -> None
+        (t, ks) :: rest -> if t == s then Some (list.length ks) else universe rest s
 
+# The `f`-th function at `vs`, if Z3 printed it with the sorts it was
+# declared with.
 fn fun_at sig full f vs -> r : sig~Sig, full~Full src, f~Nat, vs~List Value, r~Option Value
     if f < len sig.funs
         match find_def full.defs sig.funs[f].name (list.length vs)
-            Some d -> apply_def sig full d vs
+            Some d ->
+                if list.map (\(_, t) -> t) d.params == sig.funs[f].params and d.result == sig.funs[f].result
+                    apply_def sig full d vs
+                else
+                    None
             None   -> None
     else
         None
@@ -586,7 +606,10 @@ fn int_of r -> n : r~Option Value, n~Option Int
 
 fn by_zero sig full name n -> r : sig~Sig, full~Full src, name~Name, n~Int, r~Option Int
     match find_def full.defs name 2
-        Some d -> int_of (apply_def sig full d [Integer n, Integer 0])
+        Some d ->
+            match (d.params, d.result)
+                ([(_, Int), (_, Int)], Int) -> int_of (apply_def sig full d [Integer n, Integer 0])
+                _                           -> None
         None   -> None
 
 # The model `full` describes, for `c`. Selectors of another constructor's

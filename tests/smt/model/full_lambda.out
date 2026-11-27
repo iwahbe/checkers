@@ -1,9 +1,9 @@
 -- stdout
 z3: sat
 model: (get-model)
-fact 1: not determined: Z3 didn't print `a`
-fact 2: not determined: Z3 didn't print `a`
-fact 3: not determined: Z3 didn't print `a`
+fact 1: not determined: Z3 printed `a`, but this reader can't evaluate what it printed
+fact 2: not determined: Z3 printed `a`, but this reader can't evaluate what it printed
+fact 3: not determined: Z3 printed `a`, but this reader can't evaluate what it printed
 the negated goal: holds
 refutes: no (a `lambda`)
 -- stderr

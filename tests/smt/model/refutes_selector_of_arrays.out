@@ -1,9 +1,9 @@
 -- stdout
 z3: unsat
+no model: Z3 answered unsat; the assertions with nothing given:
 fact 1: not determined: Z3 didn't print `a`
 fact 2: not determined: Z3 didn't print `a`
 fact 3: not determined: Z3 didn't print `a`
 the negated goal: holds
-refutes: no
 -- stderr
 -- exit 0

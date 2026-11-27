@@ -23,8 +23,9 @@
 # printed), evaluation ran out of fuel (in `refutes`), or the model gave a
 # value of the wrong sort. `holds c m t` is true only when `t` evaluates to
 # true, and `fails c m t` only when it evaluates to false; when neither,
-# nothing is claimed. A definite answer is always the term's value in the
-# structure the model describes.
+# nothing is claimed. A definite answer is meant to be the term's value in
+# the structure the model describes; that is what S6 proves (`checks_sound`
+# and monotonicity, below), and nothing here states it as a lemma.
 #
 # **Connectives are Kleene's.** `and` is false as soon as one argument is
 # false, whatever the others are, and true only if all are true; `or`
@@ -75,7 +76,8 @@
 # replaced by normal forms (a constant and the stores that differ from it,
 # in order), each array the number `code` gives its normal form. Only those
 # numbers are arrays there, so every array `refutes` sees is one, and two
-# arrays are the same element exactly when they are the same function.
+# arrays are meant to be the same element exactly when they are the same
+# function (not proved here: S6 owes it, below).
 # Every constant array has a normal form; stores have one at `Bool`, at a
 # domain the model lists, and at sorts this module can show unbounded
 # (`Int`, sequences, a countable domain, arrays of those), not at a
@@ -113,6 +115,12 @@
 #   and has one solution once they do.
 #
 # Together: a query is never both `Valid` and `Invalid`.
+#
+# S6 also owes these, which this module is written to and states only in
+# comments: `before` is a strict total order on values; two normal forms
+# are equal exactly when they are the same function (so `normal_arrays`
+# satisfies `arrays_ok`); and the lemma that every sort of a context has a
+# value (`value_of`, from the kept witnesses), which waits for #412.
 #
 # **What a `Model` can't represent** (for #85, model limits). A `Model` is a
 # Checkers value, so its functions are computable, and its domains are
@@ -561,8 +569,8 @@ fn read_stores n bs -> r : n~Nat, bs~List Nat, r~Option (List (Value, Value), Li
 #   unbounded; stores anywhere;
 # - `Opaque`, a datatype or any other sort: only constant arrays are named.
 #
-# Two normal forms are equal exactly when the arrays are the same function:
-# if their bases differ, they differ at the first listed element, at an
+# Two normal forms are meant to be equal exactly when the arrays are the
+# same function (not proved here; S6 owes it): if their bases differ, they differ at the first listed element, at an
 # index stored in neither (`fresh`), or, for constant arrays, anywhere (no
 # sort is empty); if their bases agree, at a stored index.
 #
@@ -614,7 +622,8 @@ fn unbounded sig dom s -> r : sig~Sig, dom~(Nat -> List Sort -> Domain), s~Sort,
         Arr _ w     -> unbounded sig dom w
         _           -> False
 
-# A strict total order on values: by constructor, then by contents.
+# Meant as a strict total order on values (by constructor, then by
+# contents); not proved here, S6 owes it.
 fn before a b -> r : a~Value, b~Value, r~Bool
     match (a, b)
         (Truth x, Truth y)                   -> not x and y
@@ -857,12 +866,11 @@ export fn normal_in sig dom s k -> r : sig~Sig, dom~(Nat -> List Sort -> Domain)
                 and normal_stores sig dom i w f.stores k
         _                 -> False
 
-# An array of the normal forms' model is the number of what it decodes to.
-export lemma accepted_numbers sig dom s k : sig~Sig, dom~(Nat -> List Sort -> Domain), s~Sort, k~Nat,
-                                            normal_in sig dom s k
-    ensures match decode k
-        Some f -> code f == k
-        None   -> False
+# One number per array: two arrays of the normal forms' model that decode
+# to the same normal form are the same number (each is `code` of it).
+export lemma one_number sig dom s k l : sig~Sig, dom~(Nat -> List Sort -> Domain), s~Sort, k~Nat, l~Nat,
+                                        normal_in sig dom s k, normal_in sig dom s l, decode k == decode l
+    ensures k == l
 
 # Whether `v` is a value of sort `s` in the built model, where the arrays
 # in it number less than `bound`.
@@ -1354,6 +1362,11 @@ fn unfolds d -> r : d~Def, r~Bool
         Plain     -> True
         Recursive -> d.terminates
 
+# Whether `refutes` may run every definition of `c` (`unfolds`): every
+# recursive one is marked terminating.
+export fn defs_run c -> r : c~Context, r~Bool
+    all_marked (term.defs c)
+
 # Whether every recursive definition of `ds` is marked terminating.
 fn all_marked ds -> r : ds~List (Nat, Def), r~Bool
     match ds
@@ -1389,7 +1402,8 @@ export fn without_lambda c goal -> r : c~Context, goal~Term, r~Bool
 
 # Whether `m` is a counterexample to `goal` in `c`. It asks that:
 #
-# - `goal` is a fact of `c`, and `c` has no axioms;
+# - `goal` is a closed `Bool` term of `c` (`term.fact_ok`), and `c` has no
+#   axioms (`term.axioms c == []`);
 # - every recursive definition is marked terminating (`Def.terminates`,
 #   which only the caller sets: `models --terminating` does, on its user's
 #   word); a `define-fun` needs no mark (`unfolds`);
@@ -1398,15 +1412,16 @@ export fn without_lambda c goal -> r : c~Context, goal~Term, r~Bool
 #   definition run as its own body.
 #
 # What S6 proves of it (the `Invalid` theorem, in the header): when every
-# recursive definition marked terminating does terminate, the interpretation `m` describes, with each
-# definition its unique solution, satisfies every assertion of `c` and
-# `not goal`. Its arrays are `normal_arrays`', normal forms that are the
-# same element exactly when they are the same function, so it satisfies
-# `arrays_ok` (`check`ed at points in `model_checks`). A `lambda` is
-# refused because `normal_arrays` does not name one's array.
+# recursive definition marked terminating does terminate, the
+# interpretation `m` describes, with each definition its unique solution,
+# satisfies every assertion of `c` and `not goal`. Its arrays are
+# `normal_arrays`' normal forms, meant to be the same element exactly when
+# they are the same function, so that it satisfies `arrays_ok` (owed by
+# S6; `check`ed at points in `model_checks`). A `lambda` is refused because
+# `normal_arrays` does not name one's array.
 export fn refutes c goal m -> r : c~Context, goal~Term, m~Model, r~Bool
     let n = normal_arrays (term.signature c) m
-    term.fact_ok c goal and term.axioms c == [] and all_marked (term.defs c) and without_lambda c goal
+    term.fact_ok c goal and term.axioms c == [] and defs_run c and without_lambda c goal
         and facts_hold_unfolding c n (term.facts c) and eval_unfolding c n goal == Ok (Truth False)
 
 fn facts_hold_unfolding c m ts -> r : c~Context, m~Model, ts~List Term, r~Bool

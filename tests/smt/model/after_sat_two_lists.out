@@ -1,0 +1,5 @@
+-- stdout
+z3: sat
+the answer doesn't read: not `sat` and one `(get-value …)` list
+-- stderr
+-- exit 0
