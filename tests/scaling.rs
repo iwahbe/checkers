@@ -291,9 +291,10 @@ fn a_chain_of_lets_of_closures_checks_in_linear_time_and_memory() {
 /// function given a capability. Each call of a closure asks whether it
 /// captured one, and with one in scope, the answer was looked for in the
 /// closure's value written out: `g{i}`'s refers to `a{i-1}`, whose value,
-/// `x + 1 + … + 1`, is i deep. 8,000 lets took 9.5 times as long as 2,000
-/// (3.6 s and 0.38 s). Which bound locals a local refers to is decided once,
-/// from the term that defined it: 1.1 times as long (0.47 s and 0.41 s).
+/// `x + 1 + … + 1`, is i deep. 8,000 lets took 9.3 times as long as 2,000
+/// (7.35 s and 0.79 s, release). Which bound locals a local refers to is
+/// decided once, from the term that defined it: 1.6 times as long (0.75 s
+/// and 0.46 s), as without the capability.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_chain_of_lets_of_closures_given_an_effect_checks_in_linear_time_and_memory() {
