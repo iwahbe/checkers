@@ -161,6 +161,12 @@
 #   and its equation (`definition_axiom`), as §4.2.3 (pp. 62–63) defines
 #   `define-funs-rec`, so every solution is a `Model`'s.
 #
+# Toward the converse, a lemma: in a `Model` that answers every question
+# (`gives`, `arrays_total_at`), every closed term of the context has a value
+# of its sort (`total_has_value`). That alone doesn't make the model an
+# interpretation: the array laws (`arrays_ok_at`) and the definitions'
+# equations (`definition_axiom`) are premises of their own.
+#
 # **At the certificate's terms** (the first statement of `checks_sound`),
 # that is all: restrict 𝔄 to the values of the finitely many terms the
 # certificate uses, with the reads the premises ask there (`differ`'s
@@ -1825,7 +1831,7 @@ lemma structure_value low mode c m env senv t : low~Lower, mode~Mode, c~Context,
 # ── What a connective means, for closed terms ────────────────────────────────
 
 # Whether `t` is a closed `Bool` term of `c`.
-export fn boolean c t -> r : c~Context, t~Term, r~Bool
+export transparent fn boolean c t -> r : c~Context, t~Term, r~Bool
     term.sort_of (term.signature c) [] t == Ok Bool
 
 # Whether each of `ts` is (`boolean`).
@@ -2641,3 +2647,419 @@ export lemma arrays_total_at_fuel c m n s a b i j x env senv xs body : c~Context
         have gives_const_fuel c m n s x
         have sorted_at_fuel c m n s a j x
         have lambda_sorted_fuel c m n s env senv xs body
+
+# ── In a total model every term has a value ──────────────────────────────────
+
+# Whether each of `rs` is a value of the sort in the same place of `ss`.
+fn results_of_sorts c m rs ss -> r : c~Context, m~Model, rs~List (Result Value Unknown), ss~List Sort, r~Bool
+    match (rs, ss)
+        ([], [])              -> True
+        (Ok v :: rr, s :: sr) -> of_sort c m s v and results_of_sorts c m rr sr
+        _                     -> False
+
+lemma all_of_sort_append c m s xs ys : c~Context, m~Model, s~Sort, xs~List Value, ys~List Value, all_of_sort c m s xs,
+                                       all_of_sort c m s ys
+    ensures all_of_sort c m s (xs ++ ys)
+    proof
+        match xs
+            []        -> auto
+            _ :: rest -> have all_of_sort_append c m s rest ys
+
+lemma all_of_sort_take c m s n xs : c~Context, m~Model, s~Sort, n~Nat, xs~List Value, all_of_sort c m s xs
+    ensures all_of_sort c m s (list.take n xs)
+    proof
+        match xs
+            []        -> auto
+            _ :: rest ->
+                match n
+                    0 -> auto
+                    _ -> have all_of_sort_take c m s (n - 1) rest
+
+lemma all_of_sort_drop c m s n xs : c~Context, m~Model, s~Sort, n~Nat, xs~List Value, all_of_sort c m s xs
+    ensures all_of_sort c m s (list.drop n xs)
+    proof
+        match xs
+            []        -> auto
+            _ :: rest ->
+                match n
+                    0 -> auto
+                    _ -> have all_of_sort_drop c m s (n - 1) rest
+
+lemma all_of_sort_nth c m s xs i : c~Context, m~Model, s~Sort, xs~List Value, i~Nat, all_of_sort c m s xs,
+                                   i < list.length xs
+    ensures match list.head (list.drop i xs)
+        Some x -> of_sort c m s x
+        None   -> False
+    proof
+        match xs
+            []        -> auto
+            _ :: rest ->
+                match i
+                    0 -> auto
+                    _ -> have all_of_sort_nth c m s rest (i - 1)
+
+lemma results_reverse c m rs ss env senv : c~Context, m~Model, rs~List (Result Value Unknown), ss~List Sort,
+                                           env~List (Result Value Unknown), senv~List Sort, results_of_sorts c m rs ss,
+                                           results_of_sorts c m env senv
+    ensures results_of_sorts c m (list.reverse rs ++ env) (list.reverse ss ++ senv)
+    proof
+        match (rs, ss)
+            ([], [])           ->
+                have list.length_reverse rs
+                have list.length_reverse ss
+            (r :: rr, s :: sr) ->
+                have list.reverse_cons_append rr r env
+                have list.reverse_cons_append sr s senv
+                have results_reverse c m rr sr (r :: env) (s :: senv)
+            _                  -> auto
+
+# Whether `r` is a value of sort `s`.
+fn result_of_sort c m s r -> b : c~Context, m~Model, s~Sort, r~Result Value Unknown, b~Bool
+    match r
+        Ok v  -> of_sort c m s v
+        Err _ -> False
+
+lemma results_nth c m rs ss i : c~Context, m~Model, rs~List (Result Value Unknown), ss~List Sort, i~Nat,
+                                results_of_sorts c m rs ss
+    ensures match list.head (list.drop i ss)
+        Some s ->
+            match list.head (list.drop i rs)
+                Some r -> result_of_sort c m s r
+                None   -> False
+        None   -> True
+    proof
+        match (rs, ss)
+            (_ :: rr, _ :: sr) ->
+                match i
+                    0 -> auto
+                    _ -> have results_nth c m rr sr (i - 1)
+            _                  -> auto
+
+lemma all_known_total c m rs ss : c~Context, m~Model, rs~List (Result Value Unknown), ss~List Sort,
+                                  results_of_sorts c m rs ss
+    ensures match all_known rs
+        Ok vs -> fields_of_sort c m ss vs
+        Err _ -> False
+    proof
+        match (rs, ss)
+            (_ :: rr, _ :: sr) -> have all_known_total c m rr sr
+            _                  -> auto
+
+lemma fields_reverse c m ss vs acc_s acc_v : c~Context, m~Model, ss~List Sort, vs~List Value, acc_s~List Sort,
+                                             acc_v~List Value, fields_of_sort c m ss vs, fields_of_sort c m acc_s acc_v
+    ensures fields_of_sort c m (list.reverse ss ++ acc_s) (list.reverse vs ++ acc_v)
+    proof
+        match (ss, vs)
+            (s :: sr, v :: vr) ->
+                have list.reverse_cons_append sr s acc_s
+                have list.reverse_cons_append vr v acc_v
+                have fields_reverse c m sr vr (s :: acc_s) (v :: acc_v)
+            _                  ->
+                have list.length_reverse ss
+                have list.length_reverse vs
+
+lemma fields_nth c m ss vs j : c~Context, m~Model, ss~List Sort, vs~List Value, j~Nat, fields_of_sort c m ss vs
+    ensures match list.head (list.drop j ss)
+        Some s ->
+            match list.head (list.drop j vs)
+                Some x -> of_sort c m s x
+                None   -> False
+        None   -> True
+    proof
+        match (ss, vs)
+            (_ :: sr, _ :: vr) ->
+                match j
+                    0 -> auto
+                    _ -> have fields_nth c m sr vr (j - 1)
+            _                  -> auto
+
+lemma field_sort_nth args fs j : args~List Sort, fs~List term.Field, j~Nat
+    ensures match list.head (list.drop j fs)
+        Some f -> list.head (list.drop j (list.map (term.instantiate args) (term.field_sorts fs))) == Some (term.instantiate args f.sort)
+        None   -> True
+    proof
+        match fs
+            []        -> auto
+            _ :: rest ->
+                match j
+                    0 -> auto
+                    _ -> have field_sort_nth args rest (j - 1)
+
+# The pieces of a `seq.++` whose arguments are sequences of `e`.
+lemma concat_total c m e rs ss : c~Context, m~Model, e~Sort, rs~List (Result Value Unknown), ss~List Sort,
+                                 results_of_sorts c m rs ss, list.all (\s -> s == Seq e) ss
+    ensures match concat_all rs
+        Ok xs -> all_of_sort c m e xs
+        Err _ -> False
+    proof
+        match (rs, ss)
+            (Ok (Sequence ys) :: rr, _ :: sr) ->
+                have concat_total c m e rr sr
+                match concat_all rr
+                    Ok zs -> have all_of_sort_append c m e ys zs
+            (_ :: rr, _ :: sr)                -> have concat_total c m e rr sr
+            _                                 -> auto
+
+# Whether each of `ts` has the sort in the same place of `ss`.
+fn sorted_each sig senv ts ss -> r : sig~Sig, senv~List Sort, ts~List Term, ss~List Sort, r~Bool
+    match (ts, ss)
+        ([], [])           -> True
+        (t :: tr, s :: sr) -> term.sort_of sig senv t == Ok s and sorted_each sig senv tr sr
+        _                  -> False
+
+lemma sorts_of_each sig senv ts ss : sig~Sig, senv~List Sort, ts~List Term, ss~List Sort, term.sorts_of sig senv ts == Ok ss
+    ensures sorted_each sig senv ts ss
+    proof
+        match ts
+            []        -> have term.sorts_of_nil sig senv
+            t :: rest ->
+                have term.sorts_of_cons sig senv t rest
+                match (term.sort_of sig senv t, term.sorts_of sig senv rest)
+                    (Ok _, Ok more) -> have sorts_of_each sig senv rest more
+
+# In a total model (`total`, `arrays_total`), every term of the context
+# whose variables have values of their sorts has a value of its sort.
+lemma value_total low c m env senv t s : low~Lower, c~Context, m~Model, env~List (Result Value Unknown), senv~List Sort,
+                                         t~Term, s~Sort, results_of_sorts c m env senv,
+                                         term.sorts_ok (term.signature c) 0 senv,
+                                         term.sort_of (term.signature c) senv t == Ok s,
+                                         total: forall r : r~Read, gives c m r,
+                                         arrays_total: forall s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2 : s2~Sort, a2~Nat, b2~Nat, i2~Value, j2~Value, x2~Value,
+                                         vs2~List Value, ss2~List Sort, xs2~Sort, body2~Term,
+                                         arrays_total_at c m s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2
+    ensures result_of_sort c m s (value low AsGiven c m env senv t)
+    proof
+        let sig = term.signature c
+        match t
+            Var i          ->
+                have term.sort_of_var sig senv i
+                have results_nth c m env senv i
+            App h args     ->
+                have term.sort_of_app sig senv h args
+                match term.sorts_of sig senv args
+                    Ok found -> have apply_total low c m env senv t h args s found
+            Let binds body ->
+                have term.sort_of_let sig senv binds body
+                match term.sorts_of sig senv (term.bind_terms binds)
+                    Ok ss ->
+                        have sorts_of_each sig senv (term.bind_terms binds) ss
+                        have term.sorts_of_ok c senv (term.bind_terms binds) ss
+                        have term.sorts_ok_reverse_append sig ss senv
+                        have bound_total low c m env senv binds ss
+                        let rs = bound low AsGiven c m env senv binds
+                        have results_reverse c m rs ss env senv
+                        have value_total low c m (list.reverse rs ++ env) (list.reverse ss ++ senv) body s
+            Lam x xs body  ->
+                have term.sort_of_lam sig senv x xs body
+                have term.sort_of_lam sig senv b"x" xs body
+                have term.sort_of_ok c senv t s
+                have all_known_total c m env senv
+                match (all_known env, term.sort_of sig (xs :: senv) body)
+                    (Ok vs, Ok _) ->
+                        have fields_reverse c m senv vs [] []
+                        have list.append_nil (list.reverse senv)
+                        have list.append_nil (list.reverse vs)
+                        have arrays_total s 0 0 (Truth True) (Truth True) (Truth True) vs senv xs body
+
+lemma apply_total low c m env senv t h args s found : low~Lower, c~Context, m~Model, env~List (Result Value Unknown),
+                                                      senv~List Sort, t~Term, h~Head, args~List Term, s~Sort,
+                                                      found~List Sort, t == App h args, results_of_sorts c m env senv,
+                                                      term.sorts_ok (term.signature c) 0 senv,
+                                                      term.sort_of (term.signature c) senv t == Ok s,
+                                                      term.sorts_of (term.signature c) senv args == Ok found,
+                                                      term.apply_sort (term.signature c) h found == Ok s,
+                                                      total: forall r : r~Read, gives c m r,
+                                                      arrays_total: forall s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2 : s2~Sort, a2~Nat, b2~Nat, i2~Value, j2~Value, x2~Value,
+                                                      vs2~List Value, ss2~List Sort, xs2~Sort, body2~Term,
+                                                      arrays_total_at c m s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2
+    ensures result_of_sort c m s (apply low AsGiven c m env senv t h args)
+    proof
+        let sig = term.signature c
+        have sorts_of_each sig senv args found
+        have term.sorts_of_ok c senv args found
+        have values_total low c m env senv args found
+        let rs = values low AsGiven c m env senv args
+        have all_known_total c m rs found
+        match h
+            Prim op       -> have prim_total low c m env senv t op args s found
+            Num n         -> have term.apply_num sig n found
+            Boolean b     -> have term.apply_boolean sig b found
+            EmptySeq e    -> have term.apply_empty_seq sig e found
+            ConstArr a    ->
+                have term.apply_const_arr sig a found
+                match rs
+                    [Ok x] -> have arrays_total a 0 0 x x x [] [] Bool (Var 0)
+                    _      -> auto
+            Con d k cargs ->
+                have term.apply_con sig d k cargs found
+                have s == Data d cargs
+            Is d k        -> have term.apply_is sig d k found
+            Sel d k j     ->
+                have term.apply_sel sig d k j found
+                match (args, rs, found, term.ctor sig d k)
+                    ([a], [Ok (Constructed l fs)], [Data _ sargs], Some kc) ->
+                        match term.ctor sig d l
+                            Some kl ->
+                                have fields_nth c m (list.map (term.instantiate sargs) (term.field_sorts kl.fields)) fs j
+                                have field_sort_nth sargs kl.fields j
+                                have term.sort_of_ok c senv a (Data d sargs)
+                                have total (WrongSelAt d k j sargs (Constructed l fs))
+                            None    -> auto
+                    _                                                       -> auto
+            Fun f         ->
+                have term.apply_fun sig f found
+                match all_known rs
+                    Ok vs -> have total (FunAt f vs)
+
+lemma prim_total low c m env senv t op args s found : low~Lower, c~Context, m~Model, env~List (Result Value Unknown),
+                                                      senv~List Sort, t~Term, op~Op, args~List Term, s~Sort,
+                                                      found~List Sort, t == App (Prim op) args,
+                                                      results_of_sorts c m env senv,
+                                                      term.sorts_ok (term.signature c) 0 senv,
+                                                      term.sort_of (term.signature c) senv t == Ok s,
+                                                      sorted_each (term.signature c) senv args found,
+                                                      term.sorts_ok (term.signature c) 0 found,
+                                                      term.apply_sort (term.signature c) (Prim op) found == Ok s,
+                                                      total: forall r : r~Read, gives c m r,
+                                                      arrays_total: forall s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2 : s2~Sort, a2~Nat, b2~Nat, i2~Value, j2~Value, x2~Value,
+                                                      vs2~List Value, ss2~List Sort, xs2~Sort, body2~Term,
+                                                      arrays_total_at c m s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2
+    ensures result_of_sort c m s (prim low AsGiven c m env senv t op args)
+    proof
+        let sig = term.signature c
+        have term.apply_prim sig op found
+        have values_total low c m env senv args found
+        match (op, args, found)
+            (And, _, _)                            -> have conj_total low c m env senv args found
+            (Or, _, _)                             -> have disj_total low c m env senv args found
+            (SeqConcat, _, Seq e :: _)             -> have concat_total c m e (values low AsGiven c m env senv args) found
+            (Div, [a, b], _)                       ->
+                match value low AsGiven c m env senv a
+                    Ok (Integer x) -> have total (DivZeroAt x)
+                    _              -> auto
+            (Mod, [a, b], _)                       ->
+                match value low AsGiven c m env senv a
+                    Ok (Integer x) -> have total (ModZeroAt x)
+                    _              -> auto
+            (Select, [a, i], [sa, _])              ->
+                have term.sort_of_ok c senv a sa
+                match (value low AsGiven c m env senv a, value low AsGiven c m env senv i)
+                    (Ok (ArrayElem k), Ok j) -> have arrays_total sa k k j j j [] [] Bool (Var 0)
+                    _                        -> auto
+            (Store, [a, i, v], [sa, _, _])         ->
+                have term.sort_of_ok c senv a sa
+                match (value low AsGiven c m env senv a, value low AsGiven c m env senv i, value low AsGiven c m env senv v)
+                    (Ok (ArrayElem k), Ok j, Ok x) -> have arrays_total sa k k j j x [] [] Bool (Var 0)
+                    _                              -> auto
+            (MapAdd, [a, b], [sa, _])              ->
+                have term.sort_of_ok c senv a sa
+                match (value low AsGiven c m env senv a, value low AsGiven c m env senv b)
+                    (Ok (ArrayElem p), Ok (ArrayElem q)) -> have arrays_total s p q (Integer 0) (Integer 0) (Integer 0) [] [] Bool (Var 0)
+                    _                                    -> auto
+            (SeqNth, [a, i], [Seq e, _])           ->
+                match (value low AsGiven c m env senv a, value low AsGiven c m env senv i)
+                    (Ok (Sequence xs), Ok (Integer n)) ->
+                        if 0 <= n and n < list.length xs
+                            have all_of_sort_nth c m e xs n
+                        else
+                            have total (NthOutAt e xs n)
+                    _                                  -> auto
+            (SeqExtract, [a, i, n], [Seq e, _, _]) ->
+                match (value low AsGiven c m env senv a, value low AsGiven c m env senv i, value low AsGiven c m env senv n)
+                    (Ok (Sequence xs), Ok (Integer from), Ok (Integer count)) ->
+                        if 0 <= from and from < list.length xs and 0 < count
+                            have all_of_sort_drop c m e from xs
+                            have all_of_sort_take c m e count (list.drop from xs)
+                        else
+                            auto
+                    _                                                         -> auto
+            _                                      -> auto
+
+lemma values_total low c m env senv ts ss : low~Lower, c~Context, m~Model, env~List (Result Value Unknown), senv~List Sort,
+                                            ts~List Term, ss~List Sort, results_of_sorts c m env senv,
+                                            term.sorts_ok (term.signature c) 0 senv,
+                                            sorted_each (term.signature c) senv ts ss,
+                                            total: forall r : r~Read, gives c m r,
+                                            arrays_total: forall s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2 : s2~Sort, a2~Nat, b2~Nat, i2~Value, j2~Value, x2~Value,
+                                            vs2~List Value, ss2~List Sort, xs2~Sort, body2~Term,
+                                            arrays_total_at c m s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2
+    ensures results_of_sorts c m (values low AsGiven c m env senv ts) ss
+    proof
+        match (ts, ss)
+            (t :: tr, s :: sr) ->
+                have value_total low c m env senv t s
+                have values_total low c m env senv tr sr
+            _                  -> auto
+
+lemma bound_total low c m env senv bs ss : low~Lower, c~Context, m~Model, env~List (Result Value Unknown), senv~List Sort,
+                                           bs~List (Name, Term), ss~List Sort, results_of_sorts c m env senv,
+                                           term.sorts_ok (term.signature c) 0 senv,
+                                           sorted_each (term.signature c) senv (term.bind_terms bs) ss,
+                                           total: forall r : r~Read, gives c m r,
+                                           arrays_total: forall s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2 : s2~Sort, a2~Nat, b2~Nat, i2~Value, j2~Value, x2~Value,
+                                           vs2~List Value, ss2~List Sort, xs2~Sort, body2~Term,
+                                           arrays_total_at c m s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2
+    ensures results_of_sorts c m (bound low AsGiven c m env senv bs) ss
+    proof
+        match (bs, ss)
+            ((_, t) :: rest, s :: sr) ->
+                have value_total low c m env senv t s
+                have bound_total low c m env senv rest sr
+            _                         -> auto
+
+lemma conj_total low c m env senv ts ss : low~Lower, c~Context, m~Model, env~List (Result Value Unknown), senv~List Sort,
+                                          ts~List Term, ss~List Sort, results_of_sorts c m env senv,
+                                          term.sorts_ok (term.signature c) 0 senv,
+                                          sorted_each (term.signature c) senv ts ss, list.all (\x -> x == Bool) ss,
+                                          total: forall r : r~Read, gives c m r,
+                                          arrays_total: forall s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2 : s2~Sort, a2~Nat, b2~Nat, i2~Value, j2~Value, x2~Value,
+                                          vs2~List Value, ss2~List Sort, xs2~Sort, body2~Term,
+                                          arrays_total_at c m s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2
+    ensures match conj low AsGiven c m env senv ts
+        Ok _  -> True
+        Err _ -> False
+    proof
+        match (ts, ss)
+            (t :: tr, s :: sr) ->
+                have value_total low c m env senv t s
+                have conj_total low c m env senv tr sr
+            _                  -> auto
+
+lemma disj_total low c m env senv ts ss : low~Lower, c~Context, m~Model, env~List (Result Value Unknown), senv~List Sort,
+                                          ts~List Term, ss~List Sort, results_of_sorts c m env senv,
+                                          term.sorts_ok (term.signature c) 0 senv,
+                                          sorted_each (term.signature c) senv ts ss, list.all (\x -> x == Bool) ss,
+                                          total: forall r : r~Read, gives c m r,
+                                          arrays_total: forall s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2 : s2~Sort, a2~Nat, b2~Nat, i2~Value, j2~Value, x2~Value,
+                                          vs2~List Value, ss2~List Sort, xs2~Sort, body2~Term,
+                                          arrays_total_at c m s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2
+    ensures match disj low AsGiven c m env senv ts
+        Ok _  -> True
+        Err _ -> False
+    proof
+        match (ts, ss)
+            (t :: tr, s :: sr) ->
+                have value_total low c m env senv t s
+                have disj_total low c m env senv tr sr
+            _                  -> auto
+
+# In a model that answers every read (`gives`) and every array question
+# (`arrays_total_at`), every closed term of the context has a value, of its
+# sort. The array laws and the definitions' equations are not assumed or
+# concluded: this is about values existing, not about what they are.
+export lemma total_has_value c m t s : c~Context, m~Model, t~Term, s~Sort, term.sort_of (term.signature c) [] t == Ok s,
+                                       total: forall r : r~Read, gives c m r,
+                                       arrays_total: forall s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2 : s2~Sort, a2~Nat, b2~Nat, i2~Value, j2~Value, x2~Value,
+                                       vs2~List Value, ss2~List Sort, xs2~Sort, body2~Term,
+                                       arrays_total_at c m s2 a2 b2 i2 j2 x2 vs2 ss2 xs2 body2
+    ensures has_value c m t
+    proof
+        have value_total (level AsGiven c m m.fuel) c m [] [] t s
+        have eval c m t == value (level AsGiven c m m.fuel) AsGiven c m [] [] t
+
+# What `has_value` is, for other modules (its body is sealed there).
+export lemma has_value_def c m t : c~Context, m~Model, t~Term
+    ensures has_value c m t
+        == match (term.sort_of (term.signature c) [] t, eval c m t)
+            (Ok s, Ok v) -> of_sort c m s v
+            _            -> False
