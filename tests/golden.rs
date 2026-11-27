@@ -22,7 +22,8 @@
 //! tests/fmt/NAME.ck    → NAME.out is `checkers fmt -` on it: stdout, stderr, exit code
 //!                         (`checkers` is built from tools/checkers.ck with `ckc build`).
 //! tests/tool/NAME.args → each line runs `checkers` with those arguments (`ckc` is
-//!                         this build's); NAME.out is their output.
+//!                         this build's), or, if it starts with `ckc `, this build's
+//!                         `ckc` with the rest; NAME.out is their output.
 //! tests/doc/NAME/     → a package (`.ck` files): NAME.out is `ckc doc` on each
 //!                         file, then every page `checkers doc` writes for it
 //!                         (with a checkers.json, `checkers doc .` run in NAME/);
@@ -279,8 +280,13 @@ fn build_tool(pool: &Pool, root: &'static Path, update: bool) -> Outcome {
                 let mut failures = Vec::new();
                 let mut actual = String::new();
                 for line in fs::read_to_string(&path).unwrap().lines() {
-                    let args: Vec<&str> = line.split_whitespace().collect();
-                    actual += &format!("$ checkers {line}\n{}", shown(&run_with(&exe.0, &args, b"", root)));
+                    let (tool, rest) = match line.strip_prefix("ckc ") {
+                        Some(rest) => ("ckc", rest),
+                        None => ("checkers", line),
+                    };
+                    let program = if tool == "ckc" { Path::new(env!("CARGO_BIN_EXE_ckc")) } else { exe.0.as_path() };
+                    let args: Vec<&str> = rest.split_whitespace().collect();
+                    actual += &format!("$ {tool} {rest}\n{}", shown(&run_with(program, &args, b"", root)));
                 }
                 compare(root, &path.with_extension("out"), &actual, update, &mut failures);
                 (1, failures)

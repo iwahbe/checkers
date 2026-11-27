@@ -52,7 +52,7 @@ fn max_of xs -> m : xs~List Int, xs != [], m~Int
 
 **Functions of the same module** are known by their definitions: Z3 unfolds a function's body where a proof needs it, so a postcondition can be proved by computing. A recursive definition is unfolded only where its recursion is known to end.
 
-**Functions of other modules** are sealed ([Modules](modules.md#sealing)): Z3 knows only their postconditions. A library therefore exports, as postconditions and lemmas, the facts its users need. A function exported `transparent` is known by its definition everywhere. A call of another module's function whose value is known at compile time (`array.count 7 (array.repeat 256 7)`) is known by that value, as a fact the trust ledger records as computed: the call's value, never the function's body.
+**Functions of other modules** are sealed ([Modules](modules.md#sealing)): Z3 knows only their postconditions. A library therefore exports, as postconditions and lemmas, the facts its users need. A function exported `transparent` is known by its definition everywhere. A call of another module's function whose value is known at compile time (`array.count 7 (array.repeat 256 7)`) is known by that value, as a fact: the call's value, never the function's body.
 
 **Calls with effects** are known only by their postconditions. A call given a capability or a `Sched` (as an argument, or inside one), or calling a function that captured one, can return a different value each time: two lines read from the terminal, two new cowns. So each such call is a value of its own, and two of them are never known to be equal, wherever they are written.
 
@@ -123,7 +123,7 @@ lemma double_even n : n~Nat
     ensures double n % 2 == 0
 ```
 
-**Proofs.** A `proof` block is code that is checked but never run: its statements are `have`s and `let`s, and `match` and `if` split the proof into cases, each proved separately. The block's last line, in each case, is `auto` (prove the goal from the facts), `admit` (assume it, recorded in the trust ledger), or a `have`, after which the goal is proved as by `auto`.
+**Proofs.** A `proof` block is code that is checked but never run: its statements are `have`s and `let`s, and `match` and `if` split the proof into cases, each proved separately. The block's last line, in each case, is `auto` (prove the goal from the facts), `admit` (assume it, without a proof), or a `have`, after which the goal is proved as by `auto`.
 
 ### Induction
 
@@ -170,9 +170,9 @@ fn max_by le x y -> r : le~(a -> a -> Bool), x~a, y~a,
 check max_by (\a b -> a <= b) 3 5 == 5
 ```
 
-## The trust ledger
+## What proofs rest on
 
-Every module records what its proofs rest on: each obligation proved by Z3, each `check` and each fact proved by evaluating closed values, each axiom of the standard library and each `admit`. `checkers trust FILE.ck` prints it, with a summary for each module the program loads and the standard library's builtins the program uses.
+A program's proofs are Z3's and those of evaluating closed values (each `check`, and each fact about values known at compile time). Beyond them, they rest on two kinds of fact taken without a proof:
 
 - **`admit`** assumes a goal without proof. It is allowed while developing; `checkers build --release` refuses a program that relies on one (E0455).
 - **Axioms** are lemmas of the standard library whose proof is `__builtin`: facts about functions implemented in the runtime, trusted like that code.
