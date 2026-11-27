@@ -832,7 +832,7 @@ mod tests {
     #[test]
     fn known_constants_have_no_first_use_code() {
         crate::with_big_stack(|| {
-            for name in ["known_baked", "known_arrays", "known_closures"] {
+            for name in ["known_baked", "known_arrays", "known_closures", "known_closure"] {
                 let path = format!("{}/tests/run/{name}.ck", env!("CARGO_MANIFEST_DIR"));
                 let text = std::fs::read_to_string(&path).unwrap();
                 let dir = std::path::Path::new(&path).parent().unwrap().to_path_buf();

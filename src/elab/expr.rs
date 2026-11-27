@@ -733,11 +733,12 @@ impl Elab {
                 self.insert(cx, t, ty)
             }
             None => {
+                let class_help = self.class_fn_help(n);
                 if self.qualifier(n).is_some() {
-                    self.err(
-                        Diagnostic::error("E0213", format!("`{n}` is a module, not a value"), span)
-                            .with_help(format!("use one of its exports, e.g. `{n}.name`")),
-                    );
+                    let help = class_help.unwrap_or_else(|| format!("use one of its exports, e.g. `{n}.name`"));
+                    self.err(Diagnostic::error("E0213", format!("`{n}` is a module, not a value"), span).with_help(help));
+                } else if let Some(h) = class_help {
+                    self.err(Diagnostic::error("E0204", format!("unknown name `{n}`"), span).with_label("not found").with_help(h));
                 } else if crate::elab::stdlib::source(&format!("std.{n}")).is_some() {
                     self.err(
                         Diagnostic::error("E0204", format!("unknown name `{n}`"), span)

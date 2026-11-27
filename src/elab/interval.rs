@@ -313,8 +313,8 @@ impl Elab {
             return None;
         }
         // Kept from an earlier build, if nothing it can run has changed.
-        let disk = crate::verify::cache_dir().map(|_| self.known_disk.borrow_mut().key(&self.g, t, ty));
-        if let Some(v) = disk.as_ref().and_then(|d| self.known_disk.borrow_mut().recall(&self.g, d)) {
+        let disk = crate::verify::cache_dir().map(|_| self.g.known_disk.borrow_mut().key(&self.g, t, ty));
+        if let Some(v) = disk.as_ref().and_then(|d| self.g.known_disk.borrow_mut().recall(&self.g, d)) {
             self.known_cache.borrow_mut().insert(key, Some(v.clone()));
             return Some(v);
         }
@@ -336,7 +336,7 @@ impl Elab {
             Err(_) => None,
         };
         if let (Some(d), Some(v)) = (&disk, &k) {
-            self.known_disk.borrow_mut().store(&self.g, d, v);
+            self.g.known_disk.borrow_mut().store(&self.g, d, v);
         }
         self.known_cache.borrow_mut().insert(key, k.clone());
         k
