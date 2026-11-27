@@ -1,4 +1,4 @@
-# Using part of a value that holds a resource (D157): reading a field or
+# Using part of a value that holds a resource (#647): reading a field or
 # indexing uses the whole value, so it may not drop another part that holds
 # one (E0406, E0407); a guard can't use an arm's resource (E0408).
 module resource_parts

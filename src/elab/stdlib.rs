@@ -1,4 +1,4 @@
-//! The standard library: the package `std`, read from disk (D104).
+//! The standard library: the package `std`, read from disk (#603).
 //!
 //! `ckc` finds it through `CHECKERS_STD`, else `../lib/checkers/std` from
 //! its own directory (an installation), else the `stdlib/` of the source
@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
-/// The packages of this build (D109, D111): set once from `ckc`'s
+/// The packages of this build (#594, #608): set once from `ckc`'s
 /// `--package` and `--uses` flags.
 #[derive(Default, Clone, Debug)]
 pub struct Packages {
@@ -195,14 +195,14 @@ impl Elab {
         }
     }
 
-    /// Load the program module `a.b` from `a/b.ck` beside the program (D53).
+    /// Load the program module `a.b` from `a/b.ck` beside the program (#548).
     /// Returns false if there is no such file.
     pub fn load_user(&mut self, name: &str, _span: crate::source::Span) -> bool {
         let Some(base) = self.base_dir.clone() else { return false };
         self.load_file(name, name, &base, None)
     }
 
-    /// Load module `rel` of dependency `pkg` (D111): the file `rel`'s path
+    /// Load module `rel` of dependency `pkg` (#608): the file `rel`'s path
     /// in the package's directory, known as `pkg.rel`.
     pub fn load_package(&mut self, pkg: &str, rel: &str) -> bool {
         let Some(base) = packages().dirs.get(pkg).cloned() else { return false };

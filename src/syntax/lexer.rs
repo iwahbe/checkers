@@ -1,4 +1,4 @@
-//! Lexer: characters → raw tokens → logical lines with INDENT/DEDENT (§9.1, D23).
+//! Lexer: characters → raw tokens → logical lines with INDENT/DEDENT (§9.1, #515).
 
 use super::token::{Kw, Op, TemplatePart, Tok, Token};
 use crate::diag::Diagnostic;
@@ -21,11 +21,11 @@ pub fn lex(text: &str) -> (Vec<Token>, Vec<Diagnostic>) {
     (toks, diags)
 }
 
-/// The name the cursor stands as when completing (D142): no identifier
+/// The name the cursor stands as when completing (#626): no identifier
 /// written in a file can have a `$`.
 pub const CURSOR: &str = "$cursor";
 
-/// `lex`, with a cursor token at byte `at` (D142 c): the word the cursor is
+/// `lex`, with a cursor token at byte `at` (#626 c): the word the cursor is
 /// in or at the end of is replaced by it, or it is inserted. Also the span
 /// of the word it replaced (empty when inserted). None if `at` is in a comment, a literal or
 /// past the end.
@@ -246,7 +246,7 @@ impl<'a> RawLexer<'a> {
             let t = match c {
                 b'+' => Tok::Op(Op::Add),
                 // A sign when nothing it could subtract from is glued
-                // before it and its operand is glued after it (D169).
+                // before it and its operand is glued after it (#657).
                 b'-' if self.sign_here() => Tok::Neg,
                 b'-' => Tok::Op(Op::Sub),
                 b'*' => Tok::Op(Op::Mul),
@@ -650,13 +650,13 @@ fn is_binop(t: &Tok) -> bool {
 
 /// The previous line ends in a way that continues onto the next line.
 fn continues_after(t: &Tok) -> bool {
-    // Not `.`: a name must follow it on the same line (D22), and `p.` while
-    // typing shouldn't take in the next line (D142 e).
+    // Not `.`: a name must follow it on the same line (#526), and `p.` while
+    // typing shouldn't take in the next line (#626 e).
     (is_binop(t) && !matches!(t, Tok::Op(Op::Dot))) || matches!(t, Tok::Comma)
 }
 
 /// A keyword that starts a line and never stands inside brackets: a line
-/// starting with one closes brackets left open (D142 e).
+/// starting with one closes brackets left open (#626 e).
 fn never_bracketed(t: &Tok) -> bool {
     matches!(
         t,
@@ -722,7 +722,7 @@ fn layout(raws: Vec<Raw>, eof: usize, diags: &mut Vec<Diagnostic>) -> Vec<Token>
         if raw.first_on_line && open.is_empty() {
             let prev = out.last().map(|t| &t.tok);
             // A keyword that only starts a line never continues one. A sign
-            // (`-1`, D169) isn't an operator, so a line starting with one
+            // (`-1`, #657) isn't an operator, so a line starting with one
             // starts a new logical line.
             let cont = have_line && !never_bracketed(&raw.tok) && (prev.is_some_and(continues_after) || continues_before(&raw.tok));
             if !cont {

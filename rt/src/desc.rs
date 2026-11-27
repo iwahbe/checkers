@@ -2,7 +2,7 @@
 //! run time.
 //!
 //! Every type argument has a word at run time. Where nothing shows values
-//! of the type, it is the type's layout (D133): an integer whose low four
+//! of the type, it is the type's layout (#624): an integer whose low four
 //! bits are an `array::Layout` code. Where something does (`debug`), it is
 //! the type's descriptor: an integer `tag` for a type without arguments,
 //! or a tuple of the arguments' descriptors followed by the tag. A tag is

@@ -1,4 +1,4 @@
-//! Constant bounds of integers (D135): what the elaborator's intervals
+//! Constant bounds of integers (#616): what the elaborator's intervals
 //! compute for arithmetic (`elab::interval`), and what native code knows of
 //! a value whose type bounds it, carried past erasure (`Globals::bounds`).
 
@@ -59,7 +59,7 @@ fn sub(a: Option<i128>, b: Option<i128>) -> Option<i128> {
     a?.checked_sub(b?)
 }
 
-/// The range of `a op b` (D135 a); `nat_sub` for `Nat` subtraction, whose
+/// The range of `a op b` (#616 a); `nat_sub` for `Nat` subtraction, whose
 /// obligation `a >= b` makes it non-negative.
 pub fn combine(op: Prim, a: Range, b: Range, nat_sub: bool) -> Range {
     match op {

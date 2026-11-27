@@ -1,4 +1,4 @@
-//! Unused code (D144): declarations no root reaches (W020), constructors
+//! Unused code (#633): declarations no root reaches (W020), constructors
 //! nothing reached builds (W023), record fields nothing reached reads (W024).
 //!
 //! Every resolved name is a reference from the declaration it is written
@@ -55,7 +55,7 @@ enum Owner {
 }
 
 /// The outcome: warnings by module, and the declarations found unused
-/// (their branches aren't asked about, D144 d).
+/// (their branches aren't asked about, #633 d).
 pub struct Unused {
     pub warnings: Vec<(String, Diagnostic)>,
     pub dead: Vec<(String, Span)>,
@@ -125,11 +125,11 @@ impl Elab {
     }
 
     /// Unused declarations, constructors and fields of the modules `own`
-    /// (the program's own, D144); `root` is the module checked.
+    /// (the program's own, #633); `root` is the module checked.
     pub fn unused(&self, root: &str, own: &[String]) -> Unused {
         let program = self.modules.get(root).is_some_and(|m| m.values.contains_key("main"));
         // Neither `main` nor any export: nothing says what the module is
-        // for, so each declaration is a root (D144 h).
+        // for, so each declaration is a root (#633 h).
         let scratch = !program && self.decl_table.get(root).is_none_or(|v| v.iter().all(|e| !e.export));
         // Each class function or lemma stands for its class.
         let mut member_of: HashMap<DefId, TyId> = HashMap::new();
@@ -215,7 +215,7 @@ impl Elab {
                 if let Owner::Node(t) = node_of(e) {
                     mark(t, &mut live, &mut work);
                     // An exported type's constructors and fields are its
-                    // interface (all of a module's, D144 h).
+                    // interface (all of a module's, #633 h).
                     if let Target::Ty(tid) = t {
                         for c in &self.g.tys[tid.0 as usize].ctors {
                             built.insert(*c);

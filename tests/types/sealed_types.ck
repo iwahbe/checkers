@@ -1,6 +1,6 @@
 module sealed_types
 
-# A sealed function doesn't unfold in types either (D54): `two` is not `2`
+# A sealed function doesn't unfold in types either (#537): `two` is not `2`
 # here, while the transparent `three` is `3`.
 
 import sealed_lib (two, three)

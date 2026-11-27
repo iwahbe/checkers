@@ -393,7 +393,7 @@ pub fn conn(w: W) -> Conn {
 /// Owner of code with no definition (a `check`, say).
 pub const NO_OWNER: u32 = u32::MAX;
 
-/// Stop with a runtime error, as the interpreter reports it (D76): flush
+/// Stop with a runtime error, as the interpreter reports it (#568): flush
 /// standard output, print the message, exit with code 70.
 pub fn error(owner: u32, msg: &str) -> ! {
     let name = prog_opt().and_then(|p| p.names.get(owner as usize));
@@ -420,14 +420,14 @@ pub fn error(owner: u32, msg: &str) -> ! {
 
 #[no_mangle]
 /// # Safety
-/// Called by native code with valid pointers (D72).
+/// Called by native code with valid pointers (#569).
 pub unsafe extern "C" fn ck_fail(owner: u64, msg: *const u8, len: u64) -> W {
     let m = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg, len as usize)) };
     error(owner as u32, &format!("reached {m}"))
 }
 
 thread_local! {
-    /// Where a runtime error goes during compile-time evaluation (D80).
+    /// Where a runtime error goes during compile-time evaluation (#555).
     pub static TRAP: std::cell::RefCell<Option<std::sync::mpsc::Sender<Result<W, String>>>> =
         const { std::cell::RefCell::new(None) };
 }
@@ -515,7 +515,7 @@ pub fn set_trap(tx: Option<std::sync::mpsc::Sender<Result<W, String>>>) {
 /// A runtime error with a message of its own (from native code).
 #[no_mangle]
 /// # Safety
-/// Called by native code with valid pointers (D72).
+/// Called by native code with valid pointers (#569).
 pub unsafe extern "C" fn ck_error(owner: u64, msg: *const u8, len: u64) -> W {
     let m = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg, len as usize)) };
     error(owner as u32, m)
@@ -541,7 +541,7 @@ pub extern "C" fn ck_nomatch(w: W, owner: u64) -> W {
 /// reference for good; the caller gets another.
 #[no_mangle]
 /// # Safety
-/// Called by native code with valid pointers (D72).
+/// Called by native code with valid pointers (#569).
 pub unsafe extern "C" fn ck_caf(slot: *const std::sync::atomic::AtomicU64, code: u64) -> W {
     let slot = unsafe { &*slot };
     let v = (prog().invoke)(code, ERASED, std::ptr::null(), 0);

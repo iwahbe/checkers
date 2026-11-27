@@ -1,8 +1,8 @@
-//! First-order code → Cranelift (D72, D73, D75).
+//! First-order code → Cranelift (#569, #573, #564).
 //!
 //! Every function takes its environment (closure) and its arguments as
 //! words, in Cranelift's `tail` convention, so calls in tail position are
-//! `return_call` (D75). Small integers, `dup`/`drop`, byte indexing and
+//! `return_call` (#564). Small integers, `dup`/`drop`, byte indexing and
 //! known closure calls are inline; the rest calls the runtime
 //! (`checkers_rt`). Global closures, literals and constants' slots are
 //! static data.
@@ -351,7 +351,16 @@ fn arity_of(f: &Func) -> usize {
 }
 
 impl<'p, M: Module> Gen<'p, M> {
-    pub fn new(mut m: M, p: Program, g: &'p Globals) -> Self {
+    pub fn new(m: M, p: Program, g: &'p Globals) -> Self {
+        Self::with_invoke(m, p, g, Linkage::Export)
+    }
+
+    /// JIT modules share the host's dispatcher; object files define their own.
+    pub fn importing_invoke(m: M, p: Program, g: &'p Globals) -> Self {
+        Self::with_invoke(m, p, g, Linkage::Import)
+    }
+
+    fn with_invoke(mut m: M, p: Program, g: &'p Globals, linkage: Linkage) -> Self {
         let call_conv = m.isa().default_call_conv();
         let mut rt = HashMap::new();
         for (name, n, ret) in RUNTIME {
@@ -380,7 +389,7 @@ impl<'p, M: Module> Gen<'p, M> {
             is.params.push(AbiParam::new(I64));
         }
         is.returns.push(AbiParam::new(I64));
-        let invoke = m.declare_function("ck_invoke", Linkage::Export, &is).expect("declare invoke");
+        let invoke = m.declare_function("ck_invoke", linkage, &is).expect("declare invoke");
         let wk = &g.well_known;
         let nul = |c: Option<crate::core::ConId>| c.map_or(0, |c| w::nullary(c.0) as i64);
         Gen {
@@ -388,7 +397,7 @@ impl<'p, M: Module> Gen<'p, M> {
             p,
             g,
             defined: 0,
-            invoke_defined: false,
+            invoke_defined: linkage == Linkage::Import,
             funcs,
             rt,
             closures: HashMap::new(),
@@ -838,7 +847,7 @@ impl<'p, M: Module> Gen<'p, M> {
         (p, n)
     }
 
-    // ── reference counts (D74) ──────────────────────────────────────────────
+    // ── reference counts (#567) ──────────────────────────────────────────────
 
     /// Is `x` a pointer, a non-zero multiple of 8? Rotated right by 3, its
     /// low bits become its top bits: it is then a number from 1 to 2^61 - 1.
@@ -1909,7 +1918,7 @@ impl<'p, M: Module> Gen<'p, M> {
     }
 
     /// A tuple just built whose last component is a tuple object is
-    /// flattened (D174): `(a, (b, c))` is `(a, b, c)`.
+    /// flattened (#673): `(a, (b, c))` is `(a, b, c)`.
     fn flatten_tuple(&mut self, b: &mut FunctionBuilder, st: &mut St, x: Value, last: Value) -> Value {
         let check = b.create_block();
         let slow = b.create_block();
@@ -2110,7 +2119,7 @@ impl<'p, M: Module> Gen<'p, M> {
             Op::TypeApply => self.call1(b, st, "ck_type_apply", &[a[0], a[1]]),
             Op::Len => {
                 // Inline for strings, bytes and arrays, which keep their
-                // length in their first word (D133); lists go to the runtime.
+                // length in their first word (#624); lists go to the runtime.
                 let kinds = b.create_block();
                 let fast = b.create_block();
                 let slow = b.create_block();
@@ -2140,7 +2149,7 @@ impl<'p, M: Module> Gen<'p, M> {
             }
             Op::Index => {
                 // Inline: a small index into bytes, in bounds. Other arrays
-                // (D133) and everything else go to the runtime. An `Array
+                // (#624) and everything else go to the runtime. An `Array
                 // U8` (`nat` here) is always bytes: no need to check.
                 let fast = b.create_block();
                 let slow = b.create_block();

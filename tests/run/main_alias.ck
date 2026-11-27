@@ -1,6 +1,6 @@
 module main_alias
 
-# An alias without a predicate is no precondition of `main` (D181).
+# An alias without a predicate is no precondition of `main` (#668).
 
 import std.system (System, ExitCode)
 

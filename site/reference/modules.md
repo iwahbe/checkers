@@ -111,7 +111,7 @@ lemma quadruple_is_four_times x : x~Int
     ensures counting.quadruple x == 4 * x
 ```
 
-A call whose value is known at compile time ([Staging](staging.md)), `counting.quadruple 2` say, is the exception: the prover is given its value, `counting.quadruple 2 == 8`, though still not the function's body, and the trust ledger records each such value as computed.
+A call whose value is known at compile time ([Staging](staging.md)), `counting.quadruple 2` say, is the exception: the prover is given its value, `counting.quadruple 2 == 8`, though still not the function's body.
 
 `export transparent` unseals a function: its body is visible to type checking and to the prover everywhere, and so is every private function it calls. Its body becomes part of the module's interface. It is meant for small definitions that specifications are written in terms of, and for functions that compute types ([Staging](staging.md)).
 

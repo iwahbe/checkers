@@ -97,8 +97,7 @@ impl Elab {
                 _ => false,
             },
             // `C.Name`: a class's type.
-            ExprKind::Field(q, name) => matches!(&q.kind, ExprKind::Con(n)
-                if matches!(self.resolve(n, true), Some(Sym::Ty(t)) if self.class_defs.get(&t).is_some_and(|c| c.types().contains(&name.name)))),
+            ExprKind::Field(q, name) => self.class_named(q, None).is_some_and(|t| self.class_defs[&t].types().contains(&name.name)),
             ExprKind::Var(n) => cs.iter().any(|c| match c {
                 Constraint::Typed { name, ty, .. } => name.name == *n && matches!(&ty.kind, ExprKind::Con(t) if t == "Type"),
                 _ => false,

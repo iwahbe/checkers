@@ -26,17 +26,17 @@ pub enum Ir {
     Call(Arc<Ir>, Vec<Arc<Ir>>),
     Let(Arc<Ir>, Arc<Ir>),
     Tuple(Vec<Arc<Ir>>),
-    /// Component `i`; with the flag, and the rest after it (D174).
+    /// Component `i`; with the flag, and the rest after it (#673).
     Proj(Arc<Ir>, usize, bool),
     Field(Arc<Ir>, usize),
     /// Saturated constructor: fields only.
     Con(ConId, Vec<Arc<Ir>>),
     /// A constructor used as a function.
     ConFn(ConId),
-    /// A primitive; the flag marks `Nat` subtraction (checked, D41), or
-    /// indexing an `Array U8` (a bytes object, D133).
+    /// A primitive; the flag marks `Nat` subtraction (checked, #536), or
+    /// indexing an `Array U8` (a bytes object, #624).
     Prim(Op, Vec<Arc<Ir>>, bool),
-    /// `par (e1, …, en)`: the components, evaluated in parallel (D69).
+    /// `par (e1, …, en)`: the components, evaluated in parallel (#562).
     Par(Vec<Arc<Ir>>),
     Case(Arc<Ir>, Arc<IrCase>),
     /// Code of definition `d` (or of none) placed in another's by an
@@ -321,7 +321,7 @@ impl<'g> Compiler<'g> {
                     return self.go(x);
                 }
                 // The flag: `Nat` subtraction (checked), or indexing an
-                // `Array U8`, always a bytes object (D133).
+                // `Array U8`, always a bytes object (#624).
                 let nat = match p {
                     Prim::Sub => args.get(2).is_some_and(|ty| self.is_nat(ty)),
                     Prim::Index => args.get(2).is_some_and(|ty| self.is_bytes_elem(ty)),
@@ -433,7 +433,7 @@ impl<'g> Compiler<'g> {
         self.g.is_dict_type_field(c, k)
     }
 
-    /// An erased argument. A type is passed as its layout word (D133): an
+    /// An erased argument. A type is passed as its layout word (#624): an
     /// array of it is laid out by that word; anything else as nothing.
     fn erased(&self, a: &Tm) -> Ir {
         let h = a.head();
@@ -547,7 +547,7 @@ impl<'g> Compiler<'g> {
         }
     }
 
-    /// Is this element type `U8`, so the array is a bytes object (D133)?
+    /// Is this element type `U8`, so the array is a bytes object (#624)?
     fn is_bytes_elem(&self, ty: &Tm) -> bool {
         let depth = max_var(ty).map_or(0, |m| m + 1);
         let env = (0..depth).map(Val::var).collect::<crate::core::Env>();

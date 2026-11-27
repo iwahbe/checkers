@@ -1,4 +1,4 @@
-//! Packages (M14, SPEC §16.4, D107–D111): `checkers` in a directory with
+//! Packages (M14, SPEC §16.4, #597, #598, #594, #595, #608): `checkers` in a directory with
 //! `checkers.json` resolves path and git dependencies (minimal version
 //! selection), keeps `checkers.lock`, and passes the packages to `ckc`.
 //! Git dependencies are local repositories, so this runs offline.
@@ -137,12 +137,6 @@ fn builds_with_git_and_path_dependencies() {
     let lock = w.read("app/checkers.lock");
     assert!(lock.starts_with("{\n  \"shared\": { \"path\": \"../shared\" },\n  \"util\": { \"git\": "), "{lock}");
     assert!(lock.contains("\"version\": \"1.0.0\", \"commit\": \""), "{lock}");
-
-    // The trust ledger lists both packages.
-    let trust = w.checkers("app", &["trust"]);
-    let ledger = text(&trust.stdout);
-    assert!(ledger.contains("<shared>/text/greet.ck  proved   1 by smt, 0 computed\n"), "{ledger}");
-    assert!(ledger.contains("<util>/count.ck  proved   1 by smt, 0 computed\n"), "{ledger}");
 
     // Nothing is fetched again.
     let again = w.checkers("app", &["check"]);

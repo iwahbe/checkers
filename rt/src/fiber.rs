@@ -1,8 +1,8 @@
-//! Fibers (M16, D113, §13.8): each behaviour runs on a stack of its own, so
+//! Fibers (M16, #607, §13.8): each behaviour runs on a stack of its own, so
 //! a behaviour that would wait can be suspended in the middle of a call and
-//! its thread can run others. x86-64 and ARM64; Linux and macOS (D116, D126).
+//! its thread can run others. x86-64 and ARM64; Linux and macOS (#604, #619).
 //!
-//! A stack is reserved address space (256 MiB, the depth D75 allows a
+//! A stack is reserved address space (256 MiB, the depth #564 allows a
 //! worker), committed by the kernel only as pages are touched, with a guard
 //! region below, whose fault is a stack overflow (`overflow`). Stacks are
 //! reused through a pool. Switching saves the
@@ -434,7 +434,7 @@ pub(crate) unsafe fn abandon(f: *mut Fiber) -> (usize, usize) {
     }
 }
 
-/// Run `job` without holding this thread (D113): on a fiber, the fiber parks
+/// Run `job` without holding this thread (#607): on a fiber, the fiber parks
 /// and `job` runs on the blocking pool; elsewhere it just runs.
 pub fn blocking<R: Send + 'static>(job: impl FnOnce() -> R + Send + 'static) -> R {
     if !on_fiber() {
@@ -454,7 +454,7 @@ pub fn blocking<R: Send + 'static>(job: impl FnOnce() -> R + Send + 'static) -> 
 }
 
 /// A lock that parks a fiber that has to wait for it, rather than blocking
-/// its thread, so it can be held while parked (standard input, D113).
+/// its thread, so it can be held while parked (standard input, #607).
 pub struct FiberLock {
     busy: std::sync::atomic::AtomicBool,
     waiting: Mutex<std::collections::VecDeque<Waker>>,
@@ -509,7 +509,7 @@ impl Default for FiberLock {
 }
 
 /// A reader whose system calls don't hold the thread: on a fiber, each read
-/// runs on the blocking pool while the fiber is parked (D113). Put a buffer
+/// runs on the blocking pool while the fiber is parked (#607). Put a buffer
 /// above it, so that happens once per buffer, not once per line.
 pub struct BlockingRead<R>(pub R);
 

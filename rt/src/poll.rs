@@ -1,7 +1,7 @@
-//! Waiting for pipes without holding a thread (M16, D113, §13.8): our ends of
+//! Waiting for pipes without holding a thread (M16, #607, §13.8): our ends of
 //! a child's pipes are non-blocking; a read or write that would block parks
 //! the behaviour and registers the descriptor with one poller thread
-//! (`epoll` on Linux, `kqueue` on macOS, D126), which wakes it when the
+//! (`epoll` on Linux, `kqueue` on macOS, #619), which wakes it when the
 //! descriptor is ready. Off a fiber, the thread waits in `poll` instead.
 //! Sleeping (`std.time.sleep`) is a timer in the same poller: a `timerfd`
 //! on Linux, an `EVFILT_TIMER` event on macOS.

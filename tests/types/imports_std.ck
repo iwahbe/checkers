@@ -1,5 +1,5 @@
 # Standard-library imports are `std.` paths, qualified by their last
-# component (D105).
+# component (#613).
 module imports_std
 
 import list

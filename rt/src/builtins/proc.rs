@@ -35,7 +35,7 @@ fn command(program: W, args: W) -> std::process::Command {
     c
 }
 
-// Waiting for a child doesn't hold a behaviour's thread (D113).
+// Waiting for a child doesn't hold a behaviour's thread (#607).
 
 builtin!(ckb_proc_exec, |a| {
     let mut c = command(a[0], a[1]);
@@ -93,7 +93,7 @@ builtin!(ckb_proc_spawn, |a| {
         Ok(ch) => ch,
         Err(e) => return err(describe_io(&e)),
     };
-    // Our ends of the pipes wait in the poller, not on a thread (D113).
+    // Our ends of the pipes wait in the poller, not on a thread (#607).
     let end_in = child.stdin.take().map(|p| new_file(FileState::Write(Box::new(std::io::BufWriter::new(PollFd::new(p.into()))))));
     let end_out = child.stdout.take().map(|p| new_file(FileState::Read(Box::new(std::io::BufReader::new(PollFd::new(p.into()))))));
     let end_err = child.stderr.take().map(|p| new_file(FileState::Read(Box::new(std::io::BufReader::new(PollFd::new(p.into()))))));

@@ -1,5 +1,5 @@
 # A definition recursing by `decreasing` is given to Z3 only where its
-# recursion ends (D118): `half` ends where `x >= 1`, so outside that its
+# recursion ends: `half` ends where `x >= 1`, so outside that its
 # value is unknown. A program with one wrong call is reported at once
 # (it used to send Z3 unfolding `half 0` for minutes).
 module reflect_domain

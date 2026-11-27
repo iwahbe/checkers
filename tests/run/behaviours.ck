@@ -1,6 +1,6 @@
 module behaviours
 
-# Behaviours run after `main` returns, in the order they were scheduled (D44).
+# Behaviours run after `main` returns, in the order they were scheduled (#534).
 
 import std.system (System, ExitCode)
 import std.cown (Cown, Sched)
@@ -28,7 +28,7 @@ export fn main args sys -> code : args~List String, sys~System, code~Future Exit
     let sum = future.fork sched $ \_ ->
         let (x, y) = future.join (a, b)
         x + y
-    # `main` may give a future of its exit code (D31).
+    # `main` may give a future of its exit code (#517).
     future.fork sched $ \_ ->
         let s = future.join sum
         terminal.print_line ("sum " ++ debug s) term

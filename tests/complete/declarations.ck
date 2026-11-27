@@ -2,7 +2,7 @@ module declarations
 
 ‸
 
-# Declarations (D142): above the first one, `import` too.
+# Declarations (#626): above the first one, `import` too.
 fn one -> n : n~Int
     1
 

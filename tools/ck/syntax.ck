@@ -1,5 +1,5 @@
 # ck/syntax.ck — Checkers source as tokens and lines, keeping comments and
-# blank lines (D93). The lexer follows SPEC §9.1; the layout pass assigns
+# blank lines (#588). The lexer follows SPEC §9.1; the layout pass assigns
 # each line its block level, or marks it as continuing the line before.
 
 module ck.syntax
@@ -375,7 +375,7 @@ fn open_ended st : st~State
         Some t -> (is_binop t and not (is_punct t b".")) or is_punct t b","
         None   -> False
 
-# A keyword that only starts a line, never inside brackets (D142 e).
+# A keyword that only starts a line, never inside brackets (#626 e).
 fn starts_only t : t~Tok
     is_keyword t and list.contains LINE_KEYWORDS t.text
 
@@ -388,7 +388,7 @@ fn closes st first : st~State, first~Tok
     st.depth > 0 and first.col <= st.open and starts_only first
 
 # A line starting with an operator or `:` continues the one before; one
-# starting with a sign (`-1`, glued to what follows, D169) doesn't.
+# starting with a sign (`-1`, glued to what follows, #657) doesn't.
 fn continues st toks : st~State, toks~List Tok
     match toks
         []            -> False
@@ -397,7 +397,7 @@ fn continues st toks : st~State, toks~List Tok
             not (starts_only first) and (st.depth > 0 or leads or open_ended st)
 
 # A `-` glued to the token after it, at the start of a line or after white
-# space or an opening bracket: a sign, not a subtraction (D169).
+# space or an opening bracket: a sign, not a subtraction (#657).
 export fn is_sign t rest : t~Tok, rest~List Tok
     match rest
         n :: _ -> is_punct t b"-" and n.col == t.col + t.wide and not (is_close n or is_punct n b",")
@@ -502,7 +502,7 @@ export fn layout lines -> r : lines~List Line, r~Result (List Placed) SyntaxErro
     let placed = try place lines (State [(0, False)] 0 None 0 0 0 False) []
     Ok (resolve (reverse placed) None [])
 
-# ── Indentation for a new line (D158) ───────────────────────────────────────
+# ── Indentation for a new line (#644) ───────────────────────────────────────
 
 # One indentation level.
 let LEVEL = 4

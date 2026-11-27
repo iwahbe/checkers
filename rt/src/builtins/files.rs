@@ -25,7 +25,7 @@ pub const TABLE: &[Builtin] = &[
     ("std.files.flush", "ckb_files_flush", ckb_files_flush),
 ];
 
-// Calls on paths run without holding a behaviour's thread (D113).
+// Calls on paths run without holding a behaviour's thread (#607).
 
 builtin!(ckb_files_read, |a| match path(a[1], s(a[0])) {
     Err(e) => err(e),

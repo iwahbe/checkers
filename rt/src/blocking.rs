@@ -1,4 +1,4 @@
-//! Threads for calls that can't be polled (M16, D113, §13.8): reading
+//! Threads for calls that can't be polled (M16, #607, §13.8): reading
 //! regular files and standard input, `waitpid`, running a child to the end.
 //! A behaviour that makes such a call parks; the call runs here and wakes
 //! it. When every thread is busy another is started, so a waiting call

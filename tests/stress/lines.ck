@@ -1,7 +1,7 @@
 module lines
 
 # 40 behaviours on 40 different cowns each print one long line. They may
-# come in any order, but a `terminal` call is atomic (D68): no line is ever
+# come in any order, but a `terminal` call is atomic (#559): no line is ever
 # split by another.
 
 import std.system (System, ExitCode)

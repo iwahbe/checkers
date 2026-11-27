@@ -1,4 +1,4 @@
-# A specification mustn't speak of a call that can't be made (D118): a call
+# A specification mustn't speak of a call that can't be made: a call
 # in a precondition, postcondition or `ensures` needs its callee's
 # precondition, which may come from the conditions before it.
 module spec_preconditions

@@ -1,4 +1,4 @@
-# A cown can't hold a resource (D156 k): its handle can be shared, so
+# A cown can't hold a resource (#643 k): its handle can be shared, so
 # nothing would make sure what it holds is closed. Neither can an actor's
 # state, which is a cown's. A resource stays with one owner.
 module cown_resource

@@ -1,0 +1,4 @@
+(module instance_qualified)
+(instance order.Ord (List a) (: (order.Ord a))
+  (fn le (xs ys)
+    True))

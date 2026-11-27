@@ -9,7 +9,7 @@ John MacFarlane, released under the Creative Commons CC-BY-SA 4.0 license
 it unchanged, under the same license.
 
 `run.ck` parses each example's Markdown with `std.markdown` and compares its
-HTML with the spec's, byte for byte (D151 f): the golden tests run it
+HTML with the spec's, byte for byte (#640 f): the golden tests run it
 (`tests/run/commonmark.args`), and every example must pass.
 
     ckc run tests/commonmark/run.ck tests/commonmark/spec.json [N]
