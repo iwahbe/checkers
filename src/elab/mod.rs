@@ -184,6 +184,9 @@ pub struct Local {
     /// The bound locals its value refers to, by level, outermost first,
     /// once asked (`Elab::local_refers`).
     pub refers: std::cell::OnceCell<Rc<[usize]>>,
+    /// The level of the local of the same name that this one hides, if
+    /// any: the innermost of that name once this one is gone.
+    hides: Option<usize>,
 }
 
 #[derive(Clone, Default)]
@@ -206,9 +209,17 @@ pub struct Cx {
     /// Facts in scope (§7.1): `Bool` values known to be true, tagged with the
     /// context length when they were added, in order.
     pub facts: PVec<(usize, Val)>,
-    /// How many locals have each name, so that a name is looked up in
-    /// scope without a walk over every local (`Scope::count`).
-    named: crate::pmap::PMap<Name, usize>,
+    /// For each name, how many locals have it and the level of the
+    /// innermost: a name is looked up in scope (`lookup`, `Scope::count`)
+    /// without a walk over every local.
+    named: crate::pmap::PMap<Name, Named>,
+}
+
+/// The locals of one name in a context (`Cx::named`).
+#[derive(Clone, Copy)]
+struct Named {
+    count: usize,
+    innermost: usize,
 }
 
 impl Scope for Cx {
@@ -222,7 +233,7 @@ impl Scope for Cx {
         self.locals[level].span.map(|s| s.start)
     }
     fn count(&self, x: &str) -> usize {
-        self.named.get(x).copied().unwrap_or(0)
+        self.named.get(x).map_or(0, |n| n.count)
     }
 }
 
@@ -246,17 +257,17 @@ impl Cx {
         let l = self.lvl();
         self.env.push(Val::var(l));
         self.bound.push(l);
-        self.name_more(name);
+        let hides = self.name_more(name, l);
         self.names.push(Rc::from(name));
-        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: true, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default(), refers: Default::default() });
+        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: true, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default(), refers: Default::default(), hides });
         l
     }
     pub fn define(&mut self, name: &str, ty: Val, val: Val, mult: Mult) -> usize {
         let l = self.lvl();
         self.env.push(val);
-        self.name_more(name);
+        let hides = self.name_more(name, l);
         self.names.push(Rc::from(name));
-        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: false, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default(), refers: Default::default() });
+        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: false, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default(), refers: Default::default(), hides });
         l
     }
     /// `define`, by term `def` (over the locals before it) whose value is `val`.
@@ -269,17 +280,20 @@ impl Cx {
         let n = self.lvl().saturating_sub(1);
         self.truncate(n);
     }
-    /// One more local named `name`.
-    fn name_more(&mut self, name: &str) {
-        let k = self.named.get(name).copied().unwrap_or(0);
-        self.named.insert(Rc::from(name), k + 1);
+    /// One more local named `name`, at level `l`: the level of the one it
+    /// hides, if any.
+    fn name_more(&mut self, name: &str, l: usize) -> Option<usize> {
+        let before = self.named.get(name).copied();
+        self.named.insert(Rc::from(name), Named { count: before.map_or(0, |n| n.count) + 1, innermost: l });
+        before.map(|n| n.innermost)
     }
     pub fn truncate(&mut self, n: usize) {
-        for l in n..self.lvl() {
-            let name = self.locals[l].name.clone();
-            match self.named.get(&*name).copied() {
-                Some(k) if k > 1 => self.named.insert(name, k - 1),
-                _ => self.named.remove(&*name),
+        // Innermost first: each restores the one it hid.
+        for l in (n..self.lvl()).rev() {
+            let local = &self.locals[l];
+            match (local.hides, self.named.get(&*local.name).copied()) {
+                (Some(hidden), Some(k)) => self.named.insert(local.name.clone(), Named { count: k.count - 1, innermost: hidden }),
+                _ => self.named.remove(&*local.name),
             }
         }
         self.env.truncate(n);
@@ -296,8 +310,9 @@ impl Cx {
     pub fn assume(&mut self, fact: Val) {
         self.facts.push((self.locals.len(), fact));
     }
+    /// The level of the innermost local named `name`.
     pub fn lookup(&self, name: &str) -> Option<usize> {
-        self.names.level_of(name)
+        self.named.get(name).map(|n| n.innermost)
     }
     pub fn var(&self, lvl: usize) -> Tm {
         Tm::Var(self.lvl() - lvl - 1)

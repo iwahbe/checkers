@@ -1,9 +1,61 @@
 //! `ckc`, the compiler's command-line driver (#587).
 
+use std::alloc::{GlobalAlloc, Layout};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering::Relaxed};
 
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: Heap = Heap;
+
+/// mimalloc, counting the bytes in use and their peak when
+/// `CHECKERS_PEAK_HEAP=1` asks for it (printed at exit). Unlike the
+/// process's peak resident memory, the peak is exact and the same in every
+/// run: it holds neither the allocator's free pages nor Z3's memory nor the
+/// program's code, so a test can tell how memory grows with a program from
+/// small programs (`tests/scaling.rs`).
+struct Heap;
+
+static COUNTING: AtomicBool = AtomicBool::new(false);
+// Signed: a block allocated before counting starts may be freed after.
+static IN_USE: AtomicIsize = AtomicIsize::new(0);
+static PEAK: AtomicIsize = AtomicIsize::new(0);
+
+impl Heap {
+    fn grew(n: usize) {
+        if COUNTING.load(Relaxed) {
+            let n = n as isize;
+            let now = IN_USE.fetch_add(n, Relaxed) + n;
+            PEAK.fetch_max(now, Relaxed);
+        }
+    }
+    fn shrank(n: usize) {
+        if COUNTING.load(Relaxed) {
+            IN_USE.fetch_sub(n as isize, Relaxed);
+        }
+    }
+}
+
+// SAFETY: each call is mimalloc's; the counts don't touch the memory.
+unsafe impl GlobalAlloc for Heap {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        Heap::grew(layout.size());
+        unsafe { mimalloc::MiMalloc.alloc(layout) }
+    }
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        Heap::grew(layout.size());
+        unsafe { mimalloc::MiMalloc.alloc_zeroed(layout) }
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        Heap::shrank(layout.size());
+        unsafe { mimalloc::MiMalloc.dealloc(ptr, layout) }
+    }
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // Both blocks are held while the contents move.
+        Heap::grew(new_size);
+        Heap::shrank(layout.size());
+        unsafe { mimalloc::MiMalloc.realloc(ptr, layout, new_size) }
+    }
+}
 
 const USAGE: &str = "\
 ckc — the Checkers compiler (usually run through `checkers`, the build tool)
@@ -40,11 +92,17 @@ USAGE:
 ";
 
 fn main() -> ExitCode {
+    let peak_heap = std::env::var_os("CHECKERS_PEAK_HEAP").is_some();
+    // Counted from here: what was allocated before isn't freed after.
+    COUNTING.store(peak_heap, Relaxed);
     // The elaborator recurses deeply, so everything runs on a big stack.
     let code = checkers::with_big_stack(|| {
         let args: Vec<String> = std::env::args().skip(1).collect();
         cli(&args)
     });
+    if peak_heap {
+        eprintln!("peak heap: {} bytes", PEAK.load(Relaxed));
+    }
     ExitCode::from(code)
 }
 

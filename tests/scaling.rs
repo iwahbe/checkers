@@ -110,42 +110,43 @@ fn reading_a_field_of_a_call_does_not_run_it() {
     });
 }
 
-/// The peak resident memory, in KB, of `ckc check` on a function adding its
+/// The peak heap, in bytes, of `ckc check` on a function adding its
 /// argument to itself n times, `x + x + … + x`, and a `check` calling it. `x`
 /// is an `Int` of any size, so each `+` tests for small integers: about a
-/// block per operator. The peak is the child's high-water mark
-/// (`ru_maxrss`), which the kernel reports when it is reaped. `wait4` reaps
-/// this child alone, so other tests' children, running at the same time,
-/// don't count.
-///
-/// The allocator, mimalloc, returns freed memory to the system immediately
-/// (`MIMALLOC_PURGE_DELAY=0`), so the peak is the memory `ckc` holds. By
-/// default it waits 10 ms, and returns it only when it is next called after
-/// that: whether the `check`'s code generation, freed when it ends, is still
-/// resident when Z3 (whose own allocator can't reuse it) starts proving
-/// depends on timing. Over 20 runs each, 4,000 operators peaked anywhere from
-/// 298 MB to 373 MB and 8,000 from 501 MB to 532 MB; with the memory returned
-/// at once, at 242 MB to 256 MB and 412 MB to 416 MB.
+/// block per operator.
 #[cfg(target_os = "linux")]
-fn check_peak_kb(dir: &Path, name: &str, n: usize) -> u64 {
+fn check_peak_heap(dir: &Path, name: &str, n: usize) -> u64 {
     let chain = vec!["x"; n].join(" + ");
     source_usage(dir, name, &format!("module {name}\n\nfn f x -> r : x~Int, r~Int\n    {chain}\n\ncheck f 1 == {n}\n")).1
 }
 
-/// The CPU time, in milliseconds, and the peak resident memory, in KB, of
-/// `ckc check` on module `name`, as `check_peak_kb` measures them. CPU
-/// time, unlike the phases' times, doesn't count waiting for a CPU, so it
-/// varies less when other tests are running.
+/// The CPU time, in milliseconds, and the peak heap, in bytes, of `ckc
+/// check` on module `name`.
+///
+/// CPU time, unlike the phases' times, doesn't count waiting for a CPU, so
+/// it varies less when other tests are running. It is the child's, which
+/// the kernel reports when it is reaped; `wait4` reaps this child alone, so
+/// other tests' children, running at the same time, don't count.
+///
+/// The peak heap is the most memory `ckc` held allocated at once
+/// (`CHECKERS_PEAK_HEAP=1`): exact, and the same in every run. The peak
+/// resident memory isn't: it holds about 90 MB that don't grow with the
+/// program (the compiler's code, Z3's memory), and the allocator takes
+/// memory from the system in steps of 5 MB to 80 MB, so what a doubling
+/// of 2,000 `let`s added to it ranged from half to twice what the program
+/// held (2,000 to 4,000 lets of closures added 8 MB to 11 MB, 4,000 to
+/// 8,000 added 32 MB to 33 MB; the heap's peak grew by 16 MB and 33 MB).
 #[cfg(target_os = "linux")]
 fn source_usage(dir: &Path, name: &str, source: &str) -> (f64, u64) {
     let file = dir.join(format!("{name}.ck"));
     std::fs::write(&file, source).unwrap();
+    let err_path = dir.join(format!("{name}.err"));
     let child = Command::new(env!("CARGO_BIN_EXE_ckc"))
         .args(["check", "--no-cache", &format!("{name}.ck")])
         .current_dir(dir)
-        .env("MIMALLOC_PURGE_DELAY", "0")
+        .env("CHECKERS_PEAK_HEAP", "1")
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::fs::File::create(&err_path).unwrap())
         .spawn()
         .expect("run ckc");
     let pid = child.id() as libc::pid_t;
@@ -161,40 +162,47 @@ fn source_usage(dir: &Path, name: &str, source: &str) -> (f64, u64) {
     assert_eq!(reaped, pid, "{name}: wait4: {}", std::io::Error::last_os_error());
     // `child` is reaped already: dropping it neither waits nor kills.
     drop(child);
-    assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0, "{name}: ckc failed");
+    let err = std::fs::read_to_string(&err_path).unwrap();
+    assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0, "{name}: ckc failed:\n{err}");
+    let heap = err
+        .lines()
+        .find_map(|l| l.strip_prefix("peak heap: ")?.strip_suffix(" bytes")?.parse().ok())
+        .unwrap_or_else(|| panic!("{name}: no peak heap in\n{err}"));
     let ms = |t: libc::timeval| t.tv_sec as f64 * 1000.0 + t.tv_usec as f64 / 1000.0;
-    (ms(usage.ru_utime) + ms(usage.ru_stime), usage.ru_maxrss as u64)
+    (ms(usage.ru_utime) + ms(usage.ru_stime), heap)
 }
 
 /// Code generation keeps memory in proportion to the function: Cranelift's
 /// SSA builder, given a variable per `let`, keeps a map per variable as long
 /// as the function's block count, n² for n additions. 4,000, 8,000 and
-/// 16,000 operators peak at 242–256 MB, 412–416 MB and 732–737 MB, and with
-/// a variable per `let` at 372–376 MB, 1,160–1,164 MB and 4,243–4,247 MB.
-/// A fixed part cancels out of the increments: linear memory adds twice as
+/// 16,000 operators peak at a heap of 179 MB, 356 MB and 711 MB. (Their
+/// peak resident memory was 242–256 MB, 412–416 MB and 732–737 MB, and with
+/// a variable per `let` 372–376 MB, 1,160–1,164 MB and 4,243–4,247 MB.) A
+/// fixed part cancels out of the increments: linear memory adds twice as
 /// much for the second 8,000 operators as for the 4,000 before them, n² four
-/// times. The second may add at most three times the first (1.83 to 2.04
-/// over 20 runs, 3.89 to 3.93 with a variable per `let`).
+/// times. The second may add at most three times the first (2.00; 3.96 with
+/// a block-count map per variable).
 #[cfg(target_os = "linux")]
 #[test]
 fn additions_compile_in_linear_memory() {
     let dir = std::env::temp_dir().join(format!("checkers-scaling-{}-memory", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let [small, medium, large] = [4000, 8000, 16000].map(|n| check_peak_kb(&dir, &format!("mem{n}"), n));
+    let [small, medium, large] = [4000, 8000, 16000].map(|n| check_peak_heap(&dir, &format!("mem{n}"), n));
     let _ = std::fs::remove_dir_all(&dir);
     let (first, second) = (medium.saturating_sub(small), large.saturating_sub(medium));
+    let mb = |b: u64| b / (1 << 20);
     assert!(
         second < 3 * first,
-        "4000 operators took {} MB at peak, 8000 took {} MB, 16000 took {} MB: the second 8000 added {:.2} times what the 4000 before them did",
-        small / 1024,
-        medium / 1024,
-        large / 1024,
+        "4000 operators took a heap of {} MB at peak, 8000 took {} MB, 16000 took {} MB: the second 8000 added {:.2} times what the 4000 before them did",
+        mb(small),
+        mb(medium),
+        mb(large),
         second as f64 / first as f64
     );
 }
 
-/// The least CPU time and peak memory of a few runs of `ckc check` on a
-/// function of 2,000, 4,000 and 8,000 `let`s, `let a{i} = {step(a{i-1})}`,
+/// The least CPU time of a few runs of `ckc check`, and its peak heap, on a
+/// function of 4,000, 8,000 and 16,000 `let`s, `let a{i} = {step(a{i-1})}`,
 /// over values of type `ty`, with no `check`: only elaboration is measured.
 /// The least of a few runs is the least disturbed by other tests.
 #[cfg(target_os = "linux")]
@@ -228,16 +236,19 @@ fn lets_usage_in(tag: &str, imports: &str, sig: &str, line: &dyn Fn(usize) -> St
     usage
 }
 
-/// The sizes `lets_usage` measures.
+/// The sizes `lets_usage` measures. The peak heap is the larger of the
+/// standard library's checking and the function's: below about 4,000 `let`s,
+/// the standard library's can be the larger, and what a doubling adds to the
+/// peak isn't what the function's memory grew by.
 #[cfg(target_os = "linux")]
-const LETS: [usize; 3] = [2000, 4000, 8000];
+const LETS: [usize; 3] = [4000, 8000, 16000];
 
 /// Linear memory and time for `lets_usage`'s measurements.
 ///
-/// Memory: what each doubling adds to the peak, twice as much the second
-/// time for linear memory, four times for quadratic; the fixed part (the
-/// standard library) cancels out. The peak moves in the allocator's steps,
-/// so the second may add up to three times the first.
+/// Memory: what each doubling adds to the peak heap, twice as much the
+/// second time for linear memory, four times for quadratic; the fixed part
+/// (the standard library) cancels out. The second may add up to three times
+/// the first.
 ///
 /// Time per instruction grows with the memory a run touches, so what a
 /// doubling adds to the time doesn't tell quadratic work from cache misses:
@@ -245,12 +256,12 @@ const LETS: [usize; 3] = [2000, 4000, 8000];
 /// with any fixed part does.
 #[cfg(target_os = "linux")]
 fn assert_lets_linear(tag: &str, [a, b, c]: [(f64, u64); 3]) {
-    let mb = |kb: u64| kb as f64 / 1024.0;
+    let mb = |bytes: u64| bytes as f64 / (1 << 20) as f64;
     let (first, second) = (mb(b.1) - mb(a.1), mb(c.1) - mb(b.1));
     let [n0, n1, n2] = LETS;
     assert!(
         second <= 3.0 * first,
-        "{tag}: peak memory: {n0} to {n1} lets added {first:.0} MB, {n1} to {n2} added {second:.0} MB"
+        "{tag}: peak heap: {n0} to {n1} lets added {first:.1} MB, {n1} to {n2} added {second:.1} MB"
     );
     assert!(c.0 <= 4.0 * a.0, "{tag}: CPU time: {n0} lets took {:.0} ms, {n2} took {:.0} ms", a.0, c.0);
 }
@@ -260,9 +271,11 @@ fn assert_lets_linear(tag: &str, [a, b, c]: [(f64, u64); 3]) {
 /// to it. Shared, the values take memory in proportion to n; copied for each
 /// local that holds one, they took n²/2 (2,000 took 350 MB and 2.8 s to
 /// elaborate, 8,000 took 4.6 GB and 44 s). So did the names of every local in
-/// scope, kept for each operator's message. (2,000 to 4,000 lets add 11 MB
-/// to 18 MB, 4,000 to 8,000 16 MB to 26 MB, and 8,000 take 1.4 to 1.8 times
-/// the time of 2,000; without sharing, 850 MB and 3,396 MB, and 15 times.)
+/// scope, kept for each operator's message. (Now 4,000 to 8,000 lets add
+/// 10 MB to the peak heap, 8,000 to 16,000 21 MB, and 16,000 take 1.4 times
+/// the time of 4,000. Without sharing, 2,000 to 4,000 lets added 850 MB to
+/// the peak resident memory, 4,000 to 8,000 3,396 MB, and 8,000 took 15
+/// times the time of 2,000.)
 #[cfg(target_os = "linux")]
 #[test]
 fn a_chain_of_lets_checks_in_linear_time_and_memory() {
@@ -279,8 +292,9 @@ fn a_chain_of_lets_checks_in_linear_time_and_memory() {
 /// closure's `let` (and keeping each copy until the end), then looking
 /// through it for a use of the closure; and the inliner, putting each
 /// erased `let` into all the code after it. 2,000 lets took 4.5 s and
-/// 2.4 GB, 8,000 ran out of memory. (Now 2,000 to 4,000 lets add 12 MB,
-/// 4,000 to 8,000 30 MB, and 8,000 take 1.6 times the time of 2,000.)
+/// 2.4 GB, 8,000 ran out of memory. (Now 4,000 to 8,000 lets add 32 MB to
+/// the peak heap, 8,000 to 16,000 64 MB, and 16,000 take 2.1 times the time
+/// of 4,000.)
 #[cfg(target_os = "linux")]
 #[test]
 fn a_chain_of_lets_of_closures_checks_in_linear_time_and_memory() {
@@ -294,7 +308,8 @@ fn a_chain_of_lets_of_closures_checks_in_linear_time_and_memory() {
 /// `x + 1 + … + 1`, is i deep. 8,000 lets took 9.3 times as long as 2,000
 /// (7.35 s and 0.79 s, release). Which bound locals a local refers to is
 /// decided once, from the term that defined it: 1.6 times as long (0.75 s
-/// and 0.46 s), as without the capability.
+/// and 0.46 s), as without the capability. (16,000 take 2.2 times the time
+/// of 4,000.)
 #[cfg(target_os = "linux")]
 #[test]
 fn a_chain_of_lets_of_closures_given_an_effect_checks_in_linear_time_and_memory() {
@@ -311,7 +326,8 @@ fn a_chain_of_lets_of_closures_given_an_effect_checks_in_linear_time_and_memory(
 /// range. Asked of a local by evaluating and quoting its value, `x + 1 + … +
 /// 1`, each `+` walked every one before it: 8,000 lets took 16 times as
 /// long as 2,000 (91 s and 5.6 s). What a local is known to be is decided
-/// once, from the term that defined it: 1.4 to 1.8 times as long.
+/// once, from the term that defined it: 1.4 to 1.8 times as long. (16,000
+/// take 1.5 times the time of 4,000.)
 #[cfg(target_os = "linux")]
 #[test]
 fn a_chain_of_additions_in_lets_checks_in_linear_time_and_memory() {
@@ -326,7 +342,13 @@ fn a_chain_of_additions_in_lets_checks_in_linear_time_and_memory() {
 /// 8,000 191 MB. Each call also walked every local, to find the
 /// dictionaries in scope and the locals an unknown depends on, and built
 /// an environment of them all to evaluate its dictionary: 8,000 took 7.3
-/// times as long as 2,000 with these, 2.8 times without.
+/// times as long as 2,000 with these, 2.8 times without. And each call
+/// looked its function's name up among the locals, a walk over all of them
+/// when the name isn't a local's: 16,000 took 6.7 times as long as 4,000
+/// (4.8 s and 0.72 s, release), and 32,000 took 34 s. Looked up in a map of
+/// the locals' names, 16,000 take 2.2 times as long as 4,000 (1.05 s and
+/// 0.47 s), and 32,000 1.7 s; 4,000 to 8,000 lets add 54 MB to the peak
+/// heap, 8,000 to 16,000 108 MB.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_chain_of_class_calls_in_lets_checks_in_linear_time_and_memory() {
