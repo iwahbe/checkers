@@ -122,10 +122,12 @@
 #
 # Together: a query is never both `Valid` and `Invalid`.
 #
-# Proved so far: the first statement (`cert.checks_sound`), resting on the
-# lemmas at the end of this module about what each connective means
-# (`two_valued`, `and_meaning` and the rest). The second statement,
-# monotonicity and the `Invalid` theorem are still owed.
+# Proved so far: both statements (`cert.checks_sound`, and
+# `cert.checks_sound_everywhere` from it and `total_has_value`), resting on
+# the lemmas below about what each connective means (`two_valued`,
+# `and_meaning` and the rest); monotonicity (`monotone`), and `not fails`
+# for partial models from it (`cert.not_refuted`). The `Invalid` theorem
+# is still owed.
 #
 # S6 also owes these, which this module is written to and states only in
 # comments: `before` is a strict total order on values; two normal forms
@@ -2652,8 +2654,12 @@ export lemma arrays_total_at_fuel c m n s a b i j x env senv xs body : c~Context
 # A definite answer in a model is the answer in every model that agrees
 # with it wherever it answers (#86): `monotone`.
 
-# What a model is asked, beside whether a number is an array of a sort and
-# the elements of a sort: each function of `Model` at its arguments.
+# What a model is asked by `eval`: each of `Model`'s `funs`, `select`,
+# `const`, `store`, `sum`, `lambda`, `div_zero`, `mod_zero`, `nth_out` and
+# `wrong_sel` at its arguments. Not `array_in` and `domain`, which answer
+# with a `Bool` and a `Domain` and get premises of their own in
+# `monotone`, nor `differ` and `fuel`, which `eval` (the meaning) doesn't
+# consult.
 export enum Asked
     FunsAt f vs                : f~Nat, vs~List Value
     SelectAt s k i             : s~Sort, k~Nat, i~Value
@@ -2784,14 +2790,6 @@ lemma known_mono e1 e2 : e1~List (Result Value Unknown), e2~List (Result Value U
     proof
         match (e1, e2)
             (_ :: xr, _ :: yr) -> have known_mono xr yr
-            _                  -> auto
-
-lemma append_mono a b e1 e2 : a~List (Result Value Unknown), b~List (Result Value Unknown), e1~List (Result Value Unknown),
-                              e2~List (Result Value Unknown), envs_refine a b, envs_refine e1 e2
-    ensures envs_refine (a ++ e1) (b ++ e2)
-    proof
-        match (a, b)
-            (_ :: ar, _ :: br) -> have append_mono ar br e1 e2
             _                  -> auto
 
 lemma reverse_mono a b e1 e2 : a~List (Result Value Unknown), b~List (Result Value Unknown), e1~List (Result Value Unknown),
