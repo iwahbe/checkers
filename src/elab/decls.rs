@@ -1155,7 +1155,7 @@ impl Elab {
                 let z = crate::core::zonk_metas(&self.g, i, pt);
                 let h = z.head();
                 if matches!(h, Tm::Meta(_)) {
-                    let pv = crate::core::eval(&self.g, &Rc::new(cx.env[..i].to_vec()), pt);
+                    let pv = crate::core::eval(&self.g, &cx.env.prefix(i), pt);
                     let _ = crate::core::unify(&self.g, i, &pv, &Val::Univ(0));
                 }
                 pty_terms.push(crate::core::zonk_metas(&self.g, i, pt));
@@ -1207,7 +1207,7 @@ impl Elab {
         self.g.fuel.set(DEFAULT_FUEL);
         let mut cx = self.bind_type_params(tid);
         // Its type equations hold in its fields (#209).
-        let env = Rc::new(cx.env.to_vec());
+        let env = cx.env.clone();
         let eqs = self.ty_teqs.get(&tid).cloned().unwrap_or_default().iter().map(|q| (eval(&self.g, &env, &q.lhs), eval(&self.g, &env, &q.rhs), q.text.clone())).collect();
         self.givens.clear();
         self.assume_teqs(eqs);
@@ -1336,7 +1336,7 @@ impl Elab {
         let preds: Vec<Pred> = invs
             .into_iter()
             .map(|(tm, text, span, lvl, alias)| {
-                let v = eval(&self.g, &Rc::new(cx.env[..lvl].to_vec()), &tm);
+                let v = eval(&self.g, &cx.env.prefix(lvl), &tm);
                 // A field's refinement alias, by its position among params ++ fields.
                 Pred { tm: quote(&self.g, total, &v), text, span, is_post: false, alias }
             })
@@ -2138,9 +2138,9 @@ impl Elab {
         // type has one, at any depth, it holds (a value of it exists).
         let mut ty_givens = Vec::new();
         for (k, b) in binders.iter().enumerate() {
-            let v = eval(&self.g, &Rc::new(cx.env[..k].to_vec()), &b.3);
+            let v = eval(&self.g, &cx.env.prefix(k), &b.3);
             for (_, args, q) in self.ty_teqs_in(k, &v) {
-                let env = Rc::new(args);
+                let env = crate::core::Env::from(args);
                 ty_givens.push((eval(&self.g, &env, &q.lhs), eval(&self.g, &env, &q.rhs), q.text));
             }
         }
@@ -2263,11 +2263,9 @@ impl Elab {
         // signature's equations and its parameters' types' assumed.
         let nb = binders.len();
         let saved_givens = std::mem::take(&mut self.givens);
-        let env = Rc::new(cx.env.to_vec());
+        let env = cx.env.clone();
         let mut eqs: Vec<(Val, Val, String)> = teqs.iter().map(|q| {
-            let mut e = env.to_vec();
-            e.push(Val::var(nb));
-            let e = Rc::new(e);
+            let e = crate::core::push(&env, Val::var(nb));
             (eval(&self.g, &e, &q.lhs), eval(&self.g, &e, &q.rhs), q.text.clone())
         }).collect();
         eqs.extend(ty_givens.iter().cloned());
@@ -2371,7 +2369,8 @@ impl Elab {
                         }
                         let name = b.0.to_string();
                         let span = params.iter().find(|p| p.name == name).map(|p| p.span).unwrap_or(d.span);
-                        let shown = match sig.cx.locals.iter().position(|l| *l.name == name) {
+                        let pos = sig.cx.locals.iter().position(|l| *l.name == name);
+                        let shown = match pos {
                             Some(pos) => {
                                 sig.cx.locals[pos].mult = Mult::One;
                                 let ty = sig.cx.locals[pos].ty.clone();
@@ -2738,7 +2737,7 @@ impl Elab {
     fn assume_pres(&mut self, sig: &mut Sig) {
         let mut env = sig.cx.env.to_vec();
         env.push(Val::var(sig.cx.lvl())); // the result slot; preconditions don't mention it
-        let env = Rc::new(env);
+        let env = crate::core::Env::from(env);
         self.cur_hyps.clear();
         // Its type equations hold in the body (#209).
         self.givens.clear();

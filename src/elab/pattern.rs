@@ -1078,7 +1078,7 @@ impl Elab {
             let sub = cx.locals[occ].sub.or(cx.locals[occ].param);
             let sub_cond = if cx.locals[occ].sub.is_some() { cx.locals[occ].sub_cond } else { None };
             for (n, m, _, fty) in &fields {
-                let ty = eval(&self.g, &Rc::new(env.clone()), fty);
+                let ty = eval(&self.g, &crate::core::Env::from(env.clone()), fty);
                 let mult = if *m == Mult::Zero { Mult::Zero } else { Mult::Many };
                 let l = cx.bind(&format!("${n}"), ty, mult);
                 cx.locals[l].sub = sub;
@@ -1184,7 +1184,7 @@ impl Elab {
             let givens_before = self.givens.len();
             let mut never = false;
             if let Some(teqs) = self.con_teqs.get(&c).cloned() {
-                let env = Rc::new(all.to_vec());
+                let env = crate::core::Env::from(all.to_vec());
                 let eqs = teqs.iter().map(|q| (eval(&self.g, &env, &q.lhs), eval(&self.g, &env, &q.rhs), q.text.clone())).collect();
                 self.assume_teqs(eqs);
                 if self.contradiction().is_some() {
@@ -1219,7 +1219,7 @@ impl Elab {
                 if !super::has_meta(&tm) && mentions_var(&tm, cx.lvl() - 1 - occ) {
                     let mut env = cx.env.to_vec();
                     env[occ] = Val::Con(c, all.clone());
-                    eval(&self.g, &Rc::new(env), &tm)
+                    eval(&self.g, &crate::core::Env::from(env), &tm)
                 } else {
                     expected.clone()
                 }
@@ -1244,7 +1244,7 @@ impl Elab {
                     if !super::has_meta(&tm) && mentions_var(&tm, i) {
                         let mut env = cx.env.to_vec();
                         env[occ] = Val::Con(c, all.clone());
-                        let ty = eval(&self.g, &Rc::new(env), &tm);
+                        let ty = eval(&self.g, &crate::core::Env::from(env), &tm);
                         let new = quote(&self.g, cx.lvl(), &ty);
                         if let Some(f) = self.cur_fn {
                             if self.type_linear(&tm) && self.never_linear(&new) {

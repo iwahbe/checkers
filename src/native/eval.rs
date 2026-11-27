@@ -273,7 +273,7 @@ impl<'g> Evaluator<'g> {
                 _ => checkers_rt::desc::Ty::Unknown,
             }
         }
-        let tv = crate::core::eval(self.g, &Rc::new(Vec::new()), ty);
+        let tv = crate::core::eval(self.g, &crate::core::Env::new(), ty);
         checkers_rt::ops::show_typed_derived(v, &rt_ty(&crate::core::desc_of(self.g, &tv)), p)
     }
 
@@ -577,7 +577,7 @@ fn unboxed_con(g: &Globals, id: crate::core::TyId) -> Option<(ConId, usize)> {
 
 /// The type an alias names, as a closed term, if `ty` unfolds.
 fn unfolded(g: &Globals, ty: &Tm) -> Option<Tm> {
-    let v = crate::core::eval(g, &Rc::new(Vec::new()), ty);
+    let v = crate::core::eval(g, &crate::core::Env::new(), ty);
     let u = crate::core::unfold(g, &v)?;
     Some(crate::core::quote(g, 0, &crate::core::force(g, u)))
 }
@@ -624,11 +624,11 @@ fn subst_params(g: &Globals, t: &Tm, args: &[Tm], earlier: usize) -> Option<Tm> 
     if free.iter().any(|&k| k < earlier) {
         return None;
     }
-    let empty = Rc::new(Vec::new());
+    let empty = crate::core::Env::new();
     let mut env: Vec<crate::core::Val> = args.iter().map(|a| crate::core::eval(g, &empty, a)).collect();
     let np = env.len();
     env.extend((0..earlier).map(|k| crate::core::Val::var(np + k)));
-    let v = crate::core::eval(g, &Rc::new(env), t);
+    let v = crate::core::eval(g, &crate::core::Env::from(env), t);
     Some(crate::core::quote(g, np + earlier, &v))
 }
 

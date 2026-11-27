@@ -91,7 +91,7 @@ impl Elab {
                         }
                         let mut env = args.to_vec();
                         env.extend(std::iter::repeat_n(Val::Error, i));
-                        let fty = eval(&self.g, &Rc::new(env), &f.3);
+                        let fty = eval(&self.g, &crate::core::Env::from(env), &f.3);
                         self.can_hold(lvl, &fty, hit, unknown, depth + 1, seen)
                     })
                 });
@@ -172,7 +172,7 @@ impl Elab {
                 for (i, f) in fields.iter().enumerate() {
                     let x = crate::core::elim(&self.g, v.clone(), Elim::Field(c, i));
                     if f.1 != Mult::Zero {
-                        let fty = eval(&self.g, &Rc::new(env.clone()), &f.3);
+                        let fty = eval(&self.g, &crate::core::Env::from(env.clone()), &f.3);
                         self.held(&x, &fty, lists, depth + 1, out);
                     }
                     env.push(x);
@@ -276,7 +276,7 @@ impl Elab {
                     Held::List(ks, w) if self.one_cown_type(lvl, u, w) => {
                         let Some(c) = contains else { continue };
                         let cown = self.ty_val(self.g.well_known.cown, vec![w.clone()]);
-                        let f = eval(&self.g, &Rc::new(Vec::new()), &Tm::Def(c));
+                        let f = eval(&self.g, &crate::core::Env::new(), &Tm::Def(c));
                         let f = crate::core::app(&self.g, f, cown, Icit::Impl);
                         let f = crate::core::app(&self.g, f, ks.clone(), Icit::Expl);
                         let f = crate::core::app(&self.g, f, x.clone(), Icit::Expl);

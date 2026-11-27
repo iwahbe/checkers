@@ -59,7 +59,7 @@ impl Elab {
     /// parameter is called by the code it runs, not given an effect). The
     /// rule of `call_effects`, for every call of `d`.
     pub(super) fn signature_effects(&self, d: DefId) -> bool {
-        let mut fty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[d.0 as usize].ty);
+        let mut fty = eval(&self.g, &crate::core::Env::new(), &self.g.defs[d.0 as usize].ty);
         let mut lvl = 0;
         while let Val::Pi(_, m, icit, dom, clo) = self.force(&fty) {
             if icit == Icit::Expl && m != Mult::Zero && !matches!(self.force(&dom), Val::Pi(..)) && self.holds_effect(lvl, &dom) {
@@ -97,7 +97,7 @@ impl Elab {
         }
         let lvl = cx.lvl();
         let (mut fty, local) = match h {
-            Tm::Def(d) => (eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[d.0 as usize].ty), false),
+            Tm::Def(d) => (eval(&self.g, &crate::core::Env::new(), &self.g.defs[d.0 as usize].ty), false),
             Tm::Var(i) => {
                 let l = lvl.checked_sub(i + 1)?;
                 (cx.ty_of(l), true)

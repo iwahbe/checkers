@@ -115,7 +115,7 @@ impl Elab {
         (0..=nb)
             .map(|k| {
                 let ty = if k < nb { &binders[k].3 } else { result };
-                let env = Rc::new((0..k).map(Val::var).collect::<Vec<_>>());
+                let env = (0..k).map(Val::var).collect::<crate::core::Env>();
                 let mut r = self.type_range(&eval(&self.g, &env, ty))?;
                 for p in preds.iter().filter(|p| p.is_post == (k == nb)) {
                     r = r.meet(subject_range(&p.tm, nb - k, &|t| self.constant(t)));
@@ -206,7 +206,7 @@ impl Elab {
         let levels: Vec<usize> = free.iter().rev().map(|i| depth - 1 - i).collect();
         let k = levels.len();
         let dense = |i: usize| k - 1 - levels.binary_search(&(depth - 1 - i)).unwrap();
-        let env = Rc::new((0..k).map(Val::var).collect::<Vec<_>>());
+        let env = (0..k).map(Val::var).collect::<crate::core::Env>();
         let v = eval(&self.g, &env, &crate::core::rename_free(&t, 0, &dense));
         if let Some(l) = crate::core::known_lit(&self.g, v.clone()) {
             return Some(Rc::new(Tm::Lit(l)));
@@ -296,7 +296,7 @@ impl Elab {
             // calls runs only once its module is proved.
             return None;
         }
-        if let Some(l) = crate::core::known_lit(&self.g, eval(&self.g, &Rc::new(Vec::new()), t)) {
+        if let Some(l) = crate::core::known_lit(&self.g, eval(&self.g, &crate::core::Env::new(), t)) {
             self.known_cache.borrow_mut().insert(key, Some(Tm::Lit(l.clone())));
             return Some(Tm::Lit(l));
         }
@@ -367,7 +367,7 @@ impl Elab {
         }
         let mut found = Vec::new();
         calls(t, &mut found);
-        let empty = Rc::new(Vec::new());
+        let empty = crate::core::Env::new();
         for c in &found {
             let (h, args) = c.spine();
             let Tm::Def(d) = h else { continue };
@@ -394,7 +394,7 @@ impl Elab {
     fn known_bool(&self, t: &Tm, depth: usize, work: u64) -> Option<bool> {
         let wk = &self.g.well_known;
         let saved = self.g.fuel.replace(crate::core::DEFAULT_FUEL);
-        let forced = crate::core::force(&self.g, eval(&self.g, &Rc::new(Vec::new()), t));
+        let forced = crate::core::force(&self.g, eval(&self.g, &crate::core::Env::new(), t));
         self.g.fuel.set(saved);
         match forced {
             Val::Con(c, _) if Some(c) == wk.true_con => return Some(true),
@@ -514,7 +514,7 @@ impl Elab {
             return if nat { self.nat() } else { self.int() };
         }
         if let Some(d) = self.ranges.get(&(r.lo, r.hi)) {
-            return eval(&self.g, &Rc::new(Vec::new()), &Tm::Def(*d));
+            return eval(&self.g, &crate::core::Env::new(), &Tm::Def(*d));
         }
         let mut preds = Vec::new();
         // `n < 0` is `-(-n)`, and `-i128::MIN` is a `Big` literal.
@@ -548,7 +548,7 @@ impl Elab {
         self.alias_subject.insert(did, Rc::from("n"));
         self.g.well_known.layouts.push((did, layout_for(r)));
         self.ranges.insert((r.lo, r.hi), did);
-        eval(&self.g, &Rc::new(Vec::new()), &Tm::Def(did))
+        eval(&self.g, &crate::core::Env::new(), &Tm::Def(did))
     }
 
     /// The join placeholder `expected` is, if it is one (before the first

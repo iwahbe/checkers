@@ -623,7 +623,7 @@ impl<'a, 'g> Lowerer<'a, 'g> {
                     // the type parameters, as layouts (#624).
                     let types = checkers_rt::builtins::keeps_types(&full);
                     let mut keep = Vec::new();
-                    let mut v = crate::core::eval(g, &std::rc::Rc::new(Vec::new()), &info.ty);
+                    let mut v = crate::core::eval(g, &crate::core::Env::new(), &info.ty);
                     let mut k = 0;
                     while let crate::core::Val::Pi(_, m, _, dom, c) = crate::core::force(g, v.clone()) {
                         let is_type = matches!(crate::core::force(g, (*dom).clone()), crate::core::Val::Univ(_));

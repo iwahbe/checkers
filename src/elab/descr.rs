@@ -23,7 +23,7 @@ impl Elab {
     /// constructors.
     fn type_formers(&self, d: DefId) -> Vec<(usize, Name)> {
         let mut out = Vec::new();
-        let mut v = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[d.0 as usize].ty);
+        let mut v = eval(&self.g, &crate::core::Env::new(), &self.g.defs[d.0 as usize].ty);
         let mut k = 0;
         while let Val::Pi(x, _, _, dom, c) = self.force(&v) {
             if crate::core::is_type_former(&quote(&self.g, k, &dom)) {
@@ -101,7 +101,7 @@ impl Elab {
                 if let crate::core::FieldType::NotKept(l) = crate::core::field_type(&self.g, c, k) {
                     return Some((id, c, k, l));
                 }
-                let env = Rc::new((0..np + k).map(Val::var).collect::<Vec<_>>());
+                let env = (0..np + k).map(Val::var).collect::<crate::core::Env>();
                 let mut found = None;
                 self.each_tycon(&eval(&self.g, &env, &ci.fields[k].3), 0, &mut |t| {
                     if found.is_none() {

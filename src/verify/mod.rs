@@ -1125,8 +1125,8 @@ fn guess_group(e: &Elab, user: &str, gr: &crate::elab::termination::GuessGroup, 
             }
             let lvl = c.ob.ctx.len();
             let n_caller = e.specs.get(&c.caller).map_or(0, |s| s.n_binders);
-            let here: crate::core::Env = std::rc::Rc::new((0..n_caller).map(Val::var).collect());
-            let there: crate::core::Env = std::rc::Rc::new(c.args.clone());
+            let here: crate::core::Env = (0..n_caller).map(Val::var).collect::<crate::core::Env>();
+            let there: crate::core::Env = crate::core::Env::from(c.args.clone());
             let a: Vec<Tm> = theirs.0.iter().map(|t| quote(&e.g, lvl, &eval(&e.g, &there, t))).collect();
             let b: Vec<Tm> = mine.0.iter().map(|t| quote(&e.g, lvl, &eval(&e.g, &here, t))).collect();
             if same_at.is_none() && c.caller == c.callee && a.iter().zip(&b).all(|(x, y)| format!("{x:?}") == format!("{y:?}")) {
@@ -1144,9 +1144,7 @@ fn guess_group(e: &Elab, user: &str, gr: &crate::elab::termination::GuessGroup, 
             for bj in b.iter().rev() {
                 goal = and(Tm::PrimApp(Prim::Le, vec![Tm::Lit(Lit::Num(0)), bj.clone()]), goal);
             }
-            let env: crate::core::Env = std::rc::Rc::new(
-                c.ob.ctx.iter().enumerate().map(|(l, x)| x.def.clone().unwrap_or_else(|| Val::var(l))).collect(),
-            );
+            let env: crate::core::Env = c.ob.ctx.iter().enumerate().map(|(l, x)| x.def.clone().unwrap_or_else(|| Val::var(l))).collect();
             let mut o = c.ob.clone();
             o.goal = eval(&e.g, &env, &goal);
             let func = e.g.defs[c.caller.0 as usize].name.to_string();
@@ -1457,7 +1455,7 @@ fn known_calls(e: &Elab, o: &Obligation) -> Vec<crate::core::Val> {
         let (h, args) = t.spine();
         let Tm::Def(d) = h else { return false };
         let Some(info) = e.g.defs.get(d.0 as usize) else { return false };
-        let empty = std::rc::Rc::new(Vec::new());
+        let empty = crate::core::Env::new();
         let mut ty = crate::core::eval(&e.g, &empty, &info.ty);
         for k in 0..args.len() {
             let Val::Pi(_, _, _, _, c) = crate::core::force(&e.g, ty) else { return false };
@@ -1481,7 +1479,7 @@ fn known_calls(e: &Elab, o: &Obligation) -> Vec<crate::core::Val> {
     for v in std::iter::once(&o.goal).chain(&o.facts) {
         collect(e, &quote(&e.g, lvl, v), 0, &mut found);
     }
-    let env = std::rc::Rc::new((0..lvl).map(Val::var).collect::<Vec<_>>());
+    let env = (0..lvl).map(Val::var).collect::<crate::core::Env>();
     found.into_iter().map(|(t, n)| crate::core::eval(&e.g, &env, &Tm::PrimApp(Prim::Eq, vec![t, Tm::Lit(Lit::Num(n))]))).collect()
 }
 

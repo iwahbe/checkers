@@ -34,6 +34,7 @@ use crate::source::{SourceFile, Span};
 use crate::syntax::ast;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
+use crate::pvec::PVec;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sym {
@@ -184,17 +185,24 @@ pub struct Local {
 
 #[derive(Clone, Default)]
 pub struct Cx {
-    /// Shared, so that evaluating under the context doesn't copy it.
-    pub env: Rc<Vec<Val>>,
-    pub locals: Vec<Local>,
+    /// The locals' values. Each part of a context is persistent, so a copy
+    /// shares it: a context kept for later, as a constraint left until the
+    /// module's bodies are checked keeps the one it was made in, costs
+    /// nothing to keep however many locals are in scope.
+    pub env: Env,
+    pub locals: PVec<Local>,
+    /// The levels of the λ-bound locals (`Local::bound`), in order: what an
+    /// unknown abstracts over, and where a dictionary in scope is, without
+    /// a walk over every local.
+    bound: PVec<usize>,
     /// The locals' names, kept apart so that a constraint left for later
     /// keeps them without a copy (`names`).
     names: Names,
     /// Elaborating a type position (after `~`): `Uname`s prefer the type namespace (#521).
     pub type_pos: bool,
     /// Facts in scope (§7.1): `Bool` values known to be true, tagged with the
-    /// context length when they were added.
-    pub facts: Vec<(usize, Val)>,
+    /// context length when they were added, in order.
+    pub facts: PVec<(usize, Val)>,
 }
 
 impl Scope for Cx {
@@ -227,14 +235,15 @@ impl Cx {
     }
     pub fn bind(&mut self, name: &str, ty: Val, mult: Mult) -> usize {
         let l = self.lvl();
-        Rc::make_mut(&mut self.env).push(Val::var(l));
+        self.env.push(Val::var(l));
+        self.bound.push(l);
         self.names.push(Rc::from(name));
         self.locals.push(Local { name: Rc::from(name), ty, mult, bound: true, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default() });
         l
     }
     pub fn define(&mut self, name: &str, ty: Val, val: Val, mult: Mult) -> usize {
         let l = self.lvl();
-        Rc::make_mut(&mut self.env).push(val);
+        self.env.push(val);
         self.names.push(Rc::from(name));
         self.locals.push(Local { name: Rc::from(name), ty, mult, bound: false, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default() });
         l
@@ -246,26 +255,33 @@ impl Cx {
         l
     }
     pub fn pop(&mut self) {
-        Rc::make_mut(&mut self.env).pop();
-        self.names.pop();
-        self.locals.pop();
-        let n = self.locals.len();
-        self.facts.retain(|(l, _)| *l <= n);
+        let n = self.lvl().saturating_sub(1);
+        self.truncate(n);
     }
     pub fn truncate(&mut self, n: usize) {
-        Rc::make_mut(&mut self.env).truncate(n);
+        self.env.truncate(n);
         self.names.truncate(n);
         self.locals.truncate(n);
-        self.facts.retain(|(l, _)| *l <= n);
+        while self.bound.last().is_some_and(|l| *l >= n) {
+            self.bound.pop();
+        }
+        // In order of the levels they were added at.
+        while self.facts.last().is_some_and(|(l, _)| *l > n) {
+            self.facts.pop();
+        }
     }
     pub fn assume(&mut self, fact: Val) {
         self.facts.push((self.locals.len(), fact));
     }
     pub fn lookup(&self, name: &str) -> Option<usize> {
-        self.locals.iter().rposition(|l| l.name.as_ref() == name)
+        self.names.level_of(name)
     }
     pub fn var(&self, lvl: usize) -> Tm {
         Tm::Var(self.lvl() - lvl - 1)
+    }
+    /// The levels of the λ-bound locals, outermost first.
+    pub fn bound(&self) -> impl DoubleEndedIterator<Item = usize> + '_ {
+        self.bound.iter().copied()
     }
 }
 
@@ -1330,10 +1346,8 @@ impl Elab {
     pub fn fresh_meta(&mut self, cx: &Cx) -> Tm {
         let m = self.g.fresh_meta();
         let mut t = Tm::Meta(m);
-        for (lvl, l) in cx.locals.iter().enumerate() {
-            if l.bound {
-                t = Tm::App(Rc::new(t), Rc::new(cx.var(lvl)), Icit::Expl, Mult::Many);
-            }
+        for lvl in cx.bound() {
+            t = Tm::App(Rc::new(t), Rc::new(cx.var(lvl)), Icit::Expl, Mult::Many);
         }
         t
     }
@@ -1343,8 +1357,8 @@ impl Elab {
     pub fn fresh_meta_over_types(&mut self, cx: &Cx) -> Tm {
         let m = self.g.fresh_meta();
         let mut t = Tm::Meta(m);
-        for (lvl, l) in cx.locals.iter().enumerate() {
-            if l.bound && self.is_type_level(&l.ty) {
+        for lvl in cx.bound() {
+            if self.is_type_level(&cx.locals[lvl].ty) {
                 t = Tm::App(Rc::new(t), Rc::new(cx.var(lvl)), Icit::Expl, Mult::Many);
             }
         }
@@ -1784,7 +1798,7 @@ impl Elab {
                 let mut fv = std::collections::BTreeSet::new();
                 crate::core::free_vars(t, 0, &mut fv);
                 if fv.is_empty() {
-                    self.val_lin(&eval(&self.g, &Rc::new(Vec::new()), t), visiting)
+                    self.val_lin(&eval(&self.g, &crate::core::Env::new(), t), visiting)
                 } else {
                     Lin::Depends
                 }
@@ -1854,7 +1868,7 @@ impl Elab {
         let n = fv.iter().next_back().map_or(0, |m| m + 1);
         // Unknowns far above any context, as for fields (`field_lin`).
         let env: Vec<Val> = (0..n).map(|k| Val::var(usize::MAX / 4 + k)).collect();
-        self.val_linear(&eval(&self.g, &Rc::new(env), t))
+        self.val_linear(&eval(&self.g, &crate::core::Env::from(env), t))
     }
 
     /// Is a value of this type linear (#533)?
@@ -1921,9 +1935,9 @@ impl Elab {
 
     fn case_arms_linear(&self, c: &CaseTm, env: &Env, depth: usize) -> bool {
         let arm = |n: usize, body: &Tm| {
-            let mut e = (**env).clone();
+            let mut e = env.clone();
             e.extend((0..n).map(|k| Val::var(usize::MAX / 2 + depth * 64 + k)));
-            self.val_linear_at(&eval(&self.g, &Rc::new(e), body), depth + 1)
+            self.val_linear_at(&eval(&self.g, &e, body), depth + 1)
         };
         c.branches.iter().any(|(_, n, b)| arm(*n, b))
             || c.lits.iter().any(|(_, b)| arm(0, b))
@@ -1961,7 +1975,7 @@ impl Elab {
         for c in &ti.ctors {
             let mut env: Vec<Val> = args.to_vec();
             for (k, f) in self.g.cons[c.0 as usize].fields.iter().enumerate() {
-                let ty = eval(&self.g, &Rc::new(env.clone()), &f.3);
+                let ty = eval(&self.g, &crate::core::Env::from(env.clone()), &f.3);
                 if f.1 != Mult::Zero && self.field_lin(&f.3, &mut Vec::new()) != Lin::No && self.val_linear_at(&ty, depth + 1) {
                     return true;
                 }
@@ -2192,8 +2206,8 @@ impl Elab {
             free_levels(&quote(&self.g, lvl, v), lvl, 0, &mut out);
             out
         };
-        let earlier: HashSet<usize> = cx.facts[..before.min(cx.facts.len())].iter().flat_map(|(_, v)| levels(v)).collect();
-        let own: Vec<usize> = cx.facts[before.min(cx.facts.len())..].iter().flat_map(|(_, v)| levels(v)).collect();
+        let earlier: HashSet<usize> = cx.facts.iter().take(before).flat_map(|(_, v)| levels(v)).collect();
+        let own: Vec<usize> = cx.facts.iter().skip(before).flat_map(|(_, v)| levels(v)).collect();
         own.iter().any(|l| earlier.contains(l) || cx.locals.get(*l).is_some_and(|x| !x.bound || self.refined_ty(&x.ty)))
     }
 
@@ -2244,9 +2258,9 @@ impl Elab {
                 if let Val::Neutral(_, sp) = &v {
                     if let Some(Elim::Case(ct, env)) = sp.last() {
                         let at = |n: usize, body: &crate::core::Tm| {
-                            let mut e = (**env).clone();
+                            let mut e = env.clone();
                             e.extend(std::iter::repeat_n(Val::Error, n));
-                            self.nat_by_closure(cx, &eval(&self.g, &Rc::new(e), body))
+                            self.nat_by_closure(cx, &eval(&self.g, &e, body))
                         };
                         if ct.branches.iter().all(|(_, n, b)| at(*n, b))
                             && ct.lits.iter().all(|(_, b)| at(0, b))
@@ -2264,7 +2278,7 @@ impl Elab {
                         // Only a type that mentions no parameter or earlier field.
                         let mut free = std::collections::BTreeSet::new();
                         crate::core::free_vars(fty, 0, &mut free);
-                        if free.is_empty() && crate::core::is_nat(&self.g, &eval(&self.g, &Rc::new(vec![Val::Error; np + i]), fty)) {
+                        if free.is_empty() && crate::core::is_nat(&self.g, &eval(&self.g, &crate::core::Env::from(vec![Val::Error; np + i]), fty)) {
                             return true;
                         }
                     }
@@ -2277,7 +2291,7 @@ impl Elab {
                     // only where its own hold (the prover knows so much).
                     Val::Neutral(Head::Def(d), _) if self.class_methods.contains(d) && self.specs.get(d).is_some_and(|s| s.preds.iter().any(|p| !p.is_post)) => false,
                     Val::Neutral(Head::Def(d), sp) => {
-                        let ty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[d.0 as usize].ty);
+                        let ty = eval(&self.g, &crate::core::Env::new(), &self.g.defs[d.0 as usize].ty);
                         self.returns_nat(&ty, sp)
                     }
                     Val::Neutral(Head::Var(l), sp) => cx.locals.get(*l).is_some_and(|x| self.returns_nat(&x.ty, sp)),
@@ -2338,7 +2352,7 @@ impl Elab {
         for inv in &pt.invariants {
             let subject = match (inv.proj, &v) {
                 (None, _) => v.clone(),
-                (Some((k, last)), _) => eval(&self.g, &Rc::new(vec![v.clone()]), &Tm::Proj(Rc::new(Tm::Var(0)), k, last)),
+                (Some((k, last)), _) => eval(&self.g, &crate::core::Env::from(vec![v.clone()]), &Tm::Proj(Rc::new(Tm::Var(0)), k, last)),
             };
             let mut env = inv.args.clone();
             env.push(subject);
@@ -2401,7 +2415,7 @@ impl Elab {
         let (h, args) = ty.spine();
         let Tm::Def(d) = h else { return Vec::new() };
         let Some(preds) = self.alias_preds.get(d) else { return Vec::new() };
-        let prefix = Rc::new(cx.env[..at].to_vec());
+        let prefix = cx.env.prefix(at);
         let mut env: Vec<Val> = args.iter().map(|a| eval(&self.g, &prefix, a)).collect();
         // The predicates as written, in this use's names: `n <= hi` of
         // `type Bounded lo hi = n~Int, …` is `b <= 10` for `b~Bounded 0 10`.
@@ -2439,7 +2453,7 @@ impl Elab {
 
     /// Instantiate a predicate over `binders ++ [result]` with values.
     pub fn inst_pred(&self, p: &Pred, env: Vec<Val>) -> Val {
-        eval(&self.g, &Rc::new(env), &p.tm)
+        eval(&self.g, &crate::core::Env::from(env), &p.tm)
     }
 
     /// Is local `l` known at compile time (§8.9)? A `comptime` parameter or
@@ -2504,7 +2518,7 @@ impl Elab {
     /// `Nat`, the prelude's refinement of `Int` (#609).
     pub fn nat(&self) -> Val {
         match self.g.well_known.nat {
-            Some(d) => eval(&self.g, &Rc::new(Vec::new()), &Tm::Def(d)),
+            Some(d) => eval(&self.g, &crate::core::Env::new(), &Tm::Def(d)),
             None => self.int(),
         }
     }
@@ -2519,7 +2533,7 @@ impl Elab {
     fn prelude_alias(&self, name: &str) -> Val {
         let d = self.g.defs.iter().position(|i| i.module.as_ref() == "std.prelude" && i.name.as_ref() == name);
         match d {
-            Some(d) => eval(&self.g, &Rc::new(Vec::new()), &Tm::Def(DefId(d as u32))),
+            Some(d) => eval(&self.g, &crate::core::Env::new(), &Tm::Def(DefId(d as u32))),
             None => self.int(),
         }
     }
@@ -2535,7 +2549,7 @@ impl Elab {
     /// `Bytes`, the alias of `Array U8` (#624).
     pub fn bytes(&self) -> Val {
         match self.g.well_known.bytes {
-            Some(d) => eval(&self.g, &Rc::new(Vec::new()), &Tm::Def(d)),
+            Some(d) => eval(&self.g, &crate::core::Env::new(), &Tm::Def(d)),
             None => Val::Error,
         }
     }

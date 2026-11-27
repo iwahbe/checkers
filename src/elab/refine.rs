@@ -134,7 +134,7 @@ impl Elab {
 
     /// `t`, over `lvl` locals, as a value over the same locals.
     fn eval_closed_at(&self, lvl: usize, t: &Tm) -> Val {
-        let env = Rc::new((0..lvl).map(Val::var).collect::<Vec<_>>());
+        let env = (0..lvl).map(Val::var).collect::<crate::core::Env>();
         crate::core::eval(&self.g, &env, t)
     }
 
@@ -770,7 +770,7 @@ impl Elab {
         let (h, args) = t.spine();
         let Tm::Def(f) = h else { return None };
         // The class's binders: `\ … {d} x y -> d.f x y`.
-        let mut ty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[f.0 as usize].ty);
+        let mut ty = eval(&self.g, &crate::core::Env::new(), &self.g.defs[f.0 as usize].ty);
         let mut binders = Vec::new();
         let mut body = self.g.defs[f.0 as usize].body.as_ref()?;
         while let Tm::Lam(_, _, _, b) = body {
@@ -808,7 +808,7 @@ impl Elab {
             return None;
         }
         let mut out = Tm::Def(*g);
-        let mut gty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[g.0 as usize].ty);
+        let mut gty = eval(&self.g, &crate::core::Env::new(), &self.g.defs[g.0 as usize].ty);
         for (a, i, m) in &spine[..k] {
             let mut fv = std::collections::BTreeSet::new();
             free_vars(a, 0, &mut fv);
