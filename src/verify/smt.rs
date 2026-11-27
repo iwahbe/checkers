@@ -505,6 +505,26 @@ fn cond_copies(x: &Sx, index: &HashMap<&str, usize>, clean: &[bool], names: &mut
     }
 }
 
+/// `binder` (`lam` or `all` followed by a mark) is named by height: one
+/// more than the greatest of the binders inside it, and 0 if there are none,
+/// so a term is spelled the same wherever it occurs in a query, whatever it is
+/// inside. The binders of the lambdas and `forall`s around it are still marks,
+/// so none is captured: a binder's height is greater than those inside it.
+fn name_binders(text: &str, mark: &str) -> String {
+    let mut height = 0;
+    for prefix in ["|lam", "|all"] {
+        let mut rest = text;
+        while let Some(k) = rest.find(prefix) {
+            rest = &rest[k + prefix.len()..];
+            let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+            if digits > 0 && rest[digits..].starts_with('.') {
+                height = height.max(rest[..digits].parse::<usize>().unwrap_or(0) + 1);
+            }
+        }
+    }
+    text.replace(&format!("|lam{mark}."), &format!("|lam{height}.")).replace(&format!("|all{mark}."), &format!("|all{height}."))
+}
+
 /// A `lambda`, `forall` or `exists`.
 fn is_binder(items: &[Sx]) -> bool {
     matches!(items.first(), Some(Sx::Atom(a)) if a == "lambda" || a == "forall" || a == "exists")
@@ -827,8 +847,10 @@ pub struct Builder<'a> {
     bodies: bool,
     /// The definitions each definition's body names (`reaches`).
     def_refs: HashMap<DefId, Vec<DefId>>,
-    /// How many lambdas are being translated (names their parameters).
+    /// How many lambdas and `forall`s are being translated.
     lam_depth: usize,
+    /// Placeholders for binders whose bodies are being translated (`binders`).
+    binder_marks: usize,
     /// Function values given to a local function as fresh constants (`select`).
     fun_args: usize,
     ctx: Vec<Option<Ent>>,
@@ -889,6 +911,7 @@ impl<'a> Builder<'a> {
             bodies: false,
             def_refs: HashMap::new(),
             lam_depth: 0,
+            binder_marks: 0,
             ctx: Vec::new(),
             ctx_src: Vec::new(),
             reps: Vec::new(),
@@ -2870,7 +2893,7 @@ impl<'a> Builder<'a> {
     /// check a counterexample (#77). Its variables range over their types:
     /// a `Nat` is non-negative and a refinement's predicates hold (#112).
     fn forall(&mut self, env: &[Ent], pi: &Tm) -> Tx<(String, Sort)> {
-        let d = self.lam_depth;
+        let d = self.binder_mark();
         let mut inner = env.to_vec();
         let mut binds = Vec::new();
         let mut guards = Vec::new();
@@ -2895,7 +2918,8 @@ impl<'a> Builder<'a> {
         if bs != Sort::Bool || binds.is_empty() {
             return out("a `forall` that is not a `Bool`");
         }
-        Ok((format!("(forall ({}) {})", binds.join(" "), implies(&guards, bt)), Sort::Bool))
+        let all = format!("(forall ({}) {})", binds.join(" "), implies(&guards, bt));
+        Ok((name_binders(&all, &d), Sort::Bool))
     }
 
     /// Apply the function value `ft` (of sort `s`) to `args` (D139).
@@ -2970,7 +2994,7 @@ impl<'a> Builder<'a> {
                 _ => {}
             }
         }
-        let d = self.lam_depth;
+        let d = self.binder_mark();
         let names: Vec<String> = (0..ps.len()).map(|k| format!("|lam{d}.{k}|")).collect();
         let mut inner = env.to_vec();
         let mut body = arg;
@@ -3009,7 +3033,14 @@ impl<'a> Builder<'a> {
         for (n, s) in names.iter().zip(&ps).rev() {
             v = format!("(lambda (({n} {})) {v})", s.render(self.e));
         }
-        Ok(v)
+        Ok(name_binders(&v, &d))
+    }
+
+    /// A placeholder for the binders of a lambda or `forall` being
+    /// translated, replaced by `name_binders` once its body is.
+    fn binder_mark(&mut self) -> String {
+        self.binder_marks += 1;
+        format!("?{}", self.binder_marks)
     }
 
     /// Is this binder's type a class's dictionary (D136)?
