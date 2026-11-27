@@ -34,6 +34,7 @@ use crate::source::{SourceFile, Span};
 use crate::syntax::ast;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
+use crate::pvec::PVec;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sym {
@@ -184,23 +185,27 @@ pub struct Local {
 
 #[derive(Clone, Default)]
 pub struct Cx {
-    /// Shared, so that evaluating under the context doesn't copy it.
+    /// The locals' values. Each part of a context is persistent, so a copy
+    /// shares it: a context kept for later, as a constraint left until the
+    /// module's bodies are checked keeps the one it was made in, costs
+    /// nothing to keep however many locals are in scope.
     pub env: Env,
-    pub locals: Vec<Local>,
+    pub locals: PVec<Local>,
+    /// The levels of the λ-bound locals (`Local::bound`), in order: what an
+    /// unknown abstracts over, and where a dictionary in scope is, without
+    /// a walk over every local.
+    bound: PVec<usize>,
     /// The locals' names, kept apart so that a constraint left for later
     /// keeps them without a copy (`names`).
     names: Names,
     /// Elaborating a type position (after `~`): `Uname`s prefer the type namespace (D26).
     pub type_pos: bool,
     /// Facts in scope (§7.1): `Bool` values known to be true, tagged with the
-    /// context length when they were added.
-    pub facts: Vec<(usize, Val)>,
-    /// The levels of the bound locals, outermost first: the only locals a
-    /// value can refer to (a defined local is its value).
-    bound: Vec<usize>,
+    /// context length when they were added, in order.
+    pub facts: PVec<(usize, Val)>,
     /// How many locals have each name, so that a name is looked up in
-    /// scope without going through every local (`Scope::count`).
-    named: HashMap<Name, usize>,
+    /// scope without a walk over every local (`Scope::count`).
+    named: crate::pmap::PMap<Name, usize>,
 }
 
 impl Scope for Cx {
@@ -234,15 +239,11 @@ impl Cx {
     pub fn names(&self) -> Names {
         self.names.clone()
     }
-    /// The levels of the bound locals, outermost first.
-    pub fn bound(&self) -> &[usize] {
-        &self.bound
-    }
     pub fn bind(&mut self, name: &str, ty: Val, mult: Mult) -> usize {
         let l = self.lvl();
         self.env.push(Val::var(l));
         self.bound.push(l);
-        *self.named.entry(Rc::from(name)).or_default() += 1;
+        self.name_more(name);
         self.names.push(Rc::from(name));
         self.locals.push(Local { name: Rc::from(name), ty, mult, bound: true, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default() });
         l
@@ -250,7 +251,7 @@ impl Cx {
     pub fn define(&mut self, name: &str, ty: Val, val: Val, mult: Mult) -> usize {
         let l = self.lvl();
         self.env.push(val);
-        *self.named.entry(Rc::from(name)).or_default() += 1;
+        self.name_more(name);
         self.names.push(Rc::from(name));
         self.locals.push(Local { name: Rc::from(name), ty, mult, bound: false, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default() });
         l
@@ -262,47 +263,45 @@ impl Cx {
         l
     }
     pub fn pop(&mut self) {
-        let n = self.locals.len().saturating_sub(1);
-        self.forget(n);
-        self.env.pop();
-        self.names.pop();
-        self.locals.pop();
-        self.forget_bound(n);
-        self.facts.retain(|(l, _)| *l <= n);
+        let n = self.lvl().saturating_sub(1);
+        self.truncate(n);
+    }
+    /// One more local named `name`.
+    fn name_more(&mut self, name: &str) {
+        let k = self.named.get(name).copied().unwrap_or(0);
+        self.named.insert(Rc::from(name), k + 1);
     }
     pub fn truncate(&mut self, n: usize) {
-        self.forget(n);
+        for l in n..self.lvl() {
+            let name = self.locals[l].name.clone();
+            match self.named.get(&*name).copied() {
+                Some(k) if k > 1 => self.named.insert(name, k - 1),
+                _ => self.named.remove(&*name),
+            }
+        }
         self.env.truncate(n);
         self.names.truncate(n);
         self.locals.truncate(n);
-        self.forget_bound(n);
-        self.facts.retain(|(l, _)| *l <= n);
-    }
-    /// Forget the names of the locals at levels `n` and up.
-    fn forget(&mut self, n: usize) {
-        for l in self.locals.get(n..).unwrap_or_default() {
-            if let Some(k) = self.named.get_mut(&l.name) {
-                *k -= 1;
-                if *k == 0 {
-                    self.named.remove(&l.name);
-                }
-            }
-        }
-    }
-    /// Forget the bound locals at levels `n` and up.
-    fn forget_bound(&mut self, n: usize) {
         while self.bound.last().is_some_and(|l| *l >= n) {
             self.bound.pop();
+        }
+        // In order of the levels they were added at.
+        while self.facts.last().is_some_and(|(l, _)| *l > n) {
+            self.facts.pop();
         }
     }
     pub fn assume(&mut self, fact: Val) {
         self.facts.push((self.locals.len(), fact));
     }
     pub fn lookup(&self, name: &str) -> Option<usize> {
-        self.locals.iter().rposition(|l| l.name.as_ref() == name)
+        self.names.level_of(name)
     }
     pub fn var(&self, lvl: usize) -> Tm {
         Tm::Var(self.lvl() - lvl - 1)
+    }
+    /// The levels of the λ-bound locals, outermost first.
+    pub fn bound(&self) -> impl DoubleEndedIterator<Item = usize> + '_ {
+        self.bound.iter().copied()
     }
 }
 
@@ -1375,7 +1374,7 @@ impl Elab {
         let m = self.g.fresh_meta();
         let mut t = Tm::Meta(m);
         for lvl in cx.bound() {
-            t = Tm::App(Rc::new(t), Rc::new(cx.var(*lvl)), Icit::Expl, Mult::Many);
+            t = Tm::App(Rc::new(t), Rc::new(cx.var(lvl)), Icit::Expl, Mult::Many);
         }
         t
     }
@@ -1386,8 +1385,8 @@ impl Elab {
         let m = self.g.fresh_meta();
         let mut t = Tm::Meta(m);
         for lvl in cx.bound() {
-            if self.is_type_level(&cx.locals[*lvl].ty) {
-                t = Tm::App(Rc::new(t), Rc::new(cx.var(*lvl)), Icit::Expl, Mult::Many);
+            if self.is_type_level(&cx.locals[lvl].ty) {
+                t = Tm::App(Rc::new(t), Rc::new(cx.var(lvl)), Icit::Expl, Mult::Many);
             }
         }
         t
@@ -1953,7 +1952,7 @@ impl Elab {
         let arm = |n: usize, body: &Tm| {
             let mut e = env.clone();
             e.extend((0..n).map(|k| Val::var(usize::MAX / 2 + depth * 64 + k)));
-            self.val_linear_at(&eval(&self.g, &Rc::new(e), body), depth + 1)
+            self.val_linear_at(&eval(&self.g, &e, body), depth + 1)
         };
         c.branches.iter().any(|(_, n, b)| arm(*n, b))
             || c.lits.iter().any(|(_, b)| arm(0, b))
@@ -2222,8 +2221,8 @@ impl Elab {
             free_levels(&quote(&self.g, lvl, v), lvl, 0, &mut out);
             out
         };
-        let earlier: HashSet<usize> = cx.facts[..before.min(cx.facts.len())].iter().flat_map(|(_, v)| levels(v)).collect();
-        let own: Vec<usize> = cx.facts[before.min(cx.facts.len())..].iter().flat_map(|(_, v)| levels(v)).collect();
+        let earlier: HashSet<usize> = cx.facts.iter().take(before).flat_map(|(_, v)| levels(v)).collect();
+        let own: Vec<usize> = cx.facts.iter().skip(before).flat_map(|(_, v)| levels(v)).collect();
         own.iter().any(|l| earlier.contains(l) || cx.locals.get(*l).is_some_and(|x| !x.bound || self.refined_ty(&x.ty)))
     }
 
@@ -2276,7 +2275,7 @@ impl Elab {
                         let at = |n: usize, body: &crate::core::Tm| {
                             let mut e = env.clone();
                             e.extend(std::iter::repeat_n(Val::Error, n));
-                            self.nat_by_closure(cx, &eval(&self.g, &Rc::new(e), body))
+                            self.nat_by_closure(cx, &eval(&self.g, &e, body))
                         };
                         if ct.branches.iter().all(|(_, n, b)| at(*n, b))
                             && ct.lits.iter().all(|(_, b)| at(0, b))

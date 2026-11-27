@@ -206,7 +206,7 @@ pub fn known_var(t: &Tm) -> Option<(&Tm, &Tm)> {
 /// compiled (`ir`): one entry per binder, innermost first. Extending it
 /// shares what is there, so code of n nested `let`s is compiled in time
 /// and memory in proportion to n.
-pub type Fns = crate::env::List<Option<Rc<Bound>>>;
+pub type Fns = crate::pvec::PVec<Option<Rc<Bound>>>;
 
 /// A variable bound to a known function.
 pub struct Bound {
@@ -221,7 +221,7 @@ pub struct Bound {
 /// variable bound to a known function marked as bound to it (`known`).
 pub fn know(t: &Tm, fns: &Fns, depth: usize) -> Tm {
     match t {
-        Tm::Var(v) if *v >= depth => match fns.nth(v - depth) {
+        Tm::Var(v) if *v >= depth => match (v - depth).checked_add(1).and_then(|k| fns.len().checked_sub(k)).and_then(|l| fns.get(l)) {
             Some(Some(b)) => known(Tm::Var(*v), crate::core::rename_free(&b.f, 0, &|x| x + v + 1)),
             _ => t.clone(),
         },

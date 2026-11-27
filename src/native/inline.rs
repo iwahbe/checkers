@@ -201,7 +201,7 @@ impl Inliner<'_> {
 /// substituting each into its body was.
 #[derive(Clone, Default)]
 struct Sub {
-    binders: crate::env::List<Bound>,
+    binders: crate::pvec::PVec<Bound>,
     /// How many of them are kept.
     kept: usize,
 }
@@ -217,7 +217,7 @@ enum Bound {
 impl Sub {
     /// What variable `i` is.
     fn var(&self, i: usize) -> Ir {
-        match self.binders.nth(i) {
+        match self.binders.len().checked_sub(i + 1).and_then(|l| self.binders.get(l)) {
             Some(Bound::Kept(l)) => Ir::Var(self.kept - 1 - l),
             Some(Bound::Put(v, n)) => shift(v, self.kept - n, 0),
             // Outside the code rewritten: past the binders kept.
@@ -237,7 +237,9 @@ impl Sub {
 
     /// Under one more binder, with `v` (over the binders kept) put in for it.
     fn put(&self, v: Arc<Ir>) -> Sub {
-        Sub { binders: self.binders.with(Bound::Put(v, self.kept)), kept: self.kept }
+        let mut binders = self.binders.clone();
+        binders.push(Bound::Put(v, self.kept));
+        Sub { binders, kept: self.kept }
     }
 }
 

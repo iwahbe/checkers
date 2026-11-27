@@ -194,12 +194,13 @@ fn additions_compile_in_linear_memory() {
 }
 
 /// The least CPU time and peak memory of a few runs of `ckc check` on a
-/// function of 2,000, 4,000 and 8,000 `let`s, `let a{i} = a{i-1}{step}`,
+/// function of 2,000, 4,000 and 8,000 `let`s, `let a{i} = {step(a{i-1})}`,
 /// over values of type `ty`, with no `check`: only elaboration is measured.
 /// The least of a few runs is the least disturbed by other tests.
 #[cfg(target_os = "linux")]
-fn lets_usage(tag: &str, ty: &str, step: &str) -> [(f64, u64); 3] {
-    lets_usage_by(tag, ty, &|i| format!("    let a{i} = a{}{step}\n", i - 1))
+fn lets_usage(tag: &str, ty: &str, step: fn(&str) -> String) -> [(f64, u64); 3] {
+    lets_usage_by(tag, ty, &|i| format!("    let a{i} = {}
+", step(&format!("a{}", i - 1))))
 }
 
 /// `lets_usage`, with `line(i)` the lines defining `a{i}` from `a{i-1}`.
@@ -258,7 +259,7 @@ fn assert_lets_linear(tag: &str, [a, b, c]: [(f64, u64); 3]) {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_chain_of_lets_checks_in_linear_time_and_memory() {
-    assert_lets_linear("by_let", lets_usage("by_let", "String", " ++ \"a\""));
+    assert_lets_linear("by_let", lets_usage("by_let", "String", |a| format!("{a} ++ \"a\"")));
 }
 
 /// A function of n `let`s, each binding a closure over the one before, and
@@ -271,8 +272,8 @@ fn a_chain_of_lets_checks_in_linear_time_and_memory() {
 /// closure's `let` (and keeping each copy until the end), then looking
 /// through it for a use of the closure; and the inliner, putting each
 /// erased `let` into all the code after it. 2,000 lets took 4.5 s and
-/// 2.4 GB, 8,000 ran out of memory. (Now 2,000 to 4,000 lets add 14 MB,
-/// 4,000 to 8,000 24 MB, and 8,000 take 1.4 times the time of 2,000.)
+/// 2.4 GB, 8,000 ran out of memory. (Now 2,000 to 4,000 lets add 12 MB,
+/// 4,000 to 8,000 30 MB, and 8,000 take 1.6 times the time of 2,000.)
 #[cfg(target_os = "linux")]
 #[test]
 fn a_chain_of_lets_of_closures_checks_in_linear_time_and_memory() {
@@ -288,5 +289,20 @@ fn a_chain_of_lets_of_closures_checks_in_linear_time_and_memory() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_chain_of_additions_in_lets_checks_in_linear_time_and_memory() {
-    assert_lets_linear("by_add", lets_usage("by_add", "Int", " + 1"));
+    assert_lets_linear("by_add", lets_usage("by_add", "Int", |a| format!("{a} + 1")));
+}
+
+/// A function of n `let`s, each calling a class's function on the one
+/// before. Each call keeps its context for later: to find its instance's
+/// dictionary, and to check the call once it is found. Copied, each kept
+/// context held every local in scope, n²/2 for n calls: 2,000 took 1.3 GB
+/// and 4,000 took 5.1 GB. Persistent, they take 141 MB and 157 MB, and
+/// 8,000 191 MB. Each call also walked every local, to find the
+/// dictionaries in scope and the locals an unknown depends on, and built
+/// an environment of them all to evaluate its dictionary: 8,000 took 7.3
+/// times as long as 2,000 with these, 2.8 times without.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_chain_of_class_calls_in_lets_checks_in_linear_time_and_memory() {
+    assert_lets_linear("by_class", lets_usage("by_class", "Int", |a| format!("add {a} 1")));
 }

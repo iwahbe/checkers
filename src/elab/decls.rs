@@ -2265,9 +2265,7 @@ impl Elab {
         let saved_givens = std::mem::take(&mut self.givens);
         let env = cx.env.clone();
         let mut eqs: Vec<(Val, Val, String)> = teqs.iter().map(|q| {
-            let mut e = env.to_vec();
-            e.push(Val::var(nb));
-            let e = crate::core::Env::from(e);
+            let e = crate::core::push(&env, Val::var(nb));
             (eval(&self.g, &e, &q.lhs), eval(&self.g, &e, &q.rhs), q.text.clone())
         }).collect();
         eqs.extend(ty_givens.iter().cloned());
@@ -2371,7 +2369,8 @@ impl Elab {
                         }
                         let name = b.0.to_string();
                         let span = params.iter().find(|p| p.name == name).map(|p| p.span).unwrap_or(d.span);
-                        let shown = match sig.cx.locals.iter().position(|l| *l.name == name) {
+                        let pos = sig.cx.locals.iter().position(|l| *l.name == name);
+                        let shown = match pos {
                             Some(pos) => {
                                 sig.cx.locals[pos].mult = Mult::One;
                                 let ty = sig.cx.locals[pos].ty.clone();

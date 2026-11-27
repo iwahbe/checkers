@@ -3028,7 +3028,8 @@ impl Elab {
         }
         // `let x = y` keeps y's structural information.
         if let ExprKind::Var(src) = &rhs.kind {
-            if let Some(sl) = cx.locals[..l].iter().rposition(|x| x.name.as_ref() == src.as_str()) {
+            let found = cx.locals.iter().take(l).rposition(|x| x.name.as_ref() == src.as_str());
+            if let Some(sl) = found {
                 cx.locals[l].sub = cx.locals[sl].sub;
                 cx.locals[l].sub_cond = cx.locals[sl].sub_cond;
             }

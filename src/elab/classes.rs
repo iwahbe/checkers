@@ -372,7 +372,7 @@ pub struct InstReq {
     pub fallback: Option<SigInst>,
     /// Where it is asked for, for a check of the instance found through a
     /// refinement alias (#226).
-    pub cx: Option<Rc<Cx>>,
+    pub cx: Option<Cx>,
     /// For a type's header's clause (#385): the type.
     pub of_type: Option<TyId>,
     /// Asked in the signature of an instance's function or dictionary.
@@ -387,7 +387,7 @@ pub struct AliasDict {
     /// The unknown it was found for, if asked for by a use (not by an
     /// instance's context).
     pub meta: Option<MetaId>,
-    pub cx: Rc<Cx>,
+    pub cx: Cx,
     pub span: Span,
     pub owner: Option<DefId>,
     pub class: TyId,
@@ -2997,7 +2997,7 @@ impl Elab {
         }
         // The dictionary's parameters so far, as values: the variables,
         // then the context's dictionaries.
-        let lvl_env = (0..req.lvl).map(Val::var).collect::<crate::core::Env>();
+        let lvl_env = self.g.id_env(req.lvl);
         let mut env = args.clone();
         for (c, vs) in &inst.context {
             let ctys: Vec<Val> = vs.iter().map(|v| args[*v].clone()).collect();
@@ -3202,8 +3202,7 @@ impl Elab {
         }
         match self.find_dict(r, r.class, &r.tys, 0) {
             Ok(t) => {
-                let env = (0..r.lvl).map(Val::var).collect::<crate::core::Env>();
-                let v = eval(&self.g, &env, &t);
+                let v = eval(&self.g, &self.g.id_env(r.lvl), &t);
                 unify(&self.g, r.lvl, &r.meta, &v).is_ok()
             }
             Err(_) => false,
@@ -3304,8 +3303,7 @@ impl Elab {
                     if self.assoc_cycle(&r, &t) {
                         continue;
                     }
-                    let env = (0..r.lvl).map(Val::var).collect::<crate::core::Env>();
-                    let v = eval(&self.g, &env, &t);
+                    let v = eval(&self.g, &self.g.id_env(r.lvl), &t);
                     let _ = unify(&self.g, r.lvl, &r.meta, &v);
                 }
                 Err(why) if why == "unknown" && !last => self.inst_reqs.push(r),
@@ -3515,9 +3513,11 @@ impl Elab {
         if !self.class_defs.contains_key(&tid) || tys.is_empty() {
             return;
         }
+        // A dictionary is a clause's parameter, λ-bound: only instances
+        // build dictionaries, so no `let` or pattern defines one.
         let mut given = Vec::new();
-        for (l, loc) in cx.locals.iter().enumerate() {
-            if let Val::TyCon(c, a) = self.force(&loc.ty) {
+        for l in cx.bound() {
+            if let Val::TyCon(c, a) = self.force(&cx.locals[l].ty) {
                 if self.class_defs.contains_key(&c) && !a.is_empty() {
                     given.push((l, c, a.to_vec()));
                 }
@@ -3535,7 +3535,7 @@ impl Elab {
             given,
             assoc: None,
             fallback: self.sig_inst.clone().filter(|f| f.class == tid),
-            cx: (self.in_spec == 0).then(|| Rc::new(cx.clone())),
+            cx: (self.in_spec == 0).then(|| cx.clone()),
             of_type: None,
             instance_sig: self.instance_sig,
         });
@@ -3674,7 +3674,7 @@ impl Elab {
             if *icit != Icit::Expl || i > rlvl {
                 continue;
             }
-            let benv = crate::core::Env::from(&env[..i]);
+            let benv = crate::core::Env::from(env[..i].to_vec());
             let (iv, cv) = (eval(&self.g, &benv, ity), eval(&self.g, &benv, cty));
             let at = (x.to_string(), self.show_val(&cx, &iv), self.show_val(&cx, &cv));
             let k = kind_at(true, Some(at.clone()));
@@ -3871,7 +3871,7 @@ impl Elab {
         let (pt, pb) = (self.peel(t), self.peel(b));
         if let Some((d, args)) = self.refined_alias(&pt) {
             if self.refined_alias(&pb).is_none_or(|(e, _)| e != d) {
-                let vv = eval(&self.g, &crate::core::Env::from(env), v);
+                let vv = eval(&self.g, &crate::core::Env::from(env.to_vec()), v);
                 let preds = self.alias_preds.get(&d).cloned().unwrap_or_default();
                 // The predicates at this use's arguments where they are
                 // closed values: `n < 7` for `Below 7`, not `n < k`.
@@ -4100,7 +4100,7 @@ impl Elab {
         let base_ty = self.alias_base(alias_ty);
         let mut cx = match call {
             Some((cx, _, _)) => cx.clone(),
-            None => (*ad.cx).clone(),
+            None => ad.cx.clone(),
         };
         let alias_s = self.show_val(&cx, alias_ty);
         let base_s = self.show_val(&cx, &base_ty);

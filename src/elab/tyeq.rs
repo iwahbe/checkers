@@ -451,7 +451,7 @@ impl Elab {
     }
 
     fn inst_tm(&self, t: &Tm, env: &[Val]) -> Val {
-        eval(&self.g, &crate::core::Env::from(env), t)
+        eval(&self.g, &crate::core::Env::from(env.to_vec()), t)
     }
 
     /// Solve the wanted equations whose types are known; at the `last`

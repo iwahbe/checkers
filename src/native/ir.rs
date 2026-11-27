@@ -146,13 +146,15 @@ impl<'g> Compiler<'g> {
     /// This compiler, for code under one more binder, bound to the known
     /// function `f`.
     fn knowing(&self, f: &Rc<super::spec::Bound>) -> Compiler<'g> {
-        Compiler { fns: self.fns.with(Some(f.clone())), ..*self }
+        let mut fns = self.fns.clone();
+        fns.push(Some(f.clone()));
+        Compiler { fns, ..*self }
     }
 
     /// Variable `i`, as a value: if it is bound to a known function, its
     /// closure is built.
     fn var(&self, i: usize) -> Ir {
-        if let Some(Some(b)) = self.fns.nth(i) {
+        if let Some(Some(b)) = self.fns.len().checked_sub(i + 1).and_then(|l| self.fns.get(l)) {
             b.used.set(true);
         }
         Ir::Var(i)

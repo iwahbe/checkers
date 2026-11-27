@@ -256,7 +256,10 @@ impl Tm {
     }
 }
 
-pub use crate::env::Env;
+/// The values of the locals a term is evaluated under, outermost first:
+/// persistent, so a closure keeps it and a value added makes a new one
+/// without a copy.
+pub type Env = crate::pvec::PVec<Val>;
 
 #[derive(Clone, Debug)]
 pub struct Closure {
@@ -404,6 +407,8 @@ pub struct Globals {
     /// The base types of classes' types that have one (#360), by their
     /// field of the dictionary: closed types.
     pub type_bases: HashMap<(ConId, usize), Vec<Tm>>,
+    /// The longest identity environment `id_env` gave.
+    ids: RefCell<Env>,
 }
 
 #[derive(Default, Clone)]
@@ -453,6 +458,19 @@ pub struct WellKnown {
 pub const DEFAULT_FUEL: u64 = 200_000;
 
 impl Globals {
+    /// The environment of `l` locals in which each is its own variable,
+    /// for evaluating a term under them: a prefix of the longest one asked
+    /// for so far, which is kept, so each costs about what the length
+    /// asked grew by, not `l`.
+    pub fn id_env(&self, l: usize) -> Env {
+        let mut ids = self.ids.borrow_mut();
+        while ids.len() < l {
+            let n = ids.len();
+            ids.push(Val::var(n));
+        }
+        ids.prefix(l)
+    }
+
     pub fn new() -> Globals {
         Globals {
             defs: Vec::new(),
@@ -467,6 +485,7 @@ impl Globals {
             bounds: HashMap::new(),
             known: RefCell::new(HashMap::new()),
             run_time_only: RefCell::new(std::collections::HashSet::new()),
+            ids: RefCell::new(Env::new()),
             proved: false,
             fold_work: std::cell::Cell::new(None),
             type_bases: HashMap::new(),
@@ -572,7 +591,9 @@ impl Default for Globals {
 // ── evaluation ───────────────────────────────────────────────────────────────
 
 pub fn push(env: &Env, v: Val) -> Env {
-    env.with(v)
+    let mut e = env.clone();
+    e.push(v);
+    e
 }
 
 pub fn apply_closure(g: &Globals, c: &Closure, v: Val) -> Val {
@@ -598,7 +619,7 @@ pub fn con_icits(g: &Globals, c: ConId) -> Vec<Icit> {
 
 pub fn eval(g: &Globals, env: &Env, t: &Tm) -> Val {
     match t {
-        Tm::Var(i) => env.var(*i).clone(),
+        Tm::Var(i) => env[env.len() - 1 - i].clone(),
         // Definitions are unfolded lazily, by `force` (see there).
         Tm::Def(d) => Val::Neutral(Head::Def(*d), Rc::new(Vec::new())),
         Tm::TyCon(t) => {
@@ -1173,7 +1194,7 @@ fn case(g: &Globals, v: Val, c: Rc<CaseTm>, env: Env) -> Val {
                     let fields = &args[args.len() - n..];
                     let mut e = env.clone();
                     e.extend(fields.iter().cloned());
-                    return eval(g, &Rc::new(e), body);
+                    return eval(g, &e, body);
                 }
             }
             match &c.default {
@@ -1192,7 +1213,7 @@ fn case(g: &Globals, v: Val, c: Rc<CaseTm>, env: Env) -> Val {
                 if let Some((_, n, body)) = c.branches.iter().find(|(cid, _, _)| Some(g.cons[cid.0 as usize].ty) == g.well_known.string) {
                     let mut e = env.clone();
                     e.extend(std::iter::repeat_n(Val::Lit(Lit::Bytes(Rc::from(s.as_bytes()))), *n));
-                    return eval(g, &Rc::new(e), body);
+                    return eval(g, &e, body);
                 }
             }
             match &c.default {
@@ -1385,7 +1406,7 @@ fn quote_case(g: &Globals, l: usize, c: &Rc<CaseTm>, env: &Env) -> Rc<CaseTm> {
         for k in 0..n {
             e.push(Val::var(l + k));
         }
-        quote(g, l + n, &eval(g, &Rc::new(e), body))
+        quote(g, l + n, &eval(g, &e, body))
     };
     Rc::new(CaseTm {
         branches: c.branches.iter().map(|(cid, n, b)| (*cid, *n, qb(*n, b))).collect(),
@@ -1602,7 +1623,7 @@ fn rename_case(g: &Globals, m: MetaId, p: &PartialRenaming, c: &Rc<CaseTm>, env:
             e.push(Val::var(pr.cod));
             pr = lift(&pr);
         }
-        rename(g, m, &pr, &eval(g, &Rc::new(e), body))
+        rename(g, m, &pr, &eval(g, &e, body))
     };
     Ok(Rc::new(CaseTm {
         branches: c.branches.iter().map(|(cid, n, b)| Ok((*cid, *n, rb(*n, b)?))).collect::<Result<_, _>>()?,
@@ -2493,8 +2514,7 @@ pub fn zonk_metas(g: &Globals, l: usize, t: &Tm) -> Tm {
         let h = t.head();
         if let Tm::Meta(m) = h {
             if g.meta(*m).is_some() {
-                let env = (0..l).map(Val::var).collect::<crate::core::Env>();
-                return Some(fix_mults(g, &quote(g, l, &eval(g, &env, t))));
+                return Some(fix_mults(g, &quote(g, l, &eval(g, &g.id_env(l), t))));
             }
         }
         let rc = |x: &Rc<Tm>, k: usize| go(g, l + k, x).map(Rc::new);
@@ -2619,7 +2639,7 @@ fn invert_case(g: &Globals, l: usize, m: MetaId, sp: &[Elim], other: &Val) -> Op
         let mut e = env.clone();
         // The fields, unknown: far above any context.
         e.extend((0..*n).map(|k| Val::var(usize::MAX / 2 + k)));
-        let h = rigid_head(&force(g, eval(g, &Rc::new(e), body)))?;
+        let h = rigid_head(&force(g, eval(g, &e, body)))?;
         if heads.contains(&h) {
             return None;
         }

@@ -84,7 +84,7 @@ impl Elab {
     /// in a chain of `let`s of closures grow with the chain.
     fn captures_effect(&self, cx: &Cx, v: &Val) -> bool {
         let lvl = cx.lvl();
-        if !cx.bound().iter().any(|l| self.holds_effect(lvl, &cx.ty_of(*l))) {
+        if !cx.bound().any(|l| self.holds_effect(lvl, &cx.ty_of(l))) {
             return false;
         }
         let t = quote(&self.g, lvl, v);

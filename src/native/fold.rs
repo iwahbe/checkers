@@ -6,7 +6,9 @@
 //! (its value), and a call of a function or builtin with all its
 //! arguments. The compiler computes arithmetic and comparisons of numbers
 //! itself; anything else runs as compile-time evaluation runs code
-//! (`eval`), once per operation and arguments.
+//! (`eval`), once per operation and arguments, and its value is kept
+//! across builds as the type checker's known values are
+//! (`known_cache`).
 //!
 //! An operation that can't be computed is *kept*, with the reason: it
 //! fails (its runtime error stays the program's, at the same point), its
@@ -72,6 +74,8 @@ pub struct Folder<'g> {
     ev: Option<crate::native::eval::Evaluator<'g>>,
     /// Each operation computed, by its key: its value, or why it is kept.
     memo: HashMap<String, Result<Arc<Ir>, Kept>>,
+    /// Values kept across builds.
+    disk: crate::known_cache::KnownCache,
     /// Whether each definition reaches neither an effect nor a `partial`
     /// function (`Ok`), or which it reaches.
     pure: HashMap<DefId, Result<(), Kept>>,
@@ -81,7 +85,7 @@ pub struct Folder<'g> {
 
 impl<'g> Folder<'g> {
     pub fn new(g: &'g Globals, staged: Option<&'g crate::stage::Staged>) -> Folder<'g> {
-        Folder { g, staged, ev: None, memo: HashMap::new(), pure: HashMap::new(), kept: Vec::new() }
+        Folder { g, staged, ev: None, memo: HashMap::new(), disk: Default::default(), pure: HashMap::new(), kept: Vec::new() }
     }
 
     /// `ir` folded, for a program whose copies are `specs`.
@@ -204,6 +208,19 @@ impl<'g> Folder<'g> {
         }
         let work = self.g.fold_work.get().unwrap_or(crate::elab::CODEGEN_WORK);
         let (g, staged) = (self.g, self.staged);
+        // Kept from an earlier build, if nothing it can run has changed.
+        let program = crate::known_cache::Program { g, staged, specs: Some(specs) };
+        let disk = crate::verify::cache_dir().and_then(|_| self.disk.code_key(&program, node));
+        if let Some((s, id)) = disk.as_ref().and_then(|d| self.disk.recall_static(g, d)) {
+            let r = Ok(Arc::new(Static::ir(&s, id)));
+            if let Some(key) = key {
+                self.memo.insert(key, r.clone());
+            }
+            return r;
+        }
+        if std::env::var_os("CHECKERS_KNOWN_TRACE").is_some() {
+            eprintln!("known value computed: {}, folded", describe(g, Some(specs), node));
+        }
         let ev = self.ev.get_or_insert_with(|| {
             let mut ev = crate::native::eval::Evaluator::for_folding(g, staged);
             ev.mirror(specs);
@@ -211,9 +228,18 @@ impl<'g> Folder<'g> {
         });
         let r = match ev.eval_ir_limited(node, work) {
             Ok(v) => {
-                let out = ev.within_program(|| from_word(v)).map(|(s, id)| Arc::new(Static::ir(&Arc::new(s), id))).ok_or(Kept::NoForm);
+                let out = ev.within_program(|| from_word(v));
                 ev.release(v);
-                out
+                match out {
+                    Some((s, id)) => {
+                        let s = Arc::new(s);
+                        if let Some(d) = &disk {
+                            self.disk.store_static(&program, d, &s, id);
+                        }
+                        Ok(Arc::new(Static::ir(&s, id)))
+                    }
+                    None => Err(Kept::NoForm),
+                }
             }
             Err(e) => Err(Kept::Fails(e)),
         };
@@ -580,8 +606,9 @@ pub fn residuals<'i>(g: &Globals, ir: &'i Ir, kept: &[(Arc<Ir>, Kept)], out: &mu
     }
 }
 
-/// An operation, for messages: its operator or function and its operands.
-pub fn describe(g: &Globals, ir: &Ir) -> String {
+/// An operation, for messages: its operator or function (a copy's by the
+/// definition it copies) and its operands.
+pub fn describe(g: &Globals, specs: Option<&crate::native::spec::Specs>, ir: &Ir) -> String {
     let arg = |a: &Ir| match a {
         Ir::Lit(Lit::Num(n)) => n.to_string(),
         Ir::Lit(Lit::Big(s)) => s.to_string(),
@@ -618,7 +645,10 @@ pub fn describe(g: &Globals, ir: &Ir) -> String {
         }
         Ir::Call(h, args) => {
             let f = match &**h {
-                Ir::Global(d) => format!("`{}`", g.defs.get(d.0 as usize).map_or_else(|| format!("#{}", d.0), |i| i.name.to_string())),
+                Ir::Global(d) => {
+                    let d = specs.map_or(d.0, |s| s.origin(d.0));
+                    format!("`{}`", g.defs.get(d as usize).map_or_else(|| format!("#{d}"), |i| i.name.to_string()))
+                }
                 _ => "a closure".to_string(),
             };
             format!("a call of {f} on {}", args.iter().map(|a| arg(a)).collect::<Vec<_>>().join(", "))

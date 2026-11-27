@@ -353,6 +353,19 @@ pub fn digest(s: &str) -> String {
     format!("{:016x}{:016x}", fnv(s), h.finish())
 }
 
+/// `digest` of bytes.
+pub fn digest_bytes(b: &[u8]) -> String {
+    use std::hash::Hasher;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    h.write(b);
+    let mut f: u64 = 0xcbf29ce484222325;
+    for x in b {
+        f ^= *x as u64;
+        f = f.wrapping_mul(0x100000001b3);
+    }
+    format!("{f:016x}{:016x}", h.finish())
+}
+
 /// A cache entry: a header with Z3's version and the query's length, the
 /// query in full (compared on a hit, so a hash collision can't reuse a wrong
 /// answer), then Z3's output.
@@ -694,8 +707,11 @@ pub fn proved(e: &Elab, user: &str) -> Verified {
 }
 
 fn verify(e: &Elab, user: &str) -> Verified {
+    // The module's own functions whose calls' values the obligations need
+    // are proved first, on demand (§8.9), so that those values are facts.
+    settle_known(e, user);
     // Those proved already, so that the module's own functions could run
-    // while it was checked (§8.9): taken as proved.
+    // while it was checked or for the values above: taken as proved.
     let early = e.early.borrow();
     let obs: Vec<&Obligation> = e
         .obligations
@@ -842,6 +858,22 @@ fn verify(e: &Elab, user: &str) -> Verified {
     v.asked = ASKED.load(std::sync::atomic::Ordering::Relaxed) - asked0;
     v.reused = REUSED.load(std::sync::atomic::Ordering::Relaxed) - reused0;
     v
+}
+
+/// Prove, on demand (`Elab::settle`), the functions of module `user`
+/// whose calls in its obligations not yet proved are known at compile time
+/// once they are (`known_calls`): before the proofs phase chooses what it
+/// proves, so that each obligation is proved once.
+fn settle_known(e: &Elab, user: &str) {
+    if *e.cur != *user {
+        return;
+    }
+    let early = e.early.borrow();
+    let obs: Vec<&Obligation> = e.obligations.iter().enumerate().filter(|(k, o)| o.module == user && !early.proved(*k, o)).map(|(_, o)| o).collect();
+    drop(early);
+    for o in obs {
+        known_calls(e, o);
+    }
 }
 
 /// `obs` with, as facts, the values of the calls in each that are known at
@@ -1144,7 +1176,7 @@ fn guess_group(e: &Elab, user: &str, gr: &crate::elab::termination::GuessGroup, 
             }
             let lvl = c.ob.ctx.len();
             let n_caller = e.specs.get(&c.caller).map_or(0, |s| s.n_binders);
-            let here: crate::core::Env = (0..n_caller).map(Val::var).collect();
+            let here: crate::core::Env = (0..n_caller).map(Val::var).collect::<crate::core::Env>();
             let there: crate::core::Env = crate::core::Env::from(c.args.clone());
             let a: Vec<Tm> = theirs.0.iter().map(|t| quote(&e.g, lvl, &eval(&e.g, &there, t))).collect();
             let b: Vec<Tm> = mine.0.iter().map(|t| quote(&e.g, lvl, &eval(&e.g, &here, t))).collect();

@@ -7,7 +7,6 @@
 pub mod core;
 pub mod diag;
 pub mod doc;
-pub mod env;
 pub mod elab;
 pub mod json;
 pub mod known;
@@ -16,6 +15,8 @@ pub mod lint;
 pub mod literate;
 pub mod native;
 pub mod overlay;
+pub mod pmap;
+pub mod pvec;
 pub mod range;
 pub mod source;
 pub mod stage;
