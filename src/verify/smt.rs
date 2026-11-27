@@ -835,6 +835,9 @@ pub struct Builder<'a> {
     effect_sorts: HashMap<String, Sort>,
     /// Terms whose type's facts were asserted (once each).
     fact_seen: HashSet<String>,
+    /// Each `++` of sequences in the query, by its term: its two operands
+    /// (`index_concat`).
+    concats: HashMap<String, (String, String)>,
     /// Translating a reflected body: don't collect postconditions or facts
     /// for the query.
     in_def: bool,
@@ -906,6 +909,7 @@ impl<'a> Builder<'a> {
             effect_sorts: HashMap::new(),
             fun_args: 0,
             fact_seen: HashSet::new(),
+            concats: HashMap::new(),
             in_def: false,
             body_posts: None,
             bodies: false,
@@ -2468,6 +2472,26 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// An element of `a ++ b` is one of `a`'s or one of `b`'s, by where the
+    /// index falls: valid facts about `(seq.nth (seq.++ a b) i)`, so Z3 needn't
+    /// solve the word equation its sequence theory makes of that element,
+    /// whose cost depends on the order of its case splits (and so on how
+    /// symbols are spelled). Through nested `++` too.
+    fn index_concat(&mut self, s: &str, i: &str) {
+        let Some((a, b)) = self.concats.get(s).cloned() else { return };
+        if !self.fact_seen.insert(format!("concat-index {s} {i}")) {
+            return;
+        }
+        let la = format!("(seq.len {a})");
+        let lb = format!("(seq.len {b})");
+        let at = format!("(seq.nth {s} {i})");
+        let j = format!("(- {i} {la})");
+        self.asserts.push(format!("(=> (and (<= 0 {i}) (< {i} {la})) (= {at} (seq.nth {a} {i})))"));
+        self.asserts.push(format!("(=> (and (<= {la} {i}) (< {i} (+ {la} {lb}))) (= {at} (seq.nth {b} {j})))"));
+        self.index_concat(&a, i);
+        self.index_concat(&b, &j);
+    }
+
     fn nat_fact(&mut self, t: &str) {
         if !self.in_def && self.fact_seen.insert(t.to_string()) {
             self.asserts.push(format!("(>= {t} 0)"));
@@ -3760,10 +3784,13 @@ impl<'a> Builder<'a> {
             Prim::Eq => bin("=", &ts, Sort::Bool),
             Prim::Ne => Ok((format!("(not (= {} {}))", ts[0].0, ts[1].0), Sort::Bool)),
             Prim::Concat => match &ts[0].1 {
-                Sort::Str => bin("seq.++", &ts, Sort::Str),
-                s @ Sort::Seq(_) => {
+                s @ (Sort::Str | Sort::Seq(_)) => {
                     let s = s.clone();
-                    bin("seq.++", &ts, s)
+                    let t = format!("(seq.++ {} {})", ts[0].0, ts[1].0);
+                    if !self.in_def {
+                        self.concats.insert(t.clone(), (ts[0].0.clone(), ts[1].0.clone()));
+                    }
+                    Ok((t, s))
                 }
                 s if is_list(s) => {
                     let s = s.clone();
@@ -3798,6 +3825,7 @@ impl<'a> Builder<'a> {
                 // An element has its type's refinement (#624): a `U8` of
                 // `Bytes` is `>= 0` and `< 256`.
                 if !self.in_def && self.fact_seen.insert(t.clone()) {
+                    self.index_concat(&ts[0].0, &ts[1].0);
                     if let Some(ety) = args.get(2) {
                         let facts = self.value_terms(env, ety, &t, &elem);
                         self.asserts.extend(facts);

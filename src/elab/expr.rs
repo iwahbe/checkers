@@ -106,7 +106,7 @@ impl Elab {
         }
         if !covered && !returned && !compound && !matches!(t, Tm::Error) {
             if let Some((d, args)) = self.refined_alias(expected) {
-                let already = inferred.as_ref().and_then(|ty| self.refined_alias(ty)).is_some_and(|(d2, _)| d2 == d);
+                let already = inferred.as_ref().is_some_and(|ty| self.same_refinement(cx.lvl(), ty, expected));
                 if !already {
                     let v = self.eval(cx, &t);
                     self.refined_obligation(cx, d, args, v, e.span);
@@ -1253,7 +1253,7 @@ impl Elab {
             // A refinement the value's own type doesn't already give it
             // (#554): as `check` asks of a value checked against it.
             if let Some((d, dargs)) = self.refined_alias(&a.dom) {
-                let already = self.refined_alias(&before).is_some_and(|(d2, _)| d2 == d);
+                let already = self.same_refinement(cx.lvl(), &before, &a.dom);
                 let within = self.is_range(&a.dom)
                     && match (self.type_range(&a.dom), self.type_range(&before)) {
                         (Some(j), Some(r)) => j.holds(r),
