@@ -1136,10 +1136,19 @@ fn stuck_base(g: &Globals, orig: Val, forced: Val) -> Val {
 /// A tuple's components, flattened: a last component that is itself a tuple
 /// (of two or more) is its components (#673). `ty`: of a tuple type.
 pub fn flat_parts(g: &Globals, vs: &[Val], ty: bool) -> Vec<Val> {
+    flat_parts_by(vs, |v| match (ty, force(g, v.clone())) {
+        (true, Val::TupleTy(ws)) | (false, Val::Tuple(ws)) => Some(ws),
+        _ => None,
+    })
+}
+
+/// `flat_parts`, with `parts` saying which last component is a tuple, and
+/// its components.
+pub fn flat_parts_by(vs: &[Val], parts: impl Fn(&Val) -> Option<Rc<[Val]>>) -> Vec<Val> {
     let mut vs = vs.to_vec();
     while vs.len() >= 2 {
-        match (ty, force(g, vs[vs.len() - 1].clone())) {
-            (true, Val::TupleTy(ws)) | (false, Val::Tuple(ws)) if ws.len() >= 2 => {
+        match parts(&vs[vs.len() - 1]) {
+            Some(ws) if ws.len() >= 2 => {
                 vs.pop();
                 vs.extend(ws.iter().cloned());
             }
@@ -1147,6 +1156,25 @@ pub fn flat_parts(g: &Globals, vs: &[Val], ty: bool) -> Vec<Val> {
         }
     }
     vs
+}
+
+/// Two flattened tuples' (or tuple types') components, paired: of
+/// different lengths, the shorter's last component is the rest of the
+/// longer, `(a, t)` and `(A, B, C)` giving `a`, `A` and `t`, `(B, C)`.
+/// `None` if no pairing makes them alike: the shorter has fewer than two.
+pub fn pair_parts(x: Vec<Val>, y: Vec<Val>, ty: bool) -> Option<(Vec<Val>, Vec<Val>)> {
+    if x.len() == y.len() {
+        return Some((x, y));
+    }
+    let (short, long, flip) = if x.len() < y.len() { (x, y, false) } else { (y, x, true) };
+    if short.len() < 2 {
+        return None;
+    }
+    let k = short.len() - 1;
+    let rest = if ty { Val::TupleTy(long[k..].into()) } else { Val::Tuple(long[k..].into()) };
+    let mut long2 = long[..k].to_vec();
+    long2.push(rest);
+    Some(if flip { (long2, short) } else { (short, long2) })
 }
 
 // A projection or a field read doesn't unfold what it reads: a call's
@@ -1690,19 +1718,8 @@ fn unify_many(g: &Globals, l: usize, a: &[Val], b: &[Val]) -> Result<(), UnifyEr
 /// shorter's last component is the rest of the longer: `(a, t)` and
 /// `(A, B, C)` give `a = A`, `t = (B, C)`.
 fn unify_tuple(g: &Globals, l: usize, x: &[Val], y: &[Val], ty: bool) -> Result<(), UnifyError> {
-    let (x, y) = (flat_parts(g, x, ty), flat_parts(g, y, ty));
-    let (short, long, flip) = if x.len() <= y.len() { (&x, &y, false) } else { (&y, &x, true) };
-    if short.len() == long.len() {
-        return unify_many(g, l, &x, &y);
-    }
-    if short.len() < 2 {
-        return Err(UnifyError::Mismatch);
-    }
-    let k = short.len() - 1;
-    let rest = if ty { Val::TupleTy(long[k..].into()) } else { Val::Tuple(long[k..].into()) };
-    let mut long2 = long[..k].to_vec();
-    long2.push(rest);
-    if flip { unify_many(g, l, &long2, short) } else { unify_many(g, l, short, &long2) }
+    let (x, y) = pair_parts(flat_parts(g, x, ty), flat_parts(g, y, ty), ty).ok_or(UnifyError::Mismatch)?;
+    unify_many(g, l, &x, &y)
 }
 
 pub fn unify(g: &Globals, l: usize, a: &Val, b: &Val) -> Result<(), UnifyError> {

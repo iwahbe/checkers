@@ -470,7 +470,15 @@ impl Elab {
                     work.push(pair(x, y, pol.then(v), via, in_result));
                 }
             }
-            (Val::TupleTy(x), Val::TupleTy(y)) if x.len() == y.len() => {
+            (Val::TupleTy(x), Val::TupleTy(y)) => {
+                // Paired as unification pairs them, `(a, (b, c))` being
+                // `(a, b, c)`: each part keeps its refinement. A last part
+                // that is a refinement of a tuple stays whole.
+                let parts = |v: &Val| match self.peel(v) {
+                    Val::TupleTy(ws) => Some(ws),
+                    _ => None,
+                };
+                let (x, y) = crate::core::pair_parts(crate::core::flat_parts_by(x, parts), crate::core::flat_parts_by(y, parts), true)?;
                 work.extend(x.iter().zip(y.iter()).rev().map(|(a, b)| pair(a, b, pol, via, in_result)));
             }
             (Val::Pi(x1, _, _, a1, c1), Val::Pi(x2, _, _, a2, c2)) => {

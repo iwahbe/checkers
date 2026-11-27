@@ -107,6 +107,17 @@ fn dir() -> Option<std::path::PathBuf> {
 }
 
 /// A name written in one token.
+/// A text no other call, in this process or another, gives.
+fn unique() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u64(n);
+    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    format!("{}-{n}-{t}-{:x}", std::process::id(), h.finish())
+}
+
 fn escape(s: &str) -> String {
     s.replace('%', "%25").replace(' ', "%20").replace('\n', "%0A")
 }
@@ -456,7 +467,29 @@ impl KnownCache {
                     // Its name is this text's digest: the definition it
                     // copies, and its body, which holds the arguments put in.
                     deps.push(Item::Def(c.of.0));
-                    let body = self.render(p, &c.body, &mut deps);
+                    let body = match &c.body {
+                        crate::native::spec::Body::Term(t) => self.render(p, t, &mut deps),
+                        // Made where a call is folded: the code it copies,
+                        // and the static data put in.
+                        crate::native::spec::Body::Folded { from, put, .. } => {
+                            deps.push(Item::Def(*from));
+                            let mut text = format!("folded {}", self.def_name(p, *from));
+                            for x in put {
+                                text.push(' ');
+                                match x {
+                                    Some(x) => {
+                                        if self.ir_text(p, x, &mut text, &mut deps).is_none() {
+                                            // A value no name says: a name
+                                            // no other build gives.
+                                            text += &format!("<unnamed {}>", unique());
+                                        }
+                                    }
+                                    None => text.push('-'),
+                                }
+                            }
+                            text
+                        }
+                    };
                     format!("copy of {}\ndepth {} binders {:?}\nbody {body}", self.def_name(p, c.of.0), c.depth, c.binders)
                 } else {
                     format!("unknown {d}")
