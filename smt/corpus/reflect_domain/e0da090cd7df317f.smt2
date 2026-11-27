@@ -1,0 +1,13 @@
+(set-option :produce-models true)
+(set-option :timeout 60000)
+(set-option :reproducible-resource-limit 200000)
+(set-logic ALL)
+(declare-const |#x#0| Int)
+(assert (>= |#x#0| 0))
+(assert (>= |#x#0| 0))
+(assert (>= |#x#0| 1))
+(assert (= (= |#x#0| 1) false))
+(assert (not false))
+(check-sat)
+(get-value (|#x#0|))
+;; reachable?

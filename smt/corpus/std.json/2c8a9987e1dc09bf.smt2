@@ -1,8 +1,0 @@
-(set-option :produce-models true)
-(set-option :timeout 60000)
-(set-option :reproducible-resource-limit 200000)
-(set-logic ALL)
-(declare-const |src#0| (Seq Int))
-(assert (not (<= (seq.len |src#0|) (seq.len |src#0|))))
-(check-sat)
-(get-value (|src#0|))

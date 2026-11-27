@@ -1,0 +1,13 @@
+(set-option :produce-models true)
+(set-option :timeout 60000)
+(set-option :reproducible-resource-limit 200000)
+(set-logic ALL)
+(declare-sort |#std.files.IoError| 0)
+(declare-datatypes ((|#std.prelude.Result| 2)) ((par (|#T0| |#T1|) ((|#std.prelude.Ok| (|#std.prelude.Ok.0| |#T0|)) (|#std.prelude.Err| (|#std.prelude.Err.0| |#T1|))))))
+(declare-const |#r1#1| (|#std.prelude.Result| (Seq Int) |#std.files.IoError|))
+(declare-const |#$x#5| |#std.files.IoError|)
+(assert (= |#r1#1| ((as |#std.prelude.Err| (|#std.prelude.Result| (Seq Int) |#std.files.IoError|)) |#$x#5|)))
+(assert (not false))
+(check-sat)
+(get-value (|#r1#1|))
+;; reachable?

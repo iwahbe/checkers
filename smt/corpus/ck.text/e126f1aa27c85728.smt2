@@ -1,0 +1,12 @@
+(set-option :produce-models true)
+(set-option :timeout 60000)
+(set-option :reproducible-resource-limit 200000)
+(set-logic ALL)
+(declare-const |#text#0| (Seq Int))
+(assert (>= (seq.nth |#text#0| (- (seq.len |#text#0|) 1)) 0))
+(assert (< (seq.nth |#text#0| (- (seq.len |#text#0|) 1)) 256))
+(assert (= (ite (not (> (seq.len |#text#0|) 0)) false (not (= (seq.nth |#text#0| (- (seq.len |#text#0|) 1)) 10))) false))
+(assert (not false))
+(check-sat)
+(get-value (|#text#0|))
+;; reachable?

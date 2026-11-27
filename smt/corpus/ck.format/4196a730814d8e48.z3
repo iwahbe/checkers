@@ -1,0 +1,14 @@
+;; work 2015
+sat
+((|#c#1| 0)
+ (|#outs#0| (let ((a!1 (|#ck.format.Code|
+             (as seq.empty (Seq Int))
+             0
+             (|#std.prelude.Some|
+               (|#ck.syntax.Tok| |#ck.syntax.Literal|
+                                 (seq.unit 2)
+                                 0
+                                 21238
+                                 false))
+             3)))
+  (|#std.prelude.Cons| a!1 |#std.prelude.Nil|))))

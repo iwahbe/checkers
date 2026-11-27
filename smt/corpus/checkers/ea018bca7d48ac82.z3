@@ -1,0 +1,18 @@
+;; work 4157
+sat
+((|#args#0| (|#std.prelude.Cons|
+  (seq.++ (seq.unit 99)
+          (seq.unit 104)
+          (seq.unit 101)
+          (seq.unit 99)
+          (seq.unit 107)
+          (seq.unit 101)
+          (seq.unit 114)
+          (seq.unit 115)
+          (seq.unit 46)
+          (seq.unit 106)
+          (seq.unit 115)
+          (seq.unit 111)
+          (seq.unit 110))
+  |#std.prelude.Nil|))
+ (|#fs#2| |#std.files.Fs!val!0|))

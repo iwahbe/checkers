@@ -1,8 +1,0 @@
-(set-option :produce-models true)
-(set-option :timeout 60000)
-(set-option :reproducible-resource-limit 200000)
-(set-logic ALL)
-(define-funs-rec ((|class_alias_fn_result.Maker Int.maker| ((p0 Int)) Int)) (0))
-(declare-const |_#0| Int)
-(assert (not (>= (|class_alias_fn_result.Maker Int.maker| |_#0|) 0)))
-(check-sat)
