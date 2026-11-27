@@ -196,7 +196,7 @@ impl Elab {
         let mult = self.named_mult(cx, name, &ty0, ts, Mult::Many);
         let v = self.eval(cx, &t0);
         let tyt = quote(&self.g, cx.lvl(), &ty0);
-        cx.define(name, ty0, v, mult);
+        cx.define_by(name, ty0, v, mult, t0.clone());
         let mut st = var(name, ts);
         for p in pieces {
             match p {

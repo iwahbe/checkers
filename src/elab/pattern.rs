@@ -357,7 +357,7 @@ impl Elab {
                 self.lint_uncons_match(scrut, &st, &sty, &arms);
                 let v = self.eval(cx, &st);
                 let tyt = quote(&self.g, cx.lvl(), &sty);
-                let l = cx.define("$s", sty, v, Mult::Many);
+                let l = cx.define_by("$s", sty, v, Mult::Many, st.clone());
                 (l, Some((st, tyt)))
             }
         };
@@ -593,7 +593,7 @@ impl Elab {
             let tyt = quote(&self.g, cx.lvl(), &ty);
             let t = cx.var(*occ);
             let mult = self.named_mult(cx, name, &ty, *at, Mult::Many);
-            let l = cx.define(name, ty, v, mult);
+            let l = cx.define_by(name, ty, v, mult, t.clone());
             cx.locals[l].sub = cx.locals[*occ].sub;
             cx.locals[l].sub_cond = cx.locals[*occ].sub_cond;
             cx.locals[l].param = cx.locals[*occ].param;
@@ -807,7 +807,7 @@ impl Elab {
             let tm = Tm::Proj(Rc::new(cx.var(occ)), i, i + 1 == n);
             let v = self.eval(cx, &tm);
             let tyt = quote(&self.g, cx.lvl(), &cty);
-            let l = cx.define(&format!("$c{i}"), cty, v, Mult::Many);
+            let l = cx.define_by(&format!("$c{i}"), cty, v, Mult::Many, tm.clone());
             cx.locals[l].sub = cx.locals[occ].sub;
             cx.locals[l].sub_cond = cx.locals[occ].sub_cond;
             comps.push(l);
@@ -1367,7 +1367,7 @@ impl Elab {
         let start = cx.lvl();
         let v = self.eval(cx, &call);
         let tyt = quote(&self.g, cx.lvl(), &rty);
-        let u = cx.define("$uncons", rty, v, Mult::Many);
+        let u = cx.define_by("$uncons", rty, v, Mult::Many, call.clone());
         let mut new_rows = Vec::new();
         for mut r in rows {
             if let Some(i) = r.pats.iter().position(|(o, _)| *o == occ) {

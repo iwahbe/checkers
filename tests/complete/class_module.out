@@ -1,0 +1,4 @@
+== line 7, column 20
+replaces 7:20-7:20
+  Error              type            type Parsable.Error
+  parse              function        fn parse xs a t -> r : Seq s, Token (Seq.Elem s) t, xs~s, a~ghost Type, t~ghost Type,  (documented)

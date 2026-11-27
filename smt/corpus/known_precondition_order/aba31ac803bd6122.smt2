@@ -1,0 +1,8 @@
+(set-option :produce-models true)
+(set-option :timeout 60000)
+(set-option :reproducible-resource-limit 200000)
+(set-logic ALL)
+(declare-fun |#known.pair.second| (Int Int) Int)
+(assert (= (|#known.pair.second| 0 100) 100))
+(assert (not (< (|#known.pair.second| 0 100) 256)))
+(check-sat)

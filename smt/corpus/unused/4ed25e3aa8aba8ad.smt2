@@ -1,0 +1,7 @@
+(set-option :produce-models true)
+(set-option :timeout 60000)
+(set-option :reproducible-resource-limit 200000)
+(set-logic ALL)
+(define-funs-rec ((|#unused.small| ((p0 Int)) Bool)) ((< p0 10)))
+(assert (not (|#unused.small| 9)))
+(check-sat)

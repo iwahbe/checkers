@@ -1,8 +1,0 @@
-(set-option :produce-models true)
-(set-option :timeout 60000)
-(set-option :reproducible-resource-limit 200000)
-(set-logic ALL)
-(define-funs-rec ((|forall_hyps.ordered[fn#7a2b30ab]| ((p1 Int) (p2 Int)) Bool)) ((ite (not (<= p1 p2)) (<= p2 p1) true)))
-(assert (|forall_hyps.ordered[fn#7a2b30ab]| 1 2))
-(assert (not (|forall_hyps.ordered[fn#7a2b30ab]| 1 2)))
-(check-sat)

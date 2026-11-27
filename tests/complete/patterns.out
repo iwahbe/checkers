@@ -10,6 +10,7 @@ replaces 4:12-4:12
   env                module          
   files              module          
   future             module          
+  hint               module          
   html               module          
   json               module          
   list               module          

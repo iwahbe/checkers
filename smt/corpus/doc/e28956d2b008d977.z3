@@ -1,0 +1,18 @@
+;; work 3213
+sat
+((|#package#0| (as seq.empty (Seq Int)))
+ (|#ty#5| true)
+ (|#ts#1| (|#std.prelude.Cons|
+  (|#doc.Target| (as seq.empty (Seq Int))
+                 (as seq.empty (Seq Int))
+                 (as seq.empty (Seq Int))
+                 true)
+  (as |#std.prelude.Nil| (|#std.prelude.List| |#doc.Target|))))
+ (|#qual#3| (as seq.empty (Seq Int)))
+ (|#m#2| (|#doc.Module| (as seq.empty (Seq Int))
+               (as seq.empty (Seq Int))
+               (as |#std.prelude.Nil| (|#std.prelude.List| |#doc.Import|))
+               (as |#std.prelude.Nil| (|#std.prelude.List| |#doc.Item|))
+               (as seq.empty (Seq Int))
+               (as |#std.prelude.Nil| (|#std.prelude.List| (Seq Int)))))
+ (|#name#4| (as seq.empty (Seq Int))))

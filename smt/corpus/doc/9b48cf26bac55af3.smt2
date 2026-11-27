@@ -1,0 +1,12 @@
+(set-option :produce-models true)
+(set-option :timeout 60000)
+(set-option :reproducible-resource-limit 200000)
+(set-logic ALL)
+(declare-datatypes ((|#std.prelude.Option| 1)) ((par (|#T0|) ((|#std.prelude.None|) (|#std.prelude.Some| (|#std.prelude.Some.0| |#T0|))))))
+(declare-fun |#ck.literate.title| ((Seq Int)) (|#std.prelude.Option| (Seq Int)))
+(declare-const |#text#2| (Seq Int))
+(assert (= (|#ck.literate.title| |#text#2|) (as |#std.prelude.None| (|#std.prelude.Option| (Seq Int)))))
+(assert (not false))
+(check-sat)
+(get-value (|#text#2|))
+;; reachable?

@@ -1,0 +1,12 @@
+(set-option :produce-models true)
+(set-option :timeout 60000)
+(set-option :reproducible-resource-limit 200000)
+(set-logic ALL)
+(declare-datatypes ((|#std.prelude.List| 1)) ((par (|#T0|) ((|#std.prelude.Nil|) (|#std.prelude.Cons| (|#std.prelude.Cons.0| |#T0|) (|#std.prelude.Cons.1| (|#std.prelude.List| |#T0|)))))))
+(declare-fun |#fmt.flagged| ((|#std.prelude.List| (Seq Int))) Bool)
+(declare-const |#paths#0| (|#std.prelude.List| (Seq Int)))
+(assert (= (|#fmt.flagged| |#paths#0|) true))
+(assert (not false))
+(check-sat)
+(get-value (|#paths#0|))
+;; reachable?

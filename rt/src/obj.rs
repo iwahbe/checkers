@@ -156,8 +156,11 @@ pub fn new_cell(v: W) -> Arc<Cell> {
 /// A `K_BIG` object whose number fits in an `i128` holds it in its two
 /// words (tag 1); a larger one holds a `BigInt` (tag 0). Numbers past 63
 /// bits but within 127 then take one small allocation, and arithmetic on
-/// them none of `BigInt`'s.
+/// them none of `BigInt`'s. Native code reads and makes these objects
+/// itself (§14): their header's `info` word is `INFO_I128`, the number's low
+/// word is first.
 pub const BIG_I128: u64 = 1;
+pub const INFO_I128: u64 = info(K_BIG, 0, BIG_I128);
 /// A larger number laid out when the program is compiled (static data,
 /// never freed, §14): its magnitude's 64-bit limbs, least significant
 /// first, as its fields; positive (tag 2) or negative (tag 3).
@@ -220,7 +223,7 @@ pub fn of_num(n: Num) -> W {
 }
 
 fn of_i128(s: i128) -> W {
-    let w = alloc_obj(info(K_BIG, 0, BIG_I128), HDR + 16);
+    let w = alloc_obj(INFO_I128, HDR + 16);
     set_slot(w, 0, s as u128 as u64);
     set_slot(w, 1, ((s as u128) >> 64) as u64);
     w
