@@ -345,3 +345,17 @@ fn a_chain_of_lets_using_a_global_name_checks_in_linear_time_and_memory() {
     let uses = format!("{}x == 0{}", "not (".repeat(8), ")".repeat(8));
     assert_lets_linear("by_global", lets_usage_by("by_global", "Int", &|i| format!("    let a{i} = if {uses} then a{} else a{}\n", i - 1, i - 1)));
 }
+
+/// A function of n `let`s, each calling a function of the same module on
+/// the one before. Each such call may be recursion that a guessed measure
+/// must make smaller, and kept where it was, with the facts there, for when
+/// the module's end knows which calls are. Kept as an obligation, each held
+/// a copy of every local in scope: 8,000 lets took 9.6 times as long as
+/// 2,000 (6.9 s and 0.72 s, release). Kept as the persistent context, and
+/// made an obligation only for a call that is recursion, 1.6 times as long.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_chain_of_calls_in_lets_checks_in_linear_time_and_memory() {
+    let step = "fn step y -> r : y~Int, r~Int\n    y\n\n";
+    assert_lets_linear("by_call", lets_usage_in("by_call", step, "x -> r : x~Int, r~Int", &|i| format!("    let a{i} = step a{}\n", i - 1)));
+}
