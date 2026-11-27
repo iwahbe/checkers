@@ -817,9 +817,6 @@ fn verify(e: &Elab, user: &str) -> Verified {
 /// once they are (`known_calls`): before the proofs phase chooses what it
 /// proves, so that each obligation is proved once.
 fn settle_known(e: &Elab, user: &str) {
-    if *e.cur != *user {
-        return;
-    }
     let early = e.early.borrow();
     let obs: Vec<&Obligation> = e.obligations.iter().enumerate().filter(|(k, o)| o.module == user && !early.proved(*k, o)).map(|(_, o)| o).collect();
     drop(early);
