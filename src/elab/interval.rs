@@ -463,7 +463,7 @@ impl Elab {
             let Some(info) = self.g.defs.get(d.0 as usize) else { return false };
             // A `partial` function has a body and is opaque; a builtin has
             // none (its code is the runtime's).
-            if info.opaque && info.body.is_some() || !self.def_proved(d) {
+            if info.opaque && info.body.is_some() || self.g.run_time_only.borrow().contains(&d) || !self.def_proved(d) {
                 return false;
             }
             match &info.body {

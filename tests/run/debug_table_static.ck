@@ -7,6 +7,7 @@ module debug_table_static
 import std.system (System, ExitCode)
 import std.string (Debug, debug)
 import std.terminal (Term)
+import std.hint (blackbox)
 
 record Secret
     code~Int
@@ -16,5 +17,5 @@ instance Debug Secret
         "Secret <hidden>"
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
-    terminal.print_line (debug [Secret (len args + 7)]) sys.term
+    terminal.print_line (debug [Secret (blackbox 7)]) sys.term
     Success

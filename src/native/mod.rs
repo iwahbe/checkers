@@ -516,6 +516,17 @@ mod tests {
         })
     }
 
+    /// A value given through `std.hint.blackbox` is not known when compiling
+    /// (§8.9, tests/run/blackbox.ck): `main` calls it and adds at run time.
+    #[test]
+    fn blackbox_is_not_folded() {
+        funcs_of("blackbox.ck", |p| {
+            let main = p.funcs.iter().find(|f| f.name == "main").expect("main");
+            let code = dump(&main.body, 0);
+            assert!(code.contains("ckb_hint_blackbox") && code.contains("Prim(Add"), "{code}");
+        })
+    }
+
     /// Whether `e` duplicates or drops `v`.
     fn counts(e: &lower::E, v: lower::V) -> bool {
         use lower::E;

@@ -8,6 +8,7 @@ module minmax
 import std.system (System, ExitCode)
 import std.terminal
 import std.string (debug)
+import std.hint (blackbox)
 
 fn min x y -> r : Ord a, x~a, y~a, r~a
     if x <= y then x else y
@@ -31,10 +32,9 @@ fn hand k i acc -> r : k~Nat, i~Int, acc~Int, r~Int
     if k == 0 then acc else hand (k - 1) (i + 1) (acc + (if i <= k then i else k) - (if i >= k then i else k))
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
-    # Unknown when compiling (`none` is 0), so the work is done when the
-    # program runs, not when it is compiled (§8.9).
-    let none = len args - len args
-    let n = none + 200000000
+    # Given through `blackbox`, so the work is done when the program runs,
+    # not when it is compiled.
+    let n = blackbox 200000000
     let r = match args
         ["generic"] -> generic n 0 0
         ["mono"]    -> mono n 0 0

@@ -9,6 +9,7 @@ import std.system (System, ExitCode)
 import std.terminal (Term)
 import std.terminal
 import std.string (debug)
+import std.hint (blackbox)
 
 fn line s term : s~String, term~Term
     terminal.print_line s term
@@ -50,18 +51,12 @@ fn power k -> r : k~Nat, r~Int
 fn down a b -> s : a~Nat, b~Nat, s~String
     if a >= b then debug (a - b) else "below"
 
-fn shift n xs -> ys : n~Nat, xs~List Int, ys~List Int
-    match xs
-        []        -> []
-        x :: rest -> (x + n) :: shift n rest
-
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let term = sys.term
-    # Known only when the program runs (`n` is 0), or the operations would be
-    # computed when compiling.
-    let n = len args
-    let edges = shift n [0, 7, -7, 4611686018427387904, -4611686018427387905, 9223372036854775808, -9223372036854775808, 18446744073709551616, -18446744073709551616, 170141183460469231731687303715884105727, -170141183460469231731687303715884105728, 170141183460469231731687303715884105728]
+    # Given through `blackbox`, or the operations would be computed when
+    # compiling.
+    let edges = blackbox [0, 7, -7, 4611686018427387904, -4611686018427387905, 9223372036854775808, -9223372036854775808, 18446744073709551616, -18446744073709551616, 170141183460469231731687303715884105727, -170141183460469231731687303715884105728, 170141183460469231731687303715884105728]
     pairs edges edges term
-    line (debug (power (n + 64) == 18446744073709551616) ++ " " ++ debug (power (n + 127) - 1 == 170141183460469231731687303715884105727) ++ " " ++ debug (power (n + 100) / power 50)) term
-    line (down (n + 18446744073709551616) 9223372036854775808 ++ " " ++ down (n + 9223372036854775808) 18446744073709551616 ++ " " ++ down (n + 340282366920938463463374607431768211456) 1) term
+    line (debug (power (blackbox 64) == 18446744073709551616) ++ " " ++ debug (power (blackbox 127) - 1 == 170141183460469231731687303715884105727) ++ " " ++ debug (power (blackbox 100) / power 50)) term
+    line (down (blackbox 18446744073709551616) 9223372036854775808 ++ " " ++ down (blackbox 9223372036854775808) 18446744073709551616 ++ " " ++ down (blackbox 340282366920938463463374607431768211456) 1) term
     Success

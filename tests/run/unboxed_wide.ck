@@ -8,6 +8,7 @@ module unboxed_wide
 import std.system (System, ExitCode)
 import std.terminal (Term)
 import std.string (debug)
+import std.hint (blackbox)
 
 fn six n -> r : n~Int, r~(Int, Int, Int, Int, Int, Int)
     (n, n + 1, n + 2, n + 3, n + 4, n + 5)
@@ -35,9 +36,8 @@ fn line s term : s~String, term~Term
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let term = sys.term
-    # Known only when the program runs, or computed when compiling.
-    let n = len args + 1
-    line (debug (by_six n)) term
-    line (debug (by_seven n)) term
-    line (debug (by_eight n)) term
+    # Given through `blackbox`, or the calls would be computed when compiling.
+    line (debug (by_six (blackbox 1))) term
+    line (debug (by_seven (blackbox 1))) term
+    line (debug (by_eight (blackbox 1))) term
     Success

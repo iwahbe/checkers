@@ -3,12 +3,12 @@ module at_compare
 # Code put into a function from another (`near` and `wrap` inlined, each
 # with a `%` that could fail) gives the same results as the same code
 # written there, at the edges of small integers too. `pick` and `step` are
-# too big to be inlined themselves. Their arguments are known only when the
-# program runs (`n` is 0), or the calls would be computed when compiling.
+# too big to be inlined themselves.
 
 import std.system (System, ExitCode)
 import std.string (debug)
 import std.terminal (Term)
+import std.hint (blackbox)
 
 fn near x y -> r : x~Int, y~Int, r~Bool
     x % 7 <= y
@@ -33,10 +33,10 @@ fn line a b sys : a~Int, b~Int, sys~System
     terminal.print_line s sys.term
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
-    let n = len args
-    line (n + 3) (n + 4) sys
-    line (n + 4) (n + 3) sys
-    line (n - 5) (n - 5) sys
-    line (n + 4611686018427387904) (n + 4611686018427387903) sys
-    line (n - 4611686018427387905) n sys
+    # Given through `blackbox`, or the calls would be computed when compiling.
+    line (blackbox 3) (blackbox 4) sys
+    line (blackbox 4) (blackbox 3) sys
+    line (blackbox (-5)) (blackbox (-5)) sys
+    line (blackbox 4611686018427387904) (blackbox 4611686018427387903) sys
+    line (blackbox (-4611686018427387905)) (blackbox 0) sys
     Success

@@ -7,7 +7,8 @@ module residual_reported
 
 import std.system (System, ExitCode)
 import std.terminal (Term)
+import std.hint (blackbox)
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
-    terminal.print_line (if len args + 21 * 2 == 42 then "no arguments" else "arguments") sys.term
+    terminal.print_line (if blackbox 0 + 21 * 2 == 42 then "no arguments" else "arguments") sys.term
     Success

@@ -29,6 +29,10 @@ const EFFECT_TYPES: &[(&str, &str)] = &[
     ("std.proc", "Killer"),
 ];
 
+/// The builtins whose results are never known when compiling, though they
+/// have no effects (§8.9): a test or benchmark's inputs go through them.
+const NEVER_KNOWN: &[(&str, &str)] = &[("std.hint", "blackbox")];
+
 /// A call with effects: the types of the values it is given, where its
 /// function is named (`None` for a local function, which may hold anything).
 pub(super) struct Effects {
@@ -65,6 +69,12 @@ impl Elab {
             lvl += 1;
         }
         false
+    }
+
+    /// Whether builtin `d`'s result is never known when compiling.
+    pub(super) fn never_known(&self, d: DefId) -> bool {
+        let info = &self.g.defs[d.0 as usize];
+        NEVER_KNOWN.iter().any(|(m, n)| *info.module == **m && *info.name == **n)
     }
 
     /// Whether function value `v` captured a value that holds an effect.

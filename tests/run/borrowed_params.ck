@@ -9,6 +9,7 @@ import std.system (System, ExitCode)
 import std.terminal
 import std.string (debug)
 import std.list
+import std.hint (blackbox)
 
 # `n` is passed on unchanged: borrowed.
 fn walk n k acc -> r : n~Int, k~Nat, acc~Int, r~Int
@@ -46,14 +47,12 @@ fn add_to n m -> r : n~Int, m~Int, r~Int
     walk n 2 m
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
-    # Known only when the program runs (`n` is 0), or computed when compiling.
-    let n = len args
-    let big = 9223372036854775807 * 4 + n
-    terminal.print_line (debug (walk big (n + 3) n)) sys.term
-    terminal.print_line (debug (walk (n + 5) (n + 4) (n + 1))) sys.term
-    let (ab, lo) = if n == 0 then ("ab", "lo") else ("", "")
-    terminal.print_line (debug (keep (ab ++ "cd") ["x"])) sys.term
-    terminal.print_line (debug (both (lo ++ "ng"))) sys.term
-    terminal.print_line (debug (tests [long, short] (ab ++ "cde"))) sys.term
+    # Given through `blackbox`, or the calls would be computed when compiling.
+    let big = blackbox (9223372036854775807 * 4)
+    terminal.print_line (debug (walk big (blackbox 3) (blackbox 0))) sys.term
+    terminal.print_line (debug (walk (blackbox 5) (blackbox 4) (blackbox 1))) sys.term
+    terminal.print_line (debug (keep (blackbox "ab" ++ "cd") ["x"])) sys.term
+    terminal.print_line (debug (both (blackbox "lo" ++ "ng"))) sys.term
+    terminal.print_line (debug (tests [long, short] (blackbox "ab" ++ "cde"))) sys.term
     terminal.print_line (debug (list.map (add_to big) [1, 2])) sys.term
     Success

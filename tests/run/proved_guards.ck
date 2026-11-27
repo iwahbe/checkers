@@ -10,6 +10,7 @@ import std.system (System, ExitCode)
 import std.cown (Cown, Sched)
 import std.string (debug)
 import std.terminal (Term)
+import std.hint (blackbox)
 
 fn nat_less a b -> r : a~Nat, b~Nat, b <= a, r~Nat
     (a - b) * (a - b) + (a - b) * 2 + b
@@ -33,14 +34,11 @@ fn line n term : n~Int, term~Term
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { term, sched } = sys
-    # Known only when the program runs (`n` is 0), each within what its
-    # function requires by a remainder, or the calls would be computed when
-    # compiling.
-    let n = len args
-    line (nat_less (n + 10) ((n + 3) % 4)) term
-    line (nonzero (n + 17) (-(1 + (n + 4) % 5))) term
-    line (positive (n + 17) (1 + (n + 4) % 5)) term
-    line (byte_at b"abc" ((n + 1) % 3)) term
+    # Given through `blackbox`, or the calls would be computed when compiling.
+    line (nat_less (blackbox 10) (blackbox 3)) term
+    line (nonzero (blackbox 17) (blackbox (-5))) term
+    line (positive (blackbox 17) (blackbox 5)) term
+    line (byte_at b"abc" (blackbox 1)) term
     let c = cown.new 1 sched
     let d = cown.new 2 sched
     swap c d sched

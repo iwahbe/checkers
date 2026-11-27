@@ -7,6 +7,7 @@ module copy_params
 import std.system (System, ExitCode)
 import std.terminal
 import std.string (debug)
+import std.hint (blackbox)
 
 fn lo x y -> r : Ord a, x~a, y~a, r~a
     if le x y then x else y
@@ -23,12 +24,10 @@ fn pick f -> r : f~(Int -> Int), r~Int
     f 3
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
-    # Known only when the program runs (`n` is 0), or computed when compiling.
-    let n = len args
-    let (pear, apple) = if n == 0 then ("pear", "apple") else ("", "")
-    terminal.print_line (debug (lo (n + 4) (n + 2))) sys.term
-    terminal.print_line (lo pear apple) sys.term
-    terminal.print_line (debug (lo [n + 2, 1] [1, 5])) sys.term
-    terminal.print_line (debug (plus_nothing (n + 1))) sys.term
+    # Given through `blackbox`, or the calls would be computed when compiling.
+    terminal.print_line (debug (lo (blackbox 4) (blackbox 2))) sys.term
+    terminal.print_line (lo (blackbox "pear") (blackbox "apple")) sys.term
+    terminal.print_line (debug (lo (blackbox [2, 1]) [1, 5])) sys.term
+    terminal.print_line (debug (plus_nothing (blackbox 1))) sys.term
     terminal.print_line (debug (pick (lo 5))) sys.term
     Success

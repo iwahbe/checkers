@@ -2461,7 +2461,7 @@ impl Elab {
             },
             Tm::Def(d) => {
                 let info = &self.g.defs[d.0 as usize];
-                !(info.opaque && info.body.is_some())
+                !(info.opaque && info.body.is_some()) && !self.g.run_time_only.borrow().contains(d)
             }
             Tm::PrimApp(Prim::When, _) => false,
             Tm::Pi(_, _, _, a, b) => go(a, depth) && go(b, depth + 1),

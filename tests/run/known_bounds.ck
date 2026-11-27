@@ -12,6 +12,7 @@ import std.terminal (Term)
 import std.math
 import std.array
 import known.limits
+import std.hint (blackbox)
 
 let LIMIT = 1000
 
@@ -68,18 +69,15 @@ fn line n sys : n~Int, sys~System
     terminal.print_line (debug n) sys.term
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
-    # Known only when the program runs (`n` is 0), each within its bounds
-    # by a remainder, or the calls would be computed when compiling.
-    let n = len args
-    let (w32, w0) = ((n + 4294967295) % 4294967296, n % 4294967296)
-    line (by_call w32 w32) sys
-    line (by_literal w32 w0) sys
-    line (by_name ((n + 999) % 1000) ((n + 999) % 1000)) sys
-    line (by_number (n % 1000) ((n + 999) % 1000)) sys
-    line (call_std (n + 255) n) sys
-    line (call_own n (n + 255)) sys
-    line (call_module (n + 255) (n + 1)) sys
-    line (by_bytes ((n + 255) % 256) ((n + 255) % 256)) sys
-    line (with_name ((n + 255) % 256)) sys
-    line (with_number (n % 256)) sys
+    # Given through `blackbox`, or the calls would be computed when compiling.
+    line (by_call (blackbox 4294967295) (blackbox 4294967295)) sys
+    line (by_literal (blackbox 4294967295) (blackbox 0)) sys
+    line (by_name (blackbox 999) (blackbox 999)) sys
+    line (by_number (blackbox 0) (blackbox 999)) sys
+    line (call_std (blackbox 255) (blackbox 0)) sys
+    line (call_own (blackbox 0) (blackbox 255)) sys
+    line (call_module (blackbox 255) (blackbox 1)) sys
+    line (by_bytes (blackbox 255) (blackbox 255)) sys
+    line (with_name (blackbox 255)) sys
+    line (with_number (blackbox 0)) sys
     Success

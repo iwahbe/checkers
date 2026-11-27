@@ -8,6 +8,7 @@ module monoid_fold
 import std.system (System, ExitCode)
 import std.terminal (Term)
 import std.string (format)
+import std.hint (blackbox)
 
 # Two running totals.
 record Pair
@@ -69,10 +70,9 @@ fn repeat_pair xs k acc -> r : xs~List Pair, k~Nat, acc~Pair, r~Pair
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { term } = sys
-    # Unknown when compiling (`none` is 0), so the work is done when the
-    # program runs, not when it is compiled (§8.9).
-    let none = len args - len args
-    let xs = numbers (none + 100000) []
+    # Given through `blackbox`, so the work is done when the program runs,
+    # not when it is compiled.
+    let xs = numbers (blackbox 100000) []
     let ps = pairs xs
     let (n, p) = match args
         ["mono"] -> (repeat_int xs 100 0, repeat_pair ps 100 (Pair 0 0))

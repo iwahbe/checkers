@@ -10,6 +10,7 @@ import std.terminal (Term)
 import std.string (format)
 import std.decimal
 import std.utf8
+import std.hint (blackbox)
 
 # The total length of what `render` writes for numbers `k` down to 1.
 fn lengths k acc -> n : k~Nat, acc~Nat, n~Nat
@@ -23,9 +24,8 @@ fn lengths k acc -> n : k~Nat, acc~Nat, n~Nat
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { term } = sys
-    # Unknown when compiling (`none` is 0), so the work is done when the
-    # program runs, not when it is compiled (§8.9).
-    let none = len args - len args
-    let n = lengths (none + 1000000) 0
+    # Given through `blackbox`, so the work is done when the program runs,
+    # not when it is compiled.
+    let n = lengths (blackbox 1000000) 0
     terminal.print_line format"bytes {n}" term
     Success

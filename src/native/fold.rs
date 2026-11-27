@@ -34,8 +34,9 @@ pub enum Kept {
     NoForm,
     /// It calls a `partial` function, which may not end.
     Partial,
-    /// It reaches an effect (§8.9).
-    Effects,
+    /// It reaches a builtin that runs only when the program does: one with
+    /// effects, or `blackbox` (§8.9).
+    RunTime,
     /// The program relies on an `admit`: a call might be outside
     /// its function's preconditions.
     Unproved,
@@ -47,7 +48,7 @@ impl Kept {
             Kept::Fails(e) => format!("fails when compiling ({e})"),
             Kept::NoForm => "its value has no static form yet".into(),
             Kept::Partial => "it calls a `partial` function".into(),
-            Kept::Effects => "it has effects".into(),
+            Kept::RunTime => "it reaches a builtin that runs only when the program does (one with effects, or `blackbox`)".into(),
             Kept::Unproved => "the program relies on an `admit`".into(),
         }
     }
@@ -223,8 +224,8 @@ impl<'g> Folder<'g> {
     }
 
     /// Whether definition `d` and every definition it reaches can run when
-    /// compiling: none is `partial` or a builtin with effects, and no code
-    /// waits on a cown.
+    /// compiling: none is `partial` or a builtin that runs only when the
+    /// program does, and no code waits on a cown.
     fn pure_def(&mut self, d: DefId) -> Result<(), Kept> {
         if let Some(r) = self.pure.get(&d) {
             return r.clone();
@@ -256,13 +257,13 @@ impl<'g> Folder<'g> {
                 r = Err(Kept::Partial);
                 break;
             }
-            if g.effects.borrow().contains(&x) {
-                r = Err(Kept::Effects);
+            if g.run_time_only.borrow().contains(&x) {
+                r = Err(Kept::RunTime);
                 break;
             }
             if let Some(b) = &body {
                 if waits(b) {
-                    r = Err(Kept::Effects);
+                    r = Err(Kept::RunTime);
                     break;
                 }
                 crate::core::defs_in(b, &mut todo);
