@@ -1829,7 +1829,7 @@ lemma structure_value low mode c m env senv t : low~Lower, mode~Mode, c~Context,
 # ── What a connective means, for closed terms ────────────────────────────────
 
 # Whether `t` is a closed `Bool` term of `c`.
-export fn boolean c t -> r : c~Context, t~Term, r~Bool
+export transparent fn boolean c t -> r : c~Context, t~Term, r~Bool
     term.sort_of (term.signature c) [] t == Ok Bool
 
 # Whether each of `ts` is (`boolean`).
@@ -3060,13 +3060,3 @@ export lemma has_value_def c m t : c~Context, m~Model, t~Term
         == match (term.sort_of (term.signature c) [] t, eval c m t)
             (Ok s, Ok v) -> of_sort c m s v
             _            -> False
-
-# A `Bool` term with a value holds or fails.
-export lemma has_value_bool c m t : c~Context, m~Model, t~Term, term.sort_of (term.signature c) [] t == Ok Bool,
-                                    has_value c m t
-    ensures holds c m t or fails c m t
-    proof
-        match eval c m t
-            Ok (Truth _) -> auto
-            Ok v         -> have not (of_sort c m Bool v)
-            Err _        -> auto
