@@ -2995,10 +2995,25 @@ impl Elab {
     /// scope, or an instance's, with its context found the same way. An
     /// instance is chosen once the types are known wherever it names a type
     /// constructor (#145); until then the request waits.
-    fn find_dict(&mut self, req: &InstReq, class: TyId, tys: &[Val], depth: usize) -> Result<Tm, String> {
-        if depth > 32 {
-            return Err("instances nested too deeply".into());
+    ///
+    /// However deeply the types nest: an instance's context is at parts of
+    /// the types asked, so finding it ends. A type's header clause can ask
+    /// for more (`record T a : C (T (List a))`): a request that needs one
+    /// of the requests being found (`outer`) again, or one that grows from
+    /// it (the earlier one's types embed in its), never ends, and has no
+    /// dictionary.
+    fn find_dict(&mut self, req: &InstReq, class: TyId, tys: &[Val], outer: &mut Vec<(TyId, Vec<Tm>)>) -> Result<Tm, String> {
+        let key: Vec<Tm> = tys.iter().map(|t| quote(&self.g, req.lvl, &self.force(t))).collect();
+        if outer.iter().any(|(c, k)| *c == class && k.len() == key.len() && k.iter().zip(&key).all(|(a, b)| embeds(a, b))) {
+            return Err("none".into());
         }
+        outer.push((class, key));
+        let r = self.find_dict_in(req, class, tys, outer);
+        outer.pop();
+        r
+    }
+
+    fn find_dict_in(&mut self, req: &InstReq, class: TyId, tys: &[Val], outer: &mut Vec<(TyId, Vec<Tm>)>) -> Result<Tm, String> {
         let asked: Vec<Val> = tys.iter().map(|t| force_meta(&self.g, t.clone())).collect();
         let tys: Vec<Val> = tys.iter().map(|t| self.force(t)).collect();
         let shown: Vec<String> = tys.iter().map(|t| format!("{:?}", quote(&self.g, req.lvl, t))).collect();
@@ -3089,7 +3104,7 @@ impl Elab {
         let mut env = args.clone();
         for (c, vs) in &inst.context {
             let ctys: Vec<Val> = vs.iter().map(|v| args[*v].clone()).collect();
-            let d = match self.find_dict(req, *c, &ctys, depth + 1) {
+            let d = match self.find_dict(req, *c, &ctys, outer) {
                 Ok(d) => d,
                 Err(e) => {
                     // The innermost missing one is what to report.
@@ -3106,7 +3121,7 @@ impl Elab {
         // the same way, at the types asked for.
         for ty in self.inst_implied.get(&inst.def).cloned().unwrap_or_default() {
             let Val::TyCon(c, ctys) = self.force(&eval(&self.g, &crate::core::Env::from(env.clone()), &ty)) else { return Err("none".into()) };
-            let d = self.find_dict(req, c, &ctys, depth + 1)?;
+            let d = self.find_dict(req, c, &ctys, outer)?;
             env.push(eval(&self.g, &lvl_env, &d));
             t = Tm::App(Rc::new(t), Rc::new(d), Icit::Impl, Mult::Many);
         }
@@ -3121,8 +3136,9 @@ impl Elab {
         if let (false, Some(cx)) = (req.in_spec, &req.cx) {
             for (k, (p, a)) in inst.pats.iter().zip(&asked).enumerate() {
                 if matches!(p, InstPat::Head(..)) && self.refined_alias(a).is_some() {
-                    let meta = match (depth, force_meta(&self.g, req.meta.clone())) {
-                        (0, Val::Neutral(Head::Meta(m), _)) => Some(m),
+                    let meta = match (outer.len(), force_meta(&self.g, req.meta.clone())) {
+                        // The request itself, not one in an instance's context.
+                        (1, Val::Neutral(Head::Meta(m), _)) => Some(m),
                         _ => None,
                     };
                     self.alias_dicts.push(AliasDict {
@@ -3288,7 +3304,7 @@ impl Elab {
                 return false;
             }
         }
-        match self.find_dict(r, r.class, &r.tys, 0) {
+        match self.find_dict(r, r.class, &r.tys, &mut Vec::new()) {
             Ok(t) => {
                 let v = eval(&self.g, &self.g.id_env(r.lvl), &t);
                 unify(&self.g, r.lvl, &r.meta, &v).is_ok()
@@ -3353,7 +3369,7 @@ impl Elab {
         if free.is_empty() || free.iter().any(|i| *i < inside) {
             return None;
         }
-        match self.find_dict(r, r.class, &r.tys, 0) {
+        match self.find_dict(r, r.class, &r.tys, &mut Vec::new()) {
             Err(why) if why != "unknown" => Some(rename_free(&ty, 0, &|i| i - inside)),
             _ => None,
         }
@@ -3386,7 +3402,7 @@ impl Elab {
                 continue;
             }
             self.ctx_missing = None;
-            match self.find_dict(&r, r.class, &r.tys, 0) {
+            match self.find_dict(&r, r.class, &r.tys, &mut Vec::new()) {
                 Ok(t) => {
                     if self.assoc_cycle(&r, &t) {
                         continue;
@@ -3925,11 +3941,9 @@ impl Elab {
     /// `t` without the refinement aliases at its head: the type the alias
     /// stands for (`Int` for `Small`, through `Nat`).
     fn alias_base(&self, t: &Val) -> Val {
+        // However many aliases: unfolding them ends (see `peel`).
         let mut v = force_meta(&self.g, t.clone());
-        for _ in 0..64 {
-            if self.refined_alias(&v).is_none() {
-                break;
-            }
+        while self.refined_alias(&v).is_some() {
             match unfold(&self.g, &v) {
                 Some(u) => v = force_meta(&self.g, u),
                 None => break,
@@ -3941,31 +3955,37 @@ impl Elab {
     /// Whether `t` has a refinement alias where `b`, the same type at the
     /// alias's base, doesn't, at a place a value is produced (`co`) or
     /// consumed: a type of a value given to the caller is produced where
-    /// it is covariant.
-    fn alias_differs(&self, lvl: usize, t: &Val, b: &Val, co: bool, depth: usize) -> bool {
-        if depth > 16 {
-            return false;
-        }
-        let (pt, pb) = (self.peel(t), self.peel(b));
-        if co && self.refined_alias(&pt).is_some() && !self.same_refinement(lvl, &pt, &pb) {
-            return true;
-        }
-        match (self.force(&pt), self.force(&pb)) {
-            (Val::TyCon(t1, a1), Val::TyCon(t2, a2)) if t1 == t2 && a1.len() == a2.len() => {
-                let vs = self.variance(t1);
-                a1.iter().zip(a2.iter()).enumerate().any(|(k, (x, y))| match vs.get(k) {
-                    Some(super::refine::Variance::Co) => self.alias_differs(lvl, x, y, co, depth + 1),
-                    Some(super::refine::Variance::Contra) => self.alias_differs(lvl, x, y, !co, depth + 1),
-                    _ => self.alias_differs(lvl, x, y, co, depth + 1) || self.alias_differs(lvl, x, y, !co, depth + 1),
-                })
+    /// it is covariant. However deep: a worklist.
+    fn alias_differs(&self, lvl: usize, t: &Val, b: &Val, co: bool) -> bool {
+        let mut work = vec![(lvl, t.clone(), b.clone(), co)];
+        while let Some((lvl, t, b, co)) = work.pop() {
+            let (pt, pb) = (self.peel(&t), self.peel(&b));
+            if co && self.refined_alias(&pt).is_some() && !self.same_refinement(lvl, &pt, &pb) {
+                return true;
             }
-            (Val::TupleTy(x), Val::TupleTy(y)) if x.len() == y.len() => x.iter().zip(y.iter()).any(|(x, y)| self.alias_differs(lvl, x, y, co, depth + 1)),
-            (Val::Pi(_, _, _, a1, c1), Val::Pi(_, _, _, a2, c2)) => {
-                self.alias_differs(lvl, &a1, &a2, !co, depth + 1)
-                    || self.alias_differs(lvl + 1, &apply_closure(&self.g, &c1, Val::var(lvl)), &apply_closure(&self.g, &c2, Val::var(lvl)), co, depth + 1)
+            match (self.force(&pt), self.force(&pb)) {
+                (Val::TyCon(t1, a1), Val::TyCon(t2, a2)) if t1 == t2 && a1.len() == a2.len() => {
+                    let vs = self.variance(t1);
+                    for (k, (x, y)) in a1.iter().zip(a2.iter()).enumerate() {
+                        match vs.get(k) {
+                            Some(super::refine::Variance::Co) => work.push((lvl, x.clone(), y.clone(), co)),
+                            Some(super::refine::Variance::Contra) => work.push((lvl, x.clone(), y.clone(), !co)),
+                            _ => {
+                                work.push((lvl, x.clone(), y.clone(), co));
+                                work.push((lvl, x.clone(), y.clone(), !co));
+                            }
+                        }
+                    }
+                }
+                (Val::TupleTy(x), Val::TupleTy(y)) if x.len() == y.len() => work.extend(x.iter().zip(y.iter()).map(|(x, y)| (lvl, x.clone(), y.clone(), co))),
+                (Val::Pi(_, _, _, a1, c1), Val::Pi(_, _, _, a2, c2)) => {
+                    work.push((lvl + 1, apply_closure(&self.g, &c1, Val::var(lvl)), apply_closure(&self.g, &c2, Val::var(lvl)), co));
+                    work.push((lvl, (*a1).clone(), (*a2).clone(), !co));
+                }
+                _ => {}
             }
-            _ => false,
         }
+        false
     }
 
     /// The conditions for value `v` (a term at `env`'s level) of type `t`
@@ -3979,7 +3999,7 @@ impl Elab {
     #[allow(clippy::too_many_arguments)]
     fn alias_goals(&self, env: &[Val], outer: usize, v: &Tm, t: &Val, b: &Val, ti: Option<&Val>, seen: &mut Vec<TyId>) -> Result<Vec<AliasGoal>, TyId> {
         let lvl = env.len();
-        if !self.alias_differs(lvl, t, b, true, 0) {
+        if !self.alias_differs(lvl, t, b, true) {
             return Ok(Vec::new());
         }
         let (pt, pb) = (self.peel(t), self.peel(b));
@@ -4365,7 +4385,7 @@ impl Elab {
         // function type does (#579): at any depth, refinements written as
         // aliases or inline.
         for (i, x, dt, db) in params {
-            if !self.alias_differs(lvl, &dt, &db, false, 0) {
+            if !self.alias_differs(lvl, &dt, &db, false) {
                 continue;
             }
             let param = Some(self.alias_param(&cx, &x, &dt, &db, &alias_s));
@@ -4381,50 +4401,58 @@ impl Elab {
     /// The places in `t` where it has a refinement alias that `b`, the same
     /// type at the alias's base, doesn't, at which a value is produced
     /// (`co`), as `alias_differs` finds them: each as the steps reaching it.
-    fn alias_paths(&self, lvl: usize, t: &Val, b: &Val, co: bool, path: &mut Vec<Step>, out: &mut Vec<Vec<Step>>) {
-        if path.len() > 16 || out.len() > 4 {
-            return;
-        }
-        let (pt, pb) = (self.peel(t), self.peel(b));
-        if co {
-            if let Some((d, _)) = self.refined_alias(&pt) {
-                if self.refined_alias(&pb).is_none_or(|(e, _)| e != d) {
-                    out.push(path.clone());
-                    return;
-                }
+    /// However deep (a worklist), in order; a message names at most five.
+    fn alias_paths(&self, lvl: usize, t: &Val, b: &Val, co: bool) -> Vec<Vec<Step>> {
+        let mut out = Vec::new();
+        let mut work = vec![(lvl, t.clone(), b.clone(), co, Vec::new())];
+        while let Some((lvl, t, b, co, path)) = work.pop() {
+            if out.len() > 4 {
+                break;
             }
-        }
-        let mut at = |s: &Elab, step: Step, x: &Val, y: &Val, co: bool, lvl: usize, out: &mut Vec<Vec<Step>>| {
-            path.push(step);
-            s.alias_paths(lvl, x, y, co, path, out);
-            path.pop();
-        };
-        match (self.force(&pt), self.force(&pb)) {
-            (Val::TyCon(t1, a1), Val::TyCon(t2, a2)) if t1 == t2 && a1.len() == a2.len() => {
-                let vs = self.variance(t1);
-                for (k, (x, y)) in a1.iter().zip(a2.iter()).enumerate() {
-                    match vs.get(k) {
-                        Some(super::refine::Variance::Co) => at(self, Step::Part, x, y, co, lvl, out),
-                        Some(super::refine::Variance::Contra) => at(self, Step::Other, x, y, !co, lvl, out),
-                        _ => {
-                            at(self, Step::Other, x, y, co, lvl, out);
-                            at(self, Step::Other, x, y, !co, lvl, out);
-                        }
+            let (pt, pb) = (self.peel(&t), self.peel(&b));
+            if co {
+                if let Some((d, _)) = self.refined_alias(&pt) {
+                    if self.refined_alias(&pb).is_none_or(|(e, _)| e != d) {
+                        out.push(path);
+                        continue;
                     }
                 }
             }
-            (Val::TupleTy(x), Val::TupleTy(y)) if x.len() == y.len() => {
-                for (x, y) in x.iter().zip(y.iter()) {
-                    at(self, Step::Part, x, y, co, lvl, out);
+            let at = |step: Step, x: &Val, y: &Val, co: bool, lvl: usize| {
+                let mut p = path.clone();
+                p.push(step);
+                (lvl, x.clone(), y.clone(), co, p)
+            };
+            let mut next = Vec::new();
+            match (self.force(&pt), self.force(&pb)) {
+                (Val::TyCon(t1, a1), Val::TyCon(t2, a2)) if t1 == t2 && a1.len() == a2.len() => {
+                    let vs = self.variance(t1);
+                    for (k, (x, y)) in a1.iter().zip(a2.iter()).enumerate() {
+                        match vs.get(k) {
+                            Some(super::refine::Variance::Co) => next.push(at(Step::Part, x, y, co, lvl)),
+                            Some(super::refine::Variance::Contra) => next.push(at(Step::Other, x, y, !co, lvl)),
+                            _ => {
+                                next.push(at(Step::Other, x, y, co, lvl));
+                                next.push(at(Step::Other, x, y, !co, lvl));
+                            }
+                        }
+                    }
                 }
+                (Val::TupleTy(x), Val::TupleTy(y)) if x.len() == y.len() => {
+                    for (x, y) in x.iter().zip(y.iter()) {
+                        next.push(at(Step::Part, x, y, co, lvl));
+                    }
+                }
+                (Val::Pi(_, _, _, a1, c1), Val::Pi(_, _, _, a2, c2)) => {
+                    next.push(at(Step::Arg, &a1, &a2, !co, lvl));
+                    let (r1, r2) = (apply_closure(&self.g, &c1, Val::var(lvl)), apply_closure(&self.g, &c2, Val::var(lvl)));
+                    next.push(at(Step::Res, &r1, &r2, co, lvl + 1));
+                }
+                _ => {}
             }
-            (Val::Pi(_, _, _, a1, c1), Val::Pi(_, _, _, a2, c2)) => {
-                at(self, Step::Arg, &a1, &a2, !co, lvl, out);
-                let (r1, r2) = (apply_closure(&self.g, &c1, Val::var(lvl)), apply_closure(&self.g, &c2, Val::var(lvl)));
-                at(self, Step::Res, &r1, &r2, co, lvl + 1, out);
-            }
-            _ => {}
+            work.extend(next.into_iter().rev());
         }
+        out
     }
 
     /// Function parameter `x` of type `t` at the alias (`b` at its base),
@@ -4433,8 +4461,7 @@ impl Elab {
     /// results, …), from the places `t` has the alias.
     fn alias_param(&self, cx: &Cx, x: &str, t: &Val, b: &Val, alias: &str) -> super::AliasParam {
         let lvl = cx.lvl();
-        let mut paths = Vec::new();
-        self.alias_paths(lvl, t, b, false, &mut Vec::new(), &mut paths);
+        let paths = self.alias_paths(lvl, t, b, false);
         let a = format!("`{alias}`");
         let mut gives: Vec<String> = Vec::new();
         let mut only: Vec<String> = Vec::new();
@@ -4676,4 +4703,27 @@ fn given_pred(path: &[Step], a: &str, neg: bool) -> Option<String> {
 /// A term with an error in it: one already reported.
 fn has_error(t: &Tm) -> bool {
     matches!(t, Tm::Error) || t.any_sub(|x, _| has_error(x))
+}
+
+/// Whether `s` embeds in `t` (homeomorphic embedding): `t` is `s` with
+/// more around or inside it (`T Int` embeds in `T (List Int)`). Every
+/// endless sequence of types has one that embeds in a later one. Each pair
+/// of parts is decided once.
+fn embeds(s: &Tm, t: &Tm) -> bool {
+    fn go(s: &Tm, t: &Tm, memo: &mut HashMap<(usize, usize), bool>) -> bool {
+        let key = (s as *const Tm as usize, t as *const Tm as usize);
+        if let Some(b) = memo.get(&key) {
+            return *b;
+        }
+        let r = tm_eq(s, t)
+            || match (s, t) {
+                (Tm::TyConApp(a, xs), Tm::TyConApp(b, ys)) => a == b && xs.len() == ys.len() && xs.iter().zip(ys.iter()).all(|(x, y)| go(x, y, memo)),
+                (Tm::TupleTy(xs), Tm::TupleTy(ys)) => xs.len() == ys.len() && xs.iter().zip(ys.iter()).all(|(x, y)| go(x, y, memo)),
+                _ => false,
+            }
+            || t.any_sub(|c, k| k == 0 && go(s, c, memo));
+        memo.insert(key, r);
+        r
+    }
+    go(s, t, &mut HashMap::new())
 }

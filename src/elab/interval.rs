@@ -85,7 +85,8 @@ impl Elab {
     pub fn type_range(&self, ty: &Val) -> Option<Range> {
         let mut r = Range::ANY;
         let mut v = crate::core::force_meta(&self.g, ty.clone());
-        for _ in 0..64 {
+        // However many aliases: unfolding them ends (see `core::unfold`).
+        loop {
             if let Val::Neutral(Head::Def(d), sp) = &v {
                 if sp.is_empty() {
                     if let Some(preds) = self.alias_preds.get(d) {
