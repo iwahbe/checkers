@@ -10,7 +10,7 @@ fn past xs n x -> r : xs~List Int, n~Int, x~Int, list.contains xs x, r~Bool
 fn some_past n xs -> r : n~Int, xs~List Int, r~Bool
     list.any (past xs n) xs
 
-lemma not_all_below n xs : n~Int, xs~List Int, not (list.all (\x -> x <= n) xs)
+lemma not_all_below n xs : n~Int, xs~List Int, not (list.all (\x -> not (x > n)) xs)
     ensures list.any (\x -> x > n) xs
     proof
         have list.any_all (\x -> x > n) xs
