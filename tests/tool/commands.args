@@ -4,6 +4,6 @@ frobnicate
 fmt --check tests/fmt/basics.ck tests/fmt/blanks.ck
 fmt --check --check
 trust examples/wc.ck
+ckc trust examples/wc.ck
 build --release tests/tool/admitted.ck -o tests/tool/admitted.out-never-written
 build --unverified examples/wc.ck -o tests/tool/never
-trust tests/tool/axioms.ck

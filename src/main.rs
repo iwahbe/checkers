@@ -16,14 +16,14 @@ USAGE:
                                                check and prove, then write an executable
                                                (its threads: CHECKERS_THREADS, default: cores);
                                                --release refuses any `admit` the program relies on
-    ckc trust <FILE.ck>                        print the trust ledger (what Z3, admits and checks vouch for)
     ckc check [--deny-warnings] <FILE.ck>...   type-check and run `check`s; report diagnostics
     ckc check --json [--overlay MAP] <FILE.ck> the same as JSON lines, phase by phase, for tools (§15.5);
                                                MAP is a JSON object from paths to unsaved text
                                                (`-`: read it from standard input)
 
-    check, run, build, trust and stage reuse Z3's answers from `.checkers/` beside the
-    file; --no-cache (before the file) or CHECKERS_NO_CACHE=1 turns that off.
+    check, run, build and stage reuse Z3's answers from `.checkers/` beside the
+    file; --no-cache (before the file) or CHECKERS_NO_CACHE=1 turns that off, and
+    CHECKERS_CACHE_STATS=1 prints how many were reused, on standard error.
 
     Before the file, packages (`checkers` passes these from checkers.json):
       --package NAME=DIR    a dependency, importable as `NAME.module`
@@ -123,7 +123,6 @@ fn cli(args: &[String]) -> u8 {
     let code = match args.first().map(String::as_str) {
         Some("run") => return run(&args[1..]),
         Some("build") => return build(&args[1..]),
-        Some("trust") => return trust(&args[1..]),
         Some("stage") => return stage(&args[1..]),
         Some("check") => check(&args[1..]),
         Some("complete") => complete(&args[1..]),
@@ -150,10 +149,6 @@ fn cli(args: &[String]) -> u8 {
     } else {
         2
     }
-}
-
-fn trust(args: &[String]) -> u8 {
-    checked("trust", args, |c| &c.ledger)
 }
 
 fn stage(args: &[String]) -> u8 {

@@ -1,5 +1,4 @@
-//! The prover pipeline (SPEC §7, M3): obligations → SMT-LIB → Z3 → diagnostics
-//! and the trust ledger.
+//! The prover pipeline (SPEC §7, M3): obligations → SMT-LIB → Z3 → diagnostics.
 
 pub mod smt;
 
@@ -8,19 +7,9 @@ use crate::diag::Diagnostic;
 use crate::elab::{Elab, ObKind, Obligation, Probe, ProbeKind, Vacuity, VacuityKind, WeakenRole};
 use crate::source::Span;
 
-/// One entry of the trust ledger (§7.4).
-#[derive(Clone, Debug)]
-pub struct LedgerEntry {
-    pub span: Span,
-    pub how: &'static str,
-    pub what: String,
-}
-
 #[derive(Clone)]
 pub struct Verified {
     pub diags: Vec<Diagnostic>,
-    pub ledger: Vec<LedgerEntry>,
-    pub z3_version: Option<String>,
     pub proved: usize,
     /// Z3 answers asked for, and how many came from the cache (D100).
     pub asked: usize,
@@ -138,13 +127,11 @@ pub(crate) fn cache_dir() -> Option<std::path::PathBuf> {
 
 // ── Verified modules (D143) ─────────────────────────────────────────────────
 
-/// What a module verified before contributes: its part of the trust ledger
-/// and how many obligations it proved.
+/// What a module verified before contributes: how many obligations it
+/// proved, and its warnings.
 #[derive(Clone)]
 pub struct Remembered {
-    pub ledger: Vec<LedgerEntry>,
     pub proved: usize,
-    pub z3_version: Option<String>,
     /// Its proofs phase's warnings (W022, D144).
     pub warnings: Vec<Diagnostic>,
 }
@@ -158,7 +145,7 @@ pub fn modules_dir() -> Option<std::path::PathBuf> {
     cache_dir().map(|d| d.join("modules"))
 }
 
-const MODULE_HEADER: &str = "checkers module 3";
+const MODULE_HEADER: &str = "checkers module 4";
 
 /// Modules this process has verified, by key: a doc comment's code block
 /// imports the module it is in, and the standard library, all just verified
@@ -244,29 +231,8 @@ pub fn remembered(key: &str) -> Option<Remembered> {
         return None;
     }
     let proved = lines.next()?.strip_prefix("proved ")?.parse().ok()?;
-    let z3 = lines.next()?.strip_prefix("z3 ")?;
-    let z3_version = (z3 != "-").then(|| z3.to_string());
-    let mut ledger = Vec::new();
-    let mut warnings = Vec::new();
-    for l in lines {
-        if let Some(w) = l.strip_prefix("warning ") {
-            warnings.push(unflatten(w)?);
-            continue;
-        }
-        let mut parts = l.splitn(4, ' ');
-        let start: u32 = parts.next()?.parse().ok()?;
-        let end: u32 = parts.next()?.parse().ok()?;
-        let how = match parts.next()? {
-            "trusted" => "trusted",
-            "axiom" => "axiom",
-            "computed" => "computed",
-            "smt" => "smt",
-            _ => return None,
-        };
-        let what = parts.next()?.replace("\\n", "\n");
-        ledger.push(LedgerEntry { span: Span { start, end }, how, what });
-    }
-    Some(Remembered { ledger, proved, z3_version, warnings })
+    let warnings = lines.map(|l| unflatten(l.strip_prefix("warning ")?)).collect::<Option<Vec<_>>>()?;
+    Some(Remembered { proved, warnings })
 }
 
 /// A warning on one line: `CODE START END` and its texts, separated by
@@ -321,10 +287,7 @@ pub fn remember(key: &str, v: &Verified) {
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
-    let mut out = format!("{MODULE_HEADER}\nproved {}\nz3 {}\n", v.proved, v.z3_version.as_deref().unwrap_or("-"));
-    for x in &v.ledger {
-        out += &format!("{} {} {} {}\n", x.span.start, x.span.end, x.how, x.what.replace('\n', "\\n"));
-    }
+    let mut out = format!("{MODULE_HEADER}\nproved {}\n", v.proved);
     for d in v.diags.iter().filter(|d| d.code == "W022") {
         out += &format!("warning {}\n", flatten(d));
     }
@@ -695,7 +658,7 @@ pub fn proved(e: &Elab, user: &str) -> Verified {
         return v.clone();
     }
     if let Some(r) = module_keys(e).get(user).and_then(|k| recall(k)) {
-        let v = Verified { diags: r.warnings, ledger: r.ledger, z3_version: r.z3_version, proved: r.proved, asked: 0, reused: 0 };
+        let v = Verified { diags: r.warnings, proved: r.proved, asked: 0, reused: 0 };
         e.module_proofs.borrow_mut().insert(user.to_string(), v.clone());
         return v;
     }
@@ -721,24 +684,12 @@ fn verify(e: &Elab, user: &str) -> Verified {
         .map(|(_, o)| o)
         .filter(|o| o.only_if_nat.as_ref().is_none_or(|t| smt::is_nat(e, t)))
         .collect();
-    let mut v = Verified { diags: Vec::new(), ledger: Vec::new(), z3_version: None, proved: 0, asked: 0, reused: 0 };
+    let mut v = Verified { diags: Vec::new(), proved: 0, asked: 0, reused: 0 };
     v.proved += early.counts.get(user).copied().unwrap_or(0);
-    v.ledger.extend(early.ledger.iter().filter(|(m, _)| m == user).map(|(_, l)| l.clone()));
     drop(early);
     let (asked0, reused0) = (ASKED.load(std::sync::atomic::Ordering::Relaxed), REUSED.load(std::sync::atomic::Ordering::Relaxed));
-    for t in e.admits.iter().filter(|t| t.module == user) {
-        v.ledger.push(LedgerEntry { span: t.span, how: "trusted", what: t.what.clone() });
-    }
-    for t in e.builtin_axioms.iter().filter(|t| t.module == user) {
-        v.ledger.push(LedgerEntry { span: t.span, how: "axiom", what: t.what.clone() });
-    }
     v.diags.extend(vacuous(e, user));
     guess_measures(e, user, &mut v);
-    for (m, span, _) in e.checks.iter().filter(|c| c.0 == user) {
-        let _ = m;
-        let text = e.sources.get(user).and_then(|f| f.text.get(span.start as usize..span.end as usize)).unwrap_or("");
-        v.ledger.push(LedgerEntry { span: *span, how: "computed", what: format!("check {}", text.trim()) });
-    }
     if obs.is_empty() {
         return v;
     }
@@ -746,14 +697,11 @@ fn verify(e: &Elab, user: &str) -> Verified {
     let (trivial, obs): (Vec<&Obligation>, Vec<&Obligation>) = obs.into_iter().partition(|o| {
         matches!(crate::core::force(&e.g, o.goal.clone()), crate::core::Val::Con(c, _) if Some(c) == e.g.well_known.true_con)
     });
-    for o in trivial {
-        v.proved += 1;
-        v.ledger.push(LedgerEntry { span: o.span, how: "computed", what: describe(e, o) });
-    }
+    v.proved += trivial.len();
     if obs.is_empty() {
         return v;
     }
-    let with_values = with_known_values(e, &obs, &mut v.ledger);
+    let with_values = with_known_values(e, &obs);
     let obs: Vec<&Obligation> = with_values.iter().collect();
     let (defs, queries, answers, _) = solve(e, user, &obs);
     // Cases one `match` leaves out that may occur: one error (E0240).
@@ -803,10 +751,7 @@ fn verify(e: &Elab, user: &str) -> Verified {
         }
         match (q, a) {
             (Err(why), _) => v.diags.push(outside(e, &[o], &why.0)),
-            (Ok(_), Some(Answer::Unsat)) => {
-                v.proved += 1;
-                v.ledger.push(LedgerEntry { span: o.span, how: "smt", what: describe(e, o) });
-            }
+            (Ok(_), Some(Answer::Unsat)) => v.proved += 1,
             (Ok(q), Some(Answer::Sat(model))) => {
                 // A model of a query without the `forall` facts may break
                 // them: shown only once checked against them.
@@ -854,7 +799,6 @@ fn verify(e: &Elab, user: &str) -> Verified {
             v.diags.remove(k);
         }
     }
-    v.z3_version = z3_version();
     v.asked = ASKED.load(std::sync::atomic::Ordering::Relaxed) - asked0;
     v.reused = REUSED.load(std::sync::atomic::Ordering::Relaxed) - reused0;
     v
@@ -878,21 +822,15 @@ fn settle_known(e: &Elab, user: &str) {
 
 /// `obs` with, as facts, the values of the calls in each that are known at
 /// compile time (§7.1, §8.9): the calls' values, never their functions'
-/// bodies, each in `ledger` as computed. First, which functions recursing
-/// by `decreasing` end whatever their preconditions say: their definitions
-/// need no precondition guard (M17).
-fn with_known_values(e: &Elab, obs: &[&Obligation], ledger: &mut Vec<LedgerEntry>) -> Vec<Obligation> {
+/// bodies. First, which functions recursing by `decreasing` end whatever
+/// their preconditions say: their definitions need no precondition guard
+/// (M17).
+fn with_known_values(e: &Elab, obs: &[&Obligation]) -> Vec<Obligation> {
     ends_everywhere(e, obs);
     obs.iter()
         .map(|o| {
-            let known = known_calls(e, o);
-            for (_, what) in &known {
-                if !ledger.iter().any(|x| x.how == "computed" && x.span == o.span && x.what == *what) {
-                    ledger.push(LedgerEntry { span: o.span, how: "computed", what: what.clone() });
-                }
-            }
             let mut o = (*o).clone();
-            o.facts.extend(known.into_iter().map(|(f, _)| f));
+            o.facts.extend(known_calls(e, &o));
             o
         })
         .collect()
@@ -900,10 +838,10 @@ fn with_known_values(e: &Elab, obs: &[&Obligation], ledger: &mut Vec<LedgerEntry
 
 /// Prove `obs` and the measures of `guesses`, of module `user`, now,
 /// before the proofs phase, so that its functions can run while it is
-/// checked (§8.9): the ledger's entries for them, and how many were
-/// proved, if every one is; else None (the proofs phase then asks again, and reports what fails).
-pub fn prove_now(e: &Elab, user: &str, obs: &[&Obligation], guesses: &[&crate::elab::termination::GuessGroup]) -> Option<(Vec<LedgerEntry>, usize)> {
-    let mut v = Verified { diags: Vec::new(), ledger: Vec::new(), z3_version: None, proved: 0, asked: 0, reused: 0 };
+/// checked (§8.9): how many were proved, if every one is; else None (the
+/// proofs phase then asks again, and reports what fails).
+pub fn prove_now(e: &Elab, user: &str, obs: &[&Obligation], guesses: &[&crate::elab::termination::GuessGroup]) -> Option<usize> {
+    let mut v = Verified { diags: Vec::new(), proved: 0, asked: 0, reused: 0 };
     for g in guesses {
         if !guess_group(e, user, g, &mut v) {
             return None;
@@ -913,22 +851,18 @@ pub fn prove_now(e: &Elab, user: &str, obs: &[&Obligation], guesses: &[&crate::e
     let (trivial, obs): (Vec<&Obligation>, Vec<&Obligation>) = obs.into_iter().partition(|o| {
         matches!(crate::core::force(&e.g, o.goal.clone()), crate::core::Val::Con(c, _) if Some(c) == e.g.well_known.true_con)
     });
-    for o in trivial {
-        v.proved += 1;
-        v.ledger.push(LedgerEntry { span: o.span, how: "computed", what: describe(e, o) });
-    }
+    v.proved += trivial.len();
     if obs.is_empty() {
-        return Some((v.ledger, v.proved));
+        return Some(v.proved);
     }
-    let with_values = with_known_values(e, &obs, &mut v.ledger);
+    let with_values = with_known_values(e, &obs);
     let obs: Vec<&Obligation> = with_values.iter().collect();
     let (_, queries, answers, _) = solve(e, user, &obs);
-    for (o, (q, a)) in obs.iter().zip(queries.iter().zip(answers)) {
+    for (q, a) in queries.iter().zip(answers) {
         let (Ok(_), Some(Answer::Unsat)) = (q, a) else { return None };
         v.proved += 1;
-        v.ledger.push(LedgerEntry { span: o.span, how: "smt", what: describe(e, o) });
     }
-    Some((v.ledger, v.proved))
+    Some(v.proved)
 }
 
 /// Ask Z3 about `obs`, of module `user`: each one's query (or why it has
@@ -1277,12 +1211,7 @@ fn guess_group(e: &Elab, user: &str, gr: &crate::elab::termination::GuessGroup, 
     let first_call = gr.calls.first().map(|c| c.ob.span);
     match chosen {
         Some(ci) => {
-            for o in &obs[ci] {
-                v.proved += 1;
-                let mut what = describe(e, o);
-                what.push_str(" (guessed)");
-                v.ledger.push(LedgerEntry { span: o.span, how: "smt", what });
-            }
+            v.proved += obs[ci].len();
         }
         None => {
             // At a call no measure was shown smaller at: for the measures
@@ -1503,50 +1432,11 @@ fn unreachable(e: &Elab, user: &str) -> Vec<Diagnostic> {
     out
 }
 
-fn describe(e: &Elab, o: &Obligation) -> String {
-    let o = &Obligation { text: crate::elab::first_line(&o.text), ..o.clone() };
-    match &o.kind {
-        ObKind::Pre { callee } => format!("precondition of `{callee}`: {}", o.text),
-        ObKind::Post { func, at } => {
-            let src = e.sources.get(&o.module);
-            let line = src.map(|f| f.line_col(at.start).0).unwrap_or(0);
-            let text: String = src
-                .and_then(|f| f.text.get(at.start as usize..at.end as usize))
-                .unwrap_or("")
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ");
-            let text = if text.chars().count() > 40 { format!("{}…", text.chars().take(40).collect::<String>()) } else { text };
-            format!("postcondition of `{func}`: {} (for `{text}`, line {line})", o.text)
-        }
-        ObKind::Invariant { con } => format!("invariant of `{con}`: {}", o.text),
-        ObKind::TypeParams { written, .. } => format!("`{written}` is a type: {}", o.text),
-        ObKind::CownInvariant { alias } => format!("cown contents stay `{alias}`: {}", o.text),
-        ObKind::Refined { alias, value } => format!("`{value}` is a `{alias}`: {}", o.text),
-        ObKind::Weaken { sub, sup, .. } => format!("every `{sub}` is a `{sup}`: {}", o.text),
-        ObKind::DistinctCowns { .. } => format!("a `when`'s cowns differ: {}", o.text),
-        ObKind::NatSub => format!("`Nat` subtraction `{}` stays at or above zero", o.text),
-        ObKind::Measure { func, measure } => format!("termination of `{func}`: `decreasing {measure}` gets smaller"),
-        ObKind::Div => format!("divisor of `{}` is not zero", o.text),
-        ObKind::Index => format!("index in bounds: {}", o.text),
-        ObKind::Lemma { name } => format!("lemma `{name}`: {}", o.text),
-        ObKind::ClassType { name, given } => format!("every `{given}` satisfies `{name}`: {}", o.text),
-        ObKind::Refines { class, member, pre: true, .. } => format!("`{member}` requires no more than class `{class}`: {}", o.text),
-        ObKind::Refines { class, member, pre: false, .. } => format!("`{member}` promises what class `{class}` does: {}", o.text),
-        ObKind::AtAlias { class, alias, member, .. } => format!("`{class}` at `{alias}`: `{member}` gives `{alias}`s: {}", o.text),
-        ObKind::KnownResult { call, alias, .. } => format!("`{call}` is a `{alias}`: {}", o.text),
-        ObKind::Auto => format!("auto: {}", o.text),
-        ObKind::Have => format!("have {}", o.text),
-        ObKind::Uncovered { case, binding: false } => format!("`match` needs no arm for {case}: it can't occur"),
-        ObKind::Uncovered { case, binding: true } => format!("the pattern needn't cover {case}: it can't occur"),
-    }
-}
-
 /// The calls in `o`'s goal and facts whose values are known at compile
 /// time (`Elab::known_value`) and are numbers: each as the fact `call == n`
-/// at `o`'s level, with how the ledger shows it. Only the calls `o` has, and
-/// only outside binders, where the call is the same term in every case.
-fn known_calls(e: &Elab, o: &Obligation) -> Vec<(crate::core::Val, String)> {
+/// at `o`'s level. Only the calls `o` has, and only outside binders, where
+/// the call is the same term in every case.
+fn known_calls(e: &Elab, o: &Obligation) -> Vec<crate::core::Val> {
     use crate::core::{Lit, Prim, Tm, Val};
     fn number(e: &Elab, t: &Tm) -> bool {
         let (h, args) = t.spine();
@@ -1577,14 +1467,7 @@ fn known_calls(e: &Elab, o: &Obligation) -> Vec<(crate::core::Val, String)> {
         collect(e, &quote(&e.g, lvl, v), 0, &mut found);
     }
     let env = std::rc::Rc::new((0..lvl).map(Val::var).collect::<Vec<_>>());
-    let names: Vec<crate::core::Name> = o.ctx.iter().map(|l| l.name.clone()).collect();
-    found
-        .into_iter()
-        .map(|(t, n)| {
-            let fact = Tm::PrimApp(Prim::Eq, vec![t.clone(), Tm::Lit(Lit::Num(n))]);
-            (crate::core::eval(&e.g, &env, &fact), format!("{} is {n}", crate::core::show(&e.g, &names, &t)))
-        })
-        .collect()
+    found.into_iter().map(|(t, n)| crate::core::eval(&e.g, &env, &Tm::PrimApp(Prim::Eq, vec![t, Tm::Lit(Lit::Num(n))]))).collect()
 }
 
 /// The facts in scope, as Checkers source, most recent last.
@@ -2001,42 +1884,6 @@ fn print_sx(x: &Sx) -> String {
         Sx::Atom(a) => a.clone(),
         Sx::List(items) => format!("({})", items.iter().map(print_sx).collect::<Vec<_>>().join(" ")),
     }
-}
-
-/// Accumulate entries for `checkers trust`.
-pub fn ledger_text(file: &crate::source::SourceFile, v: &Verified) -> String {
-    let mut out = String::new();
-    let mut entries = v.ledger.clone();
-    entries.sort_by_key(|x| (x.span.start, x.how));
-    for x in &entries {
-        let (line, col) = file.line_col(x.span.start);
-        out += &format!("{}:{line}:{col}  {:<8} {}\n", file.name, x.how, x.what);
-    }
-    if let Some(z) = &v.z3_version {
-        out += &format!("solver: {z}\n");
-    }
-    out
-}
-
-/// A dependency's part of the trust ledger (D109): what it trusts, line by
-/// line, then one line for what was proved or computed.
-pub fn ledger_summary(file: &crate::source::SourceFile, v: &Verified) -> String {
-    let mut out = String::new();
-    let mut entries: Vec<&LedgerEntry> = v.ledger.iter().filter(|x| x.how == "trusted" || x.how == "axiom").collect();
-    entries.sort_by_key(|x| (x.span.start, x.how));
-    for x in &entries {
-        let (line, col) = file.line_col(x.span.start);
-        out += &format!("{}:{line}:{col}  {:<8} {}\n", file.name, x.how, x.what);
-    }
-    let smt = v.ledger.iter().filter(|x| x.how == "smt").count();
-    let computed = v.ledger.iter().filter(|x| x.how == "computed").count();
-    if smt + computed > 0 {
-        out += &format!("{}  proved   {smt} by smt, {computed} computed\n", file.name);
-    }
-    if let Some(z) = &v.z3_version {
-        out += &format!("solver: {z}\n");
-    }
-    out
 }
 
 // ── counterexamples ─────────────────────────────────────────────────────────

@@ -218,4 +218,4 @@ fn double x -> y : x~Int, y~Int
 check double 2 == 5
 ```
 
-When a `check` fails, the error shows the two sides of a comparison. A `check` that holds is recorded in the trust ledger as proved by evaluation ([Proofs](proofs.md#the-trust-ledger)).
+When a `check` fails, the error shows the two sides of a comparison.

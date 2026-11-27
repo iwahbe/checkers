@@ -2648,7 +2648,7 @@ impl Elab {
     /// `have` may use a lemma declared later.
     fn phase_lemma_statements(&mut self, m: &ast::Module, ids: &[Option<Sym>], sigs: &mut HashMap<usize, Sig>) {
         for (k, (d, id)) in m.decls.iter().zip(ids).enumerate() {
-            let DeclKind::Lemma { name, lets, ensures, decreasing, proof, .. } = &d.kind else { continue };
+            let DeclKind::Lemma { name, lets, ensures, decreasing, .. } = &d.kind else { continue };
             let Some(Sym::Def(did)) = id else { continue };
             let Some(sig) = sigs.get(&k) else { continue };
             // A class's type's predicate at an instance whose type isn't its
@@ -2657,11 +2657,6 @@ impl Elab {
                 if !self.class_type_base_holds(&sig.cx, &name.name, &bases, &x, false, ensures.span) {
                     continue;
                 }
-            }
-            // An axiom (D56) is known as one before any proof uses it, so a
-            // use before its declaration is in the ledger too (#245).
-            if self.stdlib_mode && proof.as_ref().is_some_and(is_builtin) {
-                self.axiom_defs.insert(*did);
             }
             self.g.fuel.set(DEFAULT_FUEL);
             self.sig_inst = self.sig_inst_of(k);

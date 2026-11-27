@@ -597,9 +597,9 @@ pub struct CownInv {
     pub proj: Option<(usize, bool)>,
 }
 
-/// A trust-ledger entry (§7.4) for something accepted without a solver proof.
+/// An `admit` (§7.4): a fact assumed without a proof.
 #[derive(Clone, Debug)]
-pub struct Trusted {
+pub struct Admit {
     pub module: String,
     pub span: Span,
     pub what: String,
@@ -783,7 +783,7 @@ pub struct Elab {
     pub post_target: Option<PostTarget>,
     /// The goal of the proof being elaborated (D49).
     pub proof_goal: Option<(Val, String)>,
-    pub admits: Vec<Trusted>,
+    pub admits: Vec<Admit>,
     /// An application checked against a type with a refinement inside: its
     /// result type is unified with this before its arguments are checked (D71).
     pub app_expected: Option<Val>,
@@ -795,11 +795,6 @@ pub struct Elab {
     pub head_checks_aliases: bool,
     /// The type an expression checked by inference was found to have.
     pub last_inferred: Option<Val>,
-    /// Uses of standard-library lemmas about `__builtin` functions, which are
-    /// trusted like the primitives themselves (D56).
-    pub builtin_axioms: Vec<Trusted>,
-    /// Lemmas whose proof is `__builtin` (D56).
-    pub axiom_defs: HashSet<DefId>,
     /// Measure obligations of calls (caller, callee); kept only for calls
     /// inside one recursive group once termination is analysed.
     pub measure_obs: Vec<(DefId, DefId, Obligation)>,
@@ -1105,8 +1100,6 @@ impl Elab {
             alias_covered: false,
             head_checks_aliases: false,
             last_inferred: None,
-            builtin_axioms: Vec::new(),
-            axiom_defs: HashSet::new(),
             measure_obs: Vec::new(),
             ends_everywhere: Default::default(),
             rec_calls: Vec::new(),

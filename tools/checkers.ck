@@ -24,7 +24,7 @@ let VERSION = "0.1.0"
 let USAGE = string.concat [
     "checkers — the Checkers build tool\n\n",
     "USAGE:\n",
-    "    checkers check|run|build|trust|stage|parse ...   run the compiler, `ckc` (see `ckc --help`)\n",
+    "    checkers check|run|build|stage|parse ...         run the compiler, `ckc` (see `ckc --help`)\n",
     "    checkers fmt [--check] [PATH]...                 format .ck files (see `checkers fmt --help`)\n",
     "    checkers fmt -                                   format standard input\n",
     "    checkers lsp                                     the language server, on standard input and output\n",
@@ -36,7 +36,7 @@ let USAGE = string.concat [
     "`ckc` is found through CKC, else next to `checkers`, else on PATH."]
 
 fn compiler_command c : c~String
-    c == "check" or c == "run" or c == "build" or c == "trust" or c == "stage" or c == "parse"
+    c == "check" or c == "run" or c == "build" or c == "stage" or c == "parse"
 
 fn exit_code n -> c : n~Nat, c~ExitCode
     if n == 0 then Success else if n < 256 then Failure n else Failure 1

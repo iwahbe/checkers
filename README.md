@@ -30,7 +30,7 @@ Types are written only as constraints (`i~Nat, i <= len src`); the compiler prov
 | M0 Front end: lexer with layout, parser, naming warnings, diagnostics | done |
 | M1 Type checker: dependent types, exhaustive `match`, termination, `own`/`ghost` usage | done (refinements recorded, proven in M3) |
 | M2 Interpreter: `checkers run`, `check` evaluation, files and terminal, linear resources | done |
-| M3 Prover: pre/postconditions, refinements, invariants, lemmas, Z3, trust ledger | done: `examples/sort.ck` (insertion sort) and `wc.ck` verify |
+| M3 Prover: pre/postconditions, refinements, invariants, lemmas, Z3, trust ledger (since removed) | done: `examples/sort.ck` (insertion sort) and `wc.ck` verify |
 | M4 Modules: files, sealing, exported lemmas, multi-module proofs | done: [`resort.ck`](examples/resort.ck) uses `sort` through its exported lemma only |
 | M5 Well-founded recursion, lexicographic `decreasing` | done: merge sort in [`parallel.ck`](examples/parallel.ck); [`json.ck`](stdlib/json.ck) (now `std.json`) verifies, trusting axioms about decimal numbers, characters and strings (its two `admit`s were proven in M18) |
 | M6 Staging: `comptime` parameters, compile-time expansion, `checkers stage` | done: [`format.ck`](examples/format.ck), a typed `fmt` whose format string is parsed at compile time |
@@ -56,7 +56,6 @@ Runs on Linux (x86-64) and macOS (Apple silicon). Z3 is built from source and li
 cargo build --release
 target/release/ckc run examples/wc.ck FILE         # type-check, then run `main`
 target/release/ckc check examples/sort.ck           # type-check, run the `check`s, prove
-target/release/ckc trust examples/sort.ck           # what the proof relies on: Z3, admits, checks, builtins
 target/release/ckc parse examples/json.ck           # print the syntax tree
 target/release/ckc build tools/checkers.ck -o target/release/checkers
 target/release/checkers fmt examples                # format; `checkers check …` etc. run `ckc`
