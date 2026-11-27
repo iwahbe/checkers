@@ -15,7 +15,7 @@
 module solve
 
 import std.list
-import term (Term, Context, Var, App, Let, Lam, ConstOf)
+import term (Term, Context, ConstOf)
 import model (Model)
 import cert (Refutation, Step, Fact, NotGoal, Structure, Resolve, Lit)
 
@@ -73,26 +73,26 @@ export record Outcome c goal lim : c~ghost Context, goal~ghost Term, lim~ghost L
 # A pure function of its arguments: the same answer whatever else was solved.
 export fn solve p goal lim -> r : p~Prepared c, goal~Term, lim~Limits, r~Outcome c goal lim
     let c = p.context
-    let inputs = clauses c goal
-    let numbered = number 0 inputs
-    let made = list.length inputs
-    if made >= lim.work
-        Outcome (Unknown OutOfWork None) lim.work
+    let made = gather c goal lim.work
+    # What making the clauses used.
+    let spent = lim.work - made.left
+    if not made.done
+        Outcome (Unknown OutOfWork None) spent
     else
-        match sweep numbered numbered [] False (lim.work - made)
-            Found conflict assigned used ->
+        let numbered = number 0 made.inputs
+        let swept = sweep numbered numbered [] False made.left
+        let work = spent + used swept
+        match swept
+            Found conflict assigned _ ->
                 let refutation = refutation_of numbered (reasons (list.reverse assigned) ++ [conflict])
-                let work = made + used
                 if cert.checks c goal refutation
-                    Outcome (Valid refutation) (if work <= lim.work then work else lim.work)
+                    Outcome (Valid refutation) work
                 else
                     # Propagation found a conflict the checker doesn't
                     # accept: a bug in the search, never an answer.
-                    Outcome (Unknown (Unsupported "a refutation `cert.checks` rejects") None) (if work <= lim.work then work else lim.work)
-            Fixpoint used                ->
-                let work = made + used
-                Outcome (Unknown Incomplete None) (if work <= lim.work then work else lim.work)
-            Exhausted                    -> Outcome (Unknown OutOfWork None) lim.work
+                    Outcome (Unknown (Unsupported "a refutation `cert.checks` rejects") None) work
+            Fixpoint _                -> Outcome (Unknown Incomplete None) work
+            Exhausted _               -> Outcome (Unknown OutOfWork None) work
 
 # ── The clauses ──────────────────────────────────────────────────────────────
 
@@ -101,60 +101,64 @@ record Input
     lits~List Lit
     step~Step
 
+# Clauses made, and the work left after making them: one unit for each
+# term looked at and each clause made. `done` is false if the work ran out
+# first; then `inputs` is what was made before it did.
+record Made
+    inputs~List Input
+    left~Nat
+    done~Bool
+
 # The facts, the goal taken as false, and the clauses of the Boolean
-# structure of every connective reachable from them.
-fn clauses c goal -> r : c~Context, goal~Term, r~List Input
+# structure of every connective reachable from them, within `budget`.
+fn gather c goal budget -> r : c~Context, goal~Term, budget~Nat, r~Made, r.left <= budget
     let facts = term.facts c
-    let units = fact_units c facts 0 ++ (if model.boolean c goal then [Input [Lit False goal] NotGoal] else [])
-    let roots = goal :: facts
-    units ++ expand c roots [] (term_count roots)
+    let units = fact_units c facts 0 budget
+    if not units.done
+        units
+    else if units.left == 0
+        Made units.inputs 0 False
+    else
+        let g = if model.boolean c goal then [Input [Lit False goal] NotGoal] else []
+        let more = expand c (goal :: facts) [] (units.left - 1)
+        Made (units.inputs ++ g ++ more.inputs) more.left more.done
 
-fn fact_units c fs k -> r : c~Context, fs~List Term, k~Nat, r~List Input
+fn fact_units c fs k budget -> r : c~Context, fs~List Term, k~Nat, budget~Nat, r~Made, r.left <= budget
     match fs
-        []        -> []
+        []        -> Made [] budget True
         f :: rest ->
-            let more = fact_units c rest (k + 1)
-            if model.boolean c f then Input [Lit True f] (Fact k) :: more else more
-
-# How many terms `ts` has in them, counting each subterm: enough to visit
-# each once.
-fn term_count ts -> n : ts~List Term, n~Nat
-    match ts
-        []        -> 0
-        t :: rest -> size t + term_count rest
-
-fn binds_count bs -> n : bs~List (term.Name, Term), n~Nat
-    match bs
-        []             -> 0
-        (_, t) :: rest -> size t + binds_count rest
-
-fn size t -> n : t~Term, n~Nat
-    match t
-        Var _          -> 1
-        App _ args     -> 1 + term_count args
-        Let binds body -> 1 + binds_count binds + size body
-        Lam _ _ body   -> 1 + size body
+            if budget == 0
+                Made [] 0 False
+            else
+                let more = fact_units c rest (k + 1) (budget - 1)
+                let here = if model.boolean c f then [Input [Lit True f] (Fact k)] else []
+                Made (here ++ more.inputs) more.left more.done
 
 # The structure clauses of each connective reachable from `todo` through
-# parts, skipping those in `seen`. `budget` bounds the terms visited.
-fn expand c todo seen budget -> r : c~Context, todo~List Term, seen~List Term, budget~Nat, r~List Input
+# parts, skipping those in `seen`, within `budget`.
+fn expand c todo seen budget -> r : c~Context, todo~List Term, seen~List Term, budget~Nat, r~Made, r.left <= budget
     decreasing budget
-    if budget == 0
-        []
-    else
-        match todo
-            []        -> []
-            t :: rest ->
-                if list.contains seen t
-                    expand c rest seen (budget - 1)
+    match todo
+        []        -> Made [] budget True
+        t :: rest ->
+            if budget == 0
+                Made [] 0 False
+            else if list.contains seen t
+                expand c rest seen (budget - 1)
+            else
+                let ps = cert.parts (term.structure t)
+                let made = if ps != [] and model.boolean c t and model.booleans c ps
+                    structure_of t 0 (list.length ps + 4)
+                else if model.boolean c t and is_constant t
+                    structure_of t 0 1
                 else
-                    let ps = cert.parts (term.structure t)
-                    if ps != [] and model.boolean c t and model.booleans c ps
-                        structure_of t 0 (list.length ps + 4) ++ expand c (ps ++ rest) (t :: seen) (budget - 1)
-                    else if model.boolean c t and is_constant t
-                        structure_of t 0 1 ++ expand c rest (t :: seen) (budget - 1)
-                    else
-                        expand c rest (t :: seen) (budget - 1)
+                    []
+                let cost = 1 + list.length made
+                if cost > budget
+                    Made [] budget False
+                else
+                    let more = expand c (ps ++ rest) (t :: seen) (budget - cost)
+                    Made (made ++ more.inputs) more.left more.done
 
 fn is_constant t -> r : t~Term, r~Bool
     match term.structure t
@@ -224,15 +228,21 @@ fn more_open assigned lits -> r : assigned~List Assigned, lits~List Lit, r~Statu
 enum Swept
     Found conflict assigned used : conflict~Nat, assigned~List Assigned, used~Nat
     Fixpoint used                : used~Nat
-    Exhausted
+    Exhausted used               : used~Nat
+
+fn used r -> n : r~Swept, n~Nat
+    match r
+        Found _ _ n -> n
+        Fixpoint n  -> n
+        Exhausted n -> n
 
 # Look at each of `todo`, then at all of `all` again if anything was
 # assigned, until a conflict or nothing changes.
 fn sweep todo all assigned changed budget -> r : todo~List (Nat, Input), all~List (Nat, Input), assigned~List Assigned,
-                                                 changed~Bool, budget~Nat, r~Swept
+                                                 changed~Bool, budget~Nat, r~Swept, used r <= budget
     decreasing budget
     if budget == 0
-        Exhausted
+        Exhausted 0
     else
         match todo
             []              -> if changed then counted (sweep all all assigned False (budget - 1)) else Fixpoint 1
@@ -243,11 +253,11 @@ fn sweep todo all assigned changed budget -> r : todo~List (Nat, Input), all~Lis
                     _        -> counted (sweep rest all assigned changed (budget - 1))
 
 # One more clause looked at.
-fn counted r -> s : r~Swept, s~Swept
+fn counted r -> s : r~Swept, s~Swept, used s == used r + 1
     match r
-        Found k a used -> Found k a (used + 1)
-        Fixpoint used  -> Fixpoint (used + 1)
-        Exhausted      -> Exhausted
+        Found k a n -> Found k a (n + 1)
+        Fixpoint n  -> Fixpoint (n + 1)
+        Exhausted n -> Exhausted (n + 1)
 
 fn reasons assigned -> r : assigned~List Assigned, r~List Nat
     match assigned

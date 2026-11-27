@@ -1676,6 +1676,14 @@ lemma axioms_ok_sig c xs : c~Context, xs~List Axiom, axioms_in_sig c.sig xs
             []        -> auto
             _ :: rest -> have axioms_ok_sig c rest
 
+# Each axiom of a list of well-sorted ones is well-sorted.
+export lemma axiom_listed c xs a : c~Context, xs~List Axiom, a~Axiom, axioms_ok c xs, list.contains xs a
+    ensures axiom_ok c a
+    proof
+        match xs
+            []        -> auto
+            x :: rest -> if x == a then auto else have axiom_listed c rest a
+
 # Every axiom of a context has a `Bool` body in it.
 export lemma axioms_well_sorted c : c~Context
     ensures axioms_ok c (axioms c)
@@ -2796,7 +2804,7 @@ export lemma defs_in_signature c : c~Context
 # How a term is built from Boolean connectives, seen through `let`: a
 # connective under a `let` is the connective of its parts, each under the
 # same `let` (`under`). The certificate checker (`smt.cert`) reads clauses
-# off it; `smt.model` says what it means (`model.structure_meaning`).
+# off it; `smt.model` says what it means (`model.and_meaning` and the rest).
 
 # The outermost connective of a term, and its parts.
 export enum Connective

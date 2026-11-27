@@ -476,7 +476,6 @@ lemma structure_sound c m t which cl : c~Context, m~Model, t~Term, which~Nat, cl
                 else
                     match list.head (list.drop (which - 1) ps)
                         Some p ->
-                            have cl == [Lit False t, Lit True p]
                             if model.holds c m t then have nth_holds c m ps (which - 1) p else auto
                         None   -> auto
             OrOf ps       ->
@@ -487,7 +486,6 @@ lemma structure_sound c m t which cl : c~Context, m~Model, t~Term, which~Nat, cl
                 else
                     match list.head (list.drop (which - 1) ps)
                         Some p ->
-                            have cl == [Lit True t, Lit False p]
                             have model.not_both c m p
                             if model.holds c m p then have nth_holds_one c m ps (which - 1) p else auto
                         None   -> auto
@@ -593,8 +591,15 @@ export transparent fn values_among c m ts vs -> r : c~Context, m~Model, ts~List 
 # - `arrays`: the array laws hold, and the model answers, at those values
 #   (`model.arrays_ok_at`, `model.arrays_total_at`).
 #
-# Only the values of the terms the refutation uses matter, so every model
-# of `c`, restricted to them, is such an `m`. Today's steps use only
+# Why this isn't vacuous, an argument outside Checkers (as `smt.model`'s
+# header gives it): `checks` requires every term used to be a closed `Bool`
+# term of `c`, so in any SMT-LIB model of `c` each has a value; that model,
+# restricted to the finitely many values these terms need, is a `Model`
+# meeting every premise. In Checkers, `cert_checks` builds one such model
+# for an accepted refutation, and `axiom_premises_ok` shows that no axiom of
+# `c` makes `axioms` unsatisfiable at no values. The same for definitions'
+# equations (`model.definition_axiom`) waits for `term.sort_of`'s
+# inversion lemmas (#85). Today's steps use only
 # `facts` and `defined`; `axioms`, `definitions` and `arrays` are there for
 # the theory steps to come (S6b–S6e), so that adding them doesn't change
 # this statement.
@@ -626,8 +631,9 @@ export lemma checks_sound c goal refutation m : c~Context, goal~Term, refutation
                         []        -> auto
                 None     -> auto
 
-# What `checks` asks, as lemmas: a refutation has steps, and the last adds
-# the empty clause.
+# A refutation `checks` accepts has steps. That its last clause is empty
+# is `checks`' definition itself (transparent, above), and `cert_checks`
+# checks both at examples; this lemma states the first.
 export lemma checks_has_steps c goal refutation : c~Context, goal~Term, refutation~Refutation, checks c goal refutation
     ensures refutation.steps != []
     proof
@@ -640,8 +646,15 @@ export lemma checks_has_steps c goal refutation : c~Context, goal~Term, refutati
 export lemma goal_used c goal refutation : c~Context, goal~Term, refutation~Refutation
     ensures list.contains (terms c goal refutation) goal
 
-export lemma fact_used c goal steps k f : c~Context, goal~Term, steps~List Step, k~Nat, f~Term, list.contains steps (Fact k),
-                                          list.head (list.drop k (term.facts c)) == Some f
+export lemma fact_used c goal refutation k f : c~Context, goal~Term, refutation~Refutation, k~Nat, f~Term,
+                                               list.contains refutation.steps (Fact k),
+                                               list.head (list.drop k (term.facts c)) == Some f
+    ensures list.contains (terms c goal refutation) f
+    proof
+        have fact_in_steps c goal refutation.steps k f
+
+lemma fact_in_steps c goal steps k f : c~Context, goal~Term, steps~List Step, k~Nat, f~Term, list.contains steps (Fact k),
+                                       list.head (list.drop k (term.facts c)) == Some f
     ensures list.contains (terms_of c goal steps) f
     proof
         match steps
@@ -650,7 +663,15 @@ export lemma fact_used c goal steps k f : c~Context, goal~Term, steps~List Step,
                 if s == Fact k
                     auto
                 else
-                    have fact_used c goal rest k f
+                    have fact_in_steps c goal rest k f
                     match step_clause c goal s
                         Some cl -> have list.contains_append (atoms cl) (terms_of c goal rest) f
                         None    -> auto
+
+# Every axiom of `c` is well-sorted in it, so `model.holds_at` evaluates it
+# rather than being false: the `axioms` premise can be met.
+export lemma axiom_premises_ok c a : c~Context, a~Axiom, list.contains (term.axioms c) a
+    ensures term.axiom_ok c a
+    proof
+        have term.axioms_well_sorted c
+        have term.axiom_listed c (term.axioms c) a

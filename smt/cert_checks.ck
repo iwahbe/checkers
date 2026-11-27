@@ -7,9 +7,11 @@
 
 module cert_checks
 
+import std.list
 import smtlib (Query)
 import term (Term, Context, Var, App, Prim, Num, Boolean, Fun, Eq)
 import cert (Refutation, Lit, Fact, NotGoal, Structure, Resolve)
+import model (Model, Truth, Countable)
 import solve (Limits, Proved, GaveUp, Incomplete)
 
 fn query src -> q : src~Bytes, q~Option Query
@@ -78,3 +80,18 @@ check solved b"(set-logic ALL)(declare-const p Bool)(declare-const q Bool)(decla
 check solve.verdict (solve.solve (solve.prepare (context AND)) (goal AND) (Limits 2)).answer == GaveUp solve.OutOfWork
 # The goal and the cited fact are among the terms used.
 check cert.terms (context AND) (goal AND) (Refutation GOOD) == [Q, PQ, Q, PQ, Q]
+
+# The premises of `checks_sound` can be met for an accepted refutation: in
+# the model with `p` and `q` true, the facts hold and every term used has a
+# value of its sort. (The context has no axioms, definitions or arrays, so
+# the other premises ask nothing.)
+fn everything_true -> m : m~Model
+    let funs = \_ _ -> Some (Truth True)
+    model.without_arrays funs (\_ -> None) (\_ -> None) (\_ _ _ -> None) (\_ _ _ _ _ -> None) (\_ _ -> Countable) 10
+
+let BOTH = everything_true
+
+check model.holds_all (context AND) BOTH (term.facts (context AND))
+check list.all (\t -> model.has_value (context AND) BOTH t) (cert.terms (context AND) (goal AND) (Refutation GOOD))
+check term.axioms (context AND) == [] and term.defs (context AND) == []
+check model.holds (context AND) BOTH (goal AND)
