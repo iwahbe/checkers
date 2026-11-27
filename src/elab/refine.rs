@@ -197,10 +197,12 @@ impl Elab {
     }
 
     /// Solve metas and unfold plain (unrefined) aliases, keeping refinement
-    /// aliases.
+    /// aliases. However many aliases there are: one can't recurse (a cycle
+    /// is an error) and a function unfolds only while fuel lasts, so this
+    /// ends, and stopping sooner would lose a refinement behind them.
     pub(super) fn peel(&self, v: &Val) -> Val {
         let mut v = force_meta(&self.g, v.clone());
-        for _ in 0..32 {
+        loop {
             if self.refined_alias(&v).is_some() || self.based_class_type(&v) {
                 return v;
             }
@@ -209,7 +211,6 @@ impl Elab {
                 None => return v,
             }
         }
-        v
     }
 
     /// A refinement alias's base, with all aliases unfolded at the head.
@@ -246,8 +247,9 @@ impl Elab {
     /// defined with (`Small = n~Nat, …` refines `Nat`)?
     pub fn refines(&self, sup: &Val, sub: &Val) -> bool {
         let Some((d, _)) = self.refined_alias(sub) else { return false };
+        // However many aliases: unfolding them ends (see `peel`).
         let mut v = force_meta(&self.g, sup.clone());
-        for _ in 0..64 {
+        loop {
             match crate::core::unfold(&self.g, &v) {
                 Some(u) => v = force_meta(&self.g, u),
                 None => return false,
@@ -256,7 +258,6 @@ impl Elab {
                 return true;
             }
         }
-        false
     }
 
     pub fn refined_mismatch(&mut self, cx: &Cx, expected: &Val, found: &Val, span: Span) -> Option<Gained> {
@@ -382,7 +383,9 @@ impl Elab {
                         return Some(g);
                     }
                 }
-                Step::Bind(name, dom) => cx.bind(&name, dom, Mult::Zero),
+                Step::Bind(name, dom) => {
+                    cx.bind(&name, dom, Mult::Zero);
+                }
                 Step::Pop => cx.pop(),
             }
         }
