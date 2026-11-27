@@ -322,6 +322,11 @@ pub struct DefInfo {
     pub opaque: bool,
     /// Sealed by its module (#537): does not unfold outside it.
     pub sealed: bool,
+    /// Unfolds without spending fuel: a type that can't recurse (an alias,
+    /// whose cycles are errors, #557, or one the compiler makes), so
+    /// unfolding it always ends. A function, which may recurse, never is,
+    /// whatever its result type (#711).
+    pub alias: bool,
     /// Binder positions (over the whole Π-type) that are `comptime` (#541).
     /// A function with any is a compile-time function: staging inlines it.
     pub comptime: Vec<usize>,
@@ -765,10 +770,11 @@ pub fn unfold(g: &Globals, v: &Val) -> Option<Val> {
     if info.opaque || info.sealed {
         return None;
     }
-    // Fuel bounds unfolding of functions. A type alias can't recurse
-    // (cycles are errors, #557), so unfolding it always terminates and costs
-    // none: running out of fuel must not stop `U8` from being `Nat`.
-    if !is_type_former(&info.ty) {
+    // Fuel bounds unfolding of functions, type functions too: one may
+    // recurse without end until its termination check rejects it (#711). An
+    // alias can't recurse, so unfolding it always ends and costs none:
+    // running out of fuel must not stop `U8` from being `Nat`.
+    if !info.alias {
         if g.fuel.get() == 0 {
             return None;
         }

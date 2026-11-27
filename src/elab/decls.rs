@@ -562,6 +562,7 @@ impl Elab {
             body: None,
             opaque: false,
             sealed: false,
+            alias: false,
             comptime: Vec::new(),
         });
         DefId(self.g.defs.len() as u32 - 1)
@@ -1214,6 +1215,7 @@ impl Elab {
             let info = &mut self.g.defs[did.0 as usize];
             info.body = Some(body);
             info.ty = ty;
+            info.alias = true;
             self.solve_deferred();
         }
     }
@@ -1970,6 +1972,9 @@ impl Elab {
             let tyt = quote(&self.g, 0, &ty);
             let t = crate::core::zonk_metas(&self.g, 0, &t);
             let info = &mut self.g.defs[did.0 as usize];
+            // A constant can't need its own value (#557): a type one
+            // unfolds as an alias does.
+            info.alias = crate::core::is_type_former(&tyt);
             info.ty = tyt;
             info.body = Some(t);
         }
