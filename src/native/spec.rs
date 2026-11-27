@@ -37,6 +37,11 @@
 //! a copy is replaced by its function unless the copy uses it as a value
 //! (`settle`), so the caller isn't made to build its closure.
 //!
+//! A literal or a value known at compile time (§8.9) passed to a function
+//! is put into a copy too (`known_data`), so the code using it is computed
+//! when compiling (`fold`); a recursive call passing a value computed from
+//! it is not a literal here, so it calls the general function.
+//!
 //! Code growth is bounded: one copy per function and arguments put into
 //! it (memoized, so recursion and mutual recursion reuse the copy), each
 //! such argument at most `MAX_ARG` nodes, copies made inside copies at
@@ -60,6 +65,7 @@ pub const MAX_COPIES: usize = 4096;
 
 /// A function's copy: the function, its body with the arguments put in,
 /// and how deep in copies it was made.
+#[derive(Clone)]
 pub struct Copy {
     pub of: DefId,
     pub body: Tm,
@@ -76,16 +82,29 @@ pub struct Specs {
     pub copies: Vec<Copy>,
     /// Whether a function's parameter is used as a value (`kept`).
     kept: HashMap<(u32, usize), bool>,
+    /// Whether copies are made for literals and known values (§8.9): for a
+    /// program's code, not for code compiled to run when compiling.
+    pub for_values: bool,
+    /// A mirror of another program's copies (`mirror`): it makes none of
+    /// its own, so their numbers stay the other program's.
+    pub frozen: bool,
 }
 
 impl Specs {
     pub fn new(base: u32) -> Specs {
-        Specs { base, memo: HashMap::new(), copies: Vec::new(), kept: HashMap::new() }
+        Specs { base, memo: HashMap::new(), copies: Vec::new(), kept: HashMap::new(), for_values: false, frozen: false }
     }
 
     /// The copy definition `d` is, if it is one.
     pub fn copy(&self, d: u32) -> Option<&Copy> {
         d.checked_sub(self.base).and_then(|i| self.copies.get(i as usize))
+    }
+
+    /// Take on the copies of `other` made since the last call: this
+    /// table's become a frozen mirror of its.
+    pub fn mirror(&mut self, other: &Specs) {
+        self.frozen = true;
+        self.copies.extend(other.copies[self.copies.len().min(other.copies.len())..].iter().cloned());
     }
 
     /// The definition whose code `d` is: itself, or the one it copies.
@@ -290,8 +309,14 @@ fn free_in_order(t: &Tm, depth: usize, out: &mut Vec<usize>) {
 /// The copy of `f` to call with `args` (each with its multiplicity), if
 /// one passes a known instance's dictionary or a known function, in code
 /// of `owner`.
+/// A value known at compile time written into the code: a literal, or a
+/// known value (§8.9). A copy made for it computes with it there (`fold`).
+fn known_data(t: &Tm) -> bool {
+    matches!(t, Tm::Lit(_) | Tm::Known(_))
+}
+
 pub fn specialize(g: &Globals, cx: SpecCx, owner: Option<DefId>, f: DefId, args: &[(&Rc<Tm>, Mult)]) -> Option<Spec> {
-    if off() {
+    if off() || cx.table.borrow().frozen {
         return None;
     }
     let wk = &g.well_known;
@@ -301,7 +326,9 @@ pub fn specialize(g: &Globals, cx: SpecCx, owner: Option<DefId>, f: DefId, args:
         return None;
     }
     let fun = |a: &Tm| small_fn(g, cx.staged, a);
-    if !args.iter().any(|(a, m)| *m != Mult::Zero && (closed_dict(g, a) || fun(a))) {
+    let values = cx.table.borrow().for_values;
+    let known_data = |a: &Tm| values && known_data(a);
+    if !args.iter().any(|(a, m)| *m != Mult::Zero && (closed_dict(g, a) || fun(a) || known_data(a))) {
         return None;
     }
     let body = crate::native::ir::body_of(g, cx.staged, f)?;
@@ -322,7 +349,7 @@ pub fn specialize(g: &Globals, cx: SpecCx, owner: Option<DefId>, f: DefId, args:
         .enumerate()
         .map(|(j, (a, m))| match m {
             Mult::Zero => (max_var(a).is_none() && size(a, MAX_ARG) <= MAX_ARG).then(|| (***a).clone()),
-            _ if closed_dict(g, a) => Some((***a).clone()),
+            _ if closed_dict(g, a) || known_data(a) => Some((***a).clone()),
             _ if fun(a) => {
                 let a = settle(g, cx, known_var(a).map_or(&***a, |(_, f)| f));
                 let a = &a;

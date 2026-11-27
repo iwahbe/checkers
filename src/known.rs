@@ -50,8 +50,18 @@ impl Hasher for Fx {
         self.0 = (self.0.rotate_left(5) ^ n).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
     }
 
+    /// The state mixed so that every bit of it reaches the low bits, which
+    /// a hash table indexes by: a multiplication carries a word's low bits
+    /// only upwards, so keys differing only in their high bits (a node's
+    /// fields written as one word, its last field's id in the high half)
+    /// would all fall in one bucket (murmur3's final mix).
     fn finish(&self) -> u64 {
-        self.0
+        let mut x = self.0;
+        x ^= x >> 33;
+        x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
+        x ^= x >> 33;
+        x = x.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+        x ^ (x >> 33)
     }
 }
 

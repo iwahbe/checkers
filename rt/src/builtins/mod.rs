@@ -36,6 +36,7 @@ pub mod env;
 pub mod proc;
 pub mod time;
 pub mod prelude;
+pub mod hint;
 
 /// A builtin: its standard-library name (`std.terminal.print_line`), its
 /// symbol, and its function. Each takes its kept (non-erased) arguments as
@@ -59,6 +60,7 @@ pub const MODULES: &[&[Builtin]] = &[
     proc::TABLE,
     time::TABLE,
     prelude::TABLE,
+    hint::TABLE,
 ];
 
 /// Builtins that get their type parameters' words: `std.array`'s, as

@@ -1015,6 +1015,9 @@ fn ready_to_run(name: &str, text: &str, dir: &std::path::Path, release: bool) ->
     if e.admits.is_empty() {
         e.g.bounds = std::mem::take(&mut e.bounds);
         e.g.proved = true;
+        // So calls on static data in native code are computed when
+        // compiling too (§8.9), with the limit constants have.
+        e.g.fold_work.set(Some(if release { u64::MAX } else { elab::CODEGEN_WORK }));
     }
     Ok((e, core::DefId(main as u32), staged, report))
 }

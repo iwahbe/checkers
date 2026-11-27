@@ -386,11 +386,21 @@ pub struct Globals {
     /// set once the program is proved, as `bounds` is (`Elab::known_value`).
     /// Each is a literal, `()` or a `Tm::Known`, compiled as static data.
     pub known: RefCell<HashMap<DefId, Tm>>,
+    /// The builtins never run when compiling (§8.9): those with effects
+    /// (§7.1, given a capability, a `Sched`, a file or a process handle, by
+    /// their signatures) and `std.hint.blackbox`, whose result is never
+    /// known. Neither the type checker, staging nor folding computes a call
+    /// of one.
+    pub run_time_only: RefCell<std::collections::HashSet<DefId>>,
     /// Every obligation of the program is proved, and none of its facts is
     /// assumed by an `admit` (§13.3): native code compiled from here relies
     /// on the proofs, with no run-time checks of guarded operations. False
     /// in a `check` or staging, which run before proving.
     pub proved: bool,
+    /// Whether native code's calls on static data are computed when
+    /// compiling (§8.9), and within how much work: set where `proved` is,
+    /// since then its calls meet their preconditions.
+    pub fold_work: std::cell::Cell<Option<u64>>,
     /// The base types of classes' types that have one (#360), by their
     /// field of the dictionary: closed types.
     pub type_bases: HashMap<(ConId, usize), Vec<Tm>>,
@@ -456,7 +466,9 @@ impl Globals {
             value_params: RefCell::new(HashMap::new()),
             bounds: HashMap::new(),
             known: RefCell::new(HashMap::new()),
+            run_time_only: RefCell::new(std::collections::HashSet::new()),
             proved: false,
+            fold_work: std::cell::Cell::new(None),
             type_bases: HashMap::new(),
         }
     }

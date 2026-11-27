@@ -99,6 +99,9 @@ pub enum SNode {
     Global(u32),
     /// A constructor's function as a value: its wrapper's global closure.
     ConFn(u32),
+    /// A function of the program without free variables (a closed
+    /// lambda), as a value: its global closure.
+    Code(u32),
 }
 
 impl SNode {
@@ -115,6 +118,25 @@ impl SNode {
 impl Static {
     pub fn node(&self, id: u32) -> &SNode {
         &self.nodes[id as usize]
+    }
+
+    /// The definitions whose functions the value at `id` holds, or `None`
+    /// if it holds a function of the program's first-order code.
+    pub fn globals(&self, id: u32) -> Option<Vec<u32>> {
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut todo = vec![id];
+        while let Some(n) = todo.pop() {
+            if !seen.insert(n) {
+                continue;
+            }
+            match self.node(n) {
+                SNode::Global(d) => out.push(*d),
+                SNode::Code(_) => return None,
+                node => todo.extend_from_slice(node.parts()),
+            }
+        }
+        Some(out)
     }
 
     pub fn hash_of(&self, id: u32) -> u128 {
@@ -148,6 +170,10 @@ impl Static {
                 s.write_u8(6);
                 s.write_u32(*c);
             }
+            SNode::Code(f) => {
+                s.write_u8(7);
+                s.write_u32(*f);
+            }
             SNode::Array { layout, elems } => {
                 s.write_u8(4);
                 s.write_u8(*layout);
@@ -173,10 +199,15 @@ impl Static {
         id
     }
 
-    /// The node of a word or a literal `e`, if it is one.
-    fn leaf(&mut self, e: &E) -> Option<u32> {
+    /// The node of a word or a literal `e`, if it is one; or of a function
+    /// value whose closure is static (`functions`: whether a definition's
+    /// value is its function).
+    fn leaf(&mut self, e: &E, functions: &dyn Fn(u32) -> bool) -> Option<u32> {
         use checkers_rt::word as w;
         Some(match e {
+            E::Global(d) if functions(*d) => self.add(SNode::Global(*d)),
+            E::ConFn(c) => self.add(SNode::ConFn(*c)),
+            E::MkClo { f, captured } if captured.is_empty() => self.add(SNode::Code(*f)),
             E::Int(n) => self.add(SNode::Word(w::mk_int(*n))),
             E::Str(s) => self.add(SNode::Bytes(Arc::from(s.as_bytes()))),
             E::Bytes(b) => self.add(SNode::Bytes(b.clone())),
@@ -221,12 +252,12 @@ impl Static {
     /// A constructor or tuple whose fields are all words, literals or
     /// static data, as one value: static data too. The largest field's
     /// graph is grown, so a long list written out is built in linear time.
-    pub fn fold(e: E) -> E {
+    pub fn fold(e: E, functions: &dyn Fn(u32) -> bool) -> E {
         let fields = match &e {
             E::Con { fields, reuse: None, .. } | E::Tuple(fields) if !fields.is_empty() => fields,
             _ => return e,
         };
-        if !fields.iter().all(|f| matches!(f, E::Static(..)) || Static::default().leaf(f).is_some()) {
+        if !fields.iter().all(|f| matches!(f, E::Static(..)) || Static::default().leaf(f, functions).is_some()) {
             return e;
         }
         let (con, mut fields) = match e {
@@ -252,7 +283,7 @@ impl Static {
             .map(|(k, f)| match f {
                 E::Static(_, id) if Some(k) == big => *id,
                 E::Static(g, id) => graph.import(g, *id),
-                f => graph.leaf(f).expect("a literal"),
+                f => graph.leaf(f, functions).expect("a literal"),
             })
             .collect();
         let id = match con {
@@ -426,16 +457,24 @@ pub struct Program {
     /// code is compiled for returns in registers. This machine's, unless
     /// set before reference counting.
     pub max_parts: usize,
+    /// Whether its code is folded (§8.9, `fold`): a program's, not code
+    /// compiled to run when compiling.
+    pub fold: bool,
+    /// Operations on static data alone left to run unkept, which the
+    /// check reports as compiler bugs (`CHECKERS_RESIDUAL_CHECK=1`).
+    pub residual: Vec<String>,
 }
 
 /// Code with no definition (a `check`, a value staging computes).
 pub const NO_OWNER: u32 = u32::MAX;
 
 /// Adds to a `Program`.
-pub struct Lowerer<'a, 'g> {
+pub struct Lowerer<'a, 'g: 'a> {
     g: &'g Globals,
     staged: Option<&'a crate::stage::Staged>,
     p: &'a mut Program,
+    /// Folds the program's code (`Program::fold`), made when first needed.
+    folder: Option<crate::native::fold::Folder<'a>>,
     // Per function being lowered:
     next: u32,
     owner: u32,
@@ -482,6 +521,8 @@ impl Program {
             borrowed: HashMap::new(),
             entries: HashMap::new(),
             max_parts: crate::native::host_return_words(),
+            fold: false,
+            residual: Vec::new(),
         }
     }
 }
@@ -523,6 +564,8 @@ pub fn debug_table(g: &Globals) -> Option<Tm> {
 /// The whole program reachable from `main`.
 pub fn lower(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId) -> Program {
     let mut p = Program::new(g, staged);
+    p.fold = !crate::native::fold::off();
+    p.specs.borrow_mut().for_values = true;
     Lowerer::new(g, staged, &mut p).add_defs(&[main.0]);
     p.main = main.0;
     if let Some(ir) = show_table(g) {
@@ -533,7 +576,7 @@ pub fn lower(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId) ->
 
 impl<'a, 'g> Lowerer<'a, 'g> {
     pub fn new(g: &'g Globals, staged: Option<&'a crate::stage::Staged>, p: &'a mut Program) -> Self {
-        Lowerer { g, staged, p, next: 0, owner: 0 }
+        Lowerer { g, staged, p, folder: None, next: 0, owner: 0 }
     }
 
     /// Lower `roots` and every definition they reach that isn't lowered yet.
@@ -725,7 +768,46 @@ impl Lowerer<'_, '_> {
     /// Definition `d`'s code, with small functions inlined (`inline`).
     fn inline_def(&mut self, d: u32) -> Ir {
         let ir = self.inliner(|i| i.definition(d)).expect("a definition with code");
+        let ir = self.fold(d, ir);
         self.float_in(&ir)
+    }
+
+    /// Definition `d`'s code folded (§8.9), if the program's code is; with
+    /// `CHECKERS_RESIDUAL_CHECK=1`, each operation on static data alone it
+    /// leaves to run and didn't keep reported in `Program::residual`.
+    fn fold(&mut self, d: u32, ir: Arc<Ir>) -> Arc<Ir> {
+        if !self.p.fold {
+            if crate::native::fold::checking() {
+                self.check_residual(d, &ir, &[]);
+            }
+            return ir;
+        }
+        let (g, staged) = (self.g, self.staged);
+        let folder = self.folder.get_or_insert_with(|| crate::native::fold::Folder::new(g, staged));
+        let out = folder.fold_def(&ir, &self.p.specs.borrow());
+        let kept = std::mem::take(&mut folder.kept);
+        let name = self.p.names[self.p.specs.borrow().origin(d) as usize].clone();
+        if std::env::var_os("CHECKERS_NATIVE_DUMP").is_some() {
+            for (node, why) in &kept {
+                eprintln!("kept in {name}: {}: {}", crate::native::fold::describe(g, node), why.why());
+            }
+        }
+        if crate::native::fold::checking() {
+            self.check_residual(d, &out, &kept);
+        }
+        out
+    }
+
+    fn check_residual(&mut self, d: u32, ir: &Ir, kept: &[(Arc<Ir>, crate::native::fold::Kept)]) {
+        let name = self.p.names[self.p.specs.borrow().origin(d) as usize].clone();
+        let mut found = Vec::new();
+        crate::native::fold::residuals(self.g, ir, kept, &mut found);
+        for node in found {
+            self.p.residual.push(format!(
+                "internal error: `{name}` leaves {} to run, though every value it needs is known when compiling",
+                crate::native::fold::describe(self.g, node)
+            ));
+        }
     }
 
     fn inliner<T>(&mut self, f: impl FnOnce(&mut crate::native::inline::Inliner) -> T) -> T {
@@ -741,6 +823,12 @@ impl Lowerer<'_, '_> {
             matches!(defs.get(&d.0), Some(DefShape::Builtin { sym, keep, .. }) if keep.len() == n && checkers_rt::builtins::PURE.contains(sym))
         };
         crate::native::inline::float_in(ir, &pure_call)
+    }
+
+    /// Whether definition `d`'s value is its function, whose closure is
+    /// static data (a function or a builtin, not a constant).
+    fn is_function(&self, d: u32) -> bool {
+        matches!(self.p.defs.get(&d), Some(DefShape::Fn { .. } | DefShape::Builtin { .. }))
     }
 
     fn fresh(&mut self) -> V {
@@ -879,7 +967,8 @@ impl Lowerer<'_, '_> {
                 if xs.is_empty() {
                     return E::Unit;
                 }
-                Static::fold(E::Tuple(xs.iter().map(|x| self.expr(x, ctx, false)).collect()))
+                let e = E::Tuple(xs.iter().map(|x| self.expr(x, ctx, false)).collect());
+                Static::fold(e, &|d| self.is_function(d))
             }
             Ir::Proj(x, i, rest) => {
                 let xe = self.expr(x, ctx, false);
@@ -889,7 +978,10 @@ impl Lowerer<'_, '_> {
                 let xe = self.expr(x, ctx, false);
                 self.borrow(BOp::Field(*i), vec![xe])
             }
-            Ir::Con(c, xs) => Static::fold(E::Con { con: c.0, fields: xs.iter().map(|x| self.expr(x, ctx, false)).collect(), reuse: None }),
+            Ir::Con(c, xs) => {
+                let e = E::Con { con: c.0, fields: xs.iter().map(|x| self.expr(x, ctx, false)).collect(), reuse: None };
+                Static::fold(e, &|d| self.is_function(d))
+            }
             Ir::Prim(op, args, nat) => {
                 let es: Vec<E> = args.iter().map(|a| self.expr(a, ctx, false)).collect();
                 match op {

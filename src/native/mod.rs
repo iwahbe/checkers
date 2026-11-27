@@ -5,6 +5,7 @@
 
 pub mod codegen;
 pub mod eval;
+pub mod fold;
 pub mod inline;
 pub mod ir;
 pub mod lower;
@@ -310,15 +311,26 @@ pub fn run(g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId, args
 
 fn run_in(module: cranelift_jit::JITModule, g: &Globals, staged: Option<&crate::stage::Staged>, main: DefId, args: &[String], threads: usize) -> i32 {
     let p = prepare(g, staged, main, host_return_words());
+    // The check (§8.9): a compiler bug, and the program doesn't run.
+    if !p.residual.is_empty() {
+        for r in &p.residual {
+            eprintln!("{r}");
+        }
+        return 101;
+    }
     let desc = descriptor(g, &p);
     let mut gen = codegen::Gen::new(module, p, g);
     gen.define_new();
     let main_clo = gen.main_closure();
     let invoke = gen.invoke;
-    let debug = gen.p.debug.map(|f| gen.func_id(f));
+    let debug = gen.debug_table();
     let mut module = gen.m;
     module.finalize_definitions().expect("finish native code");
-    let debug = debug.map_or(0, |f| module.get_finalized_function(f) as u64);
+    let debug = match debug {
+        Some(codegen::Placed::Word(x)) => x,
+        Some(codegen::Placed::Data(d, o)) => module.get_finalized_data(d).0 as u64 + o as u64,
+        None => 0,
+    };
     let inv = module.get_finalized_function(invoke);
     let (clo, _) = module.get_finalized_data(main_clo);
     let invoke: checkers_rt::prog::Invoke = unsafe { std::mem::transmute(inv) };
@@ -345,6 +357,9 @@ pub fn object(
     isa: std::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>,
 ) -> Result<Vec<u8>, String> {
     let p = prepare(g, staged, main, codegen::return_words(&*isa));
+    if !p.residual.is_empty() {
+        return Err(p.residual.join("\n"));
+    }
     let desc = descriptor(g, &p);
     let ob = cranelift_object::ObjectBuilder::new(isa, "checkers_program", cranelift_module::default_libcall_names())
         .map_err(|e| e.to_string())?;
@@ -469,8 +484,46 @@ mod tests {
                 out.dedup();
                 out
             };
-            assert_eq!(arity("lo"), [2]);
+            // `lo`'s copies for a dictionary take its two values; the copy for
+            // `lo 5 3` in `pick`'s copy (both known, §8.9) keeps one.
+            assert_eq!(arity("lo"), [2, 1]);
             assert_eq!(arity("nothing"), [1]);
+        })
+    }
+
+    /// A standard library function called from a program with a value known
+    /// when compiling is specialized on it (§14), as the program's own are
+    /// (tests/run/std_specialized.ck): `take 2 args` calls a copy of `take`
+    /// that takes only the list.
+    #[test]
+    fn std_calls_are_specialized_on_known_values() {
+        funcs_of("std_specialized.ck", |p| {
+            let specs = p.specs.borrow();
+            let arities: Vec<usize> = specs
+                .copies
+                .iter()
+                .filter(|c| p.names[c.of.0 as usize] == "take")
+                .map(|c| {
+                    let (mut n, mut b) = (0, &c.body);
+                    while let crate::core::Tm::Lam(_, _, _, x) = b {
+                        n += 1;
+                        b = x;
+                    }
+                    n
+                })
+                .collect();
+            assert!(arities.contains(&1), "take's copies take {arities:?} parameters");
+        })
+    }
+
+    /// A value given through `std.hint.blackbox` is not known when compiling
+    /// (§8.9, tests/run/blackbox.ck): `main` calls it and adds at run time.
+    #[test]
+    fn blackbox_is_not_folded() {
+        funcs_of("blackbox.ck", |p| {
+            let main = p.funcs.iter().find(|f| f.name == "main").expect("main");
+            let code = dump(&main.body, 0);
+            assert!(code.contains("ckb_hint_blackbox") && code.contains("Prim(Add"), "{code}");
         })
     }
 
@@ -559,6 +612,33 @@ mod tests {
         let found: Vec<&(String, String)> = code.iter().filter(|(n, _)| n == f).collect();
         assert_eq!(found.len(), 1, "functions named `{f}`");
         &found[0].1
+    }
+
+    /// The table of hand-written `Debug` instances is static data, laid out
+    /// when the program is compiled (tests/run/debug_table_static.ck): its
+    /// code is its value, so the runtime is handed the value and runs
+    /// nothing to build it.
+    #[test]
+    fn debug_table_is_static() {
+        funcs_of("debug_table_static.ck", |p| {
+            let f = p.debug.expect("a table of `Debug` instances");
+            assert!(matches!(p.funcs[f as usize].body, lower::E::Static(..)), "{}", dump(&p.funcs[f as usize].body, 0));
+        })
+    }
+
+    /// Known parts of code are computed when compiling (§8.9,
+    /// tests/run/folded.ck): `x < LIMIT * 2` compiles as `x < 2097152`, and
+    /// `scale 3 x` calls a copy of `scale` for `3` whose code is `by_hand`'s,
+    /// the general `scale` not being compiled at all.
+    #[test]
+    fn known_parts_are_computed() {
+        crate::with_big_stack(|| {
+            for (triple, _) in MACHINES {
+                let code = machine_code("folded", triple);
+                assert_eq!(code_of(&code, "under"), code_of(&code, "under_number"), "{triple}");
+                assert_eq!(code_of(&code, "scale"), code_of(&code, "by_hand"), "{triple}");
+            }
+        })
     }
 
     /// Code put into a function from another (`at`: a small function

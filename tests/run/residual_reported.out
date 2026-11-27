@@ -1,0 +1,4 @@
+-- stdout
+-- stderr
+internal error: `main` leaves `21 * 2` to run, though every value it needs is known when compiling
+-- exit 101

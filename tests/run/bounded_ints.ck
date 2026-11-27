@@ -8,6 +8,7 @@ module bounded_ints
 import std.system (System, ExitCode)
 import std.string (debug)
 import std.terminal (Term)
+import std.hint (blackbox)
 
 fn add_bytes a b c d -> r : a~U8, b~U8, c~U8, d~U8, r~Nat
     (a + b) + (c + d) + (a + c) + (b + d)
@@ -28,17 +29,18 @@ fn line n sys : n~Int, sys~System
     terminal.print_line (debug n) sys.term
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
-    line (add_bytes 0 0 0 0) sys
-    line (add_bytes 255 255 255 255) sys
-    line (spread 0 0) sys
-    line (spread 999 (-999)) sys
-    line (halves 65535 1) sys
-    line (halves 65535 65535) sys
-    line (halves 65534 65535) sys
-    line (halves 0 7) sys
-    line (take 65535 255) sys
-    line (take 256 0) sys
-    line (product 2147483647 2147483647) sys
-    line (product (-2147483648) (-2147483648)) sys
-    line (product (-2147483648) 2147483647) sys
+    # Given through `blackbox`, or the calls would be computed when compiling.
+    line (add_bytes (blackbox 0) (blackbox 0) (blackbox 0) (blackbox 0)) sys
+    line (add_bytes (blackbox 255) (blackbox 255) (blackbox 255) (blackbox 255)) sys
+    line (spread (blackbox 0) (blackbox 0)) sys
+    line (spread (blackbox 999) (blackbox (-999))) sys
+    line (halves (blackbox 65535) (blackbox 1)) sys
+    line (halves (blackbox 65535) (blackbox 65535)) sys
+    line (halves (blackbox 65534) (blackbox 65535)) sys
+    line (halves (blackbox 0) (blackbox 7)) sys
+    line (take (blackbox 65535) (blackbox 255)) sys
+    line (take (blackbox 256) (blackbox 0)) sys
+    line (product (blackbox 2147483647) (blackbox 2147483647)) sys
+    line (product (blackbox (-2147483648)) (blackbox (-2147483648))) sys
+    line (product (blackbox (-2147483648)) (blackbox 2147483647)) sys
     Success
