@@ -10,6 +10,8 @@ use num_bigint::BigInt;
 use num_traits::{Euclid, Zero};
 use std::rc::Rc;
 
+use crate::source::Span;
+
 pub type Name = Rc<str>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -132,7 +134,10 @@ pub enum Tm {
     Pi(Name, Mult, Icit, Rc<Tm>, Rc<Tm>),
     Lam(Name, Mult, Icit, Rc<Tm>),
     /// The `Mult` is the multiplicity of the function's parameter (for usage checking).
-    App(Rc<Tm>, Rc<Tm>, Icit, Mult),
+    /// The `Span` is the source expression the call came from, for
+    /// diagnostics after type checking; empty for a call the compiler made.
+    /// It never takes part in comparing, unifying, hashing or caching terms.
+    App(Rc<Tm>, Rc<Tm>, Icit, Mult, Span),
     Let(Name, Mult, Rc<Tm>, Rc<Tm>, Rc<Tm>),
     Lit(Lit),
     TupleTy(Vec<Tm>),
@@ -142,7 +147,8 @@ pub enum Tm {
     /// `(x, r)` binds `r` to `(b, c)` (#673).
     Proj(Rc<Tm>, usize, bool),
     /// Record projection: field `index` (counting fields only, not type parameters).
-    Field(Rc<Tm>, ConId, usize),
+    /// The `Span` is the source expression, as `App`'s.
+    Field(Rc<Tm>, ConId, usize, Span),
     TyConApp(TyId, Vec<Tm>),
     /// Saturated constructor: type parameters, then fields.
     ConApp(ConId, Vec<Tm>),
@@ -173,10 +179,10 @@ impl Tm {
             Tm::Var(_) | Tm::Def(_) | Tm::TyCon(_) | Tm::Con(_) | Tm::Meta(_) | Tm::Univ(_) | Tm::Lit(_) | Tm::Known(_) | Tm::Error => false,
             Tm::Pi(_, _, _, a, b) => f(a, 0) || f(b, 1),
             Tm::Lam(_, _, _, b) => f(b, 1),
-            Tm::App(a, b, _, _) => f(a, 0) || f(b, 0),
+            Tm::App(a, b, _, _, _) => f(a, 0) || f(b, 0),
             Tm::Let(_, _, a, b, c) => f(a, 0) || f(b, 0) || f(c, 1),
             Tm::TupleTy(v) | Tm::Tuple(v) | Tm::TyConApp(_, v) | Tm::ConApp(_, v) | Tm::PrimApp(_, v) => v.iter().any(|x| f(x, 0)),
-            Tm::Proj(a, _, _) | Tm::Field(a, _, _) => f(a, 0),
+            Tm::Proj(a, _, _) | Tm::Field(a, _, _, _) => f(a, 0),
             Tm::Case(s, c) => {
                 f(s, 0)
                     || c.branches.iter().any(|(_, n, b)| f(b, *n))
@@ -206,7 +212,7 @@ impl Tm {
             Tm::Var(_) | Tm::Def(_) | Tm::TyCon(_) | Tm::Con(_) | Tm::Meta(_) | Tm::Univ(_) | Tm::Lit(_) | Tm::Known(_) | Tm::Error => self.clone(),
             Tm::Pi(x, m, i, a, b) => Tm::Pi(x.clone(), *m, *i, Rc::new(f(a, 0)), Rc::new(f(b, 1))),
             Tm::Lam(x, m, i, b) => Tm::Lam(x.clone(), *m, *i, Rc::new(f(b, 1))),
-            Tm::App(a, b, i, m) => Tm::App(Rc::new(f(a, 0)), Rc::new(f(b, 0)), *i, *m),
+            Tm::App(a, b, i, m, s) => Tm::App(Rc::new(f(a, 0)), Rc::new(f(b, 0)), *i, *m, *s),
             Tm::Let(x, m, a, b, c) => Tm::Let(x.clone(), *m, Rc::new(f(a, 0)), Rc::new(f(b, 0)), Rc::new(f(c, 1))),
             Tm::TupleTy(v) => Tm::TupleTy(v.iter().map(|x| f(x, 0)).collect()),
             Tm::Tuple(v) => Tm::Tuple(v.iter().map(|x| f(x, 0)).collect()),
@@ -214,7 +220,7 @@ impl Tm {
             Tm::ConApp(c, v) => Tm::ConApp(*c, v.iter().map(|x| f(x, 0)).collect()),
             Tm::PrimApp(p, v) => Tm::PrimApp(p.clone(), v.iter().map(|x| f(x, 0)).collect()),
             Tm::Proj(x, i, r) => Tm::Proj(Rc::new(f(x, 0)), *i, *r),
-            Tm::Field(x, c, i) => Tm::Field(Rc::new(f(x, 0)), *c, *i),
+            Tm::Field(x, c, i, s) => Tm::Field(Rc::new(f(x, 0)), *c, *i, *s),
             Tm::Case(s, c) => Tm::Case(
                 Rc::new(f(s, 0)),
                 Rc::new(CaseTm {
@@ -548,7 +554,7 @@ impl Globals {
         }
         let Tm::Lam(_, _, Icit::Impl, b) = b else { return None };
         match &**b {
-            Tm::Field(x, c, i) if n > 0 && matches!(**x, Tm::Var(0)) && self.is_type_field(*c, *i) => Some((*c, *i, n)),
+            Tm::Field(x, c, i, _) if n > 0 && matches!(**x, Tm::Var(0)) && self.is_type_field(*c, *i) => Some((*c, *i, n)),
             _ => None,
         }
     }
@@ -667,7 +673,7 @@ pub fn eval(g: &Globals, env: &Env, t: &Tm) -> Val {
             Val::Pi(x.clone(), *m, *i, Rc::new(eval(g, env, a)), Closure { env: env.clone(), body: b.clone() })
         }
         Tm::Lam(x, m, i, b) => Val::Lam(x.clone(), *m, *i, Closure { env: env.clone(), body: b.clone() }),
-        Tm::App(f, a, i, _) => {
+        Tm::App(f, a, i, _, _) => {
             let fv = eval(g, env, f);
             let av = eval(g, env, a);
             app(g, fv, av, *i)
@@ -680,7 +686,7 @@ pub fn eval(g: &Globals, env: &Env, t: &Tm) -> Val {
         Tm::TupleTy(ts) => Val::TupleTy(ts.iter().map(|t| eval(g, env, t)).collect()),
         Tm::Tuple(ts) => Val::Tuple(ts.iter().map(|t| eval(g, env, t)).collect()),
         Tm::Proj(t, i, rest) => proj(g, eval(g, env, t), *i, *rest),
-        Tm::Field(t, c, i) => field(g, eval(g, env, t), *c, *i),
+        Tm::Field(t, c, i, _) => field(g, eval(g, env, t), *c, *i),
         Tm::TyConApp(t, args) => Val::TyCon(*t, args.iter().map(|a| eval(g, env, a)).collect()),
         Tm::ConApp(c, args) => Val::Con(*c, args.iter().map(|a| eval(g, env, a)).collect()),
         Tm::PrimApp(p, args) => prim(g, p, args.iter().map(|a| eval(g, env, a)).collect()),
@@ -1434,9 +1440,9 @@ pub fn quote(g: &Globals, l: usize, v: &Val) -> Tm {
             };
             for e in sp.iter() {
                 t = match e {
-                    Elim::App(a, i) => Tm::App(Rc::new(t), Rc::new(quote(g, l, a)), *i, Mult::Many),
+                    Elim::App(a, i) => Tm::App(Rc::new(t), Rc::new(quote(g, l, a)), *i, Mult::Many, Span::default()),
                     Elim::Proj(i, r) => Tm::Proj(Rc::new(t), *i, *r),
-                    Elim::Field(c, i) => Tm::Field(Rc::new(t), *c, *i),
+                    Elim::Field(c, i) => Tm::Field(Rc::new(t), *c, *i, Span::default()),
                     Elim::Case(c, env) => Tm::Case(Rc::new(t), quote_case(g, l, c, env)),
                 };
             }
@@ -1544,9 +1550,9 @@ fn rename(g: &Globals, m: MetaId, p: &PartialRenaming, v: &Val) -> Result<Tm, Un
         let mut t = t;
         for e in sp.iter() {
             t = match e {
-                Elim::App(a, i) => Tm::App(Rc::new(t), Rc::new(rename(g, m, p, a)?), *i, Mult::Many),
+                Elim::App(a, i) => Tm::App(Rc::new(t), Rc::new(rename(g, m, p, a)?), *i, Mult::Many, Span::default()),
                 Elim::Proj(i, r) => Tm::Proj(Rc::new(t), *i, *r),
-                Elim::Field(c, i) => Tm::Field(Rc::new(t), *c, *i),
+                Elim::Field(c, i) => Tm::Field(Rc::new(t), *c, *i, Span::default()),
                 Elim::Case(c, env) => Tm::Case(Rc::new(t), rename_case(g, m, p, c, env)?),
             };
         }
@@ -1630,7 +1636,7 @@ fn prune(g: &Globals, m2: MetaId, sp: &[Elim], p: &PartialRenaming) -> Option<(M
     let mut t = Tm::Meta(m3);
     for (k, (kept, i, _)) in keep.iter().enumerate() {
         if *kept {
-            t = Tm::App(Rc::new(t), Rc::new(Tm::Var(n - 1 - k)), *i, Mult::Many);
+            t = Tm::App(Rc::new(t), Rc::new(Tm::Var(n - 1 - k)), *i, Mult::Many, Span::default());
         }
     }
     for (k, (_, i, _)) in keep.iter().enumerate().rev() {
@@ -2348,7 +2354,7 @@ fn show_prec<S: Scope + ?Sized>(g: &Globals, ns: &mut Ns<S>, t: &Tm, p: u8) -> S
         Tm::App(..) => {
             let mut args = Vec::new();
             let mut h = t;
-            while let Tm::App(f, a, i, _) = h {
+            while let Tm::App(f, a, i, _, _) = h {
                 if *i == Icit::Expl {
                     args.push(a.clone());
                 }
@@ -2405,7 +2411,7 @@ fn show_prec<S: Scope + ?Sized>(g: &Globals, ns: &mut Ns<S>, t: &Tm, p: u8) -> S
             format!("({})", ts.iter().map(|x| show_prec(g, ns, x, 0)).collect::<Vec<_>>().join(", "))
         }
         Tm::Proj(x, i, _) => format!("{}.{i}", show_prec(g, ns, x, 2)),
-        Tm::Field(x, c, i) => {
+        Tm::Field(x, c, i, _) => {
             let f = &g.cons[c.0 as usize].fields[*i].0;
             format!("{}.{f}", show_prec(g, ns, x, 2))
         }
@@ -2595,9 +2601,9 @@ pub fn zonk_metas(g: &Globals, l: usize, t: &Tm) -> Tm {
             Some(new.into_iter().zip(v).map(|(n, o)| n.unwrap_or_else(|| o.clone())).collect())
         };
         match t {
-            Tm::App(f, a, i, m) => {
+            Tm::App(f, a, i, m, s) => {
                 let (nf, na) = (rc(f, 0), rc(a, 0));
-                (nf.is_some() || na.is_some()).then(|| Tm::App(keep(nf, f), keep(na, a), *i, *m))
+                (nf.is_some() || na.is_some()).then(|| Tm::App(keep(nf, f), keep(na, a), *i, *m, *s))
             }
             Tm::Pi(x, m, i, a, b) => {
                 let (na, nb) = (rc(a, 0), rc(b, 1));
@@ -2614,7 +2620,7 @@ pub fn zonk_metas(g: &Globals, l: usize, t: &Tm) -> Tm {
             Tm::Tuple(v) => many(v).map(Tm::Tuple),
             Tm::PrimApp(p, v) => many(v).map(|v| Tm::PrimApp(p.clone(), v)),
             Tm::Proj(x, i, r) => rc(x, 0).map(|nx| Tm::Proj(nx, *i, *r)),
-            Tm::Field(x, c, i) => rc(x, 0).map(|nx| Tm::Field(nx, *c, *i)),
+            Tm::Field(x, c, i, s) => rc(x, 0).map(|nx| Tm::Field(nx, *c, *i, *s)),
             Tm::Case(sc, c) => {
                 let ns = rc(sc, 0);
                 let nb: Vec<Option<Tm>> = c.branches.iter().map(|(_, n, b)| go(g, l + n, b)).collect();
@@ -2643,7 +2649,7 @@ pub fn zonk_metas(g: &Globals, l: usize, t: &Tm) -> Tm {
 fn fix_mults(g: &Globals, t: &Tm) -> Tm {
     let mut args = Vec::new();
     let mut h = t;
-    while let Tm::App(f, a, i, _) = h {
+    while let Tm::App(f, a, i, _, _) = h {
         args.push((fix_mults(g, a), *i));
         h = f;
     }
@@ -2660,7 +2666,7 @@ fn fix_mults(g: &Globals, t: &Tm) -> Tm {
             }
             _ => Mult::Many,
         };
-        out = Tm::App(Rc::new(out), Rc::new(a), i, m);
+        out = Tm::App(Rc::new(out), Rc::new(a), i, m, Span::default());
     }
     out
 }

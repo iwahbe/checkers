@@ -10,6 +10,7 @@
 
 use crate::core::{defs_in, CaseTm, ConId, DefId, Globals, Lit, Mult, Prim, Tm};
 use crate::native::eval::Evaluator;
+use crate::source::Span;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -42,6 +43,10 @@ impl R {
 
 pub type Res<T> = Result<T, String>;
 
+/// Why staging a function failed, and the call in its own body that failed,
+/// when there is one.
+pub type Failure = (DefId, Option<Span>, String);
+
 /// Runtime arguments `let`-bound before an expansion: name, value, multiplicity.
 type Lets = Vec<(crate::core::Name, Tm, Mult)>;
 
@@ -64,11 +69,12 @@ pub struct Staged {
 /// Stage every function that calls a compile-time function. Failures are
 /// returned per function; those functions keep their unstaged bodies (run
 /// time computes the same values from them).
-pub fn stage_program(g: &Globals) -> (Staged, Vec<(DefId, String)>) {
+pub fn stage_program(g: &Globals) -> (Staged, Vec<Failure>) {
     let mut s = Stager {
         g,
         ev: None,
         depth: 0,
+        failed_at: None,
         active: Vec::new(),
         wanted: HashSet::new(),
         spec_ids: HashMap::new(),
@@ -83,11 +89,12 @@ pub fn stage_program(g: &Globals) -> (Staged, Vec<(DefId, String)>) {
         }
         let d = DefId(k as u32);
         s.depth = 0;
+        s.failed_at = None;
         match s.pe(body, &[], 0) {
             Ok(r) => {
                 out.bodies.insert(d, r.tm());
             }
-            Err(why) => errs.push((d, why)),
+            Err(why) => errs.push((d, s.failed_at.take(), why)),
         }
     }
     out.extra = s.specs.into_iter().map(|(n, b)| (n, b.unwrap_or(Tm::Error))).collect();
@@ -100,6 +107,9 @@ struct Stager<'g> {
     ev: Option<Evaluator<'g>>,
     /// Nesting of compile-time expansions, against runaway recursion.
     depth: usize,
+    /// The innermost call of the function's own body (not of an expansion)
+    /// that failed: where the failure is reported.
+    failed_at: Option<Span>,
     /// Expansions in progress, by function and compile-time arguments.
     active: Vec<String>,
     /// Expansions that reached themselves again: they become functions.
@@ -186,15 +196,15 @@ impl<'g> Stager<'g> {
                 },
                 R::D(d) => R::D(Tm::Proj(Rc::new(d), *i, *rest)),
             },
-            Tm::Field(x, c, i) => match self.pe(x, env, lvl)? {
+            Tm::Field(x, c, i, at) => match self.pe(x, env, lvl)? {
                 R::S(s) => match self.whnf(&s).map(|v| self.boxed(v, *c)) {
                     Some(Tm::ConApp(c2, args)) if c2 == *c => {
                         let np = self.g.arity_ty(self.g.cons[c.0 as usize].ty);
                         R::S(args[np + i].clone())
                     }
-                    _ => R::S(Tm::Field(Rc::new(s), *c, *i)),
+                    _ => R::S(Tm::Field(Rc::new(s), *c, *i, *at)),
                 },
-                R::D(d) => R::D(Tm::Field(Rc::new(d), *c, *i)),
+                R::D(d) => R::D(Tm::Field(Rc::new(d), *c, *i, *at)),
             },
             Tm::PrimApp(p, args) => {
                 // `Sub` carries its operand type as a third argument.
@@ -302,9 +312,20 @@ impl<'g> Stager<'g> {
     }
 
     fn app(&mut self, t: &Tm, env: &[Ent], lvl: usize) -> Res<R> {
+        let own = self.depth == 0;
+        let r = self.app_spine(t, env, lvl);
+        if let (true, Err(_), None, Tm::App(.., at)) = (own, &r, self.failed_at, t) {
+            if *at != Span::default() {
+                self.failed_at = Some(*at);
+            }
+        }
+        r
+    }
+
+    fn app_spine(&mut self, t: &Tm, env: &[Ent], lvl: usize) -> Res<R> {
         let mut spine = Vec::new();
         let mut h = t;
-        while let Tm::App(f, a, i, m) = h {
+        while let Tm::App(f, a, i, m, _) = h {
             spine.push((a.clone(), *i, *m));
             h = f;
         }
@@ -332,7 +353,7 @@ impl<'g> Stager<'g> {
             }
             let mut out = (**b).clone();
             for (a, i, am) in args {
-                out = Tm::App(Rc::new(out), Rc::new(a), i, am);
+                out = Tm::App(Rc::new(out), Rc::new(a), i, am, Span::default());
             }
             let ident: Vec<Ent> = (0..=lvl).map(Ent::Dyn).collect();
             let inner = self.pe(&out, &ident, lvl + 1)?.tm();
@@ -352,7 +373,7 @@ impl<'g> Stager<'g> {
         let partial = matches!(h, Tm::Def(d) if { let i = &self.g.defs[d.0 as usize]; i.opaque && i.body.is_some() });
         let mut out = head.tm();
         for (a, i, m) in args {
-            out = Tm::App(Rc::new(out), Rc::new(a), i, m);
+            out = Tm::App(Rc::new(out), Rc::new(a), i, m, Span::default());
         }
         // Everything known, and the callee ends (not `partial`): compute it.
         if all && !partial && closed(&out, 0) {
@@ -453,7 +474,7 @@ impl<'g> Stager<'g> {
                     Ent::Dyn(j) => Tm::Var(l - 1 - j),
                     Ent::Ty(s, at) => shift(s, l - at, 0),
                 };
-                t = Tm::App(Rc::new(t), Rc::new(a), crate::core::Icit::Expl, binders[k].1);
+                t = Tm::App(Rc::new(t), Rc::new(a), crate::core::Icit::Expl, binders[k].1, Span::default());
             }
             t
         };
@@ -521,7 +542,7 @@ impl<'g> Stager<'g> {
                 Ent::Dyn(k) => Tm::Var(l - 1 - k),
                 Ent::Ty(s, at) => shift(s, l - at, 0),
             };
-            out = Tm::App(Rc::new(out), Rc::new(a), *i, *m);
+            out = Tm::App(Rc::new(out), Rc::new(a), *i, *m, Span::default());
         }
         let ident: Vec<Ent> = (0..l).map(Ent::Dyn).collect();
         self.pe(&out, &ident, l)
@@ -651,9 +672,9 @@ fn arity(ty: &Tm) -> usize {
 /// arguments are all known is closed.
 fn erase_types(t: &Tm) -> Tm {
     match t {
-        Tm::App(f, a, i, m) => {
+        Tm::App(f, a, i, m, at) => {
             let a = if *m == Mult::Zero { Tm::Univ(0) } else { (**a).clone() };
-            Tm::App(Rc::new(erase_types(f)), Rc::new(a), *i, *m)
+            Tm::App(Rc::new(erase_types(f)), Rc::new(a), *i, *m, *at)
         }
         _ => t.clone(),
     }

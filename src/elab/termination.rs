@@ -693,10 +693,10 @@ fn reindex(t: &Tm, from: usize, to: usize, depth: usize) -> Option<Tm> {
             }
             Tm::Var(to - 1 - lvl + depth)
         }
-        Tm::App(a, b, i, m) => Tm::App(Rc::new(go(a, depth)?), Rc::new(go(b, depth)?), *i, *m),
+        Tm::App(a, b, i, m, at) => Tm::App(Rc::new(go(a, depth)?), Rc::new(go(b, depth)?), *i, *m, *at),
         Tm::PrimApp(p, xs) => Tm::PrimApp(p.clone(), xs.iter().map(|x| go(x, depth)).collect::<Option<_>>()?),
         Tm::ConApp(c, xs) => Tm::ConApp(*c, xs.iter().map(|x| go(x, depth)).collect::<Option<_>>()?),
-        Tm::Field(b, c, k) => Tm::Field(Rc::new(go(b, depth)?), *c, *k),
+        Tm::Field(b, c, k, at) => Tm::Field(Rc::new(go(b, depth)?), *c, *k, *at),
         Tm::Proj(b, k, r) => Tm::Proj(Rc::new(go(b, depth)?), *k, *r),
         Tm::Def(_) | Tm::Con(_) | Tm::TyCon(_) | Tm::Lit(_) => t.clone(),
         _ => return None,
@@ -819,7 +819,7 @@ enum Kind {
 fn kind_of(t: &Tm, ctx: &[Kind]) -> Kind {
     match t {
         Tm::Var(i) => ctx.len().checked_sub(i + 1).map_or(Kind::Other, |l| ctx[l]),
-        Tm::Field(a, _, _) | Tm::Proj(a, _, _) => match kind_of(a, ctx) {
+        Tm::Field(a, _, _, _) | Tm::Proj(a, _, _) => match kind_of(a, ctx) {
             Kind::Container | Kind::Part => Kind::Part,
             _ => Kind::Other,
         },
@@ -831,7 +831,7 @@ fn kind_of(t: &Tm, ctx: &[Kind]) -> Kind {
 fn app_icits(t: &Tm) -> Vec<Icit> {
     let mut out = Vec::new();
     let mut h = t;
-    while let Tm::App(f, _, i, _) = h {
+    while let Tm::App(f, _, i, _, _) = h {
         out.push(*i);
         h = f;
     }

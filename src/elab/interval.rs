@@ -648,8 +648,8 @@ fn runtime_closed(g: &Globals, t: &Tm) -> Option<Tm> {
         let Tm::App(..) = t else { return t.map_sub(|x, n| erase(g, x, depth + n)) };
         let mut args = Vec::new();
         let mut h = t;
-        while let Tm::App(f, a, i, m) = h {
-            args.push((a, *i, *m));
+        while let Tm::App(f, a, i, m, at) = h {
+            args.push((a, *i, *m, *at));
             h = f;
         }
         args.reverse();
@@ -660,7 +660,7 @@ fn runtime_closed(g: &Globals, t: &Tm) -> Option<Tm> {
             _ => None,
         };
         let mut out = erase(g, h, depth);
-        for (a, i, m) in args {
+        for (a, i, m, at) in args {
             let m = match &ty {
                 Some(Tm::Pi(_, pm, _, _, b)) => {
                     let pm = *pm;
@@ -675,7 +675,7 @@ fn runtime_closed(g: &Globals, t: &Tm) -> Option<Tm> {
             let mut free = std::collections::BTreeSet::new();
             crate::core::free_vars(a, depth, &mut free);
             let a = if m == Mult::Zero && (!free.is_empty() || has_meta(a)) { Tm::Univ(0) } else { erase(g, a, depth) };
-            out = Tm::App(Rc::new(out), Rc::new(a), i, m);
+            out = Tm::App(Rc::new(out), Rc::new(a), i, m, at);
         }
         out
     }

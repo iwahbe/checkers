@@ -202,3 +202,23 @@ fn computed_types_are_kept_across_builds() {
     assert_eq!(computed, first, "an edit of `walk` computes the type again, and only it");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Calls and field reads carry their source positions, which take no part
+/// in a known value's key: moving every position (a comment before the
+/// module) computes nothing again, whether the type checker's, native
+/// code's or folding's.
+#[test]
+fn moved_positions_keep_known_values() {
+    let dir = scratch("moved");
+    let text = |prefix: &str| format!("{prefix}{}", program("7", "x + 1"));
+    std::fs::write(dir.join("p.ck"), text("")).unwrap();
+    let (out, computed) = run(&dir);
+    assert_eq!(out, "[7, 7, 7]\n1\n");
+    assert!(computed.iter().any(|c| c == "LIST"), "the first build computes `LIST`: {computed:?}");
+
+    std::fs::write(dir.join("p.ck"), text("# Every position moves.\n\n")).unwrap();
+    let (out, computed) = run(&dir);
+    assert_eq!(out, "[7, 7, 7]\n1\n");
+    assert!(computed.is_empty(), "moved positions keep every value, but computed {computed:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

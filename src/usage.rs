@@ -73,8 +73,9 @@ enum Kind {
 #[derive(Default)]
 struct Carried {
     lvls: BTreeSet<usize>,
-    /// A call of a function whose result is declared `own`.
-    call: Option<String>,
+    /// A call of a function whose result is declared `own`: the function,
+    /// and the call's span (empty for a call the compiler made).
+    call: Option<(String, Span)>,
 }
 
 #[derive(Clone)]
@@ -90,8 +91,8 @@ struct U<'a> {
     reported: bool,
     /// Binder level → a function it was passed to whose parameter isn't `own` (#545).
     /// The function each `own` binder is passed to as a parameter that isn't
-    /// `own`, with its module.
-    copied_by: std::collections::HashMap<usize, (String, String)>,
+    /// `own`, with its module and the call's span.
+    copied_by: std::collections::HashMap<usize, (String, String, Span)>,
     /// The `own` binders a closure captures.
     captured: std::collections::BTreeSet<usize>,
     /// The term being checked is the function's result.
@@ -189,9 +190,11 @@ impl U<'_> {
                     let closure = self.captured.contains(&lvl) && self.cown_target(lvl).is_none();
                     match self.copied_by.get(&lvl).filter(|_| !closure) {
                         // A cown can't hold a resource (#643 k).
-                        Some((_, module)) if self.cown_target(lvl).is_some() => {
+                        Some((_, module, _)) if self.cown_target(lvl).is_some() => {
                             let what = self.cown_target(lvl).unwrap_or_default();
                             let short = module.trim_start_matches("std.");
+                            // At the call that puts it there.
+                            let span = self.copied_at(lvl).unwrap_or(span);
                             Diagnostic::error(
                                 "E0405",
                                 format!("`{name}` holds a resource (`{ty}`), which can't be put in {what}"),
@@ -202,7 +205,7 @@ impl U<'_> {
                             ))
                             .with_help("keep the resource with one owner, passing it on through calls, `fork` and `join`; a cown may hold the rest of the state")
                         }
-                        Some((callee, _)) => d
+                        Some((callee, ..)) => d
                             .with_note(format!("`{name}` is passed to `{callee}`, whose parameter is not `own`, so `{callee}` may copy or drop it"))
                             .with_help(format!("mark that parameter of `{callee}` with `own` (as in `x~own a`) so it can take a resource")),
                         None if self.captured.contains(&lvl) && self.copied_by.contains_key(&lvl) => {
@@ -270,7 +273,7 @@ impl U<'_> {
                 ),
                 span,
             )
-            .with_notes(self.copied_by.get(&lvl).map(|(callee, _)| {
+            .with_notes(self.copied_by.get(&lvl).map(|(callee, ..)| {
                 format!("`{name}` is passed to `{callee}`, whose parameter is not `own`, so `{callee}` may copy or drop it")
             }))
             .with_help(format!("the closure's type takes `{name}` as `own`, since its type may be a resource: use it exactly once")),
@@ -283,7 +286,7 @@ impl U<'_> {
             _ if self.cown_target(lvl).is_some() => Diagnostic::error(
                 "E0405",
                 format!("`{name}` is `own`, so it may be a resource, which can't be put in {}", self.cown_target(lvl).unwrap_or_default()),
-                span,
+                self.copied_at(lvl).unwrap_or(span),
             )
             .with_help("remove `own`: a cown holds only values that aren't resources"),
             _ => Diagnostic::error(
@@ -368,7 +371,7 @@ impl U<'_> {
             _ => {
                 let d = Diagnostic::error("E0401", format!("{what}, but `{fname}` may {verb} it more than once"), span);
                 match self.copied_by.get(&lvl) {
-                    Some((callee, _)) => d
+                    Some((callee, ..)) => d
                         .with_note(format!("`{name}` is passed to `{callee}`, whose parameter is not `own`, so `{callee}` may {verb} it any number of times"))
                         .with_help(format!("mark that parameter of `{callee}` with `own` (as in `f~own (Unit -> a)`)")),
                     None if func && once.kind == Kind::Uses => d.with_help("a closure that uses a resource is used up by its call"),
@@ -400,6 +403,15 @@ impl U<'_> {
             _ => "…".into(),
         };
         format!("declare the result `own` (`{r}~own {ty}`), so that the caller uses it exactly once, as it would a resource")
+    }
+
+    /// `at`, a call's span, or the function's name for a call the compiler
+    /// made.
+    fn at_or_fn(&self, at: Span) -> Span {
+        if at != Span::default() {
+            return at;
+        }
+        self.e.fn_meta.get(&self.did).map(|m| m.span).unwrap_or_default()
     }
 
     /// Where a binder is bound, for a message.
@@ -434,8 +446,8 @@ impl U<'_> {
             return;
         }
         let found = self.carried_all(t);
-        if let Some(callee) = found.call {
-            let span = self.e.fn_meta.get(&self.did).map(|m| m.span).unwrap_or_default();
+        if let Some((callee, at)) = found.call {
+            let span = self.at_or_fn(at);
             self.e.err(
                 Diagnostic::error("E0401", format!("`{fname}` returns the result of `{callee}`, declared `own`, so it must be used exactly once"), span)
                     .with_note(format!("`{fname}`'s result isn't declared `own`, so its caller may use it any number of times, or never"))
@@ -485,10 +497,16 @@ impl U<'_> {
         c
     }
 
+    /// The call that passes a binder to a parameter that isn't `own`, if
+    /// it came from the source.
+    fn copied_at(&self, lvl: usize) -> Option<Span> {
+        self.copied_by.get(&lvl).map(|c| c.2).filter(|at| *at != Span::default())
+    }
+
     /// What a binder passed to `cown.new` or `actor.new` would be put in: a
     /// cown can't hold a resource (#643 k).
     fn cown_target(&self, lvl: usize) -> Option<String> {
-        match self.copied_by.get(&lvl).map(|(c, m)| (c.as_str(), m.as_str())) {
+        match self.copied_by.get(&lvl).map(|(c, m, _)| (c.as_str(), m.as_str())) {
             Some(("new", "std.cown")) => Some("a cown".into()),
             Some(("new", "std.actor")) => Some("an actor's state".into()),
             _ => None,
@@ -513,7 +531,7 @@ impl U<'_> {
             }
             // An unsolved meta (an error was reported) uses nothing.
             Tm::App(..) if head_is_meta(t) => self.zero(),
-            Tm::App(..) => self.app(t, false),
+            Tm::App(..) => self.app(t, false, None),
             Tm::Lam(x, m, _, b) => {
                 let m = &if *m == Mult::One && self.e.lam_own_moot(x) { Mult::Many } else { *m };
                 // A closure may run any number of times.
@@ -592,7 +610,7 @@ impl U<'_> {
                 }
                 c
             }
-            Tm::Proj(x, _, _) | Tm::Field(x, _, _) => self.go(x),
+            Tm::Proj(x, _, _) | Tm::Field(x, _, _, _) => self.go(x),
             Tm::Case(s, c) => {
                 let mut cs = self.go(s);
                 let scrut = match &**s {
@@ -649,19 +667,19 @@ impl U<'_> {
             }
             Tm::Var(_) | Tm::Lit(_) | Tm::Known(_) | Tm::Def(_) | Tm::Con(_) | Tm::Univ(_) | Tm::TyCon(_) | Tm::Error => {}
             Tm::Tuple(v) | Tm::ConApp(_, v) => v.iter().for_each(|x| self.carried_into(x, depth, out)),
-            Tm::Proj(x, _, _) | Tm::Field(x, _, _) => self.carried_into(x, depth, out),
+            Tm::Proj(x, _, _) | Tm::Field(x, _, _, _) => self.carried_into(x, depth, out),
             // A call with effects is the call (§7.1).
             Tm::PrimApp(Prim::Effect(_), v) => v.iter().for_each(|x| self.carried_into(x, depth, out)),
             Tm::Let(_, _, _, v, b) => {
                 self.carried_into(v, depth, out);
                 self.carried_into(b, depth + 1, out);
             }
-            Tm::App(..) => {
+            Tm::App(.., at) => {
                 // Erased arguments (types, `ghost` values) carry nothing.
                 let mut head = t;
                 let mut args = Vec::new();
                 let mut n = 0;
-                while let Tm::App(f, a, _, m) = head {
+                while let Tm::App(f, a, _, m, _) = head {
                     if *m != Mult::Zero {
                         args.push(&**a);
                     }
@@ -681,7 +699,7 @@ impl U<'_> {
                         let result = pi_peel(ty, arity);
                         let holds = || *self.result_holds.borrow_mut().entry(*d).or_insert_with(|| self.e.may_hold_once(&self.e.eval_open(result)));
                         if n >= arity && out.call.is_none() && self.e.fn_meta.get(d).is_some_and(|m| m.result_own) {
-                            out.call = Some(self.e.g.defs[d.0 as usize].name.to_string());
+                            out.call = Some((self.e.g.defs[d.0 as usize].name.to_string(), *at));
                         }
                         if n < arity || holds() {
                             args.into_iter().for_each(|x| all(x, depth, out));
@@ -717,14 +735,18 @@ impl U<'_> {
     }
 
     /// An application. `once`: it is in a place that calls the closure it
-    /// makes, if it is a partial application, exactly once.
-    fn app(&mut self, t: &Tm, once: bool) -> Counts {
-        let Tm::App(f, a, _, m) = t else { return self.go(t) };
+    /// makes, if it is a partial application, exactly once. `whole`: the
+    /// span of the call `t` is the function of, if it is one.
+    fn app(&mut self, t: &Tm, once: bool, whole: Option<Span>) -> Counts {
+        let Tm::App(f, a, _, m, at) = t else { return self.go(t) };
+        // The whole call, for a message about passing `a` (`cown.new f s`,
+        // not `cown.new f`).
+        let call = whole.unwrap_or(*at);
         // A lambda called where it is made runs once (#658).
         let mut c = match &**f {
             Tm::Lam(..) => self.lam_once(f),
             // The rest of this call: what it partly applies is decided at the top.
-            Tm::App(..) => self.app(f, true),
+            Tm::App(..) => self.app(f, true, Some(call)),
             _ => self.go(f),
         };
         // A constructor stores its argument: one use, like a saturated `ConApp`.
@@ -738,10 +760,10 @@ impl U<'_> {
         let carried = found.lvls;
         // The result of a call declared `own`, passed where it may be
         // copied or dropped.
-        if let (Mult::Many, Some(f), Some(callee)) = (m, &found.call, head_def(f).map(|d| self.e.g.defs[d.0 as usize].name.to_string())) {
+        if let (Mult::Many, Some((f, at)), Some(callee)) = (m, &found.call, head_def(f).map(|d| self.e.g.defs[d.0 as usize].name.to_string())) {
             if !self.reported {
-                let meta = self.e.fn_meta.get(&self.did);
-                let (fname, span) = (meta.map(|m| m.name.clone()).unwrap_or_default(), meta.map(|m| m.span).unwrap_or_default());
+                let fname = self.e.fn_meta.get(&self.did).map(|m| m.name.clone()).unwrap_or_default();
+                let span = self.at_or_fn(*at);
                 self.e.err(
                     Diagnostic::error("E0401", format!("the result of `{f}` is declared `own`, so it must be used exactly once, but `{fname}` passes it to `{callee}`"), span)
                         .with_note(format!("the parameter of `{callee}` is not `own`, so `{callee}` may use it any number of times, or never"))
@@ -753,7 +775,7 @@ impl U<'_> {
         if m == Mult::Many {
             if let Some(callee) = head_def(f).map(|d| {
                 let d = &self.e.g.defs[d.0 as usize];
-                (d.name.to_string(), d.module.to_string())
+                (d.name.to_string(), d.module.to_string(), call)
             }) {
                 for (lvl, c) in &used {
                     if *c != Count::Zero && self.binders[*lvl].mult == Mult::One && carried.contains(lvl) {
@@ -789,7 +811,7 @@ impl U<'_> {
     fn go_once(&mut self, t: &Tm) -> Counts {
         match t {
             Tm::Lam(..) => self.lam_once(t),
-            Tm::App(..) if !head_is_meta(t) => self.app(t, true),
+            Tm::App(..) if !head_is_meta(t) => self.app(t, true, None),
             _ => self.go(t),
         }
     }
@@ -839,7 +861,7 @@ impl U<'_> {
             .find(|l| self.binders[**l].oneshot.as_ref().is_some_and(|o| o.kind == Kind::Uses))
             .or_else(|| carried.iter().find(|l| self.binders[**l].mult == Mult::One));
         let Some(&lvl) = lvl else {
-            return found.call.map(|f| Once { used: f, kind: Kind::Result, origin: None });
+            return found.call.map(|(f, _)| Once { used: f, kind: Kind::Result, origin: None });
         };
         let b = &self.binders[lvl];
         let named = (!b.name.starts_with('$')).then_some(lvl);

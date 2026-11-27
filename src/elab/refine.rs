@@ -723,7 +723,7 @@ impl Elab {
         self.alias_subject.insert(did, Rc::from(subject));
         let mut t = Tm::Def(did);
         for lv in &levels {
-            t = Tm::App(Rc::new(t), Rc::new(Tm::Var(l - 1 - lv)), Icit::Expl, Mult::Zero);
+            t = Tm::App(Rc::new(t), Rc::new(Tm::Var(l - 1 - lv)), Icit::Expl, Mult::Zero, Span::default());
         }
         t
     }
@@ -842,13 +842,13 @@ impl Elab {
         let rest = binders.len() - given;
         let mut call = crate::core::rename_free(&t, 0, &|i| i + rest);
         for (j, (i, m)) in binders[given..].iter().enumerate() {
-            call = Tm::App(Rc::new(call), Rc::new(Tm::Var(rest - 1 - j)), *i, *m);
+            call = Tm::App(Rc::new(call), Rc::new(Tm::Var(rest - 1 - j)), *i, *m, Span::default());
         }
         let direct = crate::native::ir::known_instance(&self.g, &call)?;
         let mut spine = Vec::new();
         let mut h = &direct;
-        while let Tm::App(g, a, i, m) = h {
-            spine.push((a.clone(), *i, *m));
+        while let Tm::App(g, a, i, m, at) = h {
+            spine.push((a.clone(), *i, *m, *at));
             h = g;
         }
         spine.reverse();
@@ -864,7 +864,7 @@ impl Elab {
         }
         let mut out = Tm::Def(*g);
         let mut gty = eval(&self.g, &crate::core::Env::new(), &self.g.defs[g.0 as usize].ty);
-        for (a, i, m) in &spine[..k] {
+        for (a, i, m, at) in &spine[..k] {
             let mut fv = std::collections::BTreeSet::new();
             free_vars(a, 0, &mut fv);
             if fv.first().is_some_and(|v| *v < rest) {
@@ -873,7 +873,7 @@ impl Elab {
             let a = crate::core::rename_free(a, 0, &|v| v - rest);
             let Val::Pi(_, _, _, _, c) = self.force(&gty) else { return None };
             gty = apply_closure(&self.g, &c, self.eval(cx, &a));
-            out = Tm::App(Rc::new(out), Rc::new(a), *i, *m);
+            out = Tm::App(Rc::new(out), Rc::new(a), *i, *m, *at);
         }
         Some((out, gty))
     }

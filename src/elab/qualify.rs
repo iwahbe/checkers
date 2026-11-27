@@ -75,7 +75,7 @@ impl Elab {
         let Some(via) = &s.via else { return ("this".to_string(), false, true) };
         let mut h = via;
         let mut implicit = Vec::new();
-        while let Tm::App(f, a, i, _) = h {
+        while let Tm::App(f, a, i, _, _) = h {
             if *i == Icit::Impl {
                 implicit.push(a.clone());
             }

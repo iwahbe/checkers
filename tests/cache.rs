@@ -243,3 +243,21 @@ fn proved_on_demand_once() {
     assert_eq!(dump.lines().filter(|l| l.starts_with(";; ── NatSub at Span { start: 154,")).count(), 1, "asked once:\n{dump}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Calls and field reads carry their source positions, which never reach a
+/// query: moving every position (a comment before the module) asks Z3
+/// nothing new.
+#[test]
+fn moved_positions_reuse_answers() {
+    let dir = scratch("moved");
+    let first = ckc(&dir, &["check", "sort.ck"]);
+    let text = std::fs::read_to_string(dir.join("sort.ck")).unwrap();
+    std::fs::write(dir.join("sort.ck"), format!("# Every position moves.\n\n{text}")).unwrap();
+    let second = ckc(&dir, &["check", "sort.ck"]);
+    assert!(modules(&second).is_some_and(|(k, n)| k < n), "the edited module is verified again:\n{second}");
+    let (reused, asked) = counts(&second);
+    assert!(asked > 0, "a cache line:\n{second}");
+    assert_eq!(reused, asked, "every answer reused:\n{second}");
+    assert_eq!(proofs(&first), proofs(&second));
+    let _ = std::fs::remove_dir_all(&dir);
+}

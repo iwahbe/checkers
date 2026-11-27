@@ -1336,7 +1336,7 @@ impl Elab {
         let Some(Sym::Def(size)) = prelude.values.get("size").copied() else { return };
         fn head_to(t: &Tm, to: DefId) -> Option<Tm> {
             match t {
-                Tm::App(a, b, i, m) => Some(Tm::App(Rc::new(head_to(a, to)?), b.clone(), *i, *m)),
+                Tm::App(a, b, i, m, at) => Some(Tm::App(Rc::new(head_to(a, to)?), b.clone(), *i, *m, *at)),
                 Tm::Def(_) => Some(Tm::Def(to)),
                 _ => None,
             }
