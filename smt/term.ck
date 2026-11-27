@@ -3003,32 +3003,26 @@ lemma fun_ok_extend sig cmd f : sig~Sig, cmd~Command, f~Nat, check_command sig c
         let none_d = array.from_list []
         let none_f = array.from_list []
         let none_w = array.from_list []
-        have sig.sorts ++ none_s == sig.sorts
-        have sig.datatypes ++ none_d == sig.datatypes
-        have sig.funs ++ none_f == sig.funs
-        have sig.values ++ none_w == sig.values
         if f < len sig.funs
             match cmd
                 DeclareSort d       ->
+                    # `grow` appends an empty array of functions, which `extend` leaves alone.
                     have extend sig cmd == grow sig (array.from_list [d]) none_d none_f none_w
                     have sorts_ok_grow sig (array.from_list [d]) none_d none_f none_w 0 sig.funs[f].params
                     have sort_ok_grow sig (array.from_list [d]) none_d none_f none_w 0 sig.funs[f].result
                 DeclareDatatypes ds ->
                     let b = array.from_list ds
                     let w = array.from_list (group_values sig ds)
+                    # `grow` appends an empty array of functions, which `extend` leaves alone.
                     have extend sig cmd == grow sig none_s b none_f w
                     have sorts_ok_grow sig none_s b none_f w 0 sig.funs[f].params
                     have sort_ok_grow sig none_s b none_f w 0 sig.funs[f].result
                 DeclareFun d        ->
                     let fs = array.from_list [d]
-                    have extend sig cmd == grow sig none_s none_d fs none_w
-                    have (sig.funs ++ fs)[f] == sig.funs[f]
                     have sorts_ok_grow sig none_s none_d fs none_w 0 sig.funs[f].params
                     have sort_ok_grow sig none_s none_d fs none_w 0 sig.funs[f].result
                 DefineFuns _ ds     ->
                     let fs = array.from_list (def_funs ds)
-                    have extend sig cmd == grow sig none_s none_d fs none_w
-                    have (sig.funs ++ fs)[f] == sig.funs[f]
                     have sorts_ok_grow sig none_s none_d fs none_w 0 sig.funs[f].params
                     have sort_ok_grow sig none_s none_d fs none_w 0 sig.funs[f].result
                 _                   -> auto
@@ -3038,7 +3032,6 @@ lemma fun_ok_extend sig cmd f : sig~Sig, cmd~Command, f~Nat, check_command sig c
                 DeclareFun d    ->
                     have funs_declare sig d
                     have array.from_list_cons d [] 0
-                    have (sig.funs ++ array.from_list [d])[len sig.funs] == (array.from_list [d])[0]
                 DefineFuns s ds ->
                     let fs = array.from_list (def_funs ds)
                     have funs_define sig s ds
@@ -3061,7 +3054,6 @@ lemma funs_ok_after sig cmds f : sig~Sig, cmds~List Command, check_all sig cmds 
         match cmds
             []          -> have before f
             cmd :: rest ->
-                have check_command sig cmd == Ok ()
                 have funs_ok_extend sig cmd
                 have funs_ok_after (extend sig cmd) rest f
 

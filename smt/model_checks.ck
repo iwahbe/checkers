@@ -376,7 +376,7 @@ lemma premises_refuel c m n r s a b i j x env senv xs body : c~Context, m~Model,
         have model.arrays_total_at_fuel c m n s a b i j x env senv xs body
         have model.has_value_fuel c m n body
 
-# ── A total model is an interpretation, from another module ────────────────
+# ── In a total model every term has a value, from another module ───────────
 # As a theorem would use it: a closed term has a value; a `Bool` one holds
 # or fails; its sort is one of the context's.
 
