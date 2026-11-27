@@ -2217,7 +2217,8 @@ lemma bound_heads sig env bs ss : sig~Sig, env~List Sort, bs~List (Name, Term), 
                         have bound_heads sig env rest more
                     _               -> auto
 
-# A variable's sort is found only for an index below the environment's length.
+# A variable's sort is found only for an index below the environment's length
+# (a list fact `std.list` doesn't state, #679).
 lemma drop_head i xs : i~Nat, xs~List a, list.head (list.drop i xs) != None
     ensures i < list.length xs
     proof

@@ -3066,7 +3066,8 @@ export lemma has_value_def c m t : c~Context, m~Model, t~Term
 
 # ── Every definition's equation is an axiom of the context ───────────────────
 
-lemma drop_length_append l y z : l~List Sort, y~Sort, z~List Sort
+# A list fact `std.list` doesn't state (#679).
+lemma drop_length_append l y z : l~List a, y~a, z~List a
     ensures list.head (list.drop (list.length l) (l ++ (y :: z))) == Some y
     proof
         match l
@@ -3079,9 +3080,7 @@ lemma params_sorted sig ss e : sig~Sig, ss~List Sort, e~List Sort
     ensures term.sorts_of sig (list.reverse ss ++ e) (params_from (list.length ss)) == Ok ss
     proof
         match ss
-            []        ->
-                have list.length_reverse ss
-                have term.sorts_of_nil sig e
+            []        -> have term.sorts_of_nil sig e
             x :: rest ->
                 let env = list.reverse rest ++ (x :: e)
                 have list.reverse_cons_append rest x e
