@@ -101,7 +101,7 @@ impl<'g> Evaluator<'g> {
     /// and loop iterations (`checkers_rt::prog::eval_limited`).
     pub fn eval_limited(&mut self, t: &Tm, work: u64) -> Result<W, String> {
         let spec = super::spec::SpecCx { table: &self.gen.p.specs, staged: None, depth: 0 };
-        let ir = super::ir::Compiler { g: self.g, owner: None, spec: Some(spec) }.compile(t);
+        let ir = super::ir::Compiler::specializing(self.g, None, spec).compile(t);
         self.run(&ir, work)
     }
 

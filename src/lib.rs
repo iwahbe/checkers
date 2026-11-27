@@ -15,6 +15,7 @@ pub mod lint;
 pub mod literate;
 pub mod native;
 pub mod overlay;
+pub mod pmap;
 pub mod pvec;
 pub mod range;
 pub mod source;

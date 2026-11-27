@@ -203,6 +203,9 @@ pub struct Cx {
     /// Facts in scope (§7.1): `Bool` values known to be true, tagged with the
     /// context length when they were added, in order.
     pub facts: PVec<(usize, Val)>,
+    /// How many locals have each name, so that a name is looked up in
+    /// scope without a walk over every local (`Scope::count`).
+    named: crate::pmap::PMap<Name, usize>,
 }
 
 impl Scope for Cx {
@@ -214,6 +217,9 @@ impl Scope for Cx {
     }
     fn at(&self, level: usize) -> Option<u32> {
         self.locals[level].span.map(|s| s.start)
+    }
+    fn count(&self, x: &str) -> usize {
+        self.named.get(x).copied().unwrap_or(0)
     }
 }
 
@@ -237,6 +243,7 @@ impl Cx {
         let l = self.lvl();
         self.env.push(Val::var(l));
         self.bound.push(l);
+        self.name_more(name);
         self.names.push(Rc::from(name));
         self.locals.push(Local { name: Rc::from(name), ty, mult, bound: true, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default() });
         l
@@ -244,6 +251,7 @@ impl Cx {
     pub fn define(&mut self, name: &str, ty: Val, val: Val, mult: Mult) -> usize {
         let l = self.lvl();
         self.env.push(val);
+        self.name_more(name);
         self.names.push(Rc::from(name));
         self.locals.push(Local { name: Rc::from(name), ty, mult, bound: false, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default() });
         l
@@ -258,7 +266,19 @@ impl Cx {
         let n = self.lvl().saturating_sub(1);
         self.truncate(n);
     }
+    /// One more local named `name`.
+    fn name_more(&mut self, name: &str) {
+        let k = self.named.get(name).copied().unwrap_or(0);
+        self.named.insert(Rc::from(name), k + 1);
+    }
     pub fn truncate(&mut self, n: usize) {
+        for l in n..self.lvl() {
+            let name = self.locals[l].name.clone();
+            match self.named.get(&*name).copied() {
+                Some(k) if k > 1 => self.named.insert(name, k - 1),
+                _ => self.named.remove(&*name),
+            }
+        }
         self.env.truncate(n);
         self.names.truncate(n);
         self.locals.truncate(n);

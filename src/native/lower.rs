@@ -604,7 +604,7 @@ impl<'a, 'g> Lowerer<'a, 'g> {
                 continue;
             };
             let spec = crate::native::spec::SpecCx { table: &self.p.specs, staged, depth };
-            let c = Compiler { g, owner: Some(owner), spec: Some(spec) }.compile(&body);
+            let c = Compiler::specializing(g, Some(owner), spec).compile(&body);
             let mut gs = Vec::new();
             globals_in(&c, &mut gs);
             todo.extend(gs.iter().map(|x| x.0));
@@ -713,7 +713,7 @@ impl<'a, 'g> Lowerer<'a, 'g> {
     /// afresh each time it runs): its index.
     pub fn add_closed(&mut self, t: &Tm) -> u32 {
         let spec = crate::native::spec::SpecCx { table: &self.p.specs, staged: self.staged, depth: 0 };
-        let ir = Compiler { g: self.g, owner: None, spec: Some(spec) }.compile(t);
+        let ir = Compiler::specializing(self.g, None, spec).compile(t);
         self.add_closed_ir(&ir)
     }
 

@@ -78,8 +78,15 @@ impl Elab {
     }
 
     /// Whether function value `v` captured a value that holds an effect.
+    /// Only a bound local can be one (a value refers to no other local), so
+    /// `v` is looked into only if a bound local in scope holds an effect:
+    /// quoting it writes out the values of the locals it refers to, which
+    /// in a chain of `let`s of closures grow with the chain.
     fn captures_effect(&self, cx: &Cx, v: &Val) -> bool {
         let lvl = cx.lvl();
+        if !cx.bound().any(|l| self.holds_effect(lvl, &cx.ty_of(l))) {
+            return false;
+        }
         let t = quote(&self.g, lvl, v);
         let mut free = std::collections::BTreeSet::new();
         free_vars(&t, 0, &mut free);

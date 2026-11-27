@@ -120,12 +120,55 @@ pub struct Compiler<'g> {
     /// Where calls passing known instances' dictionaries get specialized
     /// copies (`spec`); `None`: nowhere.
     pub spec: Option<super::spec::SpecCx<'g>>,
+    /// The functions known to be bound to the variables in scope: one entry
+    /// per binder the code being compiled is under (`spec`).
+    fns: super::spec::Fns,
 }
 
 impl<'g> Compiler<'g> {
     /// Erasure without specialization.
     pub fn new(g: &'g Globals, owner: Option<DefId>) -> Self {
-        Compiler { g, owner, spec: None }
+        Compiler { g, owner, spec: None, fns: Default::default() }
+    }
+
+    /// Erasure with specialization, in `spec`.
+    pub fn specializing(g: &'g Globals, owner: Option<DefId>, spec: super::spec::SpecCx<'g>) -> Self {
+        Compiler { g, owner, spec: Some(spec), fns: Default::default() }
+    }
+
+    /// This compiler, for code under `n` more binders.
+    fn under(&self, n: usize) -> Compiler<'g> {
+        let mut fns = self.fns.clone();
+        fns.extend(std::iter::repeat_n(None, n));
+        Compiler { fns, ..*self }
+    }
+
+    /// This compiler, for code under one more binder, bound to the known
+    /// function `f`.
+    fn knowing(&self, f: &Rc<super::spec::Bound>) -> Compiler<'g> {
+        let mut fns = self.fns.clone();
+        fns.push(Some(f.clone()));
+        Compiler { fns, ..*self }
+    }
+
+    /// Variable `i`, as a value: if it is bound to a known function, its
+    /// closure is built.
+    fn var(&self, i: usize) -> Ir {
+        if let Some(Some(b)) = self.fns.len().checked_sub(i + 1).and_then(|l| self.fns.get(l)) {
+            b.used.set(true);
+        }
+        Ir::Var(i)
+    }
+
+    /// `t` with its variables bound to known functions marked as such
+    /// (`spec::know`), if it is small enough to be put into a copy or a
+    /// `let`'s body: where it is called, passed, or bound. A larger term's
+    /// variables are marked as its parts are compiled.
+    fn know(&self, t: &Rc<Tm>) -> Rc<Tm> {
+        if self.fns.is_empty() || !super::spec::small(t) {
+            return t.clone();
+        }
+        Rc::new(super::spec::know(t, &self.fns, 0))
     }
 
     pub fn compile(&self, t: &Tm) -> Arc<Ir> {
@@ -138,7 +181,7 @@ impl<'g> Compiler<'g> {
 
     fn go(&self, t: &Tm) -> Ir {
         match t {
-            Tm::Var(i) => Ir::Var(*i),
+            Tm::Var(i) => self.var(*i),
             // A constant known at compile time is its value (§8.9).
             Tm::Def(d) => match crate::core::known_const(self.g, *d) {
                 Some(v) => self.go(&v),
@@ -156,18 +199,24 @@ impl<'g> Compiler<'g> {
                 None => Ir::ConFn(*c),
             },
             Tm::TyCon(_) | Tm::Univ(_) | Tm::Pi(..) | Tm::TupleTy(_) | Tm::TyConApp(..) | Tm::Meta(_) => Ir::Erased,
-            Tm::Lam(_, _, _, b) => Ir::Lam(self.owner, self.compile(b)),
+            Tm::Lam(_, _, _, b) => Ir::Lam(self.owner, self.under(1).compile(b)),
             Tm::App(..) => {
                 if let Some(direct) = known_instance(self.g, t) {
                     return self.go(&direct);
                 }
-                let mut spine = Vec::new();
+                let mut known = Vec::new();
                 let mut h = t;
                 while let Tm::App(f, a, _, m) = h {
-                    spine.push((a, *m));
+                    known.push((self.know(a), *m));
                     h = f;
                 }
-                spine.reverse();
+                known.reverse();
+                let spine: Vec<(&Rc<Tm>, Mult)> = known.iter().map(|(a, m)| (a, *m)).collect();
+                let head = match h {
+                    Tm::Var(_) => super::spec::know(h, &self.fns, 0),
+                    _ => h.clone(),
+                };
+                let h = &head;
                 // A variable bound to a known function, called: the
                 // function, called directly.
                 if let Some((_, f)) = super::spec::known_var(h) {
@@ -256,7 +305,7 @@ impl<'g> Compiler<'g> {
                         // The functions' variables, after the arguments the
                         // copy is made for.
                         let tail = args.split_off(c.at - c.gone.iter().filter(|g| **g).count());
-                        args.extend(c.caps.iter().map(|v| Arc::new(Ir::Var(*v))));
+                        args.extend(c.caps.iter().map(|v| Arc::new(self.var(*v))));
                         args.extend(tail);
                         Ir::Call(Arc::new(Ir::Global(c.id)), args)
                     }
@@ -275,16 +324,18 @@ impl<'g> Compiler<'g> {
             // A known function stays known where it is called or passed to
             // a copy (`spec`); its closure is built only if the body uses
             // it otherwise, and then once.
-            Tm::Let(_, m, _, v, b) if *m != Mult::Zero && self.known_fn(v) => {
-                let f = super::spec::known_var(v).map_or(&**v, |(_, f)| f);
-                let body = self.compile(&super::spec::know(b, f, 0));
-                let v = if uses(&body, 0) { self.compile(v) } else { Arc::new(Ir::Erased) };
-                Ir::Let(v, body)
+            Tm::Let(_, m, _, v, b) if *m != Mult::Zero => {
+                let v = self.know(v);
+                if self.known_fn(&v) {
+                    let f = super::spec::known_var(&v).map_or(&*v, |(_, f)| f);
+                    let bound = Rc::new(super::spec::Bound { f: f.clone(), used: Default::default() });
+                    let body = self.knowing(&bound).compile(b);
+                    let v = if bound.used.get() { self.compile(&v) } else { Arc::new(Ir::Erased) };
+                    return Ir::Let(v, body);
+                }
+                Ir::Let(self.compile(&v), self.under(1).compile(b))
             }
-            Tm::Let(_, m, _, v, b) => {
-                let v = if *m == Mult::Zero { Arc::new(Ir::Erased) } else { self.compile(v) };
-                Ir::Let(v, self.compile(b))
-            }
+            Tm::Let(_, _, _, _, b) => Ir::Let(Arc::new(Ir::Erased), self.under(1).compile(b)),
             Tm::Lit(l) => Ir::Lit(lit_value(l)),
             Tm::Known(k) => self.known(k),
             Tm::Tuple(xs) => Ir::Tuple(xs.iter().map(|x| self.compile(x)).collect()),
@@ -340,7 +391,7 @@ impl<'g> Compiler<'g> {
                     let k = self.g.unboxed_field(*con).unwrap_or(0);
                     // `s` is bound first, then each field: field `j` sees
                     // `s` at index `j`. The body's other variables move past `s`.
-                    let mut ir = shift(&self.go(body), 1, *n);
+                    let mut ir = shift(&self.under(*n).go(body), 1, *n);
                     for j in (0..*n).rev() {
                         let v = if j == k { Ir::Var(j) } else { Ir::Erased };
                         ir = Ir::Let(Arc::new(v), Arc::new(ir));
@@ -356,7 +407,7 @@ impl<'g> Compiler<'g> {
     /// This compiler, for code of definition `o` (a runtime error in it
     /// names `o`).
     fn at(&self, o: Option<DefId>) -> Compiler<'g> {
-        Compiler { g: self.g, owner: o, spec: self.spec }
+        Compiler { owner: o, fns: self.fns.clone(), ..*self }
     }
 
     /// A known function small enough to substitute (`spec`), where
@@ -367,7 +418,7 @@ impl<'g> Compiler<'g> {
 
     fn case(&self, c: &CaseTm) -> IrCase {
         IrCase {
-            branches: c.branches.iter().map(|(con, n, b)| (*con, *n, self.compile(b))).collect(),
+            branches: c.branches.iter().map(|(con, n, b)| (*con, *n, self.under(*n).compile(b))).collect(),
             lits: c.lits.iter().map(|(l, b)| (lit_value(l), self.compile(b))).collect(),
             default: c.default.as_ref().map(|d| self.compile(d)),
         }
@@ -460,7 +511,7 @@ impl<'g> Compiler<'g> {
         match crate::core::layout_of(self.g, &v) {
             Ok(0) => Ir::Erased,
             Ok(l) => Ir::Lit(Lit::Num(l as i128)),
-            Err(level) if level < depth => Ir::Var(depth - 1 - level),
+            Err(level) if level < depth => self.var(depth - 1 - level),
             Err(_) => Ir::Erased,
         }
     }
@@ -470,7 +521,7 @@ impl<'g> Compiler<'g> {
     /// type's parameters' descriptors, then those fields' values.
     pub fn field_type_fn(&self, c: crate::core::ConId, k: usize, t: &Tm) -> Ir {
         let n = self.g.arity_ty(self.g.cons[c.0 as usize].ty) + k;
-        (0..n).fold(self.type_code(t), |b, _| Ir::Lam(self.owner, Arc::new(b)))
+        (0..n).fold(self.under(n).type_code(t), |b, _| Ir::Lam(self.owner, Arc::new(b)))
     }
 
     /// Code computing a type's descriptor: `match`es on values (earlier
@@ -480,7 +531,7 @@ impl<'g> Compiler<'g> {
             Tm::Case(s, c) => match c.branches.first() {
                 Some((con, n, body)) if self.g.unboxed_field(*con).is_some() => {
                     let k = self.g.unboxed_field(*con).unwrap_or(0);
-                    let mut ir = shift(&self.type_code(body), 1, *n);
+                    let mut ir = shift(&self.under(*n).type_code(body), 1, *n);
                     for j in (0..*n).rev() {
                         let v = if j == k { Ir::Var(j) } else { Ir::Erased };
                         ir = Ir::Let(Arc::new(v), Arc::new(ir));
@@ -490,7 +541,7 @@ impl<'g> Compiler<'g> {
                 _ => Ir::Case(
                     self.compile(s),
                     Arc::new(IrCase {
-                        branches: c.branches.iter().map(|(con, n, b)| (*con, *n, Arc::new(self.type_code(b)))).collect(),
+                        branches: c.branches.iter().map(|(con, n, b)| (*con, *n, Arc::new(self.under(*n).type_code(b)))).collect(),
                         lits: c.lits.iter().map(|(l, b)| (lit_value(l), Arc::new(self.type_code(b)))).collect(),
                         default: c.default.as_ref().map(|d| Arc::new(self.type_code(d))),
                     }),
@@ -498,7 +549,7 @@ impl<'g> Compiler<'g> {
             },
             Tm::Let(_, m, _, v, b) => {
                 let v = if *m == Mult::Zero { Arc::new(Ir::Erased) } else { self.compile(v) };
-                Ir::Let(v, Arc::new(self.type_code(b)))
+                Ir::Let(v, Arc::new(self.under(1).type_code(b)))
             }
             _ => self.descriptor(t),
         }
@@ -517,9 +568,9 @@ impl<'g> Compiler<'g> {
     /// dictionary itself if that is its only kept field (#170).
     fn dict_field(&self, x: usize, c: crate::core::ConId, i: usize) -> Ir {
         if self.g.unboxed_field(c) == Some(i) {
-            Ir::Var(x)
+            self.var(x)
         } else {
-            Ir::Field(Arc::new(Ir::Var(x)), i)
+            Ir::Field(Arc::new(self.var(x)), i)
         }
     }
 
@@ -532,7 +583,7 @@ impl<'g> Compiler<'g> {
                 parts.push(Arc::new(Ir::Lit(Lit::Num(*tag as i128))));
                 Ir::Tuple(parts)
             }
-            Desc::Var(level) if *level < depth => Ir::Var(depth - 1 - level),
+            Desc::Var(level) if *level < depth => self.var(depth - 1 - level),
             Desc::Dict(level, c, i) if *level < depth => self.dict_field(depth - 1 - level, *c, *i),
             // A value: computed here, and marked as one.
             Desc::Value(v) => {
@@ -540,7 +591,7 @@ impl<'g> Compiler<'g> {
                 let tag = checkers_rt::desc::tag(Some(checkers_rt::desc::VALUE), 0);
                 Ir::Tuple(vec![Arc::new(self.go(&t)), Arc::new(Ir::Lit(Lit::Num(tag as i128)))])
             }
-            Desc::Apply(level, args) if *level < depth => args.iter().fold(Ir::Var(depth - 1 - level), |f, a| {
+            Desc::Apply(level, args) if *level < depth => args.iter().fold(self.var(depth - 1 - level), |f, a| {
                 Ir::Prim(Op::TypeApply, vec![Arc::new(f), Arc::new(self.desc_ir(a, depth))], false)
             }),
             _ => Ir::Erased,
@@ -574,13 +625,6 @@ fn subst(t: &Tm, args: &[Tm], depth: usize) -> Tm {
     }
 }
 
-/// Whether `ir` uses variable `v`.
-fn uses(ir: &Ir, v: usize) -> bool {
-    match ir {
-        Ir::Var(x) => *x == v,
-        _ => ir.subterms().into_iter().any(|(x, n)| uses(x, v + n)),
-    }
-}
 
 /// Shift the free de Bruijn indices of `ir` from `cutoff` on up by `k`.
 pub fn shift(ir: &Ir, k: usize, cutoff: usize) -> Ir {

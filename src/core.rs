@@ -1972,6 +1972,10 @@ pub trait Scope {
     fn at(&self, _level: usize) -> Option<u32> {
         None
     }
+    /// How many locals are named `x`.
+    fn count(&self, x: &str) -> usize {
+        (0..self.len()).filter(|l| &**self.name(*l) == x).count()
+    }
 }
 
 impl Scope for [Name] {
@@ -2017,6 +2021,9 @@ impl<S: Scope + ?Sized> Scope for Under<'_, S> {
     fn at(&self, level: usize) -> Option<u32> {
         if level < self.0.len() { self.0.at(level) } else { None }
     }
+    fn count(&self, x: &str) -> usize {
+        self.0.count(x) + self.1.iter().filter(|n| &***n == x).count()
+    }
 }
 
 /// The names `show_prec` sees: the context's, then the binders it is under.
@@ -2039,7 +2046,7 @@ impl<S: Scope + ?Sized> Ns<'_, S> {
         }
     }
     fn contains(&self, x: &Name) -> bool {
-        self.inner.contains(x) || (0..self.outer.len()).any(|l| self.outer.name(l) == x)
+        self.inner.contains(x) || self.outer.count(x) > 0
     }
     fn push(&mut self, x: Name) {
         self.inner.push(x);
@@ -2110,7 +2117,7 @@ fn local<S: Scope + ?Sized>(ls: &S, level: usize, name: &Name) -> String {
         return name.to_string();
     }
     let same = |l: &usize| ls.name(*l) == name;
-    if level >= ls.len() || (0..ls.len()).filter(same).nth(1).is_none() {
+    if level >= ls.len() || ls.count(name) < 2 {
         return name.to_string();
     }
     let hidden_by = (level + 1..ls.len()).rev().find(same).map(|l| ls.at(l));

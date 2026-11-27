@@ -24,6 +24,7 @@ src/source.rs        spans, line/column lookup
 src/diag.rs          diagnostics and rendering
 src/json.rs          JSON strings out, the overlay map in (§15.5)
 src/pvec.rs          persistent vectors: a copy shares the elements, so a closure's environment (`Env`) and a context kept for later (`Cx`) cost nothing to keep
+src/pmap.rs          persistent maps (a treap): a copy shares the entries; how many locals of `Cx` have each name
 src/overlay.rs       unsaved files: every source read goes through `overlay::read` (`--overlay`, #601)
 src/syntax/lexer.rs  characters → tokens → logical lines (INDENT/DEDENT), §9.1
 src/syntax/parser.rs recursive descent for §9.2
