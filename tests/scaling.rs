@@ -306,3 +306,16 @@ fn a_chain_of_additions_in_lets_checks_in_linear_time_and_memory() {
 fn a_chain_of_class_calls_in_lets_checks_in_linear_time_and_memory() {
     assert_lets_linear("by_class", lets_usage("by_class", "Int", |a| format!("add {a} 1")));
 }
+
+/// A function of n `let`s, each using a global function, `not`, eight
+/// times. A name is looked up among the locals first: compared with each
+/// local in scope, each use took time in proportion to the locals before
+/// it, and 8,000 lets took 6.7 times as long as 2,000 (6.6 s and 1.0 s).
+/// Looked up in a map from each name to the levels of the locals of that
+/// name, 1.8 times as long.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_chain_of_lets_using_a_global_name_checks_in_linear_time_and_memory() {
+    let uses = format!("{}x == 0{}", "not (".repeat(8), ")".repeat(8));
+    assert_lets_linear("by_global", lets_usage_by("by_global", "Int", &|i| format!("    let a{i} = if {uses} then a{} else a{}\n", i - 1, i - 1)));
+}
