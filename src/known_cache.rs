@@ -27,13 +27,14 @@ use std::sync::Arc;
 use crate::core::{eval, unfold_all, force_meta, quote, CaseTm, ConId, DefId, Elim, Env, Globals, Head, Icit, Lit, Mult, Prim, Tm, TyId, Val};
 use crate::known::{Builder, Code, Known, Node, Value};
 use crate::native::ir::{Ir, Lit as IrLit};
-use crate::native::lower::{SNode, Static};
+use crate::native::lower::{LamCode, SNode, Static};
 use checkers_rt::word as w;
 
 const HEADER: &str = "checkers known 1";
 
-/// Keys made for terms holding a value no name can say (a lambda's code),
-/// each unlike any other: such a term's value is never reused.
+/// Keys made for terms holding a value no name can say (code naming a
+/// program's copy, which no other program has), each unlike any other:
+/// such a term's value is never reused.
 static UNNAMED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// What a key covers besides the term: a definition or a type (with its
@@ -194,8 +195,9 @@ impl KnownCache {
     }
 
     /// Value `v` written with names: each node a line, parts first, the
-    /// value last. The items it names are added to `items`. `None` if it
-    /// holds a lambda's code, which isn't written.
+    /// value last; a lambda's code as `write_lam` writes it. The items it
+    /// names are added to `items`. `None` if it holds what no name can say
+    /// (code naming a program's copy).
     fn encode(&mut self, p: &Program, k: &Known, root: u32, items: &mut Vec<Item>) -> Option<String> {
         let g = p.g;
         let nodes = k.reachable(root);
@@ -224,7 +226,11 @@ impl KnownCache {
                     items.push(Item::Ty(g.cons[c.0 as usize].ty.0));
                     format!("fc {}", self.con_name(g, c.0))
                 }
-                Node::Closure(Code::Lam(_)) => return None,
+                Node::Closure(Code::Lam(code)) => {
+                    let mut text = String::from("fl ");
+                    self.write_lam(p, code, &mut text, items)?;
+                    text
+                }
                 Node::Pap(xs) => format!("p {}", ids(xs)),
             };
             out += line.trim_end();
@@ -324,7 +330,13 @@ impl KnownCache {
                     body.push(10);
                     varint(&mut body, c as u64);
                 }
-                SNode::Global(_) | SNode::Code(_) | SNode::Lam(_) => return None,
+                SNode::Lam(code) => {
+                    let mut text = String::new();
+                    self.write_lam(p, code, &mut text, items)?;
+                    body.push(11);
+                    blob(&mut body, text.as_bytes());
+                }
+                SNode::Global(_) | SNode::Code(_) => return None,
             }
         }
         let mut out = STATIC_HEADER.to_vec();
@@ -408,6 +420,133 @@ impl KnownCache {
                 }
             }
         }
+    }
+
+    /// A lambda's code written with names (`read_lam` reads it back), as
+    /// tokens each followed by a space: how many values it captured, then
+    /// its code. Every program compiles it alike: it refers to definitions
+    /// (never a program's copies), constructors and static data, each
+    /// written by name. The items it can run are added to `items`: the
+    /// definitions it refers to, and the types of its constructors. `None`
+    /// if it names what no name can say.
+    fn write_lam(&mut self, p: &Program, code: &LamCode, out: &mut String, items: &mut Vec<Item>) -> Option<()> {
+        out.push_str(&format!("{} ", code.captured));
+        self.write_ir(p, &code.ir, out, items)
+    }
+
+    /// Code `ir` as `write_lam` writes it. Recursive over the code's
+    /// nesting, as compiling it is; a value it holds (static data) is
+    /// written by `encode_static`, as one token.
+    fn write_ir(&mut self, p: &Program, ir: &Ir, out: &mut String, items: &mut Vec<Item>) -> Option<()> {
+        let g = p.g;
+        let tok = |out: &mut String, s: &str| {
+            out.push_str(s);
+            out.push(' ');
+        };
+        // Definitions and constructors by name; a part's owner too, which
+        // names the definition a runtime error in it reports and runs
+        // nothing.
+        let def = |this: &mut KnownCache, d: DefId, out: &mut String| -> Option<()> {
+            ((d.0 as usize) < g.defs.len()).then_some(())?;
+            tok(out, &this.def_name(p, d.0));
+            Some(())
+        };
+        let owner = |this: &mut KnownCache, o: Option<DefId>, out: &mut String| match o {
+            Some(d) => def(this, d, out),
+            None => {
+                tok(out, "-");
+                Some(())
+            }
+        };
+        let con = |this: &mut KnownCache, c: ConId, out: &mut String, items: &mut Vec<Item>| -> Option<()> {
+            items.push(Item::Ty(g.cons.get(c.0 as usize)?.ty.0));
+            tok(out, &this.con_name(g, c.0));
+            Some(())
+        };
+        let list = |this: &mut KnownCache, xs: &[Arc<Ir>], out: &mut String, items: &mut Vec<Item>| -> Option<()> { xs.iter().try_for_each(|x| this.write_ir(p, x, out, items)) };
+        match ir {
+            Ir::Var(i) => tok(out, &format!("v{i}")),
+            Ir::Global(d) => {
+                tok(out, "g");
+                def(self, *d, out)?;
+                items.push(Item::Def(d.0));
+            }
+            Ir::Erased => tok(out, "_"),
+            Ir::Lit(l) => tok(out, &ir_lit_token(l)),
+            Ir::Lam(o, b) => {
+                tok(out, "L");
+                owner(self, *o, out)?;
+                self.write_ir(p, b, out, items)?;
+            }
+            Ir::Call(h, xs) => {
+                tok(out, &format!("@{}", xs.len()));
+                self.write_ir(p, h, out, items)?;
+                list(self, xs, out, items)?;
+            }
+            Ir::Let(v, b) => {
+                tok(out, "E");
+                self.write_ir(p, v, out, items)?;
+                self.write_ir(p, b, out, items)?;
+            }
+            Ir::Tuple(xs) => {
+                tok(out, &format!("T{}", xs.len()));
+                list(self, xs, out, items)?;
+            }
+            Ir::Proj(x, i, rest) => {
+                tok(out, &format!("J{i}{}", if *rest { "r" } else { "" }));
+                self.write_ir(p, x, out, items)?;
+            }
+            Ir::Field(x, i) => {
+                tok(out, &format!("F{i}"));
+                self.write_ir(p, x, out, items)?;
+            }
+            Ir::Con(c, xs) => {
+                tok(out, &format!("C{}", xs.len()));
+                con(self, *c, out, items)?;
+                list(self, xs, out, items)?;
+            }
+            Ir::ConFn(c) => {
+                tok(out, "f");
+                con(self, *c, out, items)?;
+            }
+            Ir::Prim(op, xs, flag) => {
+                tok(out, &format!("R{}", xs.len()));
+                tok(out, &format!("{op:?}"));
+                tok(out, if *flag { "1" } else { "0" });
+                list(self, xs, out, items)?;
+            }
+            Ir::Par(xs) => {
+                tok(out, &format!("P{}", xs.len()));
+                list(self, xs, out, items)?;
+            }
+            Ir::Case(x, c) => {
+                tok(out, &format!("S{} {} {}", c.branches.len(), c.lits.len(), u8::from(c.default.is_some())));
+                self.write_ir(p, x, out, items)?;
+                for (k, n, b) in &c.branches {
+                    con(self, *k, out, items)?;
+                    tok(out, &n.to_string());
+                    self.write_ir(p, b, out, items)?;
+                }
+                for (l, b) in &c.lits {
+                    tok(out, &ir_lit_token(l));
+                    self.write_ir(p, b, out, items)?;
+                }
+                if let Some(b) = &c.default {
+                    self.write_ir(p, b, out, items)?;
+                }
+            }
+            Ir::At(o, x) => {
+                tok(out, "A");
+                owner(self, *o, out)?;
+                self.write_ir(p, x, out, items)?;
+            }
+            Ir::Fail(m) => tok(out, &format!("!{}", crate::native::ir::FAILS.iter().position(|f| f == m)?)),
+            Ir::Static(v, id) => {
+                let bytes = self.encode_static(p, v, *id, items)?;
+                tok(out, &format!("K{}", hex(&bytes)));
+            }
+        }
+        Some(())
     }
 
     /// Closed code `ir` written with names, as a key needs it: `None` if
@@ -625,13 +764,13 @@ impl KnownCache {
     /// The key of the weak-head normal form the type checker's evaluation
     /// gives closed term `t` (`force_kept`): `None` if `t` reaches a
     /// definition not checked yet, whose body is still to come, or holds a
-    /// lambda's code.
+    /// value no name can say.
     fn whnf_key(&mut self, g: &Globals, t: &Tm) -> Option<String> {
         let p = Program::of(g);
         let mut items = Vec::new();
         self.unnamed = false;
         let term = self.render(&p, t, &mut items);
-        // A value no name can say (a lambda's code) is never reused.
+        // A value no name can say is never reused.
         if self.unnamed {
             return None;
         }
@@ -681,7 +820,8 @@ impl KnownCache {
 
     /// A value written by `encode`, read into this build's numbering.
     fn read_known(&mut self, g: &Globals, text: &str) -> Option<(Arc<Known>, u32)> {
-        let ByName { defs, cons, .. } = self.by_name(g);
+        let names = self.by_name(g);
+        let ByName { defs, cons, .. } = names;
         let mut b = Builder::default();
         let mut ids: Vec<u32> = Vec::new();
         for l in text.lines() {
@@ -706,6 +846,7 @@ impl KnownCache {
                 "fd" => Node::Closure(Code::Def(crate::core::DefId(*defs.get(rest)?))),
                 "fc" => Node::Closure(Code::Con(crate::core::ConId(*cons.get(rest)?))),
                 "p" => Node::Pap(parts(rest)?),
+                "fl" => Node::Closure(Code::Lam(read_lam(g, names, rest, &mut Vec::new())?)),
                 _ => return None,
             };
             ids.push(b.add(node));
@@ -738,54 +879,13 @@ impl KnownCache {
     /// build's numbering: the graph and its root.
     pub fn recall_static(&mut self, g: &Globals, key: &str) -> Option<(Arc<Static>, u32)> {
         let bytes = std::fs::read(dir()?.join(key)).ok()?;
-        let (s, root, cons) = self.read_static(g, &bytes)?;
+        let mut items = Vec::new();
+        let (s, root) = read_static(g, self.by_name(g), &bytes, &mut items)?;
         let s = Arc::new(s);
         // Code that uses the value has its key without writing it again:
         // these bytes are how it is written.
-        let items = cons.iter().map(|c| Item::Ty(g.cons[*c as usize].ty.0)).collect();
         self.remember_static(&s, root, &bytes, items);
         Some((s, root))
-    }
-
-    /// Static data written by `encode_static`, and the constructors it names.
-    fn read_static(&mut self, g: &Globals, bytes: &[u8]) -> Option<(Static, u32, Vec<u32>)> {
-        let mut r = Reader { b: bytes.strip_prefix(STATIC_HEADER)?, at: 0 };
-        let by_name = &self.by_name(g).cons;
-        let cons: Vec<Option<u32>> = (0..r.varint()?).map(|_| Some(std::str::from_utf8(r.blob()?).ok().and_then(|n| by_name.get(n).copied()))).collect::<Option<_>>()?;
-        let con = |r: &mut Reader| cons.get(r.varint()? as usize).copied().flatten();
-        let mut s = Static::default();
-        let n = r.varint()? as usize;
-        let mut ids: Vec<u32> = Vec::with_capacity(n.min(bytes.len()));
-        for _ in 0..n {
-            let parts = |r: &mut Reader, ids: &[u32]| -> Option<Box<[u32]>> { (0..r.varint()?).map(|_| ids.get(r.varint()? as usize).copied()).collect() };
-            let node = match r.byte()? {
-                0 => {
-                    let z = r.varint()?;
-                    let i = ((z >> 1) as i64) ^ -((z & 1) as i64);
-                    SNode::Word(w::mk_int(Some(i).filter(|i| w::fits(*i as i128))?))
-                }
-                1 => SNode::Word(w::nullary(con(&mut r)?)),
-                2 => SNode::Word(w::UNIT),
-                3 => SNode::Word(w::ERASED),
-                4 => SNode::Big(std::str::from_utf8(r.blob()?).ok()?.parse().ok()?),
-                5 => SNode::Bytes(r.blob()?.into()),
-                6 => {
-                    let c = con(&mut r)?;
-                    SNode::Obj { kind: w::K_CON, tag: c as u64, fields: parts(&mut r, &ids)? }
-                }
-                7 => SNode::Obj { kind: w::K_TUPLE, tag: 0, fields: parts(&mut r, &ids)? },
-                8 => {
-                    let layout = r.byte()?;
-                    SNode::Array { layout, elems: parts(&mut r, &ids)? }
-                }
-                // Functions aren't kept: folding's values have none.
-                _ => return None,
-            };
-            ids.push(s.add(node));
-        }
-        (r.at == r.b.len()).then_some(())?;
-        let root = *ids.last()?;
-        Some((s, root, cons.into_iter().flatten().collect()))
     }
 
     /// Static data `s` at `root` written with names (`encode_static`),
@@ -1081,6 +1181,199 @@ impl KnownCache {
             self.whnfs.insert(key.to_string(), (steps, t.clone()));
         }
     }
+}
+
+/// Static data written by `encode_static`, read into this build's
+/// numbering (`names`). The items it names are added to `items`, as
+/// `encode_static` adds them.
+fn read_static(g: &Globals, names: &ByName, bytes: &[u8], items: &mut Vec<Item>) -> Option<(Static, u32)> {
+    enum Name {
+        Def(u32),
+        Con(u32),
+    }
+    let mut r = Reader { b: bytes.strip_prefix(STATIC_HEADER)?, at: 0 };
+    let table: Vec<Option<Name>> = (0..r.varint()?)
+        .map(|_| {
+            let n = std::str::from_utf8(r.blob()?).ok()?;
+            Some(match n.strip_prefix("def ") {
+                Some(d) => names.defs.get(d).map(|d| Name::Def(*d)),
+                None => names.cons.get(n).map(|c| Name::Con(*c)),
+            })
+        })
+        .collect::<Option<_>>()?;
+    for n in table.iter().flatten() {
+        items.push(match n {
+            Name::Def(d) => Item::Def(*d),
+            Name::Con(c) => Item::Ty(g.cons[*c as usize].ty.0),
+        });
+    }
+    let con = |r: &mut Reader| match table.get(r.varint()? as usize)? {
+        Some(Name::Con(c)) => Some(*c),
+        _ => None,
+    };
+    let mut s = Static::default();
+    let n = r.varint()? as usize;
+    let mut ids: Vec<u32> = Vec::with_capacity(n.min(bytes.len()));
+    for _ in 0..n {
+        let parts = |r: &mut Reader, ids: &[u32]| -> Option<Box<[u32]>> { (0..r.varint()?).map(|_| ids.get(r.varint()? as usize).copied()).collect() };
+        let node = match r.byte()? {
+            0 => {
+                let z = r.varint()?;
+                let i = ((z >> 1) as i64) ^ -((z & 1) as i64);
+                SNode::Word(w::mk_int(Some(i).filter(|i| w::fits(*i as i128))?))
+            }
+            1 => SNode::Word(w::nullary(con(&mut r)?)),
+            2 => SNode::Word(w::UNIT),
+            3 => SNode::Word(w::ERASED),
+            4 => SNode::Big(std::str::from_utf8(r.blob()?).ok()?.parse().ok()?),
+            5 => SNode::Bytes(r.blob()?.into()),
+            6 => {
+                let c = con(&mut r)?;
+                SNode::Obj { kind: w::K_CON, tag: c as u64, fields: parts(&mut r, &ids)? }
+            }
+            7 => SNode::Obj { kind: w::K_TUPLE, tag: 0, fields: parts(&mut r, &ids)? },
+            8 => {
+                let layout = r.byte()?;
+                SNode::Array { layout, elems: parts(&mut r, &ids)? }
+            }
+            9 => match table.get(r.varint()? as usize)? {
+                Some(Name::Def(d)) => SNode::Global(*d),
+                _ => return None,
+            },
+            10 => SNode::ConFn(con(&mut r)?),
+            11 => SNode::Lam(read_lam(g, names, std::str::from_utf8(r.blob()?).ok()?, items)?),
+            _ => return None,
+        };
+        ids.push(s.add(node));
+    }
+    (r.at == r.b.len()).then_some(())?;
+    let root = *ids.last()?;
+    Some((s, root))
+}
+
+/// A lambda's code written by `write_lam`, read into this build's
+/// numbering (`names`): `None` if it names what this build doesn't have.
+/// The items it names are added to `items`.
+fn read_lam(g: &Globals, names: &ByName, text: &str, items: &mut Vec<Item>) -> Option<Arc<LamCode>> {
+    let mut toks = text.split(' ').filter(|t| !t.is_empty());
+    let captured = toks.next()?.parse().ok()?;
+    let ir = read_ir(g, names, &mut toks, items)?;
+    toks.next().is_none().then_some(())?;
+    Some(Arc::new(LamCode::new(Arc::new(ir), captured)))
+}
+
+/// Code `write_ir` wrote, read into this build's numbering.
+fn read_ir<'t>(g: &Globals, names: &ByName, toks: &mut dyn Iterator<Item = &'t str>, items: &mut Vec<Item>) -> Option<Ir> {
+    let def = |n: &str| names.defs.get(n).map(|d| DefId(*d));
+    let owner = |n: &str| if n == "-" { Some(None) } else { def(n).map(Some) };
+    let con = |n: &str, items: &mut Vec<Item>| {
+        let c = *names.cons.get(n)?;
+        items.push(Item::Ty(g.cons[c as usize].ty.0));
+        Some(ConId(c))
+    };
+    let count = |s: &str| s.parse::<usize>().ok();
+    let many = |n: usize, toks: &mut dyn Iterator<Item = &'t str>, items: &mut Vec<Item>| -> Option<Vec<Arc<Ir>>> { (0..n).map(|_| read_ir(g, names, toks, items).map(Arc::new)).collect() };
+    let one = |toks: &mut dyn Iterator<Item = &'t str>, items: &mut Vec<Item>| read_ir(g, names, toks, items).map(Arc::new);
+    let t = toks.next()?;
+    Some(match t {
+        "g" => {
+            let d = def(toks.next()?)?;
+            items.push(Item::Def(d.0));
+            Ir::Global(d)
+        }
+        "_" => Ir::Erased,
+        "L" => {
+            let o = owner(toks.next()?)?;
+            Ir::Lam(o, one(toks, items)?)
+        }
+        "E" => {
+            let v = one(toks, items)?;
+            Ir::Let(v, one(toks, items)?)
+        }
+        "f" => Ir::ConFn(con(toks.next()?, items)?),
+        "A" => {
+            let o = owner(toks.next()?)?;
+            Ir::At(o, one(toks, items)?)
+        }
+        _ => {
+            // Every other token is one character and what it says.
+            let (tag, rest) = t.split_at(t.chars().next()?.len_utf8());
+            match tag {
+                "v" => Ir::Var(count(rest)?),
+                "n" | "N" | "s" | "y" => Ir::Lit(read_ir_lit(t)?),
+                "@" => {
+                    let n = count(rest)?;
+                    let h = one(toks, items)?;
+                    Ir::Call(h, many(n, toks, items)?)
+                }
+                "T" => Ir::Tuple(many(count(rest)?, toks, items)?),
+                "J" => {
+                    let (i, r) = rest.strip_suffix('r').map_or((rest, false), |i| (i, true));
+                    Ir::Proj(one(toks, items)?, count(i)?, r)
+                }
+                "F" => Ir::Field(one(toks, items)?, count(rest)?),
+                "C" => {
+                    let c = con(toks.next()?, items)?;
+                    Ir::Con(c, many(count(rest)?, toks, items)?)
+                }
+                "R" => {
+                    let name = toks.next()?;
+                    let op = crate::native::ir::Op::ALL.into_iter().find(|o| format!("{o:?}") == name)?;
+                    let flag = match toks.next()? {
+                        "0" => false,
+                        "1" => true,
+                        _ => return None,
+                    };
+                    Ir::Prim(op, many(count(rest)?, toks, items)?, flag)
+                }
+                "P" => Ir::Par(many(count(rest)?, toks, items)?),
+                "S" => {
+                    let (nb, nl, nd) = (count(rest)?, count(toks.next()?)?, toks.next()? == "1");
+                    let x = one(toks, items)?;
+                    let mut c = crate::native::ir::IrCase { branches: Vec::new(), lits: Vec::new(), default: None };
+                    for _ in 0..nb {
+                        let k = con(toks.next()?, items)?;
+                        let n = count(toks.next()?)?;
+                        c.branches.push((k, n, one(toks, items)?));
+                    }
+                    for _ in 0..nl {
+                        let l = read_ir_lit(toks.next()?)?;
+                        c.lits.push((l, one(toks, items)?));
+                    }
+                    if nd {
+                        c.default = Some(one(toks, items)?);
+                    }
+                    Ir::Case(x, Arc::new(c))
+                }
+                "!" => Ir::Fail(crate::native::ir::FAILS.get(count(rest)?)?),
+                "K" => {
+                    let (s, root) = read_static(g, names, &unhex(rest)?, items)?;
+                    Ir::Static(Arc::new(s), root)
+                }
+                _ => return None,
+            }
+        }
+    })
+}
+
+fn ir_lit_token(l: &IrLit) -> String {
+    match l {
+        IrLit::Num(n) => format!("n{n}"),
+        IrLit::Big(b) => format!("N{b}"),
+        IrLit::Str(s) => format!("s{}", hex(s.as_bytes())),
+        IrLit::Bytes(b) => format!("y{}", hex(b)),
+    }
+}
+
+fn read_ir_lit(t: &str) -> Option<IrLit> {
+    let (tag, rest) = t.split_at(1);
+    Some(match tag {
+        "n" => IrLit::Num(rest.parse().ok()?),
+        "N" => IrLit::Big(Arc::from(rest)),
+        "s" => IrLit::Str(Arc::from(String::from_utf8(unhex(rest)?).ok()?)),
+        "y" => IrLit::Bytes(Arc::from(unhex(rest)?)),
+        _ => return None,
+    })
 }
 
 /// Is `it` a definition not checked yet, whose body is still to come (a
