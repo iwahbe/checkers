@@ -1965,3 +1965,68 @@ export lemma holds_at_fuel c m n a vs : c~Context, m~Model, n~Nat, a~Axiom, vs~L
         have values_of_sorts c m (term.var_sorts a.vars) vs == values_of_sorts c (with_fuel m n) (term.var_sorts a.vars) vs
         let env = list.reverse (list.map (\v -> Ok v) vs)
         have value_fuel (level AsGiven c m m.fuel) (level AsGiven c (with_fuel m n) n) c m n env (term.binder_env a.vars) a.body
+
+# ── A total model is an interpretation ───────────────────────────────────────
+
+# Whether each of `rs` is a value of the sort in the same place of `ss`.
+fn results_of_sorts c m rs ss -> r : c~Context, m~Model, rs~List (Result Value Unknown), ss~List Sort, r~Bool
+    match (rs, ss)
+        ([], [])              -> True
+        (Ok v :: rr, s :: sr) -> of_sort c m s v and results_of_sorts c m rr sr
+        _                     -> False
+
+lemma all_of_sort_append c m s xs ys : c~Context, m~Model, s~Sort, xs~List Value, ys~List Value, all_of_sort c m s xs,
+                                       all_of_sort c m s ys
+    ensures all_of_sort c m s (xs ++ ys)
+    proof
+        match xs
+            []        -> auto
+            _ :: rest -> have all_of_sort_append c m s rest ys
+
+lemma all_of_sort_take c m s n xs : c~Context, m~Model, s~Sort, n~Nat, xs~List Value, all_of_sort c m s xs
+    ensures all_of_sort c m s (list.take n xs)
+    proof
+        match xs
+            []        -> auto
+            _ :: rest ->
+                match n
+                    0 -> auto
+                    _ -> have all_of_sort_take c m s (n - 1) rest
+
+lemma all_of_sort_drop c m s n xs : c~Context, m~Model, s~Sort, n~Nat, xs~List Value, all_of_sort c m s xs
+    ensures all_of_sort c m s (list.drop n xs)
+    proof
+        match xs
+            []        -> auto
+            _ :: rest ->
+                match n
+                    0 -> auto
+                    _ -> have all_of_sort_drop c m s (n - 1) rest
+
+lemma all_of_sort_nth c m s xs i : c~Context, m~Model, s~Sort, xs~List Value, i~Nat, all_of_sort c m s xs,
+                                   i < list.length xs
+    ensures match list.head (list.drop i xs)
+        Some x -> of_sort c m s x
+        None   -> False
+    proof
+        match xs
+            []        -> auto
+            _ :: rest ->
+                match i
+                    0 -> auto
+                    _ -> have all_of_sort_nth c m s rest (i - 1)
+
+lemma results_reverse c m rs ss env senv : c~Context, m~Model, rs~List (Result Value Unknown), ss~List Sort,
+                                           env~List (Result Value Unknown), senv~List Sort, results_of_sorts c m rs ss,
+                                           results_of_sorts c m env senv
+    ensures results_of_sorts c m (list.reverse rs ++ env) (list.reverse ss ++ senv)
+    proof
+        match (rs, ss)
+            ([], [])           ->
+                have list.length_reverse rs
+                have list.length_reverse ss
+            (r :: rr, s :: sr) ->
+                have list.reverse_cons_append rr r env
+                have list.reverse_cons_append sr s senv
+                have results_reverse c m rr sr (r :: env) (s :: senv)
+            _                  -> auto
