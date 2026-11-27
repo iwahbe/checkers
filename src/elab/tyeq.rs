@@ -150,10 +150,11 @@ impl Elab {
         crate::core::max_var(&t).is_none() && !has_meta(&t)
     }
 
-    fn eq_classes(&self) -> Classes {
+    /// The classes the equations `givens` make.
+    fn eq_classes(&self, givens: &[Given]) -> Classes {
         let mut members: Vec<Vec<(Val, String)>> = Vec::new();
         let find = |members: &Vec<Vec<(Val, String)>>, v: &Val| members.iter().position(|c| c.iter().any(|(m, _)| self.same_plain(m, v)));
-        for g in &self.givens {
+        for g in givens {
             let (ia, ib) = (find(&members, &g.a), find(&members, &g.b));
             match (ia, ib) {
                 (Some(i), Some(j)) if i != j => {
@@ -173,10 +174,15 @@ impl Elab {
 
     /// The representative of `v`'s class, if `v` is a member that isn't it.
     pub fn rep_of(&self, v: &Val) -> Option<Val> {
-        if self.givens.is_empty() {
+        self.rep_of_in(&self.givens, v)
+    }
+
+    /// `rep_of`, with the equations `givens` in scope.
+    fn rep_of_in(&self, givens: &[Given], v: &Val) -> Option<Val> {
+        if givens.is_empty() {
             return None;
         }
-        let cs = self.eq_classes();
+        let cs = self.eq_classes(givens);
         for (c, &r) in cs.members.iter().zip(&cs.rep) {
             if c.iter().enumerate().any(|(k, (m, _))| k != r && self.same_plain(m, v)) && !self.same_plain(&c[r].0, v) {
                 return Some(c[r].0.clone());
@@ -187,10 +193,15 @@ impl Elab {
 
     /// Each type in the equations in scope that has a representative, and it.
     pub fn rep_pairs(&self) -> Vec<(Val, Val)> {
-        if self.givens.is_empty() {
+        self.rep_pairs_in(&self.givens)
+    }
+
+    /// `rep_pairs`, with the equations `givens` in scope.
+    pub fn rep_pairs_in(&self, givens: &[Given]) -> Vec<(Val, Val)> {
+        if givens.is_empty() {
             return Vec::new();
         }
-        let cs = self.eq_classes();
+        let cs = self.eq_classes(givens);
         let mut out = Vec::new();
         for (c, &r) in cs.members.iter().zip(&cs.rep) {
             for (k, (m, _)) in c.iter().enumerate() {
@@ -209,7 +220,7 @@ impl Elab {
 
     /// Two equations in scope that can't both hold: their texts.
     pub fn contradiction(&self) -> Option<(String, String)> {
-        let cs = self.eq_classes();
+        let cs = self.eq_classes(&self.givens);
         for c in &cs.members {
             let grounds: Vec<&(Val, String)> = c.iter().filter(|(m, _)| self.ground(m)).collect();
             for (k, (x, tx)) in grounds.iter().enumerate() {
@@ -227,23 +238,28 @@ impl Elab {
     /// `v`, over `lvl` locals, with each type in it that has a
     /// representative written as it.
     pub fn rep_deep(&self, lvl: usize, v: &Val) -> Val {
-        if self.givens.is_empty() {
+        self.rep_deep_in(&self.givens, lvl, v)
+    }
+
+    /// `rep_deep`, with the equations `givens` in scope.
+    pub fn rep_deep_in(&self, givens: &[Given], lvl: usize, v: &Val) -> Val {
+        if givens.is_empty() {
             return v.clone();
         }
         let t = quote(&self.g, lvl, v);
-        let t = self.rep_tm(lvl, &t);
+        let t = self.rep_tm(givens, lvl, &t);
         let env = (0..lvl).map(Val::var).collect::<crate::core::Env>();
         eval(&self.g, &env, &t)
     }
 
-    fn rep_tm(&self, lvl: usize, t: &Tm) -> Tm {
+    fn rep_tm(&self, givens: &[Given], lvl: usize, t: &Tm) -> Tm {
         if !matches!(t, Tm::Lit(_) | Tm::Univ(_) | Tm::Error) {
             let env = (0..lvl).map(Val::var).collect::<crate::core::Env>();
-            if let Some(r) = self.rep_of(&eval(&self.g, &env, t)) {
+            if let Some(r) = self.rep_of_in(givens, &eval(&self.g, &env, t)) {
                 return quote(&self.g, lvl, &r);
             }
         }
-        t.map_sub(|x, k| self.rep_tm(lvl + k, x))
+        t.map_sub(|x, k| self.rep_tm(givens, lvl + k, x))
     }
 
     /// Assume equations `eqs` (each the two sides and its text) for the

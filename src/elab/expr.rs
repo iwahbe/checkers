@@ -1713,12 +1713,8 @@ impl Elab {
         }
         let goal = self.eval(cx, &goal);
         let func = self.g.defs[caller.0 as usize].name.to_string();
-        let n = self.obligations.len();
-        self.oblige(cx, span, ObKind::Measure { func, measure: text.clone() }, text, goal, None);
-        if self.obligations.len() > n {
-            let ob = self.obligations.pop().expect("just pushed");
-            self.measure_obs.push((caller, callee, ob));
-        }
+        let ob = self.keep_obligation(cx, span, ObKind::Measure { func, measure: text.clone() }, text, goal);
+        self.measure_obs.push((caller, callee, ob));
     }
 
     /// `forall x y : …` (#632), allowed only in a named precondition: a Π

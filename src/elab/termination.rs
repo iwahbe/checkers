@@ -15,6 +15,17 @@ pub struct RecCall {
     pub ob: Obligation,
 }
 
+/// A call between two functions of the module, neither with a measure,
+/// which may be recursion (`RecCall`): where it is kept, not yet made an
+/// obligation, as most such calls aren't recursion (#641).
+#[derive(Clone)]
+pub struct NotedCall {
+    pub caller: DefId,
+    pub callee: DefId,
+    pub args: Vec<Val>,
+    pub at: KeptOb,
+}
+
 /// A measure: its components over a function's binders, and its text.
 pub type Measure = (Vec<Tm>, String);
 
@@ -57,8 +68,8 @@ impl Elab {
         }
         let args: Vec<Val> = args.iter().map(|a| self.eval(cx, a)).collect();
         let name = self.g.defs[caller.0 as usize].name.to_string();
-        let ob = self.obligation(cx, span, ObKind::Measure { func: name, measure: String::new() }, String::new(), Val::Error, None);
-        self.rec_calls.push(RecCall { caller, callee, args, ob });
+        let at = self.keep_obligation(cx, span, ObKind::Measure { func: name, measure: String::new() }, String::new(), Val::Error);
+        self.rec_calls.push(NotedCall { caller, callee, args, at });
     }
 
     /// The promises the module's function bodies make (#102): explicit
@@ -302,7 +313,7 @@ impl Elab {
         let held = self.body_promises();
         let fns: Vec<DefId> = std::mem::take(&mut self.module_fns);
         let calls: Vec<CallRec> = std::mem::take(&mut self.calls);
-        let rec_calls: Vec<RecCall> = std::mem::take(&mut self.rec_calls);
+        let rec_calls: Vec<NotedCall> = std::mem::take(&mut self.rec_calls);
         let v = self.termination_verdict(&fns, calls, &held, &rec_calls);
         self.elem_conds.clear();
         self.elem_cond_at.clear();
@@ -313,6 +324,7 @@ impl Elab {
         for total in &v.measured {
             for (caller, callee, ob) in std::mem::take(&mut self.measure_obs) {
                 if total.contains(&caller) && total.contains(&callee) {
+                    let ob = self.kept_obligation(&ob);
                     self.obligations.push(ob);
                 } else {
                     self.measure_obs.push((caller, callee, ob));
@@ -331,7 +343,7 @@ impl Elab {
     /// and needs proved, without applying it, so it can also be asked of a
     /// module's functions before the module is checked (§8.9: they are
     /// proved on demand).
-    pub fn termination_verdict(&self, fns: &[DefId], mut calls: Vec<CallRec>, held: &HashSet<ElemAlt>, rec_calls: &[RecCall]) -> Verdict {
+    pub fn termination_verdict(&self, fns: &[DefId], mut calls: Vec<CallRec>, held: &HashSet<ElemAlt>, rec_calls: &[NotedCall]) -> Verdict {
         let mut v = Verdict::default();
         // Parts that hold only if a promise does (#102).
         let mut unkept: HashMap<Span, String> = HashMap::new();
@@ -524,16 +536,19 @@ impl Elab {
     /// Set up guessing a measure for a recursive group with none written
     /// (#641): every member a total function, every recursive call a full
     /// call, and candidates for each. False if it can't be.
-    fn guess_measure(&self, members: &[DefId], metas: &[FnMeta], inner: &[&CallRec], rec_calls: &[RecCall], prefer: Vec<Span>) -> Option<GuessGroup> {
+    fn guess_measure(&self, members: &[DefId], metas: &[FnMeta], inner: &[&CallRec], rec_calls: &[NotedCall], prefer: Vec<Span>) -> Option<GuessGroup> {
         if metas.iter().any(|m| m.partial || m.decreasing) {
             return None;
         }
-        let calls: Vec<RecCall> =
-            rec_calls.iter().filter(|c| members.contains(&c.caller) && members.contains(&c.callee)).cloned().collect();
+        let calls: Vec<&NotedCall> = rec_calls.iter().filter(|c| members.contains(&c.caller) && members.contains(&c.callee)).collect();
         // Each recursive call must be one we can compare measures at.
-        if inner.iter().any(|c| !calls.iter().any(|r| r.ob.span == c.span || r.ob.span.start <= c.span.start && c.span.end <= r.ob.span.end)) {
+        if inner.iter().any(|c| !calls.iter().any(|r| r.at.span == c.span || r.at.span.start <= c.span.start && c.span.end <= r.at.span.end)) {
             return None;
         }
+        let calls: Vec<RecCall> = calls
+            .into_iter()
+            .map(|c| RecCall { caller: c.caller, callee: c.callee, args: c.args.clone(), ob: self.kept_obligation(&c.at) })
+            .collect();
         let mut candidates = Vec::new();
         for d in members {
             let own: Vec<&RecCall> = calls.iter().filter(|c| c.caller == *d).collect();

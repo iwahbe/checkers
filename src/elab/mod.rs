@@ -542,6 +542,33 @@ pub struct Obligation {
     pub reps: Vec<(Val, Val)>,
 }
 
+/// An obligation kept to be made later, only if it turns out to be one: a
+/// call's measure, an obligation only if termination finds the call is
+/// recursion (§5.3). It keeps the context it is in, which is persistent: a
+/// copy shares it, so keeping one costs the same however many locals are in
+/// scope; making it an `Obligation` copies them.
+#[derive(Clone)]
+pub struct KeptOb {
+    pub cx: Cx,
+    /// The type equations in scope (#209).
+    pub givens: Vec<tyeq::Given>,
+    pub module: String,
+    pub owner: Option<DefId>,
+    pub span: Span,
+    pub kind: ObKind,
+    pub text: String,
+    pub goal: Val,
+}
+
+/// Where an obligation is: its context, the type equations in scope there,
+/// its module and the declaration it is in.
+struct ObSite<'a> {
+    cx: &'a Cx,
+    givens: &'a [tyeq::Given],
+    module: &'a str,
+    owner: Option<DefId>,
+}
+
 /// A predicate from a header, constructor or alias, as a term over its binders.
 /// Arithmetic whose operands' type wasn't known yet (#616): its
 /// result's type (a meta) is settled when it is.
@@ -844,10 +871,10 @@ pub struct Elab {
     pub last_inferred: Option<Val>,
     /// Measure obligations of calls (caller, callee); kept only for calls
     /// inside one recursive group once termination is analysed.
-    pub measure_obs: Vec<(DefId, DefId, Obligation)>,
+    pub measure_obs: Vec<(DefId, DefId, KeptOb)>,
     /// Calls between functions of this module with no measure, which may
     /// recurse: for guessing a measure (#641).
-    pub rec_calls: Vec<termination::RecCall>,
+    pub rec_calls: Vec<termination::NotedCall>,
     /// For each function, `Seq.size` of what its sequence patterns take
     /// apart (§9.8): a term at a level, and its text; measures to guess.
     pub seq_sizes: HashMap<DefId, Vec<(Tm, usize, String)>>,
@@ -2416,19 +2443,38 @@ impl Elab {
 
     /// `facts in cx ⊢ goal`, not yet recorded.
     pub fn obligation(&self, cx: &Cx, span: Span, kind: ObKind, text: String, goal: Val, only_if_nat: Option<Val>) -> Obligation {
+        let at = ObSite { cx, givens: &self.givens, module: &self.cur, owner: self.cur_fn };
+        self.obligation_at(at, span, kind, text, goal, only_if_nat)
+    }
+
+    /// `facts in cx ⊢ goal`, kept to be made only if needed (`KeptOb`).
+    pub fn keep_obligation(&self, cx: &Cx, span: Span, kind: ObKind, text: String, goal: Val) -> KeptOb {
+        KeptOb { cx: cx.clone(), givens: self.givens.clone(), module: self.cur.clone(), owner: self.cur_fn, span, kind, text, goal }
+    }
+
+    /// The obligation `k` kept.
+    pub fn kept_obligation(&self, k: &KeptOb) -> Obligation {
+        let at = ObSite { cx: &k.cx, givens: &k.givens, module: &k.module, owner: k.owner };
+        self.obligation_at(at, k.span, k.kind.clone(), k.text.clone(), k.goal.clone(), None)
+    }
+
+    /// `facts ⊢ goal` where `at` is.
+    fn obligation_at(&self, at: ObSite, span: Span, kind: ObKind, text: String, goal: Val, only_if_nat: Option<Val>) -> Obligation {
+        let ObSite { cx, givens, module, owner } = at;
+        // With the type equations' representatives (#209): the prover never
+        // sees an equation.
+        let rep = |l: usize, v: &Val| self.rep_deep_in(givens, l, v);
         let ctx = (0..cx.lvl())
             .map(|l| ObLocal {
                 name: cx.locals[l].name.clone(),
-                // With the type equations' representatives (#209): the
-                // prover never sees an equation.
-                ty: self.rep_deep(l, &cx.locals[l].ty),
-                refined: cx.locals[l].refined.as_ref().map(|r| self.rep_deep(cx.lvl(), r)),
-                def: if cx.locals[l].bound { None } else { Some(self.rep_deep(l, &cx.env[l])) },
+                ty: rep(l, &cx.locals[l].ty),
+                refined: cx.locals[l].refined.as_ref().map(|r| rep(cx.lvl(), r)),
+                def: if cx.locals[l].bound { None } else { Some(rep(l, &cx.env[l])) },
             })
             .collect();
-        let facts = cx.facts.iter().map(|(_, v)| self.rep_deep(cx.lvl(), v)).collect();
-        let goal = self.rep_deep(cx.lvl(), &goal);
-        Obligation { module: self.cur.clone(), span, kind, text, ctx, facts, goal, only_if_nat, owner: self.cur_fn, reps: self.rep_pairs() }
+        let facts = cx.facts.iter().map(|(_, v)| rep(cx.lvl(), v)).collect();
+        let goal = rep(cx.lvl(), &goal);
+        Obligation { module: module.to_string(), span, kind, text, ctx, facts, goal, only_if_nat, owner, reps: self.rep_pairs_in(givens) }
     }
 
     /// Whether branches here are asked about (#633 d): the program's own
