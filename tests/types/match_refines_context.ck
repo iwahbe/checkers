@@ -1,7 +1,7 @@
 module match_refines_context
 
 # In an arm of `match s`, where `s` is a variable, every variable whose type
-# mentions `s` has that type with `s` replaced by the arm's pattern (D173).
+# mentions `s` has that type with `s` replaced by the arm's pattern (#664).
 
 import std.files (File)
 import std.files

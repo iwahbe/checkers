@@ -1,4 +1,4 @@
-# Comments: kept, re-indented, trailing ones aligned (D92).
+# Comments: kept, re-indented, trailing ones aligned (#585).
 module comments
 
 import std.list   # lists

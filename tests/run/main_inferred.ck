@@ -1,6 +1,6 @@
 module main_inferred
 
-# `main`'s types, left out, are D31's.
+# `main`'s types, left out, are #517's.
 
 import std.system (System, ExitCode)
 import std.terminal

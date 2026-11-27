@@ -1,5 +1,5 @@
 # An indented code block in a doc comment is code, as a fenced one with no
-# language is (D162): compiled, with W032 for its errors. It can't carry
+# language is (#651): compiled, with W032 for its errors. It can't carry
 # attributes; a block that isn't Checkers needs a fence saying so.
 module doc_indented
 

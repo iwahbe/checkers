@@ -1,4 +1,4 @@
-//! Arbitrary-precision integers for `Nat` and `Int` (D6), with a fast path
+//! Arbitrary-precision integers for `Nat` and `Int` (#500), with a fast path
 //! for values that fit in an `i128`.
 
 use num_bigint::BigInt;

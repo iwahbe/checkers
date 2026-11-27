@@ -1,4 +1,4 @@
-# An abstract type shows importers its name only (§6, D155): they can't
+# An abstract type shows importers its name only (§6, #637): they can't
 # build one, match on it or read its fields, only use what its module
 # exports.
 module abstract_sealed

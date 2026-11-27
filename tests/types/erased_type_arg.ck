@@ -1,7 +1,7 @@
 module erased_type_arg
 
 # A type passed as an erased argument uses nothing at run time, even the
-# variables it is computed from (`a` in `wrap s a`, D172 c).
+# variables it is computed from (`a` in `wrap s a`, #672 c).
 
 enum Shape
     One

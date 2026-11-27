@@ -1,5 +1,5 @@
-# Deep non-tail recursion inside a behaviour (D113): each behaviour runs on a
-# stack of its own, as deep as a worker's (D75, §13.8).
+# Deep non-tail recursion inside a behaviour (#607): each behaviour runs on a
+# stack of its own, as deep as a worker's (#564, §13.8).
 module deep_behaviour
 
 import std.system (System, ExitCode)

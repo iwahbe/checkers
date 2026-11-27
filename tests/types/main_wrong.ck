@@ -1,4 +1,4 @@
-# A `main` whose written types aren't D31's (E0366).
+# A `main` whose written types aren't #517's (E0366).
 module main_wrong
 
 import std.system (System, ExitCode)

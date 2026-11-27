@@ -1,5 +1,5 @@
 # ck/literate.ck — Markdown with Checkers in it, for the documentation and
-# the site (D148, §15.6): pages parsed by `std.markdown`, `[name]` links to
+# the site (#642, §15.6): pages parsed by `std.markdown`, `[name]` links to
 # the documentation of the symbols they name, and code blocks compiled (and
 # run, if they have `main`) by `ckc`, their output shown after them. What
 # goes wrong is a warning (W030–W034) at its place on the page.
@@ -473,7 +473,7 @@ record Sample
 
 # A block's lines and their spans: `#!` lines compiled but not shown, a
 # hidden `module` line if it has none, and a hidden import of the module
-# the page documents unless the block imports it (D164).
+# the page documents unless the block imports it (#650).
 partial fn sample documented k info source spans start -> r : documented~Option (String, List String), k~Nat, info~String,
                                                               source~String, spans~List Span, start~Nat, r~Sample
     let ls = zip (lines_of (string.bytes source)) spans
@@ -577,14 +577,14 @@ record Outcome
 # compiled as if they were in (a module page's package, so that a block may
 # import its modules as the module does; else a directory of the page's
 # own), and `ckc`'s flags. The blocks are given to `ckc` as an overlay
-# (D120), not written there.
+# (#601), not written there.
 export record Compiler
     ckc~String
     work~String
     flags~List String
 
 partial fn file_of c s -> r : c~Compiler, s~Sample, r~String
-    # A module `a.b` is the file `a/b.ck` (D53).
+    # A module `a.b` is the file `a/b.ck` (#548).
     c.work ++ "/" ++ string.concat_map (\ch -> if ch == c'.' then "/" else string.from_char ch) s.name ++ ".ck"
 
 # The overlay: every block of the page, at its file, so one may import
@@ -681,7 +681,7 @@ export record Context
     base~String                     # the way from the page to the symbols' documentation
     compiler~Compiler
     links~(Bytes -> Bytes -> Bool -> Option Bytes)   # names in signatures (§15.6)
-    documented~Option (String, List String)          # the module documented, and its exports: its blocks import it (D164)
+    documented~Option (String, List String)          # the module documented, and its exports: its blocks import it (#650)
 
 # The code blocks of blocks, in order.
 partial fn code_blocks bs -> r : bs~List Block, r~List (String, String, List Span, Nat)
@@ -917,7 +917,7 @@ fn result_warnings x -> r : x~(Sample, Outcome), r~List Warning
 # ── The page as Markdown ─────────────────────────────────────────────────────
 
 # The page's Markdown as it is shown: its Checkers blocks' `#!` lines left
-# out, as the HTML leaves them out (D148 g), and a block of such lines
+# out, as the HTML leaves them out (#642 g), and a block of such lines
 # alone with its fences.
 export partial fn without_hidden text -> r : text~Bytes, r~Bytes
     let doc = markdown.parse (as_string text)

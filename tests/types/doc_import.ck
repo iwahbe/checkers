@@ -1,4 +1,4 @@
-# A module's doc comment blocks import it (D164): what it exports, by name,
+# A module's doc comment blocks import it (#650): what it exports, by name,
 # with no import line:
 #
 #     check double 2 == 4

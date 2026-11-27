@@ -2,7 +2,7 @@
 //!
 //! Bidirectional checking with implicit arguments solved by pattern
 //! unification. `match` is compiled to case trees with exhaustiveness
-//! checking (D4). Predicates in constraints are type-checked as `Bool` and
+//! checking (#498). Predicates in constraints are type-checked as `Bool` and
 //! recorded for the prover (M3).
 
 mod classes;
@@ -40,7 +40,7 @@ pub enum Sym {
     Def(DefId),
     Ty(TyId),
     Con(ConId),
-    /// The overloaded built-in `len` (D38)
+    /// The overloaded built-in `len` (#528)
     Len,
     Univ,
 }
@@ -190,7 +190,7 @@ pub struct Cx {
     /// The locals' names, kept apart so that a constraint left for later
     /// keeps them without a copy (`names`).
     names: Names,
-    /// Elaborating a type position (after `~`): `Uname`s prefer the type namespace (D26).
+    /// Elaborating a type position (after `~`): `Uname`s prefer the type namespace (#521).
     pub type_pos: bool,
     /// Facts in scope (§7.1): `Bool` values known to be true, tagged with the
     /// context length when they were added.
@@ -269,7 +269,7 @@ impl Cx {
     }
 }
 
-/// A constraint on an operator's operand type, checked after the declaration (D38).
+/// A constraint on an operator's operand type, checked after the declaration (#528).
 #[derive(Clone)]
 pub struct Deferred {
     pub ty: Val,
@@ -290,12 +290,12 @@ pub enum OpClass {
     Ordered,
     Concat,
     HasLen,
-    /// `==`/`!=` in compiled code: no functions (D125).
+    /// `==`/`!=` in compiled code: no functions (#614).
     Comparable,
 }
 
 /// A use of a generic function in compiled code: its type parameters'
-/// arguments, for D125 (b).
+/// arguments, for #614 (b).
 #[derive(Clone)]
 pub struct Inst {
     pub caller: Option<DefId>,
@@ -307,7 +307,7 @@ pub struct Inst {
     pub span: Span,
 }
 
-/// Why a function's type parameter must not be a function type (D125 b):
+/// Why a function's type parameter must not be a function type (#614 b):
 /// the function that compares it with `==`, and that parameter's name.
 #[derive(Clone)]
 pub struct EqReq {
@@ -347,9 +347,9 @@ pub enum ObKind {
     TypeParams { ty: String, written: String },
     /// A behaviour must hand back contents of the cown's refinement (§8.5).
     CownInvariant { alias: String },
-    /// A value checked against a refinement alias from a type argument (D71).
+    /// A value checked against a refinement alias from a type argument (#554).
     Refined { alias: String, value: String },
-    /// A refinement replaced by another in a type (D83, D85): for any value
+    /// A refinement replaced by another in a type (#575, #579): for any value
     /// of `sub`, the predicates of `sup` hold.
     Weaken { role: WeakenRole, value: String, sub: String, sup: String, callee: Option<String> },
     /// A `when`'s cowns differ (§8.5): two of them as written. `held`: the
@@ -394,7 +394,7 @@ pub enum ObKind {
     KnownResult { call: String, alias: String, inside: bool, pres: String, inst: String, member: String },
     Auto,
     Have,
-    /// A case a `match` leaves out can't occur there (D144 e): its pattern.
+    /// A case a `match` leaves out can't occur there (#633 e): its pattern.
     /// `binding`: the pattern of a `let`, a lambda's parameter or `<-`,
     /// not a `match`.
     Uncovered { case: String, binding: bool },
@@ -430,7 +430,7 @@ pub enum VacuityKind {
     ClassType { subject: String },
 }
 
-/// Where a branch was entered, asked whether it can be reached (D144 d).
+/// Where a branch was entered, asked whether it can be reached (#633 d).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProbeKind {
     /// A `match` arm, at its pattern.
@@ -452,7 +452,7 @@ pub struct Probe {
     pub before: usize,
 }
 
-/// Where a refinement is weakened (D83, D85).
+/// Where a refinement is weakened (#575, #579).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WeakenRole {
     /// The values a type holds (`List (n~Int, n >= 6)` as `List Big`).
@@ -494,7 +494,7 @@ pub struct Obligation {
 }
 
 /// A predicate from a header, constructor or alias, as a term over its binders.
-/// Arithmetic whose operands' type wasn't known yet (D134, D135): its
+/// Arithmetic whose operands' type wasn't known yet (#616): its
 /// result's type (a meta) is settled when it is.
 pub struct ArithResult {
     pub result: Val,
@@ -505,7 +505,7 @@ pub struct ArithResult {
     /// needs of the operand terms, which can be long (`1 + 1 + …`).
     pub left: Option<i128>,
     pub right: Option<i128>,
-    /// Each operand's own type (D135).
+    /// Each operand's own type (#616).
     pub left_ty: Val,
     pub right_ty: Val,
 }
@@ -593,7 +593,7 @@ pub struct CownInv {
     pub preds: Vec<Pred>,
     pub args: Vec<Val>,
     /// The component of the body's tuple, with several cowns, and whether
-    /// it is the last (then the rest of the tuple, D174).
+    /// it is the last (then the rest of the tuple, #673).
     pub proj: Option<(usize, bool)>,
 }
 
@@ -623,9 +623,9 @@ pub struct Elab {
     pub index: Vec<index::NameUse>,
     /// That module.
     pub index_of: Option<String>,
-    /// For `ckc index` (D161): every module of the package is indexed.
+    /// For `ckc index` (#648): every module of the package is indexed.
     pub index_all: Option<HashSet<String>>,
-    /// Different for every elaborator a process makes (keys caches, D153).
+    /// Different for every elaborator a process makes (keys caches, #638).
     pub uid: u64,
     /// Where each global is declared: module and the span of its name.
     pub decl_at: HashMap<index::Target, (String, Span)>,
@@ -634,35 +634,35 @@ pub struct Elab {
     /// `function`, `lemma`, `constant` or `type` (an alias).
     pub def_class: HashMap<DefId, &'static str>,
     pub diags: Vec<(String, Diagnostic)>,
-    /// Each module's declarations: span and what they declare (D122).
+    /// Each module's declarations: span and what they declare (#599).
     pub decl_spans: HashMap<String, Vec<(Span, Option<Sym>)>>,
     seen: HashSet<(String, u32, u32, String)>,
     pub cur: String,
     loading: Vec<String>,
-    /// Where `import a.b` looks for `a/b.ck` (D53).
+    /// Where `import a.b` looks for `a/b.ck` (#548).
     pub base_dir: Option<std::path::PathBuf>,
     /// Imported program modules (not the standard library), dependencies first.
     pub user_modules: Vec<String>,
-    /// Each module's imports, by name (for D143's keys).
+    /// Each module's imports, by name (for #628's keys).
     pub module_deps: HashMap<String, Vec<String>>,
     /// The modules of the instances each module's checking chose, other
-    /// than its own (D143's keys, #272): an instance is found wherever its
+    /// than its own (#628's keys, #272): an instance is found wherever its
     /// module is loaded, so it may be in a module not imported.
     pub instance_deps: HashMap<String, std::collections::BTreeSet<String>>,
-    /// The package of each module of a dependency (D111); others are the
+    /// The package of each module of a dependency (#608); others are the
     /// program's own package, or `std`.
     pub module_pkg: HashMap<String, String>,
     pub deferred: Vec<Deferred>,
-    /// Results of arithmetic whose operands' type wasn't known yet (D134):
+    /// Results of arithmetic whose operands' type wasn't known yet:
     /// the result's type (a meta), the operands' type, the level.
     pub arith_results: Vec<ArithResult>,
-    /// The anonymous refinement made for each range (D135).
+    /// The anonymous refinement made for each range (#616).
     pub ranges: HashMap<(Option<i128>, Option<i128>), DefId>,
-    /// Inferred `if`s and `match`es whose branches' ranges join (D135).
+    /// Inferred `if`s and `match`es whose branches' ranges join (#616).
     pub joins: HashMap<MetaId, interval::Join>,
     /// The type `check` inferred for what it checked, if it did.
     pub last_checked: Option<Val>,
-    /// An arithmetic operation's operands' own types (D135).
+    /// An arithmetic operation's operands' own types (#616).
     pub operand_types: Option<(Val, Val)>,
     pub fn_meta: HashMap<DefId, FnMeta>,
     pub cur_fn: Option<DefId>,
@@ -670,18 +670,18 @@ pub struct Elab {
     /// Definitions whose bodies are being elaborated in this module (termination groups).
     pub module_fns: Vec<DefId>,
     pub obligations: Vec<Obligation>,
-    /// Branches to ask about (D144 d).
+    /// Branches to ask about (#633 d).
     pub probes: Vec<Probe>,
     pub vacuities: Vec<Vacuity>,
     /// The declaration the next `signature` is for, to ask whether its
     /// preconditions can hold (E0457).
     pub sig_vacuity: Option<(VacuityKind, String, Span)>,
-    /// The module checked, whose exported `main` is the program's (D31).
+    /// The module checked, whose exported `main` is the program's (#517).
     pub root: Option<String>,
-    /// References between declarations, for unused code (D144).
+    /// References between declarations, for unused code (#633).
     pub refs: Vec<unused::Ref>,
     /// Values whose every field is observed: formatted, or compared with
-    /// `==` (their type, solved later), for unused fields (D144).
+    /// `==` (their type, solved later), for unused fields (#633).
     pub observed: Vec<(String, Span, Val)>,
     /// Elaborating a template's tag (#126: `format` there is no call).
     pub in_tag: bool,
@@ -691,12 +691,12 @@ pub struct Elab {
     /// Calls of a template's tag outside a template (#126), by module and
     /// span: the help a type error there gets.
     pub tag_calls: HashMap<(String, u32, u32), String>,
-    /// Each program module's declarations, for unused code (D144).
+    /// Each program module's declarations, for unused code (#633).
     pub decl_table: HashMap<String, Vec<unused::Entry>>,
     /// Declarations found unused: their branches aren't asked about.
     pub dead: Vec<(String, Span)>,
     pub specs: HashMap<DefId, Spec>,
-    /// Functions exported `transparent`: reflected into importers' queries (D12).
+    /// Functions exported `transparent`: reflected into importers' queries (#506).
     pub transparent: HashSet<DefId>,
     /// Constructor invariants, over the type's parameters then the fields.
     pub con_invs: HashMap<ConId, Vec<Pred>>,
@@ -750,11 +750,11 @@ pub struct Elab {
     pub alias_subject: HashMap<DefId, Name>,
     /// The result type of a function whose result type isn't written.
     pub result_metas: HashMap<MetaId, DefId>,
-    /// The function whose argument is being checked, for messages (D85).
+    /// The function whose argument is being checked, for messages (#579).
     pub arg_of: Option<String>,
     /// Inside a type or specification: no obligations (§7.1).
     pub in_spec: usize,
-    /// Inside a lemma's proof, which is never compiled (D125).
+    /// Inside a lemma's proof, which is never compiled (#614).
     pub in_proof: usize,
     /// Inside an argument to a `ghost` parameter, or a type bound `ghost`:
     /// erased, so a `ghost` variable used there isn't used at run time.
@@ -764,7 +764,7 @@ pub struct Elab {
     /// usage error (E0403) points at.
     pub ghost_uses: HashMap<(DefId, String), Vec<Span>>,
     /// Type parameters compared with `==` in compiled code, by function and
-    /// binder position (D125 b).
+    /// binder position (#614 b).
     pub eq_reqs: HashMap<DefId, BTreeMap<usize, EqReq>>,
     /// The type parameters each function needs described (#170): the
     /// function its requirement comes from, and the parameter's name there.
@@ -777,18 +777,18 @@ pub struct Elab {
     /// The last definition `sym_term` gave, for `insert` to record its use.
     pub pending_inst: Option<(DefId, Span)>,
     /// Elaborating the head of an application: a bare function name gets its
-    /// refined type only as a value (D85).
+    /// refined type only as a value (#579).
     pub in_app_head: bool,
     /// Postconditions to check where the current function returns (§7.1).
     pub post_target: Option<PostTarget>,
-    /// The goal of the proof being elaborated (D49).
+    /// The goal of the proof being elaborated (#547).
     pub proof_goal: Option<(Val, String)>,
     pub admits: Vec<Admit>,
     /// An application checked against a type with a refinement inside: its
-    /// result type is unified with this before its arguments are checked (D71).
+    /// result type is unified with this before its arguments are checked (#554).
     pub app_expected: Option<Val>,
     /// The argument being checked is for a parameter or field declared with a
-    /// refinement alias, so the call's own obligations cover it (D71).
+    /// refinement alias, so the call's own obligations cover it (#554).
     pub alias_covered: bool,
     /// The head of the application being elaborated checks its arguments'
     /// refinement aliases (a function with a spec or a constructor with invariants).
@@ -799,50 +799,50 @@ pub struct Elab {
     /// inside one recursive group once termination is analysed.
     pub measure_obs: Vec<(DefId, DefId, Obligation)>,
     /// Calls between functions of this module with no measure, which may
-    /// recurse: for guessing a measure (D150).
+    /// recurse: for guessing a measure (#641).
     pub rec_calls: Vec<termination::RecCall>,
     /// For each function, `Seq.size` of what its sequence patterns take
     /// apart (§9.8): a term at a level, and its text; measures to guess.
     pub seq_sizes: HashMap<DefId, Vec<(Tm, usize, String)>>,
-    /// Recursive groups whose measure is guessed in the proofs phase (D150).
+    /// Recursive groups whose measure is guessed in the proofs phase (#641).
     pub guess_groups: Vec<termination::GuessGroup>,
     /// Their functions: terminating by a measure, as with `decreasing`.
     pub guessed: HashSet<DefId>,
     /// Functions recursing by `decreasing` that end without their
-    /// preconditions (D118), found while proving.
+    /// preconditions, found while proving.
     pub ends_everywhere: std::sync::Mutex<HashSet<DefId>>,
     /// Heads of saturated calls (recursion through a partial application
     /// can't have its measure checked, E0303).
     pub saturated_heads: HashSet<Span>,
-    /// `check` declarations: module, span, elaborated `Bool` term (D40).
+    /// `check` declarations: module, span, elaborated `Bool` term (#532).
     pub checks: Vec<(String, Span, Tm)>,
     /// For a `check` that is an `==`: the type of its sides, so a false one
     /// can show them as values of that type (a `Char` as `c'a'`).
     pub check_eq_tys: HashMap<Span, Tm>,
     /// The operand type of the `==` elaborated last (for `check_eq_tys`).
     pub last_eq_ty: Option<Val>,
-    /// Variables that are linear because of their type (D39): (function, name) → (span, type).
+    /// Variables that are linear because of their type (#533): (function, name) → (span, type).
     pub resource_vars: HashMap<(DefId, String), (Span, String)>,
     /// Where each named local of a function is bound, for usage messages
-    /// about one that holds no resource (a one-shot closure, D171).
+    /// about one that holds no resource (a one-shot closure, #658).
     pub local_spans: HashMap<(DefId, String), Span>,
     /// Where a lambda's or `let`'s variable is bound, by its name's
-    /// allocation: two variables of one name are told apart (D171, D172 d). The
+    /// allocation: two variables of one name are told apart (#658, #672 d). The
     /// name is kept so the address isn't reused.
     pub binder_spans: HashMap<usize, (Name, Span)>,
     /// A lambda's parameter checked against a function type that takes it
     /// `own`: its type and the level it was bound at, so the usage check
-    /// can tell, once metas are solved, whether it may be a resource (D172 b).
+    /// can tell, once metas are solved, whether it may be a resource (#672 b).
     pub lam_domains: HashMap<usize, (Val, usize)>,
     /// A variable whose type may be a resource but, in an arm of a `match`
-    /// on a variable, is refined to one that holds none (D173): the
+    /// on a variable, is refined to one that holds none (#664): the
     /// function, the matched variable's level, the arm's constructor and
     /// the variable's level. The usage check lets it go unused there.
     /// Ordered, so that an arm's variables are found without going through
     /// every variable in scope.
     pub moot_in_arm: BTreeSet<(DefId, usize, ConId, usize)>,
     /// The stuck `match`es whose arms `case_linear` is looking at: met again,
-    /// a recursive type function adds no resource (D175).
+    /// a recursive type function adds no resource (#659).
     pub lin_visiting: std::cell::RefCell<Vec<usize>>,
     /// A `match` arm's resource names, bound as ghosts for its guard: the
     /// guard's span, for E0408.
@@ -878,7 +878,7 @@ pub struct Elab {
     pub match_binding: bool,
     /// Exhaustiveness state of the `match` being compiled.
     pub pm: pattern::PatState,
-    /// Classes (D136), by their dictionary's type.
+    /// Classes (#615), by their dictionary's type.
     pub class_defs: HashMap<TyId, classes::ClassDef>,
     /// A class's types (#133): `C.Name`'s definition, by class and name.
     pub assoc_defs: HashMap<(TyId, String), DefId>,
@@ -948,7 +948,7 @@ pub struct Elab {
     pub pending_classes: Vec<(String, Vec<String>, Vec<ast::ClassMember>, Span)>,
     /// A class function's parameters' multiplicities, by `module.Class.function`,
     /// when one is written `own` or `ghost`: its dictionary field takes an `own`
-    /// one exactly once, so generic code can pass it a resource (D156 i), and a
+    /// one exactly once, so generic code can pass it a resource (#643 i), and a
     /// `ghost` one erased.
     pub class_mults: HashMap<String, Vec<Mult>>,
     /// Where an instance's head type stands for its class's parameter, by
@@ -974,7 +974,7 @@ pub struct Elab {
     /// Functions building an instance's dictionary.
     pub dict_defs: HashSet<DefId>,
     /// Instances' functions: the class's specification is theirs, so they
-    /// go into their dictionary without it (D136).
+    /// go into their dictionary without it (#615).
     pub inst_fns: HashSet<DefId>,
     /// Each instance member's dictionary function.
     pub inst_member_of: HashMap<DefId, DefId>,
@@ -985,21 +985,21 @@ pub struct Elab {
     /// While a signature's implied clauses are looked for (#385): each
     /// dictionary a type's header asks for where the type is written.
     pub type_dict_reqs: Option<Vec<classes::InstReq>>,
-    /// Inside a named precondition: `forall` is allowed (D137).
+    /// Inside a named precondition: `forall` is allowed (#632).
     pub forall_ok: usize,
-    /// The named preconditions of the function being checked (D137).
+    /// The named preconditions of the function being checked (#632).
     pub cur_hyps: Vec<(String, Val)>,
     /// The span of the name being elaborated (for a dictionary's errors).
     pub name_span: Span,
     /// Text for spans standing for code written in another module (a class's
-    /// signatures in an instance, D136): module, start, end → text.
+    /// signatures in an instance, #615): module, start, end → text.
     pub text_override: HashMap<(String, u32, u32), String>,
     /// Synthetic spans (beyond any file's text, from `SYNTHETIC`), each
     /// standing for the real span it is shown at: module, start → anchor.
     pub synthetic: HashMap<(String, u32), Span>,
-    /// Unknowns in a reported type mismatch (D141 c).
+    /// Unknowns in a reported type mismatch (#627 c).
     pub blamed: HashSet<MetaId>,
-    /// What is known at the cursor, when completing (D142).
+    /// What is known at the cursor, when completing (#626).
     pub completion: Option<complete::CompInfo>,
     /// Completing at this byte of this module: other bodies aren't checked.
     pub completing: Option<(String, u32)>,
@@ -1217,7 +1217,7 @@ impl Elab {
 
     /// A type with type functions at its head computed (`values (Last ?a)`
     /// is `?a`), stopping at an alias, whose name carries facts (`Nat`):
-    /// for the types of variables a pattern or `let` binds (D176).
+    /// for the types of variables a pattern or `let` binds (#662).
     pub fn reduce_type(&self, v: &Val) -> Val {
         let mut v = crate::core::force_meta(&self.g, v.clone());
         for _ in 0..64 {
@@ -1366,7 +1366,7 @@ impl Elab {
     }
 
     /// Record that the unknown `mt` (from `fresh_meta`) stands for the
-    /// implicit parameter `x` of the function `head` is (D141).
+    /// implicit parameter `x` of the function `head` is (#627).
     pub fn name_meta(&mut self, cx: &Cx, mt: &Tm, x: &Name, dom: &Val, head: &Tm) {
         if x.starts_with('$') || x.is_empty() || &**x == "_" {
             return;
@@ -1441,10 +1441,10 @@ impl Elab {
     }
 
     /// `own` on a function type's parameter is implied by the parameter's
-    /// type (D39), decided where the arrow is written: a type still being
+    /// type (#533), decided where the arrow is written: a type still being
     /// computed there (`values s a`) may be a resource, so it is `own`. Once
     /// the type is known not to hold one (`values One Int` is `Int`), `own`
-    /// means nothing: both sides drop it (D172 b).
+    /// means nothing: both sides drop it (#672 b).
     fn moot_own(&self, cx: &Cx, expected: &Val, actual: &Val) -> Option<(Val, Val)> {
         fn go(e: &Elab, t: &Tm, changed: &mut bool) -> Tm {
             match t {
@@ -1471,7 +1471,7 @@ impl Elab {
     }
 
     /// A type known never to hold a resource: no variables or unsolved
-    /// metas left to decide it, and not linear (D172 b).
+    /// metas left to decide it, and not linear (#672 b).
     pub fn never_linear(&self, t: &Tm) -> bool {
         let mut fv = std::collections::BTreeSet::new();
         crate::core::free_vars(t, 0, &mut fv);
@@ -1493,7 +1493,7 @@ impl Elab {
         }
         // The types differ only in `own`: a function taking a resource where
         // the type expected doesn't say its parameter is `own` (an instance
-        // of a class whose function doesn't, at a resource type, D156 i).
+        // of a class whose function doesn't, at a resource type, #643 i).
         if r.is_err() {
             if let Some(relaxed) = self.own_as_many(cx, expected, actual) {
                 if unify(&self.g, cx.lvl(), expected, &relaxed).is_ok() {
@@ -1534,7 +1534,7 @@ impl Elab {
                     return false;
                 }
                 // A mismatch about an unknown already in a reported one
-                // follows from it (D141 c).
+                // follows from it (#627 c).
                 let unknowns = {
                     let mut v = self.unknowns(cx.lvl(), expected);
                     for m in self.unknowns(cx.lvl(), actual) {
@@ -1553,7 +1553,7 @@ impl Elab {
                 if let Some(n) = self.unknowns_note(&unknowns, why, &e, &a) {
                     d = d.with_note(n);
                 }
-                // A sealed function in a type never unfolds outside its module (D54).
+                // A sealed function in a type never unfolds outside its module (#537).
                 let mut sealed = Vec::new();
                 for v in [expected, actual] {
                     collect_sealed(&quote(&self.g, cx.lvl(), v), &self.g, &self.cur, &mut sealed);
@@ -1604,7 +1604,7 @@ impl Elab {
         out
     }
 
-    /// What the named unknowns in a message stand for (D141): "`?f` is
+    /// What the named unknowns in a message stand for (#627): "`?f` is
     /// `doubled`'s type parameter `f`, a type constructor like `List`", and
     /// why `?f x` can't be the other type.
     fn unknowns_note(&self, unknowns: &[MetaId], why: crate::core::UnifyError, e: &str, a: &str) -> Option<String> {
@@ -1705,22 +1705,22 @@ impl Lin {
 }
 
 impl Elab {
-    /// A primitive resource (D39): implemented by the runtime as an open, stateful thing.
+    /// A primitive resource (#533): implemented by the runtime as an open, stateful thing.
     fn is_primitive_resource(&self, t: TyId) -> bool {
         let ti = &self.g.tys[t.0 as usize];
         matches!((&*ti.module, &*ti.name), ("std.files", "File") | ("std.proc", "Child"))
     }
 
-    /// A cown owns its contents; its handle may be shared (D39), and it can't
-    /// hold a resource (D156 k). A future of a resource is a resource, joined
-    /// exactly once (D156 l).
+    /// A cown owns its contents; its handle may be shared (#533), and it can't
+    /// hold a resource (#643 k). A future of a resource is a resource, joined
+    /// exactly once (#643 l).
     fn is_owner(&self, t: TyId) -> bool {
         Some(t) == self.g.well_known.cown
     }
 
-    /// Is a type declared with a resource in a constructor field (D39)? `Depends`
+    /// Is a type declared with a resource in a constructor field (#533)? `Depends`
     /// when a field's type is computed from the parameters (`pipe_end ss.stdout`,
-    /// D112): then it is a resource for some arguments and not others.
+    /// #611): then it is a resource for some arguments and not others.
     fn ty_lin(&self, t: TyId, visiting: &mut Vec<TyId>) -> Lin {
         if self.is_primitive_resource(t) {
             return Lin::Yes;
@@ -1763,7 +1763,7 @@ impl Elab {
                 Some(v) => Lin::of(self.val_linear(&v)),
                 None => Lin::No,
             },
-            // A type variable: a generic container (D45), decided by its argument.
+            // A type variable: a generic container (#545), decided by its argument.
             Tm::Var(_) | Tm::Pi(..) | Tm::Univ(_) | Tm::Lit(_) | Tm::Error => Lin::No,
             // A proposition (a refinement field) or a value: never a resource.
             _ if !self.computes_type(t) => Lin::No,
@@ -1833,9 +1833,9 @@ impl Elab {
     }
 
     /// A computed type: decided by evaluating it, its variables left
-    /// unknown. One that can't be computed may be a resource (D112); one
+    /// unknown. One that can't be computed may be a resource (#611); one
     /// computed by a `match` on an unknown is one if an arm may be
-    /// (`pipe_end s` may be a `File`; `values s Int` is never one, D172 e).
+    /// (`pipe_end s` may be a `File`; `values s Int` is never one, #672 e).
     fn closed_linear(&self, t: &Tm) -> bool {
         let mut fv = std::collections::BTreeSet::new();
         crate::core::free_vars(t, 0, &mut fv);
@@ -1845,7 +1845,7 @@ impl Elab {
         self.val_linear(&eval(&self.g, &Rc::new(env), t))
     }
 
-    /// Is a value of this type linear (D39)?
+    /// Is a value of this type linear (#533)?
     pub fn val_linear(&self, v: &Val) -> bool {
         self.val_linear_at(v, 0)
     }
@@ -1866,9 +1866,9 @@ impl Elab {
                 }
             }
             Val::TupleTy(ts) => ts.iter().any(|a| self.val_linear_at(a, depth + 1)),
-            // A type variable is generic (D45); a stuck computation of a type may be a resource.
+            // A type variable is generic (#545); a stuck computation of a type may be a resource.
             Val::Neutral(Head::Def(d), _) => self.def_gives_type(d),
-            // A `match` stuck on an unknown: a resource if an arm may be one (D172 e).
+            // A `match` stuck on an unknown: a resource if an arm may be one (#672 e).
             Val::Neutral(_, sp) if sp.iter().any(|e| matches!(e, Elim::Case(..))) => match sp.last() {
                 Some(Elim::Case(c, env)) => self.case_linear(c, env, depth),
                 _ => true,
@@ -1960,7 +1960,7 @@ impl Elab {
         false
     }
 
-    /// A binder's name, recorded with where it is bound (D172 d).
+    /// A binder's name, recorded with where it is bound (#672 d).
     pub fn binder_name(&mut self, name: &str, span: Span) -> Name {
         let n: Name = Rc::from(name);
         self.binder_spans.insert(Rc::as_ptr(&n) as *const u8 as usize, (n.clone(), span));
@@ -1968,7 +1968,7 @@ impl Elab {
     }
 
     /// `own` on this lambda parameter is moot: its type, now known, holds
-    /// no resource (D172 b).
+    /// no resource (#672 b).
     pub fn lam_own_moot(&self, name: &Name) -> bool {
         self.lam_domains
             .get(&(Rc::as_ptr(name) as *const u8 as usize))
@@ -1988,7 +1988,7 @@ impl Elab {
         self.binder_spans.get(&(Rc::as_ptr(name) as *const u8 as usize)).map(|(_, s)| *s)
     }
 
-    /// The multiplicity for a variable the program names: linear types make it `own` (D39).
+    /// The multiplicity for a variable the program names: linear types make it `own` (#533).
     pub fn named_mult(&mut self, cx: &Cx, name: &str, ty: &Val, span: Span, declared: Mult) -> Mult {
         if let Some(f) = self.cur_fn {
             self.local_spans.insert((f, name.to_string()), span);
@@ -2018,7 +2018,7 @@ impl Elab {
         }
     }
 
-    /// D45: `own` belongs on generic parameters and functions. On a linear
+    /// #545: `own` belongs on generic parameters and functions. On a linear
     /// type it is implied (W010); on a type without type variables that isn't
     /// a function it means nothing useful (E0358).
     pub fn check_own(&mut self, cx: &Cx, ty: &Tm, span: Span) {
@@ -2040,7 +2040,7 @@ impl Elab {
             );
         } else if !matches!(ty, Tm::Pi(..)) && !self.mentions_type_var(cx, ty, 0) {
             // A function may be a closure that uses a resource, which is
-            // called exactly once (D171): `f~own (Unit -> a)` takes one.
+            // called exactly once (#658): `f~own (Unit -> a)` takes one.
             let tyv = self.eval(cx, ty);
             let shown = self.show_val(cx, &tyv);
             self.err(
@@ -2067,7 +2067,7 @@ impl Elab {
                     && match self.force(&cx.locals[lvl].ty) {
                         Val::Univ(_) => true,
                         // A value holding types (`ts~Types`): a type computed
-                        // from it is as generic as a type variable (D176).
+                        // from it is as generic as a type variable (#662).
                         Val::TyCon(id, _) => self.holds_types(id),
                         _ => false,
                     }
@@ -2108,7 +2108,7 @@ impl Elab {
     /// Record `facts in cx ⊢ goal`.
     pub fn oblige(&mut self, cx: &Cx, span: Span, kind: ObKind, text: String, goal: Val, only_if_nat: Option<Val>) {
         // In a specification only a callee's precondition is checked: a spec
-        // mustn't speak of a call that can't be made (M17, D118). A
+        // mustn't speak of a call that can't be made (M17). A
         // specification elaborated twice (a lemma's `ensures`) obliges once;
         // each of several conditions at one place is its own obligation.
         if self.in_spec > 0 {
@@ -2140,7 +2140,7 @@ impl Elab {
         Obligation { module: self.cur.clone(), span, kind, text, ctx, facts, goal, only_if_nat, owner: self.cur_fn, reps: self.rep_pairs() }
     }
 
-    /// Whether branches here are asked about (D144 d): the program's own
+    /// Whether branches here are asked about (#633 d): the program's own
     /// code, outside specifications, written by its author.
     pub fn probing(&self, span: Span) -> bool {
         self.in_spec == 0 && !self.stdlib_mode && self.completing.is_none() && span.start < SYNTHETIC && span.end > span.start
@@ -2210,7 +2210,7 @@ impl Elab {
     }
 
     /// The postconditions hold of `v`, a value the function returns at `at`.
-    /// D121 (c): `v` is a `Nat` by construction, with no obligation: a
+    /// #609 (c): `v` is a `Nat` by construction, with no obligation: a
     /// non-negative integer known at compile time (§8.9: a literal, a named
     /// constant, `math.pow 2 3`), a `Nat` local, `len`, `+`, `*`, `/` or `%`
     /// of such values, or a `Nat` subtraction (which has its own obligation).
@@ -2298,7 +2298,7 @@ impl Elab {
     }
 
     /// A predicate that only says "is a `Nat`" of a value that is one by
-    /// construction (D121 c) needs no obligation.
+    /// construction (#609 c) needs no obligation.
     pub fn nat_pred_holds(&self, cx: &Cx, p: &Pred, v: &Val) -> bool {
         matches!(p.alias, Some((_, d)) if Some(d) == self.g.well_known.nat) && self.nat_by_closure(cx, v)
     }
@@ -2308,7 +2308,7 @@ impl Elab {
     }
 
     /// The same, knowing the returned value's type: one already a `Nat`
-    /// meets a `Nat` result (D121).
+    /// meets a `Nat` result (#609).
     pub fn oblige_posts_typed(&mut self, cx: &Cx, v: Val, at: Span, ty: Option<&Val>) {
         let Some(pt) = self.post_target.clone() else { return };
         let mut env = pt.binders.clone();
@@ -2384,7 +2384,7 @@ impl Elab {
     }
 
     /// If `ty`, a type term over the first `at` locals of `cx`, is a refinement
-    /// alias (`U8`), its predicates about `subject` (D6, §7.1).
+    /// alias (`U8`), its predicates about `subject` (#500, §7.1).
     pub fn alias_facts(&self, cx: &Cx, at: usize, ty: &Tm, subject: Val) -> Vec<(Val, String, DefId)> {
         let (h, args) = ty.spine();
         let Tm::Def(d) = h else { return Vec::new() };
@@ -2489,18 +2489,18 @@ impl Elab {
         }
     }
 
-    /// `Nat`, the prelude's refinement of `Int` (D121).
+    /// `Nat`, the prelude's refinement of `Int` (#609).
     pub fn nat(&self) -> Val {
         match self.g.well_known.nat {
             Some(d) => eval(&self.g, &Rc::new(Vec::new()), &Tm::Def(d)),
             None => self.int(),
         }
     }
-    /// The prelude's `Char` (a refinement of `Nat`), the type of `c'…'` (D19).
+    /// The prelude's `Char` (a refinement of `Nat`), the type of `c'…'` (#509).
     pub fn char_ty(&self) -> Val {
         self.prelude_alias("Char")
     }
-    /// The prelude's `U8`, the type of `'x'` (D19).
+    /// The prelude's `U8`, the type of `'x'` (#509).
     pub fn u8_ty(&self) -> Val {
         self.prelude_alias("U8")
     }
@@ -2520,7 +2520,7 @@ impl Elab {
     pub fn string(&self) -> Val {
         self.ty_val(self.g.well_known.string, vec![])
     }
-    /// `Bytes`, the alias of `Array U8` (D133).
+    /// `Bytes`, the alias of `Array U8` (#624).
     pub fn bytes(&self) -> Val {
         match self.g.well_known.bytes {
             Some(d) => eval(&self.g, &Rc::new(Vec::new()), &Tm::Def(d)),
@@ -2535,14 +2535,14 @@ impl Elab {
     }
 
     /// The module of an abstract type declared in another module: its
-    /// constructors and fields are private there (§6, D155).
+    /// constructors and fields are private there (§6, #637).
     pub fn sealed_from(&self, t: TyId) -> Option<String> {
         let ti = &self.g.tys[t.0 as usize];
         (ti.is_abstract && *ti.module != *self.cur).then(|| ti.module.to_string())
     }
 
     /// E0247: a type's constructors or fields used outside its module, which
-    /// exports it as abstract (D155).
+    /// exports it as abstract (#637).
     pub fn sealed_error(&self, t: TyId, what: &str, span: Span) -> Diagnostic {
         let ti = &self.g.tys[t.0 as usize];
         let m = ti.module.to_string();
@@ -2565,7 +2565,7 @@ impl Elab {
     /// be a function or `Unit`, so this only sharpens error messages.
     pub fn default_if_numeric(&mut self, ty: &Val) -> bool {
         let Val::Neutral(Head::Meta(m), _) = self.force(ty) else { return false };
-        // The result of arithmetic (D134): settle its operands' type first.
+        // The result of arithmetic: settle its operands' type first.
         let pos = self.arith_results.iter().position(|a| matches!(self.force(&a.result), Val::Neutral(Head::Meta(m2), _) if m2 == m));
         if let Some(pos) = pos {
             let a = self.arith_results.remove(pos);
@@ -2591,7 +2591,7 @@ impl Elab {
         }
     }
 
-    /// The type of `+ - * / %` on operands of type `ty` (D134): `Nat` for
+    /// The type of `+ - * / %` on operands of type `ty`: `Nat` for
     /// `Nat` and its refinements, `Int` for any other number type.
     pub fn arith_base(&self, ty: &Val) -> Val {
         if crate::core::is_nat(&self.g, ty) {
@@ -2604,7 +2604,7 @@ impl Elab {
     }
 
     /// The type of `lt op rt` on operands of type `ty`, now or, if `ty`
-    /// isn't known yet, once it is (D134, D135).
+    /// isn't known yet, once it is (#616).
     #[allow(clippy::too_many_arguments)]
     pub fn arith_result(&mut self, cx: &Cx, op: Prim, lt: &Tm, rt: &Tm, ty: &Val, lty: &Val, rty: &Val) -> Val {
         let (lc, rc) = (self.known_int(cx, lt), self.known_int(cx, rt));
@@ -2761,7 +2761,7 @@ impl Default for Elab {
     }
 }
 
-/// Where module `name`'s program is (D53): `dir`, the directory of its file,
+/// Where module `name`'s program is (#548): `dir`, the directory of its file,
 /// or the directory its name is relative to when `dir` ends with the name's
 /// leading parts (`tools/ck`, of `ck.syntax`, is in `tools`), so that its
 /// imports of the program's modules resolve when it is checked by itself.
@@ -2784,7 +2784,7 @@ pub fn check_module(name_hint: &str, file: &SourceFile, m: &ast::Module, dir: Op
     check_module_at(name_hint, file, m, dir, None)
 }
 
-/// `check_module`; completing at byte `at` (D142), only the body there is
+/// `check_module`; completing at byte `at` (#626), only the body there is
 /// checked, and other modules' signatures.
 pub fn check_module_at(name_hint: &str, file: &SourceFile, m: &ast::Module, dir: Option<&std::path::Path>, at: Option<u32>) -> Elab {
     let mut e = Elab::new();
@@ -2795,7 +2795,7 @@ pub fn check_module_at(name_hint: &str, file: &SourceFile, m: &ast::Module, dir:
     let name = m.name.as_ref().map(|q| q.dotted()).unwrap_or_else(|| name_hint.to_string());
     e.base_dir = dir.map(|d| program_root(d, &name));
     // A standard-library file, checked by itself, is the standard library
-    // (D145); it may be one of the core modules loaded next, so it is
+    // (#629); it may be one of the core modules loaded next, so it is
     // indexed from the start.
     let is_std = stdlib::is_std_file(&name, std::path::Path::new(&file.name));
     e.root = Some(name.clone());
@@ -2816,7 +2816,7 @@ pub fn check_module_at(name_hint: &str, file: &SourceFile, m: &ast::Module, dir:
 }
 
 impl Elab {
-    /// Check as far as possible past errors (D122): set aside the obligations
+    /// Check as far as possible past errors (#599): set aside the obligations
     /// and `check`s of declarations with errors, and those that mention a
     /// definition or type with errors (or one that uses such, transitively).
     /// `extra` adds errors not in `diags`: the checked file's syntax errors.
@@ -2908,7 +2908,7 @@ fn touches(t: &Tm, g: &Globals, defs: &HashSet<DefId>, tys: &HashSet<TyId>) -> b
         Tm::ConApp(c, v) => con(c) || v.iter().any(go),
         Tm::TupleTy(v) | Tm::Tuple(v) | Tm::PrimApp(_, v) => v.iter().any(go),
         // A branch that is only `Error` is a case the `match` leaves out
-        // (D144 e), not a type error: those are reported where they are.
+        // (#633 e), not a type error: those are reported where they are.
         Tm::Case(s, c) => {
             let arm = |b: &Tm| !matches!(b, Tm::Error) && go(b);
             go(s)
@@ -2919,7 +2919,7 @@ fn touches(t: &Tm, g: &Globals, defs: &HashSet<DefId>, tys: &HashSet<TyId>) -> b
     }
 }
 
-/// Definitions sealed by another module (D54) that occur in `t`.
+/// Definitions sealed by another module (#537) that occur in `t`.
 pub fn collect_sealed(t: &Tm, g: &Globals, cur: &str, out: &mut Vec<DefId>) {
     sealed_in(t, g, cur, out, &mut Vec::new());
 }
@@ -2955,7 +2955,7 @@ fn sealed_in(t: &Tm, g: &Globals, cur: &str, out: &mut Vec<DefId>, seen: &mut Ve
     t.each_sub(|x, _| sealed_in(x, g, cur, out, seen));
 }
 
-/// The levels of the locals `t` mentions (for termination, D150).
+/// The levels of the locals `t` mentions (for termination, #641).
 pub(super) fn free_levels_pub(t: &Tm, lvl: usize, depth: usize, out: &mut Vec<usize>) {
     free_levels(t, lvl, depth, out)
 }

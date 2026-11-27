@@ -1,4 +1,4 @@
-# Which `-` is a sign (D169): after white space or an opening bracket, and
+# Which `-` is a sign (#657): after white space or an opening bracket, and
 # glued to what follows. Every other `-` subtracts.
 module signs
 

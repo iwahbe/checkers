@@ -1,7 +1,7 @@
 module main_let
 
 # An exported `main` declared with `let`, its value a function that a call
-# computes (D181).
+# computes (#668).
 
 import std.system (System, ExitCode)
 import std.list

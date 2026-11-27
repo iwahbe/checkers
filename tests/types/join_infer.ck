@@ -1,7 +1,7 @@
 module join_infer
 
 # The types of the futures given to `join` are inferred: `futures ?ts`
-# against a tuple of futures picks `ts` arm by arm (D175).
+# against a tuple of futures picks `ts` arm by arm (#659).
 
 import std.future (Future)
 import std.future

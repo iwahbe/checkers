@@ -1,6 +1,6 @@
 module fn_values
 
-# Function values in proofs (M22, D139): a function the prover doesn't know
+# Function values in proofs (M22, #630): a function the prover doesn't know
 # (a parameter, a lambda using local variables, a function in a record) is a
 # value it can pass, apply and reason about.
 
@@ -36,7 +36,7 @@ fn adds f k xs -> r : f~(Int -> Int -> Int), k~Int, xs~List Int, r~List Int, len
     have map_keeps_length (f k) xs
     map (f k) xs
 
-# The postcondition of an unknown function, through `map` (D84).
+# The postcondition of an unknown function, through `map` (#580).
 fn bigger f xs -> r : f~(x~Int -> y~Int, y > x), xs~List Int, r~Bool, r
     first_or (map f [0]) 0 > 0
 

@@ -1,4 +1,4 @@
-# Requests as Eglot makes them (D127): highlighting asked for at once when a
+# Requests as Eglot makes them (#622): highlighting asked for at once when a
 # file opens, and again at once after each edit, waits for that text's
 # check; then references.
 > {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"capabilities":{"general":{"positionEncodings":["utf-32","utf-8","utf-16"]}}}}

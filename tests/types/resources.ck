@@ -1,6 +1,6 @@
 module resources
 
-# Resources are linear by type (D39): no `own` needed on these binders.
+# Resources are linear by type (#533): no `own` needed on these binders.
 
 import std.files (Fs, File, IoError)
 

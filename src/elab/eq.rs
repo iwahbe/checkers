@@ -1,5 +1,5 @@
 //! `==` never compares functions, nor capabilities, cowns, futures, files
-//! or process handles (D125).
+//! or process handles (#614).
 //!
 //! (a) `==`/`!=` in compiled code (function bodies, `check`s) on a type that
 //! is or contains a function type is E0263. A type parameter of the
@@ -39,7 +39,7 @@ impl Elab {
         out
     }
 
-    /// What a built-in type without equality is (D125 c): `None` for the
+    /// What a built-in type without equality is (#614 c): `None` for the
     /// built-in types that compare and for every declared type.
     fn no_equality(&self, id: TyId) -> Option<&'static str> {
         let ti = &self.g.tys[id.0 as usize];
@@ -80,7 +80,7 @@ impl Elab {
         }
         match self.force(ty) {
             f @ Val::Pi(..) => Err(f),
-            // An array compares element by element (D133).
+            // An array compares element by element (#624).
             Val::TyCon(id, args) if Some(id) == self.g.well_known.array => match args.first() {
                 Some(a) => self.comparable(a, depth + 1, seen, lvl, vars),
                 None => Ok(()),

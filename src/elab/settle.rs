@@ -24,7 +24,7 @@ pub struct Early {
     /// Measure obligations proved, which termination checking adds to
     /// `Elab::obligations` only at the module's end: by where and what.
     pub measures: Vec<(Span, ObKind)>,
-    /// Recursive groups whose guessed measure was proved (D150).
+    /// Recursive groups whose guessed measure was proved (#641).
     pub guesses: HashSet<Vec<DefId>>,
     /// How many obligations each module had proved so.
     pub counts: HashMap<String, usize>,

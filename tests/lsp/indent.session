@@ -1,4 +1,4 @@
-# On-type formatting (D158): after a line break, the new line's indentation.
+# On-type formatting (#644): after a line break, the new line's indentation.
 > {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"capabilities":{}}}
 < 1
 > {"jsonrpc":"2.0","method":"initialized","params":{}}

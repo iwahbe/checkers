@@ -1,7 +1,7 @@
 module sign_spacing
 
 # A `-` after white space or an opening bracket and glued to what follows
-# is a sign; every other `-` subtracts (D169). So `f -1` passes `-1`, a
+# is a sign; every other `-` subtracts (#657). So `f -1` passes `-1`, a
 # line starting with `-1` starts a new line (a block's first line, a
 # `match` arm), and a line starting with `- b` continues the one before.
 

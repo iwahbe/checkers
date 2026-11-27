@@ -1,6 +1,6 @@
 module past_errors
 
-# Checking goes on past errors (D122): a syntax error and a type error, and
+# Checking goes on past errors (#599): a syntax error and a type error, and
 # still the other declarations' type errors, proofs and `check`s.
 
 fn good x -> r : x~Nat, r~Nat

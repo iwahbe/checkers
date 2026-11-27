@@ -1,7 +1,7 @@
 module unsolved_in_match
 
 # A type the checker can't work out is reported (E0203) inside an `if` or a
-# `match` in a signature as it is outside one (D178).
+# `match` in a signature as it is outside one (#665).
 
 fn phantom xs -> t : xs~List a, t~Type
     Nat

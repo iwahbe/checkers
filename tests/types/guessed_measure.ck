@@ -1,4 +1,4 @@
-# D150: with no `decreasing`, a function whose recursion isn't structural
+# #641: with no `decreasing`, a function whose recursion isn't structural
 # gets a measure guessed from its parameters' sizes and its guards'
 # distances, which the prover checks.
 module guessed_measure

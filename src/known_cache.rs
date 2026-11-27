@@ -1,5 +1,5 @@
 //! Known values kept across builds (§8.9), in `.checkers/known/` beside the
-//! checked file, as Z3's answers are (D100): those native code computes for
+//! checked file, as Z3's answers are (#591): those native code computes for
 //! the type checker, and those folding computes in native code.
 //!
 //! A value is stored under a key: a digest of the term computed, its type,
