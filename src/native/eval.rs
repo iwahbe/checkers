@@ -43,12 +43,9 @@ impl<'g> Evaluator<'g> {
     /// `Debug` instances compiled (values known at compile time, §8.9).
     pub fn plain(g: &'g Globals) -> Evaluator<'g> {
         let module = super::jit_module();
-        let mut gen = Gen::new(module, Program::new(g, None), g);
+        let mut gen = Gen::importing_invoke(module, Program::new(g, None), g);
         gen.probe = true;
-        gen.define_new();
-        gen.m.finalize_definitions().expect("finish native code");
-        let invoke = gen.m.get_finalized_function(gen.invoke);
-        let invoke: checkers_rt::prog::Invoke = unsafe { std::mem::transmute(invoke) };
+        let invoke = super::shared_invoke();
         let prog = checkers_rt::prog::make(&super::descriptor(g, &gen.p), invoke);
         Evaluator { g, staged: None, gen, prog }
     }
@@ -58,12 +55,9 @@ impl<'g> Evaluator<'g> {
     /// makes (`mirror`), with the same numbers; it makes none of its own.
     pub fn for_folding(g: &'g Globals, staged: Option<&'g crate::stage::Staged>) -> Evaluator<'g> {
         let module = super::jit_module();
-        let mut gen = Gen::new(module, Program::new(g, staged), g);
+        let mut gen = Gen::importing_invoke(module, Program::new(g, staged), g);
         gen.probe = true;
-        gen.define_new();
-        gen.m.finalize_definitions().expect("finish native code");
-        let invoke = gen.m.get_finalized_function(gen.invoke);
-        let invoke: checkers_rt::prog::Invoke = unsafe { std::mem::transmute(invoke) };
+        let invoke = super::shared_invoke();
         let prog = checkers_rt::prog::make(&super::descriptor(g, &gen.p), invoke);
         gen.p.specs.borrow_mut().frozen = true;
         let mut ev = Evaluator { g, staged, gen, prog };

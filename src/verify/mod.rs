@@ -497,7 +497,10 @@ fn ask_all(texts: &[Option<String>]) -> Vec<Option<Answer>> {
 /// isn't `Send`). Answers depend only on the queries' texts, as in
 /// `ask_all_out`: a text asked again waits for the first.
 fn ask_produced(n: usize, mut produce: impl FnMut(usize) -> Option<String>) -> Vec<Option<Answer>> {
-    let workers = std::thread::available_parallelism().map_or(2, |n| n.get()).min(8);
+    if n == 0 {
+        return Vec::new();
+    }
+    let workers = std::thread::available_parallelism().map_or(2, |n| n.get()).min(8).min(n);
     let results: Vec<std::sync::Mutex<Option<String>>> = (0..n).map(|_| std::sync::Mutex::new(None)).collect();
     // The queries made so far, and whether all are.
     let queue: std::sync::Mutex<(std::collections::VecDeque<(usize, String)>, bool)> = std::sync::Mutex::new((Default::default(), false));
@@ -549,13 +552,18 @@ fn ask_produced(n: usize, mut produce: impl FnMut(usize) -> Option<String>) -> V
 
 /// Z3's output for each query, solved on a few worker threads.
 fn ask_all_out(texts: &[Option<String>]) -> Vec<Option<String>> {
-    let workers = std::thread::available_parallelism().map_or(2, |n| n.get()).min(8);
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let results: Vec<std::sync::Mutex<Option<String>>> = texts.iter().map(|_| std::sync::Mutex::new(None)).collect();
     // A query asked again in the same batch waits for the first: in
     // parallel, whether its answer were reused would depend on timing.
     let mut seen = std::collections::HashSet::new();
     let again: Vec<bool> = texts.iter().map(|t| t.as_ref().is_some_and(|t| !seen.insert(t.as_str()))).collect();
+    // Most retry tiers have nothing left to solve. Don't start workers
+    // for them, or more workers than there are distinct queries.
+    if seen.is_empty() {
+        return vec![None; texts.len()];
+    }
+    let workers = std::thread::available_parallelism().map_or(2, |n| n.get()).min(8).min(seen.len());
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let results: Vec<std::sync::Mutex<Option<String>>> = texts.iter().map(|_| std::sync::Mutex::new(None)).collect();
     std::thread::scope(|s| {
         for _ in 0..workers {
             // Z3 recurses deeply on large terms: give it a big stack.
@@ -883,24 +891,23 @@ fn solve(
     // where there are none): `unsat` is a proof, as from any weaker query;
     // where there are some, a model may break them, so `sat` is no
     // counterexample, and the full query decides (6b).
-    let lean_of = |q: &smt::Query| q.without_bodies.clone().unwrap_or_else(|| q.text.clone());
+    fn lean_of(q: &smt::Query) -> &str {
+        q.without_bodies.as_deref().unwrap_or(&q.text)
+    }
     // 1. Everything, with a small work limit (D154): most goals need little
     //    work, and this query's answer is final either way: `unsat` is a
     //    proof, `sat` a real counterexample.
     let firsts = ask_produced(obs.len(), |k| {
         let q = smt::Builder::new(e, user).sharing(&defs).with_body_posts().query(obs[k]);
-        let first = q.as_ref().ok().map(|q| with_limit(&lean_of(q), FIRST_RLIMIT));
+        let first = q.as_ref().ok().map(|q| with_limit(lean_of(q), FIRST_RLIMIT));
         queries.push(q);
         first
     });
-    let texts: Vec<Option<String>> = queries.iter().map(|q| q.as_ref().ok().map(|q| q.text.clone())).collect();
-    let fallbacks: Vec<Option<String>> = queries.iter().map(|q| q.as_ref().ok().and_then(|q| q.without_axioms.clone())).collect();
     if std::env::var_os("CHECKERS_SMT_DUMP").is_some() {
-        for (o, t) in obs.iter().zip(&texts) {
-            eprintln!(";; ── {:?} at {:?}\n{}", o.kind, o.span, t.as_deref().unwrap_or(";; outside the fragment"));
+        for (o, q) in obs.iter().zip(&queries) {
+            eprintln!(";; ── {:?} at {:?}\n{}", o.kind, o.span, q.as_ref().map_or(";; outside the fragment", |q| q.text.as_str()));
         }
     }
-    let lean: Vec<Option<String>> = queries.iter().map(|q| q.as_ref().ok().map(lean_of)).collect();
     let bodies: Vec<bool> = queries.iter().map(|q| q.as_ref().is_ok_and(|q| q.without_bodies.is_some())).collect();
     // Left for the full query.
     let mut with_bodies = vec![false; obs.len()];
@@ -920,6 +927,14 @@ fn solve(
         .collect();
     // The obligations a query has proved.
     let mut proven: Vec<bool> = answers.iter().map(|a| matches!(a, Some(Answer::Unsat))).collect();
+    // Usually the first answers settle the whole batch. Don't copy the
+    // queries or prepare retry tiers when none of them can be used.
+    if queries.iter().zip(&answers).all(|(q, a)| q.is_err() || a.is_some()) {
+        return (defs, queries, answers, proven);
+    }
+    let texts: Vec<Option<String>> = queries.iter().map(|q| q.as_ref().ok().map(|q| q.text.clone())).collect();
+    let fallbacks: Vec<Option<String>> = queries.iter().map(|q| q.as_ref().ok().and_then(|q| q.without_axioms.clone())).collect();
+    let lean: Vec<Option<String>> = queries.iter().map(|q| q.as_ref().ok().map(|q| lean_of(q).to_string())).collect();
     // Z3 gave up: weaker queries, weakest first. `unsat` from a weaker query
     // is still a proof (§7.2).
     // 2. Definitions uninterpreted: fast when the facts in scope suffice.
@@ -2199,6 +2214,17 @@ fn render_model(text: &str, shown: &[(String, String)], strings: &[String], arra
 
 #[cfg(test)]
 mod tests {
+    /// Empty retry batches and repeated queries keep their result slots
+    /// when the worker count is smaller than the batch.
+    #[test]
+    fn sparse_query_batches_keep_their_results() {
+        assert!(super::ask_produced(0, |_| unreachable!()).is_empty());
+        assert_eq!(super::ask_all_out(&[None, None]), [None, None]);
+        let query = super::options(super::FIRST_RLIMIT) + "(assert false)\n(check-sat)\n";
+        let results = super::ask_all_out(&[None, Some(query.clone()), None, Some(query)]);
+        assert_eq!(results, [None, Some("unsat\n".into()), None, Some("unsat\n".into())]);
+    }
+
     /// A module verified before (D143) is proved for the compile-time gate
     /// (§8.9) by what it gave then: no query is built for it again.
     #[test]
