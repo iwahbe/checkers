@@ -2566,3 +2566,64 @@ export lemma has_value_bool c m t : c~Context, m~Model, t~Term, term.sort_of (te
             Ok (Truth _) -> auto
             Ok v         -> have not (of_sort c m Bool v)
             Err _        -> auto
+
+# ── Every definition's equation is an axiom of the context ───────────────────
+
+lemma drop_length_append l y z : l~List Sort, y~Sort, z~List Sort
+    ensures list.head (list.drop (list.length l) (l ++ (y :: z))) == Some y
+    proof
+        match l
+            []        -> auto
+            _ :: rest -> have drop_length_append rest y z
+
+# The parameters of a binder list, `Var (k - 1)` … `Var 0`, have its sorts,
+# in order.
+lemma params_sorted sig ss e : sig~Sig, ss~List Sort, e~List Sort
+    ensures term.sorts_of sig (list.reverse ss ++ e) (params_from (list.length ss)) == Ok ss
+    proof
+        match ss
+            []        ->
+                have list.length_reverse ss
+                have term.sorts_of_nil sig e
+            x :: rest ->
+                let env = list.reverse rest ++ (x :: e)
+                have list.reverse_cons_append rest x e
+                have list.length_reverse rest
+                have drop_length_append (list.reverse rest) x e
+                have term.sort_of_var sig env (list.length rest)
+                have params_sorted sig rest (x :: e)
+                have term.sorts_of_cons sig env (Var (list.length rest)) (params_from (list.length rest))
+
+# The equation of a definition of `c` is well-sorted in `c`: `holds_at`
+# asks it at values, and is false of an axiom that isn't.
+export lemma definition_axiom_ok c n d : c~Context, n~Nat, d~Def, list.contains (term.defs c) (n, d)
+    ensures term.axiom_ok c (definition_axiom n d)
+    proof
+        let sig = term.signature c
+        let env = term.binder_env d.params
+        let ss = term.var_sorts d.params
+        let ps = params_from (list.length d.params)
+        let lhs = App (Fun n) ps
+        have term.def_of_context c n d
+        have term.def_ok_def c n d
+        have term.def_fun_params d
+        have term.axiom_ok_def c (definition_axiom n d)
+        have term.binder_env_def d.params
+        have term.var_sorts_length d.params
+        have params_sorted sig ss []
+        have list.append_nil (list.reverse ss)
+        have term.check_term_def sig env d.body d.result
+        have term.check_term_def sig env (App (Prim Eq) [lhs, d.body]) Bool
+        have term.sort_of_app sig env (Prim Eq) [lhs, d.body]
+        have term.sorts_of_cons sig env lhs [d.body]
+        have term.sorts_of_cons sig env d.body []
+        have term.sorts_of_nil sig env
+        have term.sort_of_app sig env (Fun n) ps
+        have term.apply_fun sig n ss
+        have term.apply_prim sig Eq [d.result, d.result]
+
+# Every definition's equation is an axiom of the context, all at once.
+export lemma definitions_ok c : c~Context
+    ensures forall n d : n~Nat, d~Def, list.contains (term.defs c) (n, d), term.axiom_ok c (definition_axiom n d)
+    proof
+        have definition_axiom_ok c n d

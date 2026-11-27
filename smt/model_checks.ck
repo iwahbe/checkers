@@ -406,6 +406,17 @@ lemma well_sorted c t s : c~Context, t~Term, s~Sort, term.sort_of (term.signatur
     proof
         have term.sort_of_ok c [] t s
 
+# ── Every definition's equation is an axiom of the context ───────────────────
+
+# `f`'s equation is well-sorted in its context.
+check term.axiom_ok (context F) f_axiom
+
+# From another module, as a theorem asks it of every definition.
+lemma equations_sorted c n d : c~Context, n~Nat, d~Def, list.contains (term.defs c) (n, d)
+    ensures term.axiom_ok c (model.definition_axiom n d)
+    proof
+        have model.definitions_ok c n d
+
 # ── `refutes` with an axiom ──────────────────────────────────────────────────
 
 # `x = 1` satisfies the axiom and the fact, and the goal `false` fails;
