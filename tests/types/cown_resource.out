@@ -1,31 +1,31 @@
 error[E0405]: `f` holds a resource (`File`), which can't be put in a cown
-  --> cown_resource.ck:10:11
+  --> cown_resource.ck:11:5
    |
-10 | fn direct f s -> c : f~File, s~Sched, c~Cown File
-   |           ^
+11 |     cown.new f s
+   |     ^^^^^^^^^^^^
    = note: `f` is passed to `cown.new`; a cown's handle can be shared, so nothing would make sure what it holds is closed
    = help: keep the resource with one owner, passing it on through calls, `fork` and `join`; a cown may hold the rest of the state
 
 error[E0405]: `f` holds a resource (`File`), which can't be put in a cown
-  --> cown_resource.ck:17:11
+  --> cown_resource.ck:18:5
    |
-17 | fn inside f s -> c : f~File, s~Sched, c~Cown Job
-   |           ^
+18 |     cown.new (Job f 0) s
+   |     ^^^^^^^^^^^^^^^^^^^^
    = note: `f` is passed to `cown.new`; a cown's handle can be shared, so nothing would make sure what it holds is closed
    = help: keep the resource with one owner, passing it on through calls, `fork` and `join`; a cown may hold the rest of the state
 
 error[E0405]: `v` is `own`, so it may be a resource, which can't be put in a cown
-  --> cown_resource.ck:20:12
+  --> cown_resource.ck:21:5
    |
-20 | fn generic v s -> c : v~own a, s~Sched, c~Cown a
-   |            ^
+21 |     cown.new v s
+   |     ^^^^^^^^^^^^
    = help: remove `own`: a cown holds only values that aren't resources
 
 error[E0405]: `f` holds a resource (`File`), which can't be put in an actor's state
-  --> cown_resource.ck:23:10
+  --> cown_resource.ck:24:5
    |
-23 | fn state f s -> a : f~File, s~Sched, a~Actor (Option File)
-   |          ^
+24 |     actor.new (Some f) s
+   |     ^^^^^^^^^^^^^^^^^^^^
    = note: `f` is passed to `actor.new`; a cown's handle can be shared, so nothing would make sure what it holds is closed
    = help: keep the resource with one owner, passing it on through calls, `fork` and `join`; a cown may hold the rest of the state
 
