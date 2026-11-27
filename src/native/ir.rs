@@ -446,7 +446,7 @@ impl<'g> Compiler<'g> {
             return Ir::Erased;
         }
         let depth = max_var(a).map_or(0, |m| m + 1);
-        let env = std::rc::Rc::new((0..depth).map(Val::var).collect::<Vec<_>>());
+        let env = (0..depth).map(Val::var).collect::<crate::core::Env>();
         let v = eval(self.g, &env, a);
         // A class's type at a dictionary passed at run time (#133): its
         // layout word, kept in the dictionary.
@@ -508,7 +508,7 @@ impl<'g> Compiler<'g> {
     /// descriptors, a type variable's word, or a dictionary's type.
     fn descriptor(&self, a: &Tm) -> Ir {
         let depth = max_var(a).map_or(0, |m| m + 1);
-        let env = std::rc::Rc::new((0..depth).map(Val::var).collect::<Vec<_>>());
+        let env = (0..depth).map(Val::var).collect::<crate::core::Env>();
         let v = eval(self.g, &env, a);
         self.desc_ir(&crate::core::desc_of(self.g, &v), depth)
     }
@@ -550,14 +550,14 @@ impl<'g> Compiler<'g> {
     /// Is this element type `U8`, so the array is a bytes object (D133)?
     fn is_bytes_elem(&self, ty: &Tm) -> bool {
         let depth = max_var(ty).map_or(0, |m| m + 1);
-        let env = std::rc::Rc::new((0..depth).map(Val::var).collect::<Vec<_>>());
+        let env = (0..depth).map(Val::var).collect::<crate::core::Env>();
         crate::core::layout_of(self.g, &eval(self.g, &env, ty)) == Ok(checkers_rt::array::Layout::U8 as u8)
     }
 
     /// Is this type term `Nat`? It may mention local variables and solved metas.
     fn is_nat(&self, ty: &Tm) -> bool {
         let depth = max_var(ty).map_or(0, |m| m + 1);
-        let env = std::rc::Rc::new((0..depth).map(Val::var).collect::<Vec<_>>());
+        let env = (0..depth).map(Val::var).collect::<crate::core::Env>();
         crate::core::is_nat(self.g, &eval(self.g, &env, ty))
     }
 }

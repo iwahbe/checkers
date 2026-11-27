@@ -372,7 +372,7 @@ pub struct InstReq {
     pub fallback: Option<SigInst>,
     /// Where it is asked for, for a check of the instance found through a
     /// refinement alias (#226).
-    pub cx: Option<KeptCx>,
+    pub cx: Option<Cx>,
     /// For a type's header's clause (#385): the type.
     pub of_type: Option<TyId>,
     /// Asked in the signature of an instance's function or dictionary.
@@ -387,7 +387,7 @@ pub struct AliasDict {
     /// The unknown it was found for, if asked for by a use (not by an
     /// instance's context).
     pub meta: Option<MetaId>,
-    pub cx: KeptCx,
+    pub cx: Cx,
     pub span: Span,
     pub owner: Option<DefId>,
     pub class: TyId,
@@ -3017,7 +3017,7 @@ impl Elab {
         // Its head's types' clauses (#385), implied in its context: found
         // the same way, at the types asked for.
         for ty in self.inst_implied.get(&inst.def).cloned().unwrap_or_default() {
-            let Val::TyCon(c, ctys) = self.force(&eval(&self.g, &Rc::new(env.clone()), &ty)) else { return Err("none".into()) };
+            let Val::TyCon(c, ctys) = self.force(&eval(&self.g, &crate::core::Env::from(env.clone()), &ty)) else { return Err("none".into()) };
             let d = self.find_dict(req, c, &ctys, depth + 1)?;
             env.push(eval(&self.g, &lvl_env, &d));
             t = Tm::App(Rc::new(t), Rc::new(d), Icit::Impl, Mult::Many);
@@ -3424,7 +3424,7 @@ impl Elab {
     pub fn reduce_assoc(&self, lvl: usize, t: &Tm) -> Tm {
         if let (Tm::Def(d), args) = t.spine() {
             if self.g.assoc_def(*d).is_some_and(|(_, _, n)| args.len() == n + 1) {
-                let env = Rc::new((0..lvl).map(Val::var).collect::<Vec<_>>());
+                let env = (0..lvl).map(Val::var).collect::<crate::core::Env>();
                 let v = force(&self.g, eval(&self.g, &env, t));
                 let stuck = matches!(&v, Val::Neutral(_, sp) if matches!(sp.last(), Some(Elim::Field(..))));
                 if !stuck {
@@ -3535,7 +3535,7 @@ impl Elab {
             given,
             assoc: None,
             fallback: self.sig_inst.clone().filter(|f| f.class == tid),
-            cx: (self.in_spec == 0).then(|| cx.keep()),
+            cx: (self.in_spec == 0).then(|| cx.clone()),
             of_type: None,
             instance_sig: self.instance_sig,
         });
@@ -3674,7 +3674,7 @@ impl Elab {
             if *icit != Icit::Expl || i > rlvl {
                 continue;
             }
-            let benv = Rc::new(env[..i].to_vec());
+            let benv = crate::core::Env::from(env[..i].to_vec());
             let (iv, cv) = (eval(&self.g, &benv, ity), eval(&self.g, &benv, cty));
             let at = (x.to_string(), self.show_val(&cx, &iv), self.show_val(&cx, &cv));
             let k = kind_at(true, Some(at.clone()));
@@ -3759,7 +3759,7 @@ impl Elab {
         // (`$d.make …`): a clause of the function's own (`Seq s`) may be
         // bound before it, as when the class's type is a parameter.
         let own = self.method_dict(f)?;
-        let mut ty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[f.0 as usize].ty);
+        let mut ty = eval(&self.g, &crate::core::Env::new(), &self.g.defs[f.0 as usize].ty);
         let mut pos = Vec::new();
         let mut dict = None;
         let mut i = 0;
@@ -3871,7 +3871,7 @@ impl Elab {
         let (pt, pb) = (self.peel(t), self.peel(b));
         if let Some((d, args)) = self.refined_alias(&pt) {
             if self.refined_alias(&pb).is_none_or(|(e, _)| e != d) {
-                let vv = eval(&self.g, &Rc::new(env.to_vec()), v);
+                let vv = eval(&self.g, &crate::core::Env::from(env.to_vec()), v);
                 let preds = self.alias_preds.get(&d).cloned().unwrap_or_default();
                 // The predicates at this use's arguments where they are
                 // closed values: `n < 7` for `Below 7`, not `n < k`.
@@ -3932,9 +3932,9 @@ impl Elab {
                     let mut inner = env.to_vec();
                     let mut parts = Vec::new();
                     for (i, (_, _, _, fty)) in fields.iter().enumerate() {
-                        let ft = eval(&self.g, &Rc::new(et.clone()), fty);
-                        let fb = eval(&self.g, &Rc::new(eb.clone()), fty);
-                        let fi = ei.as_ref().map(|e| eval(&self.g, &Rc::new(e.clone()), fty));
+                        let ft = eval(&self.g, &crate::core::Env::from(et.clone()), fty);
+                        let fb = eval(&self.g, &crate::core::Env::from(eb.clone()), fty);
+                        let fi = ei.as_ref().map(|e| eval(&self.g, &crate::core::Env::from(e.clone()), fty));
                         let x = Val::var(lvl + i);
                         et.push(x.clone());
                         eb.push(x.clone());
@@ -4069,7 +4069,7 @@ impl Elab {
         let x: Name = subject.clone().unwrap_or_else(|| Rc::from("x"));
         let text = if direct { format!("list.all (\\{x} -> {})", texts.join(" and ")) } else { String::new() };
         // `list.all` at the element type at the base, the predicate, `v`.
-        let mut ty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[all.0 as usize].ty);
+        let mut ty = eval(&self.g, &crate::core::Env::new(), &self.g.defs[all.0 as usize].ty);
         let mut call = Tm::Def(all);
         let mut expl = vec![Tm::Lam(x, Mult::Many, Icit::Expl, Rc::new(body)), v.clone()].into_iter();
         while let Val::Pi(_, m, icit, _, c) = self.force(&ty) {
@@ -4100,12 +4100,12 @@ impl Elab {
         let base_ty = self.alias_base(alias_ty);
         let mut cx = match call {
             Some((cx, _, _)) => cx.clone(),
-            None => ad.cx.cx(),
+            None => ad.cx.clone(),
         };
         let alias_s = self.show_val(&cx, alias_ty);
         let base_s = self.show_val(&cx, &base_ty);
         let span = call.map_or(ad.span, |c| c.2);
-        let fty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[f.0 as usize].ty);
+        let fty = eval(&self.g, &crate::core::Env::new(), &self.g.defs[f.0 as usize].ty);
         // The arguments: the call's, or the class's types, the dictionary
         // and a local for each other binder.
         let call_args: Option<Vec<(Val, Icit, Mult)>> = call.map(|(cx, t, _)| {
@@ -4367,7 +4367,7 @@ impl Elab {
         let mut out = HashMap::new();
         let Some(g) = g else { return (out, None) };
         let class_expl: Vec<usize> = (0..args.len()).filter(|i| args[*i].1 == Icit::Expl).collect();
-        let mut ty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[g.0 as usize].ty);
+        let mut ty = eval(&self.g, &crate::core::Env::new(), &self.g.defs[g.0 as usize].ty);
         let (mut j, mut k) = (0, 0);
         let mut found = Vec::new();
         while let Val::Pi(_, _, icit, d, c) = self.force(&ty) {
@@ -4448,7 +4448,7 @@ impl Elab {
             let used = ad.meta.is_some_and(|m| uses.iter().any(|u| u.0 == m));
             if cs.is_some() || used {
                 for (f, c) in cs.into_iter().flatten() {
-                    let (f, cx) = (*f, c.cx.cx());
+                    let (f, cx) = (*f, c.cx.clone());
                     let call = crate::core::zonk_metas(&self.g, cx.lvl(), &c.call);
                     self.alias_method_obligations(&ad, f, Some((&cx, &call, c.span)));
                 }

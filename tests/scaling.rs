@@ -271,11 +271,11 @@ fn a_chain_of_additions_in_lets_checks_in_linear_time_and_memory() {
 /// before. Each call keeps its context for later: to find its instance's
 /// dictionary, and to check the call once it is found. Copied, each kept
 /// context held every local in scope, n²/2 for n calls: 2,000 took 1.3 GB
-/// and 4,000 took 5.1 GB. Shared, they take 137 MB and 155 MB, and 8,000
-/// 191 MB. Each call also walked every local, to find the dictionaries in
-/// scope and the locals an unknown depends on, and built an environment of
-/// them all to evaluate its dictionary: 8,000 took 7.3 times as long as
-/// 2,000 with these, 2.6 times without.
+/// and 4,000 took 5.1 GB. Persistent, they take 141 MB and 157 MB, and
+/// 8,000 191 MB. Each call also walked every local, to find the
+/// dictionaries in scope and the locals an unknown depends on, and built
+/// an environment of them all to evaluate its dictionary: 8,000 took 7.3
+/// times as long as 2,000 with these, 2.8 times without.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_chain_of_class_calls_in_lets_checks_in_linear_time_and_memory() {

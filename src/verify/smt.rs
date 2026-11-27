@@ -1021,7 +1021,7 @@ impl<'a> Builder<'a> {
         if !has_meta(t) {
             return t.clone();
         }
-        let env = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+        let env = (0..n).map(Val::var).collect::<crate::core::Env>();
         quote(&self.e.g, n, &eval(&self.e.g, &env, t))
     }
 
@@ -1144,7 +1144,7 @@ impl<'a> Builder<'a> {
                     _ => Val::var(n + k),
                 })
                 .collect();
-            let v = eval(&self.e.g, &Rc::new(vars), t);
+            let v = eval(&self.e.g, &crate::core::Env::from(vars), t);
             if let Some((_, r)) = self.reps.iter().find(|(m, _)| self.e.same_type_forced(m, &v)).cloned() {
                 // The representative is about the obligation's locals too.
                 let tm = quote(&self.e.g, n, &r);
@@ -1220,7 +1220,7 @@ impl<'a> Builder<'a> {
                         // applied to variables past `env`, standing for the
                         // arguments kept by its key.
                         let n = env.len();
-                        let empty = Rc::new(Vec::new());
+                        let empty = crate::core::Env::new();
                         let mut extra: Vec<Ent> = Vec::new();
                         let mut venv: Vec<Val> = Vec::with_capacity(n);
                         for (k, e) in env.iter().enumerate() {
@@ -1232,7 +1232,7 @@ impl<'a> Builder<'a> {
                                             let base = n + extra.len();
                                             extra.extend(ents.iter().cloned());
                                             let args: Vec<Val> = (0..m).map(|j| Val::var(base + j)).collect();
-                                            crate::core::eval(&self.e.g, &Rc::new(args), &f)
+                                            crate::core::eval(&self.e.g, &crate::core::Env::from(args), &f)
                                         }
                                         _ => Val::var(k),
                                     },
@@ -1242,7 +1242,7 @@ impl<'a> Builder<'a> {
                             };
                             venv.push(v);
                         }
-                        let v = crate::core::force(&self.e.g, crate::core::eval(&self.e.g, &Rc::new(venv), t));
+                        let v = crate::core::force(&self.e.g, crate::core::eval(&self.e.g, &crate::core::Env::from(venv), t));
                         match &v {
                             Val::Neutral(crate::core::Head::Var(l), sp) if sp.len() == 1 && *l < n => {
                                 let crate::core::Elim::Field(c, i) = sp[0] else { return out("a class's type at a dictionary it can't name") };
@@ -1277,7 +1277,7 @@ impl<'a> Builder<'a> {
                         let mut fv = std::collections::BTreeSet::new();
                         crate::core::free_vars(t, 0, &mut fv);
                         if fv.is_empty() && !self.e.alias_preds.contains_key(d) {
-                            let v = crate::core::eval(&self.e.g, &Rc::new(Vec::new()), t);
+                            let v = crate::core::eval(&self.e.g, &crate::core::Env::new(), t);
                             if let Some(u) = crate::core::unfold(&self.e.g, &v) {
                                 let u = crate::core::force_meta(&self.e.g, u);
                                 let stuck = matches!(&u, Val::Neutral(crate::core::Head::Def(d2), _) if d2 == d)
@@ -2058,7 +2058,7 @@ impl<'a> Builder<'a> {
         let ty = match ty.head() {
             Tm::Def(_) => {
                 let n = env.len();
-                let vars = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+                let vars = (0..n).map(Val::var).collect::<crate::core::Env>();
                 match crate::core::class_type_at(&self.e.g, &eval(&self.e.g, &vars, &ty)) {
                     Some(v) => quote(&self.e.g, n, &v),
                     None => ty,
@@ -2089,7 +2089,7 @@ impl<'a> Builder<'a> {
         let shape = match ty.head() {
             Tm::Def(_) => {
                 let n = env.len();
-                let vars = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+                let vars = (0..n).map(Val::var).collect::<crate::core::Env>();
                 quote(&self.e.g, n, &force(&self.e.g, eval(&self.e.g, &vars, &ty)))
             }
             _ => ty,
@@ -2118,7 +2118,7 @@ impl<'a> Builder<'a> {
                 if let Some(inside) = inside {
                     // The type, the same at any depth of locals.
                     let n = env.len();
-                    let vars = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+                    let vars = (0..n).map(Val::var).collect::<crate::core::Env>();
                     let key = format!("{:?}", quote(&self.e.g, 1 << 20, &eval(&self.e.g, &vars, &shape)));
                     if !inside.contains(&key) && inside.len() < DATA_DEPTH {
                         inside.push(key);
@@ -2153,7 +2153,7 @@ impl<'a> Builder<'a> {
             return Vec::new();
         }
         let n = env.len();
-        let vars = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+        let vars = (0..n).map(Val::var).collect::<crate::core::Env>();
         let params: Vec<Val> = args.iter().map(|a| eval(&self.e.g, &vars, a)).collect();
         let senv = self.sort_env(id, sargs);
         let ctors = self.e.g.tys[id.0 as usize].ctors.clone();
@@ -2168,7 +2168,7 @@ impl<'a> Builder<'a> {
                 match fs.iter().find(|(i, _)| *i == k) {
                     Some((_, fsort)) => {
                         let sel = format!("({} {x})", sel_sym(self.e, c, k));
-                        let fty = quote(&self.e.g, n + k, &eval(&self.e.g, &Rc::new(vals.clone()), &f.3));
+                        let fty = quote(&self.e.g, n + k, &eval(&self.e.g, &crate::core::Env::from(vals.clone()), &f.3));
                         for t in self.type_terms(&ext, &fty, &sel, fsort, Some(inside), true) {
                             if !facts.contains(&t) {
                                 facts.push(t);
@@ -2185,7 +2185,7 @@ impl<'a> Builder<'a> {
             }
             // Invariants may mention the type's value parameters
             // (`stop <= len src`).
-            let vals = Rc::new(vals);
+            let vals = crate::core::Env::from(vals);
             for inv in self.e.con_invs.get(&c).cloned().unwrap_or_default() {
                 let tm = quote(&self.e.g, n + fields.len(), &eval(&self.e.g, &vals, &inv.tm));
                 let saved = self.in_def;
@@ -2213,8 +2213,8 @@ impl<'a> Builder<'a> {
     /// parameter types aren't computed from them (D176): its parameters,
     /// types and values, put in by evaluation.
     fn result_type_at(&self, n: usize, ty: &Tm, args: &[(Tm, Mult)]) -> Option<Tm> {
-        let vars = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
-        let mut v = eval(&self.e.g, &Rc::new(Vec::new()), ty);
+        let vars = (0..n).map(Val::var).collect::<crate::core::Env>();
+        let mut v = eval(&self.e.g, &crate::core::Env::new(), ty);
         for (a, _) in args {
             match force(&self.e.g, v) {
                 Val::Pi(_, _, _, _, c) => v = crate::core::apply_closure(&self.e.g, &c, eval(&self.e.g, &vars, a)),
@@ -2231,7 +2231,7 @@ impl<'a> Builder<'a> {
             return Vec::new();
         }
         let n = env.len();
-        let vars = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+        let vars = (0..n).map(Val::var).collect::<crate::core::Env>();
         let v = force(&self.e.g, eval(&self.e.g, &vars, ty));
         let Val::Neutral(h, sp) = &v else { return Vec::new() };
         let Some(crate::core::Elim::Field(c, i)) = sp.last() else { return Vec::new() };
@@ -3383,7 +3383,7 @@ impl<'a> Builder<'a> {
         while let Tm::Pi(_, _, _, a, b) = t.clone() {
             let Some((arg, _)) = args.get(k) else { return out(format!("a partial application of `{}`", info.name)) };
             let a = if computed {
-                let v = crate::core::eval(&self.e.g, &Rc::new(type_vals.clone()), &a);
+                let v = crate::core::eval(&self.e.g, &crate::core::Env::from(type_vals.clone()), &a);
                 quote(&self.e.g, inner.len(), &self.e.reduce_type(&v))
             } else {
                 (*a).clone()
@@ -3400,7 +3400,7 @@ impl<'a> Builder<'a> {
                         return out("a type computed from a value the prover can't see");
                     }
                     let shown = crate::core::show(&self.e.g, &[], &z);
-                    *type_vals.last_mut().unwrap() = crate::core::eval(&self.e.g, &Rc::new(Vec::new()), &z);
+                    *type_vals.last_mut().unwrap() = crate::core::eval(&self.e.g, &crate::core::Env::new(), &z);
                     computed = true;
                     tys.push(Sort::Unin(format!("val#{shown}"), Vec::new()));
                     inner.push(Ent::Opaque(shown.clone()));
@@ -3508,7 +3508,7 @@ impl<'a> Builder<'a> {
             return out("a function returning a function");
         }
         if computed {
-            let v = crate::core::eval(&self.e.g, &Rc::new(type_vals.clone()), &t);
+            let v = crate::core::eval(&self.e.g, &crate::core::Env::from(type_vals.clone()), &t);
             t = quote(&self.e.g, inner.len(), &self.e.reduce_type(&v));
         }
         let rs = self.sort_of(&inner, &t)?;
@@ -4067,7 +4067,7 @@ impl<'a> Builder<'a> {
         // One normal form, so the same function written in two places (say, a
         // lambda in a body and in a lemma, one with its pattern `let`s still
         // there) is one key.
-        let arg = if matches!(arg, Tm::Def(_)) { arg } else { quote(&self.e.g, 0, &eval(&self.e.g, &Rc::new(Vec::new()), &arg)) };
+        let arg = if matches!(arg, Tm::Def(_)) { arg } else { quote(&self.e.g, 0, &eval(&self.e.g, &crate::core::Env::new(), &arg)) };
         let h = arg.head();
         let key = match h {
             Tm::Def(d) if matches!(arg, Tm::Def(_)) => {

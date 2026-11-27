@@ -256,7 +256,10 @@ impl Tm {
     }
 }
 
-pub type Env = Rc<Vec<Val>>;
+/// The values of the locals a term is evaluated under, outermost first:
+/// persistent, so a closure keeps it and a value added makes a new one
+/// without a copy.
+pub type Env = crate::pvec::PVec<Val>;
 
 #[derive(Clone, Debug)]
 pub struct Closure {
@@ -404,7 +407,7 @@ pub struct Globals {
     /// The base types of classes' types that have one (#360), by their
     /// field of the dictionary: closed types.
     pub type_bases: HashMap<(ConId, usize), Vec<Tm>>,
-    /// The last identity environment `id_env` gave.
+    /// The longest identity environment `id_env` gave.
     ids: RefCell<Env>,
 }
 
@@ -456,20 +459,16 @@ pub const DEFAULT_FUEL: u64 = 200_000;
 
 impl Globals {
     /// The environment of `l` locals in which each is its own variable,
-    /// for evaluating a term under them. The last one is kept and grown or
-    /// shrunk to the length asked, rather than built anew: asked at nearby
-    /// lengths, as the calls of one body and a walk under binders ask it,
-    /// each costs what the length changed by, not `l`.
+    /// for evaluating a term under them: a prefix of the longest one asked
+    /// for so far, which is kept, so each costs about what the length
+    /// asked grew by, not `l`.
     pub fn id_env(&self, l: usize) -> Env {
         let mut ids = self.ids.borrow_mut();
-        if ids.len() != l {
-            let v = Rc::make_mut(&mut ids);
-            v.truncate(l);
-            while v.len() < l {
-                v.push(Val::var(v.len()));
-            }
+        while ids.len() < l {
+            let n = ids.len();
+            ids.push(Val::var(n));
         }
-        ids.clone()
+        ids.prefix(l)
     }
 
     pub fn new() -> Globals {
@@ -486,7 +485,7 @@ impl Globals {
             bounds: HashMap::new(),
             known: RefCell::new(HashMap::new()),
             run_time_only: RefCell::new(std::collections::HashSet::new()),
-            ids: RefCell::new(Rc::new(Vec::new())),
+            ids: RefCell::new(Env::new()),
             proved: false,
             fold_work: std::cell::Cell::new(None),
             type_bases: HashMap::new(),
@@ -592,9 +591,9 @@ impl Default for Globals {
 // ── evaluation ───────────────────────────────────────────────────────────────
 
 pub fn push(env: &Env, v: Val) -> Env {
-    let mut e = (**env).clone();
+    let mut e = env.clone();
     e.push(v);
-    Rc::new(e)
+    e
 }
 
 pub fn apply_closure(g: &Globals, c: &Closure, v: Val) -> Val {
@@ -629,7 +628,7 @@ pub fn eval(g: &Globals, env: &Env, t: &Tm) -> Val {
                 Val::TyCon(*t, Rc::new([]))
             } else {
                 let tid = *t;
-                eval(g, &Rc::new(Vec::new()), &eta(n, &[], |args| Tm::TyConApp(tid, args)))
+                eval(g, &crate::core::Env::new(), &eta(n, &[], |args| Tm::TyConApp(tid, args)))
             }
         }
         Tm::Con(c) => {
@@ -639,7 +638,7 @@ pub fn eval(g: &Globals, env: &Env, t: &Tm) -> Val {
             } else {
                 let cid = *c;
                 let icits = con_icits(g, cid);
-                eval(g, &Rc::new(Vec::new()), &eta(n, &icits, |args| Tm::ConApp(cid, args)))
+                eval(g, &crate::core::Env::new(), &eta(n, &icits, |args| Tm::ConApp(cid, args)))
             }
         }
         Tm::Meta(m) => match g.meta(*m) {
@@ -758,7 +757,7 @@ pub fn unfold(g: &Globals, v: &Val) -> Option<Val> {
         }
         g.fuel.set(g.fuel.get() - 1);
     }
-    let mut r = eval(g, &Rc::new(Vec::new()), body);
+    let mut r = eval(g, &crate::core::Env::new(), body);
     for e in sp.iter() {
         r = elim(g, r, e.clone());
     }
@@ -946,7 +945,7 @@ pub fn value_params_needed(g: &Globals, id: TyId) -> std::collections::BTreeSet<
                 continue;
             }
             let n = np + k;
-            let env = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+            let env = (0..n).map(Val::var).collect::<crate::core::Env>();
             let v = force(g, eval(g, &env, &ci.fields[k].3));
             let mut levels = std::collections::BTreeSet::new();
             if fixed_type(&v) {
@@ -1026,7 +1025,7 @@ pub fn field_type(g: &Globals, c: ConId, k: usize) -> FieldType {
     let ci = &g.cons[c.0 as usize];
     let np = g.arity_ty(ci.ty);
     let n = np + k;
-    let env = Rc::new((0..n).map(Val::var).collect::<Vec<_>>());
+    let env = (0..n).map(Val::var).collect::<crate::core::Env>();
     let v = force(g, eval(g, &env, &ci.fields[k].3));
     let t = quote(g, n, &v);
     if fixed_type(&v) {
@@ -1193,9 +1192,9 @@ fn case(g: &Globals, v: Val, c: Rc<CaseTm>, env: Env) -> Val {
             for (cid, n, body) in &c.branches {
                 if *cid == id {
                     let fields = &args[args.len() - n..];
-                    let mut e = (*env).clone();
+                    let mut e = env.clone();
                     e.extend(fields.iter().cloned());
-                    return eval(g, &Rc::new(e), body);
+                    return eval(g, &e, body);
                 }
             }
             match &c.default {
@@ -1212,9 +1211,9 @@ fn case(g: &Globals, v: Val, c: Rc<CaseTm>, env: Env) -> Val {
             // A string literal matched as `String b`: its bytes (#170).
             if let Lit::Str(s) = &l {
                 if let Some((_, n, body)) = c.branches.iter().find(|(cid, _, _)| Some(g.cons[cid.0 as usize].ty) == g.well_known.string) {
-                    let mut e = (*env).clone();
+                    let mut e = env.clone();
                     e.extend(std::iter::repeat_n(Val::Lit(Lit::Bytes(Rc::from(s.as_bytes()))), *n));
-                    return eval(g, &Rc::new(e), body);
+                    return eval(g, &e, body);
                 }
             }
             match &c.default {
@@ -1403,11 +1402,11 @@ pub fn quote(g: &Globals, l: usize, v: &Val) -> Tm {
 
 fn quote_case(g: &Globals, l: usize, c: &Rc<CaseTm>, env: &Env) -> Rc<CaseTm> {
     let qb = |n: usize, body: &Tm| {
-        let mut e = (**env).clone();
+        let mut e = env.clone();
         for k in 0..n {
             e.push(Val::var(l + k));
         }
-        quote(g, l + n, &eval(g, &Rc::new(e), body))
+        quote(g, l + n, &eval(g, &e, body))
     };
     Rc::new(CaseTm {
         branches: c.branches.iter().map(|(cid, n, b)| (*cid, *n, qb(*n, b))).collect(),
@@ -1576,7 +1575,7 @@ fn prune(g: &Globals, m2: MetaId, sp: &[Elim], p: &PartialRenaming) -> Option<(M
     for (k, (_, i, _)) in keep.iter().enumerate().rev() {
         t = Tm::Lam(Rc::from(format!("x{k}")), Mult::Many, *i, Rc::new(t));
     }
-    let sol = eval(g, &Rc::new(Vec::new()), &t);
+    let sol = eval(g, &crate::core::Env::new(), &t);
     g.metas.borrow_mut()[m2.0 as usize] = MetaEntry::Solved(sol);
     Some((m3, keep.into_iter().filter(|k| k.0).map(|k| Elim::App(k.2, k.1)).collect()))
 }
@@ -1606,7 +1605,7 @@ pub fn strengthen(g: &Globals, v: &Val, outer: usize) -> Val {
 pub fn forget_var(g: &Globals, l: usize, t: &Tm, x: usize) {
     if let Tm::Meta(m) = t.head() {
         if g.meta(*m).is_none() {
-            let env = Rc::new((0..l).map(Val::var).collect::<Vec<_>>());
+            let env = (0..l).map(Val::var).collect::<crate::core::Env>();
             if let Val::Neutral(Head::Meta(m), sp) = force_meta(g, eval(g, &env, t)) {
                 let ren: HashMap<usize, usize> = (0..l).filter(|y| *y != x).map(|y| (y, y)).collect();
                 prune(g, m, &sp, &PartialRenaming { dom: l, cod: l, ren });
@@ -1618,13 +1617,13 @@ pub fn forget_var(g: &Globals, l: usize, t: &Tm, x: usize) {
 
 fn rename_case(g: &Globals, m: MetaId, p: &PartialRenaming, c: &Rc<CaseTm>, env: &Env) -> Result<Rc<CaseTm>, UnifyError> {
     let rb = |n: usize, body: &Tm| -> Result<Tm, UnifyError> {
-        let mut e = (**env).clone();
+        let mut e = env.clone();
         let mut pr = PartialRenaming { dom: p.dom, cod: p.cod, ren: p.ren.clone() };
         for _ in 0..n {
             e.push(Val::var(pr.cod));
             pr = lift(&pr);
         }
-        rename(g, m, &pr, &eval(g, &Rc::new(e), body))
+        rename(g, m, &pr, &eval(g, &e, body))
     };
     Ok(Rc::new(CaseTm {
         branches: c.branches.iter().map(|(cid, n, b)| Ok((*cid, *n, rb(*n, b)?))).collect::<Result<_, _>>()?,
@@ -1640,7 +1639,7 @@ fn solve(g: &Globals, gamma: usize, m: MetaId, sp: &[Elim], rhs: &Val) -> Result
     for (k, i) in icits.iter().enumerate().rev() {
         t = Tm::Lam(Rc::from(format!("x{k}")), Mult::Many, *i, Rc::new(t));
     }
-    let sol = eval(g, &Rc::new(Vec::new()), &t);
+    let sol = eval(g, &crate::core::Env::new(), &t);
     g.metas.borrow_mut()[m.0 as usize] = MetaEntry::Solved(sol);
     Ok(())
 }
@@ -1762,7 +1761,7 @@ pub fn class_type_base(g: &Globals, v: &Val) -> Option<Val> {
             return None;
         }
         let b = g.type_bases.get(&(c, i))?.first()?;
-        return Some(eval(g, &Rc::new(args), b));
+        return Some(eval(g, &crate::core::Env::from(args), b));
     }
     let Val::Neutral(Head::Var(h), sp) = force(g, v) else { return None };
     let Some(Elim::Field(c, i)) = sp.last() else { return None };
@@ -1776,7 +1775,7 @@ pub fn class_type_base(g: &Globals, v: &Val) -> Option<Val> {
     let n = g.arity_ty(g.cons[c.0 as usize].ty);
     let mut env: Vec<Val> = vec![Val::Error; n];
     env.push(Val::Neutral(Head::Var(h), Rc::new(sp[..sp.len() - 1].to_vec())));
-    Some(eval(g, &Rc::new(env), b))
+    Some(eval(g, &crate::core::Env::from(env), b))
 }
 
 fn unify_whnf(g: &Globals, l: usize, a: &Val, b: &Val) -> Result<(), UnifyError> {
@@ -2630,10 +2629,10 @@ fn invert_case(g: &Globals, l: usize, m: MetaId, sp: &[Elim], other: &Val) -> Op
     let mut heads = Vec::new();
     let mut found = None;
     for (con, n, body) in &c.branches {
-        let mut e = (**env).clone();
+        let mut e = env.clone();
         // The fields, unknown: far above any context.
         e.extend((0..*n).map(|k| Val::var(usize::MAX / 2 + k)));
-        let h = rigid_head(&force(g, eval(g, &Rc::new(e), body)))?;
+        let h = rigid_head(&force(g, eval(g, &e, body)))?;
         if heads.contains(&h) {
             return None;
         }
@@ -2673,7 +2672,7 @@ fn first_order(g: &Globals, l: usize, m: MetaId, sp: &[Elim], other: &Val) -> Op
             let mut ts: Vec<Tm> = prefix.iter().map(|a| quote(g, l + 1, a)).collect();
             ts.push(Tm::Var(0));
             let lam = Tm::Lam(Rc::from("y"), Mult::Many, Icit::Expl, Rc::new(Tm::TyConApp(*id, ts)));
-            let env = Rc::new((0..l).map(Val::var).collect::<Vec<_>>());
+            let env = (0..l).map(Val::var).collect::<crate::core::Env>();
             let f = eval(g, &env, &lam);
             Some(unify(g, l, &head, &f).and_then(|_| unify(g, l, x, last)))
         }

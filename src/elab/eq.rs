@@ -27,7 +27,7 @@ impl Elab {
     /// The positions of `d`'s leading binders that are type parameters.
     fn type_params(&self, d: DefId) -> Vec<(usize, Name)> {
         let mut out = Vec::new();
-        let mut v = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[d.0 as usize].ty);
+        let mut v = eval(&self.g, &crate::core::Env::new(), &self.g.defs[d.0 as usize].ty);
         let mut k = 0;
         while let Val::Pi(x, _, _, dom, c) = self.force(&v) {
             if matches!(self.force(&dom), Val::Univ(_)) {
@@ -98,7 +98,7 @@ impl Elab {
                     for (i, f) in fields.iter().enumerate() {
                         let mut env = args.to_vec();
                         env.extend(std::iter::repeat_n(Val::Error, i));
-                        let fty = eval(&self.g, &Rc::new(env), &f.3);
+                        let fty = eval(&self.g, &crate::core::Env::from(env), &f.3);
                         self.comparable(&fty, depth + 1, seen, lvl, vars)?;
                     }
                 }

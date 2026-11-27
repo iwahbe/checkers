@@ -185,12 +185,11 @@ pub struct Local {
 
 #[derive(Clone, Default)]
 pub struct Cx {
-    /// Shared, so that evaluating under the context doesn't copy it.
-    pub env: Rc<Vec<Val>>,
-    /// `env`'s values again, persistent, for a context kept for later
-    /// (`keep`): a kept `env` would be copied by the next local bound here.
-    vals: PVec<Val>,
-    /// Persistent, as `facts` are: a copy of the context shares them.
+    /// The locals' values. Each part of a context is persistent, so a copy
+    /// shares it: a context kept for later, as a constraint left until the
+    /// module's bodies are checked keeps the one it was made in, costs
+    /// nothing to keep however many locals are in scope.
+    pub env: Env,
     pub locals: PVec<Local>,
     /// The levels of the λ-bound locals (`Local::bound`), in order: what an
     /// unknown abstracts over, and where a dictionary in scope is, without
@@ -204,38 +203,6 @@ pub struct Cx {
     /// Facts in scope (§7.1): `Bool` values known to be true, tagged with the
     /// context length when they were added, in order.
     pub facts: PVec<(usize, Val)>,
-}
-
-/// A context kept for later, as a constraint left until the module's
-/// bodies are checked keeps the one it was made in: shared with the
-/// context it was kept from, so keeping it takes no copy however many
-/// locals are in scope. `cx` makes it a context again.
-#[derive(Clone)]
-pub struct KeptCx {
-    vals: PVec<Val>,
-    locals: PVec<Local>,
-    bound: PVec<usize>,
-    names: Names,
-    type_pos: bool,
-    facts: PVec<(usize, Val)>,
-}
-
-impl KeptCx {
-    pub fn lvl(&self) -> usize {
-        self.locals.len()
-    }
-    /// The context again: its environment built anew.
-    pub fn cx(&self) -> Cx {
-        Cx {
-            env: Rc::new(self.vals.iter().cloned().collect()),
-            vals: self.vals.clone(),
-            locals: self.locals.clone(),
-            bound: self.bound.clone(),
-            names: self.names.clone(),
-            type_pos: self.type_pos,
-            facts: self.facts.clone(),
-        }
-    }
 }
 
 impl Scope for Cx {
@@ -266,14 +233,9 @@ impl Cx {
     pub fn names(&self) -> Names {
         self.names.clone()
     }
-    /// This context, kept for later.
-    pub fn keep(&self) -> KeptCx {
-        KeptCx { vals: self.vals.clone(), locals: self.locals.clone(), bound: self.bound.clone(), names: self.names.clone(), type_pos: self.type_pos, facts: self.facts.clone() }
-    }
     pub fn bind(&mut self, name: &str, ty: Val, mult: Mult) -> usize {
         let l = self.lvl();
-        Rc::make_mut(&mut self.env).push(Val::var(l));
-        self.vals.push(Val::var(l));
+        self.env.push(Val::var(l));
         self.bound.push(l);
         self.names.push(Rc::from(name));
         self.locals.push(Local { name: Rc::from(name), ty, mult, bound: true, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default() });
@@ -281,8 +243,7 @@ impl Cx {
     }
     pub fn define(&mut self, name: &str, ty: Val, val: Val, mult: Mult) -> usize {
         let l = self.lvl();
-        Rc::make_mut(&mut self.env).push(val.clone());
-        self.vals.push(val);
+        self.env.push(val);
         self.names.push(Rc::from(name));
         self.locals.push(Local { name: Rc::from(name), ty, mult, bound: false, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default() });
         l
@@ -298,8 +259,7 @@ impl Cx {
         self.truncate(n);
     }
     pub fn truncate(&mut self, n: usize) {
-        Rc::make_mut(&mut self.env).truncate(n);
-        self.vals.truncate(n);
+        self.env.truncate(n);
         self.names.truncate(n);
         self.locals.truncate(n);
         while self.bound.last().is_some_and(|l| *l >= n) {
@@ -621,7 +581,7 @@ pub struct Late {
 /// `typed`: its type is its known instance's result type already
 /// (`instance_call_type`).
 pub struct PendingPre {
-    pub cx: KeptCx,
+    pub cx: Cx,
     pub call: Tm,
     pub span: Span,
     pub owner: Option<DefId>,
@@ -1833,7 +1793,7 @@ impl Elab {
                 let mut fv = std::collections::BTreeSet::new();
                 crate::core::free_vars(t, 0, &mut fv);
                 if fv.is_empty() {
-                    self.val_lin(&eval(&self.g, &Rc::new(Vec::new()), t), visiting)
+                    self.val_lin(&eval(&self.g, &crate::core::Env::new(), t), visiting)
                 } else {
                     Lin::Depends
                 }
@@ -1903,7 +1863,7 @@ impl Elab {
         let n = fv.iter().next_back().map_or(0, |m| m + 1);
         // Unknowns far above any context, as for fields (`field_lin`).
         let env: Vec<Val> = (0..n).map(|k| Val::var(usize::MAX / 4 + k)).collect();
-        self.val_linear(&eval(&self.g, &Rc::new(env), t))
+        self.val_linear(&eval(&self.g, &crate::core::Env::from(env), t))
     }
 
     /// Is a value of this type linear (D39)?
@@ -1970,9 +1930,9 @@ impl Elab {
 
     fn case_arms_linear(&self, c: &CaseTm, env: &Env, depth: usize) -> bool {
         let arm = |n: usize, body: &Tm| {
-            let mut e = (**env).clone();
+            let mut e = env.clone();
             e.extend((0..n).map(|k| Val::var(usize::MAX / 2 + depth * 64 + k)));
-            self.val_linear_at(&eval(&self.g, &Rc::new(e), body), depth + 1)
+            self.val_linear_at(&eval(&self.g, &e, body), depth + 1)
         };
         c.branches.iter().any(|(_, n, b)| arm(*n, b))
             || c.lits.iter().any(|(_, b)| arm(0, b))
@@ -2010,7 +1970,7 @@ impl Elab {
         for c in &ti.ctors {
             let mut env: Vec<Val> = args.to_vec();
             for (k, f) in self.g.cons[c.0 as usize].fields.iter().enumerate() {
-                let ty = eval(&self.g, &Rc::new(env.clone()), &f.3);
+                let ty = eval(&self.g, &crate::core::Env::from(env.clone()), &f.3);
                 if f.1 != Mult::Zero && self.field_lin(&f.3, &mut Vec::new()) != Lin::No && self.val_linear_at(&ty, depth + 1) {
                     return true;
                 }
@@ -2293,9 +2253,9 @@ impl Elab {
                 if let Val::Neutral(_, sp) = &v {
                     if let Some(Elim::Case(ct, env)) = sp.last() {
                         let at = |n: usize, body: &crate::core::Tm| {
-                            let mut e = (**env).clone();
+                            let mut e = env.clone();
                             e.extend(std::iter::repeat_n(Val::Error, n));
-                            self.nat_by_closure(cx, &eval(&self.g, &Rc::new(e), body))
+                            self.nat_by_closure(cx, &eval(&self.g, &e, body))
                         };
                         if ct.branches.iter().all(|(_, n, b)| at(*n, b))
                             && ct.lits.iter().all(|(_, b)| at(0, b))
@@ -2313,7 +2273,7 @@ impl Elab {
                         // Only a type that mentions no parameter or earlier field.
                         let mut free = std::collections::BTreeSet::new();
                         crate::core::free_vars(fty, 0, &mut free);
-                        if free.is_empty() && crate::core::is_nat(&self.g, &eval(&self.g, &Rc::new(vec![Val::Error; np + i]), fty)) {
+                        if free.is_empty() && crate::core::is_nat(&self.g, &eval(&self.g, &crate::core::Env::from(vec![Val::Error; np + i]), fty)) {
                             return true;
                         }
                     }
@@ -2326,7 +2286,7 @@ impl Elab {
                     // only where its own hold (the prover knows so much).
                     Val::Neutral(Head::Def(d), _) if self.class_methods.contains(d) && self.specs.get(d).is_some_and(|s| s.preds.iter().any(|p| !p.is_post)) => false,
                     Val::Neutral(Head::Def(d), sp) => {
-                        let ty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[d.0 as usize].ty);
+                        let ty = eval(&self.g, &crate::core::Env::new(), &self.g.defs[d.0 as usize].ty);
                         self.returns_nat(&ty, sp)
                     }
                     Val::Neutral(Head::Var(l), sp) => cx.locals.get(*l).is_some_and(|x| self.returns_nat(&x.ty, sp)),
@@ -2387,7 +2347,7 @@ impl Elab {
         for inv in &pt.invariants {
             let subject = match (inv.proj, &v) {
                 (None, _) => v.clone(),
-                (Some((k, last)), _) => eval(&self.g, &Rc::new(vec![v.clone()]), &Tm::Proj(Rc::new(Tm::Var(0)), k, last)),
+                (Some((k, last)), _) => eval(&self.g, &crate::core::Env::from(vec![v.clone()]), &Tm::Proj(Rc::new(Tm::Var(0)), k, last)),
             };
             let mut env = inv.args.clone();
             env.push(subject);
@@ -2450,7 +2410,7 @@ impl Elab {
         let (h, args) = ty.spine();
         let Tm::Def(d) = h else { return Vec::new() };
         let Some(preds) = self.alias_preds.get(d) else { return Vec::new() };
-        let prefix = Rc::new(cx.env[..at].to_vec());
+        let prefix = cx.env.prefix(at);
         let mut env: Vec<Val> = args.iter().map(|a| eval(&self.g, &prefix, a)).collect();
         // The predicates as written, in this use's names: `n <= hi` of
         // `type Bounded lo hi = n~Int, …` is `b <= 10` for `b~Bounded 0 10`.
@@ -2488,7 +2448,7 @@ impl Elab {
 
     /// Instantiate a predicate over `binders ++ [result]` with values.
     pub fn inst_pred(&self, p: &Pred, env: Vec<Val>) -> Val {
-        eval(&self.g, &Rc::new(env), &p.tm)
+        eval(&self.g, &crate::core::Env::from(env), &p.tm)
     }
 
     /// Is local `l` known at compile time (§8.9)? A `comptime` parameter or
@@ -2553,7 +2513,7 @@ impl Elab {
     /// `Nat`, the prelude's refinement of `Int` (D121).
     pub fn nat(&self) -> Val {
         match self.g.well_known.nat {
-            Some(d) => eval(&self.g, &Rc::new(Vec::new()), &Tm::Def(d)),
+            Some(d) => eval(&self.g, &crate::core::Env::new(), &Tm::Def(d)),
             None => self.int(),
         }
     }
@@ -2568,7 +2528,7 @@ impl Elab {
     fn prelude_alias(&self, name: &str) -> Val {
         let d = self.g.defs.iter().position(|i| i.module.as_ref() == "std.prelude" && i.name.as_ref() == name);
         match d {
-            Some(d) => eval(&self.g, &Rc::new(Vec::new()), &Tm::Def(DefId(d as u32))),
+            Some(d) => eval(&self.g, &crate::core::Env::new(), &Tm::Def(DefId(d as u32))),
             None => self.int(),
         }
     }
@@ -2584,7 +2544,7 @@ impl Elab {
     /// `Bytes`, the alias of `Array U8` (D133).
     pub fn bytes(&self) -> Val {
         match self.g.well_known.bytes {
-            Some(d) => eval(&self.g, &Rc::new(Vec::new()), &Tm::Def(d)),
+            Some(d) => eval(&self.g, &crate::core::Env::new(), &Tm::Def(d)),
             None => Val::Error,
         }
     }
