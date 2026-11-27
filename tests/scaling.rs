@@ -350,9 +350,11 @@ fn a_chain_of_lets_using_a_global_name_checks_in_linear_time_and_memory() {
 /// the one before. Each such call may be recursion that a guessed measure
 /// must make smaller, and kept where it was, with the facts there, for when
 /// the module's end knows which calls are. Kept as an obligation, each held
-/// a copy of every local in scope: 8,000 lets took 9.6 times as long as
-/// 2,000 (6.9 s and 0.72 s, release). Kept as the persistent context, and
-/// made an obligation only for a call that is recursion, 1.6 times as long.
+/// a copy of every local in scope, n²/2 for n calls: 2,000 lets peaked at
+/// 612 MB and 8,000 at 8.7 GB, and took 4.6 times the CPU time (5.6 s and
+/// 1.2 s, release). Kept as the persistent context, and made an obligation
+/// only for a call that is recursion, they peak at 147 MB and 183 MB, and
+/// 8,000 take 1.15 times the time of 2,000.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_chain_of_calls_in_lets_checks_in_linear_time_and_memory() {

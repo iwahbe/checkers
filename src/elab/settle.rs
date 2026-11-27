@@ -127,7 +127,7 @@ impl Elab {
         }
         let owned = |o: &Option<DefId>, s: Span| o.is_some_and(|o| set.contains(&o)) || inside(s);
         let mut guesses = Vec::new();
-        let mut measures: Vec<&Obligation> = Vec::new();
+        let mut measures: Vec<Obligation> = Vec::new();
         if self.loading.last().is_some_and(|l| l == module) {
             // The module is being checked: nothing may wait for its end
             // (dictionaries settled only once every body is checked), and
@@ -146,13 +146,14 @@ impl Elab {
                 self.decide_memberships();
                 let held = self.promises_so_far();
                 let calls: Vec<CallRec> = self.calls.iter().filter(|c| set.contains(&c.caller)).cloned().collect();
-                let rec_calls: Vec<termination::RecCall> = self.rec_calls.iter().filter(|c| set.contains(&c.caller)).cloned().collect();
+                let rec_calls: Vec<termination::NotedCall> = self.rec_calls.iter().filter(|c| set.contains(&c.caller)).cloned().collect();
                 let v = self.termination_verdict(&fns, calls, &held, &rec_calls);
                 if !v.errors.is_empty() {
                     return false;
                 }
                 for total in &v.measured {
-                    measures.extend(self.measure_obs.iter().filter(|(a, b, _)| total.contains(a) && total.contains(b)).map(|(_, _, o)| o));
+                    let kept = self.measure_obs.iter().filter(|(a, b, _)| total.contains(a) && total.contains(b));
+                    measures.extend(kept.map(|(_, _, o)| self.kept_obligation(o)));
                 }
                 guesses = v.guesses;
             }
@@ -178,7 +179,7 @@ impl Elab {
             .unzip();
         drop(early);
         let n = obs.len();
-        obs.extend(measures.iter().copied());
+        obs.extend(measures.iter());
         let gs: Vec<&termination::GuessGroup> = guesses.iter().collect();
         let Some(proved) = crate::verify::prove_now(self, module, &obs, &gs) else { return false };
         let mut early = self.early.borrow_mut();
