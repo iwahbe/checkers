@@ -883,7 +883,7 @@ impl Elab {
     /// inside it (`List Nat`), or of a function's parameter or result?
     fn refined_below_top(&self, v: &Val, lvl: usize) -> bool {
         let p = self.peel(v);
-        self.refined_inside(&p, lvl, 0) || self.refined_alias(&p).is_some() && matches!(self.base(&p), Val::Pi(..))
+        self.refined_inside(&p, lvl) || self.refined_alias(&p).is_some() && matches!(self.base(&p), Val::Pi(..))
     }
 
     /// Typings of names that aren't the declaration's (`y~Int` in `fn f x`):

@@ -1,0 +1,9 @@
+error[E0262]: type mismatch: expected `Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Nat`, found `(x0~Int) -> (x1~Int) -> (x2~Int) -> (x3~Int) -> (x4~Int) -> (x5~Int) -> (x6~Int) -> (x7~Int) -> (x8~Int) -> (x9~Int) -> (x10~Int) -> (x11~Int) -> (x12~Int) -> (x13~Int) -> (x14~Int) -> (x15~Int) -> (x16~Int) -> Int`
+  --> refined_deep_fn.ck:13:11
+   |
+13 |     apply bad
+   |           ^^^ this expression has type `(x0~Int) -> (x1~Int) -> (x2~Int) -> (x3~Int) -> (x4~Int) -> (x5~Int) -> (x6~Int) -> (x7~Int) -> (x8~Int) -> (x9~Int) -> (x10~Int) -> (x11~Int) -> (x12~Int) -> (x13~Int) -> (x14~Int) -> (x15~Int) -> (x16~Int) -> Int`, so its `Int` values aren't known to be `Nat`
+   = note: a refinement inside a type is never gained from an existing value: that would need a proof about every element
+   = help: give the value the type `Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Nat` where it is built, so that each part is checked there
+
+refined_deep_fn.ck: 1 error, 0 warnings
