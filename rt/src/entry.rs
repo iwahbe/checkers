@@ -57,14 +57,14 @@ fn exit_code(r: W, owner: u32) -> i32 {
 /// Run `main` (a closure taking the arguments and the root capability) and
 /// its behaviours; the exit code. Call on a thread with a large stack.
 ///
-/// `debug`, when not 0, is code computing the hand-written `Debug`
-/// instances' functions (#126).
+/// `debug`, when not 0, is the table of the hand-written `Debug` instances'
+/// functions (#126), static data.
 #[allow(clippy::too_many_arguments)]
 pub fn run_main(desc: &str, invoke: Invoke, debug: u64, main: W, owner: u32, args: &[String], threads: usize) -> i32 {
     install(desc, invoke);
     crate::overflow::thread_init();
     if debug != 0 {
-        set_debug(invoke(debug, ERASED, std::ptr::null(), 0));
+        set_debug(debug as W);
     }
     let track = std::env::var_os("CHECKERS_RC_CHECK").is_some();
     TRACK.store(track, std::sync::atomic::Ordering::Relaxed);

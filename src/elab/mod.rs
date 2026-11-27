@@ -32,7 +32,7 @@ use crate::core::*;
 use crate::diag::Diagnostic;
 use crate::source::{SourceFile, Span};
 use crate::syntax::ast;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -173,6 +173,13 @@ pub struct Local {
     /// type with them, which a use of it has. `ty` is the type without
     /// them, over the locals before it, as every local's type is.
     pub refined: Option<Val>,
+    /// The term that defined it, over the locals before it: a `let`'s, or
+    /// the part of a value a pattern takes. None for a bound local and for
+    /// one defined by a value alone.
+    pub def: Option<Rc<Tm>>,
+    /// What it is known to be at compile time, once asked
+    /// (`Elab::known_local`).
+    pub known: std::cell::OnceCell<Option<Rc<Tm>>>,
 }
 
 #[derive(Clone, Default)]
@@ -180,11 +187,26 @@ pub struct Cx {
     /// Shared, so that evaluating under the context doesn't copy it.
     pub env: Rc<Vec<Val>>,
     pub locals: Vec<Local>,
+    /// The locals' names, kept apart so that a constraint left for later
+    /// keeps them without a copy (`names`).
+    names: Names,
     /// Elaborating a type position (after `~`): `Uname`s prefer the type namespace (D26).
     pub type_pos: bool,
     /// Facts in scope (§7.1): `Bool` values known to be true, tagged with the
     /// context length when they were added.
     pub facts: Vec<(usize, Val)>,
+}
+
+impl Scope for Cx {
+    fn len(&self) -> usize {
+        self.locals.len()
+    }
+    fn name(&self, level: usize) -> &Name {
+        &self.locals[level].name
+    }
+    fn at(&self, level: usize) -> Option<u32> {
+        self.locals[level].span.map(|s| s.start)
+    }
 }
 
 impl Cx {
@@ -199,29 +221,40 @@ impl Cx {
     pub fn ty_of(&self, l: usize) -> Val {
         self.locals[l].refined.clone().unwrap_or_else(|| self.locals[l].ty.clone())
     }
-    pub fn names(&self) -> Vec<Name> {
-        self.locals.iter().map(|l| l.name.clone()).collect()
+    /// The locals' names, outermost first.
+    pub fn names(&self) -> Names {
+        self.names.clone()
     }
     pub fn bind(&mut self, name: &str, ty: Val, mult: Mult) -> usize {
         let l = self.lvl();
         Rc::make_mut(&mut self.env).push(Val::var(l));
-        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: true, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None });
+        self.names.push(Rc::from(name));
+        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: true, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default() });
         l
     }
     pub fn define(&mut self, name: &str, ty: Val, val: Val, mult: Mult) -> usize {
         let l = self.lvl();
         Rc::make_mut(&mut self.env).push(val);
-        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: false, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None });
+        self.names.push(Rc::from(name));
+        self.locals.push(Local { name: Rc::from(name), ty, mult, bound: false, param: None, sub: None, sub_cond: None, comptime: false, span: None, refined: None, def: None, known: Default::default() });
+        l
+    }
+    /// `define`, by term `def` (over the locals before it) whose value is `val`.
+    pub fn define_by(&mut self, name: &str, ty: Val, val: Val, mult: Mult, def: Tm) -> usize {
+        let l = self.define(name, ty, val, mult);
+        self.locals[l].def = Some(Rc::new(def));
         l
     }
     pub fn pop(&mut self) {
         Rc::make_mut(&mut self.env).pop();
+        self.names.pop();
         self.locals.pop();
         let n = self.locals.len();
         self.facts.retain(|(l, _)| *l <= n);
     }
     pub fn truncate(&mut self, n: usize) {
         Rc::make_mut(&mut self.env).truncate(n);
+        self.names.truncate(n);
         self.locals.truncate(n);
         self.facts.retain(|(l, _)| *l <= n);
     }
@@ -244,7 +277,7 @@ pub struct Deferred {
     pub span: Span,
     pub what: String,
     pub lvl: usize,
-    pub names: Vec<Name>,
+    pub names: Names,
     /// The function whose body this is in.
     pub owner: Option<DefId>,
     /// The type equations that hold there (#209).
@@ -270,7 +303,7 @@ pub struct Inst {
     /// The arguments of the callee's leading implicit binders, by position.
     pub args: Vec<Val>,
     pub lvl: usize,
-    pub names: Vec<Name>,
+    pub names: Names,
     pub span: Span,
 }
 
@@ -564,9 +597,9 @@ pub struct CownInv {
     pub proj: Option<(usize, bool)>,
 }
 
-/// A trust-ledger entry (§7.4) for something accepted without a solver proof.
+/// An `admit` (§7.4): a fact assumed without a proof.
 #[derive(Clone, Debug)]
-pub struct Trusted {
+pub struct Admit {
     pub module: String,
     pub span: Span,
     pub what: String,
@@ -693,6 +726,8 @@ pub struct Elab {
     pub bounds: HashMap<DefId, Vec<Option<crate::range::Range>>>,
     /// Values known at compile time, by term (`known_value`).
     pub known_cache: std::cell::RefCell<HashMap<String, Option<Tm>>>,
+    /// Known values kept across builds (§8.9): their keys and storage.
+    pub known_disk: std::cell::RefCell<crate::known_cache::KnownCache>,
     /// Definitions found to run at compile time (`runnable`).
     pub runnable_defs: std::cell::RefCell<HashSet<DefId>>,
     /// What was proved before the proofs phase, so that a module's own
@@ -748,7 +783,7 @@ pub struct Elab {
     pub post_target: Option<PostTarget>,
     /// The goal of the proof being elaborated (D49).
     pub proof_goal: Option<(Val, String)>,
-    pub admits: Vec<Trusted>,
+    pub admits: Vec<Admit>,
     /// An application checked against a type with a refinement inside: its
     /// result type is unified with this before its arguments are checked (D71).
     pub app_expected: Option<Val>,
@@ -760,11 +795,6 @@ pub struct Elab {
     pub head_checks_aliases: bool,
     /// The type an expression checked by inference was found to have.
     pub last_inferred: Option<Val>,
-    /// Uses of standard-library lemmas about `__builtin` functions, which are
-    /// trusted like the primitives themselves (D56).
-    pub builtin_axioms: Vec<Trusted>,
-    /// Lemmas whose proof is `__builtin` (D56).
-    pub axiom_defs: HashSet<DefId>,
     /// Measure obligations of calls (caller, callee); kept only for calls
     /// inside one recursive group once termination is analysed.
     pub measure_obs: Vec<(DefId, DefId, Obligation)>,
@@ -808,7 +838,9 @@ pub struct Elab {
     /// on a variable, is refined to one that holds none (D173): the
     /// function, the matched variable's level, the arm's constructor and
     /// the variable's level. The usage check lets it go unused there.
-    pub moot_in_arm: HashSet<(DefId, usize, ConId, usize)>,
+    /// Ordered, so that an arm's variables are found without going through
+    /// every variable in scope.
+    pub moot_in_arm: BTreeSet<(DefId, usize, ConId, usize)>,
     /// The stuck `match`es whose arms `case_linear` is looking at: met again,
     /// a recursive type function adds no resource (D175).
     pub lin_visiting: std::cell::RefCell<Vec<usize>>,
@@ -909,9 +941,9 @@ pub struct Elab {
     pub inst_implied: HashMap<DefId, Vec<Tm>>,
     /// Comparisons waiting for a dictionary (#133): level, expected,
     /// actual, where, the locals' names.
-    pub waiting: Vec<(usize, Val, Val, Span, Vec<Name>, bool)>,
+    pub waiting: Vec<(usize, Val, Val, Span, Names, bool)>,
     /// Those waiting for an instance's dictionary to be elaborated (#146).
-    pub waiting_late: Vec<(usize, Val, Val, Span, Vec<Name>, bool)>,
+    pub waiting_late: Vec<(usize, Val, Val, Span, Names, bool)>,
     /// This module's classes, until their types are registered.
     pub pending_classes: Vec<(String, Vec<String>, Vec<ast::ClassMember>, Span)>,
     /// A class function's parameters' multiplicities, by `module.Class.function`,
@@ -1041,6 +1073,7 @@ impl Elab {
             alias_preds: HashMap::new(),
             bounds: HashMap::new(),
             known_cache: std::cell::RefCell::new(HashMap::new()),
+            known_disk: std::cell::RefCell::new(Default::default()),
             runnable_defs: std::cell::RefCell::new(HashSet::new()),
             early: Default::default(),
             module_proofs: std::cell::RefCell::new(HashMap::new()),
@@ -1067,8 +1100,6 @@ impl Elab {
             alias_covered: false,
             head_checks_aliases: false,
             last_inferred: None,
-            builtin_axioms: Vec::new(),
-            axiom_defs: HashSet::new(),
             measure_obs: Vec::new(),
             ends_everywhere: Default::default(),
             rec_calls: Vec::new(),
@@ -1080,7 +1111,7 @@ impl Elab {
             local_spans: HashMap::new(),
             binder_spans: HashMap::new(),
             lam_domains: HashMap::new(),
-            moot_in_arm: HashSet::new(),
+            moot_in_arm: BTreeSet::new(),
             lin_visiting: std::cell::RefCell::new(Vec::new()),
             guard_vars: HashMap::new(),
             stdlib_mode: false,
@@ -1167,8 +1198,7 @@ impl Elab {
     /// module refers to them when the diagnostic is filed (`qualify`).
     pub fn show_val(&self, cx: &Cx, v: &Val) -> String {
         let t = quote(&self.g, cx.lvl(), v);
-        let at: Vec<Option<u32>> = cx.locals.iter().map(|l| l.span.map(|s| s.start)).collect();
-        show_marked_in(&self.g, &cx.names(), &at, &t)
+        show_marked(&self.g, cx, &t)
     }
 
     pub fn eval(&self, cx: &Cx, t: &Tm) -> Val {
@@ -1478,7 +1508,7 @@ impl Elab {
             }
         }
         if r.is_ok() {
-            self.note_postponed(cx.lvl(), expected, actual, span, &cx.names());
+            self.note_postponed(cx.lvl(), expected, actual, span, cx.names());
         } else {
             self.g.postponed.borrow_mut().clear();
         }
@@ -2320,7 +2350,7 @@ impl Elab {
     }
 
     pub fn prim_val(p: Prim, args: Vec<Val>) -> Val {
-        Val::Neutral(Head::Prim(p, args), Rc::new(Vec::new()))
+        Val::Neutral(Head::Prim(p, args.into()), Rc::new(Vec::new()))
     }
 
     pub fn bool_val(&self, b: bool) -> Val {
@@ -2427,7 +2457,7 @@ impl Elab {
             },
             Tm::Def(d) => {
                 let info = &self.g.defs[d.0 as usize];
-                !(info.opaque && info.body.is_some())
+                !(info.opaque && info.body.is_some()) && !self.g.run_time_only.borrow().contains(d)
             }
             Tm::PrimApp(Prim::When, _) => false,
             Tm::Pi(_, _, _, a, b) => go(a, depth) && go(b, depth + 1),
@@ -2652,7 +2682,7 @@ impl Elab {
                     _ if self.g.reads_type_field(&t) => declared,
                     _ => quote(&self.g, d.lvl, &t),
                 };
-                let shown = crate::core::show_marked(&self.g, &d.names, &shown_tm);
+                let shown = crate::core::show_marked(&self.g, &d.names.to_vec(), &shown_tm);
                 let need = match d.kind {
                     OpClass::Numeric => "numbers (`Nat` or `Int`)",
                     OpClass::Ordered => "numbers (`Nat` or `Int`) to compare",
@@ -2663,7 +2693,7 @@ impl Elab {
                 // A number where a class's type with a base type is expected
                 // (#360): its values are numbers, but not every number.
                 if let (Some(base), true) = (crate::core::class_type_base(&self.g, &t), d.what == "a number literal") {
-                    let b = crate::core::show_marked(&self.g, &d.names, &quote(&self.g, d.lvl, &base));
+                    let b = crate::core::show_marked(&self.g, &d.names.to_vec(), &quote(&self.g, d.lvl, &base));
                     failed.push((
                         d.span,
                         shown.clone(),

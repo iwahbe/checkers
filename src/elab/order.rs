@@ -362,60 +362,128 @@ pub(crate) fn sccs(edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
     s.out
 }
 
-/// Names a part of a declaration mentions, and whether inside a type.
+/// Names a part of a declaration mentions, and whether inside a type; and
+/// the locals in scope while finding them.
 #[derive(Default)]
-struct Refs(Vec<(String, bool)>);
+struct Refs(Vec<(String, bool)>, Bound);
+
+/// The locals in scope: a stack, and how many of each name it holds, so
+/// that a name is looked up, and a scope entered and left, without going
+/// through every local around it.
+#[derive(Default)]
+struct Bound {
+    stack: Vec<String>,
+    count: HashMap<String, usize>,
+}
+
+impl Bound {
+    fn push(&mut self, x: String) {
+        *self.count.entry(x.clone()).or_default() += 1;
+        self.stack.push(x);
+    }
+    fn contains(&self, x: &str) -> bool {
+        self.count.contains_key(x)
+    }
+    /// Leave the scopes entered since `stack` was `mark` long.
+    fn reset(&mut self, mark: usize) {
+        for x in self.stack.drain(mark..) {
+            if let Some(c) = self.count.get_mut(&x) {
+                *c -= 1;
+                if *c == 0 {
+                    self.count.remove(&x);
+                }
+            }
+        }
+    }
+}
 
 impl Refs {
     fn constraints(&mut self, cs: &[Constraint], bound: &[String]) {
-        let bound: Vec<String> = bound.iter().cloned().chain(cs.iter().filter_map(|c| match c {
-            Constraint::Typed { name, .. } => Some(name.name.clone()),
-            Constraint::Pred(_) | Constraint::Named(..) => None,
-        })).collect();
-        for c in cs {
-            match c {
-                Constraint::Typed { ty, .. } => self.expr(ty, &bound, true),
-                Constraint::Pred(e) | Constraint::Named(_, e) => self.expr(e, &bound, false),
-            }
-        }
+        self.under(bound, |s| s.walk_constraints(cs));
     }
 
     fn block(&mut self, b: &Block, bound: &[String]) {
-        let mut bound = bound.to_vec();
-        for s in &b.stmts {
-            match s {
-                Stmt::Let(p, e) => {
-                    self.expr(e, &bound, false);
-                    p.binds(&mut bound);
-                }
-                Stmt::Have(e) | Stmt::Expr(e) => self.expr(e, &bound, false),
-                // `x` is a local: only the type refers to declarations.
-                Stmt::HaveType(_, t) => self.expr(t, &bound, false),
-                Stmt::GhostLet(x, e) => {
-                    self.expr(e, &bound, false);
-                    bound.push(x.name.clone());
-                }
-            }
-        }
-        self.expr(&b.result, &bound, false);
+        self.under(bound, |s| s.walk_block(b));
     }
 
     fn expr(&mut self, e: &Expr, bound: &[String], in_type: bool) {
-        let go = |s: &mut Self, x: &Expr| s.expr(x, bound, in_type);
+        self.under(bound, |s| s.walk(e, in_type));
+    }
+
+    /// `f` with `names` bound as well as what is.
+    fn under(&mut self, names: &[String], f: impl FnOnce(&mut Self)) {
+        let mark = self.1.stack.len();
+        for x in names {
+            self.1.push(x.clone());
+        }
+        f(self);
+        self.1.reset(mark);
+    }
+
+    /// Binds what `p` binds.
+    fn bind_pat(&mut self, p: &Pattern) {
+        let mut names = Vec::new();
+        p.binds(&mut names);
+        for x in names {
+            self.1.push(x);
+        }
+    }
+
+    fn walk_constraints(&mut self, cs: &[Constraint]) {
+        let mark = self.1.stack.len();
+        for c in cs {
+            if let Constraint::Typed { name, .. } = c {
+                self.1.push(name.name.clone());
+            }
+        }
+        for c in cs {
+            match c {
+                Constraint::Typed { ty, .. } => self.walk(ty, true),
+                Constraint::Pred(e) | Constraint::Named(_, e) => self.walk(e, false),
+            }
+        }
+        self.1.reset(mark);
+    }
+
+    fn walk_block(&mut self, b: &Block) {
+        let mark = self.1.stack.len();
+        for s in &b.stmts {
+            match s {
+                Stmt::Let(p, e) => {
+                    self.walk(e, false);
+                    self.bind_pat(p);
+                }
+                Stmt::Have(e) | Stmt::Expr(e) => self.walk(e, false),
+                // `x` is a local: only the type refers to declarations.
+                Stmt::HaveType(_, t) => self.walk(t, false),
+                Stmt::GhostLet(x, e) => {
+                    self.walk(e, false);
+                    self.1.push(x.name.clone());
+                }
+            }
+        }
+        self.walk(&b.result, false);
+        self.1.reset(mark);
+    }
+
+    fn walk(&mut self, e: &Expr, in_type: bool) {
+        let go = |s: &mut Self, x: &Expr| s.walk(x, in_type);
+        let mark = self.1.stack.len();
         match &e.kind {
             ExprKind::When(w) => {
                 for (_, e) in &w.binds {
-                    self.expr(e, bound, in_type);
+                    self.walk(e, in_type);
                 }
-                if !bound.contains(&w.sched.name) {
+                if !self.1.contains(&w.sched.name) {
                     self.0.push((w.sched.name.clone(), in_type));
                 }
-                let mut bound = bound.to_vec();
-                bound.extend(w.binds.iter().map(|(x, _)| x.name.clone()));
-                self.block(&w.body, &bound);
+                for (x, _) in &w.binds {
+                    self.1.push(x.name.clone());
+                }
+                self.walk_block(&w.body);
             }
             ExprKind::Var(n) | ExprKind::Con(n) => {
-                if !bound.iter().any(|b| b == n) {
+                if !self.1.contains(n) {
                     self.0.push((n.clone(), in_type));
                 }
             }
@@ -426,13 +494,14 @@ impl Refs {
             }
             ExprKind::Neg(a) | ExprKind::SectionL(_, a) | ExprKind::SectionR(_, a) | ExprKind::Try(a) => go(self, a),
             ExprKind::Refine(r) => {
-                let mut b = bound.to_vec();
-                b.extend(r.binders());
+                for x in r.binders() {
+                    self.1.push(x);
+                }
                 for t in r.types() {
-                    self.expr(t, &b, in_type);
+                    self.walk(t, in_type);
                 }
                 for p in &r.preds {
-                    self.expr(p, &b, false);
+                    self.walk(p, false);
                 }
             }
             // `m.f` names another module's `f`; `x.field` a field; `C.f`
@@ -441,7 +510,7 @@ impl Refs {
                 if let ExprKind::Con(c) = &a.kind {
                     self.0.push((format!("{c}.{}", f.name), in_type));
                 }
-                if !matches!(&a.kind, ExprKind::Var(n) if !bound.iter().any(|b| b == n)) {
+                if !matches!(&a.kind, ExprKind::Var(n) if !self.1.contains(n)) {
                     go(self, a);
                 }
             }
@@ -453,35 +522,36 @@ impl Refs {
             ExprKind::Match(s, arms) => {
                 go(self, s);
                 for a in arms {
-                    let mut b = bound.to_vec();
-                    a.pat.binds(&mut b);
+                    self.bind_pat(&a.pat);
                     self.pat_refs(&a.pat, in_type);
                     if let Some(g) = &a.guard {
-                        self.expr(g, &b, in_type);
+                        self.walk(g, in_type);
                     }
-                    self.expr(&a.body, &b, in_type);
+                    self.walk(&a.body, in_type);
+                    self.1.reset(mark);
                 }
             }
             ExprKind::Lambda(ps, body) => {
-                let mut b = bound.to_vec();
                 for p in ps {
-                    p.binds(&mut b);
+                    self.bind_pat(p);
                     self.pat_refs(p, in_type);
                 }
-                self.expr(body, &b, in_type);
+                self.walk(body, in_type);
             }
             ExprKind::Forall(vs, cs) => {
-                let mut b = bound.to_vec();
-                b.extend(vs.iter().map(|v| v.name.clone()));
-                self.constraints(cs, &b);
+                for v in vs {
+                    self.1.push(v.name.clone());
+                }
+                self.walk_constraints(cs);
             }
-            ExprKind::Block(b) => self.block(b, bound),
+            ExprKind::Block(b) => self.walk_block(b),
             ExprKind::Template(t, ps) => {
                 go(self, t);
                 ps.iter().flat_map(|p| p.exprs()).for_each(|x| go(self, x));
             }
             _ => {}
         }
+        self.1.reset(mark);
     }
 
     /// Constructors named in a pattern.

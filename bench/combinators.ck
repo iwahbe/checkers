@@ -11,6 +11,7 @@ import std.terminal (Term)
 import std.string (format)
 import std.bytes
 import std.parse (consumed, within, suffix_refl, suffix_trans, suffix_size, satisfy, map, many1, chain_left, or_else, fix)
+import std.hint (blackbox)
 
 # `n` copies of a term, joined by `+`.
 fn input n acc -> r : n~Nat, acc~List Bytes, r~Bytes
@@ -229,7 +230,9 @@ fn index xs -> r : xs~Bytes, r~Int
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
     let System { term } = sys
-    let xs = input 120000 []
+    # Given through `blackbox`, so the work is done when the program runs,
+    # not when it is compiled.
+    let xs = input (blackbox 120000) []
     let v = match args
         ["mono"]  -> mono xs
         ["index"] -> index xs

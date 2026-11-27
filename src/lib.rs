@@ -10,6 +10,7 @@ pub mod doc;
 pub mod elab;
 pub mod json;
 pub mod known;
+pub mod known_cache;
 pub mod lint;
 pub mod literate;
 pub mod native;
@@ -36,8 +37,6 @@ pub struct Checked {
     /// Proof obligations in this file, and how many the prover discharged.
     pub obligations: usize,
     pub proved: usize,
-    /// The trust ledger (§7.4), rendered.
-    pub ledger: String,
     /// Staged definitions (§8.9), for `checkers stage`.
     pub staged: String,
     /// Terms the prover left out for a type error it found in their sorts
@@ -98,7 +97,7 @@ pub fn parse_only(name: &str, text: &str) -> Checked {
     let file = SourceFile::new(name, text);
     let (module, mut diags) = syntax::parse_module(text);
     diags.extend(lint::naming(&module));
-    Checked { file, module, diags, internal: Vec::new(), others: Vec::new(), obligations: 0, proved: 0, ledger: String::new(), staged: String::new(), ill_sorted: 0, remembered: None }
+    Checked { file, module, diags, internal: Vec::new(), others: Vec::new(), obligations: 0, proved: 0, staged: String::new(), ill_sorted: 0, remembered: None }
 }
 
 /// The directory `import a.b` looks in for `a/b.ck` (D53): the program's own.
@@ -507,44 +506,6 @@ fn stage_module(c: &mut Checked, e: &elab::Elab, user: &str) {
         c.staged += &stage::show_def(&e.g, name, t, &names);
         c.staged += "\n";
     }
-    trusted_builtins(c, e, user, &staged);
-}
-
-/// Add the builtins the program relies on to the trust ledger: those reachable
-/// from `main`, or from every function of the program if it has none (§16.3).
-fn trusted_builtins(c: &mut Checked, e: &elab::Elab, user: &str, staged: &stage::Staged) {
-    let mut progs: Vec<String> = e.user_modules.iter().filter(|m| e.package_of(m) == ".").cloned().collect();
-    progs.push(user.to_string());
-    let main = e.g.defs.iter().position(|d| *d.module == *user && &*d.name == "main");
-    let roots: Vec<u32> = match main {
-        Some(m) => vec![m as u32],
-        None => (0..e.g.defs.len() as u32)
-            .filter(|d| progs.iter().any(|m| **m == *e.g.defs[*d as usize].module) && e.fn_meta.contains_key(&core::DefId(*d)))
-            .collect(),
-    };
-    let mut p = native::lower::Program::new(&e.g, Some(staged));
-    native::lower::Lowerer::new(&e.g, Some(staged), &mut p).add_defs(&roots);
-    let mut lines: Vec<(String, String)> = Vec::new();
-    for (d, shape) in &p.defs {
-        if !matches!(shape, native::lower::DefShape::Builtin { .. }) {
-            continue;
-        }
-        let info = &e.g.defs[*d as usize];
-        let at = match (e.sources.get(&*info.module), e.fn_meta.get(&core::DefId(*d))) {
-            (Some(f), Some(m)) => {
-                let (line, col) = f.line_col(m.span.start);
-                format!("{}:{line}:{col}", f.name)
-            }
-            _ => info.module.to_string(),
-        };
-        let full = format!("{}.{}", info.module, info.name);
-        lines.push((full.clone(), format!("{at}  {:<8} {full}\n", "builtin")));
-    }
-    lines.sort();
-    let text: String = lines.into_iter().map(|l| l.1).collect();
-    // Before the solver line.
-    let k = c.ledger.find("solver: ").unwrap_or(c.ledger.len());
-    c.ledger.insert_str(k, &text);
 }
 
 /// Check and prove the standard library itself (its lemmas and postconditions).
@@ -642,7 +603,6 @@ fn remembered<'a>(c: &'a mut Checked, e: &elab::Elab, user: &str) -> &'a std::co
 fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
     let known = remembered(c, e, user).clone();
     let keys = verify::module_keys(e);
-    let mut ledger = String::new();
     let (mut asked, mut reused) = (0, 0);
     let mut fresh: Vec<(String, verify::Verified)> = Vec::new();
     let all = program_modules(e, user);
@@ -650,54 +610,31 @@ fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
         let m = m.clone();
         // Verified before, with nothing it depends on changed: what it gave then.
         let v = match known.get(&m) {
-            Some((_, r)) => verify::Verified {
-                diags: r.warnings.clone(),
-                ledger: r.ledger.clone(),
-                z3_version: r.z3_version.clone(),
-                proved: r.proved,
-                asked: 0,
-                reused: 0,
-            },
+            Some((_, r)) => verify::Verified { diags: r.warnings.clone(), proved: r.proved, asked: 0, reused: 0 },
             None => {
                 let v = verify::proofs(e, &m);
                 let warnings = v.diags.iter().filter(|d| d.code == "W022").cloned().collect();
-                fresh.push((m.clone(), verify::Verified { diags: warnings, ledger: v.ledger.clone(), z3_version: v.z3_version.clone(), proved: v.proved, asked: 0, reused: 0 }));
+                fresh.push((m.clone(), verify::Verified { diags: warnings, proved: v.proved, asked: 0, reused: 0 }));
                 v
             }
         };
-        // The standard library and dependencies are summarized (D110, D111).
-        let own = e.package_of(&m) == ".";
-        if own {
+        // The program's own modules: not the standard library's or dependencies'.
+        if e.package_of(&m) == "." {
             c.proved += v.proved;
         }
         asked += v.asked;
         reused += v.reused;
-        let mut v = v;
-        for l in &mut v.ledger {
-            l.span = e.real_span(&m, l.span);
-        }
-        if let Some(f) = e.sources.get(&m) {
-            ledger += &if own { verify::ledger_text(f, &v) } else { verify::ledger_summary(f, &v) };
-        }
         for d in v.diags {
             route(c, e, user, &m, d);
         }
     }
-    // One solver line at the end.
-    let solver: Vec<&str> = ledger.lines().filter(|l| l.starts_with("solver: ")).collect();
-    let last = solver.last().map(|s| s.to_string());
-    let mut out: String = ledger.lines().filter(|l| !l.starts_with("solver: ")).map(|l| format!("{l}\n")).collect();
-    if let Some(s) = last {
-        out += &s;
-        out.push('\n');
+    // What the caches gave (D100, D143), on standard error.
+    if std::env::var_os("CHECKERS_CACHE_STATS").is_some() {
+        eprintln!("cache: {reused} of {asked} Z3 answers reused");
+        if verify::modules_dir().is_some() {
+            eprintln!("cache: {} of {} modules verified before", known.len(), all.len());
+        }
     }
-    if reused > 0 {
-        out += &format!("cache: {reused} of {asked} Z3 answers reused\n");
-    }
-    if !known.is_empty() && verify::modules_dir().is_some() {
-        out += &format!("cache: {} of {} modules verified before\n", known.len(), all.len());
-    }
-    c.ledger = out;
     // Remembered only from a check with no errors at all (D143 c).
     if c.errors() == 0 {
         for (m, v) in &fresh {
@@ -705,7 +642,7 @@ fn prove(c: &mut Checked, e: &elab::Elab, user: &str) {
                 if verify::modules_dir().is_some() {
                     verify::remember(k, v);
                 }
-                let r = verify::Remembered { ledger: v.ledger.clone(), proved: v.proved, z3_version: v.z3_version.clone(), warnings: v.diags.clone() };
+                let r = verify::Remembered { proved: v.proved, warnings: v.diags.clone() };
                 verify::VERIFIED.lock().unwrap_or_else(|p| p.into_inner()).get_or_insert_with(Default::default).insert(k.clone(), r);
             }
         }
@@ -929,7 +866,7 @@ pub fn build(name: &str, text: &str, dir: &std::path::Path, out: &std::path::Pat
     // A release build relies on no `admit` anywhere in the program, its
     // dependencies or the standard library (§7.4, D116); axioms stay allowed.
     if release && !e.admits.is_empty() {
-        let mut admits: Vec<&elab::Trusted> = e.admits.iter().collect();
+        let mut admits: Vec<&elab::Admit> = e.admits.iter().collect();
         admits.sort_by(|a, b| (a.module.as_str(), a.span.start).cmp(&(b.module.as_str(), b.span.start)));
         for a in &admits {
             let d = Diagnostic::error("E0455", "a release build can't rely on an `admit`", a.span)
@@ -1015,6 +952,9 @@ fn ready_to_run(name: &str, text: &str, dir: &std::path::Path, release: bool) ->
     if e.admits.is_empty() {
         e.g.bounds = std::mem::take(&mut e.bounds);
         e.g.proved = true;
+        // So calls on static data in native code are computed when
+        // compiling too (§8.9), with the limit constants have.
+        e.g.fold_work.set(Some(if release { u64::MAX } else { elab::CODEGEN_WORK }));
     }
     Ok((e, core::DefId(main as u32), staged, report))
 }

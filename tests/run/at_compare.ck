@@ -8,6 +8,7 @@ module at_compare
 import std.system (System, ExitCode)
 import std.string (debug)
 import std.terminal (Term)
+import std.hint (blackbox)
 
 fn near x y -> r : x~Int, y~Int, r~Bool
     x % 7 <= y
@@ -32,9 +33,10 @@ fn line a b sys : a~Int, b~Int, sys~System
     terminal.print_line s sys.term
 
 export fn main args sys -> code : args~List String, sys~System, code~ExitCode
-    line 3 4 sys
-    line 4 3 sys
-    line (-5) (-5) sys
-    line 4611686018427387904 4611686018427387903 sys
-    line (-4611686018427387905) 0 sys
+    # Given through `blackbox`, or the calls would be computed when compiling.
+    line (blackbox 3) (blackbox 4) sys
+    line (blackbox 4) (blackbox 3) sys
+    line (blackbox (-5)) (blackbox (-5)) sys
+    line (blackbox 4611686018427387904) (blackbox 4611686018427387903) sys
+    line (blackbox (-4611686018427387905)) (blackbox 0) sys
     Success

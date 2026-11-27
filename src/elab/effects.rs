@@ -29,6 +29,10 @@ const EFFECT_TYPES: &[(&str, &str)] = &[
     ("std.proc", "Killer"),
 ];
 
+/// The builtins whose results are never known when compiling, though they
+/// have no effects (§8.9): a test or benchmark's inputs go through them.
+const NEVER_KNOWN: &[(&str, &str)] = &[("std.hint", "blackbox")];
+
 /// A call with effects: the types of the values it is given, where its
 /// function is named (`None` for a local function, which may hold anything).
 pub(super) struct Effects {
@@ -48,6 +52,29 @@ impl Elab {
     /// comment).
     pub(super) fn holds_effect(&self, lvl: usize, ty: &Val) -> bool {
         self.can_hold(lvl, ty, &|e: &Elab, t: &Val| matches!(t, Val::TyCon(id, _) if e.is_effect_ty(*id)), false, 0, &mut Vec::new())
+    }
+
+    /// Whether function `d`'s signature gives it a value that holds an
+    /// effect: an explicit run-time parameter of such a type (a function
+    /// parameter is called by the code it runs, not given an effect). The
+    /// rule of `call_effects`, for every call of `d`.
+    pub(super) fn signature_effects(&self, d: DefId) -> bool {
+        let mut fty = eval(&self.g, &Rc::new(Vec::new()), &self.g.defs[d.0 as usize].ty);
+        let mut lvl = 0;
+        while let Val::Pi(_, m, icit, dom, clo) = self.force(&fty) {
+            if icit == Icit::Expl && m != Mult::Zero && !matches!(self.force(&dom), Val::Pi(..)) && self.holds_effect(lvl, &dom) {
+                return true;
+            }
+            fty = apply_closure(&self.g, &clo, Val::var(lvl));
+            lvl += 1;
+        }
+        false
+    }
+
+    /// Whether builtin `d`'s result is never known when compiling.
+    pub(super) fn never_known(&self, d: DefId) -> bool {
+        let info = &self.g.defs[d.0 as usize];
+        NEVER_KNOWN.iter().any(|(m, n)| *info.module == **m && *info.name == **n)
     }
 
     /// Whether function value `v` captured a value that holds an effect.

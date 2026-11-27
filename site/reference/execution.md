@@ -69,7 +69,7 @@ Values are shown as their type says at every level: in generic code, through a c
 
 ## Run-time checks
 
-Every obligation is proved before a program runs, so in a program that checks without errors no operation can fail, and the compiled program checks nothing: `a - b` on `Nat`s is a subtraction, and `a[i]` reads the element. An `admit`, though, is a fact assumed without a proof ([Proofs](proofs.md#the-trust-ledger)), and it could be false. A program that relies on an `admit`, anywhere in what it loads, keeps a check on every operation that guards against a bad value, and so do `check`s and staging ([Staging](staging.md)), which run before the proofs:
+Every obligation is proved before a program runs, so in a program that checks without errors no operation can fail, and the compiled program checks nothing: `a - b` on `Nat`s is a subtraction, and `a[i]` reads the element. An `admit`, though, is a fact assumed without a proof ([Proofs](proofs.md#what-proofs-rest-on)), and it could be false. A program that relies on an `admit`, anywhere in what it loads, keeps a check on every operation that guards against a bad value, and so do `check`s and staging ([Staging](staging.md)), which run before the proofs:
 
 | Operation | Checked |
 |---|---|
@@ -101,4 +101,4 @@ If `main` returns a `Future ExitCode`, the status is the future's value, once ev
 
 ## Release builds
 
-`checkers build --release` refuses a program that relies, anywhere in what it loads, on an `admit` (E0455): an assumption no one proved ([Proofs](proofs.md#the-trust-ledger)).
+`checkers build --release` refuses a program that relies, anywhere in what it loads, on an `admit` (E0455): an assumption no one proved ([Proofs](proofs.md#what-proofs-rest-on)).

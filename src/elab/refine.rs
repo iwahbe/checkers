@@ -890,9 +890,7 @@ impl Elab {
     fn subst_pred(&self, p: &Pred, env: Vec<Val>, l: usize, cx2: &Cx, x: &Name) -> Pred {
         let v = self.inst_pred(p, env);
         let tm = quote(&self.g, l, &v);
-        let mut names = cx2.names();
-        names.push(x.clone());
-        let shown = show(&self.g, &names, &tm);
+        let shown = show(&self.g, &Under(cx2, std::slice::from_ref(x)), &tm);
         let text = if shown.len() <= 2 * p.text.len() + 8 { shown } else { p.text.clone() };
         Pred { tm, text, ..p.clone() }
     }

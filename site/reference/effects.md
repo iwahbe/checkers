@@ -60,6 +60,8 @@ fn both a b fs -> r : a~String, b~String, fs~Fs, r~Result (Bytes, Bytes) IoError
 
 Two uses of one authority are independent to the prover: the compiler gives each use a token of its own, so no two calls receive the same argument and neither can be proved equal to the other. When the program runs, the calls happen in program order. The cost is that nothing can be proved about the order of effects through an authority (that a read after a write returns what was written).
 
+A closure that captured an authority may also be called any number of times, passed to `list.map`, returned or stored; each call is independent to the prover, like each use of the authority. Only a closure that holds a resource must be called exactly once ([One-shot closures](#one-shot-closures)).
+
 **Attenuation.** An authority can be narrowed: `files.within dir fs` is an `Fs` that reaches only `dir` (absolute paths and `..` are refused, and so is a symbolic link that leads out of it). Passing a narrowed capability bounds what a function can do.
 
 **Calls for their effect.** A call that returns `Unit` may stand alone as a line of a block, as `terminal.print_line` does above ([Blocks](expressions.md#blocks)).
