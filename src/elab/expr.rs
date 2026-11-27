@@ -419,18 +419,8 @@ impl Elab {
                 (t, ty)
             }
             ExprKind::Con(n) => match self.resolve(n, cx.type_pos) {
-                Some(Sym::Ty(t)) if !cx.type_pos && self.class_defs.contains_key(&t) => {
-                    let name = self.class_defs[&t].name.clone();
-                    self.err(
-                        Diagnostic::error("E0287", format!("a dictionary of class `{name}` is built only by an instance"), e.span)
-                            .with_help(format!("declare `instance {name} …`; its functions' bodies and lemmas' proofs are checked there")),
-                    );
-                    (Tm::Error, Val::Error)
-                }
+                Some(s) if self.class_as_value(s, cx.type_pos, e.span) => (Tm::Error, Val::Error),
                 Some(s) => {
-                    if let Sym::Con(c) = s {
-                        self.check_dict_con(c, e.span);
-                    }
                     self.name_span = e.span;
                     self.index_sym(e.span, s);
                     let (t, ty) = self.sym_term(cx, s, e.span);
@@ -724,18 +714,8 @@ impl Elab {
         match self.resolve(n, cx.type_pos) {
             Some(s) => {
                 self.name_span = span;
-                if let Sym::Con(c) = s {
-                    self.check_dict_con(c, span);
-                }
-                if let Sym::Ty(t) = s {
-                    if !cx.type_pos && self.class_defs.contains_key(&t) {
-                        let name = self.class_defs[&t].name.clone();
-                        self.err(
-                            Diagnostic::error("E0287", format!("a dictionary of class `{name}` is built only by an instance"), span)
-                                .with_help(format!("declare `instance {name} …`; its functions' bodies and lemmas' proofs are checked there")),
-                        );
-                        return (Tm::Error, Val::Error);
-                    }
+                if self.class_as_value(s, cx.type_pos, span) {
+                    return (Tm::Error, Val::Error);
                 }
                 if !Self::is_template_call(n) {
                     self.index_sym(span, s);
@@ -897,8 +877,8 @@ impl Elab {
     /// dictionary found for `t` once `t` is known; `C.Name s h` for a class
     /// of several parameters (#145), one type for each.
     #[allow(clippy::too_many_arguments)]
-    fn elab_assoc(&mut self, cx: &mut Cx, tid: TyId, acc: DefId, class_span: Span, name: &ast::Ident, args: &[&Expr], span: Span) -> (Tm, Val) {
-        self.index_sym(class_span, Sym::Ty(tid));
+    fn elab_assoc(&mut self, cx: &mut Cx, tid: TyId, acc: DefId, class: &Expr, name: &ast::Ident, args: &[&Expr], span: Span) -> (Tm, Val) {
+        self.index_class(class, tid);
         self.index_sym(name.span, Sym::Def(acc));
         self.note_reference(acc, span);
         let (mut t, mut ty) = self.sym_term(cx, Sym::Def(acc), span);
@@ -943,17 +923,15 @@ impl Elab {
 
         // A class's type at a type, `Display.Options Money` (#133).
         if let ExprKind::Field(x, name) = &head.kind {
-            if let ExprKind::Con(c) = &x.kind {
-                if let Some(Sym::Ty(tid)) = self.resolve(c, true) {
-                    if let Some(acc) = self.assoc_defs.get(&(tid, name.name.clone())).copied() {
-                        // One type for each of the class's parameters (#145).
-                        let n = self.class_defs.get(&tid).map_or(1, |c| c.params.len());
-                        if args.len() < n {
-                            return self.assoc_without_types(tid, acc, x.span, name, e.span);
-                        }
-                        let r = self.elab_assoc(cx, tid, acc, x.span, name, &args[..n], head.span.to(args[n - 1].span));
-                        return self.apply_rest(cx, r, &args[n..], e.span);
+            if let Some(tid) = self.class_named(x, Some(cx)) {
+                if let Some(acc) = self.assoc_defs.get(&(tid, name.name.clone())).copied() {
+                    // One type for each of the class's parameters (#145).
+                    let n = self.class_defs.get(&tid).map_or(1, |c| c.params.len());
+                    if args.len() < n {
+                        return self.assoc_without_types(tid, acc, x, name, e.span);
                     }
+                    let r = self.elab_assoc(cx, tid, acc, x, name, &args[..n], head.span.to(args[n - 1].span));
+                    return self.apply_rest(cx, r, &args[n..], e.span);
                 }
             }
         }
@@ -2723,20 +2701,22 @@ impl Elab {
     // ── fields and qualified names ──────────────────────────────────────────
 
     /// `C.Name` without the types it is for (E0291).
-    fn assoc_without_types(&mut self, tid: TyId, acc: DefId, class_span: Span, name: &Ident, span: Span) -> (Tm, Val) {
-        self.index_sym(class_span, Sym::Ty(tid));
+    fn assoc_without_types(&mut self, tid: TyId, acc: DefId, class: &Expr, name: &Ident, span: Span) -> (Tm, Val) {
+        self.index_class(class, tid);
         self.index_sym(name.span, Sym::Def(acc));
+        // The class as written: `C`, or `m.C` through its module.
+        let written = self.src_text(class.span).trim().to_string();
         let Some(cd) = self.class_defs.get(&tid) else { return (Tm::Error, Val::Error) };
         let (cn, n) = (cd.name.clone(), name.name.clone());
         let d = if cd.params.len() == 1 {
-            Diagnostic::error("E0291", format!("`{cn}.{n}` needs the type it is for"), span)
+            Diagnostic::error("E0291", format!("`{written}.{n}` needs the type it is for"), span)
                 .with_label(format!("each instance of `{cn}` gives its own `{n}`"))
-                .with_help(format!("write `{cn}.{n} t` for the type `t`, e.g. `{cn}.{n} a` under a clause `{cn} a`"))
+                .with_help(format!("write `{written}.{n} t` for the type `t`, e.g. `{written}.{n} a` under a clause `{written} a`"))
         } else {
             let ps = cd.params.join(" ");
-            Diagnostic::error("E0291", format!("`{cn}.{n}` needs the {} types it is for", cd.params.len()), span)
+            Diagnostic::error("E0291", format!("`{written}.{n}` needs the {} types it is for", cd.params.len()), span)
                 .with_label(format!("each instance of `{cn}` gives its own `{n}`"))
-                .with_help(format!("write `{cn}.{n} {ps}` under a clause `{cn} {ps}`"))
+                .with_help(format!("write `{written}.{n} {ps}` under a clause `{written} {ps}`"))
         };
         self.err(d);
         (Tm::Error, Val::Error)
@@ -2746,44 +2726,43 @@ impl Elab {
         if Self::is_cursor(&name.name) {
             return self.note_member(cx, x);
         }
-        // `Ord.le`: a class's function or lemma (D136).
-        if let ExprKind::Con(c) = &x.kind {
-            if let Some(Sym::Ty(tid)) = self.resolve(c, true) {
-                if let Some(cd) = self.class_defs.get(&tid).cloned() {
-                    let member = self.modules.get(&cd.module).and_then(|m| m.values.get(&name.name)).copied();
-                    if let Some(acc) = self.assoc_defs.get(&(tid, name.name.clone())).copied() {
-                        return self.assoc_without_types(tid, acc, x.span, name, span);
-                    }
-                    let is_member = cd.members.iter().any(|m| !matches!(m, ast::ClassMember::Type { .. }) && m.name().name == name.name);
-                    return match member {
-                        Some(s @ Sym::Def(d)) if is_member => {
-                            self.index_sym(x.span, Sym::Ty(tid));
-                            self.index_sym(name.span, s);
-                            self.note_reference(d, span);
-                            self.name_span = span;
-                            let (t, ty) = self.sym_term(cx, s, span);
-                            self.insert(cx, t, ty)
-                        }
-                        _ => {
-                            let names: Vec<String> = cd
-                                .members
-                                .iter()
-                                .map(|m| m.name().name.clone())
-                                .collect();
-                            self.err(
-                                Diagnostic::error("E0206", format!("class `{}` has no function or lemma `{}`", cd.name, name.name), name.span)
-                                    .with_help(format!("its members are `{}`", names.join("`, `"))),
-                            );
-                            (Tm::Error, Val::Error)
-                        }
-                    };
-                }
+        // `Ord.le`: a class's function or lemma (D136); `m.Ord.le` through
+        // its module's qualifier.
+        if let Some(cd) = self.class_named(x, Some(cx)).and_then(|t| self.class_defs.get(&t).cloned()) {
+            let tid = cd.tid;
+            let member = self.modules.get(&cd.module).and_then(|m| m.values.get(&name.name)).copied();
+            if let Some(acc) = self.assoc_defs.get(&(tid, name.name.clone())).copied() {
+                return self.assoc_without_types(tid, acc, x, name, span);
             }
+            let is_member = cd.members.iter().any(|m| !matches!(m, ast::ClassMember::Type { .. }) && m.name().name == name.name);
+            return match member {
+                Some(s @ Sym::Def(d)) if is_member => {
+                    self.index_class(x, tid);
+                    self.index_sym(name.span, s);
+                    self.note_reference(d, span);
+                    self.name_span = span;
+                    let (t, ty) = self.sym_term(cx, s, span);
+                    self.insert(cx, t, ty)
+                }
+                _ => {
+                    let names: Vec<String> = cd
+                        .members
+                        .iter()
+                        .map(|m| m.name().name.clone())
+                        .collect();
+                    self.err(
+                        Diagnostic::error("E0206", format!("class `{}` has no function or lemma `{}`", cd.name, name.name), name.span)
+                            .with_help(format!("its members are `{}`", names.join("`, `"))),
+                    );
+                    (Tm::Error, Val::Error)
+                }
+            };
         }
         if let ExprKind::Var(q) = &x.kind {
             if cx.lookup(q).is_none() {
                 if let Some(m) = self.qualifier(q) {
                     return match self.resolve_qualified(&m, &name.name, cx.type_pos) {
+                        Some(s) if self.class_as_value(s, cx.type_pos, span) => (Tm::Error, Val::Error),
                         Some(s) => {
                             self.index_module(x.span, &m);
                             self.index_sym(name.span, s);

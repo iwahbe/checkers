@@ -815,9 +815,22 @@ impl Parser {
         Ok(DeclKind::Class { name, params, members })
     }
 
+    /// An instance's class: `C`, or `m.C` through its module's qualifier.
+    fn instance_class(&mut self) -> PResult<Expr> {
+        let name = self.ident("a class name")?;
+        if !(self.at(&Tok::Op(Op::Dot)) && !self.tok().space_before) {
+            return Ok(Expr { kind: ExprKind::Con(name.name), span: name.span });
+        }
+        self.bump();
+        let class = self.ident("a class name after `.`")?;
+        let span = name.span.to(class.span);
+        let q = Expr { kind: ExprKind::Var(name.name), span: name.span };
+        Ok(Expr { kind: ExprKind::Field(Box::new(q), class), span })
+    }
+
     fn instance_decl(&mut self) -> PResult<DeclKind> {
         self.bump(); // instance
-        let class = self.ident("a class name")?;
+        let class = self.instance_class()?;
         let mut tys = vec![self.postfix()?];
         while !self.at(&Tok::Colon) && !self.at(&Tok::Newline) && !self.at(&Tok::Eof) {
             tys.push(self.postfix()?);
