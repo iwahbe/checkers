@@ -61,8 +61,18 @@ pub enum Sort {
     Fun(Box<Sort>, Box<Sort>),
 }
 
+/// The SMT name of a program symbol (a function, constant, local, datatype,
+/// constructor, field or sort): its name, quoted, after a `#`. Z3's names
+/// are simple symbols (SMT-LIB §3.1), which never have a `#`, so a
+/// program's `seq.unit` is never Z3's.
 fn sym(s: &str) -> String {
-    format!("|{}|", s.replace('|', "_"))
+    format!("|#{}|", s.replace('|', "_"))
+}
+
+/// The recognizer Z3 makes for the constructor or stand-in named `con` (a
+/// `sym`): `is-` before its name.
+fn is_sym(con: &str) -> String {
+    format!("|is-{}|", con.trim_matches('|'))
 }
 
 impl Sort {
@@ -117,9 +127,7 @@ fn con_sym(e: &Elab, c: ConId) -> String {
 /// its argument's sort; `(_ is C)` is ambiguous once a parametric datatype is
 /// used at two sorts.
 fn tester(e: &Elab, c: ConId) -> String {
-    let ci = &e.g.cons[c.0 as usize];
-    let ti = &e.g.tys[ci.ty.0 as usize];
-    sym(&format!("is-{}.{}", ti.module, ci.name))
+    is_sym(&con_sym(e, c))
 }
 
 fn sel_sym(e: &Elab, c: ConId, k: usize) -> String {
@@ -140,8 +148,7 @@ fn base_sym(e: &Elab, id: TyId) -> String {
 }
 
 fn base_tester(e: &Elab, id: TyId) -> String {
-    let ti = &e.g.tys[id.0 as usize];
-    sym(&format!("is-{}.{}#base", ti.module, ti.name))
+    is_sym(&base_sym(e, id))
 }
 
 fn tuple_sym(n: usize) -> String {
@@ -1724,8 +1731,9 @@ impl<'a> Builder<'a> {
             }
             fields_of.insert(id, sorts);
             // The body without its closing parentheses: a stand-in
-            // constructor may be added.
-            let ps: Vec<String> = (0..n).map(|k| format!("T{k}")).collect();
+            // constructor may be added. Its fields name its parameters as
+            // sorts (`Sort::Unin`), so they are spelled as `sym` does.
+            let ps: Vec<String> = (0..n).map(|k| sym(&format!("T{k}"))).collect();
             let body = if n == 0 {
                 format!("({}", ctors.join(" "))
             } else {
@@ -4295,7 +4303,7 @@ impl<'a> Builder<'a> {
         // precondition holds and its `Nat`s are `Nat`s: Z3 gets the equation
         // there, and an unknown value elsewhere (M17, D118).
         if let Some(guard) = guard? {
-            let out_name = sym(&format!("{}#outside", name.trim_matches('|')));
+            let out_name = format!("|{}#outside|", name.trim_matches('|'));
             self.funs.insert(
                 out_name.clone(),
                 format!(
